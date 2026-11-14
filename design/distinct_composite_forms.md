@@ -203,7 +203,23 @@ i64)]`, where `'q` took both functions, checks beside a `_` arm and gives
 arm and at the settle: `([&mut i64, &mut string], i64) as (r, n)` over
 `[(&mut i64, i64), (&mut string, i64)]` gives `r` both references, and is
 refused where a `(&mut f64, i64)` reaches the arm too. The search for the
-member reads each name of the union once. A slice pattern's predicate is a
+member reads each name of the union once. A test over a product (a tuple,
+struct or variant) collides at a part only where every other part of the
+test passes a value of its counterpart (`cast.rs::parts_collision`): a
+value passes a product's test part by part (`Type::is_a`), so a member
+another part tells apart never passes it. `(&i64, i64) as (r, n)` over
+`[(&i64, i64), (&string, string)]` checks, and so does `{n: 1, ..}` over
+two structs whose `f` fields are two function types and whose `n` fields
+are an `i64` and a `string`. What a part passes is the run-time test's
+answer, not the types' (`cast.rs::may_pass`): an empty array, list or map
+passes the test for any, and a reference or function the test for any
+other, so `(Array<i64>, &i64)` over `[(Array<i64>, &i64), (Array<string>,
+&string)]` is refused; a part not decided (an open cell, a declared
+variable, `Any`) may pass, and so may a pair of names met inside itself
+or a pair past the walk's budget (`MAX_PASS_PAIRS`). The judgments beside
+a select arm (a comparison, a map key, a union trait dispatch) report the
+first part's collision whatever the others hold: an ordering reads its
+parts in turn. A slice pattern's predicate is a
 Set whose rest cell holds the whole
 element type, so as a type it covers every array and subtracts everything
 from what reaches the arm; its test is its elements', each of which sees
@@ -257,7 +273,10 @@ values in Rust use `rep` or a `GraphixShape` derive.
   (`Type::rep_collision_tested`). A written test's variable is the type
   it took at its arm (`Type::rep_collision_written`), and in both
   judgments a part of what else reaches the arm that a union of the
-  test's holds passes as itself. Each
+  test's holds passes as itself, and a tuple, struct or variant test
+  collides at a part only where every other part passes a value of its
+  counterpart (`cast.rs::parts_collision`, by the run-time test: an empty
+  array passes any array's). Each
   element of a slice pattern is a
   test of its own among the whole element type, whatever the rest covers
   (`StructPatternNode::element_tests`). A

@@ -2660,6 +2660,123 @@ fn holds(env: &Env, unfolded: &mut Unfolded, t: &Type, b: &Type) -> bool {
     })
 }
 
+/// How many pairs one [`may_pass`] walk judges: past it, a pair may pass.
+const MAX_PASS_PAIRS: u32 = 1 << 12;
+
+/// A [`may_pass`] walk: the pairs of names it met, `None` while one is in
+/// progress, and how many pairs it has judged.
+struct Passes {
+    names: RefHist<AHashMap<(usize, usize), Option<bool>>>,
+    pairs: u32,
+}
+
+/// Whether a value of `b` may pass the run-time test ([`Type::is_a`]) for
+/// `a`, a part of a select arm's test, whose cells pass every value where
+/// `binds`: true wherever a head is not decided, a pair of names is met
+/// inside itself, or the walk is past its budget. An empty array, list or
+/// map passes the test for any, and a reference or function the test for
+/// any other.
+fn may_pass(env: &Env, seen: &mut Passes, binds: bool, a: &Type, b: &Type) -> bool {
+    if binds && matches!(a, Type::TVar(_)) {
+        return true;
+    }
+    seen.pairs += 1;
+    if seen.pairs > MAX_PASS_PAIRS {
+        return true;
+    }
+    ensure_sufficient(|| {
+        let at = (matches!(a, Type::Ref(_)) || matches!(b, Type::Ref(_)))
+            .then(|| (seen.names.param_id(a, env), seen.names.param_id(b, env)));
+        if let Some(at) = at {
+            match seen.names.get(&at) {
+                Some(r) => return r.unwrap_or(true),
+                None => seen.names.insert(at, None),
+            };
+        }
+        let r = match (rep_head(env, a), rep_head(env, b)) {
+            (Some(a), Some(b)) => heads_may_pass(env, seen, binds, &a, &b),
+            _ => true,
+        };
+        if let Some(at) = at {
+            seen.names.insert(at, Some(r));
+        }
+        r
+    })
+}
+
+/// [`may_pass`] of two heads.
+fn heads_may_pass(env: &Env, seen: &mut Passes, binds: bool, a: &Type, b: &Type) -> bool {
+    let opaque =
+        |t: &Type| matches!(t, Type::Abstract { .. } | Type::ByRef(..) | Type::Fn(_));
+    let mut pass = |x: &Type, y: &Type| may_pass(env, seen, binds, x, y);
+    match (a, b) {
+        (Type::Bottom, _) | (_, Type::Bottom) => true,
+        (Type::Set(ts), _) => ts.iter().any(|t| pass(t, b)),
+        (_, Type::Set(ts)) => ts.iter().any(|t| pass(a, t)),
+        (Type::Primitive(p), Type::Primitive(q)) => p.intersects(*q),
+        (Type::Primitive(p), t) | (t, Type::Primitive(p)) => match t {
+            Type::Tuple(_) | Type::Struct(_) | Type::Variant(..) | Type::List(_) => false,
+            Type::Array(_) | Type::Map(_) | Type::Error(_) => p.intersects(rep_prims(t)),
+            _ => p.contains(Typ::Abstract),
+        },
+        (Type::Error(x), Type::Error(y)) => pass(x, y),
+        (Type::Tuple(x), Type::Tuple(y)) => {
+            x.len() == y.len() && x.iter().zip(y.iter()).all(|(x, y)| pass(x, y))
+        }
+        (Type::Struct(x), Type::Struct(y)) => {
+            x.len() == y.len()
+                && x.iter().zip(y.iter()).all(|(x, y)| x.0 == y.0 && pass(&x.1, &y.1))
+        }
+        (Type::Variant(x, xa, _), Type::Variant(y, ya, _)) => {
+            x == y
+                && xa.len() == ya.len()
+                && xa.iter().zip(ya.iter()).all(|(x, y)| pass(x, y))
+        }
+        (a, b) => {
+            mem::discriminant(a) == mem::discriminant(b) || (opaque(a) && opaque(b))
+        }
+    }
+}
+
+/// The collision of two products part by part: the first one a part
+/// holds, unless the products are a select arm's test and what else
+/// reaches the arm, and another part of the test passes no value of its
+/// counterpart: then no value of the other product passes the test.
+fn parts_collision<'a>(
+    env: &Env,
+    seen: &mut RepSeen,
+    subject: Subject,
+    open: Open,
+    ordered: bool,
+    parts: impl Iterator<Item = (&'a Type, &'a Type)> + Clone,
+) -> Option<Indiscernible> {
+    let (at, why) = parts.clone().enumerate().find_map(|(i, (x, y))| {
+        Some((i, rep_collision(env, seen, subject, open, ordered, x, y)?))
+    })?;
+    // CR claude for claude: [bug/low] A union trait dispatch is refused for a part
+    // whose members share a runtime form though another part tells the members
+    // apart, as a select arm's test was (told-by-another-part-01): with `trait Show
+    // { val show: fn(self) -> string }`, an impl for `(&i64, i64)` and one for
+    // `(&string, string)`, `|x: [(&i64, i64), (&string, string)]| Show::show(x)`
+    // says "a Show call over [(&i64, i64), (&string, string)] can't tell &i64 from
+    // &string", though no value of either member passes the other's test.
+    // Type::dispatch_collision judges its members with Subject::Beside, which the
+    // return below keeps at the first part's collision: comparisons share that
+    // subject, and an ordering reads its parts in turn. What would close it: judge
+    // a dispatch's members as tests (a subject of its own), so the rule below this
+    // return reaches them. probe: ~/ptmp/cr29/scratch/r24/24a/tba/d1.gx
+    // (dispatch-told-by-another-part-01)
+    if subject == Subject::Beside {
+        return Some(why);
+    }
+    let passes = &mut Passes { names: RefHist::new(), pairs: 0 };
+    let binds = subject == Subject::Binds;
+    let told = parts
+        .enumerate()
+        .any(|(i, (x, y))| i != at && !may_pass(env, passes, binds, x, y));
+    (!told).then_some(why)
+}
+
 /// Two parts of `a` and `b` a runtime test can't tell apart, or,
 /// `ordered`, two numeric types at one position, whose values have no
 /// order between them.
@@ -2738,7 +2855,7 @@ fn rep_collision(
                     (Type::Map(m0), Type::Map(m1)) => pairs(
                         &mut [(&m0.key, &m1.key), (&m0.value, &m1.value)].into_iter(),
                     ),
-                    // CR claude for claude: [bug/low] A test is refused for a part
+                    // XCR claude for claude: [bug/low] A test is refused for a part
                     // whose members share a runtime form though another part of the
                     // same test tells the members apart: the tuple, struct and
                     // variant arms here report the first colliding position,
@@ -2771,19 +2888,35 @@ fn rep_collision(
                     // (~/ptmp/cr29/scratch/r24/24a/wvt/gen/, 17 of the 79 in
                     // g1-summary.txt's row 'same runtime form', 'same runtime
                     // form', 'exp=OUT'; p32.gx there).
+                    // 2026-11-14 claude: A select arm's product test (tuple,
+                    // struct, variant) collides at a part only where every other
+                    // part passes a value of its counterpart
+                    // (cast.rs::parts_collision, may_pass), at the arm and at the
+                    // settle. The other parts are judged by the run-time test, not
+                    // by Type::could_match, which holds Array<i64> apart from
+                    // Array<string> though an empty array passes both. Fail without
+                    // it: lang::select::product_test_told_by_another_part and
+                    // typ::cast::tests::a_product_test_is_told_by_another_part;
+                    // product_test_an_array_part_tells_nothing fails with
+                    // could_match in may_pass's place. Comparisons and trait
+                    // dispatch are unchanged (dispatch-told-by-another-part-01).
+                    // probes: ~/ptmp/cr29/scratch/r24/24a/tba/ (README)
                     (Type::Tuple(x), Type::Tuple(y)) if x.len() == y.len() => {
-                        pairs(&mut x.iter().zip(y.iter()))
+                        let parts = x.iter().zip(y.iter());
+                        parts_collision(env, seen, subject, open, ordered, parts)
                     }
                     (Type::Struct(x), Type::Struct(y))
                         if x.len() == y.len()
                             && x.iter().zip(y.iter()).all(|(x, y)| x.0 == y.0) =>
                     {
-                        pairs(&mut x.iter().zip(y.iter()).map(|(x, y)| (&x.1, &y.1)))
+                        let parts = x.iter().zip(y.iter()).map(|(x, y)| (&x.1, &y.1));
+                        parts_collision(env, seen, subject, open, ordered, parts)
                     }
                     (Type::Variant(x, xa, _), Type::Variant(y, ya, _))
                         if x == y && xa.len() == ya.len() =>
                     {
-                        pairs(&mut xa.iter().zip(ya.iter()))
+                        let parts = xa.iter().zip(ya.iter());
+                        parts_collision(env, seen, subject, open, ordered, parts)
                     }
                     // the tag tells them apart
                     (Type::Variant(x, _, _), Type::Variant(y, _, _)) if x != y => None,
@@ -4123,6 +4256,82 @@ pub(crate) mod tests {
         assert!(test.rep_collision_written(&env, &other).is_some());
         let narrow = parsed(&env, "(fn(x: i64) -> i64, i64)");
         assert!(narrow.rep_collision_written(&env, &held).is_some());
+    }
+
+    /// A select arm's test collides with another product at a part only
+    /// where every other part of the test passes a value of its
+    /// counterpart: no value of the other product passes the test
+    /// otherwise. An empty array, list or map passes any such test, and a
+    /// part not decided passes every value.
+    #[test]
+    fn a_product_test_is_told_by_another_part() {
+        let defs = [
+            ("T", "[`A(T), `B]"),
+            ("U", "[`C(U), `D]"),
+            ("L", "[`Cons(i64, L), `Nil]"),
+            ("M", "[`Cons(string, M), `Nil]"),
+        ];
+        let (env, _) = typed(&defs, "null");
+        let judged = |test: &str, rest: &str| {
+            let (test, rest) = (parsed(&env, test), parsed(&env, rest));
+            assert!(test.rep_collision(&env, &rest).is_some(), "{test} beside {rest}");
+            let written = test.rep_collision_written(&env, &rest).is_some();
+            let tested =
+                test.rep_collision_tested(&env, super::Open::Unknown, &rest).is_some();
+            assert_eq!(written, tested, "{test} among {rest}");
+            written
+        };
+        let told = [
+            ("(&i64, i64)", "(&string, string)"),
+            ("(&i64, i64)", "(&string, [string, null])"),
+            ("{f: fn(x: i64) -> i64, n: i64}", "{f: fn(y: string) -> string, n: string}"),
+            ("`K(&i64, i64)", "`K(&string, null)"),
+            ("((&i64, i64), i64)", "((&string, string), i64)"),
+            ("((&i64, i64), i64)", "((&string, i64), string)"),
+            ("(&i64, `A)", "(&string, `B)"),
+            ("(&i64, (i64, i64))", "(&string, (i64, i64, i64))"),
+            ("(&i64, {a: i64})", "(&string, {b: i64})"),
+            ("(&i64, Array<i64>)", "(&string, (i64, i64))"),
+            ("(&i64, Array<i64>)", "(&string, List<i64>)"),
+            ("(&i64, Error<`A>)", "(&string, Error<`B>)"),
+            ("(&i64, array)", "(&string, Map<string, i64>)"),
+            ("(&i64, i64)", "(&string, &i64)"),
+            ("(&i64, T)", "(&string, U)"),
+        ];
+        for (test, rest) in told {
+            assert!(!judged(test, rest), "{test} among {rest}");
+        }
+        let untold = [
+            ("(&i64, i64)", "(&string, i64)"),
+            ("(&i64, [i64, null])", "(&string, [string, null])"),
+            ("(&i64, Array<i64>)", "(&string, Array<string>)"),
+            ("(&i64, List<i64>)", "(&string, List<string>)"),
+            ("(&i64, Map<string, i64>)", "(&string, Map<i64, string>)"),
+            ("(&i64, array)", "(&string, Array<string>)"),
+            ("(&i64, i64)", "(&string, Any)"),
+            ("(&i64, i64)", "(&string, 'a)"),
+            ("(&i64, fn(x: i64) -> i64)", "(&string, fn(y: string) -> string)"),
+            ("(&i64, L)", "(&string, M)"),
+            ("((&i64, i64), [i64, string])", "((&string, i64), string)"),
+        ];
+        for (test, rest) in untold {
+            assert!(judged(test, rest), "{test} among {rest}");
+        }
+    }
+
+    /// What tells a product test's part from its counterpart is looked
+    /// for within a budget: over two DAGs of tuples 64 deep, 2^64 pairs
+    /// read as trees, the part may pass and the walk ends.
+    #[test]
+    fn a_part_past_the_pass_budget_may_pass() {
+        let (env, _) = typed(&[], "null");
+        let mut t = parsed(&env, "`Y");
+        for _ in 0..64 {
+            t = Type::Tuple(Arc::from_iter([t.clone(), t]));
+        }
+        let product = |r: &str| Type::Tuple(Arc::from_iter([parsed(&env, r), t.clone()]));
+        let (test, rest) = (product("&i64"), product("&string"));
+        assert!(test.rep_collision_written(&env, &rest).is_some());
     }
 
     // A written test that is a DAG of named unions looks for the member

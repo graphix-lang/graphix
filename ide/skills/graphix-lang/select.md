@@ -143,6 +143,13 @@ select, and runtime forms. Each rule refuses and names the fix.
   take. A union the test writes binds every member it holds (`([&mut
   i64, &mut string], i64) as (r, n)`), and is refused where a reference
   it does not hold reaches the arm.
+  A test over a tuple, struct or variant is refused for such a part only
+  where every other part of it passes a value of the other member: over
+  `[(&i64, i64), (&string, string)]`, `(&i64, i64) as (r, n)` checks,
+  since no value of the second member passes the `i64`. An array, list or
+  map part tells nothing (an empty one passes the test for any element
+  type), nor does a part the members share (`[i64, null]` beside
+  `[string, null]`), a declared variable or `Any`.
   Everything else is told apart: a string from a bare variant, an array
   from a tuple, struct, variant or list, `[]` from `[<>]`. A type
   variable may be any type, so a test beside one is refused where an
@@ -223,6 +230,10 @@ no "this callee is one of" let b = true; let t = select b { true => (|x: i64| x,
 no "same runtime form" let b = true; let fa = |x: i64| x; let fb = |y: string| y; let t = (fa, select b { true => fa, false => fb }); select t { ('q, 'q) as (r, s) => 0, _ => 1 }
 ok let a = 1; let b = "s"; let v = 0; let t = select v { 0 => (&mut a, 1), _ => (&mut b, 2) }; select t { ([&mut i64, &mut string], i64) as (r, n) => n }
 no "same runtime form" let a = 1; let b = "s"; let c = 2.5; let v = 0; let t = select v { 0 => (&mut a, 1), 1 => (&mut b, 2), _ => (&mut c, 3) }; select t { ([&mut i64, &mut string], i64) as (r, n) => n, _ => 0 }
+ok let a = 1; let b = "s"; let v = true; let t = select v { true => (&a, 1), false => (&b, "s") }; select t { (&i64, i64) as (r, n) => *r + n, _ => 0 }
+ok let v = true; let s = select v { true => {f: |x: i64| x, n: 1}, false => {f: |y: string| y, n: "s"} }; select s { {n: 1, ..} => 1, _ => 0 }
+no "same runtime form" let a = 1; let b = "s"; let v = true; let e: Array<string> = []; let t = select v { true => ([1], &a), false => (e, &b) }; select t { (Array<i64>, &i64) as (x, r) => *r, _ => 0 }
+no "same runtime form" let a = 1; let b = "s"; let v = true; let t = select v { true => (&a, 1), false => (&b, 2) }; select t { (&i64, i64) as (r, n) => *r + n, _ => 0 }
 no "'_1 and '_2 types no binding names" let b = true; let v = select b { true => {a: [1], c: []}, false => {a: ["s"], c: []} }; select v { {a, ..} => 0 }
 ok let b = true; let v: [{a: Array<i64>, c: Array<string>}, {a: Array<string>, c: Array<string>}] = select b { true => {a: [1], c: []}, false => {a: ["s"], c: []} }; select v { {a: Array<string>, c: Array<string>} as s => 0, {a, ..} => 1 }
 ok |x: (Any, i64)| -> i64 select x { ((a, b), n) => a + b + n, _ => 0 }

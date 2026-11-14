@@ -4773,6 +4773,94 @@ run!(
     FuseExpect::None
 );
 
+// A test over a product is refused for a part whose members share a
+// runtime form only where every other part of it passes a value of the
+// other member: a member another part tells apart never passes the test.
+run!(
+    product_test_told_by_another_part,
+    r#"{
+        let a = 1;
+        let b = "s";
+        let k = |v: i64| {
+            let t = select v > 0 { true => (&a, 1), false => (&b, "s") };
+            let s = select v > 0 { true => {f: |x: i64| x, n: 1}, false => {f: |y: string| y, n: "s"} };
+            let u = select v > 0 { true => (|x: i64| x, 1), false => (|y: string| y, "s") };
+            let n = select v > 0 { true => ((&a, 1), 5), false => ((&b, "s"), 5) };
+            let o = select v > 0 { true => ((&a, 1), 5), false => ((&b, 1), "x") };
+            let g = select v > 0 { true => (`A, &a), false => (`B, &b) };
+            let e = select v > 0 { true => (error(`A), &a), false => (error(`B), &b) };
+            let written = select t { (&i64, i64) as (r, n) => *r + n, _ => 0 };
+            let both = select t {
+                (&i64, i64) as (r, n) => *r + n,
+                (&string, string) as (r, s) => str::len(*r) + str::len(s)
+            };
+            let partial = select s { {n: 1, ..} => 1, _ => 0 };
+            let variable = select u { ('q, i64) as (r, n) => n, _ => 0 };
+            let nested = select n { ((&i64, i64), i64) as ((r, i), m) => *r + i + m, _ => 0 };
+            let outer = select o { ((&i64, i64), i64) as ((r, i), m) => *r + i + m, _ => 0 };
+            let tag = select g { (`A, &i64) as (_, r) => *r + 1, _ => 0 };
+            let err = select e { (Error<`A>, &i64) as (_, r) => *r + 1, _ => 0 };
+            let element = select [s] { [{n: 1, ..}, ..] => 1, _ => 0 };
+            [written, both, partial, variable, nested, outer, tag, err, element]
+        };
+        array::concat(k(2), k(-2))
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a))
+        if as_i64s(a) == [2, 2, 1, 1, 7, 7, 2, 2, 1, 0, 2, 0, 0, 0, 0, 0, 0, 0]);
+    FuseExpect::Jit
+);
+
+// An empty array passes the test for an array of any element, so an
+// array part tells no member apart.
+run!(
+    product_test_an_array_part_tells_nothing,
+    r#"{
+        let a = 1;
+        let b = "s";
+        let e: Array<string> = [];
+        let k = |v: i64| {
+            let t = select v > 0 { true => ([1], &a), false => (e, &b) };
+            select t { (Array<i64>, &i64) as (x, r) => *r + 1, _ => 0 }
+        };
+        k(-2)
+    }"#,
+    refused("this pattern can't tell &i64 from &string");
+    FuseExpect::None
+);
+
+run!(
+    product_test_a_part_both_members_share_tells_nothing,
+    r#"{
+        let a = 1;
+        let b = "s";
+        let k = |v: i64| {
+            let i: [i64, null] = null;
+            let s: [string, null] = null;
+            let t = select v > 0 { true => (&a, i), false => (&b, s) };
+            select t { (&i64, [i64, null]) as (r, n) => *r + 1, _ => 0 }
+        };
+        k(-2)
+    }"#,
+    refused("this pattern can't tell &i64 from &string");
+    FuseExpect::None
+);
+
+// A part whose type a call decides may be the test's.
+run!(
+    product_test_a_declared_variable_part_tells_nothing,
+    r#"{
+        let a = 1;
+        let b = "s";
+        let k = |v: i64, z: 'a| {
+            let t = select v > 0 { true => (&a, 1), false => (&b, z) };
+            select t { (&i64, i64) as (r, n) => *r + n, _ => 0 }
+        };
+        k(-2, 7)
+    }"#,
+    refused("this pattern can't tell &i64 from &string");
+    FuseExpect::None
+);
+
 const SAME_FORM_TRAIT_DISPATCH: &str = r#"
 {
   trait Show { val show: fn(self) -> string };
