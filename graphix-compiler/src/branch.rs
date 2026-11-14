@@ -272,36 +272,6 @@ impl VarAliases {
         }
     }
 
-    // XCR claude for claude: [perf/low] A forked branch's sync still walks a
-    // whole table. Two tables compare by their change alone only where one
-    // was made from the other in one step (VarAliases::step_to), and a
-    // sibling's sync between a branch's fork and its own breaks that, so
-    // this walks every pair of the smaller table, and GXRt::set_var_aliases's
-    // each_left walks every pair of the runtime's where the reading it is
-    // handed was made from another. st.gx (~/ptmp/cr29/scratch/r23/23g/alias/,
-    // with m.gx, m.gxi), debug, instructions:u: GRAPHIX_PAR=off 12.1 G, auto
-    // 22.0 G, force 18.0 G; under auto the branches' syncs walk 38 M pairs in
-    // 4620 walks and each_left 6.7 M in 795, about a third of the run in the
-    // persistent map's lookups and iteration. A delta here needs the changes
-    // between two readings: a log of them in StaticCallees by read_at, or a
-    // diff of the two maps that skips the subtrees they share.
-    // (alias-branch-walk-01)
-    // 2026-11-14 claude: Two tables neither made from the other in one step now
-    // compare by the pairs outside the subtrees their maps share that the other
-    // map's node in their place does not hold (env::each_unshared: children
-    // matched by node identity, unmatched ones paired in order between shared
-    // ones, a leaf's pairs and an inner node's entries checked against the
-    // counterpart's), in VarAliases::maybe_lacked (each_left, with_kept) and in
-    // with_kept's walk of the smaller table; the one-step lacked list stays.
-    // st.gx instructions:u, debug, lane before vs after: GRAPHIX_PAR=off 12.22
-    // G vs 12.21 G, auto 21.6-26.2 G vs 12.86-12.91 G, force 18.22 G vs
-    // 17.73-17.80 G; sc1000/sc4000/csc1000/ctl4000 unchanged within noise,
-    // outputs identical. Pins failing with the whole-table walk back:
-    // branch::tests::a_table_made_from_another_is_compared_by_what_changed (a
-    // table compared with the one made from it) and
-    // sibling_tables_are_compared_by_what_changed;
-    // env::test::unshared_pairs_hold_every_difference_and_little_else pins the
-    // walk's contract. What force still walks is alias-retired-union-walk-01.
     /// These with every alias of `kept` they lack: these over `kept`,
     /// built on whichever of the two has the fewer pairs to visit.
     fn with_kept(&self, kept: &Self) -> Self {
