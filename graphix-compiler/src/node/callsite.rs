@@ -311,36 +311,6 @@ fn checked_default<R: Rt>(
         Judge::Check(_) | Judge::Bind => None,
     };
     let typ = copy.as_ref().unwrap_or(node.typ());
-    // XCR claude for claude: [bug/medium] A labeled default whose value holds a function with a
-    // labeled default of its own is held by containment alone: the inner default is never
-    // judged (no check_hidden_defaults walk here), so a call that omits the outer label passes
-    // --check and the build or the bind refuses it. `let f = |#w: fn(?#d: 'z, x: i64) -> string
-    // = |#d = 1, x: i64| cast<string>(d)$, x: i64| w(x); f(7)` checks, and its build fails "in
-    // the instance of w(x) at this call site .. in: 1: type mismatch 'z: _ does not contain
-    // i64"; with the function in a struct field, written out or behind a typedef (`#w: W<'z> =
-    // {cb: |#d = 1, ..| .., n: 1}`, `w.cb(x)`), the program builds and logs "w.cb(x): binding
-    // the callee failed: .. in: 1: type mismatch 'z: _ does not contain i64". A call that
-    // passes the label (`f(#w: {cb: |#d = "q", ..| .., n: 1}, 7)`) is judged by
-    // CallSite::check_value_defaults and runs. base-r23 alike. A fix: once the default is held,
-    // walk its type against the label as a written argument's is (Narrowing::Site), in each of
-    // the three arms below. probes: ~/ptmp/cr29/scratch/r23/23b/trdrev/{lam_default_fn,
-    // lam_default, lam_default_struct, lam_default_passed}.gx
-    // (default-holds-defaulted-fn-01)
-    // 2026-11-14 claude: callsite::checked_default walks the default it holds against the label
-    // (check_hidden_defaults, the narrowing its judgment came with: Judge::Check(Narrowing)),
-    // in all three arms, so the inner defaults narrow the label's variable at the check;
-    // CallSite::instance_signature walks the same over the fitted copy's label where the site
-    // hides the outer one (a body calling what the held function returns, w(0)(x));
-    // judge_hidden_defaults enters the default it judges (CompileCtx::enter_default), so a
-    // default holding or passing its own function ends (let rec f = |#a: i64 = g(f), ..| hung
-    // on base-r24). Newly refused at the check: only programs whose written twin (the same
-    // function passed at the call) base-r24 refuses the same way; census 0/0. Pins
-    // lang::functions::default_holding_a_defaulted_fn and its 34 neighbours (default_holding_*,
-    // two_defaults_holding_*, default_passing_its_own_fn): 28 fail with the walks undone,
-    // default_passing_its_own_fn hangs, the two ..returns_a_defaulted_fn_behind_*_that_hides_it
-    // fail without instance_signature's walk. Left: default-call-result-open-01 (a default that
-    // is a call's result), and under GRAPHIX_NO_SUBST=1 an inner default now meets
-    // nosubst-returned-default-01. probes ~/ptmp/cr29/scratch/r24/24c/dhdf/ (README)
     let hidden = |ctx: &mut CompileCtx<R>, t: &Type| match judge {
         Judge::Check(narrowing) => {
             check_hidden_defaults(ctx, flags, scope, top_id, t, typ, narrowing)
