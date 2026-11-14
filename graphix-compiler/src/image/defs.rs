@@ -57,7 +57,7 @@ fn body_decode(buf: &mut impl Buf) -> Result<DefBody, PackError> {
 /// check's specs and its lambda literals' shares. The kernels its
 /// run-time binds built are a cache, built again after a restore.
 fn shared_encode(shared: &BodyShared, buf: &mut impl BufMut) -> Result<(), PackError> {
-    let BodyShared { lowerings, specs, literals, prototype, bound: _ } = shared;
+    let BodyShared { lowerings, specs, literals, prototype, bound: _, held: _ } = shared;
     encode_varint(lowerings.len() as u64, buf);
     for (id, e) in lowerings.iter() {
         id.encode(buf)?;

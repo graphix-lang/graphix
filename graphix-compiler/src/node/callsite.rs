@@ -263,7 +263,8 @@ fn checked_default<R: Rt>(
     judge: Judge,
     join: Option<&mut Join<'_>>,
 ) -> Result<Node<R>> {
-    let (node, res) = ctx.with_restored(f.env.clone(), |ctx| {
+    let restored = f.restore_captures(&mut ctx.env);
+    let compiled = ctx.with_restored(f.env.clone(), |ctx| {
         let local_scope = Scope {
             dynamic: scope.dynamic.clone(),
             lexical: f.scope.lexical.clone(),
@@ -290,7 +291,11 @@ fn checked_default<R: Rt>(
             }
         };
         Ok::<_, anyhow::Error>((node, res))
-    })?;
+    });
+    if let Some(restored) = restored {
+        restored.forget(&mut ctx.env)
+    }
+    let (node, res) = compiled?;
     let label = |ft: &FnType| -> Option<Type> {
         ft.args.iter().find(|a| a.label() == Some(name)).map(|a| a.typ.clone())
     };
@@ -3070,7 +3075,7 @@ impl<R: Rt> CallSite<R> {
         // one member at a time, not joined into one cell (the members' 'z are separate
         // instances: method_own_default_is_left_to_its_calls must keep running).
         // probe: ~/ptmp/cr29/scratch/r25/25d/p2.gx (trait-call-union-omitted-default-01)
-        // CR claude for claude: [bug/medium] In the REPL, where each statement is an input, a
+        // XCR claude for claude: [bug/medium] In the REPL, where each statement is an input, a
         // function a call returns that is called with a labeled default omitted checks, and
         // is refused when its bind runs. `let mk = |k: i64| |#d = 1, x: i64|
         // cast<string>(d)$` and then `let b = mk(4); b(7)` print "-: string" and log "b(7):
@@ -3086,6 +3091,18 @@ impl<R: Rt> CallSite<R> {
         // decided at the check. probes: ~/ptmp/cr29/scratch/r24/24c/dhdf-rev/repl/{f1, f2,
         // f3}.txt (`graphix --no-cache < f1.txt`), f4.gx (the script)
         // (repl-returned-default-bind-01)
+        // 2026-11-14 claude: A function a definition's body returns keeps the definition its
+        // check made of the literal, and the bindings it captures, registered until the
+        // enclosing definition is deleted (BodyShared::held, LambdaDef::hold_returned in
+        // lambda.rs); checked_default puts the captured bindings back for its judgment
+        // (LambdaDef::restore_captures). A later input's call that omits the label now judges
+        // the default at the check: the cell the earlier input settled is refused there with
+        // the 'declare b's type' text (the REPL's settle rule), an annotated twin runs and
+        // prints, and mk(4)(7) in one statement prints. No bind-time failure remains in f1-f4
+        // (probes ~/ptmp/cr29/scratch/r25/25d/rdb/). Pins fail without the hold:
+        // lang::repl_inputs::returned_default_is_judged_in_a_later_input,
+        // returned_default_reading_a_capture_is_judged_in_a_later_input,
+        // lib_tests::leaks::returned_definitions_go_with_their_enclosing_definition.
         let mut known = !defs.is_empty();
         for def in defs.iter() {
             let Some(f) = def.as_ref().and_then(|v| v.downcast_ref::<LambdaDef<R>>())
@@ -3301,6 +3318,11 @@ impl<R: Rt> CallSite<R> {
     // base-r24 alike, both GRAPHIX_NO_SUBST modes. probes:
     // ~/ptmp/cr29/scratch/r24/24h/nsr-rev/{rd1,rd2,rd3,rd4_one_input}.repl (run with
     // repl.sh BIN FILE) (repl-returned-default-open-01)
+    // 2026-11-14 claude: repl-returned-default-bind-01's fix (hold of the returned
+    // literal's definition, 25d) also closes this one: rd1, rd2 and rd4 print 1, rd3
+    // (let w = v(0); w(7)) is refused at the check naming w's type, none fails at the
+    // bind. Probes ~/ptmp/cr29/scratch/r25/25d/rdb/. Check it on the lane build before
+    // fixing.
     /// This site's terminal settle of still-unbound constrained cells,
     /// deferred to the statement boundary. Cells reachable from an
     /// omitted default the check did not see are exempt: the default

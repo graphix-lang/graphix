@@ -14,7 +14,7 @@ use crate::{
     LambdaId, LambdaInstanceId, Node, NodeView, Refs, Rt, Scope, TagValue, Update,
     dbgenv,
     effects::{LambdaFacts, NoLoop, RecursionKind},
-    env::{Env, Lexical},
+    env::{Bind, Env, Lexical},
     expr::{self, Arg, ArgKind, At, Expr, ExprId, LambdaBody, ModPath, Origin},
     fusion::{
         self,
@@ -805,6 +805,26 @@ impl InstanceTypes {
 /// (`CompileCtx::body`).
 pub type BodyShare = SArc<Mutex<BodyShared>>;
 
+/// The bindings [`LambdaDef::restore_captures`] put back.
+pub(crate) struct Restored(SmallVec<[BindId; 2]>);
+
+impl Restored {
+    /// Take them out of `env` again.
+    pub(crate) fn forget(self, env: &mut Env) {
+        for id in self.0 {
+            env.by_id.remove(&id);
+        }
+    }
+}
+
+/// A definition a returned function names, and the bindings it captures,
+/// as its enclosing definition's check left them.
+#[derive(Debug)]
+pub(crate) struct Held {
+    id: LambdaId,
+    binds: Vec<Arc<Bind>>,
+}
+
 #[derive(Debug, Default)]
 pub struct BodyShared {
     /// Each expression the body rewrites (a seq's machine, a trait
@@ -821,6 +841,11 @@ pub struct BodyShared {
     /// A collection intrinsic's prototype call, by the expression id
     /// every compile of the intrinsic gives it.
     pub(crate) prototype: Option<ExprId>,
+    /// The definition of this literal that its enclosing definition's
+    /// check made and a function the enclosing definition returns names:
+    /// it stays registered until the enclosing definition is deleted, so
+    /// a later input's call of that result finds the defaults it omits.
+    pub(crate) held: Option<Held>,
     /// The kernels the run-time binds of the definition's instances built
     /// (`fusion::fuse_instance`).
     pub(crate) bound: crate::fusion::BoundKernels,
@@ -920,6 +945,24 @@ pub(crate) struct BodyCompile {
 }
 
 impl BodyShared {
+    /// Hand `out` the id each literal under `this` holds, none held after.
+    fn release_held(
+        this: &BodyShare,
+        seen: &mut AHashSet<usize>,
+        out: &mut impl FnMut(LambdaId),
+    ) {
+        let children: SmallVec<[BodyShare; 4]> =
+            this.lock().literals.values().cloned().collect();
+        for child in children {
+            if seen.insert(SArc::as_ptr(&child) as usize) {
+                if let Some(held) = child.lock().held.take() {
+                    out(held.id)
+                }
+                Self::release_held(&child, seen, out)
+            }
+        }
+    }
+
     /// Visit `this` and every literal's share under it, each once.
     pub(crate) fn visit(
         this: &BodyShare,
@@ -977,6 +1020,35 @@ pub struct LambdaDef<R: Rt> {
 }
 
 impl<R: Rt> LambdaDef<R> {
+    /// Keep registered each definition of a literal in this body that
+    /// `rtype`, the type of what the body returns, names.
+    fn hold_returned(&self, ctx: &CompileCtx<R>, rtype: &Type) {
+        rtype.each_held_fn(&mut |ft| {
+            for id in ft.lambda_ids.ids().iter() {
+                let Some(inner) = ctx
+                    .lambda_defs
+                    .get(id)
+                    .and_then(|v| v.downcast_ref::<LambdaDef<R>>())
+                else {
+                    continue;
+                };
+                let own = self
+                    .shared
+                    .lock()
+                    .literals
+                    .get(&inner.source)
+                    .is_some_and(|s| SArc::ptr_eq(s, &inner.shared));
+                if own {
+                    let mut binds = Vec::new();
+                    inner.captured_ids(&mut |id| {
+                        binds.extend(ctx.env.by_id.get(&id).cloned())
+                    });
+                    inner.shared.lock().held = Some(Held { id: inner.id, binds })
+                }
+            }
+        })
+    }
+
     /// The definition of the lambda expression `spec`, compiled or decoded
     /// from an image: its instances' `init` built from its parts, the
     /// analysis facts as given, nothing else of a run.
@@ -1168,6 +1240,30 @@ impl<R: Rt> LambdaDef<R> {
     /// a bound.
     fn bound_ids(&self, env: &Env, f: &mut impl FnMut(BindId)) {
         env.bound_dispatchers(&Type::Fn(self.typ.clone()), f)
+    }
+
+    /// Put back into `env` the bindings this definition captures that
+    /// its enclosing definition's check made and the end of that check
+    /// closed, and say which; `None` where one it captures is still gone.
+    pub(crate) fn restore_captures(&self, env: &mut Env) -> Option<Restored> {
+        let mut gone: SmallVec<[BindId; 2]> = SmallVec::new();
+        self.captured_ids(&mut |id| {
+            if env.by_id.get(&id).is_none() {
+                gone.push(id)
+            }
+        });
+        let shared = self.shared.lock();
+        let mut put: SmallVec<[BindId; 2]> = SmallVec::new();
+        let mut binds: SmallVec<[&Arc<Bind>; 2]> = SmallVec::new();
+        for id in gone {
+            let held = shared.held.as_ref().filter(|h| h.id == self.id)?;
+            binds.push(held.binds.iter().find(|b| b.id == id)?);
+            put.push(id)
+        }
+        for b in binds {
+            env.by_id.insert(b.id, b.clone());
+        }
+        Some(Restored(put))
     }
 
     pub(crate) fn captured_ids(&self, f: &mut impl FnMut(BindId)) {
@@ -3089,7 +3185,13 @@ impl<R: Rt> Update<R> for Lambda {
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
         if let Some(def) = self.def.downcast_ref::<LambdaDef<R>>() {
-            ctx.lambda_defs.remove(&def.id);
+            if def.shared.lock().held.as_ref().is_none_or(|h| h.id != def.id) {
+                ctx.lambda_defs.remove(&def.id);
+            }
+            let mut seen: LPooled<AHashSet<usize>> = LPooled::take();
+            BodyShared::release_held(&def.shared, &mut seen, &mut |id| {
+                ctx.lambda_defs.remove(&id);
+            });
             ctx.def_assertions.lock().retain(|a| a.id != def.id);
             ctx.fusion.forget_def(def.id);
         }
@@ -3140,6 +3242,9 @@ impl<R: Rt> Update<R> for Lambda {
             let res = f.typecheck0(ctx, &mut gate.args).at(spec);
             for id in param_knot.drain(..) {
                 ctx.def_gate_params.remove(&id);
+            }
+            if res.is_ok() {
+                def.hold_returned(ctx, &ftyp.rtype);
             }
             if res.is_ok()
                 && let ApplyView::Lambda(g) = f.view()

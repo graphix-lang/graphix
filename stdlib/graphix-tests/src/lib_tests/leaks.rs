@@ -212,6 +212,28 @@ async fn failed_compiles_leave_no_definitions() -> Result<()> {
     Ok(())
 }
 
+/// A definition a returned function names outlives its enclosing
+/// definition's check, and goes with that definition.
+#[tokio::test(flavor = "current_thread")]
+async fn returned_definitions_go_with_their_enclosing_definition() -> Result<()> {
+    let (tx, _rx) = mpsc::channel(64);
+    let ctx = init(tx).await?;
+    let before = ctx.rt.env_stats().await?.lambda_defs_len;
+    for _ in 0..5 {
+        let r = ctx
+            .rt
+            .compile(literal!("let mk = |k: i64| |#d = k, x: i64| cast<string>(d)$"))
+            .await?;
+        let held = ctx.rt.env_stats().await?.lambda_defs_len;
+        assert_eq!(held, before + 2, "mk and the function it returns stay registered");
+        drop(r);
+        let after = ctx.rt.env_stats().await?.lambda_defs_len;
+        assert_eq!(before, after, "deleted definitions kept {} entries", after - before);
+    }
+    ctx.shutdown().await;
+    Ok(())
+}
+
 /// A dynamic module's source that fails to compile leaves nothing it
 /// registered, as a statement does.
 #[tokio::test(flavor = "current_thread")]

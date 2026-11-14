@@ -1531,8 +1531,18 @@ An image carries each cell's level and each definition's depth.
   compiles it again for the bind and finds the cells decided. When a
   definition is not known at the check (a fn-typed parameter, a
   runtime definition), the cells the omitted defaults reach are exempt
-  from the site's settle and the default binds them at the bind. Where
-  the site's fn type hides the label, the bind's instance runs at a copy
+  from the site's settle and the default binds them at the bind. A
+  function a definition's body returns names the definition its check
+  made of the literal, and that definition stays registered with the
+  bindings it captures until the enclosing definition is deleted
+  (`BodyShared::held`, `LambdaDef::hold_returned`), so a later REPL
+  input's call of the result finds its defaults: they are judged with
+  those bindings put back for the judgment
+  (`LambdaDef::restore_captures`), and a cell the earlier input settled
+  is refused at that call, naming the binding. Pins
+  `lang::repl_inputs::returned_default_*`,
+  `lib_tests::leaks::returned_definitions_go_with_their_enclosing_definition`.
+  Where the site's fn type hides the label, the bind's instance runs at a copy
   of the callee's signature fitted to the site's, and the default the
   bind compiled is checked over that copy's label, so the instance's
   body types see what it decides (`CallSite::instance_signature`; pin

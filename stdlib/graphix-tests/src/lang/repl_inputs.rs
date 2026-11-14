@@ -833,6 +833,57 @@ async fn met_defaults_judged_in_input_order() -> Result<()> {
     .await
 }
 
+/// A function an earlier input's call returns is called in a later input
+/// with a default omitted: the default is judged at that call's check
+/// from the definition the earlier input left, so a cell the earlier
+/// input settled is refused there, naming the binding.
+#[tokio::test(flavor = "current_thread")]
+async fn returned_default_is_judged_in_a_later_input() -> Result<()> {
+    session(&[
+        Accept("let mk = |k: i64| |#d = 1, x: i64| cast<string>(d)$"),
+        Accept("let b = mk(4)"),
+        Refuse(
+            "b(7)",
+            "type mismatch _ does not contain i64: it holds the type of `b` (line 1, \
+             column 5 in `let b = mk(4)`), settled when its input ended; declare b's \
+             type where it is bound",
+        ),
+        Produce("mk(4)(7)", Value::from("1")),
+    ])
+    .await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn annotated_returned_default_takes_a_later_call() -> Result<()> {
+    session(&[
+        Accept("let mk = |k: i64| |#d = 1, x: i64| cast<string>(d)$"),
+        Accept("let b: fn(?#d: i64, x: i64) -> string = mk(4)"),
+        Produce("b(7)", Value::from("1")),
+        Produce("b(#d: 3, 7)", Value::from("3")),
+    ])
+    .await
+}
+
+/// A default that reads the returning function's own binding is judged
+/// the same: the bindings its check made are put back for the judgment.
+#[tokio::test(flavor = "current_thread")]
+async fn returned_default_reading_a_capture_is_judged_in_a_later_input() -> Result<()> {
+    session(&[
+        Accept("let mk = |k: i64| |#d = k, x: i64| cast<string>(d)$"),
+        Accept("let b = mk(4)"),
+        Refuse(
+            "b(7)",
+            "type mismatch _ does not contain i64: it holds the type of `b` (line 1, \
+             column 5 in `let b = mk(4)`), settled when its input ended; declare b's \
+             type where it is bound",
+        ),
+        Produce("mk(4)(7)", Value::from("4")),
+        Accept("let c: fn(?#d: i64, x: i64) -> string = mk(5)"),
+        Produce("c(7)", Value::from("5")),
+    ])
+    .await
+}
+
 // A load is checked after the program that loads it: a binding the
 // program left at ⊥ holds what the loaded body writes to ⊥, so a generic
 // val over such a write is refused.
