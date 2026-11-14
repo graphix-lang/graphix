@@ -2500,6 +2500,14 @@ run!(
 );
 
 run!(
+    an_unpaired_variable_with_no_bound_in_an_argument_beside_one_at_two_places_holds,
+    is(Value::I64(0)),
+    "/test.gx" => "mod m; let result = m::f((1, \"s\"), (1, 1), |x: i64, y: i64| x)",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string], 'c: [i64, string], 'b: (i64, 'a), 'd: (i64, 'c), 'e: [i64, string], 'g: fn(x: 'e, y: i64) -> i64>(x: 'b, y: 'd, z: 'g) -> i64;",
+    "/test/m.gx" => "let f = 'p: [i64, string], 'q: (Number, 'p), 'r: (Number, 'p), 's: fn(x: 'k, y: i64) -> i64 |x: 'q, y: 'r, z: 's| -> i64 0"
+);
+
+run!(
     a_variable_in_a_parameters_argument_beside_one_at_two_places_holds,
     is(Value::I64(0)),
     "/test.gx" => "mod m; let result = m::f((1, \"s\"), (1, 1), |x: i64, y: i64| x)",

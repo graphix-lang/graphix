@@ -4402,6 +4402,27 @@ impl FnType {
         // by D36 and deleted; g3/h21_0307 is refused at --check on base-r25 (over-refusal,
         // no order of it runs), so it is no longer a case that ran at every pick.
         // design/tvar_constraints.md names the refusal and its rewrites.
+        // 2026-11-14 claude: Round 25 fixer: not fixed. Probes a4, a1, a6 (review/ of
+        // sig-unpaired-apart-01) are refused at --check on base-r25 with the message
+        // naming 'k and the two rewrites; no program the check accepts fails at an
+        // instance, so what stands is an over-refusal, pinned (lang::interfaces
+        // *_beside_one_at_two_places_*, lang::traits method_variable_in_two_bounds_*) and
+        // described in design/module_system.md. Both rewrites run: giving 'k no bound
+        // (m.gx 's: fn(x: 'k, y: i64) -> i64 with no 'k bound) is now pinned
+        // (an_unpaired_variable_with_no_bound_in_an_argument_beside_one_at_two_places_holds);
+        // 'k: NoError alone and 'k at a parameter were pinned before; 'k: [i64, string] +
+        // NoError is still refused. The fix the CR names needs the judgment's own settled
+        // set (the cells the signature holds at places that differ, `settled` in the
+        // judgment of an implementation) at FnType::held_at, which sees the implementation and the
+        // instance but no signature. A local stand-in (settle only the cells two holders'
+        // bounds name) is not the judgment's set: where the two disagree the instance
+        // holds a cell wider than its place, or the judgment accepts what held_at cannot
+        // hold, which is the unsound run failure 'an instance at' this refusal closed. So
+        // the fix is to store the settled set with the implementation's signature (a field
+        // on the definition, with its image codec), which is more than a low CR's local
+        // rule; recommendation: keep the refusal (Eric 11-10: more annotations for a
+        // simpler checker) unless an implementation of this shape turns up in real code.
+        // No census run: nothing was changed in the check.
         let settle_unplaced = |own: &Self, known: &AHashMap<usize, TVar>| {
             let mut placed: LPooled<AddrSet> = LPooled::take();
             own.for_each_type(&mut |t| {
