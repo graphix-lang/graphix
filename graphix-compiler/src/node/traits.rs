@@ -1270,65 +1270,6 @@ impl<R: Rt> Impl<R> {
         self.unannotated_method(name, false)
     }
 
-    // XCR claude for claude: [bug/low] An impl entry given back while its trait's
-    // declaration still stands is kept for no one. `Env::keep_impl` keeps an entry
-    // only in the `KeptTrait` of a declaration that is being deleted or is gone
-    // (escaped-fn-dropped-trait-01), so a function that outlives the impl alone
-    // binds at no new call site, and still does not once the trait is dropped
-    // too. Only an embedder reaches it: over a root `let saved: fn(x: i64) -> i64
-    // = never()` and a root `trait Sh { val sh: fn(self) -> i64 }`, compile `{
-    // type C = Abstract<i64>; impl Sh for C { let sh = |c: C| c.0 * 10 }; saved
-    // <- |x: i64| Sh::sh(C(x)); 1 }`, drop it, then compile `saved(3)`: it logs
-    // "binding the callee failed: .. no implementation of Sh for C" and is
-    // bottom (30 while the block lives), before escaped-fn-dropped-trait-01's fix
-    // and after it alike. The function already pins the impl's method bindings
-    // (`Env::dispatch_bindings`), so only the entry is missing. To fix: an entry
-    // whose own method bindings a value names is kept under those bindings and
-    // goes with the last of them (as `Env::release_dispatcher` lets a
-    // dispatcher's share go), and a view reads it, ahead of a registered entry of
-    // its head, where it names one of those bindings at the entry's scope; an
-    // entry that writes no method needs another holder. Never keep it for every
-    // view of the standing trait: an impl of the same head declared again must
-    // serve the functions made under it. probe: `probe_impl_dropped_first` in
-    // ~/ptmp/cr29/scratch/r24/24e/escaped-fn-dropped-trait-01/probes.rs
-    // (escaped-fn-dropped-impl-01)
-    // 2026-11-14 claude: Review of escaped-fn-dropped-trait-01: Env::keep_impl and
-    // the function's own pins (Env::dispatch_bindings) are gone. A kept
-    // declaration takes the registry's entries for its trait when it is opened
-    // (Env::keep_trait) and its named dispatchers hold the defaults and the impls'
-    // methods (Lives::hold), so an impl still registered when its trait is deleted
-    // is kept whenever it is dropped. An impl given back while its trait stands
-    // has neither its entry nor its method bindings kept, and the fix must hold
-    // both. A kept entry of a head that is no abstract type must not serve a
-    // function made after an impl of that head is declared again, which the view
-    // test of Env::kept_trait cannot tell while the trait's declaration is the
-    // same one. escaped-fn-dropped-bound-01 wants a holder under the function's
-    // definition too. Still bottom: rprobe3_late_impl, order 'impl first', in
-    // ~/ptmp/cr29/scratch/r24/24e/escaped-fn-dropped-trait-01/review/probes_rev.rs
-    // 2026-11-14 claude: escaped-fn-dropped-bound-01 is fixed without a holder for
-    // impl entries: TraitDef::anchor (the declaration's own binding, at <trait
-    // path>::#decl) now exists, and a function that names a trait as a bound pins
-    // it, so Env::keep_trait snapshots the registry's impls at the trait's
-    // deletion. An impl given back while its trait stands still has no holder; a
-    // holder keyed by the same anchor (a kept entry read where the view's anchor
-    // binding is the declaration's) is the place for it.
-    // 2026-11-14 claude: Fixed for a function that dispatches through the trait
-    // itself: a definition that calls a dispatcher or names the anchor as a bound
-    // now names the registered impls' method bindings its view names under their
-    // own scope where the impl's block or module encloses it (capture_impls,
-    // Env::impl_bindings), Impl::give_back keeps the entry under the method
-    // bindings a value names (Env::keep_impl, Env::kept_impls), and a view reads
-    // it ahead of the registered ones where it names one of those bindings
-    // (Env::kept_impls_named), so a redeclared impl of the same head serves only
-    // the functions made under it. The CR's probe prints 30 live, with the impl
-    // dropped and with both dropped. Pins that fail without keep_impl (12 runs):
-    // lib_tests::leaks::a_function_escaping_a_dropped_block_dispatches_to_its_impl_of_a_standing_trait,
-    // .._of_a_plain_head,
-    // a_function_outliving_its_impl_beside_a_standing_trait_dispatches_to_it (four
-    // drop orders over separate inputs). Not covered, now CR
-    // escaped-fn-dropped-impl-outside-01: a call that reaches the impl through a
-    // default method or a function of an earlier input, built in a view that names
-    // no impl method; and an impl that writes no method.
     /// Give back to the registry what this implementation registered:
     /// its own entry, or the declaration it narrowed. Another
     /// implementation's entry is not identified with this one, so a
