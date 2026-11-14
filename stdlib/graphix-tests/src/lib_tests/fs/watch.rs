@@ -684,7 +684,7 @@ run!(
 #[tokio::test(flavor = "current_thread")]
 async fn watch_hears_after_a_wake() -> Result<()> {
     use graphix_package_core::testing::{
-        Mode, compile_result, fixture_runtime, result_source, updates_until_quiet,
+        Collect, Mode, compile_result, fixture_runtime, result_source, updates_until,
     };
     let dir = tempfile::tempdir()?;
     let d = escape_path(dir.path().display());
@@ -711,11 +711,11 @@ async fn watch_hears_after_a_wake() -> Result<()> {
     )
     .await?;
     let res = compile_result(&ctx).await?;
-    let values = updates_until_quiet(
+    let values = updates_until(
         &ctx.rt,
         &mut rx,
         res.exprs[0].id,
-        Duration::from_millis(1500),
+        Collect::Quiet(Duration::from_millis(1500)),
     )
     .await?;
     ctx.shutdown().await;

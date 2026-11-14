@@ -2,15 +2,12 @@ use anyhow::Result;
 use arcstr::literal;
 use graphix_compiler::FAILURE_TARGET;
 use graphix_package_core::testing::{
-    Mode, PackageRef, compile_result, fixture_runtime, next_update, result_source,
-    updates_until_quiet,
+    Collect, Mode, PackageRef, compile_result, fixture_runtime, next_update,
+    result_source, updates_until,
 };
 use log::{Level, LevelFilter, Log, Metadata, Record};
 use netidx_value::Value;
-use std::{
-    sync::atomic::{AtomicUsize, Ordering::Relaxed},
-    time::Duration,
-};
+use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 
 static FAILURES: AtomicUsize = AtomicUsize::new(0);
 static IGNORED: AtomicUsize = AtomicUsize::new(0);
@@ -135,13 +132,9 @@ async fn swallowed_failure_diagnostics() -> Result<()> {
             FAILURES.store(0, Relaxed);
             IGNORED.store(0, Relaxed);
             let result = compile_result(&ctx).await?;
-            let values = updates_until_quiet(
-                &ctx.rt,
-                &mut rx,
-                result.exprs[0].id,
-                Duration::from_millis(100),
-            )
-            .await?;
+            let values =
+                updates_until(&ctx.rt, &mut rx, result.exprs[0].id, Collect::Settled)
+                    .await?;
             assert!(mode.node_walk() || ctx.rt.control().invocations().1 > 0);
             ctx.shutdown().await;
             assert_eq!(values.len(), expected.len(), "{mode:?}: {values:?}");

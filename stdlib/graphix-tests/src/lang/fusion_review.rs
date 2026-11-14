@@ -60,9 +60,8 @@ async fn late_callee_dispatch_prints_no_constant() -> Result<()> {
     use arcstr::literal;
     use graphix_package_core::{
         PrintSink,
-        testing::{Mode, fixture_runtime, updates_until_quiet},
+        testing::{Collect, Mode, fixture_runtime, updates_until},
     };
-    use std::time::Duration;
 
     for mode in Mode::ALL {
         let sink = PrintSink::default();
@@ -82,13 +81,8 @@ async fn late_callee_dispatch_prints_no_constant() -> Result<()> {
                 }"#
             ))
             .await?;
-        let values = updates_until_quiet(
-            &ctx.rt,
-            &mut rx,
-            result.exprs[0].id,
-            Duration::from_millis(100),
-        )
-        .await?;
+        let values =
+            updates_until(&ctx.rt, &mut rx, result.exprs[0].id, Collect::Settled).await?;
         assert_eq!(values, [0, 0, 0, 3, 4, 5, 6].map(Value::I64), "{mode:?}");
         assert_eq!(sink.take(), "", "{mode:?}");
         ctx.shutdown().await;

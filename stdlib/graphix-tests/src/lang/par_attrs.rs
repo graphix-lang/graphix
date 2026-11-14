@@ -8,10 +8,16 @@ use graphix_package_core::testing::{Collect, Mode};
 use netidx::publisher::Value;
 use std::time::Duration;
 
-/// Run `code` (as `let result = {code}`) node-walked under `par` until it
-/// is quiet for 300ms.
+/// Run `code` (as `let result = {code}`) node-walked under `par` until the
+/// runtime settles.
 async fn run_par(code: &str, par: ParMode) -> Result<Delta> {
     run_with(code, par, Mode::Interp).await
+}
+
+/// [`run_par`] for a program with a standing source (a server), which
+/// never settles: until the runtime is idle and quiet for 300ms.
+async fn run_served(code: &str, par: ParMode) -> Result<Delta> {
+    run_until(code, par, Mode::Interp, SERVED).await
 }
 
 /// [`run_par`] fused: a kernel's loops fork as chunks of its slots.
@@ -26,22 +32,34 @@ async fn run_auto(code: &str) -> Result<Delta> {
     run_with(code, ParMode::Auto, Mode::Par).await
 }
 
-/// Run `code` built as `mode` builds it, forking under `par`, until it is
-/// quiet for 300ms. Under `Auto` the run waits for the fork threshold's
-/// calibration first: nothing forks until it.
+/// [`run_auto`] for a program with a standing source, as [`run_served`].
+async fn run_auto_served(code: &str) -> Result<Delta> {
+    run_until(code, ParMode::Auto, Mode::Par, SERVED).await
+}
+
+const SERVED: Collect = Collect::Quiet(Duration::from_millis(300));
+
+/// Run `code` built as `mode` builds it, forking under `par`, until the
+/// runtime settles.
 async fn run_with(code: &str, par: ParMode, mode: Mode) -> Result<Delta> {
+    run_until(code, par, mode, Collect::Settled).await
+}
+
+/// Run `code` built as `mode` builds it, forking under `par`, collecting
+/// as `until` says. Under `Auto` the run waits for the fork threshold's
+/// calibration first: nothing forks until it.
+async fn run_until(
+    code: &str,
+    par: ParMode,
+    mode: Mode,
+    until: Collect,
+) -> Result<Delta> {
     if par == ParMode::Auto {
         while graphix_compiler::cost::calibration().is_none() {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
     }
-    run_delta_with(
-        code,
-        mode,
-        move |ctx| ctx.control.set_par_mode(par),
-        Collect::Quiet(Duration::from_millis(300)),
-    )
-    .await
+    run_delta_with(code, mode, move |ctx| ctx.control.set_par_mode(par), until).await
 }
 
 /// The compile error `code` gets; a refused program forks nothing, so it
@@ -634,7 +652,7 @@ async fn block_runs_fork() -> Result<()> {
 /// its value.
 async fn module_forks(module: &'static str) -> Result<(u64, Option<Value>)> {
     use graphix_package_core::testing::{
-        compile_result, fixture_runtime, result_source, updates_until_quiet,
+        compile_result, fixture_runtime, result_source, updates_until,
     };
     let (ctx, mut rx) = fixture_runtime(
         [
@@ -651,7 +669,7 @@ async fn module_forks(module: &'static str) -> Result<(u64, Option<Value>)> {
     let res = compile_result(&ctx).await?;
     let id = res.exprs[0].id;
     let quiet = Duration::from_millis(300);
-    let values = updates_until_quiet(&ctx.rt, &mut rx, id, quiet).await?;
+    let values = updates_until(&ctx.rt, &mut rx, id, Collect::Settled).await?;
     let forks = ctx.rt.control().forks() - forks_before;
     ctx.shutdown().await;
     Ok((forks, values.last().cloned()))
@@ -800,12 +818,12 @@ const WAITING_REQUESTS: &str = r#"{
 #[tokio::test(flavor = "current_thread")]
 async fn waiting_server_instances_fork_only_where_it_pays() -> Result<()> {
     let ok = Some(Value::I64(8));
-    let serial = run_par(WAITING_REQUESTS, ParMode::Off).await?;
+    let serial = run_served(WAITING_REQUESTS, ParMode::Off).await?;
     assert_eq!(serial.values.last(), ok.as_ref());
     assert_eq!(serial.forks, 0);
-    let forced = run_par(WAITING_REQUESTS, ParMode::Force).await?;
+    let forced = run_served(WAITING_REQUESTS, ParMode::Force).await?;
     assert_eq!(forced.values.last(), ok.as_ref());
-    let auto = run_auto(WAITING_REQUESTS).await?;
+    let auto = run_auto_served(WAITING_REQUESTS).await?;
     assert_eq!(auto.values.last(), ok.as_ref());
     assert!(forced.forks > 0, "Force ran the instances in order");
     assert!(auto.forks < 50, "Auto forked {} times", auto.forks);
@@ -844,7 +862,7 @@ const LOPSIDED_REQUESTS: &str = r#"{
 
 #[tokio::test(flavor = "current_thread")]
 async fn losing_instance_forks_back_off() -> Result<()> {
-    let auto = run_auto(LOPSIDED_REQUESTS).await?;
+    let auto = run_auto_served(LOPSIDED_REQUESTS).await?;
     assert_eq!(auto.values.last(), Some(&Value::I64(2)));
     assert!(auto.forks < 20, "Auto forked {} times", auto.forks);
     Ok(())

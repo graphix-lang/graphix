@@ -11,7 +11,6 @@ use graphix_package_core::{
     },
 };
 use netidx::publisher::Value;
-use std::time::Duration;
 
 /// What a run made.
 pub(super) struct Delta {
@@ -33,16 +32,11 @@ pub(super) struct Delta {
     pub regions: usize,
 }
 
-/// [`run_delta`]'s window: 700ms with no event ends a program that has
-/// a standing source.
-pub(super) const QUIET: Collect = Collect::Quiet(Duration::from_millis(700));
-
 /// Run `code` (wrapped as `let result = {code}`) in `mode` until the
-/// runtime settles (else, under a standing source, until no event arrives
-/// for 700ms), collecting every update of the result and the captured
+/// runtime settles, collecting every update of the result and the captured
 /// print output.
 pub(super) async fn run_delta(code: &str, mode: Mode) -> Result<(Vec<Value>, String)> {
-    let d = run_delta_with(code, mode, |_| (), QUIET).await?;
+    let d = run_delta_with(code, mode, |_| (), Collect::Settled).await?;
     Ok((d.values, d.out))
 }
 
@@ -117,7 +111,7 @@ pub(super) async fn run_delta_fused_with(
     setup: impl FnOnce(&mut TestState),
     expect: FuseExpect,
 ) -> Result<(Vec<Value>, String)> {
-    let d = run_delta_with(code, mode, setup, QUIET).await?;
+    let d = run_delta_with(code, mode, setup, Collect::Settled).await?;
     #[cfg(debug_assertions)]
     if matches!(mode, Mode::Jit | Mode::JitPar) {
         graphix_package_core::testing::check_fuse_expectation(

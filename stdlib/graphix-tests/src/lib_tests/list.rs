@@ -5,12 +5,10 @@ use graphix_package_core::{
     testing::{Collect, FuseExpect, Mode, collect, prints, refused},
 };
 use netidx::subscriber::Value;
-use std::time::Duration;
 
 /// The last value of `code`'s result in `mode` once the runtime is quiet.
 async fn settled(code: &str, mode: Mode) -> Result<Value> {
-    let quiet = Collect::Quiet(Duration::from_millis(500));
-    collect(code, crate::TEST_REGISTER, mode, quiet)
+    collect(code, crate::TEST_REGISTER, mode, Collect::Settled)
         .await?
         .pop()
         .ok_or_else(|| anyhow::anyhow!("no update before the runtime went quiet"))

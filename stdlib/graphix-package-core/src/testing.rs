@@ -628,20 +628,6 @@ fn update_of(batch: &mut GPooled<Vec<GXEvent>>, id: ExprId) -> Option<Value> {
     })
 }
 
-/// Every update of `id` until the runtime settles (idle with nothing
-/// outstanding, [`GXHandle::wait_settled`]), or, for a program with a
-/// standing source that never settles, until no batch arrives for
-/// `quiet` after the first; failing past [`HANG_GUARD`] (a program that
-/// never quiesces).
-pub async fn updates_until_quiet(
-    rt: &GXHandle<NoExt>,
-    rx: &mut Events,
-    id: ExprId,
-    quiet: Duration,
-) -> Result<Vec<Value>> {
-    updates_until_settled(rt, rx, id, Some(quiet)).await
-}
-
 /// Every update of `id` as `until` says, each wait as [`next_update`]'s.
 pub async fn updates_until(
     rt: &GXHandle<NoExt>,
@@ -662,7 +648,19 @@ pub async fn updates_until(
     }
 }
 
-/// [`updates_until_quiet`], where no `quiet` waits for the settle alone.
+/// Where a quiet window stands: `Busy` until the runtime answers idle, the
+/// window itself `Open`, then `Expired` until idle answers again; a batch
+/// in that last wait reopens it, so a cycle running past the window is
+/// never taken for quiet.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Window {
+    Busy,
+    Open,
+    Expired,
+}
+
+/// Every update of `id` until the runtime settles, or, with a `quiet`
+/// window, until it is idle and none arrives for the window.
 async fn updates_until_settled(
     rt: &GXHandle<NoExt>,
     rx: &mut Events,
@@ -683,11 +681,17 @@ async fn updates_until_settled(
     tokio::pin!(settled);
     let hang = tokio::time::sleep(HANG_GUARD);
     tokio::pin!(hang);
+    let idle = rt.wait_idle();
+    tokio::pin!(idle);
+    let mut window = Window::Busy;
     loop {
+        let counting = quiet.is_some() && !values.is_empty();
         let batch = async {
             match quiet {
-                Some(quiet) => tokio::time::timeout(quiet, rx.recv()).await,
-                None => Ok(rx.recv().await),
+                Some(quiet) if counting && window == Window::Open => {
+                    tokio::time::timeout(quiet, rx.recv()).await
+                }
+                _ => Ok(rx.recv().await),
             }
         };
         tokio::select! {
@@ -704,13 +708,34 @@ async fn updates_until_settled(
             () = &mut hang => {
                 bail!("the program did not quiesce: {values:?}")
             }
+            r = &mut idle, if counting && window != Window::Open => {
+                r.context("the runtime died")?;
+                // every update is in the stream before the idle answers
+                let mut batches = 0;
+                while let Ok(mut batch) = rx.try_recv() {
+                    batches += usize::from(!batch.is_empty());
+                    take(&mut batch, id, &mut values);
+                }
+                if window == Window::Expired && batches == 0 {
+                    return Ok(values);
+                }
+                window = Window::Open;
+            }
             r = batch => match r {
-                // a first value may be slow to come under load: quiet only
-                // counts once one has
-                Err(_) if values.is_empty() => continue,
-                Err(_) => return Ok(values),
+                Err(_) => {
+                    window = Window::Expired;
+                    idle.set(rt.wait_idle());
+                }
                 Ok(None) => bail!("the runtime died"),
-                Ok(Some(mut batch)) => take(&mut batch, id, &mut values),
+                Ok(Some(mut batch)) => {
+                    // the runtime answers a wait_idle request with an empty
+                    // batch: it is no activity
+                    if !batch.is_empty() {
+                        take(&mut batch, id, &mut values);
+                        window = Window::Busy;
+                        idle.set(rt.wait_idle());
+                    }
+                }
             },
         }
     }
@@ -1104,7 +1129,7 @@ pub const HANG_GUARD: Duration = Duration::from_secs(600);
 pub enum Collect {
     /// Its first `n` updates.
     First(usize),
-    // CR claude for claude: [risk/low] About 20 tests collect with a quiet window
+    // XCR claude for claude: [risk/low] About 20 tests collect with a quiet window
     // (`Collect::Quiet`, `updates_until_quiet`: 100 ms to 1 s; lang::{attributes, byref,
     // delivery, dense_deltas, fusion_review, modules, par_attrs, prune, test_builtins,
     // wake_outside}, lib_tests::{bottom, http, lift, list, map, fs::watch},
@@ -1117,8 +1142,21 @@ pub enum Collect {
     // `Collect::Settled`, and the window counts only while the runtime is idle (it starts
     // at a `GXHandle::wait_idle` answer), so a long cycle is never a quiet one.
     // (quiet-window-positive-waits-01)
-    /// Every update until the runtime settles, or none arrives for the
-    /// window after the first (a program with a standing source).
+    // 2026-11-14 claude: The quiet window counts only while the runtime is idle:
+    // updates_until_settled (stdlib/graphix-package-core/src/testing.rs) starts it at a
+    // GXHandle::wait_idle answer and, when it lapses, asks again and reopens it if a
+    // batch came meanwhile, so a cycle running past the window is never a quiet one.
+    // updates_until_quiet is gone; the programs that end by themselves (every Quiet user
+    // but three) collect with Collect::Settled; the standing-source ones (par_attrs
+    // served requests, fs watch wake) keep Quiet. Pin:
+    // lang::delivery::a_long_cycle_is_never_a_quiet_window (multi-thread, where the
+    // runtime has a thread of its own) fails with the old window (collects [0]) and
+    // passes now.
+    /// Every update until the runtime settles, or until none arrives for
+    /// the window after the first (a program with a standing source). The
+    /// window counts only while the runtime is idle: it starts at a
+    /// [`GXHandle::wait_idle`] answer, so a cycle that runs long is never a
+    /// quiet one.
     Quiet(Duration),
     /// Every update until the runtime settles, however far apart they
     /// come: a program that ends by itself.

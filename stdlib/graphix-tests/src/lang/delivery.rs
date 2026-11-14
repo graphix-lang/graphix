@@ -11,9 +11,6 @@ use graphix_package_core::testing::{
     updates_until,
 };
 use netidx::publisher::Value;
-use std::time::Duration;
-
-const QUIET: Collect = Collect::Quiet(Duration::from_millis(700));
 
 fn shown(values: Vec<Value>) -> Vec<String> {
     values.into_iter().map(|v| data(v).to_string().replace("i64:", "")).collect()
@@ -30,7 +27,8 @@ pub(super) async fn result_updates(
     let all = std::iter::once(("/test.gx", result_source(code))).chain(files);
     let (ctx, mut rx) = fixture_runtime(all, &crate::TEST_REGISTER, mode, |_| ()).await?;
     let res = compile_result(&ctx).await?;
-    let values = updates_until(&ctx.rt, &mut rx, res.exprs[0].id, QUIET).await?;
+    let values =
+        updates_until(&ctx.rt, &mut rx, res.exprs[0].id, Collect::Settled).await?;
     ctx.shutdown().await;
     Ok(shown(values))
 }
@@ -52,7 +50,7 @@ async fn input_updates(
         held.push(ctx.rt.compile(ArcStr::from(*input)).await?);
     }
     let id = held[probe].exprs[0].id;
-    let values = updates_until(&ctx.rt, &mut rx, id, QUIET).await?;
+    let values = updates_until(&ctx.rt, &mut rx, id, Collect::Settled).await?;
     drop(held);
     ctx.shutdown().await;
     Ok(shown(values))
@@ -564,3 +562,24 @@ async fn a_fire_in_a_later_module_reaches_a_passed_reader_next_cycle(
 }
 
 modes!(a_fire_in_a_later_module_reaches_a_passed_reader_next_cycle);
+
+// A quiet window counts only while the runtime is idle. The runtime has a
+// thread of its own under a multi-thread executor; the timer's cycle
+// sorts 100000 values, far longer than the 30ms window that was already
+// running when it began, and its update is collected.
+const LONG_TIMER_CYCLE: &str = r#"{
+  let x = 0;
+  let t = sys::time::timer(duration:10.ms, false) ~ 1;
+  x <- array::len(array::sort(array::init(100000, |i| (i * 7919) % 100003 + t)));
+  x
+}"#;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_long_cycle_is_never_a_quiet_window() -> Result<()> {
+    for mode in Mode::ALL {
+        let window = Collect::Quiet(std::time::Duration::from_millis(30));
+        let got = collect(LONG_TIMER_CYCLE, &crate::TEST_REGISTER, mode, window).await?;
+        assert_eq!(shown(got), ["0", "100000"], "{mode:?}");
+    }
+    Ok(())
+}

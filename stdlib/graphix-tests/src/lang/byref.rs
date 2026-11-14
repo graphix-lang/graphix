@@ -1256,9 +1256,8 @@ run!(any_reference_all_in_lambda, r#"{
 async fn any_reference_ordering_is_refused(mode: Mode) -> Result<()> {
     use compact_str::format_compact;
     use graphix_package_core::testing::{
-        compile_result, fixture_runtime, result_source, updates_until_quiet,
+        Collect, compile_result, fixture_runtime, result_source, updates_until,
     };
-    use std::time::Duration;
 
     let mut accepted = poolshark::local::LPooled::<Vec<_>>::take();
     for operation in [
@@ -1299,13 +1298,8 @@ async fn any_reference_ordering_is_refused(mode: Mode) -> Result<()> {
         )
         .await?;
         let result = compile_result(&ctx).await?;
-        let values = updates_until_quiet(
-            &ctx.rt,
-            &mut rx,
-            result.exprs[0].id,
-            Duration::from_millis(100),
-        )
-        .await?;
+        let values =
+            updates_until(&ctx.rt, &mut rx, result.exprs[0].id, Collect::Settled).await?;
         if !values.is_empty() {
             accepted.push((operation, values));
         }

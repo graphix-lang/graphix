@@ -4,7 +4,7 @@
 // `test_note`, which other fixtures register to watch what runs, with
 // `test_none_at` and `test_raw_stateless`, which `wake_outside` registers.
 
-use super::dense_deltas::{QUIET, run_delta_with};
+use super::dense_deltas::run_delta_with;
 use anyhow::Result;
 use compact_str::{CompactString, format_compact};
 use graphix_compiler::{
@@ -223,7 +223,7 @@ async fn run(code: &str, mode: Mode) -> Result<Vec<Value>> {
         ctx.register_builtin::<Identity>().unwrap();
         ctx.register_builtin::<Last>().unwrap();
     };
-    Ok(run_delta_with(code, mode, setup, QUIET).await?.values)
+    Ok(run_delta_with(code, mode, setup, Collect::Settled).await?.values)
 }
 
 /// Each program panics at n = 13 inside `#[native]`: the runtime dies
@@ -420,12 +420,7 @@ async fn prune_audit_refuses_a_queued_effect() -> Result<()> {
             ctx.register_builtin::<UnmarkedEffect>().unwrap();
             ctx.control.set_prune_mode(prune);
         };
-        run_delta_with(
-            code,
-            Mode::Interp,
-            setup,
-            Collect::Quiet(Duration::from_millis(300)),
-        )
+        run_delta_with(code, Mode::Interp, setup, Collect::Settled)
     };
     let walked = run(PruneMode::Off).await?.values;
     assert_eq!(walked, (0..=3).map(Value::I64).collect::<Vec<_>>());
@@ -485,7 +480,7 @@ async fn calls_in_order_across_a_sleep(mode: Mode) -> Result<()> {
     let setup = |ctx: &mut TestState| {
         ctx.register_builtin::<CachedArgsAsync<SlowLogEv>>().unwrap();
     };
-    run_delta_with(&code, mode, setup, QUIET).await?;
+    run_delta_with(&code, mode, setup, Collect::Settled).await?;
     let log: Vec<CompactString> = SLOW_LOG
         .lock()
         .iter()

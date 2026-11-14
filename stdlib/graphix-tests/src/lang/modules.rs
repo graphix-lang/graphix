@@ -4074,9 +4074,8 @@ run!(
 /// The seq lowerings a program leaves once `code` settles on `last`.
 async fn lowerings_kept(code: &str, last: Value) -> Result<usize> {
     use graphix_package_core::testing::{
-        compile_result, fixture_runtime, result_source, updates_until_quiet,
+        Collect, compile_result, fixture_runtime, result_source, updates_until,
     };
-    use std::time::Duration;
     let (ctx, mut rx) = fixture_runtime(
         [("/test.gx", result_source(code))],
         &crate::TEST_REGISTER,
@@ -4085,13 +4084,8 @@ async fn lowerings_kept(code: &str, last: Value) -> Result<usize> {
     )
     .await?;
     let res = compile_result(&ctx).await?;
-    let values = updates_until_quiet(
-        &ctx.rt,
-        &mut rx,
-        res.exprs[0].id,
-        Duration::from_millis(500),
-    )
-    .await?;
+    let values =
+        updates_until(&ctx.rt, &mut rx, res.exprs[0].id, Collect::Settled).await?;
     assert_eq!(values.last(), Some(&last), "{values:?}");
     let kept = ctx.rt.env_stats().await?.lowerings_len;
     ctx.shutdown().await;

@@ -701,9 +701,9 @@ run!(native_body_attribute_waits_for_instance, r#"{
 
 async fn check_dynamic_native(case: bool) -> Result<()> {
     use graphix_package_core::testing::{
-        Mode, compile_result, fixture_runtime, result_source, updates_until_quiet,
+        Collect, Mode, compile_result, fixture_runtime, result_source, updates_until,
     };
-    use std::{process::Command, time::Duration};
+    use std::process::Command;
 
     const CHILD: &str = "GRAPHIX_TEST_NATIVE_REFUSAL_CHILD";
     if !case && std::env::var_os(CHILD).is_none() {
@@ -763,13 +763,9 @@ async fn check_dynamic_native(case: bool) -> Result<()> {
             .await?;
             ctx.rt.control().reset_invocations();
             let result = compile_result(&ctx).await?;
-            let values = updates_until_quiet(
-                &ctx.rt,
-                &mut rx,
-                result.exprs[0].id,
-                Duration::from_millis(100),
-            )
-            .await?;
+            let values =
+                updates_until(&ctx.rt, &mut rx, result.exprs[0].id, Collect::Settled)
+                    .await?;
             if valid {
                 assert_eq!(values, [Value::I64(11)]);
                 assert!(
@@ -814,8 +810,7 @@ async fn native_body_attribute_survives_repl_inputs() -> Result<()> {
 #[tokio::test]
 async fn tail_recursive_covers_later_inputs() -> Result<()> {
     use arcstr::literal;
-    use graphix_package_core::testing::{Mode, fixture_runtime, updates_until_quiet};
-    use std::time::Duration;
+    use graphix_package_core::testing::{Collect, Mode, fixture_runtime, updates_until};
     for mode in [Mode::Jit, Mode::JitPar] {
         let (ctx, mut rx) =
             fixture_runtime([], crate::TEST_REGISTER, mode, |_| {}).await?;
@@ -837,13 +832,8 @@ async fn tail_recursive_covers_later_inputs() -> Result<()> {
             ))
             .await?;
         let bound = ctx.rt.compile(literal!("g(|x| x, 3, 0)")).await?;
-        let values = updates_until_quiet(
-            &ctx.rt,
-            &mut rx,
-            bound.exprs[0].id,
-            Duration::from_millis(100),
-        )
-        .await?;
+        let values =
+            updates_until(&ctx.rt, &mut rx, bound.exprs[0].id, Collect::Settled).await?;
         assert_eq!(values, [Value::I64(6)], "{mode:?}");
         let err = ctx
             .rt
@@ -871,9 +861,8 @@ async fn tail_recursive_covers_later_inputs() -> Result<()> {
 #[tokio::test]
 async fn tail_recursive_reported_bind_fuses_once() -> Result<()> {
     use graphix_package_core::testing::{
-        Mode, compile_result, fixture_runtime, result_source, updates_until_quiet,
+        Collect, Mode, compile_result, fixture_runtime, result_source, updates_until,
     };
-    use std::time::Duration;
     const CODE: &str = "{
   #[tail_recursive]
   let rec loop = |n: i64, acc: i64| -> i64 select n { 0 => acc, _ => loop(n - 1, *(&acc) + n) };
@@ -893,13 +882,9 @@ async fn tail_recursive_reported_bind_fuses_once() -> Result<()> {
             )
             .await?;
             let result = compile_result(&ctx).await?;
-            let values = updates_until_quiet(
-                &ctx.rt,
-                &mut rx,
-                result.exprs[0].id,
-                Duration::from_millis(100),
-            )
-            .await?;
+            let values =
+                updates_until(&ctx.rt, &mut rx, result.exprs[0].id, Collect::Settled)
+                    .await?;
             assert_eq!(values, [Value::I64(sum)], "{mode:?}");
             failed.push(ctx.fusion_stats().await?.failed.len());
             ctx.shutdown().await;
@@ -931,9 +916,8 @@ run!(
 #[tokio::test]
 async fn dynamic_native_kernels_are_shared() -> Result<()> {
     use graphix_package_core::testing::{
-        Mode, compile_result, fixture_runtime, result_source, updates_until_quiet,
+        Collect, Mode, compile_result, fixture_runtime, result_source, updates_until,
     };
-    use std::time::Duration;
     use tokio::time::Instant;
 
     for mode in [Mode::Jit, Mode::JitPar] {
@@ -956,13 +940,8 @@ async fn dynamic_native_kernels_are_shared() -> Result<()> {
         let before = ctx.rt.fusion_stats().await?.fused;
         let start = Instant::now();
         let result = compile_result(&ctx).await?;
-        let values = updates_until_quiet(
-            &ctx.rt,
-            &mut rx,
-            result.exprs[0].id,
-            Duration::from_millis(100),
-        )
-        .await?;
+        let values =
+            updates_until(&ctx.rt, &mut rx, result.exprs[0].id, Collect::Settled).await?;
         let emitted = ctx.rt.fusion_stats().await?.fused - before;
         eprintln!("{mode:?}: elapsed {:?}, emitted {emitted}", start.elapsed());
         assert_eq!(

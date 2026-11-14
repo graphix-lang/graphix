@@ -12,7 +12,6 @@ use graphix_package_core::{
     },
 };
 use netidx_value::Value;
-use std::time::Duration;
 
 /// The first `n` values of the result of `code` run in `mode`.
 async fn collect_n(code: &str, mode: Mode, n: usize) -> Result<Vec<Value>> {
@@ -21,8 +20,7 @@ async fn collect_n(code: &str, mode: Mode, n: usize) -> Result<Vec<Value>> {
 
 /// Every value of the result of `code` run in `mode`, to quiescence.
 async fn collect_settled(code: &str, mode: Mode) -> Result<Vec<Value>> {
-    let quiet = Collect::Quiet(Duration::from_millis(300));
-    collect(code, &crate::TEST_REGISTER, mode, quiet).await
+    collect(code, &crate::TEST_REGISTER, mode, Collect::Settled).await
 }
 
 fn as_i64(vs: &[Value]) -> Result<Vec<i64>> {

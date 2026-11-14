@@ -4,7 +4,6 @@ use graphix_package_core::{
     testing::{Collect, FuseExpect, Mode, collect},
 };
 use netidx::subscriber::Value;
-use std::time::Duration;
 
 run!(http_round_trip, r#"{
     let handler = |req: http::Request| {
@@ -434,8 +433,7 @@ async fn http_serve_forgets_its_server_asleep() -> Result<()> {
     }
 }"#;
     for mode in Mode::ALL {
-        let quiet = Collect::Quiet(Duration::from_millis(1000));
-        let got = collect(CODE, crate::TEST_REGISTER, mode, quiet).await?;
+        let got = collect(CODE, crate::TEST_REGISTER, mode, Collect::Settled).await?;
         let want: Vec<Value> =
             ["hello", "-"].into_iter().map(|s| Value::String(s.into())).collect();
         assert_eq!(got, want, "{mode:?}");

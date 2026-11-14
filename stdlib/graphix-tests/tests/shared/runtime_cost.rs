@@ -1,9 +1,8 @@
 use anyhow::Result;
 use graphix_package_core::testing::{
-    Mode, compile_result, fixture_runtime, result_source, updates_until_quiet,
+    Collect, Mode, compile_result, fixture_runtime, result_source, updates_until,
 };
 use netidx_value::{ValArray, Value};
-use std::time::Duration;
 
 use crate::TEST_REGISTER;
 
@@ -41,13 +40,9 @@ async fn idle_slots_do_not_enter_their_call_sites() -> Result<()> {
             let control = ctx.rt.control();
             let before = control.boundaries().1;
             let result = compile_result(&ctx).await?;
-            let values = updates_until_quiet(
-                &ctx.rt,
-                &mut rx,
-                result.exprs[0].id,
-                Duration::from_millis(100),
-            )
-            .await?;
+            let values =
+                updates_until(&ctx.rt, &mut rx, result.exprs[0].id, Collect::Settled)
+                    .await?;
             let skipped = control.boundaries().1 - before;
             ctx.shutdown().await;
             assert_eq!(values.len(), 101, "{mode:?}");

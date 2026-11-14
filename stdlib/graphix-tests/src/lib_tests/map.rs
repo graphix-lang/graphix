@@ -5,7 +5,6 @@ use graphix_package_core::{
     testing::{Collect, FuseExpect, Mode, collect, is, prints, refused},
 };
 use netidx::subscriber::Value;
-use std::time::Duration;
 
 const MAP_LEN: &str = r#"
 {
@@ -311,8 +310,7 @@ async fn iter_walks_a_user_ordered_map() -> Result<()> {
 }"#;
     let want: Vec<Value> = [3, 2, 1, 0].into_iter().map(Value::I64).collect();
     for mode in Mode::ALL {
-        let quiet = Collect::Quiet(Duration::from_millis(300));
-        let got = collect(CODE, crate::TEST_REGISTER, mode, quiet).await?;
+        let got = collect(CODE, crate::TEST_REGISTER, mode, Collect::Settled).await?;
         assert_eq!(got, want, "{mode:?}");
     }
     Ok(())

@@ -12,7 +12,6 @@ use super::{
 };
 use anyhow::Result;
 use graphix_package_core::testing::{Collect, Mode, TestState, data};
-use std::time::Duration;
 
 const MODES: [Mode; 5] =
     [Mode::Interp, Mode::Unpruned, Mode::Jit, Mode::Par, Mode::JitPar];
@@ -25,8 +24,7 @@ async fn updates(code: &str, mode: Mode) -> Result<(Vec<String>, usize)> {
         ctx.register_builtin::<RawStateless>().unwrap();
         ctx.register_builtin::<NoneAt>().unwrap();
     };
-    let d = run_delta_with(code, mode, setup, Collect::Quiet(Duration::from_millis(300)))
-        .await?;
+    let d = run_delta_with(code, mode, setup, Collect::Settled).await?;
     let got =
         d.values.into_iter().map(|v| data(v).to_string().replace("i64:", "")).collect();
     Ok((got, d.regions))
