@@ -5432,6 +5432,54 @@ run!(
     ; FuseExpect::None
 );
 
+// A label the signature hides holds the returned function's own
+// variable, which the bind picks with the default: an undecided default
+// stands there. One level into a label the signature declares, the
+// variable is the signature's.
+run!(
+    method_return_hidden_label_undecided_array_default,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(7))),
+    "/test.gx" => r#"
+        let k = [];
+        trait T { val mk: fn(self) -> fn(x: i64) -> i64 };
+        impl T for i64 {
+            let mk = |s| |#w: fn(?#d: Array<'q>, x: i64) -> i64 = |#d = k, x: i64| array::len(d) + x, x: i64| w(x)
+        };
+        let result = T::mk(1)(7)
+    "#
+    ; FuseExpect::None
+);
+
+run!(
+    method_return_hidden_label_undecided_default,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "1"),
+    "/test.gx" => r#"
+        let k = never();
+        trait T { val mk: fn(self) -> fn(x: i64) -> string };
+        impl T for i64 {
+            let mk = |s| |#w: fn(?#d: 'q, x: i64) -> string = |#d = k, x: i64| cast<string>(d)$, x: i64| w(x)
+        };
+        k <- 1;
+        let result = T::mk(1)(7)
+    "#
+    ; FuseExpect::None
+);
+
+run!(
+    method_return_declared_label_undecided_default_one_level_in_refused,
+    refused("`k` is undecided here; annotate `k`"),
+    "/test.gx" => r#"
+        let k = never();
+        trait T { val mk: fn(self) -> fn(?#w: fn(?#d: 'z, x: i64) -> string, x: i64) -> string };
+        impl T for i64 {
+            let mk = |s| |#w: fn(?#d: 'z, x: i64) -> string = |#d = k, x: i64| cast<string>(d)$, x: i64| w(x)
+        };
+        k <- 1;
+        let result = T::mk(1)(7)
+    "#
+    ; FuseExpect::None
+);
+
 // The walk judges the return alone: a method's own labeled default is
 // left to the call that omits it, a union self's included.
 run!(

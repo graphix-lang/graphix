@@ -1317,7 +1317,13 @@ An image carries each cell's level and each definition's depth.
   nothing has decided yet) would tie that binding to the copy's
   variable, so under a label that holds a declared variable it is
   refused, naming the binding to annotate; under a written label it
-  takes that type. The walk judges the return alone: a default of the
+  takes that type. A label the signature hides (`fn(self) -> fn(x: i64)
+  -> i64` over `|#w: fn(?#d: Array<'q>, x: i64) -> i64 = .., x|`) holds
+  the returned function's own variables, which the call that binds it
+  picks with the default: a default there stands as it does in a
+  function no trait declares, an undecided one included (the test is a
+  rigid cell under the label, `Type::has_rigid`). The walk judges the
+  return alone: a default of the
   method's own label is left to the call that omits it. Pins
   `lang::traits::method_return_default_under_a_declared_variable_refused`
   and its neighbours.

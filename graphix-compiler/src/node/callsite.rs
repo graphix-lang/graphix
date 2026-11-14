@@ -319,10 +319,11 @@ fn checked_default<R: Rt>(
     };
     let res = res.and_then(|()| match site.and_then(|s| label(s)) {
         Some(t) => {
-            // the declared variables are a copy's, which a cell every use
-            // shares must not meet
+            // the signature's variables are a copy's, held rigid, which a
+            // cell every use shares must not meet; a label the signature
+            // hides holds the callee's own, which a call picks with it
             if let Judge::Check(Narrowing::Method) = judge
-                && t.has_unbound()
+                && t.has_rigid()
                 && node.typ().has_shared_open(&ctx.rec_defs)
             {
                 let note = undecided_binds(ctx, &node, "here")
@@ -675,6 +676,27 @@ pub(crate) fn check_hidden_defaults<R: Rt>(
     hidden_defaults_at(ctx, flags, scope, top_id, declared, value, 0, walk)
 }
 
+// CR claude for claude: [bug/medium] A labeled default that raises (`#d = e?`), in a function
+// a call reaches through a type that names no definition or hides the label, checks, and
+// its bind is refused: no call judges what the default raises. `trait T { val mk: fn(self)
+// -> fn(?#d: i64, x: i64) -> i64 }; impl T for i64 { let mk = |s| |#d = error(`E)?, x: i64|
+// d + x }; { catch(e) println("caught [e]"); println(T::mk(1)(7)) }` passes --check, and
+// the run logs "T::mk(1)(7): binding the callee failed: .. in: error(`E)?: this error
+// reaches a catch that saw no error when it was checked: annotate the catch with the errors
+// it takes". The same through a typedef (`type W = fn(?#d: i64, x: i64) -> i64; let mk =
+// |k: i64| -> W |#d = error(`E)?, x: i64| d + x; .. mk(0)(7)`) and through a written return
+// type that hides the label (`let mk = |k: i64| -> fn(x: i64) -> i64 |#d = error(`E)?, x:
+// i64| d + x`). With no return type written the call names the definition, its catch takes
+// the error and the run prints "caught ..". All three run once the declared function type
+// writes the raise (`.. -> i64 throws Error<ErrChain<`E>>`), or the catch is annotated
+// (`catch(e: Error<ErrChain<`E>>)`). base-r24 alike. The walks that judge a default as
+// its declaration stands (check_method_return, and hidden_defaults_at where the
+// declaration names no definition) judge its type alone, compiled under no handler of any
+// call: a fix holds what such a default raises to the declared function's `throws` there,
+// refused naming the `throws` to write, and for a label the type hides, to the function's
+// own. Found reviewing trait-method-return-defaults-01. probes:
+// ~/ptmp/cr29/scratch/r24/24c/tmrd-rev/{a14, a14d, a14e, r1, r4, r4b, r4c, r5, r5b, r5c}.gx
+// (returned-default-raise-01)
 /// The defaults of the functions a method's value returns, judged where
 /// the method is held to its `declared` signature: against the declared
 /// return as it is written, every variable of the signature rigid, and
