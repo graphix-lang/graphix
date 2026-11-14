@@ -66,25 +66,6 @@ fn truncated(path: &ModPath, n: usize) -> ModPath {
     ModPath(NPath::from(ArcStr::from(s)))
 }
 
-// XCR claude for claude: [readability/low] A hover on a `let rec`'s read of itself
-// in its own body lists the header: `let rec rf = 'a: Number |x: 'a| -> 'a { let w
-// = rf; x }` hovers `w: fn<'a: Number>(x: 'a) -> 'a`, where a type mismatch over
-// `w` prints `fn(x: 'a: unbound within Number) -> 'a: unbound within Number`, no
-// header (the message holds the quantifiers as they stood at the refusal,
-// `tvar::HeldQuantifiers`). The hover reads the binding after the definition's
-// close generalized its cells, so nothing tells it `w` is one instance. probe:
-// ~/ptmp/cr29/scratch/r23/23h/hover-review/gx/w1.gx (the message), probe_test.rs
-// beside it (`let |w = rf`) (hover-rec-self-read-header-01)
-// 2026-11-14 claude: A named definition's close (DefGate::tell_held, lambda.rs)
-// tells the editor the quantifiers it generalizes and its body's scope
-// (ide::HeldScope); a hover's and a completion's binding prints under the ones of
-// the bodies that bind it (query::display_bind, Ide::held_in,
-// HeldQuantifiers::resolving), so w hovers fn(x: 'a) -> 'a and rf keeps its
-// header; a tuple, a struct field, a select pattern bind and a nested lambda's
-// return over the self-read alike. Pin:
-// graphix-shell/tests/lsp/main.rs::a_binding_in_a_body_holds_its_definitions_variables
-// (fails at w with either the record or the display undone; the completion detail
-// fails alone too).
 /// A binding's type for display: a hover's, an outline's, a completion's
 /// (the server's and the REPL's). `replace_auto_constrained` folds a
 /// function's open auto variables into their one bound and must run
