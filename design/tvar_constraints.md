@@ -133,7 +133,12 @@ is where the open cells a conjunct holds take their part. Under `'a0:
 pair, an `x1` narrower than it settles `'a1` there, and that puts `'a2`
 above the pair too, so an `x2: null` is refused, where an `'a2` left
 free took it and no instance held the three. A conjunct that does not
-hold the witness leaves the cell open, "unsatisfiable constraints". The
+hold the witness leaves the cell open, "unsatisfiable constraints"; a
+call's settle of the variables a formal holds drops that error, and the
+argument that prompted the settle is the mismatch. A bound that holds one
+variable twice takes one type for it there as at any bind: `'a1: ('a2,
+'a2)` above `(i64, string)` does not settle, where the same pair
+annotated `([i64, string], [i64, string])` does. The
 settles that bind so: `TVar::settle_witness`, and a containment whose
 wider side holds the witness (`'a ⊆ W ⊆ t`, below). A settle so decides
 more than its own cell, and a run of them over a set of cells (the
@@ -144,6 +149,8 @@ where neither reaches the other (`settle::settle_order`): the verdict
 turns on no map's order. Pins:
 `lang::types::a_bound_chain_{hands_on_what_a_settled_link_took,refuses_what_a_settled_link_does_not_hold,over_undecided_elements_builds,refuses_null_below_a_settled_link,in_one_argument_settles_in_the_chains_order}`,
 `a_result_settled_at_its_lower_bounds_hands_them_to_its_bound_refused`,
+`a_settle_under_a_bound_holding_a_variable_twice{,_refused}`,
+`a_result_settled_under_a_bound_holding_a_variable_twice{,_refused}`,
 `typ::settle::test::{a_settle_at_lower_bounds_commits_the_conjuncts,a_run_of_settles_takes_a_bounds_holder_first}`.
 Two lower bounds that are the same type but for open cells nothing
 bounds (no conjunct, no lower bound, not rigid, not a scheme's) are one

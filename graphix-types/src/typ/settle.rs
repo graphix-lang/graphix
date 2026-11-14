@@ -262,6 +262,18 @@ impl TVar {
         // string. The probes are refused as before (b5, b5r, c6, c8 on the lane's
         // build): the terminal settle still takes 'a5 first, to bottom. What is left of
         // this CR is that order alone.
+        // 2026-11-13 claude: Review of bound-chain-lower-settle-01 (lane 24c): a
+        // widening now commits its variable's conjuncts, so a call that widens a bound's
+        // holder reaches this refusal where base-r24 ran. `let f = 'a0: ['a1, string],
+        // 'a1: ['a2, string] |x0: 'a0, x1: 'a0| x0; let w0: [string, duration] = "s";
+        // f("s", w0)` is refused "unsatisfiable constraints on 'a1: [string, 'a2: _]"
+        // (base-r24 prints s), as the same call the other way round, `f(w0, "s")`, and
+        // the one-parameter `f(w0)` and `f(duration:1.s)` already were on base-r24;
+        // alike under `'a1: Array<'a2>` and `'a1: [Array<'a2>, null]` with `w0: [string,
+        // Array<i64>]`. No argument holds 'a1 or 'a2, so nothing at the call can be
+        // annotated. These have no never(): the fix of this CR must run them (q3, q7, q9
+        // newly refused; q1, q2, q5, q8, q10 refused on base-r24 too). probes:
+        // ~/ptmp/cr29/scratch/r24/24c/bclsrev/q{1..10}.gx
         if self.cell().read().facts.contains(CellFact::BottomFed)
             && self
                 .cell_lower()

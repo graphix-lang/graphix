@@ -12172,6 +12172,56 @@ run!(
     FuseExpect::None
 );
 
+// A bound that holds one variable twice takes one type for it at a
+// settle, as at a bind: below a pair of two types the settle leaves its
+// variable open and the call is refused; the pair annotated as one type
+// twice runs.
+run!(
+    a_settle_under_a_bound_holding_a_variable_twice_refused,
+    r#"{
+  let f = 'a0: ['a1, null], 'a1: ('a2, 'a2) |x0: 'a0, x1: 'a1, x2: 'a2| x2;
+  let v: [i64, string] = 1;
+  f((1, "s"), (1, never()), v)
+}"#,
+    refused("('a2: i64, 'a2: i64) above (i64, string) does not contain (i64, _)");
+    FuseExpect::None
+);
+
+run!(
+    a_settle_under_a_bound_holding_a_variable_twice,
+    r#"{
+  let f = 'a0: ['a1, null], 'a1: ('a2, 'a2) |x0: 'a0, x1: 'a1, x2: 'a2| x2;
+  let v: [i64, string] = 1;
+  let p: ([i64, string], [i64, string]) = (1, "s");
+  f(p, (1, never()), v)
+}"#,
+    prints("i64:1");
+    FuseExpect::Jit
+);
+
+run!(
+    a_result_settled_under_a_bound_holding_a_variable_twice_refused,
+    r#"{
+  let f = 'a0: ['a1, null], 'a1: ('a2, 'a2, i64) |x0: 'a0| -> 'a1 never();
+  let r: ([i64, string], [i64, string], [i64, null]) = f((1, "s", 1));
+  1
+}"#,
+    refused("does not contain (i64, string, i64)");
+    FuseExpect::None
+);
+
+run!(
+    a_result_settled_under_a_bound_holding_a_variable_twice,
+    r#"{
+  let f = 'a0: ['a1, null], 'a1: ('a2, 'a2, i64) |x0: 'a0| -> 'a1 never();
+  let p: ([i64, string], [i64, string], i64) = (1, "s", 1);
+  let r: ([i64, string], [i64, string], [i64, null]) = f(p);
+  1
+}"#,
+    prints("i64:1");
+    FuseExpect::Jit
+);
+
 // A recursive typedef with a bare parameter: the union of its expansion
 // places its members on copies, where the definition's recursion is met
 // by assumption, as the walk on the cells themselves meets it, rather
