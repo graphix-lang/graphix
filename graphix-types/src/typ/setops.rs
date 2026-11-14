@@ -1516,62 +1516,6 @@ impl Type {
         }
     }
 
-    // XCR claude for claude: [bug/low] A union that one of several alternatives already
-    // holds has its own members paired where the alternatives join: two function types
-    // that differ by a renaming of two undecided variables become one member and the
-    // variables one cell. `type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64]; let f
-    // = |y: 'a, z: 'b, x: F2<'a, 'b>| x; let h = |u, v, w| { let r = f(u, v, w); let g =
-    // select c { true => r, false => null }; (u, v) }; h(1, "s", |q: i64| q + 1)` is
-    // refused, "type mismatch 'b: i64 does not contain string" at "s", naming no
-    // annotation (m1.gx), where `h` without the select runs (m0.gx; one alternative is
-    // its type as it stands, `sole`). Alike: `select c { true => f(u, v, w), false =>
-    // f(u, v, w) }`, two nodes of one type (m2.gx); a field or a tuple position read
-    // over two shapes that each hold the union (m3.gx, m4.gx); a slice pattern's
-    // element (m5.gx); two arms' captures of one part (m6.gx); a bare name over the
-    // whole value, `select r { k => k }` (m7.gx). Nothing wrong runs: the type left is
-    // narrower than the value's. Two mechanisms, each enough alone (the unit test
-    // typ::normalize::tests::a_union_of_one_alternative_keeps_its_union_of_renamings
-    // fails with either's `sole` test removed): meet_alternatives flattens every
-    // alternative's members into one list, where meet_open_fns and meet_parts pair two
-    // members of one alternative as they pair two alternatives; and the welding
-    // normalize below (normalize::Members::Welding) collapses renamings in every
-    // union the result reaches, at any depth, those an alternative held before the
-    // join too. What would fix it: a member meets, and collapses with, only a member
-    // of another alternative, and a member two alternatives hold cell for cell is one
-    // member that meets neither's neighbours: the meet carries each member's
-    // alternative through meet_members and meet_parts, and the union collapses across
-    // alternatives itself, its last normalize as the members stand. Not looked into:
-    // which callers of the plain Type::union need the welding merge of products with
-    // one differing part (normalize's Type::merge under Members::Welding), which that
-    // last step would lose; census them. base-r24 alike. Found fixing
-    // read-welds-data-union-01. probes: ~/ptmp/cr29/scratch/r24/24d/rwd/m{0..7}.gx
-    // (alternative-union-members-pair-01)
-    // 2026-11-14 claude: Review of read-welds-data-union-01: a seq step that reads an
-    // outer binding holding such a union pairs it too, with no select written: 'let h =
-    // |u, v, w| { let x = f(u, v, w); seq { let g = x; (u, v) } }; h(1, "s", |q: i64| q
-    // + 1)' is refused, 'type mismatch i64 does not contain string', on base-r24 and the
-    // lane, where the same step over a value it makes itself ('seq { let x = f(u, v, w);
-    // (u, v) }') runs since that fix. The step's lowering reads its snapshot through
-    // 'any(#seqpc ~! snap, snap)', two nodes of one type, m2.gx's kind. probes:
-    // ~/ptmp/cr29/scratch/r24/24d/rwd-rev/seq/{s3,s4}.gx (refused), s1.gx (runs)
-    // 2026-11-14 claude: Fixed: a join pairs and collapses members of different
-    // alternatives only. meet_open_fns/meet_parts carry each member's alternative (tags
-    // through meet_alternatives; a member two members of one other alternative could
-    // meet meets neither), union_tagged gives Welds the join's alternatives so
-    // union_collapses and the welding normalize keep two members of one alternative
-    // apart unless identical as they stand (setops::apart), narrow_per_member tags the
-    // parts by the pattern alternative (union_exact_of_parts) and a slice name over
-    // members of one element union joins them as members (union_exact_of_members; an
-    // or-pattern child still meets). m0..m7 and the seq step (rwd-rev s3/s4) run; a call
-    // through such a union is refused naming the variables, as a call of the binding is
-    // (c1/c2 ran on base-r25 by the conflation). Pins that fail without it:
-    // lang::types::a_select_of_a_union_of_functions_beside_null_keeps_both_members and
-    // its 7 neighbours, call_through_a_select_of_calls_each_a_union_of_functions_refused
-    // (36 runs),
-    // typ::normalize::tests::a_join_of_alternatives_keeps_the_union_one_of_them_holds.
-    // Not done: which member of the other alternative a member pairs with still follows
-    // the sort order (alternative-members-pair-order-01). Census 2967 files 0 changes;
-    // guicheck 39.599G -> 39.789G; deep_nesting ok. Needs a soak.
     fn union_with(env: &Env, merge: Merge, ts: &[&Type]) -> Result<Self> {
         let tags: LPooled<Vec<u32>> = (0..ts.len() as u32).collect();
         Self::union_tagged(env, merge, ts, &tags)
