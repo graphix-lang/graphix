@@ -77,6 +77,12 @@ select, and runtime forms. Each rule refuses and names the fix.
   _)`, `([h, ..], _)`, `([<h, t..>], _)`, `(W(p), _)` check, unless
   the part stands beside a member of that shape (`y` is `x` or a pair):
   the destructure then chooses between them, refused.
+  Where the tests beside a catch-all cannot hold every member built
+  into the reference, it is what was built, and each bind takes its part
+  of the members its arm takes, as over the select written in place:
+  `` (`K, n, _) => n + 1, (_, _, m) => str::len(m) `` over `` &mut
+  (select b { true => (`K, "s", "t"), false => (`L, 0, "a") }) `` is
+  refused, since `n` is a string.
   The referent of `&mut (x, 0)` is a type of its own, which ``x: [`J,
   `M]`` leaves open: where the scrutinee holds it as a part (`select
   (*r, 1)`), the check names "the type `r` refers to", to annotate as
@@ -250,6 +256,8 @@ no "cannot compute string + i64" |s| select s { `A(2, "x") => 0, `A(1, a) => a +
 ok let f = |s| select s { `A(null) => 0, `A(a) => a + 1 }; (f(`A(null)), f(`A(3)))
 ok let f = |s| select s { `Ok(null) => "none", `Ok(v) => v, `Err(e) => e }; f(`Ok("x"))
 no "cannot compute null + i64" |s| select s { `A(1, null) => 0, `A(1, a) => a + 1, _ => 5 }
+no "cannot compute string + i64" let b = true; let r = &mut (select b { true => (`K, "s", "t"), false => (`L, 0, "a") }); select *r { (`K, n, _) => n + 1, (_, _, m) => str::len(m) }
+ok let b = true; let r = &mut (select b { true => (`K, "s", "t"), false => (`L, 0, "a") }); select *r { (`K, n, _) => str::len(n), (_, _, m) => str::len(m) }
 no "not decided at this select" |x| select (x, 0) { (`J, _) => 1, (`M, _) => 2 }
 ok |x: [`J, `M]| select (x, 0) { (`J, _) => 1, (`M, _) => 2 }
 no "could each take the test" let x = never(); let y = never(); let u = select true { true => x, false => y }; select u { i64 as n => n, _ => 0 }

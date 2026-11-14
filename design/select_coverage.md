@@ -163,7 +163,13 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   `Array<Any>`, which holds `x`'s values without `x`), except a
   whole open scrutinee, or the one cell its bounds hold whole
   (`W(x).0`), which the arms decide together, unless an arm
-  holds a partial struct pattern; a pattern there that only takes apart
+  holds a partial struct pattern; where the tests of the arms that do
+  not match every value cannot hold every part built into such a cell,
+  the cell is what was built (the union of its lower bounds,
+  `TVar::settle_witness`), and each arm's binds take their parts of the
+  members it matches, as over the select written in place (`` (`K, n,
+  _) `` beside `(_, _, m)` over `` &mut (select b { true => (`K, "s",
+  "t"), false => (`L, 0, "a") }) `` makes `n` a string); a pattern there that only takes apart
   every value of the shape it decides (a tuple, a struct naming every
   field, a slice or list with a rest, an abstract payload, of names, `_`
   and such patterns: `StructurePattern::only_destructures`) decides that

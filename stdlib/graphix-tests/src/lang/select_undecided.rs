@@ -1422,6 +1422,71 @@ run!(built_part_two_tests_could_take_annotated, r#"{
     [f(5, "s", true), f(5, "s", false), g(5, "s", true), g(5, "s", false)]
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [5, 2, 5, 2]); FuseExpect::Jit);
 
+// Tests that cannot hold every part built into the referent beside a
+// catch-all leave the referent what was built: each bind takes its part of
+// the members its arm matches, as over the select written in place.
+run!(referent_bind_takes_its_part_of_what_was_built_refused, r#"{
+    let b = true;
+    let r = &mut (select b { true => (`K, "s", "t"), false => (`L, 0, "a") });
+    select *r { (`K, n, _) => n + 1, (_, _, m) => str::len(m) }
+}"#, refused("cannot compute string + i64"); FuseExpect::None);
+
+run!(referent_bind_takes_its_part_of_what_was_built, r#"{
+    let f = |b: bool| {
+        let r = &mut (select b { true => (`K, "ss", "t"), false => (`L, 0, "aaa") });
+        select *r { (`K, n, _) => str::len(n), (_, _, m) => str::len(m) }
+    };
+    [f(true), f(false)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [2, 3]); FuseExpect::Jit);
+
+run!(referent_bind_beside_a_bind_at_its_part_refused, r#"{
+    let b = true;
+    let r = &mut (select b { true => (`K, "s", 1), false => (`L, "a", 1) });
+    select *r { (`K, n, _) => n + 1, (_, m, _) => str::len(m) }
+}"#, refused("cannot compute string + i64"); FuseExpect::None);
+
+run!(referent_field_bind_takes_its_part_of_what_was_built_refused, r#"{
+    let b = true;
+    let r = &mut (select b { true => {k: `K, v: "s", w: "t"}, false => {k: `L, v: 0, w: "a"} });
+    select *r { {k: `K, v: n, w: _} => n + 1, {k: _, v: _, w: m} => str::len(m) }
+}"#, refused("cannot compute string + i64"); FuseExpect::None);
+
+run!(abstract_parameter_bind_takes_its_part_of_what_was_built_refused, r#"{
+    type W<'p> = Abstract<'p>;
+    let f = |x, y, b: bool| {
+        let w = W(select b { true => (`K, x, y), false => (`L, 0, "a") });
+        select w.0 { (`K, n, _) => n + 1, (_, _, m) => str::len(m) }
+    };
+    [f("s", "s", true), f("s", "s", false)]
+}"#, refused("i64 does not contain string"); FuseExpect::None);
+
+run!(referent_bind_over_a_parameter_takes_the_parameter, r#"{
+    let f = |x, y, b: bool| {
+        let r = &mut (select b { true => (`K, x, y), false => (`L, 0, "a") });
+        select *r { (`K, n, _) => n + 1, (_, _, m) => str::len(m) }
+    };
+    [f(5, 7, true), f(5, 7, false)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [6, 1]); FuseExpect::Jit);
+
+run!(referent_bind_over_a_parameter_takes_the_parameter_refused, r#"{
+    let f = |x, y, b: bool| {
+        let r = &mut (select b { true => (`K, x, y), false => (`L, 0, "a") });
+        select *r { (`K, n, _) => n + 1, (_, _, m) => str::len(m) }
+    };
+    [f("s", "s", true), f("s", "s", false)]
+}"#, refused("i64 does not contain string"); FuseExpect::None);
+
+// The referent is what was built, so a later write of a member of it fits.
+run!(referent_written_after_the_select_takes_a_built_member, r#"{
+    let f = |b: bool| {
+        let r = &mut (select b { true => (`K, "ss", "t"), false => (`L, 0, "aaa") });
+        let s = select *r { (`K, n, _) => str::len(n), (_, _, m) => str::len(m) };
+        *r <- (`L, 1, "bbbb");
+        s
+    };
+    [f(true), f(false)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [2, 3]); FuseExpect::Jit);
+
 run!(arm_behind_a_cover_of_a_member_below_an_abstract_parameter, r#"{
     type W<'p> = Abstract<'p>;
     let f = |x, b: bool| {

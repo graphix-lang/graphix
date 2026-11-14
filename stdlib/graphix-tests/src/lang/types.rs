@@ -5886,9 +5886,7 @@ run!(
     x <- t ~ "s";
     (b.0, v)
 }"#,
-    refused(
-        "(1, \"a\") tests a value whose type is a part of 'b, a type not decided at this select"
-    )
+    refused("(1, \"a\") tests a value of 'x, a type not decided at this select")
 );
 
 run!(
