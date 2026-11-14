@@ -3091,32 +3091,6 @@ impl TVar {
             (s.level, s.naming.clone())
         };
         let o_naming = o_cell.read().naming.clone();
-        // XCR claude for claude: [bug/low] A call's copy a written variable took is
-        // unmarked here, but only that variable's handle carries its name: the copy's
-        // own handles still carry the callee's, so two calls' copies still read as
-        // one type where a message reaches them through those. With `let f = |x: 'a|
-        // -> Array<'a> []; let c1 = f(never()); let c2 = f(never())` and `let v:
-        // [{a: Array<i64>, c: Array<'q>}, {a: Array<string>, c: Array<'r>}]` over
-        // `{a: [1], c: c1}` and `{a: ["s"], c: c2}`, `{a, ..}` over those two structs
-        // built again unannotated is refused "{ a: Array<i64>, c: Array<'a> } and {
-        // a: Array<string>, c: Array<'a> }" (undecided-member-instance-name-01's
-        // symptom, as on base-r24); alike `let v: [..] = w` after `w`'s select, then
-        // `select w`. Without the unmarking they are numbered, but the annotation's
-        // own members then print `'_1`/`'_2` for `'q`/`'r`. What would fix both: the
-        // cell keeps the written variable's name, and every handle of it writes that
-        // name (a third state of TCell::call_copy; it costs TCell bytes, 184 of the
-        // 200 its assertion allows, and every node-walked activation holds a cell).
-        // probes: ~/ptmp/cr29/scratch/r24/24g/umin-rev/a1.gx, a2.gx
-        // (copy-taken-by-written-name-01)
-        // 2026-11-14 claude: TCell::call_copy is now TCell::naming (tvar.rs Naming:
-        // Own, call's copy, or the written variable that took it, one word); a copy
-        // merged with a cell a written variable names keeps that name, and
-        // TVar::written_own writes it through every handle. Pins that fail without it
-        // (4 modes each):
-        // lang::select::partial_struct_call_copies_a_written_variable_took_read_through_a_built_again_value
-        // and ..._a_later_annotation_took_read_through_the_built_value;
-        // image::a_cell_keeps_the_variable_that_took_it round-trips it
-        // (REGISTRATION_FORMAT 112).
         let naming = Naming::merged((&s_naming, self), (&o_naming, other));
         let moved: LPooled<Vec<Type>> =
             to_add.iter().chain(below.iter()).cloned().collect();
