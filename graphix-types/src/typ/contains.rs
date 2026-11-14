@@ -1545,10 +1545,21 @@ impl TVar {
     /// bind leaves a cell a conjunct holds free of what the cell took.
     /// False where a conjunct does not hold `t`.
     pub fn commit_conjuncts(&self, env: &Env, t: &Type) -> Result<bool> {
+        self.commit_conjuncts_in(env, &mut ContainsHist::new(), t)
+    }
+
+    /// [`Self::commit_conjuncts`] in `hist`, a walk that may have decided
+    /// other relations before ([`ContainsHist::next_relation`]).
+    pub(super) fn commit_conjuncts_in(
+        &self,
+        env: &Env,
+        hist: &mut ContainsHist,
+        t: &Type,
+    ) -> Result<bool> {
         let flags = ContainsFlags::Commit.into();
-        let mut hist = ContainsHist::new();
-        Ok(conjuncts_admit(self, flags, env, &mut hist, t)?
-            && commit_conjuncts(self, flags, env, &mut hist, t)?)
+        hist.next_relation();
+        Ok(conjuncts_admit(self, flags, env, hist, t)?
+            && commit_conjuncts(self, flags, env, hist, t)?)
     }
 }
 

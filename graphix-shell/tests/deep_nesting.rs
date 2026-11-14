@@ -400,6 +400,22 @@ fn program(shape: &str, d: usize) -> String {
             let values = vec!["1"; d + 1].join(", ");
             format!("{pre}let f = {bounds} |x: ({cells})| x;\nf(({values}))")
         }
+        // The chain through a union with each link the next one bare, the
+        // call passing a value to the first link alone: the links below it
+        // wait for it, the last open or a `never()` fed at it.
+        "chainboundswaiting" | "chainboundswaitingnever" => {
+            let never = shape == "chainboundswaitingnever";
+            let bounds = (0..d)
+                .map(|i| format!("'a{i}: ['a{}, null]", i + 1))
+                .chain(never.then(|| format!("'a{d}: i64")))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let (formals, args) = match never {
+                true => (format!("x: 'a0, y: 'a{d}"), "1, never()"),
+                false => (String::from("x: 'a0"), "1"),
+            };
+            format!("let f = {bounds} |{formals}| x;\nf({args})")
+        }
         // The chain on an impl's head, the target's parts in the chain's
         // order or against it.
         "chainboundsimpl" | "chainboundsimplreversed" => {
@@ -847,6 +863,19 @@ fn a_call_passing_values_to_a_chain_of_bounds_checks_in_linear_time() {
 #[cfg(target_os = "linux")]
 fn a_call_passing_values_to_a_chain_of_trait_bounds_checks_in_linear_time() {
     checks_within(&program("chainboundsvaluedtrait", CHAIN_DEPTH), 9 * BILLION)
+}
+
+/// A call passing a value to the first link of a chain of union bounds
+/// settles the links below in time linear in the chain's length: each
+/// link settles after the one above it, and the answer that the links
+/// below a link admit its value stands while nothing they reach is
+/// written, across the call's settles.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_chain_of_waiting_bounds_settles_in_linear_time() {
+    for shape in ["chainboundswaiting", "chainboundswaitingnever"] {
+        checks_within(&program(shape, CHAIN_DEPTH), 6 * BILLION)
+    }
 }
 
 /// An interface `val` carrying a chain of bounds matches its

@@ -151,7 +151,7 @@ impl TVar {
     /// scheme's cells must not join live inference) and its live cells
     /// shared, so it keeps its relations.
     pub(crate) fn witness(&self, env: &Env) -> Result<std::result::Result<Type, bool>> {
-        Ok(self.own_witness(env)?.map(Witness::shared))
+        Ok(self.own_witness(env, &mut ContainsHist::new())?.map(Witness::shared))
     }
 
     /// The union of the cell's lower bounds, else the narrowest conjunct
@@ -160,7 +160,11 @@ impl TVar {
     /// traits or self-referential, or a set only `Singleton` refuses: a
     /// member would do, and no walk here can choose it). Bound and
     /// unbounded cells have none.
-    fn own_witness(&self, env: &Env) -> Result<std::result::Result<Witness, bool>> {
+    fn own_witness(
+        &self,
+        env: &Env,
+        hist: &mut ContainsHist,
+    ) -> Result<std::result::Result<Witness, bool>> {
         let (cons, below) = {
             let cell = self.cell();
             let cell = cell.read();
@@ -176,17 +180,15 @@ impl TVar {
             if below.iter().any(|l| would_cycle_open(&cell, l)) {
                 return Ok(Err(false));
             }
-            let mut hist = ContainsHist::new();
-            let below = joined_lower(env, &mut hist, &below)?;
+            let below = joined_lower(env, hist, &below)?;
             let w = Type::union(env, &below)?;
             for c in cons.iter() {
-                if !c.contains_int(BitFlags::empty(), env, &mut hist, &w)? {
+                if !c.contains_int(BitFlags::empty(), env, hist, &w)? {
                     return Ok(Err(true));
                 }
             }
             return Ok(Ok(Witness::Lower(w)));
         }
-        let mut hist = ContainsHist::new();
         let mut candidates = false;
         'cand: for c in cons.iter() {
             // A trait conjunct is a predicate, not a binding, and a
@@ -195,7 +197,7 @@ impl TVar {
                 continue;
             }
             for o in cons.iter() {
-                if !o.contains_int(BitFlags::empty(), env, &mut hist, c)? {
+                if !o.contains_int(BitFlags::empty(), env, hist, c)? {
                     // `Singleton` refuses the set, not its members: one of
                     // them may still fit
                     candidates |= !matches!(o, Type::Bound(Bound::Singleton));
@@ -234,11 +236,16 @@ impl TVar {
     ///
     /// [`CellFact::BottomFed`]: super::tvar::CellFact::BottomFed
     pub fn settle(&self, env: &Env) -> Result<()> {
+        self.settle_in(env, &mut ContainsHist::new())
+    }
+
+    /// [`Self::settle`] in `hist`, a walk earlier settles may share.
+    fn settle_in(&self, env: &Env, hist: &mut ContainsHist) -> Result<()> {
         if self.cell().read().facts.contains(CellFact::BottomFed) && !self.above_a_type()
         {
             return self.settle_bottom();
         }
-        self.settle_witness(env)
+        self.settle_witness_in(env, hist)
     }
 
     /// Whether a lower bound of the cell is more than ⊥.
@@ -255,12 +262,16 @@ impl TVar {
     ///
     /// [witness]: Self::witness
     pub fn settle_witness(&self, env: &Env) -> Result<()> {
+        self.settle_witness_in(env, &mut ContainsHist::new())
+    }
+
+    fn settle_witness_in(&self, env: &Env, hist: &mut ContainsHist) -> Result<()> {
         if self.earlier_task() {
             return Ok(());
         }
         self.weld_lower();
-        let settled = match self.own_witness(env)? {
-            Ok(w) => self.settle_at(env, w)?,
+        let settled = match self.own_witness(env, hist)? {
+            Ok(w) => self.settle_at(env, hist, w)?,
             Err(unsatisfiable) => !unsatisfiable,
         };
         if settled {
@@ -285,9 +296,9 @@ impl TVar {
     /// ([`Self::commit_conjuncts`]), so a cell a conjunct holds stands
     /// above what this one took. False, the cell left open, where a
     /// conjunct does not hold it.
-    fn settle_at(&self, env: &Env, w: Witness) -> Result<bool> {
+    fn settle_at(&self, env: &Env, hist: &mut ContainsHist, w: Witness) -> Result<bool> {
         if let Witness::Lower(w) = &w
-            && !self.commit_conjuncts(env, w)?
+            && !self.commit_conjuncts_in(env, hist, w)?
         {
             return Ok(false);
         }
@@ -327,7 +338,7 @@ impl TVar {
     ///
     /// [own witness]: Self::own_witness
     pub(super) fn bounds_witness(&self, env: &Env) -> Option<Type> {
-        match self.own_witness(env) {
+        match self.own_witness(env, &mut ContainsHist::new()) {
             Ok(Ok(Witness::Lower(w) | Witness::Conjunct(w))) => Some(w),
             _ => None,
         }
@@ -347,6 +358,12 @@ impl TVar {
     /// refused instead. Only the terminal walk uses this (an earlier call
     /// would foreclose writers not yet typechecked).
     pub fn settle_or_bottom(&self, env: &Env) -> Result<()> {
+        self.settle_or_bottom_in(env, &mut ContainsHist::new())
+    }
+
+    /// [`Self::settle_or_bottom`] in `hist`, a walk earlier settles may
+    /// share.
+    fn settle_or_bottom_in(&self, env: &Env, hist: &mut ContainsHist) -> Result<()> {
         // CR claude for claude: [bug/medium] Two open cells no argument decides, one within
         // a union over the other and that other above it, have no settle: `type O<'t> =
         // ['t, null]; let f = 'a3: Array<O<'a4>>, 'a4: [i64, null] |x3: 'a3| 7; let h =
@@ -378,7 +395,7 @@ impl TVar {
         // w2{c,,d}.gx and w1.gx (refused; base-r24 runs them), w4{a,b,e,g}.gx and
         // w2{a,e,f,g}.gx (run) (conjunct-lower-cycle-settle-01)
         if !self.cell_constraints().is_empty() || !self.cell_lower().is_empty() {
-            self.settle(env)?;
+            self.settle_in(env, hist)?;
         }
         self.settle_bottom()
     }
@@ -638,6 +655,7 @@ impl FnType {
             turns: LPooled::take(),
             feeds: LPooled::take(),
             passed: LPooled::take(),
+            hist: ContainsHist::new(),
         };
         run.turns.resize(nodes.len(), Turn::Unmet);
         run.feeds.resize(nodes.len(), Feeds::Unasked);
@@ -693,6 +711,9 @@ struct TerminalRun<'a> {
     /// for each cell, how many of its `holders`, from the first, feed it
     /// no more: one that does not [feed](Self::feeds) never will again
     passed: LPooled<Vec<usize>>,
+    /// the walk the run's settles share, so a probe's verdict over a cell
+    /// whose reach no settle wrote is not walked again
+    hist: ContainsHist,
 }
 
 #[cfg(test)]
@@ -721,7 +742,7 @@ impl TerminalRun<'_> {
 
     /// Settle cell `i`, then the cells that waited for it alone.
     fn settle(&mut self, i: usize) -> Result<()> {
-        // CR claude for claude: [perf/high] A chain of union bounds whose cells wait
+        // XCR claude for claude: [perf/high] A chain of union bounds whose cells wait
         // settles in time quadratic in its length. Each link settles with the links below
         // it open, and its settle (TVar::own_witness's `c.contains_int(w)`, then
         // TVar::settle_at's commit_conjuncts) asks the next link whether its conjuncts
@@ -741,10 +762,22 @@ impl TerminalRun<'_> {
         // shape: its fix adds one. Found reviewing never-under-union-bound-01. probe:
         // ~/ptmp/cr29/scratch/r24/24c/nuubrev/mkuchain.py N [never]
         // (waiting-chain-settle-quadratic-01)
+        // 2026-11-14 claude: Lane 25b fixer: a terminal settle's run
+        // (FnType::settle_terminal's TerminalRun) now shares one ContainsHist across its
+        // settles (TVar::settle_or_bottom_in, own_witness, settle_at,
+        // TVar::commit_conjuncts_in, which starts each commit with next_relation), so a
+        // probe's verdict over a link whose reach no settle wrote stands (probe_standing)
+        // and each link below is walked twice, not once per link above. mkuchain.py on the
+        // lane's debug graphix, --no-cache --check, instructions:u (empty program 0.74G):
+        // 250 / 500 / 1000 / 2000 / 4000 / 10000 links 0.80 / 0.86 / 0.99 / 1.20 / 1.64 /
+        // 2.96G (base-r25 1.26 / 2.73G at 250 / 500); the never() twin the same. Pin:
+        // deep_nesting a_chain_of_waiting_bounds_settles_in_linear_time (both shapes at
+        // 10000 links, 6G budget; 3.0G with the fix, over 6G at once without it). Census
+        // 2971 files: no verdict or message moved; guicheck 39.64G base-r25, 39.73G lane.
         self.turns[i] = Turn::Settled;
         let tv = &self.nodes[i].1;
         if !(self.left)(tv) {
-            tv.settle_or_bottom(self.env)?
+            tv.settle_or_bottom_in(self.env, &mut self.hist)?
         }
         crate::stack::ensure_sufficient(|| {
             let edges = self.edges;
