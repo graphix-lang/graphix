@@ -899,61 +899,6 @@ impl Reach {
             // literal arms, the read, the write): no check/build difference, verdicts and
             // outputs equal on base-r24 and the lane. probes:
             // ~/ptmp/cr29/scratch/r24/24b/pbas/ (README)
-            // XCR claude for claude: [bug/low] A lower bound of a scrutinee cell the arms
-            // decide goes to the first member of the arms' union that can take it, which
-            // may decide a cell a later member would hold as it stands: `let f = |x, b:
-            // bool| { let r = &mut (select b { true => (`K, x), false => (`L, 0) }); select
-            // *r { (`K, _) => 1, (_, 0) => 2, _ => 3 } }` checks since lower-view-reach-01,
-            // as `fn(x: i64, b: bool) -> i64`: the referent is `[(Any, i64), (`K, Any)]`
-            // and `(`K, 'x)` goes to `(Any, i64)`. So `f("s", true)` is refused, "type
-            // mismatch i64 does not contain string", which names no annotation, where
-            // the plain twin `select (select b { .. }) { .. }` prints [1, 2] and base-r23
-            // refused the definition naming `x`. `|x: string, b: bool|` prints [1, 2], and
-            // so does the string call with the parts swapped (`(x, `K)` beside `(0, `L)`,
-            // arms `(_, `K)`, `(0, _)`, `_`), where `(Any, `K)` sorts first. A bind does
-            // the same on base-r23 (`(`K, _) => 1, (_, n) => n + 1`). `(`K, (x, 1))`
-            // behind `(`K, _)` and the struct form alike. What would close it: a bound
-            // goes to a member that holds it deciding no cell before one that decides
-            // one. probes: ~/ptmp/cr29/scratch/r23/23d/lvr-rev/{r1.txt,r4.txt} (run with
-            // rb.sh), r1.txt lines 3 to 5 (lower-bound-first-member-01)
-            // 2026-11-14 claude: Reproduced on base-r24: the probe types x i64 with the tag
-            // first and leaves it open with the tag last, so f("s", true) is refused in one
-            // order of the parts and prints [1, 2] in the other; the struct, variant
-            // payload, nested and top-level forms alike, and an abstract's parameter. A
-            // pick by position, so not closed by D36. Fixed in the settle (Reach::new,
-            // select::built_standing): a part built into the scrutinee's cell that one of
-            // the arms' tests holding no cell holds whatever its cells become has those
-            // cells held rigid through the settle, so no test that would decide them takes
-            // the part first and x stays open in both orders, as lower-view-reach-01's pins
-            // and the skill say of the lucky order; a cell another part needs decided is
-            // not held. A part no such test holds so that two of them could take ((`K, x,
-            // y) behind (`K, n, _), beside (_, 0, _) and (_, _, "a"): base-r24 decides y
-            // with the tag first and x with it last) is refused once no arm is refused for
-            // testing it, "could go to (Any, Any, string) or (Any, i64, Any) of the types
-            // they test, neither of which holds it as it stands: annotate it, writing for
-            // 'x the type of `x`"; the annotated twins run. Not taken: refusing wherever
-            // two tests could take the part, as lane 24d's UndecidedTaker does for the same
-            // union written as an annotation (let r: [(Any, i64), (`K, Any)] = (`K, x)): it
-            // turns 7 accepting pins of lower-view-reach-01 and the skill's ok line into
-            // refusals (tests-refuse-only.log). The CR's bind form ((`K, _) => 1, (_, n) =>
-            // n + 1) types x i64 in both orders on base-r24 and here, and refuses x: string
-            // too: no position decides it, left. Pins, lang::select_undecided:
-            // arm_behind_a_cover_leaves_{the_covered_part_open_tag_first,
-            // the_covered_field_open, the_covered_payload_open,
-            // a_cell_inside_the_covered_part_open, both_covered_parts_open,
-            // an_abstract_parameter_part_open_tag_first},
-            // arm_behind_an_or_cover_leaves_both_covered_parts_open and
-            // later_use_decides_a_cell_of_a_covered_member_tag_first fail in all four modes
-            // with the hold undone; built_part_two_tests_could_take_refused and
-            // .._in_another_order_refused fail with the refusal undone;
-            // built_part_two_tests_could_take_annotated holds either way. Differential
-            // (gen.py: 8172 selects, each written in every order of its parts as a tuple, a
-            // struct and a variant, called with an i64 and a string): 79 families whose
-            // verdict follows the order on base-r24, none here; 95 newly accepted, each the
-            // mirror of one base-r24 runs, none newly refused; the 1588 accepted print what
-            // the arms say fused, --no-fusion, GRAPHIX_PAR=force and GRAPHIX_NO_SUBST=1, no
-            // GRAPHIX_ELAB_AUDIT report. Census 2967 files: 0 verdicts, 0 messages. probes:
-            // ~/ptmp/cr29/scratch/r24/24b/lbfm/ (README)
             // CR claude for claude: [bug/low] A part built into a scrutinee cell the arms
             // decide still goes by the order of the arms' union where the arm that takes
             // its member whole binds a name: `let f = |x, y, b: bool| { let r = &mut
