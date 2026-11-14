@@ -2625,6 +2625,13 @@ impl FnType {
             // that CR's hole is closed at the judgment in this commit (a predicate asked
             // of a union holding a signature variable reads the variable as its caller's
             // pick). The held-back k4-drop.patch was not run again over it.
+            // 2026-11-13 claude: Round 24 (lane 24e, review of
+            // iface-predicate-member-01): that fix holds with the review's correction
+            // (bb311e881) and its XCR is deleted, so both holes k4-drop.patch waited on
+            // (sig-unpaired-apart-01, iface-predicate-member-01) are closed at the
+            // judgment. The patch itself was not applied or run again in that review: its
+            // tables (k4 k5 u1n valid, u1 y6 z1 the three it let through) are the first
+            // thing to re-run.
             for s in sig_tcs.iter() {
                 if s.implies(env, &in_sig)? {
                     return Ok(());
@@ -2649,74 +2656,6 @@ impl FnType {
                     }
                 }
                 Some(sig_type) => {
-                    // XCR claude for claude: [bug/medium] A paired implementation cell's
-                    // predicate conjunct is asked of the signature's concrete type as that type
-                    // stands, where a signature variable that is a member of its union does not
-                    // count as the types its bounds admit, though the caller may pick any of
-                    // them; the predicates asked of each signature variable inside (the list
-                    // below: Discernible, Ordered, JsonData, TomlData, Concrete, Data) leave out
-                    // NoError and OneNumber. `val f: fn<'a: Number>(x: ['a, `X]) -> i64;` over
-                    // `let f = 'q: OneNumber |x: 'q| -> i64 0` passes --check with `m::f(v)`, `v:
-                    // [i64, f64, `X]`, and the run fails "an instance at fn(x: [i64, f64, `X])
-                    // -> i64 of a definition typed fn<'q: OneNumber>(..)"; the same with `'a:
-                    // [i64, Error<`E>]` over `'q: NoError` and an error argument. Asking NoError
-                    // of each signature variable that is a member of the union (not one below a
-                    // constructor: an `Array<Error<..>>` is no error) closes the second; OneNumber
-                    // and Singleton count members, so a variable there would count as its bounds'
-                    // members. The open pair's case, a predicate on an unpaired cell standing
-                    // for a bare signature variable, is judged by the variable's bounds (the
-                    // Sealed arm of Type::contains_dispatch). On base-r23 and lane 23g alike.
-                    // probes: ~/ptmp/cr29/scratch/r23/23g/iface-bound-shape-01/review/{p9,p9n}/main.gx
-                    // (iface-predicate-member-01)
-                    // 2026-11-13 claude: Round 24 (lane 24e, review of iface-bound-shape-01): the
-                    // unpaired cell has this hole too, where it stands for a union holding a signature
-                    // variable, not a bare one: the Sealed arm of Type::contains_dispatch judges a
-                    // predicate against a rigid variable alone, and a union goes to one_number_holds
-                    // or may_be_error as it stands. `val f: fn<'a: Number, 'b: [`X, 'a]>(x: 'b) ->
-                    // i64;` over `let f = 'p: OneNumber, 'q: [`Y, `Z, 'p] |x: 'q| -> i64 0` passes
-                    // --check with `m::f(v)`, `v: [i64, f64]`, and the run fails "an instance at fn(x:
-                    // [i64, f64]) -> i64 of a definition typed fn<'p: OneNumber, ..>" (z7); the same
-                    // with `'a: [i64, Error<`E>]` over `'p: NoError` and `m::f(error(`E))` (z10), and
-                    // with the union at a position, `fn<'a: Number>(x: [`X, 'a])` (z11). With `` `X ``
-                    // in the implementation's union the variable is left alone and the check refuses
-                    // (z7m); `'a: Number + OneNumber` is valid and runs (z7n); Singleton refuses the
-                    // union by its two members. On base-r24 and lane 24e alike. The held-back patch of
-                    // iface-bound-shape-01 reaches it by a union of the bound's length (z1 there).
-                    // probes:
-                    // ~/ptmp/cr29/scratch/r24/24e/iface-bound-shape-01/review/{z7,z7n,z7m,z10,z11,z1}/main.gx
-                    // 2026-11-13 claude: Round 24 (lane 24e, fixer of sig-unpaired-apart-01): the unpaired
-                    // form in the note above is refused at the check since that fix: a bare member takes of
-                    // the other side's members only those its own bounds admit, each asked apart, so z5 z7
-                    // z10 z11 no longer hand `'p` the union whole (z7: "the implementation requires 'b: ['p,
-                    // `Y, `Z], which the signature does not declare"); z7n holds and runs, z7m is refused as
-                    // before. The paired form this CR opens with (p9: a signature variable a member of a
-                    // concrete type's union) is unchanged. A variable that fix settles to a union holding
-                    // signature variables (a bare member taking two members of a bound, `['a, `X]`) is judged
-                    // by this arm too, a predicate asked of the union as it stands. probes:
-                    // ~/ptmp/cr29/scratch/r24/24e/iface-bound-shape-01/review/{z5,z7,z7n,z7m,z10,z11}/main.gx
-                    // 2026-11-13 claude: Round 24 (lane 24e fixer): fixed at the judgment. Under
-                    // ContainsFlags::Sealed, OneNumber and NoError asked of a union read a rigid member as
-                    // its caller's pick: NoError holds only where a conjunct of the variable implies it
-                    // (Type::may_be_error), OneNumber counts the variable as the numeric types every closed
-                    // type among its conjuncts holds, or as one more where a conjunct implies OneNumber and
-                    // several are new (UnionParts::count_rigid_numbers); Singleton already refused a variable
-                    // beside a member. Type::implies now knows Singleton implies OneNumber, so 'a: Number +
-                    // Singleton keeps holding an implementation's OneNumber (a16, a18; the bare a17 was
-                    // refused before and holds now). The refusal names the bound: 'declare 'a: OneNumber'. p9
-                    // p9n, a field (a15), a typedef's union (a2), under a bound (a6), a return (b8), an
-                    // unbounded variable (a13), a declared variable beside another number (a9) and a
-                    // bound-only variable settled to ['a, i64] (d1) all passed --check on base-r24 and failed
-                    // at the instance (b8 ran), and are refused now; their twins run. Newly refused though
-                    // every instance holds: a variable in a union whose only bound has a variable of its own
-                    // ('a: Array<'c> in ['a, null] under NoError, c2), as the bare variable always was (c1);
-                    // 'a: Array<'c> + NoError holds. Pins, lang::interfaces: a_one_number_bound_*,
-                    // a_no_error_bound_*, a_one_number_variable_beside_a_number_may_be_another,
-                    // an_unpaired_one_number_variable_*, a_variable_bounded_by_*, a_singleton_variable_*: the
-                    // 9 refusal pins fail in all 4 modes with sealed passed as false in
-                    // Type::contains_dispatch, the 2 Singleton pins with the implication removed. Census 0/0
-                    // of 2967 against base-r24. probes:
-                    // ~/ptmp/cr29/scratch/r24/24e/iface-predicate-member-01/ (README)
-
                     // a predicate that holds of a type only if it holds of
                     // every part asks it of each signature variable inside
                     for impl_tc in tv.cell_constraints() {
