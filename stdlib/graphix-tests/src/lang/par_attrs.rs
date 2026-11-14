@@ -25,14 +25,10 @@ async fn run_fused(code: &str, par: ParMode) -> Result<Delta> {
     run_with(code, par, Mode::Jit).await
 }
 
-/// [`run_par`] under `Auto`, pruning for real, for a fixture that bounds
-/// what `Auto` decides: `run_par` audits each skip by walking its boundary
-/// on a branch of its own and merging it, inside the update `Auto` times.
-async fn run_auto(code: &str) -> Result<Delta> {
-    run_with(code, ParMode::Auto, Mode::Par).await
-}
-
-/// [`run_auto`] for a program with a standing source, as [`run_served`].
+/// [`run_served`] under `Auto`, pruning for real, for a fixture that
+/// bounds what `Auto` decides: `run_par` audits each skip by walking its
+/// boundary on a branch of its own and merging it, inside the update
+/// `Auto` times.
 async fn run_auto_served(code: &str) -> Result<Delta> {
     run_until(code, ParMode::Auto, Mode::Par, SERVED).await
 }
@@ -668,7 +664,6 @@ async fn module_forks(module: &'static str) -> Result<(u64, Option<Value>)> {
     let forks_before = ctx.rt.control().forks();
     let res = compile_result(&ctx).await?;
     let id = res.exprs[0].id;
-    let quiet = Duration::from_millis(300);
     let values = updates_until(&ctx.rt, &mut rx, id, Collect::Settled).await?;
     let forks = ctx.rt.control().forks() - forks_before;
     ctx.shutdown().await;

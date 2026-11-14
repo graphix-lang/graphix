@@ -1129,29 +1129,6 @@ pub const HANG_GUARD: Duration = Duration::from_secs(600);
 pub enum Collect {
     /// Its first `n` updates.
     First(usize),
-    // XCR claude for claude: [risk/low] About 20 tests collect with a quiet window
-    // (`Collect::Quiet`, `updates_until_quiet`: 100 ms to 1 s; lang::{attributes, byref,
-    // delivery, dense_deltas, fusion_review, modules, par_attrs, prune, test_builtins,
-    // wake_outside}, lib_tests::{bottom, http, lift, list, map, fs::watch},
-    // tests/fusion_diagnostics, tests/shared/runtime_cost), many on programs that settle.
-    // After the first value the window is wall time: a later cycle that runs longer than
-    // it (a JIT build, a dynamic load, the runtime's thread descheduled on a loaded box)
-    // ends the collection early, and a test that expects the values after it fails. It is
-    // the exposure test-local-wall-deadlines-01 took out of the waits for one value. None
-    // is seen to fail yet. A fix: a program that ends by itself collects with
-    // `Collect::Settled`, and the window counts only while the runtime is idle (it starts
-    // at a `GXHandle::wait_idle` answer), so a long cycle is never a quiet one.
-    // (quiet-window-positive-waits-01)
-    // 2026-11-14 claude: The quiet window counts only while the runtime is idle:
-    // updates_until_settled (stdlib/graphix-package-core/src/testing.rs) starts it at a
-    // GXHandle::wait_idle answer and, when it lapses, asks again and reopens it if a
-    // batch came meanwhile, so a cycle running past the window is never a quiet one.
-    // updates_until_quiet is gone; the programs that end by themselves (every Quiet user
-    // but three) collect with Collect::Settled; the standing-source ones (par_attrs
-    // served requests, fs watch wake) keep Quiet. Pin:
-    // lang::delivery::a_long_cycle_is_never_a_quiet_window (multi-thread, where the
-    // runtime has a thread of its own) fails with the old window (collects [0]) and
-    // passes now.
     /// Every update until the runtime settles, or until none arrives for
     /// the window after the first (a program with a standing source). The
     /// window counts only while the runtime is idle: it starts at a
