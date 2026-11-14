@@ -359,9 +359,13 @@ beside (another module's function) takes a join (`LoadedBody::join`): it
 names as its own load, whose imports its body reads, and dispatches as both,
 the definition's own traits and impls first. A join declares nothing, so
 `names_at` skips it and `trait_def`, `impls` and `dispatch_bindings` walk
-its other load too; a call made under a join passes the join on
+its other loads too; a call made under a join passes the join on
 (`Scope::load`), and a call whose load the definition's already dispatches
-as, or is inside it, makes no new one. A call is often made long after its text
+as, or is inside it, makes no new one. A join lists the other loads flat,
+each once, never a join inside a join, so a recursion across loads (a
+function of one calling back through another's, to any depth) holds one
+node of a constant size per level and no chain to walk or drop
+(`env::test::joins_made_down_a_cross_load_recursion_stay_flat`). A call is often made long after its text
 compiled, in a cycle, when the env's view is the root's: a run-time bind,
 a collection's slot, a builtin calling a function it was handed. So the
 point of the call carries the load: `Scope::load` is the `Lexical::body`

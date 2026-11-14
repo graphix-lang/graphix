@@ -958,33 +958,6 @@ impl Lexical {
             && self.block_names.ptr_eq(&other.block_names)
     }
 
-    // XCR claude for claude: [bug/low] A function made in one load and called from a
-    // load that is not inside it dispatches the caller's types by the registry. A
-    // view holds one chain of loads, and the definition's own imports and impls are
-    // in its own, so `called_in` keeps that one. Two dynamic modules at the root:
-    // `a`, whose interface is `val app: fn(x: Sh) -> i64` and whose body is `let app
-    // = |x: Sh| Sh::sh(x) + 5`, and `d`, whose two bodies each implement the root's
-    // `Sh` for a `C` of their own (`c.0 + 1`, then `c.0 + 2000`) and call
-    // `a::app(C(x))`. The first body's `make`, saved and first called after `d`'s
-    // reload, runs the second body's `sh`: x1.gx prints `late=[2019, 2020]` at ep
-    // 14, for `[20, 21]` (base-r24 alike; the same program with `app` at the root
-    // prints `[20, 21]` since retired-body-outside-dispatch-01). To fix: where
-    // neither load is inside the other the view holds both, the definition's for
-    // its names and both for dispatch (a join in `LoadedBody` that `trait_def`,
-    // `impls` and `dispatch_bindings` walk), and a call made under a join passes
-    // the join on. probe:
-    // ~/ptmp/cr29/scratch/r24/24e/retired-body-outside-dispatch-01/x1.gx, `graphix
-    // --no-cache` (cross-load-dispatch-01)
-    // 2026-11-14 claude: Fixed: a call from a load beside the definition's makes a
-    // join (LoadedBody::join): the definition's load names, both dispatch
-    // (trait_def, impls, dispatch_bindings walk the join), and Scope::load passes it
-    // on. x1.gx prints late=[20, 21] at ep 14 (fused, --no-fusion, PAR=force,
-    // NO_SUBST, cached). Pins fail without it:
-    // lang::modules::a_function_saved_across_a_reload_dispatches_another_modules_function_to_its_own_impl
-    // and .._passes_another_modules_load_on_to_the_root (4 modes each), unit test
-    // env::test::a_join_names_as_its_own_load_and_dispatches_as_both,
-    // lib_tests::leaks::a_saved_function_calling_another_modules_function_keeps_nothing_once_dropped.
-    // Needs a soak.
     /// This view, a definition's, for an instance a call in the load
     /// `site` makes. The instance dispatches as its caller does: it is
     /// inside `site` unless the definition was made in a load `site` is
@@ -1013,10 +986,12 @@ impl Lexical {
 pub struct LoadedBody {
     /// The load around the module, when it is declared in one.
     outer: Option<Arc<LoadedBody>>,
-    /// A join's other load: a load made for one load's function called
+    /// A join's other loads: a load made for one load's function called
     /// from another that is not inside it, which names as the one and
-    /// dispatches as both. It declares nothing of its own.
-    beside: Option<Arc<LoadedBody>>,
+    /// dispatches as both. It declares nothing of its own, and its
+    /// `beside` holds every other load a dispatch in it reads, each once
+    /// and none of them a join, however many calls made it.
+    beside: Box<[Arc<LoadedBody>]>,
     /// The module's scope: the load's import tables are the ones there
     /// and below.
     scope: ModPath,
@@ -1051,13 +1026,13 @@ struct Given {
 
 impl LoadedBody {
     pub fn under(outer: Option<Arc<LoadedBody>>, scope: ModPath) -> Arc<Self> {
-        Arc::new(Self { outer, beside: None, scope, state: RwLock::default() })
+        Arc::new(Self { outer, beside: Box::default(), scope, state: RwLock::default() })
     }
 
     /// The load of an instance of a function made in `own`, for a call in
     /// `site`. It is `site` where that is inside `own`, and `own` where
     /// `own` already dispatches as `site` does; else `own` joined with
-    /// `site`.
+    /// the loads `site` dispatches by.
     pub fn join(own: &Arc<LoadedBody>, site: &Arc<LoadedBody>) -> Arc<Self> {
         if site.is_within(own) {
             return site.clone();
@@ -1065,9 +1040,23 @@ impl LoadedBody {
         if own.dispatches_as(site) {
             return own.clone();
         }
+        let base = match own.beside.is_empty() {
+            true => own,
+            false => own.outer.as_ref().unwrap_or(own),
+        };
+        let mut beside: Vec<Arc<LoadedBody>> = own.beside.to_vec();
+        let site_loads = iter::successors(Some(site), |b| b.outer.as_ref())
+            .flat_map(|b| iter::once(b).chain(b.beside.iter()));
+        for b in site_loads {
+            let known = base.nodes().any(|o| ptr::eq(o, &**b))
+                || beside.iter().any(|o| Arc::ptr_eq(o, b));
+            if b.beside.is_empty() && !known {
+                beside.push(b.clone())
+            }
+        }
         Arc::new(Self {
-            outer: Some(own.clone()),
-            beside: Some(site.clone()),
+            outer: Some(base.clone()),
+            beside: beside.into(),
             scope: own.scope.clone(),
             state: RwLock::default(),
         })
@@ -1077,29 +1066,32 @@ impl LoadedBody {
         iter::successors(Some(self), |b| b.outer.as_deref())
     }
 
+    /// The loads a dispatch here reads: the chain of loads, then the ones
+    /// joined to it.
+    fn nodes(&self) -> impl Iterator<Item = &LoadedBody> {
+        self.chain().chain(self.chain().flat_map(|b| b.beside.iter().map(|a| &**a)))
+    }
+
     /// Whether this load is `other` or is declared inside it.
     fn is_within(&self, other: &LoadedBody) -> bool {
         self.chain().any(|b| ptr::eq(b, other))
     }
 
-    /// The first `f` answers over the loads a dispatch here reads: the
-    /// chain of loads, then the ones joined to it.
+    /// The first `f` answers over the loads a dispatch here reads.
     fn find_dispatch<T>(
         &self,
         f: &mut impl FnMut(&LoadedBody) -> Option<T>,
     ) -> Option<T> {
-        self.chain().find_map(&mut *f).or_else(|| {
-            self.chain().find_map(|b| b.beside.as_ref()?.find_dispatch(&mut *f))
-        })
+        self.nodes().find_map(f)
     }
 
     /// Whether every load a dispatch in `other` reads is one a dispatch
     /// here reads.
     fn dispatches_as(&self, other: &LoadedBody) -> bool {
-        other.chain().all(|o| match &o.beside {
-            Some(s) => self.dispatches_as(s),
-            None => self.find_dispatch(&mut |b| ptr::eq(b, o).then_some(())).is_some(),
-        })
+        other
+            .nodes()
+            .filter(|o| o.beside.is_empty())
+            .all(|o| self.nodes().any(|b| ptr::eq(b, o)))
     }
 
     pub fn declare_trait(&self, def: Arc<TraitDef>) {
@@ -1168,7 +1160,7 @@ impl LoadedBody {
     fn names_at(&self, level: &str) -> Option<ScopeNames> {
         let own = self
             .chain()
-            .find(|b| b.beside.is_none() && scope_is_under(level, &b.scope))?;
+            .find(|b| b.beside.is_empty() && scope_is_under(level, &b.scope))?;
         own.state.read().names.as_ref()?.get(level).cloned()
     }
 
@@ -4308,5 +4300,21 @@ mod test {
         let back = LoadedBody::join(&d, &j);
         assert!(back.is_within(&d) && !back.is_within(&a));
         assert!(back.dispatches_as(&a) && back.dispatches_as(&d));
+    }
+
+    #[test]
+    fn joins_made_down_a_cross_load_recursion_stay_flat() {
+        let root = LoadedBody::under(None, ModPath::root());
+        let a = LoadedBody::under(Some(root.clone()), ModPath::from(["a"]));
+        let d = LoadedBody::under(Some(root.clone()), ModPath::from(["d"]));
+        let mut cur = LoadedBody::join(&a, &d);
+        for _ in 0..200_000 {
+            let through_d = LoadedBody::join(&d, &cur);
+            cur = LoadedBody::join(&a, &through_d);
+        }
+        assert_eq!(cur.beside.len(), 1);
+        assert!(cur.chain().count() <= 3);
+        assert!(cur.dispatches_as(&a) && cur.dispatches_as(&d));
+        assert!(cur.is_within(&a) && !cur.is_within(&d));
     }
 }
