@@ -17,8 +17,7 @@ use crate::{
         tvar::{
             CellFact, CellLock, Cycle, Declared, Fresh, HeldQuantifiers, RigidGate,
             Standing, Toward, bare_path, cell_writes, cycle_toward, in_input,
-            settled_cause_note,
-            would_cycle_inner,
+            settled_cause_note, would_cycle_inner,
         },
         variance,
     },
@@ -7519,6 +7518,13 @@ mod tests {
         }
     }
 
+    /// An open cell that prints as its one lower bound, `string`.
+    fn lowered() -> Type {
+        let cell = TVar::empty_named(literal!("_7"));
+        cell.add_lower(prim(Typ::String));
+        Type::TVar(cell)
+    }
+
     /// `[(t, c1), (t, c2)]` nested `depth` deep, `t` the level below and
     /// `c1`, `c2` two cells `cell` makes.
     fn alike_over_cells(depth: usize, cell: impl Fn() -> Type) -> Type {
@@ -7545,18 +7551,16 @@ mod tests {
 
     /// Members alike but for two cells that print alike, nested: the part
     /// they share prints once a level, not 2^depth times, whether the
-    /// cells are open or print as their one lower bound.
+    /// cells print as their binding or as their one lower bound.
     #[test]
     fn members_alike_but_for_their_cells_print_a_shared_part_once() {
         let depth = 18;
-        let open = || Type::TVar(TVar::empty_named(literal!("_7")));
-        let lowered = || {
+        let bound = || {
             let cell = TVar::empty_named(literal!("_7"));
-            cell.add_lower(prim(Typ::String));
+            cell.bind(prim(Typ::Bool));
             Type::TVar(cell)
         };
-        for (cell, shown) in
-            [(&open as &dyn Fn() -> Type, "'_7: unbound"), (&lowered, "string")]
+        for (cell, shown) in [(&bound as &dyn Fn() -> Type, "bool"), (&lowered, "string")]
         {
             let t = alike_over_cells(depth, cell);
             let expected =
@@ -7572,11 +7576,11 @@ mod tests {
         let named =
             |n: &'static str| move || Type::TVar(TVar::empty_named(ArcStr::from(n)));
         let pair = |a: Type, b: Type| {
-            let shared = alike_over_cells(2, named("_7"));
+            let shared = alike_over_cells(2, lowered);
             let member = |c| Type::Tuple(Arc::from_iter([shared.clone(), c]));
             Type::Set(Arc::from_iter([member(a), member(b)]))
         };
-        let inner = "((i64, '_7: unbound), '_7: unbound)";
+        let inner = "((i64, string), string)";
         let apart = pair(named("_7")(), named("_8")());
         assert_eq!(
             member_prints(&apart).2,
@@ -7589,15 +7593,15 @@ mod tests {
     }
 
     /// Members alike but for cells each holding a copy of the level below,
-    /// nested over open cells of one name: a cell holding a union is told
-    /// by the members' text, each member printed as before (2^(depth+1) -
-    /// 2), not by their parts, which would print the level below three
-    /// times. Only the lowest level's, over open cells, are told by parts.
+    /// nested over cells that print as their lower bound: a cell holding a
+    /// union is told by the members' text, each member printed as before
+    /// (2^(depth+1) - 2), not by their parts, which would print the level
+    /// below three times. Only the lowest level's are told by parts.
     #[test]
     fn members_alike_but_for_cells_holding_a_union_print_as_before() {
         fn level(depth: usize) -> Type {
             match depth {
-                0 => Type::TVar(TVar::empty_named(literal!("_7"))),
+                0 => lowered(),
                 _ => {
                     let member = || {
                         let cell = TVar::empty_named(literal!("_9"));
@@ -7610,28 +7614,23 @@ mod tests {
         }
         let depth = 10;
         let expected =
-            (0..depth).fold(String::from("'_7: unbound"), |s, _| format!("(i64, {s})"));
+            (0..depth).fold(String::from("string"), |s, _| format!("(i64, {s})"));
         let prints = (1 << (depth + 1)) - 2 - (1 << (depth - 1));
         assert_eq!(member_prints(&level(depth)), (prints, prints, expected));
     }
 
-    /// A var prints as the name it is reached by, so two names of one cell,
-    /// one generated, print apart, and members alike but for them keep
-    /// both, as their text would.
+    /// Two names of one cell, one generated, print in one form through a
+    /// message, so members alike but for them and for cells that print
+    /// alike are one member, as their text would be.
     #[test]
     fn members_over_one_cell_under_two_names_print_as_their_text_would() {
         let generated = TVar::empty_named(literal!("_5"));
         generated.bind(prim(Typ::String));
         let written = generated.renamed(literal!("a"));
-        let member = |v: &TVar| {
-            let open = Type::TVar(TVar::empty_named(literal!("_7")));
-            Type::Tuple(Arc::from_iter([Type::TVar(v.clone()), open]))
-        };
+        let member =
+            |v: &TVar| Type::Tuple(Arc::from_iter([Type::TVar(v.clone()), lowered()]));
         let t = Type::Set(Arc::from_iter([member(&generated), member(&written)]));
-        assert_eq!(
-            member_prints(&t),
-            (2, 2, String::from("[(string, '_7: unbound), ('a: string, '_7: unbound)]"))
-        );
+        assert_eq!(member_prints(&t), (1, 1, String::from("(string, string)")));
     }
 
     /// `&T` and `&mut T` over one inner allocation are two types to every

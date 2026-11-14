@@ -2523,9 +2523,9 @@ former consumer derives from the cells:
   `deep_nesting::a_nested_lambda_bounded_by_an_enclosing_variable_checks_at_once`.
 - A name walk reads bounds in the same scope: a quantified signature's
   walk (`collect_tvars`, `collect_tvars_through_bounds`, the held check,
-  `constraint_view`, a print) passes the bounds of its own quantifiers
-  alone, an unquantified signature inside it passes in that scope, and
-  only a walk no signature encloses passes every cell's
+  `constraint_view`, `fntyp::collect_held`, a print) passes the bounds of
+  its own quantifiers alone, an unquantified signature inside it passes
+  in that scope, and only a walk no signature encloses passes every cell's
   (`FnType::in_name_scope`, `TVarsSeen::passes`; a set of the names, so
   a chain of bounds stays linear). A cell declared outside the signature is
   its declarer's, and its bound names its declarer's variables: the walk
@@ -2539,7 +2539,8 @@ former consumer derives from the cells:
   Pins: `lang::types::a_quantifier_only_an_enclosing_bound_names_is_refused`,
   `a_nested_quantifier_stays_rigid_beside_an_enclosing_bound_of_its_name`,
   `parser::test::a_nested_signature_prints_its_own_variables_bound`,
-  `typ::fntyp::tests::a_walk_through_bounds_finds_its_own_quantifier`.
+  `typ::fntyp::tests::a_walk_through_bounds_finds_its_own_quantifier`,
+  `a_held_walk_reads_its_positions_in_its_own_name_scope`.
 - `replace_auto_constrained` reads inferred `'_N` pairs from the cells
   directly (inference declares no header) and folds into its bound only a
   cell that stands open and that no declared variable stands for: a

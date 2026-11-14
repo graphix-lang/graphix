@@ -501,36 +501,38 @@ pub(super) fn meet_declared(ft: &Arc<FnType>, passed: &tvar::ConjunctsPassed) {
 /// among them name, so a quantifier held only through a bound of a bound,
 /// or through a signature nested in it, is held with every cell its bounds
 /// name. A cell declared outside `ft` has its bounds read in its
-/// declarer's scope, never in `ft`'s. Each own cell's bounds are read
-/// once, under no guard the memo heeds, so the free cells of a signature
-/// nested in them are read from the memo ([`free_cells`]); a cell reached
-/// again while its bounds are read is cut ([`HOLDING`]).
+/// declarer's scope, never in `ft`'s ([`FnType::in_name_scope`]). Each
+/// own cell's bounds are read once, under no guard the memo heeds, so the
+/// free cells of a signature nested in them are read from the memo
+/// ([`free_cells`]); a cell reached again while its bounds are read is cut
+/// ([`HOLDING`]).
 fn collect_held(ft: &FnType, known: &mut AHashMap<ArcStr, TVar>) {
     let _depth = PartsDepth::enter();
-    let mut seen = TVarsSeen::take();
-    ft.for_each_type(&mut |t| t.collect_tvars_seen(known, &mut seen));
-    let mut todo: LPooled<Vec<TVar>> = LPooled::take();
-    todo.extend(ft.quantifiers.iter().filter_map(|q| known.get(q).cloned()));
-    let mut found: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-    while let Some(tv) = todo.pop() {
-        let Some(_holding) = Walking::enter_key(&HOLDING, tv.cell_addr()) else {
-            continue;
-        };
-        for tc in tv.cell_constraints() {
-            match tc.normalize_int(&mut seen.norm) {
-                Some(n) => n.collect_tvars_seen(&mut found, &mut seen),
-                None => tc.collect_tvars_seen(&mut found, &mut seen),
-            }
-        }
-        for (name, tv) in found.drain() {
-            if let Entry::Vacant(e) = known.entry(name) {
-                if ft.quantifiers.contains(e.key()) {
-                    todo.push(tv.clone())
+    ft.in_name_scope(&mut TVarsSeen::take(), |seen| {
+        ft.for_each_type(&mut |t| t.collect_tvars_seen(known, seen));
+        let mut todo: LPooled<Vec<TVar>> = LPooled::take();
+        todo.extend(ft.quantifiers.iter().filter_map(|q| known.get(q).cloned()));
+        let mut found: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+        while let Some(tv) = todo.pop() {
+            let Some(_holding) = Walking::enter_key(&HOLDING, tv.cell_addr()) else {
+                continue;
+            };
+            for tc in tv.cell_constraints() {
+                match tc.normalize_int(&mut seen.norm) {
+                    Some(n) => n.collect_tvars_seen(&mut found, seen),
+                    None => tc.collect_tvars_seen(&mut found, seen),
                 }
-                e.insert(tv);
+            }
+            for (name, tv) in found.drain() {
+                if let Entry::Vacant(e) = known.entry(name) {
+                    if ft.quantifiers.contains(e.key()) {
+                        todo.push(tv.clone())
+                    }
+                    e.insert(tv);
+                }
             }
         }
-    }
+    })
 }
 
 // CR claude for claude: [perf/low] Comparing a nest of quantified
@@ -3393,6 +3395,27 @@ mod tests {
         let mut cut = ahash::AHashMap::default();
         collect_held(&copy, &mut cut);
         assert!(cut.contains_key("c") && !cut.contains_key("q"), "{cut:?}");
+    }
+
+    // The held walk reads a signature's positions in its own name scope: an
+    // unquantified signature in a position never passes the bound of an
+    // enclosing cell it names, so the enclosing `'d` that bound names is
+    // never taken for the nested signature's own `'d`.
+    #[test]
+    fn a_held_walk_reads_its_positions_in_its_own_name_scope() {
+        use super::collect_held;
+        use crate::typ::Type;
+        let ft = parse_fn_type(
+            "fn<'w: Array<'d>, 'd: Array<'u>, 'u: Any, 'v: Any>(x: fn<'d: Array<'v>>(y: \
+             fn(q: 'w) -> i64, z: 'd) -> 'd, a: 'w, b: 'v) -> 'd",
+        )
+        .unwrap();
+        let Type::Fn(nested) = &ft.args[0].typ else { panic!("{ft}") };
+        let mut held = ahash::AHashMap::default();
+        collect_held(nested, &mut held);
+        let mut names: Vec<_> = held.keys().map(|n| n.as_str()).collect();
+        names.sort_unstable();
+        assert_eq!(names, ["d", "v", "w"]);
     }
 
     /// The tvar-walk steps printing an `n`-deep nest of quantified function
