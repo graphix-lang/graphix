@@ -813,15 +813,17 @@ a formal's type, a struct field, an element, a union member, a `let` or
 result, a reference's referent, an abstract type's representation or
 parameter, a variant payload, `never<T>`, a bound
 (`Type::rewrite_trait_args`), and a cast's target, a type test and a
-catch's or a seq try's annotation (`Type::refuse_quantified_fns`). Such
-a type is refused before anything inside it is read: a refusal of its
-bounds or parts (a hole, a trait as a type) is reported only where it
-stands as a signature's top, and a nest of them is refused in time
-linear in its depth. A generic operation passed around is a trait (`|c:
-Collection| ..`, `'c: Collection`), or a definition's declared variable
-that each call picks (`'a: Number |f: fn(x: 'a) -> 'a, x: 'a| f(x)`).
-Pins: `lang::quantified` (each position refused, each kept form, the
-refusal ahead of its bound's and parts'),
+catch's or a seq try's annotation (`Type::refuse_quantified_fns`). A
+written `fn<..>` outside a signature's top is refused before its bounds
+and parts are read, so a nest of them is refused in time linear in its
+depth, and a trait as a type inside it or a hole in its bound reports
+this refusal; a hole in its parts is refused first
+(`Type::rewrite_written`). A generic operation passed around is a trait
+(`|c: Collection| ..`, `'c: Collection`), or a definition's declared
+variable that each call picks (`'a: Number |f: fn(x: 'a) -> 'a, x: 'a|
+f(x)`). Pins: `lang::quantified` (each position refused, each kept
+form, the refusal ahead of its bound's and parts'),
+`lang::types::hole_in_a_quantified_fn_part`,
 `lang::collection::collection_generic_formal_is_refused`,
 `deep_nesting::a_nest_of_quantified_function_types_is_refused_in_linear_time`.
 

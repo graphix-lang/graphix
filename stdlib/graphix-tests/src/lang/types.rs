@@ -4713,6 +4713,22 @@ run!(
     FuseExpect::None
 );
 
+/// A hole in a part of a written type is refused ahead of a function type
+/// with variables of its own that holds it.
+const HOLE_IN_A_QUANTIFIED_FN_PART: &str = r#"
+{
+    let g: Array<fn<'b: Any>(x: Array<'_>) -> 'b> = [];
+    0
+}
+"#;
+
+run!(
+    hole_in_a_quantified_fn_part,
+    HOLE_IN_A_QUANTIFIED_FN_PART,
+    refused("'_ is the hole");
+    FuseExpect::None
+);
+
 /// A declared variable may be anything, so `_` cannot hold it.
 const BOTTOM_REFUSES_A_DECLARED_VARIABLE: &str = r#"
 {
