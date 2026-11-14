@@ -520,6 +520,66 @@ run!(
     FuseExpect::None
 );
 
+/// A function `mk` whose body loads a module under `sandbox` whose sig
+/// imports `Foo`, a type the body declares below the module, and calls
+/// the module's `f` on `{a: v}`: `10 * mk(body_a, 4) + mk(body_b, 6)`.
+fn sig_imports_a_function_bodys_type(sandbox: &str, a: &str, b: &str) -> String {
+    format!(
+        r#"{{
+let mk = |src: string, v: i64| {{
+  let status = mod foo dynamic {{
+    sandbox {sandbox};
+    sig {{ use super::Foo; val f: fn(x: Foo) -> i64 }};
+    source src
+  }};
+  type Foo = {{a: i64}};
+  select status {{ error as _ => 0, null as _ => foo::f({{a: v}}) }}
+}};
+10 * mk("{a}", 4) + mk("{b}", 6)
+}}"#
+    )
+}
+
+run!(
+    a_sig_imports_a_type_the_functions_body_declares_below,
+    sig_imports_a_function_bodys_type(
+        "unrestricted",
+        "let f = |x: Foo| x.a",
+        "let f = |x: Foo| x.a + 1"
+    ),
+    is(Value::I64(47));
+    FuseExpect::None
+);
+
+run!(
+    a_sig_imports_a_type_the_functions_body_declares_below_and_the_body_names_it_not,
+    sig_imports_a_function_bodys_type("unrestricted", "let f = |x| 1", "let f = |x| 2"),
+    is(Value::I64(12));
+    FuseExpect::None
+);
+
+run!(
+    a_sig_imports_a_type_the_functions_body_declares_below_under_a_whitelist,
+    sig_imports_a_function_bodys_type(
+        "whitelist [core]",
+        "let f = |x: Foo| x.a",
+        "let f = |x| 1"
+    ),
+    is(Value::I64(41));
+    FuseExpect::None
+);
+
+run!(
+    a_body_naming_a_field_the_functions_type_lacks_is_refused_at_each_load,
+    sig_imports_a_function_bodys_type(
+        "unrestricted",
+        "let f = |x: Foo| x.b",
+        "let f = |x: Foo| x.b"
+    ),
+    is(Value::I64(0));
+    FuseExpect::None
+);
+
 run!(
     a_blacklist_shows_the_loaders_super,
     reads_the_loader("blacklist [sys]", "let v = super::y + 1"),
