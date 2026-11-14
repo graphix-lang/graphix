@@ -1,5 +1,5 @@
 use crate::{
-    PrintFlag,
+    AddrSet, PrintFlag,
     env::Env,
     format_with_flags,
     stack::ensure_sufficient,
@@ -444,14 +444,61 @@ pub(super) fn renames(env: &Env, t0: &Type, t1: &Type) -> bool {
 
 /// The pairs of live cells union collapses have met: each pair is one
 /// cell once [`apply_welds`] runs.
-pub(super) type Welds = SmallVec<[(TVar, TVar); 2]>;
+#[derive(Default)]
+pub(super) struct Welds {
+    pairs: SmallVec<[(TVar, TVar); 2]>,
+    /// The alternatives of the join the pairs are for: two members one of
+    /// them holds stay two ([`apart`]).
+    alts: SmallVec<[Type; 4]>,
+}
+
+impl Welds {
+    pub(super) fn new() -> Self {
+        Self::default()
+    }
+
+    pub(super) fn joining(alts: SmallVec<[Type; 4]>) -> Self {
+        Self { pairs: SmallVec::new(), alts }
+    }
+
+    pub(super) fn alternatives(&self) -> &[Type] {
+        &self.alts
+    }
+}
+
+impl std::ops::Deref for Welds {
+    type Target = SmallVec<[(TVar, TVar); 2]>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.pairs
+    }
+}
+
+impl std::ops::DerefMut for Welds {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.pairs
+    }
+}
+
+/// Whether one of `alts` holds both `t0` and `t1`: two members of one
+/// alternative are two, however alike.
+pub(super) fn apart(alts: &[Type], t0: &Type, t1: &Type) -> bool {
+    let (Some(k0), Some(k1)) = (t0.node_key(), t1.node_key()) else {
+        return false;
+    };
+    alts.iter().any(|a| holds_node(a, &[k0, k1]))
+}
 
 /// [`union_identical`], for a collapse that keeps `t0` in place of `t1`:
 /// the live cells it pairs go on `welds`, so the dropped member's cells
-/// learn what the kept one learns.
+/// learn what the kept one learns. Two members of one alternative of the
+/// join `welds` is for collapse only where they are identical as they stand.
 pub(super) fn union_collapses(t0: &Type, t1: &Type, welds: &mut Welds) -> bool {
     let start = welds.len();
-    let same = Identity::new(Some(welds), &mut NodePairs::default()).same(t0, t1);
+    let mut same = Identity::new(Some(welds), &mut NodePairs::default()).same(t0, t1);
+    if same && apart(&welds.alts, t0, t1) && !strictly_identical(t0, t1) {
+        same = false;
+    }
     if !same {
         welds.truncate(start)
     }
@@ -993,8 +1040,11 @@ fn rebuilt(
 /// and the members rebuilt of them share what they met.
 struct Meets {
     steps: u32,
-    found: Lazy<AHashMap<SmallVec<[NodeKey; 4]>, Meet>>,
+    found: Lazy<AHashMap<MeetKey, Meet>>,
 }
+
+/// The nodes alternatives hold and the alternative each member is of.
+type MeetKey = (SmallVec<[NodeKey; 4]>, SmallVec<[u32; 4]>);
 
 /// A meet [`Meets`] keeps: each alternative's met type, `None` where the
 /// meet left it as it stands, kept with the nodes its key reads.
@@ -1015,7 +1065,8 @@ impl Meets {
     fn key(
         &mut self,
         ts: &[&Type],
-    ) -> Option<(SmallVec<[NodeKey; 4]>, SmallVec<[Type; 4]>)> {
+        tags: &[u32],
+    ) -> Option<(MeetKey, SmallVec<[Type; 4]>)> {
         if self.steps < NodePairs::EAGER {
             self.steps += 1;
             return None;
@@ -1031,16 +1082,12 @@ impl Meets {
             key.push(k);
             nodes.push(n);
         }
-        Some((key, nodes))
+        Some(((key, tags.iter().copied().collect()), nodes))
     }
 
     /// The meet of `ts` found under `key` while no cell has been written
     /// since: an alternative it left as it stands is the one in `ts`.
-    fn get(
-        &self,
-        key: &SmallVec<[NodeKey; 4]>,
-        ts: &[&Type],
-    ) -> Option<Option<LPooled<Vec<Type>>>> {
+    fn get(&self, key: &MeetKey, ts: &[&Type]) -> Option<Option<LPooled<Vec<Type>>>> {
         let m = self.found.get()?.get(key).filter(|m| m.writes == cell_writes())?;
         Some(m.met.as_ref().map(|met| {
             ts.iter()
@@ -1052,7 +1099,7 @@ impl Meets {
 
     fn insert(
         &mut self,
-        key: SmallVec<[NodeKey; 4]>,
+        key: MeetKey,
         nodes: SmallVec<[Type; 4]>,
         ts: &[&Type],
         met: Option<&LPooled<Vec<Type>>>,
@@ -1078,6 +1125,56 @@ fn sole<'a>(ts: &[&'a Type]) -> Option<&'a Type> {
     let one = held.next()?;
     let node = one.node_key();
     held.all(|t| node.is_some() && t.node_key() == node).then_some(one)
+}
+
+/// Whether every node `keys` names stands somewhere in `t`, through its
+/// bindings.
+pub(super) fn holds_node(t: &Type, keys: &[NodeKey]) -> bool {
+    fn walk(t: &Type, keys: &[NodeKey], found: &mut u64, seen: &mut AddrSet) {
+        ensure_sufficient(|| match t {
+            Type::TVar(tv) => {
+                if let Some(b) = tv.binding() {
+                    walk(&b, keys, found, seen)
+                }
+            }
+            t => {
+                if let Some(a) = node_addr(t)
+                    && !seen.insert(a)
+                {
+                    return;
+                }
+                if let Some(k) = t.node_key()
+                    && let Some(i) = keys.iter().position(|n| *n == k)
+                {
+                    *found |= 1 << i
+                }
+                t.for_each_child(&mut |c| walk(c, keys, found, seen));
+            }
+        })
+    }
+    assert!(keys.len() <= 64);
+    let mut found = 0;
+    walk(t, keys, &mut found, &mut LPooled::take());
+    found == (u64::MAX >> (64 - keys.len()))
+}
+
+/// The alternatives `ts` are members of, `tags[i]` the one `ts[i]` is of,
+/// each of two or more members a union of them.
+fn alternatives(ts: &[&Type], tags: &[u32]) -> SmallVec<[Type; 4]> {
+    let mut by_tag: SmallVec<[(u32, SmallVec<[Type; 2]>); 4]> = SmallVec::new();
+    for (t, tag) in ts.iter().zip(tags) {
+        match by_tag.iter_mut().find(|(g, _)| g == tag) {
+            Some((_, ms)) => ms.push((*t).clone()),
+            None => by_tag.push((*tag, smallvec![(*t).clone()])),
+        }
+    }
+    by_tag
+        .into_iter()
+        .map(|(_, mut ms)| match ms.len() {
+            1 => ms.remove(0),
+            _ => Type::Set(Arc::from_iter(ms)),
+        })
+        .collect()
 }
 
 /// The two-member union of `a` and `b`.
@@ -1376,6 +1473,22 @@ impl Type {
         Self::union_with(env, Merge::Exact, ts)
     }
 
+    /// [`Self::union_exact`] of `ts`, the members of one union: two of them
+    /// that differ by a renaming of their cells are two.
+    pub fn union_exact_of_members(env: &Env, ts: &[&Type]) -> Result<Self> {
+        let tags: LPooled<Vec<u32>> = ts.iter().map(|_| 0).collect();
+        Self::union_tagged(env, Merge::Exact, ts, &tags)
+    }
+
+    /// [`Self::union_exact`] of the parts `ts` the alternatives of a
+    /// pattern take from the members that reach them, `tags[i]` the
+    /// alternative `ts[i]` is of: the parts of one alternative are members
+    /// of one union, and two of them that differ by a renaming of their
+    /// cells are two.
+    pub fn union_exact_of_parts(env: &Env, ts: &[&Type], tags: &[u32]) -> Result<Self> {
+        Self::union_tagged(env, Merge::Exact, ts, tags)
+    }
+
     /// The union of a select's alternatives, which a call through the
     /// select must accept alike: function members meet first, and so do
     /// those in the members' parts ([`Self::meet_alternatives`]).
@@ -1393,7 +1506,8 @@ impl Type {
     }
 
     fn union_meeting(env: &Env, merge: Merge, ts: &[&Type]) -> Result<Self> {
-        match Self::meet_alternatives(env, &mut Meets::new(), ts)? {
+        let tags: LPooled<Vec<u32>> = (0..ts.len() as u32).collect();
+        match Self::meet_alternatives(env, &mut Meets::new(), ts, &tags)? {
             None => Self::union_with(env, merge, ts),
             Some(met) => {
                 let met: LPooled<Vec<&Type>> = met.iter().collect();
@@ -1402,7 +1516,7 @@ impl Type {
         }
     }
 
-    // CR claude for claude: [bug/low] A union that one of several alternatives already
+    // XCR claude for claude: [bug/low] A union that one of several alternatives already
     // holds has its own members paired where the alternatives join: two function types
     // that differ by a renaming of two undecided variables become one member and the
     // variables one cell. `type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64]; let f
@@ -1440,7 +1554,33 @@ impl Type {
     // (u, v) }') runs since that fix. The step's lowering reads its snapshot through
     // 'any(#seqpc ~! snap, snap)', two nodes of one type, m2.gx's kind. probes:
     // ~/ptmp/cr29/scratch/r24/24d/rwd-rev/seq/{s3,s4}.gx (refused), s1.gx (runs)
+    // 2026-11-14 claude: Fixed: a join pairs and collapses members of different
+    // alternatives only. meet_open_fns/meet_parts carry each member's alternative (tags
+    // through meet_alternatives; a member two members of one other alternative could
+    // meet meets neither), union_tagged gives Welds the join's alternatives so
+    // union_collapses and the welding normalize keep two members of one alternative
+    // apart unless identical as they stand (setops::apart), narrow_per_member tags the
+    // parts by the pattern alternative (union_exact_of_parts) and a slice name over
+    // members of one element union joins them as members (union_exact_of_members; an
+    // or-pattern child still meets). m0..m7 and the seq step (rwd-rev s3/s4) run; a call
+    // through such a union is refused naming the variables, as a call of the binding is
+    // (c1/c2 ran on base-r25 by the conflation). Pins that fail without it:
+    // lang::types::a_select_of_a_union_of_functions_beside_null_keeps_both_members and
+    // its 7 neighbours, call_through_a_select_of_calls_each_a_union_of_functions_refused
+    // (36 runs),
+    // typ::normalize::tests::a_join_of_alternatives_keeps_the_union_one_of_them_holds.
+    // Not done: which member of the other alternative a member pairs with still follows
+    // the sort order (alternative-members-pair-order-01). Census 2967 files 0 changes;
+    // guicheck 39.599G -> 39.789G; deep_nesting ok. Needs a soak.
     fn union_with(env: &Env, merge: Merge, ts: &[&Type]) -> Result<Self> {
+        let tags: LPooled<Vec<u32>> = (0..ts.len() as u32).collect();
+        Self::union_tagged(env, merge, ts, &tags)
+    }
+
+    /// [`Self::union_with`] of `ts`, `tags[i]` the alternative `ts[i]` is a
+    /// member of: members of one alternative collapse only where
+    /// identical as they stand.
+    fn union_tagged(env: &Env, merge: Merge, ts: &[&Type], tags: &[u32]) -> Result<Self> {
         if let Some(one) = sole(ts) {
             return Ok(one.normalize());
         }
@@ -1449,7 +1589,7 @@ impl Type {
             return Ok(Type::Primitive(BitFlags::empty()));
         };
         let mut hist = RefHist::new();
-        let mut welds = Welds::new();
+        let mut welds = Welds::joining(alternatives(ts, tags));
         let mut acc = first.clone();
         for t in iter {
             acc = acc.union_int(env, &mut hist, merge, &mut welds, t)?;
@@ -1469,19 +1609,20 @@ impl Type {
         env: &Env,
         meets: &mut Meets,
         ts: &[&Type],
+        tags: &[u32],
     ) -> Result<Option<LPooled<Vec<Type>>>> {
         if sole(ts).is_some() {
             return Ok(None);
         }
         #[cfg(test)]
         MEET_STEPS.with(|n| n.set(n.get() + 1));
-        let Some((key, nodes)) = meets.key(ts) else {
-            return Self::meet_unions(env, meets, ts);
+        let Some((key, nodes)) = meets.key(ts, tags) else {
+            return Self::meet_unions(env, meets, ts, tags);
         };
         if let Some(met) = meets.get(&key, ts) {
             return Ok(met);
         }
-        let met = Self::meet_unions(env, meets, ts)?;
+        let met = Self::meet_unions(env, meets, ts, tags)?;
         meets.insert(key, nodes, ts, met.as_ref());
         Ok(met)
     }
@@ -1490,16 +1631,21 @@ impl Type {
         env: &Env,
         meets: &mut Meets,
         ts: &[&Type],
+        tags: &[u32],
     ) -> Result<Option<LPooled<Vec<Type>>>> {
         ensure_sufficient(|| {
             if !ts.iter().any(|t| members_of(t).is_some()) {
-                return Self::meet_members(env, meets, ts);
+                return Self::meet_members(env, meets, ts, tags);
             }
             let mut flat: LPooled<Vec<Type>> = LPooled::take();
             let mut shape: LPooled<Vec<Option<usize>>> = LPooled::take();
-            ts.iter().for_each(|t| union_members(t, &mut flat, &mut shape));
+            let mut flat_tags: LPooled<Vec<u32>> = LPooled::take();
+            for (t, tag) in ts.iter().zip(tags) {
+                union_members(t, &mut flat, &mut shape);
+                flat_tags.resize(flat.len(), *tag);
+            }
             let flat: LPooled<Vec<&Type>> = flat.iter().collect();
-            let Some(mut met) = Self::meet_members(env, meets, &flat)? else {
+            let Some(mut met) = Self::meet_members(env, meets, &flat, &flat_tags)? else {
                 return Ok(None);
             };
             let (mut shape, mut met) = (shape.drain(..), met.drain(..));
@@ -1514,14 +1660,15 @@ impl Type {
         env: &Env,
         meets: &mut Meets,
         ts: &[&Type],
+        tags: &[u32],
     ) -> Result<Option<LPooled<Vec<Type>>>> {
-        let fns = Self::meet_open_fns(env, ts)?;
+        let fns = Self::meet_open_fns(env, ts, tags)?;
         let parts = match &fns {
             Some(met) => {
                 let met: LPooled<Vec<&Type>> = met.iter().collect();
-                Self::meet_parts(env, meets, &met)?
+                Self::meet_parts(env, meets, &met, tags)?
             }
-            None => Self::meet_parts(env, meets, ts)?,
+            None => Self::meet_parts(env, meets, ts, tags)?,
         };
         Ok(parts.or(fns))
     }
@@ -1532,6 +1679,7 @@ impl Type {
         env: &Env,
         meets: &mut Meets,
         ts: &[&Type],
+        tags: &[u32],
     ) -> Result<Option<LPooled<Vec<Type>>>> {
         let members: SmallVec<[Option<Type>; 4]> = ts
             .iter()
@@ -1552,7 +1700,8 @@ impl Type {
             for j in group.iter() {
                 grouped[*j] = true;
             }
-            if group.len() < 2 {
+            let group_tags: SmallVec<[u32; 4]> = group.iter().map(|j| tags[*j]).collect();
+            if group_tags.iter().all(|t| *t == group_tags[0]) {
                 continue;
             }
             let mut rebuilt: SmallVec<[Type; 4]> =
@@ -1562,7 +1711,7 @@ impl Type {
                 let met = {
                     let at: SmallVec<[&Type; 4]> =
                         rebuilt.iter().map(|m| part(m, p)).collect();
-                    Self::meet_alternatives(env, meets, &at)?
+                    Self::meet_alternatives(env, meets, &at, &group_tags)?
                 };
                 let Some(mut met) = met else { continue };
                 for (m, t) in rebuilt.iter_mut().zip(met.drain(..)) {
@@ -1601,7 +1750,11 @@ impl Type {
     /// definition's, so it is a scheme's member still; one a member with
     /// cells of its own joins holds those from there on. `None` when no
     /// member changes.
-    fn meet_open_fns(env: &Env, ts: &[&Type]) -> Result<Option<LPooled<Vec<Type>>>> {
+    fn meet_open_fns(
+        env: &Env,
+        ts: &[&Type],
+        tags: &[u32],
+    ) -> Result<Option<LPooled<Vec<Type>>>> {
         let fns: SmallVec<[(usize, Arc<FnType>); 4]> = ts
             .iter()
             .enumerate()
@@ -1628,6 +1781,15 @@ impl Type {
         let mut met: SmallVec<[bool; 4]> = smallvec![false; fns.len()];
         let mut scheme: SmallVec<[bool; 4]> =
             (0..fns.len()).map(|j| open_cells(&member(j)) == (false, true)).collect();
+        let tag = |j: usize| tags[fns[j].0];
+        let repeated = (1..fns.len()).any(|j| (0..j).any(|i| tag(i) == tag(j)));
+        let clash = |group: &[usize], ga: usize, gb: usize| {
+            repeated
+                && (0..fns.len()).any(|x| {
+                    group[x] == ga
+                        && (0..fns.len()).any(|y| group[y] == gb && tag(x) == tag(y))
+                })
+        };
         for k in 0..fns.len() {
             let own = member(k);
             if own.tvar_free() {
@@ -1640,7 +1802,11 @@ impl Type {
             let inst = instance(k);
             let mut meets: SmallVec<[usize; 4]> = smallvec![];
             for j in 0..fns.len() {
-                if j == k || met[j] || group[j] == group[k] {
+                if j == k
+                    || met[j]
+                    || group[j] == group[k]
+                    || clash(&group, group[k], group[j])
+                {
                     continue;
                 }
                 if fns_meet(env, &inst, &member(j))? {
@@ -1649,6 +1815,32 @@ impl Type {
                         break;
                     }
                 }
+            }
+            if repeated {
+                let kept: SmallVec<[usize; 4]> = meets
+                    .iter()
+                    .copied()
+                    .filter(|j| meets.iter().all(|i| i == j || tag(*i) != tag(*j)))
+                    .collect();
+                let mut unambiguous = SmallVec::<[usize; 4]>::new();
+                for j in kept {
+                    let mut twin = false;
+                    for x in 0..fns.len() {
+                        if x != k
+                            && x != j
+                            && tag(x) == tag(k)
+                            && !member(x).tvar_free()
+                            && fns_meet(env, &instance(x), &member(j))?
+                        {
+                            twin = true;
+                            break;
+                        }
+                    }
+                    if !twin {
+                        unambiguous.push(j)
+                    }
+                }
+                meets = unambiguous;
             }
             let Some(first) = meets.first().map(|j| member(*j)) else { continue };
             let before = (!generic && meets.len() > 1).then(|| {
@@ -1695,6 +1887,8 @@ impl Type {
                             || meets.contains(&m)
                             || group[m] == group[k]
                             || group[m] == group[j]
+                            || tag(m) == tag(k)
+                            || tag(m) == tag(j)
                         {
                             continue;
                         }

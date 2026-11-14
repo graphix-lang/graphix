@@ -5531,7 +5531,7 @@ impl Type {
         }
         let mut cells: SmallVec<[TVar; 8]> = SmallVec::new();
         open(self, &mut LPooled::take(), &mut cells);
-        let mut parts: SmallVec<[Option<SmallVec<[Type; 4]>>; 8]> =
+        let mut parts: SmallVec<[Option<SmallVec<[(usize, Type); 4]>>; 8]> =
             cells.iter().map(|_| Some(SmallVec::new())).collect();
         let mut ends: SmallVec<[TVar; 8]> = SmallVec::new();
         let mut alts: SmallVec<[Type; 8]> = SmallVec::new();
@@ -5603,7 +5603,7 @@ impl Type {
                 continue;
             }
             let mut met = false;
-            for alt in alts.iter() {
+            for (alt_at, alt) in alts.iter().enumerate() {
                 if !alt.could_match(env, m)? {
                     continue;
                 }
@@ -5648,9 +5648,9 @@ impl Type {
                 for (f, p) in copies.iter().zip(parts.iter_mut()) {
                     let Some(f) = f else { continue };
                     match (f.binding(), p.as_mut()) {
-                        (Some(t), Some(p)) => p.push(t),
+                        (Some(t), Some(p)) => p.push((alt_at, t)),
                         (None, Some(p)) if taken.contains_key(&f.cell_addr()) => {
-                            p.push(Type::TVar(f.clone()))
+                            p.push((alt_at, Type::TVar(f.clone())))
                         }
                         (None, _) => *p = None,
                         (Some(_), None) => (),
@@ -5671,25 +5671,33 @@ impl Type {
                 // them are the cell, and what is left binds it
                 let mut open: SmallVec<[TVar; 4]> = SmallVec::new();
                 let mut rest: SmallVec<[Type; 4]> = SmallVec::new();
+                let mut rest_alts: SmallVec<[usize; 4]> = SmallVec::new();
                 let own = c.open_cell().is_some_and(|c| {
                     let mut seen: LPooled<AddrSet> = LPooled::take();
-                    p.iter().fold(false, |own, t| {
-                        members_beside(&c, t, &mut seen, (&mut open, &mut rest)) | own
+                    p.iter().fold(false, |own, (alt_at, t)| {
+                        let own =
+                            members_beside(&c, t, &mut seen, (&mut open, &mut rest))
+                                | own;
+                        rest_alts.resize(rest.len(), *alt_at);
+                        own
                     })
                 });
-                let p: LPooled<Vec<&Type>> = match own {
+                let held: SmallVec<[(usize, &Type); 4]> = match own {
                     true => {
                         for o in open.drain(..) {
                             cell.contains_ordered(env, &Type::TVar(o))?;
                         }
-                        rest.iter().collect()
+                        rest_alts.iter().copied().zip(rest.iter()).collect()
                     }
-                    false => p.iter().collect(),
+                    false => p.iter().map(|(a, t)| (*a, t)).collect(),
                 };
-                if p.is_empty() {
+                if held.is_empty() {
                     continue;
                 }
-                let joined = Type::union_exact(env, &p)?;
+                let tags: SmallVec<[u32; 4]> =
+                    held.iter().map(|(a, _)| *a as u32).collect();
+                let p: SmallVec<[&Type; 4]> = held.iter().map(|(_, t)| *t).collect();
+                let joined = Type::union_exact_of_parts(env, &p, &tags)?;
                 if joined.contains_ordered(env, &cell)? && c.binding().is_none() {
                     joined.open_over_any(env, &cell)?
                 }

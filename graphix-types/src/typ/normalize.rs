@@ -4,7 +4,7 @@ use crate::{
     stack::ensure_sufficient,
     typ::{
         AbstractId, Mutability, NodeKey, TVar, Type,
-        setops::{Welds, strictly_identical, union_collapses, written_identical},
+        setops::{Welds, apart, strictly_identical, union_collapses, written_identical},
     },
 };
 use ahash::AHashMap;
@@ -79,6 +79,7 @@ struct FlatCx {
     flat: Option<LPooled<AHashMap<usize, (Arc<[Type]>, Type)>>>,
     flattened: usize,
     members: Members,
+    alts: SmallVec<[Type; 4]>,
 }
 
 /// How a flattening tells that two members of a union are one.
@@ -102,7 +103,15 @@ impl FlatCx {
         match self.members {
             Members::AsTheyStand => strictly_identical(t0, t1),
             Members::Written => written_identical(t0, t1),
-            Members::Welding => union_collapses(t0, t1, welds),
+            Members::Welding => {
+                let start = welds.len();
+                let same = union_collapses(t0, t1, welds);
+                if same && apart(&self.alts, t0, t1) && !strictly_identical(t0, t1) {
+                    welds.truncate(start);
+                    return false;
+                }
+                same
+            }
         }
     }
 
@@ -255,6 +264,21 @@ struct Kept {
 }
 
 impl Kept {
+    // CR claude for claude: [bug/low] Two alternatives that each hold a union of two
+    // function types over undecided variables pair their members by the order the
+    // members sort in: the incoming member collapses with the earliest kept member it
+    // renames into, whichever of the two the other alternative's pairing would give.
+    // `type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64]; let f = |y: 'a, z: 'b, x:
+    // F2<'a, 'b>| x; let h = |u, v, w| { let g = select c { true => f(u, v, w), false =>
+    // f(v, u, w) }; (u, v) }; h(1, "s", |q: i64| q + 1)` is refused, "type mismatch i64
+    // does not contain string", naming no annotation (apm/d2.gx), where the pairing the
+    // cells' bounds give (`a` with `b2`, `b` with `a2`) runs. Nothing wrong runs, and
+    // base-r25 refuses it alike; `f(u, v, w)` in both arms (apm/m2.gx) runs, by the
+    // order of the members alone. What would fix it: a member of one alternative collapses with
+    // the one member of the other whose bounds agree, and with none where two do, by
+    // the refusal naming the annotation, the members' alternatives carried
+    // through Kept::merge_with as meet_open_fns carries them. probes:
+    // ~/ptmp/cr29/scratch/r25/25e/apm/d2.gx (alternative-members-pair-order-01)
     /// Take out the earliest kept member `t` merges with, and the merge.
     fn merge_with(
         &mut self,
@@ -555,6 +579,7 @@ impl Type {
     pub(super) fn normalize_welding(&self, welds: &mut Welds) -> Self {
         let mut cx = NormCx::take();
         cx.visited.flat.members = Members::Welding;
+        cx.visited.flat.alts = welds.alternatives().iter().cloned().collect();
         let r = self.normalize_int(&mut cx).unwrap_or_else(|| self.clone());
         welds.extend(cx.welds.drain(..));
         r
@@ -981,6 +1006,41 @@ pub(super) mod tests {
             assert!(matches!(&parts[0], Type::Set(ms) if ms.len() == 2), "{read}");
             assert!(c.stands_for() != d.stands_for(), "{read}");
         }
+    }
+
+    /// A union one alternative of a join holds keeps its members as they
+    /// stand, beside another alternative and beside a second union of the
+    /// same shape, and members that are one type meet or collapse only
+    /// across alternatives.
+    #[test]
+    fn a_join_of_alternatives_keeps_the_union_one_of_them_holds() {
+        let env = Env::default();
+        let written = "([fn(q: 'c) -> i64, fn(q: 'd) -> i64], 'c, 'd)";
+        let t = crate::expr::parser::parse_type(written).unwrap();
+        t.alias_tvars(&mut AHashMap::default());
+        let Type::Tuple(fs) = &t else { unreachable!() };
+        let (Type::TVar(c), Type::TVar(d)) = (&fs[1], &fs[2]) else { unreachable!() };
+        let Type::Set(members) = &fs[0] else { unreachable!() };
+        let null = Type::Primitive(Typ::Null.into());
+        let unions: [fn(&Env, &[&Type]) -> anyhow::Result<Type>; 4] = [
+            Type::union,
+            Type::union_exact,
+            Type::union_of_alternatives,
+            Type::union_exact_of_alternatives,
+        ];
+        for union in unions {
+            let read = union(&env, &[&fs[0], &null]).unwrap();
+            assert!(matches!(&read, Type::Set(ms) if ms.len() == 3), "{read}");
+            assert!(c.stands_for() != d.stands_for(), "{read}");
+        }
+        let (p, q) = (&members[0], &members[1]);
+        let read = Type::union_exact_of_members(&env, &[p, q]).unwrap();
+        assert!(matches!(&read, Type::Set(ms) if ms.len() == 2), "{read}");
+        let read = Type::union_exact_of_parts(&env, &[p, q], &[0, 0]).unwrap();
+        assert!(matches!(&read, Type::Set(ms) if ms.len() == 2), "{read}");
+        assert!(c.stands_for() != d.stands_for(), "{read}");
+        let read = Type::union_exact_of_parts(&env, &[p, q], &[0, 1]).unwrap();
+        assert!(!matches!(&read, Type::Set(_)), "{read}");
     }
 
     /// A node shared by both sides compares equal without walking it.

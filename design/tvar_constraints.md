@@ -1206,6 +1206,23 @@ the definition gates:
   error's payload alike; `|c, a: 'a, b: 'a|` returns one function (pins
   `lang::types::call_through_a_deref_of_two_decided_functions_refused`
   and its neighbours, `call_through_reads_of_one_variable_s_two_functions`).
+  A join pairs and collapses members of different alternatives only
+  (`Type::union_tagged`; `setops::alternatives`): the members of one
+  alternative, a select arm's union, the parts one pattern alternative
+  takes from the members reaching it (`Type::union_exact_of_parts`,
+  `TVar::narrow_per_member`), the elements a slice name reads
+  (`Type::union_exact_of_members`), are one union whose members stay two
+  however alike, collapsing only where identical as they stand
+  (`setops::apart`, `Welds`). A member that two members of one other
+  alternative could each meet meets neither (`Type::meet_open_fns`, the
+  members' alternatives carried through `meet_members` and `meet_parts`),
+  so the pairing never follows the members' order. A call through
+  such a union is refused naming the variables, as a call of the
+  binding is. The parts an or-pattern's alternatives take are
+  alternatives, and meet. Pins
+  `lang::types::a_select_of_a_union_of_functions_beside_null_keeps_both_members`
+  and its neighbours,
+  `typ::normalize::tests::a_join_of_alternatives_keeps_the_union_one_of_them_holds`.
   And
   a field read of a union meets the function members it reads
   (`data::struct_field_type`, `tuple_field_type`), as a select meets its

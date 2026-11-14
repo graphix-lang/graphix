@@ -1778,10 +1778,13 @@ impl StructPatternNode {
                     for (id, ts) in parts.iter() {
                         if let Some(b) = env.by_id.get(id) {
                             let ts: SmallVec<[&Type; 4]> = ts.iter().collect();
-                            b.typ.check_contains_ordered(
-                                env,
-                                &Type::union_exact_of_alternatives(env, &ts)?,
-                            )?
+                            let joined = match c {
+                                Self::Or { .. } => {
+                                    Type::union_exact_of_alternatives(env, &ts)?
+                                }
+                                _ => Type::union_exact_of_members(env, &ts)?,
+                            };
+                            b.typ.check_contains_ordered(env, &joined)?
                         }
                     }
                 }

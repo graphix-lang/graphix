@@ -10644,6 +10644,118 @@ run!(
     FuseExpect::None
 );
 
+run!(
+    a_select_of_a_union_of_functions_beside_null_keeps_both_members,
+    r#"{
+  type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];
+  let f = |y: 'a, z: 'b, x: F2<'a, 'b>| x;
+  let c = true;
+  let h = |u, v, w| { let r = f(u, v, w); let g = select c { true => r, false => null }; (u, v) };
+  h(1, "s", |q: i64| q + 1)
+}"#,
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::Jit
+);
+run!(
+    a_select_of_two_calls_each_a_union_of_functions_keeps_the_variables_two,
+    r#"{
+  type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];
+  let f = |y: 'a, z: 'b, x: F2<'a, 'b>| x;
+  let c = true;
+  let h = |u, v, w| { let g = select c { true => f(u, v, w), false => f(u, v, w) }; (u, v) };
+  h(1, "s", |q: i64| q + 1)
+}"#,
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::Jit
+);
+run!(
+    a_field_over_two_shapes_each_a_union_of_functions_keeps_the_variables_two,
+    r#"{
+  type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];
+  let f = |y: 'a, z: 'b, x: F2<'a, 'b>| x;
+  let c = true;
+  let h = |u, v, w| { let s = select c { true => {fld: f(u, v, w), a: 1}, false => {fld: f(u, v, w), b: 2} }; let g = s.fld; (u, v) };
+  h(1, "s", |q: i64| q + 1)
+}"#,
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::Jit
+);
+run!(
+    a_tuple_position_over_two_shapes_each_a_union_of_functions_keeps_the_variables_two,
+    r#"{
+  type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];
+  let f = |y: 'a, z: 'b, x: F2<'a, 'b>| x;
+  let c = true;
+  let h = |u, v, w| { let r = f(u, v, w); let s = select c { true => (r, 1), false => (r, "s") }; (u, v) };
+  h(1, "s", |q: i64| q + 1)
+}"#,
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::Jit
+);
+run!(
+    a_slice_element_of_a_union_of_functions_keeps_the_variables_two,
+    r#"{
+  type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];
+  let f = |y: 'a, z: 'b, x: F2<'a, 'b>| x;
+  let c = true;
+  let h = |u, v, w| { let x = [f(u, v, w)]; let g = select x { [a, ..] => a, _ => never() }; (u, v) };
+  h(1, "s", |q: i64| q + 1)
+}"#,
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::Jit
+);
+run!(
+    two_arms_naming_a_part_of_a_union_of_functions_keep_the_variables_two,
+    r#"{
+  type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];
+  let f = |y: 'a, z: 'b, x: F2<'a, 'b>| x;
+  let c = true;
+  let h = |u, v, w| { let x = (f(u, v, w), 0); let g = select x { (a, 0) => a, (b, _) => b }; (u, v) };
+  h(1, "s", |q: i64| q + 1)
+}"#,
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::Jit
+);
+run!(
+    a_bare_name_over_a_union_of_functions_keeps_the_variables_two,
+    r#"{
+  type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];
+  let f = |y: 'a, z: 'b, x: F2<'a, 'b>| x;
+  let c = true;
+  let h = |u, v, w| { let r = f(u, v, w); let g = select r { k => k }; (u, v) };
+  h(1, "s", |q: i64| q + 1)
+}"#,
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::Jit
+);
+run!(
+    a_seq_step_reading_a_union_of_functions_keeps_the_variables_two,
+    r#"{
+  type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];
+  let f = |y: 'a, z: 'b, x: F2<'a, 'b>| x;
+  let c = true;
+  let h = |u, v, w| { let x = f(u, v, w); seq { let g = x; (u, v) } };
+  h(1, "s", |q: i64| q + 1)
+}"#,
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::Jit
+);
+run!(
+    call_through_a_select_of_calls_each_a_union_of_functions_refused,
+    r#"{
+  type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];
+  let f = |y: 'a, z: 'b, x: F2<'a, 'b>| x;
+  let c = true;
+  let h = |u, v, w| { let g = select c { true => f(u, v, w), false => f(u, v, w) }; g(u) };
+  h(1, 1, |q: i64| q + 1)
+}"#,
+    refused(
+        "a call takes one function type, and this callee is one of fn(q: 'a: unbound) -> i64 \
+         and fn(q: 'b: unbound) -> i64; write one variable in both, or one written type in both"
+    );
+    FuseExpect::None
+);
+
 // Two signatures that are one type, with a typedef union of functions
 // spelling the same two variables in the other order, meet under the
 // pairing of the members the union's order gives: the call is refused
