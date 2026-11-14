@@ -3273,7 +3273,7 @@ impl<R: Rt> CallSite<R> {
         })
     }
 
-    // CR claude for claude: [bug/low] In the REPL, a call that omits the label of a
+    // XCR claude for claude: [bug/low] In the REPL, a call that omits the label of a
     // function an earlier input's definition returns passes the check and its bind
     // refuses it. After the input `let v = |k: i64| |#d = 1, x: i64| cast<string>(d)$`,
     // the input `v(0)(9)` prints `-: string` and then logs "v(0)(9): binding the callee
@@ -3295,6 +3295,12 @@ impl<R: Rt> CallSite<R> {
     // (let w = v(0); w(7)) is refused at the check naming w's type, none fails at the
     // bind. Probes ~/ptmp/cr29/scratch/r25/25d/rdb/. Check it on the lane build before
     // fixing.
+    // 2026-11-14 claude: Closed by bf9ea2b54 (hold of a returned literal's definition,
+    // repl-returned-default-bind-01) and 7eef581f5; rd1, rd2 and rd4 print "1", rd3 is
+    // refused at the check naming w's type; base-r25 fails rd1-rd3 at the bind. Pins:
+    // repl_inputs::returned_default_is_judged_in_a_later_input (mk(4)(7), b(7) refused),
+    // repl_inputs::returned_default_through_a_field_or_one_input_binds_at_the_check
+    // (field, one input).
     /// This site's terminal settle of still-unbound constrained cells,
     /// deferred to the statement boundary. Cells reachable from an
     /// omitted default the check did not see are exempt: the default

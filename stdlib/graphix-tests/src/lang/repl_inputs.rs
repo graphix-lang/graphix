@@ -853,6 +853,25 @@ async fn returned_default_is_judged_in_a_later_input() -> Result<()> {
     .await
 }
 
+/// The function an earlier input's call returns sits in a struct field,
+/// or the definition and the call are one input: the omitting call is
+/// judged the same.
+#[tokio::test(flavor = "current_thread")]
+async fn returned_default_through_a_field_or_one_input_binds_at_the_check() -> Result<()>
+{
+    session(&[
+        Accept("let v = |k: i64| |#d = 1, x: i64| cast<string>(d)$"),
+        Produce("v(0)(9)", Value::from("1")),
+        Accept("let u = |k: i64| {f: |#d = 1, x: i64| cast<string>(d)$, n: k}"),
+        Produce("u(0).f(9)", Value::from("1")),
+        Produce(
+            "{ let t = |k: i64| |#d = 1, x: i64| cast<string>(d)$; t(0)(9) }",
+            Value::from("1"),
+        ),
+    ])
+    .await
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn annotated_returned_default_takes_a_later_call() -> Result<()> {
     session(&[
