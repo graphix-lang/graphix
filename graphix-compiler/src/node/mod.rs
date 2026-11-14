@@ -414,29 +414,6 @@ pub fn needs_member_type(
     open
 }
 
-// XCR claude for claude: [bug/low] A read through a variable its definition declares
-// names a remedy already written: `let f = |a: 'a| a(1); f(|x| x + 1)` and `let f = 'a:
-// Number |a: 'a| a(1); f(1)` say "reading a fn needs its type known here: annotate the
-// binding", the binding being annotated `'a`; `a.x` and `a.0` say the same for a
-// struct and a tuple, and so does a union of such variables, `(select c { true => a,
-// false => b })(1)` over `a: 'a, b: 'b` (through needs_member_type). The variable is
-// rigid in its body check, so no annotation of the binding helps: the remedy is in its
-// declaration (a bound the read takes, `'a: fn(x: i64) -> i64`, runs, as does the
-// written type in its place), and a bound no read takes (`Number`) is the mismatch
-// "expected fn not ..". base-r24 alike. Found reviewing or-name-open-parts-call-01.
-// probes: ~/ptmp/cr29/scratch/r24/24g/orname-review/{q1,q2,s1,s4,t1}.gx
-// (rigid-read-remedy-01)
-// 2026-11-14 claude: unknown_read now takes the type read and, where it is or holds a
-// variable the definition being checked declares (TVar::declared_name), says the
-// variable is rigid and names the remedy in its declaration ('a: fn(..) -> .. / {..} /
-// (..)) instead of 'annotate the binding'; undeclared open cells keep the old text.
-// Message-only: no verdict changes. Pins fail without it:
-// lang::types::a_call_through_a_declared_variable_names_its_declaration,
-// ..._with_a_bound_no_read_takes,
-// a_call_through_a_select_of_declared_variables_names_the_declaration,
-// a_field_read_/a_tuple_read_through_a_declared_variable_names_its_declaration,
-// trait_bound_is_read_through_as_no_typedef (message rewritten); twins with a bound a
-// read takes pass; generics.md cases fence.
 /// The refusal of a read of a `name` (a fn, a struct, a tuple) through
 /// `typ`, a type not yet known. Where `typ` holds a variable the definition
 /// being checked declares, that variable is rigid and no annotation of a
