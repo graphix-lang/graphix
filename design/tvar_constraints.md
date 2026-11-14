@@ -837,6 +837,32 @@ string] ⊇ [string, i64, null]`, which gives `'a` the `i64` alone;
 it, and `[Opt<'a>, i64] ⊇ [i64, null, Opt<'a>]` would find no member for
 `[i64, null]` (pins `lang::types::alias_beside_primitives`,
 `bounded_variable_under_an_alias`, each beside its written-out twin).
+A union written out with an open member takes the other side's members
+the same way (`place_members`): one that no constructor member takes
+whole, and is several primitive types or names a union, goes a part at a
+time, each part to the constructor member that takes it and only the rest
+to the open member. `['a, null] ⊇ [i64, null, Array<i64>]` gives `'a` the
+`[i64, Array<i64>]`, so `x$` over it selects with no null arm, and `'a:
+Number |x: [['a, null], Array<i64>]|` takes that value as its alias
+spelling `[Opt<'a>, Array<i64>]` does; `[N, Array<i64>]` over `type N =
+[i64, null]` and `[Result<i64, `E>, null]` into `['a, Error<`E>]` alike.
+A member none of whose parts a constructor member takes goes to the open
+member as it stands, under its name. So the variable takes the narrowest
+type that holds the argument, however the argument's type is spelled, as
+it does from a union of primitives alone: after `v: [Array<i64>, i64,
+null]` into `x: ['a, null]`, a later `y: 'a` widens it for a wider
+argument (`[Array<i64>, i64, null]`) and is the mismatch for one neither
+wider nor narrower (`null`, `[i64, null]`), and under an invariant
+constructor (`&mut Opt<'a>` over `Opt<Opt<i64>>`, as over `[i64, null]`)
+the variable is `i64` unless an earlier parameter decided it wider (pins
+`lang::types::covered_primitive_stays_out_of_the_open_member`,
+`covered_primitive_leaves_a_bounded_open_member_its_numbers`,
+`covered_part_of_a_named_union_stays_out_of_the_open_member`, their
+`_arm_refused` twins, `uncovered_named_union_goes_to_the_open_member_whole`,
+`open_member_beside_a_covered_primitive_widens_to_a_wider_argument`,
+`open_member_beside_a_covered_primitive_takes_no_argument_apart_refused`,
+`alias_over_a_variable_under_a_writable_reference_takes_no_member_it_adds_refused`,
+`typ::contains::tests::an_open_member_takes_only_the_primitives_no_member_does`).
 A rigid check never commits, so one that fails is asked again with such
 members as their members, committing no bound of the name's parameters
 (`Type::contains_unfolded`, under `ContainsFlags::RigidCheck` alone: every

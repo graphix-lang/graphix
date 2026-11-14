@@ -35,6 +35,7 @@ use std::{
     collections::hash_map::Entry,
     mem,
     ops::{ControlFlow, Deref, DerefMut},
+    slice,
 };
 use triomphe::Arc;
 
@@ -2320,7 +2321,7 @@ fn bound_members(env: &Env, b: &Type, commit: bool) -> Result<SmallVec<[Type; 8]
     }
     let members = match b {
         Type::Set(ms) => &ms[..],
-        b => std::slice::from_ref(b),
+        b => slice::from_ref(b),
     };
     Type::unfolded_members(env, members, commit, names)
 }
@@ -4245,7 +4246,8 @@ impl Type {
             {
                 let flat = Self::unfolded(env, s0, true)?;
                 let held = t.with_deref(|t| match t {
-                    Some(Self::Set(s1)) => Self::unfolded_held(env, s1).map(Some),
+                    Some(Self::Set(s1)) => Self::unfolded_held(env, s1, true)
+                        .map(|ms| Some(Self::Set(Arc::from_iter(ms)))),
                     _ => Ok(None),
                 })?;
                 flat.contains_int(flags, env, hist, held.as_ref().unwrap_or(t))
@@ -4834,15 +4836,18 @@ impl Type {
     /// that names a union as what it names ([`names_union`]) and its
     /// primitives a type apiece, so each goes to the holder's member that
     /// takes it and only what none takes to an open one.
-    fn unfolded_held(env: &Env, s: &[Type]) -> Result<Type> {
-        let members = Self::unfolded_members(env, s, true, names_union)?;
-        Ok(Self::Set(Arc::from_iter(members.iter().flat_map(|m| {
-            let (bits, whole) = match m {
-                Self::Primitive(p) => (Some(p.iter()), None),
-                m => (None, Some(m.clone())),
-            };
-            bits.into_iter().flatten().map(|b| Self::Primitive(b.into())).chain(whole)
-        }))))
+    fn unfolded_held(env: &Env, s: &[Type], commit: bool) -> Result<SmallVec<[Type; 8]>> {
+        let members = Self::unfolded_members(env, s, commit, names_union)?;
+        Ok(members
+            .iter()
+            .flat_map(|m| {
+                let (bits, whole) = match m {
+                    Self::Primitive(p) => (Some(p.iter()), None),
+                    m => (None, Some(m.clone())),
+                };
+                bits.into_iter().flatten().map(|b| Self::Primitive(b.into())).chain(whole)
+            })
+            .collect())
     }
 
     // CR claude for claude: [risk/low] Which member of a union a walk on copies gives a
@@ -5471,9 +5476,54 @@ impl Type {
         Ok(true)
     }
 
+    /// Give `m` to the member of the union `s0` that takes it
+    /// ([`Self::take`]), of those not `free` on entry; `None` where it is
+    /// left to the open member: none admits it, or it is free itself.
+    fn place_covered(
+        s0: &[Type],
+        free: &[bool],
+        flags: BitFlags<ContainsFlags>,
+        env: &Env,
+        hist: &mut ContainsHist,
+        m: &Type,
+    ) -> Result<Option<bool>> {
+        let commit = flags.contains(ContainsFlags::Commit);
+        // one of the union's own cells is covered reflexively
+        let own_cell = matches!(m, Self::TVar(mtv) if s0.iter().any(
+            |c| matches!(c, Self::TVar(ctv) if one_variable(ctv, mtv))
+        ));
+        if own_cell {
+            return Ok(Some(true));
+        }
+        // a constructor member would bind a free one greedily; left
+        // over, it aliases with the union's bare member
+        if is_unbound_tvar(m) {
+            return Ok(None);
+        }
+        let mut admit: SmallVec<[&Type; 4]> = SmallVec::new();
+        for (c, _) in s0.iter().zip(free).filter(|(_, free)| !**free) {
+            if c.contains_int(guide(flags), env, hist, m)? {
+                admit.push(c);
+                // a decided member that holds a decided type binds nothing
+                if !commit || (hist.closed(c) && hist.closed(m)) {
+                    admit.truncate(0);
+                    admit.push(c);
+                    break;
+                }
+            }
+        }
+        match admit.is_empty() {
+            true => Ok(None),
+            false if !commit => Ok(Some(true)),
+            false => Self::take(s0, [&admit, &[]], flags, env, hist, m),
+        }
+    }
+
     /// `t0`, a union `s0` holding an open member, contains the members
-    /// `s1` in that order: each goes to the first constructor member that
-    /// fits it, and what none takes to the open member.
+    /// `s1` in that order: each goes to the constructor member that takes
+    /// it, one none takes whole that is several primitives or names a
+    /// union a part at a time ([`Self::unfolded_held`]), and what none
+    /// takes to the open member.
     fn place_members(
         flags: BitFlags<ContainsFlags>,
         env: &Env,
@@ -5487,7 +5537,6 @@ impl Type {
         // bind one (`Array<'b> ⊇ Array<i64>`) before the residue
         // reaches it
         let free: SmallVec<[bool; 8]> = s0.iter().map(is_unbound_tvar).collect();
-        let probe = guide(flags);
         let mut residue: LPooled<Vec<Type>> = LPooled::take();
         for m in s1.iter() {
             // An rhs member equal to the whole lhs set is
@@ -5499,38 +5548,10 @@ impl Type {
             if reflexive {
                 continue;
             }
-            // An rhs member that is one of the lhs's own cells
-            // is covered reflexively too.
-            let own_cell = match m {
-                Self::TVar(mtv) => s0.iter().any(|c| match c {
-                    Self::TVar(ctv) => one_variable(ctv, mtv),
-                    _ => false,
-                }),
-                _ => false,
+            let covered = |hist: &mut ContainsHist, m: &Type| {
+                Self::place_covered(s0, &free, flags, env, hist, m)
             };
-            if own_cell {
-                continue;
-            }
-            // A free rhs member is residue too: the coverage
-            // loop would bind it greedily; in the residue it
-            // aliases with the bare lhs member.
-            if is_unbound_tvar(m) {
-                residue.push(m.clone());
-                continue;
-            }
-            let mut admit: SmallVec<[&Type; 4]> = SmallVec::new();
-            for (c, _) in s0.iter().zip(&free).filter(|(_, free)| !**free) {
-                if c.contains_int(probe, env, hist, m)? {
-                    admit.push(c);
-                    // a decided member that holds a decided type binds nothing
-                    if !commit || (hist.closed(c) && hist.closed(m)) {
-                        admit.truncate(0);
-                        admit.push(c);
-                        break;
-                    }
-                }
-            }
-            // CR claude for claude: [bug/medium] A union with a bare variable takes a
+            // XCR claude for claude: [bug/medium] A union with a bare variable takes a
             // member of several primitive types whole: where no one constructor member
             // admits all of it, the whole member goes to the variable, the types a
             // constructor member covers included. `let f = 'a: Number |x: [['a, null],
@@ -5550,12 +5571,48 @@ impl Type {
             // wants a census of both repos first. probes:
             // ~/ptmp/cr29/scratch/r20/coord/x5/{h2,h3,k1,k2}.gx (h3 is h2's alias
             // spelling) (union-prim-member-whole-01)
-            if admit.is_empty() {
+            // 2026-11-13 claude: Type::place_members takes a member no constructor member
+            // takes whole a part at a time where it is several primitive types or names a
+            // union (Type::unfolded_held): each part goes to the constructor member that
+            // takes it (Type::place_covered) and only the rest to the open member; one none
+            // of whose parts is taken goes whole, under its name. h2 and k2 check and run,
+            // k1's null arm is refused as dead; [N, Array<i64>], [Opt<i64>, Array<i64>] and
+            // [Result<i64, `E>, null] into ['a, Error<`E>] alike. Moved with it: after such
+            // an argument a later y: 'a is a mismatch for a type neither wider nor narrower
+            // ([i64, null], null), as it was after [i64, string, null]; and Opt<Opt<i64>>
+            // under &mut Opt<'a> or B<Opt<'a>> gives 'a i64 as its other spellings do, so
+            // lang::types::alias_over_a_variable_under_* now decide 'a wider by an earlier
+            // parameter. Census of both repos (2967 files): no verdict or message differs.
+            // Fail with the split off:
+            // lang::types::covered_primitive_stays_out_of_the_open_member, its _arm_refused
+            // twin, covered_primitive_leaves_a_bounded_open_member_its_numbers,
+            // covered_part_of_a_named_union_stays_out_of_the_open_member, its _arm_refused
+            // twin, open_member_beside_a_covered_primitive_takes_no_argument_apart_refused,
+            // the three alias_over_a_variable_under_* pins,
+            // typ::contains::tests::an_open_member_takes_only_the_primitives_no_member_does.
+            // probes: ~/ptmp/cr29/scratch/r24/24d/upm/ (README)
+            match covered(hist, m)? {
+                Some(true) => continue,
+                Some(false) => return Ok(false),
+                None => (),
+            }
+            let several = names_union(env, m)
+                || m.with_deref(|d| matches!(d, Some(Self::Primitive(p)) if p.len() > 1));
+            let parts = match several {
+                true => Self::unfolded_held(env, slice::from_ref(m), commit)?,
+                false => SmallVec::new(),
+            };
+            let held = residue.len();
+            for part in parts.iter() {
+                match covered(hist, part)? {
+                    Some(true) => (),
+                    Some(false) => return Ok(false),
+                    None => residue.push(part.clone()),
+                }
+            }
+            if residue.len() - held == parts.len() {
+                residue.truncate(held);
                 residue.push(m.clone());
-            } else if commit
-                && Self::take(s0, [&admit, &[]], flags, env, hist, m)? != Some(true)
-            {
-                return Ok(false);
             }
         }
         // CR claude for claude: [risk/low] A definition's check and its instance's
@@ -5788,6 +5845,18 @@ impl Type {
     // call through a wrapper split this way, on base-r23 and the lane alike, none in the
     // default mode (see union-nosubst-order-01 for the kind). probes:
     // ~/ptmp/cr29/scratch/r23/23b/alias-review/ns1.gx to ns5.gx, gen.py, res.lane
+    // 2026-11-13 claude: Since union-prim-member-whole-01's fix the argument's spelling
+    // no longer decides: Type::place_members takes Opt<i64> beside null a part at a time,
+    // so n0: Opt<Opt<i64>> gives 'a i64 as [i64, null], Opt<i64> and Opt<[i64, null]> do.
+    // 'let x: &mut Opt<i64> = nest(&mut n0)' is refused and 'let x: &mut i64' checks in
+    // all four (pin
+    // lang::types::alias_over_a_variable_under_a_writable_reference_takes_no_member_it_adds_refused),
+    // and wrap's instance agrees under GRAPHIX_NO_SUBST=1 (n3/q2.gx, q7.gx; ns1's split
+    // is gone with the program it accepted). What is left is the order of the parameters
+    // alone: the check takes the narrower solution, so '|w: &mut Opt<'a>, k: &mut 'a|' at
+    // two Opt<i64> is refused in every spelling of n0 and '|k: &mut 'a, w: &mut Opt<'a>|'
+    // runs in every one. probes: ~/ptmp/cr29/scratch/r24/24d/upm/n3/, n4/c/ (progs.txt a
+    // program a line, pre.out and post3.out)
     /// Containment both ways: an invariant position.
     fn equal_int(
         &self,
@@ -8260,6 +8329,29 @@ mod tests {
         let held = parsed("[[Array<'a>, null], [List<'b>, null]]");
         assert!(held.contains(&env, &parsed("null")).unwrap());
         assert!(held.has_unbound());
+    }
+
+    // a member of several primitive types that no constructor member
+    // takes whole goes a type at a time: the open member takes only the
+    // types none does, and the member as it stands where none takes any
+    #[test]
+    fn an_open_member_takes_only_the_primitives_no_member_does() {
+        let env = Env::default();
+        for (union, t, open) in [
+            ("['a, null]", "[i64, null, Array<i64>]", "[i64, Array<i64>]"),
+            ("['a, i64]", "[i64, null, Array<i64>]", "[null, Array<i64>]"),
+            ("['a, string]", "[i64, null, Array<i64>]", "[i64, null, Array<i64>]"),
+            ("['a, null, Array<'b>]", "[i64, string, null, Array<i64>]", "[i64, string]"),
+        ] {
+            let union = parsed(union);
+            assert!(union.contains(&env, &parsed(t)).unwrap(), "{union}");
+            let mut tvs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+            union.collect_tvars(&mut tvs);
+            let a = Type::TVar(tvs["a"].clone()).deref_cloned().unwrap();
+            let open = parsed(open);
+            assert!(open.contains(&env, &a).unwrap(), "{union}: {a}");
+            assert!(a.contains(&env, &open).unwrap(), "{union}: {a}");
+        }
     }
 
     // a type holding a cell to decide that two decided members could

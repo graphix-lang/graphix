@@ -4119,6 +4119,112 @@ run!(open_member_takes_the_residue, OPEN_MEMBER_TAKES_THE_RESIDUE, |v: Result<&V
     matches!(v, Ok(Value::Array(a)) if a[..] == [Value::Bool(true), Value::Bool(true)])
 }; FuseExpect::Jit);
 
+// A member of several primitive types, or one that names a union, that no
+// constructor member of the holder takes whole is taken a part at a time:
+// each part goes to the constructor member that takes it and only the rest
+// to the open member, so 'a holds no null here and the written-out union
+// checks as its alias spelling does.
+run!(
+    covered_primitive_stays_out_of_the_open_member,
+    r#"{
+  let f = |x: ['a, null]| -> 'a x$;
+  let show = |v: [Array<i64>, i64, null]| select f(v) { i64 as i => i, Array<i64> as a => array::len(a) };
+  (show(7), show([1, 2]))
+}"#,
+    prints("[i64:7, i64:2]")
+);
+run!(
+    covered_primitive_stays_out_of_the_open_member_arm_refused,
+    r#"{
+  let f = |x: ['a, null]| -> 'a x$;
+  let v: [Array<i64>, i64, null] = 1;
+  select f(v) { null as _ => 0, i64 as i => i, Array<i64> as a => 2 }
+}"#,
+    refused("pattern null will never match [i64, Array<i64>]");
+    FuseExpect::None
+);
+run!(
+    covered_primitive_leaves_a_bounded_open_member_its_numbers,
+    r#"{
+  let f = 'a: Number |x: [['a, null], Array<i64>]| x;
+  let v: [i64, null, Array<i64>] = 1;
+  let w: [f64, i64, null, Array<i64>] = 1.5;
+  (f(v), f(w))
+}"#,
+    prints("[i64:1, f64:1.5]")
+);
+run!(
+    uncovered_primitive_refused_by_the_open_members_bound,
+    r#"{
+  let f = 'a: Number |x: [['a, null], Array<i64>]| x;
+  let v: [i64, string, null, Array<i64>] = 1;
+  f(v)
+}"#,
+    refused("does not contain [i64, null, string, Array<i64>]");
+    FuseExpect::None
+);
+run!(
+    covered_part_of_a_named_union_stays_out_of_the_open_member,
+    r#"{
+  type N = [i64, null];
+  let f = |x: ['a, null]| -> 'a x$;
+  let h = |x: ['a, Error<`E>]| -> 'a x$;
+  let show = |v: [N, Array<i64>]| select f(v) { i64 as i => i, Array<i64> as a => array::len(a) };
+  let ok = |v: [Result<i64, `E>, null]| select h(v) { i64 as i => i, null as _ => 0 };
+  (show(7), show([1, 2]), ok(3), ok(null))
+}"#,
+    prints("[i64:7, i64:2, i64:3, i64:0]")
+);
+run!(
+    covered_part_of_a_named_union_stays_out_of_the_open_member_arm_refused,
+    r#"{
+  type E = [`A, `B];
+  let f = |x: ['a, `A]| -> 'a never();
+  let v: [E, i64] = 1;
+  select f(v) { `A => 1, `B => 0, i64 as i => i }
+}"#,
+    refused("pattern `A will never match [i64, `B]");
+    FuseExpect::None
+);
+// The open member is then the narrowest type holding the argument, as after
+// a union of primitives alone: a later argument wider than it widens it,
+// and one neither wider nor narrower is the mismatch.
+run!(
+    open_member_beside_a_covered_primitive_widens_to_a_wider_argument,
+    r#"{
+  let f = |x: ['a, null], y: 'a| -> 'a select x { null as _ => y, v => v };
+  let v: [Array<i64>, i64, null] = null;
+  let w: [Array<i64>, i64, null] = [9];
+  (f(v, 3), f(v, w))
+}"#,
+    prints("[i64:3, [i64:9]]")
+);
+run!(
+    open_member_beside_a_covered_primitive_takes_no_argument_apart_refused,
+    r#"{
+  let f = |x: ['a, null], y: 'a| -> 'a select x { null as _ => y, v => v };
+  let v: [Array<i64>, i64, null] = null;
+  let n: [i64, null] = null;
+  f(v, n)
+}"#,
+    refused("'a: [i64, Array<i64>] does not contain [i64, null]");
+    FuseExpect::None
+);
+// A named union none of whose parts a constructor member takes goes to the
+// open member under its name.
+run!(
+    uncovered_named_union_goes_to_the_open_member_whole,
+    r#"{
+  type N = [i64, null];
+  let f = |x: ['a, string]| -> 'a never();
+  let v: [N, Array<i64>] = 1;
+  let r = f(v);
+  r <- 1;
+  select r { N as _ => 0, Array<i64> as _ => 1 }
+}"#,
+    prints("i64:0")
+);
+
 /// A union holding the very cell it is asked to contain binds nothing.
 const UNION_HOLDS_ITS_OWN_CELL: &str = r#"
 {
@@ -10407,22 +10513,36 @@ run!(
 );
 
 // An alias that adds a member, applied to a variable under an invariant
-// constructor: an argument written as the alias over a type that already
-// holds the member gives the variable that type, and the instance holds
-// its signature there.
+// constructor: an argument that already holds the member, however it is
+// spelled, gives the variable what is left without it; one an earlier
+// parameter decided at the wider type stands, and the instance holds its
+// signature there.
 run!(
     alias_over_a_variable_under_a_writable_reference_builds_at_a_nested_alias,
     r#"{
   type Opt<'a> = ['a, null];
   let nest = |w: &mut Opt<'a>| -> &mut 'a never();
-  let put = |w: &mut Opt<'a>, v: 'a| -> 'a { *w <- v; v };
+  let put = |k: &mut 'a, w: &mut Opt<'a>, v: 'a| -> 'a { *w <- v; v };
   let n0: Opt<Opt<i64>> = null;
-  let x: &mut Opt<i64> = nest(&mut n0);
+  let x: &mut i64 = nest(&mut n0);
   let d: Opt<i64> = 5;
-  let p: Opt<i64> = put(&mut n0, d);
+  let k: Opt<i64> = null;
+  let p: Opt<i64> = put(&mut k, &mut n0, d);
   p
 }"#,
     is(Value::I64(5));
+    FuseExpect::None
+);
+run!(
+    alias_over_a_variable_under_a_writable_reference_takes_no_member_it_adds_refused,
+    r#"{
+  type Opt<'a> = ['a, null];
+  let nest = |w: &mut Opt<'a>| -> &mut 'a never();
+  let n0: Opt<Opt<i64>> = null;
+  let x: &mut Opt<i64> = nest(&mut n0);
+  0
+}"#,
+    refused("&mut Opt<i64> does not contain &mut 'a: i64");
     FuseExpect::None
 );
 
@@ -10432,11 +10552,12 @@ run!(
   type Opt<'a> = ['a, null];
   type B<'a> = Abstract<'a>;
   let nest = |w: B<Opt<'a>>| -> B<'a> never();
-  let inner = |w: B<Opt<'a>>, d: 'a| -> B<'a> B(d);
+  let inner = |k: B<'a>, w: B<Opt<'a>>, d: 'a| -> B<'a> B(d);
   let n0: Opt<i64> = null;
   let y: B<Opt<Opt<i64>>> = B(n0);
-  let x: B<Opt<i64>> = nest(y);
-  let z: B<Opt<i64>> = inner(y, 3);
+  let x: B<i64> = nest(y);
+  let k: B<Opt<i64>> = B(n0);
+  let z: B<Opt<i64>> = inner(k, y, 3);
   z.0
 }"#,
     is(Value::I64(3));
