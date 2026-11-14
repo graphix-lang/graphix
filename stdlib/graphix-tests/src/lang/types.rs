@@ -13081,6 +13081,51 @@ run!(
     prints("[[i64:2], [i64:1]]")
 );
 
+// A wrapper's declared variable inside the value a callee's bound takes is
+// proved against the bound and never narrowed by it: the bound's own
+// variable takes it, as where the bound's type is written in the
+// parameter, and the wrapper's signature keeps the variable as declared.
+run!(
+    declared_variable_under_a_callees_bound_over_an_undecided_variable,
+    r#"{
+  let g = 'b: Array<['c, null]> |x: 'b, s: 'c| -> 'b x;
+  let h = 'b: {p: ['c, null]} |x: 'b, s: 'c| -> 'c s;
+  let f = |v: 'a, w: Array<'a>| (g(w, v), h({p: v}, v));
+  (f(1, [2]), f("a", ["b"]), f(null, []))
+}"#,
+    prints(r#"[[[i64:2], i64:1], [["b"], "a"], [[], null]]"#)
+);
+run!(
+    declared_variable_under_a_callees_bound_keeps_its_declaration,
+    r#"{
+  let g = 'b: Array<['c, null]> |x: 'b, s: 'c| -> 'c s;
+  let f = |w: Array<'a>, s| g(w, s);
+  let k: bool = f;
+  k
+}"#,
+    refused("bool does not contain fn(w: Array<'a: unbound>, s: 'a: unbound) -> 'a: unbound");
+    FuseExpect::None
+);
+run!(
+    declared_variable_under_a_callees_bound_that_another_argument_decides_refused,
+    r#"{
+  let g = 'b: Array<['c, null]> |x: 'b, s: 'c| -> 'b x;
+  let f = |w: Array<'a>| g(w, null);
+  f([null])
+}"#,
+    refused("'c: unbound does not contain null");
+    FuseExpect::None
+);
+run!(
+    declared_variable_under_a_callees_bound_declared_within_it,
+    r#"{
+  let g = 'b: Array<['c, null]> |x: 'b, s: 'c| -> 'b x;
+  let f = 'a: null |w: Array<'a>| g(w, null);
+  f([null])
+}"#,
+    prints("[null]")
+);
+
 // Two undecided elements of one array under such a bound: each stays
 // within the bound's union and the bound's variable is above both, so
 // each one's conjunct comes to hold its own cell, and admits whatever

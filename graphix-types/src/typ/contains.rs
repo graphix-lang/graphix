@@ -1416,6 +1416,23 @@ fn commit_conjuncts(
         // ~/ptmp/cr29/scratch/r23/23b/ubt-rev/{r9,r9b,r9c,r9d,r9e,r9f,q2}.gx
         // (union-bound-open-member-order-01)
 
+        // CR claude for claude: [bug/low] A bound's unions over its own variable, met by
+        // a wrapper's unions over a declared variable, make the two variables one where
+        // the bound's must hold the wrapper's whole union, so a call the written twin runs
+        // is refused. `let g = 'b: (['c, null], ['c, i64]) |s: 'c, x: 'b| -> 'b x; let f =
+        // |u, w: (['a, null], ['a, null])| g(u, w); f(1, (2, 2))` is refused at the
+        // definition of f, "'b: unbound within ([null, 'c: unbound], [i64, 'c: unbound])
+        // does not contain ([null, 'c: unbound], [null, 'c: unbound])"; with the bound's
+        // type written in the parameter (`|s: 'c, x: (['c, null], ['c, i64])|`) it prints
+        // (2, 2), 'c being ['a, null]. The step below walks the first part as lower
+        // bounds: null goes to null, the rigid 'a merges with 'c (takes_lower: a rigid
+        // part merges), and the second part's `['c, i64]` then holds no null. base-r24
+        // alike, before and after rigid-narrowed-by-callee-bound-01; 2 of 480 generated
+        // wrappers differ from their twin this way. Not decided: a rigid part standing
+        // below the bound's open cell as a lower bound, as a decided type does. probes:
+        // ~/ptmp/cr29/scratch/r24/24c/rnb/p/{p1,p1t}.gx, generator
+        // ~/ptmp/cr29/scratch/r24/24c/rnb/gen.py (bound-part-merges-declared-01)
+
         // the conjunct's own open cells must hold what the cell takes:
         // `'d: [null, 'c]` bound to i64 puts i64 below 'c, so 'c bound
         // later to a type without it is refused
@@ -1449,8 +1466,10 @@ impl TVar {
 /// its part (`Array<[i64, null]> ⊇ Array<'y>` gives `'y: [i64, null]`, `Int
 /// ⊇ [i64, 'k]` gives `'k: Int`), an exact part is committed as an exact
 /// conjunct is, and a function's argument takes the conjunct's argument,
-/// the least it must accept. A writable reference's referent is its
-/// part's exactly, and so is an abstract type's parameter. Of a union's
+/// the least it must accept. A rigid cell takes no part: the probe held
+/// it against its part, and the conjunct's open cells take it as what
+/// they must hold ([`commit_conjuncts`]). A writable reference's referent
+/// is its part's exactly, and so is an abstract type's parameter. Of a union's
 /// members, each name and bound variable among them followed to what it
 /// stands for, one has the parts ([`member_with_parts`]). A decided
 /// variable of the conjunct is met as its binding, and a name in `t`
@@ -1483,7 +1502,7 @@ fn commit_parts(
         };
         match (c, t) {
             (Type::Any, _) => Ok(true),
-            // CR claude for claude: [bug/medium] A declared variable of the definition under
+            // XCR claude for claude: [bug/medium] A declared variable of the definition under
             // check that meets a callee's bound here is narrowed for good, by a union over a
             // cell of the callee's signature that the call then decides: `let g = 'b:
             // Array<['c, null]> |x: 'b, s: 'c| -> 'b x; let f = |v: 'a, w: Array<'a>| g(w, v);
@@ -1504,8 +1523,24 @@ fn commit_parts(
             // bound to declare). Found fixing bound-holds-own-cell-01. probes:
             // ~/ptmp/cr29/scratch/r23/23c/rigid_narrow{,_s_first,_ok_unbounded}.gx
             // (rigid-narrowed-by-callee-bound-01)
+            // 2026-11-14 claude: commit_parts narrows no rigid cell: the probe before the bind
+            // holds a declared variable against its part (a part with no open cell is refused
+            // at the wrapper, base-r24 alike), and the conjunct's own open cells take it in
+            // commit_conjuncts' lower-bound step, so the bound's 'c is the wrapper's 'a as
+            // where the bound's type is written in the parameter. On base-r24 the CR's probe
+            // was refused at the definition ("'c: null does not contain 'a"): the part
+            // recorded on 'a proved `null >= 'a` by deciding 'c null. Newly refused at the
+            // definition, as the written twin is: `|w: Array<'a>| g(w, null)`, which base-r24
+            // took with 'a within null; `'a: null` declared runs. Fail without it:
+            // lang::types::declared_variable_under_a_callees_bound_{over_an_undecided_variable,keeps_its_declaration,that_another_argument_decides_refused}
+            // and contains::tests::a_bounds_part_narrows_no_rigid_cell (declared_within_it is
+            // the passing twin). Census 2967 files, no verdict or message moved. 480 generated
+            // wrappers beside their written twins: 62 newly accepted, none newly refused,
+            // every accept runs alike fused, --no-fusion and NO_SUBST; 6 still refused where
+            // the twin runs (lower-bound-refuses-narrower-01, bound-part-merges-declared-01).
+            // probes: ~/ptmp/cr29/scratch/r24/24c/rnb/ (README)
             (_, Type::TVar(t)) => match t.open_cell() {
-                Some(cell) if cell.cell_addr() != tv.cell_addr() => {
+                Some(cell) if cell.cell_addr() != tv.cell_addr() && !cell.is_rigid() => {
                     cell.narrow_cell(env, c.clone())?;
                     Ok(true)
                 }
@@ -1872,6 +1907,16 @@ fn conjuncts_admit(
     // union_narrow_wide{,_wrapper}.gx (refused at the run),
     // union_{annotated,written,written_rev}.gx (run), inner_direct.gx (refused at the
     // check) (lower-bound-refuses-narrower-01)
+    // 2026-11-14 claude: Fixing rigid-narrowed-by-callee-bound-01 (lane 24c): a wrapper's
+    // declared variable is refused the same way. `let g = 'b: Array<['c, i64]> |x: 'b, s:
+    // 'c| -> 'b x; let f = |v: 'a, w: Array<['a, null]>| g(w, v)` is refused at the
+    // definition, "'c: unbound above null does not contain 'a: unbound": the bound put 'c
+    // above `[null, 'a]` (LOWER under GRAPHIX_DBG_BIND; the message prints the bound as
+    // null alone), and the argument `v: 'a` then asks `'c >= 'a`, where the rigid 'a
+    // neither merges with a cell above null nor is looked for in the lower bound. The
+    // bound's type written in the parameter runs. base-r24 refuses it at the bound
+    // instead. 4 of 480 generated wrappers. probes:
+    // ~/ptmp/cr29/scratch/r24/24c/rnb/l/{l1,l1t}.gx, gen/w.out (w05-an-v-xs, w11-an-v-xs)
     let probe = guide(flags) & !ContainsFlags::Lower;
     for c in tv.cell_constraints().iter() {
         if !holds_cell(env, c, tv.cell_addr()) && !c.contains_int(probe, env, hist, t)? {
@@ -5450,6 +5495,15 @@ impl Type {
         // Array<i64>]]>] does not contain Array<[bool, string, Array<i64>]>". Not
         // diagnosed further. probes:
         // ~/ptmp/cr29/scratch/r24/24c/nuubrev/nosubst_{p01498,p01204}.gx
+        // 2026-11-14 claude: Fixing rigid-narrowed-by-callee-bound-01 (lane 24c): one
+        // more split, with a declared variable: `let g = |x: Array<['c, i64]>, s: 'c|
+        // x; let f = |v: 'a, w: Array<['a, null]>| g(w, v); f(1, [2])` checks and
+        // prints [2], and under GRAPHIX_NO_SUBST=1 the instance at i64 is refused,
+        // "'c: null does not contain i64": its own check gives the i64 of `[i64,
+        // null]` to the union's i64 member and only the null to 'c, where the
+        // definition's check put 'c above `['a, null]` whole. base-r24 alike; 2 of 480
+        // generated twins. probes: ~/ptmp/cr29/scratch/r24/24c/rnb/l/l1t.gx, gen/w.out
+        // (w05-an-v-xs-{b,c}-t)
         let mut undecided_free = s0
             .iter()
             .zip(&free)
@@ -8257,6 +8311,24 @@ mod tests {
                 "{t}: 'q within {within:?}"
             );
         }
+    }
+
+    // a bound's part narrows no rigid cell of the value: the bound's own
+    // open cell takes the rigid cell, which keeps the bounds it had
+    #[test]
+    fn a_bounds_part_narrows_no_rigid_cell() {
+        let (env, t) = Env::typed_at_root(&[], "(Array<['c, null]>, Array<'a>)").unwrap();
+        t.alias_tvars(&mut LPooled::take());
+        let Type::Tuple(sides) = &t else { panic!("{t} is no pair") };
+        let mut cells: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+        t.collect_tvars(&mut cells);
+        let (a, c) = (&cells["a"], &cells["c"]);
+        let _held = a.open_rigid();
+        let holder = var("holder");
+        holder.add_cell_constraint(sides[0].clone());
+        assert!(holder.commit_conjuncts(&env, &sides[1]).unwrap(), "{t}");
+        assert!(a.cell_constraints().is_empty(), "{t}");
+        assert!(c.open_cell().is_some_and(|c| c.same_cell(a)), "{t}");
     }
 }
 

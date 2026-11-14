@@ -1936,6 +1936,21 @@ which `G`'s body holds under the name `H`, takes the callee's part,
 `y3`'s type. Pins: `lang::types::partial_wrapper_bound_*`,
 `contains::tests::a_bounds_parts_reach_the_cells_under_a_name`.
 
+A rigid cell of the value takes no part. A declared variable's bounds
+are the ones its declaration writes and the conjuncts of a cell merged
+into it, so its part is proved and never recorded on it. The probe
+before the bind holds it against the part: `'b: Array<[i64, null]>`
+taking a wrapper's `Array<'a>` is refused at the wrapper, which declares
+`'a: [i64, null]` to pass. Where the part holds an open cell of the
+bound, that cell takes the variable, as it does where the bound's type
+is written in the parameter: `'b: Array<['c, null]> |x: 'b, s: 'c|`
+called `g(w, v)` in `|v: 'a, w: Array<'a>|` makes `'c` `'a`, and
+`g(w, null)` is refused there, since `'a` holds no null. A part recorded
+on the rigid cell would prove itself (`['c, null] ⊇ 'a` by the conjunct
+`['c, null]`), and `null ⊇ 'a` by deciding `'c` null. Pins:
+`lang::types::declared_variable_under_a_callees_bound_*`,
+`contains::tests::a_bounds_part_narrows_no_rigid_cell`.
+
 ### `Concrete`: a conjunct that is a predicate
 
 `'b: Concrete` (`Type::Concrete`, parsed only as a bound) says whatever

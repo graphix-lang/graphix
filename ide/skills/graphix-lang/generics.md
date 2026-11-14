@@ -501,6 +501,18 @@ no "'a2: ([i64, null], i64) does not contain string" let f = 'a0: ['a1, null], '
 no "'a3: duration does not contain string" let f = 'a2: [('a3, bool), bool] |x1: Array<'a2>, x2: 'a2, x3: 'a3| x3; let n: [(duration, bool), bool] = (duration:1.s, true); f([true], n, "s")
 ```
 
+A wrapper's declared variable takes no bound from a callee's. Inside the
+value a callee's bound takes, the bound's own variable takes it, as where
+the bound's type is written in the parameter; where the bound has no
+variable there, the wrapper declares the bound itself.
+
+```graphix,cases
+ok let g = 'b: Array<['c, null]> |x: 'b, s: 'c| -> 'b x; let f = |v: 'a, w: Array<'a>| g(w, v); (f(1, [2]), f("a", ["b"]))
+no "'c: unbound does not contain null" let g = 'b: Array<['c, null]> |x: 'b, s: 'c| -> 'b x; let f = |w: Array<'a>| g(w, null); f([null])
+no "does not contain Array<'a: unbound>" let g = 'b: Array<[i64, null]> |x: 'b| -> 'b x; let f = |w: Array<'a>| g(w); f([2])
+ok let g = 'b: Array<[i64, null]> |x: 'b| -> 'b x; let f = 'a: [i64, null] |w: Array<'a>| g(w); f([2])
+```
+
 A variable a callback also holds does not widen: the first argument decides
 it, an open one included, so order decides between a value and a refusal.
 `f(str::parse(s), 1, |v| 0)` over `|x: 'a, y: 'a, k: fn(v: 'a) -> i64|`
