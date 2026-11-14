@@ -465,28 +465,6 @@ fn names_nothing(e: &Expr) -> bool {
     })
 }
 
-// XCR claude for claude: [bug/low] An arm whose every value an earlier unguarded arm
-// takes is not found dead where the earlier arm has a name or `_` at a position the
-// later one tests by a literal the pools do not read (a number, a string): `|x: (i64,
-// i64)| select x { (_, 1) => 0, (3, 1) => 1, _ => 2 }` checks and the second arm never
-// runs, and so do `(_, true)` before `(3, true)`, `[_, 1]` before `[3, 1]`, `` `A(_, 1)
-// `` before `` `A(3, 1) ``, `{b: _, c: true}` before `{b: "s", c: true}` and its written
-// form (`E as {b: _, c: true}` before `E as {b: "s", c: true}`). `(_, true)` before
-// `(true, true)` is refused (the pool reads both), and so is the same test written
-// twice (check_repeats). base-r24 alike. What would likely fix it: same_test taken
-// one way, an earlier name or `_` standing for any test the later atom makes at its
-// position; census both repos. probes: ~/ptmp/cr29/scratch/r24/24a/wsaf/p6.txt, p5.txt
-// lines 1 to 3 (run.sh beside them runs each line: check, fused, node-walk)
-// (literal-arm-subsumed-dead-01)
-// 2026-11-14 claude: select.rs::same_test is now subsumes(earlier, later): a name or _
-// in an earlier unguarded arm stands for any test the later atom makes at that position
-// (an Or on either side is read alternative by alternative), so check_repeats refuses
-// (_, 1) before (3, 1) and the slice, payload, struct and written-struct forms. Pins
-// that fail without it:
-// lang::select::literal_after_{wildcard_in_tuple,bind_in_tuple,wildcard_in_slice,wildcard_in_payload,wildcard_in_struct,wildcard_in_written_struct,wildcard_in_or_alternative}_unreachable;
-// twins that run: literal_after_wildcard_in_tuple_twin,
-// literal_after_guarded_wildcard_runs, literal_before_wildcard_runs. Census of both
-// repos: no file newly refused.
 /// Does `earlier` match every value `later` does, position by position:
 /// a bind or `_` at a position matches whatever `later` tests there, and
 /// equal literals, heads and shapes match alike?
