@@ -4923,8 +4923,9 @@ impl Type {
 
     /// The first open cell beneath `self`, through bindings and outside
     /// every function type, that `of` holds and `beside` does not, and
-    /// that is not held rigid: as a variable `of` names it by, where one
-    /// has a written name.
+    /// that is not held rigid: as the variable written in `of` that is
+    /// that cell, else the one whose binding holds it, the least name
+    /// first; the cell itself where `of` writes neither.
     pub fn open_cell_of(&self, of: &Type, beside: &Type) -> Option<TVar> {
         let mut own: LPooled<AHashMap<usize, TVar>> = LPooled::take();
         super::settle::position_cells(of, &mut own);
@@ -4934,11 +4935,26 @@ impl Type {
             let addr = tv.cell_addr();
             !tv.is_rigid() && own.contains_key(&addr) && !theirs.contains_key(&addr)
         })?;
-        let written = own.values().find(|tv| {
-            !tv.name.starts_with('_')
-                && tv.open_cell().is_some_and(|c| c.same_cell(&open))
-        });
-        Some(written.cloned().unwrap_or(open))
+        let rank = |tv: &TVar| {
+            let is_open = tv.open_cell().is_some_and(|c| c.same_cell(&open));
+            let holds = || {
+                let t = Type::TVar(tv.clone());
+                find_open_cell(&t, false, &mut |c| c.same_cell(&open)).is_some()
+            };
+            match is_open || holds() {
+                true => Some((!is_open, tv.name.clone())),
+                false => None,
+            }
+        };
+        let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+        of.collect_tvars(&mut named);
+        let written = named
+            .values()
+            .filter(|tv| !tv.name.starts_with('_'))
+            .filter_map(|tv| rank(tv).map(|r| (r, tv)))
+            .min_by(|(r0, _), (r1, _)| r0.cmp(r1))
+            .map(|(_, tv)| tv.clone());
+        Some(written.unwrap_or(open))
     }
 
     /// [`Self::close_over_any`] before the arm of the inferred test `pred`

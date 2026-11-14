@@ -4783,6 +4783,21 @@ run!(
     FuseExpect::None
 );
 
+// The arm decides the variable only in part, leaving a callee's variable
+// open inside it: the refusal names the variable the test wrote.
+run!(
+    written_variable_twice_left_open_inside_a_callees_variable_is_refused,
+    r#"{
+        let k = |v: i64| {
+            let u = select v { 0 => (null, [7]), _ => (["s"], [1, 2]) };
+            select u { ('q, 'q) as (a0, a1) => { let n = array::len(a1); a0 }, _ => [] }
+        };
+        k(1)
+    }"#,
+    refused("binds a0 at 'q, a variable of the test's own that nothing decided by the arm's end");
+    FuseExpect::None
+);
+
 // A variable for each part binds every member's part there.
 run!(
     written_variable_for_each_part_binds_every_member,
