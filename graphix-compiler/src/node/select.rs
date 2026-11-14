@@ -916,28 +916,6 @@ impl Reach {
         }
     }
 
-    // XCR claude for claude: [bug/low] A cover that takes one member of a union at a
-    // product's position leaves the product whole in what reaches the next arm, so an
-    // arm after arms that cover such a union member by member is never found dead:
-    // `|x: [`A([i64, string])]| select x { `A(i64) as `A(n) => n, `A(string) as `A(s)
-    // => 0, _ => 3 }` checks and runs, as do the tuple form (`(null, _)`, `(i64, i64)
-    // as (n, _)`, `_` over `([i64, null], i64)`) and slice ladders beside a null
-    // (`` `A([h, ..]), `A([]), `A(null), `A(_) `` over `` `A([Array<i64>, null]) ``,
-    // whose covers since slice-position-other-member-01 are `` `A(Array<i64>) `` and
-    // `` `A(null) ``). Exhaustiveness reads `covered` by containment, so no select is
-    // refused that should check; only the dead arm is missed. Type::diff takes a
-    // product out whole or not at all (setops::held_by_shape); a residual narrowed at
-    // the position was tried for diff-product-held-01 and cost the recursive-union
-    // budget, so a fix wants a residual taken only where the subtrahend differs from
-    // the minuend at one position and takes whole members of the union there.
-    // base-r24 alike. probes: ~/ptmp/cr29/scratch/r24/24h/spom/residual/{g01,g02,g03,
-    // d04,d05,n03}.gx (product-member-residual-01)
-    // 2026-11-14 claude: Type::diff takes a product out whole, or, where it holds
-    // every position but one and a union there loses whole members to the arm's part,
-    // leaves the product with the rest of that union (setops::Type::diff_one_part).
-    // Pins: lang::select::{variant,tuple,struct}_union_part_*, variant_slice_part_*,
-    // and setops::tests::diff_keeps_the_rest_of_a_union_at_the_one_differing_position
-    // fail without it. Needs a soak.
     /// Take away what `t` covers from what reaches the arms after.
     fn cover(&mut self, env: &Env, t: Type) -> Result<()> {
         self.atype = self.atype.diff(env, &t)?;
