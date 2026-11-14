@@ -5437,6 +5437,19 @@ impl Type {
         // with the refusal logged. Whether NO_SUBST should keep refusing is a choice
         // about the debug tool, not about what the language accepts. probes:
         // ~/ptmp/cr29/scratch/r24/24h/uno/ (README, nsdiff.py, ns9301.txt)
+        // 2026-11-13 claude: Review of never-under-union-bound-01 (lane 24c): two more
+        // programs the default build runs and GRAPHIX_NO_SUBST=1 refuses, base-r24
+        // alike and with that CR's wait on or off (2 of 8600 generated programs). A
+        // wrapper passes a never() part to a chain of union bounds: `let f = 'a0:
+        // ('a1, 'a4), 'a1: [Array<'a2>, bool], 'a2: ['a3, bool], 'a3: ['a4, string],
+        // 'a4: [Array<'a5>, null], 'a5: Number |x0: 'a0, x1: 'a1| (x0, x1); let g =
+        // |p0, p1| f(p0, p1); g((never(), [1]), [never()])`. The definition's check
+        // settles the never()'s cell to the chain's own union, and the instance
+        // checked again meets that union whole against the chain, "'a1: unbound within
+        // [bool, Array<'a2: unbound within [bool, 'a3: unbound within [string, 'a4:
+        // Array<i64>]]>] does not contain Array<[bool, string, Array<i64>]>". Not
+        // diagnosed further. probes:
+        // ~/ptmp/cr29/scratch/r24/24c/nuubrev/nosubst_{p01498,p01204}.gx
         let mut undecided_free = s0
             .iter()
             .zip(&free)

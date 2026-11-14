@@ -642,7 +642,7 @@ impl FnType {
             }
             if bound.is_none() {
                 for &j in out.iter() {
-                    if j != i && !holders[j].contains(&i) {
+                    if j != i && holders[j].last() != Some(&i) {
                         holders[j].push(i)
                     }
                 }
@@ -684,9 +684,11 @@ impl FnType {
             left: &left,
             turns: LPooled::take(),
             feeds: LPooled::take(),
+            passed: LPooled::take(),
         };
         run.turns.resize(nodes.len(), Turn::Unmet);
         run.feeds.resize(nodes.len(), Feeds::Unasked);
+        run.passed.resize(nodes.len(), 0);
         for i in 0..nodes.len() {
             run.take(i)?
         }
@@ -735,6 +737,14 @@ struct TerminalRun<'a> {
     left: &'a dyn Fn(&TVar) -> bool,
     turns: LPooled<Vec<Turn>>,
     feeds: LPooled<Vec<Feeds>>,
+    /// for each cell, how many of its `holders`, from the first, feed it
+    /// no more: one that does not [feed](Self::feeds) never will again
+    passed: LPooled<Vec<usize>>,
+}
+
+#[cfg(test)]
+thread_local! {
+    static FEEDS_ASKED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 impl TerminalRun<'_> {
@@ -758,6 +768,26 @@ impl TerminalRun<'_> {
 
     /// Settle cell `i`, then the cells that waited for it alone.
     fn settle(&mut self, i: usize) -> Result<()> {
+        // CR claude for claude: [perf/high] A chain of union bounds whose cells wait
+        // settles in time quadratic in its length. Each link settles with the links below
+        // it open, and its settle (TVar::own_witness's `c.contains_int(w)`, then
+        // TVar::settle_at's commit_conjuncts) asks the next link whether its conjuncts
+        // admit the type: contains::conjuncts_admit's probe walks every open link below.
+        // `let f = 'a0: ['a1, null], 'a1: ['a2, null], .., 'a{n-1}: ['a{n}, null] |x: 'a0|
+        // x; f(1)` checks in 1.26G instructions at 250 links, 2.74G at 500, 8.68G at 1000,
+        // 32.2G at 2000, 126G at 4000 and 501G at 8000 (`perf stat -e instructions:u
+        // graphix --no-cache --check`), about 7800 instructions for each pair of links;
+        // the chain ending `'a{n}: i64` with a `never()` at it (`|x: 'a0, y: 'a{n}|`,
+        // `f(1, never())`) costs the same. base-r24 refuses both, in linear time (0.92G at
+        // 1000 links, 1.09G at 2000). The chain whose last link is closed and that no
+        // never() feeds settles from its end and is linear (1.15G at 2000, base-r24
+        // 1.08G). perf report at 1000 links: 87% under conjuncts_admit and
+        // cell_constraints_ok. A fix hands a link's type down the chain in one walk (what
+        // the link below is asked is what the link above just took), or keeps the probe's
+        // verdict by cell and type for the run. deep_nesting.rs has no chain of this
+        // shape: its fix adds one. Found reviewing never-under-union-bound-01. probe:
+        // ~/ptmp/cr29/scratch/r24/24c/nuubrev/mkuchain.py N [never]
+        // (waiting-chain-settle-quadratic-01)
         self.turns[i] = Turn::Settled;
         let tv = &self.nodes[i].1;
         if !(self.left)(tv) {
@@ -796,13 +826,21 @@ impl TerminalRun<'_> {
             }
         }
         let holders = self.holders;
-        holders[i].iter().any(|&h| self.feeds(h))
+        while let Some(&h) = holders[i].get(self.passed[i]) {
+            if self.feeds(h) {
+                return true;
+            }
+            self.passed[i] += 1
+        }
+        false
     }
 
     /// Whether cell `h`, not yet settled, may put the cells its conjuncts
     /// hold above a type when it settles: it stands above one, or a cell
     /// whose conjuncts reach it may put it above one.
     fn feeds(&mut self, h: usize) -> bool {
+        #[cfg(test)]
+        FEEDS_ASKED.with(|n| n.set(n.get() + 1));
         if self.turns[h] == Turn::Settled {
             return false;
         }
@@ -1510,6 +1548,7 @@ impl Type {
 mod test {
     use super::*;
     use crate::typ::tvar::AtLevel;
+    use compact_str::format_compact;
 
     /// A call's terminal settle decides `'a4`, which only the bound of a
     /// bound names: the signature holds no open cell after it.
@@ -1685,6 +1724,47 @@ mod test {
         for name in ["p", "a", "b"] {
             let bound = cells[name].binding().unwrap();
             assert!(strictly_identical(&bound, &i64_t), "'{name}: {bound}");
+        }
+    }
+
+    /// A cell that waits asks each cell whose conjuncts reach it whether it
+    /// may still feed it once, however many of them settle before the last:
+    /// a call's terminal settle is linear in its cells.
+    #[test]
+    fn a_waiting_cell_asks_each_holder_once() {
+        const HOLDERS: usize = 200;
+        let _level = AtLevel::enter(Level::TOP);
+        let mut sig: LPooled<String> = LPooled::take();
+        sig.push_str("fn<'x: string");
+        for i in 0..HOLDERS {
+            write!(sig, ", 'a{i}: ['b{i}, null], 'b{i}: [Array<'x>, bool]").unwrap()
+        }
+        sig.push_str(">(x: 'x");
+        for i in 0..HOLDERS {
+            write!(sig, ", p{i}: 'a{i}").unwrap()
+        }
+        sig.push_str(") -> i64");
+        let (env, t) = Env::typed_at_root(&[], &sig).unwrap();
+        let (_, bool_t) = Env::typed_at_root(&[], "bool").unwrap();
+        let Type::Fn(ft) = &t else { panic!("{t} is no function type") };
+        ft.alias_tvars(&mut LPooled::take());
+        let mut cells: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+        ft.collect_tvars_through_bounds(&mut cells);
+        for tv in cells.values() {
+            tv.set_level(Level::TOP)
+        }
+        for i in 0..HOLDERS {
+            cells[format_compact!("a{i}").as_str()].add_lower(bool_t.clone())
+        }
+        cells["x"].mark_bottom_fed();
+        FEEDS_ASKED.with(|n| n.set(0));
+        ft.settle_terminal(&env, None, &AHashSet::default(), &[]).unwrap();
+        let asked = FEEDS_ASKED.with(|n| n.get());
+        assert!(asked <= 8 * HOLDERS, "{asked} asks for {HOLDERS} holders");
+        assert!(matches!(cells["x"].binding(), Some(Type::Bottom)), "{:?}", cells["x"]);
+        for i in 0..HOLDERS {
+            let bound = cells[format_compact!("b{i}").as_str()].binding().unwrap();
+            assert!(strictly_identical(&bound, &bool_t), "'b{i}: {bound}");
         }
     }
 
