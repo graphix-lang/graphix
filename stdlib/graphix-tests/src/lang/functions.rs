@@ -2,6 +2,7 @@
 
 use super::dense_deltas::{run_delta, run_delta_fused};
 use anyhow::Result;
+use compact_str::{CompactString, format_compact};
 use graphix_package_core::{
     run,
     testing::{FuseExpect, Mode, as_i64s, eval, is, prints, refused},
@@ -4586,6 +4587,68 @@ run!(default_holding_a_defaulted_fn_in_an_abstracts_field, r#"
     (a.0).cb(7)
 }
 "#, is(Value::from("1")); FuseExpect::None);
+
+// A label whose type has no variable is one type for the function's own
+// parameter and for the function as a site holds it: the defaults under
+// it are judged against it where a function type hides the label.
+run!(default_holding_a_defaulted_fn_of_a_closed_label_behind_a_formal_that_hides_it, r#"
+{
+    let f = |#w: fn(?#d: string, x: i64) -> string = |#d = "s", x: i64| cast<string>(d)$, x: i64| w(x);
+    let g = |h: fn(x: i64) -> string| h(7);
+    g(f)
+}
+"#, is(Value::from("s")); FuseExpect::Jit);
+
+run!(default_holding_a_defaulted_fn_of_another_type_than_a_closed_label_behind_a_formal_that_hides_it, r#"
+{
+    let f = |#w: fn(?#d: string, x: i64) -> string = |#d = 1, x: i64| cast<string>(d)$, x: i64| w(x);
+    let g = |h: fn(x: i64) -> string| h(7);
+    g(f)
+}
+"#, refused("string does not contain i64"); FuseExpect::None);
+
+run!(default_holding_a_defaulted_fn_three_deep_behind_labels_that_hide_it, r#"
+{
+    let f = |
+        #w: fn(x: i64) -> string =
+            |#d: fn(?#e: string, x: i64) -> string = |#e = "s", x: i64| cast<string>(e)$, x: i64| d(x),
+        x: i64
+    | w(x);
+    f(7)
+}
+"#, is(Value::from("s")); FuseExpect::Jit);
+
+run!(default_holding_a_defaulted_fn_of_another_type_three_deep_behind_labels_that_hide_it, r#"
+{
+    let f = |
+        #w: fn(x: i64) -> string =
+            |#d: fn(?#e: string, x: i64) -> string = |#e = 1, x: i64| cast<string>(e)$, x: i64| d(x),
+        x: i64
+    | w(x);
+    f(7)
+}
+"#, refused("string does not contain i64"); FuseExpect::None);
+
+/// `depth` functions, each the default of the next one's label, whose
+/// type hides the label of the function it holds.
+fn hidden_default_chain(depth: usize) -> CompactString {
+    let mut f = CompactString::from("|#d = 1, x: i64| cast<string>(d)$");
+    for _ in 0..depth {
+        f = format_compact!("|#d: fn(x: i64) -> string = {f}, x: i64| d(x)");
+    }
+    format_compact!("{{ let f = {f}; f(7) }}")
+}
+
+// Every judgment of a default compiles it again, and each compile's
+// lambda links onto the label that holds it: the compiles of one lambda
+// are judged as one, so the work grows with the depth, not with the
+// compiles made on the way down.
+run!(
+    defaults_holding_defaulted_fns_twenty_deep_behind_labels_that_hide_them,
+    hidden_default_chain(20),
+    is(Value::from("1"));
+    FuseExpect::Jit
+);
 
 // A default that holds its own function reaches its own judgment, which
 // is the one it gets.

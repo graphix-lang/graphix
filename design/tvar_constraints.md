@@ -1224,6 +1224,16 @@ An image carries each cell's level and each definition's depth.
   label as well, so a body that calls what the held function returns
   (`w(0)(x)`) reads the label decided. Pins
   `lang::functions::default_holding_a_defaulted_fn` and its neighbours.
+  Every judgment of a default compiles it again, and each compile's
+  lambda links onto the label that holds it, so the walk takes the
+  compiles of one lambda over one lexical snapshot and the same declared
+  variables around it as one definition, the first compiled
+  (`callsite::distinct_defs`,
+  `LambdaDef::same_literal`), and walks a label with no open cell once
+  for the function's own parameter and the function as the site holds
+  it. Without either a chain of such defaults behind labels that hide
+  them never finishes (pin
+  `lang::functions::defaults_holding_defaulted_fns_twenty_deep_behind_labels_that_hide_them`).
 - A function value's labeled default that a fn type hides or makes
   optional is judged where the value meets that type
   (`callsite::check_hidden_defaults`). A call's formal is the site's own

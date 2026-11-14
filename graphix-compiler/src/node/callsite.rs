@@ -366,11 +366,24 @@ fn checked_default<R: Rt>(
         None => {
             let mut gates: LPooled<Vec<RigidGate>> = LPooled::take();
             let inst = callee_instance(ctx, f, name, site, &mut gates);
-            let sigs = [Some(&inst), value].into_iter().flatten();
-            sigs.filter_map(|sig| label(sig)).try_for_each(|t| {
+            let own = label(&inst);
+            let held = value.and_then(|sig| label(sig));
+            if let Some(t) = &own {
                 t.check_contains(&ctx.env, typ)?;
-                hidden(ctx, &t)
-            })
+                hidden(ctx, t)?;
+            }
+            match &held {
+                None => Ok(()),
+                Some(t) => {
+                    t.check_contains(&ctx.env, typ)?;
+                    // a label with no open cell is one type in both
+                    // signatures, which the walk above judged
+                    match &own {
+                        Some(own) if !own.has_unbound() && own == t => Ok(()),
+                        Some(_) | None => hidden(ctx, t),
+                    }
+                }
+            }
         }
     });
     node.refs(defaults);
@@ -394,7 +407,7 @@ fn judge_hidden_defaults<R: Rt>(
     value: &FnType,
     narrowing: Narrowing,
 ) -> Result<()> {
-    let defs = written_defs(ctx, value);
+    let defs = distinct_defs(ctx, value);
     let mut bound =
         |env: &Env,
          _: &ArcStr,
@@ -402,9 +415,7 @@ fn judge_hidden_defaults<R: Rt>(
          default: &Type,
          _: Option<CompactString>| { label.check_contains_lower(env, default) };
     for def in defs.iter() {
-        let Some(f) = def.as_ref().and_then(|v| v.downcast_ref::<LambdaDef<R>>()) else {
-            continue;
-        };
+        let Some(f) = def.downcast_ref::<LambdaDef<R>>() else { continue };
         for (a, spec) in f.typ.args.iter().zip(f.argspec.iter()) {
             let (Some(name), Some(expr)) = (a.label(), spec.kind.default()) else {
                 continue;
@@ -445,11 +456,62 @@ fn judge_hidden_defaults<R: Rt>(
                 },
             );
             ctx.leave_default(f.id, name);
-            let node = node.map_err(|e| met_default_note::<R>(e, &defs, name))?;
+            let node = node
+                .map_err(|e| met_default_note::<R>(e, &written_defs(ctx, value), name))?;
             ctx.discard(node);
         }
     }
     Ok(())
+}
+
+// CR claude for claude: [perf/low] The judgment of the defaults a default's functions hold
+// (checked_default's check_hidden_defaults) still costs more than the program's size in
+// two shapes, both a default that holds a defaulted function behind a label whose type
+// hides that function's label. (1) Call sites: every compile of a default links its lambda
+// onto the label's function type, one LambdaIds node for every compile of the function
+// around it where the annotation holds no variable (Lambda::compile clones the annotation),
+// and a compile a judgment discards lives to the deferred delete, so the set
+// LambdaIds::ids walks at each judgment grows by two a call site. `let f = |#d: fn(x: i64)
+// -> string = |#d: fn(x: i64) -> string = |#d = 1, x: i64| cast<string>(d)$, x: i64| d(x),
+// x: i64| d(x)` called at 400 sites checks in 1.88G instructions (base-r24 1.42G), at 1000
+// in 4.86G (2.61G); one level deeper, 400 sites, 3.91G (1.85G). (2) Depth: where the hiding
+// label keeps an open variable (`#d: fn(x: i64) -> [string, 'r]`), the function's own
+// parameter and the function as the site holds it are two types and both are walked at
+// every level: 12 such functions nested check in 2.23G (base-r24 0.76G), 14 in 6.68G.
+// With a closed label 24 nested check in 0.98G (0.78G). A fix for (1) gives each compile of
+// a lambda its own LambdaIds node for the function types its annotations write (see
+// annotation-names-sibling-lambdas-01); for (2), one walk where the two labels' open cells
+// are shown to be the same constraint. probes:
+// ~/ptmp/cr29/scratch/r24/24c/dhdf-rev/perf/{chain2.py, chain4.py, meas3.sh}
+// (hidden-default-walk-growth-01)
+/// [`written_defs`] with the compiles of one lambda over one environment
+/// as the first of them: every compile of a default links its lambda onto
+/// the label that holds it, each judgment of the default compiles it
+/// again, and all of them write the same defaults.
+fn distinct_defs<R: Rt>(ctx: &CompileCtx<R>, ft: &FnType) -> SmallVec<[Value; 2]> {
+    fn def<R: Rt>(v: &Value) -> Option<&LambdaDef<R>> {
+        v.downcast_ref::<LambdaDef<R>>()
+    }
+    let mut defs: SmallVec<[Value; 2]> = SmallVec::new();
+    for id in ft.lambda_ids.ids().iter() {
+        let Some(v) = ctx.lambda_defs.get(id) else { continue };
+        let Some(f) = def::<R>(v) else { continue };
+        let rec = ctx.rec_defs.contains(id);
+        let same = defs.iter_mut().find(|d| {
+            def::<R>(d)
+                .is_some_and(|g| g.same_literal(f) && ctx.rec_defs.contains(&g.id) == rec)
+        });
+        match same {
+            Some(d) if def::<R>(d).is_some_and(|g| f.id < g.id) => *d = v.clone(),
+            Some(_) => (),
+            None => defs.push(v.clone()),
+        }
+    }
+    defs.sort_by(|a, b| match (def::<R>(a), def::<R>(b)) {
+        (Some(a), Some(b)) => a.written_order(b),
+        (a, b) => b.is_some().cmp(&a.is_some()),
+    });
+    defs
 }
 
 // CR claude for claude: [risk/low] In a function's body, the function type a `let`'s
@@ -2826,6 +2888,36 @@ impl<R: Rt> CallSite<R> {
                     },
                 )
             };
+        // CR claude for claude: [bug/medium] A trait method call that omits a labeled default is
+        // checked with no default judged: the call's type is the trait's signature, which
+        // names no definition, so `defs` is empty here and the default is left to the bind,
+        // which refuses it. `trait T { val m: fn(?#w: 'z, self, y: 'z, x: i64) -> string };
+        // impl T for i64 { let m = |#w: 'z = 1, s, y: 'z, x: i64| "[w] [y]" }; T::m(1, "q",
+        // 7)` passes --check, and its build fails "in the instance of T::m(1, "q", 7) at this
+        // call site .. in: 1: type mismatch 'z: string does not contain i64" (`T::m(1, 2, 7)`
+        // prints "1 2"). The same with the method's body written in the trait, and with a
+        // default that holds a defaulted function (`#w: fn(?#d: 'z, x: i64) -> string = |#d =
+        // 1, x: i64| ..`), which default-holds-defaulted-fn-01 judges only where a definition
+        // is known. base-r24 alike. A fix: where the self argument's type decides the impl at
+        // the check (Env::find_impl), judge that method's defaults here as a named function's
+        // are. probes: ~/ptmp/cr29/scratch/r24/24c/dhdf-rev/{tplain, tplain_ok, trait2,
+        // traitd}.gx (trait-call-omitted-default-01)
+        // CR claude for claude: [bug/medium] In the REPL, where each statement is an input, a
+        // function a call returns that is called with a labeled default omitted checks, and
+        // is refused when its bind runs. `let mk = |k: i64| |#d = 1, x: i64|
+        // cast<string>(d)$` and then `let b = mk(4); b(7)` print "-: string" and log "b(7):
+        // binding the callee failed: .. in: 1: type mismatch _ does not contain i64: it holds
+        // the type of `b` .., settled when its input ended; declare b's type where it is
+        // bound"; `mk(4)(7)` alike, and so the three statements on one line. In the later
+        // statement the id the callee's type names has no registered definition (`defs` is
+        // [None] here), so no default is judged and #d's cell is left to the bind, and the
+        // input's end settles the cell first. The same text as a script prints 1 (its
+        // definitions are all registered and nothing settles before the bind); with `#d: i64
+        // = 1` the REPL prints it too. base-r24 alike. A fix judges the default here from the
+        // definition the earlier input left (or keeps it registered), so the label's cell is
+        // decided at the check. probes: ~/ptmp/cr29/scratch/r24/24c/dhdf-rev/repl/{f1, f2,
+        // f3}.txt (`graphix --no-cache < f1.txt`), f4.gx (the script)
+        // (repl-returned-default-bind-01)
         let mut known = !defs.is_empty();
         for def in defs.iter() {
             let Some(f) = def.as_ref().and_then(|v| v.downcast_ref::<LambdaDef<R>>())

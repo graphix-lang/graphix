@@ -854,6 +854,22 @@ pub struct Lexical {
     pub body: Option<Arc<LoadedBody>>,
 }
 
+impl Lexical {
+    /// Whether the two are one snapshot, every name meaning in one what
+    /// it means in the other; false says nothing.
+    pub fn same_snapshot(&self, other: &Self) -> bool {
+        let body = match (&self.body, &other.body) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (a, b) => a.is_none() && b.is_none(),
+        };
+        body && self.binds.ptr_eq(&other.binds)
+            && self.modules.ptr_eq(&other.modules)
+            && self.typedefs.ptr_eq(&other.typedefs)
+            && self.traits.ptr_eq(&other.traits)
+            && self.block_names.ptr_eq(&other.block_names)
+    }
+}
+
 /// What one load of a dynamic module's source registered, shared by the
 /// lexical view of every definition made in it. The registries name one
 /// trait record, one impl of a trait for a type and one import table a

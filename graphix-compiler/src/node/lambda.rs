@@ -1136,6 +1136,27 @@ impl<R: Rt> LambdaDef<R> {
         place.then(self.id.cmp(&other.id))
     }
 
+    /// Whether `other` is another compile of this definition's lambda
+    /// where every name and every variable the definitions around it
+    /// declare means what it means here: the two write the same defaults
+    /// over the same bindings. False says nothing.
+    pub(crate) fn same_literal(&self, other: &Self) -> bool {
+        let declared = match (&self.origin, &other.origin) {
+            (
+                DefOrigin::Source { enclosing: a, .. },
+                DefOrigin::Source { enclosing: b, .. },
+            ) => {
+                a.len() == b.len()
+                    && a.iter().zip(b.iter()).all(|(a, b)| a.cell_addr() == b.cell_addr())
+            }
+            (DefOrigin::Runtime, _) | (_, DefOrigin::Runtime) => false,
+        };
+        declared
+            && self.source == other.source
+            && self.scope.lexical == other.scope.lexical
+            && self.env.same_snapshot(&other.env)
+    }
+
     /// `f` compiling an expression the signature holds, a labeled
     /// default: a type it writes names the variables of the definitions
     /// around this one, as the signature does.
