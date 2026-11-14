@@ -263,11 +263,15 @@ structure is returned SHARED, never copied.
   A trait question reads the
   heads of the impls too: `find_impl_with` relates a copy of a head
   with parameters, which takes what the impl's cells hold, and a head
-  without parameters holds no cell. No walk writes an impl's cells:
-  every reader of `ImplDef::target` copies it, and the one check over
-  the cells themselves, the `Impl` node's of its methods, holds them
-  rigid. So such a verdict stands through a trait question, whichever
-  impl answers it (pin `typ::contains::tests::
+  without parameters holds no cell. Every other reader of
+  `ImplDef::target` copies it too. The one walk that writes the cells
+  themselves is the `Impl` node's check of each method's type against
+  the declared one (`check_contains`), with the cells held rigid: it
+  hands a cell only a conjunct its declared bounds imply (`implements`
+  refuses a method that needs any other, before that walk) or a fact
+  (`BottomFed`) that no verdict reads. So a copy admits the same types
+  before and after, and such a verdict stands through a trait question,
+  whichever impl answers it (pin `typ::contains::tests::
   a_verdict_stands_through_a_trait_an_impl_with_parameters_answers`). A call's argument pre-unifies
   part by part under one `ContainsHist` (`Type::pre_unify_seen`), as the
   whole would, so a call passing a value for every link of a chain of

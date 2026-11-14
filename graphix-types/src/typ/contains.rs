@@ -132,10 +132,12 @@ pub(super) struct ContainsHist {
     /// Per verdict of `probe_pairs` over an open var and a type that
     /// holds no cell, once the pair is probed again: the var's cell,
     /// while nothing it reaches is written. Such a verdict read only the
-    /// cells the var reaches and the heads of impls, whose cells no walk
-    /// writes ([`find_impl_with`] relates a copy), so it stands through a
-    /// write to any other, and a chain of open cells is probed once
-    /// however many of its links a call binds.
+    /// cells the var reaches and copies of impl heads ([`find_impl_with`]),
+    /// which admit the same types throughout: only an impl's own check
+    /// writes its cells, a conjunct its declared bounds imply or a fact no
+    /// verdict reads. So it stands through a write to any other cell, and a
+    /// chain of open cells is probed once however many of its links a call
+    /// binds.
     probe_standing: Lazy<AHashMap<MemoKey, Standing>>,
     probe_pins: Lazy<Vec<Type>>,
     /// Verdicts that rest on assumptions still in progress, held while
