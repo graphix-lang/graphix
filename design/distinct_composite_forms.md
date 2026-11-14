@@ -190,7 +190,16 @@ function types or two references checks and its bind holds every member
 the arm's tests admit: `(r, n)` over `[(fn(x: i64) -> i64, i64), (fn(y:
 string) -> string, string)]` gives `r` both, `(r, 1)` the first alone. A
 written test is judged at its arm whole, its variables as the types they
-took. A slice pattern's predicate is a Set whose rest cell holds the whole
+took (`Type::rep_collision_written`): one written twice is tested at one
+part as the type another decided, so `('q, 'q)` over `(fn(x: i64) -> i64,
+[fn(x: i64) -> i64, fn(y: string) -> i64])` is refused, the second part's
+other function passing as the first. A part of what else reaches the arm
+that a union of the test's holds collides with nothing there, since a
+value of it that passes is typed as it (`Type::matching_type`): a
+difference keeps a product the test holds without being it, so `('q, i64)
+as (r, n)` over `[(fn(x: i64) -> i64, i64), (fn(y: string) -> string,
+i64)]`, where `'q` took both functions, checks beside a `_` arm and gives
+`r` both. A slice pattern's predicate is a Set whose rest cell holds the whole
 element type, so as a type it covers every array and subtracts everything
 from what reaches the arm; its test is its elements', each of which sees
 any member of the element type. So each element that is not a bind is
@@ -240,7 +249,10 @@ values in Rust use `rep` or a `GraphixShape` derive.
   binds, not one it tests), collides with nothing, except against a type
   bound of what else reaches the arm; an open one of what else reaches
   the arm does, even where the arm's capture shares it
-  (`Type::rep_collision_tested`). Each element of a slice pattern is a
+  (`Type::rep_collision_tested`). A written test's variable is the type
+  it took, and a part of what else reaches the arm that a union of the
+  test's holds passes as itself (`Type::rep_collision_written`). Each
+  element of a slice pattern is a
   test of its own among the whole element type, whatever the rest covers
   (`StructPatternNode::element_tests`). A
   compared type (`==` and the orderings), a map key type and what the

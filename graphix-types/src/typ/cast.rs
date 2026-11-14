@@ -9,7 +9,7 @@ use crate::{
     typ::{
         AbstractId, Bound, CoreTrait, MapType, RefHist, RefKey, TVar, Type, TypeRef,
         Unfolded,
-        setops::union_identical,
+        setops::{union_identical, union_identical_in},
         tval::{NakedPrefix, PlainScalar, has_form, member_of},
         tvar::Judgment,
     },
@@ -2422,13 +2422,13 @@ fn open_collision(
         }
         let mut why = None;
         for b in typed.iter() {
+            let judge = |seen: &mut RepSeen| {
+                rep_collision(env, seen, Subject::Beside, Open::Unknown, ordered, t, b)
+            };
             let found = match tested {
                 // `seen` clears pairs by what the walk found under `tested`
-                true => {
-                    let fresh = &mut RepSeen::default();
-                    rep_collision(env, fresh, false, Open::Unknown, ordered, t, b)
-                }
-                false => rep_collision(env, seen, false, Open::Unknown, ordered, t, b),
+                true => judge(&mut RepSeen::default()),
+                false => judge(seen),
             };
             why = Some(found?);
         }
@@ -2624,20 +2624,45 @@ fn rep_overlaps(a: &Type, b: &Type) -> bool {
     }
 }
 
+/// What `a` is to a runtime-form judgment.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Subject {
+    /// A type beside `b`.
+    Beside,
+    /// A select arm's inferred test: its cells, bound or open, are parts
+    /// the arm binds and does not test.
+    Binds,
+    /// A select arm's written test: a cell is the type it took, and a
+    /// union of the test's types every value of a member it holds
+    /// ([`holds`]).
+    Written,
+}
+
+/// Whether `t`, a part of a written test, is `b` or a union holding it,
+/// `b` a head no union: a value of `b` that passes the test there is
+/// typed `b` ([`Type::matching_type`]), whatever else of `t` shares its
+/// form.
+fn holds(env: &Env, t: &Type, b: &Type) -> bool {
+    ensure_sufficient(|| match rep_head(env, t).as_deref() {
+        Some(Type::Set(ts)) => ts.iter().any(|t| holds(env, t, b)),
+        Some(h) => union_identical_in(env, h, b),
+        None => false,
+    })
+}
+
 /// Two parts of `a` and `b` a runtime test can't tell apart, or,
 /// `ordered`, two numeric types at one position, whose values have no
-/// order between them. `tested`: `a` is a select arm's test, whose cells,
-/// bound or open, are parts the arm binds and does not test.
+/// order between them.
 fn rep_collision(
     env: &Env,
     seen: &mut RepSeen,
-    tested: bool,
+    subject: Subject,
     open: Open,
     ordered: bool,
     a: &Type,
     b: &Type,
 ) -> Option<Indiscernible> {
-    if tested && matches!(a, Type::TVar(_)) {
+    if subject == Subject::Binds && matches!(a, Type::TVar(_)) {
         return None;
     }
     ensure_sufficient(|| {
@@ -2645,9 +2670,11 @@ fn rep_collision(
         walk(seen, at, None, |seen| {
             let pairs =
                 |seen: &mut RepSeen, xs: &mut dyn Iterator<Item = (&Type, &Type)>| {
-                    xs.map(|(x, y)| rep_collision(env, seen, tested, open, ordered, x, y))
-                        .find(Option::is_some)
-                        .flatten()
+                    xs.map(|(x, y)| {
+                        rep_collision(env, seen, subject, open, ordered, x, y)
+                    })
+                    .find(Option::is_some)
+                    .flatten()
                 };
             let (ha, hb) = (rep_head(env, a), rep_head(env, b));
             seen.env_read |= ha.is_none() || hb.is_none();
@@ -2667,6 +2694,7 @@ fn rep_collision(
                             pairs(seen, &mut ts.iter().map(|t| (t, b)))
                         }
                         (Open::Unknown, _, _) => {
+                            let tested = subject == Subject::Binds;
                             open_collision(env, seen, tested, ordered, a, b)
                         }
                     };
@@ -2676,6 +2704,15 @@ fn rep_collision(
                     |xs: &mut dyn Iterator<Item = (&Type, &Type)>| pairs(seen, xs);
                 match (a, b) {
                     (Type::Bottom, _) | (_, Type::Bottom) => None,
+                    (Type::Set(_), Type::Set(ts)) if subject == Subject::Written => {
+                        pairs(&mut ts.iter().map(|t| (a, t)))
+                    }
+                    (Type::Set(ts), _)
+                        if subject == Subject::Written
+                            && ts.iter().any(|t| holds(env, t, b)) =>
+                    {
+                        None
+                    }
                     (Type::Set(ts), _) => pairs(&mut ts.iter().map(|t| (t, b))),
                     (_, Type::Set(ts)) => pairs(&mut ts.iter().map(|t| (a, t))),
                     (Type::Primitive(p), Type::Primitive(q)) => {
@@ -2710,6 +2747,20 @@ fn rep_collision(
                     // (Type::could_match). probes:
                     // ~/ptmp/cr29/scratch/r23/23d/nafu/{p20,p27,p31}.gx
                     // (told-by-another-part-01)
+                    // 2026-11-13 claude: written-variable-told-01's fixer: the
+                    // written test `('q, i64) as (r, n)` over `[(fn(x: i64) -> i64,
+                    // i64), (fn(y: string) -> string, string)]` (that CR's p32) is
+                    // this defect and is left to this CR: `'q` is the first
+                    // function alone, the string member can pass at no value, and
+                    // the tuple arm still reports the functions. A written test is
+                    // judged with Subject::Written since then
+                    // (Type::rep_collision_written), which reads its variable as
+                    // the type it took, so the product arms see it as they see a
+                    // closed test; of 600 generated selects 17 that an oracle runs
+                    // beside a catch-all arm are refused this way
+                    // (~/ptmp/cr29/scratch/r24/24a/wvt/gen/, 17 of the 79 in
+                    // g1-summary.txt's row 'same runtime form', 'same runtime
+                    // form', 'exp=OUT'; p32.gx there).
                     (Type::Tuple(x), Type::Tuple(y)) if x.len() == y.len() => {
                         pairs(&mut x.iter().zip(y.iter()))
                     }
@@ -2767,13 +2818,15 @@ impl Type {
     /// carry it, `array` and `Array<i64>`). A test that tells them apart
     /// can't tell such a value's type.
     pub fn rep_collision(&self, env: &Env, t: &Type) -> Option<Indiscernible> {
-        rep_collision(env, &mut RepSeen::default(), false, Open::Benign, false, self, t)
+        let seen = &mut RepSeen::default();
+        rep_collision(env, seen, Subject::Beside, Open::Benign, false, self, t)
     }
 
     /// [`Self::rep_collision`] with an open cell read as any type it may
     /// yet bind ([`Open::Unknown`]): what a definition must rule out.
     pub fn rep_collision_open(&self, env: &Env, t: &Type) -> Option<Indiscernible> {
-        rep_collision(env, &mut RepSeen::default(), false, Open::Unknown, false, self, t)
+        let seen = &mut RepSeen::default();
+        rep_collision(env, seen, Subject::Beside, Open::Unknown, false, self, t)
     }
 
     /// [`Self::rep_collision`] for a select arm testing for `self` among
@@ -2787,7 +2840,17 @@ impl Type {
         open: Open,
         t: &Type,
     ) -> Option<Indiscernible> {
-        rep_collision(env, &mut RepSeen::default(), true, open, false, self, t)
+        rep_collision(env, &mut RepSeen::default(), Subject::Binds, open, false, self, t)
+    }
+
+    /// [`Self::rep_collision`] for a select arm's written test `self`
+    /// among `t`: a variable of the test's is the type it took, since one
+    /// written twice tests at one part what another decided, and a part
+    /// of `t` that a union of the test's holds collides with nothing: a
+    /// value of it that passes is typed as it.
+    pub fn rep_collision_written(&self, env: &Env, t: &Type) -> Option<Indiscernible> {
+        let seen = &mut RepSeen::default();
+        rep_collision(env, seen, Subject::Written, Open::Benign, false, self, t)
     }
 }
 
@@ -2911,7 +2974,7 @@ fn rep_ambiguity(
                                 let c = rep_collision(
                                     env,
                                     &mut pair_seen,
-                                    false,
+                                    Subject::Beside,
                                     open,
                                     ordered,
                                     a,
@@ -4031,6 +4094,23 @@ pub(crate) mod tests {
         }
         assert!(r.rep_collision(&env, &t).is_none());
         assert!(t.rep_collision(&env, &r).is_none());
+    }
+
+    /// A written test's union types each value of a member it holds,
+    /// whatever else of the union shares that member's form; a member it
+    /// does not hold passes as one it does.
+    #[test]
+    fn a_written_tests_union_collides_with_no_member_it_holds() {
+        let (env, _) = typed(&[], "null");
+        let test = parsed(&env, "([fn(x: i64) -> i64, fn(y: string) -> string], i64)");
+        let held =
+            parsed(&env, "[(fn(x: i64) -> i64, i64), (fn(y: string) -> string, i64)]");
+        let other = parsed(&env, "[(fn(x: i64) -> i64, i64), (fn(z: f64) -> f64, i64)]");
+        assert!(test.rep_collision(&env, &held).is_some());
+        assert!(test.rep_collision_written(&env, &held).is_none());
+        assert!(test.rep_collision_written(&env, &other).is_some());
+        let narrow = parsed(&env, "(fn(x: i64) -> i64, i64)");
+        assert!(narrow.rep_collision_written(&env, &held).is_some());
     }
 
     /// `type L1 = [`A, `B]; type M1 = [`A, `C]` and, to `n`, `type Li =

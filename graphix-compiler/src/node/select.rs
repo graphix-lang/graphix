@@ -758,6 +758,33 @@ impl Reach {
                     let _ = itype.contains_ordered(env, scrut);
                 }
                 false => {
+                    // CR claude for claude: [bug/low] A written test's own variable
+                    // takes the first member's part wherever this settle runs (no
+                    // catch-all arm, or a scrutinee that is no union) over a scrutinee
+                    // holding an open cell, which a lambda's function type does: the
+                    // written predicates' cells are kept out of the copy, so `itype ⊇
+                    // scrut` binds the variable itself, where an inferred predicate's
+                    // cell is left to its arm's narrowing. Over `u = select v > 0 { true
+                    // => (|x: i64| x, 1), false => (|y: string| y, 2) }`, `select u {
+                    // ('q, i64) as (r, n) => n }` says "this pattern can't tell fn(x:
+                    // i64) -> i64 from fn(y: string) -> string" (`'q` is the first
+                    // function alone), where the same arm beside `_ => 0` checks and
+                    // gives `r` both; `{f: 'q, n: i64} as {f, n}` and, beside a `_` arm,
+                    // `Array<('q, i64)> as [(r, n), ..]` over `[u, u]` alike; and with a
+                    // third member `(1, 2)` the arm is `(i64, i64)`: "missing match
+                    // cases: no arm covers [(fn(x: i64) -> i64, i64), (fn(y: string) ->
+                    // string, i64)]". base-r24 alike. Tried: `written.retain(|_, tv|
+                    // tv.is_bound() || tv.is_rigid())` before the settle (the test's
+                    // open variables copied as an inferred predicate's cells are, a
+                    // declared variable itself): the four probes run right, graphix-tests
+                    // lib passes, census 0/0, regress and typemorph-scan clean, and of
+                    // 600 generated selects 206 more check, none differing from an
+                    // oracle. Not landed: it moves a select whose variable is written
+                    // twice from the first member's binding, which refuses it ("will
+                    // never match"), to the open variable of
+                    // (written-variable-twice-open-01); fix that one first. probes:
+                    // ~/ptmp/cr29/scratch/r24/24a/wvt/{p6c,s1,a1b,d2,x1}.gx,
+                    // settle.patch, gen/ (written-variable-settle-first-01)
                     let mut written: LPooled<AHashMap<usize, TVar>> = LPooled::take();
                     for p in preds.iter().filter(|p| p.explicit_type_predicate) {
                         p.type_predicate.reached_cells(&mut written)
@@ -886,6 +913,24 @@ impl Reach {
         let dead_at =
             |e: anyhow::Error| -> Result<Result<(), Dead>> { Ok(Err(Dead(e.at(site)))) };
         let empty = Type::Primitive(BitFlags::empty());
+        // CR claude for claude: [bug/low] A catch-all arm behind a written test that
+        // takes every member is not found dead where the test's variable stands over
+        // a function in a tuple or a struct: over `u = select v { 0 => (7, 1), _ =>
+        // (fa, 2) }` (`fa = |x: i64| x + 100`), `select u { ('q, i64) as (r, n) => n,
+        // _ => 0 }` checks and prints (1, 2) for 0 and 1, and so does `(i64, 'q1, 'q2)
+        // as (a0, a1, a2) => 1, _ => 0` over `[(i64, fn(y: string) -> i64, i64), (i64,
+        // i64, fn(x: i64) -> i64)]` (base-r24 alike), and now the two-function forms
+        // (written-variable-told-01) admits (`('q, i64)` over `[(fa, i64), (fb,
+        // i64)]`, `{f: 'q, n: i64}`). The names arm `(r, n) => n, _ => 0`, the variant
+        // `` `K('q, i64) as `K(r, n) ``, and `('q, i64)` over `[(i64, i64), (string,
+        // i64)]` are refused, "unreachable arm". Of 600 generated selects 133 run with
+        // such an arm. Not diagnosed: what the arm covers is the written test, a
+        // product whose part is a union of the members' parts, and a difference
+        // subtracts a product only by the same type (diff-product-held-01). A fix here
+        // makes the accepted forms of (written-variable-told-01) need no catch-all,
+        // which (written-variable-settle-first-01) refuses today: fix that first.
+        // probes: ~/ptmp/cr29/scratch/r24/24a/wvt/{dead1,dead2,dead3,dead4,dead5,dead6,
+        // dead7}.gx, gen/g1-summary.txt (written-variable-dead-arm-01)
         if checking && (self.wildcard || self.atype == empty) {
             return dead_at(anyhow!(
                 "unreachable arm: the earlier arms already cover the whole scrutinee, \
@@ -3272,7 +3317,7 @@ impl<R: Rt> Select<R> {
                 for (test, among) in tests {
                     let Ok(rest) = among.diff(&ctx.env, &test) else { continue };
                     let collision = match pat.explicit_type_predicate {
-                        // CR claude for claude: [bug/low] A written test's variable
+                        // XCR claude for claude: [bug/low] A written test's variable
                         // is judged as the type it took, not as a part the arm
                         // binds: over `u = select v > 0 { true => (|x: i64| x, 1),
                         // false => (|y: string| y, 2) }`, `select u { ('q, i64) as
@@ -3289,7 +3334,33 @@ impl<R: Rt> Select<R> {
                         // is what the judgment here guards. probes:
                         // ~/ptmp/cr29/scratch/r23/23d/nafu/{p6,p32,q1,q3}.gx
                         // (written-variable-told-01)
-                        true => test.rep_collision(&ctx.env, &rest),
+                        // 2026-11-13 claude: A written test is now judged by
+                        // Type::rep_collision_written (typ/cast.rs,
+                        // Subject::Written): its variable is still the type it took,
+                        // and a part of what else reaches the arm that a union of
+                        // the test's holds collides with nothing, since a value of
+                        // it that passes is typed as it; the difference keeps a
+                        // product the test holds without being it, which is what
+                        // refused p6. p6, q1, q3 pass the pattern on the lane (r is
+                        // both functions; q1 and q3 are then refused at the call,
+                        // "this callee is one of"). The CR's "Tried" (cells
+                        // colliding with nothing) is unsound for a variable written
+                        // twice: `('q, 'q) as (r, s) => s(1)` over `(fa, [fa, fb])`
+                        // checked and the run logged "a run-time bind at s(1) did
+                        // not type". Pins that fail with the call back at
+                        // rep_collision:
+                        // lang::select::written_variable_binds_two_function_types,
+                        // written_variable_bind_holds_both_function_types (8 mode
+                        // runs) and the skill's first two new cases;
+                        // typ::cast::tests::a_written_tests_union_collides_with_no_member_it_holds
+                        // fails with the `holds` arm out;
+                        // written_variable_written_twice_is_tested and
+                        // .._in_an_element fail with rep_collision_tested there. Still
+                        // refused: p32, whose string member another part tells
+                        // (told-by-another-part-01), and the arm with no catch-all
+                        // (written-variable-settle-first-01). probes:
+                        // ~/ptmp/cr29/scratch/r24/24a/wvt/ (README)
+                        true => test.rep_collision_written(&ctx.env, &rest),
                         false => test.rep_collision_tested(&ctx.env, Open::Benign, &rest),
                     };
                     if let Some(why) = collision {

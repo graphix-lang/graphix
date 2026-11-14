@@ -136,7 +136,11 @@ select, and runtime forms. Each rule refuses and names the fix.
   A name tests nothing, so an arm may bind such a part, and the bind
   holds every member the arm's own tests admit: `(r, n)` over two tuples
   that hold different function types gives `r` both, `` (`A, f) `` the
-  `` `A `` member's alone.
+  `` `A `` member's alone. A written test's own variable beside a `_`
+  arm binds such a part the same way (`('q, i64) as (r, n)`); written
+  twice it is tested at one part as the type another decided, and
+  refused where that part holds a function type the variable did not
+  take.
   Everything else is told apart: a string from a bare variant, an array
   from a tuple, struct, variant or list, `[]` from `[<>]`. A type
   variable may be any type, so a test beside one is refused where an
@@ -212,6 +216,9 @@ no "same runtime form" let a: [&i64, &string] = &1; select a { &i64 as x => 1, &
 ok let b = true; let t = select b { true => (|x: i64| x, 1), false => (|y: string| y, "s") }; select t { (r, n) => 0 }
 ok let b = true; let t = select b { true => (`A, |x: i64| x), false => (`B, |y: string| y) }; select t { (`A, f) => "[f(1)]", (`B, g) => g("s") }
 no "this callee is one of" let b = true; let t = select b { true => (|x: i64| x, 1), false => (|y: string| y, 2) }; select t { (r, n) => r(n) }
+ok let b = true; let t = select b { true => (|x: i64| x, 1), false => (|y: string| y, 2) }; select t { ('q, i64) as (r, n) => n, _ => 0 }
+no "this callee is one of" let b = true; let t = select b { true => (|x: i64| x, 1), false => (|y: string| y, 2) }; select t { ('q, i64) as (r, n) => r(n), _ => 0 }
+no "same runtime form" let b = true; let fa = |x: i64| x; let fb = |y: string| y; let t = (fa, select b { true => fa, false => fb }); select t { ('q, 'q) as (r, s) => 0, _ => 1 }
 no "'_1 and '_2 types no binding names" let b = true; let v = select b { true => {a: [1], c: []}, false => {a: ["s"], c: []} }; select v { {a, ..} => 0 }
 ok let b = true; let v: [{a: Array<i64>, c: Array<string>}, {a: Array<string>, c: Array<string>}] = select b { true => {a: [1], c: []}, false => {a: ["s"], c: []} }; select v { {a: Array<string>, c: Array<string>} as s => 0, {a, ..} => 1 }
 ok |x: (Any, i64)| -> i64 select x { ((a, b), n) => a + b + n, _ => 0 }

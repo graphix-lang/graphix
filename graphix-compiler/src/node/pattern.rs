@@ -3001,6 +3001,28 @@ impl<R: Rt> PatternNode<R> {
         if !self.explicit_type_predicate {
             return Ok(self.type_predicate.any_as_tvar());
         }
+        // CR claude for claude: [bug/high] A written test's own variable that stands at
+        // two parts, and that no member reaching the arm holds one type at, types its
+        // binds without the values they receive. The narrowing below passes over each
+        // such member (Type::narrow_per_member skips a member its copy does not hold),
+        // so the variable stays open and the run-time test passes every value there
+        // (Type::is_a at an open cell), while Type::matching_type answers the test
+        // itself for a member that contains it, so a bind is the open variable: ⊥ once
+        // it settles. `let k = |v: i64| { let u = select v { 0 => (null, 7), 1 =>
+        // (null, "s"), _ => (7, [1, 2]) }; select u { ('q, 'q) as (a0, a1) => a0, _ =>
+        // null } }; let x = k(2); println(select x { null as _ => 1, y => 2 })` prints
+        // 1 fused and 2 with --no-fusion; in the arm `"[a0] [a1]"` prints `7 [1, 2]`
+        // for 2, and `select a0 { null as _ => 1, _ => 2 }` there is refused,
+        // "unreachable arm". base-r24 alike. Tried: no `t ⊇ p` answer in
+        // Type::matching_type_inner where `p` holds a free cell, so the bind takes the
+        // member's part: the probes run right (2 in both engines), and
+        // lang::select::written_test_own_variable_another_part_decides_is_tested_over_a_declared_one
+        // fails, that containment being what decides the variable there. What would
+        // close it: once the narrowing is done, a variable of the test's own still
+        // open over a part of a member that is decided (no open cell, not `Any`) is
+        // refused, naming a variable for each part; or its binds take every member's
+        // part there. probes: ~/ptmp/cr29/scratch/r24/24a/wvt/{h1,h3,h5}.gx,
+        // settle.patch (written-variable-twice-open-01)
         if self.type_predicate.has_unbound() {
             reaching.narrow_pattern(env, &self.type_predicate)?;
         }

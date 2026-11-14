@@ -4661,6 +4661,79 @@ run!(
     FuseExpect::None
 );
 
+// A written test's variable is judged as the type it took, and a part
+// of what else reaches the arm that the type holds passes as itself: a
+// variable that took every member's part binds them all, as a name does.
+run!(
+    written_variable_binds_two_function_types,
+    r#"{
+        let k = |v: i64| {
+            let fa = |x: i64| x;
+            let fb = |y: string| y;
+            let u = select v > 0 { true => (fa, 1), false => (fb, 2) };
+            let s = select v > 0 { true => {f: fa, n: 1}, false => {f: fb, n: 2} };
+            let w = select v > 0 { true => `K(fa, 1), false => `K(fb, 2) };
+            let p = select v > 0 { true => (fa, fa), false => (fb, fb) };
+            let tuple = select u { ('q, i64) as (r, n) => n, _ => 0 };
+            let literal = select u { ('q, i64) as (r, 1) => 5, ('q, i64) as (r, n) => n, _ => 0 };
+            let field = select s { {f: 'q, n: i64} as {f, n} => n, _ => 0 };
+            let payload = select w { `K('q, i64) as `K(r, n) => n };
+            let twice = select p { ('q, 'q) as (r, s) => 7, _ => 0 };
+            [tuple, literal, field, payload, twice]
+        };
+        array::concat(k(1), k(-2))
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a))
+        if as_i64s(a) == [1, 5, 1, 1, 7, 2, 2, 2, 2, 7]);
+    FuseExpect::Jit
+);
+
+run!(
+    written_variable_bind_holds_both_function_types,
+    r#"{
+        let k = |v: i64| {
+            let u = select v > 0 { true => (|x: i64| x, 1), false => (|y: string| str::len(y), 2) };
+            select u { ('q, i64) as (r, n) => r(n), _ => 0 }
+        };
+        k(1)
+    }"#,
+    refused("this callee is one of fn(x: i64) -> i64 and fn(y: string) -> i64");
+    FuseExpect::None
+);
+
+// A variable a test writes twice is tested at one part as the type
+// another decided: where that part holds a function type the variable
+// did not take, a value of it would pass as the type the variable took.
+run!(
+    written_variable_written_twice_is_tested,
+    r#"{
+        let k = |v: i64| {
+            let fa = |x: i64| x + 100;
+            let fb = |y: string| str::len(y);
+            let u = (fa, select v > 0 { true => fa, false => fb });
+            select u { ('q, 'q) as (r, s) => s(1), _ => 0 }
+        };
+        k(-1)
+    }"#,
+    refused("this pattern can't tell fn(x: i64) -> i64 from fn(y: string) -> i64");
+    FuseExpect::None
+);
+
+run!(
+    written_variable_written_twice_is_tested_in_an_element,
+    r#"{
+        let k = |v: i64| {
+            let fa = |x: i64| x + 100;
+            let fb = |y: string| str::len(y);
+            let u = select v > 0 { true => (fa, [fa]), false => (fa, [fb]) };
+            select u { ('q, Array<'q>) as (r, [s, ..]) => s(1), _ => 0 }
+        };
+        k(-1)
+    }"#,
+    refused("this pattern can't tell fn(x: i64) -> i64 from fn(y: string) -> i64");
+    FuseExpect::None
+);
+
 const SAME_FORM_TRAIT_DISPATCH: &str = r#"
 {
   trait Show { val show: fn(self) -> string };
