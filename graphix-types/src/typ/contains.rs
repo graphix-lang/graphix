@@ -457,7 +457,7 @@ impl ContainsHist {
     /// its caller writes cells between two relations. What carries over is
     /// a probe's verdicts, each stamped with [`cell_writes`], and what no
     /// cell changes.
-    pub(super) fn next_relation(&mut self) {
+    fn next_relation(&mut self) {
         debug_assert!(self.in_progress.is_empty() && self.unfolding.is_empty());
         if let Some(held) = &mut self.commit_pairs.0 {
             held.clear()
@@ -5652,12 +5652,20 @@ impl Type {
     /// union that holds a type takes it, where [`Self::contains`] refuses
     /// a choice between two undecided ones ([`AmbiguousMember`]).
     pub fn contains_ordered(&self, env: &Env, t: &Self) -> Result<bool> {
-        let r = self.contains_int(
-            ContainsFlags::Commit.into(),
-            env,
-            &mut ContainsHist::ordered(),
-            t,
-        );
+        self.contains_ordered_in(env, &mut ContainsHist::ordered(), t)
+    }
+
+    /// [`Self::contains_ordered`] in `hist`, an ordered walk that may have
+    /// decided other relations before ([`ContainsHist::next_relation`]).
+    pub(super) fn contains_ordered_in(
+        &self,
+        env: &Env,
+        hist: &mut ContainsHist,
+        t: &Self,
+    ) -> Result<bool> {
+        debug_assert!(hist.ordered);
+        hist.next_relation();
+        let r = self.contains_int(ContainsFlags::Commit.into(), env, hist, t);
         if graphix_dbg_bind() {
             eprintln!("CONTAINS-ORDERED {self} >= {t} -> {r:?}");
         }

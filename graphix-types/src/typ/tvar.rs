@@ -6,8 +6,8 @@ use crate::{
     image,
     stack::ensure_sufficient,
     typ::{
-        Bound, ContainsFlags, FnType, Mutability, NodeKey, NodePairs, PRINT_FLAGS,
-        PrintFlag, RefKey, TVarsSeen, Type,
+        Bound, FnType, Mutability, NodeKey, NodePairs, PRINT_FLAGS, PrintFlag, RefKey,
+        TVarsSeen, Type,
         contains::{ContainsHist, cell_admits, find_open_cell, holds_cell},
         fntyp::Aliasing,
         node_addr,
@@ -5950,13 +5950,7 @@ impl Narrowing {
     /// a pair of parts that holds no cell is contained once, whichever
     /// member and alternative meet it.
     fn contains(&mut self, env: &Env, t: &Type, pred: &Type) -> Result<bool> {
-        self.contains.next_relation();
-        let r =
-            t.contains_int(ContainsFlags::Commit.into(), env, &mut self.contains, pred);
-        if graphix_dbg_bind() {
-            eprintln!("CONTAINS-ORDERED {t} >= {pred} -> {r:?}");
-        }
-        r
+        t.contains_ordered_in(env, &mut self.contains, pred)
     }
 }
 
