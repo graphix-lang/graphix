@@ -2051,6 +2051,14 @@ run!(
     refused("a call picks 'a, and the body's value need not be of the type it picks; drop `-> 'a`, or write the body's type, `-> 'b`");
     FuseExpect::None
 );
+// A handle a call copied is bound to the declared variable's cell: the
+// message names that one cell once.
+run!(
+    a_copied_handle_of_a_declared_variable_prints_as_one_variable,
+    |v: Result<&Value>| matches!(v, Err(e)
+        if format!("{e:#}").contains("string does not contain Array<'a: unbound within Number>")),
+    "/test.gx" => "let result = { let k = 'a: Number |x: 'a| -> 'a { let m = array::map([x], |e| e); let z: string = m; x }; k(1) }"
+; FuseExpect::None);
 run!(
     a_return_of_one_unbounded_variable_names_the_other,
     "{ let f = |x: 'a, y: 'b| -> 'a y; f(1, 2) }",

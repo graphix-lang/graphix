@@ -2127,7 +2127,15 @@ impl fmt::Display for TVar {
                         }
                         return write!(f, "]");
                     }
-                    _ => write!(f, "'{}: ", ShortName(&printed_name(self)))?,
+                    _ => {
+                        let name = printed_name(self);
+                        if let Some(Type::TVar(next)) = &typ
+                            && printed_name(next) == name
+                        {
+                            return write!(f, "{next}");
+                        }
+                        write!(f, "'{}: ", ShortName(&name))?
+                    }
                 }
                 let Some(t) = typ else {
                     write!(f, "unbound")?;
@@ -3859,6 +3867,9 @@ struct Shown {
     held: AHashSet<usize>,
     /// The names of `names`, each one cell's.
     taken: AHashSet<ArcStr>,
+    /// The name a declared variable's open cell printed under, by the
+    /// cell's end: each handle a copy made of it prints under that one.
+    declared: AHashMap<usize, ArcStr>,
     /// Every name the message showed a cell under, and every name a type
     /// it printed holds once `unwalked` is walked: a name numbered apart
     /// is none of them.
@@ -3910,6 +3921,7 @@ impl Shown {
         if self.names.capacity() > Self::KEPT
             || self.held.capacity() > Self::KEPT
             || self.used.capacity() > Self::KEPT
+            || self.declared.capacity() > Self::KEPT
             || self.unwalked.capacity() > Self::KEPT
         {
             *self = Self::default()
@@ -3917,6 +3929,7 @@ impl Shown {
             self.names.clear();
             self.held.clear();
             self.taken.clear();
+            self.declared.clear();
             self.used.clear();
             self.unwalked.clear()
         }
@@ -3970,7 +3983,7 @@ impl Drop for Printing {
     }
 }
 
-// CR claude for claude: [readability/low] A message names one open cell
+// XCR claude for claude: [readability/low] A message names one open cell
 // twice where a handle a call copied is bound to a declared variable's:
 // `let k = 'a: Number |x: 'a| -> 'a { let m = array::map([x], |e| e); let
 // z: string = m; x }` prints `type mismatch string does not contain
@@ -3981,13 +3994,20 @@ impl Drop for Printing {
 // by `cell_addr`, is numbered away from it. probe:
 // ~/ptmp/cr29/scratch/r24/24g/hover-rec-self-read-review/p6/k.gx
 // (declared-alias-two-names-01)
+// 2026-11-14 claude: Fixed: printed_name gives every handle of one declared
+// variable's open cell (keyed by the cell's end) one name, and Display prints a
+// handle bound to a same-named handle as the bound one, so the message reads
+// Array<'a: unbound within Number>. Pin:
+// lang::types::a_copied_handle_of_a_declared_variable_prints_as_one_variable
+// (failed with 'a: 'a1: before).
 /// The name `tv` prints under where cells print as they stand
 /// ([`crate::print_standing`]), else its own: the one a printing signature
 /// gave the cell its header lists ([`quantifiers_apart`]), and for any
 /// other named cell, the one a definition being checked declares it by
 /// ([`TVar::declared_name`]), else its own, unless the message being
 /// printed showed another cell under it, then numbered apart, so two
-/// instances' cells of one declared or inferred variable read as two.
+/// instances' cells of one declared or inferred variable read as two. The
+/// handles of one declared variable's open cell share its name.
 pub(super) fn printed_name(tv: &TVar) -> ArcStr {
     if !crate::print_standing() || PRINT_DEPTH.get() == 0 {
         return tv.name.clone();
@@ -3997,8 +4017,18 @@ pub(super) fn printed_name(tv: &TVar) -> ArcStr {
         Some(name) => name.clone(),
         None if tv.unwritten() => tv.name.clone(),
         None => {
-            let name =
-                s.free_name(&tv.declared_name().unwrap_or_else(|| tv.name.clone()));
+            let declared = tv.declared_name();
+            let end = declared.as_ref().map(|_| tv.stands_for());
+            let name = match end.and_then(|e| s.declared.get(&e)) {
+                Some(name) => name.clone(),
+                None => {
+                    let name = s.free_name(&declared.unwrap_or_else(|| tv.name.clone()));
+                    if let Some(end) = end {
+                        s.declared.insert(end, name.clone());
+                    }
+                    name
+                }
+            };
             s.show(addr, name.clone());
             name
         }
