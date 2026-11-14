@@ -63,7 +63,13 @@ member that holds it at the same part (`own_parts` in
 into it. Arms that bind one part of one variant tag leave one member,
 their cells a union under the tag, and the same holds inside it: a bind
 whose cell is one of that union's cells is one cell with the open ones
-(`Type::binds_beside`). Pins:
+(`Type::binds_beside`). The select's settle against a scrutinee that is no
+open cell leaves such a union of binds out (`Type::binds_apart`, a part
+made `Any`): containing the scrutinee's part in it would commit every
+value there to its first cell, so two undecided values that meet at the
+part would end as one type, where each arm's bind takes the part as it
+stands when the arm narrows. Pins:
+`lang::select::arms_binding_one_variant_part_*`,
 `lang::select::arm_bind_over_members_*`,
 `or_arm_bind_over_members_calls_their_lambdas`,
 `lang::types::part_bound_in_three_*`,

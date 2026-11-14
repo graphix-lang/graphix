@@ -4956,6 +4956,45 @@ run!(
     FuseExpect::Jit
 );
 
+// Two undecided values that meet in one part of a variant scrutinee stay two
+// types under arms that bind the part beside literals, as the tuple and
+// struct forms keep them: each arm's bind takes the part as it stands.
+run!(
+    arms_binding_one_variant_part_leave_two_undecided_values_apart,
+    r#"{
+        let f = |x, y, c| {
+            let u = select c { true => x, false => y };
+            select `A(1, u) { `A(1, a) => "[a]", `A(2, a) => "[a]", _ => "" }
+        };
+        let g = |x, y, c| {
+            let u = select c { true => x, false => y };
+            select (1, u) { (1, a) => "[a]", (2, a) => "[a]", _ => "" }
+        };
+        let h = |x, y| array::map(
+            [`A(1, x), `A(2, y)],
+            |e| select e { `A(1, a) => "[a]", `A(2, a) => "[a]", _ => "" }
+        );
+        (f(1, "s", true), f(1, "s", false), g(1, "s", false), h(1, "s"))
+    }"#,
+    prints(r#"["1", "s", "s", ["1", "s"]]"#);
+    FuseExpect::Jit
+);
+
+// What the arms do with the part still decides it: a bind used as one type
+// refuses the value that is another.
+run!(
+    arms_binding_one_variant_part_used_as_one_type_refuse_another_value,
+    r#"{
+        let f = |x, y, c| {
+            let u = select c { true => x, false => y };
+            select `A(1, u) { `A(1, a) => a + 1, `A(2, a) => a + 2, _ => 0 }
+        };
+        (f(1, 2, true), f(1, "s", false))
+    }"#,
+    refused("type mismatch i64 does not contain string");
+    FuseExpect::None
+);
+
 // A variable a test writes twice stays one binding of the first member's
 // part: a member that holds another type there is told apart, not passed.
 run!(

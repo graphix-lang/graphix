@@ -5498,6 +5498,33 @@ impl Type {
         (own && out.len() > 1).then_some(out)
     }
 
+    /// `self` with each part of a tuple, struct or variant that is a union
+    /// of two or more open cells and nothing else, none of them `kept`,
+    /// made `Any`; `None` when no part is. Each such cell is one arm's bind
+    /// of the part ([`Self::binds_beside`]), so the part decides nothing of
+    /// the scrutinee's: a settle that contained the scrutinee's part in
+    /// the union would commit each of its members to the first cell.
+    pub fn binds_apart(&self, kept: &AHashMap<usize, TVar>) -> Option<Type> {
+        fn only_binds(t: &Type, kept: &AHashMap<usize, TVar>) -> bool {
+            matches!(t, Type::Set(ms) if ms.len() > 1 && ms.iter().all(|m| matches!(
+                m,
+                Type::TVar(tv) if tv.open_cell().is_some_and(|o| !kept.contains_key(&o.cell_addr()))
+            )))
+        }
+        ensure_sufficient(|| {
+            let part = |c: &Type| match only_binds(c, kept) {
+                true => Some(Type::Any),
+                false => c.binds_apart(kept),
+            };
+            match self {
+                Type::Tuple(_) | Type::Variant(..) | Type::Struct(_) => {
+                    self.cow_children(&mut |c| part(c))
+                }
+                t => t.cow_children(&mut |c| c.binds_apart(kept)),
+            }
+        })
+    }
+
     /// `self` looked through its bindings and typedef names to what they
     /// stand for; `None` for an open cell. A chain of names ends: a
     /// typedef naming itself through names alone is refused.

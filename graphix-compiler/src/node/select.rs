@@ -729,7 +729,7 @@ impl Reach {
             // normalizes a union of the bound cells (Kept::merge_with, Identity::same),
             // quadratic per arm. probes:
             // ~/ptmp/cr29/scratch/r25/25b/pbl/bench/{s8_100,s8_200,t8_100,t8_200}.gx, m.sh
-            // CR claude for claude: [bug/low] Two undecided values that meet in one
+            // XCR claude for claude: [bug/low] Two undecided values that meet in one
             // part of a variant scrutinee are made one type by arms that bind that
             // part beside literals, and the refusal names no annotation: `let f = |x,
             // y, c| { let u = select c { true => x, false => y }; select `A(1, u) {
@@ -754,6 +754,25 @@ impl Reach {
             // takes that part as it stands when the arm narrows. probes:
             // ~/ptmp/cr29/scratch/r24/24b/vpb-rev/{r2.txt,r6.txt} (run with rb.sh)
             // (outer-cells-take-arm-cells-01)
+            // 2026-11-14 claude: Select's settle (Reach::new, the
+            // scrutinee-is-no-open-cell branch) now contains the scrutinee in the arms'
+            // joined predicate with each tuple, struct or variant part that is a union of
+            // two or more arm binds and nothing else made Any (Type::binds_apart):
+            // containing the scrutinee's part in ['a1, 'a2] committed both of an
+            // undecided union's members to the first cell, so x and y became one type.
+            // Each arm's bind takes the part as it stands when it narrows. The variant
+            // forms of the CR (a let over a select, array::map over built variants, the
+            // inline select) check as fn(x: 'a, y: 'b, c: bool) and print ["1", "s"].
+            // Pins
+            // lang::select::arms_binding_one_variant_part_leave_two_undecided_values_apart
+            // (fails in all four modes without binds_apart) and
+            // arms_binding_one_variant_part_used_as_one_type_refuse_another_value (the
+            // sound twin: a+1 over a string is still refused). Not closed, and not this
+            // select's: two lets over never() written into one binding (v <- A(1, x); v
+            // <- A(2, y)) are refused 'y is i64, inferred from an earlier use .. declare
+            // y' with no select at all (the tuple twin v <- (1, x); v <- (2, y) alike),
+            // so that refusal names its annotation and stands. probes
+            // ~/ptmp/cr29/scratch/r25/25c/outer/
             match matches!(scrut, Type::TVar(tv) if tv.open_cell().is_some()) {
                 true => {
                     let gates: SmallVec<[_; 2]> =
@@ -848,6 +867,8 @@ impl Reach {
                             || tv.is_rigid()
                             || counts.get(addr).is_none_or(|(_, n)| *n != 1)
                     });
+                    let apart = itype.binds_apart(&written);
+                    let itype = apart.as_ref().unwrap_or(&itype);
                     if !itype.contains_through_copy(env, &mut written, scrut)? {
                         bail!(
                             "the arms decide this scrutinee's type from their patterns, \
