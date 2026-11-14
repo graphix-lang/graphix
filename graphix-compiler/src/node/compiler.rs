@@ -34,6 +34,7 @@ use crate::{
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Context, Result};
 use arcstr::ArcStr;
+use compact_str::format_compact;
 use enumflags2::BitFlags;
 use netidx_value::Value;
 use poolshark::local::LPooled;
@@ -739,7 +740,7 @@ pub(super) fn eta_dispatcher<R: Rt>(
     let at = |kind| Expr::synth(spec, kind);
     let mut args: SmallVec<[Arg; 4]> = SmallVec::new();
     let mut call: SmallVec<[(Option<ArcStr>, Expr); 4]> = SmallVec::new();
-    // CR claude for claude: [bug/low] A label named like the method as the body
+    // XCR claude for claude: [bug/low] A label named like the method as the body
     // calls it hides the method: `trait T { val m: fn(#m: i64, self) -> i64 }; impl
     // T for i64 { let m = |#m, s| s + m }; use T::m; let g = m; g(#m: 1, 2)` is
     // refused "expected fn not i64", the expansion's body `m(#m: m, self)` calling
@@ -754,15 +755,19 @@ pub(super) fn eta_dispatcher<R: Rt>(
     // lambda's own frame is dropped, Expr::is_lowered taking a lambda that declares
     // '#self as a lowering's. A fix that calls the method by a lowered path also
     // takes that frame's snippet away.
+    // 2026-11-14 claude: The eta-expansion's body now calls the method by its
+    // binding (#bind::N), which no parameter can hide; Ref::to_bind gives a
+    // synthesized reference to a generalized binding the type its site was checked
+    // at, as a named one takes. The positional-name special case is gone. Pin:
+    // lang::traits::trait_method_value_label_named_like_the_method fails (4 modes)
+    // without the path change. Probe on a warm image and GRAPHIX_PAR=force agrees.
+    // Needs a soak.
 
-    // a positional parameter takes the trait's name for it unless it would
-    // hide the method the body calls
+    // a positional parameter takes the trait's name for it
     for (i, a) in ft.args.iter().enumerate() {
         let (kind, label, var) = match (a.label(), a.name()) {
             (Some(l), _) => (ArgKind::Labeled, Some(l.clone()), l.clone()),
-            (None, Some(n)) if *name != [n.as_str()] => {
-                (ArgKind::Positional, None, n.clone())
-            }
+            (None, Some(n)) => (ArgKind::Positional, None, n.clone()),
             (None, _) => (ArgKind::Positional, None, arcstr::format!("#eta{i}")),
         };
         args.push(Arg {
@@ -776,7 +781,12 @@ pub(super) fn eta_dispatcher<R: Rt>(
     }
     let body = at(ExprKind::Apply(ApplyExpr {
         args: Arc::from_iter(call),
-        function: Arc::new(at(ExprKind::Ref { name: name.clone() })),
+        function: Arc::new(at(ExprKind::Ref {
+            name: ModPath::from([
+                arcstr::literal!("#bind"),
+                format_compact!("{}", bind.id.inner()).as_str().into(),
+            ]),
+        })),
     }));
     Ok(Some(at(ExprKind::Lambda(Arc::new(LambdaExpr {
         vargs_comments: Default::default(),

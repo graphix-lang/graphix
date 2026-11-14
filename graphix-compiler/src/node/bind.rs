@@ -1262,7 +1262,7 @@ impl Ref {
                 bailat!(spec, "synthesized reference to an unknown binding {id:?}")
             };
             let typ = bind.typ.clone();
-            return Ok(Self::new(ctx, id, typ, top_id, spec));
+            return Ok(Self::to_bind(ctx, id, typ, top_id, spec));
         }
         let resolved = match ctx.env.lookup_bind(&scope.lexical, name) {
             Ok(r) => r,
@@ -1292,13 +1292,6 @@ impl Ref {
                     return compile(ctx, flags, eta, scope, top_id);
                 }
                 let bind_id = bind.id;
-                let (typ, signature) = match ctx.env.poly_binds.contains(&bind_id) {
-                    true => match ctx.instance_node_type(spec.id) {
-                        Some(typ) => (typ, Signature::Decided),
-                        None => (Type::empty_tvar(), Signature::Pending),
-                    },
-                    false => (bind.typ.clone(), Signature::Binding),
-                };
                 if ctx.env.ide.is_lsp() {
                     ctx.env.push_reference(ReferenceSite {
                         pos: spec.pos,
@@ -1308,9 +1301,29 @@ impl Ref {
                         bind_id,
                     });
                 }
-                Ok(Self::with_signature(ctx, bind_id, typ, signature, top_id, spec))
+                let typ = bind.typ.clone();
+                Ok(Self::to_bind(ctx, bind_id, typ, top_id, spec))
             }
         }
+    }
+
+    /// A reference to the binding `id` of type `typ`: a generalized
+    /// binding's takes the type its site was checked at.
+    fn to_bind<R: Rt>(
+        ctx: &mut CompileCtx<R>,
+        id: BindId,
+        typ: Type,
+        top_id: ExprId,
+        spec: Arc<Expr>,
+    ) -> Node<R> {
+        let (typ, signature) = match ctx.env.poly_binds.contains(&id) {
+            true => match ctx.instance_node_type(spec.id) {
+                Some(typ) => (typ, Signature::Decided),
+                None => (Type::empty_tvar(), Signature::Pending),
+            },
+            false => (typ, Signature::Binding),
+        };
+        Self::with_signature(ctx, id, typ, signature, top_id, spec)
     }
 }
 

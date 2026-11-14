@@ -2621,6 +2621,19 @@ run!(
     prints(r#""x5""#)
 );
 
+// An eta-expansion calls the method itself, whatever a parameter is named.
+run!(
+    trait_method_value_label_named_like_the_method,
+    r#"{
+    trait T { val m: fn(#m: i64, self) -> i64 };
+    impl T for i64 { let m = |#m, s| s + m };
+    use T::m;
+    let g = m;
+    g(#m: 1, 2)
+}"#,
+    is(Value::I64(3))
+);
+
 // A trait method as a value prints under the trait's names: its
 // parameters, its variables, and the receiver as the trait.
 run!(
