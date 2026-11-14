@@ -6246,3 +6246,58 @@ run!(
     is(Value::I64(7));
     FuseExpect::None
 );
+
+// A default that is a call's result holding a function with an open cell
+// leaves the cell to the omitting call's bind, which places it at the site's
+// view of the label.
+const A_DEFAULT_CALL_RESULT_WITH_AN_OPEN_CELL: &str = r#"{
+    let mk = |k: i64| |d, x: i64| cast<string>(d)$;
+    let f = |#w: fn(d: 'z, x: i64) -> string = mk(0), y: 'z, x: i64| w(y, x);
+    f(1, 7)
+}"#;
+
+const A_DEFAULT_CALL_RESULT_WITH_AN_OPEN_CELL_AT_TWO_TYPES: &str = r#"{
+    let mk = |k: i64| |d, x: i64| cast<string>(d)$;
+    let f = |#w: fn(d: 'z, x: i64) -> string = mk(0), y: 'z, x: i64| w(y, x);
+    "[f(1, 7)][f("a", 7)]"
+}"#;
+
+const A_DEFAULT_CALL_RESULT_WITH_A_DEFAULTED_FUNCTION: &str = r#"{
+    let mk = |k: i64| |#d = 1, x: i64| cast<string>(d)$;
+    let f = |#w: fn(?#d: 'z, x: i64) -> string = mk(0), x: i64| w(x);
+    f(7)
+}"#;
+
+const A_DEFAULT_CALL_RESULT_THAT_FIXES_THE_VARIABLE: &str = r#"{
+    let mk = |k: i64| |d: i64, x: i64| cast<string>(d)$;
+    let f = |#w: fn(d: 'z, x: i64) -> string = mk(0), y: 'z, x: i64| w(y, x);
+    f("a", 7)
+}"#;
+
+run!(
+    a_default_call_result_with_an_open_cell,
+    A_DEFAULT_CALL_RESULT_WITH_AN_OPEN_CELL,
+    is(Value::from("1"));
+    FuseExpect::None
+);
+
+run!(
+    a_default_call_result_with_an_open_cell_at_two_types,
+    A_DEFAULT_CALL_RESULT_WITH_AN_OPEN_CELL_AT_TWO_TYPES,
+    is(Value::from("1a"));
+    FuseExpect::None
+);
+
+run!(
+    a_default_call_result_with_a_defaulted_function,
+    A_DEFAULT_CALL_RESULT_WITH_A_DEFAULTED_FUNCTION,
+    is(Value::from("1"));
+    FuseExpect::None
+);
+
+run!(
+    a_default_call_result_that_fixes_the_variable,
+    A_DEFAULT_CALL_RESULT_THAT_FIXES_THE_VARIABLE,
+    refused("does not contain");
+    FuseExpect::None
+);

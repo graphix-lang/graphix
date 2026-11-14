@@ -220,6 +220,30 @@ impl DefTable {
         }
     }
 
+    /// The open cells the rows of the labeled defaults hold, by address:
+    /// a call's bind narrows them, so no site settle binds them.
+    fn default_cells(&self) -> AHashSet<usize> {
+        if self.defaults.is_empty() {
+            return AHashSet::default();
+        }
+        let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+        let default = |id: &ExprId| self.defaults.contains(id);
+        let rows = self.types.iter().filter(|(id, _)| default(id)).map(|(_, t)| t);
+        let aux =
+            self.aux.iter().filter(|(id, _)| default(id)).flat_map(|(_, ts)| ts.iter());
+        for t in rows.chain(aux) {
+            crate::typ::settle::position_cells(t, &mut cells)
+        }
+        for (_, ft) in self.ftypes.iter().filter(|(id, _)| default(id)) {
+            ft.for_each_part(&mut |t, constraint| {
+                if !constraint {
+                    crate::typ::settle::position_cells(t, &mut cells)
+                }
+            })
+        }
+        cells.keys().copied().collect()
+    }
+
     /// Bind to ⊥ every open cell of the table's that `owner`'s gate
     /// created, but its signature (`exempt`) does not reach: nothing
     /// bounded it, and an instance reads the table as the check left it.
@@ -2746,9 +2770,11 @@ impl<R: Rt> DefGate<R> {
             }
             false => self.sig.claim(self.outer),
         }
+        let defaults = table.as_deref().map(DefTable::default_cells).unwrap_or_default();
         for s in frame.iter_mut() {
-            if let crate::PendingSettle::Site { sigs, .. } = s {
+            if let crate::PendingSettle::Site { sigs, exempt, .. } = s {
                 sigs.push(self.sig.clone());
+                exempt.extend(defaults.iter().copied());
             }
         }
         if let Some(table) = table {

@@ -294,7 +294,7 @@ fn checked_default<R: Rt>(
     let label = |ft: &FnType| -> Option<Type> {
         ft.args.iter().find(|a| a.label() == Some(name)).map(|a| a.typ.clone())
     };
-    // CR claude for claude: [bug/medium] A default that is a call's result holding a function
+    // XCR claude for claude: [bug/medium] A default that is a call's result holding a function
     // with an open cell (one instance, which nothing in the definition decides) is judged at
     // the check on this copy, which decides nothing of the default's own type, and the bind's
     // default reads the cell as bottom: the check accepts and the build refuses. `let mk = |k:
@@ -307,6 +307,12 @@ fn checked_default<R: Rt>(
     // .. = m`) both run. base-r24 alike. probes: ~/ptmp/cr29/scratch/r24/24c/dhdf/s/
     // {call_result_plain, call_result_plain_let, call_result_inner, call_result_inner_let,
     // call_result_written}.gx (default-call-result-open-01)
+    // 2026-11-14 claude: Fixed in DefGate::close (node/lambda.rs): the site settles of a
+    // default's check left the cells its rows hold (DefTable::default_cells) bound to bottom,
+    // so the bind read the call result's argument as bottom. They stay open; the bind places
+    // them at the site's view of the label. Pins that fail without it (12 of 16 runs):
+    // lang::functions::a_default_call_result_with_an_open_cell, _at_two_types,
+    // _with_a_defaulted_function; the refused twin _that_fixes_the_variable holds either way.
     let copy = match judge {
         Judge::Check(_) if node.typ().has_unbound() => {
             Some(node.typ().instantiate_with(&mut LPooled::take(), &ctx.rec_defs))

@@ -563,7 +563,12 @@ decided (`v(0)(#d: "s", 7)` makes `#d` a string), against which a default
 no call needs would be refused. A call that omits the label judges it.
 A labeled default compiled at a bind takes its types from its
 definition's check as an instance's body does, and is checked so only
-where there are no rows (`callsite::checked_default`).
+where there are no rows (`callsite::checked_default`). A cell a default's
+rows hold that the check decides nothing of (a call's result holding a
+function over a variable of its own: `#w: fn(d: 'z, x: i64) -> string =
+mk(0)`) stays open when the gate closes: no site settle of the default
+binds it to ⊥ (`DefTable::default_cells`), and the bind places it at the
+site's view of the label.
 
 **Every instance.** An instance records how it is typed
 (`node::lambda::Typing`): it is its definition's check, it substitutes
