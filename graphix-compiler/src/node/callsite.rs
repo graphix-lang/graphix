@@ -242,32 +242,6 @@ enum Judge {
 type Join<'a> =
     dyn FnMut(&Env, &ArcStr, &Type, &Type, Option<CompactString>) -> Result<()> + 'a;
 
-// XCR claude for claude: [bug/medium] A build refuses a call the check accepted where
-// the call omits a labeled default that is a lambda at a formal holding a typedef
-// union of two of the function's variables: `type P<'p, 'q> = [Array<'p>, Array<'q>];
-// let f = |#k: fn(q: P<'b, 'a>) -> i64 = |q| 7, y: 'a| k; f(1.5)` passes `--check` and
-// the run fails "in the instance of f(1.5) .. in: |q| 7: Array<'a: f64> could go to
-// Array<'b: unbound> or Array<'a1: unbound> of the union [Array<'b: unbound>, Array<'a1:
-// unbound>], which nothing has decided .. write the type of what holds that union".
-// With the default passed (`f(#k: |q| 7, 1.5)`) it runs, and so does the omitted one
-// under GRAPHIX_NO_SUBST=1 and over `type O<'t> = ['t, null]` (`fn(q: O<'b>) -> i64`).
-// Through a wrapper (`let g = |t| f(t); g(1.5)`) and with both variables decided (`z:
-// 'b`, `f(1.5, "s")`) it fails the same way. The bind's judgment (Judge::Bind) contains
-// the default's type, typed from the definition's table with the definition's cells
-// copied, in the site's view of the label: two copies of one union whose members are
-// open on one side, so the containment has to choose a member, where each cell stands
-// at its own place (Type::place_cells, as FnType::held_at and CallSite::
-// setup_static_bind place an instance's). GRAPHIX_ELAB_AUDIT=1 does not report it.
-// base-r24 alike. Found fixing undecided-into-decided-member-01. probes:
-// ~/ptmp/cr29/scratch/r24/24d/udm/{d1,d2,d3,d7}.gx (refused at the run), d6.gx, d5.gx
-// (run) (default-typedef-union-bind-01)
-// 2026-11-14 claude: An omitted labeled default's type is now placed at the site's view
-// of the label (Type::place_cells in checked_default, Judge::Bind), and Places::types
-// expands a typedef reference on either side so a union written as P<'b, 'a> stands
-// member for member beside the default's expanded copy. Pins that fail without it:
-// lang::functions::a_default_over_a_typedef_union{,_of_two_decided,_through_a_wrapper,_wrapped_undecided}.
-// Census of base-r25 vs this build: no verdict or message change over 2967 files;
-// guicheck 39.60G vs 39.66G.
 /// A labeled default of `f` compiled in `f`'s environment, where its
 /// names are, and judged in the site's, where the site's types are:
 /// against the site's view of the label, which the default narrows and
