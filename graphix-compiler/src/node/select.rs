@@ -777,48 +777,6 @@ impl Reach {
             // today). base-r24 alike. probes: ~/ptmp/cr29/scratch/r24/24b/lbfm-rev/a2.txt
             // lines 6 to 8 (run with rb.sh), t6.txt (ty.sh), gen2.py, g7711.sum (f0046)
             // (cover-bind-part-order-01)
-            // XCR claude for claude: [bug/high] A bind in an arm over a referent the arms
-            // decide is typed by its arm's body alone where another arm's member holds
-            // what was built, and the arm then takes a value of another type: `let b =
-            // true; let r = &mut (select b { true => (`K, "s", "t"), false => (`L, 0, "a")
-            // }); select *r { (`K, n, _) => n + 1, (_, _, m) => str::len(m) }` checks,
-            // with no type undecided; fused it panics, "kernel param `n`: runtime
-            // String("s") does not match the compiled Scalar(I64) slot", and --no-fusion
-            // logs an arith error and prints nothing. The struct form and an abstract's
-            // parameter (`select W(..).0`) alike. Inside a function over unannotated `x`
-            // and `y` (`(`K, x, y)` beside `(`L, 0, "a")`) it is `fn(x: '_N, y: string, b:
-            // bool) -> i64` in every order of the parts, `f("s", "s", true)` panics, and
-            // the abstract form prints an address plus one ([139885276136705, 1]). Refused
-            // as it should be: the referent written (`let r: &mut [(`K, string, string),
-            // (`L, i64, string)]`, "cannot compute string + i64"), the plain twin (`select
-            // (select b { .. }) { .. }`) and the variant form ("cannot compute Any +
-            // i64"). With both binds at one part (`(`K, n, _)`, `(_, m, _)`) the first
-            // arm's test is run and the second arm takes the value. The settle below joins
-            // `(`K, 'n, Any)` and `(Any, Any, 'm)`, both built parts go to the second, and
-            // nothing gives `'n` the part of `(`K, string, string)` that its arm takes;
-            // why the arm's run-time test then passes the string is not traced. What would
-            // likely close it: a built part goes to every member that could take it, so
-            // each arm's bind holds the part, or the select is refused where a built part
-            // goes to a member whose arm is not the first that matches its values.
-            // base-r24 alike. probes: ~/ptmp/cr29/scratch/r24/24b/lbfm-rev/h1.txt (run
-            // with rb.sh), p1.txt, p3.txt, p6.txt, q2.gx (referent-bind-other-member-01)
-            // 2026-11-14 claude: Reach::new: where the tests of the arms that do not match
-            // every value cannot hold every part built into a whole open scrutinee cell
-            // (the settle fails beside a catch-all), the cell is settled at its witness,
-            // the union of what was built (TVar::settle_witness), so each arm's binds take
-            // their parts of the members it matches, as over the select written in place.
-            // The CR's probes are refused at the check (tuple, struct, abstract, function
-            // forms, both binds at one part); newly accepted and right: binds over
-            // parameters whose arm leaves them out (f(5, 7, ..) => [6, 1]), a write of a
-            // built member after the select. Pins that fail without it:
-            // lang::select_undecided::{referent_bind_takes_its_part_of_what_was_built_refused,
-            // referent_bind_beside_a_bind_at_its_part_refused,
-            // referent_field_bind_takes_its_part_of_what_was_built_refused,
-            // abstract_parameter_bind_takes_its_part_of_what_was_built_refused,
-            // referent_bind_over_a_parameter_takes_the_parameter{,_refused},
-            // referent_written_after_the_select_takes_a_built_member};
-            // lang::types::payload_bounds_refused_together_bind_nothing now names 'x.
-            // probes: ~/ptmp/cr29/scratch/r25/25b/rbom/
             // CR claude for claude: [bug/low] Two undecided values that meet in one
             // part of a variant scrutinee are made one type by arms that bind that
             // part beside literals, and the refusal names no annotation: `let f = |x,
