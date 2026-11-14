@@ -3974,49 +3974,6 @@ pub(crate) fn resite_pending_name<R: Rt>(
     }
 }
 
-// XCR claude for claude: [bug/medium] A `use` below a typedef changes what a name
-// the typedef already read means, and nothing checks the typedef again: a `use`
-// rechecks only the pending ones (`Completed::Use`). With `type N<'a> = [`Nil,
-// `Cons('a, Option<'a>)]` above `mod o; use o::Option`, where o declares `type
-// Option<'a> = N<Array<'a>>` over `use super::N`, N's walk reads the prelude's
-// Option and settles N regular, o's Option skips the settled N, and the check's
-// end fills N's Option to the import: N is expansive and accepted, and `|a:
-// N<i64>| -> P<i64> a` over a second such pair never returns (`--check` killed at
-// 30 s, base-r23 alike). A glob's name that an explicit `use` below takes over,
-// and a block's `use` below its typedef over an outer type, are the same door.
-// typedef-import-shadow-01 closed it for a name the statement list declares
-// (`Lexical::block_names`); a name it imports below has no such rule. Either
-// record the type names a list's explicit `use`s bring as it opens and refuse a
-// read above the `use` (a glob below still slips through), or check again, at a
-// `use`, every typedef of the list whose body names what the `use` brings. probe:
-// ~/ptmp/cr29/scratch/r23/23c/tis/use-below/ (typedef-use-below-01)
-// 2026-11-13 claude: A type name is not read through a list's level before the
-// statements that may change it there have compiled: the list records its later
-// explicit use keys, its later globs and the modules it declares as it opens
-// (Env::open_list, Unsettled; compile_block_children), and Env::resolve_type_name
-// refuses with ChangesLater a name a later use imports, a name the level does not
-// hold while a glob is to come or a glob there imports from a module not compiled
-// yet, and a name whose import finds nothing while its module is not compiled
-// yet, module segments of a path included. A typedef above waits (pending) and is
-// judged at the use or at the definition that completes the cycle; a plain let
-// annotation and never<T> read the import; a type test, a cast, a destructuring
-// let and an abstract constructor above the use are refused, naming the fix.
-// Covers the CR's three doors (use below, a glob's name an explicit use takes
-// over, a block's use) and use-above-mod-below, glob below, glob above its
-// module, a nested block, a path through an imported module; all hung on
-// base-r24. Pins lang::types::typedef_above_the_use_*,
-// typedef_between_a_use_and_the_module_*, typedef_above_a_glob*,
-// typedef_between_a_glob_and_its_module*, typedef_reading_a_globs_name_*,
-// block_typedef_above_the_blocks_use*,
-// nested_block_typedef_above_an_outer_use_refused,
-// typedef_through_an_imported_module_declared_below*,
-// let_annotation_above_the_use_reads_the_import, type_test_*,
-// cast_above_the_use_refused, destructuring_let_*: 15 fixtures fail in all four
-// modes with resolve_type_name's settle off (the refusals accept, the let reads
-// half the prelude), 8 twins pass both ways; modules.md cases. Not closed, new
-// CRs: a function body above the module (import-snapshot-fallthrough-01) and a
-// function body's deferred typedef never judged (fn-typedef-unjudged-01, hangs on
-// base-r24 too). probes: ~/ptmp/cr29/scratch/r24/24e/typedef-use-below-01/
 /// Refuse now each deferred typedef what just `completed` makes
 /// unsound, before anything later in the run expands it, and forget
 /// those it settled.
