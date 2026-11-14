@@ -2478,6 +2478,11 @@ fn bodies_implementing_sh(names: &str, more: &str, make: &str) -> (String, Strin
 /// body's `make(x)` is `x + 6` and the second's `(x + 2005) * 10`.
 const EACH_BODY_RUNS_ITS_OWN_SH: &str = " 20140 15 [15, 16] 20150 16 [16, 17] 20160 17 [17, 18] 20170 18 [18, 19] 20180 19 [19, 20]";
 
+const ANOTHER_MODULES_APP: &str = "trait Sh { val sh: fn(self) -> i64 }; \
+     let sa = mod a dynamic { sandbox unrestricted; \
+     sig { use super::Sh; val app: fn(x: Sh) -> i64 }; \
+     source \"use super::Sh; let app = |x: Sh| Sh::sh(x) + 5\" };";
+
 const OUTSIDE_APP: &str =
     "trait Sh { val sh: fn(self) -> i64 }; let app = |x: Sh| Sh::sh(x) + 5;";
 
@@ -2491,6 +2496,45 @@ run!(
         let (first, second) = bodies_implementing_sh("Sh, app", "", "app(C(x))");
         a_function_saved_across_a_reload(
             OUTSIDE_APP,
+            "val make: fn(x: i64) -> i64",
+            &first,
+            &second,
+        )
+    };
+    FuseExpect::Jit
+);
+
+// The outside function is another dynamic module's: the first body's
+// instance of it dispatches by the first body's impl, beside its own
+// module's names.
+run!(
+    a_function_saved_across_a_reload_dispatches_another_modules_function_to_its_own_impl,
+    is(Value::String(EACH_BODY_RUNS_ITS_OWN_SH.into())),
+    "/test.gx" => {
+        let (first, second) = bodies_implementing_sh("Sh, a", "", "a::app(C(x))");
+        a_function_saved_across_a_reload(
+            ANOTHER_MODULES_APP,
+            "val make: fn(x: i64) -> i64",
+            &first,
+            &second,
+        )
+    };
+    FuseExpect::Jit
+);
+
+// The other module's function calls a function of the root, which
+// dispatches as the first body does too: a call made under a join passes
+// the join on.
+run!(
+    a_function_saved_across_a_reload_passes_another_modules_load_on_to_the_root,
+    is(Value::String(EACH_BODY_RUNS_ITS_OWN_SH.into())),
+    "/test.gx" => {
+        let (first, second) = bodies_implementing_sh("Sh, a", "", "a::app(C(x))");
+        a_function_saved_across_a_reload(
+            "trait Sh { val sh: fn(self) -> i64 }; let relay = |x: Sh| Sh::sh(x) + 5; \
+             let sa = mod a dynamic { sandbox unrestricted; \
+             sig { use super::Sh; val app: fn(x: Sh) -> i64 }; \
+             source \"use super::{Sh, relay}; let app = |x: Sh| relay(x)\" };",
             "val make: fn(x: i64) -> i64",
             &first,
             &second,

@@ -377,6 +377,26 @@ async fn a_saved_function_calling_an_outside_function_keeps_nothing_once_dropped
     .await
 }
 
+/// The outside function is another dynamic module's: the instance each
+/// load makes of it is made in a join of the two loads, which the saved
+/// function keeps no longer than it keeps its own.
+async fn a_saved_function_calling_another_modules_function_keeps_nothing_once_dropped(
+    mode: Mode,
+) -> Result<()> {
+    saved_across_reloads(
+        mode,
+        "trait Sh { val sh: fn(self) -> i64 }; \
+         let sa = mod a dynamic { sandbox unrestricted; \
+         sig { use super::Sh; val app: fn(x: Sh) -> i64 }; \
+         source \"use super::Sh; let app = |x: Sh| Sh::sh(x)\" };",
+        "",
+        "use super::{Sh, a}; \
+         type C = Abstract<i64>; impl Sh for C { let sh = |c: C| c.0 + v }; \
+         let get = |x: i64| a::app(C(x))",
+    )
+    .await
+}
+
 /// The same where the interface declares the trait, the type and the
 /// impl, so each load's methods join the declared entry's.
 async fn a_function_saved_past_a_declared_impl_keeps_nothing_once_dropped(
@@ -1318,6 +1338,7 @@ modes!(
     a_function_saved_across_reloads_keeps_nothing_once_dropped,
     a_dispatching_function_saved_across_reloads_keeps_nothing_once_dropped,
     a_saved_function_calling_an_outside_function_keeps_nothing_once_dropped,
+    a_saved_function_calling_another_modules_function_keeps_nothing_once_dropped,
     a_function_saved_past_a_declared_impl_keeps_nothing_once_dropped,
     a_function_saved_across_reloads_around_an_interface_module_keeps_nothing_once_dropped,
     a_function_escaping_deleted_interface_modules_keeps_nothing_once_dropped,

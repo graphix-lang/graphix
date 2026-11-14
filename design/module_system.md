@@ -345,18 +345,23 @@ a_function_saved_across_a_reload_dispatches_to_its_own_bodys_methods`,
 `a_dynamic_module_in_a_loaded_body_reads_its_own_imports` and
 `lib_tests::leaks::
 a_dispatching_function_saved_across_reloads_keeps_nothing_once_dropped`,
-`a_function_saved_past_a_declared_impl_keeps_nothing_once_dropped`.
+`a_function_saved_past_a_declared_impl_keeps_nothing_once_dropped`,
+`a_saved_function_calling_another_modules_function_keeps_nothing_once_dropped`.
 
 **An instance is made in its call's load.** A function defined outside
 the module that a loaded body calls dispatches on that body's types (a
 trait-bounded parameter, a trait's default calling its sibling), so its
 instance for the call is inside the caller's load: `Lexical::called_in`
 gives the definition's view the load of the call. A definition made in a
-load keeps its own unless the call's load is inside it (an inner module's
-body calling a function of the body around it), since a view holds one
-chain of loads and the definition's imports and impls are in its own; a
-call from a load beside it still reads the registries (CR
-`cross-load-dispatch-01`). A call is often made long after its text
+load the call's is inside (an inner module's body calling a function of the
+body around it) keeps the call's, and one made in a load the call's is
+beside (another module's function) takes a join (`LoadedBody::join`): it
+names as its own load, whose imports its body reads, and dispatches as both,
+the definition's own traits and impls first. A join declares nothing, so
+`names_at` skips it and `trait_def`, `impls` and `dispatch_bindings` walk
+its other load too; a call made under a join passes the join on
+(`Scope::load`), and a call whose load the definition's already dispatches
+as, or is inside it, makes no new one. A call is often made long after its text
 compiled, in a cycle, when the env's view is the root's: a run-time bind,
 a collection's slot, a builtin calling a function it was handed. So the
 point of the call carries the load: `Scope::load` is the `Lexical::body`
@@ -385,6 +390,8 @@ a_function_saved_across_a_reload_dispatches_an_outside_function_to_its_own_impl`
 `.._an_outside_union_call_to_its_own_impls`,
 `.._an_outside_impls_method_to_its_own_impl`,
 `.._a_seq_steps_call_to_its_own_impl`,
+`.._another_modules_function_to_its_own_impl`,
+`.._passes_another_modules_load_on_to_the_root`,
 `a_function_saved_across_a_reload_binds_an_outside_function_the_next_body_implements_nothing_for`,
 `a_function_saved_across_a_reload_shares_no_run_time_bind_with_the_next_body`,
 `a_closure_an_outside_function_made_for_a_reloaded_body_dispatches_to_that_bodys_impl`,
