@@ -862,7 +862,11 @@ Number |x: [['a, null], Array<i64>]|` takes that value as its alias
 spelling `[Opt<'a>, Array<i64>]` does; `[N, Array<i64>]` over `type N =
 [i64, null]` and `[Result<i64, `E>, null]` into `['a, Error<`E>]` alike.
 A member none of whose parts a constructor member takes goes to the open
-member as it stands, under its name. So a `Result<'a, 'e>` parameter
+member as it stands, under its name. The parts are met a level at a time
+(`Type::place_parts`): a part that names a union is asked whole first and
+its own parts after, so names nested however deep are followed a step a
+name (unit `a_member_named_deep_is_taken_a_part_at_a_time`). So a
+`Result<'a, 'e>` parameter
 takes a `[Result<i64, `A>, null]`, `'a` the `[i64, null]`. The members
 and parts are met in the value's own order, a named union's parts at its
 name's place, and where two of them could go to one constructor member
