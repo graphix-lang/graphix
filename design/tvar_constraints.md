@@ -1146,6 +1146,13 @@ the definition gates:
   `call_through_a_field_read_of_a_union_of_functions_over_two_variables_refused`,
   `call_through_a_tuple_read_of_a_union_of_functions_no_argument_decided_refused`,
   `typ::normalize::tests::a_union_of_one_alternative_keeps_its_union_of_renamings`).
+  Nor does a read join two decided members: what `|c, a, b| select c {
+  true => a, false => b }` returns over two functions of one type is the
+  union of what its parameters took, two members at its binding's call
+  and through a dereference, `any`, a select of it in every arm or an
+  error's payload alike; `|c, a: 'a, b: 'a|` returns one function (pins
+  `lang::types::call_through_a_deref_of_two_decided_functions_refused`
+  and its neighbours, `call_through_reads_of_one_variable_s_two_functions`).
   And
   a field read of a union meets the function members it reads
   (`data::struct_field_type`, `tuple_field_type`), as a select meets its

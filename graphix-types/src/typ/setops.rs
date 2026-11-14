@@ -1486,6 +1486,14 @@ impl Type {
     // last step would lose; census them. base-r24 alike. Found fixing
     // read-welds-data-union-01. probes: ~/ptmp/cr29/scratch/r24/24d/rwd/m{0..7}.gx
     // (alternative-union-members-pair-01)
+    // 2026-11-14 claude: Review of read-welds-data-union-01: a seq step that reads an
+    // outer binding holding such a union pairs it too, with no select written: 'let h =
+    // |u, v, w| { let x = f(u, v, w); seq { let g = x; (u, v) } }; h(1, "s", |q: i64| q
+    // + 1)' is refused, 'type mismatch i64 does not contain string', on base-r24 and the
+    // lane, where the same step over a value it makes itself ('seq { let x = f(u, v, w);
+    // (u, v) }') runs since that fix. The step's lowering reads its snapshot through
+    // 'any(#seqpc ~! snap, snap)', two nodes of one type, m2.gx's kind. probes:
+    // ~/ptmp/cr29/scratch/r24/24d/rwd-rev/seq/{s3,s4}.gx (refused), s1.gx (runs)
     fn union_with(env: &Env, merge: Merge, ts: &[&Type]) -> Result<Self> {
         if let Some(one) = sole(ts) {
             return Ok(one.normalize());

@@ -10591,6 +10591,85 @@ run!(
     FuseExpect::None
 );
 
+// Nor does a read make one function of two decided ones. A function that
+// returns one of two untyped parameters returns the union of what they
+// took, and a call through a reference to that result, `any` over it, a
+// select of it in every arm or an error's payload is refused as the call
+// of its binding is; one variable for both parameters is one function.
+run!(
+    call_through_a_deref_of_two_decided_functions_refused,
+    r#"{
+  let c = true;
+  let pick = |c, a, b| select c { true => a, false => b };
+  let p = pick(c, |x: i64| x, |x: i64| x + 1);
+  let r = &p;
+  (*r)(1)
+}"#,
+    refused(
+        "a call takes one function type, and this callee is one of fn(x: i64) -> i64 and \
+         fn(x: i64) -> i64"
+    );
+    FuseExpect::None
+);
+run!(
+    call_through_any_over_two_decided_functions_refused,
+    r#"{
+  let c = true;
+  let pick = |c, a, b| select c { true => a, false => b };
+  let p = pick(c, |x: i64| x, |x: i64| x + 1);
+  let g = any(p);
+  g(1)
+}"#,
+    refused(
+        "a call takes one function type, and this callee is one of fn(x: i64) -> i64 and \
+         fn(x: i64) -> i64"
+    );
+    FuseExpect::None
+);
+run!(
+    call_through_a_select_of_two_decided_functions_in_every_arm_refused,
+    r#"{
+  let c = true;
+  let pick = |c, a, b| select c { true => a, false => b };
+  let p = pick(c, |x: i64| x, |x: i64| x + 1);
+  let g = select c { true => p, false => p };
+  g(1)
+}"#,
+    refused(
+        "a call takes one function type, and this callee is one of fn(x: i64) -> i64 and \
+         fn(x: i64) -> i64"
+    );
+    FuseExpect::None
+);
+run!(
+    call_through_an_error_payload_of_two_decided_functions_refused,
+    r#"{
+  let c = true;
+  let pick = |c, a, b| select c { true => a, false => b };
+  let e = error(pick(c, |x: i64| x, |x: i64| x + 1));
+  e.0(1)
+}"#,
+    refused(
+        "a call takes one function type, and this callee is one of fn(x: i64) -> i64 and \
+         fn(x: i64) -> i64"
+    );
+    FuseExpect::None
+);
+run!(
+    call_through_reads_of_one_variable_s_two_functions,
+    r#"{
+  let c = true;
+  let pick = |c, a: 'a, b: 'a| select c { true => a, false => b };
+  let p = pick(c, |x: i64| x, |x: i64| x + 1);
+  let r = &p;
+  let g = any(*r);
+  let e = error(select c { true => g, false => g });
+  e.0(1)
+}"#,
+    prints("i64:1");
+    FuseExpect::None
+);
+
 // So an argument both members of such a union could take is refused
 // through a select of the function's copies as at a call of its binding,
 // where one variable in both members takes it.

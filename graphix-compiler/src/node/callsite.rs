@@ -1014,6 +1014,38 @@ fn carries(env: &Env, t: &Type) -> bool {
 struct FnUnion<'a>(&'a [Type]);
 
 impl FnUnion<'_> {
+    // CR claude for claude: [bug/low] A call through the result of a function that
+    // returns one of two untyped parameters is refused when both arguments are one
+    // function type, the same function twice included: `let pick = |c, a, b| select c {
+    // true => a, false => b }; let f = |x: i64| x; pick(true, f, f)(1)` is refused, "a
+    // call takes one function type, and this callee is one of fn(x: i64) -> i64 and
+    // fn(x: i64) -> i64; write one variable in both, or one written type in both": two
+    // members that print alike, and no annotation the call's author can make there
+    // (p1.gx). Alike with two lambdas of one written type (p2.gx), two untyped lambdas
+    // (p3.gx), and the choosers `|a, b| any(a, b)` and `|a, b| [a, b]` (p4.gx, p5.gx).
+    // What passes: the result bound with its type written (`let p: fn(x: i64) -> i64 =
+    // pick(..)`, p6.gx), one variable for both parameters (`|c, a: 'a, b: 'a|`, p7.gx),
+    // or the result through a bare name, `select p { k => k }` (p8.gx), whose pattern
+    // meets the members. The inferred return is the union of the two parameters'
+    // cells, which the call fills with the arguments' types and nothing joins, and
+    // this refusal reads the union as it stands. Since read-welds-data-union-01 a read
+    // of one value joins nothing either, so the call through a dereference of that
+    // result, `any` over it, a select of it in every arm or an error's payload is
+    // refused as the binding's call is (p9..p12.gx; pins
+    // lang::types::call_through_a_deref_of_two_decided_functions_refused and its three
+    // neighbours, which a fix here turns into passing ones); base-r24 ran those four
+    // (its union of one alternative welded the members) and refused the binding's
+    // call, a field or tuple read, an element and a sample. What would fix it: members
+    // of a callee that are function types with no open cell and one type
+    // (`setops::one_type`) are one member that may be either definition
+    // (`LambdaIds::joining`), here or where the call's result is built; failing that,
+    // the refusal over such members names what passes (the binding's written type).
+    // Not looked into: whether two members that differ only by a positional
+    // parameter's name (p3.gx) are one type for this, and whether members with open
+    // cells that are the same cells (`pick(c, f, f)` over `let f = |x| x`) should
+    // join too. base-r24 alike for the binding's call. Found reviewing
+    // read-welds-data-union-01. probes: ~/ptmp/cr29/scratch/r24/24d/rwd-rev/ch/p{1..12}.gx
+    // (chooser-result-fns-no-call-01)
     /// The refusal of a call through `union`, where every member is a
     /// function type, written or named.
     fn refusal(env: &Env, union: &Type) -> Option<anyhow::Error> {
