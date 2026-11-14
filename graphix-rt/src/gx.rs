@@ -1422,6 +1422,9 @@ impl<X: GXExt> GX<X> {
     // design/module_system.md states. Recommendation: delete this CR; if a display
     // ever needs a retired body's meaning it is a design question (what load a
     // displayed value is in), for Eric, not a Scope parameter.
+    // 2026-11-14 claude: Correction to the note above: the shell dropped a fragment;
+    // it should read "(a widget tree; Gui::start takes root: CompExp, an Env and no
+    // Scope)".
     fn compile_callable(&mut self, v: Value, rt: GXHandle<X>) -> Result<Callable<X>> {
         let lb = v
             .downcast_ref::<LambdaDef<GXRt<X>>>()
