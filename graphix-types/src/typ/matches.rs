@@ -805,30 +805,6 @@ impl Type {
         self.could_match_int(env, &mut MatchHist::new(), t)
     }
 
-    // XCR claude for claude: [bug/low] Two recursive types that share no value are
-    // read as sharing one where their pair is met again inside itself: could_match
-    // assumes a pair in progress overlaps, which is right for an arm's reach and
-    // too much for a shared value, which is finite. So a trait call over `[Ti, Ts]`
-    // with `type Ti = [`L(i64), `N(Ti, Ti)]; type Ts = [`L(string), `N(Ts, Ts)]`
-    // and an impl for each of the four members is refused ("a value may be both
-    // `N(Ti, Ti) and `N(Ts, Ts)"), though no value is of both and the dispatch's
-    // tests tell every value's member (main before the rule printed Ns for
-    // `N(`L("a"), `L("b"))). The refusal is safe and a select written by hand
-    // takes its place. To fix: in this walk a pair in progress is apart, which
-    // the memos of could_match (apart, refuted, rests) do not hold for as they
-    // stand. probe: ~/ptmp/cr29/scratch/r24/24d/ihsv/u5.gx
-    // (shares-value-recursive-pair-01)
-    // 2026-11-14 claude: Fixed in could_match's ref-pair walk. Under
-    // MatchHist::shared a pair met again inside itself is apart (a value is
-    // finite); a pair found apart that read such a pair still in progress is not
-    // memoized (MatchHist::lowest) until that pair is done. Pins that fail without
-    // it: typ::matches tests
-    // recursive_types_share_a_value_only_where_a_finite_one_is_of_both (fails with
-    // the exact-key rule off) and
-    // a_pair_apart_on_one_in_progress_is_asked_again_when_that_pair_shares (fails
-    // with the memo guard off); lang::traits
-    // trait_union_dispatch_recursive_typedefs_sharing_no_value, with
-    // ..._sharing_a_leaf_refused for the refusal that stays.
     /// Whether one value may be a value of both `self` and `t`:
     /// [`Self::could_match`] either way, under [`MatchHist::shared`], where a
     /// pair met again inside itself is apart: a value is finite. An open
