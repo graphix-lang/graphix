@@ -100,6 +100,36 @@ let hs = array::map([1], |r| h);
     hover_is(&mut c, "let |hs", "hs: Array<fn(x: 'a) -> 'a>");
 }
 
+/// A binding in a definition's body holds the definition's own variables,
+/// which no call of it picks: a `let rec`'s read of itself there hovers and
+/// completes as one instance, as a message made in the body prints it, and
+/// the definition and a generic name read in a body keep their headers.
+#[test]
+fn a_binding_in_a_body_holds_its_definitions_variables() {
+    const SRC: &str = "\
+let rec rf = 'a: Number |x: 'a| -> 'a { let w = rf; let w2 = (w, 1); let s = {f: rf}; x };
+let rec rs = 'a: Number |x: 'a, n: i64| -> 'a select (rs, n) { (gs, 0) => x, (gs, m) => gs(x, m - 1) };
+let rec rn = 'a: Number |x: 'a| -> 'a { let gg = |y: i64| rn; x };
+let h = 'a: Number |x: 'a| -> 'a x;
+let k = 'a: Number |x: 'a| -> 'a { let j = h; let inner = 'b: Number |y: 'b| -> 'b y; x };
+rf(1) + rs(2, 3)
+";
+    let mut c = Client::start(&[("main.gx", SRC)]);
+    c.open("main.gx");
+    assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
+    hover_is(&mut c, "let rec |rf", "rf: fn<'a: Number>(x: 'a) -> 'a");
+    hover_is(&mut c, "let |w ", "w: fn(x: 'a) -> 'a");
+    hover_is(&mut c, "let |w2", "w2: (fn(x: 'a) -> 'a, i64)");
+    hover_is(&mut c, "let |s ", "s: { f: fn(x: 'a) -> 'a }");
+    hover_is(&mut c, "(|gs, 0)", "gs: fn(x: 'a, n: i64) -> 'a");
+    hover_is(&mut c, "let |gg", "gg: fn(y: i64) -> fn(x: 'a) -> 'a");
+    hover_is(&mut c, "let |j ", "j: fn<'a: Number>(x: 'a) -> 'a");
+    hover_is(&mut c, "let |inner", "inner: fn<'b: Number>(y: 'b) -> 'b");
+    let w = c.completion_details("main.gx", "let w2 = (w|");
+    let w = w.iter().find(|(label, _)| label == "w").map(|(_, d)| d.as_deref());
+    assert_eq!(w, Some(Some("fn(x: 'a) -> 'a")));
+}
+
 /// A variable a call decided hovers, and outlines, as the type it was
 /// decided to be, as a message prints it, whatever bound it carries; one
 /// a declared variable's cell holds, an inferred return's or an inferred

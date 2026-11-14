@@ -3579,9 +3579,11 @@ impl Drop for Declaring {
 /// definition's own, read in its body, a `let rec`'s self-read, and one
 /// instance's), which print where they occur though the definition's close
 /// generalizes them, and the variables of the definitions being checked
-/// ([`Declared`]), whose gates have closed by then.
+/// ([`Declared`]), whose gates have closed by then. A binding a tool prints
+/// after the check holds the quantifiers of the definitions whose bodies
+/// bind it ([`Self::resolving`]).
 #[derive(Debug)]
-pub(crate) struct HeldQuantifiers {
+pub struct HeldQuantifiers {
     held: SmallVec<[TVar; 2]>,
     declared: Declared,
 }
@@ -3601,8 +3603,15 @@ impl HeldQuantifiers {
         Self { held, declared: Declared::current() }
     }
 
-    /// `f`, printing as when the refusal was made.
-    pub(crate) fn printing<R>(&self, f: impl FnOnce() -> R) -> R {
+    /// `typ` resolved ([`Type::resolve_tvars`]), and what it prints by: the
+    /// copies of the open cells of `held` it holds.
+    pub fn resolving(typ: &Type, held: &[TVar]) -> (Type, Self) {
+        let (typ, held) = typ.resolve_tvars_copying(held);
+        (typ, Self { held, declared: Declared::default() })
+    }
+
+    /// `f`, printing as the types stood where they were made.
+    pub fn printing<R>(&self, f: impl FnOnce() -> R) -> R {
         struct Truncate(usize);
         impl Drop for Truncate {
             fn drop(&mut self) {

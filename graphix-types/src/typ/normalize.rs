@@ -419,6 +419,21 @@ impl Type {
             .unwrap_or_else(|| self.clone())
     }
 
+    /// [`Self::resolve_tvars`], and the copy it made of the open cell of each
+    /// of `cells` it reached.
+    pub(super) fn resolve_tvars_copying(
+        &self,
+        cells: &[TVar],
+    ) -> (Self, SmallVec<[TVar; 2]>) {
+        let mut cx = ResolveTvarsCx::take();
+        let typ = self.resolve_tvars_seen_int(&mut cx).unwrap_or_else(|| self.clone());
+        let copies = cells
+            .iter()
+            .filter_map(|c| cx.fresh.get(&c.open_cell()?.cell_addr()).cloned())
+            .collect();
+        (typ, copies)
+    }
+
     /// [`Self::resolve_tvars`] for tooling: an open cell keeps the
     /// predicates it must satisfy.
     pub fn snapshot(&self) -> Self {

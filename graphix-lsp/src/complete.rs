@@ -3,7 +3,7 @@
 
 use crate::{
     position::LineIndex,
-    query::{display_type, in_file, typedef_decl},
+    query::{display_bind, display_type, in_file, typedef_decl},
     state::{Checked, ServerState},
     text::{
         Typed, UsePath, call_context, label_start, text_between, typed_before, use_path,
@@ -217,7 +217,10 @@ impl<'a> Completer<'a> {
                 Type::Fn(_) => CompletionItemKind::FUNCTION,
                 _ => CompletionItemKind::VARIABLE,
             }),
-            detail: Some(display_type(&bind.typ).into()),
+            detail: Some(match self.checked {
+                Some(c) => display_bind(&c.ide, bind).into(),
+                None => display_type(&bind.typ).into(),
+            }),
             documentation: bind
                 .doc
                 .as_ref()

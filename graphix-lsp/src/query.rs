@@ -17,9 +17,9 @@ use graphix_compiler::{
     env::{Bind, TraitDef, TypeDef},
     expr::{ModPath, Origin, Source},
     format_with_flags,
-    ide::ModuleRefSite,
+    ide::{Ide, ModuleRefSite},
     mod_root,
-    typ::Type,
+    typ::{TVar, Type, tvar::HeldQuantifiers},
 };
 use lsp_types::{
     Hover, HoverContents, Location, MarkupContent, MarkupKind, Position, Range, Uri,
@@ -66,7 +66,7 @@ fn truncated(path: &ModPath, n: usize) -> ModPath {
     ModPath(NPath::from(ArcStr::from(s)))
 }
 
-// CR claude for claude: [readability/low] A hover on a `let rec`'s read of itself
+// XCR claude for claude: [readability/low] A hover on a `let rec`'s read of itself
 // in its own body lists the header: `let rec rf = 'a: Number |x: 'a| -> 'a { let w
 // = rf; x }` hovers `w: fn<'a: Number>(x: 'a) -> 'a`, where a type mismatch over
 // `w` prints `fn(x: 'a: unbound within Number) -> 'a: unbound within Number`, no
@@ -75,19 +75,39 @@ fn truncated(path: &ModPath, n: usize) -> ModPath {
 // close generalized its cells, so nothing tells it `w` is one instance. probe:
 // ~/ptmp/cr29/scratch/r23/23h/hover-review/gx/w1.gx (the message), probe_test.rs
 // beside it (`let |w = rf`) (hover-rec-self-read-header-01)
+// 2026-11-14 claude: A named definition's close (DefGate::tell_held, lambda.rs)
+// tells the editor the quantifiers it generalizes and its body's scope
+// (ide::HeldScope); a hover's and a completion's binding prints under the ones of
+// the bodies that bind it (query::display_bind, Ide::held_in,
+// HeldQuantifiers::resolving), so w hovers fn(x: 'a) -> 'a and rf keeps its
+// header; a tuple, a struct field, a select pattern bind and a nested lambda's
+// return over the self-read alike. Pin:
+// graphix-shell/tests/lsp/main.rs::a_binding_in_a_body_holds_its_definitions_variables
+// (fails at w with either the record or the display undone; the completion detail
+// fails alone too).
 /// A binding's type for display: a hover's, an outline's, a completion's
 /// (the server's and the REPL's). `replace_auto_constrained` folds a
 /// function's open auto variables into their one bound and must run
 /// before `resolve_tvars`, which discards the cells. A header lists only
 /// the quantifiers a call still picks, as a checker message's does.
 pub fn display_type(typ: &Type) -> CompactString {
+    display_holding(typ, &[])
+}
+
+/// A binding's type for display ([`display_type`]): the quantifiers of the
+/// definitions whose bodies bind it are theirs, which no call of it picks.
+pub(crate) fn display_bind(ide: &Ide, bind: &Bind) -> CompactString {
+    display_holding(&bind.typ, &ide.held_in(&bind.scope))
+}
+
+fn display_holding(typ: &Type, held: &[TVar]) -> CompactString {
     let folded = match typ {
         Type::Fn(ft) => Type::Fn(Arc::new(ft.replace_auto_constrained())),
         t => t.clone(),
     };
-    let resolved = folded.resolve_tvars();
+    let (resolved, held) = HeldQuantifiers::resolving(&folded, held);
     format_with_flags(PrintFlag::ReplacePrims | PrintFlag::StandingHeaders, || {
-        format_compact!("{resolved}")
+        held.printing(|| format_compact!("{resolved}"))
     })
 }
 
@@ -339,7 +359,8 @@ impl<'a> Query<'a> {
         Some(match target {
             Target::Bind(id) => {
                 let bind = self.bind(id)?;
-                let code = format_compact!("{written}: {}", display_type(&bind.typ));
+                let bind_type = display_bind(&self.checked.ide, bind);
+                let code = format_compact!("{written}: {bind_type}");
                 markdown(&code, bind.doc.as_ref())
             }
             Target::Type(scope, name) => {

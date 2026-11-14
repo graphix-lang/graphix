@@ -2311,7 +2311,13 @@ former consumer derives from the cells:
   (`tvar::HeldQuantifiers`): a `let rec`'s read of itself in its own body
   is one instance, its variables held by the open definition, and prints
   no header, though the definition's close has generalized the cells by
-  the time the message prints. With no header to scope it, a named cell
+  the time the message prints. A binding the language server prints after
+  the check (a hover, a completion) holds them alike: a named
+  definition's close tells the editor the quantifiers it generalizes and
+  the scope of its body (`ide::HeldScope`), and a binding in that scope
+  prints under them (`HeldQuantifiers::resolving`), so `let w = rf` in
+  `rf`'s body hovers `w: fn(x: 'a) -> 'a` and `rf` its header. With no
+  header to scope it, a named cell
   keeps one name through one message, in every type the message prints,
   and a second cell of that name prints numbered apart (`'a1`; an
   inferred variable's too, since an instance copies the generated names
@@ -2387,7 +2393,8 @@ former consumer derives from the cells:
   `lang::types::payload_cycle_through_a_typedef`; the hover's:
   `graphix-shell/tests/lsp/main.rs::one_instance_hovers_with_no_header`,
   `a_hover_numbers_an_instance_past_a_header_name`,
-  `a_cell_merged_with_a_callee_hovers_under_one_name`.
+  `a_cell_merged_with_a_callee_hovers_under_one_name`,
+  `a_binding_in_a_body_holds_its_definitions_variables`.
   A self-referential constraint
   `fn<'a: fn(x: 'a) -> _>(…)` is legal, and once seeded the declaring
   header and an inner fn that mentions `'a` reach the same cell and

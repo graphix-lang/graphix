@@ -480,8 +480,8 @@ impl Client {
         sites
     }
 
-    /// Completion labels at `marker`.
-    pub fn completions(&mut self, file: &str, marker: &str) -> Vec<String> {
+    /// The completions at `marker`.
+    fn completion_items(&mut self, file: &str, marker: &str) -> Vec<CompletionItem> {
         let params = CompletionParams {
             text_document_position: self.doc_pos(file, marker),
             work_done_progress_params: Default::default(),
@@ -490,13 +490,24 @@ impl Client {
         };
         match self.request::<req::Completion>(params) {
             None => vec![],
-            Some(CompletionResponse::Array(items)) => {
-                items.into_iter().map(|i| i.label).collect()
-            }
-            Some(CompletionResponse::List(l)) => {
-                l.items.into_iter().map(|i| i.label).collect()
-            }
+            Some(CompletionResponse::Array(items)) => items,
+            Some(CompletionResponse::List(l)) => l.items,
         }
+    }
+
+    /// Completion labels at `marker`.
+    pub fn completions(&mut self, file: &str, marker: &str) -> Vec<String> {
+        self.completion_items(file, marker).into_iter().map(|i| i.label).collect()
+    }
+
+    /// Each completion's label and detail.
+    pub fn completion_details(
+        &mut self,
+        file: &str,
+        marker: &str,
+    ) -> Vec<(String, Option<String>)> {
+        let items = self.completion_items(file, marker).into_iter();
+        items.map(|i| (i.label, i.detail)).collect()
     }
 
     /// Document symbols: (name, the text its range spans).
