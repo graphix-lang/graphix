@@ -721,6 +721,25 @@ impl Reach {
             // "[['_N, i64, Array<'_N>, Array<i64>], ['_N, Array<'_N>]]"). Not diagnosed.
             // probes: ~/ptmp/cr29/scratch/r23/23d/stb-rev/{sp1,sp2,sp3}.gx
             // (payload-bound-arms-split-01)
+            // 2026-11-13 claude: Stale on base-r24 (main be2c16a05): sp1 checks and runs to
+            // [1] then 1, fused, --no-fusion, PAR=force, NO_SUBST, ELAB_AUDIT and from a
+            // cached image, and so do five and one literal arms and the shapes swapped. A
+            // bisect of sp1 over the 98 commits since this CR was written gives 0ec300127
+            // (construct-lower-merge-01) as the first that runs it. Its two parts each
+            // close it now: with TVar::weld_lower a no-op and FnType::settle_terminal's
+            // walk of the cells a lower bound holds both undone on the lane, sp1 is refused
+            // again with this CR's message, and with either one alone it runs. The arms'
+            // binds were never apart from the cell of x: a use in any one arm that decides
+            // its bind (let q: [i64, Array<i64>] = h) makes a later x <- "s" refused, at
+            // the check and the build alike, for each of the four arms over five tag pairs.
+            // Pins:
+            // lang::select_undecided::payload_part_bound_by_literal_arms_over_two_shapes_builds_at_a_call
+            // (all four modes fail with both parts undone, by the message above) and
+            // payload_part_an_arm_decides_over_two_shapes_then_written_apart_refused (holds
+            // either way). 468 generated programs of this family (holder, shapes, 0 to 5
+            // literal arms, the read, the write): no check/build difference, verdicts and
+            // outputs equal on base-r24 and the lane. probes:
+            // ~/ptmp/cr29/scratch/r24/24b/pbas/ (README)
             // CR claude for claude: [bug/low] A lower bound of a scrutinee cell the arms
             // decide goes to the first member of the arms' union that can take it, which
             // may decide a cell a later member would hold as it stands: `let f = |x, b:

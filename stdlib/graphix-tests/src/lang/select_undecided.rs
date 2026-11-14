@@ -994,6 +994,36 @@ run!(payload_pattern_over_two_undecided_constructions, r#"{
     select f(B([]), B([])) { B(v) => 0 }
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(0))); FuseExpect::Jit);
 
+// Arms that each bind one part of a payload built at two shapes, one
+// holding the other's cell, give the select the union of the two over that
+// one cell: a call that takes it builds as it checked, and what an arm
+// decides of its bind decides the cell for a later write.
+run!(payload_part_bound_by_literal_arms_over_two_shapes_builds_at_a_call, r#"{
+    type B<'p> = Abstract<'p>;
+    let x = never();
+    let b = B((1, [x]));
+    b <- B((2, x));
+    let v = select b.0 { (1, h) => h, (2, h) => h, (3, h) => h, (_, h) => h };
+    x <- 1;
+    let show = |a| a;
+    show(v)
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1]); FuseExpect::Jit);
+
+run!(payload_part_an_arm_decides_over_two_shapes_then_written_apart_refused, r#"{
+    type B<'p> = Abstract<'p>;
+    let x = never();
+    let b = B((3, [x]));
+    b <- B((2, x));
+    let v = select b.0 {
+        (1, h) => 0,
+        (2, h) => 0,
+        (3, h) => { let q: [i64, Array<i64>] = h; select q { Array<i64> as a => array::len(a), n => n + 1 } },
+        (_, h) => 0
+    };
+    x <- "s";
+    v
+}"#, refused("x is i64, inferred from an earlier use, and cannot hold string"); FuseExpect::None);
+
 // A later arm's pattern decides the part before an earlier arm's body is
 // checked: the body's error is the select's.
 run!(an_earlier_body_over_a_part_a_later_arm_decides_is_its_error, r#"{
