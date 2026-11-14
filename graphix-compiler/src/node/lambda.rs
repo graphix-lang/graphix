@@ -846,6 +846,9 @@ pub struct BodyShared {
     /// it stays registered until the enclosing definition is deleted, so
     /// a later input's call of that result finds the defaults it omits.
     pub(crate) held: Option<Held>,
+    /// Whether the literal sits in another definition's body: its
+    /// enclosing definition's deletion releases what it holds, not its own.
+    pub(crate) nested: bool,
     /// The kernels the run-time binds of the definition's instances built
     /// (`fusion::fuse_instance`).
     pub(crate) bound: crate::fusion::BoundKernels,
@@ -2631,10 +2634,12 @@ impl Lambda {
         typ.claim(level);
         let table = SArc::new(DefTables::default());
         let (shared, enclosing) = match &ctx.body {
-            Some(outer) => (
-                outer.share.lock().literals.entry(spec.id).or_default().clone(),
-                outer.around.clone(),
-            ),
+            Some(outer) => {
+                let share =
+                    outer.share.lock().literals.entry(spec.id).or_default().clone();
+                share.lock().nested = true;
+                (share, outer.around.clone())
+            }
             None => (BodyShare::default(), Around::nothing()),
         };
         let facts = match &body {
@@ -3185,13 +3190,19 @@ impl<R: Rt> Update<R> for Lambda {
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
         if let Some(def) = self.def.downcast_ref::<LambdaDef<R>>() {
-            if def.shared.lock().held.as_ref().is_none_or(|h| h.id != def.id) {
+            let (held, nested) = {
+                let shared = def.shared.lock();
+                (shared.held.as_ref().is_some_and(|h| h.id == def.id), shared.nested)
+            };
+            if !held {
                 ctx.lambda_defs.remove(&def.id);
             }
-            let mut seen: LPooled<AHashSet<usize>> = LPooled::take();
-            BodyShared::release_held(&def.shared, &mut seen, &mut |id| {
-                ctx.lambda_defs.remove(&id);
-            });
+            if !nested {
+                let mut seen: LPooled<AHashSet<usize>> = LPooled::take();
+                BodyShared::release_held(&def.shared, &mut seen, &mut |id| {
+                    ctx.lambda_defs.remove(&id);
+                });
+            }
             ctx.def_assertions.lock().retain(|a| a.id != def.id);
             ctx.fusion.forget_def(def.id);
         }

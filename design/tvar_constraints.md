@@ -1535,7 +1535,10 @@ An image carries each cell's level and each definition's depth.
   function a definition's body returns names the definition its check
   made of the literal, and that definition stays registered with the
   bindings it captures until the enclosing definition is deleted
-  (`BodyShared::held`, `LambdaDef::hold_returned`), so a later REPL
+  (`BodyShared::held`, `LambdaDef::hold_returned`; only the node of a
+  literal no definition encloses releases what its body holds, so the
+  deletion of a body's check or of an instance of it releases nothing),
+  so a later REPL
   input's call of the result finds its defaults: they are judged with
   those bindings put back for the judgment
   (`LambdaDef::restore_captures`), and a cell the earlier input settled

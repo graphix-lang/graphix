@@ -884,6 +884,43 @@ async fn returned_default_reading_a_capture_is_judged_in_a_later_input() -> Resu
     .await
 }
 
+/// A function a returned function returns is held with it: neither the
+/// check's deletion of the middle definition's body nor the deletion of an
+/// earlier input's call, whose instance of that body goes with it, releases
+/// the innermost one before a later input's call.
+#[tokio::test(flavor = "current_thread")]
+async fn returned_default_of_a_returned_function_is_judged_in_a_later_input() -> Result<()>
+{
+    let (tx, mut rx) = tokio::sync::mpsc::channel(1000);
+    let ctx = TestCtx::start(config(tx, crate::TEST_REGISTER, vec![], |_| {})?).await?;
+    let _mk = ctx
+        .rt
+        .compile(ArcStr::from("let mk = |k: i64| |j: i64| |#d = k, x: i64| [d]"))
+        .await?;
+    let call = ctx.rt.compile(ArcStr::from("mk(1)(2)(3)")).await?;
+    let id = call.exprs[0].id;
+    let want = Value::Array([Value::I64(1)].into());
+    loop {
+        let v = next_update_raw(&ctx.rt, &mut rx, id)
+            .await
+            .context("mk(1)(2)(3) never produced its value")?;
+        if v == want {
+            break;
+        }
+    }
+    drop(call);
+    let _m = ctx.rt.compile(ArcStr::from("let m = mk(1)")).await?;
+    let e = match ctx.rt.compile(ArcStr::from("m(2)(3)")).await {
+        Ok(_) => bail!("m(2)(3) was accepted"),
+        Err(e) => format!("{e:#}"),
+    };
+    let msg = "type mismatch _ does not contain i64: it holds the type of `m`";
+    if !e.contains(msg) {
+        bail!("m(2)(3) was refused otherwise: {e}")
+    }
+    Ok(())
+}
+
 // A load is checked after the program that loads it: a binding the
 // program left at ⊥ holds what the loaded body writes to ⊥, so a generic
 // val over such a write is refused.

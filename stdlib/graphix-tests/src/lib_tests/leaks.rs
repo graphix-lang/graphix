@@ -234,6 +234,32 @@ async fn returned_definitions_go_with_their_enclosing_definition() -> Result<()>
     Ok(())
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn nested_returned_definitions_go_with_their_enclosing_definition() -> Result<()> {
+    let (tx, _rx) = mpsc::channel(64);
+    let ctx = init(tx).await?;
+    let before = ctx.rt.env_stats().await?.lambda_defs_len;
+    for _ in 0..5 {
+        let r = ctx
+            .rt
+            .compile(literal!(
+                "let mk = |k: i64| |j: i64| |#d = k, x: i64| cast<string>(d)$"
+            ))
+            .await?;
+        let held = ctx.rt.env_stats().await?.lambda_defs_len;
+        assert_eq!(
+            held,
+            before + 3,
+            "mk and the two functions it returns stay registered"
+        );
+        drop(r);
+        let after = ctx.rt.env_stats().await?.lambda_defs_len;
+        assert_eq!(before, after, "deleted definitions kept {} entries", after - before);
+    }
+    ctx.shutdown().await;
+    Ok(())
+}
+
 /// A dynamic module's source that fails to compile leaves nothing it
 /// registered, as a statement does.
 #[tokio::test(flavor = "current_thread")]
