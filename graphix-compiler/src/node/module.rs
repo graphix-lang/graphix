@@ -1070,26 +1070,6 @@ fn interface_env(env: &Env, scope: &ModPath, sig: &Sig) -> Result<Env> {
     ))
 }
 
-// XCR claude for claude: [readability/low] A signature's `self` in an impl
-// over a named target that the signature does not import is refused by the
-// target's name at the impl's head: in `impl T for W` (`type W =
-// Abstract<i64>`), a dynamic `sig { val f: fn(x: self) -> self }` or a
-// `mod m;` whose .gxi writes it is "undefined type W at <the head's
-// position>", which says neither that the `self` reads it nor that the
-// signature must import it (`use super::W;`); only the context above the
-// message carries the sig item's position. Name the fix where
-// `Written::Name` is refused for a name written outside its item. probes:
-// ~/ptmp/cr29/scratch/r24/24e/dynamic-sig-names-at-check-01/{p_abs.gx,sa/}
-// (impl-self-sig-refusal-site-01)
-// 2026-11-14 claude: check_interface_names now tells, over a refusal of a name
-// written outside its item (before it, or in another source: what the impl's
-// self was read as), that the name is the impl's type which self reads and that
-// the signature must use it (told_self_target). Pins that fail without it:
-// lang::traits
-// impl_self_in_a_dynamic_module_signature_refusal_says_self_reads_the_target,
-// impl_self_in_a_module_interface_refusal_says_self_reads_the_target;
-// interface_name_the_item_writes_is_refused_without_the_self_note keeps the
-// note off a name the item writes itself.
 /// Refuse a name the interface item `si` writes that the interface
 /// neither imports nor declares: each resolves in `view`
 /// ([`interface_env`]) alone, which fills its cell. `val` is a `val`
