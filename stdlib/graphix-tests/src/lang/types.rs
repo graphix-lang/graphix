@@ -11532,6 +11532,49 @@ run!(
     prints("i64:7")
 );
 
+// A variable that does not widen (a function over it holds it outside
+// data), bounded by a union of function types, is bound to a callback by
+// the callback's own check: the members' parameters are the callback's
+// once its result tells them apart, and a callback that does not is
+// refused for the annotation.
+run!(
+    callback_into_a_union_bound_under_a_function_takes_the_members_parameter,
+    r#"{
+  type E<'x, 'y> = [fn(v: 'x) -> i64, fn(v: 'y) -> string];
+  let f = 'a2: E<'a3, 'a3> |z: 'a3, x1: 'a2, k: fn(q: 'a2) -> i64| 7;
+  f(1, |v| 1, |q| 0)
+}"#,
+    prints("i64:7")
+);
+run!(
+    callback_into_the_second_member_of_a_union_bound_under_a_function,
+    r#"{
+  type E<'x, 'y> = [fn(v: 'x) -> i64, fn(v: 'y) -> string];
+  let f = 'a2: E<'a3, 'a3> |z: 'a3, x1: 'a2, k: fn(q: 'a2) -> i64| 7;
+  f(1, |v| "s", |q| 0)
+}"#,
+    prints("i64:7")
+);
+run!(
+    callback_of_no_result_into_a_union_bound_under_a_function_refused,
+    r#"{
+  type E<'x, 'y> = [fn(v: 'x) -> i64, fn(v: 'y) -> string];
+  let f = 'a2: E<'a3, 'a3> |z: 'a3, x1: 'a2, k: fn(q: 'a2) -> i64| 7;
+  f(1, |v| never(), |q| 0)
+}"#,
+    refused(TWO_DECIDED_TAKERS);
+    FuseExpect::None
+);
+run!(
+    callback_of_a_written_result_into_a_union_bound_under_a_function,
+    r#"{
+  type E<'x, 'y> = [fn(v: 'x) -> i64, fn(v: 'y) -> string];
+  let f = 'a2: E<'a3, 'a3> |z: 'a3, x1: 'a2, k: fn(q: 'a2) -> i64| 7;
+  f(1, |v| -> i64 never(), |q| 0)
+}"#,
+    prints("i64:7")
+);
+
 // A formal that reaches a variable an earlier argument settled only
 // through another variable's bound leaves it settled: the copy the
 // argument pre-unifies with opens its own cells alone.

@@ -1612,6 +1612,29 @@ impl TVar {
     }
 }
 
+impl TVar {
+    /// Whether one of the open cell's union bounds has two members that
+    /// take `t`, none holding the others ([`member_with_parts`]): the
+    /// cell binding to `t` now would leave the bound not asking which.
+    pub fn bound_takers_ambiguous(&self, env: &Env, t: &Type) -> Result<bool> {
+        let flags = BitFlags::empty();
+        let mut hist = ContainsHist::early();
+        for c in self.cell_constraints() {
+            let members = Type::dispatch_members(env, &c)?;
+            let mut admit: SmallVec<[&Type; 2]> = SmallVec::new();
+            for m in members.iter().filter(|m| m.takes_constructor_of(t)) {
+                if m.contains_int(guide(flags), env, &mut hist, t)? {
+                    admit.push(m)
+                }
+            }
+            if admit.len() >= 2 && widest(&admit, flags, env, &mut hist)?.is_none() {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+}
+
 /// Pass the parts of a conjunct `c` that is not exact down to the open
 /// cells of `t` they meet: a cell in a covariant position is narrowed by
 /// its part (`Array<[i64, null]> ⊇ Array<'y>` gives `'y: [i64, null]`, `Int

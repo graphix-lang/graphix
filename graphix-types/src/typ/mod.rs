@@ -3219,6 +3219,12 @@ impl Type {
                     r => r.map(|_| ()),
                 }
             };
+            if let (None, Type::TVar(tv), Some(Type::Fn(_))) = (&d, declared, &a)
+                && let Some(cell) = tv.open_cell()
+                && cell.bound_takers_ambiguous(env, actual)?
+            {
+                return Ok(());
+            }
             match (&d, &a) {
                 (Some(Type::Fn(d)), Some(Type::Fn(a))) => d.pre_unify_params(env, a),
                 // a part pre-unifies as the whole would

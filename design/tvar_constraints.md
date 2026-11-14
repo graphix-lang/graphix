@@ -856,7 +856,11 @@ member beside another that could take the undecided argument included
 first argument has decided one member by the time the second
 pre-unifies; `f(["a"])` over `|x: [A, null]|` with `type A = [Array<i64>,
 Array<string>]`, where the first member took the literal before its
-element was checked), and the
+element was checked; a variable bounded by a union of function types, a
+callback's formal, is the same: two members that take the callback and
+none holding the other leave it unbound to the callback until its own
+check has its result, `TVar::bound_takers_ambiguous`, pins
+`lang::types::callback_*_union_bound_under_a_function*`), and the
 probes behind a refusal's note are ordered walks on copies
 (`callsite::annotation_may_fit`); a function's parameters pre-unified
 with a formal's leave two decided takers to the argument's own check too

@@ -1199,7 +1199,7 @@ fn typecheck_arg<R: Rt>(
         }
         Opening::Closed | Opening::Open => SmallVec::new(),
     };
-    // CR claude for claude: [bug/medium] A lambda passed at a variable that does not
+    // XCR claude for claude: [bug/medium] A lambda passed at a variable that does not
     // widen, bounded by a union of two function types, is bound to the variable before
     // its own check, so no member of the bound gives it its parameter: the check
     // accepts and the build refuses the instance. `type E<'x, 'y> = [fn(v: 'x) -> i64,
@@ -1215,6 +1215,18 @@ fn typecheck_arg<R: Rt>(
     // (bound-union-binds-argument-early-01 is the same early bind, refused where this
     // is accepted). probes: ~/ptmp/cr29/scratch/r24/24d/ubo/{zb,zc,zd,z5}.gx
     // (unwidenable-bound-callback-01)
+    // 2026-11-14 claude: Closed in Type::pre_unify_seen: a callback whose formal is an
+    // open variable bounded by a union of function types where two members take it and
+    // none holds the other (TVar::bound_takers_ambiguous) is left to its own check,
+    // which binds the variable once its result tells the members apart, as the widening
+    // path does. A callback of no result is refused naming the annotation
+    // (UndecidedTaker), where the build refused the instance. Pins that fail without
+    // it:
+    // lang::types::callback_into_a_union_bound_under_a_function_takes_the_members_parameter,
+    // callback_into_the_second_member_of_a_union_bound_under_a_function,
+    // callback_of_no_result_into_a_union_bound_under_a_function_refused (the
+    // written-result twin passes). Census 2967 files: no change; guicheck 39.644G base
+    // vs 39.764G lane (39.793G lane without the fix).
     match &opening {
         Opening::Closed => {
             Type::pre_unify_arg(&ctx.env, typ, n.typ()).map_err(refused)?
@@ -1790,6 +1802,10 @@ fn widenable(env: &Env, def: &FnType, inst: &FnType) -> LPooled<AHashMap<ArcStr,
     // union-bound-open-member-order-01 (gen.py: 2 of 1500 families). probes, and the
     // walk as a patch: ~/ptmp/cr29/scratch/r24/24d/ubo/{t1,t4,t6,t15,y1,v5,i7}.gx,
     // static-walk.patch (bound-held-variable-widens-01)
+    // 2026-11-14 claude: unwidenable-bound-callback-01, the one this CR says to fix
+    // first, is fixed in the lane 25d build (pre_unify_seen no longer binds a variable
+    // bounded by a union of function types to an ambiguous callback early); its static
+    // walk can be tried again.
     let mut positions = DataPositions::new(env).telling_members();
     inst.for_each_type(&mut |t| {
         positions.walk(t, Held::default(), &mut |tv, held| {
