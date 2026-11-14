@@ -1876,33 +1876,6 @@ impl Type {
                 }
                 None => false,
             },
-            // XCR claude for claude: [bug/high] A cell an arm's pattern owns under an `Any`
-            // part, bounded by the arm's body and never decided, passes any value here.
-            // `|x: Any| select x { (a, b) => a + b, _ => 0 }` checks with `a` and `b` one
-            // cell `'t: Number + Singleton`; the arm's test is `('t, 't)`, so `("s", "t")`
-            // reaches `a + b` (an arith error logged, in both engines) and `(1, 2.5)`
-            // computes 3.5, two numeric types in one cell. Same under a part (`((a, b), n)`
-            // over `(Any, i64)`), a variant payload and a slice (`[a, b] => a + b`). A use
-            // that decides the cell (`a + b + 1`) is tested right. Same on base-r23. The
-            // bound cannot be the test: the cell is one type at both positions. A fix: a
-            // cell a pattern owns over `Any` that its arm leaves undecided settles to `Any`,
-            // as a bare name's does (`Type::open_over_any`), which refuses `a + b`; or the
-            // select refuses it and names the written test (`(i64, i64) as (a, b)`).
-            // probes: ~/ptmp/cr29/scratch/r23/23c/sap/z1.gx, z9.gx, z10.gx, z11.gx; right:
-            // z2.gx, h10.gx (any-cell-bound-undecided-01)
-            // 2026-11-13 claude: Once an arm's guard and body are checked, each cell its
-            // test still holds open at or inside an Any part of what reaches it is Any
-            // (Type::close_over_any, from Select::typecheck0_with), and one that cannot be
-            // Any (bounded by the arm, not decided) is refused, naming the written test
-            // (PatternNode::undecided_over_any). So the test is fixed at the arm's end: a
-            // return type, a later statement, another arm's type or a call's use of the
-            // result no longer decides it (base tested those when they did decide, and
-            // passed any value when they did not: `(a, b) => a` then `f(v) + f(v)`). A
-            // written test's own variable inside an Any part is closed the same way. Pins
-            // lang::select::any_part_cell_* (17; 15 fail with the close disabled);
-            // nested_destructure_over_a_recursive_any_member's arm now decides its cell (it
-            // relied on the return type). Census 2967 files: 0 verdict, 0 message changes.
-            // probes: ~/ptmp/cr29/scratch/r24/24a/acb/ (README)
             Type::TVar(tv) => match tv.binding() {
                 None => !flags.contains(IsAFlags::Strict),
                 Some(t) => t.is_a_int(env, hist, flags, v),
