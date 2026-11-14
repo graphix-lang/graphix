@@ -310,7 +310,11 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   settles to ⊥, which a run-time test passes every value at
   (`Type::is_a`, `IsAFlags::Strict` apart); inside an `Any` part it is
   the arm's to decide, and `Any` at the arm's end, as an inferred cell
-  is. A union drops a ⊥ member and keeps `Any`: `Opt<'b>` over `type
+  is. At the select's settle a variable the test writes once is copied
+  as an inferred predicate's cell is and left to that narrowing; one it
+  writes twice stays out of the copy (`Type::position_counts`; pins
+  `lang::select::written_variable_once_*`, `written_variable_twice_*`).
+  A union drops a ⊥ member and keeps `Any`: `Opt<'b>` over `type
   Opt<'x> = ['x, null]` expands to `null` once `'b` is ⊥, and a fused
   arm would lay out `x` of `Array<['b, i64]> as [x, ..]` as an `i64`
   whatever element reaches it. So from `typecheck1` on an arm's written
