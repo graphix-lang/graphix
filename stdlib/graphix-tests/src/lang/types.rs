@@ -2204,6 +2204,22 @@ run!(
        let g = |x: 'z| -> i64 0; g(w) }; f([1]) }",
     prints("i64:0")
 );
+// A nested definition holds its own variable rigid in its body, though a
+// parameter reaches an enclosing bound that names a variable of its name.
+run!(
+    a_nested_quantifier_stays_rigid_beside_an_enclosing_bound_of_its_name,
+    "{ let f = 'a: Number, 'b: Array<'a> |w: 'a, v: 'b| { \
+       let g = 'a: Any |x: fn(q: 'b) -> i64| -> 'a x; g(|q| 0) }; f(1, [1]) }",
+    refused("a call picks 'a, and the body's value need not be of the type it picks");
+    FuseExpect::None
+);
+run!(
+    a_nested_quantifier_beside_an_enclosing_bound_of_its_name_stays_generic,
+    "{ let f = 'a: Number, 'b: Array<'a> |w: 'a, v: 'b| { \
+       let g = 'a: Any |x: fn(q: 'b) -> i64, y: 'a| -> 'a y; \
+       g(|q| 0, 1) + str::len(g(|q| 0, \"s\")) }; f(1, [1]) }",
+    prints("i64:2")
+);
 run!(
     a_written_fn_types_unheld_quantifier_is_refused,
     "{ type F = fn<'a: Number>(x: i64) -> i64; let f: F = |x| x; f(1) }",

@@ -2440,9 +2440,13 @@ former consumer derives from the cells:
   its declarer's, and its bound names its declarer's variables: the walk
   never finds one of those under the name of the signature's own
   quantifier, so the bound of an enclosing definition's variable holds
-  none of a nested definition's quantifiers, and a nested signature
-  prints its own variable's bound.
+  none of a nested definition's quantifiers, a nested definition's body
+  holds its own variable rigid, never an enclosing one of its name in
+  its place (`DefGate::open` reads the cells through
+  `collect_tvars_through_bounds`), and a nested signature prints its own
+  variable's bound.
   Pins: `lang::types::a_quantifier_only_an_enclosing_bound_names_is_refused`,
+  `a_nested_quantifier_stays_rigid_beside_an_enclosing_bound_of_its_name`,
   `parser::test::a_nested_signature_prints_its_own_variables_bound`,
   `typ::fntyp::tests::a_walk_through_bounds_finds_its_own_quantifier`.
 - `replace_auto_constrained` reads inferred `'_N` pairs from the cells

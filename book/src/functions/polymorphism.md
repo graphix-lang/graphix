@@ -105,9 +105,11 @@ callers may do.
 A call chooses a type for each declared variable from its arguments, its
 result and what it throws, so a variable must appear in the signature:
 on an argument, the return type or the throws, or inside the bound of
-another variable that does (`'a: Array<'b>, 'b: Int |x: 'a|`). One that
-only the body names could be chosen by no call, and the definition is
-refused,
+another variable it declares that does
+(`'a: Array<'b>, 'b: Int |x: 'a|`); the bound of a variable an enclosing
+definition declares names that definition's variables, never this one's.
+One that only the body names could be chosen by no call, and the
+definition is refused,
 
 ```graphix
 〉let h = 'a: Number |x: i64| -> i64 { let v: 'a = 1; x }
