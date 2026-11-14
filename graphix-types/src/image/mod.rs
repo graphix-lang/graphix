@@ -1464,14 +1464,14 @@ fn cell_encode(cell: &Arc<CellLock>, buf: &mut impl BufMut) -> Result<(), PackEr
         |e| &mut e.cells,
         buf,
         |buf| {
-            let (typ, constraints, below, facts, call_copy, level) = {
+            let (typ, constraints, below, facts, naming, level) = {
                 let c = cell.read();
                 let TCell {
                     binding,
                     constraints,
                     lower,
                     facts,
-                    call_copy,
+                    naming,
                     rigid_gates,
                     level,
                     task: _,
@@ -1495,7 +1495,7 @@ fn cell_encode(cell: &Arc<CellLock>, buf: &mut impl BufMut) -> Result<(), PackEr
                     constraints.to_vec(),
                     lower.to_vec(),
                     *facts,
-                    *call_copy,
+                    naming.clone(),
                     *level,
                 )
             };
@@ -1503,7 +1503,7 @@ fn cell_encode(cell: &Arc<CellLock>, buf: &mut impl BufMut) -> Result<(), PackEr
             slice_encode(&constraints, buf)?;
             slice_encode(&below, buf)?;
             facts.bits().encode(buf)?;
-            call_copy.encode(buf)?;
+            naming.encode(buf)?;
             level.encode(buf)
         },
     )
@@ -1545,7 +1545,7 @@ fn cell_decode(buf: &mut impl Buf) -> Result<Arc<CellLock>, PackError> {
             let below: Vec<_> = Pack::decode(sub)?;
             let facts = BitFlags::from_bits(u8::decode(sub)?)
                 .map_err(|_| PackError::InvalidFormat)?;
-            let call_copy = bool::decode(sub)?;
+            let naming = Pack::decode(sub)?;
             let level = Pack::decode(sub)?;
             let mut c = cell.write();
             c.level = level;
@@ -1553,7 +1553,7 @@ fn cell_decode(buf: &mut impl Buf) -> Result<Arc<CellLock>, PackError> {
             c.constraints = constraints.into_iter().collect();
             c.lower = below.into_iter().collect();
             c.facts = facts;
-            c.call_copy = call_copy;
+            c.naming = naming;
             drop(c);
             Ok(cell)
         },
@@ -2316,12 +2316,12 @@ mod decode_tests {
     /// so does its mark of a call's copy.
     #[test]
     fn a_cell_keeps_its_facts() {
-        use crate::typ::tvar::CellFact;
+        use crate::typ::tvar::{CellFact, Naming};
         let tv = TVar::empty_named(literal!("a"));
         tv.bind(Type::Bottom);
         let all = CellFact::BottomRequired | CellFact::BottomFed | CellFact::CycleRefused;
         tv.cell().write().facts = all;
-        tv.cell().write().call_copy = true;
+        tv.cell().write().naming = Naming::call_copy();
         let t = Type::TVar(tv);
         let mut enc = ImageEncoder::new();
         let len = EncodeImage::with(&mut enc, || t.encoded_len());
@@ -2336,7 +2336,30 @@ mod decode_tests {
         let back = read(&mut dec, &image, len).unwrap();
         let Type::TVar(back) = &back else { panic!() };
         assert_eq!(back.cell().read().facts, all);
-        assert!(back.cell().read().call_copy);
+        assert_eq!(back.cell().read().naming, Naming::call_copy());
+    }
+
+    /// A cell a written variable took keeps that variable's name.
+    #[test]
+    fn a_cell_keeps_the_variable_that_took_it() {
+        use crate::typ::tvar::{NamedBy, Naming};
+        let tv = TVar::empty_named(literal!("a"));
+        tv.cell().write().naming = Naming::taken(literal!("q"));
+        let t = Type::TVar(tv);
+        let mut enc = ImageEncoder::new();
+        let len = EncodeImage::with(&mut enc, || t.encoded_len());
+        let mut buf = EncodeImage::with(&mut enc, || {
+            let mut buf = ImageBuf::with_capacity(0);
+            t.encode(&mut buf).unwrap();
+            buf
+        });
+        let offsets = enc.finish(&mut buf);
+        let image = buf.freeze();
+        let mut dec = ImageDecoder::new(enc.counts(), image.clone(), offsets).unwrap();
+        let back = read(&mut dec, &image, len).unwrap();
+        let Type::TVar(back) = &back else { panic!() };
+        let naming = back.cell().read().naming.clone();
+        assert!(matches!(naming.by(), NamedBy::Taken(n) if &**n == "q"));
     }
 
     /// A read that failed fails again on the same decoder: it left none

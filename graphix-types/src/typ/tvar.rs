@@ -882,6 +882,38 @@ impl Level {
     }
 }
 
+impl Pack for Naming {
+    fn encoded_len(&self) -> usize {
+        1 + match self.by() {
+            NamedBy::Taken(name) => name.encoded_len(),
+            NamedBy::Own | NamedBy::CallCopy => 0,
+        }
+    }
+
+    fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
+        match self.by() {
+            NamedBy::Own => Ok(buf.put_u8(0)),
+            NamedBy::CallCopy => Ok(buf.put_u8(1)),
+            NamedBy::Taken(name) => {
+                buf.put_u8(2);
+                name.encode(buf)
+            }
+        }
+    }
+
+    fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
+        if !buf.has_remaining() {
+            return Err(PackError::BufferShort);
+        }
+        match buf.get_u8() {
+            0 => Ok(Self::OWN),
+            1 => Ok(Self::call_copy()),
+            2 => Ok(Self::taken(Pack::decode(buf)?)),
+            _ => Err(PackError::UnknownTag),
+        }
+    }
+}
+
 impl Pack for Level {
     fn encoded_len(&self) -> usize {
         1 + match self {
@@ -1563,6 +1595,82 @@ pub(crate) enum Fresh<'a> {
     Generic,
 }
 
+/// Whose name a cell's handles carry: what a message may write a handle
+/// as. One word: no name is the handles' own, the empty name a call's copy
+/// (no variable is written so), any other the written variable that took
+/// the copy.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct Naming(Option<ArcStr>);
+
+/// [`Naming`], read.
+pub(crate) enum NamedBy<'a> {
+    /// The name a handle carries is the cell's.
+    Own,
+    /// A call's copy of a cell ([`Fresh::Instantiate`]), or a copy of one:
+    /// the name is the copied variable's, which the program wrote for
+    /// another cell. A merge keeps it where no variable the program wrote
+    /// names either cell.
+    CallCopy,
+    /// A call's copy a variable the program wrote took: every handle of
+    /// the cell writes that variable's name, whatever name it carries.
+    Taken(&'a ArcStr),
+}
+
+impl Naming {
+    pub(crate) const OWN: Naming = Naming(None);
+
+    pub(crate) fn call_copy() -> Self {
+        Naming(Some(ArcStr::new()))
+    }
+
+    pub(crate) fn taken(name: ArcStr) -> Self {
+        Naming(Some(name))
+    }
+
+    pub(crate) fn by(&self) -> NamedBy<'_> {
+        match &self.0 {
+            None => NamedBy::Own,
+            Some(n) if n.is_empty() => NamedBy::CallCopy,
+            Some(n) => NamedBy::Taken(n),
+        }
+    }
+
+    /// What a cell copied from one named `self` and into one named `into`
+    /// is: the copy of a call's copy stays one, and a written variable's
+    /// name is the copy's too.
+    fn copied_into(self, into: &Naming) -> Naming {
+        match (self.by(), into.by()) {
+            (NamedBy::CallCopy, _) | (_, NamedBy::CallCopy) => Self::call_copy(),
+            (NamedBy::Taken(_), _) => self,
+            (NamedBy::Own, _) => into.clone(),
+        }
+    }
+
+    /// What two merged cells are, `a` and `b` being the handles the merge
+    /// met them through: a name a written variable gave a call's copy
+    /// stays the cell's, as does a written handle's where the other cell
+    /// is a call's copy.
+    fn merged(a: (&Naming, &TVar), b: (&Naming, &TVar)) -> Naming {
+        match (a.0.by(), b.0.by()) {
+            (NamedBy::Taken(_), _) => a.0.clone(),
+            (_, NamedBy::Taken(_)) => b.0.clone(),
+            (NamedBy::Own, NamedBy::Own) => Self::OWN,
+            (NamedBy::CallCopy, NamedBy::CallCopy) => Self::call_copy(),
+            (NamedBy::CallCopy, NamedBy::Own) => Self::of_copy_and(b.1),
+            (NamedBy::Own, NamedBy::CallCopy) => Self::of_copy_and(a.1),
+        }
+    }
+
+    /// A call's copy merged with the cell `t` is a handle of, whose own
+    /// name is a written variable's unless the checker made it up.
+    fn of_copy_and(t: &TVar) -> Naming {
+        match t.generated() {
+            true => Self::call_copy(),
+            false => Self::taken(t.name.clone()),
+        }
+    }
+}
+
 /// The shared binding cell: aliased `TVar`s hold one `Arc` of this.
 /// `constraints` is a conjunction — everything the cell is ever bound
 /// to must be contained by every member (empty = unconstrained); each
@@ -1579,11 +1687,9 @@ pub struct TCell {
     /// What the checks learned of the cell ([`CellFact`]): every copy, merge
     /// and image carries the whole set.
     pub(crate) facts: BitFlags<CellFact>,
-    /// A call's copy of a cell ([`Fresh::Instantiate`]), or a copy of one:
-    /// its name is the copied variable's, which the program wrote for
-    /// another cell. Copies and images carry it; a merge keeps it where
-    /// no variable the program wrote names either cell.
-    pub(crate) call_copy: bool,
+    /// Whose name the handles' names are ([`Naming`]). Copies and images
+    /// carry it.
+    pub(crate) naming: Naming,
     /// Nonzero while a declared (named) lambda tvar is inside its def's
     /// body check: a rigid unbound cell never binds, so the body must
     /// be well-typed for arbitrary 'a.
@@ -1731,7 +1837,7 @@ impl Default for TCell {
             constraints: SmallVec::new(),
             lower: SmallVec::new(),
             facts: BitFlags::empty(),
-            call_copy: false,
+            naming: Naming::OWN,
             rigid_gates: 0,
             level: current_level(),
             task: TASK.get(),
@@ -2063,21 +2169,17 @@ impl TVar {
 
     /// [`Self::written_open`] where the program wrote the variable for this
     /// cell, which a message may then name as one type: a call's copy of
-    /// the variable its callee declares ([`TCell::call_copy`]) carries a
-    /// name the program wrote for another cell, as every other copy of it
-    /// does.
+    /// the variable its callee declares carries a name the program wrote
+    /// for another cell, as every other copy of it does, unless a variable
+    /// the program wrote took it ([`Naming`]).
     pub fn written_own(&self) -> Option<Type> {
-        match self.call_copy() {
-            true => None,
-            false => self.written_open(),
-        }
-    }
-
-    /// Whether the cell this var stands for is a call's copy
-    /// ([`TCell::call_copy`]).
-    fn call_copy(&self) -> bool {
         let end = self.open_cell().unwrap_or_else(|| self.clone());
-        end.cell().read().call_copy
+        let naming = end.cell().read().naming.clone();
+        match naming.by() {
+            NamedBy::CallCopy => None,
+            NamedBy::Taken(name) => Some(Type::TVar(TVar::empty_named(name.clone()))),
+            NamedBy::Own => self.written_open(),
+        }
     }
 }
 
@@ -2286,10 +2388,10 @@ impl TVar {
     /// conjuncts and lower bounds, each through `image`, and its facts. No
     /// cell they reach is claimed at the copy's level.
     pub(super) fn copy_bounds_into(&self, copy: &Self, image: impl Fn(&Type) -> Type) {
-        let (constraints, lower, facts, call_copy) = {
+        let (constraints, lower, facts, naming) = {
             let cell = self.cell();
             let c = cell.read();
-            (c.constraints.clone(), c.lower.clone(), c.facts, c.call_copy)
+            (c.constraints.clone(), c.lower.clone(), c.facts, c.naming.clone())
         };
         let constraints: SmallVec<[Type; 1]> = constraints.iter().map(&image).collect();
         let lower: SmallVec<[Type; 1]> = lower.iter().map(&image).collect();
@@ -2298,7 +2400,7 @@ impl TVar {
         c.constraints.extend(constraints);
         c.lower.extend(lower);
         c.facts |= facts;
-        c.call_copy |= call_copy;
+        c.naming = naming.copied_into(&c.naming);
     }
 
     /// Mark a generic cell a written type's own ([`Level::Written`]).
@@ -2984,14 +3086,12 @@ impl TVar {
                 o_cell.data_ptr().addr()
             );
         }
-        let (level, s_copy) = {
+        let (level, s_naming) = {
             let s = s_cell.read();
-            (s.level, s.call_copy)
+            (s.level, s.naming.clone())
         };
-        let o_copy = o_cell.read().call_copy;
-        // a call's copy merged with a cell no variable the program wrote
-        // names stays one; a written variable now names the cell
-        // CR claude for claude: [bug/low] A call's copy a written variable took is
+        let o_naming = o_cell.read().naming.clone();
+        // XCR claude for claude: [bug/low] A call's copy a written variable took is
         // unmarked here, but only that variable's handle carries its name: the copy's
         // own handles still carry the callee's, so two calls' copies still read as
         // one type where a message reaches them through those. With `let f = |x: 'a|
@@ -3008,9 +3108,16 @@ impl TVar {
         // 200 its assertion allows, and every node-walked activation holds a cell).
         // probes: ~/ptmp/cr29/scratch/r24/24g/umin-rev/a1.gx, a2.gx
         // (copy-taken-by-written-name-01)
-        let call_copy = (s_copy || o_copy)
-            && (s_copy || self.generated())
-            && (o_copy || other.generated());
+        // 2026-11-14 claude: TCell::call_copy is now TCell::naming (tvar.rs Naming:
+        // Own, call's copy, or the written variable that took it, one word); a copy
+        // merged with a cell a written variable names keeps that name, and
+        // TVar::written_own writes it through every handle. Pins that fail without it
+        // (4 modes each):
+        // lang::select::partial_struct_call_copies_a_written_variable_took_read_through_a_built_again_value
+        // and ..._a_later_annotation_took_read_through_the_built_value;
+        // image::a_cell_keeps_the_variable_that_took_it round-trips it
+        // (REGISTRATION_FORMAT 112).
+        let naming = Naming::merged((&s_naming, self), (&o_naming, other));
         let moved: LPooled<Vec<Type>> =
             to_add.iter().chain(below.iter()).cloned().collect();
         {
@@ -3022,7 +3129,7 @@ impl TVar {
             oc.lower.extend(below.drain(..));
             if !earlier_task(&oc) {
                 oc.facts |= facts;
-                oc.call_copy = call_copy;
+                oc.naming = naming;
             } else if !oc.facts.contains(facts) {
                 written_of(oc.task, "cell", Some(cell_addr(&oc)));
             }
@@ -3409,7 +3516,7 @@ impl TVar {
             Fresh::Copy | Fresh::CopyBeside(_) => self.fresh_copy(),
             Fresh::Instantiate(open) if self.level().copied_by(open) => {
                 let f = TVar::empty_named(self.name.clone());
-                f.cell().write().call_copy = true;
+                f.cell().write().naming = Naming::call_copy();
                 f
             }
             Fresh::Scheme(open) if self.level().copied_by(open) => {
@@ -3428,7 +3535,7 @@ impl TVar {
 
     /// Make the empty cell `f` this var's copy in `fresh`: the conjuncts,
     /// lower bounds and binding rebuilt through `walk`, the facts and
-    /// [`TCell::call_copy`] kept.
+    /// [`TCell::naming`] kept.
     fn copy_into<M: Forwards>(
         &self,
         f: &TVar,
@@ -3445,16 +3552,16 @@ impl TVar {
             f.add_lower(walk(&t, fresh, memo).unwrap_or(t));
         }
         // what the source's checks learned holds of every copy
-        let (facts, call_copy) = {
+        let (facts, naming) = {
             let cell = self.cell();
             let c = cell.read();
-            (c.facts, c.call_copy)
+            (c.facts, c.naming.clone())
         };
         {
             let cell = f.cell();
             let mut c = cell.write();
             c.facts |= facts;
-            c.call_copy |= call_copy;
+            c.naming = naming.copied_into(&c.naming);
         }
         if let Some(t) = self.binding() {
             memo.in_binding(true);

@@ -6647,6 +6647,38 @@ run!(partial_struct_call_copies_a_written_variable_took_keep_its_name_refused, r
     select v { {a, ..} => array::len(a) }
 }"#, refused("the pattern { a, .. } matches two members, { a: Array<i64>, c: Array<'q> } and { a: Array<string>, c: Array<'r> }, told apart by types not decided at this select; annotate those types, or the member you mean, e.g. `T as { a, .. }`, or name every field"); FuseExpect::None);
 
+// The cell keeps the name a variable took it by: a value built again over
+// the copies, unannotated, reaches them through the copies' own handles.
+run!(partial_struct_call_copies_a_written_variable_took_read_through_a_built_again_value, r#"{
+    let b = true;
+    let f = |x: 'a| -> Array<'a> [];
+    let c1 = f(never());
+    let c2 = f(never());
+    let v: [{a: Array<i64>, c: Array<'q>}, {a: Array<string>, c: Array<'r>}] =
+        select b { true => {a: [1], c: c1}, false => {a: ["s"], c: c2} };
+    let w = select b { true => {a: [1], c: c1}, false => {a: ["s"], c: c2} };
+    select w { {a, ..} => array::len(a) }
+}"#, refused("the pattern { a, .. } matches two members, { a: Array<i64>, c: Array<'q> } and { a: Array<string>, c: Array<'r> }, told apart by types not decided at this select; annotate those types, or the member you mean, e.g. `T as { a, .. }`, or name every field"); FuseExpect::None);
+
+run!(partial_struct_call_copies_a_later_annotation_took_read_through_the_built_value, r#"{
+    let b = true;
+    let f = |x: 'a| -> Array<'a> [];
+    let w = select b { true => {a: [1], c: f(never())}, false => {a: ["s"], c: f(never())} };
+    let v: [{a: Array<i64>, c: Array<'q>}, {a: Array<string>, c: Array<'r>}] = w;
+    select w { {a, ..} => array::len(a) }
+}"#, refused("the pattern { a, .. } matches two members, { a: Array<i64>, c: Array<'q> } and { a: Array<string>, c: Array<'r> }, told apart by types not decided at this select; annotate those types, or the member you mean, e.g. `T as { a, .. }`, or name every field"); FuseExpect::None);
+
+// Copies no written variable took stay numbered when the cells merge with
+// ones the checker made up.
+run!(partial_struct_call_copies_met_through_a_let_stay_numbered, r#"{
+    let b = true;
+    let f = |x: 'a| -> Array<'a> [];
+    let c1 = f(never());
+    let c2 = f(never());
+    let w = select b { true => {a: [1], c: c1}, false => {a: ["s"], c: c2} };
+    select w { {a, ..} => array::len(a) }
+}"#, refused("matches two members, { a: Array<i64>, c: Array<'_1> } and { a: Array<string>, c: Array<'_2> }, told apart"); FuseExpect::None);
+
 run!(partial_struct_call_copies_annotated_where_built, r#"{
     let b = true;
     let f = |x: 'a| -> Array<'a> [];

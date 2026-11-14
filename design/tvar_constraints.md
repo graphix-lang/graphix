@@ -309,11 +309,11 @@ the variable a program wrote for it (`node::Holders`,
 `TVar::written_own`), else numbered as the two-member refusal below
 numbers one, `'_1`, one number a cell. A call's copy of a variable its
 callee declares is no variable the program wrote for the copy
-(`TCell::call_copy`): `[Array<string>, Array<Array<'_1>>]` where `g(never())`
+(`TCell::naming`): `[Array<string>, Array<Array<'_1>>]` where `g(never())`
 over `|u: 'a| -> Array<'a>` built the inner array. A copy merged with a
-cell a written variable names is a copy no more: each name the cell goes
-by writes itself, the variable's as the variable and the copy's as the
-callee's. The hint names
+cell a written variable names is a copy no more: the cell is the
+variable's (`Naming::Taken`), and every handle of it writes the variable's
+name, the copy's own handles included. The hint names
 no type only where what was built has no written form. Two payloads
 of one Graphix-minted abstract type are declared as the union of the
 parameter (`B<[P1, P2]>`), read through one application,
@@ -1984,11 +1984,11 @@ read through a reference to an unnamed expression, a call's result)
 numbered, `'_1`, `'_2`, one number a cell (`Holders::number`), told as
 "types no binding names, annotated where their values are built". A
 call's copy of a variable its callee declares is one no binding names,
-though it carries the callee's name (`TCell::call_copy`): two calls of
+though it carries the callee's name (`TCell::naming`): two calls of
 `|x: 'a| -> Array<'a> []` give `Array<'_1>` and `Array<'_2>`, not
-`Array<'a>` twice, which reads as one type, unless a let's annotation
-took the copies and the members are written through the copies' own
-names.
+`Array<'a>` twice, which reads as one type. A let's annotation that took
+the copies names them (`'q`, `'r`) through every handle, the copies' own
+included.
 
 Two members decided apart (`Apart::Decided`) are refused in the same
 holder's words: a select asks for the member (`T as {a, ..}`); a let and a
