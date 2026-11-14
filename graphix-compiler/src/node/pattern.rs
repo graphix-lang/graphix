@@ -1797,7 +1797,7 @@ impl StructPatternNode {
         })
     }
 
-    // CR claude for claude: [bug/high] An abstract pattern in a slice with a rest, over
+    // XCR claude for claude: [bug/high] An abstract pattern in a slice with a rest, over
     // a scrutinee not yet decided, binds its payload at the type its arm decides, and a
     // call passes another instance of the type: `type W<'a> = Abstract<'a>; let f = |x|
     // select x { [W(p), ..] => p + 100, _ => 0 }; f([W("s")])` checks (`f` is `fn(x:
@@ -1815,6 +1815,19 @@ impl StructPatternNode {
     // the slice's elements test by tag. Same on base-r24. probes:
     // ~/ptmp/cr29/scratch/r24/24a/apa/g1.gx, g2.gx, g11.gx, g12.gx, g13.gx, g14.gx;
     // right: g4.gx, g6.gx, g9.gx (abstract-slice-rest-instance-01)
+    // 2026-11-14 claude: STALE on base-r25: closed in round 24 by 1d19aed9e
+    // (slice-open-element-later-01, graphix-compiler/src/lib.rs
+    // element_binds/unheld_member: a member still open at the settle is judged as what
+    // it may become). Every probe of the CR (g1, g2, g11, g12, g13, g14) and the
+    // one-step-over forms (a variant, struct, tuple or nested slice around W, a tuple
+    // scrutinee, a second W element) are refused at --check on base-r25 and the lane;
+    // g4/g6/g9 and the annotated and one-instance twins are as before. Pins
+    // lang::select_undecided::abstract_*_beside_a_rest_* and
+    // abstract_element_after_a_named_rest_over_a_parameter_refused: 6 of the 7 refusal
+    // pins fail with 1d19aed9e's lib.rs/select.rs undone (24 runs; the fused runs panic
+    // with the CR's kernel param message);
+    // abstract_element_beside_a_rest_of_a_let_written_later_refused holds either way.
+    // No code change. Probes ~/ptmp/cr29/scratch/r25/25a/asr/.
     /// This slice's elements where what reaches it types none of them
     /// (`Any`, `Array<Any>`, a cell the arms decide) and its run-time test
     /// is `et`, its predicate's own element union, alone. A rest takes the

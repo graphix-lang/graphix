@@ -2592,6 +2592,66 @@ run!(slice_element_binds_an_abstract_of_one_instance_beside_an_open_member, r#"{
     f(W(5))
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(6))); FuseExpect::Jit);
 
+// A slice with a rest over a parameter no annotation decides: the rest's
+// cell would take any instance of the abstract its element tests by tag.
+const ABSTRACT_BESIDE_A_REST: &str = "becomes that has its structure, and this select typed the pattern's binds for W<i64> alone";
+
+run!(abstract_element_beside_a_rest_over_a_parameter_refused, r#"{
+    type W<'a> = Abstract<'a>;
+    let f = |x| select x { [W(p), ..] => p + 100, _ => 0 };
+    f([W("s")])
+}"#, refused(ABSTRACT_BESIDE_A_REST); FuseExpect::None);
+
+run!(abstract_element_beside_a_rest_called_with_its_own_instance_refused, r#"{
+    type W<'a> = Abstract<'a>;
+    let f = |x| select x { [W(p), ..] => p + 100, _ => 0 };
+    f([W(1)])
+}"#, refused(ABSTRACT_BESIDE_A_REST); FuseExpect::None);
+
+run!(abstract_tuple_element_beside_a_rest_over_a_parameter_refused, r#"{
+    type W<'a> = Abstract<'a>;
+    let f = |x| select x { [W((a, b)), ..] => a + 100, _ => 0 };
+    f([W(("s", 2))])
+}"#, refused("this select typed the pattern's binds for W<(i64, "); FuseExpect::None);
+
+run!(abstract_element_beside_a_named_rest_over_a_parameter_refused, r#"{
+    type W<'a> = Abstract<'a>;
+    let f = |x| select x { [W(p), r..] => p + 100, _ => 0 };
+    f([W("s")])
+}"#, refused(ABSTRACT_BESIDE_A_REST); FuseExpect::None);
+
+run!(abstract_element_after_a_named_rest_over_a_parameter_refused, r#"{
+    type W<'a> = Abstract<'a>;
+    let f = |x| select x { [r.., W(p)] => p + 100, _ => 0 };
+    f([W("s")])
+}"#, refused(ABSTRACT_BESIDE_A_REST); FuseExpect::None);
+
+run!(abstract_list_element_beside_a_rest_over_a_parameter_refused, r#"{
+    type W<'a> = Abstract<'a>;
+    let f = |x| select x { [<W(p), r..>] => p + 100, _ => 0 };
+    f([<W("s")>])
+}"#, refused(ABSTRACT_BESIDE_A_REST); FuseExpect::None);
+
+run!(abstract_element_beside_a_rest_of_a_let_written_later_refused, r#"{
+    type W<'a> = Abstract<'a>;
+    let x = never();
+    let r = select x { [W(p), ..] => p + 100, _ => 0 };
+    x <- [W("s")];
+    r
+}"#, refused("this pattern takes a value of W<string> too"); FuseExpect::None);
+
+run!(abstract_element_beside_a_rest_over_an_annotated_parameter, r#"{
+    type W<'a> = Abstract<'a>;
+    let f = |x: Array<W<i64>>| select x { [W(p), ..] => p + 100, _ => 0 };
+    f([W(1)])
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(101))); FuseExpect::Jit);
+
+run!(abstract_of_one_instance_beside_a_rest_over_a_parameter, r#"{
+    type W = Abstract<i64>;
+    let f = |x| select x { [r.., W(p)] => p + 100, _ => 0 };
+    f([W(1), W(2)])
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(102))); FuseExpect::Jit);
+
 // With a `_` among its elements the slice tests none of them: the bind
 // is `Any` where it is typed, whatever is written later.
 run!(slice_element_beside_a_wildcard_over_a_let_the_arms_decide_refused, r#"{

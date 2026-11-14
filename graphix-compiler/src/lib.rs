@@ -3372,6 +3372,14 @@ fn element_binds(env: &Env, test: &Type, shape: &Type, elems: &Type) -> Result<(
         Some(m) => format_with_flags(PrintFlag::DerefTVars, || {
             let test = test.resolve_tvars();
             match &m {
+                // CR claude for claude: [readability/low] This message prints the
+                // open member's internal cell name, which for a parameter's cell is
+                // a number like '_4611686018427396070 (`type W<'a> = Abstract<'a>;
+                // let f = |x| select x { [W(p), ..] => p + 100, _ => 0 }`): it names
+                // nothing the author wrote and is not the `'_8161` the sibling
+                // messages print. Say "a type not yet known here" or name the
+                // binding to annotate. probe: ~/ptmp/cr29/scratch/r25/25a/asr/g2.gx
+                // (open-member-name-01)
                 Type::TVar(tv) => bail!(
                     "this pattern takes a value of any type '{} becomes that has \
                      its structure, and this select typed the pattern's binds for \
