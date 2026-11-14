@@ -167,7 +167,7 @@ impl<X: GXExt> Output<X> {
 
     /// Show every batch the runtime has sent, once `gx` has answered a
     /// request: every batch of the cycles before it is in the stream.
-    // CR claude for claude: [bug/medium] That premise fails while the
+    // XCR claude for claude: [bug/medium] That premise fails while the
     // subscriber's channel is full: the runtime answers `get_env` from the
     // send loop of a cycle whose batch still waits for room
     // (`GX::send_batch`), so the `try_recv` drain can end before that batch
@@ -188,6 +188,13 @@ impl<X: GXExt> Output<X> {
     // try_recv of the exit request finds none). probe:
     // ~/ptmp/cr29/scratch/r24/24e/exit-cut-cycle-01/review/piped-exit.sh.
     // Draining while waiting, as process_exited does, fixes both.
+    // 2026-11-14 claude: The end of piped input drains while it waits
+    // (Output::process_ended: idle answer, exit request and the teardown bound
+    // raced against the channel), and a program's sys::exit is shown through
+    // its cycle and ends the shell with its status. Pins:
+    // tests/shell/piped_flood.rs (flood to 5000 shown whole; a flood that exits
+    // with 9 at 500 shows 0..=500 and status 9); both fail on base-r25 (about
+    // 119 values, status 0 after 5 s).
     async fn process_sent(
         &mut self,
         gx: &GXHandle<X>,
@@ -228,6 +235,54 @@ impl<X: GXExt> Output<X> {
         };
         self.process_sent(gx, from_gx, env, newenv).await?;
         ControlFlow::Continue(whole)
+    }
+
+    /// Show what a piped session's runtime sends once the input has ended,
+    /// until it is idle or `TEARDOWN_BOUND` has passed. The runtime is held
+    /// in a send while the channel is full, so the room is made here as the
+    /// idle answer is waited for. `Continue(Some(code))` when the program
+    /// asked to exit, shown through the cycle that asked.
+    async fn process_ended(
+        &mut self,
+        gx: &GXHandle<X>,
+        from_gx: &mut mpsc::Receiver<GPooled<Vec<GXEvent>>>,
+        exit: &mut Option<oneshot::Receiver<i32>>,
+        env: &mut Env,
+        newenv: &mut Option<Env>,
+    ) -> ControlFlow<Result<Option<i32>>, Option<i32>> {
+        let bound = tokio::time::sleep(TEARDOWN_BOUND);
+        tokio::pin!(bound);
+        let idle = gx.wait_idle();
+        tokio::pin!(idle);
+        loop {
+            select! {
+                biased;
+                code = exit_requested(exit) => {
+                    let Some(code) = code else { break };
+                    let shown = tokio::time::timeout(
+                        TEARDOWN_BOUND,
+                        self.process_exited(gx, from_gx, env, newenv),
+                    );
+                    return match shown.await {
+                        Ok(ControlFlow::Break(r)) => ControlFlow::Break(r),
+                        Ok(ControlFlow::Continue(false)) => ControlFlow::Break(
+                            Err(gx.stopped("graphix runtime is dead")),
+                        ),
+                        Ok(ControlFlow::Continue(true)) | Err(_) => {
+                            ControlFlow::Continue(Some(code))
+                        }
+                    };
+                }
+                _ = &mut idle => break,
+                _ = &mut bound => break,
+                batch = from_gx.recv() => match batch {
+                    Some(mut batch) => self.process_batch(env, newenv, &mut batch).await?,
+                    None => break,
+                },
+            }
+        }
+        self.process_sent(gx, from_gx, env, newenv).await?;
+        ControlFlow::Continue(exit.as_mut().and_then(|rx| rx.try_recv().ok()))
     }
 
     /// Show a batch of the runtime's events, following its env: `Break`
@@ -972,16 +1027,15 @@ impl<X: GXExt> Shell<X> {
                             // teardown's bound, and may end the shell with its
                             // own status
                             Ok(Read::Signal(Signal::CtrlD)) if !io::stdin().is_terminal() => {
-                                let _ = tokio::time::timeout(TEARDOWN_BOUND, session.gx.wait_idle()).await;
                                 let shown = output
-                                    .process_sent(&session.gx, &mut session.from_gx, &mut env, &mut newenv)
+                                    .process_ended(
+                                        &session.gx, &mut session.from_gx,
+                                        &mut session.exit, &mut env, &mut newenv,
+                                    )
                                     .await;
-                                match (shown, session.exit.as_mut().map(|rx| rx.try_recv())) {
-                                    (ControlFlow::Break(r), _) => break 'session r,
-                                    (ControlFlow::Continue(()), Some(Ok(code))) => {
-                                        break 'session Ok(Some(code))
-                                    }
-                                    (ControlFlow::Continue(()), _) => break 'session Ok(None),
+                                match shown {
+                                    ControlFlow::Break(r) => break 'session r,
+                                    ControlFlow::Continue(code) => break 'session Ok(code),
                                 }
                             }
                             Ok(Read::Signal(Signal::CtrlD | Signal::ExternalBreak(_))) => {
