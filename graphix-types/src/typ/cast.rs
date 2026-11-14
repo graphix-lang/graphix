@@ -2897,52 +2897,6 @@ fn rep_collision(
                     (Type::Map(m0), Type::Map(m1)) => pairs(
                         &mut [(&m0.key, &m1.key), (&m0.value, &m1.value)].into_iter(),
                     ),
-                    // XCR claude for claude: [bug/low] A test is refused for a part
-                    // whose members share a runtime form though another part of the
-                    // same test tells the members apart: the tuple, struct and
-                    // variant arms here report the first colliding position,
-                    // whatever the other positions decide. Over `s = select v > 0 {
-                    // true => {f: |x: i64| x, n: 1}, false => {f: |y: string| y, n:
-                    // "s"} }`, `select s { {n: 1, ..} => 1, _ => 0 }` says "this
-                    // pattern can't tell fn(x: i64) -> i64 from fn(y: string) ->
-                    // string" (the completed predicate holds the member's own `f`,
-                    // a field the arm leaves out; `{n: 1, f: _}` and `{n: 1, f}`
-                    // check), and over `[(&i64, i64), (&string, string)]` the
-                    // written `(&i64, i64) as (r, n)` says "can't tell &i64 from
-                    // &string" (it checks over `[(&i64, i64), string]`), though no
-                    // value of the other member passes either test. What would
-                    // close it for a select arm: a product's parts collide only
-                    // where every other part admits a value of the other side
-                    // (Type::could_match). probes:
-                    // ~/ptmp/cr29/scratch/r23/23d/nafu/{p20,p27,p31}.gx
-                    // (told-by-another-part-01)
-                    // 2026-11-13 claude: written-variable-told-01's fixer: the
-                    // written test `('q, i64) as (r, n)` over `[(fn(x: i64) -> i64,
-                    // i64), (fn(y: string) -> string, string)]` (that CR's p32) is
-                    // this defect and is left to this CR: `'q` is the first
-                    // function alone, the string member can pass at no value, and
-                    // the tuple arm still reports the functions. A written test is
-                    // judged with Subject::Written since then
-                    // (Type::rep_collision_written), which reads its variable as
-                    // the type it took, so the product arms see it as they see a
-                    // closed test; of 600 generated selects 17 that an oracle runs
-                    // beside a catch-all arm are refused this way
-                    // (~/ptmp/cr29/scratch/r24/24a/wvt/gen/, 17 of the 79 in
-                    // g1-summary.txt's row 'same runtime form', 'same runtime
-                    // form', 'exp=OUT'; p32.gx there).
-                    // 2026-11-14 claude: A select arm's product test (tuple,
-                    // struct, variant) collides at a part only where every other
-                    // part passes a value of its counterpart
-                    // (cast.rs::parts_collision, may_pass), at the arm and at the
-                    // settle. The other parts are judged by the run-time test, not
-                    // by Type::could_match, which holds Array<i64> apart from
-                    // Array<string> though an empty array passes both. Fail without
-                    // it: lang::select::product_test_told_by_another_part and
-                    // typ::cast::tests::a_product_test_is_told_by_another_part;
-                    // product_test_an_array_part_tells_nothing fails with
-                    // could_match in may_pass's place. Comparisons and trait
-                    // dispatch are unchanged (dispatch-told-by-another-part-01).
-                    // probes: ~/ptmp/cr29/scratch/r24/24a/tba/ (README)
                     (Type::Tuple(x), Type::Tuple(y)) if x.len() == y.len() => {
                         let parts = x.iter().zip(y.iter());
                         parts_collision(env, seen, subject, open, ordered, parts)
