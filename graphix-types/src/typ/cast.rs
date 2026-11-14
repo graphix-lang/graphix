@@ -2420,26 +2420,6 @@ fn open_collision(
             };
         }
         let mut why = None;
-        // XCR claude for claude: [risk/low] A collision this loop found is dropped
-        // where a later bound of the cell does not collide (`found?`), and outside a
-        // test (`tested` false) the bounds are judged on the walk's own `seen`: the
-        // pairs of names met under the dropped collision stay held clear, and a later
-        // part of the walk that meets one again reads it so. A walk's memory is sound
-        // only while its first collision ends it (test_collision): the review of
-        // told-by-another-part-01 found a dropped collision accepting `(X, string,
-        // bool)` among `[(Y, i64, i64), (Y, string, bool)]`. No witness here: it needs
-        // a cell with two bounds that are types, the first colliding with a type
-        // through a pair of names the walk meets again. What would close it: judge
-        // each bound on a walk of its own, as under `tested`.
-        // (open-bound-collision-dropped-01)
-        // 2026-11-14 claude: open_collision judged each typed bound of a cell on the
-        // walk's shared seen, so a bound that collided and was dropped (a later bound
-        // did not collide) left its pairs of names held clear for the rest of the
-        // walk. Each bound now has a walk of its own (the CR's witness: a cell bounded
-        // by X and {q: i64}, X and Y structs of a &i64 and a &string; the tuple of the
-        // cell and Y against (Y, X) read as no collision). Pin:
-        // cast.rs::a_bound_that_collides_clears_no_pair_for_the_next_part, which fails
-        // without the fix.
         for b in typed.iter() {
             let walk = &mut RepSeen::default();
             let found =
