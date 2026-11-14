@@ -113,6 +113,11 @@ select, and runtime forms. Each rule refuses and names the fix.
   `string` in the other is refused where the select is written
   ("string does not contain i64"). Annotate the scrutinee with the
   union and test the bind inside the arm.
+- A bind behind arms that test its part holds that part of every member
+  reaching its arm, whatever the order of the arms: `(1, 1) => .., (3,
+  "x") => .., (4, v) => ..` over an unannotated parameter gives `v`
+  `[i64, string]`, so `v + 1` is refused; test it inside the arm
+  (`select v { i64 as n => n + 1, s => str::len(s) }`).
 - A slice arm with a rest over a `never()` let the arms decide leaves the
   other elements' type to later writes, and takes a value of whatever
   they bring at every position. A write that brings a member an element's
@@ -233,6 +238,8 @@ no "cannot compute Any + i64" let f = |x: Any| select x { (a, b) => a, _ => neve
 no "tests the declared variable 't inside a value that may be Any" 't: Number + Singleton |x: Any| -> 't select x { ('t, 't) as (a, b) => a + b, _ => never() }
 no "tests the declared variable `a` is of" 't: Number + Singleton |x: Any, y: 't| select x { (a, b) => a + y, _ => y }
 ok |x: Any, y: 't| select x { ('t, i64) as (r, n) => [r, y], _ => [y] }
+no "cannot compute [i64, string] + i64" |s| select s { (1, 1) => 0, (3, "x") => 2, (4, v) => v + 1, (_, _) => 9 }
+ok let f = |s| select s { (1, 1) => 0, (3, "x") => 2, (4, v) => select v { i64 as n => n + 1, s => str::len(s) }, (_, _) => 9 }; f((4, "yy"))
 no "not decided at this select" |x| select (x, 0) { (`J, _) => 1, (`M, _) => 2 }
 ok |x: [`J, `M]| select (x, 0) { (`J, _) => 1, (`M, _) => 2 }
 no "could each take the test" let x = never(); let y = never(); let u = select true { true => x, false => y }; select u { i64 as n => n, _ => 0 }

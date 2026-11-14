@@ -3268,3 +3268,56 @@ run!(written_test_behind_an_arm_one_member_annotated, r#"{
     };
     [f(1, "s"), f(1, null), f(1, 4)]
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 1, 1]); FuseExpect::Jit);
+
+// A bind behind arms that test its part, over a scrutinee the arms decide,
+// holds every member's part that reaches its arm: the earlier arms' tests
+// decide nothing of it.
+run!(bind_behind_literals_of_two_types_holds_both_refused, r#"{
+    let f = |s| select s { (1, 1) => 0, (3, "x") => 2, (4, v) => v + 1, (_, _) => 9 };
+    f((4, 7))
+}"#, refused("cannot compute [i64, string] + i64"); FuseExpect::None);
+
+run!(bind_behind_literals_of_two_types_holds_both_in_a_struct_refused, r#"{
+    let f = |s| select s { {k: 1, v: 1} => 0, {k: 3, v: "x"} => 2, {k: 4, v} => v + 1, {k: _, v: _} => 9 };
+    f({k: 4, v: 7})
+}"#, refused("cannot compute [i64, string] + i64"); FuseExpect::None);
+
+run!(bind_behind_a_literal_and_a_null_holds_both_refused, r#"{
+    let f = |s| select s { (1, 1) => 0, (3, null) => 2, (4, v) => v + 1, (_, _) => 9 };
+    f((4, 5))
+}"#, refused("cannot compute [i64, null] + i64"); FuseExpect::None);
+
+run!(bind_behind_literals_of_two_types_holds_both, r#"{
+    let f = |s| select s { (1, 1) => "k0", (3, "x") => "k2", (4, v) => "[v]", (_, _) => "w" };
+    [f((4, "y")), f((4, 7)), f((1, 1)), f((3, "x")), f((5, 5))]
+}"#, prints(r#"["y", "7", "k0", "k2", "w"]"#); FuseExpect::Jit);
+
+run!(bind_behind_literals_of_two_types_tested_in_its_arm, r#"{
+    let f = |s| select s {
+        (1, 1) => 0,
+        (3, "x") => 2,
+        (4, v) => select v { i64 as n => n + 1, s => str::len(s) },
+        (_, _) => 9
+    };
+    [f((4, "yy")), f((4, 7)), f((5, 5))]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [2, 8, 9]); FuseExpect::Jit);
+
+run!(bind_behind_arms_that_take_its_part_apart, r#"{
+    let f = |s| select s { (1, `B(v1)) => 100, (2, (v1, v2)) => v1 + 200, (3, v1) => 300, (_, v1) => 9 };
+    [f((3, (1, 7))), f((3, `B(1))), f((2, (1, 7))), f((1, `B(1))), f((5, `B(1)))]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [300, 300, 201, 100, 9]); FuseExpect::Jit);
+
+run!(bind_behind_a_slice_and_a_literal, r#"{
+    let f = |s| select s { (1, [v1]) => v1 + 100, (2, 2) => 200, (3, v1) => 300, (_, v1) => 9 };
+    [f((3, 3)), f((3, [1])), f((1, [4])), f((2, 2)), f((1, 1))]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [300, 300, 104, 200, 9]); FuseExpect::Jit);
+
+run!(bind_behind_payload_tags_in_a_variant, r#"{
+    let f = |s| select s { `S(2, `B(v0)) => str::len(v0), `S(4, `A(v1)) => 400, `S(v1, v2) => v1 + 500 };
+    [f(`S(2, `A(1))), f(`S(2, `B("xy"))), f(`S(4, `A(1))), f(`S(4, `B("x")))]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [502, 2, 400, 504]); FuseExpect::Jit);
+
+run!(bind_behind_payload_tags_in_a_variant_leaves_a_catch_all_dead, r#"{
+    let f = |s| select s { `S(2, `B(v0)) => 200, `S(4, `A(v1)) => 400, `S(v1, v2) => v1 + 500, _ => 9 };
+    f(`S(2, `A(1)))
+}"#, refused("unreachable arm"); FuseExpect::None);

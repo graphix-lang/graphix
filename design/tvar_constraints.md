@@ -967,6 +967,19 @@ before the arms). A member of that union that is no cell is another
 arm's test (`` `A(null) => .., `A(a) => .. ``), which the bind does not
 take.
 
+A later arm's bind is typed by its own arm's narrowing alone. The
+open-cell scrutinee holds that bind's cell as its member's part, and an
+earlier arm narrows over a copy of it (`node::select::later_cells`,
+`Type::cells_apart`): what the earlier narrowing makes of the copy
+reaches the cell only where it is open cells alone (a slice's element
+made one with another arm's, the cells of `` `A(i64, ['a0, 'a1]) ``
+made one), and a type it decides for the copy is dropped. So the bind
+takes its part of every member reaching its arm in any order of the
+arms: `(1, 1) => .., (3, "x") => .., (4, v) => v + 1` is refused,
+"cannot compute [i64, string] + i64", as it is with the bind's arm
+first, and the arm's test passes every value of its shape. Pins:
+`lang::select_undecided::bind_behind_*`.
+
 `contains` does not know bindings, so the refusal is a typed error the
 relation's site names: a `<-` names its target (`declare u's type where it
 is bound`, `Connect`), a call's argument the parameter

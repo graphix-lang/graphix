@@ -5817,6 +5817,21 @@ impl Type {
         self.rename_int(known).unwrap_or_else(|| self.clone())
     }
 
+    /// Self with each open cell `apart` maps, by its address, replaced by
+    /// an empty cell of its name and level, one for each cell, and every
+    /// bound cell by its binding; any other open cell is kept. The copies,
+    /// by the address of the cell each stands for.
+    #[doc(hidden)]
+    pub fn cells_apart(
+        &self,
+        apart: &AHashMap<usize, TVar>,
+    ) -> (Type, LPooled<AHashMap<usize, TVar>>) {
+        let mut copies: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+        copies.extend(apart.iter().map(|(a, tv)| (*a, tv.fresh_copy())));
+        let t = self.rename_int(&copies).unwrap_or_else(|| self.clone());
+        (t, copies)
+    }
+
     /// Self with each open cell `image` maps, by its address, replaced by
     /// its image; every other cell, bound or open, is kept.
     pub(crate) fn swap_cells(&self, image: &dyn Fn(usize) -> Option<Type>) -> Type {

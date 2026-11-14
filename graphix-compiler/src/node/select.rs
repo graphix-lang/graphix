@@ -730,7 +730,7 @@ impl Reach {
             // wildcard_part_of_a_let_written_at_two_types,
             // wildcard_part_of_a_parsed_value. probes:
             // ~/ptmp/cr29/scratch/r24/24b/wsa-rev/ (README)
-            // CR claude for claude: [bug/high] A bind beside two other arms' literals of two
+            // XCR claude for claude: [bug/high] A bind beside two other arms' literals of two
             // types at one part of a tuple or struct is typed without one of them where its
             // arm comes after theirs, and the fused arm reads a value of that type as the
             // other: `let f = |s| select s { (1, 1) => 0, (3, "x") => 2, (4, v) => v + 1,
@@ -784,6 +784,28 @@ impl Reach {
             // value on the lane, 12 of them on base-r24 too. probes:
             // ~/ptmp/cr29/scratch/r24/24b/bbs-rev/q3.txt (run with ../bbs/rb.sh), p0047.gx,
             // g5151.sum
+            // 2026-11-14 claude: Fixed: an arm narrows over copies of the cells of later
+            // arms' predicates that the scrutinee holds (node::select::later_cells,
+            // Type::cells_apart), so a later arm's bind is typed by its own narrowing over
+            // every member reaching it; a copy the narrowing left as open cells alone is
+            // merged back (slice elements, binds_beside variant cells stay one), a type it
+            // decided is dropped. The CR's probe is now refused at the definition, 'cannot
+            // compute [i64, string] + i64', as with the bind's arm first; with "[v]" it
+            // prints y, 7 in both engines and NO_SUBST; the bind-beside-shapes notes' probes
+            // print 300, 300 and 502/(502, 1) (the variant select's catch-all is now dead,
+            // refused 'unreachable arm'); the reviewer note's 3-tuple call is refused 'could
+            // go to' (a member's Any part, wildcard-slot-any-part-01). Pins, each failing in
+            // all four modes with later_cells returning nothing:
+            // lang::select_undecided::bind_behind_literals_of_two_types_holds_both{,_refused,_in_a_struct_refused},
+            // bind_behind_a_literal_and_a_null_holds_both_refused,
+            // bind_behind_literals_of_two_types_tested_in_its_arm,
+            // bind_behind_arms_that_take_its_part_apart, bind_behind_a_slice_and_a_literal,
+            // bind_behind_payload_tags_in_a_variant{,_leaves_a_catch_all_dead}. Census 0/0;
+            // gen.py seeds 4201 and 5151 (800 selects): 11 base-wrong now right, no
+            // lane-wrong, 12 newly refused (a member's Any part, a dead catch-all, a
+            // call that could go to two members); the three checked (g1/p0031,
+            // g2/p0296, g1/p0343) are refused on base-r25 with the bind's arm first.
+            // probes: ~/ptmp/cr29/scratch/r25/25b/blt/
             // CR claude for claude: [perf/low] The check of a select over an unannotated
             // parameter whose arms hold a literal at one part and a name at another grows
             // with the square of the arms: `|s| select s { (1, a) => 1, .., (N, a) => N, (_,
@@ -3429,6 +3451,15 @@ impl<R: Rt> Select<R> {
             ExprKind::Select(se) => &se.arms,
             _ => &[],
         };
+        let mut arm_cells: LPooled<Vec<SmallVec<[TVar; 2]>>> = LPooled::take();
+        if scrut.has_unbound() {
+            let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+            for (pat, _) in self.arms.iter() {
+                cells.clear();
+                crate::typ::settle::position_cells(&pat.type_predicate, &mut cells);
+                arm_cells.push(cells.drain().map(|(_, tv)| tv).collect());
+            }
+        }
         for i in 0..self.arms.len() {
             let (pat, n) = &mut self.arms[i];
             if checking && pat.explicit_type_predicate {
@@ -3490,8 +3521,20 @@ impl<R: Rt> Select<R> {
                 }
             })?;
             let takers = written_takers(&ctx.env, &outer, &bare, &pat.type_predicate)?;
-            let narrowed = pat.capture_type(&ctx.env, &reaching).at(&site)?;
-            reaching.narrow_pattern(&ctx.env, &narrowed)?;
+            let later = arm_cells.get(i + 1..).unwrap_or(&[]);
+            let apart =
+                later_cells(&reaching, &outer, &below, &pat.type_predicate, later);
+            let (narrowing, mut copies) = match apart.is_empty() {
+                true => (Cow::Borrowed(&reaching), None),
+                false => {
+                    members.clear();
+                    let (view, copies) = reaching.cells_apart(&apart);
+                    union_members(&ctx.env, &view, &mut members)?;
+                    (Cow::Owned(view), Some(copies))
+                }
+            };
+            let narrowed = pat.capture_type(&ctx.env, &narrowing).at(&site)?;
+            narrowing.narrow_pattern(&ctx.env, &narrowed)?;
             if !pat.explicit_type_predicate && pat.structure_predicate.holds_abstract() {
                 reaching
                     .widen_abstracts_over_any(&ctx.env, &pat.type_predicate)
@@ -3508,9 +3551,21 @@ impl<R: Rt> Select<R> {
             // decides how many cells the union keeps (a map's order, the kind
             // settle::settle_order fixed for settles, is likely). probe:
             // ~/ptmp/cr29/scratch/r24/24f/sacm/p0112.gx (select-refusal-cells-nondeterministic-01)
-            pat.bind_narrowed(&ctx.env, &narrowed, &reaching, &members, checking)
+            pat.bind_narrowed(&ctx.env, &narrowed, &narrowing, &members, checking)
                 .map_err(|e| reach.untyped_binds(&ctx.env, &self.spec.ori, e))
                 .at(&site)?;
+            // a later arm's cell the narrowing made one with other open
+            // cells is one with them; one it decided is left to its arm
+            if let Some(copies) = &mut copies {
+                for tv in later.iter().flatten().filter_map(|tv| tv.open_cell()) {
+                    if let Some(copy) = copies.remove(&tv.cell_addr()) {
+                        let copy = Type::TVar(copy);
+                        if only_cells(&copy) {
+                            Type::TVar(tv).contains_ordered(&ctx.env, &copy)?;
+                        }
+                    }
+                }
+            }
             step.decided(&mut decided);
             if takers.len() > 1 && takers.iter().any(|c| c.open_cell().is_none()) {
                 let t = &pat.type_predicate;
@@ -4146,6 +4201,61 @@ impl Member {
         });
         Self { typ, open, decided }
     }
+}
+
+/// The open cells of `reaching` that the predicates of the arms after
+/// the one whose predicate is `own` hold (`later`, the cells each held
+/// before the arms ran), and that neither `own` nor the scrutinee before
+/// the arms (`outer`, `below`) holds, by address: the arm narrows over
+/// copies of them, so the cell of a later arm's bind that the scrutinee
+/// holds as a member's part is decided by that arm's own narrowing, over
+/// every member reaching it, never by an earlier arm's test.
+fn later_cells(
+    reaching: &Type,
+    outer: &AHashMap<usize, TVar>,
+    below: &AHashMap<usize, TVar>,
+    own: &Type,
+    later: &[SmallVec<[TVar; 2]>],
+) -> LPooled<AHashMap<usize, TVar>> {
+    let mut apart: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+    if later.is_empty() || !reaching.has_unbound() {
+        return apart;
+    }
+    let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+    let mut open = |t: &Type, out: &mut AHashMap<usize, TVar>| {
+        cells.clear();
+        crate::typ::settle::position_cells(t, &mut cells);
+        for tv in cells.values().filter_map(|tv| tv.open_cell()) {
+            out.insert(tv.cell_addr(), tv);
+        }
+    };
+    let mut held: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+    open(reaching, &mut held);
+    let mut kept: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+    for tv in outer.values().chain(below.values()).filter_map(|tv| tv.open_cell()) {
+        kept.insert(tv.cell_addr(), tv);
+    }
+    open(own, &mut kept);
+    held.retain(|addr, _| !kept.contains_key(addr));
+    if held.is_empty() {
+        return apart;
+    }
+    for tv in later.iter().flatten().filter_map(|tv| tv.open_cell()) {
+        if held.contains_key(&tv.cell_addr()) {
+            apart.insert(tv.cell_addr(), tv);
+        }
+    }
+    apart
+}
+
+/// Whether `t` is open cells alone: an open cell, or a union of them,
+/// through bindings.
+fn only_cells(t: &Type) -> bool {
+    crate::stack::ensure_sufficient(|| match t {
+        Type::TVar(tv) => tv.binding().is_none_or(|b| only_cells(&b)),
+        Type::Set(ms) => ms.iter().all(only_cells),
+        _ => false,
+    })
 }
 
 /// Add to `out` the open cells among `cells`, each once.
