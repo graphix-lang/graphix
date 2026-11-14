@@ -8235,6 +8235,71 @@ run!(
 }"#,
     prints("[i64:1, i64:0, i64:3, i64:0]")
 );
+run!(
+    slices_of_other_shapes_in_the_alternatives_of_an_or_arm_over_an_unannotated_parameter,
+    r#"{
+  let rest = |x| select x { `A([h, t..]) | `B([h, t..]) => (h, t), _ => (0, []) };
+  let three = |x| select x { `A([h, ..]) | `B([h, ..]) | `C([h, ..]) => h, _ => 0 };
+  let apart = |x| select x { `A([_, l]) | `B([l, ..]) => l, _ => 0 };
+  let whole = |x| select x { `A([h, ..]) | `B(h) => h, _ => 0 };
+  let beside = |x| select x {
+    `A([h, ..], k) | `B([h, ..], k) => (h, k), `A([], k) => (0, k), `B([], k) => (1, k)
+  };
+  let field = |x| select x { `A({a: [h, ..]}) | `B({a: [h, ..]}) => h, _ => 0 };
+  let inner = |x| select x { [`A([h, ..]), ..] | [`B([h, ..]), ..] => h, _ => 0 };
+  let nested = |x| select x { `A([[h, ..], ..]) | `B([[h, ..], ..]) => h, _ => 0 };
+  let pair = |x| select x { (1, [h, ..]) | (2, [h, ..]) => h, _ => 0 };
+  (
+    (rest(`A([1, 2])), three(`C([7])), apart(`A([1, 2])), apart(`B([3, 4]))),
+    (whole(`B(3)), beside(`A([1, 2], "a")), beside(`B([], "b")), field(`B({a: [5]}))),
+    (inner([`B([6])]), nested(`A([[8], [9]])), nested(`B([[]])), pair((2, [9])))
+  )
+}"#,
+    prints(
+        r#"[[[i64:1, [i64:2]], i64:7, i64:2, i64:3], [i64:3, [i64:1, "a"], [i64:1, "b"], i64:5], [i64:6, i64:8, i64:0, i64:9]]"#
+    )
+);
+run!(
+    slice_in_each_alternative_of_an_or_arm_binds_one_cell_in_one_instance,
+    r#"{
+  let mk = |z| |x| select x { `A([h, ..]) | `B([h, ..]) => h, _ => 0 };
+  let g = mk(0);
+  (g(`A([1, 2])), g(`B([3])), g(`B([])))
+}"#,
+    prints("[i64:1, i64:3, i64:0]");
+    FuseExpect::None
+);
+run!(
+    slice_in_each_alternative_of_an_or_arm_as_two_types_in_one_instance_refused,
+    r#"{
+  let mk = |z| |x| select x { `A([h, ..]) | `B([h, ..]) => h, _ => 0 };
+  let g = mk(0);
+  (g(`A([1, 2])), g(`B(["a"])))
+}"#,
+    refused("[`A(Array<i64>), `B(Array<i64>)] does not contain `B(Array<string>)");
+    FuseExpect::None
+);
+run!(
+    slice_in_each_alternative_of_an_or_arm_over_a_binding_written_later,
+    r#"{
+  let v = never();
+  let r = select v { `A([h, ..]) | `B([h, ..]) => h, _ => 0 };
+  v <- `A([1, 2]);
+  r
+}"#,
+    prints("i64:1")
+);
+run!(
+    slice_in_each_alternative_of_an_or_arm_used_as_a_number_then_written_a_string_refused,
+    r#"{
+  let v = never();
+  let r = select v { `A([h, ..]) | `B([h, ..]) => h + 1, _ => 0 };
+  v <- `B(["a"]);
+  r
+}"#,
+    refused("v is [`A(Array<i64>), `B(Array<i64>)], inferred from an earlier use, and cannot hold `B(Array<string>)");
+    FuseExpect::None
+);
 /// The cells bound to another cell that the type of `name` reaches after
 /// the check of `code`.
 async fn forward_links(code: &str, name: &str) -> Result<usize> {

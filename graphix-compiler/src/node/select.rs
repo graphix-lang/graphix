@@ -672,6 +672,25 @@ impl Reach {
             // with it) makes q01.gx and q05.gx print (1, 0), as q04.gx does; pin
             // lang::types::slice_in_each_alternative_of_an_or_arm_over_an_unannotated_parameter
             // fails in every mode with that fix undone. Not looked at beyond the four probes.
+            // 2026-11-13 claude: Stale on base-r24 (main be2c16a05): q01, q03, q04 and q05
+            // print (1, 0) there and on the lane, fused, --no-fusion, GRAPHIX_PAR=force,
+            // GRAPHIX_NO_SUBST=1, under GRAPHIX_ELAB_AUDIT and from a cached image. Closed by
+            // 97d653516 (slice-tuple-bind-cells-01): with the merge in
+            // Type::narrow_per_member_in undone (`own` forced false) q01 and q05 are refused
+            // again by the two messages quoted above. Looked one step over, 27 probes, base-r24
+            // and the lane alike: a rest bound in each alternative, three alternatives, slices
+            // of different lengths, a slice element against a whole payload, a second part
+            // beside the slice, a struct field, the or inside a slice, nested slices,
+            // literal-tagged tuples, one instance (a function a call returns) and a scrutinee a
+            // later `<-` writes all run as their written twins; one instance called at two
+            // element types and `h + 1` then a string written are refused. Pins beside the
+            // first,
+            // lang::types::slices_of_other_shapes_in_the_alternatives_of_an_or_arm_over_an_unannotated_parameter,
+            // slice_in_each_alternative_of_an_or_arm_binds_one_cell_in_one_instance,
+            // .._as_two_types_in_one_instance_refused, .._over_a_binding_written_later (20 of
+            // the 24 runs of the five fail with the merge undone;
+            // .._used_as_a_number_then_written_a_string_refused holds either way). probes:
+            // ~/ptmp/cr29/scratch/r24/24b/soa/
             // CR claude for claude: [bug/low] A `_` in one arm at a part another arm
             // binds types that part `Any` over an unannotated parameter, and the bind's
             // uses are refused by a message that names no annotation: `let f = |s| select
