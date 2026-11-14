@@ -691,6 +691,55 @@ run!(
     prints("[i64:1]")
 );
 
+// A partial struct pattern over members whose named field holds composite
+// types that differ types the name by the union of its parts, as a select
+// arm's does, when the value's type is annotated and when a select makes it.
+run!(
+    let_partial_struct_over_members_with_composite_fields,
+    r#"{
+    let v: [{a: Array<i64>, c: string}, {a: Array<string>, c: string}] = {a: [1], c: "x"};
+    let {a, ..} = v;
+    a
+}"#,
+    prints("[i64:1]")
+);
+
+run!(
+    let_partial_struct_over_members_with_composite_fields_is_their_union,
+    r#"{
+    let v: [{a: Array<i64>, c: string}, {a: Array<string>, c: string}] = {a: [1], c: "x"};
+    let {a, ..} = v;
+    let z: string = a;
+    z
+}"#,
+    refused("does not contain [Array<i64>, Array<string>]");
+    FuseExpect::None
+);
+
+run!(
+    let_partial_struct_over_members_with_tuple_fields,
+    r#"{
+    let v: [{a: (i64, i64), c: string}, {a: (string, string), c: string}] =
+        {a: (1, 2), c: "x"};
+    let {a, ..} = v;
+    a
+}"#,
+    prints("[i64:1, i64:2]")
+);
+
+run!(
+    let_partial_struct_over_a_select_of_members_with_composite_fields,
+    r#"{
+    let t = true;
+    let x: string = "x";
+    let y: string = "y";
+    let v = select t { true => {a: [1], c: x}, false => {a: ["s"], c: y} };
+    let {a, ..} = v;
+    a
+}"#,
+    prints("[i64:1]")
+);
+
 run!(
     parameter_partial_struct_over_decided_members,
     r#"{

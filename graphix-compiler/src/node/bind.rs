@@ -444,7 +444,7 @@ impl<R: Rt> Bind<R> {
                             None => (ptyp, false),
                         }
                     };
-                    // CR claude for claude: [bug/medium] A let's partial struct
+                    // XCR claude for claude: [bug/medium] A let's partial struct
                     // pattern over two members whose named field holds composite
                     // types that differ leaves the name's type open, and the name
                     // never fires. `let v: [{a: Array<i64>, c: string}, {a:
@@ -465,6 +465,18 @@ impl<R: Rt> Bind<R> {
                     // matched by { a: Array<i64>, c: string }" instead (r4.gx).
                     // Same on base-r24. probes: ~/ptmp/cr29/scratch/r24/24g/lumr/
                     // (let-partial-open-bind-01)
+                    // 2026-11-14 claude: A let's partial struct pattern over
+                    // members whose named field holds composite types that differ
+                    // now types its names by the union of their parts:
+                    // Bind::compile hands fits_every_member the completion (fresh
+                    // cells), not the pattern's own inferred predicate, and
+                    // Bind::complete_partial (value type known late) holds the
+                    // completion to every member through fits_every_member instead
+                    // of one contains that bound the cell to the first member.
+                    // Pins that fail without it:
+                    // lang::tuples_structs::let_partial_struct_over_members_with_composite_fields,
+                    // ..._is_their_union, ..._with_tuple_fields,
+                    // let_partial_struct_over_a_select_of_members_with_composite_fields.
 
                     // a `_` matches what the value holds, deciding none of it
                     if !completed && pat.has_partial_struct() {
@@ -480,7 +492,12 @@ impl<R: Rt> Bind<R> {
                             &ptyp,
                             &typ,
                             &mut narrowed,
-                            || pat.infer_type_predicate(&ctx.env, &scope.lexical),
+                            || match completed {
+                                true => Ok(ptyp.reset_tvars()),
+                                false => {
+                                    pat.infer_type_predicate(&ctx.env, &scope.lexical)
+                                }
+                            },
                         )
                         .at(&spec)?
                         {
@@ -692,20 +709,23 @@ impl<R: Rt> Bind<R> {
             });
         };
         let apart = self.apart(ctx);
-        let fits = match apart {
-            true => t.reset_tvars().contains(&ctx.env, &self.typ),
-            false => t.contains(&ctx.env, &self.typ),
-        };
-        if !fits.at(spec)? {
+        let mut narrowed = None;
+        let shape = if apart { t.reset_tvars() } else { t.clone() };
+        if !fits_every_member(ctx, &shape, &self.typ, &mut narrowed, || Ok(shape.clone()))
+            .at(spec)?
+        {
             format_with_flags(PrintFlag::DerefTVars, || {
                 bailat!(spec, "match error {} can't be matched by {t}", self.typ)
             })?
         }
         self.pattern.realign(&ctx.env, &t).at(spec)?;
-        if !self.pattern.covers(&ctx.env, &self.typ, false) {
+        if narrowed.is_none() && !self.pattern.covers(&ctx.env, &self.typ, false) {
             bailat!(spec, "refutable patterns are not allowed in let");
         }
-        let leaves = self.pattern.names_by_member(&ctx.env, &self.typ, &t).at(spec)?;
+        let leaves = self
+            .pattern
+            .names_by_member(&ctx.env, &self.typ, narrowed.as_ref().unwrap_or(&t))
+            .at(spec)?;
         let leaves = leaves.into_iter().filter(|l| apart || l.fresh).collect();
         self.type_leaves(ctx, leaves, apart)
     }
@@ -1384,7 +1404,7 @@ fn misfit<R: Rt>(
 /// A let's pattern predicate `ptyp` holds every member of the value type
 /// `typ`, each on its own; over several members `narrowed` takes the
 /// predicate with each cell the union of its parts, as a select arm's is:
-/// `binds` infers it afresh, at the binds' level (`ptyp`'s cells are the
+/// `binds` gives it afresh, at the binds' level (`ptyp`'s cells are the
 /// shape check's). A bare name takes the value's type.
 fn fits_every_member<R: Rt>(
     ctx: &CompileCtx<R>,
