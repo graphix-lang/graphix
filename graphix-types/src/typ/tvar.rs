@@ -1442,7 +1442,18 @@ impl ChainEnds {
 /// A copy's walk state beside its images: where forwarding chains end.
 pub(super) trait Forwards {
     fn ends(&mut self) -> &mut ChainEnds;
+
+    /// The composites a copy's bindings have lowered ([`lower_in`]).
+    fn lowered(&mut self) -> &mut Lowered;
+
+    /// Enter (`true`) or leave the copy of a cell's binding, the one part
+    /// of a copy whose composites many cells' bindings share.
+    fn in_binding(&mut self, _entered: bool) {}
 }
+
+/// The composites of a type already lowered ([`lower_in`]), each with the
+/// depth it was lowered to.
+pub(super) type Lowered = LPooled<AHashSet<(usize, u32)>>;
 
 /// What a walk rebuilds once, by address: each shared composite and each
 /// bound cell's binding (a cell's address is another allocation, so the
@@ -1451,11 +1462,16 @@ pub(super) trait Forwards {
 pub(super) struct CopyMemo {
     built: LPooled<AHashMap<usize, Option<Type>>>,
     ends: ChainEnds,
+    lowered: Option<Lowered>,
 }
 
 impl Forwards for CopyMemo {
     fn ends(&mut self) -> &mut ChainEnds {
         &mut self.ends
+    }
+
+    fn lowered(&mut self) -> &mut Lowered {
+        self.lowered.get_or_insert_with(LPooled::take)
     }
 }
 
@@ -1509,16 +1525,23 @@ fn open_pairs(a: &Type, b: &Type, out: &mut SmallVec<[(TVar, TVar); 2]>) -> bool
 /// still a scheme), and a cell already at or above `level`'s depth
 /// reaches nothing deeper.
 pub(super) fn lower(t: &Type, level: Level) {
-    fn go(t: &Type, level: Level, nodes: &mut AHashSet<usize>) {
+    lower_in(t, level, &mut LPooled::take())
+}
+
+/// [`lower`], skipping the composites `seen` holds lowered to `level`'s
+/// depth already: a walk that made them, and cells under them since, stand
+/// lowered.
+fn lower_in(t: &Type, level: Level, seen: &mut Lowered) {
+    fn go(t: &Type, level: Level, seen: &mut Lowered) {
         ensure_sufficient(|| match t {
             Type::TVar(tv) if tv.level() != Level::Generic => tv.claim(level),
             Type::TVar(_) => (),
-            t if node_addr(t).is_some_and(|n| !nodes.insert(n)) => (),
-            t => t.for_each_child(&mut |c| go(c, level, nodes)),
+            t if node_addr(t).is_some_and(|n| !seen.insert((n, level.depth()))) => (),
+            t => t.for_each_child(&mut |c| go(c, level, seen)),
         })
     }
     if !level.is_generic() {
-        go(t, level, &mut LPooled::take())
+        go(t, level, seen)
     }
 }
 
@@ -2548,8 +2571,13 @@ impl TVar {
     /// Bind the cell; `reaching` when `t` may reach an open cell a
     /// binding it replaces did not.
     fn write_binding(&self, t: Type, reaching: bool) {
+        self.write_binding_in(t, reaching, &mut LPooled::take())
+    }
+
+    /// [`Self::write_binding`], lowering through `seen` ([`lower_in`]).
+    fn write_binding_in(&self, t: Type, reaching: bool, seen: &mut Lowered) {
         require_bounds(&self.cell_constraints(), &t);
-        lower(&t, self.level());
+        lower_in(&t, self.level(), seen);
         let cell = self.cell();
         let mut c = cell.write();
         if decided_as(&c, &t) {
@@ -3373,7 +3401,7 @@ impl TVar {
     /// Make the empty cell `f` this var's copy in `fresh`: the conjuncts,
     /// lower bounds and binding rebuilt through `walk`, the facts and
     /// [`TCell::call_copy`] kept.
-    fn copy_into<M>(
+    fn copy_into<M: Forwards>(
         &self,
         f: &TVar,
         fresh: &mut AHashMap<usize, TVar>,
@@ -3401,28 +3429,53 @@ impl TVar {
             c.call_copy |= call_copy;
         }
         if let Some(t) = self.binding() {
-            f.bind(walk(&t, fresh, memo).unwrap_or(t));
+            memo.in_binding(true);
+            let t = walk(&t, fresh, memo).unwrap_or(t);
+            memo.in_binding(false);
+            f.write_binding_in(t, true, memo.lowered());
         }
     }
 }
 
-/// A by-name substitution: the map, and every name its types hold, read
-/// once, when a quantified function type first asks.
+/// A by-name substitution: the map, every name its types hold, read once,
+/// when a quantified function type first asks, and the copy of each shared
+/// composite, made once.
 pub(super) struct Subst<'a> {
     known: &'a AHashMap<ArcStr, Type>,
     held: Option<LPooled<AHashSet<ArcStr>>>,
     ends: ChainEnds,
+    built: Option<LPooled<AHashMap<usize, Option<Type>>>>,
+    bindings: u32,
+    lowered: Option<Lowered>,
 }
 
 impl Forwards for Subst<'_> {
     fn ends(&mut self) -> &mut ChainEnds {
         &mut self.ends
     }
+
+    fn lowered(&mut self) -> &mut Lowered {
+        self.lowered.get_or_insert_with(LPooled::take)
+    }
+
+    fn in_binding(&mut self, entered: bool) {
+        match entered {
+            true => self.bindings += 1,
+            false => self.bindings -= 1,
+        }
+    }
 }
 
 impl<'a> Subst<'a> {
     pub(super) fn new(known: &'a AHashMap<ArcStr, Type>) -> Self {
-        Self { known, held: None, ends: ChainEnds::default() }
+        Self {
+            known,
+            held: None,
+            ends: ChainEnds::default(),
+            built: None,
+            bindings: 0,
+            lowered: None,
+        }
     }
 
     fn held(&mut self) -> &AHashSet<ArcStr> {
@@ -6173,9 +6226,23 @@ impl Type {
             }
             // a union substituted into a union is one union: unflattened, a
             // non-regular typedef's unfoldings nest without end
-            Type::Set(set) => Type::cow_slice(set, |c| c.replace_tvars_int(s, fresh))
-                .map(|set| Type::flatten_set(set.iter().cloned())),
-            t => t.cow_children(&mut |c| c.replace_tvars_int(s, fresh)),
+            t => {
+                let node = node_addr(t).filter(|_| s.bindings > 0);
+                if let Some(r) = node.and_then(|n| s.built.as_ref()?.get(&n)) {
+                    return r.clone();
+                }
+                let r = match t {
+                    Type::Set(set) => {
+                        Type::cow_slice(set, |c| c.replace_tvars_int(s, fresh))
+                            .map(|set| Type::flatten_set(set.iter().cloned()))
+                    }
+                    t => t.cow_children(&mut |c| c.replace_tvars_int(s, fresh)),
+                };
+                if let Some(n) = node.filter(|_| r.is_some()) {
+                    s.built.get_or_insert_with(LPooled::take).insert(n, r.clone());
+                }
+                r
+            }
         })
     }
 

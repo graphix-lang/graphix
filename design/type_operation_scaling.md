@@ -102,6 +102,19 @@ structure is returned SHARED, never copied.
   pre-unifies with the copy (`typecheck_arg`, `Opening`), so a chain of
   bounds as parameters, every argument a call, checks in linear time. Pin:
   `deep_nesting::a_chain_of_bounds_as_parameters_checks_in_linear_time`.
+- A copy of a type by name (`Type::replace_tvars_copied`, an argument's
+  open copy of its formal among them) copies each shared composite once
+  (`Subst`'s memo by node address), and lowers the cells under a copied
+  binding once per composite and depth (`Forwards::lowered`, `lower_in`),
+  not once per bound cell: the chain's bindings share their composites, so
+  a copy of a chain of bound cells was cubic in it. Arguments that are
+  references to lets decided but for a cell inside a function type (every
+  cell of the formal's chain bound by the first argument) check in
+  quadratic time: 22.4 / 154.8 G instructions at 500 / 1000 links to
+  5.3 / 19.3. Pin: `deep_nesting::
+  a_chain_of_bounds_passed_function_references_checks_in_quadratic_time`.
+  What remains quadratic there: `shape_hash_node` under a call's
+  `Widening::join`, `commit_conjuncts`, and `TerminalRun::take`.
 - The unions a `contains` walk builds to ask about (a distribution's pool
   of its candidates' parts, a placement's residue) are normalized in one
   pass kept for the call (`ContainsHist::normal_union`), so a node many

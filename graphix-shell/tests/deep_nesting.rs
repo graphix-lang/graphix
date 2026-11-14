@@ -322,6 +322,26 @@ fn program(shape: &str, d: usize) -> String {
             format!("{typedef}\nlet f = {bounds} |x: ({cells})| x;\nf(never())")
         }
         // The chain through a typedef's parameter, each cell a parameter of
+        // its own, every argument a reference to a let that is decided but
+        // for a cell inside a function type.
+        "chainboundsfnargs" => {
+            let bounds = (0..d)
+                .map(|i| format!("'a{i}: T<'a{}>", i + 1))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let formals =
+                (0..=d).map(|i| format!("x{i}: 'a{i}")).collect::<Vec<_>>().join(", ");
+            let lets = (0..d)
+                .rev()
+                .map(|i| format!("let v{i} = [v{}];\n", i + 1))
+                .collect::<String>();
+            let args = (0..=d).map(|i| format!("v{i}")).collect::<Vec<_>>().join(", ");
+            format!(
+                "type T<'x> = Array<'x>;\nlet f = {bounds} |{formals}| x0;\n\
+                 let v{d} = |z| 0;\n{lets}let r = f({args});\n0"
+            )
+        }
+        // The chain through a typedef's parameter, each cell a parameter of
         // its own, every argument a call.
         "chainboundsformals" => {
             let bounds = (0..d)
@@ -1072,6 +1092,25 @@ fn a_chain_of_bounds_elaborates_in_linear_time() {
 // remaining fnargs (cubic, 4.16/22.38 G at 250/500 on the lane, base alike) and
 // decided (6.14 G at 1000, carries-typedef-chain-01) reproduce. probes:
 // ~/ptmp/cr29/scratch/r24/24f/cbea/review/
+// 2026-11-14 claude: Round 25, partly fixed: the fnargs shape (references to lets
+// decided but for a cell inside a function type, the chain of bounds as formals) is
+// quadratic, not cubic. Every cell of the formal's chain is bound by the first
+// argument, so an argument's open copy of its formal (Widening::opening,
+// Type::replace_tvars_copied) copied each bound cell's binding, a tree of the rest
+// of the chain whose composites the bindings share, and lowered it
+// (TVar::write_binding -> lower) once per bound cell. Subst now copies each
+// composite of a binding once (memo by node address, active under a cell's binding
+// only) and the copy's bindings are lowered through one set per copy (lower_in,
+// Forwards::lowered). --check, debug, --no-cache, G instructions (empty 0.74),
+// base-r25 -> lane, fnargs 125/250/500/1000: 1.40/4.17/22.4/154.8 ->
+// 1.12/1.99/5.3/19.2 (either part alone: 9.6 and 24.5 at 500). Pin
+// deep_nesting::a_chain_of_bounds_passed_function_references_checks_in_quadratic_time
+// (8 G at 500, 30 G at 1000), failing with either part undone. Cost: guicheck 39.607
+// -> 39.809 G (+0.5%, the memo and the shared set on every copy that binds). What
+// remains quadratic in fnargs: shape_hash_node under Widening::join's contains,
+// contains::commit_conjuncts, settle::TerminalRun::take (gdb stacks at 1000 links).
+// The decided shape stays with carries-typedef-chain-01. probes
+// ~/ptmp/cr29/scratch/r25/25h/ (fa*.gx from gen4.py fnargs N)
 /// The chain through a typedef's parameter, or a variant's, elaborates in
 /// time linear in its length, at two depths: the instance's type holds
 /// each link's application once, a node every walk and rewrite of it
@@ -1133,6 +1172,18 @@ fn a_chain_of_bounds_through_a_function_typedef_elaborates_in_linear_time() {
 fn a_chain_of_bounds_as_parameters_checks_in_linear_time() {
     checks_within(&program("chainboundsformals", CHAIN_DEPTH), 5 * BILLION);
     checks_within(&program("chainboundsformals", 2 * CHAIN_DEPTH), 9 * BILLION)
+}
+
+/// The chain through a typedef's parameter, passed references to lets each
+/// holding the rest of the chain around a function type, checks in time
+/// quadratic in its length, not cubic: an argument's open copy of its
+/// formal copies each composite the chain's bindings share once, and
+/// lowers it once.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_chain_of_bounds_passed_function_references_checks_in_quadratic_time() {
+    checks_within(&program("chainboundsfnargs", 500), 8 * BILLION);
+    checks_within(&program("chainboundsfnargs", 1000), 30 * BILLION)
 }
 
 /// The chain through a union elaborates in time linear in its length, at
