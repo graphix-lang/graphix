@@ -4670,10 +4670,10 @@ run!(
         let k = |v: i64| {
             let fa = |x: i64| x;
             let fb = |y: string| y;
-            let u = select v > 0 { true => (fa, 1), false => (fb, 2) };
-            let s = select v > 0 { true => {f: fa, n: 1}, false => {f: fb, n: 2} };
+            let u = select v { 0 => null, 1 => (fa, 1), _ => (fb, 2) };
+            let s = select v { 0 => null, 1 => {f: fa, n: 1}, _ => {f: fb, n: 2} };
             let w = select v > 0 { true => `K(fa, 1), false => `K(fb, 2) };
-            let p = select v > 0 { true => (fa, fa), false => (fb, fb) };
+            let p = select v { 0 => null, 1 => (fa, fa), _ => (fb, fb) };
             let tuple = select u { ('q, i64) as (r, n) => n, _ => 0 };
             let literal = select u { ('q, i64) as (r, 1) => 5, ('q, i64) as (r, n) => n, _ => 0 };
             let field = select s { {f: 'q, n: i64} as {f, n} => n, _ => 0 };
@@ -4681,11 +4681,26 @@ run!(
             let twice = select p { ('q, 'q) as (r, s) => 7, _ => 0 };
             [tuple, literal, field, payload, twice]
         };
-        array::concat(k(1), k(-2))
+        array::concat(k(1), k(-2), k(0))
     }"#,
     |v: Result<&Value>| matches!(v, Ok(Value::Array(a))
-        if as_i64s(a) == [1, 5, 1, 1, 7, 2, 2, 2, 2, 7]);
+        if as_i64s(a) == [1, 5, 1, 1, 7, 2, 2, 2, 2, 7, 0, 0, 0, 2, 0]);
     FuseExpect::Jit
+);
+
+// A written test whose variable took every member leaves nothing for a
+// catch-all behind it.
+run!(
+    written_variable_over_every_member_leaves_a_catch_all_dead,
+    r#"{
+        let k = |v: i64| {
+            let u = select v > 0 { true => (|x: i64| x, 1), false => (|y: string| y, 2) };
+            select u { ('q, i64) as (r, n) => n, _ => 0 }
+        };
+        k(1)
+    }"#,
+    refused("unreachable arm: the earlier arms already cover the whole scrutinee");
+    FuseExpect::None
 );
 
 run!(

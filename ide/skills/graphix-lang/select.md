@@ -137,12 +137,12 @@ select, and runtime forms. Each rule refuses and names the fix.
   holds every member the arm's own tests admit: `(r, n)` over two tuples
   that hold different function types gives `r` both, `` (`A, f) `` the
   `` `A `` member's alone. A written test's own variable beside a `_`
-  arm binds such a part the same way (`('q, i64) as (r, n)`); written
-  twice it is tested at one part as the type another decided, and
-  refused where that part holds a function type the variable did not
-  take. A union the test writes binds every member it holds (`([&mut
-  i64, &mut string], i64) as (r, n)`), and is refused where a reference
-  it does not hold reaches the arm.
+  arm that another member reaches (a `null`) binds such a part the same
+  way (`('q, i64) as (r, n)`); written twice it is tested at one part as
+  the type another decided, and refused where that part holds a function
+  type the variable did not take. A union the test writes binds every
+  member it holds (`([&mut i64, &mut string], i64) as (r, n)`), and is
+  refused where a reference it does not hold reaches the arm.
   A test over a tuple, struct or variant is refused for such a part only
   where every other part of it passes a value of the other member: over
   `[(&i64, i64), (&string, string)]`, `(&i64, i64) as (r, n)` checks,
@@ -225,7 +225,8 @@ no "same runtime form" let a: [&i64, &string] = &1; select a { &i64 as x => 1, &
 ok let b = true; let t = select b { true => (|x: i64| x, 1), false => (|y: string| y, "s") }; select t { (r, n) => 0 }
 ok let b = true; let t = select b { true => (`A, |x: i64| x), false => (`B, |y: string| y) }; select t { (`A, f) => "[f(1)]", (`B, g) => g("s") }
 no "this callee is one of" let b = true; let t = select b { true => (|x: i64| x, 1), false => (|y: string| y, 2) }; select t { (r, n) => r(n) }
-ok let b = true; let t = select b { true => (|x: i64| x, 1), false => (|y: string| y, 2) }; select t { ('q, i64) as (r, n) => n, _ => 0 }
+ok let v = 0; let t = select v { 0 => null, 1 => (|x: i64| x, 1), _ => (|y: string| y, 2) }; select t { ('q, i64) as (r, n) => n, _ => 0 }
+no "unreachable arm" let b = true; let t = select b { true => (|x: i64| x, 1), false => (|y: string| y, 2) }; select t { ('q, i64) as (r, n) => n, _ => 0 }
 no "this callee is one of" let b = true; let t = select b { true => (|x: i64| x, 1), false => (|y: string| y, 2) }; select t { ('q, i64) as (r, n) => r(n), _ => 0 }
 no "same runtime form" let b = true; let fa = |x: i64| x; let fb = |y: string| y; let t = (fa, select b { true => fa, false => fb }); select t { ('q, 'q) as (r, s) => 0, _ => 1 }
 ok let a = 1; let b = "s"; let v = 0; let t = select v { 0 => (&mut a, 1), _ => (&mut b, 2) }; select t { ([&mut i64, &mut string], i64) as (r, n) => n }

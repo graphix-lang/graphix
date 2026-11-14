@@ -198,8 +198,8 @@ that a union of the test's holds collides with nothing there, since a
 value of it that passes is typed as it (`Type::matching_type`): a
 difference keeps a product the test holds without being it, so `('q, i64)
 as (r, n)` over `[(fn(x: i64) -> i64, i64), (fn(y: string) -> string,
-i64)]`, where `'q` took both functions, checks beside a `_` arm and gives
-`r` both. A union the test writes holds its members the same way, at the
+i64), null]`, where `'q` took both functions, checks beside a `_` arm for
+the null and gives `r` both. A union the test writes holds its members the same way, at the
 arm and at the settle: `([&mut i64, &mut string], i64) as (r, n)` over
 `[(&mut i64, i64), (&mut string, i64)]` gives `r` both references, and is
 refused where a `(&mut f64, i64)` reaches the arm too. The search for the

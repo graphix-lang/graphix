@@ -798,6 +798,21 @@ impl Reach {
                     // (written-variable-twice-open-01); fix that one first. probes:
                     // ~/ptmp/cr29/scratch/r24/24a/wvt/{p6c,s1,a1b,d2,x1}.gx,
                     // settle.patch, gen/ (written-variable-settle-first-01)
+                    // 2026-11-14 claude: (finisher, lane 24a rebased onto r24-staging
+                    // e8c333097) With variant-tuple-payload-dead-01 and
+                    // diff-product-held-01 on staging the catch-all behind a written test
+                    // that took every member is found dead, so this settle is now all
+                    // that refuses the two-member forms of (written-variable-told-01):
+                    // over [(fn_a, i64), (fn_b, i64)], `('q, i64) as (r, n) => n` is
+                    // refused 'can't tell' here and `.. , _ => 0` 'unreachable arm' (pin
+                    // lang::select::written_variable_over_every_member_leaves_a_catch_all_dead),
+                    // and only a scrutinee holding a member the catch-all takes (a null)
+                    // checks: lang::select::written_variable_binds_two_function_types
+                    // holds a null member for that reason, and drops it when this is
+                    // fixed. The tuple, literal, field and twice forms without a
+                    // catch-all are the probes:
+                    // ~/ptmp/cr29/scratch/r24/24a/fin/wv{2,4,6,10}.gx (pin.gx is the
+                    // fixture as it stands, dead.gx the refused twin).
                     let mut written: LPooled<AHashMap<usize, TVar>> = LPooled::take();
                     for p in preds.iter().filter(|p| p.explicit_type_predicate) {
                         p.type_predicate.reached_cells(&mut written)
