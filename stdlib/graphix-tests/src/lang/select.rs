@@ -2262,19 +2262,22 @@ run!(
     FuseExpect::None
 );
 
-// An or-name stands at its position in whichever alternative's structure
-// a value passes first: over a scrutinee that may hold either, it is the
-// union of every alternative's part.
+// Over a scrutinee the arms decide a `_` decides nothing of its part, so
+// both parts are the name's type and the first alternative takes every
+// pair.
 run!(
-    or_name_over_an_open_scrutinee_is_every_position,
+    or_name_beside_wildcards_over_an_open_scrutinee_second_alternative_dead,
     r#"{
     let f = |a| select a { (x, _) | (_, x) => str::len(x) };
     [f(("abc", 5)), f((5, "abcd"))]
 }"#,
-    refused("string does not contain Any");
+    refused("unreachable or-pattern alternative");
     FuseExpect::None
 );
 
+// An or-name stands at its position in whichever alternative's structure
+// a value passes first: over a scrutinee that may hold either, it is the
+// union of every alternative's part.
 run!(
     or_name_over_any_is_every_position,
     r#"{

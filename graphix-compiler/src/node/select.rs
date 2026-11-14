@@ -583,6 +583,11 @@ struct Reach {
     refutable_slice: bool,
     /// What was built into a scrutinee cell the arms decided.
     built: Option<Built>,
+    /// Each arm's inferred predicate as the arms' settle put it into a
+    /// scrutinee cell nothing bounded from below
+    /// ([`Type::any_parts_as_tvars`]), which the arm narrows; empty where
+    /// the arms settled no such cell.
+    settled: SmallVec<[Option<Type>; 16]>,
 }
 
 /// The union of the lower bounds of a scrutinee cell the arms decide, as
@@ -598,28 +603,45 @@ impl Reach {
     /// The walk over `scrut`. An under-constrained scrutinee first
     /// settles against the arms' informative predicates, except a union
     /// scrutinee's open members, which are what the arms discriminate.
-    /// An open cell takes the inferred predicates' cells as its parts;
-    /// any other scrutinee settles against copies of them, so a name is
-    /// typed only where its arm narrows: its part of every member the arm
-    /// can match. A copy the settle leaves open, the part an open cell
-    /// inside the scrutinee took, is the arm's own cell again.
+    /// An open cell takes the inferred predicates' cells as its parts,
+    /// and one nothing bounds from below a cell for each `_` at a
+    /// position too ([`Type::any_parts_as_tvars`]), which its arm narrows
+    /// as it does a name's; any other scrutinee settles against copies of
+    /// them, so a name is typed only where its arm narrows: its part of
+    /// every member the arm can match. A copy the settle leaves open, the
+    /// part an open cell inside the scrutinee took, is the arm's own cell
+    /// again.
     fn new<R: Rt>(
         env: &Env,
         scrut: &Type,
         arms: &[(PatternNode<R>, Node<R>)],
     ) -> Result<Self> {
-        let mut preds: LPooled<Vec<&PatternNode<R>>> = LPooled::take();
+        let unbounded = matches!(
+            scrut,
+            Type::TVar(tv) if tv.open_cell().is_some_and(|c| c.cell_lower().is_empty())
+        );
+        let mut preds: LPooled<Vec<(usize, &PatternNode<R>)>> = LPooled::take();
+        let mut settled: SmallVec<[Option<Type>; 16]> = SmallVec::new();
         // an arm that matches anything before narrowing steers only the
         // settle: narrowing may bind its cells to one member
         let mut wildcard = false;
-        for (pat, _) in arms.iter() {
-            match pat.matches_every(env, scrut)? {
+        for (i, (pat, _)) in arms.iter().enumerate() {
+            let every = pat.matches_every(env, scrut)?;
+            match every {
                 true => wildcard |= pat.guard.is_none(),
-                false => preds.push(pat),
+                false => preds.push((i, pat)),
+            }
+            if unbounded {
+                settled.push(match !every && !pat.explicit_type_predicate {
+                    true => Some(pat.type_predicate.any_parts_as_tvars()),
+                    false => None,
+                })
             }
         }
         let mut itypes: LPooled<Vec<&Type>> = LPooled::take();
-        itypes.extend(preds.iter().map(|p| &p.type_predicate));
+        itypes.extend(preds.iter().map(|(i, p)| {
+            settled.get(*i).and_then(Option::as_ref).unwrap_or(&p.type_predicate)
+        }));
         let itype = Type::union_exact(env, &itypes)?;
         drop(itypes);
         let union_scrut = match scrut.deref_cloned() {
@@ -629,7 +651,11 @@ impl Reach {
         };
         let informative = itype != Type::Primitive(BitFlags::empty());
         let mut built = None;
-        if informative && !(wildcard && union_scrut) && scrut.has_unbound() {
+        let settles = informative && !(wildcard && union_scrut) && scrut.has_unbound();
+        if !settles {
+            settled.clear()
+        }
+        if settles {
             if let Type::TVar(tv) = scrut
                 && let Some(cell) = tv.open_cell()
             {
@@ -696,7 +722,7 @@ impl Reach {
             // shape is another defect, or-slice-name-union-01: over a written parameter the or-arm runs only
             // where the alternatives' elements are one type, so the one cell an unannotated parameter gets has no
             // annotation that passes for two.
-            // CR claude for claude: [bug/low] A `_` in one arm at a part another arm
+            // XCR claude for claude: [bug/low] A `_` in one arm at a part another arm
             // binds types that part `Any` over an unannotated parameter, and the bind's
             // uses are refused by a message that names no annotation: `let f = |s| select
             // s { (1, _) => 0, (_, b) => b + 1 }; f((2, 5))` says "cannot compute Any +
@@ -718,6 +744,67 @@ impl Reach {
             // '_N, '_N, '_N], which nothing has decided" and now says "type mismatch
             // Number does not contain Any", as this CR's other shapes do. probes:
             // ~/ptmp/cr29/scratch/r23/23d/sacc/{msg_p0085u,msg_p0199u}.gx
+            // 2026-11-13 claude: Over a scrutinee cell nothing bounds from below (an
+            // unannotated parameter, a never() let) the arms' settle reads a `_` at a
+            // position of a tuple, struct or variant as a cell of its own
+            // (Type::any_parts_as_tvars), and the arm narrows that same cell
+            // (Reach::settled), so it stands in the scrutinee as an unused name does: the
+            // CR's three shapes run, and of gen.py's 1200 (seeds 4201, 977) the 109 that
+            // base-r24 refused where the written twin runs all run as the twin (0 newly
+            // refused, 0 differing from the twin, fused, --no-fusion, PAR=force,
+            // NO_SUBST, ELAB_AUDIT). A slice's elements keep `Any`. What it refuses that
+            // ran: a part only `_` and tests meet takes the tests' type, as a `_` arm
+            // beside `"a"` makes the whole a string (`(1, _) => 0, (_, "a") => 1, (_, _)
+            // => 2` no longer takes `(2, 5)`), and a never() let's `_` part is one type
+            // for its writers; a bind inside such a part (`(2, (c, _)) => c`) is the
+            // argument's part, where base-r24 typed it a variable no argument decides and
+            // `f((2, ("s", 4))) + 1` checked and printed 2. Pins that fail with
+            // `unbounded` forced false (41 runs):
+            // lang::select_undecided::wildcard_beside_a_bind_over_an_unannotated_parameter,
+            // .._behind_a_slice_ladder, .._returned_keeps_the_binds_type,
+            // .._in_a_variant_and_a_struct, .._over_a_let_written_later,
+            // wildcards_beside_binds_at_two_parts,
+            // bind_inside_a_part_beside_wildcards_read_as_a_number_refused,
+            // wildcard_part_is_the_type_another_arm_tests_refused,
+            // wildcard_part_of_a_let_written_at_two_types_refused, arm_cells_are_decided
+            // (jit: it fuses now),
+            // lang::select::or_name_beside_wildcards_over_an_open_scrutinee_second_alternative_dead.
+            // Left: wildcard-slot-lower-bounds-01, tuple-arms-settle-cost-01. probes:
+            // ~/ptmp/cr29/scratch/r24/24b/wsa/ (README)
+            // CR claude for claude: [bug/low] A `_` in one arm at a part another arm binds
+            // still types that part `Any` where the scrutinee is a cell with lower bounds
+            // (a reference's referent, an abstract's payload): `let x: i64 = never(); let
+            // y = never(); let r = &mut (x, y); let v = select *r { (1, _) => 0, (_, b) =>
+            // b + 1 }; x <- 2; y <- 5; v` says "cannot compute Any + i64", and so does
+            // `select w.0` over `W((1, y))`; with `(1, c)` for the `(1, _)` the first
+            // prints 6. wildcard-slot-any-part-01 gave a `_` a cell of its own only over
+            // a cell nothing bounds from below (`unbounded` below). With `unbounded` true
+            // for a bounded cell too the program above prints 6, but a lower bound then
+            // goes to the first member of the arms' union that takes it
+            // (lower-bound-first-member-01): over `&mut (select b { true => (x, `K), false
+            // => (0, `L) })`, `(_, `K) => 1, (0, _) => 2, _ => 3` sends `(x, `K)` to `(i64,
+            // '_N)` and makes `x` an i64, where the `_`'s `Any` left it open, and
+            // lang::select_undecided::arm_behind_a_cover_leaves_the_covered_part_open,
+            // arm_behind_a_cover_of_a_member_below_an_abstract_parameter and
+            // later_use_decides_a_cell_of_a_covered_member_below_a_reference fail. What
+            // would close it: drop `unbounded` once lower-bound-first-member-01 is
+            // closed. probes: ~/ptmp/cr29/scratch/r24/24b/wsa/{lb.txt,t7.txt} (run with
+            // rb.sh) (wildcard-slot-lower-bounds-01)
+            // CR claude for claude: [perf/low] The check of a select over an unannotated
+            // parameter whose arms hold a literal at one part and a name or a `_` at
+            // another grows with the square of the arms: `|s| select s { (1, a) => 1, ..,
+            // (N, a) => N, (_, _) => 0 }` takes 0.75 G user instructions of `--no-cache
+            // --check` in a debug build over the 0.74 G of an empty program at 10 arms,
+            // 0.94 G at 50, 1.50 G at 100 and 3.74 G at 200, base-r24 alike, and since
+            // wildcard-slot-any-part-01 the same arms with `_` for the name cost the same
+            // (0.79 G at 200 before it); a struct of three fields takes 4.6 G at 200. The
+            // variant form (`` `A(k, a) ``) takes 1.1 G at 200: its arms' cells are one
+            // before the settle (Type::binds_beside), where each tuple or struct arm is a
+            // member of its own that every arm narrows against. What would likely fix it:
+            // the same for the members of one tuple or struct shape whose other parts are
+            // equal. The GUI examples do not move (39.54 G before and after). probes:
+            // ~/ptmp/cr29/scratch/r24/24b/wsa/{w200,b200w,b200s,b200v}.gx, m.sh
+            // (tuple-arms-settle-cost-01)
             // CR claude for claude: [bug/low] An arm that binds a part whole beside arms that
             // take that part apart in two shapes is refused at the call, where the written
             // parameter runs: `let f = |s| select s { (1, b) => 0, (2, `A(x)) => x, (3,
@@ -732,6 +819,12 @@ impl Reach {
             // member of each shape (setops::one_type), so the argument meets three
             // members. base-r23 alike. probes: ~/ptmp/cr29/scratch/r23/23d/stb-rev/d2.txt
             // (run with rb.sh) (bind-beside-shapes-01)
+            // 2026-11-13 claude: Since wildcard-slot-any-part-01 a `_` for the arm's whole
+            // bind is refused the same way, where base-r24 typed the part `Any` and ran: `let
+            // f = |s| select s { (1, _) => 0, (2, `A(c)) => c, (3, `B) => 5, (_, _) => 1 };
+            // (f((3, `B)), f((2, `A(7))))` printed (5, 7) and now says "(i64, `A(i64)) could
+            // go to (i64, [`A('_N), `B]) or (i64, `A('_N)) of the union ..". probes:
+            // ~/ptmp/cr29/scratch/r24/24b/wsa/t6.txt lines 10 to 12 (run with rb.sh)
             // CR claude for claude: [bug/low] The check accepts and the build refuses a
             // select of three literal arms and a wildcard that bind a part of an abstract's
             // payload built at two shapes, one holding the other's cell: `type B<'p> =
@@ -854,7 +947,8 @@ impl Reach {
                     // ~/ptmp/cr29/scratch/r24/24a/fin/wv{2,4,6,10}.gx (pin.gx is the
                     // fixture as it stands, dead.gx the refused twin).
                     let mut written: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-                    for p in preds.iter().filter(|p| p.explicit_type_predicate) {
+                    for (_, p) in preds.iter().filter(|(_, p)| p.explicit_type_predicate)
+                    {
                         p.type_predicate.reached_cells(&mut written)
                     }
                     if !itype.contains_through_copy(env, &mut written, scrut)? {
@@ -893,6 +987,7 @@ impl Reach {
             guarded_slice: false,
             refutable_slice: false,
             built,
+            settled,
         })
     }
 
@@ -3315,6 +3410,7 @@ impl<R: Rt> Select<R> {
                 Some((p, _)) => pattern_site(p, n.spec()),
                 None => n.spec().clone(),
             };
+            let mut settled = reach.settled.get_mut(i).and_then(Option::take);
             if deferred[i]
                 && let Some((spec_pat, _)) = spec_pats.get(i)
             {
@@ -3329,6 +3425,7 @@ impl<R: Rt> Select<R> {
                 if let Some(t) = t {
                     pat.structure_predicate.realign(&ctx.env, &t)?;
                     pat.type_predicate = t;
+                    settled = None;
                 }
             }
             // The arm's binds alias against what reaches it. The
@@ -3358,7 +3455,10 @@ impl<R: Rt> Select<R> {
             }
             let mut members: SmallVec<[Type; 8]> = SmallVec::new();
             union_members(&ctx.env, &reaching, &mut members)?;
-            let narrowed = pat.capture_type(&ctx.env, &reaching).at(&site)?;
+            let narrowed = match settled {
+                Some(view) => view.any_as_tvar(),
+                None => pat.capture_type(&ctx.env, &reaching).at(&site)?,
+            };
             // CR claude for claude: [risk/low] The verdict of this narrowing is
             // dropped: where an inferred pattern's predicate is not held by what
             // reaches a live arm, its binds keep cells nothing decides, and inside a
@@ -3372,6 +3472,16 @@ impl<R: Rt> Select<R> {
             // finds the arm live, refuse an inferred predicate the narrowing did
             // not hold, naming the written test (`T as pattern`). probes:
             // ~/ptmp/cr29/scratch/r23/23d/sab/ (narrow-verdict-dropped-01)
+            // 2026-11-13 claude: A witness, base-r24 and lane 24b alike: over a
+            // written `Any` part a bind inside a pattern its arm does not otherwise
+            // decide keeps a cell no argument decides. `let f = |x: (i64, Any)|
+            // select x { (1, _) => 0, (2, (c, _)) => c, (_, _) => 1 }; let r = f((2,
+            // ("s", 4))); println(r)` checks, `f` being `fn(x: (i64, Any)) -> [i64,
+            // '_N]`; fused it panics, "kernel param `r`: runtime String("s") does
+            // not match the compiled Scalar(I64) slot", and --no-fusion prints s.
+            // Over an unannotated parameter wildcard-slot-any-part-01 closed the
+            // same shape (the part is the argument's). probe:
+            // ~/ptmp/cr29/scratch/r24/24b/wsa/any1.gx
             reaching.narrow_pattern(&ctx.env, &narrowed)?;
             if !pat.explicit_type_predicate && pat.structure_predicate.holds_abstract() {
                 reaching

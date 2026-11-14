@@ -1571,6 +1571,20 @@ except where an arm holds a partial struct pattern, whose completion
 against an open cell is the struct of the fields it names, a type the
 program never wrote.
 
+A `_` decides nothing of a scrutinee the arms decide. A `_` arm takes no
+part in the settle (`"a" => 1, _ => 2` makes `x` a string), and a `_` at
+a position of a tuple, struct or variant is a cell of its own in the
+union the cell is bound to (`Type::any_parts_as_tvars`), the cell its arm
+then narrows (`Reach::settled`), so it stands in the scrutinee as an
+unused name would: `(1, _) => 0, (_, b) => b + 1` makes the scrutinee
+`(i64, i64)`, where the `_`'s `Any` would have typed `b` `Any`, and a
+bind inside a part the other arms leave to a `_` (`(2, (c, _)) => c`) is
+the argument's part, not a variable no argument decides. The arm's
+run-time test keeps the `Any`. The elements of a slice share one type,
+so a `_` among them stays `Any` (`design/select_coverage.md`), and so
+does every `_` over a cell with lower bounds (`*r`, an abstract's
+payload), where a bound still goes to the first member that takes it.
+
 A decision may rewrite a binding that held the cell: `y` bound to `['x,
 `J]` becomes `` `J `` once `(`J, _)` decides `'x`. So a bound cell of
 the scrutinee whose binding holds an open cell is noted with that binding,
