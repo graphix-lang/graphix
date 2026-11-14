@@ -2610,6 +2610,7 @@ impl Env {
     // fixer's eleven, 56 runs fail with called_in undone. Found beside it:
     // orphan-fn-late-bind-defuse-01, reload-same-fn-impl-01, callable-scope-root-01. The core traits
     // half still waits for Eric.
+    // 2026-11-14 claude: The core-traits half is item D38 in ~/ptmp/cr-discuss.md (Open).
     /// Every impl of `trait_id`, hidden ones included (see
     /// [`Self::impl_hidden`]). Inside a load of a dynamic module's
     /// source the impls it writes come first, in place of the registered

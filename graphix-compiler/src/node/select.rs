@@ -667,48 +667,6 @@ impl Reach {
                     built = Some(Built { typ, cells });
                 }
             }
-            // CR claude for claude: [bug/low] A slice in each alternative of an or-pattern
-            // over an unannotated parameter is refused at the call, where the same slices
-            // in arms of their own and the written parameter run: `let f = |x| select x {
-            // `A([h, ..]) | `B([h, ..]) => h, _ => 0 }; f(`A([1, 2]))` is refused, "i64
-            // could go to '_N or '_N of the union ['_N, '_N], which nothing has decided",
-            // and with `` `A([]) => 0, `B([]) => 0 `` for the wildcard "`A(Array<i64>)
-            // could go to any of 2 members of the union [`A(Array<['_a, '_b]>),
-            // `B(Array<['_a, '_b]>)]". `` `A([h, ..]) => h, `B([h, ..]) => h, `A([]) => 0,
-            // `B([]) => 0 `` prints (1, 0), and so does the or-arm under `|x: [`A(Array<i64>),
-            // `B(Array<i64>)]|`. base-r23 and lane 23d alike. Not diagnosed: the printed
-            // union keeps an alternative's element cell and its rest's cell apart, which a
-            // slice arm of its own does not. probes: ~/ptmp/cr29/scratch/r23/23d/vsc/
-            // {q01,q03,q04,q05}.gx (slice-or-arm-cells-01)
-            // 2026-11-12 claude: slice-tuple-bind-cells-01's fix (Type::narrow_per_member: an
-            // open cell among the other parts of a cell that is a member's own part is merged
-            // with it) makes q01.gx and q05.gx print (1, 0), as q04.gx does; pin
-            // lang::types::slice_in_each_alternative_of_an_or_arm_over_an_unannotated_parameter
-            // fails in every mode with that fix undone. Not looked at beyond the four probes.
-            // 2026-11-13 claude: Stale on base-r24 (main be2c16a05): q01, q03, q04 and q05
-            // print (1, 0) there and on the lane, fused, --no-fusion, GRAPHIX_PAR=force,
-            // GRAPHIX_NO_SUBST=1, under GRAPHIX_ELAB_AUDIT and from a cached image. Closed by
-            // 97d653516 (slice-tuple-bind-cells-01): with the merge in
-            // Type::narrow_per_member_in undone (`own` forced false) q01 and q05 are refused
-            // again by the two messages quoted above. Looked one step over, 27 probes, base-r24
-            // and the lane alike: a rest bound in each alternative, three alternatives, slices
-            // of different lengths, a slice element against a whole payload, a second part
-            // beside the slice, a struct field, the or inside a slice, nested slices,
-            // literal-tagged tuples, one instance (a function a call returns) and a scrutinee a
-            // later `<-` writes all run as their written twins; one instance called at two
-            // element types and `h + 1` then a string written are refused. Pins beside the
-            // first,
-            // lang::types::slices_of_other_shapes_in_the_alternatives_of_an_or_arm_over_an_unannotated_parameter,
-            // slice_in_each_alternative_of_an_or_arm_binds_one_cell_in_one_instance,
-            // .._as_two_types_in_one_instance_refused, .._over_a_binding_written_later (20 of
-            // the 24 runs of the five fail with the merge undone;
-            // .._used_as_a_number_then_written_a_string_refused holds either way). probes:
-            // ~/ptmp/cr29/scratch/r24/24b/soa/
-            // 2026-11-13 claude: Review: the stale claim holds (the four probes on base-r24 and the lane; q01 and
-            // q05 refused again and 20 of the 24 pin runs failing with the merge undone). What is left of this
-            // shape is another defect, or-slice-name-union-01: over a written parameter the or-arm runs only
-            // where the alternatives' elements are one type, so the one cell an unannotated parameter gets has no
-            // annotation that passes for two.
             // CR claude for claude: [bug/low] A `_` in one arm at a part another arm
             // binds types that part `Any` over an unannotated parameter, and the bind's
             // uses are refused by a message that names no annotation: `let f = |s| select
@@ -772,59 +730,6 @@ impl Reach {
             // wildcard_part_of_a_let_written_at_two_types,
             // wildcard_part_of_a_parsed_value. probes:
             // ~/ptmp/cr29/scratch/r24/24b/wsa-rev/ (README)
-            // XCR claude for claude: [bug/high] A bind inside a part that another arm leaves
-            // to a `_` is a variable no argument decides, over an unannotated parameter,
-            // and the fused run dies: `let f = |x| select x { (1, _) => 0, (2, (c, _)) => c,
-            // (_, _) => 1 }; let r = f((2, ("s", 4))); println(r)` checks, `f` being `fn(x:
-            // (i64, Any)) -> [i64, '_N]`; fused it panics, "kernel param `r`: runtime
-            // String("s") does not match the compiled Scalar(I64) slot", and --no-fusion
-            // prints s. `f((2, ("s", 4))) + 1` checks and prints 2 on both engines: the
-            // use makes the arm's test `(i64, (i64, Any))`, and the value goes to the `(_,
-            // _)` arm. As REPL inputs, `r + 1` after `let r = f((2, ("s", 4)))` kills the
-            // runtime. The settle below joins `(i64, Any)` and `(i64, ('c, Any))`, the
-            // `_`'s `Any` holds the other arm's part, the call's argument is held by the
-            // first, and nothing decides `'c`. With the parameter written `(i64, Any)` the
-            // same (narrow-verdict-dropped-01's note). A `_` read as a cell of its own
-            // closed it and was reverted (wildcard-slot-any-part-01's note). What would
-            // close it: an argument that a decided member holds and an undecided member
-            // could take decides that one too, or the bind is refused where the select is
-            // written, naming the parameter to annotate. base-r24 alike. probes:
-            // ~/ptmp/cr29/scratch/r24/24b/wsa-rev/{hole1.gx,hole2.gx,repl.in}
-            // (bind-inside-wildcard-part-01)
-            // 2026-11-13 claude: Fixer of bind-beside-shapes-01: Type::take now gives an
-            // argument to the undecided member that holds the others (contains::widest), but
-            // only where that leaves each of the others holding the argument as it stands
-            // (contains::decides_each), so the three-part form of this hole, `(1, _, z) =>
-            // z, (2, (c, _), z) => c, (_, _, z) => z` called with (2, ("s", 4), 0), stays
-            // refused ("could go to (i64, Any, '_N) or (i64, ('_N, Any), '_N)"), pinned by
-            // lang::select_undecided::wildcard_member_holding_a_bind_inside_takes_no_argument.
-            // The same test at the decided member that takes this CR's argument (the others
-            // that could take it must hold it as it stands, else refuse) would close the
-            // two-part form; not tried.
-            // 2026-11-14 claude: Fixer of narrow-verdict-dropped-01, lane 24b: closed by that
-            // fix (PendingSettle::InsideAny): `c` is `Any` at the end of the definition of
-            // `f`, so hole1.gx prints s fused and --no-fusion, hole2.gx (`f((2, ("s", 4))) +
-            // 1`) is refused, "cannot compute [i64, Any] + i64", and repl.in refuses `r + 1`
-            // where it killed the runtime. Pin:
-            // lang::select::name_inside_an_any_part_nothing_decides_is_any (its `u`), which
-            // fails without the fix. The three-part form stays refused as pinned (its `c` is a
-            // cell of a member of the parameter, which an argument decides).
-            // 2026-11-14 claude: Finisher, lane 24b, rebased onto r24-staging: the deferred
-            // close the note above names (PendingSettle::InsideAny) is not in the tree. Lane
-            // 24a's any-cell-bound-undecided-01 closes this instead: a name inside a part that
-            // is Any is fixed at its arm's end (Type::close_over_any), so c is Any. hole1.gx
-            // prints s fused, --no-fusion, forked and under GRAPHIX_NO_SUBST=1; hole2.gx is
-            // refused, cannot compute Any + i64; as REPL inputs r + 1 is refused and the
-            // session goes on. Pins
-            // lang::select::name_inside_an_any_part_nothing_decides_is_any (its u) and
-            // name_inside_a_part_another_arms_wildcard_makes_any_is_not_decided_by_a_caller_refused
-            // fail with the close disabled. The three-part form no longer stays refused: with
-            // c fixed, the member holding the others takes the argument (Type::take) and it
-            // prints s in every mode, pinned by
-            // lang::select_undecided::wildcard_member_holding_a_bind_inside_takes_a_decided_argument;
-            // an argument still undecided is refused as before
-            // (.._takes_no_undecided_argument). Probes: ~/ptmp/cr29/scratch/r24/24b/fin/
-            // (README).
             // CR claude for claude: [bug/high] A bind beside two other arms' literals of two
             // types at one part of a tuple or struct is typed without one of them where its
             // arm comes after theirs, and the fused arm reads a value of that type as the
@@ -893,38 +798,6 @@ impl Reach {
             // and 1.50 G at 100. base-r24. probes:
             // ~/ptmp/cr29/scratch/r24/24b/wsa/{w200,b200w,b200s,b200v}.gx, m.sh
             // (tuple-arms-settle-cost-01)
-            // CR claude for claude: [bug/low] The check accepts and the build refuses a
-            // select of three literal arms and a wildcard that bind a part of an abstract's
-            // payload built at two shapes, one holding the other's cell: `type B<'p> =
-            // Abstract<'p>; let x = never(); let b = B((1, [x])); b <- B((2, x)); let v =
-            // select b.0 { (1, h) => h, (2, h) => h, (3, h) => h, (_, h) => h }; x <- t ~
-            // 1; println(v)` passes `--check`, and a run is refused at `println(v)`, "i64
-            // could go to any of 2 members of the union ['_N, i64, Array<'_N>, Array<i64>]
-            // .. write the type of what holds that union". GRAPHIX_ELAB_AUDIT=1 reports
-            // nothing. With one literal arm (`(1, h) => h, (_, h) => h`) or a bind alone
-            // (`(n, h) => h`) it prints [1] and then 1. base-r23 alike (its union reads
-            // "[['_N, i64, Array<'_N>, Array<i64>], ['_N, Array<'_N>]]"). Not diagnosed.
-            // probes: ~/ptmp/cr29/scratch/r23/23d/stb-rev/{sp1,sp2,sp3}.gx
-            // (payload-bound-arms-split-01)
-            // 2026-11-13 claude: Stale on base-r24 (main be2c16a05): sp1 checks and runs to
-            // [1] then 1, fused, --no-fusion, PAR=force, NO_SUBST, ELAB_AUDIT and from a
-            // cached image, and so do five and one literal arms and the shapes swapped. A
-            // bisect of sp1 over the 98 commits since this CR was written gives 0ec300127
-            // (construct-lower-merge-01) as the first that runs it. Its two parts each
-            // close it now: with TVar::weld_lower a no-op and FnType::settle_terminal's
-            // walk of the cells a lower bound holds both undone on the lane, sp1 is refused
-            // again with this CR's message, and with either one alone it runs. The arms'
-            // binds were never apart from the cell of x: a use in any one arm that decides
-            // its bind (let q: [i64, Array<i64>] = h) makes a later x <- "s" refused, at
-            // the check and the build alike, for each of the four arms over five tag pairs.
-            // Pins:
-            // lang::select_undecided::payload_part_bound_by_literal_arms_over_two_shapes_builds_at_a_call
-            // (all four modes fail with both parts undone, by the message above) and
-            // payload_part_an_arm_decides_over_two_shapes_then_written_apart_refused (holds
-            // either way). 468 generated programs of this family (holder, shapes, 0 to 5
-            // literal arms, the read, the write): no check/build difference, verdicts and
-            // outputs equal on base-r24 and the lane. probes:
-            // ~/ptmp/cr29/scratch/r24/24b/pbas/ (README)
             // CR claude for claude: [bug/low] A part built into a scrutinee cell the arms
             // decide still goes by the order of the arms' union where the arm that takes
             // its member whole binds a name: `let f = |x, y, b: bool| { let r = &mut

@@ -1183,46 +1183,6 @@ pub fn union_members_with(
     union_members_stopping(env, t, out, &|_| false, &|_| None, open)
 }
 
-// CR claude for claude: [bug/high] A check runs out of memory on a select with a
-// constructor pattern over a call's result that is a union of two constructions of
-// one nominal type whose payloads hold undecided cells. `type B<'p> = Abstract<'p>;
-// let f = |a, c| select true { true => a, false => c }; select f(B([]), B([])) {
-// B(v) => 0 }` under `--check` reaches 8 GB in 3 s and is killed (2 GB in under a
-// second); `f(B([1]), B([]))` and the call bound by a `let` first do the same. A
-// backtrace of the running check (gdb, interrupted after 0.7 s) is
-// Select::check_undecided, then union_members_stopping's `go` calling itself for
-// every frame shown (60), the innermost in a closure of check_undecided reading
-// TVar::stands_for: a walk that meets a type again inside itself, through `held`
-// or a union's members, with nothing to stop it. Not looked into further: which
-// binding holds itself (GRAPHIX_DBG_BIND shows the pattern's containment merging
-// the two payload cells, RALIAS then CELL-MERGE, just before). These check:
-// `f(B(never()), B(never()))`, `f(B(1), B(2))`, `f(B([1]), B(["s"]))`, and the
-// select of the two constructions with no function between (`let x = select true {
-// true => B([1]), false => B([]) }; select x { B(v) => v }`). base-r23 alike, and
-// construct-lower-merge-01's fix does not change it. 23 of the 25 `spay` programs
-// of that fix's differential (~/ptmp/cr29/scratch/r23/23b/gen.py) are killed this
-// way. probes: ~/ptmp/cr29/scratch/r23/23b/{o1,o3,o7}.gx (killed),
-// {o2,o4,o5,o6,o8,o9}.gx (check) (select-undecided-union-oom-01)
-// 2026-11-13 claude: Stale on base-r24 (lane 24b fixer): o1, o3 and o7 check there
-// (60 MB, 0.15 s), as do all 25 spay programs of the differential, and they run to
-// [1], [1] and 0 fused and unfused. Closed by 3ea5f8dee (nov12a-crash, lane 23c),
-// which landed under this CR's commit when lane 23b was rebased: the pattern makes
-// the two payload cells one, the call's result cell, bound to the union of the two
-// constructions, is rewritten to stand for one of them, and Decisions::held kept
-// the union under the cell the holder stood for, a member of that union, so
-// union_members_stopping read the member as the union without end. It is keyed by
-// the holder's own cell now. Shown on the lane: with that commit's three lines in
-// select.rs undone, o1, o3, o7 and 23 of the 25 spay programs are killed at the cap
-// again and o2, o4, o5, o6, o8, o9 check, as this CR says; restored, all return.
-// Pins added for this shape (the nov12a pins are a union beside a bind):
-// lang::select_undecided::payload_pattern_over_two_constructions_a_call_returns,
-// _bound_by_a_let and payload_pattern_over_two_undecided_constructions; each is
-// killed at a cap with the keying undone. Not shown reachable and not guarded: a
-// member of a rewritten binding that now forwards to its holder's own cell (a merge
-// into a cell that reaches the merged one is refused, TVar::closes_cycle, so the
-// holder must drop the member first); 4000 generated selects over unions of open
-// cells and the 600 of gen.py are not killed on base-r24. probes:
-// ~/ptmp/cr29/scratch/r24/24b/oom/ (README)
 /// [`union_members_with`], where a tvar `stop` takes is handed to `open`
 /// as it stands, bound or not, and one `held` reads is that binding.
 fn union_members_stopping(

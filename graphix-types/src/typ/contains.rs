@@ -1498,6 +1498,7 @@ fn commit_conjuncts(
         // Array<string>]') and the plain function '|s: Array<i64>, x: [Array<i64>,
         // Array<string>]|'. Under 'impl<'t> T for Array<'t>' alike. base-r24 alike. probes:
         // ~/ptmp/cr29/scratch/r24/24d/mum/{k3,k12,g1}.gx (refused), {k10,k1,k9,k8}.gx (run)
+        // 2026-11-14 claude: The witness left is item D39 in ~/ptmp/cr-discuss.md (Open).
         let held = match exact(c) {
             true => c.contains_int(flags, env, hist, t)?,
             false => commit_parts(tv, flags, env, hist, &mut Lazy::new(), c, t)?,
@@ -1933,38 +1934,6 @@ fn holds_union(
 // 19}.gx, generators gen2.py / gen3.py there (`python3 gen2.py arrnotrait N`)
 // (chainbounds-array-valued-01)
 
-// XCR claude for claude: [bug/low] A call's check gives a variable a lower bound holds
-// the first member of a declared union that could take the bound. Over `type B<'p> =
-// Abstract<'p>; let f = |a, z| { a <- B([z]); a.0 }; let x: B<[Array<i64>,
-// Array<string>]> = B([1])`, `f(x, 2)` runs and `f(x, "s")` is refused, "type mismatch
-// i64 does not contain string", in either order of the parameters (`|z, a|`): the
-// payload is decided first, its bound `Array<'z>` commits against the union here, and
-// `'z` is `i64`, the member the union's sort puts first, which a string neither fits
-// nor widens. With the payload undeclared (`f(B([1]), "s")`) the call runs. Under
-// GRAPHIX_NO_SUBST the same pick refuses the instance of a wrapper, `let g = |b, u|
-// f(b, u); g(B([1]), "s")`, which the build by substitution runs (12 of the 3168
-// programs of lane 23b's rev2/gen3.py). base-r24 alike. Not decided: leave the variable
-// for its own argument and judge the bound where the variable binds, or refuse the pick
-// naming the parameter to declare. Found fixing construct-lower-instance-01. probes:
-// ~/ptmp/cr29/scratch/r24/24c/cli/{u1,u2,u3}.gx, g3/wrap-arg-arr-i-s.gx
-// (lower-bound-union-pick-01)
-// 2026-11-14 claude: Lane 24d's finisher, on r24-staging with
-// undecided-into-two-decided-01 (Type::take refuses an undecided type two decided
-// members would decide differently): the pick is gone. u1, u2 and u3 are refused alike,
-// in either order of the parameters, 'Array<'_N> could go to Array<i64> or
-// Array<string> of the union .., and nothing has decided which: the function builds
-// that type into this argument's, which the arguments have yet to decide; give this
-// argument one member's type' (callsite::undecided_taker, where the argument holds no
-// open cell; before it the note called the declared argument undecided), and the
-// payload declared as one member runs. So the CR's second option is what stands; the
-// first (leave the variable for its own argument) would accept f(x, 2) and f(x, "s")
-// and is not built. Pins:
-// lang::types::declared_union_payload_takes_no_array_the_function_builds_refused,
-// declared_union_payload_after_its_decider_refused (both run with Type::take's refusal
-// undone), decided_payload_wide_enough_takes_the_argument (the twin).
-// two_payloads_decided_apart_at_a_call_build lost its f(x, n) over a declared union
-// payload, which that pick alone ran. Not re-run: the NO_SUBST wrapper
-// g3/wrap-arg-arr-i-s.gx.
 /// Commit `t ⊇ l` for each lower bound `l` of a cell bound to `t`, on
 /// copies first, so bounds a probe admits apart but no commit holds
 /// together (`(i64, string)` above `('x, 'x)`) refuse the bind and bind
