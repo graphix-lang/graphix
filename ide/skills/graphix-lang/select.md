@@ -271,6 +271,8 @@ ok 'a: [`J, i64] |s: 'a| select s { [`J, i64] as `J => 1, _ => 2 }
 no "`J tests inside a value of self" trait Tag { val tag: fn(self) -> i64 = |x| select x { `J => 1, _ => 2 } }; 1
 no "((a, b), c) binds inside a value of 'a" 'a: (i64, i64) |x: 'a| { let r = &mut (x, 0); let ((a, b), c) = *r; a + b }
 ok 'a: (i64, i64) |x: 'a| { let r = &mut (x, 0); let ((a, b), c): ((i64, i64), i64) = *r; a + b }
+ok |x: (bool, Any)| select x { (_, `Z) => 3, (true, _) => 1, (false, _) => 2 }
+ok |b: bool, c: bool| { let r = &mut (select c { true => (b, "s"), false => (`L, `Z) }); select *r { (true, _) => 1, (false, _) => 2, (_, `Z) => 3 } }
 no "does not decide the type of `a`" |x: Any| select x { (a, b) => a + b, _ => 0 }
 no "does not decide the type of `a`" |x: Any| -> i64 select x { (a, b) => a + b, _ => 0 }
 ok |x: Any| select x { (i64, i64) as (a, b) => a + b, _ => 0 }

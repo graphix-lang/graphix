@@ -1662,15 +1662,24 @@ run!(arm_behind_a_pool_tests_the_member_that_reaches_it_refused, r#"{
     f(1, 0, true, true)
 }"#, refused("(_, 0) tests a value of 'y, a type not decided at this select"); FuseExpect::None);
 
-// A cell of the member that the arms decided is not one the pool's arms
-// hold whatever it becomes: the test behind them is what decided it.
-run!(arm_behind_a_pool_over_a_cell_the_arms_decided_refused, r#"{
+// The pool of names over a member the arms decided covers it in the walk of
+// the scrutinee's own members, so the test behind it meets none of its values
+// and decides nothing of its cell beyond the type the test gives it.
+run!(arm_behind_a_pool_over_a_cell_the_arms_decided_covers_it, r#"{
     let f = |x, b: bool, c: bool| {
         let r = &mut (select c { true => (b, x), false => (`L, 0) });
         select *r { (true, n) => 1, (false, m) => 2, (_, 0) => 3, _ => 4 }
     };
-    f(0, true, true)
-}"#, refused("(_, 0) tests a value of 'x, a type not decided at this select"); FuseExpect::None);
+    [f(0, true, true), f(0, false, true), f(0, true, false)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 2, 3]); FuseExpect::Jit);
+
+run!(arm_behind_a_pool_over_a_cell_the_arms_decided_types_it_by_the_test_refused, r#"{
+    let f = |x, b: bool, c: bool| {
+        let r = &mut (select c { true => (b, x), false => (`L, 0) });
+        select *r { (true, n) => 1, (false, m) => 2, (_, 0) => 3, _ => 4 }
+    };
+    f("s", true, true)
+}"#, refused("i64 does not contain string"); FuseExpect::None);
 
 // The arms up to a dead one are judged behind the pool too, so the dead
 // arm is what is refused.

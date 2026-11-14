@@ -1065,14 +1065,15 @@ impl Reach {
                 }
             }
             let explicit = pat.explicit_type_predicate.then_some(&pat.type_predicate);
-            match self.pool.claim(env, &self.members_of, sp, explicit)? {
-                Claim::Dead if checking && !self.reaches_unpooled(env, explicit)? => {
-                    return dead(
-                        "every combination of heads it matches is covered by earlier arms",
-                    );
-                }
+            let pooled = self.pool.claim(env, &self.members_of, sp, explicit)?;
+            if pooled.dead && checking && !self.reaches_unpooled(env, explicit)? {
+                return dead(
+                    "every combination of heads it matches is covered by earlier arms",
+                );
+            }
+            for m in pooled.completes {
                 // a slice group covers its length of the member, on its ladder
-                Claim::Completes(m) => match sp.array_len_range() {
+                match sp.array_len_range() {
                     Some((k, exact)) => {
                         let mut done = false;
                         for l in self.ladders.iter_mut() {
@@ -1085,8 +1086,7 @@ impl Reach {
                         }
                     }
                     None => self.cover(env, m)?,
-                },
-                Claim::Dead | Claim::Open | Claim::Unpooled => (),
+                }
             }
             match self.parts.claim(env, sp, explicit)? {
                 PartClaim::Dead
@@ -1621,6 +1621,26 @@ fn head_of(sp: &StructPatternNode) -> Option<Head> {
     }
 }
 
+// CR claude for claude: [bug/low] A tag or bool literal at a position the arms decide as `Any`
+// covers nothing there, so the select over such a referent is refused where its plain twin
+// runs: `|b: bool, c: bool| { let r = &mut (select c { true => (`M, b), false => (`M, b) });
+// select *r { (_, true) => 1, (`M, false) => 2 } }` says "missing match cases: no arm covers
+// (Any, bool)", and `select (select c { .. }) { .. }` checks and prints [1, 2]. The `_` at the
+// first position decides the referent `(Any, bool)`, a position `heads` reads as no finite set
+// (Miss::Unread in pooled_leaves), and `` `M `` is a head of it only as far as a name is. base-r25
+// and lane 25c alike. A fix would read the position as the type the member was built with
+// (Built::typ) where the arms left it open, which the walk does not hold here. probes:
+// ~/ptmp/cr29/scratch/r25/25c/rpe/t6.txt (run with rb.sh) (decided-any-tag-cover-01)
+// CR claude for claude: [bug/low] A test behind a pool that covers a referent's member still
+// decides that member's cell: `|x, b: bool, c: bool| { let r = &mut (select c { true => (b, x),
+// false => (`L, 0) }); select *r { (true, n) => 1, (false, m) => 2, (_, 0) => 3, _ => 4 } }`
+// checks, but with `x` the i64 that `(_, 0)` tests, so `f("s", true, true)` is refused "i64 does
+// not contain string" where the plain twin runs it (`(_, 0)` meets no value of `x`: the pool
+// takes the member whole first). Not traced: which walk binds the cell from that arm's
+// predicate where Reach has already covered the member. base-r25 refused the program,
+// for an undecided `x`.
+// probes: ~/ptmp/cr29/scratch/r25/25c/rpe/t5.txt (run with rb.sh)
+// (pool-covered-member-cell-typed-01)
 /// The pooled positions of composite pattern `sp` against `m`, a
 /// scrutinee member of its shape; `Unread` when the pattern has a
 /// refutable part the pool does not read (another literal, a slice, a
@@ -1677,6 +1697,9 @@ fn pooled_leaves(
             };
             if !held {
                 return Ok(Some(Miss::Never));
+            }
+            if domain.is_none() {
+                return Ok(Some(Miss::Unread));
             }
         }
         out.push(Leaf { path: path.clone(), heads: admitted, domain });
@@ -1963,7 +1986,7 @@ fn member_slices(
 
 /// The head a composite pattern tests: what groups arms in the
 /// literal pool and selects the scrutinee member they cover.
-#[derive(PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 enum Shape {
     Tuple(usize),
     /// An exact-length array or list slice: its group covers that length.
@@ -2073,8 +2096,6 @@ impl Matched {
 /// What pooling an atom decided.
 #[derive(Debug, PartialEq)]
 enum Claim {
-    /// The pool does not read it.
-    Unpooled,
     /// Its group does not cover its member yet.
     Open,
     /// It completes its group: the member it covers.
@@ -2083,8 +2104,22 @@ enum Claim {
     Dead,
 }
 
+/// What pooling an atom into the groups of the scrutinee's members
+/// decided.
+struct Pooled {
+    /// Every member it reaches finds every combination of heads it
+    /// matches matched by earlier arms, and it reaches one.
+    dead: bool,
+    /// The members its arm completes the groups of.
+    completes: SmallVec<[Type; 2]>,
+}
+
+impl Pooled {
+    const UNPOOLED: Self = Self { dead: false, completes: SmallVec::new_const() };
+}
+
 impl LiteralPool {
-    // CR claude for claude: [bug/low] Arms that pool over a referent they decide do not
+    // XCR claude for claude: [bug/low] Arms that pool over a referent they decide do not
     // exhaust it, with nothing undecided: `|b: bool, c: bool| { let r = &mut (select c {
     // true => (b, "s"), false => (`L, `Z) }); select *r { (true, _) => 1, (false, _) =>
     // 2, (_, `Z) => 3 } }` is refused, "missing match cases: no arm covers (bool, Any)".
@@ -2102,6 +2137,17 @@ impl LiteralPool {
     // census and the generated selects of lower-view-pool-cover-01 (its gen.py without
     // the last arm) first. probes: ~/ptmp/cr29/scratch/r24/24b/lvp-rev/r6.txt (run with
     // ../lvp/rb.sh) (referent-pool-exhaust-01)
+    // 2026-11-14 claude: Closed: LiteralPool::claim_among pools an atom into the group
+    // of each member it can match (it returned Unpooled once two members, or a member it
+    // cannot read, were reached), and a leaf over a position with no finite set of heads
+    // (Any) is Miss::Unread so it no longer poisons its group. Pins
+    // lang::select::pool_over_a_referent_the_arms_decide_exhausts_it (+ _cover_first,
+    // struct and variant forms), pool_beside_an_any_position_exhausts_the_tuple,
+    // pool_of_two_overlapping_members_covers_both,
+    // arm_behind_a_pool_of_two_overlapping_members_is_dead,
+    // catch_all_behind_a_pool_over_a_referent_the_arms_decide_is_dead,
+    // settle_types_a_name_from_every_member* (their dead arms removed); all fail without
+    // the fix. Needs a soak.
     /// Pool the unguarded atom `sp` over the scrutinee's members;
     /// `explicit`, its arm's written type test.
     fn claim(
@@ -2110,8 +2156,8 @@ impl LiteralPool {
         scrut: &Type,
         sp: &StructPatternNode,
         explicit: Option<&Type>,
-    ) -> Result<Claim> {
-        let Some(shape) = Shape::of(sp) else { return Ok(Claim::Unpooled) };
+    ) -> Result<Pooled> {
+        let Some(shape) = Shape::of(sp) else { return Ok(Pooled::UNPOOLED) };
         let mut members: SmallVec<[Type; 8]> = SmallVec::new();
         union_members(env, scrut, &mut members)?;
         self.claim_among(env, sp, shape, members.iter(), |i| match explicit {
@@ -2122,9 +2168,12 @@ impl LiteralPool {
         })
     }
 
-    /// Pool the unguarded atom `sp`, of `shape`, against the one of
-    /// `members` of that shape it can match: one its arm's test `holds`,
-    /// asked by the member's place, with a head each position admits.
+    /// Pool the unguarded atom `sp`, of `shape`, into the group of each
+    /// of `members` of that shape it can match: one its arm's test
+    /// `holds`, asked by the member's place, with a head each position
+    /// admits. A member it matches but the pool cannot read is left
+    /// out, and the atom is dead only where every member it reaches
+    /// finds it so.
     fn claim_among<'a>(
         &mut self,
         env: &Env,
@@ -2132,8 +2181,9 @@ impl LiteralPool {
         shape: Shape,
         members: impl Iterator<Item = &'a Type>,
         mut holds: impl FnMut(usize) -> Result<bool>,
-    ) -> Result<Claim> {
-        let mut reached: Option<(&Type, SmallVec<[Leaf; 8]>)> = None;
+    ) -> Result<Pooled> {
+        let mut pooled = Pooled { dead: true, completes: SmallVec::new() };
+        let mut reached = false;
         for (i, m) in members.enumerate().filter(|(_, m)| shape.fits(m)) {
             if !holds(i)? {
                 continue;
@@ -2141,31 +2191,40 @@ impl LiteralPool {
             let leaves = match pooled_leaves(env, sp, m)? {
                 Ok(leaves) => leaves,
                 Err(Miss::Never) => continue,
-                Err(Miss::Unread) => return Ok(Claim::Unpooled),
+                Err(Miss::Unread) => {
+                    pooled.dead = false;
+                    continue;
+                }
             };
-            if reached.is_some() {
-                return Ok(Claim::Unpooled);
+            reached = true;
+            let shape = shape.clone().of_member(m);
+            let g =
+                match self.groups.iter().position(|g| g.shape == shape && g.member == *m)
+                {
+                    Some(g) => g,
+                    None => {
+                        let member = m.clone();
+                        self.groups.push(PoolGroup {
+                            shape,
+                            member,
+                            arms: Vec::new(),
+                            done: false,
+                            matched: None,
+                        });
+                        self.groups.len() - 1
+                    }
+                };
+            match self.groups[g].add(leaves) {
+                Claim::Dead => (),
+                Claim::Completes(m) => {
+                    pooled.dead = false;
+                    pooled.completes.push(m)
+                }
+                Claim::Open => pooled.dead = false,
             }
-            reached = Some((m, leaves));
         }
-        let Some((m, leaves)) = reached else { return Ok(Claim::Unpooled) };
-        let shape = shape.of_member(m);
-        let i = match self.groups.iter().position(|g| g.shape == shape && g.member == *m)
-        {
-            Some(i) => i,
-            None => {
-                let member = m.clone();
-                self.groups.push(PoolGroup {
-                    shape,
-                    member,
-                    arms: Vec::new(),
-                    done: false,
-                    matched: None,
-                });
-                self.groups.len() - 1
-            }
-        };
-        Ok(self.groups[i].add(leaves))
+        pooled.dead &= reached;
+        Ok(pooled)
     }
 }
 
@@ -2431,7 +2490,7 @@ impl PartPool {
                         covers.push(held.clone())
                     }
                 }
-                Claim::Open | Claim::Unpooled => dead = false,
+                Claim::Open => dead = false,
             }
         }
         Ok(match dead && reached {
@@ -4377,11 +4436,11 @@ impl Uncovered {
                             )?)
                     },
                 )?;
-                if let Claim::Completes(m) = claim
-                    && let Some(i) = self.members.iter().position(|t| t.typ == m)
-                {
-                    self.members.remove(i);
-                    self.whole = false;
+                for m in claim.completes {
+                    if let Some(i) = self.members.iter().position(|t| t.typ == m) {
+                        self.members.remove(i);
+                        self.whole = false;
+                    }
                 }
             }
         }

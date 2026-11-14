@@ -10944,7 +10944,6 @@ run!(
         let r = select v {
             (`A, false, _, _) => "f",
             (_, true, x, _) => "x[x]",
-            (`A, _, _, _) => "a",
             (`B, _, _, _) => "b"
         };
         z <- 0;
@@ -10986,9 +10985,7 @@ run!(
             let v = select b { true => (`A, true, 5, w), false => (`B, true, "s", w) };
             select v {
                 (_, true, x, _) => "x[x]",
-                (_, false, x, _) => "f[x]",
-                (`A, _, _, _) => "a",
-                (`B, _, _, _) => "b"
+                (_, false, x, _) => "f[x]"
             }
         };
         let r = f(0);
@@ -13604,4 +13601,111 @@ run!(
     "{ type E = [{a: bool, d: i64}, {c: bool}]; let f = |x: (i64, E)| select x { (n, {a: true, d: _}) => 1, (n, {c: true}) => 2, (n, {c: false}) => 3, (n, {a: true, d: _}) => 4, (n, {a: false, d: _}) => 5 }; f((0, {c: true})) }",
     refused("unreachable arm: every combination of heads it matches is covered by earlier arms");
     FuseExpect::None
+);
+
+run!(
+    pool_over_a_referent_the_arms_decide_exhausts_it,
+    "{ let f = |b: bool, c: bool| { let r = &mut (select c { true => (b, \"s\"), false => (`L, `Z) }); select *r { (true, _) => 1, (false, _) => 2, (_, `Z) => 3 } }; [f(true, true), f(false, true), f(true, false)] }",
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 2, 3]);
+    FuseExpect::Jit
+);
+
+run!(
+    pool_over_a_referent_the_arms_decide_exhausts_it_cover_first,
+    "{ let f = |b: bool, c: bool| { let r = &mut (select c { true => (b, \"s\"), false => (`L, `Z) }); select *r { (_, `Z) => 3, (true, _) => 1, (false, _) => 2 } }; [f(true, true), f(false, true), f(true, false)] }",
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 2, 3]);
+    FuseExpect::Jit
+);
+
+run!(
+    pool_over_a_struct_referent_the_arms_decide_exhausts_it,
+    "{ let f = |b: bool, c: bool| { let r = &mut (select c { true => {k: b, v: \"s\"}, false => {k: `L, v: `Z} }); select *r { {k: true, v: _} => 1, {k: false, v: _} => 2, {k: _, v: `Z} => 3 } }; [f(true, true), f(false, true), f(true, false)] }",
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 2, 3]);
+    FuseExpect::Jit
+);
+
+run!(
+    pool_over_a_variant_referent_the_arms_decide_exhausts_it,
+    "{ let f = |b: bool, c: bool| { let r = &mut (select c { true => `P(b, \"s\"), false => `P(`L, `Z) }); select *r { `P(true, _) => 1, `P(false, _) => 2, `P(_, `Z) => 3 } }; [f(true, true), f(false, true), f(true, false)] }",
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 2, 3]);
+    FuseExpect::Jit
+);
+
+run!(
+    pool_beside_an_any_position_exhausts_the_tuple,
+    "{ let f = |x: (bool, Any)| select x { (_, `Z) => 3, (true, _) => 1, (false, _) => 2 }; [f((true, 1)), f((false, 1)), f((true, `Z))] }",
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 2, 3]);
+    FuseExpect::None
+);
+
+run!(
+    catch_all_behind_a_pool_over_a_referent_the_arms_decide_is_dead,
+    "{ let f = |b: bool, c: bool| { let r = &mut (select c { true => (b, \"s\"), false => (`L, `Z) }); select *r { (true, _) => 1, (false, _) => 2, (_, `Z) => 3, _ => 4 } }; f(true, true) }",
+    refused("unreachable arm: the earlier arms already cover the whole scrutinee");
+    FuseExpect::None
+);
+
+run!(
+    half_a_pool_over_a_referent_the_arms_decide_is_refused,
+    "{ let f = |b: bool, c: bool| { let r = &mut (select c { true => (b, \"s\"), false => (`L, `Z) }); select *r { (true, _) => 1, (_, `Z) => 3 } }; f(true, true) }",
+    refused("missing match cases: no arm covers (bool, Any)");
+    FuseExpect::None
+);
+
+run!(
+    guarded_half_of_a_pool_over_a_referent_the_arms_decide_is_refused,
+    "{ let f = |b: bool, c: bool| { let r = &mut (select c { true => (b, \"s\"), false => (`L, `Z) }); select *r { (true, _) if c => 1, (false, _) => 2, (_, `Z) => 3 } }; f(true, true) }",
+    refused("missing match cases: no arm covers (bool, Any)");
+    FuseExpect::None
+);
+
+run!(
+    pool_over_a_referent_the_arms_decide_needs_the_cover_arm,
+    "{ let f = |b: bool, c: bool| { let r = &mut (select c { true => (b, \"s\"), false => (`L, `Z) }); select *r { (true, _) => 1, (false, _) => 2 } }; f(true, true) }",
+    refused("tests a value of 'r");
+    FuseExpect::None
+);
+
+run!(
+    pool_arm_repeated_over_a_referent_the_arms_decide_is_dead,
+    "{ let f = |b: bool, c: bool| { let r = &mut (select c { true => (b, \"s\"), false => (`L, `Z) }); select *r { (true, _) => 1, (false, _) => 2, (true, _) => 5, (_, `Z) => 3 } }; f(true, true) }",
+    refused("unreachable arm");
+    FuseExpect::None
+);
+
+run!(
+    arm_behind_a_pool_of_two_overlapping_members_is_dead,
+    r#"{
+        let b = true;
+        let z = never();
+        let v = select b { true => (`A, true, 5, z), false => (`B, true, "s", z) };
+        let r = select v {
+            (`A, false, _, _) => "f",
+            (_, true, x, _) => "x[x]",
+            (`A, _, _, _) => "a",
+            (`B, _, _, _) => "b"
+        };
+        z <- 0;
+        r
+    }"#,
+    refused("will never match");
+    FuseExpect::None
+);
+
+run!(
+    pool_of_two_overlapping_members_covers_both,
+    r#"{
+        let b = true;
+        let z = never();
+        let v = select b { true => (`A, true, 5, z), false => (`B, true, "s", z) };
+        let r = select v {
+            (`A, false, _, _) => "f",
+            (_, true, x, _) => "x[x]",
+            (`B, _, _, _) => "b"
+        };
+        z <- 0;
+        r
+    }"#,
+    prints(r#""x5""#);
+    FuseExpect::Jit
 );

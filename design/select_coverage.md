@@ -93,7 +93,13 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   own and the array part a ladder or a cover); neither pool finds
   dead an arm whose written test can match a scrutinee member it does
   not see (an open cell, read as its one typed bound, or `Any`:
-  `Reach::reaches_unpooled`); a group whose combinations of
+  `Reach::reaches_unpooled`); an atom pools into the group of each
+  member it can match, so over the referent the arms decide, `[(Any, i64),
+  (bool, Any)]`, `(true, _)` and `(false, _)` complete the bool member
+  beside the arm that takes the other whole; a member whose position
+  of a tested head is not a finite set (`Any`, an array) reads no atom
+  (`Miss::Unread`), so the atom joins no group there and is found dead
+  only where every member it reaches finds it so; a group whose combinations of
   heads pass 1024 (`MAX_POOL_COMBINATIONS`: eleven independent bool
   positions) pools nothing, so its arms cover nothing by pooling; an or-arm narrows later arms per
   alternative; a structure that matches anything is a wildcard only over
@@ -153,13 +159,11 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   x), false => (`L, 0) }) ``, `(_, 0)` behind `` (`K, _) `` meets no
   value of `x`), and less each member those arms take together: the
   literal pool counted over the view's own members, an arm pooled
-  against the one member left, none of whose cells the arms decided,
+  against each member left, none of whose cells the arms decided,
   that its test holds where its pattern takes it, every cell held
   (`Uncovered::pool`, `StructPatternNode::headed_part`: over `(b, x)`
   beside `` (`L, 0) ``, `(_, 0)` behind `(true, _)` and `(false, _)`
-  meets no value of `x`, where the referent the arms decided, `[(Any,
-  i64), (bool, Any)]`, holds two members the bool pair could match and
-  `Reach` completes no pool; a member inside a part, `select (*r, 1)`,
+  meets no value of `x`; a member inside a part, `select (*r, 1)`,
   is not taken out; the settle holds the cells of a member built into
   such a cell that one of the arms' tests holding no cell holds whatever they
   become, so no other test decides them by its place in the arms'
