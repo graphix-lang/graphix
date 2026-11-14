@@ -1055,6 +1055,23 @@ arms: `(1, 1) => .., (3, "x") => .., (4, v) => v + 1` is refused,
 first, and the arm's test passes every value of its shape. Pins:
 `lang::select_undecided::bind_behind_*`.
 
+A `_` at a position of a tuple, struct or variant where another arm of
+the same shape binds a name is that name's twin over a scrutinee the
+arms decide (an unannotated parameter, a `never()` let): its settle
+reads the `_` as a cell of its own (`Type::wildcards_beside_binds`),
+the cell its arm narrows (`Reach::settled`), so the part is what the
+name's uses make it. `(1, _) => 0, (_, b) => b + 1` takes an `(i64,
+i64)`, where the `_`'s `Any` typed `b` `Any`. The arm's run-time test
+keeps the `Any`. A `_` with no name at its position in another arm,
+a name only inside or over it, a slice's elements and a cell with
+lower bounds (`*r`, an abstract's payload) keep `Any`. The twin's
+refusals are the `_`'s: arms that use the part as two types, or a call
+whose argument is wider than the part, name the part where they are
+written. Pins `lang::select_undecided::wildcard_beside_a_bind_*` and
+`wildcards_beside_binds_at_two_parts`, and the pins of the selects a
+`_` beside a shape or a test keeps running
+(`wildcard_beside_a_shape_*`, `wildcard_beside_a_literal_of_another_type`).
+
 `contains` does not know bindings, so the refusal is a typed error the
 relation's site names: a `<-` names its target (`declare u's type where it
 is bound`, `Connect`), a call's argument the parameter

@@ -4232,6 +4232,118 @@ impl Type {
         }
     }
 
+    /// An inferred predicate as it decides a scrutinee no type has decided,
+    /// where a `_` stands at a position of a tuple, struct or variant at
+    /// which another arm's predicate in `others` holds a name (an open
+    /// cell): the `Any` there is a cell of its own, as an unused name's is,
+    /// so the part is what the names' uses make it. `None` where no `_`
+    /// stands so. The elements of an array or list share one type, where
+    /// a `_` stays `Any`.
+    pub fn wildcards_beside_binds(&self, others: &[&Type]) -> Option<Type> {
+        fn members<'a>(ts: &[&'a Type], out: &mut SmallVec<[&'a Type; 8]>) {
+            for t in ts {
+                match t {
+                    Type::Set(ms) => out.extend(ms.iter()),
+                    t => out.push(t),
+                }
+            }
+        }
+        fn part(t: &Type, beside: &[&Type]) -> Option<Type> {
+            match t {
+                Type::Any => beside
+                    .iter()
+                    .any(|o| matches!(o, Type::TVar(tv) if tv.open_cell().is_some()))
+                    .then(Type::empty_tvar),
+                t => t.wildcards_beside_binds(beside),
+            }
+        }
+        fn each(
+            n: usize,
+            of: &mut dyn FnMut(usize) -> Option<Type>,
+        ) -> Option<SmallVec<[Option<Type>; 8]>> {
+            let parts: SmallVec<[Option<Type>; 8]> = (0..n).map(&mut *of).collect();
+            parts.iter().any(Option::is_some).then_some(parts)
+        }
+        ensure_sufficient(|| {
+            let mut ms: SmallVec<[&Type; 8]> = SmallVec::new();
+            members(others, &mut ms);
+            match self {
+                Type::Set(alts) => {
+                    let parts = each(alts.len(), &mut |i| {
+                        alts[i].wildcards_beside_binds(others)
+                    })?;
+                    Some(Type::Set(Arc::from_iter(
+                        alts.iter()
+                            .zip(parts)
+                            .map(|(a, p)| p.unwrap_or_else(|| a.clone())),
+                    )))
+                }
+                Type::Tuple(ts) => {
+                    let parts = each(ts.len(), &mut |k| {
+                        let beside: SmallVec<[&Type; 8]> = ms
+                            .iter()
+                            .filter_map(|o| match o {
+                                Type::Tuple(os) if os.len() == ts.len() => Some(&os[k]),
+                                _ => None,
+                            })
+                            .collect();
+                        part(&ts[k], &beside)
+                    })?;
+                    Some(Type::Tuple(Arc::from_iter(
+                        ts.iter().zip(parts).map(|(t, p)| p.unwrap_or_else(|| t.clone())),
+                    )))
+                }
+                Type::Variant(tag, ts, at) => {
+                    let parts = each(ts.len(), &mut |k| {
+                        let beside: SmallVec<[&Type; 8]> = ms
+                            .iter()
+                            .filter_map(|o| match o {
+                                Type::Variant(otag, os, _)
+                                    if otag == tag && os.len() == ts.len() =>
+                                {
+                                    Some(&os[k])
+                                }
+                                _ => None,
+                            })
+                            .collect();
+                        part(&ts[k], &beside)
+                    })?;
+                    Some(Type::Variant(
+                        tag.clone(),
+                        Arc::from_iter(
+                            ts.iter()
+                                .zip(parts)
+                                .map(|(t, p)| p.unwrap_or_else(|| t.clone())),
+                        ),
+                        *at,
+                    ))
+                }
+                Type::Struct(fs) => {
+                    let parts = each(fs.len(), &mut |k| {
+                        let name = &fs[k].0;
+                        let beside: SmallVec<[&Type; 8]> = ms
+                            .iter()
+                            .filter_map(|o| match o {
+                                Type::Struct(os) => os
+                                    .iter()
+                                    .find(|(n, _, _)| n == name)
+                                    .map(|(_, t, _)| t),
+                                _ => None,
+                            })
+                            .collect();
+                        part(&fs[k].1, &beside)
+                    })?;
+                    Some(Type::Struct(Arc::from_iter(fs.iter().zip(parts).map(
+                        |((n, t, at), p)| {
+                            (n.clone(), p.unwrap_or_else(|| t.clone()), *at)
+                        },
+                    ))))
+                }
+                _ => None,
+            }
+        })
+    }
+
     /// A unification view of this type with every `Any` leaf replaced
     /// by a throwaway TVar, sharing the existing cells so bindings made
     /// through the view land in the original. Select's arm typecheck

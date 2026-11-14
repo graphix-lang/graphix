@@ -92,6 +92,10 @@ select, and runtime forms. Each rule refuses and names the fix.
   Only a scrutinee wholly of such a type is the arms' to decide together
   (`|x| select x { `J => 1, `M => 2 }`, and `select W(x).0` alike), never
   by a partial struct pattern (`{a, ..}`).
+  A `_` at a part another arm of the same shape binds a name at stands
+  as an unused name does: `(1, _) => 0, (_, b) => b + 1` takes `(i64,
+  i64)`, and a call whose part is wider (`(2, "a")`) is refused as the
+  name's twin is, so annotate the parameter.
   A part only a name or `_` meets passes, and a name there holds that
   type beside the others: `(_, x)` over `` [(`A, z), (`B, "s")] `` with
   `str::len(x)` makes `z` a string, and `(a, _)` over `[(e1, 1), (e2,
@@ -241,6 +245,9 @@ no "do not share their fields" let v: [{a: i64, b: string}, {a: i64, c: f64}] = 
 no "name every field of { a, .. }" let t = true; let x: string = never(); let y = never(); let v = select t { true => {a: [1], c: x}, false => {a: ["s"], c: y} }; let {a, ..} = v; a
 ok let t = true; let x: string = "q"; let y = never(); let v = select t { true => {a: [1], c: x}, false => {a: ["s"], c: y} }; let {a, c} = v; a
 ok let v: [{a: i64, b: string}, {a: i64, c: f64}] = {a: 1, b: "s"}; select v { {a: i64, b: string} as {a, ..} => a, _ => 0 }
+ok let f = |s| select s { (1, _) => 0, (_, b) => b + 1 }; f((2, 5))
+ok let f = |s| select s { ([], _) => 0, ([x, ..], b) => str::len(b) }; f(([1], "q"))
+no "type mismatch" let f = |s| select s { (1, _) => 0, (2, b) => b + 1, (_, b) => str::len(b) }; f((2, 5))
 no "tests inside" 'a: [{a: i64, b: string}, i64] |x: 'a| select x { {a, ..} => a, _ => 0 }
 ok 'a: [{a: i64, b: string}, i64] |x: 'a| select x { {a: i64, b: string} as {a, ..} => a, i64 as n => n }
 no "tests inside" |x: ['a, null]| select x { null => 0, _ => 1 }

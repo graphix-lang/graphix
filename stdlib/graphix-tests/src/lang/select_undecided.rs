@@ -3452,3 +3452,45 @@ run!(payload_bind_behind_covers_beside_other_parts_and_tags, r#"{
     let k = |s| select s { `A(_, null) => 0, `A(m, b) => b + 1 };
     ([f(`A(null)), f(`B(2)), f(`A(3))], [g(`A(null)), g(`B(null)), g(`A(1)), g(`B(4))], [h(`A(1, null)), h(`A(2, null)), h(`A(2, 3))], [k(`A("q", null)), k(`A("q", 2))])
 }"#, prints("[[i64:1, i64:2, i64:4], [i64:0, i64:0, i64:2, i64:4], [i64:7, i64:2, i64:5], [i64:0, i64:3]]"); FuseExpect::Jit);
+
+// A `_` at a part of a tuple, struct or variant stands beside another arm's
+// name at that part as an unused name does: the part is what the name's uses
+// make it, over a scrutinee the arms decide.
+run!(wildcard_beside_a_bind_over_an_unannotated_parameter, r#"{
+    let f = |s| select s { (1, _) => 0, (_, b) => b + 1 };
+    [f((1, 5)), f((2, 5))]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 6]); FuseExpect::Jit);
+
+run!(wildcard_beside_a_bind_behind_a_slice_ladder, r#"{
+    let f = |s| select s { ([], _) => 0, ([x, ..], b) => str::len(b) };
+    [f(([], "q")), f(([1], "abc"))]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 3]); FuseExpect::Jit);
+
+run!(wildcard_beside_a_bind_returned_keeps_the_binds_type, r#"{
+    let f = |s| select s { ([], _) => 0, ([x, ..], b) => b };
+    let r = f(([1], "abc"));
+    select r { i64 as i => i, string as z => str::len(z) }
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(3))); FuseExpect::Jit);
+
+run!(wildcards_beside_binds_at_two_parts, r#"{
+    let f = |s| select s { ([x], b, c) => x + b, ([], _, _) => 1, ([x, y, t..], _, _) => 2 };
+    [f(([], 5, "r")), f(([3], 5, "r")), f(([1, 2], 5, "r"))]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 8, 2]); FuseExpect::Jit);
+
+run!(wildcard_beside_a_bind_in_a_variant_and_a_struct, r#"{
+    let f = |s| select s { `A(1, _) => 0, `A(_, b) => b + 1 };
+    let g = |s| select s { {a: 1, b: _} => 0, {a: _, b} => b + 1 };
+    [f(`A(2, 5)), g({a: 2, b: 7})]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [6, 8]); FuseExpect::Jit);
+
+run!(wildcard_beside_a_bind_over_a_let_written_later, r#"{
+    let s = never();
+    let v = select s { (1, _) => 0, (_, b) => b + 1 };
+    s <- (2, 5);
+    v
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(6))); FuseExpect::Jit);
+
+run!(wildcard_beside_a_bind_used_as_two_types_refused, r#"{
+    let f = |s| select s { (1, _) => 0, (2, b) => b + 1, (_, b) => str::len(b) };
+    f((2, 5))
+}"#, refused("type mismatch"); FuseExpect::None);

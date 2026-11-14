@@ -578,6 +578,12 @@ struct Reach {
     /// tests could take ([`built_standing`]), for a select no arm of which
     /// is refused for testing it.
     apart: Option<anyhow::Error>,
+    /// Each arm's inferred predicate as the arms' settle put it into a
+    /// scrutinee cell nothing bounded from below, where a `_` stands
+    /// beside another arm's name ([`Type::wildcards_beside_binds`]); the
+    /// arm narrows that view. `None` for an arm that has none, and for all
+    /// where the arms settled no such cell.
+    settled: SmallVec<[Option<Type>; 16]>,
 }
 
 /// The union of the lower bounds of a scrutinee cell the arms decide, as
@@ -608,18 +614,44 @@ impl Reach {
         arms: &[(PatternNode<R>, Node<R>)],
         checking: Option<&Origin>,
     ) -> Result<Self> {
-        let mut preds: LPooled<Vec<&PatternNode<R>>> = LPooled::take();
+        let unbounded = matches!(
+            scrut,
+            Type::TVar(tv) if tv.open_cell().is_some_and(|c| c.cell_lower().is_empty())
+        );
+        let mut preds: LPooled<Vec<(usize, &PatternNode<R>)>> = LPooled::take();
         // an arm that matches anything before narrowing steers only the
         // settle: narrowing may bind its cells to one member
         let mut wildcard = false;
-        for (pat, _) in arms.iter() {
+        for (i, (pat, _)) in arms.iter().enumerate() {
             match pat.matches_every(env, scrut)? {
                 true => wildcard |= pat.guard.is_none(),
-                false => preds.push(pat),
+                false => preds.push((i, pat)),
+            }
+        }
+        let mut settled: SmallVec<[Option<Type>; 16]> = SmallVec::new();
+        if unbounded {
+            let mut others: LPooled<Vec<&Type>> = LPooled::take();
+            for (i, (pat, _)) in arms.iter().enumerate() {
+                others.clear();
+                others.extend(
+                    arms.iter()
+                        .enumerate()
+                        .filter(|(j, (o, _))| *j != i && !o.explicit_type_predicate)
+                        .map(|(_, (o, _))| &o.type_predicate),
+                );
+                settled.push(match pat.explicit_type_predicate {
+                    true => None,
+                    false => pat.type_predicate.wildcards_beside_binds(&others),
+                })
+            }
+            if settled.iter().all(Option::is_none) {
+                settled.clear()
             }
         }
         let mut itypes: LPooled<Vec<&Type>> = LPooled::take();
-        itypes.extend(preds.iter().map(|p| &p.type_predicate));
+        itypes.extend(preds.iter().map(|(i, p)| {
+            settled.get(*i).and_then(Option::as_ref).unwrap_or(&p.type_predicate)
+        }));
         let itype = Type::union_exact(env, &itypes)?;
         drop(itypes);
         let union_scrut = match scrut.deref_cloned() {
@@ -630,7 +662,11 @@ impl Reach {
         let informative = itype != Type::Primitive(BitFlags::empty());
         let mut built = None;
         let (mut standing, mut apart) = (OpenCells::new(), None);
-        if informative && !(wildcard && union_scrut) && scrut.has_unbound() {
+        let settles = informative && !(wildcard && union_scrut) && scrut.has_unbound();
+        if !settles {
+            settled.clear()
+        }
+        if settles {
             if let Type::TVar(tv) = scrut
                 && let Some(cell) = tv.open_cell()
             {
@@ -656,7 +692,7 @@ impl Reach {
                     built = Some(Built { typ, cells });
                 }
             }
-            // CR claude for claude: [bug/low] A `_` in one arm at a part another arm
+            // XCR claude for claude: [bug/low] A `_` in one arm at a part another arm
             // binds types that part `Any` over an unannotated parameter, and the bind's
             // uses are refused by a message that names no annotation: `let f = |s| select
             // s { (1, _) => 0, (_, b) => b + 1 }; f((2, 5))` says "cannot compute Any +
@@ -719,6 +755,57 @@ impl Reach {
             // wildcard_part_of_a_let_written_at_two_types,
             // wildcard_part_of_a_parsed_value. probes:
             // ~/ptmp/cr29/scratch/r24/24b/wsa-rev/ (README)
+            // 2026-11-14 claude: Fixed (round 25, lane 25c) by a narrower rule than
+            // e4a119389's: over a scrutinee cell nothing bounds from below, a `_` at a
+            // position of a tuple, struct or variant where another arm's predicate holds
+            // a NAME at the same position (an open cell) is a cell of its own in the
+            // settle (Type::wildcards_beside_binds) and in its arm's narrowing
+            // (Reach::settled); every other `_` keeps `Any`, so a `_` beside a shape or a
+            // test, a name only inside or over it, a slice's elements and a cell with
+            // lower bounds are as on base-r25. This CR's shapes run (f((2, 5)) is 6; ([],
+            // _) => 0, ([x, ..], b) => str::len(b); the three-part slice ladder), and
+            // e4a119389's nine pins (wildcard_beside_a_shape_under_another_tag ..
+            // wildcard_part_of_a_parsed_value) pass as they are. Pins that fail without
+            // it (28 runs):
+            // lang::select_undecided::{wildcard_beside_a_bind_over_an_unannotated_parameter,
+            // _behind_a_slice_ladder, _returned_keeps_the_binds_type,
+            // wildcards_beside_binds_at_two_parts,
+            // wildcard_beside_a_bind_in_a_variant_and_a_struct,
+            // _over_a_let_written_later,
+            // wildcard_beside_a_bind_used_as_two_types_refused}; the graphix,cases lines
+            // in select.md. Of 900 generated selects (gen2.py seeds 9102, 3317; ~660 run
+            // so far) base-r25 refused 36 that the written twin runs and the lane 2
+            // (p0109 and p0184 of g1: a variant whose `_` parts stand beside no name, see
+            // variant-all-wildcard-part-01); it refuses 46 that base ran, every one
+            // refused by its twin as well (a `_` beside a name, with another arm testing
+            // the part, now joins that name's cell as the twin's name does: `(1, _) => 0,
+            // (2, v) => 1, (3, null) => 2` called with (2, 1); `let rec f = |s| select s
+            // { (1, _) => 0, (n, r) => f((n - 1, (r, r))) }`). Census 2967 files: 0
+            // verdict and 0 message changes; deep_nesting 50 ok; regress 585 clean;
+            // guicheck 39,576,861,586 (base-r25) vs 39,675,400,595 (lane);
+            // w200/b200w/b200s arms +1.5%/+1%/+1%. Needs a soak. probes:
+            // ~/ptmp/cr29/scratch/r25/25c/
+            // 2026-11-14 claude: Final numbers for the note above: of 900 generated selects
+            // base-r25 refused 48 that the written twin runs, the lane 3 (g1 p0109, p0184,
+            // g2 p0447, a `_` at a part no other arm holds a name at: new CR
+            // variant-all-wildcard-part-01); the lane refuses 38 that base ran (23 and 15),
+            // every one refused by its twin too, and runs 48 base refused (21 and 27); no
+            // fused/no-fusion split the base lacks. (The note above says
+            // variant-all-wildcard-part-01 for the 2; it is 3.)
+            // CR claude for claude: [bug/low] A `_` at a part no other arm binds a name at
+            // still types the part `Any` where its twin, a name for each `_`, is a cell: `let
+            // f = |s| select s { `S(1, (1, "b"), _) => 0, `S(3, v1, _) => v1.0 + 1, _ => 9 };
+            // f(`S(3, (2, "b"), (1, "a")))` is refused, "reading a tuple needs its type known
+            // here: annotate the binding", and with `u` for the third part's two `_` it prints
+            // 3 (the tuple form, `(1, (1, "b"), _) => 0, (3, v1, _) => v1.0 + 1`, runs). The
+            // same where a `_` stands inside a tuple a bind sits beside: `(1, v1) => ..,
+            // (2, (_, "a")) => .., (_, (_, "a")) => .., (4, v1) => "[v1.0 + 1]"` says "cannot
+            // compute Any + i64" and runs with names. wildcard-slot-any-part-01's rule makes a
+            // `_` a cell only where another arm holds a name at its own position, so these
+            // two shapes of 900 generated selects (gen2.py seeds 9102, 3317) stay refused
+            // where the twin runs. base-r25 alike. probes:
+            // ~/ptmp/cr29/scratch/r25/25c/resid/ (p0109, p0184, p0447 and their t twins)
+            // (variant-all-wildcard-part-01)
             // CR claude for claude: [perf/low] The check of a select over an unannotated
             // parameter whose arms hold a literal at one part and a name at another grows
             // with the square of the arms: `|s| select s { (1, a) => 1, .., (N, a) => N, (_,
@@ -875,7 +962,8 @@ impl Reach {
                     let mut written: LPooled<AHashMap<usize, TVar>> = LPooled::take();
                     let mut counts: LPooled<AHashMap<usize, (TVar, u32)>> =
                         LPooled::take();
-                    for p in preds.iter().filter(|p| p.explicit_type_predicate) {
+                    for (_, p) in preds.iter().filter(|(_, p)| p.explicit_type_predicate)
+                    {
                         p.type_predicate.reached_cells(&mut written);
                         p.type_predicate.position_counts(&mut counts)
                     }
@@ -922,6 +1010,7 @@ impl Reach {
             refutable_slice: false,
             built,
             apart,
+            settled,
         })
     }
 
@@ -3364,6 +3453,7 @@ impl<R: Rt> Select<R> {
         }
         for i in 0..self.arms.len() {
             let (pat, n) = &mut self.arms[i];
+            let mut settled = reach.settled.get_mut(i).and_then(Option::take);
             if checking && pat.explicit_type_predicate {
                 super::defer_written_map_keys(ctx, &pat.type_predicate, &self.spec)
             }
@@ -3387,6 +3477,7 @@ impl<R: Rt> Select<R> {
                 if let Some(t) = t {
                     pat.structure_predicate.realign(&ctx.env, &t)?;
                     pat.type_predicate = t;
+                    settled = None;
                 }
             }
             // The arm's binds alias against what reaches it. The
@@ -3462,7 +3553,10 @@ impl<R: Rt> Select<R> {
                     }
                 }
             };
-            let narrowed = pat.capture_type(&ctx.env, &narrowing).at(&site)?;
+            let narrowed = match settled {
+                Some(view) => view.any_as_tvar(),
+                None => pat.capture_type(&ctx.env, &narrowing).at(&site)?,
+            };
             narrowing.narrow_pattern(&ctx.env, &narrowed)?;
             if !pat.explicit_type_predicate && pat.structure_predicate.holds_abstract() {
                 reaching
