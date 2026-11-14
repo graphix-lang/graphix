@@ -964,8 +964,19 @@ a struct or a variant narrows over those cells as it does over members
 (`Type::binds_beside`, in `Type::narrow_parts`): the open ones are one
 cell, and it takes what a bound one holds (a payload the scrutinee held
 before the arms). A member of that union that is no cell is another
-arm's test (`` `A(null) => .., `A(a) => .. ``), which the bind does not
-take.
+arm's test, and the bind takes it too wherever its values reach the
+bind's arm: `` `A(1, a) => a + 1, `A(2, "x") => 0, _ => 0 `` is refused,
+"cannot compute string + i64", since `` `A(1, "x") `` reaches the first
+arm, as the tuple form is. What earlier unguarded arms cover whole is
+left out of the union before the arm narrows
+(`node::select::uncovered_parts`, over `Reach::covered`): the member
+whose whole value at that part, the member's other parts as they reach
+the arm, a cover takes (`` `A(null) => 0, `A(a) => a + 1 `` gives `a`
+the cell alone). A cover is a type, so an earlier arm that tests a
+literal at another part covers nothing there: `` `A(1, null) => 0,
+`A(1, a) => a + 1 `` is refused, "cannot compute null + i64", as `(0,
+null) => 0, (0, a) => a + 1` is. A guarded arm covers nothing. Pins:
+`lang::select_undecided::payload_bind_*`.
 
 A later arm's bind is typed by its own arm's narrowing alone. The
 open-cell scrutinee holds that bind's cell as its member's part, and an

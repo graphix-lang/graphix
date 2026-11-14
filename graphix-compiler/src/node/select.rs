@@ -744,6 +744,15 @@ impl Reach {
             // and 1.50 G at 100. base-r24. probes:
             // ~/ptmp/cr29/scratch/r24/24b/wsa/{w200,b200w,b200s,b200v}.gx, m.sh
             // (tuple-arms-settle-cost-01)
+            // 2026-11-14 claude: Lane 25b (payload-bind-beside-literal-01): the variant form
+            // now pays this too where a part holds a literal beside the binds: 200 pairs of
+            // `A(k, null) => k, `A(k, x) => 0 take 10.4 G instructions of --no-cache --check
+            // (2.1 G before the fix), against 14.9 G for the tuple twin (k, null) => k, (k,
+            // x) => 0 on base-r25 alike; 100 pairs 2.25 G (1.08 G before). The binds' cells
+            // each take the null, so they are no longer one cell, and each arm's Told diff
+            // normalizes a union of the bound cells (Kept::merge_with, Identity::same),
+            // quadratic per arm. probes:
+            // ~/ptmp/cr29/scratch/r25/25b/pbl/bench/{s8_100,s8_200,t8_100,t8_200}.gx, m.sh
             // CR claude for claude: [bug/low] A part built into a scrutinee cell the arms
             // decide still goes by the order of the arms' union where the arm that takes
             // its member whole binds a name: `let f = |x, y, b: bool| { let r = &mut
@@ -3457,6 +3466,33 @@ impl<R: Rt> Select<R> {
                     (Cow::Owned(view), Some(copies))
                 }
             };
+            let narrowing = match reach.covered.is_empty() {
+                true => narrowing,
+                false => {
+                    let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+                    crate::typ::settle::position_cells(&pat.type_predicate, &mut cells);
+                    let mut own: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+                    for tv in cells.values().filter_map(|tv| tv.open_cell()) {
+                        own.insert(tv.cell_addr(), tv);
+                    }
+                    match own.is_empty() {
+                        true => narrowing,
+                        false => match uncovered_parts(
+                            &ctx.env,
+                            &narrowing,
+                            &own,
+                            &reach.covered,
+                        )? {
+                            None => narrowing,
+                            Some(view) => {
+                                members.clear();
+                                union_members(&ctx.env, &view, &mut members)?;
+                                Cow::Owned(view)
+                            }
+                        },
+                    }
+                }
+            };
             let narrowed = pat.capture_type(&ctx.env, &narrowing).at(&site)?;
             narrowing.narrow_pattern(&ctx.env, &narrowed)?;
             if !pat.explicit_type_predicate && pat.structure_predicate.holds_abstract() {
@@ -4170,6 +4206,128 @@ fn later_cells(
         }
     }
     apart
+}
+
+/// `t` less, at each part of a tuple, struct or variant that is a union
+/// holding one of the open cells `own` (by address) beside members that
+/// are no open cell, each such member whose value there the earlier arms
+/// cover whole (`covered`): what of that union reaches the arm, all of
+/// which the arm's bind there takes (`Type::binds_beside`). `None` where
+/// it leaves nothing out.
+fn uncovered_parts(
+    env: &Env,
+    t: &Type,
+    own: &AHashMap<usize, TVar>,
+    covered: &[Type],
+) -> Result<Option<Type>> {
+    fn covered_whole(env: &Env, t: Type, covered: &[Type]) -> Result<bool> {
+        let mut rest = t;
+        for c in covered {
+            rest = rest.diff(env, c)?;
+            if matches!(&rest, Type::Bottom)
+                || matches!(&rest, Type::Primitive(p) if p.is_empty())
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+    fn members(
+        t: &Type,
+        own: &AHashMap<usize, TVar>,
+        held: &mut bool,
+        out: &mut SmallVec<[Type; 8]>,
+    ) {
+        crate::stack::ensure_sufficient(|| match t {
+            Type::TVar(tv) => match (tv.open_cell(), tv.binding()) {
+                (Some(o), _) => {
+                    *held |= own.contains_key(&o.cell_addr());
+                    out.push(t.clone())
+                }
+                (None, Some(b)) => members(&b, own, held, out),
+                (None, None) => out.push(t.clone()),
+            },
+            Type::Set(ms) => ms.iter().for_each(|m| members(m, own, held, out)),
+            t => out.push(t.clone()),
+        })
+    }
+    fn walk(
+        env: &Env,
+        t: &Type,
+        own: &AHashMap<usize, TVar>,
+        covered: &[Type],
+        whole: &dyn Fn(Type) -> Type,
+    ) -> Result<Option<Type>> {
+        crate::stack::ensure_sufficient(|| {
+            let Some(t) = t.deref_cloned() else { return Ok(None) };
+            let mut parts: SmallVec<[Type; 8]> = match &t {
+                Type::Set(ms) => {
+                    let mut out: SmallVec<[Type; 8]> = SmallVec::new();
+                    let mut changed = false;
+                    for m in ms.iter() {
+                        match walk(env, m, own, covered, whole)? {
+                            Some(m) => {
+                                changed = true;
+                                out.push(m)
+                            }
+                            None => out.push(m.clone()),
+                        }
+                    }
+                    return Ok(changed.then(|| Type::Set(Arc::from_iter(out))));
+                }
+                Type::Tuple(ts) | Type::Variant(_, ts, _) => ts.iter().cloned().collect(),
+                Type::Struct(fs) => fs.iter().map(|(_, t, _)| t.clone()).collect(),
+                _ => return Ok(None),
+            };
+            let make = |ps: &[Type]| match &t {
+                Type::Variant(tag, _, at) => {
+                    Type::Variant(tag.clone(), Arc::from_iter(ps.iter().cloned()), *at)
+                }
+                Type::Struct(fs) => Type::Struct(Arc::from_iter(
+                    fs.iter()
+                        .zip(ps.iter())
+                        .map(|((n, _, at), t)| (n.clone(), t.clone(), *at)),
+                )),
+                _ => Type::Tuple(Arc::from_iter(ps.iter().cloned())),
+            };
+            let mut changed = false;
+            for i in 0..parts.len() {
+                let at = |x: Type| {
+                    let mut ps = parts.clone();
+                    ps[i] = x;
+                    whole(make(&ps))
+                };
+                let mut ms: SmallVec<[Type; 8]> = SmallVec::new();
+                let mut held = false;
+                members(&parts[i], own, &mut held, &mut ms);
+                let mut pruned = None;
+                if held && ms.len() > 1 {
+                    let mut kept: SmallVec<[Type; 8]> = SmallVec::new();
+                    for m in ms.iter() {
+                        let cell =
+                            matches!(m, Type::TVar(tv) if tv.open_cell().is_some());
+                        if cell || !covered_whole(env, at(m.clone()), covered)? {
+                            kept.push(m.clone())
+                        }
+                    }
+                    if kept.len() < ms.len() {
+                        pruned = Some(match kept.len() {
+                            1 => kept.pop().unwrap(),
+                            _ => Type::Set(Arc::from_iter(kept)),
+                        })
+                    }
+                }
+                let part = pruned.as_ref().unwrap_or(&parts[i]);
+                let inner = walk(env, part, own, covered, &at)?;
+                if let Some(p) = inner.or(pruned) {
+                    parts[i] = p;
+                    changed = true
+                }
+            }
+            Ok(changed.then(|| make(&parts)))
+        })
+    }
+    walk(env, t, own, covered, &|t| t)
 }
 
 /// Whether `t` is open cells alone: an open cell, or a union of them,

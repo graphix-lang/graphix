@@ -3321,3 +3321,49 @@ run!(bind_behind_payload_tags_in_a_variant_leaves_a_catch_all_dead, r#"{
     let f = |s| select s { `S(2, `B(v0)) => 200, `S(4, `A(v1)) => 400, `S(v1, v2) => v1 + 500, _ => 9 };
     f(`S(2, `A(1)))
 }"#, refused("unreachable arm"); FuseExpect::None);
+
+// A bind at a part of a variant's payload beside another arm's test of that
+// part holds the test's values wherever they reach its arm, and does not where
+// an earlier unguarded arm takes them whole.
+run!(payload_bind_beside_a_later_literal_refused, r#"{
+    let f = |s| select s { `A(1, a) => a + 1, `A(2, "x") => 0, _ => 0 };
+    f(`A(1, "x"))
+}"#, refused("cannot compute string + i64"); FuseExpect::None);
+
+run!(payload_bind_beside_an_earlier_literal_refused, r#"{
+    let f = |s| select s { `A(2, "x") => 0, `A(1, a) => a + 1, _ => 0 };
+    f(`A(1, "x"))
+}"#, refused("cannot compute string + i64"); FuseExpect::None);
+
+run!(payload_bind_beside_a_null_refused, r#"{
+    let f = |s| select s { `A(1, a) => a, `A(2, null) => 0, _ => 1 };
+    f(`A(1, null)) + 1
+}"#, refused("cannot compute [i64, null] + i64"); FuseExpect::None);
+
+run!(payload_bind_beside_a_literal_in_a_nested_payload_refused, r#"{
+    let f = |s| select s { `B(`A(1, a)) => a + 1, `B(`A(2, "x")) => 0, _ => 0 };
+    f(`B(`A(1, "x")))
+}"#, refused("cannot compute string + i64"); FuseExpect::None);
+
+run!(payload_bind_beside_a_guarded_null_refused, r#"{
+    let f = |s, b: bool| select s { `A(null) if b => 0, `A(a) => a + 1 };
+    f(`A(null), false)
+}"#, refused("cannot compute"); FuseExpect::None);
+
+run!(payload_bind_beside_a_literal_holds_it, r#"{
+    let f = |s| select s { `A(1, a) => "[a]", `A(2, "x") => "k", _ => "w" };
+    [f(`A(1, "x")), f(`A(2, "x")), f(`A(3, "y"))]
+}"#, prints(r#"["x", "k", "w"]"#); FuseExpect::Jit);
+
+run!(payload_bind_beside_a_bool_holds_it, r#"{
+    let f = |s| select s { `A(1, a) => a, `A(2, true) => 0, _ => 1 };
+    [f(`A(1, false)), f(`A(2, true)), f(`A(3, true))]
+}"#, prints("[false, i64:0, i64:1]"); FuseExpect::Jit);
+
+run!(payload_bind_behind_arms_that_take_its_members, r#"{
+    let f = |s| select s { `A(null) => 0, `A(a) => a + 1 };
+    let g = |s| select s { `A(`X) => 0, `A(`Y) => 1, `A(a) => a };
+    let h = |s| select s { `Ok(null) => "none", `Ok(v) => v, `Err(e) => e };
+    let k = |s| select s { `B(`A(null)) => 0, `B(`A(a)) => a + 1 };
+    ([f(`A(null)), f(`A(3)), k(`B(`A(null))), k(`B(`A(5)))], [g(`A(`X)), g(`A(`Z))], [h(`Ok(null)), h(`Ok("x")), h(`Err("e"))])
+}"#, prints(r#"[[i64:0, i64:4, i64:0, i64:6], [i64:0, "Z"], ["none", "x", "e"]]"#); FuseExpect::Jit);

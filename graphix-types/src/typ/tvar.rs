@@ -5211,12 +5211,14 @@ impl Type {
         }
     }
 
-    /// The cells among the members of the union `self` stands for, where
-    /// the open cell `pred` is one of them and not the only one: an open
-    /// cell as it stands, a bound one as what it holds. The arms'
-    /// predicates joined into that union typed the scrutinee, so each cell
-    /// there is one arm's bind of this part, and receives what the others
-    /// do. A member that is no cell is another arm's test.
+    /// The members of the union `self` stands for, where the open cell
+    /// `pred` is one of them and not the only member: an open cell as it
+    /// stands, a bound one as what it holds. The arms' predicates joined
+    /// into that union typed the scrutinee, so each cell there is one
+    /// arm's bind of this part, and receives what the others do; a member
+    /// that is no cell is another arm's test, whose values reach `pred`'s
+    /// arm unless an earlier arm takes them, which the select leaves out
+    /// of what reaches it.
     fn binds_beside(&self, pred: &Type) -> Option<SmallVec<[Type; 8]>> {
         fn cells(
             t: &Type,
@@ -5240,10 +5242,14 @@ impl Type {
                     }
                 },
                 Type::Set(ms) => ms.iter().for_each(|m| cells(m, c, seen, own, out)),
-                _ => (),
+                t => {
+                    if !out.contains(t) {
+                        out.push(t.clone())
+                    }
+                }
             })
         }
-        // CR claude for claude: [bug/high] A bind beside another arm's literal at one
+        // XCR claude for claude: [bug/high] A bind beside another arm's literal at one
         // part of a variant's payload does not hold the literal's type, and the check
         // accepts a use of the bind that the literal's values reach: `let f = |s| select
         // s { `A(1, a) => a + 1, `A(2, "x") => 0, _ => 0 }; f(`A(1, "x"))` checks as
@@ -5271,6 +5277,26 @@ impl Type {
         // which is a change of the language. base-r24 alike. probes:
         // ~/ptmp/cr29/scratch/r24/24b/vpb/lit.txt (run with rb.sh)
         // (payload-bind-beside-literal-01)
+        // 2026-11-14 claude: Fixed: Type::binds_beside gives the bind every member of the
+        // union at its part, not its cells alone, and before an arm narrows
+        // node::select::uncovered_parts leaves out of that union each member that is no
+        // cell whose whole value there (the member's other parts as they reach the arm)
+        // the earlier unguarded arms cover (Reach::covered), so `A(null) => 0, `A(a) => a
+        // + 1, `A(`X) => 0, `A(a) => a and the `Ok(null) select still check and run. The
+        // CR's three probes are refused at the definition ('cannot compute string + i64',
+        // 'cannot compute [i64, null] + i64'), the bool one prints false fused; the
+        // annotated-payload form is unchanged (no cell there, Type::diff untouched).
+        // Newly refused and right at run time before: an earlier arm that tests a literal
+        // at another part covers nothing, so `A(1, null) => 0, `A(1, a) => a + 1, _ => 5
+        // is refused 'cannot compute null + i64', as its tuple twin (0, null) => 0, (0,
+        // a) => a + 1 is on base-r25. Pins, the five refusals failing in all four modes
+        // without the fix (the bool and literal twins in jit):
+        // lang::select_undecided::payload_bind_beside_{a_later_literal,an_earlier_literal,a_null,a_literal_in_a_nested_payload,a_guarded_null}_refused,
+        // payload_bind_beside_{a_literal,a_bool}_holds_it;
+        // payload_bind_behind_arms_that_take_its_members holds the valid forms; unit test
+        // normalize::narrowing_a_cell_of_a_payload_union_makes_its_cells_one now asserts
+        // the non-cell member reaches the cell. Census 0/0. probes:
+        // ~/ptmp/cr29/scratch/r25/25b/pbl/
         let Type::TVar(c) = pred else { return None };
         let c = c.open_cell()?;
         let t @ Type::Set(_) = self.deref_cloned()? else { return None };
@@ -5325,9 +5351,9 @@ impl Type {
     /// a constructor gives a bind the union of its parts over every member
     /// its pattern can match. An open cell of `pred` that is one of the
     /// cells of the union at its part of a tuple, struct or variant
-    /// narrows over those cells ([`Self::binds_beside`],
+    /// narrows over that union's members ([`Self::binds_beside`],
     /// [`Self::narrow_per_member`]): the open ones are one cell, which
-    /// takes what the bound ones hold. An element's set (a slice's
+    /// takes what the others hold. An element's set (a slice's
     /// elements and rest) narrows member by member, as containment of a
     /// set does.
     fn narrow_parts(&self, env: &Env, pred: &Type, walk: &mut Narrowing) -> Result<bool> {

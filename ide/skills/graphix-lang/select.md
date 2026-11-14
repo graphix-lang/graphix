@@ -117,7 +117,12 @@ select, and runtime forms. Each rule refuses and names the fix.
   reaching its arm, whatever the order of the arms: `(1, 1) => .., (3,
   "x") => .., (4, v) => ..` over an unannotated parameter gives `v`
   `[i64, string]`, so `v + 1` is refused; test it inside the arm
-  (`select v { i64 as n => n + 1, s => str::len(s) }`).
+  (`select v { i64 as n => n + 1, s => str::len(s) }`). In a variant's
+  payload too: `` `A(1, a) => a + 1, `A(2, "x") => 0, _ => 0 `` is
+  refused, since `` `A(1, "x") `` reaches the first arm; an earlier
+  unguarded arm that takes a member whole leaves it out (`` `A(null) =>
+  0, `A(a) => a + 1 `` checks), one that tests a literal at another part
+  does not (`` `A(1, null) => 0, `A(1, a) => a + 1 `` is refused).
 - A slice arm with a rest over a `never()` let the arms decide leaves the
   other elements' type to later writes, and takes a value of whatever
   they bring at every position. A write that brings a member an element's
@@ -240,6 +245,11 @@ no "tests the declared variable `a` is of" 't: Number + Singleton |x: Any, y: 't
 ok |x: Any, y: 't| select x { ('t, i64) as (r, n) => [r, y], _ => [y] }
 no "cannot compute [i64, string] + i64" |s| select s { (1, 1) => 0, (3, "x") => 2, (4, v) => v + 1, (_, _) => 9 }
 ok let f = |s| select s { (1, 1) => 0, (3, "x") => 2, (4, v) => select v { i64 as n => n + 1, s => str::len(s) }, (_, _) => 9 }; f((4, "yy"))
+no "cannot compute string + i64" |s| select s { `A(1, a) => a + 1, `A(2, "x") => 0, _ => 0 }
+no "cannot compute string + i64" |s| select s { `A(2, "x") => 0, `A(1, a) => a + 1, _ => 0 }
+ok let f = |s| select s { `A(null) => 0, `A(a) => a + 1 }; (f(`A(null)), f(`A(3)))
+ok let f = |s| select s { `Ok(null) => "none", `Ok(v) => v, `Err(e) => e }; f(`Ok("x"))
+no "cannot compute null + i64" |s| select s { `A(1, null) => 0, `A(1, a) => a + 1, _ => 5 }
 no "not decided at this select" |x| select (x, 0) { (`J, _) => 1, (`M, _) => 2 }
 ok |x: [`J, `M]| select (x, 0) { (`J, _) => 1, (`M, _) => 2 }
 no "could each take the test" let x = never(); let y = never(); let u = select true { true => x, false => y }; select u { i64 as n => n, _ => 0 }

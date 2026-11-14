@@ -1014,7 +1014,7 @@ pub(super) mod tests {
 
     /// An arm's cell that is one of the cells of the union at its part of
     /// a variant is one cell with the open ones and takes what a bound one
-    /// holds; a member of that union that is no cell is left where it is.
+    /// holds, and what a member of that union that is no cell holds.
     #[test]
     fn narrowing_a_cell_of_a_payload_union_makes_its_cells_one() {
         let env = Env::default();
@@ -1043,7 +1043,7 @@ pub(super) mod tests {
         let u = cell("u");
         let scrut = payload(union(&[Type::TVar(u.clone()), prim(Typ::Null)]));
         assert!(scrut.narrow_pattern(&env, &payload(Type::TVar(u.clone()))).unwrap());
-        assert!(u.open_cell().is_some());
+        assert_eq!(Type::TVar(u).deref_cloned(), Some(prim(Typ::Null)));
     }
 
     /// A cell a member holds where the arm's predicate does is its own
