@@ -828,6 +828,20 @@ impl Reach {
             // --no-fusion alike, and 3 more only --no-fusion; base-r24 alike. probes:
             // ~/ptmp/cr29/scratch/r24/24b/bbs/{e1.txt,e3.txt} (run with rb.sh), gen.py,
             // rungen.sh, wrong.txt
+            // 2026-11-14 claude: Reviewer of bind-beside-shapes-01: a call that fix newly
+            // accepts can itself print another arm's value through this, in both engines:
+            // `let f = |s| select s { (1, _, "bc") => 100, (2, v1, "a") => 200, (3, "a",
+            // (v1, 2, v2)) => str::len(v2) + 300, (v1, "bc", v2) => v1 + 400, (5, _, (v1,
+            // v2, "bc")) => v2 + 500, (_, v1, v2) => 9 }; f((4, "bc", (2, 1, "bc")))` was
+            // refused on base-r24 ("could go to (i64, Any, ..) or (i64, string, ..)") and
+            // prints 9 where the fourth arm gives 404 (GRAPHIX_NO_SUBST=1 prints 404). The
+            // defect is this CR's, not the take's: base-r24 accepts the same call over four
+            // of those arms and over `(1, "bc") => 100, (3, (v1, v2)) => v1 + 300, (4, v2)
+            // => 400, (_, v2) => 9` called with (4, (2, 1)), and prints 9 for both. Of 900
+            // more generated selects (gen.py seeds 5151, 808, 99173) 13 print another arm's
+            // value on the lane, 12 of them on base-r24 too. probes:
+            // ~/ptmp/cr29/scratch/r24/24b/bbs-rev/q3.txt (run with ../bbs/rb.sh), p0047.gx,
+            // g5151.sum
             // CR claude for claude: [perf/low] The check of a select over an unannotated
             // parameter whose arms hold a literal at one part and a name at another grows
             // with the square of the arms: `|s| select s { (1, a) => 1, .., (N, a) => N, (_,

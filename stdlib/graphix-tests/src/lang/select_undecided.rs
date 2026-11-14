@@ -2320,3 +2320,52 @@ run!(wildcard_member_holding_a_bind_inside_annotated, r#"{
     let f = |x: (i64, (string, i64), i64)| select x { (1, _, z) => "[z]", (2, (c, _), z) => c, (_, _, z) => "[z]" };
     f((2, ("s", 4), 0))
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "s"); FuseExpect::Jit);
+
+// An argument that holds a cell at the shape goes to the bind's member
+// too: the shape's own member holds it as it stands once that cell is
+// its cell.
+run!(bind_beside_arms_that_take_the_part_apart_takes_an_argument_holding_a_cell, r#"{
+    let f = |s| select s { (1, b) => 10, (2, `A(x)) => x, (3, `B(y)) => str::len(y), (_, b) => 99 };
+    let h = |a| f((2, `A(a)));
+    let n = |v| select v { i64 as i => i, string as s => str::len(s) };
+    [h(5), h(6), n(h("xyz")), f((3, `B("q")))]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [5, 6, 3, 1]); FuseExpect::Jit);
+
+run!(bind_beside_arms_that_take_the_part_apart_takes_an_empty_array, r#"{
+    let f = |s| select s { (1, b) => 10, (2, [x, ..]) => x, (3, {a, c}) => a, (_, b) => 99 };
+    [f((2, [])), f((2, [4])), f((1, []))]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [99, 4, 10]); FuseExpect::None);
+
+run!(bind_beside_arms_that_take_the_part_apart_takes_each_member_of_a_union, r#"{
+    let f = |s| select s { (1, b) => 10, (2, `A(x)) => x, (3, `B(y)) => str::len(y), (_, b) => 99 };
+    let v: [(i64, `A(i64)), (i64, `B(string))] = (3, `B("xy"));
+    let w: [(i64, `A(i64)), (i64, `B(string))] = (2, `A(8));
+    [f(v), f(w)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [2, 8]); FuseExpect::Jit);
+
+// Three members, each holding the next: the widest takes the argument.
+run!(bind_beside_arms_that_take_the_part_apart_at_two_depths, r#"{
+    let f = |s| select s {
+        (1, b) => 10,
+        (2, `A(c)) => 20,
+        (3, `A((x, y))) => x,
+        (4, `A(`K(z))) => str::len(z),
+        (_, b) => 99
+    };
+    [f((3, `A((5, 6)))), f((4, `A(`K("xy")))), f((2, `A(`K("q")))), f((1, `A((1, 2)))), f((4, `A((1, 2))))]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [5, 2, 20, 10, 99]); FuseExpect::Jit);
+
+// An argument whose shape nothing has decided could become either
+// shape's: no member takes it, and the wrapper's parameter is what to
+// annotate.
+run!(bind_beside_arms_that_take_the_part_apart_takes_no_undecided_argument, r#"{
+    let f = |s| select s { (1, b) => 10, (2, (x, y)) => x, (3, (x, y, z)) => x, (_, b) => 99 };
+    let g = |u| f((2, u));
+    g((5, 6))
+}"#, refused("could go to (i64, [("); FuseExpect::None);
+
+run!(bind_beside_arms_that_take_the_part_apart_takes_an_annotated_argument, r#"{
+    let f = |s| select s { (1, b) => 10, (2, (x, y)) => x, (3, (x, y, z)) => x, (_, b) => 99 };
+    let g = |u: (i64, i64)| f((2, u));
+    g((5, 6))
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(5))); FuseExpect::None);
