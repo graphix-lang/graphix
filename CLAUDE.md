@@ -170,7 +170,9 @@ added there and nowhere else), `Node<R>` (construct with `Node::new`),
 `update`, `delete`, `sleep` and image decode take), `CompileCtx` (what
 compile, `typecheck0`/`1`, fusion and `BuiltIn::init` take), `Scope`
 (lexical `ModPath` + `DynScope`, the chain of error handlers a `?` sees,
-following the CALL chain).
+following the CALL chain, + the dynamic module load the point is in: a
+node that calls a function in a later cycle builds the call under the
+`Scope` it was given, never `Scope::root()`).
 
 **Nodes** implement `Update` (regular nodes) or `Apply` (function
 applications called by `CallSite`). `Update` requires `update`,

@@ -387,7 +387,8 @@ A function saved out of a dynamic module (`saved <- d::get`) is the
 function of the body it was taken from. After a reload it runs that body's
 code over that body's bindings as they last stood, a call already running
 included: it never sees the new module, or a later write to `d::v`, and
-a trait method its code calls is the one that body implemented. Call through
+a trait method its code calls is the one that body implemented, also where
+a function outside the module that it calls makes the call. Call through
 the module, `d::get(x)`, to follow a reload.
 
 A closure or reference that left a select arm, held where the arm's sleep

@@ -2389,6 +2389,229 @@ run!(
     FuseExpect::Jit
 );
 
+/// `first` and `second` for [`a_function_saved_across_a_reload`]: each
+/// implements the outside trait `Sh` for a `C` of its own, the first's
+/// `sh` adding 1 and the second's 2000, and its `make` is `make`, the
+/// second's times 10. `more` is declared after the impl.
+fn bodies_implementing_sh(names: &str, more: &str, make: &str) -> (String, String) {
+    let body = |add: i64, times: &str| {
+        format!(
+            "use super::{{{names}}}; type C = Abstract<i64>; \
+             impl Sh for C {{ let sh = |c: C| c.0 + {add} }}; {more}\
+             let make = |x: i64| {make}{times}"
+        )
+    };
+    (body(1, ""), body(2000, " * 10"))
+}
+
+/// The value of [`a_function_saved_across_a_reload`] where the first
+/// body's `make(x)` is `x + 6` and the second's `(x + 2005) * 10`.
+const EACH_BODY_RUNS_ITS_OWN_SH: &str = " 20140 15 [15, 16] 20150 16 [16, 17] 20160 17 [17, 18] 20170 18 [18, 19] 20180 19 [19, 20]";
+
+const OUTSIDE_APP: &str =
+    "trait Sh { val sh: fn(self) -> i64 }; let app = |x: Sh| Sh::sh(x) + 5;";
+
+// A function defined outside the module and called by the first body is
+// instantiated for that call: its dispatch finds the first body's impl,
+// where `late` first calls it after the reload too.
+run!(
+    a_function_saved_across_a_reload_dispatches_an_outside_function_to_its_own_impl,
+    is(Value::String(EACH_BODY_RUNS_ITS_OWN_SH.into())),
+    "/test.gx" => {
+        let (first, second) = bodies_implementing_sh("Sh, app", "", "app(C(x))");
+        a_function_saved_across_a_reload(
+            OUTSIDE_APP,
+            "val make: fn(x: i64) -> i64",
+            &first,
+            &second,
+        )
+    };
+    FuseExpect::Jit
+);
+
+// So is the outside trait's default, which calls the method bare.
+run!(
+    a_function_saved_across_a_reload_dispatches_an_outside_default_to_its_own_impl,
+    is(Value::String(EACH_BODY_RUNS_ITS_OWN_SH.into())),
+    "/test.gx" => {
+        let (first, second) = bodies_implementing_sh("Sh", "", "Sh::e(C(x))");
+        a_function_saved_across_a_reload(
+            "trait Sh { val sh: fn(self) -> i64; val e: fn(self) -> i64 = |s| sh(s) + 5 };",
+            "val make: fn(x: i64) -> i64",
+            &first,
+            &second,
+        )
+    };
+    FuseExpect::Jit
+);
+
+// An impl for a type that is no abstract type of the body's: the registry
+// holds one impl of `Sh` for `i64`, the second body's.
+run!(
+    a_function_saved_across_a_reload_dispatches_an_outside_function_to_its_own_i64_impl,
+    is(Value::String(EACH_BODY_RUNS_ITS_OWN_SH.into())),
+    "/test.gx" => a_function_saved_across_a_reload(
+        OUTSIDE_APP,
+        "val make: fn(x: i64) -> i64",
+        "use super::{Sh, app}; impl Sh for i64 { let sh = |c: i64| c + 1 }; \
+         let make = |x: i64| app(x)",
+        "use super::{Sh, app}; impl Sh for i64 { let sh = |c: i64| c + 2000 }; \
+         let make = |x: i64| app(x) * 10"
+    );
+    FuseExpect::Jit
+);
+
+// The body binds the outside function at run time, as the value of a
+// select: the bind is a call in the body's load, though it runs in a cycle
+// long after the load compiled.
+run!(
+    a_function_saved_across_a_reload_dispatches_a_function_it_binds_at_run_time_to_its_own_impl,
+    is(Value::String(EACH_BODY_RUNS_ITS_OWN_SH.into())),
+    "/test.gx" => {
+        let (first, second) = bodies_implementing_sh(
+            "Sh, app, app2",
+            "",
+            "{ let f: fn(x: C) -> i64 = select x >= 0 { true => app, false => app2 }; f(C(x)) }",
+        );
+        a_function_saved_across_a_reload(
+            &format!("{OUTSIDE_APP} let app2 = |x: Sh| Sh::sh(x) + 500;"),
+            "val make: fn(x: i64) -> i64",
+            &first,
+            &second,
+        )
+    };
+    FuseExpect::Jit
+);
+
+// Both bodies bind `app2` at run time at one type, and its dispatch is a
+// static call down, in `app`: the second body's instance and the first's
+// `late` one share no kernel.
+run!(
+    a_function_saved_across_a_reload_shares_no_run_time_bind_with_the_next_body,
+    is(Value::String(
+        " 21140 115 [115, 116] 21150 116 [116, 117] 21160 117 [117, 118] 21170 118 [118, 119] 21180 119 [119, 120]"
+            .into()
+    )),
+    "/test.gx" => {
+        let (first, second) = bodies_implementing_sh(
+            "Sh, app, app2",
+            "",
+            "{ let f: fn(x: C) -> i64 = select x >= 0 { true => app2, false => app }; f(C(x)) }",
+        );
+        a_function_saved_across_a_reload(
+            &format!("{OUTSIDE_APP} let app2 = |x: Sh| app(x) + 100;"),
+            "val make: fn(x: i64) -> i64",
+            &first,
+            &second,
+        )
+    };
+    FuseExpect::Jit
+);
+
+// The outside function is a collection's callback: each slot's call of it
+// is a call in the body's load.
+run!(
+    a_function_saved_across_a_reload_dispatches_a_collections_callback_to_its_own_impl,
+    is(Value::String(EACH_BODY_RUNS_ITS_OWN_SH.into())),
+    "/test.gx" => {
+        let (first, second) = bodies_implementing_sh(
+            "Sh, app",
+            "",
+            r"array::fold(array::map(\[C(x)\], app), 0, |a, b| a + b)",
+        );
+        a_function_saved_across_a_reload(
+            OUTSIDE_APP,
+            "val make: fn(x: i64) -> i64",
+            &first,
+            &second,
+        )
+    };
+    FuseExpect::Jit
+);
+
+// A builtin calls the outside function it is handed: `filter`'s call of
+// its predicate is a call in the body's load. The second body's `sh` would
+// fail the predicate, and `late` would have no value.
+run!(
+    a_function_saved_across_a_reload_dispatches_a_builtins_callback_to_its_own_impl,
+    is(Value::String(EACH_BODY_RUNS_ITS_OWN_SH.into())),
+    "/test.gx" => a_function_saved_across_a_reload(
+        "trait Sh { val sh: fn(self) -> i64 }; let small = |x: Sh| Sh::sh(x) < 1000;",
+        "val make: fn(x: i64) -> i64",
+        "use super::{Sh, small}; type C = Abstract<i64>; \
+         impl Sh for C { let sh = |c: C| c.0 + 1 }; \
+         let make = |x: i64| Sh::sh(filter(C(x), small)) + 5",
+        "use super::{Sh, small}; type C = Abstract<i64>; \
+         impl Sh for C { let sh = |c: C| c.0 + 2000 }; \
+         let make = |x: i64| (Sh::sh(C(x)) + 5) * 10"
+    );
+    FuseExpect::Jit
+);
+
+// The call is in a labeled default of a function of the body's, which
+// compiles in that function's view at each call that omits it.
+run!(
+    a_function_saved_across_a_reload_dispatches_a_defaults_call_to_its_own_impl,
+    is(Value::String(EACH_BODY_RUNS_ITS_OWN_SH.into())),
+    "/test.gx" => {
+        let (first, second) = bodies_implementing_sh(
+            "Sh, app",
+            "",
+            "{ let g = |#k: i64 = app(C(x)), y: i64| k + y; g(0) }",
+        );
+        a_function_saved_across_a_reload(
+            OUTSIDE_APP,
+            "val make: fn(x: i64) -> i64",
+            &first,
+            &second,
+        )
+    };
+    FuseExpect::Jit
+);
+
+// A union self: the outside function's call lowers to a select over the
+// first body's two impls.
+run!(
+    a_function_saved_across_a_reload_dispatches_an_outside_union_call_to_its_own_impls,
+    is(Value::String(EACH_BODY_RUNS_ITS_OWN_SH.into())),
+    "/test.gx" => {
+        let (first, second) = bodies_implementing_sh(
+            "Sh, app",
+            "type D = Abstract<i64>; impl Sh for D { let sh = |c: D| c.0 + 7 }; ",
+            r"{ let v: \[C, D\] = select x >= 0 { true => C(x), false => D(x) }; app(v) }",
+        );
+        a_function_saved_across_a_reload(
+            OUTSIDE_APP,
+            "val make: fn(x: i64) -> i64",
+            &first,
+            &second,
+        )
+    };
+    FuseExpect::Jit
+);
+
+// `make` is the closure an outside function made over the first body's
+// value. It is first called after the reload, when no function of that
+// body's own is left: it is a function of the body's load, and keeps the
+// impl its call reaches.
+run!(
+    a_closure_an_outside_function_made_for_a_reloaded_body_dispatches_to_that_bodys_impl,
+    is(Value::String(
+        " 2014 15 [15, 16] 2015 16 [16, 17] 2016 17 [17, 18] 2017 18 [18, 19] 2018 19 [19, 20]"
+            .into()
+    )),
+    "/test.gx" => a_function_saved_across_a_reload(
+        "trait Sh { val sh: fn(self) -> i64 }; \
+         let mk = |x: Sh| |u: i64| Sh::sh(x) + u + 5;",
+        "val make: fn(x: i64) -> i64",
+        "use super::{Sh, mk}; type C = Abstract<i64>; \
+         impl Sh for C { let sh = |c: C| c.0 + 1 }; let make = mk(C(0))",
+        "use super::{Sh, mk}; type C = Abstract<i64>; \
+         impl Sh for C { let sh = |c: C| c.0 + 2000 }; let make = mk(C(0))"
+    );
+    FuseExpect::Jit
+);
+
 // What the first body imported is in scope for its `make` after a reload
 // whose source imports nothing.
 run!(
@@ -2841,6 +3064,56 @@ let make = inner::f""",
     select ep { 16 => ep ~ out, _ => never() }
 }"##,
     is(Value::String("70160 23 [23, 24]".into()));
+    FuseExpect::Jit
+);
+
+// The function the first inner body calls is the outer load's: its
+// instance for that call is in the inner load, which is declared in the
+// outer one, and dispatches to the first inner body's impl.
+run!(
+    a_function_saved_across_a_nested_reload_dispatches_the_outer_loads_function_to_its_own_impl,
+    r##"{
+    let ep = 0;
+    ep <- select ep { n if n < 16 => n + 1, _ => never() };
+    let src: string = never();
+    src <- select ep {
+        2 => """trait Sh { val sh: fn(self) -> i64 };
+let app = |x: Sh| Sh::sh(x) + 5;
+let n = 0;
+n <- select n { k if k < 6 => k + 1, _ => never() };
+let isrc: string = never();
+isrc <- select n {
+    0 => r"use super::{Sh, app}; type C = Abstract<i64>;
+        impl Sh for C { let sh = |c: C| c.0 + 1 };
+        let f = |x: i64| app(C(x))",
+    5 => r"use super::{Sh, app}; type C = Abstract<i64>;
+        impl Sh for C { let sh = |c: C| c.0 + 2000 };
+        let f = |x: i64| app(C(x)) * 10",
+    _ => never()
+};
+let r = mod inner dynamic {
+    sandbox unrestricted;
+    sig { val f: fn(x: i64) -> i64 };
+    source isrc
+};
+let make = inner::f""",
+        _ => never()
+    };
+    let s = mod d dynamic {
+        sandbox unrestricted;
+        sig { val make: fn(x: i64) -> i64 };
+        source src
+    };
+    let saved: fn(x: i64) -> i64 = never();
+    saved <- select ep { 6 => ep ~ d::make, _ => never() };
+    let held = saved(ep);
+    let xs: Array<i64> = never();
+    xs <- select ep { 12 => [0, 1], _ => never() };
+    let late = array::map(xs, |x| saved(x + ep));
+    let out = "[d::make(ep)] [held] [late]";
+    select ep { 16 => ep ~ out, _ => never() }
+}"##,
+    is(Value::String("20210 22 [22, 23]".into()));
     FuseExpect::Jit
 );
 

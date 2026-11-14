@@ -48,7 +48,7 @@ pub use fusion::FusionStats;
 pub use tval::{Tag, TagValue, TagView};
 
 use crate::{
-    env::{Env, Lexical, TraitDef},
+    env::{Env, Lexical, LoadedBody, TraitDef},
     expr::{ExprId, ModPath},
     fusion::emit::{BodyCx, CompiledExpr},
     node::{
@@ -3511,16 +3511,25 @@ pub(crate) struct PendingImport {
 
 /// The lexical scope (module and block nesting path) and dynamic scope
 /// (the error handlers visible to a `?`, following the call chain) of
-/// a point in a program.
+/// a point in a program, and the load it is in.
 #[derive(Debug, Clone)]
 pub struct Scope {
     pub lexical: ModPath,
     pub dynamic: DynScope,
+    /// The load of a dynamic module's source the point is in, the
+    /// [`Lexical::body`] of the view it compiled under. A call made
+    /// here, in whatever cycle, is a call in it ([`Lexical::called_in`]).
+    pub load: Option<Arc<LoadedBody>>,
 }
 
 impl Scope {
     pub fn append<S: AsRef<str> + ?Sized>(&self, s: &S) -> Self {
-        Self { lexical: ModPath(self.lexical.append(s)), dynamic: self.dynamic.clone() }
+        Self { lexical: ModPath(self.lexical.append(s)), ..self.clone() }
+    }
+
+    /// This scope for what compiles under `view`.
+    pub fn in_view(&self, view: &Lexical) -> Self {
+        Self { load: view.body.clone(), ..self.clone() }
     }
 
     /// Append a generated block-scope component a scope Rust builds at
@@ -3538,14 +3547,11 @@ impl Scope {
 
     /// The scope covered by a handler of `kind` installed here.
     pub fn with_catch(&self, catch: (BindId, ExprId), kind: HandlerKind) -> Self {
-        Self {
-            lexical: self.lexical.clone(),
-            dynamic: self.dynamic.with_catch(catch, kind),
-        }
+        Self { dynamic: self.dynamic.with_catch(catch, kind), ..self.clone() }
     }
 
     pub fn root() -> Self {
-        Self { lexical: ModPath::root(), dynamic: DynScope::root() }
+        Self { lexical: ModPath::root(), dynamic: DynScope::root(), load: None }
     }
 }
 

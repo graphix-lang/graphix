@@ -33,7 +33,7 @@ use smallvec::SmallVec;
 use std::{
     fmt,
     hash::Hash,
-    iter, mem,
+    iter, mem, ptr,
     sync::{
         OnceLock, Weak,
         atomic::{AtomicBool, Ordering},
@@ -954,6 +954,37 @@ impl Lexical {
             && self.traits.ptr_eq(&other.traits)
             && self.block_names.ptr_eq(&other.block_names)
     }
+
+    // CR claude for claude: [bug/low] A function made in one load and called from a
+    // load that is not inside it dispatches the caller's types by the registry. A
+    // view holds one chain of loads, and the definition's own imports and impls are
+    // in its own, so `called_in` keeps that one. Two dynamic modules at the root:
+    // `a`, whose interface is `val app: fn(x: Sh) -> i64` and whose body is `let app
+    // = |x: Sh| Sh::sh(x) + 5`, and `d`, whose two bodies each implement the root's
+    // `Sh` for a `C` of their own (`c.0 + 1`, then `c.0 + 2000`) and call
+    // `a::app(C(x))`. The first body's `make`, saved and first called after `d`'s
+    // reload, runs the second body's `sh`: x1.gx prints `late=[2019, 2020]` at ep
+    // 14, for `[20, 21]` (base-r24 alike; the same program with `app` at the root
+    // prints `[20, 21]` since retired-body-outside-dispatch-01). To fix: where
+    // neither load is inside the other the view holds both, the definition's for
+    // its names and both for dispatch (a join in `LoadedBody` that `trait_def`,
+    // `impls` and `dispatch_bindings` walk), and a call made under a join passes
+    // the join on. probe:
+    // ~/ptmp/cr29/scratch/r24/24e/retired-body-outside-dispatch-01/x1.gx, `graphix
+    // --no-cache` (cross-load-dispatch-01)
+    /// This view, a definition's, for an instance a call in the load
+    /// `site` makes. The instance dispatches as its caller does: it is
+    /// inside `site` unless the definition was made in a load `site` is
+    /// not inside.
+    pub fn called_in(&self, site: Option<&Arc<LoadedBody>>) -> Self {
+        let mut view = self.clone();
+        if let Some(site) = site
+            && self.body.as_ref().is_none_or(|own| site.is_within(own))
+        {
+            view.body = Some(site.clone())
+        }
+        view
+    }
 }
 
 /// What one load of a dynamic module's source registered, shared by the
@@ -1006,6 +1037,11 @@ impl LoadedBody {
 
     fn chain(&self) -> impl Iterator<Item = &LoadedBody> {
         iter::successors(Some(self), |b| b.outer.as_deref())
+    }
+
+    /// Whether this load is `other` or is declared inside it.
+    fn is_within(&self, other: &LoadedBody) -> bool {
+        self.chain().any(|b| ptr::eq(b, other))
     }
 
     pub fn declare_trait(&self, def: Arc<TraitDef>) {
@@ -2537,7 +2573,7 @@ impl Env {
         Some(Arc::new(list.iter().filter(|im| !self.impl_hidden(im)).cloned().collect()))
     }
 
-    // CR claude for claude: [bug/low] A retired load's own impls reach only the
+    // CR claude for eric: [bug/low] A retired load's own impls reach only the
     // calls its own text writes. A function outside the module that a retired
     // body's function calls is instantiated in its definition's view, which
     // carries no load, so its dispatch reads the registry. `Sh::e(C(x))` in the
@@ -2560,6 +2596,34 @@ impl Env {
     // a load's abstract types are its own, which may need a ruling. probes:
     // ~/ptmp/cr29/scratch/r23/23e/retired-body-trait-dispatch-01/rev/{h1,h2,p1}.gx,
     // `graphix --no-cache` (retired-body-outside-dispatch-01)
+    // 2026-11-14 claude: The dispatch half is fixed: an instance is made in the
+    // load of its call (Lexical::called_in; the point of a call carries its load in
+    // Scope::load, for the binds, slots and builtin callbacks made in a later
+    // cycle), so h1.gx and h2.gx print late=[20, 21] at ep 14. Pins:
+    // lang::modules::a_function_saved_across_a_reload_dispatches_an_outside_function_to_its_own_impl
+    // and the ten beside it (default, i64 head, run-time bind, shared kernels,
+    // collection callback, builtin callback, labeled default, union self, escaping
+    // closure, nested reload),
+    // lib_tests::leaks::a_saved_function_calling_an_outside_function_keeps_nothing_once_dropped;
+    // 36 runs of the first nine fail with called_in undone. A function made in
+    // another module's load is cross-load-dispatch-01. What remains is the core
+    // traits (p1.gx, unchanged: alive is ep + 5000 from ep 7), and it wants Eric's
+    // ruling, since it is a rule about a type's identity across reloads. The
+    // runtime finds Eq, Ord, Display and Cast by a value's abstract id alone
+    // (Value's own eq and cmp, sorts, map keys, printing and casts reach no view),
+    // and the two bodies' C are one id (AbstractId::declared is the module's path
+    // and the name). Options: (a) leave it, a value compares and prints by the impl
+    // registered now as design/module_system.md says, and D33 (a) covers bindings
+    // and user traits only; (b) an abstract type a dynamic module's body declares
+    // and its interface does not is its load's own (the id takes the load), its
+    // core impls stay registered while a function of that load lives, and a type
+    // the interface declares stays one type across reloads, compared by the impl
+    // registered now; (c) lower ==, the orderings and printing to the view's impl
+    // where the type is written, which leaves sorts, map keys and nested values on
+    // the registry, so one body would compare one type two ways. Recommendation:
+    // (b), the only one under which a retired body means what it meant; a type the
+    // interface does not declare has no name outside its load. Readdressed to eric;
+    // not yet an item in ~/ptmp/cr-discuss.md.
     /// Every impl of `trait_id`, hidden ones included (see
     /// [`Self::impl_hidden`]). Inside a load of a dynamic module's
     /// source the impls it writes come first, in place of the registered

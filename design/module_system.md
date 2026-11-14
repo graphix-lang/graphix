@@ -331,10 +331,8 @@ binding is (`ExecCtx::delete_dispatcher`), and they go with the last such
 function. Outside the body a call resolves to the declared entry as
 before, and the core traits, which the runtime consults by a value's
 type, read the registries alone: a value prints and compares by the impl
-registered now. The load reaches the calls the body's own text writes: a
-function defined outside the module is instantiated in its definition's
-view, so a dispatch inside it reads the registries whoever called it
-(CR `retired-body-outside-dispatch-01`). Pins: `lang::modules::
+registered now (CR `retired-body-outside-dispatch-01`). Pins:
+`lang::modules::
 a_function_saved_across_a_reload_dispatches_to_its_own_bodys_methods`,
 `.._dispatches_past_a_declared_impl`,
 `.._dispatches_an_outside_trait_to_its_own_impl`, `.._keeps_its_imports`,
@@ -348,6 +346,45 @@ a_function_saved_across_a_reload_dispatches_to_its_own_bodys_methods`,
 `lib_tests::leaks::
 a_dispatching_function_saved_across_reloads_keeps_nothing_once_dropped`,
 `a_function_saved_past_a_declared_impl_keeps_nothing_once_dropped`.
+
+**An instance is made in its call's load.** A function defined outside
+the module that a loaded body calls dispatches on that body's types (a
+trait-bounded parameter, a trait's default calling its sibling), so its
+instance for the call is inside the caller's load: `Lexical::called_in`
+gives the definition's view the load of the call. A definition made in a
+load keeps its own unless the call's load is inside it (an inner module's
+body calling a function of the body around it), since a view holds one
+chain of loads and the definition's imports and impls are in its own; a
+call from a load beside it still reads the registries (CR
+`cross-load-dispatch-01`). A call is often made long after its text
+compiled, in a cycle, when the env's view is the root's: a run-time bind,
+a collection's slot, a builtin calling a function it was handed. So the
+point of the call carries the load: `Scope::load` is the `Lexical::body`
+of the view the scope compiled under. `Module::compile_inner` puts it on
+the scope of a body's own statements and `lambda::make_init` on an
+instance's, every scope derived from one keeps it, and a labeled default
+compiles in its definition's view and load. A lambda literal in such an
+instance is a definition made in the load, so it pins the load's
+dispatch bindings as the body's own functions do: a closure an outside
+function returns to a body dispatches to that body's impl when no
+function of the body's own is left. Run-time bound instances share
+kernels by definition, type and the callees their bodies resolved
+(`fusion::fuse_instance`, `lowering::body_fingerprint`), so two loads'
+instances of one outside function at one type share none. An image holds
+no scope with a load (`image::scope_encode`). Pins: `lang::modules::
+a_function_saved_across_a_reload_dispatches_an_outside_function_to_its_own_impl`,
+`.._an_outside_default_to_its_own_impl`,
+`.._an_outside_function_to_its_own_i64_impl`,
+`.._a_function_it_binds_at_run_time_to_its_own_impl`,
+`.._a_collections_callback_to_its_own_impl`,
+`.._a_builtins_callback_to_its_own_impl`,
+`.._a_defaults_call_to_its_own_impl`,
+`.._an_outside_union_call_to_its_own_impls`,
+`a_function_saved_across_a_reload_shares_no_run_time_bind_with_the_next_body`,
+`a_closure_an_outside_function_made_for_a_reloaded_body_dispatches_to_that_bodys_impl`,
+`a_function_saved_across_a_nested_reload_dispatches_the_outer_loads_function_to_its_own_impl`
+and `lib_tests::leaks::
+a_saved_function_calling_an_outside_function_keeps_nothing_once_dropped`.
 
 At a deletion the val's binding is deleted with the body's, as a
 `let`'s is (`ExecCtx::delete_binding`), and the pair is what one plain

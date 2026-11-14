@@ -2090,10 +2090,19 @@ pub(crate) fn make_init<R: Rt>(
 ) -> InitFn<R> {
     let def_scope = scope.append_place("fn", &def_spec, None);
     SArc::new(move |scope, ctx, args, mode, tid| {
+        let env = match mode {
+            BindMode::Definition => def_env.clone(),
+            BindMode::Static { .. } | BindMode::Dynamic(_) => {
+                def_env.called_in(scope.load.as_ref())
+            }
+        };
         // the definition's names, the call site's handlers
-        let scope =
-            Scope { dynamic: scope.dynamic.clone(), lexical: def_scope.lexical.clone() };
-        ctx.with_restored(def_env.clone(), |ctx| match &body {
+        let scope = Scope {
+            dynamic: scope.dynamic.clone(),
+            lexical: def_scope.lexical.clone(),
+            load: env.body.clone(),
+        };
+        ctx.with_restored(env, |ctx| match &body {
             DefBody::Expr(body) => {
                 let compiling = BodyCompile {
                     share: shared.clone(),

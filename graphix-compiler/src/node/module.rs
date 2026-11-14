@@ -1857,6 +1857,7 @@ impl<R: Rt> Module<R> {
             Body::Dynamic { .. } => self.flags | CFlag::NoBuiltins,
         };
         let dynamic = matches!(self.body, Body::Dynamic { .. });
+        let scope = self.scope.in_view(&self.env);
         let compiled = ctx.with_restored_mut(&mut self.env, |ctx| {
             if dynamic {
                 ctx.env.declare_module_site(
@@ -1868,7 +1869,7 @@ impl<R: Rt> Module<R> {
             crate::node::compile_block_children(
                 ctx,
                 flags,
-                &self.scope,
+                &scope,
                 self.top_id,
                 true,
                 exprs.iter(),

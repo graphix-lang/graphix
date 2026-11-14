@@ -102,8 +102,9 @@ A function taken out of the module and kept somewhere else (`saved <-
 foo::add`) is the function of the body it was taken from. After a reload it
 still runs that body's code, over that body's bindings as they last stood, and
 it sees nothing of the new module: a trait method its code calls is the one that
-body implemented, and a name it uses is what that body imported. Code that should
-follow a reload calls through the module each time, `foo::add(x)`.
+body implemented, also where a function outside the module that it calls makes
+the call, and a name it uses is what that body imported. Code that should follow
+a reload calls through the module each time, `foo::add(x)`.
 
 Obviously the loaded module must match the type signature defined in the dynamic
 mod statement. However, the signature checking only cares that every item

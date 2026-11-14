@@ -264,8 +264,11 @@ fn checked_default<R: Rt>(
     join: Option<&mut Join<'_>>,
 ) -> Result<Node<R>> {
     let (node, res) = ctx.with_restored(f.env.clone(), |ctx| {
-        let local_scope =
-            Scope { dynamic: scope.dynamic.clone(), lexical: f.scope.lexical.clone() };
+        let local_scope = Scope {
+            dynamic: scope.dynamic.clone(),
+            lexical: f.scope.lexical.clone(),
+            load: f.env.body.clone(),
+        };
         let types = match judge {
             Judge::Bind => InstanceTypes::of_default(ctx, f, expr.id),
             Judge::Check(_) => None,

@@ -171,6 +171,10 @@ fn dynscope_decode(buf: &mut impl Buf) -> Result<DynScope, PackError> {
 }
 
 pub fn scope_encode(scope: &Scope, buf: &mut impl BufMut) -> Result<(), PackError> {
+    // a load happens in a cycle, and an image is written before any
+    if scope.load.is_some() {
+        return Err(PackError::InvalidFormat);
+    }
     scope.lexical.encode(buf)?;
     dynscope_encode(&scope.dynamic, buf)
 }
@@ -178,5 +182,5 @@ pub fn scope_encode(scope: &Scope, buf: &mut impl BufMut) -> Result<(), PackErro
 pub fn scope_decode(buf: &mut impl Buf) -> Result<Scope, PackError> {
     let lexical = Pack::decode(buf)?;
     let dynamic = dynscope_decode(buf)?;
-    Ok(Scope { lexical, dynamic })
+    Ok(Scope { lexical, dynamic, load: None })
 }

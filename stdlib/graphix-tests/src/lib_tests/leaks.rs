@@ -286,17 +286,23 @@ fn is_pair(a: i64, b: i64) -> impl Fn(&Value) -> bool {
     move |v| matches!(v, Value::Array(t) if t[..] == [Value::I64(a), Value::I64(b)])
 }
 
-/// `RELOADS` reloads of a dynamic module whose source is `body` after
-/// `let v = [tick];` and whose interface declares `sig` before `v` and
-/// `get`, each load's `get` saved and called through the next reload,
-/// which retires the body it was made in, then replaced by the new
-/// load's. `get(x)` is `x + v`.
-async fn saved_across_reloads(mode: Mode, sig: &str, body: &str) -> Result<()> {
+/// `RELOADS` reloads of a dynamic module declared after `above`, whose
+/// source is `body` after `let v = [tick];` and whose interface declares
+/// `sig` before `v` and `get`, each load's `get` saved and called through
+/// the next reload, which retires the body it was made in, then replaced
+/// by the new load's. `get(x)` is `x + v`.
+async fn saved_across_reloads(
+    mode: Mode,
+    above: &str,
+    sig: &str,
+    body: &str,
+) -> Result<()> {
     const RELOADS: i64 = 1000;
     let (ctx, mut rx) = fixture_runtime([], crate::TEST_REGISTER, mode, |_| {}).await?;
     let _tick = ctx.rt.compile(literal!("let tick: i64 = 0;")).await?;
     let program = format!(
         r#"{{
+          {above}
           let src = "let v = [tick]; {body}";
           let s = mod d dynamic {{
               sandbox whitelist [core];
@@ -331,7 +337,7 @@ async fn saved_across_reloads(mode: Mode, sig: &str, body: &str) -> Result<()> {
 async fn a_function_saved_across_reloads_keeps_nothing_once_dropped(
     mode: Mode,
 ) -> Result<()> {
-    saved_across_reloads(mode, "", "let get = |x: i64| x + v").await
+    saved_across_reloads(mode, "", "", "let get = |x: i64| x + v").await
 }
 
 /// A retired body's dispatchers, defaults and impl methods go with the
@@ -342,9 +348,29 @@ async fn a_dispatching_function_saved_across_reloads_keeps_nothing_once_dropped(
     saved_across_reloads(
         mode,
         "",
+        "",
         "trait T { val d: fn(self) -> i64; val e: fn(self) -> i64 = |s| d(s) }; \
          type C = Abstract<i64>; impl T for C { let d = |c: C| c.0 + v }; \
          let get = |x: i64| T::e(C(x))",
+    )
+    .await
+}
+
+/// A function outside the module that each load calls is instantiated in
+/// the load, and the closure it returns is a function of the load's: the
+/// instances and the closure keep the load's impl no longer than the
+/// saved function does.
+async fn a_saved_function_calling_an_outside_function_keeps_nothing_once_dropped(
+    mode: Mode,
+) -> Result<()> {
+    saved_across_reloads(
+        mode,
+        "trait Sh { val sh: fn(self) -> i64 }; \
+         let app = |x: Sh| Sh::sh(x); let mk = |x: Sh| |u: i64| Sh::sh(x) + u;",
+        "",
+        "use super::{Sh, app, mk}; \
+         type C = Abstract<i64>; impl Sh for C { let sh = |c: C| c.0 + v }; \
+         let add = mk(C(0)); let get = |x: i64| app(C(x)) + add(0) - v",
     )
     .await
 }
@@ -356,6 +382,7 @@ async fn a_function_saved_past_a_declared_impl_keeps_nothing_once_dropped(
 ) -> Result<()> {
     saved_across_reloads(
         mode,
+        "",
         "trait T { val d: fn(self) -> i64; val e: fn(self) -> i64 = |s| d(s) }; \
          type C; impl T for C;",
         "type C = Abstract<i64>; impl T for C { let d = |c: C| c.0 + v }; \
@@ -372,6 +399,7 @@ async fn a_function_saved_across_reloads_around_an_interface_module_keeps_nothin
 ) -> Result<()> {
     saved_across_reloads(
         mode,
+        "",
         "",
         "let r = mod inner dynamic { sandbox unrestricted; \
          sig { trait T { val d: fn(self) -> i64; val e: fn(self) -> i64 = |s| d(s) }; \
@@ -1287,6 +1315,7 @@ async fn a_function_escaping_dropped_impls_of_plain_heads_dispatches_past_their_
 modes!(
     a_function_saved_across_reloads_keeps_nothing_once_dropped,
     a_dispatching_function_saved_across_reloads_keeps_nothing_once_dropped,
+    a_saved_function_calling_an_outside_function_keeps_nothing_once_dropped,
     a_function_saved_past_a_declared_impl_keeps_nothing_once_dropped,
     a_function_saved_across_reloads_around_an_interface_module_keeps_nothing_once_dropped,
     a_function_escaping_deleted_interface_modules_keeps_nothing_once_dropped,
