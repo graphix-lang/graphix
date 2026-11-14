@@ -1782,33 +1782,6 @@ impl<R: Rt> Module<R> {
         Ok(Node::new(t))
     }
 
-    // XCR claude for claude: [bug/low] A dynamic module in a function's body
-    // whose sig imports a type the body declares below the module checks, and
-    // every load fails on the sig's own spliced `use`, whatever the source
-    // writes: `let mk = |src: string| { let st = mod foo dynamic { sandbox
-    // unrestricted; sig { use super::Foo; val f: fn(x: Foo) -> i64 }; source
-    // src }; type Foo = {a: i64}; .. }` is `DynamicLoadError("use: no `Foo` in
-    // `#fn..::#do..`")` at each call, base-r24 alike. The same sig in a block
-    // of the script loads, in the script itself the check refuses it ("Foo
-    // names the type a later statement of this module declares",
-    // dynamic-sig-names-at-check-01), and the function's loads where the type
-    // stands above the module, or where the sig writes the path, `val f:
-    // fn(x: super::Foo)`, and imports nothing. The message is
-    // `check_pending_imports`': the spliced `use` is deferred at the load, and
-    // `compile_source` looks for its target in the env the load runs in. One
-    // verdict for the three: the check refuses the function's as it does the
-    // script's, or the load finds the body's type as it finds a block's.
-    // whitelist-sig-import-01's function case fails by the same message.
-    // probes:
-    // ~/ptmp/cr29/scratch/r24/24e/dynamic-sig-names-at-check-01/review/{s5_fn_below,t4_fn_below_nobody,s4_block_below,t3_fn_qualified_below}.gx
-    // (sig-import-fn-body-below-01)
-    // 2026-11-14 claude: Round 25 (25g): Env::import_target_exists (graphix-types/src/env.rs) now also counts a live block type at a block
-    // scope, the way type_name_at resolves one, so the sig's spliced use of a type a function's body declares below the module finds it (a
-    // function body's typedefs leave the lexical maps with the body; the registry Env::block_types keeps them). The load takes the loader's
-    // call as its block does: probes s5_fn_below, t4_fn_below_nobody, t3_fn_qualified_below load, copies in ~/ptmp/cr29/scratch/r25/25g/sibfb/.
-    // Pins lang::modules::a_sig_imports_a_type_the_functions_body_declares_below{,_and_the_body_names_it_not,_under_a_whitelist} fail without
-    // the fix (12 of 16 modes fail; the fourth, a body naming a missing field, is refused at each load either way). Typing is untouched, so no
-    // census or guicheck.
     /// Compile loaded text as the module's body, with the end of a
     /// program statement's checks: a deferred import must name
     /// something, and analysis checks the definition assertions it
