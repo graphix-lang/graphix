@@ -956,6 +956,94 @@ run!(
     FuseExpect::None
 );
 
+// The same at the top: a slice claims its lengths of an array or list member
+// only where its elements take every element of the member.
+run!(
+    slice_tuple_element_over_a_union_claims_nothing,
+    "{ let f = |x: Array<[(i64, i64), i64]>| select x { [(a, b), ..] => a, [] => 0 }; f([3]) }",
+    refused(
+        "no arm covers Array<[i64, (i64, i64)]> (a slice arm's element patterns do not take \
+         every element of Array<[i64, (i64, i64)]>, so it covers none of its lengths)"
+    );
+    FuseExpect::None
+);
+
+run!(
+    slice_tuple_element_over_another_tuple_claims_nothing,
+    r#"{
+  let f = |x: Array<[(i64, i64), (i64, i64, i64)]>| select x { [(a, b), ..] => a, [] => 0 };
+  f([(1, 2, 3)])
+}"#,
+    refused("a slice arm's element patterns do not take every element of");
+    FuseExpect::None
+);
+
+run!(
+    slice_struct_element_over_a_union_claims_nothing,
+    "{ let f = |x: Array<[{a: i64}, i64]>| select x { [{a}, ..] => a, [] => 0 }; f([3]) }",
+    refused("no arm covers Array<[i64, { a: i64 }]> (a slice arm's element patterns");
+    FuseExpect::None
+);
+
+run!(
+    list_tuple_element_over_a_union_claims_nothing,
+    "{ let f = |x: List<[(i64, i64), i64]>| select x { [<(a, b), ..>] => a, [<>] => 0 }; f([<3>]) }",
+    refused("no arm covers List<[i64, (i64, i64)]> (a slice arm's element patterns");
+    FuseExpect::None
+);
+
+run!(
+    slice_suffix_tuple_element_over_a_union_claims_nothing,
+    "{ let f = |x: Array<[(i64, i64), i64]>| select x { [init.., (a, b)] => a, [] => 0 }; f([3]) }",
+    refused("no arm covers Array<[i64, (i64, i64)]> (a slice arm's element patterns");
+    FuseExpect::None
+);
+
+run!(
+    slice_tuple_element_over_a_union_leaves_later_arms_live,
+    r#"{
+  let f = |x: Array<[(i64, i64), i64]>| select x { [(a, b), ..] => a, [n, ..] => 9, [] => 0 };
+  let g = |x: Array<[(i64, i64), i64]>| select x { [(a, b), ..] => a, [] => 0, _ => 7 };
+  (f([(1, 2), 3]), f([3]), f([]), g([(4, 5), 3]), g([3]), g([]))
+}"#,
+    prints("[i64:1, i64:9, i64:0, i64:4, i64:7, i64:0]");
+    FuseExpect::Jit
+);
+
+run!(
+    slice_tuple_element_beside_null_claims_nothing,
+    r#"{
+  let f = |x: Array<[(i64, i64), (string, string), null]>| select x { [(a, _), ..] => 1, [] => 0 };
+  f([null])
+}"#,
+    refused("no arm covers Array<[null, (i64, i64), (string, string)]> (a slice arm's element");
+    FuseExpect::None
+);
+
+// A tuple of names takes each member of a union of tuples of its arity.
+run!(
+    slice_tuple_element_over_a_union_of_its_arity_claims_its_lengths,
+    r#"{
+  type P = [(i64, i64), (string, string)];
+  let f = |x: Array<P>| select x { [(a, _), ..] => "s [a]", [] => "e" };
+  let g = |x: `A(Array<P>)| select x { `A([(a, _), ..]) => "a [a]", `A([]) => "e" };
+  let h = |x: Array<[(i64, (i64, i64)), (string, (string, string))]>| select x {
+    [(a, (b, _)), ..] => "h [a] [b]", [] => "e"
+  };
+  [f([("s", "t")]), f([(1, 2)]), f([]), g(`A([("u", "v")])), g(`A([(3, 4)])), g(`A([])),
+   h([(5, (6, 7))]), h([("x", ("y", "z"))])]
+}"#,
+    prints(r#"["s s", "s 1", "e", "a u", "a 3", "e", "h 5 6", "h x y"]"#);
+    FuseExpect::Jit
+);
+
+run!(
+    slice_tuple_element_over_its_tuple_claims_its_lengths,
+    "{ let f = |x: Array<(i64, i64)>| select x { [(a, b), ..] => a + b, [] => 0 }; f([(3, 4)]) * 10 + f([]) }",
+    is(Value::I64(70));
+    FuseExpect::Jit
+);
+
 run!(
     nested_slice_tuple_element_over_its_tuple_claims_its_lengths,
     r#"{

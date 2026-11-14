@@ -3011,8 +3011,20 @@ impl StructPatternNode {
                 self.children()
                     .into_iter()
                     .zip(ts)
-                    .all(|(c, t)| t.is_some_and(|(t, _)| c.covers(env, &t, false)))
+                    .all(|(c, t)| t.is_some_and(|(t, _)| c.covers_each_member(env, &t)))
             })
+    }
+
+    /// Whether this pattern covers `t`, or each member of `t`, a union with
+    /// no open cell among its members.
+    fn covers_each_member(&self, env: &Env, t: &Type) -> bool {
+        if self.covers(env, t, false) {
+            return true;
+        }
+        let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+        matches!(union_members_open(env, t, &mut members), Ok(false))
+            && members.len() > 1
+            && members.iter().all(|m| self.covers(env, m, false))
     }
 
     fn matches_anything_inner(&self) -> bool {

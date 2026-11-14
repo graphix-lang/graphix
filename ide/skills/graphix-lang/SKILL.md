@@ -576,6 +576,8 @@ ok |x: [`A([Array<i64>, null])]| select x { `A([h, ..]) => 1, `A([]) => 0, `A(nu
 no "every array length" |x: [`A([Array<i64>, null])]| select x { `A([h, ..]) => 1, `A([]) => 0, `A([a, b]) => 3, `A(null) => 2 }
 ok |x: [`A([Array<i64>, null])]| select x { `A([h, ..]) => 1, `A([]) => 0, `A(_) => 2 }
 ok |x: [`A(Array<i64>), `A(null)]| select x { `A([h, ..]) => 1, `A([]) => 0, `A(null) => 2 }
+no "covers none of its lengths" |x: Array<[(i64, i64), i64]>| select x { [(a, b), ..] => a, [] => 0 }
+ok |x: Array<[(i64, i64), (string, string)]>| select x { [(a, _), ..] => 1, [] => 0 }
 no "every array length" |x: Array<i64>| select (x, 0) { ([a, ..], _) => a, ([a, b, ..], _) => a + b, _ => 0 }
 ok |x: Array<[(`A, i64), (`B, string)]>| select x { [(`A, h), ..] => h + 1, _ => 0 }
 no "cannot compute" |x: Array<[(`A, i64), (`A, string)]>| select x { [(`A, h), ..] => h + 1, _ => 0 }

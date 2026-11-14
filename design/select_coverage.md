@@ -25,7 +25,10 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   select is exhaustive when nothing reaches past the last arm. Select exhaustiveness is enforced; slice-pattern
   length ladders count as coverage, one ladder per array or list member
   (a slice arm claims its lengths of each member whose element type its
-  elements cover), and one per slice position inside a tuple, struct or
+  elements cover, or each member of it: `[(a, _), ..]` over
+  `Array<[(i64, i64), (string, string)]>`, never over
+  `Array<[(i64, i64), i64]>`; a written test's elements cover its element
+  type), and one per slice position inside a tuple, struct or
   variant member, keyed by its path and by the member as the arm's shape
   narrows it, along positions whose every member the pattern admits a
   value of fits it with the same slices (`select.rs::NestedLadder`,

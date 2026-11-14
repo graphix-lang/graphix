@@ -324,7 +324,11 @@ select a {
 
 Any other literal (an integer, a string), a nested slice, or a
 refutable element in an arm with a rest pattern claims nothing — the
-error says so when that is why a select falls short. Note also that a slice arm covers only arrays
+error says so when that is why a select falls short. A tuple or struct
+of names is refutable over an element type with a member of another
+shape: over `Array<[(i64, i64), i64]>`, `[(a, b), ..]` claims no
+length, while over `Array<[(i64, i64), (string, string)]>` it claims
+them all. Note also that a slice arm covers only arrays
 of its own inferred (or written) element type: if the scrutinee is a
 union of differently-typed arrays, each array member needs the whole
 length ladder to check out against every slice arm's type.
