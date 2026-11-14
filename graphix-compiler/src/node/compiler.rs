@@ -769,6 +769,12 @@ pub(super) fn eta_dispatcher<R: Rt>(
     // parameter can hide (the binding itself, as `#bind::N` names one, with the
     // reference a poly binding's call takes). base-r24 alike. probe:
     // ~/ptmp/cr29/scratch/r24/24g/tmv/label.gx (eta-label-hides-method-01)
+    // 2026-11-14 claude: Since trait-method-value-names-01 the expansion's
+    // parameters carry the trait's names, so this refusal's site frame quotes the
+    // expansion's body (in: m(#m, self)) where base-r24 printed no snippet; the
+    // lambda's own frame is dropped, Expr::is_lowered taking a lambda that declares
+    // '#self as a lowering's. A fix that calls the method by a lowered path also
+    // takes that frame's snippet away.
 
     // a positional parameter takes the trait's name for it unless it would
     // hide the method the body calls

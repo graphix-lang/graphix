@@ -1610,15 +1610,18 @@ impl PartialEq for Expr {
 }
 
 impl Expr {
-    /// Whether a lowering built this expression: it binds or writes a
-    /// lowered name ([`crate::is_lowered`]), it is of a kind only the
-    /// compiler builds, or it is a block that opens with one of those.
+    /// Whether a lowering built this expression: it binds, declares or
+    /// writes a lowered name ([`crate::is_lowered`]), it is of a kind only
+    /// the compiler builds, or it is a block that opens with one of those.
     pub fn is_lowered(&self) -> bool {
         match &self.kind {
             ExprKind::Bind(b) => {
                 let mut lowered = false;
                 b.pattern.with_names(&mut |n| lowered |= crate::is_lowered(n));
                 lowered
+            }
+            ExprKind::Lambda(l) => {
+                l.constraints.iter().any(|(tv, _)| crate::is_lowered(&tv.name))
             }
             ExprKind::Connect { name, .. } => {
                 Path::basename(&name.0).is_some_and(crate::is_lowered)

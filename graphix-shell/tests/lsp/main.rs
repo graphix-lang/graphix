@@ -246,6 +246,21 @@ fn traits_and_methods_answer() {
     }
 }
 
+/// A trait method named as a value hovers as its trait writes it.
+#[test]
+fn a_trait_method_value_hovers_under_the_traits_names() {
+    const SRC: &str = "\
+trait T { val m: fn<'b: Number>(self, x: 'b) -> 'b };
+impl T for i64 { let m = |s, x| x };
+let g = T::m;
+g(1, 2)
+";
+    let mut c = Client::start(&[("main.gx", SRC)]);
+    c.open("main.gx");
+    assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
+    hover_is(&mut c, "let |g", "g: fn<'b: Number>(self: T, x: 'b) -> 'b");
+}
+
 const GENERIC_IMPLS: &str = "\
 type Counter<'a> = Abstract<'a>;
 trait Show {

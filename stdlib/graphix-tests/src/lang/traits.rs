@@ -2370,6 +2370,18 @@ run!(
     refused("x: 'a1: unbound) -> 'a1: unbound")
 );
 
+// A bounded one keeps its name: its bound declares it the value's own.
+run!(
+    trait_method_value_bounded_variable_named_like_an_enclosing_one,
+    r#"{
+    trait T { val m: fn<'b: Number>(self, x: 'b) -> 'b };
+    impl T for i64 { let m = |s, x| x };
+    let f = |y: 'b| { let g = T::m; "[g(1, 2)] [g(1, 2.5)] [y]" };
+    f("s")
+}"#,
+    prints(r#""2 2.5 s""#)
+);
+
 // A parameter named like the method a `use` brought takes a name of its
 // own.
 run!(
@@ -2383,6 +2395,28 @@ run!(
 }"#,
     is(Value::I64(3))
 );
+
+// A refusal's frames quote the program's text, never the expansion's.
+#[tokio::test(flavor = "current_thread")]
+async fn trait_method_value_frames_quote_the_program() {
+    use graphix_package_core::testing::refusal;
+    for (src, why) in [
+        (
+            "{ trait T { val m: fn(self, x: i64) -> i64 }; \
+             impl T for i64 { let m = |s, x| s + x }; array::map([1, 2], T::m) }",
+            "does not contain fn(self: '#self: i64, x: i64) -> i64",
+        ),
+        (
+            "{ trait T { val m: fn<'b: Number>(self, x: 'b) -> 'b }; \
+             impl T for i64 { let m = |s, x| x }; let g: string = T::m; g }",
+            "string does not contain fn<'b: Number>(self: '#self",
+        ),
+    ] {
+        let e = refusal(src, crate::TEST_REGISTER).await.unwrap();
+        assert!(e.contains(why), "{src}: {e}");
+        assert!(!e.contains("|self"), "{src}: {e}");
+    }
+}
 
 // A trait method named as a value is its eta-expansion: an ordinary
 // function, passed to a collection, forwarded through a parameter,
