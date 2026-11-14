@@ -83,8 +83,11 @@ name: outside its default bodies and impls, call `Show::show(x)` (or
 `use Show::{show}`); a bare `show(x)` is "show not defined". Dispatch is
 static on the self
 argument's type; a union self compiles to a select, unless a method of
-the trait takes `self` beyond its receiver (another parameter, or the
-bound of a variable): then select on the value and call per member. A
+the trait takes `self` beyond its receiver (another parameter, the
+bound of a variable, or a function's parameter or a writable
+reference's referent in its result, `-> {cb: fn(d: self) -> string}`;
+`self` as data or as what a returned function returns is each member's
+own): then select on the value and call per member. A
 union two of whose members may share a value where neither holds the
 other is refused too (`Array<[i64, string]>` beside `Array<[i64,
 null]>`; any two array types, lists or maps, which share the empty
@@ -119,6 +122,8 @@ ok trait T { val m: fn<'b: [self, null]>(self, x: 'b) -> 'b }; impl<'a> T for Ar
 ok trait T { val m: fn<'b: [self, null]>(self, x: 'b) -> i64 }; impl T for i64 { let m = |s, x| select x { null as _ => s, i64 as v => v + s } }; T::m(1, 2)
 no "requires 'b: i64, which the signature does not declare" trait T { val m: fn<'b: [self, null]>(self, x: 'b) -> 'b }; impl T for i64 { let m = 'q: self |s, x: 'q| -> 'q x }; T::m(1, 2)
 no "T::m takes `self` beyond it" trait T { val m: fn<'b: [self, null]>(self, x: 'b) -> 'b }; impl T for i64 { let m = |s, x| x }; impl T for string { let m = |s, x| x }; let v: [i64, string] = 1; T::m(v, null)
+no "T::mk takes `self` beyond it" trait T { val mk: fn(self) -> {cb: fn(d: self) -> string} }; impl T for i64 { let mk = |s| {cb: |d: i64| "i"} }; impl T for string { let mk = |s| {cb: |d: string| d} }; let v: [i64, string] = 1; T::mk(v)
+ok trait T { val mk: fn(self) -> {cb: fn(d: i64) -> self} }; impl T for i64 { let mk = |s| {cb: |d: i64| s} }; impl T for string { let mk = |s| {cb: |d: i64| "x"} }; let v: [i64, string] = 1; T::mk(v)
 ok trait T { val m: fn<'b: [self, null]>(self, x: 'b) -> 'b }; impl T for i64 { let m = |s, x| x }; impl T for string { let m = |s, x| x }; let v: [i64, string] = 1; select v { i64 as i => T::m(i, null), string as s => T::m(s, null) }
 no "neither of which holds the other: give the value one member's type" trait T { val m: fn(self) -> i64 }; impl T for Array<i64> { let m = |s| 1 }; impl T for Array<string> { let m = |s| 2 }; let e: Array<i64> = []; let v: [Array<i64>, Array<string>] = e; T::m(v)
 ok trait T { val m: fn(self) -> i64 }; impl T for Array<i64> { let m = |s| 1 }; impl T for Array<string> { let m = |s| 2 }; let e: Array<i64> = []; T::m(e)

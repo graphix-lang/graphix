@@ -3585,13 +3585,14 @@ impl Type {
                 });
             }
             if members.len() > 1
-                && let Some(m) = def.self_beyond_receiver()
+                && let Some(m) = def.self_beyond_receiver(env)
             {
                 return Some(anyhow::anyhow!(
                     "a {name} call over {} narrows only its self argument, and \
-                     {name}::{} takes `self` beyond it, in another parameter or a \
-                     variable's bound: select on the value and make the call for each \
-                     member",
+                     {name}::{} takes `self` beyond it, in another parameter, a \
+                     variable's bound, or under a function parameter or a writable \
+                     reference in its result: select on the value and make the call \
+                     for each member",
                     Brief(t),
                     m.name
                 ));
@@ -6225,7 +6226,8 @@ impl Type {
             Self::Primitive(p) => p.len() > 1,
             _ => false,
         };
-        if union && env.trait_def(tid).is_some_and(|d| d.self_beyond_receiver().is_some())
+        if union
+            && env.trait_def(tid).is_some_and(|d| d.self_beyond_receiver(env).is_some())
         {
             return Ok(false);
         }

@@ -465,8 +465,14 @@ it writes a variable of its own (pins
 left of `contains` is the predicate `trait_contains`: ⊥ yes, `Any` no,
 a union iff every member its dispatch tests (below) and no method of
 the trait takes `self` beyond its receiver (`TraitDef::
-self_beyond_receiver`: in another parameter, or in the bound of a
-variable its signature holds, through bounds), an open cell yes
+self_beyond_receiver`: in another parameter, in the bound of a
+variable its signature holds, through bounds, or where its result takes
+a value of it in: under a function's parameter an odd number of times
+or as a writable reference's referent, through the typedefs it names
+(`Type::mentions_self_taken_in`), since the dispatch's arms return each
+member's own function or reference where the declared result takes the
+union; `self` as data or as what a returned function returns is
+fine), an open cell yes
 (the tvar merge carries the conjunct) unless it is RIGID without the
 conjunct, a typedef by its expansion, anything else by
 `Env::find_impl` — abstract targets by id,

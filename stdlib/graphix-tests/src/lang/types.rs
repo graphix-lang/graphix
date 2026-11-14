@@ -4128,7 +4128,7 @@ const UNION_TRAIT_SELF_ARGUMENT: &str = r#"
 run!(
     union_trait_self_argument,
     UNION_TRAIT_SELF_ARGUMENT,
-    refused("a Comb call over [A, B] narrows only its self argument, and Comb::comb takes `self` beyond it, in another parameter or a variable's bound: select on the value and make the call for each member");
+    refused("a Comb call over [A, B] narrows only its self argument, and Comb::comb takes `self` beyond it, in another parameter, a variable's bound, or under a function parameter or a writable reference in its result: select on the value and make the call for each member");
     FuseExpect::None
 );
 

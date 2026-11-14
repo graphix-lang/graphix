@@ -4583,7 +4583,7 @@ impl<'a> T for Array<'a> { let m = 'q: [self, null] |s, x: 'q| -> 'q x };
 // runs.
 run!(
     union_self_under_a_bound_holding_self_refused,
-    refused("a T call over [i64, string] narrows only its self argument, and T::m takes `self` beyond it, in another parameter or a variable's bound: select on the value and make the call for each member"),
+    refused("a T call over [i64, string] narrows only its self argument, and T::m takes `self` beyond it, in another parameter, a variable's bound, or under a function parameter or a writable reference in its result: select on the value and make the call for each member"),
     "/test.gx" => r#"
         trait T { val m: fn<'b: [self, null]>(self, x: 'b) -> i64 };
         impl T for i64 { let m = |s, x| select x { null as _ => s, i64 as v => v + s } };
@@ -4661,6 +4661,114 @@ run!(
         impl T for string { let m = |s| "[s]!" };
         let v: [i64, string] = "abc";
         let result = T::m(v)
+    "#
+);
+
+// `self` in the result is each member's own only where the result holds it
+// as data or as what a function returns; as a function's parameter, a
+// writable reference's referent, or through a typedef that puts it there,
+// a union's call returns each member's function (or reference) where the
+// declared result takes the union.
+run!(
+    union_self_as_a_returned_function_s_parameter_refused,
+    refused("a T call over [i64, string] narrows only its self argument, and T::mk takes `self` beyond it, in another parameter, a variable's bound, or under a function parameter or a writable reference in its result"),
+    "/test.gx" => r#"
+        trait T { val mk: fn(self) -> {cb: fn(d: self) -> string, n: i64} };
+        impl T for i64 { let mk = |s| {cb: |d: i64| "i", n: 1} };
+        impl T for string { let mk = |s| {cb: |d: string| d, n: 2} };
+        let v: [i64, string] = "u";
+        let result = T::mk(v).n
+    "#
+; FuseExpect::None);
+
+run!(
+    union_self_as_a_returned_function_s_parameter_selected_by_hand,
+    is(Value::I64(2)),
+    "/test.gx" => r#"
+        trait T { val mk: fn(self) -> {cb: fn(d: self) -> string, n: i64} };
+        impl T for i64 { let mk = |s| {cb: |d: i64| "i", n: 1} };
+        impl T for string { let mk = |s| {cb: |d: string| d, n: 2} };
+        let v: [i64, string] = "u";
+        let result = select v { i64 as i => T::mk(i).n, string as s => T::mk(s).n }
+    "#
+; FuseExpect::None);
+
+run!(
+    union_self_in_a_typedef_that_takes_it_as_a_parameter_refused,
+    refused("T::mk takes `self` beyond it"),
+    "/test.gx" => r#"
+        type Cb<'a> = fn(d: 'a) -> string;
+        trait T { val mk: fn(self) -> {cb: Cb<self>, n: i64} };
+        impl T for i64 { let mk = |s| {cb: |d: i64| "i", n: 1} };
+        impl T for string { let mk = |s| {cb: |d: string| d, n: 2} };
+        let v: [i64, string] = "u";
+        let result = T::mk(v).n
+    "#
+; FuseExpect::None);
+
+run!(
+    union_self_as_a_returned_function_s_parameter_through_a_name_in_a_name_refused,
+    refused("T::mk takes `self` beyond it"),
+    "/test.gx" => r#"
+        type Cb<'a> = fn(d: 'a) -> string;
+        type W<'a> = {cb: Cb<'a>, n: i64};
+        trait T { val mk: fn(self) -> W<self> };
+        impl T for i64 { let mk = |s| {cb: |d: i64| "i", n: 1} };
+        impl T for string { let mk = |s| {cb: |d: string| d, n: 2} };
+        let v: [i64, string] = "u";
+        let result = T::mk(v).n
+    "#
+; FuseExpect::None);
+
+run!(
+    union_self_as_a_returned_writable_reference_refused,
+    refused("T::mk takes `self` beyond it"),
+    "/test.gx" => r#"
+        trait T { val mk: fn(self) -> {r: &mut self, n: i64} };
+        impl T for i64 { let mk = |s| {r: &mut s, n: 1} };
+        impl T for string { let mk = |s| {r: &mut s, n: 2} };
+        let v: [i64, string] = "u";
+        let result = T::mk(v).n
+    "#
+; FuseExpect::None);
+
+// A `self` the result holds where a value flows out (data, what a returned
+// function returns, a parameter of a parameter, a typedef's covariant
+// parameter) is each member's own.
+run!(
+    union_self_as_a_returned_function_s_result_runs,
+    is(Value::I64(2)),
+    "/test.gx" => r#"
+        trait T { val mk: fn(self) -> {cb: fn(d: i64) -> self, n: i64} };
+        impl T for i64 { let mk = |s| {cb: |d: i64| s, n: 1} };
+        impl T for string { let mk = |s| {cb: |d: i64| "x", n: 2} };
+        let v: [i64, string] = "u";
+        let result = T::mk(v).n
+    "#
+; FuseExpect::None);
+
+run!(
+    union_self_as_a_parameter_of_a_returned_function_s_parameter_runs,
+    is(Value::I64(2)),
+    "/test.gx" => r#"
+        trait T { val mk: fn(self) -> {cb: fn(k: fn(d: self) -> i64) -> i64, n: i64} };
+        impl T for i64 { let mk = |s| {cb: |k: fn(d: i64) -> i64| k(1), n: 1} };
+        impl T for string { let mk = |s| {cb: |k: fn(d: string) -> i64| k("a"), n: 2} };
+        let v: [i64, string] = "u";
+        let result = T::mk(v).n
+    "#
+; FuseExpect::None);
+
+run!(
+    union_self_in_a_covariant_typedef_runs,
+    is(Value::I64(2)),
+    "/test.gx" => r#"
+        type O<'a> = ['a, null];
+        trait T { val mk: fn(self) -> {o: O<self>, n: i64} };
+        impl T for i64 { let mk = |s| {o: s, n: 1} };
+        impl T for string { let mk = |s| {o: s, n: 2} };
+        let v: [i64, string] = "u";
+        let result = T::mk(v).n
     "#
 );
 

@@ -589,7 +589,7 @@ pub struct TraitDef {
 }
 
 impl TraitDef {
-    // CR claude for claude: [bug/medium] A method whose return type takes `self` as a
+    // XCR claude for claude: [bug/medium] A method whose return type takes `self` as a
     // function's parameter is called over a union, and the check accepts what the build
     // refuses. `trait T { val mk: fn(self) -> {cb: fn(d: self) -> string, n: i64} }; impl T
     // for i64 { let mk = |s| {cb: |d: i64| "i", n: 1} }; impl T for string { let mk = |s|
@@ -604,11 +604,22 @@ impl TraitDef {
     // refusal names "select on the value"), or types the union call's result as the union
     // of its arms' returns. Found fixing trait-method-return-defaults-01. probes:
     // ~/ptmp/cr29/scratch/r24/24c/tmrd/{u1,u2}.gx (union-self-in-returned-fn-param-01)
+    // 2026-11-14 claude: A trait method whose result takes self in a function's parameter
+    // (also through a typedef) or behind a writable reference is now beyond the receiver:
+    // TraitDef::self_beyond_receiver counts Type::mentions_self_taken_in of the result, so
+    // a union call is refused naming the select. Pins
+    // lang::traits::union_self_as_a_returned_function_s_parameter_refused,
+    // ..._through_a_name_in_a_name_refused,
+    // union_self_in_a_typedef_that_takes_it_as_a_parameter_refused,
+    // union_self_as_a_returned_writable_reference_refused fail (build refuses what check
+    // accepts) with the result line removed; the covariant twins (returned fn's result,
+    // parameter of a parameter, covariant typedef) still run.
     /// The first method that takes `self` beyond its receiver, in another
-    /// parameter's type or in the bound of a variable its signature holds:
-    /// a union cannot implement such a trait, since a call narrows only
-    /// the receiver.
-    pub fn self_beyond_receiver(&self) -> Option<&TraitMethodDef> {
+    /// parameter's type, in the bound of a variable its signature holds, or
+    /// where its result takes a value of it in (under a function's
+    /// parameter, behind a writable reference): a union cannot implement
+    /// such a trait, since a call narrows only the receiver.
+    pub fn self_beyond_receiver(&self, env: &Env) -> Option<&TraitMethodDef> {
         self.methods.iter().find(|m| {
             m.typ
                 .args
@@ -617,6 +628,7 @@ impl TraitDef {
                 .any(|(i, a)| Some(i) != m.self_index && a.typ.mentions_self())
                 || m.typ.vargs.as_ref().is_some_and(|t| t.mentions_self())
                 || m.typ.bound_mentions_self()
+                || m.typ.rtype.mentions_self_taken_in(env)
         })
     }
 }

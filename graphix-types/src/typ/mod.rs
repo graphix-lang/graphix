@@ -2776,6 +2776,52 @@ impl Type {
         })
     }
 
+    /// Whether a trait method's `self` occurs in this type where a value
+    /// of it is taken in: under a function's parameter an odd number of
+    /// times, or as the referent of a writable reference or an abstract
+    /// type's parameter, through the typedefs the type names. Where it
+    /// only flows out, a union's call returns each member's own.
+    pub fn mentions_self_taken_in(&self, env: &Env) -> bool {
+        self.self_taken_in(env, false, &mut SmallVec::new())
+    }
+
+    fn self_taken_in(
+        &self,
+        env: &Env,
+        taken: bool,
+        seen: &mut SmallVec<[(usize, bool); 4]>,
+    ) -> bool {
+        ensure_sufficient(|| match self {
+            Type::TVar(tv) => taken && &*tv.name == "self",
+            Type::Fn(ft) => {
+                ft.bound_mentions_self()
+                    || ft.args.iter().any(|a| a.typ.self_taken_in(env, !taken, seen))
+                    || ft
+                        .vargs
+                        .as_ref()
+                        .is_some_and(|t| t.self_taken_in(env, !taken, seen))
+                    || ft.rtype.self_taken_in(env, taken, seen)
+                    || ft.throws.self_taken_in(env, taken, seen)
+            }
+            Type::ByRef(Mutability::Mut, t) => t.mentions_self(),
+            Type::Abstract { params, .. } => params.iter().any(Type::mentions_self),
+            Type::Ref(tr) => match self.lookup_ref_probe(env) {
+                Some((key, body)) => {
+                    !seen.contains(&(key, taken)) && {
+                        seen.push((key, taken));
+                        body.self_taken_in(env, taken, seen)
+                    }
+                }
+                None => tr.params.iter().any(Type::mentions_self),
+            },
+            t => {
+                let mut found = false;
+                t.for_each_child(&mut |c| found |= c.self_taken_in(env, taken, seen));
+                found
+            }
+        })
+    }
+
     /// [`Self::try_for_each_child`] without early exit.
     #[doc(hidden)]
     pub fn for_each_child(&self, f: &mut impl FnMut(&Type)) {
