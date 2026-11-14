@@ -841,34 +841,9 @@ impl<R: Rt> Update<R> for Bind<R> {
         let tv = self.node.update(ctx);
         ctx.event.view = view;
         let tag = tv.tag();
-        // XCR claude for claude: [bug/high] The fused build gives a `&mut`'s referent its
-        // initializer's value at a wake, where the node-walk keeps the value it holds, as
-        // design/sleep_and_wake.md rules for a binding something writes. `let c = 0; c <-
-        // select c { k if k < 8 => k + 1, _ => never() }; let sel = select c { 3 => false,
-        // 4 => false, 5 => false, _ => true }; let inp = 0; inp <- select c { 3 => c ~ 100,
-        // _ => never() }; let inner = select sel { true => { let x = inp; let y = inp;
-        // `U8(&mut x); (x, y) }, false => (-1, -1) }; println("[c] [inner]")` prints `6 (0,
-        // 100)` under --no-fusion and `6 (100, 100)` fused, from the wake at c = 6 on. With
-        // `x <- never()` in place of the reference both engines print (0, 100). On main
-        // be2c16a05 (base-r24); found by the soak nov13a (aieka, divergence_000000, "interp
-        // != jit"). Not diagnosed: which kernel reads `x` as its initializer (the hold below
-        // is the node-walk's, by CompileCtx::var_written). A fix needs the finding pinned
-        // in graphix-fuzz/findings. probes: ~/ptmp/cr29/scratch/r24/coord/soak/{d0,d0b}.gx
-        // (d0b is the `<-` twin), fuzz/pending-triage/nov13a/aieka/divergence_000000.gx
-        // (wake-mut-referent-fused-01)
         // At a wake a `<-` target holding a value keeps it unless the
         // initializer fired; otherwise a production publishes when it
         // fires, first, or quietly after a sleep.
-        // 2026-11-14 claude: Fusion discovery (lowering::walk_node_for_builtin_calls,
-        // binds_written) refuses a region holding a let that binds a name
-        // CompileCtx::var_written reports, so a written binding is never a kernel local
-        // recomputed from its initializer at a wake. The kernel held x as a local because
-        // the dead `U8(&mut x) statement is dropped by block_live, and the same held for a
-        // <- in an uncalled lambda and for a function body's let. Pins that fail without it:
-        // lang::select::wake_keeps_a_mut_referent and
-        // wake_keeps_a_mut_referent_in_a_function (jit, jit_par),
-        // findings/wake-mut-referent-nov2026/{00,01,02} (regress: interp != jit). No
-        // existing pin's fused-region count moved.
         let mut held: SmallVec<[BindId; 4]> = SmallVec::new();
         if (woke || ctx.event.wake() || tag.moved()) && !tag.triggers() {
             self.pattern.ids(&mut |id| {
