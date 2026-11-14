@@ -2042,7 +2042,13 @@ An operand that is an open cell, or a union with an open member and no decided
 member that holds an error, is refused (`Strip::of`): what the member later holds
 would decide the strip, the null form or the error form, after it was taken
 (pins `lang::types::strip_over_*`). Beside a decided error member the error form
-is the strip whatever the open member becomes, as errors come off first.
+is the strip whatever the open member becomes, as errors come off first. A `?`
+over such an operand is refused when the open member may itself hold an error
+(no `NoError` conjunct): the handler a raise joins into is fixed where the `?` is
+written, and an error the member later holds would be raised past it. A declared
+variable is told to declare `'a: NoError`, an undecided cell to be annotated
+(`Strip::open_member_raising_nothing`; pins `lang::types::qop_over_*`). `$`
+raises nothing and keeps the error form.
 
 ### Containment over a pair of definitions
 

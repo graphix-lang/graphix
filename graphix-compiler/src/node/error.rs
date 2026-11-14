@@ -677,6 +677,9 @@ impl Strip {
         if holds(&err)? && holds(&null)? && !takes(Self::Error)? && takes(Self::Null)? {
             Ok(Self::Null)
         } else if holds(&err)? {
+            if op == '?' {
+                Self::open_member_raising_nothing(&ctx.env, typ)?;
+            }
             Ok(Self::Error)
         } else if holds(&null)? {
             Ok(Self::Null)
@@ -687,6 +690,33 @@ impl Strip {
                 )
             })
         }
+    }
+
+    /// `?` raises the errors its operand's decided members hold, and the
+    /// handler it joins them into is fixed there: an open member without
+    /// `NoError` may later hold an error that is raised and joined into
+    /// nothing, so it is refused, naming the bound to declare.
+    fn open_member_raising_nothing(env: &Env, typ: &Type) -> Result<()> {
+        for m in Type::dispatch_members(env, typ)? {
+            let Type::TVar(tv) = &m else { continue };
+            if tv.binding().is_some() || !tv.may_hold_error(env)? {
+                continue;
+            }
+            let name = format_compact!("{tv}");
+            format_with_flags(PrintFlag::DerefTVars, || match tv.is_rigid() {
+                true => bail!(
+                    "the operand of ? has type {typ}, where {name} is any type its \
+                     bounds admit, an error among them that ? would raise past \
+                     its handler: declare {name}: NoError"
+                ),
+                false => bail!(
+                    "the operand of ? has type {typ}, where {name} is not decided \
+                     here and may hold an error that ? would raise past its \
+                     handler: annotate it with a type that holds no error"
+                ),
+            })?
+        }
+        Ok(())
     }
 
     /// The strip a definition's check recorded as its removed type.
@@ -1618,7 +1648,7 @@ impl<R: Rt> Qop<R> {
             }
             let etyp =
                 if rethrow { etyp } else { wrap!(self, fix_echain_typ(ctx, &etyp))? };
-            // CR claude for claude: [bug/medium] A build refuses a call the check
+            // XCR claude for claude: [bug/medium] A build refuses a call the check
             // accepted where a function raises with `?` over a union holding a bare
             // variable and the call's value puts an error into that variable. `let f =
             // |x: ['a, Error<`A>]| x?; let v: [i64, Error<`A>, Error<`B>] = error(`B); let
@@ -1642,6 +1672,14 @@ impl<R: Rt> Qop<R> {
             // declare; that needs a census. probes:
             // ~/ptmp/cr29/scratch/r24/24d/upm-rev/{w2,w3,w5,w6,c2run}.gx, catch.txt
             // (qop-open-member-errors-01)
+            // 2026-11-14 claude: A `?` whose operand holds an open member (a declared
+            // variable or an undecided cell) with no NoError conjunct beside a decided
+            // error member is refused where it is written
+            // (Strip::open_member_raising_nothing), naming 'a: NoError to declare or the
+            // cell to annotate; `$` is untouched. Pins lang::types::qop_over_* (the four
+            // refusals fail in every mode with the call removed; the NoError, Result and
+            // annotated twins run); skill cases. Census 2967 files: no verdict or message
+            // change from this commit. Needs a soak.
             join_raised(&ctx.env, handler, &etyp)?;
         }
         Ok(())

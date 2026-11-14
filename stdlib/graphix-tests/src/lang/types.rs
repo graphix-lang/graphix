@@ -6606,6 +6606,82 @@ run!(
     FuseExpect::Jit
 );
 
+// `?` joins the errors its operand's decided members hold into its handler
+// where it is written; an open member that may hold an error itself would
+// raise one the handler never took.
+run!(
+    qop_over_a_declared_variable_beside_an_error_is_refused,
+    r#"{
+    let f = |x: ['a, Error<`A>]| x?;
+    let v: [i64, Error<`A>, Error<`B>] = error(`B);
+    let r = { catch(e) e ~ select e.0.error { `A => -1 }; f(v) };
+    "[r] end"
+}"#,
+    refused("where 'a is any type its bounds admit, an error among them that ? would raise past its handler: declare 'a: NoError");
+    FuseExpect::None
+);
+
+run!(
+    qop_over_a_variable_beside_an_error_variable_is_refused,
+    r#"{
+    let f = |x: ['a, Error<'e>]| x?;
+    let v: [i64, Error<`A>, Error<`B>] = error(`B);
+    let r = { catch(e) e ~ select e.0.error { `A => -1 }; f(v) };
+    "[r] end"
+}"#,
+    refused("declare 'a: NoError");
+    FuseExpect::None
+);
+
+run!(
+    qop_over_a_variable_beside_an_error_declared_no_error,
+    r#"{
+    let f = 'a: NoError |x: ['a, Error<`A>]| x?;
+    let ok: [i64, Error<`A>] = 7;
+    "[f(ok)] end"
+}"#,
+    prints("\"7 end\"");
+    FuseExpect::Jit
+);
+
+run!(
+    qop_over_a_result_of_a_variable,
+    r#"{
+    let f = |x: Result<'a, `A>| x?;
+    let ok: [i64, Error<`A>] = 7;
+    "[f(ok)] end"
+}"#,
+    prints("\"7 end\"");
+    FuseExpect::Jit
+);
+
+run!(
+    qop_over_an_undecided_member_beside_an_error_is_refused,
+    r#"{
+    let f = |a: Error<`A>, b| {
+        let u = select false { true => a, false => b };
+        u?
+    };
+    let r = { catch(e) e ~ select e.0.error { `A => -1 }; f(error(`A), error(`B)) };
+    "[r] end"
+}"#,
+    refused("is not decided here and may hold an error that ? would raise past its handler: annotate it");
+    FuseExpect::None
+);
+
+run!(
+    qop_over_an_undecided_member_beside_an_error_annotated,
+    r#"{
+    let f = |a: Error<`A>, b: i64| {
+        let u = select false { true => a, false => b };
+        u?
+    };
+    "[f(error(`A), 3)] end"
+}"#,
+    prints("\"3 end\"");
+    FuseExpect::Jit
+);
+
 /// An input's settle binds a parameter both a payload bounded and a ⊥ was
 /// produced into to the payload's type, never ⊥: a later input reading
 /// the payload is held to it, whether the ⊥ reached the parameter

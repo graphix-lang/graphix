@@ -352,6 +352,9 @@ ok |r: Result<i64, `E>| r?
 no "not known here" let x = never(); let y = never(); let u = select true { true => x, false => y }; u$
 no "not known here" |a: [i64, null], b| { let u = select false { true => a, false => b }; u? }
 ok let x: null = never(); let y: i64 = never(); let u = select true { true => x, false => y }; u$
+no "declare 'a: NoError" |x: ['a, Error<`A>]| x?
+ok 'a: NoError |x: ['a, Error<`A>]| x?
+no "annotate it with a type that holds no error" |a: Error<`A>, b| { let u = select false { true => a, false => b }; u? }
 ```
 
 ## Functions

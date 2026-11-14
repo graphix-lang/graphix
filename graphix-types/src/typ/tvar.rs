@@ -2560,6 +2560,12 @@ impl TVar {
         Ok(false)
     }
 
+    /// Whether an open cell may be bound to a type that holds an error: no
+    /// conjunct of its own says `NoError`.
+    pub fn may_hold_error(&self, env: &Env) -> Result<bool> {
+        Ok(!self.conjunct_implies(env, &Type::Bound(Bound::NoError))?)
+    }
+
     /// The cell's lower bounds (cloned out).
     pub fn cell_lower(&self) -> SmallVec<[Type; 1]> {
         self.read().cell.read().lower.clone()
