@@ -13430,6 +13430,35 @@ run!(
     FuseExpect::Jit
 );
 
+// Only the deepest-first order holds ('c is widest under `Y`), so the
+// trial of it decides the verdict. In it the `X` part before the union
+// binds 'b: `Array<'b>` is decided when the union is met, takes the
+// decided array and binds nothing, and 'a is left for the strings,
+// wherever the two members stand.
+run!(
+    a_member_decided_in_a_trial_takes_a_decided_type,
+    r#"{
+  type U<'x, 'y> = [Array<'x>, Array<'y>];
+  let f = |x: [`X('b, 'c, U<'a, 'b>, Array<'a>), `Y(Array<Array<Array<'c>>>)]| 0;
+  let v: [`X([i64, null], i64, Array<i64>, Array<string>), `Y(Array<Array<Array<[i64, string]>>>)] = `Y([[[1]]]);
+  f(v)
+}"#,
+    prints("i64:0");
+    FuseExpect::Jit
+);
+
+run!(
+    a_member_decided_in_a_trial_takes_a_decided_type_in_the_other_member_order,
+    r#"{
+  type U<'x, 'y> = [Array<'x>, Array<'y>];
+  let f = |x: [`X('b, 'c, U<'b, 'a>, Array<'a>), `Y(Array<Array<Array<'c>>>)]| 0;
+  let v: [`X([i64, null], i64, Array<i64>, Array<string>), `Y(Array<Array<Array<[i64, string]>>>)] = `Y([[[1]]]);
+  f(v)
+}"#,
+    prints("i64:0");
+    FuseExpect::Jit
+);
+
 // A cell two arguments of one definition share holds what both ask.
 run!(
     a_cell_two_arguments_of_one_typedef_share_takes_both,

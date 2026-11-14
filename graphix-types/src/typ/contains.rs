@@ -492,6 +492,14 @@ impl ContainsHist {
         self.closure(t, true) != Closure::Open
     }
 
+    /// Whether a member `m` that holds `t` takes it and binds nothing:
+    /// neither reaches an open cell as the cells stand now. [`Self::closed`]
+    /// keeps a node it met before a cell was bound open, and would leave
+    /// the type to whichever member the walk tries first.
+    fn binds_nothing(&mut self, m: &Type, t: &Type) -> bool {
+        self.closed_now(m) && self.closed_now(t)
+    }
+
     /// Whether `t`, a node, holds no cell, so it reaches none: no occurs
     /// check finds a cycle through it.
     fn holds_no_cell(&mut self, t: &Type) -> bool {
@@ -4892,7 +4900,7 @@ impl Type {
             .collect())
     }
 
-    // CR claude for claude: [risk/low] Which member of a union a walk on copies gives a
+    // XCR claude for claude: [risk/low] Which member of a union a walk on copies gives a
     // type depends on what the walk looked at before. The shortcut for a decided member
     // asks ContainsHist::closed, which keeps `Open` for a node it met before its cells
     // were bound: a walk that first meets the member after the binding answers at once
@@ -4911,6 +4919,24 @@ impl Type {
     // the review of open-app-commit-trials-01. trace:
     // ~/ptmp/cr29/scratch/r23/23c/oact-rev/stale-closure-trace.txt
     // (set-commit-stale-closure-01)
+    // 2026-11-14 claude: Type::set_commit, Type::take and Type::place_covered ask
+    // ContainsHist::binds_nothing, closed_now of the member and the type, so a walk on
+    // copies gives a decided type to the decided member wherever it stands among the
+    // members. set_commit's shortcut is then no parting of a trial and its placement and
+    // its strays call is gone: the differential (the r23 review's harness with knobs for
+    // the old shortcut, the stray and a trial at every union) finds no pair of 640k that
+    // differs in verdict or binding without the stray, and 184 that differ from the old
+    // shortcut (107 the old code refused and this holds, 7 it held and this refuses as
+    // AmbiguousMember, 1 it held and this refuses as a mismatch). base-r24 refused
+    // g1.gx, type mismatch, and checked g2.gx, the same program with the typedef's
+    // arguments in the other order; both check now. The test this CR names is deleted:
+    // its trial held only by the stale answer, and its pair is now a mismatch (the
+    // deepest-first trial meets three undecided takers of one array and takes the
+    // first). Pins that fail with ContainsHist::closed back in binds_nothing:
+    // typ::contains::tests::a_member_decided_since_the_walk_met_it_takes_a_decided_type,
+    // lang::types::a_member_decided_in_a_trial_takes_a_decided_type (4 modes). guicheck
+    // 39.12e9 before, 39.09e9 after; census 2967 files, none differs. probes:
+    // ~/ptmp/cr29/scratch/r24/24d/scs/ (README)
     /// Decide `s ⊇ t` by the member that takes `t` ([`Self::take`]),
     /// structural members before bare unbound tvars, which admit anything:
     /// `['b, Array<'b>]` must bind an array through `Array<'b>`. `None`
@@ -4931,11 +4957,7 @@ impl Type {
                 if !m.contains_int(probe, env, hist, t)? {
                     continue;
                 }
-                // a decided member that holds a decided type binds nothing
-                if !commit || (hist.closed(m) && hist.closed(t)) {
-                    if commit && !admit.is_empty() {
-                        hist.strays()
-                    }
+                if !commit || hist.binds_nothing(m, t) {
                     return Ok(Some(true));
                 }
                 admit.push(m)
@@ -5047,7 +5069,7 @@ impl Type {
             let mut open: SmallVec<[&Type; 2]> = SmallVec::new();
             let mut decided: SmallVec<[&Type; 2]> = SmallVec::new();
             for m in tier.iter().copied() {
-                if hist.trial || (hist.closed(m) && hist.closed(t)) {
+                if hist.trial || hist.binds_nothing(m, t) {
                     if m.contains_int(flags, env, hist, t)? {
                         return Ok(Some(true));
                     }
@@ -5546,8 +5568,7 @@ impl Type {
         for (c, _) in s0.iter().zip(free).filter(|(_, free)| !**free) {
             if c.contains_int(guide(flags), env, hist, m)? {
                 admit.push(c);
-                // a decided member that holds a decided type binds nothing
-                if !commit || (hist.closed(c) && hist.closed(m)) {
+                if !commit || hist.binds_nothing(c, m) {
                     admit.truncate(0);
                     admit.push(c);
                     break;
@@ -7351,36 +7372,34 @@ mod tests {
         held.check_contains(&env, &t).unwrap();
     }
 
-    // A trial that chose a member vouches for no union below: the outer
-    // union's trial binds 'b at `Array<null>`, a trial begun at the inner
-    // union does not, and placed as written on the outer one's word the
-    // inner union meets `Array<Array<[null, string]>>` with 'b undecided.
+    // A member whose cell an earlier part of the walk bound is decided when
+    // its union is met: it takes a decided type and binds nothing, wherever
+    // it stands among the members, in a walk on copies as in the check. A
+    // walk on copies that gave `Array<i64>` to the first member admitted
+    // would decide 'a there, and `Array<'a>` would hold no `Array<string>`:
+    // the tag would have one taker in one order of the members, and two in
+    // the other.
     #[test]
-    fn a_trial_that_chose_a_member_allows_no_placement_below() {
-        let defs = [
-            ("P<'x, 'y>", "[Array<'x>, Array<Array<['y, i64]>>]"),
-            ("Q<'x, 'y>", "[`N, `X(Array<'x>, Q<'y, 'x>), `Y(Q<'y, 'x>)]"),
+    fn a_member_decided_since_the_walk_met_it_takes_a_decided_type() {
+        let (env, _) = Env::typed_at_root(&[], "i64").unwrap();
+        let cases = [
+            ("[Array<'a>, Array<'b>]", "Array<i64>"),
+            ("[Array<'b>, Array<'a>]", "Array<i64>"),
+            ("[Array<'a>, Array<'b>, 'c]", "[Array<i64>, string]"),
+            ("[Array<'b>, Array<'a>, 'c]", "[Array<i64>, string]"),
         ];
-        let (env, _) = Env::typed_at_root(&defs, "i64").unwrap();
-        let held = at_root(
-            &env,
-            "[`X([Array<'a>, `T('a)]), \
-             `Y([Array<('a, null)>, `T([Array<'a>, `T('a)])], \
-             [[[string, 'a], [string, null, i64]], (Q<i64, 'a>, 'b), \
-             [P<'b, 'a>, [Array<'b>, Array<Array<['b, string]>>], \
-             [Array<'a>, `T(null)]]])]",
-        );
-        let t = at_root(
-            &env,
-            "[`X(`T([Array<null>, `T(i64)])), \
-             `Y([Array<([[Array<null>, `T(i64)], `T(Array<null>)], null)>, \
-             `T([Array<[Array<null>, `T(i64)]>, `T([Array<null>, `T(i64)])])], \
-             [(Q<i64, [Array<null>, `T(i64)]>, null), \
-             [P<null, [[Array<null>, `T(i64)], `T(Array<null>)]>, \
-             [Array<null>, Array<Array<[null, string]>>], \
-             Array<[Array<null>, `T(i64)]>]])]",
-        );
-        held.check_contains(&env, &t).unwrap();
+        for (union, part) in cases {
+            let held = at_root(&env, &format!("('b, {union}, Array<'a>)"));
+            let t = at_root(&env, &format!("([i64, null], {part}, Array<string>)"));
+            let mut trial = ContainsHist::trial();
+            let flags = ContainsFlags::Commit.into();
+            assert!(held.contains_int(flags, &env, &mut trial, &t).unwrap(), "{union}");
+            let held =
+                at_root(&env, &format!("[`A('b, {union}, Array<'a>), `A('d, 'e, 'f)]"));
+            let t = at_root(&env, &format!("`A([i64, null], {part}, Array<string>)"));
+            let e = held.check_contains(&env, &t).unwrap_err();
+            assert!(e.is::<AmbiguousMember>(), "{union}: {e:#}");
+        }
     }
 
     // Two applications of one definition are compared by their arguments,

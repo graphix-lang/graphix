@@ -399,12 +399,14 @@ can keep the original member slice.
   applications).
 - The placement takes its trial's word only while the two decide
   alike (`ContainsHist::strays`). They part at a choice between a
-  union's members (`Type::take`, `Type::residue_member`, a decided
-  member found after an undecided one in `Type::set_commit`, two
+  union's members (`Type::take`, `Type::residue_member`, two
   applications of one definition whose arguments do not hold in
-  order): a trial takes the first member that holds, keeps what a
-  member that did not hold bound, and reads which members are decided
-  from what it has walked, and the placement judges. They part too at
+  order): a trial takes the first member that holds and keeps what a
+  member that did not hold bound, and the placement judges. A decided
+  member that holds a decided type is no choice: it takes the type in
+  both and binds nothing, and both read which members are decided from
+  the cells as they stand (`ContainsHist::binds_nothing`), never from
+  what the walk met before a cell was bound. They part too at
   a part that waits for the end of a function's arguments, which a
   trial begun inside them binds at once. A trial that met one allows
   no placement, and a placement that meets one asks a trial at each
@@ -412,7 +414,7 @@ can keep the original member slice.
   a choice, which is where the applications of two definitions with
   one body are. Pins `typ::contains::tests::
   a_placement_leaves_its_trial_at_a_choice_between_members`,
-  `a_trial_that_chose_a_member_allows_no_placement_below`,
+  `a_member_decided_since_the_walk_met_it_takes_a_decided_type`,
   `lang::types::
   a_union_below_a_choice_between_members_asks_its_own_trial`.
 - A verdict reached inside pairs in progress rests on the outermost
