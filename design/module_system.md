@@ -469,8 +469,14 @@ may outlive the declaration of a trait its body calls: an embedder drops
 the expression that declared it and keeps the function in a root
 binding. The function builds its body in its definition's view whenever
 it is next called, so what that view names must still mean what it did.
-A function names a dispatcher as it names any capture, so a dispatcher
-deleted while a value names it is orphaned
+Every declaration mints an anchor binding beside its methods'
+dispatchers (`TraitDef::anchor`, at `<trait path>::#decl`), which a trait
+with no method needs and which tells two declarations at one path apart.
+A function names a dispatcher as it names any capture, and a function
+whose signature names a trait as a bound (a parameter's type, a
+variable's `'a: Sh`) or whose body holds such a lambda names its anchor
+(`Env::bound_dispatchers`, recorded in the definition's captures at its
+check), so a dispatcher deleted while a value names it is orphaned
 (`ExecCtx::delete_dispatcher`), and those dispatchers keep the rest
 (`Env::kept_traits`, a `KeptTrait` per deleted declaration, under each
 of its dispatchers a value names). `ExecCtx::keep_trait` opens one
@@ -493,18 +499,15 @@ is collected with it. A dispatcher deleted while no value names it
 releases its share and what it held at once, one orphaned releases them
 when the last value goes (`Env::release_dispatcher`), and the
 `KeptTrait` goes with the last share. A view reads a kept declaration
-only where it names it: its binding at the trait's path is one of the
-declaration's dispatchers, the interface's or the ones the splice into
-the module's body minted (`Env::kept_trait`). There `Env::trait_def`
+only where it names it: its anchor binding at the trait's path is one of
+the declaration's dispatchers, the interface's or the ones the splice
+into the module's body minted (`Env::kept_trait`). There `Env::trait_def`
 gives the kept record and `impls_of` and `find_impl` the kept entries
 ahead of the registered ones, after a load's own. So a trait and an impl
 declared again at the same path serve the functions made under them and
 leave the functions of the dropped ones alone, whether the head is an
-abstract type or not. Two cases are not kept: an impl entry given back
-while its trait's declaration still stands (CR
-`escaped-fn-dropped-impl-01`), and a declaration none of whose
-dispatchers a value names, which a function that writes the trait only
-as a bound still needs (CR `escaped-fn-dropped-bound-01`). Pins:
+abstract type or not. One case is not kept: an impl entry given back while its
+trait's declaration still stands (CR `escaped-fn-dropped-impl-01`). Pins:
 `lib_tests::leaks::
 a_function_escaping_a_dropped_block_dispatches_to_its_impl`,
 `.._to_its_defaults`,
@@ -517,7 +520,10 @@ a_function_escaping_a_dropped_block_dispatches_to_its_impl`,
 `a_function_escaping_dropped_impls_of_plain_heads_dispatches_past_their_redeclaration`,
 `a_function_outliving_another_inputs_trait_dispatches_to_its_impl`,
 `a_function_made_before_an_impl_dispatches_to_it_once_both_are_dropped`,
-`a_function_over_an_interfaces_impl_of_a_dropped_outside_trait_dispatches`
+`a_function_over_an_interfaces_impl_of_a_dropped_outside_trait_dispatches`,
+`a_function_over_a_dropped_trait_as_a_parameters_type_binds_its_calls`,
+`a_function_over_a_dropped_trait_as_a_variables_bound_binds_its_calls`,
+`a_function_over_a_dropped_trait_with_no_methods_binds_its_calls`
 and `reference::test::a_holder_pins_what_it_holds_until_it_goes`.
 
 ### A `val`'s type variables

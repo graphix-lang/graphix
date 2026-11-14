@@ -579,6 +579,9 @@ pub struct TraitDef {
     /// method dispatchers are bound (`Trait::method`, `use Trait::*`).
     pub path: ModPath,
     pub methods: Arc<[TraitMethodDef]>,
+    /// The binding at `path::`[`TraitDef::ANCHOR`] that stands for this
+    /// declaration, which a trait with no method has no dispatcher to do.
+    pub anchor: BindId,
     /// A constructor trait: every signature applies `self` (`self<'a>`),
     /// so an impl head names a constructor (`Array<'_>`) and a call
     /// selects by the receiver's outermost form.
@@ -589,6 +592,14 @@ pub struct TraitDef {
 }
 
 impl TraitDef {
+    /// The name of a declaration's [`TraitDef::anchor`] under its path.
+    pub const ANCHOR: &'static str = "#decl";
+
+    /// The bindings this declaration mints: its methods' dispatchers and
+    /// its anchor.
+    pub fn dispatchers(&self) -> impl Iterator<Item = BindId> + '_ {
+        self.methods.iter().map(|m| m.dispatcher).chain(std::iter::once(self.anchor))
+    }
     /// The first method that takes `self` beyond its receiver, in another
     /// parameter's type, in the bound of a variable its signature holds, or
     /// where its result takes a value of it in (under a function's
@@ -733,11 +744,7 @@ impl TraitDef {
     pub(crate) fn same_definition(&self, other: &TraitDef) -> bool {
         self.id == other.id
             && self.pos == other.pos
-            && self
-                .methods
-                .iter()
-                .map(|m| m.dispatcher)
-                .eq(other.methods.iter().map(|m| m.dispatcher))
+            && self.dispatchers().eq(other.dispatchers())
     }
 }
 
@@ -1171,10 +1178,8 @@ impl LoadedBody {
         self.find_dispatch::<()>(&mut |b| {
             let st = b.state.read();
             for t in st.traits.iter() {
-                for m in t.methods.iter() {
-                    f(m.dispatcher);
-                    m.default.into_iter().for_each(&mut *f)
-                }
+                t.dispatchers().for_each(&mut *f);
+                t.methods.iter().for_each(|m| m.default.into_iter().for_each(&mut *f))
             }
             for im in st.impls.iter() {
                 im.methods.into_iter().for_each(|(_, id)| f(*id))
@@ -2364,12 +2369,22 @@ impl Env {
                 default: None,
             });
         }
+        let anchor = self
+            .bind_variable(
+                &path,
+                TraitDef::ANCHOR,
+                Type::Bottom,
+                pos.clone(),
+                ori.clone(),
+            )
+            .id;
         let def = Arc::new(TraitDef {
             id,
             name: name.clone(),
             scope: scope.clone(),
             path,
             methods: Arc::from_iter(defs.drain(..)),
+            anchor,
             hole: applied,
             doc,
             pos,
@@ -2449,6 +2464,20 @@ impl Env {
             .or_else(|| self.trait_defs.get(&id).cloned())
     }
 
+    /// The dispatchers of the traits `t` names as a bound: a function
+    /// whose types name a trait names them, and a declaration deleted
+    /// while one does is kept for it ([`Self::keep_trait`]).
+    pub fn bound_dispatchers(&self, t: &Type, f: &mut impl FnMut(BindId)) {
+        let mut cells: LPooled<AHashSet<usize>> = LPooled::take();
+        let mut ids: LPooled<AHashSet<TraitId>> = LPooled::take();
+        t.named_traits(self, &mut cells, &mut ids);
+        for id in ids.drain() {
+            if let Some(def) = self.trait_def(id) {
+                f(def.anchor)
+            }
+        }
+    }
+
     /// The deleted declaration of the trait `id` this view names: the
     /// one whose dispatchers its bindings at the trait's path are.
     fn kept_trait(&self, id: TraitId) -> Option<&Arc<KeptTrait>> {
@@ -2456,17 +2485,15 @@ impl Env {
             return None;
         }
         let named = |k: &KeptTrait| {
-            k.def.methods.first().is_some_and(|m| {
-                let binds = self.lexical.binds.get(&k.def.path);
-                let own = binds.and_then(|b| b.get(m.name.as_str()));
-                own.is_some_and(|id| k.dispatchers.contains(id))
-            })
+            let binds = self.lexical.binds.get(&k.def.path);
+            let own = binds.and_then(|b| b.get(TraitDef::ANCHOR));
+            own.is_some_and(|id| k.dispatchers.contains(id))
         };
         let mut kept = self.kept_traits.iter().map(|(_, k)| k);
         kept.find(|k| k.def.id == id && named(k))
     }
 
-    // CR claude for claude: [bug/low] A function that outlives the declaration of a
+    // XCR claude for claude: [bug/low] A function that outlives the declaration of a
     // trait it names only as a bound binds at no new call site. A declaration is
     // kept under the dispatchers a function value names (`Env::keep_trait`,
     // escaped-fn-dropped-trait-01), and a function that writes the trait as a
@@ -2489,6 +2516,20 @@ impl Env {
     // probe: `rprobe_bound_only`, `rprobe_bound_tvar` and `rprobe2_marker` in
     // ~/ptmp/cr29/scratch/r24/24e/escaped-fn-dropped-trait-01/review/probes_rev.rs
     // (escaped-fn-dropped-bound-01)
+    // 2026-11-14 claude: Fixed: every trait declaration mints an anchor binding at
+    // <trait path>::#decl (TraitDef::anchor, TraitDef::dispatchers), the view test
+    // of Env::kept_trait reads it in place of the first method's binding, and a
+    // definition's check records the anchors of the traits its signature names as a
+    // bound (LambdaDef::bound_ids over Env::bound_dispatchers, in typecheck0's
+    // captures and in capture_names for each nested lambda), so a function value
+    // pins the declaration like a dispatcher it calls; a trait with no method is
+    // kept the same way. Pins (fail without the fix, four modes each):
+    // lib_tests::leaks::a_function_over_a_dropped_trait_as_a_parameters_type_binds_its_calls,
+    // ..._as_a_variables_bound_binds_its_calls,
+    // ..._with_no_methods_binds_its_calls. Not covered: a trait named only in a
+    // body annotation (a let's type, a cast) of a lambda whose signature names
+    // none, and escaped-fn-dropped-impl-01 (an impl entry given back while its
+    // trait stands).
     /// The declaration `def` is about to be deleted and function values
     /// name `named` among its `dispatchers`: each of those keeps the
     /// record and the impl entries the registry holds for it, and holds

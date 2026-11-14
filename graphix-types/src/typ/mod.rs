@@ -2748,6 +2748,48 @@ impl Type {
         })
     }
 
+    /// The traits this type names as a bound in `env`: a reference to one
+    /// in a variable's conjuncts, a parameter's written type, or a
+    /// typedef's body, each once.
+    #[doc(hidden)]
+    pub fn named_traits(
+        &self,
+        env: &Env,
+        cells: &mut AHashSet<usize>,
+        out: &mut AHashSet<TraitId>,
+    ) {
+        ensure_sufficient(|| match self {
+            Type::TVar(tv) => {
+                if cells.insert(tv.cell_addr()) {
+                    if let Some(b) = tv.binding() {
+                        b.named_traits(env, cells, out)
+                    }
+                    for c in tv.cell_constraints() {
+                        c.named_traits(env, cells, out)
+                    }
+                }
+            }
+            Type::Ref(tr) => {
+                match env.trait_of_ref(tr) {
+                    Some(id) => {
+                        out.insert(id);
+                    }
+                    None => {
+                        if let Some(r) = tr.resolved()
+                            && cells.insert(sync::Arc::as_ptr(&r) as usize)
+                        {
+                            r.typ.named_traits(env, cells, out)
+                        }
+                    }
+                }
+                self.for_each_child(&mut |c| c.named_traits(env, cells, out))
+            }
+            t if node_addr(t).is_some_and(|n| !cells.insert(n)) => (),
+            Type::Fn(ft) => ft.for_each_part(&mut |t, _| t.named_traits(env, cells, out)),
+            t => t.for_each_child(&mut |c| c.named_traits(env, cells, out)),
+        })
+    }
+
     /// Whether a trait method's `self` occurs in this type.
     pub fn mentions_self(&self) -> bool {
         crate::stack::ensure_sufficient(|| match self {

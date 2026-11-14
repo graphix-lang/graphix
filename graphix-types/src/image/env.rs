@@ -217,12 +217,14 @@ impl Pack for ImportEntry {
 
 impl Pack for TraitDef {
     fn encoded_len(&self) -> usize {
-        let TraitDef { id, name, scope, path, methods, hole, doc, pos, ori } = self;
+        let TraitDef { id, name, scope, path, methods, anchor, hole, doc, pos, ori } =
+            self;
         id.encoded_len()
             + name.encoded_len()
             + scope.encoded_len()
             + path.encoded_len()
             + methods.encoded_len()
+            + anchor.encoded_len()
             + hole.encoded_len()
             + doc.encoded_len()
             + pos_len(pos)
@@ -230,12 +232,14 @@ impl Pack for TraitDef {
     }
 
     fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
-        let TraitDef { id, name, scope, path, methods, hole, doc, pos, ori } = self;
+        let TraitDef { id, name, scope, path, methods, anchor, hole, doc, pos, ori } =
+            self;
         id.encode(buf)?;
         name.encode(buf)?;
         scope.encode(buf)?;
         path.encode(buf)?;
         methods.encode(buf)?;
+        anchor.encode(buf)?;
         hole.encode(buf)?;
         doc.encode(buf)?;
         pos_encode(pos, buf)?;
@@ -249,6 +253,7 @@ impl Pack for TraitDef {
             scope: Pack::decode(buf)?,
             path: Pack::decode(buf)?,
             methods: Pack::decode(buf)?,
+            anchor: Pack::decode(buf)?,
             hole: Pack::decode(buf)?,
             doc: Pack::decode(buf)?,
             pos: pos_decode(buf)?,

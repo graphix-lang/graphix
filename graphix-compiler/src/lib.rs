@@ -2574,8 +2574,8 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
         def: &Arc<TraitDef>,
         splice: impl Iterator<Item = BindId>,
     ) {
-        let own = def.methods.iter().map(|m| m.dispatcher);
-        let dispatchers: SmallVec<[BindId; 4]> = own.chain(splice).collect();
+        let dispatchers: SmallVec<[BindId; 4]> =
+            def.dispatchers().chain(splice).collect();
         let lives = self.control.lives().clone();
         let named: SmallVec<[BindId; 4]> =
             dispatchers.iter().copied().filter(|id| lives.pinned(*id)).collect();

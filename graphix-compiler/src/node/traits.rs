@@ -804,8 +804,8 @@ impl<R: Rt> Update<R> for Trait<R> {
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
         ctx.keep_trait(&self.def, std::iter::empty());
         self.defaults.delete(ctx);
-        for m in self.def.methods.iter() {
-            ctx.delete_dispatcher(m.dispatcher)
+        for id in self.def.dispatchers() {
+            ctx.delete_dispatcher(id)
         }
         ctx.env.undeftrait(&self.def);
     }
@@ -1305,6 +1305,13 @@ impl<R: Rt> Impl<R> {
     // same one. escaped-fn-dropped-bound-01 wants a holder under the function's
     // definition too. Still bottom: rprobe3_late_impl, order 'impl first', in
     // ~/ptmp/cr29/scratch/r24/24e/escaped-fn-dropped-trait-01/review/probes_rev.rs
+    // 2026-11-14 claude: escaped-fn-dropped-bound-01 is fixed without a holder for
+    // impl entries: TraitDef::anchor (the declaration's own binding, at <trait
+    // path>::#decl) now exists, and a function that names a trait as a bound pins
+    // it, so Env::keep_trait snapshots the registry's impls at the trait's
+    // deletion. An impl given back while its trait stands still has no holder; a
+    // holder keyed by the same anchor (a kept entry read where the view's anchor
+    // binding is the declaration's) is the place for it.
     /// Give back to the registry what this implementation registered:
     /// its own entry, or the declaration it narrowed. Another
     /// implementation's entry is not identified with this one, so a

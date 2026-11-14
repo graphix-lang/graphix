@@ -306,9 +306,9 @@ impl SigDecls {
 
     /// The bindings a dispatch through these declarations names.
     fn dispatch_bindings(&self) -> impl Iterator<Item = BindId> {
-        let dispatchers = self.traits.iter().flat_map(|def| def.methods.iter());
+        let dispatchers = self.traits.iter().flat_map(|def| def.dispatchers());
         let methods = self.impls.iter().flat_map(|im| im.methods.iter());
-        dispatchers.map(|m| m.dispatcher).chain(methods.map(|(_, id)| *id))
+        dispatchers.chain(methods.map(|(_, id)| *id))
     }
 }
 
@@ -2315,7 +2315,8 @@ impl<R: Rt> Update<R> for Module<R> {
         }
         for def in self.sig_decls.traits.iter() {
             let body = self.env.binds.get(&def.path);
-            let splice = def.methods.iter().filter_map(|m| body?.get(m.name.as_str()));
+            let names = def.methods.iter().map(|m| m.name.as_str());
+            let splice = names.chain([TraitDef::ANCHOR]).filter_map(|n| body?.get(n));
             ctx.keep_trait(def, splice.copied())
         }
         self.clear_compiled(ctx);
@@ -2326,8 +2327,8 @@ impl<R: Rt> Update<R> for Module<R> {
             ctx.forget_binding(*id);
             ctx.delete_binding(*id)
         }
-        for m in traits.iter().flat_map(|def| def.methods.iter()) {
-            ctx.delete_dispatcher(m.dispatcher)
+        for id in traits.iter().flat_map(|def| def.dispatchers()) {
+            ctx.delete_dispatcher(id)
         }
         // CR claude for claude: [bug/low] A deleted module whose path crosses no
         // body leaves its own import table in `Env::names`

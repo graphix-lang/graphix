@@ -1139,6 +1139,12 @@ pub(crate) fn place_order(
 }
 
 impl<R: Rt> LambdaDef<R> {
+    /// The dispatchers of the traits the definition's signature names as
+    /// a bound.
+    fn bound_ids(&self, env: &Env, f: &mut impl FnMut(BindId)) {
+        env.bound_dispatchers(&Type::Fn(self.typ.clone()), f)
+    }
+
     pub(crate) fn captured_ids(&self, f: &mut impl FnMut(BindId)) {
         if let Some(tables) = self.table.get() {
             for capture in &tables.table.captures {
@@ -2885,19 +2891,26 @@ fn holds_unbound(t: &Type, f: &impl Fn(&TVar) -> bool) -> bool {
     go(t, f, &mut LPooled::take())
 }
 
+fn capture_id(
+    id: BindId,
+    outer: &Lexical,
+    checked: &Env,
+    captures: &mut AHashSet<(ModPath, CompactString)>,
+) {
+    if let Some(b) = checked.by_id.get(&id)
+        && outer.binds.get(&b.scope).and_then(|bs| bs.get(&b.name)) == Some(&id)
+    {
+        captures.insert((b.scope.clone(), b.name.clone()));
+    }
+}
+
 fn capture_names<R: Rt>(
     node: &Node<R>,
     outer: &Lexical,
     checked: &Env,
     captures: &mut AHashSet<(ModPath, CompactString)>,
 ) {
-    let mut add = |id| {
-        if let Some(b) = checked.by_id.get(&id)
-            && outer.binds.get(&b.scope).and_then(|bs| bs.get(&b.name)) == Some(&id)
-        {
-            captures.insert((b.scope.clone(), b.name.clone()));
-        }
-    };
+    let mut add = |id| capture_id(id, outer, checked, captures);
     match node.view() {
         NodeView::Ref(r) => add(r.id),
         NodeView::Connect(c) => add(c.id),
@@ -2905,6 +2918,7 @@ fn capture_names<R: Rt>(
         NodeView::Lambda(l) => {
             if let Some(d) = l.def_value().downcast_ref::<LambdaDef<R>>() {
                 d.captured_ids(&mut add);
+                d.bound_ids(checked, &mut add);
             }
         }
         _ => (),
@@ -3120,6 +3134,11 @@ impl<R: Rt> Update<R> for Lambda {
             ftyp.throws.check_contains(&ctx.env, &inferred_throws).at(spec)?;
             Ok(())
         });
+        if res.is_ok() {
+            def.bound_ids(&ctx.env, &mut |id| {
+                capture_id(id, &def.env, &ctx.env, &mut captures)
+            });
+        }
         let mut defaults: LPooled<Vec<Node<R>>> = LPooled::take();
         let res = res
             .and_then(|()| {

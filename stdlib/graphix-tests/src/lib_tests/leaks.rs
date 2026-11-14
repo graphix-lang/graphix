@@ -1084,6 +1084,47 @@ async fn a_function_escaping_a_dropped_load_around_an_interface_module_dispatche
     .await
 }
 
+/// A function that writes a dropped trait only as a parameter's type or
+/// a variable's bound, calling no method, binds the call it makes once
+/// the trait is gone: the bound's declaration stands with it.
+async fn a_function_over_a_dropped_trait_as_a_parameters_type_binds_its_calls(
+    mode: Mode,
+) -> Result<()> {
+    escaped_and_called(
+        mode,
+        [],
+        "{ type C = Abstract<i64>; trait Sh { val sh: fn(self) -> i64 }; \
+         impl Sh for C { let sh = |c: C| c.0 * 10 }; \
+         saved <- |x: i64| { let f = |v: Sh| 30; f(C(x)) }; 1 }",
+    )
+    .await
+}
+
+async fn a_function_over_a_dropped_trait_as_a_variables_bound_binds_its_calls(
+    mode: Mode,
+) -> Result<()> {
+    escaped_and_called(
+        mode,
+        [],
+        "{ type C = Abstract<i64>; trait Sh { val sh: fn(self) -> i64 }; \
+         impl Sh for C { let sh = |c: C| c.0 * 10 }; \
+         saved <- |x: i64| { let f = 'a: Sh |v: 'a| 30; f(C(x)) }; 1 }",
+    )
+    .await
+}
+
+async fn a_function_over_a_dropped_trait_with_no_methods_binds_its_calls(
+    mode: Mode,
+) -> Result<()> {
+    escaped_and_called(
+        mode,
+        [],
+        "{ type C = Abstract<i64>; trait Mk {}; impl Mk for C {}; \
+         saved <- |x: i64| { let f = |v: Mk| 30; f(C(x)) }; 1 }",
+    )
+    .await
+}
+
 /// A module at the root whose interface declares `Sh`, a type and its
 /// impl, `sh` its value times `k`; `name` is `(x)`'s `sh` through the
 /// module, made outside it.
@@ -1356,4 +1397,7 @@ modes!(
     a_function_made_before_an_impl_dispatches_to_it_once_both_are_dropped,
     a_function_over_an_interfaces_impl_of_a_dropped_outside_trait_dispatches,
     a_function_escaping_dropped_impls_of_plain_heads_dispatches_past_their_redeclaration,
+    a_function_over_a_dropped_trait_as_a_parameters_type_binds_its_calls,
+    a_function_over_a_dropped_trait_as_a_variables_bound_binds_its_calls,
+    a_function_over_a_dropped_trait_with_no_methods_binds_its_calls,
 );
