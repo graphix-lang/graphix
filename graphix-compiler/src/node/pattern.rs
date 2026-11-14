@@ -1845,57 +1845,6 @@ impl StructPatternNode {
                             parts.entry(l.id).or_default().push(l.typ)
                         }
                     }
-                    // XCR claude for claude: [bug/low] A name the slices of two
-                    // or-alternatives bind takes the first alternative's elements
-                    // alone, so an or-arm over a written union whose alternatives'
-                    // elements differ is refused, by a message that names no
-                    // annotation: `|x: [`A(Array<i64>), `B(Array<string>)]| select x {
-                    // `A([h, ..]) | `B([h, ..]) => "[h]", _ => "" }` says "type
-                    // mismatch i64 does not contain string" at the pattern, check and
-                    // build alike. So do the same arm with a rest, the list form,
-                    // `[h, ..] | [<h, ..>]` over `[Array<i64>, List<string>]`, and
-                    // `[h, ..] | (h, _)` over `[Array<i64>, (string, i64)]` in either
-                    // order ("i64 does not contain [i64, string]"). The verdict follows
-                    // the alternatives' order: with `` `B(Array<[i64, string]>) ``
-                    // second the arm is refused, with the wider member first it runs.
-                    // The same binds outside a slice (`` `A(h) | `B(h) ``, `` `A((h,
-                    // _)) | `B((h, _)) ``), the slices in arms of their own, the or
-                    // inside a slice element and the arm under a written test (``
-                    // [`A(Array<i64>), `B(Array<string>)] as .. ``) run, `h` being
-                    // `[i64, string]`, the union design/or_patterns.md (Same binds)
-                    // gives a shared name. This loop binds the name's cell at each
-                    // slice it visits and the alternatives share the name: the first
-                    // slice's elements bind it and the next must fit it, and
-                    // PatternNode::bind_narrowed's union of the alternatives' leaves
-                    // comes after. A fix joins the name over the alternatives (each
-                    // slice's union here, and the leaf of an alternative with no
-                    // slice) before anything binds it; not built. Over an unannotated
-                    // parameter the alternatives' slices are one cell by rule
-                    // (design/tvar_constraints.md; slice-or-arm-cells-01), so `let f =
-                    // |x| select x { `A([h, ..]) | `B([h, ..]) => h, _ => 0 }` is
-                    // refused for an argument of two element types and for one instance
-                    // called at two (pin lang::types::
-                    // slice_in_each_alternative_of_an_or_arm_as_two_types_in_one_instance_refused),
-                    // where `` `A(h) | `B(h) `` and the slices in two arms print (1,
-                    // "a"): that refusal names no annotation either, and writing the
-                    // parameter is refused as above. base-r24 and lane 24b alike.
-                    // probes: ~/ptmp/cr29/scratch/r24/24b/soa-rev/ (README)
-                    // (or-slice-name-union-01)
-                    // 2026-11-14 claude: Built: hold_slice_members passes a collector down an
-                    // or-pattern's alternatives and join_alternatives (node/pattern.rs) binds each
-                    // shared name once, at the union of every slice's element types and the leaf of
-                    // an alternative that binds it outside a slice, so the written-union probes
-                    // (soa-rev s04 s07 s09 s11 s12 t09 t10 u01 u03 u05) run and the order of the
-                    // alternatives no longer decides (u03/u04). Where a part of the union is an
-                    // open cell the slices still bind the name one after the other, which keeps the
-                    // one-cell rule of slice-or-arm-cells-01 (the unannotated-parameter refusals,
-                    // r04 t08 and the one-instance pin, stand, and an annotated parameter now
-                    // checks); a join over open cells split the cell in two and de-fused the pin
-                    // slice_in_each_alternative_of_an_or_arm_over_a_binding_written_later. Pins:
-                    // lang::types::slices_of_an_or_arm_over_a_written_union_whose_elements_differ_bind_their_union,
-                    // _of_other_shapes_bind_their_union, _used_as_a_number_refused (all 4 modes
-                    // fail with the collector disabled). Census base-r25 vs mine 2967 files, 0
-                    // changes; deep_nesting 50 ok; guicheck 39614504941 base, 39680497015 lane.
                     let members = !matches!(c, Self::Or { .. });
                     match joined.as_deref_mut() {
                         Some(j) => {
@@ -1912,6 +1861,7 @@ impl StructPatternNode {
                         None => {
                             for (id, ts) in parts.iter() {
                                 bind_union(env, *id, ts, members)?
+                            }
                         }
                     }
                 }
