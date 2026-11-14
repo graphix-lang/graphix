@@ -364,7 +364,7 @@ impl TVar {
     /// [`Self::settle_or_bottom`] in `hist`, a walk earlier settles may
     /// share.
     fn settle_or_bottom_in(&self, env: &Env, hist: &mut ContainsHist) -> Result<()> {
-        // CR claude for claude: [bug/medium] Two open cells no argument decides, one within
+        // XCR claude for claude: [bug/medium] Two open cells no argument decides, one within
         // a union over the other and that other above it, have no settle: `type O<'t> =
         // ['t, null]; let f = 'a3: Array<O<'a4>>, 'a4: [i64, null] |x3: 'a3| 7; let h =
         // 'b3: Array<O<'b4>> |y3: 'b3| f(y3); h([null])` is refused, "unsatisfiable
@@ -394,6 +394,21 @@ impl TVar {
         // ~/ptmp/cr29/scratch/r24/24c/pwirev/w4{c,,d}.gx (refused, base-r24 too),
         // w2{c,,d}.gx and w1.gx (refused; base-r24 runs them), w4{a,b,e,g}.gx and
         // w2{a,e,f,g}.gx (run) (conjunct-lower-cycle-settle-01)
+        // 2026-11-14 claude: Stale on base-r25: every probe the CR names (w4c, w4, w4d,
+        // w2c, w2, w2d, w1, and the inline Array<O<'a4>> form with h([null]) and h([])) now
+        // runs and prints 7, where base-r24 refuses them ('unsatisfiable constraints on
+        // b4'). Lane 24c's later commits closed it, most likely 8dedf818e (a bound's part
+        // over an open cell narrows no cell, which removes the 'b4 within [null, 'a4] half
+        // of the recorded pair) with e33e3b076 and b397cc965; none of the three names this
+        // CR. A wrapper chained three deep still refuses a member the callee does not hold
+        // (h3(["s"]): does not contain Array<string>). Pins that fail on base-r24:
+        // lang::types
+        // partial_wrapper_bound_over_a_union_of_its_variable_takes_a_value_that_decides_nothing,
+        // partial_wrapper_bound_under_a_name_over_a_union_takes_a_value_that_decides_nothing
+        // and
+        // partial_wrapper_bound_over_a_union_of_its_variable_refuses_a_member_the_callee_does_not_hold.
+        // Of 1500 generated wrapper programs sampled (gen2.py seeds 301-303), none is
+        // refused with an unsatisfiable-constraints message on base-r25.
         if !self.cell_constraints().is_empty() || !self.cell_lower().is_empty() {
             self.settle_in(env, hist)?;
         }

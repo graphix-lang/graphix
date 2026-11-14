@@ -15566,6 +15566,42 @@ run!(
     prints("[i64:7, i64:7, i64:7, i64:7]")
 );
 
+run!(
+    partial_wrapper_bound_over_a_union_of_its_variable_takes_a_value_that_decides_nothing,
+    r#"{
+  type O<'t> = ['t, null];
+  let f = 'a3: Array<O<'a4>>, 'a4: [i64, null] |x3: 'a3| 7;
+  let h = 'b3: Array<O<'b4>> |y3: 'b3| f(y3);
+  let w = 'c3: Array<O<'c4>>, 'c4: [i64, null, string] |y3: 'c3| f(y3);
+  (h([null]), h([]), h([1]), w([null]), w([]), w([1]))
+}"#,
+    prints("[i64:7, i64:7, i64:7, i64:7, i64:7, i64:7]")
+);
+
+run!(
+    partial_wrapper_bound_under_a_name_over_a_union_takes_a_value_that_decides_nothing,
+    r#"{
+  type O<'t> = ['t, null];
+  type T<'x> = [`Leaf('x), `Node(Array<T<'x>>)];
+  let f = 'a3: T<O<'a4>>, 'a4: [i64, null] |x3: 'a3| 7;
+  let h = 'b3: T<O<'b4>> |y3: 'b3| f(y3);
+  (h(`Node([`Leaf(null)])), h(`Node([])))
+}"#,
+    prints("[i64:7, i64:7]")
+);
+
+run!(
+    partial_wrapper_bound_over_a_union_of_its_variable_refuses_a_member_the_callee_does_not_hold,
+    r#"{
+  type O<'t> = ['t, null];
+  let f = 'a3: Array<O<'a4>>, 'a4: [i64, null] |x3: 'a3| 7;
+  let h = 'b3: Array<O<'b4>>, 'b4: [i64, null, string] |y3: 'b3| f(y3);
+  h(["s"])
+}"#,
+    refused("does not contain Array<string>");
+    FuseExpect::None
+);
+
 // A call's last settle takes a variable that stands above an argument
 // before the variables its bound holds, so each link of a chain of bounds
 // takes its part of the argument: a `never()` at the chain's last
