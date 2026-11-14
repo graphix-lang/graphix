@@ -5537,6 +5537,41 @@ impl Type {
         // type and for one of them; then they are kept as one. probes:
         // ~/ptmp/cr29/scratch/r24/24f/sacm/{gen3.py,grow.sh,g_arrelem_20.gx,
         // g_tupelem_24.gx,w_arrelem_20.gx,p0480.repl} (slice-arms-composite-member-cost-01)
+        // 2026-11-14 claude: Partly done in lane 25f. Base-r25 measures far above the
+        // figures above (debug, --no-cache --check, G instructions, gen3.py arrelem
+        // 12/16/20: 5.67/33.0/156.5; tupelem 24: 10.0): a perf profile (frame-pointer debug
+        // build, perf record --call-graph fp) puts 65% of the arrelem run in
+        // graphix_compiler::element_binds (the settle of an arm's element binds,
+        // slice-open-element-later-01), not in the narrowing: its holds closure walked the
+        // cells of the test and of the member for every member and read each cell's
+        // forwarding chain to its open end (mean chain 34 links at 12 arms), and the union
+        // it reads holds the one member once per arm (Array<'_N> twelve times, walked
+        // alike). Done: the test's open cells are read once per element_binds, each cell's
+        // chain end once per settle frame (OpenEnds), and unheld_member judges a member
+        // walked alike (setops::walks_alike) once. arrelem 12/16/20 -> 2.68/9.1/29.3,
+        // tupelem 24 -> 7.2, the written parameter 0.81, guicheck 39.65 -> 39.69 G. Pins:
+        // graphix-shell deep_nesting slice_arms_over_element_slices_check_in_bounded_time
+        // (16 arms, 16 G budget; base-r25 retires 33 G and fails), graphix-compiler
+        // unheld_member_tests. What stands: the rest of the excess is the walks this CR
+        // names (walks_as_one_of in narrow_per_member_in, bind_narrowed and
+        // hold_slice_members, 36% at 16 arms), and under them one cause: the cell the
+        // members hold, '_N, ends a chain of forwarding links that grows by one per arm
+        // (each arm's copy merges into the newer cell, TVar::merge_one's task order), so
+        // every walk of a member (Identity::same via Leaves::of, reset_tvars, open_cell,
+        // the Drop of a TVar) reads the chain, 25 to 40 links at 12 arms, and the cost is
+        // polynomial in arms times chain length. What would fix it more than the narrowing
+        // change above: a merge that links the newer cell into the older one (chains stay
+        // one link) or compressing a chain when it is read; compression writes a binding
+        // that a trail of speculative binds may undo, so it needs the trail read first, and
+        // the merge direction is TVar::merge_one's task rule. Probes:
+        // ~/ptmp/cr29/scratch/r25/25f/{gen3.py,m.sh} (gen3.py N arrelem|tupelem).
+        // 2026-11-14 claude: Correction to the note above: that the chain grows by one link
+        // per arm, and that merge_one's task order sets its direction, is a reading not
+        // checked; measured is only that the cells reached from the members are chains of
+        // 15 (8 arms) to 34 (12 arms) links on average (a count of TVar bindings walked
+        // from each position cell in element_binds). Look at where the links come from (a
+        // debug count of merge_one's direction per arm) before choosing between a merge
+        // direction and compression.
         for m in members {
             if m.walks_as_one_of(&walked) {
                 continue;

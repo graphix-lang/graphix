@@ -1736,6 +1736,27 @@ fn select_chains_over_parts_shared_through_cells_are_linear() {
     }
 }
 
+/// Arms that each take the elements of a slice apart, over a parameter
+/// nothing annotates, check in time polynomial in their number: the
+/// settle of each arm's element binds judges the members of the type the
+/// elements stand over once per member that walks alike, and reads the
+/// open cell a forwarding chain ends in once per cell. Debug,
+/// `--no-cache --check`, G instructions, base-r25 -> lane, 16 arms: 33.0
+/// -> 9.1, beside 0.8 over `x: Array<Array<i64>>`.
+#[test]
+#[cfg(target_os = "linux")]
+fn slice_arms_over_element_slices_check_in_bounded_time() {
+    const ARMS: usize = 16;
+    let mut program: LPooled<String> = LPooled::take();
+    program.push_str("let f = |x| select x {\n");
+    for k in (1..=ARMS).rev() {
+        let elems = (0..k).map(|i| format!("[a{i}, s{i}..]")).collect::<Vec<_>>();
+        writeln!(program, "  [{}, t..] => t,", elems.join(", ")).unwrap();
+    }
+    program.push_str("  _ => []\n};\n0\n");
+    checks_within(&program, 16 * BILLION);
+}
+
 /// A select over two pair DAGs, and an or-pattern's name over them, their
 /// parts shared as composites or through cells, check and run in time
 /// linear in their length: the meet of the alternatives meets each pair of

@@ -78,7 +78,7 @@ use poolshark::{
 use smallvec::SmallVec;
 use std::{
     any::Any,
-    cell::Cell,
+    cell::{Cell, RefCell},
     collections::{VecDeque, hash_map::Entry},
     fmt::{Debug, Write as _},
     mem,
@@ -3134,7 +3134,11 @@ impl PendingSettle {
                 on_err(spec, e)?
             }
         }
+        let mut ends: LPooled<OpenEnds> = LPooled::take();
         for s in frame.iter() {
+            if matches!(s, PendingSettle::Contains { .. }) {
+                ends.clear()
+            }
             let res = match s {
                 PendingSettle::Contains { outer, inner, spec } => {
                     (outer.check_contains(env, inner), spec)
@@ -3144,7 +3148,7 @@ impl PendingSettle {
                 }
                 PendingSettle::Told { test, rest, spec } => (told(env, test, rest), spec),
                 PendingSettle::ElementBinds { test, shape, elems, spec } => {
-                    (element_binds(env, test, shape, elems), spec)
+                    (element_binds(env, test, shape, elems, &mut ends), spec)
                 }
                 PendingSettle::Site { ftype, text, spec, .. } => {
                     (site_bounds(env, ftype, *text), spec)
@@ -3317,6 +3321,12 @@ fn site_bounds(env: &Env, ftype: &FnType, text: typ::TextSite) -> Result<()> {
     Ok(())
 }
 
+/// The open cell each cell of the types a settle frame's element tests
+/// read stands for, by the cell's address, the cell held so its address
+/// is its own: the tests of one frame read the types it holds, which
+/// only a [`PendingSettle::Contains`] binds.
+type OpenEnds = AHashMap<usize, (typ::TVar, Option<typ::TVar>)>;
+
 /// Whether a select arm testing for `test` tells it from `rest`, what
 /// else reaches the arm, open cells read as any type they may yet bind.
 fn told(env: &Env, test: &Type, rest: &Type) -> Result<()> {
@@ -3358,13 +3368,36 @@ fn told(env: &Env, test: &Type, rest: &Type) -> Result<()> {
 /// what the element's structure admits, holds. A member decided after
 /// the select (a write to a scrutinee the arms decided) is one the binds
 /// never met.
-fn element_binds(env: &Env, test: &Type, shape: &Type, elems: &Type) -> Result<()> {
-    let holds = |t: &Type| {
+fn element_binds(
+    env: &Env,
+    test: &Type,
+    shape: &Type,
+    elems: &Type,
+    ends: &mut OpenEnds,
+) -> Result<()> {
+    let ends = RefCell::new(ends);
+    let open_cells = |t: &Type, out: &mut AHashMap<usize, typ::TVar>| {
         let mut cells: LPooled<AHashMap<usize, typ::TVar>> = LPooled::take();
-        typ::settle::position_cells(test, &mut cells);
         typ::settle::position_cells(t, &mut cells);
-        let open: SmallVec<[typ::TVar; 4]> =
-            cells.drain().filter_map(|(_, tv)| tv.open_cell()).collect();
+        let mut ends = ends.borrow_mut();
+        for (addr, tv) in cells.drain() {
+            let (_, end) = ends.entry(addr).or_insert_with(|| {
+                let end = tv.open_cell();
+                (tv, end)
+            });
+            if let Some(o) = end {
+                out.insert(o.cell_addr(), o.clone());
+            }
+        }
+    };
+    let mut held: LPooled<AHashMap<usize, typ::TVar>> = LPooled::take();
+    open_cells(test, &mut held);
+    let holds = |t: &Type| {
+        let mut beside: LPooled<AHashMap<usize, typ::TVar>> = LPooled::take();
+        open_cells(t, &mut beside);
+        beside.retain(|addr, _| !held.contains_key(addr));
+        let open: SmallVec<[typ::TVar; 8]> =
+            held.values().chain(beside.values()).cloned().collect();
         test.contains_holding(env, t, &open)
     };
     match unheld_member(env, shape, &holds, elems, &mut SmallVec::new())? {
@@ -3412,8 +3445,13 @@ fn unheld_member(
     let mut members: SmallVec<[Type; 8]> = SmallVec::new();
     let mut open: SmallVec<[typ::TVar; 2]> = SmallVec::new();
     union_members_with(env, t, &mut members, &mut |tv| open.push(tv.clone()))?;
+    let mut judged: SmallVec<[Type; 8]> = SmallVec::new();
     for m in members.iter() {
-        if matches!(m, Type::Bottom) || !shape.could_match(env, m)? || holds(m)? {
+        if matches!(m, Type::Bottom) || m.walks_as_one_of(&judged) {
+            continue;
+        }
+        judged.push(m.clone());
+        if !shape.could_match(env, m)? || holds(m)? {
             continue;
         }
         let taken = shape.matching_type(env, m)?;
@@ -5069,5 +5107,44 @@ mod static_callees_tests {
                 (gone, outer, n)
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod unheld_member_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    fn arrays_of(elem: Type, n: usize) -> Type {
+        Type::Set(Arc::from_iter((0..n).map(|_| Type::Array(Arc::new(elem.clone())))))
+    }
+
+    fn judgments(elems: &Type) -> usize {
+        let judged = Cell::new(0);
+        let holds = |_: &Type| {
+            judged.set(judged.get() + 1);
+            Ok(true)
+        };
+        let shape = Type::Any;
+        let none =
+            unheld_member(&Env::default(), &shape, &holds, elems, &mut SmallVec::new())
+                .unwrap();
+        assert!(none.is_none());
+        judged.get()
+    }
+
+    #[test]
+    fn members_walked_alike_are_judged_once() {
+        let i64 = Type::Primitive(netidx_value::Typ::I64.into());
+        assert_eq!(judgments(&arrays_of(i64.clone(), 1)), 1);
+        assert_eq!(judgments(&arrays_of(i64, 12)), 1);
+    }
+
+    #[test]
+    fn members_that_differ_are_each_judged() {
+        let members =
+            [netidx_value::Typ::I64, netidx_value::Typ::F64, netidx_value::Typ::Bool]
+                .map(|t| Type::Array(Arc::new(Type::Primitive(t.into()))));
+        assert_eq!(judgments(&Type::Set(Arc::from_iter(members))), 3);
     }
 }
