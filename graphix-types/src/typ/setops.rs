@@ -1568,49 +1568,6 @@ impl Type {
         Ok(out)
     }
 
-    // XCR claude for claude: [bug/low] A select of two copies of one function whose
-    // signature holds a typedef union of two of its variables under one constructor
-    // is refused where a call of its binding runs: `type P<'p, 'q> = [Array<'p>,
-    // Array<'q>]; let f = |x: P<'a, 'b>, y: 'a| x; let g = select c { true => f,
-    // false => f }; g([1], 1)` fails at the select, "Array<'a: unbound> could go to
-    // Array<'a: unbound> or Array<'b: unbound> of the union [Array<'a: unbound>,
-    // Array<'b: unbound>], which nothing has decided .. write the type of what holds
-    // that union", and `f([1], 1)` runs. A twin lambda literal in place of the second
-    // copy, and the same function in a struct or a tuple in each arm, are refused
-    // alike. The meet contains one copy's signature in the other's, where the two
-    // unions' undecided members are ambiguous, though each member stands beside its
-    // own image. The other way round, a select of a function and its twin literal
-    // runs a call the binding's own call refuses as ambiguous (twin-fa.gx: two
-    // parameters `F2<'a, 'b>` over `[fn(q: 'p) -> i64, fn(q: 'q) -> i64]` beside
-    // `[fn(q: 'b) -> i64, Array<'a>]`, both given `|q: i64| 0`). base-r23 alike. Of
-    // 1500 select forms of 300 generated functions, 143 are refused where the direct
-    // call runs and 8 run where it is refused. Found fixing runtime-bind-fn-union-01.
-    // probes: ~/ptmp/cr29/scratch/r23/23b/rbf/sel-p.gx, sel-p-direct.gx,
-    // sel-p-twin.gx, twin-fa.gx, twin-fa-direct.gx; generator genfam.py 7 300, summary
-    // famsum.py (select-copies-union-meet-01)
-    // 2026-11-14 claude: Alternatives that are one signature but for the names of
-    // their variables meet as that renaming (setops::renames,
-    // contains::renaming_linked: the cells weld pair by pair over the whole signature,
-    // a scheme's with a live one too), so no containment places the members of a union
-    // the signature holds over its own variables. The select of two copies, of a
-    // function and its twin literal, and of structs or tuples holding them now checks
-    // and runs as the direct call does, and the twin no longer makes two variables one
-    // (which ran twin-fa.gx and refused calls the binding takes). genfam.py 7 300
-    // (select forms and the direct call, 1800 programs): 19 families had a form apart
-    // from its direct call on base-r24 and on the lane head, 0 now; 47 programs newly
-    // run, 11 newly refused, each as its direct call. Pins that fail without the fix,
-    // in 4 modes each:
-    // lang::types::select_of_copies_of_a_signature_union_under_one_constructor,
-    // select_of_copies_of_a_signature_union_before_its_variables,
-    // select_of_a_function_and_its_twin_of_a_signature_union_under_one_constructor,
-    // select_of_twins_in_composites_of_a_signature_union_under_one_constructor,
-    // select_of_twins_inside_a_function_of_a_signature_union_under_one_constructor,
-    // array_of_copies_and_a_twin_of_a_signature_union_under_one_constructor,
-    // select_of_a_twin_keeps_the_variables_of_a_signature_union_apart,
-    // select_of_a_twin_leaves_a_signature_union_of_functions_to_its_call_refused.
-    // Left, as union-member-renaming-order-01: two signatures that are one type and no
-    // renaming of each other (a typedef union spelling the variables in the other
-    // order). probes: ~/ptmp/cr29/scratch/r24/24d/scm/ (README)
     /// Function members that meet both ways, one with open cells, are one
     /// member: calling either takes the same arguments, and the union's
     /// call needs one signature. A member with a scheme's cells is an
