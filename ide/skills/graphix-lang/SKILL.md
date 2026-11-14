@@ -537,8 +537,9 @@ across a bottom cycle).
   members that test admits, in a slice element and under a written test
   too: `` [(`A, h), ..] `` over `` Array<[(`A, i64), (`B, string)]> ``
   gives `h: i64`; two members it admits give their union. A literal
-  narrows a bind the same way, except under a written test or in an
-  or-alternative: `P as (0, h)` keeps every member's part.
+  narrows a bind the same way, under a written test and in an
+  or-alternative too: `P as (0, h)` over `[(i64, i64), (f64, string)]`
+  gives `h: i64`, and an arm over the string part is dead.
 - A pattern that tests inside a declared type variable needs a written
   type test (`{a: i64, b: string} as {a, ..}`), and one over a type not yet
   decided at the select is refused until the binding it names is annotated;
@@ -589,7 +590,8 @@ ok |x: Array<[(`A, i64), (`B, string)]>| select x { [(`A, h), ..] => h + 1, _ =>
 no "cannot compute" |x: Array<[(`A, i64), (`A, string)]>| select x { [(`A, h), ..] => h + 1, _ => 0 }
 ok |x: [(`A, i64), (`B, string), null]| select x { [(`A, i64), (`B, string)] as (`A, h) => h + 1, _ => 0 }
 ok |x: [(i64, i64), (f64, string)]| select x { (0, h) => h + 1, _ => 0 }
-no "cannot compute" |x: [(i64, i64), (f64, string), null]| select x { [(i64, i64), (f64, string)] as (0, h) => h + 1, _ => 0 }
+ok |x: [(i64, i64), (f64, string), null]| select x { [(i64, i64), (f64, string)] as (0, h) => h + 1, _ => 0 }
+no "will never match" |x: [(i64, i64), (f64, string), null]| select x { [(i64, i64), (f64, string)] as (0, h) => select h { string as _ => 1, i64 as n => n }, _ => 0 }
 ```
 
 ## Connect

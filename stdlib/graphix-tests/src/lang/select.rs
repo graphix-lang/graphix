@@ -7513,17 +7513,16 @@ run!(
     |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [2, 1, 1, 3])
 );
 
-// Under a written test a slice element's literal rules out no member for a
-// bind, as a literal outside a slice does: an instance's scrutinee may be
-// the member alone.
+// Under a written test a slice element's literal rules out the members it
+// admits no value of for a bind, as a literal outside a slice does: an
+// instance's scrutinee may be the member alone.
 run!(
     written_test_slice_literal_rules_out_no_member_for_a_bind,
     r#"{
     type P = [Array<(string, f64)>, Array<(bool, i64)>];
     type Q = [(Array<(string, f64)>, i64), (Array<(bool, i64)>, i64)];
-    let n = |h: [string, bool]| -> i64 select h { string as s => str::len(s), bool as _ => 10 };
-    let a = 'a: P |x: 'a| -> i64 select x { P as [(h, 0.5), ..] => n(h), _ => 0 };
-    let b = 'a: Q |x: 'a| -> i64 select x { Q as ([(h, 0.5), ..], m) => n(h) + m, _ => 0 };
+    let a = 'a: P |x: 'a| -> i64 select x { P as [(h, 0.5), ..] => str::len(h), _ => 0 };
+    let b = 'a: Q |x: 'a| -> i64 select x { Q as ([(h, 0.5), ..], m) => str::len(h) + m, _ => 0 };
     [a([("abc", 0.5)]), a([(true, 1)]), b(([("abc", 0.5)], 1)), b(([(true, 1)], 1))]
 }"#,
     |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 0, 4, 0])
@@ -7561,11 +7560,34 @@ run!(
     FuseExpect::None
 );
 
-// Under a written test a literal rules out no member for a bind.
+// Under a written test a bind beside a literal holds its part of the members
+// the literal admits, as an inferred predicate's does.
 run!(
-    written_union_bind_beside_a_literal_holds_every_member_refused,
+    written_union_bind_beside_a_literal_holds_the_members_it_admits,
     r#"{
     type P = [(i64, i64), (f64, string)];
+    let f = |x: [P, null]| -> i64 select x { P as (0, h) => h + 1, _ => 0 };
+    let g = |x: [P, null]| -> i64 select x { P as (0, h) | (1, h) => h + 1, _ => 0 };
+    [f((0, 3)), f((0.5, "s")), f(null), g((1, 3)), g((0.5, "s"))]
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [4, 0, 0, 4, 0])
+);
+
+run!(
+    written_union_bind_beside_a_literal_loses_the_part_it_rules_out,
+    r#"{
+    type P = [(i64, i64), (f64, string)];
+    let f = |x: [P, null]| -> i64 select x { P as (0, h) => select h { string as _ => 1, i64 as n => n }, _ => 0 };
+    f((0, 3))
+}"#,
+    refused("pattern string will never match i64");
+    FuseExpect::None
+);
+
+run!(
+    written_union_bind_beside_a_literal_two_members_admit_refused,
+    r#"{
+    type P = [(i64, i64), (i64, string)];
     let f = |x: [P, null]| -> i64 select x { P as (0, h) => h + 1, _ => 0 };
     f((0, 3))
 }"#,
@@ -7584,18 +7606,23 @@ run!(
     |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [4, 0, 4, 0])
 );
 
-// An or-alternative's bind holds its part of every member the
-// alternative's shape admits.
+// An or-alternative's bind holds its part of every member the alternative
+// admits a value of, a literal included.
 run!(
-    slice_element_or_alternative_bind_holds_a_member_its_literal_rules_out,
+    slice_element_or_alternative_bind_holds_the_members_its_literal_admits,
     r#"{
     type E = [`V(bool, string), {t: f64, c: f64}];
     let n = |h: [bool, f64]| -> i64 select h { bool as _ => 1, f64 as _ => 2 };
-    let a = |x: Array<E>| -> i64 select x { [`V(h, "a") | {t: null, c: h}, ..] => n(h), _ => 0 };
+    let a = |x: Array<E>| -> i64 select x { [`V(h, "a") | {t: null, c: h}, ..] => select h { bool as _ => 1 }, _ => 0 };
     let b = |x: Array<E>| -> i64 select x { [`V(h, "a") | {t: 0.5, c: h}, ..] => n(h), _ => 0 };
-    [a([`V(true, "a")]), a([{t: 0.5, c: 1.5}]), b([`V(true, "b")]), b([{t: 0.5, c: 1.5}])]
+    type F = [`V(bool, string), {t: f64, c: f64}, {t: string, c: i64}];
+    let c = |x: [F, null]| -> i64 select x { F as `V(h, "a") | {t: 0.5, c: h} => n(h), _ => 0 };
+    [
+        a([`V(true, "a")]), a([{t: 0.5, c: 1.5}]), b([`V(true, "b")]), b([{t: 0.5, c: 1.5}]),
+        c(`V(true, "a")), c({t: 0.5, c: 1.5}), c({t: "a", c: 1})
+    ]
 }"#,
-    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 0, 0, 2])
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 0, 0, 2, 1, 2, 0])
 );
 
 // An instance whose scrutinee is the one member a written test's literal
@@ -7619,6 +7646,24 @@ run!(
     ]
 }"#,
     |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 0, 3, 0, 3, 0, 3, 0, 4, 0, 4, 0])
+);
+
+// An instance whose scrutinee is the one member a literal rules out types its
+// bind as its definition did: the member its literal admits.
+run!(
+    written_test_instance_bind_is_the_part_of_the_member_the_literal_admits,
+    r#"{
+    type P = [(string, f64), (bool, i64)];
+    let a = 'a: P |x: 'a| -> i64 select x { P as (h, 0.5) => str::len(h), _ => 0 };
+    let b = 'a: P |x: 'a| -> i64 select x { P as (h, 0.5) | (h, 1.5) => str::len(h), _ => 0 };
+    let c = 'a: P |x: Array<'a>| -> i64 select x { Array<P> as [(h, 0.5), ..] => str::len(h), _ => 0 };
+    let d = 'a: P, 'b: P |x: ('a, 'b)| -> i64 select x { (P, P) as ((h, 0.5), (_, 1)) => str::len(h), _ => 0 };
+    [
+        a(("abc", 0.5)), a((true, 1)), b(("abc", 1.5)), b((true, 1)), c([("abc", 0.5)]), c([(true, 1)]),
+        d((("abc", 0.5), (true, 1))), d(((true, 1), (true, 1)))
+    ]
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 0, 3, 0, 3, 0, 3, 0])
 );
 
 // An instance whose scrutinee is a member a written test's structure admits

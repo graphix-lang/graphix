@@ -17,8 +17,7 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   it (by its type test, and by its structure where the test does not
   hold every part the structure tests: a slice's elements, each one the
   value must hold and judged by its shape, a tag, an arity or a struct's
-  fields but never a literal, since the footprint is also the shape a
-  written test's binds are typed by (`RuledOut::ByShape`); an abstract's
+  fields but never a literal; an abstract's
   payload; the structure under a written test; `Reach::structure_admits`,
   `StructPatternNode::footprint`), or
   that tests what an earlier unguarded arm tests, is dead, and the
@@ -372,18 +371,14 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   them rules out gives the binds nothing (`` [(`A, h), ..] `` over
   `` Array<[(`A, i64), (`B, string)]> `` binds `h: i64`), whether it is
   a member of the element type or of a union inside one
-  (`StructPatternNode::leaves`, `RuledOut::ByAnyTest`). Under a written
-  test (`` P as (`A, h) ``) a bind takes nothing from a type the
-  pattern's shape rules out (`RuledOut::ByShape`): a tag, an arity, a
-  field, an abstract's type, in a union or alone, so an instance
-  checked again (`GRAPHIX_NO_SUBST`), whose scrutinee may be that one
-  member, types its binds as its definition did. A literal rules out
-  nothing there (`P as (0, h)` over `[(i64, i64), (f64, string)]` binds
-  `h: [i64, string]`). An or-alternative's binds are ruled out by shape
-  as well, wherever it stands, so
-  `` [`V(h, "a") | {t: null, c: h}, ..] `` over
-  `` Array<[`V(bool, string), {t: f64, c: f64}]> `` binds
-  `h: [bool, f64]`. A kernel reads a bind from the scrutinee's own part
+  (`StructPatternNode::leaves`), under a written test and in an
+  or-alternative as in an inferred predicate's arm: `` P as (0, h) `` over
+  `[(i64, i64), (f64, string)]` binds `h: i64`, and `` [`V(h, "a") | {t: 0.5,
+  c: h}, ..] `` over `` Array<[`V(bool, string), {t: f64, c: f64}, {t: string,
+  c: i64}]> `` binds `h: [bool, f64]`. A lone type is ruled out by the same
+  judgment, so an instance checked again (`GRAPHIX_NO_SUBST`), whose
+  scrutinee may be one member of a written test's type, types its binds as
+  its definition did. A kernel reads a bind from the scrutinee's own part
   and a struct's field by its index, so it emits no arm, or-alternative
   or composite member whose structure admits no value of what it stands
   over (`StructPatternNode::may_admit`: `admits` at every part, a
