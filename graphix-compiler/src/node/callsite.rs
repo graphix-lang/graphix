@@ -1179,6 +1179,22 @@ fn typecheck_arg<R: Rt>(
         }
         Opening::Closed | Opening::Open => SmallVec::new(),
     };
+    // CR claude for claude: [bug/medium] A lambda passed at a variable that does not
+    // widen, bounded by a union of two function types, is bound to the variable before
+    // its own check, so no member of the bound gives it its parameter: the check
+    // accepts and the build refuses the instance. `type E<'x, 'y> = [fn(v: 'x) -> i64,
+    // fn(v: 'y) -> string]; let f = 'a2: E<'a3, 'a3> |z: 'a3, x1: 'a2, k: fn(q: 'a2)
+    // -> i64| 7; f(1, |v| 1, |q| 0)` passes `--check` and the run fails "an instance at
+    // fn(z: i64, x1: fn(v: _) -> i64, k: fn(q: fn(v: _) -> i64) -> i64) -> i64 of a
+    // definition typed ..". Without `k` ('a2 widens, so the lambda is checked against
+    // the formal's open copy and the bound's member takes it after) it prints 7, and so
+    // does the bound `'a2: fn(v: 'a3) -> i64` with `k`. base-r24 alike. The
+    // pre-unification below binds 'a2 to the lambda while its result is unknown, where
+    // contains::member_with_parts tells no member apart, and once the lambda is checked
+    // 'a2 is bound and its bound is not asked again
+    // (bound-union-binds-argument-early-01 is the same early bind, refused where this
+    // is accepted). probes: ~/ptmp/cr29/scratch/r24/24d/ubo/{zb,zc,zd,z5}.gx
+    // (unwidenable-bound-callback-01)
     match &opening {
         Opening::Closed => {
             Type::pre_unify_arg(&ctx.env, typ, n.typ()).map_err(refused)?
@@ -1730,6 +1746,30 @@ fn widenable(env: &Env, def: &FnType, inst: &FnType) -> LPooled<AHashMap<ArcStr,
     let mut at_def: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
     def.collect_tvars(&mut at_def);
     let mut found: LPooled<AHashMap<ArcStr, (TVar, bool)>> = LPooled::take();
+    // CR claude for claude: [bug/medium] A variable a bound holds under a function type
+    // or exactly widens, and the bound no longer holds what its variable took: the check
+    // accepts and the build refuses the instance. `let f = 'a: fn(q: 'c) -> i64 |v: 'a,
+    // c: 'c| c; let n: [i64, string] = 1; f(|q: string| 0, n)` passes `--check` and the
+    // run fails "an instance at fn(v: fn(q: string) -> i64, c: [i64, string]) -> [i64,
+    // string] of a definition typed fn<'a: fn(q: 'c: unbound) -> i64>(..)". Alike: `'a:
+    // &mut 'c` with `f(&mut s, n)` over `let s = "s"`; `'a: [fn(q: 'c) -> i64, 'b] |v:
+    // 'a, y: 'b, c: 'c|` with `f(|q: string| 0, "s", n)`; a bound of a bound (`'a:
+    // Array<'d>, 'd: fn(q: 'c) -> i64`); a recursive typedef's function member; an
+    // omitted default `#c: 'c = n`. The function type written in the parameter (`|v:
+    // fn(q: 'c) -> i64, c: 'c|`) is refused, "'c: string does not contain [i64,
+    // string]". base-r24 alike. The walk below reads the positions and not their cells'
+    // bounds, so 'c counts as held by data alone. Walking the bounds too (each cell's
+    // cell_constraints, transitively, with a DataPositions that passes a recursive
+    // typedef's application met inside its own expansion, else
+    // lang::types::a_member_of_a_bound_variables_lower_bound_fits and four neighbours
+    // are refused) closes every form above with that mismatch, census 0 of 2967, but
+    // then lang::types::callback_into_a_union_bound_takes_the_members_parameter passes
+    // the check and fails the build: its 'a2, held under a function by the bound of
+    // 'a0, no longer widens, and its lambda goes through
+    // (unwidenable-bound-callback-01). That one first. Found deciding
+    // union-bound-open-member-order-01 (gen.py: 2 of 1500 families). probes, and the
+    // walk as a patch: ~/ptmp/cr29/scratch/r24/24d/ubo/{t1,t4,t6,t15,y1,v5,i7}.gx,
+    // static-walk.patch (bound-held-variable-widens-01)
     let mut positions = DataPositions::new(env).telling_members();
     inst.for_each_type(&mut |t| {
         positions.walk(t, Held::default(), &mut |tv, held| {

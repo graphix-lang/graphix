@@ -1462,6 +1462,20 @@ fn commit_conjuncts(
         // undecided_value_after_a_literal_narrower_than_what_*. probes
         // ~/ptmp/cr29/scratch/r24/24c/bubarev/{j1,k12,k18,j18}.gx (refused),
         // {j1t,k12t,k18t,j18t}.gx (the written twins, which run), gen2.py
+        // 2026-11-13 claude: Deciding union-bound-open-member-order-01 (closed by D36): its
+        // literal forms are this CR's. Over `let f = 'a: [Array<i64>, 'b] |v: 'a, y: 'b| v`,
+        // `f(["x"], ["s"])`, `f([z], ["s"])` over `let z: string = never()` and over `let z:
+        // [i64, string] = never()` are refused, "Array<i64> does not contain Array<string>"
+        // ("Array<[i64, string]>" for the last): the pre-unification gives the literal's
+        // element to the structural member before "x" or z is checked. The same arrays bound
+        // to a `let` first (`let x = ["x"]; f(x, ["s"])`) go to 'b and print, and so does
+        // the union written in the parameter, `|v: [Array<i64>, 'b], y: 'b|`, with the
+        // literals. A lower bound alike: `let x: Array<[i64, string]> = ["z"]; f(x, ["s"])`
+        // is refused, "Array<[i64, string]> does not contain Array<string>", a mismatch that
+        // is false as written: GRAPHIX_DBG_BIND shows the copy of 'b bound to the literal's
+        // Array<'e> and `LOWER 'e above [i64, string]` before "s" is checked; `let w =
+        // ["s"]; f(x, w)` and the parameter form print ["z"]. base-r24 alike. probes:
+        // ~/ptmp/cr29/scratch/r24/24d/ubo/{r9e,r9c,r9b,d1,p1,e3,e13,e4,e14}.gx
         let held = match exact(c) {
             true => c.contains_int(flags, env, hist, t)?,
             false => commit_parts(tv, flags, env, hist, &mut Lazy::new(), c, t)?,
@@ -1469,23 +1483,6 @@ fn commit_conjuncts(
         if !held {
             return Ok(false);
         }
-        // CR claude for claude: [bug/medium] A union bound with a member that is a variable
-        // nothing has decided yet gives a value to its structural member, so the order of
-        // the parameters decides whether a call checks. `let f = 'a: [Array<i64>, 'b] |v:
-        // 'a, y: 'b| v; f(["x"], ["s"])` is refused, "Array<i64> does not contain
-        // Array<string>", though 'b, an Array<string>, holds `["x"]`; with the parameters
-        // the other way round (`|y: 'b, v: 'a|`, `f(["s"], ["x"])`) 'b is decided first and
-        // it runs. An undecided value alike: `let z = never(); let r = f([z], ["s"]); z <-
-        // "s"` is refused, "z is i64, inferred from an earlier use, and cannot hold string;
-        // declare z: [i64, string]" (declared so, or a string, the call is refused), and
-        // the other way round the call is refused for the choice, naming `z`
-        // (UndecidedTaker). The step below walks `['b, Array<i64>] ⊇ Array<'z>` as a lower
-        // bound and the structural member takes it, binding 'z to i64, where
-        // member_with_parts tells no member apart while one is an open variable. base-r23
-        // alike. A fix waits for the variable member as a widening argument waits
-        // (callsite.rs::Widening), or refuses here naming the argument to annotate. probes:
-        // ~/ptmp/cr29/scratch/r23/23b/ubt-rev/{r9,r9b,r9c,r9d,r9e,r9f,q2}.gx
-        // (union-bound-open-member-order-01)
 
         // CR claude for claude: [bug/low] A bound's unions over its own variable, met by
         // a wrapper's unions over a declared variable, make the two variables one where

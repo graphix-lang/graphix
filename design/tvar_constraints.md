@@ -1168,7 +1168,14 @@ the definition gates:
   variables stand for (`'a: [A, B]` over `type A = Array<i64>`, `'a:
   [Array<i64>, 'b]` once an argument has decided `'b`), and an abstract
   member takes no structural value; where a member is a variable nothing
-  has decided yet, no member is told apart here. A read-only reference
+  has decided yet, no member is told apart here, and the bound's own
+  walk gives a value that holds a cell to decide to the structural member
+  before the variable, as a union written in a parameter does: `[z]` at
+  `'a: [Array<i64>, 'b]` makes `z` an `i64` while `'b` is open, by rule
+  and not by the members' order, and a decided `Array<string>` goes to
+  `'b`. So the parameters' order decides which of the two a call meets
+  (D36; pins `lang::types::union_bound_an_open_variable_member_*`). A
+  read-only reference
   member bounds a writable reference's referent (`'a: &[i64, null]` holds
   the `z` of `&mut z` within `[i64, null]`), a writable member's referent
   is the value's exactly (`'a: &mut [i64, null]` makes `z` `[i64,

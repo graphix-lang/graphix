@@ -11850,6 +11850,41 @@ run!(
     is(Value::I64(3))
 );
 
+// A variable member nothing has decided yet takes an undecided element
+// after the structural member: the element is the structural member's.
+run!(union_bound_an_open_variable_member_leaves_the_structural_taker, r#"{
+    let f = 'a: [Array<i64>, 'b] |v: 'a, w: 'b| v;
+    let z = never();
+    let r = f([z], ["s"]);
+    z <- "s";
+    r
+}"#, refused("z is i64, inferred from an earlier use, and cannot hold string"); FuseExpect::None);
+
+run!(
+    union_bound_an_open_variable_member_structural_taker_accepts,
+    r#"{
+    let f = 'a: [Array<i64>, 'b] |v: 'a, w: 'b| v;
+    let z = never();
+    let r = f([z], ["s"]);
+    z <- 3;
+    r[0]$
+}"#,
+    is(Value::I64(3))
+);
+
+run!(
+    union_bound_an_open_variable_member_takes_a_decided_array,
+    r#"{
+    let f = 'a: [Array<i64>, 'b] |v: 'a, w: 'b| v;
+    let z: string = never();
+    let x = [z];
+    let r = f(x, ["s"]);
+    z <- "s";
+    r[0]$
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "s")
+);
+
 run!(union_bound_an_abstract_member_takes_no_array, r#"{
     type C = Abstract<i64>;
     let f = 'a: [Array<[i64, null]>, C] |v: 'a| v;
