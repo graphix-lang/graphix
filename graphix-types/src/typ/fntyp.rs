@@ -1401,50 +1401,6 @@ impl FnType {
     /// picks) and of an implicit `throws` slot keep their handles. Call on
     /// a resolved type ([`Type::resolve_tvars`]).
     pub fn name_auto_variables(&self, held: &[TVar]) -> Self {
-        // XCR claude for claude: [bug/low] A hover prints an open auto variable two
-        // ways, neither the one a message prints, and one reads as another type.
-        // With `let h = 'a: Number |x: 'a| -> 'a x`: `let k = |q| h(q)` hovers (and
-        // outlines, and completes in the REPL) `k: fn(q: Number) -> Number`, where
-        // `k` keeps its argument's type (`let a: string = k(1)` prints "string does
-        // not contain i64", and `k(1); k(1.0)` checks): the fold here drops that the
-        // two positions are one variable. `let mk = |z: i64| |q| h(q)` hovers `mk:
-        // fn(z: i64) -> fn(q: '_8450) -> '_8450` (a nested signature's cell is not
-        // folded) and `let add = |x, y| x + y` hovers `fn(x: '_8435, y: '_8435) ->
-        // '_8435` (two conjuncts): a generated name that changes run to run, where a
-        // message prints `'_8435: unbound within Number & Singleton`. A fix decides
-        // one form for an undecided inferred variable in display (a named variable
-        // with its bound, as a header or as a message's `unbound within`) and drops
-        // this fold. Base-r24 alike. probe: in ~/ptmp/cr29/scratch/r24/24g/
-        // display-auto-bound, `python3 lsp_hover.py <graphix> hov open.gx 'let |k '`
-        // (hover and outline), and `--check hov/kk.gx` (display-open-auto-01)
-        // 2026-11-13 claude: A local whose inferred return merged into an enclosing
-        // def's declared variable folds the same way and reads as another type: in
-        // `let g2 = 'a: Number |x: 'a| { let inner = |y: i64| x; inner(1) }` the
-        // hover of inner is `fn(y: i64) -> Number`, where it returns `'a`, and a
-        // mismatch over inner prints `fn(y: i64) -> '_8346: unbound within Number`.
-        // The merge points the auto variable's link at the declared cell itself, and
-        // a cell keeps no name, so nothing in inner's signature says the cell is
-        // `'a`; replace_auto_constrained skips a cell a declared variable of the
-        // same signature stands for, which covers g2 itself but not inner. probe:
-        // ~/ptmp/cr29/scratch/r24/24g/display-auto-bound-review/rt2.gx (hover `let
-        // |inner `) and rt2bad.gx (--check).
-        // 2026-11-14 claude: The mismatch half of the note above is fixed by
-        // call-result-rigid-name-01: rt2bad.gx now prints fn(y: i64) -> 'a: unbound
-        // within Number. That fix names a cell by tvar::Declared, which holds only
-        // while the definition's gate is open, so a hover, run after the check,
-        // still reads the cell nameless; a name that outlives the gate is what the
-        // hover half needs.
-        // 2026-11-14 claude: A hover, outline and completion name each open generic
-        // inferred variable by a letter listed in the signature header
-        // (FnType::name_auto_variables, run on the resolved type; the resolve keeps
-        // such a cell's bounds), so k hovers fn<'a: Number>(q: 'a) -> 'a, mk fn<'a:
-        // Number>(z: i64) -> fn(q: 'a) -> 'a, add fn<'a: Number + Singleton>(x: 'a,
-        // y: 'a) -> 'a, and inner in g2 hovers fn(y: i64) -> 'a (the held
-        // definition's declared name now survives the resolve). The fold is gone.
-        // Pins: lsp::an_open_inferred_variable_hovers_as_a_listed_letter and
-        // lsp::a_cell_merged_with_a_callee_hovers_under_one_name fail without the
-        // name_auto_variables call. Probes:
-        // ~/ptmp/cr29/scratch/r25/25g/display-open-auto-01/.
         let mut all: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         self.collect_tvars(&mut all);
         let mut standing: LPooled<AHashSet<usize>> = LPooled::take();
