@@ -654,52 +654,6 @@ impl Reach {
                     built = Some(Built { typ, cells });
                 }
             }
-            // XCR claude for claude: [perf/low] The check of slice arms over an unannotated
-            // parameter still grows steeply with the arms, at the definition: `gen.py 20 rest u
-            // def` takes 1.12 G user instructions of `--no-cache --check` in a debug build, 30
-            // arms 2.18 G, 50 arms 9.8 G, beside 0.79 G to 0.94 G over `|x: Array<'e>|`; arms of
-            // fixed lengths 32 arms 2.32 G, 48 arms 7.8 G; a slice inside a slice (`gen2.py 10
-            // nested`: `[[a0, .., t..], u..] => t`) 6 arms 0.84 G, 10 arms 1.55 G, 12 arms 2.76
-            // G, 20 arms 33 G. Twelve rest arms take 0.84 G and twelve of fixed lengths 0.82 G.
-            // The scrutinee keeps one array member an arm, each a union of the one element cell
-            // standing once a position, and every arm narrows against every member
-            // (Type::narrow_per_member), then StructPatternNode::hold_slice_members and the
-            // coverage walk them again; the nested form adds a forward link to the inner cell
-            // for each (member, arm) pair, where a copy's cell takes the member's (132 links at
-            // 12 arms). A profile of the 50 arm rest case is flat (7% in
-            // expr::pattern::union_members_stopping, then TVar reads, Type::meet_parts,
-            // Type::diff_inner). What would likely fix it: the members that are one type
-            // (setops::one_type) kept as one member once the first arm's narrowing has made
-            // their cells one. probes: ~/ptmp/cr29/scratch/r23/23d/sacc/{gen.py,gen2.py,m.sh},
-            // rest50u_def.gx, g_nested_10.gx (slice-arms-member-cost-01)
-            // 2026-11-13 claude: Review of slice-arms-check-cost-01: other shapes of the same
-            // growth, user instructions of `--no-cache --check` in a debug build (`gen3.py N
-            // SHAPE` through grow.sh): a slice in a slice in a slice (nest3, `[[[a0, .., t..],
-            // u..], v..] => t`) 12 arms 4.66 G, 16 arms 19.2 G, 20 arms 65 G; a slice of fixed
-            // length inside (nestfix) 20 arms 36 G; a slice in each element (arrelem) 20 arms 32
-            // G; a tuple in each element (tupelem) 24 arms 11 G. A struct field, two slices in a
-            // tuple, a variant, a guard, a literal element and `w@` stay under 1.1 G at 12 arms.
-            // Before that fix each nested shape was killed at 6 arms (40 s), and of 1200
-            // generated functions of 2 to 5 arms 11 did not finish in 40 s (killed/), two arms
-            // enough: `|x| select x { [v1, v2, v3, v4, v5..] => v3, [v1, [[v2, v3], v4, ..],
-            // v5..] => [v5], v1 => v1 }`. probes:
-            // ~/ptmp/cr29/scratch/r23/23d/sacc-rev/{gen3.py,grow.sh,g_nest3_20.gx,killed/}
-            // 2026-11-13 claude: Fixed for the shapes named: a walk over a scrutinee's members
-            // skips a member walked alike as one before it (setops::walks_alike: one type, a
-            // union's open cells as a set and its other members in order), in
-            // Type::narrow_per_member, PatternNode::bind_narrowed's matched members and
-            // StructPatternNode::hold_slice_members' element members and parts. Debug --no-cache
-            // --check, lane head -> fix: rest 30/50 arms 2.14/9.70 G -> 1.01/2.06 G; fixed 32/48
-            // 2.40/8.12 -> 1.05/1.83; nested 12/20 2.69/32.5 -> 0.82/1.21; nest3 16/20 18.5/63.0
-            // -> 1.05/1.46; nestfix 20 35.5 -> 1.16. Pin
-            // typ::normalize::tests::narrowing_against_members_of_one_type_walks_one (348
-            // narrowings, 7800 with the skip undone). Neither skipping by one_type nor cutting
-            // the union to its normal form is neutral: the first changed REPL types (gen4 p0199,
-            // p0480), the second refused a program the head runs (pin
-            // lang::types::slice_rest_beside_an_array_element_behind_members_of_one_type).
-            // arrelem 20 (29.1 -> 17.2 G) and tupelem 24 (10.6 -> 6.4 G) are what is left:
-            // slice-arms-composite-member-cost-01. probes ~/ptmp/cr29/scratch/r24/24f/sacm/
-            // (README)
             // CR claude for claude: [bug/low] A slice in each alternative of an or-pattern
             // over an unannotated parameter is refused at the call, where the same slices
             // in arms of their own and the written parameter run: `let f = |x| select x {
