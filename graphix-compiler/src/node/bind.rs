@@ -305,6 +305,24 @@ impl<R: Rt> Bind<R> {
         let expr::BindExpr { rec, pattern: pat, typ: annotation, value } = b;
         let annotation = match annotation {
             Some(t) => {
+                // CR claude for claude: [bug/low] One module text gives a let's
+                // annotated typedef two forms by where the module is declared: `type H =
+                // {h: i64}; let s0: H = {h: 1}; let z: string = s0` is refused "string
+                // does not contain H" in a file module the root script declares (`mod m;`
+                // in main.gx), and "string does not contain { h: i64 }" at the script's
+                // top level, in that module declared inside a block (`{ mod m; m::z }`) or
+                // nested a level deeper (`mod a;` whose a.gx says `mod m;`), on base-r24
+                // as on r24-g. The binding's own type differs (env::Bind::typ is the
+                // TypeRef in the first, the expanded struct in the others), so whatever
+                // reads it differs too: printed types, hovers, and every run! fixture,
+                // whose modules sit under `{ mod test; .. }`, sees only the expanded form
+                // and cannot pin a message that depends on the written one (a val's
+                // holder through a typedef needed graphix-shell/tests/shell/
+                // typedef_holder_remedy.rs). The cause is not located: this scoping is
+                // where the annotation becomes the binding's type. A fix decides one form
+                // (the written name reads best) wherever the module is declared. probes:
+                // ~/ptmp/cr29/scratch/r24/24g/lambda-holder-dead-end-01/review/{r1,r2,r3,r4}
+                // (annotation-typedef-form-01)
                 let t = t.scope_refs(&scope.lexical);
                 crate::warn_later_block_names(ctx, flags, &t)?;
                 let declares_method = netidx_core::path::Path::basename(&*scope.lexical)
