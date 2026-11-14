@@ -1651,37 +1651,6 @@ impl<R: Rt> Module<R> {
         )))
     }
 
-    // XCR claude for claude: [bug/low] A dynamic module's signature meets its
-    // interface's names only at a load (check_sig_items' check_interface_names),
-    // so the check accepts a sig whose every load fails: `type Foo = {a: i64}`
-    // then a dynamic `sig { val f: fn(x: Foo) -> i64; val k: i64 }` read only
-    // through `foo::k` checks, and each load is `DynamicLoadError("undefined type
-    // Foo in foo")` (base-r23 alike). An impl's `self` reaches it too since
-    // impl-self-dynamic-sig-01: in `impl T for W` (`type W = Abstract<i64>`) a
-    // dynamic `sig { val f: fn(x: self) -> self }` checks, its `self` the head's
-    // resolved W, and every load fails "undefined type W"; with the `use
-    // super::W;` the load needs, the compile warns the import unused. Checking
-    // the sig's names here as a load does (interface_env and check_interface_names
-    // over its items, shared with check_sig_items) would refuse both at the check
-    // and use the import. A `mod m;` whose .gxi writes that `self` is refused at
-    // the check already, "undefined type W", naming the impl's head and not the
-    // `self` that reads it. probes:
-    // ~/ptmp/cr29/scratch/r23/23h/impl-self-dynamic-sig-01/review/{u_unused,p_abs,p_abs_use,sa}
-    // (dynamic-sig-names-at-check-01)
-    // 2026-11-13 claude: The program's check holds a dynamic module's sig to its names as a
-    // load does: Module::typecheck0 runs check_sig_decls (interface_env + check_interface_names
-    // over the items, the part check_sig_items shared out) under the module's sig_env, so
-    // u_unused and p_abs are refused at the check by the message each load gave, and
-    // p_abs_use's import is used (no warning). Pins that fail with the call put back to
-    // check_val_variables:
-    // lang::interfaces::dynamic_sig_{name,typedef_name,trait_name}_it_does_not_import_refused,
-    // dynamic_sig_import_of_a_type_declared_below_refused,
-    // lang::traits::impl_self_in_a_dynamic_module_signature_names_the_target (20 of 40 mode
-    // runs), and the shell's script_exit::a_dynamic_sig_uses_the_import_its_self_reads; the
-    // passing twins are dynamic_sig_name_it_imports_checks and
-    // impl_self_in_a_dynamic_module_signature_imports_the_target. Census 2967 files: 0 verdict,
-    // 0 message. The head-not-self wording the CR ends on is impl-self-sig-refusal-site-01;
-    // what a whitelist leaves of a sig's import is whitelist-sig-import-01.
     pub(super) fn compile_dynamic(
         ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
