@@ -1219,7 +1219,9 @@ the definition gates:
   one signature but for the names of their variables, a scheme's cell
   beside a live one too, meet as that renaming: their cells weld pair by
   pair, each part beside its own image, and neither is contained in the
-  other (`setops::renames`, `contains::renaming_linked`). So a union the
+  other (`setops::renames`, `contains::renaming_linked`); two variables
+  whose bounds differ pair too, and the weld merges both bounds into one cell
+  (pins `lang::types::select_of_twins_of_a_signature_union_*`). So a union the
   signature holds over two of its variables (`x: P<'a, 'b>` over `type
   P<'p, 'q> = [Array<'p>, Array<'q>]`), whose members a containment
   cannot place while the variables are open, decides nothing and merges

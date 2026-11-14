@@ -430,33 +430,6 @@ pub(super) fn walks_alike(t0: &Type, t1: &Type) -> bool {
     .same(t0, t1)
 }
 
-// XCR claude for claude: [bug/low] A select of a function and its twin is still
-// refused at the select, where a call of each runs, when the twin's body gives one
-// of the signature's variables another bound: `type P<'p, 'q> = [Array<'p>,
-// Array<'q>]; let f = |y: 'a, x: P<'a, 'b>| (x, y + y); let g = select c { true =>
-// f, false => |y: 'a, x: P<'a, 'b>| (x, y) }; g(1, ["s"])` fails at the select,
-// "Array<'b: unbound> could go to Array<'b1: unbound> or Array<'a: 'a1: unbound
-// within Number & Singleton> of the union .., which nothing has decided .. write
-// the type of what holds that union", which names nothing that helps: what passes
-// is the twin's variable declared with the bound the other body infers (`'a:
-// Number + Singleton |y: 'a, x: P<'a, 'b>| (x, y)`, g2.gx). `f(1, ["s"])` and the
-// twin's own call run (g8.gx), the same pair over `x: Array<'a>` meets and runs
-// (g7.gx), and so do twins whose bodies infer one bound
-// (lang::types::select_of_bounded_twins_of_a_signature_union). `renames` pairs two
-// cells only where their bounds are one list (`Identity::cells`), so this pair goes
-// to the containment, which cannot place the union's members. base-r24 alike. What
-// would fix it: a pair whose bounds differ welds too, the one cell holding both
-// bounds, as the containment leaves the pair over `Array<'a>`. Not looked into:
-// what the containment asks of two open cells before it merges them (a bare cycle's
-// merge asks `admits_lower` of each) that the weld (`contains::Link`) does not.
-// Then a generator of twins whose bodies differ, and a census. Found reviewing
-// select-copies-union-meet-01. probes: ~/ptmp/cr29/scratch/r24/24d/scm-rev/{g3,g2,
-// g7,g8}.gx (twin-bound-union-meet-01)
-// 2026-11-14 claude: Fixed: Identity::cells under renames (setops.rs) pairs two
-// cells whose bounds differ too, so the select of twins goes to Link, which welds
-// them (alias merges the bounds into one cell, as the containment does for the bare
-// Array<'a> pair). Pins that fail without it:
-// lang::types::select_of_twins_of_a_signature_union_{one_body_bounds_a_variable,..._holds_the_bound,declared_with_two_bounds,declared_with_apart_bounds_is_refused_at_the_call}.
 /// Whether the function types `t0` and `t1` differ by a renaming of their
 /// open cells alone ([`union_identical_in`]), a scheme's cell beside a live
 /// one too: each part of one stands beside its own image in the other.
