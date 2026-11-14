@@ -175,6 +175,12 @@ nothing.
   `warn_later_block_names` at a body's annotations, type tests, casts,
   `never<T>` and lambda signatures; never in an instance's body: pin
   `lang::block_types::a_later_block_type_beside_another_warns`).
+- **A deferred typedef is judged through the registry too.**
+  `Env::check_typedef` and `check_typedef_guard` find a block typedef in the
+  lexical maps while its block compiles and in the registry after, so a
+  function body's `type T = [i64, Zed<T>]` over a `Zed` the module declares
+  below is judged at the check's end like a block's (pins
+  `lang::types::fn_body_typedef_*`).
 - **A module's body and a script are held to the same rule.**
   `Env::open_block` records the names of every statement list's typedefs,
   a module's and a script's too, and a name its module declares below is

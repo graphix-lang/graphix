@@ -3346,7 +3346,7 @@ impl Env {
         Ok(())
     }
 
-    // CR claude for claude: [bug/medium] A typedef a function's body declares whose
+    // XCR claude for claude: [bug/medium] A typedef a function's body declares whose
     // shape is still open when the body's check ends is never judged: `let f = |a:
     // i64| { type T = [i64, Zed<T>]; let x: T = a; x }; type Zed<'a> = ['a, string];
     // f(1)` passes `--check` and its run never returns (killed at 20 s, base-r24
@@ -3361,15 +3361,39 @@ impl Env {
     // env the seed fills its names in, here and in `check_typedef_guard`. probe:
     // ~/ptmp/cr29/scratch/r24/24e/typedef-use-below-01/fn-body-later-type/
     // (fn-typedef-unjudged-01)
+    // 2026-11-14 claude: Env::check_typedef and check_typedef_guard find a function
+    // body's typedef through Env::block_types (Env::declared_def) once the lexical
+    // maps no longer hold it, so the deferred typedef is judged at the check's end:
+    // the probe is refused with the non-contractive message. Pins
+    // lang::types::fn_body_typedef_cycle_through_a_later_module_type (fails without:
+    // interp/par never return) and fn_body_typedef_through_a_later_type_guarded
+    // (valid twin runs).
     /// [`Self::deftype`]'s check of a typedef's shape again, for a
     /// definition whose body named something not defined yet: at the end
     /// of the check every name it reaches is. `Unknown` while a name it
     /// reaches is still undefined.
     pub fn check_typedef(&self, scope: &ModPath, name: &str) -> Result<Unguarded> {
-        let Some(td) = self.lexical.typedefs.get(scope).and_then(|m| m.get(name)) else {
+        let Some(def) = self.declared_def(scope, name) else {
             return Ok(Unguarded::Guarded);
         };
-        self.typedef_shape(name, td.typ(), &td.def)
+        self.typedef_shape(name, def.typ(), &def)
+    }
+
+    /// The definition of the typedef `name` declares at `scope`: its
+    /// lexical entry, or a block's, which outlives the block's compile
+    /// in [`Self::block_types`].
+    fn declared_def(
+        &self,
+        scope: &ModPath,
+        name: &str,
+    ) -> Option<std::sync::Arc<ResolvedRef>> {
+        if let Some(td) = self.lexical.typedefs.get(scope).and_then(|m| m.get(name)) {
+            return Some(td.def.clone());
+        }
+        match self.block_types.find(scope, name) {
+            Some(BlockHit::Live(def)) if is_block_scope(scope) => Some(def),
+            _ => None,
+        }
     }
 
     /// [`Self::check_typedef`] of the self-references alone, and whether
@@ -3380,11 +3404,11 @@ impl Env {
         scope: &ModPath,
         name: &str,
     ) -> Result<(Unguarded, bool)> {
-        let Some(td) = self.lexical.typedefs.get(scope).and_then(|m| m.get(name)) else {
+        let Some(def) = self.declared_def(scope, name) else {
             return Ok((Unguarded::Guarded, true));
         };
-        let regular = td.def.params().is_empty() || td.def.regular.get().is_some();
-        Ok((self.typedef_guard(name, td.typ(), &td.def)?, regular))
+        let regular = def.params().is_empty() || def.regular.get().is_some();
+        Ok((self.typedef_guard(name, def.typ(), &def)?, regular))
     }
 
     /// The representation of the Graphix-minted abstract type `id`, if

@@ -1818,6 +1818,32 @@ const SHADOW_CLOSES_AN_UNGUARDED_CYCLE: &str = r#"
 "#;
 run!(shadow_closes_an_unguarded_cycle, SHADOW_CLOSES_AN_UNGUARDED_CYCLE, refused("refers back to itself through unions and aliases alone"); FuseExpect::None);
 
+// A typedef a function's body declares, over a type the module declares
+// below the function, is judged once the check ends: the later type
+// closes a cycle through unions alone.
+const FN_BODY_TYPEDEF_CYCLE_THROUGH_A_LATER_TYPE: &str = r#"
+{
+  let f = |a: i64| { type T = [i64, Zed<T>]; let x: T = a; x };
+  type Zed<'a> = ['a, string];
+  f(1)
+}
+"#;
+run!(fn_body_typedef_cycle_through_a_later_type, FN_BODY_TYPEDEF_CYCLE_THROUGH_A_LATER_TYPE, refused("refers back to itself through unions and aliases alone"); FuseExpect::None);
+
+run!(
+    fn_body_typedef_cycle_through_a_later_module_type,
+    refused("refers back to itself through unions and aliases alone"),
+    "/test.gx" => "let f = |a: i64| { type T = [i64, Zed<T>]; let x: T = a; x }; \
+        type Zed<'a> = ['a, string]; let result = f(1)"
+; FuseExpect::None);
+
+run!(
+    fn_body_typedef_through_a_later_type_guarded,
+    is(Value::I64(1)),
+    "/test.gx" => "let f = |a: i64| { type T = [i64, Zed<T>]; let x: T = a; x }; \
+        type Zed<'a> = [`Z('a), string]; let result = f(1)"
+; FuseExpect::Jit);
+
 // A two-element array is not a list: converting it keeps both items.
 const CAST_PAIR_TO_LIST: &str = r#"cast<List<i64>>([1, 2])$"#;
 run!(cast_pair_to_list, CAST_PAIR_TO_LIST, prints("[i64:1, i64:2]"); FuseExpect::Jit);
