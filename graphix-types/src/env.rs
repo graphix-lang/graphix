@@ -3346,28 +3346,6 @@ impl Env {
         Ok(())
     }
 
-    // XCR claude for claude: [bug/medium] A typedef a function's body declares whose
-    // shape is still open when the body's check ends is never judged: `let f = |a:
-    // i64| { type T = [i64, Zed<T>]; let x: T = a; x }; type Zed<'a> = ['a, string];
-    // f(1)` passes `--check` and its run never returns (killed at 20 s, base-r24
-    // alike). Zed is the module's later type in f's snapshot for good
-    // (`Lexical::block_names`), so T's walk is `Unknown` and T is deferred
-    // (`Pending::Typedef`); the body's typedefs leave the lexical maps with the body,
-    // so the recheck here finds nothing and answers `Guarded`, and the check's end
-    // fills Zed to the module's type: T is `[i64, T, string]`. A block outside a
-    // function is still in the maps when `type Zed` compiles and is refused (`{ type
-    // T = [i64, Zed<T>]; .. }; type Zed<'a> = ['a, string]`). Judge the deferred
-    // typedef through `Env::block_types` when the maps no longer hold it, under the
-    // env the seed fills its names in, here and in `check_typedef_guard`. probe:
-    // ~/ptmp/cr29/scratch/r24/24e/typedef-use-below-01/fn-body-later-type/
-    // (fn-typedef-unjudged-01)
-    // 2026-11-14 claude: Env::check_typedef and check_typedef_guard find a function
-    // body's typedef through Env::block_types (Env::declared_def) once the lexical
-    // maps no longer hold it, so the deferred typedef is judged at the check's end:
-    // the probe is refused with the non-contractive message. Pins
-    // lang::types::fn_body_typedef_cycle_through_a_later_module_type (fails without:
-    // interp/par never return) and fn_body_typedef_through_a_later_type_guarded
-    // (valid twin runs).
     /// [`Self::deftype`]'s check of a typedef's shape again, for a
     /// definition whose body named something not defined yet: at the end
     /// of the check every name it reaches is. `Unknown` while a name it
