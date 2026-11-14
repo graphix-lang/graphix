@@ -167,34 +167,6 @@ impl<X: GXExt> Output<X> {
 
     /// Show every batch the runtime has sent, once `gx` has answered a
     /// request: every batch of the cycles before it is in the stream.
-    // XCR claude for claude: [bug/medium] That premise fails while the
-    // subscriber's channel is full: the runtime answers `get_env` from the
-    // send loop of a cycle whose batch still waits for room
-    // (`GX::send_batch`), so the `try_recv` drain can end before that batch
-    // and the ones after it arrive, and they are never shown. At the end of
-    // piped input the `wait_idle` before this call drains nothing either, so
-    // a runtime held in that send never answers it and the teardown bound is
-    // spent first. probe:
-    // ~/ptmp/cr29/scratch/r24/24e/exit-cut-cycle-01/flood.sh, a piped REPL
-    // counter to 5000: base-r24 (main be2c16a05) printed 113 of the 5001
-    // values and r24-e 133, each after 5 to 6 seconds, status 0.
-    // `process_exited` drains while it waits for the idle answer; the end of
-    // piped input needs the same. (piped-flood-undrained-01)
-    // 2026-11-14 claude: A program's exit status is lost the same way: a piped
-    // line that counts flat out and calls sys::exit(9) at 500 ends the shell
-    // with status 0 after the five seconds, about 110 of its 501 values shown,
-    // on base-r24 and r24-e alike (the runtime is held in a send about a
-    // hundred cycles in and never reaches the cycle that exits, so the
-    // try_recv of the exit request finds none). probe:
-    // ~/ptmp/cr29/scratch/r24/24e/exit-cut-cycle-01/review/piped-exit.sh.
-    // Draining while waiting, as process_exited does, fixes both.
-    // 2026-11-14 claude: The end of piped input drains while it waits
-    // (Output::process_ended: idle answer, exit request and the teardown bound
-    // raced against the channel), and a program's sys::exit is shown through
-    // its cycle and ends the shell with its status. Pins:
-    // tests/shell/piped_flood.rs (flood to 5000 shown whole; a flood that exits
-    // with 9 at 500 shows 0..=500 and status 9); both fail on base-r25 (about
-    // 119 values, status 0 after 5 s).
     async fn process_sent(
         &mut self,
         gx: &GXHandle<X>,
