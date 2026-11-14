@@ -1150,8 +1150,25 @@ the definition gates:
   meets the bind would end (pins
   `lang::types::field_read_refuses_a_lambda_two_members_could_decide`
   and its neighbours, `lang::select::or_name_refuses_a_function_two_could_decide`).
+  The refusal names the two functions the member cannot both be, not
+  the first it met (pin
+  `lang::types::field_read_names_the_two_functions_that_are_not_one_type`).
   A member whose open cells are all a scheme's is an instance of the
-  first member it meets, which decides nothing of it. Members one value
+  first member it meets, which decides nothing of it. The lambdas of a
+  `let`'s literal are schemes where its elements meet, and an earlier
+  one's instance that joins a later one leaves it that instance's cells,
+  which no definition owns: it is a scheme's member still, and takes
+  the first function it meets, in the order the elements are written. So
+  `[|x| x, |w| w, |y: i64| y + 1, |z: string| "[z]!"]` checks in every
+  order of its elements (pin
+  `lang::types::literal_of_schemes_beside_two_functions_in_every_order`).
+  A scheme that a member with cells of its own joins holds those cells
+  from there on: beside `|w| { let e = w == v; w }`, which reads its
+  definition's `v`, the same literal is refused in every order (pin
+  `literal_refuses_a_capture_two_functions_could_decide_in_every_order`).
+  A literal nested in another has met by then: `[[|x| x, |w| w], [|y:
+  i64| y + 1], [|z: string| "[z]!"]]` holds one instance beside two
+  functions, and is refused as an arm's lambda is. Members one value
   may be (`Type::shares_constructor`: arrays, lists, maps, references
   read-only or writable, tuples of one arity, structs of one field list,
   variants of one tag and arity) meet part by part the same way

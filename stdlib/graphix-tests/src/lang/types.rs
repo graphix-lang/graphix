@@ -14062,6 +14062,113 @@ async fn field_read_refuses_a_capture_two_members_could_decide() -> Result<()> {
     Ok(())
 }
 
+// The lambdas of a `let`'s literal are schemes where its elements meet, and
+// each takes the first function it meets in the order written, the one an
+// earlier element's instance joined too: two of them beside two functions
+// that are not one type check in every order of the elements.
+fn literal_beside_two(fns: [&str; 4], order: [usize; 4]) -> String {
+    let [a, b, c, d] = order.map(|i| fns[i]);
+    format!("{{ let k = |b| {{ let t = [{a}, {b}, {c}, {d}]; array::len(t) }}; k(0) }}")
+}
+
+const SCHEMES_BESIDE_TWO: [&str; 4] =
+    ["|x| x", "|w| w", "|y: i64| y + 1", r#"|z: string| "[z]!""#];
+
+const SILENT_BESIDE_TWO_ERRORS: [&str; 4] = [
+    "|x: i64| x",
+    "|x: i64| x + 1",
+    "|c: i64| -> i64 error(`B)?",
+    "|d: i64| -> i64 error(`A)?",
+];
+
+fn orders_of_four() -> impl Iterator<Item = [usize; 4]> {
+    (0..4usize.pow(4))
+        .map(|n| [n % 4, n / 4 % 4, n / 16 % 4, n / 64])
+        .filter(|o| (0..4).all(|i| o.contains(&i)))
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn literal_of_schemes_beside_two_functions_in_every_order() -> Result<()> {
+    use graphix_package_core::testing::eval;
+    for order in orders_of_four() {
+        for fns in [SCHEMES_BESIDE_TWO, SILENT_BESIDE_TWO_ERRORS] {
+            let code = literal_beside_two(fns, order);
+            let (v, ctx) = eval(&code, crate::TEST_REGISTER).await?;
+            ctx.shutdown().await;
+            assert_eq!(v, Value::I64(4), "{code}");
+        }
+    }
+    Ok(())
+}
+
+// A scheme a lambda with a cell of its definition joins holds that cell: a
+// literal whose lambda reads `v` is refused in every order of its elements,
+// where the functions it stands beside would decide `v` by their order.
+#[tokio::test(flavor = "current_thread")]
+async fn literal_refuses_a_capture_two_functions_could_decide_in_every_order()
+-> Result<()> {
+    use graphix_package_core::testing::refusal;
+    let fns = ["|x| x", "|w| { let e = w == v; w }", "|y: i64| y + 1", "|z: string| z"];
+    for order in orders_of_four() {
+        let [a, b, c, d] = order.map(|i| fns[i]);
+        let code =
+            format!("{{ let k = |v| {{ let t = [{a}, {b}, {c}, {d}]; v }}; k(1) }}");
+        let e = refusal(&code, crate::TEST_REGISTER).await?;
+        assert!(e.contains(TWO_MEETS), "{order:?}: {e}");
+    }
+    Ok(())
+}
+
+// Two open lambdas beside two functions that are not one type: the refusal
+// names those two, whichever lambda finds them and wherever the four stand
+// in the union.
+#[tokio::test(flavor = "current_thread")]
+async fn field_read_names_the_two_functions_that_are_not_one_type() -> Result<()> {
+    use graphix_package_core::testing::refusal;
+    for order in orders_of_four() {
+        let [a, b, c, d] = order.map(|i| ["a", "b", "c", "d"][i]);
+        let code = format!(
+            r#"{{
+  let k = |b| {{
+    let t = select b {{
+      0 => {{f: |x| x, {a}: 1}},
+      1 => {{f: |w| w, {b}: 1}},
+      2 => {{f: |y: i64| y + 1, {c}: 1}},
+      _ => {{f: |z: string| "[z]!", {d}: 1}}
+    }};
+    let u = t.f;
+    0
+  }};
+  k(0)
+}}"#
+        );
+        let e = refusal(&code, crate::TEST_REGISTER).await?;
+        assert!(
+            e.contains("fn(y: i64) -> i64 or fn(z: string) -> string, two functions")
+                || e.contains(
+                    "fn(z: string) -> string or fn(y: i64) -> i64, two functions"
+                ),
+            "{order:?}: {e}"
+        );
+        assert!(e.contains(TWO_MEETS), "{order:?}: {e}");
+    }
+    Ok(())
+}
+
+run!(
+    literal_of_two_schemes_beside_two_functions,
+    literal_beside_two(SCHEMES_BESIDE_TWO, [0, 1, 2, 3]),
+    is(Value::I64(4));
+    FuseExpect::None
+);
+
+run!(
+    literal_of_two_silent_functions_beside_two_errors,
+    literal_beside_two(SILENT_BESIDE_TWO_ERRORS, [0, 1, 2, 3]),
+    is(Value::I64(4));
+    FuseExpect::None
+);
+
 run!(
     select_of_composites_of_lambdas_in_a_definition,
     r#"{

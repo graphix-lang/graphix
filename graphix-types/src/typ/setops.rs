@@ -1590,8 +1590,11 @@ impl Type {
     /// call would bind them. A member whose own cells two members it
     /// cannot both be could decide is refused ([`two_meets`]), the member
     /// that looks for its meets and the one it finds alike: which decided
-    /// them would follow the members' order. `None` when no member
-    /// changes.
+    /// them would follow the members' order. A scheme's instance that
+    /// joins a scheme leaves it that instance's cells, which are no
+    /// definition's, so it is a scheme's member still; one a member with
+    /// cells of its own joins holds those from there on. `None` when no
+    /// member changes.
     fn meet_open_fns(env: &Env, ts: &[&Type]) -> Result<Option<LPooled<Vec<Type>>>> {
         let fns: SmallVec<[(usize, Arc<FnType>); 4]> = ts
             .iter()
@@ -1617,12 +1620,17 @@ impl Type {
         let mut group: SmallVec<[usize; 4]> = (0..fns.len()).collect();
         let mut base: SmallVec<[Option<Arc<FnType>>; 4]> = smallvec![None; fns.len()];
         let mut met: SmallVec<[bool; 4]> = smallvec![false; fns.len()];
+        let mut scheme: SmallVec<[bool; 4]> =
+            (0..fns.len()).map(|j| open_cells(&member(j)) == (false, true)).collect();
         for k in 0..fns.len() {
             let own = member(k);
             if own.tvar_free() {
                 continue;
             }
-            let (live, generic) = open_cells(&own);
+            let (live, generic) = match scheme[k] {
+                true => (false, true),
+                false => open_cells(&own),
+            };
             let inst = instance(k);
             let mut meets: SmallVec<[usize; 4]> = smallvec![];
             for j in 0..fns.len() {
@@ -1639,10 +1647,14 @@ impl Type {
             let Some(first) = meets.first().map(|j| member(*j)) else { continue };
             let before = (!generic && meets.len() > 1).then(|| {
                 let mut known = LPooled::take();
-                [&inst, &first].map(|t| {
+                let mut copy = |t: &Type| {
                     t.reset_tvars_int(&mut known, Fresh::Copy)
                         .unwrap_or_else(|| t.clone())
-                })
+                };
+                let was = copy(&inst);
+                let stood: SmallVec<[Type; 4]> =
+                    meets.iter().map(|j| copy(&member(*j))).collect();
+                (was, stood)
             });
             if generic {
                 let again = instance(k);
@@ -1656,13 +1668,20 @@ impl Type {
             }
             for (n, j) in meets.iter().copied().enumerate() {
                 let g = member(j);
-                if let Some([was, first]) = &before
+                if let Some((was, stood)) = &before
                     && n > 0
                     && !fns_meet(env, &inst, &g)?
                 {
-                    return Err(two_meets(was, first, &g));
+                    let mut other = &stood[0];
+                    for earlier in &stood[..n] {
+                        if !fns_meet_both(env, [was, earlier], [was, &stood[n]])? {
+                            other = earlier;
+                            break;
+                        }
+                    }
+                    return Err(two_meets(was, other, &stood[n]));
                 }
-                if open_cells(&g).0 {
+                if !scheme[j] && open_cells(&g).0 {
                     let again = instance(j);
                     for m in 0..fns.len() {
                         if m == k
@@ -1689,6 +1708,7 @@ impl Type {
                     base[from] = None;
                     base[to] = Some(fns[j].1.clone());
                     met[k] = true;
+                    scheme[j] &= scheme[k];
                 }
             }
         }
