@@ -1666,6 +1666,28 @@ fn written_holder_chains_check_in_linear_time() {
 // chain's --check at 1280 puts ContainsHist::closure at 13.6% self, walking the
 // cell-free resolution monomorphic now returns. probes:
 // ~/ptmp/cr29/scratch/r24/24f/call-dag-arg-walk-01/review/
+// 2026-11-14 claude: Lane 25h: no change, PARTIAL stands. base-r25, debug, --no-cache,
+// instructions:u (empty 0.77 G): plain chain at 1280 links --check 1.26, --expand
+// 10.10, --no-fusion --expand 4.25; written chain --check 3.07; fn-in-pair (b) --check
+// 1.69 at 320, 15.66 at 1280 (quadratic). Profile of fn-640 --check:
+// FnType::settle_terminal 28.5% inclusive (drain_pending_settles; its positions walk
+// through walk_positions and settle_refs reads TVar::read/cell_addr, 35% self),
+// open_beneath_in 11.9%, inner_quantifiers/quantifiers_seen 9.6%, sorted_tvars 7.5%:
+// with a generic function at the pair's leaf, the quantifier cells are unbound, so
+// reaches_no_open_cell (tvar.rs) answers false for every cell above them and each
+// call's walks take the whole DAG again. The one change that removes it is to let that
+// proof pass an unbound quantifier of a function type the walked type holds. I did not
+// make it: a cell's Level::Generic/Written is no evidence the cell is owned by the
+// function type that holds it (the thread default level is GENERIC, and a Written cell
+// is claimed by a later merge), and a ground proof is read by settle, contains,
+// holds_fn and monomorphic, so a stale 'ground' over a cell a call later binds to an
+// open type would be a wrong verdict, not a cost. It needs a fact that a quantifier is
+// owned by exactly the FnType that lists it and is shared by no cell outside it (the
+// scheme's own copy, instantiate makes fresh ones), checked where the scheme is built,
+// not a walk; then (b) joins the plain chain's proof. Remaining (a) and (c) as the
+// lane 24f note says. Recommend Eric accept (a)-(c) as a residual (no program below
+// ~640 links reaches 2x an empty program's work) or rule on scheme-owned quantifier
+// cells. Probes: ~/ptmp/cr29/scratch/r25/25h/call-dag-arg-walk-01/
 
 /// A chain of calls of a generic pair constructor, each link the pair of
 /// the last, builds and runs within a few times an empty program's work,
