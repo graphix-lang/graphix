@@ -1242,13 +1242,24 @@ the definition gates:
   `call_through_a_field_read_of_a_union_of_functions_over_two_variables_refused`,
   `call_through_a_tuple_read_of_a_union_of_functions_no_argument_decided_refused`,
   `typ::normalize::tests::a_union_of_one_alternative_keeps_its_union_of_renamings`).
-  Nor does a read join two decided members: what `|c, a, b| select c {
-  true => a, false => b }` returns over two functions of one type is the
-  union of what its parameters took, two members at its binding's call
-  and through a dereference, `any`, a select of it in every arm or an
-  error's payload alike; `|c, a: 'a, b: 'a|` returns one function (pins
-  `lang::types::call_through_a_deref_of_two_decided_functions_refused`
-  and its neighbours, `call_through_reads_of_one_variable_s_two_functions`).
+  A read joins nothing, but a call does: what `|c, a, b| select c { true
+  => a, false => b }` returns over two functions of one type is the union
+  of what its parameters took, and a call through it (its binding's, or a
+  dereference's, `any`'s, a select's in every arm, an error's payload, an
+  element's) takes one function type when the members meet as a select's
+  alternatives do (`Type::union_of_alternatives`) and every open cell they
+  hold is one the checker made, fed from below (`CallSite`'s
+  `FnUnion::one_function`). The definitions stay definitions the callee may
+  be (`LambdaIds::link`), so the call runs the one the chooser took. A
+  member holding a declared variable's cell, one a lower bound or a ⊥ does
+  not feed, or a constraint, is none of that, and members that differ by
+  a type or a label (a default's presence too) stay two, refused naming the
+  members: `|c, a: 'a, b: 'a|` is the written way to one function (pins
+  `lang::types::call_through_a_chooser_s_result_runs_either_definition`
+  and its neighbours, `call_through_a_deref_of_two_decided_functions`,
+  `call_through_a_chooser_s_result_of_two_signatures_refused`,
+  `call_through_a_chooser_s_result_of_one_generic_function_twice_refused`,
+  `call_through_reads_of_one_variable_s_two_functions`).
   A join pairs and collapses members of different alternatives only
   (`Type::union_tagged`; `setops::alternatives`): the members of one
   alternative, a select arm's union, the parts one pattern alternative

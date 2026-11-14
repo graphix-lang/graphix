@@ -11041,68 +11041,181 @@ run!(
     FuseExpect::None
 );
 
-// Nor does a read make one function of two decided ones. A function that
-// returns one of two untyped parameters returns the union of what they
-// took, and a call through a reference to that result, `any` over it, a
-// select of it in every arm or an error's payload is refused as the call
-// of its binding is; one variable for both parameters is one function.
+// A function that returns one of two untyped parameters returns the union
+// of what they took, and the members that are one function type, the
+// definitions each its own, are one function to call through the result
+// of it, a reference to it, `any` over it, a select of it in every arm or
+// an error's payload: it runs the definition the chooser took.
 run!(
-    call_through_a_deref_of_two_decided_functions_refused,
+    call_through_a_deref_of_two_decided_functions,
     r#"{
-  let c = true;
+  let c = false;
   let pick = |c, a, b| select c { true => a, false => b };
   let p = pick(c, |x: i64| x, |x: i64| x + 1);
   let r = &p;
   (*r)(1)
 }"#,
-    refused(
-        "a call takes one function type, and this callee is one of fn(x: i64) -> i64 and \
-         fn(x: i64) -> i64"
-    );
+    prints("i64:2");
     FuseExpect::None
 );
 run!(
-    call_through_any_over_two_decided_functions_refused,
+    call_through_any_over_two_decided_functions,
     r#"{
-  let c = true;
+  let c = false;
   let pick = |c, a, b| select c { true => a, false => b };
   let p = pick(c, |x: i64| x, |x: i64| x + 1);
   let g = any(p);
   g(1)
 }"#,
-    refused(
-        "a call takes one function type, and this callee is one of fn(x: i64) -> i64 and \
-         fn(x: i64) -> i64"
-    );
+    prints("i64:2");
     FuseExpect::None
 );
 run!(
-    call_through_a_select_of_two_decided_functions_in_every_arm_refused,
+    call_through_a_select_of_two_decided_functions_in_every_arm,
     r#"{
-  let c = true;
+  let c = false;
   let pick = |c, a, b| select c { true => a, false => b };
   let p = pick(c, |x: i64| x, |x: i64| x + 1);
   let g = select c { true => p, false => p };
   g(1)
 }"#,
-    refused(
-        "a call takes one function type, and this callee is one of fn(x: i64) -> i64 and \
-         fn(x: i64) -> i64"
-    );
+    prints("i64:2");
     FuseExpect::None
 );
 run!(
-    call_through_an_error_payload_of_two_decided_functions_refused,
+    call_through_an_error_payload_of_two_decided_functions,
     r#"{
-  let c = true;
+  let c = false;
   let pick = |c, a, b| select c { true => a, false => b };
   let e = error(pick(c, |x: i64| x, |x: i64| x + 1));
   e.0(1)
 }"#,
+    prints("i64:2");
+    FuseExpect::None
+);
+run!(
+    call_through_a_chooser_s_result_of_one_function_twice,
+    r#"{
+  let pick = |c, a, b| select c { true => a, false => b };
+  let f = |x: i64| x + 1;
+  let p = pick(false, f, f);
+  p(1)
+}"#,
+    prints("i64:2");
+    FuseExpect::None
+);
+run!(
+    call_through_a_chooser_s_result_runs_either_definition,
+    r#"{
+  let pick = |c, a, b| select c { true => a, false => b };
+  let f = |x: i64| x;
+  let g = |x: i64| x + 100;
+  let (u, v) = (pick(true, f, g), pick(false, f, g));
+  (u(1), v(1), v(2))
+}"#,
+    prints("[i64:1, i64:101, i64:102]");
+    FuseExpect::None
+);
+run!(
+    call_through_a_chooser_s_result_of_unnamed_lambdas,
+    r#"{
+  let pick = |c, a, b| select c { true => a, false => b };
+  let p = pick(false, |x| x + 1, |y| y + 2);
+  (p(1), p(5))
+}"#,
+    prints("[i64:3, i64:7]");
+    FuseExpect::None
+);
+run!(
+    call_through_a_chooser_s_result_of_written_returns,
+    r#"{
+  let pick = |c, a, b| select c { true => a, false => b };
+  let p = pick(false, |x: i64| -> i64 x, |x: i64| -> i64 x * 3);
+  p(2)
+}"#,
+    prints("i64:6");
+    FuseExpect::None
+);
+run!(
+    call_through_any_chooser_of_two_decided_functions,
+    r#"{
+  let ch = |a, b| any(a, b);
+  let p = ch(|x: i64| x + 1, |x: i64| x + 2);
+  p(1)
+}"#,
+    prints("i64:2");
+    FuseExpect::None
+);
+run!(
+    call_through_an_array_chooser_of_two_decided_functions,
+    r#"{
+  let ch = |a, b| [a, b];
+  let p = ch(|x: i64| x + 1, |x: i64| x + 2);
+  (p[0]$(1), p[1]$(1))
+}"#,
+    prints("[i64:2, i64:3]");
+    FuseExpect::None
+);
+run!(
+    call_through_a_chooser_s_result_of_labeled_defaults,
+    r#"{
+  let pick = |c, a, b| select c { true => a, false => b };
+  let f = |#a: i64 = 1, x: i64| x + a;
+  let g = |#a: i64 = 2, x: i64| x * a;
+  let p = pick(false, f, g);
+  (p(5), p(#a: 3, 5))
+}"#,
+    prints("[i64:10, i64:15]");
+    FuseExpect::None
+);
+run!(
+    call_through_a_chooser_s_result_of_two_signatures_refused,
+    r#"{
+  let pick = |c, a, b| select c { true => a, false => b };
+  let p = pick(false, |x: i64| x, |x: string| x);
+  p(1)
+}"#,
     refused(
         "a call takes one function type, and this callee is one of fn(x: i64) -> i64 and \
-         fn(x: i64) -> i64"
+         fn(x: string) -> string"
     );
+    FuseExpect::None
+);
+run!(
+    call_through_a_chooser_s_result_of_two_labels_refused,
+    r#"{
+  let pick = |c, a, b| select c { true => a, false => b };
+  let p = pick(false, |#a: i64, x: i64| x + a, |#b: i64, x: i64| x);
+  p(#a: 1, 1)
+}"#,
+    refused(
+        "a call takes one function type, and this callee is one of fn(#a: i64, x: i64) -> i64 and \
+         fn(#b: i64, x: i64) -> i64"
+    );
+    FuseExpect::None
+);
+run!(
+    call_through_a_chooser_s_result_of_a_default_and_a_required_label_refused,
+    r#"{
+  let pick = |c, a, b| select c { true => a, false => b };
+  let p = pick(false, |#a: i64 = 1, x: i64| x + a, |#a: i64, x: i64| x);
+  p(#a: 1, 1)
+}"#,
+    refused(
+        "a call takes one function type, and this callee is one of fn(#a: i64, x: i64) -> i64 and \
+         fn(?#a: i64, x: i64) -> i64"
+    );
+    FuseExpect::None
+);
+run!(
+    call_through_a_chooser_s_result_of_one_generic_function_twice_refused,
+    r#"{
+  let pick = |c, a, b| select c { true => a, false => b };
+  let f = |x| x;
+  let p = pick(false, f, f);
+  p(1)
+}"#,
+    refused("a call takes one function type, and this callee is one of fn(x: ");
     FuseExpect::None
 );
 run!(

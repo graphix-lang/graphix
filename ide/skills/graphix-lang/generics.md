@@ -328,7 +328,10 @@ and a `&mut` of it is refused: to write it at one type, write that type
 on its `let` (`let j: fn(x: i64) -> i64 = s.g`). Arms holding lambdas
 over two declared variables (`|p: 'a| p` beside `|q: 'b| q`) stay two
 members, and a call through them is refused, naming both: give both one
-variable, or one written type. A read of a declared variable's value (a call,
+variable, or one written type. The result of `|c, a, b| select c { true =>
+a, false => b }` over two functions of one signature is one function to
+call and runs the one chosen; over two signatures it is refused the same
+way. A read of a declared variable's value (a call,
 `.x`, `.0`) takes its declaration's bound: the variable is rigid in the body,
 so annotating a binding does not help; declare `'a: fn(x: i64) -> i64`,
 `'a: {x: i64}` or `'a: (i64, i64)`, or write the type in its place.
@@ -351,6 +354,8 @@ ok let k = |v| { let t = select v > 0 { true => ({f: |x| x}, 1), false => ({f: |
 no "i64 does not contain string" let k = |v| { let t = select v > 0 { true => ({f: |x| x}, 1), false => ({f: |y| y}, "s") }; select t { (r, n) => (r.f(v), r.f("s")) } }; k(2)
 no "one of fn(p: 'a: i64) -> 'a: i64 and fn(q: 'b: string) -> 'b: string; write one variable in both, or one written type in both" let f = |c: bool, x: 'a, y: 'b| select c { true => {g: |p: 'a| p}, false => {g: |q: 'b| q} }; f(false, 1, "s").g(2)
 ok let f = |c: bool, x: 'a, y: 'b| select c { true => {g: |p: 'a| p}, false => {g: |q: 'a| q} }; f(false, 1, "s").g(2)
+ok let pick = |c, a, b| select c { true => a, false => b }; let f = |x: i64| x; let g = |x: i64| x + 1; pick(false, f, g)(1)
+no "this callee is one of fn(x: i64) -> i64 and fn(x: string) -> string" let pick = |c, a, b| select c { true => a, false => b }; pick(false, |x: i64| x, |x: string| x)(1)
 ok let f = |c: bool, x: 'a, y: 'b| select c { true => {g: |p: i64| p}, false => {g: |q: i64| q} }; f(false, 1, "s").g(2)
 ```
 

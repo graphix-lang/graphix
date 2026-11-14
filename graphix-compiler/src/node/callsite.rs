@@ -1002,7 +1002,7 @@ fn carries(env: &Env, t: &Type) -> bool {
 struct FnUnion<'a>(&'a [Type]);
 
 impl FnUnion<'_> {
-    // CR claude for claude: [bug/low] A call through the result of a function that
+    // XCR claude for claude: [bug/low] A call through the result of a function that
     // returns one of two untyped parameters is refused when both arguments are one
     // function type, the same function twice included: `let pick = |c, a, b| select c {
     // true => a, false => b }; let f = |x: i64| x; pick(true, f, f)(1)` is refused, "a
@@ -1034,6 +1034,22 @@ impl FnUnion<'_> {
     // join too. base-r24 alike for the binding's call. Found reviewing
     // read-welds-data-union-01. probes: ~/ptmp/cr29/scratch/r24/24d/rwd-rev/ch/p{1..12}.gx
     // (chooser-result-fns-no-call-01)
+    // 2026-11-14 claude: A call through a union of function types now takes one function
+    // type when the members meet as a select's alternatives do
+    // (Type::union_of_alternatives) and every open cell they hold is a checker-made one
+    // fed from below or by bottom (FnUnion::one_function, callsite.rs): the chooser's
+    // result through its binding, a dereference, any, a select in every arm, an error
+    // payload and an element (p1..p5, p9..p12.gx) are one callee, and the members' lambda
+    // ids are linked so the call runs the definition chosen. Members that differ by a
+    // type, a label or a default's presence, or that hold a declared variable's cell
+    // (pick(c, f, f) over let f = |x| x), stay two and are refused as before. Pins that
+    // fail without it: lang::types::call_through_a_chooser_s_result_* (7 run pins),
+    // call_through_a_deref_of_two_decided_functions, call_through_any_over_..,
+    // call_through_a_select_of_.._in_every_arm, call_through_an_error_payload_of_..,
+    // call_through_any_chooser_.., call_through_an_array_chooser_..; the refusals
+    // call_through_a_chooser_s_result_of_{two_signatures,two_labels,a_default_and_a_required_label,one_generic_function_twice}_refused
+    // hold. Positional names differing (p3) join; the same-cell generic case stays refused
+    // (not looked into).
     /// The refusal of a call through `union`, where every member is a
     /// function type, written or named.
     fn refusal(env: &Env, union: &Type) -> Option<anyhow::Error> {
@@ -1043,6 +1059,51 @@ impl FnUnion<'_> {
                 Some(anyhow!("{}", FnUnion(ms)))
             }
             _ => None,
+        }
+    }
+
+    /// The one function type a call through the union `t` takes: its only
+    /// member once two that meet are one, or the join of members that meet
+    /// as a select's alternatives do ([`Type::union_of_alternatives`]) and
+    /// hold no open cell but the ones the checker made and feeds from
+    /// below. Every member's definition stays a definition it may be
+    /// ([`LambdaIds::link`](crate::typ::fntyp::LambdaIds::link)).
+    fn one_function(env: &Env, t: &Type) -> Result<Option<Type>> {
+        let Some(t) = t.deref_cloned() else { return Ok(None) };
+        let Type::Set(_) = &t else { return Ok(None) };
+        let mut fns: LPooled<Vec<Type>> = LPooled::take();
+        union_members(&t.normalize(), &mut fns, &mut |m| Some(m.clone()));
+        for m in fns.iter_mut() {
+            match opened(env, m, &mut 0) {
+                Some(open) => *m = open,
+                None => return Ok(None),
+            }
+        }
+        let decided = |m: &Type| {
+            matches!(m, Type::Fn(_))
+                && m.first_open(&|tv| {
+                    !tv.cell_constraints().is_empty()
+                        || !tv.generated()
+                        || !(tv.bottom_fed() || !tv.cell_lower().is_empty())
+                })
+                .is_none()
+        };
+        match &fns[..] {
+            [one] if matches!(one, Type::Fn(_)) => return Ok(Some(one.clone())),
+            [first, rest @ ..] if !rest.is_empty() && fns.iter().all(decided) => {
+                let members: LPooled<Vec<&Type>> = fns.iter().collect();
+                let met = Type::union_of_alternatives(env, &members)?;
+                let (Type::Fn(first), Type::Fn(met)) = (first, &met) else {
+                    return Ok(None);
+                };
+                for m in rest {
+                    if let Type::Fn(m) = m {
+                        first.lambda_ids.link(&m.lambda_ids)
+                    }
+                }
+                Ok(Some(Type::Fn(met.clone())))
+            }
+            _ => Ok(None),
         }
     }
 }
@@ -4854,7 +4915,9 @@ impl<R: Rt> CallSite<R> {
         let ftype = match self.ftype.as_ref() {
             Some(ftype) => ftype, // already initialized
             None => {
-                let ftype = deref_typ!("fn", ctx, self.fnode.typ(); FnUnion::refusal;
+                let one = FnUnion::one_function(&ctx.env, self.fnode.typ())?;
+                let callee = one.as_ref().unwrap_or(self.fnode.typ());
+                let ftype = deref_typ!("fn", ctx, callee; FnUnion::refusal;
                     Some(Type::Fn(ftype)) => Ok(ftype.clone())
                 )?;
                 // A self-call inside the def-time body check unifies against
