@@ -1521,40 +1521,6 @@ impl StructPatternNode {
         })
     }
 
-    // XCR claude for claude: [bug/low] A slice element whose literal admits no member of
-    // the element type leaves its arm live: `|x: Array<(i64, string)>| select x { [(0,
-    // 1), ..] => 1, _ => 0 }` and `|x: Array<u8>| select x { [1, ..] => 1, _ => 0 }`
-    // check, where `(0, 1)` over `(i64, string)` and `[1]` over `Array<u8>` are refused
-    // "will never match". The slice arm of footprint judges its elements by shape alone
-    // (a tag, an arity, a struct's fields), since footprint is also the shape a written
-    // test's binds are typed by (RuledOut::ByShape): judged by every test, a literal
-    // ruled a member out for a bind there, and `'a: [Array<(string, f64)>,
-    // Array<(bool, i64)>] |x: 'a| select x { [Array<(string, f64)>, Array<(bool, i64)>]
-    // as [(h, 0.5), ..] => `H(h), _ => `N }` called at `[(true, 1)]` panicked "the JIT
-    // could not link emitted code" where --no-fusion prints `N (pin
-    // lang::select::written_test_slice_literal_rules_out_no_member_for_a_bind). What
-    // would close it: Reach::structure_admits judging a slice's elements by every
-    // test, literals included, apart from footprint (StructPatternNode::may_admit on
-    // branch r24-a makes that judgment for kernels), or the literal exception for binds
-    // lifted (written-literal-narrowing-01, r24-a). probes:
-    // ~/ptmp/cr29/scratch/r24/24h/sed-review/ (slice-element-literal-dead-arm-01)
-    // 2026-11-14 claude: written-literal-narrowing-01 is fixed (this commit):
-    // RuledOut::ByShape is gone and a written test's binds are typed by
-    // StructPatternNode::admits, literals included, so the footprint is no longer also
-    // the shape a written test's binds are typed by. The slice arm of footprint may now
-    // judge its elements by admits instead of shape alone; that is this CR's fix and is
-    // not made here. pin
-    // lang::select::written_test_slice_literal_rules_out_no_member_for_a_bind
-    // (rewritten to bind string alone) covers the instance that panicked the JIT.
-    // 2026-11-14 claude: The slice arm of footprint judges each element by admits
-    // (literals included) instead of by shape, so an element literal no member of the
-    // element type holds leaves no live arm: both probes are refused 'unreachable arm:
-    // no value of ... has the parts this pattern tests'. Pins that fail without it:
-    // lang::select::slice_element_literal_over_another_member_is_a_dead_arm,
-    // slice_element_literal_over_another_number_type_is_a_dead_arm (twin
-    // slice_element_literal_of_its_member_keeps_the_arm passes), and the two cases
-    // lines in ide/skills/graphix-lang/SKILL.md. Census of both repos: no file newly
-    // refused; guicheck 39621839288 -> 39726201713; deep_nesting green. Needs a soak.
     /// What this pattern's structure test admits of `typ`: `typ` with
     /// every position the structure does not test as `Any` (an abstract
     /// pattern tests its type, never the parameters), and a union
