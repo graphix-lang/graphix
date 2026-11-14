@@ -713,6 +713,28 @@ one member, chosen by rules that read the union alone:
   `[Array<['a, 'b]>, Array<'a>]`). The same count says whether a union has
   two undecided members for an undecided type to take whole
   (`place_members`), so `['a, 'a]` is `'a` there.
+- of several that could, the one that holds each of the others as it
+  stands (`contains::widest`) takes the type, where taking it decides
+  every cell another of them would (`contains::decides_each`): what any
+  of them holds it holds, so the pick follows no order. `[(i64, [`A('x),
+  `B(string)]), (i64, `A('x)), (i64, `B(string))] ⊇ (i64, `A(i64))` goes
+  through the first and decides `'x`, as the second would: the type a
+  select gives a scrutinee whose arm binds a part whole (`(1, b)`) beside
+  arms that take that part apart (`` (2, `A(x)) ``, `` (3, `B(y)) ``).
+  The condition is judged on copies first, then against the walk's own
+  take, which may give a part to another member than the copies' ordered
+  walk did: each other member that could take the type must hold it as
+  it stands once the first has. Where one would still have a cell to
+  decide, none takes it: `[(i64, Any, 'z), (i64, ('c, Any), 'z)] ⊇ (i64,
+  (string, i64), i64)` is refused, since the first member's `Any` decides
+  nothing of `'c`, which the second member's arm reads its bind by. So is
+  a type still undecided where the others would not hold what it becomes
+  (`(i64, 'q)` against `` [(i64, [`A('x), `B('y)]), (i64, `A('x)), (i64,
+  `B('y))] ``), and a pre-unification leaves the choice to the argument's
+  check. Pins
+  `typ::contains::tests::a_member_holding_the_others_takes_a_type_where_it_decides_their_cells`,
+  `lang::select_undecided::bind_beside_arms_that_take_the_part_apart*`,
+  `wildcard_member_holding_a_bind_inside_takes_no_argument`.
 
 A type that is itself undecided is no exception: `[Array<'a>, Array<'b>]
 ⊇ Array<'e>` gives `'e` to neither, so `f([])` over `|x: P<'a, 'b>|`

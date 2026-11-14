@@ -128,7 +128,15 @@ array an arm, all over one element type, and takes an array as `|x:
 Array<'e>|` does. Another part the arms bind (`([a, c, ..], b)`, `([d],
 b)`, `([], b)`; `(1, b)`, `(2, b)`, `(_, b)`) is one type in every arm,
 whichever arm a value takes: arms that use it as two (`b + 1` in one,
-`str::len(b)` in another) are refused. An impl's target may
+`str::len(b)` in another) are refused. An arm that binds a part whole
+beside arms that take it apart (`(1, b)` beside `` (2, `A(x)) `` and
+`` (3, `B(y)) ``) types that part as the union of their shapes, and a
+call's argument of a decided type is taken as `|s: (i64, [`A('x),
+`B('y)])|` takes it; one still undecided (`f((2, u))` in a wrapper
+`|u|`) is not: annotate the wrapper's parameter. A `_` at the part is no
+such union: it holds any value and decides nothing of a name another arm
+binds inside it (`(1, _, z)` beside `(2, (c, _), z)`), so the call is
+refused: annotate the parameter. An impl's target may
 not union two of its head's variables either (`impl<'a, 'b> T for
 Array<['a, 'b]>`). An argument still undecided (`[]`) goes to no member
 either, unless the arguments before it decided the members. The parts of
@@ -160,6 +168,10 @@ ok let f = |p| select p { (x, [h, t..]) => h, (x, []) => x }; f((1, [2]))
 ok let f = |s| select s { ([a, c, ..], b) => (a, b), ([d], b) => (b, d), ([], b) => (b, b) }; f(([1, 2], "q"))
 ok let f = |s| select s { (1, b) => (b, 1), (2, b) => (b, 2), (3, b) => (b, 3), (_, b) => (b, 0) }; f((1, "q"))
 no "string does not contain i64" let f = |s| select s { (1, b) => 0, (2, b) => b + 1, (3, b) => str::len(b), _ => 0 }; f((2, 5))
+ok let f = |s| select s { (1, b) => 0, (2, `A(x)) => x, (3, `B(y)) => str::len(y), (_, b) => 0 }; (f((1, `A(5))), f((3, `B("x"))))
+no "picks none by order" let f = |x| select x { (1, _, z) => z, (2, (c, _), z) => c, (_, _, z) => z }; f((2, ("s", 4), 0))
+ok let f = |x: (i64, (string, i64), i64)| select x { (1, _, z) => "[z]", (2, (c, _), z) => c, (_, _, z) => "[z]" }; f((2, ("s", 4), 0))
+ok let f = |s| select s { (1, b) => 0, (2, `A(x)) => x, (3, `B(y)) => str::len(y), (_, b) => 0 }; let g = |u: [`A(i64), `B(string)]| f((2, u)); g(`A(5))
 ok let f = |s: (Array<'e>, 'b)| select s { ([a, c, ..], b) => (a, b), ([d], b) => (b, d), ([], b) => (b, b) }; f(([1, 2], "q"))
 no "picks none by order" type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<'a, 'b>| 0; f([1])
 no "union of the type variables" trait T { val m: fn(self) -> i64 }; impl<'a, 'b> T for Array<['a, 'b]> { let m = |s| 0 }; T::m([1])

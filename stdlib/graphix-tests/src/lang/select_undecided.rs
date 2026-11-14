@@ -2238,3 +2238,85 @@ run!(wildcard_part_of_a_parsed_value, r#"{
     let p = str::parse("(2, \"s\")")$;
     select p { (1, _) => 0, (_, _) => 1 }
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(1))); FuseExpect::None);
+
+// An arm that binds a part whole beside arms that take that part apart
+// types it as the union of their shapes, and its member holds each of
+// theirs: an argument goes to it where that decides every cell the
+// shape's own member would.
+run!(bind_beside_arms_that_take_the_part_apart, r#"{
+    let f = |s| select s { (1, b) => 10, (2, `A(x)) => x, (3, `B(y)) => str::len(y), (_, b) => 99 };
+    [f((1, `A(5))), f((1, `B("x"))), f((3, `B("x"))), f((2, `A(7))), f((9, `B("q"))), f((9, `A(1)))]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [10, 10, 1, 7, 99, 99]); FuseExpect::Jit);
+
+run!(bind_beside_arms_that_take_the_part_apart_as_tuples, r#"{
+    let f = |s| select s { (1, b) => 10, (2, (x, y)) => x, (3, (x, y, z)) => str::len(z), (_, b) => 99 };
+    [f((1, (5, 6))), f((1, (5, 6, "z"))), f((2, (5, 6))), f((3, (6, 7, "zz"))), f((3, (6, 7)))]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [10, 10, 5, 2, 99]); FuseExpect::Jit);
+
+run!(bind_beside_arms_that_take_the_part_apart_as_a_slice_and_a_struct, r#"{
+    let f = |s| select s { (1, b) => 10, (2, [x, ..]) => x, (3, {a, c}) => a, (_, b) => 99 };
+    [f((1, [5])), f((1, {a: 4, c: "s"})), f((2, [6, 7])), f((3, {a: 4, c: "s"})), f((3, [6]))]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [10, 10, 6, 4, 99]); FuseExpect::None);
+
+run!(bind_beside_arms_that_take_the_part_apart_in_a_struct, r#"{
+    let f = |s| select s {
+        {k: 1, v} => 10,
+        {k: 2, v: `A(x)} => x,
+        {k: 3, v: `B(y)} => str::len(y),
+        {k: _, v} => 99
+    };
+    [f({k: 1, v: `A(5)}), f({k: 1, v: `B("x")}), f({k: 3, v: `B("x")}), f({k: 2, v: `A(9)}), f({k: 2, v: `B("x")})]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [10, 10, 1, 9, 99]); FuseExpect::Jit);
+
+run!(bind_beside_arms_that_take_the_part_apart_in_a_variants_payload, r#"{
+    let f = |s| select s {
+        `S(1, b) => 10,
+        `S(2, `A(x)) => x,
+        `S(3, `B(y)) => str::len(y),
+        `S(_, b) => 99
+    };
+    [f(`S(1, `A(5))), f(`S(1, `B("x"))), f(`S(3, `B("x"))), f(`S(2, `A(9))), f(`S(2, `B("x")))]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [10, 10, 1, 9, 99]); FuseExpect::Jit);
+
+run!(bind_beside_arms_that_take_the_part_apart_whose_value_is_the_bind, r#"{
+    let f = |s| select s { (1, b) => b, (2, `A(x)) => `A(x + 100), (3, `B(y)) => `B(y), (_, b) => b };
+    let n = |v| select v { `A(n) => n + 1, `B(s) => str::len(s) };
+    [n(f((1, `A(5)))), n(f((2, `A(5)))), n(f((3, `B("xy")))), n(f((7, `B("xyz"))))]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [6, 106, 2, 3]); FuseExpect::Jit);
+
+run!(bind_beside_arms_that_take_the_part_apart_in_one_instance, r#"{
+    let mk = |z| |s| select s { (1, b) => 10, (2, `A(x)) => x, (3, `B(y)) => str::len(y), (_, b) => 99 };
+    let h = mk(0);
+    [h((1, `A(5))), h((2, `A(6))), h((3, `B("x"))), h((1, `B("x"))), h((4, `A(1)))]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [10, 6, 1, 10, 99]); FuseExpect::None);
+
+run!(bind_beside_arms_that_take_the_part_apart_in_one_instance_at_two_types_refused, r#"{
+    let mk = |z| |s| select s { (1, b) => 10, (2, `A(x)) => x, (3, `B(y)) => str::len(y), (_, b) => 99 };
+    let h = mk(0);
+    (h((1, `A(5))), h((2, `A("s"))))
+}"#, refused("does not contain (i64, `A(string))"); FuseExpect::None);
+
+run!(bind_beside_arms_that_take_the_part_apart_over_a_let_written_later, r#"{
+    let v = never();
+    let r = select v { (1, b) => 10, (2, `A(x)) => x, (3, `B(y)) => str::len(y), (_, b) => 99 };
+    v <- (1, `A(5));
+    r
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(10))); FuseExpect::Jit);
+
+run!(bind_beside_arms_that_take_the_part_apart_used_as_another_type_refused, r#"{
+    let f = |s| select s { (1, b) => 10, (2, `A(x)) => x, (3, `B(y)) => str::len(y), (_, b) => 99 };
+    f((3, `B(4)))
+}"#, refused("does not contain (i64, `B(i64))"); FuseExpect::None);
+
+// The member that holds the others takes an argument only where that
+// leaves nothing for another to decide: a `_` holds any value, and what
+// `c` reads would stay open.
+run!(wildcard_member_holding_a_bind_inside_takes_no_argument, r#"{
+    let f = |x| select x { (1, _, z) => z, (2, (c, _), z) => c, (_, _, z) => z };
+    f((2, ("s", 4), 0))
+}"#, refused("could go to (i64, Any, '_"); FuseExpect::None);
+
+run!(wildcard_member_holding_a_bind_inside_annotated, r#"{
+    let f = |x: (i64, (string, i64), i64)| select x { (1, _, z) => "[z]", (2, (c, _), z) => c, (_, _, z) => "[z]" };
+    f((2, ("s", 4), 0))
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "s"); FuseExpect::Jit);

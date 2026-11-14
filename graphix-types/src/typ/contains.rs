@@ -1718,12 +1718,7 @@ fn member_with_parts<'a>(
     if admit.len() < 2 {
         return Ok(admit.first().copied());
     }
-    'widest: for c in admit.iter().copied() {
-        for o in admit.iter().copied() {
-            if !std::ptr::eq(c, o) && !holds_as_it_stands(c, flags, env, hist, o)? {
-                continue 'widest;
-            }
-        }
+    if let Some(c) = widest(&admit, flags, env, hist)? {
         return Ok(Some(c));
     }
     if !open || !hist.decides() {
@@ -1735,6 +1730,48 @@ fn member_with_parts<'a>(
         }
     }
     Err(UndecidedTaker::new(bound, t, &admit))
+}
+
+/// The member of `ms` that holds each of the others as it stands
+/// ([`holds_as_it_stands`]): what any of them takes it takes, whatever
+/// decides their cells.
+fn widest<'a>(
+    ms: &[&'a Type],
+    flags: BitFlags<ContainsFlags>,
+    env: &Env,
+    hist: &mut ContainsHist,
+) -> Result<Option<&'a Type>> {
+    'widest: for m in ms.iter().copied() {
+        for o in ms.iter().copied() {
+            if !std::ptr::eq(m, o) && !holds_as_it_stands(m, flags, env, hist, o)? {
+                continue 'widest;
+            }
+        }
+        return Ok(Some(m));
+    }
+    Ok(None)
+}
+
+/// Whether `m` taking `t`, on copies, leaves each other member of `ms`
+/// holding `t` as it stands: `m` decides every cell another of them would.
+fn decides_each(
+    m: &Type,
+    ms: &[&Type],
+    flags: BitFlags<ContainsFlags>,
+    env: &Env,
+    hist: &ContainsHist,
+    t: &Type,
+) -> Result<bool> {
+    for o in ms.iter().copied().filter(|o| !std::ptr::eq(*o, m)) {
+        let decided = on_copies(Some((hist, env)), [m, o, t], |[m, o, t], trial| {
+            Ok(m.contains_int(flags, env, trial, &t)?
+                && holds_as_it_stands(&o, flags, env, trial, &t)?)
+        })?;
+        if !decided {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// Whether `m` holds `t` with every open cell of both held as it stands,
@@ -4879,13 +4916,17 @@ impl Type {
     /// ([`decides_no_cell`]): that commit is the probe that admitted it. A
     /// member that holds it as it stands, deciding no cell of the union
     /// or of `t`, takes it first; else the one member that holds it, in
-    /// the first tier where one does. Two that could are a choice only the
-    /// order of the check's relations would make ([`AmbiguousMember`]),
-    /// and so is a decided member beside another for a type a
-    /// pre-unification meets undecided; a walk on copies takes the first,
-    /// and a trial commits its members directly: a trial nested in each
-    /// would double the walk at every level of a union typedef chain.
-    /// Where none holds it, the last admitted answers.
+    /// the first tier where one does. Of several that could, the one that
+    /// holds the others ([`widest`]) takes it where that leaves each of
+    /// them holding `t` as it stands ([`decides_each`], then the same of
+    /// the walk's own take): no cell another would decide is left open.
+    /// Any other two that could are a choice only the order of the
+    /// check's relations would make ([`AmbiguousMember`]), and so is a
+    /// decided member beside another for a type a pre-unification meets
+    /// undecided; a walk on copies takes the first, and a trial commits
+    /// its members directly: a trial nested in each would double the walk
+    /// at every level of a union typedef chain. Where none holds it, the
+    /// last admitted answers.
     fn take(
         s: &[Type],
         tiers: [&[&Type]; 2],
@@ -5011,11 +5052,22 @@ impl Type {
                     open.push(m)
                 }
             }
-            match open[..] {
-                [] => (),
-                [m] => return Ok(Some(m.contains_int(flags, env, hist, t)?)),
-                _ => return Err(AmbiguousMember::new(flags, s, t, &open)),
+            let taker = match open[..] {
+                [] => continue,
+                [m] => m,
+                _ if hist.early => return Err(AmbiguousMember::new(flags, s, t, &open)),
+                _ => match widest(&open, flags, env, hist)? {
+                    Some(m) if decides_each(m, &open, flags, env, hist, t)? => m,
+                    _ => return Err(AmbiguousMember::new(flags, s, t, &open)),
+                },
+            };
+            let took = taker.contains_int(flags, env, hist, t)?;
+            for o in open.iter().copied().filter(|o| took && !std::ptr::eq(*o, taker)) {
+                if !holds_as_it_stands(o, flags, env, hist, t)? {
+                    return Err(AmbiguousMember::new(flags, s, t, &open));
+                }
             }
+            return Ok(Some(took));
         }
         Ok(Some(last.contains_int(flags, env, hist, t)?))
     }
@@ -8208,6 +8260,88 @@ mod tests {
         let e = union.contains(&env, &i64s).unwrap_err();
         assert!(e.downcast_ref::<AmbiguousMember>().is_some(), "{union}: {e}");
         assert!(a.has_unbound() && b.has_unbound(), "{union}");
+    }
+
+    // of two undecided members that could take a type, one that holds the
+    // others as it stands takes it where that decides every cell another
+    // would; where it leaves one of them open, or the walk is a
+    // pre-unification, none takes it and nothing is decided
+    #[test]
+    fn a_member_holding_the_others_takes_a_type_where_it_decides_their_cells() {
+        let env = Env::default();
+        // a tuple of the members, so one name is one cell and no two merge
+        let union = |members: &str| match &parsed(members) {
+            Type::Tuple(ms) => Type::Set(ms.clone()),
+            t => panic!("{t} is no tuple"),
+        };
+        let bound = |u: &Type| {
+            let mut tvs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+            u.collect_tvars(&mut tvs);
+            let mut bound: SmallVec<[ArcStr; 4]> = tvs
+                .iter()
+                .filter(|(_, tv)| tv.is_bound())
+                .map(|(n, _)| n.clone())
+                .collect();
+            bound.sort();
+            bound
+        };
+        for (members, t, decided) in [
+            (
+                "((i64, [`A('a), `B(string)]), (i64, `A('a)), (i64, `B(string)))",
+                "(i64, `A(i64))",
+                &["a"][..],
+            ),
+            (
+                "((i64, [`A('a), `B('b)], 'z), (i64, `A('a), 'z), (i64, `B('b), 'z))",
+                "(i64, `B(string), null)",
+                &["b", "z"],
+            ),
+            (
+                "((i64, [Array<'a>, {k: 'b}]), (i64, Array<'a>), (i64, {k: 'b}))",
+                "(i64, Array<i64>)",
+                &["a"],
+            ),
+        ] {
+            let u = union(members);
+            assert!(u.contains(&env, &parsed(t)).unwrap(), "{u}");
+            assert_eq!(&bound(&u)[..], decided, "{u}");
+            let early = union(members);
+            let e = early
+                .contains_int(
+                    ContainsFlags::Commit.into(),
+                    &env,
+                    &mut ContainsHist::early(),
+                    &parsed(t),
+                )
+                .unwrap_err();
+            assert!(e.downcast_ref::<AmbiguousMember>().is_some(), "{early}: {e}");
+            assert!(bound(&early).is_empty(), "{early}");
+        }
+        for (members, t) in [
+            ("((i64, Any, 'z), (i64, ('c, Any), 'z))", "(i64, (string, i64), i64)"),
+            ("(`S(Any, 'z), `S(Array<'c>, 'z))", "`S(Array<string>, i64)"),
+            ("((i64, [`A('a), `B('b)]), (i64, `A('a)), (i64, `B('b)))", "(i64, 'q)"),
+        ] {
+            let u = union(members);
+            let e = u.contains(&env, &parsed(t)).unwrap_err();
+            assert!(e.downcast_ref::<AmbiguousMember>().is_some(), "{u}: {e}");
+            assert!(bound(&u).is_empty(), "{u}");
+        }
+        // the copies give `K(i64) to `K('c), the first that holds it, and the
+        // walk to `K(['c, i64]), which holds it as it stands
+        let Type::Tuple(ps) = &parsed("(i64, (`K('c), `K(['c, i64])), 'z, `K('c))")
+        else {
+            panic!("no tuple")
+        };
+        let [n, Type::Tuple(ks), z, k] = &ps[..] else { panic!("no tuple") };
+        let tuple = |ts: [&Type; 3]| Type::Tuple(ts.into_iter().cloned().collect());
+        let u = Type::Set(Arc::from_iter([
+            tuple([n, &Type::Set(ks.clone()), z]),
+            tuple([n, k, z]),
+        ]));
+        let e = u.contains(&env, &parsed("(i64, `K(i64), i64)")).unwrap_err();
+        assert!(e.downcast_ref::<AmbiguousMember>().is_some(), "{u}: {e}");
+        assert_eq!(&bound(&u)[..], ["z"], "{u}");
     }
 
     // one cell standing twice is no union of two undecided members: an

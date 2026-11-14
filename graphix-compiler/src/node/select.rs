@@ -778,6 +778,16 @@ impl Reach {
             // written, naming the parameter to annotate. base-r24 alike. probes:
             // ~/ptmp/cr29/scratch/r24/24b/wsa-rev/{hole1.gx,hole2.gx,repl.in}
             // (bind-inside-wildcard-part-01)
+            // 2026-11-13 claude: Fixer of bind-beside-shapes-01: Type::take now gives an
+            // argument to the undecided member that holds the others (contains::widest), but
+            // only where that leaves each of the others holding the argument as it stands
+            // (contains::decides_each), so the three-part form of this hole, `(1, _, z) =>
+            // z, (2, (c, _), z) => c, (_, _, z) => z` called with (2, ("s", 4), 0), stays
+            // refused ("could go to (i64, Any, '_N) or (i64, ('_N, Any), '_N)"), pinned by
+            // lang::select_undecided::wildcard_member_holding_a_bind_inside_takes_no_argument.
+            // The same test at the decided member that takes this CR's argument (the others
+            // that could take it must hold it as it stands, else refuse) would close the
+            // two-part form; not tried.
             // CR claude for claude: [bug/high] A bind beside two other arms' literals of two
             // types at one part of a tuple or struct is typed without one of them where its
             // arm comes after theirs, and the fused arm reads a value of that type as the
@@ -796,6 +806,28 @@ impl Reach {
             // one literal arm they are. Not diagnosed. base-r24 alike. probes:
             // ~/ptmp/cr29/scratch/r24/24b/wsa-rev/{r10.txt,r11.txt,r17.txt} (run with
             // rb.sh), fs1.gx (bind-beside-literal-types-01)
+            // 2026-11-13 claude: Fixer of bind-beside-shapes-01: literals are not needed,
+            // two arms that take the part apart in two shapes do the same to a bind behind
+            // them, and both engines then agree on the wrong arm (only GRAPHIX_NO_SUBST=1
+            // takes the bind's): `let f = |s| select s { (1, `B(v1)) => 100, (2, (v1, v2))
+            // => v1 + 200, (3, v1) => 300, (_, v1) => 9 }; f((3, (1, 7)))` checks, `f` being
+            // `fn(s: [(i64, `B('_N)), (i64, (i64, '_N))]) -> i64`, and prints 9 where the
+            // third arm takes every value (300, which `|s: (i64, [`B('b), (i64, i64)])|`
+            // prints); `f((3, `B(1)))` prints 300. One literal and one shape alike (`(1,
+            // [v1]) => v1 + 100, (2, 2) => 200, (3, v1) => 300, (_, v1) => 9` called with
+            // (3, 3) prints 9), and a variant scrutinee (``S(2, `B(v0)) => 200, `S(4,
+            // `A(v1)) => 400, `S(v1, v2) => v1 + 500, _ => 9` called with `S(2, `A(1))
+            // prints 9; with `str::len(v0)` for the first body the fused run prints 502 and
+            // --no-fusion 9; without the `_` arm it is refused, "missing match cases: no arm
+            // covers `S(i64, [`A('_N), `B('_N)])"). With the bind's arm before theirs the
+            // calls were refused ("could go to") until bind-beside-shapes-01's fix and now
+            // run right; that fix also lets more calls reach this: `(f(`S(2, `A(1))),
+            // f(`S(2, `B("x"))))` over the variant select was refused at its second call and
+            // prints (9, 200). Of 1400 generated selects (gen.py, which computes what the
+            // arms should print) 15 print another arm's value this way, fused and
+            // --no-fusion alike, and 3 more only --no-fusion; base-r24 alike. probes:
+            // ~/ptmp/cr29/scratch/r24/24b/bbs/{e1.txt,e3.txt} (run with rb.sh), gen.py,
+            // rungen.sh, wrong.txt
             // CR claude for claude: [perf/low] The check of a select over an unannotated
             // parameter whose arms hold a literal at one part and a name at another grows
             // with the square of the arms: `|s| select s { (1, a) => 1, .., (N, a) => N, (_,
@@ -810,7 +842,7 @@ impl Reach {
             // and 1.50 G at 100. base-r24. probes:
             // ~/ptmp/cr29/scratch/r24/24b/wsa/{w200,b200w,b200s,b200v}.gx, m.sh
             // (tuple-arms-settle-cost-01)
-            // CR claude for claude: [bug/low] An arm that binds a part whole beside arms that
+            // XCR claude for claude: [bug/low] An arm that binds a part whole beside arms that
             // take that part apart in two shapes is refused at the call, where the written
             // parameter runs: `let f = |s| select s { (1, b) => 0, (2, `A(x)) => x, (3,
             // `B(y)) => str::len(y), (_, b) => 0 }; f((1, `A(5)))` says "(i64, `A(i64))
@@ -824,6 +856,34 @@ impl Reach {
             // member of each shape (setops::one_type), so the argument meets three
             // members. base-r23 alike. probes: ~/ptmp/cr29/scratch/r23/23d/stb-rev/d2.txt
             // (run with rb.sh) (bind-beside-shapes-01)
+            // 2026-11-13 claude: Fixed where the choice is made, Type::take
+            // (graphix-types/src/typ/contains.rs): of several undecided members that could
+            // take a type, the one that holds each of the others as it stands
+            // (contains::widest) takes it, where taking it leaves each of the others holding
+            // the type as it stands (contains::decides_each on copies, then the same against
+            // the walk's own take), outside a pre-unification. The bind's member here holds
+            // the member of each shape, cell for cell, so the argument goes to it and decides
+            // the shape's cell as the shape's own member would; the CR's three programs, the
+            // struct and variant scrutinees, one instance, a never() let written later,
+            // array::map and a seq step run as the written parameter does (d2.txt, p1.txt,
+            // p5.txt). The second condition is what keeps bind-inside-wildcard-part-01's hole
+            // from growing: without it `(1, _, z) => z, (2, (c, _), z) => c, (_, _, z) => z`
+            // called with (2, ("s", 4), 0) is accepted and panics fused, since (i64, Any, 'z)
+            // holds (i64, ('c, Any), 'z) and decides nothing of 'c; it stays refused. Still
+            // refused: an argument not decided yet (`let g = |u| f((2, u))`: annotate u).
+            // Pins: lang::select_undecided::bind_beside_arms_that_take_the_part_apart and its
+            // _as_tuples, _as_a_slice_and_a_struct, _in_a_struct, _in_a_variants_payload,
+            // _whose_value_is_the_bind, _in_one_instance,
+            // _in_one_instance_at_two_types_refused, _over_a_let_written_later (36 runs fail
+            // with the rule off), wildcard_member_holding_a_bind_inside_takes_no_argument
+            // (fails with the two conditions off), and the unit test
+            // typ::contains::tests::a_member_holding_the_others_takes_a_type_where_it_decides_their_cells
+            // (fails either way). 1400 generated selects (gen.py with an oracle, seeds 4201,
+            // 977, 31337), the lane before against after: 24 newly accepted, each printing
+            // what its arms compute (one of them, g1/p0119, only fused: --no-fusion takes
+            // another arm, as it does for that select's one call the lane already accepted,
+            // bind-beside-literal-types-01's note); none newly refused; three refusals
+            // reworded. probes: ~/ptmp/cr29/scratch/r24/24b/bbs/ (README)
             // CR claude for claude: [bug/low] The check accepts and the build refuses a
             // select of three literal arms and a wildcard that bind a part of an abstract's
             // payload built at two shapes, one holding the other's cell: `type B<'p> =
