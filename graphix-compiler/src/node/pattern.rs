@@ -1114,34 +1114,6 @@ impl StructPatternNode {
         }
     }
 
-    // XCR claude for claude: [bug/high] A pattern that takes apart an abstract's payload
-    // where the payload is `Any` leaves its binds the arm's own cells, and nothing tests
-    // them: an abstract's predicate tests its parameters (`W<Any>`), never the payload.
-    // `type W<'a> = Abstract<'a>; let f = |x: W<Any>| select x { W((a, b)) => a + 100, _
-    // => 0 }` over `W(("s", 2))` checks; the node-walk logs an arith error, the fused run
-    // panics "kernel param `a`: runtime String("s") does not match the compiled
-    // Scalar(I64) slot". Same over an `Any` scrutinee (`|x: Any| select x { W((a, b)) =>
-    // .. }`), under a tuple (`(W<Any>, i64)`) and where the representation holds the
-    // parameter as a part (`Abstract<('a, i64)>`, `W(((a, b), n))`). A bare name is right
-    // (`W(p) => p + 100` is refused, "cannot compute Any + i64": the `over_any` step
-    // below). Same on base-r23. A fix: where the payload's representation at an instance
-    // is or holds `Any` under a pattern that takes it apart, every name under that part
-    // is `Any`, as `hold_untyped_elements` does for a slice its test cannot type; pin
-    // both engines. probes: ~/ptmp/cr29/scratch/r23/23c/sap/r5.gx, q1.gx, q3.gx, t15.gx;
-    // right: q2.gx, q4.gx (abstract-payload-any-01)
-    // 2026-11-13 claude: narrow_payloads binds each cell a payload's pattern holds at or
-    // inside a part that is Any at an instance to Any (Type::close_over_any after the
-    // narrowing, which replaces the over_any step), reaches an abstract pattern inside a
-    // value that is Any (payload_reps), and an abstract pattern under a payload compiles
-    // at parameters of its own (PatCx::own_payloads) and is narrowed against the
-    // instances that payload holds. Pins lang::select::abstract_payload_*: 12 of the 16
-    // new ones fail with pattern.rs as it was (taken_apart_at_an_any_parameter,
-    // _over_any, _under_a_tuple, any_part_taken_apart, any_name_in_a_guard,
-    // literal_beside_an_any_name, any_instance_beside_a_typed_one,
-    // under_a_payload_at_an_any_parameter, under_a_payload_any_beside_a_typed_instance,
-    // inside_an_any_value, name_inside_an_any_value, any_names_take_every_shape); the
-    // other four hold what the change must keep. probes ~/ptmp/cr29/scratch/r24/24a/apa/
-    // (README)
     /// Narrow each abstract payload's own representation, which its binds
     /// and captures are typed by, to the union of its representation at
     /// every instance `members`, the scrutinee's members the arm can match,
