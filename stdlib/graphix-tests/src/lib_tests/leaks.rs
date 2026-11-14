@@ -286,26 +286,28 @@ fn is_pair(a: i64, b: i64) -> impl Fn(&Value) -> bool {
     move |v| matches!(v, Value::Array(t) if t[..] == [Value::I64(a), Value::I64(b)])
 }
 
-/// `RELOADS` reloads of a dynamic module declared after `above`, whose
-/// source is `body` after `let v = [tick];` and whose interface declares
-/// `sig` before `v` and `get`, each load's `get` saved and called through
-/// the next reload, which retires the body it was made in, then replaced
-/// by the new load's. `get(x)` is `x + v`.
+/// `RELOADS` reloads of a dynamic module whose source is `body` after
+/// `let v = [tick];` and whose interface declares `sig` before `v` and
+/// `get`, each load's `get` saved and called through the next reload,
+/// which retires the body it was made in, then replaced by the new
+/// load's. `get(x)` is `x + v`. `outside` is declared at the root, and a
+/// module with something to import from there is unrestricted.
 async fn saved_across_reloads(
     mode: Mode,
-    above: &str,
+    outside: &str,
     sig: &str,
     body: &str,
 ) -> Result<()> {
     const RELOADS: i64 = 1000;
     let (ctx, mut rx) = fixture_runtime([], crate::TEST_REGISTER, mode, |_| {}).await?;
-    let _tick = ctx.rt.compile(literal!("let tick: i64 = 0;")).await?;
+    let roots = ArcStr::from(format!("let tick: i64 = 0; {outside}"));
+    let _roots = ctx.rt.compile(roots).await?;
+    let sandbox = if outside.is_empty() { "whitelist [core]" } else { "unrestricted" };
     let program = format!(
         r#"{{
-          {above}
           let src = "let v = [tick]; {body}";
           let s = mod d dynamic {{
-              sandbox whitelist [core];
+              sandbox {sandbox};
               sig {{ {sig} val v: i64; val get: fn(x: i64) -> i64 }};
               source src
           }};
