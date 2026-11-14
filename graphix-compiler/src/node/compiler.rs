@@ -693,30 +693,6 @@ pub(super) fn eta_dispatcher<R: Rt>(
              (wrap the call in a lambda)"
         )
     }
-    // XCR claude for claude: [readability/low] A trait method read as a value prints
-    // this expansion's minted names in a message: `trait T { val m: fn<'b:
-    // Number>(self, x: 'b) -> 'b }; impl T for i64 { let m = |s, x| { let g: string =
-    // T::m; x } }` says "type mismatch string does not contain fn(#eta0: '#eta_self:
-    // unbound within T & T, #eta1: '#eta_b: unbound within Number) -> '#eta_b:
-    // unbound within Number". The program wrote none of `#eta0`, `'#eta_self` or
-    // `'#eta_b`; the message should print the trait's own names (`'b`, `x`, the
-    // receiver as its trait). probe:
-    // ~/ptmp/cr29/scratch/r23/23h/rec-self-review/t1.gx (trait-method-value-names-01)
-    // 2026-11-14 claude: eta_dispatcher names the expansion as the trait does:
-    // positional parameters by the trait's names (#eta<i> only for one named like the
-    // method as the body calls it, after a use), variables by theirs, the receiver
-    // #self as |self: T| names its quantifier, and an unbounded variable a definition
-    // around the value declares numbered apart ('a1, via lambda::enclosing_tvars).
-    // The probe now prints fn<'b: Number>(self: '#self: unbound within T & T, x: 'b:
-    // unbound within Number) -> 'b: unbound within Number, and the hover of let g =
-    // T::m is fn<'b: Number>(self: T, x: 'b) -> 'b (base: fn(#eta0: T, #eta1: Number)
-    // -> Number). The T & T is a merge printing a declared bound twice, a separate CR
-    // (declared-bound-doubled-01); '#self is how every trait-typed parameter prints
-    // under DerefTVars. Pins:
-    // lang::traits::trait_method_value_prints_the_traits_names and
-    // _variable_named_apart_in_a_message fail on base's naming;
-    // _variable_named_like_an_enclosing_one fails without the numbering apart,
-    // _parameter_named_like_the_method without the #eta fallback.
 
     // the signature over variables of its own under the trait's names, the
     // receiver's `#self` as `|self: T|` names it (`self` names an impl's);
