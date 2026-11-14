@@ -953,6 +953,18 @@ impl Reach {
         // "can't tell"); the written test alone (`(Y, i64) as (r, n) => n`) checks too,
         // so here no catch-all is needed. probe:
         // ~/ptmp/cr29/scratch/r24/24a/wvt/review/h07.gx
+        // 2026-11-14 claude: (review of written-struct-absent-field-cover-01)
+        // r24-staging finds this arm dead: in a trial merge of lane 24a with it
+        // (variant-tuple-payload-dead-01 and diff-product-held-01 are there),
+        // lang::select::written_variable_binds_two_function_types fails in all four
+        // modes, 'unreachable arm: the earlier arms already cover the whole scrutinee'
+        // at the catch-all of its tuple, literal, field and twice selects, and the same
+        // selects without the catch-all are still refused 'can't tell fn(x: i64) -> i64
+        // from fn(y: string) -> string' (written-variable-settle-first-01), so only the
+        // payload form checks there. The pin holds at the landing only with
+        // settle-first fixed and its catch-alls dropped. probe:
+        // ~/ptmp/cr29/scratch/r24/24a/wsaf-rev/wv.txt (lines 1 to 10, lane against the
+        // merge)
         if checking && (self.wildcard || self.atype == empty) {
             return dead_at(anyhow!(
                 "unreachable arm: the earlier arms already cover the whole scrutinee, \
@@ -1595,6 +1607,25 @@ fn may_hold(env: &Env, t: &Type, h: &Head) -> Result<bool> {
 // member by StructPatternNode::matched_part and a bool pair has no such path.
 // base-r24 alike. probes: ~/ptmp/cr29/scratch/r24/24h/spom/bool/{b05,b06,b08}.gx,
 // b07.gx (the tuple twin) (bool-beside-collection-cover-01)
+// CR claude for claude: [bug/low] An arm is not found dead behind arms that take
+// every value it matches where a position inside the scrutinee holds two tuple or
+// struct members: `type E = [{a: i64, d: i64}, {c: i64}]; |x: (i64, E)| select x { (n,
+// {a: _, d: _}) => 2, (n, {a: h, d: _}) => h, (n, {c: _}) => 1 }` checks, its second
+// arm never taken, and so do the arms `(n, {a: _, d: _}) => 2, (n, {c: _}) => 1`
+// followed by `_ => 3` or `(n, _) => 3`, the same in a variant's payload (`` `A({a: _,
+// d: _}) `` twice over `` [`A(E), `B] ``) and in a struct's field (`{s: {a: _, d: _},
+// z}` twice), and `(n, (a, b))` twice over `(i64, [(i64, i64), (i64, i64, i64)])`. The
+// same arms over `E` itself are refused, and so are `(n, (a, b))` twice over `(i64,
+// [(i64, i64), i64])` and the written form (`T as (n, {a: _, d: _})` twice, "an earlier
+// arm matches the same values"). base-r24, lane 24a and a trial merge of it with
+// r24-staging alike; of 900 generated selects of struct patterns over a union of structs
+// (gen2.py: at the top, in a tuple, a payload, a field), the merge checks 106 with a dead
+// arm at a nested position and 6 at the top (those by a literal or a guard written
+// twice). Not traced past this: a position holding a second tuple or struct has no
+// finite set of heads here, so the pool does not read it. probes:
+// ~/ptmp/cr29/scratch/r24/24a/wsaf-rev/r4.txt, r5.txt (run.sh in ../wsaf runs each
+// line), gen2.py and c11.*.txt (the generated programs' verdicts)
+// (two-composite-position-dead-01)
 /// The heads `t` admits when it is a finite set of them: a union of
 /// `bool`, `null`, variants, at most one tuple or struct holding no open
 /// cell, [`Head::Rest`] for its other primitives and [`Head::Open`] for
