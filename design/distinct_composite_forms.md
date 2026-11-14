@@ -224,10 +224,13 @@ second (`cast.rs::test_collision`) passes over each product a part tells
 apart before it looks inside. A member a part tells apart so hides none
 after it: with `X` and `Y` naming two structs that hold a `&i64` and a
 `&string`, `(X, string, bool)` over `[(X, string, bool), (Y, i64, i64),
-(Y, string, bool)]` is refused for the last member. The judgments beside
-a select arm (a comparison, a map key, a union trait dispatch) report the
-first part's collision whatever the others hold: an ordering reads its
-parts in turn. A slice pattern's predicate is a
+(Y, string, bool)]` is refused for the last member. A union trait
+dispatch tests its members whole, as an arm does, and takes both walks
+(`Type::rep_collision_open`): a `Show` call over `[(&i64, i64), (&string,
+string)]` checks, and one over `[(&i64, Array<i64>), (&string,
+Array<string>)]` is refused. The judgments beside a test (a comparison, a
+map key) report the first part's collision whatever the others hold: an
+ordering reads its parts in turn. A slice pattern's predicate is a
 Set whose rest cell holds the whole
 element type, so as a type it covers every array and subtracts everything
 from what reaches the arm; its test is its elements', each of which sees

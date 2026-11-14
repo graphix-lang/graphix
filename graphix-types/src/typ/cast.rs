@@ -2753,36 +2753,6 @@ fn parts_collision<'a>(
             .clone()
             .find_map(|(x, y)| rep_collision(env, seen, subject, open, ordered, x, y))
     };
-    // XCR claude for claude: [bug/low] A union trait dispatch is refused for a part
-    // whose members share a runtime form though another part tells the members
-    // apart, as a select arm's test was (told-by-another-part-01): with `trait Show
-    // { val show: fn(self) -> string }`, an impl for `(&i64, i64)` and one for
-    // `(&string, string)`, `|x: [(&i64, i64), (&string, string)]| Show::show(x)`
-    // says "a Show call over [(&i64, i64), (&string, string)] can't tell &i64 from
-    // &string", though no value of either member passes the other's test.
-    // Type::dispatch_collision judges its members with Subject::Beside, which the
-    // return below keeps at the first part's collision: comparisons share that
-    // subject, and an ordering reads its parts in turn. What would close it: judge
-    // a dispatch's members as tests (a subject of its own), so the rule below this
-    // return reaches them. probe: ~/ptmp/cr29/scratch/r24/24a/tba/d1.gx
-    // (dispatch-told-by-another-part-01)
-    // 2026-11-14 claude: Review of told-by-another-part-01: the rule below this
-    // return runs only in the second walk of a test's judgment
-    // (cast.rs::test_collision, the walk's told flag), made where a first walk
-    // without it found a collision. A walk that drops a collision it found holds
-    // the pairs of names under it clear, and a later member read them so: (X,
-    // string, bool) among [(Y, i64, i64), (Y, string, bool)], X and Y naming
-    // structs of a &i64 and a &string, was accepted. A dispatch told the same way
-    // takes both walks.
-    // 2026-11-14 claude: A dispatch's member pairs are judged by
-    // Type::rep_collision_open through test_collision, the two walks a select arm's
-    // test takes (cast.rs), and the told rule no longer excludes Subject::Beside (a
-    // walk is told only where test_collision makes it so, comparisons never). Pins
-    // that fail without it: traits.rs trait_union_dispatch_told_by_another_part (a
-    // Show call over [(&i64, i64), (&string, string)]) and cast.rs
-    // a_dispatch_member_is_told_by_another_part; refusals kept by
-    // trait_union_dispatch_untold_by_other_parts_refused and
-    // trait_union_dispatch_told_member_clears_no_pair_refused.
     if !seen.told {
         return first(seen);
     }
