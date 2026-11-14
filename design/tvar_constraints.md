@@ -886,6 +886,25 @@ string] ⊇ [string, i64, null]`, which gives `'a` the `i64` alone;
 it, and `[Opt<'a>, i64] ⊇ [i64, null, Opt<'a>]` would find no member for
 `[i64, null]` (pins `lang::types::alias_beside_primitives`,
 `bounded_variable_under_an_alias`, each beside its written-out twin).
+A union written out with an open member takes a member of several
+primitive types the same way (`place_members`, `place_covered`): where no
+constructor member takes it whole, each type goes to the constructor
+member that takes it and only the rest to the open member. `['a, null] ⊇
+[i64, null, Array<i64>]` gives `'a` the `[i64, Array<i64>]`, so `x$` over
+it selects with no null arm, and `'a: Number |x: [['a, null],
+Array<i64>]|` takes that value as its alias spelling does. A member that
+names a union still goes to the open member whole, under its name (the
+part-at-a-time form of it cost a chain of bounds through a typedef its
+linear time, and made two members of a named union compete for one
+constructor member's variable by the typedefs' names). The variable is
+then the narrowest type holding the argument, as from a union of
+primitives alone: a later `y: 'a` widens it for a wider argument and is the
+mismatch for one neither wider nor narrower (pins
+`lang::types::covered_primitive_stays_out_of_the_open_member`,
+`covered_primitive_leaves_a_bounded_open_member_its_numbers`, their
+`_arm_refused` and `uncovered_` twins,
+`open_member_beside_a_covered_primitive_*`,
+`typ::contains::tests::an_open_member_takes_only_the_primitives_no_member_does`).
 A rigid check never commits, so one that fails is asked again with such
 members as their members, committing no bound of the name's parameters
 (`Type::contains_unfolded`, under `ContainsFlags::RigidCheck` alone: every

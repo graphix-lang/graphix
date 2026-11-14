@@ -5738,6 +5738,36 @@ impl Type {
         }
     }
 
+    /// Give `m` to the member of the union `s0` that takes it
+    /// ([`Self::take`]), of those not `free` on entry; `None` where it is
+    /// left to the open member: none admits it.
+    fn place_covered(
+        s0: &[Type],
+        free: &[bool],
+        flags: BitFlags<ContainsFlags>,
+        env: &Env,
+        hist: &mut ContainsHist,
+        m: &Type,
+    ) -> Result<Option<bool>> {
+        let commit = flags.contains(ContainsFlags::Commit);
+        let mut admit: SmallVec<[&Type; 4]> = SmallVec::new();
+        for (c, _) in s0.iter().zip(free).filter(|(_, free)| !**free) {
+            if c.contains_int(guide(flags), env, hist, m)? {
+                admit.push(c);
+                if !commit || hist.binds_nothing(c, m) {
+                    admit.truncate(0);
+                    admit.push(c);
+                    break;
+                }
+            }
+        }
+        match admit.is_empty() {
+            true => Ok(None),
+            false if !commit => Ok(Some(true)),
+            false => Self::take(s0, [&admit, &[]], flags, env, hist, m),
+        }
+    }
+
     /// `t0`, a union `s0` holding an open member, contains the members
     /// `s1` in that order: each goes to the first constructor member that
     /// fits it, and what none takes to the open member.
@@ -5754,7 +5784,6 @@ impl Type {
         // bind one (`Array<'b> ⊇ Array<i64>`) before the residue
         // reaches it
         let free: SmallVec<[bool; 8]> = s0.iter().map(is_unbound_tvar).collect();
-        let probe = guide(flags);
         let joined = match commit {
             true => Self::join_cell_sharing(s0, &free, s1, env, hist)?,
             false => None,
@@ -5915,18 +5944,7 @@ impl Type {
                 residue.push(m.clone());
                 continue;
             }
-            let mut admit: SmallVec<[&Type; 4]> = SmallVec::new();
-            for (c, _) in s0.iter().zip(&free).filter(|(_, free)| !**free) {
-                if c.contains_int(probe, env, hist, m)? {
-                    admit.push(c);
-                    if !commit || hist.binds_nothing(c, m) {
-                        admit.truncate(0);
-                        admit.push(c);
-                        break;
-                    }
-                }
-            }
-            // CR claude for claude: [bug/medium] A union with a bare variable takes a
+            // XCR claude for claude: [bug/medium] A union with a bare variable takes a
             // member of several primitive types whole: where no one constructor member
             // admits all of it, the whole member goes to the variable, the types a
             // constructor member covers included. `let f = 'a: Number |x: [['a, null],
@@ -5972,12 +5990,54 @@ impl Type {
             // fires, the instance's types are expanded unions. The finisher's measurements
             // and what it tried: ~/ptmp/cr29/r24/prim-split-wider-later-01.txt; probes
             // ~/ptmp/cr29/scratch/r24/24d/fin/ (README), upm/, upm-rev/.
-            if admit.is_empty() {
+            // 2026-11-14 claude: Round 25, lane 25e: Type::place_members takes a member of
+            // several primitive types that no constructor member takes whole a type at a
+            // time (Type::place_covered): each type goes to the constructor member that
+            // takes it and only the rest to the open member, as a union of primitives alone
+            // and the alias spelling already did. h2 checks and runs, h3 agrees, k2 checks
+            // (no null arm), k1's null arm is refused as dead ('pattern null will never
+            // match [i64, Array<i64>]'). Only primitive members are split: a member that
+            // names a union (a typedef) still goes to the open member whole, as on
+            // base-r24, which is what the round-24 fix's cost and wider-later problems came
+            // from; deep_nesting passes with its budgets (chainboundsalias unchanged),
+            // census of 2967 files 0/0, guicheck 39.644G base vs 39.629G. What moved: after
+            // such a value a later y: 'a that is neither wider nor narrower than the
+            // narrowed variable is the mismatch (|x: ['a, null], y: 'a| over [Array<i64>,
+            // i64, null] then [i64, null] ran on base and is refused 'a: [i64, Array<i64>]
+            // does not contain [i64, null], as after [i64, string, null]; probe upm/w1.gx).
+            // Left (named unions' parts: n1.gx, '[N, Array<i64>]' still gives 'a the null)
+            // is the mechanism of value-members-one-cell-order-01. Fails without the fix:
+            // lang::types::covered_primitive_* ,
+            // open_member_beside_a_covered_primitive_takes_no_argument_apart_refused (16 of
+            // 49 runs) and
+            // typ::contains::tests::an_open_member_takes_only_the_primitives_no_member_does.
+            // Probes ~/ptmp/cr29/scratch/r25/25e/upm/. Needs a soak.
+            match Self::place_covered(s0, &free, flags, env, hist, m)? {
+                Some(true) => continue,
+                Some(false) => return Ok(false),
+                None => (),
+            }
+            let bits = m.with_deref(|d| match d {
+                Some(Self::Primitive(p)) if p.len() > 1 => Some(*p),
+                _ => None,
+            });
+            let Some(bits) = bits else {
                 residue.push(m.clone());
-            } else if commit
-                && Self::take(s0, [&admit, &[]], flags, env, hist, m)? != Some(true)
-            {
-                return Ok(false);
+                continue;
+            };
+            let mut left = BitFlags::empty();
+            for b in bits.iter() {
+                let part = Self::Primitive(b.into());
+                match Self::place_covered(s0, &free, flags, env, hist, &part)? {
+                    Some(true) => (),
+                    Some(false) => return Ok(false),
+                    None => left |= b,
+                }
+            }
+            if left == bits {
+                residue.push(m.clone());
+            } else if !left.is_empty() {
+                residue.push(Self::Primitive(left));
             }
         }
         // CR claude for claude: [risk/low] A definition's check and its instance's
@@ -8755,6 +8815,29 @@ mod tests {
         let held = parsed("[[Array<'a>, null], [List<'b>, null]]");
         assert!(held.contains(&env, &parsed("null")).unwrap());
         assert!(held.has_unbound());
+    }
+
+    // a member of several primitive types that no constructor member
+    // takes whole goes a type at a time: the open member takes only the
+    // types none does, and the member as it stands where none takes any
+    #[test]
+    fn an_open_member_takes_only_the_primitives_no_member_does() {
+        let env = Env::default();
+        for (union, t, open) in [
+            ("['a, null]", "[i64, null, Array<i64>]", "[i64, Array<i64>]"),
+            ("['a, i64]", "[i64, null, Array<i64>]", "[null, Array<i64>]"),
+            ("['a, string]", "[i64, null, Array<i64>]", "[i64, null, Array<i64>]"),
+            ("['a, null, Array<'b>]", "[i64, string, null, Array<i64>]", "[i64, string]"),
+        ] {
+            let union = parsed(union);
+            assert!(union.contains(&env, &parsed(t)).unwrap(), "{union}");
+            let mut tvs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+            union.collect_tvars(&mut tvs);
+            let a = Type::TVar(tvs["a"].clone()).deref_cloned().unwrap();
+            let open = parsed(open);
+            assert!(open.contains(&env, &a).unwrap(), "{union}: {a}");
+            assert!(a.contains(&env, &open).unwrap(), "{union}: {a}");
+        }
     }
 
     // a type holding a cell to decide that two decided members could

@@ -104,6 +104,17 @@ ok trait T { val m: fn(self, x: [self, 'a]) -> i64 }; impl T for i64 { let m = |
 ok trait T { val m: fn(self, x: [i64, string]) -> i64 }; impl T for i64 { let m = |s, x: [self, 'c]| 0 }; T::m(1, "q")
 ```
 
+A variable beside written members takes of an argument's primitive types
+only those the written members do not: `x: ['a, null]` over a `[i64, null,
+Array<i64>]` makes `'a` `[i64, Array<i64>]`, so a select over a `-> 'a`
+result writes no null arm.
+
+```graphix,cases
+ok let f = |x: ['a, null]| -> 'a x$; let v: [Array<i64>, i64, null] = 1; select f(v) { i64 as i => i, Array<i64> as a => 2 }
+no "pattern null will never match" let f = |x: ['a, null]| -> 'a x$; let v: [Array<i64>, i64, null] = 1; select f(v) { null as _ => 0, i64 as i => i, Array<i64> as a => 2 }
+ok let f = 'a: Number |x: [['a, null], Array<i64>]| x; let v: [i64, null, Array<i64>] = 1; f(v)
+```
+
 Two members of one constructor holding two of its variables ask the
 same question: `[Array<'c>, Array<'d>]` (a `[1]` fits either), `[{v:
 'c}, {v: 'd}]`, `[('c, i64), (i64, 'd)]`, `[fn(x: 'c) -> i64, fn(x: 'd)

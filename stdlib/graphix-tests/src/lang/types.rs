@@ -4145,6 +4145,71 @@ run!(open_member_takes_the_residue, OPEN_MEMBER_TAKES_THE_RESIDUE, |v: Result<&V
     matches!(v, Ok(Value::Array(a)) if a[..] == [Value::Bool(true), Value::Bool(true)])
 }; FuseExpect::Jit);
 
+// A member of several primitive types that no constructor member of the
+// holder takes whole goes a type at a time: each type to the constructor
+// member that takes it and only the rest to the open member, so 'a holds no
+// null here and the union written out checks as its alias spelling does.
+run!(
+    covered_primitive_stays_out_of_the_open_member,
+    r#"{
+  let f = |x: ['a, null]| -> 'a x$;
+  let show = |v: [Array<i64>, i64, null]| select f(v) { i64 as i => i, Array<i64> as a => array::len(a) };
+  (show(7), show([1, 2]))
+}"#,
+    prints("[i64:7, i64:2]")
+);
+run!(
+    covered_primitive_stays_out_of_the_open_member_arm_refused,
+    r#"{
+  let f = |x: ['a, null]| -> 'a x$;
+  let v: [Array<i64>, i64, null] = 1;
+  select f(v) { null as _ => 0, i64 as i => i, Array<i64> as a => 2 }
+}"#,
+    refused("pattern null will never match [i64, Array<i64>]");
+    FuseExpect::None
+);
+run!(
+    covered_primitive_leaves_a_bounded_open_member_its_numbers,
+    r#"{
+  let f = 'a: Number |x: [['a, null], Array<i64>]| x;
+  let v: [i64, null, Array<i64>] = 1;
+  let w: [f64, i64, null, Array<i64>] = 1.5;
+  (f(v), f(w))
+}"#,
+    prints("[i64:1, f64:1.5]")
+);
+run!(
+    uncovered_primitive_refused_by_the_open_members_bound,
+    r#"{
+  let f = 'a: Number |x: [['a, null], Array<i64>]| x;
+  let v: [i64, string, null, Array<i64>] = 1;
+  f(v)
+}"#,
+    refused("does not contain [i64, null, string, Array<i64>]");
+    FuseExpect::None
+);
+run!(
+    open_member_beside_a_covered_primitive_widens_to_a_wider_argument,
+    r#"{
+  let f = |x: ['a, null], y: 'a| -> 'a select x { null as _ => y, v => v };
+  let v: [Array<i64>, i64, null] = null;
+  let w: [Array<i64>, i64, null] = [9];
+  (f(v, 3), f(v, w))
+}"#,
+    prints("[i64:3, [i64:9]]")
+);
+run!(
+    open_member_beside_a_covered_primitive_takes_no_argument_apart_refused,
+    r#"{
+  let f = |x: ['a, null], y: 'a| -> 'a select x { null as _ => y, v => v };
+  let v: [Array<i64>, i64, null] = null;
+  let n: [i64, null] = null;
+  f(v, n)
+}"#,
+    refused("does not contain [i64, null]");
+    FuseExpect::None
+);
+
 /// A union holding the very cell it is asked to contain binds nothing.
 const UNION_HOLDS_ITS_OWN_CELL: &str = r#"
 {
