@@ -13126,6 +13126,35 @@ run!(
     prints("[null]")
 );
 
+// The wrapper's variable in a union under such a bound stands below the
+// bound's variable, as a decided union does: 'c is `['a, null]`, so what
+// the callee returns at 'c holds the null in the wrapper.
+run!(
+    declared_variable_in_a_union_under_a_callees_bound_is_below_its_variable,
+    r#"{
+  let g = 'b: {p: ['c, null], q: 'c} |x: 'b| -> 'c {
+    let y: {p: ['c, null], q: 'c} = x;
+    y.q
+  };
+  let f = |w: {p: ['a, null], q: ['a, null]}| g(w);
+  (f({p: 2, q: null}), f({p: "s", q: "t"}))
+}"#,
+    prints(r#"[null, "t"]"#)
+);
+run!(
+    declared_variable_in_a_union_under_a_callees_bound_types_its_result_with_the_union,
+    r#"{
+  let g = 'b: {p: ['c, null], q: 'c} |x: 'b| -> 'c {
+    let y: {p: ['c, null], q: 'c} = x;
+    y.q
+  };
+  let f = |w: {p: ['a, null], q: ['a, null]}| g(w);
+  f({p: 2, q: null}) + 1
+}"#,
+    refused("cannot compute [null, 'a: i64] + i64");
+    FuseExpect::None
+);
+
 // Two undecided elements of one array under such a bound: each stays
 // within the bound's union and the bound's variable is above both, so
 // each one's conjunct comes to hold its own cell, and admits whatever

@@ -1947,8 +1947,14 @@ is written in the parameter: `'b: Array<['c, null]> |x: 'b, s: 'c|`
 called `g(w, v)` in `|v: 'a, w: Array<'a>|` makes `'c` `'a`, and
 `g(w, null)` is refused there, since `'a` holds no null. A part recorded
 on the rigid cell would prove itself (`['c, null] ⊇ 'a` by the conjunct
-`['c, null]`), and `null ⊇ 'a` by deciding `'c` null. Pins:
+`['c, null]`), and `null ⊇ 'a` by deciding `'c` null. Where the value
+holds the variable in a union, the bound's cell stands above the union
+as it does above a decided one: `'b: {p: ['c, null], q: 'c}` taking
+`{p: ['a, null], q: ['a, null]}` makes `'c` `['a, null]`, and a result
+typed `'c` holds the null in the wrapper. The written parameter merges
+`'c` with `'a` at `p` and refuses `q`, with a decided union alike. Pins:
 `lang::types::declared_variable_under_a_callees_bound_*`,
+`lang::types::declared_variable_in_a_union_under_a_callees_bound_*`,
 `contains::tests::a_bounds_part_narrows_no_rigid_cell`.
 
 ### `Concrete`: a conjunct that is a predicate

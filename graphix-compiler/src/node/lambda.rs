@@ -1348,6 +1348,24 @@ impl<R: Rt> GXLambda<R> {
 }
 
 impl Typing {
+    // CR claude for claude: [risk/low] An instance checked again refuses a
+    // body that reads a bounded parameter at its bound, where the instance's
+    // type is narrower than the bound. `let g = 'b: Array<[i64, null]> |x:
+    // 'b| -> Array<[i64, null]> array::push(x, null); let x: Array<i64> =
+    // [2]; g(x)` checks and prints [2, null], and under GRAPHIX_NO_SUBST=1
+    // the instance is refused at the `null`, "type mismatch 'a: i64 does not
+    // contain null": the definition's check reads `x` as its bound, so push's
+    // 'a is `[i64, null]`; the instance's check reads `x` as `Array<i64>`,
+    // which decides 'a i64 before the null is met. `array::concat(x, [null])`
+    // and a local `|a: Array<'e>, e: 'e|` called `h(x, null)` split alike,
+    // and so does the instance of a wrapper (`|v: 'a, w: Array<'a>| g(w, v)`
+    // over `'b: Array<['c, null]>`). The default build is right: the value
+    // is in the bound. base-r24 alike. A fix has the instance's check read a
+    // bounded parameter as the definition's did (its bound, substituted).
+    // Found reviewing rigid-narrowed-by-callee-bound-01. probes:
+    // ~/ptmp/cr29/scratch/r24/24c/rnbrev/{n1,n3,n4,c3,b7}.gx
+    // (nosubst-bound-upcast-01)
+
     /// Whether the instance checks its body again (`GRAPHIX_NO_SUBST`),
     /// where its definition's types would do.
     fn rechecks(&self) -> bool {
