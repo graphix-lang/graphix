@@ -5754,3 +5754,60 @@ run!(
         let result = T::m(1, 2, [1])
     "#
 );
+
+// A method whose value is a block takes the declaration as a lambda does;
+// its calls bind at run time.
+run!(
+    method_variable_beside_a_written_member_in_a_block_value,
+    prints(r#"[i64:2, "b"]"#),
+    "/test.gx" => r#"
+        trait T { val m: fn(self, x: [Array<'a>, Array<string>], y: 'a) -> 'a };
+        impl T for i64 { let m = { let k = 1; |s, x, y| y } };
+        let result = (T::m(1, [1], 2), T::m(1, ["a"], "b"))
+    "#
+    ; FuseExpect::None
+);
+
+// Where the declaration holds the method's type from above (its result,
+// a callback's parameter) and no parameter before it holds the variable,
+// the lambda's own variable there could be the declaration's or the
+// written member's: the position is written with the member it gives.
+run!(
+    method_result_variable_beside_a_written_member_is_refused,
+    refused("could go to Array<string> or Array<'a1: unbound> of the union"),
+    "/test.gx" => r#"
+        trait T { val m: fn(self) -> [Array<'a>, Array<string>] };
+        impl T for i64 { let m = |s| ["x"] };
+        let result = T::m(1)
+    "#
+);
+
+run!(
+    method_result_variable_beside_a_written_member_written,
+    prints(r#"["x"]"#),
+    "/test.gx" => r#"
+        trait T { val m: fn(self) -> [Array<'a>, Array<string>] };
+        impl T for i64 { let m = |s| -> Array<string> ["x"] };
+        let result = T::m(1)
+    "#
+);
+
+run!(
+    method_callback_variable_beside_a_written_member_is_refused,
+    refused("could go to { a: string } or { a: 'a1: unbound } of the union"),
+    "/test.gx" => r#"
+        trait T { val m: fn(self, k: fn(v: [{a: 'a}, {a: string}]) -> i64, y: 'a) -> i64 };
+        impl T for i64 { let m = |s, k, y| k({a: "x"}) };
+        let result = T::m(1, |v: [{a: i64}, {a: string}]| 7, 2)
+    "#
+);
+
+run!(
+    method_callback_variable_beside_a_written_member_written,
+    is(Value::I64(7)),
+    "/test.gx" => r#"
+        trait T { val m: fn(self, k: fn(v: [{a: 'a}, {a: string}]) -> i64, y: 'a) -> i64 };
+        impl T for i64 { let m = |s, k: fn(v: {a: string}) -> i64, y| k({a: "x"}) };
+        let result = T::m(1, |v: [{a: i64}, {a: string}]| 7, 2)
+    "#
+);

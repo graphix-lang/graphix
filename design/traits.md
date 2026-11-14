@@ -408,6 +408,19 @@ implementation has string", and with `y` first it holds (pins
 `default_method_variable_beside_a_written_member_ahead_of_its_decider`,
 `method_narrower_than_a_declared_variable_is_refused`,
 `method_let_annotation_variable_*`).
+A method that took the signature is that signature, so the impl's last
+containment, which holds an annotated method or a binding's read to the
+declaration, passes it by. Where the declaration holds the method's type
+from above (its result, a callback's parameter) and no parameter before
+that place holds the variable, the lambda's own variable there could be
+the declaration's or the written member's, and neither takes it
+(`UndecidedTaker`): `val m: fn(self) -> [Array<'a>, Array<string>]` with
+`|s| ["x"]` is refused, and runs with the place written as the member it
+gives, `|s| -> Array<string> ["x"]`; a callback's parameter alike, `|s,
+k: fn(v: {a: string}) -> i64|` (pins
+`lang::traits::method_result_variable_beside_a_written_member_*`,
+`method_callback_variable_beside_a_written_member_*`,
+`method_variable_beside_a_written_member_in_a_block_value`).
 In an impl, `self` is the impl's target in every type the impl writes,
 as a default's `self` is its trait's: a method's `let` annotation, its
 lambda's parameters and result, and a lambda, `let`, cast, `never<T>`,
