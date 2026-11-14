@@ -2887,6 +2887,14 @@ implementation is refused (`design/module_system.md`). So does a union of
 a bound's length whose members pair with the bound's in no order
 (`SigPairs::settle_bound`): the implementation's may be the wider.
 
+That refusal does not model which place of a signature variable a call
+decides first (argument order decides, nothing is chased),
+so an implementation variable named at two places of one signature
+variable is refused whether or not the first of them is a parameter, and
+the rewrite is the one the message names: the variable at a parameter, or
+a bound of one type (`'p: [i64, string] + NoError`). Pins:
+`lang::interfaces::an_unpaired_variable_at_one_variable_*`.
+
 ### `FnType` derives its constraint list from the cells
 
 The `constraints` list is gone from `FnType` (`typ/fntyp.rs`). Every

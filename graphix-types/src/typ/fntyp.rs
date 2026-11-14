@@ -2332,46 +2332,6 @@ impl FnType {
                                 witnessed.push((i, w.clone()));
                                 Some((w, true))
                             }
-                            // CR claude for claude: [bug/low] The refusal below takes some
-                            // implementations every instance of which is held: a variable with
-                            // no witness named at two places of ONE signature variable, where the
-                            // first of those places (in parameter order) is the first position of
-                            // the signature that reaches the variable, so a call decides it there
-                            // and every later place holds a part of it. `val f: fn<'a: [i64,
-                            // string], 'b: (i64, 'a), 'd: (i64, 'a)>(x: 'b, y: 'd) -> i64;` over
-                            // `let f = 'p: NoError, 'q: (Number, 'p), 'r: (Number, 'p) |x: 'q, y:
-                            // 'r| -> i64 0` (o3), `val f: fn<'a: [i64, string] + Singleton, 'd:
-                            // Array<'a>>(x: Array<'a>, y: 'd) -> i64;` over `'p: NoError, 'q:
-                            // Array<'p>, 'r: Array<'p>` (o2) and `'b: (i64, 'a), 'd: fn(x: 'a, y:
-                            // Number) -> i64` over `'q: (Number, 'p), 'r: fn(x: 'p, y: i64) ->
-                            // i64` (o1) passed --check and ran on base-r24, and are refused "is
-                            // one type wherever a bound names it" since sig-unpaired-apart-01's
-                            // fix, which cannot tell them from their twins that fail at the
-                            // instance: the same bounds with `z: 'a` as a first parameter and
-                            // `m::f(u, (1, 1), (1, "s"))`, `u: [i64, string]`, where the holders'
-                            // picks differ beneath a variable an earlier argument decided. A fix
-                            // models that order: the places carry the position they are reached
-                            // from, and two places of one signature variable hold where the
-                            // earliest of them is the first position that reaches the variable
-                            // (FnType::sig_bounds's `pinned` asks the like of a pairing's
-                            // holders). Each has a rewrite today: the variable named at a
-                            // parameter, as the signature does, or a bound of one type (`'p: [i64,
-                            // string] + NoError`). In 2500 generated interfaces
-                            // (~/ptmp/cr29/scratch/r24/24e/sig-unpaired-apart-01/gen.py, seeds 1 2
-                            // 3 5 7) this takes about 1 in 50 that base-r24 ran at every pick.
-                            // probes: ~/ptmp/cr29/scratch/r24/24e/sig-unpaired-apart-01/{o1,o2,o3}/main.gx
-                            // (sig-one-type-order-01)
-                            // 2026-11-13 claude: Round 24 review of sig-unpaired-apart-01 (lane 24e): the
-                            // review's second route (FnType::sig_bounds judges every other witnessed
-                            // variable as its witness beside one named at two places, as FnType::held_at
-                            // settles them together) reads a variable WITH a witness at two places of one
-                            // signature variable as settled, though an instance whose first place decides
-                            // it never settles, so it refuses a witnessed variable in a function's
-                            // argument beside it: 1 of 4000 generated interfaces that ran at every
-                            // generated pick (g3/h21_0307: 'p: [i64, string] under fn(x: i64) -> 'c and
-                            // ['c, `X], 'k: [i64, string, f64] in fn(x: 'k, y: i64) -> i64). A fix here
-                            // that carries the position each place is reached from frees it too. probes:
-                            // ~/ptmp/cr29/scratch/r24/24e/sig-unpaired-apart-01/review/g3/h21_0307/
                             None => {
                                 let mut other = rest.iter().map(|(m, _)| m).rev();
                                 let other = other.find(|m| !strictly_identical(first, m));
