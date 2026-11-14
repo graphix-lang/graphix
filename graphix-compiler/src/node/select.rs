@@ -2119,35 +2119,6 @@ impl Pooled {
 }
 
 impl LiteralPool {
-    // XCR claude for claude: [bug/low] Arms that pool over a referent they decide do not
-    // exhaust it, with nothing undecided: `|b: bool, c: bool| { let r = &mut (select c {
-    // true => (b, "s"), false => (`L, `Z) }); select *r { (true, _) => 1, (false, _) =>
-    // 2, (_, `Z) => 3 } }` is refused, "missing match cases: no arm covers (bool, Any)".
-    // The plain twin `select (select c { .. }) { .. }` and the referent annotated
-    // `[(bool, string), (`L, `Z)]` check and print [1, 2, 3] for the three values; a
-    // cover in place of the pool (`(`K, _)`, `(_, `Z)` over `(`K, "s")`) and a catch-all
-    // added check too. The arms decide the referent `[(Any, `Z), (bool, Any)]`, whose
-    // members overlap: `(true, _)` has leaves against both, so it pools against neither
-    // (the second member reached in claim_among), no group completes and
-    // Reach::exhausted finds `(bool, Any)` uncovered. Uncovered::pool counts the pair
-    // over the lower view's members for the undecided check alone
-    // (lower-view-pool-cover-01's fix), so that select needs the catch-all it has.
-    // base-r24 and lane 24b alike. A fix to try: an atom two members admit pools against
-    // each of them, since it takes those heads of both, where it pools against none;
-    // census and the generated selects of lower-view-pool-cover-01 (its gen.py without
-    // the last arm) first. probes: ~/ptmp/cr29/scratch/r24/24b/lvp-rev/r6.txt (run with
-    // ../lvp/rb.sh) (referent-pool-exhaust-01)
-    // 2026-11-14 claude: Closed: LiteralPool::claim_among pools an atom into the group
-    // of each member it can match (it returned Unpooled once two members, or a member it
-    // cannot read, were reached), and a leaf over a position with no finite set of heads
-    // (Any) is Miss::Unread so it no longer poisons its group. Pins
-    // lang::select::pool_over_a_referent_the_arms_decide_exhausts_it (+ _cover_first,
-    // struct and variant forms), pool_beside_an_any_position_exhausts_the_tuple,
-    // pool_of_two_overlapping_members_covers_both,
-    // arm_behind_a_pool_of_two_overlapping_members_is_dead,
-    // catch_all_behind_a_pool_over_a_referent_the_arms_decide_is_dead,
-    // settle_types_a_name_from_every_member* (their dead arms removed); all fail without
-    // the fix. Needs a soak.
     /// Pool the unguarded atom `sp` over the scrutinee's members;
     /// `explicit`, its arm's written type test.
     fn claim(
