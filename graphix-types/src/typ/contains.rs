@@ -497,6 +497,19 @@ impl ContainsHist {
         t.shared_identity().is_some() && self.closure(t, false) >= Closure::NoCell
     }
 
+    /// [`names_members_by`], each parameter's verdict kept by node
+    /// ([`Self::closure`]).
+    fn names_members(&mut self, env: &Env, m: &Type) -> bool {
+        names_members_by(env, m, &mut |p| self.closure(p, false) < Closure::NoCell)
+    }
+
+    /// Whether [`Self::closure`] has found `t` [`Closure::Plain`], without
+    /// a walk.
+    fn known_plain(&self, t: &Type) -> bool {
+        let closed = |k| self.closed.get().and_then(|m| m.get(&k)).map(|(c, _)| *c);
+        t.shared_identity().is_some_and(|k| closed(k) == Some(Closure::Plain))
+    }
+
     fn closure(&mut self, t: &Type, now: bool) -> Closure {
         ensure_sufficient(|| {
             let key = t.shared_identity();
@@ -967,7 +980,7 @@ impl ContainsHist {
             }
         };
         Ok(Some(match commit && self.closure(&e, false) < Closure::Plain {
-            true => e.reset_tvars(),
+            true => e.reset_tvars_beside(&|p| self.known_plain(p)),
             false => e,
         }))
     }
@@ -1127,26 +1140,41 @@ fn takes_lower(flags: BitFlags<ContainsFlags>, tv: &TVar, rigid_part: bool) -> b
 
 /// Whether `m`, a union's member, is a name or a bound cell that stands
 /// for an open variable or for a union holding one as a member: its
-/// members are the union's.
-fn names_members(env: &Env, m: &Type) -> bool {
-    fn named(m: &Type) -> bool {
+/// members are the union's. `holds_var` answers whether a name's
+/// parameter holds a variable.
+fn names_members_by(
+    env: &Env,
+    m: &Type,
+    holds_var: &mut dyn FnMut(&Type) -> bool,
+) -> bool {
+    fn named(m: &Type, holds_var: &mut dyn FnMut(&Type) -> bool) -> bool {
         match m {
-            Type::Ref(tr) => !tr.params.iter().all(|p| p.tvar_free()),
+            Type::Ref(tr) => tr.params.iter().any(|p| holds_var(p)),
             Type::TVar(tv) => tv.is_bound() && !is_unbound_tvar(m),
             _ => false,
         }
     }
-    fn go(env: &Env, m: &Type, seen: &mut Expanded) -> bool {
-        named(m)
+    fn go(
+        env: &Env,
+        m: &Type,
+        seen: &mut Expanded,
+        holds_var: &mut dyn FnMut(&Type) -> bool,
+    ) -> bool {
+        named(m, holds_var)
             && ensure_sufficient(|| match &named_head(env, m, seen) {
                 Some(Type::Set(ms)) => {
-                    ms.iter().any(|m| is_unbound_tvar(m) || go(env, m, seen))
+                    ms.iter().any(|m| is_unbound_tvar(m) || go(env, m, seen, holds_var))
                 }
                 Some(h) => is_unbound_tvar(h),
                 None => false,
             })
     }
-    named(m) && go(env, m, &mut Expanded::default())
+    named(m, holds_var) && go(env, m, &mut Expanded::default(), holds_var)
+}
+
+/// [`names_members_by`], each parameter walked ([`Type::tvar_free`]).
+fn names_members(env: &Env, m: &Type) -> bool {
+    names_members_by(env, m, &mut |p| !p.tvar_free())
 }
 
 /// Whether `m`, a union's member, is a name or a bound cell that stands
@@ -3343,7 +3371,7 @@ impl Type {
     ) -> Result<bool> {
         let mut unfolded = |t: &Self| match t {
             Self::Set(s)
-                if s.iter().any(|m| names_members(env, m)) && !hist.closed(t) =>
+                if s.iter().any(|m| hist.names_members(env, m)) && !hist.closed(t) =>
             {
                 Self::unfolded(env, s, false).ok()
             }
@@ -3845,7 +3873,7 @@ impl Type {
             (Self::Set(s0), _)
                 if commit
                     && !hist.closed(self)
-                    && s0.iter().any(|m| names_members(env, m)) =>
+                    && s0.iter().any(|m| hist.names_members(env, m)) =>
             {
                 let flat = Self::unfolded(env, s0, true)?;
                 let held = t.with_deref(|t| match t {
@@ -3857,7 +3885,7 @@ impl Type {
             (_, Self::Set(s1))
                 if commit
                     && !hist.closed(t)
-                    && s1.iter().any(|m| names_members(env, m)) =>
+                    && s1.iter().any(|m| hist.names_members(env, m)) =>
             {
                 self.contains_int(flags, env, hist, &Self::unfolded(env, s1, true)?)
             }
@@ -4515,7 +4543,7 @@ impl Type {
         t: &Type,
     ) -> Result<Option<bool>> {
         let named = flags.contains(ContainsFlags::Commit)
-            && s.iter().any(|m| names_members(env, m));
+            && s.iter().any(|m| hist.names_members(env, m));
         match named {
             false => Self::set_commit(s, flags, env, hist, t),
             true => match &Self::unfolded(env, s, true)? {

@@ -299,11 +299,14 @@ fn program(shape: &str, d: usize) -> String {
             let cells = (0..=d).map(|i| format!("'a{i}")).collect::<Vec<_>>().join(", ");
             format!("let f = {bounds} |x: ({cells})| x;\nf(never())")
         }
-        // The chain through a typedef's parameter, a variant's and a union.
-        "chainboundstypedef" | "chainboundsvariant" | "chainboundsunion" => {
+        // The chain through a typedef's parameter, a variant's, a union and
+        // a typedef that is a union of its parameter.
+        "chainboundstypedef" | "chainboundsvariant" | "chainboundsunion"
+        | "chainboundsalias" => {
             let link = |i: usize| match shape {
                 "chainboundstypedef" => format!("'a{i}: T<'a{}>", i + 1),
                 "chainboundsvariant" => format!("'a{i}: `V('a{})", i + 1),
+                "chainboundsalias" => format!("'a{i}: M<'a{}>", i + 1),
                 _ => format!("'a{i}: [Array<'a{}>, null]", i + 1),
             };
             let bounds = (0..d)
@@ -312,8 +315,25 @@ fn program(shape: &str, d: usize) -> String {
                 .collect::<Vec<_>>()
                 .join(", ");
             let cells = (0..=d).map(|i| format!("'a{i}")).collect::<Vec<_>>().join(", ");
+            let typedef = match shape {
+                "chainboundsalias" => "type M<'x> = ['x, null];",
+                _ => "type T<'x> = Array<'x>;",
+            };
+            format!("{typedef}\nlet f = {bounds} |x: ({cells})| x;\nf(never())")
+        }
+        // The chain through a typedef's parameter, each cell a parameter of
+        // its own, every argument a call.
+        "chainboundsformals" => {
+            let bounds = (0..d)
+                .map(|i| format!("'a{i}: T<'a{}>", i + 1))
+                .chain([format!("'a{d}: Number")])
+                .collect::<Vec<_>>()
+                .join(", ");
+            let formals =
+                (0..=d).map(|i| format!("x{i}: 'a{i}")).collect::<Vec<_>>().join(", ");
+            let args = vec!["never()"; d + 1].join(", ");
             format!(
-                "type T<'x> = Array<'x>;\nlet f = {bounds} |x: ({cells})| x;\nf(never())"
+                "type T<'x> = Array<'x>;\nlet f = {bounds} |{formals}| x0;\nf({args})"
             )
         }
         // The chain with a second conjunct on every link, the last link a
@@ -955,16 +975,52 @@ fn a_chain_of_bounds_elaborates_in_linear_time() {
 // in (2). The written chain at 10000 links spends 75% of the eval thread in
 // holds_open_union too, a few walks of the whole chain (linear). perf record -F
 // 2000, flat; probes ~/ptmp/cr29/scratch/r23/23g/chainbounds-elab-alias-01/review/
+// 2026-11-13 claude: Round 24, partly fixed again: (1), (2) and (3)'s probe are
+// linear. (1) ContainsHist::expand_ref's commit copy keeps, without walking it, each
+// part ContainsHist::closure has found Plain (Type::reset_tvars_beside,
+// Fresh::CopyBeside), so a link's expansion `fn(x: C<..>) -> i64` copies its
+// function type and not the rest of the chain. (2) The union arms of
+// contains_int_inner, contains_unfolded and set_commit_flat ask
+// ContainsHist::names_members, which reads whether a name's parameter holds a
+// variable from ContainsHist::closure, kept by node, where names_members walked the
+// parameter with tvar_free to the chain's end at every link. (3) typecheck_arg makes
+// a formal's open copy (Widening::opening) only for an argument that pre-unifies
+// with it, a reference or a type made before its check holding a free cell; a call
+// argument (`never()`) made the copy, never pre-unified, and its rejoin only merged
+// the unused copy back. --expand (--check for formals) --no-cache, debug, G
+// instructions (empty 0.74), base-r24 -> lane: fnalias 4000/8000/16000
+// 6.32/19.27/67.14 -> 2.64/4.55/8.41; alias 4000/8000/16000 4.36/10.71/31.60 ->
+// 2.97/5.19/9.70; formals 1000/2000/4000 4.54/15.54/58.95 -> 1.03/1.34/1.96; a
+// wrapper `let g = |y0, ..| f(y0, ..)` called `g(never(), ..)` 500/1000 1.90/4.85 ->
+// 1.03/1.36; gen2.py's 13 other shapes alike on both. Pins in deep_nesting, each
+// failing with its part undone:
+// a_chain_of_bounds_as_parameters_checks_in_linear_time (3),
+// a_chain_of_bounds_through_a_function_typedef_elaborates_in_linear_time (1),
+// chainboundsalias in
+// a_chain_of_bounds_through_a_typedef_or_a_variant_elaborates_in_linear_time (2).
+// What remains: an argument that pre-unifies still copies its formal through every
+// cell the formal's conjuncts reach, bindings and all. References decided but for a
+// cell inside a function type (`let v{n} = |z| 0; let v{i} = [v{i+1}]`, `f(v0, ..,
+// v{n})`, gen4.py fnargs) check in cubic time, 4.15/22.37/154.8 G at 250/500/1000,
+// base-r24 alike. What would fix it is a copy that keeps the cells the conjuncts
+// reach, as Widening::opening's doc says ("every other cell the formal's own"); that
+// changes which cells a pre-unification binds, so it was not tried. A typedef chain
+// in the arguments' types is carries-typedef-chain-01. probes:
+// ~/ptmp/cr29/scratch/r24/24f/cbea/ (README)
 /// The chain through a typedef's parameter, or a variant's, elaborates in
 /// time linear in its length, at two depths: the instance's type holds
 /// each link's application once, a node every walk and rewrite of it
 /// visits once, and the call's check keys, hashes and expands each
-/// application once.
+/// application once. Through a typedef that is a union of its parameter,
+/// whether each link's application names a union member is asked of its
+/// parameter once a walk, not walked to the chain's end at every link.
 #[test]
 #[cfg(target_os = "linux")]
 fn a_chain_of_bounds_through_a_typedef_or_a_variant_elaborates_in_linear_time() {
     let expand = ["--expand", "--no-cache"];
-    for (shape, budget) in [("chainboundstypedef", 7), ("chainboundsvariant", 6)] {
+    for (shape, budget) in
+        [("chainboundstypedef", 7), ("chainboundsvariant", 6), ("chainboundsalias", 8)]
+    {
         completes_within(&expand, &program(shape, CHAIN_DEPTH), budget * BILLION);
         completes_within(
             &expand,
@@ -988,14 +1044,30 @@ fn a_chain_of_bounds_through_function_types_elaborates_in_linear_time() {
     }
 }
 
-/// The chain through a function typedef elaborates without comparing each
-/// link's expansion with every other's: a function type is keyed by its
-/// parts, any open cell inside it alike.
+/// The chain through a function typedef elaborates in time linear in its
+/// length, at two depths: no link's expansion is compared with every
+/// other's, since a function type is keyed by its parts, any open cell
+/// inside it alike; and a commit's copy of a link's expansion keeps the
+/// rest of the chain, which holds no cell, without walking it.
 #[test]
 #[cfg(target_os = "linux")]
-fn a_chain_of_bounds_through_a_function_typedef_elaborates_in_time() {
+fn a_chain_of_bounds_through_a_function_typedef_elaborates_in_linear_time() {
     let expand = ["--expand", "--no-cache"];
-    completes_within(&expand, &program("chainboundsfnalias", 2000), 5 * BILLION)
+    let chain = |d| program("chainboundsfnalias", d);
+    completes_within(&expand, &chain(CHAIN_DEPTH), 7 * BILLION);
+    completes_within(&expand, &chain(2 * CHAIN_DEPTH), 13 * BILLION)
+}
+
+/// The chain through a typedef's parameter, each cell a parameter of its
+/// own and every argument a call, checks in time linear in its length, at
+/// two depths: an argument whose type its own check makes is not
+/// pre-unified, so no open copy of its formal, which would copy the chain
+/// below it, is made for it.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_chain_of_bounds_as_parameters_checks_in_linear_time() {
+    checks_within(&program("chainboundsformals", CHAIN_DEPTH), 5 * BILLION);
+    checks_within(&program("chainboundsformals", 2 * CHAIN_DEPTH), 9 * BILLION)
 }
 
 /// The chain through a union elaborates in time linear in its length, at

@@ -767,6 +767,16 @@ fn walk_step() {
     WALK_STEPS.with(|n| n.set(n.get() + 1));
 }
 
+// CR claude for claude: [perf/low] A call whose arguments are typed by a chain of
+// typedef names checks in time quadratic in the chain: CallSite::for_each_unread asks
+// carries of each argument, and Type::holds_fn walks each argument's type through every
+// name to the chain's end, with a fresh Verdicts each time. Over the chain of bounds as
+// formals (`'a{i}: T<'a{i+1}>`, `|x0: 'a0, ..|`), `type A{i} = Array<A{i+1}>`, `let
+// v{i}: A{i} = never()`, `f(v0, .., v{n})`: --check --no-cache, debug, G instructions
+// 1.17 / 2.21 / 6.14 at 250 / 500 / 1000 links, holds and holds_fn on top (base-r24
+// 1.45 / 3.29 / 10.49, which also copied each formal). Found fixing
+// chainbounds-elab-alias-01. probe: ~/ptmp/cr29/scratch/r24/24f/cbea/gen4.py decided N
+// OUT (carries-typedef-chain-01)
 /// Whether a value of `t` can carry a value of a cell its formal holds:
 /// a function may be called with one, an unknown part may be one.
 fn carries(env: &Env, t: &Type) -> bool {
@@ -855,6 +865,16 @@ fn fill_omitted<R: Rt>(args: &mut ArgMap<R>, ftype: &FnType) -> Result<()> {
 /// address of the formal's cell it copies.
 type Copies = LPooled<AHashMap<usize, TVar>>;
 
+/// How a formal stands to its argument's check ([`Widening::opening`]).
+enum Opening {
+    /// It holds no widenable variable: the argument pre-unifies with it.
+    Closed,
+    /// It holds one, and the argument does not pre-unify.
+    Open,
+    /// It holds one: the copy the argument pre-unifies with, and its cells.
+    Copy(Type, Copies),
+}
+
 /// A formal's cells, each with its copy in the formal's open copy and the
 /// bounds the copy was made with: the cell's.
 type Copied = LPooled<Vec<(TVar, TVar, Bounds)>>;
@@ -897,11 +917,13 @@ fn ambiguous_parameter(e: anyhow::Error) -> anyhow::Error {
 /// variable and no undecided cell ([`Type::pre_unify_copy`]): a declared
 /// variable it holds would be one cell with the copy's, within the copy's
 /// bounds, over cells no instance has. `pinned` is what a refusal adds
-/// where an undecided argument pinned a variable of the formal.
+/// where an undecided argument pinned a variable of the formal. `opening`
+/// is [`Widening::opening`] of the formal, told whether the argument
+/// pre-unifies with a copy.
 fn typecheck_arg<R: Rt>(
     ctx: &mut CompileCtx<R>,
     typ: &Type,
-    opening: Option<(Type, Copies)>,
+    opening: impl FnOnce(&Env, bool) -> Opening,
     pinned: Option<CompactString>,
     prebound: &AHashSet<usize>,
     n: &mut Node<R>,
@@ -912,9 +934,10 @@ fn typecheck_arg<R: Rt>(
     if named {
         wrap!(n, n.typecheck0(ctx))?;
     }
-    let (opening, copies) = opening.unzip();
+    let made = named || n.typ().with_deref(|t| t.is_some());
+    let opening = opening(&ctx.env, made && n.typ().has_free());
     let note = match opening {
-        None if n.typ().has_free_in_data() => {
+        Opening::Closed if n.typ().has_free_in_data() => {
             decided_elsewhere(&ctx.env, typ, prebound, n.typ())?
         }
         _ => None,
@@ -923,17 +946,21 @@ fn typecheck_arg<R: Rt>(
         Some(note) => Told::over(e, note),
         None => e,
     };
-    let unchecked = !named && n.typ().with_deref(|t| t.is_none());
     match &opening {
-        None => Type::pre_unify_arg(&ctx.env, typ, n.typ()).map_err(refused)?,
-        Some(open) if !unchecked && n.typ().has_free() => {
+        Opening::Closed => {
+            Type::pre_unify_arg(&ctx.env, typ, n.typ()).map_err(refused)?
+        }
+        Opening::Copy(open, _) => {
             Type::pre_unify_copy(&ctx.env, open, n.typ()).map_err(refused)?
         }
-        Some(_) => (),
+        Opening::Open => (),
     }
     wrap!(n, n.typecheck0(ctx)).map_err(|e| undecided_taker(ctx, n, refused(e)))?;
-    Ok(match copies {
-        Some(copies) if n.typ().has_free_in_data() => {
+    Ok(match opening {
+        Opening::Closed => ArgFit::Decided,
+        _ if !n.typ().has_free_in_data() => ArgFit::Decided,
+        Opening::Open => ArgFit::Undecided(LPooled::take()),
+        Opening::Copy(_, copies) => {
             let mut copied: Copied = LPooled::take();
             Reach::default().go(typ, &mut |_| false, &mut |tv| {
                 if let Some(copy) = copies.get(&tv.cell_addr()) {
@@ -943,7 +970,6 @@ fn typecheck_arg<R: Rt>(
             });
             ArgFit::Undecided(copied)
         }
-        _ => ArgFit::Decided,
     })
 }
 
@@ -1550,23 +1576,28 @@ impl Widening {
     /// widenable variable, and its cells: a copy with those variables open
     /// and every other cell the formal's own, so the pre-unification
     /// refuses no argument wider than the ones before it, which
-    /// [`Self::join`] then widens.
+    /// [`Self::join`] then widens. The copy is made only where `copy`
+    /// says the argument may pre-unify with it.
     fn opening(
         &mut self,
         env: &Env,
         def: &Type,
         inst: &FnType,
         formal: &Type,
-    ) -> Option<(Type, Copies)> {
+        copy: bool,
+    ) -> Opening {
         if !self.fresh {
-            return None;
+            return Opening::Closed;
         }
         let cells = Self::cells(&mut self.cells, env, def, inst);
         let formal = &Self::standing(cells, formal);
         let mut all: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         formal.collect_tvars(&mut all);
         if !all.keys().any(|name| cells.contains_key(name)) {
-            return None;
+            return Opening::Closed;
+        }
+        if !copy {
+            return Opening::Open;
         }
         let kept: LPooled<AHashMap<ArcStr, Type>> = all
             .iter()
@@ -1579,7 +1610,7 @@ impl Widening {
         for tv in copies.values().filter(|tv| widened(&tv.name)) {
             tv.unbind()
         }
-        Some((open, copies))
+        Opening::Copy(open, copies)
     }
 
     /// The widenable variables `formal` reaches widen no more: an
@@ -4391,9 +4422,10 @@ impl<R: Rt> CallSite<R> {
                 continue;
             }
             if let Some(n) = arg.node.as_mut() {
-                let opening =
-                    widening.opening(&ctx.env, self.fnode.typ(), ftype, &farg.typ);
                 let pinned = widening.pinned_note(&farg.typ);
+                let def = self.fnode.typ();
+                let opening =
+                    |env: &Env, copy| widening.opening(env, def, ftype, &farg.typ, copy);
                 let fit = typecheck_arg(ctx, &farg.typ, opening, pinned, &prebound, n)?;
                 widening.fit(ctx, self.fnode.typ(), ftype, &farg.typ, n, fit)?;
             }
@@ -4403,9 +4435,10 @@ impl<R: Rt> CallSite<R> {
             for key in ArgKey::variadic(positional) {
                 let Some(arg) = self.args.get_mut(&key) else { break };
                 if let Some(n) = arg.node.as_mut() {
-                    let opening =
-                        widening.opening(&ctx.env, self.fnode.typ(), ftype, typ);
                     let pinned = widening.pinned_note(typ);
+                    let def = self.fnode.typ();
+                    let opening =
+                        |env: &Env, copy| widening.opening(env, def, ftype, typ, copy);
                     let fit = typecheck_arg(ctx, typ, opening, pinned, &prebound, n)?;
                     widening.fit(ctx, self.fnode.typ(), ftype, typ, n, fit)?;
                 }

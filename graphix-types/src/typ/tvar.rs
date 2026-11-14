@@ -1417,15 +1417,18 @@ pub(super) fn lower(t: &Type, level: Level) {
 }
 
 /// How a copy of a type treats its cells: `Copy` makes a fresh cell per
-/// cell at the source's level; `Instantiate` is a call's copy, a fresh
-/// cell at the current level per cell a call copies
-/// ([`Level::copied_by`] the open gates), every other cell shared;
-/// `Scheme` is `Instantiate` whose fresh cells are generic, a
-/// reference's copy of the scheme it names; `Generic` copies the generic
-/// cells alone, a stored scheme's, and shares every live one.
+/// cell at the source's level; `CopyBeside` is `Copy` that keeps a part its
+/// oracle finds holds no cell and no function type, as `Copy` would, without
+/// walking it; `Instantiate` is a call's copy, a fresh cell at the
+/// current level per cell a call copies ([`Level::copied_by`] the open
+/// gates), every other cell shared; `Scheme` is `Instantiate` whose fresh
+/// cells are generic, a reference's copy of the scheme it names; `Generic`
+/// copies the generic cells alone, a stored scheme's, and shares every
+/// live one.
 #[derive(Clone, Copy)]
 pub(crate) enum Fresh<'a> {
     Copy,
+    CopyBeside(&'a dyn Fn(&Type) -> bool),
     Instantiate(&'a IntSet<LambdaId>),
     Scheme(&'a IntSet<LambdaId>),
     Generic,
@@ -3238,7 +3241,7 @@ impl TVar {
             return f.named_as(self);
         }
         let f = match how {
-            Fresh::Copy => self.fresh_copy(),
+            Fresh::Copy | Fresh::CopyBeside(_) => self.fresh_copy(),
             Fresh::Instantiate(open) if self.level().copied_by(open) => {
                 let f = TVar::empty_named(self.name.clone());
                 f.cell().write().call_copy = true;
@@ -5536,6 +5539,13 @@ impl Type {
             .unwrap_or_else(|| self.clone())
     }
 
+    /// [`Self::reset_tvars`], each part `plain` answers for, one holding
+    /// no cell and no function type, kept without a walk.
+    pub(super) fn reset_tvars_beside(&self, plain: &dyn Fn(&Type) -> bool) -> Type {
+        self.reset_tvars_int(&mut LPooled::take(), Fresh::CopyBeside(plain))
+            .unwrap_or_else(|| self.clone())
+    }
+
     /// `self ⊇ t` with each of `held`, open cells, one type equal only to
     /// itself, whatever it becomes: over copies of both, each of `held`
     /// copied to one fresh cell held rigid, so it decides no cell.
@@ -5639,6 +5649,11 @@ impl Type {
         nodes: &mut CopyMemo,
         how: Fresh<'_>,
     ) -> Option<Type> {
+        if let Fresh::CopyBeside(plain) = how
+            && plain(self)
+        {
+            return None;
+        }
         ensure_sufficient(|| match self {
             Type::TVar(tv) => {
                 Some(Type::TVar(
