@@ -1853,6 +1853,40 @@ fn holds_as_it_stands(
     holds
 }
 
+/// Whether `tier[at]` takes `t` on copies, and, when `after` is asked,
+/// which members of the tier hold `t` as it stands once it has: bit `i`
+/// for `tier[i]`, none where a probe failed. Each is what [`decide_alike`]
+/// asks of the pair, taken from the same walk.
+fn takes_leaving(
+    tier: &[&Type],
+    at: usize,
+    after: bool,
+    flags: BitFlags<ContainsFlags>,
+    env: &Env,
+    hist: &ContainsHist,
+    t: &Type,
+) -> Result<(bool, Option<u64>)> {
+    let others: SmallVec<[(usize, &Type); 4]> =
+        tier.iter().copied().enumerate().filter(|(i, _)| after && *i != at).collect();
+    let mut ts: SmallVec<[&Type; 6]> = smallvec::smallvec![tier[at], t];
+    ts.extend(others.iter().map(|(_, o)| *o));
+    on_copies_of(Some((hist, env)), &ts, |copies, trial| {
+        let [m, t, rest @ ..] = &copies[..] else { unreachable!() };
+        if !m.contains_int(flags, env, trial, t)? {
+            return Ok((false, None));
+        }
+        let mut bits = after.then_some(0u64);
+        for ((i, _), o) in others.iter().zip(rest) {
+            bits = match (bits, holds_as_it_stands(o, flags, env, trial, t)) {
+                (Some(bits), Ok(true)) => Some(bits | 1 << i),
+                (bits, Ok(true) | Ok(false)) => bits,
+                (_, Err(_)) => None,
+            }
+        }
+        Ok((true, bits))
+    })
+}
+
 /// Whether `m0` and `m1`, decided members of a union that each hold `t`,
 /// decide its cells alike: each holds `t` as the other decides it, so
 /// which of them takes it decides nothing.
@@ -2226,9 +2260,25 @@ pub(super) fn on_copies<const N: usize, R>(
     ts: [&Type; N],
     f: impl FnOnce([Type; N], &mut ContainsHist) -> Result<R>,
 ) -> Result<R> {
+    on_copies_of(within, &ts, |copies, trial| {
+        let mut copies = copies.drain(..);
+        f([(); N].map(|()| copies.next().expect("one copy of each type")), trial)
+    })
+}
+
+/// [`on_copies`] over any number of types.
+pub(super) fn on_copies_of<R>(
+    within: Option<(&ContainsHist, &Env)>,
+    ts: &[&Type],
+    f: impl FnOnce(&mut SmallVec<[Type; 4]>, &mut ContainsHist) -> Result<R>,
+) -> Result<R> {
     let mut known: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-    let copies = ts
-        .map(|t| t.reset_tvars_int(&mut known, Fresh::Copy).unwrap_or_else(|| t.clone()));
+    let mut copies: SmallVec<[Type; 4]> = ts
+        .iter()
+        .map(|t| {
+            t.reset_tvars_int(&mut known, Fresh::Copy).unwrap_or_else(|| (*t).clone())
+        })
+        .collect();
     let mut gates: LPooled<Vec<RigidGate>> = LPooled::take();
     for t in ts {
         find_open_cell(t, true, &mut |tv| {
@@ -2244,7 +2294,7 @@ pub(super) fn on_copies<const N: usize, R>(
     if let Some((walk, env)) = within {
         walk.seed(&mut trial, &mut known, env, Inherit::Assumed)
     }
-    f(copies, &mut trial)
+    f(&mut copies, &mut trial)
 }
 
 /// A cell, a type that may reach it and the edges the walk takes.
@@ -5078,7 +5128,9 @@ impl Type {
     /// member beside another for a type a pre-unification meets
     /// undecided. Two decided ones that could take a type holding a cell
     /// to decide, and would decide it differently ([`decide_alike`]),
-    /// would decide it by their place in the union ([`UndecidedTaker`]).
+    /// would decide it by their place in the union ([`UndecidedTaker`]); the
+    /// walk on copies that admits a decided member reports which of the
+    /// others hold `t` as it stands after it ([`takes_leaving`]).
     /// A walk on copies takes the first, and a trial commits its members
     /// directly: a trial nested in each would double the walk at every
     /// level of a union typedef chain. Where none holds it, the last
@@ -5106,10 +5158,12 @@ impl Type {
             }
         }
         let mut fixed_t = None;
+        let mut t_open = None;
         for tier in tiers {
             let mut open: SmallVec<[&Type; 2]> = SmallVec::new();
             let mut decided: SmallVec<[&Type; 2]> = SmallVec::new();
-            for m in tier.iter().copied() {
+            let mut decided_after: SmallVec<[(usize, Option<u64>); 2]> = SmallVec::new();
+            for (at, m) in tier.iter().copied().enumerate() {
                 if hist.trial {
                     if m.contains_int(flags, env, hist, t)? {
                         return Ok(Some(true));
@@ -5175,12 +5229,37 @@ impl Type {
                 // rule undone (5.30M steps). --no-cache --check after the correction: 0140
                 // 1.66G, 0289 1.08G, 0224 17.87G; guicheck 39.50G base, 39.58G lane; 600
                 // genrigid programs (seed 11) identical to base-r24.
+                // 2026-11-14 claude: Lane 25e: partial. On base-r25 s2311_0224_two.gx took
+                // 55.0G instructions (17.9G at 24f's correction): decide_alike
+                // (undecided-into-two-decided-01) asks a second walk on copies per pair of
+                // decided takers, 1136 walks and 6.6M of the commit's 12.76M contains steps,
+                // its first half repeating the walk take had just run for that member. take's
+                // walk on copies now also reports, for each other member of the tier, whether
+                // it holds the type as it stands after the commit (takes_leaving, bits in one
+                // u64, none where a probe failed or the tier holds over 64 members, which fall
+                // back to decide_alike), so the pair's verdict is read from the two walks the
+                // choice already made: 12.76M -> 7.72M steps, 55.0G -> 34.2G instructions (0140
+                // 1.62G and 0289 1.07G unchanged). Pin
+                // typ::contains::tests::a_choice_between_decided_members_walks_each_member_once
+                // (12.76M steps without it, bound 9M). With an assert that each pair read
+                // equals decide_alike's: graphix-types and graphix-tests lib, census (2967
+                // files, identical to base-r25), gen2 perm/amb/all seed 2511 and genrigid seed
+                // 21 (2000 programs) identical. guicheck 39.68G base, 39.80G lane; deep_nesting
+                // passes. What stands: 568 choices x 2 members, each a walk on copies of the
+                // member's commit (about 4.4k steps) plus the other's probe (about 1.4k); the
+                // memo or trail ideas above are untouched. probe:
+                // ~/ptmp/cr29/scratch/r25/25e/s2311_0224_two.gx
                 let fixed = decides_no_cell(m)
                     && *fixed_t.get_or_insert_with(|| decides_no_cell(t));
-                let holds = fixed
-                    || on_copies(Some((&*hist, env)), [m, t], |[m, t], trial| {
-                        m.contains_int(flags, env, trial, &t)
-                    })?;
+                let wants_after = !hist.ordered
+                    && !hist.early
+                    && tier.len() <= u64::BITS as usize
+                    && !undecided(m)
+                    && *t_open.get_or_insert_with(|| undecided(t));
+                let (holds, after) = match fixed {
+                    true => (true, None),
+                    false => takes_leaving(tier, at, wants_after, flags, env, hist, t)?,
+                };
                 if !holds {
                     continue;
                 }
@@ -5193,13 +5272,23 @@ impl Type {
                     false => &mut decided,
                 };
                 if !takers.iter().any(|o| one_member(o, m)) {
-                    takers.push(m)
+                    takers.push(m);
+                    if !member_open && !hist.early {
+                        decided_after.push((at, after));
+                    }
                 }
             }
             if let [m, rest @ ..] = &decided[..] {
                 let mut alike = true;
-                for o in rest {
-                    alike = alike && decide_alike(m, o, flags, env, hist, t)?
+                for (o, (o_at, o_after)) in rest.iter().zip(&decided_after[1..]) {
+                    let (m_at, m_after) = decided_after[0];
+                    alike = alike
+                        && match (m_after, *o_after) {
+                            (Some(m_after), Some(o_after)) => {
+                                m_after >> o_at & 1 == 1 && o_after >> m_at & 1 == 1
+                            }
+                            _ => decide_alike(m, o, flags, env, hist, t)?,
+                        }
                 }
                 if alike {
                     return Ok(Some(m.contains_int(flags, env, hist, t)?));
@@ -7535,6 +7624,25 @@ mod tests {
             let steps = CONTAINS_STEPS.with(|n| n.get());
             assert!(steps <= most, "{body}: a commit took {steps} steps");
         }
+    }
+
+    // Two decided members of one head over a recursive definition that both
+    // take a type with a cell to decide are a choice at every application:
+    // the walk on copies that admits each also reports whether the other
+    // still holds the type, so no second walk per pair asks it again.
+    #[test]
+    fn a_choice_between_decided_members_walks_each_member_once() {
+        let body =
+            "[Error<D<'a0, string, 'a2>>, Error<D<'a1, 'a0, 'a2>>, `Y(D<'a1, 'a2, 'a0>)]";
+        let twin = body.replace("D<", "F<");
+        let defs = [("D<'a0, 'a1, 'a2>", body), ("F<'a0, 'a1, 'a2>", &*twin)];
+        let (env, _) = Env::typed_at_root(&defs, "i64").unwrap();
+        let open = at_root(&env, "fn(k: D<'q0, 'q0, 'q1>) -> D<'q0, 'q1, 'q2>");
+        let held = at_root(&env, "fn(k: F<Any, i64, i64>) -> F<i64, i64, Any>");
+        CONTAINS_STEPS.with(|n| n.set(0));
+        held.check_contains(&env, &open).unwrap();
+        let steps = CONTAINS_STEPS.with(|n| n.get());
+        assert!(steps <= 9_000_000, "a commit took {steps} steps");
     }
 
     // A function type whose quantifier an earlier task left open takes it
