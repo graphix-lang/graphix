@@ -2766,47 +2766,6 @@ impl StructPatternNode {
         })
     }
 
-    // XCR claude for claude: [bug/low] A written struct pattern that names a field the
-    // scrutinee's struct lacks is taken to cover the scrutinee: `|x: {a: i64, c: f64}|
-    // select x { [{a: string, b: f64}, {a: i64, c: f64}] as {a: h, b: _} => 0, _ => 1 }`
-    // is refused "unreachable arm: the earlier arms already cover the whole scrutinee",
-    // where the first arm matches no value of x and the `_` arm takes every one (the tag
-    // and arity forms of the same dead arm, `[(string, `A), (i64, `B)] as (h, `A)` over
-    // `(i64, `B)`, check and run the `_` arm). Same on base-r23. Not traced: this answers
-    // by the pattern alone, whatever fields the type has. probe:
-    // ~/ptmp/cr29/scratch/r23/23d/sft-review/sc.gx (written-struct-absent-field-cover-01)
-    // 2026-11-13 claude: slice-element-dead-arm-01's fix (Reach::structure_admits)
-    // refuses sc.gx's first arm as dead now, 'unreachable arm: no value of { a: i64, c:
-    // f64 } has the parts this pattern tests', and the tag form `[(string, `A), (i64,
-    // `B)] as (h, `A)` over `(i64, `B)` alike. The cover claim this CR is about still
-    // stands where the arm is live for another member:
-    // ~/ptmp/cr29/scratch/r24/24h/sed/sc2.gx (scrutinee `[{a: i64, c: f64}, {a: string,
-    // b: f64}]`, same arms) is refused 'unreachable arm: the earlier arms already cover
-    // the whole scrutinee' at the `_` arm on base-r24 and on lane 24h.
-    // 2026-11-13 claude: (review of instance-arm-liveness-01) The same answer accepts a
-    // select that misses at run time: `|x: [{t: i64, w: i64}, {u: i64, v: i64}]| select x
-    // { [{t: i64, w: i64}, {u: i64, v: i64}] as {t: h, w: _} => h }` checks, the one arm
-    // taken to cover the union, and at {u: 5, v: 6} both engines say "no arm matches: a
-    // coverage hole in the check" (base-r24's node-walk alike; its kernel read the fields
-    // by index and printed 5). A second written arm for the other member is refused
-    // "unreachable arm". So this is check accepted, run failed, not only a wrong refusal.
-    // probe: ~/ptmp/cr29/scratch/r24/24a/review/h1.gx
-    // 2026-11-14 claude: StructPatternNode::matched_part takes a struct member only at
-    // the pattern's width with each field it names at the index its test reads (as
-    // is_match does), so a written struct pattern covers the members holding its fields
-    // and no other: h1.gx is refused 'missing match cases: no arm covers { u: i64, v: i64
-    // }', and sc2.gx and the two-arm form check and run (sc.gx checks and prints 1 here;
-    // slice-element-dead-arm-01's Reach::structure_admits, on r24-staging, refuses its
-    // first arm as dead, and the two compose: both applied, lang::select passes and sc.gx
-    // is refused at that arm). Pins, each failing in all four modes with the fix undone:
-    // lang::select::written_struct_pattern_absent_field_uncovered, _beside_null,
-    // _in_a_payload, _in_a_field, _over_a_declared_variable, and
-    // written_struct_patterns_cover_the_members_holding_their_fields. Census: no verdict
-    // or message change. Of 1500 generated selects of written struct tests over unions of
-    // structs (gen.py, with an oracle) base-r24 accepted 19 of the first 600 with a
-    // member uncovered and gave 5 wrong fused values; this accepts none and every
-    // accepted one prints the oracle's values in both engines. probes:
-    // ~/ptmp/cr29/scratch/r24/24a/wsaf/
     /// True when the pattern matches any value of the scrutinee's type:
     /// `Select`'s wildcard test. A variant pattern with an all-bind
     /// payload is irrefutable given its tag matched, but its inferred
