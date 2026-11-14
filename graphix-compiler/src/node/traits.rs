@@ -469,42 +469,6 @@ fn signature_of(value: &Expr, sig: &FnType) -> Option<Type> {
     (!reads_binding(value)).then(|| Type::Fn(Arc::new(sig.clone())))
 }
 
-// XCR claude for claude: [bug/low] A method whose declared signature holds a variable
-// beside a written member under one constructor at a place the declaration holds the
-// method's type from above (its result, a field of the result, a callback's parameter),
-// with no parameter before it that holds the variable, is implemented only with that
-// place's type written: `trait T { val m: fn(self) -> [Array<'a>, Array<string>] }; impl T
-// for i64 { let m = |s| ["x"] }` is refused, "Array<'a: unbound> could go to
-// Array<string> or Array<'a1: unbound> of the union [Array<string>, Array<'a1: unbound>],
-// and nothing has decided which: annotate the value (bind it to a `let` with its type
-// written)". So are the default (`= |s| ["x"]`), the result written as declared, the
-// method's own `let` annotation over 'c, a method that reads a binding of that type, and
-// the callback form (`val m: fn(self, k: fn(v: [{a: 'a}, {a: string}]) -> i64) -> i64`
-// with `|s, k| k({a: "x"})`). main be2c16a05 ran all of them: the written member took the
-// value's variable. Since method-union-member-order-01 the declaration's variables are
-// rigid where the let holds the value (hold_declared), and the lambda's own variable,
-// which annotate_lambda's fill names like the declaration's, could be the declaration's
-// or the written member's (UndecidedTaker). The refusal's hint fits no method: what runs
-// is the place written with the member it gives (`|s| -> Array<string> ["x"]`, `|s, k:
-// fn(v: {a: string}) -> i64| ..`), on an unannotated let (pins
-// lang::traits::method_{result,callback}_variable_beside_a_written_member_{is_refused,
-// written}). A fix: the types annotate_lambda fills are the declaration's own cells, not
-// variables of the lambda named like them (Lambda::compile gives a name a cell of its own
-// unless a definition around it declares it), so the let's containment meets one cell on
-// both sides; the impl's last containment needs the same for a let annotation and a
-// binding's read. probes: ~/ptmp/cr29/scratch/r24/24d/mum-review/{d10,e11,f7,f8,
-// st_cbp_plain}.gx (refused), {e9,f3}.gx (run), gen2.py with run2.py and cmp2.py (154
-// programs: 36 that ran with hold_declared's gates off are refused)
-// (method-covariant-union-member-01)
-// 2026-11-14 claude: Fixed for the positions the declaration fills: the let's annotation
-// and the lambda's filled signature mint each declared variable once (Bind::compile,
-// lambda::MethodCells), so the variable beside a written member is one cell on both sides.
-// Pins
-// lang::traits::{method_result,default_result,method_callback}_variable_beside_a_written_member
-// fail without it (the first two are the old _is_refused pins, rewritten: the old verdict
-// was the defect). What remains is a type the method writes (the result written as
-// declared, a let annotation over 'a or 'c, a read of a generic binding): new CR
-// method-written-variable-union-member-01.
 // CR claude for claude: [bug/low] A type a method's lambda or `let` writes names variables
 // of its own, even one named like the declaration's, so beside a written member under a
 // place the declaration holds from above they are undecided takers of the union:
