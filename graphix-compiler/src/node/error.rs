@@ -1,11 +1,11 @@
 use super::{VarRead, read_var, wake::FreshFrame};
 use crate::{
     BindId, CFlag, CompileCtx, ErrorHandler, ExecCtx, HandlerKind, Node, NodeView,
-    Notify, PrintFlag, Refs, Rt, Scope, Tag, TagValue, Update, View,
+    Notify, PrintFlag, Refs, Rt, Scope, SourcePosition, Tag, TagValue, Update, View,
     compiler::compile,
     defetyp,
-    env::Env,
-    expr::{self, At, CatchRole, Expr, ExprId, ExprKind, ModPath},
+    env::{Bind, Env},
+    expr::{self, At, CatchRole, Expr, ExprId, ExprKind, ModPath, Origin},
     format_with_flags,
     fusion::{
         self,
@@ -173,6 +173,45 @@ impl<R: Rt> CatchAction<R> {
 impl<R: Rt> AbortRole<R> {
     fn machine(manual: Option<Node<R>>, pc: BindId, clock: Option<BindId>) -> Self {
         AbortRole::Machine { manual, pc, clock: clock.map(|c| (c, false)) }
+    }
+}
+
+/// A catch nothing reads, installed over a compile to collect what it
+/// raises: each raise joins the type its bind infers.
+pub(crate) struct RaiseProbe(BindId);
+
+impl RaiseProbe {
+    /// The probe, and `scope` with it installed as the innermost handler.
+    pub(crate) fn open<R: Rt>(ctx: &mut CompileCtx<R>, scope: &Scope) -> (Self, Scope) {
+        let id = BindId::new();
+        ctx.env.by_id.insert(
+            id,
+            Arc::new(Bind {
+                doc: None,
+                id,
+                name: "#faux".into(),
+                scope: scope.lexical.clone(),
+                typ: Type::empty_tvar(),
+                pos: SourcePosition::default(),
+                ori: Arc::new(Origin::default()),
+                binder: None,
+            }),
+        );
+        (Self(id), scope.with_catch((id, ExprId::new()), HandlerKind::Catch))
+    }
+
+    /// What was raised: ⊥ when nothing joined; an open callback's
+    /// `throws 'e` stays the cell.
+    pub(crate) fn raised<R: Rt>(&self, ctx: &CompileCtx<R>) -> Type {
+        match ctx.env.by_id.get(&self.0).map(|b| &b.typ) {
+            Some(Type::TVar(tv)) => tv.binding().unwrap_or(Type::Bottom),
+            Some(t) => t.clone(),
+            None => Type::Bottom,
+        }
+    }
+
+    pub(crate) fn close<R: Rt>(&self, ctx: &mut CompileCtx<R>) {
+        ctx.env.by_id.remove(&self.0);
     }
 }
 

@@ -6613,3 +6613,31 @@ run!(
         let result = T::m(1, |v: [{a: i64}, {a: string}]| 7, 2)
     "#
 );
+
+// A method's returned default that raises is called through the
+// signature's function type, which declares what it raises.
+run!(
+    method_returned_default_that_raises_is_refused,
+    refused("write `throws Error<ErrChain<`E>>`"),
+    "/test.gx" => r#"
+        trait T { val mk: fn(self) -> fn(?#d: i64, x: i64) -> i64 };
+        impl T for i64 { let mk = |s| |#d = error(`E)?, x: i64| d + x };
+        let r: [i64, null] = null;
+        { catch(e) r <- e ~ 42; T::mk(1)(7) };
+        let result = r$
+    "#
+    ; FuseExpect::None
+);
+
+run!(
+    method_returned_default_that_raises_is_declared,
+    is(Value::I64(42)),
+    "/test.gx" => r#"
+        trait T { val mk: fn(self) -> fn(?#d: i64, x: i64) -> i64 throws Error<ErrChain<`E>> };
+        impl T for i64 { let mk = |s| |#d = error(`E)?, x: i64| d + x };
+        let r: [i64, null] = null;
+        { catch(e) r <- e ~ 42; T::mk(1)(7) };
+        let result = r$
+    "#
+    ; FuseExpect::Jit
+);

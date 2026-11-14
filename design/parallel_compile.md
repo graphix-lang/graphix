@@ -570,6 +570,12 @@ mk(0)`) stays open when the gate closes: no site settle of the default
 binds it to ⊥ (`DefTable::default_cells`), and the bind places it at the
 site's view of the label.
 
+A default a call's type hides (a typedef, a written return type, a trait's
+signature) is judged by `callsite::judge_hidden_defaults` under a
+`RaiseProbe` handler of its own, and what it raised must fit the throws of
+the function type it is called through: a call raises it at the call's catch,
+which that type's `throws` tells.
+
 **Every instance.** An instance records how it is typed
 (`node::lambda::Typing`): it is its definition's check, it substitutes
 the definition's table, or it was restored from an image. It takes the

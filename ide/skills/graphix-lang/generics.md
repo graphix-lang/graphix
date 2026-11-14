@@ -530,6 +530,19 @@ ok type C<'z> = Abstract<fn(?#d: 'z, x: i64) -> string>; let c: C<[i64, string]>
 no "write the body's type, `-> C<i64>`" type C<'z> = Abstract<fn(?#d: 'z, x: i64) -> string>; let mk = |j: i64| -> C<'z> C(|#d = 1, x: i64| cast<string>(d)$); mk(0).0(7)
 ```
 
+A labeled default that raises (`#d = e?`) raises at each call that omits
+it, so a function type that hides the label or makes it optional must
+declare it: a typedef or written return type over `|#d = error(`E)?, x:
+i64|` is refused until the type writes `throws Error<ErrChain<`E>>`. A
+call that names the definition needs nothing.
+
+```graphix,cases
+no "write `throws Error<ErrChain<`E>>`" type W = fn(?#d: i64, x: i64) -> i64; let mk = |k: i64| -> W |#d = error(`E)?, x: i64| d + x; mk(0)(7)
+no "write `throws Error<ErrChain<`E>>`" let mk = |k: i64| -> fn(x: i64) -> i64 |#d = error(`E)?, x: i64| d + x; mk(0)(7)
+ok type W = fn(?#d: i64, x: i64) -> i64 throws Error<ErrChain<`E>>; let mk = |k: i64| -> W |#d = error(`E)?, x: i64| d + x; { catch(e) 0; mk(0)(7) }
+ok let mk = |k: i64| |#d = error(`E)?, x: i64| d + x; { catch(e) 0; mk(0)(7) }
+```
+
 A labeled default that holds a function is judged as that function
 written at the call is: its own defaults must fit the label's type as the
 call's arguments left it, whether or not the body passes the inner label.

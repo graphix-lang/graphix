@@ -2,7 +2,7 @@ use super::{
     NOP, Nop, WakeBit,
     bind::Ref,
     compiler::compile,
-    error::{Qop, join_open_raised, join_raised},
+    error::{Qop, RaiseProbe, join_open_raised, join_raised},
     lambda::{
         BuiltInLambda, GXLambda, InstanceTypes, Lambda, LambdaDef, same_parameters,
     },
@@ -408,10 +408,11 @@ fn judge_hidden_defaults<R: Rt>(
             if !ctx.enter_default(f.id, name) {
                 continue;
             }
+            let (probe, covered) = RaiseProbe::open(ctx, scope);
             let node = checked_default(
                 ctx,
                 flags,
-                scope,
+                &covered,
                 top_id,
                 f,
                 name,
@@ -437,9 +438,24 @@ fn judge_hidden_defaults<R: Rt>(
                 },
             );
             ctx.leave_default(f.id, name);
+            let raised = probe.raised(ctx);
+            probe.close(ctx);
             let node = node
                 .map_err(|e| met_default_note::<R>(e, &written_defs(ctx, value), name))?;
             ctx.discard(node);
+            if raised != Type::Bottom {
+                formal
+                    .throws
+                    .check_contains(&ctx.env, &raised)
+                    .map_err(|_| {
+                        anyhow!(
+                            "this default raises {raised}, which the function type it is \
+                             called through does not declare: write `throws {raised}` in it",
+                            raised = printed_deref(&raised)
+                        )
+                    })
+                .at(expr)?;
+            }
         }
     }
     Ok(())
@@ -671,7 +687,7 @@ pub(crate) fn check_hidden_defaults<R: Rt>(
     hidden_defaults_at(ctx, flags, scope, top_id, declared, value, 0, walk)
 }
 
-// CR claude for claude: [bug/medium] A labeled default that raises (`#d = e?`), in a function
+// XCR claude for claude: [bug/medium] A labeled default that raises (`#d = e?`), in a function
 // a call reaches through a type that names no definition or hides the label, checks, and
 // its bind is refused: no call judges what the default raises. `trait T { val mk: fn(self)
 // -> fn(?#d: i64, x: i64) -> i64 }; impl T for i64 { let mk = |s| |#d = error(`E)?, x: i64|
@@ -692,6 +708,13 @@ pub(crate) fn check_hidden_defaults<R: Rt>(
 // own. Found reviewing trait-method-return-defaults-01. probes:
 // ~/ptmp/cr29/scratch/r24/24c/tmrd-rev/{a14, a14d, a14e, r1, r4, r4b, r4c, r5, r5b, r5c}.gx
 // (returned-default-raise-01)
+// 2026-11-14 claude: A default judged as its declaration stands (judge_hidden_defaults) now
+// compiles under a RaiseProbe handler of its own, and what it raised must fit the declared
+// function type's throws: refused at the check, naming the throws to write. Pins that fail
+// without it: lang::functions::a_raising_default_behind_a_typedef,
+// a_raising_default_behind_a_hiding_return_type, a_raising_default_passed_to_an_open_throws,
+// lang::traits::method_returned_default_that_raises_is_refused. Annotated-catch twins
+// (catch(e: Error<ErrChain<`E>>)) are refused too: the declared type is the contract.
 /// The defaults of the functions a method's value returns, judged where
 /// the method is held to its `declared` signature: against the declared
 /// return as it is written, every variable of the signature rigid, and

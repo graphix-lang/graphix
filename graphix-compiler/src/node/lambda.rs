@@ -3,17 +3,18 @@ use super::{
     callsite::{CallSite, Feeds, QuietAtRoot, publish_production},
     collection::CollectionIntrinsic,
     compiler::compile,
+    error::RaiseProbe,
     pattern::{Holder, StructPatternNode, rigid_refusal},
     produce_constant,
     select::ArmDiscriminants,
 };
 use crate::SourcePosition;
 use crate::{
-    AddrSet, Apply, ApplyView, BindId, BindMode, CFlag, CompileCtx, ExecCtx, HandlerKind,
-    InitFn, LambdaId, LambdaInstanceId, Node, NodeView, Refs, Rt, Scope, TagValue,
-    Update, dbgenv,
+    AddrSet, Apply, ApplyView, BindId, BindMode, CFlag, CompileCtx, ExecCtx, InitFn,
+    LambdaId, LambdaInstanceId, Node, NodeView, Refs, Rt, Scope, TagValue, Update,
+    dbgenv,
     effects::{LambdaFacts, NoLoop, RecursionKind},
-    env::{Bind, Env, Lexical},
+    env::{Env, Lexical},
     expr::{self, Arg, ArgKind, At, Expr, ExprId, LambdaBody, ModPath, Origin},
     fusion::{
         self,
@@ -2606,7 +2607,7 @@ struct DefGate<R: Rt> {
     outer: Level,
     _at: AtLevel,
     sig: Arc<FnType>,
-    faux_id: BindId,
+    faux: RaiseProbe,
     args: LPooled<Vec<Node<R>>>,
     scope: Scope,
     rigid: LPooled<Vec<RigidGate>>,
@@ -2625,21 +2626,7 @@ impl<R: Rt> DefGate<R> {
         let outer = current_level();
         let at = AtLevel::enter(def.level);
         let args = def.typ.args.iter().map(|at| Nop::new(at.typ.clone())).collect();
-        let faux_id = BindId::new();
-        ctx.env.by_id.insert(
-            faux_id,
-            Arc::new(Bind {
-                doc: None,
-                id: faux_id,
-                name: "#faux".into(),
-                scope: def.scope.lexical.clone(),
-                typ: Type::empty_tvar(),
-                pos: SourcePosition::default(),
-                ori: Arc::new(Origin::default()),
-                binder: None,
-            }),
-        );
-        let scope = def.scope.with_catch((faux_id, ExprId::new()), HandlerKind::Catch);
+        let (faux, scope) = RaiseProbe::open(ctx, &def.scope);
         let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         def.typ.collect_tvars_through_bounds(&mut named);
         named.retain(|name, _| !name.starts_with('_'));
@@ -2680,7 +2667,7 @@ impl<R: Rt> DefGate<R> {
             outer,
             _at: at,
             sig: def.typ.clone(),
-            faux_id,
+            faux,
             args,
             scope,
             rigid,
@@ -2741,14 +2728,9 @@ impl<R: Rt> DefGate<R> {
         })
     }
 
-    /// What the body raised: ⊥ when nothing joined the faux catch; an
-    /// open callback's `throws 'e` stays the cell.
+    /// What the body raised.
     fn thrown(&self, ctx: &CompileCtx<R>) -> Type {
-        match ctx.env.by_id.get(&self.faux_id).map(|b| &b.typ) {
-            Some(Type::TVar(tv)) => tv.binding().unwrap_or(Type::Bottom),
-            Some(t) => t.clone(),
-            None => Type::Bottom,
-        }
+        self.faux.raised(ctx)
     }
 
     /// The body's sites settle with the enclosing statement, all but the
@@ -2815,7 +2797,7 @@ impl<R: Rt> DefGate<R> {
         // refuses), n{3,4,5,6,12}.gx (right), gen2.py (def-site-settle-after-calls-01)
         ctx.pending_settles.last_mut().expect("root settle frame").append(frame);
         ctx.rec_defs.remove(&self.def);
-        ctx.env.by_id.remove(&self.faux_id);
+        self.faux.close(ctx);
         self.rigid.clear();
     }
 

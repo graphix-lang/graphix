@@ -6301,3 +6301,110 @@ run!(
     refused("does not contain");
     FuseExpect::None
 );
+
+// A default that raises is called through the function type its definition
+// is held to, so that type declares what it raises.
+const A_RAISING_DEFAULT_BEHIND_A_TYPEDEF: &str = r#"{
+    type W = fn(?#d: i64, x: i64) -> i64;
+    let mk = |k: i64| -> W |#d = error(`E)?, x: i64| d + x;
+    let r: [i64, null] = null;
+    {
+        catch(e) r <- e ~ 42;
+        mk(0)(7)
+    };
+    r$
+}"#;
+
+const A_RAISING_DEFAULT_BEHIND_A_TYPEDEF_THAT_THROWS: &str = r#"{
+    type W = fn(?#d: i64, x: i64) -> i64 throws Error<ErrChain<`E>>;
+    let mk = |k: i64| -> W |#d = error(`E)?, x: i64| d + x;
+    let r: [i64, null] = null;
+    {
+        catch(e) r <- e ~ 42;
+        mk(0)(7)
+    };
+    r$
+}"#;
+
+const A_RAISING_DEFAULT_BEHIND_A_HIDING_RETURN_TYPE: &str = r#"{
+    let mk = |k: i64| -> fn(x: i64) -> i64 |#d = error(`E)?, x: i64| d + x;
+    let r: [i64, null] = null;
+    {
+        catch(e) r <- e ~ 42;
+        mk(0)(7)
+    };
+    r$
+}"#;
+
+const A_RAISING_DEFAULT_BEHIND_A_HIDING_RETURN_TYPE_THAT_THROWS: &str = r#"{
+    let mk = |k: i64| -> fn(x: i64) -> i64 throws Error<ErrChain<`E>> |#d = error(`E)?, x: i64| d + x;
+    let r: [i64, null] = null;
+    {
+        catch(e) r <- e ~ 42;
+        mk(0)(7)
+    };
+    r$
+}"#;
+
+const A_RAISING_DEFAULT_NAMED_BY_ITS_CALL: &str = r#"{
+    let mk = |k: i64| |#d = error(`E)?, x: i64| d + x;
+    let r: [i64, null] = null;
+    {
+        catch(e) r <- e ~ 42;
+        mk(0)(7)
+    };
+    r$
+}"#;
+
+const A_RAISING_DEFAULT_PASSED_TO_AN_OPEN_THROWS: &str = r#"{
+    let f = |#d = error(`E)?, x: i64| d + x;
+    let app = |g: fn(x: i64) -> i64 throws 'e, y: i64| g(y);
+    let r: [i64, null] = null;
+    {
+        catch(e) r <- e ~ 42;
+        app(f, 3)
+    };
+    r$
+}"#;
+
+run!(
+    a_raising_default_behind_a_typedef,
+    A_RAISING_DEFAULT_BEHIND_A_TYPEDEF,
+    refused("write `throws Error<ErrChain<`E>>`");
+    FuseExpect::None
+);
+
+run!(
+    a_raising_default_behind_a_typedef_that_throws,
+    A_RAISING_DEFAULT_BEHIND_A_TYPEDEF_THAT_THROWS,
+    is(Value::I64(42));
+    FuseExpect::Jit
+);
+
+run!(
+    a_raising_default_behind_a_hiding_return_type,
+    A_RAISING_DEFAULT_BEHIND_A_HIDING_RETURN_TYPE,
+    refused("write `throws Error<ErrChain<`E>>`");
+    FuseExpect::None
+);
+
+run!(
+    a_raising_default_behind_a_hiding_return_type_that_throws,
+    A_RAISING_DEFAULT_BEHIND_A_HIDING_RETURN_TYPE_THAT_THROWS,
+    is(Value::I64(42));
+    FuseExpect::Jit
+);
+
+run!(
+    a_raising_default_named_by_its_call,
+    A_RAISING_DEFAULT_NAMED_BY_ITS_CALL,
+    is(Value::I64(42));
+    FuseExpect::Jit
+);
+
+run!(
+    a_raising_default_passed_to_an_open_throws,
+    A_RAISING_DEFAULT_PASSED_TO_AN_OPEN_THROWS,
+    is(Value::I64(42));
+    FuseExpect::Jit
+);
