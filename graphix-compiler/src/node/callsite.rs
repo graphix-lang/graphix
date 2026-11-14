@@ -876,7 +876,8 @@ enum Opening {
 }
 
 /// A formal's cells, each with its copy in the formal's open copy and the
-/// bounds the copy was made with: the cell's.
+/// bounds the copy was made with: the cell's, less the lower bounds of a
+/// variable the copy opens.
 type Copied = LPooled<Vec<(TVar, TVar, Bounds)>>;
 
 /// How a call's argument stands once its own check is done.
@@ -946,6 +947,12 @@ fn typecheck_arg<R: Rt>(
         Some(note) => Told::over(e, note),
         None => e,
     };
+    let bounds: SmallVec<[(usize, Bounds); 4]> = match &opening {
+        Opening::Copy(_, copies) => {
+            copies.iter().map(|(cell, copy)| (*cell, copy.bounds())).collect()
+        }
+        Opening::Closed | Opening::Open => SmallVec::new(),
+    };
     match &opening {
         Opening::Closed => {
             Type::pre_unify_arg(&ctx.env, typ, n.typ()).map_err(refused)?
@@ -963,8 +970,11 @@ fn typecheck_arg<R: Rt>(
         Opening::Copy(_, copies) => {
             let mut copied: Copied = LPooled::take();
             Reach::default().go(typ, &mut |_| false, &mut |tv| {
-                if let Some(copy) = copies.get(&tv.cell_addr()) {
-                    copied.push((tv.clone(), copy.clone(), tv.bounds()))
+                let cell = tv.cell_addr();
+                if let Some(copy) = copies.get(&cell)
+                    && let Some((_, made)) = bounds.iter().find(|(c, _)| *c == cell)
+                {
+                    copied.push((tv.clone(), copy.clone(), *made))
                 }
                 false
             });
@@ -1595,11 +1605,12 @@ impl Widening {
     }
 
     /// The formal an argument is pre-unified with where `formal` holds a
-    /// widenable variable, and its cells: a copy with those variables open
-    /// and every other cell the formal's own, so the pre-unification
-    /// refuses no argument wider than the ones before it, which
-    /// [`Self::join`] then widens. The copy is made only where `copy`
-    /// says the argument may pre-unify with it.
+    /// widenable variable, and its cells: a copy with those variables open,
+    /// above no lower bound, and every other cell the formal's own, so the
+    /// pre-unification refuses no argument wider than the ones before it,
+    /// which [`Self::join`] then widens, and none narrower than what a
+    /// bound's holder put the variable above. The copy is made only where
+    /// `copy` says the argument may pre-unify with it.
     fn opening(
         &mut self,
         env: &Env,
@@ -1630,7 +1641,8 @@ impl Widening {
         let open = formal.replace_tvars_copied(&kept, &mut copies);
         let widened = |name: &ArcStr| cells.contains_key(name) && all.contains_key(name);
         for tv in copies.values().filter(|tv| widened(&tv.name)) {
-            tv.unbind()
+            tv.unbind();
+            tv.drop_lower()
         }
         Opening::Copy(open, copies)
     }

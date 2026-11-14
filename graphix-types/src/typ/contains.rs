@@ -1359,7 +1359,7 @@ fn commit_conjuncts(
         if c.is_predicate() {
             continue;
         }
-        // CR claude for claude: [bug/low] An argument's undecided part that meets a union
+        // CR claude for eric: [bug/low] An argument's undecided part that meets a union
         // of a declared bound is bound to that union at the pre-unification, before the
         // argument's own expression is checked: `let f = 'x: (['a, null], i64) |y: 'x| y;
         // let g = |u| f((u, u + 1)); g(1)` is refused, "cannot compute [null, 'a: unbound] +
@@ -1391,6 +1391,49 @@ fn commit_conjuncts(
         // x1: 'a1, x2: Array<'a2>|` given `(w0, "s", ["s"])` printed null on base-r24 and is
         // refused on the lane (1 of 7200 generated programs, gen/w61-p0310.gx). probes:
         // ~/ptmp/cr29/scratch/r24/24c/nuub/{s1,s2,s3,s4,s5}.gx, gen/w61-p0310.gx
+        // 2026-11-14 claude: Lane 24c fixer: two of the mechanisms recorded here are fixed,
+        // and the one in the CR's own text is not. Fixed: (1) the 11-12 note's p5 and p4,
+        // and the same arrays bound to a `let` first (`let v = [u, [u]]; f(v)`, refused on
+        // base-r24 with no pre-unification in play): contains::commit_parts narrowed a cell
+        // of the value by a part holding an open cell (`['a, null]`), the bound's own
+        // containment then put 'a above that cell, and the same cell under a constructor
+        // (`[u]`, `(u, 1)`) could not go below 'a, the two bounds reading as a cycle; a part
+        // holding an open cell narrows no cell now. (2) the 11-13 note's s1, s2 and
+        // gen/w61-p0310: the open copy of a formal kept the lower bounds of the variables it
+        // opens, a literal's element that merged with the copy took them, and the element's
+        // own check refused a "s" below `[null, string]`; Widening::opening drops them
+        // (TVar::drop_lower) and typecheck_arg hands TVar::rejoin each copy's bounds as it
+        // was made. Pins:
+        // lang::types::undecided_{value,binding,array}_*_under_a_union_bound* and
+        // literal_{narrower_than,outside}_what_* (ten),
+        // contains::tests::a_bounds_part_holding_an_open_cell_narrows_no_cell. NOT fixed:
+        // the CR's own witness, `f((u, u + 1))` at `'x: (['a, null], i64)`: the
+        // pre-unification binds the copy of 'x to the argument, and the bound's containment
+        // (commit_conjuncts, its last step) binds u to `[null, 'a]`. Two fixes were built
+        // and dropped (tried.txt has both): (a) Type::pre_unify_seen pre-unifies the
+        // argument with the bound's type as if written and leaves the variable open; (b)
+        // under ContainsHist::early a cell that a union with an undecided member meets is
+        // narrowed by it, not bound. Each makes the witness print (1, 2), and each breaks
+        // programs pinned as valid, because that same bind is what gives a literal's element
+        // the bound's union:
+        // lang::types::declared_variables_passed_on_through_a_chain_of_union_bounds and
+        // _beside_callbacks (`h(`A([`B(null)]), [`A("s")], null)`: the first literal typed
+        // on its own decides 'b2 as Array<`B(null)>, and the second, neither wider nor
+        // narrower, is the mismatch),
+        // undecided_element_takes_the_union_of_a_bound_over_another_variable (`f([1])[0]$`
+        // is `[i64, null]` today and i64 without the bind),
+        // two_undecided_elements_of_a_bound_widen_its_variable; six pins with (b), nine with
+        // (a), which also lets 3 of 1000 generated programs through the check that the build
+        // refuses (base-r24 does with the argument in a `let`: noted on
+        // lower-bound-refuses-narrower-01). So a literal under a bound takes its expected
+        // type by this bind, and an undecided value used twice in one argument pays for it;
+        // which of the two stands, or whether a variable only bounds hold widens
+        // (bound-var-no-widen-01) so that both can, is a rule this CR does not decide.
+        // Recommendation: (b), once bound-var-no-widen-01 is decided for widening; until
+        // then the refusal could name the value to annotate (`|u: i64|` runs). The written
+        // form has the same early bind for a union of primitives
+        // (written-primitive-union-binds-early-01). probes ~/ptmp/cr29/scratch/r24/24c/buba/
+        // (README, tried.txt)
         let held = match exact(c) {
             true => c.contains_int(flags, env, hist, t)?,
             false => commit_parts(tv, flags, env, hist, &mut Lazy::new(), c, t)?,
@@ -1468,7 +1511,10 @@ impl TVar {
 /// conjunct is, and a function's argument takes the conjunct's argument,
 /// the least it must accept. A rigid cell takes no part: the probe held
 /// it against its part, and the conjunct's open cells take it as what
-/// they must hold ([`commit_conjuncts`]). A writable reference's referent
+/// they must hold ([`commit_conjuncts`]). Neither does a cell whose part
+/// holds an open cell: the conjunct's own containment relates the two
+/// there, and a cell within a part that stands above it would reach
+/// itself. A writable reference's referent
 /// is its part's exactly, and so is an abstract type's parameter. Of a union's
 /// members, each name and bound variable among them followed to what it
 /// stands for, one has the parts ([`member_with_parts`]). A decided
@@ -1503,7 +1549,11 @@ fn commit_parts(
         match (c, t) {
             (Type::Any, _) => Ok(true),
             (_, Type::TVar(t)) => match t.open_cell() {
-                Some(cell) if cell.cell_addr() != tv.cell_addr() && !cell.is_rigid() => {
+                Some(cell)
+                    if cell.cell_addr() != tv.cell_addr()
+                        && !cell.is_rigid()
+                        && !c.has_unbound() =>
+                {
                     cell.narrow_cell(env, c.clone())?;
                     Ok(true)
                 }
@@ -1880,6 +1930,24 @@ fn conjuncts_admit(
     // bound's type written in the parameter runs. base-r24 refuses it at the bound
     // instead. 4 of 480 generated wrappers. probes:
     // ~/ptmp/cr29/scratch/r24/24c/rnb/l/{l1,l1t}.gx, gen/w.out (w05-an-v-xs, w11-an-v-xs)
+    // 2026-11-14 claude: Fixing bound-union-binds-argument-early-01 (lane 24c): one
+    // bounded variable whose bound holds a variable twice splits the same way, with no
+    // second parameter. `let f = 'x: (['c, null], Array<['c, i64]>) |y: 'x| y; let v =
+    // ("s", [{p: "s"}]); f(v)` passes --check and the run fails "an instance at fn(y:
+    // (string, Array<{ p: string }>)) -> (string, Array<{ p: string }>) of a definition
+    // typed fn<'x: ([null, 'c: unbound], Array<[i64, 'c: unbound]>)>(y: 'x ..) -> 'x ..":
+    // the call's check puts 'c above string and above {p: string}, and no attempt of
+    // FnType::held_at holds the instance. `'x: Array<['c, Array<'c>]>` given `let v =
+    // ["s", [2]]` alike (annotated or not), and the tuple written in the call where its
+    // parts are decided (`f(({p: u}, [u]))` over `let u = null` at `'x: (['c, null], ['c,
+    // null])`); GRAPHIX_NO_SUBST=1 runs each. base-r24 alike. And an argument that a
+    // variable's lower bounds hold is refused as a merge where the union written in the
+    // parameter runs: `let f = 'x: Array<['a, null]> |y: 'x, z: 'a| z; let g = |u| f([u,
+    // [u]], u); g(1)` fails "cannot infer a finite type here" ('a stands above u and
+    // Array<u>, and z's `'a >= u` makes the two one cell), where `|y: Array<['a, null]>,
+    // z: 'a|` prints 1; base-r24 refused the first argument
+    // (bound-union-binds-argument-early-01). probes:
+    // ~/ptmp/cr29/scratch/r24/24c/buba/pin/{x1,x2,x3,x4,a11,a11t}.gx, g2/p0145-b.gx
     let probe = guide(flags) & !ContainsFlags::Lower;
     for c in tv.cell_constraints().iter() {
         if !holds_cell(env, c, tv.cell_addr()) && !c.contains_int(probe, env, hist, t)? {
@@ -5467,6 +5535,15 @@ impl Type {
         // definition's check put 'c above `['a, null]` whole. base-r24 alike; 2 of 480
         // generated twins. probes: ~/ptmp/cr29/scratch/r24/24c/rnb/l/l1t.gx, gen/w.out
         // (w05-an-v-xs-{b,c}-t)
+        // 2026-11-14 claude: Fixing bound-union-binds-argument-early-01 (lane 24c):
+        // one more split, the bound form and its written twin alike. `let f = 'x:
+        // Array<['c, null]> |y: 'x, k: fn(a: 'x) -> i64, z: 'c| z; let g = |u| { let v
+        // = [[u], u]; f(v, |a| 0, null) }; g(null)` prints null fused, with
+        // --no-fusion and under GRAPHIX_PAR=force, and GRAPHIX_NO_SUBST=1 refuses the
+        // instance, "type mismatch 'c: Array<null> does not contain null"; with `y:
+        // Array<['c, null]>` written in both places the same, on the lane before that
+        // fix too (the bound form was refused at the check then). probes:
+        // ~/ptmp/cr29/scratch/r24/24c/buba/g3/p0563-{b,t}.gx
         let mut undecided_free = s0
             .iter()
             .zip(&free)
@@ -8292,6 +8369,26 @@ mod tests {
         assert!(holder.commit_conjuncts(&env, &sides[1]).unwrap(), "{t}");
         assert!(a.cell_constraints().is_empty(), "{t}");
         assert!(c.open_cell().is_some_and(|c| c.same_cell(a)), "{t}");
+    }
+
+    // a bound's part that holds an open cell narrows no cell of the value:
+    // the bound's own containment puts its cell above the value's parts,
+    // one of them that cell under a constructor
+    #[test]
+    fn a_bounds_part_holding_an_open_cell_narrows_no_cell() {
+        let (env, t) =
+            Env::typed_at_root(&[], "(Array<['c, null]>, Array<['u, Array<'u>]>)")
+                .unwrap();
+        t.alias_tvars(&mut LPooled::take());
+        let Type::Tuple(sides) = &t else { panic!("{t} is no pair") };
+        let mut cells: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+        t.collect_tvars(&mut cells);
+        let (c, u) = (&cells["c"], &cells["u"]);
+        let holder = var("holder");
+        holder.add_cell_constraint(sides[0].clone());
+        assert!(holder.commit_conjuncts(&env, &sides[1]).unwrap(), "{t}");
+        assert!(u.cell_constraints().is_empty(), "{t}");
+        assert_eq!(c.cell_lower().len(), 1, "{t}");
     }
 }
 

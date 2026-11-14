@@ -499,6 +499,9 @@ way.
 ok let f = 'a0: ['a1, null], 'a1: ['a2, null] |x0: 'a0, x1: 'a1, x2: 'a2| x2; let v: ([i64, null], i64) = (1, 1); f(v, (1, 1), (null, 1))
 no "'a2: ([i64, null], i64) does not contain string" let f = 'a0: ['a1, null], 'a1: ['a2, null] |x0: 'a0, x1: 'a1, x2: 'a2| x2; let v: ([i64, null], i64) = (1, 1); f(v, (1, 1), "s")
 no "'a3: duration does not contain string" let f = 'a2: [('a3, bool), bool] |x1: Array<'a2>, x2: 'a2, x3: 'a3| x3; let n: [(duration, bool), bool] = (duration:1.s, true); f([true], n, "s")
+ok let f = 'a1: ['a2, duration] |x0: 'a1, x2: Array<'a2>| x2; let w0: [null, string] = null; f(w0, ["s"])
+no "Array<'a2: [null, string]> does not contain Array<i64>" let f = 'a1: ['a2, duration] |x0: 'a1, x2: Array<'a2>| x2; let w0: [null, string] = null; f(w0, [1])
+ok let f = 'x: Array<['a, null]> |y: 'x| y; let g = |u| f([u, [u]]); g(1)
 ```
 
 A wrapper's declared variable takes no bound from a callee's. Inside the

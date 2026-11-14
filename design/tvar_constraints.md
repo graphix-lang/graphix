@@ -446,9 +446,17 @@ pre-unified with a copy of its formal in which the widenable variables
 are open and every other cell is the formal's own (`Widening::opening`,
 `Type::pre_unify_copy`), so the pre-unification refuses no argument
 wider than the ones before it; a formal holding no widenable variable is
-pre-unified as it stands. An expression whose type its own check has yet
-to make (a seq step's captured argument, a field read) is not
-pre-unified with the copy. Neither is an argument holding no undecided
+pre-unified as it stands. An open variable of the copy stands above no
+lower bound either: one a bound's holder put above a type (`'a1: ['a2,
+duration]` given a `[null, string]` puts `'a2` above it) would hand the
+bound to the cell it merges with, a literal's element, and the element's
+own check refuses a `"s"` narrower than the bound, where the argument
+checked alone (`["s"]` at `x2: Array<'a2>`) fits the variable at its
+meeting with the formal (pins
+`lang::types::literal_narrower_than_what_*`,
+`literal_outside_what_*_refused`). An expression whose type its own
+check has yet to make (a seq step's captured argument, a field read) is
+not pre-unified with the copy. Neither is an argument holding no undecided
 cell (a declared variable of the definition the call stands in, a
 written type), nor a part of one that holds a declared variable and no
 undecided cell: a declared variable merges with the open cell it meets
@@ -475,9 +483,10 @@ cell: the pre-unification made it one cell with the argument's, which
 brought the bound (the lower bounds of a binding's open payload, `let v =
 x.0`; the conjunct an operator left on a parameter, `p + q`, `a[p]`), and
 the check that follows binds it only where what stands fits those bounds.
-A copy is made with its formal's cell's own bounds (a declared `'a:
-Number`), so the count of each kind is what tells them apart
-(`tvar::Bounds`; pins
+A copy is made with its formal's cell's own conjuncts (a declared `'a:
+Number`), and with its lower bounds unless it is opened, so the count of
+each kind when it was made is what tells them apart (`tvar::Bounds`;
+pins
 `lang::functions::undecided_binding_above_a_lower_bound_{refused,it_holds_joins}`,
 `undecided_parameter_within_a_conjunct_{refused,it_fits_joins}`).
 
@@ -1904,25 +1913,32 @@ A conjunct that holds its own cell says nothing of it: `'c ⊆ ['c,
 null]` whatever `'c` is. It holds the cell where it is the cell, a
 union one of whose members holds it (through names and bound cells), or
 an open cell above a lower bound that holds it (`contains::holds_cell`).
-A bound's part passed down to a value's open cell
-(`contains::commit_parts`, through `TVar::narrow_cell`) is not added
-where it holds that cell: `'x: Array<['a, null]>` taking `[1]` binds the
-element to `['a, null]`, whose own part for `'a` is that union, and
-`'b: ['c, null]` taking a caller's `['a, null]` beside `'c ⊇ 'a` meets
-`'a` the same way. Kept as a conjunct it sends each probe of the cell
-(`conjuncts_admit`) back to the cell, a check without end, so the probe
-skips one that came to hold its cell later too (a member took the cell
-as a lower bound after the conjunct was added): `f([u, v])` over `'x:
-Array<['a, null]>` with `u` and `v` undecided leaves each within `['a,
-null]` and `'a` above both, and whatever decides either probes it. Pins:
+A bound's part that holds an open cell is passed down to no cell of the
+value (`contains::commit_parts`): the bound's own containment, which
+follows the parts (`contains::commit_conjuncts`), relates the two, the
+bound's cell standing above what it took. `f([u, v])` over `'x:
+Array<['a, null]>` with `u` and `v` undecided puts `'a` above both and
+leaves each as it stood, and `f([u, [u]])` puts it above `u` and
+`Array<'u>`, as the union written in the parameter takes both. A cell
+narrowed by such a part would stand within a union whose variable stands
+above it, and the same cell under a constructor could go below that
+variable no more: the two bounds read as a cycle. A conjunct added by
+any other way (`TVar::narrow_cell`) is not added where it holds
+its cell, and a probe of a cell (`conjuncts_admit`) skips one that came
+to hold the cell later (a member took the cell as a lower bound after
+the conjunct was added), since it would send the probe back to the
+cell, a check without end. Pins:
 `lang::types::wrapper_passing_a_union_over_its_variable_*`,
 `undecided_element*_bound_*`, `two_undecided_elements_*`,
-`contains::tests::a_bound_that_holds_its_own_cell_narrows_nothing`,
-`a_conjunct_that_comes_to_hold_its_own_cell_admits_every_type`.
+`undecided_{value,binding,array}_*_under_a_union_bound*`,
+`contains::tests::{a_bound_that_holds_its_own_cell_narrows_nothing,
+a_conjunct_that_comes_to_hold_its_own_cell_admits_every_type,
+a_bounds_part_holding_an_open_cell_narrows_no_cell}`.
 
 A bound's parts reach every open cell of the value its variable takes
 (`contains::commit_parts`): a part that is one type binds the cell it
-meets, any other narrows it. The walk goes through what the two sides
+meets, any other that holds no open cell narrows it. The walk goes
+through what the two sides
 name: a decided variable of the bound is its binding, and a typedef
 application in the value over an open cell is what it stands for, each
 pair of a part and an application once, so two recursive names met

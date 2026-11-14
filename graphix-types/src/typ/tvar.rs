@@ -3120,6 +3120,18 @@ impl TVar {
         c.facts.remove(CellFact::BottomRequired);
     }
 
+    /// Clear the cell's lower bounds; the binding and the conjuncts stay.
+    pub fn drop_lower(&self) {
+        let cell = self.cell();
+        let mut c = cell.write();
+        if !c.lower.is_empty() && decided(&c) {
+            if c.binding.is_some() {
+                bound_cell_changes();
+            }
+            c.lower.clear();
+        }
+    }
+
     /// Open a rigid gate on the open cell this var stands for
     /// ([`Self::open_cell`]: a merge re-points one var and leaves the
     /// others reading a cell that forwards), else on the cell it reads;

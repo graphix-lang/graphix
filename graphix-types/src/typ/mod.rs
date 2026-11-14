@@ -3213,6 +3213,25 @@ impl Type {
                         _ => whole(hist),
                     }
                 }
+                // CR claude for claude: [bug/low] A union of primitives written in a
+                // parameter binds an argument's undecided part at the pre-unification,
+                // before the argument's own expression is checked: `let f = |y: ([i64,
+                // null], i64)| y; let g = |u| f((u, u + 1)); g(1)` is refused, "cannot
+                // compute [i64, null] + i64", where the same type as a bound, `'x: ([i64,
+                // null], i64) |y: 'x| y`, prints (1, 2) (the bound's part narrows u, and
+                // `u + 1` decides it), and so does `|u: i64|`. A union the type holds as a
+                // set (`[Array<i64>, null]`) leaves the part to the argument's own check
+                // (the arm above: two members admit it); a union of primitives is one
+                // `Type::Primitive` of two bits, takes the arm below and binds u to the
+                // union. `f((u, u))` is refused alike, "([i64, null], i64) does not contain
+                // ([i64, null], [i64, null])", and `f({p: u, q: u})` at `{p: [i64, null], q:
+                // i64}`. base-r24 alike. A fix reads a primitive of two bits or more as the
+                // arm above reads a union's members; census first, since it moves when an
+                // undecided read target (a `str::parse`) takes its type. Found on
+                // bound-union-binds-argument-early-01. probes:
+                // ~/ptmp/cr29/scratch/r24/24c/buba/pin/{y1,y5,y3,y7}.gx (refused),
+                // {y2,y6,y4}.gx (the bound forms, which run)
+                // (written-primitive-union-binds-early-01)
                 _ => whole(hist),
             }
         })
