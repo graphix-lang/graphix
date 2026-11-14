@@ -3,7 +3,7 @@
 
 use crate::{
     position::LineIndex,
-    query::{display_bind, display_type, in_file, typedef_decl},
+    query::{display_holding, held_at, in_file, typedef_decl},
     state::{Checked, ServerState},
     text::{
         Typed, UsePath, call_context, label_start, text_between, typed_before, use_path,
@@ -17,7 +17,7 @@ use graphix_compiler::{
     env::{Bind, Env},
     expr::ModPath,
     ide::ScopeMapEntry,
-    typ::{FnArgKind, FnType, Type},
+    typ::{FnArgKind, FnType, TVar, Type},
 };
 use lsp_types::{
     CompletionItem, CompletionItemKind, CompletionTextEdit, Documentation,
@@ -71,6 +71,9 @@ struct Completer<'a> {
     file: &'a Path,
     cursor: Position,
     scope: ModPath,
+    /// The quantifiers the definitions around the cursor hold
+    /// ([`held_at`]), which every type shown here holds.
+    held: LPooled<Vec<TVar>>,
 }
 
 impl<'a> Completer<'a> {
@@ -167,7 +170,7 @@ impl<'a> Completer<'a> {
                 CompletionItem {
                     label: format!("#{label}"),
                     kind: Some(CompletionItemKind::FIELD),
-                    detail: Some(display_type(&arg.typ).into()),
+                    detail: Some(self.display(&arg.typ).into()),
                     insert_text: replace.is_none().then(|| insert.clone()),
                     text_edit: replace.map(|range| {
                         CompletionTextEdit::Edit(TextEdit { range, new_text: insert })
@@ -181,9 +184,9 @@ impl<'a> Completer<'a> {
     fn fields(&self, typed: &Typed) -> Vec<CompletionItem> {
         let Some((first, rest)) = typed.receiver.split_first() else { return vec![] };
         let Some(bind) = self.lookup(first) else { return vec![] };
-        let fields_of = |typ: &Type| match &typ.resolve_tvars() {
-            Type::Struct(fields) => Some(fields.clone()),
-            t @ Type::Ref(_) => match &t.lookup_ref(self.env) {
+        let fields_of = |typ: &Type| match &typ.deref_cloned() {
+            Some(Type::Struct(fields)) => Some(fields.clone()),
+            Some(t @ Type::Ref(_)) => match &t.lookup_ref(self.env) {
                 Ok(Type::Struct(fields)) => Some(fields.clone()),
                 Ok(_) | Err(_) => None,
             },
@@ -200,10 +203,14 @@ impl<'a> Completer<'a> {
             .map(|(name, typ, _)| CompletionItem {
                 label: name.to_string(),
                 kind: Some(CompletionItemKind::FIELD),
-                detail: Some(display_type(typ).into()),
+                detail: Some(self.display(typ).into()),
                 ..Default::default()
             })
             .collect()
+    }
+
+    fn display(&self, typ: &Type) -> CompactString {
+        display_holding(typ, &self.held)
     }
 
     fn bind_item(&self, name: &str, bind: &Bind) -> CompletionItem {
@@ -217,10 +224,7 @@ impl<'a> Completer<'a> {
                 Type::Fn(_) => CompletionItemKind::FUNCTION,
                 _ => CompletionItemKind::VARIABLE,
             }),
-            detail: Some(match self.checked {
-                Some(c) => display_bind(&c.ide, bind).into(),
-                None => display_type(&bind.typ).into(),
-            }),
+            detail: Some(self.display(&bind.typ).into()),
             documentation: bind
                 .doc
                 .as_ref()
@@ -274,7 +278,7 @@ impl<'a> Completer<'a> {
                     Type::Fn(_) => CompletionItemKind::FUNCTION,
                     _ => CompletionItemKind::VARIABLE,
                 };
-                items.push(item(name, kind, Some(display_type(&b.typ))));
+                items.push(item(name, kind, Some(self.display(&b.typ))));
             }
         }
         let types =
@@ -369,6 +373,10 @@ impl ServerState {
             file: &file,
             cursor,
             scope: Completer::scope_at(checked, &file, cursor),
+            held: match checked {
+                Some(c) => held_at(&c.ide, &file, cursor),
+                None => LPooled::take(),
+            },
         };
         if let Some(at) = use_path(&doc.text, cursor) {
             return c.imports(&at);

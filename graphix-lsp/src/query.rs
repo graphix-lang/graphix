@@ -94,13 +94,17 @@ pub fn display_type(typ: &Type) -> CompactString {
     display_holding(typ, &[])
 }
 
-/// A binding's type for display ([`display_type`]): the quantifiers of the
-/// definitions whose bodies bind it are theirs, which no call of it picks.
-pub(crate) fn display_bind(ide: &Ide, bind: &Bind) -> CompactString {
-    display_holding(&bind.typ, &ide.held_in(&bind.scope))
+/// The quantifiers of the definitions whose text holds `cursor` in
+/// `file`: there they are each definition's own, which no call picks.
+pub(crate) fn held_at(ide: &Ide, file: &Path, cursor: Position) -> LPooled<Vec<TVar>> {
+    let around = ide.held.iter().filter(|h| {
+        in_file(&h.ori, file) && zero_based(h.pos) <= cursor && cursor < zero_based(h.end)
+    });
+    around.flat_map(|h| h.cells.iter().cloned()).collect()
 }
 
-fn display_holding(typ: &Type, held: &[TVar]) -> CompactString {
+/// A type shown where `held` ([`held_at`]) are held ([`display_type`]).
+pub(crate) fn display_holding(typ: &Type, held: &[TVar]) -> CompactString {
     let folded = match typ {
         Type::Fn(ft) => Type::Fn(Arc::new(ft.replace_auto_constrained())),
         t => t.clone(),
@@ -340,7 +344,7 @@ impl<'a> Query<'a> {
     }
 
     /// The field selected under the cursor (`s.f`), with its type.
-    fn field(&self) -> Option<Hover> {
+    fn field(&self, held: &[TVar]) -> Option<Hover> {
         let fields = self.checked.ide.field_refs.iter();
         let mut here = fields.filter(|f| {
             in_file(&f.ori, self.file)
@@ -348,18 +352,20 @@ impl<'a> Query<'a> {
                 && covers(zero_based(f.pos), self.ident.chars().count(), self.cursor)
         });
         let f = here.next()?;
-        Some(markdown(&format_compact!("{}: {}", f.name, display_type(&f.typ)), None))
+        let typ = display_holding(&f.typ, held);
+        Some(markdown(&format_compact!("{}: {typ}", f.name), None))
     }
 
     pub(crate) fn hover(&self) -> Option<Hover> {
-        if let Some(field) = self.field() {
+        let held = held_at(&self.checked.ide, self.file, self.cursor);
+        if let Some(field) = self.field(&held) {
             return Some(field);
         }
         let (target, written) = self.target()?;
         Some(match target {
             Target::Bind(id) => {
                 let bind = self.bind(id)?;
-                let bind_type = display_bind(&self.checked.ide, bind);
+                let bind_type = display_holding(&bind.typ, &held);
                 let code = format_compact!("{written}: {bind_type}");
                 markdown(&code, bind.doc.as_ref())
             }

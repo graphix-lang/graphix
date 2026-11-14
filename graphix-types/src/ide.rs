@@ -13,7 +13,6 @@ use crate::{
 use ahash::{AHashMap, AHashSet};
 use arcstr::ArcStr;
 use compact_str::CompactString;
-use netidx_core::path::Path as NPath;
 use parking_lot::Mutex;
 use poolshark::global::{GPooled, Pool};
 use smallvec::SmallVec;
@@ -154,13 +153,15 @@ pub struct ExprTypeSite {
     pub bind: Option<BindId>,
 }
 
-/// The quantifiers a named definition's close generalized, over the scope
-/// of its body: in a binding there they are the definition's own, which no
-/// call picks, as a message made in the body prints them
+/// The quantifiers a named definition's close generalized, over its text
+/// `[pos, end)`: a type shown there holds them as the definition's own,
+/// which no call picks, as a message made in the body prints them
 /// ([`crate::typ::tvar::HeldQuantifiers`]).
 #[derive(Debug, Clone)]
-pub struct HeldScope {
-    pub body: ModPath,
+pub struct HeldSpan {
+    pub ori: Arc<Origin>,
+    pub pos: SourcePosition,
+    pub end: SourcePosition,
     pub cells: SmallVec<[TVar; 2]>,
 }
 
@@ -268,8 +269,8 @@ pub struct Ide {
     pub expr_types: GPooled<Vec<ExprTypeSite>>,
     /// Per cell a seq's lowering made, what it stands for.
     pub lowered: AHashMap<ArcStr, Lowered>,
-    /// The quantifiers each named definition's body holds.
-    pub held: GPooled<Vec<HeldScope>>,
+    /// The quantifiers each named definition's text holds.
+    pub held: GPooled<Vec<HeldSpan>>,
 }
 
 impl Ide {
@@ -295,7 +296,7 @@ impl Ide {
             LazyLock::new(|| Pool::new(32, 4096));
         static EXPR_TYPE_SITE_POOL: LazyLock<Pool<Vec<ExprTypeSite>>> =
             LazyLock::new(|| Pool::new(32, 65536));
-        static HELD_SCOPE_POOL: LazyLock<Pool<Vec<HeldScope>>> =
+        static HELD_SPAN_POOL: LazyLock<Pool<Vec<HeldSpan>>> =
             LazyLock::new(|| Pool::new(32, 4096));
         Self {
             binds: BIND_POOL.take(),
@@ -309,7 +310,7 @@ impl Ide {
             sig_links: SIG_LINK_POOL.take(),
             expr_types: EXPR_TYPE_SITE_POOL.take(),
             lowered: AHashMap::default(),
-            held: HELD_SCOPE_POOL.take(),
+            held: HELD_SPAN_POOL.take(),
         }
     }
 
@@ -344,12 +345,6 @@ impl Ide {
             merge_lowered(&mut self.lowered, cell, l)
         }
         self.held.append(held);
-    }
-
-    /// The quantifiers the definitions whose bodies hold `scope` held.
-    pub fn held_in(&self, scope: &ModPath) -> SmallVec<[TVar; 2]> {
-        let around = self.held.iter().filter(|h| NPath::is_parent(&*h.body, &**scope));
-        around.flat_map(|h| h.cells.iter().cloned()).collect()
     }
 
     pub(crate) fn push_type_ref(&mut self, site: TypeRefSite) {

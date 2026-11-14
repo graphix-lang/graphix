@@ -3579,9 +3579,9 @@ impl Drop for Declaring {
 /// definition's own, read in its body, a `let rec`'s self-read, and one
 /// instance's), which print where they occur though the definition's close
 /// generalizes them, and the variables of the definitions being checked
-/// ([`Declared`]), whose gates have closed by then. A binding a tool prints
-/// after the check holds the quantifiers of the definitions whose bodies
-/// bind it ([`Self::resolving`]).
+/// ([`Declared`]), whose gates have closed by then. A type a tool shows
+/// after the check holds the quantifiers of the definitions whose text it
+/// is shown in ([`Self::resolving`]).
 #[derive(Debug)]
 pub struct HeldQuantifiers {
     held: SmallVec<[TVar; 2]>,

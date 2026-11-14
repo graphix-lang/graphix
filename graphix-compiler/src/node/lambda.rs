@@ -21,7 +21,7 @@ use crate::{
             BodyCx, CompiledExpr, call_result_needs_value_widening, widen_result_to_value,
         },
     },
-    ide::{HeldScope, Ide},
+    ide::{HeldSpan, Ide},
     image::{
         self, ImageBuf, ImageDecoder, lexical_decode, lexical_encode,
         nodes::{NodeTag, decode_node, put_tag},
@@ -1983,12 +1983,6 @@ impl Lambda {
     }
 }
 
-/// The scope the body of the definition `spec`, defined in `scope`,
-/// compiles in.
-fn body_scope(scope: &Scope, spec: &Expr) -> Scope {
-    scope.append_place("fn", spec, None)
-}
-
 /// The `init` of a definition: how a call site builds an instance from
 /// the source body (or a builtin) in the definition's environment and
 /// its `fn` block under `scope`, the definition's own. A function of
@@ -2006,7 +2000,7 @@ pub(crate) fn make_init<R: Rt>(
     table: SArc<DefTables>,
     shared: BodyShare,
 ) -> InitFn<R> {
-    let def_scope = body_scope(scope, &def_spec);
+    let def_scope = scope.append_place("fn", &def_spec, None);
     SArc::new(move |scope, ctx, args, mode, tid| {
         // the definition's names, the call site's handlers
         let scope =
@@ -2625,8 +2619,9 @@ impl<R: Rt> DefGate<R> {
     }
 
     /// Tell the editor the quantifiers the close is about to generalize,
-    /// which the body's bindings hold as the definition's own.
+    /// which a type shown in the definition's text holds as its own.
     fn tell_held(&self, ide: &mut Ide, spec: &Expr) {
+        let Some(end) = spec.end.get() else { return };
         let mut cells = SmallVec::new();
         self.sig.each_quantifier(|_, tv| {
             if let Some(c) = tv.open_cell()
@@ -2637,8 +2632,7 @@ impl<R: Rt> DefGate<R> {
             }
         });
         if !cells.is_empty() {
-            let body = body_scope(&self.scope, spec).lexical;
-            ide.held.push(HeldScope { body, cells })
+            ide.held.push(HeldSpan { ori: spec.ori.clone(), pos: spec.pos, end, cells })
         }
     }
 }
