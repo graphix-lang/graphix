@@ -1315,22 +1315,29 @@ impl<R: Rt> Impl<R> {
     // serve the functions made under it. probe: `probe_impl_dropped_first` in
     // ~/ptmp/cr29/scratch/r24/24e/escaped-fn-dropped-trait-01/probes.rs
     // (escaped-fn-dropped-impl-01)
+    // 2026-11-14 claude: Review of escaped-fn-dropped-trait-01: Env::keep_impl and
+    // the function's own pins (Env::dispatch_bindings) are gone. A kept
+    // declaration takes the registry's entries for its trait when it is opened
+    // (Env::keep_trait) and its named dispatchers hold the defaults and the impls'
+    // methods (Lives::hold), so an impl still registered when its trait is deleted
+    // is kept whenever it is dropped. An impl given back while its trait stands
+    // has neither its entry nor its method bindings kept, and the fix must hold
+    // both. A kept entry of a head that is no abstract type must not serve a
+    // function made after an impl of that head is declared again, which the view
+    // test of Env::kept_trait cannot tell while the trait's declaration is the
+    // same one. escaped-fn-dropped-bound-01 wants a holder under the function's
+    // definition too. Still bottom: rprobe3_late_impl, order 'impl first', in
+    // ~/ptmp/cr29/scratch/r24/24e/escaped-fn-dropped-trait-01/review/probes_rev.rs
     /// Give back to the registry what this implementation registered:
     /// its own entry, or the declaration it narrowed. Another
     /// implementation's entry is not identified with this one, so a
     /// reload that unregistered this body and registered a new one
-    /// finds nothing to give back. A trait declaration kept for a
-    /// function value keeps the entry given back.
+    /// finds nothing to give back.
     fn give_back(&self, ctx: &mut ExecCtx<'_, R>) {
         match &self.fulfils {
-            None => {
-                if ctx.env.unregister_impl(&self.def) {
-                    ctx.env.keep_impl(&self.trait_def, &self.def)
-                }
-            }
+            None => ctx.env.unregister_impl(&self.def),
             Some(Fulfils { entry, narrowed: Some(declared) }) => {
-                ctx.env.replace_impl(entry, declared.clone());
-                ctx.env.keep_impl(&self.trait_def, entry)
+                ctx.env.replace_impl(entry, declared.clone())
             }
             Some(Fulfils { narrowed: None, .. }) => (),
         }

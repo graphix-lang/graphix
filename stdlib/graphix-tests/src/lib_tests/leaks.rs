@@ -710,6 +710,21 @@ async fn a_dropped_interface_module_takes_what_its_interface_declared() -> Resul
     .await
 }
 
+/// A dropped block's trait whose default calls its own method goes with
+/// the block: the default names the dispatcher that holds it.
+#[tokio::test(flavor = "current_thread")]
+async fn a_dropped_blocks_default_that_calls_its_trait_goes_with_it() -> Result<()> {
+    compiled_and_dropped(
+        [],
+        "{ type C = Abstract<i64>; \
+           trait Sh { val sh: fn(self) -> i64; val twice: fn(self) -> i64 = |s| sh(s) * 2 }; \
+           impl Sh for C { let sh = |c: C| c.0 * 10 }; \
+           Sh::twice(C(3)) }",
+        Value::I64(60),
+    )
+    .await
+}
+
 /// A dropped block's import table goes with it.
 #[tokio::test(flavor = "current_thread")]
 async fn a_dropped_block_takes_its_import_table() -> Result<()> {
@@ -1135,6 +1150,140 @@ async fn a_function_outliving_another_inputs_trait_dispatches_to_its_impl(
     Ok(())
 }
 
+/// `ROUNDS` times over: compile `trait_input`, which declares `Sh` at the
+/// root, then `impl_input`, then `{ saved <- <function>; 1 }`; drop the
+/// trait's input, then the impl's, then the function's, and call
+/// `saved(3)` at a new site after each. Every call answers `want`, and the
+/// session holds after the last round what it held after the fifth.
+async fn trait_dropped_before_its_impl(
+    mode: Mode,
+    trait_input: &'static str,
+    impl_input: &'static str,
+    function: &'static str,
+    want: i64,
+) -> Result<()> {
+    const ROUNDS: usize = 30;
+    let (ctx, mut rx) = fixture_runtime([], crate::TEST_REGISTER, mode, |_| {}).await?;
+    let _saved =
+        ctx.rt.compile(literal!("let saved: fn(x: i64) -> i64 = never();")).await?;
+    let is = |n: i64| move |v: &Value| *v == Value::I64(n);
+    let mut early = None;
+    for i in 0..5 + ROUNDS {
+        if i == 5 {
+            early = Some(held(&ctx).await?)
+        }
+        let declared = ctx.rt.compile(ArcStr::from(trait_input)).await?;
+        let (made, read) = compile_one(&ctx, "{ let f = app; 7 }").await?;
+        await_update(&mut rx, made, is(7)).await?;
+        drop(read);
+        let implemented = ctx.rt.compile(ArcStr::from(impl_input)).await?;
+        let (made, function) =
+            compile_one(&ctx, format!("{{ saved <- {function}; 1 }}")).await?;
+        await_update(&mut rx, made, is(1)).await?;
+        let (landed, read) = compile_one(&ctx, "{ let f = saved; 7 }").await?;
+        await_update(&mut rx, landed, is(7)).await?;
+        drop(read);
+        let mut inputs = [Some(declared), Some(implemented), Some(function)];
+        for input in inputs.iter_mut() {
+            drop(input.take());
+            let (late, call) = compile_one(&ctx, "saved(3)").await?;
+            await_update(&mut rx, late, is(want)).await?;
+            drop(call);
+        }
+    }
+    let late = held(&ctx).await?;
+    ctx.shutdown().await;
+    assert_eq!(early, Some(late), "{mode:?}: grew over {ROUNDS} rounds");
+    Ok(())
+}
+
+/// A generic function made before an impl of its trait is registered
+/// reaches that impl through a later function's call, once the trait's
+/// input and then the impl's are dropped.
+async fn a_function_made_before_an_impl_dispatches_to_it_once_both_are_dropped(
+    mode: Mode,
+) -> Result<()> {
+    trait_dropped_before_its_impl(
+        mode,
+        "trait Sh { val sh: fn(self) -> i64; val twice: fn(self) -> i64 = |s| sh(s) * 2 }; \
+         let app = |v: Sh| Sh::twice(v) + 1",
+        "type C = Abstract<i64>; impl Sh for C { let sh = |c: C| c.0 * 5 }",
+        "|x: i64| app(C(x))",
+        31,
+    )
+    .await
+}
+
+/// The same for an impl a module's interface declares of a trait
+/// declared outside the module.
+async fn a_function_over_an_interfaces_impl_of_a_dropped_outside_trait_dispatches(
+    mode: Mode,
+) -> Result<()> {
+    trait_dropped_before_its_impl(
+        mode,
+        "trait Sh { val sh: fn(self) -> i64 }; let app = |v: Sh| Sh::sh(v)",
+        r#"mod m dynamic {
+               sandbox unrestricted;
+               sig { use super::Sh; type C; impl Sh for C; val make: fn(x: i64) -> C };
+               source "use super::Sh; type C = Abstract<i64>; impl Sh for C { let sh = |c: C| c.0 * 10 }; let make = |x: i64| C(x)"
+           }"#,
+        "|x: i64| Sh::sh(m::make(x))",
+        30,
+    )
+    .await
+}
+
+/// Impls of heads that are no abstract type, declared again with their
+/// trait at the same path: each function calls the impls and the default
+/// it was made under, through a union too, whichever declaration stands.
+async fn a_function_escaping_dropped_impls_of_plain_heads_dispatches_past_their_redeclaration(
+    mode: Mode,
+) -> Result<()> {
+    let (ctx, mut rx) = fixture_runtime([], crate::TEST_REGISTER, mode, |_| {}).await?;
+    let _roots = ctx
+        .rt
+        .compile(literal!(
+            "let old: fn(x: i64) -> i64 = never(); let new: fn(x: i64) -> i64 = never();"
+        ))
+        .await?;
+    let is = |n: i64| move |v: &Value| *v == Value::I64(n);
+    let before = held(&ctx).await?;
+    let declare = |name: &str, k: i64| {
+        format!(
+            "trait Sh {{ val sh: fn(self) -> i64; val twice: fn(self) -> i64 = |s| sh(s) * {k} }}; \
+             impl Sh for i64 {{ let sh = |c: i64| c * {k} }}; \
+             impl Sh for string {{ let sh = |c: string| {k} }}; \
+             {name} <- |x: i64| {{ let u: [i64, string] = x; Sh::twice(u) + Sh::sh(x) }}; 1"
+        )
+    };
+    let mut made = Vec::new();
+    for (name, k, want) in [("old", 2, 18), ("new", 3, 36)] {
+        // the first declaration is gone before the second is made
+        made.clear();
+        let res = ctx.rt.compile(ArcStr::from(declare(name, k))).await?;
+        await_update(&mut rx, res.exprs[res.exprs.len() - 1].id, is(1)).await?;
+        made.push(res);
+        let (id, call) = compile_one(&ctx, format!("{name}(3)")).await?;
+        await_update(&mut rx, id, is(want)).await?;
+        drop(call)
+    }
+    let (id, call) = compile_one(&ctx, "(old(3), new(3))").await?;
+    await_update(&mut rx, id, is_pair(18, 36)).await?;
+    drop((call, made));
+    let (id, call) = compile_one(&ctx, "(old(4), new(4))").await?;
+    await_update(&mut rx, id, is_pair(24, 48)).await?;
+    drop(call);
+    released(&ctx, &mut rx, &["old", "new"]).await?;
+    let after = held(&ctx).await?;
+    ctx.shutdown().await;
+    assert_eq!(
+        before[5..9],
+        after[5..9],
+        "{mode:?}: dispatchers, records, impls or kept"
+    );
+    Ok(())
+}
+
 modes!(
     a_function_saved_across_reloads_keeps_nothing_once_dropped,
     a_dispatching_function_saved_across_reloads_keeps_nothing_once_dropped,
@@ -1152,4 +1301,7 @@ modes!(
     a_function_escaping_a_dropped_load_around_an_interface_module_dispatches,
     a_function_escaping_a_dropped_trait_dispatches_past_its_redeclaration,
     a_function_outliving_another_inputs_trait_dispatches_to_its_impl,
+    a_function_made_before_an_impl_dispatches_to_it_once_both_are_dropped,
+    a_function_over_an_interfaces_impl_of_a_dropped_outside_trait_dispatches,
+    a_function_escaping_dropped_impls_of_plain_heads_dispatches_past_their_redeclaration,
 );

@@ -7,6 +7,7 @@ use crate::{
     },
     is_lowered, mod_root,
     profile::{self, Phase},
+    reference::Lives,
     tracked::{TrackedMap, TrackedSet},
     typ::{
         AbstractId, CoreTrait, FnType, ResolvedRef, TVar, TraitId, Type, TypeRef,
@@ -1091,30 +1092,49 @@ impl LoadedBody {
 }
 
 /// A trait declaration deleted while a function value named one of its
-/// dispatchers, as the registries held it, for the view that names those
-/// dispatchers ([`Env::kept_trait`]). It goes with the last of them.
+/// dispatchers, as the registries held it then, for the view that names
+/// those dispatchers ([`Env::kept_trait`]). It goes with the last of them.
 #[derive(Debug)]
 pub struct KeptTrait {
     /// The record, with the defaults its implementation compiled.
     def: Arc<TraitDef>,
     /// An interface's, and the ones its splice into the body minted.
     dispatchers: SmallVec<[BindId; 4]>,
-    /// The impl entries the registry gave back since.
-    impls: RwLock<SmallVec<[Arc<ImplDef>; 2]>>,
+    /// The impl entries the registry held for the record.
+    impls: SmallVec<[Arc<ImplDef>; 2]>,
     /// The typedefs the signatures and the heads name, which a
     /// resolution cell holds only weakly.
-    named: RwLock<Vec<std::sync::Arc<ResolvedRef>>>,
+    _named: Vec<std::sync::Arc<ResolvedRef>>,
 }
 
 impl KeptTrait {
-    fn own<'a>(&self, types: impl Iterator<Item = &'a Type>) {
+    fn new(
+        def: Arc<TraitDef>,
+        dispatchers: &[BindId],
+        impls: SmallVec<[Arc<ImplDef>; 2]>,
+    ) -> Self {
         let mut cells: LPooled<AHashSet<usize>> = LPooled::take();
         let mut defs: LPooled<AHashMap<usize, std::sync::Arc<ResolvedRef>>> =
             LPooled::take();
-        for t in types {
-            t.named_defs(&mut cells, &mut defs)
+        for m in def.methods.iter() {
+            Type::Fn(m.typ.clone()).named_defs(&mut cells, &mut defs)
         }
-        self.named.write().extend(defs.drain().map(|(_, d)| d))
+        for im in impls.iter() {
+            im.target.named_defs(&mut cells, &mut defs);
+            for tv in im.params.iter() {
+                Type::TVar(tv.clone()).named_defs(&mut cells, &mut defs)
+            }
+        }
+        let _named = defs.drain().map(|(_, d)| d).collect();
+        Self { def, dispatchers: SmallVec::from_slice(dispatchers), impls, _named }
+    }
+
+    /// The bindings a call through one of the dispatchers reaches: the
+    /// defaults and the impls' methods.
+    fn reached(&self) -> impl Iterator<Item = BindId> {
+        let defaults = self.def.methods.iter().filter_map(|m| m.default);
+        let methods = self.impls.iter().flat_map(|im| im.methods.into_iter());
+        defaults.chain(methods.map(|(_, id)| *id))
     }
 }
 
@@ -2291,48 +2311,63 @@ impl Env {
         kept.find(|k| k.def.id == id && named(k))
     }
 
+    // CR claude for claude: [bug/low] A function that outlives the declaration of a
+    // trait it names only as a bound binds at no new call site. A declaration is
+    // kept under the dispatchers a function value names (`Env::keep_trait`,
+    // escaped-fn-dropped-trait-01), and a function that writes the trait as a
+    // parameter's type or a variable's bound and calls no method names none, as
+    // does every function over a trait with no methods. Only an embedder reaches
+    // it: over a root `let saved: fn(x: i64) -> i64 = never()`, compile `{ type C =
+    // Abstract<i64>; trait Sh { val sh: fn(self) -> i64 }; impl Sh for C { let sh =
+    // |c: C| c.0 * 10 }; saved <- |x: i64| { let f = |v: Sh| 30; f(C(x)) }; 1 }`,
+    // drop it, then compile `saved(3)`: it logs "binding the callee failed: .. an
+    // instance at fn(v: C) -> i64 of a definition typed fn(v: '#v: unbound within
+    // Sh) -> i64" and is bottom (30 while the block lives). The same with `'a: Sh
+    // |v: 'a| 30`, and with `trait Mk {}; impl Mk for C {}` and `|v: Mk| 30`. To
+    // fix: a function value keeps the declarations of the traits its types name,
+    // not only of the dispatchers its body names. Its definition's check resolves
+    // every such bound, so the definition can record the traits and pin a
+    // dispatcher of each; a trait with no method has no dispatcher, so it needs a
+    // holder of another kind (the declaration kept under the function's
+    // definition, as a load keeps its own in `LoadedBody`).
+    // escaped-fn-dropped-impl-01 wants such a holder too: fix them together.
+    // probe: `rprobe_bound_only`, `rprobe_bound_tvar` and `rprobe2_marker` in
+    // ~/ptmp/cr29/scratch/r24/24e/escaped-fn-dropped-trait-01/review/probes_rev.rs
+    // (escaped-fn-dropped-bound-01)
     /// The declaration `def` is about to be deleted and function values
-    /// name `named` among its `dispatchers`: each of those holds what the
-    /// registry holds for it, until [`Self::release_dispatcher`].
+    /// name `named` among its `dispatchers`: each of those keeps the
+    /// record and the impl entries the registry holds for it, and holds
+    /// the bindings a call through it reaches ([`Lives::hold`]), until
+    /// [`Self::release_dispatcher`]. A declaration that is not the record
+    /// is kept elsewhere: a load's, given back at its reload, by the load
+    /// ([`LoadedBody`]), and an interface's splice into its body with the
+    /// interface's.
     pub fn keep_trait(
         &mut self,
+        lives: &Lives,
         def: &Arc<TraitDef>,
         dispatchers: &[BindId],
         named: &[BindId],
     ) {
-        let Some(first) = named.first() else { return };
-        let kept = match self.kept_traits.get(first) {
+        if named.is_empty() {
+            return;
+        }
+        let kept = match named.iter().find_map(|id| self.kept_traits.get(id)) {
             Some(k) => k.clone(),
             None => {
-                let kept = KeptTrait {
-                    def: self.trait_of_record(def),
-                    dispatchers: SmallVec::from_slice(dispatchers),
-                    impls: RwLock::default(),
-                    named: RwLock::default(),
+                let record = self.trait_defs.get(&def.id);
+                let Some(record) = record.filter(|r| r.same_definition(def)) else {
+                    return;
                 };
-                let sigs: LPooled<Vec<Type>> =
-                    kept.def.methods.iter().map(|m| Type::Fn(m.typ.clone())).collect();
-                kept.own(sigs.iter());
-                Arc::new(kept)
+                let registered = self.impls.get(&def.id);
+                let impls = registered.iter().flat_map(|l| l.iter()).cloned().collect();
+                Arc::new(KeptTrait::new(record.clone(), dispatchers, impls))
             }
         };
         for id in named {
-            self.kept_traits.insert(*id, kept.clone());
-        }
-    }
-
-    /// The registry gave back the entry `im` of an impl of the
-    /// declaration `of`: where that declaration is kept, it keeps the
-    /// entry.
-    pub fn keep_impl(&self, of: &TraitDef, im: &Arc<ImplDef>) {
-        let mut kept = self.kept_traits.iter().map(|(_, k)| k);
-        if let Some(k) = kept.find(|k| k.def.same_definition(of)) {
-            let mut impls = k.impls.write();
-            if !impls.iter().any(|o| Arc::ptr_eq(o, im)) {
-                let params: LPooled<Vec<Type>> =
-                    im.params.iter().map(|tv| Type::TVar(tv.clone())).collect();
-                k.own(iter::once(&im.target).chain(params.iter()));
-                impls.push(im.clone())
+            if self.kept_traits.get(id).is_none() {
+                lives.hold(*id, kept.reached());
+                self.kept_traits.insert(*id, kept.clone());
             }
         }
     }
@@ -2342,27 +2377,6 @@ impl Env {
     pub fn release_dispatcher(&mut self, id: BindId) {
         self.trait_methods.remove(&id);
         self.kept_traits.remove(&id);
-    }
-
-    /// The bindings a call through the dispatcher `id` can reach, which a
-    /// function value naming it keeps as it keeps what it captures: its
-    /// trait's defaults and the methods of the trait's impls.
-    pub fn dispatch_bindings(&self, id: BindId, f: &mut impl FnMut(BindId)) {
-        let Some(tm) = self.trait_methods.get(&id) else { return };
-        let kept = self.kept_traits.get(&id);
-        let record = kept.map(|k| &k.def).or_else(|| self.trait_defs.get(&tm.trait_id));
-        for m in record.iter().flat_map(|def| def.methods.iter()) {
-            m.default.into_iter().for_each(&mut *f)
-        }
-        let methods = |im: &Arc<ImplDef>, f: &mut dyn FnMut(BindId)| {
-            im.methods.into_iter().for_each(|(_, id)| f(*id))
-        };
-        if let Some(k) = kept {
-            k.impls.read().iter().for_each(|im| methods(im, f))
-        }
-        for im in self.impls.get(&tm.trait_id).iter().flat_map(|l| l.iter()) {
-            methods(im, f)
-        }
     }
 
     /// Register an implementation. One impl per (trait, target): an
@@ -2413,20 +2427,15 @@ impl Env {
         self.impls.insert(old.trait_id, list);
     }
 
-    /// Take the entry `im` out of the registry: whether it was there.
-    pub fn unregister_impl(&mut self, im: &Arc<ImplDef>) -> bool {
-        let Some(old) = self.impls.get(&im.trait_id) else { return false };
+    pub fn unregister_impl(&mut self, im: &Arc<ImplDef>) {
+        let Some(list) = self.impls.get(&im.trait_id) else { return };
         let list: Vec<Arc<ImplDef>> =
-            old.iter().filter(|o| !o.same_definition(im)).cloned().collect();
-        if list.len() == old.len() {
-            return false;
-        }
+            list.iter().filter(|o| !o.same_definition(im)).cloned().collect();
         if list.is_empty() {
             self.impls.remove(&im.trait_id);
         } else {
             self.impls.insert(im.trait_id, Arc::new(list));
         }
-        true
     }
 
     /// Whether the abstract type `id` has an implementation of `t`.
@@ -2568,7 +2577,7 @@ impl Env {
             body.impls(trait_id, &mut own)
         }
         if let Some(k) = kept {
-            own.extend(k.impls.read().iter().cloned())
+            own.extend(k.impls.iter().cloned())
         }
         if own.is_empty() {
             return registered.cloned();

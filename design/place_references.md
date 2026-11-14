@@ -57,7 +57,12 @@ the walk did not all find (its strong count exceeds the edges to it) is
 held from outside, and so is an orphan with a pin the walk did not find;
 everything such a holder reaches lives, and the other orphans are
 released, with the cells of the references collected: a cell mirrors its
-place, so its value holds the reference too. What the walk
+place, so its value holds the reference too. A binding may hold others
+with no value between them (`Lives::hold`: the dispatcher of a deleted
+trait declaration holds the trait's defaults and its impls' methods,
+`design/module_system.md`, "A function keeps the trait it dispatches
+through"): what an orphan holds is pinned by that orphan in the walk, and
+is released when it is. What the walk
 cannot read keeps what it holds, so a collection only ever releases too
 little. It runs when an orphan was made or lost a pin since the last one;
 one that kept an orphan with nothing changed waits 1, 2, 4.. up to 1024

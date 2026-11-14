@@ -2975,9 +2975,6 @@ impl<R: Rt> Update<R> for Lambda {
             def.captures.get_or_init(|| {
                 let mut ids: LPooled<Vec<BindId>> = LPooled::take();
                 def.captured_ids(&mut |id| ids.push(id));
-                for i in 0..ids.len() {
-                    ctx.env.dispatch_bindings(ids[i], &mut |id| ids.push(id))
-                }
                 if let Some(body) = &def.env.body {
                     body.dispatch_bindings(&mut |id| ids.push(id))
                 }

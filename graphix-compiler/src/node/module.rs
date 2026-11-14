@@ -263,18 +263,9 @@ struct SigDecls {
 }
 
 impl SigDecls {
-    /// Give the registries back what is still these declarations': an
-    /// entry the registry held goes to its trait's declaration where a
-    /// function value keeps that ([`Env::keep_impl`]).
+    /// Give the registries back what is still these declarations'.
     fn unregister(&self, env: &mut Env) {
-        for im in self.impls.iter() {
-            let own = self.traits.iter().find(|def| def.id == im.trait_id);
-            if env.unregister_impl(im)
-                && let Some(of) = own.or_else(|| env.trait_defs.get(&im.trait_id))
-            {
-                env.keep_impl(of, im)
-            }
-        }
+        self.impls.iter().for_each(|im| env.unregister_impl(im));
         self.traits.iter().for_each(|def| env.unrecord_trait(def))
     }
 

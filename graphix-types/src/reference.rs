@@ -35,6 +35,9 @@ struct LivesState {
     targets: IntMap<BindId, BindId>,
     /// Bindings deleted while pinned: their values go with the last pin.
     orphaned: IntSet<BindId>,
+    /// Per binding, the bindings it pins until it is released
+    /// ([`Lives::hold`]).
+    holds: IntMap<BindId, SmallVec<[BindId; 4]>>,
     /// Cells, and orphans unpinned, whose values may go.
     released: Vec<BindId>,
     /// An orphan was made or lost a pin since the last collection.
@@ -57,6 +60,15 @@ impl LivesState {
                 }
             } else if self.orphaned.contains(&t) {
                 self.dirty = true;
+            }
+        }
+    }
+
+    /// `holder` is gone: what it held is pinned by it no more.
+    fn unhold(&mut self, holder: BindId) {
+        if let Some(held) = self.holds.remove(&holder) {
+            for id in held {
+                self.unpin(id)
             }
         }
     }
@@ -92,7 +104,20 @@ impl Lives {
         Captures { ids, lives: lives.clone() }
     }
 
-    /// Whether a reference or a function value names `id`.
+    /// `holder` pins `ids` as a function value pins its captures, until
+    /// it is deleted with nothing naming it or released as an orphan: what
+    /// a call through `holder` reaches that no value names.
+    pub fn hold(&self, holder: BindId, ids: impl Iterator<Item = BindId>) {
+        let mut st = self.0.lock();
+        let st = &mut *st;
+        let held = st.holds.entry(holder).or_default();
+        for id in ids {
+            *st.pins.entry(id).or_default() += 1;
+            held.push(id)
+        }
+    }
+
+    /// Whether a reference, a function value or a holder names `id`.
     pub fn pinned(&self, id: BindId) -> bool {
         self.0.lock().pins.contains_key(&id)
     }
@@ -105,6 +130,8 @@ impl Lives {
         if pinned {
             st.orphaned.insert(id);
             st.dirty = true;
+        } else {
+            st.unhold(id)
         }
         pinned
     }
@@ -117,6 +144,7 @@ impl Lives {
     /// function value. An allocation whose owners are not all counted, a
     /// pin not found and anything an abstract this walk cannot read holds
     /// keep what they reach, so a collection only ever releases too little.
+    /// What an orphan holds ([`Lives::hold`]) is pinned by that orphan.
     pub fn collect(
         &self,
         mut stored: impl FnMut(BindId, &mut dyn FnMut(&Value)),
@@ -180,7 +208,12 @@ impl Lives {
     /// stored values may go; the lock is not held while `f` runs.
     pub fn released(&self, mut f: impl FnMut(BindId)) {
         loop {
-            let released = mem::take(&mut self.0.lock().released);
+            let released = {
+                let mut st = self.0.lock();
+                let released = mem::take(&mut st.released);
+                released.iter().for_each(|id| st.unhold(*id));
+                released
+            };
             if released.is_empty() {
                 break;
             }
@@ -198,8 +231,11 @@ struct Graph {
     /// Per binding walked (an orphan, or a cell a reference owns), the
     /// allocations its value holds.
     binds: IntMap<BindId, SmallVec<[usize; 2]>>,
-    /// Per binding, how many distinct allocations found pin it.
+    /// Per binding, how many distinct allocations and holders found pin
+    /// it.
     found: IntMap<BindId, u32>,
+    /// Per binding walked, the bindings it holds.
+    holds: IntMap<BindId, SmallVec<[BindId; 4]>>,
     /// The cells of the keeps walked.
     cells: IntSet<BindId>,
 }
@@ -234,6 +270,12 @@ impl Graph {
             return;
         }
         self.binds.insert(id, SmallVec::new());
+        if let Some(held) = lives.0.lock().holds.get(&id) {
+            for t in held.iter() {
+                *self.found.entry(*t).or_default() += 1;
+            }
+            self.holds.insert(id, held.clone());
+        }
         stored(id, &mut |v| {
             let mut stack: LPooled<Vec<(Option<usize>, Edge<'_>)>> = LPooled::take();
             v.edges(|e| stack.push((None, e)));
@@ -328,10 +370,11 @@ impl Graph {
                     }
                 }
                 Item::Bind(b) => {
-                    if live.binds.insert(b)
-                        && let Some(cs) = self.binds.get(&b)
-                    {
-                        work.extend(cs.iter().map(|c| Item::Alloc(*c)));
+                    if live.binds.insert(b) {
+                        let allocs = self.binds.get(&b).into_iter().flatten();
+                        work.extend(allocs.map(|c| Item::Alloc(*c)));
+                        let held = self.holds.get(&b).into_iter().flatten();
+                        work.extend(held.map(|t| Item::Bind(*t)));
                     }
                 }
             }
@@ -498,6 +541,54 @@ mod test {
             released += 1;
         });
         assert_eq!(released, 1);
+    }
+
+    #[test]
+    fn a_holder_pins_what_it_holds_until_it_goes() {
+        let lives = Arc::new(Lives::default());
+        let (holder, held) = (BindId::new(), BindId::new());
+        let named = Lives::capture(&lives, [holder].into_iter());
+        lives.hold(holder, [held].into_iter());
+        assert!(lives.orphan_if_pinned(holder));
+        assert!(lives.orphan_if_pinned(held));
+        lives.collect(|_, _| (), |_| None);
+        lives.released(|_| panic!("a function still names the holder"));
+        drop(named);
+        let mut released = Vec::new();
+        lives.released(|id| released.push(id));
+        assert_eq!(released, [holder, held]);
+        assert!(!lives.pinned(held));
+    }
+
+    #[test]
+    fn orphans_that_hold_each_other_are_collected() {
+        let lives = Arc::new(Lives::default());
+        let (holder, held, other) = (BindId::new(), BindId::new(), BindId::new());
+        // `held` holds `holder` back, as a default that calls its own
+        // trait's dispatcher does
+        lives.hold(holder, [held, other].into_iter());
+        lives.hold(held, [holder].into_iter());
+        assert!(lives.orphan_if_pinned(holder));
+        assert!(lives.orphan_if_pinned(held));
+        lives.collect(|_, _| (), |_| None);
+        let mut released = Vec::new();
+        lives.released(|id| released.push(id));
+        released.sort();
+        let mut want = [holder, held];
+        want.sort();
+        assert_eq!(released, want);
+        assert!(!lives.pinned(other));
+    }
+
+    #[test]
+    fn a_holder_deleted_with_nothing_naming_it_holds_nothing() {
+        let lives = Arc::new(Lives::default());
+        let (holder, held) = (BindId::new(), BindId::new());
+        let named = Lives::capture(&lives, [holder].into_iter());
+        lives.hold(holder, [held].into_iter());
+        drop(named);
+        assert!(!lives.orphan_if_pinned(holder));
+        assert!(!lives.pinned(held));
     }
 
     #[test]

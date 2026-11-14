@@ -2534,9 +2534,10 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
     }
 
     /// The trait declaration `def` is about to be deleted: the
-    /// dispatchers a function value names keep its record and the impl
-    /// entries the registry gives back from here on. `splice` are the
-    /// dispatchers an interface declaration's splice into the body minted.
+    /// dispatchers a function value names keep its record, the impl
+    /// entries the registry holds and the bindings those reach. `splice`
+    /// are the dispatchers an interface declaration's splice into the body
+    /// minted.
     pub(crate) fn keep_trait(
         &mut self,
         def: &Arc<TraitDef>,
@@ -2544,10 +2545,10 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
     ) {
         let own = def.methods.iter().map(|m| m.dispatcher);
         let dispatchers: SmallVec<[BindId; 4]> = own.chain(splice).collect();
-        let lives = self.control.lives();
+        let lives = self.control.lives().clone();
         let named: SmallVec<[BindId; 4]> =
             dispatchers.iter().copied().filter(|id| lives.pinned(*id)).collect();
-        self.env.keep_trait(def, &dispatchers, &named)
+        self.env.keep_trait(&lives, def, &dispatchers, &named)
     }
 
     /// Let go of what the references released since the last cycle kept:
