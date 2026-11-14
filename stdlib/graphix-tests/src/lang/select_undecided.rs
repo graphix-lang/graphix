@@ -3117,3 +3117,76 @@ run!(written_tests_covering_a_decided_member_and_two_undecided, r#"{
     };
     [g(1, "ab", 0), g("ab", 1, 0), g(1, 1, 2)]
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [2, 1, -1]); FuseExpect::Jit);
+
+// Two undecided members no binding of their own names go by the binding
+// that holds their union, named once: it is the one to annotate.
+run!(written_test_two_unnamed_members_name_their_holder_once, r#"{
+    let a = [];
+    let b = [];
+    let u = select true { true => a[0]$, false => b[0]$ };
+    select u { i64 as n => n, _ => 0 }
+}"#, refused("i64 as n tests a value of 'u, a type not decided at this select, members of which could each take the test, and the check picks none by their order: annotate it, writing for 'u the type of `u`"); FuseExpect::None);
+
+run!(written_test_two_parsed_members_name_their_holder_once, r#"{
+    let u = select true { true => str::parse("1")$, false => str::parse("s")$ };
+    select u { i64 as n => n, _ => 0 }
+}"#, refused("i64 as n tests a value of 'u, a type not decided at this select, members of which could each take the test"); FuseExpect::None);
+
+run!(written_test_two_parsed_members_their_holder_annotated, r#"{
+    let u: [i64, string] = select true { true => str::parse("1")$, false => str::parse("s")$ };
+    select u { i64 as n => n, _ => 0 }
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(1))); FuseExpect::Jit);
+
+// The members reach the select through a callback's element, a field and
+// an earlier arm that takes a decided member.
+run!(written_test_two_undecided_members_a_callback_element_refused, r#"{
+    let f = |a, b| array::map([a, b], |e| select e { i64 as n => n, _ => 0 });
+    f(1, "s")
+}"#, refused("i64 as n tests a value of 'a or 'b, types not decided at this select that could each take the test"); FuseExpect::None);
+
+run!(written_test_a_callback_element_annotated, r#"{
+    let f = |a, b| array::map([a, b], |e: [i64, string]| select e { i64 as n => n, _ => 0 });
+    [f("s", 1), f(1, "s")]
+}"#, |v: Result<&Value>| match v {
+    Ok(Value::Array(t)) => match &t[..] {
+        [Value::Array(p), Value::Array(q)] => as_i64s(p) == [0, 1] && as_i64s(q) == [1, 0],
+        _ => false,
+    },
+    _ => false,
+}; FuseExpect::Jit);
+
+run!(written_test_two_undecided_members_a_field_holds_refused, r#"{
+    let x = never();
+    let y = never();
+    let t = {f: select true { true => x, false => y }};
+    let r = select t.f { i64 as n => n, _ => 0 };
+    x <- 1;
+    y <- "s";
+    r
+}"#, refused(COULD_EACH_TAKE); FuseExpect::None);
+
+run!(written_error_test_two_undecided_members_could_take_refused, r#"{
+    let x = never();
+    let y = never();
+    let u = select true { true => x, false => y };
+    let r = select u { error as e => 1, v => 0 };
+    x <- error(`E);
+    y <- "s";
+    r
+}"#, refused("error as e tests a value of 'x or 'y, types not decided at this select that could each take the test"); FuseExpect::None);
+
+run!(written_test_behind_an_arm_a_decided_member_takes_refused, r#"{
+    let f = |a, b| {
+        let u = select 0 { 0 => a, 1 => b, _ => null };
+        select u { null as _ => -1, i64 as n => n, _ => 0 }
+    };
+    f(1, "s")
+}"#, refused("i64 as n tests a value of 'a or 'b, types not decided at this select that could each take the test"); FuseExpect::None);
+
+run!(written_test_behind_an_arm_one_member_annotated, r#"{
+    let f = |a: i64, b| {
+        let u = select 0 { 0 => a, 1 => b, _ => null };
+        select u { null as _ => -1, i64 as n => n, _ => 0 }
+    };
+    [f(1, "s"), f(1, null), f(1, 4)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 1, 1]); FuseExpect::Jit);

@@ -99,7 +99,10 @@ select, and runtime forms. Each rule refuses and names the fix.
   to either, and is refused, "could each take the test": annotate one,
   and the other is the test's to decide, or stays open where the
   annotation holds the test. With no catch-all the tests decide both,
-  each the union of the tests.
+  each the union of the tests. Two such members that have no binding of
+  their own (two `str::parse` results in one `let u`) are refused by
+  the name of the binding that holds them: annotate it, `let u: [i64,
+  string] = ..`.
 - Arms that bind one part of a scrutinee the arms decide bind one type
   there: `(1, a) => .., (2, a) => ..` and `` `A(1, a) => .., `A(2, a) =>
   .. `` give both `a` the part's one type, since no literal or guard
@@ -223,6 +226,8 @@ ok |x: [`J, `M]| select (x, 0) { (`J, _) => 1, (`M, _) => 2 }
 no "could each take the test" let x = never(); let y = never(); let u = select true { true => x, false => y }; select u { i64 as n => n, _ => 0 }
 ok let x = never(); let y: string = never(); let u = select true { true => x, false => y }; select u { i64 as n => n, _ => 0 }
 ok let x = never(); let y = never(); let u = select true { true => x, false => y }; select u { i64 as n => n, string as s => 0 }
+no "'u, a type not decided at this select, members of which could each take the test" let u = select true { true => str::parse("1")$, false => str::parse("s")$ }; select u { i64 as n => n, _ => 0 }
+ok let u: [i64, string] = select true { true => str::parse("1")$, false => str::parse("s")$ }; select u { i64 as n => n, _ => 0 }
 no "string does not contain" 'c: Collection, 'b: (i64, i64) |x: 'c<'b>| -> [string, null] select x { [h, ..] => { let q: string = h; q }, _ => null }
 ok let g = 'c: Collection, 'b: (i64, i64) |x: 'c<'b>| -> [i64, null] select x { [h, ..] => h.0, _ => null }; g([(3, 4)])
 no "string does not contain" 'b: (i64, i64) |x: (Array<'b>, i64)| -> [string, null] select x { ([h, ..], n) => { let q: string = h; q }, _ => null }

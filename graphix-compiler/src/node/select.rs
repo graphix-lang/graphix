@@ -4522,7 +4522,8 @@ fn written_takers(
 
 /// The refusal of `pat`, whose written test the narrowing gave to the
 /// first of `takers` ([`written_takers`]) in the scrutinee's union,
-/// naming the bindings whose types they are.
+/// naming the bindings whose types they are, each once: cells no binding
+/// of their own names go by the one binding that holds their union.
 fn taken_by_order(
     env: &Env,
     pat: &dyn std::fmt::Display,
@@ -4537,17 +4538,33 @@ fn taken_by_order(
     let mut sorted: SmallVec<[&TVar; 2]> = takers.iter().collect();
     sorted.sort_by_cached_key(|tv| name(&mut Holders::new(env, None), tv));
     let mut holders = Holders::new(env, None);
-    let mut names = CompactString::new("");
-    for (i, tv) in sorted.into_iter().enumerate() {
-        names.push_str(if i == 0 { "" } else { " or " });
-        names.push_str(&name(&mut holders, tv));
+    let mut names: SmallVec<[CompactString; 2]> = SmallVec::new();
+    for tv in sorted {
+        let name = name(&mut holders, tv);
+        if !names.contains(&name) {
+            names.push(name)
+        }
     }
     let meanings = holders.meanings(&select.ori);
-    anyhow!(
-        "{pat} tests a value of {names}, types not decided at this select that could \
-         each take the test, and the check picks none by their order: annotate all but \
-         one of them{meanings}"
-    )
+    match &names[..] {
+        [name] => anyhow!(
+            "{pat} tests a value of {name}, a type not decided at this select, members \
+             of which could each take the test, and the check picks none by their \
+             order: annotate it{meanings}"
+        ),
+        each => {
+            let mut names = CompactString::new("");
+            for (i, name) in each.iter().enumerate() {
+                names.push_str(if i == 0 { "" } else { " or " });
+                names.push_str(name);
+            }
+            anyhow!(
+                "{pat} tests a value of {names}, types not decided at this select that \
+                 could each take the test, and the check picks none by their order: \
+                 annotate all but one of them{meanings}"
+            )
+        }
+    }
 }
 
 /// The refusal of `pat`, which tests a value of `tv`, a cell not decided

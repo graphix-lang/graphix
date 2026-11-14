@@ -112,7 +112,10 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   first of them in the union, is refused naming them all
   (`written_takers`, `taken_by_order`: a member is never picked by its
   place in a union; over `u`, an `x` or a `y` both written later, `i64
-  as n => n, _ => 0` is refused until one is annotated). A decided
+  as n => n, _ => 0` is refused until one is annotated; cells no
+  binding of their own names, two `str::parse` results in one `let u`,
+  go by the binding that holds their union, named once and the one to
+  annotate). A decided
   member that holds the test takes it and leaves them open, one such
   cell alone is the arm's to decide, and arms with no catch-all decide
   them together in the settle, each the union of the tests; a case
