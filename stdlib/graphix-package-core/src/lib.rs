@@ -319,10 +319,10 @@ pub struct ProgramArgs(pub Vec<ArcStr>);
 /// How `sys::exit` ends a program, seeded into `ctx.libstate` by an
 /// embedder that ends in order (a display cleared, its runtime stopped)
 /// and then exits with the code. Without one the runtime ends the process
-/// after the program's last cycle. The request is made inside the program's last cycle
-/// (`Control::exit`), which may still be running when it arrives: the
-/// runtime is idle (`GXHandle::wait_idle`) once that cycle's batch is
-/// sent.
+/// after the program's last cycle. The request is made inside the
+/// program's last cycle (`Control::exit`), which may still be running when
+/// it arrives: the runtime is idle (`GXHandle::wait_idle`) once that
+/// cycle's batch is sent.
 #[derive(Clone)]
 pub struct ExitRequest(
     triomphe::Arc<parking_lot::Mutex<Option<tokio::sync::oneshot::Sender<i32>>>>,
