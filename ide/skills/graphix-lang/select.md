@@ -46,7 +46,10 @@ select, and runtime forms. Each rule refuses and names the fix.
   needing an arm of its own. A written test that holds part of a tuple
   or struct covers that part beside other arms' bool literals and
   variant heads; one naming a declared variable holds only that
-  variable, never its bound.
+  variable, never its bound, and covers nothing of another declared
+  variable: `Array<'b> as` over `Array<'a>` (a map's, a list's, an
+  error's or an abstract's parameter alike) needs an `Array<'a> as` arm
+  or a catch-all after it, since `'a` and `'b` may differ in a call.
 - A type not decided yet where a select is checked (a `never()` let
   written after it, a function's unannotated parameter) is one unknown
   type there, equal only to itself. An arm that tests a value of it
@@ -291,6 +294,8 @@ no "[i64, null] does not contain string" let f = |v: [Array<'b>, i64]| select v 
 no "not known here" let f = |v: [Array<'b>, i64]| select v { Array<['c, null]> as [x, ..] => x$ + 1, _ => 0 }; f([1])
 ok let f = |v: [Array<'b>, i64]| select v { Array<['c, null]> as [x, ..] => select x { i64 as n => n + 1, _ => 0 }, _ => 0 }; f([1])
 ok |xs: Array<(i64, i64)>| select xs { Array<'b> as [(a, b), ..] => a + b, _ => 0 }
+no "no arm covers Array<'a" |x: [Array<'a>, i64], y: 'b| select x { Array<'b> as a => 1, i64 as n => n }
+ok let f = |x: [Array<'a>, i64], y: 'b| select x { Array<'b> as a => 1, Array<'a> as a => 2, i64 as n => n }; [f([1], "s"), f([1], 1)]
 no "cannot hold Array<string>" let e1 = []; let e2 = []; let b = true; let t = select b { true => (e1, 1), false => (e2, "s") }; let z = select t { (a, n) => a[0]$ + 1 }; e1 <- [1]; e2 <- ["s"]; z
 ok let e1 = []; let e2 = []; let b = true; let t = select b { true => (e1, 1), false => (e2, "s") }; let z = select t { (a, n) => a[0]$ + 1 }; e1 <- [1]; e2 <- [2]; z
 no "same runtime form" let a: [&i64, &string] = &1; select a { &i64 as x => 1, &string as y => 2 }
