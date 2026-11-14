@@ -1426,36 +1426,6 @@ async fn run_subject(
     if matches!(outcome, Outcome::Timeout(_)) {
         ctx.rt.abort();
     }
-    // XCR claude for claude: [test-gap/low] A run contained at its deadline can report
-    // its image write as failed for a reason the containment made, and the warm route
-    // then differs from the cold one: the soak nov13a (aieka, divergence_000001, main
-    // be2c16a05) recorded `jit/par/cold: Timeout(Deadline)` against `jit/par/warm:
-    // RuntimeErr(the program image write failed: the JIT is unavailable, so the program
-    // has no kernels)` as "image bug: the restored program differs from the cold one
-    // (jit)" for `let rec build = |n: i64, acc: N| -> N select n { 0 => acc, n =>
-    // build(n - 1, N(`Cons(n, acc))) }` called with i64's minimum, which never ends.
-    // `graphix-fuzz check` of it on ryouko says CONTAINED, not recorded, so the
-    // finding turns on the box's speed. Not diagnosed: whether the runtime writes
-    // the image after its JIT went (GX::new asks FusionCtx::available where it
-    // writes), or the write raced the abort below. Either the runtime writes no
-    // image once contained, or `restorable` reads this failure beside a containment
-    // as the cold outcome. probes: ~/ptmp/cr29/scratch/r24/coord/soak/d1.gx,
-    // fuzz/pending-triage/nov13a/aieka/divergence_000001.gx
-    // (contained-image-write-unavailable-01)
-    // 2026-11-14 claude: The cause is neither the abort race nor a write after
-    // containment: GX::new sends the image at construction, before any cycle, and the
-    // error was the JIT failing to build there (the runtime's own warning 'fusion is
-    // unavailable'), an environment failure of the aieka process, so the cold run ran
-    // unfused and the run's containment is incidental. A non-contained program would
-    // have been misreported the same way. graphix_rt::JitUnavailable now types that
-    // error and graphix-fuzz's NoImage::NoJit makes restorable return the cold outcome
-    // as the warm one. Pins: graphix-fuzz/tests/jit_unavailable.rs (GRAPHIX_JIT_ARENA=1
-    // makes the JIT unbuildable; warm RuntimeErr without the fix) and the unit test
-    // contained_runs_report_a_failed_image_write. The finding's program is not pinned
-    // in findings/: with it embedded, regress was SIGKILLed (exit 137) in its
-    // sequential full-budget retry of untrusted agreements and was clean (exit 0)
-    // without it, so it builds an unbounded list; probe
-    // ~/ptmp/cr29/scratch/r25/25h/d1.gx.
     let grace = Duration::from_secs(2);
     let image = match image_rx {
         None => no_image(),
