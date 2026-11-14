@@ -2510,6 +2510,94 @@ run!(
     FuseExpect::Jit
 );
 
+// The first instance's reload fails after the second instance loaded, so
+// its first body runs on: the saved function and the module's own both
+// read that body's import.
+run!(
+    a_function_saved_past_another_instances_load_keeps_its_imports_past_a_failed_reload,
+    r##"{
+    let ep = 0;
+    ep <- select ep { n if n < 14 => n + 1, _ => never() };
+    let src0: string = never();
+    src0 <- select ep {
+        2 => ep ~ r#"use str::len; let make = |x: i64| len("ab") + x"#,
+        8 => ep ~ "use array::len; let make = |x: i64| nope(x)",
+        _ => never()
+    };
+    let xs0: Array<i64> = never();
+    xs0 <- select ep { 1 => [0], 6 => [0, 1], _ => never() };
+    let f = |i: i64| {
+        let s = mod d dynamic {
+            sandbox unrestricted;
+            sig { val make: fn(x: i64) -> i64 };
+            source select i {
+                0 => src0,
+                _ => once(i) ~ r"use array::len; let make = |x: i64| len([1, 2, 3]) + x * 1000"
+            }
+        };
+        d::make
+    };
+    let slots = array::map(xs0, |i| f(i));
+    let saved: fn(x: i64) -> i64 = never();
+    saved <- select ep { 4 => ep ~ slots[0]$, _ => never() };
+    let own = slots[0]$;
+    let other = slots[1]$;
+    let xs: Array<i64> = never();
+    xs <- select ep { 11 => [0, 1], _ => never() };
+    let late = array::map(xs, |x| saved(x + ep));
+    let late_own = array::map(xs, |x| own(x + ep));
+    select ep { 14 => ep ~ "[late] [late_own] [other(ep)]", _ => never() }
+}"##,
+    is(Value::String("[16, 17] [16, 17] 14003".into()));
+    FuseExpect::Jit
+);
+
+// Each instance's body declares a dynamic module of its own, and each of
+// those reads the `len` its own source imports.
+run!(
+    a_function_saved_past_another_instances_load_keeps_a_nested_modules_imports,
+    r###"{
+    let ep = 0;
+    ep <- select ep { n if n < 14 => n + 1, _ => never() };
+    let srcs = [
+        r##"let isrc = r#"use str::len; let f = |x: i64| len("ab") + x"#;
+let r = mod inner dynamic {
+    sandbox unrestricted;
+    sig { val f: fn(x: i64) -> i64 };
+    source isrc
+};
+let make = |x: i64| inner::f(x)"##,
+        r##"let isrc = r"use array::len; let f = |x: i64| len([1, 2, 3]) + x * 1000";
+let r = mod inner dynamic {
+    sandbox unrestricted;
+    sig { val f: fn(x: i64) -> i64 };
+    source isrc
+};
+let make = |x: i64| inner::f(x)"##
+    ];
+    let xs0: Array<i64> = never();
+    xs0 <- select ep { 2 => [0], 6 => [0, 1], _ => never() };
+    let f = |i: i64| {
+        let s = mod d dynamic {
+            sandbox unrestricted;
+            sig { val make: fn(x: i64) -> i64 };
+            source once(i) ~ srcs[i]$
+        };
+        d::make
+    };
+    let slots = array::map(xs0, |i| f(i));
+    let saved: fn(x: i64) -> i64 = never();
+    saved <- select ep { 4 => ep ~ slots[0]$, _ => never() };
+    let other = slots[1]$;
+    let xs: Array<i64> = never();
+    xs <- select ep { 10 => [0, 1], _ => never() };
+    let late = array::map(xs, |x| saved(x + ep));
+    select ep { 14 => ep ~ "[late] [other(ep)]", _ => never() }
+}"###,
+    is(Value::String("[16, 17] 14003".into()));
+    FuseExpect::Jit
+);
+
 // A dynamic module declared in a loaded body resolves the names its own
 // source imports, from its first load on.
 run!(
