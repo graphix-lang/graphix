@@ -86,13 +86,22 @@ structure is returned SHARED, never copied.
   compares only those that may be one. `expand_ref` asks `closure` whether
   an application holds a cell, and a committing walk copies a cached
   expansion only where a copy differs from it: where it holds a cell or a
-  function type (`Closure::Plain` is neither). A function's containment
-  asks whether a position holds a union of open cells only of a position
-  `closure` finds open, so a chain of function types is walked once, not
-  once a link. Pins: `typ::contains::tests::
+  function type (`Closure::Plain` is neither), and the copy keeps each part
+  `closure` has found plain without walking it (`Type::reset_tvars_beside`).
+  Whether a union's member names its members reads whether a name's
+  parameter holds a cell from `closure` too (`ContainsHist::names_members`).
+  A function's containment asks whether a position holds a union of open
+  cells only of a position `closure` finds open, so a chain of function
+  types is walked once, not once a link. Pins: `typ::contains::tests::
   function_types_are_keyed_by_their_parts`, `deep_nesting::
   a_chain_of_bounds_through_function_types_elaborates_in_linear_time`,
-  `a_chain_of_bounds_through_a_function_typedef_elaborates_in_time`.
+  `a_chain_of_bounds_through_a_function_typedef_elaborates_in_linear_time`,
+  `a_chain_of_bounds_through_a_typedef_or_a_variant_elaborates_in_linear_time`.
+- A call copies a formal holding a widenable variable (`Widening::opening`:
+  through every cell its conjuncts reach) only for an argument that
+  pre-unifies with the copy (`typecheck_arg`, `Opening`), so a chain of
+  bounds as parameters, every argument a call, checks in linear time. Pin:
+  `deep_nesting::a_chain_of_bounds_as_parameters_checks_in_linear_time`.
 - The unions a `contains` walk builds to ask about (a distribution's pool
   of its candidates' parts, a placement's residue) are normalized in one
   pass kept for the call (`ContainsHist::normal_union`), so a node many
