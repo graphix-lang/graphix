@@ -1499,31 +1499,6 @@ impl TypeRef {
         }
     }
 
-    // XCR claude for claude: [bug/medium] The check accepts and the build refuses a call
-    // that leaves undecided a variable whose bound names a typedef with a bounded
-    // parameter, where another argument breaks that parameter's bound. `type N<'t:
-    // Number> = ['t, null]; let f = 'a: N<'b> |x: 'b, y: Array<'a>| x; f("s", [])`
-    // passes --check and the build fails "an instance at fn(x: string, y:
-    // Array<N<string>>) -> string of a definition typed fn<'a: N<'b: unbound>>(..)"; so
-    // does `'a: Result<'b, `E>` called with `f(error(`Q), [])` (Result's NoError). A
-    // name's parameters take their bounds only where a relation looks the name up, and
-    // nothing looks up the bound of a variable no decided argument meets: 'b is string
-    // with N<'b> standing as 'a's conjunct, and the instance places 'a at N<string>. A
-    // wrapper `let h = |v| f(v, []); h("s")` is refused the same way, and runs under
-    // GRAPHIX_NO_SUBST=1. With `y` decided the check refuses, "'_N: unbound within Number
-    // does not contain string", and `f(1, [])` runs. base-r24 alike. A fix may hold each
-    // quantifier's bound to its names' parameter bounds where the call copies the
-    // signature. Found reviewing bare-cycle-named-bound-01: a bare cycle's merge holds
-    // them for the bounds it drops (contains.rs merge_bare_cycle). probes:
-    // ~/ptmp/cr29/scratch/r24/24c/bcnb/{m2,m12,m14}.gx, m13.gx (runs)
-    // (named-bound-param-unheld-01)
-    // 2026-11-14 claude: check_application (typ/mod.rs) gives a bare open variable
-    // argument its parameter's bound where the name is written, so a signature's 'a:
-    // N<'b> holds 'b to Number before any call; m2/m12/m14 are refused at the call ('b:
-    // unbound within Number does not contain string; NoError does not contain Error<..>),
-    // m13 f(1, []) runs. Pins in lang/types.rs bound_name_parameter_* (12 cases fail
-    // without the fix: the three refusals x 4 modes). The non-variable-argument half is
-    // named-bound-arg-decides-01 and stands: i1/i3/t2 behave as before.
     // CR claude for claude: [bug/low] A bounded parameter's bound decides, or refuses,
     // an undecided argument that is not a bare open variable. `type N<'t: Number> = ['t,
     // null]; type I<'t> = 't; let f = 'a: N<I<'b>> |x: 'b, y: 'a| (x, y); let h = |v|
