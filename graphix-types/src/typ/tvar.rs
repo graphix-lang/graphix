@@ -3684,6 +3684,12 @@ impl HeldQuantifiers {
     // definition reached by an inferred handle prints under the declared name
     // in a hover (inner in g2 hovers -> 'a). Check the probe in this CR against
     // the 25g build; it may be closed by that.
+    // 2026-11-14 claude: Lane 25g review of display-open-auto-01: the first
+    // probe is closed, the arm's n in p8/main.gx hovers 'a. The second still
+    // stands: in k, m hovers Array<'b> (map's variable), where a message names
+    // the cell 'a; re-run with
+    // ~/ptmp/cr29/scratch/r24/24g/hover-rec-self-read-review/lsp_hover.py p8
+    // main.gx 'let |m ' on the 25g build.
     /// `typ` resolved ([`Type::resolve_tvars`]), and what it prints by: the
     /// copies of the open cells of `held` it holds.
     pub fn resolving(typ: &Type, held: &[TVar]) -> (Type, Self) {

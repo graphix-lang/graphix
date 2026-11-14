@@ -27,7 +27,6 @@ use lsp_types::{
 use netidx_core::path::Path as NPath;
 use poolshark::local::LPooled;
 use std::{cell::RefCell, fmt::Write, path::Path};
-use triomphe::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
 enum Target {
@@ -67,9 +66,9 @@ fn truncated(path: &ModPath, n: usize) -> ModPath {
 }
 
 /// A binding's type for display: a hover's, an outline's, a completion's
-/// (the server's and the REPL's). `name_auto_variables` names a
-/// function's open generic auto variables once the type is resolved. A header lists only
-/// the quantifiers a call still picks, as a checker message's does.
+/// (the server's and the REPL's). `name_auto_variables` names each
+/// function type's open auto variables once the type is resolved. A header
+/// lists only the quantifiers a call still picks, as a checker message's does.
 pub fn display_type(typ: &Type) -> CompactString {
     display_holding(typ, &[])
 }
@@ -86,10 +85,7 @@ pub(crate) fn held_at(ide: &Ide, file: &Path, cursor: Position) -> LPooled<Vec<T
 /// A type shown where `held` ([`held_at`]) are held ([`display_type`]).
 pub(crate) fn display_holding(typ: &Type, held: &[TVar]) -> CompactString {
     let (resolved, held) = HeldQuantifiers::resolving(typ, held);
-    let resolved = match &resolved {
-        Type::Fn(ft) => Type::Fn(Arc::new(ft.name_auto_variables(held.cells()))),
-        _ => resolved,
-    };
+    let resolved = resolved.name_auto_variables(held.cells());
     format_with_flags(PrintFlag::ReplacePrims | PrintFlag::StandingHeaders, || {
         held.printing(|| format_compact!("{resolved}"))
     })

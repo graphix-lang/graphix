@@ -3140,12 +3140,14 @@ former consumer derives from the cells:
   `typ::fntyp::tests::a_walk_through_bounds_finds_its_own_quantifier`,
   `a_held_walk_reads_its_positions_in_its_own_name_scope`.
 - `FnType::name_auto_variables` names, on the resolved type, each open
-  generic inferred cell (`'_N`, whose digits change from run to run) a
+  inferred cell (`'_N`, whose digits change from run to run) a
   letter no other variable of the signature uses, in the order the
   signature prints them, and lists it in the signature's header, so a
   bound prints in the header (`fn<'a: Number>(q: 'a) -> 'a`) and a
   variable the positions share stays one variable, in a nested signature
-  too (`fn<'a: Number>(z: i64) -> fn(q: 'a) -> 'a`). The resolve keeps the
+  too (`fn<'a: Number>(z: i64) -> fn(q: 'a) -> 'a`). It runs on each
+  outermost function type of a type (a struct's field, an array's
+  element), and on a local function as on a top-level one. The resolve keeps the
   bounds of such a cell (`ResolveTvarsCx::bounded`). It leaves alone a
   cell a quantifier of the type stands for, an implicit `throws` slot,
   and a cell of the definitions the cursor is inside (`held`): the
@@ -3156,6 +3158,7 @@ former consumer derives from the cells:
   type through one function, `graphix_lsp::display_type`. Pins:
   `lsp::a_decided_variable_hovers_as_its_type`,
   `lsp::an_open_inferred_variable_hovers_as_a_listed_letter`,
+  `lsp::an_open_inferred_variable_of_a_local_or_held_function_hovers_as_a_listed_letter`,
   `completion::tests::a_completion_describes_a_binding_as_a_hover_does`.
   `sig_matches_int`'s impl-constraint check is SATISFACTION — the
   signature's concrete choice must be admitted by the impl's inferred

@@ -132,7 +132,7 @@ pub(super) struct ResolveTvarsCx {
     /// An open cell's copy keeps its predicate conjuncts (`Concrete`,
     /// `Function`), which name no cell.
     predicates: bool,
-    /// An open generic cell no program named keeps its bounds, resolved,
+    /// An open inferred cell keeps its bounds, resolved,
     /// as a quantifier's copy does.
     bounded: bool,
     /// The open quantifiers of the function types met: their bounds are
@@ -514,7 +514,7 @@ impl Type {
                         let fresh = tv.fresh_copy();
                         cx.fresh.insert(addr, fresh.clone());
                         if cx.quantifiers.contains(&addr)
-                            || (cx.bounded && tv.generated() && tv.level().is_generic())
+                            || (cx.bounded && tv.generated())
                         {
                             for c in tv.cell_constraints() {
                                 let c = c.resolve_tvars_seen_int(cx).unwrap_or(c);

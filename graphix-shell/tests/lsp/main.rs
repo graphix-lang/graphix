@@ -259,6 +259,31 @@ let g2 = 'a: Number |x: 'a| { let inner = |y: i64| x; inner(1) };
     }
 }
 
+/// The same holds for a local function, one a data structure holds, and
+/// one that calls a generic function.
+#[test]
+fn an_open_inferred_variable_of_a_local_or_held_function_hovers_as_a_listed_letter() {
+    const SRC: &str = "\
+let h = 'a: Number |x: 'a| -> 'a x;
+let s = {f: |x| h(x), n: 1};
+let xs = [|x| h(x)];
+let f = |x| { let id = |y| y; let loc = |q| h(q); (id(x), loc(x)) };
+0
+";
+    let mut c = Client::start(&[("main.gx", SRC)]);
+    c.open("main.gx");
+    assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
+    let hovers = [
+        ("let |s ", "s: { f: fn<'a: Number>(x: 'a) -> 'a, n: i64 }"),
+        ("let |xs ", "xs: Array<fn<'a: Number>(x: 'a) -> 'a>"),
+        ("let |id ", "id: fn(y: 'a) -> 'a"),
+        ("let |loc ", "loc: fn<'a: Number>(q: 'a) -> 'a"),
+    ];
+    for (marker, typ) in hovers {
+        hover_is(&mut c, marker, typ);
+    }
+}
+
 #[test]
 fn hover_never_answers_for_another_name() {
     let mut c = two_files();

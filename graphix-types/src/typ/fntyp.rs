@@ -1393,7 +1393,7 @@ impl FnType {
         self.cow_walk(|t| t.replace_tvars_int(s, fresh))
     }
 
-    /// For display, each open generic auto variable (`'_23`) of the
+    /// For display, each open auto variable (`'_23`) of the
     /// signature named a letter no variable of it uses and listed in its
     /// header, which prints it with its bounds: a variable the
     /// signature's positions share stays one variable. A cell of a
@@ -1453,7 +1453,6 @@ impl FnType {
         let mut autos: LPooled<Vec<(ArcStr, usize)>> = LPooled::take();
         for (name, tv) in all.iter() {
             if let Some(open) = tv.open_cell()
-                && open.level().is_generic()
                 && !standing.contains(&open.cell_addr())
                 && !autos.iter().any(|(_, a)| *a == open.cell_addr())
             {
@@ -2627,6 +2626,19 @@ impl FnType {
         let mut copies: LPooled<AHashMap<usize, TVar>> = LPooled::take();
         self.cow_walk(|t| t.scope_refs_int(scope, &mut copies))
             .unwrap_or_else(|| self.clone())
+    }
+}
+
+impl Type {
+    /// [`FnType::name_auto_variables`] on each outermost function type this
+    /// type holds.
+    pub fn name_auto_variables(&self, held: &[TVar]) -> Self {
+        crate::stack::ensure_sufficient(|| match self {
+            Type::Fn(ft) => Type::Fn(Arc::new(ft.name_auto_variables(held))),
+            t => t
+                .cow_children(&mut |c| Some(c.name_auto_variables(held)))
+                .unwrap_or_else(|| t.clone()),
+        })
     }
 }
 
