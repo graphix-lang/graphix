@@ -26,11 +26,14 @@ How `run!` fixtures run, and what a landing owes.
   compiles it, and `GRAPHIX_TEST_ROOT=compile` compiles every one. A
   `run!` fixture is a `testing::RunFixture` value its four tests hand to
   `testing::run_fixture`, compiled once, never a driver per fixture.
-  A fixture's first value is awaited by `testing::first_update`, which
-  `run_with_tempdir!`, the `eval*` helpers and `Fixture` share: it fails
-  when the runtime settles without the value (nothing outstanding can
-  bring it), and wall time bounds only a hang (`testing::HANG_GUARD`),
-  so a fixture's work takes what the box's load makes it take.
+  Every wait for a value goes through `testing::next_update` (or
+  `next_update_raw`, the value as delivered), which `run!`,
+  `run_with_tempdir!`, the `eval*` helpers, `Fixture`, `collect` and
+  `updates_until` share: it fails when the runtime settles without the
+  value (nothing outstanding can bring it), and wall time bounds only a
+  hang (`testing::HANG_GUARD`), so a program's work takes what the box's
+  load makes it take. A test takes no deadline of its own for a value
+  that must come; a wall window is only for what must not come.
   `GRAPHIX_FUSE_AUDIT=1 cargo test -- jit --nocapture` prints the audit,
   and in the forced modes a `PARAUDIT-NOFORK` line for each fixture that
   forked nothing (a finding where the fixture has fork points).

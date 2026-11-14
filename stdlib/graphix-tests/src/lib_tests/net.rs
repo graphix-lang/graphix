@@ -6,7 +6,7 @@ use graphix_package_core::{
 };
 use netidx::subscriber::Value;
 use poolshark::local::LPooled;
-use std::{fmt::Write, sync::Arc, time::Duration};
+use std::{fmt::Write, sync::Arc};
 
 const NET_PUB_SUB: &str = r#"
 {
@@ -794,14 +794,7 @@ const NET_RPC_MISSING: &str = r#"{
 async fn net_rpc_missing_path() -> Result<()> {
     for mode in Mode::ALL {
         let first = Collect::First(1);
-        let v = collect(
-            NET_RPC_MISSING,
-            &crate::TEST_REGISTER,
-            mode,
-            first,
-            Duration::from_secs(20),
-        )
-        .await?;
+        let v = collect(NET_RPC_MISSING, &crate::TEST_REGISTER, mode, first).await?;
         assert_eq!(
             v[0].to_string(),
             r#"error:["RpcError", "timeout subscribing to procedure"]"#,
@@ -861,14 +854,7 @@ const NET_NO_STALE_VALUE: &str = r#"
 async fn net_no_stale_value() -> Result<()> {
     for mode in Mode::ALL {
         let first = Collect::First(1);
-        let v = collect(
-            NET_NO_STALE_VALUE,
-            &crate::TEST_REGISTER,
-            mode,
-            first,
-            Duration::from_secs(10),
-        )
-        .await?;
+        let v = collect(NET_NO_STALE_VALUE, &crate::TEST_REGISTER, mode, first).await?;
         match &v[..] {
             [Value::Array(a)] => match &a[..] {
                 // hundreds of good deliveries over the 100 moves

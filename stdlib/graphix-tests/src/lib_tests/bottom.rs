@@ -318,14 +318,7 @@ async fn beside_y(expr: &str) -> Result<Vec<(Mode, Vec<Value>)>> {
         let code = format!("{{ {GOES_AT_20MS} (y, {expr}) }}");
         runs.spawn(async move {
             let quiet = Collect::Quiet(Duration::from_millis(300));
-            let got = collect(
-                &code,
-                crate::TEST_REGISTER,
-                mode,
-                quiet,
-                Duration::from_secs(10),
-            )
-            .await;
+            let got = collect(&code, crate::TEST_REGISTER, mode, quiet).await;
             (mode, got)
         });
     }
@@ -399,9 +392,7 @@ async fn owed_elements_deliver_through_a_bottom_source() -> Result<()> {
 }"#;
     for mode in Mode::ALL {
         let quiet = Collect::Quiet(Duration::from_millis(200));
-        let got =
-            collect(CODE, crate::TEST_REGISTER, mode, quiet, Duration::from_secs(10))
-                .await?;
+        let got = collect(CODE, crate::TEST_REGISTER, mode, quiet).await?;
         assert_eq!(
             got.last().map(|v| v.to_string()).as_deref(),
             Some("[i64:1, i64:2, i64:3]"),

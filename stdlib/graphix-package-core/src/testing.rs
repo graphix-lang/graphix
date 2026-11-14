@@ -455,7 +455,7 @@ async fn fixture_mode(
                     ctx.rt.match_shape(eid, spec).await?;
                 }
             }
-            let v = first_update(&ctx.rt, &mut rx, eid).await?;
+            let v = next_update_raw(&ctx.rt, &mut rx, eid).await?;
             let v = observed(&ctx, &res.exprs[0].typ, v).await?;
             eprintln!("{v}");
             assert!(pred(Ok(&v)));
@@ -518,7 +518,7 @@ pub async fn run_tempdir_fixture(
     }
     // the fixture's expression lives as long as `built`
     let built = built?;
-    let v = first_update(&ctx.rt, &mut rx, built.exprs[0].id).await?;
+    let v = next_update_raw(&ctx.rt, &mut rx, built.exprs[0].id).await?;
     expect(observed(&ctx, &built.exprs[0].typ, v).await?)?;
     ctx.shutdown().await;
     Ok(())
@@ -576,7 +576,7 @@ pub async fn observed(ctx: &TestCtx, typ: &Type, v: Value) -> Result<Value> {
     Ok(data(v))
 }
 
-// CR claude for claude: [risk/low] Test-local waits still hand this and
+// XCR claude for claude: [risk/low] Test-local waits still hand this and
 // `next_update_raw` (and `collect`, and their own `tokio::time::timeout`s) a short wall
 // deadline: 5 to 20 s in lang::fusion's `await_map_len`, lang::fusion_review,
 // lang::attributes, lang::image's `eval_on`, lib_tests::{pack, process, lift,
@@ -587,37 +587,35 @@ pub async fn observed(ctx: &TestCtx, typ: &Type, v: Value) -> Result<Value> {
 // wait for a later update races the settle as `first_update` does (a settle without the
 // update fails at once), with `HANG_GUARD` its only wall limit, and the deadline
 // parameter goes. (test-local-wall-deadlines-01)
+// 2026-11-13 claude: testing::next_update/next_update_raw take the runtime and race its
+// settle (first_update is now next_update_raw), HANG_GUARD their only wall limit;
+// updates_until, updates_until_quiet and collect lose their deadline. Every positive
+// wait in graphix-tests goes through them or HANG_GUARD: the hand-rolled loops in
+// lang::{types, errors, modules, repl_inputs, image} and lib_tests::{leaks, interrupt}
+// call next_update; fs::watch's positive waits and the remaining poll loops
+// (budget_stops, kill_on_drop, fastcall_panic, image's first_values) take HANG_GUARD.
+// Wall windows stay only where a value must not come (watch_test's expect:false
+// NO_EVENT, interrupt's after-stop check, the simultaneous-watch third event). The
+// runtime prunes a dropped settle waiter when the next is pushed (300 held over 300
+// next_update calls on a timer program before, 1 after). Pins:
+// lib_tests::harness::next_update_fails_when_the_runtime_settles_without_a_later_value
+// and a_late_later_value_is_awaited (11 s gap), both fail with the settle race undone
+// and a 10 s deadline. The GUI and TUI harnesses' waits are
+// harness-wall-deadlines-gui-tui-01.
 /// The next update of `id`, as [`data`].
 pub async fn next_update(
+    rt: &GXHandle<NoExt>,
     rx: &mut Events,
     id: ExprId,
-    deadline: Instant,
 ) -> Result<Value> {
-    next_update_raw(rx, id, deadline).await.map(data)
+    next_update_raw(rt, rx, id).await.map(data)
 }
 
-/// The next update of `id` as the runtime delivered it.
-pub async fn next_update_raw(
-    rx: &mut Events,
-    id: ExprId,
-    deadline: Instant,
-) -> Result<Value> {
-    loop {
-        let mut batch = tokio::time::timeout_at(deadline, rx.recv())
-            .await
-            .map_err(|_| anyhow::anyhow!("timeout waiting for an update of {id:?}"))?
-            .context("the runtime died")?;
-        if let Some(v) = update_of(&mut batch, id) {
-            return Ok(v);
-        }
-    }
-}
-
-/// The first update of `id` as the runtime delivered it. A runtime that
+/// The next update of `id` as the runtime delivered it. A runtime that
 /// settles without one fails at once, since nothing outstanding can bring
-/// it; otherwise the wait lasts as long as the fixture's work does under
+/// it; otherwise the wait lasts as long as the program's work does under
 /// the box's load, up to [`HANG_GUARD`].
-pub async fn first_update(
+pub async fn next_update_raw(
     rt: &GXHandle<NoExt>,
     rx: &mut Events,
     id: ExprId,
@@ -625,7 +623,14 @@ pub async fn first_update(
     let settled = rt.wait_settled();
     tokio::pin!(settled);
     tokio::select! {
-        v = next_update_raw(rx, id, Instant::now() + HANG_GUARD) => v,
+        v = async {
+            loop {
+                let mut batch = rx.recv().await.context("the runtime died")?;
+                if let Some(v) = update_of(&mut batch, id) {
+                    break Ok(v);
+                }
+            }
+        } => v,
         r = &mut settled => {
             r.context("the runtime died")?;
             // every update is in the stream before the settle answers
@@ -635,6 +640,9 @@ pub async fn first_update(
                 }
             }
             bail!("the runtime settled without an update of {id:?}")
+        }
+        () = tokio::time::sleep(HANG_GUARD) => {
+            bail!("no update of {id:?} in {HANG_GUARD:?}")
         }
     }
 }
@@ -649,38 +657,34 @@ fn update_of(batch: &mut GPooled<Vec<GXEvent>>, id: ExprId) -> Option<Value> {
 /// Every update of `id` until the runtime settles (idle with nothing
 /// outstanding, [`GXHandle::wait_settled`]), or, for a program with a
 /// standing source that never settles, until no batch arrives for
-/// `quiet` after the first; failing at `deadline` (a program that never
-/// quiesces).
+/// `quiet` after the first; failing past [`HANG_GUARD`] (a program that
+/// never quiesces).
 pub async fn updates_until_quiet(
     rt: &GXHandle<NoExt>,
     rx: &mut Events,
     id: ExprId,
     quiet: Duration,
-    deadline: Instant,
 ) -> Result<Vec<Value>> {
-    updates_until_settled(rt, rx, id, Some(quiet), deadline).await
+    updates_until_settled(rt, rx, id, Some(quiet)).await
 }
 
-/// Every update of `id` as `until` says, failing at `deadline`.
+/// Every update of `id` as `until` says, each wait as [`next_update`]'s.
 pub async fn updates_until(
     rt: &GXHandle<NoExt>,
     rx: &mut Events,
     id: ExprId,
     until: Collect,
-    deadline: Instant,
 ) -> Result<Vec<Value>> {
     match until {
         Collect::First(n) => {
             let mut values = Vec::with_capacity(n);
             while values.len() < n {
-                values.push(next_update(rx, id, deadline).await?);
+                values.push(next_update(rt, rx, id).await?);
             }
             Ok(values)
         }
-        Collect::Quiet(window) => {
-            updates_until_settled(rt, rx, id, Some(window), deadline).await
-        }
-        Collect::Settled => updates_until_settled(rt, rx, id, None, deadline).await,
+        Collect::Quiet(window) => updates_until_settled(rt, rx, id, Some(window)).await,
+        Collect::Settled => updates_until_settled(rt, rx, id, None).await,
     }
 }
 
@@ -690,7 +694,6 @@ async fn updates_until_settled(
     rx: &mut Events,
     id: ExprId,
     quiet: Option<Duration>,
-    deadline: Instant,
 ) -> Result<Vec<Value>> {
     fn take(batch: &mut GPooled<Vec<GXEvent>>, id: ExprId, values: &mut Vec<Value>) {
         for e in batch.drain(..) {
@@ -704,6 +707,8 @@ async fn updates_until_settled(
     let mut values = Vec::new();
     let settled = rt.wait_settled();
     tokio::pin!(settled);
+    let hang = tokio::time::sleep(HANG_GUARD);
+    tokio::pin!(hang);
     loop {
         let batch = async {
             match quiet {
@@ -722,7 +727,7 @@ async fn updates_until_settled(
                 }
                 return Ok(values);
             }
-            () = tokio::time::sleep_until(deadline) => {
+            () = &mut hang => {
                 bail!("the program did not quiesce: {values:?}")
             }
             r = batch => match r {
@@ -883,7 +888,7 @@ impl Fixture {
             .compile(arcstr::literal!("{ mod test; test::result }"))
             .await
             .context("compile graphix code")?;
-        let initial = first_update(&ctx.rt, &mut rx, compiled.exprs[0].id).await?;
+        let initial = next_update_raw(&ctx.rt, &mut rx, compiled.exprs[0].id).await?;
         let f = Self {
             _ctx: ctx,
             gx,
@@ -1044,7 +1049,7 @@ where
 {
     let (ctx, mut rx) = fixture_runtime(files, register, Mode::Jit, setup).await?;
     let res = compile_result(&ctx).await?;
-    let v = first_update(&ctx.rt, &mut rx, res.exprs[0].id).await?;
+    let v = next_update_raw(&ctx.rt, &mut rx, res.exprs[0].id).await?;
     Ok((v, ctx))
 }
 
@@ -1070,7 +1075,7 @@ pub async fn eval_modes(
                 .with_context(|| format!("{code}"))?;
         }
         let got = match built {
-            Ok(res) => Ok(data(first_update(&ctx.rt, &mut rx, res.exprs[0].id).await?)),
+            Ok(res) => Ok(next_update(&ctx.rt, &mut rx, res.exprs[0].id).await?),
             Err(e) => Err(format!("{e:#}")),
         };
         ctx.shutdown().await;
@@ -1106,21 +1111,18 @@ pub enum Collect {
 }
 
 /// `code` (as `let result = {code}`) run in `mode`: its result's updates
-/// as `until` says, failing past `deadline` from now.
+/// as `until` says ([`updates_until`]).
 pub async fn collect(
     code: &str,
     register: &[PackageRef],
     mode: Mode,
     until: Collect,
-    deadline: Duration,
 ) -> Result<Vec<Value>> {
     let (ctx, mut rx) =
         fixture_runtime([("/test.gx", result_source(code))], register, mode, |_| {})
             .await?;
     let res = compile_result(&ctx).await?;
-    let id = res.exprs[0].id;
-    let deadline = Instant::now() + deadline;
-    let values = updates_until(&ctx.rt, &mut rx, id, until, deadline).await?;
+    let values = updates_until(&ctx.rt, &mut rx, res.exprs[0].id, until).await?;
     ctx.shutdown().await;
     Ok(values)
 }

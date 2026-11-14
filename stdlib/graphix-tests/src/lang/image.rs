@@ -123,25 +123,7 @@ async fn eval_on(
 ) -> Result<Value> {
     let compiled = ctx.rt.compile(ArcStr::from(code)).await?;
     let eid = compiled.exprs[compiled.exprs.len() - 1].id;
-    let timeout = tokio::time::sleep(std::time::Duration::from_secs(5));
-    tokio::pin!(timeout);
-    loop {
-        tokio::select! {
-            _ = &mut timeout => anyhow::bail!("timeout waiting for {code}"),
-            batch = rx.recv() => match batch {
-                None => anyhow::bail!("runtime died"),
-                Some(mut batch) => {
-                    for e in batch.drain(..) {
-                        if let GXEvent::Updated(id, v) = e
-                            && id == eid
-                        {
-                            return Ok(graphix_package_core::testing::data(v));
-                        }
-                    }
-                }
-            }
-        }
-    }
+    testing::next_update(&ctx.rt, rx, eid).await.with_context(|| code.to_owned())
 }
 
 /// A runtime restored from the registration image of another runs
@@ -231,13 +213,12 @@ async fn first_values(
             }
         }
     };
-    let settled =
-        tokio::time::timeout(std::time::Duration::from_secs(60), rt.wait_settled());
+    let settled = tokio::time::timeout(testing::HANG_GUARD, rt.wait_settled());
     tokio::pin!(settled);
     loop {
         tokio::select! {
             r = &mut settled => {
-                r.context("the program did not settle in 60 s")??;
+                r.context("the program did not settle")??;
                 break;
             }
             batch = rx.recv() => match batch {

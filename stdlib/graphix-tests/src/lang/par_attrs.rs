@@ -649,10 +649,9 @@ async fn module_forks(module: &'static str) -> Result<(u64, Option<Value>)> {
     .await?;
     let forks_before = ctx.rt.control().forks();
     let res = compile_result(&ctx).await?;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
     let id = res.exprs[0].id;
     let quiet = Duration::from_millis(300);
-    let values = updates_until_quiet(&ctx.rt, &mut rx, id, quiet, deadline).await?;
+    let values = updates_until_quiet(&ctx.rt, &mut rx, id, quiet).await?;
     let forks = ctx.rt.control().forks() - forks_before;
     ctx.shutdown().await;
     Ok((forks, values.last().cloned()))

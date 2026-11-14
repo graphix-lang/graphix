@@ -5,11 +5,11 @@
 //! a native loop in constant memory; node-walked every call is a retained
 //! activation, so its memory grows until the interrupt lands.
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use graphix_compiler::{CFlag, StopCause};
-use graphix_package_core::testing::{TestCtx, config};
+use graphix_package_core::testing::{HANG_GUARD, TestCtx, config, next_update};
 use graphix_rt::GXEvent;
 use poolshark::global::GPooled;
 use tokio::{sync::mpsc, time::Duration};
@@ -36,7 +36,7 @@ async fn init_flags(
 /// A runtime the interrupt stopped: its task ends, and every call on its
 /// handle fails, naming the interrupt.
 async fn stopped_for_good(ctx: &TestCtx) -> Result<()> {
-    if tokio::time::timeout(Duration::from_secs(10), ctx.rt.ended()).await.is_err() {
+    if tokio::time::timeout(HANG_GUARD, ctx.rt.ended()).await.is_err() {
         bail!("the interrupted runtime's task did not end");
     }
     if ctx.rt.control().stopped_by() != Some(StopCause::Interrupt) {
@@ -74,7 +74,7 @@ async fn interrupt_stops(program: &str, flags: BitFlags<CFlag>) -> Result<()> {
         bail!("runtime did not wedge — {program:?} is not an unbounded loop");
     }
     ctx.rt.interrupt();
-    match tokio::time::timeout(Duration::from_secs(5), probe).await {
+    match tokio::time::timeout(HANG_GUARD, probe).await {
         Err(_) => bail!("the probe still hung after interrupt()"),
         Ok(Err(e)) => bail!("probe task panicked: {e}"),
         Ok(Ok(Ok(_))) => bail!("the interrupted runtime answered the probe"),
@@ -120,9 +120,7 @@ async fn interrupt_stops_an_idle_runtime() -> Result<()> {
     }
     held.push(ctx.rt.compile(ArcStr::from("cnt")).await?);
     let cnt = held.last().unwrap().exprs[0].id;
-    let Some(_) = value_of(&mut rx, cnt, Duration::from_secs(10)).await else {
-        bail!("cnt never counted")
-    };
+    next_update(&ctx.rt, &mut rx, cnt).await.context("cnt never counted")?;
     ctx.rt.wait_idle().await?;
     ctx.rt.interrupt();
     stopped_for_good(&ctx).await?;
@@ -156,7 +154,7 @@ async fn abort_unblocks_pending_commands() -> Result<()> {
     tokio::time::sleep(Duration::from_millis(300)).await;
     ctx.rt.abort();
     for (i, p) in pending.into_iter().enumerate() {
-        match tokio::time::timeout(Duration::from_secs(5), p).await {
+        match tokio::time::timeout(HANG_GUARD, p).await {
             Err(_) => bail!("command {i} hung after abort() instead of erroring"),
             Ok(Err(e)) => bail!("command {i} task panicked: {e}"),
             Ok(Ok(Ok(()))) => {
@@ -170,7 +168,7 @@ async fn abort_unblocks_pending_commands() -> Result<()> {
     Ok(())
 }
 
-/// The next value of the root `id`, within `wait`.
+/// The next value of the root `id`, if one comes within `wait`.
 async fn value_of(
     rx: &mut mpsc::Receiver<GPooled<Vec<GXEvent>>>,
     id: graphix_compiler::expr::ExprId,

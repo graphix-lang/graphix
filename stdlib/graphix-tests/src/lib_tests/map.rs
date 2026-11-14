@@ -312,9 +312,7 @@ async fn iter_walks_a_user_ordered_map() -> Result<()> {
     let want: Vec<Value> = [3, 2, 1, 0].into_iter().map(Value::I64).collect();
     for mode in Mode::ALL {
         let quiet = Collect::Quiet(Duration::from_millis(300));
-        let got =
-            collect(CODE, crate::TEST_REGISTER, mode, quiet, Duration::from_secs(10))
-                .await?;
+        let got = collect(CODE, crate::TEST_REGISTER, mode, quiet).await?;
         assert_eq!(got, want, "{mode:?}");
     }
     Ok(())

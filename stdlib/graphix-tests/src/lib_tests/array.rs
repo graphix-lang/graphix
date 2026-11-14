@@ -5,7 +5,6 @@ use graphix_package_core::{
     testing::{Collect, FuseExpect, Mode, collect, is, prints, refused},
 };
 use netidx::subscriber::Value;
-use std::time::Duration;
 
 const ARRAY_MAP0: &str = r#"
 {
@@ -1216,14 +1215,7 @@ async fn group_takes_what_queued_while_it_waited() -> Result<()> {
 }"#;
     let pair = |a, b| Value::Array([Value::I64(a), Value::I64(b)].into_iter().collect());
     for mode in Mode::ALL {
-        let got = collect(
-            CODE,
-            crate::TEST_REGISTER,
-            mode,
-            Collect::First(3),
-            Duration::from_secs(10),
-        )
-        .await?;
+        let got = collect(CODE, crate::TEST_REGISTER, mode, Collect::First(3)).await?;
         assert_eq!(got, [pair(1, 2), pair(3, 4), pair(5, 6)], "{mode:?}");
     }
     Ok(())

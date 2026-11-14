@@ -13,18 +13,16 @@ use graphix_package_core::{
 };
 use netidx_value::Value;
 use std::time::Duration;
-use tokio::time::Instant;
 
 /// The first `n` values of the result of `code` run in `mode`.
 async fn collect_n(code: &str, mode: Mode, n: usize) -> Result<Vec<Value>> {
-    collect(code, &crate::TEST_REGISTER, mode, Collect::First(n), Duration::from_secs(10))
-        .await
+    collect(code, &crate::TEST_REGISTER, mode, Collect::First(n)).await
 }
 
 /// Every value of the result of `code` run in `mode`, to quiescence.
 async fn collect_settled(code: &str, mode: Mode) -> Result<Vec<Value>> {
     let quiet = Collect::Quiet(Duration::from_millis(300));
-    collect(code, &crate::TEST_REGISTER, mode, quiet, Duration::from_secs(10)).await
+    collect(code, &crate::TEST_REGISTER, mode, quiet).await
 }
 
 fn as_i64(vs: &[Value]) -> Result<Vec<i64>> {
@@ -48,10 +46,9 @@ pub(super) async fn collect_n_blocks(code: &str, n: usize) -> Result<Vec<i64>> {
     .await?;
     let res = compile_result(&ctx).await?;
     let id = res.exprs[0].id;
-    let deadline = Instant::now() + Duration::from_secs(10);
     let mut blocks = Vec::new();
     while blocks.len() < n {
-        next_update(&mut rx, id, deadline).await?;
+        next_update(&ctx.rt, &mut rx, id).await?;
         blocks.push(ctx.rt.control().live_self_blocks());
     }
     ctx.shutdown().await;

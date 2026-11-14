@@ -1010,6 +1010,7 @@ impl<X: GXExt> GX<X> {
                 ToGX::WaitIdle { res } => self.idle_waiters.push(res),
                 ToGX::NotifyIdle => self.notify_idle = true,
                 ToGX::WaitSettled { until, res } => {
+                    self.settle_waiters.retain(|(_, tx)| !tx.is_closed());
                     self.settle_waiters.push((until, res))
                 }
                 ToGX::TraceStart { max_events, max_cycles } => {

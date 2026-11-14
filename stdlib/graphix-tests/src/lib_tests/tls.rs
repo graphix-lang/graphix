@@ -121,7 +121,6 @@ run!(tls_connect_refuses_a_ca_without_certificate, r#"{
 #[cfg_attr(not(feature = "slow-tests"), ignore = "slow-tests")]
 async fn tls_accept_times_out() -> Result<()> {
     use graphix_package_core::testing::{Collect, Mode, collect};
-    use std::time::Duration;
     let cd = crate::lib_tests::cert_dir();
     let code = format!(
         r#"{{
@@ -136,7 +135,7 @@ async fn tls_accept_times_out() -> Result<()> {
     // the modes wait out the timeout together
     let run = |mode| {
         let first = Collect::First(1);
-        collect(&code, &crate::TEST_REGISTER, mode, first, Duration::from_secs(180))
+        collect(&code, &crate::TEST_REGISTER, mode, first)
     };
     let [interp, jit, par, jit_par] = Mode::ALL;
     let got = tokio::try_join!(run(interp), run(jit), run(par), run(jit_par))?;

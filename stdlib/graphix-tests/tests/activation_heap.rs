@@ -18,9 +18,8 @@ use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,
     thread,
-    time::Duration,
 };
-use tokio::{sync::mpsc, time::Instant};
+use tokio::sync::mpsc;
 
 const REGISTER: &[PackageRef] = graphix_package::package_refs!();
 
@@ -129,8 +128,7 @@ async fn run(program: CompactString, expected: Value, fused: bool) -> Result<i64
         live
     });
     let res = ctx.rt.compile(ArcStr::from(program.as_str())).await?;
-    let deadline = Instant::now() + Duration::from_secs(300);
-    let v = next_update(&mut rx, res.exprs[0].id, deadline).await?;
+    let v = next_update(&ctx.rt, &mut rx, res.exprs[0].id).await?;
     let peak = HEAP.with(|h| h.get().peak);
     assert_eq!(v, expected, "{program}");
     drop(res);

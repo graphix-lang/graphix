@@ -4,14 +4,13 @@
 // paired with the annotation that lifts it. A dynamic module's load is an
 // input of the same kind, after the program that loads it.
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use arcstr::ArcStr;
 use graphix_compiler::expr::{VfsEntry, VfsResolver};
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, TestCtx, config, is},
+    testing::{FuseExpect, TestCtx, config, is, next_update_raw},
 };
-use graphix_rt::GXEvent;
 use netidx::publisher::Value;
 
 #[derive(Clone)]
@@ -80,19 +79,12 @@ async fn session_over(files: &[(&'static str, &str)], steps: &[Step]) -> Result<
         let r = ctx.rt.compile(ArcStr::from(*input)).await?;
         let id = r.exprs[0].id;
         held.push(r);
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
-        'wait: loop {
-            let batch = tokio::time::timeout_at(deadline, rx.recv()).await;
-            let Ok(Some(batch)) = batch else {
-                bail!("{input} never produced its value")
-            };
-            for ev in batch.iter() {
-                if let GXEvent::Updated(eid, v) = ev
-                    && *eid == id
-                    && produced(step, v)
-                {
-                    break 'wait;
-                }
+        loop {
+            let v = next_update_raw(&ctx.rt, &mut rx, id)
+                .await
+                .with_context(|| format!("{input} never produced its value"))?;
+            if produced(step, &v) {
+                break;
             }
         }
     }

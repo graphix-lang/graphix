@@ -301,6 +301,17 @@ impl GuiTestHarness {
         self.root.w.before_view()
     }
 
+    // CR claude for claude: [risk/low] The GUI and TUI harnesses still give a wait for
+    // something a correct program brings a short wall deadline: this `wait_until`'s
+    // `within` (2 to 10 s at its callers in data_table_test and clipboard_test),
+    // `deliver_batch`'s 10 s, and in graphix-package-tui's `testing` the
+    // `TuiTestHarness::next_update`/`wait_for` timeouts (10 to 30 s in input_test and
+    // control_test) and examples_test's `FIRST_FRAME`. A loaded box can fail them: the
+    // exposure test-local-wall-deadlines-01 took out of graphix-tests. Their runtimes are
+    // NoExt, so a wait can race `GXHandle::wait_settled` as `testing::next_update` does (a
+    // settle with the predicate still false fails at once), `testing::HANG_GUARD` its only
+    // wall limit; a wait that a widget's own timer or an iced/crossterm event must end
+    // needs that source counted first. (harness-wall-deadlines-gui-tui-01)
     /// Drain and `before_view` in a loop until `pred(self)` holds;
     /// returns an error when `within` elapses.
     async fn wait_until<F>(

@@ -534,8 +534,7 @@ async fn place_through_deref_mirror() -> Result<()> {
             .await?;
     // the graph lives while its cell is read: a deleted reference forgets it
     let res = compile_result(&ctx).await?;
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
-    let v = next_update(&mut rx, res.exprs[0].id, deadline).await?;
+    let v = next_update(&ctx.rt, &mut rx, res.exprs[0].id).await?;
     let Some(id) = graphix_compiler::reference::cell(&v) else {
         anyhow::bail!("expected a reference, got {v}")
     };
@@ -1260,7 +1259,6 @@ async fn any_reference_ordering_is_refused(mode: Mode) -> Result<()> {
         compile_result, fixture_runtime, result_source, updates_until_quiet,
     };
     use std::time::Duration;
-    use tokio::time::Instant;
 
     let mut accepted = poolshark::local::LPooled::<Vec<_>>::take();
     for operation in [
@@ -1306,7 +1304,6 @@ async fn any_reference_ordering_is_refused(mode: Mode) -> Result<()> {
             &mut rx,
             result.exprs[0].id,
             Duration::from_millis(100),
-            Instant::now() + Duration::from_secs(20),
         )
         .await?;
         if !values.is_empty() {

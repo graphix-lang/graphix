@@ -704,7 +704,6 @@ async fn check_dynamic_native(case: bool) -> Result<()> {
         Mode, compile_result, fixture_runtime, result_source, updates_until_quiet,
     };
     use std::{process::Command, time::Duration};
-    use tokio::time::Instant;
 
     const CHILD: &str = "GRAPHIX_TEST_NATIVE_REFUSAL_CHILD";
     if !case && std::env::var_os(CHILD).is_none() {
@@ -769,7 +768,6 @@ async fn check_dynamic_native(case: bool) -> Result<()> {
                 &mut rx,
                 result.exprs[0].id,
                 Duration::from_millis(100),
-                Instant::now() + Duration::from_secs(20),
             )
             .await?;
             if valid {
@@ -818,7 +816,6 @@ async fn tail_recursive_covers_later_inputs() -> Result<()> {
     use arcstr::literal;
     use graphix_package_core::testing::{Mode, fixture_runtime, updates_until_quiet};
     use std::time::Duration;
-    use tokio::time::Instant;
     for mode in [Mode::Jit, Mode::JitPar] {
         let (ctx, mut rx) =
             fixture_runtime([], crate::TEST_REGISTER, mode, |_| {}).await?;
@@ -845,7 +842,6 @@ async fn tail_recursive_covers_later_inputs() -> Result<()> {
             &mut rx,
             bound.exprs[0].id,
             Duration::from_millis(100),
-            Instant::now() + Duration::from_secs(20),
         )
         .await?;
         assert_eq!(values, [Value::I64(6)], "{mode:?}");
@@ -878,7 +874,6 @@ async fn tail_recursive_reported_bind_fuses_once() -> Result<()> {
         Mode, compile_result, fixture_runtime, result_source, updates_until_quiet,
     };
     use std::time::Duration;
-    use tokio::time::Instant;
     const CODE: &str = "{
   #[tail_recursive]
   let rec loop = |n: i64, acc: i64| -> i64 select n { 0 => acc, _ => loop(n - 1, *(&acc) + n) };
@@ -903,7 +898,6 @@ async fn tail_recursive_reported_bind_fuses_once() -> Result<()> {
                 &mut rx,
                 result.exprs[0].id,
                 Duration::from_millis(100),
-                Instant::now() + Duration::from_secs(20),
             )
             .await?;
             assert_eq!(values, [Value::I64(sum)], "{mode:?}");
@@ -967,7 +961,6 @@ async fn dynamic_native_kernels_are_shared() -> Result<()> {
             &mut rx,
             result.exprs[0].id,
             Duration::from_millis(100),
-            Instant::now() + Duration::from_secs(30),
         )
         .await?;
         let emitted = ctx.rt.fusion_stats().await?.fused - before;

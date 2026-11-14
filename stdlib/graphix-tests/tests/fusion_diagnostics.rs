@@ -11,7 +11,6 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering::Relaxed},
     time::Duration,
 };
-use tokio::time::Instant;
 
 static FAILURES: AtomicUsize = AtomicUsize::new(0);
 static IGNORED: AtomicUsize = AtomicUsize::new(0);
@@ -65,12 +64,7 @@ async fn swallowed_failure_diagnostics() -> Result<()> {
                 }"#
             ))
             .await?;
-        let value = next_update(
-            &mut rx,
-            result.exprs[0].id,
-            Instant::now() + Duration::from_secs(5),
-        )
-        .await?;
+        let value = next_update(&ctx.rt, &mut rx, result.exprs[0].id).await?;
         let Value::Array(rows) = value else { panic!("{mode:?}: {value:?}") };
         assert_eq!(rows.len(), 2, "{mode:?}");
         for (row, n) in rows.iter().zip([5, 7]) {
@@ -146,7 +140,6 @@ async fn swallowed_failure_diagnostics() -> Result<()> {
                 &mut rx,
                 result.exprs[0].id,
                 Duration::from_millis(100),
-                Instant::now() + Duration::from_secs(10),
             )
             .await?;
             assert!(mode.node_walk() || ctx.rt.control().invocations().1 > 0);

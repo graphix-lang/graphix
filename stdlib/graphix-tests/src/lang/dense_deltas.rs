@@ -6,13 +6,12 @@ use anyhow::Result;
 use graphix_package_core::{
     PrintSink,
     testing::{
-        Collect, FuseExpect, HANG_GUARD, Mode, TestState, as_i64s, check_fixture,
-        compile_result, fixture_runtime, result_source, updates_until, verdicts_agree,
+        Collect, FuseExpect, Mode, TestState, as_i64s, check_fixture, compile_result,
+        fixture_runtime, result_source, updates_until, verdicts_agree,
     },
 };
 use netidx::publisher::Value;
 use std::time::Duration;
-use tokio::time::Instant;
 
 /// What a run made.
 pub(super) struct Delta {
@@ -81,9 +80,7 @@ pub(super) async fn run_delta_with(
     }
     let res = built?;
     let regions = res.fused;
-    let deadline = Instant::now() + HANG_GUARD;
-    let values =
-        updates_until(&ctx.rt, &mut rx, res.exprs[0].id, until, deadline).await?;
+    let values = updates_until(&ctx.rt, &mut rx, res.exprs[0].id, until).await?;
     let out = sink.take();
     let forks = control.forks() - forks_before;
     let build_forks = control.build_forks() - build_forks_before;

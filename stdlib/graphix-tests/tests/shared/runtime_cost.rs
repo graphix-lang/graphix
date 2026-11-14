@@ -4,7 +4,6 @@ use graphix_package_core::testing::{
 };
 use netidx_value::{ValArray, Value};
 use std::time::Duration;
-use tokio::time::Instant;
 
 use crate::TEST_REGISTER;
 
@@ -47,7 +46,6 @@ async fn idle_slots_do_not_enter_their_call_sites() -> Result<()> {
                 &mut rx,
                 result.exprs[0].id,
                 Duration::from_millis(100),
-                Instant::now() + Duration::from_secs(20),
             )
             .await?;
             let skipped = control.boundaries().1 - before;

@@ -3274,13 +3274,11 @@ async fn lowerings_kept(code: &str, last: Value) -> Result<usize> {
     )
     .await?;
     let res = compile_result(&ctx).await?;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
     let values = updates_until_quiet(
         &ctx.rt,
         &mut rx,
         res.exprs[0].id,
         Duration::from_millis(500),
-        deadline,
     )
     .await?;
     assert_eq!(values.last(), Some(&last), "{values:?}");
@@ -3459,9 +3457,8 @@ run!(
 #[tokio::test(flavor = "current_thread")]
 async fn sibling_first_written_by_a_later_input_fires_alone() -> Result<()> {
     use arcstr::ArcStr;
-    use graphix_package_core::testing::{data, init};
-    use graphix_rt::GXEvent;
-    use tokio::{sync::mpsc, time};
+    use graphix_package_core::testing::{init, next_update};
+    use tokio::sync::mpsc;
     let (tx, mut rx) = mpsc::channel(1000);
     let ctx = init(tx, crate::TEST_REGISTER).await?;
     let probe = ctx
@@ -3474,25 +3471,14 @@ async fn sibling_first_written_by_a_later_input_fires_alone() -> Result<()> {
         .await?;
     let id = probe.exprs.last().expect("the select").id;
     let mut held = vec![];
-    let deadline = time::Instant::now() + time::Duration::from_secs(10);
     let mut next = async || -> Result<String> {
-        loop {
-            let batch = time::timeout_at(deadline, rx.recv()).await;
-            let Ok(Some(batch)) = batch else { anyhow::bail!("the probe went quiet") };
-            for ev in batch.iter() {
-                if let GXEvent::Updated(eid, v) = ev
-                    && *eid == id
-                {
-                    return Ok(data(v.clone()).to_string());
-                }
-            }
-        }
+        Ok(next_update(&ctx.rt, &mut rx, id).await?.to_string())
     };
     assert_eq!(next().await?, "[i64:1, i64:1]");
     held.push(ctx.rt.compile(ArcStr::from("gate <- false")).await?);
     assert_eq!(next().await?, "[i64:-1, i64:-1]");
     held.push(ctx.rt.compile(ArcStr::from("a <- 5")).await?);
-    time::sleep(time::Duration::from_millis(200)).await;
+    ctx.rt.wait_settled().await?;
     held.push(ctx.rt.compile(ArcStr::from("gate <- true")).await?);
     assert_eq!(next().await?, "[i64:5, i64:1]");
     Ok(())

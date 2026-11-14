@@ -372,7 +372,7 @@ fn alive(pid: i64) -> bool {
 #[cfg(target_os = "linux")]
 #[tokio::test(flavor = "current_thread")]
 async fn kill_on_drop_kills_the_child() -> Result<()> {
-    use graphix_package_core::testing::{Mode, fixture_runtime, next_update};
+    use graphix_package_core::testing::{HANG_GUARD, Mode, fixture_runtime, next_update};
     use std::time::Duration;
     use tokio::time::Instant;
     let src = r#"{
@@ -386,15 +386,14 @@ async fn kill_on_drop_kills_the_child() -> Result<()> {
     let (ctx, mut rx) =
         fixture_runtime([], crate::TEST_REGISTER, Mode::Jit, |_| {}).await?;
     let res = ctx.rt.compile(arcstr::ArcStr::from(src)).await?;
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let pid = match next_update(&mut rx, res.exprs[0].id, deadline).await? {
+    let pid = match next_update(&ctx.rt, &mut rx, res.exprs[0].id).await? {
         Value::I64(pid) => pid,
         v => anyhow::bail!("expected a pid, got {v:?}"),
     };
     assert!(alive(pid), "the child is not running");
     drop(res);
     ctx.rt.wait_idle().await?;
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + HANG_GUARD;
     while alive(pid) {
         if Instant::now() >= deadline {
             anyhow::bail!("child {pid} outlived the expression that held it");

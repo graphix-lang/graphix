@@ -1233,8 +1233,7 @@ async fn run_rec(
     mode: Mode,
 ) -> Result<(Vec<i64>, u64)> {
     use graphix_package_core::testing::{
-        Collect, HANG_GUARD, compile_result, fixture_runtime, result_source,
-        updates_until,
+        Collect, compile_result, fixture_runtime, result_source, updates_until,
     };
     use std::fmt::Write;
     let mut code = String::from("{\n let t = filter(array::iter([");
@@ -1251,10 +1250,8 @@ async fn run_rec(
     .await?;
     let control = ctx.rt.control();
     let res = compile_result(&ctx).await?;
-    let deadline = tokio::time::Instant::now() + HANG_GUARD;
     let values =
-        updates_until(&ctx.rt, &mut rx, res.exprs[0].id, Collect::Settled, deadline)
-            .await?;
+        updates_until(&ctx.rt, &mut rx, res.exprs[0].id, Collect::Settled).await?;
     let live = control.live_activations();
     ctx.shutdown().await;
     Ok((as_i64s(&values), live))
@@ -4740,14 +4737,14 @@ async fn budget_stops(
     code: &str,
     live: std::ops::Range<u64>,
 ) -> anyhow::Result<()> {
-    use graphix_package_core::testing::{TestCtx, config};
+    use graphix_package_core::testing::{HANG_GUARD, TestCtx, config};
     let (tx, _rx) = tokio::sync::mpsc::channel(10);
     let ctx =
         TestCtx::start(config(tx, &crate::TEST_REGISTER, vec![], |_| {})?.flags(flags))
             .await?;
     ctx.rt.control().set_activation_budget(2000);
     ctx.rt.compile(arcstr::ArcStr::from(code)).await?;
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    let deadline = tokio::time::Instant::now() + HANG_GUARD;
     while !ctx.rt.budget_aborted() && tokio::time::Instant::now() < deadline {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
@@ -5000,16 +4997,13 @@ run!(
 #[tokio::test(flavor = "current_thread")]
 async fn generic_function_copies_in_a_later_input() -> Result<()> {
     use graphix_package_core::testing::{init, next_update};
-    use std::time::Duration;
-    use tokio::time::Instant;
     let (tx, mut rx) = tokio::sync::mpsc::channel(1000);
     let ctx = init(tx, crate::TEST_REGISTER).await?;
     let _g = ctx.rt.compile(arcstr::ArcStr::from(GENERIC_ADD)).await?;
     let mut values = Vec::new();
     for input in ["array::map([g, g], |f| f(u8:1, u8:2))", "g(1.5, 2.5)"] {
         let res = ctx.rt.compile(arcstr::ArcStr::from(input)).await?;
-        let deadline = Instant::now() + Duration::from_secs(10);
-        values.push(next_update(&mut rx, res.exprs[0].id, deadline).await?);
+        values.push(next_update(&ctx.rt, &mut rx, res.exprs[0].id).await?);
         drop(res);
     }
     ctx.shutdown().await;

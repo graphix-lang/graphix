@@ -169,15 +169,12 @@ async fn pack_abstract_read_checks_the_payload() -> Result<()> {
     use graphix_package_core::testing::{
         Mode, compile_result, fixture_runtime, next_update,
     };
-    use std::time::Duration;
-    use tokio::time::Instant;
     async fn result(src: &str) -> Result<Value> {
         let file = [("/test.gx", arcstr::ArcStr::from(src).into())];
         let (ctx, mut rx) =
             fixture_runtime(file, crate::TEST_REGISTER, Mode::Interp, |_| {}).await?;
         let res = compile_result(&ctx).await?;
-        let deadline = Instant::now() + Duration::from_secs(5);
-        next_update(&mut rx, res.exprs[0].id, deadline).await
+        next_update(&ctx.rt, &mut rx, res.exprs[0].id).await
     }
     let written = result(
         r#"type Box = Abstract<string>;

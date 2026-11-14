@@ -7,12 +7,11 @@ use anyhow::Result;
 use arcstr::ArcStr;
 use graphix_compiler::expr::VfsEntry;
 use graphix_package_core::testing::{
-    Collect, HANG_GUARD, Mode, collect, compile_result, data, fixture_runtime,
-    result_source, updates_until,
+    Collect, Mode, collect, compile_result, data, fixture_runtime, result_source,
+    updates_until,
 };
 use netidx::publisher::Value;
 use std::time::Duration;
-use tokio::time::Instant;
 
 const QUIET: Collect = Collect::Quiet(Duration::from_millis(700));
 
@@ -31,9 +30,7 @@ pub(super) async fn result_updates(
     let all = std::iter::once(("/test.gx", result_source(code))).chain(files);
     let (ctx, mut rx) = fixture_runtime(all, &crate::TEST_REGISTER, mode, |_| ()).await?;
     let res = compile_result(&ctx).await?;
-    let deadline = Instant::now() + HANG_GUARD;
-    let values =
-        updates_until(&ctx.rt, &mut rx, res.exprs[0].id, QUIET, deadline).await?;
+    let values = updates_until(&ctx.rt, &mut rx, res.exprs[0].id, QUIET).await?;
     ctx.shutdown().await;
     Ok(shown(values))
 }
@@ -54,9 +51,8 @@ async fn input_updates(
     for input in inputs {
         held.push(ctx.rt.compile(ArcStr::from(*input)).await?);
     }
-    let deadline = Instant::now() + HANG_GUARD;
     let id = held[probe].exprs[0].id;
-    let values = updates_until(&ctx.rt, &mut rx, id, QUIET, deadline).await?;
+    let values = updates_until(&ctx.rt, &mut rx, id, QUIET).await?;
     drop(held);
     ctx.shutdown().await;
     Ok(shown(values))
@@ -383,9 +379,7 @@ const LATE_LOOP: &str = "{
 }";
 
 async fn a_late_value_closing_a_loop_steps_a_cycle_at_a_time(mode: Mode) -> Result<()> {
-    let got =
-        collect(LATE_LOOP, &crate::TEST_REGISTER, mode, Collect::First(1), HANG_GUARD)
-            .await?;
+    let got = collect(LATE_LOOP, &crate::TEST_REGISTER, mode, Collect::First(1)).await?;
     let got = shown(got);
     assert_eq!(
         got,

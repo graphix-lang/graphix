@@ -2,7 +2,7 @@ use anyhow::Result;
 use arcstr::ArcStr;
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, escape_path},
+    testing::{FuseExpect, HANG_GUARD, escape_path},
 };
 use graphix_rt::GXEvent;
 use netidx::subscriber::Value;
@@ -23,8 +23,13 @@ fn saw(kinds: &[String], classes: &[&str]) -> bool {
     want.peek().is_none()
 }
 
+/// How long a single-action test waits for the event it expects not to
+/// come.
+const NO_EVENT: Duration = Duration::from_secs(8);
+
 /// Build an fs::watch test: a single action after establishment with a
-/// boolean expectation, or a multi-event sequence with state tracking.
+/// boolean expectation, or a multi-event sequence with state tracking
+/// that waits for `until`.
 macro_rules! watch_test {
     (
         name: $test_name:ident,
@@ -34,9 +39,9 @@ macro_rules! watch_test {
         expect: $expect:expr
     ) => {
         watch_test! {
+            @wait if $expect { HANG_GUARD } else { NO_EVENT },
             name: $test_name,
             interest: $interest,
-            timeout_secs: 8,
             setup: |$temp_dir| $setup,
             state: {
                 _event_count: usize = 0,
@@ -65,7 +70,27 @@ macro_rules! watch_test {
     (
         name: $test_name:ident,
         interest: $interest:expr,
-        timeout_secs: $timeout:expr,
+        setup: |$setup_dir:ident| $setup:block,
+        state: { $($state_name:ident: $state_type:ty = $state_init:expr),* $(,)? },
+        on_event: |$event_count:ident, $kind:ident, $event_dir:ident, $($state_param:ident),*| $on_event:block,
+        until: $until:expr,
+        verify: { $($verify:stmt);* $(;)? }
+    ) => {
+        watch_test! {
+            @wait HANG_GUARD,
+            name: $test_name,
+            interest: $interest,
+            setup: |$setup_dir| $setup,
+            state: { $($state_name: $state_type = $state_init),* },
+            on_event: |$event_count, $kind, $event_dir, $($state_param),*| $on_event,
+            until: $until,
+            verify: { $($verify);* }
+        }
+    };
+    (
+        @wait $wait:expr,
+        name: $test_name:ident,
+        interest: $interest:expr,
         setup: |$setup_dir:ident| $setup:block,
         state: { $($state_name:ident: $state_type:ty = $state_init:expr),* $(,)? },
         on_event: |$event_count:ident, $kind:ident, $event_dir:ident, $($state_param:ident),*| $on_event:block,
@@ -91,7 +116,7 @@ macro_rules! watch_test {
             let compiled = ctx.rt.compile(ArcStr::from(code)).await?;
             let eid = compiled.exprs[0].id;
 
-            let timeout = tokio::time::sleep(Duration::from_secs($timeout));
+            let timeout = tokio::time::sleep($wait);
             tokio::pin!(timeout);
             let mut event_count = 0;
             $(let mut $state_name: $state_type = $state_init;)*
@@ -213,7 +238,6 @@ watch_test! {
 watch_test! {
     name: test_watch_nonexistent_file_created,
     interest: "[`Create, `Established]",
-    timeout_secs: 5,
     setup: |temp_dir| {
         let test_file = temp_dir.path().join("nonexistent.txt");
         let _ = std::fs::remove_file(&test_file);
@@ -243,7 +267,6 @@ watch_test! {
 watch_test! {
     name: test_watch_delete_then_recreate,
     interest: "[`Established, `Create, `Delete, `Modify]",
-    timeout_secs: 6,
     setup: |temp_dir| {
         let test_file = temp_dir.path().join("delete_recreate.txt");
         fs::write(&test_file, b"initial").await?;
@@ -274,7 +297,6 @@ watch_test! {
 watch_test! {
     name: test_watch_parent_rename,
     interest: "[`Established, `Delete, `Create]",
-    timeout_secs: 4,
     setup: |temp_dir| {
         let parent_dir = temp_dir.path().join("parent");
         fs::create_dir(&parent_dir).await?;
@@ -304,7 +326,6 @@ watch_test! {
 watch_test! {
     name: test_watch_multilevel_parent_creation,
     interest: "[`Established, `Create]",
-    timeout_secs: 5,
     setup: |temp_dir| {
         let deep_file = temp_dir.path().join("a").join("b").join("c").join("file.txt");
         let _ = fs::remove_dir_all(temp_dir.path().join("a")).await;
@@ -345,7 +366,6 @@ watch_test! {
 watch_test! {
     name: test_watch_deep_parent_rename,
     interest: "[`Established, `Delete]",
-    timeout_secs: 4,
     setup: |temp_dir| {
         let d = temp_dir.path().join("a").join("b").join("c").join("d");
         fs::create_dir_all(&d).await?;
@@ -379,7 +399,6 @@ watch_test! {
 watch_test! {
     name: test_watch_parent_tree_deletion,
     interest: "[`Established, `Delete]",
-    timeout_secs: 4,
     setup: |temp_dir| {
         let b = temp_dir.path().join("a").join("b");
         fs::create_dir_all(&b).await?;
@@ -437,7 +456,7 @@ async fn test_watch_multiple_related_paths() -> Result<()> {
     let compiled = ctx.rt.compile(ArcStr::from(code)).await?;
     let eid = compiled.exprs[0].id;
 
-    let timeout = tokio::time::sleep(Duration::from_secs(10));
+    let timeout = tokio::time::sleep(HANG_GUARD);
     tokio::pin!(timeout);
     let mut event_count = 0;
     let mut created_file = false;
@@ -498,7 +517,7 @@ async fn test_watch_simultaneous_events_all_delivered() -> Result<()> {
     );
     let compiled = ctx.rt.compile(ArcStr::from(code)).await?;
     let eid = compiled.exprs[0].id;
-    let timeout = tokio::time::sleep(Duration::from_secs(5));
+    let timeout = tokio::time::sleep(HANG_GUARD);
     tokio::pin!(timeout);
     let mut paths: Vec<Value> = Vec::new();
     loop {
@@ -529,7 +548,6 @@ async fn test_watch_simultaneous_events_all_delivered() -> Result<()> {
 watch_test! {
     name: test_watch_established_to_pending,
     interest: "[`Delete, `Create, `Established]",
-    timeout_secs: 4,
     setup: |temp_dir| {
         let subdir = temp_dir.path().join("subdir");
         fs::create_dir(&subdir).await?;
@@ -565,7 +583,6 @@ watch_test! {
 watch_test! {
     name: test_watch_file_to_directory,
     interest: "[`Established, `Delete, `Create]",
-    timeout_secs: 8,
     setup: |temp_dir| {
         let path = temp_dir.path().join("transform");
         fs::write(&path, b"file content").await?;
@@ -595,7 +612,6 @@ watch_test! {
 watch_test! {
     name: test_watch_symlink_nonexistent_target,
     interest: "[`Established, `Create, `Modify]",
-    timeout_secs: 4,
     setup: |temp_dir| {
         use std::os::unix::fs::symlink;
         let target = temp_dir.path().join("target.txt");
@@ -627,7 +643,6 @@ watch_test! {
 watch_test! {
     name: test_watch_symlink_recreate,
     interest: "[`Established, `Delete, `Create]",
-    timeout_secs: 4,
     setup: |temp_dir| {
         use std::os::unix::fs::symlink;
         let target = temp_dir.path().join("target.txt");
@@ -696,13 +711,11 @@ async fn watch_hears_after_a_wake() -> Result<()> {
     )
     .await?;
     let res = compile_result(&ctx).await?;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     let values = updates_until_quiet(
         &ctx.rt,
         &mut rx,
         res.exprs[0].id,
         Duration::from_millis(1500),
-        deadline,
     )
     .await?;
     ctx.shutdown().await;

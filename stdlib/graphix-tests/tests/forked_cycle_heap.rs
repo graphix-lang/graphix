@@ -20,9 +20,8 @@ use std::{
     alloc::{GlobalAlloc, Layout, System},
     sync::atomic::{AtomicI64, Ordering},
     thread,
-    time::Duration,
 };
-use tokio::{sync::mpsc, time::Instant};
+use tokio::sync::mpsc;
 
 const REGISTER: &[PackageRef] = graphix_package::package_refs!();
 
@@ -116,11 +115,10 @@ async fn grow(
     };
     let ctx = TestCtx::start(cfg.flags(flags)).await?;
     let res = ctx.rt.compile(ArcStr::from(program.as_str())).await?;
-    let deadline = Instant::now() + Duration::from_secs(600);
     let mut at = [0; 2];
     for (cycles, live) in [SETTLED, LATER].into_iter().zip(at.iter_mut()) {
         loop {
-            match next_update(&mut rx, res.exprs[0].id, deadline).await? {
+            match next_update(&ctx.rt, &mut rx, res.exprs[0].id).await? {
                 Value::I64(n) if n >= cycles => break,
                 _ => (),
             }

@@ -3,7 +3,7 @@
 use anyhow::Result;
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, eval_modes, is, prints, refused},
+    testing::{FuseExpect, eval_modes, is, next_update_raw, prints, refused},
 };
 use netidx::publisher::Value;
 
@@ -5822,7 +5822,6 @@ run!(
 async fn settle_keeps_a_payload_bound_beside_bottom() -> Result<()> {
     use arcstr::ArcStr;
     use graphix_package_core::testing::init;
-    use graphix_rt::GXEvent;
     let (tx, mut rx) = tokio::sync::mpsc::channel(1000);
     let ctx = init(tx, crate::TEST_REGISTER).await?;
     let inputs = [
@@ -5844,19 +5843,8 @@ async fn settle_keeps_a_payload_bound_beside_bottom() -> Result<()> {
     }
     let probe =
         ctx.rt.compile(ArcStr::from("{ let s: string = r.0; \"[s][q.0]\" }")).await?;
-    let id = probe.exprs[0].id;
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
-    loop {
-        let batch = tokio::time::timeout_at(deadline, rx.recv()).await;
-        let Ok(Some(batch)) = batch else { anyhow::bail!("the read never produced") };
-        if let Some(v) = batch.iter().find_map(|ev| match ev {
-            GXEvent::Updated(eid, v) if *eid == id => Some(v.clone()),
-            _ => None,
-        }) {
-            assert_eq!(v, Value::String("ab".into()));
-            break;
-        }
-    }
+    let v = next_update_raw(&ctx.rt, &mut rx, probe.exprs[0].id).await?;
+    assert_eq!(v, Value::String("ab".into()));
     drop(held);
     ctx.shutdown().await;
     Ok(())
@@ -9439,26 +9427,6 @@ async fn written_after_a_static_call_is_refused() -> Result<()> {
     Ok(())
 }
 
-/// The first value the expression `id` produces, within 10 s.
-async fn value_of(
-    rx: &mut tokio::sync::mpsc::Receiver<
-        poolshark::global::GPooled<Vec<graphix_rt::GXEvent>>,
-    >,
-    id: graphix_compiler::expr::ExprId,
-) -> Result<Value> {
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
-    loop {
-        let batch = tokio::time::timeout_at(deadline, rx.recv()).await;
-        let Ok(Some(batch)) = batch else { anyhow::bail!("{id:?} never produced") };
-        if let Some(v) = batch.iter().find_map(|ev| match ev {
-            graphix_rt::GXEvent::Updated(eid, v) if *eid == id => Some(v.clone()),
-            _ => None,
-        }) {
-            return Ok(v);
-        }
-    }
-}
-
 /// A static call holds its callee only while it lives: once the input
 /// that made it is deleted, a `<-` to the callee compiles. Fused, the
 /// kernel that replaced the call holds it in the call's place.
@@ -9506,13 +9474,13 @@ async fn a_reloaded_module_releases_its_static_callee() -> Result<()> {
         held.push(ctx.rt.compile(ArcStr::from(i)).await?);
     }
     let v = ctx.rt.compile(ArcStr::from("d::v")).await?;
-    assert_eq!(value_of(&mut rx, v.exprs[0].id).await?, Value::I64(2));
+    assert_eq!(next_update_raw(&ctx.rt, &mut rx, v.exprs[0].id).await?, Value::I64(2));
     let e = ctx.rt.compile(ArcStr::from("f <- |x: i64| x + 100")).await.unwrap_err();
     assert!(format!("{e:#}").contains("super::f(1)"), "{e:#}");
     let _w = ctx.rt.compile(ArcStr::from("src <- \"let v = 5\"")).await?;
     ctx.rt.wait_settled().await?;
     let v = ctx.rt.compile(ArcStr::from("d::v")).await?;
-    assert_eq!(value_of(&mut rx, v.exprs[0].id).await?, Value::I64(5));
+    assert_eq!(next_update_raw(&ctx.rt, &mut rx, v.exprs[0].id).await?, Value::I64(5));
     let _w = ctx.rt.compile(ArcStr::from("f <- |x: i64| x + 100")).await?;
     ctx.shutdown().await;
     Ok(())
@@ -9536,7 +9504,7 @@ async fn a_reload_may_write_what_the_replaced_body_calls() -> Result<()> {
         held.push(ctx.rt.compile(ArcStr::from(i)).await?);
     }
     let v = ctx.rt.compile(ArcStr::from("d::v")).await?;
-    assert_eq!(value_of(&mut rx, v.exprs[0].id).await?, Value::I64(2));
+    assert_eq!(next_update_raw(&ctx.rt, &mut rx, v.exprs[0].id).await?, Value::I64(2));
     let bad = "src <- \"super::f <- |x: i64| x + 100; let v = nope\"";
     let _w = ctx.rt.compile(ArcStr::from(bad)).await?;
     ctx.rt.wait_settled().await?;
@@ -9546,11 +9514,11 @@ async fn a_reload_may_write_what_the_replaced_body_calls() -> Result<()> {
     let _w = ctx.rt.compile(ArcStr::from(good)).await?;
     ctx.rt.wait_settled().await?;
     let st = ctx.rt.compile(ArcStr::from("s")).await?;
-    assert_eq!(value_of(&mut rx, st.exprs[0].id).await?, Value::Null);
+    assert_eq!(next_update_raw(&ctx.rt, &mut rx, st.exprs[0].id).await?, Value::Null);
     let v = ctx.rt.compile(ArcStr::from("d::v")).await?;
-    assert_eq!(value_of(&mut rx, v.exprs[0].id).await?, Value::I64(7));
+    assert_eq!(next_update_raw(&ctx.rt, &mut rx, v.exprs[0].id).await?, Value::I64(7));
     let r = ctx.rt.compile(ArcStr::from("f(1)")).await?;
-    assert_eq!(value_of(&mut rx, r.exprs[0].id).await?, Value::I64(101));
+    assert_eq!(next_update_raw(&ctx.rt, &mut rx, r.exprs[0].id).await?, Value::I64(101));
     ctx.shutdown().await;
     Ok(())
 }
@@ -9583,7 +9551,7 @@ async fn a_write_through_an_interface_reaches_a_later_static_call() -> Result<()
     let _w = ctx.rt.compile(ArcStr::from("a::f <- |x: i64| x + 100")).await?;
     ctx.rt.wait_settled().await?;
     let v = ctx.rt.compile(ArcStr::from("a::g(1)")).await?;
-    assert_eq!(value_of(&mut rx, v.exprs[0].id).await?, Value::I64(101));
+    assert_eq!(next_update_raw(&ctx.rt, &mut rx, v.exprs[0].id).await?, Value::I64(101));
     ctx.shutdown().await;
     Ok(())
 }
@@ -9605,12 +9573,18 @@ async fn a_reload_reaches_a_reader_in_an_earlier_input() -> Result<()> {
         held.push(ctx.rt.compile(ArcStr::from(i)).await?);
     }
     let tens = ctx.rt.compile(ArcStr::from("d::v * 10")).await?;
-    assert_eq!(value_of(&mut rx, tens.exprs[0].id).await?, Value::I64(10));
+    assert_eq!(
+        next_update_raw(&ctx.rt, &mut rx, tens.exprs[0].id).await?,
+        Value::I64(10)
+    );
     let _w = ctx.rt.compile(ArcStr::from("src <- \"let v = 5\"")).await?;
-    assert_eq!(value_of(&mut rx, tens.exprs[0].id).await?, Value::I64(50));
+    assert_eq!(
+        next_update_raw(&ctx.rt, &mut rx, tens.exprs[0].id).await?,
+        Value::I64(50)
+    );
     ctx.rt.wait_settled().await?;
     let w = ctx.rt.compile(ArcStr::from("w")).await?;
-    assert_eq!(value_of(&mut rx, w.exprs[0].id).await?, Value::I64(5));
+    assert_eq!(next_update_raw(&ctx.rt, &mut rx, w.exprs[0].id).await?, Value::I64(5));
     ctx.shutdown().await;
     Ok(())
 }
@@ -9642,12 +9616,21 @@ async fn a_module_reaches_its_readers_in_other_inputs() -> Result<()> {
         held.push(ctx.rt.compile(ArcStr::from(i)).await?);
     }
     let tens = ctx.rt.compile(ArcStr::from("a::y * 10")).await?;
-    assert_eq!(value_of(&mut rx, tens.exprs[0].id).await?, Value::I64(10));
+    assert_eq!(
+        next_update_raw(&ctx.rt, &mut rx, tens.exprs[0].id).await?,
+        Value::I64(10)
+    );
     let _w = ctx.rt.compile(ArcStr::from("a::x <- 10")).await?;
-    assert_eq!(value_of(&mut rx, tens.exprs[0].id).await?, Value::I64(110));
+    assert_eq!(
+        next_update_raw(&ctx.rt, &mut rx, tens.exprs[0].id).await?,
+        Value::I64(110)
+    );
     ctx.rt.wait_settled().await?;
     let wr = ctx.rt.compile(ArcStr::from("\"[w] [r]\"")).await?;
-    assert_eq!(value_of(&mut rx, wr.exprs[0].id).await?, Value::String("11 11".into()));
+    assert_eq!(
+        next_update_raw(&ctx.rt, &mut rx, wr.exprs[0].id).await?,
+        Value::String("11 11".into())
+    );
     ctx.shutdown().await;
     Ok(())
 }
@@ -9698,7 +9681,7 @@ async fn a_write_through_an_interface_reaches_an_earlier_input() -> Result<()> {
         ctx.rt.wait_settled().await?;
         let rr = ctx.rt.compile(ArcStr::from("\"[r] [r2]\"")).await?;
         assert_eq!(
-            value_of(&mut rx, rr.exprs[0].id).await?,
+            next_update_raw(&ctx.rt, &mut rx, rr.exprs[0].id).await?,
             Value::String(expected.into())
         );
     }
@@ -9728,7 +9711,7 @@ async fn an_alias_holds_its_callee_while_its_instance_lives() -> Result<()> {
     drop(r);
     let _w = ctx.rt.compile(ArcStr::from("f <- |x: i64| x + 100")).await?;
     let v = ctx.rt.compile(ArcStr::from("g(1)")).await?;
-    assert_eq!(value_of(&mut rx, v.exprs[0].id).await?, Value::I64(101));
+    assert_eq!(next_update_raw(&ctx.rt, &mut rx, v.exprs[0].id).await?, Value::I64(101));
     ctx.shutdown().await;
     Ok(())
 }
@@ -10559,7 +10542,6 @@ run!(
 async fn repl_inputs_declare_distinct_abstract_types() -> anyhow::Result<()> {
     use arcstr::ArcStr;
     use graphix_package_core::testing::init;
-    use graphix_rt::GXEvent;
     use tokio::sync::mpsc;
     let (tx, mut rx) = mpsc::channel(1000);
     let ctx = init(tx, crate::TEST_REGISTER).await?;
@@ -10576,20 +10558,9 @@ async fn repl_inputs_declare_distinct_abstract_types() -> anyhow::Result<()> {
         .compile(ArcStr::from("let b = { type T = Abstract<string>; T(\"x\") }"))
         .await?;
     let probe = ctx.rt.compile(ArcStr::from("f(a)")).await?;
-    let id = probe.exprs[0].id;
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
-    loop {
-        let batch = tokio::time::timeout_at(deadline, rx.recv()).await;
-        let Ok(Some(batch)) = batch else { anyhow::bail!("f(a) never produced") };
-        for ev in batch.iter() {
-            if let GXEvent::Updated(eid, v) = ev
-                && *eid == id
-            {
-                assert_eq!(*v, netidx_value::Value::I64(0));
-                return Ok(());
-            }
-        }
-    }
+    let v = next_update_raw(&ctx.rt, &mut rx, probe.exprs[0].id).await?;
+    assert_eq!(v, netidx_value::Value::I64(0));
+    Ok(())
 }
 
 // A renaming import of ErrChain is ErrChain: a chain of it is a chain.

@@ -435,9 +435,7 @@ async fn http_serve_forgets_its_server_asleep() -> Result<()> {
 }"#;
     for mode in Mode::ALL {
         let quiet = Collect::Quiet(Duration::from_millis(1000));
-        let got =
-            collect(CODE, crate::TEST_REGISTER, mode, quiet, Duration::from_secs(10))
-                .await?;
+        let got = collect(CODE, crate::TEST_REGISTER, mode, quiet).await?;
         let want: Vec<Value> =
             ["hello", "-"].into_iter().map(|s| Value::String(s.into())).collect();
         assert_eq!(got, want, "{mode:?}");
@@ -467,7 +465,7 @@ async fn http_silent_socket_releases_its_permit() -> Result<()> {
     // the modes wait out the timeout together
     let run = |mode| {
         let first = Collect::First(1);
-        collect(CODE, crate::TEST_REGISTER, mode, first, Duration::from_secs(30))
+        collect(CODE, crate::TEST_REGISTER, mode, first)
     };
     let [interp, jit, par, jit_par] = Mode::ALL;
     let (a, b, c, d) = tokio::join!(run(interp), run(jit), run(par), run(jit_par));

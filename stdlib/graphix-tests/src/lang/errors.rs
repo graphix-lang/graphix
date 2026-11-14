@@ -395,9 +395,9 @@ run!(
 /// Compile each of `inputs` as a REPL input, then `probe`, and wait for
 /// the probe to produce the string `want`.
 async fn repl_inputs_produce(inputs: &[&str], probe: &str, want: &str) -> Result<()> {
+    use anyhow::Context;
     use arcstr::ArcStr;
-    use graphix_package_core::testing::init;
-    use graphix_rt::GXEvent;
+    use graphix_package_core::testing::{init, next_update};
     use tokio::sync::mpsc;
     let (tx, mut rx) = mpsc::channel(1000);
     let ctx = init(tx, crate::TEST_REGISTER).await?;
@@ -408,19 +408,14 @@ async fn repl_inputs_produce(inputs: &[&str], probe: &str, want: &str) -> Result
     }
     let probe = ctx.rt.compile(ArcStr::from(probe)).await?;
     let id = probe.exprs[0].id;
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
-        let batch = tokio::time::timeout_at(deadline, rx.recv()).await;
-        let Ok(Some(batch)) = batch else {
-            anyhow::bail!("the probe never produced {want:?}")
-        };
-        for ev in batch.iter() {
-            if let GXEvent::Updated(eid, Value::String(s)) = ev
-                && *eid == id
-                && &**s == want
-            {
-                return Ok(());
-            }
+        let v = next_update(&ctx.rt, &mut rx, id)
+            .await
+            .with_context(|| format!("the probe never produced {want:?}"))?;
+        if let Value::String(s) = v
+            && &*s == want
+        {
+            return Ok(());
         }
     }
 }
@@ -559,14 +554,14 @@ run!(
 );
 
 // A connect of the catch variable into a binding over a different
-// error union is a type mismatch; the timeout turns a hang into a
+// error union is a type mismatch; the hang guard turns a hang into a
 // failure.
 #[tokio::test]
 async fn catch_connect_union_mismatch_is_an_error() -> Result<()> {
     let src = "{let err1: Error<ErrChain<[`ArithError(string)]>> = never(); \
                catch(e) err1 <- e; error(`B)?; 1}";
     let r = tokio::time::timeout(
-        std::time::Duration::from_secs(120),
+        graphix_package_core::testing::HANG_GUARD,
         graphix_package_core::testing::eval(src, crate::TEST_REGISTER),
     )
     .await

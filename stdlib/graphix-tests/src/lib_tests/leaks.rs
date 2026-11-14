@@ -3,56 +3,45 @@
 // dynamic modules, a regrowing map) holds what is live, not its history.
 
 use crate::init;
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use arcstr::{ArcStr, literal};
 use graphix_compiler::{
     BindId,
     expr::{ExprId, VfsEntry},
 };
-use graphix_package_core::testing::{Mode, TestCtx, fixture_runtime};
-use graphix_rt::GXEvent;
+use graphix_package_core::testing::{
+    Events, Mode, TestCtx, fixture_runtime, next_update,
+};
 use netidx::publisher::Value;
-use poolshark::global::GPooled;
-use std::time::Duration;
 use tokio::sync::mpsc;
-
-type Events = mpsc::Receiver<GPooled<Vec<GXEvent>>>;
 type Compiled = graphix_rt::CompRes<graphix_rt::NoExt>;
 
 /// Wait for `eid`'s next update satisfying `done`.
 async fn await_update(
+    ctx: &TestCtx,
     rx: &mut Events,
     eid: ExprId,
     done: impl Fn(&Value) -> bool,
 ) -> Result<()> {
-    await_value(rx, eid, done).await.map(drop)
+    await_value(ctx, rx, eid, done).await.map(drop)
 }
 
 /// [`await_update`], with the value that satisfied `done`.
 async fn await_value(
+    ctx: &TestCtx,
     rx: &mut Events,
     eid: ExprId,
     done: impl Fn(&Value) -> bool,
 ) -> Result<Value> {
-    let timeout = tokio::time::sleep(Duration::from_secs(5));
-    tokio::pin!(timeout);
     let mut last = None;
     loop {
-        tokio::select! {
-            _ = &mut timeout => bail!("timeout waiting on {eid:?}, last saw {last:?}"),
-            batch = rx.recv() => match batch {
-                None => bail!("runtime died"),
-                Some(mut batch) => for e in batch.drain(..) {
-                    if let GXEvent::Updated(id, v) = e && id == eid {
-                        let v = graphix_package_core::testing::data(v);
-                        if done(&v) {
-                            return Ok(v);
-                        }
-                        last = Some(v);
-                    }
-                }
-            }
+        let v = next_update(&ctx.rt, rx, eid)
+            .await
+            .with_context(|| format!("waiting on {eid:?}, last saw {last:?}"))?;
+        if done(&v) {
+            return Ok(v);
         }
+        last = Some(v);
     }
 }
 
@@ -84,9 +73,9 @@ async fn timer_fires_leave_no_store_entries() -> Result<()> {
         }",
     )
     .await?;
-    await_update(&mut rx, eid, |v| matches!(v, Value::I64(10))).await?;
+    await_update(&ctx, &mut rx, eid, |v| matches!(v, Value::I64(10))).await?;
     let early = store_len(&ctx).await?;
-    await_update(&mut rx, eid, |v| matches!(v, Value::I64(60))).await?;
+    await_update(&ctx, &mut rx, eid, |v| matches!(v, Value::I64(60))).await?;
     let late = store_len(&ctx).await?;
     ctx.shutdown().await;
     assert!(late <= early, "the store grew from {early} to {late} entries over 50 ticks");
@@ -113,9 +102,9 @@ async fn rebind_defaults_leave_no_store_entries() -> Result<()> {
     )
     .await?;
     let at = |n: i64| move |v: &Value| matches!(v, Value::Array(a) if a.first() == Some(&Value::I64(n)));
-    await_update(&mut rx, eid, at(10)).await?;
+    await_update(&ctx, &mut rx, eid, at(10)).await?;
     let early = store_len(&ctx).await?;
-    await_update(&mut rx, eid, at(60)).await?;
+    await_update(&ctx, &mut rx, eid, at(60)).await?;
     let late = store_len(&ctx).await?;
     ctx.shutdown().await;
     assert!(
@@ -151,9 +140,9 @@ async fn fn_forward_resolutions_go_with_their_instance() -> Result<()> {
     for _ in 0..4 {
         let four: Vec<Value> = (1..=4).map(Value::I64).collect();
         ctx.rt.set(arr, Value::Array(four.into()))?;
-        await_update(&mut rx, eid, len(4)).await?;
+        await_update(&ctx, &mut rx, eid, len(4)).await?;
         ctx.rt.set(arr, Value::Array(Vec::<Value>::new().into()))?;
-        await_update(&mut rx, eid, len(0)).await?;
+        await_update(&ctx, &mut rx, eid, len(0)).await?;
         forward_resolutions
             .push(ctx.rt.with_ctx(|ctx| ctx.fn_forward_resolutions.len()).await?);
     }
@@ -191,11 +180,11 @@ async fn core_hook_sites_leave_no_bindings() -> Result<()> {
             ),
         )
         .await?;
-        await_update(&mut rx, id, |_| true).await?;
+        await_update(&ctx, &mut rx, id, |_| true).await?;
         decls.push(decl);
         // two ticks: a comparison ran against the grown list
-        await_update(&mut rx, eid, |_| true).await?;
-        await_update(&mut rx, eid, |_| true).await?;
+        await_update(&ctx, &mut rx, eid, |_| true).await?;
+        await_update(&ctx, &mut rx, eid, |_| true).await?;
     }
     let env = ctx.rt.get_env().await?;
     let seams =
@@ -243,7 +232,7 @@ async fn failed_dynamic_module_compiles_leave_no_definitions() -> Result<()> {
             }"#,
         )
         .await?;
-        await_update(&mut rx, eid, |v| matches!(v, Value::Error(_))).await?;
+        await_update(&ctx, &mut rx, eid, |v| matches!(v, Value::Error(_))).await?;
         drop(res);
     }
     let after = ctx.rt.env_stats().await?;
@@ -322,12 +311,12 @@ async fn saved_across_reloads(mode: Mode, sig: &str, body: &str) -> Result<()> {
     let at = |n: i64| is_pair(n, 2 * n);
     for n in 1..=20 {
         ctx.rt.set(tick, n)?;
-        await_update(&mut rx, eid, at(n)).await?;
+        await_update(&ctx, &mut rx, eid, at(n)).await?;
     }
     let early = held(&ctx).await?;
     for n in 21..=20 + RELOADS {
         ctx.rt.set(tick, n)?;
-        await_update(&mut rx, eid, at(n)).await?;
+        await_update(&ctx, &mut rx, eid, at(n)).await?;
     }
     let late = held(&ctx).await?;
     ctx.shutdown().await;
@@ -424,12 +413,12 @@ async fn a_function_escaping_deleted_interface_modules_keeps_nothing_once_droppe
     let at = |n: i64| is_pair(n, n + 100 * (n - n % 2));
     for n in 1..=20 {
         ctx.rt.set(tick, n)?;
-        await_update(&mut rx, eid, at(n)).await?;
+        await_update(&ctx, &mut rx, eid, at(n)).await?;
     }
     let early = held(&ctx).await?;
     for n in 21..=20 + 2 * ROUNDS {
         ctx.rt.set(tick, n)?;
-        await_update(&mut rx, eid, at(n)).await?;
+        await_update(&ctx, &mut rx, eid, at(n)).await?;
     }
     let late = held(&ctx).await?;
     ctx.shutdown().await;
@@ -487,7 +476,7 @@ async fn both_sides_of_deleted_interface_modules_keep_nothing_once_dropped(
         .await?;
     let (e_gone, _gone) =
         compile_one(&ctx, "(|x: i64| x, |x: i64| -> null null)").await?;
-    let gone = match await_value(&mut rx, e_gone, |_| true).await? {
+    let gone = match await_value(&ctx, &mut rx, e_gone, |_| true).await? {
         Value::Array(gone) => gone,
         v => bail!("expected two functions, got {v:?}"),
     };
@@ -511,7 +500,7 @@ async fn both_sides_of_deleted_interface_modules_keep_nothing_once_dropped(
     for r in 1..=ROUNDS {
         ctx.rt.set(tick, 2 * r - 1)?;
         let born = |v: &Value| matches!(v, Value::Array(a) if a.len() == 1);
-        match await_value(&mut rx, e_slots, born).await? {
+        match await_value(&ctx, &mut rx, e_slots, born).await? {
             Value::Array(slots) => match &slots[0] {
                 Value::Array(four) => {
                     for (id, f) in [g, s, o, w].into_iter().zip(four.iter()) {
@@ -523,12 +512,12 @@ async fn both_sides_of_deleted_interface_modules_keep_nothing_once_dropped(
             v => bail!("expected a slot, got {v:?}"),
         }
         ctx.rt.set(tick, 2 * r)?;
-        await_update(&mut rx, e_slots, empty).await?;
+        await_update(&ctx, &mut rx, e_slots, empty).await?;
         ctx.rt.set(wv, 700 + r)?;
         ctx.rt.set(ys, one.clone())?;
-        await_update(&mut rx, e_late, late(700 + r, 700 + r)).await?;
+        await_update(&ctx, &mut rx, e_late, late(700 + r, 700 + r)).await?;
         ctx.rt.set(ys, none.clone())?;
-        await_update(&mut rx, e_late, empty).await?;
+        await_update(&ctx, &mut rx, e_late, empty).await?;
         let val_first = r % 2 == 0;
         let (first, second) = if val_first { ([o, w], [g, s]) } else { ([g, s], [o, w]) };
         for (id, f) in first.into_iter().zip(gone.iter()) {
@@ -538,18 +527,18 @@ async fn both_sides_of_deleted_interface_modules_keep_nothing_once_dropped(
             Value::Array(p) => p[val_first as usize] == Value::I64(1),
             _ => false,
         };
-        await_update(&mut rx, e_probe, dropped).await?;
+        await_update(&ctx, &mut rx, e_probe, dropped).await?;
         ctx.rt.set(ys, one.clone())?;
         let kept = |n: i64| if val_first { late(n, 0) } else { late(0, n) };
-        await_update(&mut rx, e_late, kept(700 + r)).await?;
+        await_update(&ctx, &mut rx, e_late, kept(700 + r)).await?;
         ctx.rt.set(if val_first { sv } else { wv }, 5000 + r)?;
-        await_update(&mut rx, e_late, kept(5000 + r)).await?;
+        await_update(&ctx, &mut rx, e_late, kept(5000 + r)).await?;
         ctx.rt.set(ys, none.clone())?;
-        await_update(&mut rx, e_late, empty).await?;
+        await_update(&ctx, &mut rx, e_late, empty).await?;
         for (id, f) in second.into_iter().zip(gone.iter()) {
             ctx.rt.set(id, f.clone())?
         }
-        await_update(&mut rx, e_probe, is_pair(1, 1)).await?;
+        await_update(&ctx, &mut rx, e_probe, is_pair(1, 1)).await?;
         if r == 4 {
             early = Some(held(&ctx).await?)
         }
@@ -607,18 +596,18 @@ async fn a_held_function_outlives_a_collected_reader_of_its_val(
     let empty = |v: &Value| matches!(v, Value::Array(a) if a.is_empty());
     ctx.rt.set(tick, 1i64)?;
     let born = |v: &Value| matches!(v, Value::Array(a) if a.len() == 1);
-    let get = match await_value(&mut rx, e_slots, born).await? {
+    let get = match await_value(&ctx, &mut rx, e_slots, born).await? {
         Value::Array(slots) => slots[0].clone(),
         v => bail!("expected a slot, got {v:?}"),
     };
     for n in 1..=8i64 {
         ctx.rt.set(tick, 2 * n)?;
-        await_update(&mut rx, e_slots, empty).await?;
+        await_update(&ctx, &mut rx, e_slots, empty).await?;
     }
     ctx.rt.set(g, get)?;
     ctx.rt.set(ys, Value::Array([Value::I64(3)].into_iter().collect()))?;
     let three = |v: &Value| matches!(v, Value::Array(a) if a[..] == [Value::I64(3)]);
-    await_update(&mut rx, e_late, three).await?;
+    await_update(&ctx, &mut rx, e_late, three).await?;
     ctx.shutdown().await;
     Ok(())
 }
@@ -645,7 +634,7 @@ async fn compiled_and_dropped<const N: usize>(
             Err(e) => bail!("compile {i} failed: {e:?}"),
         };
         let eid = res.exprs[res.exprs.len() - 1].id;
-        await_update(&mut rx, eid, |v| *v == want).await?;
+        await_update(&ctx, &mut rx, eid, |v| *v == want).await?;
         drop(res);
     }
     let late = held(&ctx).await?;

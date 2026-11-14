@@ -63,7 +63,6 @@ async fn late_callee_dispatch_prints_no_constant() -> Result<()> {
         testing::{Mode, fixture_runtime, updates_until_quiet},
     };
     use std::time::Duration;
-    use tokio::time::Instant;
 
     for mode in Mode::ALL {
         let sink = PrintSink::default();
@@ -88,7 +87,6 @@ async fn late_callee_dispatch_prints_no_constant() -> Result<()> {
             &mut rx,
             result.exprs[0].id,
             Duration::from_millis(100),
-            Instant::now() + Duration::from_secs(5),
         )
         .await?;
         assert_eq!(values, [0, 0, 0, 3, 4, 5, 6].map(Value::I64), "{mode:?}");
@@ -102,8 +100,6 @@ async fn late_callee_dispatch_prints_no_constant() -> Result<()> {
 async fn deleted_kernel_releases_activation_budget() -> Result<()> {
     use arcstr::literal;
     use graphix_package_core::testing::{Mode, fixture_runtime, next_update};
-    use std::time::Duration;
-    use tokio::time::Instant;
 
     for mode in Mode::ALL {
         let (ctx, mut rx) = fixture_runtime([], crate::TEST_REGISTER, mode, |ctx| {
@@ -126,8 +122,7 @@ async fn deleted_kernel_releases_activation_budget() -> Result<()> {
         for _ in 0..8 {
             let result = ctx.rt.compile(literal!("#[native] f(50)")).await?;
             let id = result.exprs.last().unwrap().id;
-            let value =
-                next_update(&mut rx, id, Instant::now() + Duration::from_secs(5)).await?;
+            let value = next_update(&ctx.rt, &mut rx, id).await?;
             assert_eq!(value, Value::I64(1325), "{mode:?}");
             if !mode.node_walk() {
                 assert!(ctx.rt.control().live_self_blocks() >= 50, "vacuous kernel test");

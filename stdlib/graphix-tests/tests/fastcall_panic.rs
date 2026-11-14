@@ -7,11 +7,10 @@ use anyhow::{Result, bail};
 use graphix_compiler::{Effect, ExecCtx, FastCall, Rt};
 use graphix_package_core::{
     CachedArgs, CachedVals, EvalCached, fast_eval,
-    testing::{Mode, TestCtx, config},
+    testing::{HANG_GUARD, Mode, TestCtx, config},
 };
 use graphix_rt::GXEvent;
 use netidx_value::Value;
-use std::time::Duration;
 
 fn fc_panic_at_three(args: &[Value]) -> Option<Value> {
     match args {
@@ -54,7 +53,7 @@ async fn values_until_death(mode: Mode, code: &'static str) -> Result<(Vec<Value
     let compiled = ctx.rt.compile(arcstr::ArcStr::from(code)).await?;
     let eid = compiled.exprs[0].id;
     let mut out = Vec::new();
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let deadline = tokio::time::Instant::now() + HANG_GUARD;
     loop {
         match tokio::time::timeout_at(deadline, rx.recv()).await {
             Err(_) => bail!("timeout: the runtime outlived the panic, saw {out:?}"),

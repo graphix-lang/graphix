@@ -13,8 +13,7 @@ use graphix_package_core::{
 };
 use graphix_rt::EnvStats;
 use netidx::publisher::Value;
-use std::time::Duration;
-use tokio::{sync::mpsc, time::Instant};
+use tokio::sync::mpsc;
 
 // A function value bound in the first cycle fuses at its bind, after the
 // build: `FuseExpect` counts what the build fused, none here.
@@ -162,8 +161,7 @@ async fn run_code(
     };
     let regions = res.fused - before.fused;
     let eid = res.exprs.first().context("no top-level expr")?.id;
-    let value =
-        next_update(&mut rx, eid, Instant::now() + Duration::from_secs(5)).await?;
+    let value = next_update(&ctx.rt, &mut rx, eid).await?;
     let invocations = ctx.rt.control().invocations();
     let after = ctx.fusion_stats().await?;
     let attempts = after.attempted - before.attempted;
@@ -910,12 +908,15 @@ async fn shadow_arm_binding_node_walk() -> Result<()> {
 // must reverse them. Drives an impure HOF array up and down and asserts
 // the registries return to the same size at the bottom of every cycle.
 
-/// Drain `rx` until the map at `eid` emits an array of `target` length;
-/// times out after 5s.
-async fn await_map_len(rx: &mut Events, eid: ExprId, target: usize) -> Result<()> {
-    let deadline = Instant::now() + Duration::from_secs(5);
+/// Drain `rx` until the map at `eid` emits an array of `target` length.
+async fn await_map_len(
+    ctx: &TestCtx,
+    rx: &mut Events,
+    eid: ExprId,
+    target: usize,
+) -> Result<()> {
     loop {
-        if let Value::Array(a) = next_update(rx, eid, deadline).await?
+        if let Value::Array(a) = next_update(&ctx.rt, rx, eid).await?
             && a.len() == target
         {
             return Ok(());
@@ -930,14 +931,9 @@ fn iota(n: i64) -> Value {
 }
 
 /// `code` mapping `arr: Array<i64>` churned `cycles` times: `arr` filled
-/// with `n` elements, `settle` waited out, then emptied. The env stats at
+/// with `n` elements, the runtime settled, then emptied. The env stats at
 /// each empty `arr`, and at the last full one.
-async fn churn(
-    code: &str,
-    n: i64,
-    cycles: usize,
-    settle: Duration,
-) -> Result<(Vec<EnvStats>, EnvStats)> {
+async fn churn(code: &str, n: i64, cycles: usize) -> Result<(Vec<EnvStats>, EnvStats)> {
     let (tx, mut rx) = mpsc::channel(64);
     let ctx = init(tx).await?;
     // Kept alive so its Delete does not race the second compile.
@@ -956,14 +952,14 @@ async fn churn(
     let mut peak = None;
     for _ in 0..cycles {
         ctx.rt.set(arr_id, iota(n))?;
-        await_map_len(&mut rx, eid, n as usize).await?;
-        tokio::time::sleep(settle).await;
+        await_map_len(&ctx, &mut rx, eid, n as usize).await?;
+        ctx.rt.wait_settled().await?;
         peak = Some(ctx.rt.env_stats().await?);
         ctx.rt.set(
             arr_id,
             Value::Array(netidx_value::ValArray::from_iter_exact(std::iter::empty())),
         )?;
-        await_map_len(&mut rx, eid, 0).await?;
+        await_map_len(&ctx, &mut rx, eid, 0).await?;
         bottoms.push(ctx.rt.env_stats().await?);
     }
     ctx.shutdown().await;
@@ -974,13 +970,8 @@ async fn churn(
 async fn env_accounting_grow_shrink() -> Result<()> {
     // `throttle(x)` is the async fusion boundary that forces the per-slot
     // node-walk residue this test measures.
-    let (bottoms, peak) = churn(
-        "array::map(arr, |x| { let v = throttle(x) * 2 + 1; v })",
-        4,
-        4,
-        Duration::ZERO,
-    )
-    .await?;
+    let (bottoms, peak) =
+        churn("array::map(arr, |x| { let v = throttle(x) * 2 + 1; v })", 4, 4).await?;
 
     // Every bottom-of-cycle snapshot (0 slots) must be identical.
     let base = bottoms[0];
@@ -1039,7 +1030,6 @@ async fn deleted_sample_releases_store() -> Result<()> {
          t <- x; seqq any(x, t) { v } })",
         4,
         3,
-        Duration::from_millis(50),
     )
     .await?;
     let base = bottoms[0].store_len;
