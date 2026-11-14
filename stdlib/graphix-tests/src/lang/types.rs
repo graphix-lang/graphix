@@ -10605,6 +10605,60 @@ run!(
     FuseExpect::None
 );
 
+// The renaming is of cells, whatever the variables are called: a twin
+// with the names swapped or with others, a select of selects, an
+// or-pattern's name and twins whose bodies give a variable one bound.
+run!(
+    select_of_a_twin_under_other_names_of_a_signature_union,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  let f = |y: 'a, x: P<'a, 'b>| (x, y);
+  let c = false;
+  let g = select c { true => f, false => |y: 'b, x: P<'b, 'a>| (x, y) };
+  let h = select c { true => |y: 'm, x: P<'m, 'n>| (x, y), false => f };
+  let k = select c { true => select c { true => f, false => f }, false => f };
+  (g(1, ["s"]).1, h("t", [2]).1, k(2, ["u"]).1)
+}"#,
+    prints(r#"[i64:1, "t", i64:2]"#);
+    FuseExpect::None
+);
+run!(
+    or_name_of_a_function_and_its_twin_of_a_signature_union,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  let f = |y: 'a, x: P<'a, 'b>| (x, y);
+  let c = false;
+  let t = select c { true => `A(f), false => `B(|y: 'a, x: P<'a, 'b>| (x, y)) };
+  select t { `A(k) | `B(k) => k(1, ["s"]).1 }
+}"#,
+    prints("i64:1");
+    FuseExpect::None
+);
+run!(
+    select_of_bounded_twins_of_a_signature_union,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  let f = 'a: Number |y: 'a, x: P<'a, 'b>| (x, y + y);
+  let c = false;
+  let g = select c { true => f, false => 'a: Number |y: 'a, x: P<'a, 'b>| (x, y + y + y) };
+  g(1, ["s"]).1
+}"#,
+    prints("i64:3");
+    FuseExpect::None
+);
+run!(
+    select_of_bounded_twins_of_a_signature_union_holds_the_bound,
+    r#"{
+  type P<'p, 'q> = [Array<'p>, Array<'q>];
+  let f = 'a: Number |y: 'a, x: P<'a, 'b>| (x, y + y);
+  let c = false;
+  let g = select c { true => f, false => 'a: Number |y: 'a, x: P<'a, 'b>| (x, y + y + y) };
+  g("t", ["s"]).1
+}"#,
+    refused("within Number & Singleton does not contain string");
+    FuseExpect::None
+);
+
 // A function a call returned is one instance, its variables open cells
 // its calls decide: read through a field it keeps its signature's union
 // as well, so another argument decides the member, and an argument both
