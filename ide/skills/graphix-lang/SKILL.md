@@ -349,6 +349,9 @@ no "Number does not contain datetime" let d = datetime:"2020-01-01T00:00:00Z"; d
 ok let d = datetime:"2020-01-01T00:00:00Z"; sys::time::diff(d, d)
 no "not known here" |r| r?
 ok |r: Result<i64, `E>| r?
+no "not known here" let x = never(); let y = never(); let u = select true { true => x, false => y }; u$
+no "not known here" |a: [i64, null], b| { let u = select false { true => a, false => b }; u? }
+ok let x: null = never(); let y: i64 = never(); let u = select true { true => x, false => y }; u$
 ```
 
 ## Functions

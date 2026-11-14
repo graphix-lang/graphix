@@ -2026,7 +2026,12 @@ whose open cells are told apart by identity (`F<'a>` and `F<'b>` are two)
 strip takes, which decides the strip and is the raised type, and the rest
 is the result type (`Strip::taken`, `Strip::left`; pins
 `lang::errors::an_operand_past_the_pair_budget_*`,
-`one_name_behind_a_wrapper_past_the_pair_budget_*`). One unfolding and
+`one_name_behind_a_wrapper_past_the_pair_budget_*`).
+An operand that is an open cell, or a union with an open member and no decided
+member that holds an error, is refused (`Strip::of`): what the member later holds
+would decide the strip, the null form or the error form, after it was taken
+(pins `lang::types::strip_over_*`). Beside a decided error member the error form
+is the strip whatever the open member becomes, as errors come off first. One unfolding and
 1000 pairs were chosen from the 1600 generated selects (review-r8
 X-r1-1): of main's 1547 finishes none changes verdict or the kind of its
 message, 52 of its 53 timeouts end, the last in matching_type's

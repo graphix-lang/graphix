@@ -6545,6 +6545,67 @@ run!(
     FuseExpect::None
 );
 
+// `$` and `?` over a union whose members are all undecided, or none of which
+// holds an error, would take the null form or the error form on what an open
+// member later holds.
+run!(
+    strip_over_two_open_cells_is_refused,
+    r#"{
+    let x = never();
+    let y = never();
+    let u = select true { true => x, false => y };
+    let r = u$;
+    x <- null;
+    y <- 1;
+    "[r] end"
+}"#,
+    refused("the operand of $ has type");
+    FuseExpect::None
+);
+
+run!(
+    strip_over_two_open_cells_annotated,
+    r#"{
+    let x: null = never();
+    let y: i64 = never();
+    let u = select true { true => x, false => y };
+    let r = u$;
+    x <- null;
+    y <- 1;
+    "ok"
+}"#,
+    prints("\"ok\"");
+    FuseExpect::Jit
+);
+
+run!(
+    strip_over_open_member_beside_null_is_refused,
+    r#"{
+    let f = |a: [i64, null], b| {
+        let u = select false { true => a, false => b };
+        u?
+    };
+    let r = f(1, error(`E));
+    "[r] end"
+}"#,
+    refused("the operand of ? has type");
+    FuseExpect::None
+);
+
+run!(
+    strip_over_open_member_beside_error_is_decided,
+    r#"{
+    let f = |a: Error<`E>, b| {
+        let u = select false { true => a, false => b };
+        u$
+    };
+    let r = f(error(`E), 3);
+    "[r] end"
+}"#,
+    prints("\"3 end\"");
+    FuseExpect::Jit
+);
+
 /// An input's settle binds a parameter both a payload bounded and a ⊥ was
 /// produced into to the payload's type, never ⊥: a later input reading
 /// the payload is held to it, whether the ⊥ reached the parameter

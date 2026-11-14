@@ -611,7 +611,7 @@ pub(crate) enum Strip {
 }
 
 impl Strip {
-    // CR claude for claude: [bug/medium] `$` and `?` choose what they take out before
+    // XCR claude for claude: [bug/medium] `$` and `?` choose what they take out before
     // an undecided member of their operand's union is decided, and what that member
     // later holds passes them: `let x = never(); let y = never(); let u = select true
     // { true => x, false => y }; let r = u$; x <- null; y <- 1; "[r] end"` checks and
@@ -630,11 +630,40 @@ impl Strip {
     // for an operand any member of which is an open cell, naming the bindings to
     // annotate. base-r24 alike. probes: ~/ptmp/cr29/scratch/r24/24b/puo-rev/p6.txt,
     // p8.txt (run with rb.sh) (strip-open-union-member-01)
+    // 2026-11-14 claude: Strip::of now refuses an operand that is an open cell or a
+    // union with an open member and no decided member holding an error, naming the
+    // annotation (an open member beside a decided error member keeps the error form:
+    // errors come off first; the stdlib's slots[i]$ over untyped arrays needs that).
+    // Pins fail without it: lang::types::strip_over_two_open_cells_is_refused,
+    // strip_over_open_member_beside_null_is_refused (+ annotated twin,
+    // error-beside-open pin) and the three graphix,cases lines in
+    // ide/skills/graphix-lang/SKILL.md. Census: 2967 files, no verdict change;
+    // guicheck 39642216849 -> 39611695307; deep_nesting ok. Needs a soak.
     fn of<R: Rt>(ctx: &CompileCtx<R>, op: char, typ: &Type) -> Result<Self> {
-        // an open operand would take the error form here and fail an
-        // instance whose type has neither: its type must be known
-        if typ.with_deref(|t| t.is_none()) {
-            let below = typ.open_lower();
+        // an open operand would take the strip here before what it holds
+        // is decided: its type must be known. An open member beside one
+        // that holds an error leaves the strip decided (errors come off
+        // first); beside none it would pick the null form or the error form
+        // on what it later holds
+        let err = Type::Error(Arc::new(Type::empty_tvar()));
+        let members = Type::dispatch_members(&ctx.env, typ)?;
+        let open_member = |m: &Type| m.with_deref(|t| t.is_none()) && m.has_free();
+        let open = match typ.with_deref(|t| t.is_none()) {
+            true => Some(typ),
+            false => match members.iter().find(|m| open_member(m)) {
+                None => None,
+                Some(open) => {
+                    let mut held = false;
+                    for m in members.iter().filter(|m| !open_member(m)) {
+                        held |=
+                            m.contains_with_flags(BitFlags::empty(), &ctx.env, &err)?
+                    }
+                    (!held).then_some(open)
+                }
+            },
+        };
+        if let Some(open) = open {
+            let below = open.open_lower();
             format_with_flags(PrintFlag::DerefTVars, || match &below[..] {
                 [] => bail!(
                     "the operand of {op} has type {typ}, not known here: annotate it \
@@ -666,7 +695,6 @@ impl Strip {
                 )
             })?
         }
-        let err = Type::Error(Arc::new(Type::empty_tvar()));
         let null = Type::Primitive(Typ::Null.into());
         let holds = |t: &Type| typ.contains_with_flags(BitFlags::empty(), &ctx.env, t);
         // an open member holds both: the strip is the one that takes a
