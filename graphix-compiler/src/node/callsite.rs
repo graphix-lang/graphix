@@ -3283,6 +3283,24 @@ impl<R: Rt> CallSite<R> {
         // `site_ftype` is a deep clone: the instance's inferred return
         // must be unified back into the site's live rtype cell.
         if let Some(site_ft) = self.ftype.as_ref() {
+            // CR claude for claude: [risk/low] Under GRAPHIX_NO_SUBST=1 the unify-back
+            // gives a site's return its own union again as a member, and the audit reports
+            // it as a narrowing: `type B<'p> = Abstract<'p>; let go = |t| { let x =
+            // never(); let b = B([x]); b <- B(x); let v = b.0; x <- t ~ 1;
+            // println(array::map([v], |e| e)); null }; go(t)` prints, with
+            // GRAPHIX_ELAB_AUDIT=1, "unify-back at .. `("nop")(collection_element)`:
+            // narrowed the site's return from 'b: [i64, Array<i64>] to 'b: [i64,
+            // Array<i64>, [i64, Array<i64>]]", once per call of `go`. The program runs
+            // right ([[1]], then [1]). No report at the top level, with `|e| e` called
+            // directly, with array::filter, or by default (an instance takes its
+            // definition's types). base-r24 alike. Either the instance checked again
+            // returns a union over cells of its own that the site's union does not hold as
+            // equal members, or the union the site keeps is not flattened; not diagnosed.
+            // design/parallel_compile.md, The audit, says this unify-back never narrows a
+            // site. 9 of 1275 generated programs report it
+            // (~/ptmp/cr29/scratch/r24/24b/pbas-rev/gen3.py). probes:
+            // ~/ptmp/cr29/scratch/r24/24b/pbas-rev/{ns1,ns1_top,ns1_id}.gx
+            // (nosubst-unify-back-self-union-01)
             let before =
                 dbgenv::graphix_elab_audit().then(|| printed_deref(&site_ft.rtype));
             if let Err(e) = site_ft.rtype.check_contains(&ctx.env, &instance_ftype.rtype)
