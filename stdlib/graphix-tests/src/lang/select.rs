@@ -12972,9 +12972,29 @@ run!(
 );
 
 run!(
+    written_bottom_over_a_declared_variable_refused,
+    r#"{
+  let k = |z: 'a| select z { _ as w => w + 1, _ => 0 };
+  k("q")
+}"#,
+    refused("the written test types `w` at `_`");
+    FuseExpect::None
+);
+
+run!(
     shared_residual_connect_asks_for_a_type_holding_both,
     shared_residual("`A => 1, e => { let q = 1; q <- e; q }"),
     refused_within("declare q with a type holding both where it is bound", 4 * Brief::BYTES);
+    FuseExpect::None
+);
+
+run!(
+    written_bottom_over_a_declared_bound_refused,
+    r#"{
+  let k = 'a: [i64, string] |z: 'a| select z { _ as w => w + 1, _ => 0 };
+  k("q")
+}"#,
+    refused("the written test types `w` at `_`");
     FuseExpect::None
 );
 
@@ -12986,8 +13006,29 @@ run!(
 );
 
 run!(
+    written_bottom_in_a_union_of_products_refused,
+    r#"{
+  let k = |z: [(i64, 'a), (string, 'a)]| select z { (i64, _) as (n, w) => n + w, _ => 0 };
+  k((1, 2))
+}"#,
+    refused("the written test types `w` at `_`");
+    FuseExpect::None
+);
+
+run!(
     shared_residual_struct_write_is_brief,
     shared_residual("`A => 1, e => { let s = {a: 1, b: 2}; s <- {a: e, b: 2}; 2 }"),
     refused_within("declare s with a type holding both where it is bound", 4 * Brief::BYTES);
     FuseExpect::None
+);
+
+run!(
+    written_bottom_over_a_declared_variable_any_twin,
+    r#"{
+  let k = |z: 'a| select z { Any as _ => 1, _ => 0 };
+  let p = |z: ('a, i64)| select z { (_, i64) as (w, n) => n, _ => 0 };
+  (k("q"), p(("q", 5)))
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 5]);
+    FuseExpect::Jit
 );

@@ -3376,7 +3376,7 @@ impl<R: Rt> PatternNode<R> {
         scrut: &Type,
         leaves: &mut SmallVec<[Leaf; 4]>,
     ) -> Result<()> {
-        // CR claude for claude: [bug/medium] A written test that is `_` where a
+        // XCR claude for claude: [bug/medium] A written test that is `_` where a
         // declared variable stands types its name at bottom, and the run-time test
         // for bottom passes every value: `let k = |z: 'a| select z { _ as w => w + 1,
         // _ => 0 }; println(k("q"))` passes --check; fused it panics ("kernel param
@@ -3395,6 +3395,14 @@ impl<R: Rt> PatternNode<R> {
         // written_refusal does inside one, naming `Any`. probes:
         // ~/ptmp/cr29/scratch/r24/24a/tba/review/{h1,h3,h4,h5,h7}.gx
         // (bottom-test-over-variable-01)
+        // 2026-11-14 claude: A name a written test types at `_` where a declared
+        // variable stands (`_ as w` over 'a, a bound, a union of products) is refused
+        // in type_inside_rigid, naming the type or Any. Pins
+        // lang::select::written_bottom_over_a_declared_{variable,bound}_refused and
+        // written_bottom_in_a_union_of_products_refused fail without it (12 of 16
+        // mode runs); twin written_bottom_over_a_declared_variable_any_twin and the
+        // select.md cases lines hold the accepted forms. Census base-r25 vs mine: no
+        // file changes.
         let parts = self.type_predicate.matching_parts(env, scrut)?;
         let mut inside: SmallVec<[Leaf; 4]> = SmallVec::new();
         self.structure_predicate.leaves(
@@ -3413,6 +3421,16 @@ impl<R: Rt> PatternNode<R> {
                     k.typ = Type::union(env, &[&k.typ, &l.typ])?
                 }
                 Some(k) if k.typ.has_rigid() => (),
+                Some(k) if matches!((&k.typ, &l.typ), (Type::Bottom, Type::Bottom)) => {
+                    let name = env.by_id.get(&l.id).map(|b| b.name.as_str());
+                    bail!(
+                        "the written test types `{}` at `_`, which is bottom, where a \
+                         declared variable stands, and the run-time test for bottom \
+                         passes every value: write the type it tests there in place of \
+                         `_`, or `Any`",
+                        name.unwrap_or("the name")
+                    )
+                }
                 Some(k) => *k = l,
                 None => leaves.push(l),
             }

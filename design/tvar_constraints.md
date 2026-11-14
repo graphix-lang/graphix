@@ -249,7 +249,12 @@ test's own types none of the cell's values (a run-time test passes every
 value at that variable), so a name under it keeps the cell
 (`Type::matching_type`; `design/select_coverage.md`, Patterns inside a
 declared variable; pins
-`lang::select::written_test_own_variable_over_a_declared_one_*`). An
+`lang::select::written_test_own_variable_over_a_declared_one_*`). A
+name the test types at `_` where the cell stands (`_ as w` over `'a`,
+`(i64, _) as (n, w)` over `[(i64, 'a), (string, 'a)]`) would be bottom
+while the run-time test for bottom passes every value: it is refused,
+naming `Any` or the type the test takes (`StructurePattern`'s
+`type_inside_rigid`; pins `lang::select::written_bottom_over_a_declared_*`). An
 abstract pattern names the type its compile resolved, an alias's
 included (`CompiledAbstracts`); a name a later statement of the block
 declares is that type there, in a function above the declaration too, and
