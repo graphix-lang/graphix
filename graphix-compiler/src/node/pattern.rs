@@ -11,7 +11,10 @@ use crate::{
     node::{Held, compiler, list, prune::Prune},
     prune::BoundaryRef,
     rep,
-    typ::{AbstractId, ContainsFlags, IsAFlags, ShallowScrutinee, TVar, Type},
+    typ::{
+        AbstractId, ContainsFlags, IsAFlags, ShallowScrutinee, TVar, Type,
+        settle::position_cells, tvar::OpenOverAny,
+    },
 };
 use ahash::AHashMap;
 use anyhow::{Result, anyhow, bail};
@@ -3014,6 +3017,45 @@ impl<R: Rt> PatternNode<R> {
             }
         }
         Ok(())
+    }
+
+    /// A refusal of [`Type::close_over_any`] told as the written test
+    /// that decides the cell: `pat` is the arm's pattern as written.
+    pub(super) fn undecided_over_any(
+        &self,
+        env: &Env,
+        pat: Option<&StructurePattern>,
+        e: anyhow::Error,
+    ) -> anyhow::Error {
+        let Some(OpenOverAny(tv)) = e.downcast_ref() else { return e };
+        // the name that is the cell, else the first whose type holds it
+        let mut held: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+        let (mut is, mut holds) = (None, None);
+        self.structure_predicate.ids(&mut |id| {
+            if let Some(b) = env.by_id.get(&id) {
+                held.clear();
+                position_cells(&b.typ, &mut held);
+                let own = matches!(&b.typ, Type::TVar(v) if v.open_cell().is_some());
+                match held.contains_key(&tv.cell_addr()) {
+                    true if own => is = is.take().or(Some(&b.name)),
+                    true => holds = holds.take().or(Some(&b.name)),
+                    false => (),
+                }
+            }
+        });
+        let name = match is.or(holds) {
+            Some(n) => format_compact!("`{n}`"),
+            None => format_compact!("{}", Type::TVar(tv.clone())),
+        };
+        let pat = match pat {
+            Some(p) => format_compact!("{p}"),
+            None => CompactString::const_new("its pattern"),
+        };
+        anyhow!(
+            "this arm does not decide the type of {name}, which {pat} takes out of a \
+             value that may be Any, so its test would pass any value there: write the \
+             type in a test before the pattern (`(i64, i64) as (a, b)`)"
+        )
     }
 
     /// Under a written test, each bind in `leaves`, typed over what passes

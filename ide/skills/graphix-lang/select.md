@@ -91,7 +91,14 @@ select, and runtime forms. Each rule refuses and names the fix.
 - Over `Any` (a scrutinee, a tuple position, a field, a payload) a name
   is `Any`, and a pattern that takes the value apart is a run-time test
   of the types its arm decides: `((a, b), n) => a + b + n` over `(Any,
-  i64)` takes only a pair of `i64`. A slice tests every element against
+  i64)` takes only a pair of `i64`. The arm is its guard and body, and
+  nothing outside it reaches the test (a return type, a later statement,
+  a caller): a part the arm leaves open is `Any` (`(a, b) => a` gives
+  `Any`), and one it constrains without deciding is refused, `(a, b) =>
+  a + b` being a number of no one type. Write the test, `(i64, i64) as
+  (a, b)`, or decide it in the arm (`a + b + 1`). A written test's own
+  variable there is the arm's alike (`('q, i64) as (r, n) => r + n`
+  tests an `i64`). A slice tests every element against
   the union of its elements' types, so with a `_` among them, or a rest
   beside no name, it tests none and every name under it is `Any`: `[(a,
   b), _] => a + 1` and `[(a, b), ..] => a + 1` are refused. Write the
@@ -142,6 +149,11 @@ no "[`J, _] tests inside a value of 'a" type W<'a> = Abstract<'a>; |x: 'a| selec
 no "types none of it" 'b: [`A(i64), `B] |x: 'b| { let r = &mut (x, 0); select *r { (`A(_), i64) as (`A(z), _) => 1, _ => 2 } }
 no "((a, b), c) binds inside a value of 'a" 'a: (i64, i64) |x: 'a| { let r = &mut (x, 0); let ((a, b), c) = *r; a + b }
 ok 'a: (i64, i64) |x: 'a| { let r = &mut (x, 0); let ((a, b), c): ((i64, i64), i64) = *r; a + b }
+no "does not decide the type of `a`" |x: Any| select x { (a, b) => a + b, _ => 0 }
+no "does not decide the type of `a`" |x: Any| -> i64 select x { (a, b) => a + b, _ => 0 }
+ok |x: Any| select x { (i64, i64) as (a, b) => a + b, _ => 0 }
+ok |x: Any| select x { (a, b) => a + b + 1, _ => 0 }
+no "cannot compute Any + i64" let f = |x: Any| select x { (a, b) => a, _ => never() }; let v: Any = (1, 2); f(v) + 1
 no "not decided at this select" |x| select (x, 0) { (`J, _) => 1, (`M, _) => 2 }
 ok |x: [`J, `M]| select (x, 0) { (`J, _) => 1, (`M, _) => 2 }
 no "string does not contain" 'c: Collection, 'b: (i64, i64) |x: 'c<'b>| -> [string, null] select x { [h, ..] => { let q: string = h; q }, _ => null }

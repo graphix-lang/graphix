@@ -8,7 +8,7 @@ use crate::{
     typ::{
         Bound, FnType, Mutability, NodeKey, NodePairs, PRINT_FLAGS, PrintFlag, RefKey,
         TVarsSeen, Type,
-        contains::{ContainsHist, holds_cell},
+        contains::{ContainsHist, find_open_cell, holds_cell},
         fntyp::Aliasing,
         node_addr,
         setops::union_identical,
@@ -413,12 +413,28 @@ pub(super) fn bare_path(addr: usize, t: &Type, toward: Toward) -> LPooled<Vec<TV
 }
 
 /// What [`Type::open_over_any`] has done: the node pairs it walked whole
-/// since it last bound a cell, and the cells it bound.
+/// since it last bound a cell, and the cells it bound. `inside`: every
+/// cell open inside a part that is `Any` is bound too
+/// ([`Type::close_over_any`]).
 #[derive(Default)]
 struct AnyWalk {
     walked: NodePairs,
     binds: usize,
+    inside: bool,
 }
+
+/// A cell a select arm's test holds inside an `Any` part, open once the
+/// arm is checked, that cannot be `Any` ([`Type::close_over_any`]).
+#[derive(Debug)]
+pub struct OpenOverAny(pub TVar);
+
+impl fmt::Display for OpenOverAny {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "the type '{} is not decided over Any", ShortName(&self.0.name))
+    }
+}
+
+impl std::error::Error for OpenOverAny {}
 
 struct BarePath {
     addr: usize,
@@ -4603,6 +4619,41 @@ impl Type {
         self.open_over_any_int(env, pred, &mut AnyWalk::default())
     }
 
+    /// [`Self::open_over_any`] once the arm of the test `pred` is checked,
+    /// `self` being what reaches it: each cell still open inside a part
+    /// that is `Any` is `Any` too. The run-time test passes every value at
+    /// an open cell, so nothing decided of it later would be tested. A
+    /// cell that cannot be `Any` is [`OpenOverAny`]; a declared variable
+    /// stands, and so does a function type's.
+    pub fn close_over_any(&self, env: &Env, pred: &Type) -> Result<()> {
+        let mut walk = AnyWalk { inside: true, ..AnyWalk::default() };
+        self.open_over_any_int(env, pred, &mut walk)
+    }
+
+    /// Bind each free cell `self` holds as data to `Any`. A cell another
+    /// compile task owns is left to that task's refusal of the write.
+    fn any_beneath(&self, env: &Env, walk: &mut AnyWalk) -> Result<()> {
+        let mut left: LPooled<AddrSet> = LPooled::take();
+        loop {
+            let mut free = |tv: &TVar| !tv.is_rigid() && !left.contains(&tv.cell_addr());
+            let Some(tv) = find_open_cell(self, false, &mut free) else { break };
+            if !Type::TVar(tv.clone()).contains_ordered(env, &Type::Any).unwrap_or(false)
+            {
+                bail!(OpenOverAny(tv))
+            }
+            match tv.is_bound() {
+                true => {
+                    walk.binds += 1;
+                    walk.walked.clear()
+                }
+                false => {
+                    left.insert(tv.cell_addr());
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// [`Self::open_over_any`], each pair of shared nodes walked once
     /// while no cell is bound: a pair walked whole under the cells as they
     /// stand binds nothing when met again. A bound cell is the node it
@@ -4614,6 +4665,9 @@ impl Type {
         walk: &mut AnyWalk,
     ) -> Result<()> {
         ensure_sufficient(|| {
+            if walk.inside && matches!(self.head(env)?, Some(Type::Any)) {
+                return pred.any_beneath(env, walk);
+            }
             let Some(p) = pred.deref_cloned() else {
                 if matches!(self.head(env)?, Some(Type::Any)) {
                     pred.contains_ordered(env, &Type::Any)?;

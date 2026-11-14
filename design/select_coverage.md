@@ -228,10 +228,31 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   (`StructurePattern::collection_view`), so a name over the element is
   `'b`; a written test reads it so in `Type::matching_type`.
 
+- **A test inside an `Any` part is fixed at its arm's end.** A pattern
+  that takes an `Any` part apart (a tuple, struct, variant or slice
+  pattern over an `Any` scrutinee or part, inferred or under a written
+  test's own variable) tests the types its arm decides, the arm being its
+  guard and body. Once they are checked, each cell the test still holds
+  open at or inside a part of what reaches the arm that is `Any` is `Any`
+  (`Type::close_over_any`, from `Select::typecheck0_with`): a run-time
+  test passes every value at an open cell (`Type::is_a`), so the bind
+  receives any value there, and what a later statement, a return type or
+  a call's use of the function's result decided of the cell would be
+  tested nowhere. `(a, b) => a` over `Any` is `Any`. A cell that cannot
+  be `Any`, one the arm constrained and did not decide (`(a, b) => a +
+  b`: one cell `'t: Number + Singleton` at both positions, which no test
+  of a bound could hold to one type), is refused, naming the written test
+  (`PatternNode::undecided_over_any`); `(i64, i64) as (a, b)` and `a + b +
+  1` are tested. A declared variable stands, an instance's test being its
+  type there, and so do the cells of a function type. Pins:
+  `lang::select::any_part_cell_*`.
+
 - **A written test's own variable is a part the arm binds, not one it
   tests.** Nothing declares it, and where the narrowing leaves it open it
   settles to ⊥, which a run-time test passes every value at
-  (`Type::is_a`, `IsAFlags::Strict` apart). A named type applied to it
+  (`Type::is_a`, `IsAFlags::Strict` apart); inside an `Any` part it is
+  the arm's to decide, and `Any` at the arm's end, as an inferred cell
+  is. A named type applied to it
   would lose that: `Opt<'b>` over `type Opt<'x> = ['x, null]` expands to
   `null` once `'b` is ⊥, a union dropping its ⊥ member, where `['b,
   null]` written out keeps the cell. So from `typecheck1` on an arm's

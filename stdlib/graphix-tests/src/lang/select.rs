@@ -6475,7 +6475,7 @@ run!(
     r#"{
     type L = [`Cons(Any, L), `Nil];
     let f = |l: L| -> i64 select l {
-      `Cons(_, `Cons((a, b), `Cons(_, t))) => a + b,
+      `Cons(_, `Cons((a, b), `Cons(_, t))) => a + b + 10,
       `Cons(_, `Cons(_, t)) => 1,
       _ => 0
     };
@@ -6488,9 +6488,202 @@ run!(
     ]
 }"#,
     |v: Result<&Value>| match v {
-        Ok(Value::Array(a)) => as_i64s(a) == [7, 1, 1, 0, 0],
+        Ok(Value::Array(a)) => as_i64s(a) == [17, 1, 1, 0, 0],
         _ => false,
     }
+);
+
+// The test of a pattern that takes an `Any` part apart is fixed at its
+// arm's end: a cell the arm bounded and did not decide is refused.
+run!(
+    any_part_cell_the_arm_bounds_undecided_refused,
+    r#"{
+    let f = |x: Any| select x { (a, b) => a + b, _ => 0 - 1 };
+    let v: Any = ("s", "t");
+    f(v)
+}"#,
+    refused(
+        "this arm does not decide the type of `a`, which (a, b) takes out of a value that may be Any"
+    )
+);
+
+run!(
+    any_part_cell_the_arm_bounds_undecided_under_a_part_refused,
+    r#"{
+    let f = |x: (Any, i64)| select x { ((a, b), n) => a + b, _ => 0 - 1 };
+    let v: Any = ("s", "t");
+    f((v, 1))
+}"#,
+    refused("does not decide the type of `a`")
+);
+
+run!(
+    any_part_cell_the_arm_bounds_undecided_in_a_slice_refused,
+    r#"{
+    let f = |x: Any| select x { [a, b] => a + b, _ => 0 - 1 };
+    let v: Any = ["s", "t"];
+    f(v)
+}"#,
+    refused("does not decide the type of `a`")
+);
+
+run!(
+    any_part_cell_the_arm_bounds_undecided_beside_a_rest_refused,
+    r#"{
+    let f = |x: Any| select x { [h, t..] => h + h, _ => 0 - 1 };
+    let v: Any = ["s", "t"];
+    f(v)
+}"#,
+    refused("does not decide the type of `h`")
+);
+
+run!(
+    any_part_cell_the_arm_bounds_undecided_in_a_payload_refused,
+    r#"{
+    let f = |x: Any| select x { `P(a, b) => a + b, _ => 0 - 1 };
+    let v: Any = `P("s", "t");
+    f(v)
+}"#,
+    refused("does not decide the type of `a`")
+);
+
+run!(
+    any_part_cell_the_arm_bounds_undecided_in_a_struct_refused,
+    r#"{
+    let f = |x: Any| select x { {a, b} => a + b, _ => 0 - 1 };
+    let v: Any = {a: "s", b: "t"};
+    f(v)
+}"#,
+    refused("does not decide the type of `a`")
+);
+
+run!(
+    any_part_cell_a_generic_call_bounds_undecided_refused,
+    r#"{
+    let sum = 'a: Number + Singleton |x: 'a, y: 'a| x + y;
+    let f = |x: Any| select x { (a, b) => sum(a, b), _ => 0 - 1 };
+    let v: Any = ("s", "t");
+    f(v)
+}"#,
+    refused("does not decide the type of `a`")
+);
+
+run!(
+    any_part_cell_the_guard_bounds_undecided_refused,
+    r#"{
+    let f = |x: Any| select x { (a, b) if a + b == a => 1, _ => 0 };
+    let v: Any = ("s", "t");
+    f(v)
+}"#,
+    refused("does not decide the type of `a`")
+);
+
+run!(
+    any_part_cell_at_the_top_level_refused,
+    r#"{
+    let v: Any = ("s", "t");
+    select v { (a, b) => a + b, _ => 0 - 1 }
+}"#,
+    refused("does not decide the type of `a`")
+);
+
+// Nothing outside the arm decides its test: not the function's return
+// type, and not a later statement.
+run!(
+    any_part_cell_a_return_type_does_not_decide_refused,
+    r#"{
+    let f = |x: Any| -> i64 select x { (a, b) => a + b, _ => 0 - 1 };
+    let v: Any = (3, 4);
+    f(v)
+}"#,
+    refused("does not decide the type of `a`")
+);
+
+run!(
+    any_part_cell_a_written_tests_variable_bounds_undecided_refused,
+    r#"{
+    let f = |x: Any| select x { ('q, i64) as (r, n) => r + r, _ => 0 - 1 };
+    let v: Any = ("s", 1);
+    f(v)
+}"#,
+    refused("does not decide the type of `r`")
+);
+
+// The written test, and an arm that decides the cell, are tested.
+run!(
+    any_part_cell_decided_or_written_is_tested,
+    r#"{
+    let f = |x: Any| select x { (i64, i64) as (a, b) => a + b, _ => 0 - 1 };
+    let g = |x: Any| select x { (a, b) => a + b + 1, _ => 0 - 1 };
+    let h = |x: Any| select x { ('q, i64) as (r, n) => r + n, _ => 0 - 1 };
+    let k = |x: Any| select x { (a, b) if a + b > 6 => 1, _ => 0 };
+    let p: Any = (3, 4);
+    let s: Any = ("s", "t");
+    let m: Any = (1, 2.5);
+    [f(p), f(s), f(m), g(p), g(s), g(m), h(p), h(s), h(m), k(p), k(s), k(m)]
+}"#,
+    |v: Result<&Value>| match v {
+        Ok(Value::Array(a)) => as_i64s(a) == [7, -1, -1, 8, -1, -1, 7, -1, -1, 1, 0, 0],
+        _ => false,
+    }
+);
+
+// A cell the arm leaves open inside an `Any` part is `Any`, whatever a
+// later use would make of it.
+run!(
+    any_part_cell_the_arm_leaves_open_is_any,
+    r#"{
+    let f = |x: Any| select x { (a, b) => a, _ => never() };
+    let g = |x: Any, y| select x { (a, b) => a == y, _ => false };
+    let h = |x: Any| select x { [h, ..] => h, _ => never() };
+    let v: Any = ("s", 1);
+    let w: Any = [2, "t"];
+    "[f(v)] [g(v, 2)] [g(v, "s")] [h(w)]"
+}"#,
+    prints(r#""s false true 2""#)
+);
+
+// Nor does another arm's type: the union of the arms' types decides no
+// arm's test.
+run!(
+    any_part_cell_another_arm_does_not_decide,
+    r#"{
+    let f = |x: Any| select x { ((a, b), (c, d)) => (a + 1, c), _ => (0, 0) };
+    let v: Any = ((1, 2), ("s", "t"));
+    let w: Any = (("s", 2), (3, 4));
+    "[f(v)] [f(w)]"
+}"#,
+    prints(r#""(2, \"s\") (0, 0)""#)
+);
+
+run!(
+    any_part_cell_the_arm_leaves_open_a_call_does_not_decide_refused,
+    r#"{
+    let f = |x: Any| select x { (a, b) => a, _ => never() };
+    let v: Any = ("s", "t");
+    f(v) + f(v)
+}"#,
+    refused("cannot compute Any + Any")
+);
+
+run!(
+    any_part_cell_the_arm_leaves_open_a_later_statement_does_not_decide_refused,
+    r#"{
+    let v: Any = ("s", "t");
+    let r = select v { (a, b) => a, _ => never() };
+    r + r
+}"#,
+    refused("cannot compute Any + Any")
+);
+
+run!(
+    any_part_cell_a_written_tests_variable_leaves_open_is_any_refused,
+    r#"{
+    let f = |x: Any| select x { ('q, i64) as (r, n) => r, _ => never() };
+    let v: Any = ("s", 1);
+    f(v) + f(v)
+}"#,
+    refused("cannot compute Any + Any")
 );
 
 // A slice's rest nothing types takes the type of a name beside it, so

@@ -3310,6 +3310,16 @@ impl<R: Rt> Select<R> {
                 }
             }
             wrap!(n, child(n, ctx))?;
+            if pat.type_predicate.has_free() {
+                reaching
+                    .close_over_any(&ctx.env, &pat.type_predicate)
+                    .map_err(|e| {
+                        let written =
+                            spec_pats.get(i).map(|(p, _)| &p.structure_predicate);
+                        pat.undecided_over_any(&ctx.env, written, e)
+                    })
+                    .at(&site)?;
+            }
             let deciding = deciding.again();
             let covered = reach.arm(&ctx.env, &scrut, pat, &site, checking)?;
             deciding.decided(&mut decided);
