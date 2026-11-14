@@ -1502,43 +1502,6 @@ fn commit_parts(
         };
         match (c, t) {
             (Type::Any, _) => Ok(true),
-            // XCR claude for claude: [bug/medium] A declared variable of the definition under
-            // check that meets a callee's bound here is narrowed for good, by a union over a
-            // cell of the callee's signature that the call then decides: `let g = 'b:
-            // Array<['c, null]> |x: 'b, s: 'c| -> 'b x; let f = |v: 'a, w: Array<'a>| g(w, v);
-            // f(1, [2])` is refused, "'a: unbound within null does not contain i64", with g's
-            // parameters in either order, and `let k: bool = f` prints f as `fn(v: 'a: unbound
-            // within null, w: Array<'a: unbound within null>) -> ..`. The call is valid for
-            // every 'a ('c is 'a, and Array<'a> is in Array<['a, null]>): the unbounded `|x:
-            // Array<['c, null]>, s: 'c|`, the unannotated `|v, w|` and `|v: i64, w:
-            // Array<i64>|` print [2]. base-r23 alike. GRAPHIX_DBG_BIND shows the rigid 'a
-            // taking the conjunct `[null, 'c]` from pre_unify_arg, after Widening::opening
-            // copied the formal, so that 'c is not the one `s: 'c` merged with 'a
-            // (TVar::narrow_cell adds it, contains::holds_cell finds no 'a in it), and 'a
-            // ends bounded by `null` alone. A rigid cell's requirement is one to prove
-            // against the callee's cells, as `(rigid || commit) && t1.is_rigid()` does in
-            // contains_dispatch, not a bound to record on it; where the bound holds no open
-            // cell the narrowing is how `'b: Array<[i64, null]>` reaches a wrapper's 'a
-            // today, so that case needs its own answer (refuse at the definition, naming the
-            // bound to declare). Found fixing bound-holds-own-cell-01. probes:
-            // ~/ptmp/cr29/scratch/r23/23c/rigid_narrow{,_s_first,_ok_unbounded}.gx
-            // (rigid-narrowed-by-callee-bound-01)
-            // 2026-11-14 claude: commit_parts narrows no rigid cell: the probe before the bind
-            // holds a declared variable against its part (a part with no open cell is refused
-            // at the wrapper, base-r24 alike), and the conjunct's own open cells take it in
-            // commit_conjuncts' lower-bound step, so the bound's 'c is the wrapper's 'a as
-            // where the bound's type is written in the parameter. On base-r24 the CR's probe
-            // was refused at the definition ("'c: null does not contain 'a"): the part
-            // recorded on 'a proved `null >= 'a` by deciding 'c null. Newly refused at the
-            // definition, as the written twin is: `|w: Array<'a>| g(w, null)`, which base-r24
-            // took with 'a within null; `'a: null` declared runs. Fail without it:
-            // lang::types::declared_variable_under_a_callees_bound_{over_an_undecided_variable,keeps_its_declaration,that_another_argument_decides_refused}
-            // and contains::tests::a_bounds_part_narrows_no_rigid_cell (declared_within_it is
-            // the passing twin). Census 2967 files, no verdict or message moved. 480 generated
-            // wrappers beside their written twins: 62 newly accepted, none newly refused,
-            // every accept runs alike fused, --no-fusion and NO_SUBST; 6 still refused where
-            // the twin runs (lower-bound-refuses-narrower-01, bound-part-merges-declared-01).
-            // probes: ~/ptmp/cr29/scratch/r24/24c/rnb/ (README)
             (_, Type::TVar(t)) => match t.open_cell() {
                 Some(cell) if cell.cell_addr() != tv.cell_addr() && !cell.is_rigid() => {
                     cell.narrow_cell(env, c.clone())?;
