@@ -263,9 +263,18 @@ struct SigDecls {
 }
 
 impl SigDecls {
-    /// Give the registries back what is still these declarations'.
+    /// Give the registries back what is still these declarations': an
+    /// entry the registry held goes to its trait's declaration where a
+    /// function value keeps that ([`Env::keep_impl`]).
     fn unregister(&self, env: &mut Env) {
-        self.impls.iter().for_each(|im| env.unregister_impl(im));
+        for im in self.impls.iter() {
+            let own = self.traits.iter().find(|def| def.id == im.trait_id);
+            if env.unregister_impl(im)
+                && let Some(of) = own.or_else(|| env.trait_defs.get(&im.trait_id))
+            {
+                env.keep_impl(of, im)
+            }
+        }
         self.traits.iter().for_each(|def| env.unrecord_trait(def))
     }
 
@@ -2276,6 +2285,11 @@ impl<R: Rt> Update<R> for Module<R> {
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
         if let Body::Dynamic { source, .. } = &mut self.body {
             source.delete(ctx);
+        }
+        for def in self.sig_decls.traits.iter() {
+            let body = self.env.binds.get(&def.path);
+            let splice = def.methods.iter().filter_map(|m| body?.get(m.name.as_str()));
+            ctx.keep_trait(def, splice.copied())
         }
         self.clear_compiled(ctx);
         self.sig_decls.unregister(&mut ctx.env);

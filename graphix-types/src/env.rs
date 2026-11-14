@@ -1090,6 +1090,34 @@ impl LoadedBody {
     }
 }
 
+/// A trait declaration deleted while a function value named one of its
+/// dispatchers, as the registries held it, for the view that names those
+/// dispatchers ([`Env::kept_trait`]). It goes with the last of them.
+#[derive(Debug)]
+pub struct KeptTrait {
+    /// The record, with the defaults its implementation compiled.
+    def: Arc<TraitDef>,
+    /// An interface's, and the ones its splice into the body minted.
+    dispatchers: SmallVec<[BindId; 4]>,
+    /// The impl entries the registry gave back since.
+    impls: RwLock<SmallVec<[Arc<ImplDef>; 2]>>,
+    /// The typedefs the signatures and the heads name, which a
+    /// resolution cell holds only weakly.
+    named: RwLock<Vec<std::sync::Arc<ResolvedRef>>>,
+}
+
+impl KeptTrait {
+    fn own<'a>(&self, types: impl Iterator<Item = &'a Type>) {
+        let mut cells: LPooled<AHashSet<usize>> = LPooled::take();
+        let mut defs: LPooled<AHashMap<usize, std::sync::Arc<ResolvedRef>>> =
+            LPooled::take();
+        for t in types {
+            t.named_defs(&mut cells, &mut defs)
+        }
+        self.named.write().extend(defs.drain().map(|(_, d)| d))
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Env {
     pub by_id: TrackedMap<BindId, Arc<Bind>>,
@@ -1112,6 +1140,9 @@ pub struct Env {
     /// Every trait's implementations; global (scope governs only the
     /// trait's name).
     pub impls: TrackedMap<TraitId, Arc<Vec<Arc<ImplDef>>>>,
+    /// The deleted trait declarations function values still dispatch
+    /// through, by each dispatcher one names.
+    pub kept_traits: TrackedMap<BindId, Arc<KeptTrait>>,
     /// Generalized bindings (let-bound lambdas, interface `val`s, trait
     /// dispatchers, and the lets nothing writes that hold a lambda in a
     /// data literal) whose signatures a value occurrence instantiates
@@ -1159,6 +1190,7 @@ impl Env {
             trait_defs: self.trait_defs.fork(),
             trait_methods: self.trait_methods.fork(),
             impls: self.impls.fork(),
+            kept_traits: self.kept_traits.fork(),
             poly_binds: self.poly_binds.fork(),
             package_roots: self.package_roots.fork(),
             block_types: self.block_types.clone(),
@@ -1182,6 +1214,7 @@ impl Env {
             trait_defs,
             trait_methods,
             impls,
+            kept_traits,
             poly_binds,
             package_roots,
             block_types: _,
@@ -1197,6 +1230,7 @@ impl Env {
         self.trait_defs.join(trait_defs);
         self.trait_methods.join(trait_methods);
         self.impls.join(impls);
+        self.kept_traits.join(kept_traits);
         self.poly_binds.join(poly_binds);
         self.package_roots.join(package_roots);
         self.ide.join(ide, &self.recorded);
@@ -2232,10 +2266,103 @@ impl Env {
     }
 
     /// The trait `id` as this view sees it: the declaration of the load
-    /// it is inside, else the definition of record.
+    /// it is inside, else the deleted declaration it names, else the
+    /// definition of record.
     pub fn trait_def(&self, id: TraitId) -> Option<Arc<TraitDef>> {
         let own = self.lexical.body.as_ref().and_then(|b| b.trait_def(id));
-        own.or_else(|| self.trait_defs.get(&id).cloned())
+        own.or_else(|| self.kept_trait(id).map(|k| k.def.clone()))
+            .or_else(|| self.trait_defs.get(&id).cloned())
+    }
+
+    /// The deleted declaration of the trait `id` this view names: the
+    /// one whose dispatchers its bindings at the trait's path are.
+    fn kept_trait(&self, id: TraitId) -> Option<&Arc<KeptTrait>> {
+        if self.kept_traits.len() == 0 {
+            return None;
+        }
+        let named = |k: &KeptTrait| {
+            k.def.methods.first().is_some_and(|m| {
+                let binds = self.lexical.binds.get(&k.def.path);
+                let own = binds.and_then(|b| b.get(m.name.as_str()));
+                own.is_some_and(|id| k.dispatchers.contains(id))
+            })
+        };
+        let mut kept = self.kept_traits.iter().map(|(_, k)| k);
+        kept.find(|k| k.def.id == id && named(k))
+    }
+
+    /// The declaration `def` is about to be deleted and function values
+    /// name `named` among its `dispatchers`: each of those holds what the
+    /// registry holds for it, until [`Self::release_dispatcher`].
+    pub fn keep_trait(
+        &mut self,
+        def: &Arc<TraitDef>,
+        dispatchers: &[BindId],
+        named: &[BindId],
+    ) {
+        let Some(first) = named.first() else { return };
+        let kept = match self.kept_traits.get(first) {
+            Some(k) => k.clone(),
+            None => {
+                let kept = KeptTrait {
+                    def: self.trait_of_record(def),
+                    dispatchers: SmallVec::from_slice(dispatchers),
+                    impls: RwLock::default(),
+                    named: RwLock::default(),
+                };
+                let sigs: LPooled<Vec<Type>> =
+                    kept.def.methods.iter().map(|m| Type::Fn(m.typ.clone())).collect();
+                kept.own(sigs.iter());
+                Arc::new(kept)
+            }
+        };
+        for id in named {
+            self.kept_traits.insert(*id, kept.clone());
+        }
+    }
+
+    /// The registry gave back the entry `im` of an impl of the
+    /// declaration `of`: where that declaration is kept, it keeps the
+    /// entry.
+    pub fn keep_impl(&self, of: &TraitDef, im: &Arc<ImplDef>) {
+        let mut kept = self.kept_traits.iter().map(|(_, k)| k);
+        if let Some(k) = kept.find(|k| k.def.same_definition(of)) {
+            let mut impls = k.impls.write();
+            if !impls.iter().any(|o| Arc::ptr_eq(o, im)) {
+                let params: LPooled<Vec<Type>> =
+                    im.params.iter().map(|tv| Type::TVar(tv.clone())).collect();
+                k.own(iter::once(&im.target).chain(params.iter()));
+                impls.push(im.clone())
+            }
+        }
+    }
+
+    /// The dispatcher `id` is gone, and no value names it: what it kept
+    /// of its declaration goes when the last of that declaration's does.
+    pub fn release_dispatcher(&mut self, id: BindId) {
+        self.trait_methods.remove(&id);
+        self.kept_traits.remove(&id);
+    }
+
+    /// The bindings a call through the dispatcher `id` can reach, which a
+    /// function value naming it keeps as it keeps what it captures: its
+    /// trait's defaults and the methods of the trait's impls.
+    pub fn dispatch_bindings(&self, id: BindId, f: &mut impl FnMut(BindId)) {
+        let Some(tm) = self.trait_methods.get(&id) else { return };
+        let kept = self.kept_traits.get(&id);
+        let record = kept.map(|k| &k.def).or_else(|| self.trait_defs.get(&tm.trait_id));
+        for m in record.iter().flat_map(|def| def.methods.iter()) {
+            m.default.into_iter().for_each(&mut *f)
+        }
+        let methods = |im: &Arc<ImplDef>, f: &mut dyn FnMut(BindId)| {
+            im.methods.into_iter().for_each(|(_, id)| f(*id))
+        };
+        if let Some(k) = kept {
+            k.impls.read().iter().for_each(|im| methods(im, f))
+        }
+        for im in self.impls.get(&tm.trait_id).iter().flat_map(|l| l.iter()) {
+            methods(im, f)
+        }
     }
 
     /// Register an implementation. One impl per (trait, target): an
@@ -2286,15 +2413,20 @@ impl Env {
         self.impls.insert(old.trait_id, list);
     }
 
-    pub fn unregister_impl(&mut self, im: &Arc<ImplDef>) {
-        let Some(list) = self.impls.get(&im.trait_id) else { return };
+    /// Take the entry `im` out of the registry: whether it was there.
+    pub fn unregister_impl(&mut self, im: &Arc<ImplDef>) -> bool {
+        let Some(old) = self.impls.get(&im.trait_id) else { return false };
         let list: Vec<Arc<ImplDef>> =
-            list.iter().filter(|o| !o.same_definition(im)).cloned().collect();
+            old.iter().filter(|o| !o.same_definition(im)).cloned().collect();
+        if list.len() == old.len() {
+            return false;
+        }
         if list.is_empty() {
             self.impls.remove(&im.trait_id);
         } else {
             self.impls.insert(im.trait_id, Arc::new(list));
         }
+        true
     }
 
     /// Whether the abstract type `id` has an implementation of `t`.
@@ -2423,12 +2555,21 @@ impl Env {
     /// [`Self::impl_hidden`]). Inside a load of a dynamic module's
     /// source the impls it writes come first, in place of the registered
     /// ones of their heads: its own entry, the interface's declaration it
-    /// fulfils, or the entry of the source that replaced it.
+    /// fulfils, or the entry of the source that replaced it. So do the
+    /// ones kept with a deleted declaration the view names.
     pub(crate) fn impls_all(&self, trait_id: TraitId) -> Option<Arc<Vec<Arc<ImplDef>>>> {
         let registered = self.impls.get(&trait_id);
-        let Some(body) = &self.lexical.body else { return registered.cloned() };
+        let kept = self.kept_trait(trait_id);
+        if self.lexical.body.is_none() && kept.is_none() {
+            return registered.cloned();
+        }
         let mut own: LPooled<Vec<Arc<ImplDef>>> = LPooled::take();
-        body.impls(trait_id, &mut own);
+        if let Some(body) = &self.lexical.body {
+            body.impls(trait_id, &mut own)
+        }
+        if let Some(k) = kept {
+            own.extend(k.impls.read().iter().cloned())
+        }
         if own.is_empty() {
             return registered.cloned();
         }
@@ -3405,6 +3546,7 @@ impl Env {
             trait_defs,
             trait_methods,
             impls,
+            kept_traits,
             poly_binds,
             // a package stays registered across its recheck
             package_roots: _,
@@ -3424,6 +3566,7 @@ impl Env {
             .collect();
         by_id.remove_many(binds.iter().copied());
         trait_methods.remove_many(binds.iter().copied());
+        kept_traits.remove_many(binds.iter().copied());
         poly_binds.remove_many(binds.iter().copied());
         byref_chain.remove_many(binds.iter().copied());
         abstract_reps.retain(|_, r| !under(&r.scope));

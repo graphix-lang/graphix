@@ -48,7 +48,7 @@ pub use fusion::FusionStats;
 pub use tval::{Tag, TagValue, TagView};
 
 use crate::{
-    env::{Env, Lexical},
+    env::{Env, Lexical, TraitDef},
     expr::{ExprId, ModPath},
     fusion::emit::{BodyCx, CompiledExpr},
     node::{
@@ -2528,9 +2528,26 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
         if self.control.lives().orphan_if_pinned(id) {
             self.env.unbind_name(id)
         } else {
-            self.env.trait_methods.remove(&id);
+            self.env.release_dispatcher(id);
             self.env.unbind_variable(id)
         }
+    }
+
+    /// The trait declaration `def` is about to be deleted: the
+    /// dispatchers a function value names keep its record and the impl
+    /// entries the registry gives back from here on. `splice` are the
+    /// dispatchers an interface declaration's splice into the body minted.
+    pub(crate) fn keep_trait(
+        &mut self,
+        def: &Arc<TraitDef>,
+        splice: impl Iterator<Item = BindId>,
+    ) {
+        let own = def.methods.iter().map(|m| m.dispatcher);
+        let dispatchers: SmallVec<[BindId; 4]> = own.chain(splice).collect();
+        let lives = self.control.lives();
+        let named: SmallVec<[BindId; 4]> =
+            dispatchers.iter().copied().filter(|id| lives.pinned(*id)).collect();
+        self.env.keep_trait(def, &dispatchers, &named)
     }
 
     /// Let go of what the references released since the last cycle kept:
@@ -2556,7 +2573,7 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
             self.cx.env.byref_chain.remove(&id);
             self.cx.env.by_id.remove(&id);
             self.cx.env.poly_binds.remove(&id);
-            self.cx.env.trait_methods.remove(&id);
+            self.cx.env.release_dispatcher(id);
             self.rt.clear_ref_path(&id);
             self.release_kept(id);
             self.rt.store_release(&id);

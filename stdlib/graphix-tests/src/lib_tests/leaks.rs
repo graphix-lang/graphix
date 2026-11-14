@@ -244,7 +244,7 @@ async fn failed_dynamic_module_compiles_leave_no_definitions() -> Result<()> {
 
 /// What the runtime and the env hold: a count that grows with what a
 /// session has run and deleted is a leak.
-async fn held(ctx: &TestCtx) -> Result<[usize; 14]> {
+async fn held(ctx: &TestCtx) -> Result<[usize; 15]> {
     let s = ctx.rt.env_stats().await?;
     let env = ctx.rt.get_env().await?;
     macro_rules! names {
@@ -261,6 +261,7 @@ async fn held(ctx: &TestCtx) -> Result<[usize; 14]> {
         env.trait_methods.len(),
         env.trait_defs.len(),
         names!(*env.impls),
+        env.kept_traits.len(),
         env.poly_binds.len(),
         names!(env.lexical.binds),
         names!(env.lexical.typedefs),
@@ -853,6 +854,287 @@ async fn a_dropped_root_module_is_declared_again() -> Result<()> {
     .await
 }
 
+/// `ROUNDS` times over: compile `code`, which writes a function to the
+/// root `saved`, drop it, and call `saved(3)` at a site compiled after the
+/// drop, the first to build the function's body since. Each call answers
+/// 30, and the session holds after the last round what it held after the
+/// fifth: what the dropped expression declared goes with the function.
+async fn escaped_and_called<const N: usize>(
+    mode: Mode,
+    files: [(&'static str, &'static str); N],
+    code: &'static str,
+) -> Result<()> {
+    const ROUNDS: usize = 30;
+    let files = files.map(|(path, text)| (path, VfsEntry::from(ArcStr::from(text))));
+    let (ctx, mut rx) =
+        fixture_runtime(files, crate::TEST_REGISTER, mode, |_| {}).await?;
+    let _saved =
+        ctx.rt.compile(literal!("let saved: fn(x: i64) -> i64 = never();")).await?;
+    let mut early = None;
+    for i in 0..5 + ROUNDS {
+        if i == 5 {
+            early = Some(held(&ctx).await?)
+        }
+        let made = match ctx.rt.compile(ArcStr::from(code)).await {
+            Ok(r) => r,
+            Err(e) => bail!("compile {i} failed: {e:?}"),
+        };
+        let eid = made.exprs[made.exprs.len() - 1].id;
+        await_update(&mut rx, eid, |v| *v == Value::I64(1)).await?;
+        let (landed, read) = compile_one(&ctx, "{ let f = saved; 7 }").await?;
+        await_update(&mut rx, landed, |v| *v == Value::I64(7)).await?;
+        drop((made, read));
+        let (late, call) = compile_one(&ctx, "saved(3)").await?;
+        await_update(&mut rx, late, |v| *v == Value::I64(30)).await?;
+        drop(call);
+    }
+    let late = held(&ctx).await?;
+    ctx.shutdown().await;
+    assert_eq!(early, Some(late), "{mode:?}: grew over {ROUNDS} escaped functions");
+    Ok(())
+}
+
+/// A function that left a dropped block dispatches through the trait and
+/// the impl the block declared, wherever it is first called.
+async fn a_function_escaping_a_dropped_block_dispatches_to_its_impl(
+    mode: Mode,
+) -> Result<()> {
+    escaped_and_called(
+        mode,
+        [],
+        "{ type C = Abstract<i64>; trait Sh { val sh: fn(self) -> i64 }; \
+         impl Sh for C { let sh = |c: C| c.0 * 10 }; \
+         saved <- |x: i64| Sh::sh(C(x)); 1 }",
+    )
+    .await
+}
+
+/// The same through a default, of an impl that writes its other method
+/// and of one that writes none, and through a generic function and a
+/// union.
+async fn a_function_escaping_a_dropped_block_dispatches_to_its_defaults(
+    mode: Mode,
+) -> Result<()> {
+    escaped_and_called(
+        mode,
+        [],
+        "{ type C = Abstract<i64>; type D = Abstract<i64>; \
+         trait Sh { val sh: fn(self) -> i64 = |s| 3; \
+                    val twice: fn(self) -> i64 = |s| sh(s) * 2 }; \
+         impl Sh for C { let sh = |c: C| c.0 * 2 }; impl Sh for D {}; \
+         let app = |v: Sh| Sh::twice(v); \
+         let u: [C, D] = D(0); \
+         saved <- |x: i64| { let g = |y: i64| app(C(y)) + Sh::twice(u); \
+                             g(x) + app(D(x)) + Sh::sh(u) + Sh::sh(D(x)) }; \
+         1 }",
+    )
+    .await
+}
+
+const SH_INTERFACE: &str = "trait Sh { val sh: fn(self) -> i64 }; type C; impl Sh for C; \
+                            val get: fn(x: i64) -> i64; val make: fn(x: i64) -> C";
+const SH_BODY: &str = "type C = Abstract<i64>; impl Sh for C { let sh = |c: C| c.0 * 10 }; \
+                       let get = |x: i64| Sh::sh(C(x)); let make = |x: i64| C(x)";
+
+/// The same for a function of a dropped module whose interface file
+/// declares the trait and the impl.
+async fn a_function_escaping_a_dropped_interface_module_dispatches_to_its_impl(
+    mode: Mode,
+) -> Result<()> {
+    escaped_and_called(
+        mode,
+        [("/m.gxi", SH_INTERFACE), ("/m.gx", SH_BODY)],
+        "{ mod m; saved <- m::get; 1 }",
+    )
+    .await
+}
+
+/// The same for a function made outside the module that calls the
+/// interface's trait.
+async fn a_function_over_a_dropped_interface_modules_trait_dispatches_to_its_impl(
+    mode: Mode,
+) -> Result<()> {
+    escaped_and_called(
+        mode,
+        [("/m.gxi", SH_INTERFACE), ("/m.gx", SH_BODY)],
+        "{ mod m; saved <- |x: i64| m::Sh::sh(m::make(x)); 1 }",
+    )
+    .await
+}
+
+/// The same for a function of a dropped dynamic module, whose view
+/// carries its load.
+async fn a_function_escaping_a_dropped_dynamic_module_dispatches_to_its_impl(
+    mode: Mode,
+) -> Result<()> {
+    escaped_and_called(
+        mode,
+        [],
+        r#"{ let status = mod m dynamic {
+               sandbox whitelist [core];
+               sig { trait Sh { val sh: fn(self) -> i64 }; type C; impl Sh for C; val get: fn(x: i64) -> i64 };
+               source "type C = Abstract<i64>; impl Sh for C { let sh = |c: C| c.0 * 10 }; let get = |x: i64| Sh::sh(C(x))"
+           };
+           saved <- m::get;
+           select status { error as e => never(dbg(e)), null as _ => 1 } }"#,
+    )
+    .await
+}
+
+/// The same for a function made outside the dynamic module.
+async fn a_function_over_a_dropped_dynamic_modules_trait_dispatches_to_its_impl(
+    mode: Mode,
+) -> Result<()> {
+    escaped_and_called(
+        mode,
+        [],
+        r#"{ let status = mod m dynamic {
+               sandbox whitelist [core];
+               sig { trait Sh { val sh: fn(self) -> i64 }; type C; impl Sh for C; val make: fn(x: i64) -> C };
+               source "type C = Abstract<i64>; impl Sh for C { let sh = |c: C| c.0 * 10 }; let make = |x: i64| C(x)"
+           };
+           saved <- |x: i64| m::Sh::sh(m::make(x));
+           select status { error as e => never(dbg(e)), null as _ => 1 } }"#,
+    )
+    .await
+}
+
+/// The same for a function made in a dynamic module's load where the
+/// interface of a module that load declares declares the trait and the
+/// impl.
+async fn a_function_escaping_a_dropped_load_around_an_interface_module_dispatches(
+    mode: Mode,
+) -> Result<()> {
+    escaped_and_called(
+        mode,
+        [],
+        r#"{ let status = mod d dynamic {
+               sandbox unrestricted;
+               sig { val make: fn(x: i64) -> i64 };
+               source "let r = mod inner dynamic { sandbox unrestricted; sig { trait Sh { val sh: fn(self) -> i64 }; type C; impl Sh for C; val mk: fn(x: i64) -> C }; source \"type C = Abstract<i64>; impl Sh for C { let sh = |c: C| c.0 * 10 }; let mk = |x: i64| C(x)\" }; let make = |x: i64| inner::Sh::sh(inner::mk(x))"
+           };
+           saved <- d::make;
+           select status { error as e => never(dbg(e)), null as _ => 1 } }"#,
+    )
+    .await
+}
+
+/// A module at the root whose interface declares `Sh`, a type and its
+/// impl, `sh` its value times `k`; `name` is `(x)`'s `sh` through the
+/// module, made outside it.
+fn root_module_and_function(name: &str, k: i64) -> String {
+    format!(
+        r#"mod m dynamic {{
+               sandbox whitelist [core];
+               sig {{ trait Sh {{ val sh: fn(self) -> i64 }}; type C; impl Sh for C; val make: fn(x: i64) -> C }};
+               source "type C = Abstract<i64>; impl Sh for C {{ let sh = |c: C| c.0 * {k} }}; let make = |x: i64| C(x)"
+           }};
+           {name} <- |x: i64| m::Sh::sh(m::make(x));
+           1"#
+    )
+}
+
+/// The root functions `names` replaced by the identity, once that has
+/// landed and the functions they held are collected.
+async fn released(ctx: &TestCtx, rx: &mut Events, names: &[&str]) -> Result<()> {
+    let writes: String = names.iter().map(|n| format!("{n} <- |x: i64| x; ")).collect();
+    let calls: String = names.iter().map(|n| format!("{n}(3) + ")).collect();
+    let written = ctx.rt.compile(ArcStr::from(format!("{{ {writes}1 }}"))).await?;
+    let want = Value::I64(3 * names.len() as i64);
+    for _ in 0..3 {
+        let (id, call) = compile_one(ctx, format!("{calls}0")).await?;
+        await_update(rx, id, |v| *v == want).await?;
+        drop(call)
+    }
+    drop(written);
+    Ok(())
+}
+
+/// A function that outlives its trait's declaration keeps dispatching
+/// through it once the trait and the impl are declared again at the same
+/// path: each function calls the impl it was made under, whichever of the
+/// two declarations stands.
+async fn a_function_escaping_a_dropped_trait_dispatches_past_its_redeclaration(
+    mode: Mode,
+) -> Result<()> {
+    let (ctx, mut rx) = fixture_runtime([], crate::TEST_REGISTER, mode, |_| {}).await?;
+    let _roots = ctx
+        .rt
+        .compile(literal!(
+            "let old: fn(x: i64) -> i64 = never(); let new: fn(x: i64) -> i64 = never();"
+        ))
+        .await?;
+    let is = |n: i64| move |v: &Value| *v == Value::I64(n);
+    let before = held(&ctx).await?;
+    let mut made = Vec::new();
+    for (name, k) in [("old", 10), ("new", 20)] {
+        // the first declaration is gone before the second is made
+        made.clear();
+        let res = ctx.rt.compile(ArcStr::from(root_module_and_function(name, k))).await?;
+        await_update(&mut rx, res.exprs[res.exprs.len() - 1].id, is(1)).await?;
+        made.push(res);
+        let (id, call) = compile_one(&ctx, format!("{name}(3)")).await?;
+        await_update(&mut rx, id, is(3 * k)).await?;
+        drop(call)
+    }
+    let (id, call) = compile_one(&ctx, "(old(3), new(3))").await?;
+    await_update(&mut rx, id, is_pair(30, 60)).await?;
+    drop((call, made));
+    let (id, call) = compile_one(&ctx, "(old(4), new(4))").await?;
+    await_update(&mut rx, id, is_pair(40, 80)).await?;
+    drop(call);
+    released(&ctx, &mut rx, &["old", "new"]).await?;
+    let after = held(&ctx).await?;
+    ctx.shutdown().await;
+    assert_eq!(
+        before[5..9],
+        after[5..9],
+        "{mode:?}: dispatchers, records, impls or kept"
+    );
+    Ok(())
+}
+
+/// A function made in a later input than the trait and the impl it calls
+/// dispatches through them once their input is dropped.
+async fn a_function_outliving_another_inputs_trait_dispatches_to_its_impl(
+    mode: Mode,
+) -> Result<()> {
+    let (ctx, mut rx) = fixture_runtime([], crate::TEST_REGISTER, mode, |_| {}).await?;
+    let _saved =
+        ctx.rt.compile(literal!("let saved: fn(x: i64) -> i64 = never();")).await?;
+    let before = held(&ctx).await?;
+    let declared = ctx
+        .rt
+        .compile(literal!(
+            "type C = Abstract<i64>; \
+             trait Sh { val sh: fn(self) -> i64; val twice: fn(self) -> i64 = |s| sh(s) * 2 }; \
+             impl Sh for C { let sh = |c: C| c.0 * 5 }"
+        ))
+        .await?;
+    let is = |n: i64| move |v: &Value| *v == Value::I64(n);
+    let (made, kept) =
+        compile_one(&ctx, "{ saved <- |x: i64| Sh::twice(C(x)); 1 }").await?;
+    await_update(&mut rx, made, is(1)).await?;
+    let (live, call) = compile_one(&ctx, "saved(3)").await?;
+    await_update(&mut rx, live, is(30)).await?;
+    drop((declared, call));
+    let (late, call) = compile_one(&ctx, "saved(3)").await?;
+    await_update(&mut rx, late, is(30)).await?;
+    drop((kept, call));
+    let (later, call) = compile_one(&ctx, "saved(4)").await?;
+    await_update(&mut rx, later, is(40)).await?;
+    drop(call);
+    released(&ctx, &mut rx, &["saved"]).await?;
+    let after = held(&ctx).await?;
+    ctx.shutdown().await;
+    assert_eq!(
+        before[5..9],
+        after[5..9],
+        "{mode:?}: dispatchers, records, impls or kept"
+    );
+    Ok(())
+}
+
 modes!(
     a_function_saved_across_reloads_keeps_nothing_once_dropped,
     a_dispatching_function_saved_across_reloads_keeps_nothing_once_dropped,
@@ -861,4 +1143,13 @@ modes!(
     a_function_escaping_deleted_interface_modules_keeps_nothing_once_dropped,
     both_sides_of_deleted_interface_modules_keep_nothing_once_dropped,
     a_held_function_outlives_a_collected_reader_of_its_val,
+    a_function_escaping_a_dropped_block_dispatches_to_its_impl,
+    a_function_escaping_a_dropped_block_dispatches_to_its_defaults,
+    a_function_escaping_a_dropped_interface_module_dispatches_to_its_impl,
+    a_function_over_a_dropped_interface_modules_trait_dispatches_to_its_impl,
+    a_function_escaping_a_dropped_dynamic_module_dispatches_to_its_impl,
+    a_function_over_a_dropped_dynamic_modules_trait_dispatches_to_its_impl,
+    a_function_escaping_a_dropped_load_around_an_interface_module_dispatches,
+    a_function_escaping_a_dropped_trait_dispatches_past_its_redeclaration,
+    a_function_outliving_another_inputs_trait_dispatches_to_its_impl,
 );

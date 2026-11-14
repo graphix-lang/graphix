@@ -779,11 +779,12 @@ impl<R: Rt> Update<R> for Trait<R> {
     }
 
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
+        ctx.keep_trait(&self.def, std::iter::empty());
         self.defaults.delete(ctx);
         for m in self.def.methods.iter() {
             ctx.delete_dispatcher(m.dispatcher)
         }
-        // CR claude for claude: [bug/low] A function that outlives the
+        // XCR claude for claude: [bug/low] A function that outlives the
         // declaration of a trait it dispatches binds at no new call site. This
         // delete gives the trait's record back and `Impl::give_back` the impl's
         // entry, and `Module::delete` does both for an interface's
@@ -819,6 +820,28 @@ impl<R: Rt> Update<R> for Trait<R> {
         // lang::modules::a_function_saved_across_a_reload_around_an_interface_module_dispatches_to_its_own);
         // Module::delete gives the load nothing, so the fix for this one is the
         // same hand-over at a delete that no unregister came before.
+        // 2026-11-14 claude: Fixed: a trait declaration deleted while a function value names one of its
+        // dispatchers is kept by those dispatchers (Env::kept_traits, KeptTrait: the record of record with
+        // its defaults, the impl entries the registry gives back from then on, and the typedefs their
+        // signatures and heads name), opened by ExecCtx::keep_trait at Trait::delete and at Module::delete
+        // for an interface's (with the dispatchers its splice into the body minted), released per dispatcher
+        // at ExecCtx::delete_dispatcher or with the last value (Env::release_dispatcher). A view reads it
+        // where its binding at the trait's path is one of the declaration's dispatchers (Env::kept_trait,
+        // under Env::trait_def and impls_all), so a redeclaration at the same path is left alone. A function
+        // that names a dispatcher pins the trait's defaults and every registered impl's methods
+        // (Env::dispatch_bindings at Lambda::update). The note's case (a load around an interface module,
+        // dropped) is closed the same way, with no hand-over to the load. Pins, lib_tests::leaks, four modes
+        // each: a_function_escaping_a_dropped_block_dispatches_to_its_impl, .._to_its_defaults,
+        // a_function_escaping_a_dropped_interface_module_dispatches_to_its_impl,
+        // a_function_over_a_dropped_interface_modules_trait_dispatches_to_its_impl,
+        // a_function_over_a_dropped_dynamic_modules_trait_dispatches_to_its_impl,
+        // a_function_escaping_a_dropped_load_around_an_interface_module_dispatches,
+        // a_function_escaping_a_dropped_trait_dispatches_past_its_redeclaration,
+        // a_function_outliving_another_inputs_trait_dispatches_to_its_impl: 32 runs fail with the view's
+        // lookup off, 28 with the pins off, 32 with keep_impl off, 4 with the typedefs unowned, 4 without
+        // the splice's dispatchers, 51 leaks runs with the release off, and the redeclaration pin with the
+        // view test always true. Not closed: an impl dropped while its trait's declaration stands
+        // (escaped-fn-dropped-impl-01).
         ctx.env.undeftrait(&self.def);
     }
 
@@ -1270,16 +1293,44 @@ impl<R: Rt> Impl<R> {
                     && reads_binding(&b.value))))
     }
 
+    // CR claude for claude: [bug/low] An impl entry given back while its trait's
+    // declaration still stands is kept for no one. `Env::keep_impl` keeps an entry
+    // only in the `KeptTrait` of a declaration that is being deleted or is gone
+    // (escaped-fn-dropped-trait-01), so a function that outlives the impl alone
+    // binds at no new call site, and still does not once the trait is dropped
+    // too. Only an embedder reaches it: over a root `let saved: fn(x: i64) -> i64
+    // = never()` and a root `trait Sh { val sh: fn(self) -> i64 }`, compile `{
+    // type C = Abstract<i64>; impl Sh for C { let sh = |c: C| c.0 * 10 }; saved
+    // <- |x: i64| Sh::sh(C(x)); 1 }`, drop it, then compile `saved(3)`: it logs
+    // "binding the callee failed: .. no implementation of Sh for C" and is
+    // bottom (30 while the block lives), before escaped-fn-dropped-trait-01's fix
+    // and after it alike. The function already pins the impl's method bindings
+    // (`Env::dispatch_bindings`), so only the entry is missing. To fix: an entry
+    // whose own method bindings a value names is kept under those bindings and
+    // goes with the last of them (as `Env::release_dispatcher` lets a
+    // dispatcher's share go), and a view reads it, ahead of a registered entry of
+    // its head, where it names one of those bindings at the entry's scope; an
+    // entry that writes no method needs another holder. Never keep it for every
+    // view of the standing trait: an impl of the same head declared again must
+    // serve the functions made under it. probe: `probe_impl_dropped_first` in
+    // ~/ptmp/cr29/scratch/r24/24e/escaped-fn-dropped-trait-01/probes.rs
+    // (escaped-fn-dropped-impl-01)
     /// Give back to the registry what this implementation registered:
     /// its own entry, or the declaration it narrowed. Another
     /// implementation's entry is not identified with this one, so a
     /// reload that unregistered this body and registered a new one
-    /// finds nothing to give back.
+    /// finds nothing to give back. A trait declaration kept for a
+    /// function value keeps the entry given back.
     fn give_back(&self, ctx: &mut ExecCtx<'_, R>) {
         match &self.fulfils {
-            None => ctx.env.unregister_impl(&self.def),
+            None => {
+                if ctx.env.unregister_impl(&self.def) {
+                    ctx.env.keep_impl(&self.trait_def, &self.def)
+                }
+            }
             Some(Fulfils { entry, narrowed: Some(declared) }) => {
-                ctx.env.replace_impl(entry, declared.clone())
+                ctx.env.replace_impl(entry, declared.clone());
+                ctx.env.keep_impl(&self.trait_def, entry)
             }
             Some(Fulfils { narrowed: None, .. }) => (),
         }

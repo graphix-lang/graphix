@@ -360,7 +360,11 @@ per scope (lexical, like `typedefs`); `trait_defs` (by id),
 `trait_methods` (dispatcher `BindId` → `(trait, method)`) and `impls`
 (per trait, a list of `ImplDef`) are GLOBAL like `names`. The first
 registration is the definition of record; a re-declaration adds its
-compiled default bodies through `set_trait_defaults`. The trait's own
+compiled default bodies through `set_trait_defaults`. A declaration
+deleted while a function value names one of its dispatchers is kept for
+that function, record and impl entries (`Env::kept_traits`;
+`design/module_system.md`, "A function keeps the trait it dispatches
+through"). The trait's own
 scope `<mod>::T` is entered in `env.modules` and its dispatcher
 bindings live there — which is all it takes for `T::m` paths and `use
 T::m` to ride the import engine. Default bodies compile as typed

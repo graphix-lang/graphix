@@ -397,10 +397,7 @@ dispatchers and impl methods from the load's compile
 (`LoadedBody::declare`), and a reload that fails gives nothing
 (`LoadedBody::revive`). The import tables at scopes that cross a body
 go with their input ("A body's table goes with its input", below); the
-one at the module's own path stays (CR `root-module-table-01`). A
-function that outlives a dropped declaration, a static one or one in a
-load an embedder drops, binds at no new call site (CR
-`escaped-fn-dropped-trait-01`). Pins:
+one at the module's own path stays (CR `root-module-table-01`). Pins:
 `lib_tests::leaks::a_dropped_module_takes_its_declared_core_impl`,
 `a_dropped_module_takes_its_declared_trait_and_impl`,
 `a_dropped_interface_module_takes_what_its_interface_declared`,
@@ -412,6 +409,47 @@ a_reload_around_an_interface_module_declares_its_impl_again`,
 `a_reload_around_a_declared_core_impl_declares_it_again`,
 `a_function_saved_across_a_reload_around_an_interface_module_dispatches_to_its_own`,
 `a_failed_reload_around_an_interface_module_leaves_its_interface_registered`.
+
+**A function keeps the trait it dispatches through.** A function value
+may outlive the declaration of a trait its body calls: an embedder drops
+the expression that declared it and keeps the function in a root
+binding. The function builds its body in its definition's view whenever
+it is next called, so what that view names must still mean what it did.
+The bindings are kept as captures are: a function that names a
+dispatcher pins the trait's defaults and the method bindings of every
+impl registered for the trait when the function is made
+(`Env::dispatch_bindings`, at `Lambda::update`, beside a load's
+`LoadedBody::dispatch_bindings`). The record and the entries are kept by
+the dispatchers (`Env::kept_traits`, a `KeptTrait` per deleted
+declaration, under each of its dispatchers a value names):
+`ExecCtx::keep_trait` opens one before a declaration is deleted, a
+`trait` statement's at `Trait::delete` and an interface's at
+`Module::delete`, with the record of record and its defaults; every impl
+entry the registry gives back from then on goes to its trait's
+(`Env::keep_impl`, from `Impl::give_back` and `SigDecls::give_back`); and
+it owns the typedefs those signatures and heads name, which a resolution
+cell holds only weakly. A dispatcher deleted while no value names it
+releases its share at once, one orphaned releases it when the last value
+goes (`Env::release_dispatcher`), and the `KeptTrait` goes with the last
+share. A view reads a kept declaration only where it names it: its
+binding at the trait's path is one of the declaration's dispatchers,
+the interface's or the ones the splice into the module's body minted
+(`Env::kept_trait`). There `Env::trait_def` gives the kept record and
+`impls_of` and `find_impl` the kept entries ahead of the registered ones
+of their heads, after a load's own. So a trait and an impl declared again
+at the same path serve the functions made under them and leave the
+functions of the dropped ones alone. An impl entry given back while its
+trait's declaration still stands is not kept (CR
+`escaped-fn-dropped-impl-01`). Pins: `lib_tests::leaks::
+a_function_escaping_a_dropped_block_dispatches_to_its_impl`,
+`.._to_its_defaults`,
+`a_function_escaping_a_dropped_interface_module_dispatches_to_its_impl`,
+`a_function_over_a_dropped_interface_modules_trait_dispatches_to_its_impl`,
+`a_function_escaping_a_dropped_dynamic_module_dispatches_to_its_impl`,
+`a_function_over_a_dropped_dynamic_modules_trait_dispatches_to_its_impl`,
+`a_function_escaping_a_dropped_load_around_an_interface_module_dispatches`,
+`a_function_escaping_a_dropped_trait_dispatches_past_its_redeclaration`
+and `a_function_outliving_another_inputs_trait_dispatches_to_its_impl`.
 
 ### A `val`'s type variables
 
