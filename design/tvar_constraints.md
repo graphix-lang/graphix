@@ -847,10 +847,18 @@ Number |x: [['a, null], Array<i64>]|` takes that value as its alias
 spelling `[Opt<'a>, Array<i64>]` does; `[N, Array<i64>]` over `type N =
 [i64, null]` and `[Result<i64, `E>, null]` into `['a, Error<`E>]` alike.
 A member none of whose parts a constructor member takes goes to the open
-member as it stands, under its name. So the variable takes the narrowest
-type that holds the argument, however the argument's type is spelled, as
-it does from a union of primitives alone: after `v: [Array<i64>, i64,
-null]` into `x: ['a, null]`, a later `y: 'a` widens it for a wider
+member as it stands, under its name. So a `Result<'a, 'e>` parameter
+takes a `[Result<i64, `A>, null]`, `'a` the `[i64, null]`. The members
+and parts are met in the value's own order, a named union's parts at its
+name's place, and where two of them could go to one constructor member
+that holds a variable the first decides it and the other goes to the open
+member: `['a, Array<'b>] ⊇ [Array<i64>, Array<string>]` gives `'b` the
+`i64`, and there the value's spelling and its typedefs' names still
+decide (CR value-members-one-cell-order-01). Elsewhere the variable takes
+the narrowest type that holds the argument, however the argument's type
+is spelled, as it does from a union of primitives alone: after `v:
+[Array<i64>, i64, null]` into `x: ['a, null]`, a later `y: 'a` widens it
+for a wider
 argument (`[Array<i64>, i64, null]`) and is the mismatch for one neither
 wider nor narrower (`null`, `[i64, null]`), and under an invariant
 constructor (`&mut Opt<'a>` over `Opt<Opt<i64>>`, as over `[i64, null]`)
@@ -858,7 +866,8 @@ the variable is `i64` unless an earlier parameter decided it wider (pins
 `lang::types::covered_primitive_stays_out_of_the_open_member`,
 `covered_primitive_leaves_a_bounded_open_member_its_numbers`,
 `covered_part_of_a_named_union_stays_out_of_the_open_member`, their
-`_arm_refused` twins, `uncovered_named_union_goes_to_the_open_member_whole`,
+`_arm_refused` twins, `result_beside_a_null_goes_into_a_result_parameter`,
+`uncovered_named_union_goes_to_the_open_member_whole`,
 `open_member_beside_a_covered_primitive_widens_to_a_wider_argument`,
 `open_member_beside_a_covered_primitive_takes_no_argument_apart_refused`,
 `alias_over_a_variable_under_a_writable_reference_takes_no_member_it_adds_refused`,

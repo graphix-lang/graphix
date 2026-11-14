@@ -4186,6 +4186,19 @@ run!(
     refused("pattern `A will never match [i64, `B]");
     FuseExpect::None
 );
+// A `Result<'a, 'e>` parameter takes a Result beside a null as it takes
+// the two written out: the Result's error goes to the error member, and
+// what is left of it to 'a with the null.
+run!(
+    result_beside_a_null_goes_into_a_result_parameter,
+    r#"{
+  let f = |x: Result<'a, 'e>| -> 'a x$;
+  let show = |v: [Result<i64, `A>, null]| select f(v) { i64 as i => i, null as _ => 0 };
+  let twin = |v: [i64, Error<`A>, null]| select f(v) { i64 as i => i, null as _ => 0 };
+  (show(3), show(null), twin(3), twin(null))
+}"#,
+    prints("[i64:3, i64:0, i64:3, i64:0]")
+);
 // The open member is then the narrowest type holding the argument, as after
 // a union of primitives alone: a later argument wider than it widens it,
 // and one neither wider nor narrower is the mismatch.

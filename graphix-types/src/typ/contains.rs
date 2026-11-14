@@ -5538,6 +5538,43 @@ impl Type {
         // reaches it
         let free: SmallVec<[bool; 8]> = s0.iter().map(is_unbound_tvar).collect();
         let mut residue: LPooled<Vec<Type>> = LPooled::take();
+        // CR claude for claude: [bug/medium] Two members of the value that one constructor
+        // member of the holder could take, where that member holds a variable, are met in
+        // the value's own order: the first decides the variable and the other goes to the
+        // open member. That order is the union's sort, which follows the names of typedefs
+        // and of declared variables, so a rename changes what a call infers and whether it
+        // checks. Over `let f = |x: ['a, Array<'b>]| -> 'b never()`: `let v: [Array<i64>,
+        // Array<string>, null] = null; let n: i64 = f(v)` checks and `let n: string` is
+        // refused, "string does not contain i64"; `type T0 = Array<string>; type T1 =
+        // Array<i64>; let v: [T0, T1] = never(); let n: i64 = f(v)` is refused, "i64 does
+        // not contain string", and checks with the two names swapped; `let g = |p: 'p, q:
+        // 'q| { let v: [Array<'p>, Array<'q>, null] = null; f(v) }; let n: i64 = g(1,
+        // "s")` checks and is refused with `|p: 'q, q: 'p|` (base-r24 and lane 24d alike
+        // for these three). Since union-prim-member-whole-01 the parts of a named union
+        // are met too, at the name's place: `type T0 = [Array<string>, f64]; type T1 =
+        // [Array<i64>, bool]; let v: [T0, T1] = never(); let n: i64 = f(v)` is refused and
+        // checks with the names swapped, and `[T0, Array<i64>]` is refused where its
+        // written-out twin `[Array<string>, f64, Array<i64>]` checks (base-r24 takes all
+        // three: a named union went whole to 'a and left 'b open). A written-out union
+        // merges what a named one keeps apart: over `type T0 = [null, `B(string)]`, `[T0,
+        // `B(i64)]` into `['a, `B('b)]` gives 'b string and its twin `[i64, string]`. Where
+        // it shows most: over `let f = |x: ['a, Error<'e>]| x?` a value of two error tags
+        // gives 'e the first and leaves the other error in 'a, so `v: [i64, string,
+        // Error<`A>, Error<`B>]` under `{ catch(e) e ~ select e.0.error { `A => -1, `B =>
+        // -2 }; f(v) }` is refused, "unreachable arm" (base-r24 alike), and `v:
+        // [Result<i64, `A>, Result<string, `B>]`, which base-r24 takes with both arms
+        // (both Results whole in 'a, 'e open), is refused the same way since
+        // union-prim-member-whole-01; the handler with the `A arm alone passes the check
+        // and fails the build in both (qop-open-member-errors-01). Every one of these
+        // typings holds the value, and a body cannot test for the constructor member
+        // among 'a, so nothing wrong runs. What would fix it: the constructor member
+        // takes together every member and part of the value it admits as the walk begins
+        // (`Error<'e> ⊇ [Error<`A>, Error<`B>]` giving 'e both tags), or the call is
+        // refused; a refusal has no annotation to name at the call, since the argument's
+        // type is decided. probes: ~/ptmp/cr29/scratch/r24/24d/upm-rev/
+        // {order,errs,catch}.txt (a program a line; cmp.sh prints base-r24's and the
+        // lane's verdicts: order.out, errs.out, catch.out)
+        // (value-members-one-cell-order-01)
         for m in s1.iter() {
             // An rhs member equal to the whole lhs set is
             // covered reflexively; as residue it would close a
