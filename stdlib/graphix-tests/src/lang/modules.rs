@@ -146,6 +146,16 @@ run!(
 );
 
 run!(
+    a_dynamic_module_in_a_seq_is_refused_as_one_not_as_a_duplicate,
+    refused("a dynamic module is not allowed inside a seq"),
+    "/test.gx" => format!(
+        "let t = sys::time::timer(duration:10.ms, false); \
+         let result = {{ let a = {LET_BOUND_MODULE}; let s = seq t {{ let b = {LET_BOUND_MODULE}; b }}; (a, s) }}"
+    )
+    ; FuseExpect::None
+);
+
+run!(
     sibling_blocks_each_bind_a_dynamic_module_of_one_name,
     is(Value::String("ok".into())),
     "/test.gx" => format!(

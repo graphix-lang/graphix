@@ -128,6 +128,7 @@ pub(crate) fn declared_modules<'a>(e: &'a Expr, f: &mut impl FnMut(&'a Name)) {
         ExprKind::Block { .. }
         | ExprKind::Lambda(_)
         | ExprKind::Select(_)
+        | ExprKind::Seq(_)
         | ExprKind::Catch(_)
         | ExprKind::Trait(_)
         | ExprKind::Impl(_)
