@@ -1281,7 +1281,33 @@ An image carries each cell's level and each definition's depth.
   of an instance's result into the site's meets no open cell the check
   left (an omitted default's exempt cell keeps its bounds' cells; pins
   `typ::settle::test::a_terminal_settle_decides_a_cell_a_lower_bound_holds`,
-  `lang::types::undecided_payloads_met_in_a_select_build`). A cell still
+  `lang::types::undecided_payloads_met_in_a_select_build`). One cell
+  does not settle before the cell whose bound holds it: a cell that
+  stands above a type commits its conjuncts over it when it settles
+  (above), which is where the cells they hold take their part, so a cell
+  settled before that has none. A cell that would settle to ⊥ or to a
+  type holding an open cell (it is open, above no type, and a ⊥ was
+  produced into it or its conjuncts are no closed type) waits while a
+  cell whose conjuncts reach it stands above a type, or itself waits for
+  one that does (`settle::TerminalRun::waits`), and settles when the
+  last of those has. Under `'a3: ['a4, null], 'a4: Array<'a5>, 'a5:
+  string`, `f(never(), ["s"])` (`x5: 'a5`, `x3: 'a3`) puts `'a4` above
+  `Array<string>`; `'a5`, fed ⊥ alone, waits for `'a4`, whose settle
+  binds it `string`, where ⊥ first left `'a4`'s bound `Array<_>` and the
+  call refused, "unsatisfiable constraints". So does a variable no
+  argument holds: `'a0: ['a1, string], 'a1: ['a2, string]` given a
+  `duration` settles `'a1` and then `'a2` there. Every other cell keeps
+  the order: one with a type below it, and one whose conjuncts are
+  closed once the cells they reach have settled, settle before their
+  holder, which then holds them decided (`'a4: [Array<'a5>,
+  Array<['a5, null]>], 'a5: string` above `Array<string>` tells its
+  members apart only by a decided `'a5`; with a `never()` at `'a5` the
+  call is refused for the undecided members until the `never` is typed).
+  Pins `typ::settle::test::a_terminal_settle_takes_a_cell_above_a_type_before_its_bounds_cells`,
+  `lang::types::never_under_a_union_bound_*`,
+  `unheld_variable{,s}_under_*`,
+  `{closed_bound_under_a_union_bound,bound_closed_by_its_own_chain}_settles_before_its_holder`.
+  A cell still
   unbound after the whole tc0 phase binds ⊥ (`TVar::settle_or_bottom`):
   nothing ever produced into it, and what bounds it (a trait, a
   predicate) has no witness, so a trait dispatch on it is a standing

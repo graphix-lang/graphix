@@ -13340,3 +13340,170 @@ run!(
 }"#,
     prints("[i64:7, i64:7, i64:7, i64:7]")
 );
+
+// A call's last settle takes a variable that stands above an argument
+// before the variables its bound holds, so each link of a chain of bounds
+// takes its part of the argument: a `never()` at the chain's last
+// variable, or a variable no argument holds, is not settled to bottom
+// under it.
+run!(
+    never_under_a_union_bound_takes_the_holders_argument,
+    r#"{
+  type O<'t> = ['t, null];
+  let f = 'a3: O<'a4>, 'a4: Array<'a5>, 'a5: string |x5: 'a5, x3: 'a3| x3;
+  f(never(), ["s"])
+}"#,
+    prints("[\"s\"]");
+    FuseExpect::None
+);
+
+run!(
+    never_under_a_union_bound_takes_the_holders_argument_holder_first,
+    r#"{
+  let f = 'a3: ['a4, null], 'a4: Array<'a5>, 'a5: string |x3: 'a3, x5: 'a5| x3;
+  f(["s"], never())
+}"#,
+    prints("[\"s\"]");
+    FuseExpect::None
+);
+
+run!(
+    never_under_a_union_bound_takes_the_holders_argument_through_wrappers,
+    r#"{
+  type O<'t> = ['t, null];
+  let f = 'a2: O<'a3>, 'a3: O<'a4>, 'a4: Array<'a5>, 'a5: string |x5: 'a5, x2: 'a2| x2;
+  let g = |a, b| f(a, b);
+  let h = |a, b| g(a, b);
+  (h(never(), ["s"]), h("u", ["t"]))
+}"#,
+    prints("[[\"s\"], [\"t\"]]")
+);
+
+run!(
+    never_under_a_union_bound_refuses_what_the_chain_does_not_hold,
+    r#"{
+  type O<'t> = ['t, null];
+  let f = 'a3: O<'a4>, 'a4: Array<'a5>, 'a5: string |x5: 'a5, x3: 'a3| x3;
+  f(never(), [1])
+}"#,
+    refused("Array<'a5: unbound within string>> does not contain Array<i64>");
+    FuseExpect::None
+);
+
+run!(
+    undecided_under_a_union_bound_written_another_type_refused,
+    r#"{
+  type O<'t> = ['t, null];
+  let f = 'a3: O<'a4>, 'a4: Array<'a5>, 'a5: [string, i64] |x5: 'a5, x3: 'a3| (x3, x5);
+  let n = never();
+  let r = f(n, ["s"]);
+  n <- 1;
+  r
+}"#,
+    refused("unsatisfiable constraints on 'a4: Array<'a5: i64>");
+    FuseExpect::None
+);
+
+run!(
+    undecided_under_a_union_bound_written_the_holders_type,
+    r#"{
+  type O<'t> = ['t, null];
+  let f = 'a3: O<'a4>, 'a4: Array<'a5>, 'a5: [string, i64] |x5: 'a5, x3: 'a3| (x3, x5);
+  let n = never();
+  let r = f(n, ["s"]);
+  n <- "t";
+  r
+}"#,
+    prints("[[\"s\"], \"t\"]")
+);
+
+run!(
+    unheld_variables_under_a_union_bound_chain_take_the_argument,
+    r#"{
+  let f = 'a0: ['a1, string], 'a1: ['a2, string], 'a2: ['a3, string] |x0: 'a0| x0;
+  f(duration:1.s)
+}"#,
+    prints("duration:1.s")
+);
+
+run!(
+    unheld_variable_under_a_union_bound_holds_a_widened_argument,
+    r#"{
+  let f = 'a0: ['a1, string], 'a1: ['a2, string] |x0: 'a0, x1: 'a0| (x0, x1);
+  let w0: [string, duration] = duration:1.s;
+  (f("s", w0), f(w0, "s"))
+}"#,
+    prints("[[\"s\", duration:1.s], [duration:1.s, \"s\"]]")
+);
+
+run!(
+    unheld_variable_under_a_structured_bound_holds_a_widened_argument,
+    r#"{
+  let f = 'a0: ['a1, string], 'a1: [Array<'a2>, null] |x0: 'a0, x1: 'a0| (x0, x1);
+  let g = 'b0: ['b1, string], 'b1: Array<'b2> |x0: 'b0, x1: 'b0| (x0, x1);
+  let w0: [string, Array<i64>] = [1];
+  (f("s", w0), g("s", w0), f(w0, "s"))
+}"#,
+    prints("[[\"s\", [i64:1]], [\"s\", [i64:1]], [[i64:1], \"s\"]]")
+);
+
+run!(
+    never_under_a_union_bound_chain_through_a_struct,
+    r#"{
+  let f = 'a0: ['a1, string], 'a1: {v: 'a2}, 'a2: ['a3, null], 'a3: Array<'a4>
+    |x0: 'a0, x4: 'a4| x0;
+  f({v: [1]}, never()).v
+}"#,
+    prints("[i64:1]");
+    FuseExpect::None
+);
+
+// A variable no argument holds whose bound is a closed type settles to it
+// before the variable that holds it, which then tells the members of its
+// own bound apart; with a `never()` at it the members stay undecided, and
+// the call is refused until the `never` is given its type.
+run!(
+    closed_bound_under_a_union_bound_settles_before_its_holder,
+    r#"{
+  type O<'t> = ['t, null];
+  let f = 'a3: O<'a4>, 'a4: [Array<'a5>, Array<O<'a5>>], 'a5: string |x3: 'a3| x3;
+  f(["s"])
+}"#,
+    prints("[\"s\"]")
+);
+
+run!(
+    never_under_a_union_bound_of_two_arrays_refused,
+    r#"{
+  type O<'t> = ['t, null];
+  let f = 'a3: O<'a4>, 'a4: [Array<'a5>, Array<O<'a5>>], 'a5: string
+    |x3: 'a3, x5: 'a5| x3;
+  f(["s"], never())
+}"#,
+    refused("Array<string> could go to Array<O<'a5: unbound within string>> or Array<'a5");
+    FuseExpect::None
+);
+
+run!(
+    typed_never_under_a_union_bound_of_two_arrays,
+    r#"{
+  type O<'t> = ['t, null];
+  let f = 'a3: O<'a4>, 'a4: [Array<'a5>, Array<O<'a5>>], 'a5: string
+    |x3: 'a3, x5: 'a5| x3;
+  f(["s"], never<string>())
+}"#,
+    prints("[\"s\"]")
+);
+
+// A variable whose bound is closed once the variables it holds have
+// settled is no variable that waits: it settles before the one that holds
+// it, as a chain of bounds nothing was produced into always did.
+run!(
+    bound_closed_by_its_own_chain_settles_before_its_holder,
+    r#"{
+  let f = 'a0: ('a1, 'a1), 'a1: ['a2, bool], 'a2: [('a3, 'a3), bool],
+    'a3: [('a4, bool), bool], 'a4: i64 |x0: Array<'a0>, x1: 'a1| x1;
+  f([never()], ((1, true), true))
+}"#,
+    prints("[[i64:1, true], true]")
+);

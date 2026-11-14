@@ -908,6 +908,25 @@ impl FnType {
     /// quantifiers name. A position left to inference writes none,
     /// whatever the bounds its check gave it name.
     pub fn written_tvars(&self) -> LPooled<Vec<(ArcStr, TVar)>> {
+        // CR claude for claude: [perf/high] The walk below asks `self.quantifiers`, a
+        // list, whether it holds each cell's name, once for every cell the signature
+        // and its bounds name: a signature of q quantifiers costs q^2 name comparisons
+        // at each lambda::written_tvars (make_init, at the definition's bind). The
+        // check of deep_nesting.rs's "chainbounds" program at 30000 links retires 20.2G
+        // instructions on this lane (`perf stat -e instructions:u graphix --no-cache
+        // --check`), where base-r24 retires 7.1G; at 10000 links 4.6G. perf report: 41%
+        // under FnType::written_tvars, 30% self in `<ArcStr as SliceContains>::
+        // slice_contains` from close_through_bounds's `pass`. Six tests of
+        // graphix-shell's deep_nesting target fail on their instruction budgets for it
+        // (a_chain_of_bounds_checks_in_linear_time: "retired 14.0G instructions, over
+        // 14.0G", ..declared_last_link_first.., ..elaborates_in_linear_time and its
+        // typedef, union and function-type forms), with never-under-union-bound-01's
+        // change taken out too (the same build with its ordering switched off: 20.19G
+        // against 20.20G). A set of the quantifiers' names, made once per call, or the
+        // cells' own mark that a signature declares them, makes `pass` one lookup.
+        // Found fixing never-under-union-bound-01. probe:
+        // ~/ptmp/cr29/scratch/r24/24c/nuub/mkchain.py 30000
+        // (written-tvars-quantifier-scan-01)
         let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         let mut seen = TVarsSeen::take();
         self.for_each_type(&mut |t| t.collect_tvars_seen(&mut known, &mut seen));

@@ -234,7 +234,7 @@ impl TVar {
     ///
     /// [`CellFact::BottomFed`]: super::tvar::CellFact::BottomFed
     pub fn settle(&self, env: &Env) -> Result<()> {
-        // CR claude for claude: [bug/medium] A `never()` at a variable a bound holds is
+        // XCR claude for claude: [bug/medium] A `never()` at a variable a bound holds is
         // refused where the bound's holder took its argument as a lower bound: `type
         // O<'t> = ['t, null]; let f = 'a3: O<'a4>, 'a4: Array<'a5>, 'a5: string |x5:
         // 'a5, x3: 'a3| x5; f(never(), ["s"])` fails "unsatisfiable constraints on 'a4:
@@ -274,15 +274,35 @@ impl TVar {
         // annotated. These have no never(): the fix of this CR must run them (q3, q7, q9
         // newly refused; q1, q2, q5, q8, q10 refused on base-r24 too). probes:
         // ~/ptmp/cr29/scratch/r24/24c/bclsrev/q{1..10}.gx
-        if self.cell().read().facts.contains(CellFact::BottomFed)
-            && self
-                .cell_lower()
-                .iter()
-                .all(|l| l.with_deref(|l| matches!(l, Some(Type::Bottom))))
+        // 2026-11-13 claude: Fixed in FnType::settle_terminal (settle::TerminalRun): a
+        // cell that would settle to bottom or to a type holding an open cell (open,
+        // above no type, and bottom-fed or with no closed conjunct) waits while a cell
+        // whose conjuncts reach it stands above a type or waits for one that does, and
+        // settles after it; every other cell keeps the order (a cell with a type below
+        // it or closed conjuncts settles before its holder). The CR's probes and the
+        // review's q1..q10 run, fused = --no-fusion = PAR=force = NO_SUBST = a warm
+        // image. Pins that fail with TerminalRun::waits answering false:
+        // typ::settle::test::a_terminal_settle_takes_a_cell_above_a_type_before_its_bounds_cells;
+        // lang::types::never_under_a_union_bound_{takes_the_holders_argument,takes_the_holders_argument_holder_first,takes_the_holders_argument_through_wrappers,chain_through_a_struct,of_two_arrays_refused},
+        // unheld_variables_under_a_union_bound_chain_take_the_argument,
+        // unheld_variable_under_a_{union,structured}_bound_holds_a_widened_argument (32
+        // of 32 mode runs). Pins that hold the order of the other cells (they fail if
+        // every open cell above no type waits):
+        // closed_bound_under_a_union_bound_settles_before_its_holder,
+        // bound_closed_by_its_own_chain_settles_before_its_holder. 7200 generated
+        // programs before / after: 0 newly refused, 15 newly accepted, 0 check/build
+        // splits; census 0/0. probes: ~/ptmp/cr29/scratch/r24/24c/nuub/ (README)
+        if self.cell().read().facts.contains(CellFact::BottomFed) && !self.above_a_type()
         {
             return self.settle_bottom();
         }
         self.settle_witness(env)
+    }
+
+    /// Whether a lower bound of the cell is more than ⊥.
+    fn above_a_type(&self) -> bool {
+        let below = self.cell_lower();
+        below.iter().any(|l| !l.with_deref(|l| matches!(l, Some(Type::Bottom))))
     }
 
     /// Bind a constrained-unbound cell to its conjunction's [witness].
@@ -415,10 +435,7 @@ impl TVar {
     /// nothing of it was built ([`settle_input`]).
     fn settle_built(&self, env: &Env) -> Result<()> {
         let fed = self.cell().read().facts.contains(CellFact::BottomFed)
-            && self
-                .cell_lower()
-                .iter()
-                .all(|l| l.with_deref(|l| matches!(l, Some(Type::Bottom))));
+            && !self.above_a_type();
         if !fed {
             self.weld_lower();
             if let Ok(w) = self.witness(env)? {
@@ -546,7 +563,8 @@ fn settle_refs(
 impl FnType {
     /// Terminal settle of a call site's resolved signature in
     /// dependency order: a member settles only after every member its
-    /// binding or constraints reach. Ordering keys are (name, TVarId)
+    /// binding, constraints or lower bounds reach, but for one that waits
+    /// for it ([`TerminalRun::waits`]). Ordering keys are (name, TVarId)
     /// only — `cell_addr` is ASLR-dependent and used for identity alone.
     /// `exempt` cells, and every cell in `kept` (what the enclosing
     /// definitions' signatures reach now), are ordered but not settled.
@@ -609,7 +627,9 @@ impl FnType {
             index.insert(tv.cell_addr(), i);
         }
         let mut edges: LPooled<Vec<SmallVec<[usize; 4]>>> = LPooled::take();
-        for (_, tv) in nodes.iter() {
+        let mut holders: LPooled<Vec<SmallVec<[usize; 4]>>> = LPooled::take();
+        holders.resize(nodes.len(), SmallVec::new());
+        for (i, (_, tv)) in nodes.iter().enumerate() {
             let mut out: SmallVec<[usize; 4]> = SmallVec::new();
             let mut visited: LPooled<AHashSet<usize>> = LPooled::take();
             let (bound, cons, below) = {
@@ -617,40 +637,22 @@ impl FnType {
                 let cell = cell.read();
                 (cell.binding.clone(), cell.constraints.clone(), cell.lower.clone())
             };
-            for t in bound.iter().chain(cons.iter()).chain(below.iter()) {
+            for t in cons.iter() {
+                settle_refs(t, &index, &mut visited, &mut out);
+            }
+            if bound.is_none() {
+                for &j in out.iter() {
+                    if j != i && !holders[j].contains(&i) {
+                        holders[j].push(i)
+                    }
+                }
+            }
+            for t in bound.iter().chain(below.iter()) {
                 settle_refs(t, &index, &mut visited, &mut out);
             }
             out.sort_unstable();
             out.dedup();
             edges.push(out);
-        }
-        // a post-order over the dependency edges, on a stack of its own:
-        // the program sets how long a chain of bounds is
-        let mut seen: LPooled<Vec<bool>> = LPooled::take();
-        seen.resize(nodes.len(), false);
-        let mut order: LPooled<Vec<usize>> = LPooled::take();
-        let mut stack: LPooled<Vec<(usize, usize)>> = LPooled::take();
-        for root in 0..nodes.len() {
-            if seen[root] {
-                continue;
-            }
-            seen[root] = true;
-            stack.push((root, 0));
-            while let Some(&(i, k)) = stack.last() {
-                match edges[i].get(k) {
-                    Some(&j) => {
-                        stack.last_mut().expect("nonempty").1 += 1;
-                        if !seen[j] {
-                            seen[j] = true;
-                            stack.push((j, 0));
-                        }
-                    }
-                    None => {
-                        order.push(i);
-                        stack.pop();
-                    }
-                }
-            }
         }
         // an enclosing definition's signature is settled by each call,
         // what it reaches as it stands now; a quantifier of a function
@@ -666,20 +668,161 @@ impl FnType {
         // a `Concrete` or `Function` cell met only inside a conjunct is no
         // position of the signature: nothing reads it, so it is left as
         // it stands
-        for i in order.drain(..) {
-            let tv = &nodes[i].1;
+        let left = |tv: &TVar| {
             let addr = tv.cell_addr();
-            if exempt.contains(&addr)
+            exempt.contains(&addr)
                 || quantifiers.contains_key(&addr)
                 || kept.iter().any(|k| k.contains(&addr))
                 || (!positional.contains_key(&addr)
                     && (tv.requires_concrete() || tv.requires_function()))
-            {
-                continue;
+        };
+        let mut run = TerminalRun {
+            env,
+            nodes: &nodes,
+            edges: &edges,
+            holders: &holders,
+            left: &left,
+            turns: LPooled::take(),
+            feeds: LPooled::take(),
+        };
+        run.turns.resize(nodes.len(), Turn::Unmet);
+        run.feeds.resize(nodes.len(), Feeds::Unasked);
+        for i in 0..nodes.len() {
+            run.take(i)?
+        }
+        for i in 0..nodes.len() {
+            if run.turns[i] == Turn::Waiting {
+                run.settle(i)?
             }
-            tv.settle_or_bottom(env)?;
         }
         Ok(())
+    }
+}
+
+/// Where a cell stands in a terminal settle's run.
+#[derive(Clone, Copy, PartialEq)]
+enum Turn {
+    Unmet,
+    /// the cells it reaches are being taken
+    Met,
+    /// left open for a cell whose conjuncts reach it
+    /// ([`TerminalRun::waits`])
+    Waiting,
+    Settled,
+}
+
+/// Whether a cell's settle may put the cells its conjuncts hold above a
+/// type ([`TerminalRun::feeds`]).
+#[derive(Clone, Copy)]
+enum Feeds {
+    Unasked,
+    Asked,
+    No,
+    Yes,
+}
+
+/// A terminal settle's run over its cells, `nodes`: a cell settles after
+/// the cells it reaches, but for one that [waits](Self::waits).
+struct TerminalRun<'a> {
+    env: &'a Env,
+    nodes: &'a [(ArcStr, TVar)],
+    /// for each cell, the cells its binding, conjuncts and lower bounds
+    /// reach
+    edges: &'a [SmallVec<[usize; 4]>],
+    /// for each cell, the open cells whose conjuncts reach it
+    holders: &'a [SmallVec<[usize; 4]>],
+    /// the cells the site orders and does not settle
+    left: &'a dyn Fn(&TVar) -> bool,
+    turns: LPooled<Vec<Turn>>,
+    feeds: LPooled<Vec<Feeds>>,
+}
+
+impl TerminalRun<'_> {
+    fn take(&mut self, i: usize) -> Result<()> {
+        if self.turns[i] != Turn::Unmet {
+            return Ok(());
+        }
+        self.turns[i] = Turn::Met;
+        crate::stack::ensure_sufficient(|| {
+            let edges = self.edges;
+            for &j in edges[i].iter() {
+                self.take(j)?
+            }
+            if self.waits(i) {
+                self.turns[i] = Turn::Waiting;
+                return Ok(());
+            }
+            self.settle(i)
+        })
+    }
+
+    /// Settle cell `i`, then the cells that waited for it alone.
+    fn settle(&mut self, i: usize) -> Result<()> {
+        self.turns[i] = Turn::Settled;
+        let tv = &self.nodes[i].1;
+        if !(self.left)(tv) {
+            tv.settle_or_bottom(self.env)?
+        }
+        crate::stack::ensure_sufficient(|| {
+            let edges = self.edges;
+            for &j in edges[i].iter() {
+                if self.turns[j] == Turn::Waiting && !self.waits(j) {
+                    self.settle(j)?
+                }
+            }
+            Ok(())
+        })
+    }
+
+    /// Whether cell `i` settles after a cell whose conjuncts reach it. A
+    /// cell that stands above a type commits its conjuncts over it when it
+    /// settles ([`TVar::settle_witness`]), which puts the cells they hold
+    /// above their part of it, and a cell settled before that has no part.
+    /// So a cell that would settle to ⊥ or to a type holding an open cell
+    /// (it is open, above no type, and a ⊥ was produced into it or its
+    /// conjuncts are no closed type) waits for the cells that may
+    /// [feed](Self::feeds) it. Any other settles first, so its holder
+    /// holds it decided.
+    fn waits(&mut self, i: usize) -> bool {
+        let tv = &self.nodes[i].1;
+        if self.holders[i].is_empty() || tv.is_bound() || tv.above_a_type() {
+            return false;
+        }
+        if !tv.bottom_fed() {
+            let mut types = tv.cell_constraints();
+            types.retain(|c| !c.is_predicate() && !c.is_trait_ref(self.env));
+            if !types.is_empty() && !types.iter().any(|c| c.has_unbound()) {
+                return false;
+            }
+        }
+        let holders = self.holders;
+        holders[i].iter().any(|&h| self.feeds(h))
+    }
+
+    /// Whether cell `h`, not yet settled, may put the cells its conjuncts
+    /// hold above a type when it settles: it stands above one, or a cell
+    /// whose conjuncts reach it may put it above one.
+    fn feeds(&mut self, h: usize) -> bool {
+        if self.turns[h] == Turn::Settled {
+            return false;
+        }
+        match self.feeds[h] {
+            Feeds::Yes => true,
+            Feeds::No | Feeds::Asked => false,
+            Feeds::Unasked => {
+                self.feeds[h] = Feeds::Asked;
+                let tv = &self.nodes[h].1;
+                let yes = !tv.is_bound()
+                    && !(self.left)(tv)
+                    && (tv.above_a_type()
+                        || crate::stack::ensure_sufficient(|| {
+                            let holders = self.holders;
+                            holders[h].iter().any(|&g| self.feeds(g))
+                        }));
+                self.feeds[h] = if yes { Feeds::Yes } else { Feeds::No };
+                yes
+            }
+        }
     }
 }
 
@@ -1515,6 +1658,34 @@ mod test {
         ft.settle_terminal(&env, None, &AHashSet::default(), &[]).unwrap();
         assert!(matches!(a.binding(), Some(Type::Bottom)), "{a:?}");
         assert!(!p.binding().unwrap().has_unbound(), "{p:?}");
+    }
+
+    /// A call's terminal settle takes a cell that stands above a type
+    /// before the cells its bound holds, down a chain: each takes its part
+    /// of what the cell before it settled to.
+    #[test]
+    fn a_terminal_settle_takes_a_cell_above_a_type_before_its_bounds_cells() {
+        let _level = AtLevel::enter(Level::TOP);
+        let (env, t) = Env::typed_at_root(
+            &[],
+            "fn<'p: ['a, null], 'a: ['b, null]>(x: 'p, y: 'b) -> i64",
+        )
+        .unwrap();
+        let (_, i64_t) = Env::typed_at_root(&[], "i64").unwrap();
+        let Type::Fn(ft) = &t else { panic!("{t} is no function type") };
+        ft.alias_tvars(&mut LPooled::take());
+        let mut cells: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+        ft.collect_tvars_through_bounds(&mut cells);
+        for tv in cells.values() {
+            tv.set_level(Level::TOP)
+        }
+        cells["p"].add_lower(i64_t.clone());
+        cells["b"].mark_bottom_fed();
+        ft.settle_terminal(&env, None, &AHashSet::default(), &[]).unwrap();
+        for name in ["p", "a", "b"] {
+            let bound = cells[name].binding().unwrap();
+            assert!(strictly_identical(&bound, &i64_t), "'{name}: {bound}");
+        }
     }
 
     /// A run of settles takes a cell after the cells whose bounds reach

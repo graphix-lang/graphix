@@ -1379,6 +1379,18 @@ fn commit_conjuncts(
         // rhs` of the array's element to `[null, 'a]` before its elements are checked.
         // base-r23 does not return. probes: ~/ptmp/cr29/scratch/r23/23c/rev/{p5,p4}.gx
         // (refused), {q5,q4}.gx (the written twins)
+        // 2026-11-13 claude: Learned fixing never-under-union-bound-01 (lane 24c): a literal
+        // array met by a parameter over a variable that a bound's holder put above a union
+        // is refused the same way, with no wrapper: `let f = 'a1: ['a2, duration] |x0: 'a1,
+        // x2: Array<'a2>| x0; let w0: [null, string] = null; f(w0, ["s"])` fails "type
+        // mismatch Array<[null, string]> does not contain Array<string>" on base-r24 and on
+        // the lane (s2.gx); the array annotated `Array<[null, string]>` (s4.gx) and the
+        // union written in the parameter (s5.gx) print null. Since
+        // bound-chain-lower-settle-01 a chain's settle reaches it where base-r24 ran: `'a0:
+        // ['a1, bool], 'a1: ['a2, duration], 'a2: ['a3, null], 'a3: [i64, string] |x0: 'a0,
+        // x1: 'a1, x2: Array<'a2>|` given `(w0, "s", ["s"])` printed null on base-r24 and is
+        // refused on the lane (1 of 7200 generated programs, gen/w61-p0310.gx). probes:
+        // ~/ptmp/cr29/scratch/r24/24c/nuub/{s1,s2,s3,s4,s5}.gx, gen/w61-p0310.gx
         let held = match exact(c) {
             true => c.contains_int(flags, env, hist, t)?,
             false => commit_parts(tv, flags, env, hist, &mut Lazy::new(), c, t)?,
