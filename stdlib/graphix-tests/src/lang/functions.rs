@@ -6184,3 +6184,65 @@ run!(
     prints("[i64:2, i64:1]");
     FuseExpect::Jit
 );
+
+// A default omitted at a call is judged against the site's view of its label,
+// each cell of the default's own copy at its place in that view, so a union of
+// two of the function's variables holds the default's argument as it does the
+// site's.
+const A_DEFAULT_OVER_A_TYPEDEF_UNION: &str = r#"{
+    type P<'p, 'q> = [Array<'p>, Array<'q>];
+    let f = |#k: fn(q: P<'b, 'a>) -> i64 = |q| 7, y: 'a| k;
+    let r = f(1.5);
+    r([1.5])
+}"#;
+
+const A_DEFAULT_OVER_A_TYPEDEF_UNION_OF_TWO_DECIDED: &str = r#"{
+    type P<'p, 'q> = [Array<'p>, Array<'q>];
+    let f = |#k: fn(q: P<'b, 'a>) -> i64 = |q| 7, y: 'a, z: 'b| k;
+    let r = f(1.5, "s");
+    r([1.5])
+}"#;
+
+const A_DEFAULT_OVER_A_TYPEDEF_UNION_THROUGH_A_WRAPPER: &str = r#"{
+    type P<'p, 'q> = [Array<'p>, Array<'q>];
+    let f = |#k: fn(q: P<'b, 'a>) -> i64 = |q| 7, y: 'a, z: 'b| k;
+    let g = |t| f(t, "s");
+    let r = g(1.5);
+    r([1.5])
+}"#;
+
+const A_DEFAULT_OVER_A_TYPEDEF_UNION_WRAPPED_UNDECIDED: &str = r#"{
+    type P<'p, 'q> = [Array<'p>, Array<'q>];
+    let f = |#k: fn(q: P<'b, 'a>) -> i64 = |q| 7, y: 'a| k;
+    let g = |t| f(t);
+    let r = g(1.5);
+    r([1.5])
+}"#;
+
+run!(
+    a_default_over_a_typedef_union,
+    A_DEFAULT_OVER_A_TYPEDEF_UNION,
+    is(Value::I64(7));
+    FuseExpect::None
+);
+
+run!(
+    a_default_over_a_typedef_union_of_two_decided,
+    A_DEFAULT_OVER_A_TYPEDEF_UNION_OF_TWO_DECIDED,
+    is(Value::I64(7));
+    FuseExpect::None
+);
+
+run!(
+    a_default_over_a_typedef_union_through_a_wrapper,
+    A_DEFAULT_OVER_A_TYPEDEF_UNION_THROUGH_A_WRAPPER,
+    is(Value::I64(7));
+    FuseExpect::None
+);
+
+run!(
+    a_default_over_a_typedef_union_wrapped_undecided,
+    A_DEFAULT_OVER_A_TYPEDEF_UNION_WRAPPED_UNDECIDED,
+    is(Value::I64(7));
+    FuseExpect::None
+);

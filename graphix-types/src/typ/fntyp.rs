@@ -4374,7 +4374,6 @@ impl<'a> Places<'a> {
                 }
                 self.member = outer
             }
-            (Type::Set(_), _) | (_, Type::Set(_)) => (),
             (Type::Fn(f0), Type::Fn(f1)) => self.signatures(f0, f1),
             (Type::Ref(r0), Type::Ref(r1)) => {
                 if r0.same_definition(r1, self.env) && r0.params.len() == r1.params.len()
@@ -4384,6 +4383,17 @@ impl<'a> Places<'a> {
                     }
                 }
             }
+            (own, Type::Ref(_)) => {
+                if let Some((_, at)) = at.lookup_ref_probe(self.env) {
+                    self.types(own, &at)
+                }
+            }
+            (Type::Ref(_), at) => {
+                if let Some((_, own)) = own.lookup_ref_probe(self.env) {
+                    self.types(&own, at)
+                }
+            }
+            (Type::Set(_), _) | (_, Type::Set(_)) => (),
             (own, at) => {
                 any_part_pair(own, at, &mut |own, at| {
                     self.types(own, at);
