@@ -132,15 +132,11 @@ pub(super) struct ContainsHist {
     /// Per verdict of `probe_pairs` over an open var and a type that
     /// holds no cell, once the pair is probed again: the var's cell,
     /// while nothing it reaches is written. Such a verdict read only the
-    /// cells the var reaches, so it stands through a write to any other,
-    /// and a chain of open cells is probed once however many of its
-    /// links a call binds.
+    /// cells the var reaches and the heads of impls, whose cells no walk
+    /// writes ([`find_impl_with`] relates a copy), so it stands through a
+    /// write to any other, and a chain of open cells is probed once
+    /// however many of its links a call binds.
     probe_standing: Lazy<AHashMap<MemoKey, Standing>>,
-    /// The walk read the head of an impl with parameters
-    /// ([`find_impl_with`]): its copy took what the impl's cells hold,
-    /// none a var reaches, so from then on no verdict stands by
-    /// `probe_standing`.
-    impls_read: bool,
     probe_pins: Lazy<Vec<Type>>,
     /// Verdicts that rest on assumptions still in progress, held while
     /// those stand: one is dropped when an assumption it may rest on is
@@ -340,7 +336,6 @@ impl ContainsHist {
             expansions: Lazy::new(),
             probe_pairs: Lazy::new(),
             probe_standing: Lazy::new(),
-            impls_read: false,
             probe_pins: Lazy::new(),
             provisional: Lazy::new(),
             provisional_order: Lazy::new(),
@@ -418,20 +413,6 @@ impl ContainsHist {
 
     fn trial() -> Self {
         ContainsHist { trial: true, ..Self::ordered() }
-    }
-
-    /// [`find_impl`]: the impl of `tid` for `t` in a walk of its own,
-    /// whose reading an impl's cells marks this walk (`impls_read`).
-    fn find_impl_apart(
-        &mut self,
-        env: &Env,
-        tid: TraitId,
-        t: &Type,
-    ) -> Result<Option<Arc<ImplDef>>> {
-        let mut apart = Self::new();
-        let found = find_impl_with(env, tid, t, &mut apart);
-        self.impls_read |= apart.impls_read;
-        found
     }
 
     /// The walk goes on with cells held rigid (a function type's open
@@ -579,7 +560,7 @@ impl ContainsHist {
                 |hist: &mut Self, t: &Type| hist.closure(t, false) >= Closure::NoCell;
             let current = epoch == writes
                 || (no_cell(self, t0) && no_cell(self, t1))
-                || (!self.impls_read && stands(self));
+                || stands(self);
             if current {
                 return Some(r);
             }
@@ -612,8 +593,7 @@ impl ContainsHist {
             if again {
                 let standing = match (t0, t1) {
                     (Type::TVar(tv), t) | (t, Type::TVar(tv))
-                        if !self.impls_read
-                            && !tv.is_bound()
+                        if !tv.is_bound()
                             && self.closure(t, false) >= Closure::NoCell =>
                     {
                         Standing::of(tv)
@@ -1638,6 +1618,22 @@ fn holds_union(
     }
 }
 
+// CR claude for claude: [perf/medium] A call passing an array for every link of a
+// chain of bounds checks in time exponential in the chain's length. `let f = 'a0:
+// ['a1, null], .., 'a{d-1}: ['a{d}, null], 'a{d}: Array<i64> |x: ('a0, .., 'a{d})|
+// x; f(([1], .., [1]))` takes 1.79 / 4.88 / 17.2 / 66.5 / 264 G instructions at
+// 15 / 17 / 19 / 21 / 23 links (base-r24 debug, --no-cache --check; empty 0.75),
+// where the twin passing integers (`'a{d}: Number`, deep_nesting
+// chainboundsvalued) is linear and strings are too (1.12 / 1.49 at 1000 / 2000).
+// perf at 17 links: 75% under Type::pre_unify_seen -> commit_cell_bounds ->
+// commit_lower -> holds_union; likely each link's commit_lower walks the links
+// below once in its trial on copies and again in its commit, doubling per link.
+// With a trait on every link (`+ Tr`) it is quadratic instead: `impl Tr for
+// Array<i64>` 6.8 / 24.5 G at 500 / 1000, `impl<'e> Tr for Array<'e>` 16.3 / 61.8
+// / 244 G at 500 / 1000 / 2000; tuples `(i64, i64)` with no trait 4.8 / 16.3 G at
+// 1000 / 2000. probes: ~/ptmp/cr29/scratch/r24/24h/impls-read/arrnotrait{15,17,
+// 19}.gx, generators gen2.py / gen3.py there (`python3 gen2.py arrnotrait N`)
+// (chainbounds-array-valued-01)
 /// Commit `t ⊇ l` for each lower bound `l` of a cell bound to `t`, on
 /// copies first, so bounds a probe admits apart but no commit holds
 /// together (`(i64, string)` above `('x, 'x)`) refuse the bind and bind
@@ -5418,10 +5414,7 @@ impl Type {
             }
             Self::Primitive(p) if p.len() > 1 => {
                 for m in p.iter() {
-                    if hist
-                        .find_impl_apart(env, tid, &Self::Primitive(m.into()))?
-                        .is_none()
-                    {
+                    if env.find_impl(tid, &Self::Primitive(m.into()))?.is_none() {
                         return Ok(false);
                     }
                 }
@@ -5432,7 +5425,7 @@ impl Type {
                 // A constructor trait's reference is matched by name,
                 // never expanded.
                 None if env.trait_def(tid).is_some_and(|d| d.hole) => {
-                    Ok(hist.find_impl_apart(env, tid, t)?.is_some())
+                    Ok(env.find_impl(tid, t)?.is_some())
                 }
                 // A typedef met again inside its own question implements
                 // the trait if the rest of it does.
@@ -6927,6 +6920,62 @@ mod tests {
         assert!(!probe().0);
     }
 
+    // A trait question an impl with parameters answers reads a copy of
+    // the impl's head, whose cells no walk writes, so the verdict on a var
+    // stands through it, in the walk that asked it.
+    #[test]
+    fn a_verdict_stands_through_a_trait_an_impl_with_parameters_answers() {
+        const LINKS: usize = 40;
+        let mut env = Env::default();
+        let (root, pos) = (ModPath::root(), SourcePosition::default());
+        let show = env
+            .deftrait(
+                &root,
+                &literal!("Show"),
+                std::iter::empty(),
+                None,
+                pos,
+                Arc::new(Default::default()),
+            )
+            .unwrap();
+        let array = |t: Type| Type::Array(Arc::new(t));
+        let e = TVar::empty_generic(literal!("e"));
+        let im = ImplDef {
+            trait_id: show.id,
+            target: array(Type::TVar(e.clone())),
+            params: Arc::from_iter([e]),
+            scope: root,
+            methods: Default::default(),
+            declared: false,
+            pos,
+            ori: Arc::new(Default::default()),
+        };
+        env.register_impl(Arc::new(im)).unwrap();
+        let cells: Vec<TVar> = (0..=LINKS).map(|_| var("c")).collect();
+        for link in cells.windows(2) {
+            link[0].add_cell_constraint(array(Type::TVar(link[1].clone())));
+        }
+        let top = Type::TVar(cells[0].clone());
+        let arrays = (0..LINKS).fold(prim(Typ::I64), |t, _| array(t));
+        let lower = ContainsFlags::Lower | ContainsFlags::RigidCheck;
+        let probe = |hist: &mut ContainsHist| {
+            CONTAINS_STEPS.with(|n| n.set(0));
+            let held = top.contains_int(lower, &env, hist, &arrays).unwrap();
+            (held, CONTAINS_STEPS.with(|n| n.get()))
+        };
+        let mut hist = ContainsHist::new();
+        for _ in 0..2 {
+            let (held, steps) = probe(&mut hist);
+            assert!(held && steps > 1, "{steps} steps");
+            var("other").bind(prim(Typ::String));
+        }
+        let shown = array(prim(Typ::I64));
+        let empty = BitFlags::empty();
+        assert!(Type::trait_contains(show.id, empty, &env, &mut hist, &shown).unwrap());
+        var("other").bind(prim(Typ::String));
+        assert_eq!(probe(&mut hist), (true, 1));
+    }
+
     fn parsed(s: &str) -> Type {
         let t = crate::expr::parser::parse_type(s).unwrap();
         t.alias_tvars(&mut LPooled::take());
@@ -7502,7 +7551,7 @@ pub(super) fn find_impl_with(
         let head = if im.params.is_empty() {
             im.target.clone()
         } else {
-            // CR claude for claude: [test-gap/low] No test shows the hazard this mark
+            // XCR claude for claude: [test-gap/low] No test shows the hazard this mark
             // guards: with ContainsHist::impls_read never set, graphix-types' unit tests
             // and graphix-tests' lang::{traits, types, cast_trait, interfaces, quantified}
             // all pass. The one write to an impl's parameter cells found is the rigid
@@ -7511,7 +7560,24 @@ pub(super) fn find_impl_with(
             // of one walk would show the mark is needed; if no walk can, the mark goes.
             // A trial (on_copies) carries no mark back to the walk it is made in.
             // (impls-read-unpinned-01)
-            hist.impls_read = true;
+            // 2026-11-13 claude: No walk writes an impl's parameter cells, so the mark
+            // went: ContainsHist::impls_read and find_impl_apart are deleted, and a
+            // verdict over an open var stands through a trait question whatever impl
+            // answers it. Every reader of ImplDef::target copies it (find_impl_with,
+            // heads_overlap, the constructor split, matches) and the one check over the
+            // cells themselves, Impl::typecheck0's of its methods, holds them rigid. Audit
+            // (~/ptmp/cr29/scratch/r24/24h/impls-read/audit.patch, impl_audit.rs: the mark
+            // off, each impl head fingerprinted by its cells' bindings, conjuncts, lower
+            // bounds, facts and levels at every read and at every verdict that stood):
+            // graphix-tests lib (20997), graphix-types and graphix-compiler units,
+            // graphix-shell shell and lsp, graphix-rt, and a census of 2967 files of both
+            // repos saw no head change; census 0 verdict / 0 message against b24h and
+            // base. Pin
+            // typ::contains::tests::a_verdict_stands_through_a_trait_an_impl_with_parameters_answers
+            // fails with the mark restored (the probe after the trait question walks
+            // again). No program shape found that the mark slowed alone: chains whose
+            // values a param impl answers are quadratic for other reasons
+            // (chainbounds-array-valued-01).
             im.target.reset_tvars()
         };
         let (hc, tc) = (

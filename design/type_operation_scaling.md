@@ -260,13 +260,15 @@ structure is returned SHARED, never copied.
   number stands, whatever else is written, under any flags (pin
   `typ::contains::tests::
   a_flagged_verdict_stands_while_no_cell_its_var_reaches_is_written`).
-  A walk that read the head of
-  an impl with parameters keeps and reads no such verdict from then on
-  (`ContainsHist::impls_read`, set by `find_impl_with` and carried back
-  from a lookup made in a walk of its own): the head's copy took what
-  the impl's cells hold, which no var reaches. An impl without
-  parameters has a head that holds no cell, so a walk whose trait
-  questions only such impls answer keeps its standing verdicts. A call's argument pre-unifies
+  A trait question reads the
+  heads of the impls too: `find_impl_with` relates a copy of a head
+  with parameters, which takes what the impl's cells hold, and a head
+  without parameters holds no cell. No walk writes an impl's cells:
+  every reader of `ImplDef::target` copies it, and the one check over
+  the cells themselves, the `Impl` node's of its methods, holds them
+  rigid. So such a verdict stands through a trait question, whichever
+  impl answers it (pin `typ::contains::tests::
+  a_verdict_stands_through_a_trait_an_impl_with_parameters_answers`). A call's argument pre-unifies
   part by part under one `ContainsHist` (`Type::pre_unify_seen`), as the
   whole would, so a call passing a value for every link of a chain of
   bounds asks each link once whether it admits the value, a trait on
