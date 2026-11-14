@@ -3567,55 +3567,6 @@ impl<R: Rt> Select<R> {
             let mut members: SmallVec<[Type; 8]> = SmallVec::new();
             union_members(&ctx.env, &reaching, &mut members)?;
             let narrowed = pat.capture_type(&ctx.env, &reaching).at(&site)?;
-            // XCR claude for claude: [risk/low] The verdict of this narrowing is
-            // dropped: where an inferred pattern's predicate is not held by what
-            // reaches a live arm, its binds keep cells nothing decides, and inside a
-            // lambda those generalize into the function's type as variables no
-            // argument decides (slice-arm-bind-bottom-panic-01 was this: `fn(s:
-            // (Array<'e>, 'a)) -> ['_N, ('a, 'a)]`, a kernel compiled without the
-            // member). No witness is left: a debug print of every `false` here over
-            // the census (2962 files, both repos) found 8, seven in arms the
-            // coverage then refuses as dead and one under a written test, which
-            // Type::matching_type types. What would close it: after Reach::arm
-            // finds the arm live, refuse an inferred predicate the narrowing did
-            // not hold, naming the written test (`T as pattern`). probes:
-            // ~/ptmp/cr29/scratch/r23/23d/sab/ (narrow-verdict-dropped-01)
-            // 2026-11-13 claude: Two witnesses, base-r24:
-            // bind-inside-wildcard-part-01 (an unannotated parameter), and the same
-            // with the part written: `let f = |x: (i64, Any)| select x { (1, _) =>
-            // 0, (2, (c, _)) => c, (_, _) => 1 }; let r = f((2, ("s", 4)));
-            // println(r)` checks, `f` being `fn(x: (i64, Any)) -> [i64, '_N]`; fused
-            // it panics, "kernel param `r`: runtime String("s") does not match the
-            // compiled Scalar(I64) slot", and --no-fusion prints s. probe:
-            // ~/ptmp/cr29/scratch/r24/24b/wsa/any1.gx
-            // 2026-11-14 claude: Fixer, lane 24b: neither witness of the note above
-            // is a false verdict: the narrowing holds in both (`Any` holds the
-            // tuple) and leaves the cell of `c` open, beneath the tuple the pattern
-            // tests inside the `Any` part. Closed as that: a name inside a part
-            // typed `Any` that nothing decided by the end of its definition (the
-            // settle of its input at the top level) is `Any`, one an argument
-            // decides at each call is left to the argument, and one whose bounds
-            // take no `Any` is refused, naming the written test
-            // (PendingSettle::InsideAny, Type::open_inside_any,
-            // DefGate::close_inside_any). Pins:
-            // lang::select::name_inside_an_any_part_nothing_decides_is_any,
-            // .._is_not_decided_by_a_caller_refused,
-            // names_inside_an_any_part_left_a_bounded_type_refused and
-            // .._at_the_top_level_refused fail with the judgment not deferred (16
-            // runs), name_inside_an_any_part_decided_outside_its_arm with the
-            // parameter exemption undone;
-            // names_inside_an_any_part_under_a_written_test holds both ways. The
-            // verdict itself: a debug print of every `false` here finds none in a
-            // live inferred arm over the census (2967 files) and five over
-            // graphix-tests (21269 tests), each an arm or an or-alternative that can
-            // match nothing of what reaches it (slice-element-dead-arm-01), no value
-            // reaching its binds; two are pinned as running
-            // (lang::select::slice_element_bind_under_a_union_inside_a_member,
-            // slice_element_or_alternative_bind_holds_a_member_its_literal_rules_out),
-            // so the refusal this CR proposes would refuse them. Not closed: the
-            // same over a written test (written-variable-over-any-open-01) and under
-            // GRAPHIX_NO_SUBST=1 (nosubst-any-member-first-01). probes:
-            // ~/ptmp/cr29/scratch/r24/24b/nvd/ (README)
             reaching.narrow_pattern(&ctx.env, &narrowed)?;
             if !pat.explicit_type_predicate && pat.structure_predicate.holds_abstract() {
                 reaching
