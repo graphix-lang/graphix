@@ -3137,7 +3137,7 @@ impl<R: Rt> PatternNode<R> {
         if !self.explicit_type_predicate {
             return Ok(self.type_predicate.any_as_tvar());
         }
-        // CR claude for claude: [bug/high] A written test's own variable that stands at
+        // XCR claude for claude: [bug/high] A written test's own variable that stands at
         // two parts, and that no member reaching the arm holds one type at, types its
         // binds without the values they receive. The narrowing below passes over each
         // such member (Type::narrow_per_member skips a member its copy does not hold),
@@ -3159,10 +3159,71 @@ impl<R: Rt> PatternNode<R> {
         // refused, naming a variable for each part; or its binds take every member's
         // part there. probes: ~/ptmp/cr29/scratch/r24/24a/wvt/{h1,h3,h5}.gx,
         // settle.patch (written-variable-twice-open-01)
+        // 2026-11-14 claude: Closed two ways. (1) Refusal: PatternNode::open_written_bind, called
+        // from Select::typecheck0_with at the arm's end (after close_over_any, checking only),
+        // refuses a name of a written test whose type still holds an open, non-rigid cell of the
+        // test's own that the reaching type does not hold (Type::open_cell_of), naming the variable
+        // and suggesting a variable for each part; an arm that decides it (a0 + 1) is still accepted
+        // and tested. h1 stays refused (unreachable arm, the inner select decides 'q), h3 and h5 are
+        // refused. (2) Right type where cheap: Type::matching_type_inner's pair-met-again guard over
+        // typedef names answers what reaches the part when the test's part holds a free cell, so
+        // L<['b, null]> as `C(x, t) types t L<i64> and Array<Opt<Opt<'b>>> as [x, ..] types x i64
+        // (both diverged fused vs --no-fusion on base-r25). Pins that fail without it:
+        // lang::select::written_variable_twice_left_open_is_refused,
+        // written_variable_twice_left_open_in_arithmetic_is_refused (base: runtime arith error on
+        // null + "s"), written_variable_under_a_grown_tail_left_open_is_refused,
+        // written_test_own_variable_under_a_recursive_tail,
+        // written_test_own_variable_under_an_alias_applied_twice (jit modes diverge on base); twins
+        // written_variable_for_each_part_binds_every_member,
+        // written_variable_twice_decided_by_its_arm_is_tested, written_union_binds_a_grown_tail. The
+        // grown arms of written_test_alias_over_its_own_variable and
+        // written_test_union_over_its_own_variable now bind `C(x, _) (their t held 'b; g2.gx shows
+        // the hole). Census 0/0, regress 585/0, typemorph-scan 985/0.
         if self.type_predicate.has_unbound() {
             reaching.narrow_pattern(env, &self.type_predicate)?;
         }
         self.type_predicate.matching_type(env, reaching)
+    }
+
+    /// Refuse a bind of the arm's written test whose type holds a variable
+    /// of the test's own (no cell of `reaching`, what reaches the arm, nor
+    /// held rigid) that nothing decided by the arm's end: the run-time test
+    /// passes every value at it, and it settles to ⊥, which holds none.
+    /// `written` is the arm's pattern as written.
+    pub(super) fn open_written_bind(
+        &self,
+        env: &Env,
+        reaching: &Type,
+        written: Option<&Pattern>,
+    ) -> Result<()> {
+        if !self.explicit_type_predicate {
+            return Ok(());
+        }
+        let mut open = None;
+        self.structure_predicate.ids(&mut |id| {
+            if open.is_none()
+                && let Some(b) = env.by_id.get(&id)
+                && let Some(tv) = b.typ.open_cell_of(&self.type_predicate, reaching)
+            {
+                open = Some((b.name.clone(), tv))
+            }
+        });
+        let Some((name, tv)) = open else { return Ok(()) };
+        let t = &self.type_predicate;
+        let pat = match written {
+            Some(p) => {
+                let w = p.type_predicate.as_ref().unwrap_or(t);
+                format_compact!("{w} as {}", p.structure_predicate)
+            }
+            None => format_compact!("the test {t}"),
+        };
+        let var = Type::TVar(tv);
+        bail!(
+            "{pat} binds {name} at {var}, a variable of the test's own that nothing decided \
+             by the arm's end: a run-time test passes every value at an undecided variable, \
+             so {name} would hold values its type does not. Write the type {var} stands for, \
+             or a variable for each part it stands at"
+        )
     }
 
     /// Type the arm's binds from `narrowed`, the arm's predicate as the

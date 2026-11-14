@@ -3610,6 +3610,10 @@ impl<R: Rt> Select<R> {
                         pat.undecided_over_any(&ctx.env, written, e)
                     })
                     .at(&site)?;
+                if checking {
+                    let written = spec_pats.get(i).map(|(p, _)| p);
+                    pat.open_written_bind(&ctx.env, &reaching, written).at(&site)?;
+                }
             }
             let step = deciding.again();
             let covered = reach.arm(&ctx.env, &scrut, pat, &site, checking)?;

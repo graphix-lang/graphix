@@ -4754,7 +4754,121 @@ run!(
     FuseExpect::None
 );
 
-// A union a test writes holds each member's part at the arm and at the
+// A variable a test writes twice that no member reaching the arm holds at
+// one type, and that the arm does not decide, passes every value at run
+// time: a bind at it is refused, the variable named.
+run!(
+    written_variable_twice_left_open_is_refused,
+    r#"{
+        let k = |v: i64| {
+            let u = select v { 0 => (null, 7), 1 => (null, "s"), _ => (7, [1, 2]) };
+            select u { ('q, 'q) as (a0, a1) => a0, _ => null }
+        };
+        select k(2) { null as _ => 1, y => 2 }
+    }"#,
+    refused("binds a0 at 'q, a variable of the test's own that nothing decided by the arm's end");
+    FuseExpect::None
+);
+
+run!(
+    written_variable_twice_left_open_in_arithmetic_is_refused,
+    r#"{
+        let k = |v: i64| {
+            let u = select v { 0 => (null, 7), 1 => (null, "s"), _ => (7, 8) };
+            select u { ('q, 'q) as (a0, a1) => a0 + a1, _ => 0 }
+        };
+        [k(0), k(1), k(2)]
+    }"#,
+    refused("binds a0 at 'q, a variable of the test's own that nothing decided by the arm's end");
+    FuseExpect::None
+);
+
+// A variable for each part binds every member's part there.
+run!(
+    written_variable_for_each_part_binds_every_member,
+    r#"{
+        let k = |v: i64| {
+            let u = select v { 0 => (null, 7), 1 => (null, "s"), _ => (7, [1, 2]) };
+            select u { ('q, 'r) as (a0, a1) => a0 }
+        };
+        let f = |v: i64| select k(v) { null as _ => 1, y => 2 };
+        [f(0), f(1), f(2)]
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 1, 2]);
+    FuseExpect::Jit
+);
+
+// A variable written twice that the arm decides is tested as that type.
+run!(
+    written_variable_twice_decided_by_its_arm_is_tested,
+    r#"{
+        let k = |v: i64| {
+            let u = select v { 0 => (null, 7), 1 => (null, "s"), _ => (7, 8) };
+            select u { ('q, 'q) as (a0, a1) => a0 + 1, _ => 0 }
+        };
+        [k(0), k(1), k(2)]
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 0, 8]);
+    FuseExpect::Jit
+);
+
+// A part of a written test holding its own variable, met again under the
+// same typedef name (a recursive typedef's tail, an alias applied twice),
+// is typed by what reaches it: the run-time test passes every value there.
+run!(
+    written_test_own_variable_under_a_recursive_tail,
+    r#"{
+        type L<'a> = [`Nil, `C('a, L<'a>)];
+        let named = |v: [L<i64>, L<string>]| select v { L<['b, null]> as `C(x, t) => t, _ => `Nil };
+        let l: L<i64> = `C(1, `C(2, `C(3, `Nil)));
+        let r = named(l);
+        let z = select r { `C(_, `C(y, _)) => y, _ => null };
+        select z { null as _ => 1, _ => 2 }
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(2)));
+    FuseExpect::Jit
+);
+
+run!(
+    written_test_own_variable_under_an_alias_applied_twice,
+    r#"{
+        type Opt<'b> = ['b, null];
+        let nested = |v: [Array<i64>, Array<string>]| select v { Array<Opt<Opt<'b>>> as [x, ..] => x, _ => null };
+        let r = nested([5]);
+        select r { null as _ => 1, _ => 2 }
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(2)));
+    FuseExpect::Jit
+);
+
+// A tail whose typedef applies the parameter anew at each link holds the
+// test's own variable where nothing types it: the bind is refused, and the
+// written union binds the tail.
+run!(
+    written_variable_under_a_grown_tail_left_open_is_refused,
+    r#"{
+        type U<'a> = [`Nil, `C('a, U<['a, null]>)];
+        let grown = |v: [U<i64>, U<string>]| select v { U<['b, null]> as `C(x, t) => t, _ => `Nil };
+        let u: U<i64> = `C(1, `C(2, `C(3, `Nil)));
+        select grown(u) { `C(_, `C(y, _)) => 1, _ => 0 }
+    }"#,
+    refused("binds t at 'b, a variable of the test's own that nothing decided by the arm's end");
+    FuseExpect::None
+);
+
+run!(
+    written_union_binds_a_grown_tail,
+    r#"{
+        type U<'a> = [`Nil, `C('a, U<['a, null]>)];
+        let grown = |v: [U<i64>, U<string>]| select v { [U<i64>, U<string>] as `C(x, t) => t, _ => `Nil };
+        let u: U<i64> = `C(1, `C(2, `C(3, `Nil)));
+        select grown(u) { `C(_, `C(y, _)) => 1, _ => 0 }
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(1)));
+    FuseExpect::Jit
+);
+
+// A union a test writes holds each member's part at the
 // select's settle: its bind is every reference the members hold.
 run!(
     written_union_binds_two_reference_types,
@@ -12189,7 +12303,7 @@ run!(
         let two = |v: [Array<i64>, Array<string>]| select v { Array<Opt<'b>> as [x, ..] => 1, _ => 0 };
         let mixed = |v: [Array<i64>, string]| #[native] select v { Array<Opt<'b>> as [x, ..] => 1, _ => 0 };
         let named = |v: [L<i64>, L<string>]| select v { L<Opt<'b>> as `C(x, t) => 1, _ => 0 };
-        let grown = |v: [U<i64>, U<string>]| select v { U<Opt<'b>> as `C(x, t) => 1, _ => 0 };
+        let grown = |v: [U<i64>, U<string>]| select v { U<Opt<'b>> as `C(x, _) => 1, _ => 0 };
         let nested = |v: [Array<i64>, Array<string>]| select v { Array<Opt<Opt<'b>>> as [x, ..] => 1, _ => 0 };
         let closed = |v: [Array<i64>, Array<string>]| select v { Array<Opt<i64>> as [x, ..] => 1, _ => 0 };
         let l: L<string> = `C("s", `Nil);
@@ -12322,7 +12436,7 @@ run!(
         let two = |v: [Array<i64>, Array<string>]| select v { Array<['b, null]> as [x, ..] => 1, _ => 0 };
         let mixed = |v: [Array<i64>, string]| #[native] select v { Array<['b, null]> as [x, ..] => 1, _ => 0 };
         let named = |v: [L<i64>, L<string>]| select v { L<['b, null]> as `C(x, t) => 1, _ => 0 };
-        let grown = |v: [U<i64>, U<string>]| select v { U<['b, null]> as `C(x, t) => 1, _ => 0 };
+        let grown = |v: [U<i64>, U<string>]| select v { U<['b, null]> as `C(x, _) => 1, _ => 0 };
         let nested = |v: [Array<i64>, Array<string>]| select v { Array<[['b, null], null]> as [x, ..] => 1, _ => 0 };
         let closed = |v: [Array<i64>, Array<string>]| select v { Array<[i64, null]> as [x, ..] => 1, _ => 0 };
         let l: L<string> = `C("s", `Nil);

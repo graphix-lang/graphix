@@ -4921,6 +4921,26 @@ impl Type {
         self.open_over_any_int(env, pred, &mut walk)
     }
 
+    /// The first open cell beneath `self`, through bindings and outside
+    /// every function type, that `of` holds and `beside` does not, and
+    /// that is not held rigid: as a variable `of` names it by, where one
+    /// has a written name.
+    pub fn open_cell_of(&self, of: &Type, beside: &Type) -> Option<TVar> {
+        let mut own: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+        super::settle::position_cells(of, &mut own);
+        let mut theirs: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+        super::settle::position_cells(beside, &mut theirs);
+        let open = find_open_cell(self, false, &mut |tv| {
+            let addr = tv.cell_addr();
+            !tv.is_rigid() && own.contains_key(&addr) && !theirs.contains_key(&addr)
+        })?;
+        let written = own.values().find(|tv| {
+            !tv.name.starts_with('_')
+                && tv.open_cell().is_some_and(|c| c.same_cell(&open))
+        });
+        Some(written.cloned().unwrap_or(open))
+    }
+
     /// [`Self::close_over_any`] before the arm of the inferred test `pred`
     /// is checked, for the abstract types `pred` holds alone: the test
     /// of an abstract type reads its tag, never a parameter, so inside a

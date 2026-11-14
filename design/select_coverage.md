@@ -307,6 +307,24 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   down (pins `lang::select::written_test_alias_over_its_own_variable`,
   `written_test_union_over_its_own_variable`, each over a value three
   links deep).
+  A bind takes its part of what reaches it where the variable stands
+  (`Type::matching_type`), and a part of the test holding the variable
+  that the walk meets again under the same typedef name (a recursive
+  typedef's tail, `Opt<Opt<'b>>`) is typed by what reaches it too. A
+  bind holds the variable itself only where a reaching part contains the
+  test's part, which an open cell makes true at once; the narrowing
+  against the binds' types (`Select::typecheck0_with`) then decides it
+  from that part, as in the pin above. Where the parts it stands over are no
+  one type (`('q, 'q)` over `(null, i64)`, a tail whose typedef applies
+  its parameter anew at each link) and the arm does not decide it, it is
+  still open at the arm's end, and a name bound at it is refused, naming
+  the variable (`PatternNode::open_written_bind`): written for each part,
+  `('q, 'r)`, each takes every member's part. Pins
+  `lang::select::written_variable_twice_left_open_is_refused`,
+  `written_variable_for_each_part_binds_every_member`,
+  `written_variable_twice_decided_by_its_arm_is_tested`,
+  `written_test_own_variable_under_a_recursive_tail`,
+  `written_variable_under_a_grown_tail_left_open_is_refused`.
 
 - **`name@ pattern` captures** are typed from the SCRUTINEE (a `let`'s
   from its value, `Bind::complete_partial`): under an

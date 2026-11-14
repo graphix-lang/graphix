@@ -2197,8 +2197,10 @@ impl Type {
                     _ => None,
                 };
                 let key = (definition(p), definition(t));
+                // a part holding the test's own variable passes every value
+                // there: what reaches it types it
                 if !walk.refs.insert(key) {
-                    return Ok(p.clone());
+                    return Ok(if p.has_free() { t.clone() } else { p.clone() });
                 }
                 let r =
                     p.lookup_ref(env)?.matching_type_int(env, walk, &t.lookup_ref(env)?);
