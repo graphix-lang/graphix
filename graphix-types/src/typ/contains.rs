@@ -1146,12 +1146,11 @@ fn guide(flags: BitFlags<ContainsFlags>) -> BitFlags<ContainsFlags> {
 
 /// Whether the open cell `tv` takes what it must hold as a lower bound
 /// rather than binding to it ([`ContainsFlags::Lower`] outside a
-/// function's arguments, where a rigid `part` merges, and
-/// [`ContainsFlags::LowerInArgs`] inside them).
-fn takes_lower(flags: BitFlags<ContainsFlags>, tv: &TVar, rigid_part: bool) -> bool {
+/// function's arguments and [`ContainsFlags::LowerInArgs`] inside them).
+fn takes_lower(flags: BitFlags<ContainsFlags>, tv: &TVar) -> bool {
     !tv.is_rigid()
         && match flags.contains(ContainsFlags::Contra) {
-            false => flags.contains(ContainsFlags::Lower) && !rigid_part,
+            false => flags.contains(ContainsFlags::Lower),
             true => flags.contains(ContainsFlags::LowerInArgs),
         }
 }
@@ -1528,7 +1527,7 @@ fn commit_conjuncts(
             return Ok(false);
         }
 
-        // CR claude for claude: [bug/low] A bound's unions over its own variable, met by
+        // XCR claude for claude: [bug/low] A bound's unions over its own variable, met by
         // a wrapper's unions over a declared variable, make the two variables one where
         // the bound's must hold the wrapper's whole union, so a call the written twin runs
         // is refused. `let g = 'b: (['c, null], ['c, i64]) |s: 'c, x: 'b| -> 'b x; let f =
@@ -1544,6 +1543,24 @@ fn commit_conjuncts(
         // below the bound's open cell as a lower bound, as a decided type does. probes:
         // ~/ptmp/cr29/scratch/r24/24c/rnb/p/{p1,p1t}.gx, generator
         // ~/ptmp/cr29/scratch/r24/24c/rnb/gen.py (bound-part-merges-declared-01)
+        // 2026-11-14 claude: Fixed: under Lower an open cell takes a rigid cell as a lower
+        // bound too (contains.rs takes_lower no longer exempts a rigid part), so the
+        // bound's cell stands above the declared variable, as above a decided type, and
+        // TVar::add_lower keeps no bound that a union lower bound holds as a member ('c
+        // above 'a and ['a, null] is ['a, null], not two bounds an argument chooses
+        // between). The CR's probe runs, (2, 2), fused, --no-fusion, GRAPHIX_PAR=force,
+        // GRAPHIX_NO_SUBST=1; 960 generated wrappers and twins (gen.py): 0 newly refused,
+        // 6 newly accepted (4 of them where the written twin is refused), every accept
+        // prints the same in each mode. Still refused where the twin runs: an argument at
+        // the bound's own variable that is the null, f(null, (1, 1)) (probe
+        // ~/ptmp/cr29/scratch/r25/25e/d3.gx; d1.gx is the written parameter): the
+        // wrapper's u stays a cell above ['a, null], and the argument binds it before 'a
+        // is decided; refused, never wrong. Pins that fail without it:
+        // lang::types::declared_variable_under_two_unions_of_a_callees_bound_{stands_below_its_variable,declared_within_its_bound,types_its_wrapper_with_the_union}
+        // (the last fails with only the add_lower part undone; `keeps_the_bounds_of_its_variable`
+        // guards the refusal that stands),
+        // contains::tests::a_bounds_part_narrows_no_rigid_cell, and the generics.md cases
+        // line.
 
         // the conjunct's own open cells must hold what the cell takes:
         // `'d: [null, 'c]` bound to i64 puts i64 below 'c, so 'c bound
@@ -4221,7 +4238,7 @@ impl Type {
                 if (rigid || commit) && t0.is_rigid() {
                     return rigid_holds_by_lower((self, t0), flags, env, hist, t1);
                 }
-                if takes_lower(flags, t0, false) {
+                if takes_lower(flags, t0) {
                     if !conjuncts_admit(t0, flags, env, hist, t1)? {
                         return Ok(false);
                     }
@@ -4732,7 +4749,7 @@ impl Type {
         let (cell0, cell1) = (t0.cell(), t1.cell());
         let (addr0, addr1) = (cell0.data_ptr().addr(), cell1.data_ptr().addr());
         // `t0` takes `t1` as a lower bound, rather than a merge or a bind
-        let lower = |t1_rigid: bool| takes_lower(flags, t0, t1_rigid);
+        let lower = takes_lower(flags, t0);
         // A cycle under a constructor has no finite solution; the cells on
         // a bare one are one type.
         let refuse = |cycle: Cycle, paths: &[Reach], hist: &mut ContainsHist| {
@@ -4764,11 +4781,11 @@ impl Type {
                 {
                     return tt0.contains_int(flags, env, hist, &b1);
                 }
-                let up = if lower(false) { Toward::Above } else { Toward::Any };
+                let up = if lower { Toward::Above } else { Toward::Any };
                 if let Some(cycle) = cycle_toward(&cell1, tt0, up) {
                     return refuse(cycle, &[(t1, tt0, up)], hist);
                 }
-                if lower(false) {
+                if lower {
                     if !conjuncts_admit(t0, flags, env, hist, &b1)? {
                         return Ok(false);
                     }
@@ -4844,7 +4861,7 @@ impl Type {
                 })
             }
             (None, None) => {
-                let (down, up) = match lower(t1.is_rigid()) {
+                let (down, up) = match lower {
                     true => (Toward::Below, Toward::Above),
                     false => (Toward::Any, Toward::Any),
                 };
@@ -4864,8 +4881,8 @@ impl Type {
                     }
                 }
                 // an open cell below is bounded by what bounds `t0`, as a
-                // merge would have it; under `Lower` a declared one is merged
-                if lower(t1.is_rigid()) {
+                // merge would have it
+                if lower {
                     if commit {
                         for c in t0.cell_constraints() {
                             t1.add_cell_constraint(c)
@@ -9095,7 +9112,7 @@ mod tests {
     }
 
     // a bound's part narrows no rigid cell of the value: the bound's own
-    // open cell takes the rigid cell, which keeps the bounds it had
+    // open cell stands above the rigid cell, which keeps the bounds it had
     #[test]
     fn a_bounds_part_narrows_no_rigid_cell() {
         let (env, t) = Env::typed_at_root(&[], "(Array<['c, null]>, Array<'a>)").unwrap();
@@ -9109,7 +9126,8 @@ mod tests {
         holder.add_cell_constraint(sides[0].clone());
         assert!(holder.commit_conjuncts(&env, &sides[1]).unwrap(), "{t}");
         assert!(a.cell_constraints().is_empty(), "{t}");
-        assert!(c.open_cell().is_some_and(|c| c.same_cell(a)), "{t}");
+        assert!(c.open_cell().is_some_and(|o| !o.same_cell(a)), "{t}");
+        assert!(matches!(&c.cell_lower()[..], [Type::TVar(l)] if l.same_cell(a)), "{t}");
     }
 
     // a bound's part that holds an open cell narrows no cell of the value:

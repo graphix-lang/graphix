@@ -2384,19 +2384,31 @@ into it, so its part is proved and never recorded on it. The probe
 before the bind holds it against the part: `'b: Array<[i64, null]>`
 taking a wrapper's `Array<'a>` is refused at the wrapper, which declares
 `'a: [i64, null]` to pass. Where the part holds an open cell of the
-bound, that cell takes the variable, as it does where the bound's type
-is written in the parameter: `'b: Array<['c, null]> |x: 'b, s: 'c|`
-called `g(w, v)` in `|v: 'a, w: Array<'a>|` makes `'c` `'a`, and
-`g(w, null)` is refused there, since `'a` holds no null. A part recorded
+bound, that cell stands above the variable, as it stands above a decided
+type: `'b: Array<['c, null]> |x: 'b, s: 'c|` called `g(w, v)` in `|v: 'a,
+w: Array<'a>|` puts `'c` above `'a`, which settles it as `'a` when
+nothing else is above it, and `g(w, null)` is refused there, since `'a`
+holds no null. A lower bound that another lower bound of the cell, a union,
+holds as a member is not kept beside it (`TVar::add_lower`), so `'c` above `'a`
+and above `['a, null]` is `['a, null]`, one union and not two bounds
+that a later argument chooses between. A part recorded
 on the rigid cell would prove itself (`['c, null] ⊇ 'a` by the conjunct
 `['c, null]`), and `null ⊇ 'a` by deciding `'c` null. Where the value
 holds the variable in a union, the bound's cell stands above the union
 as it does above a decided one: `'b: {p: ['c, null], q: 'c}` taking
 `{p: ['a, null], q: ['a, null]}` makes `'c` `['a, null]`, and a result
 typed `'c` holds the null in the wrapper. The written parameter merges
-`'c` with `'a` at `p` and refuses `q`, with a decided union alike. Pins:
+`'c` with `'a` at `p` and refuses `q`, with a decided union alike. Two
+unions of the bound over `'c` met by two of the wrapper's over `'a`
+(`'b: (['c, null], ['c, i64]) |s: 'c, x: 'b|` taking `(['a, null], ['a,
+null])`) put `'c` above `'a` and above the null of each, where a merge
+would have the second union's `['c, i64]` hold no null. A call whose
+argument at `s` is the null is still refused there, since `s`'s cell
+stands above `['a, null]` and the argument binds it before `'a` is
+decided. Pins:
 `lang::types::declared_variable_under_a_callees_bound_*`,
 `lang::types::declared_variable_in_a_union_under_a_callees_bound_*`,
+`lang::types::declared_variable_under_two_unions_*`,
 `contains::tests::a_bounds_part_narrows_no_rigid_cell`.
 
 ### `Concrete`: a conjunct that is a predicate

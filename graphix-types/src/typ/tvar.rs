@@ -1156,6 +1156,11 @@ pub(super) fn decided(cell: &TCell) -> bool {
     decided_of(cell.task, "cell", Some(cell_addr(cell)), || None)
 }
 
+/// Whether `u` is a union that holds `t` as one of its members.
+fn union_member(u: &Type, t: &Type) -> bool {
+    matches!(u, Type::Set(s) if s.iter().any(|m| union_identical(m, t)))
+}
+
 /// [`decided`], where the decision would make the cell `would`.
 pub(super) fn decided_as(cell: &TCell, would: &Type) -> bool {
     decided_of(cell.task, "cell", Some(cell_addr(cell)), || Some(would.clone()))
@@ -2571,12 +2576,15 @@ impl TVar {
         self.read().cell.read().lower.clone()
     }
 
-    /// Bound the open cell from below by `t` (deduped): whatever it binds
-    /// to must contain `t`. The caller has checked the cell's conjuncts
-    /// admit `t`; they are handed to `t`'s open cells as a binding's are.
+    /// Bound the open cell from below by `t` (deduped, and a bound that a
+    /// union bound holds as a member is not kept beside it): whatever it
+    /// binds to must contain `t`. The caller has checked the cell's
+    /// conjuncts admit `t`; they are handed to `t`'s open cells as a
+    /// binding's are.
     pub(crate) fn add_lower(&self, t: Type) {
         let cell = self.cell();
-        if cell.read().lower.iter().any(|e| union_identical(e, &t)) {
+        if cell.read().lower.iter().any(|e| union_identical(e, &t) || union_member(e, &t))
+        {
             return;
         }
         require_bounds(&self.cell_constraints(), &t);
@@ -2586,6 +2594,7 @@ impl TVar {
             if c.binding.is_some() {
                 bound_cell_changes();
             }
+            c.lower.retain(|e| !union_member(&t, e));
             c.lower.push(t)
         }
     }

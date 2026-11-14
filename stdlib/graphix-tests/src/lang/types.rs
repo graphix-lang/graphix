@@ -15264,7 +15264,7 @@ run!(
   let f = |w: Array<'a>| g(w, null);
   f([null])
 }"#,
-    refused("'a: unbound does not contain null");
+    refused("does not contain null");
     FuseExpect::None
 );
 run!(
@@ -15304,6 +15304,59 @@ run!(
 }"#,
     refused("cannot compute [null, 'a: i64] + i64");
     FuseExpect::None
+);
+
+// A bound's unions over its own variable, met by a wrapper's unions over a
+// declared variable, put the bound's variable above the declared one: it
+// takes the null the second union holds too, as the bound's type written in
+// the parameter does.
+run!(
+    declared_variable_under_two_unions_of_a_callees_bound_stands_below_its_variable,
+    r#"{
+  let g = 'b: (['c, null], ['c, i64]) |s: 'c, x: 'b| -> 'b x;
+  let f = |u, w: (['a, null], ['a, null])| g(u, w);
+  (f(1, (2, 2)), f("s", ("t", null)))
+}"#,
+    prints(r#"[[i64:2, i64:2], ["t", null]]"#)
+);
+run!(
+    declared_variable_under_two_unions_of_a_callees_bound_types_its_wrapper_with_the_union,
+    r#"{
+  let g = 'b: (['c, null], ['c, i64]) |s: 'c, x: 'b| -> 'b x;
+  let f = |u, w: (['a, null], ['a, null])| g(u, w);
+  let k: bool = f;
+  k
+}"#,
+    refused("bool does not contain fn(u: [null, 'a: unbound], w: ([null, 'a: unbound], [null, 'a: unbound])) -> ([null, 'a: unbound], [null, 'a: unbound])");
+    FuseExpect::None
+);
+run!(
+    declared_variable_under_two_unions_written_in_the_parameter,
+    r#"{
+  let g = |s: 'c, x: (['c, null], ['c, i64])| x;
+  let f = |u, w: (['a, null], ['a, null])| g(u, w);
+  (f(1, (2, 2)), f("s", ("t", null)))
+}"#,
+    prints(r#"[[i64:2, i64:2], ["t", null]]"#)
+);
+run!(
+    declared_variable_under_two_unions_of_a_callees_bound_keeps_the_bounds_of_its_variable,
+    r#"{
+  let g = 'b: (['c, null], ['c, i64]), 'c: [string, null, i64] |s: 'c, x: 'b| -> 'b x;
+  let f = |u, w: (['a, null], ['a, null])| g(u, w);
+  f(1, (2, 2))
+}"#,
+    refused("does not contain ([null, 'a: unbound], [null, 'a: unbound])");
+    FuseExpect::None
+);
+run!(
+    declared_variable_under_two_unions_of_a_callees_bound_declared_within_its_bound,
+    r#"{
+  let g = 'b: (['c, null], ['c, i64]), 'c: [string, null, i64] |s: 'c, x: 'b| -> 'b x;
+  let f = 'a: [string, null] |u, w: (['a, null], ['a, null])| g(u, w);
+  f("s", ("t", null))
+}"#,
+    prints(r#"["t", null]"#)
 );
 
 // Two undecided elements of one array under such a bound: each stays
