@@ -5588,46 +5588,6 @@ impl Type {
             let covered = |hist: &mut ContainsHist, m: &Type| {
                 Self::place_covered(s0, &free, flags, env, hist, m)
             };
-            // XCR claude for claude: [bug/medium] A union with a bare variable takes a
-            // member of several primitive types whole: where no one constructor member
-            // admits all of it, the whole member goes to the variable, the types a
-            // constructor member covers included. `let f = 'a: Number |x: [['a, null],
-            // Array<i64>]| x; let v: [i64, null, Array<i64>] = 1; f(v)` is refused,
-            // "[null, 'a: unbound within Number, Array<i64>] does not contain [i64, null,
-            // Array<i64>]", where 'a = i64 holds it (base-r20 alike). Unbounded, `let f =
-            // |x: ['a, null]| -> 'a x$` over `v: [Array<i64>, i64, null]` gives 'a the
-            // null too: `select f(v) { i64 as i => .., Array<i64> as a => .. }` is refused
-            // for a null arm that can never be taken. A primitive alone (`v: [i64, null]`)
-            // is taken a type at a time (contains_dispatch's `Self::Primitive(p) if p.len()
-            // > 1` arm), and so is the alias spelling of the first (`[Opt<'a>,
-            // Array<i64>]` checks and runs, Type::unfolded_held): the alias accepts what
-            // its written-out twin refuses. What would fix it: a primitive member no
-            // constructor member admits whole gives each of its types to the constructor
-            // member that admits it and only the rest to the residue. That moves what a
-            // call infers (the second example's select must drop its null arm), so it
-            // wants a census of both repos first. probes:
-            // ~/ptmp/cr29/scratch/r20/coord/x5/{h2,h3,k1,k2}.gx (h3 is h2's alias
-            // spelling) (union-prim-member-whole-01)
-            // 2026-11-13 claude: Type::place_members takes a member no constructor member
-            // takes whole a part at a time where it is several primitive types or names a
-            // union (Type::unfolded_held): each part goes to the constructor member that
-            // takes it (Type::place_covered) and only the rest to the open member; one none
-            // of whose parts is taken goes whole, under its name. h2 and k2 check and run,
-            // k1's null arm is refused as dead; [N, Array<i64>], [Opt<i64>, Array<i64>] and
-            // [Result<i64, `E>, null] into ['a, Error<`E>] alike. Moved with it: after such
-            // an argument a later y: 'a is a mismatch for a type neither wider nor narrower
-            // ([i64, null], null), as it was after [i64, string, null]; and Opt<Opt<i64>>
-            // under &mut Opt<'a> or B<Opt<'a>> gives 'a i64 as its other spellings do, so
-            // lang::types::alias_over_a_variable_under_* now decide 'a wider by an earlier
-            // parameter. Census of both repos (2967 files): no verdict or message differs.
-            // Fail with the split off:
-            // lang::types::covered_primitive_stays_out_of_the_open_member, its _arm_refused
-            // twin, covered_primitive_leaves_a_bounded_open_member_its_numbers,
-            // covered_part_of_a_named_union_stays_out_of_the_open_member, its _arm_refused
-            // twin, open_member_beside_a_covered_primitive_takes_no_argument_apart_refused,
-            // the three alias_over_a_variable_under_* pins,
-            // typ::contains::tests::an_open_member_takes_only_the_primitives_no_member_does.
-            // probes: ~/ptmp/cr29/scratch/r24/24d/upm/ (README)
             match covered(hist, m)? {
                 Some(true) => continue,
                 Some(false) => return Ok(false),
