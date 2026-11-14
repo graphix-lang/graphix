@@ -197,6 +197,12 @@ select, and runtime forms. Each rule refuses and names the fix.
   `let` (`let {a, ..} = v`, "not decided at this let") and a parameter
   are refused alike: annotate `x` and `y`, the binding (`let {a, ..}: T
   = v`), or name every field.
+- A partial struct pattern over members whose completions differ
+  (`{a, ..}` over `{a: i64, b: string}` and `{a: i64, c: f64}`) matches
+  more than one member too. A select takes the member (`{a: i64, b:
+  string} as {a, ..}`); a `let` or a parameter takes every member at
+  once, so it names every field where the members share theirs, and
+  binds the value whole and selects on it where they do not.
 - No arm may tell apart two types that share a runtime form: two
   reference types, two function types. Wrap them in distinct variants.
   A name tests nothing, so an arm may bind such a part, and the bind
@@ -230,6 +236,11 @@ select, and runtime forms. Each rule refuses and names the fix.
   the parameter.
 
 ```graphix,cases
+no "matches more than one member" |x: [{a: i64, b: string}, {a: i64, c: f64}]| select x { {a, ..} => a }
+no "do not share their fields" let v: [{a: i64, b: string}, {a: i64, c: f64}] = {a: 1, b: "s"}; let {a, ..} = v; a
+no "name every field of { a, .. }" let t = true; let x: string = never(); let y = never(); let v = select t { true => {a: [1], c: x}, false => {a: ["s"], c: y} }; let {a, ..} = v; a
+ok let t = true; let x: string = "q"; let y = never(); let v = select t { true => {a: [1], c: x}, false => {a: ["s"], c: y} }; let {a, c} = v; a
+ok let v: [{a: i64, b: string}, {a: i64, c: f64}] = {a: 1, b: "s"}; select v { {a: i64, b: string} as {a, ..} => a, _ => 0 }
 no "tests inside" 'a: [{a: i64, b: string}, i64] |x: 'a| select x { {a, ..} => a, _ => 0 }
 ok 'a: [{a: i64, b: string}, i64] |x: 'a| select x { {a: i64, b: string} as {a, ..} => a, i64 as n => n }
 no "tests inside" |x: ['a, null]| select x { null => 0, _ => 1 }

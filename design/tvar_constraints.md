@@ -1907,7 +1907,7 @@ alike and refuse it alike, each in its own words ("at this let",
 annotated `let {a, ..}: T = ..`; "at this parameter"), the remedy written
 over the whole pattern its holder holds where the refused one is a part
 of it (`let ({a, ..}, n): T = ..`, `T as ({a, ..}, n)`). The refusal
-writes the two members as a program can (`pattern::undecided_members`,
+writes the two members as a program can (`pattern::members_refusal`,
 which every completion site calls with its `Holder`): an undecided cell
 as `'x` for the binding it waits for, one a let's annotation wrote as
 its variable (`'q`), and one no binding names (the element of a `[]`, a
@@ -1920,6 +1920,13 @@ though it carries the callee's name (`TCell::call_copy`): two calls of
 `Array<'a>` twice, which reads as one type, unless a let's annotation
 took the copies and the members are written through the copies' own
 names.
+
+Two members decided apart (`Apart::Decided`) are refused in the same
+holder's words: a select asks for the member (`T as {a, ..}`); a let and a
+parameter take every member at once, so they name every field where the
+two members share their fields and say to bind the value whole and take it
+apart in a select where they do not (pins
+`lang::tuples_structs::*_over_members_*`).
 
 ### Unfolding a pair of definitions
 

@@ -464,7 +464,7 @@ impl StructurePattern {
         })
     }
 
-    // CR claude for claude: [bug/low] The refusal of a partial struct pattern two of
+    // XCR claude for claude: [bug/low] The refusal of a partial struct pattern two of
     // whose members complete apart prints an undecided cell raw and offers a select's
     // remedy wherever the pattern stands. `let {a, ..} = v` over `{a: [1], c: x}` and
     // `{a: ["s"], c: y}`, `x: string` and `y` lets over `never()`, is refused "the
@@ -479,6 +479,16 @@ impl StructurePattern {
     // remedy what takes the value (every field named where the members share their
     // fields, else a select). Same on base-r24. probes:
     // ~/ptmp/cr29/scratch/r24/24g/lumr/{r3,m1,m2,s3}.gx (many-members-told-raw-01)
+    // 2026-11-14 claude: Two members that complete apart are now a ManyMembers
+    // (Apart::Decided) told by members_refusal at every completion site: cells named
+    // through Holders, a select asks for the member, a let and a parameter name every
+    // field where the members share theirs and bind the value whole and select
+    // otherwise. Pins that fail without it:
+    // lang::tuples_structs::{let_partial_struct_over_members_decided_apart_refused,
+    // let_partial_struct_over_members_that_share_no_fields_refused,
+    // parameter_partial_struct_over_members_that_share_no_fields_refused,
+    // select_partial_struct_over_members_decided_apart_refused}; skill cases in
+    // ide/skills/graphix-lang/select.md.
 
     /// The completion of the one scrutinee member `complete` answers
     /// for and the pattern, of the inferred type `ptype`, could match. A
@@ -520,18 +530,16 @@ impl StructurePattern {
             match &found {
                 None => found = Some((t, m)),
                 Some((f, _)) if strictly_identical(f, &t) => (),
-                Some((f, first)) if *f == t => {
+                Some((f, first)) => {
+                    let apart = match *f == t {
+                        true => Apart::Undecided,
+                        false => Apart::Decided,
+                    };
                     let members = [(*first).clone(), m.clone()];
                     return Err(
-                        UndecidedMembers { pattern: self.clone(), members }.into()
+                        ManyMembers { pattern: self.clone(), members, apart }.into()
                     );
                 }
-                Some(_) => format_with_flags(PrintFlag::DerefTVars, || {
-                    bail!(
-                        "the pattern {self} matches more than one member of {scrutinee}; \
-                         annotate the member you mean, e.g. `T as {self}`"
-                    )
-                })?,
             }
         }
         Ok(found.map(|(t, _)| t))
@@ -679,30 +687,45 @@ impl StructurePattern {
 /// that member goes on.
 type OverAny = Option<anyhow::Error>;
 
-/// A partial struct pattern's two members told apart only by cells not
-/// decided where it is completed. The site that completes it tells the
-/// refusal in its own words, naming the cells.
-#[derive(Debug)]
-pub struct UndecidedMembers {
-    pub pattern: StructurePattern,
-    pub members: [Type; 2],
+/// What tells the two members a partial struct pattern matches apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Apart {
+    /// Only cells not decided where the pattern is completed.
+    Undecided,
+    /// Types decided there.
+    Decided,
 }
 
-impl fmt::Display for UndecidedMembers {
+/// A partial struct pattern that two members of the scrutinee could take.
+/// The site that completes it tells the refusal in its own words, naming
+/// the cells.
+#[derive(Debug)]
+pub struct ManyMembers {
+    pub pattern: StructurePattern,
+    pub members: [Type; 2],
+    pub apart: Apart,
+}
+
+impl fmt::Display for ManyMembers {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let Self { pattern, members: [a, b] } = self;
-        format_with_flags(PrintFlag::DerefTVars, || {
-            write!(
+        let Self { pattern, members: [a, b], apart } = self;
+        format_with_flags(PrintFlag::DerefTVars, || match apart {
+            Apart::Undecided => write!(
                 f,
                 "the pattern {pattern} matches two members, {a} and {b}, told apart by \
                  types not decided where it takes them apart; annotate those types, or \
                  name every field"
-            )
+            ),
+            Apart::Decided => write!(
+                f,
+                "the pattern {pattern} matches more than one member, {a} and {b}; \
+                 test the member you mean, or name every field"
+            ),
         })
     }
 }
 
-impl std::error::Error for UndecidedMembers {}
+impl std::error::Error for ManyMembers {}
 
 /// The abstract type each abstract pattern of a pattern names, as the
 /// pattern's compile resolved it.

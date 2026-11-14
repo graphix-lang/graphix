@@ -5,7 +5,7 @@ use super::{
     data::{struct_field_types, tuple_field_types},
     lambda::{DefBody, DefOrigin, LambdaDef, MethodCells},
     pattern::{
-        CompiledAbstracts, Holder, StructPatternNode, rigid_refusal, undecided_members,
+        CompiledAbstracts, Holder, StructPatternNode, members_refusal, rigid_refusal,
     },
     place::{self, Path, RefPath},
     read_var_by,
@@ -419,13 +419,7 @@ impl<R: Rt> Bind<R> {
                         match pat
                             .complete_type_predicate(&ctx.env, &ptyp, &typ)
                             .map_err(|e| {
-                                undecided_members(
-                                    &ctx.env,
-                                    e,
-                                    &spec.ori,
-                                    Holder::Let,
-                                    pat,
-                                )
+                                members_refusal(&ctx.env, e, &spec.ori, Holder::Let, pat)
                             })
                             .at(&spec)?
                         {
@@ -651,9 +645,7 @@ impl<R: Rt> Bind<R> {
         let t = b
             .pattern
             .complete_type_predicate(&ctx.env, &ptyp, &self.typ)
-            .map_err(|e| {
-                undecided_members(&ctx.env, e, &spec.ori, Holder::Let, &b.pattern)
-            })
+            .map_err(|e| members_refusal(&ctx.env, e, &spec.ori, Holder::Let, &b.pattern))
             .at(spec)?;
         let Some(t) = t else {
             if self.typ.with_deref(|t| t.is_none()) {

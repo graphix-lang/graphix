@@ -3,7 +3,7 @@ use super::{
     compiler::compile,
     pattern::{
         ArmMatch, CompiledAbstracts, Holder, PatternNode, SliceKind, StructPatternNode,
-        Tested, rigid_refusal, undecided_members, written_named, written_refusal,
+        Tested, members_refusal, rigid_refusal, written_named, written_refusal,
     },
     wake::{self, ArmMask, TrackedFires},
 };
@@ -3392,7 +3392,7 @@ impl<R: Rt> Select<R> {
                     .complete_type_predicate(&ctx.env, &pat.type_predicate, &reach.atype)
                     .map_err(|e| {
                         let whole = &spec_pat.structure_predicate;
-                        undecided_members(&ctx.env, e, &self.spec.ori, Holder::Arm, whole)
+                        members_refusal(&ctx.env, e, &self.spec.ori, Holder::Arm, whole)
                     })
                     .at(&site)?;
                 if let Some(t) = t {

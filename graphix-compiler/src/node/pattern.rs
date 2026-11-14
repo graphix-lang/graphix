@@ -4,7 +4,7 @@ use crate::{
     BindId, CFlag, CompileCtx, ExecCtx, Notify, PrintFlag, Rt, Scope, Tag, TagValue,
     env::{ChangesLater, Env},
     expr::{
-        AbstractOf, ExprId, Name, Origin, Pattern, StructurePattern, UndecidedMembers,
+        AbstractOf, Apart, ExprId, ManyMembers, Name, Origin, Pattern, StructurePattern,
         WrittenAt, union_members, union_members_open, union_members_with,
     },
     format_with_flags,
@@ -422,17 +422,17 @@ pub(super) fn written_named(holders: &mut Holders, t: &Type) -> Option<Type> {
     })
 }
 
-/// An [`UndecidedMembers`] refusal of a part of `whole`, the pattern
+/// A [`ManyMembers`] refusal of a part of `whole`, the pattern
 /// `holder` holds, told with the bindings whose types the undecided cells
 /// are, a cell no binding names numbered.
-pub(super) fn undecided_members(
+pub(super) fn members_refusal(
     env: &Env,
     e: anyhow::Error,
     at: &Origin,
     holder: Holder,
     whole: &StructurePattern,
 ) -> anyhow::Error {
-    let Some(u) = e.downcast_ref::<UndecidedMembers>() else { return e };
+    let Some(u) = e.downcast_ref::<ManyMembers>() else { return e };
     let mut holders = Holders::new(env, None);
     let mut written = |t: &Type| written_named(&mut holders, t);
     let [a, b] = &u.members;
@@ -445,24 +445,57 @@ pub(super) fn undecided_members(
         }),
     };
     let pat = &u.pattern;
-    let (site, fix) = match holder {
-        Holder::Arm => {
-            ("select", format_compact!("the member you mean, e.g. `T as {whole}`"))
-        }
-        Holder::Let => (
-            "let",
-            format_compact!("the binding with the type it binds, `let {whole}: T = ..`"),
-        ),
-        Holder::Formal => (
-            "parameter",
-            format_compact!("the parameter with the type it binds, `{whole}: T`"),
-        ),
+    let site = match holder {
+        Holder::Arm => "select",
+        Holder::Let => "let",
+        Holder::Formal => "parameter",
     };
-    anyhow!(
-        "the pattern {pat} matches two members, {a} and {b}, told apart by types not \
-         decided at this {site}; annotate those types, or {fix}, or name every \
-         field{meanings}"
-    )
+    match u.apart {
+        Apart::Undecided => {
+            let fix = match holder {
+                Holder::Arm => {
+                    format_compact!("the member you mean, e.g. `T as {whole}`")
+                }
+                Holder::Let => format_compact!(
+                    "the binding with the type it binds, `let {whole}: T = ..`"
+                ),
+                Holder::Formal => {
+                    format_compact!("the parameter with the type it binds, `{whole}: T`")
+                }
+            };
+            anyhow!(
+                "the pattern {pat} matches two members, {a} and {b}, told apart by types \
+                 not decided at this {site}; annotate those types, or {fix}, or name \
+                 every field{meanings}"
+            )
+        }
+        Apart::Decided => {
+            let share_fields = match &u.members {
+                [Type::Struct(x), Type::Struct(y)] => {
+                    x.len() == y.len()
+                        && x.iter().zip(y.iter()).all(|((m, _, _), (n, _, _))| m == n)
+                }
+                _ => false,
+            };
+            let fix = match (holder, share_fields) {
+                (Holder::Arm, _) => {
+                    format_compact!("annotate the member you mean, e.g. `T as {whole}`")
+                }
+                (_, true) => format_compact!(
+                    "name every field of {pat}, which the members share, or take the \
+                     value apart in a select, `T as {whole}`"
+                ),
+                (_, false) => format_compact!(
+                    "the members do not share their fields: bind the value whole and \
+                     take it apart in a select, `T as {whole}`"
+                ),
+            };
+            anyhow!(
+                "the pattern {pat} matches more than one member, {a} and {b}; {fix}\
+                 {meanings}"
+            )
+        }
+    }
 }
 
 /// The refusal of `pat`, over a value of `typ`, testing or binding inside
@@ -2135,7 +2168,7 @@ impl StructPatternNode {
             // only the binds
             let shape = match spec
                 .complete_type_predicate(env, &shape, type_predicate)
-                .map_err(|e| undecided_members(env, e, cx.ori, cx.holder, cx.whole))?
+                .map_err(|e| members_refusal(env, e, cx.ori, cx.holder, cx.whole))?
             {
                 Some(t) => t,
                 None => shape,

@@ -378,7 +378,7 @@ a written test's own open variable (pins
 test of the undecided part (`written_tests_undecided`, pins
 `lang::select_undecided::written_union_test_of_an_undecided_*`); and members
 told apart only by undecided cells under a partial struct pattern
-(`UndecidedMembers`; pins `lang::select::partial_struct_*_two_members`).
+(`ManyMembers`; pins `lang::select::partial_struct_*_two_members`).
 
 **15. A union of variables in a signature.** Site: a top-level `let`
 of a lambda whose first positional parameter is a name, written with no

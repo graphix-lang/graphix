@@ -13,7 +13,7 @@ use netidx_core::{pack::PackError, path::Path};
 use netidx_derive::Pack;
 use netidx_value::{ValArray, Value};
 pub use pattern::{
-    AbstractOf, Decided, Pattern, StructurePattern, UndecidedMembers, union_members,
+    AbstractOf, Apart, Decided, ManyMembers, Pattern, StructurePattern, union_members,
     union_members_open, union_members_with,
 };
 use poolshark::local::LPooled;

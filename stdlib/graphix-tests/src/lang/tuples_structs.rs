@@ -646,6 +646,101 @@ run!(
     FuseExpect::None
 );
 
+// A partial struct pattern over members decided apart is refused in its
+// holder's words: a let and a parameter take every member at once, so the
+// remedy is every field named where the members share their fields, else a
+// select; an undecided cell is named by its binding.
+run!(
+    let_partial_struct_over_members_decided_apart_refused,
+    r#"{
+    let t = true;
+    let x: string = never();
+    let y = never();
+    let v = select t { true => {a: [1], c: x}, false => {a: ["s"], c: y} };
+    let {a, ..} = v;
+    y <- "w";
+    a
+}"#,
+    refused(
+        "the pattern { a, .. } matches more than one member, { a: Array<i64>, c: string } \
+         and { a: Array<string>, c: 'y }; name every field of { a, .. }, which the \
+         members share, or take the value apart in a select, `T as { a, .. }`, writing \
+         for 'y the type of `y` (line 4, column 9)"
+    );
+    FuseExpect::None
+);
+
+run!(
+    let_partial_struct_over_members_decided_apart_every_field_named,
+    r#"{
+    let t = true;
+    let x: string = "q";
+    let y = never();
+    let v = select t { true => {a: [1], c: x}, false => {a: ["s"], c: y} };
+    let {a, c} = v;
+    y <- "w";
+    a
+}"#,
+    prints("[i64:1]")
+);
+
+run!(
+    let_partial_struct_over_members_that_share_no_fields_refused,
+    r#"{
+    let v: [{a: i64, b: string}, {a: i64, c: f64}] = {a: 1, b: "s"};
+    let {a, ..} = v;
+    a
+}"#,
+    refused(
+        "the pattern { a, .. } matches more than one member, { a: i64, b: string } and { \
+         a: i64, c: f64 }; the members do not share their fields: bind the value whole \
+         and take it apart in a select, `T as { a, .. }`"
+    );
+    FuseExpect::None
+);
+
+run!(
+    select_over_the_member_of_members_that_share_no_fields,
+    r#"{
+    let v: [{a: i64, b: string}, {a: i64, c: f64}] = {a: 1, b: "s"};
+    select v { {a: i64, b: string} as {a, ..} => a, _ => 0 }
+}"#,
+    prints("i64:1")
+);
+
+run!(
+    parameter_partial_struct_over_members_that_share_no_fields_refused,
+    r#"{
+    let f = |{a, ..}: [{a: i64, b: string}, {a: i64, c: f64}]| a;
+    f({a: 1, b: "s"})
+}"#,
+    refused(
+        "the pattern { a, .. } matches more than one member, { a: i64, b: string } and { \
+         a: i64, c: f64 }; the members do not share their fields: bind the value whole \
+         and take it apart in a select, `T as { a, .. }`"
+    );
+    FuseExpect::None
+);
+
+run!(
+    select_partial_struct_over_members_decided_apart_refused,
+    r#"{
+    let t = true;
+    let x: string = never();
+    let y = never();
+    let v = select t { true => {a: [1], c: x}, false => {a: ["s"], c: y} };
+    let r = select v { {a, ..} => a };
+    y <- "w";
+    r
+}"#,
+    refused(
+        "the pattern { a, .. } matches more than one member, { a: Array<i64>, c: string } \
+         and { a: Array<string>, c: 'y }; annotate the member you mean, e.g. `T as { a, \
+         .. }`, writing for 'y the type of `y` (line 4, column 9)"
+    );
+    FuseExpect::None
+);
+
 // Each remedy the refusal names passes: the cells annotated, the binding
 // annotated, every field named.
 run!(
