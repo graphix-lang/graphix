@@ -729,30 +729,6 @@ impl Reach {
             // normalizes a union of the bound cells (Kept::merge_with, Identity::same),
             // quadratic per arm. probes:
             // ~/ptmp/cr29/scratch/r25/25b/pbl/bench/{s8_100,s8_200,t8_100,t8_200}.gx, m.sh
-            // CR claude for claude: [bug/low] A part built into a scrutinee cell the arms
-            // decide still goes by the order of the arms' union where the arm that takes
-            // its member whole binds a name: `let f = |x, y, b: bool| { let r = &mut
-            // (select b { true => (`K, x, y), false => (`L, 0, "a") }); select *r { (`K,
-            // n, _) => "0:[n]", (_, _, "a") => "1", _ => "w" } }` is `fn(x: '_N, y:
-            // string, b: bool) -> string`, so `f(5, 7, true)` is refused, "type mismatch
-            // string does not contain i64", and with `y` first (`(y, `K, x)` beside `("a",
-            // `L, 0)`, arms `(_, `K, n)`, `("a", _, _)`, `_`) it is `fn(x: '_N, y: '_N, b:
-            // bool) -> string` and prints ["0:5", "1"]. built_standing takes only a test
-            // that holds no cell as holding a part as it stands, so `(`K, 'n, Any)`, which
-            // holds `(`K, 'x, 'y)` binding only its own cell, holds nothing back, `(Any,
-            // Any, string)` takes the part where it sorts first, and one such test is not
-            // two for the refusal. `|x, y: i64, b: bool|` prints in both orders. Of 70
-            // generated families over two undecided parts (gen2.py, 1680 selects, each
-            // family in the six orders of its parts) this is the one whose verdict follows
-            // the order. What would close it: a test with cells of its own that holds the
-            // part binding only those counts as holding it, where the settle can still
-            // place every other part (the test's cells are shared between the parts: `(`K,
-            // 'n)` over `(`K, 1)` and `(`K, x)`); or the part is refused as one two tests
-            // could take, which also refuses the selects whose other test decides only the
-            // cell the name binds (`(`K, n, _)`, `(_, 0, _)`: `x` is i64 in every order
-            // today). base-r24 alike. probes: ~/ptmp/cr29/scratch/r24/24b/lbfm-rev/a2.txt
-            // lines 6 to 8 (run with rb.sh), t6.txt (ty.sh), gen2.py, g7711.sum (f0046)
-            // (cover-bind-part-order-01)
             // CR claude for claude: [bug/low] Two undecided values that meet in one
             // part of a variant scrutinee are made one type by arms that bind that
             // part beside literals, and the refusal names no annotation: `let f = |x,

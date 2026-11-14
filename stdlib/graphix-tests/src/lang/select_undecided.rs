@@ -3494,3 +3494,30 @@ run!(wildcard_beside_a_bind_used_as_two_types_refused, r#"{
     let f = |s| select s { (1, _) => 0, (2, b) => b + 1, (_, b) => str::len(b) };
     f((2, 5))
 }"#, refused("type mismatch"); FuseExpect::None);
+
+// A part an earlier arm takes whole, binding only another cell, is where a
+// later test over an undecided cell lands; which cell a test narrows follows
+// the order of the parts, and each order's verdict is sound.
+run!(cover_bind_part_after_a_taken_member_narrows_the_cell_refused, r#"{
+    let f = |x, y, b: bool| {
+        let r = &mut (select b { true => (`K, x, y), false => (`L, 0, "a") });
+        select *r { (`K, n, _) => "0:[n]", (_, _, "a") => "1", _ => "w" }
+    };
+    [f(5, 7, true), f(5, 7, false)]
+}"#, refused("string does not contain i64"); FuseExpect::None);
+
+run!(cover_bind_part_after_a_taken_member_annotated, r#"{
+    let f = |x, y: i64, b: bool| {
+        let r = &mut (select b { true => (`K, x, y), false => (`L, 0, "a") });
+        select *r { (`K, n, _) => "0:[n]", (_, _, "a") => "1", _ => "w" }
+    };
+    [f(5, 7, true), f(5, 7, false)]
+}"#, prints(r#"["0:5", "1"]"#); FuseExpect::Jit);
+
+run!(cover_bind_part_after_a_taken_member_part_first, r#"{
+    let f = |x, y, b: bool| {
+        let r = &mut (select b { true => (y, `K, x), false => ("a", `L, 0) });
+        select *r { (_, `K, n) => "0:[n]", ("a", _, _) => "1", _ => "w" }
+    };
+    [f(5, 7, true), f(5, 7, false)]
+}"#, prints(r#"["0:5", "1"]"#); FuseExpect::Jit);
