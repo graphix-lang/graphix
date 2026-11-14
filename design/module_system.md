@@ -403,6 +403,22 @@ a_function_saved_across_a_reload_dispatches_an_outside_function_to_its_own_impl`
 and `lib_tests::leaks::
 a_saved_function_calling_an_outside_function_keeps_nothing_once_dropped`.
 
+A call made outside every load has no load to dispatch in, so its
+instance of an outside function reads the registry's impls. Each run-time
+bind records the registry entries its dispatches chose
+(`CompileCtx::impl_reads`, `CallSite::impl_reads`; an entry a load's own
+view supplied is not one, since that load keeps it), and the site builds its
+instance again when the registry no longer holds one: a reload replaced or
+removed the impl. That holds for the call through the module's val and for
+a function saved from the module where both are `let make = app`, the
+outside function itself, alike, whether or not the instance was alive
+across the reload. A bind that failed (`Callee::Failed`) is tried again
+when the registry's impls changed since it failed. A reload that leaves the
+impls an instance chose alone keeps the instance and its state. Pins:
+`lang::modules::a_call_of_an_outside_function_follows_a_reloaded_impl`,
+`.._binds_again_once_a_reload_implements_its_trait` and
+`.._keeps_its_instance_over_a_reload_that_leaves_its_impl`.
+
 At a deletion the val's binding is deleted with the body's, as a
 `let`'s is (`ExecCtx::delete_binding`), and the pair is what one plain
 `let` would be. Where values name each of the two (a function the body

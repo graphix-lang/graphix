@@ -1630,6 +1630,7 @@ impl<R: Rt> CallSite<R> {
                 m.name
             )
         };
+        ctx.read_impl(&im);
         self.retarget(ctx, bind);
         let fv = ctx.bind_to_lambda.get(&bind).cloned();
         if let Some(fv) = fv
@@ -1782,6 +1783,7 @@ impl<R: Rt> CallSite<R> {
             else {
                 bailat!(self.spec, "impl {} for {mem} has no method {}", def.name, m.name)
             };
+            ctx.read_impl(&im);
             targets.push((mem.clone(), bind));
         }
         let spec = (*self.spec).clone();

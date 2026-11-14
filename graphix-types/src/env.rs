@@ -2854,6 +2854,18 @@ impl Env {
         Some(Arc::new(own.iter().chain(rest).cloned().collect()))
     }
 
+    /// Whether `im`, an impl this view found for a dispatch, is the
+    /// registry's entry itself: a view inside a load reads the load's own
+    /// impls first, and those stay what they were past a reload.
+    pub fn is_registered_impl(&self, im: &Arc<ImplDef>) -> bool {
+        self.lexical.body.is_none()
+            && self.kept_trait(im.trait_id).is_none()
+            && self
+                .impls
+                .get(&im.trait_id)
+                .is_some_and(|list| list.iter().any(|r| Arc::ptr_eq(r, im)))
+    }
+
     /// An impl a sibling module's body added undeclared, hidden from the
     /// other siblings' checks.
     pub(crate) fn impl_hidden(&self, im: &ImplDef) -> bool {

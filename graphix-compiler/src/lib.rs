@@ -1561,6 +1561,9 @@ pub struct CompileCtx<R: Rt> {
     /// The copies the reads in the holder's value being checked share
     /// (`node::bind::ValueReads`).
     pub(crate) holder_reads: Option<ReadCopies>,
+    /// While a run-time bind builds its instance: the registry's impls its
+    /// dispatches chose, which the bound site judges its instance by.
+    pub(crate) impl_reads: Option<SmallVec<[Arc<ImplDef>; 2]>>,
     /// Per-instance fn-formal BindId → the `LambdaId` forwarded to it:
     /// the persistent record the kernel cache fingerprint reads after
     /// the re-drive's `bind_to_lambda` entry is gone.
@@ -1747,6 +1750,7 @@ impl<R: Rt> CompileCtx<R> {
             resolving_lambdas: Mutex::new(self.resolving_lambdas.lock().clone()),
             defaults_in_check: self.defaults_in_check.clone(),
             holder_reads: None,
+            impl_reads: None,
             fn_forward_resolutions: self.fn_forward_resolutions.fork(),
             body: self.body.clone(),
             pending_settles: vec![SettleFrame::default()],
@@ -1761,6 +1765,15 @@ impl<R: Rt> CompileCtx<R> {
             boundary: self.boundary.clone(),
             profile: profile::Task::fork(),
             fusion: self.fusion.fork(),
+        }
+    }
+
+    /// A dispatch chose `im`: the instance being built, if any, follows it
+    /// while the registry holds it.
+    pub(crate) fn read_impl(&mut self, im: &Arc<ImplDef>) {
+        let Some(reads) = &mut self.impl_reads else { return };
+        if self.env.is_registered_impl(im) && !reads.iter().any(|r| Arc::ptr_eq(r, im)) {
+            reads.push(im.clone())
         }
     }
 
@@ -1798,6 +1811,7 @@ impl<R: Rt> CompileCtx<R> {
             resolving_lambdas: _,
             defaults_in_check: _,
             holder_reads: _,
+            impl_reads: _,
             fn_forward_resolutions,
             body: _,
             pending_settles,
@@ -2307,6 +2321,7 @@ impl<R: Rt> ExecState<R> {
                 resolving_lambdas: Mutex::new(Resolving::default()),
                 defaults_in_check: SmallVec::new(),
                 holder_reads: None,
+                impl_reads: None,
                 fn_forward_resolutions: TrackedMap::default(),
                 body: None,
                 pending_settles: vec![SettleFrame::default()],
@@ -2952,6 +2967,7 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
             && self.resolving_lambdas.lock().0.is_none()
             && self.defaults_in_check.is_empty()
             && self.holder_reads.is_none()
+            && self.impl_reads.is_none()
             && self.body.is_none()
     }
 
@@ -2968,6 +2984,7 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
         *self.resolving_lambdas.lock() = Resolving::default();
         self.defaults_in_check.clear();
         self.holder_reads = None;
+        self.impl_reads = None;
         self.body = None;
     }
     env_restore_methods!();
@@ -4670,6 +4687,7 @@ impl Saved {
             resolving_lambdas: _,
             defaults_in_check: _,
             holder_reads: _,
+            impl_reads: _,
             fn_forward_resolutions,
             body: _,
             pending_settles: _,

@@ -400,7 +400,10 @@ code over that body's bindings as they last stood, a call already running
 included: it never sees the new module, or a later write to `d::v`, and
 a trait method its code calls is the one that body implemented, also where
 a function outside the module that it calls makes the call. Call through
-the module, `d::get(x)`, to follow a reload.
+the module, `d::get(x)`, to follow a reload. A call made outside every load
+of a function outside every load (`let make = app` in the body, `saved <-
+d::make`) is the root's own: it dispatches by the impl registered now, so a
+reload that replaces the body's impl moves it, a saved one included.
 
 A closure or reference that left a select arm, held where the arm's sleep
 does not reach (`let h = once(g)`, a `<-` to an outer variable), reads the

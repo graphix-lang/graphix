@@ -2914,6 +2914,79 @@ run!(
     FuseExpect::Jit
 );
 
+// A function made outside every load is called from outside every load, so
+// it dispatches by the registry as it stands: both bodies give the val the
+// outside `app` and differ in the impl of `Sh` for `i64`, and the call
+// through the val, the instance `held` has kept and the ones `late` first
+// calls all run the second body's impl.
+run!(
+    a_call_of_an_outside_function_follows_a_reloaded_impl,
+    is(Value::String(
+        " 2014 2014 [2014, 2015] 2015 2015 [2015, 2016] 2016 2016 [2016, 2017] 2017 2017 [2017, 2018] 2018 2018 [2018, 2019]"
+            .into()
+    )),
+    "/test.gx" => a_function_saved_across_a_reload(
+        OUTSIDE_APP,
+        "val make: fn(x: i64) -> i64",
+        "use super::{Sh, app}; impl Sh for i64 { let sh = |c: i64| c + 1 }; let make = app",
+        "use super::{Sh, app}; impl Sh for i64 { let sh = |c: i64| c + 2000 }; let make = app",
+    );
+    FuseExpect::Jit
+);
+
+// The second body implements nothing, so the bind of `late` at 9 fails, and
+// so does the rebuild of `held`; the third implements `Sh` for `i64`, and
+// both are tried again. `d::make` is the second body's own function.
+run!(
+    a_call_of_an_outside_function_binds_again_once_a_reload_implements_its_trait,
+    r#"{
+    trait Sh { val sh: fn(self) -> i64 }; let app = |x: Sh| Sh::sh(x) + 5;
+    let ep = 0;
+    ep <- select ep { n if n < 18 => n + 1, _ => never() };
+    let src: string = never();
+    src <- select ep {
+        2 => "use super::{Sh, app}; impl Sh for i64 { let sh = |c: i64| c + 1 }; let make = app",
+        6 => "use super::{Sh, app}; let make = |x: i64| x * 10",
+        12 => "use super::{Sh, app}; impl Sh for i64 { let sh = |c: i64| c + 2000 }; let make = app",
+        _ => never()
+    };
+    let s = mod d dynamic { sandbox unrestricted; sig { val make: fn(x: i64) -> i64 }; source src };
+    let saved: fn(x: i64) -> i64 = never();
+    saved <- select ep { 4 => ep ~ d::make, _ => never() };
+    let held = saved(ep);
+    let xs: Array<i64> = never();
+    xs <- select ep { 9 => [0, 1], _ => never() };
+    let late = array::map(xs, |x| saved(x + ep));
+    let seen = "";
+    seen <- late ~ "[seen] [held] [late]";
+    select ep { 18 => ep ~ seen, _ => never() }
+}"#,
+    is(Value::String(
+        " 2018 [2018, 2019] 2019 [2019, 2020] 2020 [2020, 2021] 2021 [2021, 2022] 2022 [2022, 2023]"
+            .into()
+    ));
+    FuseExpect::Jit
+);
+
+// A reload that leaves the registry's impl of `Sh` for `i64` alone keeps the
+// instances that dispatch to it: `make`'s `count` goes on through the
+// reload, in the call through the val and in `held`.
+run!(
+    a_call_of_an_outside_function_keeps_its_instance_over_a_reload_that_leaves_its_impl,
+    is(Value::String(
+        " 7010 5010 [1010, 1011] 8011 6011 [2011, 2012] 9012 7012 [3012, 3013] 10013 8013 [4013, 4014] 11014 9014 [5014, 5015]"
+            .into()
+    )),
+    "/test.gx" => a_function_saved_across_a_reload(
+        "trait Sh { val sh: fn(self) -> i64 }; impl Sh for i64 { let sh = |c: i64| c + 1 }; \
+         let tick = |x: i64| Sh::sh(x) + count(x) * 1000;",
+        "val make: fn(x: i64) -> i64",
+        "use super::tick; let make = tick",
+        "use super::tick; let make = tick"
+    );
+    FuseExpect::Jit
+);
+
 // The call is to a method of an outside impl whose head is generic over
 // `Sh`: the method's instance dispatches its element to the first body's
 // impl.

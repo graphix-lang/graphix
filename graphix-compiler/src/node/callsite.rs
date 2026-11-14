@@ -13,7 +13,7 @@ use crate::{
     Apply, ApplyView, BindId, BindMode, CFlag, CompileCtx, ExecCtx, FnArgIdentity,
     LambdaId, LambdaInstanceId, Node, NodeView, Notify, Refs, ResolvingLambda, Rt, Scope,
     StaticHold, TagValue, Update, View, analysis, bailat, dbgenv, deref_typ,
-    env::Env,
+    env::{Env, ImplDef, Map},
     expr::{ApplyExpr, At, Expr, ExprId, ExprKind, Told},
     fusion::{
         self,
@@ -36,7 +36,7 @@ use crate::{
     stack::ensure_sufficient,
     typ::{
         AmbiguousMember, AppKey, Brief, ContainsFlags, FnArgKind, FnArgType, FnType,
-        Mutability, TVar, TakerUnion, Type, UndecidedTaker,
+        Mutability, TVar, TakerUnion, TraitId, Type, UndecidedTaker,
         settle::{DataPositions, Expanded, Held, Reaching, Unrolling, settle_order},
         tvar::{AtLevel, BoundAt, Bounds, Judgment, Level, RigidGate},
     },
@@ -2440,8 +2440,9 @@ pub(crate) enum Callee<R: Rt> {
     /// variables the defaults it compiled read, and binds it.
     Prebound { def: Value, apply: Box<dyn Apply<R>>, defaults: SmallVec<[BindId; 2]> },
     /// Binding `def` failed: the call is bottom until `fnode` yields
-    /// another definition.
-    Failed { def: Value },
+    /// another definition, or an impl is registered or removed (`impls`,
+    /// the registry's as the bind found it).
+    Failed { def: Value, impls: ImplTable },
     /// Pre-bound at compile time by [`CallSite::try_static_resolve`]; the
     /// per-cycle identity check is skipped (`fnode.update()` still runs
     /// for effects). `first_update` marks the next update as the
@@ -2464,6 +2465,9 @@ pub(crate) enum Callee<R: Rt> {
         held: bool,
     },
 }
+
+/// The registry's impls by trait ([`Env::impls`]).
+pub(crate) type ImplTable = Map<TraitId, TArc<Vec<TArc<ImplDef>>>>;
 
 /// The reads of an imaged instance's whole tree, flattened from the
 /// image's table when first asked.
@@ -2621,6 +2625,9 @@ pub struct CallSite<R: Rt> {
     /// The bindings this call bound statically, its function's and its
     /// fn-typed arguments', and, for an imaged callee, its whole tree's.
     static_holds: SmallVec<[StaticHold; 1]>,
+    /// The registry's impls the bound instance's dispatches chose: the
+    /// instance is built again when the registry no longer holds one.
+    impl_reads: Option<Box<[TArc<ImplDef>]>>,
 }
 
 /// The registered builtin a site calls by name: its function is a
@@ -2673,6 +2680,7 @@ impl<R: Rt> CallSite<R> {
             defaults_open: true,
             absent: None,
             step_due: false,
+            impl_reads: None,
             decoded: false,
             fork: ForkSite::default(),
             static_holds: SmallVec::new(),
@@ -3500,7 +3508,7 @@ impl<R: Rt> CallSite<R> {
                     format_compact!("{}: binding the callee failed: {e:#}", self.spec);
                 super::error::report_failure!(&msg);
                 self.clear_prepared_bind(ctx);
-                self.callee = Callee::Failed { def: fv };
+                self.callee = Callee::Failed { def: fv, impls: (*ctx.env.impls).clone() };
             }
         }
     }
@@ -3519,7 +3527,8 @@ impl<R: Rt> CallSite<R> {
         if perfdbg::enabled() {
             perfdbg::BIND_CALLS.fetch_add(1, Relaxed);
         }
-        crate::with_attribute_frame(ctx, |ctx| {
+        let outer = ctx.impl_reads.replace(SmallVec::new());
+        let built = crate::with_attribute_frame(ctx, |ctx| {
             let (scope, flags) = (self.scope.clone(), self.flags);
             // The lazy-bound body's typecheck defers settles no statement
             // boundary will drain.
@@ -3539,6 +3548,24 @@ impl<R: Rt> CallSite<R> {
                 fused?;
             }
             Ok(defaults)
+        });
+        let reads = mem::replace(&mut ctx.impl_reads, outer).unwrap_or_default();
+        self.impl_reads = match built {
+            Ok(_) if !reads.is_empty() => Some(reads.into_vec().into_boxed_slice()),
+            _ => None,
+        };
+        built
+    }
+
+    /// Whether the registry has dropped an impl this site's instance
+    /// dispatches to: a reload replaced or removed it.
+    fn impl_reads_moved(&self, env: &Env) -> bool {
+        self.impl_reads.as_ref().is_some_and(|reads| {
+            reads.iter().any(|im| {
+                !env.impls
+                    .get(&im.trait_id)
+                    .is_some_and(|l| l.iter().any(|r| TArc::ptr_eq(r, im)))
+            })
         })
     }
 
@@ -3626,7 +3653,7 @@ impl<R: Rt> CallSite<R> {
                     mem::replace(&mut self.callee, Callee::DynamicUnbound)
                 {
                     ctx.discard_apply(apply);
-                    self.callee = Callee::Failed { def };
+                    self.callee = Callee::Failed { def, impls: (*ctx.env.impls).clone() };
                 }
                 return Err(e.context(format!(
                     "a run-time bind at {} did not elaborate",
@@ -4253,7 +4280,7 @@ impl<R: Rt> CallSite<R> {
         }
     }
 
-    // CR claude for claude: [bug/low] A call through a dynamic module does not
+    // XCR claude for claude: [bug/low] A call through a dynamic module does not
     // follow a reload where both bodies give the val the same function of the code
     // around the module and differ in an impl it dispatches to. The site keeps its
     // instance, whose dispatch was resolved against the impl the first body
@@ -4275,6 +4302,22 @@ impl<R: Rt> CallSite<R> {
     // body's own, so D33 (a) does not say. probes:
     // ~/ptmp/cr29/scratch/r24/24e/retired-body-outside-dispatch-01/review/{r7,r7c}.gx,
     // `graphix --no-cache` (reload-same-fn-impl-01)
+    // 2026-11-14 claude: A run-time bind records the registry impls its dispatches
+    // chose (CompileCtx::impl_reads, read_impl at resolve_trait_call and
+    // lower_trait_union; an impl a load's own view supplies is not recorded, so D33
+    // stays: Env::is_registered_impl), and CallSite::rebind builds the instance again
+    // when one is no longer registered; a Callee::Failed carries the registry's impl
+    // table and retries when it changed. r7.gx and r7c.gx on the lane build: ep 14
+    // new=2019 alive=2019 late=[2019, 2020], and r7c's late line recovers at ep 13.
+    // What saved means: a function outside every load called from outside every load
+    // dispatches by the registry as it stands, so a saved one moves with a reload too
+    // (the function is the root's app, not the body's own; D33 (a) says nothing of
+    // it); written in design/module_system.md and the graphix-lang skill. Pins that
+    // fail without it:
+    // lang::modules::a_call_of_an_outside_function_follows_a_reloaded_impl and
+    // .._binds_again_once_a_reload_implements_its_trait;
+    // .._keeps_its_instance_over_a_reload_that_leaves_its_impl guards state. Needs a
+    // soak.
     /// Bind the definition `v` unless it is the one bound, or the one
     /// whose bind failed; true when a fresh callee was bound.
     fn rebind(
@@ -4284,8 +4327,13 @@ impl<R: Rt> CallSite<R> {
         set: &mut Published,
     ) -> bool {
         let same = match &self.callee {
-            Callee::DynamicBound { def, .. } | Callee::Failed { def } => def == &v,
-            Callee::Prebound { def, .. } if def == &v => {
+            Callee::DynamicBound { def, .. } => {
+                def == &v && !self.impl_reads_moved(&ctx.env)
+            }
+            Callee::Failed { def, impls } => def == &v && impls.ptr_eq(&ctx.env.impls),
+            Callee::Prebound { def, .. }
+                if def == &v && !self.impl_reads_moved(&ctx.env) =>
+            {
                 let Callee::Prebound { def, apply, defaults } =
                     mem::replace(&mut self.callee, Callee::DynamicUnbound)
                 else {
@@ -4309,7 +4357,7 @@ impl<R: Rt> CallSite<R> {
                 let msg =
                     format_compact!("{}: binding the callee failed: {e:#}", self.spec);
                 super::error::report_failure!(&msg);
-                self.callee = Callee::Failed { def: v };
+                self.callee = Callee::Failed { def: v, impls: (*ctx.env.impls).clone() };
                 false
             }
         }
