@@ -2233,13 +2233,13 @@ pub(crate) fn make_init<R: Rt>(
             BindMode::Definition => def_env.clone(),
             BindMode::Static { .. } => {
                 let mut env = def_env.called_in(scope.load.as_ref());
-                ctx.env.name_kept_impls(&mut env, &def_scope.lexical);
+                ctx.env.name_kept_impls(&mut env);
                 env
             }
             BindMode::Dynamic(_, kept) => {
                 let mut env = def_env.called_in(scope.load.as_ref());
                 if let Some(kept) = kept {
-                    kept.name_in(&mut env, &def_scope.lexical)
+                    kept.name_in(&mut env)
                 }
                 env
             }

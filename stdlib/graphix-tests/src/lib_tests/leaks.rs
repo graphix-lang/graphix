@@ -1947,6 +1947,39 @@ async fn a_method_of_a_dropped_impl_naming_a_later_method_dispatches_by_the_trai
     .await
 }
 
+/// A method of a dropped impl of a standing trait calls a later method of
+/// its own impl through the trait: it dispatches to the impl it is part of.
+async fn a_method_of_a_dropped_impl_calling_a_later_sibling_through_the_trait_dispatches_to_it(
+    mode: Mode,
+) -> Result<()> {
+    escaped_and_called_over(
+        mode,
+        [],
+        "trait Sh { val sh: fn(self) -> i64; val k: fn(self) -> i64 }",
+        "{ type C = Abstract<i64>; \
+         impl Sh for C { let sh = |c: C| k(c) + 1; let k = |c: C| c.0 * 9 + 2 }; \
+         saved <- |y: i64| Sh::sh(C(y)); 1 }",
+    )
+    .await
+}
+
+/// The same through a generic function outside the block, which the
+/// method calls: it dispatches as the method does.
+async fn a_method_of_a_dropped_impl_reaching_a_later_sibling_through_an_outside_function_dispatches_to_it(
+    mode: Mode,
+) -> Result<()> {
+    escaped_and_called_over(
+        mode,
+        [],
+        "trait Sh { val sh: fn(self) -> i64; val k: fn(self) -> i64 }; \
+         let app = |v: Sh| Sh::k(v)",
+        "{ type C = Abstract<i64>; \
+         impl Sh for C { let sh = |c: C| app(c) + 1; let k = |c: C| c.0 * 9 + 2 }; \
+         saved <- |y: i64| Sh::sh(C(y)); 1 }",
+    )
+    .await
+}
+
 /// A function value passed through a higher-order function reaches the dropped
 /// impl of a standing trait.
 async fn a_function_passed_to_another_beside_a_dropped_impl_dispatches_to_it(
@@ -2120,6 +2153,8 @@ modes!(
     a_function_reaching_the_trait_only_through_a_captured_function_dispatches_to_its_dropped_impl,
     a_run_time_bind_beside_a_dropped_impl_of_a_standing_trait_dispatches_to_it,
     a_method_of_a_dropped_impl_naming_a_later_method_dispatches_by_the_trait,
+    a_method_of_a_dropped_impl_calling_a_later_sibling_through_the_trait_dispatches_to_it,
+    a_method_of_a_dropped_impl_reaching_a_later_sibling_through_an_outside_function_dispatches_to_it,
     a_function_outliving_its_impl_of_a_plain_head_past_a_redeclaration_beside_a_standing_trait,
     a_function_over_an_interfaces_impl_of_a_dropped_outside_trait_dispatches,
     a_function_escaping_dropped_impls_of_plain_heads_dispatches_past_their_redeclaration,

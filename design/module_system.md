@@ -565,23 +565,22 @@ function value pins them. `Impl::give_back` keeps the entry under the
 method bindings a value names (`ExecCtx::keep_impl`, `Env::kept_impls`,
 a `KeptImpl` with the typedefs its head names); the entry goes with the
 last of them (`Env::release_dispatcher`). A view reads a kept entry only
-where it names one of its methods at the entry's scope
-(`Env::kept_impls_named`), ahead of the registered ones of its head, so
-an impl of the same head declared again serves the functions made under
-it and leaves the older ones alone. An instance a static call builds
-names, in its view, the kept entries its caller's view names at each
-scope its own view holds nothing at and its definition is not inside
-(`Env::name_kept_impls`, in `make_init`), so a trait's default method and
-a function of an earlier input dispatch to the entry their caller was
-made beside, and a method's names still mean what they meant where it was
-defined: a later method of its impl does not shadow the trait's
-dispatcher. A run-time bind's instance names the same, read from the
-view its call site was checked in (`CallSite::kept`, `KeptView`, held
-only where the view names a kept entry), since the bind itself runs under
-the run-time env. Not kept: an entry that writes no method, one a function
-reaches only through a captured function whose type names no trait
-bound, and one an impl's first method reaches through a later method of the
-same impl, since its view names none of the entry's methods. Pins:
+where it names it: one of its methods at the entry's scope, or the entry
+in `Lexical::kept` (`Env::kept_impls_named`), ahead of the registered
+ones of its head, so an impl of the same head declared again serves the
+functions made under it and leaves the older ones alone. An instance a
+static call builds names in `Lexical::kept` the kept entries its
+caller's view names whose scope its own view holds nothing at
+(`Env::name_kept_impls`, in `make_init`), so a trait's default method, a
+function of an earlier input and an impl's first method dispatch to the
+entry their caller was made beside. No name lookup reads that set, so a
+method's names still mean what they meant where it was defined: a later
+method of its impl does not shadow the trait's dispatcher. A run-time
+bind's instance names the same, read from the view its call site was
+checked in (`CallSite::kept`, `KeptView`, held only where the view names
+a kept entry), since the bind itself runs under the run-time env. Not
+kept: an entry that writes no method, and one a function reaches only
+through a captured function whose type names no trait bound. Pins:
 `lib_tests::leaks::
 a_function_escaping_a_dropped_block_dispatches_to_its_impl`,
 `.._to_its_defaults`,
@@ -598,6 +597,8 @@ a_function_escaping_a_dropped_block_dispatches_to_its_impl`,
 `a_function_reaching_a_dropped_impl_through_an_earlier_definition_dispatches_to_it`,
 `a_run_time_bind_beside_a_dropped_impl_of_a_standing_trait_dispatches_to_it`,
 `a_method_of_a_dropped_impl_naming_a_later_method_dispatches_by_the_trait`,
+`a_method_of_a_dropped_impl_calling_a_later_sibling_through_the_trait_dispatches_to_it`,
+`a_method_of_a_dropped_impl_reaching_a_later_sibling_through_an_outside_function_dispatches_to_it`,
 `a_function_outliving_another_inputs_trait_dispatches_to_its_impl`,
 `a_function_made_before_an_impl_dispatches_to_it_once_both_are_dropped`,
 `a_function_over_an_interfaces_impl_of_a_dropped_outside_trait_dispatches`,

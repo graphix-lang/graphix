@@ -1008,6 +1008,11 @@ pub struct Lexical {
     /// its list has compiled reads no module in it as holding what it
     /// holds now.
     pub open: Map<ModPath, OpenList>,
+    /// The kept impl entries ([`Env::kept_impls`]) a dispatch under this
+    /// view reads beside those its bindings name, each by a method
+    /// binding that keys it: an instance's, named by its caller
+    /// ([`Env::name_kept_impls`]). No name lookup reads it.
+    pub kept: Set<BindId>,
 }
 
 impl Lexical {
@@ -1023,6 +1028,7 @@ impl Lexical {
             && self.typedefs.ptr_eq(&other.typedefs)
             && self.traits.ptr_eq(&other.traits)
             && self.block_names.ptr_eq(&other.block_names)
+            && self.kept.ptr_eq(&other.kept)
     }
 
     /// This view, a definition's, for an instance a call in the load
@@ -1412,38 +1418,34 @@ impl KeptImpl {
         Self { im, _named }
     }
 
-    /// `view`'s bindings at the entry's scope, where they name one of its
-    /// methods.
-    fn named_in<'a>(&self, view: &'a Lexical) -> Option<&'a Map<CompactString, BindId>> {
-        let names = |b: &&Map<CompactString, BindId>| {
+    /// Whether `view` names this entry, kept under its method binding
+    /// `id`: by its bindings at the entry's scope or by [`Lexical::kept`].
+    fn named_by(&self, id: &BindId, view: &Lexical) -> bool {
+        let names = |b: &Map<CompactString, BindId>| {
             self.im.methods.into_iter().any(|(n, id)| b.get(n) == Some(id))
         };
-        view.binds.get(&self.im.scope).filter(names)
+        view.kept.contains(id) || view.binds.get(&self.im.scope).is_some_and(names)
     }
 }
 
-/// The kept impl entries a view names, each as its bindings at the
-/// impl's scope: what [`Env::name_kept_impls`] reads of a caller's view,
-/// held by a call site that binds its callee later.
+/// The kept impl entries a view names, each by its scope and the method
+/// binding that keys it: what [`Env::name_kept_impls`] reads of a
+/// caller's view, held by a call site that binds its callee later.
 #[derive(Clone, Debug)]
-pub struct KeptView(Box<[(ModPath, Map<CompactString, BindId>)]>);
+pub struct KeptView(Box<[(ModPath, BindId)]>);
 
 impl KeptView {
-    /// Name these entries in `view`, a definition's at `at`, as
+    /// Name these entries in `view`, a definition's, as
     /// [`Env::name_kept_impls`] does for the view they were read from.
-    pub fn name_in(&self, view: &mut Lexical, at: &ModPath) {
-        name_kept(self.0.iter().map(|(scope, binds)| (scope, binds)), view, at)
+    pub fn name_in(&self, view: &mut Lexical) {
+        name_kept(self.0.iter().map(|(scope, id)| (scope, *id)), view)
     }
 }
 
-fn name_kept<'a>(
-    named: impl Iterator<Item = (&'a ModPath, &'a Map<CompactString, BindId>)>,
-    view: &mut Lexical,
-    at: &ModPath,
-) {
-    for (scope, binds) in named {
-        if view.binds.get(scope).is_none() && !scope_is_under(&at.0, &scope.0) {
-            view.binds = view.binds.insert(scope.clone(), binds.clone()).0;
+fn name_kept<'a>(named: impl Iterator<Item = (&'a ModPath, BindId)>, view: &mut Lexical) {
+    for (scope, id) in named {
+        if view.binds.get(scope).is_none() {
+            view.kept.insert_cow(id);
         }
     }
 }
@@ -2754,12 +2756,11 @@ impl Env {
         }
     }
 
-    /// The entries kept for `trait_id` whose method bindings this view
-    /// names at the entry's scope.
+    /// The entries kept for `trait_id` this view names.
     fn kept_impls_named(&self, trait_id: TraitId, own: &mut Vec<Arc<ImplDef>>) {
-        for (_, k) in self.kept_impls.iter() {
+        for (id, k) in self.kept_impls.iter() {
             if k.im.trait_id == trait_id
-                && k.named_in(&self.lexical).is_some()
+                && k.named_by(id, &self.lexical)
                 && !own.iter().any(|o| Arc::ptr_eq(o, &k.im))
             {
                 own.push(k.im.clone())
@@ -2767,7 +2768,7 @@ impl Env {
         }
     }
 
-    // CR claude for claude: [bug/low] The first method of an impl kept while its trait
+    // XCR claude for claude: [bug/low] The first method of an impl kept while its trait
     // stands cannot dispatch to a later method of that impl through the trait: with
     // `trait Sh { val sh: fn(self) -> i64; val k: fn(self) -> i64 }` standing and a block
     // `{ type C = Abstract<i64>; impl Sh for C { let sh = |c: C| k(c) + 1; let k = |c: C|
@@ -2783,21 +2784,34 @@ impl Env {
     // scope reads that impl's kept entry as its own. Only an embedder reaches it. base-r26
     // alike. probe: ~/ptmp/cr29/scratch/r26/26a/efo-rev/probes.txt
     // (escaped-fn-method-forward-sibling-01)
-    /// `view`, of a definition at `at`, for an instance a call compiled
-    /// under this view makes: it names the kept entries this view names,
-    /// at each scope `view` holds nothing at, so the instance dispatches to
-    /// the impls its caller does, as [`Lexical::called_in`] does for a
-    /// load. Never at a scope `at` is inside: the body's names resolve
-    /// there, and a method's later siblings would shadow what it named.
-    pub fn name_kept_impls(&self, view: &mut Lexical, at: &ModPath) {
+    // 2026-11-15 claude: A view names kept entries apart from its bindings: Lexical::kept
+    // (a set of method bindings keying entries), read by Env::kept_impls_named through
+    // KeptImpl::named_by and by no name lookup. Env::name_kept_impls puts there every entry
+    // the caller names (by its bindings or its own set) whose scope the instance's view
+    // holds nothing at, in place of copying the caller's bindings, so the scope the
+    // definition is inside needs no exception. An image refuses a view with a non-empty set
+    // (a kept entry exists only after a cycle). Pins
+    // lib_tests::leaks::a_method_of_a_dropped_impl_calling_a_later_sibling_through_the_trait_dispatches_to_it
+    // and .._reaching_a_later_sibling_through_an_outside_function_dispatches_to_it fail in
+    // all four modes without it.
+    /// `view`, a definition's, for an instance a call compiled under this
+    /// view makes: it names in [`Lexical::kept`] the kept entries this
+    /// view names whose scope `view` holds nothing at, so the instance
+    /// dispatches to the impls its caller does, as [`Lexical::called_in`]
+    /// does for a load.
+    pub fn name_kept_impls(&self, view: &mut Lexical) {
         if self.kept_impls.len() == 0 {
             return;
         }
-        let named = self
-            .kept_impls
+        name_kept(self.kept_named(), view)
+    }
+
+    /// The kept entries this view names, by scope and keying binding.
+    fn kept_named(&self) -> impl Iterator<Item = (&ModPath, BindId)> {
+        self.kept_impls
             .iter()
-            .filter_map(|(_, k)| Some((&k.im.scope, k.named_in(&self.lexical)?)));
-        name_kept(named, view, at)
+            .filter(|(id, k)| k.named_by(id, &self.lexical))
+            .map(|(id, k)| (&k.im.scope, *id))
     }
 
     /// What this view names of the kept entries, for a call site whose
@@ -2807,13 +2821,8 @@ impl Env {
         if self.kept_impls.len() == 0 {
             return None;
         }
-        let named: Box<[_]> = self
-            .kept_impls
-            .iter()
-            .filter_map(|(_, k)| {
-                Some((k.im.scope.clone(), k.named_in(&self.lexical)?.clone()))
-            })
-            .collect();
+        let named: Box<[_]> =
+            self.kept_named().map(|(scope, id)| (scope.clone(), id)).collect();
         (!named.is_empty()).then_some(KeptView(named))
     }
 

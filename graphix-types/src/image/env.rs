@@ -10,7 +10,7 @@ use crate::{
     BindId,
     env::{
         AbstractRep, Bind, BlockType, BlockTypes, Env, ImplDef, ImportEntry, Lexical,
-        Map, TraitDef, TypeDef,
+        Map, Set, TraitDef, TypeDef,
     },
     expr::ModPath,
     shared_map::{self, RelocatedMap, RelocatedSet, SharedMap, SharedSet},
@@ -351,6 +351,7 @@ pub(crate) fn lexical_len(lex: &Lexical) -> usize {
         body: _,
         input: _,
         open: _,
+        kept: _,
     } = lex;
     shared_map::map_len(binds)
         + SharedSet(modules.clone()).encoded_len()
@@ -370,9 +371,11 @@ pub fn lexical_encode(lex: &Lexical, buf: &mut impl BufMut) -> Result<(), PackEr
         body,
         input: _,
         open: _,
+        kept,
     } = lex;
-    // a load happens in a cycle, and an image is written before any
-    if body.is_some() {
+    // a load happens in a cycle, and an impl is kept in one: an image is
+    // written before any
+    if body.is_some() || !kept.is_empty() {
         return Err(PackError::InvalidFormat);
     }
     nested_encode(binds, buf)?;
@@ -397,6 +400,7 @@ pub fn lexical_decode(buf: &mut impl Buf) -> Result<Lexical, PackError> {
         body: None,
         input: None,
         open: Map::default(),
+        kept: Set::default(),
     })
 }
 
