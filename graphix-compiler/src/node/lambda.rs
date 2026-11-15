@@ -2886,55 +2886,6 @@ impl<R: Rt> DefGate<R> {
                 spec: Arc::new(spec.clone()),
             });
         }
-        // XCR claude for claude: [bug/medium] A call site in a named definition's body
-        // settles with the enclosing statement, after the calls of the definition that
-        // the statement makes have instantiated its signature, so a bound that settle
-        // puts on a cell the signature reaches comes too late for them: the check
-        // accepts and the build refuses. `let f = 'a0: ['a1, bool], 'a1: ['a2, duration]
-        // |x0: 'a0, x2: 'a2| x2; let w0: [null, string] = null; let g = |u| f(w0, u);
-        // g(1)` passes --check and the run fails "an instance at fn(u: i64) -> i64 of a
-        // definition typed fn(u: [null, string]) -> [null, string]"; `g("s")`, a valid
-        // call, fails the same way, in a block too, and GRAPHIX_NO_SUBST=1 refuses each
-        // at `f(w0, u)` (the first, "unsatisfiable constraints on 'a1: [duration, 'a2:
-        // i64]"). The
-        // site's first argument puts 'a1 above `[null, string]`, and 'a1's own bound
-        // reaches 'a2, which is u, only when 'a1 settles: `SETTLE 'a1` and `LOWER 'a2`
-        // under GRAPHIX_DBG_BIND come after the check of `g(1)`, which bound its copy
-        // of u to i64. These are right: `g(w0)` and u annotated `[null, string]` run;
-        // one bound alone (`'a1: ['a2, duration] |x0: 'a1, x2: 'a2|`) refuses `g(1)`
-        // at the check, "[null, string] does not contain i64"; the chain written in
-        // the parameter (`x0: [['a2, duration], bool]`) refuses `g(1)` and prints s
-        // for `g("s")`. base-r24 alike (its build names f's instance). 2 of 350
-        // generated calls under a chain of two bounds. A fix passes a lower bound a
-        // cell takes on to the open cells of its conjuncts when it takes it (what the
-        // cell binds to holds the bound and stands within the conjunct), or settles
-        // at the gate's close the cells of the body's sites that reach the signature's.
-        // Found reviewing bound-union-binds-argument-early-01. probes:
-        // ~/ptmp/cr29/scratch/r24/24c/bubarev/n{1,2,7}.gx (check accepts, build
-        // refuses), n{3,4,5,6,12}.gx (right), gen2.py (def-site-settle-after-calls-01)
-        // 2026-11-14 claude: Fixed at the gate's close: DefGate::close passes the
-        // decided lower bounds of each body site's open cells whose conjuncts reach the
-        // signature on to those conjuncts (FnType::lower_into_kept, settle.rs), before
-        // the enclosing statement's calls, as the site's own settle would. n1, n2, n7
-        // now refuse g(1) at the check ([null, string] does not contain i64) or print s;
-        // n3-6, n12 unchanged. Pins that fail without it (16 of 20 runs):
-        // lang::types::lower_bound_reaches_the_bounds_own_cells_*. The eager form
-        // (commit_conjuncts where a cell takes a lower bound, contains.rs) was built and
-        // dropped: it newly refuses valid programs a cell above a bound meets later
-        // (lang::types::a_bound_chain_in_one_argument_settles_in_the_chains_order,
-        // bound_closed_by_its_own_chain_settles_before_its_holder, even with
-        // lower-bound-refuses-narrower-01's held_by_lower applied) and two pins read the
-        // undecided lower bound as a meet. Generated chains (gen.py, 300 programs and
-        // twins): 36 check-accepts-build-refuses now refused at the check, 7 now run,
-        // none valid changed.
-        // 2026-11-14 claude: Correction to the note above: the eager form failed on
-        // a_bound_chain_in_one_argument_settles_in_the_chains_order even with
-        // lower-bound-refuses-narrower-01's held_by_lower applied (the formal cell 'j
-        // met by a narrower argument is not a conjunct's cell), and on
-        // bound_closed_by_its_own_chain_settles_before_its_holder alone (the undecided
-        // argument's cell took the bound's tuple, so 'a1 counted as met: "pass the
-        // widest argument first"); that is why only decided lower bounds pass, at the
-        // gate's close.
         ctx.pending_settles.last_mut().expect("root settle frame").append(frame);
         ctx.rec_defs.remove(&self.def);
         self.faux.close(ctx);
