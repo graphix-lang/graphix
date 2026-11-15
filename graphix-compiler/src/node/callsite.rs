@@ -3306,6 +3306,18 @@ impl<R: Rt> CallSite<R> {
         (f.init)(scope, ctx, &mut self.arg_refs, mode, self.top_id)
     }
 
+    // CR claude for claude: [bug/low] A run-time bind checks and builds its instance under the
+    // run-time env, not the view of the code the call is in, so an impl entry kept for that
+    // view (`Env::kept_impls`) is unseen: with `let app = |v: Sh| Sh::sh(v)` of an earlier input
+    // and `saved <- |x: i64| { let f = select x { 3 => app, _ => |c: C| 0 }; f(C(x)) * 5 +
+    // Sh::sh(C(x)) - 6 }` made beside `impl Sh for C`, once the impl's block is dropped the
+    // call logs "a run-time bind at f(C(x)) did not type: an instance at fn(c: C) -> i64 of a
+    // definition typed fn(v: '#v: unbound within Sh) -> i64" and is bottom (30 while it
+    // lives). A static call names the caller's kept entries in the instance's view
+    // (`Env::name_kept_impls` in `make_init`); a run-time bind has no caller's view to read.
+    // To fix: the site carries what its view names of the kept entries, as `Scope::load`
+    // carries its load, and the bind's check and instance read it. Only an embedder reaches
+    // it. probe: ~/ptmp/cr29/scratch/r26/26a/efo/probes.txt (escaped-fn-runtime-bind-view-01)
     /// The instance of `f` a run-time bind dispatches, and the outer
     /// variables the defaults it compiled read.
     fn setup_dynamic_bind(

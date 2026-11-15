@@ -1530,16 +1530,13 @@ async fn a_function_outliving_its_impl_beside_a_standing_trait_dispatches_to_it(
     let trait_input = "trait Sh { val sh: fn(self) -> i64; val twice: fn(self) -> i64 = |s| sh(s) * 2 }; \
          let app = |v: Sh| Sh::twice(v) + 1";
     let impl_input = "type C = Abstract<i64>; impl Sh for C { let sh = |c: C| c.0 * 5 }";
-    for order in [[1, 0, 2], [1, 2, 0], [0, 1, 2], [2, 1, 0]] {
-        inputs_dropped_in_order(
-            mode,
-            trait_input,
-            impl_input,
-            "|x: i64| Sh::sh(C(x)) + 1",
-            16,
-            order,
-        )
-        .await?
+    let functions =
+        [("|x: i64| Sh::sh(C(x)) + 1", 16), ("|x: i64| Sh::twice(C(x)) + app(C(x))", 61)];
+    for (function, want) in functions {
+        for order in [[1, 0, 2], [1, 2, 0], [0, 1, 2], [2, 1, 0]] {
+            inputs_dropped_in_order(mode, trait_input, impl_input, function, want, order)
+                .await?
+        }
     }
     Ok(())
 }
@@ -1636,6 +1633,25 @@ async fn a_union_over_two_dropped_impls_of_a_standing_trait_dispatches_to_both(
         "{ type C = Abstract<i64>; impl Sh for C { let sh = |c: C| c.0 * 10 }; \
          type D = Abstract<i64>; impl Sh for D { let sh = |c: D| 1 }; let u: [C, D] = C(3); \
          saved <- |x: i64| Sh::sh(u) + Sh::sh(C(x)) - 30; 1 }",
+    )
+    .await
+}
+
+/// A function made beside the dropped impl of a standing trait reaches it
+/// through the trait's default method and through a function of the
+/// trait's input that names the trait only as a parameter's type, called
+/// and as values: each is instantiated in a view made before the impl.
+async fn a_function_reaching_a_dropped_impl_through_an_earlier_definition_dispatches_to_it(
+    mode: Mode,
+) -> Result<()> {
+    escaped_and_called_over(
+        mode,
+        [],
+        "trait Sh { val sh: fn(self) -> i64; val twice: fn(self) -> i64 = |s| sh(s) * 2 }; \
+         let app = |v: Sh| Sh::sh(v)",
+        "{ type C = Abstract<i64>; impl Sh for C { let sh = |c: C| c.0 * 2 }; \
+         saved <- |x: i64| { let t = Sh::twice; let g = |c: C| app(c); \
+                             Sh::twice(C(x)) + app(C(x)) + t(C(x)) + g(C(x)) - 6 }; 1 }",
     )
     .await
 }
@@ -1806,6 +1822,7 @@ modes!(
     a_function_over_a_generic_one_beside_a_dropped_impl_dispatches_to_it,
     a_union_over_two_dropped_impls_of_a_standing_trait_dispatches_to_both,
     a_function_passed_to_another_beside_a_dropped_impl_dispatches_to_it,
+    a_function_reaching_a_dropped_impl_through_an_earlier_definition_dispatches_to_it,
     a_function_outliving_its_impl_of_a_plain_head_past_a_redeclaration_beside_a_standing_trait,
     a_function_over_an_interfaces_impl_of_a_dropped_outside_trait_dispatches,
     a_function_escaping_dropped_impls_of_plain_heads_dispatches_past_their_redeclaration,

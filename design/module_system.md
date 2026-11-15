@@ -539,11 +539,15 @@ last of them (`Env::release_dispatcher`). A view reads a kept entry only
 where it names one of its methods at the entry's scope
 (`Env::kept_impls_named`), ahead of the registered ones of its head, so
 an impl of the same head declared again serves the functions made under
-it and leaves the older ones alone. Not kept: an entry that writes no
-method, and a call that reaches the impl through another function
-instantiated in that function's own view (a trait's default method, a
-function of an earlier input that names the trait only as a bound),
-whose view does not name the impl. Pins:
+it and leaves the older ones alone. An instance a static call builds
+names, in its view, the kept entries its caller's view names at each
+scope its own view holds nothing at (`Env::name_kept_impls`, in
+`make_init`), so a trait's default method and a function of an earlier
+input dispatch to the entry their caller was made beside. Not kept: an
+entry that writes no method, one a function reaches only through a
+function it captures (it names neither a dispatcher nor the anchor), and
+one a run-time bind's instance would reach: the bind checks under the
+run-time env, which names no caller's entries. Pins:
 `lib_tests::leaks::
 a_function_escaping_a_dropped_block_dispatches_to_its_impl`,
 `.._to_its_defaults`,
@@ -557,6 +561,7 @@ a_function_escaping_a_dropped_block_dispatches_to_its_impl`,
 `a_function_escaping_a_dropped_block_dispatches_to_its_impl_of_a_standing_trait`,
 `.._of_a_plain_head`,
 `a_function_outliving_its_impl_beside_a_standing_trait_dispatches_to_it`,
+`a_function_reaching_a_dropped_impl_through_an_earlier_definition_dispatches_to_it`,
 `a_function_outliving_another_inputs_trait_dispatches_to_its_impl`,
 `a_function_made_before_an_impl_dispatches_to_it_once_both_are_dropped`,
 `a_function_over_an_interfaces_impl_of_a_dropped_outside_trait_dispatches`,
