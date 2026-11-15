@@ -2793,6 +2793,8 @@ pub struct TypeMismatch {
     infinite: bool,
     /// [`settled_cause_note`] of the two sides.
     settled: Option<CompactString>,
+    /// [`unmet_bound_note`] of the two sides.
+    unmet: Option<CompactString>,
     held: HeldQuantifiers,
 }
 
@@ -2837,9 +2839,51 @@ impl std::fmt::Display for TypeMismatch {
             if let Some(note) = &self.settled {
                 write!(f, ": {note}")?;
             }
+            if let Some(note) = &self.unmet {
+                write!(f, ": {note}")?;
+            }
             Ok(())
         })
     }
+}
+
+/// The note a refusal ends with where a generated cell it reaches, which
+/// prints as what it is above, stands within a bound that none of those
+/// lower bounds meets: the bound, and the type it refuses.
+fn unmet_bound_note(env: &Env, types: &[&Type]) -> Option<CompactString> {
+    let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+    for t in types {
+        t.reached_cells(&mut cells);
+    }
+    let mut found: SmallVec<[&TVar; 2]> = cells
+        .values()
+        .filter(|tv| {
+            tv.generated() && tv.binding().is_none() && !tv.cell_constraints().is_empty()
+        })
+        .collect();
+    found.sort_by_key(|tv| tv.cell_addr());
+    found.into_iter().find_map(|tv| {
+        let lower = tv.cell_lower().into_iter().find(|l| {
+            let mut hist = ContainsHist::new();
+            !conjuncts_admit(tv, BitFlags::empty(), env, &mut hist, l).unwrap_or(true)
+        })?;
+        let within = format_with_flags(PrintFlag::ReplacePrims, || {
+            let mut s = CompactString::default();
+            for (i, c) in tv.cell_constraints().iter().enumerate() {
+                s.push_str(if i == 0 { "" } else { " & " });
+                s.push_str(&format_compact!("{c}"));
+            }
+            s
+        });
+        let lower =
+            format_with_flags(PrintFlag::DerefTVars | PrintFlag::ReplacePrims, || {
+                format_compact!("{lower}")
+            });
+        Some(format_compact!(
+            "it is within the bound {within}, which {lower} does not meet: a variable \
+             the bound names is one type"
+        ))
+    })
 }
 
 /// A type that two or more undecided members of a union could take. Which
@@ -3553,6 +3597,7 @@ impl Type {
             kept_bare: kept_bare(env, self, t),
             infinite: false,
             settled: settled_cause_note(env, self, t, false),
+            unmet: unmet_bound_note(env, &[self, t]),
             held: HeldQuantifiers::of([self, t]),
         })
     }
@@ -4452,7 +4497,7 @@ impl Type {
                     }
                     t1.weld_lower();
                     let Ok(w) = t1.witness(env)? else { return Ok(false) };
-                    // CR claude for claude: [bug/low] A refusal under a bound that holds one
+                    // XCR claude for claude: [bug/low] A refusal under a bound that holds one
                     // variable twice prints a mismatch that is false as printed, where the
                     // bound's variable is a call's result. `let f = 'a0: ['a1, null], 'a1:
                     // ('a2, 'a2, i64) |x0: 'a0| -> 'a1 never(); let r: ([i64, string], [i64,
@@ -4469,6 +4514,13 @@ impl Type {
                     // to annotate. Found reviewing bound-chain-lower-settle-01. probes:
                     // ~/ptmp/cr29/scratch/r24/24c/bclsrev/{d1,d6,d5,k3}.gx
                     // (bound-twice-result-message-01)
+                    // 2026-11-14 claude: The refusal's message now ends with the bound a
+                    // generated cell stands within and the lower bound it does not meet
+                    // (contains.rs unmet_bound_note, TypeMismatch.unmet): d1 and d6 print "it is
+                    // within the bound ('a2, 'a2, i64), which (i64, string, i64) does not meet".
+                    // Pins
+                    // lang::types::a_result_within_a_bound_holding_one_variable_twice_names_the_bound
+                    // (4 modes fail without) and its annotated twin. Message-only, no census.
                     if !t1.cell_lower().is_empty()
                         && !commit_conjuncts(t1, flags, env, hist, &w)?
                     {

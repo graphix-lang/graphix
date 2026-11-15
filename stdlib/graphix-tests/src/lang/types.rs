@@ -14052,6 +14052,31 @@ run!(
     FuseExpect::None
 );
 
+run!(
+    a_result_within_a_bound_holding_one_variable_twice_names_the_bound,
+    r#"{
+  let f = 'a0: ['a1, null], 'a1: ('a2, 'a2, i64) |x0: 'a0| -> 'a1 never();
+  let r: (i64, string, i64) = f((1, "s", 1));
+  1
+}"#,
+    refused(
+        "it is within the bound ('a2, 'a2, i64), which (i64, string, i64) does not meet"
+    );
+    FuseExpect::None
+);
+
+run!(
+    a_result_within_a_bound_holding_one_variable_twice_takes_an_argument_of_one_type,
+    r#"{
+  let f = 'a0: ['a1, null], 'a1: ('a2, 'a2, i64) |x0: 'a0| -> 'a1 never();
+  let p: ([i64, string], [i64, string], i64) = (1, "s", 1);
+  let r: ([i64, string], [i64, string], [i64, null]) = f(p);
+  1
+}"#,
+    prints("i64:1");
+    FuseExpect::Jit
+);
+
 // The links of a chain one argument holds settle in the order of the
 // chain, whatever the variables are named.
 run!(
