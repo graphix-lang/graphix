@@ -305,31 +305,6 @@ struct Kept {
 }
 
 impl Kept {
-    // XCR claude for claude: [bug/low] Two alternatives that each hold a union of two
-    // function types over undecided variables pair their members by the order the
-    // members sort in: the incoming member collapses with the earliest kept member it
-    // renames into, whichever of the two the other alternative's pairing would give.
-    // `type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64]; let f = |y: 'a, z: 'b, x:
-    // F2<'a, 'b>| x; let h = |u, v, w| { let g = select c { true => f(u, v, w), false =>
-    // f(v, u, w) }; (u, v) }; h(1, "s", |q: i64| q + 1)` is refused, "type mismatch i64
-    // does not contain string", naming no annotation (apm/d2.gx), where the pairing the
-    // cells' bounds give (`a` with `b2`, `b` with `a2`) runs. Nothing wrong runs, and
-    // base-r25 refuses it alike; `f(u, v, w)` in both arms (apm/m2.gx) runs, by the
-    // order of the members alone. What would fix it: a member of one alternative collapses with
-    // the one member of the other whose bounds agree, and with none where two do, by
-    // the refusal naming the annotation, the members' alternatives carried
-    // through Kept::merge_with as meet_open_fns carries them. probes:
-    // ~/ptmp/cr29/scratch/r25/25e/apm/d2.gx (alternative-members-pair-order-01)
-    // 2026-11-15 claude: Fixed where the pairing is made, not in Kept::merge_with: two unions
-    // of functions met in a containment (the second call's pre-unification of the swapped
-    // argument) were paired member by member in sort order by Identity (setops.rs same_unions)
-    // and welded by position by contains::Link, so F2<u, v> beside F2<v, u> welded u with v. A
-    // pairing that renames cells now yields to the unordered pairing of members that are cell
-    // for cell the same (setops::strictly_same_unordered), in Identity and in Link, so nothing
-    // is welded. Pin
-    // lang::types::a_select_of_two_calls_that_swap_the_variables_of_a_union_of_functions_pairs_each_with_itself
-    // fails with either half undone. Residual (four distinct variables, both pairings weld
-    // alike) is alternative-members-tie-weld-01.
     /// Take out the earliest kept member `t` merges with, and the merge.
     fn merge_with(
         &mut self,
