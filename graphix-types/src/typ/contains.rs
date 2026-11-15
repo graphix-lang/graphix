@@ -1149,44 +1149,6 @@ fn guide(flags: BitFlags<ContainsFlags>) -> BitFlags<ContainsFlags> {
     }
 }
 
-// CR claude for eric: [bug/low] A well-typed call over a shorter chain of bounds is
-// refused, as it is on base-r25 (the same refusal before 3157516bb): `let f = 'a3:
-// ['a4, Array<'a4>], 'a4: ['a5, Array<'b>], 'a5: Array<i64>, 'b: Number |x: ('a3, 'a4,
-// 'a5)| x; f(([1], [], [1]))` is refused with `type mismatch Array<Array<['_N: unbound
-// within Number, ..]>> does not contain Array<i64>` at the first `[1]`, which `'a3 =
-// Array<i64>` (its member `'a4`) types; `([], [], [1])` is accepted. The member of
-// `'a3`'s bound that takes `Array<_>` is `Array<'a4>`, which decides 'a4 an array
-// where the member `'a4` holds it. probe: ~/ptmp/cr29/scratch/r26/26e/p3.gx
-// (bound-chain-array-member-01)
-// 2026-11-15 claude: 27c fixer: not fixed, BLOCKED on a ruling. Mechanism: the call's
-// pre-unification meets the literal [1] while its type is Array<'e> with 'e undecided,
-// exactly as [] is, and Contains::set_commit puts the structural member Array<'a4>
-// before the bare bounded member 'a4 (tiers [structural, bare], Type::take), so 'a3
-// takes Array<'a4> and the literal's own element check then fails against 'a4's bound;
-// nothing at that point tells [1] from []. Tried (a) a bounded bare member that
-// another member mentions takes a type with the structural members (new takes_last):
-// the CR's call is then accepted, but [] against ['a4, Array<'a4>] becomes an
-// AmbiguousMember refusal, which fails the pins
-// chain_of_bounds_sharing_a_variable_takes_arrays and _takes_a_nested_array (valid
-// programs, fuzz shapes) and f(([1])) over 'a4: ['a5: Array<i64>, Array<'b>] shows the
-// same flip for members that share no cell, so a restriction to shared cells is the
-// only variant that keeps those, and it still refuses [] where the tier order accepted
-// it. (b) a bounded bare member first: f([[1]]) over 'a3: ['a4, Array<'a4>], 'a4:
-// Array<i64> then fails (valid today). Either way one of [1] and [[1]] is a valid
-// program the check refuses, and only looking at the later element tells them apart,
-// which D36 rules out (no wait, no deferral). Annotating the value takes the
-// variable's member and runs: let a: Array<i64> = [1]; f((a, [], [1])). Pinned in
-// lang::types (chain_bound_array_literal_is_taken_by_the_structural_member,
-// _value_annotated_takes_the_variable_member,
-// _nested_array_literal_takes_the_structural_member). Recommendation: close as no
-// defect under D36 (the structural-first tier is a fixed shape order, not a
-// check-order pick), optionally with a refusal note on a literal argument once
-// decided-early-unrelated-refusal-01 limits decided_early to refusals about the early
-// cell: today a literal has no binding for it to name. Verdict: Eric's ruling on
-// whether to close, or on which of [1] and [[1]] the tier should favour.
-// 2026-11-15 claude: Round 27 coordinator: with Eric as D46 in ~/ptmp/cr-discuss.md
-// (recommendation: close under D36).
-
 /// Whether the open cell `tv` takes what it must hold as a lower bound
 /// rather than binding to it ([`ContainsFlags::Lower`] outside a
 /// function's arguments and [`ContainsFlags::LowerInArgs`] inside them).
