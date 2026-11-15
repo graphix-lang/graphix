@@ -1434,7 +1434,7 @@ impl Drop for AtLevel {
 pub(super) struct ChainEnds(Option<LPooled<AHashMap<usize, Option<usize>>>>);
 
 impl ChainEnds {
-    const SHORT: usize = 8;
+    pub(super) const SHORT: usize = 8;
 
     /// The address of `tv.open_cell()`.
     fn open_cell(&mut self, tv: &TVar) -> Option<usize> {
@@ -2639,6 +2639,46 @@ impl TVar {
                 Some(next) => tv = next,
             }
         }
+    }
+
+    /// The address of [`Self::open_cell`]'s cell, `None` when the chain ends
+    /// bound. A chain longer than [`ChainEnds::SHORT`] is walked once while
+    /// this thread writes no cell.
+    pub(super) fn open_cell_addr(&self) -> Option<usize> {
+        thread_local! {
+            static ENDS: RefCell<(u64, AHashMap<usize, (Arc<CellLock>, Option<usize>)>)> =
+                RefCell::new((0, AHashMap::default()));
+        }
+        let writes = cell_writes();
+        let start = self.cell();
+        let addr = start.data_ptr().addr();
+        let known = ENDS.with_borrow_mut(|(at, ends)| {
+            if *at != writes {
+                ends.clear();
+                *at = writes;
+            }
+            ends.get(&addr).map(|(_, end)| *end)
+        });
+        if let Some(end) = known {
+            return end;
+        }
+        let mut walked = 0;
+        let mut cell = start.clone();
+        let end = loop {
+            walked += 1;
+            #[cfg(test)]
+            CHAIN_STEPS.with(|n| n.set(n.get() + 1));
+            let next = match &cell.read().binding {
+                None => break Some(cell.data_ptr().addr()),
+                Some(Type::TVar(next)) => next.cell(),
+                Some(_) => break None,
+            };
+            cell = next;
+        };
+        if walked > ChainEnds::SHORT {
+            ENDS.with_borrow_mut(|(_, ends)| ends.insert(addr, (start, end)));
+        }
+        end
     }
 
     /// Bind the open, flexible, unbounded var `slot` holds to `t`, which
@@ -5898,6 +5938,36 @@ impl Type {
         // from each position cell in element_binds). Look at where the links come from (a
         // debug count of merge_one's direction per arm) before choosing between a merge
         // direction and compression.
+        // 2026-11-15 claude: Lane 26f, round 26: PARTIAL. Debug, --no-cache --check, G
+        // instructions, base-r26 -> lane, gen3.py arrelem 8/12/16/20: 1.19/3.34/11.6/36.0
+        // -> 1.06/2.05/4.97/11.96, tupelem 24: 7.53 -> 6.15, the written parameter 0.86 ->
+        // 0.86; census 0/0 (2972 files), checkcost +0.10%, guicheck 41.9696 G -> 41.9693 G.
+        // Done: (1) Alternatives::apart (setops.rs) reads the nodes each alternative of a
+        // join holds once while this thread writes no cell, where holds_node walked every
+        // alternative for every identical pair of the join (the 'apart' work of the weld
+        // commits, 25% of arrelem 12); (2) TVar::open_cell_addr reads the end of a chain
+        // longer than 8 once while no cell is written, used by Leaves::add, so a
+        // walks_alike no longer walks the forwarding chains (avg 22 links at 16 arms) per
+        // cell; (3) Type::with_deref follows a chain of forwarding links in a loop under
+        // one read guard, not by recursion through ensure_sufficient. Measured, not done:
+        // the links are not made by merge_one's direction (every merge's other cell is a
+        // chain end), a cell whose wrapper was merged earlier is read by other wrappers and
+        // each later merge into a fresh cell adds a link behind them; compressing them is
+        // unsafe because unbind (callsite.rs) clears a middle cell's own binding. A walk
+        // key (a hash of the open cells and structure that two types walking alike share)
+        // made unheld_member's pairs cost less per pair but net +18%: 88% of the adds are
+        // members that DO walk alike to a held one, so the confirming walk stays, and the
+        // keys are read again after every write. What stands: arrelem 16 is still 4.97 G
+        // beside 0.8, in unheld_member's confirming walks of alike members (16%),
+        // bind_narrowed/wholes_by_member (12%) and normalize/merge_with (8%); tupelem 24 is
+        // dominated by narrow_per_member_in (16%) and bind_narrowed (10%), untouched. What
+        // would end it is what the CR says: a narrowing that gives one result for a union
+        // of members one type and for one of them, so the union keeps them as one. Pins:
+        // graphix-types lib alternatives_read_their_nodes_once_while_no_cell_is_written and
+        // the_end_of_a_long_chain_is_read_once_while_no_cell_is_written (fail with the memo
+        // off: 250 reads against 1, and 100 chain walks), graphix-shell deep_nesting
+        // slice_arms_over_element_slices_check_in_bounded_time (budget 16 G -> 8 G:
+        // base-r26 retires 11.6 G). Probes: ~/ptmp/cr29/scratch/r26/26f/slice-arms/.
         for m in members {
             if m.walks_as_one_of(&walked) {
                 continue;
@@ -6900,6 +6970,32 @@ mod tests {
             assert_ne!(end(&c), cells[n - 1].cell_addr());
             assert!(matches!(&c, Type::TVar(tv) if tv.name == "a0"));
         }
+    }
+
+    /// The end of a long chain is read once while no cell is written, and
+    /// again once one is: a bound end is none.
+    #[test]
+    fn the_end_of_a_long_chain_is_read_once_while_no_cell_is_written() {
+        let n = 2000;
+        let cells: Vec<TVar> =
+            (0..n).map(|i| TVar::empty_named(arcstr::format!("a{i}"))).collect();
+        for c in &cells {
+            c.set_level(Level::TOP)
+        }
+        for w in cells.windows(2) {
+            w[0].bind(Type::TVar(w[1].clone()))
+        }
+        let end = cells[n - 1].cell_addr();
+        assert_eq!(cells[0].open_cell().unwrap().cell_addr(), end);
+        CHAIN_STEPS.with(|s| s.set(0));
+        for _ in 0..100 {
+            assert_eq!(cells[0].open_cell_addr(), Some(end));
+        }
+        let steps = CHAIN_STEPS.with(|s| s.get());
+        assert!(steps <= n + 8, "{steps} links walked for 100 reads of {n}");
+        cells[n - 1].bind(Type::Primitive(netidx_value::Typ::I64.into()));
+        assert_eq!(cells[0].open_cell_addr(), None);
+        assert_eq!(cells[0].open_cell(), None);
     }
 
     /// A copy from each cell of a chain, none of which it copies (a

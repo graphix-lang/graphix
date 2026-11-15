@@ -4,7 +4,9 @@ use crate::{
     stack::ensure_sufficient,
     typ::{
         AbstractId, Mutability, NodeKey, TVar, Type,
-        setops::{Welds, apart, strictly_identical, union_collapses, written_identical},
+        setops::{
+            Alternatives, Welds, strictly_identical, union_collapses, written_identical,
+        },
     },
 };
 use ahash::AHashMap;
@@ -79,7 +81,7 @@ struct FlatCx {
     flat: Option<LPooled<AHashMap<usize, (Arc<[Type]>, Type)>>>,
     flattened: usize,
     members: Members,
-    alts: SmallVec<[Type; 4]>,
+    alts: Alternatives,
 }
 
 /// How a flattening tells that two members of a union are one.
@@ -99,14 +101,14 @@ enum Members {
 
 impl FlatCx {
     /// Whether a union keeps `t0` in place of `t1`.
-    fn collapses(&self, t0: &Type, t1: &Type, welds: &mut Welds) -> bool {
+    fn collapses(&mut self, t0: &Type, t1: &Type, welds: &mut Welds) -> bool {
         match self.members {
             Members::AsTheyStand => strictly_identical(t0, t1),
             Members::Written => written_identical(t0, t1),
             Members::Welding => {
                 let start = welds.len();
                 let same = union_collapses(t0, t1, welds);
-                if same && apart(&self.alts, t0, t1) && !strictly_identical(t0, t1) {
+                if same && self.alts.apart(t0, t1) && !strictly_identical(t0, t1) {
                     welds.truncate(start);
                     return false;
                 }
@@ -610,9 +612,10 @@ impl Type {
     pub(super) fn normalize_welding(&self, welds: &mut Welds) -> Self {
         let mut cx = NormCx::take();
         cx.visited.flat.members = Members::Welding;
-        cx.visited.flat.alts = welds.alternatives().iter().cloned().collect();
+        cx.visited.flat.alts = mem::take(&mut welds.alts);
         let r = self.normalize_int(&mut cx).unwrap_or_else(|| self.clone());
         welds.extend(cx.welds.drain(..));
+        welds.alts = mem::take(&mut cx.visited.flat.alts);
         r
     }
 

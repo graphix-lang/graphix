@@ -3967,10 +3967,20 @@ impl Type {
             | Self::Variant(_, _, _)
             | Self::Ref(_)
             | Self::Map { .. } => f(Some(self)),
-            Self::TVar(tv) => match tv.read().cell.read().binding.as_ref() {
-                Some(t) => ensure_sufficient(|| t.with_deref(f)),
-                None => f(None),
-            },
+            Self::TVar(tv) => {
+                let mut cell = tv.cell();
+                loop {
+                    let next = match &cell.read().binding {
+                        Some(Self::TVar(next)) => next.cell(),
+                        _ => break,
+                    };
+                    cell = next;
+                }
+                match cell.read().binding.as_ref() {
+                    Some(t) => ensure_sufficient(|| t.with_deref(f)),
+                    None => f(None),
+                }
+            }
         }
     }
 

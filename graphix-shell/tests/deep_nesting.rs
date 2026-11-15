@@ -1897,10 +1897,11 @@ fn select_chains_over_parts_shared_through_cells_are_linear() {
 /// Arms that each take the elements of a slice apart, over a parameter
 /// nothing annotates, check in time polynomial in their number: the
 /// settle of each arm's element binds judges the members of the type the
-/// elements stand over once per member that walks alike, and reads the
-/// open cell a forwarding chain ends in once per cell. Debug,
-/// `--no-cache --check`, G instructions, base-r25 -> lane, 16 arms: 33.0
-/// -> 9.1, beside 0.8 over `x: Array<Array<i64>>`.
+/// elements stand over once per member that walks alike, the open cell a
+/// forwarding chain ends in is read once while no cell is written, and a
+/// join reads the nodes of its alternatives once while no cell is written.
+/// Debug, `--no-cache --check`, 16 arms: 5.0 G instructions, beside 0.8
+/// over `x: Array<Array<i64>>`.
 #[test]
 #[cfg(target_os = "linux")]
 fn slice_arms_over_element_slices_check_in_bounded_time() {
@@ -1912,7 +1913,7 @@ fn slice_arms_over_element_slices_check_in_bounded_time() {
         writeln!(program, "  [{}, t..] => t,", elems.join(", ")).unwrap();
     }
     program.push_str("  _ => []\n};\n0\n");
-    checks_within(&program, 16 * BILLION);
+    checks_within(&program, 8 * BILLION);
 }
 
 /// A select over two pair DAGs, and an or-pattern's name over them, their

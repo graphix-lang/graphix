@@ -500,9 +500,8 @@ pub(super) fn renames(env: &Env, t0: &Type, t1: &Type) -> bool {
 #[derive(Default)]
 pub(super) struct Welds {
     pairs: SmallVec<[(TVar, TVar); 2]>,
-    /// The alternatives of the join the pairs are for: two members one of
-    /// them holds stay two ([`apart`]).
-    alts: SmallVec<[Type; 4]>,
+    /// The alternatives of the join the pairs are for.
+    pub(super) alts: Alternatives,
 }
 
 impl Welds {
@@ -511,11 +510,7 @@ impl Welds {
     }
 
     pub(super) fn joining(alts: SmallVec<[Type; 4]>) -> Self {
-        Self { pairs: SmallVec::new(), alts }
-    }
-
-    pub(super) fn alternatives(&self) -> &[Type] {
-        &self.alts
+        Self { pairs: SmallVec::new(), alts: Alternatives::new(alts) }
     }
 }
 
@@ -533,13 +528,38 @@ impl std::ops::DerefMut for Welds {
     }
 }
 
-/// Whether one of `alts` holds both `t0` and `t1`: two members of one
-/// alternative are two, however alike.
-pub(super) fn apart(alts: &[Type], t0: &Type, t1: &Type) -> bool {
-    let (Some(k0), Some(k1)) = (t0.node_key(), t1.node_key()) else {
-        return false;
-    };
-    alts.iter().any(|a| holds_node(a, &[k0, k1]))
+/// The alternatives of a join, with the nodes each holds read once while
+/// this thread writes no cell.
+#[derive(Default)]
+pub(super) struct Alternatives {
+    alts: SmallVec<[Type; 4]>,
+    held: Option<(u64, SmallVec<[LPooled<AHashSet<NodeKey>>; 4]>)>,
+}
+
+impl Alternatives {
+    pub(super) fn new(alts: SmallVec<[Type; 4]>) -> Self {
+        Self { alts, held: None }
+    }
+
+    /// Whether one alternative holds both `t0` and `t1`: two members of one
+    /// alternative are two, however alike.
+    pub(super) fn apart(&mut self, t0: &Type, t1: &Type) -> bool {
+        let (Some(k0), Some(k1)) = (t0.node_key(), t1.node_key()) else {
+            return false;
+        };
+        if self.alts.is_empty() {
+            return false;
+        }
+        let writes = cell_writes();
+        if self.held.as_ref().is_none_or(|(at, _)| *at != writes) {
+            #[cfg(test)]
+            HELD_READS.with(|n| n.set(n.get() + 1));
+            let nodes = self.alts.iter().map(|a| held_nodes(a)).collect();
+            self.held = Some((writes, nodes));
+        }
+        let (_, nodes) = self.held.as_ref().unwrap();
+        nodes.iter().any(|n| n.contains(&k0) && n.contains(&k1))
+    }
 }
 
 /// [`union_identical`], for a collapse that keeps `t0` in place of `t1`:
@@ -549,7 +569,7 @@ pub(super) fn apart(alts: &[Type], t0: &Type, t1: &Type) -> bool {
 pub(super) fn union_collapses(t0: &Type, t1: &Type, welds: &mut Welds) -> bool {
     let start = welds.len();
     let mut same = Identity::new(Some(welds), &mut NodePairs::default()).same(t0, t1);
-    if same && apart(&welds.alts, t0, t1) && !strictly_identical(t0, t1) {
+    if same && welds.alts.apart(t0, t1) && !strictly_identical(t0, t1) {
         same = false;
     }
     if !same {
@@ -1057,12 +1077,15 @@ impl Leaves {
         for m in ms {
             #[cfg(test)]
             IDENTITY_STEPS.with(|n| n.set(n.get() + 1));
-            match (members_of(m), m) {
-                (Some(ms), _) => ensure_sufficient(|| self.add(&ms)),
-                (None, Type::TVar(tv)) if let Some(c) = tv.open_cell() => {
-                    self.cells.push(c.cell_addr())
-                }
-                (None, _) => self.rest.push(m.clone()),
+            if let Type::TVar(tv) = m
+                && let Some(c) = tv.open_cell_addr()
+            {
+                self.cells.push(c);
+                continue;
+            }
+            match members_of(m) {
+                Some(ms) => ensure_sufficient(|| self.add(&ms)),
+                None => self.rest.push(m.clone()),
             }
         }
     }
@@ -1208,14 +1231,13 @@ fn sole<'a>(ts: &[&'a Type]) -> Option<&'a Type> {
     held.all(|t| node.is_some() && t.node_key() == node).then_some(one)
 }
 
-/// Whether every node `keys` names stands somewhere in `t`, through its
-/// bindings.
-pub(super) fn holds_node(t: &Type, keys: &[NodeKey]) -> bool {
-    fn walk(t: &Type, keys: &[NodeKey], found: &mut u64, seen: &mut AddrSet) {
+/// The nodes that stand somewhere in `t`, through its bindings.
+fn held_nodes(t: &Type) -> LPooled<AHashSet<NodeKey>> {
+    fn walk(t: &Type, found: &mut AHashSet<NodeKey>, seen: &mut AddrSet) {
         ensure_sufficient(|| match t {
             Type::TVar(tv) => {
                 if let Some(b) = tv.binding() {
-                    walk(&b, keys, found, seen)
+                    walk(&b, found, seen)
                 }
             }
             t => {
@@ -1224,19 +1246,16 @@ pub(super) fn holds_node(t: &Type, keys: &[NodeKey]) -> bool {
                 {
                     return;
                 }
-                if let Some(k) = t.node_key()
-                    && let Some(i) = keys.iter().position(|n| *n == k)
-                {
-                    *found |= 1 << i
+                if let Some(k) = t.node_key() {
+                    found.insert(k);
                 }
-                t.for_each_child(&mut |c| walk(c, keys, found, seen));
+                t.for_each_child(&mut |c| walk(c, found, seen));
             }
         })
     }
-    assert!(keys.len() <= 64);
-    let mut found = 0;
-    walk(t, keys, &mut found, &mut LPooled::take());
-    found == (u64::MAX >> (64 - keys.len()))
+    let mut found = LPooled::take();
+    walk(t, &mut found, &mut LPooled::take());
+    found
 }
 
 /// The alternatives `ts` are members of, `tags[i]` the one `ts[i]` is of,
@@ -2764,6 +2783,7 @@ thread_local! {
     static MEET_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     pub(super) static IDENTITY_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static NO_MEMO: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static HELD_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Whether diff, could_match, [`IdenticalMemo`] and [`Meets`] read their
@@ -2789,8 +2809,8 @@ pub(crate) mod tests {
             matches::MATCH_PAIRS,
             node_addr,
             setops::{
-                ERRORS_OVER_CUT, Identical, IdenticalMemo, WALK_PAIRS, one_type,
-                union_identical,
+                Alternatives, ERRORS_OVER_CUT, Identical, IdenticalMemo, WALK_PAIRS,
+                one_type, union_identical,
             },
         },
     };
@@ -2806,6 +2826,40 @@ pub(crate) mod tests {
         t.collect_tvars(&mut cells);
         cells["c"].bind(Type::Primitive(Typ::I64.into()));
         t
+    }
+
+    /// The members of one alternative are apart however alike; those of two
+    /// are not. The alternatives' nodes are read once while no cell is
+    /// written, and again after a write.
+    #[test]
+    fn alternatives_read_their_nodes_once_while_no_cell_is_written() {
+        let pair =
+            |a: &Type, b: &Type| Type::Tuple(Arc::from_iter([a.clone(), b.clone()]));
+        let (x, y, z) = (
+            Type::Array(Arc::new(Type::Primitive(Typ::I64.into()))),
+            Type::Array(Arc::new(Type::Primitive(Typ::I64.into()))),
+            Type::Array(Arc::new(Type::Primitive(Typ::String.into()))),
+        );
+        let cell = TVar::empty_named(literal!("c"));
+        let held = Type::Array(Arc::new(Type::TVar(cell.clone())));
+        let beside = Type::Array(Arc::new(Type::Primitive(Typ::Bool.into())));
+        cell.bind(pair(&x, &held));
+        let mut alts = Alternatives::new(
+            [pair(&x, &y), pair(&z, &Type::TVar(cell.clone()))].into_iter().collect(),
+        );
+        super::HELD_READS.with(|n| n.set(0));
+        for _ in 0..50 {
+            assert!(alts.apart(&x, &y));
+            assert!(alts.apart(&x, &held));
+            assert!(alts.apart(&z, &x));
+            assert!(!alts.apart(&y, &z));
+            assert!(!alts.apart(&y, &beside));
+        }
+        assert_eq!(super::HELD_READS.with(|n| n.get()), 1);
+        let other = TVar::empty_named(literal!("d"));
+        other.bind(Type::Primitive(Typ::I64.into()));
+        assert!(alts.apart(&x, &y));
+        assert_eq!(super::HELD_READS.with(|n| n.get()), 2);
     }
 
     // Each instantiation of W expands to an abstract type built anew, so
