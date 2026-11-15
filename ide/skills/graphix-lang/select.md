@@ -95,7 +95,9 @@ select, and runtime forms. Each rule refuses and names the fix.
   A `_` at a part another arm of the same shape binds a name at stands
   as an unused name does: `(1, _) => 0, (_, b) => b + 1` takes `(i64,
   i64)`, and a call whose part is wider (`(2, "a")`) is refused as the
-  name's twin is, so annotate the parameter.
+  name's twin is, so annotate the parameter. The same holds for a `_`
+  inside a tuple, struct or variant standing at that part: `(1, v) => 0,
+  (2, (_, "a")) => 1, (4, v) => v.0 + 1` makes `v` `(i64, string)`.
   A part only a name or `_` meets passes, and a name there holds that
   type beside the others: `(_, x)` over `` [(`A, z), (`B, "s")] `` with
   `str::len(x)` makes `z` a string, and `(a, _)` over `[(e1, 1), (e2,
@@ -248,6 +250,7 @@ ok let t = true; let x: string = "q"; let y = never(); let v = select t { true =
 ok let v: [{a: i64, b: string}, {a: i64, c: f64}] = {a: 1, b: "s"}; select v { {a: i64, b: string} as {a, ..} => a, _ => 0 }
 ok let f = |s| select s { (1, _) => 0, (_, b) => b + 1 }; f((2, 5))
 ok let f = |s| select s { ([], _) => 0, ([x, ..], b) => str::len(b) }; f(([1], "q"))
+ok let f = |s| select s { (1, v) => 0, (2, (_, "a")) => 1, (_, (_, "a")) => 2, (4, v) => v.0 + 1, _ => 9 }; f((4, (1, "a")))
 no "type mismatch" let f = |s| select s { (1, _) => 0, (2, b) => b + 1, (_, b) => str::len(b) }; f((2, 5))
 no "tests inside" 'a: [{a: i64, b: string}, i64] |x: 'a| select x { {a, ..} => a, _ => 0 }
 ok 'a: [{a: i64, b: string}, i64] |x: 'a| select x { {a: i64, b: string} as {a, ..} => a, i64 as n => n }

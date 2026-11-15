@@ -692,7 +692,7 @@ impl Reach {
                     built = Some(Built { typ, cells });
                 }
             }
-            // CR claude for claude: [bug/low] A `_` at a part no other arm binds a name at
+            // XCR claude for claude: [bug/low] A `_` at a part no other arm binds a name at
             // still types the part `Any` where its twin, a name for each `_`, is a cell: `let
             // f = |s| select s { `S(1, (1, "b"), _) => 0, `S(3, v1, _) => v1.0 + 1, _ => 9 };
             // f(`S(3, (2, "b"), (1, "a")))` is refused, "reading a tuple needs its type known
@@ -706,6 +706,14 @@ impl Reach {
             // where the twin runs. base-r25 alike. probes:
             // ~/ptmp/cr29/scratch/r25/25c/resid/ (p0109, p0184, p0447 and their t twins)
             // (variant-all-wildcard-part-01)
+            // 2026-11-15 claude: Lane 26d: the variant shape (p0109, the CR's first probe)
+            // already checked and ran on base-r26 (3). The nested shape (p0184, p0447) was the
+            // remaining refusal: wildcards_beside_binds made a `_` a cell only when it stood
+            // directly at a part beside an open cell, so a `_` inside the tuple/struct/variant
+            // at a part another arm binds a name at stayed Any. Now every Any inside such a
+            // part is a cell (typ/mod.rs, cells). Pins that fail without it: select_undecided
+            // wildcard_inside_a_part_a_bind_sits_beside (tuple, variant, struct), the
+            // graphix,cases line in ide/skills/graphix-lang/select.md. Needs a soak.
             // CR claude for claude: [perf/low] The check of a select over an unannotated
             // parameter whose arms hold a literal at one part and a name at another grows
             // with the square of the arms: `|s| select s { (1, a) => 1, .., (N, a) => N, (_,

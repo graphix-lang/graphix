@@ -3589,6 +3589,13 @@ run!(wildcard_beside_a_bind_in_a_variant_and_a_struct, r#"{
     [f(`A(2, 5)), g({a: 2, b: 7})]
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [6, 8]); FuseExpect::Jit);
 
+run!(wildcard_inside_a_part_a_bind_sits_beside, r#"{
+    let f = |s| select s { (1, v) => 0, (2, (_, "a")) => 1, (_, (_, "a")) => 2, (4, v) => v.0 + 1, _ => 9 };
+    let g = |s| select s { `S(1, (1, "b"), _) => 0, `S(3, v, _) => v.0 + 1, _ => 9 };
+    let h = |s| select s { {a: 1, b} => 0, {a: 2, b: {c: _, d: "a"}} => 1, {a: _, b: {c: _, d: "a"}} => 2, {a: 4, b} => b.c + 1, _ => 9 };
+    [f((4, (1, "a"))), f((5, (1, "a"))), g(`S(3, (2, "b"), (1, "a"))), h({a: 4, b: {c: 6, d: "x"}})]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [2, 2, 3, 7]); FuseExpect::Jit);
+
 run!(wildcard_beside_a_bind_over_a_let_written_later, r#"{
     let s = never();
     let v = select s { (1, _) => 0, (_, b) => b + 1 };

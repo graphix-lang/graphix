@@ -4251,9 +4251,10 @@ impl Type {
     /// An inferred predicate as it decides a scrutinee no type has decided,
     /// where a `_` stands at a position of a tuple, struct or variant at
     /// which another arm's predicate in `others` holds a name (an open
-    /// cell): the `Any` there is a cell of its own, as an unused name's is,
-    /// so the part is what the names' uses make it. `None` where no `_`
-    /// stands so. The elements of an array or list share one type, where
+    /// cell): the `Any` there, and every `Any` inside a tuple, struct or
+    /// variant standing there, is a cell of its own, as an unused name's
+    /// is, so the part is what the names' uses make it. `None` where no
+    /// `_` stands so. The elements of an array or list share one type, where
     /// a `_` stays `Any`.
     pub fn wildcards_beside_binds(&self, others: &[&Type]) -> Option<Type> {
         fn members<'a>(ts: &[&'a Type], out: &mut SmallVec<[&'a Type; 8]>) {
@@ -4264,13 +4265,54 @@ impl Type {
                 }
             }
         }
+        fn cells(t: &Type) -> Option<Type> {
+            ensure_sufficient(|| match t {
+                Type::Any => Some(Type::empty_tvar()),
+                Type::Set(ms) => each(ms.len(), &mut |i| cells(&ms[i])).map(|parts| {
+                    Type::Set(Arc::from_iter(
+                        ms.iter().zip(parts).map(|(m, p)| p.unwrap_or_else(|| m.clone())),
+                    ))
+                }),
+                Type::Tuple(ts) => each(ts.len(), &mut |i| cells(&ts[i])).map(|parts| {
+                    Type::Tuple(Arc::from_iter(
+                        ts.iter().zip(parts).map(|(m, p)| p.unwrap_or_else(|| m.clone())),
+                    ))
+                }),
+                Type::Variant(tag, ts, at) => {
+                    each(ts.len(), &mut |i| cells(&ts[i])).map(|parts| {
+                        Type::Variant(
+                            tag.clone(),
+                            Arc::from_iter(
+                                ts.iter()
+                                    .zip(parts)
+                                    .map(|(m, p)| p.unwrap_or_else(|| m.clone())),
+                            ),
+                            *at,
+                        )
+                    })
+                }
+                Type::Struct(fs) => {
+                    each(fs.len(), &mut |i| cells(&fs[i].1)).map(|parts| {
+                        Type::Struct(Arc::from_iter(fs.iter().zip(parts).map(
+                            |((n, t, at), p)| {
+                                (n.clone(), p.unwrap_or_else(|| t.clone()), *at)
+                            },
+                        )))
+                    })
+                }
+                _ => None,
+            })
+        }
         fn part(t: &Type, beside: &[&Type]) -> Option<Type> {
-            match t {
-                Type::Any => beside
-                    .iter()
-                    .any(|o| matches!(o, Type::TVar(tv) if tv.open_cell().is_some()))
-                    .then(Type::empty_tvar),
-                t => t.wildcards_beside_binds(beside),
+            match beside
+                .iter()
+                .any(|o| matches!(o, Type::TVar(tv) if tv.open_cell().is_some()))
+            {
+                true => cells(t),
+                false => match t {
+                    Type::Any => None,
+                    t => t.wildcards_beside_binds(beside),
+                },
             }
         }
         fn each(
