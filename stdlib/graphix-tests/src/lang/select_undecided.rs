@@ -2765,7 +2765,7 @@ run!(slice_element_binds_an_abstract_of_one_instance_beside_an_open_member, r#"{
 
 // A slice with a rest over a parameter no annotation decides: the rest's
 // cell would take any instance of the abstract its element tests by tag.
-const ABSTRACT_BESIDE_A_REST: &str = "becomes that has its structure, and this select typed the pattern's binds for W<i64> alone";
+const ABSTRACT_BESIDE_A_REST: &str = "a type not yet known here becomes and that has its structure, and this select typed the pattern's binds for W<i64> alone";
 
 run!(abstract_element_beside_a_rest_over_a_parameter_refused, r#"{
     type W<'a> = Abstract<'a>;
