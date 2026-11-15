@@ -914,37 +914,44 @@ impl Reach {
     /// A refusal of an arm's binds over a scrutinee the arms decided,
     /// told as the annotation that fixes it.
     fn untyped_binds(&self, env: &Env, at: &Origin, e: anyhow::Error) -> anyhow::Error {
-        let Some(built) = &self.built else { return e };
+        if self.built.is_none() {
+            return e;
+        }
         if e.downcast_ref::<TypeMismatch>().is_none()
             && e.downcast_ref::<InfiniteType>().is_none()
         {
             return e;
         }
-        let mut holders = Holders::new(env, None);
-        match &built.typ {
-            Some(typ) => {
-                let known: AHashMap<ArcStr, Type> = built
-                    .cells
-                    .iter()
-                    .map(|(n, tv)| {
-                        let name = holders.name_cell(tv).or_else(|| tv.written_own());
-                        (n.clone(), name.unwrap_or_else(|| holders.number(tv)))
-                    })
-                    .collect();
-                let typ = typ.replace_tvars(&known);
-                let meanings = holders.meanings(at);
-                anyhow!(
-                    "the arms decide this scrutinee's type from their patterns, and their \
-                     binds cannot hold what was built into it, {typ}: annotate that type \
-                     where it is built{meanings}"
-                )
-            }
+        match self.built_form(env, at) {
+            Some((typ, meanings)) => anyhow!(
+                "the arms decide this scrutinee's type from their patterns, and their \
+                 binds cannot hold what was built into it, {typ}: annotate that type \
+                 where it is built{meanings}"
+            ),
             None => anyhow!(
                 "the arms decide this scrutinee's type from their patterns, and their \
                  binds cannot hold what was built into it: annotate its type where it is \
                  built"
             ),
         }
+    }
+
+    /// What was built into the scrutinee cell the arms decided, written
+    /// with the names the program gives its cells, and what those names
+    /// mean at `at`.
+    fn built_form(&self, env: &Env, at: &Origin) -> Option<(Type, CompactString)> {
+        let built = self.built.as_ref()?;
+        let typ = built.typ.as_ref()?;
+        let mut holders = Holders::new(env, None);
+        let known: AHashMap<ArcStr, Type> = built
+            .cells
+            .iter()
+            .map(|(n, tv)| {
+                let name = holders.name_cell(tv).or_else(|| tv.written_own());
+                (n.clone(), name.unwrap_or_else(|| holders.number(tv)))
+            })
+            .collect();
+        Some((typ.replace_tvars(&known), holders.meanings(at)))
     }
 
     /// Take away what `t` covers from what reaches the arms after.
@@ -1286,7 +1293,13 @@ impl Reach {
     /// anything, or what the arms cover leaves no case, each of
     /// `undecided` one type whatever it becomes, else where the cover
     /// decides them.
-    fn exhausted(&self, env: &Env, scrut: &Type, undecided: &[TVar]) -> Result<()> {
+    fn exhausted(
+        &self,
+        env: &Env,
+        at: &Origin,
+        scrut: &Type,
+        undecided: &[TVar],
+    ) -> Result<()> {
         let empty = Type::Primitive(BitFlags::empty());
         if self.wildcard || self.atype == empty {
             return Ok(());
@@ -1341,12 +1354,26 @@ impl Reach {
                 true => " (a guarded slice arm cannot establish length coverage)",
                 false => "",
             };
+            let built = match self.built_form(env, at) {
+                Some((typ, meanings))
+                    if self.built.as_ref().is_some_and(|b| b.cells.is_empty())
+                        && scrut.contains_with_flags(BitFlags::empty(), env, &typ)?
+                        && !typ.contains_with_flags(BitFlags::empty(), env, scrut)? =>
+                {
+                    format_compact!(
+                        " (the arms decide the scrutinee's type from their patterns, wider \
+                         than what was built into it, {typ}: annotate that type where it is \
+                         built and the arms are judged against it{meanings})"
+                    )
+                }
+                _ => format_compact!(""),
+            };
             let settled = match crate::typ::tvar::settled_note(env, &[scrut]) {
                 Some(n) => format_compact!(": {n}"),
                 None => format_compact!(""),
             };
             Err(anyhow!(
-                "missing match cases: no arm covers {}{gap}{refutable}{guarded}{settled}",
+                "missing match cases: no arm covers {}{gap}{refutable}{guarded}{built}{settled}",
                 Brief(&self.atype.normalize())
             ))
         })
@@ -1677,7 +1704,7 @@ fn head_of(sp: &StructPatternNode) -> Option<Head> {
     }
 }
 
-// CR claude for claude: [bug/low] A tag or bool literal at a position the arms decide as `Any`
+// XCR claude for claude: [bug/low] A tag or bool literal at a position the arms decide as `Any`
 // covers nothing there, so the select over such a referent is refused where its plain twin
 // runs: `|b: bool, c: bool| { let r = &mut (select c { true => (`M, b), false => (`M, b) });
 // select *r { (_, true) => 1, (`M, false) => 2 } }` says "missing match cases: no arm covers
@@ -1687,6 +1714,15 @@ fn head_of(sp: &StructPatternNode) -> Option<Head> {
 // and lane 25c alike. A fix would read the position as the type the member was built with
 // (Built::typ) where the arms left it open, which the walk does not hold here. probes:
 // ~/ptmp/cr29/scratch/r25/25c/rpe/t6.txt (run with rb.sh) (decided-any-tag-cover-01)
+// 2026-11-15 claude: Not a hole: the refusal is the rule. The referent's cell is decided by the
+// arms, a `_` makes the position Any, and a later write of another tag fits it (pin
+// wildcard_over_a_referent_takes_a_later_write_of_another_tag: `*r <- (`N, true)` after the select
+// checks), so (`M, false) beside (_, true) misses (`N, false); reading the position as the built
+// type would accept a select a write then breaks. Changed: the refusal tells the built type to
+// annotate (Reach::built_form, Reach::exhausted), and the annotated twin covers
+// (wildcard_beside_tag_over_a_referent_names_the_built_type,
+// wildcard_beside_tag_over_an_annotated_referent_covers; the first fails without the note).
+// design/select_coverage.md has the rule.
 // CR claude for claude: [bug/low] A test behind a pool that covers a referent's member still
 // decides that member's cell: `|x, b: bool, c: bool| { let r = &mut (select c { true => (b, x),
 // false => (`L, 0) }); select *r { (true, n) => 1, (false, m) => 2, (_, 0) => 3, _ => 4 } }`
@@ -3695,7 +3731,9 @@ impl<R: Rt> Select<R> {
                 check_repeats(&ctx.env, &self.arms)?;
                 let undecided: LPooled<Vec<TVar>> =
                     undecided.drain().map(|(_, c)| c).collect();
-                reach.exhausted(&ctx.env, &scrut, &undecided).at(&self.spec)?;
+                reach
+                    .exhausted(&ctx.env, &self.spec.ori, &scrut, &undecided)
+                    .at(&self.spec)?;
                 by_order
             }
             false => Ok(()),

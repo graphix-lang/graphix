@@ -194,7 +194,12 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   field, a slice or list with a rest, an abstract payload, of names, `_`
   and such patterns: `StructurePattern::only_destructures`) decides that
   shape as an annotation would and tests nothing, except beside a member
-  of that shape, where it chooses between them. An arm the coverage
+  of that shape, where it chooses between them. A `_` there decides its
+  position `Any` and a later write of another tag fits it (`select *r { (_, true) => 1, (`M, false) => 2 }` over `&mut
+  (select c { true => (`M, b), false => (`M, b) })` misses `(Any, bool)`:
+  `(`N, false)`), so the arms are not judged against the built type; the
+  refusal tells it (`Reach::built_form`) and the annotation that gives it
+  (`let r: &mut (`M, bool) = ..`) makes the arms cover. An arm the coverage
   finds dead has the arms up to it judged so first, against the cells
   still open and those decided (`still_open`), the dead arm itself in
   what reaches it alone, never in the bounds' reading, which holds what

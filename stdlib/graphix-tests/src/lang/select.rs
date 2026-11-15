@@ -1102,6 +1102,44 @@ run!(
     FuseExpect::None
 );
 
+// A `_` beside a tag over `&mut`'s referent decides the position `Any`, as a
+// later write of another tag then takes it; the refusal names the built type
+// to annotate.
+run!(
+    wildcard_beside_tag_over_a_referent_names_the_built_type,
+    "|b: bool, c: bool| { let r = &mut (select c { true => (`M, b), false => (`M, b) }); select *r { (_, true) => 1, (`M, false) => 2 } }",
+    refused("no arm covers (Any, bool) (the arms decide the scrutinee's type from their patterns, wider than what was built into it, (`M, bool): annotate that type where it is built");
+    FuseExpect::None
+);
+
+run!(
+    wildcard_beside_tag_over_an_annotated_referent_covers,
+    r#"{
+  let f = |b: bool, c: bool| {
+    let r: &mut (`M, bool) = &mut (select c { true => (`M, b), false => (`M, b) });
+    select *r { (_, true) => 1, (`M, false) => 2 }
+  };
+  [f(true, true), f(false, true)]
+}"#,
+    prints("[i64:1, i64:2]");
+    FuseExpect::Jit
+);
+
+run!(
+    wildcard_over_a_referent_takes_a_later_write_of_another_tag,
+    r#"{
+  let f = |b: bool, c: bool| {
+    let r = &mut (select c { true => (`M, b), false => (`M, b) });
+    let v = select *r { (_, true) => 1, (_, false) => 2 };
+    *r <- (`N, true);
+    v
+  };
+  f(true, true)
+}"#,
+    prints("i64:1");
+    FuseExpect::Jit
+);
+
 // Exact-length slice arms pool their elements' heads per length: `[true]`
 // with `[false]` claims length 1, of an array or a list, through a tuple
 // element too; a length short of a combination stays uncovered, and an arm
