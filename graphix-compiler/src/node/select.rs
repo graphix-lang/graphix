@@ -3928,38 +3928,17 @@ fn built_standing(
             continue;
         }
         let all: OpenCells = rigid.iter().chain(open.iter()).cloned().collect();
-        // XCR claude for claude: [bug/low] Arms whose tests hold a built member only
-        // together do not hold its cells open, so the arm behind them is refused where
-        // the plain twin runs: `|x, t: [`A, `B], c: bool| { let r = &mut (select c { true
-        // => (t, x), false => (`L, 0) }); select *r { (`A, _) => 1, (`B, _) => 2, (_, 0)
-        // => 3, _ => 4 } }` says "(_, 0) tests a value of 'x", and so does `(`A, true, _)`,
-        // `(`A, false, _)`, `(`B, _, _)` over `(t, b, x)`; `select (select c { .. }) { ..
-        // }` and the or form `(`A | `B, _) => 1` check and take any `x`. Each test is
-        // asked alone below, `(`A, Any)` and `(`B, Any)` each hold half of `([`A, `B],
-        // 'x)`, so `x` does not stand, the settle gives it to `(Any, i64)`, the test of
-        // the arm behind, and Uncovered::pool leaves a member holding a cell the arms
-        // decided alone (Member::decided), as it must: that test is what decided it.
-        // Tried: the tests asked together here (their union's `contains_holding`, which
-        // splits the part by its heads) runs both selects right in every mode and every
-        // lang:: pin passes; not censused, not run over generated families, and not
-        // looked at for a part two tests hold together where a third could take a half.
-        // probes: ~/ptmp/cr29/scratch/r24/24b/lvp/x1.txt, a1.txt programs 7 and 8 (run
-        // with rb.sh), tried-tests-together.patch (standing-by-tests-together-01)
-        // 2026-11-14 claude: Built_standing asks the arms' tests together: the union of the
-        // tests' members holds the built member whole with its cells held
-        // (contains_holding), not each test alone, so (`A, _) and (`B, _) hold ([`A, `B],
-        // 'x) between them and the arm behind them no longer meets a decided 'x. Pins that
-        // fail without it (16 runs): lang::select_undecided
-        // arm_behind_the_tag_pool_of_a_member_below_a_reference, ..._beside_other_members,
-        // later_use_decides_a_cell_of_a_tag_pooled_member,
-        // arm_after_a_tag_pool_that_covers_it_is_unreachable; the refused twins (half a tag
-        // pool, a tag missing, a guarded tag) hold in both forms. Not fixed: a name in a
-        // tag arm (`(`A, n)`) puts that test among those with an unbound cell, which
-        // built_standing drops, so it still says '(_, 0) tests a value of 'x' where the
-        // plain twin runs; probes ~/ptmp/cr29/scratch/r25/25c/tw2.txt 4 and 5. Checked: 400
-        // generated programs, census 2967 files 0 changes, regress 585 0 mismatches,
-        // deep_nesting ok, guicheck 39714917996 before / 39798262062 after (lane HEAD
-        // without and with the fix).
+        // CR claude for claude: [bug/low] A tag arm that names its part, `(`A, n)`, is a
+        // test with an unbound cell, which `members.retain(|m| !m.has_unbound())` drops
+        // above, so the arms' tests no longer hold the built member together and the arm
+        // behind them is refused where the plain twin runs: `|x, t: [`A, `B], c: bool| {
+        // let r = &mut (select c { true => (t, x), false => (`L, 0) }); select *r { (`A,
+        // n) => 1, (`B, _) => 2, (_, 0) => 3, _ => 4 } }` says "(_, 0) tests a value of
+        // 'x", and so does `(`A, n)` with `(`B, m)`; the same arms over `select (select c
+        // { .. }) { .. }` check and take any `x`. The refusal is sound, it only asks for
+        // an annotation the unnamed form does not. Fix: ask the test with its binds held
+        // as the part stands (the bind's cell is the part's), not drop it.
+        // probes: ~/ptmp/cr29/scratch/r25/25c/tw2.txt 4 and 5 (standing-tests-bind-names-01)
         let together = Type::Set(Arc::from_iter(members.iter().cloned()));
         if together.contains_holding(env, l, &all)? {
             held.extend(open);
