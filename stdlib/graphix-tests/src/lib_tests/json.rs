@@ -842,9 +842,8 @@ run!(
 );
 
 // A `Transparent` over a definition's own variable is judged where it is
-// written, at the definition, never at a call's type: an instance checked
-// again (GRAPHIX_NO_SUBST) leaves it there. One over a type the definition
-// knows is refused.
+// written, at the definition, never at a call's type. One over a type the
+// definition knows is refused.
 run!(
     json_transparent_over_a_definitions_variable_writes,
     r#"{

@@ -35,7 +35,6 @@ mod loop_call_words;
 mod lsp_stdio;
 mod module_typedef_forms;
 mod netidx_zero_config;
-mod no_subst;
 mod piped_flood;
 mod profile_instances;
 mod program_args;

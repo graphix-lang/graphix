@@ -672,23 +672,24 @@ fn instance_cells<R: Rt>(
 }
 
 impl InstanceTypes {
-    /// The types of `def`'s labeled default at `root` as its check
-    /// recorded them, each open cell its definition owns copied; `None`
-    /// where it recorded none or under `GRAPHIX_NO_SUBST`.
+    /// The types of `def`'s default of the label `name`, at `root`, as its
+    /// check recorded them, each open cell its definition owns copied.
     pub(crate) fn of_default<R: Rt>(
         ctx: &CompileCtx<R>,
         def: &LambdaDef<R>,
+        name: &ArcStr,
         root: ExprId,
-    ) -> Option<Self> {
-        if dbgenv::graphix_no_subst() {
-            return None;
+    ) -> Result<Self> {
+        match def.table.get() {
+            Some(tables) if tables.table.types.contains_key(&root) => Ok(Self {
+                tables: tables.clone(),
+                known: Known::default(),
+                open: ctx.rec_defs.clone(),
+            }),
+            _ => bail!(
+                "the default of #{name}, which its definition's check recorded no types of"
+            ),
         }
-        let tables = def.table.get()?;
-        tables.table.types.contains_key(&root).then(|| Self {
-            tables: tables.clone(),
-            known: Known::default(),
-            open: ctx.rec_defs.clone(),
-        })
     }
 
     /// `None` when the instance's signature does not hold the
@@ -1563,68 +1564,6 @@ impl<R: Rt> GXLambda<R> {
 }
 
 impl Typing {
-    // CR claude for claude: [risk/low] An instance checked again refuses a
-    // body that reads a bounded parameter at its bound, where the instance's
-    // type is narrower than the bound. `let g = 'b: Array<[i64, null]> |x:
-    // 'b| -> Array<[i64, null]> array::push(x, null); let x: Array<i64> =
-    // [2]; g(x)` checks and prints [2, null], and under GRAPHIX_NO_SUBST=1
-    // the instance is refused at the `null`, "type mismatch 'a: i64 does not
-    // contain null": the definition's check reads `x` as its bound, so push's
-    // 'a is `[i64, null]`; the instance's check reads `x` as `Array<i64>`,
-    // which decides 'a i64 before the null is met. `array::concat(x, [null])`
-    // and a local `|a: Array<'e>, e: 'e|` called `h(x, null)` split alike,
-    // and so does the instance of a wrapper (`|v: 'a, w: Array<'a>| g(w, v)`
-    // over `'b: Array<['c, null]>`). The default build is right: the value
-    // is in the bound. base-r24 alike. A fix has the instance's check read a
-    // bounded parameter as the definition's did (its bound, substituted).
-    // Found reviewing rigid-narrowed-by-callee-bound-01. probes:
-    // ~/ptmp/cr29/scratch/r24/24c/rnbrev/{n1,n3,n4,c3,b7}.gx
-    // (nosubst-bound-upcast-01)
-    // 2026-11-14 claude: Round 25 fixer, tried and undone (patch:
-    // ~/ptmp/cr29/scratch/r25/25d/nosubst-bound-upcast-01/attempt.patch).
-    // Confirmed on base-r25: n1 n3 n4 c3 b7 print right by default and are
-    // refused under GRAPHIX_NO_SUBST=1. The attempt typed an instance's formal
-    // whose definition type is an open bounded variable at its bound
-    // (Type::open_bound, renamed through the table's outer map and instantiated
-    // through instance_cells' known cells, in GXLambda::new before
-    // new_with_body compiles the formal patterns); the five probes then agree
-    // in both modes. It is wrong for the A/B because a formal read at its bound
-    // is no longer the instance's cell: (1) a bound that is a trait-like set
-    // breaks the pinned no_subst test
-    // an_instance_checked_again_holds_a_nested_variable_bounded_by_an_enclosing_one
-    // (f = 'z: Number |w: 'z| { let g = 'e: 'z |u: 'e| -> 'z u; g(w) } reads w
-    // as Number, so g's 'e, bound by the instance's i64 'z, is refused: i64
-    // does not contain [Int, Real], probe p1.gx); (2) a body that names the
-    // variable again splits the other way: let g = 'b: Array<[i64, null]> |x:
-    // 'b| { let h = |y: 'b| -> 'b y; h(x) } over Array<i64> (h1.gx) and a let
-    // y: 'b = x (h2.gx) check today in both modes and are refused under
-    // NO_SUBST with the formal at the bound. Restricting to structural bounds
-    // does not close (2). A fix that holds has the instance's recheck
-    // instantiate a bounded formal's cell as the definition's check had it,
-    // open and carrying the (instantiated) bound, and bind it to the instance's
-    // argument type only after the body is checked, so the body's reads and its
-    // named uses of the variable stay one cell: that is the definition's check
-    // run again at the instance's cells, not a local rule. The shipped mode
-    // (which substitutes) is right and unchanged; the gap is the debug A/B
-    // alone.
-    // 2026-11-14 claude: Coordinator, round 25: whether a refusal only
-    // GRAPHIX_NO_SUBST=1 makes is a defect is D42 in ~/ptmp/cr-discuss.md (Open);
-    // three rounds tried a fix and undid it. Readdressed to eric.
-    // 2026-11-15 claude: Eric ruled (2026-11-15, D42): delete the flag. "given that
-    // we made the subst change a long time ago now, we should probably delete that
-    // debug and remove any code that is dead because of its removal."
-    // GRAPHIX_NO_SUBST, the recheck path it selects (Typing::rechecks,
-    // InstanceTypes::of_default's early return),
-    // graphix-shell/tests/shell/no_subst.rs and the flag's leg of elab_audit.rs go,
-    // with whatever only a rechecking instance reached; this CR is deleted in that
-    // change.
-
-    /// Whether the instance checks its body again (`GRAPHIX_NO_SUBST`),
-    /// where its definition's types would do.
-    fn rechecks(&self) -> bool {
-        matches!(self, Typing::Substituted(..)) && dbgenv::graphix_no_subst()
-    }
-
     fn instance_types<R: Rt>(
         &self,
         ctx: &CompileCtx<R>,
@@ -1639,9 +1578,6 @@ impl Typing {
             Typing::Substituted(table, def) => (table, def),
             Typing::Prepared(prepared) => return Ok(Some(prepared.1.clone())),
         };
-        if self.rechecks() {
-            return Ok(None);
-        }
         let Some(tables) = table.get() else {
             bail!("an instance of {:?}, whose definition's check recorded no types", id)
         };
@@ -1708,7 +1644,6 @@ impl<R: Rt> Apply<R> for GXLambda<R> {
             // an instance's formals and return are its site's, which the
             // definition's check covers
             let types = self.instance_types(ctx)?;
-            let recheck = self.typing.rechecks();
             for (arg, FnArgType { typ, .. }) in args.iter_mut().zip(self.typ.args.iter())
             {
                 wrap!(arg, arg.typecheck0(ctx))?;
@@ -1722,10 +1657,7 @@ impl<R: Rt> Apply<R> for GXLambda<R> {
                     wrap!(self.body, self.body.typecheck0_instance(ctx, &mut types))
                 }
                 None => {
-                    let body = &mut self.body;
-                    let res =
-                        super::rechecking_instance(recheck, || body.typecheck0(ctx));
-                    wrap!(self.body, res)?;
+                    wrap!(self.body, self.body.typecheck0(ctx))?;
                     let body = self.body.typ().clone();
                     let rtype = &self.typ.rtype;
                     let contain =
@@ -1741,12 +1673,6 @@ impl<R: Rt> Apply<R> for GXLambda<R> {
                             }
                         });
                     wrap!(self.body, contain)?;
-                    // the defaults its return hides are its definition's to
-                    // judge: an instance's return holds what its site's uses
-                    // decided, and a call that omits a label judges its default
-                    if recheck {
-                        return Ok(());
-                    }
                     let top = self.body.spec().id;
                     wrap!(
                         self.body,
@@ -1780,11 +1706,8 @@ impl<R: Rt> Apply<R> for GXLambda<R> {
         let _elaboration = profile::elaboration(self.instance_id);
         elab_audit::enter();
         let env = self.env.clone();
-        let recheck = self.typing.rechecks();
         let body = &mut self.body;
-        let res = ctx.with_restored(env, |ctx| {
-            super::rechecking_instance(recheck, || wrap!(body, body.typecheck1(ctx)))
-        });
+        let res = ctx.with_restored(env, |ctx| wrap!(body, body.typecheck1(ctx)));
         elab_audit::leave(ctx.def_gate_depth, "typecheck1", self.body.spec(), &res);
         res
     }

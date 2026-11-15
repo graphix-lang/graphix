@@ -408,9 +408,7 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   `[(i64, i64), (f64, string)]` binds `h: i64`, and `` [`V(h, "a") | {t: 0.5,
   c: h}, ..] `` over `` Array<[`V(bool, string), {t: f64, c: f64}, {t: string,
   c: i64}]> `` binds `h: [bool, f64]`. A lone type is ruled out by the same
-  judgment, so an instance checked again (`GRAPHIX_NO_SUBST`), whose
-  scrutinee may be one member of a written test's type, types its binds as
-  its definition did. A kernel reads a bind from the scrutinee's own part
+  judgment. A kernel reads a bind from the scrutinee's own part
   and a struct's field by its index, so it emits no arm, or-alternative
   or composite member whose structure admits no value of what it stands
   over (`StructPatternNode::may_admit`: `admits` at every part, a
@@ -473,6 +471,5 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   `written_union_bind_beside_a_tag_*`,
   `written_union_bind_beside_a_literal_*`,
   `inferred_bind_beside_a_literal_*`,
-  `written_test_over_an_instance_its_structure_rules_out`, the shell's
-  `no_subst::an_instance_checked_again_takes_no_bind_*`,
+  `written_test_over_an_instance_its_structure_rules_out`,
   `nested_slice_*`, `let_partial_struct_capture_is_the_whole_value`.

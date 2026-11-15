@@ -203,8 +203,7 @@ gave fits it, as it fits the bound written out; a wider one widens it,
 as it widens any (pins
 `lang::types::an_argument_a_bound_variables_lower_bound_holds_fits`
 and its twins, `a_member_of_a_bound_variables_lower_bound_fits`, the
-refusal `.._does_not_hold_is_refused`; under `GRAPHIX_NO_SUBST`,
-`no_subst::an_instance_checked_again_fits_what_a_lower_bound_holds`).
+refusal `.._does_not_hold_is_refused`).
 Only a call does: a select's pattern over such a cell still decides it
 (`lang::types::select_arms_at_two_depths_over_two_payloads`).
 
@@ -600,8 +599,7 @@ omitted_undecided_default_before_a_wider_one_refused}`,
 argument_into_a_typedef_union_before_its_deciders_refused,
 variable_in_a_typedef_union_does_not_widen_refused,
 literal_element_into_a_typedef_union_after_its_deciders,
-wrappers_of_a_typedef_union_function}`, the shell's
-`no_subst::an_instance_checked_again_meets_its_arguments_in_the_same_order`.
+wrappers_of_a_typedef_union_function}`.
 
 ### A function held at a function type
 
@@ -2364,10 +2362,8 @@ parameter take every edge. A declared variable under its definition's
 check does none of the three, so against a bound cell it takes no walk:
 the binding decides, through the variable's bounds where the cell is to
 hold it, and a cell its bound names closes no cycle. Under `'e: 'z` with
-`'z` decided (an instance checked again), `'z` holds `'e` and `'e` keeps
-its bound (pins
-`typ::contains::tests::a_declared_var_and_the_bound_cell_its_bound_names`,
-graphix-shell's `no_subst::an_instance_checked_again_holds_a_nested_variable_bounded_by_an_enclosing_one`).
+`'z` decided, `'z` holds `'e` and `'e` keeps its bound (pin
+`typ::contains::tests::a_declared_var_and_the_bound_cell_its_bound_names`).
 Where two cells meet (`contains_tvars`):
 
 - A path through a constructor's part (an element, a field, a payload,
@@ -2809,8 +2805,8 @@ so the rows the definition's check filled mean at the bind what they meant
 there (pins `default_at_a_bind_declares_a_recursive_type`,
 `default_at_a_bind_names_a_block_type_over_an_outer_one`,
 `lang::block_types::default_naming_a_block_type_takes_its_definitions_types`).
-The bind checks a default in full only where there are no rows (a
-builtin's, or under `GRAPHIX_NO_SUBST`; `node::rechecking_instance`).
+A default whose definition recorded no rows is a compiler error at the
+bind (`InstanceTypes::of_default`).
 
 A signature finds its quantifiers by name (`FnType::quantifiers`). A
 parameter the body unifies with a declared quantifier (`x` in `'a:
@@ -3033,10 +3029,8 @@ Over a type known not to be abstract `Transparent` is refused: it would
 change nothing. Over a definition's own open variable it is not judged,
 and where a call binds that variable to a type that is not abstract it
 writes that type's data bare, as it would without `Transparent`. The
-verdict is the written place's: an instance's body checked again
-(`GRAPHIX_NO_SUBST`, `node::rechecking_instance`) judges its JSON and TOML
-bounds with `TextSite::Instance`, which leaves every `Transparent` to the
-definition's check. The walk reaches every part of the type: elements, fields,
+verdict is the written place's: the definition's check judges it, and
+an instance takes its types. The walk reaches every part of the type: elements, fields,
 payloads, a map's key and value, an abstract type's representation where
 its `Cast` implementation leaves a method out (and `Transparent`'s
 parameter), each named type once per list of arguments, in the text and

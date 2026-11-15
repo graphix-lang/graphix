@@ -271,7 +271,7 @@ fn checked_default<R: Rt>(
             load: f.env.body.clone(),
         };
         let types = match judge {
-            Judge::Bind => InstanceTypes::of_default(ctx, f, expr.id),
+            Judge::Bind => Some(InstanceTypes::of_default(ctx, f, name, expr.id)?),
             Judge::Check(_) => None,
         };
         // a check outside the definition reads its scheme, whose cells it
@@ -285,10 +285,7 @@ fn checked_default<R: Rt>(
         super::bind::name_value(&mut node, true);
         let res = match types {
             Some(mut types) => node.typecheck0_instance(ctx, &mut types),
-            None => {
-                let bind = matches!(judge, Judge::Bind);
-                super::rechecking_instance(bind, || node.typecheck0(ctx))
-            }
+            None => node.typecheck0(ctx),
         };
         Ok::<_, anyhow::Error>((node, res))
     });
@@ -3413,17 +3410,12 @@ impl<R: Rt> CallSite<R> {
             Type::TVar(tv) => Some(tv.clone()),
             _ => None,
         };
-        let text = match super::instance_rechecked() {
-            true => crate::typ::TextSite::Instance,
-            false => crate::typ::TextSite::Written,
-        };
         crate::PendingSettle::Site {
             sigs: smallvec::SmallVec::new(),
             unread_callbacks,
             ftype: ftype.clone(),
             rtype,
             exempt,
-            text,
             spec: self.spec.clone(),
         }
     }
@@ -3480,53 +3472,6 @@ impl<R: Rt> CallSite<R> {
         // unified back into the site's live rtype cell, the cells both
         // leave open first, which no member of a union beside one takes.
         if let Some(site_ft) = self.ftype.as_ref() {
-            // CR claude for claude: [risk/low] Under GRAPHIX_NO_SUBST=1 the unify-back
-            // gives a site's return its own union again as a member, and the audit reports
-            // it as a narrowing: `type B<'p> = Abstract<'p>; let go = |t| { let x =
-            // never(); let b = B([x]); b <- B(x); let v = b.0; x <- t ~ 1;
-            // println(array::map([v], |e| e)); null }; go(t)` prints, with
-            // GRAPHIX_ELAB_AUDIT=1, "unify-back at .. `("nop")(collection_element)`:
-            // narrowed the site's return from 'b: [i64, Array<i64>] to 'b: [i64,
-            // Array<i64>, [i64, Array<i64>]]", once per call of `go`. The program runs
-            // right ([[1]], then [1]). No report at the top level, with `|e| e` called
-            // directly, with array::filter, or by default (an instance takes its
-            // definition's types). base-r24 alike. Either the instance checked again
-            // returns a union over cells of its own that the site's union does not hold as
-            // equal members, or the union the site keeps is not flattened; not diagnosed.
-            // design/parallel_compile.md, The audit, says this unify-back never narrows a
-            // site. 9 of 1275 generated programs report it
-            // (~/ptmp/cr29/scratch/r24/24b/pbas-rev/gen3.py). probes:
-            // ~/ptmp/cr29/scratch/r24/24b/pbas-rev/{ns1,ns1_top,ns1_id}.gx
-            // (nosubst-unify-back-self-union-01)
-            // 2026-11-14 claude: PARTIAL. Cause found: TVar::add_lower deduped a new lower
-            // bound only against each existing lower one at a time, so a union lower whose
-            // members the cell already held as separate lowers (a TVar bound to i64 and
-            // Array<TVar bound to i64>) was pushed as a further member and printed as a
-            // nested self-union. add_lower now also returns when every member of a Set
-            // bound is already held. Pin: graphix-shell tests
-            // shell::elab_audit::an_instance_returning_the_sites_union_narrows_nothing
-            // (fails without the fix under GRAPHIX_NO_SUBST=1, passes with it); ns1.gx is
-            // silent. What remains: in the gen3.py corpus
-            // (~/ptmp/cr29/scratch/r25/25d/aud.sh runs it, 1275 programs,
-            // GRAPHIX_NO_SUBST=1 GRAPHIX_ELAB_AUDIT=1) 20 programs report on base-r25 and
-            // 18 still do, e.g. gen p0050 (b = B((1,[x])); b <- B((2,x)); select b.0
-            // {..}): there the site's lowers hold the definition's open cell of x and the
-            // second check's instance returns a Set over fresh open cells of its own, so
-            // the added bound is a genuinely different union by cell identity (printed
-            // '_N_2, '_N_3), not a duplicate; making them agree needs the instance's cells
-            // unified with the site's, not a dedupe. Programs run right; the shipped mode
-            // substitutes and is unaffected. Left as a CR for that remainder.
-            // 2026-11-14 claude: Coordinator, round 25: whether a refusal only
-            // GRAPHIX_NO_SUBST=1 makes is a defect is D42 in ~/ptmp/cr-discuss.md (Open);
-            // three rounds tried a fix and undid it. Readdressed to eric.
-            // 2026-11-15 claude: Eric ruled (2026-11-15, D42): delete the flag. "given
-            // that we made the subst change a long time ago now, we should probably delete
-            // that debug and remove any code that is dead because of its removal."
-            // GRAPHIX_NO_SUBST, the recheck path it selects (Typing::rechecks,
-            // InstanceTypes::of_default's early return),
-            // graphix-shell/tests/shell/no_subst.rs and the flag's leg of elab_audit.rs
-            // go, with whatever only a rechecking instance reached; this CR is deleted in
-            // that change.
             let before =
                 dbgenv::graphix_elab_audit().then(|| printed_deref(&site_ft.rtype));
             if !site_ft.rtype.prove_ground() {

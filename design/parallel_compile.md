@@ -549,25 +549,17 @@ and catches read: `par_growth` (20000 slots, an arithmetic callback)
 49.5G at the last step (-11%); `par_wide` 42.4G, 39.5G (-7%).
 
 The default `typecheck0_instance` is the check: the leaves, a reference
-(which copies its binding's scheme), and declarations. `GRAPHIX_NO_SUBST=1`
-checks and elaborates every instance again, but for its selects' verdicts
-(coverage, dead arms, guards, the one-runtime-form and map-key refusals),
-a `Transparent` a JSON or TOML writer's value holds, and the labeled
-defaults its return hides, which stay its definition's, as an instance
-without check rows takes them (`node::rechecking_instance`,
-`typ::TextSite`, `GXLambda::typecheck0`): the instance's narrower types
-can make an arm the definition needs unreachable, and such an arm, which
-never runs, binds its names at ⊥, but for the elements of a slice it
-stands over, which type its binds as the definition's check did (an array
-the call makes of a collection variable still gives a list arm its
-element); at the instance's types a
-`Transparent` over the definition's own variable is over the type a call
-gave it; and an instance's return holds what its site's later uses
+(which copies its binding's scheme), and declarations. No instance checks
+its body again: its selects' verdicts (coverage, dead arms, guards, the
+one-runtime-form and map-key refusals), a `Transparent` a JSON or TOML
+writer's value holds, and the labeled defaults its return hides are its
+definition's. An instance's return holds what its site's later uses
 decided (`v(0)(#d: "s", 7)` makes `#d` a string), against which a default
-no call needs would be refused. A call that omits the label judges it.
+no call needs would be refused: a call that omits the label judges it.
 A labeled default compiled at a bind takes its types from its
-definition's check as an instance's body does, and is checked so only
-where there are no rows (`callsite::checked_default`). A cell a default's
+definition's check as an instance's body does
+(`InstanceTypes::of_default`, `callsite::checked_default`); one whose
+definition recorded no rows is a compiler error. A cell a default's
 rows hold that the check decides nothing of (a call's result holding a
 function over a variable of its own: `#w: fn(d: 'z, x: i64) -> string =
 mk(0)`) stays open when the gate closes: no site settle of the default

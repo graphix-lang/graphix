@@ -3006,9 +3006,6 @@ pub(crate) enum PendingSettle {
         /// The signatures of the enclosing definitions: what they reach
         /// is generalized, settled by each call.
         sigs: SmallVec<[triomphe::Arc<FnType>; 1]>,
-        /// What its JSON and TOML bounds judge: `Instance` in an instance's
-        /// body checked again (`node::instance_rechecked`).
-        text: typ::TextSite,
         spec: Arc<Expr>,
     },
     /// A cell an operation leaves for its context to decide (an
@@ -3109,7 +3106,6 @@ impl PendingSettle {
                 sigs,
                 spec,
                 unread_callbacks,
-                text: _,
             } = s
             {
                 let mut kept: SmallVec<[&AHashSet<usize>; 2]> = SmallVec::new();
@@ -3174,8 +3170,8 @@ impl PendingSettle {
                 PendingSettle::ElementBinds { test, shape, elems, spec } => {
                     (element_binds(env, test, shape, elems, &mut ends), spec)
                 }
-                PendingSettle::Site { ftype, text, spec, .. } => {
-                    (site_bounds(env, ftype, *text), spec)
+                PendingSettle::Site { ftype, spec, .. } => {
+                    (site_bounds(env, ftype), spec)
                 }
                 _ => continue,
             };
@@ -3211,7 +3207,7 @@ fn known_members(union: &Type) -> CompactString {
 /// The bounds a call's settled cells must meet beyond their check: a
 /// `Discernible` cell's binding, and the map keys a `Concrete` one's (a
 /// map read from data).
-fn site_bounds(env: &Env, ftype: &FnType, text: typ::TextSite) -> Result<()> {
+fn site_bounds(env: &Env, ftype: &FnType) -> Result<()> {
     let mut tvs: LPooled<AHashMap<ArcStr, typ::TVar>> = LPooled::take();
     ftype.collect_tvars(&mut tvs);
     for tv in tvs.values() {
@@ -3227,7 +3223,7 @@ fn site_bounds(env: &Env, ftype: &FnType, text: typ::TextSite) -> Result<()> {
                         Bound::JsonData => "JSON",
                         _ => "TOML",
                     };
-                    if let Some(why) = t.text_refusal(env, text) {
+                    if let Some(why) = t.text_refusal(env) {
                         let r = |t: &Type| t.resolve_tvars();
                         let what = || format_compact!("{}", r(&t));
                         let (what, why) = match &why {

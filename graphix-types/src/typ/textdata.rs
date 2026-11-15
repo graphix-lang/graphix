@@ -36,17 +36,6 @@ pub enum TextRefusal {
     Transparent(Type),
 }
 
-/// Whose types a [`Type::text_refusal`] judges: a `Transparent` over a
-/// type known not to be abstract is refused as a program wrote it
-/// (`Written`), and left to the definition's check in an instance's body
-/// checked again (`Instance`), where the type is the definition's at a
-/// call's.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TextSite {
-    Written,
-    Instance,
-}
-
 /// A named type a walk expands: a typedef by its definition, or an
 /// abstract type's representation by its identity.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -70,15 +59,14 @@ struct Walk<'a> {
     /// The abstract type whose `from_value` reads the data the walk is in;
     /// `None` in the text itself.
     read_by: Option<ArcStr>,
-    site: TextSite,
     /// Each named type expanded, by what it names, whether it is in data
     /// a `from_value` reads, and its arguments.
     seen: LPooled<AHashSet<(Named, bool, Arc<[Type]>)>>,
 }
 
 impl<'a> Walk<'a> {
-    fn new(env: &'a Env, site: TextSite) -> Self {
-        Walk { env, read_by: None, site, seen: LPooled::take() }
+    fn new(env: &'a Env) -> Self {
+        Walk { env, read_by: None, seen: LPooled::take() }
     }
 
     /// The walk of `body`, the expansion of the named type `named` at
@@ -175,10 +163,7 @@ impl<'a> Walk<'a> {
         let body = rep.instantiate_with(params);
         let read_by = if id == AbstractId::transparent() {
             match self.head(&body) {
-                Some(h)
-                    if self.site == TextSite::Written
-                        && !matches!(h, Type::Abstract { .. }) =>
-                {
+                Some(h) if !matches!(h, Type::Abstract { .. }) => {
                     return Err(TextRefusal::Transparent(t.clone()));
                 }
                 _ => self.read_by.clone(),
@@ -363,8 +348,8 @@ impl Type {
     /// a union whose members a tag does not tell apart, or a
     /// `Transparent` over a type that is not abstract; `None` when they
     /// read back every value of it.
-    pub fn text_refusal(&self, env: &Env, site: TextSite) -> Option<TextRefusal> {
-        Walk::new(env, site).walk(self).err()
+    pub fn text_refusal(&self, env: &Env) -> Option<TextRefusal> {
+        Walk::new(env).walk(self).err()
     }
 
     /// The map at this type's root, past names, variables and a union's
@@ -372,7 +357,7 @@ impl Type {
     /// value]` pairs (its key type is known and is not `string`), which a
     /// TOML document, a table, cannot be.
     pub fn toml_root_pairs(&self, env: &Env) -> Option<Type> {
-        let walk = Walk::new(env, TextSite::Written);
+        let walk = Walk::new(env);
         let mut members: SmallVec<[(Type, Type); 8]> = SmallVec::new();
         walk.members(self, &mut members, &mut vec![]);
         members.into_iter().find_map(|(head, written)| match &head {
@@ -405,13 +390,13 @@ mod test {
 
     fn refused(t: &str) -> bool {
         let env = Env::default();
-        parse_type(t).unwrap().text_refusal(&env, TextSite::Written).is_some()
+        parse_type(t).unwrap().text_refusal(&env).is_some()
     }
 
     /// [`refused`] over the typedefs `defs`.
     fn named(defs: &[(&str, &str)], t: &str) -> bool {
         let (env, t) = typed(defs, t);
-        t.text_refusal(&env, TextSite::Written).is_some()
+        t.text_refusal(&env).is_some()
     }
 
     #[test]
@@ -503,12 +488,12 @@ mod test {
         let defs = crate::typ::cast::tests::union_dag(20);
         let defs: Vec<(&str, &str)> = defs.iter().map(|(n, b)| (&**n, &**b)).collect();
         let (env, t) = typed(&defs, "[L20, `D]");
-        let walk = Walk::new(&env, TextSite::Written);
+        let walk = Walk::new(&env);
         let mut out = SmallVec::new();
         walk.members(&t, &mut out, &mut vec![]);
         let leaves: Vec<String> = out.iter().map(|(h, _)| h.to_string()).collect();
         assert_eq!(leaves, ["`A", "`B", "`A", "`C", "`D"]);
-        assert!(t.text_refusal(&env, TextSite::Written).is_none());
+        assert!(t.text_refusal(&env).is_none());
     }
 
     // A typedef expands once for each list of arguments it is applied to,
@@ -524,6 +509,6 @@ mod test {
     #[test]
     fn a_finite_chain_of_larger_arguments_is_judged() {
         let (env, t) = crate::typ::cast::tests::typed_chain("O", 8);
-        assert!(t.text_refusal(&env, TextSite::Written).is_none());
+        assert!(t.text_refusal(&env).is_none());
     }
 }

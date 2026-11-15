@@ -52,7 +52,7 @@ mod print;
 pub use print::{Brief, Noted};
 pub(crate) mod regular;
 mod textdata;
-pub use textdata::{TextRefusal, TextSite, toml_root_refusal};
+pub use textdata::{TextRefusal, toml_root_refusal};
 mod setops;
 pub(crate) use setops::strictly_identical;
 #[doc(hidden)]

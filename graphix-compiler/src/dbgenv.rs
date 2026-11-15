@@ -12,7 +12,6 @@ dbg_flag!(graphix_dbg_region, "GRAPHIX_DBG_REGION");
 dbg_flag!(graphix_dbg_select, "GRAPHIX_DBG_SELECT");
 dbg_flag!(graphix_dump_clif, "GRAPHIX_DUMP_CLIF");
 dbg_flag!(graphix_elab_audit, "GRAPHIX_ELAB_AUDIT");
-dbg_flag!(graphix_no_subst, "GRAPHIX_NO_SUBST");
 dbg_flag!(graphix_fuse_serial, "GRAPHIX_FUSE_SERIAL");
 dbg_flag!(graphix_no_outline, "GRAPHIX_NO_OUTLINE");
 dbg_flag!(graphix_par_audit, "GRAPHIX_PAR_AUDIT");

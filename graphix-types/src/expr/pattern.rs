@@ -118,33 +118,19 @@ impl StructurePattern {
     /// where `t` holds none.
     pub fn collection_view(&self, env: &Env, t: &Type) -> Option<Type> {
         match self.has_slice() {
-            true => self.collection_view_inner(env, t, false),
+            true => self.collection_view_inner(env, t),
             false => None,
         }
     }
 
-    /// [`Self::collection_view`] for an arm nothing reaches: each slice
-    /// the pattern stands over is read as the pattern's own collection
-    /// over the same elements, a `List` where `t` holds an `Array` and
-    /// the reverse, so the arm's binds are typed by the elements.
-    pub fn collection_view_of_unreached(&self, env: &Env, t: &Type) -> Option<Type> {
-        match self.has_slice() {
-            true => self.collection_view_inner(env, t, true),
-            false => None,
-        }
-    }
-
-    fn collection_view_inner(&self, env: &Env, t: &Type, reflect: bool) -> Option<Type> {
+    fn collection_view_inner(&self, env: &Env, t: &Type) -> Option<Type> {
         /// Each part's view, where any part has one.
         fn parts<'a>(
             env: &Env,
-            reflect: bool,
             parts: impl Iterator<Item = (Option<&'a StructurePattern>, &'a Type)>,
         ) -> Option<SmallVec<[Type; 8]>> {
             let views: SmallVec<[(Option<Type>, &Type); 8]> = parts
-                .map(|(p, t)| {
-                    (p.and_then(|p| p.collection_view_inner(env, t, reflect)), t)
-                })
+                .map(|(p, t)| (p.and_then(|p| p.collection_view_inner(env, t)), t))
                 .collect();
             views.iter().any(|(v, _)| v.is_some()).then(|| {
                 views.into_iter().map(|(v, t)| v.unwrap_or_else(|| t.clone())).collect()
@@ -152,25 +138,22 @@ impl StructurePattern {
         }
         fn each<'a>(
             env: &Env,
-            reflect: bool,
             ps: &'a [StructurePattern],
             ts: &'a [Type],
         ) -> Option<Arc<[Type]>> {
             if ps.len() != ts.len() {
                 return None;
             }
-            parts(env, reflect, ps.iter().map(Some).zip(ts.iter())).map(Arc::from_iter)
+            parts(env, ps.iter().map(Some).zip(ts.iter())).map(Arc::from_iter)
         }
         fn seq<'a>(
             env: &Env,
-            reflect: bool,
             ps: impl Iterator<Item = &'a StructurePattern>,
             t: &Type,
         ) -> Option<Type> {
             let mut view: Option<Type> = None;
             for p in ps {
-                if let Some(v) =
-                    p.collection_view_inner(env, view.as_ref().unwrap_or(t), reflect)
+                if let Some(v) = p.collection_view_inner(env, view.as_ref().unwrap_or(t))
                 {
                     view = Some(v)
                 }
@@ -179,7 +162,6 @@ impl StructurePattern {
         }
         fn elems(
             env: &Env,
-            reflect: bool,
             ps: &[StructurePattern],
             list: bool,
             t: &Type,
@@ -187,10 +169,9 @@ impl StructurePattern {
             let (et, open) = match (list, t) {
                 (false, Type::Array(et)) | (true, Type::List(et)) => (et, false),
                 (_, Type::App(_, et)) => (et, true),
-                (_, Type::Array(et) | Type::List(et)) if reflect => (et, true),
                 _ => return None,
             };
-            let view = seq(env, reflect, ps.iter(), et);
+            let view = seq(env, ps.iter(), et);
             if !open && view.is_none() {
                 return None;
             }
@@ -200,28 +181,26 @@ impl StructurePattern {
         use StructurePattern as P;
         crate::stack::ensure_sufficient(|| match (self, t) {
             (P::Ignore | P::Bind(_) | P::Literal(..) | P::Abstract { .. }, _) => None,
-            (_, Type::TVar(tv)) => {
-                self.collection_view_inner(env, &tv.binding()?, reflect)
-            }
+            (_, Type::TVar(tv)) => self.collection_view_inner(env, &tv.binding()?),
             (_, Type::Ref(_)) => {
-                self.collection_view_inner(env, &t.lookup_ref(env).ok()?, reflect)
+                self.collection_view_inner(env, &t.lookup_ref(env).ok()?)
             }
-            (_, Type::Set(ts)) => parts(env, reflect, ts.iter().map(|m| (Some(self), m)))
+            (_, Type::Set(ts)) => parts(env, ts.iter().map(|m| (Some(self), m)))
                 .map(|ts| Type::Set(Arc::from_iter(ts))),
-            (P::Or(alts), _) => seq(env, reflect, alts.iter(), t),
+            (P::Or(alts), _) => seq(env, alts.iter(), t),
             (_, Type::App(c, a)) if let Some(f) = Type::app_filled(c, a) => {
-                Some(self.collection_view_inner(env, &f, reflect).unwrap_or(f))
+                Some(self.collection_view_inner(env, &f).unwrap_or(f))
             }
             (P::Tuple { binds, .. }, Type::Tuple(ts)) => {
-                each(env, reflect, binds, ts).map(Type::Tuple)
+                each(env, binds, ts).map(Type::Tuple)
             }
             (P::Variant { tag, binds, .. }, Type::Variant(vt, ts, at)) if vt == tag => {
-                each(env, reflect, binds, ts).map(|ts| Type::Variant(vt.clone(), ts, *at))
+                each(env, binds, ts).map(|ts| Type::Variant(vt.clone(), ts, *at))
             }
             (P::Struct { binds, .. }, Type::Struct(fs)) => {
                 let pat =
                     |n: &ArcStr| binds.iter().find(|(b, _, _)| b == n).map(|(_, p, _)| p);
-                parts(env, reflect, fs.iter().map(|(n, ft, _)| (pat(n), ft))).map(|ts| {
+                parts(env, fs.iter().map(|(n, ft, _)| (pat(n), ft))).map(|ts| {
                     Type::Struct(
                         fs.iter()
                             .zip(ts)
@@ -232,9 +211,9 @@ impl StructurePattern {
             }
             (P::Slice { list, binds, .. }, _)
             | (P::SlicePrefix { list, prefix: binds, .. }, _) => {
-                elems(env, reflect, binds, *list, t)
+                elems(env, binds, *list, t)
             }
-            (P::SliceSuffix { suffix, .. }, _) => elems(env, reflect, suffix, false, t),
+            (P::SliceSuffix { suffix, .. }, _) => elems(env, suffix, false, t),
             (P::Tuple { .. } | P::Variant { .. } | P::Struct { .. }, _) => None,
         })
     }
@@ -484,7 +463,6 @@ impl StructurePattern {
             )
         })
     }
-
 
     /// The completion of the one scrutinee member `complete` answers
     /// for and the pattern, of the inferred type `ptype`, could match. A

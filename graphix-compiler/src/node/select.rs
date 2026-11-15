@@ -1127,14 +1127,6 @@ impl Reach {
         Ok(false)
     }
 
-    /// Nothing that reaches `pat`'s arm can pass its test.
-    fn passes_nothing<R: Rt>(&self, env: &Env, pat: &PatternNode<R>) -> Result<bool> {
-        Ok(self.wildcard
-            || self.atype == Type::Primitive(BitFlags::empty())
-            || !pat.type_predicate.could_match(env, &self.atype)?
-            || !self.structure_admits(env, pat, &pat.structure_predicate)?)
-    }
-
     /// Whether a value of what reaches may pass `sp`, the structure of
     /// `pat` or of one of its or-alternatives, where `pat`'s type predicate
     /// could match it. An inferred predicate holds every test of its
@@ -2982,8 +2974,7 @@ impl<R: Rt> Update<R> for Select<R> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
-        let checking = !super::instance_rechecked();
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx), checking)?;
+        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx), true)?;
         if self.flags.intersects(CFlag::SeqStep | CFlag::RunEvent) {
             return Ok(());
         }
@@ -3298,26 +3289,14 @@ impl<R: Rt> Select<R> {
             // The arm's binds alias against what reaches it. The
             // `any_as_tvar` view keeps a `_` slot from short-circuiting the
             // walk.
-            let unreached =
-                super::instance_rechecked() && reach.passes_nothing(&ctx.env, pat)?;
             // a written test types its binds itself (Type::matching_type)
-            let view = spec_pats.get(i).filter(|_| !pat.explicit_type_predicate);
-            let reaching = match (unreached, view) {
-                (false, view) => view
-                    .and_then(|(p, _)| {
-                        p.structure_predicate.collection_view(&ctx.env, &reach.atype)
-                    })
-                    .unwrap_or_else(|| reach.atype.clone()),
-                // an arm its definition's check kept that nothing reaches
-                // at the instance's types never runs: its binds take the
-                // elements of the slices it stands over, else ⊥
-                (true, view) => view
-                    .and_then(|(p, _)| {
-                        p.structure_predicate
-                            .collection_view_of_unreached(&ctx.env, &reach.atype)
-                    })
-                    .unwrap_or(Type::Bottom),
-            };
+            let reaching = spec_pats
+                .get(i)
+                .filter(|_| !pat.explicit_type_predicate)
+                .and_then(|(p, _)| {
+                    p.structure_predicate.collection_view(&ctx.env, &reach.atype)
+                })
+                .unwrap_or_else(|| reach.atype.clone());
             if checking {
                 reached.push(Reached {
                     atype: reaching.clone(),

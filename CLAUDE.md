@@ -416,8 +416,8 @@ compiler tracing to one expression — the stdlib typechecks on every
 compile, so unscoped prints are gigabytes. Every debug env var is in
 `design/debugging.md`; the common ones are `GRAPHIX_ELAB_AUDIT=1` (a build
 refusing what the check accepted), `GRAPHIX_DBG_BIND=1` (every tvar bind and
-`contains` verdict), `GRAPHIX_NO_SUBST=1` (instances check again),
-`GRAPHIX_PAR_AUDIT=1`, `GRAPHIX_PRUNE=audit` and `GRAPHIX_DUMP_CLIF=1`.
+`contains` verdict), `GRAPHIX_PAR_AUDIT=1`, `GRAPHIX_PRUNE=audit` and
+`GRAPHIX_DUMP_CLIF=1`.
 
 ## Working conventions
 
