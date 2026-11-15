@@ -280,6 +280,17 @@ no "another argument of this call decided as Array<i64>" type B<'p> = Abstract<'
 ok type B<'p> = Abstract<'p>; let n: [i64, null] = null; let f = |a, z| { a <- B([z]); a.0 }; let x: B<Array<[i64, null]>> = B([1]); f(x, n)
 ```
 
+A declared variable is every type a call picks, so a body that puts a
+type above it, by passing a value of that type where the variable's bound
+needs it, is refused: annotate the parameter with a type holding it, or
+declare no variable.
+
+```graphix,cases
+no "annotate the parameter with a type holding" let f = 'a0: ['a1, bool], 'a1: ['a2, duration] |x0: 'a0, x2: 'a2| x2; let w0: [null, string] = null; let g = |u: 'u| f(w0, u); 1
+ok let f = 'a0: ['a1, bool], 'a1: ['a2, duration] |x0: 'a0, x2: 'a2| x2; let w0: [null, string] = null; let g = |u: [null, string]| f(w0, u); 1
+ok let f = 'a0: ['a1, bool], 'a1: ['a2, duration] |x0: 'a0, x2: 'a2| x2; let w0: [null, string] = null; let g = |u| f(w0, u); 1
+```
+
 A function type with variables of its own (`fn<'a: Number>(x: 'a) ->
 'a`, or a trait as a parameter's type inside a written function type,
 `fn(c: Collection) -> i64`) stands only as a definition's signature: a

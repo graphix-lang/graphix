@@ -2573,6 +2573,10 @@ signature gives it its lower bound as its own settle would
 so a chain of bounds passes it down. A call of the definition then meets
 the signature's cell above that bound, as one bound alone has it at the
 site's bind (`lang::types::lower_bound_reaches_the_bounds_own_cells_*`).
+A conjunct that does not hold the lower bound (the definition's declared
+variable is rigid, and above the bound it is no longer the caller's to pick)
+refuses the definition at its close, naming the annotation
+(`lang::types::lower_bound_into_a_declared_variable_*_is_refused`).
 An undecided lower bound waits for the settle. A lower bound given at the
 moment a cell takes it was tried and breaks the programs a cell above a
 bound that a narrower argument meets later
