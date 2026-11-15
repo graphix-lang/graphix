@@ -882,6 +882,18 @@ impl<R: Rt> Update<R> for Bind<R> {
         if let ExprKind::Bind(b) = &self.spec.kind
             && b.typ.is_some()
         {
+            // CR claude for claude: [bug/low] A `let` annotation above the trait it names
+            // as a type is not refused: `let v: Array<Sh> = [1, 2]; trait Sh { .. }; impl Sh
+            // for i64 {..}; println(v)` checks and prints [1, 2], while `trait Sh {..}; let
+            // v: Array<Sh> = [1]` is refused ("trait Sh used as a type"); a lambda
+            // parameter's annotation (`|a: Array<Sh>| 0` above the trait) is accepted the
+            // same way. The same hole as (typedef-forward-trait-type-01), which closed it
+            // for a typedef body only (defer_typedef_names): the value of defer_unresolved_names
+            // here says a name means a trait, and nothing asks `rewrite_trait_args` again.
+            // Fix as there: ask again at the end of the block, and Pending::Body for a name
+            // still unresolved then. probes: ~/ptmp/cr29/scratch/r27/27f/y1.gx (runs, prints
+            // [1, 2]) and x1.gx, x2.gx beside it; x3.gx is the refused order.
+            // (let-annotation-forward-trait-type-01)
             crate::defer_unresolved_names(ctx, &self.typ, &self.spec, None)?;
         }
         // every write compiled before this check is a target by now, the

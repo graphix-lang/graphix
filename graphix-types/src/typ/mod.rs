@@ -3428,7 +3428,7 @@ impl Type {
     /// (inferred, not written) not. A name that does resolve is refused
     /// where it is applied wrongly ([`TypeRef::check_application`]). Each
     /// union it writes in a function type goes to `union`
-    /// ([`Self::for_each_written`]). Whether some name means a trait.
+    /// ([`Self::for_each_written`]). True when some name means a trait.
     #[doc(hidden)]
     pub fn unresolved_names(
         &self,

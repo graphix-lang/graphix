@@ -4141,7 +4141,7 @@ pub(crate) fn recheck_pending_typedefs<R: Rt>(
 /// Record the names `t`, written at `spec`, holds that do not resolve
 /// yet ([`CompileCtx::pending_names`]); refuse one that resolves and is
 /// applied wrongly; each union it writes in a function type goes to
-/// `union`. Whether some name means a trait.
+/// `union`. True when some name in `t` means a trait.
 pub(crate) fn defer_unresolved_names<R: Rt>(
     ctx: &mut CompileCtx<R>,
     t: &Type,
