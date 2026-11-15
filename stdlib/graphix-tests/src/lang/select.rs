@@ -12422,7 +12422,7 @@ run!(
         g(1)
     }"#,
     is(Value::I64(1));
-    FuseExpect::None
+    FuseExpect::Jit
 );
 
 run!(
