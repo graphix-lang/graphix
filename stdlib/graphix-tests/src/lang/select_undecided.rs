@@ -2625,6 +2625,18 @@ run!(slice_element_binds_an_abstract_instance_written_later_refused, r#"{
     z
 }"#, refused("this pattern takes a value of W<string> too"); FuseExpect::None);
 
+run!(slice_element_binds_an_unnamed_open_member_refused, r#"{
+    type W<'a> = Abstract<'a>;
+    let f = |x| select x { [W(p), ..] => p + 100, _ => 0 };
+    f([W("s")])
+}"#, refused("this pattern takes a value of any type that a type not yet known here becomes and that has its structure"); FuseExpect::None);
+
+run!(slice_element_binds_an_unnamed_open_member_annotated, r#"{
+    type W<'a> = Abstract<'a>;
+    let f = |x: Array<W<i64>>| select x { [W(p), ..] => p + 100, _ => 0 };
+    f([W(1)])
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(101))); FuseExpect::Jit);
+
 run!(slice_element_binds_the_abstract_instance_it_typed, r#"{
     type W<'a> = Abstract<'a>;
     let v = never();
@@ -2738,7 +2750,7 @@ run!(slice_element_binds_an_abstract_beside_an_open_member_refused, r#"{
         z
     };
     f(W("s"))
-}"#, refused("becomes that has its structure, and this select typed the pattern's binds for W<i64> alone"); FuseExpect::None);
+}"#, refused("a type not yet known here becomes and that has its structure, and this select typed the pattern's binds for W<i64> alone"); FuseExpect::None);
 
 run!(slice_element_binds_an_abstract_of_one_instance_beside_an_open_member, r#"{
     type W = Abstract<i64>;

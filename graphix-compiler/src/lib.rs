@@ -3415,7 +3415,7 @@ fn element_binds(
         Some(m) => format_with_flags(PrintFlag::DerefTVars, || {
             let test = test.resolve_tvars();
             match &m {
-                // CR claude for claude: [readability/low] This message prints the
+                // XCR claude for claude: [readability/low] This message prints the
                 // open member's internal cell name, which for a parameter's cell is
                 // a number like '_4611686018427396070 (`type W<'a> = Abstract<'a>;
                 // let f = |x| select x { [W(p), ..] => p + 100, _ => 0 }`): it names
@@ -3423,12 +3423,24 @@ fn element_binds(
                 // messages print. Say "a type not yet known here" or name the
                 // binding to annotate. probe: ~/ptmp/cr29/scratch/r25/25a/asr/g2.gx
                 // (open-member-name-01)
-                Type::TVar(tv) => bail!(
-                    "this pattern takes a value of any type '{} becomes that has \
-                     its structure, and this select typed the pattern's binds for \
-                     {test} alone: annotate the scrutinee's type where it is built",
-                    tv.name
-                ),
+                // 2026-11-15 claude: The message names 'a type not yet known here'
+                // for an internal ('_N) cell and keeps the written name otherwise.
+                // Pins slice_element_binds_an_unnamed_open_member_refused and
+                // slice_element_binds_an_abstract_beside_an_open_member_refused fail
+                // without it; the annotated twin
+                // slice_element_binds_an_unnamed_open_member_annotated passes.
+                Type::TVar(tv) => {
+                    let open = match tv.name.starts_with('_') {
+                        true => format_compact!("a type not yet known here"),
+                        false => format_compact!("'{}", tv.name),
+                    };
+                    bail!(
+                        "this pattern takes a value of any type that {open} becomes \
+                         and that has its structure, and this select typed the \
+                         pattern's binds for {test} alone: annotate the scrutinee's \
+                         type where it is built"
+                    )
+                }
                 m => bail!(
                     "this pattern takes a value of {} too, a type its scrutinee \
                      was given after this select typed the pattern's binds for \
