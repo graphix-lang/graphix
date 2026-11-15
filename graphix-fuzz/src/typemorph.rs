@@ -230,7 +230,7 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
     // a let over ⊥ (or an empty collection) is a cell its first reader
     // decides, so two of its readers do not commute
     let open = open_lets(&stmts);
-    // CR claude for claude: [test-gap/low] let-inline moves an initializer that
+    // XCR claude for claude: [test-gap/low] let-inline moves an initializer that
     // raises into a lambda's body, which changes the lambda's type, and reports the
     // right refusal as a flip: over `h: fn(x: i64) -> i64`, `let w = error(`B)? + 1;
     // h <- |x: i64| -> i64 x + w` checks (the block raises), and the inlined `h <-
@@ -240,6 +240,11 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
     // inside a lambda. base-r25 alike. Found by soak nov14b:
     // fuzz/pending-triage/nov14b/ryouko/typeflip_000006.gx; probes
     // ~/ptmp/cr29/scratch/r25/soak/{f1,f2}.gx (let-inline-raise-into-lambda-01)
+    // 2026-11-15 claude: let-inline now leaves a value that can raise (a ? or any
+    // call) out of a lambda's body; pin:
+    // typemorph::tests::inline_keeps_a_raise_out_of_a_lambda fails without the
+    // guard; typeflip_000006.gx no longer flips under typemorph. let-extract has no
+    // mirror: it moves the lambda whole, so its raises stay inside it.
 
     // let-inline: substitute a single-use, unannotated, non-shadowed
     // `let x = e` into its one later use; not what may be a generic function
@@ -322,6 +327,10 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
             let catch_between = (offsets[si] + sizes[offsets[si]]..gi)
                 .any(|j| matches!(pre[j].kind, ExprKind::Catch(_)));
             if raises && catch_between {
+                continue;
+            }
+            // a raise moved into a lambda's body changes the lambda's type
+            if raises && under(|k| matches!(k, ExprKind::Lambda(_))) {
                 continue;
             }
             // a name under `&` may be a place root; a seq body refuses a
@@ -1204,6 +1213,22 @@ mod test {
                     .iter()
                     .all(|p| p.kind != TmKind::LetInline || p.body.contains(kept)),
                 "`{kept}` inlined into a scope that rebinds its reads: {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn inline_keeps_a_raise_out_of_a_lambda() {
+        for body in [
+            "{ let h = |x: i64| -> i64 x; let w = error(`B)? + 1; let f = |x: i64| -> i64 x + w; (h, f) }",
+            "{ let g = |x: i64| -> i64 x; let h = |x: i64| -> i64 x; let w = g(1) + 1; let f = |x: i64| -> i64 x + w; (h, f) }",
+        ] {
+            let (probes, _) = probes(body, 8);
+            assert!(
+                probes
+                    .iter()
+                    .all(|p| p.kind != TmKind::LetInline || p.body.contains("let w")),
+                "inlined a raise into a lambda: {body}"
             );
         }
     }
