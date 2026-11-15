@@ -13719,6 +13719,18 @@ run!(typedef_body_with_extra_parameters_refused, r#"{
     bad
 }"#, refused("P expects 1 type parameters"); FuseExpect::None);
 
+run!(typedef_body_applying_a_plain_typedef_refused, r#"{
+    type U = u8;
+    type W<'a> = Abstract<U<'a>>;
+    1
+}"#, refused("U expects 0 type parameters"); FuseExpect::None);
+
+run!(typedef_body_applying_a_plain_typedef_under_an_array_refused, r#"{
+    type U = u8;
+    type W<'a> = Array<U<'a>>;
+    1
+}"#, refused("U expects 0 type parameters"); FuseExpect::None);
+
 run!(written_parameter_outside_its_bound_refused, r#"{
     type B<'a: Number> = ('a, 'a);
     let bad: [B<string>, null] = null;

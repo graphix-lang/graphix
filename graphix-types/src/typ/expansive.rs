@@ -160,8 +160,9 @@ impl<'a> Flow<'a> {
     /// plainly: a union flattens, so `T<['a, string]>` applied to itself
     /// is `T<['a, string]>` again.
     fn apply(&mut self, d: usize, formals: &[ArcStr], c: usize, args: &[Type]) {
-        let first = self.defs[c].first;
-        for (j, arg) in args.iter().enumerate() {
+        let Def { first, params, .. } = &self.defs[c];
+        let (first, arity) = (*first, params.len());
+        for (j, arg) in args.iter().enumerate().take(arity) {
             let members = match arg {
                 Type::Set(ms) => &ms[..],
                 arg => std::slice::from_ref(arg),
