@@ -8,12 +8,13 @@ use std::fs;
 
 const MAIN: &str = r#"mod a;
 let nested = mod foo dynamic {
-    sig { use core; use sys::fs::tempdir; use a::b::f; val y: i64 };
+    sig { use core; use sys::fs::tempdir; use super::a::b::f; val y: i64 };
     source "let t = sys::fs::tempdir::create; let y = super::a::b::f(1)"
 };
 let traits = mod bar dynamic {
-    sig { use core; use a::b;
-        use super::a::b::Show;
+    sig {
+        use core;
+        use super::a::b::{self, Show};
         type Counter;
         impl Show for Counter;
         val make: fn(x: i64) -> Counter

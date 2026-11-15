@@ -729,6 +729,11 @@ mod test {
             for (at, _) in main.match_indices("use m") {
                 let end = main[at..].find(';').map_or(main.len(), |e| at + e);
                 let stmt = &main[at..end];
+                // a generated module is `m` and its index; `use map` is a
+                // dynamic module's grant
+                if !stmt["use m".len()..].starts_with(|c: char| c.is_ascii_digit()) {
+                    continue;
+                }
                 let name = match stmt.split_once(" as ") {
                     Some((_, alias)) => alias,
                     None => stmt.rsplit("::").next().unwrap(),
