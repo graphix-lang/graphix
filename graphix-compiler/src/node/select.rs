@@ -3940,8 +3940,9 @@ pub(super) fn lower_view(t: &Type) -> Option<Type> {
 
 /// The open cells of the parts built into a scrutinee cell the arms
 /// decide (`lower`, its lower bounds) that the arms' settle holds as they
-/// stand: those of a part the arms' `tests` that hold no cell hold together
-/// whatever its cells become, so no other test decides them by its place
+/// stand: those of a part the arms' `tests` that hold no cell, a name at a
+/// position of a tuple, struct or variant counting as `_`
+/// ([`standing_test`]), hold together whatever its cells become, so no other test decides them by its place
 /// in the arms' union, but a cell another part needs decided. With them,
 /// when `checking`, the refusal of the first part no test holds so that
 /// two of them could take.
@@ -3957,7 +3958,9 @@ fn built_standing(
     }
     let mut members: SmallVec<[Type; 8]> = SmallVec::new();
     union_members(env, tests, &mut members)?;
-    members.retain(|m| !m.has_unbound());
+    let mut holds: SmallVec<[Type; 8]> = SmallVec::new();
+    holds.extend(members.drain(..).filter_map(|m| standing_test(&m)));
+    let members = holds;
     if members.is_empty() {
         return Ok((held, apart));
     }
@@ -3975,7 +3978,7 @@ fn built_standing(
             continue;
         }
         let all: OpenCells = rigid.iter().chain(open.iter()).cloned().collect();
-        // CR claude for claude: [bug/low] A tag arm that names its part, `(`A, n)`, is a
+        // XCR claude for claude: [bug/low] A tag arm that names its part, `(`A, n)`, is a
         // test with an unbound cell, which `members.retain(|m| !m.has_unbound())` drops
         // above, so the arms' tests no longer hold the built member together and the arm
         // behind them is refused where the plain twin runs: `|x, t: [`A, `B], c: bool| {
@@ -3986,6 +3989,17 @@ fn built_standing(
         // an annotation the unnamed form does not. Fix: ask the test with its binds held
         // as the part stands (the bind's cell is the part's), not drop it.
         // probes: ~/ptmp/cr29/scratch/r25/25c/tw2.txt 4 and 5 (standing-tests-bind-names-01)
+        // 2026-11-15 claude: A name at a position of a tuple, struct or variant in a test is
+        // held as the part's own (as a _ is) by built_standing (standing_test); a name
+        // inside an array element or a type parameter still is not, since a later write
+        // widens those (lang::types select_before_a_deeper_write pins fail if it is). Pins
+        // fail without the fix: lang::select_undecided standing_tests_name_their_parts,
+        // standing_tests_name_one_part_and_ignore_another (4 modes each). Three refusal pins
+        // whose cover binds a name now accept like their _ twins
+        // (built_part_two_tests_behind_a_named_cover_*,
+        // cover_bind_part_after_a_taken_member_leaves_the_cells_open). The apart refusal
+        // (apart_refusal) has no pin left that reaches it with a name; probes
+        // ~/ptmp/cr29/scratch/r26/26d/sb/.
         let together = Type::Set(Arc::from_iter(members.iter().cloned()));
         if together.contains_holding(env, l, &all)? {
             held.extend(open);
@@ -4005,6 +4019,37 @@ fn built_standing(
     }
     held.retain(|c| !decided.iter().any(|d| d.stands_for() == c.stands_for()));
     Ok((held, apart))
+}
+
+/// The test `m` as it holds a part built into a scrutinee cell: a name at
+/// a position of a tuple, struct or variant takes whatever stands there,
+/// so it holds the part as an `Any` does. `None` where another cell
+/// remains (bounded, rigid, or an element of a collection or a type's
+/// parameter, which a later write widens), which the test does not hold as
+/// it stands.
+fn standing_test(m: &Type) -> Option<Type> {
+    fn names_as_any(t: &Type) -> Option<Type> {
+        crate::stack::ensure_sufficient(|| match t {
+            Type::TVar(tv) => match tv.open_cell() {
+                Some(c)
+                    if !c.is_rigid()
+                        && c.cell_lower().is_empty()
+                        && c.cell_constraints().is_empty() =>
+                {
+                    Some(Type::Any)
+                }
+                Some(_) => None,
+                None => names_as_any(&tv.binding()?),
+            },
+            t @ (Type::Set(_) | Type::Tuple(_) | Type::Variant(..) | Type::Struct(_)) => {
+                t.cow_children(&mut |c| names_as_any(c))
+            }
+            _ => None,
+        })
+    }
+    let t = names_as_any(m);
+    let t = t.as_ref().unwrap_or(m);
+    (!t.has_unbound()).then(|| t.clone())
 }
 
 /// The refusal of `built`, which either of `takers` could take and

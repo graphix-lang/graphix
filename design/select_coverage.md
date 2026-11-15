@@ -173,11 +173,14 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   no cell decided, whatever they become, so no test decides them by its
   place in the arms' union, and `x` stays open there with the parts in
   either order (`(`A, _)` and `(`B, _)` hold `([`A, `B], x)` between
-  them, so `(_, 0)` behind them meets no value of `x`); a member no
-  test holds so that two of them could take, `` (`K, x, y) ``
-  behind `` (`K, n, _) `` beside `(_, 0, _)` and `(_, _, "a")`, is
-  refused once no arm is refused for testing it, naming the bindings to
-  annotate: `built_standing`), and so does
+  them, so `(_, 0)` behind them meets no value of `x`; a name at a
+  position of a tuple, struct or variant holds its part as a `_` does,
+  `standing_test`, so `` (`K, n, _) `` holds `` (`K, x, y) `` as
+  `` (`K, _, _) `` does, while a name inside an array's element or a
+  type's parameter, which a later write widens, holds nothing); a member
+  no test holds so that two of them could take is refused once no arm is
+  refused for testing it, naming the bindings to annotate:
+  `built_standing`), and so does
   one those bounds hold that the arms leave open (`Deciding::left_open`:
   over `&mut [x, 0]`, `` [`J, _] `` beside `_` decides the referent
   `Array<Any>`, which holds `x`'s values without `x`), except a

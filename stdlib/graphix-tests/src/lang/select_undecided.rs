@@ -1391,24 +1391,23 @@ run!(test_holding_an_annotated_part_leaves_the_other_part_open, r#"{
     [f(5, "s", true), f(5, 7, true), f(5, 7, false), g(5, "s", true), g(5, 7, true), g(5, 7, false)]
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [5, 5, 2, 5, 5, 2]); FuseExpect::Jit);
 
-// No test holds the member as it stands (the cover binds a part), and two
-// tests could take it, each deciding another of its cells: which did would
-// follow their place in the arms' union.
-run!(built_part_two_tests_could_take_refused, r#"{
+// A cover that names a part holds the member as it stands, as a `_` does:
+// the tests behind it that could each take it decide none of its cells.
+run!(built_part_two_tests_behind_a_named_cover_decide_nothing, r#"{
     let f = |x, y, b: bool| {
         let r = &mut (select b { true => (`K, x, y), false => (`L, 0, "a") });
         select *r { (`K, n, _) => n, (_, 0, _) => 2, (_, _, "a") => 3, _ => 4 }
     };
     [f(5, "s", true), f(5, "s", false)]
-}"#, refused("(`K, 'x, 'y), built into it, could go to (Any, Any, string) or (Any, i64, Any) of the types they test, neither of which holds it as it stands: annotate it, writing for 'x the type of `x`"); FuseExpect::None);
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [5, 2]); FuseExpect::Jit);
 
-run!(built_part_two_tests_could_take_in_another_order_refused, r#"{
+run!(built_part_two_tests_behind_a_named_cover_in_another_order, r#"{
     let f = |x, y, b: bool| {
         let r = &mut (select b { true => (y, x, `K), false => ("a", 0, `L) });
         select *r { (_, n, `K) => n, (_, 0, _) => 2, ("a", _, _) => 3, _ => 4 }
     };
     [f(5, "s", true), f(5, "s", false)]
-}"#, refused("('y, 'x, `K), built into it, could go to (Any, i64, Any) or (string, Any, Any) of the types they test, neither of which holds it as it stands: annotate it, writing for 'y the type of `y`"); FuseExpect::None);
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [5, 2]); FuseExpect::Jit);
 
 run!(built_part_two_tests_could_take_annotated, r#"{
     let f = |x: i64, y: string, b: bool| {
@@ -3608,16 +3607,16 @@ run!(wildcard_beside_a_bind_used_as_two_types_refused, r#"{
     f((2, 5))
 }"#, refused("type mismatch"); FuseExpect::None);
 
-// A part an earlier arm takes whole, binding only another cell, is where a
-// later test over an undecided cell lands; which cell a test narrows follows
-// the order of the parts, and each order's verdict is sound.
-run!(cover_bind_part_after_a_taken_member_narrows_the_cell_refused, r#"{
+// A part an earlier arm takes whole, binding only another cell, holds the
+// member as it stands, so a later test decides none of its cells, in
+// whichever order the parts stand.
+run!(cover_bind_part_after_a_taken_member_leaves_the_cells_open, r#"{
     let f = |x, y, b: bool| {
         let r = &mut (select b { true => (`K, x, y), false => (`L, 0, "a") });
         select *r { (`K, n, _) => "0:[n]", (_, _, "a") => "1", _ => "w" }
     };
     [f(5, 7, true), f(5, 7, false)]
-}"#, refused("string does not contain i64"); FuseExpect::None);
+}"#, prints(r#"["0:5", "1"]"#); FuseExpect::Jit);
 
 run!(cover_bind_part_after_a_taken_member_annotated, r#"{
     let f = |x, y: i64, b: bool| {
@@ -3634,3 +3633,35 @@ run!(cover_bind_part_after_a_taken_member_part_first, r#"{
     };
     [f(5, 7, true), f(5, 7, false)]
 }"#, prints(r#"["0:5", "1"]"#); FuseExpect::Jit);
+
+run!(standing_tests_name_their_parts, r#"{
+    let f = |x, t: [`A, `B], c: bool| {
+        let r = &mut (select c { true => (t, x), false => (`L, 0) });
+        select *r { (`A, n) => 1, (`B, m) => 2, (_, 0) => 3, _ => 4 }
+    };
+    [f(0, `A, true), f(0, `B, true), f(0, `A, false)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 2, 3]); FuseExpect::Jit);
+
+run!(standing_tests_name_one_part_and_ignore_another, r#"{
+    let f = |x, t: [`A, `B], c: bool| {
+        let r = &mut (select c { true => (t, x), false => (`L, 0) });
+        select *r { (`A, n) => 1, (`B, _) => 2, (_, 0) => 3, _ => 4 }
+    };
+    [f(0, `A, true), f(0, `B, true), f(0, `A, false)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 2, 3]); FuseExpect::Jit);
+
+run!(standing_tests_that_leave_a_member_uncovered_refused, r#"{
+    let f = |x, t: [`A, `B], c: bool| {
+        let r = &mut (select c { true => (t, x), false => (`L, 0) });
+        select *r { (`A, n) => 1, (_, 0) => 3, _ => 4 }
+    };
+    [f(0, `A, true), f(0, `B, true)]
+}"#, refused("(_, 0) tests a value of 'x, a type not decided at this select"); FuseExpect::None);
+
+run!(standing_tests_that_leave_a_member_uncovered_annotated, r#"{
+    let f = |x: i64, t: [`A, `B], c: bool| {
+        let r = &mut (select c { true => (t, x), false => (`L, 0) });
+        select *r { (`A, n) => 1, (_, 0) => 3, _ => 4 }
+    };
+    [f(0, `A, true), f(0, `B, true)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 3]); FuseExpect::Jit);

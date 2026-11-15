@@ -68,11 +68,12 @@ select, and runtime forms. Each rule refuses and names the fix.
   0) }) ``, where `x` stays open: the function takes any `x`), and so do
   arms that take it together (`(true, _)` and `(false, _)` over `(b,
   x)`); so is a literal, `null`, `[]`, a fixed-length slice or an
-  or-pattern there. A
-  member built into the reference that no arm without a name takes
-  whole and two arms' tests could take (`` (`K, x, y) `` behind `` (`K,
-  n, _) ``, beside `(_, 0, _)` and `(_, _, "a")`) is refused, "could go
-  to", until `x` and `y` are annotated. A pattern
+  or-pattern there. A name at
+  a position of a tuple, struct or variant takes the part whole as a `_`
+  does, so `` (`K, n, _) `` leaves `x` and `y` open beside `(_, 0, _)`
+  and `(_, _, "a")` over `` (`K, x, y) ``; a member built into the
+  reference that no test takes whole and two could take is refused,
+  "could go to", until its cells are annotated. A pattern
   that only takes it apart decides its shape: `((a, b), _)`, `({a, b},
   _)`, `([h, ..], _)`, `([<h, t..>], _)`, `(W(p), _)` check, unless
   the part stands beside a member of that shape (`y` is `x` or a pair):
@@ -345,7 +346,7 @@ ok |x| { let r: &mut Array<[`J, `M, i64]> = &mut [x, 0]; select *r { [`J, _] => 
 ok |x, b: bool| { let r = &mut (select b { true => (`K, x), false => (`L, 0) }); select *r { (`K, _) => 1, (_, 0) => 2, _ => 3 } }
 ok let f = |x, b: bool| { let r = &mut (select b { true => (`K, x), false => (`L, 0) }); select *r { (`K, _) => 1, (_, 0) => 2, _ => 3 } }; (f("s", true), f(0, true))
 ok let f = |x, b: bool| { let r = &mut (select b { true => (x, `K), false => (0, `L) }); select *r { (_, `K) => 1, (0, _) => 2, _ => 3 } }; (f("s", true), f(0, true))
-no "could go to (Any, Any, string) or (Any, i64, Any)" |x, y, b: bool| { let r = &mut (select b { true => (`K, x, y), false => (`L, 0, "a") }); select *r { (`K, n, _) => n, (_, 0, _) => 2, (_, _, "a") => 3, _ => 4 } }
+ok |x, y, b: bool| { let r = &mut (select b { true => (`K, x, y), false => (`L, 0, "a") }); select *r { (`K, n, _) => n, (_, 0, _) => 2, (_, _, "a") => 3, _ => 4 } }
 ok |x: i64, y: string, b: bool| { let r = &mut (select b { true => (`K, x, y), false => (`L, 0, "a") }); select *r { (`K, n, _) => n, (_, 0, _) => 2, (_, _, "a") => 3, _ => 4 } }
 ok let f = |x, b: bool, c: bool| { let r = &mut (select c { true => (b, x), false => (`L, 0) }); select *r { (true, _) => 1, (false, _) => 2, (_, 0) => 3, _ => 4 } }; (f("s", true, true), f(0, false, true))
 no "(_, 0) tests a value of 'x" |x, b: bool, c: bool| { let r = &mut (select c { true => (b, x), false => (`L, 0) }); select *r { (true, _) => 1, (_, 0) => 3, _ => 4 } }
