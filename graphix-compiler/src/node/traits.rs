@@ -650,7 +650,7 @@ impl<R: Rt> Trait<R> {
         }
         let exprs: Arc<[Expr]> = Arc::from_iter(exprs.drain(..));
         let defaults =
-            Block::compile(ctx, flags, spec.clone(), &dscope, top_id, true, &exprs)
+            Block::compile(ctx, flags, spec.clone(), &dscope, top_id, true, None, &exprs)
                 .with_context(|| format!("in the default methods of trait {}", t.name))?;
         let mut defaults_by_name: LPooled<Vec<(CompactString, BindId)>> = LPooled::take();
         if let Some(binds) = ctx.env.lexical.binds.get(&dscope.lexical) {
@@ -1159,7 +1159,7 @@ impl<R: Rt> Impl<R> {
         }
         let exprs: Arc<[Expr]> = Arc::from_iter(exprs.drain(..));
         let body =
-            Block::compile(ctx, flags, spec.clone(), &bscope, top_id, true, &exprs)
+            Block::compile(ctx, flags, spec.clone(), &bscope, top_id, true, None, &exprs)
                 .with_context(|| format!("in impl {} for {target}", trait_def.name))?;
         let mut methods: Map<CompactString, BindId> = Map::new();
         if let Some(binds) = ctx.env.lexical.binds.get(&bscope.lexical) {

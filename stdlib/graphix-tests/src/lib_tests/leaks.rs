@@ -960,6 +960,22 @@ async fn a_dropped_root_module_is_declared_again() -> Result<()> {
     .await
 }
 
+/// A file module with no interface, and the module and the type it
+/// declares, are declared again once it is dropped, and hold nothing.
+#[tokio::test(flavor = "current_thread")]
+async fn a_dropped_root_file_module_without_an_interface_is_declared_again() -> Result<()>
+{
+    compiled_and_dropped(
+        [
+            ("/m.gx", "mod n; type T = i64; let make = |x: T| n::inc(x)"),
+            ("/m/n.gx", "let inc = |x: i64| x + 1"),
+        ],
+        "mod m; m::make(3)",
+        Value::I64(4),
+    )
+    .await
+}
+
 const DYNAMIC_LEN_MODULE: &str = r#"sig { use core; use str; val make: fn(s: string) -> i64 }; source "use str::len; let make = |s: string| len(s)""#;
 
 /// Compile and drop a dynamic module at `/m` whose source writes `use

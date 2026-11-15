@@ -531,7 +531,8 @@ async fn a_later_block_type_beside_another_warns(mode: Mode) -> Result<()> {
 modes!(a_later_block_type_beside_another_warns);
 
 // A module's names are its own only while its statements compile: a
-// type deleted with its module leaves its name to what else is in view.
+// type deleted with its module leaves its name to what else is in view,
+// and the module is no longer in scope.
 async fn a_deleted_modules_type_frees_its_name(mode: Mode) -> Result<()> {
     let (tx, _rx) = tokio::sync::mpsc::channel(100);
     let files = [(
@@ -556,7 +557,15 @@ async fn a_deleted_modules_type_frees_its_name(mode: Mode) -> Result<()> {
         }
     }
     drop(held);
-    let _prelude = ctx.rt.compile(source).await?;
+    match ctx.rt.compile(source).await {
+        Ok(_) => anyhow::bail!("a deleted module was still in scope"),
+        Err(e) => {
+            let e = format!("{e:#}");
+            assert!(e.contains("no module `n` in scope"), "{e}")
+        }
+    }
+    let _prelude =
+        ctx.rt.compile(literal!("let y: Result<i64, string> = error(\"e\")")).await?;
     ctx.shutdown().await;
     Ok(())
 }

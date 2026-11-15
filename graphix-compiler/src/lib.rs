@@ -4262,6 +4262,7 @@ pub fn compile_script<R: Rt>(
             scope,
             top_id,
             false,
+            None,
             exprs,
         )?;
         Ok((n, scope.clone()))

@@ -1023,6 +1023,9 @@ impl<R: Rt> Update<R> for Constant {
 #[derive(Debug)]
 pub struct Block<R: Rt> {
     pub(crate) module: bool,
+    /// A file module's path, which its delete unbinds from the lexical
+    /// maps.
+    declared: Option<ModPath>,
     /// A module's: a `let` among its children re-raised at a wake in the
     /// last update that walked it, and the block around it has not taken
     /// that back yet.
@@ -1219,11 +1222,12 @@ impl<R: Rt> Block<R> {
     /// Build a `Block` from compiled children. A module produces no
     /// value; a non-module block's value is its last child's.
     pub fn new(module: bool, children: Box<[Node<R>]>, spec: Arc<Expr>) -> Node<R> {
-        Self::with(module, spec, children, Box::default(), Runs::default())
+        Self::with(module, None, spec, children, Box::default(), Runs::default())
     }
 
     fn with(
         module: bool,
+        declared: Option<ModPath>,
         spec: Arc<Expr>,
         mut children: Box<[Node<R>]>,
         catches: Box<[usize]>,
@@ -1231,6 +1235,7 @@ impl<R: Rt> Block<R> {
     ) -> Node<R> {
         Node::new(Self {
             module,
+            declared,
             reraised: false,
             around: None,
             spec,
@@ -1249,6 +1254,7 @@ impl<R: Rt> Block<R> {
         scope: &Scope,
         top_id: ExprId,
         module: bool,
+        declared: Option<ModPath>,
         exprs: &Arc<[Expr]>,
     ) -> Result<Node<R>> {
         let (children, catches) = compile_block_children(
@@ -1260,7 +1266,7 @@ impl<R: Rt> Block<R> {
             exprs.iter(),
             true,
         )?;
-        Ok(Self::with(module, spec, children, catches, Runs::default()))
+        Ok(Self::with(module, declared, spec, children, catches, Runs::default()))
     }
 }
 
@@ -2307,11 +2313,12 @@ impl<R: Rt> Block<R> {
         buf: &mut &[u8],
     ) -> Result<Node<R>, PackError> {
         let module = bool::decode(buf)?;
+        let declared = Option::<ModPath>::decode(buf)?;
         let spec = Arc::new(Expr::decode(buf)?);
         let children = decode_nodes(ctx, buf)?.into_boxed_slice();
         let catches = Vec::<usize>::decode(buf)?.into_boxed_slice();
         let runs = Runs::image_decode(buf)?;
-        Ok(Self::with(module, spec, children, catches, runs))
+        Ok(Self::with(module, declared, spec, children, catches, runs))
     }
 }
 
@@ -2327,10 +2334,18 @@ impl<R: Rt> Update<R> for Block<R> {
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::Block, buf);
         self.module.encode(buf)?;
+        self.declared.encode(buf)?;
         self.spec.encode(buf)?;
         encode_nodes(&self.children, buf)?;
         image::slice_encode(&self.catches, buf)?;
         self.runs.image_encode(buf)
+    }
+
+    fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
+        self.for_each_child_mut(&mut |c| c.delete(ctx));
+        if let Some(scope) = &self.declared {
+            ctx.env.unbind_lexical_under(scope);
+        }
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {

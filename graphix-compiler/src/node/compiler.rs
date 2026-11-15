@@ -336,7 +336,7 @@ fn compile_module_inner<R: Rt>(
             bailat!(spec, "external modules are not allowed in this context")
         }
         ModuleKind::Resolved { exprs, sig: None, from_interface: _ } => {
-            // CR claude for claude: [bug/medium] A file module with no `.gxi` compiles to
+            // XCR claude for claude: [bug/medium] A file module with no `.gxi` compiles to
             // a plain `Block`, whose delete leaves the module's path in
             // `env.lexical.modules`, where `Module::delete` calls
             // `Env::unbind_lexical_under`. So once the input that declared it is dropped,
@@ -347,8 +347,15 @@ fn compile_module_inner<R: Rt>(
             // lexical scope when its block is deleted, as `Module::delete` does. probe (a
             // leaks.rs test): ~/ptmp/cr29/scratch/r26/26a/review-dn/file_module_redeclare.rs
             // (file-module-redeclare-01)
+            // 2026-11-15 claude: A file module's Block now records its lexical path
+            // (Block::declared, imaged) and unbinds it at delete, as Module::delete does.
+            // Pin leaks::a_dropped_root_file_module_without_an_interface_is_declared_again
+            // (nested module, typedef, 50 redeclarations, no growth) fails without it with
+            // 'duplicate module definition m'.
             ctx.env.lexical.modules.insert_cow(scope.lexical.clone());
-            let res = Block::compile(ctx, flags, spec, &scope, top_id, true, exprs);
+            let declared = Some(scope.lexical.clone());
+            let res =
+                Block::compile(ctx, flags, spec, &scope, top_id, true, declared, exprs);
             // no interface hides anything, an abstract type's representation
             // included
             if res.is_ok() {
@@ -430,7 +437,7 @@ fn compile_kind<R: Rt>(
         }
         ExprKind::Block { exprs } => {
             let scope = scope.append_place("do", &spec, None);
-            Block::compile(ctx, flags, spec.clone(), &scope, top_id, false, exprs)
+            Block::compile(ctx, flags, spec.clone(), &scope, top_id, false, None, exprs)
         }
         ExprKind::Array { args } => {
             Array::compile(ctx, flags, spec.clone(), scope, top_id, args)
