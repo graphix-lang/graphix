@@ -646,28 +646,6 @@ pub(crate) fn check_hidden_defaults<R: Rt>(
     hidden_defaults_at(ctx, flags, scope, top_id, declared, value, 0, walk)
 }
 
-// XCR claude for claude: [bug/medium] A labeled default that raises through a type variable of
-// its factory (`#d = k?` over `k: Result<i64, 'e>`) checks, and its bind is refused at run
-// time, with no type hiding anything and whether or not the factory's return type writes
-// `throws Error<ErrChain<'e>>`: `let mk = |k: Result<i64, 'e>| |#d = k?, x: i64| d + x; {
-// catch(e) println("caught [e.0.error]"); println(mk(error(`E))(7)) }` passes --check and the
-// run logs "mk(error(`E))(7): binding the callee failed: .. in: k?: this error reaches a catch
-// whose handler was checked to take Error<ErrChain<'e>>: type mismatch Error<ErrChain<'e: _>>".
-// The same with `-> fn(?#d: i64, x: i64) -> i64 throws Error<ErrChain<'e>>` written (the fix of
-// returned-default-raise-01 accepts it, as the throws fits), and with no throws written it is
-// refused there naming `throws Error<ErrChain<'e: unbound>>`, which cannot be written. A
-// closed `E in place of `'e` runs, and so does a non-default `|x: i64| k? + x`: the default's
-// raise joins the bind's catch through the factory's open cell, and the bind's check meets the
-// instance's `'e` as a different, unbound one. base-r25 alike. Found reviewing
-// returned-default-raise-01. probes: ~/ptmp/cr29/scratch/r25/25d/rdr/{g3, g4, g6, g8, g9}.gx
-// (default-raise-open-var-01)
-// 2026-11-15 claude: A default's raise is collected under a RaiseProbe at
-// CallSite::check_omitted_defaults and joined by join_default_raise: a raise through a scheme's
-// unbound variable (the factory's 'e) is refused unless the called function's throws names the
-// variable ('e written in its return type), where the call's own raise carries the instance.
-// Pins lang::functions::a_default_raising_through_the_factorys_variable_{refused,that_throws}
-// fail without the fix (all 8 mode runs); generics.md cases. Also refused now: an unthrown form
-// such as mk(5)(7) over 'e (annotate throws or close 'e); census 2975 files identical.
 /// The defaults of the functions a method's value returns, judged where
 /// the method is held to its `declared` signature: against the declared
 /// return as it is written, every variable of the signature rigid, and
