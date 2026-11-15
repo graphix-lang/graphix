@@ -692,7 +692,7 @@ impl Reach {
                     built = Some(Built { typ, cells });
                 }
             }
-            // CR claude for claude: [perf/low] The check of a select over an unannotated
+            // CR claude for eric: [perf/low] The check of a select over an unannotated
             // parameter whose arms hold a literal at one part and a name at another grows
             // with the square of the arms: `|s| select s { (1, a) => 1, .., (N, a) => N, (_,
             // _) => 0 }` takes 3.73 G user instructions of `--no-cache --check` in a debug
@@ -769,6 +769,9 @@ impl Reach {
             // literal's type at the bind (payload-bind-beside-literal-01's rule), or a
             // narrowing that is incremental in the arms. probes:
             // ~/ptmp/cr29/scratch/r26/26d/tuple-arms/
+            // 2026-11-15 claude: Round 26 coordinator: three rounds of partial fixes and
+            // this round's lane all end at a design change, so the question of accepting the
+            // cost or commissioning that change goes to Eric as D44 in ~/ptmp/cr-discuss.md.
             match matches!(scrut, Type::TVar(tv) if tv.open_cell().is_some()) {
                 true => {
                     let gates: SmallVec<[_; 2]> =
@@ -1577,29 +1580,6 @@ fn may_hold(env: &Env, t: &Type, h: &Head) -> Result<bool> {
         }))
 }
 
-// CR claude for claude: [bug/low] An arm is not found dead behind an arm that takes every
-// value of its variant where the parameter is unannotated and another tag's arm follows:
-// `let f = |s| select s { `A(b) => b, `A(c) => 1, `B => 2 }; f(`A(1))` checks and runs
-// with its second arm never taken (so does `` `A(_, b) => b, `A(_, c) => 1, `B => 2 ``
-// over two parts, and a `C arm after `B), where `` `A(b) => b, `B => 2, `A(c) => 1 ``
-// and `` `A(b) => b, `A(c) => 1, _ => 2 `` are refused "unreachable arm", and the
-// parameter written (`|s: [`A(i64), `B]|`) is refused with a message about another arm,
-// "pattern `A('_N) will never match `B". The language says no dead arms. base-r25 alike
-// (with `_` for `b`, base-r25 refused by that message; wildcard-slot-any-part-01's fix
-// checks it as its name twin does). Not traced: which of the arms' settle and the
-// coverage walk takes the second `A arm as covering `B. probes:
-// ~/ptmp/cr29/scratch/r25/25c/rev2/p5.txt, p6.txt, p7.txt (run with rb.sh)
-// (variant-dead-arm-unannotated-01)
-// 2026-11-15 claude: Checked on base-r26 (4ed90c8f0) and on the lane-26c build: the CR's
-// accepted programs are all refused now. Its p5/p6/p7 and 132 variants (all of rev2's
-// p1-p9) are refused: the unannotated forms by 'pattern `A('_N: unbound) will never match
-// `B' (or 'unreachable arm' where the dead arm comes last), the same message the
-// annotated form gives, so no program with a dead arm checks or runs. Non-dead twins
-// (`A(1) first, a guard on the first arm, a single `A arm) still check. What stands is
-// only the message: it names the other arm (`B), not the dead second `A arm, and prints
-// an inference cell ('_7999: unbound) where a type should be. Not fixed here: the CR's
-// claim is stale, and the wording is the same one the annotated parameter gets. Probes:
-// ~/ptmp/cr29/scratch/r26/26c/vd/.
 /// The heads `t` admits when it is a finite set of them: a union of
 /// `bool`, `null`, variants, tuples and structs holding no open cell,
 /// [`Head::Rest`] for its other primitives and [`Head::Open`] for
@@ -1653,7 +1633,7 @@ fn head_of(sp: &StructPatternNode) -> Option<Head> {
     }
 }
 
-// CR claude for claude: [bug/low] A test behind a pool that covers a referent's member still
+// CR claude for eric: [bug/low] A test behind a pool that covers a referent's member still
 // decides that member's cell: `|x, b: bool, c: bool| { let r = &mut (select c { true => (b, x),
 // false => (`L, 0) }); select *r { (true, n) => 1, (false, m) => 2, (_, 0) => 3, _ => 4 } }`
 // checks, but with `x` the i64 that `(_, 0)` tests, so `f("s", true, true)` is refused "i64 does
@@ -1689,6 +1669,9 @@ fn head_of(sp: &StructPatternNode) -> Option<Head> {
 // (it names no select). Recommendation: keep, and either rm this CR as by design or open a
 // message CR ('the arms decide this referent, which holds a test of x'); not decided here.
 // Probes: ~/ptmp/cr29/scratch/r26/26c/pc/.
+// 2026-11-15 claude: Round 26 coordinator: the verdict is sound and the lane's two attempts show
+// a fix is a change to how an arm's binds meet a decided referent, so whether to accept this as
+// built or change the model goes to Eric as D45 in ~/ptmp/cr-discuss.md.
 /// The lengths slice pattern `sp` claims of `t`, when `t` is one array or
 /// list type its kind fits and its elements take every element of it.
 fn slice_head(env: &Env, sp: &StructPatternNode, t: &Type) -> Result<Option<Head>> {

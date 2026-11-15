@@ -986,7 +986,7 @@ fn a_chain_of_bounds_elaborates_in_linear_time() {
     )
 }
 
-// CR claude for claude: [perf/low] Some typedef neighbours of the chain of bounds
+// CR claude for eric: [perf/low] Some typedef neighbours of the chain of bounds
 // still elaborate in more than linear time, where the chain through `type T<'x> =
 // Array<'x>` (and through a struct or an abstract typedef, in any declaration
 // order) is linear. `graphix --expand --no-cache`, debug, total G instructions
@@ -1169,6 +1169,9 @@ fn a_chain_of_bounds_elaborates_in_linear_time() {
 // contrived shape (references to lets decided but for a cell inside a function type,
 // passed to 1000 chained formals); status PARTIAL. probes and the phase-timer patch:
 // ~/ptmp/cr29/scratch/r26/26h/chainbounds/
+// 2026-11-15 claude: Round 26 coordinator: three rounds of partial fixes and this
+// round's lane all end at a design change, so the question of accepting the cost or
+// commissioning that change goes to Eric as D44 in ~/ptmp/cr-discuss.md.
 /// The chain through a typedef's parameter, or a variant's, elaborates in
 /// time linear in its length, at two depths: the instance's type holds
 /// each link's application once, a node every walk and rewrite of it

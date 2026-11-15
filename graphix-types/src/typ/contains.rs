@@ -2187,7 +2187,7 @@ fn holds_union(
     }
 }
 
-// CR claude for claude: [perf/low] A call passing an array, or a tuple, for every
+// CR claude for eric: [perf/low] A call passing an array, or a tuple, for every
 // link of a chain of bounds checks in time quadratic in the chain's length, where the
 // twin passing integers is linear (deep_nesting chainboundsvalued). `python3 gen2.py
 // arrnotrait N` / `gen3.py tupnotrait N` (--no-cache --check, debug, empty 0.75 G): arrays
@@ -2222,6 +2222,9 @@ fn holds_union(
 // to how a cell's conjunct chain is probed, not a local memo. Probes:
 // ~/ptmp/cr29/scratch/r26/26e/chainbounds (a*.gx arrays, t* tuples, s* shared v, i* integers,
 // ic.sh BIN FILE counts instructions).
+// 2026-11-15 claude: Round 26 coordinator: three rounds of partial fixes and this round's lane all
+// end at a design change, so the question of accepting the cost or commissioning that change goes
+// to Eric as D44 in ~/ptmp/cr-discuss.md.
 
 /// Commit `t ⊇ l` for each lower bound `l` of a cell bound to `t`, on
 /// copies first, so bounds a probe admits apart but no commit holds

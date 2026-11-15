@@ -2641,6 +2641,19 @@ impl TVar {
         }
     }
 
+    // CR claude for claude: [structure/low] `open_cell_addr` keeps its chain ends in a
+    // thread-local map (`ENDS`) beside the scoped `ChainEnds` a copy's walk already
+    // carries: two memos of one fact, and this one holds an `Arc<CellLock>` for every
+    // long chain's first cell until the thread's next call after a cell write, so a
+    // finished compile's cells stay alive on an idle thread. Nothing reads a stale end
+    // (the map is cleared when `cell_writes` moves, the rule the other standing verdicts
+    // use), so this is layering and retained memory, not a wrong answer. A fix gives
+    // `setops::Leaves` a `ChainEnds` owned by the walk that builds it (`walks_alike`'s
+    // caller, valid while that walk writes no cell) and deletes the thread-local. Keep
+    // slice-arms-composite-member-cost-01's pin
+    // `the_end_of_a_long_chain_is_read_once_while_no_cell_is_written` passing. Added
+    // by 26f's slice-arms commit; found in the round 26 coordinator review.
+    // (chain-ends-thread-local-01)
     /// The address of [`Self::open_cell`]'s cell, `None` when the chain ends
     /// bound. A chain longer than [`ChainEnds::SHORT`] is walked once while
     /// this thread writes no cell.
@@ -5881,7 +5894,7 @@ impl Type {
         }
         // a member walked as one before it gives no part that one did not
         let mut walked: SmallVec<[Type; 8]> = SmallVec::new();
-        // CR claude for claude: [perf/low] Slice arms that take each element apart over
+        // CR claude for eric: [perf/low] Slice arms that take each element apart over
         // an unannotated parameter still cost steeply at the definition: `gen3.py 20
         // arrelem` (`[[a0, s0..], [a1, s1..], .., t..] => t`) takes 17.2 G user
         // instructions of `--no-cache --check` in a debug build and `gen3.py 24 tupelem`
@@ -5968,6 +5981,9 @@ impl Type {
         // off: 250 reads against 1, and 100 chain walks), graphix-shell deep_nesting
         // slice_arms_over_element_slices_check_in_bounded_time (budget 16 G -> 8 G:
         // base-r26 retires 11.6 G). Probes: ~/ptmp/cr29/scratch/r26/26f/slice-arms/.
+        // 2026-11-15 claude: Round 26 coordinator: three rounds of partial fixes and this
+        // round's lane all end at a design change, so the question of accepting the cost or
+        // commissioning that change goes to Eric as D44 in ~/ptmp/cr-discuss.md.
         for m in members {
             if m.walks_as_one_of(&walked) {
                 continue;
