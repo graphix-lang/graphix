@@ -1580,6 +1580,33 @@ impl Typing {
     // Found reviewing rigid-narrowed-by-callee-bound-01. probes:
     // ~/ptmp/cr29/scratch/r24/24c/rnbrev/{n1,n3,n4,c3,b7}.gx
     // (nosubst-bound-upcast-01)
+    // 2026-11-14 claude: Round 25 fixer, tried and undone (patch:
+    // ~/ptmp/cr29/scratch/r25/25d/nosubst-bound-upcast-01/attempt.patch).
+    // Confirmed on base-r25: n1 n3 n4 c3 b7 print right by default and are
+    // refused under GRAPHIX_NO_SUBST=1. The attempt typed an instance's formal
+    // whose definition type is an open bounded variable at its bound
+    // (Type::open_bound, renamed through the table's outer map and instantiated
+    // through instance_cells' known cells, in GXLambda::new before
+    // new_with_body compiles the formal patterns); the five probes then agree
+    // in both modes. It is wrong for the A/B because a formal read at its bound
+    // is no longer the instance's cell: (1) a bound that is a trait-like set
+    // breaks the pinned no_subst test
+    // an_instance_checked_again_holds_a_nested_variable_bounded_by_an_enclosing_one
+    // (f = 'z: Number |w: 'z| { let g = 'e: 'z |u: 'e| -> 'z u; g(w) } reads w
+    // as Number, so g's 'e, bound by the instance's i64 'z, is refused: i64
+    // does not contain [Int, Real], probe p1.gx); (2) a body that names the
+    // variable again splits the other way: let g = 'b: Array<[i64, null]> |x:
+    // 'b| { let h = |y: 'b| -> 'b y; h(x) } over Array<i64> (h1.gx) and a let
+    // y: 'b = x (h2.gx) check today in both modes and are refused under
+    // NO_SUBST with the formal at the bound. Restricting to structural bounds
+    // does not close (2). A fix that holds has the instance's recheck
+    // instantiate a bounded formal's cell as the definition's check had it,
+    // open and carrying the (instantiated) bound, and bind it to the instance's
+    // argument type only after the body is checked, so the body's reads and its
+    // named uses of the variable stay one cell: that is the definition's check
+    // run again at the instance's cells, not a local rule. The shipped mode
+    // (which substitutes) is right and unchanged; the gap is the debug A/B
+    // alone.
 
     /// Whether the instance checks its body again (`GRAPHIX_NO_SUBST`),
     /// where its definition's types would do.
