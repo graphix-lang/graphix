@@ -213,7 +213,7 @@ fn builtin_binding<R: Rt>(node: &Node<R>, value: &Expr) -> Option<BuiltinBindInf
     })
 }
 
-// CR claude for claude: [bug/low] A builtin alias a `<-` writes is still taken as the builtin, so
+// XCR claude for claude: [bug/low] A builtin alias a `<-` writes is still taken as the builtin, so
 // the check accepts what the run refuses: `let t = sys::net::publish; t <- sys::net::publish;
 // t(never(), 10)` (and `let f = t; f(never(), 10)`) checks, `--check` accepts it, and
 // `gxf check` logs "a run-time bind's settle at (\"nop\")(x) refused: the type 'a must be
@@ -222,13 +222,18 @@ fn builtin_binding<R: Rt>(node: &Node<R>, value: &Expr) -> Option<BuiltinBindInf
 // while the variable may hold another function. Same on base-r26 in the direct form; the
 // block form `{ let t = publish; t <- publish; t }` took it from block-read-optional-callback-01.
 // probes ~/ptmp/cr29/scratch/r26/26f/{q1,q2,p9}.gx (builtin-alias-written-01)
+// 2026-11-15 claude: A name a <- writes, and a name of it, is no longer taken as the builtin
+// (CompileCtx::builtin_binding, mark_connect_target, Bind::settle_builtin_alias): the call is
+// dynamic and the unread quantifier is refused at the check, naming the handler to pass. Pins
+// lang::test_builtins::unread_quantifier_is_refused_through_a_written_alias (4 modes) and
+// lang::repl_inputs::builtin_alias_written_by_an_earlier_input fail without it.
 /// The builtin a read of a binding the table names is.
 fn aliased_builtin<R: Rt>(
     ctx: &CompileCtx<R>,
     node: &Node<R>,
 ) -> Option<BuiltinBindInfo> {
     let NodeView::Ref(r) = value_of(node).view() else { return None };
-    ctx.builtin_bindings.get(&r.id).cloned()
+    ctx.builtin_binding(r.id).cloned()
 }
 
 impl<R: Rt> Bind<R> {
@@ -710,6 +715,7 @@ impl<R: Rt> Bind<R> {
                 spec: self.spec.clone(),
             });
         }
+        self.settle_builtin_alias(ctx);
         if let Some(fv) = self.lambda_def_value().or_else(|| self.aliased_lambda(ctx)) {
             self.pattern.ids(&mut |id| {
                 if crate::dbgenv::gxdbg_resolve() {
@@ -717,6 +723,26 @@ impl<R: Rt> Bind<R> {
                 }
                 ctx.bind_to_lambda.insert(id, fv.clone());
             });
+        }
+    }
+
+    /// Whether the builtin this binding names stands: a write to the
+    /// binding it aliases, which compile had not seen, retracts it, and
+    /// while it stands that binding is held static.
+    fn settle_builtin_alias(&mut self, ctx: &mut CompileCtx<R>) {
+        let Some(id) = self.pattern.single_bind_id() else { return };
+        let NodeView::Ref(r) = value_of(&self.node).view() else { return };
+        if !ctx.builtin_bindings.contains_key(&id) {
+            return;
+        }
+        match ctx.builtin_binding(r.id).is_some() {
+            false => {
+                ctx.builtin_bindings.remove(&id);
+            }
+            true if self.static_hold.is_none() => {
+                self.static_hold = Some(ctx.hold_static(r.id, &self.spec))
+            }
+            true => (),
         }
     }
 

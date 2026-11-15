@@ -376,6 +376,40 @@ async fn unread_quantifier_settles_through_a_block(mode: Mode) -> Result<()> {
     Ok(())
 }
 
+/// A name something writes may hold another function, so a call through it,
+/// or through a name of it, settles nothing of the builtin's: the unread
+/// quantifier is refused at the call, naming what to pass.
+async fn unread_quantifier_is_refused_through_a_written_alias(mode: Mode) -> Result<()> {
+    let code = |body: &str| {
+        format_compact!(
+            r#"{{
+                let f = 'a: Concrete |#h: [fn(v: 'a) -> i64, null] = null, x: i64|
+                    -> i64 'test_last;
+                {body}
+            }}"#
+        )
+    };
+    for body in [
+        "let t = f; t <- f; t(3)",
+        "let t = f; t <- f; let g = t; g(3)",
+        "let t = f; let g = t; t <- f; g(3)",
+        "{ let t = f; t <- f; t }(3)",
+    ] {
+        let e = run(&code(body), mode).await.unwrap_err();
+        let message = format_compact!("{e:#}");
+        assert!(message.contains("typed handler or a typed null"), "{body}: {message}");
+    }
+    for body in [
+        "let t = f; let g = t; g(3)",
+        "let t = f; t <- f; let h: [fn(v: i64) -> i64, null] = null; t(#h: h, 3)",
+        "let t = f; t <- f; let g = t; let h: [fn(v: i64) -> i64, null] = null; g(#h: h, 3)",
+    ] {
+        let out = run(&code(body), mode).await?;
+        assert_eq!(out.first(), Some(&Value::I64(3)), "{body}: {out:?}");
+    }
+    Ok(())
+}
+
 async fn unread_forwarded_quantifier_message(mode: Mode) -> Result<()> {
     let code = |call: &str| {
         format_compact!(
@@ -517,6 +551,7 @@ modes!(
     mistyped_function_value_is_refused,
     unread_quantifier_settles,
     unread_quantifier_settles_through_a_block,
+    unread_quantifier_is_refused_through_a_written_alias,
     unread_forwarded_quantifier_message,
     read_quantifier_keeps_type_directed_message
 );

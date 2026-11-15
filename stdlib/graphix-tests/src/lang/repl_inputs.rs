@@ -173,6 +173,24 @@ async fn annotated_binding_takes_a_function_write() -> Result<()> {
     .await
 }
 
+/// A call through a builtin binding a later input wrote is made at run
+/// time, so its unread quantifier is refused as a function value's is.
+#[tokio::test(flavor = "current_thread")]
+async fn builtin_alias_written_by_an_earlier_input() -> Result<()> {
+    session(&[
+        Accept("let t = sys::net::publish"),
+        Accept("t <- sys::net::publish"),
+        Refuse("t(never(), 10)", "typed handler or a typed null"),
+    ])
+    .await?;
+    session(&[
+        Accept("let t = sys::net::publish"),
+        Accept("let f = t"),
+        Refuse("t <- sys::net::publish", "t cannot be written"),
+    ])
+    .await
+}
+
 /// A constructed abstract value's parameter its input left open is ⊥:
 /// a later type test of another parameter covers nothing of it.
 #[tokio::test(flavor = "current_thread")]

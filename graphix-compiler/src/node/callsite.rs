@@ -2626,6 +2626,9 @@ pub(crate) fn static_builtin<'a, R: Rt>(
     cs: &CallSite<R>,
 ) -> Option<&'a ArcStr> {
     let NodeView::Ref(r) = cs.fnode().view() else { return None };
+    if ctx.rebinds(r.id) {
+        return None;
+    }
     if let Some(d) = ctx
         .bind_to_lambda
         .get(&r.id)
@@ -2633,7 +2636,7 @@ pub(crate) fn static_builtin<'a, R: Rt>(
     {
         return d.builtin_name();
     }
-    ctx.builtin_bindings.get(&r.id).map(|i| &i.name)
+    ctx.builtin_binding(r.id).map(|i| &i.name)
 }
 
 impl<R: Rt> CallSite<R> {

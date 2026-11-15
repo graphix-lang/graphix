@@ -1972,6 +1972,9 @@ impl<R: Rt> CompileCtx<R> {
                 self.check_val_written(&o.name, &o.typ, &i.typ)?
             }
         }
+        for written in ids.iter() {
+            self.builtin_bindings.remove(written);
+        }
         self.batch_connect_targets.insert(id);
         self.connect_targets.insert(id);
         if !self.generalized_earlier(id) {
@@ -1993,6 +1996,12 @@ impl<R: Rt> CompileCtx<R> {
             && names.iter().any(|n| {
                 self.batch_connect_targets.contains(n) || self.connect_targets.contains(n)
             })
+    }
+
+    /// What the builtin binding `id` names is, where a call through it
+    /// runs that builtin: nothing writes it ([`Self::rebinds`]).
+    pub(crate) fn builtin_binding(&self, id: BindId) -> Option<&BuiltinBindInfo> {
+        self.builtin_bindings.get(&id).filter(|_| !self.rebinds(id))
     }
 
     /// Whether anything writes the variable `id` names: a `<-` to it or

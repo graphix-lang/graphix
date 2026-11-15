@@ -86,5 +86,8 @@ order as values do), and the builtin's
 call's result and throws do not hold, and no argument the call passes or
 omits can carry a value of (no function, no open part), settles to ⊥
 whatever its bounds (`CallSite::settle_unread`): `publish`'s handler is
-`[fn(v: 'a) -> _, null] = null` under `'a: Concrete`. A definition's call sites settle with
+`[fn(v: 'a) -> _, null] = null` under `'a: Concrete`. Only a name nothing
+writes is the builtin it aliases (`CompileCtx::builtin_binding`): a call
+through one a `<-` writes, or through a name of it, is made at run time
+and is refused as any function value's is, naming the handler to pass. A definition's call sites settle with
 the enclosing statement, the signature's cells exempt.

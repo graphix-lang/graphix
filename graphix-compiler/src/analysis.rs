@@ -1315,7 +1315,7 @@ fn callee_own_facts<R: Rt>(
         if let Some(lid) = ctx.fn_forward_resolutions.get(&r.id) {
             return of_def(*lid);
         }
-        if let Some(info) = ctx.builtin_bindings.get(&r.id) {
+        if let Some(info) = ctx.builtin_binding(r.id) {
             return ctx.builtin_effect(info.name.as_str()).facts();
         }
     }

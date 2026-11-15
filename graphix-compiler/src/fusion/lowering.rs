@@ -329,7 +329,7 @@ fn try_register_builtin_call_from_callsite<R: Rt>(
         _ => return None,
     };
     let NodeView::Ref(r) = cs.fnode().view() else { return None };
-    let info = ctx.builtin_bindings.get(&r.id)?.clone();
+    let info = ctx.builtin_binding(r.id)?.clone();
     let effect = ctx.builtin_effect(info.name.as_str());
     let fastcall = match effect.fastcall() {
         Some(fastcall) => fastcall,
