@@ -59,6 +59,11 @@ repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 # soak and adjust from there. Baselines from nov14b: washu-chan about 53 runs/s at
 # 48 workers (1.9M runs in 10.4 h), katana about 28 runs/s at 32 (status at 12 h:
 # reactive 148800, fuzz 588416, typemorph 244608, generate not read).
+# 2026-11-15 claude: Correction to the baselines in the note above, read from the
+# campaign logs: katana 26 runs/s at 32 workers (1192320 runs in 12.7 h: fuzz
+# 605056, generate 183040, reactive 153024, typemorph 251200); washu-chan 47
+# runs/s at 48 workers (1761280 runs in 10.4 h: fuzz 951040, generate 260672,
+# reactive 205056, typemorph 344512).
 HOSTS=(
     "katana:8:4:darwin"
     "washu-chan:16:1:linux"
