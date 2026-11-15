@@ -356,6 +356,27 @@ fn program(shape: &str, d: usize) -> String {
                 "type T<'x> = Array<'x>;\nlet f = {bounds} |{formals}| x0;\nf({args})"
             )
         }
+        // The chain through a typedef's parameter, every argument a name of
+        // its own in a chain of typedefs.
+        "chainboundsdecided" => {
+            let typedefs = (0..d)
+                .map(|i| format!("type A{i} = Array<A{}>;\n", i + 1))
+                .collect::<String>();
+            let bounds = (0..d)
+                .map(|i| format!("'a{i}: T<'a{}>", i + 1))
+                .chain([format!("'a{d}: Number")])
+                .collect::<Vec<_>>()
+                .join(", ");
+            let formals =
+                (0..=d).map(|i| format!("x{i}: 'a{i}")).collect::<Vec<_>>().join(", ");
+            let lets = (0..=d)
+                .map(|i| format!("let v{i}: A{i} = never();\n"))
+                .collect::<String>();
+            let args = (0..=d).map(|i| format!("v{i}")).collect::<Vec<_>>().join(", ");
+            format!(
+                "type T<'x> = Array<'x>;\n{typedefs}type A{d} = i64;\nlet f = {bounds} |{formals}| x0;\n{lets}f({args})"
+            )
+        }
         // The chain with a second conjunct on every link, the last link a
         // type the comparison takes.
         "chainboundsdiscernible" | "chainboundsordered" => {
@@ -1195,6 +1216,18 @@ fn a_chain_of_bounds_as_parameters_checks_in_linear_time() {
 fn a_chain_of_bounds_passed_function_references_checks_in_quadratic_time() {
     checks_within(&program("chainboundsfnargs", 500), 8 * BILLION);
     checks_within(&program("chainboundsfnargs", 1000), 30 * BILLION)
+}
+
+/// The chain of bounds as parameters, called with a name of each link's
+/// type in a chain of typedefs, checks in time linear in its length, at
+/// two depths: the call asks of each argument and each formal whether it
+/// can carry a function or an unknown part, and what the walk decided of
+/// the definition a name stands for is shared by every argument.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_chain_of_typedef_names_as_arguments_checks_in_linear_time() {
+    checks_within(&program("chainboundsdecided", CHAIN_DEPTH / 2), 7 * BILLION);
+    checks_within(&program("chainboundsdecided", CHAIN_DEPTH), 13 * BILLION)
 }
 
 /// The chain through a union elaborates in time linear in its length, at

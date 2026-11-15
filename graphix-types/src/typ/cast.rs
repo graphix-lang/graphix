@@ -513,6 +513,34 @@ impl<T> Verdicts<T> {
     }
 }
 
+/// Whether each of several types in one `Env` can carry a function or an
+/// unknown part, sharing what the searches decided of the definitions
+/// they name: a chain of names is walked to its end once, not once per
+/// type that enters it.
+pub struct Carriers {
+    fns: Verdicts<bool>,
+    unknown: Verdicts<bool>,
+}
+
+impl Carriers {
+    pub fn new() -> Self {
+        Self {
+            fns: Verdicts::judging(Judgment::HoldsFn),
+            unknown: Verdicts::judging(Judgment::HoldsUnknown),
+        }
+    }
+
+    /// [`Type::holds_fn`] of `t`.
+    pub fn holds_fn(&mut self, env: &Env, t: &Type) -> bool {
+        t.holds_fn_in(env, &mut self.fns)
+    }
+
+    /// [`Type::holds_fn`] or [`Type::holds_unknown`] of `t`.
+    pub fn carries(&mut self, env: &Env, t: &Type) -> bool {
+        t.holds_fn_in(env, &mut self.fns) || t.holds_unknown_in(env, &mut self.unknown)
+    }
+}
+
 /// `decide` the application `k` once per walk. A repeat while it is being
 /// decided answers `cycle`, an assumption that holds coinductively for
 /// `k` itself; a decision that read the assumption of an application
@@ -725,11 +753,7 @@ impl Type {
     /// value-level predicate cannot be decided of.
     #[doc(hidden)]
     pub fn holds_unknown(&self, env: &Env) -> bool {
-        self.holds(env, &mut Verdicts::judging(Judgment::HoldsUnknown), &|t| match t {
-            Type::Any => Some(true),
-            Type::TVar(tv) if tv.binding().is_none() => Some(true),
-            _ => None,
-        })
+        self.holds_unknown_in(env, &mut Verdicts::judging(Judgment::HoldsUnknown))
     }
 
     /// Whether a value of this type can hold a function outside an
@@ -737,9 +761,21 @@ impl Type {
     /// but not one signature from another.
     #[doc(hidden)]
     pub fn holds_fn(&self, env: &Env) -> bool {
-        self.holds(env, &mut Verdicts::judging(Judgment::HoldsFn), &|t| match t {
+        self.holds_fn_in(env, &mut Verdicts::judging(Judgment::HoldsFn))
+    }
+
+    fn holds_fn_in(&self, env: &Env, seen: &mut Verdicts<bool>) -> bool {
+        self.holds(env, seen, &|t| match t {
             Type::Fn(_) => Some(true),
             Type::Abstract { .. } => Some(false),
+            _ => None,
+        })
+    }
+
+    fn holds_unknown_in(&self, env: &Env, seen: &mut Verdicts<bool>) -> bool {
+        self.holds(env, seen, &|t| match t {
+            Type::Any => Some(true),
+            Type::TVar(tv) if tv.binding().is_none() => Some(true),
             _ => None,
         })
     }
