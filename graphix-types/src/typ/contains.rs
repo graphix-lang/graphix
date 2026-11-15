@@ -7884,6 +7884,41 @@ mod tests {
         });
         assert_eq!(words(&lower), None);
         assert_eq!(of("fn(x: i64) -> i64"), None);
+        let marked = at_root(&env, "Array<('q0, 'q1, 'q0)>");
+        find_open_cell(&marked, true, &mut |tv| {
+            tv.mark_cycle_refused();
+            true
+        });
+        assert_ne!(shape, words(&marked));
+        let moved = at_root(&env, "Array<('q0, 'q1, 'q0)>");
+        find_open_cell(&moved, true, &mut |tv| {
+            tv.set_level(crate::typ::tvar::Level::TOP);
+            true
+        });
+        assert_ne!(shape, words(&moved));
+        let earlier = at_root(&env, "Array<('q0, 'q1, 'q0)>");
+        let _later = InTask::enter(new_task());
+        assert_ne!(shape, words(&earlier));
+    }
+
+    // The words of types are read as one list: a cell bound to a cell and a
+    // cell are not the words of the same sequence of types.
+    #[test]
+    fn the_words_of_a_chain_of_cells_end_where_the_chain_does() {
+        let open = |name: &str| {
+            let tv = TVar::empty_named(name.into());
+            tv.set_level(crate::typ::tvar::Level::TOP);
+            tv
+        };
+        let head = open("q0");
+        head.bind(Type::TVar(open("q1")));
+        let chain = Type::TVar(head);
+        let single = Type::TVar(open("q2"));
+        let bottom = Type::Bottom;
+        let long = CopyWords::of(&[&chain, &bottom, &bottom], &[]);
+        let short = CopyWords::of(&[&single, &bottom, &bottom, &bottom, &bottom], &[]);
+        assert!(long.is_some() && short.is_some());
+        assert_ne!(long, short);
     }
 
     // A function type whose quantifier an earlier task left open takes it

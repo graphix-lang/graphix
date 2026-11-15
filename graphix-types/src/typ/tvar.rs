@@ -2076,6 +2076,10 @@ pub struct TVarInner {
     pub(crate) link: RwLock<TVarLink>,
 }
 
+/// The word [`TVar::copied_reads`] puts between two cells of a chain: after a
+/// cell's words, the next word says whether the chain ends there.
+const CHAIN_ON: u64 = 2;
+
 /// Where [`TVar::copied_reads`] ends.
 pub(super) enum CopiedEnd {
     /// An open cell, by its address.
@@ -3386,6 +3390,7 @@ impl TVar {
                 Some(Type::TVar(next)) => {
                     let next = next.clone();
                     drop(c);
+                    words.push(CHAIN_ON);
                     tv = next;
                 }
                 Some(t) => return Some(CopiedEnd::Bound(t.clone())),
