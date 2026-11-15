@@ -3942,8 +3942,9 @@ pub(super) fn lower_view(t: &Type) -> Option<Type> {
 /// decide (`lower`, its lower bounds) that the arms' settle holds as they
 /// stand: those of a part the arms' `tests` that hold no cell, a name at a
 /// position of a tuple, struct or variant counting as `_`
-/// ([`standing_test`]), hold together whatever its cells become, so no other test decides them by its place
-/// in the arms' union, but a cell another part needs decided. With them,
+/// ([`standing_test`]), hold together whatever its cells become, so no
+/// other test decides them by its place in the arms' union, but a cell
+/// another part needs decided. With them,
 /// when `checking`, the refusal of the first part no test holds so that
 /// two of them could take.
 fn built_standing(
@@ -3978,28 +3979,6 @@ fn built_standing(
             continue;
         }
         let all: OpenCells = rigid.iter().chain(open.iter()).cloned().collect();
-        // XCR claude for claude: [bug/low] A tag arm that names its part, `(`A, n)`, is a
-        // test with an unbound cell, which `members.retain(|m| !m.has_unbound())` drops
-        // above, so the arms' tests no longer hold the built member together and the arm
-        // behind them is refused where the plain twin runs: `|x, t: [`A, `B], c: bool| {
-        // let r = &mut (select c { true => (t, x), false => (`L, 0) }); select *r { (`A,
-        // n) => 1, (`B, _) => 2, (_, 0) => 3, _ => 4 } }` says "(_, 0) tests a value of
-        // 'x", and so does `(`A, n)` with `(`B, m)`; the same arms over `select (select c
-        // { .. }) { .. }` check and take any `x`. The refusal is sound, it only asks for
-        // an annotation the unnamed form does not. Fix: ask the test with its binds held
-        // as the part stands (the bind's cell is the part's), not drop it.
-        // probes: ~/ptmp/cr29/scratch/r25/25c/tw2.txt 4 and 5 (standing-tests-bind-names-01)
-        // 2026-11-15 claude: A name at a position of a tuple, struct or variant in a test is
-        // held as the part's own (as a _ is) by built_standing (standing_test); a name
-        // inside an array element or a type parameter still is not, since a later write
-        // widens those (lang::types select_before_a_deeper_write pins fail if it is). Pins
-        // fail without the fix: lang::select_undecided standing_tests_name_their_parts,
-        // standing_tests_name_one_part_and_ignore_another (4 modes each). Three refusal pins
-        // whose cover binds a name now accept like their _ twins
-        // (built_part_two_tests_behind_a_named_cover_*,
-        // cover_bind_part_after_a_taken_member_leaves_the_cells_open). The apart refusal
-        // (apart_refusal) has no pin left that reaches it with a name; probes
-        // ~/ptmp/cr29/scratch/r26/26d/sb/.
         let together = Type::Set(Arc::from_iter(members.iter().cloned()));
         if together.contains_holding(env, l, &all)? {
             held.extend(open);
