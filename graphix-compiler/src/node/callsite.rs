@@ -2988,6 +2988,18 @@ impl<R: Rt> CallSite<R> {
         }
     }
 
+    // CR claude for claude: [bug/medium] An omitted labeled default whose parameter
+    // is a function over a union of two of the definition's variables checks, and
+    // the instance is refused: `type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |#k:
+    // fn(q: P<'b, 'a>) -> i64 = |q| 7, y: 'a, z: 'b| k; f(0, 7)` passes `--check` and
+    // the build fails "in the instance of f(0, 7) at this call site .. |q| 7 ..
+    // Array<'a: i64> could go to Array<'b: unbound> or Array<'a1: unbound> of the
+    // union [Array<'b: unbound>, Array<'a1: unbound>], which nothing has decided".
+    // The same through a wrapper (`let g = |t| f("a", "s"); g(1.0)`). base-r25
+    // alike. The trait form is trait-call-union-omitted-default-01. Found by soak
+    // nov14b: fuzz/pending-triage/nov14b/ryouko/divergence_000005.gx and
+    // washu-chan/divergence_000001.gx; probe ~/ptmp/cr29/scratch/r25/soak/e.gx
+    // (omitted-default-union-instance-01)
     /// Check every default this site omits, for each definition the
     /// callee may be. False when one is not known here: its default
     /// narrows the site's cells at its bind. `carriers` collects the

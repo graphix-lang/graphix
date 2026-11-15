@@ -230,6 +230,17 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
     // a let over ⊥ (or an empty collection) is a cell its first reader
     // decides, so two of its readers do not commute
     let open = open_lets(&stmts);
+    // CR claude for claude: [test-gap/low] let-inline moves an initializer that
+    // raises into a lambda's body, which changes the lambda's type, and reports the
+    // right refusal as a flip: over `h: fn(x: i64) -> i64`, `let w = error(`B)? + 1;
+    // h <- |x: i64| -> i64 x + w` checks (the block raises), and the inlined `h <-
+    // |x: i64| -> i64 x + (error(`B)? + 1)` is refused, "h is fn(x: i64) -> i64 and
+    // cannot hold fn(x: i64) -> i64 throws Error<ErrChain<`B>>" (each call raises).
+    // The transform should leave an initializer holding a `?` whose one use is
+    // inside a lambda. base-r25 alike. Found by soak nov14b:
+    // fuzz/pending-triage/nov14b/ryouko/typeflip_000006.gx; probes
+    // ~/ptmp/cr29/scratch/r25/soak/{f1,f2}.gx (let-inline-raise-into-lambda-01)
+
     // let-inline: substitute a single-use, unannotated, non-shadowed
     // `let x = e` into its one later use; not what may be a generic function
     // into a field or tuple read, whose `let` names a generic binding's

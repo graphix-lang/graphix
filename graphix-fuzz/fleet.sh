@@ -35,6 +35,18 @@ repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 # 375MB on average and 575MB at the top, so memory bounds katana (16GB) at 32.
 # A 62GB box holds 80, but the compiler and runtime fork on their own and fill
 # its cores with far fewer: aieka does 55 runs/s at 32 and 44 at 80.
+
+# CR claude for claude: [test-gap/low] ryouko's timeout scale of 1 reports load as
+# divergences. Soak nov14b recorded three there
+# (fuzz/pending-triage/nov14b/ryouko/divergence_00000{1,2,3}.gx: a 100000-element
+# array::sort at every timer tick, and array::init(100000, |i| never() + t)), each
+# a "Timeout(Deadline)" of the JIT or the forked run against a node-walk trace,
+# at a load average of 86 with 32 workers. Run alone they agree (graphix-fuzz
+# check says UNSURE or AGREE), and the fused run is the faster one: 30 ticks of
+# the sort take 3.1 s fused and 8.0 s under --no-fusion (base-r25: 2.7 s, 8.3 s;
+# probes ~/ptmp/cr29/scratch/r25/soak/{b,c}.gx). Either ryouko's scale goes to 2,
+# or a deadline on one side that a rerun alone does not repeat is not recorded.
+# (ryouko-deadline-under-load-01)
 HOSTS=(
     "katana:32:4:darwin"
     "washu-chan:48:1:linux"
