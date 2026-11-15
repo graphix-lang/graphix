@@ -47,11 +47,18 @@ repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 # probes ~/ptmp/cr29/scratch/r25/soak/{b,c}.gx). Either ryouko's scale goes to 2,
 # or a deadline on one side that a rerun alone does not repeat is not recorded.
 # (ryouko-deadline-under-load-01)
+# 2026-11-15 claude: Eric (11-15): reduce ryouko's workers rather than raise its
+# scale. Done: 32 -> 16, one a physical core (16 cores, 32 threads; 32 workers ran
+# at a load average of 86 since each worker's children fork on their own).
+# Baseline to compare at the next soak: nov14b at 32 workers did about 109 runs/s
+# on ryouko (5.06M runs in 12.9 h: generate 757504, reactive 642432, fuzz 2306048,
+# typemorph about 1.35M). This CR stays until a soak at 16 shows no deadline
+# finding; if one does, the scale goes to 2 as well.
 HOSTS=(
     "katana:32:4:darwin"
     "washu-chan:48:1:linux"
     "aieka:32:4:linux"
-    "ryouko:32:1:linux"
+    "ryouko:16:1:linux"
 )
 
 MIX=${FLEET_MIX:-}                   # empty: the binary's DEFAULT_MIX
