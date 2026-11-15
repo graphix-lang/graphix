@@ -201,6 +201,9 @@ ok let f = |s| select s { (1, b) => 0, (2, (x, y)) => x, (3, (x, y, z)) => x, (_
 ok let f = |s: (Array<'e>, 'b)| select s { ([a, c, ..], b) => (a, b), ([d], b) => (b, d), ([], b) => (b, b) }; f(([1, 2], "q"))
 no "picks none by order" type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<'a, 'b>| 0; f([1])
 no "union of the type variables" trait T { val m: fn(self) -> i64 }; impl<'a, 'b> T for Array<['a, 'b]> { let m = |s| 0 }; T::m([1])
+no "trait Sh used as a type" type T = Array<Sh>; trait Sh { val m: fn(self) -> i64 }; 0
+no "trait Sh used as a type" trait Sh { val m: fn(self) -> i64 }; type T = Array<Sh>; 0
+ok type T<'a: Sh> = Array<'a>; trait Sh { val m: fn(self) -> i64 }; impl Sh for i64 { let m = |s| 1 }; let v: T<i64> = [1]; v
 no "picks none by order" type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<'a, 'b>| 0; f([])
 no "picks none by order" type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<'a, 'b>, y: 'a, z: 'b| x; f([1], 1, "s")
 ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |y: 'a, z: 'b, x: P<'a, 'b>| x; f(1, "s", [1])

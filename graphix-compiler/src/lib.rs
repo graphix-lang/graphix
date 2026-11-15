@@ -4018,6 +4018,10 @@ pub(crate) enum Pending {
     /// A typedef whose body named something not defined yet: its shape
     /// is checked once everything is ([`Env::check_typedef`]).
     Typedef(ModPath, ArcStr, Expr, Undecided),
+    /// A typedef's body that held a name not defined at the end of its
+    /// block: once the check ends, no name in it may mean a trait
+    /// ([`Type::rewrite_trait_args`]).
+    Body(Type, Expr),
 }
 
 /// What of a pending typedef's shape is still open.
@@ -4057,6 +4061,9 @@ pub(crate) fn check_pending_names<R: Rt>(ctx: &mut CompileCtx<R>) -> Result<()> 
             }
             Pending::Typedef(scope, name, spec, _) => {
                 ctx.env.check_typedef(&scope, &name).at(&spec)?;
+            }
+            Pending::Body(t, spec) => {
+                t.rewrite_trait_args(&ctx.env).at(&spec)?;
             }
         }
     }
@@ -4126,7 +4133,7 @@ pub(crate) fn recheck_pending_typedefs<R: Rt>(
                 }
             }
         }
-        Pending::Name(..) => true,
+        Pending::Name(..) | Pending::Body(..) => true,
     });
     res
 }
@@ -4134,13 +4141,13 @@ pub(crate) fn recheck_pending_typedefs<R: Rt>(
 /// Record the names `t`, written at `spec`, holds that do not resolve
 /// yet ([`CompileCtx::pending_names`]); refuse one that resolves and is
 /// applied wrongly; each union it writes in a function type goes to
-/// `union`.
+/// `union`. Whether some name means a trait.
 pub(crate) fn defer_unresolved_names<R: Rt>(
     ctx: &mut CompileCtx<R>,
     t: &Type,
     spec: &Expr,
     union: Option<&mut dyn FnMut(&Type) -> Result<()>>,
-) -> Result<()> {
+) -> Result<bool> {
     use expr::At;
     let mut names = Vec::new();
     let res = t.unresolved_names(&ctx.env, &mut names, union).at(spec);

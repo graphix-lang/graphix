@@ -5269,6 +5269,94 @@ const TRAIT_UNDER_A_BOUND: &str = r#"
 
 run!(trait_under_a_bound, TRAIT_UNDER_A_BOUND, refused("trait Show used as a type"); FuseExpect::None);
 
+/// A typedef names no trait as a type, whichever of the two is declared first.
+const TYPEDEF_ABOVE_ITS_TRAIT: &str = r#"
+{
+    type T = Array<Sh>;
+    trait Sh { val sh: fn(self) -> i64 };
+    impl Sh for i64 { let sh = |c| c * 10 };
+    let v: T = [1, 2];
+    v
+}
+"#;
+
+run!(
+    typedef_above_its_trait,
+    TYPEDEF_ABOVE_ITS_TRAIT,
+    refused("trait Sh used as a type");
+    FuseExpect::None
+);
+
+const TYPEDEF_ARGUMENT_ABOVE_ITS_TRAIT: &str = r#"
+{
+    type T<'a> = Array<'a>;
+    type U = T<Sh>;
+    trait Sh { val sh: fn(self) -> i64 };
+    0
+}
+"#;
+
+run!(
+    typedef_argument_above_its_trait,
+    TYPEDEF_ARGUMENT_ABOVE_ITS_TRAIT,
+    refused("trait Sh used as a type");
+    FuseExpect::None
+);
+
+/// The trait is declared by a block around the typedef's, below it.
+const TYPEDEF_BELOW_ITS_TRAITS_BLOCK: &str = r#"
+{
+    let q = {
+        type T = Array<Sh>;
+        let v: T = [1, 2];
+        v
+    };
+    trait Sh { val sh: fn(self) -> i64 };
+    impl Sh for i64 { let sh = |c| c * 10 };
+    q
+}
+"#;
+
+run!(
+    typedef_below_its_traits_block,
+    TYPEDEF_BELOW_ITS_TRAITS_BLOCK,
+    refused("trait Sh used as a type");
+    FuseExpect::None
+);
+
+const TYPEDEF_AFTER_ITS_TRAIT: &str = r#"
+{
+    trait Sh { val sh: fn(self) -> i64 };
+    type T = Array<Sh>;
+    0
+}
+"#;
+
+run!(
+    typedef_after_its_trait,
+    TYPEDEF_AFTER_ITS_TRAIT,
+    refused("trait Sh used as a type");
+    FuseExpect::None
+);
+
+/// A trait as a typedef parameter's bound stands above the trait's declaration.
+const TYPEDEF_BOUND_ABOVE_ITS_TRAIT: &str = r#"
+{
+    type T<'a: Sh> = Array<'a>;
+    trait Sh { val sh: fn(self) -> i64 };
+    impl Sh for i64 { let sh = |c| c * 10 };
+    let v: T<i64> = [1, 2];
+    v
+}
+"#;
+
+run!(
+    typedef_bound_above_its_trait,
+    TYPEDEF_BOUND_ABOVE_ITS_TRAIT,
+    prints("[i64:1, i64:2]");
+    FuseExpect::Jit
+);
+
 const HOLE_IN_A_FN_QUANTIFIER: &str = r#"
 {
     trait T { val g: fn<'b: Array<'_>>(self, x: 'b) -> i64 };

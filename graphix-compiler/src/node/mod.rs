@@ -1896,11 +1896,20 @@ pub(crate) fn defer_typedef_names<R: Rt>(
     else {
         return Ok(());
     };
-    let written: LPooled<Vec<Type>> = iter::once(def.typ().clone())
-        .chain(def.rep.clone())
-        .chain(def.params().iter().filter_map(|(_, c)| c.clone()))
-        .collect();
-    for t in written.iter() {
+    let bodies: LPooled<Vec<Type>> =
+        iter::once(def.typ().clone()).chain(def.rep.clone()).collect();
+    let bounds: LPooled<Vec<Type>> =
+        def.params().iter().filter_map(|(_, c)| c.clone()).collect();
+    for t in bodies.iter() {
+        let before = ctx.pending_names.len();
+        if defer_unresolved_names(ctx, t, &td.spec, None)? {
+            t.rewrite_trait_args(&ctx.env).at(&td.spec)?;
+        }
+        if ctx.pending_names.len() > before {
+            ctx.pending_names.push(crate::Pending::Body(t.clone(), (*td.spec).clone()));
+        }
+    }
+    for t in bounds.iter() {
         defer_unresolved_names(ctx, t, &td.spec, None)?;
     }
     Ok(())

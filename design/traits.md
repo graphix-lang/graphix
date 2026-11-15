@@ -70,6 +70,15 @@ In any other position (return type, struct field, array element) it
 cannot mean that and is an error; a struct parameterizes
 (`type Server<'a: Read> = {conn: 'a}`).
 
+A typedef's body names no trait as a type, whichever of the two a
+block declares first: the end of the block (`defer_typedef_names`) asks
+again of every name that was not a trait when the typedef compiled, and
+a body that still held a name unresolved there (a trait an enclosing
+block declares below it) asks once more when the check ends
+(`Pending::Body`). A trait as a parameter's bound stays legal above its
+declaration. Pins: `lang::types::typedef_above_its_trait` and its
+siblings.
+
 ## 3. Dispatch is static, and a union self generates the select
 
 An unresolvable method call is a compile error: a self type still an

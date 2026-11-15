@@ -1589,9 +1589,19 @@ impl TypeRef {
     /// before every name is registered can capture a shadowed target.
     #[doc(hidden)]
     pub fn names_something(&self, env: &Env) -> bool {
-        self.resolved().is_some()
-            || self.resolve_pure(env).is_some()
-            || env.trait_of_ref(self).is_some()
+        self.means(env).is_some()
+    }
+
+    /// What the name means in `env`, as [`Self::names_something`] reads it.
+    #[doc(hidden)]
+    pub fn means(&self, env: &Env) -> Option<NameMeans> {
+        if self.resolved().is_some() || self.resolve_pure(env).is_some() {
+            Some(NameMeans::Type)
+        } else if env.trait_of_ref(self).is_some() {
+            Some(NameMeans::Trait)
+        } else {
+            None
+        }
     }
 
     /// Refuse this application of a name that resolves when it gives the
@@ -3418,23 +3428,27 @@ impl Type {
     /// (inferred, not written) not. A name that does resolve is refused
     /// where it is applied wrongly ([`TypeRef::check_application`]). Each
     /// union it writes in a function type goes to `union`
-    /// ([`Self::for_each_written`]).
+    /// ([`Self::for_each_written`]). Whether some name means a trait.
     #[doc(hidden)]
     pub fn unresolved_names(
         &self,
         env: &Env,
         out: &mut Vec<TypeRef>,
         mut union: Option<&mut dyn FnMut(&Type) -> Result<()>>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let judged = union.is_some();
         let mut res = Ok(());
+        let mut trait_named = false;
         let mut each = |w: Written<'_>| {
             if res.is_ok() {
                 res = match w {
-                    Written::Name(tr) if tr.names_something(env) => {
-                        tr.check_application(env)
-                    }
-                    Written::Name(tr) => Ok(out.push(tr.clone())),
+                    Written::Name(tr) => match tr.means(env) {
+                        Some(m) => {
+                            trait_named |= m == NameMeans::Trait;
+                            tr.check_application(env)
+                        }
+                        None => Ok(out.push(tr.clone())),
+                    },
                     Written::Union(u) => union.as_mut().map_or(Ok(()), |f| f(u)),
                 }
             }
@@ -3443,7 +3457,7 @@ impl Type {
             true => self.written_walk::<true>(false, &mut each),
             false => self.written_walk::<false>(false, &mut each),
         }
-        res
+        res.map(|()| trait_named)
     }
 
     /// [`TypeRef::resolve_only_in`] of every name this written type holds,
@@ -4079,7 +4093,7 @@ impl Type {
         ensure_sufficient(|| self.rewrite_trait_args_inner(env, scheme))
     }
 
-    // CR claude for claude: [bug/low] A typedef above the trait its body names as a
+    // XCR claude for claude: [bug/low] A typedef above the trait its body names as a
     // type is not refused: `type T = Array<Sh>; trait Sh { .. }` checks, and `let v: T
     // = [1, 2]` runs and prints [1, 2], while the same two statements the other way
     // round are refused ("trait Sh used as a type"). The Ref arm below asks
@@ -4091,6 +4105,12 @@ impl Type {
     // `Env::settled_trait_of_ref` says changes later, is refused here). probes:
     // ~/ptmp/cr29/scratch/r26/26a/typedef_forward_trait.gx (accepted, runs) and
     // typedef_trait_after.gx (refused) beside it. (typedef-forward-trait-type-01)
+    // 2026-11-15 claude: A typedef body's names are asked again for a trait once the
+    // block's names are registered (defer_typedef_names) and, for a body with a name
+    // still unresolved there, once the check ends (Pending::Body); refused with the
+    // backward order's message. Pins lang::types::typedef_above_its_trait,
+    // typedef_argument_above_its_trait, typedef_below_its_traits_block fail without
+    // it; twins typedef_after_its_trait, typedef_bound_above_its_trait.
     fn rewrite_trait_args_inner(&self, env: &Env, scheme: bool) -> Result<Option<Type>> {
         match self {
             Type::Ref(tr) if env.trait_of_ref(tr).is_some() => bail!(
@@ -4481,6 +4501,14 @@ fn ctor_quantifiers(ft: &FnType, env: &Env) -> LPooled<Vec<(ArcStr, Type)>> {
         }
     }
     out
+}
+
+/// What a written name means ([`TypeRef::means`]).
+#[doc(hidden)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum NameMeans {
+    Type,
+    Trait,
 }
 
 /// What a written type holds, as [`Type::for_each_written`] meets it.
