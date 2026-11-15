@@ -1870,25 +1870,6 @@ impl<R: Rt> Module<R> {
             StaticCallees::set_aside(&ctx.static_callees, holders.take_holders(), vars);
         // `names` is a global registry: a recompile must scrub the
         // previous source's imports or they accumulate
-        // XCR claude for claude: [bug/medium] A dynamic module's load clears every
-        // import table at its scope and below, whichever input made them, where
-        // `Env::names_mut` displaces a table another input made into that input's
-        // `InputTables` (root-module-table-01). So a function that escaped a dropped
-        // static module at the same path, built later, reads the load's tables: with
-        // `/m.gx` writing `use str::len` behind a `.gxi`, `mod m; g <- m::make` dropped
-        // while `g` is held, then `mod m dynamic { .. source "use array::len; .." }`,
-        // `g("abc")` never answers (a source writing `use str::len` answers 3). The
-        // `held_by` assert in `Env::lookup_in` does not see it at `/m`, which crosses no
-        // body. To fix: displace the tables other inputs made under the scope before
-        // the clear, as `displace_names` does for one. probe (a leaks.rs test):
-        // ~/ptmp/cr29/scratch/r26/26a/dn/probes.rs, zz_reload_takes_a_held_inputs_table
-        // (reload-displaced-names-01)
-        // 2026-11-15 claude: Env::clear_names_under now takes the loading module's input
-        // and moves each table another input made under the scope into that input's
-        // displaced tables (displace_foreign, shared with displace_names) before
-        // clearing. Pin: leaks.rs
-        // a_function_escaping_a_dropped_module_keeps_its_imports_beside_a_dynamic_load
-        // fails without it (g("abc") never answers).
         ctx.env.clear_names_under(&self.scope.lexical, self.env.input.as_ref());
         let env = self.env.clone();
         let load = LoadedBody::under(env.body.clone(), self.scope.lexical.clone());
