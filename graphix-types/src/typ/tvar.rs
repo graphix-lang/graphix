@@ -2076,6 +2076,13 @@ pub struct TVarInner {
     pub(crate) link: RwLock<TVarLink>,
 }
 
+/// Where [`TVar::copied_reads`] ends.
+pub(super) enum CopiedEnd {
+    /// An open cell, by its address.
+    Open(usize),
+    Bound(Type),
+}
+
 /// How many lower bounds and conjuncts a cell holds ([`TVar::bounds`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Bounds {
@@ -3340,6 +3347,51 @@ impl TVar {
             && cell.constraints.is_empty()
             && cell.lower.is_empty()
             && !cell.level.is_generic()
+    }
+
+    /// What a walk on a copy of this var reads of the cells of its chain of
+    /// bindings: for each cell its facts, level, naming kind and whether
+    /// it is held rigid or an earlier task created it, pushed as words. The
+    /// end of the chain, with the cell's address if it is open, or the type
+    /// it is bound to; `None` where a cell on the chain holds a conjunct or
+    /// a lower bound, which the copy carries beside it.
+    pub(super) fn copied_reads(&self, words: &mut Vec<u64>) -> Option<CopiedEnd> {
+        let mut tv = self.clone();
+        loop {
+            let cell = tv.cell();
+            let c = cell.read();
+            if !c.constraints.is_empty() || !c.lower.is_empty() {
+                return None;
+            }
+            let naming = match c.naming.by() {
+                NamedBy::Own => 0,
+                NamedBy::CallCopy => 1,
+                NamedBy::Taken(_) => 2,
+            };
+            words.push(
+                c.facts.bits() as u64
+                    | ((c.rigid_gates > 0) as u64) << 8
+                    | (earlier_task(&c) as u64) << 9
+                    | naming << 10,
+            );
+            match c.level {
+                Level::Top => words.push(0),
+                Level::Def { depth, owner } => {
+                    words.extend([1, depth as u64, owner.inner()])
+                }
+                Level::Generic => words.push(2),
+                Level::Written => words.push(3),
+            }
+            match &c.binding {
+                Some(Type::TVar(next)) => {
+                    let next = next.clone();
+                    drop(c);
+                    tv = next;
+                }
+                Some(t) => return Some(CopiedEnd::Bound(t.clone())),
+                None => return Some(CopiedEnd::Open(cell_addr(&c))),
+            }
+        }
     }
 
     /// Bind the open cell to ⊥ as a requirement; see

@@ -18,8 +18,8 @@ use crate::{
             union_identical,
         },
         tvar::{
-            CellFact, CellLock, Cycle, Declared, Fresh, HeldQuantifiers, RigidGate,
-            Standing, Toward, bare_path, cell_writes, cycle_toward, in_input,
+            CellFact, CellLock, CopiedEnd, Cycle, Declared, Fresh, HeldQuantifiers,
+            RigidGate, Standing, Toward, bare_path, cell_writes, cycle_toward, in_input,
             settled_cause_note, would_cycle_inner,
         },
         variance,
@@ -199,6 +199,9 @@ pub(super) struct ContainsHist {
     norm: Option<NormCx>,
     /// The unions [`Self::pool`] built, by the ids of the parts they pool.
     pools: Lazy<AHashMap<SmallVec<[usize; 8]>, Type>>,
+    /// What [`takes_leaving`] answered, by the types it was asked of
+    /// ([`CopyWords`]).
+    leaving: Lazy<AHashMap<Box<[u64]>, (bool, Option<u64>)>>,
     /// The walk is a trial on copies ([`on_copies`]): a member a union
     /// admits commits directly, whatever it leaves behind in the copies.
     trial: bool,
@@ -366,6 +369,7 @@ impl ContainsHist {
             closed_pins: Lazy::new(),
             norm: None,
             pools: Lazy::new(),
+            leaving: Lazy::new(),
             trial: false,
             proved: false,
             as_tried: false,
@@ -1917,24 +1921,148 @@ fn holds_as_it_stands(
     holds
 }
 
+/// The most words [`CopyWords`] writes for the types of one walk on copies.
+const COPY_WORDS_MAX: usize = 256;
+
+/// The most walks on copies' answers a walk keeps.
+const LEAVING_MAX: usize = 4096;
+
+/// The words that stand for types as a walk on their copies reads them
+/// ([`on_copies_of`]): each node's kind and parts, a name by its
+/// definition, each cell by the place it is first met in and what the
+/// copy takes of it ([`TVar::copied_reads`]). Two sets of types of the same
+/// words are the same walk over cells of other names.
+struct CopyWords {
+    words: LPooled<Vec<u64>>,
+    cells: LPooled<AHashMap<usize, u64>>,
+}
+
+impl CopyWords {
+    fn of(ts: &[&Type], head: &[u64]) -> Option<Box<[u64]>> {
+        let mut w = CopyWords { words: LPooled::take(), cells: LPooled::take() };
+        w.words.extend_from_slice(head);
+        w.words.push(in_input() as u64);
+        for t in ts {
+            w.put(t)?;
+        }
+        Some(w.words.as_slice().into())
+    }
+
+    fn bytes(&mut self, s: &str) {
+        self.words.push(s.len() as u64);
+        for chunk in s.as_bytes().chunks(8) {
+            let mut word = [0u8; 8];
+            word[..chunk.len()].copy_from_slice(chunk);
+            self.words.push(u64::from_le_bytes(word));
+        }
+    }
+
+    fn parts(&mut self, ts: &[Type]) -> Option<()> {
+        self.words.push(ts.len() as u64);
+        ts.iter().try_for_each(|t| self.put(t))
+    }
+
+    fn put(&mut self, t: &Type) -> Option<()> {
+        if self.words.len() > COPY_WORDS_MAX {
+            return None;
+        }
+        match t {
+            Type::Bottom => self.words.push(0),
+            Type::Any => self.words.push(1),
+            Type::Primitive(p) => self.words.extend([2, p.bits() as u64]),
+            Type::Ref(r) => {
+                self.words.extend([3, r.def_key()? as u64]);
+                self.parts(&r.params)?
+            }
+            Type::Set(ms) => {
+                self.words.push(4);
+                self.parts(ms)?
+            }
+            Type::Tuple(ps) => {
+                self.words.push(5);
+                self.parts(ps)?
+            }
+            Type::Struct(fs) => {
+                self.words.extend([6, fs.len() as u64]);
+                for (name, t, _) in fs.iter() {
+                    self.bytes(name);
+                    self.put(t)?
+                }
+            }
+            Type::Variant(tag, ps, _) => {
+                self.words.push(7);
+                self.bytes(tag);
+                self.parts(ps)?
+            }
+            Type::Error(t) => {
+                self.words.push(8);
+                self.put(t)?
+            }
+            Type::Array(t) => {
+                self.words.push(9);
+                self.put(t)?
+            }
+            Type::List(t) => {
+                self.words.push(10);
+                self.put(t)?
+            }
+            Type::Map(m) => {
+                self.words.push(11);
+                self.put(&m.key)?;
+                self.put(&m.value)?
+            }
+            Type::ByRef(m, t) => {
+                self.words.extend([12, matches!(m, Mutability::Mut) as u64]);
+                self.put(t)?
+            }
+            Type::Abstract { id, params } => {
+                self.words.extend([13, id.0]);
+                self.parts(params)?
+            }
+            Type::TVar(tv) => {
+                self.words.push(14);
+                match tv.copied_reads(&mut self.words)? {
+                    CopiedEnd::Open(addr) => {
+                        let next = self.cells.len() as u64;
+                        let n = *self.cells.entry(addr).or_insert(next);
+                        self.words.extend([0, n])
+                    }
+                    CopiedEnd::Bound(b) => {
+                        self.words.push(1);
+                        self.put(&b)?
+                    }
+                }
+            }
+            Type::Fn(_) | Type::App(..) | Type::Hole | Type::Bound(_) => return None,
+        }
+        Some(())
+    }
+}
+
 /// Whether `tier[at]` takes `t` on copies, and, when `after` is asked,
 /// which members of the tier hold `t` as it stands once it has: bit `i`
 /// for `tier[i]`, none where a probe failed. Each is what [`decide_alike`]
 /// asks of the pair, taken from the same walk.
+/// The answer is kept by [`CopyWords`] of the types, so the same walk over
+/// cells of the same state is made once.
 fn takes_leaving(
     tier: &[&Type],
     at: usize,
     after: bool,
     flags: BitFlags<ContainsFlags>,
     env: &Env,
-    hist: &ContainsHist,
+    hist: &mut ContainsHist,
     t: &Type,
 ) -> Result<(bool, Option<u64>)> {
     let others: SmallVec<[(usize, &Type); 4]> =
         tier.iter().copied().enumerate().filter(|(i, _)| after && *i != at).collect();
     let mut ts: SmallVec<[&Type; 6]> = smallvec::smallvec![tier[at], t];
     ts.extend(others.iter().map(|(_, o)| *o));
-    on_copies_of(Some((hist, env)), &ts, |copies, trial| {
+    let key = CopyWords::of(&ts, &[flags.bits() as u64, after as u64, at as u64]);
+    if let Some(&answer) = key.as_ref().and_then(|k| hist.leaving.get()?.get(k)) {
+        return Ok(answer);
+    }
+    let answer = on_copies_of(Some((hist, env)), &ts, |copies, trial| {
         let [m, t, rest @ ..] = &copies[..] else { unreachable!() };
         if !m.contains_int(flags, env, trial, t)? {
             return Ok((false, None));
@@ -1948,7 +2076,14 @@ fn takes_leaving(
             }
         }
         Ok((true, bits))
-    })
+    })?;
+    if let Some(key) = key {
+        let kept = hist.leaving.get_mut();
+        if kept.len() < LEAVING_MAX {
+            kept.insert(key, answer);
+        }
+    }
+    Ok(answer)
 }
 
 /// Whether `m0` and `m1`, decided members of a union that each hold `t`,
@@ -5320,7 +5455,7 @@ impl Type {
                 if open.is_empty() && decided.is_empty() && std::ptr::eq(m, *last) {
                     break;
                 }
-                // CR claude for claude: [perf/low] A choice between the members of a
+                // XCR claude for claude: [perf/low] A choice between the members of a
                 // union asks a walk on copies for each member that admits the type, at
                 // every such union the walk meets, and each of those walks what is below
                 // it: over a recursive definition with two members of one head (`type
@@ -5396,6 +5531,26 @@ impl Type {
                 // member's commit (about 4.4k steps) plus the other's probe (about 1.4k); the
                 // memo or trail ideas above are untouched. probe:
                 // ~/ptmp/cr29/scratch/r25/25e/s2311_0224_two.gx
+                // 2026-11-15 claude: Lane 26e: a walk on copies' answer is kept in the walk
+                // (ContainsHist::leaving) by CopyWords of the types it was asked of (each
+                // node's kind and parts, a name by its definition, each cell by the place it is
+                // first met in plus what the copy reads of it: TVar::copied_reads, facts,
+                // level, rigid hold, earlier task, naming kind; a cell with a conjunct or lower
+                // bound, a function type, an unresolved name: no words, walk every time).
+                // s2311_0224_two on base-r26: 1136 walks, 34.47G instructions, 7.72M contains
+                // steps; now 150 walks, 6.50G, 1.31M steps (0140 1.67G and 0289 1.12G
+                // unchanged; empty program 0.78G). Pins
+                // typ::contains::tests::a_choice_asked_again_over_cells_of_one_state_walks_once
+                // (7.72M steps without the memo, bound 2M) and
+                // the_words_of_a_walk_on_copies_hold_what_it_reads_of_its_cells. Differential:
+                // an experiment build that walked anyway on each hit and compared (986 hits on
+                // the lead probe, 1006 more over gen2 perm seed 2311 and amb seed 2511, 90 over
+                // genrigid seed 31, 16 over graphix-tests lib, 947 over graphix-types lib): no
+                // mismatch; census 2972 files identical to base; gen2 and genrigid verdicts
+                // identical. checkcost equal within noise, guicheck 41.95G -> 41.91G,
+                // deep_nesting ok. What stands: 150 distinct walks (about 1M steps) and the
+                // commit's own steps; a trail of writes would end those. Probes
+                // ~/ptmp/cr29/scratch/r26/26e/take-member.
                 let fixed = decides_no_cell(m)
                     && *fixed_t.get_or_insert_with(|| decides_no_cell(t));
                 let wants_after = !hist.ordered
@@ -7679,6 +7834,56 @@ mod tests {
         held.check_contains(&env, &open).unwrap();
         let steps = CONTAINS_STEPS.with(|n| n.get());
         assert!(steps <= 9_000_000, "a commit took {steps} steps");
+    }
+
+    // The walk on copies that admits a decided member is asked again of
+    // the same members over other cells of the same state, and answers from
+    // the first.
+    #[test]
+    fn a_choice_asked_again_over_cells_of_one_state_walks_once() {
+        let body =
+            "[Error<D<'a0, string, 'a2>>, Error<D<'a1, 'a0, 'a2>>, `Y(D<'a1, 'a2, 'a0>)]";
+        let twin = body.replace("D<", "F<");
+        let defs = [("D<'a0, 'a1, 'a2>", body), ("F<'a0, 'a1, 'a2>", &*twin)];
+        let (env, _) = Env::typed_at_root(&defs, "i64").unwrap();
+        let open = at_root(&env, "fn(k: D<'q0, 'q0, 'q1>) -> D<'q0, 'q1, 'q2>");
+        let held = at_root(&env, "fn(k: F<Any, i64, i64>) -> F<i64, i64, Any>");
+        CONTAINS_STEPS.with(|n| n.set(0));
+        held.check_contains(&env, &open).unwrap();
+        let steps = CONTAINS_STEPS.with(|n| n.get());
+        assert!(steps <= 2_000_000, "a commit took {steps} steps");
+    }
+
+    // A walk on copies reads each cell's place among the others, its level,
+    // facts and whether it is held rigid, and a bound or a lower bound it
+    // carries: two asks of one word list are one walk, and no other is.
+    #[test]
+    fn the_words_of_a_walk_on_copies_hold_what_it_reads_of_its_cells() {
+        let (env, _) = Env::typed_at_root(&[], "i64").unwrap();
+        let words = |t: &Type| CopyWords::of(&[t], &[]);
+        let of = |s: &str| words(&at_root(&env, s));
+        let shape = of("Array<('q0, 'q1, 'q0)>");
+        assert!(shape.is_some());
+        assert_eq!(shape, of("Array<('r5, 'r6, 'r5)>"));
+        assert_ne!(shape, of("Array<('q0, 'q1, 'q1)>"));
+        assert_ne!(shape, of("Array<('q0, 'q1, i64)>"));
+        let rigid = at_root(&env, "Array<('q0, 'q1, 'q0)>");
+        let mut gates = vec![];
+        hold_rigid(&rigid, &mut gates);
+        assert_ne!(shape, words(&rigid));
+        let bound = at_root(&env, "Array<('q0, 'q1, 'q0)>");
+        find_open_cell(&bound, true, &mut |tv| {
+            tv.bind(Type::Primitive(Typ::String.into()));
+            true
+        });
+        assert_ne!(shape, words(&bound));
+        let lower = at_root(&env, "Array<('q0, 'q1, 'q0)>");
+        find_open_cell(&lower, true, &mut |tv| {
+            tv.add_lower(Type::Primitive(Typ::String.into()));
+            true
+        });
+        assert_eq!(words(&lower), None);
+        assert_eq!(of("fn(x: i64) -> i64"), None);
     }
 
     // A function type whose quantifier an earlier task left open takes it

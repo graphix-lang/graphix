@@ -476,8 +476,19 @@ products_of_distinct_cells_are_not_walked_pairwise`,
   a_choice_no_commit_can_decide_walks_no_copies` (224 k and 76 k steps;
   5.3 M and 832 k with the walks). A choice whose commit decides a cell,
   a decided member taking an undecided type between two definitions with
-  one body, walks each member on copies still: over three parameters,
-  568 walks taking 2.9 M of a commit's 4.0 M steps.
+  one body, walks each member on copies (`takes_leaving`), which also reads
+  whether each other member still holds the type. The answer is kept in
+  the walk (`ContainsHist::leaving`) by `CopyWords` of the types: each
+  node's kind and parts, a name by its definition, each cell by the place
+  it is first met in, and what the copy reads of it (`TVar::copied_reads`:
+  facts, level, rigid hold, earlier task, naming kind). A cell holding a
+  conjunct or a lower bound, a function type and an unresolved name have
+  no words, and their walk is made every time. Over three parameters 1136
+  walks fall to 150: 7.7 M steps to 1.3 M, `s2311_0224_two` 34.5 G
+  instructions to 6.5 G. Pin `typ::contains::tests::
+  a_choice_asked_again_over_cells_of_one_state_walks_once`, and
+  `the_words_of_a_walk_on_copies_hold_what_it_reads_of_its_cells` for what
+  tells two asks apart.
 - The trial of a union with a bare open member starts with the pairs
   its walk is expanding in progress, on its copies
   (`ContainsHist::seed`), so it meets their recursion by assumption. A
