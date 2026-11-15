@@ -262,6 +262,17 @@ no "takes 'e as its own too" trait T { val m: fn<'a: [i64, string], 'c: [i64, st
 ok trait T { val m: fn<'a: [i64, string], 'c: [i64, string], 'b: (i64, 'a), 'd: (i64, 'c), 'e: [i64, string], 'g: fn(x: 'e) -> i64>(self, x: 'b, y: 'd, z: 'g) -> i64 }; impl T for i64 { let m = 'p: [i64, string], 'o: [i64, string], 'q: (Number, 'p), 'r: (Number, 'o) |s, x: 'q, y: 'r, z| -> i64 0 }; T::m(1, (1, "s"), (1, 1), |x: i64| x)
 ```
 
+A variable a method writes is its own, even one named like the
+declaration's: beside a written member of a union the declaration holds
+from above, it is refused naming the remedy, leaving the type unwritten
+(the lambda takes the declared one) or writing the member.
+
+```graphix,cases
+no "a method's own variables are not the declaration's" trait T { val m: fn(self) -> [Array<'a>, Array<string>] }; impl T for i64 { let m = |s| -> [Array<'a>, Array<string>] ["x"] }; T::m(1)
+ok trait T { val m: fn(self) -> [Array<'a>, Array<string>] }; impl T for i64 { let m = |s| ["x"] }; T::m(1)
+ok trait T { val m: fn(self) -> [Array<'a>, Array<string>] }; impl T for i64 { let m = |s| -> Array<string> ["x"] }; T::m(1)
+```
+
 A `val`'s type variable stands only inside a function type, where each
 use picks it: `val v: Array<'a>` is refused (declare it at one type,
 `Array<i64>`), and so is `val c: {f: fn(x: 'a) -> string, last: ['a,

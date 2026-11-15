@@ -6772,3 +6772,59 @@ run!(
     "#
     ; FuseExpect::Jit
 );
+
+const METHOD_OWN_VARIABLES: &str = "a method's own variables are not the declaration's, even one named like it: leave the method's type unwritten, so its lambda takes the declared one, or write the member the value is";
+
+run!(
+    method_lambda_written_variable_beside_member_names_remedy,
+    refused(METHOD_OWN_VARIABLES),
+    "/test.gx" => r#"
+        trait T { val m: fn(self) -> [Array<'a>, Array<string>] };
+        impl T for i64 { let m = |s| -> [Array<'a>, Array<string>] ["x"] };
+        let result = T::m(1)
+    "#
+    ; FuseExpect::None
+);
+
+run!(
+    method_let_written_variable_beside_member_names_remedy,
+    refused(METHOD_OWN_VARIABLES),
+    "/test.gx" => r#"
+        trait T { val m: fn(self) -> [Array<'a>, Array<string>] };
+        impl T for i64 { let m: fn(self) -> [Array<'c>, Array<string>] = |s| ["x"] };
+        let result = T::m(1)
+    "#
+    ; FuseExpect::None
+);
+
+run!(
+    method_read_of_generic_written_variable_beside_member_names_remedy,
+    refused(METHOD_OWN_VARIABLES),
+    "/test.gx" => r#"
+        let g = |s: i64| -> [Array<'a>, Array<string>] ["x"];
+        trait T { val m: fn(self) -> [Array<'a>, Array<string>] };
+        impl T for i64 { let m = g };
+        let result = T::m(1)
+    "#
+    ; FuseExpect::None
+);
+
+run!(
+    method_unwritten_type_takes_the_declared_union,
+    prints(r#"["x"]"#),
+    "/test.gx" => r#"
+        trait T { val m: fn(self) -> [Array<'a>, Array<string>] };
+        impl T for i64 { let m = |s| ["x"] };
+        let result = T::m(1)
+    "#
+);
+
+run!(
+    method_written_member_beside_declared_union,
+    prints(r#"["x"]"#),
+    "/test.gx" => r#"
+        trait T { val m: fn(self) -> [Array<'a>, Array<string>] };
+        impl T for i64 { let m = |s| -> Array<string> ["x"] };
+        let result = T::m(1)
+    "#
+);

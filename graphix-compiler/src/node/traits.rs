@@ -23,9 +23,9 @@ use crate::{
         Env, Glob, ImplDef, Map, TraitDef, TraitMethodDef, TraitMethodRef, TraitMethodSig,
     },
     expr::{
-        ApplyExpr, Arg, ArgKind, At, Attr, BindExpr, Decorations, Expr, ExprId, ExprKind,
-        ImplExpr, ImplHead, LambdaExpr, ModPath, Name, Origin, Pattern, SelectExpr,
-        StructurePattern, Told, TraitExpr, TraitMethod, WrittenAt,
+        ApplyExpr, Arg, ArgKind, At, Attr, BindExpr, Decorations, ErrorSite, Expr,
+        ExprId, ExprKind, ImplExpr, ImplHead, LambdaExpr, ModPath, Name, Origin, Pattern,
+        SelectExpr, StructurePattern, Told, TraitExpr, TraitMethod, WrittenAt,
     },
     ide::ModuleRefSite,
     image::{
@@ -34,8 +34,9 @@ use crate::{
     },
     stack::ensure_sufficient,
     typ::{
-        CoreTrait, FnArgKind, FnType, TVar, TraitId, Type, TypeRef, check_bounds_acyclic,
-        seed_conjuncts, settle::VariableUnion, tvar::RigidGate,
+        AmbiguousMember, CoreTrait, FnArgKind, FnType, TVar, TakerUnion, TraitId, Type,
+        TypeRef, UndecidedTaker, check_bounds_acyclic, seed_conjuncts,
+        settle::VariableUnion, tvar::RigidGate,
     },
     wrap,
 };
@@ -469,7 +470,7 @@ fn signature_of(value: &Expr, sig: &FnType) -> Option<Type> {
     (!reads_binding(value)).then(|| Type::Fn(Arc::new(sig.clone())))
 }
 
-// CR claude for claude: [bug/low] A type a method's lambda or `let` writes names variables
+// XCR claude for claude: [bug/low] A type a method's lambda or `let` writes names variables
 // of its own, even one named like the declaration's, so beside a written member under a
 // place the declaration holds from above they are undecided takers of the union:
 // `trait T { val m: fn(self) -> [Array<'a>, Array<string>] }; impl T for i64 { let m = |s|
@@ -488,6 +489,34 @@ fn signature_of(value: &Expr, sig: &FnType) -> Option<Type> {
 // implementation's own quantifier instantiated against a rigid declaration is the
 // UndecidedTaker rule's case, not a placement. probes:
 // ~/ptmp/cr29/scratch/r25/25f/{f7,f7a,f7b,f8}.gx (method-written-variable-union-member-01)
+// 2026-11-15 claude: A refusal at a method's value or at the impl's containment of the
+// method's type, that is an undecided taker or ambiguous member in a holder, names what a
+// method can do (leave its type unwritten so the lambda takes the declared one, or write
+// the member) in place of 'annotate the value', via traits::taker_refusal /
+// Impl::method_written. Accepted programs unchanged (messages only). Pins
+// lang::traits::method_lambda_written_variable_beside_member_names_remedy,
+// method_let_written_variable_beside_member_names_remedy,
+// method_read_of_generic_written_variable_beside_member_names_remedy fail without it; the
+// twins method_unwritten_type_takes_the_declared_union and
+// method_written_member_beside_declared_union pass. The rule by name was not taken: it
+// would turn the typedef-expanded union pins into instance refusals.
+/// A method's written type holding a variable of its own beside a member
+/// of a union it shares with the declaration's: the refusal of the
+/// relation says what to annotate, which a method has no place for. The
+/// method's variables are its own, even one named like the declaration's.
+fn taker_refusal(e: &anyhow::Error) -> Option<anyhow::Error> {
+    const REMEDY: &str = "a method's own variables are not the declaration's, even \
+                          one named like it: leave the method's type unwritten, so \
+                          its lambda takes the declared one, or write the member the value is";
+    match (e.downcast_ref::<UndecidedTaker>(), e.downcast_ref::<AmbiguousMember>()) {
+        (Some(u), _) if u.at() == TakerUnion::Holder => {
+            Some(anyhow!("{}: {REMEDY}", u.fact()))
+        }
+        (_, Some(a)) if a.in_holder() => Some(anyhow!("{}: {REMEDY}", a.fact())),
+        _ => None,
+    }
+}
+
 /// Rigid gates on every open cell `declared` reach: a declaration's
 /// variables, which nothing held to it decides. A value's own variable
 /// beside a written member (`x: [Array<'a>, Array<string>]`) takes the
@@ -1258,6 +1287,24 @@ impl<R: Rt> Impl<R> {
                     && reads_binding(&b.value) == reads)))
     }
 
+    /// `e` as [`taker_refusal`] says it where it arose at a method's value:
+    /// the relation of what the method writes with the signature its `let`
+    /// took.
+    fn method_written(&self, e: anyhow::Error) -> anyhow::Error {
+        let ExprKind::Impl(im) = &self.spec.kind else { return e };
+        let Some(site) = e.downcast_ref::<ErrorSite>().map(|s| s.expr().id) else {
+            return e;
+        };
+        let at = im.methods.iter().find_map(|m| match &m.kind {
+            ExprKind::Bind(b) if b.value.unparen().id == site => Some(&b.value),
+            _ => None,
+        });
+        match (at, taker_refusal(&e)) {
+            (Some(value), Some(refusal)) => refusal.at(value.unparen()),
+            _ => e,
+        }
+    }
+
     /// Whether method `name` took its value's type: it writes no
     /// annotation and [`signature_of`] gave it none.
     fn method_reads_binding(&self, name: &str) -> bool {
@@ -1370,7 +1417,7 @@ impl<R: Rt> Update<R> for Impl<R> {
             let binds = took.filter_map(|(_, id)| ctx.env.by_id.get(id));
             hold_declared(binds.map(|b| &b.typ))
         };
-        wrap!(self.body, self.body.typecheck0(ctx))?;
+        wrap!(self.body, self.body.typecheck0(ctx).map_err(|e| self.method_written(e)))?;
         drop(declared);
         // a user-annotated method must still fit the declared signature
         for d in self.trait_def.methods.iter() {
@@ -1395,6 +1442,7 @@ impl<R: Rt> Update<R> for Impl<R> {
                     Type::Fn(Arc::new(method_sig_at(&d.typ, &self.def.target)));
                 let _declared = hold_declared(iter::once(&expected));
                 expected.check_contains(&ctx.env, &implemented).map_err(|e| {
+                    let e = taker_refusal(&e).unwrap_or(e);
                     let told = format_compact!(
                         "method {} of impl {} for {} has type {}, the trait declares {}",
                         d.name,

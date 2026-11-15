@@ -427,7 +427,10 @@ declaration's, so `|s| -> [Array<'a>, Array<string>] ["x"]` (and an
 annotation over `'c`, and a read of a generic binding) is refused as an
 undecided taker, and runs with the place written as the member it gives,
 `|s| -> Array<string> ["x"]` (pin
-`method_result_variable_beside_a_written_member_written`).
+`method_result_variable_beside_a_written_member_written`). The refusal at
+the method names that remedy, or leaving the type unwritten, in place of
+the relation's own hint, which has no place to write one
+(`traits::taker_refusal`; pins `lang::traits::method_*_beside_member_names_remedy`).
 In an impl, `self` is the impl's target in every type the impl writes,
 as a default's `self` is its trait's: a method's `let` annotation, its
 lambda's parameters and result, and a lambda, `let`, cast, `never<T>`,
