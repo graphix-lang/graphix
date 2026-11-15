@@ -2503,7 +2503,7 @@ impl StructPatternNode {
                 if let Some(pos) = at.get() {
                     ctx.env.push_typedef_ref(&td, name, &cx.scope.lexical, pos, cx.ori);
                 }
-                let Type::Abstract { id, .. } = td.typ() else {
+                let Type::Abstract { id, params } = td.typ() else {
                     bail!("{name} is not an abstract type, so it has no constructor")
                 };
                 let id = *id;
@@ -2519,17 +2519,27 @@ impl StructPatternNode {
                 // the predicate is this abstract type, as a variant pattern's is
                 // its variant: a union around it would make the arm refutable by
                 // a tag test nothing performs
-                // CR claude for claude: [bug/low] The advice below is wrong for an abstract
+                // XCR claude for claude: [bug/low] The advice below is wrong for an abstract
                 // type with parameters: `W as x` over `type W<'a> = Abstract<&mut 'a>` is
                 // refused, "W expects 1 type parameters". Name the instance (`W<T> as x`)
                 // where the type has parameters. probe:
                 // ~/ptmp/cr29/scratch/r25/25a/aio-rev/t1.gx, t2.gx
                 // (abstract-tag-first-advice-01)
+                // 2026-11-15 claude: The advice names `W<..> as x` where the typedef has
+                // parameters. Pins in lang/select.rs:
+                // abstract_constructor_over_any_advises_the_tag,
+                // parameterized_abstract_constructor_over_any_advises_the_instance (fails
+                // without the fix), parameterized_abstract_tag_test_names_the_instance.
                 if !matches!(type_predicate.deref_cloned(), Some(Type::Abstract { id: t, .. }) if t == id)
                 {
+                    let tag = if params.is_empty() {
+                        format_compact!("{name}")
+                    } else {
+                        format_compact!("{name}<..>")
+                    };
                     return format_with_flags(PrintFlag::DerefTVars, || {
                         bail!(
-                            "{name}(..) patterns can't match {type_predicate}: test the tag first, `{name} as x`"
+                            "{name}(..) patterns can't match {type_predicate}: test the tag first, `{tag} as x`"
                         )
                     });
                 }

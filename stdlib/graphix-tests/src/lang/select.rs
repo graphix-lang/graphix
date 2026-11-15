@@ -10279,6 +10279,26 @@ run!(an_error_literal_pattern_is_typed_by_its_payload, r#"{
   select r { error:1 => 1, _ => 2 }
 }"#, refused("will never match"); FuseExpect::None);
 
+// The advice for an abstract constructor pattern over a wider type names the
+// tag test, with the instance where the type has parameters.
+run!(abstract_constructor_over_any_advises_the_tag, r#"{
+  type W = Abstract<i64>;
+  let f = |x: Any| select x { Any as W(r) => 1, _ => 0 };
+  f(1)
+}"#, refused("test the tag first, `W as x`"); FuseExpect::None);
+
+run!(parameterized_abstract_constructor_over_any_advises_the_instance, r#"{
+  type W<'a> = Abstract<&mut 'a>;
+  let f = |x: Any| select x { Any as W(r) => 1, _ => 0 };
+  f(1)
+}"#, refused("test the tag first, `W<..> as x`"); FuseExpect::None);
+
+run!(parameterized_abstract_tag_test_names_the_instance, r#"{
+  type W<'a> = Abstract<&mut 'a>;
+  let f = |x: Any| select x { W<i64> as w => 1, _ => 0 };
+  f(1)
+}"#, prints("i64:0"); FuseExpect::None);
+
 run!(an_abstract_literal_pattern_is_refused, r#"{
   let x: Any = 1;
   select x { abstract:EgABAgMEBQYHCAkKCwwNDg8BAg== => 1, _ => 2 }
