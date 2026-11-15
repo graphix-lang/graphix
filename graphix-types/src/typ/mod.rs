@@ -4093,24 +4093,6 @@ impl Type {
         ensure_sufficient(|| self.rewrite_trait_args_inner(env, scheme))
     }
 
-    // XCR claude for claude: [bug/low] A typedef above the trait its body names as a
-    // type is not refused: `type T = Array<Sh>; trait Sh { .. }` checks, and `let v: T
-    // = [1, 2]` runs and prints [1, 2], while the same two statements the other way
-    // round are refused ("trait Sh used as a type"). The Ref arm below asks
-    // `Env::trait_of_ref` in the env of the typedef's declaration, where a trait the
-    // block declares later is not yet registered, so the name is taken for an
-    // unresolved typedef. `Type::named_traits` relies on a typedef's body naming no
-    // trait. To fix: refuse at the point the name is settled (the block's typedefs see
-    // every name of the block: a trait declared anywhere in it, or a name that
-    // `Env::settled_trait_of_ref` says changes later, is refused here). probes:
-    // ~/ptmp/cr29/scratch/r26/26a/typedef_forward_trait.gx (accepted, runs) and
-    // typedef_trait_after.gx (refused) beside it. (typedef-forward-trait-type-01)
-    // 2026-11-15 claude: A typedef body's names are asked again for a trait once the
-    // block's names are registered (defer_typedef_names) and, for a body with a name
-    // still unresolved there, once the check ends (Pending::Body); refused with the
-    // backward order's message. Pins lang::types::typedef_above_its_trait,
-    // typedef_argument_above_its_trait, typedef_below_its_traits_block fail without
-    // it; twins typedef_after_its_trait, typedef_bound_above_its_trait.
     fn rewrite_trait_args_inner(&self, env: &Env, scheme: bool) -> Result<Option<Type>> {
         match self {
             Type::Ref(tr) if env.trait_of_ref(tr).is_some() => bail!(
