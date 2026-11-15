@@ -350,6 +350,8 @@ so annotating a binding does not help; declare `'a: fn(x: i64) -> i64`,
 ```graphix,cases
 no "i64 does not contain string" let fs = array::map([1], |r| |x| x); let g = fs[0]$; (g(1), g("s"))
 ok let fs = array::map([1], |r| |x| x); let g = fs[0]$; g(1)
+ok let f = { let t = sys::net::publish; t }; f(never(), 10)
+ok let f = sys::net::publish; f(never(), 10)
 no "i64 does not contain string" let id = |x| x; let g = (id, 1).0; (g(1), g("s"))
 no "i64 does not contain string" let f = |x| x; let r = &f; ((*r)(1), (*r)("s"))
 no "i64 does not contain string" let s = {f: |x| x}; let j = s.f; let p = |b| select b { true => s, false => {f: j} }; j <- |x: i64| x; (p(true).f("s"), p(false).f(1))

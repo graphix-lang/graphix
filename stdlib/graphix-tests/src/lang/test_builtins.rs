@@ -357,6 +357,25 @@ async fn unread_quantifier_settles(mode: Mode) -> Result<()> {
     Ok(())
 }
 
+/// A name that holds a builtin through a block's final expression is the
+/// builtin as a direct alias is: its call accepts the unread quantifier.
+async fn unread_quantifier_settles_through_a_block(mode: Mode) -> Result<()> {
+    let code = |value: &str| {
+        format_compact!(
+            r#"{{
+                let f = 'a: Concrete |#h: [fn(v: 'a) -> i64, null] = null, x: i64|
+                    -> i64 'test_last;
+                let g = {value};
+                g(3)
+            }}"#
+        )
+    };
+    for value in ["f", "{ let t = f; t }", "{ 1; f }", "{ let t = f; (t) }"] {
+        assert_eq!(run(&code(value), mode).await?, [Value::I64(3)], "{value}");
+    }
+    Ok(())
+}
+
 async fn unread_forwarded_quantifier_message(mode: Mode) -> Result<()> {
     let code = |call: &str| {
         format_compact!(
@@ -497,6 +516,7 @@ modes!(
     a_panic_stops_a_kernel_loop,
     mistyped_function_value_is_refused,
     unread_quantifier_settles,
+    unread_quantifier_settles_through_a_block,
     unread_forwarded_quantifier_message,
     read_quantifier_keeps_type_directed_message
 );

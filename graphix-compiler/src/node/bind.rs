@@ -218,7 +218,7 @@ fn aliased_builtin<R: Rt>(
     ctx: &CompileCtx<R>,
     node: &Node<R>,
 ) -> Option<BuiltinBindInfo> {
-    let NodeView::Ref(r) = node.view() else { return None };
+    let NodeView::Ref(r) = value_of(node).view() else { return None };
     ctx.builtin_bindings.get(&r.id).cloned()
 }
 
@@ -715,7 +715,7 @@ impl<R: Rt> Bind<R> {
     /// f`), when `f` resolves statically and no `<-` writes it, which this
     /// one then holds.
     fn aliased_lambda(&mut self, ctx: &mut CompileCtx<R>) -> Option<Value> {
-        let id = match ungrouped(&self.node) {
+        let id = match value_of(&self.node).view() {
             NodeView::Ref(r) if !ctx.rebinds(r.id) => r.id,
             _ => return None,
         };

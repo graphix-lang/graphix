@@ -318,7 +318,7 @@ run!(
     a_block_whose_value_is_a_generic_name_is_generic,
     "{ let g = |x| x; let f = { let n = 1; g }; (f(1), f(\"s\")) }",
     prints(r#"[i64:1, "s"]"#);
-    FuseExpect::None
+    FuseExpect::Jit
 );
 
 run!(
