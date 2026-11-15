@@ -48,7 +48,7 @@ pub use fusion::FusionStats;
 pub use tval::{Tag, TagValue, TagView};
 
 use crate::{
-    env::{Env, ImplDef, Lexical, LoadedBody, TraitDef},
+    env::{Env, ImplDef, KeptView, Lexical, LoadedBody, TraitDef},
     expr::{ExprId, ModPath},
     fusion::emit::{BodyCx, CompiledExpr},
     node::{
@@ -579,8 +579,12 @@ impl<R: Rt> std::ops::DerefMut for Node<R> {
 #[derive(Clone, Copy)]
 pub enum BindMode<'a> {
     Definition,
-    Dynamic(&'a FnType),
-    Static { instance: &'a FnType },
+    /// A site that binds when the program runs: the signature its view
+    /// calls, and what that view names of the kept impls.
+    Dynamic(&'a FnType, Option<&'a KeptView>),
+    Static {
+        instance: &'a FnType,
+    },
 }
 
 pub type InitFn<R> = sync::Arc<

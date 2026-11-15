@@ -1283,6 +1283,32 @@ impl KeptImpl {
     }
 }
 
+/// The kept impl entries a view names, each as its bindings at the
+/// impl's scope: what [`Env::name_kept_impls`] reads of a caller's view,
+/// held by a call site that binds its callee later.
+#[derive(Clone, Debug)]
+pub struct KeptView(Box<[(ModPath, Map<CompactString, BindId>)]>);
+
+impl KeptView {
+    /// Name these entries in `view`, a definition's at `at`, as
+    /// [`Env::name_kept_impls`] does for the view they were read from.
+    pub fn name_in(&self, view: &mut Lexical, at: &ModPath) {
+        name_kept(self.0.iter().map(|(scope, binds)| (scope, binds)), view, at)
+    }
+}
+
+fn name_kept<'a>(
+    named: impl Iterator<Item = (&'a ModPath, &'a Map<CompactString, BindId>)>,
+    view: &mut Lexical,
+    at: &ModPath,
+) {
+    for (scope, binds) in named {
+        if view.binds.get(scope).is_none() && !scope_is_under(&at.0, &scope.0) {
+            view.binds = view.binds.insert(scope.clone(), binds.clone()).0;
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Env {
     pub by_id: TrackedMap<BindId, Arc<Bind>>,
@@ -2628,14 +2654,28 @@ impl Env {
         if self.kept_impls.len() == 0 {
             return;
         }
-        for (_, k) in self.kept_impls.iter() {
-            if view.binds.get(&k.im.scope).is_none()
-                && !scope_is_under(&at.0, &k.im.scope.0)
-                && let Some(binds) = k.named_in(&self.lexical)
-            {
-                view.binds = view.binds.insert(k.im.scope.clone(), binds.clone()).0;
-            }
+        let named = self
+            .kept_impls
+            .iter()
+            .filter_map(|(_, k)| Some((&k.im.scope, k.named_in(&self.lexical)?)));
+        name_kept(named, view, at)
+    }
+
+    /// What this view names of the kept entries, for a call site whose
+    /// instance is built when the program runs, in a view of its own
+    /// ([`KeptView::name_in`]).
+    pub fn kept_view(&self) -> Option<KeptView> {
+        if self.kept_impls.len() == 0 {
+            return None;
         }
+        let named: Box<[_]> = self
+            .kept_impls
+            .iter()
+            .filter_map(|(_, k)| {
+                Some((k.im.scope.clone(), k.named_in(&self.lexical)?.clone()))
+            })
+            .collect();
+        (!named.is_empty()).then_some(KeptView(named))
     }
 
     /// Register an implementation. One impl per (trait, target): an

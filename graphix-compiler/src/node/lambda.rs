@@ -2236,7 +2236,13 @@ pub(crate) fn make_init<R: Rt>(
                 ctx.env.name_kept_impls(&mut env, &def_scope.lexical);
                 env
             }
-            BindMode::Dynamic(_) => def_env.called_in(scope.load.as_ref()),
+            BindMode::Dynamic(_, kept) => {
+                let mut env = def_env.called_in(scope.load.as_ref());
+                if let Some(kept) = kept {
+                    kept.name_in(&mut env, &def_scope.lexical)
+                }
+                env
+            }
         };
         // the definition's names, the call site's handlers
         let scope = Scope {
@@ -2299,7 +2305,7 @@ pub(crate) fn make_init<R: Rt>(
                 let typ = instance_type(ctx, mode, &def_typ)?;
                 let resolved = match mode {
                     BindMode::Definition => None,
-                    BindMode::Static { .. } | BindMode::Dynamic(_) => Some(&*typ),
+                    BindMode::Static { .. } | BindMode::Dynamic(..) => Some(&*typ),
                 };
                 let apply = init(ctx, &def_typ, resolved, &scope, args, tid)?;
                 let builtin = BuiltInLambda::with(typ, name.clone(), apply);
@@ -2325,7 +2331,7 @@ fn instantiate<R: Rt>(
 ) -> Result<Box<dyn Apply<R>>> {
     let typing = match mode {
         BindMode::Definition => Typing::Definition,
-        BindMode::Static { .. } | BindMode::Dynamic(_) => {
+        BindMode::Static { .. } | BindMode::Dynamic(..) => {
             Typing::Substituted(table.clone(), def_typ.clone())
         }
     };
@@ -2344,8 +2350,8 @@ fn instance_type<R: Rt>(
 ) -> Result<Arc<FnType>> {
     Ok(match mode {
         BindMode::Static { instance } => Arc::new(instance.clone()),
-        BindMode::Dynamic(r) if same_parameters(r, def_typ) => Arc::new(r.clone()),
-        BindMode::Dynamic(r) => Arc::new(fit_callee(ctx, r, def_typ)?),
+        BindMode::Dynamic(r, _) if same_parameters(r, def_typ) => Arc::new(r.clone()),
+        BindMode::Dynamic(r, _) => Arc::new(fit_callee(ctx, r, def_typ)?),
         BindMode::Definition => def_typ.clone(),
     })
 }

@@ -13,7 +13,7 @@ use crate::{
     Apply, ApplyView, BindId, BindMode, CFlag, CompileCtx, ExecCtx, FnArgIdentity,
     LambdaId, LambdaInstanceId, Node, NodeView, Notify, Refs, ResolvingLambda, Rt, Scope,
     StaticHold, TagValue, Update, View, analysis, bailat, dbgenv, deref_typ,
-    env::{Env, ImplDef, Map},
+    env::{Env, ImplDef, KeptView, Map},
     expr::{ApplyExpr, At, Expr, ExprId, ExprKind, Told},
     fusion::{
         self,
@@ -2612,6 +2612,10 @@ pub struct CallSite<R: Rt> {
     /// The registry's impls the bound instance's dispatches chose: the
     /// instance is built again when the registry no longer holds one.
     impl_reads: Option<Box<SmallVec<[TArc<ImplDef>; 2]>>>,
+    /// What the view this site was checked in names of the kept impls:
+    /// the instance a run-time bind builds dispatches to them as a static
+    /// call's does.
+    kept: Option<Box<KeptView>>,
 }
 
 /// The registered builtin a site calls by name: its function is a
@@ -2665,9 +2669,16 @@ impl<R: Rt> CallSite<R> {
             absent: None,
             step_due: false,
             impl_reads: None,
+            kept: None,
             decoded: false,
             fork: ForkSite::default(),
             static_holds: SmallVec::new(),
+        }
+    }
+
+    fn note_kept_view(&mut self, ctx: &CompileCtx<R>) {
+        if self.kept.is_none() {
+            self.kept = ctx.env.kept_view().map(Box::new)
         }
     }
 
@@ -3308,7 +3319,7 @@ impl<R: Rt> CallSite<R> {
         (f.init)(scope, ctx, &mut self.arg_refs, mode, self.top_id)
     }
 
-    // CR claude for claude: [bug/low] A run-time bind checks and builds its instance under the
+    // XCR claude for claude: [bug/low] A run-time bind checks and builds its instance under the
     // run-time env, not the view of the code the call is in, so an impl entry kept for that
     // view (`Env::kept_impls`) is unseen: with `let app = |v: Sh| Sh::sh(v)` of an earlier input
     // and `saved <- |x: i64| { let f = select x { 3 => app, _ => |c: C| 0 }; f(C(x)) * 5 +
@@ -3320,6 +3331,11 @@ impl<R: Rt> CallSite<R> {
     // To fix: the site carries what its view names of the kept entries, as `Scope::load`
     // carries its load, and the bind's check and instance read it. Only an embedder reaches
     // it. probe: ~/ptmp/cr29/scratch/r26/26a/efo/probes.txt (escaped-fn-runtime-bind-view-01)
+    // 2026-11-15 claude: A call site holds what the view it was checked in names of the kept
+    // impls (CallSite::kept, Env::kept_view, KeptView), and BindMode::Dynamic carries it to
+    // make_init, which names it in the instance's view as a static call does. Pin
+    // lib_tests::leaks::a_run_time_bind_beside_a_dropped_impl_of_a_standing_trait_dispatches_to_it
+    // fails in all four modes without it ('did not type ... unbound within Sh').
     /// The instance of `f` a run-time bind dispatches, and the outer
     /// variables the defaults it compiled read.
     fn setup_dynamic_bind(
@@ -3345,8 +3361,8 @@ impl<R: Rt> CallSite<R> {
             }
             None => f.typ.instantiate(&ctx.rec_defs),
         };
-        let mut apply = self
-            .init_prepared_bind(ctx, scope, f, BindMode::Dynamic(&view))
+        let mode = BindMode::Dynamic(&view, self.kept.as_deref());
+        let mut apply = (f.init)(scope, ctx, &mut self.arg_refs, mode, self.top_id)
             .with_context(|| context(&self.spec))?;
         let params = self.register_fn_params(ctx, &*apply, &apply.typ(), f.id);
         if let Err(e) = apply.typecheck0(ctx, &mut self.arg_refs) {
@@ -4925,6 +4941,7 @@ impl<R: Rt> CallSite<R> {
     }
 
     pub(crate) fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
+        self.note_kept_view(ctx);
         wrap!(self.fnode, self.fnode.typecheck0(ctx))?;
         let mut fresh = false;
         let mut self_call = false;
@@ -5122,6 +5139,7 @@ impl<R: Rt> CallSite<R> {
         ctx: &mut CompileCtx<R>,
         types: &mut InstanceTypes,
     ) -> Result<()> {
+        self.note_kept_view(ctx);
         let ftype = match self.ftype.is_none() {
             true => types.ftype(self.spec.id),
             false => None,

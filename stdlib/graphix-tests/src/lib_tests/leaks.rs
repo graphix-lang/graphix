@@ -1760,6 +1760,24 @@ async fn a_function_reaching_the_trait_only_through_a_captured_function_dispatch
     .await
 }
 
+/// A run-time bind in a function made beside the dropped impl of a standing
+/// trait (the callee is chosen by a select, so it binds when the call runs)
+/// builds its instance under the view of the code the call is in: the impl
+/// is reached through the generic function of an earlier input and by name.
+async fn a_run_time_bind_beside_a_dropped_impl_of_a_standing_trait_dispatches_to_it(
+    mode: Mode,
+) -> Result<()> {
+    escaped_and_called_over(
+        mode,
+        [],
+        "trait Sh { val sh: fn(self) -> i64 }; let app = |v: Sh| Sh::sh(v)",
+        "{ type C = Abstract<i64>; impl Sh for C { let sh = |c: C| c.0 * 10 }; \
+         saved <- |x: i64| { let f = select x { 3 => app, _ => |c: C| 0 }; \
+                             f(C(x)) + Sh::sh(C(x)) - 30 }; 1 }",
+    )
+    .await
+}
+
 /// A method of a dropped impl of a standing trait, instantiated for a call
 /// beside it, names a later method of its trait for another type: the
 /// name is the trait's, as it was where the method was defined, not the
@@ -1947,6 +1965,7 @@ modes!(
     a_function_passed_to_another_beside_a_dropped_impl_dispatches_to_it,
     a_function_reaching_a_dropped_impl_through_an_earlier_definition_dispatches_to_it,
     a_function_reaching_the_trait_only_through_a_captured_function_dispatches_to_its_dropped_impl,
+    a_run_time_bind_beside_a_dropped_impl_of_a_standing_trait_dispatches_to_it,
     a_method_of_a_dropped_impl_naming_a_later_method_dispatches_by_the_trait,
     a_function_outliving_its_impl_of_a_plain_head_past_a_redeclaration_beside_a_standing_trait,
     a_function_over_an_interfaces_impl_of_a_dropped_outside_trait_dispatches,

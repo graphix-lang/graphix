@@ -548,11 +548,12 @@ scope its own view holds nothing at and its definition is not inside
 a function of an earlier input dispatch to the entry their caller was
 made beside, and a method's names still mean what they meant where it was
 defined: a later method of its impl does not shadow the trait's
-dispatcher. Not kept: an entry that writes no method, one a function
+dispatcher. A run-time bind's instance names the same, read from the
+view its call site was checked in (`CallSite::kept`, `KeptView`, held
+only where the view names a kept entry), since the bind itself runs under
+the run-time env. Not kept: an entry that writes no method, one a function
 reaches only through a captured function whose type names no trait
-bound, one a run-time bind's instance would reach:
-the bind checks under the run-time env, which names no caller's entries,
-and one an impl's first method reaches through a later method of the
+bound, and one an impl's first method reaches through a later method of the
 same impl, since its view names none of the entry's methods. Pins:
 `lib_tests::leaks::
 a_function_escaping_a_dropped_block_dispatches_to_its_impl`,
@@ -568,6 +569,7 @@ a_function_escaping_a_dropped_block_dispatches_to_its_impl`,
 `.._of_a_plain_head`,
 `a_function_outliving_its_impl_beside_a_standing_trait_dispatches_to_it`,
 `a_function_reaching_a_dropped_impl_through_an_earlier_definition_dispatches_to_it`,
+`a_run_time_bind_beside_a_dropped_impl_of_a_standing_trait_dispatches_to_it`,
 `a_method_of_a_dropped_impl_naming_a_later_method_dispatches_by_the_trait`,
 `a_function_outliving_another_inputs_trait_dispatches_to_its_impl`,
 `a_function_made_before_an_impl_dispatches_to_it_once_both_are_dropped`,
