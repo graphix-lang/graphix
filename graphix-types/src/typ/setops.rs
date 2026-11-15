@@ -2475,9 +2475,7 @@ impl Type {
         let Some(whole) = union_parts(p0[i]) else { return Ok(None) };
         let d = p0[i].diff_int(env, hist, p1[i])?;
         let Some((flags, rest)) = parts_of(&d) else { return Ok(None) };
-        if !whole.0.contains(flags)
-            || !rest.iter().all(|m| whole.1.iter().any(|n| union_identical(m, n)))
-        {
+        if !whole.0.contains(flags) || !each_member_of(&rest, &whole.1) {
             return Ok(None);
         }
         if is_empty_ty(&d) {
@@ -2536,6 +2534,27 @@ fn same_type(t0: &Type, t1: &Type) -> bool {
 /// variables may differ in every instance.
 fn identical_normal(t0: &Type, t1: &Type) -> bool {
     union_identical(&t0.resolve_tvars().normalize(), &t1.resolve_tvars().normalize())
+}
+
+/// Whether each of `ms` is identical ([`union_identical`]) to one of `of`;
+/// an open cell is identical only to its own cell, so those are found by
+/// address.
+fn each_member_of(ms: &[Type], of: &[Type]) -> bool {
+    let mut cells: LPooled<Vec<usize>> = LPooled::take();
+    let mut others: LPooled<Vec<&Type>> = LPooled::take();
+    for n in of {
+        match n {
+            Type::TVar(tv) if let Some(c) = tv.open_cell() => cells.push(c.cell_addr()),
+            n => others.push(n),
+        }
+    }
+    cells.sort_unstable();
+    ms.iter().all(|m| match m {
+        Type::TVar(tv) if let Some(c) = tv.open_cell() => {
+            cells.binary_search(&c.cell_addr()).is_ok()
+        }
+        m => others.iter().any(|n| union_identical(m, n)),
+    })
 }
 
 /// The primitive flags and the other members of `t`.

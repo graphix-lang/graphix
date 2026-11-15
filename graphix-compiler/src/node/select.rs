@@ -740,6 +740,35 @@ impl Reach {
             // fix needs the N members to be one without losing the literal's type at the
             // bind (payload-bind-beside-literal-01's rule). probes:
             // ~/ptmp/cr29/scratch/r25/25c/tuple-arms/
+            // 2026-11-15 claude: Lane 26d (partial). base-r26 (user instructions of
+            // --no-cache --check, debug, empty program 0.78 G): t200 1.92 G, s8_200 (200
+            // pairs of `A(k, null)/`A(k, x)) 9.54 G, t8_200 (the tuple twin) 14.53 G, b200s
+            // 2.42 G. Done: the cubic part in the pair forms, from two walks. (1)
+            // Kept::merge_with tried each incoming open cell against every kept member (an
+            // open cell sat in no bucket) and each incoming product against every kept
+            // product: open cells are now keyed by cell (MergeKey::Cell, not in a
+            // source-written union, where one name is one cell) and a product is tried only
+            // against kept products that hold no different open cell at a position among the
+            // first four (CellSig), since two distinct open cells never merge. (2)
+            // Type::diff_one_part checked each member of the difference against every member
+            // of the whole with union_identical (each pair an Identity walk reading two
+            // cells); each_member_of finds open cells by address. Now s8_200 3.79 G, t8_200
+            // 8.73 G, t200 1.83 G, b200s 2.32 G; no verdict changes (census 2972 files
+            // identical); checkcost +0.02..0.23 pct (noise), guicheck 41.938 -> 42.0 G
+            // (+0.15 pct, the Cell key's hash entry per cell member), deep_nesting ok. Pins:
+            // typ::normalize::tests::products_of_distinct_cells_are_not_walked_pairwise
+            // (1488 identity steps for 32 members without the CellSig test, 0 with),
+            // deep_nesting
+            // select_over_{variant,tuple}_arms_pairing_null_and_a_name_checks_in_time (9.5 G
+            // and 14.5 G on base). What remains is the quadratic itself (callgrind, t8_100
+            // 2.38 G: narrow_per_member_in 34 pct, of it walks_as_one_of's walks_alike of
+            // every member against every member walked before it 20 pct, contains/seed_walk
+            // 14 pct; t200: contains, seed_walk, close_over_any/open_over_any, could_match,
+            // each 7-14 pct): one narrowing per arm over a union of N members that differ
+            // only in an open cell. A fix needs the N members to be one without losing the
+            // literal's type at the bind (payload-bind-beside-literal-01's rule), or a
+            // narrowing that is incremental in the arms. probes:
+            // ~/ptmp/cr29/scratch/r26/26d/tuple-arms/
             match matches!(scrut, Type::TVar(tv) if tv.open_cell().is_some()) {
                 true => {
                     let gates: SmallVec<[_; 2]> =

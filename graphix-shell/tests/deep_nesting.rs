@@ -2425,3 +2425,36 @@ fn select_over_tuple_arms_binding_a_name_checks_in_time() {
     source.push_str("(_, _) => 0\n}");
     checks_within(&source, 2 * BILLION);
 }
+
+/// A select whose arms pair a null part with a bind part for each key
+/// (`` `A(k, null) => k, `A(k, x) => 0 ``): the bound cells are one cell
+/// each, so the union of them is walked once a pair of arms, not merged
+/// member against member (3.8 G at 200 pairs, 9.5 G before).
+#[test]
+#[cfg(target_os = "linux")]
+fn select_over_variant_arms_pairing_null_and_a_name_checks_in_time() {
+    let mut source: LPooled<String> = LPooled::take();
+    source.push_str("let g = |s| select s {\n");
+    for i in 0..200 {
+        writeln!(source, "`A({i}, null) => {i},").unwrap();
+        writeln!(source, "`A({i}, x) => 0,").unwrap();
+    }
+    source.push_str("_ => 0\n}");
+    checks_within(&source, 5 * BILLION);
+}
+
+/// [`select_over_variant_arms_pairing_null_and_a_name_checks_in_time`] over
+/// tuples, whose members the union holds apart (8.7 G at 200 pairs, 14.5 G
+/// before).
+#[test]
+#[cfg(target_os = "linux")]
+fn select_over_tuple_arms_pairing_null_and_a_name_checks_in_time() {
+    let mut source: LPooled<String> = LPooled::take();
+    source.push_str("let g = |s| select s {\n");
+    for i in 0..200 {
+        writeln!(source, "({i}, null) => {i},").unwrap();
+        writeln!(source, "({i}, x) => 0,").unwrap();
+    }
+    source.push_str("_ => 0\n}");
+    checks_within(&source, 10 * BILLION);
+}

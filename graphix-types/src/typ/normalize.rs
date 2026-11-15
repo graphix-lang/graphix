@@ -221,18 +221,58 @@ pub fn norm_key(t: &Type) -> Option<NormKey> {
 /// only with one of its tag and arity, a struct only with one of its
 /// field names, a reference only with one to its definition (by its
 /// written name while its cell is open) and an abstract type only with
-/// itself, each of its arity.
+/// itself, each of its arity, and an open cell only with itself, where the
+/// source does not name its variables (two of one name are one cell then).
 #[derive(PartialEq, Eq, Hash)]
 enum MergeKey {
+    Cell(usize),
     Variant(ArcStr, usize),
     Struct(u64, usize),
     Ref(u64, usize),
     Abstract(AbstractId, usize),
 }
 
-impl MergeKey {
-    fn of(t: &Type) -> Option<Self> {
+/// The open cells a product's first parts are, by address (0 where a part
+/// is no open cell): two products with different cells at one position never
+/// merge, since two distinct open cells are two members, so a merge is
+/// tried only past this test.
+#[derive(Default, Clone, Copy)]
+struct CellSig([usize; 4]);
+
+impl CellSig {
+    fn of(t: &Type, members: &Members) -> Self {
+        let mut sig = Self::default();
+        if matches!(members, Members::Written) {
+            return sig;
+        }
+        let mut set = |parts: &mut dyn Iterator<Item = &Type>| {
+            for (slot, p) in sig.0.iter_mut().zip(parts) {
+                if let Type::TVar(tv) = p
+                    && let Some(c) = tv.open_cell()
+                {
+                    *slot = c.cell_addr()
+                }
+            }
+        };
         match t {
+            Type::Tuple(ts) | Type::Variant(_, ts, _) => set(&mut ts.iter()),
+            Type::Struct(fs) => set(&mut fs.iter().map(|(_, t, _)| t)),
+            _ => (),
+        }
+        sig
+    }
+
+    fn clashes(&self, other: &Self) -> bool {
+        self.0.iter().zip(other.0).any(|(a, b)| *a != 0 && b != 0 && *a != b)
+    }
+}
+
+impl MergeKey {
+    fn of(t: &Type, members: &Members) -> Option<Self> {
+        match t {
+            Type::TVar(tv) if !matches!(members, Members::Written) => {
+                tv.open_cell().map(|c| Self::Cell(c.cell_addr()))
+            }
             Type::Variant(tag, args, _) => Some(Self::Variant(tag.clone(), args.len())),
             Type::Struct(fields) => {
                 let mut h = DefaultHasher::new();
@@ -261,6 +301,7 @@ struct Kept {
     members: LPooled<Vec<Option<Type>>>,
     keyed: LPooled<AHashMap<MergeKey, SmallVec<[usize; 2]>>>,
     unkeyed: LPooled<Vec<usize>>,
+    cells: LPooled<Vec<CellSig>>,
 }
 
 impl Kept {
@@ -286,7 +327,7 @@ impl Kept {
         cx: &mut FlatCx,
         welds: &mut Welds,
     ) -> Option<Type> {
-        let key = MergeKey::of(t);
+        let key = MergeKey::of(t, &cx.members);
         let keyed: &[usize] = match &key {
             Some(k) => self.keyed.get(k).map(|v| &v[..]).unwrap_or(&[]),
             None => &[],
@@ -306,26 +347,31 @@ impl Kept {
                     .map(|(i, _)| i),
             ),
         }
+        let sig = CellSig::of(t, &cx.members);
         let (j, m, mut met) = candidates.iter().find_map(|&j| {
+            if sig.clashes(&self.cells[j]) {
+                return None;
+            }
             let mut met = Welds::new();
             let kept = self.members[j].as_ref()?;
             t.merge(kept, cx, &mut met).map(|m| (j, m, met))
         })?;
         welds.extend(met.drain(..));
         let kept = self.members[j].take().expect("live");
-        match MergeKey::of(&kept) {
+        match MergeKey::of(&kept, &cx.members) {
             Some(k) => self.keyed.get_mut(&k).expect("indexed").retain(|i| *i != j),
             None => self.unkeyed.retain(|i| *i != j),
         }
         Some(m)
     }
 
-    fn push(&mut self, t: Type) {
+    fn push(&mut self, t: Type, members: &Members) {
         let j = self.members.len();
-        match MergeKey::of(&t) {
+        match MergeKey::of(&t, members) {
             Some(k) => self.keyed.entry(k).or_default().push(j),
             None => self.unkeyed.push(j),
         }
+        self.cells.push(CellSig::of(&t, members));
         self.members.push(Some(t));
     }
 
@@ -416,7 +462,7 @@ impl Type {
                 changed = true;
                 incoming = m;
             }
-            acc.push(incoming);
+            acc.push(incoming, &cx.members);
         }
         let mut acc = acc.into_members();
         if !acc.is_sorted() {
@@ -1275,11 +1321,54 @@ pub(super) mod tests {
                 Arc::from_iter([]),
             )))
         };
-        let key = |t: &Type| MergeKey::of(t).expect("keyed");
+        let key = |t: &Type| MergeKey::of(t, &Members::AsTheyStand).expect("keyed");
         assert!(key(&abs("A")) == key(&abs("A")));
         assert!(key(&abs("A")) != key(&abs("B")));
         assert!(key(&named("A")) == key(&named("A")));
         assert!(key(&named("A")) != key(&named("B")));
+    }
+
+    fn open_cell() -> Type {
+        Type::TVar(TVar::empty_named(arcstr::literal!("c")))
+    }
+
+    /// A union of products holding distinct open cells at one position
+    /// keeps every member without one identity walk of a pair.
+    #[test]
+    fn products_of_distinct_cells_are_not_walked_pairwise() {
+        use crate::typ::setops::IDENTITY_STEPS;
+        let i64t = Type::Primitive(Typ::I64.into());
+        let tuple = |a, b| Type::Tuple(Arc::from_iter([a, b]));
+        let variant = |a, b| {
+            Type::Variant(
+                arcstr::literal!("A"),
+                Arc::from_iter([a, b]),
+                WrittenAt::default(),
+            )
+        };
+        for product in [&tuple as &dyn Fn(Type, Type) -> Type, &variant] {
+            let members: Vec<Type> =
+                (0..32).map(|_| product(i64t.clone(), open_cell())).collect();
+            IDENTITY_STEPS.with(|s| s.set(0));
+            let kept = Type::flatten_set(members);
+            assert!(matches!(&kept, Type::Set(ms) if ms.len() == 32), "{kept:?}");
+            assert_eq!(IDENTITY_STEPS.with(|s| s.get()), 0);
+        }
+    }
+
+    /// Two products of one shape that hold different open cells at a
+    /// position are two members; the same cell there lets them merge.
+    #[test]
+    fn products_merge_only_through_one_cell() {
+        let (c0, c1) = (open_cell(), open_cell());
+        let (i, s) =
+            (Type::Primitive(Typ::I64.into()), Type::Primitive(Typ::String.into()));
+        let pair =
+            |a: &Type, b: &Type| Type::Tuple(Arc::from_iter([a.clone(), b.clone()]));
+        let apart = Type::flatten_set([pair(&i, &c0), pair(&i, &c1)]);
+        assert!(matches!(&apart, Type::Set(ms) if ms.len() == 2), "{apart:?}");
+        let joined = Type::flatten_set([pair(&i, &c0), pair(&s, &c0)]);
+        assert!(matches!(&joined, Type::Tuple(_)), "{joined:?}");
     }
 
     /// Cells `c_0 = i64`, `c_k = (c_k-1, c_k-1)`, proved ground: what

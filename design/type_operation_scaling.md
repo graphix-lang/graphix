@@ -371,6 +371,14 @@ new merge — no restart. `merge` compares nested positions via
 `flat_eq`, which flattens only when a side actually IS a Set.
 `flatten_set_tracked` reports whether anything changed so `normalize`
 can keep the original member slice.
+A member is tried only against the kept members its `MergeKey` allows
+(a variant's tag, a struct's field names, a name's definition, an open cell
+only itself outside the source's own written unions), and a product only
+against the kept products whose first four parts hold no different open
+cell at one position (`CellSig`): two distinct open cells are two members, so
+no merge passes one. Pins: `typ::normalize::tests::
+products_of_distinct_cells_are_not_walked_pairwise`,
+`deep_nesting::select_over_{variant,tuple}_arms_pairing_null_and_a_name_checks_in_time`.
 
 **`expand_ref_d` is memoized** (`fusion/lowering.rs`):
 - Expansion memo (`MemoEntry`) keyed by the expanded `TypeRef` (by its
