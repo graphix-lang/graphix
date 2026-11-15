@@ -1724,6 +1724,32 @@ fn head_of(sp: &StructPatternNode) -> Option<Head> {
 // for an undecided `x`.
 // probes: ~/ptmp/cr29/scratch/r25/25c/rpe/t5.txt (run with rb.sh)
 // (pool-covered-member-cell-typed-01)
+// 2026-11-15 claude: Lane 26c fixer (BLOCKED, no code change). Reproduced on base-r26 (probe
+// ~/ptmp/cr29/scratch/r26/26c/pc/a.gx; twin b.gx runs). The diagnosis is not a leak past the
+// pool: the scrutinee '*r' is an open cell (a '&mut' referent) with the built type as its lower
+// bounds, so Reach::new settles it (itype.contains_ordered(env, scrut), the cell branch) and
+// DECIDES the referent as the union of the arms' own predicates, [(Any, i64), (bool, 'n), (bool,
+// 'm)] (printed at the settle: the cell becomes that union, the arms' bind cells 'n/'m take
+// (bool, 'x)). In that decided referent the first arm (true, n) legitimately reaches the (Any,
+// i64) member that the arm (_, 0) put there, and Select narrowing makes a bind that is itself a
+// member's part hold the union of the other members' parts (TVar::narrow_per_member, 'it takes
+// the union of the rest'), so n = [x, i64] with n the member's own cell, which is x: x := i64.
+// Pooling and covering run after the settle and cannot undo it; the plain twin has no settle (a
+// union scrutinee with a catch-all is skipped, 'settles = informative && !(wildcard &&
+// union_scrut)'), so no referent is decided there. Evidence: with x annotated string the same
+// select checks (a decided part is not rewritten); GRAPHIX_DBG_BIND shows the BIND of x to i64
+// in arm 0's narrowing right after the settle. Tried: (1) the as-it-stands first pass of
+// contains::take for an ordered walk (no effect: an arm's bind cell holds a decided cell only by
+// deciding it); (2) settling against the arms' predicates in arm order instead of union order
+// (a:=x, no direct x:=i64 in the settle, but arm 0's narrowing then makes n = [x, i64] one cell
+// with x, so x := i64 all the same). What a fix needs is a model change: the arms' bind cells
+// must not be the lower bounds' own cells when they decide a referent (n a fresh cell above x
+// and i64), which touches the decided-referent rule of decided-any-tag-cover-01 and the
+// narrowing of every bind over a decided cell. The verdict is sound as it stands (x is i64,
+// f('s', ..) is refused at the call, nothing runs wrong); only its wording at the call is poor
+// (it names no select). Recommendation: keep, and either rm this CR as by design or open a
+// message CR ('the arms decide this referent, which holds a test of x'); not decided here.
+// Probes: ~/ptmp/cr29/scratch/r26/26c/pc/.
 /// The lengths slice pattern `sp` claims of `t`, when `t` is one array or
 /// list type its kind fits and its elements take every element of it.
 fn slice_head(env: &Env, sp: &StructPatternNode, t: &Type) -> Result<Option<Head>> {
