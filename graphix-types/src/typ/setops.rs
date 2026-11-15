@@ -345,6 +345,33 @@ impl Type {
         }
     }
 
+    /// Whether `self` and `other` are one constraint: they differ by a
+    /// renaming of their open cells alone ([`renames`]), and each cell
+    /// stands at its image's level, rigidity and lower bounds. A walk
+    /// over either reads the same.
+    pub fn one_constraint(&self, env: &Env, other: &Type) -> bool {
+        if !renames(env, self, other) {
+            return false;
+        }
+        let cells = |t: &Type| {
+            let cells = std::cell::RefCell::new(SmallVec::<[TVar; 4]>::new());
+            t.first_open(&|tv| {
+                cells.borrow_mut().push(tv.clone());
+                false
+            });
+            cells.into_inner()
+        };
+        let (a, b) = (cells(self), cells(other));
+        a.len() == b.len()
+            && a.iter().zip(b.iter()).all(|(x, y)| {
+                let (lx, ly) = (x.cell_lower(), y.cell_lower());
+                x.is_rigid() == y.is_rigid()
+                    && x.level().is_generic() == y.level().is_generic()
+                    && lx.len() == ly.len()
+                    && lx.iter().zip(ly.iter()).all(|(p, q)| strictly_identical(p, q))
+            })
+    }
+
     /// Whether a walk of `self` is one of `members`' ([`walks_alike`]).
     pub fn walks_as_one_of(&self, members: &[Type]) -> bool {
         members.iter().any(|m| walks_alike(m, self))

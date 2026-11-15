@@ -360,10 +360,11 @@ fn checked_default<R: Rt>(
                 None => Ok(()),
                 Some(t) => {
                     t.check_contains(&ctx.env, typ)?;
-                    // a label with no open cell is one type in both
-                    // signatures, which the walk above judged
+                    // a label that is one constraint in both signatures
+                    // reads the same to the walk above, which judged it
                     match &own {
                         Some(own) if !own.has_unbound() && own == t => Ok(()),
+                        Some(own) if own.one_constraint(&ctx.env, t) => Ok(()),
                         Some(_) | None => hidden(ctx, t),
                     }
                 }
@@ -466,7 +467,7 @@ fn judge_hidden_defaults<R: Rt>(
     Ok(())
 }
 
-// CR claude for claude: [perf/low] The judgment of the defaults a default's functions hold
+// XCR claude for claude: [perf/low] The judgment of the defaults a default's functions hold
 // (checked_default's check_hidden_defaults) still costs more than the program's size in
 // two shapes, both a default that holds a defaulted function behind a label whose type
 // hides that function's label. (1) Call sites: every compile of a default links its lambda
@@ -486,6 +487,23 @@ fn judge_hidden_defaults<R: Rt>(
 // are shown to be the same constraint. probes:
 // ~/ptmp/cr29/scratch/r24/24c/dhdf-rev/perf/{chain2.py, chain4.py, meas3.sh}
 // (hidden-default-walk-growth-01)
+// 2026-11-14 claude: Part (1) (call sites) was already made linear by 1bc0160c3 (each
+// scoping of a written fn type gets its own LambdaIds node): the CR's two-level shape at
+// 400/800/1600 sites is 1.89G/3.66G/9.84G on base-r25 and 1.62G/2.47G/4.17G here, a steady
+// 2.1M instructions a site (a plain call 0.6M); the per-site judgment of the default stays.
+// Part (2) (depth): a hidden label's own-signature and held walks each judged the whole
+// nested default, so checked_default ran 2^n-1 times for n nested open-variable labels
+// (n=8: 255, 10: 1023, 12: 4095). Now the held walk is skipped where the two labels are one
+// constraint (Type::one_constraint: a renaming of open cells with equal levels, rigidity
+// and lower bounds; a walk over either reads the same), so the count is linear: chain4.py
+// n=12 2.25G -> 0.79G, n=14 6.75G -> 0.80G, n=30 0.92G (--no-cache --check, perf stat
+// instructions:u). Pin
+// lang::functions::defaults_holding_defaulted_fns_twenty_deep_behind_labels_that_hide_them_and_keep_a_variable
+// (20 deep: hangs without the skip, 0.09s with). An instrumented run of all graphix-tests
+// lib (a diff of the held label's cells before/after its walk wherever the skip applies)
+// found no walk that changed a cell. Census 2967 files 0/0, deep_nesting 50 ok, guicheck
+// 39.59G base-r25 / 39.89G lane (earlier lane commits included). Probes
+// ~/ptmp/cr29/scratch/r25/25d/hdwg.
 /// [`written_defs`] with the compiles of one lambda over one environment
 /// as the first of them: every compile of a default links its lambda onto
 /// the label that holds it, each judgment of the default compiles it

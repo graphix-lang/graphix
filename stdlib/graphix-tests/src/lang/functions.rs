@@ -4650,6 +4650,26 @@ run!(
     FuseExpect::Jit
 );
 
+/// [`hidden_default_chain`] whose labels keep an open variable for what
+/// the function they hide returns.
+fn hidden_default_open_chain(depth: usize) -> CompactString {
+    let mut f = CompactString::from("|#d = 1, x: i64| cast<string>(d)$");
+    for i in 1..=depth {
+        f = format_compact!("|#d: fn(x: i64) -> [string, 'r{i}] = {f}, x: i64| \"h\"");
+    }
+    format_compact!("{{ let f = {f}; f(7) }}")
+}
+
+// A label that is one constraint in the callee's own signature and in the
+// function as the site holds it is judged once: the work grows with the
+// depth, not with its power of two.
+run!(
+    defaults_holding_defaulted_fns_twenty_deep_behind_labels_that_hide_them_and_keep_a_variable,
+    hidden_default_open_chain(20),
+    is(Value::from("h"));
+    FuseExpect::Jit
+);
+
 // A default that holds its own function reaches its own judgment, which
 // is the one it gets.
 run!(default_holding_its_own_fn, r#"
