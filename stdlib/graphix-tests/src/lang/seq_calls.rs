@@ -1,4 +1,4 @@
-use super::dense_deltas::run_delta;
+use super::dense_deltas::{run_delta, run_delta_serving};
 use anyhow::Result;
 use graphix_package_core::{
     run,
@@ -384,7 +384,7 @@ async fn steps_rpc_answer_their_own_runs(
         .replace("NAME", name)
         .replace("RET", ret)
         .replace("ANSWER", answer);
-        let (values, _) = run_delta(&code, mode).await?;
+        let (values, _) = run_delta_serving(&code, mode).await?;
         assert_eq!(as_i64s(&values), [1, 2, 3], "{name}: {call}");
     }
     Ok(())

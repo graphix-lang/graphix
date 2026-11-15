@@ -1,4 +1,4 @@
-use super::dense_deltas::{run_delta, run_delta_with};
+use super::dense_deltas::{run_delta, run_delta_serving, run_delta_with};
 use anyhow::Result;
 use graphix_package_core::testing::{Collect, Mode, as_i64s};
 use netidx_value::Value;
@@ -240,7 +240,7 @@ async fn seq_network(mode: Mode) -> Result<()> {
                 out
             }}"#
         );
-        let (values, _) = run_delta(&code, mode).await?;
+        let (values, _) = run_delta_serving(&code, mode).await?;
         assert_eq!(as_i64s(&values), [1, 2], "{expr}");
     }
     Ok(())

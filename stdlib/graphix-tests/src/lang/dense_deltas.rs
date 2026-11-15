@@ -11,6 +11,7 @@ use graphix_package_core::{
     },
 };
 use netidx::publisher::Value;
+use std::time::Duration;
 
 /// What a run made.
 pub(super) struct Delta {
@@ -37,6 +38,18 @@ pub(super) struct Delta {
 /// print output.
 pub(super) async fn run_delta(code: &str, mode: Mode) -> Result<(Vec<Value>, String)> {
     let d = run_delta_with(code, mode, |_| (), Collect::Settled).await?;
+    Ok((d.values, d.out))
+}
+
+/// [`run_delta`] for a program that publishes or serves on the network: its
+/// publisher stands for good, so the runtime never settles, and the run ends
+/// when the runtime is idle and no update arrives for the window.
+pub(super) async fn run_delta_serving(
+    code: &str,
+    mode: Mode,
+) -> Result<(Vec<Value>, String)> {
+    let window = Collect::Quiet(Duration::from_millis(700));
+    let d = run_delta_with(code, mode, |_| (), window).await?;
     Ok((d.values, d.out))
 }
 
