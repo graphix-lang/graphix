@@ -14991,7 +14991,7 @@ run!(
   let f = 'a: Number, 'b: {x: i64} |c: bool, a: 'a, b: 'b| (select c { true => a, false => b }).x;
   f(true, 1, {x: 2})
 }"#,
-    refused("reading a struct needs its type known here");
+    refused("reading a struct needs the type of `'a` known here: the definition declares `'a`, so declare a bound it reads as a struct");
     FuseExpect::None
 );
 
