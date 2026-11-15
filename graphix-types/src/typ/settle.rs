@@ -864,6 +864,24 @@ impl FnType {
                 && reaches(tv, kept, &mut memo)
             {
                 for l in tv.cell_lower().iter().filter(|l| !l.has_unbound()) {
+                    // CR claude for claude: [bug/medium] The verdict of this commit is
+                    // dropped: a lower bound that a cell the signature reaches cannot hold
+                    // (`Ok(false)`) leaves the definition accepted, so the check accepts and
+                    // the build refuses. `let f = 'a0: ['a1, bool], 'a1: ['a2, duration]
+                    // |x0: 'a0, x2: 'a2| x2; let w0: [null, string] = null; let g = |u: 'u|
+                    // f(w0, u); g("s")` passes --check (also under GRAPHIX_NO_SUBST=1) and the
+                    // run fails "an instance at fn(u: string) -> string of a definition typed
+                    // fn(u: 'u: unbound above [null, string]) -> ..."; `'u: Any |u: 'u|` alike.
+                    // `a1`'s commit of [null, string] returns Ok(false) here (the declared 'u is
+                    // rigid, and above [null, string] it is no longer the caller's to pick),
+                    // and the one-bound twin `'a1: ['a2, duration] |x0: 'a1, x2: 'a2|` is
+                    // refused at the definition, "'a2: unbound above [null, string] does not
+                    // contain 'u: unbound". A fix refuses the definition at DefGate::close with
+                    // the message of that twin (close has no error path today); the 28 pins of
+                    // `lang::types::lower_bound*` and the lang suite never reach Ok(false) or
+                    // Err (22 commits, all Ok(true)). Found reviewing def-site-settle-after-
+                    // calls-01. probes: ~/ptmp/cr29/scratch/r25/25d/dsac-rev/q{1,2}.gx
+                    // (lower-into-kept-rigid-dropped-01)
                     let _ = tv.commit_conjuncts(env, l);
                 }
             }
