@@ -970,45 +970,7 @@ fn reach_new(
     })
 }
 
-/// `Type::position_counts`: each cell's visits, a typedef's arguments
-/// counted twice (its body may repeat a parameter), a cell's binding walked
-/// at the first visit.
-fn count_positions(
-    t: &Type,
-    weight: u32,
-    out: &mut AHashMap<usize, (TVar, u32)>,
-    entered: &mut AHashSet<usize>,
-) {
-    crate::stack::ensure_sufficient(|| match t {
-        Type::TVar(tv) => {
-            out.entry(tv.cell_addr()).or_insert_with(|| (tv.clone(), 0)).1 += weight;
-            if entered.insert(tv.cell_addr())
-                && let Some(b) = tv.binding()
-            {
-                count_positions(&b, weight, out, entered)
-            }
-        }
-        Type::Ref(tr) => {
-            tr.params.iter().for_each(|p| count_positions(p, weight.max(2), out, entered))
-        }
-        Type::Fn(ft) => ft.for_each_part(&mut |t, constraint| {
-            if !constraint {
-                count_positions(t, weight, out, entered)
-            }
-        }),
-        t => t.for_each_child(&mut |c| count_positions(c, weight, out, entered)),
-    })
-}
-
 impl Type {
-    /// How many positions of this type each cell stands at, by address.
-    /// A shared composite counts at every meeting, and a cell a typedef's
-    /// argument holds counts at least twice.
-    #[doc(hidden)]
-    pub fn position_counts(&self, out: &mut AHashMap<usize, (TVar, u32)>) {
-        count_positions(self, 1, out, &mut LPooled::take())
-    }
-
     /// [`FnType::reached_cells`] for a type.
     #[doc(hidden)]
     pub fn reached_cells(&self, out: &mut AHashMap<usize, TVar>) {

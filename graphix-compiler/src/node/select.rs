@@ -772,7 +772,7 @@ impl Reach {
                     }
                 }
                 false => {
-                    // CR claude for claude: [bug/low] A written test's own variable
+                    // XCR claude for claude: [bug/low] A written test's own variable
                     // takes the first member's part wherever this settle runs (no
                     // catch-all arm, or a scrutinee that is no union) over a scrutinee
                     // holding an open cell, which a lambda's function type does: the
@@ -841,19 +841,29 @@ impl Reach {
                     // written_variable_twice_over_an_undecided_part_is_refused. A later fixer
                     // can try leaving a twice-written variable to its arm's narrowing at the
                     // settle now that its open-variable hole is refused where it stands.
+                    // 2026-11-15 claude: Round 26: the settle now copies every written variable
+                    // that is neither bound nor rigid as an inferred predicate's cell, once or
+                    // twice written (Type::position_counts and the count condition are gone),
+                    // now that the twice-open hole is refused where it stands
+                    // (written-variable-twice-open-01). wv10 ('q beside 'q over [(fa, fa), (fb,
+                    // fb)]) checks and runs with no catch-all, and
+                    // written_variable_binds_two_function_types drops its null member. x1 (a
+                    // variable the members hold at different types) is refused at the arm's bind
+                    // ('binds a0 at q', or the arm's own type mismatch) in place of 'will never
+                    // match'; pin written_variable_twice_over_an_undecided_part_is_refused
+                    // rewritten to that verdict. Pins failing without it:
+                    // written_variable_binds_two_function_types,
+                    // written_variable_twice_binds_every_member_part, with
+                    // written_variable_twice_over_every_member_leaves_a_catch_all_dead covering
+                    // the dead catch-all. Census 2972 files no change, graphix-tests lib 25901
+                    // pass, regress clean, deep_nesting ok, checkcost -0.36%, guicheck
+                    // 41,942,940,308 (base-r26) vs 41,911,720,117. Needs a soak.
                     let mut written: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-                    let mut counts: LPooled<AHashMap<usize, (TVar, u32)>> =
-                        LPooled::take();
                     for (_, p) in preds.iter().filter(|(_, p)| p.explicit_type_predicate)
                     {
-                        p.type_predicate.reached_cells(&mut written);
-                        p.type_predicate.position_counts(&mut counts)
+                        p.type_predicate.reached_cells(&mut written)
                     }
-                    written.retain(|addr, tv| {
-                        tv.is_bound()
-                            || tv.is_rigid()
-                            || counts.get(addr).is_none_or(|(_, n)| *n != 1)
-                    });
+                    written.retain(|_, tv| tv.is_bound() || tv.is_rigid());
                     let apart = itype.binds_apart(&written);
                     let itype = apart.as_ref().unwrap_or(&itype);
                     if !itype.contains_through_copy(env, &mut written, scrut)? {

@@ -4987,26 +4987,58 @@ run!(
         let k = |v: i64| {
             let fa = |x: i64| x;
             let fb = |y: string| y;
-            let u = select v { 0 => null, 1 => (fa, 1), _ => (fb, 2) };
-            let s = select v { 0 => null, 1 => {f: fa, n: 1}, _ => {f: fb, n: 2} };
+            let u = select v > 0 { true => (fa, 1), false => (fb, 2) };
+            let s = select v > 0 { true => {f: fa, n: 1}, false => {f: fb, n: 2} };
             let w = select v > 0 { true => `K(fa, 1), false => `K(fb, 2) };
-            let p = select v { 0 => null, 1 => (fa, fa), _ => (fb, fb) };
-            let tuple = select u { ('q, i64) as (r, n) => n, _ => 0 };
-            let literal = select u { ('q, i64) as (r, 1) => 5, ('q, i64) as (r, n) => n, _ => 0 };
-            let field = select s { {f: 'q, n: i64} as {f, n} => n, _ => 0 };
+            let p = select v > 0 { true => (fa, fa), false => (fb, fb) };
+            let tuple = select u { ('q, i64) as (r, n) => n };
+            let literal = select u { ('q, i64) as (r, 1) => 5, ('q, i64) as (r, n) => n };
+            let field = select s { {f: 'q, n: i64} as {f, n} => n };
             let payload = select w { `K('q, i64) as `K(r, n) => n };
-            let twice = select p { ('q, 'q) as (r, s) => 7, _ => 0 };
+            let twice = select p { ('q, 'q) as (r, s) => 7 };
             [tuple, literal, field, payload, twice]
         };
-        array::concat(k(1), k(-2), k(0))
+        array::concat(k(1), k(-2))
     }"#,
     |v: Result<&Value>| matches!(v, Ok(Value::Array(a))
-        if as_i64s(a) == [1, 5, 1, 1, 7, 2, 2, 2, 2, 7, 0, 0, 0, 2, 0]);
+        if as_i64s(a) == [1, 5, 1, 1, 7, 2, 2, 2, 2, 7]);
     FuseExpect::Jit
 );
 
-// A variable a test writes once binds the part of every member the test
-// admits, with no arm beside it to take a member.
+// A variable a test writes twice, once at each of two positions every
+// member holds one type at, binds that member's part with no arm beside it.
+run!(
+    written_variable_twice_binds_every_member_part,
+    r#"{
+        let k = |v: i64| {
+            let fa = |x: i64| x;
+            let fb = |y: string| y;
+            let p = select v > 0 { true => (fa, fa, 1), false => (fb, fb, 2) };
+            let s = select v > 0 { true => {f: fa, g: fa}, false => {f: fb, g: fb} };
+            let tuple = select p { ('q, 'q, i64) as (r, s, n) => n };
+            let field = select s { {f: 'q, g: 'q} as {f, g} => 3 };
+            [tuple, field]
+        };
+        array::concat(k(1), k(-2))
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a))
+        if as_i64s(a) == [1, 3, 2, 3]);
+    FuseExpect::Jit
+);
+
+run!(
+    written_variable_twice_over_every_member_leaves_a_catch_all_dead,
+    r#"{
+        let k = |v: i64| {
+            let p = select v > 0 { true => (|x: i64| x, |x: i64| x), false => (|y: string| y, |y: string| y) };
+            select p { ('q, 'q) as (r, s) => 7, _ => 0 }
+        };
+        k(1)
+    }"#,
+    refused("unreachable arm: the earlier arms already cover the whole scrutinee");
+    FuseExpect::None
+);
+
 run!(
     written_variable_once_binds_every_member_part,
     r#"{
@@ -5081,8 +5113,8 @@ run!(
     FuseExpect::None
 );
 
-// A variable a test writes twice stays one binding of the first member's
-// part: a member that holds another type there is told apart, not passed.
+// A variable a test writes twice that the members hold at different types
+// is left open at the select, and the arm's binds at it are refused.
 run!(
     written_variable_twice_over_an_undecided_part_is_refused,
     r#"{
@@ -5097,7 +5129,7 @@ run!(
         };
         k(0)
     }"#,
-    refused("will never match");
+    refused("type mismatch bool does not contain");
     FuseExpect::None
 );
 
