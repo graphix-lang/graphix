@@ -2975,27 +2975,6 @@ fn capture_id(
     }
 }
 
-// XCR claude for claude: [bug/low] A function that reaches a trait only through a function
-// it captures keeps no impl entry: `capture_impls` takes the traits whose dispatchers or
-// anchor the captures name, so `saved <- |x: i64| app(C(x))`, made beside `impl Sh for C`
-// with `let app = |v: Sh| Sh::sh(v)` of an earlier input, pins none of the impl's methods,
-// `Env::keep_impl` keeps nothing when the impl's input is dropped while the trait stands,
-// and the late call logs "an instance at fn(v: C) -> i64 of a definition typed fn(v: '#v:
-// unbound within Sh) -> i64" and is bottom (30 while the impl lives). Naming the trait
-// anywhere in the function keeps the entry, and the instance then finds it
-// (`Env::name_kept_impls`). To fix: capture what a captured function reaches, transitively
-// (e.g. the traits a definition reaches recorded beside its captures, imaged with the
-// definition and not with its lazily decoded table, or every impl the view names that the
-// definition is inside), measured with checkcost. Only an embedder reaches it. probe:
-// ~/ptmp/cr29/scratch/r26/26a/efo/probes.txt (escaped-fn-reach-capture-01)
-// 2026-11-15 claude: A captured binding's type that names a trait as a bound (a generic
-// function of an earlier input, called or passed on) now names the trait to capture_impls,
-// so the impl's methods are pinned and kept when its input drops while the trait stands.
-// Pin:
-// lib_tests::leaks::a_function_reaching_the_trait_only_through_a_captured_function_dispatches_to_its_dropped_impl
-// (fails in all four modes without the change: 'an instance at fn(v: C) -> i64 of a
-// definition typed fn(v: #v: unbound within Sh) -> i64'). A captured function whose type
-// names no bound is still not followed (design/module_system.md).
 /// The methods of the impls of every trait `captures` names a dispatcher
 /// or the anchor of, or names as a bound in a type, which a call through
 /// it may reach once the impl is given back.
