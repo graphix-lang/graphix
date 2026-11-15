@@ -692,86 +692,6 @@ impl Reach {
                     built = Some(Built { typ, cells });
                 }
             }
-            // CR claude for eric: [perf/low] The check of a select over an unannotated
-            // parameter whose arms hold a literal at one part and a name at another grows
-            // with the square of the arms: `|s| select s { (1, a) => 1, .., (N, a) => N, (_,
-            // _) => 0 }` takes 3.73 G user instructions of `--no-cache --check` in a debug
-            // build at 200 arms, beside the 0.74 G of an empty program and the 0.80 G of
-            // the same arms with `_` for the name; a struct of three fields takes 4.65 G
-            // at 200. The variant form (`` `A(k, a) ``) takes 1.11 G: its arms' cells are
-            // one before the settle (Type::binds_beside), where each tuple or struct arm
-            // is a member of its own that every arm narrows against. What would likely fix
-            // it: the same for the members of one tuple or struct shape whose other parts
-            // are equal. The fixer of wildcard-slot-any-part-01 measured 0.94 G at 50 arms
-            // and 1.50 G at 100. base-r24. probes:
-            // ~/ptmp/cr29/scratch/r24/24b/wsa/{w200,b200w,b200s,b200v}.gx, m.sh
-            // (tuple-arms-settle-cost-01)
-            // 2026-11-14 claude: Lane 25b (payload-bind-beside-literal-01): the variant form
-            // now pays this too where a part holds a literal beside the binds: 200 pairs of
-            // `A(k, null) => k, `A(k, x) => 0 take 10.4 G instructions of --no-cache --check
-            // (2.1 G before the fix), against 14.9 G for the tuple twin (k, null) => k, (k,
-            // x) => 0 on base-r25 alike; 100 pairs 2.25 G (1.08 G before). The binds' cells
-            // each take the null, so they are no longer one cell, and each arm's Told diff
-            // normalizes a union of the bound cells (Kept::merge_with, Identity::same),
-            // quadratic per arm. probes:
-            // ~/ptmp/cr29/scratch/r25/25b/pbl/bench/{s8_100,s8_200,t8_100,t8_200}.gx, m.sh
-            // 2026-11-14 claude: Fixer (partial). base-r25 probes still quadratic in the
-            // arms (user instructions of --no-cache --check, debug; empty program 0.74 G):
-            // t200 (the CR's tuple form, (k, a) arms then (_, _)) 2.2-2.3 G, t400 6.3 G; the
-            // scrutinee is a union of N tuples (i64, 'ak), one per arm, because merge of two
-            // tuples with two distinct open cells is refused (strict tvar identity,
-            // normalize.rs merge_inner), where the variant form's payload cells are one
-            // cell, so each of the N arms walks all N members (narrow_pattern,
-            // close_over_any via open_over_any_inner, meets_undecided via may_hold_met,
-            // Reach::new, element_tests). Not changed: merging those members would give the
-            // tuple the variant form's behaviour, which payload-bind-beside-literal-01 shows
-            // unsound for a bind beside a literal, so the member count stays. Done: the walk
-            // of one pair is cheaper. could_match built a MatchHist per call whose RefHist
-            // took two pooled maps and Unfoldings a third, now taken at the first write
-            // (RefHist::inner, Unfoldings), and a Primitive against a Primitive is an
-            // intersection test, not a contains_int per bit (matches.rs). Measured: t200
-            // 2.31 -> 1.75 G (excess over empty 1.54 -> 1.0 G), t400 6.32 -> 4.70 G, b200s
-            // (struct) 2.51 -> 2.19 G, GUI examples (guicheck) 39.66 -> 39.29 G; no verdict
-            // changes (graphix-types 657, graphix-tests lib 24526 pass; the one failure,
-            // lang::select::test_beside_a_variable_bounded_by_any_written::jit, fails on the
-            // lane without this change too). Pin: deep_nesting
-            // select_over_tuple_arms_binding_a_name_checks_in_time (200 arms, 2 G budget;
-            // 2.2 G without the change, 1.8 G with). What remains is the quadratic itself; a
-            // fix needs the N members to be one without losing the literal's type at the
-            // bind (payload-bind-beside-literal-01's rule). probes:
-            // ~/ptmp/cr29/scratch/r25/25c/tuple-arms/
-            // 2026-11-15 claude: Lane 26d (partial). base-r26 (user instructions of
-            // --no-cache --check, debug, empty program 0.78 G): t200 1.92 G, s8_200 (200
-            // pairs of `A(k, null)/`A(k, x)) 9.54 G, t8_200 (the tuple twin) 14.53 G, b200s
-            // 2.42 G. Done: the cubic part in the pair forms, from two walks. (1)
-            // Kept::merge_with tried each incoming open cell against every kept member (an
-            // open cell sat in no bucket) and each incoming product against every kept
-            // product: open cells are now keyed by cell (MergeKey::Cell, not in a
-            // source-written union, where one name is one cell) and a product is tried only
-            // against kept products that hold no different open cell at a position among the
-            // first four (CellSig), since two distinct open cells never merge. (2)
-            // Type::diff_one_part checked each member of the difference against every member
-            // of the whole with union_identical (each pair an Identity walk reading two
-            // cells); each_member_of finds open cells by address. Now s8_200 3.79 G, t8_200
-            // 8.73 G, t200 1.83 G, b200s 2.32 G; no verdict changes (census 2972 files
-            // identical); checkcost +0.02..0.23 pct (noise), guicheck 41.938 -> 42.0 G
-            // (+0.15 pct, the Cell key's hash entry per cell member), deep_nesting ok. Pins:
-            // typ::normalize::tests::products_of_distinct_cells_are_not_walked_pairwise
-            // (1488 identity steps for 32 members without the CellSig test, 0 with),
-            // deep_nesting
-            // select_over_{variant,tuple}_arms_pairing_null_and_a_name_checks_in_time (9.5 G
-            // and 14.5 G on base). What remains is the quadratic itself (callgrind, t8_100
-            // 2.38 G: narrow_per_member_in 34 pct, of it walks_as_one_of's walks_alike of
-            // every member against every member walked before it 20 pct, contains/seed_walk
-            // 14 pct; t200: contains, seed_walk, close_over_any/open_over_any, could_match,
-            // each 7-14 pct): one narrowing per arm over a union of N members that differ
-            // only in an open cell. A fix needs the N members to be one without losing the
-            // literal's type at the bind (payload-bind-beside-literal-01's rule), or a
-            // narrowing that is incremental in the arms. probes:
-            // ~/ptmp/cr29/scratch/r26/26d/tuple-arms/
-            // 2026-11-15 claude: Round 26 coordinator: three rounds of partial fixes and
-            // this round's lane all end at a design change, so the question of accepting the
-            // cost or commissioning that change goes to Eric as D44 in ~/ptmp/cr-discuss.md.
             match matches!(scrut, Type::TVar(tv) if tv.open_cell().is_some()) {
                 true => {
                     let gates: SmallVec<[_; 2]> =
@@ -1633,45 +1553,6 @@ fn head_of(sp: &StructPatternNode) -> Option<Head> {
     }
 }
 
-// CR claude for eric: [bug/low] A test behind a pool that covers a referent's member still
-// decides that member's cell: `|x, b: bool, c: bool| { let r = &mut (select c { true => (b, x),
-// false => (`L, 0) }); select *r { (true, n) => 1, (false, m) => 2, (_, 0) => 3, _ => 4 } }`
-// checks, but with `x` the i64 that `(_, 0)` tests, so `f("s", true, true)` is refused "i64 does
-// not contain string" where the plain twin runs it (`(_, 0)` meets no value of `x`: the pool
-// takes the member whole first). Not traced: which walk binds the cell from that arm's
-// predicate where Reach has already covered the member. base-r25 refused the program,
-// for an undecided `x`.
-// probes: ~/ptmp/cr29/scratch/r25/25c/rpe/t5.txt (run with rb.sh)
-// (pool-covered-member-cell-typed-01)
-// 2026-11-15 claude: Lane 26c fixer (BLOCKED, no code change). Reproduced on base-r26 (probe
-// ~/ptmp/cr29/scratch/r26/26c/pc/a.gx; twin b.gx runs). The diagnosis is not a leak past the
-// pool: the scrutinee '*r' is an open cell (a '&mut' referent) with the built type as its lower
-// bounds, so Reach::new settles it (itype.contains_ordered(env, scrut), the cell branch) and
-// DECIDES the referent as the union of the arms' own predicates, [(Any, i64), (bool, 'n), (bool,
-// 'm)] (printed at the settle: the cell becomes that union, the arms' bind cells 'n/'m take
-// (bool, 'x)). In that decided referent the first arm (true, n) legitimately reaches the (Any,
-// i64) member that the arm (_, 0) put there, and Select narrowing makes a bind that is itself a
-// member's part hold the union of the other members' parts (TVar::narrow_per_member, 'it takes
-// the union of the rest'), so n = [x, i64] with n the member's own cell, which is x: x := i64.
-// Pooling and covering run after the settle and cannot undo it; the plain twin has no settle (a
-// union scrutinee with a catch-all is skipped, 'settles = informative && !(wildcard &&
-// union_scrut)'), so no referent is decided there. Evidence: with x annotated string the same
-// select checks (a decided part is not rewritten); GRAPHIX_DBG_BIND shows the BIND of x to i64
-// in arm 0's narrowing right after the settle. Tried: (1) the as-it-stands first pass of
-// contains::take for an ordered walk (no effect: an arm's bind cell holds a decided cell only by
-// deciding it); (2) settling against the arms' predicates in arm order instead of union order
-// (a:=x, no direct x:=i64 in the settle, but arm 0's narrowing then makes n = [x, i64] one cell
-// with x, so x := i64 all the same). What a fix needs is a model change: the arms' bind cells
-// must not be the lower bounds' own cells when they decide a referent (n a fresh cell above x
-// and i64), which touches the decided-referent rule of decided-any-tag-cover-01 and the
-// narrowing of every bind over a decided cell. The verdict is sound as it stands (x is i64,
-// f('s', ..) is refused at the call, nothing runs wrong); only its wording at the call is poor
-// (it names no select). Recommendation: keep, and either rm this CR as by design or open a
-// message CR ('the arms decide this referent, which holds a test of x'); not decided here.
-// Probes: ~/ptmp/cr29/scratch/r26/26c/pc/.
-// 2026-11-15 claude: Round 26 coordinator: the verdict is sound and the lane's two attempts show
-// a fix is a change to how an arm's binds meet a decided referent, so whether to accept this as
-// built or change the model goes to Eric as D45 in ~/ptmp/cr-discuss.md.
 /// The lengths slice pattern `sp` claims of `t`, when `t` is one array or
 /// list type its kind fits and its elements take every element of it.
 fn slice_head(env: &Env, sp: &StructPatternNode, t: &Type) -> Result<Option<Head>> {

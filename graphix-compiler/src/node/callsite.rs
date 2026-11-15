@@ -1704,7 +1704,7 @@ fn holds_a_variable(t: &Type) -> bool {
 /// a type turns on what the cells are, so the first argument that meets
 /// it decides it.
 fn widenable(env: &Env, def: &FnType, inst: &FnType) -> LPooled<AHashMap<ArcStr, TVar>> {
-    // CR claude for eric: [bug/low] A variable only bounds hold takes no argument wider
+    // CR claude for claude: [bug/low] A variable only bounds hold takes no argument wider
     // than the first that reached it through a bound. Over `let f = 'a1: Array<'a3>, 'a2:
     // Array<'a3> |x1: 'a1, x2: 'a2| 7; let v: Array<[i64, null]> = [1]; let u: Array<i64>
     // = [1]`, `f(u, v)` is refused, "'a2: unbound within Array<'a3: i64> does not contain
@@ -1763,6 +1763,11 @@ fn widenable(env: &Env, def: &FnType, inst: &FnType) -> LPooled<AHashMap<ArcStr,
     // tree.
     // 2026-11-14 claude: Coordinator, round 25: this is D40 in ~/ptmp/cr-discuss.md (Open), with
     // the lane's two measured options; rec (b), the refusal names the annotation.
+    // 2026-11-15 claude: Eric ruled (2026-11-15, D40): (b), "yes definitely refusal for both,
+    // your rec". Keep the refusal and make it name the annotation: the variable is held only by
+    // the bounds of the parameters, an argument before this one decided it narrower than this
+    // argument holds, annotate that argument with a type that holds both; the two-deep cases get
+    // the same note at the middle bound. No widening of a bound-held variable.
     let mut at_def: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
     def.collect_tvars(&mut at_def);
     let mut found: LPooled<AHashMap<ArcStr, (TVar, bool)>> = LPooled::take();
@@ -3475,7 +3480,7 @@ impl<R: Rt> CallSite<R> {
         // unified back into the site's live rtype cell, the cells both
         // leave open first, which no member of a union beside one takes.
         if let Some(site_ft) = self.ftype.as_ref() {
-            // CR claude for eric: [risk/low] Under GRAPHIX_NO_SUBST=1 the unify-back
+            // CR claude for claude: [risk/low] Under GRAPHIX_NO_SUBST=1 the unify-back
             // gives a site's return its own union again as a member, and the audit reports
             // it as a narrowing: `type B<'p> = Abstract<'p>; let go = |t| { let x =
             // never(); let b = B([x]); b <- B(x); let v = b.0; x <- t ~ 1;
@@ -3514,6 +3519,14 @@ impl<R: Rt> CallSite<R> {
             // 2026-11-14 claude: Coordinator, round 25: whether a refusal only
             // GRAPHIX_NO_SUBST=1 makes is a defect is D42 in ~/ptmp/cr-discuss.md (Open);
             // three rounds tried a fix and undid it. Readdressed to eric.
+            // 2026-11-15 claude: Eric ruled (2026-11-15, D42): delete the flag. "given
+            // that we made the subst change a long time ago now, we should probably delete
+            // that debug and remove any code that is dead because of its removal."
+            // GRAPHIX_NO_SUBST, the recheck path it selects (Typing::rechecks,
+            // InstanceTypes::of_default's early return),
+            // graphix-shell/tests/shell/no_subst.rs and the flag's leg of elab_audit.rs
+            // go, with whatever only a rechecking instance reached; this CR is deleted in
+            // that change.
             let before =
                 dbgenv::graphix_elab_audit().then(|| printed_deref(&site_ft.rtype));
             if !site_ft.rtype.prove_ground() {

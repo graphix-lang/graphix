@@ -1563,7 +1563,7 @@ impl<R: Rt> GXLambda<R> {
 }
 
 impl Typing {
-    // CR claude for eric: [risk/low] An instance checked again refuses a
+    // CR claude for claude: [risk/low] An instance checked again refuses a
     // body that reads a bounded parameter at its bound, where the instance's
     // type is narrower than the bound. `let g = 'b: Array<[i64, null]> |x:
     // 'b| -> Array<[i64, null]> array::push(x, null); let x: Array<i64> =
@@ -1610,6 +1610,14 @@ impl Typing {
     // 2026-11-14 claude: Coordinator, round 25: whether a refusal only
     // GRAPHIX_NO_SUBST=1 makes is a defect is D42 in ~/ptmp/cr-discuss.md (Open);
     // three rounds tried a fix and undid it. Readdressed to eric.
+    // 2026-11-15 claude: Eric ruled (2026-11-15, D42): delete the flag. "given that
+    // we made the subst change a long time ago now, we should probably delete that
+    // debug and remove any code that is dead because of its removal."
+    // GRAPHIX_NO_SUBST, the recheck path it selects (Typing::rechecks,
+    // InstanceTypes::of_default's early return),
+    // graphix-shell/tests/shell/no_subst.rs and the flag's leg of elab_audit.rs go,
+    // with whatever only a rechecking instance reached; this CR is deleted in that
+    // change.
 
     /// Whether the instance checks its body again (`GRAPHIX_NO_SUBST`),
     /// where its definition's types would do.

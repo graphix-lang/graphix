@@ -1630,7 +1630,7 @@ impl Env {
                 }
                 Ok(t)
             }
-            // CR claude for eric: [bug/low] What a whitelist leaves of a name a
+            // CR claude for claude: [bug/low] What a whitelist leaves of a name a
             // dynamic module's sig imports depends on where the type is declared,
             // and the check accepts each. Under `sandbox whitelist [core]` and `sig {
             // use super::Foo; val f: fn(x: Foo) -> i64 }` the body `let f = |x: Foo|
@@ -1678,6 +1678,14 @@ impl Env {
             // declares, now loads under a whitelist and without one (Env::import_target_exists counts a live block type; pin
             // lang::modules::a_sig_imports_a_type_the_functions_body_declares_below_under_a_whitelist). Parts (1) and (3) stand.
             // 2026-11-14 claude: Coordinator, round 25: this is D41 in ~/ptmp/cr-discuss.md (Open); rec (a), a sig's import grants the body the typedef.
+            // 2026-11-15 claude: Eric ruled (2026-11-15, D41): (a), "yes a". Under a whitelist, a dynamic module body is granted the typedefs its sig
+            // imports: the type only, no values and nothing else of the module, as a declared impl grants its trait (Env::grant_trait).
+            // 2026-11-15 claude: Eric ruled again (2026-11-15, D41, replacing the ruling above): the sandbox statement goes. A dynamic module body compiles
+            // in an empty environment plus what its sig imports with `use` and declares; "empty means empty, including core": with no import only operators
+            // and the built-in data structures work. `sandbox unrestricted` ("a little crazy anyway"), `whitelist` and `blacklist` are deleted with
+            // Env::apply_sandbox and the Sandbox type. The check refuses a sig import that does not resolve at the declaration, which closes this CR. Built
+            // as its own change, not in a CR round. Probes of what holds today: ~/ptmp/cr29/scratch/r26/coord/u{1,2,3,4}.gx (a sig import reaches a block
+            // value; it is not re-exported; whitelist [core] with `use array` fails every load; operators need no core).
             Sandbox::Whitelist(wl) => {
                 let mut modules: LPooled<AHashSet<ModPath>> = LPooled::take();
                 let mut names: LPooled<
@@ -2783,7 +2791,7 @@ impl Env {
         Some(Arc::new(list.iter().filter(|im| !self.impl_hidden(im)).cloned().collect()))
     }
 
-    // CR claude for eric: [bug/low] A retired load's own impls reach only the
+    // CR claude for claude: [bug/low] A retired load's own impls reach only the
     // calls its own text writes. A function outside the module that a retired
     // body's function calls is instantiated in its definition's view, which
     // carries no load, so its dispatch reads the registry. `Sh::e(C(x))` in the
@@ -2845,6 +2853,11 @@ impl Env {
     // orphan-fn-late-bind-defuse-01, reload-same-fn-impl-01, callable-scope-root-01. The core traits
     // half still waits for Eric.
     // 2026-11-14 claude: The core-traits half is item D38 in ~/ptmp/cr-discuss.md (Open).
+    // 2026-11-15 claude: Eric ruled (2026-11-15, D38): (b), "Yes, clearly b". An abstract type a
+    // dynamic module body declares and its interface does not is its load's own: the id takes the
+    // load, and its core impls (Eq, Ord, Display, Cast) stay registered while a function of that
+    // load lives. A type the interface declares stays one type across reloads, compared by the impl
+    // registered now.
     /// Every impl of `trait_id`, hidden ones included (see
     /// [`Self::impl_hidden`]). Inside a load of a dynamic module's
     /// source the impls it writes come first, in place of the registered

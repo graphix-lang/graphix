@@ -1448,7 +1448,7 @@ fn commit_conjuncts(
         if c.is_predicate() {
             continue;
         }
-        // CR claude for eric: [bug/low] An argument's undecided part that meets a union
+        // CR claude for claude: [bug/low] An argument's undecided part that meets a union
         // of a declared bound is bound to that union at the pre-unification, before the
         // argument's own expression is checked: `let f = 'x: (['a, null], i64) |y: 'x| y;
         // let g = |u| f((u, u + 1)); g(1)` is refused, "cannot compute [null, 'a: unbound] +
@@ -1574,6 +1574,9 @@ fn commit_conjuncts(
         // Array<string>]|'. Under 'impl<'t> T for Array<'t>' alike. base-r24 alike. probes:
         // ~/ptmp/cr29/scratch/r24/24d/mum/{k3,k12,g1}.gx (refused), {k10,k1,k9,k8}.gx (run)
         // 2026-11-14 claude: The witness left is item D39 in ~/ptmp/cr-discuss.md (Open).
+        // 2026-11-15 claude: Eric ruled (2026-11-15, D39): (a), "yes definitely refusal for both, your rec". The
+        // early bind stays; the refusal names the value to annotate (`|u: i64|` runs). (b) is closed with D40 (b):
+        // a bound-held variable does not widen.
         let held = match exact(c) {
             true => c.contains_int(flags | ContainsFlags::Conjunct, env, hist, t)?,
             false => commit_parts(
@@ -2186,45 +2189,6 @@ fn holds_union(
         ),
     }
 }
-
-// CR claude for eric: [perf/low] A call passing an array, or a tuple, for every
-// link of a chain of bounds checks in time quadratic in the chain's length, where the
-// twin passing integers is linear (deep_nesting chainboundsvalued). `python3 gen2.py
-// arrnotrait N` / `gen3.py tupnotrait N` (--no-cache --check, debug, empty 0.75 G): arrays
-// 8.1 / 27.9 G at 500 / 1000 links, tuples (i64, i64) 5.0 / 17.0 G at 1000 / 2000, a
-// trait on every link `impl<'e> Tr for Array<'e>` 16.6 G at 500. The profile is flat
-// (contains_dispatch, TVar::read, cell_lower, probe_get, ContainsHist::closure): each
-// link's commit probes and commits the whole chain below it once. A fix makes a link's
-// commit read the links below by a verdict that stands while nothing they reach is
-// written, as the integers' probes do (probe_standing). probes:
-// ~/ptmp/cr29/scratch/r24/24h/impls-read/, ~/ptmp/cr29/scratch/r25/25e/ (chainbounds-quadratic-01)
-// 2026-11-15 claude: Round 26 attempt, no code change (PARTIAL). Measured on base-r26 (debug,
-// --no-cache --check, instructions:u, empty program 0.75G): gen2 arrnotrait 100/250/500 links
-// 1.22/2.87/8.11G, tuples (i64,i64) 500/1000 1.96/5.06G, integers (1 for every link) 250/500
-// 0.87/0.97G (linear); the same chain passing ONE shared array (let v = [1]; f((v,v,..)))
-// 125/250/500 0.98/1.49/3.42G (still quadratic). Mechanism: a literal [1] is Array<'n_k> with a
-// cell of its own per link, so link k's commit asks 'a_{k+1} contains Array<n_k> and the answer is
-// a walk of the conjunct chain a_{k+1}..a_d ([null, 'a_{j+1}] contains X at each j) down to
-// Array<i64> contains Array<n_k>; probe_pairs keys (a_j, Array<n_k>) differ for every k, so
-// nothing is shared across links (the integers' probes share one key (a_j, i64) and probe_standing
-// keeps it). Counts by instrumentation (500 pairs of (k,j) = d^2/2): 12 contains_int calls per
-// (k,j), all of them RigidCheck|Conjunct probes made outside any trial or proved pass (376K at 250
-// links, 4x per doubling; trial/proved passes are linear: 500 calls); 4 first-time keys per (k,j),
-// the rest are stale entries (global cell_writes epoch moved: the commit of link k writes a lower
-// bound into a_{k+1}) re-walked top down. Two parts: (1) the stale re-walks of one X within a
-// link, which a probe_standing over a type that holds open cells (Standing of each cell it
-// reaches, not only the var's) would keep, a constant factor of about 3 and the whole of the
-// shared-v case; (2) the first walk of each X_k down the chain, O(d-k) because the verdict for
-// Array<n_k> shares no key with Array<n_{k-1}> (n_k above n_{k-1}, so the chain's admission of
-// X_{k-1} does not imply X_k's). Linear time needs a summary of a chain's conjunct bounds per cell
-// (the flat type [Array<i64>, null] that a_{k+1}'s conjuncts and its successors' amount to, kept
-// while no cell of the chain is written), read by the probe in place of the walk: a design change
-// to how a cell's conjunct chain is probed, not a local memo. Probes:
-// ~/ptmp/cr29/scratch/r26/26e/chainbounds (a*.gx arrays, t* tuples, s* shared v, i* integers,
-// ic.sh BIN FILE counts instructions).
-// 2026-11-15 claude: Round 26 coordinator: three rounds of partial fixes and this round's lane all
-// end at a design change, so the question of accepting the cost or commissioning that change goes
-// to Eric as D44 in ~/ptmp/cr-discuss.md.
 
 /// Commit `t ⊇ l` for each lower bound `l` of a cell bound to `t`, on
 /// copies first, so bounds a probe admits apart but no commit holds
@@ -6146,7 +6110,7 @@ impl Type {
                 residue.push(Self::Primitive(left));
             }
         }
-        // CR claude for eric: [risk/low] A definition's check and its instance's
+        // CR claude for claude: [risk/low] A definition's check and its instance's
         // second check (GRAPHIX_NO_SUBST=1) still meet one union of two undecided
         // members in two states. `let mk = |c, a, b| (select c { true => a, false => b
         // }, [a], [b]); let g = |p, q| { let t = mk(true, never(), never()); let u =
@@ -6300,6 +6264,14 @@ impl Type {
         // 2026-11-14 claude: Coordinator, round 25: whether a refusal only
         // GRAPHIX_NO_SUBST=1 makes is a defect is D42 in ~/ptmp/cr-discuss.md (Open);
         // three rounds tried a fix and undid it. Readdressed to eric.
+        // 2026-11-15 claude: Eric ruled (2026-11-15, D42): delete the flag. "given
+        // that we made the subst change a long time ago now, we should probably delete
+        // that debug and remove any code that is dead because of its removal."
+        // GRAPHIX_NO_SUBST, the recheck path it selects (Typing::rechecks,
+        // InstanceTypes::of_default's early return),
+        // graphix-shell/tests/shell/no_subst.rs and the flag's leg of elab_audit.rs
+        // go, with whatever only a rechecking instance reached; this CR is deleted in
+        // that change.
         let mut undecided_free = s0
             .iter()
             .zip(&free)

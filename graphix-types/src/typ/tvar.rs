@@ -3049,7 +3049,7 @@ impl TVar {
                 return;
             }
         }
-        // CR claude for eric: [readability/low] A declared variable a call in its
+        // CR claude for claude: [readability/low] A declared variable a call in its
         // body meets prints its bound twice: `let f = 'a: Number |x: 'a| -> 'a x; let
         // g: string = 'c: Number |y: 'c| -> 'c f(y)` says "fn<'c: Number>(y: 'c:
         // unbound within Number & Number) -> 'c: unbound within Number & Number", the
@@ -3086,6 +3086,13 @@ impl TVar {
         // built.
         // 2026-11-14 claude: Coordinator, round 25: whether to accept this residual is
         // D43 in ~/ptmp/cr-discuss.md (Open). Readdressed to eric.
+        // 2026-11-15 claude: Eric ruled (2026-11-15, D43 item 4): (b). A body that
+        // needs more of a declared variable than its declared bound is refused, naming
+        // the bound to write (`'c: Any |y: 'c| f(y)` over an f that needs Number is
+        // refused until the signature says `'c: Number`); no quiet tightening, so the
+        // doubled print goes with it. Built with a census of both repos; one that
+        // needs a new annotation in the stdlib, the book or netidx-admin goes back to
+        // Eric first.
 
         // Dedup computed lock-free: the identity walk can re-enter these cells.
         let (mut to_add, facts) = if same {
@@ -5894,7 +5901,7 @@ impl Type {
         }
         // a member walked as one before it gives no part that one did not
         let mut walked: SmallVec<[Type; 8]> = SmallVec::new();
-        // CR claude for eric: [perf/low] Slice arms that take each element apart over
+        // CR claude for claude: [perf/low] Slice arms that take each element apart over
         // an unannotated parameter still cost steeply at the definition: `gen3.py 20
         // arrelem` (`[[a0, s0..], [a1, s1..], .., t..] => t`) takes 17.2 G user
         // instructions of `--no-cache --check` in a debug build and `gen3.py 24 tupelem`
@@ -5984,6 +5991,10 @@ impl Type {
         // 2026-11-15 claude: Round 26 coordinator: three rounds of partial fixes and this
         // round's lane all end at a design change, so the question of accepting the cost or
         // commissioning that change goes to Eric as D44 in ~/ptmp/cr-discuss.md.
+        // 2026-11-15 claude: Eric ruled (2026-11-15, D44): fix this one; the other three
+        // cost residuals of D44 are deleted ("the others are code no sane entity would
+        // write"). The narrowing change the CR names is wanted: one result for a union of
+        // members that are one type and for one of them.
         for m in members {
             if m.walks_as_one_of(&walked) {
                 continue;

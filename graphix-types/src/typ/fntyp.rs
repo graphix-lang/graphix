@@ -4586,56 +4586,6 @@ impl FnType {
             prepare(&own, &known);
             instance.check_contains(env, &own).map(|()| own)
         };
-        // CR claude for eric: [bug/low] The settle below takes every cell only bounds
-        // name that has a witness, or none, so an instance is refused that is held with
-        // one such cell as its witness and another at its place. `val f: fn<'a: [i64,
-        // string], 'c: [i64, string], 'b: (i64, 'a), 'd: (i64, 'c), 'e: [i64, string], 'g:
-        // fn(x: 'e, y: i64) -> i64>(x: 'b, y: 'd, z: 'g) -> i64;` over `let f = 'p: [i64,
-        // string], 'q: (Number, 'p), 'r: (Number, 'p), 'k: [i64, string], 's: fn(x: 'k, y:
-        // i64) -> i64 |x: 'q, y: 'r, z: 's| -> i64 0`, called `m::f((1, "s"), (1, 1), |x:
-        // i64, y: i64| x)`, is held with 'p as [i64, string] and 'k as i64; the settle
-        // makes 'k [i64, string] too, which the argument's `fn(x: i64, ..)` does not hold.
-        // base-r24 passed it at --check and failed the run "an instance at"; since the
-        // review of sig-unpaired-apart-01 the signature's judgment refuses the
-        // implementation, though its bound of 'g restates the signature's ("an instance
-        // that takes 'p as its own bound takes 'k as its own too"; FnType::sig_bounds's
-        // second route). A trait's own variable is refused the same way beside an impl's
-        // variable two bounds name, since a method's cells carry the trait's bounds
-        // (tr/k3.gx). A fix settles only the cells whose places differ, which the
-        // judgment's walk finds (its `settled`), and the second route goes with it. Of
-        // 4000 generated interfaces with two or three such variables (gen3.py seed 21,
-        // gen4.py seed 31) the judgment took 248 before that route; 28 of them failed at
-        // an instance at some pick and are refused by it now, with one more that ran at
-        // every generated pick (g3/h21_0307, of sig-one-type-order-01's kind). probes:
-        // ~/ptmp/cr29/scratch/r24/24e/sig-unpaired-apart-01/review/{a4,a1,a6}/main.gx,
-        // tr/k3.gx there (README) (inst-settle-all-01)
-        // 2026-11-14 claude: Round 25 review of sig-one-type-order-01: that CR is closed
-        // by D36 and deleted; g3/h21_0307 is refused at --check on base-r25 (over-refusal,
-        // no order of it runs), so it is no longer a case that ran at every pick.
-        // design/tvar_constraints.md names the refusal and its rewrites.
-        // 2026-11-14 claude: Round 25 fixer: not fixed. Probes a4, a1, a6 (review/ of
-        // sig-unpaired-apart-01) are refused at --check on base-r25 with the message
-        // naming 'k and the two rewrites; no program the check accepts fails at an
-        // instance, so what stands is an over-refusal, pinned (lang::interfaces
-        // *_beside_one_at_two_places_*, lang::traits method_variable_in_two_bounds_*) and
-        // described in design/module_system.md. Both rewrites run: giving 'k no bound
-        // (m.gx 's: fn(x: 'k, y: i64) -> i64 with no 'k bound) is now pinned
-        // (an_unpaired_variable_with_no_bound_in_an_argument_beside_one_at_two_places_holds);
-        // 'k: NoError alone and 'k at a parameter were pinned before; 'k: [i64, string] +
-        // NoError is still refused. The fix the CR names needs the judgment's own settled
-        // set (the cells the signature holds at places that differ, `settled` in the
-        // judgment of an implementation) at FnType::held_at, which sees the implementation and the
-        // instance but no signature. A local stand-in (settle only the cells two holders'
-        // bounds name) is not the judgment's set: where the two disagree the instance
-        // holds a cell wider than its place, or the judgment accepts what held_at cannot
-        // hold, which is the unsound run failure 'an instance at' this refusal closed. So
-        // the fix is to store the settled set with the implementation's signature (a field
-        // on the definition, with its image codec), which is more than a low CR's local
-        // rule; recommendation: keep the refusal (Eric 11-10: more annotations for a
-        // simpler checker) unless an implementation of this shape turns up in real code.
-        // No census run: nothing was changed in the check.
-        // 2026-11-14 claude: Coordinator, round 25: whether to accept this residual is D43 in
-        // ~/ptmp/cr-discuss.md (Open). Readdressed to eric.
         let settle_unplaced = |own: &Self, known: &AHashMap<usize, TVar>| {
             let mut placed: LPooled<AddrSet> = LPooled::take();
             own.for_each_type(&mut |t| {
