@@ -1704,25 +1704,6 @@ fn head_of(sp: &StructPatternNode) -> Option<Head> {
     }
 }
 
-// XCR claude for claude: [bug/low] A tag or bool literal at a position the arms decide as `Any`
-// covers nothing there, so the select over such a referent is refused where its plain twin
-// runs: `|b: bool, c: bool| { let r = &mut (select c { true => (`M, b), false => (`M, b) });
-// select *r { (_, true) => 1, (`M, false) => 2 } }` says "missing match cases: no arm covers
-// (Any, bool)", and `select (select c { .. }) { .. }` checks and prints [1, 2]. The `_` at the
-// first position decides the referent `(Any, bool)`, a position `heads` reads as no finite set
-// (Miss::Unread in pooled_leaves), and `` `M `` is a head of it only as far as a name is. base-r25
-// and lane 25c alike. A fix would read the position as the type the member was built with
-// (Built::typ) where the arms left it open, which the walk does not hold here. probes:
-// ~/ptmp/cr29/scratch/r25/25c/rpe/t6.txt (run with rb.sh) (decided-any-tag-cover-01)
-// 2026-11-15 claude: Not a hole: the refusal is the rule. The referent's cell is decided by the
-// arms, a `_` makes the position Any, and a later write of another tag fits it (pin
-// wildcard_over_a_referent_takes_a_later_write_of_another_tag: `*r <- (`N, true)` after the select
-// checks), so (`M, false) beside (_, true) misses (`N, false); reading the position as the built
-// type would accept a select a write then breaks. Changed: the refusal tells the built type to
-// annotate (Reach::built_form, Reach::exhausted), and the annotated twin covers
-// (wildcard_beside_tag_over_a_referent_names_the_built_type,
-// wildcard_beside_tag_over_an_annotated_referent_covers; the first fails without the note).
-// design/select_coverage.md has the rule.
 // CR claude for claude: [bug/low] A test behind a pool that covers a referent's member still
 // decides that member's cell: `|x, b: bool, c: bool| { let r = &mut (select c { true => (b, x),
 // false => (`L, 0) }); select *r { (true, n) => 1, (false, m) => 2, (_, 0) => 3, _ => 4 } }`
