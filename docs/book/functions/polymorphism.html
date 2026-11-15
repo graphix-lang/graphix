@@ -243,6 +243,15 @@ definition is refused,</p>
 error: ... 'a is declared but the signature does not hold it: write it on a parameter, the return type, the throws or the bound of a quantifier the signature holds, or remove it
 </code></pre>
 <p>A written function type follows the same rule: <code>fn&lt;'a: Number&gt;(x: i64) -&gt; i64</code> is refused too.</p>
+<p>A body may not ask more of a declared variable than its bound says: a
+call, an operator or a builtin that needs <code>Number</code>, <code>Ordered</code> or
+<code>Discernible</code> of a variable bounded by less is refused, and the message
+names the bound to write. <code>'c: Any |y: 'c| -&gt; 'c f(y)</code> over an <code>f</code> that
+needs <code>Number</code> is refused until the signature says <code>'c: Number</code>, and
+<code>'a: Number |x: 'a, y: 'a| x &lt; y</code> until it says <code>'a: Number + Ordered</code>.
+Nothing is added to the signature quietly. Arithmetic over a <code>Number</code>
+variable needs no <code>Singleton</code> written, and a variable only written bare
+(<code>|y: 'c| ..</code>) is inferred, taking the bound its body needs.</p>
 <p>In the body a declared variable is whatever type a call picks, so a
 <code>select</code> may not look inside a value of it on its own: a pattern that
 tests or binds inside one needs a written type test (see

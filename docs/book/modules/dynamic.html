@@ -245,6 +245,13 @@ it sees nothing of the new module: a trait method its code calls is the one that
 body implemented, also where a function outside the module that it calls makes
 the call, and a name it uses is what that body imported. Code that should follow
 a reload calls through the module each time, <code>foo::add(x)</code>.</p>
+<p>An abstract type the module's body declares and its interface does not belongs
+to that load alone. The next load may declare a type of the same name, even with
+another representation, and it is a different type: a function kept from the
+first body compares, sorts, prints and casts its values by the first body's
+<code>Eq</code>, <code>Ord</code>, <code>Display</code> and <code>Cast</code>. A type the interface declares is one type for
+every load, and its values compare and print by the implementation the current
+load registered.</p>
 <h2 id="what-a-loaded-module-can-see"><a class="header" href="#what-a-loaded-module-can-see">What a Loaded Module Can See</a></h2>
 <p>A loaded module starts with nothing: no package, not even <code>core</code>, and none of
 the loading program's bindings, types or modules. The module in the example

@@ -3349,6 +3349,15 @@ definition is refused,</p>
 error: ... 'a is declared but the signature does not hold it: write it on a parameter, the return type, the throws or the bound of a quantifier the signature holds, or remove it
 </code></pre>
 <p>A written function type follows the same rule: <code>fn&lt;'a: Number&gt;(x: i64) -&gt; i64</code> is refused too.</p>
+<p>A body may not ask more of a declared variable than its bound says: a
+call, an operator or a builtin that needs <code>Number</code>, <code>Ordered</code> or
+<code>Discernible</code> of a variable bounded by less is refused, and the message
+names the bound to write. <code>'c: Any |y: 'c| -&gt; 'c f(y)</code> over an <code>f</code> that
+needs <code>Number</code> is refused until the signature says <code>'c: Number</code>, and
+<code>'a: Number |x: 'a, y: 'a| x &lt; y</code> until it says <code>'a: Number + Ordered</code>.
+Nothing is added to the signature quietly. Arithmetic over a <code>Number</code>
+variable needs no <code>Singleton</code> written, and a variable only written bare
+(<code>|y: 'c| ..</code>) is inferred, taking the bound its body needs.</p>
 <p>In the body a declared variable is whatever type a call picks, so a
 <code>select</code> may not look inside a value of it on its own: a pattern that
 tests or binds inside one needs a written type test (see
@@ -5692,6 +5701,13 @@ it sees nothing of the new module: a trait method its code calls is the one that
 body implemented, also where a function outside the module that it calls makes
 the call, and a name it uses is what that body imported. Code that should follow
 a reload calls through the module each time, <code>foo::add(x)</code>.</p>
+<p>An abstract type the module's body declares and its interface does not belongs
+to that load alone. The next load may declare a type of the same name, even with
+another representation, and it is a different type: a function kept from the
+first body compares, sorts, prints and casts its values by the first body's
+<code>Eq</code>, <code>Ord</code>, <code>Display</code> and <code>Cast</code>. A type the interface declares is one type for
+every load, and its values compare and print by the implementation the current
+load registered.</p>
 <h2 id="what-a-loaded-module-can-see"><a class="header" href="#what-a-loaded-module-can-see">What a Loaded Module Can See</a></h2>
 <p>A loaded module starts with nothing: no package, not even <code>core</code>, and none of
 the loading program's bindings, types or modules. The module in the example
