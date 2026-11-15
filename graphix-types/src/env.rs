@@ -1011,8 +1011,9 @@ pub struct Lexical {
     /// The kept impl entries ([`Env::kept_impls`]) a dispatch under this
     /// view reads beside those its bindings name, each by a method
     /// binding that keys it: an instance's, named by its caller
-    /// ([`Env::name_kept_impls`]). No name lookup reads it.
-    pub kept: Set<BindId>,
+    /// ([`Env::name_kept_impls`]); none where it names none. No name
+    /// lookup reads it.
+    pub kept: Option<Arc<Set<BindId>>>,
 }
 
 impl Lexical {
@@ -1028,7 +1029,10 @@ impl Lexical {
             && self.typedefs.ptr_eq(&other.typedefs)
             && self.traits.ptr_eq(&other.traits)
             && self.block_names.ptr_eq(&other.block_names)
-            && self.kept.ptr_eq(&other.kept)
+            && match (&self.kept, &other.kept) {
+                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                (a, b) => a.is_none() && b.is_none(),
+            }
     }
 
     /// This view, a definition's, for an instance a call in the load
@@ -1424,7 +1428,8 @@ impl KeptImpl {
         let names = |b: &Map<CompactString, BindId>| {
             self.im.methods.into_iter().any(|(n, id)| b.get(n) == Some(id))
         };
-        view.kept.contains(id) || view.binds.get(&self.im.scope).is_some_and(names)
+        view.kept.as_ref().is_some_and(|k| k.contains(id))
+            || view.binds.get(&self.im.scope).is_some_and(names)
     }
 }
 
@@ -1445,7 +1450,7 @@ impl KeptView {
 fn name_kept<'a>(named: impl Iterator<Item = (&'a ModPath, BindId)>, view: &mut Lexical) {
     for (scope, id) in named {
         if view.binds.get(scope).is_none() {
-            view.kept.insert_cow(id);
+            Arc::make_mut(view.kept.get_or_insert_default()).insert_cow(id);
         }
     }
 }
