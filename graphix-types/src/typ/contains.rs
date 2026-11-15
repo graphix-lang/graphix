@@ -1145,29 +1145,6 @@ fn guide(flags: BitFlags<ContainsFlags>) -> BitFlags<ContainsFlags> {
     }
 }
 
-// XCR claude for claude: [bug/medium] A well-typed call over a chain of bounds that
-// share a declared variable is refused since a rigid part took a lower bound (commit
-// 3157516bb, bound-part-merges-declared-01; 36409d1b7 and base-r25 accept): `let f =
-// 'a1: ['a3, Array<'b>], 'a3: ['a4, Array<'a4>], 'a4: ['a5, Array<'b>], 'a5:
-// Array<i64>, 'b: Number |x: ('a1, 'a3, 'a4, 'a5)| x; f(([1], [], [], [1]))` is refused
-// with `type mismatch Array<['_N: unbound within Number, [Int, Real]]> does not contain
-// Array<i64>` at the first `[1]`, where 'b = i64 types it. With 'a3's bound
-// `['a4, Array<'b>]` it runs. Found by running 440 generated chains (gen2.py) on
-// base-r25 and on the lane: this is the one verdict that changed; the commit
-// 919807ed2 (chainbounds-array-valued-01) is not the cause (its parent refuses it too).
-// probes: ~/ptmp/cr29/scratch/r25/25e/reg/{o1,o7}.gx (bound-part-lower-regress-01)
-// 2026-11-15 claude: Fixed: the two-rigid-cells arm of contains_tvars tries the lower
-// bounds of t0 that hold t1 before t1's conjuncts, so a literal's element cell takes
-// the declared b as a lower bound instead of the Number that bounds it (which i64 then
-// did not hold); takes_lower and the rigid part of 3157516bb stand. The CR's probes
-// o1/o7 are accepted (fused, --no-fusion, GRAPHIX_PAR=force); 440 generated chains
-// (seed 4242, ~/ptmp/cr29/scratch/r26/26e/gen3.py): lane equals base-r25 on all,
-// base-r26 refused 3 of them; 960 wrappers (r24 gen.py): no verdict changes. Pins that
-// fail without it:
-// lang::types::chain_of_bounds_sharing_a_variable_{takes_arrays,takes_a_nested_array};
-// the declared_variable_under_two_unions_* pins and
-// contains::tests::a_bounds_part_narrows_no_rigid_cell still hold.
-
 // CR claude for claude: [bug/low] A well-typed call over a shorter chain of bounds is
 // refused, as it is on base-r25 (the same refusal before 3157516bb): `let f = 'a3:
 // ['a4, Array<'a4>], 'a4: ['a5, Array<'b>], 'a5: Array<i64>, 'b: Number |x: ('a3, 'a4,
