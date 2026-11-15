@@ -2420,6 +2420,13 @@ fn undecided_taker<R: Rt>(
     }
 }
 
+// CR claude for claude: [bug/low] decided_early attaches to any refusal inside the
+// argument, whatever its cause: `let f = 'x: (['a, null], i64) |y: 'x| y; let g = |u|
+// f((u, 1 + "a")); g(1)` is refused for `1 + "a"`, and the error still says `u` was
+// decided early and to annotate `u`, which does not help (`|u: i64|` is refused the same
+// way). The note should only appear where the refusing expression reads a binding that
+// stands on an early-bound cell, or where the leaf is about that cell's type. probe:
+// ~/ptmp/cr29/scratch/r27/27c/fp1.gx (decided-early-unrelated-refusal-01)
 /// A refusal `e` of the argument `n`, whose pre-unification with its formal
 /// bound the undecided cells `early` to types that hold undecided cells
 /// themselves, names the bindings `n` reads that stand on them: the
