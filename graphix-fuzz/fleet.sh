@@ -54,9 +54,14 @@ repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 # on ryouko (5.06M runs in 12.9 h: generate 757504, reactive 642432, fuzz 2306048,
 # typemorph about 1.35M). This CR stays until a soak at 16 shows no deadline
 # finding; if one does, the scale goes to 2 as well.
+# 2026-11-15 claude: Eric (11-15): katana 32 -> 8 and washu-chan 48 -> 16 as well,
+# one worker a logical CPU on each (katana has 8, washu-chan 16); measure the next
+# soak and adjust from there. Baselines from nov14b: washu-chan about 53 runs/s at
+# 48 workers (1.9M runs in 10.4 h), katana about 28 runs/s at 32 (status at 12 h:
+# reactive 148800, fuzz 588416, typemorph 244608, generate not read).
 HOSTS=(
-    "katana:32:4:darwin"
-    "washu-chan:48:1:linux"
+    "katana:8:4:darwin"
+    "washu-chan:16:1:linux"
     "aieka:32:4:linux"
     "ryouko:16:1:linux"
 )
