@@ -914,7 +914,7 @@ impl<'a> Identity<'a> {
     /// renamed cells than by position takes. `base` is how many cell pairs
     /// the walk held on entering the unions.
     fn another_pairing(
-        &self,
+        &mut self,
         a: &[Type],
         b: &[Type],
         base: usize,
@@ -930,7 +930,7 @@ impl<'a> Identity<'a> {
                 let mut scratch = Welds::new();
                 let mut probe = Identity {
                     strict: self.strict,
-                    sets: self.sets,
+                    sets: self.sets.as_deref_mut(),
                     in_order: self.in_order,
                     by_name: self.by_name,
                     unbounded: self.unbounded,
