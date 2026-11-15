@@ -1386,43 +1386,6 @@ impl<X: GXExt> GX<X> {
         Ok(ProgramRoot { id, output, typ, warnings: vec![] })
     }
 
-    // CR claude for claude: [risk/low] A callable is a call under `Scope::root()`,
-    // so it is in no load: where a widget built in a dynamic module's body is handed
-    // a function of the code around the module (`#on_press: handler`, a tui
-    // `input_handler`'s `#handle`), the handler's instance dispatches by the
-    // registry, the next body's impl once a reload retired the body, where a builtin
-    // that calls the function it is handed through `genn::Callback` dispatches in
-    // the body's load (retired-body-outside-dispatch-01, `Lexical::called_in`). Not
-    // shown reachable: the handler must dispatch a trait on its argument's type and
-    // each body must implement it for that type. To fix: the builtin passes the
-    // `Scope` its `init` was given, and the callable's apply is built under it.
-    // (callable-scope-root-01)
-    // 2026-11-14 claude: Checked on base-r25 (lane 25h): the premise of the fix has
-    // no referent. compile_callable (graphix-rt/src/gx.rs) is reached only through
-    // GXHandle::compile_callable / update_callable, and its callers are embedders
-    // with no Scope: gui widgets/mod.rs and data_table/subscriptions.rs, tui
-    // input_handler.rs, graphix-package-core testing.rs, graphix-fuzz. None is a
-    // builtin and none is given a Scope by an init. The gui and tui are
-    // CustomDisplay impls driven by the shell: they receive the program's root value
-    // (a widget tree, takes , an Env and no Scope) and compile a callable for each
-    // handler in it as the tree updates. A builtin that calls a function it is
-    // handed already passes its init's Scope through genn::Callback (handler.rs,
-    // queuefn.rs, array and core lib.rs), which is the path
-    // retired-body-outside-dispatch-01 covers, with pins. So there is no builtin to
-    // pass a Scope; the only way to carry a load would be a new
-    // GXHandle::compile_callable_in(scope) that the display would have to fill from
-    // the tree's value, and a value holds no load. It is also not reachable as the
-    // CR worries: a widget tree is the root's current value, so after a reload the
-    // displayed tree is the new body's (update_callable keeps the site only for the
-    // same lambda, and then the registry's impl is the one the new tree wants); the
-    // handler's argument is a stdlib event type, which no body implements a trait
-    // for. Outside any body a call resolves to the registry, as
-    // design/module_system.md states. Recommendation: delete this CR; if a display
-    // ever needs a retired body's meaning it is a design question (what load a
-    // displayed value is in), for Eric, not a Scope parameter.
-    // 2026-11-14 claude: Correction to the note above: the shell dropped a fragment;
-    // it should read "(a widget tree; Gui::start takes root: CompExp, an Env and no
-    // Scope)".
     fn compile_callable(&mut self, v: Value, rt: GXHandle<X>) -> Result<Callable<X>> {
         let lb = v
             .downcast_ref::<LambdaDef<GXRt<X>>>()

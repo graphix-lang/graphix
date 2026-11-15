@@ -6126,7 +6126,7 @@ impl Type {
                 residue.push(Self::Primitive(left));
             }
         }
-        // CR claude for claude: [risk/low] A definition's check and its instance's
+        // CR claude for eric: [risk/low] A definition's check and its instance's
         // second check (GRAPHIX_NO_SUBST=1) still meet one union of two undecided
         // members in two states. `let mk = |c, a, b| (select c { true => a, false => b
         // }, [a], [b]); let g = |p, q| { let t = mk(true, never(), never()); let u =
@@ -6277,6 +6277,9 @@ impl Type {
         // types, elaboration and values over what both modes accept, not as a split;
         // if that is ruled, delete this CR and the same-kind ones at select.rs (the
         // two NO_SUBST notes near the select arm walk).
+        // 2026-11-14 claude: Coordinator, round 25: whether a refusal only
+        // GRAPHIX_NO_SUBST=1 makes is a defect is D42 in ~/ptmp/cr-discuss.md (Open);
+        // three rounds tried a fix and undid it. Readdressed to eric.
         let mut undecided_free = s0
             .iter()
             .zip(&free)

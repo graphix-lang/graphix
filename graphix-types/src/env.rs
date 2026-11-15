@@ -1666,6 +1666,7 @@ impl Env {
             // 2026-11-14 claude: Round 25 (25g), sig-import-fn-body-below-01: part (2) of the note above, a sig use of a name a function body's block
             // declares, now loads under a whitelist and without one (Env::import_target_exists counts a live block type; pin
             // lang::modules::a_sig_imports_a_type_the_functions_body_declares_below_under_a_whitelist). Parts (1) and (3) stand.
+            // 2026-11-14 claude: Coordinator, round 25: this is D41 in ~/ptmp/cr-discuss.md (Open); rec (a), a sig's import grants the body the typedef.
             Sandbox::Whitelist(wl) => {
                 let mut modules: LPooled<AHashSet<ModPath>> = LPooled::take();
                 let mut names: LPooled<

@@ -1585,7 +1585,7 @@ fn written_holder_chains_check_in_linear_time() {
     }
 }
 
-// CR claude for claude: [perf/low] A chain of calls of a generic pair constructor
+// CR claude for eric: [perf/low] A chain of calls of a generic pair constructor
 // checks and builds in time quadratic in its length, where the same pair DAG built
 // without calls is linear: each call walks its argument type's whole DAG once a node.
 // base-r20 (82569fed3), --no-cache, instructions:u, an empty program 0.76G: `let mk =
@@ -1721,6 +1721,8 @@ fn written_holder_chains_check_in_linear_time() {
 // lane 24f note says. Recommend Eric accept (a)-(c) as a residual (no program below
 // ~640 links reaches 2x an empty program's work) or rule on scheme-owned quantifier
 // cells. Probes: ~/ptmp/cr29/scratch/r25/25h/call-dag-arg-walk-01/
+// 2026-11-14 claude: Coordinator, round 25: whether to accept this residual is D43 in
+// ~/ptmp/cr-discuss.md (Open). Readdressed to eric.
 
 /// A chain of calls of a generic pair constructor, each link the pair of
 /// the last, builds and runs within a few times an empty program's work,

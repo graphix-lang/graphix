@@ -2985,7 +2985,7 @@ impl TVar {
                 return;
             }
         }
-        // CR claude for claude: [readability/low] A declared variable a call in its
+        // CR claude for eric: [readability/low] A declared variable a call in its
         // body meets prints its bound twice: `let f = 'a: Number |x: 'a| -> 'a x; let
         // g: string = 'c: Number |y: 'c| -> 'c f(y)` says "fn<'c: Number>(y: 'c:
         // unbound within Number & Number) -> 'c: unbound within Number & Number", the
@@ -3020,6 +3020,8 @@ impl TVar {
         // and 'c: [i64, string] are accepted today with the cell tightened to Any &
         // Number / [i64, string] & Number, so it needs a census and Eric before it is
         // built.
+        // 2026-11-14 claude: Coordinator, round 25: whether to accept this residual is
+        // D43 in ~/ptmp/cr-discuss.md (Open). Readdressed to eric.
 
         // Dedup computed lock-free: the identity walk can re-enter these cells.
         let (mut to_add, facts) = if same {

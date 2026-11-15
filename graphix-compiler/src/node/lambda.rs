@@ -1563,7 +1563,7 @@ impl<R: Rt> GXLambda<R> {
 }
 
 impl Typing {
-    // CR claude for claude: [risk/low] An instance checked again refuses a
+    // CR claude for eric: [risk/low] An instance checked again refuses a
     // body that reads a bounded parameter at its bound, where the instance's
     // type is narrower than the bound. `let g = 'b: Array<[i64, null]> |x:
     // 'b| -> Array<[i64, null]> array::push(x, null); let x: Array<i64> =
@@ -1607,6 +1607,9 @@ impl Typing {
     // run again at the instance's cells, not a local rule. The shipped mode
     // (which substitutes) is right and unchanged; the gap is the debug A/B
     // alone.
+    // 2026-11-14 claude: Coordinator, round 25: whether a refusal only
+    // GRAPHIX_NO_SUBST=1 makes is a defect is D42 in ~/ptmp/cr-discuss.md (Open);
+    // three rounds tried a fix and undid it. Readdressed to eric.
 
     /// Whether the instance checks its body again (`GRAPHIX_NO_SUBST`),
     /// where its definition's types would do.

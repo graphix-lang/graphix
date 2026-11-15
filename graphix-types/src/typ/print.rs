@@ -404,7 +404,7 @@ impl Type {
 /// that is kept as far as it printed, and once the kept text passes
 /// [`SHOWN`] the next member that is not identical to one kept counts as
 /// kept unprinted, since none of it shows.
-// CR claude for claude: [risk/low] Members alike but for two copies of one union that are not one
+// CR claude for eric: [risk/low] Members alike but for two copies of one union that are not one
 // node, or for cells holding such copies, still print whole to be compared, so nesting them costs
 // 2^depth as before: `Parts` tells a union only by its node, and a cell holding one refuses to
 // print alone (`ALONE`), since printing both copies there would cost three prints of the level
@@ -429,6 +429,8 @@ impl Type {
 // Recommendation: leave this CR as the record (or delete it) unless a program shows the chain; if
 // one does, the right fix is probably to make unions built by one inference share a node, not to
 // teach the printer to match copies.
+// 2026-11-14 claude: Coordinator, round 25: whether to accept this residual is D43 in
+// ~/ptmp/cr-discuss.md (Open). Readdressed to eric.
 fn write_deref_set(f: &mut fmt::Formatter<'_>, s: &[Type]) -> fmt::Result {
     if ALONE.get() {
         return Err(fmt::Error);

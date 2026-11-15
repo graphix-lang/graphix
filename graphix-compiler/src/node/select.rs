@@ -3186,39 +3186,6 @@ impl<R: Rt> Select<R> {
         );
         let rtypes: LPooled<Vec<&Type>> =
             self.arms.iter().map(|(_, n)| n.typ()).collect();
-        // XCR claude for claude: [bug/medium] A build refuses a call the check accepted
-        // where a recursive function over a typedef union of two of its variables is
-        // called from a wrapper with that parameter undecided: `type P<'p, 'q> =
-        // [Array<'p>, Array<'q>]; let rec loop = |n: i64, k: fn(q: P<'b, 'a>) -> i64|
-        // select n { 0 => k, _ => loop(n - 1, k) }; let g = |t| loop(3, never()); g(1)`
-        // passes `--check` and the run fails "in the instance of loop(3, never()) .. in:
-        // select n { 0 => k, _ => loop(n - 1, k).. Array<'b: unbound> could go to
-        // Array<'b1: 'b2: unbound> or Array<'a: 'a1: unbound> of the union [Array<'b1:
-        // 'b2: unbound>, Array<'a: 'a1: unbound>], which nothing has decided". The
-        // instance's select meets its arms here, and they no longer hold one type: the
-        // union's members print the signature's cells placed at the instance's open ones
-        // (FnType::held_at), the type going in a cell 'b bound to nothing, so the meet
-        // has to choose a member where the definition's check met one type with itself.
-        // The first suspect is the recursive call's row, copied apart from the
-        // signature's cells. With a declared result type the same. These run: the direct
-        // call (`let r = loop(3, never())`, whose cells the statement settles), the
-        // wrapper with 'a decided (`loop(3, |q| array::len(q), t)` over `y: 'a`), the
-        // function without the recursion (`|k: fn(q: P<'b, 'a>) -> i64, c: bool| select c
-        // { true => k, false => never() }`), and the lane's build under
-        // GRAPHIX_NO_SUBST=1. base-r24 alike, before and after
-        // undecided-into-decided-member-01's fix. Found reviewing that CR. probes:
-        // ~/ptmp/cr29/scratch/r24/24d/udm-rev/{t07,t01}.gx (refused at the run),
-        // {t15,t08,t14}.gx (run) (rec-instance-arm-cells-01)
-        // 2026-11-14 claude: Stale on base-r25: t07 and t01 (and the CR's one-line form)
-        // check and run on main 3fcf32fc0 in every mode (plain, --no-fusion, PAR=force,
-        // ELAB_AUDIT, NO_SUBST), while base-r24 still refuses them at the run with the
-        // ELAB-AUDIT unify-back text. One of round 24's finisher/review commits after
-        // 2d64f2a4f closed it (the union-order and member-placement commits d83fafe64,
-        // e3de250c2 are the candidates; not bisected). Pins added:
-        // lang::select::rec_instance_over_a_typedef_union_of_two_variables and
-        // rec_instance_over_a_typedef_union_declared_result (all four modes pass here;
-        // the program is the one base-r24 refuses). Reviewer: bisecting which commit
-        // fixed it is optional.
         self.typ = Type::union_of_alternatives(&ctx.env, &rtypes)?;
         Ok(())
     }

@@ -1731,6 +1731,8 @@ fn widenable(env: &Env, def: &FnType, inst: &FnType) -> LPooled<AHashMap<ArcStr,
     // (b) only if Eric wants a bound-held variable to widen like a position one, as one change
     // covering held_at. Left to Eric: which rule. Fixer did not pick it; no code change in the
     // tree.
+    // 2026-11-14 claude: Coordinator, round 25: this is D40 in ~/ptmp/cr-discuss.md (Open), with
+    // the lane's two measured options; rec (b), the refusal names the annotation.
     let mut at_def: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
     def.collect_tvars(&mut at_def);
     let mut found: LPooled<AHashMap<ArcStr, (TVar, bool)>> = LPooled::take();
@@ -3335,7 +3337,7 @@ impl<R: Rt> CallSite<R> {
         // unified back into the site's live rtype cell, the cells both
         // leave open first, which no member of a union beside one takes.
         if let Some(site_ft) = self.ftype.as_ref() {
-            // CR claude for claude: [risk/low] Under GRAPHIX_NO_SUBST=1 the unify-back
+            // CR claude for eric: [risk/low] Under GRAPHIX_NO_SUBST=1 the unify-back
             // gives a site's return its own union again as a member, and the audit reports
             // it as a narrowing: `type B<'p> = Abstract<'p>; let go = |t| { let x =
             // never(); let b = B([x]); b <- B(x); let v = b.0; x <- t ~ 1;
@@ -3371,6 +3373,9 @@ impl<R: Rt> CallSite<R> {
             // '_N_2, '_N_3), not a duplicate; making them agree needs the instance's cells
             // unified with the site's, not a dedupe. Programs run right; the shipped mode
             // substitutes and is unaffected. Left as a CR for that remainder.
+            // 2026-11-14 claude: Coordinator, round 25: whether a refusal only
+            // GRAPHIX_NO_SUBST=1 makes is a defect is D42 in ~/ptmp/cr-discuss.md (Open);
+            // three rounds tried a fix and undid it. Readdressed to eric.
             let before =
                 dbgenv::graphix_elab_audit().then(|| printed_deref(&site_ft.rtype));
             if !site_ft.rtype.prove_ground() {

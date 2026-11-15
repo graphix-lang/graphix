@@ -4518,7 +4518,7 @@ impl FnType {
             prepare(&own, &known);
             instance.check_contains(env, &own).map(|()| own)
         };
-        // CR claude for claude: [bug/low] The settle below takes every cell only bounds
+        // CR claude for eric: [bug/low] The settle below takes every cell only bounds
         // name that has a witness, or none, so an instance is refused that is held with
         // one such cell as its witness and another at its place. `val f: fn<'a: [i64,
         // string], 'c: [i64, string], 'b: (i64, 'a), 'd: (i64, 'c), 'e: [i64, string], 'g:
@@ -4566,6 +4566,8 @@ impl FnType {
         // rule; recommendation: keep the refusal (Eric 11-10: more annotations for a
         // simpler checker) unless an implementation of this shape turns up in real code.
         // No census run: nothing was changed in the check.
+        // 2026-11-14 claude: Coordinator, round 25: whether to accept this residual is D43 in
+        // ~/ptmp/cr-discuss.md (Open). Readdressed to eric.
         let settle_unplaced = |own: &Self, known: &AHashMap<usize, TVar>| {
             let mut placed: LPooled<AddrSet> = LPooled::take();
             own.for_each_type(&mut |t| {
