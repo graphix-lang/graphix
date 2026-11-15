@@ -43,21 +43,6 @@ impl fmt::Display for ConcreteRequired {
 impl Error for ConcreteRequired {}
 
 impl ConcreteRequired {
-    // XCR claude for claude: [bug/low] A function read through a block is refused
-    // with this message where the same read bound directly is accepted: `let f = {
-    // let t = sys::net::publish; t }; f(never(), 10)` is refused, "the quantifier 'a
-    // must be fully known but is unread through an optional callback at this call",
-    // and `let f = sys::net::publish; f(never(), 10)` checks; the `10` decides 'a in
-    // both. base-r25 alike. A typemorph block-wrap flip of soak nov14b
-    // (fuzz/pending-triage/nov14b/washu-chan/typeflip_000002.gx); probes
-    // ~/ptmp/cr29/scratch/r25/soak/{h1,h2}.gx (block-read-optional-callback-01)
-    // 2026-11-15 claude: A let over a block whose value reads a name now aliases
-    // that name's builtin/lambda as a direct alias does (bind.rs aliased_builtin,
-    // aliased_lambda read through value_of), so the call resolves statically and the
-    // builtin's unread quantifier settles. Pins:
-    // lang::test_builtins::unread_quantifier_settles_through_a_block (fails without
-    // the fix), generics.md cases lines, lang::quantified
-    // a_block_whose_value_is_a_generic_name_is_generic now fuses (Jit).
     pub fn unread_callback(&self) -> anyhow::Error {
         anyhow::anyhow!(
             "the quantifier '{} must be fully known but is unread through an optional \
