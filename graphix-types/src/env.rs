@@ -2498,33 +2498,6 @@ impl Env {
         }
     }
 
-    // XCR claude for claude: [bug/low] An impl given back while its trait stands is not
-    // kept for a call that reaches it through a function instantiated in its own
-    // definition's view. `Env::kept_impls_named` reads a kept entry only where the view names
-    // one of its method bindings, which a function made beside the impl does, and a trait's
-    // default method (`val twice: fn(self) -> i64 = |s| sh(s) * 2`, `Sh::twice(C(x))`) or a
-    // function of an earlier input that names the trait only as a bound (`let app = |v: Sh|
-    // Sh::sh(v)`, `app(C(x))`) is built in a view made before the impl, which names none:
-    // after the impl input is dropped the call logs "binding the callee failed: .. an
-    // instance at fn(self: C) -> i64 of a definition typed fn(s: 'self: unbound within Sh &
-    // Sh) -> i64" and is bottom, with the trait's declaration standing (30 while the impl
-    // lives). Only an embedder reaches it (escaped-fn-dropped-impl-01's setting). To fix: an
-    // instance made for a call takes the kept impls its caller's view names, as
-    // `Lexical::called_in` gives it the caller's load. probe:
-    // ~/ptmp/cr29/scratch/r25/25g/eid/probes.txt (escaped-fn-dropped-impl-outside-01)
-    // 2026-11-15 claude: An instance a static call builds names, in its view, the kept impl
-    // entries its caller's view names at each scope its own view holds nothing at
-    // (Env::name_kept_impls, called in make_init for BindMode::Static), so a trait's default
-    // and a function of an earlier input dispatch to the entry their caller was made beside.
-    // Pins:
-    // lib_tests::leaks::a_function_reaching_a_dropped_impl_through_an_earlier_definition_dispatches_to_it
-    // (default called and as a value, app called and through a local closure) and the second
-    // function of a_function_outliving_its_impl_beside_a_standing_trait_dispatches_to_it
-    // (Sh::twice(C(x)) + app(C(x)), four drop orders); all 8 mode runs fail with the call
-    // undone. Not covered, filed apart: a function that names the trait only through a
-    // captured function keeps no entry at all, so the probe's bare |x: i64| app(C(x)) still
-    // fails (escaped-fn-reach-capture-01), and a run-time bind checks under the run-time env
-    // (escaped-fn-runtime-bind-view-01).
     /// The method bindings of the registered impls of `trait_id` that
     /// `view` names under their own scope, for impls of blocks and
     /// modules a definition at `at` is inside: what a function value
