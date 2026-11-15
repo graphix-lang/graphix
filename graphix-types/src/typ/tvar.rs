@@ -2823,14 +2823,17 @@ impl TVar {
 
     /// The refusal of the bounds `needs` a body needs of the variable of its
     /// definition this cell is, which the variable's own bound does not
-    /// imply, with the bound to write in the signature.
-    pub(super) fn undeclared_bound(&self, needs: &[&Type]) -> CompactString {
+    /// imply, with the bound to write in the signature: its own conjuncts
+    /// that none of `needs` implies, and `needs`.
+    pub(super) fn undeclared_bound(&self, env: &Env, needs: &[&Type]) -> CompactString {
         crate::format_with_flags(PrintFlag::DerefTVars | PrintFlag::ReplacePrims, || {
             let name = self.declared_name().unwrap_or_else(|| self.name.clone());
             let mut bound = CompactString::default();
             let mut within = CompactString::default();
             for own in self.cell_constraints().iter() {
-                if !matches!(own, Type::Any) {
+                let said = matches!(own, Type::Any)
+                    || needs.iter().any(|c| c.implies(env, own).unwrap_or(false));
+                if !said {
                     bound.push_str(&format_compact!("{own} + "));
                 }
             }
@@ -2877,7 +2880,7 @@ impl TVar {
         }
         match c.is_quiet_bound() {
             true => Ok(self.add_cell_constraint(c)),
-            false => bail!("{}", self.undeclared_bound(&[&c])),
+            false => bail!("{}", self.undeclared_bound(env, &[&c])),
         }
     }
 

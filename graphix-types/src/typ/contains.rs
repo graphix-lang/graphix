@@ -3027,7 +3027,7 @@ fn undeclared_bound_note(env: &Env, s: &Type, t: &Type) -> Option<CompactString>
                             || declared.conjunct_implies(env, c).unwrap_or(true))
                     })
                     .collect();
-                (!needs.is_empty()).then(|| declared.undeclared_bound(&needs))
+                (!needs.is_empty()).then(|| declared.undeclared_bound(env, &needs))
             })
     }
     fn go(

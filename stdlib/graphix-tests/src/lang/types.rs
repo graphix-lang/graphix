@@ -3125,7 +3125,7 @@ mod unsound_acceptances {
 #[tokio::test(flavor = "current_thread")]
 async fn not_concrete_names_a_minted_cell_short() -> Result<()> {
     let src = r#"{
-  let rd = 'a: Concrete + JsonData + NoError |s: string| -> 'a json::read(s)$;
+  let rd = |s: string| -> 'a json::read(s)$;
   let g = |s| { let v = rd(s); [v] };
   g("1")
 }"#;
@@ -3627,7 +3627,7 @@ run!(
 
 const DISCERNIBLE_ACCEPTS: &str = r#"{
   let f = |x, y| x == y;
-  let g = 'a: Discernible |o: Option<'a>| o == o;
+  let g = |o: Option<'a>| o == o;
   let h = |c, a: i64| { let v = select c { true => a, false => 0 }; v == v };
   let k = 'a: Discernible |x: 'a| x;
   [f(1, 1), g(null), g(2), h(true, 3), k("x") == "x", array::sort([3, 1]) == [1, 3]]
@@ -10479,7 +10479,7 @@ run!(
   let h = 'b0: Q<'b2, 'b1>, 'b1: string, 'b2: Array<Q<'b4, 'b3>>, 'b3: O<'b4>, 'b4: [i64, string] |y0: 'b0, y2: 'b2, y3: 'b3| f(y0, y2, y3);
   h(`B("s"), [`A("t")], "s")
 }"#,
-    refused("the body needs 'b4 within string, which the signature does not declare: write 'b4: [i64, string] + string");
+    refused("the body needs 'b4 within string, which the signature does not declare: write 'b4: string");
     FuseExpect::None
 );
 
@@ -16634,7 +16634,7 @@ run!(
   let wide = 'c3: T<O<'c4>>, 'c4: [i64, null, string] |y3: 'c3| f(y3);
   wide(`Node([`Leaf(1)]))
 }"#,
-    refused("the body needs 'c4 within [i64, null], which the signature does not declare: write 'c4: [i64, null, string] + [i64, null]");
+    refused("the body needs 'c4 within [i64, null], which the signature does not declare: write 'c4: [i64, null]");
     FuseExpect::None
 );
 
@@ -16669,7 +16669,7 @@ run!(
   let w = 'c3: Array<O<'c4>>, 'c4: [i64, null, string] |y3: 'c3| f(y3);
   w([1])
 }"#,
-    refused("the body needs 'c4 within [i64, null], which the signature does not declare: write 'c4: [i64, null, string] + [i64, null]");
+    refused("the body needs 'c4 within [i64, null], which the signature does not declare: write 'c4: [i64, null]");
     FuseExpect::None
 );
 
