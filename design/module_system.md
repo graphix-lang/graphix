@@ -492,8 +492,11 @@ A function names a dispatcher as it names any capture, and a function
 whose signature names a trait as a bound (a parameter's type, a
 variable's `'a: Sh`) or whose body holds such a lambda names its anchor
 (`Env::bound_dispatchers`, recorded in the definition's captures at its
-check), so a dispatcher deleted while a value names it is orphaned
-(`ExecCtx::delete_dispatcher`), and those dispatchers keep the rest
+check; a nested lambda's come in with its captures). The walk reads the
+trait a bound's resolution cell holds, which the definition's gate
+fills, and stops at a typedef's name: a typedef's body holds no trait,
+so only its arguments are walked. So a dispatcher deleted while a value
+names it is orphaned (`ExecCtx::delete_dispatcher`), and those dispatchers keep the rest
 (`Env::kept_traits`, a `KeptTrait` per deleted declaration, under each
 of its dispatchers a value names). `ExecCtx::keep_trait` opens one
 before a declaration is deleted, a `trait` statement's at

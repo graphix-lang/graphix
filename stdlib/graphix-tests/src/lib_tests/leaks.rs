@@ -1732,6 +1732,21 @@ async fn a_function_over_a_dropped_trait_bound_inferred_through_a_callee_binds_i
     .await
 }
 
+/// A trait bounding a typedef's parameter reaches a signature through
+/// the argument the typedef is applied to, never through its body.
+async fn a_function_over_a_dropped_trait_bounding_a_typedefs_parameter_binds_its_calls(
+    mode: Mode,
+) -> Result<()> {
+    escaped_and_called(
+        mode,
+        [],
+        "{ type C = Abstract<i64>; trait Sh { val sh: fn(self) -> i64 }; \
+         impl Sh for C { let sh = |c: C| c.0 * 10 }; type W<'a: Sh> = ('a, i64); \
+         saved <- |x: i64| { let f = |w: W<'b>| w.1; f((C(x), 30)) }; 1 }",
+    )
+    .await
+}
+
 modes!(
     a_function_saved_across_reloads_keeps_nothing_once_dropped,
     a_dispatching_function_saved_across_reloads_keeps_nothing_once_dropped,
@@ -1767,4 +1782,5 @@ modes!(
     a_function_over_a_dropped_trait_bound_in_a_nested_function_binds_its_calls,
     a_function_over_a_dropped_trait_bound_in_a_function_it_names_binds_its_calls,
     a_function_over_a_dropped_trait_bound_inferred_through_a_callee_binds_its_calls,
+    a_function_over_a_dropped_trait_bounding_a_typedefs_parameter_binds_its_calls,
 );

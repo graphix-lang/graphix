@@ -2757,45 +2757,37 @@ impl Type {
         })
     }
 
-    /// The traits this type names as a bound in `env`: a reference to one
-    /// in a variable's conjuncts, a parameter's written type, or a
-    /// typedef's body, each once.
+    /// The traits this type names as a bound, each once: a reference
+    /// whose cell holds a trait, in a variable's binding or conjuncts or
+    /// in a part. A definition's gate fills the cell of every bound its
+    /// signature declares, and a call copies a callee's filled cells. A
+    /// typedef's body names no trait (a written type refuses one,
+    /// [`Self::rewrite_trait_args`]), so only a typedef's arguments are
+    /// walked.
     #[doc(hidden)]
-    pub fn named_traits(
-        &self,
-        env: &Env,
-        cells: &mut AHashSet<usize>,
-        out: &mut AHashSet<TraitId>,
-    ) {
+    pub fn named_traits(&self, cells: &mut AddrSet, out: &mut SmallVec<[TraitId; 2]>) {
         ensure_sufficient(|| match self {
             Type::TVar(tv) => {
                 if cells.insert(tv.cell_addr()) {
                     if let Some(b) = tv.binding() {
-                        b.named_traits(env, cells, out)
+                        b.named_traits(cells, out)
                     }
                     for c in tv.cell_constraints() {
-                        c.named_traits(env, cells, out)
+                        c.named_traits(cells, out)
                     }
                 }
             }
             Type::Ref(tr) => {
-                match env.trait_of_ref(tr) {
-                    Some(id) => {
-                        out.insert(id);
-                    }
-                    None => {
-                        if let Some(r) = tr.resolved()
-                            && cells.insert(sync::Arc::as_ptr(&r) as usize)
-                        {
-                            r.typ.named_traits(env, cells, out)
-                        }
-                    }
+                if let Some(id) = tr.trait_id()
+                    && !out.contains(&id)
+                {
+                    out.push(id)
                 }
-                self.for_each_child(&mut |c| c.named_traits(env, cells, out))
+                self.for_each_child(&mut |c| c.named_traits(cells, out))
             }
             t if node_addr(t).is_some_and(|n| !cells.insert(n)) => (),
-            Type::Fn(ft) => ft.for_each_part(&mut |t, _| t.named_traits(env, cells, out)),
-            t => t.for_each_child(&mut |c| c.named_traits(env, cells, out)),
+            Type::Fn(ft) => ft.for_each_type(&mut |t| t.named_traits(cells, out)),
+            t => t.for_each_child(&mut |c| c.named_traits(cells, out)),
         })
     }
 
@@ -4087,6 +4079,18 @@ impl Type {
         ensure_sufficient(|| self.rewrite_trait_args_inner(env, scheme))
     }
 
+    // CR claude for claude: [bug/low] A typedef above the trait its body names as a
+    // type is not refused: `type T = Array<Sh>; trait Sh { .. }` checks, and `let v: T
+    // = [1, 2]` runs and prints [1, 2], while the same two statements the other way
+    // round are refused ("trait Sh used as a type"). The Ref arm below asks
+    // `Env::trait_of_ref` in the env of the typedef's declaration, where a trait the
+    // block declares later is not yet registered, so the name is taken for an
+    // unresolved typedef. `Type::named_traits` relies on a typedef's body naming no
+    // trait. To fix: refuse at the point the name is settled (the block's typedefs see
+    // every name of the block: a trait declared anywhere in it, or a name that
+    // `Env::settled_trait_of_ref` says changes later, is refused here). probes:
+    // ~/ptmp/cr29/scratch/r26/26a/typedef_forward_trait.gx (accepted, runs) and
+    // typedef_trait_after.gx (refused) beside it. (typedef-forward-trait-type-01)
     fn rewrite_trait_args_inner(&self, env: &Env, scheme: bool) -> Result<Option<Type>> {
         match self {
             Type::Ref(tr) if env.trait_of_ref(tr).is_some() => bail!(

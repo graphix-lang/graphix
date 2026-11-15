@@ -2460,7 +2460,7 @@ impl Env {
             .or_else(|| self.trait_defs.get(&id).cloned())
     }
 
-    // CR claude for claude: [perf/high] Every definition's check walks its whole
+    // XCR claude for claude: [perf/high] Every definition's check walks its whole
     // signature for the traits it names as a bound, through every typedef the
     // signature reaches, and the check of every program pays for it: an empty
     // program's `--no-cache --check` went from 740.9M to 764.6M instructions:u at
@@ -2480,23 +2480,35 @@ impl Env {
     // reads the nested definition's captures. The lane skipped guicheck ("no typing
     // change"). Measured by ~/ptmp/cr29/r25/costbisect.sh, results in
     // costbisect.out beside it. (bound-traits-walk-cost-01)
-    /// The traits `t` names as a bound.
-    pub fn bound_traits(&self, t: &Type, f: &mut impl FnMut(TraitId)) {
-        let mut cells: LPooled<AHashSet<usize>> = LPooled::take();
-        let mut ids: LPooled<AHashSet<TraitId>> = LPooled::take();
-        t.named_traits(self, &mut cells, &mut ids);
-        ids.drain().for_each(f)
-    }
-
-    /// The dispatchers of the traits `t` names as a bound: a function
-    /// whose types name a trait names them, and a declaration deleted
-    /// while one does is kept for it ([`Self::keep_trait`]).
-    pub fn bound_dispatchers(&self, t: &Type, f: &mut impl FnMut(BindId)) {
-        self.bound_traits(t, &mut |id| {
+    // 2026-11-15 claude: Type::named_traits reads only the trait a bound's filled
+    // cell holds (Env::trait_of_ref's name lookup of an open cell is gone) and stops
+    // at a typedef's name, walking its arguments: a typedef's body names no trait
+    // (Type::rewrite_trait_args refuses one; the forward-reference gap is
+    // typedef-forward-trait-type-01). A signature's parts are walked by
+    // FnType::for_each_type, not for_each_part (whose position-tvar pass re-walked
+    // the conjuncts named_traits walks itself), into an AddrSet and a SmallVec, not
+    // two pooled sets; Env::bound_dispatchers takes the FnType, no Type::Fn clone.
+    // capture_names reads a nested lambda's anchors from its captures (captured_ids)
+    // and no longer walks its signature again. callgrind, empty program --no-cache
+    // --check: bound_ids+bound_dispatchers 23.45M (base-r26) -> 1.72M; checkcost min
+    // 776.4M -> 755.7M (-2.7%); guicheck 41.98G -> 40.85G; census 0/0. Pins: the
+    // seven lib_tests::leaks bound pins (new:
+    // a_function_over_a_dropped_trait_bounding_a_typedefs_parameter_binds_its_calls)
+    // pass and fail with the walk disabled; escaped-fn-dropped-impl-01's seven pass
+    // and fail with capture_impls disabled.
+    /// The dispatchers of the traits the signature `ft` names as a
+    /// bound ([`Type::named_traits`]): a function whose types name a
+    /// trait names them, and a declaration deleted while one does is kept
+    /// for it ([`Self::keep_trait`]).
+    pub fn bound_dispatchers(&self, ft: &FnType, f: &mut impl FnMut(BindId)) {
+        let mut cells: LPooled<AddrSet> = LPooled::take();
+        let mut ids: SmallVec<[TraitId; 2]> = SmallVec::new();
+        ft.for_each_type(&mut |t| t.named_traits(&mut cells, &mut ids));
+        for id in ids {
             if let Some(def) = self.trait_def(id) {
                 f(def.anchor)
             }
-        })
+        }
     }
 
     /// The trait the binding `id`, named `name`, is a dispatcher or the

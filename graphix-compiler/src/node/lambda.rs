@@ -1251,7 +1251,7 @@ impl<R: Rt> LambdaDef<R> {
     /// The dispatchers of the traits the definition's signature names as
     /// a bound.
     fn bound_ids(&self, env: &Env, f: &mut impl FnMut(BindId)) {
-        env.bound_dispatchers(&Type::Fn(self.typ.clone()), f)
+        env.bound_dispatchers(&self.typ, f)
     }
 
     /// Put back into `env` the bindings this definition captures that
@@ -3077,7 +3077,6 @@ fn capture_names<R: Rt>(
         NodeView::Lambda(l) => {
             if let Some(d) = l.def_value().downcast_ref::<LambdaDef<R>>() {
                 d.captured_ids(&mut add);
-                d.bound_ids(checked, &mut add);
             }
         }
         _ => (),
