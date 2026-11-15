@@ -7,10 +7,10 @@ use anyhow::{Context, Result, bail};
 use arcstr::{ArcStr, literal};
 use graphix_compiler::{
     BindId,
-    expr::{ExprId, VfsEntry},
+    expr::{ExprId, FilesResolver, VfsEntry},
 };
 use graphix_package_core::testing::{
-    Events, Mode, TestCtx, fixture_runtime, next_update,
+    Events, Mode, TestCtx, config, fixture_runtime, next_update,
 };
 use netidx::publisher::Value;
 use tokio::sync::mpsc;
@@ -1069,6 +1069,39 @@ async fn a_function_escaping_a_dropped_module_keeps_its_imports_beside_a_new_mod
     drop(x);
     let made = ctx.rt.compile(literal!("mod m; m::make([1, 2])")).await?;
     await_update(&ctx, &mut rx, made.exprs[1].id, |v| *v == Value::I64(2)).await?;
+    let late = ctx.rt.compile(literal!(r#"g("abc")"#)).await?;
+    await_update(&ctx, &mut rx, late.exprs[0].id, |v| *v == Value::I64(3)).await?;
+    ctx.shutdown().await;
+    Ok(())
+}
+
+/// A function that left a dropped file module builds its body against the
+/// imports the file wrote then, where the module declared again at the path
+/// reads the file as since edited: the old input's views read the table the
+/// new module displaced.
+#[tokio::test(flavor = "current_thread")]
+async fn a_function_escaping_a_dropped_file_module_keeps_its_imports_past_an_edit()
+-> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let m = dir.path().join("m.gx");
+    std::fs::write(dir.path().join("m.gxi"), "val make: fn(s: string) -> i64")?;
+    std::fs::write(&m, "use str::len; let make = |s: string| len(s)")?;
+    let (tx, mut rx) = mpsc::channel(1024);
+    let files = FilesResolver::new(dir.path().to_path_buf(), None);
+    let ctx =
+        TestCtx::start(config(tx, crate::TEST_REGISTER, vec![files], |_| {})?).await?;
+    let _g = ctx.rt.compile(literal!("let g: fn(s: string) -> i64 = never();")).await?;
+    let a = ctx.rt.compile(literal!("mod m; g <- m::make; null")).await?;
+    await_update(&ctx, &mut rx, a.exprs[2].id, |v| *v == Value::Null).await?;
+    let (id, read) = compile_one(&ctx, "{ let f = g; 7 }").await?;
+    await_update(&ctx, &mut rx, id, |v| *v == Value::I64(7)).await?;
+    drop((a, read));
+    let (id, x) = compile_one(&ctx, "1").await?;
+    await_update(&ctx, &mut rx, id, |v| *v == Value::I64(1)).await?;
+    drop(x);
+    std::fs::write(&m, "use array::len; let make = |s: string| len([s, s, s, s])")?;
+    let made = ctx.rt.compile(literal!(r#"mod m; m::make("ab")"#)).await?;
+    await_update(&ctx, &mut rx, made.exprs[1].id, |v| *v == Value::I64(4)).await?;
     let late = ctx.rt.compile(literal!(r#"g("abc")"#)).await?;
     await_update(&ctx, &mut rx, late.exprs[0].id, |v| *v == Value::I64(3)).await?;
     ctx.shutdown().await;
