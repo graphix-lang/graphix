@@ -1651,6 +1651,16 @@ fn may_hold(env: &Env, t: &Type, h: &Head) -> Result<bool> {
 // coverage walk takes the second `A arm as covering `B. probes:
 // ~/ptmp/cr29/scratch/r25/25c/rev2/p5.txt, p6.txt, p7.txt (run with rb.sh)
 // (variant-dead-arm-unannotated-01)
+// 2026-11-15 claude: Checked on base-r26 (4ed90c8f0) and on the lane-26c build: the CR's
+// accepted programs are all refused now. Its p5/p6/p7 and 132 variants (all of rev2's
+// p1-p9) are refused: the unannotated forms by 'pattern `A('_N: unbound) will never match
+// `B' (or 'unreachable arm' where the dead arm comes last), the same message the
+// annotated form gives, so no program with a dead arm checks or runs. Non-dead twins
+// (`A(1) first, a guard on the first arm, a single `A arm) still check. What stands is
+// only the message: it names the other arm (`B), not the dead second `A arm, and prints
+// an inference cell ('_7999: unbound) where a type should be. Not fixed here: the CR's
+// claim is stale, and the wording is the same one the annotated parameter gets. Probes:
+// ~/ptmp/cr29/scratch/r26/26c/vd/.
 /// The heads `t` admits when it is a finite set of them: a union of
 /// `bool`, `null`, variants, tuples and structs holding no open cell,
 /// [`Head::Rest`] for its other primitives and [`Head::Open`] for
