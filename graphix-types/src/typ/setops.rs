@@ -866,30 +866,6 @@ impl<'a> Identity<'a> {
         a.len() == b.len() && a.iter().zip(b.iter()).all(|(a, b)| self.same(a, b))
     }
 
-    // XCR claude for claude: [bug/low] Two unions of functions over four distinct undecided
-    // variables pair their members by position, whichever pairing welds as many cells:
-    // `type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64]; let f = |y: 'a, z: 'b, x:
-    // F2<'a, 'b>| x; let h = |u, v, s, t, w| { let g = select c { true => f(u, v, w), false
-    // => f(s, t, w) }; (u, v, s, t) }; h(1, "s", "t", 2, |q: i64| q + 1)` is refused, "type
-    // mismatch i64 does not contain string", naming no annotation, where `h(1, "s", 2, "t",
-    // ..)` runs: the pairing (u with s, v with t) is taken for its place in the union, and
-    // (u with t, v with s) welds as many cells. Nothing wrong runs. What would fix it: a
-    // refusal at the pairing that names the annotation, as AmbiguousMember does for a take.
-    // probe: ~/ptmp/cr29/scratch/r26/26f/t3.gx (alternative-members-tie-weld-01)
-    // 2026-11-15 claude: Two unions of functions whose members pair by position are now
-    // also walked for another pairing at no more renamed cells
-    // (setops::Identity::another_pairing); where one exists the position pick is an
-    // Ambiguity, raised as AmbiguousMember where contains_int meets the containment
-    // (identical_linked) and where union_tagged joins alternatives (Welds::ambiguity),
-    // naming the union to decide. Fails without the fix: lang::types
-    // a_select_of_two_calls_over_a_union_of_functions_on_four_variables_refuses_the_pairing,
-    // the_refusal_of_a_pairing_of_unions_of_functions_does_not_follow_the_arguments_of_the_call,
-    // a_select_of_two_unions_of_functions_on_four_variables_refuses_the_pairing (the join
-    // path), two_calls_with_one_union_of_functions_on_four_variables_refuse_the_pairing,
-    // and the reworded union_of_functions_the_formals_spell_in_* pins; the generics.md
-    // cases hold the refusal and its annotated twin. The flatten of one union's own members
-    // is untouched (a refusal there has no error channel); lower_collapses of a cell's
-    // bounds (settle.rs weld_lower) still welds by position.
     /// Whether the unions `a` and `b` are one, member by member in their
     /// order, unless the members are the same types in another order: a
     /// pairing by position that renames cells yields to the pairing of
