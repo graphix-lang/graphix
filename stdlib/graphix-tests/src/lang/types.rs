@@ -17052,6 +17052,174 @@ run!(
 );
 
 run!(
+    two_variant_members_one_cell_hold_it_together,
+    r#"{
+  type T0 = `B(i64);
+  type T1 = `B(string);
+  let f = |x: ['a, `B('b)]| -> 'b never();
+  let v: [T0, T1] = never();
+  let n: [i64, string] = f(v);
+  0
+}"#,
+    prints("i64:0");
+    FuseExpect::None
+);
+
+run!(
+    two_variant_members_one_cell_are_refused_as_the_first_name_is_not_first,
+    r#"{
+  type T0 = `B(i64);
+  type T1 = `B(string);
+  let f = |x: ['a, `B('b)]| -> 'b never();
+  let v: [T0, T1] = never();
+  let n: i64 = f(v);
+  0
+}"#,
+    refused("i64 does not contain [i64, string]");
+    FuseExpect::None
+);
+
+run!(
+    two_variant_members_one_cell_are_refused_as_the_second_name_is_not_first,
+    r#"{
+  type T1 = `B(i64);
+  type T0 = `B(string);
+  let f = |x: ['a, `B('b)]| -> 'b never();
+  let v: [T0, T1] = never();
+  let n: i64 = f(v);
+  0
+}"#,
+    refused("i64 does not contain [i64, string]");
+    FuseExpect::None
+);
+
+run!(
+    two_tuple_members_one_cell_hold_it_together,
+    r#"{
+  type T0 = (i64, string);
+  type T1 = (i64, i64);
+  let f = |x: ['a, (i64, 'b)]| -> 'b never();
+  let v: [T0, T1] = never();
+  let n: [i64, string] = f(v);
+  0
+}"#,
+    prints("i64:0");
+    FuseExpect::None
+);
+
+run!(
+    two_tuple_members_one_cell_are_refused_as_the_first_name_is_not_first,
+    r#"{
+  type T0 = (i64, string);
+  type T1 = (i64, i64);
+  let f = |x: ['a, (i64, 'b)]| -> 'b never();
+  let v: [T0, T1] = never();
+  let n: i64 = f(v);
+  0
+}"#,
+    refused("i64 does not contain [i64, string]");
+    FuseExpect::None
+);
+
+run!(
+    two_tuple_members_one_cell_are_refused_as_the_second_name_is_not_first,
+    r#"{
+  type T1 = (i64, string);
+  type T0 = (i64, i64);
+  let f = |x: ['a, (i64, 'b)]| -> 'b never();
+  let v: [T0, T1] = never();
+  let n: i64 = f(v);
+  0
+}"#,
+    refused("i64 does not contain [i64, string]");
+    FuseExpect::None
+);
+
+run!(
+    two_map_members_one_cell_hold_it_together,
+    r#"{
+  type T0 = Map<string, i64>;
+  type T1 = Map<string, string>;
+  let f = |x: ['a, Map<string, 'b>]| -> 'b never();
+  let v: [T0, T1] = never();
+  let n: [i64, string] = f(v);
+  0
+}"#,
+    prints("i64:0");
+    FuseExpect::None
+);
+
+run!(
+    two_map_members_one_cell_are_refused_as_the_first_name_is_not_first,
+    r#"{
+  type T0 = Map<string, i64>;
+  type T1 = Map<string, string>;
+  let f = |x: ['a, Map<string, 'b>]| -> 'b never();
+  let v: [T0, T1] = never();
+  let n: i64 = f(v);
+  0
+}"#,
+    refused("i64 does not contain [i64, string]");
+    FuseExpect::None
+);
+
+run!(
+    two_map_members_one_cell_are_refused_as_the_second_name_is_not_first,
+    r#"{
+  type T1 = Map<string, i64>;
+  type T0 = Map<string, string>;
+  let f = |x: ['a, Map<string, 'b>]| -> 'b never();
+  let v: [T0, T1] = never();
+  let n: i64 = f(v);
+  0
+}"#,
+    refused("i64 does not contain [i64, string]");
+    FuseExpect::None
+);
+
+run!(
+    two_struct_members_one_cell_hold_it_together,
+    r#"{
+  type T0 = {a: i64};
+  type T1 = {a: string};
+  let f = |x: ['a, {a: 'b}]| -> 'b never();
+  let v: [T0, T1] = never();
+  let n: [i64, string] = f(v);
+  0
+}"#,
+    prints("i64:0");
+    FuseExpect::None
+);
+
+run!(
+    two_struct_members_one_cell_are_refused_as_the_first_name_is_not_first,
+    r#"{
+  type T0 = {a: i64};
+  type T1 = {a: string};
+  let f = |x: ['a, {a: 'b}]| -> 'b never();
+  let v: [T0, T1] = never();
+  let n: i64 = f(v);
+  0
+}"#,
+    refused("i64 does not contain [i64, string]");
+    FuseExpect::None
+);
+
+run!(
+    two_struct_members_one_cell_are_refused_as_the_second_name_is_not_first,
+    r#"{
+  type T1 = {a: i64};
+  type T0 = {a: string};
+  let f = |x: ['a, {a: 'b}]| -> 'b never();
+  let v: [T0, T1] = never();
+  let n: i64 = f(v);
+  0
+}"#,
+    refused("i64 does not contain [i64, string]");
+    FuseExpect::None
+);
+
+run!(
     one_array_member_one_cell_still_decides_it,
     r#"{
   let f = |x: ['a, Array<'b>]| -> 'b never();

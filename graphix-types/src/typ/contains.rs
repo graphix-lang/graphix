@@ -7,8 +7,8 @@ use crate::{
     stack::ensure_sufficient,
     typ::{
         AbstractId, AndAc, AppKey, Bound, Brief, CoreTrait, FnType, Held, Indiscernible,
-        Lazy, Mutability, NodePairs, NormKey, Open, RefHist, RefPair, TVar, TraitId,
-        Type, TypeRef, Unfolded,
+        Lazy, MapType, Mutability, NodePairs, NormKey, Open, RefHist, RefPair, TVar,
+        TraitId, Type, TypeRef, Unfolded,
         cast::shares_form,
         node_addr,
         normalize::NormCx,
@@ -1284,10 +1284,25 @@ fn decides_no_cell(t: &Type) -> bool {
     })
 }
 
-/// The parameter of an `Array`, `List` or `Error`.
-fn ctor_param(t: &Type) -> Option<&Type> {
+/// How many parameters an `Array`, `List`, `Error`, tuple, struct, variant or
+/// map holds.
+fn ctor_arity(t: &Type) -> Option<usize> {
     match t {
-        Type::Array(p) | Type::List(p) | Type::Error(p) => Some(p),
+        Type::Array(_) | Type::List(_) | Type::Error(_) => Some(1),
+        Type::Map(_) => Some(2),
+        Type::Tuple(ps) | Type::Variant(_, ps, _) => Some(ps.len()),
+        Type::Struct(fs) => Some(fs.len()),
+        _ => None,
+    }
+}
+
+/// The `i`th parameter of a type with [`ctor_arity`] more than `i`.
+fn ctor_param(t: &Type, i: usize) -> Option<&Type> {
+    match t {
+        Type::Array(p) | Type::List(p) | Type::Error(p) => (i == 0).then_some(&**p),
+        Type::Map(m) => [&m.key, &m.value].get(i).copied(),
+        Type::Tuple(ps) | Type::Variant(_, ps, _) => ps.get(i),
+        Type::Struct(fs) => fs.get(i).map(|(_, t, _)| t),
         _ => None,
     }
 }
@@ -5826,7 +5841,7 @@ impl Type {
             };
             let shape = shape.as_ref().unwrap_or(m);
             shapes.push(shape.clone());
-            if ctor_param(shape).is_some() {
+            if ctor_arity(shape).is_some_and(|n| n > 0) {
                 let mut found = None;
                 let mut many = false;
                 for (i, c) in s0.iter().enumerate().filter(|(i, _)| !free[*i]) {
@@ -5876,21 +5891,55 @@ impl Type {
     }
 
     /// The one type that holds every member of `group`, applications of
-    /// one single-parameter constructor.
+    /// one constructor to as many parameters, each parameter the union of
+    /// the members' there.
     fn join_ctor<'a>(
         group: impl Iterator<Item = &'a Type> + Clone,
         hist: &mut ContainsHist,
     ) -> Option<Type> {
         let first = group.clone().next()?;
-        let kind = std::mem::discriminant(first);
-        if group.clone().any(|m| std::mem::discriminant(m) != kind) {
+        let arity = ctor_arity(first)?;
+        let same = |m: &Type| {
+            ctor_arity(m) == Some(arity)
+                && match (first, m) {
+                    (Self::Array(_), Self::Array(_))
+                    | (Self::List(_), Self::List(_))
+                    | (Self::Error(_), Self::Error(_))
+                    | (Self::Map(_), Self::Map(_))
+                    | (Self::Tuple(_), Self::Tuple(_)) => true,
+                    (Self::Variant(a, ..), Self::Variant(b, ..)) => a == b,
+                    (Self::Struct(a), Self::Struct(b)) => {
+                        a.iter().zip(b.iter()).all(|(a, b)| a.0 == b.0)
+                    }
+                    _ => false,
+                }
+        };
+        if !group.clone().all(same) {
             return None;
         }
-        let inner = Arc::new(hist.normal_union(group.filter_map(ctor_param)));
+        let mut joined: SmallVec<[Type; 4]> = SmallVec::new();
+        for i in 0..arity {
+            joined
+                .push(hist.normal_union(group.clone().filter_map(|m| ctor_param(m, i))));
+        }
+        let mut joined = joined.into_iter();
+        let mut next = || joined.next();
         match first {
-            Self::Array(_) => Some(Self::Array(inner)),
-            Self::List(_) => Some(Self::List(inner)),
-            Self::Error(_) => Some(Self::Error(inner)),
+            Self::Array(_) => Some(Self::Array(Arc::new(next()?))),
+            Self::List(_) => Some(Self::List(Arc::new(next()?))),
+            Self::Error(_) => Some(Self::Error(Arc::new(next()?))),
+            Self::Map(_) => {
+                let key = next()?;
+                let value = next()?;
+                Some(Self::Map(Arc::new(MapType { key, value })))
+            }
+            Self::Tuple(_) => Some(Self::Tuple(Arc::from_iter(joined))),
+            Self::Variant(tag, _, at) => {
+                Some(Self::Variant(tag.clone(), Arc::from_iter(joined), at.clone()))
+            }
+            Self::Struct(fs) => Some(Self::Struct(Arc::from_iter(
+                fs.iter().zip(joined).map(|((n, _, at), t)| (n.clone(), t, at.clone())),
+            ))),
             _ => None,
         }
     }
@@ -5947,7 +5996,7 @@ impl Type {
         };
         let s1: &[Type] = joined.as_deref().map_or(s1, |j| &j[..]);
         let mut residue: LPooled<Vec<Type>> = LPooled::take();
-        // CR claude for claude: [bug/medium] Two members of the value that one constructor
+        // XCR claude for claude: [bug/medium] Two members of the value that one constructor
         // member of the holder could take, where that member holds a variable, are met in
         // the value's own order: the first decides the variable and the other goes to the
         // open member. That order is the union's sort, which follows the names of typedefs
@@ -6072,6 +6121,30 @@ impl Type {
         // lang::types::two_array_members_one_cell_under_a_writable_reference_are_refused.
         // Skipping the join there would need a flag on the walk (ContainsFlags is a full
         // u8). Probes ~/ptmp/cr29/scratch/r25/25e/review/m.txt, m2.txt.
+        // 2026-11-15 claude: Round 26, lane 26e. The join of join_cell_sharing now also
+        // holds members that are tuples of one arity, variants of one tag, structs of one
+        // field list and maps (each parameter the union of the members' there), a name
+        // standing for one included; before it, over type T0 = `B(i64); type T1 =
+        // `B(string); ['a, `B('b)] took the first of the two by the names' order ('n: i64 =
+        // f(v)' checked, and was refused with the names swapped), and the same for (i64,
+        // 'b) over two tuples and Map<string, 'b> over two maps; now both are refused in
+        // either order, 'b being [i64, string]. A search of 11 holders x 380 member pairs x
+        // (aliases, aliases of unions) x both name orders x three read-outs, and of 7
+        // constructors under declared variables 'p/'q swapped, finds no verdict that
+        // follows an order (probes ~/ptmp/cr29/scratch/r26/26e/vm/{gen.py,gen2.py,v.txt}).
+        // What is left is no order: a named union's parts go whole to the open member
+        // (order.txt 5-7: accepted in either name order, a sound typing), the written-out
+        // union still merges what a named one keeps apart (the same typing the other way
+        // round, not an order), the &mut form is refused in both orders since lane 25e's
+        // join, and the bottom-cell form is refused in both orders (c1, c2 and the REPL
+        // arms; pin
+        // lang::repl_inputs::settled_member_first_is_refused_as_the_written_twins). Pins:
+        // lang::types::two_variant_members_one_cell_* and two_tuple_members_one_cell_* (16
+        // failures across the modes with the join narrowed back). Needs a soak.
+        // 2026-11-15 claude: Round 26, lane 26e: the map and struct forms are pinned too,
+        // lang::types::two_map_members_one_cell_* and two_struct_members_one_cell_* (their
+        // two refusals fail with the join narrowed back, their messages being 'i64 does not
+        // contain string').
         for m in s1.iter() {
             // An rhs member equal to the whole lhs set is
             // covered reflexively; as residue it would close a

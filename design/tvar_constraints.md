@@ -798,18 +798,23 @@ one member, chosen by rules that read the union alone:
   [Array<i64>, Array<string>, null]` is `'b ⊇ [i64, string]` and `'a ⊇
   null`, in either order of the members, whatever the typedefs' or the
   declared variables' names (`place_members`, `join_cell_sharing`: `Array`,
-  `List` and `Error` members, a name standing for one included). Over
-  `|x: ['a, Error<'e>]| x?` a value of two error tags gives `'e` both, so a
-  handler for one tag is refused as missing the other (pins
+  `List` and `Error` members, tuples of one arity, variants of one tag, maps
+  and structs of one field list, each parameter the union of the members'
+  there, a name standing for one included: `['a, (i64, 'b)] ⊇ [(i64,
+  string), (i64, i64)]` is `'b ⊇ [string, i64]`). Over `|x: ['a,
+  Error<'e>]| x?` a value of two error tags gives `'e` both, so a handler
+  for one tag is refused as missing the other (pins
   `lang::types::two_array_members_one_cell_hold_it_together`,
   `two_named_array_members_one_cell_are_refused_as_the_second_name_is_not_first`,
-  `two_error_members_one_cell_hold_both_tags`). A member that two
-  constructor members could take, a name standing for a union, and a member
-  of another constructor are not joined and keep the walk's order. Under a
-  writable reference the join holds too: `&mut ['a, Array<'b>]` against a
-  `&mut` of two arrays is refused in either order of the members (pin
-  `two_array_members_one_cell_under_a_writable_reference_are_refused`), where
-  the first member used to decide it.
+  `two_error_members_one_cell_hold_both_tags`,
+  `two_variant_members_one_cell_*`, `two_tuple_members_one_cell_*`,
+  `two_map_members_one_cell_*`, `two_struct_members_one_cell_*`). A member
+  that two constructor members could take, and a name standing for a union,
+  are not joined and keep the walk's order. Under a writable reference the
+  join holds too: `&mut ['a, Array<'b>]` against a `&mut` of two arrays is
+  refused in either order of the members (pin
+  `two_array_members_one_cell_under_a_writable_reference_are_refused`),
+  where the first member used to decide it.
 - of several that could, the one that holds each of the others as it
   stands (`contains::widest`) takes the type, where taking it decides
   every cell another of them would (`contains::decides_each`): what any
