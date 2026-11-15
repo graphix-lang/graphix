@@ -1699,9 +1699,17 @@ fn holds_a_variable(t: &Type) -> bool {
 /// bound that held what its variable took holds it still. One standing
 /// in a union beside another undecided member is not: which member takes
 /// a type turns on what the cells are, so the first argument that meets
-/// it decides it.
-fn widenable(env: &Env, def: &FnType, inst: &FnType) -> LPooled<AHashMap<ArcStr, TVar>> {
-    // CR claude for claude: [bug/low] A variable only bounds hold takes no argument wider
+/// it decides it. A variable only the bounds hold is none of them: it stays
+/// as the first argument that reached it through a bound decided it, and
+/// `bound_held` collects the decided ones, for the refusal that names them
+/// ([`bound_held_note`]).
+fn widenable(
+    env: &Env,
+    def: &FnType,
+    inst: &FnType,
+    mut bound_held: Option<&mut AHashMap<ArcStr, TVar>>,
+) -> LPooled<AHashMap<ArcStr, TVar>> {
+    // XCR claude for claude: [bug/low] A variable only bounds hold takes no argument wider
     // than the first that reached it through a bound. Over `let f = 'a1: Array<'a3>, 'a2:
     // Array<'a3> |x1: 'a1, x2: 'a2| 7; let v: Array<[i64, null]> = [1]; let u: Array<i64>
     // = [1]`, `f(u, v)` is refused, "'a2: unbound within Array<'a3: i64> does not contain
@@ -1765,6 +1773,15 @@ fn widenable(env: &Env, def: &FnType, inst: &FnType) -> LPooled<AHashMap<ArcStr,
     // the bounds of the parameters, an argument before this one decided it narrower than this
     // argument holds, annotate that argument with a type that holds both; the two-deep cases get
     // the same note at the middle bound. No widening of a bound-held variable.
+    // 2026-11-15 claude: Eric ruled D40 (b): the refusal stays and names the annotation
+    // (bound_held_note, called from Widening::join): 'a3 (the middle bound's variable two deep)
+    // is held only by the bounds of the parameters, and an argument before this one decided it
+    // narrower than this argument holds; annotate that argument with a type that holds both. No
+    // verdict changes: the 4800-program generator (588 refusals with a runnable twin, all now
+    // carry the note, 0 newly ok / 0 newly not), census 2976 files 0 verdict changes. Pins that
+    // fail without it: lang::types::bound_held_variable_takes_no_wider_argument,
+    // _through_a_wrapper_names_the_annotation, _two_deep_names_the_middle_bound; the annotated
+    // twins and wide-first order run; graphix,cases lines in generics.md.
     let mut at_def: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
     def.collect_tvars(&mut at_def);
     let mut found: LPooled<AHashMap<ArcStr, (TVar, bool)>> = LPooled::take();
@@ -1787,10 +1804,36 @@ fn widenable(env: &Env, def: &FnType, inst: &FnType) -> LPooled<AHashMap<ArcStr,
             bounds.walk(&c, Held::default(), &mut |tv, held| {
                 if let Some((_, data)) = found.get_mut(&tv.name) {
                     *data &= held.data()
+                } else if let Some(only) = bound_held.as_deref_mut() {
+                    only.insert(tv.name.clone(), tv.clone());
                 }
                 bounded.push(tv.clone())
             })
         }
+    }
+    if let Some(only) = bound_held {
+        let mut reached: LPooled<Vec<TVar>> = at_def.values().cloned().collect();
+        walked.clear();
+        while let Some(tv) = reached.pop() {
+            if !walked.insert(tv.cell_addr()) {
+                continue;
+            }
+            for c in tv.cell_constraints() {
+                let mut under: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+                c.collect_tvars(&mut under);
+                for (name, tv) in under.drain() {
+                    if !at_def.contains_key(&name) {
+                        at_def.insert(name, tv.clone());
+                    }
+                    reached.push(tv)
+                }
+            }
+        }
+        only.retain(|name, tv| {
+            tv.is_bound()
+                && !tv.is_rigid()
+                && at_def.get(name).is_some_and(|d| !d.is_bound())
+        })
     }
     found
         .drain()
@@ -1846,7 +1889,7 @@ impl Widening {
     ) -> &'a AHashMap<ArcStr, TVar> {
         cells.get_or_insert_with(|| {
             def.with_deref(|t| match t {
-                Some(Type::Fn(def)) => widenable(env, def, inst),
+                Some(Type::Fn(def)) => widenable(env, def, inst, None),
                 _ => LPooled::take(),
             })
         })
@@ -2001,9 +2044,15 @@ impl Widening {
             Ok(false) => formal.check_contains(env, typ),
             Err(e) => Err(ambiguous_parameter(e)),
         };
-        res.map_err(|e| match self.pinned_note(formal) {
-            Some(note) if !e.is::<UndecidedTaker>() => anyhow!("{e}: {note}"),
-            Some(_) | None => e,
+        res.map_err(|e| {
+            if e.is::<UndecidedTaker>() {
+                return e;
+            }
+            let held = bound_held_note(env, def, inst, formal, typ);
+            match (held, self.pinned_note(formal)) {
+                (Some(note), _) | (None, Some(note)) => anyhow!("{e}: {note}"),
+                (None, None) => e,
+            }
         })
     }
 
@@ -2216,6 +2265,78 @@ impl Widening {
         }
         Ok(below)
     }
+}
+
+/// What a decided argument of type `typ` refused at `formal` asks to
+/// annotate where it is wider than a variable only the bounds of the
+/// parameters hold: an argument before this one decided that variable, and
+/// the bounds never widen it. None when no such variable would take `typ`
+/// wider than it stands.
+fn bound_held_note(
+    env: &Env,
+    def: &Type,
+    inst: &FnType,
+    formal: &Type,
+    typ: &Type,
+) -> Option<CompactString> {
+    if typ.has_unbound() {
+        return None;
+    }
+    let mut held: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+    def.with_deref(|t| {
+        if let Some(Type::Fn(def)) = t {
+            widenable(env, def, inst, Some(&mut held));
+        }
+    });
+    if held.is_empty() {
+        return None;
+    }
+    let mut copies: Copies = LPooled::take();
+    let open = formal.replace_tvars_copied(&AHashMap::new(), &mut copies);
+    let mut opened: SmallVec<[(&ArcStr, &TVar, TVar); 2]> = SmallVec::new();
+    for (name, tv) in held.iter() {
+        if let Some(copy) = copies.get(&tv.cell_addr()) {
+            copy.unbind();
+            copy.drop_lower();
+            opened.push((name, tv, copy.clone()))
+        }
+    }
+    if opened.is_empty() || !open.contains(env, typ).ok()? {
+        return None;
+    }
+    let probe = ContainsFlags::RigidCheck.into();
+    let mut wider: SmallVec<[(&ArcStr, &TVar); 2]> = SmallVec::new();
+    for (name, cell, copy) in opened.iter() {
+        let (Some(old), Some(new)) = (cell.binding(), copy.binding()) else { continue };
+        if !old.contains_with_flags(probe, env, &new).ok()?
+            && new.contains_with_flags(probe, env, &old).ok()?
+        {
+            wider.push((name, cell))
+        }
+    }
+    let mut inner: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+    for (_, cell) in wider.iter() {
+        for c in cell.cell_constraints() {
+            c.collect_tvars(&mut inner)
+        }
+    }
+    let mut wider: SmallVec<[&ArcStr; 2]> = wider
+        .iter()
+        .map(|(name, _)| *name)
+        .filter(|name| !inner.contains_key(*name))
+        .collect();
+    wider.sort();
+    let (first, rest) = wider.split_first()?;
+    let mut note = format_compact!("'{first}");
+    for name in rest {
+        write!(note, ", '{name}").unwrap();
+    }
+    note.push_str(match rest.is_empty() {
+        true => " is held only by the bounds of the parameters, and an argument before this one decided it narrower than this argument holds",
+        false => " are held only by the bounds of the parameters, and an argument before this one decided them narrower than this argument holds",
+    });
+    note.push_str("; annotate that argument with a type that holds both (bind it to a `let` with its type written)");
+    Some(note)
 }
 
 /// Whether some decision of the undecided cells the type `arg` holds outside

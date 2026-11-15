@@ -16408,6 +16408,92 @@ run!(
     prints("[null]")
 );
 
+// A variable only the bounds of the parameters hold takes no argument wider
+// than the first that reached it through a bound: the refusal names the
+// annotation, and the argument annotated with a type holding both runs.
+run!(
+    bound_held_variable_takes_no_wider_argument,
+    r#"{
+  let f = 'a1: Array<'a3>, 'a2: Array<'a3> |x1: 'a1, x2: 'a2| 7;
+  let u: Array<i64> = [1];
+  let v: Array<[i64, null]> = [1];
+  f(u, v)
+}"#,
+    refused(
+        "type mismatch 'a2: unbound within Array<'a3: i64> does not contain \
+         Array<[i64, null]>: 'a3 is held only by the bounds of the parameters, and an \
+         argument before this one decided it narrower than this argument holds; \
+         annotate that argument with a type that holds both"
+    );
+    FuseExpect::None
+);
+
+run!(
+    bound_held_variable_takes_the_annotated_argument,
+    r#"{
+  let f = 'a1: Array<'a3>, 'a2: Array<'a3> |x1: 'a1, x2: 'a2| 7;
+  let u: Array<[i64, null]> = [1];
+  let v: Array<[i64, null]> = [1];
+  f(u, v)
+}"#,
+    prints("i64:7")
+);
+
+run!(
+    bound_held_variable_takes_the_narrower_argument_after_the_wider,
+    r#"{
+  let f = 'a1: Array<'a3>, 'a2: Array<'a3> |x1: 'a1, x2: 'a2| 7;
+  let u: Array<i64> = [1];
+  let v: Array<[i64, null]> = [1];
+  f(v, u)
+}"#,
+    prints("i64:7")
+);
+
+run!(
+    bound_held_variable_through_a_wrapper_names_the_annotation,
+    r#"{
+  let f = 'a1: Array<'c>, 'a2: Array<'c> |x1: 'a1, x2: 'a2| 7;
+  let h = 'b1: Array<'c>, 'b2: Array<'c> |y1: 'b1, y2: 'b2| f(y1, y2);
+  let u: Array<i64> = [1];
+  let v: Array<[i64, null]> = [1];
+  h(u, v)
+}"#,
+    refused(
+        "'c is held only by the bounds of the parameters, and an argument before \
+         this one decided it narrower than this argument holds; annotate that \
+         argument with a type that holds both"
+    );
+    FuseExpect::None
+);
+
+run!(
+    bound_held_variable_two_deep_names_the_middle_bound,
+    r#"{
+  let f = 'm: Array<'c>, 'a1: 'm, 'a2: Array<'m> |x1: 'a1, x2: 'a2| 7;
+  let u: Array<i64> = [1];
+  let v: Array<Array<[i64, null]>> = [[1]];
+  f(u, v)
+}"#,
+    refused(
+        "'m is held only by the bounds of the parameters, and an argument before \
+         this one decided it narrower than this argument holds; annotate that \
+         argument with a type that holds both"
+    );
+    FuseExpect::None
+);
+
+run!(
+    bound_held_variable_two_deep_takes_the_annotated_argument,
+    r#"{
+  let f = 'm: Array<'c>, 'a1: 'm, 'a2: Array<'m> |x1: 'a1, x2: 'a2| 7;
+  let u: Array<[i64, null]> = [1];
+  let v: Array<Array<[i64, null]>> = [[1]];
+  f(u, v)
+}"#,
+    prints("i64:7")
+);
+
 run!(
     partial_wrapper_bound_reaches_an_element_through_a_decided_variable,
     r#"{

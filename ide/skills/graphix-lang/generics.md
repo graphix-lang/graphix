@@ -671,6 +671,22 @@ no "Array<'a2: [null, string]> does not contain Array<i64>" let f = 'a1: ['a2, d
 ok let f = 'x: Array<['a, null]> |y: 'x| y; let g = |u| f([u, [u]]); g(1)
 ```
 
+A variable only the bounds of the parameters hold widens to no argument:
+the first argument that reaches it through a bound decides it, and a later
+one wider is refused, "is held only by the bounds of the parameters". The
+same bound written in the parameters (`|x1: Array<'a3>, x2: Array<'a3>|`)
+widens it. Annotate the earlier argument with a type that holds both (bind
+it to a `let` with its type written), or put the wider one first. Two bounds
+deep the refusal names the middle bound.
+
+```graphix,cases
+no "'a3 is held only by the bounds of the parameters" let f = 'a1: Array<'a3>, 'a2: Array<'a3> |x1: 'a1, x2: 'a2| 7; let u: Array<i64> = [1]; let v: Array<[i64, null]> = [1]; f(u, v)
+ok let f = 'a1: Array<'a3>, 'a2: Array<'a3> |x1: 'a1, x2: 'a2| 7; let u: Array<[i64, null]> = [1]; let v: Array<[i64, null]> = [1]; f(u, v)
+ok let f = 'a1: Array<'a3>, 'a2: Array<'a3> |x1: 'a1, x2: 'a2| 7; let u: Array<i64> = [1]; let v: Array<[i64, null]> = [1]; f(v, u)
+ok let f = |x1: Array<'a3>, x2: Array<'a3>| 7; let u: Array<i64> = [1]; let v: Array<[i64, null]> = [1]; f(u, v)
+no "'m is held only by the bounds of the parameters" let f = 'm: Array<'c>, 'a1: 'm, 'a2: Array<'m> |x1: 'a1, x2: 'a2| 7; let u: Array<i64> = [1]; let v: Array<Array<[i64, null]>> = [[1]]; f(u, v)
+```
+
 A wrapper's declared variable takes no bound from a callee's. Inside the
 value a callee's bound takes, the bound's own variable takes it, as where
 the bound's type is written in the parameter; where the bound has no
