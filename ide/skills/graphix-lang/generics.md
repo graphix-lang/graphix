@@ -552,13 +552,16 @@ A default that raises through a variable its factory declares
 (`|k: Result<i64, 'e>| |#d = k?, x: i64| ..`) raises what each call that
 made the function picked for `'e`, which only the returned function's
 `throws` names: write it there, or close `'e`. A call inside the factory
-needs neither.
+needs neither. Two such variables cannot be written together in a `throws`
+(a union of two variables): close all but one.
 
 ```graphix,cases
 no "write `throws Error<ErrChain<'e>>` in the type of the function it returns" let mk = |k: Result<i64, 'e>| |#d = k?, x: i64| d + x; { catch(e) 0; mk(error(`E))(7) }
 ok let mk = |k: Result<i64, 'e>| -> fn(?#d: i64, x: i64) -> i64 throws Error<ErrChain<'e>> |#d = k?, x: i64| d + x; { catch(e) 0; mk(error(`E))(7) }
 ok let mk = |k: Result<i64, `E>| |#d = k?, x: i64| d + x; { catch(e) 0; mk(error(`E))(7) }
 ok let mk = |k: Result<i64, 'e>| { let g = |#d = k?, x: i64| d + x; g(1) }; { catch(e) 0; mk(error(`E)) }
+no "close all but one of them where they are declared" let mk = |k: Result<i64, 'e>, j: Result<i64, 'f>| -> fn(?#d: i64, x: i64) -> i64 throws Error<ErrChain<'e>> |#d = k? + j?, x: i64| d + x; { catch(e) 0; mk(error(`E), 1)(7) }
+ok let mk = |k: Result<i64, 'e>, j: Result<i64, `F>| -> fn(?#d: i64, x: i64) -> i64 throws Error<ErrChain<['e, `F]>> |#d = k? + j?, x: i64| d + x; { catch(e) 0; mk(error(`E), 1)(7) }
 ```
 
 A labeled default that holds a function is judged as that function

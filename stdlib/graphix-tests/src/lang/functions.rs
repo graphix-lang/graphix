@@ -6472,6 +6472,23 @@ const A_DEFAULT_RAISING_THROUGH_THE_FACTORYS_VARIABLE_USED_INSIDE: &str = r#"{
     r$
 }"#;
 
+const A_DEFAULT_RAISING_THROUGH_TWO_OF_THE_FACTORYS_VARIABLES: &str = r#"{
+    let mk = |k: Result<i64, 'e>, j: Result<i64, 'f>| -> fn(?#d: i64, x: i64) -> i64 throws Error<ErrChain<'e>>
+        |#d = k? + j?, x: i64| d + x;
+    { catch(e) 0; mk(error(`E), 1)(7) }
+}"#;
+
+const A_DEFAULT_RAISING_THROUGH_ONE_OF_THE_FACTORYS_VARIABLES_AND_A_CLOSED_ONE: &str = r#"{
+    let mk = |k: Result<i64, 'e>, j: Result<i64, `F>| -> fn(?#d: i64, x: i64) -> i64 throws Error<ErrChain<['e, `F]>>
+        |#d = k? + j?, x: i64| d + x;
+    let r: [string, null] = null;
+    {
+        catch(e) r <- e ~ "[e.0.error]";
+        mk(error(`E), 1)(7)
+    };
+    r$
+}"#;
+
 const A_DEFAULT_RAISING_THROUGH_THE_FACTORYS_VARIABLE_THAT_THROWS_ANOTHER_TYPE: &str = r#"{
     let mk = |k: Result<i64, 'e>| -> fn(?#d: i64, x: i64) -> i64 throws Error<ErrChain<`Z>>
         |#d = k?, x: i64| d + x;
@@ -6502,6 +6519,20 @@ run!(
 run!(
     a_default_raising_through_the_factorys_variable_used_inside,
     A_DEFAULT_RAISING_THROUGH_THE_FACTORYS_VARIABLE_USED_INSIDE,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "`E");
+    FuseExpect::Jit
+);
+
+run!(
+    a_default_raising_through_two_of_the_factorys_variables,
+    A_DEFAULT_RAISING_THROUGH_TWO_OF_THE_FACTORYS_VARIABLES,
+    refused("close all but one of them where they are declared");
+    FuseExpect::None
+);
+
+run!(
+    a_default_raising_through_one_of_the_factorys_variables_and_a_closed_one,
+    A_DEFAULT_RAISING_THROUGH_ONE_OF_THE_FACTORYS_VARIABLES_AND_A_CLOSED_ONE,
     |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "`E");
     FuseExpect::Jit
 );

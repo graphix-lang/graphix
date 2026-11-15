@@ -3192,13 +3192,27 @@ impl<R: Rt> CallSite<R> {
         let mut scheme: SmallVec<[ArcStr; 2]> = SmallVec::new();
         scheme_variables(raised, &mut scheme);
         if let Some(missing) = scheme.iter().find(|n| !names_variable(&ftype.throws, n)) {
-            bail!(
-                "this default raises {raised}, through the variable '{missing} of the \
-                 function that made this one, which no call of it decides: write \
-                 `throws {raised}` in the type of the function it returns, or close \
-                 '{missing} where it is declared",
-                raised = raised.resolve_tvars()
-            )
+            let raised = raised.resolve_tvars();
+            match scheme.len() {
+                1 => bail!(
+                    "this default raises {raised}, through the variable '{missing} of the \
+                     function that made this one, which no call of it decides: write \
+                     `throws {raised}` in the type of the function it returns, or close \
+                     '{missing} where it is declared"
+                ),
+                _ => {
+                    let mut vars = LPooled::<String>::take();
+                    for (i, n) in scheme.iter().enumerate() {
+                        let _ = write!(vars, "{}'{n}", if i == 0 { "" } else { ", " });
+                    }
+                    bail!(
+                        "this default raises {raised}, through the variables {vars} of the \
+                         function that made this one, which no call of it decides and a \
+                         function type cannot name together: close all but one of them \
+                         where they are declared"
+                    )
+                }
+            }
         }
         let Some(h) = self.scope.dynamic.handler() else { return Ok(()) };
         match raised {
