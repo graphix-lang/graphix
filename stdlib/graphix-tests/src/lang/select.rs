@@ -13662,7 +13662,7 @@ run!(
 run!(
     pool_over_a_referent_the_arms_decide_needs_the_cover_arm,
     "{ let f = |b: bool, c: bool| { let r = &mut (select c { true => (b, \"s\"), false => (`L, `Z) }); select *r { (true, _) => 1, (false, _) => 2 } }; f(true, true) }",
-    refused("tests a value of 'r");
+    refused("missing match cases: no arm covers (`L, `Z)");
     FuseExpect::None
 );
 

@@ -835,6 +835,12 @@ impl Reach {
                     // test_beside_a_variable_bounded_by_any_written::jit, the same on main),
                     // deep_nesting 50 ok, guicheck 39,721,487,097 (base-r25) vs 39,666,524,724
                     // (lane, with its earlier commits).
+                    // 2026-11-14 claude: Finisher: written-variable-twice-open-01, which the
+                    // twice forms waited on, is closed on r25-staging (5c7f331d0, reviewed
+                    // ca5ed9dca); the twice forms (wv10, x1) are still refused as pinned by
+                    // written_variable_twice_over_an_undecided_part_is_refused. A later fixer
+                    // can try leaving a twice-written variable to its arm's narrowing at the
+                    // settle now that its open-variable hole is refused where it stands.
                     let mut written: LPooled<AHashMap<usize, TVar>> = LPooled::take();
                     let mut counts: LPooled<AHashMap<usize, (TVar, u32)>> =
                         LPooled::take();
