@@ -347,6 +347,24 @@ async fn saved_across_reloads(
     sig: &str,
     body: &str,
 ) -> Result<()> {
+    reloads(
+        mode,
+        outside,
+        sig,
+        body,
+        "let saved: fn(x: i64) -> i64 = never(); saved <- d::get; (d::v, saved(d::v))",
+    )
+    .await
+}
+
+/// [`saved_across_reloads`], the program's tail after the module `tail`.
+async fn reloads(
+    mode: Mode,
+    outside: &str,
+    sig: &str,
+    body: &str,
+    tail: &str,
+) -> Result<()> {
     const RELOADS: i64 = 1000;
     let (ctx, mut rx) = fixture_runtime([], crate::TEST_REGISTER, mode, |_| {}).await?;
     let roots = ArcStr::from(format!("let tick: i64 = 0; {outside}"));
@@ -358,9 +376,7 @@ async fn saved_across_reloads(
               sig {{ {sig} val v: i64; val get: fn(x: i64) -> i64 }};
               source src
           }};
-          let saved: fn(x: i64) -> i64 = never();
-          saved <- d::get;
-          (d::v, saved(d::v))
+          {tail}
         }}"#
     );
     let (eid, _expr) = compile_one(&ctx, program.as_str()).await?;
@@ -421,6 +437,22 @@ async fn a_function_saved_across_reloads_keeps_its_loads_type_no_longer(
     .await
 }
 
+/// A load's type and its `Eq` go with the load at the reload that
+/// retires it, where nothing made in the load is saved.
+async fn a_reloaded_module_keeps_its_retired_loads_type_no_longer(
+    mode: Mode,
+) -> Result<()> {
+    reloads(
+        mode,
+        "",
+        "use core;",
+        "type C = Abstract<i64>; impl Eq for C { let eq = |a, b| a.0 != b.0 }; \
+         let get = |x: i64| select C(x) == C(x) { true => 0, false => x + v }",
+        "(d::v, d::get(d::v))",
+    )
+    .await
+}
+
 /// How many impls and abstract types the env registers.
 async fn impls_and_types(ctx: &TestCtx) -> Result<(usize, usize)> {
     let env = ctx.rt.get_env().await?;
@@ -471,6 +503,50 @@ async fn a_retired_loads_type_goes_with_its_last_function(mode: Mode) -> Result<
         ctx.rt.set(tick, n)?;
         await_update(&ctx, &mut rx, e_held, is_pair(n, 10 * n)).await?;
     }
+    let after = impls_and_types(&ctx).await?;
+    ctx.shutdown().await;
+    assert_eq!(after, before, "{mode:?}: held past its last function");
+    Ok(())
+}
+
+/// A deleted module's load keeps its type and its `Eq` while a function
+/// made in it lives, and loses them once that function goes.
+async fn a_deleted_modules_type_goes_with_its_last_function(mode: Mode) -> Result<()> {
+    let (ctx, mut rx) = fixture_runtime([], crate::TEST_REGISTER, mode, |_| {}).await?;
+    let roots = literal!("let tick: i64 = 0; let held: fn(x: i64) -> i64 = never();");
+    let _roots = ctx.rt.compile(roots).await?;
+    let before = impls_and_types(&ctx).await?;
+    let tick = root_bind(&ctx, "tick").await?;
+    let (e_held, _held) = compile_one(&ctx, "(tick, held(tick))").await?;
+    let (id, module) = compile_one(
+        &ctx,
+        r#"{
+             let s = mod d dynamic {
+               sig { use core; val get: fn(x: i64) -> i64 };
+               source "type C = Abstract<i64>; impl Eq for C { let eq = |a, b| a.0 != b.0 }; let get = |x: i64| select C(x) == C(x) { true => 0, false => x + 1 }"
+             };
+             held <- d::get;
+             d::get(tick)
+           }"#,
+    )
+    .await?;
+    ctx.rt.set(tick, 1i64)?;
+    await_update(&ctx, &mut rx, id, |v| *v == Value::I64(2)).await.context("load")?;
+    drop(module);
+    for n in 2..=5i64 {
+        ctx.rt.set(tick, n)?;
+        await_update(&ctx, &mut rx, e_held, is_pair(n, n + 1)).await.context("held")?;
+        let kept = impls_and_types(&ctx).await?;
+        assert_eq!(kept, (before.0 + 1, before.1 + 1), "{mode:?}: dropped at {n}");
+    }
+    let (_, w) = compile_one(&ctx, "held <- |x: i64| 10 * x").await?;
+    let mut n = 5;
+    while impls_and_types(&ctx).await? != before && n < 100 {
+        n += 1;
+        ctx.rt.set(tick, n)?;
+        await_update(&ctx, &mut rx, e_held, is_pair(n, 10 * n)).await?;
+    }
+    drop(w);
     let after = impls_and_types(&ctx).await?;
     ctx.shutdown().await;
     assert_eq!(after, before, "{mode:?}: held past its last function");
@@ -2015,6 +2091,8 @@ modes!(
     a_dispatching_function_saved_across_reloads_keeps_nothing_once_dropped,
     a_function_saved_across_reloads_keeps_its_loads_type_no_longer,
     a_retired_loads_type_goes_with_its_last_function,
+    a_reloaded_module_keeps_its_retired_loads_type_no_longer,
+    a_deleted_modules_type_goes_with_its_last_function,
     a_saved_function_calling_an_outside_function_keeps_nothing_once_dropped,
     a_saved_function_calling_another_modules_function_keeps_nothing_once_dropped,
     a_function_saved_past_a_declared_impl_keeps_nothing_once_dropped,

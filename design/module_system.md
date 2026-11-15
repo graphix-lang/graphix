@@ -371,7 +371,9 @@ a_function_saved_across_a_reload_compares_its_loads_type_by_its_loads_eq`,
 `a_reload_declares_its_own_type_beside_the_retired_loads` and
 `lib_tests::leaks::
 a_function_saved_across_reloads_keeps_its_loads_type_no_longer`,
-`a_retired_loads_type_goes_with_its_last_function`.
+`a_retired_loads_type_goes_with_its_last_function`,
+`a_deleted_modules_type_goes_with_its_last_function`,
+`a_reloaded_module_keeps_its_retired_loads_type_no_longer`.
 
 **An instance is made in its call's load.** A function defined outside
 the module that a loaded body calls dispatches on that body's types (a
