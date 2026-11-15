@@ -5901,7 +5901,7 @@ impl Type {
         }
         // a member walked as one before it gives no part that one did not
         let mut walked: SmallVec<[Type; 8]> = SmallVec::new();
-        // CR claude for claude: [perf/low] Slice arms that take each element apart over
+        // CR claude for eric: [perf/low] Slice arms that take each element apart over
         // an unannotated parameter still cost steeply at the definition: `gen3.py 20
         // arrelem` (`[[a0, s0..], [a1, s1..], .., t..] => t`) takes 17.2 G user
         // instructions of `--no-cache --check` in a debug build and `gen3.py 24 tupelem`
@@ -5995,6 +5995,37 @@ impl Type {
         // cost residuals of D44 are deleted ("the others are code no sane entity would
         // write"). The narrowing change the CR names is wanted: one result for a union of
         // members that are one type and for one of them.
+        // 2026-11-15 claude: Lane 27b, round 27: BLOCKED, the D44 rule cannot be built as
+        // written without changing verdicts; no code change. Measured on base-r27 (debug,
+        // --no-cache --check, G instructions): gen3.py arrelem 8/12/16/20
+        // 1.04/2.11/5.25/12.77, tupelem 24 6.05, the written parameter (16) 0.83. The cause
+        // is in base itself: a union's narrowing depends on whether a member stands twice.
+        // Type::narrow_pattern_inner narrows ['c, A] (one non-cell member beside an open
+        // cell) by containment of the whole union, and ['c, A, A] (or [['c, A], A]) member
+        // by member, where the own-part merge makes the open cell one with the element
+        // cell; programs are accepted only because each shape gets its own path. Variants
+        // tried (patch ~/ptmp/cr29/scratch/r27/27b/variants.patch, differential runner
+        // dfenv.sh over the lane 24f corpora, 4295 programs): (1) drop members one type
+        // with an earlier one before the count (Type::drop_one_typed in
+        // narrow_pattern_inner) plus the one_type skip in narrow_per_member_in: a16 5.25 ->
+        // 2.74 G, but 19 programs differ, valid programs refused both ways:
+        // g3_nestboth_1.gx (one arm, [[a0, t..], [b0, s..], u..] => (t, s)) and
+        // g3_arrelem_2.gx (two arrelem arms) are refused
+        // 'a type variable there isn't known here and may share Array<'_0>'s runtime form',
+        // and REPL types change (p0199.repl prints a '_N cell for concat's 'a; p0093.repl
+        // collapses a union of two members one type). (2) the one_type skip alone: p0251.gx
+        // refused the same way (the merge the [[c, A], A] member's walk makes is lost). (3)
+        // the skip with the per-member route kept for a deduped union (count before the
+        // drop): p0251 refused. (4) an open cell counted toward the per-member route, or
+        // the lone non-cell member narrowed in place of the union: p0251 refused even
+        // without the skip. (5) one_type in place of walks_alike at the other sites
+        // (bind_narrowed, unheld_member, drop_repeated in hold_slice_members): g3_arrelem_2
+        // and g3_nestboth_1 refused. What a fix needs: a narrowing whose own-part merge
+        // does not depend on member multiplicity, i.e. a rule for when an open cell beside
+        // a member merges with the element cell that gives ['c, A] and ['c, A, A] one
+        // result and still accepts g3_nestboth_1, g3_arrelem_2 and p0251; that is a
+        // redesign of the merge, not a skip. Probes and witnesses:
+        // ~/ptmp/cr29/scratch/r27/27b/.
         for m in members {
             if m.walks_as_one_of(&walked) {
                 continue;
