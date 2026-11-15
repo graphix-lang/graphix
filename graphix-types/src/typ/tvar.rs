@@ -6108,6 +6108,11 @@ impl Type {
         // (chain-ends-thread-local-01); its pin
         // the_end_of_a_long_chain_is_read_once_while_no_cell_is_written reads through
         // StandingEnds and a16/a20/t24 measure as before.
+        // 2026-11-15 claude: Round 27 coordinator: the D44 ruling cannot be built as
+        // written, so the choice between accepting the cost and commissioning the merge
+        // redesign is with Eric as the D44 follow-up in ~/ptmp/cr-discuss.md. Wall time on
+        // the round's tip (debug, --check): an empty program 0.27 s, a16 1.17 s, a20 2.81
+        // s.
         for m in members {
             if m.walks_as_one_of(&walked, &mut chain_ends) {
                 continue;

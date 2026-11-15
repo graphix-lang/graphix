@@ -1184,6 +1184,8 @@ fn guide(flags: BitFlags<ContainsFlags>) -> BitFlags<ContainsFlags> {
 // decided-early-unrelated-refusal-01 limits decided_early to refusals about the early
 // cell: today a literal has no binding for it to name. Verdict: Eric's ruling on
 // whether to close, or on which of [1] and [[1]] the tier should favour.
+// 2026-11-15 claude: Round 27 coordinator: with Eric as D46 in ~/ptmp/cr-discuss.md
+// (recommendation: close under D36).
 
 /// Whether the open cell `tv` takes what it must hold as a lower bound
 /// rather than binding to it ([`ContainsFlags::Lower`] outside a
