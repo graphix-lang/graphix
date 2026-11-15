@@ -336,22 +336,6 @@ fn compile_module_inner<R: Rt>(
             bailat!(spec, "external modules are not allowed in this context")
         }
         ModuleKind::Resolved { exprs, sig: None, from_interface: _ } => {
-            // XCR claude for claude: [bug/medium] A file module with no `.gxi` compiles to
-            // a plain `Block`, whose delete leaves the module's path in
-            // `env.lexical.modules`, where `Module::delete` calls
-            // `Env::unbind_lexical_under`. So once the input that declared it is dropped,
-            // declaring it again is refused: `/m.gx` alone, `mod m; m::make("ab")` compiled
-            // and dropped, then `mod m; m::make("abc")` fails "duplicate module definition
-            // m"; with a `/m.gxi` beside it the second declaration answers 3
-            // (a_dropped_root_module_is_declared_again). To fix: unbind the module's
-            // lexical scope when its block is deleted, as `Module::delete` does. probe (a
-            // leaks.rs test): ~/ptmp/cr29/scratch/r26/26a/review-dn/file_module_redeclare.rs
-            // (file-module-redeclare-01)
-            // 2026-11-15 claude: A file module's Block now records its lexical path
-            // (Block::declared, imaged) and unbinds it at delete, as Module::delete does.
-            // Pin leaks::a_dropped_root_file_module_without_an_interface_is_declared_again
-            // (nested module, typedef, 50 redeclarations, no growth) fails without it with
-            // 'duplicate module definition m'.
             ctx.env.lexical.modules.insert_cow(scope.lexical.clone());
             let declared = Some(scope.lexical.clone());
             let res =
