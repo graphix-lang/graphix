@@ -756,42 +756,6 @@ pub(super) fn eta_dispatcher<R: Rt>(
     let at = |kind| Expr::synth(spec, kind);
     let mut args: SmallVec<[Arg; 4]> = SmallVec::new();
     let mut call: SmallVec<[(Option<ArcStr>, Expr); 4]> = SmallVec::new();
-    // XCR claude for claude: [bug/low] A label named like the method as the body
-    // calls it hides the method: `trait T { val m: fn(#m: i64, self) -> i64 }; impl
-    // T for i64 { let m = |#m, s| s + m }; use T::m; let g = m; g(#m: 1, 2)` is
-    // refused "expected fn not i64", the expansion's body `m(#m: m, self)` calling
-    // its own label. A positional parameter takes a name apart there; a label
-    // cannot, its bind being its name. A fix calls the method by a path no
-    // parameter can hide (the binding itself, as `#bind::N` names one, with the
-    // reference a poly binding's call takes). base-r24 alike. probe:
-    // ~/ptmp/cr29/scratch/r24/24g/tmv/label.gx (eta-label-hides-method-01)
-    // 2026-11-14 claude: Since trait-method-value-names-01 the expansion's
-    // parameters carry the trait's names, so this refusal's site frame quotes the
-    // expansion's body (in: m(#m, self)) where base-r24 printed no snippet; the
-    // lambda's own frame is dropped, Expr::is_lowered taking a lambda that declares
-    // '#self as a lowering's. A fix that calls the method by a lowered path also
-    // takes that frame's snippet away.
-    // 2026-11-15 claude: Coordinator, after soak nov14b: round 25's fix (b8175905d,
-    // the body calling '#bind::N') is undone. The binding's id is program-visible
-    // and is not relocated by an image: 'println(Collection::fold)' printed '..
-    // #bind::4611686018427387917(self, init, f)' where base-r25 prints
-    // 'Collection::fold(self, init, f)', a different id each process (three boxes
-    // reported it as a rerun mismatch), and a warm image of '{ trait Probe { val p:
-    // fn(self, x: 'a) -> bool }; impl Probe for i64 { let p = p }; Probe::p(1, 0)
-    // }' failed its bind, 'synthesized reference to an unknown binding BindId(..)',
-    // where the cold run reaches its activation budget. A fix that holds names the
-    // method by something that prints as the program wrote it and survives an image
-    // (a path no parameter can hide, or a reference kind the printer and the image
-    // codec both know), not a raw id in a name. Findings:
-    // fuzz/pending-triage/nov14b/{katana/divergence_000000,ryouko/divergence_000000,ryouko/divergence_000004,washu-chan/divergence_000003}.gx;
-    // pin graphix-fuzz/findings/eta-method-value-nov2026.
-    // 2026-11-15 claude: The expansion's body calls the method by a path no parameter can hide only where a label of its signature is named
-    // like the call's single-segment name: the trait's own path (T::m) or self::name, whichever reaches the same binding from the lambda's
-    // scope (unhidden_path); every other body is the name as written, so a value prints as the program wrote it, the same in every process,
-    // and an image holds a plain path. Where neither reaches the binding the value is refused naming the fix. Pins:
-    // lang::traits::trait_method_value_label_named_like_the_method, _renamed_method and _prints_its_trait fail (4 modes) without it;
-    // graphix-fuzz/findings/eta-method-value-nov2026/01_label_named_like_method.gx; divergence_000004 through gxf check: no DIVERGENCE
-    // (CONTAINED, the cold run's activation budget as before).
 
     // a positional parameter takes the trait's name for it unless it would
     // hide the method the body calls

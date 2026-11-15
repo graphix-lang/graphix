@@ -2943,6 +2943,26 @@ run!(
     FuseExpect::None
 );
 
+// Where neither the trait's own path nor `self::m` reaches the method from
+// the value's scope, a label named like the method is refused with the fix.
+run!(
+    trait_method_value_label_named_like_the_method_out_of_reach,
+    r#"{
+    trait T { val m: fn(#m: i64, self) -> i64 };
+    impl T for i64 { let m = |#m, s| s + m };
+    use T::m;
+    {
+        trait T { val m: fn(#m: i64, self) -> i64 };
+        impl T for i64 { let m = |#m, s| s * m };
+        let g = m;
+        g(#m: 3, 2)
+    }
+}"#,
+    refused(
+        "m is also the label #m of its own signature, which the value's body would call instead (call the method in a lambda, or `use` it at the top of its module)"
+    )
+);
+
 // A trait method as a value prints under the trait's names: its
 // parameters, its variables, and the receiver as the trait.
 run!(

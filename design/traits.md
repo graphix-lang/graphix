@@ -603,7 +603,12 @@ stored, written and called polymorphically. It carries the trait's
 names, so a message or a hover prints the method's signature
 (`fn<'b: Number>(self: T, x: 'b) -> 'b`): its parameters', except one
 named like the method as the body calls it (`use T::m`), which takes
-`#eta<i>`; its variables', except that the receiver is `#self`, as
+`#eta<i>`, and a label of that name, which the body cannot rename: there the
+body calls the trait's own path (`T::m`) or `self::m`, whichever reaches the
+same binding from the value's scope, and a value where neither does is
+refused naming the fix (`eta_dispatcher`, `unhidden_path`; no binding id
+appears in the body, so it prints as written and an image holds a plain
+path); its variables', except that the receiver is `#self`, as
 `|self: T|` names its quantifier (`self` would name an impl's receiver),
 and an unbounded variable a definition around it declares is numbered
 apart (`'a1`), since by name it would be that definition's (a bounded one
@@ -613,7 +618,8 @@ so a refusal's chain never quotes the expansion's text. Pins
 `lang::traits::trait_method_value_{prints_the_traits_names,
 variable_named_like_an_enclosing_one,
 bounded_variable_named_like_an_enclosing_one,
-parameter_named_like_the_method, frames_quote_the_program}` and the
+parameter_named_like_the_method, label_named_like_the_method,
+label_named_like_the_method_out_of_reach, frames_quote_the_program}` and the
 language server's `a_trait_method_value_hovers_under_the_traits_names`.
 A variadic method has no
 expansion (a lambda cannot pass its rest on) and is refused as a
