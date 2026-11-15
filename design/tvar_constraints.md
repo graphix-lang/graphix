@@ -733,11 +733,22 @@ one member, chosen by rules that read the union alone:
   that one, so a function over a cell that forwards to a rigid cell is
   not one over another rigid cell (pin
   `typ::contains::tests::a_cell_forwarding_to_a_rigid_cell_pairs_as_that_cell`).
-  Two unions of such functions pair their members by position, unless
-  the members are the same functions cell for cell in another order
-  (`setops::strictly_same_unordered`): `F2<u, v>` beside `F2<v, u>` is one
-  union of two functions and welds nothing (pin
+  Two unions of such functions pair their members by position only
+  where no other pairing is as cheap in renamed cells. The members that
+  are the same functions cell for cell in another order are one union and
+  weld nothing (`setops::strictly_same_unordered`): `F2<u, v>` beside
+  `F2<v, u>` (pin
   `a_select_of_two_calls_that_swap_the_variables_of_a_union_of_functions_pairs_each_with_itself`).
+  Where another pairing renames no more cells than the one by position
+  (`F2<u, v>` beside `F2<s, t>`, four distinct cells) the check takes
+  neither: it refuses with `AmbiguousMember`, naming the union to decide
+  (`setops::Identity::another_pairing`, raised where `contains_int`
+  meets a containment and where `union_tagged` joins alternatives; pins
+  `a_select_of_two_calls_over_a_union_of_functions_on_four_variables_refuses_the_pairing`
+  and the ones beside it). The members' cells are decided by the program
+  where the unions are held (a parameter, a `let`): the twin with them
+  written runs. A cell an earlier position of the same function type has
+  paired decides the pairing, so it is no tie.
   A member of a holder that is the value's member cell for cell takes it
   before another that would admit it by welding cells
   (`contains::place_covered`): a slice's bind over an array joined with an

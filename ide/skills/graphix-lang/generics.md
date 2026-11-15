@@ -436,6 +436,9 @@ that union, the read making its members one no more than the binding
 does, so parameters nothing has decided stay two and a variable no
 argument decided (`F2<'a, 'b>` with `'b` nowhere else) stays open: the
 call through the read is refused. Write one variable in both.
+Two such unions over four distinct variables met twice (two calls handed
+one `w`) pair their members either way and are refused, "picks none by
+order": declare the types of what holds them.
 
 ```graphix,cases
 ok let s = {f: |x| x}; let t: {f: fn(x: i64) -> i64} = s; (t.f(1), s.f("a"))
@@ -465,6 +468,8 @@ ok let t = 1; let s = {f: |x| x}; seq t { (s.f(1), s.f("s")) }
 ok let t = 1; let s = {f: |x| x}; seqq t { (s.f(1), s.f("s")) }
 ok let s = {f: |x| x}; let h = {g: |k| seqq k { (s.f(1), s.f("s")) }}; h.g(1)
 no "i64 does not contain string" let k = |p: {f: fn(x: i64) -> i64}| 0; let s = {f: |x| x}; let t = {a: s, b: seqq 1 { k(s) }}; t.a.f("x")
+no "picks none by order" type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64]; let f = |y: 'a, z: 'b, x: F2<'a, 'b>| x; let h = |u, v, s, t, w| { f(u, v, w); f(s, t, w); (u, v, s, t) }; h(1, "s", "t", 2, |q: i64| q + 1)
+ok type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64]; let f = |y: 'a, z: 'b, x: F2<'a, 'b>| x; let h = |u: i64, v: string, s: string, t: i64, w: F2<i64, string>| { f(u, v, w); f(s, t, w); (u, v, s, t) }; h(1, "s", "t", 2, |q: i64| q + 1)
 ok type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64]; let s = {fld: |y: 'a, z: 'b, x: F2<'a, 'b>| (x, y, z)}; s.fld(1, "s", |q: i64| 0)
 no "a call takes one function type" type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64]; let s = {fld: |y: 'a, z: 'b, x: F2<'a, 'b>| x}; let g = s.fld(1, "s", |q: i64| q + 1); g("s")
 ok type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64]; let f = |y: 'a, z: 'b, x: F2<'a, 'b>| x; let h = |u, v, w| { let s = {fld: f(u, v, w)}; (s.fld, u, v) }; h(1, "s", |q: i64| q + 1)

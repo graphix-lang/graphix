@@ -106,10 +106,10 @@ impl FlatCx {
             Members::AsTheyStand => strictly_identical(t0, t1),
             Members::Written => written_identical(t0, t1),
             Members::Welding => {
-                let start = welds.len();
+                let mark = welds.mark();
                 let same = union_collapses(t0, t1, welds);
                 if same && self.alts.apart(t0, t1) && !strictly_identical(t0, t1) {
-                    welds.truncate(start);
+                    welds.rewind(mark);
                     return false;
                 }
                 same
@@ -343,7 +343,7 @@ impl Kept {
             let kept = self.members[j].as_ref()?;
             t.merge(kept, cx, &mut met).map(|m| (j, m, met))
         })?;
-        welds.extend(met.drain(..));
+        welds.absorb(&mut met);
         let kept = self.members[j].take().expect("live");
         match MergeKey::of(&kept, &cx.members) {
             Some(k) => self.keyed.get_mut(&k).expect("indexed").retain(|i| *i != j),
@@ -614,7 +614,7 @@ impl Type {
         cx.visited.flat.members = Members::Welding;
         cx.visited.flat.alts = mem::take(&mut welds.alts);
         let r = self.normalize_int(&mut cx).unwrap_or_else(|| self.clone());
-        welds.extend(cx.welds.drain(..));
+        welds.absorb(&mut cx.welds);
         welds.alts = mem::take(&mut cx.visited.flat.alts);
         r
     }

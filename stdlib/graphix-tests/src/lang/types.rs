@@ -10775,6 +10775,61 @@ run!(
     FuseExpect::Jit
 );
 run!(
+    a_select_of_two_calls_over_a_union_of_functions_on_four_variables_refuses_the_pairing,
+    r#"{
+  type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];
+  let f = |y: 'a, z: 'b, x: F2<'a, 'b>| x;
+  let c = true;
+  let h = |u, v, s, t, w| { let g = select c { true => f(u, v, w), false => f(s, t, w) }; (u, v, s, t) };
+  h(1, "s", "t", 2, |q: i64| q + 1)
+}"#,
+    refused("and the check picks none by order")
+);
+run!(
+    the_refusal_of_a_pairing_of_unions_of_functions_does_not_follow_the_arguments_of_the_call,
+    r#"{
+  type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];
+  let f = |y: 'a, z: 'b, x: F2<'a, 'b>| x;
+  let c = true;
+  let h = |u, v, s, t, w| { let g = select c { true => f(u, v, w), false => f(s, t, w) }; (u, v, s, t) };
+  h(1, "s", 2, "t", |q: i64| q + 1)
+}"#,
+    refused("and the check picks none by order")
+);
+run!(
+    a_select_of_two_unions_of_functions_on_four_variables_refuses_the_pairing,
+    r#"{
+  type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];
+  let f = |y: 'a, z: 'b, x: F2<'a, 'b>| x;
+  let c = true;
+  let h = |u, v, s, t, w, w2| { let g = select c { true => f(u, v, w), false => f(s, t, w2) }; (u, v, s, t) };
+  h(1, "s", "t", 2, |q: i64| q + 1, |q: i64| q + 2)
+}"#,
+    refused("and the check picks none by order")
+);
+run!(
+    two_calls_with_one_union_of_functions_on_four_variables_refuse_the_pairing,
+    r#"{
+  type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];
+  let f = |y: 'a, z: 'b, x: F2<'a, 'b>| x;
+  let h = |u, v, s, t, w| { f(u, v, w); f(s, t, w); (u, v, s, t) };
+  h(1, "s", "t", 2, |q: i64| q + 1)
+}"#,
+    refused("and the check picks none by order")
+);
+run!(
+    a_select_of_two_calls_over_a_union_of_functions_on_four_decided_variables_passes,
+    r#"{
+  type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];
+  let f = |y: 'a, z: 'b, x: F2<'a, 'b>| x;
+  let c = true;
+  let h = |u: i64, v: string, s: string, t: i64, w: F2<i64, string>| { let g = select c { true => f(u, v, w), false => f(s, t, w) }; (u, v, s, t) };
+  h(1, "s", "t", 2, |q: i64| q + 1)
+}"#,
+    prints(r#"[i64:1, "s", "t", i64:2]"#);
+    FuseExpect::Jit
+);
+run!(
     a_field_over_two_shapes_each_a_union_of_functions_keeps_the_variables_two,
     r#"{
   type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];
@@ -10887,11 +10942,10 @@ run!(
 );
 
 // Two signatures that are one type, with a typedef union of functions
-// spelling the same two variables in the other order, meet under the
-// pairing of the members the union's order gives: the call is refused
-// where that pairing welds the argument's variable to the other's, and
-// runs, narrower than either, where it welds none wrongly. The twin
-// spelling of each refused program runs.
+// spelling the same two variables, meet in the union's members: where an
+// earlier parameter has paired the variables the members pair one way
+// only and the call runs, and where nothing has the members could pair
+// either way and the call is refused, naming the annotation.
 run!(
     union_of_functions_the_formals_spell_in_the_other_order_is_refused_after_a_param,
     r#"{
@@ -10900,7 +10954,7 @@ run!(
   let app = |k: fn(x0: 'c, x2: F2<'d, 'c>) -> i64, v: 'c, w: 'd| 0;
   app(f, 1, "s")
 }"#,
-    refused("does not contain string");
+    refused("and the check picks none by order");
     FuseExpect::None
 );
 run!(
@@ -10922,22 +10976,22 @@ run!(
   let app = |k: fn(x2: F2<'d, 'c>, x0: 'c) -> i64, v: 'c, w: 'd| 0;
   app(f, 1, "s")
 }"#,
-    refused("does not contain string");
+    refused("and the check picks none by order");
     FuseExpect::None
 );
 run!(
-    union_of_functions_the_formals_spell_in_the_same_order_runs_before_a_param,
+    union_of_functions_the_formals_spell_in_the_same_order_refused_before_a_param,
     r#"{
   type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];
   let f = |x2: F2<'b, 'a>, x0: 'b| 0;
   let app = |k: fn(x2: F2<'c, 'd>, x0: 'c) -> i64, v: 'c, w: 'd| 0;
   app(f, 1, "s")
 }"#,
-    prints("i64:0");
-    FuseExpect::Jit
+    refused("and the check picks none by order");
+    FuseExpect::None
 );
 run!(
-    select_of_two_spellings_of_a_union_of_functions_is_refused_where_the_call_names_one_member,
+    select_of_two_spellings_of_a_union_of_functions_is_refused_where_nothing_pairs_the_members,
     r#"{
   type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];
   let c = true;
@@ -10945,7 +10999,7 @@ run!(
   let g = select c { true => f, false => |x0: 'b, x2: F2<'a, 'b>| 0 };
   g(1, |q: string| 0)
 }"#,
-    refused("does not contain fn(q: string) -> i64");
+    refused("and the check picks none by order");
     FuseExpect::None
 );
 run!(

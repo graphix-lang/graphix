@@ -6,7 +6,9 @@ use crate::{
     typ::{
         Bound, Brief, ContainsFlags, FnType, Kept, Lazy, NodeKey, NodePairs, RefHist,
         RefPair, TVar, Type, TypeRef,
-        contains::{ContainsHist, find_open_cell, on_copies, renaming_linked},
+        contains::{
+            AmbiguousMember, ContainsHist, find_open_cell, on_copies, renaming_linked,
+        },
         fntyp::LambdaIds,
         node_addr,
         tvar::{Fresh, StandingEnds, cell_writes, written_since},
@@ -503,6 +505,9 @@ pub(super) struct Welds {
     pairs: SmallVec<[(TVar, TVar); 2]>,
     /// The alternatives of the join the pairs are for.
     pub(super) alts: Alternatives,
+    /// The first pairing of unions by position a collapse met that another
+    /// pairing would have made as cheaply.
+    pub(super) ambiguity: Option<Box<Ambiguity>>,
 }
 
 impl Welds {
@@ -511,7 +516,28 @@ impl Welds {
     }
 
     pub(super) fn joining(alts: SmallVec<[Type; 4]>) -> Self {
-        Self { pairs: SmallVec::new(), alts: Alternatives::new(alts) }
+        Self { pairs: SmallVec::new(), alts: Alternatives::new(alts), ambiguity: None }
+    }
+
+    /// What a collapse that may yet fail starts from ([`Self::rewind`]).
+    pub(super) fn mark(&self) -> (usize, bool) {
+        (self.pairs.len(), self.ambiguity.is_some())
+    }
+
+    /// Forget the pairs and the ambiguity a failed collapse met.
+    pub(super) fn rewind(&mut self, (pairs, ambiguous): (usize, bool)) {
+        self.pairs.truncate(pairs);
+        if !ambiguous {
+            self.ambiguity = None
+        }
+    }
+
+    /// Take the pairs and the ambiguity `other` met.
+    pub(super) fn absorb(&mut self, other: &mut Welds) {
+        self.pairs.extend(other.pairs.drain(..));
+        if self.ambiguity.is_none() {
+            self.ambiguity = other.ambiguity.take()
+        }
     }
 }
 
@@ -568,13 +594,13 @@ impl Alternatives {
 /// learn what the kept one learns. Two members of one alternative of the
 /// join `welds` is for collapse only where they are identical as they stand.
 pub(super) fn union_collapses(t0: &Type, t1: &Type, welds: &mut Welds) -> bool {
-    let start = welds.len();
+    let mark = welds.mark();
     let mut same = Identity::new(Some(welds), &mut NodePairs::default()).same(t0, t1);
     if same && welds.alts.apart(t0, t1) && !strictly_identical(t0, t1) {
         same = false;
     }
     if !same {
-        welds.truncate(start)
+        welds.rewind(mark)
     }
     same
 }
@@ -585,14 +611,14 @@ pub(super) fn union_collapses(t0: &Type, t1: &Type, welds: &mut Welds) -> bool {
 /// weld. Two cells earlier compile tasks left open are decided open, and
 /// stay two.
 pub(super) fn lower_collapses(t0: &Type, t1: &Type, welds: &mut Welds) -> bool {
-    let start = welds.len();
+    let mark = welds.mark();
     let same = Identity {
         unbounded: true,
         ..Identity::new(Some(welds), &mut NodePairs::default())
     }
     .same(t0, t1);
     if !same {
-        welds.truncate(start)
+        welds.rewind(mark)
     }
     same
 }
@@ -641,9 +667,16 @@ pub(super) struct IdenticalMemo {
     writes: u64,
     found: NodePairs,
     settled: Settled,
+    /// What the last [`Self::identical`] found ambiguous, until taken.
+    ambiguity: Option<Box<Ambiguity>>,
 }
 
 impl IdenticalMemo {
+    /// The ambiguity [`Self::identical`] found since the last call.
+    pub(super) fn take_ambiguity(&mut self) -> Option<Box<Ambiguity>> {
+        self.ambiguity.take()
+    }
+
     pub(super) fn identical(&mut self, t0: &Type, t1: &Type) -> Identical {
         let writes = cell_writes();
         if self.writes != writes || !memo_on() {
@@ -660,6 +693,10 @@ impl IdenticalMemo {
         };
         let same = id.same(t0, t1);
         let renamed = id.renamed;
+        let ambiguity = id.ambiguity.take();
+        if same && self.ambiguity.is_none() {
+            self.ambiguity = ambiguity
+        }
         if renamed {
             self.found.clear()
         }
@@ -696,6 +733,26 @@ impl Settled {
     }
 }
 
+/// A union whose members a walk paired with another union's by position,
+/// where `typ`, one of the other's members, could as well have gone to
+/// either of `members`.
+pub(super) struct Ambiguity {
+    pub(super) union: SmallVec<[Type; 4]>,
+    pub(super) typ: Type,
+    pub(super) members: [Type; 2],
+}
+
+impl Ambiguity {
+    pub(super) fn refusal(&self, flags: BitFlags<ContainsFlags>) -> anyhow::Error {
+        AmbiguousMember::new(
+            flags,
+            &self.union,
+            &self.typ,
+            &[&self.members[0], &self.members[1]],
+        )
+    }
+}
+
 /// Identity of `t0` and `t1`.
 struct Identity<'a> {
     strict: bool,
@@ -727,6 +784,11 @@ struct Identity<'a> {
     found_in_fn: NodePairs,
     /// Two distinct cells were paired.
     renamed: bool,
+    /// How many pairs of distinct cells were paired.
+    paired: usize,
+    /// The first pairing of unions the walk took by position that another
+    /// pairing would have made as cheaply.
+    ambiguity: Option<Box<Ambiguity>>,
     /// Where the verdicts of pairs whose walk read no cell go: a plain
     /// walk's alone ([`IdenticalMemo`]), whose every cell read is a
     /// [`Self::same_inner`] of a variable or of a name.
@@ -750,6 +812,8 @@ impl<'a> Identity<'a> {
             found,
             found_in_fn: NodePairs::default(),
             renamed: false,
+            paired: 0,
+            ambiguity: None,
             settled: None,
             read_cell: false,
         }
@@ -802,7 +866,7 @@ impl<'a> Identity<'a> {
         a.len() == b.len() && a.iter().zip(b.iter()).all(|(a, b)| self.same(a, b))
     }
 
-    // CR claude for claude: [bug/low] Two unions of functions over four distinct undecided
+    // XCR claude for claude: [bug/low] Two unions of functions over four distinct undecided
     // variables pair their members by position, whichever pairing welds as many cells:
     // `type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64]; let f = |y: 'a, z: 'b, x:
     // F2<'a, 'b>| x; let h = |u, v, s, t, w| { let g = select c { true => f(u, v, w), false
@@ -812,28 +876,120 @@ impl<'a> Identity<'a> {
     // (u with t, v with s) welds as many cells. Nothing wrong runs. What would fix it: a
     // refusal at the pairing that names the annotation, as AmbiguousMember does for a take.
     // probe: ~/ptmp/cr29/scratch/r26/26f/t3.gx (alternative-members-tie-weld-01)
+    // 2026-11-15 claude: Two unions of functions whose members pair by position are now
+    // also walked for another pairing at no more renamed cells
+    // (setops::Identity::another_pairing); where one exists the position pick is an
+    // Ambiguity, raised as AmbiguousMember where contains_int meets the containment
+    // (identical_linked) and where union_tagged joins alternatives (Welds::ambiguity),
+    // naming the union to decide. Fails without the fix: lang::types
+    // a_select_of_two_calls_over_a_union_of_functions_on_four_variables_refuses_the_pairing,
+    // the_refusal_of_a_pairing_of_unions_of_functions_does_not_follow_the_arguments_of_the_call,
+    // a_select_of_two_unions_of_functions_on_four_variables_refuses_the_pairing (the join
+    // path), two_calls_with_one_union_of_functions_on_four_variables_refuse_the_pairing,
+    // and the reworded union_of_functions_the_formals_spell_in_* pins; the generics.md
+    // cases hold the refusal and its annotated twin. The flatten of one union's own members
+    // is untouched (a refusal there has no error channel); lower_collapses of a cell's
+    // bounds (settle.rs weld_lower) still welds by position.
     /// Whether the unions `a` and `b` are one, member by member in their
     /// order, unless the members are the same types in another order: a
     /// pairing by position that renames cells yields to the pairing of
     /// members that are cell for cell the same ([`strictly_same_unordered`]),
-    /// which renames none.
+    /// which renames none. A pairing by position that renames cells where
+    /// the members pair some other way at no more renamed cells is the
+    /// walk's [`Ambiguity`]: which members are the same is for the program
+    /// to say.
     fn same_unions(&mut self, a: &[Type], b: &[Type]) -> bool {
         let live = self.live.as_ref().map(|l| l.len());
         let pairs = self.pairs.as_ref().map(|p| p.len());
         let renamed = mem::replace(&mut self.renamed, false);
         let same = self.all(a, b);
-        if same && self.renamed && strictly_same_unordered(a, b) {
-            if let (Some(live), Some(l)) = (&mut self.live, live) {
-                live.truncate(l)
+        if same && self.renamed {
+            if strictly_same_unordered(a, b) {
+                if let (Some(live), Some(l)) = (&mut self.live, live) {
+                    live.truncate(l)
+                }
+                if let (Some(pairs), Some(n)) = (&mut self.pairs, pairs) {
+                    pairs.truncate(n)
+                }
+                self.renamed = renamed;
+                return true;
             }
-            if let (Some(pairs), Some(n)) = (&mut self.pairs, pairs) {
-                pairs.truncate(n)
+            if self.ambiguity.is_none()
+                && self.live.as_ref().is_none_or(|l| l.ambiguity.is_none())
+                && let Some((i, j)) = self.another_pairing(a, b, pairs.unwrap_or(0))
+            {
+                let found = Box::new(Ambiguity {
+                    union: a.iter().cloned().collect(),
+                    typ: b[j].clone(),
+                    members: [a[i].clone(), a[j].clone()],
+                });
+                match &mut self.live {
+                    Some(live) => live.ambiguity = Some(found),
+                    None => self.ambiguity = Some(found),
+                }
             }
-            self.renamed = renamed;
-            return true;
         }
         self.renamed |= renamed;
         same
+    }
+
+    /// The first member `i` of `a` and the member `j` of `b` it pairs with,
+    /// where the members pair some way other than by position at no more
+    /// renamed cells than by position takes. `base` is how many cell pairs
+    /// the walk held on entering the unions.
+    fn another_pairing(
+        &self,
+        a: &[Type],
+        b: &[Type],
+        base: usize,
+    ) -> Option<(usize, usize)> {
+        let n = a.len();
+        if n < 2 || n != b.len() {
+            return None;
+        }
+        let mut costs: SmallVec<[Option<usize>; 16]> = SmallVec::new();
+        for x in a {
+            for y in b {
+                let mut found = NodePairs::default();
+                let mut scratch = Welds::new();
+                let mut probe = Identity {
+                    strict: self.strict,
+                    sets: self.sets,
+                    in_order: self.in_order,
+                    by_name: self.by_name,
+                    unbounded: self.unbounded,
+                    across: self.across,
+                    live: self.live.as_ref().map(|_| &mut scratch),
+                    env: self.env,
+                    pairs: self.pairs.as_ref().map(|p| SmallVec::from_slice(&p[..base])),
+                    ..Identity::new(None, &mut found)
+                };
+                costs.push(probe.same(x, y).then_some(probe.paired));
+            }
+        }
+        let cost = |i: usize, j: usize| costs[i * n + j];
+        let limit = (0..n).try_fold(0, |s, i| cost(i, i).map(|c| s + c))?;
+        fn search(
+            cost: &dyn Fn(usize, usize) -> Option<usize>,
+            i: usize,
+            spent: usize,
+            limit: usize,
+            taken: &mut SmallVec<[bool; 8]>,
+            moved: Option<(usize, usize)>,
+        ) -> Option<(usize, usize)> {
+            if i == taken.len() {
+                return moved;
+            }
+            (0..taken.len()).find_map(|j| {
+                let c = cost(i, j).filter(|c| !taken[j] && spent + c <= limit)?;
+                taken[j] = true;
+                let moved = moved.or((i != j).then_some((i, j)));
+                let found = search(cost, i + 1, spent + c, limit, taken, moved);
+                taken[j] = false;
+                found
+            })
+        }
+        search(&cost, 0, 0, limit, &mut smallvec![false; n], None)
     }
 
     /// Whether the unions `a` and `b` hold the same members ([`Leaves`]):
@@ -869,6 +1025,7 @@ impl<'a> Identity<'a> {
                 {
                     live.push((a.clone(), b.clone()));
                     self.renamed = true;
+                    self.paired += 1;
                     true
                 }
                 _ => false,
@@ -901,6 +1058,7 @@ impl<'a> Identity<'a> {
                     live.push((a.clone(), b.clone()))
                 }
                 self.renamed = true;
+                self.paired += 1;
                 let (ca, cb) = (a.cell_constraints(), b.cell_constraints());
                 if !self.across {
                     return self.all(&ca, &cb);
@@ -1386,7 +1544,7 @@ impl Type {
             .filter(|(_, (a, b))| !union_collapses(a, b, &mut kept));
         let (i, (p0, p1)) = match (differ.next(), differ.next()) {
             (None, _) => {
-                welds.extend(kept.drain(..));
+                welds.absorb(&mut kept);
                 return Ok(self.clone());
             }
             (Some(d), None) => d,
@@ -1405,7 +1563,7 @@ impl Type {
         if merged.contains_with_flags(probe, env, self)?
             && merged.contains_with_flags(probe, env, t)?
         {
-            welds.extend(kept.drain(..));
+            welds.absorb(&mut kept);
             Ok(merged)
         } else {
             Ok(pair(self, t))
@@ -1642,6 +1800,9 @@ impl Type {
             acc = acc.union_int(env, &mut hist, merge, &mut welds, t)?;
         }
         let acc = acc.normalize_welding(&mut welds);
+        if let Some(a) = welds.ambiguity.take() {
+            return Err(a.refusal(BitFlags::empty()));
+        }
         apply_welds(&mut welds);
         Ok(acc)
     }

@@ -3068,7 +3068,7 @@ pub struct AmbiguousMember {
 }
 
 impl AmbiguousMember {
-    fn new(
+    pub(super) fn new(
         flags: BitFlags<ContainsFlags>,
         s: &[Type],
         t: &Type,
@@ -4125,7 +4125,11 @@ impl Type {
     ) -> Result<bool> {
         #[cfg(test)]
         CONTAINS_STEPS.with(|n| n.set(n.get() + 1));
-        ensure_sufficient(|| self.contains_int_inner(flags, env, hist, t))
+        let held = ensure_sufficient(|| self.contains_int_inner(flags, env, hist, t));
+        match hist.identical.take_ambiguity() {
+            Some(a) if held.is_ok() => Err(a.refusal(flags)),
+            _ => held,
+        }
     }
 
     fn contains_int_inner(
