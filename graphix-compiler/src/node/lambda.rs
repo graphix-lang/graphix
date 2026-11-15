@@ -2302,7 +2302,7 @@ pub(crate) fn make_init<R: Rt>(
             BindMode::Definition => def_env.clone(),
             BindMode::Static { .. } => {
                 let mut env = def_env.called_in(scope.load.as_ref());
-                ctx.env.name_kept_impls(&mut env);
+                ctx.env.name_kept_impls(&mut env, &def_scope.lexical);
                 env
             }
             BindMode::Dynamic(_) => def_env.called_in(scope.load.as_ref()),

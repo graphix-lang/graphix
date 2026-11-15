@@ -2644,16 +2644,35 @@ impl Env {
         }
     }
 
-    /// `view`, a definition's, for an instance a call compiled under this
-    /// view makes: it names the kept entries this view names, at each scope
-    /// `view` holds nothing at, so the instance dispatches to the impls
-    /// its caller does, as [`Lexical::called_in`] does for a load.
-    pub fn name_kept_impls(&self, view: &mut Lexical) {
+    // CR claude for claude: [bug/low] The first method of an impl kept while its trait
+    // stands cannot dispatch to a later method of that impl through the trait: with
+    // `trait Sh { val sh: fn(self) -> i64; val k: fn(self) -> i64 }` standing and a block
+    // `{ type C = Abstract<i64>; impl Sh for C { let sh = |c: C| k(c) + 1; let k = |c: C|
+    // c.0 * 9 + 2 }; saved <- |y: i64| Sh::sh(C(y)); 1 }` dropped, `saved(3)` logs "in the
+    // instance of Sh::sh(C(y)) at this call site: .. k(c): no implementation of Sh for C"
+    // and is bottom (30 while the block lives). `sh`'s view holds nothing at the impl's
+    // scope, so `Env::kept_impls_named` finds no entry; a later method works, since its
+    // view names an earlier one. `name_kept_impls` cannot name the entry there: the body's
+    // names resolve at that scope, and the siblings it would add shadow the trait's
+    // dispatchers (`k(D(c.0))` would bind C's `k`). To fix: a view names kept entries apart
+    // from its bindings (a set of entries beside `Lexical::binds`, read by
+    // `kept_impls_named` and never by a name lookup), or a definition inside an impl's
+    // scope reads that impl's kept entry as its own. Only an embedder reaches it. base-r26
+    // alike. probe: ~/ptmp/cr29/scratch/r26/26a/efo-rev/probes.txt
+    // (escaped-fn-method-forward-sibling-01)
+    /// `view`, of a definition at `at`, for an instance a call compiled
+    /// under this view makes: it names the kept entries this view names,
+    /// at each scope `view` holds nothing at, so the instance dispatches to
+    /// the impls its caller does, as [`Lexical::called_in`] does for a
+    /// load. Never at a scope `at` is inside: the body's names resolve
+    /// there, and a method's later siblings would shadow what it named.
+    pub fn name_kept_impls(&self, view: &mut Lexical, at: &ModPath) {
         if self.kept_impls.len() == 0 {
             return;
         }
         for (_, k) in self.kept_impls.iter() {
             if view.binds.get(&k.im.scope).is_none()
+                && !scope_is_under(&at.0, &k.im.scope.0)
                 && let Some(binds) = k.named_in(&self.lexical)
             {
                 view.binds = view.binds.insert(k.im.scope.clone(), binds.clone()).0;
