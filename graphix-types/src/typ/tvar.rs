@@ -3126,67 +3126,6 @@ impl TVar {
                 return;
             }
         }
-        // XCR claude for claude: [readability/low] A declared variable a call in its
-        // body meets prints its bound twice: `let f = 'a: Number |x: 'a| -> 'a x; let
-        // g: string = 'c: Number |y: 'c| -> 'c f(y)` says "fn<'c: Number>(y: 'c:
-        // unbound within Number & Number) -> 'c: unbound within Number & Number", the
-        // header once and the positions twice; inside a definition the header too
-        // (`'q: T + T` for `'q: T |s: 'q| -> i64 T::m(s)` in a lambda's body), and a
-        // bound holding a variable gains the callee copy's (`'a: unbound within
-        // Array<'b1: ..> & Array<'b: ..>` where the definition wrote `Array<'b>`, the
-        // printer numbering the declared `'b` apart from the copy's). The copy merged
-        // into the rigid cell here looks to bring its conjuncts, which new_conjuncts
-        // keeps unless union_identical to one the cell has, so the callee's `Number`
-        // stands beside the definition's own. A fix keeps a declared variable's
-        // bounds as its signature writes them (the call's bound is checked, not
-        // added). base-r24 alike. probes: ~/ptmp/cr29/scratch/r24/24g/tmv/dupbound.gx,
-        // dupbound2.gx, dupbound3.gx (declared-bound-doubled-01)
-        // 2026-11-14 claude: Partly fixed. Mechanism: the doubled conjunct is the
-        // callee copy's bound beside the rigid cell's own, kept because new_conjuncts
-        // compares two Refs without an env and an open ref is never identical to a
-        // filled one (the declared bound was open, the callee's filled by its own
-        // check's seed). DefGate::open now seeds the refs of each declared variable's
-        // bounds (Type::seed_names_seen), so dupbound.gx prints 'c: Number once; pin
-        // lang::quantified::a_declared_bound_a_call_meets_prints_once (4 modes fail
-        // without it). Still open: dupbound2.gx ('q: T + T) is the other direction,
-        // the incoming bound is a trait method's own self bound, whose ref the trait
-        // never fills (scope '/' ref open, the declared one filled Trait), and a
-        // call's meet of two scopes' refs to one trait reads apart even by
-        // same_definition (resolve_peek is None for a trait, so (None,None) compares
-        // scope and name); a fix fills the trait signatures' refs where the trait is
-        // registered (a shadowing hazard if before every name is registered) and
-        // compares trait ids in same_definition/same_held. dupbound3.gx (a bound
-        // holding a variable: 'b1 vs 'b numbered apart) is untouched. The suggested
-        // rule (a call's bound checked, not added) is a refusal: 'c: Any |y: 'c| f(y)
-        // and 'c: [i64, string] are accepted today with the cell tightened to Any &
-        // Number / [i64, string] & Number, so it needs a census and Eric before it is
-        // built.
-        // 2026-11-14 claude: Coordinator, round 25: whether to accept this residual is
-        // D43 in ~/ptmp/cr-discuss.md (Open). Readdressed to eric.
-        // 2026-11-15 claude: Eric ruled (2026-11-15, D43 item 4): (b). A body that
-        // needs more of a declared variable than its declared bound is refused, naming
-        // the bound to write (`'c: Any |y: 'c| f(y)` over an f that needs Number is
-        // refused until the signature says `'c: Number`); no quiet tightening, so the
-        // doubled print goes with it. Built with a census of both repos; one that
-        // needs a new annotation in the stdlib, the book or netidx-admin goes back to
-        // Eric first.
-        // 2026-11-15 claude: Built Eric's D43 (4b): a body adds no bound to a
-        // quantifier its definition declares (a header's, or one only a bound names);
-        // a bare written variable stays inferred. Refused at a call (contains.rs
-        // bound_covers over TVar::declared_here, the note undeclared_bound_note naming
-        // the bound to write), an operator, a comparison, a map key and a typedef
-        // parameter bound (TVar::add_body_bound); Singleton is the one bound a body
-        // adds quietly (operands of an operator are one type). The doubled print of a
-        // closed bound goes (retire_implied): dupbound.gx and dupbound2.gx print 'c:
-        // Number and 'q: T once. Still open: dupbound3.gx (a bound holding a variable
-        // prints the callee's copy beside the declared, 'b1 vs 'b), kept because a
-        // conjunct that names cells links them. Census 2976 files both repos: 0
-        // verdict changes, 9 message changes (design/review-*/repro only); no stdlib,
-        // book or netidx annotation. Pins fail without the fix:
-        // lang::quantified::a_body_needing_more_of_a_variable_than_its_bound_* and
-        // a_trait_bound_a_call_meets_prints_once (the twins that declare the bound
-        // pass); typemorph family 2 mode x + x. Probes
-        // ~/ptmp/cr29/scratch/r27/27c/dbd. Needs a soak.
 
         // Dedup computed lock-free: the identity walk can re-enter these cells.
         let (mut to_add, facts) = if same {
