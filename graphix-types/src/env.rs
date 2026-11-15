@@ -2768,32 +2768,6 @@ impl Env {
         }
     }
 
-    // XCR claude for claude: [bug/low] The first method of an impl kept while its trait
-    // stands cannot dispatch to a later method of that impl through the trait: with
-    // `trait Sh { val sh: fn(self) -> i64; val k: fn(self) -> i64 }` standing and a block
-    // `{ type C = Abstract<i64>; impl Sh for C { let sh = |c: C| k(c) + 1; let k = |c: C|
-    // c.0 * 9 + 2 }; saved <- |y: i64| Sh::sh(C(y)); 1 }` dropped, `saved(3)` logs "in the
-    // instance of Sh::sh(C(y)) at this call site: .. k(c): no implementation of Sh for C"
-    // and is bottom (30 while the block lives). `sh`'s view holds nothing at the impl's
-    // scope, so `Env::kept_impls_named` finds no entry; a later method works, since its
-    // view names an earlier one. `name_kept_impls` cannot name the entry there: the body's
-    // names resolve at that scope, and the siblings it would add shadow the trait's
-    // dispatchers (`k(D(c.0))` would bind C's `k`). To fix: a view names kept entries apart
-    // from its bindings (a set of entries beside `Lexical::binds`, read by
-    // `kept_impls_named` and never by a name lookup), or a definition inside an impl's
-    // scope reads that impl's kept entry as its own. Only an embedder reaches it. base-r26
-    // alike. probe: ~/ptmp/cr29/scratch/r26/26a/efo-rev/probes.txt
-    // (escaped-fn-method-forward-sibling-01)
-    // 2026-11-15 claude: A view names kept entries apart from its bindings: Lexical::kept
-    // (a set of method bindings keying entries), read by Env::kept_impls_named through
-    // KeptImpl::named_by and by no name lookup. Env::name_kept_impls puts there every entry
-    // the caller names (by its bindings or its own set) whose scope the instance's view
-    // holds nothing at, in place of copying the caller's bindings, so the scope the
-    // definition is inside needs no exception. An image refuses a view with a non-empty set
-    // (a kept entry exists only after a cycle). Pins
-    // lib_tests::leaks::a_method_of_a_dropped_impl_calling_a_later_sibling_through_the_trait_dispatches_to_it
-    // and .._reaching_a_later_sibling_through_an_outside_function_dispatches_to_it fail in
-    // all four modes without it.
     /// `view`, a definition's, for an instance a call compiled under this
     /// view makes: it names in [`Lexical::kept`] the kept entries this
     /// view names whose scope `view` holds nothing at, so the instance
