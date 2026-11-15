@@ -482,6 +482,8 @@ pub struct InputHold(std::sync::Arc<InputTables>);
 /// ([`Env::names_mut`]).
 #[derive(Debug, Default)]
 pub struct InputTables {
+    /// Set once `displaced` holds a table: it only grows.
+    any_displaced: AtomicBool,
     displaced: RwLock<Map<ModPath, ScopeNames>>,
 }
 
@@ -1823,7 +1825,7 @@ impl Env {
         let mut later_module = None;
         if let Some(sn) = kept.as_ref().or_else(|| self.names.get(level)) {
             debug_assert!(
-                !crosses_body(level) || sn.held_by(self.lexical.input.as_ref()),
+                sn.held_by(self.lexical.input.as_ref()) || !crosses_body(level),
                 "{n} is looked up from {origin} through the import table at \
                  {level} by a view made in another input"
             );
@@ -3195,14 +3197,14 @@ impl Env {
         let Some(own) = self.lexical.input.as_ref().filter(|_| &*scope.0 != "/") else {
             return;
         };
-        let Some(owner) = self.names.get(scope).and_then(|sn| sn.input.clone()) else {
-            return;
-        };
-        if Weak::as_ptr(&owner) == std::sync::Arc::as_ptr(&own.0) {
+        let Some(table) = self.names.get(scope) else { return };
+        let Some(owner) = &table.input else { return };
+        if Weak::as_ptr(owner) == std::sync::Arc::as_ptr(&own.0) {
             return;
         }
-        if let (Some(old), Some(table)) = (owner.upgrade(), self.names.get(scope)) {
+        if let Some(old) = owner.upgrade() {
             old.displaced.write().insert_cow(scope.clone(), table.clone());
+            old.any_displaced.store(true, Ordering::Release);
         }
         self.names.remove(scope);
     }
@@ -3224,7 +3226,7 @@ impl Env {
         sn
     }
 
-    // CR claude for claude: [perf/medium] The names tables tagged by input cost
+    // XCR claude for claude: [perf/medium] The names tables tagged by input cost
     // every check 1.2%: an empty program's `--no-cache --check` went from 766.7M
     // to 775.4M instructions:u between 7d7da1521 and 35749ee10, the commit between
     // them that touches the check being 202a06876 (root-module-table-01; two runs
@@ -3237,10 +3239,27 @@ impl Env {
     // (a flag the first displacement sets), and measure what the tagging itself
     // costs. Measured with bound-traits-walk-cost-01, same script and results file.
     // (displaced-names-lookup-01)
+    // 2026-11-15 claude: Fixed: the step's cost was the held_by debug_assert in
+    // Env::lookup_in, whose crosses_body (a Path::parts walk) ran first at every
+    // level a table answers (8.5M of 8.7M, callgrind); held_by (a pointer compare,
+    // true in every lookup of an empty program) now runs first. displaced_at reads
+    // InputTables::any_displaced (set by displace_names with the first table, the
+    // map only grows) before taking the lock, and displace_names compares the owner
+    // without cloning the Weak. Empty program --no-cache --check, min of 6-8 runs:
+    // 756.1M -> 745.7M (base-r26 775.3M); what the tagging leaves is 0.24M
+    // (names_mut's downgrade, displace_names, sweep_names). guicheck 40.75G ->
+    // 40.31G; census 0/0; leaks, modules, image, deep_nesting pass. No pin fails
+    // with any_displaced never set: displaced_at's read is unobservable with a file
+    // module (both loads write the same imports), and the dynamic path that would
+    // show it clears the tables instead (reload-displaced-names-01).
     /// The table at `level` a module declared there took the registry's
     /// slot of, which the views of the input that made it read.
     fn displaced_at(&self, level: &str) -> Option<ScopeNames> {
-        self.lexical.input.as_ref()?.0.displaced.read().get(level).cloned()
+        let tables = &self.lexical.input.as_ref()?.0;
+        if !tables.any_displaced.load(Ordering::Acquire) {
+            return None;
+        }
+        tables.displaced.read().get(level).cloned()
     }
 
     /// Begin a top-level input: the views made from here on hold it,
