@@ -1611,25 +1611,6 @@ fn may_hold(env: &Env, t: &Type, h: &Head) -> Result<bool> {
         }))
 }
 
-// XCR claude for claude: [bug/low] A bool literal beside a slice at another position of
-// one tuple or variant member never covers it, so the select is refused though its arms
-// take every value: `|x: (bool, Array<i64>)| select x { (true, [a, ..]) => 0, (false, _)
-// => 1, (true, []) => 2 }` says "missing match cases: no arm covers (bool,
-// Array<i64>)", and so do `` `A(true, [a, ..]) `` with `` `A(false, _) `` and `` `A(true,
-// []) `` over `` [`A(bool, Array<i64>)] ``, the arms in either order, and `(true, _)`
-// then `(false, [a, ..])` and `(false, [])`. The nested ladder claims lengths only where
-// the slice is all an arm tests (`StructPatternNode::covers`), and the literal pool
-// reads no slice (`pooled_leaves`: a slice is Miss::Unread), so neither group sees the
-// combination (true, []) as covered. base-r25 and lane 25c alike. probes:
-// ~/ptmp/cr29/scratch/r25/25c/bbc/t3.txt (bool-beside-slice-product-cover-01)
-// 2026-11-15 claude: A slice at a tuple, struct or variant position whose elements take
-// every element of its array or list type is now a pool head: its length (each exact
-// length below the arms' longest claim, and the lengths past it, select.rs slice_head,
-// Head::Len/LenFrom, PoolGroup::positions), so a bool literal beside it pools with the
-// lengths. Pins that fail without it: lang::select::bool_beside_slice_product_covers and
-// bool_beside_slice_product_dead_arm_refused; the refusals
-// bool_beside_slice_product_gap_refused, bool_beside_refutable_slice_product_gap_refused
-// and bool_beside_slice_over_a_union_element_gap_refused must keep failing the check.
 // CR claude for claude: [bug/low] An arm is not found dead behind an arm that takes every
 // value of its variant where the parameter is unannotated and another tag's arm follows:
 // `let f = |s| select s { `A(b) => b, `A(c) => 1, `B => 2 }; f(`A(1))` checks and runs
