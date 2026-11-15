@@ -291,7 +291,7 @@ async fn failed_dynamic_module_compiles_leave_no_definitions() -> Result<()> {
 
 /// What the runtime and the env hold: a count that grows with what a
 /// session has run and deleted is a leak.
-async fn held(ctx: &TestCtx) -> Result<[usize; 16]> {
+async fn held(ctx: &TestCtx) -> Result<[usize; 17]> {
     let s = ctx.rt.env_stats().await?;
     let env = ctx.rt.get_env().await?;
     macro_rules! names {
@@ -316,6 +316,7 @@ async fn held(ctx: &TestCtx) -> Result<[usize; 16]> {
         env.lexical.modules.len(),
         env.names.len(),
         env.kept_impls.len(),
+        env.abstract_reps.len(),
     ])
 }
 
@@ -402,6 +403,78 @@ async fn a_dispatching_function_saved_across_reloads_keeps_nothing_once_dropped(
          let get = |x: i64| T::e(C(x))",
     )
     .await
+}
+
+/// Each load's type is its own, and so is its `Eq`, which decides the
+/// saved function's comparisons past the reload: the representation and
+/// the impl go with the last function made in the load.
+async fn a_function_saved_across_reloads_keeps_its_loads_type_no_longer(
+    mode: Mode,
+) -> Result<()> {
+    saved_across_reloads(
+        mode,
+        "",
+        "use core;",
+        "type C = Abstract<i64>; impl Eq for C { let eq = |a, b| a.0 != b.0 }; \
+         let get = |x: i64| select C(x) == C(x) { true => 0, false => x + v }",
+    )
+    .await
+}
+
+/// How many impls and abstract types the env registers.
+async fn impls_and_types(ctx: &TestCtx) -> Result<(usize, usize)> {
+    let env = ctx.rt.get_env().await?;
+    let impls = (&*env.impls).into_iter().map(|(_, l)| l.len()).sum();
+    Ok((impls, env.abstract_reps.len()))
+}
+
+/// A load's type keeps its representation and its `Eq` past the reload
+/// that retires the load while a function made in it lives, and loses
+/// them once that function goes, with no reload after.
+async fn a_retired_loads_type_goes_with_its_last_function(mode: Mode) -> Result<()> {
+    let (ctx, mut rx) = fixture_runtime([], crate::TEST_REGISTER, mode, |_| {}).await?;
+    let roots = literal!("let tick: i64 = 0; let held: fn(x: i64) -> i64 = never();");
+    let _roots = ctx.rt.compile(roots).await?;
+    let before = impls_and_types(&ctx).await?;
+    let _module = ctx
+        .rt
+        .compile(literal!(
+            r#"let src = select tick {
+                 1 => "type C = Abstract<i64>; impl Eq for C { let eq = |a, b| a.0 != b.0 }; let get = |x: i64| select C(x) == C(x) { true => 0, false => x + 1 }",
+                 _ => "let get = |x: i64| x * 10"
+               };
+               let s = mod d dynamic { sig { use core; val get: fn(x: i64) -> i64 }; source src };"#
+        ))
+        .await?;
+    let tick = root_bind(&ctx, "tick").await?;
+    let (e_held, _held) = compile_one(&ctx, "(tick, held(tick))").await?;
+    ctx.rt.set(tick, 1i64)?;
+    let (id, w) = compile_one(&ctx, "{ held <- d::get; d::get(tick) }").await?;
+    await_update(&ctx, &mut rx, id, |v| *v == Value::I64(2))
+        .await
+        .context("first load")?;
+    drop(w);
+    for n in 2..=5i64 {
+        ctx.rt.set(tick, n)?;
+        await_update(&ctx, &mut rx, e_held, is_pair(n, n + 1)).await.context("held")?;
+        let kept = impls_and_types(&ctx).await?;
+        assert_eq!(kept, (before.0 + 1, before.1 + 1), "{mode:?}: dropped at {n}");
+    }
+    let (id, w) = compile_one(&ctx, "{ held <- d::get; d::get(tick) }").await?;
+    await_update(&ctx, &mut rx, id, |v| *v == Value::I64(50))
+        .await
+        .context("later load")?;
+    drop(w);
+    let mut n = 5;
+    while impls_and_types(&ctx).await? != before && n < 100 {
+        n += 1;
+        ctx.rt.set(tick, n)?;
+        await_update(&ctx, &mut rx, e_held, is_pair(n, 10 * n)).await?;
+    }
+    let after = impls_and_types(&ctx).await?;
+    ctx.shutdown().await;
+    assert_eq!(after, before, "{mode:?}: held past its last function");
+    Ok(())
 }
 
 /// A function outside the module that each load calls is instantiated in
@@ -1940,6 +2013,8 @@ async fn a_function_over_a_dropped_trait_bounding_a_typedefs_parameter_binds_its
 modes!(
     a_function_saved_across_reloads_keeps_nothing_once_dropped,
     a_dispatching_function_saved_across_reloads_keeps_nothing_once_dropped,
+    a_function_saved_across_reloads_keeps_its_loads_type_no_longer,
+    a_retired_loads_type_goes_with_its_last_function,
     a_saved_function_calling_an_outside_function_keeps_nothing_once_dropped,
     a_saved_function_calling_another_modules_function_keeps_nothing_once_dropped,
     a_function_saved_past_a_declared_impl_keeps_nothing_once_dropped,

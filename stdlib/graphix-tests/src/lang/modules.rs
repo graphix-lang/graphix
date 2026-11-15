@@ -2605,6 +2605,82 @@ run!(
     FuseExpect::Jit
 );
 
+// An abstract type a body declares and its interface does not is its
+// load's own, and so are its core impls: the first body's `Eq` decides the
+// comparison of a function saved from it after the reload, the second body
+// declaring no `C`.
+run!(
+    a_function_saved_across_a_reload_compares_its_loads_type_by_its_loads_eq,
+    is(Value::String(
+        " 90 10 [10, 11] 100 11 [11, 12] 110 12 [12, 13] 120 13 [13, 14] 130 14 [14, 15]"
+            .into()
+    )),
+    "/test.gx" => a_function_saved_across_a_reload(
+        "",
+        "use core; val make: fn(x: i64) -> i64",
+        "type C = Abstract<i64>; impl Eq for C { let eq = |a, b| true }; \
+         let make = |x: i64| select C(x) == C(x + 1) { true => x + 1, false => x + 5000 }",
+        "let make = |x: i64| x * 10"
+    );
+    FuseExpect::Jit
+);
+
+// A type the interface declares is one type across reloads, compared by the
+// impl registered now: the saved function's comparison follows the second
+// body's `Eq`.
+run!(
+    a_function_saved_across_a_reload_compares_an_interface_type_by_the_impl_registered_now,
+    is(Value::String(
+        " 180 5009 [5009, 5010] 200 5010 [5010, 5011] 220 5011 [5011, 5012] 240 5012 [5012, 5013] 260 5013 [5013, 5014]"
+            .into()
+    )),
+    "/test.gx" => a_function_saved_across_a_reload(
+        "",
+        "use core; type C; val make: fn(x: i64) -> i64",
+        "type C = Abstract<i64>; impl Eq for C { let eq = |a, b| true }; \
+         let make = |x: i64| select C(x) == C(x + 1) { true => x + 1, false => x + 5000 }",
+        "type C = Abstract<i64>; impl Eq for C { let eq = |a, b| false }; \
+         let make = |x: i64| select C(x) == C(x) { true => x * 10, false => x * 20 }"
+    );
+    FuseExpect::Jit
+);
+
+// Each load's type is its own: the second body declares `C` again with
+// another representation and other impls, and the function saved from the
+// first compares, prints, sorts and writes its `C` by the first body's
+// `Eq`, `Display`, `Ord` and `Cast`.
+run!(
+    a_reload_declares_its_own_type_beside_the_retired_loads,
+    r##"{
+let ep = 0;
+ep <- select ep { n if n < 10 => n + 1, _ => never() };
+let src: string = never();
+src <- select ep {
+  2 => """type C = Abstract<i64>;
+    impl Eq for C { let eq = |a, b| true };
+    impl Display for C { let fmt = |c| "one[c.0]" };
+    impl Ord for C { let cmp = |a, b| select a.0 < b.0 { true => `Greater, false => select a.0 == b.0 { true => `Equal, false => `Less } } };
+    impl Cast for C { let to_value = |c| cast<Any>(c.0 * 100) };
+    let make = |x: i64| "[C(x) == C(x + 1)] [C(x)] [array::sort([C(1), C(3), C(2)])] [json::write_str(C(x))$]"
+  """,
+  6 => """type C = Abstract<string>;
+    impl Eq for C { let eq = |a, b| false };
+    impl Display for C { let fmt = |c| "two[c.0]" };
+    let make = |x: i64| "[C("a") == C("a")] [C("q")]"
+  """,
+  _ => never()
+};
+let s = mod d dynamic { sig { use core; use array; use json; val make: fn(x: i64) -> string }; source src };
+let saved: fn(x: i64) -> string = never();
+saved <- select ep { 4 => ep ~ d::make, _ => never() };
+select ep { 10 => ep ~ "[s] [saved(ep)] | [d::make(ep)]", _ => never() }
+}"##,
+    is(Value::String(
+        r#"null true one10 [one3, one2, one1] {"C":1000} | false twoq"#.into()
+    ));
+    FuseExpect::Jit
+);
+
 // Where the interface declares the trait, the type and the impl, the first
 // body's `make` still runs the first body's `d` over the first body's `v`,
 // through the default the interface wrote.

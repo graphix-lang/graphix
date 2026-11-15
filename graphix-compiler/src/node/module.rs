@@ -1872,7 +1872,18 @@ impl<R: Rt> Module<R> {
         // previous source's imports or they accumulate
         ctx.env.clear_names_under(&self.scope.lexical, self.env.input.as_ref());
         let env = self.env.clone();
-        let load = LoadedBody::under(env.body.clone(), self.scope.lexical.clone());
+        let interface = self.sig.items.iter().filter_map(|si| match &si.kind {
+            SigKind::TypeDef(td) => Some(td.name.name.clone()),
+            _ => None,
+        });
+        let own = ctx.env.own_types(
+            &self.scope.lexical,
+            &self.spec.ori,
+            self.spec.pos,
+            interface,
+        );
+        let load =
+            LoadedBody::of_source(env.body.clone(), self.scope.lexical.clone(), own);
         self.env.body = Some(load.clone());
         let sig_env = match &self.body {
             Body::Static => None,
@@ -2123,6 +2134,9 @@ impl<R: Rt> Module<R> {
     /// holds one keeps it.
     fn retire(&self, ctx: &mut ExecCtx<'_, R>, body: SetAside<R>, reload: bool) {
         let SetAside { mut env, nodes, proxy, .. } = body;
+        if let Some(load) = own_load(&self.base, &env) {
+            load.retire()
+        }
         for Proxy { inner, outer, .. } in proxy.iter() {
             ctx.unref_var(*inner, self.top_id);
             ctx.unref_var(*outer, self.top_id);
@@ -2279,6 +2293,7 @@ impl<R: Rt> Update<R> for Module<R> {
                         }
                         Ok(()) => {
                             self.retire(ctx, set_aside, true);
+                            ctx.env.sweep_load_types();
                             compiled = true
                         }
                     }
@@ -2354,6 +2369,7 @@ impl<R: Rt> Update<R> for Module<R> {
             ctx.keep_trait(def, splice.copied())
         }
         self.clear_compiled(ctx);
+        ctx.env.sweep_load_types();
         self.sig_decls.unregister(&mut ctx.env);
         let SigDecls { traits, impls } = &self.sig_decls;
         let methods = impls.iter().flat_map(|im| im.methods.iter());

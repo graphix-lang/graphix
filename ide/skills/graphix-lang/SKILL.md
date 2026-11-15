@@ -408,6 +408,11 @@ the module, `d::get(x)`, to follow a reload. A call made outside every load
 of a function outside every load (`let make = app` in the body, `saved <-
 d::make`) is the root's own: it dispatches by the impl registered now, so a
 reload that replaces the body's impl moves it, a saved one included.
+A type the body declares and the `sig` does not is that load's own: the
+next load's `C` is another type, with any representation, and the saved
+function's `C` compares, sorts, prints and casts by its own body's `Eq`,
+`Ord`, `Display` and `Cast`. A type the `sig` declares is one type across
+reloads, and compares and prints by the impl registered now.
 
 A closure or reference that left a select arm, held where the arm's sleep
 does not reach (`let h = once(g)`, a `<-` to an outer variable), reads the

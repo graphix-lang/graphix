@@ -1291,9 +1291,11 @@ impl<R: Rt> Impl<R> {
     /// its own entry, or the declaration it narrowed. Another
     /// implementation's entry is not identified with this one, so a
     /// reload that unregistered this body and registered a new one
-    /// finds nothing to give back.
+    /// finds nothing to give back. A core impl of a load's own type stays
+    /// until the load is gone ([`Env::sweep_load_types`]).
     fn give_back(&self, ctx: &mut ExecCtx<'_, R>) {
         match &self.fulfils {
+            None if ctx.env.load_keeps_impl(&self.def) => (),
             None => {
                 ctx.keep_impl(&self.def);
                 ctx.env.unregister_impl(&self.def)

@@ -2616,6 +2616,15 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
     /// reference named it.
     pub fn release_references(&mut self) {
         let lives = self.control.lives().clone();
+        // a retired load's hook sites hold its impls' methods where no
+        // collection counts them: they go, to be built again by a call
+        if lives.changed() {
+            let mut retired: LPooled<Vec<typ::AbstractId>> = LPooled::take();
+            self.cx.env.block_types.retired_types(|t| retired.extend(t.iter().copied()));
+            if !retired.is_empty() {
+                node::coretraits::drop_sites(self, |id| retired.contains(&id))
+            }
+        }
         let rt = &self.rt;
         let functions = &self.cx.bind_to_lambda;
         lives.collect(
@@ -2645,6 +2654,7 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
             self.forget_function_records(id);
             self.rt.store_release(&id);
         });
+        self.cx.env.sweep_load_types();
     }
 
     /// The same view, borrowed for a shorter time, over `event`.

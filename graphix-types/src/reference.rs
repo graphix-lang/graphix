@@ -117,6 +117,13 @@ impl Lives {
         }
     }
 
+    /// Whether the next [`Lives::collect`] looks at the orphans because
+    /// one was made or lost a pin since the last.
+    pub fn changed(&self) -> bool {
+        let st = self.0.lock();
+        st.dirty && !st.orphaned.is_empty()
+    }
+
     /// Whether a reference, a function value or a holder names `id`.
     pub fn pinned(&self, id: BindId) -> bool {
         self.0.lock().pins.contains_key(&id)

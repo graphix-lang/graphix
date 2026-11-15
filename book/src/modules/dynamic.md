@@ -99,6 +99,14 @@ body implemented, also where a function outside the module that it calls makes
 the call, and a name it uses is what that body imported. Code that should follow
 a reload calls through the module each time, `foo::add(x)`.
 
+An abstract type the module's body declares and its interface does not belongs
+to that load alone. The next load may declare a type of the same name, even with
+another representation, and it is a different type: a function kept from the
+first body compares, sorts, prints and casts its values by the first body's
+`Eq`, `Ord`, `Display` and `Cast`. A type the interface declares is one type for
+every load, and its values compare and print by the implementation the current
+load registered.
+
 ## What a Loaded Module Can See
 
 A loaded module starts with nothing: no package, not even `core`, and none of

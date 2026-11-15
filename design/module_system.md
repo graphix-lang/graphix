@@ -297,8 +297,8 @@ later in the reload's own cycle reads the retired binding too.
 
 **A load keeps what it registered.** The registries hold one record of
 a trait, one impl of a trait for a type and one import table a scope, and
-the two bodies name them alike (a trait and an abstract type are their
-paths), so a reload gives each to the new source (`Trait::unregister`,
+the two bodies name them alike (a trait and a type the interface
+declares are their paths), so a reload gives each to the new source (`Trait::unregister`,
 `Impl::unregister`, `Env::clear_names_under`). A function made in the
 retired body compiles its body in that body's lexical view whenever it is
 first called, so the view carries the load (`Lexical::body`, one
@@ -329,9 +329,7 @@ defaults and impl methods (`LoadedBody::dispatch_bindings`, at
 `Lambda::update`), a dispatcher deleted while pinned is orphaned as a
 binding is (`ExecCtx::delete_dispatcher`), and they go with the last such
 function. Outside the body a call resolves to the declared entry as
-before, and the core traits, which the runtime consults by a value's
-type, read the registries alone: a value prints and compares by the impl
-registered now (CR `retired-body-outside-dispatch-01`). Pins:
+before; the core traits read the registries, below. Pins:
 `lang::modules::
 a_function_saved_across_a_reload_dispatches_to_its_own_bodys_methods`,
 `.._dispatches_past_a_declared_impl`,
@@ -347,6 +345,33 @@ a_function_saved_across_a_reload_dispatches_to_its_own_bodys_methods`,
 a_dispatching_function_saved_across_reloads_keeps_nothing_once_dropped`,
 `a_function_saved_past_a_declared_impl_keeps_nothing_once_dropped`,
 `a_saved_function_calling_another_modules_function_keeps_nothing_once_dropped`.
+
+**A load's types are its own.** An abstract type a load's source
+declares and its interface does not is the load's, its id keyed by the
+load (design/nominal_abstract_types.md, Identity), so a reload declares
+another type of the name, with any representation. The core traits
+(`Eq`, `Ord`, `Display`, `Cast`), which the runtime consults by a value's
+abstract id from `Value`'s own comparison, sorts, map keys, printing,
+casts and writers, find a load's type's impls in the registry, and those
+stay while a function made in the load lives: `Impl::give_back` leaves a
+core impl of the load's own type registered, and the load keeps it with
+the typedefs its head names (`Env::load_keeps_impl`). When the load is
+gone, its last function and view with it, its `Drop` hands its types and
+those impls to `Env::sweep_load_types`, which unregisters the impls and
+drops the representations (after a reload's retirement, at a module's
+deletion and after each cycle's collection). A core hook site
+(`node::coretraits`) holds the impl's method where no collection counts
+it, so at a collection that may find a retired load gone
+(`Lives::changed`) the sites of the retired loads' types go first
+(`coretraits::drop_sites`), built again by the next call. A type the
+interface declares is one type across reloads, compared and printed by
+the impl registered now. Pins: `lang::modules::
+a_function_saved_across_a_reload_compares_its_loads_type_by_its_loads_eq`,
+`.._compares_an_interface_type_by_the_impl_registered_now`,
+`a_reload_declares_its_own_type_beside_the_retired_loads` and
+`lib_tests::leaks::
+a_function_saved_across_reloads_keeps_its_loads_type_no_longer`,
+`a_retired_loads_type_goes_with_its_last_function`.
 
 **An instance is made in its call's load.** A function defined outside
 the module that a loaded body calls dispatches on that body's types (a

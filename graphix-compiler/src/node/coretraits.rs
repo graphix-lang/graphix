@@ -264,6 +264,17 @@ impl<R: Rt> SiteEntry<R> {
     }
 }
 
+// CR claude for claude: [perf/low] An entry is replaced only when its own key is
+// looked up again under another `Version`, so the entry of a type no value
+// dispatches on any more stays, with its pooled sites, their argument bindings
+// and the method instances they hold, for the session. A block declaring `type T =
+// Abstract<i64>; impl Eq for T { .. }` and comparing two `T`s, compiled as a new
+// REPL input each time (each input's `T` is another id), leaves one entry per
+// input. A retired load's types are dropped (`drop_sites`, from
+// `ExecCtx::release_references`); the rest are not. Read from the code, not run.
+// To fix: drop an entry whose trait no longer has an impl for its id when the
+// impl list changes, or at the deletion that gave the impl back.
+// (stale-hook-site-entries-01)
 /// The per-context registry, keyed `(method, tag)`. An entry resolves on
 /// first use and is rebuilt when the trait's implementation list
 /// changes or a dynamic module loads ([`Version`]). The seam runs its sites over events of
@@ -493,6 +504,32 @@ fn take_site<R: Rt>(ctx: &mut ExecCtx<'_, R>, m: Method, typ: &Type) -> Taken<R>
         },
     };
     Taken::Site(Loan { key, version, slot, typ: typ.clone(), site })
+}
+
+/// Delete the pooled sites of the abstract types `gone` picks.
+pub(crate) fn drop_sites<R: Rt>(
+    ctx: &mut ExecCtx<'_, R>,
+    gone: impl Fn(AbstractId) -> bool,
+) {
+    let mut dropped: LPooled<Vec<SiteEntry<R>>> = {
+        let mut reg = ctx.core_hook_sites.lock();
+        let keys: LPooled<Vec<(u8, AbstractId)>> =
+            reg.sites.keys().filter(|(_, id)| gone(*id)).copied().collect();
+        keys.iter().filter_map(|k| reg.sites.remove(k)).collect()
+    };
+    if dropped.is_empty() {
+        return;
+    }
+    // a site registered under no boundary ([`call_hook`])
+    let boundary = ctx.boundary.take();
+    for e in dropped.drain(..) {
+        for (_, c) in e.by_type {
+            for mut s in c.into_iter().flat_map(|c| c.pool) {
+                s.call.delete(ctx)
+            }
+        }
+    }
+    ctx.boundary = boundary;
 }
 
 fn return_site<R: Rt>(ctx: &mut ExecCtx<'_, R>, loan: Loan<R>) {

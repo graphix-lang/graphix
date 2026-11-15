@@ -957,6 +957,22 @@ impl AbstractId {
         AbstractId(lo).named(name)
     }
 
+    // CR claude for claude: [perf/low] Each load of a dynamic module that declares a
+    // type of its own names a new id here, and `ABSTRACT_NAMES` is process-global and
+    // never shrinks: a module reloaded every second for a day adds 86400 entries. An
+    // entry cannot go with its load, since another context of the process (a test
+    // fixture, a second runtime) runs the same program to the same ids and prints its
+    // types by this map. To fix: name a load's type by its base id (the map keyed by
+    // the id before the key is mixed in, the base carried beside the id), or count
+    // the contexts naming each id. (load-type-names-01)
+    /// This id, of a type `name` that the load `key` of a dynamic
+    /// module's source declares and its interface does not: each load's
+    /// type is its own ([`crate::env::LoadedBody`]).
+    pub(crate) fn in_load(self, key: &str, name: &str) -> Self {
+        let (_, lo) = abstract_uuid(&format_compact!("{:x}@{key}", self.0)).as_u64_pair();
+        AbstractId(lo).named(name)
+    }
+
     /// This id, its declared name recorded for diagnostics: by a mint,
     /// and by a restored definition, which mints nothing.
     pub(crate) fn named(self, name: &str) -> Self {

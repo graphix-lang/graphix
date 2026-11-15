@@ -304,6 +304,16 @@ struct BlockRegistry {
     swept_at: usize,
     /// The loads numbered so far ([`BlockTypes::next_load`]).
     loads: u32,
+    /// The loads of each dynamic module made so far, by the module's
+    /// place ([`Env::own_types`]).
+    module_loads: AHashMap<CompactString, u32>,
+    /// The types of the loads a reload or a deletion retired that are not
+    /// gone yet ([`LoadedBody::retire`]).
+    retired_types: AHashSet<AbstractId>,
+    /// The types of the loads that are gone, whose representations and
+    /// core impls [`Env::sweep_load_types`] has still to drop.
+    dead_types: Vec<AbstractId>,
+    dead_impls: Vec<KeptImpl>,
 }
 
 #[derive(Clone, Debug)]
@@ -400,6 +410,44 @@ impl BlockTypes {
         let mut reg = self.0.write();
         reg.loads += 1;
         reg.loads
+    }
+
+    fn next_module_load(&self, place: &str) -> u32 {
+        let mut reg = self.0.write();
+        let n = reg.module_loads.entry(CompactString::from(place)).or_default();
+        *n += 1;
+        *n
+    }
+
+    fn bury(
+        &self,
+        types: impl IntoIterator<Item = AbstractId>,
+        impls: impl IntoIterator<Item = KeptImpl>,
+    ) {
+        let mut reg = self.0.write();
+        for id in types {
+            reg.retired_types.remove(&id);
+            reg.dead_types.push(id)
+        }
+        reg.dead_impls.extend(impls)
+    }
+
+    /// The types of the retired loads not yet gone.
+    pub fn retired_types(&self, f: impl FnOnce(&AHashSet<AbstractId>)) {
+        let reg = self.0.read();
+        if !reg.retired_types.is_empty() {
+            f(&reg.retired_types)
+        }
+    }
+
+    fn take_dead(&self) -> Option<(Vec<AbstractId>, Vec<KeptImpl>)> {
+        let reg = self.0.read();
+        if reg.dead_types.is_empty() && reg.dead_impls.is_empty() {
+            return None;
+        }
+        drop(reg);
+        let mut reg = self.0.write();
+        Some((mem::take(&mut reg.dead_types), mem::take(&mut reg.dead_impls)))
     }
 
     /// Every live entry at `scope` or below, with its name.
@@ -1014,13 +1062,42 @@ pub struct LoadedBody {
     /// The module's scope: the load's import tables are the ones there
     /// and below.
     scope: ModPath,
+    /// The types it declares for itself, for a load of a source.
+    own: Option<OwnTypes>,
     /// Never held across a call into the env: a name looked up under it
     /// reads it again.
     state: RwLock<LoadedState>,
 }
 
+/// A load's own types: every abstract type declared at its module's scope
+/// or below but the ones its interface declares takes its key
+/// ([`AbstractId::in_load`]), and their representations and core impls go
+/// with the load, when no function made in it is left.
+#[derive(Debug)]
+pub struct OwnTypes {
+    key: ArcStr,
+    interface: Box<[ArcStr]>,
+    registry: BlockTypes,
+}
+
+impl Drop for LoadedBody {
+    fn drop(&mut self) {
+        if let Some(own) = &self.own {
+            let st = self.state.get_mut();
+            own.registry.bury(st.types.drain(..), st.core_impls.drain(..))
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct LoadedState {
+    /// The ids that took its key.
+    types: SmallVec<[AbstractId; 2]>,
+    /// A reload replaced it, or its module was deleted.
+    retired: bool,
+    /// The core impls of its types, registered until it is gone, with
+    /// the typedefs their heads name.
+    core_impls: SmallVec<[KeptImpl; 1]>,
     /// Each trait it declares, with its own dispatchers and defaults.
     traits: SmallVec<[Arc<TraitDef>; 1]>,
     /// Each impl it writes, by the bindings of the methods it writes.
@@ -1045,7 +1122,68 @@ struct Given {
 
 impl LoadedBody {
     pub fn under(outer: Option<Arc<LoadedBody>>, scope: ModPath) -> Arc<Self> {
-        Arc::new(Self { outer, beside: Box::default(), scope, state: RwLock::default() })
+        Arc::new(Self {
+            outer,
+            beside: Box::default(),
+            scope,
+            own: None,
+            state: RwLock::default(),
+        })
+    }
+
+    /// A load of a dynamic module's source, `own` its types
+    /// ([`Env::own_types`]).
+    pub fn of_source(
+        outer: Option<Arc<LoadedBody>>,
+        scope: ModPath,
+        own: OwnTypes,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            outer,
+            beside: Box::default(),
+            scope,
+            own: Some(own),
+            state: RwLock::default(),
+        })
+    }
+
+    /// The id `id` of the abstract type `name` declared at `scope` takes
+    /// in this view: the key of the innermost load around `scope` whose
+    /// interface does not declare it, else `id`.
+    fn own_id(&self, scope: &ModPath, name: &str, id: AbstractId) -> AbstractId {
+        let declares = |b: &LoadedBody, own: &OwnTypes| {
+            b.scope == *scope && own.interface.iter().any(|n| n.as_str() == name)
+        };
+        let owner = self.chain().find_map(|b| {
+            let own = b.own.as_ref().filter(|_| scope_is_under(scope, &b.scope))?;
+            (!declares(b, own)).then_some((b, own))
+        });
+        let Some((b, own)) = owner else { return id };
+        let id = id.in_load(&own.key, name);
+        let mut st = b.state.write();
+        if !st.types.contains(&id) {
+            st.types.push(id);
+            if st.retired {
+                own.registry.0.write().retired_types.insert(id);
+            }
+        }
+        id
+    }
+
+    /// A reload replaced the load or its module was deleted: a function
+    /// made in it may still call its types' core impls, whose hook sites
+    /// go at each collection that may find the load gone
+    /// ([`Env::sweep_load_types`]).
+    pub fn retire(&self) {
+        let Some(own) = &self.own else { return };
+        let mut st = self.state.write();
+        st.retired = true;
+        own.registry.0.write().retired_types.extend(st.types.iter().copied())
+    }
+
+    /// Whether `id` is one of this load's own types.
+    pub fn owns(&self, id: AbstractId) -> bool {
+        self.own.is_some() && self.state.read().types.contains(&id)
     }
 
     /// The load of an instance of a function made in `own`, for a call in
@@ -1077,6 +1215,7 @@ impl LoadedBody {
             outer: Some(base.clone()),
             beside: beside.into(),
             scope: own.scope.clone(),
+            own: None,
             state: RwLock::default(),
         })
     }
@@ -2808,7 +2947,7 @@ impl Env {
         Some(Arc::new(list.iter().filter(|im| !self.impl_hidden(im)).cloned().collect()))
     }
 
-    // CR claude for claude: [bug/low] A retired load's own impls reach only the
+    // XCR claude for claude: [bug/low] A retired load's own impls reach only the
     // calls its own text writes. A function outside the module that a retired
     // body's function calls is instantiated in its definition's view, which
     // carries no load, so its dispatch reads the registry. `Sh::e(C(x))` in the
@@ -2875,6 +3014,24 @@ impl Env {
     // load, and its core impls (Eq, Ord, Display, Cast) stay registered while a function of that
     // load lives. A type the interface declares stays one type across reloads, compared by the impl
     // registered now.
+    // 2026-11-15 claude: Built D38 (b). A type a load declares and its interface does not takes the
+    // load's key in its id (LoadedBody::own_id, AbstractId::in_load; the key is the module's place
+    // and the number of its loads, Env::own_types, the same cold, warm and in every process, printed
+    // nowhere); an interface type keeps its path id. Impl::give_back leaves a core impl of a load's
+    // own type registered and the load keeps it with its head's typedefs (Env::load_keeps_impl); the
+    // load's Drop hands its types and impls to Env::sweep_load_types (after a retirement, a module's
+    // deletion and each collection), and a retired load's hook sites go at each collection that may
+    // find it gone (coretraits::drop_sites, Lives::changed), since a site holds the impl's method
+    // where no collection counts it. A reload may now redeclare a load's own type with another
+    // representation. p1.gx (sig given use core) prints alive=ep+1 to the end. Pins failing with the
+    // fix undone:
+    // lang::modules::a_function_saved_across_a_reload_compares_its_loads_type_by_its_loads_eq,
+    // a_reload_declares_its_own_type_beside_the_retired_loads,
+    // lib_tests::leaks::a_retired_loads_type_goes_with_its_last_function (and
+    // a_function_saved_across_reloads_around_an_interface_module_keeps_nothing_once_dropped, now
+    // that held() counts abstract_reps: base grew one representation a reload there); leak pin for
+    // the mechanism: a_function_saved_across_reloads_keeps_its_loads_type_no_longer; the interface
+    // half: .._compares_an_interface_type_by_the_impl_registered_now. Needs a soak.
     /// Every impl of `trait_id`, hidden ones included (see
     /// [`Self::impl_hidden`]). Inside a load of a dynamic module's
     /// source the impls it writes come first, in place of the registered
@@ -3219,6 +3376,62 @@ impl Env {
         }
     }
 
+    /// The types of the next load of the dynamic module at `scope`,
+    /// declared at `pos` in `ori`, whose interface declares the types
+    /// `interface`. Its key is the module's place, the same in every
+    /// process, and how many loads of it the session has made: no two
+    /// loads share it, and a run makes each one again cold or warm.
+    pub fn own_types(
+        &self,
+        scope: &ModPath,
+        ori: &Origin,
+        pos: SourcePosition,
+        interface: impl Iterator<Item = ArcStr>,
+    ) -> OwnTypes {
+        let place = match crosses_body(scope) {
+            false => format_compact!("{scope}"),
+            true => {
+                let stable: ModPath =
+                    Path::parts(&scope.0).filter(|p| !p.starts_with('#')).collect();
+                format_compact!("{stable}#{}", crate::typ::declaration_place(ori, pos))
+            }
+        };
+        let n = self.block_types.next_module_load(&place);
+        OwnTypes {
+            key: format_compact!("{place}#{n}").as_str().into(),
+            interface: interface.collect(),
+            registry: self.block_types.clone(),
+        }
+    }
+
+    /// Drop the representations and the core impls of the types of the
+    /// loads that are gone ([`OwnTypes`]).
+    pub fn sweep_load_types(&mut self) {
+        let Some((dead, impls)) = self.block_types.take_dead() else { return };
+        for k in impls.iter() {
+            self.unregister_impl(&k.im)
+        }
+        for id in dead.iter() {
+            self.abstract_reps.remove(id);
+        }
+    }
+
+    /// Whether the core impl `im`, being given back, stays registered
+    /// until the load this view is inside is gone, its head a type of
+    /// that load: the load keeps it.
+    pub fn load_keeps_impl(&self, im: &Arc<ImplDef>) -> bool {
+        let Some(body) = &self.lexical.body else { return false };
+        let owned = CoreTrait::of_id(im.trait_id).is_some()
+            && self.head_abstract(&im.target).is_some_and(|id| body.owns(id));
+        if owned {
+            let mut st = body.state.write();
+            if !st.core_impls.iter().any(|k| Arc::ptr_eq(&k.im, im)) {
+                st.core_impls.push(KeptImpl::new(im.clone()))
+            }
+        }
+        owned
+    }
+
     /// Where the innermost module around `scope` whose path crosses a
     /// body is declared ([`Self::declare_module_site`]).
     fn module_site(&self, scope: &ModPath) -> Option<ArcStr> {
@@ -3463,6 +3676,10 @@ impl Env {
                     Arc::from_iter(params.iter().map(|(tv, _)| Type::TVar(tv.clone())));
                 let site = self.module_site(scope);
                 let id = AbstractId::declared(scope, name, decl, &ori, site.as_deref());
+                let id = match &self.lexical.body {
+                    Some(body) => body.own_id(scope, name, id),
+                    None => id,
+                };
                 let typ = Type::Abstract { id, params: formals };
                 let rep = match rep {
                     None => None,

@@ -197,6 +197,20 @@ without the type holds it opaquely, which `Value::Abstract` supports).
 The parse-time process counter it replaced made two parses of one
 interface two types.
 
+A type a dynamic module's load declares and its interface does not is
+the load's own (`LoadedBody::own_id`): its id is the id above with the
+load's key mixed in (`AbstractId::in_load`), the module's place and how
+many loads of it the session has made (`Env::own_types`). The key is the
+same in every process and cold or warm (an image is written before any
+load), and it reaches no printed type or message: the type prints by its
+name. So each load declares its own type, a reload may give it another
+representation, and the retired load's values and functions keep theirs
+and its core impls (design/module_system.md, "A load's types are its
+own"). A type the interface declares is one type across reloads, its id
+its path, and so is a nested load's interface type for every reload of
+that load: the innermost load around the declaration whose interface does
+not declare it keys it.
+
 Runtime shape: `GxAbstract { id, name, params, payload }`
 (`graphix-types/src/abstract_value.rs`), registered with netidx-value
 when an execution state is built, before any value can decode; `params`
