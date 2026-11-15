@@ -4497,30 +4497,6 @@ impl Type {
                     }
                     t1.weld_lower();
                     let Ok(w) = t1.witness(env)? else { return Ok(false) };
-                    // XCR claude for claude: [bug/low] A refusal under a bound that holds one
-                    // variable twice prints a mismatch that is false as printed, where the
-                    // bound's variable is a call's result. `let f = 'a0: ['a1, null], 'a1:
-                    // ('a2, 'a2, i64) |x0: 'a0| -> 'a1 never(); let r: ([i64, string], [i64,
-                    // string], [i64, null]) = f((1, "s", 1))` is refused here, "type mismatch
-                    // ([i64, string], [i64, string], [i64, null]) does not contain (i64, string,
-                    // i64)", and with `r: (i64, string, i64)` (refused at the bind below this
-                    // block, base-r24 alike) "type mismatch (i64, string, i64) does not contain
-                    // (i64, string, i64)". The refusals are right: 'a2 is one type, as `|x: ('a,
-                    // 'a)|` given `(1, "s")` is refused, and the argument annotated `([i64,
-                    // string], [i64, string], i64)` runs. The message names neither the bound
-                    // nor 'a2, where the same refusal at a parameter (`|x: 'a1, y: 'a2|`) prints
-                    // "'a1: unbound within ('a2: i64, 'a2: i64) does not contain (i64, string)".
-                    // A fix prints the result's variable with its bound, or names the argument
-                    // to annotate. Found reviewing bound-chain-lower-settle-01. probes:
-                    // ~/ptmp/cr29/scratch/r24/24c/bclsrev/{d1,d6,d5,k3}.gx
-                    // (bound-twice-result-message-01)
-                    // 2026-11-14 claude: The refusal's message now ends with the bound a
-                    // generated cell stands within and the lower bound it does not meet
-                    // (contains.rs unmet_bound_note, TypeMismatch.unmet): d1 and d6 print "it is
-                    // within the bound ('a2, 'a2, i64), which (i64, string, i64) does not meet".
-                    // Pins
-                    // lang::types::a_result_within_a_bound_holding_one_variable_twice_names_the_bound
-                    // (4 modes fail without) and its annotated twin. Message-only, no census.
                     if !t1.cell_lower().is_empty()
                         && !commit_conjuncts(t1, flags, env, hist, &w)?
                     {
