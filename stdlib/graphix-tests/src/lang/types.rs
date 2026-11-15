@@ -16549,7 +16549,7 @@ run!(
 run!(
     two_error_members_one_cell_hold_both_tags,
     r#"{
-  let f = |x: ['a, Error<'e>]| x?;
+  let f = 'a: NoError |x: ['a, Error<'e>]| x?;
   let v: [i64, string, Error<`A>, Error<`B>] = error(`B);
   let r = {
     catch(e) e ~ select e.0.error { `A => -1, `B => -2 };
@@ -16563,7 +16563,7 @@ run!(
 run!(
     two_error_members_one_cell_are_refused_a_handler_for_one_tag,
     r#"{
-  let f = |x: ['a, Error<'e>]| x?;
+  let f = 'a: NoError |x: ['a, Error<'e>]| x?;
   let v: [i64, string, Error<`A>, Error<`B>] = error(`B);
   let r = {
     catch(e) e ~ select e.0.error { `A => -1 };
