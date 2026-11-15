@@ -64,7 +64,11 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   over `Array<'a>`, two declared variables, takes nothing (`'a` and `'b`
   differ in an instance; `setops::same_type`);
   bool literals, variant heads
-  (payload irrefutable) and or-patterns of them pool per position
+  (payload irrefutable), array and list slices whose elements take every
+  element of their position's one array or list type (a slice's length is
+  its head: each exact length below the arms' longest claim, and the
+  lengths past it, so `(true, [a, ..])`, `(true, [])` and `(false, _)`
+  cover `(bool, Array<i64>)`) and or-patterns of them pool per position
   inside composite patterns, keyed by path (a partial struct pattern
   against the one member holding its fields, the rest any value; an open
   scrutinee's members are its structural bound's; each tuple or struct

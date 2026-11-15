@@ -1505,12 +1505,48 @@ enum Head {
     /// A value of a primitive member but `bool` and `null`, which only a
     /// name or `_` there matches.
     Rest,
+    /// An array or list of exactly this length.
+    Len(usize),
+    /// An array or list of at least this length: an arm's prefix or suffix
+    /// slice; in a position's domain, the lengths past its longest claim.
+    LenFrom(usize),
+}
+
+impl Head {
+    /// Whether an arm testing `self` matches a value of the class `class`
+    /// of the position's domain.
+    fn admits(&self, class: &Head) -> bool {
+        match (self, class) {
+            (Head::LenFrom(k), Head::Len(n) | Head::LenFrom(n)) => n >= k,
+            _ => self == class,
+        }
+    }
+}
+
+/// The classes of one position's values the pool tells apart.
+enum Domain<'a> {
+    /// The heads the member admits there.
+    Heads(&'a [Head]),
+    /// The array lengths the arms' slices tell apart.
+    Lengths(SmallVec<[Head; 8]>),
+}
+
+impl std::ops::Deref for Domain<'_> {
+    type Target = [Head];
+
+    fn deref(&self) -> &[Head] {
+        match self {
+            Domain::Heads(hs) => hs,
+            Domain::Lengths(hs) => hs,
+        }
+    }
 }
 
 /// One position of a composite pattern, keyed by its path into the
 /// scrutinee member: the heads the arm admits there (`None` = any
 /// value, which also covers every position under the path) and the
-/// heads the member admits there (`None` = not a finite set of heads).
+/// heads the member admits there (`None` = not a finite set of heads;
+/// a slice's length heads have the arms' lengths as theirs).
 struct Leaf {
     path: SmallVec<[u32; 4]>,
     heads: Option<SmallVec<[Head; 2]>>,
@@ -1575,7 +1611,7 @@ fn may_hold(env: &Env, t: &Type, h: &Head) -> Result<bool> {
         }))
 }
 
-// CR claude for claude: [bug/low] A bool literal beside a slice at another position of
+// XCR claude for claude: [bug/low] A bool literal beside a slice at another position of
 // one tuple or variant member never covers it, so the select is refused though its arms
 // take every value: `|x: (bool, Array<i64>)| select x { (true, [a, ..]) => 0, (false, _)
 // => 1, (true, []) => 2 }` says "missing match cases: no arm covers (bool,
@@ -1586,6 +1622,14 @@ fn may_hold(env: &Env, t: &Type, h: &Head) -> Result<bool> {
 // reads no slice (`pooled_leaves`: a slice is Miss::Unread), so neither group sees the
 // combination (true, []) as covered. base-r25 and lane 25c alike. probes:
 // ~/ptmp/cr29/scratch/r25/25c/bbc/t3.txt (bool-beside-slice-product-cover-01)
+// 2026-11-15 claude: A slice at a tuple, struct or variant position whose elements take
+// every element of its array or list type is now a pool head: its length (each exact
+// length below the arms' longest claim, and the lengths past it, select.rs slice_head,
+// Head::Len/LenFrom, PoolGroup::positions), so a bool literal beside it pools with the
+// lengths. Pins that fail without it: lang::select::bool_beside_slice_product_covers and
+// bool_beside_slice_product_dead_arm_refused; the refusals
+// bool_beside_slice_product_gap_refused, bool_beside_refutable_slice_product_gap_refused
+// and bool_beside_slice_over_a_union_element_gap_refused must keep failing the check.
 // CR claude for claude: [bug/low] An arm is not found dead behind an arm that takes every
 // value of its variant where the parameter is unannotated and another tag's arm follows:
 // `let f = |s| select s { `A(b) => b, `A(c) => 1, `B => 2 }; f(`A(1))` checks and runs
@@ -1672,6 +1716,35 @@ fn head_of(sp: &StructPatternNode) -> Option<Head> {
 // for an undecided `x`.
 // probes: ~/ptmp/cr29/scratch/r25/25c/rpe/t5.txt (run with rb.sh)
 // (pool-covered-member-cell-typed-01)
+/// The lengths slice pattern `sp` claims of `t`, when `t` is one array or
+/// list type its kind fits and its elements take every element of it.
+fn slice_head(env: &Env, sp: &StructPatternNode, t: &Type) -> Result<Option<Head>> {
+    let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+    if union_members_open(env, t, &mut members)? {
+        return Ok(None);
+    }
+    let [m] = &members[..] else { return Ok(None) };
+    let fits = match (sp, m) {
+        (
+            StructPatternNode::Slice { kind: SliceKind::Array, .. }
+            | StructPatternNode::SlicePrefix { list: false, .. }
+            | StructPatternNode::SliceSuffix { .. },
+            Type::Array(_),
+        )
+        | (
+            StructPatternNode::Slice { kind: SliceKind::List, .. }
+            | StructPatternNode::SlicePrefix { list: true, .. },
+            Type::List(_),
+        ) => sp.elements_cover(env, m),
+        _ => false,
+    };
+    Ok(match sp.array_len_range() {
+        Some((k, true)) if fits => Some(Head::Len(k)),
+        Some((k, false)) if fits => Some(Head::LenFrom(k)),
+        _ => None,
+    })
+}
+
 /// The pooled positions of composite pattern `sp` against `m`, a
 /// scrutinee member of its shape; `Unread` when the pattern has a
 /// refutable part the pool does not read (another literal, a slice, a
@@ -1703,6 +1776,17 @@ fn pooled_leaves(
                     Some(hs) => Some(hs),
                     None => return Ok(Some(Miss::Unread)),
                 }
+            }
+            sp if sp.is_array_slice() => {
+                let Some(h) = slice_head(env, sp, t)? else {
+                    return Ok(Some(Miss::Unread));
+                };
+                out.push(Leaf {
+                    path: path.clone(),
+                    heads: Some(smallvec![h]),
+                    domain: None,
+                });
+                return Ok(None);
             }
             sp => match head_of(sp) {
                 Some(h) => Some(SmallVec::from_iter([h])),
@@ -2102,11 +2186,12 @@ struct PoolGroup {
 }
 
 /// The combinations a group's arms match, indexed as
-/// [`PoolGroup::combinations`] numbers them over its first `positions`
-/// positions. An arm adds its new positions after the group's, so a
-/// group with as many positions numbers its combinations alike.
+/// [`PoolGroup::combinations`] numbers them over its first positions,
+/// `radix` the size of each one's domain. An arm adds its new positions
+/// after the group's, so a group with the same radix numbers its
+/// combinations alike.
 struct Matched {
-    positions: usize,
+    radix: SmallVec<[usize; 8]>,
     count: usize,
     bits: [u64; MAX_POOL_COMBINATIONS / 64],
 }
@@ -2507,7 +2592,7 @@ impl PartPool {
 fn admits(arm: &[Leaf], path: &[u32], h: &Head) -> bool {
     arm.iter().any(|l| match &l.heads {
         None => path.starts_with(&l.path),
-        Some(hs) => l.path[..] == *path && hs.contains(h),
+        Some(hs) => l.path[..] == *path && hs.iter().any(|a| a.admits(h)),
     })
 }
 
@@ -2541,15 +2626,30 @@ impl PoolGroup {
     fn positions<'a>(
         arms: &'a [SmallVec<[Leaf; 8]>],
         extra: Option<&'a [Leaf]>,
-    ) -> Option<SmallVec<[(&'a [u32], &'a [Head]); 8]>> {
-        let mut out: SmallVec<[(&[u32], &[Head]); 8]> = SmallVec::new();
+    ) -> Option<SmallVec<[(&'a [u32], Domain<'a>); 8]>> {
+        let mut out: SmallVec<[(&[u32], Domain); 8]> = SmallVec::new();
         let mut total = 1usize;
-        let arms = arms.iter().map(|a| &a[..]).chain(extra);
-        for l in arms.flat_map(|a| a.iter()).filter(|l| l.heads.is_some()) {
+        let leaves = || arms.iter().map(|a| &a[..]).chain(extra).flat_map(|a| a.iter());
+        for l in leaves().filter(|l| l.heads.is_some()) {
             if out.iter().any(|(p, _)| *p == &l.path[..]) {
                 continue;
             }
-            let domain = l.domain.as_deref()?;
+            let domain = match l.heads.as_deref() {
+                Some([Head::Len(_) | Head::LenFrom(_)]) => {
+                    let past = leaves()
+                        .filter(|o| o.path == l.path)
+                        .filter_map(|o| match o.heads.as_deref() {
+                            Some([Head::Len(k)]) => Some(k + 1),
+                            Some([Head::LenFrom(k)]) => Some(*k),
+                            _ => None,
+                        })
+                        .max()
+                        .unwrap_or(0);
+                    let lens = (0..past).map(Head::Len).chain([Head::LenFrom(past)]);
+                    Domain::Lengths(lens.collect())
+                }
+                _ => Domain::Heads(l.domain.as_deref()?),
+            };
             total = total.saturating_mul(domain.len());
             out.push((&l.path[..], domain));
         }
@@ -2558,7 +2658,7 @@ impl PoolGroup {
 
     /// Every combination of heads `positions` names, as head references.
     fn combinations<'a>(
-        positions: &'a [(&'a [u32], &'a [Head])],
+        positions: &'a [(&'a [u32], Domain<'a>)],
     ) -> impl Iterator<Item = SmallVec<[&'a Head; 8]>> + 'a {
         let total = positions.iter().map(|(_, d)| d.len()).product::<usize>();
         (0..total).map(move |mut c| {
@@ -2579,7 +2679,7 @@ impl PoolGroup {
     /// (`nested`).
     fn matches(
         arm: &[Leaf],
-        positions: &[(&[u32], &[Head])],
+        positions: &[(&[u32], Domain)],
         nested: bool,
         combo: &[&Head],
     ) -> bool {
@@ -2596,7 +2696,7 @@ impl PoolGroup {
         })
     }
 
-    fn nested(positions: &[(&[u32], &[Head])]) -> bool {
+    fn nested(positions: &[(&[u32], Domain)]) -> bool {
         positions.iter().any(|(_, d)| d.iter().any(|h| matches!(h, Head::Composite(_))))
     }
 
@@ -2608,14 +2708,13 @@ impl PoolGroup {
             return false;
         };
         let nested = Self::nested(&positions);
+        let radix: SmallVec<[usize; 8]> =
+            positions.iter().map(|(_, d)| d.len()).collect();
         let (m, from) = match &mut self.matched {
-            Some(m) if m.positions == positions.len() => (m, self.arms.len() - 1),
+            Some(m) if m.radix == radix => (m, self.arms.len() - 1),
             slot => {
-                let fresh = Matched {
-                    positions: positions.len(),
-                    count: 0,
-                    bits: [0; MAX_POOL_COMBINATIONS / 64],
-                };
+                let fresh =
+                    Matched { radix, count: 0, bits: [0; MAX_POOL_COMBINATIONS / 64] };
                 (slot.insert(fresh), 0)
             }
         };
@@ -2638,7 +2737,11 @@ impl PoolGroup {
             .enumerate()
             .filter(|(_, c)| Self::matches(arm, &positions, nested, c));
         match &self.matched {
-            Some(m) if m.positions == positions.len() => combos.all(|(i, _)| m.get(i)),
+            Some(m)
+                if m.radix.iter().copied().eq(positions.iter().map(|(_, d)| d.len())) =>
+            {
+                combos.all(|(i, _)| m.get(i))
+            }
             _ => combos.all(|(_, c)| {
                 self.arms.iter().any(|a| Self::matches(a, &positions, nested, &c))
             }),

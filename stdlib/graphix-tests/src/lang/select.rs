@@ -637,7 +637,7 @@ run!(
     nested_slice_ladders_per_position,
     r#"{
   let f = |x: Array<i64>, y: Array<i64>| select (x, y) {
-    ([a, ..], _) => a, (_, [b, ..]) => b, ([], []) => 0, ([a, b, ..], _) => 9
+    ([a, ..], _) => a, (_, [b, ..]) => b, ([a, b, ..], _) => 9, ([], []) => 0
   };
   f([5, 1], [])
 }"#,
@@ -1052,6 +1052,54 @@ run!(
 }"#,
     is(Value::I64(70));
     FuseExpect::Jit
+);
+
+// A bool literal beside a slice at another position of a tuple or variant
+// member pools with the slice's lengths: `(true, [a, ..])` and `(true, [])`
+// with `(false, _)` cover `(bool, Array<i64>)`, in either order, and the
+// lengths an arm claims beside a literal are the ones it is dead behind.
+run!(
+    bool_beside_slice_product_covers,
+    r#"{
+  let f = |x: (bool, Array<i64>)| select x { (true, [a, ..]) => a, (false, _) => 1, (true, []) => 2 };
+  let g = |x: [`A(bool, Array<i64>)]| select x { `A(true, [a, ..]) => a, `A(false, _) => 1, `A(true, []) => 2 };
+  let h = |x: (bool, Array<i64>)| select x { (true, [a, ..]) => a, (true, []) => 2, (false, _) => 1 };
+  let k = |x: (bool, Array<i64>)| select x { (true, _) => 2, (false, [a, ..]) => a, (false, []) => 1 };
+  let l = |x: (bool, bool, Array<i64>)| select x {
+    (true, true, [a, ..]) => a, (true, false, _) => 1, (false, _, _) => 4, (true, true, []) => 2
+  };
+  (f((true, [])), g(`A(true, [])), h((true, [7])), k((false, [])), l((true, true, [])))
+}"#,
+    prints("[i64:2, i64:2, i64:7, i64:1, i64:2]");
+    FuseExpect::Jit
+);
+
+run!(
+    bool_beside_slice_product_gap_refused,
+    "|x: (bool, Array<i64>)| select x { (true, [a, b, ..]) => a, (true, []) => 2, (false, _) => 1 }",
+    refused("missing match cases");
+    FuseExpect::None
+);
+
+run!(
+    bool_beside_slice_product_dead_arm_refused,
+    "|x: (bool, Array<i64>)| select x { (true, [a, ..]) => a, (false, _) => 1, (true, [a, b]) => 3, (true, []) => 2 }",
+    refused("every combination of heads it matches is covered by earlier arms");
+    FuseExpect::None
+);
+
+run!(
+    bool_beside_refutable_slice_product_gap_refused,
+    "|x: (bool, Array<(i64, i64)>)| select x { (true, [(a, 0), ..]) => a, (false, _) => 1, (true, []) => 2 }",
+    refused("missing match cases");
+    FuseExpect::None
+);
+
+run!(
+    bool_beside_slice_over_a_union_element_gap_refused,
+    "|x: (bool, Array<[(i64, i64), i64]>)| select x { (true, [(a, b), ..]) => a, (false, _) => 1, (true, []) => 2 }",
+    refused("missing match cases");
+    FuseExpect::None
 );
 
 // Exact-length slice arms pool their elements' heads per length: `[true]`

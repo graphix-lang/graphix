@@ -587,6 +587,9 @@ no "missing match cases" |x: [`A([Array<i64>, null])]| select x { `A([h, ..]) =>
 ok |x: [`A([Array<i64>, null])]| select x { `A([h, ..]) => 1, `A([]) => 0, `A(null) => 2 }
 no "will never match" |x: [`A([Array<i64>, null])]| select x { `A([h, ..]) => 1, `A([]) => 0, `A([a, b]) => 3, `A(null) => 2 }
 ok |x: [`A([Array<i64>, null])]| select x { `A([h, ..]) => 1, `A([]) => 0, `A(_) => 2 }
+ok |x: (bool, Array<i64>)| select x { (true, [a, ..]) => 0, (false, _) => 1, (true, []) => 2 }
+no "missing match cases" |x: (bool, Array<i64>)| select x { (true, [a, b, ..]) => 0, (false, _) => 1, (true, []) => 2 }
+no "missing match cases" |x: (bool, Array<[(i64, i64), i64]>)| select x { (true, [(a, b), ..]) => 0, (false, _) => 1, (true, []) => 2 }
 ok |x: [`A(Array<i64>), `A(null)]| select x { `A([h, ..]) => 1, `A([]) => 0, `A(null) => 2 }
 no "covers none of its lengths" |x: Array<[(i64, i64), i64]>| select x { [(a, b), ..] => a, [] => 0 }
 ok |x: Array<[(i64, i64), (string, string)]>| select x { [(a, _), ..] => 1, [] => 0 }
