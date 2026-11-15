@@ -48,7 +48,8 @@ thread_local! {
     static ANY_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     pub(super) static NARROW_STEPS: std::cell::Cell<usize> =
         const { std::cell::Cell::new(0) };
-    static CHAIN_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    pub(super) static CHAIN_STEPS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
     static CYCLE_CELLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
@@ -1471,6 +1472,77 @@ impl ChainEnds {
     }
 }
 
+// XCR claude for claude: [structure/low] `open_cell_addr` keeps its chain ends in a
+// thread-local map (`ENDS`) beside the scoped `ChainEnds` a copy's walk already
+// carries: two memos of one fact, and this one holds an `Arc<CellLock>` for every
+// long chain's first cell until the thread's next call after a cell write, so a
+// finished compile's cells stay alive on an idle thread. Nothing reads a stale end
+// (the map is cleared when `cell_writes` moves, the rule the other standing verdicts
+// use), so this is layering and retained memory, not a wrong answer. A fix gives
+// `setops::Leaves` a `ChainEnds` owned by the walk that builds it (`walks_alike`'s
+// caller, valid while that walk writes no cell) and deletes the thread-local. Keep
+// slice-arms-composite-member-cost-01's pin
+// `the_end_of_a_long_chain_is_read_once_while_no_cell_is_written` passing. Added
+// by 26f's slice-arms commit; found in the round 26 coordinator review.
+// (chain-ends-thread-local-01)
+// 2026-11-15 claude: The thread-local is gone: tvar::StandingEnds holds the chain
+// ends (by first cell, which it keeps alive, cleared when cell_writes moves), owned
+// by each walks_as_one_of caller's loop (narrow_per_member_in, unheld_member,
+// bind_narrowed, the slice-member reach loop in StructPatternNode, drop_repeated)
+// and passed through walks_alike to Identity's sets field and Leaves::of; one_type
+// takes its own per call. Not ChainEnds itself: with a cell_writes stamp it cost a16
+// +2.4% (it hashes at every link and memoizes every link of a long walk, and keeps
+// no key cell alive, so a freed first cell's address could be reused unseen across
+// the caller's loop); scoped to one walks_as_one_of call it cost a16 +19.5%. Pins:
+// graphix-types lib the_end_of_a_long_chain_is_read_once_while_no_cell_is_written
+// (now on StandingEnds; 200000 links with the memo off) and
+// walks_as_one_of_reads_a_long_chain_once (16000 links walked against 2000 when
+// walks_alike gets a fresh StandingEnds per walk). Cost (debug, --no-cache --check,
+// instructions): a16 5.248 G -> 5.240 G, a20 12.773 -> 12.742, t24 6.066 -> 6.068.
+/// Where each chain of forwarding links longer than [`ChainEnds::SHORT`]
+/// ends, by the address of its first cell, which it keeps alive, for walks
+/// one owner makes while this thread writes no cell: forgotten at the next.
+#[derive(Default)]
+pub struct StandingEnds {
+    at: u64,
+    ends: Option<LPooled<AHashMap<usize, (CellRef, Option<usize>)>>>,
+}
+
+impl StandingEnds {
+    /// The address of `tv.open_cell()`.
+    pub(super) fn open_cell(&mut self, tv: &TVar) -> Option<usize> {
+        let writes = cell_writes();
+        if self.at != writes {
+            if let Some(ends) = &mut self.ends {
+                ends.clear()
+            }
+            self.at = writes;
+        }
+        let start = tv.cell();
+        let addr = start.data_ptr().addr();
+        if let Some((_, end)) = self.ends.as_ref().and_then(|e| e.get(&addr)) {
+            return *end;
+        }
+        let mut walked = 0;
+        let mut cell = start.clone();
+        let end = loop {
+            walked += 1;
+            #[cfg(test)]
+            CHAIN_STEPS.with(|n| n.set(n.get() + 1));
+            let next = match &cell.read().binding {
+                None => break Some(cell.data_ptr().addr()),
+                Some(Type::TVar(next)) => next.cell(),
+                Some(_) => break None,
+            };
+            cell = next;
+        };
+        if walked > ChainEnds::SHORT {
+            self.ends.get_or_insert_with(LPooled::take).insert(addr, (start, end));
+        }
+        end
+    }
+}
+
 /// A copy's walk state beside its images: where forwarding chains end.
 pub(super) trait Forwards {
     fn ends(&mut self) -> &mut ChainEnds;
@@ -2639,59 +2711,6 @@ impl TVar {
                 Some(next) => tv = next,
             }
         }
-    }
-
-    // CR claude for claude: [structure/low] `open_cell_addr` keeps its chain ends in a
-    // thread-local map (`ENDS`) beside the scoped `ChainEnds` a copy's walk already
-    // carries: two memos of one fact, and this one holds an `Arc<CellLock>` for every
-    // long chain's first cell until the thread's next call after a cell write, so a
-    // finished compile's cells stay alive on an idle thread. Nothing reads a stale end
-    // (the map is cleared when `cell_writes` moves, the rule the other standing verdicts
-    // use), so this is layering and retained memory, not a wrong answer. A fix gives
-    // `setops::Leaves` a `ChainEnds` owned by the walk that builds it (`walks_alike`'s
-    // caller, valid while that walk writes no cell) and deletes the thread-local. Keep
-    // slice-arms-composite-member-cost-01's pin
-    // `the_end_of_a_long_chain_is_read_once_while_no_cell_is_written` passing. Added
-    // by 26f's slice-arms commit; found in the round 26 coordinator review.
-    // (chain-ends-thread-local-01)
-    /// The address of [`Self::open_cell`]'s cell, `None` when the chain ends
-    /// bound. A chain longer than [`ChainEnds::SHORT`] is walked once while
-    /// this thread writes no cell.
-    pub(super) fn open_cell_addr(&self) -> Option<usize> {
-        thread_local! {
-            static ENDS: RefCell<(u64, AHashMap<usize, (Arc<CellLock>, Option<usize>)>)> =
-                RefCell::new((0, AHashMap::default()));
-        }
-        let writes = cell_writes();
-        let start = self.cell();
-        let addr = start.data_ptr().addr();
-        let known = ENDS.with_borrow_mut(|(at, ends)| {
-            if *at != writes {
-                ends.clear();
-                *at = writes;
-            }
-            ends.get(&addr).map(|(_, end)| *end)
-        });
-        if let Some(end) = known {
-            return end;
-        }
-        let mut walked = 0;
-        let mut cell = start.clone();
-        let end = loop {
-            walked += 1;
-            #[cfg(test)]
-            CHAIN_STEPS.with(|n| n.set(n.get() + 1));
-            let next = match &cell.read().binding {
-                None => break Some(cell.data_ptr().addr()),
-                Some(Type::TVar(next)) => next.cell(),
-                Some(_) => break None,
-            };
-            cell = next;
-        };
-        if walked > ChainEnds::SHORT {
-            ENDS.with_borrow_mut(|(_, ends)| ends.insert(addr, (start, end)));
-        }
-        end
     }
 
     /// Bind the open, flexible, unbounded var `slot` holds to `t`, which
@@ -5901,6 +5920,7 @@ impl Type {
         }
         // a member walked as one before it gives no part that one did not
         let mut walked: SmallVec<[Type; 8]> = SmallVec::new();
+        let mut chain_ends = StandingEnds::default();
         // CR claude for eric: [perf/low] Slice arms that take each element apart over
         // an unannotated parameter still cost steeply at the definition: `gen3.py 20
         // arrelem` (`[[a0, s0..], [a1, s1..], .., t..] => t`) takes 17.2 G user
@@ -6026,8 +6046,13 @@ impl Type {
         // result and still accepts g3_nestboth_1, g3_arrelem_2 and p0251; that is a
         // redesign of the merge, not a skip. Probes and witnesses:
         // ~/ptmp/cr29/scratch/r27/27b/.
+        // 2026-11-15 claude: TVar::open_cell_addr, named in the 26f note above, is now
+        // tvar::StandingEnds owned by the walks_as_one_of callers
+        // (chain-ends-thread-local-01); its pin
+        // the_end_of_a_long_chain_is_read_once_while_no_cell_is_written reads through
+        // StandingEnds and a16/a20/t24 measure as before.
         for m in members {
-            if m.walks_as_one_of(&walked) {
+            if m.walks_as_one_of(&walked, &mut chain_ends) {
                 continue;
             }
             let mut met = false;
@@ -7045,14 +7070,15 @@ mod tests {
         }
         let end = cells[n - 1].cell_addr();
         assert_eq!(cells[0].open_cell().unwrap().cell_addr(), end);
+        let mut ends = StandingEnds::default();
         CHAIN_STEPS.with(|s| s.set(0));
         for _ in 0..100 {
-            assert_eq!(cells[0].open_cell_addr(), Some(end));
+            assert_eq!(ends.open_cell(&cells[0]), Some(end));
         }
         let steps = CHAIN_STEPS.with(|s| s.get());
         assert!(steps <= n + 8, "{steps} links walked for 100 reads of {n}");
         cells[n - 1].bind(Type::Primitive(netidx_value::Typ::I64.into()));
-        assert_eq!(cells[0].open_cell_addr(), None);
+        assert_eq!(ends.open_cell(&cells[0]), None);
         assert_eq!(cells[0].open_cell(), None);
     }
 

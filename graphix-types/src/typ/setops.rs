@@ -9,7 +9,7 @@ use crate::{
         contains::{ContainsHist, find_open_cell, on_copies, renaming_linked},
         fntyp::LambdaIds,
         node_addr,
-        tvar::{Fresh, cell_writes, written_since},
+        tvar::{Fresh, StandingEnds, cell_writes, written_since},
     },
 };
 use ahash::{AHashMap, AHashSet};
@@ -373,15 +373,16 @@ impl Type {
     }
 
     /// Whether a walk of `self` is one of `members`' ([`walks_alike`]).
-    pub fn walks_as_one_of(&self, members: &[Type]) -> bool {
-        members.iter().any(|m| walks_alike(m, self))
+    pub fn walks_as_one_of(&self, members: &[Type], ends: &mut StandingEnds) -> bool {
+        members.iter().any(|m| walks_alike(m, self, ends))
     }
 
     /// Drop from `members` each walked as a member before it.
     pub fn drop_repeated(members: &mut SmallVec<[Type; 8]>) {
+        let mut ends = StandingEnds::default();
         let mut i = 1;
         while i < members.len() {
-            match members[i].walks_as_one_of(&members[..i]) {
+            match members[i].walks_as_one_of(&members[..i], &mut ends) {
                 true => drop(members.remove(i)),
                 false => i += 1,
             }
@@ -464,7 +465,7 @@ pub(crate) fn strictly_identical(t0: &Type, t1: &Type) -> bool {
 pub(super) fn one_type(t0: &Type, t1: &Type) -> bool {
     Identity {
         strict: true,
-        sets: true,
+        sets: Some(&mut StandingEnds::default()),
         ..Identity::new(None, &mut NodePairs::default())
     }
     .same(t0, t1)
@@ -473,10 +474,10 @@ pub(super) fn one_type(t0: &Type, t1: &Type) -> bool {
 /// [`one_type`] with a union's members but its open cells read in order:
 /// a narrowing walks two such types alike, where a union of two members
 /// one type with each other walks apart from one of them.
-pub(super) fn walks_alike(t0: &Type, t1: &Type) -> bool {
+pub(super) fn walks_alike(t0: &Type, t1: &Type, ends: &mut StandingEnds) -> bool {
     Identity {
         strict: true,
-        sets: true,
+        sets: Some(ends),
         in_order: true,
         ..Identity::new(None, &mut NodePairs::default())
     }
@@ -698,9 +699,10 @@ impl Settled {
 /// Identity of `t0` and `t1`.
 struct Identity<'a> {
     strict: bool,
-    /// A union is the set of its members ([`one_type`]); with `strict`
+    /// A union is the set of its members ([`one_type`]), its open cells
+    /// read through where their forwarding chains end; with `strict`
     /// alone, since a failed search for a member must pair no cells.
-    sets: bool,
+    sets: Option<&'a mut StandingEnds>,
     /// With `sets`, a union's members but its open cells in order
     /// ([`walks_alike`]).
     in_order: bool,
@@ -737,7 +739,7 @@ impl<'a> Identity<'a> {
     fn new(live: Option<&'a mut Welds>, found: &'a mut NodePairs) -> Self {
         Self {
             strict: false,
-            sets: false,
+            sets: None,
             in_order: false,
             by_name: false,
             unbounded: false,
@@ -838,7 +840,8 @@ impl<'a> Identity<'a> {
     /// an open cell is one only with itself, any other member is one with
     /// another only by a walk of the two.
     fn same_members(&mut self, a: &[Type], b: &[Type]) -> bool {
-        let (a, b) = (Leaves::of(a), Leaves::of(b));
+        let ends = self.sets.as_deref_mut().expect("a walk of sets");
+        let (a, b) = (Leaves::of(a, ends), Leaves::of(b, ends));
         a.cells[..] == b.cells[..]
             && match self.in_order {
                 true => self.all(&a.rest, &b.rest),
@@ -916,7 +919,7 @@ impl<'a> Identity<'a> {
     #[inline(never)]
     fn same_inner(&mut self, t0: &Type, t1: &Type) -> bool {
         self.read_cell |= matches!(t0, Type::TVar(_)) || matches!(t1, Type::TVar(_));
-        if self.sets {
+        if self.sets.is_some() {
             match (members_of(t0), members_of(t1)) {
                 (None, None) => (),
                 (s0, s1) => {
@@ -1065,26 +1068,26 @@ struct Leaves {
 }
 
 impl Leaves {
-    fn of(ms: &[Type]) -> Self {
+    fn of(ms: &[Type], ends: &mut StandingEnds) -> Self {
         let mut l = Self { cells: LPooled::take(), rest: LPooled::take() };
-        l.add(ms);
+        l.add(ms, ends);
         l.cells.sort_unstable();
         l.cells.dedup();
         l
     }
 
-    fn add(&mut self, ms: &[Type]) {
+    fn add(&mut self, ms: &[Type], ends: &mut StandingEnds) {
         for m in ms {
             #[cfg(test)]
             IDENTITY_STEPS.with(|n| n.set(n.get() + 1));
             if let Type::TVar(tv) = m
-                && let Some(c) = tv.open_cell_addr()
+                && let Some(c) = ends.open_cell(tv)
             {
                 self.cells.push(c);
                 continue;
             }
             match members_of(m) {
-                Some(ms) => ensure_sufficient(|| self.add(&ms)),
+                Some(ms) => ensure_sufficient(|| self.add(&ms, ends)),
                 None => self.rest.push(m.clone()),
             }
         }
@@ -2812,6 +2815,7 @@ pub(crate) mod tests {
                 Alternatives, ERRORS_OVER_CUT, Identical, IdenticalMemo, WALK_PAIRS,
                 one_type, union_identical,
             },
+            tvar::{CHAIN_STEPS, Level, StandingEnds},
         },
     };
     use ahash::{AHashMap, AHashSet};
@@ -4494,5 +4498,35 @@ pub(crate) mod tests {
         ] {
             assert!(!one_type(&m0, &m1) && !one_type(&m1, &m0), "{m0} is not {m1}");
         }
+    }
+
+    /// Walks asking whether a union is one of several, each holding the
+    /// cell at the head of one long chain of forwarding links, read the
+    /// chain's end once while no cell is written.
+    #[test]
+    fn walks_as_one_of_reads_a_long_chain_once() {
+        let n = 2000;
+        let cells: Vec<TVar> =
+            (0..n).map(|i| TVar::empty_named(arcstr::format!("a{i}"))).collect();
+        for c in &cells {
+            c.set_level(Level::TOP)
+        }
+        for w in cells.windows(2) {
+            w[0].bind(Type::TVar(w[1].clone()))
+        }
+        let union = |t: Typ| {
+            Type::Set(Arc::from_iter([
+                Type::TVar(cells[0].clone()),
+                Type::Primitive(t.into()),
+            ]))
+        };
+        let members = [Typ::I64, Typ::F64, Typ::String, Typ::Bool].map(union);
+        CHAIN_STEPS.with(|s| s.set(0));
+        let mut ends = StandingEnds::default();
+        assert!(!union(Typ::U8).walks_as_one_of(&members, &mut ends));
+        assert!(!union(Typ::U16).walks_as_one_of(&members, &mut ends));
+        let steps = CHAIN_STEPS.with(|s| s.get());
+        assert!(steps <= n + 8, "{steps} links walked for {} members", members.len());
+        assert!(union(Typ::Bool).walks_as_one_of(&members, &mut ends));
     }
 }

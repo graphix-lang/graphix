@@ -3454,8 +3454,9 @@ fn unheld_member(
     let mut open: SmallVec<[typ::TVar; 2]> = SmallVec::new();
     union_members_with(env, t, &mut members, &mut |tv| open.push(tv.clone()))?;
     let mut judged: SmallVec<[Type; 8]> = SmallVec::new();
+    let mut ends = typ::tvar::StandingEnds::default();
     for m in members.iter() {
-        if matches!(m, Type::Bottom) || m.walks_as_one_of(&judged) {
+        if matches!(m, Type::Bottom) || m.walks_as_one_of(&judged, &mut ends) {
             continue;
         }
         judged.push(m.clone());

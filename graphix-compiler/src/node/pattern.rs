@@ -13,7 +13,8 @@ use crate::{
     rep,
     typ::{
         AbstractId, ContainsFlags, IsAFlags, ShallowScrutinee, TVar, Type,
-        settle::position_cells, tvar::OpenOverAny,
+        settle::position_cells,
+        tvar::{OpenOverAny, StandingEnds},
     },
 };
 use ahash::AHashMap;
@@ -1889,6 +1890,7 @@ impl StructPatternNode {
             let mut held: SmallVec<[Type; 8]> = SmallVec::new();
             let mut reach: SmallVec<[Type; 8]> = SmallVec::new();
             let or = matches!(self, Self::Or { .. });
+            let mut ends = StandingEnds::default();
             let mut alternatives: SmallVec<
                 [(&Self, Type, LPooled<AlternativeParts>); 4],
             > = SmallVec::new();
@@ -1912,7 +1914,7 @@ impl StructPatternNode {
                     held.push(Type::Any)
                 }
                 for m in held.drain(..) {
-                    if !m.walks_as_one_of(&reach) && t.could_match(env, &m)? {
+                    if !m.walks_as_one_of(&reach, &mut ends) && t.could_match(env, &m)? {
                         reach.push(m)
                     }
                 }
@@ -3356,8 +3358,9 @@ impl<R: Rt> PatternNode<R> {
         let mut matched: SmallVec<[Type; 8]> = SmallVec::new();
         let mut wholes: SmallVec<[Type; 8]> = SmallVec::new();
         if !self.explicit_type_predicate {
+            let mut ends = StandingEnds::default();
             for m in reaching {
-                if m.walks_as_one_of(&matched) {
+                if m.walks_as_one_of(&matched, &mut ends) {
                     continue;
                 }
                 if self.type_predicate.could_match(env, m)? {
