@@ -3045,7 +3045,6 @@ impl<R: Rt> CallSite<R> {
         // instances: method_own_default_is_left_to_its_calls must keep running).
         // probe: ~/ptmp/cr29/scratch/r25/25d/p2.gx (trait-call-union-omitted-default-01)
         let mut known = !defs.is_empty();
-        let mut carry = Carriers::new();
         for def in defs.iter() {
             let Some(f) = def.as_ref().and_then(|v| v.downcast_ref::<LambdaDef<R>>())
             else {
@@ -3078,7 +3077,7 @@ impl<R: Rt> CallSite<R> {
                         Some(&mut join),
                     )
                     .map_err(|e| met_default_note::<R>(e, &defs, name))?;
-                if carry.carries(&ctx.env, node.typ()) {
+                if Carriers::new().carries(&ctx.env, node.typ()) {
                     carriers.push(name.clone());
                 }
                 ctx.discard(node);
@@ -3087,27 +3086,6 @@ impl<R: Rt> CallSite<R> {
         Ok(known)
     }
 
-    // XCR claude for claude: [perf/low] A call whose arguments are typed by a chain of
-    // typedef names checks in time quadratic in the chain: CallSite::for_each_unread asks
-    // carries of each argument, and Type::holds_fn walks each argument's type through every
-    // name to the chain's end, with a fresh Verdicts each time. Over the chain of bounds as
-    // formals (`'a{i}: T<'a{i+1}>`, `|x0: 'a0, ..|`), `type A{i} = Array<A{i+1}>`, `let
-    // v{i}: A{i} = never()`, `f(v0, .., v{n})`: --check --no-cache, debug, G instructions
-    // 1.17 / 2.21 / 6.14 at 250 / 500 / 1000 links, holds and holds_fn on top (base-r24
-    // 1.45 / 3.29 / 10.49, which also copied each formal). Found fixing
-    // chainbounds-elab-alias-01. probe: ~/ptmp/cr29/scratch/r24/24f/cbea/gen4.py decided N
-    // OUT (carries-typedef-chain-01)
-    // 2026-11-14 claude: CallSite::for_each_unread, the callbacks filter in the call's
-    // check and check_omitted_defaults now ask carries/holds_fn through one typ::Carriers
-    // per walk, which shares the searches' verdicts on the definitions a name stands for,
-    // so a chain of typedef names is walked once. gen4.py decided, --check --no-cache,
-    // debug, G instructions (empty 0.74), base-r25 -> lane: 250/500/1000/2000/4000
-    // 1.18/2.22/6.16/21.79/83.16 -> 0.89/1.04/1.36/2.00/3.39 (linear). Pin: deep_nesting
-    // a_chain_of_typedef_names_as_arguments_checks_in_linear_time (shape
-    // chainboundsdecided, 5000/10000 links at 7/13 G), which fails with Carriers made to
-    // search afresh each time. guicheck base-r25 39.531 G, lane 39.920 G (the lane carries
-    // the earlier fixes of 25d); graphix-types 90, graphix-compiler 3, graphix-tests lib
-    // 24322, deep_nesting 51 pass. Needs a soak.
     /// Cells the result and throws do not hold, and no argument this
     /// call passes or omits can carry a value of.
     fn for_each_unread(

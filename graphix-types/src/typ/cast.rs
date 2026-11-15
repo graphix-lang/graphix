@@ -516,7 +516,8 @@ impl<T> Verdicts<T> {
 /// Whether each of several types in one `Env` can carry a function or an
 /// unknown part, sharing what the searches decided of the definitions
 /// they name: a chain of names is walked to its end once, not once per
-/// type that enters it.
+/// type that enters it. A verdict stands only while no cell of the types
+/// asked is bound or bounded: ask no more of one after a check that may.
 pub struct Carriers {
     fns: Verdicts<bool>,
     unknown: Verdicts<bool>,
