@@ -142,6 +142,7 @@
 1	env-cell-generalized-sep2026/00_extracted_callback_shares_outer.gx
 0	errchain-distribution-loop-sep2026/00_connect_mismatch.gx
 0	errchain-distribution-loop-sep2026/01_handler_rethrow.gx
+0	eta-method-value-nov2026/00_method_value.gx
 1	evict-stub-order-jul2026/00_evicted_callee_symbol.gx
 0	fed-arg-let-sep2026/00_fold_init_binds_the_callback_read.gx
 1	filtermap-push-confusion-jul2026/00_slice_elem_sigsegv.gx

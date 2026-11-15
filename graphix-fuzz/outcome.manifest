@@ -142,6 +142,7 @@ trace	empty-scaffold-depth-charge-aug2026/02_empty_literal_source_fold.gx
 trace	env-cell-generalized-sep2026/00_extracted_callback_shares_outer.gx
 reject	N: errN is Error<ErrChain<`ArithError(string)>> and cannot hold Error<ErrChain<`B>>; declare errN: [Error<ErrChain<`ArithError(string)>>, Error<ErrChain<`B>>] where it is bound (line N, column N)	errchain-distribution-loop-sep2026/00_connect_mismatch.gx
 reject	N: errN is Error<ErrChain<[`ArithError(string), `ArrayIndexError(string)]>> and cannot hold Error<ErrChain<[`ArrayIndexError(string), `B]>>; declare errN: [Error<ErrChain<[`ArithError(string), `ArrayIndexError(string)]>>, Error<ErrChain<[`ArrayIndexError(string), `B]>>] where it is bound (line N, column N)	errchain-distribution-loop-sep2026/01_handler_rethrow.gx
+trace	eta-method-value-nov2026/00_method_value.gx
 trace	evict-stub-order-jul2026/00_evicted_callee_symbol.gx
 reject	N: a let binding is not an expression — it may only appear as a statement in a block or module body, not where a value is expected	fed-arg-let-sep2026/00_fold_init_binds_the_callback_read.gx
 trace	filtermap-push-confusion-jul2026/00_slice_elem_sigsegv.gx

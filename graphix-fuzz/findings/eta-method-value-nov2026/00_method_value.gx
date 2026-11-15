@@ -1,0 +1,6 @@
+// nov14b katana divergence_000000 (ryouko and washu-chan alike). A trait
+// method named as a value is its eta-expansion, and a function value prints
+// its body, so the body names the method as the program wrote it: a binding's
+// id there differs from one process to the next.
+// Expected: the same printed value on every run.
+Collection::fold
