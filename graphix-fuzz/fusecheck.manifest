@@ -298,6 +298,9 @@
 2	oct30b-oct2026/06_abstract_naming_a_shadowing_typedef_in_a_body.gx
 0	omitted-default-check-sep2026/01_default_types_the_site.gx
 1	omitted-default-check-sep2026/02_default_and_argument_agree.gx
+1	omitted-default-union-nov2026/00_default_over_a_union_of_equal_cells.gx
+1	omitted-default-union-nov2026/01_default_over_a_union_through_a_wrapper.gx
+1	omitted-default-union-nov2026/02_default_over_a_union_of_distinct_cells.gx
 1	operand-bound-member-oct2026/00_extracted_callback.gx
 1	organic-firing-aug2026/00_const_terminal.gx
 1	organic-firing-aug2026/01_multilevel_face.gx

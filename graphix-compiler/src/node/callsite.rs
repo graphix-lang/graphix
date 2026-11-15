@@ -2988,7 +2988,7 @@ impl<R: Rt> CallSite<R> {
         }
     }
 
-    // CR claude for claude: [bug/medium] An omitted labeled default whose parameter
+    // XCR claude for claude: [bug/medium] An omitted labeled default whose parameter
     // is a function over a union of two of the definition's variables checks, and
     // the instance is refused: `type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |#k:
     // fn(q: P<'b, 'a>) -> i64 = |q| 7, y: 'a, z: 'b| k; f(0, 7)` passes `--check` and
@@ -3000,6 +3000,18 @@ impl<R: Rt> CallSite<R> {
     // nov14b: fuzz/pending-triage/nov14b/ryouko/divergence_000005.gx and
     // washu-chan/divergence_000001.gx; probe ~/ptmp/cr29/scratch/r25/soak/e.gx
     // (omitted-default-union-instance-01)
+    // 2026-11-15 claude: Cause: the omitted default's type at the bind is its
+    // definition's recorded one, whose union [Array<'b>, Array<'a1>] (a typedef union
+    // of two variables) takes its cells' places from the site's label type by
+    // position (Type::place_cells); where the call decided both members alike the
+    // site's union is one member (Array<i64>), so no cell was placed and the contains
+    // refused. Fixed in FnType/Type::place_cells (fntyp::collapsed_members): a member
+    // built like the one the site holds, or each cell of a union of cells alone,
+    // takes its place. Pins that fail without it:
+    // lang::types::omitted_default_over_a_typedef_union_{of_equal_cells,through_a_generic_wrapper,of_cells_alone,beside_a_written_member},
+    // typ::fntyp::tests::a_cell_takes_a_members_place_after_its_own,
+    // graphix-fuzz/findings/omitted-default-union-nov2026/{00,01}. The trait form
+    // (trait-call-union-omitted-default-01) is a different gap and stands.
     /// Check every default this site omits, for each definition the
     /// callee may be. False when one is not known here: its default
     /// narrows the site's cells at its bind. `carriers` collects the

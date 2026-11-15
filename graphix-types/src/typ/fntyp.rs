@@ -3109,6 +3109,28 @@ mod tests {
             ),
             "[null, Array<'a: unbound>]"
         );
+        assert_eq!(
+            placed("fn(x: [Array<'a>, Array<'b>]) -> i64", "fn(x: Array<i64>) -> i64"),
+            "Array<'a: i64>"
+        );
+        assert_eq!(
+            placed(
+                "fn(x: [Array<'a>, Array<'b>, null]) -> i64",
+                "fn(x: [Array<string>, null]) -> i64"
+            ),
+            "[null, Array<'a: string>]"
+        );
+        assert_eq!(
+            placed("fn(x: ['a, 'b]) -> i64", "fn(x: string) -> i64"),
+            "'a: string"
+        );
+        assert_eq!(
+            placed(
+                "fn(x: [Array<'a>, Array<'b>]) -> i64",
+                "fn(x: [Array<i64>, Array<string>]) -> i64"
+            ),
+            "[Array<'a: i64>, Array<'b: string>]"
+        );
     }
 
     /// A cell a lower bound of another holds takes its own place before the
@@ -4322,19 +4344,54 @@ fn members_stand_alike(own: &[Type], at: &[Type]) -> bool {
     let alike = |own: &Type, at: &Type| {
         own.with_deref(|own| match own {
             None => true,
-            Some(own) => at.with_deref(|at| {
-                at.is_some_and(|at| match (own, at) {
-                    (Type::Primitive(p0), Type::Primitive(p1)) => p0 == p1,
-                    (Type::Variant(n0, a0, _), Type::Variant(n1, a1, _)) => {
-                        n0 == n1 && a0.len() == a1.len()
-                    }
-                    (Type::Tuple(a0), Type::Tuple(a1)) => a0.len() == a1.len(),
-                    (own, at) => discriminant(own) == discriminant(at),
-                })
-            }),
+            Some(own) => at.with_deref(|at| at.is_some_and(|at| same_build(own, at))),
         })
     };
     own.len() == at.len() && own.iter().zip(at.iter()).all(|(own, at)| alike(own, at))
+}
+
+fn same_build(own: &Type, at: &Type) -> bool {
+    match (own, at) {
+        (Type::Primitive(p0), Type::Primitive(p1)) => p0 == p1,
+        (Type::Variant(n0, a0, _), Type::Variant(n1, a1, _)) => {
+            n0 == n1 && a0.len() == a1.len()
+        }
+        (Type::Tuple(a0), Type::Tuple(a1)) => a0.len() == a1.len(),
+        (own, at) => discriminant(own) == discriminant(at),
+    }
+}
+
+/// The members of `own` that a single member of `at` stands for where
+/// `at` holds fewer than `own`: two or more members of `own` built alike
+/// and one member of `at` built so, which is what a union of two cells
+/// becomes where the call decided both alike; or, where `own` is open
+/// cells alone, the one member of `at`. Each such pair.
+fn collapsed_members<'a>(
+    own: &'a [Type],
+    at: &'a [Type],
+) -> SmallVec<[(&'a Type, &'a Type); 4]> {
+    let built = |t: &Type, with: &Type| {
+        t.with_deref(|t| {
+            t.is_some_and(|t| with.with_deref(|w| w.is_some_and(|w| same_build(t, w))))
+        })
+    };
+    let mut pairs = SmallVec::new();
+    if let [a] = at
+        && own.len() >= 2
+        && own.iter().all(|o| o.with_deref(|o| o.is_none()))
+    {
+        pairs.extend(own.iter().map(|o| (o, a)));
+        return pairs;
+    }
+    for a in at.iter() {
+        let mut alike = at.iter().filter(|b| built(a, b));
+        let (Some(_), None) = (alike.next(), alike.next()) else { continue };
+        let held: SmallVec<[&Type; 4]> = own.iter().filter(|o| built(o, a)).collect();
+        if held.len() >= 2 {
+            pairs.extend(held.into_iter().map(|o| (o, a)))
+        }
+    }
+    pairs
 }
 
 /// The walk of two types built alike that gives each open cell of the
@@ -4407,7 +4464,9 @@ impl<'a> Places<'a> {
                     self.types(&own, at)
                 }
             }
-            (Type::Set(_), _) | (_, Type::Set(_)) => (),
+            (Type::Set(own), Type::Set(at)) => self.collapsed(own, at),
+            (Type::Set(own), at) => self.collapsed(own, std::slice::from_ref(at)),
+            (_, Type::Set(_)) => (),
             (own, at) => {
                 any_part_pair(own, at, &mut |own, at| {
                     self.types(own, at);
@@ -4415,6 +4474,14 @@ impl<'a> Places<'a> {
                 });
             }
         })
+    }
+
+    fn collapsed(&mut self, own: &[Type], at: &[Type]) {
+        let outer = std::mem::replace(&mut self.member, true);
+        for (own, at) in collapsed_members(own, at) {
+            self.types(own, at)
+        }
+        self.member = outer
     }
 
     /// [`Self::types`] over two signatures, position by position.
@@ -4435,8 +4502,9 @@ impl Type {
     /// ⊥ included, wherever the two types are built alike
     /// ([`place_in_order`]). A union's members have places where `at`'s
     /// union stands member for member beside it
-    /// ([`members_stand_alike`]); a cell the members of any other union
-    /// alone hold is left open.
+    /// ([`members_stand_alike`]), or where `at` holds one member for
+    /// several of the union's ([`collapsed_members`]); a cell the members
+    /// of any other union alone hold is left open.
     pub fn place_cells(&self, env: &Env, at: &Self) {
         place_in_order(env, |f| Places::new(env, f).types(self, at))
     }

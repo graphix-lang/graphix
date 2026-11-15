@@ -2650,7 +2650,14 @@ constructor, an open cell's being whatever stands there
 place of its own binds it, since a union that reached the instance some
 other way (a written function type the definition was passed as) may hold
 its members in another order (unit test
-`typ::fntyp::tests::a_cell_takes_a_members_place_after_its_own`). That is
+`typ::fntyp::tests::a_cell_takes_a_members_place_after_its_own`). Where the
+call decided two members of the definition's union alike, the instance's
+union holds one member for them (`[Array<'p>, Array<'q>]` at `i64` and
+`i64` is `Array<i64>`), and each member built like it, or each open cell of
+a union of cells alone, takes that one's place
+(`fntyp::collapsed_members`; pins
+`lang::types::omitted_default_over_a_typedef_union_*`,
+`graphix-fuzz/findings/omitted-default-union-nov2026/`). That is
 what gives a cell only unions hold
 the ⊥ a call left it at, which no containment of the union finds: `|x:
 P<'a, string>, y: O<'a>|` over `type P<'p, 'q> = [Array<'p>, Array<'q>]`

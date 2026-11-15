@@ -8207,6 +8207,32 @@ run!(
 );
 
 run!(
+    omitted_default_over_a_typedef_union_of_equal_cells,
+    r#"{ type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |#k: fn(q: P<'b, 'a>) -> i64 = |q| 7, y: 'a, z: 'b| k([y]); f(0, 7) }"#,
+    prints("i64:7")
+);
+run!(
+    omitted_default_over_a_typedef_union_of_distinct_cells,
+    r#"{ type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |#k: fn(q: P<'b, 'a>) -> i64 = |q| 7, y: 'a, z: 'b| k([y]); (f(0, "s"), f("s", 0)) }"#,
+    prints("[i64:7, i64:7]")
+);
+run!(
+    omitted_default_over_a_typedef_union_through_a_generic_wrapper,
+    r#"{ type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |#k: fn(q: P<'b, 'a>) -> i64 = |q| 7, y: 'a, z: 'b| k([y]); let g = |t: 'c, u: 'd| f(t, u); g(1, 2) }"#,
+    prints("i64:7")
+);
+run!(
+    omitted_default_over_a_typedef_union_of_cells_alone,
+    r#"{ type P<'p, 'q> = ['p, 'q]; let f = |#k: fn(q: P<'b, 'a>) -> i64 = |q| 7, y: 'a, z: 'b| k(y); f(0, 7) }"#,
+    prints("i64:7")
+);
+run!(
+    omitted_default_over_a_typedef_union_beside_a_written_member,
+    r#"{ type P<'p, 'q> = [Array<'p>, Array<'q>, string]; let f = |#k: fn(q: P<'b, 'a>) -> i64 = |q| 7, y: 'a, z: 'b| k([y]); f(0, 7) }"#,
+    prints("i64:7")
+);
+
+run!(
     typedef_union_at_a_written_type,
     r#"{ type E<'p, 'q> = ['p, 'q]; let f = |x: Array<E<i64, 'a>>, y: 'a| -> 'a y; f([1], 2) }"#,
     prints("i64:2");

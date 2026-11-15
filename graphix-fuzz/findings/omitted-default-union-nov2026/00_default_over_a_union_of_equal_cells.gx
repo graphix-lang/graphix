@@ -1,0 +1,7 @@
+// nov14b ryouko divergence_000005: the check accepted `f(0, 7)` and the
+// build refused its instance. The omitted default's parameter is
+// `P<'b, 'a>`, a union of two arrays over the definition's variables; the
+// call decides both i64, so the union is one type, and the bind took no
+// place for the default's cells in it. Both engines run it now.
+// Expected trace (both engines): 7.
+{ type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |#k: fn(q: P<'b, 'a>) -> i64 = |q| 7, y: 'a, z: 'b| k([y]); println("[f(0, 7)]"); f(0, 7) }

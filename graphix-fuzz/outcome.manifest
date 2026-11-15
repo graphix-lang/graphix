@@ -298,6 +298,9 @@ trace	oct30b-oct2026/05_restored_body_abstract_naming_typedefs.gx
 trace	oct30b-oct2026/06_abstract_naming_a_shadowing_typedef_in_a_body.gx
 reject	N: cannot compute fN + iN: arithmetic is fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a — both operands must be one numeric type (cast one side explicitly)	omitted-default-check-sep2026/01_default_types_the_site.gx
 trace	omitted-default-check-sep2026/02_default_and_argument_agree.gx
+trace	omitted-default-union-nov2026/00_default_over_a_union_of_equal_cells.gx
+trace	omitted-default-union-nov2026/01_default_over_a_union_through_a_wrapper.gx
+trace	omitted-default-union-nov2026/02_default_over_a_union_of_distinct_cells.gx
 trace	operand-bound-member-oct2026/00_extracted_callback.gx
 trace	organic-firing-aug2026/00_const_terminal.gx
 trace	organic-firing-aug2026/01_multilevel_face.gx

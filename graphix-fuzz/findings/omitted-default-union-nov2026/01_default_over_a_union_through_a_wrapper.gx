@@ -1,0 +1,4 @@
+// nov14b washu-chan divergence_000001: the same through a wrapper whose
+// own call decides the two cells alike at its instance.
+// Expected trace (both engines): 7.
+{ type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |#k: fn(q: P<'b, 'a>) -> i64 = |q| 7, y: 'a, z: 'b| k([y]); let g = |t: 'c, u: 'd| f(t, u); println("[g(1, 2)]"); g(1, 2) }
