@@ -3226,32 +3226,6 @@ impl Env {
         sn
     }
 
-    // XCR claude for claude: [perf/medium] The names tables tagged by input cost
-    // every check 1.2%: an empty program's `--no-cache --check` went from 766.7M
-    // to 775.4M instructions:u between 7d7da1521 and 35749ee10, the commit between
-    // them that touches the check being 202a06876 (root-module-table-01; two runs
-    // each, 767.3M and 776.2M the second; debug build, GRAPHIX_EVAL_THREADS=1).
-    // Since it, a level whose own view holds no table takes this lock and looks the
-    // level up in the input's displaced tables (empty in every program that deletes
-    // no module), every table at a scope but the root is tagged with its input
-    // where only one crossing a body was, and each write of a scope's table calls
-    // `displace_names`. To fix: skip the lookup while the input displaced nothing
-    // (a flag the first displacement sets), and measure what the tagging itself
-    // costs. Measured with bound-traits-walk-cost-01, same script and results file.
-    // (displaced-names-lookup-01)
-    // 2026-11-15 claude: Fixed: the step's cost was the held_by debug_assert in
-    // Env::lookup_in, whose crosses_body (a Path::parts walk) ran first at every
-    // level a table answers (8.5M of 8.7M, callgrind); held_by (a pointer compare,
-    // true in every lookup of an empty program) now runs first. displaced_at reads
-    // InputTables::any_displaced (set by displace_names with the first table, the
-    // map only grows) before taking the lock, and displace_names compares the owner
-    // without cloning the Weak. Empty program --no-cache --check, min of 6-8 runs:
-    // 756.1M -> 745.7M (base-r26 775.3M); what the tagging leaves is 0.24M
-    // (names_mut's downgrade, displace_names, sweep_names). guicheck 40.75G ->
-    // 40.31G; census 0/0; leaks, modules, image, deep_nesting pass. No pin fails
-    // with any_displaced never set: displaced_at's read is unobservable with a file
-    // module (both loads write the same imports), and the dynamic path that would
-    // show it clears the tables instead (reload-displaced-names-01).
     /// The table at `level` a module declared there took the registry's
     /// slot of, which the views of the input that made it read.
     fn displaced_at(&self, level: &str) -> Option<ScopeNames> {
