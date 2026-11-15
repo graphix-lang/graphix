@@ -213,6 +213,15 @@ fn builtin_binding<R: Rt>(node: &Node<R>, value: &Expr) -> Option<BuiltinBindInf
     })
 }
 
+// CR claude for claude: [bug/low] A builtin alias a `<-` writes is still taken as the builtin, so
+// the check accepts what the run refuses: `let t = sys::net::publish; t <- sys::net::publish;
+// t(never(), 10)` (and `let f = t; f(never(), 10)`) checks, `--check` accepts it, and
+// `gxf check` logs "a run-time bind's settle at (\"nop\")(x) refused: the type 'a must be
+// fully known here". `aliased_lambda` refuses a rebound name (`ctx.rebinds`), this one
+// consults `builtin_bindings` alone, so the call settles the unread quantifier statically
+// while the variable may hold another function. Same on base-r26 in the direct form; the
+// block form `{ let t = publish; t <- publish; t }` took it from block-read-optional-callback-01.
+// probes ~/ptmp/cr29/scratch/r26/26f/{q1,q2,p9}.gx (builtin-alias-written-01)
 /// The builtin a read of a binding the table names is.
 fn aliased_builtin<R: Rt>(
     ctx: &CompileCtx<R>,
