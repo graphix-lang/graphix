@@ -23,7 +23,7 @@ use parking_lot::Mutex;
 use poolshark::{IsoPoolable, local::LPooled};
 use smallvec::SmallVec;
 use std::{
-    cell::RefCell,
+    cell::{OnceCell, RefCell},
     cmp::Ordering,
     collections::hash_map::Entry,
     fmt::Debug,
@@ -549,6 +549,12 @@ fn probe_key(t: &Type) -> Option<NormKey> {
 /// write theirs.
 struct Lazy<T: IsoPoolable>(Option<LPooled<T>>);
 
+impl<T: IsoPoolable> Default for Lazy<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<T: IsoPoolable> Lazy<T> {
     fn new() -> Self {
         Self(None)
@@ -564,7 +570,9 @@ impl<T: IsoPoolable> Lazy<T> {
 }
 
 struct RefHist<H: IsoPoolable> {
-    inner: LPooled<H>,
+    /// Taken from the pool at the first write; `empty` answers reads before.
+    inner: Option<LPooled<H>>,
+    empty: OnceCell<H>,
     /// Definition key → the resolution it came from, pinned so the key
     /// is not reused.
     ref_defs: Lazy<AddrMap<sync::Arc<ResolvedRef>>>,
@@ -725,20 +733,21 @@ impl<H: IsoPoolable> Deref for RefHist<H> {
     type Target = H;
 
     fn deref(&self) -> &H {
-        &*self.inner
+        self.inner.as_deref().unwrap_or_else(|| self.empty.get_or_init(H::empty))
     }
 }
 
 impl<H: IsoPoolable> DerefMut for RefHist<H> {
     fn deref_mut(&mut self) -> &mut H {
-        &mut *self.inner
+        self.inner.get_or_insert_with(LPooled::take)
     }
 }
 
 impl<H: IsoPoolable> RefHist<H> {
     fn new() -> Self {
         RefHist {
-            inner: LPooled::take(),
+            inner: None,
+            empty: OnceCell::new(),
             ref_defs: Lazy::new(),
             ref_nodes: Lazy::new(),
             ref_apps: Lazy::new(),

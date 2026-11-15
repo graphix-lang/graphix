@@ -641,6 +641,7 @@ impl Type {
             | (_, Type::Hole)
             | (Type::Bound(_), _)
             | (_, Type::Bound(_)) => Ok(self == t),
+            (Type::Primitive(p), Self::Primitive(s)) => Ok(p.intersects(*s)),
             (t0, Self::Primitive(s)) => {
                 for t1 in s.iter() {
                     let t1 = Type::Primitive(t1.into());

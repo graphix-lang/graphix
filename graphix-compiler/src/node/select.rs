@@ -729,6 +729,31 @@ impl Reach {
             // normalizes a union of the bound cells (Kept::merge_with, Identity::same),
             // quadratic per arm. probes:
             // ~/ptmp/cr29/scratch/r25/25b/pbl/bench/{s8_100,s8_200,t8_100,t8_200}.gx, m.sh
+            // 2026-11-14 claude: Fixer (partial). base-r25 probes still quadratic in the
+            // arms (user instructions of --no-cache --check, debug; empty program 0.74 G):
+            // t200 (the CR's tuple form, (k, a) arms then (_, _)) 2.2-2.3 G, t400 6.3 G; the
+            // scrutinee is a union of N tuples (i64, 'ak), one per arm, because merge of two
+            // tuples with two distinct open cells is refused (strict tvar identity,
+            // normalize.rs merge_inner), where the variant form's payload cells are one
+            // cell, so each of the N arms walks all N members (narrow_pattern,
+            // close_over_any via open_over_any_inner, meets_undecided via may_hold_met,
+            // Reach::new, element_tests). Not changed: merging those members would give the
+            // tuple the variant form's behaviour, which payload-bind-beside-literal-01 shows
+            // unsound for a bind beside a literal, so the member count stays. Done: the walk
+            // of one pair is cheaper. could_match built a MatchHist per call whose RefHist
+            // took two pooled maps and Unfoldings a third, now taken at the first write
+            // (RefHist::inner, Unfoldings), and a Primitive against a Primitive is an
+            // intersection test, not a contains_int per bit (matches.rs). Measured: t200
+            // 2.31 -> 1.75 G (excess over empty 1.54 -> 1.0 G), t400 6.32 -> 4.70 G, b200s
+            // (struct) 2.51 -> 2.19 G, GUI examples (guicheck) 39.66 -> 39.29 G; no verdict
+            // changes (graphix-types 657, graphix-tests lib 24526 pass; the one failure,
+            // lang::select::test_beside_a_variable_bounded_by_any_written::jit, fails on the
+            // lane without this change too). Pin: deep_nesting
+            // select_over_tuple_arms_binding_a_name_checks_in_time (200 arms, 2 G budget;
+            // 2.2 G without the change, 1.8 G with). What remains is the quadratic itself; a
+            // fix needs the N members to be one without losing the literal's type at the
+            // bind (payload-bind-beside-literal-01's rule). probes:
+            // ~/ptmp/cr29/scratch/r25/25c/tuple-arms/
             match matches!(scrut, Type::TVar(tv) if tv.open_cell().is_some()) {
                 true => {
                     let gates: SmallVec<[_; 2]> =

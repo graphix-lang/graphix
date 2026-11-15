@@ -2348,3 +2348,19 @@ fn select_discriminants_first_value_in_time() {
     );
     completes_within(&["--no-cache", "--no-fusion"], &source, 40 * BILLION);
 }
+
+/// A select over an unannotated parameter whose arms test one part of a
+/// tuple by a literal and bind another takes time quadratic in its arms,
+/// each pair of arms' predicates walked once; the walk of a pair must be
+/// cheap (1.8 G at 200 arms, beside the 0.75 G of an empty program).
+#[test]
+#[cfg(target_os = "linux")]
+fn select_over_tuple_arms_binding_a_name_checks_in_time() {
+    let mut source: LPooled<String> = LPooled::take();
+    source.push_str("let f = |s| select s {\n");
+    for i in 0..200 {
+        writeln!(source, "({i}, a) => {i},").unwrap();
+    }
+    source.push_str("(_, _) => 0\n}");
+    checks_within(&source, 2 * BILLION);
+}

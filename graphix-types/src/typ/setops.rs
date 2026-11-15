@@ -260,13 +260,14 @@ pub(super) const UNFOLDINGS: usize = 1;
 /// The pairs of definitions a walk is inside, each with its unfoldings'
 /// pairs in progress, innermost last.
 #[derive(Default)]
-pub(super) struct Unfoldings(LPooled<AHashMap<DefPair, SmallVec<[RefPair; 1]>>>);
+pub(super) struct Unfoldings(Lazy<AHashMap<DefPair, SmallVec<[RefPair; 1]>>>);
 
 impl Unfoldings {
     /// The innermost pair in progress of `defs` when the walk has unfolded
     /// it [`UNFOLDINGS`] times.
     pub(super) fn again(&self, defs: Option<DefPair>) -> Option<RefPair> {
         self.0
+            .get()?
             .get(&defs?)
             .filter(|ks| ks.len() >= UNFOLDINGS)
             .and_then(|ks| ks.last().copied())
@@ -274,19 +275,24 @@ impl Unfoldings {
 
     pub(super) fn enter(&mut self, defs: Option<DefPair>, key: RefPair) {
         if let Some(defs) = defs {
-            self.0.entry(defs).or_default().push(key)
+            self.0.get_mut().entry(defs).or_default().push(key)
         }
     }
 
     pub(super) fn leave(&mut self, defs: Option<DefPair>) {
-        if let Some(ks) = defs.and_then(|defs| self.0.get_mut(&defs)) {
+        if let Some(ks) = defs.and_then(|defs| self.0.0.as_mut()?.get_mut(&defs)) {
             ks.pop();
         }
     }
 
     /// The pairs of definitions the path holds.
     fn held(&self) -> impl Iterator<Item = DefPair> + '_ {
-        self.0.iter().filter(|(_, ks)| !ks.is_empty()).map(|(d, _)| *d)
+        self.0
+            .get()
+            .into_iter()
+            .flatten()
+            .filter(|(_, ks)| !ks.is_empty())
+            .map(|(d, _)| *d)
     }
 }
 
