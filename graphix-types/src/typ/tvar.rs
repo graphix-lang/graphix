@@ -1472,33 +1472,6 @@ impl ChainEnds {
     }
 }
 
-// XCR claude for claude: [structure/low] `open_cell_addr` keeps its chain ends in a
-// thread-local map (`ENDS`) beside the scoped `ChainEnds` a copy's walk already
-// carries: two memos of one fact, and this one holds an `Arc<CellLock>` for every
-// long chain's first cell until the thread's next call after a cell write, so a
-// finished compile's cells stay alive on an idle thread. Nothing reads a stale end
-// (the map is cleared when `cell_writes` moves, the rule the other standing verdicts
-// use), so this is layering and retained memory, not a wrong answer. A fix gives
-// `setops::Leaves` a `ChainEnds` owned by the walk that builds it (`walks_alike`'s
-// caller, valid while that walk writes no cell) and deletes the thread-local. Keep
-// slice-arms-composite-member-cost-01's pin
-// `the_end_of_a_long_chain_is_read_once_while_no_cell_is_written` passing. Added
-// by 26f's slice-arms commit; found in the round 26 coordinator review.
-// (chain-ends-thread-local-01)
-// 2026-11-15 claude: The thread-local is gone: tvar::StandingEnds holds the chain
-// ends (by first cell, which it keeps alive, cleared when cell_writes moves), owned
-// by each walks_as_one_of caller's loop (narrow_per_member_in, unheld_member,
-// bind_narrowed, the slice-member reach loop in StructPatternNode, drop_repeated)
-// and passed through walks_alike to Identity's sets field and Leaves::of; one_type
-// takes its own per call. Not ChainEnds itself: with a cell_writes stamp it cost a16
-// +2.4% (it hashes at every link and memoizes every link of a long walk, and keeps
-// no key cell alive, so a freed first cell's address could be reused unseen across
-// the caller's loop); scoped to one walks_as_one_of call it cost a16 +19.5%. Pins:
-// graphix-types lib the_end_of_a_long_chain_is_read_once_while_no_cell_is_written
-// (now on StandingEnds; 200000 links with the memo off) and
-// walks_as_one_of_reads_a_long_chain_once (16000 links walked against 2000 when
-// walks_alike gets a fresh StandingEnds per walk). Cost (debug, --no-cache --check,
-// instructions): a16 5.248 G -> 5.240 G, a20 12.773 -> 12.742, t24 6.066 -> 6.068.
 /// Where each chain of forwarding links longer than [`ChainEnds::SHORT`]
 /// ends, by the address of its first cell, which it keeps alive, for walks
 /// one owner makes while this thread writes no cell: forgotten at the next.
