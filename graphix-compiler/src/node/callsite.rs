@@ -2561,7 +2561,7 @@ pub struct CallSite<R: Rt> {
     static_holds: SmallVec<[StaticHold; 1]>,
     /// The registry's impls the bound instance's dispatches chose: the
     /// instance is built again when the registry no longer holds one.
-    impl_reads: Option<Box<[TArc<ImplDef>]>>,
+    impl_reads: Option<Box<SmallVec<[TArc<ImplDef>; 2]>>>,
 }
 
 /// The registered builtin a site calls by name: its function is a
@@ -3504,7 +3504,7 @@ impl<R: Rt> CallSite<R> {
         });
         let reads = mem::replace(&mut ctx.impl_reads, outer).unwrap_or_default();
         self.impl_reads = match built {
-            Ok(_) if !reads.is_empty() => Some(reads.into_vec().into_boxed_slice()),
+            Ok(_) if !reads.is_empty() => Some(Box::new(reads)),
             _ => None,
         };
         built
