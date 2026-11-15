@@ -16549,6 +16549,41 @@ run!(
     FuseExpect::None
 );
 
+// A union bound `['a4, Array<'a4>]` takes an array literal whose elements
+// are not yet checked through its structural member, so a literal of the
+// bounded variable's own element type is refused at its element; the value
+// bound to a `let` with its type written takes the variable's member.
+run!(
+    chain_bound_array_literal_is_taken_by_the_structural_member,
+    r#"{
+  let f = 'a3: ['a4, Array<'a4>], 'a4: ['a5, Array<'b>], 'a5: Array<i64>, 'b: Number
+    |x: ('a3, 'a4, 'a5)| x;
+  f(([1], [], [1]))
+}"#,
+    refused("does not contain Array<i64>");
+    FuseExpect::None
+);
+
+run!(
+    chain_bound_array_value_annotated_takes_the_variable_member,
+    r#"{
+  let f = 'a3: ['a4, Array<'a4>], 'a4: ['a5, Array<'b>], 'a5: Array<i64>, 'b: Number
+    |x: ('a3, 'a4, 'a5)| x;
+  let a: Array<i64> = [1];
+  f((a, [], [1]))
+}"#,
+    prints("[[i64:1], [], [i64:1]]")
+);
+
+run!(
+    chain_bound_nested_array_literal_takes_the_structural_member,
+    r#"{
+  let f = 'a3: ['a4, Array<'a4>], 'a4: Array<i64> |x: ('a3, 'a4)| x;
+  f(([[1]], [1]))
+}"#,
+    prints("[[[i64:1]], [i64:1]]")
+);
+
 run!(
     partial_wrapper_bound_reaches_an_element_through_a_decided_variable,
     r#"{
