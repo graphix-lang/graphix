@@ -391,7 +391,7 @@ let result = layout(&[
                 ctx.libstate.get_or_default::<TuiControl>().install_stop(stop);
             })
             .await?;
-        tokio::time::timeout(Duration::from_millis(100), stopped).await???;
+        tokio::time::timeout(testing::HANG_GUARD, stopped).await???;
         Ok(())
     }
 

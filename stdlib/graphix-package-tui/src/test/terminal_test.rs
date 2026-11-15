@@ -106,7 +106,7 @@ async fn in_child(
         };
         if n < 0 { Err(std::io::Error::last_os_error()) } else { Ok(()) }
     };
-    // CR claude for claude: [risk/low] The child-process tests still give a wait for work a
+    // XCR claude for claude: [risk/low] The child-process tests still give a wait for work a
     // correct run brings a wall deadline: this 10 s on the child (it starts a test binary,
     // which a loaded box slows), `a_display_ending_beside_another_reader_leaves_the_terminal`'s
     // `recv_timeout(5 s)` on the next display's `Live::take`, and
@@ -115,13 +115,22 @@ async fn in_child(
     // runtime fills, so each wants the child's own exit or the runtime's settle as its end,
     // with `testing::HANG_GUARD` the only wall limit, as harness-wall-deadlines-gui-tui-01
     // did for the harness waits. (harness-wall-deadlines-child-01)
-    let (output, typed) = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        futures::future::join(command.output(), typed),
-    )
-    .await?;
-    typed?;
-    let output = output?;
+    // 2026-11-15 claude: The child wait in in_child now ends at the child's own exit (or a
+    // failed typing), the next display's wait at its thread's result (rx.recv), and
+    // an_initial_exit_reaches_a_later_display at the stop oneshot the runtime fills;
+    // testing::HANG_GUARD is the only wall limit left in all three. No pin can fail without the
+    // fix: a slowed box is what it removes (a wall deadline can only fail spuriously); a hang
+    // now ends at HANG_GUARD with a named message.
+    let output = tokio::select! {
+        output = command.output() => output?,
+        Err(e) = async {
+            typed.await?;
+            std::future::pending::<std::io::Result<()>>().await
+        } => return Err(e.into()),
+        () = tokio::time::sleep(graphix_package_core::testing::HANG_GUARD) => {
+            anyhow::bail!("the child {name} ran past the hang guard")
+        }
+    };
     const RAN_ONE: &[u8] = b"test result: ok. 1 passed";
     if output.status.success()
         && !output.stdout.windows(RAN_ONE.len()).any(|w| w == RAN_ONE)
@@ -311,8 +320,8 @@ async fn a_display_ending_beside_another_reader_leaves_the_terminal() -> anyhow:
         thread::spawn(move || {
             let _ = tx.send(crate::Live::take(false).map(drop));
         });
-        rx.recv_timeout(Duration::from_secs(5))
-            .context("the next display never took the terminal")??;
+        rx.recv()
+            .context("the next display's thread ended without taking the terminal")??;
         Ok(())
     })
     .await?
