@@ -305,7 +305,7 @@ struct Kept {
 }
 
 impl Kept {
-    // CR claude for claude: [bug/low] Two alternatives that each hold a union of two
+    // XCR claude for claude: [bug/low] Two alternatives that each hold a union of two
     // function types over undecided variables pair their members by the order the
     // members sort in: the incoming member collapses with the earliest kept member it
     // renames into, whichever of the two the other alternative's pairing would give.
@@ -320,6 +320,16 @@ impl Kept {
     // the refusal naming the annotation, the members' alternatives carried
     // through Kept::merge_with as meet_open_fns carries them. probes:
     // ~/ptmp/cr29/scratch/r25/25e/apm/d2.gx (alternative-members-pair-order-01)
+    // 2026-11-15 claude: Fixed where the pairing is made, not in Kept::merge_with: two unions
+    // of functions met in a containment (the second call's pre-unification of the swapped
+    // argument) were paired member by member in sort order by Identity (setops.rs same_unions)
+    // and welded by position by contains::Link, so F2<u, v> beside F2<v, u> welded u with v. A
+    // pairing that renames cells now yields to the unordered pairing of members that are cell
+    // for cell the same (setops::strictly_same_unordered), in Identity and in Link, so nothing
+    // is welded. Pin
+    // lang::types::a_select_of_two_calls_that_swap_the_variables_of_a_union_of_functions_pairs_each_with_itself
+    // fails with either half undone. Residual (four distinct variables, both pairings weld
+    // alike) is alternative-members-tie-weld-01.
     /// Take out the earliest kept member `t` merges with, and the merge.
     fn merge_with(
         &mut self,

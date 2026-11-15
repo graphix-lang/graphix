@@ -15,7 +15,7 @@ use crate::{
         probe_key,
         setops::{
             Identical, IdenticalMemo, one_type, renames, strictly_identical,
-            union_identical,
+            strictly_same_unordered, union_identical,
         },
         tvar::{
             CellFact, CellLock, CopiedEnd, Cycle, Declared, Fresh, HeldQuantifiers,
@@ -2755,8 +2755,13 @@ impl Link {
                 equal
             }
             (Type::Ref(r0), Type::Ref(r1)) => self.all(&r0.params, &r1.params),
-            (Type::Set(a), Type::Set(b))
-            | (Type::Tuple(a), Type::Tuple(b))
+            (Type::Set(a), Type::Set(b)) => {
+                (a.len() > 1
+                    && !a.iter().zip(b.iter()).all(|(x, y)| strictly_identical(x, y))
+                    && strictly_same_unordered(a, b))
+                    || self.all(a, b)
+            }
+            (Type::Tuple(a), Type::Tuple(b))
             | (Type::Variant(_, a, _), Type::Variant(_, b, _))
             | (Type::Abstract { params: a, .. }, Type::Abstract { params: b, .. }) => {
                 self.all(a, b)

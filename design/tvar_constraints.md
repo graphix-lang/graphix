@@ -734,7 +734,12 @@ one member, chosen by rules that read the union alone:
   (`contains::Link`): a cell a merge left forwarding to another pairs as
   that one, so a function over a cell that forwards to a rigid cell is
   not one over another rigid cell (pin
-  `typ::contains::tests::a_cell_forwarding_to_a_rigid_cell_pairs_as_that_cell`);
+  `typ::contains::tests::a_cell_forwarding_to_a_rigid_cell_pairs_as_that_cell`).
+  Two unions of such functions pair their members by position, unless
+  the members are the same functions cell for cell in another order
+  (`setops::strictly_same_unordered`): `F2<u, v>` beside `F2<v, u>` is one
+  union of two functions and welds nothing (pin
+  `a_select_of_two_calls_that_swap_the_variables_of_a_union_of_functions_pairs_each_with_itself`);
 - else constructor members before bare variables (`Result<'a, 'e> ⊇
   Error<`X>` is `Error<'e>`'s, `['b, Array<'b>]` takes an array through
   `Array<'b>`);

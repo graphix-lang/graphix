@@ -10763,6 +10763,18 @@ run!(
     FuseExpect::Jit
 );
 run!(
+    a_select_of_two_calls_that_swap_the_variables_of_a_union_of_functions_pairs_each_with_itself,
+    r#"{
+  type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];
+  let f = |y: 'a, z: 'b, x: F2<'a, 'b>| x;
+  let c = true;
+  let h = |u, v, w| { let g = select c { true => f(u, v, w), false => f(v, u, w) }; (u, v) };
+  h(1, "s", |q: i64| q + 1)
+}"#,
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::Jit
+);
+run!(
     a_field_over_two_shapes_each_a_union_of_functions_keeps_the_variables_two,
     r#"{
   type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];

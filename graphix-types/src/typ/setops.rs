@@ -430,6 +430,26 @@ pub(super) fn union_identical_in(env: &Env, t0: &Type, t1: &Type) -> bool {
         .same(t0, t1)
 }
 
+/// Whether each of `a` is [`strictly_identical`] to its own member of `b`,
+/// whatever the order the members stand in.
+pub(super) fn strictly_same_unordered(a: &[Type], b: &[Type]) -> bool {
+    if a.len() < 2 || a.len() != b.len() {
+        return false;
+    }
+    let mut taken: SmallVec<[bool; 8]> = smallvec![false; b.len()];
+    a.iter().all(|m| {
+        let found = b
+            .iter()
+            .enumerate()
+            .find(|(j, n)| !taken[*j] && strictly_identical(m, n))
+            .map(|(j, _)| j);
+        found.is_some_and(|j| {
+            taken[j] = true;
+            true
+        })
+    })
+}
+
 /// [`union_identical`] with every unbound cell by identity, inside a
 /// function type too: one signature's variables are its own.
 pub(crate) fn strictly_identical(t0: &Type, t1: &Type) -> bool {
@@ -760,6 +780,40 @@ impl<'a> Identity<'a> {
         a.len() == b.len() && a.iter().zip(b.iter()).all(|(a, b)| self.same(a, b))
     }
 
+    // CR claude for claude: [bug/low] Two unions of functions over four distinct undecided
+    // variables pair their members by position, whichever pairing welds as many cells:
+    // `type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64]; let f = |y: 'a, z: 'b, x:
+    // F2<'a, 'b>| x; let h = |u, v, s, t, w| { let g = select c { true => f(u, v, w), false
+    // => f(s, t, w) }; (u, v, s, t) }; h(1, "s", "t", 2, |q: i64| q + 1)` is refused, "type
+    // mismatch i64 does not contain string", naming no annotation, where `h(1, "s", 2, "t",
+    // ..)` runs: the pairing (u with s, v with t) is taken for its place in the union, and
+    // (u with t, v with s) welds as many cells. Nothing wrong runs. What would fix it: a
+    // refusal at the pairing that names the annotation, as AmbiguousMember does for a take.
+    // probe: ~/ptmp/cr29/scratch/r26/26f/t3.gx (alternative-members-tie-weld-01)
+    /// Whether the unions `a` and `b` are one, member by member in their
+    /// order, unless the members are the same types in another order: a
+    /// pairing by position that renames cells yields to the pairing of
+    /// members that are cell for cell the same ([`strictly_same_unordered`]),
+    /// which renames none.
+    fn same_unions(&mut self, a: &[Type], b: &[Type]) -> bool {
+        let live = self.live.as_ref().map(|l| l.len());
+        let pairs = self.pairs.as_ref().map(|p| p.len());
+        let renamed = mem::replace(&mut self.renamed, false);
+        let same = self.all(a, b);
+        if same && self.renamed && strictly_same_unordered(a, b) {
+            if let (Some(live), Some(l)) = (&mut self.live, live) {
+                live.truncate(l)
+            }
+            if let (Some(pairs), Some(n)) = (&mut self.pairs, pairs) {
+                pairs.truncate(n)
+            }
+            self.renamed = renamed;
+            return true;
+        }
+        self.renamed |= renamed;
+        same
+    }
+
     /// Whether the unions `a` and `b` hold the same members ([`Leaves`]):
     /// an open cell is one only with itself, any other member is one with
     /// another only by a walk of the two.
@@ -893,7 +947,7 @@ impl<'a> Identity<'a> {
                 };
                 same && self.all(&r0.params, &r1.params)
             }
-            (Type::Set(s0), Type::Set(s1)) => self.all(s0, s1),
+            (Type::Set(s0), Type::Set(s1)) => self.same_unions(s0, s1),
             (Type::Error(a), Type::Error(b))
             | (Type::Array(a), Type::Array(b))
             | (Type::List(a), Type::List(b)) => self.same(a, b),
