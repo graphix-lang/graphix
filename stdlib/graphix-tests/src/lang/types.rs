@@ -15989,6 +15989,29 @@ run!(
     prints(r#"["t", null]"#)
 );
 
+// A chain of bounds that share declared variables, called with arrays: the
+// array literals' element cell stands above the variable they are held
+// against as it stands, and a variable is proved by its own lower bound
+// before it is by a bound of the variable it holds.
+run!(
+    chain_of_bounds_sharing_a_variable_takes_arrays,
+    r#"{
+  let f = 'a1: ['a3, Array<'b>], 'a3: ['a4, Array<'a4>], 'a4: ['a5, Array<'b>],
+    'a5: Array<i64>, 'b: Number |x: ('a1, 'a3, 'a4, 'a5)| x;
+  f(([1], [], [], [1]))
+}"#,
+    prints(r#"[[i64:1], [], [], [i64:1]]"#)
+);
+run!(
+    chain_of_bounds_sharing_a_variable_takes_a_nested_array,
+    r#"{
+  let f = 'a1: ['a3, Array<'b>], 'a3: ['a4, Array<'a4>], 'a4: ['a5, Array<'b>],
+    'a5: Array<i64>, 'b: Number |x: ('a1, 'a3, 'a4, 'a5)| x;
+  f(([1], [], [1], [1]))
+}"#,
+    prints(r#"[[i64:1], [], [i64:1], [i64:1]]"#)
+);
+
 // Two undecided elements of one array under such a bound: each stays
 // within the bound's union and the bound's variable is above both, so
 // each one's conjunct comes to hold its own cell, and admits whatever

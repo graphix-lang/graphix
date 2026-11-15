@@ -659,6 +659,7 @@ variable there, the wrapper declares the bound itself.
 ok let g = 'b: Array<['c, null]> |x: 'b, s: 'c| -> 'b x; let f = |v: 'a, w: Array<'a>| g(w, v); (f(1, [2]), f("a", ["b"]))
 no "does not contain null" let g = 'b: Array<['c, null]> |x: 'b, s: 'c| -> 'b x; let f = |w: Array<'a>| g(w, null); f([null])
 ok let g = 'b: (['c, null], ['c, i64]) |s: 'c, x: 'b| -> 'b x; let f = |u, w: (['a, null], ['a, null])| g(u, w); f(1, (2, 2))
+ok let f = 'a1: ['a3, Array<'b>], 'a3: ['a4, Array<'a4>], 'a4: ['a5, Array<'b>], 'a5: Array<i64>, 'b: Number |x: ('a1, 'a3, 'a4, 'a5)| x; f(([1], [], [], [1]))
 no "does not contain Array<'a: unbound>" let g = 'b: Array<[i64, null]> |x: 'b| -> 'b x; let f = |w: Array<'a>| g(w); f([2])
 ok let g = 'b: Array<[i64, null]> |x: 'b| -> 'b x; let f = 'a: [i64, null] |w: Array<'a>| g(w); f([2])
 ```

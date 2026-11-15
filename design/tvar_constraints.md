@@ -3461,7 +3461,12 @@ on a cycle through cells and unions alone are one type, merged
 what one of its lower bounds holds (`contains::rigid_holds_by_lower`): an open
 cell a merge would put below it merges into it, or, where the occurs
 check refuses that merge, stays a lower bound (`TVar::merge_into`). It
-holds a union member by member, probed whole before any member commits:
+holds another rigid cell by a lower bound that holds it before it holds
+it by one of that cell's conjuncts, which would put the conjunct above each
+open cell of the bound (`'a1: ['a3, Array<'b>], .., 'b: Number` met by `[1]`:
+the literal's element cell stands above `'b`, not above `Number`; pins
+`lang::types::chain_of_bounds_sharing_a_variable_*`). It holds a union
+member by member, probed whole before any member commits:
 `'e ⊇ ['p, 'q]` makes both open cells `'e` (a slice pattern's element
 cells over `Array<'e>`, two arms' results under a declared `-> 'e`), and
 `'e ⊇ ['p, i64]` is refused with `'p` left open.

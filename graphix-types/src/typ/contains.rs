@@ -1145,7 +1145,7 @@ fn guide(flags: BitFlags<ContainsFlags>) -> BitFlags<ContainsFlags> {
     }
 }
 
-// CR claude for claude: [bug/medium] A well-typed call over a chain of bounds that
+// XCR claude for claude: [bug/medium] A well-typed call over a chain of bounds that
 // share a declared variable is refused since a rigid part took a lower bound (commit
 // 3157516bb, bound-part-merges-declared-01; 36409d1b7 and base-r25 accept): `let f =
 // 'a1: ['a3, Array<'b>], 'a3: ['a4, Array<'a4>], 'a4: ['a5, Array<'b>], 'a5:
@@ -1156,6 +1156,27 @@ fn guide(flags: BitFlags<ContainsFlags>) -> BitFlags<ContainsFlags> {
 // base-r25 and on the lane: this is the one verdict that changed; the commit
 // 919807ed2 (chainbounds-array-valued-01) is not the cause (its parent refuses it too).
 // probes: ~/ptmp/cr29/scratch/r25/25e/reg/{o1,o7}.gx (bound-part-lower-regress-01)
+// 2026-11-15 claude: Fixed: the two-rigid-cells arm of contains_tvars tries the lower
+// bounds of t0 that hold t1 before t1's conjuncts, so a literal's element cell takes
+// the declared b as a lower bound instead of the Number that bounds it (which i64 then
+// did not hold); takes_lower and the rigid part of 3157516bb stand. The CR's probes
+// o1/o7 are accepted (fused, --no-fusion, GRAPHIX_PAR=force); 440 generated chains
+// (seed 4242, ~/ptmp/cr29/scratch/r26/26e/gen3.py): lane equals base-r25 on all,
+// base-r26 refused 3 of them; 960 wrappers (r24 gen.py): no verdict changes. Pins that
+// fail without it:
+// lang::types::chain_of_bounds_sharing_a_variable_{takes_arrays,takes_a_nested_array};
+// the declared_variable_under_two_unions_* pins and
+// contains::tests::a_bounds_part_narrows_no_rigid_cell still hold.
+
+// CR claude for claude: [bug/low] A well-typed call over a shorter chain of bounds is
+// refused, as it is on base-r25 (the same refusal before 3157516bb): `let f = 'a3:
+// ['a4, Array<'a4>], 'a4: ['a5, Array<'b>], 'a5: Array<i64>, 'b: Number |x: ('a3, 'a4,
+// 'a5)| x; f(([1], [], [1]))` is refused with `type mismatch Array<Array<['_N: unbound
+// within Number, ..]>> does not contain Array<i64>` at the first `[1]`, which `'a3 =
+// Array<i64>` (its member `'a4`) types; `([], [], [1])` is accepted. The member of
+// `'a3`'s bound that takes `Array<_>` is `Array<'a4>`, which decides 'a4 an array
+// where the member `'a4` holds it. probe: ~/ptmp/cr29/scratch/r26/26e/p3.gx
+// (bound-chain-array-member-01)
 
 /// Whether the open cell `tv` takes what it must hold as a lower bound
 /// rather than binding to it ([`ContainsFlags::Lower`] outside a
@@ -4991,18 +5012,23 @@ impl Type {
                 }
                 Ok(true)
             }
-            // two quantifiers: t0 holds t1 only through one of t1's
-            // conjuncts ('t1 ⊆ C ⊆ t0) or one of t0's lower bounds ('t1 ⊆
-            // L ⊆ t0), whatever an occurs check would say
+            // two quantifiers: t0 holds t1 only through one of t0's lower
+            // bounds ('t1 ⊆ L ⊆ t0) or one of t1's conjuncts ('t1 ⊆ C ⊆
+            // t0), whatever an occurs check would say. A lower bound that
+            // holds the cell adds none; a conjunct a lower bound holds is
+            // put above that bound's open cells, so it is tried last
             (None, None) if t0.is_rigid() && t1.is_rigid() => {
                 let cons = t1.cell_constraints();
                 hist.assuming((Some(addr0), Some(addr1)), |hist| {
+                    if rigid_holds_by_lower((tt0, t0), flags, env, hist, tt1)? {
+                        return Ok(true);
+                    }
                     for c in cons.iter() {
                         if tt0.contains_int(flags, env, hist, c)? {
                             return Ok(true);
                         }
                     }
-                    rigid_holds_by_lower((tt0, t0), flags, env, hist, tt1)
+                    Ok(false)
                 })
             }
             (None, None) => {
