@@ -1143,6 +1143,32 @@ fn a_chain_of_bounds_elaborates_in_linear_time() {
 // alive through the copy; a quantified fn type's inner Subst has its own memo. The CR
 // stays for what remains quadratic (shape_hash_node under Widening::join,
 // commit_conjuncts, TerminalRun::take).
+// 2026-11-15 claude: Round 26, no code change: reproduced on base-r26 and measured
+// what is left. --expand/--check --no-cache, debug, G instructions (empty 0.74):
+// alias 1000/2000/8000 1.40/2.02/5.77, fnalias 1000/2000/8000 1.30/1.83/5.00, formals
+// 1000/2000/4000 1.11/1.44/2.11, decided 1000 1.43 (carries-typedef-chain-01): all
+// linear. The one quadratic shape is fnargs (gen4.py fnargs N, f(v0..vN) over lets
+// [v{i+1}] on a lambda, the chain of bounds as formals): 250/500/1000/2000
+// 2.01/5.29/19.12/77.45, a factor of 4 a doubling. Where it goes, rdtsc timers around
+// CallSite::typecheck0's phases at 1000 links (cycles, the whole check 11.9 G):
+// Widening::opening 2.2 G, Type::pre_unify_copy 2.5 G, Widening::fit (join, rejoin,
+// take) 1.0 G, the checks after the argument loop (prove_ground, the settle of the
+// produced cells) 0.9 G, the arguments' own typecheck0 0.08 G; each grows 4x a
+// doubling. All four walk one formal's whole chain once an argument: after the first
+// argument every cell of the chain is bound to Array^k<fn(z)>, so x_i's open copy
+// (replace_tvars_copied) copies the n-i bound cells its conjuncts reach, and the
+// pre-unification (a fresh ContainsHist::early, so ContainsHist::closure and
+// shape_hash are computed again over the argument's type, depth n-i) and the join
+// read the same tree. A cell write invalidates every memo (IdenticalMemo, closure),
+// so no walk's result survives to the next argument. What would make it linear is a
+// copy that keeps the cells no conjunct widens (the doc of Widening::opening already
+// says every other cell is the formal's own) plus a ContainsHist whose per-node
+// closure survives from one argument to the next across writes that bind a cell
+// outside it; that changes which cells a pre-unification binds and the lifetime of
+// the contains memos, a design change, not tried. Cost without it is only this
+// contrived shape (references to lets decided but for a cell inside a function type,
+// passed to 1000 chained formals); status PARTIAL. probes and the phase-timer patch:
+// ~/ptmp/cr29/scratch/r26/26h/chainbounds/
 /// The chain through a typedef's parameter, or a variant's, elaborates in
 /// time linear in its length, at two depths: the instance's type holds
 /// each link's application once, a node every walk and rewrite of it
