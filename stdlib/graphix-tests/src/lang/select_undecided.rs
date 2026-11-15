@@ -1607,6 +1607,91 @@ run!(arm_behind_an_or_pool_of_a_member_below_a_reference, r#"{
     ]
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 1, 3, 1, 1, 1, 3, 1, 1, 2, 3, 1]); FuseExpect::Jit);
 
+// Arms that hold a member only together hold its cells together: each tag
+// arm takes half of the tags the member's part has, and the two take all of
+// it.
+run!(arm_behind_the_tag_pool_of_a_member_below_a_reference, r#"{
+    let f = |x, t: [`A, `B], c: bool| {
+        let r = &mut (select c { true => (t, x), false => (`L, 0) });
+        select *r { (`A, _) => 1, (`B, _) => 2, (_, 0) => 3, _ => 4 }
+    };
+    let g = |x, t: [`A, `B], b: bool, c: bool| {
+        let r = &mut (select c { true => (t, b, x), false => (`L, `L, 0) });
+        select *r {
+            (`A, true, _) => 1,
+            (`A, false, _) => 2,
+            (`B, _, _) => 3,
+            (_, _, 0) => 4,
+            _ => 5
+        }
+    };
+    let h = |x, t: [`A, `B], c: bool| select (select c { true => (t, x), false => (`L, 0) }) {
+        (`A, _) => 1,
+        (`B, _) => 2,
+        (_, 0) => 3,
+        _ => 4
+    };
+    [
+        f("s", `A, true), f("s", `B, true), f("s", `A, false), f(0, `A, true), f(0, `B, true),
+        g("s", `A, true, true), g("s", `A, false, true), g("s", `B, true, true),
+        g("s", `A, true, false), g(0, `A, true, true),
+        h("s", `A, true), h("s", `B, true), h("s", `A, false), h(0, `B, true)
+    ]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 2, 3, 1, 2, 1, 2, 3, 4, 1, 1, 2, 3, 2]); FuseExpect::Jit);
+
+run!(arm_behind_the_tag_pool_of_a_member_beside_other_members, r#"{
+    let f = |x, t: [`A, `B], c: i64| {
+        let r = &mut (select c { 0 => (t, x), 1 => (`L, 0), _ => (`M, x) });
+        select *r { (`A, _) => 1, (`B, _) => 2, (`M, _) => 5, (_, 0) => 3, _ => 4 }
+    };
+    let g = |x, t: [`A, `B], c: bool| {
+        let r = &mut (select c { true => (t, x), false => (`L, "z") });
+        select *r { (`A, _) => 1, (`B, _) => 2, (_, "z") => 3, _ => 4 }
+    };
+    [f(0, `A, 0), f(0, `B, 1), f(7, `A, 2), g("s", `A, true), g("z", `B, true), g("q", `A, false)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 3, 5, 1, 2, 3]); FuseExpect::Jit);
+
+run!(later_use_decides_a_cell_of_a_tag_pooled_member, r#"{
+    let f = |x, t: [`A, `B], c: bool| {
+        let r = &mut (select c { true => (t, x), false => (`L, 0) });
+        let s = select *r { (`A, _) => 1, (`B, _) => 2, (_, 0) => 3, _ => 4 };
+        s * 100 + x + 1
+    };
+    [f(1, `A, true), f(1, `B, false)]
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [102, 302]); FuseExpect::Jit);
+
+run!(arm_behind_half_a_tag_pool_of_a_member_below_a_reference_refused, r#"{
+    let f = |x, t: [`A, `B], c: bool| {
+        let r = &mut (select c { true => (t, x), false => (`L, 0) });
+        select *r { (`A, _) => 1, (_, 0) => 3, _ => 4 }
+    };
+    f("s", `A, true)
+}"#, refused("(_, 0) tests a value of 'x, a type not decided at this select"); FuseExpect::None);
+
+run!(arm_behind_a_tag_pool_missing_a_tag_of_a_member_refused, r#"{
+    let f = |x, t: [`A, `B, `C], c: bool| {
+        let r = &mut (select c { true => (t, x), false => (`L, 0) });
+        select *r { (`A, _) => 1, (`B, _) => 2, (_, 0) => 3, _ => 4 }
+    };
+    f("s", `A, true)
+}"#, refused("(_, 0) tests a value of 'x, a type not decided at this select"); FuseExpect::None);
+
+run!(arm_behind_a_guarded_tag_pool_of_a_member_refused, r#"{
+    let f = |x, t: [`A, `B], c: bool| {
+        let r = &mut (select c { true => (t, x), false => (`L, 0) });
+        select *r { (`A, _) => 1, (`B, _) if c => 2, (_, 0) => 3, _ => 4 }
+    };
+    f("s", `A, true)
+}"#, refused("(_, 0) tests a value of 'x, a type not decided at this select"); FuseExpect::None);
+
+run!(arm_after_a_tag_pool_that_covers_it_is_unreachable, r#"{
+    let f = |x, t: [`A, `B], c: bool| {
+        let r = &mut (select c { true => (t, x), false => (`L, 0) });
+        select *r { (`A, _) => 1, (`B, _) => 2, (`B, 0) => 5, (_, 0) => 3, _ => 4 }
+    };
+    f(0, `B, true)
+}"#, refused("unreachable arm"); FuseExpect::None);
+
 // A name in a pooled arm holds the member's part as it stands, so the
 // arm's test still holds the member.
 run!(arm_behind_a_pool_that_binds_the_open_part, r#"{

@@ -604,7 +604,7 @@ impl Reach {
     /// typed only where its arm narrows: its part of every member the arm
     /// can match. A copy the settle leaves open, the part an open cell
     /// inside the scrutinee took, is the arm's own cell again. A part
-    /// built into an open cell that one of the arms' tests holds whatever
+    /// built into an open cell that the arms' tests hold together whatever
     /// its cells become keeps them open ([`built_standing`]), and one
     /// two tests could take that neither holds so is refused, for a
     /// definition's check (`checking`, where it is).
@@ -3893,7 +3893,7 @@ pub(super) fn lower_view(t: &Type) -> Option<Type> {
 
 /// The open cells of the parts built into a scrutinee cell the arms
 /// decide (`lower`, its lower bounds) that the arms' settle holds as they
-/// stand: those of a part one of the arms' `tests` that hold no cell holds
+/// stand: those of a part the arms' `tests` that hold no cell hold together
 /// whatever its cells become, so no other test decides them by its place
 /// in the arms' union, but a cell another part needs decided. With them,
 /// when `checking`, the refusal of the first part no test holds so that
@@ -3928,7 +3928,7 @@ fn built_standing(
             continue;
         }
         let all: OpenCells = rigid.iter().chain(open.iter()).cloned().collect();
-        // CR claude for claude: [bug/low] Arms whose tests hold a built member only
+        // XCR claude for claude: [bug/low] Arms whose tests hold a built member only
         // together do not hold its cells open, so the arm behind them is refused where
         // the plain twin runs: `|x, t: [`A, `B], c: bool| { let r = &mut (select c { true
         // => (t, x), false => (`L, 0) }); select *r { (`A, _) => 1, (`B, _) => 2, (_, 0)
@@ -3945,11 +3945,23 @@ fn built_standing(
         // looked at for a part two tests hold together where a third could take a half.
         // probes: ~/ptmp/cr29/scratch/r24/24b/lvp/x1.txt, a1.txt programs 7 and 8 (run
         // with rb.sh), tried-tests-together.patch (standing-by-tests-together-01)
-        let mut stands = false;
-        for m in members.iter() {
-            stands = stands || m.contains_holding(env, l, &all)?
-        }
-        if stands {
+        // 2026-11-14 claude: Built_standing asks the arms' tests together: the union of the
+        // tests' members holds the built member whole with its cells held
+        // (contains_holding), not each test alone, so (`A, _) and (`B, _) hold ([`A, `B],
+        // 'x) between them and the arm behind them no longer meets a decided 'x. Pins that
+        // fail without it (16 runs): lang::select_undecided
+        // arm_behind_the_tag_pool_of_a_member_below_a_reference, ..._beside_other_members,
+        // later_use_decides_a_cell_of_a_tag_pooled_member,
+        // arm_after_a_tag_pool_that_covers_it_is_unreachable; the refused twins (half a tag
+        // pool, a tag missing, a guarded tag) hold in both forms. Not fixed: a name in a
+        // tag arm (`(`A, n)`) puts that test among those with an unbound cell, which
+        // built_standing drops, so it still says '(_, 0) tests a value of 'x' where the
+        // plain twin runs; probes ~/ptmp/cr29/scratch/r25/25c/tw2.txt 4 and 5. Checked: 400
+        // generated programs, census 2967 files 0 changes, regress 585 0 mismatches,
+        // deep_nesting ok, guicheck 39714917996 before / 39798262062 after (lane HEAD
+        // without and with the fix).
+        let together = Type::Set(Arc::from_iter(members.iter().cloned()));
+        if together.contains_holding(env, l, &all)? {
             held.extend(open);
             continue;
         }

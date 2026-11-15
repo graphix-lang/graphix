@@ -165,10 +165,12 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   beside `` (`L, 0) ``, `(_, 0)` behind `(true, _)` and `(false, _)`
   meets no value of `x`; a member inside a part, `select (*r, 1)`,
   is not taken out; the settle holds the cells of a member built into
-  such a cell that one of the arms' tests holding no cell holds whatever they
-  become, so no other test decides them by its place in the arms'
-  union, and `x` stays open there with the parts in either order; a
-  member no test holds so that two of them could take, `` (`K, x, y) ``
+  such a cell that the arms' tests hold together, their union asked with
+  no cell decided, whatever they become, so no test decides them by its
+  place in the arms' union, and `x` stays open there with the parts in
+  either order (`(`A, _)` and `(`B, _)` hold `([`A, `B], x)` between
+  them, so `(_, 0)` behind them meets no value of `x`); a member no
+  test holds so that two of them could take, `` (`K, x, y) ``
   behind `` (`K, n, _) `` beside `(_, 0, _)` and `(_, _, "a")`, is
   refused once no arm is refused for testing it, naming the bindings to
   annotate: `built_standing`), and so does
