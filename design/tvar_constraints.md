@@ -533,6 +533,17 @@ checked (`|u| f((u, u + 1))` at `f: |y: ([i64, null], i64)|` is accepted and
 `u` is decided by `u + 1`; a bound `'x: ([i64, null], i64)` does the same).
 Pins: `lang::types::written_primitive_union_leaves_a_*_part_to_its_check`.
 
+A bound's union that an argument's undecided cell meets does bind it, before
+the argument is checked: the same bind gives a literal's element the bound's
+union, and a pre-unification that leaves the cell open breaks pinned valid
+programs (`f([1])[0]$` is `[i64, null]`; a second literal neither wider nor
+narrower than the first is a mismatch). So `|u| f((u, u + 1))` at `'x: (['a,
+null], i64)` is refused where the union written in the parameter runs (D39
+(a)), and `typecheck_arg` makes the refusal name the bindings the argument
+reads whose cells the pre-unification bound to a type holding an undecided
+cell (`decided_early`): annotate them. Pins:
+`lang::types::undecided_value_decided_early_*`.
+
 A variable does not widen where a function type of the signature holds
 it (the first argument decides it, a callback's parameter being typed by
 it), nor where it stands in a union beside another undecided member

@@ -1448,7 +1448,7 @@ fn commit_conjuncts(
         if c.is_predicate() {
             continue;
         }
-        // CR claude for claude: [bug/low] An argument's undecided part that meets a union
+        // XCR claude for claude: [bug/low] An argument's undecided part that meets a union
         // of a declared bound is bound to that union at the pre-unification, before the
         // argument's own expression is checked: `let f = 'x: (['a, null], i64) |y: 'x| y;
         // let g = |u| f((u, u + 1)); g(1)` is refused, "cannot compute [null, 'a: unbound] +
@@ -1577,6 +1577,13 @@ fn commit_conjuncts(
         // 2026-11-15 claude: Eric ruled (2026-11-15, D39): (a), "yes definitely refusal for both, your rec". The
         // early bind stays; the refusal names the value to annotate (`|u: i64|` runs). (b) is closed with D40 (b):
         // a bound-held variable does not widen.
+        // 2026-11-15 claude: Eric ruled D39 (a): the early bind stays, the refusal names the value. typecheck_arg
+        // (callsite.rs) records the argument's undecided cells before the pre-unification; where it bound one to a
+        // type holding an undecided cell and the argument's own check refuses, decided_early names the bindings the
+        // argument reads that stand on those cells (`u`), 'annotate `u` with the type the argument needs'. No
+        // verdict changes (census 2976 files, 0 verdict 0 message). Pins that fail without it (8 of 12 runs):
+        // lang::types::undecided_value_decided_early_by_a_union_bound_names_the_value,
+        // _in_a_struct_names_the_value; the annotated twin _takes_its_annotation runs; generics.md cases lines.
         let held = match exact(c) {
             true => c.contains_int(flags | ContainsFlags::Conjunct, env, hist, t)?,
             false => commit_parts(

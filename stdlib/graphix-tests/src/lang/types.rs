@@ -16494,6 +16494,49 @@ run!(
     prints("i64:7")
 );
 
+// An undecided value in an argument that a declared union bound meets is
+// decided by the bound before the argument is checked: the refusal names the
+// value, and the value annotated runs.
+run!(
+    undecided_value_decided_early_by_a_union_bound_names_the_value,
+    r#"{
+  let f = 'x: (['a, null], i64) |y: 'x| y;
+  let g = |u| f((u, u + 1));
+  g(1)
+}"#,
+    refused(
+        "was decided by the type of the parameter this argument is passed to, \
+         before the argument was checked, as a type with an undecided part; \
+         annotate `u` with the type the argument needs"
+    );
+    FuseExpect::None
+);
+
+run!(
+    undecided_value_decided_early_by_a_union_bound_takes_its_annotation,
+    r#"{
+  let f = 'x: (['a, null], i64) |y: 'x| y;
+  let g = |u: i64| f((u, u + 1));
+  g(1)
+}"#,
+    prints("[i64:1, i64:2]")
+);
+
+run!(
+    undecided_value_decided_early_in_a_struct_names_the_value,
+    r#"{
+  let f = 'x: {p: ['a, null], q: i64} |y: 'x| y;
+  let g = |u| f({p: u, q: u + 1});
+  g(1)
+}"#,
+    refused(
+        "was decided by the type of the parameter this argument is passed to, \
+         before the argument was checked, as a type with an undecided part; \
+         annotate `u` with the type the argument needs"
+    );
+    FuseExpect::None
+);
+
 run!(
     partial_wrapper_bound_reaches_an_element_through_a_decided_variable,
     r#"{

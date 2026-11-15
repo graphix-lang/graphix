@@ -671,6 +671,18 @@ no "Array<'a2: [null, string]> does not contain Array<i64>" let f = 'a1: ['a2, d
 ok let f = 'x: Array<['a, null]> |y: 'x| y; let g = |u| f([u, [u]]); g(1)
 ```
 
+A value in an argument that a bound's union meets is decided by the bound
+before the argument is checked: `u` in `f((u, u + 1))` at `'x: (['a, null],
+i64)` is `[null, 'a]` when `u + 1` is checked, and the refusal names `u`.
+Annotate the value (`|u: i64|`), or write the union in the parameter, where
+`u + 1` decides it.
+
+```graphix,cases
+no "was decided by the type of the parameter this argument is passed to" let f = 'x: (['a, null], i64) |y: 'x| y; let g = |u| f((u, u + 1)); g(1)
+ok let f = 'x: (['a, null], i64) |y: 'x| y; let g = |u: i64| f((u, u + 1)); g(1)
+ok let f = |y: (['a, null], i64)| y; let g = |u| f((u, u + 1)); g(1)
+```
+
 A variable only the bounds of the parameters hold widens to no argument:
 the first argument that reaches it through a bound decides it, and a later
 one wider is refused, "is held only by the bounds of the parameters". The

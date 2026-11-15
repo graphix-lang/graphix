@@ -1173,6 +1173,15 @@ fn typecheck_arg<R: Rt>(
         }
         Opening::Closed | Opening::Open => SmallVec::new(),
     };
+    let mut open_cells: LPooled<Vec<TVar>> = LPooled::take();
+    if !matches!(opening, Opening::Open) && made && n.typ().has_free() {
+        Reach::default().go(n.typ(), &mut |_| false, &mut |tv| {
+            if !tv.is_bound() && !tv.is_rigid() {
+                open_cells.push(tv.clone())
+            }
+            false
+        });
+    }
     match &opening {
         Opening::Closed => {
             Type::pre_unify_arg(&ctx.env, typ, n.typ()).map_err(refused)?
@@ -1182,7 +1191,14 @@ fn typecheck_arg<R: Rt>(
         }
         Opening::Open => (),
     }
-    wrap!(n, n.typecheck0(ctx)).map_err(|e| undecided_taker(ctx, n, refused(e)))?;
+    open_cells.retain(|tv| tv.binding().is_some_and(|b| b.has_free()));
+    wrap!(n, n.typecheck0(ctx)).map_err(|e| {
+        let e = refused(e);
+        match e.is::<UndecidedTaker>() || open_cells.is_empty() {
+            true => undecided_taker(ctx, n, e),
+            false => decided_early(ctx, n, &open_cells, e),
+        }
+    })?;
     Ok(match opening {
         Opening::Closed => ArgFit::Decided,
         _ if !n.typ().has_free_in_data() => ArgFit::Decided,
@@ -2402,6 +2418,59 @@ fn undecided_taker<R: Rt>(
         }
         None => e,
     }
+}
+
+/// A refusal `e` of the argument `n`, whose pre-unification with its formal
+/// bound the undecided cells `early` to types that hold undecided cells
+/// themselves, names the bindings `n` reads that stand on them: the
+/// argument's own check meets them so decided, and annotating them
+/// decides them as written.
+fn decided_early<R: Rt>(
+    ctx: &CompileCtx<R>,
+    n: &Node<R>,
+    early: &[TVar],
+    e: anyhow::Error,
+) -> anyhow::Error {
+    let mut refs = Refs::without_callees();
+    n.refs(&mut refs);
+    let mut binds: SmallVec<[_; 2]> = SmallVec::new();
+    refs.with_external_refs(|id| {
+        if let Some(b) = ctx.env.by_id.get(&id)
+            && !crate::is_lowered(&b.name)
+            && !b.typ.with_deref(|t| matches!(t, Some(Type::Fn(_))))
+            && early.iter().any(|tv| {
+                let mut hit = false;
+                Reach::default().go(&b.typ, &mut |_| false, &mut |c| {
+                    hit = hit || c.cell_addr() == tv.cell_addr();
+                    hit
+                });
+                hit
+            })
+        {
+            binds.push(b)
+        }
+    });
+    binds.sort_by_key(|b| b.id);
+    if binds.is_empty() {
+        return e;
+    }
+    let mut names = CompactString::new("");
+    for (i, b) in binds.iter().enumerate() {
+        let sep = if i == 0 { "" } else { ", " };
+        write!(names, "{sep}`{}` ({})", b.name, BoundAt(b, None)).unwrap();
+    }
+    let (verb, annotate) = match binds.len() {
+        1 => ("was", format_compact!("annotate `{}`", binds[0].name)),
+        _ => ("were", CompactString::const_new("annotate them")),
+    };
+    Told::over(
+        e,
+        &format_compact!(
+            "{names} {verb} decided by the type of the parameter this argument is \
+             passed to, before the argument was checked, as a type with an undecided \
+             part; {annotate} with the type the argument needs"
+        ),
+    )
 }
 
 /// The bindings `n` reads whose types are undecided `at` the place that
