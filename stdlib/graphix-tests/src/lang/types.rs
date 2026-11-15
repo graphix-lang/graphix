@@ -10811,6 +10811,30 @@ run!(
     FuseExpect::Jit
 );
 run!(
+    a_slice_over_an_array_joined_with_an_empty_one_keeps_the_variables_of_a_union_of_functions_two,
+    r#"{
+  type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];
+  let f = |y: 'a, z: 'b, x: F2<'a, 'b>| x;
+  let c = true;
+  let h = |u, v, w| { let g = select c { true => [f(u, v, w)], false => [] }; select g { [a, ..] => a, _ => never() }; (u, v) };
+  h(1, "s", |q: i64| q + 1)
+}"#,
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::Jit
+);
+run!(
+    a_slice_rest_over_an_array_joined_with_an_empty_one_keeps_the_variables_of_a_union_of_functions_two,
+    r#"{
+  type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];
+  let f = |y: 'a, z: 'b, x: F2<'a, 'b>| x;
+  let c = true;
+  let h = |u, v, w| { let g = select c { true => [], false => [f(u, v, w)] }; select g { [a, b..] => (a, b), _ => never() }; (u, v) };
+  h(1, "s", |q: i64| q + 1)
+}"#,
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::Jit
+);
+run!(
     two_arms_naming_a_part_of_a_union_of_functions_keep_the_variables_two,
     r#"{
   type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];

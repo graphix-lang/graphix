@@ -6034,7 +6034,9 @@ impl Type {
 
     /// Give `m` to the member of the union `s0` that takes it
     /// ([`Self::take`]), of those not `free` on entry; `None` where it is
-    /// left to the open member: none admits it.
+    /// left to the open member: none admits it. A member that is `m` cell
+    /// for cell takes it, as one binding nothing does: another that admits
+    /// it by welding cells does not.
     fn place_covered(
         s0: &[Type],
         free: &[bool],
@@ -6048,7 +6050,7 @@ impl Type {
         for (c, _) in s0.iter().zip(free).filter(|(_, free)| !**free) {
             if c.contains_int(guide(flags), env, hist, m)? {
                 admit.push(c);
-                if !commit || hist.binds_nothing(c, m) {
+                if !commit || hist.binds_nothing(c, m) || strictly_identical(c, m) {
                     admit.truncate(0);
                     admit.push(c);
                     break;

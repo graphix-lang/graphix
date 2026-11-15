@@ -739,7 +739,13 @@ one member, chosen by rules that read the union alone:
   the members are the same functions cell for cell in another order
   (`setops::strictly_same_unordered`): `F2<u, v>` beside `F2<v, u>` is one
   union of two functions and welds nothing (pin
-  `a_select_of_two_calls_that_swap_the_variables_of_a_union_of_functions_pairs_each_with_itself`);
+  `a_select_of_two_calls_that_swap_the_variables_of_a_union_of_functions_pairs_each_with_itself`).
+  A member of a holder that is the value's member cell for cell takes it
+  before another that would admit it by welding cells
+  (`contains::place_covered`): a slice's bind over an array joined with an
+  empty one holds `[fn(q: 'a) -> i64, fn(q: 'b) -> i64]` and keeps both
+  variables (pin
+  `a_slice_over_an_array_joined_with_an_empty_one_keeps_the_variables_of_a_union_of_functions_two`);
 - else constructor members before bare variables (`Result<'a, 'e> ⊇
   Error<`X>` is `Error<'e>`'s, `['b, Array<'b>]` takes an array through
   `Array<'b>`);
