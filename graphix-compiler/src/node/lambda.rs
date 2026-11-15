@@ -2882,7 +2882,7 @@ impl<R: Rt> DefGate<R> {
         spec: &Expr,
         table: Option<SArc<DefTable>>,
         named: bool,
-    ) {
+    ) -> Result<()> {
         let mut frame = ctx.pending_settles.pop().expect("gate settle frame");
         ctx.def_gate_depth -= 1;
         match named {
@@ -2901,10 +2901,13 @@ impl<R: Rt> DefGate<R> {
         }
         let mut sig: LPooled<AHashMap<usize, TVar>> = LPooled::take();
         self.sig.reached_cells(&mut sig);
+        let mut lowered = Ok(());
         if !sig.is_empty() {
             for s in frame.iter() {
-                if let crate::PendingSettle::Site { ftype, .. } = s {
-                    ftype.lower_into_kept(&ctx.env, &sig)
+                if let crate::PendingSettle::Site { ftype, .. } = s
+                    && lowered.is_ok()
+                {
+                    lowered = ftype.lower_into_kept(&ctx.env, &sig)
                 }
             }
         }
@@ -2920,6 +2923,7 @@ impl<R: Rt> DefGate<R> {
         ctx.rec_defs.remove(&self.def);
         self.faux.close(ctx);
         self.rigid.clear();
+        lowered.at(spec)
     }
 
     /// Tell the editor the quantifiers the close is about to generalize,
@@ -3333,11 +3337,12 @@ impl<R: Rt> Update<R> for Lambda {
         for n in defaults.drain(..) {
             ctx.discard(n)
         }
-        gate.close(ctx, spec, def.table.get().map(|t| t.table.clone()), self.named);
+        let closed =
+            gate.close(ctx, spec, def.table.get().map(|t| t.table.clone()), self.named);
         // what the body bound is the signature: a call's types follow from
         // it without elaborating the body
         self.typ.unbind_vacuous_tvars();
-        res
+        res.and(closed)
     }
 
     /// A lambda an instance defines takes its signature from the

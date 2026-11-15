@@ -812,8 +812,10 @@ impl FnType {
     /// of the cell does ([`TVar::commit_conjuncts`]): a caller of the
     /// definition then meets a kept cell above what the site put there, not
     /// above nothing until the site settles. Each cell passes before the
-    /// cells its conjuncts hold, so a chain passes down it.
-    pub fn lower_into_kept(&self, env: &Env, kept: &AHashMap<usize, TVar>) {
+    /// cells its conjuncts hold, so a chain passes down it. An error where
+    /// a conjunct does not hold a lower bound: the signature stands above
+    /// what its own bound cannot take.
+    pub fn lower_into_kept(&self, env: &Env, kept: &AHashMap<usize, TVar>) -> Result<()> {
         fn children(tv: &TVar) -> SmallVec<[TVar; 2]> {
             let mut out = SmallVec::new();
             for c in tv.cell_constraints().iter() {
@@ -854,7 +856,7 @@ impl FnType {
             }
         }
         if self.quantifiers.is_empty() {
-            return;
+            return Ok(());
         }
         let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
         self.reached_cells(&mut cells);
@@ -872,7 +874,7 @@ impl FnType {
                 && reaches(tv, kept, &mut memo)
             {
                 for l in tv.cell_lower().iter().filter(|l| !l.has_unbound()) {
-                    // CR claude for claude: [bug/medium] The verdict of this commit is
+                    // XCR claude for claude: [bug/medium] The verdict of this commit is
                     // dropped: a lower bound that a cell the signature reaches cannot hold
                     // (`Ok(false)`) leaves the definition accepted, so the check accepts and
                     // the build refuses. `let f = 'a0: ['a1, bool], 'a1: ['a2, duration]
@@ -890,10 +892,28 @@ impl FnType {
                     // Err (22 commits, all Ok(true)). Found reviewing def-site-settle-after-
                     // calls-01. probes: ~/ptmp/cr29/scratch/r25/25d/dsac-rev/q{1,2}.gx
                     // (lower-into-kept-rigid-dropped-01)
-                    let _ = tv.commit_conjuncts(env, l);
+                    // 2026-11-15 claude: lower_into_kept now returns the refusal and
+                    // DefGate::close hands it to the definition's typecheck0 (the def's own
+                    // check fails). Pins
+                    // lang::types::lower_bound_into_a_declared_variable_a_bound_holds_is_refused
+                    // and ..._with_a_bound_is_refused fail with the close's result dropped.
+                    // Probes: ~/ptmp/cr29/scratch/r26/26f/q{1,2}.gx
+                    if !tv.commit_conjuncts(env, l)? {
+                        let shown = crate::format_with_flags(
+                            crate::PrintFlag::DerefTVars,
+                            || compact_str::format_compact!("{}", Type::TVar(tv.clone())),
+                        );
+                        bail!(
+                            "{shown}: the body puts {l} above it, which the variables \
+                             the definition declares cannot hold, since each call picks \
+                             them anew: annotate the parameter with a type holding {l}, \
+                             or declare no variable"
+                        )
+                    }
                 }
             }
         }
+        Ok(())
     }
 }
 

@@ -16898,6 +16898,28 @@ run!(
     prints(r#""s""#)
 );
 run!(
+    lower_bound_into_a_declared_variable_a_bound_holds_is_refused,
+    r#"{
+  let f = 'a0: ['a1, bool], 'a1: ['a2, duration] |x0: 'a0, x2: 'a2| x2;
+  let w0: [null, string] = null;
+  let g = |u: 'u| f(w0, u);
+  g("s")
+}"#,
+    refused("annotate the parameter with a type holding [null, string]");
+    FuseExpect::None
+);
+run!(
+    lower_bound_into_a_declared_variable_with_a_bound_is_refused,
+    r#"{
+  let f = 'a0: ['a1, bool], 'a1: ['a2, duration] |x0: 'a0, x2: 'a2| x2;
+  let w0: [null, string] = null;
+  let g = 'u: Any |u: 'u| f(w0, u);
+  g(1)
+}"#,
+    refused("annotate the parameter with a type holding [null, string]");
+    FuseExpect::None
+);
+run!(
     lower_bound_reaches_the_bounds_own_cells_through_three_links,
     r#"{
   let f = 'a0: ['a1, bool], 'a1: ['a2, duration], 'a2: ['a3, null] |x0: 'a0, x3: 'a3| x3;
