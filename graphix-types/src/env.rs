@@ -3214,7 +3214,17 @@ impl Env {
         let Some(own) = self.lexical.input.as_ref().filter(|_| &*scope.0 != "/") else {
             return;
         };
-        let Some(table) = self.names.get(scope) else { return };
+        Self::displace_foreign(&mut self.names, scope, own);
+    }
+
+    /// Move the table at `scope` out of the registry into its input's
+    /// views when another input than `own` made it.
+    fn displace_foreign(
+        names: &mut TrackedMap<ModPath, ScopeNames>,
+        scope: &ModPath,
+        own: &InputHold,
+    ) {
+        let Some(table) = names.get(scope) else { return };
         let Some(owner) = &table.input else { return };
         if Weak::as_ptr(owner) == std::sync::Arc::as_ptr(&own.0) {
             return;
@@ -3223,7 +3233,7 @@ impl Env {
             old.displaced.write().insert_cow(scope.clone(), table.clone());
             old.any_displaced.store(true, Ordering::Release);
         }
-        self.names.remove(scope);
+        names.remove(scope);
     }
 
     /// The table at `scope` to write, made where there is none: one at any
@@ -3318,8 +3328,26 @@ impl Env {
             }
     }
 
-    /// Drop every import table at `scope` or any descendant.
-    pub fn clear_names_under(&mut self, scope: &ModPath) {
+    /// Drop every import table at `scope` or any descendant that `own`
+    /// made, or no input did. A table another input made stays with the
+    /// views of that input ([`Self::displace_names`]).
+    pub fn clear_names_under(&mut self, scope: &ModPath, own: Option<&InputHold>) {
+        if let Some(own) = own {
+            let foreign: LPooled<Vec<ModPath>> = self
+                .names
+                .iter()
+                .filter(|(s, sn)| {
+                    scope_is_under(s, scope)
+                        && sn.input.as_ref().is_some_and(|o| {
+                            Weak::as_ptr(o) != std::sync::Arc::as_ptr(&own.0)
+                        })
+                })
+                .map(|(s, _)| s.clone())
+                .collect();
+            for s in foreign.iter() {
+                Self::displace_foreign(&mut self.names, s, own)
+            }
+        }
         self.names.retain(|s, _| !scope_is_under(s, scope));
     }
 
@@ -4352,7 +4380,7 @@ mod test {
         assert!(t.lexical.binds.get(&net).unwrap().get("publish").is_some());
         assert!(t.lexical.binds.get(&root).is_none_or(|v| v.get("top").is_none()));
         let mut env = env.clone();
-        env.clear_names_under(&m);
+        env.clear_names_under(&m, None);
         env.import_glob(&m, Glob::Module(root.clone()));
         let t = env.imported_view(&m, env.names.get(&m), []);
         assert!(t.lexical.binds.get(&root).unwrap().get("top").is_some());

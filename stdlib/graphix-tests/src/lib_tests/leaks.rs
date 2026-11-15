@@ -1100,6 +1100,43 @@ async fn a_function_escaping_a_dropped_file_module_keeps_its_imports_past_an_edi
     Ok(())
 }
 
+/// A function that left a dropped static module builds its body against the
+/// imports its file wrote, while a dynamic module loaded at the path writes
+/// tables of its own there.
+#[tokio::test(flavor = "current_thread")]
+async fn a_function_escaping_a_dropped_module_keeps_its_imports_beside_a_dynamic_load()
+-> Result<()> {
+    let files = [
+        ("/m.gxi", VfsEntry::from(ArcStr::from("val make: fn(s: string) -> i64"))),
+        (
+            "/m.gx",
+            VfsEntry::from(ArcStr::from("use str::len; let make = |s: string| len(s)")),
+        ),
+    ];
+    let (ctx, mut rx) =
+        fixture_runtime(files, crate::TEST_REGISTER, Mode::Interp, |_| {}).await?;
+    let _g = ctx.rt.compile(literal!("let g: fn(s: string) -> i64 = never();")).await?;
+    let a = ctx.rt.compile(literal!("mod m; g <- m::make; null")).await?;
+    await_update(&ctx, &mut rx, a.exprs[2].id, |v| *v == Value::Null).await?;
+    let (id, read) = compile_one(&ctx, "{ let f = g; 7 }").await?;
+    await_update(&ctx, &mut rx, id, |v| *v == Value::I64(7)).await?;
+    drop((a, read));
+    let (id, x) = compile_one(&ctx, "1").await?;
+    await_update(&ctx, &mut rx, id, |v| *v == Value::I64(1)).await?;
+    drop(x);
+    let made = ctx
+        .rt
+        .compile(literal!(
+            r#"mod m dynamic { sig { use core; use array; val make: fn(a: Array<i64>) -> i64 }; source "use array::len; let make = |a: Array<i64>| len(a)" }; m::make([1, 2])"#
+        ))
+        .await?;
+    await_update(&ctx, &mut rx, made.exprs[1].id, |v| *v == Value::I64(2)).await?;
+    let late = ctx.rt.compile(literal!(r#"g("abc")"#)).await?;
+    await_update(&ctx, &mut rx, late.exprs[0].id, |v| *v == Value::I64(3)).await?;
+    ctx.shutdown().await;
+    Ok(())
+}
+
 /// `ROUNDS` times over: compile `code`, which writes a function to the
 /// root `saved`, drop it, and call `saved(3)` at a site compiled after the
 /// drop, the first to build the function's body since. Each call answers

@@ -1870,7 +1870,7 @@ impl<R: Rt> Module<R> {
             StaticCallees::set_aside(&ctx.static_callees, holders.take_holders(), vars);
         // `names` is a global registry: a recompile must scrub the
         // previous source's imports or they accumulate
-        // CR claude for claude: [bug/medium] A dynamic module's load clears every
+        // XCR claude for claude: [bug/medium] A dynamic module's load clears every
         // import table at its scope and below, whichever input made them, where
         // `Env::names_mut` displaces a table another input made into that input's
         // `InputTables` (root-module-table-01). So a function that escaped a dropped
@@ -1883,7 +1883,13 @@ impl<R: Rt> Module<R> {
         // the clear, as `displace_names` does for one. probe (a leaks.rs test):
         // ~/ptmp/cr29/scratch/r26/26a/dn/probes.rs, zz_reload_takes_a_held_inputs_table
         // (reload-displaced-names-01)
-        ctx.env.clear_names_under(&self.scope.lexical);
+        // 2026-11-15 claude: Env::clear_names_under now takes the loading module's input
+        // and moves each table another input made under the scope into that input's
+        // displaced tables (displace_foreign, shared with displace_names) before
+        // clearing. Pin: leaks.rs
+        // a_function_escaping_a_dropped_module_keeps_its_imports_beside_a_dynamic_load
+        // fails without it (g("abc") never answers).
+        ctx.env.clear_names_under(&self.scope.lexical, self.env.input.as_ref());
         let env = self.env.clone();
         let load = LoadedBody::under(env.body.clone(), self.scope.lexical.clone());
         self.env.body = Some(load.clone());
