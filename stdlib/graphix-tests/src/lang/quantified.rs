@@ -1347,6 +1347,121 @@ run!(
 );
 
 run!(
+    a_trait_bound_a_call_meets_prints_once,
+    refused("does not contain fn<'q: T>(s: 'q: unbound within T) -> i64"),
+    "/test.gx" => r#"
+        trait T { val m: fn(self) -> i64 };
+        impl T for i64 { let m = |s| s };
+        let k = |z: i64| { let g: string = 'q: T |s: 'q| -> i64 T::m(s); z };
+        let result = k(1)
+    "#
+);
+
+run!(
+    a_body_needing_more_of_a_variable_than_its_bound_is_refused_at_a_call,
+    refused("the body needs 'c within Number, which the signature does not declare: write 'c: Number"),
+    "/test.gx" => r#"
+        let f = 'a: Number |x: 'a| -> 'a x;
+        let g = 'c: Any |y: 'c| -> 'c f(y);
+        let result = g(1)
+    "#
+);
+
+run!(
+    a_body_needing_more_of_a_variable_than_its_bound_names_the_bound_to_write,
+    refused("write 'c: [i64, string] + Number"),
+    "/test.gx" => r#"
+        let f = 'a: Number |x: 'a| -> 'a x;
+        let g = 'c: [i64, string] |y: 'c| -> 'c f(y);
+        let result = g(1)
+    "#
+);
+
+run!(
+    a_variable_declaring_the_bound_its_body_needs_is_accepted,
+    is(Value::I64(1)),
+    "/test.gx" => r#"
+        let f = 'a: Number |x: 'a| -> 'a x;
+        let g = 'c: Number |y: 'c| -> 'c f(y);
+        let result = g(1)
+    "#
+);
+
+run!(
+    a_variable_whose_bound_implies_the_one_its_body_needs_is_accepted,
+    is(Value::I64(1)),
+    "/test.gx" => r#"
+        let f = 'a: Number |x: 'a| -> 'a x;
+        let g = 'c: Int |y: 'c| -> 'c f(y);
+        let result = g(1)
+    "#
+);
+
+run!(
+    a_body_needing_more_of_a_variable_than_its_bound_is_refused_at_an_operator,
+    refused("the body needs 'a within Number, which the signature does not declare: write 'a: Number"),
+    "/test.gx" => r#"
+        let f = 'a: Any |x: 'a, y: 'a| -> 'a x + y;
+        let result = f(1, 2)
+    "#
+);
+
+run!(
+    a_body_needing_more_of_a_variable_than_its_bound_is_refused_at_an_ordering,
+    refused("the body needs 'a within Ordered, which the signature does not declare: write 'a: Number + Ordered"),
+    "/test.gx" => r#"
+        let f = 'a: Number |x: 'a, y: 'a| x < y;
+        let result = f(1, 2)
+    "#
+);
+
+run!(
+    a_body_needing_more_of_a_variable_than_its_bound_is_refused_at_an_equality,
+    refused("the body needs 'a within Discernible, which the signature does not declare: write 'a: Discernible"),
+    "/test.gx" => r#"
+        let f = 'a: Any |x: 'a, y: 'a| x == y;
+        let result = f(1, 2)
+    "#
+);
+
+run!(
+    a_variable_declaring_the_ordering_its_body_needs_is_accepted,
+    is(Value::Bool(true)),
+    "/test.gx" => r#"
+        let f = 'a: Number + Ordered |x: 'a, y: 'a| x < y;
+        let result = f(1, 2)
+    "#
+);
+
+run!(
+    arithmetic_over_a_number_variable_needs_no_singleton_written,
+    is(Value::I64(3)),
+    "/test.gx" => r#"
+        let f = 'a: Number |x: 'a, y: 'a| -> 'a x + y;
+        let result = f(1, 2)
+    "#
+);
+
+run!(
+    a_body_needing_more_of_a_variable_than_its_bound_is_refused_at_a_return_type,
+    refused("the body needs 'a within Concrete + JsonData + NoError, which the signature does not declare: write 'a: Concrete + JsonData + NoError"),
+    "/test.gx" => r#"
+        let rd = 'a: Any |s: string| -> 'a json::read(s)$;
+        let result = rd("1")
+    "#
+);
+
+run!(
+    a_variable_nothing_declares_takes_the_bound_its_body_needs,
+    is(Value::I64(1)),
+    "/test.gx" => r#"
+        let f = 'a: Number |x: 'a| -> 'a x;
+        let g = |y: 'c| -> 'c f(y);
+        let result = g(1)
+    "#
+);
+
+run!(
     a_printed_quantifier_is_not_read_for_a_cell_of_its_name,
     refused("but implemented fn<'a1: Number>(y: Array<'a: unbound>, x: 'a1: unbound within Number) -> 'a1: unbound within Number:"),
     "/test.gx" => "mod m; let result = 0",

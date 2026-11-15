@@ -641,7 +641,7 @@ run!(
 
 run!(parse_printed_primitive_composites, r#"{
     type E = `ParseError(string);
-    let round = 'a: Data + Concrete + Discernible |v: 'a| {
+    let round = 'a: Data + Concrete + Discernible + NoError |v: 'a| {
         let r: Result<'a, E> = str::parse("[v]");
         select r { error as _ => false, got => got == v }
     };

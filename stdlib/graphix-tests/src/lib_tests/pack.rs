@@ -198,7 +198,7 @@ async fn pack_abstract_read_checks_the_payload() -> Result<()> {
 
 run!(pack_preserves_union_member_kinds, r#"{
     type E = [`PackErr(string), `InvalidCast(string)];
-    let round = 'a: Data + Concrete + Discernible |v: 'a| {
+    let round = 'a: Data + Concrete + Discernible + NoError |v: 'a| {
         let r: Result<'a, E> = pack::read(pack::write_bytes(v)$);
         select r { error as _ => false, got => got == v }
     };

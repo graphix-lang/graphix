@@ -82,7 +82,7 @@ impl Family {
     pub fn refuses_with(self, head: &str) -> bool {
         let says: &[&str] = match self {
             Family::MonoReuse => &["does not contain"],
-            Family::RigidVar => &["unbound"],
+            Family::RigidVar => &["unbound", "which the signature does not declare"],
             Family::RigidPattern => &["tests inside a value of", "matches no value of"],
             Family::SharedVar | Family::AbstractParam => &["does not contain"],
             Family::OpenArg => &["is undecided at this call"],
@@ -1113,9 +1113,11 @@ fn call(function: Arc<Expr>, args: Vec<(Option<ArcStr>, Expr)>) -> Expr {
 
 /// A first statement that fixes one of a lambda's declared variables,
 /// as its value and annotation: `x == 1` for a parameter `x: 'a`, or
-/// under `bottom` `x` annotated `_`; `f(1)` for a parameter `f: fn(x:
-/// 'a) -> ..` whose `'a` is not its own quantifier.
-fn rigid_probe(l: &LambdaExpr, bottom: bool) -> Option<(Expr, Option<Type>)> {
+/// under `RigidProbe::Bottom` `x` annotated `_`, or under
+/// `RigidProbe::Needs` `x + x` where the header bounds `'a` by `Any`, a
+/// predicate that does not say `Number`; `f(1)` for a parameter `f:
+/// fn(x: 'a) -> ..` whose `'a` is not its own quantifier.
+fn rigid_probe(l: &LambdaExpr, mode: RigidProbe) -> Option<(Expr, Option<Type>)> {
     let one = || ExprKind::Constant(netidx_value::Value::I64(1)).to_expr_nopos();
     let name_ref = |x: &Name| {
         Arc::new(ExprKind::Ref { name: ModPath::from([x.name.as_str()]) }.to_expr_nopos())
@@ -1123,7 +1125,26 @@ fn rigid_probe(l: &LambdaExpr, bottom: bool) -> Option<(Expr, Option<Type>)> {
     l.args.iter().filter(|a| !a.kind.is_labeled()).find_map(|a| {
         let StructurePattern::Bind(x) = &a.pattern else { return None };
         match a.constraint.as_ref()? {
-            Type::TVar(_) if bottom => Some(((*name_ref(x)).clone(), Some(Type::Bottom))),
+            Type::TVar(tv) if mode == RigidProbe::Needs => {
+                let declared_any = l
+                    .constraints
+                    .iter()
+                    .any(|(c, b)| c.name == tv.name && matches!(b, Type::Any));
+                declared_any.then(|| {
+                    (
+                        ExprKind::BinOp {
+                            op: BinOp::Add,
+                            lhs: name_ref(x),
+                            rhs: name_ref(x),
+                        }
+                        .to_expr_nopos(),
+                        None,
+                    )
+                })
+            }
+            Type::TVar(_) if mode == RigidProbe::Bottom => {
+                Some(((*name_ref(x)).clone(), Some(Type::Bottom)))
+            }
             Type::TVar(_) => Some((
                 ExprKind::BinOp { op: BinOp::Eq, lhs: name_ref(x), rhs: Arc::new(one()) }
                     .to_expr_nopos(),
@@ -1169,13 +1190,30 @@ fn rigid_pattern_probe(l: &LambdaExpr) -> Option<(Expr, Option<Type>)> {
     })
 }
 
+/// What [`rigid_probe`] does to a declared variable.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RigidProbe {
+    Equal,
+    Bottom,
+    Needs,
+}
+
 /// Family 2. A lambda with a parameter over a declared variable `'a`
-/// gets a first statement fixing `'a` to `i64` or to `_`
-/// ([`rigid_probe`], alternately): a def's declared variables are rigid
-/// in its body, so `'a` can become neither. Right site: the definition.
+/// gets a first statement fixing `'a` to `i64` or to `_`, or asking more
+/// of an `Any`-bounded one than its bound says ([`rigid_probe`], in
+/// turn): a def's declared variables are rigid in its body, so `'a` can
+/// become neither, and its body adds no bound to it. Right site: the
+/// definition.
 fn rigid_var(root: &Expr, cap: usize, out: &mut Vec<RejectProbe>) {
     with_first_statement(root, cap, Family::RigidVar, out, |l, taken| {
-        rigid_probe(l, taken % 2 == 1)
+        rigid_probe(
+            l,
+            match taken % 3 {
+                0 => RigidProbe::Equal,
+                1 => RigidProbe::Bottom,
+                _ => RigidProbe::Needs,
+            },
+        )
     })
 }
 

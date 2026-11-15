@@ -120,9 +120,14 @@ holds, `contains::rigid_holds_by_lower`, and an open cell below a rigid
 survivor merges into it, since it can be no other type: `W<'c> ⊇ W(x)`
 under a rigid `'c` makes `x` `'c`; one whose merge is refused, the
 occurs check's case, stays below it, a lower bound); a copy, an image
-and a level claim carry the list. A rigid cell so takes on the
-conjuncts of an open cell merged into it, which its definition's
-signature then carries; a judgment against a signature whose bounds are
+and a level claim carry the list. A quantifier of the definition whose
+body is being checked takes on no conjunct of an open cell merged into
+it (a callee's copy, an operand the body's operators bound, a typedef's
+parameter bound): the cell's conjuncts must each be implied by the
+quantifier's own (`Type::implies`), and it holds the signature's bound
+once, the implied ones dropped as the cells merge
+(`contains::bound_covers`, `retire_implied`; "A body adds no bound to a
+declared variable", below). A judgment against a signature whose bounds are
 fixed (`Type::implies`, an interface's bounds: `ContainsFlags::Sealed`)
 merges an open cell into a rigid one only where the open cell's own
 conjuncts admit it, and there a rigid cell holds a predicate only where
@@ -501,6 +506,7 @@ instance has and nothing decides. It meets the formal itself, and stands
 within its own bound and the callee's, over the instance's cells (pins
 `lang::types::declared_variables_passed_on_through_{a_chain_of,recursive}_union_bounds`,
 `declared_variable_passed_on_stands_within_its_callees_bound{,_refused}`,
+`declared_variable_passed_on_needs_its_callees_bound_declared`,
 `declared_variables_passed_on_through_an_inner_function_and_a_callback`,
 `declared_variables_passed_on_beside_callbacks{,_take_decided_arguments}`).
 What an undecided argument took from the copy is made the formal's own
@@ -611,6 +617,41 @@ argument_into_a_typedef_union_before_its_deciders_refused,
 variable_in_a_typedef_union_does_not_widen_refused,
 literal_element_into_a_typedef_union_after_its_deciders,
 wrappers_of_a_typedef_union_function}`.
+
+### A body adds no bound to a declared variable
+
+A body that needs more of a quantifier its definition declares than the
+quantifier's bound says is refused, naming the bound to write (Eric D43
+(b)). `'c: Any |y: 'c| f(y)` over an `f` of `'a: Number` is refused,
+"the body needs 'c within Number, which the signature does not declare:
+write 'c: Number", and so is `'a: Any |x: 'a, y: 'a| x + y`, `x < y` (write
+`'a: Number + Ordered`), `x == y` (`'a: Discernible`) and a builtin's
+`Concrete`/`JsonData`/`NoError` at a return type: nothing tightens the
+signature quietly, and a bound a declared one already implies is not
+added, so it prints once (a conjunct that names no cell; one that names
+cells links them to the variable's, `retire_implied` keeps it). The quantifiers are the ones the signature
+declares: a header's, and a variable only a bound names (`'b4` in `'b3:
+Array<O<'b4>>`); a variable written bare in a position (`|y: 'c|`) is
+inferred and takes the bound its body needs. Where it is made:
+
+- a call or any other unification of an open cell with the quantifier:
+  `contains.rs`'s open-cell merge, when `TVar::declared_here` (the
+  quantifier is a variable of a definition whose body this thread checks,
+  `Declared`, `Declaring::enter`) holds, refuses a cell whose conjunct the
+  quantifier's own does not imply (`bound_covers`), and `undeclared_bound_note`
+  adds the bound to write to the mismatch, naming the deepest variable
+  where the conjunct names variables of its own;
+- an operator or a typedef's parameter bound: `TVar::narrow_cell`,
+  `add_body_bound` and `require_body_bounds` refuse the same.
+
+`Singleton` is the one conjunct a body adds quietly: the operands of an
+operator are one type, so `'a: Number |x: 'a, y: 'a| x + y` stays the
+spelling the book teaches. Pins: `lang::quantified::a_body_needing_more_*`,
+`a_variable_declaring_the_bound_its_body_needs_is_accepted`,
+`a_trait_bound_a_call_meets_prints_once`,
+`lang::types::partial_wrapper_bound_*`. Must-reject family 2
+(`design/must_reject.md`) mutates a declared variable's use and expects
+this rule's refusal.
 
 ### A function held at a function type
 

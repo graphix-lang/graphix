@@ -113,10 +113,15 @@ signature names undeclared is lowered with the outer cell instead, and the
 definition is monomorphic in it). Skip: a variable with a constraint the concrete type satisfies
 only through the constraint (`'a: Number` against `1` is still refused,
 but keep the first cut to unconstrained variables). Built: a first
-statement comparing a parameter `x: 'a` with a literal or, alternately,
-binding it under a `_` annotation, or calling a
+statement comparing a parameter `x: 'a` with a literal or, in turn,
+binding it under a `_` annotation, or adding it to itself (`x + x`) where
+its header bounds it by `Any`, or calling a
 parameter `f: fn(x: 'a) -> ..` with one (`'a` not `f`'s own
-quantifier: each call picks that anew), right site the definition. Open: equating two declared variables;
+quantifier: each call picks that anew), right site the definition. The
+third's rule is that a body adds no bound to a declared variable
+(`tvar_constraints.md`, "A body adds no bound to a declared variable"):
+it refuses "the body needs 'a within Number, which the signature does not
+declare" (`Family::refuses_with`). Open: equating two declared variables;
 writing a parameter `x: 'a` to an outer `let y = never()` (`y <- x`).
 
 **3. Call conflicts.** Site: a call argument. (a) The callee's resolved

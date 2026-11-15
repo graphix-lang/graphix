@@ -416,7 +416,7 @@ async fn unread_forwarded_quantifier_message(mode: Mode) -> Result<()> {
             r#"{{
         let f = 'a: Concrete |#h: [fn(v: 'a) -> i64, null] = null, x: i64|
             -> i64 'test_last;
-        let g = |#h: [fn(v: 'b) -> i64, null] = null, x: i64| f(#h: h, x);
+        let g = 'b: Concrete |#h: [fn(v: 'b) -> i64, null] = null, x: i64| f(#h: h, x);
         {call}
     }}"#
         )

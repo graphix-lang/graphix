@@ -2715,14 +2715,10 @@ impl<R: Rt> DefGate<R> {
             Type::TVar(tv.clone()).seed_names_seen(&ctx.env, &mut seen);
         }
         let rigid = named.values().map(|tv| tv.open_rigid()).collect();
-        let declaring = Declaring::enter(named.values().cloned());
-        let declared = def
-            .typ
-            .quantifiers
-            .iter()
-            .filter_map(|q| named.get(q))
-            .map(|tv| (tv.clone(), tv.level().depth()))
-            .collect();
+        let quantified = def.typ.quantifiers.iter().filter_map(|q| named.get(q));
+        let declaring =
+            Declaring::enter(named.values().cloned(), quantified.clone().cloned());
+        let declared = quantified.map(|tv| (tv.clone(), tv.level().depth())).collect();
         let outside = |t: &Type| match t {
             Type::TVar(c)
                 if c.name.starts_with('_') && c.level().depth() < def.level.depth() =>

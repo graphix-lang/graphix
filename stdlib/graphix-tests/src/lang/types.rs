@@ -3125,7 +3125,7 @@ mod unsound_acceptances {
 #[tokio::test(flavor = "current_thread")]
 async fn not_concrete_names_a_minted_cell_short() -> Result<()> {
     let src = r#"{
-  let rd = |s: string| -> 'a json::read(s)$;
+  let rd = 'a: Concrete + JsonData + NoError |s: string| -> 'a json::read(s)$;
   let g = |s| { let v = rd(s); [v] };
   g("1")
 }"#;
@@ -3165,7 +3165,7 @@ run!(
     refused("but implemented fn<'a: Eq + Ord + Ordered>(x: 'a: unbound within Eq & Ord & Ordered, y: 'a: unbound within Eq & Ord & Ordered) -> bool:"),
     "/test.gx" => "mod m; let result = 0",
     "/test/m.gxi" => "val f: fn(x: string) -> string;",
-    "/test/m.gx" => "let f = 'a: Eq + Ord |x: 'a, y: 'a| -> bool x < y"
+    "/test/m.gx" => "let f = 'a: Eq + Ord + Ordered |x: 'a, y: 'a| -> bool x < y"
 );
 
 // A read of it no binding names is one instance, which prints no header:
@@ -3200,7 +3200,7 @@ async fn comparison_operands_are_one_type() -> Result<()> {
 const COMPARISON_ONE_TYPE: &str = r#"{
   let s: [`Menu, `Edit] = `Menu;
   let t: [`Menu, `Edit] = `Edit;
-  let f = 'a: Number |a: 'a, b: 'a| -> bool a < b;
+  let f = 'a: Number + Ordered |a: 'a, b: 'a| -> bool a < b;
   let g = |a, b| a == b;
   [s == t, s != t, f(3, 4), f(2.5, 1.5), g("a", "a"), g(s, t)]
 }"#;
@@ -3627,7 +3627,7 @@ run!(
 
 const DISCERNIBLE_ACCEPTS: &str = r#"{
   let f = |x, y| x == y;
-  let g = |o: Option<'a>| o == o;
+  let g = 'a: Discernible |o: Option<'a>| o == o;
   let h = |c, a: i64| { let v = select c { true => a, false => 0 }; v == v };
   let k = 'a: Discernible |x: 'a| x;
   [f(1, 1), g(null), g(2), h(true, 3), k("x") == "x", array::sort([3, 1]) == [1, 3]]
@@ -10453,10 +10453,10 @@ run!(
   type O<'t> = ['t, null];
   type Q<'x, 'y> = [`A('x), `B('y)];
   let f = 'a0: Q<'a2, 'a1>, 'a1: string, 'a2: Array<Q<'a4, 'a3>>, 'a3: O<'a4>, 'a4: string |x0: 'a0, x2: 'a2, x3: 'a3| (x0, x2);
-  let h = 'b0: Q<'b2, 'b1>, 'b1: string, 'b2: Array<Q<'b4, 'b3>>, 'b3: O<'b4>, 'b4: [i64, string] |y0: 'b0, y2: 'b2, y3: 'b3| f(y0, y2, y3);
+  let h = 'b0: Q<'b2, 'b1>, 'b1: string, 'b2: Array<Q<'b4, 'b3>>, 'b3: O<'b4>, 'b4: string |y0: 'b0, y2: 'b2, y3: 'b3| f(y0, y2, y3);
   h(`B("s"), [`A(1)], "s")
 }"#,
-    refused("'b4: unbound within [i64, string] & string");
+    refused("'b4: unbound within string");
     FuseExpect::None
 );
 run!(
@@ -10465,10 +10465,22 @@ run!(
   type O<'t> = ['t, null];
   type Q<'x, 'y> = [`A('x), `B('y)];
   let f = 'a0: Q<'a2, 'a1>, 'a1: string, 'a2: Array<Q<'a4, 'a3>>, 'a3: O<'a4>, 'a4: string |x0: 'a0, x2: 'a2, x3: 'a3| (x0, x2);
-  let h = 'b0: Q<'b2, 'b1>, 'b1: string, 'b2: Array<Q<'b4, 'b3>>, 'b3: O<'b4>, 'b4: [i64, string] |y0: 'b0, y2: 'b2, y3: 'b3| f(y0, y2, y3);
+  let h = 'b0: Q<'b2, 'b1>, 'b1: string, 'b2: Array<Q<'b4, 'b3>>, 'b3: O<'b4>, 'b4: string |y0: 'b0, y2: 'b2, y3: 'b3| f(y0, y2, y3);
   h(`B("s"), [`A("t")], "s")
 }"#,
     prints(r#"[["B", "s"], [["A", "t"]]]"#)
+);
+run!(
+    declared_variable_passed_on_needs_its_callees_bound_declared,
+    r#"{
+  type O<'t> = ['t, null];
+  type Q<'x, 'y> = [`A('x), `B('y)];
+  let f = 'a0: Q<'a2, 'a1>, 'a1: string, 'a2: Array<Q<'a4, 'a3>>, 'a3: O<'a4>, 'a4: string |x0: 'a0, x2: 'a2, x3: 'a3| (x0, x2);
+  let h = 'b0: Q<'b2, 'b1>, 'b1: string, 'b2: Array<Q<'b4, 'b3>>, 'b3: O<'b4>, 'b4: [i64, string] |y0: 'b0, y2: 'b2, y3: 'b3| f(y0, y2, y3);
+  h(`B("s"), [`A("t")], "s")
+}"#,
+    refused("the body needs 'b4 within string, which the signature does not declare: write 'b4: [i64, string] + string");
+    FuseExpect::None
 );
 
 // The same where the declared variables reach the callee through an inner
@@ -10527,10 +10539,10 @@ run!(
   type O<'t> = ['t, null];
   type Q<'x, 'y> = [`A('x), `B('y)];
   let f = 'a0: Q<'a2, 'a1>, 'a1: string, 'a2: Array<Q<'a4, 'a3>>, 'a3: O<'a4>, 'a4: string |x0: ('a0, fn(v: 'a7) -> 'a7), x2: ('a2, fn(v: 'a8) -> 'a8), x3: ('a3, fn(v: 'a9) -> 'a9)| (x0.0, x2.0);
-  let h = 'b0: Q<'b2, 'b1>, 'b1: string, 'b2: Array<Q<'b4, 'b3>>, 'b3: O<'b4>, 'b4: [i64, string] |y0: 'b0, y2: 'b2, y3: 'b3| f((y0, |v| v), (y2, |v| v), (y3, |v| v));
+  let h = 'b0: Q<'b2, 'b1>, 'b1: string, 'b2: Array<Q<'b4, 'b3>>, 'b3: O<'b4>, 'b4: string |y0: 'b0, y2: 'b2, y3: 'b3| f((y0, |v| v), (y2, |v| v), (y3, |v| v));
   h(`B("s"), [`A(1)], "s")
 }"#,
-    refused("'b4: unbound within [i64, string] & string");
+    refused("'b4: unbound within string");
     FuseExpect::None
 );
 run!(
@@ -10539,7 +10551,7 @@ run!(
   type O<'t> = ['t, null];
   type Q<'x, 'y> = [`A('x), `B('y)];
   let f = 'a0: Q<'a2, 'a1>, 'a1: string, 'a2: Array<Q<'a4, 'a3>>, 'a3: O<'a4>, 'a4: string |x0: ('a0, fn(v: 'a7) -> 'a7), x2: ('a2, fn(v: 'a8) -> 'a8), x3: ('a3, fn(v: 'a9) -> 'a9)| (x0.0, x2.0);
-  let h = 'b0: Q<'b2, 'b1>, 'b1: string, 'b2: Array<Q<'b4, 'b3>>, 'b3: O<'b4>, 'b4: [i64, string] |y0: 'b0, y2: 'b2, y3: 'b3| f((y0, |v| v), (y2, |v| v), (y3, |v| v));
+  let h = 'b0: Q<'b2, 'b1>, 'b1: string, 'b2: Array<Q<'b4, 'b3>>, 'b3: O<'b4>, 'b4: string |y0: 'b0, y2: 'b2, y3: 'b3| f((y0, |v| v), (y2, |v| v), (y3, |v| v));
   h(`B("s"), [`A("t")], "s")
 }"#,
     prints(r#"[["B", "s"], [["A", "t"]]]"#);
@@ -16572,11 +16584,23 @@ run!(
   type T<'x> = [`Leaf('x), `Node(Array<T<'x>>)];
   let f = 'a3: T<O<'a4>>, 'a4: [i64, null] |x3: 'a3| 7;
   let whole = 'b3: T<O<'b4>>, 'b4: [i64, null] |y3: 'b3| f(y3);
-  let wide = 'c3: T<O<'c4>>, 'c4: [i64, null, string] |y3: 'c3| f(y3);
   let v: T<null> = `Node([`Leaf(null)]);
-  (whole(`Node([`Leaf(null)])), whole(`Node([])), wide(v), wide(`Node([`Leaf(1)])))
+  (whole(`Node([`Leaf(null)])), whole(`Node([])), whole(v), whole(`Node([`Leaf(1)])))
 }"#,
     prints("[i64:7, i64:7, i64:7, i64:7]")
+);
+
+run!(
+    partial_wrapper_bound_wider_than_the_callees_is_refused,
+    r#"{
+  type O<'t> = ['t, null];
+  type T<'x> = [`Leaf('x), `Node(Array<T<'x>>)];
+  let f = 'a3: T<O<'a4>>, 'a4: [i64, null] |x3: 'a3| 7;
+  let wide = 'c3: T<O<'c4>>, 'c4: [i64, null, string] |y3: 'c3| f(y3);
+  wide(`Node([`Leaf(1)]))
+}"#,
+    refused("the body needs 'c4 within [i64, null], which the signature does not declare: write 'c4: [i64, null, string] + [i64, null]");
+    FuseExpect::None
 );
 
 run!(
@@ -16584,11 +16608,34 @@ run!(
     r#"{
   type O<'t> = ['t, null];
   let f = 'a3: Array<O<'a4>>, 'a4: [i64, null] |x3: 'a3| 7;
-  let h = 'b3: Array<O<'b4>> |y3: 'b3| f(y3);
-  let w = 'c3: Array<O<'c4>>, 'c4: [i64, null, string] |y3: 'c3| f(y3);
-  (h([null]), h([]), h([1]), w([null]), w([]), w([1]))
+  let h = 'b3: Array<O<'b4>>, 'b4: [i64, null] |y3: 'b3| f(y3);
+  (h([null]), h([]), h([1]))
 }"#,
-    prints("[i64:7, i64:7, i64:7, i64:7, i64:7, i64:7]")
+    prints("[i64:7, i64:7, i64:7]")
+);
+
+run!(
+    partial_wrapper_bound_over_a_union_of_its_variable_needs_the_callees_bound_declared,
+    r#"{
+  type O<'t> = ['t, null];
+  let f = 'a3: Array<O<'a4>>, 'a4: [i64, null] |x3: 'a3| 7;
+  let h = 'b3: Array<O<'b4>> |y3: 'b3| f(y3);
+  h([1])
+}"#,
+    refused("the body needs 'b4 within [i64, null], which the signature does not declare: write 'b4: [i64, null]");
+    FuseExpect::None
+);
+
+run!(
+    partial_wrapper_bound_over_a_union_of_its_variable_declared_wider_is_refused,
+    r#"{
+  type O<'t> = ['t, null];
+  let f = 'a3: Array<O<'a4>>, 'a4: [i64, null] |x3: 'a3| 7;
+  let w = 'c3: Array<O<'c4>>, 'c4: [i64, null, string] |y3: 'c3| f(y3);
+  w([1])
+}"#,
+    refused("the body needs 'c4 within [i64, null], which the signature does not declare: write 'c4: [i64, null, string] + [i64, null]");
+    FuseExpect::None
 );
 
 run!(
@@ -16597,7 +16644,7 @@ run!(
   type O<'t> = ['t, null];
   type T<'x> = [`Leaf('x), `Node(Array<T<'x>>)];
   let f = 'a3: T<O<'a4>>, 'a4: [i64, null] |x3: 'a3| 7;
-  let h = 'b3: T<O<'b4>> |y3: 'b3| f(y3);
+  let h = 'b3: T<O<'b4>>, 'b4: [i64, null] |y3: 'b3| f(y3);
   (h(`Node([`Leaf(null)])), h(`Node([])))
 }"#,
     prints("[i64:7, i64:7]")
@@ -16608,7 +16655,7 @@ run!(
     r#"{
   type O<'t> = ['t, null];
   let f = 'a3: Array<O<'a4>>, 'a4: [i64, null] |x3: 'a3| 7;
-  let h = 'b3: Array<O<'b4>>, 'b4: [i64, null, string] |y3: 'b3| f(y3);
+  let h = 'b3: Array<O<'b4>>, 'b4: [i64, null] |y3: 'b3| f(y3);
   h(["s"])
 }"#,
     refused("does not contain Array<string>");

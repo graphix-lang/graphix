@@ -6212,6 +6212,8 @@ mod tests {
             // the hop: the widened `a` reaches `+` through `w`'s let
             ("{ let a = 1; let w = a; let z = w + 2; z }", "widen-hop#"),
             ("{ let f = 'a: Number |x: 'a| -> 'a x + x; f(1) }", "rigid-var#"),
+            // a body asks no more of a declared variable than its bound says
+            ("{ let f = 'a: Any |x: 'a| -> i64 1; f(1) }", "rigid-var#"),
             ("{ let f = 'a: Number |x: 'a| -> 'a x + x; f(1) }", "rigid-pattern#"),
             ("{ let g = 'a: Number |x: 'a, y: 'a| -> 'a x + y; g(1, 2) }", "shared-var#"),
             (
@@ -6307,6 +6309,18 @@ mod tests {
             rep.rejects.iter().filter(|p| p.id.starts_with("variable-union#")).collect();
         assert!(
             unions.len() == 3 && unions.iter().all(|p| p.verdict.is_none()),
+            "{prog}: {:?}",
+            rep.rejects
+        );
+        // family 2 asks more of an `Any`-bounded variable than its bound says,
+        // in the third of its sites: refused, naming the bound to write
+        let prog = "{ let f = 'a: Any |x: 'a| -> i64 1; let g = 'a: Any |x: 'a| -> i64 2; \
+                    let h = 'a: Any |x: 'a| -> i64 3; (f(1), g(1), h(1)) }";
+        let rep = typemorph_subject(prog, per, TM_CAP).await.unwrap();
+        let rigid: Vec<_> =
+            rep.rejects.iter().filter(|p| p.id.starts_with("rigid-var#")).collect();
+        assert!(
+            rigid.len() == 3 && rigid.iter().all(|p| p.verdict.is_none()),
             "{prog}: {:?}",
             rep.rejects
         );

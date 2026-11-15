@@ -119,6 +119,16 @@ error: ... 'a is declared but the signature does not hold it: write it on a para
 A written function type follows the same rule: `fn<'a: Number>(x: i64)
 -> i64` is refused too.
 
+A body may not ask more of a declared variable than its bound says: a
+call, an operator or a builtin that needs `Number`, `Ordered` or
+`Discernible` of a variable bounded by less is refused, and the message
+names the bound to write. `'c: Any |y: 'c| -> 'c f(y)` over an `f` that
+needs `Number` is refused until the signature says `'c: Number`, and
+`'a: Number |x: 'a, y: 'a| x < y` until it says `'a: Number + Ordered`.
+Nothing is added to the signature quietly. Arithmetic over a `Number`
+variable needs no `Singleton` written, and a variable only written bare
+(`|y: 'c| ..`) is inferred, taking the bound its body needs.
+
 In the body a declared variable is whatever type a call picks, so a
 `select` may not look inside a value of it on its own: a pattern that
 tests or binds inside one needs a written type test (see

@@ -18,7 +18,7 @@ use crate::{
         ImageBuf,
         nodes::{NodeTag, decode_node, put_tag},
     },
-    typ::{Bound, NakedPrefix, TVar, Type, tvar::require_bounds},
+    typ::{Bound, NakedPrefix, TVar, Type, tvar::require_body_bounds},
     wrap,
 };
 use anyhow::Result;
@@ -180,7 +180,10 @@ impl<R: Rt> Map<R> {
             vts.push(v.typ());
         }
         let ktype = wrap!(self, Type::union(&ctx.env, &kts))?;
-        require_bounds(&[Type::Bound(Bound::Ordered)], &ktype);
+        wrap!(
+            self,
+            require_body_bounds(&ctx.env, &[Type::Bound(Bound::Ordered)], &ktype)
+        )?;
         let vtype = wrap!(self, super::array::element_union(&ctx.env, &vts))?;
         let bound = match &self.typ {
             Type::Map(m) => {

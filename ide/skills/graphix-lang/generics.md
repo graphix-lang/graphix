@@ -699,6 +699,28 @@ ok let f = |x1: Array<'a3>, x2: Array<'a3>| 7; let u: Array<i64> = [1]; let v: A
 no "'m is held only by the bounds of the parameters" let f = 'm: Array<'c>, 'a1: 'm, 'a2: Array<'m> |x1: 'a1, x2: 'a2| 7; let u: Array<i64> = [1]; let v: Array<Array<[i64, null]>> = [[1]]; f(u, v)
 ```
 
+A body asks no more of a declared variable than its bound says. A call, an
+operator or a builtin that needs `Number`, `Ordered`, `Discernible`,
+`Concrete`, `NoError` of a variable the signature bounds by less is refused,
+naming the bound to write, `'c: Number`, never quietly added to the
+signature. A variable bounded by something that implies what the body needs
+(`'c: Int` for `Number`) is accepted, and arithmetic over a `Number` variable
+needs no `Singleton` written. A variable written bare (`|y: 'c|`) is
+inferred and takes the bound its body needs.
+
+```graphix,cases
+no "write 'c: Number" let f = 'a: Number |x: 'a| -> 'a x; 'c: Any |y: 'c| -> 'c f(y)
+no "write 'c: [i64, string] + Number" let f = 'a: Number |x: 'a| -> 'a x; 'c: [i64, string] |y: 'c| -> 'c f(y)
+ok let f = 'a: Number |x: 'a| -> 'a x; 'c: Number |y: 'c| -> 'c f(y)
+ok let f = 'a: Number |x: 'a| -> 'a x; 'c: Int |y: 'c| -> 'c f(y)
+ok let f = 'a: Number |x: 'a| -> 'a x; |y: 'c| -> 'c f(y)
+no "write 'a: Number" 'a: Any |x: 'a, y: 'a| -> 'a x + y
+ok 'a: Number |x: 'a, y: 'a| -> 'a x + y
+no "write 'a: Number + Ordered" 'a: Number |x: 'a, y: 'a| x < y
+ok 'a: Number + Ordered |x: 'a, y: 'a| x < y
+no "write 'a: Discernible" 'a: Any |x: 'a, y: 'a| x == y
+```
+
 A wrapper's declared variable takes no bound from a callee's. Inside the
 value a callee's bound takes, the bound's own variable takes it, as where
 the bound's type is written in the parameter; where the bound has no

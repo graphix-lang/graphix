@@ -1269,7 +1269,7 @@ run!(
     refused("the implementation requires 'a: Ordered"),
     "/test.gx" => "mod m; let result = m::lt(1, 2)",
     "/test/m.gxi" => "val lt: fn<'a: Any>(x: 'a, y: 'a) -> bool;",
-    "/test/m.gx" => "let lt = 'a: Any |x: 'a, y: 'a| -> bool x < y"
+    "/test/m.gx" => "let lt = 'a: Ordered |x: 'a, y: 'a| -> bool x < y"
 ; FuseExpect::None);
 
 run!(
@@ -1277,7 +1277,7 @@ run!(
     refused("the implementation requires 'a: Discernible"),
     "/test.gx" => "mod m; let result = m::eq([1], [2])",
     "/test/m.gxi" => "val eq: fn<'a: Array<Any>>(x: 'a, y: 'a) -> bool;",
-    "/test/m.gx" => "let eq = 'a: Array<Any> |x: 'a, y: 'a| -> bool x == y"
+    "/test/m.gx" => "let eq = 'a: Array<Any> + Discernible |x: 'a, y: 'a| -> bool x == y"
 ; FuseExpect::None);
 
 run!(
@@ -1285,7 +1285,7 @@ run!(
     refused("the implementation requires 'b: Concrete"),
     "/test.gx" => "mod m; let result = m::parse(\"1\", 0)",
     "/test/m.gxi" => "val parse: fn<'b: Any>(s: string, d: 'b) -> Result<'b, `ParseError(string)>;",
-    "/test/m.gx" => "let parse = 'b: Any |s: string, d: 'b| -> Result<'b, `ParseError(string)> str::parse(s)"
+    "/test/m.gx" => "let parse = 'b: Concrete |s: string, d: 'b| -> Result<'b, `ParseError(string)> str::parse(s)"
 ; FuseExpect::None);
 
 // A union of members holding variables behind two typedefs pairs with the

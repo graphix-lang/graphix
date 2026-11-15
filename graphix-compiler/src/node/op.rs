@@ -18,7 +18,7 @@ use crate::{
     stack::ensure_sufficient,
     typ::{
         Bound, ContainsFlags, Type,
-        tvar::{require_bounds, settled_cause_note},
+        tvar::{require_body_bounds, settled_cause_note},
     },
     wrap,
 };
@@ -334,7 +334,10 @@ macro_rules! compare_op {
                             true => Type::Bound(Bound::Ordered),
                             false => Type::Bound(Bound::Discernible),
                         };
-                        require_bounds(std::slice::from_ref(&bound), &t);
+                        wrap!(
+                            self,
+                            require_body_bounds(&ctx.env, std::slice::from_ref(&bound), &t)
+                        )?;
                         let judgment = crate::PendingSettle::Discernible {
                             typ: t.clone(),
                             what: crate::Discerned::Compared { ordered: $ordered },

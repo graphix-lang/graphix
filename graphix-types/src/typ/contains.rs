@@ -2166,6 +2166,46 @@ fn conjuncts_admit(
     Ok(true)
 }
 
+/// Whether the bound a body's declared variable `declared` was written with
+/// implies each conjunct of the open cell `open` it is merged with: a body
+/// needs no more of the variable than its signature says.
+fn bound_covers(env: &Env, declared: &TVar, open: &TVar) -> Result<bool> {
+    for c in open.cell_constraints().iter() {
+        if !c.is_quiet_bound()
+            && !holds_cell(env, c, open.cell_addr())
+            && !declared.conjunct_implies(env, c)?
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Drop from the declared variable `declared`, an open cell has merged into,
+/// the conjuncts its own bound `own` implies that name no cell (one that does
+/// links the cells it names to the variable's): it holds the signature's bound
+/// once.
+fn retire_implied(env: &Env, declared: &TVar, own: &[Type]) -> Result<()> {
+    let mut keep: SmallVec<[Type; 1]> = SmallVec::new();
+    for c in declared.cell_constraints() {
+        let written = own.iter().any(|o| strictly_identical(o, &c));
+        if written || c.is_quiet_bound() || c.has_free() || !implied_by(env, own, &c)? {
+            keep.push(c)
+        }
+    }
+    declared.set_cell_constraints(keep);
+    Ok(())
+}
+
+fn implied_by(env: &Env, own: &[Type], c: &Type) -> Result<bool> {
+    for o in own {
+        if o.implies(env, c)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// Whether every conjunct of the open cell's constraints contains `t`
 /// ([`conjuncts_admit`]).
 pub(super) fn cell_admits(tv: &TVar, env: &Env, t: &Type) -> Result<bool> {
@@ -2833,6 +2873,8 @@ pub struct TypeMismatch {
     settled: Option<CompactString>,
     /// [`unmet_bound_note`] of the two sides.
     unmet: Option<CompactString>,
+    /// [`undeclared_bound_note`] of the two sides.
+    undeclared: Option<CompactString>,
     held: HeldQuantifiers,
 }
 
@@ -2880,6 +2922,9 @@ impl std::fmt::Display for TypeMismatch {
             if let Some(note) = &self.unmet {
                 write!(f, ": {note}")?;
             }
+            if let Some(note) = &self.undeclared {
+                write!(f, ": {note}")?;
+            }
             Ok(())
         })
     }
@@ -2922,6 +2967,88 @@ fn unmet_bound_note(env: &Env, types: &[&Type]) -> Option<CompactString> {
              the bound names is one type"
         ))
     })
+}
+
+/// The note a refusal ends with where a variable of a definition being
+/// checked meets an open cell whose bound the variable's own does not imply:
+/// the body needs more of it than its signature declares.
+fn undeclared_bound_note(env: &Env, s: &Type, t: &Type) -> Option<CompactString> {
+    type Seen = AHashSet<(usize, usize)>;
+    fn unmet(
+        env: &Env,
+        declared: &TVar,
+        open: &TVar,
+        seen: &mut Seen,
+    ) -> Option<CompactString> {
+        if !declared.is_rigid() || open.is_rigid() {
+            return None;
+        }
+        open.cell_constraints()
+            .iter()
+            .find_map(|c| {
+                declared.cell_constraints().iter().find_map(|own| {
+                    let mut found = None;
+                    go(env, own, c, seen, &mut found);
+                    found
+                })
+            })
+            .or_else(|| {
+                let cons = open.cell_constraints();
+                let needs: SmallVec<[&Type; 2]> = cons
+                    .iter()
+                    .filter(|c| {
+                        !(holds_cell(env, c, open.cell_addr())
+                            || declared.conjunct_implies(env, c).unwrap_or(true))
+                    })
+                    .collect();
+                (!needs.is_empty()).then(|| declared.undeclared_bound(&needs))
+            })
+    }
+    fn go(
+        env: &Env,
+        s: &Type,
+        t: &Type,
+        seen: &mut Seen,
+        found: &mut Option<CompactString>,
+    ) -> bool {
+        ensure_sufficient(|| {
+            if let (Some(a), Some(b)) = (node_addr(s), node_addr(t))
+                && !seen.insert((a, b))
+            {
+                return false;
+            }
+            match (s, t) {
+                (Type::TVar(a), Type::TVar(b))
+                    if a.binding().is_none() && b.binding().is_none() =>
+                {
+                    *found = unmet(env, a, b, seen).or_else(|| unmet(env, b, a, seen));
+                    found.is_some()
+                }
+                (Type::TVar(tv), t) if tv.is_bound() => match tv.binding() {
+                    Some(b) => go(env, &b, t, seen, found),
+                    None => false,
+                },
+                (s, Type::TVar(tv)) if tv.is_bound() => match tv.binding() {
+                    Some(b) => go(env, s, &b, seen, found),
+                    None => false,
+                },
+                (Type::Ref(r0), Type::Ref(r1))
+                    if r0.name == r1.name && r0.params.len() == r1.params.len() =>
+                {
+                    r0.params
+                        .iter()
+                        .zip(r1.params.iter())
+                        .any(|(a, b)| go(env, a, b, seen, found))
+                }
+                (s, t) => any_part_pair(s, t, &mut |a, b| go(env, a, b, seen, found)),
+            }
+        })
+    }
+    let mut found = None;
+    if TVar::checking_a_body() {
+        go(env, s, t, &mut LPooled::take(), &mut found);
+    }
+    found
 }
 
 /// A type that two or more undecided members of a union could take. Which
@@ -3636,6 +3763,7 @@ impl Type {
             infinite: false,
             settled: settled_cause_note(env, self, t, false),
             unmet: unmet_bound_note(env, &[self, t]),
+            undeclared: undeclared_bound_note(env, self, t),
             held: HeldQuantifiers::of([self, t]),
         })
     }
@@ -5039,22 +5167,34 @@ impl Type {
                 {
                     return refuse(cycle, &[(t0, tt1, down), (t1, tt0, up)], hist);
                 }
-                if flags.contains(ContainsFlags::Sealed) {
-                    let held = match (t0.is_rigid(), t1.is_rigid()) {
-                        (false, true) => conjuncts_admit(t0, flags, env, hist, tt1)?,
-                        (true, false) => conjuncts_admit(t1, flags, env, hist, tt0)?,
-                        _ => true,
-                    };
-                    if !held {
-                        return Ok(false);
+                let sealed = flags.contains(ContainsFlags::Sealed);
+                let mut body_bound: Option<(&TVar, &TVar)> = None;
+                let held = match (t0.is_rigid(), t1.is_rigid()) {
+                    (false, true) if sealed => {
+                        conjuncts_admit(t0, flags, env, hist, tt1)?
                     }
+                    (true, false) if sealed => {
+                        conjuncts_admit(t1, flags, env, hist, tt0)?
+                    }
+                    (false, true) if t1.declared_here() => {
+                        body_bound = Some((t1, t0));
+                        bound_covers(env, t1, t0)?
+                    }
+                    (true, false) if t0.declared_here() => {
+                        body_bound = Some((t0, t1));
+                        bound_covers(env, t0, t1)?
+                    }
+                    _ => true,
+                };
+                if !held {
+                    return Ok(false);
                 }
                 // an open cell below is bounded by what bounds `t0`, as a
                 // merge would have it
                 if lower {
                     if commit {
                         for c in t0.cell_constraints() {
-                            t1.add_cell_constraint(c)
+                            t1.add_body_bound(env, c)?
                         }
                         t0.add_lower(tt1.clone());
                     }
@@ -5069,7 +5209,11 @@ impl Type {
                     OpenPair::Distinct => Ok(false),
                     act => {
                         if commit {
+                            let own = body_bound.map(|(d, _)| d.cell_constraints());
                             act.apply(t0, t1);
+                            if let (Some((declared, _)), Some(own)) = (body_bound, own) {
+                                retire_implied(env, declared, &own)?;
+                            }
                         }
                         Ok(true)
                     }

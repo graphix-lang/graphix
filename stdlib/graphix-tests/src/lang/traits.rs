@@ -1448,7 +1448,7 @@ run!(
         trait Show { val show: fn(self) -> string };
         impl Show for i64 { let show = |x| "i" };
         impl<'b: Show> Show for Array<'b> { let show = |xs| "arr" };
-        let h = 'a: Number |x: Array<'a>| -> string Show::show(x);
+        let h = 'a: Number + Show |x: Array<'a>| -> string Show::show(x);
         let result = h([1.5])
     "##;
     FuseExpect::None
@@ -3133,7 +3133,7 @@ run!(trait_over_recursive_typedef_missing_impl, r#"{
 run!(trait_any_bound_does_not_imply_ordered, r#"{
     trait Cmp { val lt: fn<'a: Any>(self, x: 'a, y: 'a) -> bool };
     type W = Abstract<i64>;
-    impl Cmp for W { let lt = 'a: Any |s: W, x: 'a, y: 'a| -> bool x < y };
+    impl Cmp for W { let lt = 'a: Ordered |s: W, x: 'a, y: 'a| -> bool x < y };
     let a = 1;
     Cmp::lt(W(1), &a, &a)
 }"#, refused("the implementation requires 'a: Ordered, which the signature does not declare"); FuseExpect::None);

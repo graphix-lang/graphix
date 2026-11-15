@@ -2370,6 +2370,30 @@ pub fn require_bounds(cons: &[Type], t: &Type) {
     handed_bounds(cons, t, &mut |tv, b| tv.add_cell_constraint(b))
 }
 
+impl Type {
+    /// The conjunct a body adds to a variable its definition declares
+    /// without the signature saying it: the operands of its operators are
+    /// one type.
+    pub(super) fn is_quiet_bound(&self) -> bool {
+        matches!(self, Type::Bound(Bound::Singleton))
+    }
+}
+
+/// [`require_bounds`] for a body: the variable of a definition being
+/// checked that `t` reaches takes none its signature does not declare, and
+/// the first such is refused with the bound to write.
+pub fn require_body_bounds(env: &Env, cons: &[Type], t: &Type) -> Result<()> {
+    let mut refused: Option<Error> = None;
+    handed_bounds(cons, t, &mut |tv, b| {
+        if refused.is_none()
+            && let Err(e) = tv.add_body_bound(env, b)
+        {
+            refused = Some(e)
+        }
+    });
+    refused.map_or(Ok(()), Err)
+}
+
 /// Each conjunct the bounds `cons` hand an open cell of `t`, a type
 /// bound where they hold: what [`require_bounds`] adds, and what an
 /// interface's typedef parameter declares of the variables its argument
@@ -2666,6 +2690,19 @@ impl TVar {
         DECLARED.with_borrow(|d| d.name_of(self))
     }
 
+    /// Whether the open cell this var stands for is a quantifier a
+    /// definition whose body this thread checks declares: its bound is the
+    /// signature's, which the body may not add to.
+    pub(super) fn declared_here(&self) -> bool {
+        DECLARED.with_borrow(|d| d.each_of(self, |frame| &frame.quantified, |_| true))
+    }
+
+    /// Whether this thread is checking the body of a definition that
+    /// declares variables.
+    pub(super) fn checking_a_body() -> bool {
+        DECLARED.with_borrow(|d| d.0.is_some())
+    }
+
     /// The open cell this var stands for: its own, or the end of a chain
     /// of bindings to vars (a merged cell's forward link); `None` when
     /// the chain ends bound.
@@ -2784,6 +2821,33 @@ impl TVar {
         }
     }
 
+    /// The refusal of the bounds `needs` a body needs of the variable of its
+    /// definition this cell is, which the variable's own bound does not
+    /// imply, with the bound to write in the signature.
+    pub(super) fn undeclared_bound(&self, needs: &[&Type]) -> CompactString {
+        crate::format_with_flags(PrintFlag::DerefTVars | PrintFlag::ReplacePrims, || {
+            let name = self.declared_name().unwrap_or_else(|| self.name.clone());
+            let mut bound = CompactString::default();
+            let mut within = CompactString::default();
+            for own in self.cell_constraints().iter() {
+                if !matches!(own, Type::Any) {
+                    bound.push_str(&format_compact!("{own} + "));
+                }
+            }
+            for (i, c) in needs.iter().enumerate() {
+                let sep = if i == 0 { "" } else { " + " };
+                within.push_str(&format_compact!("{sep}{c}"));
+            }
+            bound.push_str(&within);
+            format_compact!(
+                "the body needs '{} within {within}, which the signature does not \
+                 declare: write '{}: {bound}",
+                ShortName(&name),
+                ShortName(&name)
+            )
+        })
+    }
+
     /// Narrow the cell by `c` unless a conjunct already is at least
     /// that narrow (a probe in `env`: `c` contains it), or `c` holds the
     /// cell itself ([`holds_cell`]): no cell stands in its own bound.
@@ -2797,8 +2861,29 @@ impl TVar {
                 return Ok(());
             }
         }
-        self.add_cell_constraint(c);
-        Ok(())
+        self.add_body_bound(env, c)
+    }
+
+    /// Add the conjunct `c` a body needs of the cell: the variable of a
+    /// definition being checked takes none its signature does not declare,
+    /// but `Singleton`, which its operators say of one type each call picks.
+    pub fn add_body_bound(&self, env: &Env, c: Type) -> Result<()> {
+        if !self.declared_here() {
+            self.add_cell_constraint(c);
+            return Ok(());
+        }
+        if self.conjunct_implies(env, &c)? {
+            return Ok(());
+        }
+        match c.is_quiet_bound() {
+            true => Ok(self.add_cell_constraint(c)),
+            false => bail!("{}", self.undeclared_bound(&[&c])),
+        }
+    }
+
+    /// Replace the cell's constraint conjunction.
+    pub(super) fn set_cell_constraints(&self, constraints: SmallVec<[Type; 1]>) {
+        self.read().cell.write().constraints = constraints;
     }
 
     /// The cell's constraint conjunction (cloned out).
@@ -3041,7 +3126,7 @@ impl TVar {
                 return;
             }
         }
-        // CR claude for claude: [readability/low] A declared variable a call in its
+        // XCR claude for claude: [readability/low] A declared variable a call in its
         // body meets prints its bound twice: `let f = 'a: Number |x: 'a| -> 'a x; let
         // g: string = 'c: Number |y: 'c| -> 'c f(y)` says "fn<'c: Number>(y: 'c:
         // unbound within Number & Number) -> 'c: unbound within Number & Number", the
@@ -3085,6 +3170,23 @@ impl TVar {
         // doubled print goes with it. Built with a census of both repos; one that
         // needs a new annotation in the stdlib, the book or netidx-admin goes back to
         // Eric first.
+        // 2026-11-15 claude: Built Eric's D43 (4b): a body adds no bound to a
+        // quantifier its definition declares (a header's, or one only a bound names);
+        // a bare written variable stays inferred. Refused at a call (contains.rs
+        // bound_covers over TVar::declared_here, the note undeclared_bound_note naming
+        // the bound to write), an operator, a comparison, a map key and a typedef
+        // parameter bound (TVar::add_body_bound); Singleton is the one bound a body
+        // adds quietly (operands of an operator are one type). The doubled print of a
+        // closed bound goes (retire_implied): dupbound.gx and dupbound2.gx print 'c:
+        // Number and 'q: T once. Still open: dupbound3.gx (a bound holding a variable
+        // prints the callee's copy beside the declared, 'b1 vs 'b), kept because a
+        // conjunct that names cells links them. Census 2976 files both repos: 0
+        // verdict changes, 9 message changes (design/review-*/repro only); no stdlib,
+        // book or netidx annotation. Pins fail without the fix:
+        // lang::quantified::a_body_needing_more_of_a_variable_than_its_bound_* and
+        // a_trait_bound_a_call_meets_prints_once (the twins that declare the bound
+        // pass); typemorph family 2 mode x + x. Probes
+        // ~/ptmp/cr29/scratch/r27/27c/dbd. Needs a soak.
 
         // Dedup computed lock-free: the identity walk can re-enter these cells.
         let (mut to_add, facts) = if same {
@@ -3913,6 +4015,9 @@ pub(crate) struct Declared(Option<Arc<DeclaredFrame>>);
 #[derive(Debug)]
 struct DeclaredFrame {
     vars: SmallVec<[TVar; 2]>,
+    /// The variables among `vars` the definition's signature declares with a
+    /// bound of their own, as against those it only names.
+    quantified: SmallVec<[TVar; 2]>,
     outer: Declared,
 }
 
@@ -3928,25 +4033,44 @@ impl Declared {
         f()
     }
 
-    /// The name a variable of these declares the open cell `tv` stands for
-    /// by, the least where two do.
-    fn name_of(&self, tv: &TVar) -> Option<ArcStr> {
-        let mut frame = self.0.as_deref()?;
-        let end = tv.open_cell()?;
-        let mut found: Option<&ArcStr> = None;
+    /// Each variable of these whose cell is the open cell `tv` stands for,
+    /// until `f` answers true; whether it did.
+    fn each_of(
+        &self,
+        tv: &TVar,
+        pick: fn(&DeclaredFrame) -> &[TVar],
+        mut f: impl FnMut(&TVar) -> bool,
+    ) -> bool {
+        let Some(mut frame) = self.0.as_deref() else { return false };
+        let Some(end) = tv.open_cell() else { return false };
         loop {
-            for v in frame.vars.iter() {
-                if v.open_cell().is_some_and(|c| c.same_cell(&end))
-                    && found.is_none_or(|f| v.name < *f)
-                {
-                    found = Some(&v.name)
+            for v in pick(frame).iter() {
+                if v.open_cell().is_some_and(|c| c.same_cell(&end)) && f(v) {
+                    return true;
                 }
             }
             match frame.outer.0.as_deref() {
                 Some(outer) => frame = outer,
-                None => return found.cloned(),
+                None => return false,
             }
         }
+    }
+
+    /// The name a variable of these declares the open cell `tv` stands for
+    /// by, the least where two do.
+    fn name_of(&self, tv: &TVar) -> Option<ArcStr> {
+        let mut found: Option<ArcStr> = None;
+        self.each_of(
+            tv,
+            |frame| &frame.vars,
+            |v| {
+                if found.as_ref().is_none_or(|f| v.name < *f) {
+                    found = Some(v.name.clone())
+                }
+                false
+            },
+        );
+        found
     }
 }
 
@@ -3958,14 +4082,20 @@ pub struct Declaring(Declared);
 
 impl Declaring {
     #[doc(hidden)]
-    pub fn enter(vars: impl IntoIterator<Item = TVar>) -> Self {
+    pub fn enter(
+        vars: impl IntoIterator<Item = TVar>,
+        quantified: impl IntoIterator<Item = TVar>,
+    ) -> Self {
         let vars: SmallVec<[TVar; 2]> = vars.into_iter().collect();
+        let quantified = quantified.into_iter().collect();
         let outer = Declared::current();
         match vars.is_empty() {
             true => Self(outer),
-            false => {
-                Self::replace(Declared(Some(Arc::new(DeclaredFrame { vars, outer }))))
-            }
+            false => Self::replace(Declared(Some(Arc::new(DeclaredFrame {
+                vars,
+                quantified,
+                outer,
+            })))),
         }
     }
 
@@ -4020,6 +4150,7 @@ impl HeldQuantifiers {
             true => Declared::default(),
             false => Declared(Some(Arc::new(DeclaredFrame {
                 vars,
+                quantified: SmallVec::new(),
                 outer: Declared::default(),
             }))),
         };

@@ -1539,7 +1539,7 @@ impl TypeRef {
             match arg.open_cell(env) {
                 Some(tv) => {
                     if commit {
-                        tv.add_cell_constraint(bound)
+                        tv.add_body_bound(env, bound)?
                     }
                 }
                 None if commit => {
