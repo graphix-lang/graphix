@@ -958,6 +958,12 @@ same items the load splices into the body.
   syntax and need no name.
 - The sig still grants the traits it declares impls of (`Env::grant_trait`),
   wherever they are declared.
+- A block's types are named through the global `Env::block_types`
+  wherever a view lists no names for the block, so the view lists, for
+  each block around the module, the names the imports bring of it, if
+  none: `super::Foo` over a block's `Foo` the sig does not import is
+  undefined (pins `a_body_names_no_type_of_the_block_around_it_its_sig_does_not_import`,
+  `a_sig_import_shows_the_type_of_the_block_around_it`).
 
 An import must name something where the module is declared
 (`Env::import_target_declared`): the view is made once, there, so a

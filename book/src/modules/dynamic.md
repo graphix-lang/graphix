@@ -122,7 +122,9 @@ status
 
 - `use core;` or any other package brings the whole package: the module can
   call `dbg`, `filter` and the rest of `core` by their bare names, as any
-  program does.
+  program does. The type names `core` declares, such as `Result`, come with
+  it too; without it only the built-in types (`i64`, `Array`, `Map` and the
+  like) are there.
 - `use array::{len, map};` brings those two functions and nothing else of
   `array`: `array::fold` is not defined inside the module.
 - `use super::limit;` brings one binding of the loading program. It must be

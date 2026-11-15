@@ -561,6 +561,31 @@ run!(
     FuseExpect::None
 );
 
+/// A block declaring a type, and in it a module `m` whose sig imports
+/// `imports`, loaded from `body`, which names the type: `m`'s status.
+fn names_the_blocks_type(imports: &str, body: &str) -> String {
+    format!(
+        r#"{{
+    type Foo = {{a: i64}};
+    mod m dynamic {{ sig {{ {imports} val v: i64 }}; source "{body}" }}
+}}"#
+    )
+}
+
+run!(
+    a_body_names_no_type_of_the_block_around_it_its_sig_does_not_import,
+    names_the_blocks_type("", "let w: super::Foo = {a: 1}; let v = w.a"),
+    load_refused("undefined type super::Foo");
+    FuseExpect::None
+);
+
+run!(
+    a_sig_import_shows_the_type_of_the_block_around_it,
+    names_the_blocks_type("use super::Foo;", "let w: super::Foo = {a: 1}; let v = w.a"),
+    is(Value::Null);
+    FuseExpect::None
+);
+
 /// A function `mk` whose body loads a module whose sig imports `Foo`, a
 /// type the body declares below the module, and calls the module's `f`
 /// on `{a: v}`: `10 * mk(body_a, 4) + mk(body_b, 6)`.
