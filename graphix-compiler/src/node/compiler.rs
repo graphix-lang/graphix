@@ -14,8 +14,8 @@ use super::{
     seq_machine::{SeqCapture, SeqMachine},
 };
 use crate::{
-    CFlag, CompileCtx, DefAssertion, DefAssertionKind, Node, NodeView, PrintFlag, Rt,
-    Scope, bailat,
+    BindId, CFlag, CompileCtx, DefAssertion, DefAssertionKind, Node, NodeView, PrintFlag,
+    Rt, Scope, bailat,
     expr::{
         ApplyExpr, Arg, ArgKind, At, Attr, BinOp, Decorations, Expr, ExprId, ExprKind,
         LambdaBody, LambdaExpr, ModPath, ModuleKind, Name, SelectExpr, StructExpr,
@@ -658,6 +658,22 @@ pub(super) fn lowering<R: Rt>(
     Ok(lower(ctx)?.map(|e| share.lock().lowerings.entry(key).or_insert(e).clone()))
 }
 
+/// A path to the binding `id` that no parameter of a lambda written at
+/// `scope` can hide, from the paths that reach it as written there: the
+/// trait's own, or the name from the module's root.
+fn unhidden_path<R: Rt>(
+    ctx: &CompileCtx<R>,
+    scope: &ModPath,
+    name: &ModPath,
+    id: BindId,
+    trait_name: &str,
+    method: &str,
+) -> Option<ModPath> {
+    [ModPath::from([trait_name, method]), ModPath::from(["self", &*name.to_string()])]
+        .into_iter()
+        .find(|p| matches!(ctx.env.lookup_bind(scope, p), Ok(Some((_, b))) if b.id == id))
+}
+
 /// A trait method named as a value (`let d = Desc::desc`) is its
 /// eta-expansion at the method's signature, `|x| Desc::desc(x)`: a
 /// dispatcher binding holds no value, the call resolves by its
@@ -667,6 +683,7 @@ pub(super) fn lowering<R: Rt>(
 pub(super) fn eta_dispatcher<R: Rt>(
     ctx: &CompileCtx<R>,
     spec: &Expr,
+    scope: &ModPath,
     name: &ModPath,
     bind: &crate::env::Bind,
 ) -> Result<Option<Expr>> {
@@ -739,7 +756,7 @@ pub(super) fn eta_dispatcher<R: Rt>(
     let at = |kind| Expr::synth(spec, kind);
     let mut args: SmallVec<[Arg; 4]> = SmallVec::new();
     let mut call: SmallVec<[(Option<ArcStr>, Expr); 4]> = SmallVec::new();
-    // CR claude for claude: [bug/low] A label named like the method as the body
+    // XCR claude for claude: [bug/low] A label named like the method as the body
     // calls it hides the method: `trait T { val m: fn(#m: i64, self) -> i64 }; impl
     // T for i64 { let m = |#m, s| s + m }; use T::m; let g = m; g(#m: 1, 2)` is
     // refused "expected fn not i64", the expansion's body `m(#m: m, self)` calling
@@ -768,6 +785,13 @@ pub(super) fn eta_dispatcher<R: Rt>(
     // codec both know), not a raw id in a name. Findings:
     // fuzz/pending-triage/nov14b/{katana/divergence_000000,ryouko/divergence_000000,ryouko/divergence_000004,washu-chan/divergence_000003}.gx;
     // pin graphix-fuzz/findings/eta-method-value-nov2026.
+    // 2026-11-15 claude: The expansion's body calls the method by a path no parameter can hide only where a label of its signature is named
+    // like the call's single-segment name: the trait's own path (T::m) or self::name, whichever reaches the same binding from the lambda's
+    // scope (unhidden_path); every other body is the name as written, so a value prints as the program wrote it, the same in every process,
+    // and an image holds a plain path. Where neither reaches the binding the value is refused naming the fix. Pins:
+    // lang::traits::trait_method_value_label_named_like_the_method, _renamed_method and _prints_its_trait fail (4 modes) without it;
+    // graphix-fuzz/findings/eta-method-value-nov2026/01_label_named_like_method.gx; divergence_000004 through gxf check: no DIVERGENCE
+    // (CONTAINED, the cold run's activation budget as before).
 
     // a positional parameter takes the trait's name for it unless it would
     // hide the method the body calls
@@ -788,9 +812,22 @@ pub(super) fn eta_dispatcher<R: Rt>(
         });
         call.push((label, at(ExprKind::Ref { name: ModPath::from([var]) })));
     }
+    let hidden = ft.args.iter().any(|a| a.label().is_some_and(|l| *name == [l.as_str()]));
+    let callee = match hidden {
+        false => name.clone(),
+        true => match unhidden_path(ctx, scope, name, bind.id, &def.name, &m.name) {
+            Some(path) => path,
+            None => bailat!(
+                spec,
+                "{name} is also the label #{name} of its own signature, which the \
+                 value's body would call instead (call the method in a lambda, or \
+                 `use` it at the top of its module)"
+            ),
+        },
+    };
     let body = at(ExprKind::Apply(ApplyExpr {
         args: Arc::from_iter(call),
-        function: Arc::new(at(ExprKind::Ref { name: name.clone() })),
+        function: Arc::new(at(ExprKind::Ref { name: callee })),
     }));
     Ok(Some(at(ExprKind::Lambda(Arc::new(LambdaExpr {
         vargs_comments: Default::default(),

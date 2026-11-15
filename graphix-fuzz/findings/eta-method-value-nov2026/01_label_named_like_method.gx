@@ -1,0 +1,12 @@
+// eta-label-hides-method-01. A trait method named as a value whose signature
+// has a label named like the method: the expansion's body calls the method by
+// a path no parameter hides, which prints as the program wrote it and
+// survives an image.
+// Expected: 3
+{
+    trait T { val m: fn(#m: i64, self) -> i64 };
+    impl T for i64 { let m = |#m, s| s + m };
+    use T::m;
+    let g = m;
+    g(#m: 1, 2)
+}

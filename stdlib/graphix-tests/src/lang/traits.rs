@@ -2902,6 +2902,47 @@ run!(
     prints(r#""x5""#)
 );
 
+// An eta-expansion calls the method itself, whatever a parameter is named:
+// the call's path is the trait's own where a label of the signature would
+// hide the name.
+run!(
+    trait_method_value_label_named_like_the_method,
+    r#"{
+    trait T { val m: fn(#m: i64, self) -> i64 };
+    impl T for i64 { let m = |#m, s| s + m };
+    use T::m;
+    let g = m;
+    g(#m: 1, 2)
+}"#,
+    is(Value::I64(3))
+);
+
+run!(
+    trait_method_value_label_named_like_the_renamed_method,
+    r#"{
+    trait T { val m: fn(#k: i64, self) -> i64 };
+    impl T for i64 { let m = |#k, s| s + k };
+    use T::m as k;
+    let g = k;
+    g(#k: 1, 2)
+}"#,
+    is(Value::I64(3))
+);
+
+// The path the body calls by is the program's, the same in every process.
+run!(
+    trait_method_value_label_named_like_the_method_prints_its_trait,
+    r#"{
+    trait T { val m: fn(#m: i64, self) -> i64 };
+    impl T for i64 { let m = |#m, s| s + m };
+    use T::m;
+    let g = m;
+    "[g]"
+}"#,
+    prints(r#""Abstract('#self: T |#m: i64, self: '#self| -> i64 T::m(#m, self))""#);
+    FuseExpect::None
+);
+
 // A trait method as a value prints under the trait's names: its
 // parameters, its variables, and the receiver as the trait.
 run!(
