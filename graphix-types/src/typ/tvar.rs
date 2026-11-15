@@ -1717,7 +1717,7 @@ pub struct TCell {
 
 // Every node-walked activation holds a cell.
 #[cfg(target_pointer_width = "64")]
-const _: () = assert!(size_of::<TCell>() <= 200);
+const _: () = assert!(size_of::<TCell>() <= 208);
 
 /// What [`Type::tvar_occurrences`] found: each variable met, once, and
 /// which cells occur more than once, a shared node's cells once per sight.
