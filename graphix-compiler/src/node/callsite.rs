@@ -457,7 +457,7 @@ fn judge_hidden_defaults<R: Rt>(
                         anyhow!(
                             "this default raises {raised}, which the function type it is \
                              called through does not declare: write `throws {raised}` in it",
-                            raised = printed_deref(&raised)
+                            raised = raised.resolve_tvars()
                         )
                     })
                 .at(expr)?;
@@ -646,7 +646,7 @@ pub(crate) fn check_hidden_defaults<R: Rt>(
     hidden_defaults_at(ctx, flags, scope, top_id, declared, value, 0, walk)
 }
 
-// CR claude for claude: [bug/medium] A labeled default that raises through a type variable of
+// XCR claude for claude: [bug/medium] A labeled default that raises through a type variable of
 // its factory (`#d = k?` over `k: Result<i64, 'e>`) checks, and its bind is refused at run
 // time, with no type hiding anything and whether or not the factory's return type writes
 // `throws Error<ErrChain<'e>>`: `let mk = |k: Result<i64, 'e>| |#d = k?, x: i64| d + x; {
@@ -661,6 +661,13 @@ pub(crate) fn check_hidden_defaults<R: Rt>(
 // instance's `'e` as a different, unbound one. base-r25 alike. Found reviewing
 // returned-default-raise-01. probes: ~/ptmp/cr29/scratch/r25/25d/rdr/{g3, g4, g6, g8, g9}.gx
 // (default-raise-open-var-01)
+// 2026-11-15 claude: A default's raise is collected under a RaiseProbe at
+// CallSite::check_omitted_defaults and joined by join_default_raise: a raise through a scheme's
+// unbound variable (the factory's 'e) is refused unless the called function's throws names the
+// variable ('e written in its return type), where the call's own raise carries the instance.
+// Pins lang::functions::a_default_raising_through_the_factorys_variable_{refused,that_throws}
+// fail without the fix (all 8 mode runs); generics.md cases. Also refused now: an unthrown form
+// such as mk(5)(7) over 'e (annotate throws or close 'e); census 2975 files identical.
 /// The defaults of the functions a method's value returns, judged where
 /// the method is held to its `declared` signature: against the declared
 /// return as it is written, every variable of the signature rigid, and
@@ -745,6 +752,47 @@ fn holds_defaulted<R: Rt>(
             any
         }
     })
+}
+
+/// The unbound variables of a scheme (no definition owns them) that `t`
+/// holds, by name.
+fn scheme_variables(t: &Type, names: &mut SmallVec<[ArcStr; 2]>) {
+    fn go(t: &Type, names: &mut SmallVec<[ArcStr; 2]>, seen: &mut AHashSet<usize>) {
+        ensure_sufficient(|| match t {
+            Type::TVar(tv) => {
+                if seen.insert(tv.cell_addr()) {
+                    match tv.binding() {
+                        Some(b) => go(&b, names, seen),
+                        None if tv.level().is_generic() && !names.contains(&tv.name) => {
+                            names.push(tv.name.clone())
+                        }
+                        None => (),
+                    }
+                }
+            }
+            t => t.for_each_child(&mut |c| go(c, names, seen)),
+        })
+    }
+    go(t, names, &mut LPooled::take())
+}
+
+/// Whether `t` holds a variable called `name`, bound or not.
+fn names_variable(t: &Type, name: &ArcStr) -> bool {
+    fn go(t: &Type, name: &ArcStr, seen: &mut AHashSet<usize>) -> bool {
+        ensure_sufficient(|| match t {
+            Type::TVar(tv) => {
+                tv.name == *name
+                    || (seen.insert(tv.cell_addr())
+                        && tv.binding().is_some_and(|b| go(&b, name, seen)))
+            }
+            t => {
+                let mut found = false;
+                t.for_each_child(&mut |c| found = found || go(c, name, seen));
+                found
+            }
+        })
+    }
+    go(t, name, &mut LPooled::take())
 }
 
 /// Typedefs expand this deep at most on one path of the walk, so a
@@ -3103,20 +3151,27 @@ impl<R: Rt> CallSite<R> {
                     |env: &Env, name: &ArcStr, formal: &Type, typ: &Type, undecided| {
                         join_in(widening, sig, env, name, formal, typ, undecided)
                     };
-                let node = self
-                    .checked_default(
-                        ctx,
-                        flags,
-                        &self.scope,
-                        f,
-                        name,
-                        expr,
-                        &mut Refs::default(),
-                        Some(sig),
-                        Judge::Check(Narrowing::Site),
-                        Some(&mut join),
-                    )
-                    .map_err(|e| met_default_note::<R>(e, shared, name))?;
+                let (probe, covered) = RaiseProbe::open(ctx, &self.scope);
+                let node = self.checked_default(
+                    ctx,
+                    flags,
+                    &covered,
+                    f,
+                    name,
+                    expr,
+                    &mut Refs::default(),
+                    Some(sig),
+                    Judge::Check(Narrowing::Site),
+                    Some(&mut join),
+                );
+                let raised = probe.raised(ctx);
+                probe.close(ctx);
+                let node = node.map_err(|e| met_default_note::<R>(e, shared, name))?;
+                if let Err(e) = self.join_default_raise(&ctx.env, ftype, &raised).at(expr)
+                {
+                    ctx.discard(node);
+                    return Err(e);
+                }
                 if Carriers::new().carries(&ctx.env, node.typ()) {
                     carriers.push(name.clone());
                 }
@@ -3124,6 +3179,47 @@ impl<R: Rt> CallSite<R> {
             }
         }
         Ok(known)
+    }
+
+    /// What an omitted default raises joins this site's catch. A variable
+    /// of a definition whose check has closed stands for a different type
+    /// in each call that made the function, which only the function's
+    /// `throws` names: the catch takes the instance from there.
+    fn join_default_raise(&self, env: &Env, ftype: &FnType, raised: &Type) -> Result<()> {
+        if *raised == Type::Bottom {
+            return Ok(());
+        }
+        let mut scheme: SmallVec<[ArcStr; 2]> = SmallVec::new();
+        scheme_variables(raised, &mut scheme);
+        if let Some(missing) = scheme.iter().find(|n| !names_variable(&ftype.throws, n)) {
+            bail!(
+                "this default raises {raised}, through the variable '{missing} of the \
+                 function that made this one, which no call of it decides: write \
+                 `throws {raised}` in the type of the function it returns, or close \
+                 '{missing} where it is declared",
+                raised = raised.resolve_tvars()
+            )
+        }
+        let Some(h) = self.scope.dynamic.handler() else { return Ok(()) };
+        match raised {
+            Type::Set(members) if !scheme.is_empty() => {
+                let closed: SmallVec<[&Type; 4]> = members
+                    .iter()
+                    .filter(|m| {
+                        let mut held = SmallVec::new();
+                        scheme_variables(m, &mut held);
+                        held.is_empty()
+                    })
+                    .collect();
+                match closed.is_empty() {
+                    true => Ok(()),
+                    false => join_raised(env, &h, &Type::union(env, &closed)?),
+                }
+            }
+            _ if !scheme.is_empty() => Ok(()),
+            Type::TVar(_) => join_open_raised(env, &h, raised),
+            _ => join_raised(env, &h, raised),
+        }
     }
 
     /// Cells the result and throws do not hold, and no argument this

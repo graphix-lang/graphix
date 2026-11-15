@@ -6428,3 +6428,87 @@ run!(
     is(Value::I64(42));
     FuseExpect::Jit
 );
+
+// A default that raises through a variable its factory declares: the
+// returned function's `throws` is what names the instance.
+const A_DEFAULT_RAISING_THROUGH_THE_FACTORYS_VARIABLE: &str = r#"{
+    let mk = |k: Result<i64, 'e>| |#d = k?, x: i64| d + x;
+    let r: [string, null] = null;
+    {
+        catch(e) r <- e ~ "[e.0.error]";
+        mk(error(`E))(7)
+    };
+    r$
+}"#;
+
+const A_DEFAULT_RAISING_THROUGH_THE_FACTORYS_VARIABLE_THAT_THROWS: &str = r#"{
+    let mk = |k: Result<i64, 'e>| -> fn(?#d: i64, x: i64) -> i64 throws Error<ErrChain<'e>>
+        |#d = k?, x: i64| d + x;
+    let r: [string, null] = null;
+    {
+        catch(e) r <- e ~ "[e.0.error]";
+        mk(error(`E))(7)
+    };
+    r$
+}"#;
+
+const A_DEFAULT_RAISING_THROUGH_THE_FACTORYS_VARIABLE_CLOSED: &str = r#"{
+    let mk = |k: Result<i64, `E>| |#d = k?, x: i64| d + x;
+    let r: [string, null] = null;
+    {
+        catch(e) r <- e ~ "[e.0.error]";
+        mk(error(`E))(7)
+    };
+    r$
+}"#;
+
+const A_DEFAULT_RAISING_THROUGH_THE_FACTORYS_VARIABLE_USED_INSIDE: &str = r#"{
+    let mk = |k: Result<i64, 'e>| { let g = |#d = k?, x: i64| d + x; g(1) };
+    let r: [string, null] = null;
+    {
+        catch(e) r <- e ~ "[e.0.error]";
+        mk(error(`E))
+    };
+    r$
+}"#;
+
+const A_DEFAULT_RAISING_THROUGH_THE_FACTORYS_VARIABLE_THAT_THROWS_ANOTHER_TYPE: &str = r#"{
+    let mk = |k: Result<i64, 'e>| -> fn(?#d: i64, x: i64) -> i64 throws Error<ErrChain<`Z>>
+        |#d = k?, x: i64| d + x;
+    mk
+}"#;
+
+run!(
+    a_default_raising_through_the_factorys_variable_refused,
+    A_DEFAULT_RAISING_THROUGH_THE_FACTORYS_VARIABLE,
+    refused("write `throws Error<ErrChain<'e>>` in the type of the function it returns");
+    FuseExpect::None
+);
+
+run!(
+    a_default_raising_through_the_factorys_variable_that_throws,
+    A_DEFAULT_RAISING_THROUGH_THE_FACTORYS_VARIABLE_THAT_THROWS,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "`E");
+    FuseExpect::Jit
+);
+
+run!(
+    a_default_raising_through_the_factorys_variable_closed,
+    A_DEFAULT_RAISING_THROUGH_THE_FACTORYS_VARIABLE_CLOSED,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "`E");
+    FuseExpect::Jit
+);
+
+run!(
+    a_default_raising_through_the_factorys_variable_used_inside,
+    A_DEFAULT_RAISING_THROUGH_THE_FACTORYS_VARIABLE_USED_INSIDE,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "`E");
+    FuseExpect::Jit
+);
+
+run!(
+    a_default_raising_through_the_factorys_variable_declared_another_type,
+    A_DEFAULT_RAISING_THROUGH_THE_FACTORYS_VARIABLE_THAT_THROWS_ANOTHER_TYPE,
+    refused("which the function type it is called through does not declare");
+    FuseExpect::None
+);

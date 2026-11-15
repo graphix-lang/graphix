@@ -548,6 +548,19 @@ ok type W = fn(?#d: i64, x: i64) -> i64 throws Error<ErrChain<`E>>; let mk = |k:
 ok let mk = |k: i64| |#d = error(`E)?, x: i64| d + x; { catch(e) 0; mk(0)(7) }
 ```
 
+A default that raises through a variable its factory declares
+(`|k: Result<i64, 'e>| |#d = k?, x: i64| ..`) raises what each call that
+made the function picked for `'e`, which only the returned function's
+`throws` names: write it there, or close `'e`. A call inside the factory
+needs neither.
+
+```graphix,cases
+no "write `throws Error<ErrChain<'e>>` in the type of the function it returns" let mk = |k: Result<i64, 'e>| |#d = k?, x: i64| d + x; { catch(e) 0; mk(error(`E))(7) }
+ok let mk = |k: Result<i64, 'e>| -> fn(?#d: i64, x: i64) -> i64 throws Error<ErrChain<'e>> |#d = k?, x: i64| d + x; { catch(e) 0; mk(error(`E))(7) }
+ok let mk = |k: Result<i64, `E>| |#d = k?, x: i64| d + x; { catch(e) 0; mk(error(`E))(7) }
+ok let mk = |k: Result<i64, 'e>| { let g = |#d = k?, x: i64| d + x; g(1) }; { catch(e) 0; mk(error(`E)) }
+```
+
 A labeled default that holds a function is judged as that function
 written at the call is: its own defaults must fit the label's type as the
 call's arguments left it, whether or not the body passes the inner label.
