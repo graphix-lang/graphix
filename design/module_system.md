@@ -528,7 +528,9 @@ leave the functions of the dropped ones alone, whether the head is an
 abstract type or not.
 
 **An impl given back while its trait stands.** A function that calls a
-dispatcher, or names the anchor as a bound, also names the method
+dispatcher, names the anchor as a bound, or captures a binding whose type
+names the trait as a bound (a generic function of an earlier input it
+calls or passes on), also names the method
 bindings of the registered impls of that trait that its definition's
 view names under their own scope, where the impl's block or module
 encloses the definition (`capture_impls`, `Env::impl_bindings`), so a
@@ -547,8 +549,8 @@ a function of an earlier input dispatch to the entry their caller was
 made beside, and a method's names still mean what they meant where it was
 defined: a later method of its impl does not shadow the trait's
 dispatcher. Not kept: an entry that writes no method, one a function
-reaches only through a function it captures (it names neither a
-dispatcher nor the anchor), one a run-time bind's instance would reach:
+reaches only through a captured function whose type names no trait
+bound, one a run-time bind's instance would reach:
 the bind checks under the run-time env, which names no caller's entries,
 and one an impl's first method reaches through a later method of the
 same impl, since its view names none of the entry's methods. Pins:

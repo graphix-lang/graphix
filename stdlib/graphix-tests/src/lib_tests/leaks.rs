@@ -1744,6 +1744,22 @@ async fn a_function_reaching_a_dropped_impl_through_an_earlier_definition_dispat
     .await
 }
 
+/// A function made beside the dropped impl of a standing trait that names
+/// the trait only through a function of an earlier input, called and
+/// passed on as a value, dispatches to the impl.
+async fn a_function_reaching_the_trait_only_through_a_captured_function_dispatches_to_its_dropped_impl(
+    mode: Mode,
+) -> Result<()> {
+    escaped_and_called_over(
+        mode,
+        [],
+        "trait Sh { val sh: fn(self) -> i64 }; let app = |v: Sh| Sh::sh(v)",
+        "{ type C = Abstract<i64>; impl Sh for C { let sh = |c: C| c.0 * 10 }; \
+         saved <- |x: i64| { let ap = |f: fn(v: C) -> i64, c: C| f(c); app(C(x)) + ap(app, C(x)) - 30 }; 1 }",
+    )
+    .await
+}
+
 /// A method of a dropped impl of a standing trait, instantiated for a call
 /// beside it, names a later method of its trait for another type: the
 /// name is the trait's, as it was where the method was defined, not the
@@ -1930,6 +1946,7 @@ modes!(
     a_union_over_two_dropped_impls_of_a_standing_trait_dispatches_to_both,
     a_function_passed_to_another_beside_a_dropped_impl_dispatches_to_it,
     a_function_reaching_a_dropped_impl_through_an_earlier_definition_dispatches_to_it,
+    a_function_reaching_the_trait_only_through_a_captured_function_dispatches_to_its_dropped_impl,
     a_method_of_a_dropped_impl_naming_a_later_method_dispatches_by_the_trait,
     a_function_outliving_its_impl_of_a_plain_head_past_a_redeclaration_beside_a_standing_trait,
     a_function_over_an_interfaces_impl_of_a_dropped_outside_trait_dispatches,
