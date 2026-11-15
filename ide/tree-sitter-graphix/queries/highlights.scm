@@ -45,10 +45,6 @@
   "for"
   "pub"
   "dynamic"
-  "sandbox"
-  "unrestricted"
-  "whitelist"
-  "blacklist"
   "sig"
   "source"
 ] @keyword

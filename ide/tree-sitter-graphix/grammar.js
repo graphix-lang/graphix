@@ -91,7 +91,6 @@ module.exports = grammar({
     [$.type_def, $.sig_type_def],
     [$.trait_def, $.sig_trait_def],
     [$.impl_def, $.sig_impl_def],
-    [$.module_path],
     // `select impl T for X { arms }`: the impl's optional method block
     // and the select's arms begin alike — keep both parses
     [$._impl_def],
@@ -180,14 +179,12 @@ module.exports = grammar({
     module: $ => choice(
       // Bodyless module declaration: mod name
       seq('mod', field('name', $._binding_name)),
-      // Dynamic module: mod name dynamic { sandbox ...; sig { ... }; source expr }
+      // Dynamic module: mod name dynamic { sig { ... }; source expr }
       seq(
         'mod',
         field('name', $._binding_name),
         'dynamic',
         '{',
-        field('sandbox', $.sandbox),
-        ';',
         field('sig', $.sig_block),
         ';',
         'source',
@@ -195,12 +192,6 @@ module.exports = grammar({
         optional(';'),
         '}',
       ),
-    ),
-
-    sandbox: $ => choice(
-      seq('sandbox', 'unrestricted'),
-      seq('sandbox', 'blacklist', '[', commaSep1($.module_path), ']'),
-      seq('sandbox', 'whitelist', '[', commaSep1($.module_path), ']'),
     ),
 
     sig_block: $ => seq(

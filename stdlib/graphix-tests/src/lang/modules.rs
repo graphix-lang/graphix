@@ -17,8 +17,7 @@ const DYNAMIC_MODULE0: &str = r#"
     ";
     sys::net::publish("/local/foo", source)?;
     let status = mod foo dynamic {
-        sandbox whitelist [core];
-        sig {
+        sig { use core;
             val add: fn(x: i64) -> i64;
             val sub: fn(x: i64) -> i64;
             val cfg: Array<i64>
@@ -40,8 +39,7 @@ const DYNAMIC_MODULE_SOURCE_ERROR: &str = r#"
 {
     let src: [string, Error<`E>] = "let x = 0; let y = x * 10";
     let status = mod foo dynamic {
-        sandbox whitelist [core];
-        sig { val x: i64; val y: i64 };
+        sig { use core; val x: i64; val y: i64 };
         source src
     };
     src <- once(status) ~ error(`E);
@@ -59,8 +57,7 @@ const DYNAMIC_MODULE_BAD_SOURCE_KEEPS_THE_LOAD: &str = r#"
 {
     let src: [string, Error<`E>] = "let x = 0; let y = x * 10";
     let status = mod foo dynamic {
-        sandbox whitelist [core];
-        sig { val x: i64; val y: i64 };
+        sig { use core; val x: i64; val y: i64 };
         source src
     };
     src <- once(status) ~ "let x = ;";
@@ -79,8 +76,7 @@ const DYNAMIC_MODULE_GOOD_SOURCE_AFTER_A_BAD_ONE: &str = r#"
     step <- select step { k if k < 6 => (k ~ step) + 1, _ => never() };
     let src: [string, Error<`E>] = "let x = 0; let y = x * 10";
     let status = mod foo dynamic {
-        sandbox whitelist [core];
-        sig { val x: i64; val y: i64 };
+        sig { use core; val x: i64; val y: i64 };
         source src
     };
     src <- select step {
@@ -99,8 +95,7 @@ run!(dynamic_module_good_source_after_a_bad_one, DYNAMIC_MODULE_GOOD_SOURCE_AFTE
 // whole list, as a `mod` statement does: a path through the name above it
 // never reads an outer module of that name.
 const LET_BOUND_MODULE: &str = r#"mod foo dynamic {
-    sandbox whitelist [core];
-    sig { type Foo<'a> = ['a, string]; val f: fn(x: i64) -> i64 };
+    sig { use core; type Foo<'a> = ['a, string]; val f: fn(x: i64) -> i64 };
     source "let f = |x| x"
 }"#;
 
@@ -178,8 +173,7 @@ run!(
     let good = "type C = Abstract<i64>; impl Cast for C { let to_value = |c: C| c.0 * 10 }; let make = |x: i64| C(x)";
     let source: [string, Error<`E>] = first;
     let status = mod foo dynamic {
-        sandbox whitelist [core];
-        sig { type C; impl Cast for C; val make: fn(x: i64) -> C };
+        sig { use core; type C; impl Cast for C; val make: fn(x: i64) -> C };
         source source
     };
     source <- select step {
@@ -207,8 +201,7 @@ run!(
     let good = "trait T { val d: fn(self) -> i64 }; type C = Abstract<i64>; impl T for C { let d = |c: C| c.0 + 2 }; let make = |x: i64| T::d(C(x))";
     let source: [string, Error<`E>] = first;
     let status = mod foo dynamic {
-        sandbox whitelist [core];
-        sig { val make: fn(x: i64) -> i64 };
+        sig { use core; val make: fn(x: i64) -> i64 };
         source source
     };
     source <- select step {
@@ -236,8 +229,7 @@ run!(
     r#"{
     let source = "type C = Abstract<i64>; impl Cast for C {}; let make = |x: i64| C(x)";
     let status = mod foo dynamic {
-        sandbox whitelist [core];
-        sig { type C; impl Cast for C; val make: fn(x: i64) -> C };
+        sig { use core; type C; impl Cast for C; val make: fn(x: i64) -> C };
         source source
     };
     source <- once(status) ~ "type C = Abstract<i64>; impl Cast for C { let to_value = |c: C| c.0 * 10 }; let make = |x: i64| C(x)";
@@ -258,8 +250,7 @@ run!(
   let src = "let v = 5";
   src <- select n { 2 => "let v = 7", _ => never() };
   let status = mod foo dynamic {
-    sandbox whitelist [core];
-    sig { val v: i64 };
+    sig { use core; val v: i64 };
     source src
   };
   let a = foo::v;
@@ -312,8 +303,7 @@ const DYNAMIC_MODULE1: &str = r#"
     ";
     sys::net::publish("/local/foo", source)?;
     let status = mod foo dynamic {
-        sandbox whitelist [core];
-        sig {
+        sig { use core;
             val add: fn(x: i64) -> i64;
             val sub: fn(x: i64) -> i64;
             val cfg: Array<i64>
@@ -334,8 +324,7 @@ const DYNAMIC_MODULE2: &str = r#"
     let source = "let add = 'a: Number |x: 'a| -> 'a x + x";
     sys::net::publish("/local/foo", source)?;
     let status = mod foo dynamic {
-        sandbox whitelist [core];
-        sig {
+        sig { use core;
             val add: fn<'a: Number + Singleton>(x: 'a) -> 'a
         };
         source sys::net::subscribe("/local/foo")?
@@ -356,7 +345,6 @@ run!(
     r#"
 {
     let status = mod foo dynamic {
-        sandbox unrestricted;
         sig { mod m; val x: i64 };
         source "let x = 1"
     };
@@ -366,11 +354,11 @@ run!(
     refused("a dynamic module has no sub-modules")
 );
 
-/// A dynamic module `test` loaded under `sandbox`, its sig `foo` and `bar`
-/// with `sig` after them, its body the relay `foo` to `bar` with `body`
-/// after it: `test::bar` once the program writes `test::foo`, at the
-/// fire of the load's status, or the load's error.
-fn sandboxed(sandbox: &str, sig: &str, body: &str) -> String {
+/// A dynamic module `test` whose sig imports `imports` and declares `foo`
+/// and `bar`, with `sig` after them, its body the relay `foo` to `bar`
+/// with `body` after it: `test::bar` once the program writes `test::foo`,
+/// at the fire of the load's status, or the load's error.
+fn relay(imports: &str, sig: &str, body: &str) -> String {
     format!(
         r#"{{
     let source = "
@@ -380,8 +368,8 @@ fn sandboxed(sandbox: &str, sig: &str, body: &str) -> String {
     ";
     sys::net::publish("/local/test", source)?;
     let status = mod test dynamic {{
-        sandbox {sandbox};
         sig {{
+            {imports}
             val foo: string;
             val bar: string{sig}
         }};
@@ -407,128 +395,180 @@ const PUBLISHES: &str = r#";
         sys::net::publish(\"/local/test\", 42)"#;
 
 run!(
-    whitelisted_core_loads,
-    sandboxed("whitelist [core]", "", ""),
+    an_imported_package_loads,
+    relay("use core;", "", ""),
     prints(r#""hello world""#);
     FuseExpect::Jit
 );
 
+// A dynamic module's body sees nothing its sig does not import, core
+// included.
+run!(
+    a_body_sees_no_core_its_sig_does_not_import,
+    relay("", "", ""),
+    load_refused("dbg not defined");
+    FuseExpect::Jit
+);
+
+run!(
+    a_body_of_operators_needs_no_import,
+    r#"{
+    let status = mod m dynamic {
+        sig { val f: fn(x: i64) -> i64 };
+        source "let f = |x| select x * 2 + 1 { 3 => 0, n => n }"
+    };
+    select status { error as e => never(dbg(e)), null as _ => m::f(1) + m::f(2) }
+}"#,
+    is(Value::I64(5));
+    FuseExpect::None
+);
+
 run!(
     a_missing_implementation_is_refused,
-    sandboxed("whitelist [core]", ";\n            val baz: string", ""),
+    relay("use core;", ";\n            val baz: string", ""),
     load_refused("val baz: string is missing an implementation");
     FuseExpect::Jit
 );
 
 run!(
-    an_unlisted_package_is_refused,
-    sandboxed("whitelist [core]", "", SUBSCRIBES),
+    a_package_the_sig_does_not_import_is_refused,
+    relay("use core;", "", SUBSCRIBES),
     load_refused("no module `net` in `sys`");
     FuseExpect::Jit
 );
 
 run!(
-    a_blacklist_keeps_the_rest,
-    sandboxed("blacklist [sys::net::publish]", "", SUBSCRIBES),
+    an_imported_function_loads,
+    relay("use core; use sys::net::subscribe;", "", SUBSCRIBES),
     prints(r#""hello world""#);
     FuseExpect::Jit
 );
 
+// An imported name brings itself alone, never its module's other names.
 run!(
-    a_blacklisted_function_is_refused,
-    sandboxed("blacklist [sys::net::publish]", "", PUBLISHES),
+    a_function_beside_an_imported_one_is_refused,
+    relay("use core; use sys::net::subscribe;", "", PUBLISHES),
     load_refused("sys::net::publish not defined");
     FuseExpect::Jit
 );
 
+// An imported module brings what is under it.
 run!(
-    a_whitelisted_function_loads,
-    sandboxed("whitelist [core, sys::net::subscribe]", "", SUBSCRIBES),
+    an_imported_module_brings_its_functions,
+    relay("use core; use sys::net;", "", PUBLISHES),
     prints(r#""hello world""#);
     FuseExpect::Jit
 );
 
-// A blacklisted package takes its submodules with it.
-run!(
-    a_blacklisted_root_is_refused,
-    sandboxed("blacklist [sys]", "", PUBLISHES),
-    load_refused("no module `net` in `sys`");
-    FuseExpect::Jit
-);
-
-/// A module `m` loaded under `sandbox` from `body`, reading the loader's
-/// `y`: its status.
-fn reads_the_loader(sandbox: &str, body: &str) -> String {
+/// A module `m` whose sig imports `imports`, loaded from `body`, beside
+/// the loader's `y`: its status.
+fn beside_the_loaders_y(imports: &str, body: &str) -> String {
     format!(
         r#"{{
     let y = 41;
-    mod m dynamic {{ sandbox {sandbox}; sig {{ val v: i64 }}; source "{body}" }}
+    mod m dynamic {{ sig {{ {imports} val v: i64 }}; source "{body}" }}
 }}"#
     )
 }
 
-// A whitelist sandbox keeps a loaded body from the loader's own
-// bindings, however the body names them; a blacklist only removes what
-// it lists.
+// A loaded body reads nothing of the loader its sig does not import,
+// however the body names it.
 run!(
-    a_whitelist_hides_the_loaders_super,
-    reads_the_loader("whitelist [core]", "let v = super::y + 1"),
+    a_body_reads_no_binding_of_the_loader_by_super,
+    beside_the_loaders_y("", "let v = super::y + 1"),
     load_refused("super::y not defined");
     FuseExpect::None
 );
 
 run!(
-    a_whitelist_hides_the_loaders_package,
-    reads_the_loader("whitelist [core]", "let v = package::y + 1"),
+    a_body_reads_no_binding_of_the_loader_by_package,
+    beside_the_loaders_y("", "let v = package::y + 1"),
     load_refused("package::y not defined");
     FuseExpect::None
 );
 
 run!(
-    a_whitelist_hides_the_loaders_glob,
-    reads_the_loader("whitelist [core]", "use super::*; let v = y + 1"),
+    a_body_reads_no_binding_of_the_loader_by_its_own_glob,
+    beside_the_loaders_y("", "use super::*; let v = y + 1"),
     load_refused("y not defined");
     FuseExpect::None
 );
 
-/// A script declaring a type, and a module `m` loaded under `sandbox`
-/// from `body`, which names it: `m`'s status.
-fn names_the_loaders_type(sandbox: &str, body: &str) -> String {
+run!(
+    a_sig_import_shows_the_loaders_binding,
+    beside_the_loaders_y("use super::y;", "let v = y + 1"),
+    is(Value::Null);
+    FuseExpect::None
+);
+
+run!(
+    a_sig_import_shows_the_loaders_binding_by_its_path,
+    beside_the_loaders_y("use super::y;", "let v = super::y + 1"),
+    is(Value::Null);
+    FuseExpect::None
+);
+
+run!(
+    a_sig_glob_shows_the_loaders_bindings_and_no_package,
+    beside_the_loaders_y("use super::*;", "let v = y + 1"),
+    is(Value::Null);
+    FuseExpect::None
+);
+
+run!(
+    a_sig_glob_of_the_loader_brings_no_package,
+    beside_the_loaders_y("use super::*;", "let v = y + array::len(\\[1\\])"),
+    load_refused("array::len not defined");
+    FuseExpect::None
+);
+
+// An import must name something where the module is declared: a body
+// compiled later sees what the sig imported then.
+run!(
+    a_sig_import_of_a_later_binding_is_refused,
+    r#"{
+    let status = mod m dynamic { sig { use super::y; val v: i64 }; source "let v = y" };
+    let y = 41;
+    status
+}"#,
+    refused("the sig imports `y`, which nothing above this module declares");
+    FuseExpect::None
+);
+
+/// A script declaring a type, and a module `m` whose sig imports
+/// `imports`, loaded from `body`, which names the type: `m`'s status.
+fn names_the_loaders_type(imports: &str, body: &str) -> String {
     format!(
         r#"type Foo = {{a: i64}};
-let result = mod m dynamic {{ sandbox {sandbox}; sig {{ val v: i64 }}; source "{body}" }}"#
+let result = mod m dynamic {{ sig {{ {imports} val v: i64 }}; source "{body}" }}"#
     )
 }
 
 run!(
-    a_whitelist_hides_the_loaders_type,
+    a_body_names_no_type_of_the_loader_its_sig_does_not_import,
     load_refused("undefined type super::Foo"),
-    "/test.gx" => &names_the_loaders_type(
-        "whitelist [core]",
-        "let w: super::Foo = {a: 1}; let v = w.a"
-    );
+    "/test.gx" => &names_the_loaders_type("", "let w: super::Foo = {a: 1}; let v = w.a");
     FuseExpect::None
 );
 
 run!(
-    a_blacklist_shows_the_loaders_type,
+    a_sig_import_shows_the_loaders_type,
     is(Value::Null),
     "/test.gx" => &names_the_loaders_type(
-        "blacklist [sys]",
-        "let w: super::Foo = {a: 1}; let v = w.a"
+        "use super::Foo;",
+        "let w: Foo = {a: 1}; let v = w.a"
     );
     FuseExpect::None
 );
 
-/// A function `mk` whose body loads a module under `sandbox` whose sig
-/// imports `Foo`, a type the body declares below the module, and calls
-/// the module's `f` on `{a: v}`: `10 * mk(body_a, 4) + mk(body_b, 6)`.
-fn sig_imports_a_function_bodys_type(sandbox: &str, a: &str, b: &str) -> String {
+/// A function `mk` whose body loads a module whose sig imports `Foo`, a
+/// type the body declares below the module, and calls the module's `f`
+/// on `{a: v}`: `10 * mk(body_a, 4) + mk(body_b, 6)`.
+fn sig_imports_a_function_bodys_type(a: &str, b: &str) -> String {
     format!(
         r#"{{
 let mk = |src: string, v: i64| {{
   let status = mod foo dynamic {{
-    sandbox {sandbox};
     sig {{ use super::Foo; val f: fn(x: Foo) -> i64 }};
     source src
   }};
@@ -542,48 +582,29 @@ let mk = |src: string, v: i64| {{
 
 run!(
     a_sig_imports_a_type_the_functions_body_declares_below,
-    sig_imports_a_function_bodys_type(
-        "unrestricted",
-        "let f = |x: Foo| x.a",
-        "let f = |x: Foo| x.a + 1"
-    ),
+    sig_imports_a_function_bodys_type("let f = |x: Foo| x.a", "let f = |x: Foo| x.a + 1"),
     is(Value::I64(47));
     FuseExpect::None
 );
 
 run!(
     a_sig_imports_a_type_the_functions_body_declares_below_and_the_body_names_it_not,
-    sig_imports_a_function_bodys_type("unrestricted", "let f = |x| 1", "let f = |x| 2"),
+    sig_imports_a_function_bodys_type("let f = |x| 1", "let f = |x| 2"),
     is(Value::I64(12));
     FuseExpect::None
 );
 
 run!(
-    a_sig_imports_a_type_the_functions_body_declares_below_under_a_whitelist,
-    sig_imports_a_function_bodys_type(
-        "whitelist [core]",
-        "let f = |x: Foo| x.a",
-        "let f = |x| 1"
-    ),
+    a_sig_imports_a_type_the_functions_body_declares_below_and_one_body_names_it,
+    sig_imports_a_function_bodys_type("let f = |x: Foo| x.a", "let f = |x| 1"),
     is(Value::I64(41));
     FuseExpect::None
 );
 
 run!(
     a_body_naming_a_field_the_functions_type_lacks_is_refused_and_the_next_load_holds,
-    sig_imports_a_function_bodys_type(
-        "unrestricted",
-        "let f = |x: Foo| x.b",
-        "let f = |x: Foo| x.a + 1"
-    ),
+    sig_imports_a_function_bodys_type("let f = |x: Foo| x.b", "let f = |x: Foo| x.a + 1"),
     is(Value::I64(7));
-    FuseExpect::None
-);
-
-run!(
-    a_blacklist_shows_the_loaders_super,
-    reads_the_loader("blacklist [sys]", "let v = super::y + 1"),
-    is(Value::Null);
     FuseExpect::None
 );
 
@@ -999,8 +1020,7 @@ const DYNAMIC_MODULE_MISSING_IMPORT: &str = r#"
     let source = "use core::no_such_thing; let x = 42";
     sys::net::publish("/local/imp", source)?;
     let status = mod imp dynamic {
-        sandbox whitelist [core];
-        sig { val x: i64 };
+        sig { use core; val x: i64 };
         source sys::net::subscribe("/local/imp")?
     };
     select status {
@@ -1022,8 +1042,7 @@ const DYNAMIC_MODULE_SLEEP: &str = r#"
     let x = select step < 10 || step >= 20 {
         true => {
             let status = mod foo dynamic {
-                sandbox whitelist [core];
-                sig { val x: i64 };
+                sig { use core; val x: i64 };
                 source src
             };
             select status { error as e => never(dbg(e)), null as _ => foo::x }
@@ -1071,8 +1090,7 @@ const DYNAMIC_MODULE_AFTER_A_FAILURE: &str = r#"
         "type C = Abstract<i64>; let make = |x: i64| C(x); let h = make(41).0 + 1"
     );
     let status = mod m dynamic {
-        sandbox whitelist [core];
-        sig { type C; val make: fn(x: i64) -> C; val h: i64 };
+        sig { use core; type C; val make: fn(x: i64) -> C; val h: i64 };
         source source
     };
     select status {
@@ -1428,8 +1446,7 @@ fn load_refused(phrase: &'static str) -> impl Fn(Result<&Value>) -> bool {
 const LOADED_BUILTIN_IN_A_LAMBDA: &str = r#"
 {
     let status = mod foo dynamic {
-        sandbox whitelist [core];
-        sig { val n: i64 };
+        sig { use core; val n: i64 };
         source """
             let outer = |s: string| -> i64 {
                 let len = |s: string| -> i64 'str_len;
@@ -1450,8 +1467,7 @@ run!(loaded_builtin_in_a_lambda, LOADED_BUILTIN_IN_A_LAMBDA,
 const LOADED_BODY_IS_TOP_LEVEL: &str = r#"
 {
     let status = mod foo dynamic {
-        sandbox whitelist [core];
-        sig { val w: i64 };
+        sig { use core; val w: i64 };
         source """
             let z = never();
             let f = |x| { z <- x; x };
@@ -1470,8 +1486,7 @@ run!(loaded_body_is_top_level, LOADED_BODY_IS_TOP_LEVEL,
 const LOADED_BODY_SETTLES: &str = r#"
 {
     let status = mod foo dynamic {
-        sandbox whitelist [core];
-        sig { val a: i64; val w: i64 };
+        sig { use core; val a: i64; val w: i64 };
         source """
             let a = 1;
             let w = { catch(e: Error<`A>) println("[e]"); error(`B)?; 1 }
@@ -1488,8 +1503,7 @@ run!(loaded_body_settles, LOADED_BODY_SETTLES,
 const EXPORT_IS_THE_LAST_BINDING: &str = r#"
 {
     let status = mod foo dynamic {
-        sandbox whitelist [core];
-        sig { val f: fn(x: i64) -> i64 };
+        sig { use core; val f: fn(x: i64) -> i64 };
         source """
             let f = |x: i64| -> i64 x + 1;
             let g = |x: i64| -> i64 x + 100;
@@ -1509,8 +1523,7 @@ const IMPL_NARROWER_THAN_DECLARED: &str = r#"
 {
     trait Val { val v: fn(self) -> i64 };
     let status = mod foo dynamic {
-        sandbox whitelist [core];
-        sig {
+        sig { use core;
             use super::Val;
             type Box<'a>;
             impl<'a> Val for Box<'a>;
@@ -1536,8 +1549,7 @@ const RELOAD_CHANGES_A_REPRESENTATION: &str = r#"
     let source = """type C = Abstract<string>; let make = |x: i64| C("v")""";
     sys::net::publish("/local/reprchange", source)?;
     let status = mod foo dynamic {
-        sandbox whitelist [core];
-        sig { type C; val make: fn(x: i64) -> C };
+        sig { use core; type C; val make: fn(x: i64) -> C };
         source sys::net::subscribe("/local/reprchange")?
     };
     source <- once(status) ~ """type C = Abstract<i64>; let make = |x: i64| C(x)""";
@@ -1554,8 +1566,7 @@ const SOURCE_ERROR_KEEPS_THE_BODY_RUNNING: &str = r#"
 {
     let src: [string, Error<`E>] = "let x = 0; let y = x * 10";
     let status = mod foo dynamic {
-        sandbox whitelist [core];
-        sig { val x: i64; val y: i64 };
+        sig { use core; val x: i64; val y: i64 };
         source src
     };
     let go = once(status);
@@ -1739,8 +1750,7 @@ run!(
     "/test.gx" => r#"
         mod a;
         let s = mod d dynamic {
-            sandbox unrestricted;
-            sig { val v: i64 };
+            sig { use super::a; val v: i64 };
             source "super::a::f <- |x: i64| x + 100; let v = 1"
         };
         let result = select s { error as e => e, null as _ => "accepted" }
@@ -1764,8 +1774,7 @@ run!(
     "/test/a.gx" => r#"
         let f = |x: i64| -> i64 x + 1;
         let s = mod d dynamic {
-            sandbox unrestricted;
-            sig { val v: i64 };
+            sig { use super::f; val v: i64 };
             source "super::f <- |x: i64| x + 100; let v = 1"
         }
     "#; FuseExpect::Jit
@@ -1818,7 +1827,7 @@ pub(crate) const BODY_WRITE_BEFORE_A_LOAD: WithInterface = WithInterface {
     root: r#"
         mod a;
         let src = skip(#n: 1, a::f ~ "let v = super::a::f(1)");
-        let s = mod d dynamic { sandbox unrestricted; sig { val v: i64 }; source src };
+        let s = mod d dynamic { sig { use super::a; val v: i64 }; source src };
         let result = d::v
     "#,
     gxi: "val f: fn(x: i64) -> i64",
@@ -1830,7 +1839,6 @@ pub(crate) const BODY_WRITE_BEFORE_A_LOAD: WithInterface = WithInterface {
 pub(crate) const ROOT_WRITE_BEFORE_A_LOAD: &str = r#"
     let src = "let f = |x: i64| -> i64 x + 1; let v = f(f ~ 1)";
     let s = mod d dynamic {
-        sandbox unrestricted;
         sig { val f: fn(x: i64) -> i64; val v: i64 };
         source src
     };
@@ -1905,8 +1913,7 @@ run!(
     "/test/a.gx" => r#"
         let f = |x| x;
         let s = mod d dynamic {
-            sandbox unrestricted;
-            sig { val v: i64 };
+            sig { use super::f; val v: i64 };
             source "super::f <- |x: i64| -> i64 x + 100; let v = 1"
         }
     "#; FuseExpect::Jit
@@ -1920,7 +1927,6 @@ run!(
     refused("c is { f: fn(x: 'a: unbound) -> 'a: unbound }, a generic binding, so what is written to it must be as general"),
     "/test.gx" => r#"
         let s = mod d dynamic {
-            sandbox unrestricted;
             sig { val c: {f: fn(x: 'a) -> 'a}; val g: fn(t: Any) -> string };
             source "let c = {f: |x| x}; let g = |t| c.f(t ~ \"s\")"
         };
@@ -1938,8 +1944,7 @@ run!(
     "/test.gx" => r#"
         mod a;
         let s = mod d dynamic {
-            sandbox unrestricted;
-            sig { val v: i64 };
+            sig { use super::a; val v: i64 };
             source "super::a::f <- |x: i64| -> i64 x + 100; let v = 1"
         };
         let result = select s { error as e => e, null as _ => "accepted" }
@@ -1954,8 +1959,7 @@ run!(
     "/test.gx" => r#"
         mod a;
         let s = mod d dynamic {
-            sandbox unrestricted;
-            sig { val v: i64 };
+            sig { use super::a; val v: i64 };
             source "let rf = &mut super::a::f; *rf <- |x: i64| -> i64 x + 100; let v = 1"
         };
         let result = select s { error as e => e, null as _ => "accepted" }
@@ -1970,8 +1974,7 @@ run!(
     "/test.gx" => r#"
         mod a;
         let s = mod d dynamic {
-            sandbox unrestricted;
-            sig { val v: i64 };
+            sig { use super::a; val v: i64 };
             source "let rf = &mut super::a::f; *rf <- |x: i64| -> i64 x + 100; let v = 1"
         };
         let result = select s { error as e => e, null as _ => "accepted" }
@@ -1988,7 +1991,6 @@ run!(
     {
         let src = "let f = |x: i64| -> i64 x + 1; let g = |x: i64| -> i64 f(x)";
         let s = mod d dynamic {
-            sandbox unrestricted;
             sig { val f: fn(x: i64) -> i64; val g: fn(x: i64) -> i64 };
             source src
         };
@@ -2219,7 +2221,6 @@ run!(
         ep <- select ep { n if n < 9 => n + 1, _ => never() };
         let src = r"let go = never(); let f = |x: i64| -> i64 x + 1; f <- go ~ |x: i64| -> i64 x + 10; let rf = &mut f; *rf <- go ~ |x: i64| -> i64 x + 20; let r = 0";
         let s = mod d dynamic {
-            sandbox unrestricted;
             sig { val go: i64; val f: fn(x: i64) -> i64; val r: i64 };
             source src
         };
@@ -2239,7 +2240,7 @@ run!(
         let ep = 0;
         ep <- select ep { n if n < 9 => n + 1, _ => never() };
         let src = r"let v = 1";
-        let s = mod d dynamic { sandbox unrestricted; sig { val v: i64 }; source src };
+        let s = mod d dynamic { sig { val v: i64 }; source src };
         src <- select ep { 4 => r"let v = 5000", _ => never() };
         d::v <- select ep { 4 => 10, _ => never() };
         let rv = &mut d::v;
@@ -2261,7 +2262,6 @@ run!(
         let src = "let f = |x: i64| -> i64 x; f <- |x: i64| -> i64 x + 1; let n = 0";
         src <- select ep { 2 => "let f = |x| x; let g = |u| f(u ~ \"s\"); let n = 1", _ => never() };
         let s = mod d dynamic {
-            sandbox unrestricted;
             sig { val f: fn(x: i64) -> i64; val n: i64 };
             source src
         };
@@ -2296,7 +2296,7 @@ fn load_beside_growing_collections(result: &str) -> String {
     src <- select ep {{ 2 => "{first}", 4 => "{second}", 6 => "{third}", _ => never() }};
     let r = (
         {{
-            let s = mod d dynamic {{ sandbox unrestricted; sig {{ val v: i64 }}; source src }};
+            let s = mod d dynamic {{ sig {{ use core; val v: i64 }}; source src }};
             d::v <- select ep {{ 9 => 9, _ => never() }};
             select s {{ error as e => never(dbg(e)), null as _ => d::v }}
         }},
@@ -2356,7 +2356,7 @@ run!(
     let saved: fn(x: i64) -> i64 = never();
     let m = (
         {
-            let s = mod d dynamic { sandbox unrestricted; sig { val v: i64; val get: fn(x: i64) -> i64 }; source src };
+            let s = mod d dynamic { sig { val v: i64; val get: fn(x: i64) -> i64 }; source src };
             d::v <- select ep { 10 => 9, 12 => 11, _ => never() };
             saved <- select ep { 3 => d::get, _ => never() };
             select s { error as e => never(dbg(e)), null as _ => d::v }
@@ -2395,7 +2395,7 @@ run!(
     let saved: fn(x: i64) -> i64 = never();
     let m = (
         {
-            let s = mod d dynamic { sandbox unrestricted; sig { val v: i64; val get: fn(x: i64) -> i64 }; source src };
+            let s = mod d dynamic { sig { val v: i64; val get: fn(x: i64) -> i64 }; source src };
             saved <- select ep { 3 => d::get, _ => never() };
             select s { error as e => never(dbg(e)), null as _ => d::v }
         },
@@ -2427,7 +2427,7 @@ fn retired_function_first_called_after_the_reload(native: &str) -> String {
         6 => "use super::{{Sh, app}}; type C = Abstract<i64>; impl Sh for C {{ let sh = |c: C| c.0 + 2000 }}; let helper = |y: i64| y + 6; let make = |x: i64| #\[native\] {native} * 10",
         _ => never()
     }};
-    let s = mod d dynamic {{ sandbox unrestricted; sig {{ val make: fn(x: i64) -> i64 }}; source src }};
+    let s = mod d dynamic {{ sig {{ use super::{{Sh, app}}; val make: fn(x: i64) -> i64 }}; source src }};
     let saved: fn(x: i64) -> i64 = never();
     saved <- select ep {{ 4 => ep ~ d::make, _ => never() }};
     let xs: Array<i64> = never();
@@ -2503,7 +2503,6 @@ run!(
         _ => never()
     };
     let s = mod d dynamic {
-        sandbox unrestricted;
         sig { val v: i64; val get: fn(x: i64) -> i64; val set: fn(x: i64) -> null };
         source src
     };
@@ -2546,7 +2545,7 @@ let ep = 0;
 ep <- select ep {{ n if n < 14 => n + 1, _ => never() }};
 let src: string = never();
 src <- select ep {{ 2 => "{first}", 6 => "{second}", _ => never() }};
-let s = mod d dynamic {{ sandbox unrestricted; sig {{ {sig} }}; source src }};
+let s = mod d dynamic {{ sig {{ {sig} }}; source src }};
 let saved: fn(x: i64) -> i64 = never();
 saved <- select ep {{ 4 => ep ~ d::make, _ => never() }};
 let held = saved(ep);
@@ -2613,7 +2612,7 @@ run!(
     )),
     "/test.gx" => a_function_saved_across_a_reload(
         "trait Sh { val sh: fn(self) -> i64 };",
-        "val make: fn(x: i64) -> i64",
+        "use super::Sh; val make: fn(x: i64) -> i64",
         "use super::Sh; type C = Abstract<i64>; impl Sh for C { let sh = |c: C| c.0 + 1 }; \
          let make = |x: i64| Sh::sh(C(x))",
         "use super::Sh; type C = Abstract<i64>; impl Sh for C { let sh = |c: C| c.0 + 2000 }; \
@@ -2642,8 +2641,7 @@ fn bodies_implementing_sh(names: &str, more: &str, make: &str) -> (String, Strin
 const EACH_BODY_RUNS_ITS_OWN_SH: &str = " 20140 15 [15, 16] 20150 16 [16, 17] 20160 17 [17, 18] 20170 18 [18, 19] 20180 19 [19, 20]";
 
 const ANOTHER_MODULES_APP: &str = "trait Sh { val sh: fn(self) -> i64 }; \
-     let sa = mod a dynamic { sandbox unrestricted; \
-     sig { use super::Sh; val app: fn(x: Sh) -> i64 }; \
+     let sa = mod a dynamic { sig { use super::Sh; val app: fn(x: Sh) -> i64 }; \
      source \"use super::Sh; let app = |x: Sh| Sh::sh(x) + 5\" };";
 
 const OUTSIDE_APP: &str =
@@ -2659,7 +2657,7 @@ run!(
         let (first, second) = bodies_implementing_sh("Sh, app", "", "app(C(x))");
         a_function_saved_across_a_reload(
             OUTSIDE_APP,
-            "val make: fn(x: i64) -> i64",
+            "use super::{Sh, app}; val make: fn(x: i64) -> i64",
             &first,
             &second,
         )
@@ -2677,7 +2675,7 @@ run!(
         let (first, second) = bodies_implementing_sh("Sh, a", "", "a::app(C(x))");
         a_function_saved_across_a_reload(
             ANOTHER_MODULES_APP,
-            "val make: fn(x: i64) -> i64",
+            "use super::{Sh, a}; val make: fn(x: i64) -> i64",
             &first,
             &second,
         )
@@ -2695,10 +2693,9 @@ run!(
         let (first, second) = bodies_implementing_sh("Sh, a", "", "a::app(C(x))");
         a_function_saved_across_a_reload(
             "trait Sh { val sh: fn(self) -> i64 }; let relay = |x: Sh| Sh::sh(x) + 5; \
-             let sa = mod a dynamic { sandbox unrestricted; \
-             sig { use super::Sh; val app: fn(x: Sh) -> i64 }; \
+             let sa = mod a dynamic { sig { use super::{Sh, relay}; val app: fn(x: Sh) -> i64 }; \
              source \"use super::{Sh, relay}; let app = |x: Sh| relay(x)\" };",
-            "val make: fn(x: i64) -> i64",
+            "use super::{Sh, a}; val make: fn(x: i64) -> i64",
             &first,
             &second,
         )
@@ -2714,7 +2711,7 @@ run!(
         let (first, second) = bodies_implementing_sh("Sh", "", "Sh::e(C(x))");
         a_function_saved_across_a_reload(
             "trait Sh { val sh: fn(self) -> i64; val e: fn(self) -> i64 = |s| sh(s) + 5 };",
-            "val make: fn(x: i64) -> i64",
+            "use super::{Sh}; val make: fn(x: i64) -> i64",
             &first,
             &second,
         )
@@ -2729,7 +2726,7 @@ run!(
     is(Value::String(EACH_BODY_RUNS_ITS_OWN_SH.into())),
     "/test.gx" => a_function_saved_across_a_reload(
         OUTSIDE_APP,
-        "val make: fn(x: i64) -> i64",
+        "use super::{Sh, app}; val make: fn(x: i64) -> i64",
         "use super::{Sh, app}; impl Sh for i64 { let sh = |c: i64| c + 1 }; \
          let make = |x: i64| app(x)",
         "use super::{Sh, app}; impl Sh for i64 { let sh = |c: i64| c + 2000 }; \
@@ -2752,7 +2749,7 @@ run!(
         );
         a_function_saved_across_a_reload(
             &format!("{OUTSIDE_APP} let app2 = |x: Sh| Sh::sh(x) + 500;"),
-            "val make: fn(x: i64) -> i64",
+            "use super::{Sh, app, app2}; val make: fn(x: i64) -> i64",
             &first,
             &second,
         )
@@ -2777,7 +2774,7 @@ run!(
         );
         a_function_saved_across_a_reload(
             &format!("{OUTSIDE_APP} let app2 = |x: Sh| app(x) + 100;"),
-            "val make: fn(x: i64) -> i64",
+            "use super::{Sh, app, app2}; val make: fn(x: i64) -> i64",
             &first,
             &second,
         )
@@ -2798,7 +2795,7 @@ run!(
         );
         a_function_saved_across_a_reload(
             OUTSIDE_APP,
-            "val make: fn(x: i64) -> i64",
+            "use array; use super::{Sh, app}; val make: fn(x: i64) -> i64",
             &first,
             &second,
         )
@@ -2814,7 +2811,7 @@ run!(
     is(Value::String(EACH_BODY_RUNS_ITS_OWN_SH.into())),
     "/test.gx" => a_function_saved_across_a_reload(
         "trait Sh { val sh: fn(self) -> i64 }; let small = |x: Sh| Sh::sh(x) < 1000;",
-        "val make: fn(x: i64) -> i64",
+        "use core; use super::{Sh, small}; val make: fn(x: i64) -> i64",
         "use super::{Sh, small}; type C = Abstract<i64>; \
          impl Sh for C { let sh = |c: C| c.0 + 1 }; \
          let make = |x: i64| Sh::sh(filter(C(x), small)) + 5",
@@ -2838,7 +2835,7 @@ run!(
         );
         a_function_saved_across_a_reload(
             OUTSIDE_APP,
-            "val make: fn(x: i64) -> i64",
+            "use super::{Sh, app}; val make: fn(x: i64) -> i64",
             &first,
             &second,
         )
@@ -2859,7 +2856,7 @@ run!(
         );
         a_function_saved_across_a_reload(
             OUTSIDE_APP,
-            "val make: fn(x: i64) -> i64",
+            "use super::{Sh, app}; val make: fn(x: i64) -> i64",
             &first,
             &second,
         )
@@ -2880,7 +2877,7 @@ run!(
     "/test.gx" => a_function_saved_across_a_reload(
         "trait Sh { val sh: fn(self) -> i64 }; \
          let mk = |x: Sh| |u: i64| Sh::sh(x) + u + 5;",
-        "val make: fn(x: i64) -> i64",
+        "use super::{Sh, mk}; val make: fn(x: i64) -> i64",
         "use super::{Sh, mk}; type C = Abstract<i64>; \
          impl Sh for C { let sh = |c: C| c.0 + 1 }; let make = mk(C(0))",
         "use super::{Sh, mk}; type C = Abstract<i64>; \
@@ -2906,7 +2903,7 @@ run!(
         );
         a_function_saved_across_a_reload(
             &format!("{OUTSIDE_APP} let app2 = |x: Sh| Sh::sh(x) + 500;"),
-            "val make: fn(x: i64) -> i64",
+            "use super::{Sh, app, app2}; val make: fn(x: i64) -> i64",
             &first,
             "let make = |x: i64| x * 1000",
         )
@@ -2927,7 +2924,7 @@ run!(
     )),
     "/test.gx" => a_function_saved_across_a_reload(
         OUTSIDE_APP,
-        "val make: fn(x: i64) -> i64",
+        "use super::{Sh, app}; val make: fn(x: i64) -> i64",
         "use super::{Sh, app}; impl Sh for i64 { let sh = |c: i64| c + 1 }; let make = app",
         "use super::{Sh, app}; impl Sh for i64 { let sh = |c: i64| c + 2000 }; let make = app",
     );
@@ -2950,7 +2947,7 @@ run!(
         12 => "use super::{Sh, app}; impl Sh for i64 { let sh = |c: i64| c + 2000 }; let make = app",
         _ => never()
     };
-    let s = mod d dynamic { sandbox unrestricted; sig { val make: fn(x: i64) -> i64 }; source src };
+    let s = mod d dynamic { sig { use super::{Sh, app}; val make: fn(x: i64) -> i64 }; source src };
     let saved: fn(x: i64) -> i64 = never();
     saved <- select ep { 4 => ep ~ d::make, _ => never() };
     let held = saved(ep);
@@ -2980,7 +2977,7 @@ run!(
     "/test.gx" => a_function_saved_across_a_reload(
         "trait Sh { val sh: fn(self) -> i64 }; impl Sh for i64 { let sh = |c: i64| c + 1 }; \
          let tick = |x: i64| Sh::sh(x) + count(x) * 1000;",
-        "val make: fn(x: i64) -> i64",
+        "use super::tick; val make: fn(x: i64) -> i64",
         "use super::tick; let make = tick",
         "use super::tick; let make = tick"
     );
@@ -3000,7 +2997,7 @@ run!(
              impl<'a: Sh> Out for Array<'a> { \
                  let o = |a| array::fold(array::map(a, |e| Sh::sh(e)), 5, |p, q| p + q) \
              };",
-            "val make: fn(x: i64) -> i64",
+            "use super::{Sh, Out}; val make: fn(x: i64) -> i64",
             &first,
             &second,
         )
@@ -3023,7 +3020,7 @@ run!(
         );
         a_function_saved_across_a_reload(
             OUTSIDE_APP,
-            "val make: fn(x: i64) -> i64",
+            "use core; use super::{Sh, app}; val make: fn(x: i64) -> i64",
             &first,
             &second,
         )
@@ -3041,7 +3038,7 @@ run!(
     )),
     "/test.gx" => a_function_saved_across_a_reload(
         "",
-        "val make: fn(x: i64) -> i64",
+        "use str; use array; val make: fn(x: i64) -> i64",
         r#"use str::len; let make = |x: i64| len(\"ab\") + x"#,
         "let make = |x: i64| x * 1000"
     );
@@ -3061,8 +3058,7 @@ let xs0: Array<i64> = never();
 xs0 <- select ep {{ 2 => [0], 6 => [0, 1], _ => never() }};
 let f = |i: i64| {{
     let s = mod d dynamic {{
-        sandbox unrestricted;
-        sig {{ val make: fn(x: i64) -> i64 }};
+        sig {{ use str; use array; val make: fn(x: i64) -> i64 }};
         source once(i) ~ srcs[i]$
     }};
     d::make
@@ -3129,8 +3125,7 @@ run!(
     xs0 <- select ep { 2 => [0], 6 => [0, 1], _ => never() };
     let f = |i: i64| {
         let s = mod d dynamic {
-            sandbox unrestricted;
-            sig { val mk: fn(k: i64) -> fn(x: i64) -> i64 };
+            sig { use str; val mk: fn(k: i64) -> fn(x: i64) -> i64 };
             source once(i) ~ srcs[i]$
         };
         d::mk
@@ -3170,8 +3165,7 @@ run!(
     xs0 <- select ep { 1 => [0], 6 => [0, 1], _ => never() };
     let f = |i: i64| {
         let s = mod d dynamic {
-            sandbox unrestricted;
-            sig { val make: fn(x: i64) -> i64 };
+            sig { use str; use array; val make: fn(x: i64) -> i64 };
             source select i {
                 0 => src0,
                 _ => once(i) ~ r"use array::len; let make = |x: i64| len([1, 2, 3]) + x * 1000"
@@ -3204,15 +3198,13 @@ run!(
     let srcs = [
         r##"let isrc = r#"use str::len; let f = |x: i64| len("ab") + x"#;
 let r = mod inner dynamic {
-    sandbox unrestricted;
-    sig { val f: fn(x: i64) -> i64 };
+    sig { use str; use array; val f: fn(x: i64) -> i64 };
     source isrc
 };
 let make = |x: i64| inner::f(x)"##,
         r##"let isrc = r"use array::len; let f = |x: i64| len([1, 2, 3]) + x * 1000";
 let r = mod inner dynamic {
-    sandbox unrestricted;
-    sig { val f: fn(x: i64) -> i64 };
+    sig { use str; use array; val f: fn(x: i64) -> i64 };
     source isrc
 };
 let make = |x: i64| inner::f(x)"##
@@ -3221,8 +3213,7 @@ let make = |x: i64| inner::f(x)"##
     xs0 <- select ep { 2 => [0], 6 => [0, 1], _ => never() };
     let f = |i: i64| {
         let s = mod d dynamic {
-            sandbox unrestricted;
-            sig { val make: fn(x: i64) -> i64 };
+            sig { use str; use array; val make: fn(x: i64) -> i64 };
             source once(i) ~ srcs[i]$
         };
         d::make
@@ -3251,16 +3242,14 @@ run!(
     src <- select ep {
         2 => """let isrc = r"use array::len; let f = |x: i64| len([1, 2]) + x";
 let r = mod inner dynamic {
-    sandbox unrestricted;
-    sig { val f: fn(x: i64) -> i64 };
+    sig { use array; val f: fn(x: i64) -> i64 };
     source isrc
 };
 let make = |x: i64| inner::f(x) + 100""",
         _ => never()
     };
     let s = mod d dynamic {
-        sandbox unrestricted;
-        sig { val make: fn(x: i64) -> i64 };
+        sig { use array; val make: fn(x: i64) -> i64 };
         source src
     };
     let out = d::make(ep);
@@ -3281,7 +3270,6 @@ run!(
     ep <- select ep { n if n < 12 => n + 1, _ => never() };
     let body = |make: string| """let isrc = r"type C = Abstract<i64>; impl Sh for C { let sh = |c: C| c.0 * 10 }; let mk = |x: i64| C(x)";
 let r = mod inner dynamic {
-    sandbox unrestricted;
     sig { trait Sh { val sh: fn(self) -> i64 }; type C; impl Sh for C; val mk: fn(x: i64) -> C };
     source isrc
 };
@@ -3294,7 +3282,6 @@ let make = |x: i64| \[make]""";
         _ => never()
     };
     let s = mod d dynamic {
-        sandbox unrestricted;
         sig { val make: fn(x: i64) -> i64 };
         source src
     };
@@ -3317,7 +3304,6 @@ run!(
     ep <- select ep { n if n < 14 => n + 1, _ => never() };
     let body = |k: i64, decl: string, written: string| """let isrc = r#"type C = Abstract<i64>; \[written] let mk = |x: i64| C(x)"#;
 let r = mod inner dynamic {
-    sandbox unrestricted;
     sig { type C; \[decl] val mk: fn(x: i64) -> C };
     source isrc
 };
@@ -3334,8 +3320,7 @@ let make = |x: i64| "[json::write_str(inner::mk(x))$] \[k]" """;
         _ => never()
     };
     let s = mod d dynamic {
-        sandbox unrestricted;
-        sig { val make: fn(x: i64) -> string };
+        sig { use core; use json; val make: fn(x: i64) -> string };
         source src
     };
     let m = d::make(ep);
@@ -3360,7 +3345,6 @@ run!(
     ep <- select ep { n if n < 14 => n + 1, _ => never() };
     let body = |make: string| """let isrc = r"type C = Abstract<i64>; impl Sh for C { let sh = |c: C| c.0 * 10 }; let mk = |x: i64| C(x)";
 let r = mod inner dynamic {
-    sandbox unrestricted;
     sig { trait Sh { val sh: fn(self) -> i64; val tw: fn(self) -> i64 = |s| sh(s) * 2 }; type C; impl Sh for C; val mk: fn(x: i64) -> C };
     source isrc
 };
@@ -3373,7 +3357,6 @@ let make = |x: i64| \[make]""";
         _ => never()
     };
     let s = mod d dynamic {
-        sandbox unrestricted;
         sig { val make: fn(x: i64) -> i64 };
         source src
     };
@@ -3407,7 +3390,6 @@ let isrc = uniq(select c {
     _ => r"type C = Abstract<i64>; impl Sh for C { let sh = |c: C| c.0 * 100 }; let mk = |x: i64| C(x)"
 });
 let r = mod inner dynamic {
-    sandbox unrestricted;
     sig { trait Sh { val sh: fn(self) -> i64; val tw: fn(self) -> i64 = |s| sh(s) * 2 }; type C; impl Sh for C; val mk: fn(x: i64) -> C };
     source isrc
 };
@@ -3420,8 +3402,7 @@ let make2 = |x: i64| \[make] + 1000""";
         _ => never()
     };
     let s = mod d dynamic {
-        sandbox unrestricted;
-        sig { val make: fn(x: i64) -> i64; val make2: fn(x: i64) -> i64 };
+        sig { use core; val make: fn(x: i64) -> i64; val make2: fn(x: i64) -> i64 };
         source src
     };
     let ys: Array<i64> = never();
@@ -3461,16 +3442,14 @@ isrc <- select n {
     _ => never()
 };
 let r = mod inner dynamic {
-    sandbox unrestricted;
-    sig { val f: fn(x: i64) -> i64 };
+    sig { use array; val f: fn(x: i64) -> i64 };
     source isrc
 };
 let make = inner::f""",
         _ => never()
     };
     let s = mod d dynamic {
-        sandbox unrestricted;
-        sig { val make: fn(x: i64) -> i64 };
+        sig { use array; val make: fn(x: i64) -> i64 };
         source src
     };
     let saved: fn(x: i64) -> i64 = never();
@@ -3511,15 +3490,13 @@ isrc <- select n {
     _ => never()
 };
 let r = mod inner dynamic {
-    sandbox unrestricted;
-    sig { val f: fn(x: i64) -> i64 };
+    sig { use super::{Sh, app}; val f: fn(x: i64) -> i64 };
     source isrc
 };
 let make = inner::f""",
         _ => never()
     };
     let s = mod d dynamic {
-        sandbox unrestricted;
         sig { val make: fn(x: i64) -> i64 };
         source src
     };
@@ -3729,7 +3706,7 @@ fn reload_beside_slower_and_faster_siblings() -> String {
     let saved: fn(x: i64) -> null = never();
     let r = (
         {{
-            let s = mod d dynamic {{ sandbox unrestricted; sig {{ val v: i64; val set: fn(x: i64) -> null }}; source src }};
+            let s = mod d dynamic {{ sig {{ val v: i64; val set: fn(x: i64) -> null }}; source src }};
             saved <- d::set;
             select s {{ error as e => never(dbg(e)), null as _ => d::v }}
         }},
@@ -4025,8 +4002,8 @@ async fn loads_leave_no_primes(mode: Mode) -> Result<()> {
             let src = never();
             src <- select k { 2 => "let v = super::y + 1", _ => never() };
             let r = (
-                mod a dynamic { sandbox unrestricted; sig { val v: i64 }; source src },
-                mod b dynamic { sandbox unrestricted; sig { val v: i64 }; source src }
+                mod a dynamic { sig { val v: i64 }; source src },
+                mod b dynamic { sig { val v: i64 }; source src }
             );
             let n = 0;
             n <- y ~ n + 1;
@@ -4078,8 +4055,7 @@ run!(
     let r = {
         catch(e: Error<ErrChain<i64>>) never(e);
         mod foo dynamic {
-            sandbox unrestricted;
-            sig { val v: i64 };
+            sig { use core; val v: i64 };
             source "let v = 1; let w = error(\"hello\")?"
         }
     };
@@ -4131,8 +4107,7 @@ run!(
     let r = {
         catch(e) never(e);
         mod foo dynamic {
-            sandbox unrestricted;
-            sig { val v: i64 };
+            sig { use core; val v: i64 };
             source "let v = 1; let w = error(\"hello\")?"
         }
     };
@@ -4175,8 +4150,7 @@ async fn reloads_keep_no_old_lowerings() -> Result<()> {
                 let k = 0;
                 k <- select k {{ x if x < {reloads} => x + 1, _ => never() }};
                 let status = mod foo dynamic {{
-                    sandbox whitelist [core];
-                    sig {{ val v: i64 }};
+                    sig {{ use core; val v: i64 }};
                     source "let v = seq {{ let a = [k]; a + 1 }}"
                 }};
                 select status {{ error as e => never(dbg(e)), null as _ => foo::v }}
@@ -4238,8 +4212,7 @@ const RELOAD_CHANGES_A_REPRESENTATION_THROUGH_A_TYPEDEF: &str = r#"
     let source = """type R = {x: string}; type C = Abstract<R>; let make = |x: i64| C({x: "v"})""";
     sys::net::publish("/local/reprchange_td", source)?;
     let status = mod foo dynamic {
-        sandbox whitelist [core];
-        sig { type C; val make: fn(x: i64) -> C };
+        sig { use core; type C; val make: fn(x: i64) -> C };
         source sys::net::subscribe("/local/reprchange_td")?
     };
     source <- once(status) ~ """type R = {x: i64}; type C = Abstract<R>; let make = |x: i64| C({x: x})""";
@@ -4258,8 +4231,7 @@ const RELOAD_CHANGES_A_REPRESENTATION_THROUGH_A_LATER_TYPEDEF: &str = r#"
     let source = """type C = Abstract<R>; type R = {x: string}; let make = |x: i64| C({x: "v"})""";
     sys::net::publish("/local/reprchange_later", source)?;
     let status = mod foo dynamic {
-        sandbox whitelist [core];
-        sig { type C; val make: fn(x: i64) -> C };
+        sig { use core; type C; val make: fn(x: i64) -> C };
         source sys::net::subscribe("/local/reprchange_later")?
     };
     source <- once(status) ~ """type C = Abstract<R>; type R = {x: i64}; let make = |x: i64| C({x: x})""";
@@ -4277,8 +4249,7 @@ run!(
     r#"{
     let source = "type C = Abstract<R>; type R = {x: string}; let make = |x: i64| C({x: \"v\"}); let n = 1";
     let status = mod foo dynamic {
-        sandbox whitelist [core];
-        sig { type C; val make: fn(x: i64) -> C; val n: i64 };
+        sig { use core; type C; val make: fn(x: i64) -> C; val n: i64 };
         source source
     };
     source <- once(status) ~ "type C = Abstract<R>; type R = {x: string}; let make = |x: i64| C({x: \"w\"}); let n = 2";
@@ -4405,8 +4376,7 @@ run!(dynamic_module_runs_on_under_a_bottom_source, r#"{
   step <- select step { k if k < 3 => (k ~ step) + 1, _ => never() };
   let src0: [string, Error<`E>] = "let x = 0; let y = x * 10";
   let status = mod foo dynamic {
-    sandbox whitelist [core];
-    sig { val x: i64; val y: i64 };
+    sig { use core; val x: i64; val y: i64 };
     source src0$
   };
   src0 <- select step { 1 => step ~ error(`E), _ => never() };
@@ -4420,7 +4390,6 @@ const TWO_BLOCK_MODULES: &str = r#"
 {
   let a = {
     let s = mod m dynamic {
-      sandbox unrestricted;
       sig { type T; val mk: fn(x: i64) -> T; val get: fn(t: T) -> i64 };
       source "type T = Abstract<i64>; let mk = |x: i64| -> T T(x); let get = |t: T| -> i64 t.0"
     };
@@ -4428,7 +4397,6 @@ const TWO_BLOCK_MODULES: &str = r#"
   };
   let b = {
     let s = mod m dynamic {
-      sandbox unrestricted;
       sig { type T; val mk: fn(x: string) -> T; val get: fn(t: T) -> string };
       source "type T = Abstract<string>; let mk = |x: string| -> T T(x); let get = |t: T| -> string t.0"
     };
@@ -4443,14 +4411,12 @@ const TWO_BLOCK_MODULES_CROSSED: &str = r#"
 {
   let a = {
     let s = mod m dynamic {
-      sandbox unrestricted;
       sig { type T; val mk: fn(x: i64) -> T; val get: fn(t: T) -> i64 };
       source "type T = Abstract<i64>; let mk = |x: i64| -> T T(x); let get = |t: T| -> i64 t.0"
     };
     select s { error as e => never(e), null as _ => m::mk(41) }
   };
   let s = mod m dynamic {
-    sandbox unrestricted;
     sig { type T; val mk: fn(x: i64) -> T; val get: fn(t: T) -> i64 };
     source "type T = Abstract<i64>; let mk = |x: i64| -> T T(x); let get = |t: T| -> i64 t.0 + 1"
   };

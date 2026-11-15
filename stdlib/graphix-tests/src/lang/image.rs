@@ -618,7 +618,7 @@ async fn a_restored_constructor_keeps_its_lower_bound() -> Result<()> {
 /// does.
 #[tokio::test]
 async fn a_restored_interface_keeps_its_positions() -> Result<()> {
-    let program = r#"{ trait Val { val v: fn(self) -> i64 }; let status = mod foo dynamic { sandbox whitelist [core]; sig { use super::Val; type Box<'a>; impl<'a> Val for Box<'a>; val make: fn(x: 'a) -> Box<'a> }; source r"type Box<'a> = Abstract<'a>; let make = |x| Box(x)" }; select status { error as e => e, null as _ => 2 } }"#;
+    let program = r#"{ trait Val { val v: fn(self) -> i64 }; let status = mod foo dynamic { sig { use core; use super::Val; type Box<'a>; impl<'a> Val for Box<'a>; val make: fn(x: 'a) -> Box<'a> }; source r"type Box<'a> = Abstract<'a>; let make = |x| Box(x)" }; select status { error as e => e, null as _ => 2 } }"#;
     let item = program.find("impl<'a> Val").expect("the declared impl") + 1;
     let ((_, cold), (_, warm)) = cold_and_warm(program).await?;
     let refused = cold.last().expect("the module refused its body");
@@ -722,7 +722,7 @@ async fn a_restored_block_trait_dispatches() -> Result<()> {
 /// module's later raise of another error is refused warm as cold.
 #[tokio::test]
 async fn a_restored_catch_stays_sealed() -> Result<()> {
-    let program = r#"{ let caught = "none"; catch(e) caught <- select e.0.error { `A => "a" }; let a = select caught { "none" => error(`A)?, _ => 0 }; let status = mod foo dynamic { sandbox unrestricted; sig { val y: i64 }; source r"let x = error(`B)?; let y = 1" }; status }"#;
+    let program = r#"{ let caught = "none"; catch(e) caught <- select e.0.error { `A => "a" }; let a = select caught { "none" => error(`A)?, _ => 0 }; let status = mod foo dynamic { sig { use core; val y: i64 }; source r"let x = error(`B)?; let y = 1" }; status }"#;
     let ((_, cold), (_, warm)) = cold_and_warm(program).await?;
     let refused = cold.last().expect("the module refused its body");
     assert!(format!("{refused}").contains("this error reaches a catch"), "{refused}");

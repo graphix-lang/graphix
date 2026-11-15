@@ -96,7 +96,7 @@ fn stripped(e: &Expr, above: bool) -> Expr {
         }))),
         ExprKind::TypeDef(td) => Some(ExprKind::TypeDef(Arc::new(unnoted(td)))),
         ExprKind::Module { name, value } => match &**value {
-            ModuleKind::Dynamic { sandbox, sig, source } => {
+            ModuleKind::Dynamic { sig, source } => {
                 let items = sig.items.iter().map(|si| SigItem {
                     comments: lines(&si.comments),
                     eol: Eol::default(),
@@ -113,8 +113,7 @@ fn stripped(e: &Expr, above: bool) -> Expr {
                     toplevel: sig.toplevel,
                     below: Comments::default(),
                 };
-                let (sandbox, source) = (sandbox.clone(), source.clone());
-                let value = Arc::new(ModuleKind::Dynamic { sandbox, sig, source });
+                let value = Arc::new(ModuleKind::Dynamic { sig, source: source.clone() });
                 Some(ExprKind::Module { name: name.clone(), value })
             }
             _ => None,
@@ -1703,24 +1702,13 @@ fn check_impl_head(i0: &ImplHead, i1: &ImplHead) -> bool {
         && (check_type(&i0.target, &i1.target))
 }
 
-fn module_sandbox() -> impl Strategy<Value = Sandbox> {
-    prop_oneof![
-        Just(Sandbox::Unrestricted),
-        (collection::vec(modpath(), (1, 10)))
-            .prop_map(|l| Sandbox::Blacklist(Arc::from(l))),
-        (collection::vec(modpath(), (1, 10)))
-            .prop_map(|l| Sandbox::Whitelist(Arc::from(l)))
-    ]
-}
-
 macro_rules! dynamic_module {
     ($inner:expr) => {
-        (random_fname(), module_sandbox(), module_sig(false), decorated($inner)).prop_map(
-            |(name, sandbox, sig, source)| {
+        (random_fname(), module_sig(false), decorated($inner)).prop_map(
+            |(name, sig, source)| {
                 ExprKind::Module {
                     name: name.into(),
                     value: Arc::new(ModuleKind::Dynamic {
-                        sandbox,
                         sig,
                         source: Arc::new(source),
                     }),
@@ -2417,14 +2405,11 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
             ExprKind::Module { name: name0, value: v0 },
             ExprKind::Module { name: name1, value: v1 },
         ) if let (
-            ModuleKind::Dynamic { sandbox: sb0, sig: si0, source: sr0 },
-            ModuleKind::Dynamic { sandbox: sb1, sig: si1, source: sr1 },
+            ModuleKind::Dynamic { sig: si0, source: sr0 },
+            ModuleKind::Dynamic { sig: si1, source: sr1 },
         ) = (&**v0, &**v1) =>
         {
-            (name0 == name1)
-                && (sb0 == sb1)
-                && (check_module_sig(si0, si1))
-                && (check(sr0, sr1))
+            (name0 == name1) && (check_module_sig(si0, si1)) && (check(sr0, sr1))
         }
         (ExprKind::Block { exprs: exprs0 }, ExprKind::Block { exprs: exprs1 }) => {
             exprs0.len() == exprs1.len()
@@ -3206,7 +3191,7 @@ fn ts_accepts_what_the_parser_does() {
         "select x { r\"a\" => 1, \"\"\"b\"\"\" => 2, r#\"c\"# => 3, _ => 4 }",
         "use  array::map",
         "use\n    array::map",
-        "mod m dynamic {\n  sandbox\n  whitelist  [core];\n  sig { val y: i64 };\n  source \"let y = 1\"\n}",
+        "mod m dynamic {\n  sig\n  { val y: i64 };\n  source \"let y = 1\"\n}",
         "a[\n  1\n]",
         "a[1 ..\n 2\n]",
         "a[\n  1..\n]",
@@ -3387,7 +3372,6 @@ fn map_written_types_reaches_each_kind() {
         catch(e: 'z) 1;
         seq let t: 'z = a { try { 1 } with(e: 'z) { 2 } };
         mod d dynamic {
-            sandbox unrestricted;
             sig { type S<'p: 'z> = 'z; val v: 'z; trait Q { val q: fn(self) -> i64 } };
             source ""
         }

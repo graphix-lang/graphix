@@ -22,9 +22,9 @@ use types::I64;
 
 use crate::mutate::Rng;
 
-/// The sandbox of a generated dynamic module: every package a generated
-/// body can reach.
-const BODY_PACKAGES: &str = "[core, array, str, map, list, re]";
+/// What a generated dynamic module's sig imports: every package a
+/// generated body can reach.
+const BODY_PACKAGES: &str = "use core; use array; use str; use map; use list; use re;";
 
 /// Feature probabilities and limits for one generation profile. All
 /// randomness flows through the seeded [`Rng`], so a given (cfg, seed)
@@ -248,13 +248,12 @@ fn raw_string(src: &str) -> String {
 fn dynamic_module(
     status: &str,
     name: &str,
-    whitelist: &str,
+    imports: &str,
     sig: &str,
     source: &str,
 ) -> String {
     format!(
-        "let {status} = mod {name} dynamic {{ sandbox whitelist {whitelist}; \
-         sig {{ {sig} }}; source {source} }}"
+        "let {status} = mod {name} dynamic {{ sig {{ {imports} {sig} }}; source {source} }}"
     )
 }
 

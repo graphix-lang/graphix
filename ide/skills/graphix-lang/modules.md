@@ -59,11 +59,28 @@ there, `use super::Foo;`, or written by its path, `super::Foo`, and
 declared above the module.
 
 ```graphix,cases
-no "undefined type Foo in foo" type Foo = {a: i64}; let st = mod foo dynamic { sandbox unrestricted; sig { val f: fn(x: Foo) -> i64 }; source "let f = |x| 1" }; st
-ok type Foo = {a: i64}; let st = mod foo dynamic { sandbox unrestricted; sig { use super::Foo; val f: fn(x: Foo) -> i64 }; source "let f = |x: Foo| x.a" }; st
-no "Foo names the type a later statement of this module declares" let st = mod foo dynamic { sandbox unrestricted; sig { use super::Foo; val f: fn(x: Foo) -> i64 }; source "let f = |x| 1" }; type Foo = {a: i64}; st
-ok type Foo = {a: i64}; let st = mod foo dynamic { sandbox unrestricted; sig { val f: fn(x: super::Foo) -> i64 }; source "let f = |x: super::Foo| x.a" }; st
-no "super::Foo names the type a later statement of this module declares" let st = mod foo dynamic { sandbox unrestricted; sig { val f: fn(x: super::Foo) -> i64 }; source "let f = |x| 1" }; type Foo = {a: i64}; st
+no "undefined type Foo in foo" type Foo = {a: i64}; let st = mod foo dynamic { sig { val f: fn(x: Foo) -> i64 }; source "let f = |x| 1" }; st
+ok type Foo = {a: i64}; let st = mod foo dynamic { sig { use super::Foo; val f: fn(x: Foo) -> i64 }; source "let f = |x: Foo| x.a" }; st
+no "the sig imports `Foo`, which nothing above this module declares" let st = mod foo dynamic { sig { use super::Foo; val f: fn(x: Foo) -> i64 }; source "let f = |x| 1" }; type Foo = {a: i64}; st
+ok type Foo = {a: i64}; let st = mod foo dynamic { sig { val f: fn(x: super::Foo) -> i64 }; source "let f = |x| 1" }; st
+no "super::Foo names the type a later statement of this module declares" let st = mod foo dynamic { sig { val f: fn(x: super::Foo) -> i64 }; source "let f = |x| 1" }; type Foo = {a: i64}; st
+```
+
+A dynamic module's body sees only what its `sig` imports: no package,
+`core` included, and nothing of the program around it. Operators and
+literals need no import. `use core;` brings a package whole, `use
+array::len;` one name, `use super::limit;` a binding declared above the
+module, `use super::*;` every name the enclosing scope declares and no
+package. The body may still write a granted name by its path
+(`array::len`, `super::limit`). An import that names nothing above the
+module is refused at the check; a body that reaches past its sig's
+imports fails at the load, so it shows in the module's status and never
+at the check. There is no `sandbox` statement.
+
+```graphix,cases
+ok let k = 1; let st = mod m dynamic { sig { use core; use array::len; use super::k; val v: i64 }; source "let v = k" }; st
+no "the sig imports `k`, which nothing above this module declares" let st = mod m dynamic { sig { use super::k; val v: i64 }; source "let v = k" }; let k = 1; st
+no "a dynamic module has no `sandbox`" let st = mod m dynamic { sandbox whitelist [core]; sig { val v: i64 }; source "let v = 1" }; st
 ```
 
 A gxi `mod` or `use` the body does not repeat is spliced into the body
@@ -132,13 +149,13 @@ ok trait T { val m: fn(self) -> i64 }; impl T for Array<i64> { let m = |s| 1 }; 
 ok trait T { val m: fn(self) -> i64 }; impl T for Array<i64> { let m = |s| 1 }; impl T for null { let m = |s| 2 }; let v: [Array<i64>, null] = [1]; T::m(v)
 no "type P writes `self`" trait T { val m: fn(self) -> i64 }; impl<'a> T for Array<'a> { let m = |s| { type P = self; let p: P = s; array::len(p) } }; T::m([1])
 ok trait T { val m: fn(self) -> i64 }; impl<'a> T for Array<'a> { let m = |s| { type P<'b> = Array<'b>; let p: P<'a> = s; array::len(p) } }; T::m([1])
-no "i64 does not contain string" trait T { val m: fn(self) -> i64 }; impl T for i64 { let m = |s| { let st = mod foo dynamic { sandbox whitelist [core]; sig { val f: fn(x: self) -> self }; source "let f = |x| x" }; select st { error as e => 0, null as _ => str::len(foo::f("ab")) + s } } }; T::m(1)
-no "[i64, null] does not contain string" trait T { val m: fn(self) -> i64 }; impl T for i64 { let m = |s| { let st = mod foo dynamic { sandbox whitelist [core]; sig { val f: fn<'b: [self, null]>(x: 'b) -> 'b }; source "let f = |x| x" }; select st { error as e => 0, null as _ => str::len(foo::f("ab")) + s } } }; T::m(1)
-no "undefined type W" type W = Abstract<i64>; trait T { val m: fn(self) -> i64 }; impl T for W { let m = |s| { let st = mod foo dynamic { sandbox whitelist [core]; sig { val f: fn(x: self) -> self }; source "let f = |x| x" }; select st { error as e => 0, null as _ => foo::f(s).0 } } }; T::m(W(7))
-ok type W = Abstract<i64>; trait T { val m: fn(self) -> i64 }; impl T for W { let m = |s| { let st = mod foo dynamic { sandbox whitelist [core]; sig { use super::W; val f: fn(x: self) -> self }; source "let f = |x| x" }; select st { error as e => 0, null as _ => foo::f(s).0 } } }; T::m(W(7))
-no "the signature of module foo writes `self`" trait T { val m: fn(self) -> i64 }; impl<'a> T for Array<'a> { let m = |s| { let st = mod foo dynamic { sandbox whitelist [core]; sig { val f: fn(x: self) -> self }; source "let f = |x| x" }; select st { error as e => 0, null as _ => array::len(s) } } }; T::m([1])
-no "which in a default is the trait's type variable" trait T { val m: fn(self) -> i64 = |s| { let st = mod foo dynamic { sandbox whitelist [core]; sig { val f: fn(x: self) -> self }; source "let f = |x| x" }; select st { error as e => 0, null as _ => 1 } } }; impl T for i64 {}; T::m(1)
-ok trait T { val m: fn(self) -> i64 = |s| { let st = mod foo dynamic { sandbox whitelist [core]; sig { val f: fn(x: 'q) -> 'q }; source "let f = |x| x" }; select st { error as e => 0, null as _ => str::len(foo::f("ab")) } } }; impl T for i64 {}; T::m(1)
+no "i64 does not contain string" trait T { val m: fn(self) -> i64 }; impl T for i64 { let m = |s| { let st = mod foo dynamic { sig { val f: fn(x: self) -> self }; source "let f = |x| x" }; select st { error as e => 0, null as _ => str::len(foo::f("ab")) + s } } }; T::m(1)
+no "[i64, null] does not contain string" trait T { val m: fn(self) -> i64 }; impl T for i64 { let m = |s| { let st = mod foo dynamic { sig { val f: fn<'b: [self, null]>(x: 'b) -> 'b }; source "let f = |x| x" }; select st { error as e => 0, null as _ => str::len(foo::f("ab")) + s } } }; T::m(1)
+no "undefined type W" type W = Abstract<i64>; trait T { val m: fn(self) -> i64 }; impl T for W { let m = |s| { let st = mod foo dynamic { sig { val f: fn(x: self) -> self }; source "let f = |x| x" }; select st { error as e => 0, null as _ => foo::f(s).0 } } }; T::m(W(7))
+ok type W = Abstract<i64>; trait T { val m: fn(self) -> i64 }; impl T for W { let m = |s| { let st = mod foo dynamic { sig { use super::W; val f: fn(x: self) -> self }; source "let f = |x| x" }; select st { error as e => 0, null as _ => foo::f(s).0 } } }; T::m(W(7))
+no "the signature of module foo writes `self`" trait T { val m: fn(self) -> i64 }; impl<'a> T for Array<'a> { let m = |s| { let st = mod foo dynamic { sig { val f: fn(x: self) -> self }; source "let f = |x| x" }; select st { error as e => 0, null as _ => array::len(s) } } }; T::m([1])
+no "which in a default is the trait's type variable" trait T { val m: fn(self) -> i64 = |s| { let st = mod foo dynamic { sig { val f: fn(x: self) -> self }; source "let f = |x| x" }; select st { error as e => 0, null as _ => 1 } } }; impl T for i64 {}; T::m(1)
+ok trait T { val m: fn(self) -> i64 = |s| { let st = mod foo dynamic { sig { val f: fn(x: 'q) -> 'q }; source "let f = |x| x" }; select st { error as e => 0, null as _ => str::len(foo::f("ab")) } } }; impl T for i64 {}; T::m(1)
 ```
 
 A method's value decides none of the variables its trait's signature

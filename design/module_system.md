@@ -880,7 +880,7 @@ consulted env's view; interior imports of the modules walked are not
 consulted (plain `use` is private), except through `self::`/`super::`
 roots, which are inside the privacy boundary. The package prelude gates
 at the DESCENT: `package_roots` membership alone answers the leading
-segment, so a sandboxed dynamic-module env may keep `/sys/net` without
+segment, so a dynamic module's view may keep `/sys/net` without
 `/sys`.
 
 Keyword roots resolve structurally. `self::x` looks up at
@@ -931,6 +931,48 @@ it is loader-side code, and compiling it under the module's own scope
 made `let src = …; mod foo dynamic { … source src }` inexpressible
 (inside a block no spelling reaches the block-local; `super::` names
 module items only). The sig still binds under the module.
+
+### What a dynamic module's body sees
+
+A dynamic module's body compiles under a lexical view that holds what its
+sig imports and nothing else (`Env::imported_view`, built in
+`Module::compile_dynamic` from the env as it stood before the sig was
+bound, so the sig's own declarations are the body's to make). There is no
+sandbox statement: the sig's `use` items are the grant, and they are the
+same items the load splices into the body.
+
+- An imported name keeps every kind it has at the level it names (value,
+  type, trait), with what is under it: a module's contents, a trait's
+  scope. A keyword-anchored import (`use super::x`) keeps the name at
+  every level of the anchor's chain.
+- A glob keeps a level's own names and the modules it declares, with
+  their contents, never a package and never the module itself, so
+  `use super::*` at a script's root brings the script's names and no
+  `array`.
+- A package imported under its own name (`use core;`) installs no entry,
+  the prelude naming it already, so `compile_dynamic` passes those to the
+  view from the sig's items.
+- Nothing else is there: the core prelude's implicit glob finds an empty
+  `/core`, and a package root answers a path's first segment and nothing
+  below it. Operators, literals and the built-in type constructors are
+  syntax and need no name.
+- The sig still grants the traits it declares impls of (`Env::grant_trait`),
+  wherever they are declared.
+
+An import must name something where the module is declared
+(`Env::import_target_declared`): the view is made once, there, so a
+binding declared further down would be imported by the check and missing
+at every load. A type that a block's statement list declares further down
+is the exception: the block's types name it once it is declared
+(`Env::block_types`). A dynamic sig's imports are never reported unused.
+A body that reaches past the view fails at the load, in the module's
+status. Pins: `lang::modules::{a_body_sees_no_core_its_sig_does_not_import,
+a_body_of_operators_needs_no_import, an_imported_function_loads,
+a_function_beside_an_imported_one_is_refused,
+an_imported_module_brings_its_functions,
+a_sig_glob_of_the_loader_brings_no_package,
+a_sig_import_of_a_later_binding_is_refused}`, `env::test::an_imported_view_*`,
+the shell's `sig_imports`.
 
 ### Diagnostics
 

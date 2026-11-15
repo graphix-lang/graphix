@@ -628,9 +628,9 @@ pub(super) fn gen_module(
 }
 
 /// Emit a dynamic module: a raw-string-literal source compiled at
-/// runtime against a declared sig inside a sandbox, consumed through
-/// the status gate. Every outcome (load, sig mismatch, sandbox
-/// violation, syntax error) is deterministic at Exact strength, so
+/// runtime against a declared sig, consumed through the status gate.
+/// Every outcome (load, sig mismatch, a reach past the sig's imports,
+/// syntax error) is deterministic at Exact strength, so
 /// negative variants exercise the error arm as first-class outcomes.
 pub(super) fn gen_dynamic_module(
     ctx: &mut GenCtx,
@@ -685,13 +685,13 @@ pub(super) fn gen_dynamic_module(
     if sig_mismatch {
         sig.push_str("val absent: fn(x: i64) -> i64; ");
     }
-    // a narrow sandbox turns package reaches into deterministic
-    // error-arm outcomes, so both whitelists are healthy to emit
-    let whitelist = if chance(rng, 0.25) { "[core]" } else { super::BODY_PACKAGES };
+    // a sig that imports core alone turns package reaches into
+    // deterministic error-arm outcomes, so both are healthy to emit
+    let imports = if chance(rng, 0.25) { "use core;" } else { super::BODY_PACKAGES };
     let src = super::raw_string(src.trim_end().trim_end_matches(';'));
     let status = ctx.fresh();
     let sig = sig.trim_end().trim_end_matches(';');
-    let mut stmts = vec![super::dynamic_module(&status, &dname, whitelist, sig, &src)];
+    let mut stmts = vec![super::dynamic_module(&status, &dname, imports, sig, &src)];
     // consume one public fn through the status gate
     let (fname, fty) = &public[rng.below(public.len())];
     let GenType::Fn { params, ret, .. } = fty else { unreachable!() };

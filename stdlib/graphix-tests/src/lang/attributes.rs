@@ -308,8 +308,7 @@ const SYNC_ON_DYNAMIC_MODULE: &str = r#"
   #[sync]
   let f = |x: i64| {
     let s = mod t dynamic {
-      sandbox whitelist [core];
-      sig { val foo: i64 };
+      sig { use core; val foo: i64 };
       source "let foo = 42"
     };
     (s, x)
@@ -326,8 +325,7 @@ const ASYNC_ON_DYNAMIC_MODULE: &str = r#"
   #[async]
   let f = |x: i64| {
     let s = mod t dynamic {
-      sandbox whitelist [core];
-      sig { val foo: i64 };
+      sig { use core; val foo: i64 };
       source sys::time::after_idle(duration:0.001s, "let foo = 42")
     };
     select s { error as _ => never(), null as _ => t::foo + x }

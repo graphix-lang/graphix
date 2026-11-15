@@ -285,13 +285,10 @@ fn merge_uses_within(e: &Expr) -> Expr {
             handler: merge_expr_uses(&t.handler, None),
             ..(**t).clone()
         })),
-        Module { name, value }
-            if let ModuleKind::Dynamic { sandbox, sig, source } = &**value =>
-        {
+        Module { name, value } if let ModuleKind::Dynamic { sig, source } = &**value => {
             Module {
                 name: name.clone(),
                 value: Arc::new(ModuleKind::Dynamic {
-                    sandbox: sandbox.clone(),
                     sig: merge_sig_uses(sig),
                     source: source.clone(),
                 }),
@@ -511,7 +508,7 @@ mod tests {
             "seq t; abort(\n  // c\n  e\n) {\n  a;\n  c\n}\n",
             "seqq t; flush(\n  // c\n  e\n) {\n  a;\n  c\n}\n",
             "select\n  // c\n  x {\n  _ => 2\n}\n",
-            "mod m dynamic {\n  sandbox unrestricted;\n  sig { val x: i64 };\n  source\n    // c\n    \"let x = 1\"\n};\nm::x\n",
+            "mod m dynamic {\n  sig { val x: i64 };\n  source\n    // c\n    \"let x = 1\"\n};\nm::x\n",
         ] {
             stable(SourceKind::Program, src);
         }
@@ -1323,7 +1320,7 @@ mod tests {
             ),
             (
                 Program,
-                "mod m dynamic {\n    sandbox unrestricted;\n    sig {\n        val x: i64; // x\n        val y: i64\n        // below\n    };\n    source \"let x = 1\";\n};\n\nm::x\n",
+                "mod m dynamic {\n    sig {\n        val x: i64; // x\n        val y: i64\n        // below\n    };\n    source \"let x = 1\";\n};\n\nm::x\n",
             ),
             (Interface, "// only a comment\n"),
             (Interface, "val x: i64; // x\nval y: i64 // y\n// below\n"),
@@ -1578,13 +1575,6 @@ mod tests {
         );
         let caught = fmt(&format!("{{ catch(e) {{ println(e); {call} }}; x }}"));
         assert!(caught.lines().all(|l| !l.ends_with(' ')), "{caught:?}");
-        let sandbox = fmt(
-            "let m = mod m dynamic { sandbox whitelist [core, array, str, map, sys, http, toml, re, rand, pack, gui, tui, xls, net, fs, time, io, tcp, tls, dirs]; sig { val x: i64 }; source \"let x = 1\" }",
-        );
-        assert!(
-            sandbox.contains("sandbox whitelist [\n") && !sandbox.contains(", \n"),
-            "{sandbox}"
-        );
     }
 
     #[test]

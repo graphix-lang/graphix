@@ -2120,8 +2120,7 @@ const DYNAMIC_IMPL_DISPATCH: &str = r#"
     """;
     sys::net::publish("/local/dimpl0", source)?;
     let status = mod foo dynamic {
-        sandbox whitelist [core];
-        sig {
+        sig { use core;
             trait Show { val show: fn(self) -> string };
             type Counter;
             impl Show for Counter;
@@ -2152,8 +2151,7 @@ const DYNAMIC_IMPL_DEFAULT: &str = r#"
     """;
     sys::net::publish("/local/dimpl1", source)?;
     let status = mod foo dynamic {
-        sandbox whitelist [core];
-        sig {
+        sig { use core;
             trait Show {
                 val show: fn(self) -> string;
                 val twice: fn(self) -> string = |s| "[show(s)] [show(s)]"
@@ -2187,8 +2185,7 @@ const DYNAMIC_IMPL_INTERNAL: &str = r#"
     """;
     sys::net::publish("/local/dimpl2", source)?;
     let status = mod foo dynamic {
-        sandbox whitelist [core];
-        sig {
+        sig { use core;
             trait Show { val show: fn(self) -> string };
             type Counter;
             impl Show for Counter;
@@ -2225,8 +2222,7 @@ const DYNAMIC_IMPL_RELOAD: &str = r#"
     let source = one;
     sys::net::publish("/local/dimpl3", source)?;
     let status = mod foo dynamic {
-        sandbox whitelist [core];
-        sig {
+        sig { use core;
             trait Show { val show: fn(self) -> string };
             type Counter;
             impl Show for Counter;
@@ -2263,8 +2259,7 @@ run!(
         """;
         sys::net::publish("/local/dimpl4", source)?;
         let status = mod foo dynamic {
-            sandbox whitelist [core];
-            sig {
+            sig { use core;
                 use super::Show;
                 type Counter;
                 impl Show for Counter;
@@ -2297,8 +2292,7 @@ run!(
         """;
         sys::net::publish("/local/dimpl5", source)?;
         let status = mod foo dynamic {
-            sandbox whitelist [core];
-            sig {
+            sig { use core;
                 use super::Show;
                 type Counter;
                 impl Show for Counter;
@@ -2352,8 +2346,7 @@ const DYNAMIC_MODULE_TC1: &str = r#"
     """;
     sys::net::publish("/local/dtc1", source)?;
     let status = mod foo dynamic {
-        sandbox whitelist [core];
-        sig { val g: i64 };
+        sig { use core; val g: i64 };
         source sys::net::subscribe("/local/dtc1")?
     };
     select status {
@@ -2377,8 +2370,7 @@ const DYNAMIC_CORE_IMPL: &str = r#"
     """;
     sys::net::publish("/local/dcore", source)?;
     let status = mod foo dynamic {
-        sandbox whitelist [core];
-        sig {
+        sig { use core;
             type Counter;
             impl Display for Counter;
             val make: fn(x: i64) -> Counter
@@ -2809,7 +2801,7 @@ async fn implementations_are_declared_ones() {
         ),
         // an interface's impl too: the body binds the signature per compile
         (
-            "{ let f = |x: i64| mod foo dynamic { sandbox whitelist [core]; sig { trait Show { val show: fn(self) -> string }; type Counter; impl Show for Counter }; source \"\" }; f(0) }",
+            "{ let f = |x: i64| mod foo dynamic { sig { use core; trait Show { val show: fn(self) -> string }; type Counter; impl Show for Counter }; source \"\" }; f(0) }",
             "is in a function body",
         ),
         (
@@ -3359,8 +3351,7 @@ run!(
         let source = one;
         sys::net::publish("/local/dimpl_core_reload", source)?;
         let status = mod foo dynamic {
-            sandbox whitelist [core];
-            sig {
+            sig { use core;
                 type Counter;
                 impl Display for Counter;
                 val make: fn(x: i64) -> Counter
@@ -3386,8 +3377,7 @@ run!(
         let two = "let f = |x: i64| x + 200";
         let source = one;
         let status = mod foo dynamic {
-            sandbox whitelist [core];
-            sig { val f: fn(x: i64) -> i64 };
+            sig { use core; val f: fn(x: i64) -> i64 };
             source source
         };
         let n = 1;
@@ -3431,7 +3421,7 @@ run!(
         step <- select step { k if k < 3 => (k ~ step) + 1, _ => never() };
         let a = "[T(0)]";
         let src = select step { 1 => "let x = 1", _ => never() };
-        let st = mod foo dynamic { sandbox whitelist [core]; sig { val x: i64 }; source src };
+        let st = mod foo dynamic { sig { use core; val x: i64 }; source src };
         let result = select step { 3 => "[T(step)] [a]", _ => never() }
     "#; FuseExpect::Jit);
 
@@ -3727,8 +3717,7 @@ run!(
     uncalled_dynamic_trait_impl_must_be_pure,
     r#"{
     let status = mod foo dynamic {
-        sandbox whitelist [core];
-        sig {
+        sig { use core;
             trait Score { #[pure] val score: fn(self) -> i64 };
             impl Score for i64
         };
@@ -5306,8 +5295,7 @@ run!(
         impl T for i64 {
             let m = |s| {
                 let status = mod foo dynamic {
-                    sandbox whitelist [core];
-                    sig { type X = self; val f: fn(x: X) -> X; val k: self };
+                    sig { use core; type X = self; val f: fn(x: X) -> X; val k: self };
                     source "let f = |x| x + 1; let k = 10"
                 };
                 select status { error as e => 0, null as _ => foo::f(s) + foo::k }
@@ -5325,8 +5313,7 @@ run!(
         impl T for i64 {
             let m = |s| {
                 let status = mod foo dynamic {
-                    sandbox whitelist [core];
-                    sig { val f: fn(x: self) -> self };
+                    sig { use core; val f: fn(x: self) -> self };
                     source "let f = |x| x"
                 };
                 select status { error as e => 0, null as _ => str::len(foo::f("ab")) + s }
@@ -5346,8 +5333,7 @@ run!(
         impl T for W {
             let m = |s| {
                 let status = mod foo dynamic {
-                    sandbox whitelist [core];
-                    sig { val f: fn(x: self) -> self };
+                    sig { use core; val f: fn(x: self) -> self };
                     source "let f = |x| x"
                 };
                 select status { error as e => 0, null as _ => foo::f(s).0 }
@@ -5369,8 +5355,7 @@ run!(
         impl T for W {
             let m = |s| {
                 let status = mod foo dynamic {
-                    sandbox whitelist [core];
-                    sig { val f: fn(x: self) -> self };
+                    sig { use core; val f: fn(x: self) -> self };
                     source "let f = |x| x"
                 };
                 select status { error as e => 0, null as _ => foo::f(s).0 }
@@ -5419,8 +5404,7 @@ run!(
         impl T for W {
             let m = |s| {
                 let status = mod foo dynamic {
-                    sandbox whitelist [core];
-                    sig { use super::W; val f: fn(x: self) -> self };
+                    sig { use core; use super::W; val f: fn(x: self) -> self };
                     source "let f = |x| x"
                 };
                 select status { error as e => 0, null as _ => foo::f(s).0 }
@@ -5470,8 +5454,7 @@ run!(
         impl C for Array<'_> {
             let f = |s, x| {
                 let status = mod foo dynamic {
-                    sandbox whitelist [core, array];
-                    sig { val g: fn(x: self<'e>) -> i64 };
+                    sig { use core; use array; val g: fn(x: self<'e>) -> i64 };
                     source "let g = |x| array::len(x)"
                 };
                 select status { error as e => 0, null as _ => foo::g(s) + foo::g(["a", "b"]) }
@@ -5495,8 +5478,7 @@ run!(
         impl<'a> T for Array<'a> {
             let m = |s| {
                 let status = mod foo dynamic {
-                    sandbox whitelist [core];
-                    sig { val f: fn(x: self) -> self };
+                    sig { use core; val f: fn(x: self) -> self };
                     source "let f = |x| x"
                 };
                 select status {
@@ -5517,8 +5499,7 @@ run!(
         impl<'a> T for Array<'a> {
             let m = |s| {
                 let status = mod foo dynamic {
-                    sandbox whitelist [core];
-                    sig { val f: fn(x: Array<'b>) -> Array<'b> };
+                    sig { use core; val f: fn(x: Array<'b>) -> Array<'b> };
                     source "let f = |x| x"
                 };
                 select status {
@@ -5541,8 +5522,7 @@ run!(
         trait T {
             val m: fn(self) -> i64 = |s| {
                 let status = mod foo dynamic {
-                    sandbox whitelist [core];
-                    sig { val f: fn(x: self) -> self };
+                    sig { use core; val f: fn(x: self) -> self };
                     source "let f = |x| x"
                 };
                 select status { error as e => 0, null as _ => str::len(foo::f("ab")) }
@@ -5560,8 +5540,7 @@ run!(
         trait T {
             val m: fn(self) -> i64 = |s| {
                 let status = mod foo dynamic {
-                    sandbox whitelist [core];
-                    sig { val f: fn(x: 'q) -> 'q };
+                    sig { use core; val f: fn(x: 'q) -> 'q };
                     source "let f = |x| x"
                 };
                 select status { error as e => 0, null as _ => str::len(foo::f("ab")) }
@@ -5582,8 +5561,7 @@ run!(
         impl T for i64 {
             let m = |s| {
                 let status = mod foo dynamic {
-                    sandbox whitelist [core];
-                    sig { val f: fn<'b: [self, null]>(x: 'b) -> 'b };
+                    sig { use core; val f: fn<'b: [self, null]>(x: 'b) -> 'b };
                     source "let f = |x| x"
                 };
                 select status { error as e => 0, null as _ => foo::f(s) + 1 }
@@ -5601,8 +5579,7 @@ run!(
         impl T for i64 {
             let m = |s| {
                 let status = mod foo dynamic {
-                    sandbox whitelist [core];
-                    sig { val f: fn<'b: [self, null]>(x: 'b) -> 'b };
+                    sig { use core; val f: fn<'b: [self, null]>(x: 'b) -> 'b };
                     source "let f = |x| x"
                 };
                 select status { error as e => 0, null as _ => str::len(foo::f("ab")) + s }
@@ -5620,8 +5597,7 @@ run!(
         impl<'a> T for Array<'a> {
             let m = |s| {
                 let status = mod foo dynamic {
-                    sandbox whitelist [core];
-                    sig { val f: fn<'b: [self, null]>(x: 'b) -> 'b };
+                    sig { use core; val f: fn<'b: [self, null]>(x: 'b) -> 'b };
                     source "let f = |x| x"
                 };
                 select status { error as e => 0, null as _ => array::len(s) }
@@ -5638,8 +5614,7 @@ run!(
         trait T {
             val m: fn(self) -> i64 = |s| {
                 let status = mod foo dynamic {
-                    sandbox whitelist [core];
-                    sig { val f: fn<'b: [self, null]>(x: 'b) -> 'b };
+                    sig { use core; val f: fn<'b: [self, null]>(x: 'b) -> 'b };
                     source "let f = |x| x"
                 };
                 select status { error as e => 0, null as _ => str::len(foo::f("ab")) }

@@ -14,7 +14,7 @@ The highlighter recognizes and highlights:
 - Control flow: `let`, `fn`, `select`, `if`, `as`, `with`
 - Module system: `mod`, `type`, `val`, `sig`, `use`
 - Error handling: `throws`
-- Dynamic modules: `dynamic`, `sandbox`, `whitelist`
+- Dynamic modules: `dynamic`, `sig`, `source`
 
 **Literals:**
 - Booleans: `true`, `false`

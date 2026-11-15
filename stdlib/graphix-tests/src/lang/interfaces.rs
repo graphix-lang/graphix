@@ -284,8 +284,7 @@ run!(
         ";
         sys::net::publish("/local/dyn_test", source)?;
         let status = mod dyn dynamic {
-            sandbox whitelist [core];
-            sig {
+            sig { use core;
                 type T;
                 val make: fn(x: i64) -> T;
                 val double: fn(t: T) -> i64             };
@@ -2758,7 +2757,6 @@ run!(
     refused("val v has its type variable 'a outside a function type"),
     "/test.gx" => r#"
         let st = mod d dynamic {
-            sandbox unrestricted;
             sig { val v: Array<'a>; val set: fn(x: Array<string>) -> null };
             source "let v = never(); let set = |x| { v <- x; null }"
         };
@@ -2776,7 +2774,6 @@ run!(
     "/test.gx" => r#"
         type Foo = {a: i64};
         let st = mod foo dynamic {
-            sandbox unrestricted;
             sig { val f: fn(x: Foo) -> i64; val k: i64 };
             source "let f = |x| 1; let k = 3"
         };
@@ -2790,7 +2787,6 @@ run!(
     "/test.gx" => r#"
         type Foo = {a: i64};
         let st = mod foo dynamic {
-            sandbox unrestricted;
             sig { use super::Foo; val f: fn(x: Foo) -> i64; val k: i64 };
             source "let f = |x: Foo| x.a; let k = 3"
         };
@@ -2804,7 +2800,6 @@ run!(
     "/test.gx" => r#"
         type Foo = {a: i64};
         let st = mod foo dynamic {
-            sandbox unrestricted;
             sig { type P = {p: Foo}; val k: i64 };
             source "let k = 3"
         };
@@ -2818,7 +2813,6 @@ run!(
     "/test.gx" => r#"
         type Foo = {a: i64};
         let st = mod foo dynamic {
-            sandbox unrestricted;
             sig { trait Q { val q: fn(self, x: Foo) -> i64 }; val k: i64 };
             source "let k = 3"
         };
@@ -2830,10 +2824,9 @@ run!(
 // nothing where the module stands.
 run!(
     dynamic_sig_import_of_a_type_declared_below_refused,
-    refused("Foo names the type a later statement of this module declares"),
+    refused("the sig imports `Foo`, which nothing above this module declares"),
     "/test.gx" => r#"
         let st = mod foo dynamic {
-            sandbox unrestricted;
             sig { use super::Foo; val f: fn(x: Foo) -> i64; val k: i64 };
             source "let f = |x| 1; let k = 3"
         };
@@ -2849,9 +2842,8 @@ run!(
     is(Value::Bool(true)),
     "/test.gx" => r#"
         let st = mod outer dynamic {
-            sandbox unrestricted;
             sig { val k: i64 };
-            source """type Bar = {b: i64}; let st = mod inner dynamic { sandbox unrestricted; sig { val f: fn(x: Bar) -> i64 }; source "let f = |x| 1" }; let k = select st { error as e => 1, null as _ => 2 }"""
+            source """type Bar = {b: i64}; let st = mod inner dynamic { sig { val f: fn(x: Bar) -> i64 }; source "let f = |x| 1" }; let k = select st { error as e => 1, null as _ => 2 }"""
         };
         let result = select st {
             error as e => str::contains(#part: "undefined type Bar", "[e]"),
@@ -2869,7 +2861,6 @@ run!(
         type Foo = {a: i64};
         let mk = |src: string| {
             let st = mod foo dynamic {
-                sandbox unrestricted;
                 sig { use super::Foo; val f: fn(x: Foo) -> i64 };
                 source src
             };

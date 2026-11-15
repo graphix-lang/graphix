@@ -1,7 +1,7 @@
 use super::{
     COMMA_WHY, Commentable, choice, commented, decl_items, doc_comment, expr, fname,
     input::{Input, R},
-    keyword, leading_comments, modpath, sep_by1_tok, spname,
+    keyword, leading_comments, spname,
     traitexp::{impl_sig, trait_decl},
     typexp::{typ, typedef},
     typname,
@@ -9,9 +9,9 @@ use super::{
 use crate::{
     SourcePosition,
     expr::{
-        BindSig, Comment, Comments, Eol, Expr, ExprKind, ModPath, ModuleKind, Name,
-        Sandbox, Sig, SigItem, SigKind, UseComment, UseCommentKind, UseComments, UseItem,
-        WrittenPath, get_origin,
+        BindSig, Comment, Comments, Eol, Expr, ExprKind, ModPath, ModuleKind, Name, Sig,
+        SigItem, SigKind, UseComment, UseCommentKind, UseComments, UseItem, WrittenPath,
+        get_origin,
     },
 };
 use arcstr::{ArcStr, literal};
@@ -79,37 +79,6 @@ fn sig(i: &mut Input) -> R<Sig> {
     Ok(Sig { toplevel: false, items: Arc::from_iter(items.drain(..)), below })
 }
 
-fn sandbox(i: &mut Input) -> R<Sandbox> {
-    i.spaces();
-    choice!(
-        i,
-        |i| i.string("unrestricted").map(|_| Sandbox::Unrestricted),
-        |i| {
-            i.string("blacklist")?;
-            paths(i).map(|mut l| Sandbox::Blacklist(Arc::from_iter(l.drain(..))))
-        },
-        |i| {
-            i.string("whitelist")?;
-            paths(i).map(|mut l| Sandbox::Whitelist(Arc::from_iter(l.drain(..))))
-        }
-    )
-}
-
-/// `[a::b, c]`: a sandbox's module paths.
-fn paths(i: &mut Input) -> R<LPooled<Vec<ModPath>>> {
-    i.sptoken('[')?;
-    let paths = sep_by1_tok(
-        i,
-        &|i| {
-            i.spaces();
-            modpath(i)
-        },
-        &|i| i.token(']').map(drop),
-    )?;
-    i.sptoken(']')?;
-    Ok(paths)
-}
-
 fn dynamic_module(i: &mut Input) -> R<ModuleKind> {
     i.attempt(|i| {
         i.spaces1()?;
@@ -117,9 +86,14 @@ fn dynamic_module(i: &mut Input) -> R<ModuleKind> {
     })?;
     i.sptoken('{')?;
     i.spaces();
-    i.word_space("sandbox")?;
-    let sandbox = sandbox(i)?;
-    i.sptoken(';')?;
+    let start = i.mark();
+    if i.attempt(|i| i.word_space("sandbox")).is_ok() {
+        return Err(i.refuse_from(
+            start,
+            start.pos,
+            "a dynamic module has no `sandbox`: its body sees only what its `sig` imports with `use`",
+        ));
+    }
     let sig = sig(i)?;
     i.sptoken(';')?;
     i.spaces();
@@ -128,7 +102,7 @@ fn dynamic_module(i: &mut Input) -> R<ModuleKind> {
     i.spaces();
     i.optional(|i| i.token(';'))?;
     i.sptoken('}')?;
-    Ok(ModuleKind::Dynamic { sandbox, sig, source: Arc::new(source) })
+    Ok(ModuleKind::Dynamic { sig, source: Arc::new(source) })
 }
 
 pub(super) fn module(i: &mut Input) -> R<Expr> {

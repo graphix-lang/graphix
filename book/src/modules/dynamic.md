@@ -4,9 +4,10 @@ Graphix programs can dynamically load modules at runtime. The loaded code will
 be compiled, type checked, and the loader will return an error indicating any
 failure in that process. Because Graphix is a statically typed language we must
 know ahead of time what interface the dynamically loaded module will have. We do
-this by defining a module signature. We can also define what the dynamically
-loaded module is allowed to reference, in order to prevent it from just calling
-any function it likes (aka it's sandboxed). Lets dive right in with an example,
+this by defining a module signature. The signature also decides what the
+dynamically loaded module may reference: it sees what the signature imports and
+nothing else, so it cannot just call any function it likes. Lets dive right in
+with an example,
 
 ```graphix
 // the module source, which we will publish in netidx
@@ -21,7 +22,6 @@ sys::net::publish(path, source)$;
 
 // now load the module
 let status = mod foo dynamic {
-    sandbox whitelist [core];
     sig {
         val add: fn(x: i64) -> i64;
         val sub: fn(x: i64) -> i64;
@@ -48,18 +48,9 @@ interesting, lets break it down.
 
 `mod foo dynamic` declares a dynamically loaded module named `foo`. In the rest
 of our code we can refer (statically) to `foo` as if it was a normal module that
-we loaded at compile time. There are three sections required to define a dynamic
-module, they are required to be defined in order, sandbox, sig, and source,
+we loaded at compile time. There are two sections required to define a dynamic
+module, they are required to be defined in order, sig and source,
 
-- a `sandbox` statement, of which there are three types
-  - `sandbox unrestricted;` no sandboxing, the dynamic module can access
-    anything in it's scope
-  - `sandbox whitelist [item0, item1, ...]` the dynamic module may access ONLY
-    the names explicitly listed. e.g. `sandbox whitelist [core, array];` would
-    allow the dynamic module to access only `core` and `array` and nothing else.
-  - `sandbox blacklist [item0, item1, ...]` the dynamic module may access
-    anything except the names listed. `sandbox blacklist [sys];` everything
-    except the `sys` package would be accessible
 - a `sig` statement is the type signature of the module, written as an
   [interface](./interfaces.md) is. Its statements are,
   - a val statement defines a value and it's type, `val add: fn(x: i64) -> i64` is
@@ -74,7 +65,9 @@ module, they are required to be defined in order, sandbox, sig, and source,
     [Abstract Types](./interfaces.md#abstract-types) section for details.
   - a trait statement defines a trait, and an impl statement, `impl Show for
     T;`, declares an implementation the loaded module must provide.
-  - a use statement imports names the signature uses, e.g. `use sys::io::Read;`
+  - a use statement imports names, e.g. `use sys::io::Read;`. What the
+    signature imports is also everything the loaded module can see, as
+    described below.
 
   Like an interface, the signature sees only what it imports or declares
   itself. A type of the loading program is imported, `use super::Config;`,
@@ -105,6 +98,43 @@ it sees nothing of the new module: a trait method its code calls is the one that
 body implemented, also where a function outside the module that it calls makes
 the call, and a name it uses is what that body imported. Code that should follow
 a reload calls through the module each time, `foo::add(x)`.
+
+## What a Loaded Module Can See
+
+A loaded module starts with nothing: no package, not even `core`, and none of
+the loading program's bindings, types or modules. The module in the example
+above uses only operators and literals, which need no import, so its signature
+imports nothing. Everything else comes from a `use` in the signature:
+
+```graphix
+let limit = 10;
+let status = mod foo dynamic {
+    sig {
+        use core;
+        use array::{len, map};
+        use super::limit;
+        val small: fn(xs: Array<i64>) -> bool
+    };
+    source "let small = |xs| { dbg(len(xs)); len(xs) < limit }"
+};
+status
+```
+
+- `use core;` or any other package brings the whole package: the module can
+  call `dbg`, `filter` and the rest of `core` by their bare names, as any
+  program does.
+- `use array::{len, map};` brings those two functions and nothing else of
+  `array`: `array::fold` is not defined inside the module.
+- `use super::limit;` brings one binding of the loading program. It must be
+  declared above the module.
+- A glob, `use super::*;`, brings every name the enclosing scope declares, but
+  never a package.
+
+A signature import that names nothing is refused when the loading program is
+checked. Nothing a signature imports is added to the module's interface:
+`foo::limit` is not defined.
+
+## Signature Checking
 
 Obviously the loaded module must match the type signature defined in the dynamic
 mod statement. However, the signature checking only cares that every item

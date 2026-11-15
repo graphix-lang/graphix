@@ -386,8 +386,7 @@ run!(
     let k = 0;
     k <- select k { 0 => 1, _ => never() };
     let status = mod foo dynamic {
-        sandbox whitelist [core];
-        sig { val y: string };
+        sig { use core; val y: string };
         source select k {
             0 => "let y = { type L = i64; let v: L = 1; \"a\" }",
             _ => "let y = { type L = string; let v: L = \"b\"; v }"

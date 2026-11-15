@@ -1380,8 +1380,7 @@ mod test {
         // `let v = mod m dynamic { .. }` binds `m` for the statements after
         // it (sep29b)
         let body = "{ let src = \"let f = |x: i64| -> i64 x\"; \
-                    let v = mod m dynamic { sandbox whitelist [core]; \
-                    sig { val f: fn(x: i64) -> i64 }; source src }; \
+                    let v = mod m dynamic { sig { use core; val f: fn(x: i64) -> i64 }; source src }; \
                     let r = m::f(i64:1); r }";
         let (probes, _) = probes(body, 8);
         assert!(

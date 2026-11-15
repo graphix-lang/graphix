@@ -12,8 +12,7 @@ fn a_failed_load_in_a_nested_branch_joins() {
     let program = r#"let result = {
     queuefn(#trigger: 0, |x: i64| -> i64 x);
     (mod foo dynamic {
-        sandbox whitelist [core];
-        sig { val n: i64 };
+        sig { use core; val n: i64 };
         source "let len = |s: string| -> i64 'str_len; let n = len(\"abc\")"
     }, 7).1
 };

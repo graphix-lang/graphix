@@ -91,8 +91,7 @@
                      "catch" "cast" "never" "any" "with" "throws" "as"
                      "pub" "trait" "impl" "mut" "val" "for"
                      "seq" "seqq" "until" "live" "abort" "flush"
-                     "dynamic" "sandbox" "whitelist" "blacklist"
-                     "unrestricted" "sig" "source"
+                     "dynamic" "sig" "source"
                      "self" "super" "package"))
         (builtins '("true" "false" "null"))
         (types '("bool" "string" "bytes" "i8" "u8" "i16" "u16"

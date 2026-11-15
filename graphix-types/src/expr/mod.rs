@@ -549,16 +549,8 @@ impl Deref for Sig {
 
 #[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
 #[pack(unwrapped)]
-pub enum Sandbox {
-    Unrestricted,
-    Blacklist(Arc<[ModPath]>),
-    Whitelist(Arc<[ModPath]>),
-}
-
-#[derive(Debug, Clone, PartialEq, PartialOrd, Pack)]
-#[pack(unwrapped)]
 pub enum ModuleKind {
-    Dynamic { sandbox: Sandbox, sig: Sig, source: Arc<Expr> },
+    Dynamic { sig: Sig, source: Arc<Expr> },
     Resolved { exprs: Arc<[Expr]>, sig: Option<Sig>, from_interface: bool },
     Unresolved { from_interface: bool },
 }
@@ -1884,10 +1876,9 @@ impl Expr {
                         from_interface: *from_interface,
                     }),
                 },
-                ModuleKind::Dynamic { sandbox, sig, source } => Module {
+                ModuleKind::Dynamic { sig, source } => Module {
                     name: name.clone(),
                     value: Arc::new(ModuleKind::Dynamic {
-                        sandbox: sandbox.clone(),
                         sig: sig.clone(),
                         source: a(f, source),
                     }),
@@ -2196,8 +2187,7 @@ impl Expr {
             TypeDef(td) => TypeDef(Arc::new(td.map_written_types(f)?)),
             Module { name, value } => {
                 let value = match &**value {
-                    ModuleKind::Dynamic { sandbox, sig, source } => ModuleKind::Dynamic {
-                        sandbox: sandbox.clone(),
+                    ModuleKind::Dynamic { sig, source } => ModuleKind::Dynamic {
                         sig: sig.map_written_types(f)?,
                         source: source.clone(),
                     },

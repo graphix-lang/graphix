@@ -3,9 +3,9 @@ use crate::{
     expr::{
         ApplyExpr, Arg, Attr, BinOp, BindExpr, BindSig, CatchRole, Comment, Comments,
         Decorations, Doc, Expr, ExprKind, ImplExpr, ImplHead, ItemComments, LambdaBody,
-        LambdaExpr, ModPath, ModuleKind, Sandbox, SelectExpr, SeqExpr, SeqTrigger, Sig,
-        SigItem, SigKind, StrForm, StructExpr, StructWithExpr, StructurePattern,
-        TraitExpr, TraitMethod, TypeDefBody, TypeDefExpr, UseCommentKind, UseItem,
+        LambdaExpr, ModPath, ModuleKind, SelectExpr, SeqExpr, SeqTrigger, Sig, SigItem,
+        SigKind, StrForm, StructExpr, StructWithExpr, StructurePattern, TraitExpr,
+        TraitMethod, TypeDefBody, TypeDefExpr, UseCommentKind, UseItem,
         format::FormatConfig, parser, pattern::printed_fields,
     },
     print_as_written, print_lowered,
@@ -1189,53 +1189,6 @@ impl PrettyDisplay for ImplExpr {
     }
 }
 
-impl Sandbox {
-    fn kind_and_list(&self) -> Option<(&str, &[crate::expr::ModPath])> {
-        match self {
-            Sandbox::Unrestricted => None,
-            Sandbox::Blacklist(l) => Some(("blacklist", l)),
-            Sandbox::Whitelist(l) => Some(("whitelist", l)),
-        }
-    }
-}
-
-impl fmt::Display for Sandbox {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        match self.kind_and_list() {
-            None => write!(f, "sandbox unrestricted"),
-            Some((kind, l)) => {
-                write!(f, "sandbox {kind} [")?;
-                for (i, p) in l.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?
-                    }
-                    write!(f, "{p}")?
-                }
-                write!(f, "]")
-            }
-        }
-    }
-}
-
-impl PrettyDisplay for Sandbox {
-    fn fmt_pretty_inner(&self, buf: &mut PrettyBuf) -> fmt::Result {
-        match self.kind_and_list() {
-            None => writeln!(buf, "sandbox unrestricted"),
-            Some((kind, l)) => {
-                writeln!(buf, "sandbox {kind} [")?;
-                buf.nested(|buf| {
-                    for (i, p) in l.iter().enumerate() {
-                        let sep = if i + 1 < l.len() { "," } else { "" };
-                        writeln!(buf, "{p}{sep}")?
-                    }
-                    Ok(())
-                })?;
-                writeln!(buf, "]")
-            }
-        }
-    }
-}
-
 impl fmt::Display for BindSig {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "val {}: {}", self.name, self.typ)
@@ -2194,14 +2147,11 @@ impl PrettyDisplay for ExprKind {
             Impl(i) => i.fmt_pretty_inner(buf),
             StructWith(sw) => sw.fmt_pretty_inner(buf),
             Module { name, value } => {
-                let ModuleKind::Dynamic { sandbox, sig, source } = &**value else {
+                let ModuleKind::Dynamic { sig, source } = &**value else {
                     return writeln!(buf, "{self}");
                 };
                 writeln!(buf, "mod {name} dynamic {{")?;
                 buf.nested(|buf| {
-                    sandbox.fmt_pretty(buf)?;
-                    buf.kill_newline();
-                    writeln!(buf, ";")?;
                     sig.fmt_pretty(buf)?;
                     buf.kill_newline();
                     writeln!(buf, ";")?;
@@ -2864,9 +2814,8 @@ impl ExprKind {
                 write!(f, "mod {name}")?;
                 match &**value {
                     ModuleKind::Resolved { .. } | ModuleKind::Unresolved { .. } => Ok(()),
-                    ModuleKind::Dynamic { sandbox, sig, source } => {
-                        write!(f, " dynamic {{ {sandbox};")?;
-                        write!(f, " {sig};")?;
+                    ModuleKind::Dynamic { sig, source } => {
+                        write!(f, " dynamic {{ {sig};")?;
                         write!(f, " source {source} }}")
                     }
                 }

@@ -370,13 +370,12 @@ fn compile_module_inner<R: Rt>(
                 top_id,
             )
         }
-        ModuleKind::Dynamic { sandbox, sig, source } => Module::compile_dynamic(
+        ModuleKind::Dynamic { sig, source } => Module::compile_dynamic(
             ctx,
             flags,
             spec.clone(),
             enclosing,
             &scope,
-            sandbox.clone(),
             sig.clone(),
             source.clone(),
             top_id,

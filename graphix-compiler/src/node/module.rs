@@ -9,7 +9,7 @@ use crate::{
     errf,
     expr::{
         At, BindSig, Doc, ErrorSite, Expr, ExprId, ExprKind, ModPath, ModuleKind, Name,
-        Origin, ParserContext, Sandbox, Sig, SigItem, SigKind, Source, Told, TypeDefBody,
+        Origin, ParserContext, Sig, SigItem, SigKind, Source, Told, TypeDefBody,
         TypeDefExpr, UseItem, WrittenAt, add_interface_modules, parser,
     },
     format_with_flags,
@@ -48,7 +48,11 @@ use netidx_value::{Typ, Value};
 use nohash::IntSet;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
-use std::{fmt::Write, mem, sync::LazyLock};
+use std::{
+    fmt::Write,
+    mem,
+    sync::{LazyLock, atomic::Ordering},
+};
 use triomphe::Arc;
 
 /// What one item of a `use` installs.
@@ -1708,7 +1712,6 @@ impl<R: Rt> Module<R> {
         spec: Arc<Expr>,
         enclosing: &Scope,
         scope: &Scope,
-        sandbox: Sandbox,
         sig: Sig,
         source: Arc<Expr>,
         top_id: ExprId,
@@ -1725,13 +1728,48 @@ impl<R: Rt> Module<R> {
         // the loaded text compiles under the module's own scope
         let source = compile(ctx, flags, (*source).clone(), enclosing, top_id)?;
         ctx.env.declare_module_site(&scope.lexical, &spec.ori, spec.pos);
-        let mut env = ctx.env.apply_sandbox(&sandbox).context("applying sandbox")?;
-        env.declare_module_site(&scope.lexical, &spec.ori, spec.pos);
-        env.lexical.modules.insert_cow(scope.lexical.clone());
+        let outside = ctx.env.clone();
         let sig_decls = bind_sig(&mut ctx.env, &mut ctx.pending_imports, &scope, &sig)
             .context("binding module signature")?;
+        // the body sees what the sig imports and nothing else, so an import
+        // is a grant: it must name something here, and is never unused
+        if let Some(names) = ctx.env.names.get(&scope.lexical) {
+            for (key, e) in names.imports.iter() {
+                if !ctx.env.import_target_declared(e) {
+                    return Err(anyhow!(
+                        "the sig imports `{key}`, which nothing above this module \
+                         declares: a dynamic module's body sees only what its sig imports"
+                    )
+                    .context(ParserContext { ori: e.ori.clone(), pos: e.pos }));
+                }
+                e.used.store(true, Ordering::Relaxed)
+            }
+        }
+        let packages = sig
+            .items
+            .iter()
+            .filter_map(|si| match &si.kind {
+                SigKind::Use { names, .. } => Some(names.iter()),
+                _ => None,
+            })
+            .flatten()
+            .filter_map(|u| {
+                let mut parts = Path::parts(&*u.path.0);
+                match (parts.next(), parts.next(), &u.rename) {
+                    (Some(pkg), None, None) if ctx.env.package_roots.contains(pkg) => {
+                        Some(ModPath::from([pkg]))
+                    }
+                    _ => None,
+                }
+            });
+        let mut env = outside.imported_view(
+            &scope.lexical,
+            ctx.env.names.get(&scope.lexical),
+            packages,
+        );
+        env.lexical.modules.insert_cow(scope.lexical.clone());
         // the interface grants the traits it declares impls of, wherever
-        // the sandbox leaves them
+        // the imports leave them
         for si in sig.items.iter() {
             if let SigKind::Impl(im) = &si.kind
                 && let Some(tid) = ctx.env.lookup_trait(&scope.lexical, &im.trait_name)?

@@ -544,8 +544,7 @@ const LATER_MODULE: &str = r#"{
   let h: fn(x: i64) -> i64 = |x: i64| -> i64 x;
   let a = h(1);
   let status = mod foo dynamic {
-    sandbox whitelist [core];
-    sig { val g: fn(x: i64) -> i64 };
+    sig { use core; val g: fn(x: i64) -> i64 };
     source "let c = 0; c <- select c { k if k < 3 => k + 1, _ => never() };
             let d = c * 10; let g = |x: i64| -> i64 x + d"
   };

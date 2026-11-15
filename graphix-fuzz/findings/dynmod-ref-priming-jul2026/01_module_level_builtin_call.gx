@@ -14,7 +14,7 @@
 // from ctx.cached after every dynamic (re)compile, exactly as bind()
 // does (node/module.rs).
 {
-  let v8 = mod d1 dynamic { sandbox whitelist [core, str]; sig { val g0: fn(a0: bool) -> i64 }; source "let v8 = str::len(\"graphix\");\nlet g0 = |v9: bool| -> i64 (-((v8 - i64:-100)))" };
+  let v8 = mod d1 dynamic { sig { use core; use str; val g0: fn(a0: bool) -> i64 }; source "let v8 = str::len(\"graphix\");\nlet g0 = |v9: bool| -> i64 (-((v8 - i64:-100)))" };
   let v9 = select v8 {error as _ => i64:0, null as _ => d1::g0(true)};
   let v11: i64 = (str::len("graphix") + i64:1);
   v9

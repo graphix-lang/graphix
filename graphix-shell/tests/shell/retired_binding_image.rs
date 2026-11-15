@@ -22,7 +22,7 @@ src <- select ep {
     6 => "let v = 20; let get = |x: i64| x * 1000 + v",
     _ => never()
 };
-let s = mod d dynamic { sandbox unrestricted; sig { val v: i64; val get: fn(x: i64) -> i64 }; source src };
+let s = mod d dynamic { sig { val v: i64; val get: fn(x: i64) -> i64 }; source src };
 let get0: fn(x: i64) -> i64 = never();
 get0 <- select ep { 4 => ep ~ d::get, _ => never() };
 let escaped = array::map(ys, |y| (saved(y + ep), get0(y + ep)));

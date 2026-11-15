@@ -1,6 +1,6 @@
-//! A dynamic module's whitelist keeps the modules enclosing what it lists,
-//! so a nested module, a value two levels down and a granted trait below
-//! the root are reachable by their qualified paths.
+//! What a dynamic module's sig imports keeps the modules enclosing it, so
+//! a nested module, a value two levels down and a granted trait below the
+//! root are reachable by their qualified paths.
 
 use super::common;
 use common::graphix;
@@ -8,13 +8,11 @@ use std::fs;
 
 const MAIN: &str = r#"mod a;
 let nested = mod foo dynamic {
-    sandbox whitelist [core, sys::fs::tempdir, a::b::f];
-    sig { val y: i64 };
+    sig { use core; use sys::fs::tempdir; use a::b::f; val y: i64 };
     source "let t = sys::fs::tempdir::create; let y = super::a::b::f(1)"
 };
 let traits = mod bar dynamic {
-    sandbox whitelist [core, a::b];
-    sig {
+    sig { use core; use a::b;
         use super::a::b::Show;
         type Counter;
         impl Show for Counter;
@@ -33,7 +31,7 @@ select nested {
 "#;
 
 #[test]
-fn whitelist_keeps_enclosing_modules() {
+fn a_sig_import_keeps_enclosing_modules() {
     let dir = tempfile::tempdir().expect("tempdir");
     let a = dir.path().join("a");
     fs::create_dir_all(&a).expect("tempdir");

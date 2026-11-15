@@ -272,8 +272,7 @@ async fn failed_dynamic_module_compiles_leave_no_definitions() -> Result<()> {
             &ctx,
             r#"{
                 let status = mod m dynamic {
-                    sandbox whitelist [core];
-                    sig { val h: i64 };
+                    sig { use core; val h: i64 };
                     source "let a = 1; let f = |x| x + a; let g = |y| y; let h = missing"
                 };
                 select status { error as e => e, null as _ => never() }
@@ -339,8 +338,8 @@ fn is_pair(a: i64, b: i64) -> impl Fn(&Value) -> bool {
 /// `let v = [tick];` and whose interface declares `sig` before `v` and
 /// `get`, each load's `get` saved and called through the next reload,
 /// which retires the body it was made in, then replaced by the new
-/// load's. `get(x)` is `x + v`. `outside` is declared at the root, and a
-/// module with something to import from there is unrestricted.
+/// load's. `get(x)` is `x + v`. `outside` is declared at the root, where
+/// the sig imports from.
 async fn saved_across_reloads(
     mode: Mode,
     outside: &str,
@@ -351,12 +350,10 @@ async fn saved_across_reloads(
     let (ctx, mut rx) = fixture_runtime([], crate::TEST_REGISTER, mode, |_| {}).await?;
     let roots = ArcStr::from(format!("let tick: i64 = 0; {outside}"));
     let _roots = ctx.rt.compile(roots).await?;
-    let sandbox = if outside.is_empty() { "whitelist [core]" } else { "unrestricted" };
     let program = format!(
         r#"{{
           let src = "let v = [tick]; {body}";
           let s = mod d dynamic {{
-              sandbox {sandbox};
               sig {{ {sig} val v: i64; val get: fn(x: i64) -> i64 }};
               source src
           }};
@@ -418,7 +415,7 @@ async fn a_saved_function_calling_an_outside_function_keeps_nothing_once_dropped
         mode,
         "trait Sh { val sh: fn(self) -> i64 }; \
          let app = |x: Sh| Sh::sh(x); let mk = |x: Sh| |u: i64| Sh::sh(x) + u;",
-        "",
+        "use super::{Sh, app, mk};",
         "use super::{Sh, app, mk}; \
          type C = Abstract<i64>; impl Sh for C { let sh = |c: C| c.0 + v }; \
          let add = mk(C(0)); let get = |x: i64| app(C(x)) + add(0) - v",
@@ -435,10 +432,9 @@ async fn a_saved_function_calling_another_modules_function_keeps_nothing_once_dr
     saved_across_reloads(
         mode,
         "trait Sh { val sh: fn(self) -> i64 }; \
-         let sa = mod a dynamic { sandbox unrestricted; \
-         sig { use super::Sh; val app: fn(x: Sh) -> i64 }; \
+         let sa = mod a dynamic { sig { use super::Sh; val app: fn(x: Sh) -> i64 }; \
          source \"use super::Sh; let app = |x: Sh| Sh::sh(x)\" };",
-        "",
+        "use super::{Sh, a};",
         "use super::{Sh, a}; \
          type C = Abstract<i64>; impl Sh for C { let sh = |c: C| c.0 + v }; \
          let get = |x: i64| a::app(C(x))",
@@ -472,8 +468,7 @@ async fn a_function_saved_across_reloads_around_an_interface_module_keeps_nothin
         mode,
         "",
         "",
-        "let r = mod inner dynamic { sandbox unrestricted; \
-         sig { trait T { val d: fn(self) -> i64; val e: fn(self) -> i64 = |s| d(s) }; \
+        "let r = mod inner dynamic { sig { trait T { val d: fn(self) -> i64; val e: fn(self) -> i64 = |s| d(s) }; \
          type C; impl T for C; val mk: fn(x: i64) -> C }; \
          source \\\"type C = Abstract<i64>; impl T for C { let d = |c: C| c.0 }; \
          let mk = |x: i64| C(x)\\\" }; \
@@ -752,8 +747,7 @@ async fn a_dropped_module_takes_its_declared_core_impl() -> Result<()> {
         [],
         r#"{
             let status = mod m dynamic {
-                sandbox whitelist [core];
-                sig { type C; impl Cast for C; val make: fn(x: i64) -> C };
+                sig { use core; type C; impl Cast for C; val make: fn(x: i64) -> C };
                 source "type C = Abstract<i64>; impl Cast for C { let to_value = |c: C| c.0 * 10 }; let make = |x: i64| C(x)"
             };
             select status { error as e => never(dbg(e)), null as _ => json::write_str(m::make(3))$ }
@@ -771,8 +765,7 @@ async fn a_dropped_module_takes_its_declared_trait_and_impl() -> Result<()> {
         [],
         r#"{
             let status = mod m dynamic {
-                sandbox whitelist [core];
-                sig { trait Sh { val sh: fn(self) -> i64 }; type C; impl Sh for C; val make: fn(x: i64) -> C };
+                sig { use core; trait Sh { val sh: fn(self) -> i64 }; type C; impl Sh for C; val make: fn(x: i64) -> C };
                 source "type C = Abstract<i64>; impl Sh for C { let sh = |c: C| c.0 * 10 }; let make = |x: i64| C(x)"
             };
             select status { error as e => never(dbg(e)), null as _ => m::Sh::sh(m::make(3)) }
@@ -959,8 +952,7 @@ async fn a_dropped_root_module_is_declared_again() -> Result<()> {
     compiled_and_dropped(
         [],
         r#"mod m dynamic {
-            sandbox whitelist [core];
-            sig { trait Sh { val sh: fn(self) -> i64 }; type C; impl Sh for C; val make: fn(x: i64) -> C };
+            sig { use core; trait Sh { val sh: fn(self) -> i64 }; type C; impl Sh for C; val make: fn(x: i64) -> C };
             source "type C = Abstract<i64>; impl Sh for C { let sh = |c: C| c.0 * 10 }; let make = |x: i64| C(x)"
         }"#,
         Value::Null,
@@ -968,7 +960,7 @@ async fn a_dropped_root_module_is_declared_again() -> Result<()> {
     .await
 }
 
-const DYNAMIC_LEN_MODULE: &str = r#"sandbox whitelist [core, str]; sig { val make: fn(s: string) -> i64 }; source "use str::len; let make = |s: string| len(s)""#;
+const DYNAMIC_LEN_MODULE: &str = r#"sig { use core; use str; val make: fn(s: string) -> i64 }; source "use str::len; let make = |s: string| len(s)""#;
 
 /// Compile and drop a dynamic module at `/m` whose source writes `use
 /// str::len`, and a unit after it, which takes the module's tables.
@@ -1237,8 +1229,7 @@ async fn a_function_escaping_a_dropped_dynamic_module_dispatches_to_its_impl(
         mode,
         [],
         r#"{ let status = mod m dynamic {
-               sandbox whitelist [core];
-               sig { trait Sh { val sh: fn(self) -> i64 }; type C; impl Sh for C; val get: fn(x: i64) -> i64 };
+               sig { use core; trait Sh { val sh: fn(self) -> i64 }; type C; impl Sh for C; val get: fn(x: i64) -> i64 };
                source "type C = Abstract<i64>; impl Sh for C { let sh = |c: C| c.0 * 10 }; let get = |x: i64| Sh::sh(C(x))"
            };
            saved <- m::get;
@@ -1255,8 +1246,7 @@ async fn a_function_over_a_dropped_dynamic_modules_trait_dispatches_to_its_impl(
         mode,
         [],
         r#"{ let status = mod m dynamic {
-               sandbox whitelist [core];
-               sig { trait Sh { val sh: fn(self) -> i64 }; type C; impl Sh for C; val make: fn(x: i64) -> C };
+               sig { use core; trait Sh { val sh: fn(self) -> i64 }; type C; impl Sh for C; val make: fn(x: i64) -> C };
                source "type C = Abstract<i64>; impl Sh for C { let sh = |c: C| c.0 * 10 }; let make = |x: i64| C(x)"
            };
            saved <- |x: i64| m::Sh::sh(m::make(x));
@@ -1275,9 +1265,8 @@ async fn a_function_escaping_a_dropped_load_around_an_interface_module_dispatche
         mode,
         [],
         r#"{ let status = mod d dynamic {
-               sandbox unrestricted;
                sig { val make: fn(x: i64) -> i64 };
-               source "let r = mod inner dynamic { sandbox unrestricted; sig { trait Sh { val sh: fn(self) -> i64 }; type C; impl Sh for C; val mk: fn(x: i64) -> C }; source \"type C = Abstract<i64>; impl Sh for C { let sh = |c: C| c.0 * 10 }; let mk = |x: i64| C(x)\" }; let make = |x: i64| inner::Sh::sh(inner::mk(x))"
+               source "let r = mod inner dynamic { sig { trait Sh { val sh: fn(self) -> i64 }; type C; impl Sh for C; val mk: fn(x: i64) -> C }; source \"type C = Abstract<i64>; impl Sh for C { let sh = |c: C| c.0 * 10 }; let mk = |x: i64| C(x)\" }; let make = |x: i64| inner::Sh::sh(inner::mk(x))"
            };
            saved <- d::make;
            select status { error as e => never(dbg(e)), null as _ => 1 } }"#,
@@ -1332,8 +1321,7 @@ async fn a_function_over_a_dropped_trait_with_no_methods_binds_its_calls(
 fn root_module_and_function(name: &str, k: i64) -> String {
     format!(
         r#"mod m dynamic {{
-               sandbox whitelist [core];
-               sig {{ trait Sh {{ val sh: fn(self) -> i64 }}; type C; impl Sh for C; val make: fn(x: i64) -> C }};
+               sig {{ use core; trait Sh {{ val sh: fn(self) -> i64 }}; type C; impl Sh for C; val make: fn(x: i64) -> C }};
                source "type C = Abstract<i64>; impl Sh for C {{ let sh = |c: C| c.0 * {k} }}; let make = |x: i64| C(x)"
            }};
            {name} <- |x: i64| m::Sh::sh(m::make(x));
@@ -1701,7 +1689,6 @@ async fn a_function_over_an_interfaces_impl_of_a_dropped_outside_trait_dispatche
         mode,
         "trait Sh { val sh: fn(self) -> i64 }; let app = |v: Sh| Sh::sh(v)",
         r#"mod m dynamic {
-               sandbox unrestricted;
                sig { use super::Sh; type C; impl Sh for C; val make: fn(x: i64) -> C };
                source "use super::Sh; type C = Abstract<i64>; impl Sh for C { let sh = |c: C| c.0 * 10 }; let make = |x: i64| C(x)"
            }"#,

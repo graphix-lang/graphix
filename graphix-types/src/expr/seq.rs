@@ -2193,10 +2193,9 @@ fn rewrite_with_inner(e: &Expr, map: &Names, mode: Rewrite<'_>) -> Expr {
         // a module's body names nothing of the seq's: it is a scope of its own,
         // but a dynamic module's source is an expression here
         ExprKind::Module { name, value } => match &**value {
-            ModuleKind::Dynamic { sandbox, sig, source } => ExprKind::Module {
+            ModuleKind::Dynamic { sig, source } => ExprKind::Module {
                 name: name.clone(),
                 value: Arc::new(ModuleKind::Dynamic {
-                    sandbox: sandbox.clone(),
                     sig: sig.clone(),
                     source: Arc::new(rewrite(source, map)),
                 }),

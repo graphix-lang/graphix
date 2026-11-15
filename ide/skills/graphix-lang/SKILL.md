@@ -394,6 +394,10 @@ activation is deleted, including captures used by nested closures and labeled
 defaults. The retained values remain readable and writable; the deleted
 initializer does not keep running.
 
+A dynamic module's body sees only what its `sig` imports with `use`, not
+even `core`: a body that calls `dbg` or `array::len` without the import
+fails to load, which the check never shows (`modules.md`).
+
 A function saved out of a dynamic module (`saved <- d::get`) is the
 function of the body it was taken from. After a reload it runs that body's
 code over that body's bindings as they last stood, a call already running

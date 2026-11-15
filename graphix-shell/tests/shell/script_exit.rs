@@ -148,8 +148,7 @@ fn a_dynamic_sig_uses_the_import_its_self_reads() {
         impl T for W {\n\
           let m = |s| {\n\
             let status = mod foo dynamic {\n\
-              sandbox whitelist [core];\n\
-              sig { use super::W; val f: fn(x: self) -> self };\n\
+              sig { use core; use super::W; val f: fn(x: self) -> self };\n\
               source \"let f = |x| x\"\n\
             };\n\
             select status { error as e => 0, null as _ => foo::f(s).0 }\n\

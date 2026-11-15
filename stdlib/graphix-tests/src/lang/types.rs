@@ -12141,7 +12141,7 @@ async fn a_reloaded_module_releases_its_static_callee() -> Result<()> {
     for i in [
         "let f = |x: i64| x + 1",
         "let src = \"let v = super::f(1)\"",
-        "let s = mod d dynamic { sandbox unrestricted; sig { val v: i64 }; source src }",
+        "let s = mod d dynamic { sig { use super::f; val v: i64 }; source src }",
     ] {
         held.push(ctx.rt.compile(ArcStr::from(i)).await?);
     }
@@ -12171,7 +12171,7 @@ async fn a_reload_may_write_what_the_replaced_body_calls() -> Result<()> {
     for i in [
         "let f = |x: i64| x + 1",
         "let src = \"let v = super::f(1)\"",
-        "let s = mod d dynamic { sandbox unrestricted; sig { val v: i64 }; source src }",
+        "let s = mod d dynamic { sig { use super::f; val v: i64 }; source src }",
     ] {
         held.push(ctx.rt.compile(ArcStr::from(i)).await?);
     }
@@ -12239,7 +12239,7 @@ async fn a_reload_reaches_a_reader_in_an_earlier_input() -> Result<()> {
     let mut held = Vec::new();
     for i in [
         "let src = \"let v = 1\"",
-        "let s = mod d dynamic { sandbox unrestricted; sig { val v: i64 }; source src }",
+        "let s = mod d dynamic { sig { val v: i64 }; source src }",
         "let w = d::v",
     ] {
         held.push(ctx.rt.compile(ArcStr::from(i)).await?);

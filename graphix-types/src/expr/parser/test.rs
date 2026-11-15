@@ -2709,16 +2709,21 @@ fn a_comment_ending_a_line_rides_the_item_before_it() {
 }
 
 #[test]
-fn whitespace_before_a_use_tree_or_sandbox_kind_is_any() {
+fn whitespace_before_a_use_tree_is_any() {
     for src in
         ["use  array::map", "use\n    array::map", "use array::{\n  map,\n  len\n}"]
     {
         parse_one(src).unwrap_or_else(|e| panic!("{src}: {e:#}"));
     }
-    parse_one(
-        "mod m dynamic {\n  sandbox  whitelist  [core];\n  sig { val y: i64 };\n  source \"let y = 1\"\n}",
+}
+
+#[test]
+fn a_dynamic_module_with_a_sandbox_is_refused() {
+    let e = parse_one(
+        "mod m dynamic {\n  sandbox whitelist [core];\n  sig { val y: i64 };\n  source \"let y = 1\"\n}",
     )
-    .unwrap();
+    .unwrap_err();
+    assert!(format!("{e:#}").contains("a dynamic module has no `sandbox`"), "{e:#}");
 }
 
 #[test]
@@ -2993,46 +2998,46 @@ fn no_comment_stands_inside_a_splice_or_an_attribute() {
             splice,
         ),
         (
-            "let s = \"[{ mod m dynamic { sandbox whitelist [core]; sig { val x: i64 // c\n }; source \"let x = 1\" }; 1 }]\";\ns",
+            "let s = \"[{ mod m dynamic { sig { val x: i64 // c\n }; source \"let x = 1\" }; 1 }]\";\ns",
             splice,
         ),
         (
-            "let s = \"[{ mod m dynamic { sandbox whitelist [core]; sig { val x: i64;\n // c\n }; source \"let x = 1\" }; 1 }]\";\ns",
+            "let s = \"[{ mod m dynamic { sig { val x: i64;\n // c\n }; source \"let x = 1\" }; 1 }]\";\ns",
             splice,
         ),
         ("let s = \"[{ type T = {\n a: i64, // c\n b: i64\n }; 1 }]\";\ns", splice),
         (
-            "let s = \"[{ mod m dynamic { sandbox whitelist [core]; sig { type T = [\n `A, // a\n `B\n ] }; source \"let x = 1\" }; 1 }]\";\ns",
+            "let s = \"[{ mod m dynamic { sig { type T = [\n `A, // a\n `B\n ] }; source \"let x = 1\" }; 1 }]\";\ns",
             splice,
         ),
         // what an interface item holds: a trait's method comments and
         // default bodies, a use tree's comments and a `///` doc
         (
-            "let s = \"[{ mod m dynamic { sandbox whitelist [core]; sig { trait T { val f: fn(self) -> i64 // c\n } }; source \"\" }; 1 }]\";\ns",
+            "let s = \"[{ mod m dynamic { sig { trait T { val f: fn(self) -> i64 // c\n } }; source \"\" }; 1 }]\";\ns",
             splice,
         ),
         (
-            "let s = \"[{ mod m dynamic { sandbox whitelist [core]; sig { trait T { val f: fn(self) -> i64;\n // c\n } }; source \"\" }; 1 }]\";\ns",
+            "let s = \"[{ mod m dynamic { sig { trait T { val f: fn(self) -> i64;\n // c\n } }; source \"\" }; 1 }]\";\ns",
             splice,
         ),
         (
-            "let s = \"[{ mod m dynamic { sandbox whitelist [core]; sig { trait T {\n // c\n val f: fn(self) -> i64 } }; source \"\" }; 1 }]\";\ns",
+            "let s = \"[{ mod m dynamic { sig { trait T {\n // c\n val f: fn(self) -> i64 } }; source \"\" }; 1 }]\";\ns",
             splice,
         ),
         (
-            "let s = \"[{ mod m dynamic { sandbox whitelist [core]; sig {\n/// d\nval f: i64 }; source \"\" }; 1 }]\";\ns",
+            "let s = \"[{ mod m dynamic { sig {\n/// d\nval f: i64 }; source \"\" }; 1 }]\";\ns",
             splice,
         ),
         (
-            "let s = \"[{ mod m dynamic { sandbox whitelist [core]; sig { trait T {\n /// d\n val f: fn(self) -> i64 } }; source \"\" }; 1 }]\";\ns",
+            "let s = \"[{ mod m dynamic { sig { trait T {\n /// d\n val f: fn(self) -> i64 } }; source \"\" }; 1 }]\";\ns",
             splice,
         ),
         (
-            "let s = \"[{ mod m dynamic { sandbox whitelist [core]; sig { trait T { val f: fn(self) -> i64 = |x| { let y = 1; // c\ny } } }; source \"\" }; 1 }]\";\ns",
+            "let s = \"[{ mod m dynamic { sig { trait T { val f: fn(self) -> i64 = |x| { let y = 1; // c\ny } } }; source \"\" }; 1 }]\";\ns",
             splice,
         ),
         (
-            "let s = \"[{ mod m dynamic { sandbox whitelist [core]; sig { use core::{\n// c\nprint}; val f: i64 }; source \"\" }; 1 }]\";\ns",
+            "let s = \"[{ mod m dynamic { sig { use core::{\n// c\nprint}; val f: i64 }; source \"\" }; 1 }]\";\ns",
             splice,
         ),
         (
@@ -3044,7 +3049,7 @@ fn no_comment_stands_inside_a_splice_or_an_attribute() {
             "a comment cannot stand inside an attribute",
         ),
         (
-            "#[parallel({ mod m dynamic { sandbox whitelist [core]; sig {\n /// d\n val x: i64 }; source \"let x = 1\" }; 1 })]\nlet a = f(1);\na",
+            "#[parallel({ mod m dynamic { sig {\n /// d\n val x: i64 }; source \"let x = 1\" }; 1 })]\nlet a = f(1);\na",
             "a comment cannot stand inside an attribute",
         ),
     ] {
@@ -3062,8 +3067,8 @@ fn no_attribute_stands_inside_a_splice() {
         "let s = \"a [{ #[pure] let y = 1; y }] b\";\ns",
         "let s = \"\"\"a \\[#[pure] 1] b\"\"\";\ns",
         "let s = \"[{ trait T { #[pure] val f: fn(self) -> i64 }; 1 }]\";\ns",
-        "let s = \"[{ mod m dynamic { sandbox whitelist [core]; sig { trait T { #[pure] val f: fn(self) -> i64 } }; source \"\" }; 1 }]\";\ns",
-        "let s = \"[{ mod m dynamic { sandbox whitelist [core]; sig { trait T { val f: fn(self) -> i64 = |x| { #[pure] let y = |z| z; y(1) } } }; source \"\" }; 1 }]\";\ns",
+        "let s = \"[{ mod m dynamic { sig { trait T { #[pure] val f: fn(self) -> i64 } }; source \"\" }; 1 }]\";\ns",
+        "let s = \"[{ mod m dynamic { sig { trait T { val f: fn(self) -> i64 = |x| { #[pure] let y = |z| z; y(1) } } }; source \"\" }; 1 }]\";\ns",
     ] {
         let msg = parse_program(src);
         assert!(msg.contains(attr), "{src}: {msg}");
@@ -3231,19 +3236,7 @@ fn editor_keyword_lists_name_every_keyword() {
         ("graphix-highlight.js", book_words("KEYWORDS")),
     ];
     let contextual = [
-        "val",
-        "with",
-        "as",
-        "throws",
-        "for",
-        "abort",
-        "flush",
-        "dynamic",
-        "sandbox",
-        "whitelist",
-        "blacklist",
-        "unrestricted",
-        "sig",
+        "val", "with", "as", "throws", "for", "abort", "flush", "dynamic", "sig",
         "source",
     ];
     let construct = KEYWORDS

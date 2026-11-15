@@ -962,8 +962,7 @@ async fn returned_default_of_a_returned_function_is_judged_in_a_later_input() ->
 const LOAD_WRITE_HELD: &str = r#"{
     let y = never();
     let status = mod d dynamic {
-        sandbox unrestricted;
-        sig { val h: fn(x: 'a) -> 'a };
+        sig { use super::y; val h: fn(x: 'a) -> 'a };
         source "let h = |x| { super::y <- x; x }"
     };
     select status { error as e => "[e]", null as _ => "loaded" }
@@ -984,8 +983,7 @@ run!(
 const LOAD_WRITE_ANNOTATED: &str = r#"{
     let y: i64 = never();
     let status = mod d dynamic {
-        sandbox unrestricted;
-        sig { val h: fn(x: i64) -> i64; val g: fn(u: i64) -> i64 };
+        sig { use super::y; val h: fn(x: i64) -> i64; val g: fn(u: i64) -> i64 };
         source "let h = |x| { super::y <- x; x }; let g = |u: i64| -> i64 u + super::y"
     };
     select status { error as e => never(dbg(e)), null as _ => d::g(d::h(5)) }
@@ -1019,8 +1017,7 @@ async fn load_decides_no_earlier_open_cell() -> Result<()> {
             ),
             Accept(
                 r##"let st = mod d dynamic {
-                    sandbox unrestricted;
-                    sig { val s: fn(u: i64) -> string };
+                    sig { use super::{p, unw}; val s: fn(u: i64) -> string };
                     source r#"let s = |u: i64| -> string super::unw(super::p[0]$)"#
                 }"##,
             ),
@@ -1029,8 +1026,7 @@ async fn load_decides_no_earlier_open_cell() -> Result<()> {
             Accept("mod m"),
             Accept(
                 r#"let st = mod e dynamic {
-                    sandbox unrestricted;
-                    sig { val q: fn(x: i64) -> i64 };
+                    sig { use super::m; val q: fn(x: i64) -> i64 };
                     source "let q: fn(x: i64) -> i64 = super::m::k; let bad: string = 1"
                 }"#,
             ),
@@ -1051,8 +1047,7 @@ async fn load_names_every_cell_it_would_decide() -> Result<()> {
         Accept("let k = [g, g]"),
         Accept(
             r#"let st = mod d dynamic {
-                sandbox unrestricted;
-                sig { val z: fn(x: i64) -> i64 };
+                sig { use super::{j, k}; val z: fn(x: i64) -> i64 };
                 source "let z: fn(x: i64) -> i64 = super::j\[0\]$; let kk: fn(x: f64) -> f64 = super::k\[0\]$"
             }"#,
         ),
@@ -1082,8 +1077,7 @@ async fn load_takes_an_annotated_earlier_binding() -> Result<()> {
             ),
             Accept(
                 r##"let st = mod d dynamic {
-                    sandbox unrestricted;
-                    sig { val s: fn(u: i64) -> i64 };
+                    sig { use super::{p, unw}; val s: fn(u: i64) -> i64 };
                     source r#"let s = |u: i64| -> i64 super::unw(super::p[0]$) + u"#
                 }"##,
             ),
@@ -1093,8 +1087,7 @@ async fn load_takes_an_annotated_earlier_binding() -> Result<()> {
             Accept("mod m"),
             Accept(
                 r#"let st = mod f dynamic {
-                    sandbox unrestricted;
-                    sig { val q: fn(x: i64) -> i64 };
+                    sig { use super::m; val q: fn(x: i64) -> i64 };
                     source "let q: fn(x: i64) -> i64 = super::m::k"
                 }"#,
             ),
@@ -1113,8 +1106,7 @@ const LOAD_DECIDES_PROGRAM_TYPE: &str = r##"{
     let unw = |w: W<'a>| -> 'a w.0;
     let p = { let y = never(); let g = |x| { y <- array::map([x], |e| W(e)); x }; y };
     let status = mod d dynamic {
-        sandbox unrestricted;
-        sig { val s: fn(u: i64) -> string };
+        sig { use super::{p, unw}; val s: fn(u: i64) -> string };
         source r#"let s = |u: i64| -> string super::unw(super::p[0]$)"#
     };
     select status { error as e => "[e]", null as _ => "loaded" }
@@ -1137,8 +1129,7 @@ const LOAD_READS_ANNOTATED_PROGRAM: &str = r##"{
         y
     };
     let status = mod d dynamic {
-        sandbox unrestricted;
-        sig { val s: fn(u: i64) -> i64 };
+        sig { use super::{p, unw}; val s: fn(u: i64) -> i64 };
         source r#"let s = |u: i64| -> i64 super::unw(super::p[0]$) + u"#
     };
     select status { error as e => never(dbg(e)), null as _ => d::s(1) }
