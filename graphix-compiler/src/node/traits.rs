@@ -470,36 +470,6 @@ fn signature_of(value: &Expr, sig: &FnType) -> Option<Type> {
     (!reads_binding(value)).then(|| Type::Fn(Arc::new(sig.clone())))
 }
 
-// XCR claude for claude: [bug/low] A type a method's lambda or `let` writes names variables
-// of its own, even one named like the declaration's, so beside a written member under a
-// place the declaration holds from above they are undecided takers of the union:
-// `trait T { val m: fn(self) -> [Array<'a>, Array<string>] }; impl T for i64 { let m = |s|
-// -> [Array<'a>, Array<string>] ["x"] }` is refused, "Array<'a: unbound> could go to
-// Array<string> or Array<'a1: unbound> of the union", and so are the method's `let`
-// annotation over `'a` or over `'c` (`let m: fn(self) -> [Array<'c>, Array<string>] =
-// |s| ["x"]`, "method m of impl T for i64 has type .., the trait declares ..") and a
-// binding's read of a generic function (`let m = g`, `g = |s: i64| -> [Array<'a>,
-// Array<string>] ["x"]`). The hint, "annotate the value (bind it to a `let` with its type
-// written)", fits no method: what runs is the place left to the declaration, or written
-// as the member it gives (`|s| -> Array<string> ["x"]`). A fix is a rule for what a
-// written variable of a method means against the declaration's (by name, which turns a
-// typedef-expanded union of two written variables (`x: E<'a, 'b>`) into an instance's
-// refusal, pins lang::traits::impl_method_typedef_union_refused and
-// default_body_typedef_union_refused), or a hint that names the remedy; the
-// implementation's own quantifier instantiated against a rigid declaration is the
-// UndecidedTaker rule's case, not a placement. probes:
-// ~/ptmp/cr29/scratch/r25/25f/{f7,f7a,f7b,f8}.gx (method-written-variable-union-member-01)
-// 2026-11-15 claude: A refusal at a method's value or at the impl's containment of the
-// method's type, that is an undecided taker or ambiguous member in a holder, names what a
-// method can do (leave its type unwritten so the lambda takes the declared one, or write
-// the member) in place of 'annotate the value', via traits::taker_refusal /
-// Impl::method_written. Accepted programs unchanged (messages only). Pins
-// lang::traits::method_lambda_written_variable_beside_member_names_remedy,
-// method_let_written_variable_beside_member_names_remedy,
-// method_read_of_generic_written_variable_beside_member_names_remedy fail without it; the
-// twins method_unwritten_type_takes_the_declared_union and
-// method_written_member_beside_declared_union pass. The rule by name was not taken: it
-// would turn the typedef-expanded union pins into instance refusals.
 /// A method's written type holding a variable of its own beside a member
 /// of a union it shares with the declaration's: the refusal of the
 /// relation says what to annotate, which a method has no place for. The
