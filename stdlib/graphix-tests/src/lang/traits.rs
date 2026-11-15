@@ -6342,6 +6342,33 @@ run!(
 );
 
 run!(
+    method_own_default_of_a_union_self_member_conflicting_with_an_argument_refused,
+    refused("'z: i64 does not contain string"),
+    "/test.gx" => r#"
+        trait T { val m: fn(?#w: 'z, self, y: 'z, x: i64) -> string };
+        impl T for i64 { let m = |#w: 'z = 1, s, y: 'z, x: i64| "[w] [y]" };
+        impl T for string { let m = |#w: 'z = "a", s, y: 'z, x: i64| "[w] [y]" };
+        let g = |s: [i64, string]| T::m(s, 2, 7);
+        let result = g(1)
+    "#
+);
+
+run!(
+    method_own_default_of_a_union_self_fitting_its_arguments,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "1 2 2 2 s q s q"),
+    "/test.gx" => r#"
+        trait T { val m: fn(?#w: 'z, self, y: 'z, x: i64) -> string };
+        impl T for i64 { let m = |#w: 'z = 1, s, y: 'z, x: i64| "[w] [y]" };
+        impl T for string { let m = |#w: 'z = 2, s, y: 'z, x: i64| "[w] [y]" };
+        let g = |s: [i64, string]| T::m(s, 2, 7);
+        let h = |s: [i64, string]| T::m(#w: "s", s, "q", 7);
+        let a: [i64, string] = 1;
+        let b: [i64, string] = "a";
+        let result = "[g(a)] [g(b)] [h(a)] [h(b)]"
+    "#
+);
+
+run!(
     method_own_default_fitting_its_arguments,
     |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "1 2 s q"),
     "/test.gx" => r#"

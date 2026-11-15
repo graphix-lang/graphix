@@ -503,12 +503,17 @@ function node is RE-POINTED at that binding and pre-bound statically
 when the lambda is known — after which it is an ordinary static call.
 A call that omits a method's labeled default is judged at the check as a
 named function's is, against the default of the impl its self type
-decides (`CallSite::decided_method`: no open cell, no union, no
-constructor or structural core trait); a union self's per-member defaults
-are left to the binds. Pins
+decides (`CallSite::decided_methods`: no open cell, no constructor or
+structural core trait); a union self judges each member's impl default,
+every member against its own copy of the signature as the arguments left
+it, since the lowered call is one call per member and the members' variables
+are separate instances. Pins
 `lang::traits::{method_own_default_conflicting_with_an_argument_refused,
 trait_body_default_conflicting_with_an_argument_refused,
-method_own_default_holding_a_defaulted_fn_conflicting_refused}`.
+method_own_default_holding_a_defaulted_fn_conflicting_refused,
+method_own_default_of_a_union_self_member_conflicting_with_an_argument_refused,
+method_own_default_of_a_union_self_fitting_its_arguments,
+method_own_default_is_left_to_its_calls}`.
 An open self type inside a definition gate is the polymorphic case,
 left for the instances; open at depth zero is the compile error. A self
 type holding a declared (rigid) variable is a constant to the impl

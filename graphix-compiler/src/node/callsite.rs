@@ -503,6 +503,11 @@ fn distinct_defs<R: Rt>(ctx: &CompileCtx<R>, ft: &FnType) -> SmallVec<[Value; 2]
 fn written_defs<R: Rt>(ctx: &CompileCtx<R>, ft: &FnType) -> SmallVec<[Option<Value>; 2]> {
     let mut defs: SmallVec<[Option<Value>; 2]> =
         ft.lambda_ids.ids().iter().map(|id| ctx.lambda_defs.get(id).cloned()).collect();
+    sort_written::<R>(&mut defs);
+    defs
+}
+
+fn sort_written<R: Rt>(defs: &mut [Option<Value>]) {
     fn def<R: Rt>(v: &Option<Value>) -> Option<&LambdaDef<R>> {
         v.as_ref().and_then(|v| v.downcast_ref::<LambdaDef<R>>())
     }
@@ -510,7 +515,6 @@ fn written_defs<R: Rt>(ctx: &CompileCtx<R>, ft: &FnType) -> SmallVec<[Option<Val
         (Some(a), Some(b)) => a.written_order(b),
         (a, b) => b.is_some().cmp(&a.is_some()),
     });
-    defs
 }
 
 /// A refused default of one of several functions met into one type,
@@ -1790,6 +1794,22 @@ impl Widening {
         Self { fresh, cells: None, pinned: LPooled::take() }
     }
 
+    /// This widening as it stands over `copy`, a copy of the signature it
+    /// widened through `known`: what the copy takes widens nothing of the
+    /// original.
+    fn fork(&self, known: &AHashMap<usize, TVar>) -> Self {
+        let cells = self.cells.as_ref().map(|cells| {
+            cells
+                .iter()
+                .map(|(name, tv)| {
+                    let own = known.get(&tv.cell_addr()).unwrap_or(tv);
+                    (name.clone(), own.clone())
+                })
+                .collect()
+        });
+        Self { fresh: self.fresh, cells, pinned: self.pinned.iter().cloned().collect() }
+    }
+
     fn cells<'a>(
         cells: &'a mut Option<LPooled<AHashMap<ArcStr, TVar>>>,
         env: &Env,
@@ -2863,6 +2883,7 @@ impl<R: Rt> CallSite<R> {
                 name,
                 expr,
                 defaults,
+                self.ftype.as_deref(),
                 Judge::Bind,
                 None,
             )?;
@@ -2900,6 +2921,7 @@ impl<R: Rt> CallSite<R> {
         name: &ArcStr,
         expr: &Expr,
         defaults: &mut Refs,
+        site: Option<&FnType>,
         judge: Judge,
         join: Option<&mut Join<'_>>,
     ) -> Result<Node<R>> {
@@ -2913,7 +2935,7 @@ impl<R: Rt> CallSite<R> {
             name,
             expr,
             defaults,
-            self.ftype.as_deref(),
+            site,
             None,
             judge,
             join,
@@ -3014,27 +3036,39 @@ impl<R: Rt> CallSite<R> {
         // (a restored interface `val`'s type carries none) by the binding
         // the function names
         let mut defs = written_defs(ctx, ftype);
-        if defs.is_empty() {
+        let from_value = !defs.is_empty();
+        if !from_value {
             let bind = match self.fnode.view() {
                 NodeView::Ref(r) => Some(r.id),
                 _ => None,
             };
-            let bind = self.decided_method(ctx, ftype).or(bind);
-            if let Some(fv) = bind.and_then(|b| ctx.bind_to_lambda.get(&b)) {
-                defs.push(Some(fv.clone()));
+            let mut binds = self.decided_methods(ctx, ftype);
+            if binds.is_empty() {
+                binds.extend(bind);
             }
+            defs.extend(
+                binds.iter().filter_map(|b| ctx.bind_to_lambda.get(b)).cloned().map(Some),
+            );
+            sort_written::<R>(&mut defs);
         }
+        // the impls a trait call dispatches to are not one value an annotation holds
+        let shared: &[Option<Value>] = if from_value { &defs } else { &[] };
         let callee = self.fnode.typ();
-        let mut join =
-            |env: &Env, name: &ArcStr, formal: &Type, typ: &Type, undecided| {
-                widening.join_default(env, callee, ftype, formal, typ, undecided).map_err(
-                    |e| match met_defaults::<R>(&defs, name) {
-                        Some(shared) => Told::over(e, &shared),
-                        None => e,
-                    },
-                )
-            };
-        // CR claude for claude: [bug/medium] A trait method call whose self is a union is
+        let join_in = |widening: &mut Widening,
+                       sig: &FnType,
+                       env: &Env,
+                       name: &ArcStr,
+                       formal: &Type,
+                       typ: &Type,
+                       undecided| {
+            widening.join_default(env, callee, sig, formal, typ, undecided).map_err(|e| {
+                match met_defaults::<R>(shared, name) {
+                    Some(shared) => Told::over(e, &shared),
+                    None => e,
+                }
+            })
+        };
+        // XCR claude for claude: [bug/medium] A trait method call whose self is a union is
         // checked with no omitted labeled default judged: CallSite::decided_method declines a
         // union self, so the per-member defaults are left to the binds, which refuse what the
         // check accepted. `trait T { val m: fn(?#w: 'z, self, y: 'z, x: i64) -> string }; impl T
@@ -3046,12 +3080,30 @@ impl<R: Rt> CallSite<R> {
         // one member at a time, not joined into one cell (the members' 'z are separate
         // instances: method_own_default_is_left_to_its_calls must keep running).
         // probe: ~/ptmp/cr29/scratch/r25/25d/p2.gx (trait-call-union-omitted-default-01)
+        // 2026-11-15 claude: check_omitted_defaults now judges each member's impl default of a
+        // union self (CallSite::decided_methods), each against its own copy of the signature
+        // (reset_tvars_with, Widening::fork), so the members' 'z stay separate. Pins that fail
+        // without it:
+        // lang::traits::method_own_default_of_a_union_self_member_conflicting_with_an_argument_refused
+        // (interp); method_own_default_of_a_union_self_fitting_its_arguments and
+        // method_own_default_is_left_to_its_calls guard the valid side.
+        let per_member = !from_value && defs.len() > 1;
         let mut known = !defs.is_empty();
         for def in defs.iter() {
             let Some(f) = def.as_ref().and_then(|v| v.downcast_ref::<LambdaDef<R>>())
             else {
                 known = false;
                 continue;
+            };
+            let (copy, mut forked);
+            let (sig, widening) = match per_member {
+                true => {
+                    let mut copies = LPooled::take();
+                    copy = ftype.reset_tvars_with(&mut copies);
+                    forked = widening.fork(&copies);
+                    (&copy, &mut forked)
+                }
+                false => (ftype, &mut *widening),
             };
             for (farg, argspec) in f.typ.args.iter().zip(f.argspec.iter()) {
                 let Some(name) = farg.label().filter(|n| omitted(n)) else { continue };
@@ -3066,6 +3118,10 @@ impl<R: Rt> CallSite<R> {
                     known = false;
                     continue;
                 }
+                let mut join =
+                    |env: &Env, name: &ArcStr, formal: &Type, typ: &Type, undecided| {
+                        join_in(widening, sig, env, name, formal, typ, undecided)
+                    };
                 let node = self
                     .checked_default(
                         ctx,
@@ -3075,10 +3131,11 @@ impl<R: Rt> CallSite<R> {
                         name,
                         expr,
                         &mut Refs::default(),
+                        Some(sig),
                         Judge::Check(Narrowing::Site),
                         Some(&mut join),
                     )
-                    .map_err(|e| met_default_note::<R>(e, &defs, name))?;
+                    .map_err(|e| met_default_note::<R>(e, shared, name))?;
                 if Carriers::new().carries(&ctx.env, node.typ()) {
                     carriers.push(name.clone());
                 }
