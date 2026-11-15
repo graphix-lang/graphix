@@ -2460,6 +2460,26 @@ impl Env {
             .or_else(|| self.trait_defs.get(&id).cloned())
     }
 
+    // CR claude for claude: [perf/high] Every definition's check walks its whole
+    // signature for the traits it names as a bound, through every typedef the
+    // signature reaches, and the check of every program pays for it: an empty
+    // program's `--no-cache --check` went from 740.9M to 764.6M instructions:u at
+    // commit 49f65efbf (escaped-fn-dropped-bound-01; its parent cc323aded 740.9M and
+    // 742.5M in two runs, the commit 764.6M and 766.2M; debug build,
+    // GRAPHIX_EVAL_THREADS=1), 3.2% of the stdlib's check, and the GUI suite
+    // (guicheck.sh, 52 files) from 39.60G on round 25's base to 41.91G at its tip,
+    // this commit and root-module-table-01's (displaced-names-lookup-01) being all
+    // but 5M of the 43M a file. `Type::named_traits` dedups by node only inside one
+    // call, so a typedef's body (the gui's widget types) is walked again for every
+    // lambda that names it, each Ref locking its resolution cell twice
+    // (`TypeRef::trait_id`, `resolved`) and an open one resolving its name in the
+    // env; `capture_names` walks a nested lambda's signature once more for the
+    // definition around it (`d.bound_ids`), after the nested check walked it. To
+    // fix: a typedef records, where it is declared, the traits its body names, so
+    // the walk stops at a typedef's Ref and takes its record; or the nested walk
+    // reads the nested definition's captures. The lane skipped guicheck ("no typing
+    // change"). Measured by ~/ptmp/cr29/r25/costbisect.sh, results in
+    // costbisect.out beside it. (bound-traits-walk-cost-01)
     /// The traits `t` names as a bound.
     pub fn bound_traits(&self, t: &Type, f: &mut impl FnMut(TraitId)) {
         let mut cells: LPooled<AHashSet<usize>> = LPooled::take();
@@ -3228,6 +3248,19 @@ impl Env {
         sn
     }
 
+    // CR claude for claude: [perf/medium] The names tables tagged by input cost
+    // every check 1.2%: an empty program's `--no-cache --check` went from 766.7M
+    // to 775.4M instructions:u between 7d7da1521 and 35749ee10, the commit between
+    // them that touches the check being 202a06876 (root-module-table-01; two runs
+    // each, 767.3M and 776.2M the second; debug build, GRAPHIX_EVAL_THREADS=1).
+    // Since it, a level whose own view holds no table takes this lock and looks the
+    // level up in the input's displaced tables (empty in every program that deletes
+    // no module), every table at a scope but the root is tagged with its input
+    // where only one crossing a body was, and each write of a scope's table calls
+    // `displace_names`. To fix: skip the lookup while the input displaced nothing
+    // (a flag the first displacement sets), and measure what the tagging itself
+    // costs. Measured with bound-traits-walk-cost-01, same script and results file.
+    // (displaced-names-lookup-01)
     /// The table at `level` a module declared there took the registry's
     /// slot of, which the views of the input that made it read.
     fn displaced_at(&self, level: &str) -> Option<ScopeNames> {
