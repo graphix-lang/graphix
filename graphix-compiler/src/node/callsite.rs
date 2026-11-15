@@ -3068,25 +3068,6 @@ impl<R: Rt> CallSite<R> {
                 }
             })
         };
-        // XCR claude for claude: [bug/medium] A trait method call whose self is a union is
-        // checked with no omitted labeled default judged: CallSite::decided_method declines a
-        // union self, so the per-member defaults are left to the binds, which refuse what the
-        // check accepted. `trait T { val m: fn(?#w: 'z, self, y: 'z, x: i64) -> string }; impl T
-        // for i64 { let m = |#w: 'z = 1, s, y: 'z, x: i64| "[w] [y]" }; impl T for string {
-        // let m = |#w: 'z = "a", s, y: 'z, x: i64| "[w] [y]" }; let g = |s: [i64, string]|
-        // T::m(s, 2, 7); g(1)` passes --check and the build of g(1) fails "type mismatch 'z:
-        // i64 does not contain string" at the string impl's default. A fix: judge each member's
-        // impl default (Type::dispatch_members, Env::find_impl) against the call's own cells,
-        // one member at a time, not joined into one cell (the members' 'z are separate
-        // instances: method_own_default_is_left_to_its_calls must keep running).
-        // probe: ~/ptmp/cr29/scratch/r25/25d/p2.gx (trait-call-union-omitted-default-01)
-        // 2026-11-15 claude: check_omitted_defaults now judges each member's impl default of a
-        // union self (CallSite::decided_methods), each against its own copy of the signature
-        // (reset_tvars_with, Widening::fork), so the members' 'z stay separate. Pins that fail
-        // without it:
-        // lang::traits::method_own_default_of_a_union_self_member_conflicting_with_an_argument_refused
-        // (interp); method_own_default_of_a_union_self_fitting_its_arguments and
-        // method_own_default_is_left_to_its_calls guard the valid side.
         let per_member = !from_value && defs.len() > 1;
         let mut known = !defs.is_empty();
         for def in defs.iter() {
