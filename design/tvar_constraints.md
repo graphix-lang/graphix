@@ -1810,7 +1810,11 @@ An image carries each cell's level and each definition's depth.
   of an instance's result into the site's meets no open cell the check
   left (an omitted default's exempt cell keeps its bounds' cells; pins
   `typ::settle::test::a_terminal_settle_decides_a_cell_a_lower_bound_holds`,
-  `lang::types::undecided_payloads_met_in_a_select_build`). One cell
+  `lang::types::undecided_payloads_met_in_a_select_build`). A
+  `Concrete` or `Function` cell among them is refused open as at any
+  other position, so a typed read under an abstract type's parameter
+  (`B(str::parse(s))`) is the call's to decide (pin
+  `lib_tests::typecheck::parse_under_an_abstract_parameter_no_type`). One cell
   does not settle before the cell whose bound holds it: a cell that
   stands above a type commits its conjuncts over it when it settles
   (above), which is where the cells they hold take their part, so a cell
