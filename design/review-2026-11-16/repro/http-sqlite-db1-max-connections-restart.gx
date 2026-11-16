@@ -1,0 +1,24 @@
+// http::serve's #max_connections is not held across a restart on the same
+// socket: a connection that outlives the restart keeps its permit from the
+// old semaphore, and the new loop gets a fresh full count.
+// Command: timeout -s KILL 60 graphix --no-cache http-sqlite-db1-max-connections-restart.gx
+// Here #max_connections is 1 and a silent connection holds it; the
+// `mb <- later ~ 200` line restarts the server (new #max_body) on the same
+// socket.
+// Expected: the request waits for the silent connection's permit and times
+//   out, as it does with the `mb <-` line removed:
+//   "error:`HTTPError(\"request failed: ... operation timed out\")"
+// Observed: "served" (two connections run under a cap of one)
+let mb = 100;
+let handler = |req: http::Request| req ~ {body: "served", headers: [], status: u16:200};
+let server = http::serve(#addr: "127.0.0.1:0", #max_connections: 1, #max_body: mb, #header_timeout: duration:10.s, #handler: handler)$;
+let addr = http::server_addr(once(server));
+let silent = sys::tcp::connect(addr)$;
+let later = sys::time::timer(duration:300.ms, false);
+mb <- later ~ 200;
+let client = http::default_client(null)$;
+let go = sys::time::timer(duration:600.ms, false);
+let resp = http::request(#timeout: duration:3.s, client, (go ~ silent) ~ "http://[addr]/");
+let out = select resp { error as e => "[e]", r => r.body };
+sys::exit(sys::time::after_idle(duration:200.ms, out ~ 0));
+out

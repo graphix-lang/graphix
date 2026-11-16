@@ -1,0 +1,25 @@
+// x-async-io: a tls::connect that failed on its CA never retries on the same stream
+//
+// command: timeout -s KILL 30 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache design/review-2026-11-16/repro/x-async-io-tls-config-error-blocks-retry.gx
+//
+// The first call fails building its config (the CA is no PEM) and leaves
+// the TCP stream untouched; 300 ms later the CA becomes null.
+//
+// expected: a second answer, the handshake's (here a failure: the peer hangs up)
+//   tls answered: error:`TLSError("invalid ca_cert PEM: no certificate in it")
+//   tls answered: error:`TLSError("TLS handshake failed: ...")
+// observed: the first answer only; the second call starts nothing
+use sys::io::Close;
+let listener = sys::tcp::listen("127.0.0.1:0")$;
+let addr = sys::tcp::listener_addr(listener)$;
+let client = sys::tcp::connect(listener ~ addr)$;
+let server = sys::tcp::accept(listener, client)$;
+// first a CA that is no PEM; 300 ms later the default roots
+let ca: [bytes, null] = client ~ buffer::from_string("not a pem");
+ca <- sys::time::after_idle(duration:300.ms, client ~ null);
+let tls = sys::tls::connect(#ca_cert: ca, "localhost", client);
+println("tls answered: [tls]");
+// the peer hangs up, so a handshake that starts fails at once
+Close::close(sys::time::after_idle(duration:500.ms, server));
+sys::exit(sys::time::after_idle(duration:1500.ms, client ~ 0));
+tls

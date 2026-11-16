@@ -1,0 +1,19 @@
+// lang::select::select_arm_local_persists_fold pins the fold's phantom
+// first-entry fire: x arrives after the program's first cycle, so the arm
+// `_` is entered, not born, and `s <- array::fold([1, 2, 3], ..)` reads no
+// variable. The check warns "this write reads no variable, so it acts only
+// if this arm is taken in the program's first cycle", yet the write lands.
+// Command:
+//   timeout -s KILL 30 graphix --no-cache --no-fusion tests-select-a-arm-local-fold-pin.gx
+// Expected (CLAUDE.md "Bodies are bind-driven"): 0 100 0 100.
+// Observed (both engines): the warning, then 0 100 6 100, which the test
+// asserts. Swap the fold for `6` or `array::len([1, 2, 3, 4, 5, 6])` and the
+// run prints 0 100 0 100.
+let x = array::iter([1, 2, 3, 4]);
+let m = x % 2;
+let sel = select m {
+  0 => 100,
+  _ => { let s = 0; s <- array::fold([1, 2, 3], 0, |acc, e| acc + e); s }
+};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+sel

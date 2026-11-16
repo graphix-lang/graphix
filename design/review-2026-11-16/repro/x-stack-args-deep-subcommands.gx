@@ -1,0 +1,10 @@
+// args::parse overflows the runtime thread's stack on a deeply nested spec
+// run: timeout -s KILL 60 graphix --no-cache x-stack-args-deep-subcommands.gx
+// expected: a result, or an `ArgError refusing the spec
+// observed: "thread 'graphix-runtime' has overflowed its stack / fatal
+//   runtime error: stack overflow, aborting", exit 134 (3000 levels pass;
+//   gdb shows graphix_package_args::build_clap_command recursing)
+let leaf = args::command(#name: "c", []);
+let cmd = array::fold(array::init(10000, |i| i), leaf, |acc, i| args::command(#name: "c", #subcommands: [acc], []));
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+args::parse(cmd)

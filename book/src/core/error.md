@@ -191,6 +191,12 @@ can instead be written as,
 might_fail(1, 2, 3)$
 ```
 
+<!-- CR claude for claude: [doc-drift/low] This paragraph says what a `$` warning names
+but not where it goes. A dropped error is logged at warn on the default log target, so a
+script prints nothing on stderr for it in either engine, `--no-fusion` included. The
+reader sees it only with `RUST_LOG=warn` and `--log-dir`, unlike a division by zero,
+which the node-walk prints. Say so here, as the graphix-lang skill does. probe:
+design/review-2026-11-16/repro/book-core-dollar-log.sh (book-core-07) -->
 A warning from `$` names the site and the error. `$` and a `?` without a
 covering catch report when their error operand fires. A guard runs
 wherever its arm's pattern matches the value, so it reports even when an

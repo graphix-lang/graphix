@@ -1,0 +1,9 @@
+// Title: a type test that decides an unannotated parameter's type reports the arm after it as dead, naming neither cause nor fix
+// Command: graphix --check design/review-2026-11-16/repro/x-diagnostics-dead-arm-decided-param.gx
+// Expected: the refusal says the test `i64 as n` decided `x`'s type (it was undecided at this
+//   select) and names the fix the skill gives: annotate the parameter, `|x: [i64, string]|`.
+// Observed: "unreachable arm: the earlier arms already cover the whole scrutinee, unused match
+//   cases" at the `_` arm, with no mention of `x`; the frame for the arm has no expression text.
+//   The same for `|x| select x { null as _ => 0, v => v }` (the skill's own example).
+let f = |x| select x { i64 as n => n, _ => 0 };
+f(1)

@@ -1,0 +1,23 @@
+// sys::fs::write_all_bin is CANCEL_SAFE by default, but tokio::fs::write runs on a
+// blocking thread that an abort cannot stop: a write "aborted" by its arm's sleep
+// keeps writing, and the site's next call (after the wake) is not held behind it.
+// command (from a scratch dir; writes race.bin in the cwd):
+//   timeout -s KILL 30 graphix --no-cache x-builtin-effects-write-all-sleep-race.gx; head -c 8 race.bin | od -c
+// expected: (2, null, u64:5) and race.bin = "small": the write made after the wake is
+//   the site's last, and a Fifo site's next call waits for a call its sleep let finish
+// observed: (2, null, u64:48000000), race.bin is 48 MB of zeros: the stale big write
+//   finished after the newer one and overwrote it (3 of 3 runs). With a small first
+//   write, or with no `1 => null` arm (no sleep), race.bin is "small".
+let path = "race.bin";
+let big = buffer::encode([`Pad(u64:48000000)]);
+let small = buffer::from_string("small");
+let n = array::iter([0, 1, 2]);
+let d = select n { 0 => n ~ big, _ => n ~ small };
+let r = select n {
+  1 => null,
+  k => sys::fs::write_all_bin(#path: path, k ~ d)
+};
+let done = sys::time::after_idle(duration:500.ms, n);
+let len = buffer::len(sys::fs::read_all_bin(done ~ path)$);
+sys::exit(len ~ 0);
+(n, r, len)

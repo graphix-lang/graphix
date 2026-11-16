@@ -27,6 +27,12 @@ mod linux {
         assert_eq!(v, Value::I64(41));
         ctx.shutdown().await;
         // Let the runtime task see its handle gone and drop its context.
+        // CR claude for claude: [risk/low] A 50 ms sleep stands in for "the runtime has
+        // dropped its context", an event that must come, and design/testing.md's rule
+        // is that such a wait derives from the event. `GXHandle::ended` is that wait:
+        // `ctx.rt.abort(); ctx.rt.ended().await;` before `ctx.shutdown()`, after which
+        // the run loop's future and its JIT modules are dropped. Found by reading; not
+        // run. (tests-lib-b-a-08)
         tokio::time::sleep(Duration::from_millis(50)).await;
         Ok(())
     }

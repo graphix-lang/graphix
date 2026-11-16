@@ -165,6 +165,17 @@ impl TraceState {
     }
 }
 
+// CR claude for claude: [bug/medium] An empty statement (ExprKind::NoOp, from an empty
+// line, a comment-only line or a trailing `;`) counts as an output here. In the REPL an
+// empty line prints `-: _` and becomes the value display, so at a terminal the prompt
+// does not come back until Ctrl-C and lines typed meanwhile are dropped. Piped, it
+// replaces the value being shown. `let b = 1;` prints `-: _` and `x + 1;` shows
+// nothing. Fix: drop NoOp statements from what GX::compile installs and returns, so the
+// last real statement of a line decides the display, and have the shell change nothing
+// when an input installs nothing. Classifying NoOp as non-output alone would leave `x +
+// 1;` running unseen in the shell's `exprs`. probe:
+// design/review-2026-11-16/repro/x-repl-empty-input.py Also reported as (rt-06).
+// (x-repl-01)
 fn is_output_kind(kind: &ExprKind) -> bool {
     match kind {
         ExprKind::Bind { .. }
@@ -611,6 +622,16 @@ impl<X: GXExt> GX<X> {
             self.ctx.rt.updated.entry(r.root).or_insert(false);
             r.mark(cycle);
             let fires = late.entry(id).or_default();
+            // CR claude for claude: [perf/low] The late-fire dedupe is a linear scan
+            // per entry, and late_fire's lookup is another linear find per read. The
+            // seq machine's same-cycle handoffs queue about 1.5*N^2 late pc fires over
+            // about 3N readers, so when the next cycle delivers no pc (the run waits on
+            // a step) this loop is O(N^3): a 400-step seq with a final 1 ms wait costs
+            // 129 ms per run against 15 ms without the wait. Fix: key Late by reader
+            // per variable (Reader is Hash and Eq) so the dedupe and late_fire are each
+            // one probe. probe:
+            // design/review-2026-11-16/repro/x-perf-runtime-late-dedupe-cubic.sh
+            // (x-perf-runtime-03)
             if !fires.iter().any(|(_, known)| *known == r) {
                 fires.push((tv, r))
             }
@@ -686,6 +707,15 @@ impl<X: GXExt> GX<X> {
             for (answer, v) in self.held_answers.drain(..) {
                 batch.push(GXEvent::Updated(answer, v))
             }
+            // CR claude for claude: [bug/medium] The answer is held for exactly one
+            // cycle. A variable takes one delivery per cycle, so a handler write queued
+            // behind another write to the same variable lands after the answer.
+            // call_answered promises that the writes its cycle queued come first. A
+            // handler `|s: string| { v <- s; v <- "[s]!"; s }` answers between its two
+            // writes. Number each write in Waiting and hold the answer until no write
+            // queued at or before its cycle's end is still waiting. probe:
+            // design/review-2026-11-16/repro/rt-handle-contracts.rs
+            // (review_an_answer_comes_before_the_second_write) (rt-02)
             let writes_queued = !self.ctx.rt.var_updates.is_empty();
             for (expr, answer) in answering.drain(..) {
                 let v = batch
@@ -1155,6 +1185,14 @@ impl<X: GXExt> GX<X> {
                 let root = RootFile::load(file, overrides.as_ref(), probes, load).await?;
                 (root.ori, root.exprs, root.sig)
             }
+            // CR claude for eric: [structure/low] A root fetched from netidx takes none
+            // of `RootFile::load`'s steps. The `.gxi` beside it is never fetched (sig
+            // `None`), so the program runs unchecked against an interface that the same
+            // files on disk would be checked against, and a `#!` line is not stripped.
+            // The netidx module resolver does fetch a module's interface. Decide
+            // whether a netidx root has an interface; either way the root load should
+            // be one function over a fetch (`RootFile::load` taking the transport), so
+            // the two loaders cannot drift. Found by reading; not run. (x-dup-04)
             Load::Netidx(_) => {
                 // Non-file transports are fetched by whichever resolver claims
                 // the source.
@@ -1236,6 +1274,19 @@ impl<X: GXExt> GX<X> {
             }))
             .await?;
             info!("parse and resolve time: {:?}", st.elapsed());
+            // CR claude for claude: [risk/low] `check`'s script path repeats
+            // `load_program` (load the root, resolve modules, prune, `compile_script`,
+            // warn of unused imports). It leaves out one step that every other compile
+            // path makes right after pruning: `batch_connect_targets.clear()`
+            // (`compile_root`, `compile`, `load_program`). A check therefore runs with
+            // the previous batch's `<-` targets still in the batch set, and
+            // `CompileCtx::rebinds` answers true for them where the build of the same
+            // text answers false; `register_fn_params` then skips a forward resolution
+            // the build makes. Pruning hides most of this today, since those ids have
+            // already left `bind_to_lambda`. Fix: fold the clear into
+            // `prune_static_resolution`, as one step that starts a batch for all four
+            // paths, and share the script compile between `check` and `load_program`.
+            // Found by reading; not run. (x-dup-03)
             self.prune_static_resolution();
             // the check alone: definitions and call sites, no elaboration;
             // `--expand` prints each instance's step boundaries, so it builds
@@ -1394,6 +1445,14 @@ impl<X: GXExt> GX<X> {
         // the call's own instance: typing the argument references with the
         // definition's cells would merge this site's copy into them. A
         // defaulted label is left out, and the bind fills its default.
+        // CR claude for claude: [risk/low] Nothing decides this instance's parameters,
+        // so a generic lambda's callable keeps an open type: `|x| x * x` gives fn(x:
+        // '_0) -> '_0. check_args's is_a passes every value at an unbound variable
+        // whatever its bound, so call("s") reaches the node-walk's `*` instead of being
+        // refused. Refuse here when an argument type is undecided after the check,
+        // naming the parameter to annotate. probe:
+        // design/review-2026-11-16/repro/rt-handle-contracts.rs
+        // (review_a_generic_callable) (rt-07)
         let ftype = lb.typ.instantiate(&nohash::IntSet::default());
         let ftype = FnType {
             args: ftype.args.iter().filter(|a| !a.has_default()).cloned().collect(),
@@ -1595,6 +1654,16 @@ impl<X: GXExt> GX<X> {
         }
     }
 
+    // CR claude for eric: [risk/medium] A `<-` whose right side reads its own target
+    // unsampled runs a cycle per write forever; the check accepts it by ruling (the
+    // same shape is a legitimate loop) and this loop says nothing. In the probe `rows
+    // <- array::map(rows, ..)` without its `edit ~` passes the check and prints 8,800
+    // lines in five seconds; the admin port's ledger records three earlier sightings.
+    // The runtime can tell without judging intent: count consecutive cycles that only
+    // queued variable writes made ready, and past a threshold log once under
+    // FAILURE_TARGET the variable that keeps the loop going. probe:
+    // design/review-2026-11-16/repro/a-language-table-sort.gx (remove `edit ~` from the
+    // `rows <-` line) (a-language-07)
     pub(super) async fn run(
         mut self,
         to_rt: &mut tmpsc::UnboundedReceiver<ToGX<X>>,
@@ -1744,6 +1813,15 @@ impl<X: GXExt> GX<X> {
             let mut batch = self.batch_pool.take();
             self.process_input_batch(&mut sets, &mut input, &mut batch).await;
             let st = Instant::now();
+            // CR claude for claude: [perf/low] This runs after every wake, whether or
+            // not anything is ready. Each query that asks nothing of the program
+            // (get_env, with_ctx, env_stats, compile_ref, a WaitIdle and its grace
+            // pass) starts a cycle and sends an empty batch, and the TUI redraws at
+            // every batch. Run the cycle only when the `ready` test holds, and send a
+            // batch only when it is non-empty (a Delete's Env events still go out).
+            // probe: design/review-2026-11-16/repro/rt-handle-contracts.rs
+            // (review_a_query_runs_a_cycle: 10 get_env -> 12 cycles, 12 empty batches)
+            // Also reported as (x-concurrency-03). (rt-04)
             self.do_cycle(
                 &mut tasks,
                 &mut sets,

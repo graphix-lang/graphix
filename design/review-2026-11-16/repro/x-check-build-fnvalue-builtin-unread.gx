@@ -1,0 +1,19 @@
+// The check accepts a call of sys::net::publish through a function value; the build refuses it
+//
+// command:  graphix -n --check x-check-build-fnvalue-builtin-unread.gx          (exit 0)
+//           graphix -n --no-cache --expand x-check-build-fnvalue-builtin-unread.gx   (exit 1)
+//           (graphix -n --no-cache <file> refuses the same way before any cycle)
+// expected: both accept, as they accept the direct call `sys::net::publish("/local/x", 10)`
+//           and `let f = sys::net::publish; f("/local/x", 10)`
+// observed: --check passes; the build refuses
+//   at: line: 18, column: 3, in: f("/local/x", 10)
+//   the quantifier 'a must be fully known but is unread through an optional callback
+//   at this call: pass a typed handler or a typed null
+// GRAPHIX_ELAB_AUDIT=1 prints no ELAB-AUDIT line for the refusal.
+// The same holds for `let f = (sys::net::publish, 1).0; f("/local/x", 10)`,
+// `let mk = || sys::net::publish; let f = mk(); f(..)` and
+// `let f = any(sys::net::publish, sys::net::publish); f(..)`.
+seq {
+  let f = sys::net::publish;
+  f("/local/x", 10)
+}

@@ -2,6 +2,15 @@
 // 100k-element array. Stresses the inner-loop arithmetic the JIT compiles
 // to native code.
 let n = 100000;
+// CR claude for claude: [bug/medium] The clock starts at `now(0)` before `xs` is built,
+// and `xs` does not depend on `t0`, so the timed region holds the 100k-element
+// `array::init` with its casts as well as the float fold. That build is about 75% of
+// the JIT time (1.6 ms, of which the fold is 0.39 ms) and 40% of the node-walk's, so
+// the README's fold_floatmath row mostly measures setup. bench/README.md's rule is to
+// start the clock after the setup, by dataflow: move `let xs = ..` above this line,
+// write `let t0 = sys::time::now(xs);`, and re-measure the row. probe:
+// design/review-2026-11-16/repro/examples-rest-floatmath-times-setup.sh
+// (examples-rest-01)
 let t0 = sys::time::now(0);
 let seed = cast<f64>(t0)$;
 let xs = array::init(n, |i| cast<f64>(i)$);

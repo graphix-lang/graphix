@@ -1,0 +1,18 @@
+// x-async-io: writes two call sites make to one stream in the same cycle land in task order, not program order
+//
+// command (nondeterministic):
+//   for i in $(seq 1 30); do timeout -s KILL 20 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache design/review-2026-11-16/repro/x-async-io-same-cycle-writes-race.gx >/dev/null 2>&1; cat /home/eric/tmp/review-2026-11-16/work/x-async-io/w15.txt; echo; done | sort | uniq -c
+//
+// The four writes fire together, in the cycle the file handle arrives.
+//
+// expected, every run: ABCD (statements run in text order)
+// observed, 30 runs: 16 ABCD, 8 ABDC, 2 ACBD, 2 ACDB, 2 ADBC
+use sys::io::Write;
+let path = "/home/eric/tmp/review-2026-11-16/work/x-async-io/w15.txt";
+let f = sys::fs::open(`Create, path)$;
+let a = Write::write_exact(f, buffer::from_string("A"));
+let b = Write::write_exact(f, buffer::from_string("B"));
+let c = Write::write_exact(f, buffer::from_string("C"));
+let d = Write::write_exact(f, buffer::from_string("D"));
+sys::exit(sys::time::after_idle(duration:150.ms, f ~ 0));
+(a, b, c, d)

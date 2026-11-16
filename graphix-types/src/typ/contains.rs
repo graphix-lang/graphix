@@ -41,6 +41,17 @@ use std::{
 };
 use triomphe::Arc;
 
+// CR claude for eric: [structure/high] `contains` is one walk run in whatever mode
+// these eight independent bits select. `IntoMember` means something only under `Lower`,
+// `LowerInArgs` only under `Contra`, `RigidCheck` nothing beside `Commit`; `guide`,
+// `probe_flags` and `takes_lower` exist only to turn one combination into another, and
+// the memo is keyed by the combination. Each bit is a ruling on a corner case, and the
+// churn follows: 885 of the 2,315 commits since the last review touched `typ/`, against
+// 148 for all of fusion. Make the mode a sum type whose variants are the walks that
+// exist (probe, rigid probe, bind, lower-bound solve, conjunct probe, sealed signature)
+// with `Contra` the one bit the walk flips, so a new rule is a variant with its callers
+// and a combination nobody ruled on cannot be built. Found by reading; counts from git
+// log. (a-compiler-02)
 #[derive(Debug, Clone, Copy)]
 #[bitflags]
 #[repr(u8)]
@@ -204,6 +215,14 @@ pub(super) struct ContainsHist {
     leaving: Lazy<AHashMap<Box<[u64]>, (bool, Option<u64>)>>,
     /// The walk is a trial on copies ([`on_copies`]): a member a union
     /// admits commits directly, whatever it leaves behind in the copies.
+    // CR claude for claude: [structure/low] `trial`, `ordered` and `early` are three
+    // bools for four modes: the check's own walk, an ordered one, a trial (which
+    // `trial()` builds as ordered too) and a pre-unification. A trial that is not
+    // ordered, or an early walk that is, can be built, and take() tests each bool
+    // apart. One `mode` field over an enum of the four, with `ordered()` true for the
+    // ordered walk and the trial and `decides()` true for the check's own, says what
+    // the constructors say and leaves no other state. Found by reading; not run.
+    // (t-contains-a-06)
     trial: bool,
     /// The walk is the commit that follows a trial which held a cell's
     /// lower bounds ([`commit_lower`]): the cells below take their choice
@@ -1047,6 +1066,16 @@ fn resting(assumed: &mut [usize], mut at: usize) -> usize {
 
 /// A union whose open member's cell another member mentions, as
 /// `['b, Array<'b>]`: where a member goes decides that cell.
+// CR claude for claude: [risk/low] The search for the open member's cell in the other
+// members goes through collect_tvars, which keys the cells it finds by variable name
+// (the first of a name wins) and records a bound var without walking its binding. A
+// member holding two cells of one name, or a member that is a var bound to `Array<'b>`,
+// is then read as not mentioning `'b`, and the union is placed by place_members where
+// place_in_order was meant. It also takes a map and walks each member once per open
+// member. `find_open_cell(m, true, &mut |tv| tv.cell_addr() == cell)` follows bindings,
+// compares by address and allocates nothing; the App over Bottom arm of
+// contains_dispatch marks cells through the same map. Found by reading; not run.
+// (t-contains-a-05)
 fn shares_bare_cell(s0: &[Type]) -> bool {
     let open = |tv: &TVar| tv.open_cell().map(|c| c.cell_addr());
     s0.iter()
@@ -1457,6 +1486,18 @@ fn commit_conjuncts(
         // the conjunct's own open cells must hold what the cell takes:
         // `'d: [null, 'c]` bound to i64 puts i64 below 'c, so 'c bound
         // later to a type without it is refused
+        // CR claude for claude: [bug/low] This commit of the conjunct over `t` under
+        // Lower is there to put `t` below the conjunct's own open cells, but it also
+        // decides `t`'s cells. With `'a: ['b, Array<[i64, null]>]` and `'b` still open,
+        // commit_parts gives up on the union (a member is an open cell), and this step
+        // binds the element of an undecided argument `[z]` to `[i64, null]`, where
+        // commit_parts over the same bound with `'b` decided narrows it. `z <- 1; z +
+        // 1` is then refused, "cannot compute [i64, null] + i64", and accepted with the
+        // two parameters swapped. Let commit_parts pick the member with the parts among
+        // the conjunct's decided members and narrow, leaving only the open members to
+        // this commit. probe:
+        // design/review-2026-11-16/repro/t-contains-a-bound-variable-binds-union.gx
+        // (t-contains-a-03)
         if !hist.closed_now(c)
             && !exact(c)
             && c.has_unbound()
@@ -1501,6 +1542,16 @@ impl TVar {
         let flags = BitFlags::empty();
         let mut hist = ContainsHist::early();
         for c in self.cell_constraints() {
+            // CR claude for claude: [bug/medium] A trait conjunct reaches
+            // `dispatch_members` here, which expands names by `lookup_ref`, and a trait
+            // names no typedef: a function passed where the parameter is bounded by a
+            // trait is refused "undefined type T". So `T::m(f)` over an accepted `impl
+            // T for fn(x: i64) -> i64` does not check, nor does `'a: Eq |x: 'a| 1`
+            // called with a lambda or `Display::fmt(|x: i64| x)`, and a function with
+            // no impl gets that message in place of "does not implement T". Skip trait
+            // references and predicates as `commit_conjuncts` does. probe:
+            // design/review-2026-11-16/repro/x-traits-abstract-fn-arg-trait-bound.gx
+            // (x-traits-abstract-05)
             let members = Type::dispatch_members(env, &c)?;
             let mut admit: SmallVec<[&Type; 2]> = SmallVec::new();
             for m in members.iter().filter(|m| m.takes_constructor_of(t)) {
@@ -1645,6 +1696,20 @@ fn commit_parts(
                     expanded,
                 )
             }
+            // CR claude for claude: [bug/high] This arm passes a function conjunct's
+            // parts only when the two function types have the same number of arguments
+            // with the same names, and anything else falls to `_ => Ok(true)`. So `'a:
+            // fn(x: i64) -> [i64, null]` leaves the result and the parameter of a
+            // callback written `|y| e`, or of one with a labeled default the bound
+            // lacks, free of the bound: the check accepts a later `e <- "s"`, the build
+            // refuses the instance, and graphix-fuzz reports the check accepting what
+            // the build refused. Pair the arguments as FnType::contains_int does
+            // (positional by position, labeled by label, the callback's extra optional
+            // labels skipped), always pass the result, and pass vargs and throws too;
+            // pin the renamed-parameter and the labeled-default callback on both the
+            // result and the parameter side. probe:
+            // design/review-2026-11-16/repro/t-contains-a-fn-bound-parts-by-name.gx
+            // Also reported as (x-check-build-01). (t-contains-a-01)
             (Type::Fn(cf), Type::Fn(tf))
                 if cf.args.len() == tf.args.len()
                     && cf
@@ -2848,6 +2913,15 @@ pub(super) fn renaming_linked(env: &Env, t0: &Type, t1: &Type, commit: bool) -> 
 /// A non-containment report that formats lazily: callers probe these
 /// errors, and rendering a large type eagerly is tree-cost.
 #[derive(Debug)]
+// CR claude for eric: [structure/low] About 1,300 lines of this file decide no
+// containment: this type and its notes, AmbiguousMember's and UndecidedTaker's
+// messages, DataMeet, same_name_apart, kept_bare, contains_mismatch and the trait,
+// bound and uncastable refusals, and the dispatch planning (dispatch_arms, crosses,
+// dispatch_crossing) that only the trait nodes call. They sit between the walk's memos
+// and contains_dispatch, so the relation's rules are read across a thousand lines of
+// message building. Move the refusals to a `typ/refusal.rs` and the dispatch planning
+// to a `typ/dispatch.rs`: plain moves, no new layer. Found by reading; not run.
+// (t-contains-a-07)
 pub struct TypeMismatch {
     expected: Type,
     actual: Type,
@@ -3306,6 +3380,21 @@ impl<'a> DataMeet<'a> {
                 self.own[1].truncate(lens[1]);
                 found
             }
+            // CR claude for claude: [bug/medium] `DataMeet` pairs the parameters of any
+            // two abstract types, where `contains` (and `any_part_pair`) pair them only
+            // under one id. So passing `B<fn() -> i64>` where `A<'d: Data>` is wanted
+            // is refused as "fn() -> i64 is not data", and no change to the function
+            // fixes that; with `B(1)` the same call reports the real type mismatch.
+            // This walk is one of three in this file that pair two types' parts, each
+            // by its own rules. `any_part_pair` checks ids, pairs refs by
+            // `same_filled_definition`, pairs function args by position with no throws
+            // or vargs, and has no App. `DataMeet` has no id check, expands refs, pairs
+            // labeled args by label, and walks throws, vargs and App. `same_name_apart`
+            // is a positional `for_each_child` zip whatever the two heads are. Fix: one
+            // pairing function with `contains`'s rules, which `meets_itself`,
+            // `decided_part`, `nests`, `DataMeet` and `same_name_apart` call with their
+            // own leaf test; at least require one abstract id here. probe:
+            // design/review-2026-11-16/repro/x-dup-datameet-abstract-ids.gx (x-dup-02)
             [Type::Tuple(a), Type::Tuple(b)]
             | [Type::Abstract { params: a, .. }, Type::Abstract { params: b, .. }] => {
                 self.zip(a, b)
@@ -3523,6 +3612,15 @@ fn discernible_cell(t: &Type) -> Option<(TVar, Type)> {
 /// Whether `f` holds of a pair of parts `s` and `t` place alike: a
 /// function's result and arguments, each member of a union beside the
 /// other side, the parts of one constructor on both sides.
+// CR claude for claude: [structure/medium] This file pairs the parts of two types in
+// five walks, and each pairs a function's arguments by its own rule: here by index when
+// the counts are equal, without vargs or throws; DataMeet::fn_parts by position and by
+// label, with vargs and throws; commit_parts by index when counts and names are equal;
+// Link::equal_inner by a blind zip; same_name_apart by zipping for_each_child.
+// commit_parts' rule is why a bound's parts miss a callback whose parameter is named
+// differently. Give FnType one argument pairing beside its contains_int and make this
+// function the one enumeration of paired parts, so the other four keep only their own
+// TVar, Ref and Set arms. Found by reading; not run. (t-contains-a-04)
 pub(super) fn any_part_pair(
     s: &Type,
     t: &Type,
@@ -3780,6 +3878,16 @@ impl Type {
             let minted = matches!(&a, Self::Abstract { id, .. }
                 if env.abstract_reps.get(id).is_some());
             let advice = match minted {
+                // CR claude for claude: [readability/low] This advice is also given
+                // when the impl exists and is only hidden from a sibling's check
+                // because its module's interface does not declare it: the sibling's
+                // `json::write_str(m0::make(5))` is told to implement Cast for a type
+                // whose module already does. A user trait's refusal in the same place
+                // names the interface and the line to add. Where `impls_all` holds a
+                // Cast impl for the id that `impl_hidden` filters, say the impl is not
+                // in its module's interface and name the declaration. probe:
+                // design/review-2026-11-16/repro/x-traits-abstract-sibling-cast-undeclared-message.gx
+                // (x-traits-abstract-10)
                 true => "implement Cast for it where it is defined",
                 false => {
                     "it is a Rust type, which crosses data only where its package \
@@ -3909,6 +4017,16 @@ impl Type {
 
     /// Why a bound of an impl of `tid` whose head holds `m` is not met by
     /// what its parameter took.
+    // CR claude for claude: [bug/medium] When a head parameter met a declared variable
+    // whose bounds lack the impl's bound, this reports nothing, so bound_refusal says
+    // only "Array<'a> does not implement Show". Example: `'a: Number |x: Array<'a>|
+    // Show::show(x)` under `impl<'b: Show> Show for Array<'b>`, an impl that visibly
+    // matches. A body's call of a bounded function in the same spot names the fix
+    // ("write 'a: Ordered + Number"). Report the unmet bound and the annotation ("a
+    // bound of its impl is not met: write 'a: Number + Show"), and pin it in
+    // lang::traits; nothing pins this refusal today. probe:
+    // design/review-2026-11-16/repro/tests-traits-a-rigid-impl-bound-no-remedy.sh
+    // (tests-traits-a-04)
     fn impl_bound_refusal(
         env: &Env,
         tid: TraitId,
@@ -4091,6 +4209,17 @@ impl Type {
     }
 
     /// Whether `self` holds every member of a union.
+    // CR claude for claude: [bug/medium] A union below an open cell that reaches the
+    // cell under a constructor (`'b ⊇ [null, Array<'b>]`) is committed here a member at
+    // a time, so `null` binds the cell before `Array<'b>` is refused. contains_mismatch
+    // then finds the cell bound, open_cell_reaches is false, and the refusal reads "b
+    // is null, inferred from an earlier use .. declare b: [null, Array<null>]": no use
+    // came before, and the advice is refused again one Array deeper. `b <- a` alone
+    // gives the InfiniteType message. Probe every member with guide(flags) before
+    // committing any, or refuse the cycle first, so a refused relation binds nothing.
+    // probe:
+    // design/review-2026-11-16/repro/t-contains-a-infinite-union-partial-commit.gx
+    // (t-contains-a-02)
     fn holds_each(
         &self,
         flags: BitFlags<ContainsFlags>,
@@ -4633,6 +4762,20 @@ impl Type {
                     // still hold it in one member: `['b, null] ⊇ 'r`
                     // with `'r` within `Array<_>`, by `'b`; a union of
                     // primitives in one of its bits
+                    // CR claude for claude: [bug/low] A union the cell's constraints
+                    // refuse whole goes to one member here, which was written for `['b,
+                    // null] ⊇ 'r` under a typed bound. For a read's `'b: Concrete` it
+                    // narrows the written target without a word: `let y: Result<[null,
+                    // {v: i64, next: &i64}], ..> = json::read(s)` checks with 'b `null`
+                    // alone and every object answers `can't cast .. to null`, and with
+                    // two data members beside the reference the refusal is `'b could go
+                    // to null or { v: i64 } .. annotate the value`, which names the
+                    // wrong problem. `cast<[null, {v: i64, next: &i64}]>` and the
+                    // struct alone are refused for the reference. Where the refusing
+                    // conjunct is a predicate, refuse here naming the member it
+                    // refuses, or give the cell every member it admits. probe:
+                    // design/review-2026-11-16/repro/x-typecheck-generics-read-target-union-nondata.sh
+                    // (x-typecheck-generics-05)
                     match t0 {
                         Self::Set(s) => {
                             return Ok(Self::set_commit_flat(s, flags, env, hist, t)?
@@ -4771,6 +4914,33 @@ impl Type {
                     }
                 }
             }
+            // CR claude for claude: [bug/medium] A decided union of two members of one
+            // constructor is refused by a single-constructor type that holds an open
+            // cell. holds_each relates the members in turn, so the first member binds
+            // the cell ('a := i64 from Array<i64>) and the second no longer fits.
+            // `array::len(select b { true => [1], false => ["a"] })`, `let w2:
+            // Array<'q> = w` and tuple, List, Map and two-field struct formals are all
+            // refused with a bare "Array<'a: i64> does not contain [Array<i64>,
+            // Array<string>]" that names no annotation, while a one-field struct and a
+            // variant formal accept the same shape. Relate an open, non-rigid cell to
+            // the join of the members' parts at its position ('a := [i64, string], the
+            // Widening rule within one decided argument), or else refuse naming the
+            // annotation (Array<[i64, string]>); pin array::len over a select of two
+            // array types. probe:
+            // design/review-2026-11-16/repro/tests-types-a-union-argument-binds-first-member.sh
+            // Also reported as (x-typecheck-generics-03). (tests-types-a-01)
+            // CR claude for claude: [bug/medium] A holder of one constructor commits
+            // the value's members one at a time, so the first in the union's sorted
+            // order decides its cell and the next is a mismatch: `array::len(v)` over
+            // `v: [Array<i64>, Array<string>]` is refused, "Array<'a: i64> does not
+            // contain ..", and over `[P, Q]` with `P = Array<i64>` and `Q = Array<[i64,
+            // string]>` the verdict flips when the two typedefs swap names.
+            // place_members joins such members first (join_cell_sharing), so `['b,
+            // Array<'a>]` takes the same value; this arm and place_each (`[null,
+            // Array<'a>]`) do not. Join the members one constructor of the holder
+            // takes, here and in place_each, before holding each. probe:
+            // design/review-2026-11-16/repro/t-contains-b-union-of-arrays-refused.gx
+            // (t-contains-b-04)
             (t0, Self::Set(s)) => t0.holds_each(flags, env, hist, s),
             (Self::Set(s), t) => {
                 if graphix_dbg_bind() {
@@ -5104,6 +5274,18 @@ impl Type {
                 if let Some(cycle) = cycle_toward(&cell0, tt1, Toward::Any) {
                     return refuse(cycle, &[(t0, tt1, Toward::Any)], hist);
                 }
+                // CR claude for claude: [bug/medium] Where the cell's conjuncts refuse
+                // the holder's binding whole this case answers false, while the same
+                // type met as itself (the `(t0, Self::TVar(t1))` arm of
+                // contains_dispatch) goes on to give the cell the union without its
+                // errors, the member that holds it, or its witness. So `f(e, r)` over
+                // `|a: 'q, b: 'q|`, with `e: [i64, Error<`E>]` and `r` an open cell
+                // within NoError, is a type mismatch that tells the author to annotate
+                // `r`, and `let h: [i64, Error<`E>] = r` checks. Answer
+                // `b0.contains_int(flags, env, hist, tt1)` here, as the rigid case
+                // above does. probe:
+                // design/review-2026-11-16/repro/t-contains-b-bound-cell-holder-refuses-constrained-cell.gx
+                // (t-contains-b-03)
                 if !cell_constraints_ok(t1, flags, env, hist, &b0)? {
                     return Ok(false);
                 }
@@ -5778,6 +5960,18 @@ impl Type {
         let mut deepest: SmallVec<[Type; 8]> = s1.iter().cloned().collect();
         let mut depths: LPooled<AddrMap<usize>> = LPooled::take();
         deepest.sort_by_key(|m| std::cmp::Reverse(nesting(m, &mut depths)));
+        // CR claude for eric: [bug/medium] Where the deepest-first order is the written
+        // one no second order is tried, so a cell two members of the holder share is
+        // decided by the member that sorts first: `[`A('a), `B('a)]` refuses `[`A(i64),
+        // `B([i64, null])]` and takes it with the tags swapped. A struct's fields meet
+        // in name order the same way (the Struct arm of contains_dispatch): `f({a: 1,
+        // b: n})` over `|x: {a: 'a, b: 'a}|` with `n: [i64, null]` is refused and
+        // `f({b: 1, a: n})` checks, where the two arguments of `f(1, n)` widen. A tag's
+        // or a field's spelling decides the verdict. Decide whether the parts of one
+        // argument widen as arguments do (held on copies as lower bounds of the cell,
+        // then bound to their union), or the refusal names the part to annotate. probe:
+        // design/review-2026-11-16/repro/t-contains-b-part-order-by-name.gx
+        // (t-contains-b-05)
         if deepest[..] == s1[..] {
             return place(flags, env, hist, t0, s0, s1);
         }
@@ -5899,6 +6093,17 @@ impl Type {
         let mut shared = false;
         for m in s1.iter() {
             let mut taker = None;
+            // CR claude for claude: [bug/medium] The shape of a member is taken through
+            // a Type::Ref only, so a member that is a bound cell (a select arm's type,
+            // `error(`A)` written in an arm) has no constructor here and is never
+            // joined with its sibling. `filter_err(select c { 0 => 1, 1 => error(`A), _
+            // => error(`B) })` is refused (`Result<'a, 'b: `B> does not contain [i64,
+            // Error<'a1: `B>, Error<'a2: `A>]`) while the same select under `let r:
+            // [i64, Error<`A>, Error<`B>]` is accepted with 'b both tags. Take the
+            // shape through a bound cell as through a name, for the taker probe and for
+            // join_ctor's group. probe:
+            // design/review-2026-11-16/repro/x-typecheck-generics-error-members-in-cells-not-joined.sh
+            // (x-typecheck-generics-04)
             let shape = match m {
                 Type::Ref(_) => m.lookup_ref_with(env, false)?,
                 _ => None,

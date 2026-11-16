@@ -1,0 +1,19 @@
+// Title: one Cast impl's from_value gets a marked value from pack/db and
+// stripped data from json/toml/netidx, so a from_value that tests the
+// shape it wrote reads back under pack and fails under json.
+// Command: timeout -s KILL 20 graphix --no-cache design/review-2026-11-16/repro/x-kind-markers-fromvalue-two-forms.gx
+// Expected: both readers give Q({x: 5}) (or both refuse): from_value sees
+//   one form of the data to_value wrote.
+// Observed: (Q({x: 5}), error:`InvalidCast("can't cast [5, \"Q\"] to Q: not a (i64, `Q): [5, \"Q\"]"))
+type Q = Abstract<{x: i64}>;
+impl Cast for Q {
+  let to_value = |q: Q| -> Any (q.0.x, `Q);
+  let from_value = |v| select v {
+    (i64, `Q) as (x, _) => Q({x}),
+    _ => error(`InvalidCast("not a (i64, `Q): [v]"))
+  }
+};
+let v = Q({x: 5});
+let rp: Result<Q, [`PackErr(string), `InvalidCast(string)]> = pack::read(pack::write_bytes(v)$);
+let rj: Result<Q, [`JsonErr(string), `InvalidCast(string)]> = json::read(json::write_str(v)$);
+(rp, rj)

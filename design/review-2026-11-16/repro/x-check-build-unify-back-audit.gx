@@ -1,0 +1,15 @@
+// GRAPHIX_ELAB_AUDIT reports an instance narrowing its site's return on a valid program
+//
+// command:  GRAPHIX_ELAB_AUDIT=1 graphix -n --no-cache --expand x-check-build-unify-back-audit.gx
+// expected: no ELAB-AUDIT line (an instance decides nothing its call's check left open)
+// observed: exit 0, and on stderr
+//   ELAB-AUDIT unify-back at File(..):line: 13, column: 3 `v(u)`: narrowed the site's
+//   return from fn(s: 'a: 'a1: unbound within { n: i64 }) -> i64
+//            to fn(s: 'a: 'a1: { n: i64 }) -> i64
+// Silent when the inner lambda does not read its declared variable's bound
+// (`'a: [i64, string] |s: 'a| 0`), or when `v` is called at the top level.
+let w = |u| {
+  let v = |q| 'a: {n: i64} |s: 'a| s.n;
+  v(u)
+};
+w(0)

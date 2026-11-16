@@ -1,0 +1,12 @@
+// A tail loop rebinds a `_` formal into a capture that shares the
+// formal's declared name (body.rs::lookup_slot's name fallback).
+// command:  graphix-fuzz check f-call-flow-tail-rebind-capture-name.gx
+//           graphix --no-cache f-call-flow-tail-rebind-capture-name.gx
+// expected: 100 (the capture `a`; the `_` formal is never read), as
+//           `graphix --no-cache --no-fusion` prints
+// observed: DIVERGENCE — interp: Trace([0:100])  jit: Trace([0:1000]);
+//           the fused run prints 1000, the last value passed to `_`
+let a = 100;
+let rec f: fn(a: i64, n: i64) -> i64 = |_, n| select n { 0 => a, k => f(k * 1000, k - 1) };
+let r = |n: i64| -> i64 f(7, n);
+r(3)

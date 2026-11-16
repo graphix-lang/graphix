@@ -168,6 +168,18 @@ pub enum CustomResult<X: GXExt> {
 /// Trait implemented by Graphix packages, normally via `defpackage!`.
 /// Object-safe so packages can be collected as `Vec<Box<dyn Package<X>>>`
 /// or `&[&dyn Package<X>]` and driven uniformly.
+// CR claude for eric: [structure/medium] A package is a Rust crate compiled into the
+// shell, and that is the only way Graphix source becomes a package:
+// `graphix_ast_pack::emit` packs `src/graphix` at build time and `register` reads the
+// blob. A library with no builtin (a widget set over `tui`) still needs a toolchain and
+// a rebuild of the shell on every machine that installs it (`cargo build --release`,
+// fat LTO, a 106 MB binary here), a package author's edit to a `.gx` reaches a running
+// shell only through that rebuild, and a directory on `GRAPHIX_MODPATH` is unversioned
+// and is no package root (`package::` there means the program). Keep crates for
+// builtins and add a source tier: a package whose manifest declares no builtins is
+// fetched and served by a resolver as a package root (the image's probe record already
+// covers changed files), and a `--package-src name=dir` override serves an installed
+// package's Graphix from disk. Found by reading; not run. (a-packages-06)
 pub trait Package<X: GXExt>: Send + Sync {
     /// Register this package's builtins and Graphix modules: modules by path in
     /// `modules`, the package itself by name in `root_mods`. Registration is
@@ -249,6 +261,15 @@ struct Skel {
 
 static SKEL: Skel = Skel {
     cargo_toml: include_str!("skel/Cargo.toml.hbs"),
+    // CR claude for claude: [doc-drift/low] The skeleton's lib.rs teaches the two hard
+    // builtin paths and not the easy one. Its first example is a raw `BuiltIn` +
+    // `Apply` of about 70 lines for an is-error test, its second a hand-written
+    // `EvalCached` with `unit_image_state!` and a type alias, which is what one
+    // `fast_builtin!` line writes; the book calls `fast_builtin!` the simple path and
+    // the stdlib uses it 120 times against 43 raw `Apply` impls. It has no test either,
+    // though `defpackage!` generates `TEST_REGISTER`. Lead with a `fast_builtin!` over
+    // a plain function, keep one raw `Apply` below it as the full-control path, and add
+    // a test module with one `run!`. Found by reading; not run. (a-packages-10)
     lib_rs: include_str!("skel/lib.rs"),
     build_rs: include_str!("skel/build.rs"),
     mod_gx: include_str!("skel/mod.gx"),
@@ -268,6 +289,18 @@ pub async fn create_package(base: &Path, name: &str) -> Result<()> {
     // the short name becomes the Graphix module name and, `-` read as `_`,
     // the prefix of every builtin's name
     let short = name.strip_prefix("graphix-package-").unwrap_or("");
+    // CR claude for claude: [risk/medium] This rule ([a-z][-a-z0-9]*, no reserved word,
+    // no stdlib name) is the only check that a package's short name can be a Graphix
+    // module name, and only create_package applies it. defpackage! takes the name from
+    // CARGO_CRATE_NAME unchecked, and add_packages accepts any name. So an external
+    // crate named graphix-package-2d or graphix-package-select builds and registers,
+    // and register_packages then writes `mod 2d` / `mod select` into the root module
+    // source, which does not parse: the shell cannot start a program until the package
+    // is removed. Fix: move the check into one function that create_package and
+    // add_packages both call, and make defpackage! refuse such a name at compile time
+    // (every package passes through it). probe:
+    // design/review-2026-11-16/repro/package-unparseable-name.sh shows the parser
+    // refusing those root lines; the rest is by reading. (package-03)
     let valid = short.starts_with(|c: char| c.is_ascii_lowercase())
         && short
             .chars()
@@ -361,6 +394,15 @@ impl std::fmt::Display for PackageEntry {
 /// explicitly declined or removed (`stdlib_removed`). Third-party packages
 /// live in `external`, keyed by short-name, still carrying a version or path.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+// CR claude for claude: [structure/low] Two sets that must stay disjoint, with core
+// always in one of them. That holds only because enforce_invariants runs "after every
+// load/mutation" (five call sites) and because add_packages, remove_packages and
+// reinstall maintain it by hand; a new mutation path that forgets either writes a name
+// into both lists, which parse_v2 silently reads as installed. One map from name to an
+// Installed/Removed state, with core implied rather than stored, makes both invariants
+// unrepresentable and deletes enforce_invariants. build_plan, compute_update_plan's
+// "neither installed nor removed" test and list read it directly. Found by reading; not
+// run. (package-08)
 pub struct Packages {
     stdlib_installed: BTreeSet<CompactString>,
     stdlib_removed: BTreeSet<CompactString>,
@@ -711,6 +753,18 @@ fn removal_cascade(
 /// The shell manifest `content` with the external packages added to its
 /// `[dependencies]`. Stdlib packages are permanent optional deps selected
 /// by Cargo feature; neither they nor `[features]` are touched.
+// CR claude for eric: [risk/medium] A third-party package enters the shell's manifest
+// as a caret requirement and no lockfile survives a rebuild (`prepare_source` unpacks a
+// fresh source whose `Cargo.lock` names the shell's own dependencies only), so every
+// `add`, `remove` and `rebuild` resolves each third-party package, and everything only
+// it depends on, to the newest compatible release: adding package `b` can change the
+// code of installed package `a`, and two machines with one packages.toml can run
+// different code. Package code runs with the shell's full authority and its build
+// script runs at install, so an upgrade nobody asked for is a trust decision the user
+// did not make. Keep the resolved `Cargo.lock` beside packages.toml, copy it into the
+// unpacked source before the build, and let only `update` move it. The book's
+// Rebuilding section states the current behaviour as intended, so this needs a ruling.
+// Found by reading; not run. (a-packages-07)
 fn with_external(
     content: &str,
     external: &BTreeMap<CompactString, PackageEntry>,
@@ -1299,6 +1353,24 @@ fn compute_update_plan(
     for (name, entry) in &packages.external {
         if let PackageEntry::Version(cur) = entry {
             if let Some(latest) = external_latest.get(name) {
+                // CR claude for eric: [bug/medium] A recorded external version is a
+                // Cargo requirement ("1.2.0" means ^1.2.0), and every rebuild resolves
+                // it afresh, because the unpacked source's lockfile does not name it
+                // (the book's Rebuilding section says so). This compares it to
+                // crates.io's newest as if it were the built version. Effects: a
+                // semver-compatible newer release is offered, and taking it runs a full
+                // LTO rebuild that only rewrites the record. A requirement that is not
+                // a bare version (`=1.2.3`, the only way to hold a version) fails
+                // semver parsing, so version_gt's string-inequality fallback offers
+                // "=1.2.3 -> 1.2.3" even when nothing is newer, and apply_selection
+                // replaces the pin with a caret requirement, so the next build moves to
+                // the newest 1.x. Decide what update should offer, e.g. parse the
+                // record as semver::VersionReq and offer latest only when the
+                // requirement does not match it, keeping an operator the user wrote.
+                // The book is stale either way: it says a new major version needs a
+                // manual edit of packages.toml (update offers majors today), and
+                // describes `add mypackage@1.2.0` as installing that specific version.
+                // Found by reading; not run (needs crates.io). (package-02)
                 if version_gt(latest, cur) {
                     external_updates.push((name.clone(), cur.clone(), latest.clone()));
                 }
@@ -1597,6 +1669,20 @@ fn backup_stamp(name: &str) -> Option<chrono::NaiveDateTime> {
 }
 
 /// The Graphix package manager
+// CR claude for claude: [test-gap/medium] No test pins what these commands promise
+// (book, design/stdlib_notes.md): a cascade refused on a non-terminal without --yes,
+// the manifest and lockfile put back after remove_packages' cascade probe,
+// packages.toml untouched when the build fails, update building against the source the
+// selection chose, build_standalone without an override. The tests reach only
+// install_from_source and build_standalone with an override, because every command
+// re-derives the data dir (graphix_data_dir in packages_toml_path, lock_file,
+// unpack_source, prepare_source) and the cargo home (cargo_home, from the environment),
+// so a test cannot point them at a temp dir. Fix: hold data_dir and cargo_home in
+// GraphixPM, as target_dir already is. With cargo (already a field) set to a stub
+// script that answers metadata and reports a built binary, these commands run
+// in-process against temp dirs without building. update also needs its crates.io
+// answers passed in. Found by reading; the commands ran against such a stub in
+// design/review-2026-11-16/repro/package-standalone-target-exe.sh. (package-05)
 pub struct GraphixPM {
     cratesio: AsyncClient,
     cargo: PathBuf,
@@ -1611,6 +1697,14 @@ pub struct GraphixPM {
 impl GraphixPM {
     /// A package manager for the running shell, of version `version`.
     pub async fn new(version: &str) -> Result<Self> {
+        // CR claude for claude: [bug/low] GraphixPM::new looks cargo up (and the exe
+        // and the target dir) for every package command. So `graphix package list`,
+        // which only reads packages.toml, and `search`, which only queries crates.io,
+        // fail with "can't find the cargo command" on a machine without a Rust
+        // toolchain. Fix: make list a function of the record alone (it uses no
+        // GraphixPM field), and look cargo up where it is run (shell_metadata,
+        // cargo_build). probe:
+        // design/review-2026-11-16/repro/package-list-needs-cargo.sh (package-06)
         let cargo = which::which("cargo").context("can't find the cargo command")?;
         let cratesio = AsyncClient::new(
             "Graphix Package Manager <eestokes@pm.me>",
@@ -1691,6 +1785,19 @@ impl GraphixPM {
     /// Delete the scratch build dir and unpack a fresh graphix-shell source
     /// tree for `version`.
     async fn prepare_source(&self, version: &str) -> Result<PathBuf> {
+        // CR claude for claude: [bug/medium] prepare_source runs check_rebuild_exe, the
+        // guard against replacing a cargo build output. But build_standalone also
+        // unpacks through prepare_source, and it never replaces the running exe. So
+        // `graphix package build-standalone` run from a graphix under a target dir
+        // (`cargo run`, target/release/graphix) fails before unpacking with "cannot
+        // replace ... before rebuilding packages", while the same binary elsewhere
+        // builds the package. Fix: move the check out of prepare_source into the
+        // callers that go on to replace the exe (rebuild, the stdlib branch of
+        // remove_packages, update); replace_exe keeps its own. The only
+        // build_standalone test passes a source override, so prepare_source's path is
+        // never run: add a test of build_standalone(None) from an exe under a
+        // target-dir marker. probe:
+        // design/review-2026-11-16/repro/package-standalone-target-exe.sh (package-01)
         self.check_rebuild_exe()?;
         println!("Unpacking graphix-shell source...");
         let build_dir = graphix_data_dir()?.join("build");
@@ -1830,6 +1937,15 @@ impl GraphixPM {
     }
 
     /// Clean up graphix-previous-* binaries older than 1 week
+    // CR claude for eric: [perf/low] replace_exe keeps each replaced shell as
+    // graphix-previous-<stamp> in the exe's directory, and this deletes only backups
+    // older than a week, and only after a later rebuild succeeds. Package development
+    // (`add --path`, edit, `rebuild`) leaves one backup of roughly 100 MB per
+    // iteration. This machine's ~/.cargo/bin, which is on PATH, holds 18 from two days
+    // in February (583 MB), still there because no rebuild has succeeded since. Keeping
+    // only the newest one or two backups would bound it; whether a dated history is
+    // wanted is your call. Found by reading; the directory listing is the observation.
+    // (package-07)
     async fn cleanup_old_binaries(&self) {
         let Some(bin_dir) = self.exe.parent() else { return };
         let Ok(mut entries) = fs::read_dir(bin_dir).await else { return };
@@ -2176,6 +2292,13 @@ impl GraphixPM {
         let built = built?;
         let bin_name = format!("{short_name}{}", std::env::consts::EXE_SUFFIX);
         let dest = package_dir.join(&bin_name);
+        // CR claude for claude: [bug/low] This copy writes the new binary over the old
+        // one in place. On Linux it fails with ETXTBSY ("Text file busy") while the
+        // package's previous standalone binary is running, and it fails only after the
+        // full release build. replace_exe already avoids this for the shell: it copies
+        // to a staged sibling, then renames over the exe. Give build_standalone the
+        // same staging (without the backup), through one helper both call. probe:
+        // design/review-2026-11-16/repro/package-standalone-busy-binary.py (package-04)
         fs::copy(&built, &dest).await.with_context(|| {
             format!("copying {} to {}", built.display(), dest.display())
         })?;

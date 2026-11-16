@@ -1,0 +1,23 @@
+// The fuzzer's own run of the warm-start segfault (see x-dyn-modules-warm-par-segv.gx for the small program)
+// run: timeout -s KILL 170 graphix-fuzz check design/review-2026-11-16/repro/x-dyn-modules-warm-par-segv-fuzz.gx   (GRAPHIX_FUZZ_RUN_LOG=1 names the run)
+// expected: AGREE
+// observed: SIGSEGV (exit 139) during "RUN JitPar InLanguage Cold / Warm"; graphix-fuzz run of the same file finishes every mode
+let n = 0;
+select n { k if k < 7 => n <- k + 1, _ => never() };
+type W = Abstract<i64>;
+trait Sh { val sh: fn(self) -> i64 };
+impl Sh for i64 { let sh = |c| c + 7 };
+let app = |x: Sh| Sh::sh(x) + 1;
+let xs = select n { 0 => [1, 2, 3], 1 => [1, 2, 3], 2 => [1, 2], 3 => [1], 4 => [], 5 => [4, 5], _ => [4, 5, 6] };
+let keep: Any = null;
+let keepf = never();
+let r = array::map(xs, |i| {
+    let st = mod foo dynamic {
+        sig { use core; use super::{Sh, app}; val f: fn(x: i64) -> i64; val v: Any };
+        source "type C = Abstract<i64>; let x = [i]; let c = 0; c <- x ~ c + 1; let v: Any = C([i]); let f = |y| app(y) + C(y).0 * [i] + c"
+    };
+    keep <- foo::v;
+    keepf <- foo::f;
+    (foo::f(10), "[foo::v]")
+});
+(n, r, "[n ~ keep]", keepf(n))

@@ -1,0 +1,9 @@
+// Title: a `// file-v1:` section named like a harness module (`test.gx`, the
+// subject's own module; `inputs.gx`) silently replaces it in the VFS.
+// Command: graphix-fuzz run fuzz-main-aux-section-clobbers-body.gx
+// Expected: refused as a malformed section (or the body's value, 1).
+// Observed: every mode Trace([0:2]): the section's `result` replaced the
+//   subject's body, which was never compiled.
+i64:1
+// file-v1: test.gx
+let result = i64:2

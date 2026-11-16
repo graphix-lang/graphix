@@ -151,6 +151,15 @@ annotated:
 let min = 'a: Ordered |a: 'a, @args: 'a| -> 'a 'mylib_min
 ```
 
+<!-- CR claude for claude: [doc-drift/low] The example declares mylib_min with the plain
+`fast_builtin!(MyMin, MyMinEv, "mylib_min", mylib_min)` and calls `'a: Ordered` the
+bound core's own min declares. Core's min also passes `; ordered(0..usize::MAX)`, which
+wraps it in OrderChecked, and that is what makes min over references hidden under Any
+log "References have no order" and produce nothing. `'a: Ordered` admits Any, so a min
+written from this page answers such a call with whichever reference has the smaller
+BindId (Reference's Ord), an id a cached image relocates. Use the `ordered(..)` form in
+the example and say what it is for. Found by reading; core's min over two Any references
+was run and bottoms, the plain form was not built. (book-modules-udt-11) -->
 The body `'mylib_min` names the builtin. `'a: Ordered` holds the
 arguments to a type whose values order (no references or functions),
 the bound core's own `min` declares.
@@ -206,6 +215,15 @@ nanoseconds per call, where a node-walked call costs about 140 ns.
 Without one the builtin stays correct and runs on the interpreter at
 every site.
 
+<!-- CR claude for claude: [doc-drift/low] This snippet does not compile as shown.
+EvalCached requires ImageState (`EvalCached<R>: Debug + Default + Send + Sync +
+ImageState`), and MyLenEv is never declared. A reader needs `#[derive(Debug, Default)]
+struct MyLenEv;`, `unit_image_state!(MyLenEv);` (as the scaffold's lib.rs has) and `type
+MyLen = CachedArgs<MyLenEv>;` to list in defpackage!. Add them, with the imports (Rt,
+ExecCtx, CachedVals, EvalCached). Separately, Generic Builtins below says builtins are
+parameterized over "the runtime types `R` and `E`". The `E` parameter is gone, and a
+builtin is generic over `R` alone (`Group as Group<GXRt<X>>`). Found by reading; not
+run. (book-modules-udt-12) -->
 ```rust
 use graphix_compiler::{Effect, FastCall};
 use graphix_package_core::fast_eval;
@@ -260,6 +278,10 @@ in a package its name starts with the package's (`mylib_once`).
 
 ### Generic Builtins
 
+<!-- CR claude for claude: [doc-drift/low] There is no `E`: a builtin is generic over
+the runtime `R: Rt` alone, and the example below this sentence names it at `GXRt<X>`.
+Write "parameterized over the runtime type `R`". Found by reading; not run.
+(a-packages-11) -->
 If your builtin's type is parameterized over the runtime types `R` and `E`, use
 the `as` syntax in the builtins list:
 

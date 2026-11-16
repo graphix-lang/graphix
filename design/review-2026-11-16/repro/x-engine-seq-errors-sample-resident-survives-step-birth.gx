@@ -1,0 +1,28 @@
+// A banking sample (`~`) born again with its seq step keeps the output of
+// the previous run, so a run in which it produces nothing answers with the
+// last run's sample.
+//
+// command: graphix-fuzz run x-engine-seq-errors-sample-resident-survives-step-birth.gx
+//   (or: graphix --no-cache <file>)
+//
+// `f` is called by a seq step, so each run's call is a fresh call
+// (design/seq_blocks.md 6.3: "a previous run's answer is never this
+// issue's"). In the runs for go = 10 and go = 30 `v` is bottom, so `v ~ x`
+// has sampled nothing in this call and `f` has no value: the step waits and
+// the abort ends the run.
+// expected: r = 1001, 20020
+// observed: r = 1001, 1010, 20020, 20030 (node-walk and JIT agree): 1010 is
+//   the first run's sample (1) times 1000 plus this run's x (10).
+// The same body with `v` read bare (`v * 1000 + x`), with `once(v)`, or with
+// the strict sample (`x ~! v`) gives the expected 1001, 20020. `(x ~ v)`
+// (the argument bottom, the trigger fired) gives 1010 too, and so does a
+// sample written in the step's own text:
+//   let v = select go { 10 | 30 => 0, _ => go };
+//   let b = (filter(v, |q| q > 0) ~ go) * 1000 + go;
+let step = 0;
+step <- select step { n if n < 40 => n + 1, _ => never() };
+let go = select step { 1 | 10 | 20 | 30 => step, _ => never() };
+let f = |x: i64| -> i64 { let v = select x { 10 | 30 => never(), _ => x }; (v ~ x) * 1000 + x };
+let r = seq go; abort(select step { 15 | 35 => step, _ => never() }) { let b = f(go); b };
+dbg(r);
+step

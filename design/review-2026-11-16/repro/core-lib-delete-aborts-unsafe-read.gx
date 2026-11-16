@@ -1,0 +1,22 @@
+// Title: deleting a call site aborts a read that is not cancel-safe, and the
+//        bytes it had consumed are lost to the stream's next reader (a sleep
+//        returns them; see the select-arm variant at the bottom).
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache design/review-2026-11-16/repro/core-lib-delete-aborts-unsafe-read.gx
+// Expected: "AAAA" (the deleted slot's read_exact had taken AAAA and was
+//           waiting for 4 more; its bytes should go back to the stream, as
+//           they do when the slot's arm sleeps instead).
+// Observed: "BBBB" (AAAA is gone). Replacing the array::map slot with
+//           `let on = true; on <- sys::time::timer(duration:200.ms, false) ~ false;
+//            let firsts = select on { true => buffer::to_string_lossy(Read::read_exact(s, u64:8)$), false => never() };`
+//           prints "AAAA".
+use sys::io::Read;
+let opts = |script| sys::process::options(
+  #stdio: sys::process::stdio(#stdout: `Pipe), #args: ["-c", script], "sh");
+let s = sys::process::spawn(opts("printf AAAA; sleep 0.6; printf BBBBCCCC"))$.stdout$;
+let xs: Array<i64> = [1];
+xs <- sys::time::timer(duration:200.ms, false) ~ [];
+let firsts = array::map(xs, |x| buffer::to_string_lossy(Read::read_exact(s, u64:8)$));
+let later = sys::time::timer(duration:300.ms, false) ~ s;
+let second = buffer::to_string_lossy(Read::read_exact(later, u64:4)$);
+sys::exit(sys::time::after_idle(duration:200.ms, second ~ 0));
+second

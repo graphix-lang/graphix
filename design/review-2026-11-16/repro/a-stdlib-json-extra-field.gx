@@ -1,0 +1,19 @@
+// A typed json read refuses an object with a field the target does not name,
+// and names no field in its error
+//
+// command:
+//   graphix --no-cache design/review-2026-11-16/repro/a-stdlib-json-extra-field.gx
+// expected: "extra" reads {name: "a", qty: 1}; "missing" names the field qty
+// observed:
+//   extra: error:`InvalidCast("can't cast [[\"name\", \"a\"], [\"note\", \"hi\"], [\"qty\", 1]] to { name: string, qty: i64 }: struct size mismatch")
+//   missing: error:`InvalidCast("can't cast [[\"name\", \"a\"]] to { name: string, qty: i64 }: struct size mismatch")
+//   coerced: {name: "a", qty: 5}
+type Item = {name: string, qty: i64};
+let show = |label: string, s: string| {
+  let r: Result<Item, [`JsonErr(string), `InvalidCast(string)]> = json::read(s);
+  println("[label]: [r]")
+};
+show("extra", r#"{"name": "a", "qty": 1, "note": "hi"}"#);
+show("missing", r#"{"name": "a"}"#);
+show("coerced", r#"{"name": "a", "qty": "5"}"#);
+sys::exit(sys::time::after_idle(duration:500.ms, 0))

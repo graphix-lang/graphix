@@ -39,6 +39,16 @@ const ERROR: &str = r#"
 "#;
 
 // `error(v)` is a fast fn; the error value is a value-shape return.
+// CR claude for claude: [test-gap/low] This predicate accepts any error. Nothing
+// compares the modes, so the predicate is the only check, and a fused error("foo") that
+// lost or changed its payload passes in all four. Pin it exactly with is or prints. The
+// same looseness appears in filter_err above;
+// a_result_holding_only_an_error_is_an_error (lang/types.rs); tuple_duration_field and
+// struct_computed_bool_field (lang/tuples_structs.rs: the duration and the field name,
+// the very values those fixtures exist to fuse); rec_fn_arg_compiles (Ok(_),
+// lang/functions.rs); cast_of_a_collection_param (length only, lang/lists.rs); and the
+// two len()==1 bound fixtures in lang/interfaces.rs. Found by reading (a scan of every
+// run! predicate); not run. (core-aux-05)
 run!(error, ERROR, |v: Result<&Value>| match v {
     Ok(Value::Error(_)) => true,
     _ => false,
@@ -295,6 +305,17 @@ run!(queuefn_immediate, QUEUEFN_IMMEDIATE, |v: Result<&Value>| {
 
 // The wrapper's call passes every formal and no more: a function with a
 // defaulted label or a variadic argument is refused by the check.
+// CR claude for claude: [bug/medium] The refusal this pins is the bare contains
+// mismatch for the Function bound: "'a: unbound within Function does not contain
+// fn(?#scale: i64, x: i64) -> i64". It reads as a function refused for not being a
+// Function, and names neither the defaulted label/variadic nor the fix
+// design/queue_fn.md gives (wrap it in a lambda that calls it). `queuefn(#trigger:
+// never(), 3)` gets the same text, so the phrase pins no rule of its own. Give
+// Bound::Function a refusal that says why, as Type::not_discernible does for Ordered
+// and Discernible, pin that text here and in queuefn_refuses_variadic, and pin the
+// wrapped lambda passing. probe:
+// design/review-2026-11-16/repro/tests-lib-a-queuefn-function-bound-message.sh
+// (tests-lib-a-02)
 run!(
     queuefn_refuses_defaulted_label,
     "queuefn(#trigger: never(), |#scale: i64 = 10, x: i64| -> i64 x * scale)(5)",
@@ -491,6 +512,13 @@ run!(
 
 // Per-cycle delta semantics: a pop sets only the queued arg, so an x
 // queued without a tick emits nothing. Total emits: 2.
+// CR claude for claude: [risk/low] `done` is a 200 ms wall-clock timer, so the count it
+// reads is whatever the queue finished by then. Under load a slow run reads 1 (a
+// flake), and an emission later than 200 ms is never seen. HOLD_MULTIPLE_VALUES has the
+// same shape: a 0.5 s timer clock racing array::iter's three elements. Derive each read
+// from the work: `sys::time::after_idle(duration: 50.ms, out) ~ count` here, and an
+// after_idle over the iterated value as the hold's clock. Found by reading; not run.
+// (tests-lib-a-04)
 const QUEUEFN_DELTA_PER_CYCLE: &str = r#"
 {
   let feedback: Any = never();

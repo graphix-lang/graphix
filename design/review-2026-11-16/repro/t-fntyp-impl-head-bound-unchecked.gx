@@ -1,0 +1,17 @@
+// Title: an impl head's bound is not held to the rules of a bound: a
+//        function type with variables of its own, and a trait used as a
+//        type, are accepted there
+// Command: /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache --check \
+//          design/review-2026-11-16/repro/t-fntyp-impl-head-bound-unchecked.gx
+// Expected: refused, as the same bounds are on a lambda and on a typedef
+//           parameter: "a function type with type variables of its own ..
+//           stands only as a definition's signature" for the first impl,
+//           "trait Show used as a type" for the second
+//           (`let f = 'a: Array<Show> |x: 'a| 1` and
+//           `type X<'a: Array<Show>> = Array<'a>` are refused so).
+// Observed: exit 0, no message.
+trait Show { val show: fn(self) -> string };
+trait T { val m: fn(self) -> i64 = |s| 1 };
+impl<'a: fn<'b: Number>(x: 'b) -> 'b> T for Array<'a> {};
+impl<'k: Array<Show>> T for Map<string, 'k> {};
+1

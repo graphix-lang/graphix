@@ -357,6 +357,16 @@ impl Hooked {
 
 /// Run the method `m` of the implementation for the abstract type `typ`
 /// on `args`.
+// CR claude for eric: [risk/medium] The check accepts `impl Eq for W { let eq = |a, b|
+// a == b }`, and the first == on a W then recurses through call_hook forever inside one
+// cycle: no output, no diagnostic, and no cycle ever ends, since the budgets are
+// unlimited by default. The same wedge comes from `let hash = |w| w`, because
+// GxAbstract::hash hashes the returned part through the same hook, and from `let fmt =
+// |w| "W([w])"`. These are natural first drafts, and unlike a recursive call nothing in
+// the text calls eq. Proposal: refuse at the impl a method whose body applies its own
+// trait's operator to a value of the impl's type, naming `a.0` as the fix; and hash the
+// payload when the part a hash hook returns is the value itself. probe:
+// design/review-2026-11-16/repro/x-panics-core-trait-self-recursion.gx (x-panics-03)
 fn call_hook<R: Rt>(
     ctx: &mut ExecCtx<'_, R>,
     m: Method,
@@ -569,6 +579,18 @@ fn call_hook_over<R: Rt>(
     };
     // a hook's first call is a body's entry: its arguments fire, its
     // constants stand
+    // CR claude for claude: [bug/high] Only a hook site's first dispatch runs under
+    // `enter_body`; every later one runs in the spare event's ordinary view, and the
+    // site is walked at dispatches alone, so a fire of a variable the method captures
+    // in a cycle with no dispatch reaches none of its nodes. A part of the method that
+    // reads captures alone (`!strict` in `|a, b| !strict || a.0 == b.0`) rides the
+    // value of the last dispatch that saw it fire, a `Prune` statement of the body that
+    // reads no formal rides its resident, and the answer depends on how often the
+    // consumer dispatched: the node-walk answers true where the JIT answers false. Run
+    // every dispatch as a resume (`enter_body`), so standing reads recompute, and pin a
+    // method over a capture that changes between dispatches. probe:
+    // design/review-2026-11-16/repro/c-prune-wake-hook-stale-capture.gx (and
+    // c-prune-wake-hook-stale-capture-fuzz.gx: interp != jit) (c-prune-wake-03)
     let r = if first { ctx.enter_body(run) } else { run(ctx) };
     return_site(ctx, loan);
     Hooked::Ran(r)
@@ -609,6 +631,16 @@ fn pair<R: Rt>(
     b: &GxAbstract,
 ) -> Option<Option<Value>> {
     let typ = a.typ();
+    // CR claude for claude: [bug/high] This compares the two values' types as written.
+    // A value cast or read at an alias-spelled instance (cast<W<I>>(c) with type I =
+    // i64; cast_abstract wraps it at the written params) and one built as W<i64>
+    // therefore take the structural case. ==, <, sort and map keys then ignore the
+    // type's Eq/Ord between them, although GxAbstract::eq/cmp have already found them
+    // one instantiation by params_key, and `W<i64> as _` admits the W<I> value. A map
+    // holding one such key mixes two orders, and map::get misses every present key.
+    // Both callers have already compared id and params_key, and key_bottoms passes one
+    // value twice, so drop the check. probe:
+    // design/review-2026-11-16/repro/t-rep-alias-params-bypass-eq-ord.gx (t-rep-01)
     if b.typ() != typ {
         return None;
     }
@@ -620,6 +652,17 @@ fn key_bottoms<R: Rt>(ctx: &mut ExecCtx<'_, R>, m: Method, k: &GxAbstract) -> bo
     matches!(pair(ctx, m, k, k), Some(None))
 }
 
+// CR claude for claude: [perf/low] This answers by the abstract id alone, so an `Eq`
+// impl for one instantiation (`impl Eq for W<i64>`) makes `GxAbstract::hash` take the
+// hook's answer for every other instantiation, where no impl applies and the answer is
+// none. Every `W<string>` then hashes alike while its equality is the payload's, and
+// `array::dedup` over them is quadratic: 8000 values take 9.5 s against 0.09 s without
+// the impl, and 30000 do not finish in 150 s. `dispatch_cmp_applies` asks `impl_for` of
+// the value's own type. `call_hook` already tells no implementation (`Hooked::None`)
+// from one that leaves `hash` out (`Hooked::Representation`): return that from the
+// `hash` hook and drop `eq_applies`. probe:
+// design/review-2026-11-16/repro/c-module-traits-eq-applies-by-id-dedup.sh
+// (c-module-traits-05)
 fn dispatch_eq_applies<R: Rt>(state: *mut u8, a: &GxAbstract) -> bool {
     // SAFETY: with_hooks lent its context for this dispatch.
     let ctx = unsafe { lent::<R>(state) };
@@ -745,6 +788,31 @@ fn dispatch_from_value<R: Rt>(
 }
 
 /// Can a core-trait hook fire: is any core trait implemented?
+// CR claude for claude: [perf/medium] This answers true in every program, because
+// core's own `impl<'a> Cast for Transparent<'a> {}` registers a Cast impl. An empty
+// impl changes no Value operation: a method it leaves out uses the representation. So
+// Uniq::update never takes structural_eq's same-allocation shortcut and compares with
+// Value's PartialEq, a full walk. uniq over an unchanged array costs 342 ms per 1000
+// fires at 100k elements against 6.9 ms at 1k, while once over the same array stays at
+// 3.6 ms; a map or a tuple around the array is linear the same way. Every with_hooks
+// site also takes the loan, and every with_display_hooks site clones the Env, for
+// nothing. Count an impl only when it defines a method, and let uniq ask about Eq
+// alone. probe: design/review-2026-11-16/repro/x-rerun-5-uniq-hooks-always-live.sh
+// (x-rerun-5-02)
+// CR claude for claude: [perf/medium] This is true in every program: core's mod.gx
+// declares `impl<'a> Cast for Transparent<'a> {}`, so every env holds a Cast impl.
+// Every gate built on it is now constant. FusedKernel::update runs each kernel whose
+// meets_abstract is set under the value-hook loan, and par_loop::run never forks under
+// a loan. So a kernel loop that builds or reads an abstract value never forks: not
+// under Auto, not under GRAPHIX_PAR=force, and not under a #[parallel] the build
+// accepted. The book's gui/mandelbrot loop builds gui::Color values and now runs
+// serially. uniq's structural_eq same-allocation shortcut is never taken: about 680 us
+// a fire over a standing 200k-element array, where it was O(1). Count only impls that
+// run code: an impl implementing none of the hooked methods dispatches nothing, since
+// take_site answers Representation. Skip such impls here, and decide meets_abstract per
+// type the kernel meets. Pin a #[parallel] loop over such a type forking. probe:
+// design/review-2026-11-16/repro/x-rerun-2-abstract-kernel-never-forks.gx and
+// design/review-2026-11-16/repro/x-rerun-2-uniq-shortcut-dead.gx (x-rerun-2-01)
 pub fn hooks_live(env: &Env) -> bool {
     [CoreTrait::Eq, CoreTrait::Ord, CoreTrait::Display, CoreTrait::Cast]
         .into_iter()

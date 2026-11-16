@@ -1,0 +1,25 @@
+// x-panics: hbs::render panics the runtime when an Eq hash hook re-enters it
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache x-panics-hbs-memo-reentry.gx
+// Expected: "warm warm", then the outer render's value (an HbsErr naming the
+//   non-string partial, as when the memo is cold), then exit 0.
+// Observed: "warm warm", then
+//   thread 'graphix-runtime' panicked at stdlib/graphix-package-hbs/src/lib.rs:413:19:
+//   RefCell already borrowed
+//   Error: graphix runtime is dead        (exit 1; same under --no-fusion)
+// fc_render looks its key up in the TEMPLATES memo under borrow_mut; the key
+// holds #partials, whose hash runs W's `hash` hook (Graphix code, allowed to
+// call the Stateless hbs::render), which borrows TEMPLATES again. The memo
+// must be non-empty (hashbrown skips hashing on an empty table): `warm` fills it.
+type W = Abstract<i64>;
+impl Cast for W {};
+impl Eq for W {
+    let eq = |a, b| a.0 == b.0;
+    let hash = |w| hbs::render("inner", {a: w.0})
+};
+let clk = sys::time::timer(duration:20.ms, false);
+let warm = hbs::render("warm", {a: 1});
+println("warm [warm]");
+let r = hbs::render(#partials: {p: clk ~ W(1)}, "outer", {a: 1});
+println("[r]");
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+0

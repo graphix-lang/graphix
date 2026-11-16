@@ -1,0 +1,9 @@
+// Title: two decided arguments neither wider than the other are refused with a
+//        bare mismatch that names no annotation, though one makes the call pass
+// Command: graphix --no-cache --check x-typecheck-order-incomparable-args-no-remedy.gx
+// Expected: a refusal that says what to annotate (the earlier argument, with
+//           a type holding both: `let xs: Array<[`Red, `Green, `Blue]> = ..`
+//           passes).
+// Observed: type mismatch 'a: [`Green, `Red] does not contain `Blue
+let xs = [`Red, `Green];
+array::push(xs, `Blue)

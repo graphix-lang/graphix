@@ -1,0 +1,30 @@
+// A dynamic module's body may write every name its sig imports: a host binding, and a
+// package function for every module loaded after it
+//
+// command:  timeout -s KILL 30 graphix --no-cache x-refs-dynamic-body-writes-imports.gx
+// rule:     design/module_system.md, "What a dynamic module's body sees": the sig's `use`
+//           items are the grant. Nothing says whether the grant is to read or to write.
+// expected (if an import grants a read): module `a` fails to load, `limit` stays 10 and
+//           `b::n` is 3.
+// observed: `a` loads; through `&mut limit` it sets the host's `limit` to 0, and its
+//           `str::len <- ..` replaces `str::len` for module `b`, loaded later from a
+//           source that only calls it:
+//             (null, null, 0, 99)
+//           columns: a's status, b's status, limit, b::n (= str::len("abc"))
+//           A package function the host itself already calls is safe only by the
+//           unrelated "an earlier compile calls it as a fixed function" refusal.
+let step = 0;
+step <- select step { s if s < 8 => s + 1, _ => never() };
+let limit = 10;
+let sta = mod a dynamic {
+  sig { use str; use super::limit; val v: i64 };
+  source "let r = &mut limit; *r <- 0; str::len <- |s: string| -> i64 99; let v = 1"
+};
+let srcb: string = never();
+srcb <- (select step { 4 => null, _ => never() }) ~ "let n = str::len(\"abc\")";
+let stb = mod b dynamic {
+  sig { use str; val n: i64 };
+  source srcb
+};
+sys::exit(sys::time::after_idle(duration:150.ms, 0));
+(sta, stb, limit, b::n)

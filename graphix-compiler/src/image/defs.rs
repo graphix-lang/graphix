@@ -63,6 +63,29 @@ fn shared_encode(shared: &BodyShared, buf: &mut impl BufMut) -> Result<(), PackE
         literals,
         prototype,
         bound: _,
+        // CR claude for claude: [bug/high] `shared_encode` writes neither `held` nor
+        // `nested`, so a definition its enclosing definition's check kept registered
+        // for a returned function (`LambdaDef::hold_returned`) comes back from an image
+        // with no bindings to put back: `LambdaDef::restore_captures` returns `None`
+        // and the compile of its labeled default fails. A dynamic module that calls
+        // such a function and omits the label loads on a cold start and fails on a warm
+        // one with `z not defined` (the same through a struct field holding the
+        // function). Write `held` (its id and binds) and `nested` with the share and
+        // read them back; both, since a restored nested literal with `nested` false
+        // would release what its enclosing definition still holds. probe:
+        // design/review-2026-11-16/repro/c-lambda-held-not-imaged.gx (c-lambda-01)
+        // CR claude for claude: [bug/high] shared_encode drops BodyShared::held and
+        // nested, and a share is not an image object: each restored definition decodes
+        // its own copy, so a definition and its enclosing definition's literals entry
+        // stop sharing one. A warm session loses what LambdaDef::hold_returned kept, so
+        // a later input (a dynamic module's load, a REPL input) whose call omits a
+        // labeled default that reads a capture of the enclosing definition's check
+        // fails with `n not defined` (LambdaDef::restore_captures finds no held binds);
+        // cold, the same call works. Fix: write a BodyShare as an image object keyed by
+        // its Arc address, carrying held (its LambdaId and binds) and nested, so every
+        // definition and literals entry naming one share decodes to one; pin it cold vs
+        // warm beside repl_inputs' held-default case. probe:
+        // design/review-2026-11-16/repro/c-image-held-capture-lost.gx (c-image-01)
         held: _,
         nested: _,
     } = shared;

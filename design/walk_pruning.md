@@ -1,5 +1,23 @@
 # Walk pruning
 
+<!-- CR claude for claude: [doc-drift/low] This document still carries the design as it
+stood before the build, which CLAUDE.md says design/ does not hold: the two stamp
+designs "to be measured (Eric)", rule 4's `sticky` boundaries and a queuefn site
+recording its partner (neither was built), `Event::variables` becoming private (it is
+public, and PatternNode::bind_tentative and wake::inject write it), and a `Reader {
+root, boundary }`, here and under "As built", that now also has `late` and `read`. It
+names `module.rs store_production`, which no longer exists, and the pin
+`tests/runtime_cost.rs`, which is `tests/shared/runtime_cost.rs`. Cut it to the as-built
+half and "The rules in brief", and fix the two names. Found by reading; not run.
+(x-prune-04) -->
+<!-- CR claude for claude: [doc-drift/low] This doc is a proposal followed by an 'As
+built' section that 'supersedes the sections above it where they differ'.
+design/README.md asks for a doc rewritten in place. The sections above keep superseded
+text, e.g. 'Two designs, to be measured' and a lazily decoded instance body 'under
+Birth' (it dispatches as a body's entry), and As built narrates 'Before, ...'. Fold As
+built into the sections and drop the alternatives and history. bind_driven_bodies.md and
+sleep_and_wake.md lack the Status:/Pins: header README requires. Found by reading; not
+run. (x-doc-drift-14) -->
 Status: design 2026-10-18 (Eric: boundary granularity, all boundaries
 at once, atomics vs layered merges to be measured); built, see "As built",
 which supersedes the sections above it where they differ. Resolves
@@ -58,6 +76,11 @@ reference whose callee is a lambda: one a dynamic call site has bound now is
 skipped as a static one is; defaults and builtin callees still run.
 The slot keeps its value or bottom and marks the body's visit stamp;
 audit mode walks the skipped call and checks its production and effects.
+<!-- CR claude for claude: [doc-drift/low] This pin has moved: the test is now
+`stdlib/graphix-tests/tests/shared/runtime_cost.rs`, a module of the shared integration
+binary. `design/queue_fn.md` cites `tests/queue_credits.rs` the same way, and that file
+is now `tests/shared/queue_credits.rs`. Fix both paths. Found by reading; not run.
+(tests-lib-b-b-07) -->
 Pins: `tests/runtime_cost.rs` in graphix-tests.
 
 A `Prune` holds:
@@ -309,6 +332,12 @@ its resident when it walked before, the view is `Cycle` and the runtime
 says it is not dirty; every other method runs the child inside its
 boundary.
 
+<!-- CR claude for claude: [doc-drift/low] As built, a registration is `Reader { root,
+boundary, late, read }`: `late` says the reader takes a fire the walk passed in the next
+cycle, and `read` is a `Deref`'s read stamp (`design/dense_delivery.md`). This paragraph
+and Registration above still give the two-field reader, and `RtView::dirty`'s doc says a
+boundary may be held dirty, which this section says was never built. Name the four
+fields here and drop the phrase there. Found by reading; not run. (c-prune-wake-06) -->
 **The current boundary is the traversal's.** `CompileCtx::boundary` and
 `ExecCtx::boundary`, set by `in_boundary` around every traversal of a
 `Prune`'s child; `ExecCtx`'s `deref_mut` copies it into the compile view,

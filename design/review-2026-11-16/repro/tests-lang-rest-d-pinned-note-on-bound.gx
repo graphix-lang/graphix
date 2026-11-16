@@ -1,0 +1,13 @@
+// The "undecided argument" note is appended to an Ordered-bound refusal that
+// no argument order or annotation can fix.
+// Command: graphix --no-cache --check tests-lang-rest-d-pinned-note-on-bound.gx
+// Expected: "'k must be Ordered, but &i64 is a reference: references have no
+//   order, and only == and != compare them, by what they point to" (as with
+//   `let m: Map<i64, i64> = {}; map::insert(m, &x, 1)`), nothing more.
+// Observed: the same, then ": an undecided argument before this one met 'k,
+//   which the arguments after it can no longer widen: pass the widest argument
+//   first, or annotate the undecided one". Annotating `{}` as Map<&i64, i64>
+//   is refused ("a map key type can't hold the reference"), and the key cannot
+//   be passed before the map: the advice cannot make the program pass.
+let x = 1;
+map::len(map::insert({}, &x, 1))

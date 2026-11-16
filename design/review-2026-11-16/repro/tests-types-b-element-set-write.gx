@@ -1,0 +1,25 @@
+// Title: a write to a cell bound to a payload's element set is refused with a
+//        self-contradictory message ("x is [i64, string] ... cannot hold i64").
+// Command: timeout -s KILL 60 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache --check \
+//          design/review-2026-11-16/repro/tests-types-b-element-set-write.gx
+// This is lang::types::payload_cells_bound_to_an_element_set with the hint its
+// refusal gives applied ("declare y: [i64, string]"), and the timer dropped.
+// Expected: accepted: x's cell lies in the element set whose cells all stand
+// above [i64, string], which already holds the i64 written.
+// Observed:
+//   x is [i64, string], inferred from an earlier use, and cannot hold i64;
+//   declare x: [i64, string] where it is bound (line 2, column 5)
+// GRAPHIX_DBG_BIND=1 shows `SET-T ['_a, '_b] >= i64` (two open cells, each
+// above [i64, string]) failing, printed by write_mismatch as their lower bound.
+// Without the select (b.0 read plainly), without the abstract (plain arrays),
+// or with `x <- 1` moved above the select, or with `y: i64`, the same program
+// checks; `x <- "s"` in its place is refused as "x is [i64, string] ... cannot
+// hold string". The build (run without --check) refuses it the same way.
+type B<'p> = Abstract<'p>;
+let x = never();
+let y: [i64, string] = never();
+let b = B([x]);
+b <- B([y]);
+let v = select b.0 { [h, ..] => h, _ => never() };
+x <- 1;
+v

@@ -311,6 +311,21 @@ fn decorations() -> impl Strategy<Value = Option<Arc<Decorations>>> {
 /// `inner` with decorations above it. Legal only where the parser captures
 /// decorations: an expression position or a select arm, impl method or
 /// struct field head. Decorating an operand is a parse error.
+// CR claude for claude: [test-gap/medium] The generator decorates only block items,
+// struct and `with` fields, a select's scrutinee, guards and arms, seq statements and
+// clauses, impl methods and a dynamic module's source. Every other child the parser
+// reads through expr_knot takes comments and attributes above it too, and no round trip
+// ever generates one there: array, list, tuple and variant elements, call/any/never
+// arguments, map keys and values, index and slice bounds, the operand of `T(..)` and
+// `cast<T>(..)`, a let's or connect's value, a lambda's body and defaults, a catch
+// handler, try/with statements. That is how the ArraySlice layout that writes a
+// decorated end bound after `..` got past every pp_round_trip. Fix: wrap those children
+// in `decorated(..)` in array!, list_lit!, tuple!, variant!, apply!, any!, never!,
+// map!, arrayref!, arrayslice!, mapref!, construct!, typecast!, bind!, connect!,
+// catch_stmt!, lambda! and seq_item!'s try/with, leaving operator operands and postfix
+// sources bare. probe: design/review-2026-11-16/repro/tests-expr-slice-end-comment.gx
+// (a sweep of these positions through graphix fmt found that one failure).
+// (tests-expr-02)
 fn decorated(inner: impl Strategy<Value = Expr>) -> impl Strategy<Value = Expr> {
     (inner, decorations()).prop_map(|(mut e, dec)| {
         e.dec = dec;
@@ -1663,6 +1678,14 @@ fn undecorated_sigitem() -> impl Strategy<Value = SigItem> {
     ]
 }
 
+// CR claude for claude: [test-gap/low] check_trait compares a method's name, doc,
+// comments, eol, receiver, type and default, but not its attributes, and trait_decl!
+// puts #[pure] on about half the methods it generates. A printer or parser that
+// dropped, doubled or moved a method's #[pure]/#[sync] (node/traits.rs reads them as
+// what every impl must satisfy) passes expr_round_trip and every pp_round_trip; only
+// the formatter's ornament guard would notice, at a user's file. Fix: compare m0.attrs
+// with m1.attrs by name and arguments, through one helper shared with check_dec. Found
+// by reading; not run. (tests-expr-03)
 fn check_trait(t0: &TraitExpr, t1: &TraitExpr) -> bool {
     (t0.name == t1.name)
         && (t0.below.lines() == t1.below.lines())
@@ -2635,6 +2658,15 @@ fn operands_ending_in_a_lambda_print_in_parens() {
 fn generated_trees_are_often_undecorated() {
     use proptest::{strategy::ValueTree, test_runner::TestRunner};
     let (strategy, mut runner) = (expr(), TestRunner::deterministic());
+    // CR claude for claude: [test-gap/low] This calls a tree bare when no node has
+    // `dec`, but what keeps a tree off one line is print::decorated under
+    // PrintFlag::AsWritten. That also counts a trait method's comments, doc, eol and
+    // attributes (trait_decl! gives most methods one), a trait's or impl's comments
+    // below, a typedef's notes and an interface item's comments, none of which live in
+    // `dec`. The test can therefore pass while few generated trees print flat, the
+    // condition its doc says it guards. Fix: count
+    // `format_with_flags(PrintFlag::AsWritten, || !print::decorated(&e))`. Found by
+    // reading; not run. (tests-expr-05)
     let bare = (0..400)
         .filter(|_| {
             let e = strategy.new_tree(&mut runner).expect("a tree").current();
@@ -3059,6 +3091,14 @@ mod tree_sitter_compat {
                 "i64:4/i64:2",
                 "(binary_expression (type_ascription (primitive_type) (literal (number))) (type_ascription",
             ),
+            // CR claude for claude: [test-gap/low] `bytes:AQID==` is not a Graphix
+            // program: the parser refuses it ("base64 decode failed", the padding is
+            // extra), so this case pins tree-sitter's reading of text the language does
+            // not have; `bytes:AQID` is the literal meant. Nothing in ts_tree_shapes
+            // checks that the parser takes its sources; assert parser_takes(src) in the
+            // loop, as ts_accepts_what_the_parser_does does. probe:
+            // design/review-2026-11-16/repro/tests-expr-bytes-fixture.gx
+            // (tests-expr-04)
             ("bytes:AQID==", "(type_ascription (primitive_type))"),
             // an annotation keeps the binding; a primitive is a primitive
             ("let x: Foo = 1", "(let_binding pattern: (structure_pattern (pattern_bind"),

@@ -1,0 +1,33 @@
+// db::insert stores a value nested deeper than db::get can read back
+//
+// command (debug binary at HEAD e1be2fbf2; it creates a database at the
+// path db::open names below: point it at a scratch directory):
+//   timeout -s KILL 60 graphix --no-cache design/review-2026-11-16/repro/x-unsafe-db-value-deeper-than-read.gx
+//
+// expected: "inserted; ok", or the insert refused
+// observed:
+//   inserted; get err error:`DbErr("can't cast [[[[[[... to [null, Array<T>]: no member admits it")
+//   The value is committed and no read returns it: a cast reads data at
+//   most typ::cast::MAX_DATA_DEPTH (1024) values deep, and the stored
+//   value nests 1100. With mk(1000) the same program prints "inserted; ok".
+type T = Array<T>;
+let mk = |n: i64| {
+  let init: T = [];
+  array::fold(array::init(n, |i| i), init, |acc, i| [acc])
+};
+let dbh = db::open("/home/eric/tmp/review-2026-11-16/work/x-unsafe/db-deep")$;
+let t: db::Tree<string, T> = db::tree(dbh, "t")$;
+let ins = db::insert(t, "k", mk(1100));
+let insr = select ins {
+  error as e => "insert err [e]",
+  _ => "inserted"
+};
+let got = db::get(t, ins ~ "k");
+let r = select got {
+  error as e => "get err [e]",
+  null as _ => "none",
+  v => "ok"
+};
+println("[insr]; [r]");
+sys::exit(sys::time::after_idle(duration:1.s, 0));
+0

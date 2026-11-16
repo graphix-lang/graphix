@@ -34,6 +34,14 @@ pub struct TestCtx {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FuseExpect {
     /// The program builds a fused kernel and the JIT runs it natively.
+    // CR claude for claude: [doc-drift/low] These variant docs promise more than
+    // check_fuse_expectation asserts. Jit says the JIT runs the kernel, and None says
+    // the program makes no kernel at all. Both are judged only by CompRes::fused at the
+    // end of the build: a kernel need not run before the judged value, and a run-time
+    // bind fuses later. Say what is asserted: Jit means the build fuses a region, None
+    // means the build fuses none. The run! doc below also says each mode is a
+    // #[tokio::test(flavor = "current_thread")]; the expansion is a plain #[test]
+    // calling run_fixture. Found by reading; not run. (core-aux-06)
     Jit,
     /// The program produces no fused kernel at all.
     None,
@@ -799,6 +807,31 @@ pub fn prints(expected: &'static str) -> impl Fn(Result<&Value>) -> bool {
 
 /// The compile error `let result = {code}` gets, in full; an error if it
 /// compiles, or if the runtime died compiling it.
+// CR claude for claude: [test-gap/medium] refusal builds the program and never checks
+// it, so its callers' refusals escape the rule run!'s interp mode enforces: the check
+// refuses exactly when the build does. In lang::traits that covers the twelve
+// check-level refusals of implementations_are_declared_ones,
+// trait_method_value_frames_quote_the_program and trait_method_variadic_value_refused
+// (impl placement, the orphan rule, a variadic method as a value). A change that moved
+// one of them into elaboration would pass these tests. Run check_fixture first and
+// require verdicts_agree. Give the callers whose refusal only a build makes (the
+// #[native] and par-attribute ones) a build-only variant, as run! has build_only.
+// compile_error has the same gap. Found by reading; --check refuses all twelve today.
+// (tests-traits-a-05)
+// CR claude for claude: [test-gap/medium] refusal, compile_error, eval (with
+// eval_with_setup and first_value), collect and Fixture::new compile without the check.
+// A refusal or value they pin therefore says nothing about whether --check agrees. The
+// order sweeps in lang/types.rs run most of their orders only through refusal or eval:
+// field_read_refuses_a_lambda_two_members_could_decide,
+// literal_refuses_a_capture_two_functions_could_decide_in_every_order,
+// field_read_names_the_two_functions_that_are_not_one_type and
+// literal_of_schemes_beside_two_functions_in_every_order. An order-dependent split
+// between check and build is exactly what they exist to catch. The gate itself is
+// written out three times, in fixture_mode, run_tempdir_fixture and eval_modes. Fix:
+// fold it into one helper beside compile_result that checks, compiles and calls
+// verdicts_agree, and use it here, in compile_error, and in the sweeps that call eval.
+// probe: the 108 sweep programs agree under graphix --check today, so this is a gap,
+// not a live split. (core-aux-04)
 pub async fn refusal(code: &str, register: &[PackageRef]) -> Result<String> {
     let (ctx, _rx) =
         fixture_runtime([("/test.gx", result_source(code))], register, Mode::Jit, |_| {})

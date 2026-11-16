@@ -1,0 +1,9 @@
+// Title: an arm nothing reaches has its body checked first, so its bind,
+// typed `[]`, reports an arithmetic error where the arm is unreachable.
+// Command: graphix --no-cache --check x-typecheck-patterns-dead-arm-body-error.gx
+// Expected: "unreachable arm: the earlier arms already cover the whole
+//   scrutinee", as `|x| select x { null as _ => 0, v => v }` reports (the
+//   skill's gotcha: a type test over an untyped parameter binds it).
+// Observed: "cannot compute [] + i64: arithmetic is fn<'a: Number +
+//   Singleton>(x: 'a, y: 'a) -> 'a — both operands must be one numeric type"
+|x| select x { null as _ => 0, v => v + 1 }

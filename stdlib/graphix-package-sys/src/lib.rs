@@ -405,6 +405,17 @@ impl Halves {
     }
 
     /// [`Self::on_reader`] over the write half.
+    // CR claude for eric: [risk/medium] The order of operations on a stream half is
+    // decided here, by which task reaches the lock first, not by the order the calls
+    // were made in the cycle. Four write_exact sites firing in one cycle wrote ABCD in
+    // 16 of 30 runs and four other orders in the rest; two writes and a close in one
+    // cycle lost the second write to broken pipe in 28 of 30 (repro
+    // x-async-io-close-cuts-same-cycle-writes.gx). Either order a half's operations by
+    // the cycle's text order (a place in line taken when the call is issued, which
+    // this, on_reader and close wait on), or document that same-cycle operations on one
+    // stream are unordered. probe:
+    // design/review-2026-11-16/repro/x-async-io-same-cycle-writes-race.gx
+    // (x-async-io-04)
     pub(crate) async fn on_writer<T>(
         &self,
         tag: &'static str,
@@ -880,6 +891,17 @@ impl<R: Rt> Apply<R> for Exit {
     fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R>) {}
 }
 
+// CR claude for eric: [structure/medium] An embedder confines a script only by the set
+// of packages it registers. Every registered builtin is reachable from any script by
+// its marker (`let w = |#path: string, data: string| -> .. 'sys_fs_write_all` writes a
+// file with no `sys::fs` name in the program; `CFlag::NoBuiltins` is applied to a
+// dynamic module's body alone), so the module tree confines nothing, and `sys` is one
+// package: a script that needs a timer or `sys::exit` comes with the filesystem,
+// sockets and process spawning. Split `sys` into packages along its modules (time and
+// exit, fs, net, tcp/tls, process), or give `ShellBuilder` a deny-list of builtin name
+// prefixes applied at registration. probe:
+// design/review-2026-11-16/repro/a-packages-marker-reaches-any-builtin.gx
+// (a-packages-09)
 graphix_derive::defpackage! {
     builtins => [
         Args,

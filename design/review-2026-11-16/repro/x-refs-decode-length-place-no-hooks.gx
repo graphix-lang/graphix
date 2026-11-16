@@ -1,0 +1,31 @@
+// buffer::decode never completes when a length is read through a map place whose key
+// is an abstract value with its own Ord
+//
+// command:  timeout -s KILL 30 graphix --no-cache x-refs-decode-length-place-no-hooks.gx
+// rule:     node/place.rs, read_path: "A map step compares keys, so the caller runs this
+//           under `coretraits::with_hooks`". K(11) and K(1) are one key under K's Ord.
+// expected: the three reads agree on the length 3, and the decode takes "abc":
+//             dbg(viakey): 3
+//             dbg(*len): 3
+//             dbg(rest): bytes:ZGVm
+//             "abc"
+// observed: the map read and the dereference find the entry; the decode's own read of
+//           the same place misses it, takes the length as not arrived, and stays bottom:
+//             dbg(viakey): 3
+//             dbg(*len): 3
+//             ""
+//           With `&m{K(1)}` (the stored key itself) the decode completes.
+type K = Abstract<i64>;
+impl Eq for K { let eq = |a, b| (a.0 % 10) == (b.0 % 10) };
+impl Ord for K { let cmp = |a, b| select (a.0 % 10) < (b.0 % 10) { true => `Less, false => select (a.0 % 10) == (b.0 % 10) { true => `Equal, false => `Greater } } };
+let m: Map<K, u64> = {K(1) => u64:3, K(2) => u64:2};
+let viakey = m{K(11)};
+let len = &m{K(11)};
+let out = "";
+let buf = buffer::from_string("abcdef");
+let rest = buffer::decode(buf, [`UTF8(len, &mut out)]);
+sys::exit(sys::time::after_idle(duration:150.ms, 0));
+dbg(viakey);
+dbg(*len);
+dbg(rest);
+out

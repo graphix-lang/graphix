@@ -32,5 +32,13 @@ fn a_warm_chain_starts_faster_than_it_compiles() {
     let sum = (N * (N - 1) / 2 + 1).to_string();
     assert_eq!(cold.stdout.trim(), sum);
     assert_eq!(warm.stdout.trim(), sum);
+    // CR claude for claude: [test-gap/low] The module doc promises a decode linear in
+    // the chain's length, but this asserts only that one warm start beats one cold
+    // compile, on wall time. On a debug build, cold is about 670 ms and warm about 170
+    // ms at N = 3000, so a decode that turned quadratic has roughly 500 ms to hide in,
+    // and the suite's load moves both times. Measure warm starts at N and 2N by work
+    // (`common::Instructions` counts the child, as idle_module_cost.rs does) and bound
+    // the ratio, which is what linear means. Found by reading; timings measured by
+    // hand. (tests-shell-compiler-b-08)
     assert!(warm_time < cold_time, "warm {warm_time:?}, cold {cold_time:?}");
 }

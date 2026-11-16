@@ -1,0 +1,58 @@
+// A fold fires where nothing fired for it: at its arm's wake when its source
+// grew while the arm slept, and at an arm's first entry by a guard's flip.
+// A count over it ticks and a connect from it writes, in both engines.
+//
+// run:  /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache <this file>
+//       /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache --no-fusion <this file>
+//       (graphix-fuzz check says AGREE: both engines do it)
+//
+// First select: the arm runs at n = 0, 1, sleeps at n = 2, 3 and wakes at
+// n = 4. `src` grows from [1, 2] to [1, 2, 3] at cycle 3, while the arm
+// sleeps, and does not fire at the wake.
+// Second select: the scrutinee is a constant and the guard flips at n = 3, so
+// the arm is entered with its bind stale; `fixed` never fires after cycle 0.
+//
+// CLAUDE.md: a wake fires nothing for anyone; nothing fires in a body but
+// its binds and the captures that fire while it runs.
+// design/bind_driven_bodies.md: "Slot, born at an outer wake": nothing
+// inside, the site quiet; "Arm, entry by a guard's flip": nothing inside.
+// A map over the same source is quiet in both places. The fold fires
+// because every new slot is handed its accumulator as a fire.
+//
+// rows: (n one cycle back, wake: count(fold), count(map), written w,
+//        guard flip: count(fold), count(map), written v)
+// expected from n = 4 on: (4, 1, 1, 3, 0, 0, -1)
+// observed, both engines: (4, 2, 1, 6, 1, 0, 3)
+{
+    let n = 0;
+    n <- select n { k if k < 6 => k + 1, _ => never() };
+    let src = [1, 2];
+    src <- select n { 2 => [1, 2, 3], _ => never() };
+    let fixed = [1, 2];
+    let cf = 0; let cm = 0; let w = -1;
+    let gf = 0; let gm = 0; let v = -1;
+    let sum = |a: Array<i64>| array::fold(a, 0, |acc: i64, x: i64| acc + x);
+    let inc = |a: Array<i64>| array::map(a, |x: i64| x + 1);
+    select n % 4 < 2 {
+        true => {
+            let f = sum(src);
+            cf <- count(f);
+            w <- f;
+            cm <- count(inc(src));
+            0
+        },
+        false => -1
+    };
+    select 5 {
+        k if n > 2 => {
+            let f = sum(fixed);
+            gf <- count(f);
+            v <- f;
+            gm <- count(inc(fixed));
+            k
+        },
+        _ => -1
+    };
+    let ln = -1; ln <- n;
+    (ln, cf, cm, w, gf, gm, v)
+}

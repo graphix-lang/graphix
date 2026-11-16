@@ -1,0 +1,22 @@
+// `*r <- v` whose value fired before the reference arrived writes at its
+// arm's wake, when the reference arrived while the arm slept.
+//
+// run: graphix-fuzz run design/review-2026-11-16/repro/x-sleep-wake-deref-pending-write-at-wake.gx
+//
+// `once(clk) ~ 77` fires at clk 0 with `r` absent (the write is kept). The arm
+// sleeps from clk 2, `r` arrives at clk 4, the arm wakes at clk 6.
+// Each tick is (clk, on, x, count(x)).
+//
+// expected (a wake fires nothing): x stays 0.
+// observed, both engines: 7:(6, true, 0, 1) 8:(7, true, 77, 2): written in
+// the wake cycle, in which nothing the connect reads fired.
+{
+  let clk = array::iter([0, 1, 2, 3, 4, 5, 6, 7, 8]);
+  let x = 0;
+  let r: &mut i64 = never();
+  r <- select clk { 3 => &mut x, _ => never() };
+  let on = true;
+  on <- select clk { 1 => false, 5 => true, _ => never() };
+  let a = select on { true => { *r <- once(clk) ~ 77; 0 }, false => 1 };
+  clk ~ (clk, on, x, count(x))
+}

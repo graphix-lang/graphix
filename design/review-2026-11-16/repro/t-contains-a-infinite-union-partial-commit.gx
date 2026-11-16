@@ -1,0 +1,17 @@
+// An infinite type met through a union is reported as an earlier use that
+// never happened, with advice that leads nowhere.
+//
+// command:  /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache --check t-contains-a-infinite-union-partial-commit.gx
+// expected: "cannot infer a finite type here: unification requires a type
+//           that contains itself ..", as `b <- a` alone and `b <- [a]` give:
+//           b would be [null, Array<b>].
+// observed: "b is null, inferred from an earlier use, and cannot hold
+//           [null, Array<null>]; declare b: [null, Array<null>] where it is
+//           bound". Nothing used b before: the refused relation itself bound
+//           b to its first member, null. Declaring b as advised is refused
+//           again, one Array deeper, without end.
+let c = true;
+let b = never();
+let a = [b];
+b <- select c { true => a, false => null };
+a

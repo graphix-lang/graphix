@@ -1,0 +1,21 @@
+// Title: tui::form's handle answers `Stop twice for every edited key: the edit select re-fires when vals lands
+// Command: timeout -s KILL 4 graphix --no-cache gx-ui-form-handle-answers-twice.gx | tail -12
+// Expected: one answer per event: "events=3 answers=3" after the x, y and Tab keys.
+// Observed: "k=1 answer=`Stop" twice, "k=2 answer=`Stop" twice, Tab once: "events=3 answers=5".
+//   edit's `select vals[i]` has vals in its scrutinee, so the write line_edit::handle makes
+//   (`*st <- s`) re-fires the select a cycle later with handle's standing `Stop.
+use tui::{form::form, input_handler::{Event, KeyCode}};
+let key = |c: KeyCode| -> Event `Key({code: c, kind: `Press, modifiers: [], state: []});
+let f = form(#title: "t", #on_submit: |v| null, [{label: "a", value: ""}]);
+let go = sys::time::timer(duration:300.ms, true);
+let k = 0;
+k <- go ~ k + 1;
+let ev: Event = never();
+ev <- select k { 1 => k ~ key(`Char("x")), 2 => k ~ key(`Char("y")), 3 => k ~ key(`Tab), _ => never() };
+let r = f.handle(ev);
+let answers = 0;
+answers <- r ~ answers + 1;
+let events = 0;
+events <- ev ~ events + 1;
+let p = println(r ~ "k=[k] answer=[r]");
+"events=[events] answers=[answers]"

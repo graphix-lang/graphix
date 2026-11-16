@@ -1,0 +1,13 @@
+// The order of a load's own abstract types changes from load to load of the same source
+// run: timeout -s KILL 30 graphix --no-cache design/review-2026-11-16/repro/x-dyn-modules-own-type-order.gx
+// expected: the same 'v=' line after every reload: the source never changes
+// observed: v=[F(1), E(1), C(1), D(1)], then [C(1), F(1), D(1), E(1)], [D(1), E(1), C(1), F(1)], ... a different order at most loads
+let clk = sys::time::timer(duration:50.ms, true);
+let n = 0;
+n <- clk ~ n + 1;
+let st = mod foo dynamic {
+    sig { use core; use array; val v: string };
+    source n ~ "type C = Abstract<i64>; type D = Abstract<i64>; type E = Abstract<i64>; type F = Abstract<i64>; let xs: Array<\[C, D, E, F\]> = \[C(1), D(1), E(1), F(1)\]; let v = \"\[array::sort(xs)\]\""
+};
+sys::exit(n ~ select n { 12 => 0, _ => never() });
+println("n=[n] st=[st]"); println("v=[foo::v]")

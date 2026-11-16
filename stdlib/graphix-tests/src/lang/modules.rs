@@ -1078,6 +1078,14 @@ const DYNAMIC_MODULE_SLEEP: &str = r#"
 }
 "#;
 
+// CR claude for claude: [test-gap/low] The predicate reads `x` in the wake's own cycle
+// (step 20). There it is 10 whether the woken body counts on, stays stalled, or is
+// re-fired by the wake, so the wake rule is not pinned. Watched past the wake, the
+// loaded counter stays at 10 for good: a wake fires nothing, so the self-loop never
+// runs again. That contradicts the comment's 'resumes at the wake'. Read `x` at a later
+// step (e.g. `step >= 22`, still 10), and say in the comment that the body keeps its
+// state and fires nothing at the wake. probe:
+// design/review-2026-11-16/repro/tests-modules-sleep-pause-stalls.gx (tests-modules-05)
 run!(dynamic_module_sleep_is_pause, DYNAMIC_MODULE_SLEEP, is(Value::I64(10)); FuseExpect::Jit);
 
 // Refusals of a statement in the wrong place carry their site.
@@ -1389,6 +1397,12 @@ run!(
 // An error such a module raises to the function around it is refused
 // without naming the function's own throws, which no program writes.
 run!(
+    // CR claude for claude: [test-gap/low] The refusal tells the author to 'catch it
+    // inside the module', but nothing pins that this remedy builds. Add the twin whose
+    // `a.gx` puts `catch(e) println("[e]");` above `let n = g(1)?`; it builds and
+    // `mk(1)` is 2. probe:
+    // design/review-2026-11-16/repro/tests-modules-catch-inside-the-module.sh
+    // (tests-modules-08)
     module_in_a_function_raising_to_it_refused,
     refused("an error the module raises reaches the function around it"),
     "/test.gx" => r#"
@@ -1615,6 +1629,14 @@ run!(
 
 // Two explicit imports of one name are refused.
 run!(
+    // CR claude for claude: [test-gap/low] Only the file side of this rule is pinned.
+    // design/module_system.md says the REPL compiles with `CFlag::ReplaceImports` so
+    // that a second `use` of a name shadows the first, but no test anywhere compiles
+    // two inputs under that flag, so dropping it from the shell's REPL mode would go
+    // unnoticed. Add a test that compiles `use array::len`, then `use str::len`, then
+    // `len("abc")` as separate inputs under `CFlag::ReplaceImports`, expecting 3.
+    // probe: design/review-2026-11-16/repro/tests-modules-repl-reimport.sh
+    // (tests-modules-09)
     two_imports_of_one_name_are_refused,
     "{ use array::len; use str::len; len([1]) }",
     refused("`len` is already imported here (from `array`); rename one");
@@ -2120,6 +2142,14 @@ run!(
 // cycle starts, so a reader of the other in a statement before the
 // module sees it, as a reader of one binding does.
 run!(
+    // CR claude for claude: [test-gap/low] This fixture and
+    // a_body_write_reaches_an_earlier_reader_through_its_interface claim that the write
+    // lands on both bindings as the cycle starts, so a reader above the module sees it.
+    // Both read `r` at ep 4, a cycle after the write lands at ep 3, and a reader served
+    // a cycle late reads 11 there too. `r` is already 11 at ep 3, as it is over plain
+    // lets, so read it with `select ep { 3 => r, _ => never() }` in both. probe:
+    // design/review-2026-11-16/repro/tests-modules-earlier-reader-late.sh
+    // (tests-modules-06)
     a_write_through_an_interface_reaches_an_earlier_reader_of_the_body,
     is(Value::I64(11)),
     "/test.gx" => r#"
@@ -4093,6 +4123,15 @@ run!(
 
 // A loaded body's primes are its own: two modules loading in one cycle
 // requeue nothing, and nothing later in the cycle fires from a prime.
+// CR claude for claude: [test-gap/medium] Both loads here fail. The body reads
+// `super::y`, which the sig `{ val v: i64 }` does not grant now that a dynamic body
+// sees only what its sig imports, so each status is `super::y not defined`. The
+// assertion on `n` ([0, 1]) holds whether any body loads, so this no longer tests a
+// loaded body's primes. Give both sigs `use super::y;` and make the result depend on
+// both statuses being null so that a failed load cannot pass. With the grant, both
+// bodies load and `n` is still [0, 1] in the node-walk, the JIT and forced forking.
+// probe: design/review-2026-11-16/repro/tests-modules-primes-loads-fail.gx
+// (tests-modules-01)
 async fn loads_leave_no_primes(mode: Mode) -> Result<()> {
     use super::dense_deltas::run_delta;
     let (values, _) = run_delta(
@@ -4203,6 +4242,12 @@ run!(
 // A catch that saw no raise at its check takes none later: the refusal
 // names the annotation that would take it.
 run!(
+    // CR claude for claude: [test-gap/low] The refusal names `catch(e:
+    // Error<ErrChain<string>>)` as the fix, but no test holds that this annotation
+    // makes the load succeed. Add the twin with that annotation on the catch around the
+    // same module, expecting a null status. probe:
+    // design/review-2026-11-16/repro/tests-modules-catch-annotation-twin.gx
+    // (tests-modules-07)
     dynamic_raise_names_the_catch_annotation,
     r##"{
     let r = {
@@ -4387,6 +4432,13 @@ run!(
 // arm reading both never catches `b` up.
 run!(
     sibling_written_from_outside_its_module_fires_alone,
+    // CR claude for claude: [test-gap/low] The predicate pins only `count(m::b)`, so
+    // any `m::a` passes. A build that dropped every outside write to `m::a` (giving
+    // `[i64:1, i64:1]`) would pass a test about what those writes fire. The first value
+    // is `[i64:61, i64:1]` in the node-walk, the JIT, forked and unpruned runs alike;
+    // pin it with `prints("[i64:61, i64:1]")`. probe:
+    // design/review-2026-11-16/repro/tests-modules-sibling-outside-loose.sh
+    // (tests-modules-04)
     |v: Result<&Value>| matches!(v, Ok(v) if v.to_string().ends_with(", i64:1]")),
     "/test.gx" => r#"
         mod m;
@@ -4425,6 +4477,15 @@ async fn sibling_first_written_by_a_later_input_fires_alone() -> Result<()> {
         Ok(next_update(&ctx.rt, &mut rx, id).await?.to_string())
     };
     assert_eq!(next().await?, "[i64:1, i64:1]");
+    // CR claude for claude: [test-gap/medium] This test cannot fail for the rule it
+    // names. `a <- 5` lands while the arm holding `count(b)` sleeps, and a fire made
+    // while an arm sleeps is never delivered at the wake, so `count(b)` reads 1 after
+    // `gate <- true` even when `b` itself is written in between. The comment's 'the
+    // wake catches `a` up' describes the deleted wake catch-up. Drop the two gate
+    // inputs and write `a <- 5` while the arm is awake, asserting `[i64:5, i64:1]` on
+    // the next update: a `b` that fired with `a` would then count 2. probe:
+    // design/review-2026-11-16/repro/tests-modules-sibling-asleep-vacuous.sh
+    // (tests-modules-02)
     held.push(ctx.rt.compile(ArcStr::from("gate <- false")).await?);
     assert_eq!(next().await?, "[i64:-1, i64:-1]");
     held.push(ctx.rt.compile(ArcStr::from("a <- 5")).await?);

@@ -1,0 +1,29 @@
+// A runaway recursion through `Cast::from_value` is not contained by the
+// activation budget: the budget trips, and the unwind then exhausts memory.
+//
+// Command (6 GB cap in the wrapper):
+//   GRAPHIX_ACTIVATION_BUDGET=50000 timeout -s KILL 60 \
+//     /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache \
+//     design/review-2026-11-16/repro/x-traits-abstract-from-value-recursion-uncontained.gx
+//
+// Expected: as for `let rec f = |x: i64| -> i64 f(x + 1) + 1; f(0)` and for
+// the same mistake in `Display::fmt`, `Eq::eq`, `Ord::cmp` and
+// `Cast::to_value` under the same budget:
+//   Error: a runaway recursion exceeded the runtime's budget (..) and it stopped
+//
+// Observed: "[probe] OOM-KILLED: this run exceeded its 6G memory cap" after
+// about 6 s. `graphix-fuzz run` (budget 50000, 10 GB cap) logs "activation
+// budget (50000) exceeded by a recursion — aborting the runtime" and is
+// OOM-killed as well, where the plain recursion reports
+// Timeout(ActivationBudget).
+//
+// The memory is quadratic in the budget: 12000 stops clean in 1.5 s, 24000
+// passes 6 GB. After the abort the deepest hook rides bottom
+// (`GXLambda::update`), `Type::cast_abstract` turns that into the error
+// "its Cast implementation produced nothing", and every level above wraps
+// the level below's refusal in its own ("can't cast 3 to T: can't cast 3
+// to T: ..") and keeps it.
+type T = Abstract<i64>;
+impl Cast for T { let from_value = |v| cast<T>(v) };
+let v: Any = 3;
+cast<T>(v)

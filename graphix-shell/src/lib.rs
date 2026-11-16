@@ -81,6 +81,15 @@ fn print_fusion_stats(base: &FusionStats, after: &FusionStats) {
 
 /// The argv[0] a program loaded from `source` names itself by, as it was
 /// asked for on the command line.
+// CR claude for claude: [readability/low] The comment says argv[0] is the program "as
+// it was asked for on the command line". But `configure` canonicalizes a script's path
+// before it calls `argv0`, and main.rs canonicalizes it before that. So `graphix
+// ./link.gx` gives the link's resolved absolute target, which is what
+// tests/shell/program_args.rs pins. argv0_names_the_program_as_asked_for passes an
+// absolute path and cannot tell. Make the comment say what argv[0] is: the script's
+// canonical path, or `netidx:` and the path. probe: `graphix --no-cache ./alink.gx a
+// b`, with alink.gx a symlink to args.gx, printed `["/…/args.gx", "a", "b"]`.
+// (shell-05)
 fn argv0(source: &Load) -> Option<ArcStr> {
     match source {
         Load::File(p) => Some(arcstr::format!("{}", p.display())),
@@ -214,6 +223,17 @@ impl<X: GXExt> Output<X> {
     /// in a send while the channel is full, so the room is made here as the
     /// idle answer is waited for. `Continue(Some(code))` when the program
     /// asked to exit, shown through the cycle that asked.
+    // CR claude for eric: [bug/medium] A piped REPL ends at the first idle verdict
+    // (`GXHandle::wait_idle`), and wait_idle reads a pending timer as idle. So a line's
+    // timer-gated `sys::exit` never runs. `printf
+    // 'sys::exit(sys::time::after_idle(duration:100.ms, 3))\n' | graphix` exits 0, and
+    // so does `sys::exit(t ~ 4)` over a 300 ms timer. The same program run as a script
+    // exits 3. book/src/shell.md promises that the end of piped input waits until "what
+    // its lines started has run" and keeps the status a `sys::exit` among them asked
+    // for. Decide whether a pending timer holds the end (bounded by TEARDOWN_BOUND,
+    // e.g. a settle that counts timers), or say in the book that piped input ends at
+    // idle. probe: design/review-2026-11-16/repro/shell-piped-timer-exit-lost.sh
+    // (shell-01)
     async fn process_ended(
         &mut self,
         gx: &GXHandle<X>,
@@ -568,6 +588,12 @@ pub struct Shell<X: GXExt> {
     packages: Vec<Box<dyn Package<X>>>,
     /// Where `sys::exit` asks the shell to end, installed at init.
     #[builder(setter(skip), default)]
+    // CR claude for claude: [structure/low] Two fields of `Shell` are not
+    // configuration. `exit` is per-runtime state: `configure` parks a receiver here and
+    // `start` takes it back with an `expect`, while `check` and `warm` leave it set and
+    // unused. Return it from `configure`/`init` beside the handle instead, and drop the
+    // field and the `expect`. `_phantom` is dead: `X` is already used by `packages` and
+    // `setup_context`. Found by reading; not run. (shell-06)
     exit: Option<tokio::sync::oneshot::Receiver<i32>>,
     #[builder(setter(skip), default)]
     _phantom: PhantomData<X>,
@@ -901,6 +927,17 @@ impl<X: GXExt> Shell<X> {
         // that arrives meanwhile ends the shell with its code, not the
         // process with its default action
         let mut terminated = Terminated::new()?;
+        // CR claude for claude: [bug/low] A script's Ctrl-C (SIGINT), and the interrupt
+        // key's SIGQUIT, are not heard while the program compiles. `start` installs
+        // `KeySignals` before `init`, which takes away the process's default action,
+        // but the key task that reads them is spawned only after the runtime has
+        // compiled the program. So the shell ends with 130 only once the compile is
+        // over: 2.2 s into a 3 s cold compile in the probe. SIGTERM at the same point
+        // ends the shell at once through the `terminated` arm of this select. For a
+        // script, hear the keys here too: a key during the start returns
+        // `Some(INTERRUPTED)` as SIGTERM returns its code, e.g. by creating
+        // `KeySignals` in `run` and handing them to `start`. probe:
+        // design/review-2026-11-16/repro/shell-sigint-waits-for-compile.sh (shell-02)
         let mut session = tokio::select! {
             session = self.start(&keys_tx) => session?,
             code = terminated.recv() => return Ok(code),
@@ -970,6 +1007,17 @@ impl<X: GXExt> Shell<X> {
                     },
                     batch = session.from_gx.recv() => match batch {
                         None if session.interrupted() => key = Some(Key::Interrupt),
+                        // CR claude for claude: [bug/low] A runtime a budget stopped
+                        // ends the REPL here with the error and exit 1, and the inputs
+                        // after the runaway are never read, where the interrupt resets
+                        // the session and keeps the shell (`Session::interrupted` knows
+                        // `StopCause::Interrupt` alone). The book says a program over a
+                        // budget is stopped the way the interrupt key stops it. In the
+                        // REPL take the reset path for a budget stop too, saying which
+                        // budget; a script keeps its exit. Add the case to
+                        // repl_interrupt.rs. probe:
+                        // design/review-2026-11-16/repro/x-recursion-repl-budget-ends-shell.sh
+                        // (x-recursion-05)
                         None => break 'session Err(session.gx.stopped("graphix runtime is dead")),
                         Some(mut batch) => {
                             let shown =
@@ -1021,6 +1069,21 @@ impl<X: GXExt> Shell<X> {
                                     output
                                         .process_sent(&session.gx, &mut session.from_gx, &mut env, &mut newenv)
                                         .await?;
+                                    // CR claude for claude: [bug/low] A piped line is
+                                    // compiled while the value it replaces is still
+                                    // installed, so that value's static calls still
+                                    // hold their callees. After `g(5)`, the line `g <-
+                                    // |x: i64| -> i64 x + 100` is refused ('an earlier
+                                    // compile calls it as a fixed function at ...
+                                    // g(5)'), though the display it names is the one
+                                    // this line removes. At a terminal the same inputs
+                                    // pass, because Ctrl-C cleared the display before
+                                    // the next line could be typed. Clear the shown
+                                    // output after process_sent has shown what it
+                                    // produced and before the compile, as Ctrl-C does
+                                    // at a terminal. probe:
+                                    // design/review-2026-11-16/repro/x-repl-piped-output-holds.sh
+                                    // (x-repl-04)
                                     match session.gx.compile(ArcStr::from(line)).await {
                                         // the reset says why
                                         Err(_) if session.interrupted() => (),

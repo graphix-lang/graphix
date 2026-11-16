@@ -107,6 +107,17 @@ fn implements<R: Rt>(
         Some(Type::Fn(ft)) => Some(ft.clone()),
         _ => None,
     }) else {
+        // CR claude for claude: [readability/low] When a method's value reads a binding
+        // still undecided at the impl (`let h = never(); impl T for i64 { let m = h };
+        // h <- ..`), `implemented` is an open cell. The leaf is then "'_8187 is not a
+        // function": a generated variable, and false, since h is a function. Annotating
+        // `h` makes it check, but nothing names `h`. For an unbound cell, refuse naming
+        // the read binding as undecided here and to annotate it, as
+        // callsite::undecided_binds words it. Pin that leaf in
+        // lang::traits::method_value_read_of_an_undecided_binding_is_refused, which
+        // today pins only the told note. probe:
+        // design/review-2026-11-16/repro/tests-traits-b-undecided-method-read.sh
+        // (tests-traits-b-04)
         return Err(told(anyhow!("{implemented} is not a function")));
     };
     let pairs = declared.sig_matches(&ctx.env, &ft).map_err(told)?;
@@ -121,6 +132,21 @@ fn implements<R: Rt>(
         !tv.level().copied_by(&ctx.rec_defs)
             && captured().as_ref().is_none_or(|c| c.contains_key(&tv.cell_addr()))
     };
+    // CR claude for claude: [bug/medium] When the method returns what the shared
+    // binding holds, the hint "give {b} a type that holds every {v}" cannot work.
+    // Examples are `|s, x| k(s, x)` over a written `k`, and `st.k(x)` over `{k: |x| { y
+    // <- x; y }}`. With `y: Any` the check refuses again: "'a: unbound does not contain
+    // Any". lang::traits::method_over_a_written_lambda_names_it,
+    // method_over_a_struct_of_lambdas_names_what_they_write and
+    // method_over_a_struct_of_a_named_helper_names_what_it_writes pin this hint, and
+    // method_handing_a_written_lambda_its_argument_annotated had to change the method
+    // body too. Give the binding hint only where the method does not return the
+    // binding's value. Otherwise say the method returns one type for every call, so it
+    // should return what the call passed or the method should be declared at one type.
+    // Pin a passing program for each of these refusals. module::check_val's `give {b} a
+    // type` arms carry the same hint. probe:
+    // design/review-2026-11-16/repro/tests-traits-b-remedy-does-not-pass.sh
+    // (tests-traits-b-01)
     module::hold_paired(&ctx.env, "method", &pairs, shared, |tv, v| {
         match (Holder::of(ctx, id, tv), module::generalized_impl(ctx, id)) {
             (Holder::Captured(b), _) => format_compact!(
@@ -254,6 +280,15 @@ pub(crate) fn impl_outside_functions(
     lexical: &ModPath,
     trait_name: &ModPath,
 ) -> Result<()> {
+    // CR claude for claude: [readability/low] A dynamic module declared in a function
+    // body can load no source that writes an `impl`, of its own type included, and this
+    // refusal tells the source's author to move the impl out of a function when the
+    // function is around the module in the loading program. Where the scope crosses a
+    // dynamic module, say that the module is declared inside a function so its loads
+    // may write no impl; or allow an impl whose head is the load's own type, which the
+    // load's view keeps to itself. probe:
+    // design/review-2026-11-16/repro/x-dyn-modules-impl-in-fn-module.gx
+    // (x-dyn-modules-11)
     if netidx_core::path::Path::parts(&**lexical).any(crate::is_fn_block) {
         bail!(
             "impl {trait_name} is in a function body; an implementation is global, \
@@ -872,10 +907,41 @@ pub(crate) fn check_target(
     target: &Type,
     declared: bool,
 ) -> Result<()> {
+    // CR claude for eric: [bug/high] A dynamic module's body is the program's own
+    // package here, so a body whose sig only imports a type (`use super::K`) and
+    // declares no impl may write `impl Ord for K`. The impl is global once the load
+    // compiles, under values the program already holds: a map keyed by K built before
+    // the load answers MapKeyError for every key it holds, and `<` flips.
+    // design/traits.md §4 names this case as what coherence is for, and a dynamic body
+    // is otherwise held to what its sig grants. Refuse at the load an impl for a type
+    // the load does not own unless the sig declares it, or rule what a body may
+    // implement. probe:
+    // design/review-2026-11-16/repro/x-traits-abstract-dynamic-impl-corrupts-map.gx
+    // (x-traits-abstract-01)
+    // CR claude for eric: [bug/high] A dynamic module's body counts as the program's
+    // package here, so a loaded source may write a core-trait impl for any abstract
+    // type of the program its sig lets it name, with no `impl` item in the sig. `impl
+    // Ord for W { let cmp = |a, b| `Less }` in a body granted `use core; use super::W;`
+    // makes every lookup in the host's own `Map<W, _>` fail and reorders its sorts
+    // until the next reload, though the body cannot read W's payload; Eq and Display go
+    // the same way. A loaded body should implement a trait only for a type its own
+    // source or its sig declares, or where the sig declares the impl. probe:
+    // design/review-2026-11-16/repro/x-dyn-modules-core-impl-hijack.gx
+    // (x-dyn-modules-03)
     let here = env.package_root(scope);
     let trait_pkg = env.package_root(&trait_def.scope);
     // a constructor trait's reference head is the named constructor,
     // never expanded: it belongs to the package defining the name
+    // CR claude for claude: [bug/medium] This arm accepts any named head for a
+    // constructor trait after the package check, so an alias of a union (`type Opt<'a>
+    // = ['a, null]`) and of a bare variable (`type Id<'a> = 'a`) are targets, which
+    // design/traits.md says are never offered. Two such heads that both fit a type are
+    // no conflict to `heads_overlap`, and the call takes the impl written first:
+    // `Functor::fmap(1, f)` answers error:`E, null or f(1) by the order of three impl
+    // lines. Expand the name and refuse a union or a parameter as the body, and treat
+    // heads that admit one type as overlapping. probe:
+    // design/review-2026-11-16/repro/x-traits-abstract-ctor-trait-alias-heads.gx
+    // (x-traits-abstract-06)
     if trait_def.hole
         && let Type::Ref(tr) = target
         && env.trait_of_ref(tr).is_none()
@@ -938,6 +1004,17 @@ pub(crate) fn check_target(
                     .as_ref()
                     .map_or("", |r| env.package_root(r.canonical_scope())),
             };
+            // CR claude for eric: [bug/high] A dynamic module's body counts as the
+            // program's own package here, so it may implement core Eq, Ord and Display
+            // for a host abstract type its sig imports (`use core; use super::C;`)
+            // though the sig declares no impl. The impl is global: after the load the
+            // host's own `m{C(2)}` over a map built before it answers MapKeyError, its
+            // sorts and `==` of C follow the body's `cmp` and `eq`, and `"[c]"` prints
+            // what the body says, until the next load. A sig can already declare `impl
+            // Ord for C;`: require that declaration for an impl in a load whose target
+            // the load does not own, so the host grants it. probe:
+            // design/review-2026-11-16/repro/x-typecheck-generics-dyn-core-impl-host-type.gx
+            // (x-typecheck-generics-02)
             if here != trait_pkg && here != type_pkg {
                 bail!(
                     "impl {} for {target}: an abstract type's implementation must live \
@@ -1006,6 +1083,16 @@ pub(crate) fn impl_head(
             bail!("undeclared type variable '{name} in impl target {target}")
         }
     }
+    // CR claude for claude: [bug/low] An impl head's bounds are not checked as bounds:
+    // nothing in `impl_head` calls `Type::check_bound`, which a lambda's declared
+    // variables, a typedef's parameters and a quantified signature's conjuncts all pass
+    // through. So `impl<'a: fn<'b: Number>(x: 'b) -> 'b> T for Array<'a> {}` is
+    // accepted, against the rule that a function type with variables of its own stands
+    // only as a declared signature's top, and `impl<'k: Array<Show>> T for Map<string,
+    // 'k> {}` uses a trait as a type, which `'a: Array<Show> |x: 'a| ..` and `type
+    // X<'a: Array<Show>> = ..` refuse. Call `check_bound` on each scoped constraint
+    // here and pin both refusals. probe:
+    // design/review-2026-11-16/repro/t-fntyp-impl-head-bound-unchecked.gx (t-fntyp-04)
     for (tv, tc) in head.constraints.iter() {
         in_target.clear();
         tc.collect_tvars(&mut in_target);
@@ -1455,6 +1542,19 @@ impl<R: Rt> Update<R> for Impl<R> {
                 .ok_or_else(|| {
                     anyhow!("impl method {} has no checked definition", method.name)
                 })?;
+            // CR claude for claude: [bug/medium] A trait method's `#[pure]` or
+            // `#[sync]` reaches the user in two unhelpful forms. A method whose value
+            // is no lambda (`impl Display for W { let fmt = show }`, a documented
+            // method form) is refused by the decoration `Impl::compile` adds, as
+            // `#[pure] annotates a function definition`: an attribute the program never
+            // wrote, with no remedy. A lambda that breaks the requirement is refused
+            // here at the whole impl, naming neither the method nor the trait that
+            // requires it. Refuse a value that is no lambda where the method is
+            // compiled, naming the method, the trait's requirement and the lambda to
+            // write (`|w| show(w)`), and site this refusal at the method with the same
+            // names. `Trait::typecheck1` repeats this loop and can share it. probe:
+            // design/review-2026-11-16/repro/c-module-traits-pure-method-reads-binding.gx
+            // (c-module-traits-04)
             for name in method.requires.iter() {
                 let kind = DefAssertionKind::from_name(name).expect("method requirement");
                 if let Some(message) = crate::analysis::assertion_failure(kind, def) {
@@ -1513,6 +1613,16 @@ impl<R: Rt> CallSite<R> {
         ctx: &CompileCtx<R>,
         ftype: &FnType,
     ) -> SmallVec<[BindId; 2]> {
+        // CR claude for claude: [structure/low] Which binding a trait call reaches is
+        // worked out here for the check and again in `resolve_trait_call` and
+        // `lower_trait_union` for the build: the same alias expansion, open-cell test
+        // and union test over the self type.
+        // `im.methods.get(name).copied().or(m.default)` is written four times, in these
+        // three and in `coretraits::method_bind`. The check's verdict on an omitted
+        // default holds only while the copies agree. Give `TraitMethodDef` one
+        // `bind_in(&ImplDef) -> Option<BindId>`, and have both callers read one
+        // function that classifies the resolved self type (bottom, open, core, union
+        // members, one type). Found by reading; not run. (c-module-traits-06)
         let mut binds = SmallVec::new();
         let NodeView::Ref(r) = self.fnode.view() else { return binds };
         let Some(tm) = ctx.env.trait_methods.get(&r.id).copied() else { return binds };

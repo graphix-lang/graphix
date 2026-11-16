@@ -384,6 +384,14 @@ fn build_registry(
             .ok_or_else(|| anyhow!("the partial depth helper did not compile"))?;
     let partials_type = ft.args.get(1).map(|a| &a.typ);
     register_partials(&mut registry, &block, env, partials_type, partials)
+        // CR claude for claude: [bug/medium] The template is registered as "main" after
+        // the partials, so a partial the program names main is silently replaced by the
+        // template. {{> main}} then recurses into the template and fails with
+        // "templates nest more than 128 deep" instead of rendering the partial. Fix:
+        // render the main template directly (Renderable::render with Context::wraps and
+        // RenderContext::new) so it takes no partial name, or refuse a partial named
+        // after a reserved registry name with an error saying so. probe:
+        // design/review-2026-11-16/repro/small-pkgs-hbs-partial-main.gx (small-pkgs-02)
         .and_then(|()| register(&mut registry, &block, "main", template))
         .map_err(|e| anyhow!("{e}"))?;
     registry.register_helper(DEPTH_HELPER, Box::new(RenderDepth));
@@ -409,6 +417,27 @@ fn fc_render(env: &Env, ft: &FnType, args: &[Value]) -> Option<Value> {
             };
             let partials_type = ft.args.get(1).map(|a| a.typ.clone());
             let key = (template.clone(), *strict, partials.clone(), partials_type);
+            // CR claude for claude: [bug/medium] The memo lookup hashes and compares
+            // its key while borrow_mut holds TEMPLATES, and build_registry runs inside
+            // the same borrow. The key holds #partials, so an abstract value inside it
+            // runs its Eq hash and eq hooks there. Those hooks are Graphix code that
+            // may call the Stateless hbs::render, and the inner call panics with
+            // 'RefCell already borrowed', which kills the runtime. Fix: let no hook run
+            // under the borrow. Hash, compare and build outside it, for example by
+            // keeping Arc'd registries, or by falling back to an unmemoized build when
+            // try_borrow_mut fails. probe:
+            // design/review-2026-11-16/repro/x-panics-hbs-memo-reentry.gx (x-panics-02)
+            // CR claude for claude: [bug/medium] The TEMPLATES borrow is held across
+            // code that can run Graphix through the core-trait hooks: hashing and
+            // comparing a key holding an abstract partials value, and build_registry
+            // writing that value through its Cast::to_value (or formatting it for an
+            // error). If that code calls hbs::render, the nested borrow_mut panics with
+            // RefCell already borrowed and the runtime thread dies. --check accepts
+            // such a program. Fix: resolve the partials to (name, text) strings before
+            // touching the memo, key the memo on (template, strict, those strings), and
+            // store Rc<Handlebars> so the borrow ends before render. probe:
+            // design/review-2026-11-16/repro/small-pkgs-hbs-reentrant-panic.gx
+            // (small-pkgs-01)
             Some(TEMPLATES.with(|c| {
                 c.borrow_mut()
                     .with(

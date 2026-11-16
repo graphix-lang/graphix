@@ -165,6 +165,12 @@ impl<X: GXExt> DataTableW<X> {
         self.raw_cell_value(&self.cells.inner.lock(), row_path, col_name).cloned()
     }
 
+    // CR claude for claude: [structure/low] This function, cell_text and
+    // default_value_f64_for each spell out the same chain: columns.get, then source,
+    // then parsed.lookup of the basename. Give DataTableW one `fallback(col, row_name)
+    // -> Option<&Value>` and build the three on it, so the shown text, the sort key and
+    // the sparkline seed cannot drift apart. Found by reading; not run.
+    // (gui-datatable-08)
     pub(super) fn raw_cell_value<'a>(
         &'a self,
         inner: &'a SharedCellsInner,
@@ -270,6 +276,17 @@ impl<X: GXExt> DataTableW<X> {
 
     /// Auto-fit every column to its widest content over all rows, each
     /// resized as a drag resizes it (`user_resize`).
+    // CR claude for claude: [bug/medium] The auto-fit changes the widths of columns
+    // left of first_col but leaves the scroll overlay at its old absolute offset. The
+    // content width changes, iced re-notifies that offset, and handle_scroll's
+    // col_at_offset maps it to a different first_col, so the view jumps. A width-ref
+    // change in handle_update does the same, and so does a table update that changes
+    // row_height() (adding a toggle column at row 1000 moves the view to row 733). Fix:
+    // set scroll_dirty at the end of this function, in the width-ref branch and in
+    // apply_table_sync, so take_ops re-syncs the overlay to (first_row, first_col)
+    // first. Found by reading; not run (needs a display). Witness, which `graphix
+    // --check` passes: design/review-2026-11-16/repro/gui-datatable-autofit-jumps.gx
+    // (gui-datatable-03)
     pub(super) fn auto_fit_all_columns(&mut self) {
         let mut fits: LPooled<Vec<(ArcStr, f32)>> = LPooled::take();
         {

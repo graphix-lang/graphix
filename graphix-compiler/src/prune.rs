@@ -80,6 +80,19 @@ impl BoundaryRef {
 
     /// Mark this boundary and its ancestors in `cycle`, up to the first one
     /// already marked.
+    // CR claude for claude: [perf/medium] A reader in a select arm that is not the
+    // running one (never taken, or deselected) marks every boundary up to the root on
+    // each fire, so the select's statement or slot body is walked although a body
+    // select records nothing for that arm and enters it under View::Wake anyway. In a
+    // collection this also defeats skip_idle_slot. An array::map of N slots whose
+    // untaken arm reads a ticking `i` costs 440 us per tick at N=1000 and 10 ms at
+    // 16000, against 3-4 us when the arm reads an idle value; the map never fires. Fix:
+    // a dormant flag on Boundary, set by a tracker-less select on a body arm's boundary
+    // when the arm stops being selected and cleared before it runs; mark stamps a
+    // dormant boundary and stops climbing. Guards and seq-world selects keep climbing.
+    // walk_pruning.md 'Sleep and wake' changes with it. probe:
+    // design/review-2026-11-16/repro/x-perf-runtime-sleeping-arm-marks.sh
+    // (x-perf-runtime-01)
     pub fn mark(&self, cycle: u64) {
         let mut b = self;
         loop {

@@ -1,0 +1,20 @@
+// Two abstract values of one type and one payload compare unequal where the
+// type's argument holds a function type: regular::key keys a function type
+// as it prints, parameter names and typedef names included.
+//
+// command:
+//   timeout -s KILL 30 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache \
+//     design/review-2026-11-16/repro/t-settle-abstract-eq-fn-param-printed.gx
+// expected: (true, true)
+//   the check takes each pair for one type (`==` needs operands of exactly
+//   one type), and the payloads are equal
+// observed: (false, false)
+type R = {a: i64};
+type S = {a: i64};
+type B<'p> = Abstract<Array<'p>>;
+let a: B<fn(x: i64) -> i64> = B([]);
+let b: B<fn(y: i64) -> i64> = B([]);
+let c: B<fn(x: R) -> i64> = B([]);
+let d: B<fn(x: S) -> i64> = B([]);
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(a == b, c == d)

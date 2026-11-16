@@ -1,0 +1,19 @@
+// Title: a cycle where sys::net::publish fails skips its #on_write handler's
+// update, so a capture that fires in that cycle never reaches the handler.
+// Command:
+//   timeout -s KILL 30 graphix --no-cache -n sys-net-publish-error-skips-handler.gx
+// Expected (as with the path "/local/b" in place of "relative" at tick 5):
+//   ... [101, 102, 103, 104, 105, 106, 107]
+// Observed: tick 5's cycle, where the publish to "relative" fails, is lost:
+//   ... [101, 102, 103, 104, 106, 107]
+// Cause: Publish::update (stdlib/graphix-package-sys/src/net.rs) returns from
+// the publish! error arm (and the write_data error arm) before
+// `self.on_write.update(ctx)`.
+let tick = count(sys::time::timer(duration:100.ms, true));
+let seen: Array<i64> = [];
+let p = select tick { 5 => "relative", _ => "/local/a" };
+let r = sys::net::publish(#on_write: |v: i64| seen <- tick ~ array::push(seen, tick + v), p, 0);
+sys::net::write("/local/a", 100);
+println("r=[r]");
+sys::exit(select tick { 8 => tick ~ 0, _ => never() });
+seen

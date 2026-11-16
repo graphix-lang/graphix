@@ -1,0 +1,22 @@
+// A builtin's Graphix signature is trusted by the JIT and any script may write one
+//
+// Any program outside a dynamic module may bind a registered builtin by its
+// marker under a signature of its own. The check accepts it, and fused code
+// reads the builtin's result as the declared type says: the string str_trim
+// returns is read as an i64 (the payload word, a heap address).
+//
+// command:
+//   graphix-fuzz check design/review-2026-11-16/repro/a-stdlib-builtin-sig-trusted.gx
+// expected: the check refuses the binding, or both engines agree (bottom and a
+//   logged failure)
+// observed:
+//   DIVERGENCE — fusion/JIT bug (interp != jit)
+//     interp: Trace([])
+//     jit: Trace([0:139661341879889])      (an address; it changes per run)
+//
+// The Value-shaped direction aborts the process instead:
+//   let f = |s: string| -> string 'str_len; str::to_upper(f("abc"))
+//   graphix --no-cache: "thread caused non-unwinding panic. aborting."
+//   (fusion::emit_helpers::graphix_shape_mismatch), node-walk: no output
+let f = |x: string| -> i64 'str_trim;
+f(" a ") + 1

@@ -1,0 +1,27 @@
+// Title: a place reference re-delivers its UNCHANGED value at every write of
+// its root, so a gui control given `&doc.text` takes every write of `doc.n`
+// as a program value (Echoes::delivered retires the sends not yet echoed).
+// Command: graphix --no-cache design/review-2026-11-16/repro/gui-widgets-b-place-redelivers.gx
+// Expected (were only a change of the text delivered): (1, ""), (2, "typed").
+// Observed: (1, "") (2, "") (3, "") (4, "typed") (5, "typed") ... one delivery
+// of the unchanged text per place write of doc.n.
+// The gui program this premise breaks (checks with --check):
+//   let doc = {text: "", n: 0};
+//   let text = &mut doc.text;
+//   let n = &mut doc.n;
+//   *n <- sys::time::timer(duration:10.ms, true) ~ *n + 1;
+//   text_editor(#on_edit: |s| *text <- s, &doc.text)
+// A write of doc.n landing between a key's send and its echo re-delivers the
+// old text: the editor is rebuilt at it with its cursor clamped back, and the
+// cursor stays there after the echo, so the next key lands before the last.
+let doc = {text: "", n: 0};
+let text = &mut doc.text;
+let n = &mut doc.n;
+let tick = sys::time::timer(duration:20.ms, true);
+*n <- tick ~ *n + 1;
+let k = sys::time::timer(duration:50.ms, false);
+*text <- k ~ "typed";
+let done = select doc.n { 6 => 0, _ => never() };
+sys::exit(done);
+let f = |x: &string| (count(*x), *x);
+f(&doc.text)

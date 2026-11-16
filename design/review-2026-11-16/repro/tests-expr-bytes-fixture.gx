@@ -1,0 +1,7 @@
+// ts_tree_shapes pins tree-sitter's tree for `bytes:AQID==`, which the
+// parser refuses.
+// Command: graphix --check tests-expr-bytes-fixture.gx
+// Expected: a program the parser takes, as every shape fixture should be.
+// Observed: "Parse error ... base64 decode failed" at the closing `==`;
+// `bytes:AQID` (the literal the case means) checks.
+bytes:AQID==

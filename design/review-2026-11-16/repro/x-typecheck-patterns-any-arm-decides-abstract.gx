@@ -1,0 +1,16 @@
+// Title: an arm that takes a part out of an `Any` scrutinee and decides it an
+// abstract instance in its body is tested by the tag alone: a W<string> is
+// bound as a W<i64>, and the engines disagree on the result.
+// Command: graphix-fuzz check x-typecheck-patterns-any-arm-decides-abstract.gx
+//   (and `graphix --no-cache --check`, which exits 0)
+// Expected: the value (W("s"), 1) does not match the first arm (its test is
+//   (W<i64>, _), as the written test `(W<i64>, Any) as (a, b)` is), so the
+//   program's value is 0; or the check refuses the arm.
+// Observed: --check exits 0. `graphix --no-cache` prints 1 (the fused arm
+//   reads the string payload as an i64); `graphix --no-cache --no-fusion`
+//   logs `arith error .. Unexpected `s`` and prints nothing.
+//   graphix-fuzz check prints DIVERGENCE.
+type W<'a> = Abstract<'a>;
+let f = |x: Any| select x { (a, b) => { let q: W<i64> = a; q.0 + 1 }, _ => 0 };
+let v: Any = (W("s"), 1);
+f(v)

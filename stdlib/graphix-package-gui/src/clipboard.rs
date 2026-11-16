@@ -60,6 +60,16 @@ impl<Op: ClipboardOp> ImageState for ClipboardBuiltin<Op> {
 /// each call would lose the text unless a clipboard manager took it.
 static CLIPBOARD: Mutex<Option<arboard::Clipboard>> = parking_lot::const_mutex(None);
 
+// CR claude for claude: [bug/high] The CLIPBOARD lock is held across `f(cb)`, so a read
+// waiting on the clipboard's owner holds the process's only clipboard for the whole
+// wait. arboard's X11 read waits up to 6 formats x 4 s; its Wayland read never times
+// out. Every write builtin, the GUI thread's copy/paste (event_loop.rs `Clipboard`) and
+// `release()` at process end wait behind it. With a frozen owner under Wayland the
+// process never exits. Fix: keep the static only as a keep-alive and run each op on its
+// own `arboard::Clipboard::new()`; X11 instances share arboard's global context, so a
+// temporary one owns nothing. Also update UPSTREAM.md's wl-clipboard-rs entry, which
+// says no such owner has been seen. probe:
+// design/review-2026-11-16/repro/gui-core-clipboard-lock-wedges-exit.sh (gui-core-01)
 pub(crate) fn clipboard<T>(
     f: impl FnOnce(&mut arboard::Clipboard) -> Result<T, arboard::Error>,
 ) -> Result<T, arboard::Error> {

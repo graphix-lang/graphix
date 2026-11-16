@@ -1,0 +1,21 @@
+// Title: book/src/modules/dynamic.md never says that a hidden type the sig declares (`type T;`)
+// keeps the representation of the first load that defined it: a reload that defines it
+// differently fails to load.
+// Command: timeout -s KILL 10 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache book-modules-udt-dyn-sig-type-fixed.gx
+// Expected from the book ("The loaded module must provide a concrete definition, but that
+//   definition is hidden from the loading code"): the second source, with T = Abstract<string>,
+//   loads.
+// Observed: error:`DynamicLoadError("... T is already defined as Abstract<i64>: a value of it
+//   may still be held, so its representation cannot change"); the first load runs on.
+let src = r#"type T = Abstract<i64>; let mk = |x| T(x); let get = |t: T| "i64 payload [t.0 + 1]""#;
+src <- sys::time::timer(duration:100.ms, false) ~ r#"type T = Abstract<string>; let mk = |x| T("s[x]"); let get = |t: T| "string payload [str::len(t.0)]""#;
+let status = mod foo dynamic {
+    sig { use str; type T; val mk: fn(x: i64) -> T; val get: fn(t: T) -> string };
+    source src
+};
+let saved: foo::T = never();
+saved <- once(foo::mk(5));
+let go = 0;
+go <- sys::time::timer(duration:300.ms, false) ~ 1;
+sys::exit(sys::time::after_idle(duration:600.ms, 0));
+(status, go ~ foo::get(saved))

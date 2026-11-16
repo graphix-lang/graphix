@@ -1,0 +1,24 @@
+// Title: x-engine-seq-errors-01 variant: a seqq flush that fires between a request's
+//   dispatch and its run's entry neither drops nor aborts that request: it runs and its
+//   value fires after the flush.
+// Command: timeout -s KILL 30 graphix --no-cache x-rerun-5-flush-misses-dispatched.gx
+// Ten requests queue (k = 0..9); each run ends in its entry cycle, so request n's value
+//   fires at k = 4n + 3. One flush fires at k = 13, after r=2 and before request 3's run.
+// Expected (design/seq_blocks.md §9: flush is an abort that also empties the queue; the
+//   queue clears during handoffs too): r=0, r=1, r=2, flush at k=13, and nothing after.
+// Observed: r=0 at k=3 / r=1 at k=7 / r=2 at k=11 / flush at k=13 / r=3 at k=15
+//   (requests 4..9 are dropped). The same with the flush at k=12 or k=14: request 3 was
+//   released at k=12, so the queue no longer holds it, and run_event drops the fire as
+//   one before the run's entry.
+let k = 0;
+k <- select k { s if s < 60 => s + 1, _ => never() };
+let go = select k < 10 { true => k, false => never() };
+let fl = filter(k, |x| x == 13);
+let r = seqq let c = go; flush(fl) {
+  let s = live(k);
+  c
+};
+println(r ~ "r=[r] at k=[k]");
+println(fl ~ "flush at k=[k]");
+sys::exit(select k { 40 => 0, _ => never() });
+k

@@ -1,0 +1,29 @@
+// Title: leakcheck witness `select-written-test-binds` (graphix-fuzz/src/main.rs
+// LEAK_WITNESSES) no longer compiles, so leakcheck reports it DIED every run.
+// This file is the witness verbatim.
+// Command: graphix --no-cache --check fuzz-main-aux-leak-witness-refused.gx
+// Expected: accepted (the witness must run for a minute under both engines).
+// Observed: refused: "unreachable arm: the earlier arms already cover the whole
+//   scrutinee, unused match cases" at `select s { string as t => .., i64 as n => n }`:
+//   the literal `i64:0` in `[(i64, string), (f64, i64)] as (i64:0, s)` narrows `s`
+//   to string, so the `i64 as n` arm is dead. The shell exits 1 at once, and
+//   `graphix-fuzz leakcheck <bin>` prints "select-written-test-binds: interp child
+//   died early ... <-- DIED" and exits FAILURE.
+//   Replacing `(f64, i64)` with `(i64, i64)` in `f` checks (both arms live).
+let clk = sys::time::timer(duration:0.001s, true);
+let x = i64:0;
+x <- clk ~ (x + i64:1);
+let pad = "pppppppppppppppppppppppppppppppppppppppppppppppppp";
+let big = "[pad][pad][pad][pad][pad][pad][pad][pad]";
+let f = |v: [(i64, string), (f64, i64)]| select v {
+[(i64, string), (f64, i64)] as (i64:0, s) => select s {
+string as t => str::len(t),
+i64 as n => n
+},
+_ => i64:0
+};
+let g = |w: [Array<string>, i64]| select w {
+Array<[string, null]> as [s, ..] => str::len(s),
+_ => i64:0
+};
+f((i64:0, "[big][x]")) + g(["[big][x]"])

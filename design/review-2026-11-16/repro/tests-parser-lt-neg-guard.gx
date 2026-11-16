@@ -1,0 +1,13 @@
+// tests-parser-lt-neg-guard: `n<-1` (a comparison with a negative number,
+// written without a space) parses as the connect `n <- 1`, whose type is
+// bottom, so the check accepts it as a guard (and as any annotated let:
+// `let s: string = x<-1` checks too); the guard never decides and the
+// select is bottom forever.
+// Command:
+//   timeout -s KILL 30 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache \
+//     design/review-2026-11-16/repro/tests-parser-lt-neg-guard.gx
+// Expected (as `n < -1` gives): "below"
+// Observed: nothing is printed, exit 0; `--check` accepts the program.
+let x = -5;
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+select x { n if n<-1 => "below", _ => "other" }

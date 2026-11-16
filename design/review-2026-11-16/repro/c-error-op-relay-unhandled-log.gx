@@ -1,0 +1,20 @@
+// Title: an http/rpc handler's raise that no catch covers is logged twice,
+// once by ErrorRelay::update as "unhandled error error:{...}" (no site, the
+// error doubled, a format no other unhandled report uses).
+// Command: timeout -s KILL 30 graphix --no-cache --no-netidx c-error-op-relay-unhandled-log.gx
+// Expected: one report per raise, in the format a handler-less `?` uses
+//   ("unhandled error <site> `Empty(\"/a\")"), or only the builtin's own
+//   "an http handler raised: ..." line.
+// Observed (per request):
+//   unhandled error error:{cause: null, error: `Empty("/a"), ori: {...}, pos: {column: 16, line: 13}}
+//   an http handler raised: error:{cause: null, error: `Empty("/a"), ori: {...}, pos: {column: 16, line: 13}}
+let handler = |req: http::Request| {
+  let text: Result<string, `Empty(string)> = error(`Empty(req.path));
+  { body: "hi [text?]", headers: [], status: u16:200 }
+};
+let server = http::serve(#addr: "127.0.0.1:0", #handler: handler)$;
+let addr = http::server_addr(server);
+let client = http::default_client(server)$;
+let r1 = http::request(client, "http://[addr]/a")$;
+sys::exit(sys::time::after_idle(duration:300.ms, r1 ~ 0));
+r1.status

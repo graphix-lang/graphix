@@ -114,6 +114,17 @@ const MAX_WINDOW_EDGE: f32 = 8192.;
 impl WindowSizeV {
     pub fn new(size: Size) -> Result<Self> {
         for edge in [size.width, size.height] {
+            // CR claude for claude: [bug/medium] Any positive edge passes here, but
+            // winit rounds the logical size to whole pixels, so an edge under 0.5
+            // becomes 0. Under Wayland, set_window_geometry(0x0) is a protocol error:
+            // the compositor drops the connection, every window of the program closes
+            // and the GUI ends with 'Exit Failure: 1' (misreported as 'gpu init: no
+            // suitable GPU adapter' when it happens at creation). Under X11,
+            // CreateWindow fails. `reported` lets a 1 px window at scale 3 (0.33)
+            // through too. Fix: a MIN_WINDOW_EDGE of 1.0 beside MAX_WINDOW_EDGE, and a
+            // sub-pixel case in window_sizes_fit_the_window_system. probe:
+            // design/review-2026-11-16/repro/gui-core-subpixel-window-size.sh
+            // (gui-core-02)
             if !(edge > 0. && edge <= MAX_WINDOW_EDGE) {
                 bail!(
                     "a window edge must be positive and at most {MAX_WINDOW_EDGE}, not {edge}"

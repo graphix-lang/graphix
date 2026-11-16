@@ -183,6 +183,17 @@ impl<'a> Decoder<'a> {
             None => match &target {
                 WriteTarget::Bind(b) => ctx.rt.store_value(b),
                 WriteTarget::Place(root, path) => {
+                    // CR claude for claude: [bug/low] This reads a length place outside
+                    // `coretraits::with_hooks`, which `read_path` requires for a map
+                    // step: a length given as `&m{K(11)}`, where `K` is an abstract
+                    // type whose `Ord` makes K(11) and K(1) one key, is not found, the
+                    // miss is taken as a length that has not arrived, and the decode
+                    // stays bottom, while `m{K(11)}` and `*len` both read 3. Every
+                    // other caller of read_path and write_path lends the hooks. Take
+                    // the context mutably and read under with_hooks; report a place
+                    // that does not exist as a DecodeError. probe:
+                    // design/review-2026-11-16/repro/x-refs-decode-length-place-no-hooks.gx
+                    // (x-refs-06)
                     ctx.rt.store_value(root).and_then(|rv| read_path(&rv, path).ok())
                 }
             },

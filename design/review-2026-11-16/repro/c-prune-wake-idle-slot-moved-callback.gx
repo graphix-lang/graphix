@@ -1,0 +1,18 @@
+// A map's idle-slot skip keeps the old callback when a wake moved the
+// function its callback argument reads: pruned and unpruned walks diverge.
+//
+// Arm 0 holds `g`, a function chosen by `v0`, and hands out `&g`; `once`
+// keeps the reference where the arm's sleep does not reach. `v0` is written 1
+// and 3 while arm 0 sleeps; at the wake (in0 = 4) `g` recomputes to `fb` and
+// stands moved, so `*v3` moved and so did `array::map`'s callback formal. The
+// map must rebind its slots to `fb` quietly: [100, 200] from then on.
+//
+// Command:
+//   graphix-fuzz check design/review-2026-11-16/repro/c-prune-wake-idle-slot-moved-callback.gx
+// Expected: AGREE, the map reading [100, 200] at in1 = 8.
+// Observed:
+//   DIVERGENCE — walk pruning bug (pruned node-walk != unpruned node-walk)
+//     interp/unpruned: ...; [0:(8, [100, 200])]; [0:(9, [100, 200])]
+//     interp:          ...; [0:(8, [2, 3])]; [0:(9, [2, 3])]
+// schedule-v1: cap=96 events=768; in0=i64:2 in1=i64:0; in0=i64:1; in0=i64:3; in0=i64:4; in1=i64:8; in1=i64:9
+{ let v0 = i64:0; v0 <- select (in0 % i64:2) { i64:1 => in0, _ => never() }; let fa = |e: i64| e + i64:1; let fb = |e: i64| e * i64:100; let v1 = select (in0 % i64:2) { i64:0 => { let g = select v0 > i64:2 { true => fb, false => fa }; &g }, _ => { let g = fa; &g } }; let v3 = once(v1); let out = array::map([i64:1, i64:2], *v3); (in1, out) }

@@ -1,0 +1,35 @@
+// Title: a bind in a forked compile task numbers its functions over the
+//   root emission's cached kernel bodies: a later region calls another
+//   function's code (script form of f-mod-lowering-local-emission-ids.sh)
+//
+// Command:
+//   GRAPHIX_PAR=force timeout -s KILL 30 /home/eric/tmp/review-2026-11-16/bin/graphix \
+//     --no-cache design/review-2026-11-16/repro/f-mod-lowering-local-emission-ids.gx
+//
+// Expected: dbg(r3) prints 5, then 1007 (g(5) + 2), as under GRAPHIX_PAR=off.
+// Observed: dbg(r3) prints 5, then 24: the region `g(x) + 2`, bound at tick 5
+//   on the root context, calls the cached kernel of `g` by its function id,
+//   whose record a slot's bind of the map callback (a compile task, tick 2)
+//   replaced with the kernel of `f2` (5 * 4 + 2 = 22).
+let g = |x: i64| x + 1000;
+let f0 = |x: i64| x * 2 + 0;
+let f1 = |x: i64| x * 3 + 1;
+let f2 = |x: i64| x * 4 + 2;
+let f3 = |x: i64| x * 5 + 3;
+let f4 = |x: i64| x * 6 + 4;
+let f5 = |x: i64| x * 7 + 5;
+let f6 = |x: i64| x * 8 + 6;
+let f7 = |x: i64| x * 9 + 7;
+let f8 = |x: i64| x * 10 + 8;
+let f9 = |x: i64| x * 11 + 9;
+let a = 5;
+let r1 = g(a) + 0;
+let tick = count(sys::time::timer(duration:100.ms, true) ~ r1);
+let k = |xs: Array<i64>| [(array::len(xs), 0)];
+k <- once(filter(tick, |n: i64| n == 2)) ~ (|xs: Array<i64>| array::map(xs, |v| (f0(v) + f1(v) + f2(v) + f3(v) + f4(v) + f5(v) + f6(v) + f7(v) + f8(v) + f9(v), count(v))));
+let r2 = k(tick ~ [1, 2, 3, 4, 5, 6, 7, 8]);
+let m = |x: i64| x;
+m <- once(filter(r2 ~ tick, |n: i64| n == 5)) ~ (|x: i64| g(x) + 2);
+let r3 = m(tick ~ a);
+dbg(r3);
+sys::exit(filter(tick, |n: i64| n == 8) ~ 0)

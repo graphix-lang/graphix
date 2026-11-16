@@ -1,0 +1,22 @@
+// A cell whose lower bounds its conjuncts refuse is reported as
+// "unsatisfiable constraints" over the conjuncts alone.
+//
+// Run: /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache --check \
+//        design/review-2026-11-16/repro/t-tvar-b-unsatisfiable-names-no-lower-bound.gx
+//
+// Expected: a refusal that says what conflicts: the payload of `b` holds an
+//   i64 (`B(1)`) and an f64 (`b <- B(1.5)`), and `b.0 + b.0` needs one
+//   numeric type.
+// Observed:
+//     at: line 19, column 9 .. in: B(1)
+//     unsatisfiable constraints on '_NNNN: Number & Singleton
+//   `Number & Singleton` is satisfiable (i64 meets it); the two types built
+//   into the payload, which the conjuncts refuse together, are not named,
+//   nor is the operator or the write. The same text answers
+//   `add(b.0, b.0)` over `let add = |x, y| x + y` and a `'a: OneNumber`
+//   parameter.
+type B<'p> = Abstract<'p>;
+let b = B(1);
+let r = b.0 + b.0;
+b <- B(1.5);
+r

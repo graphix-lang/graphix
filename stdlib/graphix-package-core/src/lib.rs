@@ -100,6 +100,11 @@ fn without_errors(t: &Type) -> Option<Type> {
     })
 }
 
+// CR claude for claude: [dead/low] `extract_cast_type` has one caller, `data_target`,
+// whose body is only a call to it, and nothing outside this file uses it. That makes
+// two public names for one function. Delete it, give `data_target` its body
+// (`result_cast_type(env, &resolved?.rtype)`), and point `cast_target`'s doc at
+// `data_target`. Found by reading; not run. (core-lib-06)
 pub fn extract_cast_type(env: &Env, resolved_typ: Option<&FnType>) -> Option<Type> {
     result_cast_type(env, &resolved_typ?.rtype)
 }
@@ -273,6 +278,15 @@ impl<F> ImageState for TypedRead<F> {
     }
 }
 
+// CR claude for eric: [structure/medium] `json::read`, `toml::read` and `pack::read`
+// ride the async reader built for `sqlite::query`, though their `parse` awaits nothing:
+// a read answers a cycle after its text, where `str::parse` and every writer answer at
+// once. A program that shows a reply beside its parsed body prints each new reply with
+// the previous body, a read in a select arm is a call the arm's sleep aborts, and the
+// book's json, toml and pack chapters do not say the read is async. Make the three text
+// readers `typed_fast_builtin!` builtins as `str::parse` is, keeping `TypedRead` for
+// sqlite, or offer both and say which is which. probe:
+// design/review-2026-11-16/repro/a-stdlib-json-read-async.gx (a-stdlib-06)
 impl<F: ReadFormat> EvalCachedAsync for TypedRead<F> {
     const NAME: &str = F::NAME;
     type Args = F::Args;
@@ -801,6 +815,18 @@ fn untyped_shape(env: &Env, v: &Value, form: Form) -> Result<Shape> {
 /// bottom (a fresh one if any bottom fired), which the builtin returns
 /// where it would ride. An emission owed to an earlier input still
 /// delivers, and the resident re-surfaces once the values return.
+// CR claude for claude: [bug/high] A builtin that returns this bottom and later rides
+// its resident brings a value back from bottom with no fire and no moved mark, which no
+// consumer expects. With d bottom for one cycle, `(n, once(d))` and `select once(d)
+// {..}` see the value again, `let on = once(d)` and `max(once(d), 0)` stay bottom
+// forever (Bind publishes nothing, CachedArgs rides its bottom), and `f(once(d))` or
+// `array::map([once(d)], ..)` is bottom in the node-walk and present in the JIT
+// (graphix-fuzz reports DIVERGENCE). once, take, filter and queue all do it. Tag the
+// first ride after a returned bottom Tag::MOVED, in one helper here that owns the
+// resident, so Bind, CachedArgs, formals and slots recompute; or drop the resident as
+// Uniq does and say so above. probe:
+// design/review-2026-11-16/repro/x-engine-firing-once-resurface-after-bottom.gx
+// (x-engine-firing-02)
 pub fn bottom_of(tags: impl IntoIterator<Item = Tag>) -> Option<&'static TagValue> {
     let mut bottom = None;
     for t in tags {
@@ -1216,6 +1242,30 @@ impl<R: Rt, C: Elements> Apply<R> for IterQ<C> {
         self.var.release(ctx)
     }
 
+    // CR claude for eric: [bug/medium] A woken iterq delivers its last element a second
+    // time. This sleep remints the reply variable and takes back what was in flight,
+    // but keeps `self.out`. When a select re-enters the arm because its scrutinee
+    // fired, it emits the kept element again, and the reader counts it twice.
+    // Queue::sleep does the same. Iter, Range, throttle and the timers clear their
+    // output at sleep because 'a kept event would be re-raised as if it were new'
+    // (design/async_sleep_outputs.md), but that doc classes queue and iterq as State
+    // and says nothing of their output. In the shape of
+    // async_restart::iter_reentry_emits_no_old_element, an iterq loops forever. If the
+    // dequeued element is an event, clear `self.out` here and in Queue::sleep (the
+    // contents, credits and taken-back items stay), and pin both beside
+    // iter_reentry_emits_no_old_element. probe:
+    // design/review-2026-11-16/repro/tests-lang-rest-d-iterq-wake-redelivers.gx
+    // (tests-lang-rest-d-01)
+    // CR claude for eric: [bug/medium] iterq keeps its last element across a sleep, so
+    // a select re-entering its arm fires that element again: array::iterq over [10..16]
+    // in an arm that sleeps and wakes delivers [10, 10, 11, ..]. Iter::sleep clears
+    // `out` because 'a kept event would be re-raised as if it were new'
+    // (design/async_sleep_outputs.md), but that doc files iterq and queue under State,
+    // which keeps it. Queue::sleep and array's Group::sleep keep their last event the
+    // same way. Decide whether these event-stream outputs clear at sleep (self.out =
+    // TagValue::phantom()), fix the audit table to match, and pin it. probe:
+    // design/review-2026-11-16/repro/collections-str-iterq-reentry-duplicate.gx
+    // (collections-str-02)
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.var.remint(ctx);
         let back: SmallVec<[Value; 4]> = self.sent.take_back().collect();
@@ -1667,6 +1717,12 @@ pub fn fast_get<T: FromValue>(args: &[Value], i: usize) -> Option<T> {
 
 /// The cached argument slots as a fast fn's `&[Value]` view; `None`
 /// if any slot has never been delivered.
+// CR claude for claude: [perf/low] Every node-walk evaluation of a fast builtin clones
+// all its cached arguments into a pooled Vec, one Arc increment and decrement per
+// string, array, map or abstract argument, only to lend them as a slice. Store
+// CachedVals' values contiguously (`Box<[Value]>` beside the tags, a never-delivered
+// slot marked in its tag and read as None by `value`) and pass that slice to the fast
+// fn directly. Found by reading; not run. (core-lib-05)
 fn fast_args(from: &CachedVals) -> Option<LPooled<Vec<Value>>> {
     let mut args: LPooled<Vec<Value>> = LPooled::take();
     for v in from.values() {
@@ -1911,6 +1967,16 @@ impl<R: Rt, T: EvalCached<R>> Apply<R> for CachedArgs<T> {
     }
 }
 
+// CR claude for eric: [risk/medium] A builtin is tied to its Graphix signature by hand
+// in three ways nothing checks. Arguments are read by literal index (about 150 reads in
+// the stdlib and 70 in netidx-admin, whose `SessionCeremony::update` does index
+// arithmetic against the order of labels in its `.gx`), and a `prepare_args` that reads
+// the wrong one answers nothing, with no error. Error tags are strings:
+// `QueueFn::update` answers a `QueueFnErr` its `-> 'a` signature does not hold. And the
+// signature is written in the `.gxi` and again on each `.gx` binding (430 of them).
+// Resolve each argument's index by name from the `FnType` `init` is given, and let a
+// builtin binding take its types from its `.gxi` val as an impl method takes its
+// trait's. Found by reading; not run. (a-stdlib-11)
 pub trait EvalCachedAsync: Debug + Default + Send + Sync + ImageState + 'static {
     const NAME: &str;
 
@@ -2033,6 +2099,17 @@ impl<T> CachedArgs<T> {
             }
             // a bottom eval already gave over these slots stands
             Some(_) if cached.evaluated.0 => last_result.ride(),
+            // CR claude for eric: [doc-drift/low] This arm evaluates once over standing
+            // arguments for every effect class, so a `Sync` builtin on this wrapper
+            // (the stdio handles, `http::client`, `http::default_client`, the db cursor
+            // constructors) has a value in an arm entered after the first cycle:
+            // `sys::io::stdout(null)` there stands a handle where `count(null)` gives
+            // nothing. bind_driven_bodies.md rule 5 says every `Sync` builtin gives
+            // nothing until an input fires and that `EFFECT` is the split. Either ride
+            // here when `!of_args`, or state in the doc that these constructors stand
+            // their value at entry. probe:
+            // design/review-2026-11-16/repro/x-sleep-wake-sync-ctor-in-late-arm.gx
+            // (x-sleep-wake-07)
             Some(t) => {
                 // Nothing to re-surface yet: compute the value once to
                 // establish the value channel, quiet.
@@ -2267,6 +2344,15 @@ impl<T: EvalCachedAsync> CachedArgsAsync<T> {
 
     /// Abort the calls in flight, drop those queued and release the ids
     /// of the calls replaced.
+    // CR claude for eric: [risk/medium] At a delete this aborts the calls of an eval
+    // that is not cancel-safe, the ones a sleep lets finish because stopping them
+    // mid-way loses what they did. The stream outlives the site: a read_exact that had
+    // taken 4 of 10 bytes when its collection slot was deleted lost them (a sleep there
+    // gives them back), and a write_exact is cut half written. reclaim_all already
+    // settles the replies; only the abort is in the way. Let a kept site's evals run
+    // without the abort race, or record why delete differs from sleep. probe:
+    // design/review-2026-11-16/repro/x-async-io-delete-aborts-read-exact.gx
+    // (x-async-io-06)
     fn drop_calls<R: Rt>(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.abort = None;
         if let Some(kept) = &self.kept {
@@ -2539,6 +2625,21 @@ impl<R: Rt, T: EvalCachedAsync> Apply<R> for CachedArgsAsync<T> {
         self.t.typecheck1(ctx, from, resolved)
     }
 
+    // CR claude for eric: [bug/medium] A delete goes through `drop_calls`, which drops
+    // `abort` for a site whose eval is not `CANCEL_SAFE` too. The eval is cut mid-way,
+    // which is exactly the loss `CANCEL_SAFE = false` declares. In the probe, a
+    // `read_exact` that had consumed 4 of its 8 bytes when its array::map slot was
+    // removed loses them, and the stream's next reader gets "BBBB". The same read in an
+    // arm that sleeps gives the bytes back and the next reader gets "AAAA". The site
+    // goes away but the stream often does not (a removed slot, a replaced function
+    // value, a reloaded module). Two options: treat a delete like a sleep for `kept`
+    // sites (reclaim_all and let the calls finish unanswered, at the cost of a read on
+    // an idle stream holding it open until it ends), or make each non-cancel-safe eval
+    // hand back its partial work when dropped (a guard in the read evals that pushes
+    // the bytes read so far back to the stream). design/builtins.md says delete aborts,
+    // so this needs a ruling. probe:
+    // design/review-2026-11-16/repro/core-lib-delete-aborts-unsafe-read.gx Also
+    // reported as (x-concurrency-01). (core-lib-01)
     fn delete(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.release(ctx);
         self.cached.clear();
@@ -2630,6 +2731,21 @@ impl<R: Rt> Apply<R> for Once {
         let res = match from {
             [s] => {
                 let x = s.update(ctx);
+                // CR claude for eric: [bug/high] A `let` over once stays bottom for
+                // good after its input's bottom spell, while the same call written
+                // inline recovers. When the input comes back after the shot is spent,
+                // update answers `self.out.ride()`, a quiet stale production. The value
+                // leaves bottom without firing (design/organic_firing.md rule 2), and a
+                // let binding republishes only a production that fires, so its readers
+                // keep the bottom. Counted::update (take) and Filter::update do the
+                // same. This breaks the skill's holder idiom `let h = once(g)`: with a
+                // `_ => never()` arm in g's select, `h(1)` is bottom for the rest of
+                // the program. Decide whether once and take stop consuming their input
+                // after the shot (never bottom again) or go bottom and fire the held
+                // value when the input returns. Either way, pin let-vs-inline agreement
+                // for once, take and filter. probe:
+                // design/review-2026-11-16/repro/lang-skill-once-stuck-bottom.gx
+                // (lang-skill-01)
                 if let Some(bottom) = bottom_of([x.tag()]) {
                     return bottom;
                 }
@@ -2785,6 +2901,20 @@ impl ImageState for AllEv {
     }
 }
 
+// CR claude for claude: [bug/high] `all` fuses through `fc_all`, which compares values
+// raw, while `AllEv::eval` compares references by what they name (`ctx.ref_targets`),
+// as `==` does. An abstract type wrapping a reference (`type W = Abstract<&i64>`)
+// crosses the kernel boundary as a Value, so `|p: W, q: W| all(p, q)` fuses. There it
+// bottoms where the node-walk answers `p`, because two `&x` are two cells naming one
+// place. Emit refuses `==` over the same type ("comparison over references requires
+// runtime context"), but `all` has no such guard: lowering's `builtin_order_arg` check
+// covers only builtins that order. Fix: let a builtin declare the argument it compares
+// with its trait (Eq here, Ord for the `OrderChecked` ones), and refuse the fast call
+// in `try_register_builtin_call_from_callsite` when the argument's type
+// `compares_refs`. Pin it beside `any_reference_all_in_lambda`, whose `Any` never
+// reaches a kernel. probe:
+// design/review-2026-11-16/repro/x-builtin-effects-all-refs-jit.gx
+// (x-builtin-effects-01)
 impl<R: Rt> EvalCached<R> for AllEv {
     const EFFECT: Effect =
         Effect::Stateless(Some(graphix_compiler::FastCall::Plain(fc_all)));
@@ -3370,6 +3500,18 @@ impl<R: Rt> Apply<R> for Range {
                             graphix_compiler::node::MAX_ARRAY_INIT_LEN
                         ))
                     } else {
+                        // CR claude for claude: [perf/low] Every element is queued as a
+                        // runtime write at once, and the runtime holds them all while
+                        // it delivers one a cycle. range(0, 16000000), the cap, peaks
+                        // at 1.08 GB RSS against 73 MB idle. The cap bounds one
+                        // invocation, so each later firing appends another backlog.
+                        // Keep a `(next, end)` cursor per pending range, as `IterQ`
+                        // keeps its cursors, and set the next element when the previous
+                        // one is delivered. That gives the same pacing in O(1) memory,
+                        // and `range_len_exceeds_cap` can go. `Iter::update` clones its
+                        // collection into the queue the same way. probe:
+                        // design/review-2026-11-16/repro/core-lib-range-eager-memory.sh
+                        // (core-lib-04)
                         for v in *i..*j {
                             ctx.rt.set_var(self.var.id, Value::I64(v));
                         }
@@ -3381,6 +3523,15 @@ impl<R: Rt> Apply<R> for Range {
                     Some(err!(e, "invalid args i must be <= j"))
                 }
             };
+            // CR claude for claude: [bug/low] This returns the RangeError before the
+            // delivery check below. An element of an earlier range that the runtime
+            // delivers this cycle is never output: range(0, 5) whose `j` turns -1 as
+            // element 2 arrives yields 0, 1, err, 3, 4. Send the error through
+            // `self.var`, so it queues behind the elements already sent, or hold it for
+            // the next cycle as `CachedArgsAsync::update` does with
+            // `answer_next_cycle`. probe:
+            // design/review-2026-11-16/repro/core-lib-range-error-drops-element.gx
+            // (core-lib-03)
             if let Some(e) = err {
                 return self.out.set(TagValue::fired(e));
             }
@@ -3974,6 +4125,14 @@ fn emit_line<R: Rt>(ctx: &mut ExecCtx<'_, R>, dest: LogDest, line: &str, suffix:
             sink.push(ctx.rt.cycle(), line, suffix)
         }
         // a reader that has gone takes nothing, and the program goes on
+        // CR claude for claude: [bug/medium] Rust's stdout is line-buffered and nothing
+        // here flushes it. `println`, `log` and `dbg` end in a newline, but `print`
+        // does not, so its text waits for some later newline or the exit. `print("name?
+        // ")` followed by a read of stdin shows the prompt only together with the
+        // reply. Flush the locked handle after the write when the text does not end in
+        // '\n' (Stderr is unbuffered). probe:
+        // design/review-2026-11-16/repro/core-lib-print-unflushed-prompt.sh
+        // (core-lib-02)
         (LogDest::Stdout, None) => {
             let _ = write!(std::io::stdout().lock(), "{line}{suffix}");
         }

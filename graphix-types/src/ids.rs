@@ -20,6 +20,15 @@ const MINT_LIMIT: u64 = 1 << 63;
 /// The one write an identity key hashes to. Minted ids share their high
 /// bits and addresses their high and low bits, which a hash table's tag
 /// and bucket index read: the multiply spreads them over both.
+// CR claude for claude: [perf/low] A multiply carries entropy only upward. For a
+// 16-byte-aligned address the product's low 4 bits are always 0, so AddrHasher's hash
+// only ever starts an AddrMap/AddrSet probe on every 16th slot (64 distinct starts for
+// 1024 keys at mask 1023). The doc's claim that the multiply spreads the bits over the
+// bucket index is false for addresses, and address_keys_spread_over_the_tag checks only
+// the tag. Fold the high half down after the multiply (`let m = n.wrapping_mul(K); m ^
+// (m >> 32)`): the top 7 tag bits are unchanged and the low bits take the high entropy.
+// Pin the low bits in the test as well. probe:
+// design/review-2026-11-16/repro/t-expr-core-mix-low-bits.py (t-expr-core-02)
 pub const fn mix(n: u64) -> u64 {
     n.wrapping_mul(0x9E37_79B9_7F4A_7C15)
 }

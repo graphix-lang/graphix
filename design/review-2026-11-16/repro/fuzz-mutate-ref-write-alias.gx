@@ -1,0 +1,10 @@
+// Title: ref-write reports MISPLACED when an alias of `r` is used before the write
+// Command: timeout -s KILL 170 /home/eric/tmp/review-2026-11-16/bin/graphix-fuzz typemorph design/review-2026-11-16/repro/fuzz-mutate-ref-write-alias.gx
+// Expected: typemorph: no flips (`&mut x` made `&x` is refused where the read-only
+//   reference first meets a writable parameter).
+// Observed:
+//   TYPEFLIP ... ref-write#2: MISPLACED: N: type mismatch &mut iN does not contain &iN
+//   mutant: { let x = 1; let f = |p: &mut i64| -> i64 *p; let r = &x; let p = r; let y = f(p); *r <- 5; x + y }
+// `references` takes as right sites the write and the statements naming `r`
+// before it; `let y = f(p)` names only `p`, an alias of `r`.
+{ let x = 1; let f = |p: &mut i64| -> i64 *p; let r = &mut x; let p = r; let y = f(p); *r <- 5; x + y }

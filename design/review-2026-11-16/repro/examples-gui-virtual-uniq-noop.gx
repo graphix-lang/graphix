@@ -1,0 +1,29 @@
+// Title: data_table_virtual.gx's uniq({ rows, columns }) never filters anything
+// tbl below is data_table_virtual.gx's tbl without the uniq, with score
+// changing every 300 ms the way its sliders write it.
+// Command: timeout -s KILL 30 graphix --no-cache examples-gui-virtual-uniq-noop.gx
+// Expected (if uniq were needed): fires > uniq.
+// Observed: "8 fires=1 uniq=1" — tbl fires once (list_table answers only a
+// changed listing, and the &`Netidx(score) reference does not refire when
+// score changes), so uniq passes every fire it ever sees.
+use sys::net;
+use gui::data_table::{progress_column, text_column};
+net::publish("/local/graphix/review_examples_gui_uniq/nr0/score", 0.5);
+let score: Map<string, f64> = {};
+let tbl = {
+    let raw = net::list_table("/local/graphix/review_examples_gui_uniq")$;
+    let columns = array::map(raw.columns, |n| select n {
+        "score" => progress_column(#name: "score", #display_name: "Score", #source: &`Netidx(score), #width: &180.0),
+        n => n
+    });
+    let columns = array::push_front(columns, text_column(#name: "region", #display_name: "Region", #source: &"production"));
+    let rows = array::concat(raw.rows, ["vr0", "vr1", "vr2"]);
+    { rows, columns }
+};
+let fires = count(tbl);
+let u = count(uniq(tbl));
+let clock = sys::time::timer(duration:300.ms, true);
+let k = count(clock);
+score <- clock ~ map::insert(score, "vr0", cast<f64>(k)$ / 10.);
+sys::exit(sys::time::after_idle(duration:2500.ms, 0));
+"[k] fires=[fires] uniq=[u]"

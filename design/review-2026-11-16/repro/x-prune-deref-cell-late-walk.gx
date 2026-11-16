@@ -1,0 +1,25 @@
+// Title: a Deref of a chained reference is a late reader of the reference's
+// cell, which it never reads: a reference made after its reader costs each
+// fire of the referent a second cycle that walks every such reader
+//
+// Command:
+//   GRAPHIX_DBG_SELECT=1 GRAPHIX_PAR=off graphix --no-cache --no-fusion \
+//     design/review-2026-11-16/repro/x-prune-deref-cell-late-walk.gx 2>&1 | grep 'line: 22, column: 30'
+//
+// `b` is bound ABOVE the map, so `*p` reads it in the cycle it fires. The
+// reference `&b` is made below the map; its cell's mirror publication
+// (ByRef::publish) fires after the walk passed the slot, and the Deref
+// registered on that cell (Deref::address), so the fire is delivered late.
+//
+// Expected: the slot's select is walked once per fire of `b` (4 times after
+// its birth), as it is when `let p = &b` stands above the map.
+// Observed: 5 walks after the birth; the last line reads `vars=0`, a cycle
+// with no delivery at all, scheduled by GX::deliver_late for the cell alone.
+let n = 0;
+n <- select n { k if k < 4 => k + 1, _ => never() };
+let b = n * 2;
+let p: &i64 = never();
+let ys = array::map([1], |x| select x { v => v + *p });
+p <- once(&b);
+sys::exit(sys::time::after_idle(duration:80.ms, 0));
+ys

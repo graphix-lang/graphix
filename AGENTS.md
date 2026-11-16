@@ -633,6 +633,9 @@ refusing what the check accepted), `GRAPHIX_DBG_BIND=1` (every tvar bind and
   code; a live CR's text is never edited: it is X'd, noted
   (`// <date> claude: ..`), re-addressed or deleted. Load `/cr-discipline` before
   touching one.
+- A full-repository review is run with the kit in `review/`
+  (`review/README.md`); its summary is `design/REVIEW-<date>.md`, its
+  repros `design/review-<date>/repro/`.
 - PRs carry a concise summary, testing notes and related issues. Rebuild
   the book when docs or examples change.
 - Examples in `book/src/examples/` are documentation and test corpus at

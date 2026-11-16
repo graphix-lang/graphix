@@ -1,0 +1,22 @@
+// Title: a written test that names a declared variable is not judged at the
+// call that instantiates the variable: at a reference type the run-time test
+// passes every reference, so a `&i64` is returned as a `&string`.
+// Command: graphix --no-cache x-typecheck-patterns-declared-var-test-at-reference.gx
+//   (and `--check`, which exits 0)
+// Expected: the check refuses the call `f((&n, 1), &s)` (the instance's test
+//   `(&string, i64)` cannot tell `&string` from the scrutinee's `&i64`), as it
+//   refuses `(&string, i64) as (a, _)` written over `[(&i64, i64), i64]`
+//   ("can't tell &string from &i64: both have the same runtime form").
+// Observed: --check exits 0; the run panics the runtime thread:
+//     kernel param `arg`: runtime I64(1) does not match the compiled String slot
+//     Error: runtime did not respond
+//   Under --no-fusion `str::len` is handed the i64 and the program prints nothing.
+let f = |x: [(&i64, i64), i64], y: 't| select x { ('t, i64) as (a, _) => a, _ => y };
+let n = 1;
+let s = "s";
+let r = f((&n, 1), &s);
+let k = |a: string, b: string| str::len(a) + str::len(b);
+let out = k(*r, "x");
+println("out = [out]");
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+out

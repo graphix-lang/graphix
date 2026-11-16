@@ -1,0 +1,11 @@
+// Title: stmt-permute swaps two readers of a let over an open-return call, a false flip
+// Command: timeout -s KILL 170 /home/eric/tmp/review-2026-11-16/bin/graphix-fuzz typemorph design/review-2026-11-16/repro/fuzz-mutate-permute-open-return.gx
+// Expected: typemorph: no flips (`v` is a cell its first reader decides, as a let over
+//   never() is, so its two readers do not commute).
+// Observed:
+//   TYPEFLIP ... stmt-permute#1: N: type mismatch iN does not contain [iN, string]
+//   mutant: { let v = str::parse("1")$; let a: [i64, string] = v; let b: i64 = v; let c = 1; (a, b, c) }
+// The same with `let v = list::nil(null)` and List<i64> / List<[i64, string]> readers.
+// typemorph::open_value knows never(), a connect, a let and an empty literal, not a
+// call whose declared return no argument decides (mustreject::open_return).
+{ let v = str::parse("1")$; let b: i64 = v; let a: [i64, string] = v; let c = 1; (a, b, c) }

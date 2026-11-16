@@ -1,5 +1,11 @@
 # Design documents
 
+<!-- CR claude for eric: [doc-drift/low] This contract ('records of past arcs are in git
+log, not here') is false of design/REVIEW-*.md and design/review-*/: 2,642 tracked files
+of closed review rounds, with each round adding more. They swamp greps for rules as
+built with superseded findings. Decide: move them under the top-level review/ beside the
+kit, delete closed rounds (git keeps them), or name the exception here. Found by
+reading; not run. (x-doc-drift-13) -->
 Design as built. Every document here describes a rule the tree
 implements today and why; when a design changes, its document is
 rewritten in place. Proposals that were withdrawn and records of past

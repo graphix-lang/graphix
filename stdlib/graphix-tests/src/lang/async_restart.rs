@@ -372,6 +372,15 @@ async fn wake_resumes_a_count(mode: Mode) -> Result<()> {
 // arm builds on it reads bottom at the wake, so count(timer) shows nothing
 // then, never its kept 2 again, and its next fire shows 3 (D2,
 // x-engine-firing-03).
+// CR claude for claude: [style/low] The comment above holds two comments. Its first
+// paragraph ('A sleep pauses a timer's run...') describes wake_resumes_standing_timers
+// below, which has none, and '(D2, x-engine-firing-03)' is a ruling and finding id,
+// which is history. byref.rs's PLACE_BOTTOM_KEY comment ends with
+// '(tests-lang-rest-b-03)', and par_attrs.rs's
+// activations_decide_their_fork_points_at_bind comment narrates the old cubic walk
+// ('Asked there, each operator walked...'). Move the first paragraph to
+// wake_resumes_standing_timers and drop the ids and the narration. Found by reading;
+// not run. (tests-lang-rest-d-10)
 async fn woken_event_state_blanks_until_the_next_event(mode: Mode) -> Result<()> {
     let code = r#"{
         let interval = duration:10.ms;

@@ -155,6 +155,13 @@ impl<R: Rt> Apply<R> for AfterIdle {
 }
 
 /// How many fires a timer's `repeat` asks for: `None` forever.
+// CR claude for claude: [bug/low] fires refuses a negative repeat only for the integer
+// variants. A negative or NaN f32, f64 or decimal goes to cast_to::<u64>, which yields
+// 0, a run with no fires. So timer(d, -1.0) and a NaN repeat silently never fire,
+// instead of returning the TimerError that time.gxi promises for an invalid repeat
+// (timer(d, -1) does return it). Fix: refuse a float or decimal repeat that is negative
+// or NaN here, before the cast. probe:
+// design/review-2026-11-16/repro/sys-io-timer-float-repeat.gx (sys-io-06)
 fn fires(repeat: &Value) -> Option<Option<u64>> {
     match repeat {
         Value::Bool(true) => Some(None),
@@ -341,6 +348,17 @@ impl<R: Rt> Apply<R> for Now {
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R>, from: &mut [Node<R>]) -> &TagValue {
+        // CR claude for claude: [bug/medium] `now` keeps re-delivering its last reading
+        // while its trigger is bottom: `seam_tick` gives `None` for a bottom and the
+        // update falls to `self.out.ride()`. Every other builtin bottoms on a bottomed
+        // argument (design/dense_delivery.md R3 and ruled delta 13; `count`,
+        // `rand::pick`, every `CachedArgs` builtin). So `(n, now(10 / (n % 2)))` shows
+        // a stale datetime at each even `n` where it should be bottom. `args::parse`'s
+        // `Parse::update` has the same shape. Fix: check for bottom first, as
+        // `Pick::update` does: `if tv.tag().is_bottom() { return
+        // self.out.set_bottom(tv.tag().triggers()) }`. probe:
+        // design/review-2026-11-16/repro/x-builtin-effects-now-rides-bottom.gx Also
+        // reported as (x-node-contract-03). (x-builtin-effects-03)
         if seam_tick(from[0].update(ctx)).is_some() {
             self.out.set(TagValue::fired(Value::from(Utc::now())))
         } else {

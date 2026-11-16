@@ -1,0 +1,15 @@
+// Title: a FinalValues program with one async call that never replies is
+// Timeout in every run, so the oracle compares none of its values and
+// records a trusted `contained` verdict.
+// Command: timeout -s KILL 170 graphix-fuzz check fuzz-lib-a-standing-reply-contained.gx
+//          timeout -s KILL 170 graphix-fuzz run fuzz-lib-a-standing-reply-contained.gx
+// Expected: the result (21) is produced in the program's first cycle in both
+// engines and is compared; the standing accept is left out of the settle
+// (REPLY_WAIT bounds it, as drive_inner's comment says).
+// Observed: run prints Timeout(Deadline) for every engine and session;
+// check prints "AGREE (contained)". Dropping the `accept` line gives
+// Trace([0:21]) everywhere. REPLY_WAIT (10s) is never shorter than the
+// drive's own deadline (10s for check, 3s for campaigns and regress).
+let l = sys::tcp::listen("127.0.0.1:0")$;
+let c = sys::tcp::accept(l, null);
+str::len("abc") * 7

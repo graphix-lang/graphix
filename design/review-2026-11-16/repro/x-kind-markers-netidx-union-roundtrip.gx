@@ -1,0 +1,16 @@
+// Title: a value published and subscribed at one union type comes back as
+// another member: netidx data has no JsonData-like bound, so a union whose
+// members write as the same data reads back as the first member its cast tries.
+// Command (needs the localhost netidx resolver of ~/.config/netidx/client.json):
+//   timeout -s KILL 20 graphix --no-cache design/review-2026-11-16/repro/x-kind-markers-netidx-union-roundtrip.gx
+// Expected: ([1, 2], `A) -- what was published, or the types refused as
+//   json::write_str refuses [Array<i64>, (i64, i64)] ('a: JsonData).
+// Observed: ((1, 2), "A")
+let v0: [Array<i64>, (i64, i64)] = [1, 2];
+let v1: [string, `A] = `A;
+sys::net::publish("/local/review-xkm/a", v0);
+sys::net::publish("/local/review-xkm/b", v1);
+let r0: [Array<i64>, (i64, i64)] = sys::net::subscribe("/local/review-xkm/a")$;
+let r1: [string, `A] = sys::net::subscribe("/local/review-xkm/b")$;
+sys::exit(sys::time::after_idle(duration:500.ms, 0));
+(r0, r1)

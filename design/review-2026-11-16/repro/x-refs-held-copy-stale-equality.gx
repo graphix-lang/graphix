@@ -1,0 +1,26 @@
+// `==` over a held copy of a moving reference keeps its answer after the reference moves
+//
+// command:  timeout -s KILL 30 graphix --no-cache x-refs-held-copy-stale-equality.gx
+// rule:     design/place_references.md, "Equality and order": "`==` and `!=` compare what
+//           they name ... A moving reference compares by where it points now."
+// expected: `i` moves from 0 to 2 at step 4, so from then on `held` (the same cell as `r`)
+//           names a[2] and every comparison with `&a[0]` is false:
+//             (6, 2, 30, false, false, false)
+// observed: the comparison made before the move still says true, beside a comparison of
+//           the same reference value made after it that says false:
+//             (6, 2, 30, false, true, false)
+//           columns: step, i, *held, r == &a[0], held == &a[0], (tick ~ held) == &a[0]
+let step = 0;
+step <- select step { s if s < 8 => s + 1, _ => never() };
+let a = [10, 20, 30];
+let i = 0;
+let r = &a[i];
+let held: &i64 = never();
+held <- once(r);
+i <- (select step { 3 => null, _ => never() }) ~ 2;
+let eq_copy = held == &a[0];
+let eq_live = r == &a[0];
+let tick = select step { 6 => null, _ => never() };
+let eq_resampled = { let h = tick ~ held; h == &a[0] };
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(step, i, *held, eq_live, eq_copy, eq_resampled)

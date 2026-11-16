@@ -264,6 +264,12 @@ pub(super) fn maybe_select(
     } else {
         (exprs::gen_typed(ctx, rng, &I64, d), I64)
     };
+    // CR claude for claude: [dead/low] `arms` is always empty past this point: the only
+    // pushes are in the list-ladder branch, which returns. Passing it on to
+    // array_ladder and general_select suggests a caller can seed arms, and
+    // general_select returns an Option it always fills. Build the Vec inside each of
+    // the three users, drop the parameter, and return a String from general_select.
+    // Found by reading; not run. (fuzz-gen-b-06)
     let mut arms: Vec<String> = Vec::new();
     if rng.below(16) == 0 {
         return Some(or_pair_select(ctx, rng, ty, d));

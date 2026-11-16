@@ -53,6 +53,12 @@ pub type Set<K> = imhm::Set<K, Hasher>;
 /// that the node of `with` in its place does not hold: every pair `of`
 /// holds that `with` lacks or holds another value for is among them, and
 /// no pair of a shared subtree is.
+// CR claude for claude: [structure/low] `each_unshared`, `unshared` and `holds` diff
+// two imhm tries and know nothing of the environment; their one caller is
+// graphix-compiler's `branch.rs`. Move them and their test to `shared_map.rs`, which
+// already walks imhm's node API (`NodeRef`, `Contents`, `SlotRef`), so env.rs drops
+// those imports and 130 lines that are not about names. Found by reading; not run.
+// (t-env-04)
 pub fn each_unshared<K: Eq, V: Eq>(
     of: &Map<K, V>,
     with: &Map<K, V>,
@@ -727,6 +733,16 @@ struct TypeDefSite {
     ori: Arc<Origin>,
 }
 
+// CR claude for eric: [bug/medium] A sig type whose representation names a type the
+// body declares for itself (`type C = Abstract<i64>; type T = Abstract<C>` under `sig {
+// type T; .. }`) is refused at every reload, the same text included: C is a new type
+// each load, so T's representation changed. This message prints the old representation,
+// which reads exactly as the new one (`T is already defined as Abstract<C>`), and names
+// no remedy; declaring `type C;` in the sig lifts it. Say that the representation names
+// a type of the previous load and to declare it in the sig, or rule that such a type is
+// the interface's. probe:
+// design/review-2026-11-16/repro/x-dyn-modules-sig-type-private-rep-reload.gx
+// (x-dyn-modules-08)
 fn rep_changed(name: &str, old: &Type) -> String {
     format!(
         "{name} is already defined as Abstract<{old}>: a value of it may still be \
@@ -1060,6 +1076,19 @@ impl Lexical {
 /// tables. A function made here still compiles its body against these,
 /// whenever it is first called.
 #[derive(Debug)]
+// CR claude for eric: [structure/medium] The rule that a function taken out of a
+// dynamic module outlives its load, with that load's bindings, imports, traits, impls,
+// defaults and types, is what this struct, its joins, `KeptImpl`, `impl_reads`,
+// `set_aside`, `displace_names` and `sweep_load_types` exist for. It takes about 350 of
+// design/module_system.md's 1096 lines, 47 tests named for a reload or a load and 88 of
+// the 2316 commits since the last review, it is unsoaked, and no program in graphix or
+// netidx loads a dynamic module outside tests and the book. It also means a host cannot
+// unload a guest: code a guest left in a host variable runs on after the reload. Many
+// rulings on one mechanism question the model: consider retiring a load whole (its
+// nodes deleted, a function value of it bottoms and logs when called, as an aborted
+// async call does), which keeps `foo::f(x)` following reloads and deletes the kept
+// state. What is lost is a saved callback that survives a reload. Found by reading; not
+// run. (a-packages-03)
 pub struct LoadedBody {
     /// The load around the module, when it is declared in one.
     outer: Option<Arc<LoadedBody>>,
@@ -1780,6 +1809,28 @@ impl Env {
     /// level's own names and the modules it declares, never a package. A
     /// package imported under its own name leaves no entry, the prelude
     /// naming it already: `packages` holds those.
+    // CR claude for eric: [risk/medium] A name this view imports can be written by the
+    // body as well as read: with `sig { use str; use super::limit; .. }` a body runs
+    // `let r = &mut limit; *r <- 0` and `str::len <- |s: string| -> i64 99`, and a
+    // module loaded afterwards that calls `str::len("abc")` gets 99. Only a function
+    // the host already calls as a fixed function is refused. If the sig's imports are
+    // meant as a sandbox, an import should grant a read, with `<-` and `&mut` on an
+    // imported binding refused at the load; if a write is meant,
+    // design/module_system.md and the skill should say that one loaded body can replace
+    // a package function for the next. probe:
+    // design/review-2026-11-16/repro/x-refs-dynamic-body-writes-imports.gx (x-refs-05)
+    // CR claude for eric: [bug/high] A name a dynamic module's sig imports is a write
+    // grant as well as a read grant: the body may `<-` it. A guest whose sig says `use
+    // super::limit` sets the host's `limit`, and one whose sig says `use str::trim`
+    // replaces `str::trim` for every module loaded after it (a second guest's `trim("
+    // host ")` answers the first guest's string); only a function an earlier compile
+    // already bound statically is refused. The book presents the sig's imports as what
+    // the body may see, so a host has no way to share a value or a stdlib function
+    // read-only. Refuse at the load a `<-` to or a `&mut` of a name the view brings,
+    // naming the remedy (the host hands the guest a `&mut` through a val or an
+    // argument), or rule that imports are writable and say so in the book. probe:
+    // design/review-2026-11-16/repro/a-packages-guest-replaces-stdlib-fn.gx and
+    // design/review-2026-11-16/repro/a-packages-guest-writes-import.gx (a-packages-01)
     pub fn imported_view(
         &self,
         scope: &ModPath,
@@ -1798,6 +1849,22 @@ impl Env {
                     under.insert(ModPath(level(l).0.append(e.name.as_str())));
                 };
                 match e.keyword_anchored {
+                    // CR claude for eric: [bug/high] A keyword-anchored import keeps
+                    // `level/name` whole at every level of its chain, the root
+                    // included, where `name` may be a package. In a block, `let sys =
+                    // 42; mod m dynamic { sig { use super::sys as handle; .. } }` gives
+                    // the body the whole `sys` package and it reads a file through
+                    // `sys::fs::read_all`; a binding or parameter named `db`, `http`,
+                    // `args` or `json` does the same, and so does `use super::sys` with
+                    // no such binding. A glob never brings a package (`declared_in`)
+                    // and the same sig at the top level grants nothing
+                    // (`resolve_use_item` drops it). Ruling needed: may a `super`
+                    // import grant a package? If not, leave a package out of `under` at
+                    // the root level and have `import_target_declared` not count it.
+                    // The `an_imported_view_*` tests import with `keyword_anchored:
+                    // false` only. probe:
+                    // design/review-2026-11-16/repro/t-env-sandbox-super-import-grants-package.gx
+                    // (t-env-01)
                     true => chain_levels(&e.scope).for_each(&mut keep),
                     false => keep(&e.scope),
                 }
@@ -2827,6 +2894,14 @@ impl Env {
                 {
                     return Ok(Some(other.clone()));
                 }
+                // CR claude for claude: [bug/low] The refusal prints the earlier impl's
+                // position without its origin, so for an impl in another file it reads
+                // as a line of the file the error is reported in: `b.gx` 1:1 is refused
+                // and told `at line: 3, column: 1`, which is in `a.gx`. Name
+                // `other.ori.source` where it is not `im.ori`'s, as
+                // `later_block_type_note` does. probe:
+                // design/review-2026-11-16/repro/t-env-conflicting-impl-other-file.sh
+                // (t-env-03)
                 bail!(
                     "conflicting implementation: {} is already implemented for {} at {}",
                     self.trait_defs
@@ -2867,6 +2942,19 @@ impl Env {
     }
 
     /// Whether the abstract type `id` has an implementation of `t`.
+    // CR claude for eric: [bug/medium] This matches an impl head by its abstract id
+    // alone, but a head may name one instantiation (`impl Ord for Box<i64>`, `impl Cast
+    // for Box<i64> {}` over `type Box<'a> = Abstract<'a>`), and the dispatch
+    // (`find_impl_with`) unifies the head with the value's type. With those two impls
+    // the check accepts `a < b` over `Box<[i64, f64]>`, which runs by the
+    // representation and answers `i64:3 < f64:3.0`, and a cast, a json read and a json
+    // write of `Box<string>`, which answer "has no Cast implementation" at run time;
+    // without the impls each is refused. Either refuse a core-trait impl whose abstract
+    // head is not the type at its own variables, or ask `casts`, `compared_rep`,
+    // `Type::holds_beyond_data` and `Type::uncastable_but` of the type with its
+    // parameters, as `reference_rep` does. design/traits.md says `Env::find_impl`
+    // matches abstract targets by id, which it does not. probe:
+    // design/review-2026-11-16/repro/t-cast-specialized-impl-head.gx (t-cast-01)
     pub fn implements(&self, t: CoreTrait, id: AbstractId) -> bool {
         self.impls_of(t.id()).is_some_and(|l| {
             l.iter().any(|im| self.head_abstract(&im.target) == Some(id))
@@ -2891,6 +2979,16 @@ impl Env {
         self.cast_leaves_out(id, "from_value")
     }
 
+    // CR claude for claude: [bug/medium] This answers for an abstract id if any impl of
+    // it leaves the method out, and `casts` if any impl exists, while the hook that
+    // runs is found by instantiation. An `impl Cast for Box<Inner> {}` beside `impl
+    // Cast for Box<Array<Inner>>` with its own `from_value` makes json write the
+    // second's inner values wrapped, a form its `from_value` refuses, so the round trip
+    // fails; and an impl for `Box<i64>` lets a write, cast or read of `Box<string>`
+    // past the check to fail at run time. Ask by the type, finding the impl as
+    // `coretraits::impl_for` does. probe:
+    // design/review-2026-11-16/repro/x-traits-abstract-cast-facts-by-id.gx and
+    // x-traits-abstract-cast-impl-by-id-not-instantiation.gx (x-traits-abstract-07)
     fn cast_leaves_out(&self, id: AbstractId, method: &str) -> bool {
         self.impls_of(CoreTrait::Cast.id()).is_some_and(|l| {
             l.iter().any(|im| {
@@ -3201,6 +3299,20 @@ impl Env {
         replace: bool,
     ) -> Result<()> {
         self.displace_names(scope);
+        // CR claude for eric: [bug/medium] With `replace` (the REPL's
+        // CFlag::ReplaceImports), a `use` of a name this scope already declares is
+        // installed but never found, because a level's declaration wins over its
+        // imports. In the REPL, `let map = 5` then `use array::map` is accepted and
+        // `map` stays 5. After `let f = ..`, `use m::f` silently keeps calling the old
+        // f. `type T = i64` then `use str::Escape as T` leaves T as i64. A script
+        // refuses the same `use` ('already defined in this scope'), and the flag's doc
+        // says a colliding use shadows. Decide one of two fixes. Either refuse as a
+        // script does (test `declares` whether or not `replace` is set, so `replace`
+        // only lets an import replace an import), or make the later `use` win by taking
+        // the declared name out of the scope's lexical maps for later lookups (earlier
+        // inputs hold their bindings by id). Fix the CFlag::ReplaceImports doc either
+        // way. probe: design/review-2026-11-16/repro/x-repl-use-after-let.sh
+        // (x-repl-02)
         if !replace {
             if let Some(e) = self.names.get(scope).and_then(|sn| sn.imports.get(key)) {
                 if e.scope == entry.scope && e.name == entry.name {
@@ -3311,7 +3423,27 @@ impl Env {
 
     /// Drop the representations and the core impls of the types of the
     /// loads that are gone ([`OwnTypes`]).
+    // CR claude for eric: [bug/medium] A load's core impls and representations go with
+    // its last function, not its last value. A value of a load's own type that the
+    // program still holds (it leaves through a `val` of type Any) compares by the
+    // load's `Eq` and prints by its `Display` until the cycle after the reload, then by
+    // its payload: `a == b` goes from true to false and `C-one` to `C(1)` with no
+    // event, and a Cast impl is lost the same way. Either a value keeps its load's
+    // impls alive, as a function does, or such a value must not leave the module.
+    // probe: design/review-2026-11-16/repro/x-dyn-modules-retired-value-impls.gx
+    // (x-dyn-modules-05)
     pub fn sweep_load_types(&mut self) {
+        // CR claude for eric: [bug/high] The sweep unregisters a retired load's core
+        // impls when its last function is gone, but values of the load's types are not
+        // counted and live on wherever the program holds them as `Any`. A `Map<Any,
+        // i64>` keyed by such values under the load's `Ord` answers MapKeyError for
+        // every key it holds from the cycle after the reload, since the keys now
+        // compare structurally; a sorted array and a dedup lose their meaning the same
+        // way. Keep the impls and the representation while a value of the type can
+        // exist (never sweep them, or keep a load's own type from leaving the load
+        // untyped). probe:
+        // design/review-2026-11-16/repro/x-traits-abstract-retired-load-ord-corrupts-map.gx
+        // (x-traits-abstract-03)
         let Some((dead, impls)) = self.block_types.take_dead() else { return };
         for k in impls.iter() {
             self.unregister_impl(&k.im)
@@ -3910,6 +4042,17 @@ impl Env {
                 if td.seeded.load(Ordering::Relaxed) {
                     continue;
                 }
+                // CR claude for claude: [perf/low] Each unseeded typedef walks every
+                // body its refs reach with a fresh seen set, and a typedef an earlier
+                // walk already reached is walked again from scratch. A chain of N
+                // typedefs is therefore quadratic: the build takes 0.45 s at N=2500,
+                // 5.5 s at 10000 and 24 s at 20000, with SeedTypes at 99% of Compile,
+                // while --check stays at about 150 ms. Fix: share one seen set across
+                // this loop (seed_refs_seen), and mark seeded every typedef a completed
+                // walk reached, keeping unseeded only one whose own reach hit an
+                // unresolved ref. probe:
+                // design/review-2026-11-16/repro/x-panics-seed-types-quadratic.sh
+                // (x-panics-04)
                 let complete = td.typ().seed_refs(self)
                     & td.rep.as_ref().is_none_or(|rep| rep.seed_refs(self));
                 if complete {
@@ -4030,6 +4173,19 @@ impl Env {
     /// body or script at `scope`, whose statements have compiled: the
     /// lexical maps hold what it declares, and a name they lose (one its
     /// interface hides, one deleted) is no longer its own. A block's stay.
+    // CR claude for claude: [bug/low] A block's names stay in `lexical.block_names`
+    // after the block's input is dropped. Three other per-input registrations are not
+    // swept either: `abstract_reps` (`undeftype` keeps a representation), the static
+    // `ABSTRACT_NAMES` entry `AbstractId::named` makes, and
+    // `BlockRegistry::module_loads` for a dynamic module's place. Each REPL input or
+    // embedder compile with distinct text that declares a type in a block adds one of
+    // each for the session. 3000 dropped `{ type C = Abstract<i64>; C(i).0 }` take
+    // `abstract_reps` and `block_names` from 21 to 3020, about 400 bytes per input.
+    // leaks.rs `compiled_and_dropped` compiles one text, which reuses one id, so it
+    // cannot see this. Sweep these by the input that made them, as `Env::sweep_names`
+    // does for import tables. probe:
+    // design/review-2026-11-16/repro/x-leaks-registry-counts.rs (repl_inputs)
+    // (x-leaks-06)
     pub fn close_block(&mut self, scope: &ModPath) {
         if !is_block_scope(scope) {
             self.lexical.block_names.remove_cow(scope);

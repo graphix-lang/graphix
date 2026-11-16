@@ -1,0 +1,29 @@
+// A default method written in a dynamic module's sig is compiled only inside
+// each load, in the loaded body's view: the program's check never sees it,
+// and names that are in scope where the sig is written are not in scope for it.
+//
+// command:  graphix --check c-module-traits-dyn-sig-default-compiled-in-guest.gx   (exit 0)
+//           timeout -s KILL 10 graphix --no-cache c-module-traits-dyn-sig-default-compiled-in-guest.gx
+// expected: 3 (`array::len` is in scope at the sig, the host's own text), or a
+//           refusal at the check
+// observed: the check accepts; every load fails:
+//           error:`DynamicLoadError("compile error at: line: 21, column: 9 .., in: trait Sh { ..
+//             .. in: array::len
+//             array::len not defined")
+//           With `use array;` added to the sig, which also grants `array` to the
+//           guest's body, it prints 3.
+// The same default written `= |s| nosuch(sh(s)) + "oops"` (an undefined name
+// and a type error) also passes --check, builds and starts, and fails at
+// every load ("nosuch not defined"). A static module's interface with the
+// same default is refused at the check.
+let st = mod m dynamic {
+    sig {
+        trait Sh { val sh: fn(self) -> i64; val twice: fn(self) -> i64 = |s| array::len([sh(s)]) + sh(s) };
+        type C;
+        impl Sh for C;
+        val mk: fn(x: i64) -> C
+    };
+    source "type C = Abstract<i64>; impl Sh for C { let sh = |c| c.0 }; let mk = |x| C(x)"
+};
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+select st { error as e => dbg(e), null as _ => m::Sh::twice(m::mk(2)) }

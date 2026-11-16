@@ -23,6 +23,16 @@ use std::fmt;
 /// Default trace budgets (see [`graphix_rt::GXHandle::trace_start`]):
 /// total recorded events per trace, and active cycles per segment. A
 /// schedule header overrides them per program.
+// CR claude for claude: [doc-drift/low] The doc calls this the total events per trace,
+// as `Schedule::max_events` and graphix-rt's `TraceSegment::capped_events` do. The
+// runtime bounds events per segment (`TraceState::resolve` replaces the vector;
+// `GXHandle::trace_start`'s doc says per segment). So a schedule of N epochs records up
+// to N times `events`, and a FinalValues epoch gets one budget per settle round. Two
+// more stale docs: `Trace::stdout` says Exact tier only, while `drive_inner` captures
+// prints for every tier but Excluded. schedule.rs's module doc says inputs are declared
+// at the compile-text top level as `let in0: i64 = 0`, while `Subject::parse` declares
+// them in the `inputs` module as `let in0: i64 = i64:0`. Fix the three docs. Found by
+// reading; not run. (fuzz-main-aux-07)
 pub const MAX_EVENTS: usize = 512;
 pub const MAX_CYCLES: u64 = 64;
 
@@ -132,6 +142,16 @@ fn rewrite(v: &Value, ids: &mut RunIds, naming: Naming) -> Value {
                 let i = sight(&mut ids.refs, c, keep);
                 out.push(Value::String(ArcStr::from(format_compact!("&ref{i}").as_str())))
             }
+            // CR claude for claude: [test-gap/medium] Every string a program produces
+            // goes through `fresh_cells`, whose `run_names` takes `#` and digits with
+            // no letter between, and `#` with lowercase letters and digits, for a run's
+            // id. So "item #1", "item #2" and "item #3" are all "item #0" in the
+            // compared trace, "#ff0000" and "#ff0001" are one string, and a divergence
+            // that shows only there is AGREE. Match only the shapes lowerings and cells
+            // mint, or rewrite only error payloads and printed functions; pin that a
+            // plain "#1" is kept. probe:
+            // design/review-2026-11-16/repro/x-traits-abstract-fuzz-trace-renumbers-program-strings.gx
+            // (x-traits-abstract-08)
             Task::Visit(Value::String(t)) if let Some(n) = fresh_cells(t) => {
                 out.push(Value::String(ArcStr::from(n)))
             }
@@ -193,6 +213,21 @@ fn rewrite(v: &Value, ids: &mut RunIds, naming: Naming) -> Value {
 /// as a type error prints an unbound cell) and a name a lowering binds (`#`,
 /// lowercase and digits, as a printed function reads a seq's). An error a
 /// program reads holds the ids of the compile that raised it, a run's.
+// CR claude for claude: [bug/medium] `rewrite` applies this to every string in a trace,
+// and `drive_inner` applies it to every printed line. `run_names` matches any `#`
+// followed by optional lowercase letters and then digits, or `'_` and digits, so user
+// text is renumbered: "row #7" and "row #42" both become "row #0". Each string is
+// numbered on its own, so distinct keys collide: the map {"#1" => 10, "#2" => 20}
+// normalizes to {"#0" => 10} and loses an entry. A JIT that computed a different number
+// there agrees with the node-walk. This is the kind of canonicalization the design
+// rules out. Fix: match only compiler-minted names (`'_` cells, and `#` names with a
+// lowercase prefix and a long digit run, like the lowering's
+// `#seqt4611686018427390981_y`). Number them across the trace in `RunIds`, as
+// references and handles are, so distinct names stay distinct. `normalize_diag` in
+// lib.rs scans the same forms and could share the scanner. probes:
+// design/review-2026-11-16/repro/fuzz-main-aux-fresh-cells-hide-digits.gx,
+// design/review-2026-11-16/repro/fuzz-main-aux-fresh-cells-map-collapse.gx
+// (fuzz-main-aux-01)
 pub fn fresh_cells(text: &str) -> Option<String> {
     run_names(text).next()?;
     let (mut out, mut seen, mut last) =

@@ -1299,6 +1299,14 @@ fn graphix_map_finalize(buf: *mut LPooled<Vec<Value>>, check_keys: u64) -> TagVa
     let map = guard_panic(TagValue::phantom(), || {
         let mut m = netidx_value::Map::new();
         let mut entries = unsafe { (*buf).drain(..) };
+        // CR claude for claude: [structure/low] This loop is MapNew::update's
+        // (node/map.rs) line for line: pairs taken in written order, a refused key
+        // making the whole literal bottom, insert_cow so a later key wins. The two
+        // engines must agree bit-for-bit here, and map_get and pairs_to_map already
+        // live once in the node-walk for exactly that reason. Move the loop into
+        // node/map.rs as one shared function (an entries iterator and check_keys in,
+        // Option<Value> out) and call it from both. Found by reading; not run.
+        // (f-helpers-03)
         while let (Some(k), Some(v)) = (entries.next(), entries.next()) {
             if check_keys != 0 && !crate::node::coretraits::ordered(&k) {
                 return TagValue::phantom();
@@ -1319,6 +1327,14 @@ fn graphix_valarray_into_list(bits: u64) -> TagValue {
 
 /// Flatten a Map value into owned ValArray bits of `[k, v]` pairs in
 /// key order, consuming it; a non-map yields the empty array.
+// CR claude for claude: [perf/low] Every run of a fused Map loop allocates a fresh
+// tuple per entry, plus the flattened array, and the destructuring callback then takes
+// it apart and drops it. map::fold over 16000 entries with one changing costs 2544 us
+// per cycle, against 475 us for the same fold over an Array<(i64, i64)>. Fix: flatten
+// into one ValArray of alternating keys and values, let a callback whose parameter is a
+// two-leaf tuple pattern bind k and v from the two words, and build the pair only where
+// the callback uses it whole. probe:
+// design/review-2026-11-16/repro/x-perf-runtime-map-pair-flatten.sh (x-perf-runtime-05)
 fn graphix_cmap_to_pairs(tv: TagValue) -> u64 {
     let v = tv.value();
     let arr = match &v {
@@ -1916,6 +1932,16 @@ fn graphix_site_child_block(
     let v = unsafe { &mut *(*word as *mut Vec<u64>) };
     v[words] = SELF_BLOCK_GEN.get();
     SELF_BLOCK_REACHED.set(SELF_BLOCK_REACHED.get() + 1);
+    // CR claude for claude: [dead/low] The `fresh` word returned here has no reader.
+    // emit_site_block's only caller, the lambda call emission in emit/call.rs, discards
+    // it, because bind-driven bodies made a self-call's fresh block no longer an entry.
+    // ChildBlock exists only to carry that word, and it keeps a second pair type alive
+    // in the helper ABI: its impl_pair_arg entry (no helper takes one), the `->
+    // ChildBlock` arm of jit_helpers!, and the Option<ClifValue> second result of
+    // emit_site_block. Return the block pointer as one word (`-> *mut u64`), delete
+    // ChildBlock and those three pieces, and drop ChildBlock from
+    // design/helper_abi_portability.md. Its doc comment ('born with the init view')
+    // also describes a rule that is gone. Found by reading; not run. (f-helpers-02)
     ChildBlock { block: v.as_mut_ptr(), fresh: fresh as u64 }
 }
 
@@ -1930,6 +1956,13 @@ fn graphix_slot_state_blocks(
 ) -> *mut u64 {
     let leaf_ref = unsafe { &*leaf };
     let len = (slots as usize) * (leaf_ref.stride as usize);
+    // CR claude for claude: [structure/low] graphix_slot_state_blocks repeats
+    // graphix_slot_state_table's body: the sized_table fast path, the lazy
+    // Box<Vec<u64>>, truncate-with-free on a present source, and zero-fill growth. Only
+    // the length and what frees a dropped tail differ. Give both one private resize
+    // function that takes the word, the length, source_present and the tail's free
+    // (free_slot_chain per entry, or free_blocks), so the retention rule the per-slot
+    // state depends on is written once. Found by reading; not run. (f-helpers-04)
     if let Some(table) = unsafe { sized_table(word, len, source_present) } {
         return table;
     }
@@ -2094,6 +2127,15 @@ thread_local! {
 
     /// The invoking kernel's type environment, loaned for one wrapper
     /// call ([`with_kernel_env`]); null when no kernel is in flight.
+    // CR claude for claude: [risk/low] KERNEL_ENV and KERNEL_ABORT are `pub` statics in
+    // the public fusion::emit_helpers module. So are free_slot_chain,
+    // free_self_block_tree, reclaim_self_block_tree, reclaim_slot_chain, ChildBlock,
+    // record_fusion_invocation and the TagValue re-export, and nothing outside this
+    // crate uses any of them (only kernel_running is read, by graphix-package-core).
+    // KERNEL_ENV is a raw pointer that kernel_env() dereferences and par_loop hands to
+    // workers. A builtin in another crate can store any pointer in it with safe code (a
+    // FastFn runs mid-kernel), and the next env-reading helper is then UB. Make all of
+    // these pub(crate). Found by reading; not run. (f-helpers-05)
     pub static KERNEL_ENV: Cell<*const crate::env::Env> =
         const { Cell::new(std::ptr::null()) };
 
@@ -2346,6 +2388,17 @@ unsafe fn kernel_env<'a>() -> &'a crate::env::Env {
 
 /// Whether a fused kernel is running on this thread: a fast fn's
 /// arithmetic diagnostics are the node-walk's alone, as an operator's are.
+// CR claude for claude: [bug/low] kernel_running() reads the KERNEL_ENV loan, which
+// stays set for everything that runs on this thread during the wrapper call, not only
+// for JIT code. A core-trait hook's site (coretraits::call_hook) runs node-walk code
+// inside the kernel, and so does a pool job the thread steals while a forked kernel
+// loop waits. A fast fn called from that node-walk code (sum, product, divide in
+// graphix-package-core) then skips its failure log, so the fused run of a program says
+// less than its --no-fusion run. Fix: clear the loan for node-walk code nested in a run
+// (a Restore of KERNEL_ENV to null around call_hook's site update and at the eval
+// pool's job entry), or set a flag of its own around the call in fast_dispatch, clear
+// it in call_hook, and read that flag here. probe:
+// design/review-2026-11-16/repro/f-helpers-kernel-running-hook.gx (f-helpers-01)
 pub fn kernel_running() -> bool {
     !KERNEL_ENV.with(|c| c.get()).is_null()
 }

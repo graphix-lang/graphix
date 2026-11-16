@@ -1,0 +1,18 @@
+// lang::types::union_of_arrays_beside_an_open_argument_is_refused_in_the_first_order
+// (and _in_the_other_order) pin refused("type mismatch"). The refusal names
+// no annotation, though design/tvar_constraints.md ("Where a refusal is of
+// an undecided argument and some decision of its cells could fit ... the
+// refusal says 'annotate it'") promises one, and annotating `z` as the type
+// the pre-unification already gave it, `|z: [i64, null]|`, makes it run.
+// Command: graphix --no-cache --check tests-types-d-open-argument-names-no-fix.gx
+// Observed: type mismatch [`X('b: [i64, null], 'c: i64, ...), `Y(Array<Array<Array<'c: i64>>>)]
+//   does not contain [`X([i64, null], i64, Array<[i64, null]>, Array<string>, [i64, null]), `Y(...)]
+//   (no "annotate"); with `|z: [i64, null]|` the check accepts.
+{
+  type U<'x, 'y> = [Array<'x>, Array<'y>];
+  let f = |x: [`X('b, 'c, U<'a, 'b>, Array<'a>, [i64, null]), `Y(Array<Array<Array<'c>>>)]| 0;
+  let n: [i64, null] = null;
+  let y: Array<Array<Array<[i64, string]>>> = [[[1]]];
+  let g = |z| { let c = true; let v = select c { true => `X(n, 1, [z], ["s"], z), false => `Y(y) }; f(v) };
+  g(null)
+}

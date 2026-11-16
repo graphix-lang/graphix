@@ -1,0 +1,9 @@
+// Title: graphix-fuzz misses `rand::` after a `"` in a trailing comment
+// Command: timeout -s KILL 180 /home/eric/tmp/review-2026-11-16/bin/graphix-fuzz check design/review-2026-11-16/repro/x-dup-fuzz-comment-quote.gx
+// Expected: EXCLUDED (the program reads rand::, as it is without the comment)
+// Observed: DIVERGENCE — nondeterminism: first run Trace([0:779491405]), rerun Trace([0:345407179])
+// Cause: graphix-fuzz `without_strings` (a second copy of the parser's
+// `state.rs::unclosed_at_end` context machine) has no `//` rule, so the `"`
+// in the comment opens a string that blanks `rand::` on the next line.
+let a = 1; // a "quote
+rand::rand(#start: 0, #end: 1000000000, #clock: a)

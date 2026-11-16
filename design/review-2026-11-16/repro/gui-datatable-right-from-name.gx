@@ -1,0 +1,24 @@
+// Right arrow from a selected row-name cell skips the first data column.
+// Command (needs a display; not run in the review, `graphix --check` passes):
+//   cargo run --bin graphix -- design/review-2026-11-16/repro/gui-datatable-right-from-name.gx
+// Steps: click the "r0" cell of the name column (no #on_activate, so the
+// click selects "r0"), then press ArrowRight.
+// Expected: "on_select: r0/c0" (the first data column of the same row).
+// Read from DataTableW::handle_table_key: cur_col is 0 (the name column),
+// c = cur_col.max(first_data_col) = 1, Right makes it 2, so it shows
+// "on_select: r0/c1"; with one data column it moves to "r1/c0" instead.
+use gui::{window, column::column, text::text, data_table::data_table};
+let sel: Array<string> = [];
+let picked = "";
+let tbl = {rows: ["r0", "r1"], columns: ["c0", "c1"]};
+[&window(
+    #title: &"right arrow from the name cell",
+    &column(&[
+        text(&"on_select: [picked]"),
+        data_table(
+            #selection: &sel,
+            #on_select: |#path: string| { sel <- [path]; picked <- path },
+            #table: &tbl
+        )
+    ])
+)]

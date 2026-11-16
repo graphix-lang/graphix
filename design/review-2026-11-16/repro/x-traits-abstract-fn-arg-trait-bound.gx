@@ -1,0 +1,27 @@
+// A function passed where a parameter is bounded by a trait is refused
+// with "undefined type <Trait>", whatever the trait implements.
+//
+// Command:
+//   /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache --check \
+//     design/review-2026-11-16/repro/x-traits-abstract-fn-arg-trait-bound.gx
+//
+// Expected: the check accepts it. `T` is implemented for `fn(x: i64) -> i64`
+// (the impl itself is accepted), so `T::m(f)` is a call of that impl.
+// The same holds for a written core bound, which every type satisfies:
+//   let f = 'a: Eq |x: 'a| 1; f(|y: i64| y)        -- undefined type Eq
+//   Display::fmt(|x: i64| x)                        -- undefined type Display
+// while `let h = |x: i64| x; h == h` and `"[h]"` are accepted. Where the
+// function type has no impl the refusal should be "fn(..) does not
+// implement T", as `T::m("a")` says of a string.
+//
+// Observed:
+//   0: at: line: .., in: T::m(f)
+//   1: undefined type T at line: .., column: 1
+//
+// Cause (RUST_BACKTRACE=1): Type::pre_unify_seen -> TVar::bound_takers_ambiguous
+// -> Type::dispatch_members -> flatten_members -> lookup_ref of the trait
+// conjunct, which is no typedef.
+trait T { val m: fn(self) -> i64 };
+impl T for fn(x: i64) -> i64 { let m = |s| s(1) };
+let f = |x: i64| -> i64 x + 1;
+T::m(f)

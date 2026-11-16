@@ -1,0 +1,20 @@
+// t-typ-mod: the check accepts a union self call of a method whose result
+// takes `self` in through the second application of one typedef, and the
+// build then refuses it with a type mismatch.
+//
+// Command:  graphix --check t-typ-mod-self-taken-in-seen.gx   (exit 0, no output)
+//           graphix --no-cache t-typ-mod-self-taken-in-seen.gx
+// Expected: both refuse with "a T call over [i64, string] narrows only its
+//           self argument, and T::mk takes `self` beyond it ..", as they do
+//           when the first tuple slot names another typedef of the same body
+//           (`type H<'a> = {cb: fn(d: 'a) -> string}`, `-> (H<i64>, F<self>)`)
+//           or when the result is `F<self>` alone.
+// Observed: --check prints nothing and exits 0; the run fails with
+//           "type mismatch (F<i64>, F<'self: [i64, string]>) does not contain
+//            [(F<i64>, F<i64>), (F<i64>, F<string>)]".
+type F<'a> = {cb: fn(d: 'a) -> string};
+trait T { val mk: fn(self) -> (F<i64>, F<self>) };
+impl T for i64 { let mk = |s| ({cb: |d: i64| "i"}, {cb: |d: i64| "i"}) };
+impl T for string { let mk = |s| ({cb: |d: i64| "i"}, {cb: |d: string| d}) };
+let v: [i64, string] = 1;
+T::mk(v)

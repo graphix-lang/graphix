@@ -1,0 +1,18 @@
+// One refusal names the definition's declared variable two ways: `'a1` in
+// the mismatch and `'a` in the note that says what to write.
+//
+// Run: /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache --check \
+//        design/review-2026-11-16/repro/t-tvar-b-declared-name-numbered-apart.gx
+//
+// Expected: the variable the program wrote prints as `'a` throughout, and
+//   the callee's copy of its own `'a` (uniq's) is the one numbered apart:
+//     type mismatch 'a1: unbound within Discernible does not contain
+//     'a: unbound within Any: the body needs 'a within Discernible, ..
+// Observed:
+//     type mismatch 'a: unbound within Discernible does not contain
+//     'a1: unbound within Any: the body needs 'a within Discernible, which
+//     the signature does not declare: write 'a: Discernible
+//   The `'a` of the first half is uniq's variable, the `'a` of the second
+//   half is the program's, and no `'a1` is written anywhere in the program.
+let f = 'a: Any |x: 'a| uniq(x);
+f(1)

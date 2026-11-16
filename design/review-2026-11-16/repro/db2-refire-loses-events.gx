@@ -1,0 +1,23 @@
+// db2: re-firing a subscription with the same tree and prefix loses queued deliveries
+// Run from an empty scratch dir (it creates ./refire.db):
+//   cd $(mktemp -d) && timeout -s KILL 150 graphix --no-cache <this file>
+// Expected: the last line is (1, _, 5000): every insert reaches on_change,
+//   since "re-firing the same tree and prefix keeps the subscription".
+// Observed: (1, 339, 2234), (1, 233, 2226), (1, 324, 2190) in three runs.
+//   Control: replace `on_change(sub)` with `on_change(uniq(sub))` (the accessor
+//   no longer sees the re-fire) and every run ends (1, _, 5000).
+let d = db::open("refire.db")$;
+let t: db::Tree<i64, i64> = db::tree(d, null)$;
+let prefix: [i64, null] = null;
+let sub = db::subscription::new(#prefix: prefix, t);
+let ch = db::subscription::on_change(sub)$;
+let n = 0;
+n <- ch ~ n + array::len(ch);
+let deliveries = 0;
+deliveries <- ch ~ deliveries + 1;
+prefix <- sys::time::timer(duration:1.ms, true) ~ null;
+let go = once(sub ~ 0);
+let w = array::init(5000, |i| db::insert(t, go ~ i, i)$);
+let finished = count(w);
+sys::exit(sys::time::after_idle(duration:1000.ms, finished) ~ 0);
+(finished, deliveries, n)

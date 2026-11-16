@@ -2231,6 +2231,14 @@ run!(
 );
 
 // Neither argument holds the other: refused, in either order.
+// CR claude for claude: [test-gap/low] "Refused, in either order" is pinned by one
+// program, and the check reports only its first refusal. The message here is f(`A,
+// `B)'s, and the same program with the second call replaced by an accepted f(`B, `B)
+// gives the same message. A change that accepted f(`B, `A), an order-dependent verdict,
+// would still pass. Split this into two fixtures, each pinning its own message: "'a: `A
+// does not contain `B" and "'a: `B does not contain `A". probe:
+// design/review-2026-11-16/repro/tests-functions-a-either-order-half-pinned.sh
+// (tests-functions-a-03)
 run!(
     no_widest_arg_refused,
     r#"{ let f = |x: 'a, y: 'a| -> 'a y; (f(`A, `B), f(`B, `A)) }"#,
@@ -2314,6 +2322,16 @@ run!(
 
 // A waiting argument whose cell stands above lower bounds takes what the
 // others settle only where that holds them.
+// CR claude for claude: [test-gap/low] The note this pins, "annotate `v`", cannot make
+// this program pass: with `let v: [i64, string] = x.0` the program is refused at `let
+// r: i64` instead. undecided_binding_above_a_lower_bound_builtin_refused has the same
+// problem with `Array<i64>`. Nothing pins the passing version (no `let r`, `v: [i64,
+// string]`, accepted), here or in the generics.md cases, so a check that kept refusing
+// the annotated read would pass every test. Drop the `let r` annotations from both
+// fixtures (they get the same refusal without them) and add the annotated program as an
+// accepting fixture. probe:
+// design/review-2026-11-16/repro/tests-functions-a-lower-bound-twin-unpinned.sh
+// (tests-functions-a-04)
 run!(
     undecided_binding_above_a_lower_bound_refused,
     r#"{
@@ -2362,6 +2380,20 @@ run!(
 
 // So does one whose cell an operator left a conjunct on: what the others
 // settle must fit it, whichever the call, and whatever stands between.
+// CR claude for claude: [bug/medium] This fixture,
+// undecided_parameter_within_a_conjunct_builtin_refused and
+// undecided_binding_within_a_conjunct_refused pin the note "`p` is undecided at this
+// call; annotate `p`", and undecided_index_within_a_conjunct_refused prints it too. No
+// annotation can satisfy it: `p: string`, `p: i64`, `p: [i64, string]` and `p: Any` are
+// each refused, because the operator's conjunct (Number & Singleton) holds no type that
+// holds, or is held by, the string the call gave 'a. That breaks the rule
+// undecided_mismatch_names_no_annotation pins (a refusal that no annotation of the
+// undecided argument can pass names none). Fix callsite.rs::annotation_may_fit, which
+// Widening::take consults, so the note needs a type the argument's cell admits, its
+// conjunct included, that relates to what the call gave the variable. Then pin these
+// with refused_naming_nothing and update the matching generics.md case. probe:
+// design/review-2026-11-16/repro/tests-functions-a-conjunct-note-unfollowable.sh
+// (tests-functions-a-01)
 run!(
     undecided_parameter_within_a_conjunct_refused,
     r#"{
@@ -2770,6 +2802,18 @@ run!(
 
 // A variable a callback holds does not widen: the callback was checked
 // at the type the variable had when it was reached.
+// CR claude for claude: [bug/low] This refusal names no annotation, yet annotating the
+// first argument as `[u64, null]` (`let z: [u64, null] = u64:0; g(z, |v| v, n)`)
+// passes, and no fixture pins that. The undecided version
+// (callback_variable_undecided_last_refused) gets "annotate that argument as wide as
+// this one" from callsite.rs::decided_elsewhere, and a bound-held variable gets
+// callsite.rs::bound_held_note. A decided argument at a variable a function type of the
+// signature holds gets neither, because Widening::join adds only bound_held_note or
+// pinned_note. writable_reference_variable_does_not_widen has the same shape. Add the
+// note in Widening::join, pin it in both fixtures, and add the annotated programs as
+// accepting twins. probe:
+// design/review-2026-11-16/repro/tests-functions-a-callback-held-refusal-names-nothing.sh
+// (tests-functions-a-02)
 run!(
     callback_variable_does_not_widen,
     r#"{
@@ -2980,6 +3024,15 @@ const ENVIRONMENT_CELL_IS_NOT_GENERALIZED: &str = r#"
 }
 "#;
 
+// CR claude for claude: [test-gap/low] The value is the constant 42 and nothing reads
+// `y`'s type, while the check accepts an undecided `y`. A definition that generalized
+// `y`'s cell would leave `y` undecided and still yield 42, so this test cannot fail for
+// the rule it names; only environment_cell_makes_the_definition_monomorphic catches
+// that. Add `let z: string = y;` and pin refused("string does not contain i64"); an
+// undecided `y` is refused with "unbound within Number & Singleton" instead. Or delete
+// the fixture as a duplicate. probe:
+// design/review-2026-11-16/repro/tests-functions-a-environment-cell-unobserved.sh
+// (tests-functions-a-05)
 run!(environment_cell_is_not_generalized, ENVIRONMENT_CELL_IS_NOT_GENERALIZED, is(Value::I64(42)); FuseExpect::Jit);
 
 // So that definition is monomorphic: a second call at another type is
@@ -3663,6 +3716,15 @@ run!(default_hidden_by_a_connect, r#"
 }
 "#, refused("string does not contain i64"); FuseExpect::None);
 
+// CR claude for claude: [test-gap/low] `{s with h: f}` gives `h` f's own generic type,
+// so the update hides no label and judges nothing. The update with no call checks, and
+// so does `(s2.h)(#d: 2.5, 1.5)`. This fixture's refusal is the omitted default at
+// `(s2.h)(1.5)`, which `f(1.5)` alone gets, so it pins nothing about an update. Rewrite
+// it as an annotated update (`let s2: {h: fn(x: f64) -> f64} = {s with h: f}`, refused
+// at the update) beside the bare update passing the label, or delete it. The family
+// comment above still lists 'a rank-2 formal', which no longer exists. probe:
+// design/review-2026-11-16/repro/tests-functions-b-with-update-hides-nothing.sh
+// (tests-functions-b-05)
 run!(default_hidden_by_a_with_update, r#"
 {
     let f = 'a: Number |#d: 'a = 5, x: 'a| x + d;
@@ -5405,6 +5467,19 @@ run!(
 // A function value no binding names is one instance: an element of a
 // collection a call returns is, and a callback calling it at two types is
 // refused.
+// CR claude for claude: [test-gap/medium] This fixture is named for elements staying
+// generic but pins the opposite. Its refusal does not come from the rule its comment
+// states: the callback's parameter `f` is one instance on its own. Over a generic
+// holder (`let fs = [h]` with a let-bound generic h, whose direct reads check at two
+// types), the same map is refused with the same message. A change that made an element
+// of a call's result generic would pass this fixture. It would also pass
+// collection_returned_function_is_one_instance and the generics.md case, which read
+// through `let g = fs[0]$`, an index read that is one instance anyway. Pin the rule
+// with direct reads: `(fs[0]$(1, 2), fs[0]$(f32:1.5, f32:2.0))` over `array::map(..)`
+// refused, beside the same reads over `let fs = [h]` checking. Then rename or fold this
+// fixture. probe:
+// design/review-2026-11-16/repro/tests-functions-b-call-result-element-rule-unpinned.sh
+// (tests-functions-b-04)
 run!(
     generic_function_elements_stay_generic,
     r#"{
@@ -5474,6 +5549,21 @@ async fn generic_function_elements_elaborate_in_any_task_order() -> Result<()> {
 // call through either picks the quantifier anew: an unannotated
 // parameter the body unifies with the declared quantifier names its
 // cell under a second name, and nothing binds the quantifier.
+// CR claude for eric: [bug/medium] The comment above says copies of g in an array 'meet
+// as one generic member ... each call through either picks the quantifier anew'.
+// design/tvar_constraints.md and generics.md say a let of an array literal holding
+// functions is generalized, with an annotation deciding only its own read's copy. As
+// built, that holds for `[g]` and `[|x| x]` but not for `[g, g]` or `[|x| x, |y| y]`.
+// The meet leaves the element an instance's cells, which a read does not copy, so `[g,
+// g]` called at u8 then at i64 is refused, and two annotations of `[|x| x, |y| y]` at
+// i64 and string are refused; the one-element versions check. The repl_inputs.rs pins
+// encode the monomorphic verdict, and no fixture here calls two elements at two types
+// (nested_array_of_generic_lambdas calls both at i64). Please rule whether the number
+// of functions in a literal may decide whether its binding is generic. I think it
+// should not, since ML generalizes `[id; id]`. Then fix the docs or the build, rewrite
+// this comment, and pin calls at two types. probe:
+// design/review-2026-11-16/repro/tests-functions-b-array-of-two-fns-not-generic.sh
+// (tests-functions-b-02)
 const GENERIC_ADD: &str = "let g = 'q: Number |x, y: 'q| -> 'q x + y;";
 
 run!(
@@ -5536,6 +5626,17 @@ run!(
 // The copies' quantifier is held rigid when the array's type is checked
 // against what is written to it: a monomorphic function is no generic one,
 // and the earlier call at u8 relies on the quantifier staying open.
+// CR claude for claude: [test-gap/medium] The comment above says the copies' quantifier
+// stays open after `fs[0]$(u8:1, u8:2)` and is held rigid against the write. It does
+// not stay open. `fs` is written, so it is one instance and the u8 call decides it: the
+// refusal reads 'fs is Array<fn(x: u8, y: u8) -> u8> and cannot hold ...'. The same
+// write of a monomorphic u8 function checks. This fixture therefore passes on a plain
+// u8/i64 mismatch, and would still pass if the rigid hold of a generic holder against a
+// write were lost. Rewrite the comment to what it pins and add the u8 write as the
+// accepted twin. Pin the rigid hold where it still applies: a write a later input or a
+// module body makes to a generic holder. probe:
+// design/review-2026-11-16/repro/tests-functions-b-copies-monomorphic-write.sh
+// (tests-functions-b-03)
 run!(
     generic_function_copies_refuse_a_monomorphic_write,
     refused("and cannot hold Array<fn(x: i64, y: i64) -> i64>"),
@@ -5657,6 +5758,14 @@ run!(
     |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[null, null, i64:1]")
 );
 
+// CR claude for claude: [test-gap/low] This refusal names two fixes: 'pass the widest
+// argument first, or annotate the undecided one'. Only the reordered twin is pinned.
+// The annotated twin, `let h = |z: [i64, null]| pick(i64:1, z, v)`, checks, but no
+// fixture holds it, and the nested form below is the same. Add both annotated twins
+// (they print `[i64:1, null, null]` and `[[i64:1], [null], [null]]`) so a change that
+// breaks the told fix fails. probe:
+// design/review-2026-11-16/repro/tests-functions-b-undecided-arg-annotation-twin.sh
+// (tests-functions-b-06)
 run!(
     open_argument_before_a_wider_one_refused,
     r#"{

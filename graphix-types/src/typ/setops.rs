@@ -570,6 +570,19 @@ impl Alternatives {
 
     /// Whether one alternative holds both `t0` and `t1`: two members of one
     /// alternative are two, however alike.
+    // CR claude for claude: [perf/medium] apart scans the held-node set of every
+    // alternative of the join, and union_tagged collapses each member into the
+    // accumulator through it. A union of N same-shaped composite alternatives therefore
+    // costs N² probes; alternatives() also groups members by tag with a linear find. An
+    // array literal of 8000 structs (or tuples, or one-element arrays) takes 146 ms of
+    // Typecheck0, 4x per doubling, against 0.2 ms for 8000 integers, and `any` and
+    // select arms over composites pay alike. element_union's dedupe catches only
+    // primitives and shared Arcs, never separately written literals, and
+    // a_literals_element_union_is_linear pins only i64. Index the held nodes by key
+    // when `held` is built (key to the alternatives holding it), so apart is two
+    // lookups; group alternatives() by tag in a map; pin a struct-literal array. probe:
+    // design/review-2026-11-16/repro/x-perf-compile-composite-literal-union.py
+    // (x-perf-compile-04)
     pub(super) fn apart(&mut self, t0: &Type, t1: &Type) -> bool {
         let (Some(k0), Some(k1)) = (t0.node_key(), t1.node_key()) else {
             return false;
@@ -755,6 +768,17 @@ impl Ambiguity {
 
 /// Identity of `t0` and `t1`.
 struct Identity<'a> {
+    // CR claude for claude: [structure/low] Six flags and options (`strict`, `sets`,
+    // `in_order`, `by_name`, `unbounded`, `across`) spell the walks the constructors
+    // below build, and most of their other combinations mean nothing: `sets` needs
+    // `strict` (its doc), `in_order` needs `sets`, `by_name` needs `pairs` to be `Some`
+    // from the start, `unbounded` acts only with `live`. Nothing keeps a new caller
+    // from building one of those, and `another_pairing` copies all six by hand. One
+    // enum of how two open cells pair (by identity; by identity over sets, in order or
+    // not; by position; by position across a scheme; by name; welded, unbounded or not)
+    // in place of the six fields makes the others unrepresentable and turns the tests
+    // in `cells` and at the head of `same_inner` into one match. Found by reading; not
+    // run. (t-setops-11)
     strict: bool,
     /// A union is the set of its members ([`one_type`]), its open cells
     /// read through where their forwarding chains end; with `strict`
@@ -987,6 +1011,19 @@ impl<'a> Identity<'a> {
     }
 
     fn cells(&mut self, a: &TVar, b: &TVar) -> bool {
+        // CR claude for claude: [bug/medium] A cell that stands beside itself inside a
+        // function type records no pair: this return, and the same-node shortcut at the
+        // top of `Identity::same`, answer true before `pairs` is read, so the cell is
+        // then free to pair with another one. `union_identical` finds `fn(x: 'a) -> 'a`
+        // identical to `fn(x: 'a) -> 'b`, which its own doc says it is not;
+        // `RefHist::shape_id` gives the two one id, and a walk keyed by `ref_id` reads
+        // one for the other (the check accepts `q(v)` over `(f, g, n)` with `g: fn(x:
+        // 'a) -> 'b` typed as `f: fn(x: 'a) -> 'a`). While `pairs` is `Some`, record
+        // the pair (x, x) here through the lookup the distinct cells take, and skip the
+        // shortcut in `same` for a `Type::TVar`. probe:
+        // design/review-2026-11-16/repro/t-setops-identity-shared-cell.gx and
+        // `a_cell_met_beside_itself_pairs_with_no_other` in
+        // t-setops-identity-and-alternatives.rs (t-setops-02)
         if a.same_cell(b) {
             return true;
         }
@@ -1070,6 +1107,18 @@ impl<'a> Identity<'a> {
                 (None, Some(y)) => matches!(y, Type::TVar(_)) && self.same(t0, &y),
                 (Some(x), None) => matches!(x, Type::TVar(_)) && self.same(&x, t1),
             },
+            // CR claude for claude: [bug/low] Both alternatives call `self.same(&x,
+            // t)`: with the bound cell on the right the two sides are swapped, so
+            // inside a function type the cells beneath are recorded as (right, left),
+            // and the consistency check in `cells`, which reads each pair as (left,
+            // right), misses a left cell paired twice. `union_identical` finds `fn(x:
+            // Array<'a>, y: 'a)` identical to `fn(x: 'c, y: 'e)` with `'c` bound to
+            // `Array<'b>`, and not the other way round, nor with `Array<'b>` written in
+            // place of `'c`. Split the arm: `(t, Type::TVar(a)) =>
+            // a.binding().is_some_and(|x| self.same(t, &x))`. probe:
+            // `a_bound_cell_on_the_right_keeps_the_sides` in
+            // design/review-2026-11-16/repro/t-setops-identity-and-alternatives.rs
+            // (t-setops-04)
             (Type::TVar(a), t) | (t, Type::TVar(a)) => {
                 a.binding().is_some_and(|x| self.same(&x, t))
             }
@@ -1166,6 +1215,16 @@ fn same_ref(env: &Env, r0: &TypeRef, r1: &TypeRef) -> bool {
 /// order.
 fn part_count(t: &Type) -> usize {
     match t {
+        // CR claude for claude: [bug/low] An Error's payload is no part here (nor in
+        // `part`), though `union_inner` joins two Errors payload by payload: function
+        // alternatives inside one do not meet. `select b { true => error(|x| x), false
+        // => error(|x: i64| x + 1) }` leaves `Error<[fn(x: i64) -> i64, fn(x: 'a) ->
+        // 'a]>`, and a call through its payload is refused ("a call takes one function
+        // type"), where the same lambdas in a tuple, an array, a map or a variant meet
+        // and the call checks. Count `Type::Error(_)` as one part and return its
+        // payload from `part`. probe:
+        // design/review-2026-11-16/repro/t-setops-error-payload-fns-not-met.gx
+        // (t-setops-05)
         Type::Array(_) | Type::List(_) | Type::ByRef(..) => 1,
         Type::Map(_) => 2,
         Type::Tuple(ts) | Type::Variant(_, ts, _) => ts.len(),
@@ -1511,6 +1570,20 @@ impl Type {
         t1: &TypeRef,
         t: &Self,
     ) -> Result<Self> {
+        // CR claude for claude: [bug/low] `kept` holds no alternatives, so the rule
+        // `union_tagged` states (members of one alternative collapse only where
+        // identical as they stand, `Alternatives::apart`) is not applied to the
+        // parameters of two applications: `union_exact_of_members` of `R<fn(q: 'c) ->
+        // i64>` and `R<fn(q: 'd) -> i64>` is the one member `R<fn(q: 'c) -> i64>`,
+        // where the bare functions stay two. The variant arm of `union_inner` counts
+        // its differing positions with a `Welds::new()` too, so `` `P(fn(q: 'c) -> i64,
+        // i64) `` with `` `P(fn(q: 'd) -> i64, string) `` is one variant with two
+        // positions unioned at once, which its own comment says invents pairs. Give
+        // both the alternatives of `welds`: ask `welds.alts.apart` beside each
+        // `union_collapses`, as `union_collapses` itself does. probe:
+        // `members_of_one_alternative_collapse_only_as_they_stand` in
+        // design/review-2026-11-16/repro/t-setops-identity-and-alternatives.rs
+        // (t-setops-09)
         let mut kept = Welds::new();
         let mut differ = t0
             .params
@@ -2147,6 +2220,15 @@ impl Type {
             hist.holds(over_cut);
             return Ok(answer);
         }
+        // CR claude for claude: [structure/low] The walk of a pair is written twice,
+        // here and in the `Type::Ref` arm of `diff_inner`: both save `hist.cut` and
+        // `hist.reached`, run the walk, fold them back and keep a `Done` where `cut >=
+        // depth`, and both replay a kept `Done` with the same lines (`reached.union`,
+        // `holds(over_cut)`, the answer). A change to what a kept difference carries,
+        // or to when one may be kept, has to be made in both. Make them two methods of
+        // `DiffHist`: `replay(&Done) -> Type`, and one that runs a closure between the
+        // save and the fold and returns the walk's cut and what it reached. Found by
+        // reading; not run. (t-setops-10)
         let depth = hist.hist.len() + 1;
         let outer_cut = mem::replace(&mut hist.cut, usize::MAX);
         let outer_reached = mem::take(&mut hist.reached);
@@ -2322,6 +2404,17 @@ impl Type {
                     Ok(self.diff_one_part(env, hist, t)?.unwrap_or_else(|| self.clone()))
                 }
             }
+            // CR claude for claude: [bug/low] A map loses only an identical map, where
+            // an array, a list and an Error lose themselves to a test whose element
+            // type covers theirs. `Map<Any, Any> as m` over `[Map<string, i64>, null]`
+            // leaves the map reaching the arms after it, so `Map<Any, Any> as m => ..,
+            // null as _ => .., _ => ..` is accepted with a dead third arm; the same
+            // select over `[Array<i64>, null]` with `Array<Any>` is refused. Subtract
+            // the map where the key's and the value's differences are both empty, as
+            // the `(Type::List(t0), Type::List(t1)) | (Type::Array(t0),
+            // Type::Array(t1))` arm does for its element. probe:
+            // design/review-2026-11-16/repro/t-setops-diff-wider-test-not-subtracted.gx
+            // (t-setops-07)
             (Type::Map { .. }, Type::Map { .. }) => {
                 if same_type(self, t) {
                     Ok(Type::Primitive(BitFlags::empty()))
@@ -2363,6 +2456,16 @@ impl Type {
                     (Some(t0), Some(t1)) => t0.diff_int(env, hist, &t1)?,
                 })
             }
+            // CR claude for claude: [bug/low] This arm, and the cell-against-cell arm
+            // above it, stand above `(_, Type::Any)`, so an open cell less `Any` is the
+            // cell. `Array<'a>` less `Array<Any>` is then not covered (the element's
+            // difference is `'a`, not empty), and `Array<Any> as a => .., null as _ =>
+            // .., _ => ..` over `[Array<'a>, null]` is accepted with a dead third arm,
+            // where `Array<i64>` in place of `Array<'a>` refuses it. Every value is a
+            // value of `Any`: move `(_, Type::Any)` above the `Type::TVar` arms, or
+            // answer empty in them where `is_any(t)`. probe:
+            // design/review-2026-11-16/repro/t-setops-diff-wider-test-not-subtracted.gx
+            // (t-setops-08)
             (Type::TVar(tv), t) => Ok(match tv.binding() {
                 Some(tv) => tv.diff_int(env, hist, t)?,
                 None => self.clone(),
@@ -2504,6 +2607,22 @@ impl Type {
         reaching: &Self,
     ) -> Result<Self> {
         ensure_sufficient(|| {
+            // CR claude for claude: [bug/high] This memo answers a pair by its
+            // `RefHist::ref_id`s, which key two function types alike wherever
+            // `union_identical_in` pairs their cells (`fn(x: 'a) -> 'a` and `fn(x: 'b)
+            // -> 'b`), so the second function part of a tuple is answered with the
+            // first's type. Over `(f, g, n)` with `f: fn(x: 'a) -> 'a, g: fn(x: 'b) ->
+            // 'b`, the test `(Any, Any, i64) as (_, q, _)` types `q` as `f`'s type: the
+            // check accepts `q(x)` with `x: 'a` and the run refuses the bind; with live
+            // cells the narrowing welds the two functions, and a later `b("s")` is
+            // refused. `DiffHist::done` leaves such a minuend out (`keyed_loosely`): do
+            // the same here for a side holding an open cell in a function type
+            // (`cell_beneath`), put the memo under `memo_on()` and add function parts
+            // to the `memos_agree` pools. probe:
+            // design/review-2026-11-16/repro/t-setops-matching-memo-fn-renaming.gx,
+            // t-setops-matching-memo-welds-fns.gx, and
+            // `matching_type_types_each_function_part_as_its_own` in
+            // t-setops-identity-and-alternatives.rs (t-setops-01)
             let key = (walk.memo.ref_id(self, env), walk.memo.ref_id(reaching, env));
             if let Some(m) = walk.memo.get(&key) {
                 return Ok(m.answer.clone());
@@ -2672,6 +2791,17 @@ impl Type {
         if p0.len() != p1.len() {
             return Ok(None);
         }
+        // CR claude for claude: [bug/low] `union_parts` reads a position through bound
+        // cells but not through a typedef name, so a product whose one differing
+        // position is a named union loses nothing. Over `(O, i64)` with `type O = [i64,
+        // null]`, the arms `(null, _)` and `(i64, i64) as (a, b)` leave `(O, i64)`
+        // reaching a third arm `_`, which is accepted, where the same select over
+        // `([i64, null], i64)` refuses it as unreachable (`` `K(O) `` against ``
+        // `K([i64, null]) `` alike). `held_by_shape` reads a minuend's name through:
+        // read it here too (`lookup_ref_with(env, false)` before `parts_of`), so
+        // `whole` is the named union's members. probe:
+        // design/review-2026-11-16/repro/t-setops-diff-one-part-named-union.gx
+        // (t-setops-06)
         if !p0.iter().any(|a| union_parts(a).is_some()) {
             return Ok(None);
         }
@@ -2687,6 +2817,20 @@ impl Type {
         let Some(i) = apart else { return Ok(None) };
         let Some(whole) = union_parts(p0[i]) else { return Ok(None) };
         let d = p0[i].diff_int(env, hist, p1[i])?;
+        // CR claude for claude: [bug/medium] Where the difference at the one part is a
+        // lone open cell (['b, null] less null is the declared 'b), parts_of returns
+        // None, since deref_cloned is None for an open cell. diff_one_part then gives
+        // up, and what reaches the next arm keeps the whole part, null included. The
+        // next arm's bind holds null: over `` `B(['b, null]) `` with 'b: [i64, string],
+        // `` `B(null) => 1, `B(v) => select v { i64 as n => n, string as s =>
+        // str::len(s) } `` is refused for a missing null, and `` `B(v) => v `` returns
+        // [i64, null, 'b]. The concrete `` `B([i64, string, null]) `` and `` `B(['b,
+        // i64, null]) `` both check. Read a lone open cell as one member here. Then
+        // update lang::select::distribution_variable_beside_null_is_its_bound and
+        // distribution_variable_beside_a_variant_is_its_bound, which pin residuals
+        // naming the covered null and `C(bool), and pin the bind. probe:
+        // design/review-2026-11-16/repro/tests-select-c-null-arm-leaves-null-beside-a-variable.sh
+        // (tests-select-c-01)
         let Some((flags, rest)) = parts_of(&d) else { return Ok(None) };
         if !whole.0.contains(flags) || !each_member_of(&rest, &whole.1) {
             return Ok(None);
@@ -2824,6 +2968,19 @@ impl Held<'_> {
         let env = self.env;
         let product =
             |t: &Type| matches!(t, Type::Tuple(_) | Type::Struct(_) | Type::Variant(..));
+        // CR claude for claude: [perf/medium] `Held::of` keeps no answer for a pair of
+        // shared nodes, so where `t1` holds `t0` by shape without being identical to it
+        // (the `union_identical` test above fails) a tuple, struct or variant whose
+        // positions share their parts is walked once per path: `Type::diff` of two
+        // tuple types nested d deep costs 2^d. A two-arm select over `select c { true
+        // => (a26, 0), false => (b26, null) }`, each of `a26` and `b26` built by 26
+        // lets of `(x, x)`, takes 22 s to check where the lets alone take 0.1 s, and
+        // the time doubles per level. Every other walk of this file takes a DAG once
+        // per pair of nodes (`NodePairs`, `DiffHist::parts`): keep here the pairs of
+        // shared nodes found held whose walk read no name of `t1` (the answer of the
+        // others depends on `read`). probe:
+        // design/review-2026-11-16/repro/t-setops-held-by-shape-dag.gx,
+        // t-setops-held-by-shape-dag.rs (t-setops-03)
         ensure_sufficient(|| match (t0.deref_cloned(), t1.deref_cloned()) {
             (Some(t0 @ Type::Ref(_)), Some(t1)) => {
                 if !product(&t1) && identical_normal(&t0, &t1) {

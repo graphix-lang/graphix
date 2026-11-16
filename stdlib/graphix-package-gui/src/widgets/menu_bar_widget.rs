@@ -47,6 +47,16 @@ fn owned_by_text(key: &keyboard::Key, modifiers: keyboard::Modifiers) -> bool {
     modifiers.command()
         && matches!(
             (chars.next(), chars.next()),
+            // CR claude for claude: [bug/medium] 'z' is claimed for a focused text
+            // widget, but iced 0.14's TextInput and TextEditor bind only c, x, v and a
+            // under the command modifier and have no undo. So while any text widget has
+            // the focus, a menu action with the shortcut Ctrl+Z (or Ctrl+Shift+Z, which
+            // lowercases to 'z') never fires, and nothing else takes the key: an app's
+            // Undo and Redo are dead exactly while the user types. Fix: own 'c' | 'v' |
+            // 'x' | 'a' only, drop undo from the doc comment above and Z from
+            // book/src/ui/gui/menu.md, and add a Ctrl+Z item that must fire while
+            // focused to a_focused_text_widget_owns_its_editing_keys. Found by reading;
+            // not run. (gui-widgets-b-02)
             (Some('c' | 'v' | 'x' | 'z' | 'a'), None)
         )
 }
@@ -166,6 +176,15 @@ impl overlay::Overlay<Message, GraphixTheme, Renderer> for MenuOverlay<'_, '_> {
         }
     }
 
+    // CR claude for claude: [structure/low] This draw and OwnedMenuBar's repeat three
+    // constructions: four default-border renderer::Quad literals, three nine-field
+    // iced_core::Text literals that differ only in content, bounds and horizontal
+    // alignment, and five Color::from_rgba(c.r, c.g, c.b, a) copies of a palette
+    // colour. A change to the menu text style must be made three times. Fix: `Color {
+    // a: .., ..c }` for the alpha copies, and two private fns in this file, one
+    // building the default quad from its bounds and one building the label Text from
+    // content, bounds, size and alignment. Found by reading; not run.
+    // (gui-widgets-b-05)
     fn draw(
         &self,
         renderer: &mut Renderer,
@@ -593,6 +612,14 @@ impl Widget<Message, GraphixTheme, Renderer> for OwnedMenuBar<'_> {
         translation: Vector,
     ) -> Option<overlay::Element<'b, Message, GraphixTheme, Renderer>> {
         let state = tree.state.downcast_mut::<State>();
+        // CR claude for claude: [bug/low] When the menus property shrinks below the
+        // open index, `descs.get(idx)?` returns no overlay but leaves open_menu and
+        // menu_visible set. When the menus come back, the dropdown is drawn open again
+        // with no click, and stays until the next press. The context menu closes when
+        // its items go away (OwnedContextMenu::overlay clears `state.open`, pinned by
+        // a_context_menu_without_items_closes); the bar needs the same: clear open_menu
+        // and menu_visible when the index is out of range, and add the matching pin.
+        // Found by reading; not run. (gui-widgets-b-03)
         let idx = state.open_menu?;
         let menu = self.descs.get(idx)?;
         let label = layout.children().nth(idx)?.bounds();

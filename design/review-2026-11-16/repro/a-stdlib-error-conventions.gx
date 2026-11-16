@@ -1,0 +1,28 @@
+// What a bad argument gets, function by function
+//
+// command:
+//   graphix --no-cache design/review-2026-11-16/repro/a-stdlib-error-conventions.gx
+// observed (one line each, in this order), five conventions:
+//   timer:      error:`TimerError("timer(per, rep): expected duration, bool or number >= 0")
+//   after_idle: no line; stderr has "after_idle: invalid timeout f64:-1.: can't cast"
+//   sub_dur:    0.s                                  (saturates)
+//   index:      error:`ArrayIndexError("array index out of bounds")
+//   nth:        null
+//   divide:     no line; stderr has `divide: "arithmetic error"`
+//   window:     []                                   (a negative #n is taken as 0)
+//   sqrt:       NaN
+//   read_all:   `IOError("could not read /nonexistent/x: No such file or directory (os error 2)")
+//               (the only way to tell a missing file from a denied one is the text)
+let show = |label: string, v: Any| println("[label]: [v]");
+show("timer", sys::time::timer(-1.0, false));
+show("after_idle", sys::time::after_idle(-1.0, 5));
+show("sub_dur", sys::time::sub_dur(duration:1.s, duration:5.s));
+let a = [1, 2];
+show("index", a[5]);
+show("nth", list::nth([<1, 2>], 5));
+show("divide", divide(1, 0));
+show("window", array::window(#n: -1, [1, 2, 3], 4));
+show("sqrt", math::sqrt(-1.0));
+let e = sys::fs::read_all("/nonexistent/x");
+show("read_all", select e { error as er => "[er.0]", s => s });
+sys::exit(sys::time::after_idle(duration:500.ms, e) ~ 0)

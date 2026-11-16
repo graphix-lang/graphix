@@ -1,0 +1,17 @@
+// A default holding a `let` over never() that a generic function's body writes: the
+// definition's check types it as bottom, the omitting call's instance as the written type
+//
+// command:  graphix -n --check x-check-build-default-never-let.gx            (exit 0)
+//           GRAPHIX_ELAB_AUDIT=1 graphix -n --no-cache --expand x-check-build-default-never-let.gx  (exit 1)
+// expected: both accept: the same block as a function's body builds
+//           (`let w = |y: i64| { let last = never(); let note = |z| { last <- z; z }; (note(3), last) }; w(1)`)
+// observed: --check passes; the build refuses, with no ELAB-AUDIT line:
+//   in the instance of w(1) at this call site
+//   type mismatch (i64, _) does not contain (i64, i64)
+// With `note` annotated (`|z: i64|`) or the write made directly (`last <- 3`) the build passes.
+let w = |#d = {
+  let last = never();
+  let note = |z| { last <- z; z };
+  (note(3), last)
+}, x: i64| x;
+w(1)

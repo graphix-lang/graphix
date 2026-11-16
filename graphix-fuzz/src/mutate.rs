@@ -90,6 +90,13 @@ pub(crate) fn top_statements<'a>(
 }
 
 /// Total number of nodes (preorder), so a target index can be chosen.
+// CR claude for claude: [structure/low] count recomputes a subtree's size, which
+// `sizes` gives for every node in one walk. statements_at calls it once per block
+// statement, re-walking each statement (and each nested block's statements again:
+// O(n·depth)), and node_count, its only other caller, is used by one test. Fix: delete
+// count and node_count, have `statements` compute `sizes(e)` once and step `idx +=
+// sizes[idx]`, and have the test use `preorder(&e).len()`. Found by reading; not run.
+// (fuzz-mutate-08)
 fn count(e: &Expr) -> usize {
     let mut n = 1;
     e.for_each_child(&mut |c| n += count(c));
@@ -263,6 +270,16 @@ fn try_strip_annotation(e: &Expr, rng: &mut Rng) -> Option<ExprKind> {
 
 /// Apply one random mutation to `prog`, drawing transplant donors from
 /// `donor_nodes` (a flat preorder pool of subtrees from the seed corpus).
+// CR claude for claude: [test-gap/medium] No mutation moves a program into another
+// position, and `run!` compares the check with the build for a fixture only as written,
+// so 'what the check accepts, the build builds' is unpinned where an instance is typed
+// from a definition's table. Wrapping each of the 5,988 raw-string fixtures of
+// stdlib/graphix-tests as `|#d = { .. }, x: i64| x` called without `#d` gives 17
+// programs the check accepts and the build refuses (attribute assertions aside), as a
+// function's body 4; the fixtures as written give none. Add the wrappers as mutations
+// with that rule (labeled default, function body, nested lambda), or as an extra pass
+// of `run!`'s interp mode. probe:
+// design/review-2026-11-16/repro/x-check-build-wrapper-sweep.py (x-check-build-07)
 pub fn mutate_once(prog: &Expr, donor_nodes: &[Expr], rng: &mut Rng) -> Expr {
     let nodes = preorder(prog);
     let total = nodes.len();

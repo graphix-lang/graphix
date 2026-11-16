@@ -25,6 +25,14 @@ use triomphe::Arc;
 /// Build a tokio runtime, stand up a graphix runtime with the
 /// in-process netidx and the full stdlib loaded, and run the LSP
 /// server until it shuts down.
+// CR claude for claude: [risk/low] Nothing installs a logger on the `graphix lsp` path
+// (main dispatches here before the program path's flexi_logger setup), so every log::*
+// call in graphix-lsp and this backend is dropped. That includes the malformed-frame
+// warning, `guarded`'s "panicked", "unhandled request" and "no URI for ..": an editor's
+// server log is empty whatever RUST_LOG says, and --log-dir is ignored. Start a stderr
+// logger from RUST_LOG (default warn) here, honouring --log-dir. The doc comment above
+// also promises an in-process netidx that run never builds. probe:
+// design/review-2026-11-16/repro/x-lsp-probe-lsp-logs-nothing.sh (x-lsp-probe-07)
 pub fn run() -> Result<()> {
     let (connection, io_threads) = graphix_lsp::stdio::stdio()?;
     serve(connection)?;

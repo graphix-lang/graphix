@@ -1,0 +1,14 @@
+// A sig type whose representation names a type the body declares for itself can never be reloaded, not even from the same text
+// run: timeout -s KILL 30 graphix --no-cache design/review-2026-11-16/repro/x-dyn-modules-sig-type-private-rep-reload.gx
+// expected: the reload at n=3 of the identical source succeeds (st=null), or is refused with a message naming the remedy
+// observed: st=error: T is already defined as Abstract<C>: a value of it may still be held, so its representation cannot change (the new definition is also Abstract<C>); declaring 'type C;' in the sig lifts it
+let clk = sys::time::timer(duration:100.ms, true);
+let n = 0;
+n <- clk ~ n + 1;
+let src = "type C = Abstract<i64>; type T = Abstract<C>; let mk = |x| T(C(x)); let show = |t: T| t.0.0 + 1";
+let st = mod foo dynamic {
+    sig { type T; val mk: fn(x: i64) -> T; val show: fn(t: T) -> i64 };
+    source uniq(n / 3) ~ src
+};
+sys::exit(n ~ select n { 5 => 0, _ => never() });
+println("n=[n] st=[st] show=[foo::show(foo::mk(n))]")

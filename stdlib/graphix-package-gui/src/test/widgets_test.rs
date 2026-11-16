@@ -291,6 +291,15 @@ let items = select n { 1 => [text(&"one")], _ => [text(&"one"), text(&"two")] }"
     .await
 }
 
+// CR claude for claude: [test-gap/low] image_renders, svg_renders, grid_renders,
+// grid_with_params, markdown_renders and markdown_with_params assert nothing. render()
+// runs a frame without presenting it, so an image is never even decoded (and /dev/null
+// decodes to nothing). ImageW::view drawing a Space for every source, ImageHandle::of
+// taking an .svg path as raster, GridW ignoring #columns, or MarkdownW mapping every
+// link to Message::Nop would all pass. Probe pixels from screenshot as canvas_test
+// does: a solid-colour Rgba image and an inline Svg rect at the widget's centre, a
+// two-column grid of coloured containers. Also click a markdown link and assert
+// on_link's Call carries the URL. Found by reading; not run. (gui-widgets-a-04)
 #[tokio::test(flavor = "current_thread")]
 async fn image_renders() -> Result<()> {
     let mut h = harness(r#"image(&"/dev/null")"#).await?;
@@ -568,6 +577,14 @@ async fn a_refused_update_does_not_drop_the_rest_of_the_batch() -> Result<()> {
 /// A widget tree as deep as the program builds it compiles, and every
 /// walk of it runs on a stack of its own, even from a thread with little
 /// of one (x-stack-02).
+// CR claude for claude: [style/low] The docs of a_deep_widget_tree_compiles_and_walks
+// and a_deep_widget_tree_draws end with "(x-stack-02)", and interaction_test's
+// a_two_hop_echo_keeps_the_edit ends with "(gui-widgets-b-03)". These name past bugs,
+// which the comment rule forbids. The ids also identify nothing: x-stack-02 is a
+// GxAbstract recursion in REVIEW-2026-10-05, a quadratic occurs check in 10-19 and this
+// GUI depth crash in 10-26, and gui-widgets-b-03 names four different findings across
+// the four reviews. Delete the parentheticals; the commit messages already carry the
+// ids. Found by reading; not run. (tests-gui-b-01)
 #[tokio::test(flavor = "current_thread")]
 async fn a_deep_widget_tree_compiles_and_walks() -> Result<()> {
     use crate::widgets::{Message, MessageShell};

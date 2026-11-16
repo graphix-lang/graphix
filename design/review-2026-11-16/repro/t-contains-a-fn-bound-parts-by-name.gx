@@ -1,0 +1,24 @@
+// A function bound that is not exact (its result is a union) passes its
+// parts to a callback only when the callback's parameters have the bound's
+// names and count: `|y| e` against `fn(x: i64) -> [i64, null]` keeps its
+// result free, the check accepts, and the build refuses.
+//
+// command:  /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache --check t-contains-a-fn-bound-parts-by-name.gx
+//           /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache t-contains-a-fn-bound-parts-by-name.gx
+//           /home/eric/tmp/review-2026-11-16/bin/graphix-fuzz check t-contains-a-fn-bound-parts-by-name.gx
+// expected: the check refuses `e <- "s"`, as it does with the callback
+//           written `|x| e` ("e is '_N: unbound within [i64, null] and cannot
+//           hold string") and with the exact bound `fn(x: i64) -> i64`.
+// observed: --check exits 0; the run fails with "an instance at
+//           fn(g: fn(y: _) -> string) -> i64 of a definition typed
+//           fn<'a: fn(x: i64) -> [i64, null]>(..)"; graphix-fuzz prints
+//           "DIVERGENCE — the check accepted what the build refused".
+// The same holds for a callback with a labeled default the bound lacks:
+//   let mk = |z| |#d = 0, x| z; let h = mk(e); .. f(h)
+// and under a struct or a union in the bound
+// (`'a: {k: fn(x: i64) -> [i64, null]}`, `'a: [fn(x: i64) -> [i64, null], null]`).
+let e = never();
+let f = 'a: fn(x: i64) -> [i64, null] |g: 'a| g(1)$ + 1;
+let r = f(|y| e);
+e <- "s";
+r

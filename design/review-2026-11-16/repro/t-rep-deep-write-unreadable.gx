@@ -1,0 +1,25 @@
+// Title: pack::write_bytes and db::insert write a value no reader can read
+// back: a 1100-deep user-defined recursive variant passes the writer
+// (abstract_value::to_marked_data counts only abstract nesting) but the
+// reader's cast refuses data nested past typ::cast::MAX_DATA_DEPTH (1024).
+// Command: timeout -s KILL 120 graphix --no-cache t-rep-deep-write-unreadable.gx
+// Expected: either the write is refused, or the read gives the value back
+//   ("p: ok" then "pr: ok").
+// Observed:
+//   p: ok
+//   pr: err error:`InvalidCast("can't cast 76 to i64: the data is nested too deep")
+// The same holds for db: db::insert(tree, "k", t) answers ok and every
+// later db::get(tree, "k") answers
+//   error:`DbErr("can't cast 76 to i64: the data is nested too deep").
+type L = [`Nil, `Cons(i64, L)];
+let n = 1100;
+let init: L = `Nil;
+let t: L = array::fold(array::init(n, |i| i), init, |acc, i| `Cons(i, acc));
+let p = pack::write_bytes(t);
+let ps = select p { error as e => "err [e]", _ => "ok" };
+let pr: Result<L, [`PackErr(string), `InvalidCast(string)]> = pack::read(p$);
+let prs = select pr { error as e => "err [e]", _ => "ok" };
+println("p: [ps]");
+println("pr: [prs]");
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+0

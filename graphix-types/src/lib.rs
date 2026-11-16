@@ -406,6 +406,10 @@ pub fn is_fn_block(part: &str) -> bool {
 
 /// True iff `part` is a `do` block's scope component: a loaded
 /// script's top level is one.
+// CR claude for claude: [dead/low] `is_do_block` has no caller in this repo or in
+// ../netidx; graphix-compiler only re-exports it. Delete it, and its entry in
+// graphix-compiler's `pub use graphix_types::{..}` list. Found by grep; not run.
+// (t-misc-05)
 pub fn is_do_block(part: &str) -> bool {
     is_block_kind(part, "do")
 }

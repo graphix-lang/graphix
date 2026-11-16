@@ -1,0 +1,26 @@
+// The check accepts a `OneNumber` variable instantiated at [i64, f64]; the
+// build refuses the instance.
+//
+// Run (check):  /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache --check \
+//                 design/review-2026-11-16/repro/t-tvar-b-onenumber-open-member-decided-later.gx
+// Run (build):  GRAPHIX_ELAB_AUDIT=1 timeout -s KILL 30 \
+//                 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache \
+//                 design/review-2026-11-16/repro/t-tvar-b-onenumber-open-member-decided-later.gx
+//
+// Expected: the check refuses, as it refuses `let a: [i64, f64] = 1; f(a)`
+//   ("'a: unbound within [null, Number] & OneNumber does not contain
+//   [i64, f64]"): `e <- 1.5` makes f's `'a` the union [i64, f64].
+// Observed: --check exits 0. The run prints
+//     ELAB-AUDIT instance-signature .. an instance at fn(x: [i64, f64]) ->
+//     [i64, f64] of a definition typed fn<'a: [null, Number] + OneNumber>(..)
+//   and fails with that message "in the instance of f(u) at this call site".
+//   `graphix-fuzz check` on this program less the `sys::exit` line prints
+//   "DIVERGENCE — the check accepted what the build refused".
+let f = 'a: [Number, null] + OneNumber |x: 'a| x;
+let e = never();
+let i: i64 = 1;
+let u = select 0 { 0 => i, _ => e };
+let r = f(u);
+e <- 1.5;
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+r

@@ -1,5 +1,13 @@
 # Data: reads, writes, casts and printing
 
+<!-- CR claude for claude: [doc-drift/medium] 'a read into neither, `Array<Any>`, gives
+`f64`' is wrong for integral numbers. The JSON reader reads `1` as i64 whatever the
+target (u64 past i64, f64 past that); only a number with a fraction or exponent reads as
+f64 where the target holds no integer or decimal, since the exact flag reaches only
+those. A reader who follows this text and selects `f64 as f` over the elements drops
+every integer. Say instead: read into a target holding neither, an integral number is
+i64 (u64 past it) and any other number is f64. probe:
+design/review-2026-11-16/repro/lang-skill-json-any-integers.gx (lang-skill-03) -->
 A type-directed read (`json::read`,
 `str::parse`) takes its target from the annotation it reaches, and the
 target must settle concrete (its `'b: Concrete` bound). `str::parse` reads

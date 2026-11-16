@@ -92,6 +92,13 @@ fn main() -> Result<ExitCode> {
         .iter()
         .map(|b| (last.get(&b.label).copied(), b.job(bin_args, &library_path)))
         .collect();
+    // CR claude for claude: [bug/low] The doc job receives every cargo arg, so `cargo
+    // xtest --test shared`, `--lib`, `--bins` or `-p` of a package without a library
+    // makes cargo refuse --doc ("can't mix --doc with other target selecting options" /
+    // "no library targets found in package"). xtest then reports a failed `doc tests`
+    // binary and exits 1 though every selected test passed. Fix: add the doc job only
+    // when cargo_args hold no target selector and the --no-run build produced a lib
+    // artifact. Found by reading; not run. (ide-tooling-04)
     let mut doc = Command::new(&cargo);
     doc.arg("test").arg("--doc").args(cargo_args).arg("--").args(bin_args);
     jobs.push((

@@ -18,6 +18,16 @@ const MODES: [Mode; 5] =
 
 /// `code`'s updates in `mode`, each update's data form printed without
 /// its integer type prefixes, and the regions the build fused.
+// CR claude for claude: [test-gap/low] The setup's set_prune_mode(mode.prune())
+// overrides the harness's Mode::fixture_prune (Audit in Interp and JitPar) with On, so
+// no wake fixture runs under PruneMode::Audit. These are the fixtures where MOVED marks
+// meet pruning, and they measure no walks. The function also drops Delta.out, so
+// an_io_call_passes_its_moved_argument_on's claim that 'the event the arm slept through
+// is not printed' is asserted nowhere: a PrintCall acting on a moved tag would pass.
+// Delete the set_prune_mode line (fixture_runtime already sets fixture_prune) and
+// return d.out, asserting it where a comment makes a claim about prints. For the dbg
+// program, the CLI prints 1, 2, 3, 4, 5, 6 and nothing at the wake. Found by reading;
+// not run. (tests-lang-rest-b-03)
 async fn updates(code: &str, mode: Mode) -> Result<(Vec<String>, usize)> {
     let setup = |ctx: &mut TestState| {
         ctx.control.set_prune_mode(mode.prune());
@@ -751,6 +761,14 @@ async fn a_reader_waking_in_the_same_cycle_reads_it_standing() -> Result<()> {
 // A kernel inside the woken arm ORs the bit into its result as it does
 // bottomness, so the formal it feeds gives the reader outside the new
 // value, with no fire.
+// CR claude for claude: [structure/low] This fixture and the five below it (kernel
+// select, kernel loop, kernel call, collection, stateless builtin) are in_arm's program
+// with one expression spliced in, plus a hand-written ten-row table that formal()
+// computes: about 200 lines. Each is one call, e.g. `in_arm_agrees("n * 2 + 1",
+// &formal(|x| 2 * x + 1))`, which also runs the node-walk and #[native] forms together
+// (the collection fixture is the loop's node-walk twin). 13 fixtures in this file also
+// spell out CLOCK's five lines verbatim; write `{CLOCK}`. Found by reading; not run.
+// (tests-lang-rest-b-04)
 #[tokio::test(flavor = "multi_thread")]
 async fn a_kernel_in_the_woken_arm_carries_the_move() -> Result<()> {
     let code = "{

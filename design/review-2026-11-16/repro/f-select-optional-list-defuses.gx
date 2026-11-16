@@ -1,0 +1,12 @@
+// f-select: a list pattern over an option (or result) of a list de-fuses its
+// select, where the array form fuses: emit_structure_cond hands the
+// scrutinee's own type to emit_list_pattern_cond, which wants a List.
+//
+// Command: graphix --no-cache f-select-optional-list-defuses.gx
+// Expected: (3, 3): both selects fuse, as `a` (the array analog) does.
+// Observed: refused, "#[native] expression did not fully fuse to native code:
+//           emit_clif: list pattern over non-list [null, List<i64>]".
+let a = |x: [Array<i64>, null]| #[native] select x { [h, ..] => h, _ => 0 };
+let l = |x: [List<i64>, null]| #[native] select x { [<h, ..>] => h, _ => 0 };
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(a([3]), l([<3>]))

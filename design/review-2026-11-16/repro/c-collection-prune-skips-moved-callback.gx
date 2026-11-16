@@ -1,0 +1,23 @@
+// Title: a collection's idle-slot prune skips a slot whose callback moved
+// quietly, so a pruned map keeps the old callback's results forever.
+// Command: timeout -s KILL 180 graphix-fuzz check c-collection-prune-skips-moved-callback.gx
+//   (or: GRAPHIX_PRUNE=on vs GRAPHIX_PRUNE=off graphix --no-cache --no-fusion <file>)
+// Expected (unpruned, and by design/walk_pruning.md pruning changes nothing):
+//   from n=3 on, m = [100, 200, 300] (cb moved to f2 at the arm's wake; cb(5) = 500)
+// Observed (pruned, the default): m stays [2, 3, 4] (f1's results) while cb(5) = 500;
+//   graphix-fuzz: "DIVERGENCE — walk pruning bug (pruned node-walk != unpruned node-walk)";
+//   GRAPHIX_PRUNE=audit panics "a boundary nothing marked changed in a cycle ...
+//   `("nop")(collection_element)`".
+let n = 0;
+n <- select n { k if k < 8 => k + 1, _ => never() };
+let sel = uniq(select n { 0 => 0, 1 => 1, 2 => 1, _ => 0 });
+let k = uniq(select n < 2 { true => 0, false => 1 });
+let f1 = |x: i64| x + 1;
+let f2 = |x: i64| x * 100;
+let r = select sel { 0 => { let w = select k { 0 => f1, _ => f2 }; &w }, _ => { let w = f1; &w } };
+let h = once(r);
+let cb = *h;
+let xs = [1, 2, 3];
+let m = array::map(xs, cb);
+let d = cb(5);
+(n ~ (n, m, d), count(m))

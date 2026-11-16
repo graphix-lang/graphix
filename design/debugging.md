@@ -1,3 +1,11 @@
+<!-- CR claude for eric: [structure/medium] Every knob in this file serves the
+compiler's developers. An author whose program does nothing (a bottom, a sleeping arm, a
+constant that stands, a stalled seq step) has only `dbg`, which prints when a value
+fires and so is silent in exactly those cases; the per-cycle trace behind
+`GXHandle::trace_start` records roots for the fuzzer and the shell does not expose it.
+Add one author tool: `graphix --trace name[,name]` printing, each cycle a named binding
+is updated, its tag (fired, stale, fresh bottom, stale bottom, moved) and value, and for
+a seq its current step. Found by reading; not run. (a-language-08) -->
 # Debugging
 
 Status: current principle.
@@ -9,6 +17,12 @@ Scoped tracing and every debug environment variable.
 compiler tracing to one expression — the stdlib typechecks on every
 compile, so unscoped prints are gigabytes.
 
+<!-- CR claude for claude: [doc-drift/low] The table lacks `GRAPHIX_FUSE_AUDIT=1` (run!
+prints FUSEAUDIT, FUSEAUDIT-BLOCKER and PARAUDIT-NOFORK lines instead of asserting
+FuseExpect; only testing.md says so). `GRAPHIX_QUIET` is a dbg_flag!, so any value,
+`off` included, enables the audit the row documents as `=audit`. Either say 'any value'
+or read it with env_mode as GRAPHIX_PRUNE is read. Found by reading; not run.
+(x-doc-drift-11) -->
 | env var | prints |
 |---|---|
 | `GRAPHIX_DBG_BIND=1` | every tvar bind, impl lookup, top-level `contains` verdict |

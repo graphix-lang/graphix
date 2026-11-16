@@ -24,6 +24,14 @@ let form = |
   focus <- fields ~ 0;
   let edit = |e: input_handler::Event| {
     let i = e ~ focus;
+    // CR claude for claude: [bug/low] vals is in this select's scrutinee. The write
+    // line_edit::handle makes through `&mut vals[i]` therefore re-fires the select a
+    // cycle later with handle's standing `Stop, so form.handle answers twice for every
+    // key that edits. input_handler drops the second answer, but a handler that wraps
+    // form.handle and acts on its answer (counting keys, marking a form dirty) acts
+    // twice. Fix: select on the event, `select e ~ vals[i] { .. }` (checked on a local
+    // copy: one answer per event, submit unchanged). probe:
+    // design/review-2026-11-16/repro/gx-ui-form-handle-answers-twice.gx (gx-ui-05)
     select vals[i] {
       error as _ => `Continue,
       _ => line_edit::handle(&mut vals[i], e)

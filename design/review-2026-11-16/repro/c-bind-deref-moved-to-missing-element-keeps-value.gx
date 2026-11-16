@@ -1,0 +1,28 @@
+// Title: a `let` over `*h` keeps the old element when the place `h` names moves to an element that does not exist
+// Command: timeout -s KILL 5 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache design/review-2026-11-16/repro/c-bind-deref-moved-to-missing-element-keeps-value.gx
+//   (as a block with no exit, `let o = (c, v); array::group(o, |n, _| n == 5)`,
+//   graphix-fuzz check prints AGREE and the trace holds (3, 20) and (4, 20))
+// `r` is `&a[i]`; `h` holds a copy of it. `i` is 0, 1 from c = 1 and 9 (past
+// the end) from c = 3. `v` reads the copy, `w` the reference itself.
+// Expected (place_references.md: "a read of a place that does not exist
+//   bottoms"): `v` and `w` are both bottom from c = 3, so no line is printed
+//   after c = 2:
+//   c=0 v=10 / c=0 w=10 / c=1 v=20 / c=1 w=20 / c=2 v=20 / c=2 w=20
+// Observed: `w` is bottom from c = 3 and `v` keeps 20:
+//   the same lines, then c=3 v=20 / c=4 v=20 / c=5 v=20
+// `Deref::update` returns a bottom that is not fresh when the read through the
+// path fails after a path move (the reference `h` did not fire, the root did
+// not fire), so `Bind::update` publishes nothing and `v` stands at 20.
+let c = array::iter([0, 1, 2, 3, 4, 5]);
+let a = [10, 20, 30];
+let i = 0;
+i <- select c { 0 => 1, 2 => 9, _ => never() };
+let r = &a[i];
+let h = never();
+h <- once(r);
+let v = *h;
+let w = *r;
+println("c=[c] v=[v]");
+println("c=[c] w=[w]");
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+c

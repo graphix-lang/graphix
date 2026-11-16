@@ -1,0 +1,19 @@
+// Title: design/parallel_compile.md still states the pre-D36 rule: a cell
+//        under a typedef's union in an EARLIER parameter "is not decided by
+//        that union alone", citing the deleted pin
+//        lang::functions::instance_lambda_typedef_union_before_its_variable.
+// Command: timeout -s KILL 60 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache --check \
+//          design/review-2026-11-16/repro/x-doc-drift-parallel-compile-order-free-param.gx
+// Expected per the doc: checks (k's 'c is decided by every parameter, i64).
+// Observed: refused, "type mismatch fn(v: 'b: unbound within [i64, null], s: i64)
+//   -> i64 does not contain fn(v: Option<'b ..>, s: 'b ..) -> i64": the union in
+//   the first parameter decides 'c. This is the old pin's program; D36 flipped k's
+//   parameters (pin instance_lambda_typedef_union_parameters) because parameters
+//   are now met in order. The tree is right (D36); the doc is stale.
+type O<'x> = ['x, null];
+let g = 'b: [i64, null] |x: 'b| {
+  let h: fn(v: 'b, w: 'b) -> i64 = |v: O<'a>, w: 'a| 1;
+  let k: fn(v: 'b, s: i64) -> i64 = |v: Option<'c>, s: 'c| 2;
+  h(x, x) + k(x, 1)
+};
+[g(2), g(null)]

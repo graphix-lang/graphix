@@ -1,0 +1,16 @@
+// A wide collection trips the activation budget, and the diagnostic names a recursion.
+//
+// command:
+//   GRAPHIX_ACTIVATION_BUDGET=50000 graphix --no-cache x-engine-collections-activation-budget-wide-map.gx
+//
+// expected: 60000 (there is no recursion here; the same program with the pure
+//   callback `|x| x + 1`, which fuses, prints 60000 under the same budget), or a
+//   diagnostic that says a collection of 60000 slots passed the budget.
+// observed: exit 1,
+//   "Error: a runaway recursion exceeded the runtime's budget (GRAPHIX_STACK_BUDGET
+//    or GRAPHIX_ACTIVATION_BUDGET) and it stopped"
+//   and the log line "activation budget (50000) exceeded by a recursion".
+let a = array::init(60000, |i| i * 3);
+let b = array::map(a, |x| count(x) + 1);
+sys::exit(sys::time::after_idle(duration:500.ms, 0));
+array::len(b)

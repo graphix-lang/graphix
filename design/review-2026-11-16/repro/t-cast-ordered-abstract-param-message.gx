@@ -1,0 +1,18 @@
+// An order over an abstract type whose parameter holds a reference is
+// refused by a message that names a generated variable and no cause.
+//
+// Command:
+//   /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache --check t-cast-ordered-abstract-param-message.gx
+//
+// Expected: a refusal that names the reference, as the same order over a
+// tuple gets: "can't order values of (&i64, i64): it holds the reference
+// &i64, and references have no order (== and != compare them by what they
+// point to)".
+//
+// Observed:
+//   in: Box(&x)
+//   unsatisfiable constraints on '_8192: Ordered
+type Box<'a> = Abstract<'a>;
+let x = 1;
+let b = Box(&x);
+b < b

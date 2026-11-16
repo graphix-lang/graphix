@@ -1,0 +1,20 @@
+// Two abstract values of one static type and one payload compare unequal:
+// regular::key keys a union whose members are one regular tree apart from
+// that tree.
+//
+// command:
+//   timeout -s KILL 30 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache \
+//     design/review-2026-11-16/repro/t-settle-abstract-eq-union-of-one-tree.gx
+// expected: (true, [B([{a: 1}])], 1)
+//   the check takes B<[R, S]> and B<R> for one type (`let b: B<R> = a` and
+//   `b == c` are accepted), and the payloads are equal
+// observed: (false, [B([{a: 1}]), B([{a: 1}])], error:`MapKeyError("map key B(…) not found"))
+type R = {a: i64};
+type S = {a: i64};
+type B<'p> = Abstract<Array<'p>>;
+let a: B<[R, S]> = B([{a: 1}]);
+let b: B<R> = a;
+let c: B<R> = B([{a: 1}]);
+let m = {b => 1};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(b == c, array::dedup([b, c]), m{c})

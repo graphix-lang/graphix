@@ -1,0 +1,14 @@
+// Title: a decided argument wider than the one before it is refused when its
+//        type holds any unbound cell: a declared variable of the enclosing
+//        definition (rigid there), or a lambda literal's open `throws`
+// Command: graphix --no-cache --check x-typecheck-order-widen-refused-beside-open-cell.gx
+// Expected: accepted, as the same body is with `p: string`, and as
+//           `array::push([(n, p)], (1, p))` (the wide one first) is.
+// Observed: type mismatch 'a: (i64, 'p: unbound) does not contain
+//           ([i64, null], 'p: unbound)     (no remedy named)
+// Same refusal, same cause, for a lambda literal:
+//   let f = |x: 'a, y: 'a| -> 'a y; f((1, |q: i64| q), (n, |q: i64| q))
+//   -> 'a: (i64, fn(q: i64) -> i64) does not contain ([i64, null], fn(q: i64) -> i64)
+//   (accepted in the other order, and with `-> i64 throws `E` written on both)
+let g = |p: 'p, n: [i64, null]| array::push([(1, p)], (n, p));
+g("s", null)

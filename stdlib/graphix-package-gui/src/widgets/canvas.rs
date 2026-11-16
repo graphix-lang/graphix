@@ -283,6 +283,16 @@ impl<X: GXExt> GuiWidget<X> for CanvasW<X> {
         if id == self.p.shapes.r.id {
             self.invalid_geometry.set(false);
         }
+        // CR claude for claude: [perf/low] A shapes or background delivery clears the
+        // geometry cache whether or not its value changed, and Props::update has
+        // already re-read every shape. A reference re-delivers an unchanged value
+        // whenever its root is written (see TRef::update_changed), so a canvas over
+        // `&app.shapes` re-parses and re-tessellates all its shapes at every write of
+        // `app`. An invalid shape also logs its FAILURE_TARGET errors again each time,
+        // and the shell shows them. MarkdownW re-parses its content the same way. Skip
+        // a value equal to `r.last`, as Child::update and ImageW do, or have props! use
+        // TRef::update_changed so no widget re-casts or redraws a value it already
+        // holds. Found by reading; not run. (gui-widgets-a-02)
         if id == self.p.shapes.r.id || id == self.p.background.r.id {
             self.cache.clear();
         }

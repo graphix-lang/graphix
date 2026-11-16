@@ -1,0 +1,16 @@
+// A write to a function variable while a seq step's call through it is pending wedges the seq for good (no dynamic module needed)
+// run: timeout -s KILL 30 graphix --no-cache design/review-2026-11-16/repro/x-dyn-modules-seq-wedge-fn-write.gx
+// expected: 'r=.. at n=..' for the trigger at n=1 and for the one at n=8 (with the write moved to n=6, while the seq is idle, it prints r=2 at n=4 and r=1009 at n=11)
+// observed: no 'r=' line at all, with and without --no-fusion
+let clk = sys::time::timer(duration:100.ms, true);
+let n = 0;
+n <- clk ~ n + 1;
+let slow1 = |x: i64| sys::time::timer(duration:350.ms, false) ~ x;
+let slow2 = |x: i64| sys::time::timer(duration:350.ms, false) ~ (x + 1000);
+let fv = slow1;
+fv <- select n { 2 => n ~ slow2, _ => never() };
+let go = select n { 1 => n, 8 => n, _ => never() };
+let r = seq go { let a = fv(go); a + 1 };
+println("n=[n]");
+println("r=[r] at n=[r ~ n]");
+sys::exit(n ~ select n { 15 => 0, _ => never() })

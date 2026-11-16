@@ -273,6 +273,15 @@ pub(super) fn gen_module(
     // vocabulary over `GenType::Abstract`, so T values flow first-class.
     // In the bare-module variant `m<i>::T` is a public newtype.
     let mut stmts = Vec::new();
+    // CR claude for claude: [structure/low] gen_module is about 545 lines, and this
+    // section repeats one registration about fifteen times:
+    // `ctx.push(format!("{mname}::.."), GenType::Fn { labels: Vec::new(), params:
+    // vec![..], ret: Box::new(..) })`, eight lines each, for Tr::tv, via, both, tsum,
+    // vi/va/vaa, teq, teqa, tmap, tshow, csize, mk, un, mkb and unb. A local `reg(ctx,
+    // name, params, ret)` closure makes each one a single line. Moving this
+    // abstract-type section into its own function that takes `&mut gx` and `&mut gxi`
+    // and returns its statements leaves gen_module with the konst, the helper, the
+    // publics and the imports. Found by reading; not run. (fuzz-gen-b-05)
     if chance(rng, cfg.p_abstract) {
         let concrete = match rng.below(3) {
             0 => I64,

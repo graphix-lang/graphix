@@ -299,6 +299,12 @@ writes one for a later cycle with `ctx.rt.set_var`).
 
 ### The store, refs, delete
 
+<!-- CR claude for claude: [doc-drift/low] The `ExecCtx::deliver(id, tv)` this paragraph
+names takes a third argument: `deliver(id, tv, notify: Notify)`. Notify::Walk schedules
+the walk's readers alone, and Notify::Roots also the roots that read the binding. A
+builtin author following this paragraph writes a call that does not compile, and is not
+told which Notify to choose. Give the real signature and say when each Notify applies.
+Found by reading; not run. (book-modules-udt-14) -->
 When a call site is initialized for the first time, or a select arm
 wakes from sleep, it needs the current value of every variable it
 depends on, so the runtime keeps the current value of every variable

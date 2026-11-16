@@ -1,0 +1,13 @@
+// A script reaches any registered builtin by its marker, whatever names its
+// module tree shows: an embedder confines a script only by the packages it
+// registers, and `sys` (time, exit, fs, sockets, processes) is one package.
+//
+// command:  cd /tmp && timeout -s KILL 30 graphix --no-cache a-packages-marker-reaches-any-builtin.gx
+// expected: (for an embedder that wants a script with timers and no file
+//           access) some way to refuse this program
+// observed: prints null, exits 0, and ./a-packages-marker.out holds the text:
+//           no `sys::fs` name is written anywhere in the program
+let w = |#path: string, data: string| -> Result<null, `IOError(string)> 'sys_fs_write_all;
+let r = w(#path: "a-packages-marker.out", "written through a marker");
+sys::exit(r ~ 0);
+r

@@ -1,0 +1,25 @@
+// A banked `~` pays at its arm's wake: a write in a cycle in which neither
+// its trigger nor its argument fires.
+//
+// run: graphix-fuzz run design/review-2026-11-16/repro/x-sleep-wake-banked-sample-pays-at-wake.gx
+//
+// `once(clk)` fires at clk 0 while the arm runs and finds `late` absent: one
+// payment is banked. The arm sleeps from clk 2; `late` arrives at clk 4, while
+// it sleeps; the arm wakes at clk 6. Each tick is (clk, on, w, count(w)).
+//
+// expected (a wake fires nothing; an arm asleep at the arrival is owed
+// nothing): w stays 0 and count(w) stays 1.
+// observed, both engines: 7:(6, true, 0, 1) 8:(7, true, 42, 2): the sample
+// fired in the wake cycle and the connect wrote.
+// `hold(#clock: once(clk), late)` and `queue(#clock: once(clk), late)` in the
+// same place, which bank a clock tick the same way, write nothing.
+{
+  let clk = array::iter([0, 1, 2, 3, 4, 5, 6, 7]);
+  let late = never<i64>();
+  late <- select clk { 3 => 42, _ => never() };
+  let on = true;
+  on <- select clk { 1 => false, 5 => true, _ => never() };
+  let w = 0;
+  let a = select on { true => { w <- once(clk) ~ late; 0 }, false => 1 };
+  clk ~ (clk, on, w, count(w))
+}

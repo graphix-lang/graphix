@@ -308,9 +308,29 @@ impl<'a> TVal<'a> {
         hist: &mut AHashSet<(RefKey, usize)>,
         context: PrintContext,
     ) -> fmt::Result {
+        // CR claude for claude: [perf/low] Printing a value of a recursive union nests
+        // three `fmt_inner` frames a cell (the named type, its union, the variant),
+        // each with the whole match's formatting temporaries: about 14 KB of stack a
+        // level in the debug build. A 200,000-cell cons list that a fused loop builds
+        // in 0.1 s peaks at 2.8 GB when the shell shows it or a string interpolates it,
+        // and about 430,000 cells exhaust 6 GB. Resolve `Ref`, `TVar`, `App` and `Set`
+        // to the structural type in a loop before the match so only the structural arm
+        // recurses, and keep the leaf formatting out of the recursive frame; bound the
+        // slope in a test. probe:
+        // design/review-2026-11-16/repro/x-recursion-deep-value-print-stack.gx
+        // (x-recursion-06)
         crate::stack::ensure_sufficient(|| self.fmt_inner(f, hist, context))
     }
 
+    // CR claude for claude: [structure/medium] This is a second printer for every form
+    // `fmt_naked_capped` prints. Since a tuple, struct, variant and list carry their
+    // kind (`rep.rs`), the static type decides nothing here: nine forms print byte for
+    // byte alike typed and under `Any`, and the two places the walks differ are defects
+    // (an abstract payload's context, a function). The typed walk costs every print a
+    // whole-value `is_a_with` first, then `member_of` at each union, and recurses where
+    // the naked walk is iterative. Print through the naked walk alone, the abstract
+    // payload nested, and delete this, the `is_a` gate and the path set. probe:
+    // design/review-2026-11-16/repro/t-cast-typed-print-equals-naked.gx (t-cast-05)
     fn fmt_inner(
         &self,
         f: &mut fmt::Formatter<'_>,
@@ -358,6 +378,14 @@ impl<'a> TVal<'a> {
                 )
             }
             (Type::Error(_), v) => fmt_value(f, v, context),
+            // CR claude for eric: [bug/low] A function prints here as netidx's Debug
+            // wrapper, `Abstract(|x: i64| x)`, and as `abstract:` under `Any`
+            // (`NakedValue`, in `fmt_naked_capped`): two forms for one value, one of
+            // them the name of a Rust type, and both reach a program's strings through
+            // interpolation. Pick the printed form of a function (the lambda's own
+            // Debug text without the wrapper) and print it from both walks. probe:
+            // design/review-2026-11-16/repro/t-cast-function-prints-two-ways.gx
+            // (t-cast-08)
             (Type::Fn(_), Value::Abstract(v)) => write!(f, "{v:?}"),
             (Type::Fn(_), v) => fmt_value(f, v, context),
             // `hist` is the path: an application met again on the same

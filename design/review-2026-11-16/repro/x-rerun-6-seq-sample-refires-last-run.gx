@@ -1,0 +1,21 @@
+// Title: x-seq-sampling-04 variant: a sample in a seq step re-fires the
+//   previous run's output in the next run, though its trigger never fires
+//   in that run (Sample::update clears the bank at the step's birth but
+//   keeps `resident`); the strict `~!` does the same.
+// Command: timeout -s KILL 120 /home/eric/tmp/review-2026-11-16/bin/graphix-fuzz run x-rerun-6-seq-sample-refires-last-run.gx
+// Expected (seq_blocks.md: a step completes on a FIRED production after its
+//   entry, never on a standing value; ev fires only at step 9, inside run 1):
+//   Trace([10:((1, 9), 10)])   -- run 2 (go = 14) waits for an ev that never comes
+// Observed (node-walk and JIT agree): Trace([10:((1, 9), 10) 16:((14, 9), 16)])
+//   run 2 completes two cycles after its entry with run 1's sample (9, not
+//   the step it would sample now). The same with `live(ev ~! step)`,
+//   `live(ev) ~ 5` and under seqq (a queued request after a completed run).
+//   `live(ev)` and `live(ev + 0)` stall as expected.
+{
+let step = 0;
+step <- select step { n if n < 25 => n + 1, _ => never() };
+let go = select step { 1 | 14 => step, _ => never() };
+let ev = select step { 9 => step, _ => never() };
+let r = seq let g = go { let r = live(ev ~ step); (g, r) };
+r ~ (r, step)
+}

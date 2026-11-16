@@ -1,0 +1,28 @@
+// queuefn: an argument that stands (has a value but does not fire) never
+// reaches the wrapped function, so the wrapper is silent where the direct
+// call answers.
+//
+// Command:
+//   timeout -s KILL 30 graphix --no-cache core-aux-queuefn-standing-arg-never-reaches-f.gx
+// Expected: the second log equal to the first, last line
+//   ([(2, 2), (3, 2), (4, 2), (5, 2), (6, 2)], [(2, 2), (3, 2), (4, 2), (5, 2), (6, 2)])
+//   (design/queue_fn.md: "the wrapped fn sees the same per-cycle arg pattern
+//   it would see without queueing"; the trigger fires every cycle, so no
+//   call waits)
+// Observed: ([(2, 2), (3, 2), (4, 2), (5, 2), (6, 2)], [])
+//   graphix-fuzz check AGREEs: both engines give the empty log.
+//   The direct call's formal y reads the standing 2; WrapperApply::update
+//   puts only fired arguments in its delta (seam_tick), so the site's binding
+//   for y is never written and f's y stays bottom.
+let c = 0;
+c <- select c { n if n < 6 => n + 1, _ => never() };
+let f = |x: i64, y: i64| -> (i64, i64) (x, y);
+let q = queuefn(#trigger: c, f);
+let mode = uniq(select c { n if n < 2 => `A, _ => `B });
+let rd = select mode { `B => f(c, 2), `A => never() };
+let rq = select mode { `B => q(c, 2), `A => never() };
+let ld: Array<(i64, i64)> = [];
+ld <- rd ~ array::push(ld, rd);
+let lq: Array<(i64, i64)> = [];
+lq <- rq ~ array::push(lq, rq);
+select c { 6 => (ld, lq), _ => never() }

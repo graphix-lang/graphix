@@ -1,0 +1,15 @@
+// Title: Type::diff subtracts a map only from an identical map, and an
+//        element that is an open cell is not covered by Any, so a dead arm
+//        behind a wider collection test is not found.
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-11-16/bin/graphix --check \
+//          design/review-2026-11-16/repro/t-setops-diff-wider-test-not-subtracted.gx
+// Expected: "unreachable arm: the earlier arms already cover the whole
+//           scrutinee", as the check says of each of
+//             |x: [Array<i64>, null]| select x { Array<Any> as a => 0, null as _ => 1, _ => 2 }
+//             |x: [List<i64>, null]| select x { List<Any> as a => 0, null as _ => 1, _ => 2 }
+//             |x: [Error<`A>, i64]| select x { Error<Any> as e => 0, i64 as n => 1, _ => 2 }
+// Observed: exit 0, for both functions below (the first: a map; the second:
+//           an array whose element is a declared variable).
+let f = |x: [Map<string, i64>, null]| select x { Map<Any, Any> as m => 0, null as _ => 1, _ => 2 };
+let g = |x: [Array<'a>, null]| select x { Array<Any> as a => 0, null as _ => 1, _ => 2 };
+0

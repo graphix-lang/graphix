@@ -70,6 +70,16 @@ impl RedrawWaker {
 pub(crate) static REDRAW_WAKER: std::sync::OnceLock<RedrawWaker> =
     std::sync::OnceLock::new();
 
+// CR claude for claude: [bug/medium] Nothing stops this Gui's event loop when the Gui
+// is dropped without clear(), and event_loop::run ignores a failed proxy_tx.send. The
+// shell's script loop selects load_env, which holds Output::from_expr, against SIGTERM
+// and Ctrl-C. A signal during Gui::start or Output::chosen therefore drops the display
+// unseen: the tokio thread ends, and the main thread stays in the winit loop forever
+// with no window. Fix: run returns when proxy_tx.send fails, and Gui gets a Drop that
+// sends a Stop naming its session (an id per run in GuiHandler) so a stale one cannot
+// end a later session. probe:
+// design/review-2026-11-16/repro/gui-core-sigterm-at-start-orphans-event-loop.sh
+// (gui-core-03)
 struct Gui<X: GXExt> {
     proxy: EventLoopProxy<ToGui>,
     done: oneshot::Receiver<()>,

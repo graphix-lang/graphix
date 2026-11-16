@@ -1,0 +1,14 @@
+// Title: a lambda formal that destructures a same-shape union is refused as
+//   refutable, while a `let` over the same value accepts it (variant of the
+//   fixes for x-rerun-6-02 and c-pattern-05, which reached the let only).
+// Command: timeout -s KILL 30 graphix --no-cache x-rerun-3-formal-union-destructure.gx
+//   (--check refuses the same way)
+// Expected: ("1 a", "b 2"), as the let form prints:
+//   let f = |v: U| { let (x, y) = v; "[x] [y]" };
+// Observed: "refutable patterns are not allowed in lambda arguments (x, y)".
+//   The same for a struct union, `|{a, b}: [{a: i64, b: string}, {a: string, b: i64}]|`,
+//   and for a capture, `|a@ (_, _): U|`.
+type U = [(i64, string), (string, i64)];
+let f = |(x, y): U| "[x] [y]";
+sys::exit(sys::time::after_idle(duration:50.ms, 0));
+(f((1, "a")), f(("b", 2)))

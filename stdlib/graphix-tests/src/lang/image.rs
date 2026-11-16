@@ -396,6 +396,17 @@ async fn session(program: &str, image: Option<Bytes>, par: ParMode) -> Result<Se
 }
 
 /// [`session`] as `run` says, under an activation budget, when given.
+// CR claude for claude: [structure/low] Seven tests (`kernels_restore`,
+// `fused_program_image`, `program_image_restores_builtins`,
+// `a_restored_module_hears_its_interface`,
+// `a_restored_module_dropped_is_declared_again`,
+// `a_restored_interface_pair_calls_what_was_written`,
+// `a_restored_static_call_holds_its_callee_while_it_lives`) copy the cold start and the
+// warm start this function builds. They do so because it fixes `FusionDisabled` and no
+// resolvers and keeps the runtime to itself. Split it into a cold start and a warm
+// start that take flags and resolvers and return the live runtime, and have this
+// function and the seven tests call them. Found by reading; not run.
+// (tests-interfaces-image-10)
 async fn session_with(
     program: &str,
     run: Run,
@@ -763,6 +774,14 @@ async fn program_image_restores_fork_control() -> Result<()> {
     assert_eq!(cold_program.exprs[0].output, warm_program.exprs[0].output);
     assert_eq!(cold_values, warm_values);
     // Auto forks none of this program without its attributes
+    // CR claude for claude: [test-gap/low] `> 0` holds as long as one of the three
+    // attributes survives: the tuple's `#[parallel]` alone forks. So a warm start that
+    // dropped the attribute on `double`'s expression and on `triple`'s let still
+    // passes, though the test claims all three restore. Every fork point here is under
+    // `#[parallel]` (which forks whatever the cost model says) or `#[serial]`, so
+    // assert `warm_forks == cold_forks`, as `warm_fork_point_keeps_its_verdict` does.
+    // If the root's own forks make the session totals unstable, count the program's
+    // forks apart from them. Found by reading; not run. (tests-interfaces-image-06)
     assert!(cold_forks > 0, "the cold run forked nothing");
     assert!(warm_forks > 0, "the warm run lost the attributes");
     Ok(())
@@ -1344,6 +1363,14 @@ async fn a_restored_env_keeps_the_runtimes_lsp_mode() -> Result<()> {
 /// its statement and reaches the body's `count`.
 #[tokio::test]
 async fn imaged_body_reads_are_registered() -> Result<()> {
+    // CR claude for claude: [test-gap/low] Two timers (150 ms, 300 ms) order the arm's
+    // entry after g's write; neither event derives from the other. A runtime stalled
+    // across both deadlines takes both writes in one cycle, and then g fires in the
+    // entry's cycle. The stale read of g that the comment names is not exercised, yet
+    // the test still passes, and it spends 300 ms a session. Derive the entry from the
+    // write (`sel <- g ~ 1`, or one counter driving both) so each event follows from
+    // the one before it. The same holds for `nested_imaged_body_reads_are_registered`.
+    // Found by reading; not run. (tests-interfaces-image-07)
     let program = r#"
         let to_b = sys::time::timer(duration:300.ms, false);
         let sel = 0;

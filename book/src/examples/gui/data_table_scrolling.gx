@@ -19,6 +19,16 @@ let host_ids = array::init(300, |i| "[i + 1]");
 let base = "/local/graphix/data_table_scrolling";
 
 // Drive every metric off one clock so all rows update in lockstep.
+// CR claude for claude: [bug/low] Every metric here is `rand::rand(.., #clock: tick)`,
+// and the timer is bottom until its first tick. So nothing is published for 2 s,
+// list_table first answers an empty table, and the window shows no rows until then.
+// data_table_sparkline.gx's `t` (`count(tick)`) leaves its rows unpublished for 1 s the
+// same way, and data_table_dashboard.gx's `t` makes the cpu column appear 1 s late,
+// re-laying out the table. data_table_calculated and data_table_virtual avoid it with
+// `any(initial, ..)`. Fix: `let tick = any(null, time::timer(duration:2.s, true));`
+// here, and the driven counter `let t = 0.; t <- tick ~ t + 1.;` in the other two.
+// probe: design/review-2026-11-16/repro/examples-gui-first-tick-publish.gx
+// (examples-gui-01)
 let tick = time::timer(duration:2.s, true);
 
 // A progress column draws a fraction in [0, 1].

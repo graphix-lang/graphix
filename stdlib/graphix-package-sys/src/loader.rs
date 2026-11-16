@@ -183,6 +183,9 @@ mod test {
     /// A module netidx does not serve still records that netidx was
     /// asked: a later file resolver's answer is no file's alone to vouch
     /// for, since netidx may serve the module later (sys-net-01, shell-02).
+    // CR claude for claude: [style/low] The doc comment above ends with review finding
+    // ids "(sys-net-01, shell-02)", which are history. Delete them and keep the
+    // sentence that states the invariant. Found by reading; not run. (sys-net-07)
     #[tokio::test(flavor = "multi_thread")]
     async fn a_miss_records_its_probe() {
         let env = netidx::InternalOnly::new().await.unwrap();

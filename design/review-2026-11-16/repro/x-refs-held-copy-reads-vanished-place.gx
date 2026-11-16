@@ -1,0 +1,30 @@
+// A held copy of a moving reference keeps reading the old element after the reference
+// moves to a place that does not exist
+//
+// command:  timeout -s KILL 30 graphix --no-cache x-refs-held-copy-reads-vanished-place.gx
+// rule:     design/place_references.md: "a read of a place that does not exist bottoms";
+//           a reference's value is its cell, so `held` and `r` name one place and `*held`
+//           and `*r` must agree. CLAUDE.md, "Bottom is dense".
+// expected: `i` becomes 7 at step 4, past the end of `a`. From then on both reads are
+//           bottom: neither the `direct` lines nor the tuples appear after step 3.
+// observed: `*r` bottoms (its last line is step 3's) and `*held` stays 20, the element of
+//           the place the reference left, through step 8:
+//             line: .. dbg(step ~! (*r)): 20        (4 times: steps 0..3)
+//             (3, 20)
+//             (4, 20)
+//             ..
+//             (8, 20)
+//           Deref::update moved its path, failed the read and returned a STALE bottom
+//           (neither the root nor the reference fired), which the `let` does not publish.
+let step = 0;
+step <- select step { s if s < 8 => s + 1, _ => never() };
+let a = [10, 20, 30];
+let i = 1;
+let r = &a[i];
+let held: &i64 = never();
+held <- once(r);
+i <- (select step { 3 => null, _ => never() }) ~ 7;
+dbg(step ~! (*r));
+let copy = *held;
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(step, copy)

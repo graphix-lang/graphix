@@ -52,6 +52,15 @@ fn a_restored_pure_assertion_warns_as_cold() {
         let env = [("RUST_LOG", "info")];
         let cold = graphix(dir.path(), &program(root), args, &env);
         let warm = graphix(dir.path(), &program(root), args, &env);
+        // CR claude for claude: [test-gap/low] This counts a stale image as a restore:
+        // "Program image <path> is stale" (cache.rs) contains "Program image /", so a
+        // warm run that rejected the image and compiled cold passes as restored. Use
+        // `program_image(&warm) == (false, true)` under `CACHE_LOG`, as the image tests
+        // do. The other tests in this file never assert their premise either:
+        // `warnings_as_errors_refuse_a_cached_warned_program` and
+        // `a_prepended_search_directory_is_seen` also pass if the first run wrote no
+        // image, so assert `program_image(&first).0` there. Found by reading; not run.
+        // (tests-shell-compiler-a-07)
         assert!(warm.log.contains("Program image /"), "warm compiled: {}", warm.log);
         (diagnostics(&cold), diagnostics(&warm))
     };

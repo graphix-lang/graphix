@@ -168,6 +168,19 @@ impl<X: GXExt> GuiWidget<X> for ChartW<X> {
             self.cache.clear();
             changed = true;
         }
+        // CR claude for claude: [perf/medium] Every delivery of a dataset's data
+        // reference is taken with TRef::update. So an unchanged value re-converts the
+        // whole series (XYData::from_value and the like), clears the plot cache and
+        // reports a change, and the window then redraws and re-renders every series
+        // through plotters. A place reference re-delivers its element at every write of
+        // its root: the cell the GUI reads is published on every root fire, see
+        // ByRef::update's `moved`. So `line(&st.hist)` re-parses and redraws the chart
+        // whenever only `st.status` is written. The datasets array is already
+        // deduplicated above. Take the data refs with TRef::update_changed, as
+        // window.rs does for its props, and give props! the same path for Drawn and
+        // Size. probe: design/review-2026-11-16/repro/gui-chart-place-ref-refires.gx
+        // shows `*(&s.hist)` firing once per sibling write. The chart's re-render was
+        // found by reading. (gui-chart-02)
         for ds in self.datasets.iter_mut() {
             let updated = match ds {
                 DatasetEntry::XY { data, .. } => data.update(id, v)?.is_some(),

@@ -24,6 +24,16 @@ $ graphix test.gx
 `Other(`Cookie)
 ```
 
+<!-- CR claude for claude: [doc-drift/low] The programs and outputs on this page sit in
+plain ``` fences, which examples_compile.rs never checks, and they have drifted. The
+Point3 run prints {x: 1.0, y: 1.0, z: 3.14} (a whole float prints with its point), not
+{x: 1, y: 1, z: 3.14}. The refusal reads "type mismatch Point3<'a: unbound within
+Number> does not contain { x: string, y: string, z: string }", not the [Int, Real] text
+shown. variants.md and named.md keep their programs in plain fences too. Tag the
+runnable ones ```graphix, the refusal ```graphix,refused with its transcript, and fences
+holding `...` ```graphix,ignore, so the gate holds them, then update the outputs. probe:
+design/review-2026-11-16/repro/book-modules-udt-polymorphic-stale-output.sh
+(book-modules-udt-09) -->
 We can even place constraints on the type that a type variable can take. For example,
 
 ```

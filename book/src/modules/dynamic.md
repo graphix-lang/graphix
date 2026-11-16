@@ -85,6 +85,22 @@ The `mod foo dynamic ...` expression returns a value of type,
 
 ```[null, Error<`DynamicLoadError(string)>]```
 
+<!-- CR claude for claude: [doc-drift/low] This paragraph says the previous module is
+deleted whatever the outcome. A load that fails leaves the last good body running
+(`Module::put_back`); only a load that succeeds retires the one before it, and the code
+is the side that is right. Further up, the page says a `type T;` in the sig must be
+defined by the loaded module: a source that never defines T loads. probe:
+design/review-2026-11-16/repro/x-dyn-modules-failed-reload-keeps-body.gx
+(x-dyn-modules-12) -->
+<!-- CR claude for claude: [doc-drift/medium] This paragraph says the previous load is
+deleted "regardless of the outcome". On a failed compile the code does the opposite:
+Module::update puts the set-aside body back (put_back) and retires it only when the new
+source checks. So after a bad source the status is the DynamicLoadError while foo::add
+keeps answering from the last good load, and a reader will expect the module's values to
+stop. Say that a failed load leaves the last good load running, and only a successful
+one replaces it. probe:
+design/review-2026-11-16/repro/book-modules-udt-dyn-failed-load-keeps-module.gx
+(book-modules-udt-01) -->
 The runtime will try to load the module every time the source updates. If it
 succeeds it will update with `null`, if it fails it will update with an error
 indicating what went wrong. Regardless of the outcome the previous loaded
@@ -99,6 +115,16 @@ body implemented, also where a function outside the module that it calls makes
 the call, and a name it uses is what that body imported. Code that should follow
 a reload calls through the module each time, `foo::add(x)`.
 
+<!-- CR claude for claude: [doc-drift/low] This page never says that a hidden type the
+sig declares (`type T;`) keeps the representation of the first load that defines it. A
+reload that defines `T = Abstract<string>` after `Abstract<i64>` fails with "T is
+already defined as Abstract<i64>: a value of it may still be held, so its representation
+cannot change", and the old load runs on. The sig bullet on abstract types reads as if
+each load may choose its own hidden definition. Add a sentence here: a sig-declared type
+is one type across loads, so the first load fixes its representation, and changing it
+takes a new name or a restart. probe:
+design/review-2026-11-16/repro/book-modules-udt-dyn-sig-type-fixed.gx
+(book-modules-udt-07) -->
 An abstract type the module's body declares and its interface does not belongs
 to that load alone. The next load may declare a type of the same name, even with
 another representation, and it is a different type: a function kept from the
@@ -152,6 +178,14 @@ mentioned in the signature is present in the dynamic module and that the types
 match. If extra items are present in the dynamic module they will simply be
 ignored, and will be inaccessible to the loading program.
 
+<!-- CR claude for claude: [doc-drift/medium] This example predates sandboxing by sig
+imports. The body writes super::y, which it can name only when the sig imports it. As
+written, both the failing body and the fixed one (`let y: i64 = never()`, `val h: fn(x:
+i64) -> i64`) fail to load with "super::y is undefined", not for the reason given. Add
+`use super::y;` to both sigs. With it, the unannotated version fails as described ("it
+holds the type of `y` ... declare y's type") and the annotated one loads. probe:
+design/review-2026-11-16/repro/book-modules-udt-dyn-super-write-needs-import.gx
+(book-modules-udt-02) -->
 A load is checked after the program that loads it, so the program's types are
 decided by then: what the program left undecided is `_`, and a load that would
 decide it otherwise is refused, naming the binding to annotate, and leaves the

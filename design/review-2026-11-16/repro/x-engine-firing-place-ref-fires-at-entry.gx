@@ -1,0 +1,61 @@
+// A reference to a place (`&src[i]`, `&st.p`, `&m{k}`) fires where nothing
+// fired for it: where a body entered later first makes it, and at its arm's
+// wake when its index changed while the arm slept. A count over `*r` ticks
+// and a connect from `*r` writes, in both engines.
+//
+// run:  /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache <this file>
+//       /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache --no-fusion <this file>
+//       (graphix-fuzz check says AGREE: both engines do it)
+//
+// First select: the scrutinee is a constant and the guard flips at n = 3, so
+// the arm is entered with nothing firing. `&x`, a reference to a variable,
+// and the plain read `src[0]$` are quiet there; `&src[0]` and `&st.p` fire.
+// Second select: the arm runs at n = 0, 1, sleeps at n = 2, 3 and wakes at
+// n = 4; `b` goes from 1 to 3 at cycle 3 and does not fire at the wake.
+//
+// CLAUDE.md: entering a body is not an event and neither is waking one; a
+// wake fires nothing for anyone. ByRef::update's own comment: a reference
+// is "fired where it is born or moves, standing where a body first makes it".
+//
+// rows: (n one cycle back,
+//        entry: count(*&src[0]), count(*&st.p), count(*&x), count(src[0]$), written w,
+//        wake:  count(*&src[b - 1]), count(src[b - 1]$), written v)
+// expected from n = 4 on: (4, 0, 0, 0, 0, -1, 1, 1, 10)
+// observed, both engines: (4, 1, 1, 0, 0, 10, 2, 1, 30)
+{
+    let n = 0;
+    n <- select n { k if k < 6 => k + 1, _ => never() };
+    let b = 1;
+    b <- select n { 2 => 3, _ => never() };
+    let src = [10, 20, 30];
+    let st = {p: 1, q: 2};
+    let x = 7;
+    let e1 = 0; let e2 = 0; let e3 = 0; let e4 = 0; let w = -1;
+    let k1 = 0; let k2 = 0; let v = -1;
+    select 5 {
+        kk if n > 2 => {
+            let r1 = &src[0];
+            e1 <- count(*r1);
+            w <- *r1;
+            let r2 = &st.p;
+            e2 <- count(*r2);
+            let r3 = &x;
+            e3 <- count(*r3);
+            e4 <- count(src[0]$);
+            0
+        },
+        _ => -1
+    };
+    select n % 4 < 2 {
+        true => {
+            let re = &src[b - 1];
+            k1 <- count(*re);
+            v <- *re;
+            k2 <- count(src[b - 1]$);
+            0
+        },
+        false => -1
+    };
+    let ln = -1; ln <- n;
+    (ln, e1, e2, e3, e4, w, k1, k2, v)
+}

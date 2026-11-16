@@ -193,6 +193,13 @@ Falls back to this mode when tree-sitter is not available.
      ;; Level 1: keywords
      :language 'graphix
      :feature 'keyword
+     ;; CR claude for claude: [bug/low] This keyword list has drifted from
+     ;; queries/highlights.scm: it lacks "mut", "dynamic", "sig" and "source" (and the
+     ;; self/super/package path roots highlights.scm captures in use_path and
+     ;; module_path), so `&mut x` and dynamic modules get no keyword face in
+     ;; graphix-ts-mode while Helix, Zed and Neovim color them. Fix: add the four words
+     ;; here and the path-root rules from highlights.scm. probe:
+     ;; design/review-2026-11-16/repro/ide-tooling-emacs-ts-keywords.el (ide-tooling-05)
      '(["mod" "use" "let" "rec" "type" "fn" "select" "seq" "seqq" "until" "abort" "flush(" "if" "catch"
         "cast" "any" "with" "throws" "as" "trait" "impl" "for" "pub" "try" "never" "live" "val"]
        @font-lock-keyword-face)

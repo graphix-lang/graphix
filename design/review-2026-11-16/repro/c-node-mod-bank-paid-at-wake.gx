@@ -1,0 +1,39 @@
+// A banked `~` is paid at its arm's wake by an argument that arrived while
+// the arm slept: a write made by a wake in which nothing the arm reads fires.
+//
+// Command:
+//   timeout -s KILL 120 /home/eric/tmp/review-2026-11-16/bin/graphix-fuzz run \
+//     design/review-2026-11-16/repro/c-node-mod-bank-paid-at-wake.gx
+//
+// `trig` fires at c = 1 while the arm runs and `v` is absent: `trig ~ v`
+// banks. The arm sleeps from the cycle after c = 1. `v` arrives (42) while
+// it sleeps. `c` ends at 5, so in the cycle `on` returns to true nothing
+// but `on` fires.
+//
+// CLAUDE.md: "a wake is a resume, never a rebirth, and fires nothing for
+// anyone"; design/organic_firing.md rule 3: "a body that does not run misses
+// what fires meanwhile, a value leaving bottom included";
+// design/bind_driven_bodies.md §1.5: `~` "gives nothing until an input
+// fires". By those the arrival of `v` was missed and `hits` stays 0.
+// Observed, both engines: Trace([0:(true, 0) 3:(false, 0) 7:(true, 0)
+// 8:(true, 1)]): the sample fires in the wake cycle and `hits <- 1` lands.
+//
+// `*r <- v` does the same with the write it holds for a reference that had
+// not arrived (ConnectDeref's `pending`): replace the arm with
+// `*r <- select c { 1 => 99, _ => never() }` over
+// `let go = select c { 3 => null, _ => never() }; let r = go ~ &mut x`
+// and x becomes 99 the cycle after the wake.
+{
+  let c = array::iter([0, 1, 2, 3, 4, 5]);
+  let trig = select c { 1 => null, _ => never() };
+  let v = never<i64>();
+  v <- select c { 3 => 42, _ => never() };
+  let on = true;
+  on <- select c { 1 => false, 5 => true, _ => never() };
+  let hits = 0;
+  select on {
+    true => hits <- (trig ~ v) ~ hits + 1,
+    false => never()
+  };
+  (on, hits)
+}

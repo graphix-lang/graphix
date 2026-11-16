@@ -1,0 +1,27 @@
+// Title: small-pkgs-09 variant: pack::write_bytes and db::insert accept data
+//   nested past the cast's MAX_DATA_DEPTH (1024), which pack::read and db::get
+//   then refuse, so a 1100-element user cons list writes but never reads back
+//   (json::write refuses its 128th container; pack and db have no write bound).
+// Command: rm -rf /home/eric/tmp/review-2026-11-16/work/x-rerun-6/db/cons;
+//   timeout -s KILL 30 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache x-rerun-6-pack-db-deep-write-unreadable.gx
+// Expected: the write is refused (PackErr / DbErr naming the depth), or the
+//   value reads back.
+// Observed: ("w ok", "i ok", "error:`InvalidCast(\"can't cast 1024 to i64: the data is nested too dee..",
+//   "error:`DbErr(\"can't cast ...")
+//   The insert is acknowledged; every later db::get of the key fails.
+type L = [`Cons(i64, L), `Nil];
+let rec mk = |n: i64, acc: L| -> L select n { 0 => acc, n => mk(n - 1, `Cons(n, acc)) };
+let l = mk(1100, `Nil);
+let s = pack::write_bytes(l);
+let back: Result<L, [`PackErr(string), `InvalidCast(string)]> = pack::read(s$);
+let db = db::open("/home/eric/tmp/review-2026-11-16/work/x-rerun-6/db/cons")$;
+let t: db::Tree<string, L> = db::tree(db, "t")$;
+let ins = db::insert(t, "k", l);
+let g = db::get(ins ~ t, "k");
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+(
+  select s { error as e => "werr", _ => "w ok" },
+  select ins { error as e => "ierr", _ => "i ok" },
+  select back { error as e => str::sub(#start: 0, #len: 70, "[e]")$, _ => "r ok" },
+  select g { error as e => str::sub(#start: 0, #len: 30, "[e]")$, null as _ => "null", _ => "g ok" }
+)

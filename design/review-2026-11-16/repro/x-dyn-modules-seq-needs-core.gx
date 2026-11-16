@@ -1,0 +1,14 @@
+// A seq in a loaded body fails to load unless the sig imports core, naming a function the body never wrote
+// run: timeout -s KILL 30 graphix --no-cache design/review-2026-11-16/repro/x-dyn-modules-seq-needs-core.gx
+// expected: "ok 3" (seq is syntax), or a refusal that says the sig must import core
+// observed: DynamicLoadError .. core::filter not defined (seqq: core::queue not defined); with 'use core;' in the sig it prints ok 3
+
+let st = mod foo dynamic {
+    sig { val f: fn(x: i64) -> i64 };
+    source "let f = |x| seq x { let a = x + 1; a + 1 }"
+};
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+select st {
+    error as e => "err [e]",
+    null as _ => "ok [foo::f(1)]"
+}

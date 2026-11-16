@@ -343,6 +343,18 @@ impl<R: Rt> Bind<R> {
             if pat.single_bind().is_none() {
                 bailat!(spec, "can't use rec on a complex pattern")
             }
+            // CR claude for eric: [risk/medium] A `let rec` whose self-call sits
+            // outside every select arm, nested lambda and seq step can never stop, and
+            // nothing says so: a call is an activation whether or not its argument has
+            // a value, so `walk(n.next$)` unfolds past the last node. The node-walk
+            // binds activations until a budget or memory ends it; fused, the tail loop
+            // spins in native code that no budget counts and prints nothing until the
+            // interrupt. The check accepts it with no warning. Either warn or refuse
+            // here where the body reaches a self-call with none of those three around
+            // it, naming `select` as what ends a recursion, or state the rule in the
+            // skill and the book. probe:
+            // design/review-2026-11-16/repro/x-recursion-bottom-ended-recursion.gx
+            // (x-recursion-02)
             if !matches!(value.unparen().kind, ExprKind::Lambda(_)) {
                 bailat!(spec, "let rec may only be used for lambdas")
             }
@@ -665,6 +677,18 @@ impl<R: Rt> Bind<R> {
     fn check_value(&self, ctx: &mut CompileCtx<R>, unwritten: Narrowing) -> Result<()> {
         if !self.forwards(ctx) {
             let written = written(ctx, &self.pattern);
+            // CR claude for claude: [bug/low] `written` is true when any name of the
+            // pattern is written, and the whole value is then held to one instance:
+            // `let (f, n) = (|x| x, 1); n <- 2; (f(1), f("s"))` is refused at `f("s")`
+            // ("i64 does not contain string", naming neither the write nor a fix)
+            // though nothing writes `f`, while `Bind::compile` generalizes the
+            // unwritten names of such a pattern and the forwarded form (`let s = (|x|
+            // x, 1); let (f, n) = s; n <- 2`) keeps `f` generic through `type_leaves`.
+            // Hold only the written leaves to one instance, as `type_leaves` does, or
+            // say in generics.md that one written name makes every sibling one instance
+            // and name the write in the refusal. probe:
+            // design/review-2026-11-16/repro/c-bind-written-sibling-pins-unwritten-lambda.sh
+            // (c-bind-07)
             let value = match written {
                 true => ctx.monomorphic(self.node.typ()),
                 false => self.node.typ().clone(),
@@ -750,6 +774,16 @@ impl<R: Rt> Bind<R> {
     /// The LambdaDef `Value` this binding holds when its value node is
     /// a lambda; `None` otherwise.
     pub(crate) fn lambda_def_value(&self) -> Option<Value> {
+        // CR claude for claude: [perf/medium] `lambda_value` sees a lambda through
+        // parentheses only, while `names_generic` and `aliased_lambda` read the value
+        // past a block's final expression (`value_of`). So `let f = { let n = 1; |x:
+        // i64| x + n }`, which generics.md lists among the bindings that name a
+        // function, records nothing in `bind_to_lambda`: every call through `f`
+        // dispatches at run time and `#[native] f(y) * 2` is refused ("no static
+        // callee"), where `let f = { let n = 1; let h = |x: i64| x + n; h }` fuses.
+        // Read the lambda through `value_of` here. probe:
+        // design/review-2026-11-16/repro/c-bind-block-lambda-no-static-callee.gx Also
+        // reported as (tests-lang-rest-c-02). (c-bind-06)
         lambda_value(&self.node).map(|l| l.def_value().clone())
     }
 }
@@ -815,6 +849,19 @@ impl<R: Rt> Update<R> for Bind<R> {
         // initializer fired; otherwise a production publishes when it
         // fires, first, or quietly after a sleep.
         let mut held: SmallVec<[BindId; 4]> = SmallVec::new();
+        // CR claude for eric: [bug/medium] A written binding keeps its value at a seq
+        // step's birth as at a wake, so a seq inside a function a step calls reads as
+        // the last run's result until this run's lands: `pair(go)` returning (a slow
+        // seq, a fast seq) completes its step on the fast one with the slow one's value
+        // from the run before, (0, 30) for (20, 30), and the slow run is then aborted
+        // with the passed step, so it never answers again. The same seqs written in the
+        // step's own text give (20, 30), and design/seq_blocks.md 5 says the enclosing
+        // step completes only on this run's production. To decide: whether a birth
+        // returns a written binding whose initializer is bottom to bottom, for the
+        // lowering's result cell at least; the doc's "a let whose initializer never
+        // fires keeps its last value" is the rule this would change. probe:
+        // design/review-2026-11-16/repro/x-engine-seq-errors-callee-seq-result-stands-across-runs.gx
+        // (x-engine-seq-errors-05)
         if (woke || ctx.event.wake() || tag.moved()) && !tag.triggers() {
             self.pattern.ids(&mut |id| {
                 let holds =
@@ -894,6 +941,17 @@ impl<R: Rt> Update<R> for Bind<R> {
         if let ExprKind::Bind(b) = &self.spec.kind
             && b.typ.is_some()
         {
+            // CR claude for claude: [bug/low] The deferred check reaches only
+            // annotations the let's compile got through. A bare `let x: T = 1` above
+            // `trait T` is refused by `Bind::compile`, before the block's names are
+            // registered, as "undefined type T", on the line that declares T; `let x:
+            // (T, i64)` gets "trait T used as a type above its declaration", and a
+            // `type T` declared below is in force above. Let the compile leave a name
+            // it cannot resolve to this check, which knows by then that it is a trait,
+            // and pin the bare form beside lang::types::annotation_above_its_trait.
+            // probe:
+            // design/review-2026-11-16/repro/c-bind-bare-trait-annotation-undefined-type.sh
+            // (c-bind-09)
             crate::defer_written_names(ctx, &self.typ, &self.spec)?;
         }
         // every write compiled before this check is a target by now, the
@@ -1341,6 +1399,12 @@ fn refuse_inside_rigid(
 
 /// The refusal of a `let` whose pattern `ptyp` does not hold its value
 /// type `typ`.
+// CR claude for claude: [readability/low] The refusal prints `ptyp`, the checker's
+// predicate for the pattern, whose cells nothing bound when the fit failed: `let (a, b)
+// = x` over `[(i64, i64), null]` says "('_8190: unbound, '_8191: unbound) matches only
+// part of [null, (i64, i64)]", and a refused abstract pattern "(W, '_8187: unbound)".
+// Print the pattern as written, which each caller holds in its spec. probe:
+// design/review-2026-11-16/repro/c-pattern-let-misfit-prints-cells.gx (c-pattern-07)
 fn misfit<R: Rt>(
     ctx: &CompileCtx<R>,
     spec: &Expr,
@@ -1353,6 +1417,14 @@ fn misfit<R: Rt>(
             spec,
             "refutable patterns are not allowed in let: {ptyp} matches only part of {typ}"
         ),
+        // CR claude for claude: [readability/low] `let (a, b) = p` over `(i64, i64,
+        // i64)` is refused as "match error (i64, i64, i64) can't be matched by ('_8145:
+        // unbound, '_8146: unbound)". ptyp is the pattern's predicate, a fresh cell per
+        // bind, so the author sees cell ids where they wrote `(a, b)`. Print the
+        // pattern as written ("the pattern (a, b) cannot bind a value of (i64, i64,
+        // i64)"), and likewise at the other `match error` sites in this file. probe:
+        // design/review-2026-11-16/repro/x-diagnostics-destructure-match-error.gx
+        // (x-diagnostics-08)
         false => bailat!(spec, "match error {typ} can't be matched by {ptyp}"),
     })
 }
@@ -1371,6 +1443,16 @@ fn fits_every_member<R: Rt>(
 ) -> Result<bool> {
     let mut members: SmallVec<[Type; 8]> = SmallVec::new();
     expr::union_members(&ctx.env, typ, &mut members)?;
+    // CR claude for claude: [bug/low] Only the value's top-level members are fitted one
+    // by one; a union under a constructor falls to plain containment, which binds the
+    // pattern's cells to its first member and fails on the next. So `let ((a, b), c) =
+    // v` over `([(i64, i64), (string, string)], bool)` is refused, "matches only part
+    // of", though the pattern matches every value; `let (p, c) = v; let (a, b) = p` and
+    // a select arm `((a, b), c)` check. Judge the fit by `Type::narrow_pattern`, as a
+    // select arm does, for one member as for several; `StructPatternNode::covers` has
+    // to go member by member with it. probe:
+    // design/review-2026-11-16/repro/c-pattern-written-union-destructure-refutable.sh
+    // (programs 8, 9 and 11) (c-pattern-06)
     if members.len() < 2 || matches!(ptyp, Type::TVar(_)) {
         return ptyp.any_as_tvar().contains_ordered(&ctx.env, typ);
     }
@@ -1569,6 +1651,14 @@ impl<R: Rt> Update<R> for Ref {
 /// One accessor of a place reference's path, with its key expression
 /// where the key is dynamic.
 #[derive(Debug)]
+// CR claude for claude: [structure/low] From here to the end of the file (some 1150
+// lines: `PlaceStep`, `Place`, `Referent`, `ByRef`, `Deref`, `Addr`, `ref_target`, less
+// the few generalization helpers between them) is the reference and place machinery, in
+// the file of `let` and the variable read, while node/place.rs, which owns `Path`,
+// `Step`, `RefPath` and the read and write along a path, is 480 lines. Move these nodes
+// to place.rs so bind.rs keeps `Bind`, `Ref` and what generalizes them; nothing changes
+// but the module paths `NodeView`, the image decoder and `ExecCtx::ref_targets` name.
+// Found by reading; not run. (c-bind-12)
 enum PlaceStep<R: Rt> {
     Index(Node<R>),
     Tuple(usize),
@@ -1676,6 +1766,16 @@ fn mark_value<R: Rt>(node: &mut Node<R>, data: bool, naming: Naming) {
     if let Some(t) = node.downcast_mut::<super::data::TupleRef<R>>() {
         return mark_value(&mut t.source, false, naming);
     }
+    // CR claude for claude: [structure/low] The data literal kinds are listed here and
+    // again in `holds_function`, and what a `let` names past parentheses and a block's
+    // final expression is walked three ways (`value_of`, this function, `name_passed`'s
+    // fallback) beside `ungrouped`, which stops at parentheses. `holds_function`
+    // generalizes a binding (`poly_binds`) whose parts this walk must then name, so the
+    // copies have to agree: a kind added to one list alone leaves a generalized binding
+    // with unnamed parts, and `lambda_def_value` already stops short through
+    // `ungrouped`. One `fn data_literal(view) -> bool` for both lists, and
+    // `lambda_value` over `value_of`, remove the copies. Found by reading; not run.
+    // (c-bind-10)
     let literal = matches!(
         node.view(),
         NodeView::Struct(_)
@@ -2139,8 +2239,28 @@ impl<R: Rt> ByRef<R> {
     /// `let` publishes; a quiet production under an init view stands in
     /// it, so the cell exists from the reference's birth.
     fn publish(&self, ctx: &mut ExecCtx<'_, R>, tv: TagValue) {
+        // CR claude for claude: [bug/high] A `&mut e` over an unnamed expression is a
+        // cell only the reference reaches, so the cell is the state, yet every quiet
+        // production under an init view stands the initializer over it: a write through
+        // the reference is lost at each wake of the arm that made it (`&mut 0`, `&mut
+        // null`, a default `#sel: &mut [T, null] = &mut never()` as tui's browser and
+        // gui's window declare). The named form (`let v = 0; &mut v`) keeps the write,
+        // as design/sleep_and_wake.md says of a `&mut`'s referent. Stand a quiet
+        // production in a writable chainless cell only while the store holds nothing
+        // for it, as `Bind::update` holds a `<-` target; a read-only one recomputes as
+        // now. Pin both forms beside findings/wake-mut-referent-nov2026. probe:
+        // design/review-2026-11-16/repro/c-bind-mut-cell-reset-at-wake.gx (c-bind-01)
         if tv.tag().triggers() {
             ctx.deliver(self.id, tv, Notify::Roots)
+        // CR claude for claude: [bug/medium] At a wake this stands the initializer over
+        // the fresh cell of a `&mut <expr>`, so a value written through the reference
+        // is lost with no event: `&mut 0` and `&mut (base + 0)` written 50 read 0 and 1
+        // again after their arm sleeps and wakes, while `&mut z` over a `let z` keeps
+        // 50. A `&mut`'s referent is state and keeps the value it holds at a wake. For
+        // a writable reference to an unnamed expression, stand a quiet production only
+        // while the cell holds nothing, as Bind::update holds a written binding. probe:
+        // design/review-2026-11-16/repro/x-refs-fresh-mut-cell-reset-at-wake.gx
+        // (x-refs-02)
         } else if ctx.event.init() || tv.tag().moved() {
             ctx.stand(self.id, tv);
         }
@@ -2171,6 +2291,14 @@ pub(crate) fn ref_target<'a, R: Rt>(
     ctx: &'a ExecCtx<'_, R>,
     cell: BindId,
 ) -> (BindId, &'a Path) {
+    // CR claude for claude: [bug/medium] The binding returned is the one the reference
+    // was written against, not its variable: an interface `val` and the binding
+    // implementing it are one variable (`CompileCtx::join_interface_pair`) under two
+    // ids, so `m::r == &m::x` is false where the module's `r` is `&x`, though a write
+    // to `m::x` is read through both; `uniq` over references compares the same way.
+    // `ExecCtx::ref_targets` should name the root by its variable (`rt.var_of`) before
+    // comparing; `Deref::address` must keep registering the id it has. probe:
+    // design/review-2026-11-16/repro/c-bind-ref-equality-across-val.sh (c-bind-05)
     match ctx.rt.ref_path(&cell) {
         Some(RefPath::At(root, path)) => (*root, path),
         Some(RefPath::Nowhere) => (cell, Path::empty()),
@@ -2228,6 +2356,32 @@ impl<R: Rt> Update<R> for ByRef<R> {
                 };
                 let same = matches!(&self.registered,
                     Some(RefPath::At(r, p)) if *r == bind && p == path);
+                // CR claude for claude: [bug/medium] An address that changed with no
+                // fire behind it is published as a fire: the mirror gets `Tag::FIRED`
+                // and the reference re-fires its readers. That happens at a wake when
+                // the key changed while the arm slept, and for a reference outside the
+                // arm whose key is a moved value, so `w <- *r` over `&arr[n % 3]`
+                // writes in the wake cycle and `count(*r)` ticks. A wake fires nothing
+                // for anyone. Separate a retarget a fire caused from a quiet one, and
+                // for the quiet one publish the mirror `Tag::MOVED` and stand the
+                // reference moved. probe:
+                // design/review-2026-11-16/repro/x-sleep-wake-moving-ref-fires-on-quiet-key.gx
+                // (x-sleep-wake-02)
+                // CR claude for claude: [bug/medium] A changed address is taken as an
+                // event even when no input of the place fired: `!same` is true the
+                // first time a place reference registers and when its index moved while
+                // its arm slept, so the mirror is published fired and the reference
+                // fires. `*r` over `&src[0]`, `&st.p` or `&src[b - 1]` then fires at a
+                // guard-flip entry and at a wake, where `w <- *r` writes and a count
+                // ticks, while `&x` and the plain read `src[i]$` are quiet. That breaks
+                // "a wake fires nothing" and this node's own rule ("standing where a
+                // body first makes it"). Fire only at a birth or when the address
+                // changed and the place's root or index fired; otherwise stand the
+                // mirror and set the resident stale, moved if retargeted. Deref's
+                // comment about catch-up deciding at a wake describes machinery that is
+                // gone. probe:
+                // design/review-2026-11-16/repro/x-engine-firing-place-ref-fires-at-entry.gx
+                // (x-engine-firing-04)
                 let moved = moved || !same;
                 if !same {
                     let to = RefPath::At(bind, path.clone());
@@ -2249,6 +2403,19 @@ impl<R: Rt> Update<R> for ByRef<R> {
                             self.publish(ctx, TagValue::tagged(v, tag))
                         }
                         Some(Err(e)) => {
+                            // CR claude for claude: [bug/medium] A failed read through
+                            // a place reference is a running program's failure, but
+                            // this logs it at warn under the module target, not
+                            // FAILURE_TARGET, and with no site: "read through a
+                            // reference: index 2 out of range for length 1". The
+                            // deref's path read below does the same. Under the target
+                            // but also siteless are coretraits' "references have no
+                            // order, including under Any" and
+                            // collection::log_init_oversize. Report all of them with
+                            // report_failure! and diagnostic_site of the reading
+                            // expression, as arith errors and unhandled `?` are. probe:
+                            // design/review-2026-11-16/repro/x-diagnostics-failure-no-site.sh
+                            // (x-diagnostics-07)
                             log::warn!("read through a reference: {e}");
                             self.bottom_mirror(ctx);
                         }
@@ -2262,6 +2429,20 @@ impl<R: Rt> Update<R> for ByRef<R> {
         // standing where a body first makes it
         let first = self.resident.tag().is_bottom() && self.keep.is_none();
         if ctx.event.born() || retargeted || first {
+            // CR claude for claude: [bug/high] A place reference (`&a[i]`, `&(*r).f`)
+            // fires where a body first makes it and at a wake that finds its path
+            // moved: `retargeted` is true whenever the path differs from `registered`,
+            // which is None on a body's first run and stale after a sleep. Entering or
+            // waking a body is not an event, and a plain `&x` stands in both cases;
+            // here the reference, its `*r` and every effect over them fire on arm
+            // entry, and a holder of a copy outside the arm ticks at the wake
+            // (Deref::update makes a moved path fresh). Fire only when the root or a
+            // key fired this cycle; otherwise publish the reference stale (first make)
+            // or moved (resume), stand the mirror cell with that tag, and let Deref
+            // take the cell's tag for a moved path. The Deref comment about catch-up at
+            // a wake names a mechanism that is gone. probe:
+            // design/review-2026-11-16/repro/x-refs-place-ref-fires-on-entry-and-wake.gx
+            // Also reported as (c-bind-02). (x-refs-01)
             let fires = ctx.event.born() || retargeted;
             let target = ctx.env.byref_chain.get(&self.id).copied();
             let target = target.or_else(|| match &self.registered {
@@ -2461,6 +2642,20 @@ impl<R: Rt> Deref<R> {
                 ctx.event.learned = true;
                 self.release(ctx);
                 let reader = ctx.stamped_reader(self.top_id, Some(&self.read));
+                // CR claude for claude: [perf/low] A Deref registers as a late reader
+                // of the reference's cell whenever the cell is not the referent, but
+                // for a chained reference (`&b`, whose target the byref chain fixes) it
+                // never reads the cell: it reads `b`, and the cell only tells it of a
+                // place whose path moved. ByRef::publish fires that cell at every fire
+                // of `b`, so each Deref of `&b` is marked twice, and one walked before
+                // the `&b` expression (a reference written back to an earlier binding)
+                // takes the cell's fire late: GX::deliver_late schedules a cycle of its
+                // own and walks every such reader again for a value none of them reads.
+                // Register on the cell only when it names a place (Rt::ref_path answers
+                // for it), and keep that in Addr so release and swap_cell unregister
+                // what was registered. probe:
+                // design/review-2026-11-16/repro/x-prune-deref-cell-late-walk.gx
+                // (x-prune-02)
                 if cell != id {
                     ctx.ref_reader(cell, reader.clone());
                 }
@@ -2520,6 +2715,12 @@ impl<R: Rt> Update<R> for Deref<R> {
         self.typ.encode(buf)?;
         self.child.image_encode(buf)?;
         self.top_id.encode(buf)?;
+        // CR claude for claude: [dead/low] `addr` is state `update` sets, and an image
+        // is taken before any cycle (`Update::image_encode`'s contract), so this always
+        // writes `None`: the branch of `Deref::image_decode` that registers readers for
+        // a decoded address never runs, and `Addr` derives `Pack` for it alone. Drop
+        // the field from the image and decode with `None`. Found by reading; not run.
+        // (c-bind-11)
         self.addr.encode(buf)
     }
 
@@ -2557,7 +2758,42 @@ impl<R: Rt> Update<R> for Deref<R> {
                         Some(c)
                     }
                     Err(e) => {
+                        // CR claude for claude: [bug/low] This warning is logged at
+                        // every update that finds the element missing, fired or not,
+                        // with no source position and under the module's own log
+                        // target: a reference left pointing past the end logs one line
+                        // per cycle its reader is walked (10 lines for one move in the
+                        // probe), and nothing says which `*r` it is. Log once, where
+                        // the bottom is fresh, with this node's spec position, under
+                        // `FAILURE_TARGET` as the dropped write through the same
+                        // reference is; `ByRef::update`'s copy of the message likewise.
+                        // probe:
+                        // design/review-2026-11-16/repro/c-bind-missing-place-read-logs-every-cycle.sh
+                        // (c-bind-08)
                         log::warn!("read through a reference: {e}");
+                        // CR claude for claude: [bug/medium] When the reference's path
+                        // moved to a place that does not exist and neither the root nor
+                        // the reference fired (a copy held by a `<-`, read here), this
+                        // bottom is stale, and a `let` over the dereference does not
+                        // publish it: `let copy = *held` keeps 20, the element of the
+                        // place the reference left, while `*r` over the reference
+                        // itself is bottom. A value that becomes bottom is a fresh
+                        // bottom. Make it fresh for Moved::Path and Moved::Target
+                        // outside a wake, as the `None if moved != Moved::No` branch
+                        // below does. probe:
+                        // design/review-2026-11-16/repro/x-refs-held-copy-reads-vanished-place.gx
+                        // (x-refs-03)
+                        // CR claude for claude: [bug/medium] When the read through the
+                        // path fails after the path moved (a held copy of `&a[i]` whose
+                        // key went past the end), neither the reference nor the root
+                        // fired, so this bottom is not fresh; `Bind::update` publishes
+                        // nothing for it and a `let v = *h` keeps the old element while
+                        // `*r` on the reference itself goes bottom. The arm for a moved
+                        // address with nothing to read below already makes its bottom
+                        // fresh: do the same here (`moved` is `Path` or `Target`,
+                        // outside a wake). probe:
+                        // design/review-2026-11-16/repro/c-bind-deref-moved-to-missing-element-keeps-value.gx
+                        // (c-bind-04)
                         return self.resident.set_bottom(tv.tag().join(addr).triggers());
                     }
                 }
@@ -2567,6 +2803,29 @@ impl<R: Rt> Update<R> for Deref<R> {
         match res {
             Some(mut tv) => {
                 // a move to another element is read fired
+                // CR claude for claude: [bug/medium] A retarget is read fired unless
+                // this deref is itself under a wake view, so a deref outside the arm
+                // fires when the reference it reads was retargeted quietly by the arm's
+                // wake (its production is `Tag::MOVED`): `count(*r2)` ticks and `w <-
+                // *r2` writes at the wake. The pins move the referent's value under a
+                // fixed reference, never the reference. Read the new target fresh only
+                // when the address production fired; when it moved, stand the result
+                // moved. The bottom branch below takes the same test. probe:
+                // design/review-2026-11-16/repro/x-sleep-wake-deref-fires-on-quiet-retarget.gx
+                // (x-sleep-wake-03)
+                // CR claude for claude: [bug/medium] Whether a moved address is read
+                // fired is decided by this node's own view, so a `*h` outside the arm
+                // (View::Cycle) fires when a wake inside the arm moved what `h` names
+                // quietly: `**h` over an arm's `let t = select which { 0 => &x, _ => &y
+                // }` ticks a `count` at the wake, and so does `*h` over an arm's
+                // `&a[i]` whose key moved while it slept; the same program over values
+                // reads the new value with no event (design/bind_driven_bodies.md 1.4).
+                // A target move needs no `fresh`: the reference changed, so its own tag
+                // says fired or moved. A path move needs the tag of the move, which the
+                // reference's cell can carry (FIRED for a live key, MOVED at a wake).
+                // The comment on the arm below names the deleted wake catch-up. probe:
+                // design/review-2026-11-16/repro/c-bind-deref-outside-fires-at-wake.gx
+                // (c-bind-03)
                 let t = match moved {
                     // at a wake, catch-up decides through the reference's fire
                     Moved::Path | Moved::Target if !ctx.event.wake() => {

@@ -1,0 +1,24 @@
+// db2: a tree's stored type names a recursive typedef, so an equal type is refused
+// Run from an empty scratch dir (it creates ./rec.db):
+//   cd $(mktemp -d) && timeout -s KILL 60 graphix --no-cache <this file>
+// L, M and W<i64> are one structural type: the check accepts `let y: M = x`
+// with x: L. A tree created as Tree<string, L> should open as any of them.
+// Expected: (_, false, false), the meta text naming no typedef.
+// Observed: (("string", "[`Cons(i64, [`Cons(i64, L), `Nil]), `Nil]"), true, true):
+//   both reopenings are DbErr "tree 'a' has type ... L ... but was opened as ... M ...".
+//   (The text also unrolls L twice; Tree<string, Array<L>> stores it unrolled once.)
+type L = [`Cons(i64, L), `Nil];
+type M = [`Cons(i64, M), `Nil];
+type W<'a> = [`Cons('a, W<'a>), `Nil];
+let d = db::open("rec.db")$;
+let r = seq {
+  let a: db::Tree<string, L> = db::tree(d, "a")$;
+  let ta = db::get_type(d, "a")$;
+  let b: Result<db::Tree<string, M>, `DbErr(string)> = db::tree(d, "a");
+  let c: Result<db::Tree<string, W<i64>>, `DbErr(string)> = db::tree(d, "a");
+  let x: L = `Cons(1, `Nil);
+  let y: M = x;
+  (ta, is_err(b), is_err(c))
+};
+sys::exit(sys::time::after_idle(duration:200.ms, r) ~ 0);
+r

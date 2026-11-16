@@ -1,0 +1,23 @@
+// x-async-io: a close cuts the writes its own cycle issued above it
+//
+// command (nondeterministic):
+//   for i in $(seq 1 30); do timeout -s KILL 20 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache design/review-2026-11-16/repro/x-async-io-close-cuts-same-cycle-writes.gx 2>/dev/null | head -1; done | sort | uniq -c
+//
+// Two writes and a close fire in one cycle, in that text order.
+//
+// expected, every run: peer got: 'hello bye' write=null
+// observed, 30 runs: 2 as expected, 28 with the second write refused:
+//   peer got: 'hello ' write=error:`IOError("write_exact failed: broken pipe")
+use sys::io::{Read, Write, Close};
+let listener = sys::tcp::listen("127.0.0.1:0")$;
+let addr = sys::tcp::listener_addr(listener)$;
+let client = sys::tcp::connect(listener ~ addr)$;
+let server = sys::tcp::accept(listener, client)$;
+let go = sys::time::after_idle(duration:50.ms, server ~ client);
+let pad = Write::write_exact(go, buffer::from_string("hello "));
+let w = Write::write_exact(go, buffer::from_string("bye"));
+let c = Close::close(go);
+let got = buffer::to_string_lossy(Read::read_all(server)$);
+println("peer got: '[got]' write=[w]");
+sys::exit(sys::time::after_idle(duration:300.ms, server ~ 0));
+got

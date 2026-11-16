@@ -1,0 +1,17 @@
+// A select arm that only raises (`error(..)?`) leaves the select's type
+// undecided, where a `never()` arm adds nothing; strip_typ's doc says the
+// result is "bottom, which a select absorbs".
+// Command: graphix --no-cache --check tests-lang-rest-d-raise-arm-leaves-select-open.gx
+// Expected: accepted, as it is with `2 => never()` in place of the raise arm
+//   (v: i64).
+// Observed: refused: "0 tests a value of 'v, a type not decided at this
+//   select, which a later use could decide apart from what the arms test:
+//   annotate it, writing for 'v the type of `v`".
+// The same open member keeps the select from fusing at the top level:
+//   `#[native] select x { 2 => error(`E(x))?, _ => x }` there is refused with
+//   "a region of type '_N: unbound has no kernel return" (lang::errors::
+//   arm_input_raise_delivers pins that build as FuseExpect::None; its #[native]
+//   twin fuses only because it annotates `let v: i64`).
+let x = array::iter([1, 2, 3, 4]);
+let v = { catch(e) println("[e]"); select x { 2 => error(`E(x))?, _ => x } };
+select v { 0 => 1, n => n }

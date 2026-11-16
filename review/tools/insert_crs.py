@@ -70,6 +70,13 @@ def rust_line_states(lines):
     return states
 
 
+# CR claude for claude: [bug/low] A CR anchored at a markdown table row is inserted
+# between rows. An HTML block ends a GFM table, so mdbook renders every row below the
+# comment as a paragraph of literal pipes; this affects book pages, bench/README.md and
+# design docs with tables. Fix: give table lines (a `|` line followed by a `|---|`
+# delimiter row, and the `|` lines after it) a ('table', header_line) state, so the CR
+# moves above the table header as it does above a code fence. probe:
+# design/review-2026-11-16/repro/ide-tooling-insert-crs-md-table.sh (ide-tooling-03)
 def md_line_states(lines):
     """For each line, ('fence', open_line) inside a code fence, ('front',
     last_line) inside front matter (the CR goes below it), else None."""
@@ -80,6 +87,8 @@ def md_line_states(lines):
             states.append(('front', front + 1)); continue
         states.append(None if fence is None else ('fence', fence))
         t = line.lstrip()
+        if t.startswith('```') and fence is None and '`' in t.lstrip('`'):
+            continue  # ```code``` on one line is inline code, not a fence
         if t.startswith(('```', '~~~')):
             fence = ln if fence is None else None
     return states
@@ -109,6 +118,8 @@ def main():
     for f, cs in sorted(by_file.items()):
         path = os.path.join(root, f)
         ext = os.path.splitext(f)[1]
+        if ext == '' and os.path.exists(path) and open(path, errors='replace').read(2) == '#!':
+            ext = '.sh'
         if ext != '.md' and ext not in PREFIX or not os.path.exists(path):
             for c in cs:
                 report.append(('NOFILE' if not os.path.exists(path) else 'NOFORMAT', c['id'], f, c.get('line')))

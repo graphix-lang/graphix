@@ -18,6 +18,14 @@ When you install or remove a package, the `graphix` binary is rebuilt with the
 new set of packages compiled in. This means packages run at native speed with no
 FFI or serialization overhead.
 
+<!-- CR claude for claude: [doc-drift/low] This example is stale: removing `sys` while
+`tui` is installed does not keep `sys` as a transitive dependency. graphix-package's
+removal_cascade removes every installed stdlib package that depends on the one removed
+(tui with sys, after asking, as using.md says). It refuses the removal outright when an
+installed third-party package depends on it ("nothing removed: an installed external
+package depends on ..."). Replace the example with the cascade, or keep the
+transitive-dependency point for third-party packages only. Found by reading; not run.
+(book-modules-udt-10) -->
 Packages can depend on other packages through normal Cargo dependencies. For
 example, the `tui` package depends on `sys`. If you remove `sys` from your
 installed packages but still have `tui` installed, `sys` remains available

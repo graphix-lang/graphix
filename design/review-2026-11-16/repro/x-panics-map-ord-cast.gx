@@ -1,0 +1,22 @@
+// x-panics: a data cast into Map<W, _> under a user Ord that is no total order panics the runtime
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache x-panics-map-ord-cast.gx
+// Expected: the cast answers (a map built pair by pair, or an InvalidCast), exit 0.
+// Observed: "built 55", then
+//   thread 'graphix-runtime' panicked at .../core/src/slice/sort/shared/smallsort.rs:854:5:
+//   user-provided comparison function does not correctly implement a total order
+//   Error: graphix runtime is dead     (exit 1, with and without --no-fusion)
+// The keys come from data (here a Map<i64, i64>; json/pack/netidx reads take the
+// same `typ/cast.rs` Map::from_iter), so which data trips the sort's check is the data's choice.
+type W = Abstract<i64>;
+impl Cast for W {};
+impl Eq for W { let eq = |a, b| a.0 == b.0 };
+impl Ord for W { let cmp = |a, b| select ((a.0 * 2654435761 + b.0 * 40503 + a.0 * b.0 * 977) / 13) % 3 { 0 => `Less, 1 => `Greater, -1 => `Greater, _ => `Equal } };
+let clk = sys::time::timer(duration:20.ms, false);
+let pairs = array::init(55, |i| (i * 31 + 7, i));
+let m: Map<i64, i64> = array::fold(pairs, {}, |acc, p| map::insert(acc, p.0, p.1));
+println("built [map::len(m)]");
+let c = cast<Map<W, i64>>(clk ~ m);
+let cr = select c { error as e => "err [e]", v => "ok [map::len(v)]" };
+println("cast [cr]");
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+0

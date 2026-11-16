@@ -56,6 +56,12 @@ fn typeprim(i: &mut Input) -> R<Typ> {
 }
 
 /// The predicates a bound may name, by keyword.
+// CR claude for claude: [structure/low] These ten bound names are also hand-listed in
+// parser/mod.rs's KEYWORDS reserved array, whose comment says why they must be
+// reserved. A bound added here and not there makes a user type of that name nameable
+// everywhere except a bound, where it silently means the builtin. Keep one `const
+// BOUNDS: [(&str, Bound); N]` here, read by predicate() and chained into KEYWORDS.
+// Found by reading; not run. (t-parser-b-07)
 fn predicate(word: &str) -> Option<Type> {
     Some(match word {
         "Concrete" => Type::Bound(Bound::Concrete),
@@ -288,6 +294,11 @@ fn parsed(i: &mut Input, r: Result<Noted, (SourcePosition, &'static str)>) -> R<
 
 /// `{ name: T, .. }`, each field's type read by `field`; in a type
 /// definition (`noted`) each field takes comments as a list's item does.
+// CR claude for claude: [structure/low] `field` and `noted` must agree (plain_typ with
+// false, noted_typ with true), and every caller pairs them by hand. uniontyp has the
+// same pair. Take `noted` alone and choose the item parser from it inside both
+// functions, so a mismatched pair cannot be written. Found by reading; not run.
+// (t-parser-b-08)
 fn structtyp(i: &mut Input, field: fn(&mut Input) -> R<Noted>, noted: bool) -> R<Noted> {
     let item = |i: &mut Input| {
         let first = i.look_ahead(|i| {

@@ -1,0 +1,12 @@
+// Title: str::parse does not read back what Graphix prints: a printed array
+// literal parses as a tuple or a struct where the target union holds one.
+// Command: timeout -s KILL 30 graphix --no-cache design/review-2026-11-16/repro/x-kind-markers-parse-print-roundtrip.gx
+// Expected (data.md: "str::parse reads what Graphix prints"; the printer
+//   keeps kinds: [1, 2] vs (1, 2)): ("\[1, 2\]", [1, 2], true, [["x", 1]], true)
+// Observed: ("\[1, 2\]", (1, 2), false, {x: 1}, false)
+let x: [Array<i64>, (i64, i64)] = [1, 2];
+let s = "[x]";
+let y: [Array<i64>, (i64, i64)] = str::parse(s)$;
+let x4: [Array<Array<[string, i64]>>, {x: i64}] = [["x", 1]];
+let y4: [Array<Array<[string, i64]>>, {x: i64}] = str::parse("[x4]")$;
+(s, y, x == y, y4, x4 == y4)

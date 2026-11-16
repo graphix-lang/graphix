@@ -1,0 +1,24 @@
+// A struct literal keeps a field's old value when the field moved quietly
+// (Tag::MOVED): the node-walk is wrong and the JIT right.
+//
+// run: graphix-fuzz check design/review-2026-11-16/repro/x-sleep-wake-struct-moved-field.gx
+//      graphix-fuzz run   design/review-2026-11-16/repro/x-sleep-wake-struct-moved-field.gx
+//
+// Arm 0 of `r` sleeps from clk 2 while `n` goes 1, 2, 3 and wakes at clk 6,
+// so `v` (read through a reference that left the arm) moves 2 -> 4 at clk 6
+// with no fire. Each tick is (clk, v, s.a).
+//
+// expected at clk 6: (6, 4, 4)
+// observed: DIVERGENCE (interp != jit); node-walk (6, 4, 2), JIT (6, 4, 4)
+{
+  let clk = array::iter(array::init(10, |i| i));
+  let n = 0;
+  n <- filter(clk, |c| c % 2 == 0) ~ (n + 1);
+  let sel = 0;
+  sel <- filter(clk, |c| c % 4 == 1) ~ (1 - sel);
+  let r = select sel { 0 => &(n + 1), _ => &(n + 100) };
+  let holder = once(r);
+  let v = *holder;
+  let s = {a: v, b: 1};
+  clk ~ (clk, v, s.a)
+}

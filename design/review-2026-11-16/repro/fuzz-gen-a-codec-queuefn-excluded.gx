@@ -1,0 +1,10 @@
+// Title: a generated codec program also draws the queuefn template, so the oracle compares none of its values
+// Program 262 of `graphix-fuzz gen 6000 1` (the default generator, verbatim below).
+// Command: graphix-fuzz check design/review-2026-11-16/repro/fuzz-gen-a-codec-queuefn-excluded.gx
+// Expected (generate/mod.rs: "a program draws its codec round trips or its `<-` templates, never both"):
+//   the json round trip lowers the tier to FinalValues and the values are compared.
+// Observed: EXCLUDED — the oracle compares no values of this program; its sessions agree in kind
+//   (the queuefn template's `<-` and `queuefn(` beside `json::read` make oracle_tier say Excluded).
+//   The same program without the first five statements: AGREE (trace).
+// Over `gen 6000 1`: 205 programs round-trip a codec, 33 of them (16%) also hold a queuefn template, all Excluded.
+{ let v2 = i64:0; v2 <- select v2 { s if s < i64:0 => s + i64:1, _ => never() }; let v0 = queuefn(#trigger: v2, |v1: i64| -> i64 v1 + i64:0); let v3 = v0((i64:2 - i64:1)); let v4 = v0(cast<i64>(i16:-32768)$); println("[v4]"); let v5 = v0(cast<i64>(z32:2147483647)$); println("[v5]"); let v3 = {i64:0 => Collection::map([f64:-1.0, f64:5e-324], |v0| ""), i64:1 => ["hello"]}; println("[v3]"); { let r: string = json::read(json::write_str("graphix")$)$; r } }

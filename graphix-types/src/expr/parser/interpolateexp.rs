@@ -130,6 +130,14 @@ fn triple_run(i: &mut Input) -> R<Intp> {
     Ok(Intp::Lit(pos, i.pos(), CompactString::from(s)))
 }
 
+// CR claude for claude: [bug/low] A bad escape in a template is reported at its `\` as
+// "Unexpected `\` / Expected \"\"\"" (`"""a\qb"""`, `"""a\]b"""`). A quoted string
+// reports the char after the `\` and lists the escapes it could be. Cause: the
+// `attempt` around the `\` and its char rolls the failure back to the `\`, the run
+// ends, and only the closer is expected. Fix: read the `\` outside the attempt, so the
+// failure stands at the escape char with the escapes listed (`splice_part` already
+// takes `\[` first), and add a note that `\]` is no escape in a template. probe:
+// design/review-2026-11-16/repro/t-parser-a-template-escape.sh (t-parser-a-03)
 fn triple_escape(i: &mut Input) -> R<Intp> {
     const ESCAPES: [(char, char); 6] =
         [('n', '\n'), ('r', '\r'), ('t', '\t'), ('0', '\0'), ('"', '"'), ('\\', '\\')];

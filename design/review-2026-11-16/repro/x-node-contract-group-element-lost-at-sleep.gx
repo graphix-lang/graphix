@@ -1,0 +1,22 @@
+// array::group: the element sent to the predicate in the cycle before the
+// arm sleeps is lost, and the group stalls for good.
+// Run: timeout -s KILL 10 graphix --no-cache x-node-contract-group-element-lost-at-sleep.gx
+// Expected: [1], [2], [3] (element 2 is sent to `f` when f answers for 1 at
+//   cycle 5; the arm sleeps at cycle 6 and wakes at cycle 8; a sleep is a
+//   pause, so 2 and 3 are grouped after the wake, as `queue` re-sends what it
+//   had in flight).
+// Observed: [1] only. Group's `update` sends the next element through
+//   `ctx.rt.set_var(pred.args()..)`, which lands at cycle 6 while the arm
+//   sleeps; `Group::sleep` only sleeps the callback, `ready` stays false, and
+//   the woken callback recomputes without firing, so no answer ever comes.
+// Control: replace the `on` writer by `select ev { 10 => true, _ => never() }`
+//   (no sleep): [1], [2], [3].
+// graphix-fuzz check (with `r` in place of `dbg(r)`): AGREE.
+let ev = array::iter([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+let g = never();
+g <- select ev { 4 => true, _ => never() };
+let x = select ev { 1 => 1, 2 => 2, 3 => 3, _ => never() };
+let on = true;
+on <- select ev { 5 => false, 7 => true, _ => never() };
+let r = select on { true => array::group(x, |n, v| v ~ g), false => never() };
+dbg(r)

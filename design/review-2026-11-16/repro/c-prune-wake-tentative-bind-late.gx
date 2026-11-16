@@ -1,0 +1,18 @@
+// A guard's tentative bind reaches a reader the walk passed as a late fire,
+// though the arm is not taken and the bind is retracted.
+//
+// `f` holds a closure over the guarded arm's bind `n`, made when the arm took
+// 20. `let r = f()` sits ABOVE the select, so it is a reader the walk has
+// passed when the select runs. At in0 = 5 and 6 the guard `n > 10` is false
+// and the arm `m => m` takes the value: `n` was never bound to 5 or 6.
+//
+// Command:
+//   graphix-fuzz run design/review-2026-11-16/repro/c-prune-wake-tentative-bind-late.gx
+// Expected (as the same program with `let r = f()` moved BELOW the select
+// gives): r stays 20 and c stays 1 through in0 = 5 and 6:
+//   [1:(20, 1, 20)]; [0:(20, 1, 5)]; [0:(20, 1, 6)]; ...
+// Observed (node-walk and JIT alike, cold and warm):
+//   [1:(20, 1, 20)]; [0:(20, 1, 5) 1:(5, 2, 5)]; [0:(5, 2, 6) 1:(6, 3, 6)]; ...
+//   stdout: r=20 c=1 | r=5 c=2 | r=6 c=3 | r=30 c=4
+// schedule-v1: cap=96 events=768; in0=i64:20; in0=i64:5; in0=i64:6; in0=i64:30
+{ let f: fn() -> i64 = never(); let r = f(); let c = count(r); println("r=[r] c=[c]"); let s = select in0 { n if n > i64:10 => { f <- n ~ (|| n); n }, m => m }; (r, c, s) }

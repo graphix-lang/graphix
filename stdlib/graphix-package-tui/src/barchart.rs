@@ -176,6 +176,19 @@ impl<X: GXExt> TuiWidget for BarChartW<X> {
             }
         };
         let mut used = 0u32;
+        // CR claude for claude: [bug/medium] This loop hands ratatui only the bars that
+        // fit, and with no #max ratatui scales against the largest value it is given.
+        // So the scale is the visible bars' maximum, not the data's, and it changes
+        // with the terminal's size: twenty bars of 1 with one of 1000 last draw nothing
+        // for the 1s at 30 columns, but at 8 columns (the 1000 bar off screen) the
+        // eight 1s draw full height with "1" labels. Ratatui's BarChart and this
+        // package's sparkline both scale against all the data. Fix: when #max is unset,
+        // compute the maximum over every bar of every group before this loop and pass
+        // it with chart.max(..), keeping the truncation for the u16 width sum.
+        // render_test::a_bar_chart_draws_the_bars_that_fit pins the current scale (bars
+        // 1..8 of 40000 drawn full), and its expected lines change with the fix. probe:
+        // design/review-2026-11-16/repro/tests-tui-barchart-scale-follows-width.gx
+        // (tests-tui-01)
         'groups: for (_, group) in &self.data {
             let mut bars: SmallVec<[Bar; 8]> = SmallVec::new();
             for (_, bar) in &group.bars {

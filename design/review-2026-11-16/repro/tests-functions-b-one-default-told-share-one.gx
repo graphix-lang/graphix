@@ -1,0 +1,17 @@
+// Title: one defaulted function at a written label is told "the functions met here share one #d"
+// Command: graphix --no-cache --check tests-functions-b-one-default-told-share-one.gx
+// Expected: refused with "type mismatch string does not contain i64" and no note
+//   (only one function has a #d default, and the label `fn(?#d: string, ..)` that
+//   holds it is already written; one_met_default_names_no_annotation pins that a
+//   single defaulted function gets no "share one" note).
+// Observed:
+//   1: at: line: .. in: |#d = 1, x: i64| cast<string>(d)$
+//   2: the functions met here share one #d: annotate the binding that holds them
+//      with a function type whose #d holds every default
+//   3: at: .. in: 1
+//   4: type mismatch string does not contain i64
+// Cause: callsite.rs judge_hidden_defaults iterates distinct_defs (the compiles of
+// one lambda folded into one) but builds the note from written_defs, which lists
+// the definition's compile and the call's re-compile of the same lambda as two.
+let f = |#w: fn(?#d: string, x: i64) -> string = |#d = 1, x: i64| cast<string>(d)$, x: i64| w(x);
+f(7)

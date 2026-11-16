@@ -328,6 +328,27 @@ impl<R: Rt> Apply<R> for Group<R> {
         self.pred.delete(ctx);
     }
 
+    // CR claude for claude: [bug/medium] A sleep loses the element `update` sent to the
+    // predicate through `set_var` for the next cycle. The delivery lands while the arm
+    // sleeps and `ready` stays false. The woken predicate recomputes without firing, so
+    // the group stalls until something else fires `f`, and that fire is then taken as
+    // the answer for the lost element. Keep the sent `(len, x)` until the predicate's
+    // argument ids are seen in the event, and send it again from the wake, as `Queue`
+    // and `IterQ` do with `InFlight`. List `group` beside them in
+    // design/sleep_and_wake.md. `queuefn`'s release has the same loss. probe:
+    // design/review-2026-11-16/repro/x-node-contract-group-element-lost-at-sleep.gx
+    // (x-node-contract-02)
+    // CR claude for claude: [bug/high] Group never answers again when its arm sleeps
+    // while it drains a backlog. The answer path feeds the next queued element to f
+    // through ctx.rt.set_var on pred.args() for the next cycle. If the arm sleeps in
+    // that cycle, the write lands on a sleeping call and the wake fires nothing, so
+    // `ready` stays false forever and every later v piles into `queue` without bound.
+    // Queue and IterQ take back what they sent at sleep and send it again from the wake
+    // (design/async_sleep_outputs.md, State); Group should too. When !ready at sleep,
+    // re-send buf's (len, last) through set_var at the first update after the wake, and
+    // add group to that doc's audit table with a pin. probe:
+    // design/review-2026-11-16/repro/collections-str-group-sleep-stuck.gx
+    // (collections-str-01)
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.pred.sleep(ctx);
     }

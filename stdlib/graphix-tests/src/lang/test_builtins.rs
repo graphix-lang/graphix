@@ -533,6 +533,13 @@ async fn calls_in_order_across_a_sleep(mode: Mode) -> Result<()> {
     let setup = |ctx: &mut TestState| {
         ctx.register_builtin::<CachedArgsAsync<SlowLogEv>>().unwrap();
     };
+    // CR claude for claude: [test-gap/low] The run's values are discarded, so the
+    // fixture passes whether the program hears call 2's answer or not, and whether call
+    // 1's answer (which the sleep took back) leaks through after the wake. The select
+    // should give exactly [2]: assert `run_delta_with(..).values == [Value::I64(2)]`
+    // beside the log. A change to CachedArgsAsync's kept-reply routing (kept.id at the
+    // remint, reclaim_all) that answers the reclaimed call or loses the queued one goes
+    // unseen here. Found by reading; not run. (tests-lang-rest-b-02)
     run_delta_with(&code, mode, setup, Collect::Settled).await?;
     let log: Vec<CompactString> = SLOW_LOG
         .lock()

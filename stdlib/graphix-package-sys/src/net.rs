@@ -143,6 +143,13 @@ impl Write {
     }
 }
 
+// CR claude for claude: [bug/medium] Write has no reborn. The values it queued while
+// the path was bottom (dv Right) survive the sleep between seq runs and are written by
+// a later run once its path is valid. Apply::reborn says a builtin entering a step's
+// next run forgets what its last run left. Add reborn: release a connected target,
+// reset dv to an empty queue and out to phantom. probe:
+// design/review-2026-11-16/repro/sys-net-write-queue-survives-seq-run.gx (runs 1-3
+// queue under a bottom path, run 4 writes [1, 2, 3, 4], not [4]) (sys-net-02)
 impl<R: Rt> Apply<R> for Write {
     /// A live subscription and queued values exist only once a cycle ran.
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
@@ -165,6 +172,16 @@ impl<R: Rt> Apply<R> for Write {
             && (woke || !self.same_path(p.as_ref()))
         {
             self.release(ctx);
+            // CR claude for claude: [bug/low] This return, and the write_target error
+            // return below, leave update before the block that queues `val`. A value
+            // that fires in the same cycle as an invalid path is dropped, though
+            // write's doc says values that fire while the path is invalid queue and are
+            // written when a valid one arrives. A later value under the same invalid
+            // path does queue. Hold the error in a local, fall through to the queueing
+            // block (dv is already Right after release), and return the error at the
+            // end. probe:
+            // design/review-2026-11-16/repro/sys-net-write-invalid-path-drops-value.gx
+            // (handler gets [1, 3], not [1, 2, 3]) (sys-net-03)
             let Some(p) = p else {
                 let e = errf!(literal!("WriteError"), "invalid path {path}");
                 return self.out.set(TagValue::fired(e));
@@ -328,6 +345,18 @@ impl<R: Rt> Apply<R> for Subscribe {
         let res = got.map(|v| match v {
             // the pump's unsubscribe, or the publisher's own error
             Value::Error(e) => remote_err(&ERR_TAG, &e),
+            // CR claude for eric: [bug/medium] A subscription casts what arrives as
+            // writer's data. No bound on `subscribe`'s 'a refuses a union whose members
+            // write as the same data, as JsonData does for JSON; the same holds for
+            // `publish`'s 'v and on_write 'a, `write`, `call` and `rpc`. So a Graphix
+            // publisher and a Graphix subscriber at one type disagree on the value:
+            // `[1, 2]: [Array<i64>, (i64, i64)]` arrives as `(1, 2)`, and `` `A:
+            // [string, `A] `` arrives as `"A"` (a `` [`Default, string] `` setting is
+            // the realistic case). Decide whether the netidx entry points take the
+            // textdata judgment JsonData uses: refuse such a union and name the member
+            // to tag. probe:
+            // design/review-2026-11-16/repro/x-kind-markers-netidx-union-roundtrip.gx
+            // (x-kind-markers-01)
             v => coretraits::with_display_hooks(ctx, |env| self.target.cast(env, v)),
         });
         match res {
@@ -1001,6 +1030,11 @@ fn write_type(env: &Env, resolved: Option<&FnType>) -> Option<Type> {
 pub(crate) struct Publish<R: Rt> {
     /// Wake catch-up: `sleep()` unpublishes, so the first update after
     /// must republish from the present path/value.
+    // CR claude for claude: [readability/low] This field's doc, and PublishRpc's slept
+    // doc, open with "Wake catch-up:", the name of the deleted rule. What the bit does
+    // is re-attach the publication at the wake, as Subscribe's slept describes without
+    // that label. Drop the prefix in both places. Found by reading; not run.
+    // (sys-net-06)
     slept: WakeBit,
     current: Option<(Path, Val)>,
     top_id: ExprId,
@@ -1092,6 +1126,15 @@ impl<R: Rt> Apply<R> for Publish<R> {
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R>, from: &mut [Node<R>]) -> &TagValue {
+        // CR claude for claude: [bug/medium] The publish! error arm and the write_data
+        // error arm below both return from update before `self.on_write.update(ctx)`
+        // and before the NetWrite take. So in a cycle where the publication fails, a
+        // running handler instance loses the fires of its captures, and a write
+        // delivered in that cycle is dropped while its writer is told success. Keep the
+        // error in a local the way PublishRpc::update keeps `failed`, let control reach
+        // the write handling and on_write.update, and return the error at the end.
+        // probe: design/review-2026-11-16/repro/sys-net-publish-error-skips-handler.gx
+        // (sys-net-01)
         macro_rules! publish {
             ($path:expr, $v:expr) => {{
                 let path = Path::from($path.clone());

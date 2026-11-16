@@ -617,6 +617,19 @@ fn check_def_assertions<R: Rt>(
             continue;
         };
         if let Some(msg) = assertion_failure(pending[i].kind, d) {
+            // CR claude for claude: [bug/medium] A failed assertion is removed as its
+            // refusal is returned, and nothing puts it back (Saved leaves
+            // def_assertions out), so a definition's assertion is enforced once: the
+            // next input, or the next dynamic module load, that calls the same function
+            // is accepted and runs it. `#[tail_recursive] let rec g = ..` with a
+            // non-tail self-call refuses the first load of `let v = g(3)` and loads
+            // `let v = g(4)`; at the REPL the second `g(3)` prints 3, and #[sync] and
+            // #[pure] behave alike. Leave the assertion pending when its check fails
+            // (take the error's site from `pending[i].spec`), and have
+            // analyze_bound_callee set `said` so a run-time bind still reports once.
+            // probe:
+            // design/review-2026-11-16/repro/c-lib-def-assertion-enforced-once.gx
+            // (c-lib-02)
             let a = pending.remove(i);
             return Err(anyhow!("{msg}").at(&a.spec));
         }
@@ -873,6 +886,18 @@ pub(crate) fn def_body_facts<R: Rt>(
                     }
                 }
             }
+            // CR claude for claude: [bug/medium] c-lambda-04 variant: a call to a local
+            // lambda adds that lambda's facts but not the fn parameters it calls (its
+            // `param_calls.captured`). So a callback that reaches the enclosing
+            // definition's parameter through another local lambda records no call of
+            // it, and callback_facts finds the callback pure. `#[sync]` then passes on
+            // `|f, v| { let k = |y| f(y); let g = |x| k(x); filter(v, g) }` and on
+            // `filter(v, |x| { let k = |y| f(y); k(x) })` when `f` is async. `filter(v,
+            // |x| f(x))` and a direct `k(v)` are refused. When callee_def resolves to a
+            // source definition, merge its `param_calls.captured` into `calls.captured`
+            // here. probe:
+            // design/review-2026-11-16/repro/x-rerun-6-sync-callback-via-local-callee.gx
+            // (x-rerun-6-02)
             callee_facts(cs, None, ctx, &unresolved, &mut |_| ())
         }
     });
@@ -1103,6 +1128,18 @@ enum Reach {
 /// value can hold a reference or a function, at a parameter its declared
 /// signature types as one, as `Any` or by a bounded variable (a builtin
 /// has nothing else to reach through).
+// CR claude for claude: [bug/high] A builtin handed a callback whose source holds any
+// call (even `str::len`) or any `<-` answers Reach::All here, because writes_nothing
+// counts every Apply and Connect. The step then reads and writes everything, and every
+// seqq capture turns live. In `seqq t { until live(step) > 5; let y = filter(t, |v|
+// str::len("[v]") > 0); x }` the run reads x as it stands (6) instead of at enqueue
+// (0). The same callback handed to array::map, an intrinsic summarized through its
+// instance, keeps the snapshot. Nothing in the seqq writes x, and the language rule
+// says seqq captures what the body only reads. Summarize a callback literal through its
+// definition's own reads and writes and its callees', as instance_summaries does,
+// instead of collapsing to All. design/dependency_summaries.md's builtin bullet changes
+// with it. probe:
+// design/review-2026-11-16/repro/x-rerun-5-seqq-writing-callback-live.gx (x-rerun-5-01)
 fn builtin_reach<R: Rt>(cs: &CallSite<R>, ctx: &CompileCtx<R>) -> Reach {
     let env = &ctx.env;
     let ft = callee_def(cs, ctx).map(|d| &d.typ);
@@ -1267,6 +1304,19 @@ fn handed_def<'a, R: Rt>(
         return l.def_value().downcast_ref::<LambdaDef<R>>();
     }
     let lid = match n.view() {
+        // CR claude for claude: [bug/medium] `bind_to_lambda` keeps a binding's first
+        // lambda when a `<-` writes the binding, and the call site's readers of the
+        // table (`static_builtin`, `fn_arg_identity`, `Bind::aliased_lambda`) ask
+        // `CompileCtx::rebinds` before trusting it; this one does not. A builtin handed
+        // a written function variable is so judged by the variable's first value: `seq
+        // go { filter(5, cb); let s = b; s }`, with `cb` rewritten to a lambda that
+        // writes `b`, is planned "reads all, writes nothing", the next step enters in
+        // the same cycle and reads the old `b` (0, where the twin whose `cb` is never
+        // written prints 5). A `seqq` capture of `b` stays the queued snapshot the same
+        // way. Return `None` for a binding `CompileCtx::var_written` names, so the call
+        // is opaque. probe:
+        // design/review-2026-11-16/repro/c-analysis-branch-seq-written-callback.gx
+        // (c-analysis-branch-04)
         NodeView::Ref(r) => ctx
             .bind_to_lambda
             .get(&r.id)
@@ -1307,6 +1357,17 @@ fn callee_own_facts<R: Rt>(
             ids.iter().for_each(|iid| pending(*iid));
             return LambdaFacts::PURE;
         }
+        // CR claude for claude: [bug/medium] A call with no static target through a
+        // binding a `<-` writes takes the facts of the binding's first lambda here,
+        // which `bind_to_lambda` still names, so its caller is inferred by a function
+        // the variable may no longer hold. `#[sync] let g = |n| f(n)` passes while `f
+        // <- .. ~ |n| throttle(..)` makes `g` async at run time, and `#[pure]` passes
+        // over a `count` the same way; with `f` async from its `let` the same `g` is
+        // refused, and nothing is reported when the write lands. `callee_def` reads the
+        // table the same way. Answer `unresolved` where `CompileCtx::var_written` holds
+        // of the binding. probe:
+        // design/review-2026-11-16/repro/c-analysis-branch-sync-written-callee.gx
+        // (c-analysis-branch-05)
         if let Some(d) =
             ctx.bind_to_lambda.get(&r.id).and_then(|v| v.downcast_ref::<LambdaDef<R>>())
         {
@@ -1595,6 +1656,17 @@ impl Summary {
 /// Whether `n` itself may run a core-trait impl (`Eq`, `Ord`,
 /// `Display`): a comparison or a print of a value that can hold an
 /// abstract one, or a kernel whose region holds one.
+// CR claude for claude: [bug/medium] Only the six comparison operators, a string
+// interpolation and a kernel count as running a core-trait impl. A builtin handed a
+// value holding an abstract (`array::sort`) and a map literal keyed by one run the same
+// `Ord`/`Eq` impls, whose reads no summary holds, and are summarised as reading nothing
+// unknown: `(mk(1), array::sort([C(a + 10), ..]))` forks and the forked sort orders by
+// what the impl read the cycle before, where the same tuple over `C(a + 10) < C(1)`
+// stays in order. Under `Auto` the map-literal form answers differently from run to
+// run. Make a builtin call with an argument whose type holds an abstract, and a map
+// literal or lookup keyed by one, opaque here as the operators are. probe:
+// design/review-2026-11-16/repro/c-analysis-branch-fork-builtin-hook-reads.gx
+// (c-analysis-branch-02)
 fn runs_hooks<R: Rt>(n: &Node<R>, env: &Env) -> bool {
     let holds = |n: &Node<R>| n.typ().holds_abstract(env);
     match n.view() {
@@ -1720,6 +1792,15 @@ fn access_children<'a, R: Rt>(n: &'a Node<R>, f: &mut dyn FnMut(&'a Node<R>)) {
 }
 
 /// [`local_summary`] of `x` alone, its children aside.
+// CR claude for claude: [risk/medium] `NodeView`'s contract is that a new node kind is
+// a compile error at every match that must decide about it, and `node_facts` keeps it.
+// This summary, which decides whether siblings fork and whether a seq step enters in
+// the same cycle, ends in `_ => ()`: a kind it does not name reads and writes nothing,
+// the unsafe answer, and `escaping` and `publishes` have the same shape. A new kind
+// that reads or writes a variable by id compiles, forks beside its reader, and is found
+// only if the fuzzer generates it under `GRAPHIX_PAR_AUDIT`. Replace each wildcard with
+// the list of kinds that touch nothing, as `node_facts` does. Found by reading; not
+// run. (a-compiler-07)
 fn own_access<R: Rt>(
     x: &Node<R>,
     current: Option<&Node<R>>,
@@ -1732,6 +1813,20 @@ fn own_access<R: Rt>(
     let ids = detail == Detail::Ids;
     match x.view() {
         NodeView::ByRef(_) => s.makes_refs = true,
+        // CR claude for eric: [bug/high] A read is summarized as its own id, so a seq
+        // step that reads a binding derived from a variable the step before wrote is
+        // planned into the cycle of the write and reads the value from before it. `let
+        // b = a * 2; seq go { a <- 5; let d = b; let g = a; [d, g, b] }` answers [0, 5,
+        // 10]; `busy <- false; until idle` over `let idle = !busy` stalls for good
+        // while `until !busy` completes; under seqq the derived read stays the enqueue
+        // snapshot for the whole run. The same value read through a function (`|| a *
+        // 2`) sees the write, and the book says a run sees its own effects. Fix: close
+        // a step's reads over the initializers of the unwritten bindings it names
+        // (transitively, through their static callees), and make a seqq capture whose
+        // closure meets the machine's writes live; or rule the narrower reading and say
+        // so in the book and the skill. probe:
+        // design/review-2026-11-16/repro/x-seq-sampling-derived-read-misses-own-write.gx
+        // and x-seq-sampling-until-derived-stalls.gx (x-seq-sampling-02)
         NodeView::Ref(r) => {
             if ids {
                 s.reads.ids.insert(r.id);
@@ -1819,6 +1914,18 @@ fn own_access<R: Rt>(
                     }
                 );
             }
+            // CR claude for claude: [perf/medium] A slot's call through a function
+            // parameter of the function around the collection (`|xs, t, f|
+            // array::map(xs, |x| f(x, t))`) binds at run time, after the enclosing
+            // check's `bind_to_lambda` entry is gone, so it lands here as opaque and
+            // ordered: the slots are dependent and never fork, under Auto and under
+            // `#[parallel]`, which `check_parallel` accepts because `slots_fork` judges
+            // the statically resolved prototype. The effect analysis (`handed_def`,
+            // `callee_own_facts`) and fusion's lowering read `fn_forward_resolutions`
+            // for such a call; read it here too and count the call as the instance it
+            // is bound to, as a slot's own call is. probe:
+            // design/review-2026-11-16/repro/x-parallel-slot-call-through-formal-never-forks.gx
+            // (x-parallel-01)
             s.unbound |= cs.resolved_apply().is_none()
                 && (cs.static_target().is_some() || current);
             s.opaque()
@@ -2180,6 +2287,16 @@ fn hands_out_callee_binds<R: Rt>(n: &Node<R>) -> bool {
                     makes_handles(g.body())
                         || g.inline_callback().is_some_and(|c| makes_handles(c.body()))
                 }
+                // CR claude for claude: [bug/medium] A builtin handed a function runs
+                // it, and that callback's body can make a reference or a lambda over
+                // its own lets as any callee's can. `(*r, filter(a, |x| { let y = x +
+                // 1; r <- once(&y); true }))` is planned independent and the forked run
+                // drops one of `*r`'s values; the same callback in a user function,
+                // `array::map`, `array::fold` or `opt::map` is found and agrees. Answer
+                // true for a builtin handed an argument of function type or a
+                // reference. probe:
+                // design/review-2026-11-16/repro/c-analysis-branch-fork-builtin-callback-ref.gx
+                // (c-analysis-branch-03)
                 Some(ApplyView::BuiltIn(_)) => false,
                 None | Some(ApplyView::Opaque) => true,
             }
@@ -2197,6 +2314,15 @@ fn read_before<R: Rt>(
     publishing: &Vars,
     escaping: &Vars,
 ) -> Option<Option<BindId>> {
+    // CR claude for claude: [perf/low] This scans every id the run has read for each
+    // statement, where the statement publishes a handful: planning a run of n
+    // statements that each read a variable of their own costs n²/2 probes. A block of
+    // 32000 constants and 32000 lets over them spends 2.26 s in the Analysis phase
+    // (debug build) against 42 ms when every let reads one variable. Probe the smaller
+    // set, as `Vars::meeting` does: `publishing.ids.iter().find(|id|
+    // reads.ids.contains(id))`. probe:
+    // design/review-2026-11-16/repro/c-analysis-branch-plan-runs-quadratic.py
+    // (c-analysis-branch-08)
     if let Some(id) = reads.ids.iter().find(|id| publishing.ids.contains(id)) {
         return Some(Some(*id));
     }
@@ -2306,6 +2432,17 @@ fn shallow_verdict(siblings: &[Shallow]) -> Option<Option<bool>> {
 }
 
 /// The verdict on `children` from what each accesses.
+// CR claude for claude: [structure/medium] This loop and `plan_runs` each write out the
+// sibling rule (a read meeting what is published, `read_before`, an unknown read after
+// a reference was made, two ordered calls) over the same four accumulators,
+// `shallow_verdict` states a third, shorter form, and `independent` and
+// `ForkCx::independent` each derive `Shallow` their own way. Each gap in the rule has
+// to be closed in two places, and one closed in `read_before` alone left the other
+// direction open. Keep the accumulators in one struct with one `breaks(n, access,
+// escaping) -> Option<RunBreak>` and one `admit`, which `plan_runs` calls to cut runs
+// and this calls to answer dependent at the first break; give `ForkCx::independent` the
+// `Sites` and have `independent` build its graph and call it. Found by reading; not
+// run. (c-analysis-branch-07)
 fn ids_verdict<'a, R: Rt>(
     children: impl Iterator<Item = &'a Node<R>>,
     accesses: &[Summary],
@@ -2318,6 +2455,19 @@ fn ids_verdict<'a, R: Rt>(
     for (n, access) in children.zip(accesses.iter()) {
         let mut publishing = Vars::default();
         publishes(n, &mut publishing);
+        // CR claude for claude: [bug/high] An unknown read (a dynamic call, a `*r`)
+        // meets an earlier sibling only where that sibling publishes something by name
+        // or makes a reference. A sibling that publishes nothing itself (a
+        // zero-argument call, a select over one) but whose callee binds a let a lambda
+        // captures is passed: `(mk(), h(5))`, with `h` the closure `mk`'s instance
+        // made, forks, and the forked `h(5)` reads the instance's `y` of the cycle
+        // before, for good in `add(mk(), h(5))`. `read_before` closes the other
+        // direction with `hands_out_callee_binds`; this direction needs the same:
+        // remember whether a sibling already admitted hands out callee binds and break
+        // on an unknown read after one. `plan_runs` restates the rule and has the same
+        // gap (`{ mk(); h(5) }`). probe:
+        // design/review-2026-11-16/repro/c-analysis-branch-fork-callee-closure.gx
+        // (c-analysis-branch-01)
         if access.reads.meeting(&published).is_some()
             || read_before(&read, n, &publishing, escaping).is_some()
             || (access.reads.unknown() && made_refs)
@@ -2548,6 +2698,36 @@ fn plan_machines<R: Rt>(graph: &StaticCallGraph<'_, R>, ctx: &CompileCtx<R>) {
                 written.union(&s.writes);
             });
             for (id, c) in caps.iter() {
+                // CR claude for eric: [risk/medium] `Vars::names` is true for every
+                // capture once any step is opaque, so one call through a function value
+                // (`h.f(0)` over a struct of lambdas, a function from an array or a
+                // select) or one core-trait hook (interpolating or comparing an
+                // abstract type that implements Display or Eq) makes every capture of
+                // the seqq live: each request then reads the world at its steps'
+                // entries, two steps can disagree, and nothing warns. `seqq go { until
+                // live(ready); let c = h.f(0); [go, c, x] }` answers [1, 1, 90] where
+                // the same body over a named function answers [1, 1, 10]. The skill
+                // promises one read of the world per run with no exception. Narrow what
+                // an opaque step can write (only variables some lambda writes; a
+                // `#[pure]` hook writes nothing), or warn at the check and document it.
+                // probe:
+                // design/review-2026-11-16/repro/x-seq-sampling-seqq-dynamic-call-voids-captures.gx
+                // (x-seq-sampling-05)
+                // CR claude for eric: [bug/medium] A seqq step that calls a function
+                // the compiler cannot trace (a function value from a select, or from a
+                // call such as `id(f)`) summarizes as writing every variable. Here that
+                // marks every capture live, so the run reads `k` as it stands, not as
+                // the request captured it. The repro prints (1, 30) (2, 30) (3, 30);
+                // the same program with `g` a plain lambda, or passed as a formal,
+                // prints (1, 10) (2, 20) (3, 30). design/seq_blocks.md states this
+                // rule, but book core/seq.md (Captured inputs) and SKILL.md promise
+                // that seqq captures every variable its body only reads, so a program's
+                // meaning changes when a function moves into a select. Decide which
+                // holds: snapshot every capture the seq's own text does not write (a
+                // callee's own `<-` still lands where it writes), or keep the rule and
+                // state it in the book and the skill. probe:
+                // design/review-2026-11-16/repro/x-rerun-3-seqq-untraced-callee-live.gx
+                // (x-rerun-3-02)
                 let live = written.names(&c.live_id);
                 c.is_live.store(live, Ordering::Relaxed);
                 if live {

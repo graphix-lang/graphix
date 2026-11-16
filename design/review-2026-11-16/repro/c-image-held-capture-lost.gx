@@ -1,0 +1,13 @@
+// Title: a warm image loses BodyShared::held, so a later input's call that
+// omits a labeled default reading a capture of the enclosing definition's
+// check fails to compile.
+// Command: /home/eric/tmp/review-2026-11-16/bin/graphix-fuzz check c-image-held-capture-lost.gx
+// Expected: AGREE, every mode Trace([0:(null, 11)])
+// Observed: DIVERGENCE — image bug: interp/cold Trace([0:(null, 11)]),
+//   interp/warm Trace([]). In the shell with a cache (run it twice, printing
+//   `st`), the warm run's `st` is
+//   error:`DynamicLoadError("compile error ... n not defined").
+// Passing the default (`outer(3)(#m: 6, 5)`) agrees; so does `--no-cache`.
+let outer = |n: i64| { let inner = |#m: i64 = n * 2, k: i64| k + m; inner };
+let st = mod m dynamic { sig { use super::outer; val v: i64 }; source "let v = outer(3)(5)" };
+(st, m::v)

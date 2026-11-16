@@ -1,0 +1,22 @@
+// Title: a widening rebinds the variable to the wider argument without tying
+//        the earlier argument's open function cells to it: the check accepts,
+//        the build's run-time bind refuses
+// Command: GRAPHIX_ELAB_AUDIT=1 timeout -s KILL 15 graphix --no-cache x-typecheck-order-widen-drops-open-fn-cells.gx
+//          (graphix --no-cache --check on it exits 0)
+// Expected: the check refuses `st <- "s"` (st is i64: `h` was read at
+//           fn(q: i64) -> i64 through 'a), as it does when the tuples are
+//           written (h, 1) and (g, n).
+// Observed: --check passes; the run prints
+//   ELAB-AUDIT instance-signature .. `{ st <- q; st }`: an instance at fn(q: i64) -> i64 of a definition typed fn(q: string) -> string
+//   r.1(3): binding the callee failed: a run-time bind at r.1(3) did not type: ..
+//   and `v + 1` never has a value.
+let n: [i64, null] = null;
+let g: fn(q: i64) -> i64 = |q: i64| q;
+let f = |x: 'a, y: 'a| -> 'a x;
+let st = never();
+let h = |q| { st <- q; st };
+let r = f((1, h), (n, g));
+st <- "s";
+let v = (r.1)(3);
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+v + 1

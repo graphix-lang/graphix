@@ -40,6 +40,13 @@ pub(crate) fn stopped<R: Rt>(ctx: &ExecCtx<'_, R>) -> u64 {
 /// fire of one written from `unseen` on, while the evaluating arm slept,
 /// unless the innermost enclosing select that tracks it has no fire bit
 /// for it.
+// CR claude for claude: [structure/low] A scope is one of three things, a tracker's, a
+// fresh frame's or a body's, written as two bools beside tracker fields the other two
+// leave empty: `fresh && body` is representable, `owes` tests `body` in two places, and
+// `in_body` and `FreshFrame::open` allocate two empty `Arc<IntSet>`s and a `Mutex`
+// nothing reads, once for every body evaluated under a step and every call a step
+// issues. Make the kind an enum (`Tracker { tracked, pending, taken }`, `Fresh`,
+// `Body`) beside `unseen` and `outer`. Found by reading; not run. (c-prune-wake-05)
 #[derive(Debug)]
 pub(crate) struct CatchUp {
     /// The first cycle whose writes the evaluating arm did not see.
@@ -254,6 +261,19 @@ pub(crate) fn inject<R: Rt>(
 /// the current standing value. A select gives each guard a consumer slot
 /// in the same tracker. The scrutinee and pattern binds (of any enclosing
 /// select) are not delivered by it. Survives sleep.
+// CR claude for eric: [structure/medium] Bind-driven bodies deleted fire memory from
+// arms, guards, slots and activations; this tracker keeps it for the seq world: a fire
+// bit per input per consumer, a clock per consumer, `learned` and `carried` sets, held
+// by the machine, by a select compiled in a step's own text and by an absent bound
+// call. The language now has two answers to what an entered body is owed for the fires
+// it missed: a step is owed them once, a select arm nothing, and which one a select
+// gets depends on whether it is written in the step or in a function the step calls
+// (`CFlag::SeqStep`, which a lambda drops). A step already reads its inputs through an
+// entry snapshot; what the tracker still serves is `live(e)`, a nested seq's trigger
+// and inputs learned while running. Rule whether those three are worth 795 lines and
+// the second rule: giving them the body rule (owed nothing, read live from entry)
+// deletes `TrackedFires`, `CatchUp` and `Event::learned`. Found by reading; not run.
+// (a-compiler-06)
 #[derive(Debug, Default)]
 pub(crate) struct TrackedFires {
     /// Per arm: the body's free refs. Refreshed at each deselect, when
@@ -565,6 +585,18 @@ impl TrackedFires {
         if !changed {
             return;
         }
+        // CR claude for claude: [perf/medium] A recursion whose call sits in a seq step
+        // costs time cubic in its depth: 50 levels 0.44 s, 100 1.6 s, 200 13.5 s (debug
+        // build). The same recursion without the seq runs 100000 deep in 2.9 s. Each
+        // level binds a fresh call. `CallSite` sets `Event::learned`,
+        // `TrackedFires::ran` leaves it set for every enclosing tracked arm and seq
+        // step, and each of them then re-collects `Refs::default()` here over its whole
+        // subtree, every deeper instance included: O(depth) walks of O(depth) nodes per
+        // level. gdb samples of the runtime thread all sit in these walks. Fix: collect
+        // with `Refs::stopping_at_callees` and take each callee instance's refs from a
+        // set its `CallSite` keeps, recomputed only when that call binds, so a bind
+        // costs O(depth) rather than O(depth²). probe:
+        // design/review-2026-11-16/repro/x-stack-seq-recursion-cubic.gx (x-stack-02)
         let mut r = Refs::default();
         fill(&mut r);
         Self::arm_refs(&ctx.env, &r, &mut inputs, &mut consumed);

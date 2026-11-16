@@ -1,0 +1,25 @@
+// x-panics: building a map under a user Ord that is no total order panics the runtime
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache x-panics-map-ord-sort.gx
+// Expected (as array::sort and collection.rs's map result builder already do):
+//   the sort's panic caught, the map built pair by pair ("wrong but whole"),
+//   "union <n>" printed, exit 0.
+// Observed: "built 50 55", then
+//   thread 'graphix-runtime' panicked at .../core/src/slice/sort/shared/smallsort.rs:854:5:
+//   user-provided comparison function does not correctly implement a total order
+//   Error: graphix runtime is dead     (exit 1, with and without --no-fusion)
+// Same panic from `cast<Map<W, i64>>(m)` (typ/cast.rs Map::from_iter) and, under
+// --no-fusion only, from `map::filter(n, |kv| true)` (collection.rs `kept`); the
+// default (fused) run of that filter catches it and prints "filter 26".
+type W = Abstract<i64>;
+impl Eq for W { let eq = |a, b| a.0 == b.0 };
+impl Ord for W { let cmp = |a, b| select ((a.0 * 2654435761 + b.0 * 40503 + a.0 * b.0 * 977) / 13) % 3 { 0 => `Less, 1 => `Greater, -1 => `Greater, _ => `Equal } };
+let clk = sys::time::timer(duration:20.ms, false);
+let ks = array::init(200, |i| i);
+let a = {W(100000) => 0};
+let m = array::fold(ks, a, |acc, i| map::insert(acc, W(i), i));
+let n = array::fold(ks, a, |acc, i| map::insert(acc, W(i * 31 + 7), i));
+println("built [map::len(m)] [map::len(n)]");
+let u = map::union(clk ~ m, n);
+println("union [map::len(u)]");
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+0

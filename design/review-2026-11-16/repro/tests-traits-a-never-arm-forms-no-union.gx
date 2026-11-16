@@ -1,0 +1,15 @@
+// Title: trait_dispatch_never_arm_union forms no dispatch union: a never() arm
+//   adds nothing to a select's type, so `c` is Counter and the call is the static
+//   one trait_basic_abstract already pins.
+// Command: /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache --check design/review-2026-11-16/repro/tests-traits-a-never-arm-forms-no-union.gx
+// Expected (per the fixture's comment): c is the union [⊥, Counter].
+// Observed: "type mismatch bool does not contain Counter" — c is Counter alone.
+//   A written `let c: [_, Counter] = Counter(3)` keeps the bottom member and
+//   dispatches ("Counter(3)").
+trait Show { val show: fn(self) -> string };
+type Counter = Abstract<i64>;
+impl Show for Counter { let show = |c| "Counter([c.0])" };
+let opt: [Counter, null] = Counter(3);
+let c = select opt { null as _ => never(), s => s };
+let z: bool = c;
+Show::show(c)

@@ -234,6 +234,15 @@ pub(super) fn any_lambda(i: &mut Input) -> R<Expr> {
 }
 
 /// Whether every labeled item stands before every positional one.
+// CR claude for claude: [test-gap/low] This rule's refusal has no pin at any of its
+// three sites (apply_args, the lambda formals, typexp's fn type): no test or refused
+// fence holds LABELED_FIRST's text, so deleting any of the checks passes the gate. None
+// of the sites reports at the labeled item that follows a positional one. A call's
+// caret stands on its `)` with the note a column past it, a lambda's on its closing
+// `|`, and a fn type's after its return type. Refuse from the first labeled item after
+// a positional one, leading with LABELED_FIRST, and pin the three forms in
+// parser/test.rs with that item's column. probe:
+// design/review-2026-11-16/repro/tests-parser-labeled-first.sh (tests-parser-03)
 pub(super) fn labeled_first(labeled: impl IntoIterator<Item = bool>) -> bool {
     let mut positional = false;
     labeled.into_iter().all(|labeled| {

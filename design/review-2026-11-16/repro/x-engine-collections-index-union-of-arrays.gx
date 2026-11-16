@@ -1,0 +1,15 @@
+// Indexing, slicing or measuring a union of two array types is refused by a bare mismatch.
+//
+// command:
+//   graphix --no-cache --check x-engine-collections-index-union-of-arrays.gx
+//
+// expected: accepted, `xs[0]` typed Result<[i64, string], ..> (as `.0` over a union
+//   of tuples is, and as the slice pattern `select xs { [] => 0, [h, ..] => 1 }` over
+//   this same `xs` is), or a refusal that names what to write instead.
+// observed: "type mismatch Array<i64> does not contain [Array<i64>, Array<string>]"
+//   The same refusal for `xs[0..1]`, and
+//   "Array<'a: i64> does not contain [Array<i64>, Array<string>]" for `array::len(xs)`
+//   and `array::map(xs, |x| 1)`.
+let e: Array<i64> = [1, 2];
+let xs: [Array<string>, Array<i64>] = e;
+xs[0]

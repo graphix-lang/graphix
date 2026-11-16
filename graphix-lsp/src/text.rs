@@ -69,6 +69,13 @@ fn path_start(chars: &[char], mut start: usize) -> usize {
 }
 
 /// The identifier the cursor is on (`map` in `array::map`).
+// CR claude for claude: [style/low] The cursor helpers return names as `String` and
+// paths as `Vec<String>`: `ident_at`, `Typed`, `UsePath`, `call_context`, and the
+// `Query::ident` built from this. They allocate per request (and per REPL keystroke)
+// for names almost always under 24 bytes that never cross the LSP API as such. Fix: use
+// `CompactString` for the names and `LPooled<Vec<CompactString>>` for `receiver` and
+// `prefix`, converting only where a `CompletionItem` label wants a `String`. Found by
+// reading; not run. (lsp-08)
 pub(crate) fn ident_at(text: &str, cursor: Position) -> Option<String> {
     let chars = line_chars(text, cursor.line)?;
     let col = (cursor.character as usize).min(chars.len());

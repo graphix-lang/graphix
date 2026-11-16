@@ -1,0 +1,27 @@
+// db2: one commit reaches a subscription split across several deliveries
+// Run from an empty scratch dir (it creates ./torn.db):
+//   cd $(mktemp -d) && timeout -s KILL 120 graphix --no-cache <this file>
+// Each of 200 commits writes 50 keys; a delivery whose length is not a
+// multiple of 50 holds part of a commit, a state of the tree no commit made.
+// Expected (if a commit reached a watch whole): (200, _, 0).
+// Observed: (200, 219, 32): 32 of 219 deliveries held a torn commit.
+let d = db::open("torn.db")$;
+let t: db::Tree<string, i64> = db::tree(d, "t")$;
+let sub = db::subscription::new(t);
+let ch = db::subscription::on_change(sub)$;
+let split = 0;
+split <- ch ~ select array::len(ch) % 50 { 0 => split, _ => split + 1 };
+let deliveries = 0;
+deliveries <- ch ~ deliveries + 1;
+let go = sub ~ 0;
+let n = seqq let i = go {
+  let txn = db::txn::begin(d)$;
+  let tt: db::txn::TxnTree<string, i64> = db::txn::tree(txn, "t")$;
+  let _ = db::txn::batch(tt, array::init(50, |k| `Insert("[k]", i + 1)))$;
+  let _ = db::txn::commit(txn)$;
+  i + 1
+};
+go <- select n { x if x < 200 => x, _ => never() };
+let done = select n { 200 => n, _ => never() };
+sys::exit(sys::time::after_idle(duration:500.ms, done) ~ 0);
+(n, deliveries, split)

@@ -124,6 +124,15 @@ async fn interrupt_stops_an_idle_runtime() -> Result<()> {
     ctx.rt.wait_idle().await?;
     ctx.rt.interrupt();
     stopped_for_good(&ctx).await?;
+    // CR claude for claude: [test-gap/low] This check cannot catch the defect it names,
+    // and it can fail without one. `stopped_for_good` has already awaited
+    // `GXHandle::ended`, and when the run loop returns it drops `GX`, the only holder
+    // of the event sender. So nothing produced after the stop can reach `rx`. What
+    // `value_of` can find is a `cnt` update from before the interrupt, left in the
+    // channel when the 50 ms timer fired between its arming (the second compile) and
+    // `interrupt()`. Load makes that likely in a debug build. Delete the check and
+    // `value_of`: the ended task and the calls that fail with STOPPED already prove
+    // that the runtime stopped. Found by reading; not run. (tests-lib-b-b-04)
     if let Some(v) = value_of(&mut rx, cnt, Duration::from_millis(500)).await {
         bail!("cnt counted to {v} after the interrupt")
     }

@@ -1,0 +1,15 @@
+// A recursion whose call sits in a seq step costs time cubic in its depth
+// run: timeout -s KILL 100 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache x-stack-seq-recursion-cubic.gx
+//   (vary 200: 50 / 100 / 150 / 200)
+// expected: time linear in the depth, as for the same recursion without the
+//   seq (`|n| select n { 0 => 0, m => f(m - 1) + 1 }` runs 100000 deep in 2.9 s)
+// observed (debug build): depth 50: 0.44 s, 100: 1.64 s, 150: 5.6 s, 200: 13.5 s,
+//   exit code = the depth (the result). The same with GRAPHIX_PRUNE=off,
+//   GRAPHIX_PAR=off or --no-fusion. gdb samples of the runtime thread sit in
+//   Refs walks (Node::refs, CallSite::refs, GXLambda::refs ... 200-560 frames
+//   deep) called from node::wake::TrackedFires::evaluated, reached from
+//   seq_machine::evaluate and select::evaluate_arm.
+let rec f = |n: i64| -> i64 seq { select n { 0 => 0, m => f(m - 1) + 1 } };
+let r = f(200);
+sys::exit(sys::time::after_idle(duration:200.ms, r));
+r

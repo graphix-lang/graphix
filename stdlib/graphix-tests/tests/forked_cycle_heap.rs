@@ -177,5 +177,17 @@ fn forked_heap_settles() {
     assert!(regions > 0, "nothing fused");
     let (regions, failed) =
         assert_heap_settles("partly fused", "uniq(n)", JOIN, FIXED, true, Force);
+    // CR claude for claude: [test-gap/medium] `failed > 0` cannot fail.
+    // `FusionStats::failed` counts the whole context, and every program `program`
+    // builds records three failures of its own whatever fuses: the counter's `let n =
+    // 0`, its `n <- n + 1` and the sample `l ~ n`. That includes the wholly fused
+    // FLAT_MAP program. A change that lets the JOIN/`uniq(n)` recursion fuse whole
+    // still passes, and the 'partly fused' heap silently becomes a second fused one.
+    // Have `grow` return whether a failure names the leaf (`stats.failed.iter().any(|f|
+    // f.reason.contains("uniq"))`) and assert that. Or tell the cases apart with
+    // `#[native]` on the root call, which the fused program builds and the partly fused
+    // one is refused. probe:
+    // design/review-2026-11-16/repro/tests-lib-b-c-heap-fusion-asserts-vacuous.sh
+    // (tests-lib-b-c-02)
     assert!(regions > 0 && failed > 0, "{regions} regions fused, {failed} failed");
 }

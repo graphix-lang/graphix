@@ -1,0 +1,33 @@
+// A reload that replaces an impl marks no call site whose instance dispatches
+// to it, so the pruned walk keeps the retired impl where the unpruned walk
+// follows the new one.
+//
+// run:  timeout -s KILL 20 graphix --no-cache c-callsite-impl-reload-not-marked.gx
+//       GRAPHIX_PRUNE=off   timeout -s KILL 20 graphix --no-cache c-callsite-impl-reload-not-marked.gx
+//       GRAPHIX_PRUNE=audit timeout -s KILL 20 graphix --no-cache c-callsite-impl-reload-not-marked.gx
+//
+// `saved` is the root's `app`, saved out of the module at ep 4 and called
+// outside every load with a constant argument; the reload at ep 8 replaces
+// the impl of `Sh` for i64 its instance dispatches to.
+//
+// expected: (9, 2010) .. (14, 2010) after the reload in every mode: the call
+//           dispatches by the impl registered now (design/module_system.md)
+// observed: default (pruned):    (9, 11) .. (14, 11), the retired impl
+//           GRAPHIX_PRUNE=off:   (9, 2010) .. (14, 2010)
+//           GRAPHIX_PRUNE=audit: panic at prune.rs, "a boundary nothing marked
+//           changed in a cycle ... at `let held = saved(5)`"
+trait Sh { val sh: fn(self) -> i64 };
+let app = |x: Sh| Sh::sh(x) + 5;
+let ep = 0;
+ep <- select ep { n if n < 14 => n + 1, _ => never() };
+let src: string = never();
+src <- select ep {
+    2 => "use super::{Sh, app}; impl Sh for i64 { let sh = |c: i64| c + 1 }; let make = app",
+    8 => "use super::{Sh, app}; impl Sh for i64 { let sh = |c: i64| c + 2000 }; let make = app",
+    _ => never()
+};
+let s = mod d dynamic { sig { use super::{Sh, app}; val make: fn(x: i64) -> i64 }; source src };
+let saved: fn(x: i64) -> i64 = never();
+saved <- select ep { 4 => ep ~ d::make, _ => never() };
+let held = saved(5);
+(ep, held)

@@ -1,0 +1,23 @@
+// Title: dynamic_module_sleep_is_pause reads only the wake cycle; the body never runs again
+// The fixture's predicate reads `x` at step 20, the wake's own cycle, where it
+// is 10 whether the woken body resumes counting, stays stalled, or is re-fired
+// by the wake. Watched past the wake, the loaded body's self-driven counter
+// stays at 10 for good (a wake fires nothing), so the comment's "resumes at
+// the wake" is not what runs, and nothing pins the wake rule here.
+// Command: timeout -s KILL 30 graphix --no-cache tests-modules-sleep-pause-stalls.gx
+// Observed: (20, 10) (21, 10) ... (30, 10)
+let src = "let x = 0; x <- select x { v if v < 100 => v + 1, _ => never() }";
+let step = 0;
+step <- select step { s if s < 30 => s + 1, _ => never() };
+let x = select step < 10 || step >= 20 {
+    true => {
+        let status = mod foo dynamic {
+            sig { use core; val x: i64 };
+            source src
+        };
+        select status { error as e => never(dbg(e)), null as _ => foo::x }
+    },
+    false => never()
+};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+select step >= 20 { true => (step, x), false => never() }

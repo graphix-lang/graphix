@@ -1,0 +1,15 @@
+// sys::time::now rides its last timestamp while its trigger is bottom;
+// sys::net::call_id, the same shape, is bottom.
+// Run: timeout -s KILL 5 graphix --no-cache x-node-contract-now-rides-bottom-trigger.gx
+// Expected: at i = 0 (x = 10 / 0 is bottom) both `now(x)` and `call_id(x)` are
+//   bottom, so neither dbg line prints for i = 0 (a node whose input is
+//   bottom sets its resident bottom and never rides it, sleep_and_wake.md).
+// Observed: "dbg((i, is_err(error(n)))): (0, true)" prints, the call_id line
+//   for i = 0 does not: Now::update rides `out` on a bottom trigger
+//   (args::Parse does the same).
+let i = array::iter([1, 0, 2]);
+let x = 10 / i;
+let n = sys::time::now(x);
+let c = sys::net::call_id(x);
+dbg((i, is_err(error(n))));
+dbg((i, is_err(error(c))))

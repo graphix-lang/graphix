@@ -1,0 +1,18 @@
+// args::parse answers its stale last result when its spec goes bottom
+// command: timeout -s KILL 60 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache small-pkgs-args-bottom-rides.gx
+// expected (bottomness ORs over consumed productions; rand::pick beside it shows the rule):
+//   n=0 parse=false
+//   n=0 pick=7
+//   0
+// observed: a fourth line `n=1 parse=false`: once the spec is bottom (n=1) parse still
+//   delivers its last ParseResult, while rand::pick over a bottom input is bottom.
+let n = 0;
+n <- sys::time::after_idle(duration:50.ms, 1);
+let c = select n { 0 => args::command(#name: "t", []), _ => never() };
+let a = select n { 0 => [7], _ => never() };
+let r = args::parse(c);
+let p = rand::pick(a);
+println("n=[n] parse=[is_err(r)]");
+println("n=[n] pick=[p]");
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+0

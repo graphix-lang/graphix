@@ -1,0 +1,36 @@
+// Title: data_table_scrolling/_sparkline/_dashboard publish nothing until their timer's first tick
+// The publishers below are data_table_scrolling.gx's (3 hosts, 3 metrics) and
+// data_table_sparkline.gx's cpu, with the GUI replaced by the list_table the
+// examples hand to data_table.
+// Command: timeout -s KILL 30 graphix --no-cache examples-gui-first-tick-publish.gx
+// Expected: the first listing already holds the rows (the table is not empty
+//   at start), as data_table_calculated.gx / data_table_virtual.gx manage with
+//   `any(initial, rand::rand(..))`.
+// Observed:
+//   "scroll: 1 at 3.5ms: 0 rows 0 cols"     then "scroll: 2 at 2.0s: 3 rows 3 cols"
+//   "spark: 1 at 3.5ms: 0 rows []"           then "spark: 2 at 1.0s: 2 rows [\"cpu\"]"
+// (count(tick) and rand::rand(#clock: tick) are bottom until the first tick,
+// so nothing is published and data_table draws an empty table for 1-2 s.)
+use core::math;
+use sys::{time, net};
+let base = "/local/graphix/review_examples_gui_first_tick";
+let tick = time::timer(duration:2.s, true);
+let rand01 = || rand::rand(#start: 0., #end: 1., #clock: tick);
+let publish_host = |name: string| {
+    net::publish("[base]/scroll/host-[name]/cpu_pct", rand01());
+    net::publish("[base]/scroll/host-[name]/mem_pct", rand01());
+    net::publish("[base]/scroll/host-[name]/disk_pct", rand01())
+};
+array::map(["1", "2", "3"], publish_host);
+let t = cast<f64>(count(time::timer(duration:1.s, true)))$;
+net::publish("[base]/spark/web-01/cpu", 50.0 + 40.0 * math::sin(t / 4.0));
+net::publish("[base]/spark/web-02/cpu", 50.0 + 30.0 * math::sin((t + 10.) / 5.0));
+let start = time::now(once(null));
+let scroll = net::list_table("[base]/scroll")$;
+let spark = net::list_table("[base]/spark")$;
+let s_at = time::diff(time::now(scroll), start);
+let k_at = time::diff(time::now(spark), start);
+println("scroll: [count(scroll)] at [s_at]: [array::len(scroll.rows)] rows [array::len(scroll.columns)] cols");
+println("spark: [count(spark)] at [k_at]: [array::len(spark.rows)] rows [spark.columns]");
+sys::exit(sys::time::after_idle(duration:3.s, 0));
+null

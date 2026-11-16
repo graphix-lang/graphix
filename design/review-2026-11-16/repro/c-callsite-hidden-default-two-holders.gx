@@ -1,0 +1,18 @@
+// A default hidden by a declared union is not judged by the check where two
+// members of the union take the value's constructor: hidden_defaults_at
+// walks the value only when exactly one member holds it.
+//
+// run: timeout -s KILL 20 graphix --no-cache --check c-callsite-hidden-default-two-holders.gx
+//      timeout -s KILL 20 graphix --no-cache c-callsite-hidden-default-two-holders.gx
+//
+// `g`'s default is an i64 and the declared element type calls it at string,
+// hiding #d. With `[Array<fn(x: string) -> string>, null]` as the annotation
+// the check refuses, "type mismatch 'a: string does not contain i64".
+//
+// expected: --check refuses, as it does where one member is an array
+// observed: --check exits 0; the run logs
+//           `fs[0]$("s"): binding the callee failed: ... type mismatch
+//           'a: string does not contain i64` and the call is bottom for good
+let g = |#d: 'a = 1, x: 'a| -> 'a d;
+let v: [Array<fn(x: string) -> string>, Array<i64>] = [g];
+select v { Array<i64> as _ => "", fs => fs[0]$("s") }

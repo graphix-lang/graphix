@@ -1,0 +1,36 @@
+// A map keyed by values of a dynamic module's own type loses its order when
+// the module reloads: the retired load's `Ord` impl is unregistered once no
+// function of the load lives, while the values, which the program holds as
+// `Any`, live on and are compared structurally from then on.
+//
+// Command:
+//   timeout -s KILL 5 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache \
+//     design/review-2026-11-16/repro/x-traits-abstract-retired-load-ord-corrupts-map.gx
+//
+// Expected: every line ends  look=[1, 2, 3, 4, 5]  (the map is looked up
+// by the very keys it was built from).
+//
+// Observed: the lines before the reload do; after it (i=1, the next tick)
+//   n=2 i=1 m={C(5) => 5, C(4) => 4, C(3) => 3, C(2) => 2, C(1) => 1}
+//     look=[error:`MapKeyError("map key C(…) not found"), .. five times]
+//
+// design/module_system.md ("A load's types are its own") keeps a retired
+// load's core impls "while a function made in the load lives"; a value of
+// the type keeps nothing.
+let srcs = [
+  """type C = Abstract<i64>; impl Ord for C { let cmp = |a, b| select a.0 < b.0 { true => `Greater, false => select a.0 > b.0 { true => `Less, false => `Equal } } }; let mk = |x: i64| -> Any C(x)""",
+  """let mk = |x: i64| -> Any x"""
+];
+let i = 0;
+let clk = sys::time::timer(duration:200.ms, true);
+i <- select clk ~ i { k if k < 1 => k + 1, _ => never() };
+let st = mod d dynamic {
+  sig { use core; val mk: fn(x: i64) -> Any };
+  source srcs[i]$
+};
+let keys: Array<Any> = never();
+keys <- once(st ~ [d::mk(1), d::mk(2), d::mk(3), d::mk(4), d::mk(5)]);
+let m: Map<Any, i64> = never();
+m <- once(keys ~ map::insert(map::insert(map::insert(map::insert(map::insert({}, keys[0]$, 1), keys[1]$, 2), keys[2]$, 3), keys[3]$, 4), keys[4]$, 5));
+let n = count(clk);
+println("n=[n] i=[i] m=[clk ~ m] look=[array::map(clk ~ keys, |k| (clk ~ m){k})]")

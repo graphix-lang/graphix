@@ -246,6 +246,14 @@ run!(
 // A call whose argument reads the world live is issued again at each fire
 // of that argument, a pattern bind of a live scrutinee included, and the
 // step completes on the call's first value after entry (x-rerun-1-01).
+// CR claude for claude: [style/low] The comment above ends in a review finding id. So
+// do the comments of a_nullary_call_answers_each_run,
+// a_callee_reads_its_world_fresh_each_run, a_callees_own_state_starts_fresh_each_run,
+// a_callee_bottom_at_the_issue_is_born_when_it_returns and
+// a_callee_answers_a_captured_event_as_it_stands (t-seq-03), and of seq_errors.rs
+// a_step_error_names_nothing_lowered (tests-seq-08, x-errors-04). An id points at a
+// past bug, which the comment rule leaves to git log, and the sentences before each one
+// already state the rule. Delete the ids. Found by reading; not run. (tests-seq-08)
 run!(
     a_call_over_a_live_argument_is_issued_at_each_fire,
     r#"{

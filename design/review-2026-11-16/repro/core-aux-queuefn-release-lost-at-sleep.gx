@@ -1,0 +1,28 @@
+// queuefn: a call released into a wrapper site that sleeps before the
+// release lands is lost, and the trigger fire that paid it is spent.
+//
+// Command:
+//   timeout -s KILL 30 graphix --no-cache core-aux-queuefn-release-lost-at-sleep.gx
+// Expected: [10, 11, 15]  (the site's sleep is a pause: its calls keep their
+//   place; the same program with the first trigger one cycle later, at c=3,
+//   prints exactly this)
+// Observed: [10, 15]      (call 11 never reaches f; graphix-fuzz check AGREEs:
+//   both engines drop it)
+//
+// Cycle 2: the trigger releases the queued call 11 (QueueFn sits above the
+// site, so its set_var goes out first), then mode turns `Off and the site
+// sleeps. Cycle 3: 11 lands in the sleeping site's bindings; nothing runs.
+// Cycle 5: the wake fires nothing, QueueState::wake clears the in-flight mark,
+// and 11 is gone. Moving mode's switch to c=3 (the landing cycle) loses it too.
+let c = 0;
+c <- select c { n if n < 10 => n + 1, _ => never() };
+let trig: Any = select c { 2 => null, 7 => null, _ => never() };
+let calls: Array<i64> = [];
+let q = queuefn(#trigger: trig, |x: i64| -> i64 {
+    calls <- x ~ array::push(calls, x);
+    x
+});
+let mode = uniq(select c { n if n < 2 => `On, n if n < 5 => `Off, _ => `On });
+let x = select c { 0 => 10, 1 => 11, 5 => 15, _ => never() };
+let r = select mode { `On => q(x), `Off => never() };
+select c { 10 => calls, _ => never() }

@@ -1,0 +1,18 @@
+// Title: book/src/udt/traits.md says "A method that produces no value makes the comparison
+// produce none"; the code (and design/traits.md, THE BOTTOM-KEY RULE) answers by the
+// bottom-key rule instead: a key the impl bottoms on sorts below every real key.
+// Command: RUST_LOG=warn timeout -s KILL 10 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache book-modules-udt-bottoming-ord-answers.gx
+// Expected per the book: K(0) < K(2) produces nothing (the tuple never prints).
+// Observed: (true, true): the operator answered, K(0) taken as below K(2).
+type K = Abstract<i64>;
+impl Ord for K {
+    let cmp = |x, y| select (x.0, y.0) {
+        (0, _) => never(),
+        (_, 0) => never(),
+        (a, b) if a < b => `Less,
+        (a, b) if a > b => `Greater,
+        _ => `Equal
+    }
+};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(K(0) < K(2), K(1) < K(2))

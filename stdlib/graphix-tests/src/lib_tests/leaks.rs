@@ -161,6 +161,17 @@ async fn fn_forward_resolutions_go_with_their_instance() -> Result<()> {
 async fn core_hook_sites_leave_no_bindings() -> Result<()> {
     let (tx, mut rx) = mpsc::channel(64);
     let ctx = init(tx).await?;
+    // CR claude for claude: [test-gap/medium] This test cannot fail on the code it
+    // names. Its comparison `T(1) == T(2)` has constant operands, so Eq dispatches
+    // once, at birth, and `n ~ (..)` re-reads the stored value at every tick. No
+    // dispatch follows the `impl Eq for U{k}` registrations, so `take_site` never
+    // rebuilds the (Eq, T) entry, and the `#seam` count is the birth site's whatever a
+    // rebuild does: deleting `take_site`'s deletion of the stale entry's pooled sites
+    // still passes. Make the operands fire each tick, `(n, T(n) == T(2))`, so each tick
+    // dispatches against the grown impl list. probe:
+    // design/review-2026-11-16/repro/tests-lib-b-a-hook-site-never-rebuilt.gx (a `dbg`
+    // in the Eq method prints once over five ticks in both engines; with `T(n)` it
+    // prints six times). (tests-lib-b-a-01)
     let (eid, _expr) = compile_one(
         &ctx,
         "{
@@ -317,6 +328,14 @@ async fn failed_dynamic_module_compiles_leave_no_definitions() -> Result<()> {
 
 /// What the runtime and the env hold: a count that grows with what a
 /// session has run and deleted is a leak.
+// CR claude for claude: [test-gap/medium] `held` is the leak measure for every reload,
+// drop and escape test below, and it leaves out `EnvStats::lambda_defs_len` and
+// `lowerings_len`. A `LambdaDef` or a lowering kept per reload or per dropped input
+// passes all of them, though each of `reloads`' 1000 reloads compiles a new `get`. Only
+// the failed-compile and returned-definition tests at the top count `lambda_defs_len`.
+// Add both counts to `held`; they are deterministic
+// (`returned_definitions_go_with_their_enclosing_definition` pins `lambda_defs_len`
+// exactly). Found by reading; not run. (tests-lib-b-a-02)
 async fn held(ctx: &TestCtx) -> Result<[usize; 17]> {
     let s = ctx.rt.env_stats().await?;
     let env = ctx.rt.get_env().await?;
@@ -536,6 +555,16 @@ async fn a_retired_loads_type_goes_with_its_last_function(mode: Mode) -> Result<
         .context("later load")?;
     drop(w);
     let mut n = 5;
+    // CR claude for claude: [test-gap/low] The doc says the load's type goes once its
+    // last function does, "with no reload after", but every `ctx.rt.set(tick, n)` in
+    // this loop fires `src` (a select fires its arm's constant at each scrutinee fire).
+    // A dynamic module reloads on every fire of its source, identical text included,
+    // and each reload runs `Env::sweep_load_types`. So the test passes even if only a
+    // reload frees a retired load's type. Drive `e_held` from a root binding the module
+    // does not read (`(probe, held(probe))`, set `probe` here) so nothing reloads after
+    // `drop(w)`. probe:
+    // design/review-2026-11-16/repro/tests-lib-b-a-retired-load-reloads.gx (prints a
+    // load at every tick). (tests-lib-b-a-03)
     while impls_and_types(&ctx).await? != before && n < 100 {
         n += 1;
         ctx.rt.set(tick, n)?;
@@ -1800,6 +1829,12 @@ async fn a_function_made_before_an_impl_dispatches_to_it_once_both_are_dropped(
 /// function that dispatches through the trait: the block that declares
 /// the impl and the function is dropped first, then the trait; and an
 /// impl and a function of separate inputs, dropped in each order.
+// CR claude for claude: [doc-drift/low] The doc above names a block declaring the impl
+// and the function, dropped before the trait, and impl and function inputs "dropped in
+// each order". The code builds no such block (trait, impl and function are always three
+// inputs) and runs four of the six orders, never `[0, 2, 1]` or `[2, 0, 1]` (the impl
+// dropped last, after the trait). Add the two orders and the block case, or make the
+// doc name the four it runs. Found by reading; not run. (tests-lib-b-a-11)
 async fn a_function_outliving_its_impl_beside_a_standing_trait_dispatches_to_it(
     mode: Mode,
 ) -> Result<()> {
@@ -2056,6 +2091,17 @@ async fn a_function_over_an_interfaces_impl_of_a_dropped_outside_trait_dispatche
 /// Impls of heads that are no abstract type, declared again with their
 /// trait at the same path: each function calls the impls and the default
 /// it was made under, through a union too, whichever declaration stands.
+// CR claude for claude: [structure/low] This test and
+// `a_function_escaping_a_dropped_trait_dispatches_past_its_redeclaration` are one
+// procedure (roots `old`/`new`, declare per name and drop the first, call each, call
+// the pair before and after dropping, `released`, compare `held`) differing only in the
+// declaration text and the answers.
+// `a_function_outliving_its_impl_of_a_plain_head_past_a_redeclaration_beside_a_standing_trait`
+// is a third copy, and the four `..._keeps_its_imports_...` tests repeat one
+// escape-then-sweep prologue. Factor one helper per shape. `held` also returns a
+// positional `[usize; 17]` that three tests slice as `[5..9]`, so a counter inserted
+// before index 9 silently changes what they compare: return a struct with named fields
+// and compare the four by name. Found by reading; not run. (tests-lib-b-a-10)
 async fn a_function_escaping_dropped_impls_of_plain_heads_dispatches_past_their_redeclaration(
     mode: Mode,
 ) -> Result<()> {

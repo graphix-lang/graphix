@@ -1,3 +1,9 @@
+// CR claude for claude: [style/low] Three `use crate::` statements stand where one
+// grouped statement is the convention (genn.rs has two), and
+// `crate::stack::ensure_sufficient` is written out at each of its 31 uses, `crate::Tag`
+// twice though `Tag` is imported, `crate::expr::union_members_with` once though it is
+// imported. Group the `use`s and import `stack::ensure_sufficient`. Found by reading;
+// not run. (c-pattern-10)
 use crate::SourcePosition;
 use crate::image::ImageBuf;
 use crate::{
@@ -1520,6 +1526,20 @@ impl StructPatternNode {
             let members = self.member_parts(env, typ, inferred);
             let mut all: SmallVec<[Leaf; 4]> = SmallVec::new();
             for (m, ts) in members.iter() {
+                // CR claude for claude: [perf/medium] `leaves` asks `admits` for each
+                // member, which is a `footprint` of the whole pattern beneath, and then
+                // recurses into each child once per member; `footprint` goes member by
+                // member the same way. Nested D deep over a union with two members of
+                // the pattern's shape at each level that is 2^D walks: `|((((v, _), _),
+                // _), _): T|` over `type T = [(T, i64), (U, string)]; type U = [(T,
+                // bool), (U, f64)]` takes 3.6 s to check at D=16 and 14 s at D=18
+                // (debug build), and stack samples stand in `leaves_inner`, `admits`,
+                // `footprint` and `member_footprint` under `names_by_member`. Memo both
+                // walks by pattern node and part type for one call, as `Narrowing` does
+                // for `narrow_pattern_in`, or return a member's leaves and its
+                // admission from one walk. probe:
+                // design/review-2026-11-16/repro/c-pattern-nested-pattern-check-exponential.sh
+                // (c-pattern-05)
                 if !self.admits(env, m, inferred)? {
                     continue;
                 }
@@ -1785,6 +1805,13 @@ impl StructPatternNode {
     /// list member's elements are its own, not the predicate's cells, which
     /// stand for any other member (`Any`). `open`: `matched` is empty
     /// because what the pattern stands over is not decided yet.
+    // CR claude for claude: [readability/low] This function does three jobs in 150
+    // lines and rebinds its names as it goes: `own` is a bool, then the predicate's
+    // element type, then a slice of `members`, then one name's parts, then an
+    // alternative's map; `typed` is a count and then a slice; `members` is the element
+    // members and, inside the loop over them, a bool. Move the typing of the slice's
+    // own elements (the `if let Self::Slice ..` block) into a method of its own and
+    // give each of these a name of its own. Found by reading; not run. (c-pattern-08)
     fn hold_slice_members(
         &self,
         env: &Env,
@@ -2544,6 +2571,20 @@ impl StructPatternNode {
                 Self::Abstract { id, all, own, rep, bind }
             }
             StructurePattern::Struct { exhaustive, all, binds } => {
+                // CR claude for claude: [bug/medium] A partial struct pattern is
+                // refused, "non exhaustive struct matches require type annotations",
+                // wherever its struct type is reached through a bound type variable:
+                // this match reads `type_predicate` itself, so only a `Type::Struct`
+                // held directly passes, though the statement below already looks
+                // through the cell (`deref_cloned`) and every other branch does. A
+                // callback's `|{a, ..}| a` over `Array<{a: i64, b: i64}>`, a `let {a,
+                // ..} = x` in its body, `|(k, {a, ..})|` under `map::map`, and `W<{a:
+                // i64, b: i64}> as W({a, ..})` over `type W<'a> = Abstract<'a>` (the
+                // annotation the message asks for) are refused; the same patterns
+                // naming every field, or under a tuple whose type holds the struct
+                // directly, check. Match on the dereferenced type. probe:
+                // design/review-2026-11-16/repro/c-pattern-partial-struct-over-decided-cell.sh
+                // (c-pattern-01)
                 match &type_predicate {
                     Type::Struct(_) => (),
                     _ if *exhaustive => type_predicate.check_contains_ordered(
@@ -2998,6 +3039,20 @@ impl StructPatternNode {
         // a union of one type, a cell a use decided beside its binding, is that
         // type
         let one;
+        // CR claude for claude: [bug/medium] `covers` answers false for a tuple,
+        // variant or struct pattern over a union every member of which has the
+        // pattern's shape: only the or-pattern and abstract branches above go member by
+        // member. A parameter and an annotated let are held to it, so `|(a, b): [(i64,
+        // i64), (string, string)]|`, `array::map(xs, |(a, b)| ..)` over an array of
+        // that union and `|((a, b), c)|` over a tuple holding it are refused as
+        // refutable, while the unannotated `let (a, b) = v` and a select arm with the
+        // same pattern check, and `members_refusal` tells the author of `|{a, ..}:
+        // [..]|` to write `{a, b: _}`, which is refused too. Cover a union with no open
+        // member where each member is covered (a struct member at the indexes the test
+        // reads, as `part` checks), which `covers_each_member` does for slice elements
+        // alone. probe:
+        // design/review-2026-11-16/repro/c-pattern-written-union-destructure-refutable.sh
+        // (c-pattern-02)
         let typ = match &shape {
             Some(Type::Set(_)) => {
                 one = typ.resolve_tvars().normalize();
@@ -3386,6 +3441,19 @@ impl<R: Rt> PatternNode<R> {
             checking,
             &mut leaves,
         )?;
+        // CR claude for claude: [bug/critical] A name a written test types at `_` is
+        // refused only here, where the scrutinee holds a declared variable. Elsewhere
+        // the arm is refused only when the whole test can match nothing, so a `_`
+        // beside a live member of a written union, or over `Any`, stands and its bind
+        // is bottom, which every type holds, while the run-time test passes every value
+        // there (`blind_bottoms`). `|x: [`A(i64), `B]| select x { [`A(_), `B] as `A(a)
+        // => str::len(a), _ => 1 }` checks, and f(`A(7)) hands 7 to str::len and panics
+        // the runtime thread at the kernel boundary; `(_, i64) as (a, b)` over `Any`
+        // does the same. Fix: refuse every bind whose type under a written test holds
+        // the test's bottom, whatever the scrutinee, with the message
+        // `type_inside_rigid` has, and pin both cases. probe:
+        // design/review-2026-11-16/repro/x-typecheck-patterns-bottom-test-bind.gx
+        // (x-typecheck-patterns-01)
         if self.explicit_type_predicate && scrut.has_rigid() {
             self.type_inside_rigid(env, scrut, &mut leaves)?
         }
@@ -3563,6 +3631,21 @@ impl<R: Rt> PatternNode<R> {
         // select refuses a test over two of its instantiations
         match &type_predicate {
             Type::Fn(_) => bail!("can't match on Fn type"),
+            // CR claude for eric: [bug/critical] A test that holds a declared variable
+            // is judged once, in the definition's check, where the variable is rigid;
+            // no call that instantiates it is judged. `|x: [(&i64, i64), i64], y: 't|
+            // select x { ('t, i64) as (a, _) => a, _ => y }` types `a` as 't, and
+            // f((&n, 1), &s) makes the instance's test `(&string, i64)`, which every
+            // reference passes: a `&i64` comes back as a `&string` and the runtime
+            // thread panics at the next kernel. An arm over `Any` that decides its bind
+            // 't (`(a, b) => { let q: 't = a; q }`) does the same. At a function type
+            // this arm refuses when the instance is built, so the check accepts what
+            // the build refuses. Needs a rule the check applies at the call: for
+            // example, a variable a test holds takes no type holding a reference or a
+            // function. probes:
+            // design/review-2026-11-16/repro/x-typecheck-patterns-declared-var-test-at-reference.gx,
+            // design/review-2026-11-16/repro/x-typecheck-patterns-declared-var-test-at-function.gx
+            // (x-typecheck-patterns-03)
             t if explicit && t.holds_fn(&ctx.env) => {
                 bail!(
                     "can't match on a type holding a function: a test tells a function from a value, not one signature from another"
@@ -3657,6 +3740,19 @@ impl<R: Rt> PatternNode<R> {
     /// these leaves at its last consult, which was the select's last run,
     /// so its readers hold them and none is marked; a reader outside the
     /// guard reads what the retract puts back.
+    // CR claude for claude: [bug/medium] A tentative bind that fires is delivered
+    // through `ExecCtx::deliver_took`, whose `store_fire` queues a late fire for every
+    // reader of the bind the walk has passed, and `retract` puts back the event and the
+    // store but not that queue. So a closure or reference that left the arm and is read
+    // above the select takes, a cycle later, the value of a scrutinee the guard
+    // refused: it fires with a value its arm never held (`out` reads 3, 4 and 0 where
+    // the arm took only 10 and 20; with the reader below the select it reads 10 and
+    // 20). Both engines agree on it. Deliver the tentative fire to the guard's readers
+    // alone (mark the readers inside `guard_boundary`, queue no late fire, notify no
+    // other root), or have `retract` take back what it queued, and pin it beside
+    // `lang::wake_outside::a_moved_scrutinee_moves_its_guards_bind`. probe:
+    // design/review-2026-11-16/repro/c-select-seq-guard-bind-leaks-late.gx
+    // (c-select-seq-01)
     pub(super) fn bind_tentative(
         &self,
         ctx: &mut ExecCtx<'_, R>,
@@ -3673,11 +3769,34 @@ impl<R: Rt> PatternNode<R> {
             self.structure_predicate
                 .bind(v, &mut |id, v| ctx.restand(id, TagValue::tagged(v, stood)))
         } else {
+            // CR claude for claude: [bug/high] A guard's tentative bind of a fired
+            // scrutinee goes through `deliver_took`, whose `store_fire` records a late
+            // fire for every reader outside the guard the walk has passed (`Rt::late`)
+            // and notes the binding for other roots (`Rt::produced`); `retract` takes
+            // back the overlay and the store and neither record. A closure or reference
+            // over the bind that sits above the select is fired next cycle with a value
+            // its arm never took, and a reader in an earlier root is fired again at the
+            // old value `GX::readers_in_other_roots` finds in the store, while a reader
+            // below the select sees nothing. Deliver a tentative bind to the guard
+            // alone (mark, record no late reader and no production) and let the take's
+            // `bind_event` record them; pin both orders. probe:
+            // design/review-2026-11-16/repro/c-prune-wake-tentative-bind-late.gx (one
+            // root) and c-prune-wake-tentative-bind-late-roots.sh (REPL roots)
+            // (c-prune-wake-02)
             self.bind_event(ctx, v, stood)
         }
         // the guard reads the event, where a bind that moved says so
         if !tag.triggers() && tag.moved() {
             self.structure_predicate.bind(v, &mut |id, v| {
+                // CR claude for claude: [style/low] CLAUDE.md's rule is that a node
+                // never inserts into event.variables; this node does (wake::inject
+                // writes it too, with `put`). It is safe today only because bind_event
+                // delivered the same ids just above, and it marks nothing itself: the
+                // rule is what keeps every this-cycle write in ExecCtx, where the marks
+                // are made. Give ExecCtx the event-only retag this needs beside restand
+                // (the moved tag over an entry already delivered this cycle), or have
+                // bind_event take the tag the event shows apart from the tag it stores.
+                // Found by reading; not run. (x-prune-06)
                 ctx.event.variables.insert(id, TagValue::tagged(v, tag));
             })
         }
@@ -3759,6 +3878,20 @@ impl<R: Rt> PatternNode<R> {
         // inferred predicate is checked permissively (an abstract's
         // hidden rep cannot be verified); an explicit one strictly.
         let t = shallow.unwrap_or(&self.type_predicate);
+        // CR claude for claude: [bug/high] An inferred predicate is tested with
+        // `MatchAbstract`, which compares no parameter of a Graphix abstract and passes
+        // every Rust-backed abstract value for any abstract type. A constructor pattern
+        // tests the id itself, but a cell the arm's body decides over an `Any` part has
+        // no other test. `|x: Any| select x { (a, b) => { let q: W<i64> = a; q.0 + 1 },
+        // _ => 0 }` binds a `W<string>`: the JIT answers 1 and the node-walk logs an
+        // arith error. With `let q: sys::io::Stdout = a`, a Stdin, a reference and a
+        // function each take the arm. Fix: once the arm is checked, refuse an abstract
+        // type it decided at or inside an `Any` part, naming the written test
+        // (`(W<i64>, i64) as (a, b)` tests strictly), or test such an arm strictly; pin
+        // both. probes:
+        // design/review-2026-11-16/repro/x-typecheck-patterns-any-arm-decides-abstract.gx,
+        // design/review-2026-11-16/repro/x-typecheck-patterns-any-arm-decides-rust-abstract.gx
+        // (x-typecheck-patterns-04)
         let typed = if self.explicit_type_predicate {
             t.is_a(env, v)
         } else {

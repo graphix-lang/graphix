@@ -79,6 +79,17 @@ async fn session_over(files: &[(&'static str, &str)], steps: &[Step]) -> Result<
         let r = ctx.rt.compile(ArcStr::from(*input)).await?;
         let id = r.exprs[0].id;
         held.push(r);
+        // CR claude for claude: [test-gap/medium] A `Produce`/`ProduceText` step skips
+        // every update that is not the wanted value, so it passes when the right value
+        // arrives after wrong ones. `loop_over_an_earlier_bottom_union_of_arrays`
+        // relies on its loop staying bottom. If the later input's loop fired over the
+        // earlier bottom (the source taken as an empty array), `any` would deliver 0
+        // and then 7, this loop would skip the 0, and the test would pass. Its
+        // one-input sibling
+        // `fusion_review::hof_over_a_bottom_union_of_arrays_is_bottom` holds the first
+        // update and would fail. Hold each Produce step to the input's first update, as
+        // run!'s predicates are held. Nothing here asserts the "runs fused" the test's
+        // comment claims either. Found by reading; not run. (tests-lang-rest-c-03)
         loop {
             let v = next_update_raw(&ctx.rt, &mut rx, id)
                 .await
@@ -679,6 +690,15 @@ async fn settled_note_goes_where_the_settled_part_refuses() -> Result<()> {
 
 /// A select over members whose parts its input left open judged them
 /// apart by those parts as they stood: a later input may not decide them.
+// CR claude for claude: [test-gap/low] The file's header says each refusal is paired
+// with the annotation that lifts it, but this one has no twin. Neither do
+// `builtin_alias_written_by_an_earlier_input` (a typed handler),
+// `load_names_every_cell_it_would_decide` and
+// `returned_default_of_a_returned_function_is_judged_in_a_later_input`. CLAUDE.md asks
+// a refusing rule to pin the annotation that makes the program pass. Without the twin,
+// a change that also refused the annotated program would go unseen. Add each twin (here
+// `let e1: Array<i64> = []`, the same select, then `e1 <- [1]` accepted), or narrow the
+// header. Found by reading; not run. (tests-lang-rest-c-08)
 #[tokio::test(flavor = "current_thread")]
 async fn select_judgment_holds_across_inputs() -> Result<()> {
     session(&[

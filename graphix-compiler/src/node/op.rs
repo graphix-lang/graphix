@@ -71,6 +71,13 @@ macro_rules! binary_node {
             pub rhs: Node<R>,
             resident: TagValue,
             /// wake catch-up: set by `sleep()`, taken by the next update
+            // CR claude for claude: [doc-drift/low] The doc above, "wake catch-up: set
+            // by `sleep()`, taken by the next update", names the catch-up that
+            // bind-driven bodies deleted. WakeBit's own doc says what the bit does now:
+            // the first update after a sleep recomputes from the present world. Delete
+            // this doc and its twins: Unary's `slept` in this file, and the `slept`
+            // fields in array.rs, map.rs, data.rs and lambda.rs. Found by reading; not
+            // run. (c-error-op-05)
             slept: WakeBit,
             pub(crate) fork: crate::cost::ForkSite,
             $(
@@ -297,6 +304,18 @@ macro_rules! compare_op {
                 }
                 let (l, r, _, tag) = gated_operands!(self, ctx);
                 if $ordered && matches!(self.state, Equality::Targets(_)) {
+                    // CR claude for claude: [bug/medium] A standing ordered compare
+                    // over references hidden under Any logs "references have no order,
+                    // including under Any" at every cycle its statement is visited, not
+                    // once. The bottom it leaves makes dense_gate! recompute it at each
+                    // visit, and coretraits::ordered logs unconditionally, whereas the
+                    // arith ops log only when `trig` is set. The line also names no
+                    // site, unlike "arith error <site> ...". Fix: keep the `trig` that
+                    // gated_operands! returns, test with crate::reference::orderable,
+                    // and report once, with diagnostic_site(&self.spec), when trig is
+                    // set. probe:
+                    // design/review-2026-11-16/repro/c-error-op-ordered-ref-log-flood.gx
+                    // (c-error-op-01)
                     let valid = coretraits::with_hooks(ctx, || {
                         l.with_value(coretraits::ordered) && r.with_value(coretraits::ordered)
                     });
@@ -305,6 +324,19 @@ macro_rules! compare_op {
                     }
                 }
                 let v = match &self.state {
+                    // CR claude for eric: [bug/medium] A comparison over a held copy of
+                    // a moving reference keeps its answer after the reference moves:
+                    // with `held <- once(&a[i])` and `i` moved from 0 to 2, `held ==
+                    // &a[0]` still says true while `*held` reads a[2] and the same
+                    // comparison over `tick ~ held` says false. The targets are
+                    // resolved only when an operand fires, and a copy does not fire
+                    // when its cell's path moves; `*held` follows the move because
+                    // Deref reads the cell with interest. Either the comparison reads
+                    // the cells of its operands with interest too, or the rule
+                    // 'compares by where it points now' is narrowed to 'when an operand
+                    // fires' in design/place_references.md. probe:
+                    // design/review-2026-11-16/repro/x-refs-held-copy-stale-equality.gx
+                    // (x-refs-04)
                     Equality::Targets(t) if !$ordered => {
                         let lv = l.with_value(|v| ctx.ref_targets(t, v));
                         let rv = r.with_value(|v| ctx.ref_targets(t, v));
@@ -367,6 +399,17 @@ macro_rules! compare_op {
     };
 }
 
+// CR claude for eric: [structure/medium] `x == null` over `x: [i64, null]` and a
+// variant union compared with one of its tags are refused ("both operands must be one
+// type") though the right operand is a member of the left one's type, so the commonest
+// comparison in ordinary code needs `opt::is_none` or a select, and the message names
+// neither. The arithmetic refusal over a nullable or a Result advises "cast one side
+// explicitly" where the fix is `x$ + 1`. Decide whether `==` and `!=` admit an operand
+// whose type the other's holds (both are values of the wider type), and either way name
+// `$`, `opt::is_none` or a select in both messages when one operand's type is the
+// other's plus null or an error. probe:
+// design/review-2026-11-16/repro/a-language-check-refusals.sh (cases 6 to 8)
+// (a-language-09)
 compare_op!(Eq, ==, false);
 compare_op!(Ne, !=, false);
 compare_op!(Lt, <, true);
@@ -783,6 +826,17 @@ pub(crate) fn arith_rule(
     let checked = op.is_checked();
     let Some(t) = operand_type(env, lt, rt)? else {
         return crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
+            // CR claude for claude: [readability/medium] "(cast one side explicitly)"
+            // never works as written: cast returns a Result, so `cast<i64>(x) + 1` over
+            // a nullable x and `cast<f64>(x) + y` for i64 + f64 are refused again with
+            // the same advice. The common case, a nullable or a Result operand (`x + 1`
+            // over `[i64, null]`, `a[1] + 1`), needs `x$`, which the message never
+            // names, and `s + 1` over a string misses the interpolation hint that
+            // string + string gets. Choose the advice from the operands: `x$`/`x?` on
+            // an operand Strip::of would take, `cast<T>(x)$` for two numeric
+            // primitives, interpolation for a string, nothing otherwise. probe:
+            // design/review-2026-11-16/repro/x-diagnostics-arith-cast-advice.sh
+            // (x-diagnostics-02)
             bail!(
                 "cannot compute {lt} {} {rt}: arithmetic is \
                  fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a — both operands must \

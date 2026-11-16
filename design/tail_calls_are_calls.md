@@ -1,7 +1,28 @@
 # Tail calls are calls
 
+<!-- CR claude for claude: [doc-drift/low] The pin
+`tail_depth_catches_up_an_outer_write` named below does not exist: the test is
+`tail_depth_arm_entered_later_writes_nothing`, and it asserts the opposite, that an arm
+a tail depth moves to writes nothing for what fired before. recursive_activations.md
+names `rec_reborn_depth_reads_its_capture` the same way, for
+`rec_regrown_depth_reads_its_capture_as_it_stands`, and the survey here cites
+`GXDBG_TAIL`, which no code reads. Name the tests that exist and drop the variable.
+Found by reading; not run. (x-recursion-08) -->
 Status: ruled 2026-09-26 (Eric). Built 2026-09-26/27: steps 1–3,
 G1–G4, and the collection-slot follow-up.
+<!-- CR claude for claude: [doc-drift/low] `tail_depth_catches_up_an_outer_write` no
+longer exists: bind-driven bodies deleted it, and its successor is
+`lang::functions::tail_depth_arm_entered_later_writes_nothing`. More stale pins
+elsewhere: recursive_activations.md `rec_reborn_depth_reads_its_capture` (now
+`rec_regrown_depth_reads_its_capture_as_it_stands`); program_image.md
+`a_body_write_keeps_a_generic_interface_generic` (dropped by D4, see
+`lang::interfaces::generic_val_over_a_written_let_refused`) and its 'registration format
+104' (REGISTRATION_FORMAT is 112; drop the number); walk_pruning.md
+`lang::par_attrs::run_auto` (now `run_auto_served`) and `tests/runtime_cost.rs`;
+queue_fn.md `tests/queue_credits.rs` (both now under graphix-tests' tests/shared/);
+collection_intrinsics.md `freeze_for_abi_d` (now `kernel_abi::freeze_for_abi`). A gate
+test that resolves the names in Pins: lines would keep them from rotting. Found by
+reading; not run. (x-doc-drift-03) -->
 Pins: `findings/tail-calls-are-calls-sep2026/` (the sep25b over-fire),
 `lang::functions::{tail_depth_catches_up_an_outer_write, tail_loop_deep}`
 (the deep loop is JIT-only: the node-walk recurses past the stack

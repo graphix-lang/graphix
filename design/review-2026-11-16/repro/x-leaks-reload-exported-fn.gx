@@ -1,0 +1,29 @@
+// x-leaks: every reload of a dynamic module whose sig declares a function
+// val leaves ~100 bytes behind: the sig's FnType links (LambdaIds::link,
+// from check_val's sig_matches) to each load's lambda through a std Weak,
+// which pins the dead load's LambdaIds allocation, and nothing prunes the
+// sig node's link set (only LambdaIds::ids prunes, and nothing walks it).
+//
+// Run from the repo root:
+//   timeout -s KILL 70 python3 design/review-2026-11-16/repro/x-leaks-watch.py 60 --every 15 -- --no-cache --no-fusion design/review-2026-11-16/repro/x-leaks-reload-exported-fn.gx
+// Expected: RssAnon flat, as with the control below.
+// Observed (debug build, HEAD e1be2fbf2), one reload per cycle:
+//   44672 kB @ 67.8k reloads, 52996 kB @ 138.4k, 60224 kB @ 209.6k (~110 B/reload);
+//   the same with fusion on (~115 B/reload).
+// Control, flat at 37524 kB over 3.7M reloads: the same program with
+//   sig { val v: i64 } and source "let v = [n]" (no function val).
+// Control, flat: a function the body declares and calls but the sig does not
+//   export ("let f = |x| x + 1; let v = f([n])").
+// Massif (valgrind --tool=massif, --no-fusion, 6000 reloads): the heap that
+// grows between snapshots is LambdaIds::default under Lambda::compile (the
+// load's lambda) and the IntSet<Link> under LambdaIds::link under
+// Type::sig_matches under module::check_val. The leaks.rs reload pins
+// assert held() only, which counts neither.
+let n = 0;
+n <- n + 1;
+let st = mod m dynamic {
+  sig { val v: i64; val f: fn(x: i64) -> i64 };
+  source "let v = [n]; let f = |x| x + v"
+};
+let r = m::v;
+select n { x if x % 200 == 0 => (x, r), _ => never() }

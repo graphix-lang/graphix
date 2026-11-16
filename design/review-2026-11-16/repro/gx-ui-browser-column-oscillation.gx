@@ -1,0 +1,30 @@
+// Title: tui::browser's column window oscillates forever after a Right scroll; selected_path flips d <-> e with no input
+// Command: timeout -s KILL 20 graphix -n --no-cache gx-ui-browser-column-oscillation.gx
+// Expected: after the fourth Right(1) the window settles: one `shown` count and sel=/local/osc/row0/e
+//   from then on (no cursor event arrives after n=4).
+// Observed: from n=4 on, every second: shown=4 sel=.../e, then shown=8 sel=.../d, then back, forever
+//   ("n=6 shown=4 sel=/local/osc/row0/e" / "n=6 shown=8 sel=/local/osc/row0/d" / ...).
+//   content_widths is measured per DRAWN position (relative to first_col) but window(scrolled_col)
+//   and the back-fill's cost(c) read it as if it were relative to scrolled_col / column 0.
+use tui::{Tui, browser::{MoveCursor, browser}};
+let long = "abcdefghijklmnopqrstuvwxyz0123";
+let names = ["a", "b", "c", "d", "e", "f", "g", "h"];
+let pubs = array::map(names, |c| {
+  let v = select c { "a" => long, _ => "x" };
+  [sys::net::publish("/local/osc/row0/[c]", v), sys::net::publish("/local/osc/row1/[c]", v)]
+});
+let listed = sys::net::list_table("/local/osc")$;
+let path: string = never();
+path <- select (array::len(listed.rows), array::len(listed.columns)) {
+  l@ (2, 8) => l ~ "/local/osc",
+  _ => never()
+};
+let cur: MoveCursor = never();
+let sel: [string, null] = never();
+let b: Tui = browser(#rate: duration:10.ms, #size: {width: 40, height: 6}, #cursor: cur, #selected_path: &mut sel, path);
+let shown = select b { `Table(t) => array::len((*t.widths)$) - 1, _ => never() };
+let clock = sys::time::timer(duration:1500.ms, true);
+let n = 0;
+n <- clock ~ n + 1;
+cur <- select n { k if k >= 1 && k <= 4 => n ~ `Right(1), _ => never() };
+"n=[n] shown=[shown] sel=[sel]"

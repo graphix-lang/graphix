@@ -1,0 +1,38 @@
+// A core trait's method is held to #[pure], "a pure function of its
+// arguments" (book/src/udt/traits.md), yet a method that reads a binding
+// something writes is accepted. When the binding changes, values that stand
+// keep what the old order gave them and fresh comparisons take the new one.
+//
+// command:  timeout -s KILL 10 graphix --no-cache c-module-traits-pure-method-reads-written-binding.gx
+//           (graphix-fuzz check on the program without its exit line: AGREE)
+// expected: the impl refused (#[pure]: `cmp` reads `flip`, which `flip <- ..`
+//           writes), or every line agreeing with itself: lt equal to the
+//           fresh comparison beside it, and the lookup finding its key
+// observed: (3, false, true, true, 1, "a")
+//           (4, true, true, false, 1, error:`MapKeyError("map key K(…) not found"))
+//           (5, true, true, false, 1, error:`MapKeyError("map key K(…) not found"))
+//           `a < b` stays true beside `K(1) < K(2)` false in one cycle, the
+//           sorted array keeps the old order, and the map built before the
+//           write no longer finds a key it holds.
+type K = Abstract<i64>;
+let flip = false;
+impl Ord for K {
+  let cmp = |a, b| select (flip, a.0 < b.0, a.0 > b.0) {
+    (false, true, _) => `Less,
+    (false, _, true) => `Greater,
+    (true, true, _) => `Greater,
+    (true, _, true) => `Less,
+    _ => `Equal
+  }
+};
+let n = 0;
+n <- select n { k if k < 6 => k + 1, _ => never() };
+flip <- select n { 3 => true, _ => never() };
+let a = K(1);
+let b = K(2);
+let lt = a < b;
+let m = {a => "a", b => "b"};
+let sorted = array::sort([b, a]);
+let first = select sorted { [h, ..] => h.0, _ => never() };
+sys::exit(select n { 6 => sys::time::after_idle(duration:100.ms, 0), _ => never() });
+(n, flip, lt, K(1) < K(n ~ 2), first, m{K(n ~ 1)})

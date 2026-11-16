@@ -1,0 +1,22 @@
+// Title: a bar chart auto-scales against the bars that fit the screen, not
+// its data, so the same bars change height with the terminal's width.
+//
+// Twenty bars: nineteen of 1 and one of 1000 (the last). With no #max,
+// ratatui's BarChart scales against the largest value of its data.
+//
+// Command (from this directory):
+//   timeout -s KILL 30 python3 -I tests-tui-pty-drive.py 30 3 tests-tui-barchart-scale-follows-width.gx
+//   timeout -s KILL 30 python3 -I tests-tui-pty-drive.py 8 3 tests-tui-barchart-scale-follows-width.gx
+//
+// Expected: at both widths the value-1 bars are scaled against 1000 and
+// draw nothing (only the 1000 bar is a full column when it fits).
+// Observed: at 30 columns only the 1000 bar draws (\x1b[1;20H█ ...); at 8
+// columns, where the 1000 bar does not fit, the eight value-1 bars draw at
+// full height with "1" labels:
+//   ...\x1b[1;1H████████\x1b[2;1H████████\x1b[3;1H11111111...
+// BarChartW::draw hands ratatui only the bars that fit, so its auto max is
+// the visible bars' max. render_test::a_bar_chart_draws_the_bars_that_fit
+// pins the same thing (bars 1..8 of 40000 drawn at full scale).
+use tui::barchart::{bar, bar_chart, bar_group};
+let bars = array::init(20, |i| bar(&select i { 19 => 1000, _ => 1 }));
+bar_chart(#bar_gap: &0, &[bar_group(bars)])

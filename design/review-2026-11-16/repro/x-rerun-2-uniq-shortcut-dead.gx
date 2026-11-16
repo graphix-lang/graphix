@@ -1,0 +1,19 @@
+// Title: (with x-rerun-2-abstract-kernel-never-forks.gx) uniq's same-allocation
+//   shortcut is never taken: coretraits::hooks_live is true in every program.
+// Command: timeout -s KILL 120 graphix --no-cache --no-fusion x-rerun-2-uniq-shortcut-dead.gx
+//   (control: replace `uniq(n ~ a)` by `n ~ a`)
+// Expected: uniq over the same 200k-element allocation is O(1) a fire
+//   (structural_eq's pointer check), a few us a cycle as the control.
+// Observed (debug build): "uniq 500 cycles: 0.34s" (~680 us a fire, an
+//   element-wise compare) vs the control's 0.0018s: uniq takes the hooked `!=`
+//   because core's `impl Cast for Transparent` makes hooks_live true.
+let a = array::init(200000, |i| i);
+let n = 0;
+n <- select n { k if k < 500 => k + 1, _ => never() };
+let u = uniq(n ~ a);
+let c = count(u);
+let t0 = sys::time::now(select n { 1 => n, _ => never() });
+let t1 = sys::time::now(select n { 500 => n, _ => never() });
+let dt = cast<f64>(sys::time::diff(t1, t0))$;
+println("uniq 500 cycles: [dt]s fires=[c]");
+sys::exit(dt ~ 0)

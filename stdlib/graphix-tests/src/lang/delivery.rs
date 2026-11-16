@@ -18,6 +18,14 @@ fn shown(values: Vec<Value>) -> Vec<String> {
 
 /// `/test.gx` (`let result = {code}`) beside `files`, run in `mode` until
 /// the runtime settles: every update of the result.
+// CR claude for claude: [test-gap/low] This helper and input_updates build and run
+// without check_fixture. So no delivery fixture (nor the modules.rs test that calls
+// this) holds the check to the build in Interp, as run!, run_delta_with and
+// run_tempdir_fixture do. errors.rs's repl_inputs_produce re-implements input_updates
+// and runs only under init's defaults, so the REPL catch tests never run the node-walk
+// or the forced fork modes. Run check_fixture plus verdicts_agree in Mode::Interp here,
+// as run_delta_with does, then make input_updates pub(super) and run the two REPL catch
+// tests through it under modes!. Found by reading; not run. (tests-lang-rest-d-09)
 pub(super) async fn result_updates(
     code: &str,
     files: &[(&str, &str)],

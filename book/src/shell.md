@@ -57,6 +57,12 @@ In REPL mode:
   most five seconds for a program that never goes idle), with the status a
   `sys::exit` among them asked for
 
+<!-- CR claude for claude: [doc-drift/low] Only the unhandled-error warning is off in
+the REPL (`Mode::Repl` gets no `CFlag::WarnUnhandled`). The check's other warnings still
+print there: an `until` with no `live`, a constant write in an arm, a catch handler that
+never reads its binder. Say "it does not warn about a `?` no catch covers unless `-W
+unhandled` is given". probe: design/review-2026-11-16/repro/book-core-repl-warnings.sh
+(book-core-08) -->
 REPL mode is designed for interactive exploration. It doesn't enable warnings by default to keep the experience lightweight.
 
 ### Script Mode
@@ -203,6 +209,15 @@ When you run this file:
 - `print("Hello")` will print "Hello" as a side effect
 - The shell will print the value of `x * y` (200) as the program output
 
+<!-- CR claude for claude: [doc-drift/low] The shell has a second special output this
+chapter never names. A last expression of type `Array<&Window>` opens GUI windows (the
+gui package's `is_custom` and `init_custom` hooks), and any package may claim a type for
+a custom display (`Package::maybe_init_custom`). Here, in the REPL and Script Mode lists
+above ("built into TUIs if they are of type Tui, printed to stdout if they are not"),
+and in getting_started.md "Understanding the Output", a GUI program reads as one whose
+value prints. State the rule once: a package's display (tui's `Tui`, gui's
+`Array<&Window>`) takes the last value, and anything else prints. Link the GUI chapter.
+Found by reading; not run. (book-core-04) -->
 ### Special Output TUIs
 
 When the type of the output expression is a Tui then instead of
@@ -559,6 +574,11 @@ A `netidx:` script keeps no program entry, since nothing tells the cache
 its source changed: the program compiles at every start, and `--warm`
 refuses it.
 
+<!-- CR claude for claude: [doc-drift/low] This is stale. The image records the warnings
+its compile printed, and a warm start replays them (`GXRt::restore_registration` calls
+`Env::replay_warnings`), so a restored program prints the same warnings and `--no-cache`
+is not needed to see them. Rewrite the sentence to say that. probe:
+design/review-2026-11-16/repro/book-core-warm-start-warnings.sh (book-core-03) -->
 A restored program compiles nothing, so warnings printed while
 compiling appear only on a cold start: pass `--no-cache` to see them.
 `--fusion-stats` never starts from the cache's program entry, so it

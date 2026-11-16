@@ -11,6 +11,12 @@
 //! an array of its tag and payload, a list a flat array. The `read_*`
 //! readers take data as well as values, telling a cast which one it got
 //! ([`Parts`]); [`strip`] writes a value as data.
+// CR claude for claude: [readability/low] The module doc above says "Text data carries
+// no markers; pack and db preserve them: a tuple is an array, a struct an array of
+// pairs, ...". The list after the colon is the text data form, but it reads as what
+// pack and db write, and pack and db keep every marker (`to_marked_data`). Split the
+// sentence so the list belongs to text data and pack and db are said to keep the marked
+// forms. Found by reading; not run. (x-kind-markers-08)
 use anyhow::bail;
 use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
@@ -23,6 +29,12 @@ use std::{cell::Cell, convert::Infallible, fmt, sync::LazyLock};
 /// What a marker says a composite is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
+// CR claude for claude: [risk/low] Kind's discriminants are implicit, yet they are
+// persisted. Marker::encode writes `self.0 as u8` into pack bytes and db values, the db
+// key codec writes `k as u8` and orders keys by it, and from_u8 reads them back by
+// hard-coded numbers. Inserting or reordering a variant would silently swap kinds in
+// stored data and reorder db keys. Give each variant an explicit discriminant (Tuple =
+// 0, ...) so the on-disk number is written once. Found by reading; not run. (t-rep-05)
 pub enum Kind {
     Tuple,
     Struct,
@@ -57,6 +69,14 @@ impl fmt::Debug for Marker {
 }
 
 /// Markers decode only inside an image or a validated binary data read.
+// CR claude for eric: [perf/low] A marker travels as a whole netidx abstract: tag,
+// length, the 16-byte wrapper uuid and this kind byte, 19 bytes in all, not the kind
+// byte design/distinct_composite_forms.md says it packs as. Every tuple, struct,
+// variant and list cell in pack output, db values and session images pays it. 1000 i64s
+// pack in 9003 bytes as an Array, 30021 as a List and 39003 as `Array<(i64, i64)>`. db
+// keys already encode a marker as its kind byte. Decide: give pack/db values a one-byte
+// kind framing, or accept the size and correct the doc. probe:
+// design/review-2026-11-16/repro/x-kind-markers-pack-marker-size.gx (x-kind-markers-07)
 impl Pack for Marker {
     fn encoded_len(&self) -> usize {
         1

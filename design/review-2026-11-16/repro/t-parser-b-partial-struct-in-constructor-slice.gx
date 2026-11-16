@@ -1,0 +1,16 @@
+// Title: a partial struct pattern inside a slice or list pattern over an
+//   applied constructor variable (`c: 'c<{a: i64, b: i64}>`, 'c: Collection)
+//   is never completed against the element type, so the arm tests for the
+//   exact struct `{a}` and silently never matches; both engines agree on the
+//   wrong answer. StructurePattern::complete_slice's `elem` reads only an
+//   Array or a List scrutinee member, where parts_over and
+//   collection_view_inner also read `Type::App(_, elem)`.
+// Command:
+//   timeout -s KILL 10 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache t-parser-b-partial-struct-in-constructor-slice.gx
+//   (graphix-fuzz check agrees across every mode on the same wrong value)
+// Expected: (1, 0, 0, 3) -- the array arm takes the array's first element,
+//   the list arm the list's (as `[{a, b}, ..]` and `[x, ..] => x.a` do).
+// Observed: (0, 0, 0, 0).
+let fa = 'c: Collection |c: 'c<{a: i64, b: i64}>| select c { [{a, ..}, ..] => a, _ => 0 };
+let fl = 'c: Collection |c: 'c<{a: i64, b: i64}>| select c { [<{a, ..}, ..>] => a, _ => 0 };
+(fa([{a: 1, b: 2}]), fa([<{a: 3, b: 4}>]), fl([{a: 1, b: 2}]), fl([<{a: 3, b: 4}>]))

@@ -175,6 +175,20 @@ fn merge_uses<T: Clone>(
     let mut i = 0;
     while i < items.len() {
         let first = &items[i];
+        // CR claude for claude: [bug/medium] Every name of one use statement gets the
+        // same group, so a statement whose items depend on each other is sorted by root
+        // and split into statements that do. `use {gui::text, text::text as mk}` (whose
+        // `text::text` reads the outer `use tui::text`, since a statement's items do
+        // not see each other) becomes `use gui::text; use text::text as mk`, where
+        // `text::text` reads the sibling: a program that checks is rewritten into one
+        // the check refuses, and a refused one into one that checks. The guard cannot
+        // see it, because Parsed::new merges the input and the reparse alike. Fix: test
+        // `depends` between the names of one statement too, and either put the reader
+        // in a group before the binder or leave that statement unsplit as a decorated
+        // use is. The same merge runs over sigs and .gxi uses. Pin both directions in
+        // uses_merge_at_every_level. probe:
+        // design/review-2026-11-16/repro/x-formatter-use-split-rebinds.gx
+        // (x-formatter-01)
         while let Some((reexport, names)) = items.get(i).and_then(&as_use) {
             // the group after the last one it depends on: every group
             // depends on the one before it, so a reparse groups alike
@@ -276,6 +290,14 @@ fn merge_uses_within(e: &Expr) -> Expr {
     let e = ensure_sufficient(|| e.map_children(&mut merge_uses_within));
     let kind = match &e.kind {
         Block { exprs } => Block { exprs: merge_expr_uses(exprs, exprs.last()) },
+        // CR claude for claude: [dead/low] This arm and the `TryWith` arm merge the use
+        // statements of a seq body, a try body and a with handler. The check refuses
+        // every declaration in those lists ('a declaration is not a seq step'), so the
+        // two arms only ever reformat a program that does not compile. A use that a seq
+        // needs sits in a `{ .. }` statement, which the `Block` arm already merges.
+        // Delete both arms. probe:
+        // design/review-2026-11-16/repro/t-format-resolver-seq-use-merge-dead.sh
+        // (t-format-resolver-04)
         Seq(s) => Seq(Arc::new(SeqExpr {
             body: merge_expr_uses(&s.body, None),
             ..(**s).clone()
@@ -348,6 +370,17 @@ impl Parsed {
 
     /// The first place `other` says something else, as the text each
     /// side prints there.
+    // CR claude for claude: [risk/medium] This guard decides by Expr equality, which is
+    // blind where the proptest oracle (expr/test.rs check_type, same_constant) is not.
+    // TVar equality holds for any two unbound cells, so `|x: 'a| -> 'a x` equals `|x:
+    // 'a| -> 'b x`, and a lambda constraint equals the same bound on another variable.
+    // FnType equality skips explicit_throws. Value equality takes -0.0 for 0.0 and
+    // decimal:1.50 for decimal:1.5. A printer change that loses any of these, all
+    // program-visible, would be written silently. Fix: also compare each item's
+    // canonical print (format_with_flags(BitFlags::empty(), ..)), as pack_round_trip
+    // does, and add a renamed-variable case to
+    // the_guard_refuses_text_that_says_something_else. Found by reading; not run.
+    // (x-formatter-02)
     fn difference(&self, other: &Self) -> Option<(CompactString, CompactString)> {
         fn smallest(a: &Expr, b: &Expr) -> (CompactString, CompactString) {
             let children = |e| {
@@ -437,6 +470,17 @@ pub fn format_source(
     // a file whose every line ends in CRLF keeps them; the layout is LF
     let lines = text.matches('\n').count();
     let (parsed, buf) = layout(kind, text, cfg)?;
+    // CR claude for claude: [readability/low] The comment below ('a literal's own
+    // already are') is wrong. `parse_all` reads every CRLF as LF (`crlf_as_lf`), so a
+    // raw or template string spanning a line holds LF in the laid-out text, and this
+    // loop gives it its CR like any layout break; that is what keeps
+    // `crlf_lines_stay_crlf` passing. The `prev != '\r'` test never fires on output the
+    // guard accepts. Quoted and template strings escape a CR, and a raw string whose
+    // value holds CR LF prints quoted and is refused: `r"a<CR><CR><LF>b"` in a CRLF
+    // file checks, yet fmt says it 'changed a string's delimiters'. Push '\r' before
+    // every '\n' and say why. probe:
+    // design/review-2026-11-16/repro/t-format-resolver-raw-crlf-refused.sh
+    // (t-format-resolver-05)
     if lines > 0 && text.matches("\r\n").count() == lines {
         // the layout's line breaks become CRLF; a literal's own already are
         let mut crlf: LPooled<String> = LPooled::take();
@@ -465,6 +509,19 @@ fn guard(kind: SourceKind, parsed: &Parsed, out: &str) -> Result<()> {
             bail!(Refused(msg.as_str().into()))
         }
     };
+    // CR claude for claude: [risk/medium] This check is `Expr ==`, which is not
+    // syntactic for types. `TVar`'s `PartialEq` compares cells by binding, so any two
+    // unbound variables are equal, and every variable a parse makes is unbound.
+    // `FnArgKind`'s ignores a positional parameter's name, and `FnType`'s compares the
+    // quantifiers only through `constraint_view`. As a result, `|x: 'a, y: 'b| -> 'a x`
+    // and `|x: 'a, y: 'b| -> 'b x` compare equal, and so do `type T<'a, 'b> = ('a, 'b)`
+    // and `('b, 'a)`. A printer slip that renamed or swapped a variable would be
+    // written to disk, against this function's contract. No such printer bug is known
+    // today; the fn-type quantifier reconstruction is where one would come from. Also
+    // compare the two parses' canonical prints (each item under
+    // `format_with_flags(BitFlags::empty(), ..)`, which names every variable), or have
+    // `Ornaments` push each type's variable names, and pin it with a `refused` case
+    // that renames a variable. Found by reading; not run. (t-format-resolver-02)
     if let Some((was, now)) = parsed.difference(&reparsed) {
         let msg = format_compact!(
             "the formatted text says something else\nwas {was}\nnow {now}"

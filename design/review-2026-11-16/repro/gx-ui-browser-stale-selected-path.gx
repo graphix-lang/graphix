@@ -1,0 +1,30 @@
+// Title: tui::browser keeps #selected_path on the old row when no column fits: cell_path's `visible_columns[sel.x - 1]$` goes bottom
+// Command: timeout -s KILL 6 graphix -n --no-cache gx-ui-browser-stale-selected-path.gx | grep -v '^[0-9]*$'
+// Expected: after k=2's Down(1), selected_path follows the row (null, or .../aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1/...)
+// Observed: "k=2 selected_row=/local/ln/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1" while selected_path stays
+//   "/local/ln/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0/x" (the row the cursor left). With the 31-char row names
+//   in a 30-wide browser, window(first_col) takes no column, visible_columns is [], and cell_path is
+//   bottom, so `*selected_path <- ...` never writes. netidx-tools' browser `:w` writes to that path.
+use tui::{Tui, browser::{MoveCursor, browser}};
+let rows = ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1"];
+let pubs = array::map(rows, |r| sys::net::publish("/local/ln/[r]/x", 1));
+let listed = sys::net::list_table("/local/ln")$;
+let path: string = never();
+path <- select (array::len(listed.rows), array::len(listed.columns)) {
+  l@ (2, 1) => l ~ "/local/ln",
+  _ => never()
+};
+let cur: MoveCursor = never();
+let srow: [string, null] = never();
+let spath: [string, null] = never();
+let size = {width: 60, height: 6};
+let b: Tui = browser(#size, #cursor: cur, #selected_row: &mut srow, #selected_path: &mut spath, path);
+let go = sys::time::timer(duration:1500.ms, true);
+let k = 0;
+k <- go ~ k + 1;
+size <- select k { 1 => k ~ {width: 30, height: 6}, _ => never() };
+cur <- select k { 2 => k ~ `Down(1), _ => never() };
+let p1 = println(srow ~ "k=[k] selected_row=[srow]");
+let p2 = println(spath ~ "k=[k] selected_path=[spath]");
+let p3 = println(k ~ "k=[k] tick");
+k

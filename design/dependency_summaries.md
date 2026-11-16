@@ -190,6 +190,14 @@ request.
 
 ## 6. Parallel evaluation
 
+<!-- CR claude for claude: [doc-drift/low] This section gives the fork rule as one
+clause (a later sibling reads what an earlier one publishes) and lists a handler both
+reach among the publications. As built (`analysis::plan_runs`, `design/parallel_eval.md`
+§3.2) there are three: that one, an earlier sibling reading what a later one fires
+(`read_before`), and two ordered calls; and `analysis::publishes` holds no handler,
+`branch::merge_in_order` queuing the later of two deliveries. The code is right: point
+this section at §3.2 instead of restating it. Found by reading; not run.
+(c-analysis-branch-11) -->
 What the summary provides: the read set of the independence rule
 (`parallel_eval.md` §3.2, `analysis::plan_block`). A later sibling
 depends on an earlier one iff it reads what the earlier one publishes

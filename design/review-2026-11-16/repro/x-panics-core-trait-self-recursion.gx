@@ -1,0 +1,19 @@
+// x-panics: a core-trait impl that applies its own operator to self hangs the runtime
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache x-panics-core-trait-self-recursion.gx
+//          timeout -s KILL 30 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache --check x-panics-core-trait-self-recursion.gx
+// Expected: the check refuses `eq` (it can only recurse: write `a.0 == b.0`), or
+//   the run reports the recursion; never a silent wedge.
+// Observed: --check exits 0 with no diagnostic; the run prints "0" (its last
+//   expression) and nothing more, and is killed by the timeout (exit 137): `x == W(1)` dispatches to `eq`, whose
+//   `a == b` dispatches to `eq` again, forever, inside one cycle.
+// The same wedge, also ran: `impl Eq for W { let eq = |a, b| a.0 == b.0; let hash
+//   = |w| w }` under `array::dedup([W(1), W(2), W(1)])` (the hash of the part
+//   `hash` returns is `hash` again), and `impl Display for W { let fmt = |w|
+//   "W([w])" }` under `println("[W(1)]")`. `let hash = |w| w.0` prints "dedup 2".
+type W = Abstract<i64>;
+impl Eq for W { let eq = |a, b| a == b };
+let clk = sys::time::timer(duration:20.ms, false);
+let x = clk ~ W(1);
+println("eq [x == W(1)]");
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+0

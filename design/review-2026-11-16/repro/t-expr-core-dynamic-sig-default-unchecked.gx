@@ -1,0 +1,18 @@
+// A dynamic module's sig trait default body is never checked by --check.
+// The type error below is in the program's own text (the sig), not in the
+// run-time source string, yet --check accepts the program; the error surfaces
+// only at the module's load, as a DynamicLoadError value.
+//
+// Command:
+//   graphix --no-cache --check t-expr-core-dynamic-sig-default-unchecked.gx   (exit 0, no output)
+//   timeout -s KILL 10 graphix --no-cache t-expr-core-dynamic-sig-default-unchecked.gx
+// Expected: --check refuses `T::m(s) + "x"` ("cannot compute i64 + string"),
+//   as it does for the same trait in a file module's .gxi.
+// Observed: --check exits 0; the run prints
+//   error:`DynamicLoadError("compile error at: line: 14, column: 9 ... cannot compute i64 + string ...")
+let st = mod m dynamic {
+  sig { trait T { val m: fn(self) -> i64; val d: fn(self) -> i64 = |s| T::m(s) + "x" }; impl T for i64; val v: i64 };
+  source "impl T for i64 { let m = |s| s }; let v = T::d(5)"
+};
+println("[st]");
+m::v

@@ -1,0 +1,18 @@
+// Title: an array index or slice bound of a varint integer type (z32, z64, v32,
+// v64) never fuses, and the refusal calls the type non-integer.
+// Command: timeout -s KILL 180 graphix-fuzz check c-collection-varint-index-defuses.gx
+// Expected: the check accepts these indexes (array::check_index admits
+//   Typ::integer(), which holds the varint types, and the node-walk's
+//   array::index_i64 widens them), so `#[native]` should hold, as it does for
+//   `|i: z64| #[native] i + z64:1` and for an i8/u32 index.
+// Observed: "DIVERGENCE — fusion/JIT bug (interp != jit)": the JIT build refuses
+//   "#[native] expression did not fully fuse to native code:
+//    - emit_clif: index of non-integer type z64" (the same for v64; slices say
+//   "slice bound of non-integer type"). The node-walk answers
+//   (20, [20, 30]) and (error:`ArrayIndexError("array index out of bounds"),
+//   error:`ArrayIndexError("slice out of bounds")).
+// Without the #[native] the program agrees: the index just never fuses.
+let a = [10, 20, 30];
+let fz = |i: z64| #[native] (a[i], a[i..]);
+let fv = |i: v64| #[native] (a[i], a[..i]);
+(fz(z64:-2), fv(v64:18446744073709551615))

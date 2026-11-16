@@ -1,0 +1,24 @@
+// Title: an exhaustive select over 11 bool positions is refused "missing match cases"
+// (the pool's MAX_POOL_COMBINATIONS cap), while the same ladder over 10 positions
+// finds a catch-all dead.
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache --check design/review-2026-11-16/repro/tests-select-b-pool-cap-11-bools.gx
+// Expected: accepted (the 12 arms cover every value: a decision list on the first true).
+// Observed: missing match cases: no arm covers (bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool)
+// The 10-position twin with a trailing `_ => 0` is refused "unreachable arm: the earlier
+// arms already cover the whole scrutinee", so growing the tuple by one flag flips one
+// refusal into the other, and the message never names the cap.
+let f = |t: (bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool)| select t {
+  (true, _, _, _, _, _, _, _, _, _, _) => 1,
+  (false, true, _, _, _, _, _, _, _, _, _) => 2,
+  (false, false, true, _, _, _, _, _, _, _, _) => 3,
+  (false, false, false, true, _, _, _, _, _, _, _) => 4,
+  (false, false, false, false, true, _, _, _, _, _, _) => 5,
+  (false, false, false, false, false, true, _, _, _, _, _) => 6,
+  (false, false, false, false, false, false, true, _, _, _, _) => 7,
+  (false, false, false, false, false, false, false, true, _, _, _) => 8,
+  (false, false, false, false, false, false, false, false, true, _, _) => 9,
+  (false, false, false, false, false, false, false, false, false, true, _) => 10,
+  (false, false, false, false, false, false, false, false, false, false, true) => 11,
+  (false, false, false, false, false, false, false, false, false, false, false) => 12
+};
+f((false, false, false, false, false, false, false, false, false, false, true))

@@ -199,6 +199,18 @@ impl Widget<Message, crate::theme::GraphixTheme, Renderer> for KeyboardArea<'_> 
 
         if let Some(p) = &self.on_pointer {
             match event {
+                // CR claude for claude: [bug/medium] A CursorMoved is reported at the
+                // event's own position, but a left press at the cursor's. Inside a
+                // scrollable these differ: iced's Scrollable gives its content the
+                // cursor translated by its scroll offset and leaves the event
+                // unchanged. A data_table inside a horizontally scrolled scrollable
+                // therefore gets its press's ColumnResizeMove in content coordinates
+                // and every later move in window coordinates. handle_mouse_move_resize
+                // sizes the column by the difference between successive x's, so the
+                // first move of a drag changes the column's width by the scroll offset.
+                // Read the position from `cursor.land().position()` for moves as for
+                // the press, as iced's own slider drag does, and ignore the event's
+                // `position`. Found by reading; not run. (gui-widgets-a-01)
                 Event::Mouse(mouse::Event::CursorMoved { position }) => {
                     shell.publish((p.on_move)(position.x - layout.bounds().x))
                 }

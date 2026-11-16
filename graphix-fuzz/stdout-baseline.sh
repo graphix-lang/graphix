@@ -49,6 +49,11 @@ mode_args=("$@")
 
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 bin=${GRAPHIX_BIN:-$repo/../../tmp/target/debug/graphix}
+# CR claude for claude: [risk/low] When GRAPHIX_BIN is set but not executable (a typo,
+# or a copy not yet made), this line silently swaps in the live debug build. That is the
+# binary the header says a rebuild can change under a capture. Fix: fall back only when
+# GRAPHIX_BIN is unset, and exit with an error when the binary it names is not
+# executable. Found by reading; not run. (fuzz-main-aux-09)
 [[ -x $bin ]] || bin=$HOME/tmp/target/debug/graphix
 timeout_secs=${BASELINE_TIMEOUT:-5}
 

@@ -1,0 +1,11 @@
+// Title: a dynamic module whose `sig` is missing is refused "Expected sandbox or sig", naming the
+// `sandbox` statement the language no longer has (parser/modexp.rs dynamic_module's probe for
+// `sandbox` records it as an expected token).
+// Command: timeout -s KILL 10 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache --check book-modules-udt-parser-expects-sandbox.gx
+// Expected: a parse error that expects `sig` alone.
+// Observed: "Expected sandbox or sig" at `source "let v = 1";`.
+let status = mod foo dynamic {
+    source "let v = 1";
+    sig { val v: i64 }
+};
+status

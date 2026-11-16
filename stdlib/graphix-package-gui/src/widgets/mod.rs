@@ -86,6 +86,10 @@ pub enum TableMsg {
     /// Cell edit submitted (Enter pressed).
     CellEditSubmit,
     /// Cell edit cancelled (Escape or click elsewhere).
+    // CR claude for claude: [dead/low] No code in either repo builds this variant:
+    // Escape comes as TableMsg::Key(TableKeyAction::Escape), and a click elsewhere as
+    // CellClick. Delete it and its arm in DataTableW::on_message. Found by reading;
+    // checked with grep. (gui-datatable-09)
     CellEditCancel,
     /// Column resize drag started (column name).
     ColumnResizeStart(ArcStr),
@@ -411,6 +415,18 @@ impl<X: GXExt, T: Item<X>, S: Shape> Children<X, T, S> {
         let mut changed = false;
         if id == self.r.id && self.r.last.as_ref() != Some(v) {
             let (vals, shape) = S::items(v.clone())?;
+            // CR claude for eric: [bug/low] Reconcile keeps a moved item's GuiW, but
+            // the views push items into a plain iced Column/Row/Stack/Grid. iced
+            // matches its widget state (Tree) to children by position
+            // (Tree::diff_children_custom). A moved widget therefore takes the focus,
+            // caret, scroll offset or open menu of whatever stood at its new index,
+            // while its own Echoes and caches move with it. Example: rotate a column of
+            // three text_inputs while the second has focus, and the next keys go to the
+            // input that moved into index 1. iced_widget::keyed::Column keyed by an id
+            // each Children item carries would let the state follow the item for
+            // columns. Row, Stack and Grid have no keyed form in iced 0.14, so this
+            // needs a decision on what a moved widget keeps. Found by reading; not run.
+            // (gui-widgets-a-03)
             rt.block_on(reconcile(&mut self.ws, vals, |v| T::compile(gx, v)))?;
             self.shape = shape;
             self.r.last = Some(v.clone());

@@ -158,6 +158,15 @@ async fn slider_drag_no_panic() -> Result<()> {
     Ok(())
 }
 
+// CR claude for claude: [structure/low] slider_on_change_produces_call,
+// slider_on_release_produces_call and their two vertical_slider copies are one body
+// that varies only the widget, viewport, hit point and handler. The mouse_area
+// press/release tests, and likewise the enter/move tests, are identical but for the
+// handler name. The (kind, size, hit) slider table is spelled out four times further
+// down, and the copies in continuous_slider_keys_and_wheel_move_one_percent and
+// stepped_slider_keys_wheel_and_drags_share_one_lattice are identical. Fold each family
+// into one test that loops over a table, with one const for the 400-pixel slider
+// layouts. Found by reading; not run. (tests-gui-b-02)
 #[tokio::test(flavor = "current_thread")]
 async fn slider_on_change_produces_call() -> Result<()> {
     let code = format!(

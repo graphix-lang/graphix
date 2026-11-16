@@ -29,6 +29,15 @@ use std::{
 };
 use triomphe::Arc;
 
+// CR claude for claude: [structure/low] This file is four subsystems under one name:
+// the cast walk and its conversions; the `Verdicts` searches behind `holds_fn`,
+// `holds_ref` and `data_holds`; the run-time type test (`is_a_int`,
+// `ShallowScrutinee`); and the runtime-form judgments (`rep_collision`,
+// `rep_ambiguity`, `compared_ref`, `map_refs`). They share `rep_head` and `ref_key` and
+// little else, and a reader looking for select's test or the `Ordered` rule has no
+// reason to open a file named for casts. Move the last three to files of their own
+// beside this one (`holds.rs`, `is_a.rs`, `form.rs`) with their tests; no code changes.
+// Found by reading; not run. (t-cast-12)
 #[derive(Debug, Clone, Copy)]
 #[bitflags]
 #[repr(u8)]
@@ -912,6 +921,17 @@ impl Type {
                 },
                 Type::Ref(tr) => seen.search_once(self, |seen| {
                     seen.looked_up = true;
+                    // CR claude for claude: [perf/medium] The typedef is expanded here
+                    // before `decide_once` looks its definition up, so a reference to a
+                    // definition already being decided or decided pays a walk of the
+                    // whole body for nothing. A union of N structs that each name the
+                    // union is expanded N times in one walk: the check of 500 calls
+                    // passing such a value takes 0.8 s, 2.5 s and 9.1 s at 150, 300 and
+                    // 600 variants, and the samples sit in `replace_tvars` under this
+                    // lookup. Compute `shape`, call `decide_once`, and look the
+                    // definition up inside its closure. probe:
+                    // design/review-2026-11-16/repro/c-callsite-unread-walk-per-call.sh
+                    // (c-callsite-06)
                     let Ok(t) = self.lookup_ref(env) else { return false };
                     let shape =
                         tr.params.iter().map(|p| p.holds(env, seen, leaf)).collect();
@@ -942,6 +962,26 @@ impl Type {
         if at == cx.at {
             return ensure_sufficient(|| self.cast_inner(env, cx, src, v));
         }
+        // CR claude for eric: [bug/medium] This bound guards foreign data, but it also
+        // refuses a value the program built that is already of the target: cast<L>(a)
+        // over a 1100-deep `type L = [`Nil, `Cons(i64, L)]` answers InvalidCast, while
+        // `select a { L as _ => .. }` over the same value takes the arm. A cast and a
+        // type test disagree on one value. The refusal also names the leaf where the
+        // count ran out ("can't cast 76 to i64"), not the value or the limit. Decide
+        // whether an in-language cast is bounded at all. If it is, the type test should
+        // share the bound and the message should name the limit. probe:
+        // design/review-2026-11-16/repro/t-rep-cast-refuses-deep-own-value.gx
+        // (t-rep-03)
+        // CR claude for eric: [bug/medium] This bound also refuses a program's own
+        // value: `cast<L>(v)` of a `v: L` 1,100 conses deep (`` type L = [`Cons(i64,
+        // L), `Nil] ``) is an `InvalidCast`, where a select reads the same value.
+        // `pack::write_bytes` writes such a value and `pack::read` then refuses it, so
+        // the round trip fails; json's writer has a bound of its own, 128. No doc a
+        // program's author reads states either. Decide the rule: the writers refuse
+        // past the bound the readers have (as `abstract_value::nested` does for
+        // abstract values) and data.md says so, or the bound is for bytes being decoded
+        // and not for a value already built. probe:
+        // design/review-2026-11-16/repro/t-cast-depth-limit-roundtrip.gx (t-cast-04)
         if cx.depth == MAX_DATA_DEPTH {
             return Err(self.cast_fail("the data is nested too deep", v));
         }
@@ -1515,6 +1555,16 @@ impl Type {
                 }
             },
         };
+        // CR claude for eric: [risk/medium] `from_value` is handed `v` as its reader
+        // holds it: marked by pack and db, stripped data by json, toml, netidx and
+        // `cast`. So one `Cast` impl sees `(5, `Q)` under pack and `[5, "Q"]` under
+        // JSON. A from_value that tests the shape its own to_value wrote (`select v {
+        // (i64, `Q) as (x, _) => .. }`) reads back from pack and fails from JSON.
+        // Decide: either hand from_value one form (strip `v` with `rep::strip` before
+        // the hook, so every reader agrees), or state on the `Cast` trait in core's
+        // mod.gxi that from_value must `cast` its argument and never test its shape.
+        // probe: design/review-2026-11-16/repro/x-kind-markers-fromvalue-two-forms.gx
+        // (x-kind-markers-05)
         match abstract_value::from_value(self, v) {
             None => Err(self.cast_fail("it has no Cast implementation", v)),
             Some(CastHook::Ran(None)) => {
@@ -1584,6 +1634,16 @@ impl Type {
                 })
                 .collect(),
         };
+        // CR claude for eric: [bug/low] A value whose static type is an array is still
+        // read as a writer's data when its elements need a conversion: this tier offers
+        // none unless the input is `Marked`, so the cast falls to the tuple and struct
+        // readings. `cast<[(i64, i64), Array<i64>]>` of an `Array<f64>` is the tuple
+        // `(1, 2)` for two elements and the array `[1, 2, 3]` for three, and the array
+        // `[1, 2]` for an `Array<i64>`: the kind of the result follows the data. Where
+        // the source's element type is known (not `Any`) this tier could convert, as it
+        // does for `Marked` input. probe:
+        // design/review-2026-11-16/repro/t-cast-static-array-reads-as-tuple.gx
+        // (t-cast-06)
         if let Ok(r) = self.tier(env, cx, src, v, &[&arrays], converts, &Holds::KEEPING) {
             return Ok(r);
         }
@@ -1591,6 +1651,16 @@ impl Type {
         // tagless reading of an earlier member says
         let tagged: SmallVec<[&Type; 4]> =
             ts().filter(|t| carries_tag(env, t, v)).collect();
+        // CR claude for claude: [bug/medium] When unmarked data starts with a string
+        // that is a member's tag and has that member's arity, the tagged member is the
+        // only reading tried: if its payload does not fit, the cast fails without
+        // trying a member the value already inhabits. `["A", "x"]` cast to `` [`A(i64),
+        // Array<string>] `` from `Any`, by `str::parse` or as a subscriber reads it is
+        // an `InvalidCast` though it is an `Array<string>`, and beside `(string,
+        // string)` it fails where `["B", "x"]` reads as the tuple. The tag gives its
+        // member priority, not the only say: on a refusal fall through to the tiers
+        // below and return the tagged refusal only if none reads the value. probe:
+        // design/review-2026-11-16/repro/t-cast-tagged-data-no-fallback.gx (t-cast-03)
         if !tagged.is_empty() {
             return self
                 .tier(env, cx, src, v, &[&tagged], true, &Holds::ALL)
@@ -1636,6 +1706,17 @@ impl Type {
         {
             return Ok(r);
         }
+        // CR claude for claude: [bug/medium] A union that reads no member answers this
+        // and drops what its members said: `tier` returns a refusal and every caller
+        // but the tagged one discards it. So `cast<[Sorted, null]>` and a json read of
+        // an optional `Sorted` field lose the reason its `from_value` gave ("not
+        // sorted"), which design/abstract_cast.md says the cast's error repeats, and a
+        // bad field deep inside an optional struct is reported as the whole value
+        // against the whole union. Give `CastFail` the depth it was raised at and
+        // report the deepest refusal tried (the first on a tie), this text only when no
+        // member was tried. `CastFail`'s doc says a union keeps its last failure; it
+        // keeps none. probe:
+        // design/review-2026-11-16/repro/t-cast-union-drops-refusal.gx (t-cast-02)
         Err(self.cast_fail("no member admits it", v))
     }
 
@@ -1714,6 +1795,12 @@ impl Type {
     /// [`Self::cast_value`] of a `v` statically of type `src`, which
     /// decides whether an unmarked array is an array or a writer's data:
     /// a union reads an array as an array member it inhabits first.
+    // CR claude for claude: [dead/low] Nothing calls this in either repository:
+    // `TypeCast::update` and the fused cast site call `cast_with`.
+    // design/distinct_composite_forms.md still says both engines' casts call it, and
+    // design/strict_fusion.md and design/tvar_constraints.md cite it. Delete it, move
+    // its sentence on what a static source decides to `cast_with`, and point the three
+    // docs there. Found by reading; not run. (t-cast-10)
     pub fn cast_from(&self, env: &Env, src: &Type, v: Value) -> Value {
         self.cast_with(env, Some(src), v, CastInput::Data, true).unwrap_or_else(|e| e)
     }
@@ -2407,6 +2494,20 @@ pub(super) fn shares_form(env: &Env, t: &Type) -> bool {
         Some(Type::Variant(_, ps, _)) if ps.is_empty() => false,
         Some(Type::Primitive(p)) => p.intersects(SHARED_PRIMS),
         Some(Type::Set(ts)) => ts.iter().any(|t| shares_form(env, t)),
+        // CR claude for eric: [bug/medium] This arm makes every tuple, struct and
+        // payload variant share its form, which was true before kind markers. Now a
+        // written test of a composite checks each part at run time, so a value of an
+        // open member passes it only if it is that type. A composite shares a form only
+        // where one of its parts does. Today `|x: ['a, (i64, i64)]| select x { (i64,
+        // i64) as (a, b) => .., _ => .. }` is refused "annotate it", with nothing a
+        // declared 'a can be annotated with. The inferred `` `Tick(n) `` refusal's
+        // advice (write `` `Tick(i64) as `Tick(n) ``) leads straight into this refusal.
+        // design/distinct_composite_forms.md lists only references, functions, errors,
+        // maps, arrays and Rust-backed abstracts. Fix: for Tuple, Struct and a payload
+        // Variant, recurse into the parts; keep List (nil passes any list's test).
+        // `crosses` gains the same. probe:
+        // design/review-2026-11-16/repro/x-kind-markers-open-member-composite.sh
+        // (x-kind-markers-04)
         Some(_) => true,
     })
 }
@@ -3243,6 +3344,15 @@ impl Type {
                     n.resolve_tvars(),
                     Indiscernible::OPEN_NUMBER
                 ),
+                // CR claude for claude: [readability/low] This joins "holds" to a
+                // sentence that starts with the type and its verb: "Array<Box<[i64,
+                // f64]>> must be Ordered here, but it holds Box<[i64, f64]> has no Ord
+                // implementation, so its values compare by its representation, ...".
+                // Split `by_representation` into the type and the clause after it, so
+                // this arm reads "holds T, which has no Ord implementation, so .." and
+                // the operator's message keeps "T has no ..". probe:
+                // design/review-2026-11-16/repro/t-cast-not-discernible-wording.gx
+                // (t-cast-13)
                 Indiscernible::Abstract(a, kind) => {
                     anyhow::anyhow!(
                         "{what} holds {}",
@@ -4062,6 +4172,14 @@ pub(crate) mod tests {
         pred.seed_refs(&env);
         let started = Instant::now();
         pred.shallow_discriminant(&env, &scrutinee);
+        // CR claude for claude: [test-gap/low] This pin and
+        // `failing_union_read_is_linear` assert a wall-clock bound inside the library's
+        // shared test binary: under the gate's load two seconds can pass with nothing
+        // wrong, and what the bound proves depends on the machine. The pins beside them
+        // count work. Assert on `SHAPE_STEPS` here, as
+        // `shallow_discriminant_walks_a_shared_dag_once` does, and give the union read
+        // a `#[cfg(test)]` counter of `cast_member` calls. Found by reading; not run.
+        // (t-cast-11)
         assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
     }
 

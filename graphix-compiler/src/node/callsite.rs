@@ -280,6 +280,20 @@ fn checked_default<R: Rt>(
         // a check outside the definition reads its scheme, whose cells it
         // may not decide: it compiles among generic cells, and the copy
         // below is what it judges
+        // CR claude for claude: [bug/high] Under `Judge::Check` outside the definition
+        // the default is checked against the enclosing definitions' own scheme cells
+        // (only the node's top type is copied below), so a call inside the default
+        // aliases its cell to the factory's declared variable and pushes a
+        // `PendingSettle::Site` that keeps nothing of it: the statement's settle binds
+        // that variable to bottom. `let mk = |x: 'a| |#pre: i64 = len([x]), y: i64|
+        // (pre, y); let a = mk(1); a(2)` passes the check and the build refuses `mk(1)`
+        // ("an instance at fn(x: i64) .. of a definition typed fn(x: 'a: _)"); the same
+        // where a formal or a `let` annotation hides the label. Give the settles the
+        // default's check pushes the signatures of the closed definitions around `f` to
+        // keep, as `DefGate::close` gives its frame its own, or check the default over
+        // a copy of those cells. probe:
+        // design/review-2026-11-16/repro/c-lambda-omitted-default-bottoms-scheme.gx
+        // (c-lambda-02)
         let _level = (matches!(judge, Judge::Check(_)) && !ctx.rec_defs.contains(&f.id))
             .then(|| AtLevel::enter(Level::GENERIC));
         let mut node = f.in_signature(ctx, types.clone(), |ctx| {
@@ -340,6 +354,20 @@ fn checked_default<R: Rt>(
                     if matches!(judge, Judge::Bind) {
                         typ.place_cells(&ctx.env, &t);
                     }
+                    // CR claude for claude: [bug/medium] At the bind this holds the
+                    // label as the site's check settled it against the default as the
+                    // bind types it, and the two differ for a default with a `let` over
+                    // `never()` that a generic function's body writes: `{ let last =
+                    // never(); let note = |z| { last <- z; z }; (note(3), last) }` is
+                    // `(i64, _)` to the site and `(i64, i64)` here. The build refuses
+                    // 'type mismatch (i64, _) does not contain (i64, i64)' what the
+                    // check accepted, with no ELAB-AUDIT line; the same block as a
+                    // function's body builds, and the definition's own judgment knows
+                    // the cell is i64. The site's judgment must take the default's
+                    // cells as the default's writers decide them, not leave them to its
+                    // settle. probe:
+                    // design/review-2026-11-16/repro/x-check-build-default-never-let.gx
+                    // (x-check-build-04)
                     t.check_contains(&ctx.env, typ)
                 }
             }?;
@@ -446,6 +474,20 @@ fn judge_hidden_defaults<R: Rt>(
             ctx.leave_default(f.id, name);
             let raised = probe.raised(ctx);
             probe.close(ctx);
+            // CR claude for claude: [bug/medium] The note on this refusal comes from
+            // `met_default_note` over `written_defs`, which lists each compile of one
+            // lambda as a definition of its own: the definition's compile and every
+            // judgment's re-compile. The loop above judges `distinct_defs`. So a single
+            // defaulted function is told 'the functions met here share one #d: annotate
+            // the binding that holds them ...': `let f = |#w: fn(?#d: string, x: i64)
+            // -> string = |#d = 1, x: i64| cast<string>(d)$, x: i64| w(x); f(7)`, whose
+            // label is already written. one_met_default_names_no_annotation pins that
+            // one defaulted function gets no such note. Count distinct literals for the
+            // note (pass `distinct_defs`, or fold by `same_literal` in `met_defaults`).
+            // Then make functions.rs' closed-label fixtures, which show the wrong note
+            // today, assert that it is absent. probe:
+            // design/review-2026-11-16/repro/tests-functions-b-one-default-told-share-one.gx
+            // (tests-functions-b-01)
             let node = node
                 .map_err(|e| met_default_note::<R>(e, &written_defs(ctx, value), name))?;
             ctx.discard(node);
@@ -810,6 +852,18 @@ fn hidden_defaults_at<R: Rt>(
         };
     }
     let mut expanded = expanded;
+    // CR claude for claude: [bug/medium] At `MAX_EXPANSIONS` typedef expansions on one
+    // path `opened` answers None and the walk returns Ok, so a function whose default
+    // the declaration hides is accepted unjudged; the value's side does the same just
+    // above. A struct literal holding `|#d: 'a = 1, x: 'a| -> 'a d`, annotated with a
+    // chain of 17 typedefs ending in `fn(x: string) -> string`, passes `--check`, and
+    // the bind then refuses it (`binding the callee failed: type mismatch 'a: string
+    // does not contain i64`), the call bottom for good; one typedef shallower the check
+    // refuses. Refuse at the cap where the value still `holds_defaulted`, naming the
+    // binding to annotate, or end a recursive typedef by the pairs already walked
+    // instead of a depth count. probe:
+    // design/review-2026-11-16/repro/c-callsite-hidden-default-past-16-typedefs.gx
+    // (c-callsite-03)
     let Some(d) = opened(&ctx.env, declared, &mut expanded) else { return Ok(()) };
     if let (Some(a), Some(b)) = (d.shared_identity(), v.shared_identity()) {
         match walk.visited.entry((a, b)) {
@@ -857,6 +911,17 @@ fn hidden_defaults_at<R: Rt>(
                     return at(ctx, walk, &d, v);
                 }
                 let mut holders = formals.iter().filter(|d| d.takes_constructor_of(v));
+                // CR claude for claude: [bug/medium] A member of the value that two
+                // members of the declared union could hold is not walked at all (`_ =>
+                // Ok(())`), so the hidden defaults of its functions go unjudged. `let
+                // v: [Array<fn(x: string) -> string>, Array<i64>] = [g]` with `g = |#d:
+                // 'a = 1, x: 'a| -> 'a d` passes `--check`, and `fs[0]$("s")` fails its
+                // bind at run time, bottom for good; with `[Array<fn(x: string) ->
+                // string>, null]` the check refuses. Walk every holder the value fits,
+                // decided by a probe that binds nothing, and accept only where none
+                // takes its constructor. probe:
+                // design/review-2026-11-16/repro/c-callsite-hidden-default-two-holders.gx
+                // (c-callsite-04)
                 match (holders.next(), holders.next()) {
                     (Some(d), None) => at(ctx, walk, d, v),
                     _ => Ok(()),
@@ -1121,6 +1186,21 @@ enum ArgFit {
 /// parameter is what to annotate.
 fn ambiguous_parameter(e: anyhow::Error) -> anyhow::Error {
     match e.downcast_ref::<AmbiguousMember>() {
+        // CR claude for claude: [bug/medium] Every refusal through here tells the
+        // author to 'declare the parameters that decide them before this one', whether
+        // or not a later parameter decides the members. Over `|#y: 'a = 1, #z: 'b =
+        // "s", x: P<'a, 'b>|`, `f([1])` gets that advice although #y and #z already
+        // stand before x: they are omitted defaults, met after the written arguments,
+        // and `f(#y: 1, #z: "s", [1])` checks. Over `|y: 'a, x: P3<'a, 'b, 'c>|` and
+        // `|x: E<'a, 'b>|`, no parameter holds the open members' variables, so only
+        // writing x's type helps. Name the reorder only where a later parameter holds a
+        // variable of the members the argument could go to, and name passing the
+        // labeled arguments where the deciders are omitted defaults. Pin the remedy in
+        // lang::types::argument_into_a_typedef_union_before_the_omitted_defaults_refused
+        // and argument_into_a_three_member_typedef_union_two_left_open_refused, which
+        // pin only the fact today. probe:
+        // design/review-2026-11-16/repro/tests-types-c-ambiguous-remedy.sh
+        // (tests-types-c-03)
         Some(a) if a.in_holder() => anyhow!(
             "{}: a call's arguments are met in the order of the parameters, so declare \
              the parameters that decide them before this one, or write the type of the \
@@ -1166,6 +1246,17 @@ fn typecheck_arg<R: Rt>(
         }
         _ => None,
     };
+    // CR claude for claude: [readability/low] Two common refusals reach here with no
+    // note: `let h = mk(0); (h(1), h("s"))`, where h is one instance, and `f("s")`
+    // where f writes its parameter into a captured `let a = 1`. Both say only "type
+    // mismatch i64 does not contain string" at the argument. The fixes pass (`let h =
+    // |x| mk(0)(x)`, `let a: [i64, string] = 1`), and a direct `a <- "s"` already names
+    // the declaration, but the call says nothing. Add the note here: for a callee
+    // binding bind::names_generic does not generalize, say it is one instance and to
+    // write a lambda; for a formal that is a written binding's cell, reuse
+    // generic_target's "declare a: .. where it is bound". probe:
+    // design/review-2026-11-16/repro/x-diagnostics-instance-arg-no-cause.sh
+    // (x-diagnostics-11)
     let refused = |e: anyhow::Error| match pinned.as_ref().or(note.as_ref()) {
         Some(note) => Told::over(e, note),
         None => e,
@@ -1731,6 +1822,17 @@ fn widenable(
     let mut at_def: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
     def.collect_tvars(&mut at_def);
     let mut found: LPooled<AHashMap<ArcStr, (TVar, bool)>> = LPooled::take();
+    // CR claude for claude: [bug/medium] This walk does not pass repeats, so
+    // `DataPositions::walk` tells a recursive typedef's own application inside its
+    // expansion as held under a function, and no variable of a recursive data typedef
+    // widens. `type L<'t> = [`Cons('t, L<'t>), `Nil]` with `|y: 'a, x: L<'a>|` refuses
+    // `f(n, f(1, `Nil))` over `n: [i64, null]` at `n`, the first argument written
+    // (`holds_invariantly` hoists the list), with no remedy named; `type W<'t> = {v:
+    // 't}` and `Array<'a>` widen. Add `.passing_repeats()` here as the bounds walk
+    // below has, and pin the cons program in both parameter orders beside a recursive
+    // typedef that holds a function, which must stay refused. probe:
+    // design/review-2026-11-16/repro/x-typecheck-order-recursive-typedef-no-widen.gx
+    // (x-typecheck-order-04)
     let mut positions = DataPositions::new(env).telling_members();
     inst.for_each_type(&mut |t| {
         positions.walk(t, Held::default(), &mut |tv, held| {
@@ -1781,6 +1883,19 @@ fn widenable(
                 && at_def.get(name).is_some_and(|d| !d.is_bound())
         })
     }
+    // CR claude for claude: [bug/critical] This filter takes a variable for a fresh
+    // instance's when the definition's cell is unbound, but `FnType::instantiate`
+    // shares every cell it does not copy: the cell of a binding the function writes
+    // (`let st = never(); let h = |x: 'a, y: 'a| -> 'a { st <- y; st }`) or of a
+    // one-instance function is the same cell in `def` and `inst`. `Widening::cells` is
+    // computed before the first argument is checked, so in `h(g(h(1, 1)), n)` the inner
+    // call binds the shared cell to i64, `g(v: i64)` accepts it, and `n` then widens it
+    // to [i64, null]: the check passes and the run panics in `fusion::kernel` ("runtime
+    // Null does not match the compiled Scalar(I64) slot"), or with --no-fusion adds to
+    // a null. Keep a variable only where the instance's cell is a copy
+    // (`!d.same_cell(tv)`), and pin the program as refused at `n`. probe:
+    // design/review-2026-11-16/repro/x-typecheck-order-widen-shared-cell.gx
+    // (x-typecheck-order-01)
     found
         .drain()
         .filter(|(name, (tv, data))| {
@@ -1995,6 +2110,18 @@ impl Widening {
                 return e;
             }
             let held = bound_held_note(env, def, inst, formal, typ);
+            // CR claude for claude: [bug/medium] This adds the 'undecided argument
+            // before this one' note to every refusal at a formal holding a pinned
+            // variable, bound failures included. `map::insert({}, &x, 1)` is refused
+            // for ordering a reference and then told to pass the widest argument first
+            // or annotate `{}`. Neither can make it pass: a Map<&i64, i64> annotation
+            // is refused too, and the key cannot come before the map. A function key
+            // gets the same text. Attach the note only where the refusal is a
+            // containment that widening would have admitted, never to a bound (Ordered,
+            // Number...) failure. lang::byref::byref_map_insert_refused passes with the
+            // misleading text. probe:
+            // design/review-2026-11-16/repro/tests-lang-rest-d-pinned-note-on-bound.gx
+            // (tests-lang-rest-d-03)
             match (held, self.pinned_note(formal)) {
                 (Some(note), _) | (None, Some(note)) => anyhow!("{e}: {note}"),
                 (None, None) => e,
@@ -2103,6 +2230,23 @@ impl Widening {
     /// widened variable's conjuncts commit over its wider type
     /// ([`TVar::commit_conjuncts`]), and one that does not hold it undoes
     /// the widening too.
+    // CR claude for eric: [bug/medium] [bug/medium] A variable held at two places of
+    // one decided argument does not widen the way it does across two arguments. `widen`
+    // probes the opened formal with `open.contains(typ)`, which binds the open copy to
+    // the first part and then fails at the second, so it never sees the wider type.
+    // Over `let first = |p: ('a, 'a)| p.0` and `x: [i64, null]`, `first((1, x))` is
+    // refused with "('a: i64, 'a: i64) does not contain (i64, [i64, null])", while
+    // `first((x, 1))` runs and so does `|a: 'a, b: 'a|` called with `(1, x)`. A struct
+    // at `{a: 'a, b: 'a}`, `[(1, x)]` at `Array<('a, 'a)>` and a let-bound tuple are
+    // refused the same way. design/tvar_constraints.md says two decided arguments
+    // settle a variable alike in either order and says nothing about the parts of one
+    // argument ("two parts of one position" is its rule for a function held at a
+    // function type). No test pins either verdict, and the refusal names no fix.
+    // Decide: widen within one argument as across arguments, or keep
+    // first-part-decides, document and pin it, and have the refusal say to write the
+    // wider part first or to annotate. probe:
+    // design/review-2026-11-16/repro/tests-types-d-one-argument-no-widening.gx
+    // (tests-types-d-02)
     fn widen(
         &mut self,
         env: &Env,
@@ -2112,6 +2256,18 @@ impl Widening {
         typ: &Type,
     ) -> Result<bool> {
         let check = || formal.check_contains(env, typ).map(|()| true);
+        // CR claude for claude: [bug/medium] `has_unbound` counts rigid cells and cells
+        // inside function types, which `typecheck_arg` did not count when it called
+        // this argument decided (`has_free_in_data`). So no widening happens for an
+        // argument that mentions a declared variable of the enclosing definition or
+        // holds a lambda literal (its open `throws`): `|p: 'p, n: [i64, null]|
+        // array::push([(1, p)], (n, p))` is refused with a bare mismatch, while `p:
+        // string` and the wide argument first both pass. Test `typ.has_free_in_data()`
+        // here (the closing `check()` binds the argument's function cells for real),
+        // together with relating the old binding into the new one after the rebind
+        // below. probe:
+        // design/review-2026-11-16/repro/x-typecheck-order-widen-refused-beside-open-cell.gx
+        // (x-typecheck-order-03)
         if !self.fresh || typ.has_unbound() {
             return check();
         }
@@ -2130,6 +2286,19 @@ impl Widening {
         // every variable the argument holds wider than it stands widens; one
         // that is neither wider nor narrower defers the argument until a
         // later one widens it, whatever the order
+        // CR claude for claude: [readability/low] The comment above this line says an
+        // argument neither wider nor narrower than a variable is deferred until a later
+        // one widens it, whatever the order. Nothing is deferred: `incomparable`
+        // returns false below and `join` reports the mismatch where the argument is
+        // written, which is the ruled behaviour and what this function's doc comment
+        // says. Delete the comment. Found by reading; not run. (x-typecheck-order-06)
+        // CR claude for claude: [doc-drift/low] The comment above says an argument
+        // neither wider nor narrower than a variable is deferred until a later one
+        // widens it, whatever the order. Nothing defers: `incomparable` makes `widen`
+        // answer false and `join` reports the mismatch at this argument, as
+        // design/tvar_constraints.md rules (`f(`A, `B, ab)` over three `'a` is refused
+        // at `` `B ``). Say that it is the mismatch here. probe: run by hand, no repro
+        // saved. Also reported as (tests-types-d-07). (c-callsite-09)
         let probe = ContainsFlags::RigidCheck.into();
         let mut wider: LPooled<Vec<(TVar, Type, Type)>> = LPooled::take();
         let mut incomparable = false;
@@ -2150,6 +2319,20 @@ impl Widening {
         }
         if !wider.is_empty() {
             let stood = Self::below_bounds(env, inst)?;
+            // CR claude for claude: [bug/high] The variable is rebound to the wider
+            // argument's type after two probes, and the old binding is dropped
+            // unrelated to it. An earlier argument that held an open cell inside a
+            // function type (decided by `has_free_in_data`: `(1, h)` over `let h = |q|
+            // { st <- q; st }`) is then tied to nothing: `array::push([(1, h)], (n,
+            // g))` with `g: fn(q: i64) -> i64`, then `st <- "s"`, passes the check and
+            // the build refuses the instance; over a user function the run-time bind
+            // fails (ELAB-AUDIT instance-signature). Written `(h, 1)` and `(g, n)` the
+            // failed `formal.contains` in `join` happens to bind the cell first and the
+            // check refuses correctly. Relate the old binding into the new one for real
+            // after the bind (`new.check_contains(env, &old)`), undoing the widening
+            // where that fails, and pin both element orders. probe:
+            // design/review-2026-11-16/repro/x-typecheck-order-widen-drops-open-fn-cells.gx
+            // (and ..-build.gx) (x-typecheck-order-02)
             for (cell, _, new) in wider.iter() {
                 cell.bind(new.clone())
             }
@@ -2174,6 +2357,16 @@ impl Widening {
                 }
             }
         }
+        // CR claude for claude: [bug/low] An argument neither wider nor narrower than
+        // what the variable holds ends as `check_contains`'s bare mismatch:
+        // `array::push([`Red, `Green], `Blue)` says only "'a: [`Green, `Red] does not
+        // contain `Blue", while the same call with a wider second argument passes.
+        // Every other refusal of `Widening` names what to annotate; this one should say
+        // that no union is made of two arguments and that the earlier argument takes a
+        // type holding both (`let xs: Array<[`Red, `Green, `Blue]> = ..` passes). Add
+        // the note in `join` as `pinned_note` is added, and pin it. probe:
+        // design/review-2026-11-16/repro/x-typecheck-order-incomparable-args-no-remedy.gx
+        // (x-typecheck-order-05)
         if incomparable {
             return Ok(false);
         }
@@ -2453,6 +2646,15 @@ fn decided_early<R: Rt>(
             binds.push(b)
         }
     });
+    // CR claude for claude: [bug/low] This filter compares names, not bindings, so a
+    // refusal that reads a shadowing `u` keeps the outer `u`. In `let g = |u| f((u, {
+    // let u = "a"; 1 + u }))` the note says the parameter `u` was decided early and to
+    // annotate it, but the refusal is the inner string `u` in `1 + u`, and `|u: i64|`
+    // is refused the same way. Retain a binding only where the refusing expression
+    // reads that bind id (Refs over the site's node, or each Ref resolved in its
+    // scope). probe:
+    // design/review-2026-11-16/repro/x-diagnostics-decided-early-shadow.gx
+    // (x-diagnostics-04)
     if let Some(site) = e.downcast_ref::<ErrorSite>() {
         binds.retain(|b| {
             site.expr().fold(false, &mut |read, x| {
@@ -2561,6 +2763,25 @@ pub(crate) enum Callee<R: Rt> {
     /// instance's first dispatch: it keeps every quiet production,
     /// delivers its arguments and defaults fired and dispatches under
     /// `View::Birth`.
+    // CR claude for claude: [readability/low] The doc above says the first dispatch
+    // 'delivers its arguments and defaults fired and dispatches under View::Birth'.
+    // `CallSite::update` stands a fresh bind's quiet arguments and dispatches under
+    // `ExecCtx::enter_body`, born only when `step_due` (a seq issue) or an enclosing
+    // birth joins, per bind_driven_bodies.md. Rewrite it so. Make the same fix in
+    // `Select`'s `entered` field doc ('A first entry is the arm's birth': true only in
+    // a `seq_world` select), in collection.rs `SlotViews` ('a fresh slot's birth') and
+    // `update_slots` ('a forced init view'), and in walk_pruning.md's 'lazily decoded
+    // instance body ... under Birth'. probe:
+    // design/review-2026-11-16/repro/x-doc-drift-static-first-dispatch-not-birth.gx
+    // (x-doc-drift-04)
+    // CR claude for claude: [doc-drift/low] The doc above describes the rule
+    // bind-driven bodies replaced. The first dispatch stands its quiet arguments and
+    // defaults (`QuietAtRoot::Stand`) and runs under `ExecCtx::enter_body`, a birth
+    // only inside one; nothing is delivered fired, and `View::Birth` is entered only
+    // for a seq step's due call (`step_due`). `select n { 3 => f(1), _ => never() }`
+    // over `|x: i64| count(x)` never counts. Say that `first_update` keeps every quiet
+    // production for the bind to stand and enters the body. probe: run by hand, no
+    // repro saved. (c-callsite-08)
     Static { apply: Box<dyn Apply<R>>, first_update: bool },
     /// A statically bound instance the image holds in its heap, decoded
     /// by the first dispatch; `refs` is the body's summary until then,
@@ -3367,6 +3588,17 @@ impl<R: Rt> CallSite<R> {
         carriers: &[ArcStr],
         mut f: impl FnMut(&ArcStr, &TVar),
     ) {
+        // CR claude for claude: [perf/medium] This walk runs for every fresh call
+        // before it is known that any cell could be unread: `Carriers::carries` expands
+        // each written argument's type through its typedefs even where `tvs` is empty,
+        // a signature with no type variable. 500 calls of `|w: Any, x: i64| x` with a
+        // value of a 600-variant recursive union check in 9.1 s against 0.13 s without
+        // that argument (debug build), and a `gui::Widget` argument costs about 0.3 ms
+        // a call. Return here when `tvs` is empty, judge `carried` only for a formal
+        // that holds one of the cells, and in `typecheck0` collect `unread` before the
+        // `callbacks` filter. probe:
+        // design/review-2026-11-16/repro/c-callsite-unread-walk-per-call.sh
+        // (c-callsite-05)
         let mut tvs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         ftype.collect_tvars(&mut tvs);
         let mut carry = Carriers::new();
@@ -3607,6 +3839,19 @@ impl<R: Rt> CallSite<R> {
             if !site_ft.rtype.prove_ground() {
                 instance_ftype.rtype.place_open_cells(&ctx.env, &site_ft.rtype);
             }
+            // CR claude for claude: [bug/medium] At the bind of an omitted labeled
+            // default this unify-back refuses what the check accepted. A static call in
+            // the default whose result is a union of members holding open cells
+            // (`view(false).a` over `select done { true => {a: 1, notes: []}, false =>
+            // {a: 2, notes: []} }`, or `pick(false, f, f)(1)` over two functions) fails
+            // with 'could go to .. or ..': the site's return holds one copied cell
+            // beside one original, the instance's one member over the original, which
+            // points at the copy `InstanceTypes::of_default` makes of the default's
+            // rows. The same call in a function's body or at the top level builds. Give
+            // the default's bind the cell map a body instance has, and pin the program
+            // under GRAPHIX_ELAB_AUDIT. probe:
+            // design/review-2026-11-16/repro/x-check-build-default-fn-union-result.gx
+            // (x-check-build-02)
             if let Err(e) = site_ft.rtype.check_contains(&ctx.env, &instance_ftype.rtype)
             {
                 if ctx.def_gate_depth == 0 {
@@ -3623,6 +3868,17 @@ impl<R: Rt> CallSite<R> {
                 && ctx.def_gate_depth == 0
             {
                 let after = printed_deref(&site_ft.rtype);
+                // CR claude for claude: [bug/low] This fires on a valid program: in
+                // `let w = |u| { let v = |q| 'a: {n: i64} |s: 'a| s.n; v(u) }; w(0)`
+                // the instance of `v` returns its lambda with `'a` bound to its bound
+                // where the site's row left it 'unbound within { n: i64 }', and
+                // `shell::elab_audit` pins that an instance decides nothing its call's
+                // check left open. Nothing is refused and no verdict changes that I
+                // could find. Either the instance's read of a declared variable's bound
+                // (`s.n`) should not bind the cell, or the report should pass a cell
+                // narrowed to its own bound. probe:
+                // design/review-2026-11-16/repro/x-check-build-unify-back-audit.gx
+                // (x-check-build-09)
                 if before != after {
                     super::lambda::elab_audit::report(
                         "unify-back",
@@ -3711,6 +3967,18 @@ impl<R: Rt> CallSite<R> {
         if perfdbg::enabled() {
             perfdbg::BIND_CALLS.fetch_add(1, Relaxed);
         }
+        // CR claude for claude: [bug/high] The reads collected here miss every dispatch
+        // made in a statically bound callee of the instance: such a callee is bound in
+        // a forked task (`resolve_static_entered`), `CompileCtx::fork` starts the task
+        // with `impl_reads: None` and `join` drops the field. So `CallSite::impl_reads`
+        // stays empty, `impl_reads_moved` is never true, and after a reload the site
+        // keeps the retired impl: `d::make(ep)` over `let wrap = |x: Sh| app(x)`
+        // answers with the first body's `sh` for good, where `let make = app` follows
+        // the reload, and every engine agrees on the wrong value. Give a forked task an
+        // empty list when its parent holds one and append it in `join`; pin it with a
+        // wrapper between the bind and the dispatch. probe:
+        // design/review-2026-11-16/repro/c-callsite-nested-impl-read-lost.gx
+        // (c-callsite-01)
         let outer = ctx.impl_reads.replace(SmallVec::new());
         let built = crate::with_attribute_frame(ctx, |ctx| {
             let (scope, flags) = (self.scope.clone(), self.flags);
@@ -3743,7 +4011,32 @@ impl<R: Rt> CallSite<R> {
 
     /// Whether the registry has dropped an impl this site's instance
     /// dispatches to: a reload replaced or removed it.
+    // CR claude for eric: [bug/medium] This follows a reloaded impl only where the
+    // bound function is the outside function itself. A function a load defines that
+    // dispatches through an impl another module's load registered (`let g = |x|
+    // Sh::sh(x) + 1`, or through a program function it calls, `|x| app(x)`) keeps that
+    // impl for good: it answers with the first impl through a reload that removes it
+    // and one that replaces it, while `let g = app` goes bottom and then follows, as
+    // design/module_system.md says a call outside every load does. Record the read for
+    // every instance built inside a load that takes an entry its own view did not
+    // supply, or rule that a load keeps the registry impls it met. Found by running;
+    // the cause is not traced. probe:
+    // design/review-2026-11-16/repro/x-dyn-modules-cross-load-dispatch.gx
+    // (x-dyn-modules-06)
     fn impl_reads_moved(&self, env: &Env) -> bool {
+        // CR claude for claude: [bug/high] A site judges its instance by the registry's
+        // impls here, and a `Callee::Failed` by its `impls` snapshot, but the registry
+        // is no variable: a reload that replaces or removes an impl marks no boundary,
+        // so a site none of whose arguments fire is not walked and keeps the retired
+        // impl. `saved(5)` stays on the first body's impl under the default pruned walk
+        // and follows the reload under GRAPHIX_PRUNE=off; GRAPHIX_PRUNE=audit panics
+        // and graphix-fuzz check reports a walk pruning divergence. The pins of this
+        // rule all pass an argument that fires every cycle, so they cannot fail on it.
+        // Have a site that holds `impl_reads` or is `Failed` read a variable that an
+        // impl's registration and `Impl::give_back` publish, and pin the
+        // constant-argument call. probe:
+        // design/review-2026-11-16/repro/c-callsite-impl-reload-not-marked.gx
+        // (c-callsite-02)
         self.impl_reads.as_ref().is_some_and(|reads| {
             reads.iter().any(|im| {
                 !env.impls
@@ -3868,6 +4161,15 @@ impl<R: Rt> CallSite<R> {
         defaults: &[BindId],
         set: &mut Published,
     ) {
+        // CR claude for claude: [dead/low] `prime_bound` ignores `defaults`, so
+        // everything that computes it is dead: the `defaults: &mut Refs` parameter of
+        // `checked_default` and `prepare_bind` (a `node.refs` walk per default, at the
+        // check too, into a `Refs` that is dropped), the list `setup_dynamic_bind`
+        // builds from it, `build_bound`'s value and `Callee::Prebound::defaults`. The
+        // docs here and on `build_bound` still say the bind primes those variables and
+        // runs the defaults under the init view; it runs them under `enter_body` and
+        // primes nothing. Delete the parameter and the field, and say what the function
+        // does. Found by reading; not run. (c-callsite-07)
         let _ = defaults;
         ctx.enter_body(|ctx| {
             for arg in self.args.values_mut() {
@@ -3915,6 +4217,20 @@ impl<R: Rt> CallSite<R> {
         // identity is resolving is a self-call and shares that instance;
         // a different identity is a fresh instantiation.
         let identity = self.fn_arg_identity(ctx);
+        // CR claude for eric: [perf/medium] The knot tells instantiations apart by
+        // `FnArgIdentity` alone, which holds no types: `impl<'a: Total> Total for
+        // Array<'a>` called on `Array<Array<i64>>` reaches its own definition at
+        // `Array<i64>` while the outer instance resolves, and the inner site takes that
+        // instance, at the outer type, as its static target. The node-walk still
+        // answers right (the edge binds lazily at the site's own type), but no kernel
+        // is built: `#[native] Total::total(xs)` passes over `Array<i64>` and is
+        // refused over `Array<Array<i64>>` with "a self-call passes a formal a value of
+        // another shape", though the chain is three known instances. Share the active
+        // instance only where the site's parameter types are the active one's too and
+        // bind any other statically as a fresh instance; a recursion whose type grows
+        // needs a bound that keeps the lazy edge, which is the decision here. probe:
+        // design/review-2026-11-16/repro/c-lambda-generic-impl-reentry-not-native.gx
+        // (c-lambda-04)
         let active = ctx.resolving(def.id, &identity);
         if let Some(active) = active {
             let scope = self.scope.clone();
@@ -4417,6 +4733,19 @@ impl<R: Rt> CallSite<R> {
                 // its body reads.
                 let owed = super::wake::deliver_owed(ctx, |r| f.refs(r));
                 let arg_refs = &mut self.arg_refs;
+                // CR claude for eric: [bug/high] A function value written while a seq
+                // step's call through it is pending (a dynamic module's reload, or any
+                // `<-` to a function variable) rebinds the call as a plain body entry:
+                // `step_due` is set only where the function was bottom at the issue, so
+                // the replacement instance is not born, nothing is owed to it, its
+                // arguments are not delivered again, and the step never answers. A
+                // `seq` then drops every later trigger and a `seqq` queues them
+                // forever; a write while the seq is idle is fine. A call a step issued
+                // that has not answered needs the birth and the fresh frame its first
+                // instance took when its function is replaced, or the retired instance
+                // must be left to answer: which of the two is the ruling asked. probe:
+                // design/review-2026-11-16/repro/x-dyn-modules-seq-wedge-on-reload.gx
+                // and x-dyn-modules-seq-wedge-fn-write.gx (x-dyn-modules-02)
                 let tv = match mem::take(&mut self.step_due) {
                     true => ctx.under(View::Birth, |ctx| f.update(ctx, arg_refs).clone()),
                     false => ctx.enter_body(|ctx| f.update(ctx, arg_refs).clone()),
@@ -4685,6 +5014,14 @@ impl<R: Rt> CallSite<R> {
                 Box::new(g)
             }
             Err(e) => {
+                // CR claude for claude: [risk/low] This truncate runs after drop(dec),
+                // but Jit::restored is one queue shared by every decode, and only the
+                // decoder lock orders decode and install_restored. Once dec is
+                // released, a lazy instance materializing in another forked branch can
+                // queue its wrappers, and this truncate to this decode's mark then
+                // removes them. Its install_restored installs nothing, and its kernels
+                // panic in WrappedKernel::fn_ptr. Forget the restored wrappers before
+                // dropping dec. Found by reading; not run. (f-jit-03)
                 ctx.fusion.forget_restored_since(mark);
                 ctx.drop_deferred();
                 return Err(e);
@@ -5024,6 +5361,21 @@ impl<R: Rt> CallSite<R> {
         }
     }
 
+    // CR claude for claude: [bug/high] A static callee that has never been dispatched
+    // (`Callee::Static { first_update: true }`) is slept here when its arm sleeps. The
+    // event-source builtins set their wake bit unconditionally in `sleep`
+    // (`WatchApply`, net write/subscribe/publish/publish_rpc/list, the http server, db
+    // subscribe). Their first update therefore treats the arm's first entry as a wake:
+    // they attach over standing arguments, and `sys::fs::watch` fires at entry.
+    // design/async_sleep_outputs.md says an event source over standing arguments in a
+    // body entered after the first cycle starts nothing. An imaged callee is never
+    // slept, so a warm start decodes the body fresh and starts nothing: cold and warm
+    // diverge. `graphix-fuzz check` reports such a program EXCLUDED, so nothing
+    // compares them. Fix: skip `f.sleep` while the callee's first dispatch has not
+    // happened, as `Callee::Imaged` already does (or set the wake bit only where
+    // something was attached, as `AfterIdle::sleep` does), and pin the shape cold and
+    // warm. probe: design/review-2026-11-16/repro/x-image-watch-never-run-wake.gx
+    // (x-image-01)
     pub(crate) fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.slept.set();
         // A recursive edge deselected by a shrink deletes its callee, so
@@ -5173,6 +5525,19 @@ impl<R: Rt> CallSite<R> {
         self.check_value_defaults(ctx, ftype)?;
         let mut unread_callbacks = SmallVec::new();
         if fresh && !self.defaults_open {
+            // CR claude for claude: [bug/medium] A builtin's unread quantifiers settle
+            // to bottom only where `static_builtin` names the builtin through the
+            // site's own binding. A call through a value the static resolution traces
+            // to the same builtin (`let f = (sys::net::publish, 1).0; f(path, v)`, a
+            // `mk()` returning it, or `let f = sys::net::publish` as a seq step, which
+            // the lowering makes a call's result) takes the other branch when the bind
+            // checks the site again, and is refused 'the quantifier 'a must be fully
+            // known but is unread through an optional callback' after the check, which
+            // left the omitted `#on_write` open, accepted it. The direct call builds.
+            // Settle them wherever the resolved callee is a builtin, or refuse at the
+            // check too. probe:
+            // design/review-2026-11-16/repro/x-check-build-fnvalue-builtin-unread.gx
+            // (x-check-build-06)
             if static_builtin(ctx, self).is_some() {
                 self.for_each_unread(&ctx.env, ftype, &carriers, |name, tv| {
                     if ftype.quantifiers.contains(name) {

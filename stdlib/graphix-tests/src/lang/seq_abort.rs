@@ -110,6 +110,16 @@ async fn abort_bypasses_try(mode: Mode) -> Result<()> {
 // The event is an initial step: a timer in it starts with each run. Run 1
 // finishes inside its 140 ms; run 2 outlasts its own. A timer started once
 // at init would fire while idle and let run 2 finish.
+// CR claude for claude: [risk/medium] Two independent timers race here and in
+// abort_timer_budgets_every_run. Run 1 (run 22 there) has to see two 40 ms ticks before
+// its 140 ms budget ends, with 60 ms to spare. A stall of the runtime thread of about
+// 100 ms between the ticks lets the budget win and the run is aborted: the fixture's
+// program with a computation at tick 2 standing in for load gives no value instead of
+// 1. Make every edge causal: queue three requests on a seqq with the same abort, have
+// runs 1 and 2 wait on something that never comes so only each run's own budget ends it
+// and its abort dequeues the next, and have run 3 answer at once; expect [3]. A budget
+// born once at init would leave run 2 running and give nothing. probe:
+// design/review-2026-11-16/repro/tests-seq-abort-budget-timer-race.sh (tests-seq-02)
 async fn abort_timer_starts_with_the_run(mode: Mode) -> Result<()> {
     let code = r#"{
         let tick = count(sys::time::timer(duration:40.ms, 16)?);

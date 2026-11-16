@@ -1,0 +1,16 @@
+// An undecided argument met at a bound that unions another variable is
+// bound to the whole of the bound's part, where it only had to stay within it.
+//
+// command:  /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache --check t-contains-a-bound-variable-binds-union.gx
+// expected: accepted, as the same program is with f's parameters swapped
+//           (`|y: 'b, x: 'a|` and `f("q", [z])`): there z is "unbound within
+//           [i64, null]", `z <- 1` decides it i64 and `z + 1` checks.
+// observed: "cannot compute [i64, null] + i64": z was bound to [i64, null]
+//           at f([z], "q") (GRAPHIX_DBG_BIND=1 shows
+//           "SET-T ['b, Array<[i64, null]>] >= Array<'_N>" then
+//           "BIND rhs '_N := [i64, null]").
+let f = 'a: ['b, Array<[i64, null]>] |x: 'a, y: 'b| x;
+let z = never();
+let r = f([z], "q");
+z <- 1;
+z + 1

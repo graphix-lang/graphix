@@ -30,6 +30,13 @@ Netidx is not changed. A Graphix tuple, struct, variant and list stays a
 - `[VMARK, "A"]` for a bare variant;
 - `[LMARK, h, t]` for a list cell.
 
+<!-- CR claude for claude: [doc-drift/low] This paragraph says each marker is its own
+registered abstract, crosses no data and decodes only under an image, so no array's
+element 0 is ever a marker. As built (rep.rs) there is one registered abstract,
+Marker(Kind), and it crosses pack and db data: rep::decode_marked_data decodes it under
+READING_DATA, as the As built section below says. Rewrite the paragraph to the built
+rule: one Marker abstract, decoded in an image session or a validated binary data read,
+never in text or netidx data. Found by reading; not run. (t-rep-04) -->
 **The markers.** Each marker is a Rust-registered netidx abstract, one
 per kind, that no Graphix type can name. It crosses no data (the `Cast`
 rules refuse Rust-backed abstracts) and decodes only under an image. So

@@ -27,6 +27,15 @@ fn netidx_script_loads_without_a_config_file() {
         .stderr(Stdio::piped())
         .spawn()
         .expect("run graphix");
+    // CR claude for claude: [test-gap/low] A 5-second deadline of the test's own ends
+    // the run. The child is then killed, and the only check is that stderr holds no
+    // panic. A child slowed past 5 s by the suite's load is killed before it reaches
+    // the lookup, and the test passes having tested nothing. design/testing.md says a
+    // test takes no deadline of its own for what must come. Wait for the exit instead
+    // (`--resolve-timeout 1` ends the run in about a second; make `common`'s
+    // `within_deadline` pub to bound a hang) and assert stderr names the resolve
+    // timeout. Then the run is known to have reached the local resolver. Found by
+    // reading; the run ends by itself in 1.1 s here. (tests-shell-compiler-b-09)
     let deadline = Instant::now() + Duration::from_secs(5);
     while child.try_wait().expect("wait").is_none() && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(50));

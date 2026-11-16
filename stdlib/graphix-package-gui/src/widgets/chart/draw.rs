@@ -134,6 +134,18 @@ fn ticks(n: i64, min: usize) -> usize {
 
 /// A size in pixels as plotters takes it: a positive size rounds to at
 /// least one pixel, anything else is none.
+// CR claude for claude: [bug/low] pixels bounds a size below but not above, while
+// plotters reads every u32 size as an i32 and lays out in i32. `chart_style(#margin:
+// 2e9)` gets through ChartBuilder::margin, and then DrawingArea::dim_in_pixel subtracts
+// x0 = 2e9 from x1 = width - 2e9 and overflows, which panics in dev and soak builds. A
+// size at or above 2^31 wraps negative and becomes 0 instead, so `dashed_line(#dash:
+// 3e9)` draws nothing. The same class covers: label areas sized `s as u32` in
+// label_areas and draw_3d_chart; a pie's label_offset (plotters' label x saturates,
+// then `mid_coord.0 -= label_size.0` overflows); a 3D projection scale (projected
+// depths saturate and draw_axis_line adds two of them); and a point_size of 1e12, which
+// makes each marker a circle of u32::MAX pixels. Bound these where they are read, as
+// TextSizeV bounds font sizes at 4096 pixels, and document the bound in chart.gxi.
+// Found by reading; not run. (gui-chart-04)
 pub(crate) fn pixels(size: f64) -> u32 {
     if size > 0.0 { (size.round() as u32).max(1) } else { 0 }
 }

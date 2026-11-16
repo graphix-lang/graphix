@@ -106,6 +106,17 @@ impl InputReader {
                     Some(ed) => ed.read_line(&prompt).map_err(Error::from),
                     None => {
                         let mut line = String::new();
+                        // CR claude for claude: [bug/low] A piped line that is not
+                        // UTF-8 makes read_line fail with InvalidData. Shell::run takes
+                        // an input error with no display up as the end of the session,
+                        // so one bad line exits 1 ('stream did not contain valid
+                        // UTF-8'), discards every binding and leaves the later lines
+                        // unread. The same error with a value showing is only printed.
+                        // Read the line as bytes (`read_until(b'\n')`) and pass a line
+                        // that is not UTF-8 to the shell as that input's own error, so
+                        // the session goes on as after any refused input. probe:
+                        // design/review-2026-11-16/repro/x-repl-non-utf8-line.sh
+                        // (x-repl-03)
                         match std::io::stdin().read_line(&mut line) {
                             Ok(0) => Ok(Signal::CtrlD),
                             Ok(_) => Ok(Signal::Success(line)),

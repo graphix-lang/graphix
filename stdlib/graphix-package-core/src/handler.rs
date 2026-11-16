@@ -253,6 +253,16 @@ impl<R: Rt, Q: Reply> Handler<R, Q> {
             && let Some(function) = ctx.rt.store_value(&self.pid)
         {
             for (req, q) in self.pending.drain(..) {
+                // CR claude for claude: [test-gap/low] A request's `ErrorRelay` is made
+                // here, outside every compile task, so its bind's cell belongs to
+                // `TaskId::OUTSIDE`, and the instance's bind (`CallSite::prebind`, a
+                // task of its own) joins its raises into that cell: GRAPHIX_TASK_AUDIT
+                // prints a FOREIGN-WRITE for every request of a handler that raises.
+                // The write is harmless (the cell is the request's own) but it drowns
+                // the audit on any program that serves requests. Make the relay inside
+                // the task that binds the request's call. probe:
+                // design/review-2026-11-16/repro/x-parallel-task-audit-relay-foreign-write.gx
+                // (x-parallel-04)
                 let r = Request::new(
                     ctx,
                     Err(function.clone()),

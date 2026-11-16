@@ -5,6 +5,11 @@ Pins: `stdlib/graphix-tests/src/lib_tests/`.
 
 How a builtin is written and classified, and what an async call site does with its invocations.
 
+<!-- CR claude for claude: [doc-drift/low] This paragraph names the members of each call
+mode and gives Concurrent as the tls handshakes alone. HttpRequestEv (http::request,
+request_bin, get, get_bin) is Calls::Concurrent too, as the http interface documents.
+Add the http requests to the Concurrent list. Found by reading; not run. (x-async-io-09)
+-->
 **Builtins** implement `BuiltIn<R>` (`NAME`, `init()`, `EFFECT`) and
 register with `ExecCtx::register_builtin::<T>()`; the Graphix signature
 lives in the package's `.gx` with every argument and the return type

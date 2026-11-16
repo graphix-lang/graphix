@@ -1,0 +1,31 @@
+// pack::write_bytes writes a value nested deeper than any pack::read reads
+//
+// command (debug binary at HEAD e1be2fbf2):
+//   timeout -s KILL 60 graphix --no-cache design/review-2026-11-16/repro/x-unsafe-pack-write-deeper-than-read.gx
+//
+// expected: a writer refuses what no reader can read, as json::write_str
+//   ("the value nests 128 containers deep or more") and the toml writer do:
+//   both lines "ok", or the write itself an error at 1100
+// observed:
+//   (u64:36026, "ok", u64:39626, "err: error:`InvalidCast(\"can't cast 76 to i64: the data is nested too deep\")")
+//   1000 elements round-trip; 1100 are written (39626 bytes) and can never
+//   be read back (typ::cast::MAX_DATA_DEPTH = 1024). With mk(1500000) the
+//   write alone exhausts a 6 GB memory cap in under a second.
+type T = [`Cons(i64, T), `Nil];
+let mk = |n: i64| {
+  let init: T = `Nil;
+  array::fold(array::init(n, |i| i), init, |acc, i| `Cons(i, acc))
+};
+let trip = |n: i64| {
+  let bs = pack::write_bytes(mk(n))$;
+  let back: Result<T, [`PackErr(string), `InvalidCast(string)]> = pack::read(bs);
+  let r = select back {
+    error as e => "err: [e]",
+    v => "ok"
+  };
+  (buffer::len(bs), r)
+};
+let a = trip(1000);
+let b = trip(1100);
+sys::exit(sys::time::after_idle(duration:500.ms, 0));
+(a.0, a.1, b.0, b.1)

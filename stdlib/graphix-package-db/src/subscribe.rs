@@ -275,6 +275,19 @@ impl<R: Rt> Apply<R> for DbSubscribe {
             }
             Invocation::Quiet => {
                 // a prefix's error was reported when the subscription fired
+                // CR claude for claude: [bug/high] A wake re-registers the watch
+                // whenever the slept bit is set, even while the subscription is bottom.
+                // Take this sequence: a prefix goes bottom (out set to bottom, watch
+                // stopped), the arm sleeps, and it wakes with its arguments standing.
+                // That leaves abort Some while out holds the bottom's Null. The next
+                // fire of equal arguments takes the identity shortcut and retags that
+                // Null FIRED. A null then reaches the program as Subscription<'k, 'v>,
+                // and its accessors find no bind id and never hear a change. Re-watch
+                // at a wake only while the subscription value stands (out not bottom),
+                // or clear the slept bit in the Bottom arm, so abort Some always means
+                // a fired subscription. probe:
+                // design/review-2026-11-16/repro/db2-subscription-fires-null.gx
+                // (db2-02)
                 if self.slept.take() {
                     let _ = self.watch(ctx);
                 }
@@ -402,6 +415,22 @@ macro_rules! db_event_accessor {
                     }
                     // after a sleep, the standing subscription again
                     Invocation::Quiet if self.bind_id.is_some() => (),
+                    // CR claude for claude: [bug/high] The accessors release the
+                    // subscription's bind id with release_var, which also forgets the
+                    // deliveries queued for it (store_release, then forget_writes, then
+                    // custom_updates.forget). But the id is DbSubscribe's, and every
+                    // accessor of the subscription reads it. So each of these drops the
+                    // queued deliveries of every reader: a re-fire of the same tree and
+                    // prefix (which the interface says keeps the subscription), an
+                    // accessor's sleep, a bottom, or a delete. In the probes, 5000
+                    // inserts reach on_change as about 2200 when the prefix re-fires
+                    // every millisecond, and as about 3000 when an on_insert of the
+                    // same subscription sleeps and wakes beside it. Drop the id with
+                    // unref_var here and in sleep, delete and the Bottom arm, keep the
+                    // ref when the id is unchanged, and pin both shapes. probe:
+                    // design/review-2026-11-16/repro/db2-refire-loses-events.gx,
+                    // design/review-2026-11-16/repro/db2-sleeping-accessor-loses-events.gx
+                    // (db2-01)
                     Invocation::Quiet | Invocation::Fired => {
                         if let Some(bid) = self.bind_id.take() {
                             ctx.release_var(bid, self.top_id);

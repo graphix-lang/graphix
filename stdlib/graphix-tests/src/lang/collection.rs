@@ -483,6 +483,12 @@ run!(collection_returned_function_is_one_instance, r#"{
 // nothing, so the sample on it stands at its last value, in the fused loop
 // as in the node-walk.
 async fn collection_is_quiet_on_a_stale_resize(mode: Mode) -> Result<()> {
+    // CR claude for claude: [style/low] `use super::dense_deltas::run_delta;` is
+    // repeated in seven functions of this file and `use
+    // graphix_package_core::testing::as_i64s;` in two. Import each once at the top:
+    // `run_delta` beside the other `use`s, and `as_i64s` in the existing
+    // `graphix_package_core::testing` group. Found by reading; not run.
+    // (tests-lang-rest-a-09)
     use super::dense_deltas::run_delta;
     use graphix_package_core::testing::as_i64s;
     let (values, _) = run_delta(
@@ -559,6 +565,15 @@ async fn slot_callback_capture_fires_only_when_delivered(mode: Mode) -> Result<(
 // a kernel runs no phantom slot over the source's placeholder in the
 // root's first cycle, where a slot's constant error would raise. The real
 // slots are entered after it, so theirs never fires.
+// CR claude for claude: [test-gap/low] This fixture is about the kernel ("a kernel runs
+// no phantom slot over the source's placeholder"), and
+// collection_is_quiet_on_a_stale_resize claims the same "in the fused loop as in the
+// node-walk". But run_delta asserts nothing about fusion: if these maps stopped fusing,
+// the jit modes would node-walk them and both fixtures would still pass. All three maps
+// build under `#[native]` today, so write `#[native]` on the two `array::map` calls
+// here and on `array::map(xs, |x| x)` there. probe:
+// design/review-2026-11-16/repro/tests-lang-rest-a-collection-kernel-unpinned.sh
+// (tests-lang-rest-a-06)
 async fn bottom_source_runs_no_slot(mode: Mode) -> Result<()> {
     use super::dense_deltas::run_delta;
     let (values, _) = run_delta(

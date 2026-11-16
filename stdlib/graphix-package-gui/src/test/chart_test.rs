@@ -17,6 +17,13 @@ fn chart(h: &GuiTestHarness) -> &ChartW<NoExt> {
 
 /// Draw the chart through its program into `state` at `size`, returning
 /// the plot area the draw recorded.
+// CR claude for claude: [structure/low] draw_in and draw are async fns that await
+// nothing, so their ~50 call sites each carry a dead .await. Size::new(400.0, 300.0) is
+// re-spelled in 17 tests beside draw's own copy. The CursorMoved handle_event call
+// (event, bounds, Cursor::Available) is written out in about a dozen tests although
+// hover_at_fraction already wraps it. Make both plain fns, name the size once as a
+// const, and give the cursor move one helper; draw_in's doc should also say it draws
+// through `state`, not into it. Found by reading; not run. (tests-gui-b-04)
 async fn draw_in(h: &GuiTestHarness, state: &ChartState, size: Size) -> Option<PlotInfo> {
     let frame = h.frame_state();
     let theme = GraphixTheme { inner: iced_core::Theme::Dark, overrides: None };
@@ -175,6 +182,13 @@ async fn background_color() -> Result<()> {
     Ok(())
 }
 
+// CR claude for claude: [test-gap/low] mesh_style sets show_x_grid: true and
+// show_y_grid: false but asserts only that some bold-green pixels appear. That still
+// holds with both grids drawn, with neither flag honoured, or with disable_x_mesh and
+// disable_y_mesh swapped in configure_mesh, and no other test touches these documented
+// options. Assert the direction: with show_y_grid false, no row of the plot rect is
+// mostly bold green while some column is, and the mirror for show_x_grid false. Found
+// by reading; not run. (tests-gui-b-03)
 #[tokio::test(flavor = "current_thread")]
 async fn mesh_style() -> Result<()> {
     let mut h = chart_harness(

@@ -40,6 +40,18 @@ defetyp!(ERR, ERR_TAG, "ArrayIndexError", "Error<`{}(string)>");
 struct SameType(mem::Discriminant<Type>, u64, u64);
 
 impl SameType {
+    // CR claude for claude: [perf/low] A tuple, struct, array or map is keyed here by
+    // its Arc address. The element types of separately written literals (`[{name: "a",
+    // v: 1}, {name: "b", v: 2}, ..]`) therefore never dedupe, and every one reaches
+    // Type::union_of_alternatives. A literal of 5000/10000/20000 struct rows checks in
+    // 162/369/1128 ms, against 89/97/114 ms for the same count of integers. The
+    // x-perf-compile-08 fix made only primitives linear. Fix: key a composite by its
+    // discriminant and a hash of its parts' SameType keys. Drop the third u64, which is
+    // 0 in every arm. Map literals stay superlinear too (80000 entries 2.3 s, whether
+    // the keys or the values are uniform), so Map::typecheck0_with's path has a
+    // per-entry cost of its own to find. probe:
+    // design/review-2026-11-16/repro/x-rerun-1-literal-composite-union-quadratic.sh
+    // (x-rerun-1-02)
     fn of(t: &Type) -> Self {
         fn at<T: ?Sized>(p: *const T) -> u64 {
             p.cast::<u8>().addr() as u64
@@ -94,6 +106,13 @@ pub(super) fn check_index<R: Rt>(env: &Env, i: &Node<R>) -> Result<()> {
 #[derive(Debug)]
 pub struct ArrayRef<R: Rt> {
     /// wake catch-up: set by `sleep()`, taken by `dense_gate!`
+    // CR claude for claude: [readability/low] The doc above names a mechanism the tree
+    // no longer has: wake catch-up went with bind-driven bodies, and what this bit does
+    // is make the first update after a sleep recompute instead of riding the resident
+    // (`dense_gate!`). Thirteen `slept` fields in node/array.rs, data.rs, map.rs, op.rs
+    // and lambda.rs carry the same line. Delete the comments, since the type and the
+    // macro say it, or write what the bit does. Found by reading; not run.
+    // (a-compiler-10)
     slept: WakeBit,
     pub source: Node<R>,
     pub i: Node<R>,
@@ -652,6 +671,19 @@ impl<R: Rt> ArrayRef<R> {
             wrap!(self, self.etyp.check_contains(&ctx.env, &byte))?;
         } else {
             let at = Type::Array(Arc::new(self.etyp.clone()));
+            // CR claude for eric: [bug/low] An index over a source typed as a union of
+            // two array types is refused here with "Array<i64> does not contain
+            // [Array<i64>, Array<string>]": the element variable takes the first member
+            // and the second fails, so the message states a requirement nobody wrote
+            // and names nothing to annotate. ArraySlice refuses the same source, and
+            // array::len and array::map refuse it with the same shape of message. A
+            // tuple union's `.0` reads the union of its members and a slice pattern
+            // over this same value checks, so the value can be taken apart but not
+            // indexed or measured. Either relate each array member separately and union
+            // the element types into etyp, or refuse in words that say to select on the
+            // value or give it one array type. probe:
+            // design/review-2026-11-16/repro/x-engine-collections-index-union-of-arrays.gx
+            // (x-engine-collections-03)
             wrap!(self, at.check_contains(&ctx.env, source_typ))?;
         }
         match check {

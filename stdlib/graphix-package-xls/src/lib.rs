@@ -455,6 +455,14 @@ type XlsSheets = CachedArgsAsync<XlsSheetsEv>;
 #[derive(Debug, Default)]
 struct XlsReadEv;
 
+// CR claude for claude: [bug/medium] This eval and XlsSheetsEv run their parse on
+// spawn_blocking but keep CANCEL_SAFE at its default, true, though the trait lists work
+// on a blocking thread as not cancel-safe. A sleep or delete drops the future while the
+// parse keeps running and holding memory, and the site starts its next parse at once.
+// An arm toggled during a 1.4 s parse held 3-5 parses at once (peak RSS ~970 MB against
+// ~290 MB for one). Fix: const CANCEL_SAFE: bool = false on both, so the next call
+// waits for the old parse (waits_on_old). probe:
+// design/review-2026-11-16/repro/small-pkgs-xls-blocking-cancel.sh (small-pkgs-05)
 impl EvalCachedAsync for XlsReadEv {
     type Args = (Bytes, ArcStr);
 

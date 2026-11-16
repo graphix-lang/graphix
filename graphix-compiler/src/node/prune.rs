@@ -105,6 +105,20 @@ impl<R: Rt> Prune<R> {
             let tv = child.update(ctx).clone();
             // a stale publication of what the store holds reads as no
             // publication in a plain cycle
+            // CR claude for claude: [test-gap/low] This test cannot fail for a quiet
+            // entry the walk delivered: ExecCtx::deliver and stand write the branch's
+            // store before the event entry, and `ctx.rt.store_get` here reads that
+            // branch's store, so the entry is compared with itself. The audit therefore
+            // never reports a quiet publication that changed its binding (a moved
+            // stand, a formal stood at a first dispatch, a stale pattern bind); only
+            // ExecCtx::publish's event-only entries are compared with the store as it
+            // stood. Store-only writes (ByRef::bottom_mirror) and reference path moves
+            // sit in the branch's deltas and are not looked at either. Compare each own
+            // entry, and each store delta, with the entry the view the branch forked
+            // from holds. probe:
+            // design/review-2026-11-16/repro/x-prune-audit-published-vacuous.gx (a let
+            // republished as 2010 over 11 is reported `published []`; the panic comes
+            // from the queued calls alone) (x-prune-03)
             let standing = |id: &BindId, tv: &TagValue| {
                 !tv.tag().triggers()
                     && ctx.rt.store_get(id).is_some_and(|(s, _)| {
@@ -122,6 +136,17 @@ impl<R: Rt> Prune<R> {
                 .collect();
             (tv, published)
         });
+        // CR claude for claude: [test-gap/medium] `standing` above asks the branch's
+        // own store, which the walk it audits has just written: a quiet publication (a
+        // `let` stood again, a moved stand delivered through `deliver_took`) is
+        // compared with itself and always reads as no publication, whatever the store
+        // held before the walk. Store-only writes (`ExecCtx::stand`, an argument whose
+        // overlay entry its call site removed) are not listed at all, and this check
+        // ignores `Tag::moved`. So a missing mark under a boundary whose own value does
+        // not change passes the audit, and the plain gate that leans on it. Compare
+        // each binding in the branch's store delta with the parent's entry before the
+        // merge, and the moved bit of the production with the resident's. Found by
+        // reading; not run. (c-prune-wake-04)
         let quiet = !tv.tag().triggers()
             && tv.tag().is_bottom() == expected.tag().is_bottom()
             && (tv.tag().is_bottom()

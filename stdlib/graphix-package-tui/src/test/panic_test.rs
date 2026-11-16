@@ -89,6 +89,16 @@ let result = bar_chart(#bar_width: &-1, &[bar_group(#label: line("G"), [b])])
 }
 
 #[tokio::test]
+// CR claude for claude: [test-gap/low] Three of these clamp pins cannot fail if
+// validate::Dim or Index wrapped with `as` instead of clamping. This one draws one bar,
+// and a gap is only drawn between two bars. barchart_bar_width_negative_does_not_panic
+// draws a blank screen whether -1 clamps to 0 or wraps to 65535, since BarChartW::draw
+// fits no bar that wide. table_selected_negative_does_not_panic has one row, and
+// ratatui clamps a wrapped -1 to that same row. Fix: two bars and values whose wrap
+// differs from the clamp (#bar_gap: &65537 wraps to 1 and draws a second bar, clamped
+// to 1024 it draws one; #bar_width: &-65535 wraps to 1), and two table rows under
+// #selected: &-1 (clamped: the first row; wrapped: ratatui's last). Found by reading;
+// not run. (tests-tui-04)
 async fn barchart_bar_gap_huge_does_not_panic() -> Result<()> {
     let mut h = TuiTestHarness::new(
         r#"
@@ -104,6 +114,15 @@ let result = bar_chart(#bar_gap: &999999, &[bar_group(#label: line("G"), [b])])
 }
 
 #[tokio::test]
+// CR claude for claude: [test-gap/low] This pin and
+// barchart_max_negative_does_not_panic draw one bar, which is full height whatever a
+// non-positive #max means, so they pin no scale. What it means today: Index clamps the
+// max to 0, BarChartW::draw passes chart.max(0), ratatui raises it to 1, and every
+// non-zero bar draws full height (under #max: &0, bars of 10 and 5 are both full).
+// sparkline's MaxV takes a non-positive max as unset and scales to the data. Fix: read
+// barchart's #max as MaxV does (positive, else the data's maximum, with the warning),
+// and give both pins two bars of different values. probe:
+// design/review-2026-11-16/repro/tests-tui-barchart-max-zero.gx (tests-tui-03)
 async fn barchart_max_zero_does_not_panic() -> Result<()> {
     let mut h = TuiTestHarness::new(
         r#"

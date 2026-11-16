@@ -125,6 +125,19 @@ async fn rigid_type_variables_survive_a_cell_merge() -> Result<()> {
         Err(msg) => msg,
         Ok(v) => panic!("must be refused: {v:?}"),
     };
+    // CR claude for claude: [test-gap/low] [test-gap/low] Any type mismatch satisfies
+    // this assertion. The rule's refusal is at the definition ("a call picks 'a ...
+    // drop `-> [null, 'a]`"). An 'a that absorbed the foreign `0` would instead be
+    // refused at the call `first(["s"])` with "Array<i64> does not contain
+    // Array<string>", which this assertion also accepts. Assert "a call picks 'a". In
+    // annotations_the_checker_asks_for, FOLD_CALLBACK_ANNOTATED is held to "does not
+    // contain" too (pin "type mismatch fn(acc", as the skill's case does).
+    // WRITER_WIDER_THAN_TVAR's comment says no declaration is offered, but nothing
+    // asserts the message lacks "declare". WRITER_WIDER_THAN_INITIALIZER has no lift,
+    // though the header pairs every refusal with one (`let x: [i64, string] = y + 1; x
+    // <- "s"` checks). probe:
+    // design/review-2026-11-16/repro/tests-types-d-rigid-alias-loose-pin.gx
+    // (tests-types-d-05)
     assert!(msg.contains("does not contain"), "{msg}");
     Ok(())
 }

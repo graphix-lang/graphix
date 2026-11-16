@@ -1,0 +1,39 @@
+// A seqq in a select arm reads a capture as it stood before the arm slept:
+// a variable written while the arm was asleep is stale to every request
+// until it fires again.
+//
+// command:  timeout -s KILL 4 graphix --no-cache x-seq-sampling-seqq-capture-stale-after-wake.gx
+//           (same with --no-fusion; graphix-fuzz check prints AGREE)
+// `x` is 10 from step 2 and 50 from step 6; the arm sleeps over steps 4-6 and
+// wakes at 7; the one request after the wake is queued at step 9, when `x`
+// has been 50 for three cycles.
+// expected: (.., 50, [9, 50], [9, 50])   the seqq and the seq read the same world
+// observed: (.., 50, [9, 10], [9, 50])   the seqq reads the value from before the sleep
+// The component form, a screen's arm calling a function that holds the seqq:
+//   let editor = |save: i64, known: i64| { let done = seqq save { [save, known] }; .. };
+//   select screen { `Edit => editor(save, known), `Menu => 1 }
+// saves the `known` from before the visit to `Menu`.
+// The capture is `hold(#clock: s, s)` over `s = any(x, activation ~ x)`, which
+// takes a new value only when `x` FIRES, and a wake fires nothing. The same
+// outside any arm, for a capture that moved quietly (a holder of a woken arm's
+// binding): `seqq go { [go, plain] }` reads the value from before the wake
+// while `seq go { [go, plain] }` reads the present one.
+let step = 0;
+step <- select step { n if n < 14 => n + 1, _ => never() };
+let on = select step { 4 | 5 | 6 => false, _ => true };
+let go = select step { 2 | 9 => step, _ => never() };
+let x = 0;
+x <- select step { 1 => 10, 5 => 50, _ => never() };
+let qv: Array<i64> = [];
+let pv: Array<i64> = [];
+select on {
+  true => {
+    let q = seqq go { [go, x] };
+    let p = seq go { [go, x] };
+    qv <- q;
+    pv <- p;
+    0
+  },
+  false => 1
+};
+(step, x, qv, pv)

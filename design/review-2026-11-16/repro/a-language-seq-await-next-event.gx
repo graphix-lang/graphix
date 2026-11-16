@@ -1,0 +1,38 @@
+// a-language: a seq has no step that waits for the next event of a stream
+// command:  graphix --no-cache a-language-seq-await-next-event.gx
+// A line protocol client: send a request, read the reply, three times, against a server in the same program.
+// expected: ["= 3", "= 30", "ERR"]
+// observed: ["= 3", "= 3", "= 30"]: `live(answers)` (and a bare `answers`, and `once(live(answers))`) completes
+//           at once on the line that stands from the request before. `live(once(answers))` and
+//           `live(answers ~ answers)` give the expected replies; `live(skip(#n: 1, answers))` stalls.
+//           No book page, skill file or design doc shows a spelling for "the next event".
+use sys::io::{Lines, Write};
+use sys::tcp;
+
+let listener = tcp::listen("127.0.0.1:0")$;
+let addr = tcp::listener_addr(listener)$;
+let conn = tcp::accept(listener, null)$;
+let req = Lines::lines(conn)$;
+let reply = select str::split(#pat: " ", req) {
+  ["ADD", a, b] => {
+    let x: i64 = str::parse(a)$;
+    let y: i64 = str::parse(b)$;
+    "= [x + y]"
+  },
+  _ => "ERR"
+};
+Write::write_exact(conn, buffer::from_string("[reply]\n"))$;
+
+let c = tcp::connect(addr)$;
+let answers = Lines::lines(c)$;
+let result = seq c {
+  Write::write_exact(c, buffer::from_string("ADD 1 2\n"))$;
+  let r1 = live(answers);
+  Write::write_exact(c, buffer::from_string("ADD 10 20\n"))$;
+  let r2 = live(answers);
+  Write::write_exact(c, buffer::from_string("BOGUS\n"))$;
+  let r3 = live(answers);
+  [r1, r2, r3]
+};
+sys::exit(result ~ 0);
+result

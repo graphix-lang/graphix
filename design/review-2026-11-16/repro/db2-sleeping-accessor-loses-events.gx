@@ -1,0 +1,23 @@
+// db2: an accessor that sleeps makes another accessor of the same subscription lose events
+// Run from an empty scratch dir (it creates ./p9.db):
+//   cd $(mktemp -d) && timeout -s KILL 150 graphix --no-cache <this file>
+// on_change(sub) runs at the top level; on_insert(sub) sits in an arm that
+// sleeps and wakes every millisecond. 5000 distinct inserts.
+// Expected: (1, 5000).
+// Observed: (1, 2992), (1, 3072): the sleeping accessor's release_var forgets
+//   the deliveries queued for the shared bind id.
+// Control: replace the `on <- timer ~ !on` line with a timer nobody reads: (1, 5000).
+let d = db::open("p9.db")$;
+let t: db::Tree<i64, i64> = db::tree(d, null)$;
+let sub = db::subscription::new(t);
+let ch = db::subscription::on_change(sub)$;
+let n = 0;
+n <- ch ~ n + array::len(ch);
+let on = true;
+on <- sys::time::timer(duration:1.ms, true) ~ !on;
+let other = select on { true => db::subscription::on_insert(sub)$, false => never() };
+let go = once(sub ~ 0);
+let w = array::init(5000, |i| db::insert(t, go ~ i, i)$);
+let finished = count(w);
+sys::exit(sys::time::after_idle(duration:1000.ms, finished) ~ 0);
+(finished, n)

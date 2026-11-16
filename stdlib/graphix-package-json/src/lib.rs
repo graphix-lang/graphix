@@ -153,6 +153,13 @@ impl<'de> Visitor<'de> for JsonValue {
             if pairs.is_empty() && &*k == NUMBER_TOKEN {
                 let n: CompactString = a.next_value()?;
                 let n = n.parse::<serde_json::Number>().map_err(de::Error::custom)?;
+                // CR claude for claude: [bug/low] serde_json routes the text "-0" here,
+                // off its integer path, so that it can read as negative zero, but
+                // as_i64 parses it as the i64 0. An f64 target then reads JSON -0 as
+                // +0.0. Fix: read "-0" as F64(-0.0) before trying as_i64; integer
+                // targets already read F64(-0.0) as 0. probe:
+                // design/review-2026-11-16/repro/small-pkgs-json-negative-zero.gx
+                // (small-pkgs-06)
                 return match (n.as_i64(), n.as_u64()) {
                     (Some(i), _) => Ok(Value::I64(i)),
                     (None, Some(u)) => Ok(Value::U64(u)),
@@ -300,6 +307,14 @@ fn serialize_leaf<S: Serializer>(value: &Value, s: S) -> Result<S::Ok, S::Error>
         Value::String(st) => s.serialize_str(st),
         Value::Bytes(b) => s.collect_seq(b.iter()),
         Value::DateTime(dt) => s.serialize_str(&dt.to_rfc3339()),
+        // CR claude for claude: [bug/low] A duration is written as f64 seconds, which
+        // past ~104 days cannot hold its nanoseconds. duration:17280000.000000001s
+        // writes 17280000.0 and reads back as 200.d, so json::read does not read back
+        // what write_str wrote. Fix: write the exact seconds text (secs plus 9-digit
+        // nanos) as a serde_json::Number, and have TypedRead treat a duration position
+        // as exact so the read converts through Decimal, not f64. probe:
+        // design/review-2026-11-16/repro/small-pkgs-json-duration-precision.gx
+        // (small-pkgs-07)
         Value::Duration(d) => s.serialize_f64(d.as_secs_f64()),
         Value::Array(_) | Value::Map(_) => {
             unreachable!("shape reads every array and map")

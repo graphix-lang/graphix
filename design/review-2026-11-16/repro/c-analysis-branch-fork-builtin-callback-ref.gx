@@ -1,0 +1,28 @@
+// c-analysis-branch: a `*r` is forked beside a builtin whose callback
+// fires the binding `r` names.
+//
+// The earlier sibling reads through a reference; the later one calls the
+// builtin `filter` with a callback that binds `y` and hands out `&y`.
+// `analysis::hands_out_callee_binds` answers false for every builtin call,
+// so `read_before` finds nothing and the tuple is planned independent. The
+// same callback in a user function (`cbf(a)`), in `array::map`, in
+// `array::fold` or in `opt::map` is found, and those programs AGREE.
+//
+// command:
+//   graphix-fuzz check design/review-2026-11-16/repro/c-analysis-branch-fork-builtin-callback-ref.gx
+// expected: AGREE
+// observed (three runs alike):
+//   DIVERGENCE — parallel evaluation bug (forked node-walk != serial node-walk)
+//     interp: Trace([0:(0, 0) 1:(1, 0) 2:(2, 0) 3:(3, 0) 4:(4, 0) 5:(5, 0) 6:(6, 0)])
+//     interp/par: Trace([0:(0, 0) 1:(1, 0) 3:(3, 0) 4:(4, 0) 5:(5, 0) 6:(6, 0)])
+// The audit does not see it: `GRAPHIX_PAR=force GRAPHIX_PAR_AUDIT=1 graphix
+// --no-cache --no-fusion <this file>` panics nowhere and prints (0, 0)
+// (1, 0) (3, 0) (4, 0) .., the serial run (0, 0) (1, 0) (2, 0) (3, 0) ..:
+// `branch::audit` checks a branch's reads against what EARLIER branches
+// published, never against what later ones did.
+let a = 0;
+let seed = 0;
+let r: &i64 = &seed;
+let t = (*r, filter(a, |x: i64| { let y = x + 1; r <- once(&y); true }));
+select a { n if n < 5 => a <- a + 1, _ => never() };
+t

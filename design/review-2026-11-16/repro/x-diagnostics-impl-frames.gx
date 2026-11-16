@@ -1,0 +1,10 @@
+// Title: a refusal inside an impl method carries a position-less "in file F" frame and prints code the program did not write
+// Command: graphix --check design/review-2026-11-16/repro/x-diagnostics-impl-frames.gx
+// Expected: frames for the impl, the method's `let m = |s, x: self| x` as written, and the leaf.
+// Observed:
+//   0: at: line: 10, column: 51 ..., in: impl T for i64 { let m = |s, x: self| ..
+//   1: in file .../x-diagnostics-impl-frames.gx                 <- no position, adds nothing
+//   2: at: line: 10, column: 68 ..., in: let m: fn(self: i64, x: string) -> str..   <- annotation not written
+//   3: at: line: 10, column: 76 ..., in: |s: i64, x: i64| -> string x             <- types not written
+//   4: at: line: 10, column: 89 ..., in: x
+trait T { val m: fn(self, x: string) -> string }; impl T for i64 { let m = |s, x: self| x }; T::m(1, "q")

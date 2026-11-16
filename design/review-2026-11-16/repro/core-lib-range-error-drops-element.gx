@@ -1,0 +1,13 @@
+// Title: range answers an invalid invocation's RangeError in place of the
+//        element of an earlier range delivered that cycle, which is lost.
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache design/review-2026-11-16/repro/core-lib-range-error-drops-element.gx
+// Expected: every element of range(0, 5) and the error, e.g.
+//           ["0", "1", "2", "err", "3", "4"] or ["0", "1", "err", "2", "3", "4"]
+// Observed: ["0", "1", "err", "3", "4"]  (element 2 is gone)
+let n = 5;
+let r = range(0, n);
+n <- select r { 1 => -1, _ => never() };
+let seen: Array<string> = [];
+seen <- r ~ array::push(seen, select r { error as e => "err", v => "[v]" });
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+seen

@@ -1,0 +1,21 @@
+// A labeled default whose root is lowered at compile (a trait method named
+// as a value, a seq block) passes the check and is refused by the build.
+//
+// command:  graphix --check c-lambda-default-lowered-root.gx   (exit 0, no output)
+//           graphix --no-cache c-lambda-default-lowered-root.gx
+//           graphix-fuzz check c-lambda-default-lowered-root.gx
+// expected: "int 1"; the fuzzer prints AGREE
+// observed: the build refuses:
+//             in the instance of f(1) at this call site
+//             the default of #show, which its definition's check recorded no types of
+//           graphix-fuzz: DIVERGENCE — the check accepted what the build refused
+//
+// The same with `let f = |#v: i64 = seq { let a = 1; a + 1 }, y: i64| v + y; f(1)`.
+// Behind a run-time bind (`let mk = |z: i64| |#show: .. = Desc::desc, y: i64| ..;
+// let g = mk(1); g(1)`) the program starts, logs "binding the callee failed" and
+// the call is bottom for good.
+// Writing the default as a lambda, `= |x: i64| Desc::desc(x)`, builds and runs.
+trait Desc { val desc: fn(self) -> string };
+impl Desc for i64 { let desc = |s| "int [s]" };
+let f = |#show: fn(x: i64) -> string = Desc::desc, y: i64| show(y);
+f(1)

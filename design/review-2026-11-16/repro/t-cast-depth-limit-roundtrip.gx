@@ -1,0 +1,27 @@
+// A cast refuses a value of its own target type that nests more than 1024
+// values deep, and pack writes such a value that its own reader refuses.
+//
+// Command:
+//   /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache t-cast-depth-limit-roundtrip.gx
+//
+// Expected: "cast: ok", and either "pack write" refuses the value or
+// "pack read" reads back what was written.
+//
+// Observed:
+//   cast: error:`InvalidCast("can't cast 76 to i64: the data is nested too deep")
+//   pack write: wrote
+//   pack read: error:`InvalidCast("can't cast 76 to i64: the data is nested too deep")
+type L = [`Cons(i64, L), `Nil];
+let nil: L = `Nil;
+let deep: L = array::fold(array::init(1100, |i| i), nil, |acc: L, x: i64| -> L `Cons(x, acc));
+let c = cast<L>(deep);
+let ok = select c { error as e => "[e]", v => "ok" };
+println("cast: [ok]");
+let b = pack::write_bytes(deep);
+let wrote = select b { error as e => "[e]", v => "wrote" };
+println("pack write: [wrote]");
+let back: Result<L, [`PackErr(string), `InvalidCast(string)]> = pack::read(b$);
+let rd = select back { error as e => "[e]", v => "read" };
+println("pack read: [rd]");
+sys::exit(sys::time::after_idle(duration:500.ms, 0));
+0

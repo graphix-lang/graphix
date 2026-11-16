@@ -125,6 +125,15 @@ pub(crate) struct TlsConnectEv {
 
 /// A client config trusting `ca_cert`'s certificates, else the webpki
 /// roots.
+// CR claude for eric: [risk/low] Without #ca_cert a sys::tls client trusts the
+// webpki-roots bundle compiled into the binary. http::client and default_client trust
+// the platform store through reqwest's rustls-platform-verifier, which on macOS and
+// Windows also checks revocation. So a server whose CA the OS trusts (an enterprise CA)
+// is reachable over http and refused over sys::tls. A CA the OS has distrusted stays
+// trusted by sys::tls until graphix is rebuilt. tls.gxi does not say which roots it
+// uses. Decide one default for both; rustls-platform-verifier is already in the
+// dependency tree, so sys::tls can use it the way reqwest does. Found by reading; not
+// run. (x-security-04)
 fn client_config(ca_cert: &Option<Bytes>) -> Result<rustls::ClientConfig, Value> {
     let mut root_store = rustls::RootCertStore::empty();
     match ca_cert {
@@ -166,6 +175,19 @@ impl EvalCachedAsync for TlsConnectEv {
             }
         };
         let hostname = cached.get::<ArcStr>(1)?;
+        // CR claude for claude: [bug/medium] take_new records the stream as started
+        // before the config is built and before eval parses the hostname. An upgrade
+        // refused before the handshake (a #ca_cert PEM with no certificate, an invalid
+        // hostname; in TlsAcceptEv::prepare_args a bad cert or key) does leave the
+        // stream untouched, as tls.gxi promises, but this site never starts on it
+        // again: the corrected CA, hostname or key starts nothing, and the program
+        // waits forever. Fix: test `started` without committing, build the config and
+        // parse the ServerName here, and record the stream only when both succeed (the
+        // same in TlsAcceptEv). The pin invalid_ca_does_not_consume_stream covers only
+        // a non-bytes CA, which the [bytes, null] type makes unreachable; pin the
+        // reachable case. probe:
+        // design/review-2026-11-16/repro/sys-io-tls-bad-ca-no-retry.gx Also reported as
+        // (x-async-io-07). (sys-io-03)
         let sv = self.started.take_new(cached)?;
         Some(built(&mut self.config, ca_cert, client_config).map(|c| (c, hostname, sv)))
     }

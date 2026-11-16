@@ -408,6 +408,12 @@ async fn parallel_where_nothing_forks() {
 #[tokio::test(flavor = "current_thread")]
 async fn fork_keeps_the_other_attributes() {
     let e = refusal("{ let g = #[serial] #[tail_recursive] |x: i64| x + 1; g(1) }").await;
+    // CR claude for claude: [test-gap/low] Any refusal that names the attribute passes
+    // this, including one that refused a fork attribute beside #[tail_recursive]
+    // without checking the assertion, which is the regression the test exists to catch.
+    // Both programs get '#[tail_recursive]: this function is not recursive' today
+    // (graphix --expand). Pin that message here and in the assert below.
+    // (tests-lang-rest-d-08)
     assert!(e.contains("#[tail_recursive]"), "{e}");
     let e =
         refusal("{ #[serial] let f = #[tail_recursive] (|x: i64| x + 1); f(1) }").await;

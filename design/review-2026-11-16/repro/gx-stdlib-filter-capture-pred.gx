@@ -1,0 +1,18 @@
+// core::filter's doc, "return v if f(v) is true", does not hold for a predicate
+// that reads only a capture: `filter(x, |v| en)` with en true passes nothing
+// until en is written, then one value, then nothing again.
+// Command:
+//   timeout -s KILL 10 graphix --no-cache gx-stdlib-filter-capture-pred.gx
+// Expected (per mod.gxi): x=1 f=1, x=2 f=2, ... x=6 f=6 (en is true throughout)
+// Observed: 0 / x=3 f=3 / x=4 f=3 / x=5 f=3 / x=6 f=3
+// The predicate's activation fires only when what it reads fires; `|v| en`
+// does not read v, so no element gets an answer except at en's write. The
+// same holds for array::group's f (`|n, v| true` groups nothing).
+let c = sys::time::timer(duration:20.ms, 6);
+let x = count(c);
+let en = true;
+en <- select x { 3 => true, _ => never() };
+let f = filter(x, |v| en);
+println("x=[x] f=[f]");
+sys::exit(sys::time::after_idle(duration:200.ms, c ~ 0));
+0

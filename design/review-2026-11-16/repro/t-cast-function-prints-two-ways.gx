@@ -1,0 +1,18 @@
+// A function value prints as the Rust wrapper's Debug form where its type
+// is known and as an empty `abstract:` under Any.
+//
+// Command:
+//   /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache t-cast-function-prints-two-ways.gx
+//
+// Expected: one printed form for one value, with no `Abstract(..)` wrapper
+// (the name of netidx's Rust type).
+//
+// Observed:
+//   Abstract(|x: i64| x) | abstract: | [Abstract(|x: i64| x)] | [abstract:]
+let f = |x: i64| x;
+let a: Any = f;
+let fs = [f];
+let b: Any = fs;
+println("[f] | [a] | [fs] | [b]");
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+0

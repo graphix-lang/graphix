@@ -33,6 +33,12 @@ const TUPLE_DURATION_FIELD: &str = r#"
 }
 "#;
 
+// CR claude for claude: [test-gap/low] The predicate accepts any Duration in the first
+// slot, so a kernel that wrote the duration field wrong (zero, or its seconds and
+// nanoseconds swapped) passes, and the fixture exists for exactly that encoding. Pin
+// it: `[Value::Duration(d), Value::I64(2)] if **d == Duration::from_secs(1)`.
+// struct_computed_bool_field below accepts any field name the same way; pin "x". Found
+// by reading; not run. (tests-lang-rest-b-07)
 run!(tuple_duration_field, TUPLE_DURATION_FIELD, |v: Result<&Value>| match v {
     Ok(Value::Array(a)) => {
         matches!(&a[..], [Value::Duration(_), Value::I64(2)])

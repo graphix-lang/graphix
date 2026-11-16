@@ -287,6 +287,17 @@ async fn stderr_is_written_through_while_displaying() -> anyhow::Result<()> {
 /// takes the terminal.
 #[cfg(unix)]
 #[tokio::test]
+// CR claude for claude: [test-gap/medium] This pin can no longer fail. Since a display
+// reads through Events, Live::take only spawns the reader thread and never waits on
+// crossterm's event-reader lock. A reader of the dropped display left running still
+// lets the next Live::take return, and nothing typed after the drop is ever read: for
+// example Events::drop not stopping its thread, or the thread calling
+// crossterm::event::read without a bound and holding the lock. The test failed only
+// while Live::take built an EventStream, whose construction blocked on that lock.
+// UPSTREAM.md names it as the pin of the crossterm workaround. Fix: after other.join(),
+// assert that the dropped display's reader is gone (no thread named tui-events left in
+// /proc/self/task/*/comm on Linux), or type a key after the drop and assert the next
+// reader gets it. Found by reading; not run. (tests-tui-02)
 async fn a_display_ending_beside_another_reader_leaves_the_terminal() -> anyhow::Result<()>
 {
     use anyhow::Context;

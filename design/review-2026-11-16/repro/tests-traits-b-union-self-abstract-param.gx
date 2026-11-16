@@ -1,0 +1,16 @@
+// Title: union-self dispatch over a method whose result holds `self` as an
+//   abstract type's parameter is refused, and no fixture pins it.
+// Command: /home/eric/tmp/review-2026-11-16/bin/graphix --check --no-cache design/review-2026-11-16/repro/tests-traits-b-union-self-abstract-param.gx
+// Expected (today, and the pin to add): refused, "T::mk takes `self` beyond it".
+// Observed: refused as expected. Without the Type::Abstract arm of
+//   Type::self_taken_in the call would be accepted and return a Bx<string>
+//   typed Bx<[i64, string]>, which `==` against Bx<[i64, string]>("u")
+//   answers false (two instantiations are two values).
+type Bx<'a> = Abstract<'a>;
+trait T { val mk: fn(self) -> Bx<self> };
+impl T for i64 { let mk = |s| Bx(s) };
+impl T for string { let mk = |s| Bx(s) };
+let v: [i64, string] = "u";
+let r = T::mk(v);
+let w: Bx<[i64, string]> = Bx("u");
+r == w

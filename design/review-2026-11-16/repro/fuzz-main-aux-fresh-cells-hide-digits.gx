@@ -1,0 +1,11 @@
+// schedule-v1: cap=64 events=512; in0=i64:7; in0=i64:42
+// Title: the trace oracle renumbers every `#<lowercase*><digits>` and `'_<digits>`
+// in a program's strings and prints (trace.rs fresh_cells), so a value that
+// differs only in those digits compares equal.
+// Command: graphix-fuzz run fuzz-main-aux-fresh-cells-hide-digits.gx
+// Expected: three epochs holding "row #0, cell '_0", "row #7, cell '_21" and
+//   "row #42, cell '_126".
+// Observed: every mode, every epoch: "row #0, cell '_cell1" — the digits 0, 7 and
+//   42 are all renamed to the first-sight index, so a JIT that printed
+//   "row #8" for "row #7" would AGREE with the node-walk.
+"row #[in0], cell '_[in0 * i64:3]"

@@ -94,6 +94,13 @@ had, minus the allocation:
 - Placeholders (the taint channel's shape-safe stand-ins) are owned
   clones of a static EMPTY array / empty `ArcStr`; dropping one is a
   refcount decrement on a static that never reaches zero.
+<!-- CR claude for claude: [doc-drift/low] The tainted Value::Null placeholder no longer
+reaches graphix_value_into_array(_borrowed). emit_qop_node (emit/flow.rs) sends a
+tainted inner down the bad path before either helper is called, and the helper's own
+comment says the shape check only stops a codegen bug. As written, this bullet says an
+ordinary `?` unwrap can reach a process abort. Say instead that the check guards against
+a codegen bug, and that the emitter routes a tainted inner to the placeholder path.
+Found by reading; not run. (f-helpers-06) -->
 - Checked narrowing stays: `graphix_value_into_array(_borrowed)`
   (Value pair → array bits) PANICS (a defined abort) on a non-Array —
   the tainted `Value::Null` placeholder is reachable on `?`-unwrap

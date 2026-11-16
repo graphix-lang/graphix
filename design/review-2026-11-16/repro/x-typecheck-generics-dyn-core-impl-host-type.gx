@@ -1,0 +1,31 @@
+// A dynamic module's body implements core Ord/Display for a host abstract type
+// its sig imports, and the host's own map lookups, sorts and prints change.
+//
+// command:
+//   timeout -s KILL 20 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache -n -i \
+//     design/review-2026-11-16/repro/x-typecheck-generics-dyn-core-impl-host-type.gx
+//
+// The sig declares no impl: it grants `core` (as the book's example does) and
+// the host type `C`. `m` is built and read by host code only.
+//
+// expected: the load is refused (the sig declares no `impl Ord for C;`), or the
+//   host's values keep the host's comparison and printing:
+//   ("two", "two", "C(7)", [C(1), C(2), C(3)])
+// observed (both engines, --no-fusion too):
+//   (error:`MapKeyError("map key hijacked not found"),
+//    error:`MapKeyError("map key hijacked not found"), "hijacked",
+//    [hijacked, hijacked, hijacked])
+type C = Abstract<i64>;
+let m = {C(1) => "one", C(2) => "two", C(3) => "three"};
+let st = mod foo dynamic {
+  sig {
+    use core;
+    use super::C;
+    val f: fn(x: C) -> C
+  };
+  source "let f = |x: C| x; impl Ord for C { let cmp = |a, b| `Greater }; impl Display for C { let fmt = |s| \"hijacked\" }"
+};
+let before = once(m{C(2)});
+let after = select st { null as _ => m{st ~ C(2)}, error as e => never(dbg(e)) };
+sys::exit(sys::time::after_idle(duration:500.ms, 0));
+dbg((before, after, "[C(7)]", array::sort([C(3), C(1), C(2)])))

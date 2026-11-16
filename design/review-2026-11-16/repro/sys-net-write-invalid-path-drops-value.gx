@@ -1,0 +1,24 @@
+// Title: sys::net::write drops the value that fires in the same cycle as an
+// invalid path, though its doc says values that fire while the path is
+// invalid queue and are written when a valid path arrives.
+// Command:
+//   timeout -s KILL 30 graphix --no-cache -n sys-net-write-invalid-path-drops-value.gx
+// Expected (net.gxi `write`: "Values that fire while the path is bottom or
+// invalid queue ... and are written in order when a valid path arrives"):
+//   last line [1, 2, 3]
+// Observed: v = 2 fires in the cycle "relative" lands and is dropped:
+//   write: error:`WriteError("invalid path \"relative\"")
+//   []
+//   [1]
+//   [1, 3]
+// Cause: Write::update (stdlib/graphix-package-sys/src/net.rs) returns the
+// invalid-path error before the block that queues the fired value.
+let got: Array<i64> = [];
+sys::net::publish(#on_write: |v: i64| got <- v ~ array::push(got, v), "/local/wq", 0);
+let v = array::iter([1, 2, 3]);
+let p: string = never();
+p <- select v { 1 => "relative", 3 => "/local/wq", _ => never() };
+let r = sys::net::write(p, v);
+println("write: [r]");
+sys::exit(sys::time::after_idle(duration:500.ms, got) ~ 0);
+got

@@ -1,0 +1,25 @@
+// A union of two abstract types written by pack reads back as the other
+// member: the data carries no tag, and the read takes the first member whose
+// representation accepts it.
+//
+// Command:
+//   timeout -s KILL 10 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache \
+//     design/review-2026-11-16/repro/x-traits-abstract-pack-union-of-abstracts.gx
+//   (graphix-fuzz check on the program without its exit line: AGREE)
+//
+// Expected: ("meters", "meters", true), as json and toml read it back (they
+// write {"Meters":3.0}), or the check refusing the read as `JsonData` refuses
+// a union whose members share a tag.
+//
+// Observed:
+//   ("meters", "feet", false)
+type Meters = Abstract<f64>;
+impl Cast for Meters {};
+type Feet = Abstract<f64>;
+impl Cast for Feet {};
+type Len = [Meters, Feet];
+let unit = |l: Len| select l { Meters as _ => "meters", Feet as _ => "feet" };
+let v: Len = Meters(3.0);
+let back: Result<Len, [`PackErr(string), `InvalidCast(string)]> = pack::read(pack::write_bytes(v)$);
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+(unit(v), unit(back$), back$ == v)

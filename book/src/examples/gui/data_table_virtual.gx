@@ -39,6 +39,14 @@ let tbl = {
     // but will be looked up in the score map for a default value.
     // that lets us add virtual rows that don't exist in netidx
     let rows = array::concat(raw.rows, ["vr0", "vr1", "vr2"]);
+    // CR claude for claude: [dead/low] This uniq never drops anything. list_table
+    // answers only a changed listing, and the &`Netidx(score) source does not fire
+    // again when the sliders write score (the widget reads the referent), so the struct
+    // fires once per real change. No other data_table example has one, and here it
+    // suggests a Table needs deduplicating before data_table. Make the last expression
+    // `{ rows, columns }`. probe:
+    // design/review-2026-11-16/repro/examples-gui-virtual-uniq-noop.gx
+    // (examples-gui-03)
     uniq({ rows, columns })
 };
 

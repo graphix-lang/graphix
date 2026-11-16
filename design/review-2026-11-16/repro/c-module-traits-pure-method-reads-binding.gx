@@ -1,0 +1,27 @@
+// An impl method whose value reads a binding is refused under any trait
+// method that requires #[pure] or #[sync] (every core trait's), by a message
+// about an attribute the program never wrote.
+//
+// command:  graphix --check c-module-traits-pure-method-reads-binding.gx
+// expected: accepted (`let put = s.g` is a documented method form:
+//           ide/skills/graphix-lang/modules.md, design/traits.md §7), or a
+//           refusal that names the trait's requirement and the lambda to
+//           write (`let fmt = |w| show(w)`, which is accepted)
+// observed: 0: in impl Display for W
+//           1: at: line: 26, column: 22 .., in: let fmt = show
+//           2: #[pure] annotates a function definition
+// The same for a user trait: `trait T { #[pure] val m: fn(self) -> i64 };
+// let f = |s: i64| -> i64 s + 1; impl T for i64 { let m = f }`, and for a
+// default (`= { let c = 1; |s| c }`).
+//
+// Where a lambda does break the requirement, the refusal sites the whole impl
+// and names neither the method nor the trait that requires it:
+//   type W = Abstract<i64>;
+//   impl Eq for W { let eq = |a, b| a.0 == b.0; let hash = |a| { println("h"); a.0 } };
+//   W(1) == W(2)
+// graphix --no-cache: "at: line: 2, column: 1 .., in: impl Eq for W { let eq = ..
+//   #[pure]: this function is not a pure function of its arguments — .."
+type W = Abstract<i64>;
+let show = |w: W| -> string "W([w.0])";
+impl Display for W { let fmt = show };
+"[W(3)]"

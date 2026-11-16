@@ -1,0 +1,9 @@
+// Title: lang::select::arm_matching_no_value_of_a_declared_variable_refused never judges
+// its second function `h`: the build stops at `g`'s refusal, which is the phrase pinned.
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache --check design/review-2026-11-16/repro/tests-select-b-second-select-never-judged.gx
+// Observed (h alone): unreachable arm: null matches no value of 'a, whose bound is Number, unused match cases
+// The fixture with g and h together reports only g's
+// "unreachable arm: `C(z) matches no value of 'b, whose bound is [`A(i64), `B(i64)]",
+// so accepting `null => 1` over 'a: Number would leave the fixture passing.
+let h = 'a: Number |x: 'a| select x { null => 1, _ => 2 };
+h(3)

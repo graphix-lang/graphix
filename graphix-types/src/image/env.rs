@@ -438,6 +438,20 @@ impl Pack for Env {
             + RelocatedMap((**trait_methods).clone()).encoded_len()
             + SharedMap((**impls).clone()).encoded_len()
             + RelocatedSet(poly_binds.to_set()).encoded_len()
+            // CR claude for claude: [bug/low] `package_roots` is written as a
+            // `SharedSet` over `TrackedSet::to_set()`, which builds a new set at every
+            // call. So `encoded_len` and `encode` each meet a fresh root node and take
+            // two ordinals. Once the image's ordinals cross a varint width between the
+            // two calls, the write is longer than the measure. That breaks the
+            // session's rule that every `encoded_len` is exact, and a derived `Pack`
+            // framing an `Env` would be mis-framed. The rebuilt nodes share nothing,
+            // yet the write pins them for the session; `poly_binds.to_set()` likewise
+            // rebuilds a whole set only to list it. Fix: write both as a count and
+            // their members, iterating the `TrackedSet` itself (the `RelocatedSet` wire
+            // form), or wrap the set's own persistent map so node identity is stable.
+            // The pin `environment_round_trips` asserts this exactness but cannot catch
+            // the bug, because its two ordinals fall in one varint width. probe:
+            // design/review-2026-11-16/repro/t-image-env-encoded-len.rs (t-image-01)
             + SharedSet(package_roots.to_set()).encoded_len()
             + block_types.encoded_len()
     }

@@ -1,0 +1,25 @@
+// Title: a written test that holds `_` (bottom) beside a member that keeps
+// the arm alive, or over `Any`, types its bind at bottom, which every type
+// holds, while the run-time test passes every value there.
+// Command: graphix --no-cache x-typecheck-patterns-bottom-test-bind.gx
+//   (and `--check`, which exits 0)
+// Expected: the check refuses the arm, as it refuses `A(_) as `A(a) alone
+//   ("pattern `A(_) will never match ..: `_` in a type is bottom") and a name
+//   at `_` where a declared variable stands ("the written test types `a` at
+//   `_`, which is bottom, .. write the type it tests there in place of `_`,
+//   or `Any`").
+// Observed: --check exits 0: `a` is bottom, so `str::len(a)` checks. The run
+//   panics the runtime thread:
+//     kernel param `a`: runtime I64(7) does not match the compiled String slot
+//     Error: runtime did not respond
+//   Under --no-fusion `str::len` is handed 7 and the program prints nothing.
+// Over `Any` the test needs no second member:
+//   let f = |x: Any| select x { (_, i64) as (a, b) => str::len(a) + b, _ => 0 };
+//   let v: Any = (7, 1); f(v)
+// panics the same way, and a whole capture holds the bottom too:
+//   |x: [(i64, i64), null]| select x { [(_, i64), null] as v => select v { null as _ => 0, (a, b) => str::len(a) + b }, _ => 1 }
+let f = |x: [`A(i64), `B]| select x { [`A(_), `B] as `A(a) => str::len(a), _ => 1 };
+let out = f(`A(7));
+println("out = [out]");
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+out

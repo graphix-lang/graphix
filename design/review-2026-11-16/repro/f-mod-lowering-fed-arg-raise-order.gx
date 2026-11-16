@@ -1,0 +1,28 @@
+// Title: a fed argument whose raise sits in a lambda handed to a builtin is
+//   delivered ahead of an earlier fused argument's raise
+//
+// Command:
+//   timeout -s KILL 180 /home/eric/tmp/review-2026-11-16/bin/graphix-fuzz check \
+//     design/review-2026-11-16/repro/f-mod-lowering-fed-arg-raise-order.gx
+//
+// Expected: AGREE. At x == 2 both arguments raise to the one catch; the
+//   node-walk delivers them in argument order: `Bad(1), then `Bad(2).
+// Observed: DIVERGENCE — fusion/JIT bug (interp != jit)
+//   interp: stdout=[.. dbg(e.0.error): `Bad(1) | .. dbg(e.0.error): `Bad(2)]
+//   jit:    stdout=[.. dbg(e.0.error): `Bad(2) | .. dbg(e.0.error): `Bad(1)]
+//
+// Cause: fusion::try_fuse_feeding_args feeds `filter(..)` (no fast call) and
+//   keeps `chk(1, x)?` in the kernel. It refuses to feed an argument that
+//   may raise after a fused one that does, but fusion::may_raise_to_handler
+//   walks only statically resolved lambda calls: the `?` in the lambda the
+//   builtin `filter` calls back is not seen, so the feeder (which runs
+//   before the kernel) raises first.
+let x = 0;
+select x { n if n < 4 => x <- x + 1, _ => never() };
+let f = |a: i64, b: i64| a * 100 + b;
+let chk = |tag: i64, v: i64| -> Result<i64, `Bad(i64)> select v { 2 => error(`Bad(tag)), v => v };
+let r = {
+  catch(e) dbg(e.0.error);
+  f(chk(1, x)?, filter(x, |v: i64| chk(2, v)? >= 0))
+};
+r

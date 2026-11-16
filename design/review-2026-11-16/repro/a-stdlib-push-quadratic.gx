@@ -1,0 +1,12 @@
+// Building an array in a fold with array::push is quadratic
+//
+// command:
+//   time graphix --no-cache design/review-2026-11-16/repro/a-stdlib-push-quadratic.gx
+// observed (debug build, startup 0.08 s): n=4000 0.18 s, n=16000 1.43 s,
+//   n=64000 21.9 s. The same fold over list::cons, finished by
+//   list::to_array_rev, takes 0.10 s at every one of those sizes:
+//     list::to_array_rev(array::fold(xs, [<>], |acc, x| list::cons(x * 2, acc)))
+let xs = array::init(64000, |i| i);
+let r = array::fold(xs, [], |acc, x| array::push(acc, x * 2));
+println(array::len(r));
+sys::exit(r ~ 0)

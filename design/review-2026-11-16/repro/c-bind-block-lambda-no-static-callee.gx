@@ -1,0 +1,18 @@
+// Title: a `let` of a block whose value is a lambda never binds its calls statically, so they do not fuse
+// Command: timeout -s KILL 10 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache design/review-2026-11-16/repro/c-bind-block-lambda-no-static-callee.gx
+// generics.md names this form among the bindings that name a function
+// ("a block whose value is one of these (`let f = { let n = 1; |x| x }`)").
+// Expected: 2, 4, 6, as with either of
+//   let n = 1; let f = |x: i64| x + n;
+//   let f = { let n = 1; let h = |x: i64| x + n; h };
+// both of which build and print 2, 4, 6.
+// Observed: the build refuses the assertion:
+//   #[native] expression did not fully fuse to native code:
+//     - emit_clif: call `f(y)` has no static callee: its function is a
+//       run-time value, so it dispatches at run time
+{
+  let c = array::iter([0, 1, 2]);
+  let f = { let n = 1; |x: i64| x + n };
+  let g = |y: i64| #[native] f(y) * 2;
+  g(c)
+}

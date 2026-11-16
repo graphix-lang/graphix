@@ -1,0 +1,18 @@
+// f-select: an arm whose body is `never()` inside parens or at the end of a
+// block de-fuses its select in value position, though the same arm fuses in
+// tail position (fusion::tail_position sees through blocks and parens).
+//
+// Command: graphix --no-cache f-select-never-in-block-defuses.gx
+// Expected: ((1, 3), (1, 3)): every select below is #[native].
+// Observed: refused, "#[native] expression did not fully fuse to native code:
+//           the node-walk computes `never(y)`" for `v` (and `never()` for the
+//           parenthesized form); `t`, the same arm in tail position, fuses.
+// without the block (`n if n > 5 => never(n)`) v fuses and this prints ((1, 3), (1, 3))
+let v = |x: i64| #[native] select x { 0 => 1, n if n > 5 => { let y = n * 2; never(y) }, n => n };
+let rec t = |x: i64, acc: i64| -> i64 #[native] select x {
+  0 => acc,
+  n if n > 50 => { let y = n * 2; never(y) },
+  n => t(n - 1, acc + n)
+};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+((v(0), v(3)), (t(1, 0), t(2, 0)))

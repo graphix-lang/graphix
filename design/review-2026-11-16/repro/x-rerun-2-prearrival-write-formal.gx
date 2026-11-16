@@ -1,0 +1,29 @@
+// Title: x-engine-firing-04 variant: a write through a reference before it
+//   arrives lands when the reference reaches the writer through a let, and is
+//   dropped when it reaches it through a function's parameter.
+// Command: timeout -s KILL 180 graphix-fuzz run x-rerun-2-prearrival-write-formal.gx
+//   (graphix-fuzz check agrees: every mode prints the same trace)
+// ra and rb are never<&mut i64>() until step 3 writes them (they arrive at
+// step 4); v fires once, 10, at step 1, before either arrives.
+// Expected (design/place_references.md: "A write made before the reference
+//   first arrives ... waits for it and lands at its first target"): a and b
+//   both 10 from step 5.
+// Observed (every mode): a = 10, b = 0:
+//   Trace([0:(0, 0, 0) .. 4:(4, 0, 0) 5:(5, 10, 0) .. 8:(8, 10, 0)])
+// The same reference passed as f's argument is delivered to the formal as a
+// bottom value at the call's birth, so ConnectDeref::update reads it standing,
+// finds no cell and takes it as "a reference that arrived naming no place"
+// (addressless), dropping the pending write.
+let step = 0;
+step <- select step { s if s < 8 => s + 1, _ => never() };
+let a = 0;
+let b = 0;
+let ra = never<&mut i64>();
+let rb = never<&mut i64>();
+ra <- select step { s if s == 3 => s ~ &mut a, _ => never() };
+rb <- select step { s if s == 3 => s ~ &mut b, _ => never() };
+let v = select step { s if s == 1 => s * 10, _ => never() };
+{ let r = ra; *r <- v };
+let f = |r: &mut i64| { *r <- v; 0 };
+let q = f(rb);
+(step, a, b)

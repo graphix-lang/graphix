@@ -481,6 +481,16 @@ only the state part of its check:
 - a call site installs its signature, placeholders for omitted
   defaults, joins its raise, and pre-unifies each argument with its
   formal so a callback's parameters infer;
+<!-- CR claude for claude: [doc-drift/medium] This bullet states the rule D36 reversed.
+It says each cell takes 'the widest part a parameter gives it' and that a cell under a
+typedef's union in an earlier parameter 'is not decided by that union alone'.
+`FnType::pre_unify_params` now commits the parameters in order (order_free_cells is
+gone). The cited pin `instance_lambda_typedef_union_before_its_variable` was renamed
+`instance_lambda_typedef_union_parameters`, with its `k` case flipped because the old
+form is now refused. Fix: say the parameters take the row in order, a variable under a
+union decided by the positions before it, and cite the renamed pin. probe:
+design/review-2026-11-16/repro/x-doc-drift-parallel-compile-order-free-param.gx
+(x-doc-drift-01) -->
 - a lambda literal takes its signature at its own level and generalizes
   it with no gate and no second compile of its body; its instances
   read its table through the enclosing instance's map (`Tables::outer`,

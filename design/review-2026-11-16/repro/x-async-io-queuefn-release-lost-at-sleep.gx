@@ -1,0 +1,24 @@
+// x-async-io: queuefn loses the call it released when its site falls asleep in the cycle the release lands
+//
+// command: timeout -s KILL 30 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache design/review-2026-11-16/repro/x-async-io-queuefn-release-lost-at-sleep.gx
+//
+// The site calls q(0) (the birth credit), q(1) and q(2) (queued). The trigger
+// fires at n == 2 and releases q(1); the release lands in the next cycle, the
+// one in which the site's arm falls asleep. design/queue_fn.md: "A site's
+// sleep is a pause: its calls keep their place in the queue".
+//
+// expected: f(0), f(1), f(2), f(6) (every call made runs, in order)
+// observed: f(0), f(2), f(6), f(7): f(1) never runs
+let clk = sys::time::timer(duration:50.ms, 10);
+let n = 0;
+n <- clk ~ n + 1;
+let trig = select n { 2 | 7 | 8 | 9 => n, _ => never() };
+let depth = 0;
+let f = |x: i64| { println("f([x])"); x };
+let q = queuefn(#count: &mut depth, #trigger: trig, f);
+let asleep = false;
+asleep <- select n { 2 => n ~ true, 5 => n ~ false, _ => never() };
+let r = select asleep { false => q(n), true => never() };
+println("n=[n] depth=[depth]");
+sys::exit(sys::time::after_idle(duration:300.ms, n ~ 0));
+r

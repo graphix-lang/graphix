@@ -1,0 +1,28 @@
+// Title: a `*h` outside an arm fires when the arm's wake moves what `h` names
+// Command: timeout -s KILL 100 /home/eric/tmp/review-2026-11-16/bin/graphix-fuzz run design/review-2026-11-16/repro/c-bind-deref-outside-fires-at-wake.gx
+// `h` holds `&t`, a reference to the arm's own binding `t`, which holds `&x` or
+// `&y` by `which`. `which` moves at c = 1 while the arm sleeps; the arm wakes at
+// c = 2 and recomputes `t` to `&y`, quietly.
+// Expected (bind_driven_bodies.md 1.4: "A wake fires nothing for anyone ... A
+//   reader outside takes the new value and no event"): the count stays 1:
+//   (1, 1, 10) (2, 1, 20) (3, 1, 20) (4, 1, 20) (5, 1, 20)
+//   That is the trace of the same program over values: `let t = select which
+//   { 0 => x, _ => y }; &t` read by `count(*h), *h`.
+// Observed, both engines (AGREE):
+//   (1, 1, 10) (2, 2, 20) (3, 2, 20) (4, 2, 20) (5, 2, 20)
+// The same happens with `h <- once(select .. { true => &a[i], .. })` and a key
+// `i` that moved while the arm slept: `count(*h)` ticks at the wake.
+{
+  let c = array::iter([0, 1, 2, 3, 4, 5]);
+  let x = 10;
+  let y = 20;
+  let which = 0;
+  which <- select c { 0 => 1, _ => never() };
+  let h = never();
+  h <- once(select c % 2 == 0 {
+    true => { let t = select which { 0 => &x, _ => &y }; &t },
+    false => never()
+  });
+  let o = (c, count(**h), **h);
+  array::group(o, |n, _| n == 5)
+}

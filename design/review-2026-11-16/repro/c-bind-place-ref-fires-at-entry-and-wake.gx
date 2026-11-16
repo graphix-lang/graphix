@@ -1,0 +1,30 @@
+// Title: a place reference fires where its body is entered, and again at a wake that finds its key moved
+// Command: timeout -s KILL 100 /home/eric/tmp/review-2026-11-16/bin/graphix-fuzz run design/review-2026-11-16/repro/c-bind-place-ref-fires-at-entry-and-wake.gx
+// The arm is entered after the program's first cycle (at c = 0), sleeps at odd
+// c and wakes at even c. `i` moves from 0 to 1 at c = 1, while the arm sleeps.
+// Expected (bind_driven_bodies.md 1: "Entering a body is not an event, and
+//   neither is waking one"; ByRef::update's own comment: a reference is
+//   "standing where a body first makes it"): neither count ever has a value,
+//   so the tuple is bottom at every even c:
+//   (1, -1) (3, -1) (5, -1)
+//   That is the trace with the arm's body replaced by
+//   `{ let plain = &a; (count(plain), count(a[i]$)) }`.
+// Observed, both engines (AGREE):
+//   (0, (1, 1)) (1, -1) (2, (1, 2)) (3, -1) (4, (1, 2)) (5, -1)
+//   `fixed` fired at the entry; `*moving` fired at the entry and at the wake.
+{
+  let c = array::iter([0, 1, 2, 3, 4, 5]);
+  let a = [10, 20, 30];
+  let i = 0;
+  i <- select c { 0 => 1, _ => never() };
+  let out = select c % 2 == 0 {
+    true => {
+      let fixed = &a[0];
+      let moving = &a[i];
+      (count(fixed), count(*moving))
+    },
+    false => -1
+  };
+  let o = (c, out);
+  array::group(o, |n, _| n == 6)
+}

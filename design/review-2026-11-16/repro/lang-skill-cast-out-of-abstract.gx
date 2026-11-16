@@ -1,0 +1,14 @@
+// SKILL.md (Types, Abstract): an abstract type "crosses data (json/toml/pack reads and
+// writers, casts, `sys::net`) only through `impl Cast for T {};` ... (a method the impl
+// leaves out uses the representation)". A cast OUT of an abstract value never crosses:
+// the check accepts `cast<i64>(w)` and every run answers InvalidCast, with the impl or
+// without it, while json::write_str of the same value writes the representation.
+// run: timeout -s KILL 30 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache design/review-2026-11-16/repro/lang-skill-cast-out-of-abstract.gx
+// expected (reading the skill): 1 {"W":1}
+// observed: error:`InvalidCast("can't cast W(…) to i64: an abstract value has no primitive form") {"W":1}
+type W = Abstract<i64>;
+impl Cast for W {};
+let v = W(1);
+println("[cast<i64>(v)] [json::write_str(v)$]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+0

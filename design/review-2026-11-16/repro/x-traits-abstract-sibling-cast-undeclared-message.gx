@@ -1,0 +1,30 @@
+// A sibling module writes a value whose type's `Cast` impl exists but is not
+// declared in its module's interface. The refusal is right; its text says
+// the type has no implementation and tells the author to write the one that
+// is already there.
+//
+// Command (multi-file fuzzer format):
+//   timeout -s KILL 180 /home/eric/tmp/review-2026-11-16/bin/graphix-fuzz run \
+//     design/review-2026-11-16/repro/x-traits-abstract-sibling-cast-undeclared-message.gx
+//
+// Expected: the hint a user trait gets in the same place (book,
+// modules/interfaces.md): "... the impl in module /m0 is not in its
+// interface (declare `impl Cast for Counter;` there)".
+//
+// Observed:
+//   Counter has no Cast implementation, so no read, cast or writer reaches
+//   it: implement Cast for it where it is defined
+//
+// With `impl Cast for Counter;` added to m0.gxi the program runs.
+m1::w
+// file-v1: m0.gxi
+type Counter;
+val make: fn(x: i64) -> Counter;
+// file-v1: m0.gx
+type Counter = Abstract<i64>;
+impl Cast for Counter {};
+let make = |x| Counter(x)
+// file-v1: m1.gxi
+val w: Result<string, `JsonErr(string)>;
+// file-v1: m1.gx
+let w = json::write_str(super::m0::make(5))

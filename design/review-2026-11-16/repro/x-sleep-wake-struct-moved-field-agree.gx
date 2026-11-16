@@ -1,0 +1,20 @@
+// The same defect where the struct does not fuse: both engines agree on the
+// stale field, so the fuzzer says AGREE.
+//
+// run: graphix-fuzz run design/review-2026-11-16/repro/x-sleep-wake-struct-moved-field-agree.gx
+//
+// Each tick is (clk, v, [{a: v, b: 1}]); `v` moves 2 -> 4 at clk 6 with no fire.
+//
+// expected at clk 6: (6, 4, [{a: 4, b: 1}])
+// observed, both engines: (6, 4, [{a: 2, b: 1}])
+{
+  let clk = array::iter(array::init(10, |i| i));
+  let n = 0;
+  n <- filter(clk, |c| c % 2 == 0) ~ (n + 1);
+  let sel = 0;
+  sel <- filter(clk, |c| c % 4 == 1) ~ (1 - sel);
+  let r = select sel { 0 => &(n + 1), _ => &(n + 100) };
+  let holder = once(r);
+  let v = *holder;
+  clk ~ (clk, v, [{a: v, b: 1}])
+}

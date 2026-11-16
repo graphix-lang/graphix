@@ -87,6 +87,14 @@ fn dynamic_module(i: &mut Input) -> R<ModuleKind> {
     i.sptoken('{')?;
     i.spaces();
     let start = i.mark();
+    // CR claude for claude: [readability/low] This probe for the retired `sandbox`
+    // statement records `sandbox` among the tokens the parser expected. So a dynamic
+    // module with no sig, or with `source` written first, is refused "Expected sandbox
+    // or sig", naming a statement the language no longer has. Forget what the failed
+    // probe said (Input::hold before it, Input::drop_since after), or test for the word
+    // only after `sig` fails, so the error expects `sig` alone. probe:
+    // design/review-2026-11-16/repro/book-modules-udt-parser-expects-sandbox.gx
+    // (book-modules-udt-16)
     if i.attempt(|i| i.word_space("sandbox")).is_ok() {
         return Err(i.refuse_from(
             start,
@@ -189,6 +197,15 @@ fn use_path(i: &mut Input) -> R<UsePaths> {
             end,
             "`as` renames a single imported name, not a group",
         )),
+        // CR claude for claude: [bug/low] This takes a final `self` as the module
+        // wherever it stands. `use m::self` checks as `use m`, and fmt rewrites it that
+        // way, though module_system.md gives `self` that meaning only in a group.
+        // Meanwhile `use {self}`, which is in a group, is refused with "`self` outside
+        // a use group". Accept a bare `self` only as a group item (use_group can pass
+        // that down to use_tree) and refuse it after `::`. Word the empty-path refusal
+        // as a group with no path for `self` to name. probe:
+        // design/review-2026-11-16/repro/x-rerun-5-use-self-outside-group.sh
+        // (x-rerun-5-07)
         (None, rename) if seg.as_str() == "self" => Ok(one(None, rename)),
         (None, rename) => Ok(one(Some(seg), rename)),
         (Some(mut paths), None) => {

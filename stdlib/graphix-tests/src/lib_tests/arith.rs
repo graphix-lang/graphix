@@ -105,6 +105,15 @@ run!(f32_add_inexact, F32_ADD_INEXACT, |v: Result<&Value>| {
 
 // Checked-arithmetic overflow detection.
 
+// CR claude for claude: [structure/low] These i64 `is_err` fixtures
+// (`checked_add/sub/mul_overflow_errs`, `checked_div_zero_errs`,
+// `checked_min_div_neg_one_errs`, `checked_no_overflow_ok`) and `CHECKED_FLOAT_IEEE`
+// below repeat pins in `lang::errors`. `checked_failures_name_their_cause` pins each of
+// these failures with its exact `ArithError` cause, where `is_err` accepts any error,
+// and `lang::errors::checked_float_follows_ieee` (same name) covers the float cases in
+// every mode. Delete the copies here (or move the u8 cases into
+// `checked_failures_name_their_cause`); each is four gate tests. Found by reading; not
+// run. (tests-lib-b-a-09)
 const CHECKED_ADD_OVERFLOW: &str = "is_err(i64:9223372036854775807 +? i64:1)";
 run!(checked_add_overflow_errs, CHECKED_ADD_OVERFLOW, |v: Result<&Value>| {
     matches!(v, Ok(Value::Bool(true)))
@@ -168,6 +177,15 @@ run!(checked_min_div_neg_one_errs, CHECKED_MIN_DIV_NEG_ONE, |v: Result<&Value>| 
     matches!(v, Ok(Value::Bool(true)))
 });
 
+// CR claude for claude: [test-gap/low] The comment above says integer div/rem by zero
+// and `MIN / -1` bottom, but this fixture puts the quotient in an untaken arm, so it
+// answers 99 whatever `MIN / -1` gives (bottom, MIN by wrapping, or anything else). It
+// pins only that the division does not crash. No fixture pins unchecked i64 `MIN / -1`
+// as bottom; the narrow widths are pinned in
+// `lang::fusion_review::narrow_min_div_minus_one_is_bottom`. Add `any(#[native]
+// d(i64:-9223372036854775808, i64:-1), i64:7)` over `d = |a: i64, b: i64| a / b`, and
+// the same unfused, expecting 7 (both engines give it today). Found by reading; not
+// run. (tests-lib-b-a-05)
 const MIN_DIV_NEG_ONE_SINK: &str =
     "{ let v = i64:-9223372036854775808 / i64:-1; select i64:5 { 2 => v, _ => i64:99 } }";
 run!(min_div_neg_one_sink, MIN_DIV_NEG_ONE_SINK, |v: Result<&Value>| {

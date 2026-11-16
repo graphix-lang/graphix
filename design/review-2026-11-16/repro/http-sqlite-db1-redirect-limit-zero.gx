@@ -1,0 +1,16 @@
+// http::client(#redirect_limit: u32:0) answers every redirect with an error,
+// so a program can never see a 3xx response (its status or Location).
+// Command: timeout -s KILL 30 graphix --no-cache http-sqlite-db1-redirect-limit-zero.gx
+// Expected (0 = follow none): "302 "
+// Observed: "error:`HTTPError(\"request failed: error following redirect for url (...): too many redirects\")"
+let handler = |req: http::Request| select req.path {
+  "/target" => {body: "landed", headers: [], status: u16:200},
+  _ => {body: "", headers: [("Location", "/target")], status: u16:302}
+};
+let server = http::serve(#addr: "127.0.0.1:0", #handler: handler)$;
+let addr = http::server_addr(server);
+let client = http::client(#redirect_limit: u32:0, server)$;
+let r = http::request(#timeout: duration:5.s, client, "http://[addr]/start");
+let out = select r { error as e => "[e]", r => "[r.status] [r.body]" };
+sys::exit(sys::time::after_idle(duration:200.ms, out ~ 0));
+out

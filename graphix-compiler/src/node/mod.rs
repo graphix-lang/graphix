@@ -190,6 +190,17 @@ fn late_fire<'a, R: Rt>(
     if ctx.event.variables.get_var(var).is_some() {
         return None;
     }
+    // CR claude for claude: [perf/medium] A fire that N readers take late costs N^2 a
+    // cycle: this find scans every late fire of the variable for each reader that reads
+    // it, and GX::deliver_late dedups the same list with one scan per queued reader
+    // (`fires.iter().any`). A map of N slots whose callback reads a binding made below
+    // the map (through a function value or a reference written later) takes each fire
+    // of that binding late in all N slots: 18 such cycles cost 1.4 s at N=8000, 5.4 s
+    // at 16000 and 21 s at 32000 on the debug build, against 0.08, 0.2 and 0.6 s for
+    // the same map over a binding above it. Key a variable's late fires by reader
+    // (Reader is Hash + Eq; a small vector up to a few and a map past that, as rt.rs's
+    // Readers does), so the dedup and this lookup are one probe each. probe:
+    // design/review-2026-11-16/repro/x-prune-late-readers-quadratic.sh (x-prune-01)
     let (tv, _) = fires.iter().find(|(_, r)| {
         r.root == root && r.boundary == ctx.boundary && r.read.as_ref() == read
     })?;
@@ -1562,6 +1573,14 @@ enum Walk {
     Module,
 }
 
+// CR claude for claude: [structure/low] This file holds two things that are not nodes:
+// the written-lets walk (`written_lets`, `BlockWrites`, `ModuleWrites`, `Anchor`,
+// `Writes` and its test, about 500 lines) and the wording of a `<-` refusal
+// (`lower_shown`, `Holders`, `decided_decl`, `params_union`, `generic_target`,
+// `write_mismatch`, about 520 lines). Neither reads a node's state, and a reader
+// looking for `Sample` or `Block::update` pages through both. Move the walk to
+// `node/writes.rs` and the refusal wording to `node/write_mismatch.rs` as they are;
+// nothing else changes. Found by reading; not run. (c-node-mod-06)
 struct Writes<'a> {
     walk: Walk,
     /// The walked statements' binding of each name at the walk's position.
@@ -2054,6 +2073,16 @@ pub(crate) type Child<'a, R> =
 fn statement_result<R: Rt>(r: Result<()>, n: &Node<R>, module: bool) -> Result<()> {
     let r = wrap!(n, r);
     match module {
+        // CR claude for claude: [readability/low] This adds a frame that prints as "in
+        // file F" with no position to every refusal in a module body, an impl's
+        // included. The frames around it already name that file, so it says nothing.
+        // The method frames under it also print the lambda annotate_lambda rebuilt
+        // ("let m: fn(self: i64, x: string) -> str..", "|s: i64, x: i64| -> string x")
+        // where the author wrote `let m = |s, x: self| x`. Add the origin only where it
+        // differs from the frames' own, and print a rebuilt expression by its source
+        // span (ErrorContext::source_text), as is done for lowered ones. probe:
+        // design/review-2026-11-16/repro/x-diagnostics-impl-frames.gx
+        // (x-diagnostics-12)
         true => r.with_context(|| n.spec().ori.clone()),
         false => r,
     }
@@ -2076,6 +2105,15 @@ fn check_in_tasks<R: Rt>(
         statement_result(r, n, module)
     };
     match ctx.control.eval_pool() {
+        // CR claude for claude: [structure/low] Three functions fork a `CompileCtx` per
+        // part, run the parts on the evaluation pool and join them in order: this one,
+        // `fusion::fuse_each` and `branch::compile_each`. Only `compile_each` enters
+        // the pool through `branch::on_pool` and `as_part`; this one and `fuse_each`
+        // call `EvalPool::map` bare, so a dynamic module's load checked inside a cycle
+        // runs its tasks without the runtime's `Control` on their threads (no stack
+        // budget, no interrupt) and uncounted by `Control::eval_saturated`. Give the
+        // three one body over `&mut CompileCtx` that enters the pool as `compile_each`
+        // does. Found by reading; not run. (x-parallel-05)
         Some(pool) => pool.map(&mut work, &mut results, check_task),
         None => results.extend(work.iter_mut().map(check_task)),
     }
@@ -3150,6 +3188,19 @@ fn write_mismatch(
                 )
             }),
         false => {
+            // CR claude for claude: [bug/medium] When the written value's type is a
+            // definition's declared variable (`'a: Any |x: 'a| -> 'a { y <- x; x }`
+            // over `let y: i64`), this hint names the variable after its binding as if
+            // it were an open cell: "declare y: [i64, 'x] where it is bound, writing
+            // for 'x the type of `x`". That declaration is then refused by the escape
+            // rule ("'a escapes the definition ... the bound of 'a, or Any"); only Any
+            // or the bound passes. A trait method's variable gets the same hint
+            // (lang::types::rigid_survives_alias pins only "cannot hold"). Where the
+            // written type holds a cell a declaration holds rigid, give the escape
+            // refusal's remedy instead (Holders::name_open must not name a rigid cell),
+            // and pin the hint with an Any twin that runs. probe:
+            // design/review-2026-11-16/repro/tests-types-a-escape-hint-declares-a-quantifier.sh
+            // (tests-types-a-02)
             let write = |t: &Type, holders: &mut Holders| {
                 t.written_form(&mut |tv| holders.name_open(tv))
                     .filter(|t| Brief::within(t, Brief::DECLARATION).is_some())
@@ -3157,6 +3208,25 @@ fn write_mismatch(
             // a parameter decided apart is held by no union of parameters
             let both = match settled.as_ref().and_then(|t| write(t, &mut holders)) {
                 Some(t) => Some(t),
+                // CR claude for claude: [bug/medium] params_union offers `B<[p0, p1]>`
+                // whenever the target and the written value apply one minted abstract.
+                // An abstract's parameters are invariant, so that declaration holds the
+                // written value only while its parameter is still open, as in a
+                // construction written directly (errors.rs
+                // a_write_hint_names_a_writable_type). Where a use has decided the
+                // written value's parameter, following the hint is refused again: `let
+                // b: B<i64> = B(1); let c: B<string> = B("s"); b <- c` says `declare b:
+                // B<[i64, string]>`, and with b so declared it is refused with `declare
+                // b: [B<string>, B<[i64, string]>]`.
+                // lang::types::payload_write_declares_the_parameters_union pins this
+                // wrong hint: its select over c.0 decides c's parameter, and only
+                // `[B<Array<Array<i64>>>, B<Array<i64>>]` checks there. Fix: offer the
+                // parameter union only where a non-binding probe shows it holds both
+                // types, and otherwise fall through to the union of the two
+                // applications. Then repin that fixture and give it a declared twin.
+                // probe:
+                // design/review-2026-11-16/repro/tests-types-b-params-union-hint.gx
+                // (tests-types-b-01)
                 None => match params_union(env, &held, &written)
                     .and_then(|t| write(&t, &mut holders))
                 {
@@ -3186,6 +3256,25 @@ fn write_mismatch(
                     "annotate the let's pattern type with a type holding both at \
                      {name}'s position"
                 ),
+                // CR claude for claude: [bug/medium] This remedy declares the binding
+                // as the union of what it holds and what is written, without asking
+                // whether the use that decided its type holds that union, so it is
+                // wrong wherever a consumer decided it. After `let r = f(&mut z)` over
+                // `'a: &mut [i64, null]`, `z <- "hello"` is told `declare z: [i64,
+                // null, string]`, and with that declaration the call is refused. The
+                // same happens with a union bound's member (`f((z, 1))` over `'a:
+                // [(i64, i64), (string, string)]`, told `declare z: [i64, f64]`) and
+                // with arithmetic (`let y = x + 1; x <- "s"`, told `declare x: [i64,
+                // string]`, then `cannot compute`). CLAUDE.md asks a refusal to name
+                // the annotation that makes the program pass. Check the declaration on
+                // copies against the uses the binding met (as
+                // callsite::annotation_may_fit does for arguments) and name it only
+                // where it fits; otherwise name the use that decided the type.
+                // lang::types::writable_reference_bound_decides_the_referent and
+                // slice_in_each_alternative_of_an_or_arm_used_as_a_number_then_written_a_string_refused
+                // carry the wrong advice today; their pins stop before it. probe:
+                // design/review-2026-11-16/repro/tests-types-c-declare-remedy.sh
+                // (tests-types-c-02)
                 (_, Some(both)) => {
                     format_compact!("declare {name}: {both} where it is bound")
                 }
@@ -3324,6 +3413,15 @@ impl<R: Rt> Update<R> for ConnectDeref<R> {
     fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         // a fired RHS writes; a write before the reference arrived lands at
         // its first target; a bottom RHS or address never writes
+        // CR claude for eric: [bug/low] A write kept in `pending` because the reference
+        // had not arrived is made at the arm's wake when the reference arrived while
+        // the arm slept: `*r <- once(clk) ~ 77` writes in the wake cycle, in which
+        // neither the right side nor the reference fires. This is the banked `~`
+        // question (Sample::update) at a second site, and it takes the same ruling: if
+        // a wake fires nothing, drop `pending` in `sleep`; if the debt is meant to be
+        // paid, say so in place_references.md and pin it. probe:
+        // design/review-2026-11-16/repro/x-sleep-wake-deref-pending-write-at-wake.gx
+        // (x-sleep-wake-05)
         let woke = self.slept.take();
         let written = {
             let tv = self.rhs.update(ctx);
@@ -3335,6 +3433,22 @@ impl<R: Rt> Update<R> for ConnectDeref<R> {
         }
         // a reference that arrived naming no place (a place whose address
         // is bottom) has nowhere to write
+        // CR claude for eric: [bug/medium] A write made before its reference arrives is
+        // held only while the reference binding has no standing value. A function
+        // formal over an argument that has not produced yet is delivered as bottom at
+        // the call's birth. read_var then finds it standing, Self::cell gives None, and
+        // addressless clears pending, so the write is dropped. Example: `let f = |r:
+        // &mut i64| { *r <- v; 0 }; f(rb)` with rb = never<&mut i64>() written at step
+        // 3 and v firing at step 1 never writes, while `{ let r = ra; *r <- v }` over
+        // the same kind of reference lands at the first target. A top-level `let rr =
+        // select .. { _ => never() }` drops it as well, the case the
+        // write_before_reference_arrives pin calls a bottom reference. Whether a write
+        // waits now depends on whether a bottom was delivered, which the text does not
+        // show. Decide where 'not yet arrived' ends (a parameter, a select over
+        // never()), make addressless follow that rule, and pin the let and formal
+        // spellings together. probe:
+        // design/review-2026-11-16/repro/x-rerun-2-prearrival-write-formal.gx
+        // (x-rerun-2-02)
         let mut addressless = false;
         if let Some(tv) = ctx
             .event
@@ -3357,6 +3471,21 @@ impl<R: Rt> Update<R> for ConnectDeref<R> {
                 addressless = self.cell.is_none();
             }
         }
+        // CR claude for eric: [bug/medium] Whether a write fired while the reference
+        // has no value lands later depends on how the reference came to have none. A
+        // reference nothing was ever delivered to (`read_var` answers `None`: a sample
+        // not yet fired, a timer) keeps the write in `pending` for its first target;
+        // one that holds a delivered bottom (a select's `never()` arm, `k$` over null)
+        // sets `addressless` and drops it. `let r = select c { k if k >= 4 => k ~ &mut
+        // x, _ => never() }` and `let go = ..; let r = go ~ &mut x` are the same stream
+        // of values, and a `*r <- 99` fired before either arrives writes x through the
+        // second only. representable_bottom.md has one bottom and no pending channel,
+        // and dense_delivery.md reads an absent store entry as the phantom. Rule one
+        // answer for both: the write waits for the reference's first value however it
+        // is absent, or it is dropped. place_references.md and
+        // `lang::byref::write_before_reference_arrives` pin the split today. probe:
+        // design/review-2026-11-16/repro/c-node-mod-deref-write-absent-vs-bottom.sh
+        // (c-node-mod-02)
         if addressless {
             self.pending = None;
         } else if written.is_some() {
@@ -3507,6 +3636,18 @@ impl<R: Rt> Update<R> for TypeCast<R> {
             errf!(CAST_ERR_TAG, "can't cast a reference")
         } else {
             let (target, src) = (&self.target, self.n.typ());
+            // CR claude for claude: [bug/medium] A cast whose `from_value` hook was cut
+            // off by the activation or stack budget still produces a value: the deepest
+            // hook rides bottom, `Type::cast_abstract` makes "its Cast implementation
+            // produced nothing" of it, and each level of the recursion above wraps the
+            // refusal of the level below and keeps it. The unwind's memory is quadratic
+            // in the budget, so `impl Cast for T { let from_value = |v| cast<T>(v) }`
+            // is OOM-killed under a 50000 budget where a plain recursion stops as
+            // ActivationBudget. Ride the resident when `ctx.interrupted()` after the
+            // cast, as `GXLambda::update` does, here and in `TypedRead::map_value`.
+            // probe:
+            // design/review-2026-11-16/repro/x-traits-abstract-from-value-recursion-uncontained.gx
+            // (x-traits-abstract-04)
             coretraits::with_display_hooks(ctx, |env| {
                 target
                     .cast_with(env, Some(src), v, CastInput::Data, self.check_keys)
@@ -3772,6 +3913,14 @@ impl<R: Rt> Update<R> for Any<R> {
         // triggering bottom never beats one (`any(risky?, default)`); at a
         // wake, the child the resident came from standing bottom now
         // stands the resident bottom, moved
+        // CR claude for claude: [bug/low] The rule that an `any` stands bottom when the
+        // child its value came from is bottom at a wake is applied only where the `any`
+        // itself slept. An `any` outside the arm, reading the same value through a
+        // reference that left it, sees the child as a moved bottom and keeps the old
+        // value, while an operator in its place and an `any` inside the arm are bottom.
+        // Take the child's `tag.moved()` beside `woke` in the `lost` test. probe:
+        // design/review-2026-11-16/repro/x-sleep-wake-any-outside-keeps-bottomed-child.gx
+        // (x-sleep-wake-06)
         let woke = self.slept.take();
         let mut winner: Option<(usize, TagValue)> = None;
         let mut bottomed = false;
@@ -4038,6 +4187,19 @@ impl<R: Rt> Update<R> for Sample<R> {
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
+        // CR claude for claude: [bug/high] A sample's rebirth clears its bank and keeps
+        // its last output: `resident` rides into the step's next run, so a step, or a
+        // callee a step calls, whose `~` is not triggered in that run completes on the
+        // previous run's sample. `seq go { let s = live(ev) ~ 7; s }` waits for `ev` in
+        // its first run and completes at once in every later one, where
+        // `once(live(ev))` waits in each (`Apply::reborn`). organic_firing.md rule 1
+        // starts a step's run with every value bottom, and the skill's seq.md says a
+        // step never completes on a value standing from an earlier run. Set `resident`
+        // to the phantom in this branch, for `~`, `~!` and the banked sample alike, and
+        // pin it beside `lang::seq::sample_bank_cleared_at_seq_rebirth` (that fixture
+        // with `v` present gives 2, not 1). probe:
+        // design/review-2026-11-16/repro/c-node-mod-sample-output-survives-step-rebirth.gx
+        // Also reported as (x-rerun-6-01), (x-engine-seq-errors-03). (c-node-mod-01)
         if self.slept.take() && ctx.event.born() {
             match &mut self.banking {
                 Banking::Strict => (),
@@ -4071,8 +4233,59 @@ impl<R: Rt> Update<R> for Sample<R> {
             }
         };
 
+        // CR claude for eric: [bug/medium] A banked payment is made whenever the
+        // argument is present, fired or not. A sample that banked a trigger and then
+        // slept pays at its arm's wake if the argument arrived meanwhile, and a sample
+        // outside pays when its argument leaves bottom by a wake's quiet recompute: a
+        // connect writes in a cycle in which nothing it reads fired. `hold` and `queue`
+        // with a banked clock, and 12 other consumers tried on the same input, do
+        // nothing there. Either pay only in a cycle the argument fires and drop a debt
+        // whose arrival was missed, or name this as the exception to "a wake fires
+        // nothing" in the docs and pin it. probe:
+        // design/review-2026-11-16/repro/x-sleep-wake-banked-sample-pays-at-wake.gx and
+        // x-sleep-wake-banked-sample-pays-on-moved.gx (x-sleep-wake-04)
+        // CR claude for eric: [bug/medium] A debt is paid whenever the held argument is
+        // not bottom, so an argument that a wake recomputed quietly (moved, no fire)
+        // pays it and the sample fires: a wake fires an event. A banked `e ~ h(1)`
+        // outside a woken arm writes through `<-` at the wake, where a plain `h(1)`
+        // reader does not, a call over it does not fire and a seq step waiting for it
+        // stalls; the same sample inside the arm fires at its own wake. That
+        // contradicts "a wake fires nothing for anyone" and "a sample whose trigger did
+        // not fire rides" (bind_driven_bodies.md). Either pay only on a triggering
+        // production of the argument (or with a trigger fire) and keep the debt across
+        // a moved arrival, or write the exception into the rule; no pin covers a wake
+        // that finds the banked argument standing. probe:
+        // design/review-2026-11-16/repro/x-seq-sampling-bank-paid-by-wake.gx
+        // (x-seq-sampling-03)
         let live = self.arg.value.as_ref().filter(|_| !self.arg.tag.is_bottom());
         match live {
+            // CR claude for eric: [bug/medium] A banked trigger is paid whenever the
+            // argument is present, fired or not, and the bank survives an arm's sleep.
+            // A sample in an arm whose argument arrived while the arm slept therefore
+            // fires at the wake: `let t = go ~ v; w <- t` writes at a cycle in which
+            // neither `go` nor `v` fires. CLAUDE.md says a wake fires nothing for
+            // anyone and nothing is kept for a body that does not run;
+            // organic_firing.md says only that the bank is kept. Which holds: the
+            // arrival the arm slept through is missed and the bank waits for the
+            // argument's next fire, or the wake pays and the docs name it as the
+            // exception? Pin the ruling beside
+            // banked_sample_payment_asleep_is_owed_nothing. probe:
+            // design/review-2026-11-16/repro/x-engine-firing-bank-pays-at-wake.gx
+            // (x-engine-firing-05)
+            // CR claude for eric: [bug/medium] A bank is paid in the cycle its arm
+            // wakes when the argument arrived during the sleep: the held argument reads
+            // present, quietly, and `owed` fires the sample though nothing the arm
+            // reads fired. In the probe `hits <- (trig ~ v) ~ hits + 1` writes in a
+            // wake cycle in which only the select's scrutinee fires. CLAUDE.md has a
+            // wake fire nothing for anyone, organic_firing.md rule 3 has a sleeping
+            // body miss a value leaving bottom, and sleep_and_wake.md says `~` rides.
+            // `ConnectDeref::update` lands its `pending` write at a wake the same way.
+            // Either the bank is state whose payment is the one fire a wake may make
+            // (say so in sleep_and_wake.md and bind_driven_bodies.md), or a wake that
+            // finds the argument present with no fire drops the debt, the arrival
+            // having been missed. No pin holds either today. probe:
+            // design/review-2026-11-16/repro/c-node-mod-bank-paid-at-wake.gx
+            // (c-node-mod-03)
             Some(value) if *owed => {
                 *owed = false;
                 self.resident.set(TagValue::fired(value.clone()))

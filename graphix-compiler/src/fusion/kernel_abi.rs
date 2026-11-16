@@ -156,6 +156,14 @@ pub enum AbiKind {
     /// `Type::Bottom`. Not a valid kernel parameter.
     Unit,
     /// The `null` type. Not a valid kernel parameter.
+    // CR claude for claude: [doc-drift/low] Two docs in this file contradict the code.
+    // Null's doc says a bare null is not a valid kernel parameter, but
+    // lowering::param_kind maps AbiKind::Null to ParamKind::Value and it crosses as
+    // one. abi_kind's doc lists "a recursive named type" among the shapes with no
+    // encoding, but abi_kind_d classifies a recursive union of variants (`[`Nil,
+    // `Cons(i64, T)]`) as Variant and a recursive option as Nullable; it returns None
+    // only when a named type recurs inside a union member's own classification. Fix
+    // both docs. Found by reading; not run. (f-kernel-04)
     Null,
 }
 
@@ -852,6 +860,18 @@ impl Freeze {
                         _ => Ok(flat),
                     }
                 }
+                // CR claude for claude: [perf/low] An Abstract's params, and a List's
+                // element in the Type::List arm, are frozen as structure, so a part
+                // with no kernel form (a function type) refuses the whole type. Yet
+                // abi_kind classifies both as an opaque Value, and the Map and Error
+                // arms keep their parts as found. A map whose slots carry a
+                // `List<fn(..)>` or a `Cb<fn(..)>` (`type Cb<'f> = Abstract<'f>`)
+                // therefore node-walks, while the same map over a `Map<string, fn(..)>`
+                // fuses. Keep a part that does not freeze as found, as the Map arm
+                // does. The value then crosses as the Value it is, and only a node that
+                // reads inside it (a payload read, a list pattern) refuses. probe:
+                // design/review-2026-11-16/repro/f-kernel-opaque-parts-defuse.gx
+                // (f-kernel-02)
                 Type::Abstract { id, params } => {
                     let frozen: Result<LPooled<Vec<Type>>, FreezeError> =
                         params.iter().map(|p| self.freeze(p)).collect();

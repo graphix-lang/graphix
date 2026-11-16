@@ -1,0 +1,32 @@
+// What the json writer knows of a `Cast` impl it asks by the abstract type's
+// id, over every impl of that id: an impl for another instantiation that
+// leaves `from_value` out changes the text this instantiation is written
+// as, to one its own `from_value` cannot read back.
+//
+// Command:
+//   timeout -s KILL 10 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache \
+//     design/review-2026-11-16/repro/x-traits-abstract-cast-facts-by-id.gx
+//   (graphix-fuzz check on the program without its exit line: AGREE)
+//
+// Expected, and observed with the line `impl Cast for Box<Inner> {};` removed:
+//   ("{\"Box\":\[5,6\]}", Box([Inner(5), Inner(6)]))
+//
+// Observed:
+//   ("{\"Box\":\[{\"Inner\":5},{\"Inner\":6}\]}",
+//    error:`InvalidCast("can't cast [[[\"Inner\", 5]], [[\"Inner\", 6]]] to Box<Array<Inner>>: can't cast [[\"Inner\", 5]] to i64: no primitive conversion"))
+//
+// `Env::read_as_representation` (and `written_as_representation`, `casts`)
+// answer for the id if any impl of it does; the hook that runs is found by
+// the instantiation (`coretraits::impl_for`).
+type Inner = Abstract<i64>;
+impl Cast for Inner {};
+type Box<'a> = Abstract<'a>;
+impl Cast for Box<Array<Inner>> {
+  let to_value = |b| b.0;
+  let from_value = |v| select cast<Array<Inner>>(v) { error as e => e, a => Box(a) }
+};
+impl Cast for Box<Inner> {};
+let j = json::write_str(Box([Inner(5), Inner(6)]));
+let r: Result<Box<Array<Inner>>, [`JsonErr(string), `InvalidCast(string)]> = json::read(j$);
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+(j, r)

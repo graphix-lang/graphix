@@ -1,0 +1,22 @@
+// Title: loads_leave_no_primes loads no body: both loads fail since the sig grants no `y`
+// The fixture's two modules read `super::y`, which their sig `{ val v: i64 }`
+// does not import, so both loads fail; the test asserts only `n`'s values
+// ([0, 1]), which hold whether any body loads or not.
+// Command: timeout -s KILL 30 graphix --no-cache tests-modules-primes-loads-fail.gx
+// Expected (for a test that bites): both statuses null, n = 1.
+// Observed: ((error:`DynamicLoadError("... super::y not defined"), error:`DynamicLoadError("... super::y not defined")), 1)
+// With `sig { use super::y; val v: i64 }` in both: ((null, null), 1), and `n`
+// alone still updates 0 then 1 in the node-walk, the JIT and GRAPHIX_PAR=force.
+let y = 1;
+let k = 0;
+k <- select k { x if x < 3 => x + 1, _ => never() };
+let src = never();
+src <- select k { 2 => "let v = super::y + 1", _ => never() };
+let r = (
+    mod a dynamic { sig { val v: i64 }; source src },
+    mod b dynamic { sig { val v: i64 }; source src }
+);
+let n = 0;
+n <- y ~ n + 1;
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(r, n)

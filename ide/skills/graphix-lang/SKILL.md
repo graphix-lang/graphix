@@ -75,6 +75,18 @@ event that says the work is done (`sys::exit(written ~ 0)`).
   every cycle (the accidental counter, 100% CPU). Write
   `known <- ev ~ upsert(known, x)`. The legitimate counter is
   `x <- clock ~ x + 1`.
+<!-- CR claude for claude: [doc-drift/medium] This rule says what fires inside an arm
+but not what the select itself yields. The select's result fires at every fire of its
+scrutinee (and of a consulted guard), carrying the taken arm's current value. That
+includes a constant arm entered after the first cycle and a re-match of the same arm
+(design/organic_firing.md, ruled deltas 1 and 3). Read alone, 'its constants never fire'
+suggests `select n { 3 => "entered", _ => "start" }` never shows "entered" and fires
+only once. Nothing here warns that `select enabled { true => data, _ => never() }`
+re-delivers data at every `enabled` fire. Add a bullet: the result fires per scrutinee
+fire with the arm's value, so the connect written outside (`screen <- select ev { `Esc
+=> `Menu, _ => never() }`) writes at every `Esc; wrap the scrutinee in `uniq` when only
+changes should count. probe:
+design/review-2026-11-16/repro/lang-skill-select-result-fires.gx (lang-skill-02) -->
 - **Entering a select arm is not an event, and neither is waking one.**
   Nothing fires in an arm but its pattern binds, when the scrutinee fires,
   and the captures that fire while the arm runs. Its constants never fire,
@@ -254,6 +266,16 @@ type List2<'a> = [`Cons('a, List2<'a>), `Nil]   // recursive
 'a: Number  'a: Int  'a: Float   // constraints; sets Number Int Sint Uint Float Real
 ```
 
+<!-- CR claude for eric: [doc-drift/low] This paragraph lists casts among the ways an
+abstract type crosses data through `impl Cast`, but a cast only reads INTO one
+(design/abstract_cast.md lists casts under 'In' only). `cast<i64>(w)` and
+`cast<string>(w)` over an abstract value pass the check and answer InvalidCast 'an
+abstract value has no primitive form' at every run, with `impl Cast for W {}` or without
+it. Meanwhile json::write_str(w) writes the representation. Decide between two options:
+a cast out of an abstract value with a Cast impl goes through to_value as the writers
+do, or the check refuses a cast whose source type is an abstract type the target cannot
+hold. Then say which here. probe:
+design/review-2026-11-16/repro/lang-skill-cast-out-of-abstract.gx (lang-skill-05) -->
 Abstract (nominal) types: `type Counter = Abstract<i64>` as a whole
 typedef body; `Counter(x)` constructs, `c.0` reads the payload, pattern
 `Counter(p)` destructures — only where the definition is visible (the
@@ -293,6 +315,13 @@ ok {"a" => 1}
 * *? / /? % %?     + +? - -?     < > <= >=     == !=     &&     ||     ~ ~!
 ```
 
+<!-- CR claude for claude: [doc-drift/low] The clause 'Inside fused code a guard whose
+operand does not read its arm's binds also reports where its pattern does not admit the
+value' is stale. emit_select_arms runs a guard only where the scrutinee is present and
+its arm's pattern admits the value, as activation_state.md says. A fused `1 if (10 /?
+d)? > 0` does not report at x = 2, d = 0, exactly as the node-walk does not. Drop the
+clause, and keep the native-tail-depth one only if it still holds. probe:
+design/review-2026-11-16/repro/f-select-fused-guard-report-doc.gx (f-select-07) -->
 Unchecked `+ - *` wrap; integer `/` by zero and `MIN / -1` bottom, and
 `x % -1` is 0 (only the node-walk logs those diagnostics); checked
 (`+?` …) returns `[T, Error<`ArithError(string)>]`. `$` and a
@@ -669,6 +698,14 @@ no "will never match" { catch(e) select e { `NotFound(s) => 1, _ => 2 }; error(`
 ok { catch(e) select e.0.error { `NotFound(s) => 1 }; error(`NotFound("m"))? }
 ```
 
+<!-- CR claude for claude: [doc-drift/medium] The skill never says which catch a `?`
+inside a function reaches. It is the catch around the function's CALL, along the call
+chain (design/catch.md), never the one around its definition. 'Raise to the nearest
+catch' and 'installs a handler for the rest of its block' read as lexical. A handler
+written around a lambda's definition hears nothing, and reading its binder's fields is
+then refused with 'expected tuple not _'. Add: a function's raises go to the catches
+around where it is called, and a callback's to those around the code that calls it.
+probe: design/review-2026-11-16/repro/lang-skill-catch-call-chain.gx (lang-skill-04) -->
 `catch` is not control flow: the handler is a reactive expression.
 Read its binder to drive it on errors: `catch(e) failed <- e ~ true`.
 A handler that never reads its binder acts only when the program starts,
@@ -850,6 +887,14 @@ away the element it had in hand. Build the final row there:
 - Primitive type names are legal binding and field names; control
   keywords and literal words are not (`{type: v}` written explicitly);
   `bytes` is field-only.
+<!-- CR claude for claude: [doc-drift/low] The example is wrong for `null`. `let null =
+1` parses as a literal pattern and the check refuses it with 'match error i64 can't be
+matched by null', and `|null| 1` is refused as a refutable lambda argument. The parser's
+'is a reserved word' note appears only for the reserved words that are not literals
+(`any`, `self`, `bytes`, `Array` ...), never for construct keywords (parser::KEYWORDS).
+Use `any` or `self` as the example, and say that `null`, `true` and `false` in a binding
+position read as refutable literal patterns. probe:
+design/review-2026-11-16/repro/lang-skill-reserved-word-null.sh (lang-skill-07) -->
 - Reserved words in a name position are reported by the parser ("`null`
   is a reserved word"); parse errors point at the furthest point reached.
 - `use` imports a NAME, never a module's contents: `use sys::net` gives

@@ -139,6 +139,19 @@ pub fn pad_range(min: f64, max: f64) -> (f64, f64) {
 
 /// `r` when plotters can draw over it: finite ends, `min < max`, a
 /// finite span.
+// CR claude for claude: [bug/medium] checked_range admits any finite ordered range with
+// a finite span. That is weaker than what pad_range_by guarantees: ends within
+// +-f64::MAX/4, so a span below 1e308. A program's x/y/z range and every zoomed or
+// panned view reach plotters through checked_range alone. On an axis given one label
+// (`mesh_style(#y_labels: 1)`, where `ticks` also turns 0 and negative counts into 1),
+// plotters' f64 key-point search multiplies its 1e308 scale by 10 to inf and loops
+// forever on NaN. So `#y_range: &{min: -6e307, max: 6e307}` freezes the GUI thread in
+// draw, and so do two wheel notches out from the auto range of data near +-4e307. Bound
+// checked_range by the same LIMIT, hoisted to module scope, so user ranges and views
+// beyond it are refused as a non-finite one is. Pin a one-label axis over an extreme
+// user range and over an extreme zoom-out. probe:
+// design/review-2026-11-16/repro/gui-chart-one-label-hang.rs (verbatim copies of
+// plotters 0.3.7's compute_f64_key_points and of the range functions). (gui-chart-01)
 pub fn checked_range(r: (f64, f64)) -> Option<(f64, f64)> {
     (r.0.is_finite() && r.1.is_finite() && r.0 < r.1 && (r.1 - r.0).is_finite())
         .then_some(r)

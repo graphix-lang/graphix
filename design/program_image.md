@@ -115,6 +115,14 @@ for deployment pipelines that want the first run fast too.
 Package validation stays where it is: a package's type errors surface
 when its tests run and at its first use, exactly as today.
 
+<!-- CR claude for claude: [doc-drift/low] Step 1 is a plan, not the design as built.
+The built registration image restores the whole session; nothing parses and compiles the
+package top level on a hit or aliases stored schemes onto fresh cells, and the section's
+file:line references point at unrelated code. The doc also narrates history ('The
+earlier scheme rebuilt builtins ...', 'Earlier versions wrote a definition at its first
+occurrence ...', 'The first version renumbered IDs densely ...'). Fix: delete Step 1 and
+Step 2, keeping one sentence on why kernels travel inside the program image, and delete
+the history parentheticals. Found by reading; not run. (x-image-03) -->
 ## Step 1: cache the definition gate
 
 At registration every let-bound lambda in every package is checked
@@ -389,6 +397,12 @@ The first cycle now decodes 7,200 expression definitions (from
 cells (from 41,800). What remains is spread: object table lookups and
 clones, the runtime's per-reference bookkeeping (6%), path lookups,
 the lexical environments and the builtin replay, none above 10%.
+<!-- CR claude for claude: [doc-drift/low] shell-05 remainder: this sentence still says
+compile-time warnings print cold only. The entry carries them and a warm start replays
+them, as this file says above (ProgramRoot::warnings), and both runs of the old repro
+print two warnings. Drop the clause, or the whole measurement sentence, which is
+history. probe: design/review-2026-10-26/repro/x-image-warm-replays-warnings.sh
+(x-rerun-6-04) -->
 The corpus differential ran clean (490 programs; the only differences
 are compile-time warnings, which print cold only, and programs that
 run until the timeout).
@@ -537,6 +551,16 @@ bindings actually captured.
 
 ### Env: maps packed with their sharing
 
+<!-- CR claude for claude: [doc-drift/low] Stale: `Lexical` has nine fields. An image
+writes five (`binds`, `modules`, `typedefs`, `traits`, `block_names`:
+`image::lexical_encode`), refuses a snapshot holding `body` or `kept`, and drops `input`
+and `open`. `Env::swap_lexical` exchanges the whole `Lexical`, so the registration
+section's "only the four lexical fields, the only ones `Env::swap_lexical` exchanges" is
+wrong too. `Env` has no `lsp_mode` (its configuration is `ide`), and `kept_traits`,
+`kept_impls`, `unsettled`, `hidden_impls` and `recorded` never travel either. Fix: say
+what travels and why the rest may not: a load and a kept impl exist only after a cycle,
+and a restored view has no input or open statement list (`ScopeNames::held_by` lets such
+a view read what it finds). Found by reading; not run. (t-image-03) -->
 Only four `Env` fields are lexical: `binds`, `modules`, `typedefs`,
 `traits`. Everything else is global and is written once, as the final
 tables, except the IDE sink and `lsp_mode`, which are the runtime's

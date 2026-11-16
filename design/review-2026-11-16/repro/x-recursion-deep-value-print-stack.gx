@@ -1,0 +1,24 @@
+// x-recursion: printing a deep recursive value costs about 14 KB of stack
+// per level
+//
+// A fused tail loop builds a 200,000-cell cons list in well under a second
+// and 100 MB; printing it (an interpolation here, the shell's display of an
+// expression's value likewise) peaks near 2.8 GB of resident stack
+// segments. `TVal::fmt_inner` nests three frames a cell (the named type,
+// its union, the variant), each under `ensure_sufficient`.
+//
+// command:
+//   timeout -s KILL 60 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache \
+//     design/review-2026-11-16/repro/x-recursion-deep-value-print-stack.gx
+//   (peak RSS read with python's resource.getrusage(RUSAGE_CHILDREN))
+//
+// expected: memory near the size of the value and its text (a few MB).
+// observed (debug binary): 758 MB at 50,000 cells, 1445 MB at 100,000,
+//   2806 MB at 200,000: 13.9 KB a cell, so about 430,000 cells exhaust a
+//   6 GB cap. The answer printed is right (2888899).
+type L = [`Cons(i64, L), `Nil];
+let rec build = |n: i64, acc: L| -> L select n { 0 => acc, _ => build(n - 1, `Cons(n, acc)) };
+let a = build(200000, `Nil);
+let r = str::len("[a]");
+sys::exit(r ~ 0);
+r

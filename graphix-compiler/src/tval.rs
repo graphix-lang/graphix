@@ -49,6 +49,16 @@ impl Tag {
     /// Wrap a raw tag byte; other bits are dropped. A kernel may leave
     /// MOVED on a fire, where it means nothing ([`Tag::moved`]).
     #[inline]
+    // CR claude for claude: [risk/low] Tag derives Eq over raw bits, but this keeps
+    // MOVED on a tag that is not STALE, and the kernel ORs MOVED regardless of STALE.
+    // So one state has two encodings: a fused fire can be Tag(MOVED_BIT) rather than
+    // Tag::FIRED, and a fresh bottom can be FRESH_BOTTOM|MOVED, while the node-walk's
+    // Tag::join gives the canonical tag for the same inputs. The predicates read both
+    // correctly, but any `tag == Tag::FIRED` / `== Tag::FRESH_BOTTOM` (or a match on
+    // the constants) would judge the two engines differently. Nothing compares that way
+    // today; FusedKernel::quiescent compares only STALE_BOTTOM. Fix: canonicalise here
+    // (keep MOVED only under STALE; every TagValue::tag() passes through), then drop
+    // the caveat in this doc comment. Found by reading; not run. (c-cost-misc-02)
     pub fn from_raw(bits: u8) -> Self {
         Tag(bits & (Self::STALE_BIT | Self::TAINT_BIT | Self::MOVED_BIT))
     }

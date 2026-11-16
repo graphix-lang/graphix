@@ -1,0 +1,31 @@
+// A `~` in a seq step keeps its last output across the step's rebirth: a
+// later run completes on the previous run's sample.
+//
+// Command:
+//   timeout -s KILL 120 /home/eric/tmp/review-2026-11-16/bin/graphix-fuzz run \
+//     design/review-2026-11-16/repro/c-node-mod-sample-output-survives-step-rebirth.gx
+//
+// `ev` fires once, at c = 2, and is bottom from c = 3 on. `go` starts a run
+// at c = 1 and another at c = 5. The step waits for `ev` in the first run
+// (r = 7 after c = 2). In the second run `ev` never fires, so the step has
+// nothing to complete on and the run stalls: `runs` stays 1.
+//
+// Expected (design/organic_firing.md rule 1, "a seq step's run starts the
+// same way": every value bottom; the skill's seq.md, "a step completes
+// when it produces a NEW value after its entry, never on a value standing
+// from an earlier run"): the last tuple is (9, 1).
+// Observed, node-walk and JIT alike: (8, 2), (9, 2). The second run
+// completes at once with the 7 the first run's `ev` sampled.
+//
+// The same with `~!`, with `(live(ev) ~ 7) + 1`, and in a callee a step
+// calls (`let w = |e: i64| (e ~ 7) + 1; seq go { let s = w(live(ev)); s }`);
+// `once(live(ev)) + 1` in the same places waits in every run (runs = 1).
+{
+  let c = array::iter([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  let ev = select c { 2 => 10, _ => never() };
+  let go = select c { 1 => null, 5 => null, _ => never() };
+  let r = seq go { let s = live(ev) ~ 7; s };
+  let runs = 0;
+  runs <- r ~ runs + 1;
+  (c, runs)
+}

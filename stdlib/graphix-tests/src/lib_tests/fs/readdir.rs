@@ -442,6 +442,17 @@ run_with_tempdir! {
         let root = temp_dir.path();
         fs::write(root.join("a.txt"), "a").await?;
         fs::create_dir(root.join("locked")).await?;
+        // CR claude for claude: [bug/medium] This leaves `locked` at mode 000 and
+        // nothing restores it. tempfile's `TempDir` drop cannot open `locked` to remove
+        // it, ignores the error, and the temp dir stays in /tmp: one per mode per run,
+        // 1577 on this host so far. Restore the mode in a `verify: |dir| { .. }` block
+        // (`fs::set_permissions(dir.path().join("locked"),
+        // Permissions::from_mode(0o700))`). The comment above says the unreadable
+        // directory is left out, yet the test requires `locked` in the listing. What is
+        // skipped is its contents, which this empty directory cannot show: write a file
+        // into `locked` before the chmod, assert it is absent, and fix the comment.
+        // probe: design/review-2026-11-16/repro/tests-lib-b-c-readdir-tempdir-leak.sh
+        // (tests-lib-b-c-01)
         fs::set_permissions(root.join("locked"), std::fs::Permissions::from_mode(0o000)).await?;
         root.to_path_buf()
     },

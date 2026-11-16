@@ -460,6 +460,16 @@ pub struct ForkRt<R: Rt> {
 // in the join that forked this branch. Its children read a `ForkRt`
 // through `&` (the store and reference-path deltas, the cycle); the log
 // is only reached through `&mut`.
+// CR claude for claude: [risk/low] The comment above says a child reads only the store
+// and reference-path deltas and the cycle through `&`, and that the log is reached only
+// through `&mut`. `RtView::waiting_writes` walks every parent's `log` through `&`, and
+// `RtView::each_reader` their `readers`, from whichever threads the children run on;
+// `RtOp` holds futures that are not `Sync`, so the `Sync` impl below is what lets that
+// compile, and `shared_across_branches` cannot fail for it. It is sound today because
+// the walk matches only an op's kind and id. Count a branch's queued writes per
+// variable in a map of its own, which `waiting_writes` reads (a lookup per layer, and
+// it then counts patches as the runtime does), and list here what a child does read.
+// Found by reading; not run. (c-analysis-branch-09)
 unsafe impl<R: Rt + Sync> Send for ForkRt<R> {}
 unsafe impl<R: Rt + Sync> Sync for ForkRt<R> {}
 
@@ -804,6 +814,12 @@ impl<'a, R: Rt> RtView<'a, R> {
     }
 
     /// See [`Rt::store_insert_standing`].
+    // CR claude for claude: [dead/low] No caller: every standing insert goes through
+    // `store_insert_standing_var` or `store_restand_var`. The trait default this names,
+    // `Rt::store_insert_standing`, has none either, and unlike `store_restand_var` it
+    // does not carry a moved mark over, so a caller reaching for it would drop one.
+    // Delete both. Found by reading (a grep of this workspace and netidx's admin
+    // package); not run. (c-analysis-branch-10)
     pub fn store_insert_standing(&mut self, id: BindId, tv: TagValue) {
         self.store_insert_standing_var(self.var_of(id), tv)
     }
@@ -1443,6 +1459,13 @@ impl<R: Rt> Branch<R> {
 }
 
 /// What every branch of one fork shares with the view it forked from.
+// CR claude for claude: [style/low] This file spells out `parking_lot::Mutex` and
+// `crate::node::coretraits::..` three times each, `graphix_types::stack::{ParMode,
+// PruneMode}` beside an import of that module, and `triomphe::Arc` though `Arc` is
+// imported; `analysis::check_parallel` does the same with `compact_str::CompactString`,
+// `format_compact!` and `crate::expr::Expr`, all imported at the top of that file.
+// Import each once in the grouped `use` and write the short name. Found by reading; not
+// run. (c-analysis-branch-13)
 struct Shared<'a, R: Rt> {
     image_decoder: &'a std::sync::OnceLock<crate::image::SharedDecoder>,
     libstate: &'a crate::LibState,
@@ -1495,6 +1518,15 @@ impl<'a, R: Rt> Shared<'a, R> {
 
 /// `GRAPHIX_PAR_AUDIT`: no branch read what an earlier one published in
 /// the same cycle, which serial evaluation would have shown it.
+// CR claude for claude: [test-gap/medium] The audit checks one clause of the
+// independence rule: a branch read what an earlier one published. The other clause (an
+// earlier branch read what a later one fired, `analysis::read_before`) is never
+// checked, so a plan that breaks it passes `GRAPHIX_PAR_AUDIT=1` clean: the repro runs
+// to its end under the audit and prints a trace missing a value. Check each earlier
+// branch's reads against what each later one owns too. probe:
+// design/review-2026-11-16/repro/c-analysis-branch-fork-builtin-callback-ref.gx
+// (GRAPHIX_PAR=force GRAPHIX_PAR_AUDIT=1) Also reported as (x-parallel-02).
+// (c-analysis-branch-06)
 fn audit_in_order<R: Rt>(branches: &[&Branch<R>]) {
     for (i, b) in branches.iter().enumerate() {
         let Some(reads) = b.rt.reads.as_ref() else { continue };
@@ -1561,6 +1593,14 @@ pub(crate) fn alone<R: Rt, T>(
 /// runtime's control, the caller's tokio runtime and the forking
 /// thread's compile context, its share of `live` given back when it
 /// ends, or unwinds.
+// CR claude for claude: [risk/low] A part can run nested in a kernel's frame:
+// par_loop::run forks its chunks while the worker is inside with_kernel_env and
+// with_par_loan, and EvalPool's run_until then pops that worker's own deque, where the
+// enclosing fork_each's sibling parts wait. This sets the Control, tokio and the
+// TaskContext only, so a node-walk part sees KERNEL_ENV and PAR_LOAN of a kernel it is
+// no part of: emit_helpers::kernel_running answers true there and core's arith drops a
+// sum/product/divide failure the serial run logs. Clear both here with Restore::replace
+// (the chunk closure sets them again). Found by reading; not run. (x-unsafe-02)
 pub(crate) fn as_part<T>(
     control: &Control,
     tokio: Option<&tokio::runtime::Handle>,

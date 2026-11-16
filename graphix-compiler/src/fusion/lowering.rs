@@ -39,6 +39,15 @@ pub use kernel_abi::PrimType;
 /// A lambda kernel, cached per monomorphization in
 /// `FusionCtx::kernels` and shared by every call site that reaches it.
 #[derive(Debug)]
+// CR claude for claude: [doc-drift/low] The doc above names `FusionCtx::kernels`, which
+// does not exist: the signatures are cached in the emission (`FusionCtx::kernel`,
+// `cache_kernel`), a layer per context and per compile task, and a failed region's
+// attempt forgets what it cached; `build_lambda_kernel`'s doc calls it the
+// per-`ExecCtx` cache. `tail_loop_blocker`'s doc opens with two sentences run together
+// ("What keeps the structural tail-loop predicate from holding shared by ..") and lists
+// the conditions for a loop where the function returns the reason there is none. Say
+// where the cache lives in both docs and rewrite that sentence. Found by reading; not
+// run. (f-mod-lowering-07)
 pub struct CachedKernel {
     /// The kernel; calls resolve by its identity ([`kernel_abi::kernel_key`]).
     pub kernel: Arc<KernelSig>,
@@ -570,6 +579,17 @@ pub(crate) fn const_map<R: Rt>(entries: &[Node<R>]) -> Option<Value> {
 /// Whether a value of an abstract type, or of `Any`, can pass through a
 /// kernel built from `n`, its callees included: a core-trait impl may
 /// run on it.
+// CR claude for claude: [perf/medium] This is true for any node whose type holds an
+// abstract, so FusedKernel::update runs every such kernel under with_display_hooks.
+// core's `impl<'a> Cast for Transparent<'a>` makes coretraits::hooks_live true in every
+// program, so each run clones the Env and takes the value-hook loan, and par_loop::run
+// then runs every loop in order. A kernel that only carries an abstract value (a map
+// over `(Tok, i64)` reading the i64) never forks, even under GRAPHIX_PAR=force, though
+// nothing in it can reach a core-trait impl. Ask instead whether a node dispatches
+// through a hook: an equality, ordering, hash (map key), print or cast, or a builtin
+// fast call, over a type holding an abstract or Any. Then pin that a kernel carrying an
+// abstract value forks. probe:
+// design/review-2026-11-16/repro/f-kernel-abstract-blocks-fork.sh (f-kernel-01)
 pub(crate) fn meets_abstract<R: Rt>(n: &Node<R>, env: &Env) -> bool {
     let mut meets = false;
     fusion::for_each_reachable_node(n, &mut |x| {
@@ -1027,6 +1047,14 @@ pub(crate) enum Naming {
     Source,
 }
 
+// CR claude for claude: [perf/low] This walks every body reachable from the callee, and
+// discovery fingerprints each callee it meets, so a region over a static call chain of
+// depth D walks D(D+1)/2 bodies. Callees takes 4.2 / 15.7 / 64.7 ms at D = 200 / 400 /
+// 800 in debug, the largest phase at 800. Build an instance's fingerprint from its own
+// emitted nodes plus its callees' fingerprints, held by reference from the Fingerprints
+// memo and compared by pointer first, so each body is walked once. probe:
+// design/review-2026-11-16/repro/x-perf-compile-fingerprint-chain.py
+// (x-perf-compile-05)
 pub(crate) fn body_fingerprint<R: Rt>(
     body: &Node<R>,
     ec: &CompileCtx<R>,
@@ -1398,6 +1426,19 @@ impl ReadsMemo {
 /// callees' bodies included: its own reads (a builtin callee's walked
 /// whole) joined with each lambda callee's, each instance walked once
 /// (`memo`).
+// CR claude for eric: [perf/medium] Joining every callee's reads into the caller's
+// makes each kernel take two parameter words per binding its whole call tree reads, and
+// every call pass them all on. In a chain whose levels each read one outer `let`, the
+// kernel at depth i has 2(i+1)+5 parameters, and fusion is quadratic in the depth:
+// own-root compile 34 / 100 / 405 / 2000 ms at D = 100 / 200 / 400 / 800 (Link 13 to
+// 1530 ms, Freeze calls 6.6k to 333k, 526 MB). Without the reads, D=800 takes 195 ms
+// and 135 MB. The same arities make the spill-slot frames at emit_kernel_dispatch
+// overflow MAX_FRAME. A callee could read its captures through one pointer to the
+// region's input array, indexed by a slot fixed at discovery, or through its caller's
+// state, rather than as parameters of every kernel above it. That is a kernel ABI
+// choice. probe:
+// design/review-2026-11-16/repro/x-perf-compile-transitive-capture-arity.py
+// (x-perf-compile-03)
 fn external_reads<R: Rt>(
     g: &GXLambda<R>,
     ec: &CompileCtx<R>,

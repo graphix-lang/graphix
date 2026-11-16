@@ -1,0 +1,21 @@
+// Title: an arm that takes a part out of an `Any` scrutinee and decides it a
+// Rust-backed abstract type (sys::io::Stdout) is passed any abstract value:
+// a Stdin, a reference and a function are each bound as a Stdout.
+// Command: graphix --no-cache x-typecheck-patterns-any-arm-decides-rust-abstract.gx < /dev/null
+// Expected: f answers as g, whose test is written, does:
+//   [["other", "other", "other", "a Stdout", "other"], ["other", "other", "other", "a Stdout", "other"]]
+// Observed (both engines):
+//   [["a Stdout", "a Stdout", "a Stdout", "a Stdout", "other"], ["other", "other", "other", "a Stdout", "other"]]
+use sys::io;
+let f = |x: Any| select x { (a, b) => { let q: io::Stdout = a; "a Stdout" }, _ => "other" };
+let g = |x: Any| select x { (io::Stdout, i64) as (a, b) => "a Stdout", _ => "other" };
+let s = "str";
+let v1: Any = (io::stdin(1), 1);
+let v2: Any = (&s, 1);
+let v3: Any = (|z: i64| z, 1);
+let v4: Any = (io::stdout(1), 1);
+let v5: Any = (5, 1);
+let out = [[f(v1), f(v2), f(v3), f(v4), f(v5)], [g(v1), g(v2), g(v3), g(v4), g(v5)]];
+println("[out]");
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+out

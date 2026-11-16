@@ -147,6 +147,14 @@ static LATE: Mutex<()> = Mutex::new(());
 /// that found none ran gets each key it changed as the tree holds it
 /// after, sent under [`LATE`], so the last value a watch receives for a
 /// key is the key's.
+// CR claude for claude: [risk/low] write sends whatever the closure recorded, whether
+// or not the write happened. transaction and apply_batch's failed sled batch clear by
+// hand. But apply_batch's watched path records each key before applying, and its
+// `tree.get(k)?` returns without clearing. So a read error sends changes for a batch
+// that never applied: for example, a db::drop_tree whose sled drop lands between the
+// gets, which the exclusive order lock does not hold off. Have the closure return a
+// Result and clear the changes on Err here, which also retires both manual clears.
+// Found by reading; not run. (db2-05)
 pub(crate) fn write<T>(
     trees: &[(&Watches, &sled::Tree)],
     write: impl FnOnce(&mut Changes) -> T,
@@ -204,6 +212,17 @@ pub(crate) fn transaction<T, E>(
 
 /// Send each change to its tree's watches under its key's prefix, a
 /// `late` one with the value its key holds now.
+// CR claude for eric: [bug/medium] send hands each change of a write to a watch as its
+// own message, and the watch task delivers whatever has arrived when the runtime has
+// room. So one commit or batch reaches a subscriber across several deliveries: in the
+// probe, 32 of 219 deliveries of 200 fifty-key commits held part of a commit. A
+// subscriber sees tree states that no commit made, which contradicts txn::commit's "all
+// writes become visible atomically". Every change of the write is in hand here. Sending
+// each watch its share as one message (a pooled Vec<Change>) makes a write one
+// delivery, and the "may arrive across several deliveries" text in subscription.gxi and
+// the book can go. A commit over two trees still reaches their subscriptions apart;
+// that would take one channel per database. probe:
+// design/review-2026-11-16/repro/db2-commit-torn-across-deliveries.gx (db2-03)
 fn send(trees: &[(&Watches, &sled::Tree)], changes: &mut Changes, late: bool) {
     let lists: SmallVec<[_; 4]> = trees.iter().map(|(w, _)| w.list()).collect();
     for (tree, mut change) in changes.changes.drain(..) {

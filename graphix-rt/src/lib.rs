@@ -10,6 +10,12 @@
 //! current-thread tokio runtime, in a task), and can be interacted with
 //! via a handle. All features of the standard library are supported by
 //! this runtime.
+// CR claude for claude: [doc-drift/low] The module doc above says the interpreter runs
+// on a thread of its own, on a current-thread tokio runtime, in a task. GXConfig::start
+// does neither. On a current-thread runtime the loop is a task on the caller's thread.
+// On a multi-thread runtime it has a thread of its own driven by Handle::block_on
+// (RuntimeThread). Rewrite the sentence that way and fix "interperter". Found by
+// reading; not run. (rt-10)
 use anyhow::{Context, Result, anyhow, bail};
 use arcstr::ArcStr;
 use bytes::Bytes;
@@ -32,6 +38,10 @@ use netidx_value::FromValue;
 use netidx_value::{ValArray, Value};
 use parking_lot::Mutex;
 use poolshark::global::GPooled;
+// CR claude for claude: [dead/low] No derive in this crate uses these. With this import
+// gone, Cargo.toml's serde_derive, serde, compact_str, immutable-chunkmap, rand and
+// regex (and the dev-deps proptest and env_logger) have no user in src/ or tests/.
+// Delete the import and those entries. Found by reading; not run. (rt-09)
 use serde_derive::{Deserialize, Serialize};
 use smallvec::{SmallVec, smallvec};
 use std::{fmt, future, panic::AssertUnwindSafe, path::PathBuf, sync::Arc};
@@ -72,6 +82,16 @@ impl std::error::Error for JitUnavailable {}
 /// what they receive through variables the runtime watches
 /// (`Rt::watch_var`, `Rt::spawn_var`), which store it and wake its
 /// readers.
+// CR claude for eric: [structure/medium] `GXExt` has one implementor outside a test
+// (`NoExt`), its one method is called at one site (the run loop's select), and no
+// package in graphix or netidx uses it: packages deliver through `Rt::watch_var` and
+// `Rt::spawn_var`, as the comment above says. Its type parameter is carried by 290 `X:
+// GXExt` bounds in 67 files, by `Package<X>`, `CustomDisplay<X>`, `GXHandle<X>` and
+// `CompExp<X>`, and by the `Foo as Foo<GXRt<X>>` form of `defpackage!` that the book
+// has to teach. Delete the parameter; an embedder with its own event source spawns a
+// task that sets a ref. `Rt` likewise has one implementor, `GXRt`, behind 1113 `R: Rt`
+// bounds in 69 files; that seam keeps tokio out of the compiler, so it is a separate
+// and larger decision. Found by reading; not run. (a-packages-08)
 pub trait GXExt: Default + fmt::Debug + Send + Sync + 'static {
     /// Update your custom event sources
     ///
@@ -143,6 +163,13 @@ impl<X: GXExt> Ref<X> {
     /// `GXHandle::set`
     pub fn set<T: Into<Value>>(&mut self, v: T) -> Result<()> {
         let v = v.into();
+        // CR claude for claude: [bug/low] `last` takes the value before the runtime has
+        // accepted it. GX::admits refuses and logs a value that does not fit the
+        // binding's type, so `last` keeps a value the variable never had (set "hello"
+        // on an i64: last is "hello", the runtime holds 0). TRef::set does the same to
+        // `t`. Leave both to `update`, or refuse handle-side with `self.typ.is_a`
+        // first. probe: design/review-2026-11-16/repro/rt-handle-contracts.rs
+        // (review_a_refused_ref_set_leaves_last) (rt-05)
         self.last = Some(v.clone());
         self.rt.set(self.bid, v)
     }
@@ -224,6 +251,21 @@ macro_rules! props {
             ) -> $crate::__private::anyhow::Result<bool> {
                 use $crate::__private::anyhow::Context as _;
                 let mut changed = false;
+                // CR claude for claude: [perf/medium] Every TUI widget property is
+                // converted again at each delivery, equal or not. A place reference
+                // such as `&s.items` re-delivers its unchanged value at every write of
+                // `s`, so a list over `&s.items` converts its whole Vec<LineV> each
+                // time `s.sel` moves. With 2^16 lines a 1 ms writer gets 460 ticks in 6
+                // s against 1330 over a plain binding. No TUI widget calls
+                // TRef::update_changed. The GUI's input widgets count deliveries
+                // (Echoes::delivered), so `update` itself must not change. Have props!
+                // also generate an `update_changed` (each field's TRef::update_changed)
+                // and call it from the TUI widgets, whose properties are all display
+                // levels. Apply the same skip in DatasetW::set_data, the
+                // set_data/set_rows/set_shapes reconciles and CalendarW::set_events.
+                // probe:
+                // design/review-2026-11-16/repro/tui-widgets-place-ref-reconvert.sh
+                // (tui-widgets-04)
                 $(changed |= self.$field.update(id, v).context(stringify!($field))?.is_some();)*
                 Ok(changed)
             }
@@ -516,6 +558,12 @@ enum ToGX<X: GXExt> {
 #[derive(Debug, Clone)]
 pub enum GXEvent {
     Updated(ExprId, Value),
+    // CR claude for claude: [perf/medium] Env inline makes every GXEvent 968 bytes
+    // (Value is 16, ExprId 8). Every Updated event in every batch, every move out of
+    // the subscriber's drain, and every Vec the batch pool keeps pays 40 times the
+    // payload, though only a Delete makes an Env event. Box it: `Env(Box<Env>)`, then
+    // adjust graphix-shell's process_batch arm. probe:
+    // design/review-2026-11-16/repro/rt-handle-contracts.rs (review_event_size) (rt-03)
     Env(Env),
     /// The runtime went idle after a [`GXHandle::notify_idle`]: every
     /// update of the cycles before it came before it.
@@ -774,6 +822,16 @@ impl<X: GXExt> GXHandle<X> {
     /// else `what`.
     pub fn stopped(&self, what: &'static str) -> anyhow::Error {
         match self.0.control.stopped_by() {
+            // CR claude for claude: [readability/low] Both budget causes share one
+            // message that says a runaway recursion did it and names both variables,
+            // though `stopped_by` knows which budget tripped and the activation budget
+            // counts collection slots and queued effects too. A 60,000-element
+            // `array::map` with no recursion, under an activation budget of 50,000, is
+            // reported as a runaway recursion. Give each cause its own message, the
+            // activation one saying it counts calls and collection slots and naming its
+            // variable alone, and word the log line in `Control::holds` the same way.
+            // probe: design/review-2026-11-16/repro/x-recursion-budget-message.gx
+            // (x-recursion-07)
             Some(StopCause::Stack | StopCause::Activations) => anyhow!(
                 "a runaway recursion exceeded the runtime's budget \
                  (GRAPHIX_STACK_BUDGET or GRAPHIX_ACTIVATION_BUDGET) and it stopped"

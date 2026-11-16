@@ -92,6 +92,12 @@ fn a_runtime_stopped_in_its_exit_cycle_says_why() {
 /// are known for one and refused: the wrapper is registered before the
 /// first value is read, and only an image decodes one.
 #[test]
+// CR claude for claude: [readability/low] The doc above starts mid-sentence ("are known
+// for one and refused: .."), its subject lost. The name says the value reads, while the
+// test asserts that the cold run refuses it (`PackErr("InvalidFormat")`): bytes holding
+// an abstract value decode only under an image session. Rename it
+// (`an_abstract_value_in_bytes_is_refused_cold`) and restore the doc's first line.
+// Found by reading; not run. (tests-shell-compiler-b-11)
 fn an_abstract_value_reads_before_any_is_minted() {
     let program = "type Box = Abstract<i64>;\n\
         impl Cast for Box {};\n\

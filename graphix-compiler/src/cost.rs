@@ -120,6 +120,11 @@ pub fn fix_calibration(t: u64) {
 }
 
 /// The workers of the pool the calibration measures, at most.
+// CR claude for claude: [doc-drift/low] design/parallel_eval.md §5 (As built) says the
+// threshold is measured against a pool with 'as many workers as a runtime's'. calibrate
+// builds at most this many (two), fewer when eval_threads() is lower. The doc is stale:
+// say the calibration pool has at most CALIBRATION_WORKERS workers. Found by reading;
+// not run. (c-cost-misc-04)
 const CALIBRATION_WORKERS: usize = 2;
 
 /// The latency, in ticks, from handing an idle evaluation pool a job to
@@ -408,6 +413,22 @@ impl ForkSite {
 
     /// What this update does with the site's `n` children.
     #[inline]
+    // CR claude for claude: [perf/medium] Under Auto a pool of one worker still forks.
+    // On a one-CPU host (an affinity mask, a container, or GRAPHIX_EVAL_THREADS=1),
+    // eval_threads() is 1, and saturated() is false at the top level because no part is
+    // live yet. So this site, SlotSite's sites and kernel LoopSites all fork.
+    // branch::on_pool hands the fork to the single worker through EvalPool::install and
+    // parks, and the parts run one after another, each paying the install hop, branch
+    // views and the merge. ForkSite and LoopSite never judge their own forks
+    // (SlotSite::forked does), so they never back off. Result: the default mode is
+    // 25-35% slower than GRAPHIX_PAR=off on one CPU (fused loops: 0.28 s vs 0.37 s with
+    // 4002 forked kernel loops; node-walk block: 1.37 s vs 1.70 s). Fix: under Auto,
+    // plan in order when ctx.control.eval_workers() < 2 (which covers eval_unavailable
+    // too) in ForkSite::plan, SlotSite::plan and ProbePlan::of (give it the worker
+    // count; par_loop::run has loan.control), and leave Force as is. One shared gate
+    // for the three keeps them from drifting. Pin it with a one-worker Auto run that
+    // forks nothing. probe:
+    // design/review-2026-11-16/repro/c-cost-misc-one-worker-forks.sh (c-cost-misc-01)
     pub fn plan<R: Rt>(&mut self, ctx: &ExecCtx<'_, R>, n: usize) -> Plan<'_> {
         match ctx.fork_mode() {
             ParMode::Off => Plan::Serial,
@@ -1024,6 +1045,12 @@ impl LoopSite {
     /// the run's fixed cost, so while the estimate is unknown or under
     /// `T / PROBE_BATCH` a probe times at least [`PROBE_BATCH`] slots; a
     /// settled loop of dearer slots probes the one it asks for.
+    // CR claude for claude: [dead/low] This never answers Some(0). ProbePlan::of plans
+    // a probe only for two or more slots, ProbeSite::probes then gives at least one,
+    // and the later arms keep k >= 1. So the `0 => 0` arm, par_loop::run's `if k > 0`,
+    // and the Option in LoopSite::grain's `probed` (always Some, in the unit tests too)
+    // are dead. Drop the arm, make grain take `probed: (u64, usize)`, and run the probe
+    // unconditionally in par_loop::run. Found by reading; not run. (c-cost-misc-03)
     pub(crate) fn probes(&self, cal: &Calibration, n: usize) -> Option<usize> {
         self.probe.try_lock().map(|p| match p.probes(n) {
             0 => 0,

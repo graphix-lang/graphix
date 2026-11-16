@@ -240,6 +240,14 @@ async fn seqq_credit(mode: Mode) -> Result<()> {
 }
 
 #[tokio::test(flavor = "current_thread")]
+// CR claude for claude: [test-gap/low] The `with(e: Error<`Wrong>)` case below is the
+// only pin of a typed with binder. Error<`Oops> (the right tag, no ErrChain) is refused
+// too, so this case passes whether or not the binder is typed Error<ErrChain<..>>.
+// Nothing pins that a covering annotation checks and runs, so a change that refused
+// every annotated with would pass the gate. Add a run of `with(e:
+// Error<ErrChain<`Oops>>)` reading (e.0).error (it checks and gives 7 today) and a
+// refusal of `with(e: Error<`Oops>)` whose message names ErrChain. probe:
+// design/review-2026-11-16/repro/tests-seq-typed-with-unpinned.sh (tests-seq-05)
 async fn refusals() -> Result<()> {
     for (src, needle) in [
         (

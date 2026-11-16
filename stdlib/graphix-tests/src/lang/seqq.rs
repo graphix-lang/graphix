@@ -54,6 +54,18 @@ async fn delayed_capture(mode: Mode) -> Result<()> {
     Ok(())
 }
 
+// CR claude for eric: [risk/medium] A seqq capture keeps serving its last value after
+// it goes bottom. desugar_queued wraps each capture in core::hold, which keeps the last
+// value when the source goes bottom, so a request queued while x is bottom is served
+// the x that stood before it. The same body under seq waits for x to return
+// (seq_step_waits_for_an_absent_value_in_each_run), and this test pins the ride:
+// request 3 reads 20 while x is bottom. The book states the ride. CLAUDE.md (seqq reads
+// the world at enqueue), the skill and seq_blocks.md §8 do not, and §8 gives the hold a
+// different reason (the first request) that the seed's activation sample already
+// serves. Select no longer has a stored ride of this kind. Decide: drop the hold, so a
+// request waits for an absent capture as a seq step does, or keep it and say so in the
+// skill, CLAUDE.md and §8. probe:
+// design/review-2026-11-16/repro/tests-seq-seqq-capture-rides-bottom.sh (tests-seq-01)
 async fn stale_capture(mode: Mode) -> Result<()> {
     let code = format!(
         r#"{{
@@ -105,6 +117,12 @@ async fn live_until(mode: Mode) -> Result<()> {
 
 // An `until` reads everything live but the trigger's name, which is the
 // request this run serves, as it is under `seq`.
+// CR claude for claude: [doc-drift/low] The comment above says an `until` reads
+// everything live but the trigger's name. An until condition reads its variables
+// through the step's entry snapshot (seq_blocks.md §5, a_fixed_until_warns); only what
+// is under live(..) is read live, as live(step) is here. Say that the until waits on
+// live(step) while `request` is this run's request. Found by reading; not run.
+// (tests-seq-07)
 async fn until_waits_on_its_own_request(mode: Mode) -> Result<()> {
     for kw in ["seq", "seqq"] {
         let code = format!(
@@ -373,6 +391,13 @@ pub(super) const DELAYED_CAPTURE_REQUESTS: &str = r#"{
         seqq let value = request { (value, capture) }
     }"#;
 
+// CR claude for claude: [test-gap/low] capture never changes after it arrives, so this
+// test passes whether requests that waited for it keep its first complete snapshot
+// (seq_blocks.md §8) or read it when each is dequeued. Change capture again while
+// requests 2 and 3 are still queued behind a slow run 1, and add a request after the
+// change. Today that gives (1, 22) (2, 22) (3, 22) (10, 33); pin that. probe:
+// design/review-2026-11-16/repro/tests-seq-seqq-shared-snapshot-unpinned.sh
+// (tests-seq-06)
 async fn delayed_capture_keeps_each_request(mode: Mode) -> Result<()> {
     use poolshark::local::LPooled;
     let (values, _) = run_delta(DELAYED_CAPTURE_REQUESTS, mode).await?;

@@ -1,0 +1,25 @@
+// lang::orphans::a_saved_closure_writing_through_a_captured_reference_outlives_its_slot
+// never observes its write: the closure returns `x + k`, so the value is 14
+// whether or not `*p <- x` lands. This variant returns `*p + k`, which reads
+// the write a cycle after it.
+//
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache \
+//   design/review-2026-11-16/repro/tests-lang-rest-c-orphan-write-unobserved.gx
+// Expected and observed (fused and --no-fusion alike): 20, 14, 15, 16, 17, 18
+// (20 = the slot's v, 10, plus k; then each call reads the previous write).
+// A write that went nowhere after the slot's deletion would print 20 throughout.
+let result = {
+    let n = 0;
+    n <- select n { k if k < 8 => k + 1, _ => never() };
+    let src = select n { k if k < 2 => [10], _ => [] };
+    let gs = array::map(src, |k| {
+        let v = k;
+        let p = &mut v;
+        |x: i64| -> i64 { *p <- x; *p + k }
+    });
+    let saved: fn(x: i64) -> i64 = never();
+    saved <- gs[0]$;
+    select n { k if k >= 4 => saved(k), _ => never() }
+};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+result

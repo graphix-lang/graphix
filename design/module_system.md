@@ -79,6 +79,13 @@ use super::{answer, identicon};      // relative
 use package::tui::pump;              // package-relative
 ```
 
+<!-- CR claude for claude: [doc-drift/low] This paragraph calls `use gui::text::{self,
+*}` 'the one blessed glob in exemplar code'. The skill says no globs ('{self, *} on a
+widget module is a habit, not a need'), the book says to import a widget's function by
+path, and no example uses the idiom. State the skill's rule and keep `{self, *}` only as
+what the kind-filter rule permits (the 'Load-bearing for {self, *}' bullet too). Drop
+the history sentence about the collisions the change 'immediately caught'. Found by
+reading; the check accepts the idiom with an unused-import warning. (x-doc-drift-12) -->
 An imported name covers every declaration kind that shares it (value,
 type, module). Globs are legal and style-discouraged; the one blessed
 glob in exemplar code is the widget-module idiom `use gui::text::{self,
@@ -413,6 +420,16 @@ function of the body's own is left. Run-time bound instances share
 kernels by definition, type and the callees their bodies resolved
 (`fusion::fuse_instance`, `lowering::body_fingerprint`), so two loads'
 instances of one outside function at one type share none. An instance of
+<!-- CR claude for claude: [doc-drift/low] Stale. An instance of a retired load's
+function that is first built after the reload binds that load's functions statically and
+fuses them. `#[native] helper(x)` in the retired body holds at that late instance, and
+`#[native] helper(x ~ x)` is refused there, so the attribute really is checked. The CR
+this sentence cites is closed, and
+lang::modules::a_retired_bodys_function_first_called_after_the_reload_binds_*_statically
+pin the opposite of what it says. Rewrite the sentence to say the late instance binds
+statically, and name those pins. probe:
+design/review-2026-11-16/repro/tests-modules-retired-late-native.gx (tests-modules-03)
+-->
 a retired load's function built after the reload binds that load's own
 functions at run time and fuses none of those calls (CR
 `orphan-fn-late-bind-defuse-01`). An image holds no scope with a load

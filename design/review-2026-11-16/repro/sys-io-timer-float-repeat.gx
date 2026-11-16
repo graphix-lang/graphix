@@ -1,0 +1,15 @@
+// sys-io: a negative or NaN float `repeat` silently stops a timer instead of a TimerError
+// Command: timeout -s KILL 30 graphix --no-cache sys-io-timer-float-repeat.gx
+// Expected (time.gxi: "An invalid timeout or repeat produces TimerError"):
+//   a TimerError line for "a" (-1), "b" (-1.0) and "d" (NaN).
+// Observed: only ("a", error..) and two ("c", "fired"): `fires` tests the
+//   sign of the integer variants alone, and a float -1.0 or NaN casts to
+//   u64 0, a run of no fires, so b and d produce nothing at all.
+let a = sys::time::timer(duration:50.ms, -1);
+let b = sys::time::timer(duration:50.ms, -1.0);
+let c = sys::time::timer(duration:50.ms, 2.7);
+let d = sys::time::timer(duration:50.ms, 0.0 / 0.0);
+let show = |t: Result<datetime, `TimerError(string)>| select t { error as e => "[e]", _ => "fired" };
+let out = any(("a", show(a)), ("b", show(b)), ("c", show(c)), ("d", show(d)));
+sys::exit(sys::time::after_idle(duration:600.ms, out) ~ 0);
+out

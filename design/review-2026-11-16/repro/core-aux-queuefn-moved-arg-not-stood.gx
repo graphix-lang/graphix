@@ -1,0 +1,25 @@
+// queuefn: a value a wake recomputes (Tag::MOVED) never reaches the wrapped
+// function's binding, so after the wake f keeps computing over the old value.
+//
+// Command:
+//   timeout -s KILL 30 graphix --no-cache core-aux-queuefn-moved-arg-not-stood.gx
+// Expected: the two logs equal; the direct call's log is
+//   [(0, 1), (1, 1), (5, 2), (6, 2), (7, 2), (8, 2)]
+// Observed: the wrapper's log is [(0, 1), (1, 1), (5, 1), (6, 1), (7, 1), (8, 1)]:
+//   k moved to 2 while the arm slept; the direct call's formal is stood with
+//   the moved value (callsite::publish_production, QuietAtRoot::Stand), the
+//   wrapper site only ever writes fired arguments.
+let c = 0;
+c <- select c { n if n < 8 => n + 1, _ => never() };
+let f = |x: i64, y: i64| -> (i64, i64) (x, y);
+let q = queuefn(#trigger: c, f);
+let k = 1;
+k <- select c { 3 => 2, _ => never() };
+let mode = uniq(select c { n if n < 2 => `On, n if n < 5 => `Off, _ => `On });
+let rd = select mode { `On => f(c, k), `Off => never() };
+let rq = select mode { `On => q(c, k), `Off => never() };
+let ld: Array<(i64, i64)> = [];
+ld <- rd ~ array::push(ld, rd);
+let lq: Array<(i64, i64)> = [];
+lq <- rq ~ array::push(lq, rq);
+select c { 8 => (ld, lq), _ => never() }

@@ -162,6 +162,14 @@ pub(super) fn gen_union_flow(
     inner.push(q.clone(), u.clone());
     let read = super::patterns::union_select(&inner, rng, &q, members, &I64, 2);
     stmts.push(format!("let {g} = |{q}: {t}| -> i64 {read}"));
+    // CR claude for claude: [style/low] This closure is a local copy of a constructor
+    // generate/ lacks. `GenType::Fn { labels: Vec::new(), params, ret: Box::new(ret) }`
+    // is written out 19 times (4 here, 15 in modules.rs), and
+    // gen_shadowed_lambda_template builds the same `fn(T) -> T` value three times. Add
+    // `GenType::func(params, ret)` in types.rs, use it everywhere, and build the
+    // template's type once. The lambda-rebind `matches!` in gen_typed_lambda and
+    // gen_poly_lambda is also duplicated; a `GenCtx::names_function` method serves
+    // both. Found by reading; not run. (fuzz-gen-a-05)
     let fn_ty = |params: Vec<GenType>, ret: GenType| GenType::Fn {
         labels: Vec::new(),
         params,

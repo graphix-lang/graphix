@@ -190,6 +190,18 @@ impl TVar {
             return Ok(Ok(Witness::Lower(w)));
         }
         let mut candidates = false;
+        // CR claude for eric: [bug/medium] The witness search tries each conjunct and
+        // never their meet, so two bounds that overlap with neither holding the other
+        // report "unsatisfiable constraints" though a type satisfies both. `let p = |s:
+        // string| { let v = str::parse(s)$; f(v); g(v); v }; p("1")` over `f: 'a:
+        // Number` and `g: 'b: [i64, string]` is refused ("unsatisfiable constraints on
+        // '_N: Concrete & NoError & Number & [i64, string]") where `i64` fits; with
+        // `g`'s bound `[Number, string]` it is accepted and reads a `Number`. Either
+        // such a cell settles to the meet of its type conjuncts, or the refusal says
+        // the bounds overlap and names the annotation: which is the rule is yours.
+        // probe:
+        // design/review-2026-11-16/repro/t-settle-overlapping-bounds-unsatisfiable.gx
+        // (t-settle-06)
         'cand: for c in cons.iter() {
             // A trait conjunct is a predicate, not a binding, and a
             // conjunct reaching this cell has no finite witness.
@@ -287,6 +299,29 @@ impl TVar {
                 write!(cs, "{c}")?;
             }
             let name = super::tvar::ShortName(&self.name);
+            // CR claude for claude: [bug/low] Where a generated cell's lower bound
+            // fails a marker bound, this is the whole refusal: `Box(&x) < Box(&x)` over
+            // `type Box<'a> = Abstract<'a>` says "unsatisfiable constraints on '_8192:
+            // Ordered", a variable the program never wrote and no cause, where the same
+            // order over a tuple names the reference. Name the lower bound the conjunct
+            // refuses and why, as a bound cell's refusal does (`Type::not_discernible`
+            // for `Ordered` and `Discernible`, `unmet_bound_note`'s wording for a typed
+            // bound). The conjuncts are joined here and in `unmet_bound_note` without
+            // the `written_identical` filter `TVar`'s Display applies, so a doubled
+            // bound still prints twice in both (that part by reading). probe:
+            // design/review-2026-11-16/repro/t-cast-ordered-abstract-param-message.gx
+            // (t-cast-09)
+            // CR claude for claude: [bug/medium] This prints the cell's conjuncts
+            // alone. Where the cell fails because its conjuncts refuse its lower bounds
+            // together, the text names a conjunction that is satisfiable and a
+            // generated variable, and omits what conflicts: `type B<'p> = Abstract<'p>;
+            // let b = B(1); let r = b.0 + b.0; b <- B(1.5)` answers "unsatisfiable
+            // constraints on '_8191: Number & Singleton" at `B(1)`, with no word of the
+            // i64 and the f64 built into the payload, the operator or the write. When
+            // `cell_lower()` is not empty, print the bounds the conjuncts refuse and
+            // the binding to declare, as a refused write does. probe:
+            // design/review-2026-11-16/repro/t-tvar-b-unsatisfiable-names-no-lower-bound.gx
+            // (t-tvar-b-03)
             bail!("unsatisfiable constraints on '{name}: {}", &*cs)
         })
     }
@@ -389,6 +424,21 @@ impl TVar {
         if graphix_dbg_bind() {
             eprintln!("SETTLE-BUILT '{}({:x})", self.name, self.cell_addr());
         }
+        // CR claude for claude: [bug/high] An input's end binds a `Concrete` or
+        // `Function` cell to bottom here, where a call's terminal settle
+        // (`settle_bottom`) refuses it. A function a REPL input leaves at one type
+        // (`let fs = [|| str::parse("42"), || str::parse("43")]`) is then callable by a
+        // later input at result type `_`: `let e: Error<`ParseError(string)> =
+        // fs[0]$()` is accepted and holds 42, `e.0` is null, and a select over the call
+        // reports a coverage hole in the check, while the same statements as one script
+        // are refused ("the type 'b must be fully known here"). Refuse the cell as
+        // `settle_bottom` does (this tail repeats that function's but for its two
+        // predicate tests), so the input is refused naming the binding; census both
+        // repos, pin it in `lang::repl_inputs`, and fix "nothing of it having been
+        // built" in design/tvar_constraints.md, which a function's result cell
+        // contradicts. probe:
+        // design/review-2026-11-16/repro/t-settle-input-end-settles-concrete-to-bottom.sh
+        // (t-settle-01)
         self.bind(Type::Bottom);
         Ok(())
     }
@@ -865,6 +915,20 @@ impl FnType {
                 out.push(tv.clone())
             }
         }
+        // CR claude for claude: [bug/high] This returns before passing any lower bound
+        // when the site's callee DECLARES no quantifier, but a function whose bounds
+        // were inferred (`let f = |a, b| f0(a, b)` over a declared `f0`) holds its
+        // bounded cells under no declared name. A definition that calls it closes with
+        // its signature's cell above nothing, so the check accepts what the build
+        // refuses: `let g = |u| f(w0, u); g("s")` passes `--check` and the build says
+        // "an instance at fn(u: string) -> string of a definition typed fn(u: [null,
+        // string]) -> [null, string]", and `g(1)` is accepted by the check where `f0`
+        // called directly is refused. Test the reached cells instead (return when none
+        // is open with a conjunct), and pin the
+        // `lower_bound_reaches_the_bounds_own_cells_*` programs through an inferred
+        // wrapper. probe:
+        // design/review-2026-11-16/repro/t-settle-lower-into-kept-inferred-callee.gx
+        // (graphix-fuzz check prints DIVERGENCE) (t-settle-02)
         if self.quantifiers.is_empty() {
             return Ok(());
         }
@@ -939,6 +1003,17 @@ pub fn settle_input(
             && !tv.earlier_task()
             && !quantifiers.contains_key(&tv.cell_addr())
     };
+    // CR claude for claude: [bug/medium] A cell this loop binds to a conjunct's witness
+    // takes fresh copies of the conjunct's generic cells (`Witness::shared`), and the
+    // copies are in no list this function walks: they stay open and are never marked
+    // `Settled`. After `let f = 'a0: Array<'a1> |x0: 'a0| x0` and `let fs = [|w| f(w),
+    // |w| f(w)]` the REPL prints `fs` as `Array<fn(w: Array<'a1: unbound>) ->
+    // Array<'a1: unbound>>`, where `[|w: Array<'e>| w, |w| w]` prints `'e: _`, and a
+    // later use is refused as deciding an earlier input's type, not as a settled
+    // binding's. Make the loop a worklist: run `reach_new` over each cell it binds, so
+    // every cell the settle introduces is settled and marked. probe:
+    // design/review-2026-11-16/repro/t-settle-input-end-leaves-witness-copy-open.sh
+    // (t-settle-03)
     for (i, tv) in reached.iter().filter(|(_, tv)| top(tv)) {
         if !tv.is_bound() && !tv.is_rigid() {
             tv.settle_built(env).map_err(|e| (*i, e))?
@@ -949,6 +1024,13 @@ pub fn settle_input(
 }
 
 /// [`reached`], each cell met for the first time pushed with `owner`.
+// CR claude for claude: [structure/low] `reach_new`, `reached` and `settle_refs` are
+// one recursion written three times (a cell's binding, conjuncts and lower bounds; a
+// shared node once; a function type by `for_each_type`), apart only in what they do at
+// a cell's first visit, and `Reaching::of` is its worklist form. `walk_positions`
+// already takes that difference as a `first` closure. Write one walk taking `first` and
+// express the three through it, so a change to what a cell reaches is made once. Found
+// by reading; not run. (t-settle-08)
 fn reach_new(
     t: &Type,
     owner: usize,
@@ -1014,6 +1096,13 @@ impl Type {
 /// that hold two distinct such variables: which of them a value takes, no
 /// type says ([`Type::variable_union`]).
 #[derive(Debug)]
+// CR claude for claude: [structure/low] From `variable_outside_functions` to
+// `Unrolling` this file holds walks no settle calls and that call no settle:
+// `VariableUnion`, `OutsideFunctions`, `Held`, `DataPositions` and `Unrolling` serve
+// signature checks and a call's widening in callsite.rs, lambda.rs, traits.rs and
+// module.rs, and the module's header names only the settle phase. Move them to a module
+// of their own (typ/positions.rs), so settle.rs is the settle and each is found by its
+// file's name. Found by reading; not run. (t-settle-09)
 pub struct VariableUnion {
     pub union: Type,
     pub vars: SmallVec<[ArcStr; 4]>,

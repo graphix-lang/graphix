@@ -1,0 +1,35 @@
+// A default hidden under 16 or more typedef expansions is not judged by the
+// check: check_hidden_defaults stops at MAX_EXPANSIONS and accepts.
+//
+// run: timeout -s KILL 20 graphix --no-cache --check c-callsite-hidden-default-past-16-typedefs.gx
+//      timeout -s KILL 20 graphix --no-cache c-callsite-hidden-default-past-16-typedefs.gx
+//
+// `g`'s default is an i64 and the declared field calls it at string, which
+// hides #d. With `type T15` as the annotation (15 expansions) the check
+// refuses, "type mismatch 'a: string does not contain i64".
+//
+// expected: --check refuses, as it does one typedef shallower
+// observed: --check exits 0; the run logs
+//           `h("s"): binding the callee failed: ... type mismatch 'a: string
+//           does not contain i64` and the call is bottom for good
+let g = |#d: 'a = 1, x: 'a| -> 'a d;
+type T0 = {f: fn(x: string) -> string};
+type T1 = {t: T0};
+type T2 = {t: T1};
+type T3 = {t: T2};
+type T4 = {t: T3};
+type T5 = {t: T4};
+type T6 = {t: T5};
+type T7 = {t: T6};
+type T8 = {t: T7};
+type T9 = {t: T8};
+type T10 = {t: T9};
+type T11 = {t: T10};
+type T12 = {t: T11};
+type T13 = {t: T12};
+type T14 = {t: T13};
+type T15 = {t: T14};
+type T16 = {t: T15};
+let v: T16 = {t: {t: {t: {t: {t: {t: {t: {t: {t: {t: {t: {t: {t: {t: {t: {t: {f: g}}}}}}}}}}}}}}}}};
+let h = v.t.t.t.t.t.t.t.t.t.t.t.t.t.t.t.t.f;
+h("s")

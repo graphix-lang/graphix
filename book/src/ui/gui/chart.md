@@ -219,6 +219,13 @@ Used with the chart `#projection` parameter for 3D charts:
 - **margin** — Margin in pixels around the plot area. Defaults to 10.
 - **title_size** — Font size for the chart title. Defaults to 16. Must be finite, positive and at most 4096 pixels.
 - **title_color** — Color of the chart title text. Defaults to black when null.
+<!-- CR claude for claude: [doc-drift/low] A series takes the palette color at its own
+index in the datasets array: series_color is called with the dataset's index (draw_xy,
+draw_bar_chart via bar_series, draw_3d_chart), so a series with #color still uses up its
+slot. With palette [a, b] and datasets [line(#color: red), line(), line()], the second
+line is b and the third a, not a then b as this sentence suggests. An empty palette
+array also counts as null (palette_color filters it out). Say both. Found by reading;
+not run. (book-ui-a-04) -->
 - **palette** — Colors assigned, in order, to series that set no `#color` of their own, and to pie slices without `#colors`. Cycles when there are more series than colors. When null, a built-in eight-color palette is used.
 - **legend_position** — Position of the series legend. Defaults to `` `UpperLeft `` when null.
 - **legend** — Legend appearance via a `LegendStyle` struct. When null, defaults to white background with black border.

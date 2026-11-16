@@ -1,0 +1,19 @@
+// Title: a seq that raises with no catch above it is warned and logged as a `?`
+// at the `seq` keyword, and the real raise site is buried in the logged chain.
+// Command: timeout -s KILL 30 graphix --no-cache c-error-op-seq-rethrow-diagnostic.gx
+// Expected: the warning and the log name the `v?` on line 16 (or say the seq
+//   lets an error escape), and the log shows the payload as a handler-less `?`
+//   does: "unhandled error ... at line: 16, column: 3 `A(1)".
+// Observed:
+//   WARNING at line: 14, column: 9 ...: error raised by ? will not be caught
+//   unhandled error in file ... at line: 14, column: 9 {cause: null, error: `A(1),
+//     ori: {...}, pos: {column: i32:3, line: i32:16}}
+// (line 14 column 9 is the `seq` keyword; there is no `?` there)
+let t = sys::time::timer(duration:10.ms, true);
+let c = count(t);
+let r = seq c {
+  let v: Result<i64, `A(i64)> = error(`A(c));
+  v?
+};
+sys::exit(select c > 2 { true => c ~ 0, false => never() });
+r

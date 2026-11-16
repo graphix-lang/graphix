@@ -1,0 +1,41 @@
+// a-language: a handler that never reads its parameter runs with no call, and the check says nothing of it
+// command:  graphix --no-cache a-language-handler-ignores-event.gx
+// The simulated user types into three fields and never presses Save.
+// expected (what the author means): status stays "", no file is written, or a warning that `save` never reads `c`
+// observed: "status: fix the errors first" in the first cycle, then "status: saved" and form.json written when
+//           the form becomes valid, with no press at all; the only warning is the constant write on the false arm
+let tick = count(sys::time::timer(duration:30.ms, 8)$);
+let name = "";
+let email = "";
+let age = "";
+let save_press: null = never();
+select tick {
+  2 => name <- tick ~ "Ada",
+  3 => email <- tick ~ "ada@example.com",
+  4 => age <- tick ~ "abc",
+  6 => age <- tick ~ "36",
+  _ => never()
+};
+let name_err = select str::len(str::trim(name)) { 0 => "name is required", _ => null };
+let email_err = select str::contains(#part: "@", email) { true => null, false => "email needs an @" };
+let age_n = str::parse(age);
+let age_err = select age_n {
+  error as _ => "age must be a number",
+  n if n < 0 || n > 150 => "age out of range",
+  _ => null
+};
+let valid = opt::is_none(name_err) && opt::is_none(email_err) && opt::is_none(age_err);
+let status = "";
+let save = |c| select valid {
+  false => status <- "fix the errors first",
+  true => {
+    let r = sys::fs::write_all(
+      #path: "/home/eric/tmp/review-2026-11-16/work/a-language/form.json",
+      json::write_str({name, email, age: age_n})?
+    );
+    status <- select r { error as e => "save failed: [e]", _ => "saved" }
+  }
+};
+save(save_press);
+println("status: [status]  errors: [name_err] [email_err] [age_err]");
+sys::exit(select tick { 8 => 0, _ => never() })

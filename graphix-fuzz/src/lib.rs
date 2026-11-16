@@ -32,6 +32,12 @@ use graphix_compiler::{
 use graphix_package::Package;
 use graphix_package_core::testing::{TestCtx, TestState, config};
 use graphix_rt::{CompRes, GXConfigBuilder, GXEvent, NoExt, RegistrationImage};
+// CR claude for claude: [structure/low] The fuzzer depends on the networking `netidx`
+// crate only for these re-exports (here, schedule.rs, trace.rs); mutate.rs already uses
+// `netidx_value::Value`. Import `netidx_value::{Value, ValArray}` and drop `netidx`
+// from graphix-fuzz's Cargo.toml. CLAUDE.md and design/netidx_extraction.md say
+// networking crates appear only in stdlib packages: true then, except the shell's CLI,
+// which they should name. Found by reading; not run. (x-doc-drift-09)
 use netidx::{protocol::valarray::ValArray, publisher::Value};
 use netidx_core::path::Path;
 use parking_lot::Mutex;
@@ -558,6 +564,19 @@ async fn start_session(
     };
     match tokio::time::timeout(timeout, init).await {
         Ok(Ok(ctx)) => Ok(Started { ctx, rx, sink, exit }),
+        // CR claude for claude: [bug/medium] A runtime that could not start becomes a
+        // RuntimeErr outcome, and `Outcome::agrees_with` holds any two RuntimeErrs
+        // equal. So a check whose runtimes all failed to start answers "AGREE (reject)"
+        // without running anything, and one start failure beside a trace is filed as an
+        // engine, parallel or nondeterminism bug. Under a 128 MB cap with a check
+        // child's environment, every run of a twin program that is a DIVERGENCE
+        // uncapped reads RuntimeErr(runtime init failed: starting the runtime's
+        // thread), and the check prints AGREE (reject). Treat a start failure caused by
+        // the OS refusing a thread or memory as a harness failure the child reports
+        // instead of a verdict, and count it in BreakageWindow. Keep a warm run's
+        // image-restore failure as an outcome. probe:
+        // design/review-2026-11-16/repro/fuzz-lib-b-runtime-start-agrees.sh
+        // (fuzz-lib-b-02)
         Ok(Err(e)) => Err(Outcome::RuntimeErr(format!("runtime init failed: {e:?}"))),
         Err(_) => Err(Outcome::Timeout(Containment::Compile)),
     }
@@ -615,6 +634,12 @@ async fn program_result(ctx: &TestCtx) -> anyhow::Result<CompRes<NoExt>> {
 /// delta for the program itself (stats accumulate per `ExecState`, so the
 /// post-init baseline is subtracted); `None` when the runtime did not
 /// answer.
+// CR claude for claude: [doc-drift/low] The doc says these are the compile-time stats
+// with the post-init baseline subtracted. Nothing is subtracted: `run_subject` reads
+// `ctx.fusion_stats()` after the drive, and that also counts the run-time binds its
+// cycles fused. `SubjectRun::stats` gives the real reason the counts are the program's
+// own: the registration compiles unfused or is restored. Say that, and that the counts
+// include run-time binds. Found by reading; not run. (fuzz-lib-a-07)
 pub async fn run_program_with_stats(
     code: &str,
     mode: Mode,
@@ -664,8 +689,38 @@ async fn drive(
 }
 
 /// The longest a settle round waits for the replies in flight.
+// CR claude for claude: [bug/medium] `wait_settled!` waits up to this fixed 10 s for a
+// FinalValues epoch's replies. The wait runs inside the drive deadline, which is the
+// run's budget: 3 s per run in a campaign, 10 s in check and run. So a program that
+// keeps one call in flight forever (an accept nobody connects to, or a mutant of a tcp
+// or http fixture) reaches the deadline in every mode. The two `Timeout(Deadline)`
+// outcomes agree, and check reports AGREE (contained) without comparing a value. The
+// same program with an Excluded marker added runs Trace([0:5]) at once. Fix: make the
+// reply wait a fraction of the run's budget, shared by the drive's epochs (each epoch's
+// settle waits again). When `wait_replies` times out, take the segment as it stands and
+// end the loop. probe:
+// design/review-2026-11-16/repro/fuzz-main-aux-pending-reply-timeout.gx
+// (fuzz-main-aux-02)
+// CR claude for claude: [bug/medium] REPLY_WAIT (10 s) is never shorter than the
+// drive's own deadline (10 s for `check`, 3 s for campaigns and regress), so the bound
+// `wait_settled!` promises never fires. A FinalValues program with one async call that
+// never replies (a `sys::tcp::accept` nobody connects to) times out in every run, and
+// `step_or_timeout!` drops the segments already taken. Both engines then agree as
+// `Timeout(Deadline)`, a `contained` verdict that regress trusts, and none of the
+// program's values is compared. Bound each reply wait by a share of what is left of the
+// drive's deadline, and keep the epoch's segment when that bound expires, so a standing
+// request ends the settle round instead of the run. probe:
+// design/review-2026-11-16/repro/fuzz-lib-a-standing-reply-contained.gx (fuzz-lib-a-01)
 const REPLY_WAIT: Duration = Duration::from_secs(10);
 
+// CR claude for claude: [test-gap/medium] `run!` holds every fixture's value to its
+// static type (`testing::observed` calls `Type::is_a`), but this drive compares traces
+// between modes only, so a generated program whose value is not of its checked type
+// agrees in every mode and is filed as AGREE. A type lie is caught here only when it
+// crashes. Check each traced value of the program's last expression against that
+// expression's type in the first mode driven, and report a miss as its own verdict
+// class. It costs one `is_a` per traced value and gives the soundness direction to the
+// lane that generates the most programs. Found by reading; not run. (a-compiler-03)
 async fn drive_inner(
     ctx: &TestCtx,
     rx: &mut mpsc::Receiver<poolshark::global::GPooled<Vec<GXEvent>>>,
@@ -762,6 +817,15 @@ async fn drive_inner(
     // Every input's ref is created up front and each epoch's injections
     // go through one `set_many`: separate `set` calls can land in
     // different cycles depending on scheduler timing.
+    // CR claude for claude: [structure/low] Two copies of one loop inject the
+    // schedule's inputs and the in-language route's callable arguments: compile each
+    // name's ref under `input_scope`, then `set_many` each epoch and push its settled
+    // segment. One copy keys its map by a `&str` it finds by searching the epochs
+    // again, the other by an owned `String`. The in-language callable epochs are only
+    // more injection epochs after the schedule's. Build one ref map over
+    // `sched.inputs()` and, on `Route::InLanguage`, `c.args()`, keyed by the owned
+    // names, and run one loop over `sched.epochs` chained with `c.epochs`. Found by
+    // reading; not run. (fuzz-lib-a-06)
     let mut refs: AHashMap<&str, graphix_rt::Ref<NoExt>> = AHashMap::new();
     for (name, _) in sched.inputs() {
         let scope = input_scope(&compiled.env, &name);
@@ -863,6 +927,25 @@ async fn drive_inner(
                         }
                     );
                 }
+                // CR claude for claude: [bug/medium] This discards the gap segment's
+                // events but leaves its prints in the sink. The print loop's
+                // `take_through` then hands them to the first dispatch epoch. When that
+                // epoch has no trace event, its prints anchor at the first printed
+                // line. That is a gap print: a handler that prints at its instance's
+                // birth prints there when `compile_callable` builds the instance. So
+                // every later print in the epoch is offset by the number of gap cycles,
+                // 6, 7 or 8 from run to run. A deterministic program then reports an
+                // interp/dispatch vs jit/dispatch DIVERGENCE, or a route divergence
+                // (the in-language route has no such print), and would flake selfcheck.
+                // Fix: keep this segment's end_cycle and, in the print loop, discard
+                // `sink.take_through(gap_end)` just before the first dispatch epoch's
+                // take. Draining here would also take the earlier epochs' prints, which
+                // the loop has not distributed yet. The design says each dispatch epoch
+                // anchors at its dispatch. That holds only when the watched expression
+                // or the callable's result fires, because nothing records the
+                // dispatch's cycle. probe:
+                // design/review-2026-11-16/repro/fuzz-main-aux-dispatch-gap-prints.gx
+                // (fuzz-main-aux-03)
                 let _ = wait_settled!();
                 for ep in &c.epochs {
                     let args =
@@ -976,6 +1059,21 @@ impl Strength {
     /// the outcome's kind for a program whose values are not comparable.
     pub fn of(pair: Pair, tier: OracleTier) -> Self {
         match tier {
+            // CR claude for eric: [bug/medium] At `Strength::Kind` an Excluded
+            // program's comparisons still hold a Trace to a Timeout, yet whether a
+            // random program terminates is one of its values. A `rand::pick` that
+            // chooses a runaway in one run and not in the other was recorded as a
+            // divergence ("image bug": interp/nocache Timeout(ActivationBudget) vs
+            // interp/cold Trace) in two of four checks: the reference's single rerun
+            // catches the nondeterminism only half the time. design/graphix_fuzz.md
+            // says an Excluded program's divergences never record, while
+            // `Strength::Kind`'s doc and the doc's sessions paragraph say such programs
+            // compare in kind. Decide which rule holds. If kind comparison stays, a
+            // Trace beside a Timeout or a RuntimeErr at `Strength::Kind` should drop,
+            // since only a compile verdict or a crash is free of values, and the two
+            // sentences of the doc should agree. probe:
+            // design/review-2026-11-16/repro/fuzz-lib-a-excluded-kind-divergence.gx
+            // (fuzz-lib-a-02)
             OracleTier::Excluded => Strength::Kind,
             OracleTier::FinalValues => Strength::Final,
             // the routes pace a program differently
@@ -1015,6 +1113,16 @@ fn code_only(code: &str) -> String {
 /// `code` with every string literal's text blanked, so a marker in text
 /// is not a call; what a string interpolates is code and stays. The
 /// contexts are the parser's (`state.rs::unclosed_at_end`).
+// CR claude for claude: [bug/medium] This is a second copy of the parser's
+// string-context machine (`parser/state.rs::unclosed_at_end`), without its `//` rule,
+// and `code_only` drops only whole-line comments. A `"` in a trailing comment opens a
+// string here that blanks the code after it, up to the next quote. `oracle_tier` then
+// misses a `rand::`, `sys::time` or `<-` written there: the program is compared and
+// reported as an engine nondeterminism DIVERGENCE, or it lands in the wrong tier. Fix:
+// one scanner in graphix-types (the context stack, comments skipped) that
+// `unclosed_at_end` and this function both call; the whole-line filter in `code_only`
+// then goes. probe: design/review-2026-11-16/repro/x-dup-fuzz-comment-quote.gx
+// (x-dup-01)
 fn without_strings(code: &str) -> String {
     enum Ctx {
         Str,
@@ -2298,6 +2406,17 @@ impl<'a> Oracle<'a> {
     /// The node-walk's construction outlived the deadline, and again at
     /// the slow budget: a single-run finding, since every run shares the
     /// checker.
+    // CR claude for claude: [bug/medium] `construction` reruns the node-walk at the
+    // slow budget and drops the result when the rerun finishes. `settle(Pair::Engine)`
+    // then compares the stale `Timeout(Compile)` with the JIT's, and the two agree
+    // because Compile agrees with Compile. So does every session, forked and pruned
+    // pair whose construction also outlived the deadline. A program whose compile is
+    // merely slow therefore ends AGREE (contained), not even unsure, with no value
+    // compared, and a JIT construction that hangs beside it (fusion gone superlinear)
+    // is never seen. Campaigns run with a 3 s deadline, so this covers any compile
+    // slower than that on a loaded box. Store the slow run's outcome in `runs` and set
+    // `confirmed`, so the Engine pair retries the JIT side at the slow budget like any
+    // other one-sided construction timeout. Found by reading; not run. (fuzz-lib-a-04)
     async fn construction(&self) -> Option<Divergence> {
         let (a, _) = Pair::Engine.runs()?;
         let o @ Outcome::Timeout(Containment::Compile) = self.get(a) else {
@@ -2360,6 +2479,18 @@ impl<'a> Oracle<'a> {
         None
     }
 
+    // CR claude for eric: [test-gap/medium] When the serial node-walk is stopped by its
+    // budget, or dropped as SLOW, beside JIT traces, both `Pair::Engine` and
+    // `Pair::Par(Mode::JitPar)` drop, and no comparison holds the forked JIT to the
+    // serial JIT. The only reference `Pair::Par(JitPar)` has is the serial node-walk,
+    // and its sessions compare the forked JIT with itself. The programs the node-walk
+    // cannot finish are the ones whose fused loops `Auto` forks, so a forked-JIT bug
+    // there is never seen. When the node-walk reference is contained or dropped beside
+    // two JIT traces, compare `Mode::JitPar` with the serial JIT's run at the program's
+    // strength, keeping the Par stack-budget containment, and record the rule in
+    // design/graphix_fuzz.md. probe:
+    // design/review-2026-11-16/repro/fuzz-lib-a-forked-jit-unrefuted.gx (two CONTAINED
+    // lines, then UNSURE). (fuzz-lib-a-03)
     fn runtime_contained(&self, pair: Pair, a: &Outcome, b: &Outcome) -> bool {
         let (ra, rb) = pair.runs().expect("a comparison");
         let reason = if ra.mode.node_walk()
@@ -2504,6 +2635,17 @@ impl<'a> Oracle<'a> {
         }
         // a reference that disagrees with itself is nondeterminism, a
         // finding where the program has no source of it
+        // CR claude for claude: [risk/low] When no retry happened, this nondeterminism
+        // rerun of the reference runs at the normal budget, and a rerun that times out
+        // (a loaded box, a reference near its deadline) is read as the reference
+        // disagreeing with itself. At the Exact tier the finding is filed as
+        // `Pair::Rerun` with the timeout as its evidence, and the tested run is dropped
+        // from the record. At the other tiers a real divergence is dropped as
+        // NONDETERMINISTIC. `Pair::Rerun` also keeps only the mode, not the route and
+        // session of the run that varied. Treat a rerun that differs only by a Timeout
+        // as inconclusive: rerun at `slow_budget`, or report `Diverge(pair, a, b)`.
+        // Carry the whole `Run` in `Pair::Rerun`. Found by reading; not run.
+        // (fuzz-lib-a-05)
         let again = run_one(self.code, ra, budget).await;
         if !again.agrees_at(&a, s) {
             if self.tier == OracleTier::Exact {
@@ -2527,6 +2669,17 @@ impl<'a> Oracle<'a> {
     fn recorded(&self) -> Recorded {
         let verdict = self.verdict();
         let (a, _) = Pair::Engine.runs().expect("a comparison");
+        // CR claude for claude: [test-gap/medium] A Contained verdict records no
+        // containment kind, and `Containment::agrees_with` lets Deadline agree with
+        // ActivationBudget. So the outcome manifest cannot tell the seven contained
+        // pins (each stopped by its activation budget in both engines) from a build
+        // where both engines deadlock at the deadline: the loaded pass trusts the
+        // matching row and `regress` passes. That misses a change that turns a budget
+        // trip into a deadlock in both engines, the Timeout==Timeout blind spot in the
+        // gate itself. Record the two runs' containment kinds in `why` for Contained
+        // and bless. A loaded run that reaches the deadline first is then untrusted and
+        // retried alone, where the budget trips first. Found by reading; not run.
+        // (fuzz-lib-b-05)
         let why = match (verdict, self.get(a)) {
             (Verdict::Rejected, Outcome::CompileErr(e) | Outcome::RuntimeErr(e)) => {
                 Some(tm_error_head(e).replace('\t', " "))
@@ -3061,6 +3214,17 @@ fn bucket(d: &Divergence) -> (&'static str, u8, u8, Option<trace::TraceDiff>) {
     let td = match (&d.reference, &d.tested) {
         (Outcome::Trace(a), Outcome::Trace(b)) => match Strength::of(d.pair, d.tier) {
             Strength::Exact => a.first_difference(b),
+            // CR claude for claude: [bug/medium] `first_final_difference` answers
+            // `TraceDiff::FinalValue(epoch)`, so `Finding::key` for every
+            // FinalValues-tier and `Pair::Route` divergence holds the index of the
+            // first epoch whose settled value differs, not a class of difference.
+            // `minimize` requires the key to hold, so it rejects every schedule
+            // reduction that drops an epoch before the diverging one (`remove(i)`, the
+            // empty schedule) and every body reduction that moves the divergence to
+            // another epoch. One bug met at two epochs is two keys, each with its own
+            // MINIMIZE_PER_KEY minimizations. Collapse the index here, for example by
+            // mapping `FinalValue(_)` to one value. Found by reading; not run.
+            // (fuzz-lib-b-04)
             Strength::Final => a.first_final_difference(b),
             Strength::Kind => None,
         },
@@ -3237,6 +3401,15 @@ fn crash_claim(status: &str, prog: &str) -> String {
 /// With `want`, a [`Finding::key`] or a crash class, a program whose
 /// finding has another key comes back unchanged. `progress` sees each smaller
 /// program the minimizer settles on.
+// CR claude for claude: [test-gap/low] minimize and shrink have no test. Nothing checks
+// the design's guard that the returned text reproduces the key it was asked to keep, or
+// that a failed composite round falls back by halving to a verified prefix. A
+// deterministic subject exists: a value carrying the twin tag is a Pair::Twin finding
+// in every run. `{ let a = i64:1; let b = a + i64:2; let c = "TwinDiverged"; let d = b
+// * i64:3; (d, c) }` shrinks at budget 40 to `{ let a = 1; let b = a; let c =
+// "TwinDiverged"; let d = b; c }`. A test should minimize it with Judge::InProcess and
+// assert that the result is shorter and that check on it gives the same finding_key.
+// probe: design/review-2026-11-16/repro/fuzz-lib-c-minimize-twin-pin.sh (fuzz-lib-c-05)
 pub async fn minimize(
     code: &str,
     judge: Judge,
@@ -4261,6 +4434,15 @@ pub fn outcome_mismatches(manifest: &str, r: &Regression) -> Vec<String> {
     let regressed = r.regressions.iter().map(|(n, _)| (n.as_str(), Measured::Elsewhere));
     manifest_diff(manifest, live.chain(regressed), |n, r: &Recorded, v| {
         let unsure = r.verdict == Verdict::Unsure || v.verdict == Verdict::Unsure;
+        // CR claude for eric: [risk/medium] A live `unsure` matches any recorded
+        // verdict, although `run_regression` has already retried it alone at 4x, so it
+        // is not load. A pin recorded `trace` whose node-walk now exceeds its
+        // activation budget beside the JIT's trace is dropped as `runtime_contained`,
+        // ends unsure, and the gate passes. The same holds for any other drop in the
+        // settle ladder. Decide whether a confident recorded verdict against a live
+        // unsure that survived the alone retry is a mismatch (an `unsure` row would
+        // stay a wildcard). Found by reading; a `check` of a deep tail recursion past
+        // the node-walk's budget prints UNSURE. (fuzz-lib-b-06)
         (r != v && !unsure).then(|| format!("changed outcome: {n}: {r} -> {v}"))
     })
 }
@@ -4476,6 +4658,14 @@ impl Corpus {
                     if let Some(k) = body.lines().find_map(|l| l.strip_prefix(KEY_LINE)) {
                         *keys.entry(unescape_line(k)).or_default() += 1;
                     }
+                    // CR claude for claude: [bug/low] A typeflip file holds its subject
+                    // verbatim, and 70 corpus pins carry a `// minimized:` line. The
+                    // typemorph source probes every pin first, so a flip found in one
+                    // of them reloads here as the pin's tail instead of its class, and
+                    // is written again by every later campaign. Choose the key by the
+                    // file name's prefix (divergence_, crash_, typeflip_), which this
+                    // function already parses for the counter. Found by reading; not
+                    // run. (fuzz-lib-b-07)
                     if let Some(m) = extract_minimized(&body) {
                         seen.insert(m);
                     } else if let Some(class) = typeflip_class_of(&body) {
@@ -5452,6 +5642,19 @@ pub async fn check_isolated_report(prog: &str, timeout: Duration) -> String {
 }
 
 /// What a check child that left no verdict means.
+// CR claude for claude: [bug/high] After a cap death this answers Agree unless a JIT
+// run dies alone beside a node-walk trace, so a death it cannot pin on a run ends the
+// check with every later comparison unmade. Node-walk runs in flight are filtered out,
+// `Mode::Par` included (the budget ladder calls a forked node-walk's runaway beside a
+// serial trace a divergence). A dead run that survives alone is skipped, the serial
+// re-check falls through to Agree, the ladder's unlogged runs (`settle`'s roomy
+// remakes, `stalled`, `check_only`) default to a plain JIT rerun that cannot reproduce
+// them, and run-one children that die at startup read as 'the node-walk runs away too'.
+// Under a 200 MB cap the isolated check of a twin program that is a DIVERGENCE
+// in-process answers AGREE. Answer Agree only when the node-walk twin's run-one child
+// died after logging its RUN line, treat `Mode::Par` as a tested run, log the ladder's
+// runs, and answer every other cap death as a crash naming the runs in flight. probe:
+// design/review-2026-11-16/repro/fuzz-lib-b-cap-death-agrees.sh (fuzz-lib-b-01)
 async fn died(
     prog: &str,
     timeout: Duration,
@@ -5480,6 +5683,17 @@ async fn died(
             status.push_str(PANIC_SITE);
             status.push_str(at.trim_end_matches(':'));
         }
+        // CR claude for claude: [bug/medium] The crash status takes the child's last
+        // two stderr lines whatever printed them, so a signal with no panic (a SIGSEGV
+        // in JIT frames) is classed by the oracle's last message instead of its own
+        // words. The ladder's drop messages end in ` program: <the whole program>`, and
+        // the node-walk's `graphix::failure` logs print at ERROR level. A class holding
+        // the program text admits no reduction in `minimize`. A class holding a shared
+        // log line (an arith error) gives distinct segfaults one `crash_claim`, so
+        // after MINIMIZE_PER_KEY of them the rest are counted known and never recorded.
+        // Take the words only from the panic's own lines (from 'panicked at' on) or the
+        // cap and abort messages, and give a silent signal none, so `crash_claim` keys
+        // it per program. Found by reading; not run. (fuzz-lib-b-03)
         for l in output().collect::<Vec<_>>().into_iter().rev().take(2).rev() {
             status.push_str(" | ");
             status.push_str(l);
@@ -5511,6 +5725,23 @@ async fn died(
         flight.push(Run::plain(Mode::Jit, Route::InLanguage));
     }
     let crowded = flight.len() > 1;
+    // CR claude for claude: [risk/medium] A cap death is judged AGREE here without the
+    // comparison it stands for, in two ways. First, a JIT run whose rerun alone
+    // (run_isolated) neither dies nor traces is skipped and its node-walk twin is never
+    // consulted. That happens when the rerun reaches the deadline before the cap,
+    // without the memory the check child had already taken. A JIT runaway beside a
+    // node-walk trace then comes back as containment, while design/graphix_fuzz.md says
+    // a cap death is containment only when the node-walk alone runs away too. Second,
+    // this filter drops every node-walk mode. Mode::Par is the tested run of
+    // Pair::Par(Mode::Par), pruned Interp is the tested run of Pair::Prune, and
+    // Interp's Cold/Warm runs are the tested runs of the image pairs. A forked, pruned
+    // or restored node-walk that runs away in memory beside its reference's trace
+    // therefore ends AGREE; the serial re-check only isolates it for this filter to
+    // drop again. Fix: for each run in flight, take its reference from the pair that
+    // tests it (Pair::runs: serial Interp for Par and JitPar, Unpruned for Interp, the
+    // NoCache or Cold run for a session). Report the crash when the run alone yields no
+    // trace (run_isolated != Some(true)) while its reference alone traces. Found by
+    // reading; not run. (fuzz-lib-c-01)
     for r in flight.into_iter().filter(|r| !r.mode.node_walk()) {
         if run_isolated(prog, r, timeout).await.is_none()
             && run_isolated(prog, r.node_walk(), timeout).await == Some(true)
@@ -5840,6 +6071,16 @@ async fn derive_suspect(
     let prog = suspect.prog();
     if kind == SourceKind::Typemorph {
         let (confirmed, cpu) = confirm_typeflip(corpus, tally, suspect, timeout).await;
+        // CR claude for claude: [bug/low] A typemorph subject whose fresh-process
+        // confirm failed is counted twice. confirm_typeflip's Err arm records the
+        // crash, adds it to tally.crashes and returns true, which its doc says means
+        // the fresh process flipped. This line then adds it to tally.divergences, which
+        // the progress line prints as flips. So a dead typemorph child, or a subject it
+        // cannot run (a HARNESS error), shows as one crash and one flip. Fix: count a
+        // flip in confirm_typeflip where it records confirmed flips, and drop this
+        // increment. tally.known has the same mix: it counts crashes past their claim
+        // but is printed beside the divergences, so count those crashes separately or
+        // print known after both counts. Found by reading; not run. (fuzz-lib-c-06)
         if confirmed {
             tally.divergences.fetch_add(1, Relaxed);
         }
@@ -5914,6 +6155,12 @@ async fn confirm_typeflip(
     let prog = suspect.prog();
     let (r, cpu) = typemorph_child(prog, timeout).await;
     let (flips, confirmed) = match (r, suspect) {
+        // CR claude for claude: [risk/low] A subject the batch child never judged has
+        // every flip of one fresh process recorded as confirmed, so an acceptance flap
+        // there is filed as a typeflip class instead of the `unconfirmed` class; only a
+        // Flagged subject is held to two processes. When this run shows flips, probe
+        // once more and pass both through `confirmed_flips` with the first run's ids,
+        // as `typemorph_scan` does. Found by reading; not run. (fuzz-lib-b-08)
         (Ok(rep), Suspect::Unjudged(_)) => {
             let f = tm_flips(&rep);
             let confirmed = !f.is_empty();
@@ -6003,6 +6250,25 @@ mod tests {
                     if compile_left { (compile, running) } else { (running, compile) };
                 oracle.runs.extend([(ra, a), (rb, b)]);
                 let settled = oracle.settle(pair).await;
+                // CR claude for claude: [bug/medium] This assertion accepts two false
+                // findings. When a construction timeout sits beside a runtime one,
+                // Oracle::settle remakes only the construction side at the slow budget,
+                // because its `retry` is a single run. The other side keeps its
+                // normal-budget Timeout(Deadline) and never gets the slow retry the
+                // ladder gives every other one-sided timeout. When the JIT is remade
+                // (compile_left false), the node-walk rerun at the slow budget finishes
+                // and is compared with its own normal-budget Deadline. For "1" that
+                // ends Diverge(Pair::Rerun(Interp), Timeout(Deadline), Trace), a
+                // nondeterminism finding. When the node-walk is remade (compile_left
+                // true), it ends Diverge(Pair::Engine, Trace, Timeout(Deadline)), an
+                // asymmetric JIT timeout. On a loaded box both findings come from a
+                // program that is only slow. Fix: in settle, after the remake, also
+                // remake the other side when it is still a one-sided Timeout(Deadline),
+                // the only containment that more time changes. Then assert here that
+                // the Deadline cases of "1" settle Agree with verdict Unsure, and keep
+                // the budget cases as they are. Found by reading; not run (settle is
+                // private, and no CLI path forces a construction timeout).
+                // (fuzz-lib-c-02)
                 assert!(!matches!(settled, Settled::Agree));
                 if !compile_left && runtime != Containment::Deadline {
                     assert!(
@@ -7620,6 +7886,19 @@ mod tests {
             let strength = Strength::of(Pair::Engine, oracle_tier(&code));
             // assert only when interp agrees with itself, mirroring the
             // oracle's double-run guard
+            // CR claude for claude: [test-gap/low] This sweep runs its own retry logic,
+            // weaker than Oracle::settle's, so it cannot fail on three classes the
+            // oracle reports. (1) A pair still one-sided after the 4x retry (i2 or j2 a
+            // Timeout) is counted in budget_skipped and passed, so a JIT that hangs
+            // where the node-walk answers never fails it. (2) An Exact program whose
+            // node-walk disagrees with its rerun is skipped, where the oracle reports
+            // Pair::Rerun. (3) After a timeout retry it compares the first `interp`,
+            // which was the Timeout, with `interp2`, so a value divergence the 4x runs
+            // showed is skipped as nondeterminism. Fix: judge each program with the
+            // oracle's Engine ladder (Oracle::new(&code, tier, t, None),
+            // make(&[Pair::Engine]), settle(Pair::Engine)) and panic on
+            // Settled::Diverge. Keep run_program_with_stats only for the fused count.
+            // Found by reading; not run. (fuzz-lib-c-04)
             if !interp.agrees_at(&direct, strength) {
                 // a Timeout on either side is the budget talking under
                 // suite load: re-check at 4x before believing it
@@ -8362,6 +8641,18 @@ mod batch_files_test {
     /// observable.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn batched_files_do_not_alias() {
+        // CR claude for claude: [test-gap/medium] This test cannot fail. Both subjects
+        // are refused when checked alone: the `mod m0;` in the body gives "module
+        // test::m0 could not be found", because the driver already declares `mod m0;`
+        // itself. A refusal counts as agreement here, since `v != BatchVerdict::Other`
+        // admits BatchVerdict::Refused. So a batch child that served one subject's
+        // m0.gx to the other still passes: b over a's m0 is also refused. Fix: write
+        // the subjects as `m0::k0` and `str::len(m0::k0)`, and require
+        // BatchVerdict::Ran for both. Each of those checks AGREE (trace) alone, and b
+        // over a's m0 is refused. The module doc of files.rs shows the same refused `{
+        // mod m0; m0::f(i64:2) }` form. probe:
+        // design/review-2026-11-16/repro/fuzz-lib-c-batched-files-alias-vacuous.sh
+        // (fuzz-lib-c-03)
         let a = "{ mod m0; m0::k0 }\n// file-v1: m0.gx\nlet k0 = i64:1\n";
         let b = "{ mod m0; str::len(m0::k0) }\n// file-v1: m0.gx\nlet k0 = \"xy\"\n";
         for progs in

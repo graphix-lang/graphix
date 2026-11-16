@@ -809,6 +809,19 @@ run!(
     FuseExpect::Jit
 );
 
+// CR claude for eric: [bug/medium] This pins a refusal that the same `let` outside a
+// seq does not get. `{ let s = {g: |x| x, n: str::len("ab")}; (s.g(1), s.g("s"), s.n)
+// }` checks, but the seq-step form here is refused ("i64 does not contain string"). The
+// seq form checks when the part is an operator or `live`, or when the call is hoisted
+// into its own step (`let n = str::len("ab"); let s = {g: |x| x, n}`). It contradicts
+// this file's own rule (a let in a seq step names what it holds as a let outside one
+// does) and the generalization rule in CLAUDE.md. seq_blocks.md's reason, "a call's
+// result is no binding's", holds outside a seq too, where the holder stays generic.
+// Either lift the limit, so the step's issued-call lowering leaves the holder's scheme
+// as the snapshot and step-value forms do, and flip this pin and its twin; or rule it
+// and give a reason that distinguishes the seq case in seq_blocks.md and the skill.
+// probe: design/review-2026-11-16/repro/tests-lang-rest-c-seq-holder-call-part.sh
+// (tests-lang-rest-c-01)
 run!(
     a_holder_with_a_call_part_in_a_seq_step_is_one_instance,
     "seq { let s = {g: |x| x, n: str::len(\"ab\")}; (s.g(1), s.g(\"s\"), s.n) }",

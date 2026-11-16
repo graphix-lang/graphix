@@ -27,6 +27,15 @@ run!(first_cycle_bind_is_not_the_builds, r#"
 
 // A call whose function changes binds again at each change: a later bind
 // of a definition takes the kernels its first bind built.
+// CR claude for claude: [test-gap/low] This fixture,
+// bound_function_rebinds_over_a_deleted_builder and
+// bound_definitions_raise_to_their_slots_handler say the bound lambdas run in kernels.
+// But FuseExpect counts only what the build fused, and a run-time bind fuses after it.
+// A change that left fusion::fuse_instance node-walking them would pass every mode. Put
+// `#[native]` in the bound lambdas' bodies, as first_cycle_bind_is_not_the_builds does:
+// a bind that fails it leaves the call bottom. With it, this fixture and the slots one
+// run and give their values today. probe:
+// design/review-2026-11-16/repro/tests-fusion-bound-defs-unpinned.sh (tests-fusion-06)
 run!(bound_function_value_rebinds, r#"
 {
     let fs = [|x: i64| -> i64 x * 2, |x: i64| -> i64 x + 7];
@@ -274,6 +283,15 @@ async fn load_and_count(code: &str) -> Result<(Value, (u64, u64))> {
 }
 
 /// [`load_and_count`]'s value.
+// CR claude for claude: [structure/low] About 45 value tests here (closure_*,
+// nested_hof_*, impure_*, fused_select_*, load_*) run the fused engine alone through
+// run_code. It reads the first update without holding it to its static type
+// (testing::observed), and three programs are written twice by hand to get the
+// node-walk (the *_node_walk twins). As run! fixtures (is/prints, `#[native]` where the
+// point is a kernel, a fn building the impure program text) they would run all four
+// modes and the check against the build. Then the twins and
+// assert_i64s/assert_strs/assert_nested_i64s go. Keep run_code for the tests that read
+// fusion stats or counts. Found by reading; not run. (tests-fusion-09)
 async fn load_and_await(code: &str) -> Result<Value> {
     Ok(load_and_count(code).await?.0)
 }
@@ -1627,6 +1645,17 @@ run!(bottom_typed_arm_runs, BOTTOM_TYPED_ARM_RUNS, is(Value::I64(5)); FuseExpect
 // the args are consumed: the handler-ful `?` inside one delivers its
 // raise at the fire of `x` that takes the arm (its select node-walks: a
 // raise to a handler under an arm is refused a kernel).
+// CR claude for claude: [doc-drift/medium] The comment above says a raise to a handler
+// under an arm is refused a kernel. strict_fusion.md says a handler-ful `?` in an arm's
+// body fuses, and it does once the select's type is decided: `let w: i64 = #[native]
+// select x { 2 => error(`E(n))?, _ => x }` fuses and gives 0 here, and 1 for the `E(x)`
+// form, in both engines. What keeps this select and ARM_RAISE_STANDING_INPUT's
+// node-walked is the open result type of `error(..)?` ("discarded result of type '_N
+// doesn't classify", see Qop::typecheck0_with). So FuseExpect::None pins that cliff,
+// and neither JIT run runs the kernel the next comment speaks of. Fix both comments;
+// once the cliff is fixed, put `#[native]` on the selects and assert FuseExpect::Jit.
+// probe: design/review-2026-11-16/repro/tests-fusion-arm-raise-defuses.sh
+// (tests-fusion-03)
 const NEVER_ARM_ARGS_RAISE: &str = r#"
 {
   let x = array::iter([1, 2, 3]);
@@ -2980,6 +3009,15 @@ run!(struct_pattern_over_placeholder, r#"{
 // Two instances of one generic callback in a region share their call
 // sites' ids; each must call its own instance's kernel (u64::MAX < 0 is
 // false, and an f64 instance never calls an i64 kernel).
+// CR claude for claude: [test-gap/low] The comment says each instance calls its own
+// kernel inside one region. But a region holding both maps is refused ("two instances
+// in one region call this site's lambda apart", fusion::build_region), and this fixture
+// and the next pass because each map fuses alone: `#[native]` on the tuple is refused,
+// while `#[native]` on each map fuses. Say what happens. Put `#[native]` on each map,
+// and pin the tuple's refusal by its reason in a jit_only fixture once the #[native]
+// message names it. probe:
+// design/review-2026-11-16/repro/tests-fusion-two-instances-region-refused.sh
+// (tests-fusion-07)
 run!(callback_instances_call_their_own_kernels, r#"{
   let h = |a, b| a < b;
   let g = |x| h(x, x - x);

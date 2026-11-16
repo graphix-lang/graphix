@@ -63,6 +63,14 @@ pub(super) fn valarray_get_helper(p: PrimType) -> &'static str {
 
 /// The helper that reads a Graphix-minted abstract value's payload
 /// (`.0`) at the representation's shape.
+// CR claude for claude: [structure/low] `abstract_read_helper` and
+// `element_read_helper` are one dispatch written twice over three helper families: a
+// scalar to its family member, a string to `_arcstr`, an array/tuple/struct to
+// `_array`, the value shapes to `_value`, the rest refused. Add an `Abstract` variant
+// to `ElementRead`, pick the family's names by the variant in `element_read_helper`,
+// and delete this function. `emit_abstract_ref_node` then calls
+// `element_read_helper(&rep, ElementRead::Abstract)`. Found by reading; not run.
+// (f-nodes-scalar-05)
 pub(super) fn abstract_read_helper(rep: &Type) -> Result<&'static str> {
     Ok(match kernel_abi::abi_kind(rep) {
         Some(AbiKind::Scalar(p)) => ABSTRACT_GET[p as usize],

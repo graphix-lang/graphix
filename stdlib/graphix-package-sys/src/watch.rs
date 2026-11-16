@@ -387,6 +387,16 @@ impl<R: Rt> Apply<R> for WatchApply {
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R>, from: &mut [Node<R>]) -> &TagValue {
+        // CR claude for eric: [bug/low] At the wake this update builds a new Watch over
+        // the standing arguments and outputs it fired in the wake cycle itself. So
+        // count(watch::watch(w, p)$) in an arm that sleeps and wakes goes from 1 to 2
+        // though nothing fired, against the rule that a wake fires nothing for anyone.
+        // design/async_sleep_outputs.md says the watch is rebuilt at the wake, but not
+        // whether the rebuild is an event; a timer or after_idle resumed the same way
+        // fires only at its own event. Decide whether the rebuilt handle is delivered
+        // MOVED (WatchStream would then re-extract on a moved argument, as it does on
+        // its own wake), or whether this exception is written into the rule. probe:
+        // design/review-2026-11-16/repro/sys-io-watch-fires-at-wake.gx (sys-io-07)
         let woke = self.slept.take();
         let (interest, interest_fired) = seam_arg(ctx, &mut from[0]);
         let (watcher, watcher_fired) = seam_arg(ctx, &mut from[1]);
@@ -445,6 +455,12 @@ impl<R: Rt> Apply<R> for WatchApply {
 
 /// The watches `v` holds, a watch or an array or map of them, onto
 /// `out` in the order `v` holds them, each once.
+// CR claude for claude: [perf/low] The dedup by out.contains makes this quadratic in
+// the watches an argument holds, and WatchStream::update runs it over every argument at
+// each fire. A map of watches that grows one at a time (a tree watcher) costs O(n^3)
+// over the program's life. Fix: track the ids already seen in an
+// LPooled<AHashSet<BindId>> (or poolshark IntSet) and push only on first insert, which
+// keeps argument order. Found by reading; not run. (sys-io-09)
 fn extract_bind_ids(v: &Value, out: &mut Vec<BindId>) {
     let mut add = |v: &Value| {
         if let Value::Abstract(a) = v

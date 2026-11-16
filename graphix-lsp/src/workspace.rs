@@ -68,6 +68,15 @@ pub struct WorkspaceModel {
     pub file_to_projects: AHashMap<PathBuf, Vec<usize>>,
 }
 
+// CR claude for claude: [bug/low] The scan skips any directory with one of these names
+// (or starting with `.`) at every depth, and `resolve_mod` only finds files the scan
+// saw. So a module of that name (`mod target;` resolving to `target/mod.gx`) is in no
+// project. Opening its file checks it as a lone script, which reports '`super` goes
+// above the package root' and answers no hover, though `graphix --check` accepts the
+// program. Fix: let `resolve_mod` find a module the scan skipped by reading and
+// summarizing it on demand, as `scan` does, so a skip only keeps a directory's files
+// from being roots. probe: design/review-2026-11-16/repro/lsp-skipped-module-dir.py
+// (lsp-06)
 const SKIP_DIRS: &[&str] = &["target", "node_modules", "vendor"];
 
 /// A directory below a root that holds no modules: a build or vendor

@@ -1,0 +1,20 @@
+// Title: fmt splits one `use` statement into per-root statements, and the
+//   split lets one item resolve through what its sibling imports.
+// Command: graphix --check x-formatter-use-split-rebinds.gx           (exit 0)
+//          graphix fmt --stdout x-formatter-use-split-rebinds.gx > f.gx (exit 0)
+//          graphix --check f.gx                                         (exit 1)
+// Expected: the formatted program means what this one means: `mk` is
+//   tui::text::text (a statement's items do not see each other, so
+//   `text::text` reads the outer `use tui::text`; the check warns that the
+//   block's `gui::text` import is unused), and the check passes.
+// Observed: fmt writes `{ use gui::text; use text::text as mk; mk(&"hi") }`,
+//   where `text::text` now reads the block's gui::text, `mk` is
+//   gui::text::text, and the check refuses `let t: tui::Tui = r`
+//   ("type mismatch tui::Tui does not contain [`Button(..) ..]").
+use tui::text;
+let r = {
+    use {gui::text, text::text as mk};
+    mk(&"hi")
+};
+let t: tui::Tui = r;
+t

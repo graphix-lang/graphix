@@ -2673,6 +2673,15 @@ async fn silent(code: &str, mode: Mode) -> Result<()> {
 // callee the arm calls, resolved statically or through a function value
 // bound only at that entry, samples `a` when `a` fires while the arm runs
 // and at no other time, so the select produces nothing.
+// CR claude for claude: [test-gap/low] These fixtures (and the build-cycle pair below)
+// assert only that nothing arrives. A call in a later-entered arm that never fires at
+// all, even when `a` fires while the arm runs, passes them, so the half this comment
+// states ("samples `a` when `a` fires while the arm runs") has no pin. Keep the arm
+// selected past its entry and fire `a` again: `a <- select n { 3 => 7, 7 => 8, _ =>
+// never() }` with `select n >= 6 { true => CALL(n), false => never() }`. Expect exactly
+// [8] for both callees. probe:
+// design/review-2026-11-16/repro/tests-select-a-first-entry-positive-control.gx
+// (tests-select-a-03)
 const FIRST_ENTRY_CALLEE: &str = r#"
 {
   let a = 0;
@@ -2769,6 +2778,16 @@ run!(select_arm_local_persists, SELECT_ARM_LOCAL_PERSISTS, |v: Result<&Value>| {
 }; FuseExpect::Jit);
 
 // Same shape with the connect RHS computed by a fold: re-entry sees 6.
+// CR claude for claude: [bug/medium] This fixture pins the fold's phantom first-entry
+// fire (see the CR on FoldQ::update's fresh-slot seed in node/collection.rs). x arrives
+// after the program's first cycle, so the arm is entered, not born. The write reads no
+// variable, and the check warns on this fixture that it acts only in the first cycle.
+// By CLAUDE.md the run is 0, 100, 0, 100, yet the test asserts 6 at re-entry, so a
+// correct fold fails it. Sample the bind, `s <- x ~ array::fold([1, 2, 3], 0, |acc, e|
+// acc + e)`: the test keeps its point (a write that persists across the sleep) and its
+// 6 for the right reason. probe:
+// design/review-2026-11-16/repro/tests-select-a-arm-local-fold-pin.gx
+// (tests-select-a-02)
 const SELECT_ARM_LOCAL_PERSISTS_FOLD: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);
@@ -3052,6 +3071,13 @@ run!(
 // A select's type is the union of its arm types; a free tvar arm beside
 // an `i64` arm stays free, whether the `i64` is a literal or arrives
 // through a bound tvar.
+// CR claude for claude: [test-gap/low] This test and
+// `select_optional_fn_member_matches` go through `testing::eval`, which runs the jit
+// mode alone and never checks the program. Neither holds the node-walk, the forked
+// modes or the check to the build, as every `run!` fixture does. Make them `run!`
+// fixtures (`refused("must be fully known here")` for each program,
+// `is(Value::I64(42))`), or use `eval_modes`. --check refuses both programs here with
+// that message today. Found by reading. (tests-select-a-05)
 #[tokio::test]
 async fn free_union_arm_is_not_inferred_from_sibling() {
     for code in [
@@ -5115,6 +5141,16 @@ run!(
 
 // A variable a test writes twice that the members hold at different types
 // is left open at the select, and the arm's binds at it are refused.
+// CR claude for claude: [test-gap/low] [test-gap/low] This fixture is refused by the
+// type mismatch its own `let z: bool = a1` makes ("bool does not contain [fn(x: i64) ->
+// i64, 'q]", since `a1` holds the function member's part). That is not the rule the
+// comment names. With the arm body `0` or `a0`, the same select is refused "binds a0 at
+// 'q, a variable of the test's own that nothing decided by the arm's end". Deleting
+// that refusal (`PatternNode::open_written_bind`) would leave this fixture refused and
+// passing. Pin the open-variable message on the select without the `let`, or, if the
+// point is the function member, pin the full mismatch text. probe:
+// design/review-2026-11-16/repro/tests-select-b-written-variable-twice-pin.gx
+// (tests-select-b-03)
 run!(
     written_variable_twice_over_an_undecided_part_is_refused,
     r#"{
@@ -5601,6 +5637,15 @@ run!(trait_bound_tells_tag_from_string, SAME_FORM_TRAIT_BOUND, |v: Result<&Value
 // An open member beside one whose runtime form another type may share is
 // refused at the definition: no call is checked against the arm's test
 // (x-typecheck-patterns-04/05).
+// CR claude for claude: [style/low] [style/low] Comments in this file cite finding ids
+// or narrate a past bug: "(x-typecheck-patterns-04/05)" above this fixture,
+// "tvar-interp-defuse-01:" above interpolated_bind_inside_a_declared_variable_refused,
+// "or-capture-rigid-01:" above or_capture_inside_a_declared_variable_refused,
+// "slice-bind-mismatch-01:" above slice_literal_inside_an_unbounded_variable_refused,
+// "pool-open-member-01:" above literal_inside_a_variable_beside_null_refused, and "(the
+// kernel read it as bottom)" above slice_over_a_union_member_binds_its_element_type.
+// Delete the ids and the past-bug clause and keep the rule each comment states. Found
+// by reading; not run. (tests-select-b-05)
 run!(open_member_beside_a_reference_refused, r#"{
   let f = |x: [&i64, 'b]| select x { &i64 as r => "int ref", _ => "other" };
   let s = "s";
@@ -6039,6 +6084,14 @@ run!(
 // variable is dead; a variable with no bound is bounded first, since a test
 // beside an unbounded variable may share its runtime form; a variable its
 // bound names is written as its own bound.
+// CR claude for claude: [test-gap/low] [test-gap/low] The build stops at the first
+// refusal, `g`'s `C(z) arm, and that is the phrase pinned. So `h` (`null => 1` over
+// `'a: Number`) is never judged, though alone it is refused "unreachable arm: null
+// matches no value of 'a, whose bound is Number". A change that accepted a literal arm
+// matching no value of a bounded variable would leave this fixture passing. Give `h` a
+// fixture of its own that pins its message. probe:
+// design/review-2026-11-16/repro/tests-select-b-second-select-never-judged.gx
+// (tests-select-b-04)
 run!(arm_matching_no_value_of_a_declared_variable_refused, r#"{
   let g = 'b: [`A(i64), `B(i64)] |x: 'b| select x { `C(z) => z, _ => 0 };
   let h = 'a: Number |x: 'a| select x { null => 1, _ => 2 };
@@ -9826,6 +9879,17 @@ run!(native_guard_below_a_claim_narrows_inside_a_tuple, r#"{
 // tuple, an or-pattern of tuples, a struct field, a variant's payload, an
 // option's composite, and a scrutinee whose union of two tuples keeps the
 // node-walk's full test.
+// CR claude for claude: [test-gap/low] The comment says "the same" as the tuple fixture
+// above it: a guard runs below the claim where its pattern admits the value. But every
+// guard here divides with `/`, which bottoms silently, and a guard is consulted only
+// where no arm above claims. So nothing here observes whether a kernel's guard runs
+// below the claim or sleeps where its pattern refuses the value, and a kernel that got
+// either wrong passes. Make each guard raise, `(10 /? n)?`. Feed claimed values with a
+// zero at an admitted position and at a refused one, and count the catch, as
+// native_guard_below_a_claim_narrows_inside_a_tuple does. The probe's program expects 7
+// raises and agrees in both engines today. probe:
+// design/review-2026-11-16/repro/tests-select-c-guard-raises-below-a-claim-in-composites.gx
+// (tests-select-c-05)
 run!(native_guard_below_a_claim_narrows_inside_a_composite, r#"{
   let lit = |v: ([i64, string], i64)| -> i64 #[native] select v {
     (_, 1) => 1,
@@ -10522,6 +10586,17 @@ run!(
 // the arm is taken in the program's first cycle: a write, an effect, a
 // raise, a seq with no trigger, and an event source (a timer) alike. A
 // builtin given no argument has a value that stands and is not warned of.
+// CR claude for claude: [test-gap/low] The comment lists a write and a seq with no
+// trigger, but neither is among the cases: `set(5)` is warned as "this call" and `seq
+// 1` as "this seq's trigger reads no variable". Deleting the `NodeView::Connect` arm of
+// node/select.rs warn_constant_action ("this write") or the `None` arm of
+// warn_triggerless_seq ("this seq has no trigger") passes this test, and nothing else
+// in the tree pins either message. Add a constant write, `let screen: [`Menu, `Game] =
+// `Menu; select x { 0 => screen <- `Game, _ => never() }`, expecting "this write reads
+// no variable". Add `select x { 0 => seq { println("a"); 0 }, _ => 1 }` expecting "this
+// seq has no trigger". Add a sampled write (`screen <- x ~ `Game`) to the programs that
+// compile. Found by reading and grep; both warnings fire today under --check.
+// (tests-select-c-03)
 async fn constant_arm_action_warnings(mode: Mode) -> Result<()> {
     let (tx, _rx) = tokio::sync::mpsc::channel(100);
     let flags = mode.flags() | CFlag::WarningsAreErrors;
@@ -11672,6 +11747,14 @@ run!(
     FuseExpect::Jit
 );
 
+// CR claude for claude: [readability/low] The name says the written tests cover the
+// variable, but the fixture pins the opposite, "missing match cases": `[`X, null]`
+// leaves out the 'a: string member of 'b's bound. The passing twin is
+// written_tests_over_a_variable_its_bound_names_covered. Rename to say they miss it.
+// Likewise pool_takes_no_composite_head_holding_an_undeclared_variable holds 'q, which
+// its parameter annotation declares and the refusal calls "a type variable of the
+// definition": it is unbounded, not undeclared, and select.md uses "undeclared" for a
+// variable only a type test writes. Found by reading. (tests-select-c-06)
 run!(
     written_tests_over_a_variable_its_bound_names_cover_it,
     r#"{

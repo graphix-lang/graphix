@@ -574,6 +574,15 @@ drifting to the same wrong answer. Pulled fleet findings go to
 `fuzz/pending-triage/<campaign>/` (untracked); the triage record is
 that directory's README.
 
+<!-- CR claude for eric: [test-gap/medium] The check is where the work is (1,333 of the
+2,315 commits since the last review touched `typ/`, `callsite.rs`, `select.rs`,
+`lambda.rs` or `tvar_constraints.md`) and it is the one component with no second
+opinion: the engines share it, and this lane compares the check only with itself on
+rewritten programs. The reflective oracle listed below as not built is the cheapest one,
+and it waits on a single ruling: whether a body annotation's variables are the
+signature's. Rule on it, or build the form that needs no ruling: re-check each top-level
+binding whose inferred type holds no variable with that type written as its annotation,
+and file a refusal as a flip. Found by reading; counts from git log. (a-compiler-04) -->
 ## 8. The acceptance plane: `typemorph`
 
 The differential oracle cannot see typechecker bugs on the acceptance

@@ -21,6 +21,14 @@ systemd-run --user --scope --quiet --collect --slice=review-probes.slice \
 rc=$?
 a=$(kills $SL/memory.events); al=$(kills $SL/memory.events.local)
 if [ "$rc" -eq 137 ] && [ "$a" != "$b" ]; then
+  # CR claude for claude: [bug/medium] This branch can never be taken, so a shared-pool
+  # OOM is reported as the run blowing its own cap. The kernel counts oom_kill locally
+  # on the victim's cgroup (the run's scope), never on review-probes.slice, which holds
+  # no processes; the pool's own limit shows in the slice's LOCAL `oom`/`max` counters.
+  # A reviewer whose reasonable probe was killed because other probes filled the 40G
+  # pool is then told the program ran away and that this is a finding. Fix: compare the
+  # slice's memory.events.local `oom` before and after, instead of `oom_kill`. probe:
+  # design/review-2026-11-16/repro/ide-tooling-probe-run-pool-oom.sh (ide-tooling-02)
   if [ "$al" != "$bl" ]; then
     why="the shared $POOL probe pool ran out (several probes at once, maybe not this one's fault): rerun it alone"
   else

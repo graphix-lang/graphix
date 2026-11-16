@@ -771,6 +771,18 @@ impl Strip {
     }
 
     /// What this strip takes out of `typ`.
+    // CR claude for claude: [perf/medium] Checking `?` costs time quadratic in the
+    // operand union's member count. taken computes typ.diff(typ - removed), a
+    // difference of an n-member union by an (n-1)-member one. Qop::typecheck0_with
+    // computes it at every `?` site, and Strip::of computes it up to twice more when
+    // the operand also holds null. Strip::of and open_member_raising_nothing also walk
+    // Type::dispatch_members three times. Debug build, 100 sites over a 400-member
+    // union: plain reads 0.05 s, `$` 0.18 s, `?` 1.2 s; at 800 members `?` takes 4.7 s.
+    // Fix: take the members a strip matches directly (Strip::members(env, typ, true),
+    // linear), compute them once per check, and share one dispatch_members list across
+    // Strip::of and open_member_raising_nothing. probe:
+    // design/review-2026-11-16/repro/c-error-op-strip-taken-quadratic.sh
+    // (c-error-op-02)
     fn taken(self, env: &Env, typ: &Type) -> Result<Type> {
         match typ.diff_exact(env, &self.removed())? {
             Some(rest) => typ.diff(env, &rest),
@@ -1572,6 +1584,17 @@ impl<R: Rt> Catch<R> {
         child: &mut super::Child<'_, R>,
         check: bool,
     ) -> Result<()> {
+        // CR claude for claude: [bug/low] A handler that reads its binder's parts over
+        // a region no raise reaches is refused with "expected tuple not _" at `e.0`,
+        // which names neither the catch nor the cause; a seq's `with(e)` does the same.
+        // `{ catch(e) msg <- "[e.0.error]"; a[1]$ }` is the smallest case, and the same
+        // handler written `"[e]"` checks with no warning though it can never run. Fix:
+        // when the binder's raised type is still bottom once the covered region is
+        // checked, say so over the handler's error (`Told::over`: no `?` under this
+        // catch raises, so `e` has no type) and warn that the catch hears nothing.
+        // probe:
+        // design/review-2026-11-16/repro/x-engine-seq-errors-catch-no-raise-diagnostic.gx
+        // (x-engine-seq-errors-06)
         wrap!(self.handler, child(&mut self.handler, ctx))?;
         // a handler that reads the error was checked at the bind's type; a
         // handler that ignores it (the REPL's tail catch) takes any raise
@@ -1666,13 +1689,53 @@ impl<R: Rt> Qop<R> {
         // warned once, at the definition's check: an instance compiles
         // under its call site's handlers, which raise_throws judges
         if check && let QopMode::Raise { handler: None, flags, .. } = &self.mode {
+            // CR claude for claude: [bug/medium] A seq whose run raises with no catch
+            // above it is warned here as "error raised by ? will not be caught" at the
+            // `seq` keyword, where there is no `?`: the machine's handler is a
+            // compiler-made Rethrow whose spec is the seq's. At run time the same
+            // Rethrow's handler-less branch in Qop::update logs "unhandled error <seq
+            // site> {cause: null, error: `A(1), ori: {..}, pos: {column: i32:3, line:
+            // i32:16}}". That is the whole chain with typed integers and the real raise
+            // site buried in it, where a handler-less `?` logs only its payload at its
+            // own site. Fix: for ExprKind::Rethrow, word the warning for the seq. When
+            // the payload is a chain, log its `error` (chain_error) at the site of the
+            // link that raised it. probe:
+            // design/review-2026-11-16/repro/c-error-op-seq-rethrow-diagnostic.gx
+            // (c-error-op-03)
             Self::check_unhandled(&ctx.env, *flags, &self.spec, "error raised by ?")?;
         }
         let op = if self.raises() { '?' } else { '$' };
+        // CR claude for claude: [bug/medium] When the operand is only an error,
+        // strip_typ returns Type::Bottom, but this site only checks that the Qop's
+        // fresh cell (Qop::compile's empty_tvar) contains it, so the cell stays open.
+        // never() is typed Type::Bottom and a select absorbs it; this open cell is not
+        // absorbed. As a result, `select x { 2 => error(`E(x))?, _ => x }` keeps an
+        // undecided member: a later `select v { 0 => 1, n => n }` is refused asking to
+        // annotate v (accepted with never()), and at the top level the select cannot
+        // fuse ('a region of type '_N: unbound has no kernel return').
+        // lang::errors::arm_input_raise_delivers pins that as FuseExpect::None, and its
+        // #[native] twin fuses only through `let v: i64`. Bind the cell to Type::Bottom
+        // when the strip leaves nothing, as strip_typ's doc promises, then flip that
+        // fixture to FuseExpect::Jit. probe:
+        // design/review-2026-11-16/repro/tests-lang-rest-d-raise-arm-leaves-select-open.gx
+        // (tests-lang-rest-d-02)
         let (strip, rtyp) = wrap!(self, strip_typ(ctx, op, self.n.typ(), decided))?;
         self.strip = strip;
         self.raised = Self::raised_typ(strip, &self.n);
         if check {
+            // CR claude for claude: [perf/medium] When the operand is always what the
+            // op strips (`error(`E(x))?`, `error(..)$`), `rtyp` is ⊥ and self.typ is
+            // left an unbound cell. Fusion cannot classify that cell: a select arm
+            // holding the raise refuses its region ("a region of type '_N: unbound has
+            // no kernel return"), and a `never(error(..)?)` arm's discarded argument
+            // refuses emission ("doesn't classify — can't drop it"). strict_fusion.md
+            // says both fuse (emit_qop_always_bad). `#[native] select x { 2 =>
+            // error(`E(x))$, _ => x }` at the top level is refused, while with `let w:
+            // i64 =` it fuses and both engines agree. Settle the cell to ⊥ where the
+            // strip leaves nothing, or freeze such a cell as ⊥ in fusion. Then
+            // lang::fusion's never_arm_args_raise and arm_raise_standing_input fuse.
+            // probe: design/review-2026-11-16/repro/tests-fusion-arm-raise-defuses.sh
+            // (tests-fusion-02)
             wrap!(self, self.typ.check_contains(&ctx.env, &rtyp))?;
         }
         if let Some(handler) = self.handler() {
@@ -1861,6 +1924,15 @@ impl ErrorRelay {
                 let (id, _) = parent.id();
                 ctx.rt.set_var(id, e.clone())
             }
+            // CR claude for claude: [readability/low] An http or rpc handler's raise
+            // that no catch covers is logged twice per request. Here it is logged as
+            // "unhandled error error:{cause: null, error: `Empty("/a"), ...}": no site,
+            // `error` doubled, a format no other unhandled report uses. The builtin's
+            // Reply also logs it as "an http handler raised: ...". Fix: drop this
+            // report, since every Handler user logs the raise. Or log it through
+            // unhandled_msg with the chain's own site and its `error` field. probe:
+            // design/review-2026-11-16/repro/c-error-op-relay-unhandled-log.gx
+            // (c-error-op-04)
             None => report_failure!(&format_compact!(
                 "unhandled error {}",
                 crate::typ::Naked(&e)

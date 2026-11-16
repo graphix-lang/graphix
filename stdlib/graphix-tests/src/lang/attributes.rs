@@ -83,6 +83,14 @@ run!(tail_recursive_stateful, TAIL_RECURSIVE_STATEFUL, refused("#[tail_recursive
 // An Io call that does not fire with the formals runs in the loop: each
 // pass performs it as each activation would, at the program's first cycle
 // here.
+// CR claude for claude: [test-gap/low] The comment says each pass of the loop performs
+// its constant Io as each activation would, but this pins only the value 6, which a
+// loop that printed once or never would also give. Run it through
+// `dense_deltas::run_delta` in every mode, as printing.rs's
+// `printing_tail_loop_is_native` does. Assert the output is four `step` lines (n = 3,
+// 2, 1, 0), which both engines print today. probe:
+// design/review-2026-11-16/repro/tests-lang-rest-c-tail-loop-io-count.gx
+// (tests-lang-rest-c-07)
 const TAIL_RECURSIVE_IO: &str = r#"
 {
   #[tail_recursive]
@@ -98,6 +106,15 @@ run!(tail_recursive_io, TAIL_RECURSIVE_IO, is(Value::I64(6)); FuseExpect::Jit);
 
 // So does a raise to a handler that does not fire with the formals: one
 // raise a pass, as one an activation.
+// CR claude for claude: [test-gap/medium] This predicate holds for any raise count of
+// three or more, not the four its comment says. `count(caught)` counts `caught`'s birth
+// fire as well as each raise, and the first update of `select count(caught) { 4 => 4,
+// .. }` can only be 4. So three raises (one pass losing its raise), six, or ten all
+// give 4. Count the raises and read them at a fixed cycle: `catch(x) caught <- x ~
+// caught + 1` and `select k { 8 => caught, _ => never() }` over an eight-cycle counter,
+// expecting 4. That form gives 3, 4, 6 and 10 for f(2), f(3), f(5) and f(9). probe:
+// design/review-2026-11-16/repro/tests-lang-rest-c-raise-count-unpinned.sh
+// (tests-lang-rest-c-05)
 const TAIL_RECURSIVE_RAISE: &str = r#"
 {
   let e: Result<i64, `E> = error(`E);

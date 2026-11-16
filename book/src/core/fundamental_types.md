@@ -307,6 +307,12 @@ between the delimiters.
 
 ## Any
 
+<!-- CR claude for claude: [readability/low] "Unifies with any other type" reads as
+two-way, and it is one-way. `Any` holds a value of every type, but no concrete type
+holds an `Any`: `let y: i64 = x` with `x: Any` is refused, "i64 does not contain Any",
+which is why the next sentences cast. Say "every value is an Any; to use an Any as a
+particular type, cast it or select on its type". probe:
+design/review-2026-11-16/repro/book-core-any-one-way.sh (book-core-12) -->
 The `Any` type is a type that unifies with any other type, it corresponds to the
 underlying variant type that represents all values in Graphix (and netidx). It
 is not used very often, as it provides very few guarantees, however it has it's
@@ -462,6 +468,15 @@ if you need random access, convert to an array.
 
 ### Lists as Data
 
+<!-- CR claude for claude: [doc-drift/medium] This paragraph says pack writes a list as
+a flat array, so `pack::write_bytes([<1, 2, 3>])` is the same bytes as
+`pack::write_bytes([1, 2, 3])`. That is false: pack keeps the list's marked cells.
+Pack's `fc_write_bytes` goes through `to_marked_data`, pack.gxi says it preserves list
+kinds, and design/list_native.md and stdlib/pack.md agree, so the comparison is false.
+Only json, toml and netidx strip a list to a flat array. Say that, and give
+`json::write_str([<1, 2, 3>])` ("[1,2,3]") as the example. A pack read into `List<i64>`
+or `Array<i64>` accepts either form. probe:
+design/review-2026-11-16/repro/book-core-pack-list-cells.sh (book-core-01) -->
 Data carries no list cells: every writer (`json`, `toml`, `pack`, netidx)
 writes a list as a flat array, so `pack::write_bytes([<1, 2, 3>])` is the
 same bytes as `pack::write_bytes([1, 2, 3])`. A typed read or a cast to a

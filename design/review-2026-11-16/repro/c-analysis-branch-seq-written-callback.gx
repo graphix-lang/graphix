@@ -1,0 +1,25 @@
+// c-analysis-branch: a seq step that hands a builtin a function VARIABLE
+// something writes is planned by the variable's initial lambda.
+//
+// `cb` starts as a lambda that writes nothing and is rewritten (`<-`) to
+// one that writes `b`. `analysis::handed_def` resolves the argument `cb`
+// through `bind_to_lambda` to its initializer, so `builtin_reach` answers
+// `Reads` and the step is summarised "reads all, writes nothing"
+// (GXDBG_SEQPLAN=1: "reading builtin filter", plan "S0 -> S1 same"). The
+// next step then enters in the cycle the callback's write is still queued
+// and reads the old `b`.
+//
+// command:
+//   graphix --no-cache design/review-2026-11-16/repro/c-analysis-branch-seq-written-callback.gx
+// expected: 5 (design/dependency_summaries.md §1, the first failure: a
+//   callee's write is seen by the next step), as the same program prints
+//   with `let cb = |x: i64| -> bool { b <- x; true };` and no `cb <- ..`
+//   (plan "S0 -> S1 next")
+// observed: 0
+let b = 0;
+let cb = |x: i64| -> bool true;
+cb <- once(b) ~ |x: i64| -> bool { b <- x; true };
+let go = sys::time::after_idle(duration:100.ms, 1);
+let r = seq go { filter(5, cb); let s = b; s };
+sys::exit(sys::time::after_idle(duration:500.ms, 0));
+r

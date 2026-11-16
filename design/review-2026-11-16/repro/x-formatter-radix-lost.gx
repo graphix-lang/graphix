@@ -1,0 +1,15 @@
+// Title: fmt rewrites hex, octal and binary integer literals in decimal
+// Command: graphix fmt --stdout x-formatter-radix-lost.gx
+// Expected: the literals as written (the radix is the author's choice, as a
+//   string's delimiters are), or the normalization listed in
+//   design/formatter.md's "What the formatter does normalize".
+// Observed:
+//   let mask = u32:4278255360;
+//   let bits = u8:165;
+//   let perm = u32:493;
+//   let h = 9223372036854775807;
+let mask = u32:0xff00ff00;
+let bits = u8:0b10100101;
+let perm = u32:0o755;
+let h = 0x7fffffffffffffff;
+(mask, bits, perm, h)

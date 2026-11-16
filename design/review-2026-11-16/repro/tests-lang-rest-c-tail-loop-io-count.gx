@@ -1,0 +1,19 @@
+// lang::attributes::tail_recursive_io claims each pass of the loop performs
+// its constant Io as each activation would, but pins only the value 6.
+// This is the fixture with an exit: it prints `step` four times (n = 3, 2,
+// 1, 0) and 6, fused and --no-fusion alike; nothing in the test would see
+// a loop that printed once, or not at all.
+//
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache \
+//   design/review-2026-11-16/repro/tests-lang-rest-c-tail-loop-io-count.gx
+// Expected and observed: step step step step 6
+let result = {
+  #[tail_recursive]
+  let rec f = |n: i64, acc: i64| -> i64 {
+    println("step");
+    select n { 0 => acc, _ => f(n - 1, acc + n) }
+  };
+  f(3, 0)
+};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+result

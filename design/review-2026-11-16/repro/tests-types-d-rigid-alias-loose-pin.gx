@@ -1,0 +1,17 @@
+// lang::inference::rigid_type_variables_survive_a_cell_merge holds
+// RIGID_ALIAS_FOREIGN_MEMBER to msg.contains("does not contain"). The
+// right refusal is at the definition: "[null, 'a] does not contain
+// [i64, null, 'a]: a call picks 'a ... drop `-> [null, 'a]`". This
+// program is what an `'a` that absorbed the foreign `0` (bound to i64)
+// would leave, and its refusal also says "does not contain", so the
+// assertion cannot tell the rule working from the rule broken.
+// Command: graphix --no-cache --check tests-types-d-rigid-alias-loose-pin.gx
+// Observed: type mismatch Array<i64> does not contain Array<string>
+{
+  let first = |rows: [Array<i64>, null]| -> [i64, null] select rows {
+    null as _ => null,
+    [a, ..] => a,
+    _ => 0
+  };
+  select first(["s"]) { null as _ => "", v => v }
+}

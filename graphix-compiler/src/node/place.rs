@@ -265,6 +265,13 @@ pub fn read_path<'a>(
 
 /// `root` with the value at `path` replaced by `v`. A map step compares
 /// keys, so the caller runs this under `coretraits::with_hooks`.
+// CR claude for claude: [structure/low] `write_path` matches every `Step` against the
+// value as `read_path` does: index bounds through `index_of`, an error's and an
+// abstract value's payload, `field_of`, and the key's orderability check with its
+// message, in a different arm order. The two must agree, or a write patches another
+// place than the read reads. Fix: one `fn step<'v>(step: &Step, cur: &'v Value) ->
+// Result<(Hole<'v>, Option<&'v Value>)>` that both walks use (`None` for an absent key,
+// which only a write's last step accepts). Found by reading; not run. (x-dup-08)
 pub fn write_path<'a>(
     root: &Value,
     path: impl IntoIterator<Item = &'a Step>,

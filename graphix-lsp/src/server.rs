@@ -24,6 +24,13 @@ use std::{path::PathBuf, sync::Arc};
 
 /// Prefer UTF-32 when the client supports it: our cursor logic counts
 /// `char`s, and UTF-16 (the LSP default) diverges on non-BMP characters.
+// CR claude for claude: [readability/low] The doc above says UTF-16 'diverges on
+// non-BMP characters', but every position is translated at the boundary (`LineIndex`,
+// `ServerState::decode`/`encode`), and UTF-16 answers are correct with non-BMP
+// characters on the line. Fix: keep only why UTF-32 is preferred (its columns are char
+// columns, so a conversion is a count). Probe: hover, definition and diagnostics over a
+// line holding two U+1D49C characters returned correct UTF-16 and UTF-32 columns.
+// (lsp-09)
 fn select_position_encoding(init: &InitializeParams) -> Option<PositionEncodingKind> {
     let offered = init.capabilities.general.as_ref()?.position_encodings.as_ref()?;
     offered.iter().find(|e| **e == PositionEncodingKind::UTF32).cloned()

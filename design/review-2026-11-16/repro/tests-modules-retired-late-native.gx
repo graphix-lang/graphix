@@ -1,0 +1,28 @@
+// Title: design/module_system.md says a retired load's late instance binds its
+// own functions at run time and fuses none; it binds them statically and fuses.
+// `saved` is the first body's `make`, first called (by `late`) after the reload
+// at ep 6 retired that body. Its `#[native] helper(x)` holds in the JIT.
+// Command: timeout -s KILL 60 graphix --no-cache tests-modules-retired-late-native.gx
+// Observed: (null, [20, 21])
+// Control: write `#\[native\] helper(x ~ x)` in the first body instead and the
+// late bind is refused: "saved(x + ep): binding the callee failed: ...
+// #[native] expression did not fully fuse to native code: the node-walk
+// computes `x ~ x`", so the attribute is checked at that late instance.
+trait Sh { val sh: fn(self) -> i64 };
+let app = |x: Sh| Sh::sh(x) + 5;
+let ep = 0;
+ep <- select ep { n if n < 14 => n + 1, _ => never() };
+let src: string = never();
+src <- select ep {
+    2 => "use super::{Sh, app}; type C = Abstract<i64>; impl Sh for C { let sh = |c: C| c.0 + 1 }; let helper = |y: i64| y + 6; let make = |x: i64| #\[native\] helper(x)",
+    6 => "use super::{Sh, app}; type C = Abstract<i64>; impl Sh for C { let sh = |c: C| c.0 + 2000 }; let helper = |y: i64| y + 6; let make = |x: i64| #\[native\] helper(x) * 10",
+    _ => never()
+};
+let s = mod d dynamic { sig { use super::{Sh, app}; val make: fn(x: i64) -> i64 }; source src };
+let saved: fn(x: i64) -> i64 = never();
+saved <- select ep { 4 => ep ~ d::make, _ => never() };
+let xs: Array<i64> = never();
+xs <- select ep { 10 => [0, 1], _ => never() };
+let late = array::map(xs, |x| saved(x + ep));
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+(s, select ep { 14 => late, _ => never() })

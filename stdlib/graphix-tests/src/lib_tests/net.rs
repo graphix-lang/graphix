@@ -128,6 +128,16 @@ run!(net_list, NET_LIST, |v: Result<&Value>| {
 
 // A polled listing that finds what it last answered answers nothing, and
 // the next tick lists again: a path published after such a poll is seen.
+// CR claude for claude: [test-gap/low] net_list_polled_sees_a_later_path reads the
+// listing's length at a 2 s wall deadline (`after_idle(duration:2.s, null) ~ n`),
+// although the second path is the value that must come. design/testing.md allows a wall
+// window only for what must not come. The same holds for request_after_wake (the list
+// case's second error, read at 400 ms), net_write_not_repeated_after_wake (the first
+// write, read at 400 ms) and tcp.rs's tcp_accept_busy_trigger (50 accepts, read at 1
+// s). Gate each read on the value that must come (`select n { 2 => n, _ => never() }`).
+// Where a count must also not grow, start its window at that gate
+// (`after_idle(duration: .., gate) ~ count`), so a slow box waits instead of failing.
+// Found by reading; not run. (tests-lib-b-c-05)
 const NET_LIST_POLLED: &str = r#"
 {
   sys::net::publish("/local/poll/a", 1);
@@ -1037,6 +1047,13 @@ run!(net_write_not_repeated_after_wake, r#"{
 // refuses a function, a reference and a type it cannot settle, so every
 // write reaches the handler cast (x-builtin-effects-02, gx-stdlib-01,
 // sys-net-03, tests-lib-b2-01, tests-lib-b2-02).
+// CR claude for claude: [style/low] The comment above ends in review finding ids
+// (x-builtin-effects-02, gx-stdlib-01, sys-net-03, tests-lib-b2-01, tests-lib-b2-02),
+// which record the pin's history, not its rule. The comments on TCP_READ_ACROSS_SLEEP,
+// pack_refuses_trailing_bytes, the_deepest_written_table_reads_back and
+// exit_without_a_listener_keeps_the_process do the same, and graphix-tests holds about
+// 60 more. Drop the ids and keep the rule each comment states. Found by reading; not
+// run. (tests-lib-b-c-08)
 run!(net_on_write_open_type_refused, r#"{
     let n: i64 = -1;
     sys::net::publish(#on_write: |v: Array<'b>| n <- v ~ array::len(v), "/local/ow_open", 0);

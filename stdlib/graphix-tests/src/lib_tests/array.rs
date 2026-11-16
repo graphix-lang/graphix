@@ -373,6 +373,14 @@ run!(array_fold_may_bottom, ARRAY_FOLD_MAY_BOTTOM, |v: Result<&Value>| {
 // The fold's firing is per slot, not the acc carry: slot 0 consumes
 // each fired init while the final carry stays stale, and the fold
 // still fires per init re-fire. The counter pins the cadence.
+// CR claude for claude: [test-gap/low] `filter(c, |n| n == 5)` passes on the fifth fire
+// whatever follows. It pins "at least 5 fires", not the cadence the comment claims: a
+// fold that fires once too often (a spurious fire after the last init, a doubled
+// delivery) still answers 5. Read the count once the program is quiet, e.g.
+// `sys::time::after_idle(duration: 50.ms, c) ~ c` as the value, so 5 pins the cadence
+// both ways. probe:
+// design/review-2026-11-16/repro/tests-lib-a-fold-midchain-lower-bound.gx
+// (tests-lib-a-03)
 const ARRAY_FOLD_MIDCHAIN_FIRE: &str = r#"
 {
   let x = array::iter([1, 2, 3, 4]);

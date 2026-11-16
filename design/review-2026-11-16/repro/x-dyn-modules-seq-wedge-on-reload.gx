@@ -1,0 +1,17 @@
+// A reload while a seq step's call into the module is pending wedges the seq for good
+// run: timeout -s KILL 30 graphix --no-cache design/review-2026-11-16/repro/x-dyn-modules-seq-wedge-on-reload.gx
+// expected: an answer for each trigger (n=1 and n=8): 'r=.. at n=..' twice, as the same program prints when the source never changes
+// observed: no 'r=' line at all: the reload at n=2 replaces the function the step issued at n=1, the step never answers, and the trigger at n=8 is dropped by the busy seq (a seqq queues it forever)
+let clk = sys::time::timer(duration:100.ms, true);
+let n = 0;
+n <- clk ~ n + 1;
+let ver = select n { 0 => 0, 1 => 0, 2 => 1, _ => 1 };
+let st = mod foo dynamic {
+    sig { use sys::time::timer; val slow: fn(x: i64) -> i64 };
+    source "let slow = |x| timer(duration:350.ms, false) ~ (x + [uniq(ver)] * 1000)"
+};
+let go = select n { 1 => n, 8 => n, _ => never() };
+let r = seq go { let a = foo::slow(go); a + 1 };
+println("n=[n] st=[st]");
+println("r=[r] at n=[r ~ n]");
+sys::exit(n ~ select n { 15 => 0, _ => never() })

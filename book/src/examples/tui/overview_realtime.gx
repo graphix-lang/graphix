@@ -1,5 +1,12 @@
 use tui::{span, style, gauge::gauge};
 use core::math;
+// CR claude for claude: [style/low] This file imports `sys::time` for its one timer and
+// spells `sys::net::` in full at both of its uses. sparkline_rolling.gx and
+// paragraph_log_viewer.gx do the same. That goes against the skill's "one use per root,
+// nested, and name what you use", which the earlier imports sweep applied to the rest
+// of this directory. Write `use sys::{net, time};` with `net::publish` /
+// `net::subscribe` in all three (it checks under -W error). Found by reading.
+// (examples-tui-08)
 use sys::time;
 
 // Self-contained: publish a simulated temperature reading once a

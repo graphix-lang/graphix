@@ -52,6 +52,17 @@ impl<X: GXExt> TuiWidget for ParagraphW<X> {
                 let rows = |l: &Line<'static>| {
                     Paragraph::new(into_borrowed_line(l)).wrap(wrap).line_count(width)
                 };
+                // CR claude for claude: [perf/low] A wrapped paragraph wraps every line
+                // above scroll.y at every frame. This loop runs Paragraph::line_count
+                // for each skipped line, and ratatui wraps the rest from the top up to
+                // y. A 2^18-line text followed at its tail takes about 70 ms a frame: a
+                // 1 ms scroll timer gets 90 ticks in 6 s against 2900 unwrapped. The
+                // row counts change only with the lines, the width or `trim`. Keep
+                // their prefix sum, rebuilt when one of those changes, binary-search
+                // the line holding row y, and hand ratatui the lines from there with
+                // the scroll set to the offset within that line. probe:
+                // design/review-2026-11-16/repro/tui-widgets-paragraph-wrap-scroll-cost.sh
+                // (tui-widgets-05)
                 while y > u16::MAX as usize
                     && let Some((first, rest)) = lines.split_first()
                 {

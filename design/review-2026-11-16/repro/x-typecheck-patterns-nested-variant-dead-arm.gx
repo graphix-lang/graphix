@@ -1,0 +1,10 @@
+// Title: an arm that an earlier arm subsumes position by position is accepted
+// where the variants nest three deep (two deep over a recursive typedef).
+// Command: graphix --no-cache --check x-typecheck-patterns-nested-variant-dead-arm.gx
+// Expected: the second arm is refused as unreachable: `S(`S(`S(_))) takes
+//   every value `S(`S(`S(`Z))) matches. One level shallower it is refused:
+//   |x: [`S([`S([`Z, `Y]), `Z]), `Q]| select x { `S(`S(_)) => 0, `S(`S(`Z)) => 1, _ => 2 }
+//   -> pattern `S(`S(`Z)) will never match [`Q, `S(`Z)], unused match cases
+// Observed: the check passes (exit 0). So does, over `type L = [`S(L), `Z]`,
+//   |x: L| select x { `S(`S(_)) => 0, `S(`S(`Z)) => 1, _ => 2 }
+|x: [`S([`S([`S([`Z, `Y]), `Z]), `Z]), `Z]| select x { `S(`S(`S(_))) => 0, `S(`S(`S(`Z))) => 1, _ => 2 }

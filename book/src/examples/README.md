@@ -12,6 +12,14 @@ change to the documentation.
 
 ## The gate
 
+<!-- CR claude for claude: [doc-drift/low] Step 3's command fails: graphix-shell's
+integration tests are one target, tests/shell/main.rs, so there is no `examples_compile`
+test target. Use `cargo test -p graphix-shell --test shell examples_compile`, or the
+gate, `cargo xtest`. This paragraph also calls the gate "the plain cargo test" and says
+fences and REPL inputs are parsed. In fact untagged fences and transcript inputs are
+checked (`Claim::Accepted`, `Repl::transcript`), and it names only the `ignore` and
+`refused` tags, not `fragment`, `sig`, `cases` and `repl`. Found by reading; not run.
+(book-core-10) -->
 `graphix-shell/tests/shell/examples_compile.rs` builds every example (check,
 elaboration and fusion) against the full shell environment in the plain
 `cargo test`, as `graphix --expand` does, so an example must build, not
@@ -31,4 +39,10 @@ cargo run --bin graphix -- book/src/examples/tui/barchart_basic.gx
 
 1. Put the `.gx` file in the subdirectory of its chapter.
 2. Include it in the chapter with `{{#include ../../examples/.../file.gx}}`.
+<!-- CR claude for claude: [doc-drift/low] `--test examples_compile` names no target.
+graphix-shell's integration tests are one binary, tests/shell/main.rs (target `shell`),
+with examples_compile as a module of it, so cargo refuses this command for want of a
+test target. Write `cargo test -p graphix-shell --test shell examples_compile`, or
+`cargo xtest`, the gate. Found by reading; not run. Also reported as
+(tests-shell-compiler-b-12). (examples-tui-09) -->
 3. Run it, and run `cargo test -p graphix-shell --test examples_compile`.

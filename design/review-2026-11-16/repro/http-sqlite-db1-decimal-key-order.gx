@@ -1,0 +1,22 @@
+// A db tree keyed by a union holding decimal orders its keys unlike `<`.
+// Command: rm -rf /tmp/dec.db; timeout -s KILL 60 graphix --no-cache http-sqlite-db1-decimal-key-order.gx
+// Expected (keys in the language's order, as array::sort and `<` give it;
+// db::first the least key):
+//   ([decimal:-2.0, decimal:1.5, null], [decimal:-2.0, decimal:1.5, null], false, (decimal:-2.0, 0))
+// Observed: the cursor yields null first, and db::first answers null:
+//   ([null, decimal:-2., decimal:1.5], [decimal:-2.0, decimal:1.5, null], false, (null, 0))
+type K = [decimal, null];
+let ks: Array<K> = [null, decimal:1.5, decimal:-2.0];
+let db = db::open("/tmp/dec.db")$;
+let t: db::Tree<K, i64> = db::tree(db, null)$;
+let a: K = null;
+let b: K = decimal:1.5;
+let r = seq {
+  let _ = db::batch(t, array::map(ks, |k| `Insert(k, 0)))$;
+  let read = db::cursor::read_many(db::cursor::new(t), 100)$;
+  let keys = array::map(read, |(k, _)| k);
+  let f = db::first(t)$;
+  (keys, array::sort(ks), a < b, f)
+};
+sys::exit(sys::time::after_idle(duration:200.ms, r ~ 0));
+r

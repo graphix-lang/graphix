@@ -1,0 +1,17 @@
+// Title: a written test over a tuple holding two functions makes them one
+//        type: matching_type's memo hands the second part the first's
+//        type, and the narrowing welds their cells.
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-11-16/bin/graphix --check \
+//          design/review-2026-11-16/repro/t-setops-matching-memo-welds-fns.gx
+// Expected: exit 0. a and b are two instances (the program checks without
+//           the select, and with the scrutinee (a, (b, 0), n)).
+// Observed: "type mismatch i64 does not contain string" at b("s").
+let mk = |z| |x| x;
+let a = mk(0);
+let b = mk(0);
+let n: [i64, null] = 1;
+let r = select (a, b, n) {
+  (Any, Any, i64) as (_, _, k) => k,
+  _ => 0
+};
+(a(1), b("s"))

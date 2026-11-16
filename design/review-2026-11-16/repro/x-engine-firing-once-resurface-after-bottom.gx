@@ -1,0 +1,35 @@
+// once/take (every raw builtin that returns `bottom_of` and later rides its
+// resident) comes back from bottom with no event and no moved mark: a `let`
+// over it, a CachedArgs builtin and a block stay bottom forever, a tuple, an
+// operator and a select see the value, and a call or a collection differs
+// between the node-walk and the JIT
+//
+// run:  /home/eric/tmp/review-2026-11-16/bin/graphix-fuzz check <this file>
+//       /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache [--no-fusion] <this file>
+//
+// d = 10 / (n % 3) is bottom at n = 0 and 3, and 10, 5 at n = 1, 2 and 4, 5.
+// once(d) takes 10 at n = 1, is bottom with d at n = 3, and d is back at
+// n = 4. Each element of the result is the last n at which its reader had a
+// value (written by a connect, so a row shows the cycle before it).
+//
+// expected, if the resident re-surfaces as `bottom_of` says: every element
+// follows n at 4 and 5:           (5, 5, 5, 5, 5, 5, 5)
+// expected, if once stays bottom: (5, 2, 2, 2, 2, 2, 2)
+// observed, node-walk, last row:  (6, 5, 2, 5, 2, 2, 2)
+// observed, JIT, last row:        (6, 5, 2, 5, 5, 5, 2)
+// graphix-fuzz check: DIVERGENCE — fusion/JIT bug (interp != jit)
+{
+    let n = 0;
+    n <- select n { k if k < 6 => k + 1, _ => never() };
+    let d = 10 / (n % 3);
+    let f = |x: i64| x + 1;
+    let on = once(d);
+    let p_tup = (-1, 0); p_tup <- (n, once(d));
+    let p_let = (-1, 0); p_let <- (n, on);
+    let p_sel = (-1, 0); p_sel <- (n, select once(d) { x => x + 2 });
+    let p_call = (-1, 0); p_call <- (n, f(once(d)));
+    let p_map = (-1, [0]); p_map <- (n, array::map([once(d)], |x: i64| x + 3));
+    let p_max = (-1, 0); p_max <- (n, max(once(d), 0));
+    let ln = -1; ln <- n;
+    (ln, p_tup.0, p_let.0, p_sel.0, p_call.0, p_map.0, p_max.0)
+}

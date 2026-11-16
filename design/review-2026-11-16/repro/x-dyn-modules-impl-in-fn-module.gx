@@ -1,0 +1,14 @@
+// A dynamic module declared in a function body can load no source that writes an impl, and the refusal blames the source
+// run: timeout -s KILL 30 graphix --no-cache design/review-2026-11-16/repro/x-dyn-modules-impl-in-fn-module.gx
+// expected: "ok 12" (the impl is of the load's own type C), or a refusal that names the module's place in the program
+// observed: DynamicLoadError .. impl Sh is in a function body; an implementation is global, declare it outside every function
+trait Sh { val sh: fn(self) -> i64 };
+let mk = |k: i64| {
+    let st = mod foo dynamic {
+        sig { use super::Sh; val f: fn(x: i64) -> i64 };
+        source "type C = Abstract<i64>; impl Sh for C { let sh = |c| c.0 + 1 }; let f = |x| Sh::sh(C(x))"
+    };
+    select st { error as e => "err [e]", null as _ => "ok [foo::f(k)]" }
+};
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+mk(11)

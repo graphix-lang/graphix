@@ -43,6 +43,16 @@ async fn idle_slots_do_not_enter_their_call_sites() -> Result<()> {
             let values =
                 updates_until(&ctx.rt, &mut rx, result.exprs[0].id, Collect::Settled)
                     .await?;
+            // CR claude for claude: [test-gap/low] The bound counts only boundaries a
+            // `Prune` skipped. When `skip_idle_slot` does not short-circuit an idle
+            // slot and the slot's body boundary is marked dirty, the body is walked,
+            // and walks are counted in `boundaries().0`, which this test never reads. A
+            // change that marks every slot body on each write to `i`, or that stops
+            // wrapping lambda bodies in `Prune`, enters all 200 idle call sites every
+            // cycle and still passes with `skipped` near zero. Take `(walked, skipped)`
+            // before and after the run, and bound their sum by what the current code
+            // walks (a few boundaries per cycle, not 200). Found by reading; not run.
+            // (tests-lib-b-b-03)
             let skipped = control.boundaries().1 - before;
             ctx.shutdown().await;
             assert_eq!(values.len(), 101, "{mode:?}");

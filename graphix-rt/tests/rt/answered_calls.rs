@@ -26,6 +26,13 @@ async fn heard(code: &'static str) -> Result<Vec<&'static str>> {
     tokio::time::sleep(Duration::from_millis(300)).await;
     while rx.try_recv().is_ok() {}
     h.call_answered(ValArray::from_iter([Value::from("a")]))?;
+    // CR claude for claude: [risk/low] This waits on the wall clock, not the runtime.
+    // Under the gate's load a late cycle leaves `order` short and the test fails.
+    // embedder_writes::run and send_loop::values sleep the same way, and send_loop's
+    // Rig::stall never checks the runtime reached its send loop, so the two
+    // *_lands_unprompted tests can pass without exercising it. Use gx.wait_idle()
+    // before each drain (runtime_api::produced does), and assert the Rig's channel is
+    // full before the write. Found by reading; not run. (rt-08)
     tokio::time::sleep(Duration::from_millis(500)).await;
     let mut order = vec![];
     while let Ok(mut b) = rx.try_recv() {

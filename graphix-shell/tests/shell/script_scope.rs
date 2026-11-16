@@ -211,6 +211,15 @@ fn a_function_body_s_write_makes_its_let_one_instance() {
         let main = format!(
             "{holder}let g = |v: i64| {{ {write} <- |x: i64| x + 1; v }};\n{shows}"
         );
+        // CR claude for claude: [test-gap/low] The printed value checked here, "(1,
+        // 1)", is what the program prints in its first cycle, before the write lands.
+        // The test therefore passes whether or not the write ever takes effect; today
+        // "(2, 1)" follows. The same holds for the super, &mut super and import cases
+        // below. The "nested glob over a lambda" case checks "1", which its own
+        // `println(g(1))` prints whatever `f` becomes. Check the line after the write
+        // lands: "(2, 1)", and "2" for the lambda case. probe:
+        // design/review-2026-11-16/repro/tests-shell-compiler-a-write-effect-unpinned.gx
+        // (tests-shell-compiler-a-06)
         accepted(case, &main, &[], "(1, 1)");
     }
     let main = format!(

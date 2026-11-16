@@ -284,6 +284,17 @@ fn graphix_files() -> Vec<TokenStream> {
     }]
 }
 
+// CR claude for claude: [bug/low] When main.gx runs as a file, a package's
+// `src/graphix/main.gxi` is its interface, and a type declared there is in scope in the
+// body. The standalone build embeds `main.gx` alone: `main_program` returns its text,
+// `Shell::configure` loads it as `Load::Text`, and `GX::load_exprs` gives a text no
+// sig. So a main.gx that relies on its interface fails with "undefined type" only in
+// the standalone binary. graphix_ast_pack::emit skips main.gx but packs main.gxi into
+// the package's VFS as an interface with no module. Either carry the interface with the
+// program (emit skips main.gxi too, and main_program hands both texts to the shell), or
+// refuse a main.gxi in check_invariants. probe:
+// design/review-2026-11-16/repro/shell-standalone-main-gxi.sh (the standalone half is
+// simulated by running main.gx without its .gxi) (shell-03)
 fn main_program_impl(c: &Crate) -> TokenStream {
     let main = c.graphix_src().join("main.gx");
     if main.exists() {

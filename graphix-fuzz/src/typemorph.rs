@@ -229,6 +229,16 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
     }
     // a let over ⊥ (or an empty collection) is a cell its first reader
     // decides, so two of its readers do not commute
+    // CR claude for claude: [bug/low] open_lets judges a let open by `open_value` alone
+    // (never(), a connect, a let, an empty literal). It misses a let over a call whose
+    // declared return no argument decides, which `mustreject::open_init` knows through
+    // `TypeMap::open_return`. So stmt-permute swaps two annotated readers of `let v =
+    // str::parse("1")$` (or `list::nil(null)`), the first of which decides `v`, and
+    // files the refusal as a flip. Fix: check the base with types before the transforms
+    // (must_reject does that check anyway) and let open_lets ask `open_init`, so one
+    // judgment of an open let serves both lanes. probe:
+    // design/review-2026-11-16/repro/fuzz-mutate-permute-open-return.gx
+    // (fuzz-mutate-06)
     let open = open_lets(&stmts);
 
     // let-inline: substitute a single-use, unannotated, non-shadowed

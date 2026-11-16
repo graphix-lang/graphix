@@ -27,6 +27,13 @@ fn trait_method(i: &mut Input, sig: bool) -> R<TraitMethod> {
         false => Doc(None),
     };
     i.spaces();
+    // CR claude for claude: [bug/low] A `//` line after a method's `#[..]` and before
+    // its `val` fails here ("Unexpected `/` / Expected val"). leading_decorations
+    // accepts the same layout on an expression, and fmt moves the comment above the
+    // attribute. Read comments after the attributes too (as leading_decorations does)
+    // into the method's comments, which already print above its attributes. probe:
+    // design/review-2026-11-16/repro/t-parser-b-trait-attr-then-comment.sh
+    // (t-parser-b-05)
     let mut attrs: LPooled<Vec<Attr>> = LPooled::take();
     i.many(
         |i| {

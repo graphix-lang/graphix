@@ -1,0 +1,32 @@
+// A holder that is a bound cell refuses a constrained open cell its binding, written out, takes
+//
+// command (each program alone, in a file p.gx):
+//   /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache --check p.gx
+//
+// (1) this file as it stands: 'q is [i64, Error<`E>] (decided by `e`), `r` is an
+//     open cell within NoError.
+//   expected: checks, as (2) does: `r` takes the union without its errors (i64)
+//   observed: "type mismatch 'q: [i64, Error<`E>] does not contain
+//             '_NNNN: unbound within NoError: `r` is undecided at this call;
+//             annotate `r`"
+//
+// (2) the same holder written out:
+//     let mk = 'r: NoError |x: 'r| -> 'r x; let z = never(); let r = mk(z);
+//     let h: [i64, Error<`E>] = r; h
+//   observed: checks
+//
+// (3) a cell within Array<_> below a union holding one array member:
+//     let mk = 'r: Array<'e> |x: 'r| -> 'r x; let z = never(); let r = mk(z);
+//     let e: [Array<i64>, null] = null; let f = |a: 'q, b: 'q| 0; f(e, r)
+//   observed: "type mismatch 'q: [null, Array<i64>] does not contain '_NNNN:
+//             unbound within Array<'e: unbound>"
+//     and `let h: [Array<i64>, null] = r; h` in place of the call checks.
+//
+// GRAPHIX_DBG_BIND=1 shows the verdict is contains' own:
+//   CHK-CONTAINS 'q >= '_8202 -> false
+let mk = 'r: NoError |x: 'r| -> 'r x;
+let z = never();
+let r = mk(z);
+let e: [i64, Error<`E>] = 1;
+let f = |a: 'q, b: 'q| 0;
+f(e, r)

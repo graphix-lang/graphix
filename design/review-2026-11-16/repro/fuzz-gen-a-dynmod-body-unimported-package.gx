@@ -1,0 +1,12 @@
+// Title: a generated dynamic-module body reaches pack::/json::/toml::/sys::time, which BODY_PACKAGES does not import
+// Shape taken from program 844 of `graphix-fuzz gen 6000 1` (its g0, trimmed): the body is generated from
+// ctx.clone(), so a codec program's dynamic module draws codec round trips, and a duration/datetime
+// subexpression draws sys::time::*; the sig imports only core array str map list re.
+// Command: graphix --no-cache design/review-2026-11-16/repro/fuzz-gen-a-dynmod-body-unimported-package.gx
+// Expected (generate/mod.rs BODY_PACKAGES: "every package a generated body can reach"): the module loads, prints 7.
+// Observed: load failed: error:`DynamicLoadError("... pack::read not defined") then -1 (the fallback arm).
+// In gen 6000 1: 10 of 1351 full-import dynamic bodies reach an unimported package (json 6, pack 3, sys 1).
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+let s = mod d0 dynamic { sig { use core; use array; use str; use map; use list; use re; val g0: fn(a0: string) -> i32 }; source r#"let g0 = |v18: string| -> i32 { let r: i32 = pack::read(pack::write_bytes(i32:7)$)$; r }"# };
+let v = select s { error as e => { println("load failed: [e]"); i32:-1 }, null as _ => d0::g0("x") };
+v

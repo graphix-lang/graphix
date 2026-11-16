@@ -1,0 +1,37 @@
+// x-recursion: effects still run, over torn values, in the cycle a stop cuts
+//
+// A stop (the activation or stack budget, or the interrupt key) makes every
+// later lambda dispatch of the cut cycle ride its last result
+// (GXLambda::update), but the rest of the update pass still runs: nodes fed
+// by a fresh input and a ridden call fire, and effects below them act. Here
+// `balance(i)` rides cycle 2's 200 while `i` is 3, and the file write lands
+// with a pair the program never computes.
+//
+// command (run it from a scratch directory: the write goes to the current
+// directory):
+//   rm -f x-recursion-torn.txt; GRAPHIX_ACTIVATION_BUDGET=20000 \
+//     timeout -s KILL 30 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache \
+//     /home/eric/proj/graphix/design/review-2026-11-16/repro/x-recursion-stop-torn-effects.gx; \
+//     cat x-recursion-torn.txt
+//   (the same with --no-fusion)
+//
+// expected: the cycle the budget cuts writes nothing and shows nothing:
+//   (1, 10, 100)
+//   (2, 10, 200)
+//   Error: a runaway recursion exceeded the runtime's budget ...
+//   file: account 2 balance 200
+// observed (both engines): the file holds
+//   account 3 balance 200
+// and with fusion on the shell also shows the torn batch `(3, 10, 200)`
+// before the error. The interrupt (SIGQUIT sent to a long fused loop in
+// place of the budget) leaves the same file.
+let rec f = |n: i64| -> i64 select n { 0 => 0, _ => 1 + f(n - 1) };
+let balance = |x: i64| -> i64 x * 100 + count(x) * 0;
+let clk = sys::time::timer(duration:200.ms, 3);
+let i = 1;
+i <- clk ~ i + 1;
+let d = select i { 3 => 100000000, _ => 10 };
+let big = f(d);
+let b = balance(i);
+sys::fs::write_all(#path: "x-recursion-torn.txt", "account [i] balance [b]\n");
+(i, big, b)

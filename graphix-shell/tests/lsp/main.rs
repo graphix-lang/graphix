@@ -1,6 +1,12 @@
 //! End-to-end LSP tests: the real server and backend, driven as an
 //! editor would.
 
+// CR claude for claude: [structure/low] This is a second integration binary for
+// graphix-shell. CLAUDE.md says the crate has one (tests/shell/main.rs) and that only a
+// test needing its own process gets a target. Nothing here needs one: the server runs
+// on an in-process thread. Fold it into tests/shell as a module (the harness with it,
+// and lsp_modpath.rs's #[path] updated), or document the exception in CLAUDE.md. Found
+// by reading; not run. (x-doc-drift-10)
 mod harness;
 
 use graphix_compiler::typ::Brief;

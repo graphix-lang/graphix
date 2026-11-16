@@ -1,0 +1,21 @@
+// c-analysis-branch: #[sync] (and #[pure]) pass on a function that calls a
+// function VARIABLE something writes, judged by the variable's initial
+// lambda.
+//
+// `g` calls `f`, which a `<-` rewrites to an async function at run time.
+// `analysis::callee_own_facts` finds no static target and falls through to
+// `bind_to_lambda`, which still names `f`'s initializer, so `g` is inferred
+// sync and the assertion holds. With `f` async from the start
+// (`let f = |n: i64| -> i64 throttle(#rate: duration:0.001s, n);`, no
+// write) the same `g` is refused: "#[sync]: this function is async".
+//
+// command:
+//   graphix --no-cache design/review-2026-11-16/repro/c-analysis-branch-sync-written-callee.gx
+// expected: refused, "#[sync]: this function is async"
+// observed: runs, prints 42
+let f = |n: i64| -> i64 n * 2;
+#[sync]
+let g = |n: i64| f(n);
+f <- once(g(1)) ~ |n: i64| -> i64 throttle(#rate: duration:0.001s, n);
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+g(21)

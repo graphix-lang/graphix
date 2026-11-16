@@ -307,6 +307,14 @@ fn takes_path(cmd: &str) -> bool {
 // Two worker threads on purpose: the work is in the children, each
 // with its own runtime, and every parent thread is one stolen from them
 // (measured: per-core sizing was a 7.5x throughput regression).
+// CR claude for claude: [structure/low] main is one function of about 770 lines
+// covering twenty-odd subcommands. gen-check, reactive-check, leakcheck, fusecheck and
+// soak have their bodies inline, and the `[n] [seed]` parse is repeated in seven arms.
+// The `Err(e)` arms of gen-check's and reactive-check's `windowed` callbacks cannot
+// run: both subcommands install the abort-on-panic hook, so a worker panic aborts the
+// process before the JoinSet sees it. Fix: give each subcommand body its own function
+// called from the match, add one helper for the count and seed arguments, and delete
+// the two dead arms. Found by reading; not run. (fuzz-main-aux-08)
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> Result<ExitCode> {
     // Before anything allocates: the child half of the sandbox's
@@ -1362,6 +1370,17 @@ const LEAK_WITNESSES: &[(&str, &str)] = &[
     (
         // a written test's binds read at another kind than their local's:
         // a string local as a value, a value local as a string
+        // CR claude for claude: [bug/medium] The check refuses this witness. The
+        // literal in `[(i64, string), (f64, i64)] as (i64:0, s)` narrows `s` to string,
+        // so the `i64 as n` arm of `select s` is unreachable. The shell exits 1 at
+        // once, so `leakcheck` reports the witness DIED and exits FAILURE on every run,
+        // and the leak it was written for is not measured. CLAUDE.md asks for a
+        // leakcheck run when an owned-local class is added. Fix the witness so the
+        // literal does not narrow `s` to one member (replacing `(f64, i64)` with `(i64,
+        // i64)` in `f` checks). Also have leakcheck check each witness before timing it
+        // and report a refusal as REFUSED with its error. probe:
+        // design/review-2026-11-16/repro/fuzz-main-aux-leak-witness-refused.gx
+        // (fuzz-main-aux-04)
         "select-written-test-binds",
         "let clk = sys::time::timer(duration:0.001s, true);\n\
          let x = i64:0;\n\

@@ -1,0 +1,26 @@
+// Title: a collection whose callback binding fires every cycle with the same
+// function never forks its slots.
+//
+// Command (node-walk, 4 workers; compare the wall time of the two modes):
+//   for m in off auto; do
+//     time GRAPHIX_PAR=$m GRAPHIX_EVAL_THREADS=4 \
+//       graphix --no-cache --no-fusion x-parallel-callback-refired-never-forks.gx
+//   done
+//
+// Expected: `auto` forks the eight slots, as it does when `f` stands (replace
+// the select's scrutinee by a constant, `let flag = true; let f = select flag
+// { true => g1, false => g2 }`: 1.1 s against 1.65 s off, debug build).
+// Observed: off and auto take the same time (1.6 s to 1.75 s): `f` fires in
+// every cycle `n` does, with the function it already held, the call keeps its
+// instances, and `MapQ::update` still reads the delivery as a new callback
+// (`rebound`), runs the slots in order and redecides the site.
+let n = 0;
+n <- select n { k if k < 30 => k + 1, _ => never() };
+let heavy = |x: i64, t: i64| -> i64
+  array::fold(array::init(3000, |i| i), x, |a, i| (a * 31 + i + t) % 1000003);
+let g1 = |x: i64| -> i64 heavy(x, n);
+let g2 = |x: i64| -> i64 heavy(x, n) + 1;
+let f = select n { k if k < 1000 => g1, _ => g2 };
+let r = array::map([1, 2, 3, 4, 5, 6, 7, 8], f);
+sys::exit(select n { 30 => (r ~ 0), _ => never() });
+array::fold(r, 0, |a, v| a + v)

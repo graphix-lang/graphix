@@ -1,0 +1,20 @@
+// Title: (variant of x-typecheck-order-widen-drops-open-fn-cells.gx) the
+//        widening inside array::push drops the first element's open function
+//        cells: the check accepts, the build refuses
+// Command: graphix --no-cache --check <this file>   -> exit 0
+//          graphix --no-cache <this file>           -> exit 1
+// Expected: the check refuses `st <- "s"` (st is i64 once `h` stands beside
+//           g: fn(q: i64) -> i64 in one array), as the build's instance does.
+// Observed: --check passes; the run fails before any cycle with
+//   in the instance of array::push([(1, h)], (n, g)) at this call site
+//   type mismatch Array<([i64, null], fn(q: i64) -> i64)> does not contain
+//   Array<(i64, fn(q: string) -> string)>
+let n: [i64, null] = null;
+let st = never();
+let h = |q| { st <- q; st };
+let g: fn(q: i64) -> i64 = |q: i64| q;
+let r = array::push([(1, h)], (n, g));
+st <- "s";
+let v = array::map(r, |p| (p.1)(3));
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+v

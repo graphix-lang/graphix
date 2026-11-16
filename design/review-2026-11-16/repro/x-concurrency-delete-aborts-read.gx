@@ -1,0 +1,22 @@
+// Title: deleting a call site aborts a non-cancel-safe read mid-way: its bytes are lost
+// Command: graphix --no-cache --no-netidx design/review-2026-11-16/repro/x-concurrency-delete-aborts-read.gx
+// Expected: "ABCD" (the first read_exact was cut off when its array::map slot was
+//   deleted; as at a sleep, its bytes go back to the stream, so the next read sees them;
+//   the same program with the read in a select arm that SLEEPS prints "ABCD")
+// Observed: "CDEF" (the two bytes "AB" the deleted read took are gone)
+use sys::io::Read;
+let child = sys::process::spawn(sys::process::options(
+  #args: ["-c", "printf AB; sleep 0.4; printf CD; sleep 0.4; printf EF; sleep 2"],
+  #stdio: sys::process::stdio(#stdout: `Pipe, #stderr: `Inherit),
+  #kill_on_drop: true,
+  "/bin/sh"
+))$;
+let out = child.stdout$;
+let jobs = [u64:4];
+let first = array::map(jobs, |n| buffer::to_string(Read::read_exact(out, n)$)$);
+let t1 = sys::time::timer(duration:150.ms, false);
+jobs <- t1 ~ [];
+let t2 = sys::time::timer(duration:300.ms, false);
+let second = buffer::to_string(Read::read_exact(t2 ~ out, u64:4)$)$;
+sys::exit(sys::time::after_idle(duration:1500.ms, second ~ 0));
+second

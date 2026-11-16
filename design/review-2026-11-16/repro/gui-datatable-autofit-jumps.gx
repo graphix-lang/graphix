@@ -1,0 +1,18 @@
+// Auto-fit while scrolled right moves the view to another column.
+// Command (needs a display; not run in the review, `graphix --check` passes):
+//   cargo run --bin graphix -- design/review-2026-11-16/repro/gui-datatable-autofit-jumps.gx
+// Steps: scroll right until c15 is the first column shown, then
+// double-click the resize handle of a visible column header.
+// Expected: c15 stays the first column shown.
+// Read from auto_fit_all_columns and handle_scroll: the auto-fit changes
+// the widths of c0..c14 (drawn at most 300 px, fitted to their whole
+// text), nothing moves the scroll overlay (scroll_dirty stays false), the
+// content width change makes iced re-notify the old absolute offset, and
+// col_at_offset maps it to another column under the new widths.
+use gui::{window, data_table::{ColumnSpec, data_table, text_column}};
+let cols: Array<[string, ColumnSpec]> = array::init(30, |i| text_column(
+    #name: "c[i]",
+    #source: &"a cell value wide enough to need about two hundred pixels"
+));
+let tbl = {rows: ["r0", "r1", "r2"], columns: cols};
+[&window(#title: &"auto-fit while scrolled right", &data_table(#table: &tbl))]

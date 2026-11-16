@@ -15,6 +15,12 @@ run!(test_write_then_read, WRITE_THEN_READ, |v: Result<&Value>| {
 
 // Watch a directory, write a file, receive modify events. macOS reports
 // writes as Create, so both are in the interest set.
+// CR claude for claude: [structure/low] The macOS and non-macOS
+// `WRITE_THEN_WATCH_MODIFY` fixtures are the same 22 lines except for the `#interest`
+// list. Keep one fixture and splice the list in, choosing it with `cfg!(target_os =
+// "macos")` inside a `format!` (run! takes an expression, as `&with_forms(..)` in
+// json.rs does). A fix to the program then cannot reach one platform only. Found by
+// reading; not run. (tests-lib-b-b-06)
 #[cfg(not(target_os = "macos"))]
 const WRITE_THEN_WATCH_MODIFY: &str = r#"{
   let paths = {

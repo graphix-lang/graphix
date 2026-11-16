@@ -90,6 +90,18 @@ fn show(v: Value) -> String {
 
 /// `code`'s updates in every mode, which must agree with each other and
 /// with `expected` (each update's data form, printed).
+// CR claude for claude: [structure/low] show/agrees re-implement wake_outside's
+// updates/agrees (both re-strip values updates_until already stripped) with three modes
+// instead of five. So write_landing_at_the_deselect_stands, the fresh_callee_*
+// fixtures, fresh_closure_at_a_wake_counts_nothing and
+// a_guard_statement_counts_each_fire_of_its_bind_once never run in Par or JitPar.
+// standing_formal_refresh_marks_its_readers_quietly is
+// wake_outside::a_bare_read_of_a_moved_formal_stands verbatim (program, rows, modes).
+// standing_reference_refresh_marks_its_readers takes its expectation from the Unpruned
+// run and pins one row of eleven. Put one five-mode agrees beside run_delta_with in
+// dense_deltas and use it from both files, delete the duplicate fixture, and write the
+// reference fixture's eleven rows out. Found by reading; not run.
+// (tests-lang-rest-b-05)
 async fn agrees(code: &str, expected: &[&str]) -> Result<()> {
     for mode in [Mode::Interp, Mode::Unpruned, Mode::Jit] {
         let (values, _) = walks(code, mode).await?;

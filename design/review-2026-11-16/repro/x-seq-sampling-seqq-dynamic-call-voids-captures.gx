@@ -1,0 +1,27 @@
+// One call through a function value in a seqq body makes every capture live:
+// each request reads the world at its steps' entries, not at its enqueue, and
+// nothing warns.
+//
+// command:  timeout -s KILL 4 graphix --no-cache x-seq-sampling-seqq-dynamic-call-voids-captures.gx
+//           (same with --no-fusion; --check prints nothing)
+// expected: [1, 1, 10] then [2, 1, 20]  (x as it stood when each request was
+//           queued, which is what the same body prints with `let c = f(0)`
+//           for a `let f = |a: i64| a + 1`)
+// observed: [1, 1, 90] then [2, 1, 140]
+// The same with no call at all, where a step prints or compares an abstract
+// type that implements a core trait (the hook is opaque to the summary):
+//   type W = Abstract<i64>; impl Display for W { let fmt = |w| "W" };
+//   seqq go { until live(ready); let c = "[W(go)]"; [go, x] }   ->  [1, 90], [2, 140]
+// GXDBG_SEQPLAN=1 graphix --expand shows "opaque call h.f(..) static=false"
+// and "capture .. live true" for x.
+let step = 0;
+step <- select step { n if n < 14 => n + 1, _ => never() };
+let go = select step { 1 | 2 => step, _ => never() };
+let x = step * 10;
+let ready = step >= 8;
+let h = {f: |a: i64| a + 1};
+seqq go {
+  until live(ready);
+  let c = h.f(0);
+  [go, c, x]
+}

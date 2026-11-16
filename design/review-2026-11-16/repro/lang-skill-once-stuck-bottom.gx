@@ -1,0 +1,31 @@
+// A `let` over once(g) (or take(#n: 1, g)) stays bottom for good after g's bottom spell,
+// while the same expression written inline recovers: naming the value changes the answer.
+// The skill's holder idiom `let h = once(g)` (SKILL.md, a closure that left a select arm)
+// loses the closure whenever the arm's select goes bottom (a `_ => never()` arm).
+// Once and Counted<TAKE> (stdlib/graphix-package-core/src/lib.rs) answer a quiet
+// `self.out.ride()` when the input comes back from bottom after their shot is spent, so
+// the value leaves bottom without firing (organic_firing.md rule 2) and the binding never
+// republishes it. uniq, skip and hold recover.
+// run: timeout -s KILL 30 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache design/review-2026-11-16/repro/lang-skill-once-stuck-bottom.gx
+//   (the same with --no-fusion, GRAPHIX_PRUNE=off, GRAPHIX_PAR=off; graphix-fuzz agrees across engines)
+// expected: every line printed again at steps 5..8, when g is 7 again and c fires
+// observed: inline-once and uniq print at 5..8; let-once, let-take and h(1) print at
+//   steps 0 and 1 only
+let clock = sys::time::timer(duration:40.ms, 8);
+let step = 0;
+step <- clock ~ step + 1;
+let mode: [`On, `Off] = select step { 2 => `Off, 3 => `Off, 4 => `Off, _ => `On };
+let g = select mode { `On => 7, `Off => never() };
+let o = once(g);
+let t = take(#n: 1, g);
+println("step=[step ~ step] inline-once=[(step, once(g))]");
+println("step=[step ~ step] let-once=[(step, o)]");
+println("step=[step ~ step] let-take=[(step, t)]");
+println("step=[step ~ step] uniq=[(step, uniq(g))]");
+let c = select step { 5 => 100, 6 => 200, 7 => 300, 8 => 400, _ => 1 };
+let mk = |x: i64| |q: i64| q + x;
+let f = select mode { `On => mk(c), `Off => never() };
+let h = once(f);
+println("step=[step ~ step] h(1)=[(step, h(1))]");
+sys::exit(sys::time::after_idle(duration:300.ms, step));
+0

@@ -1,0 +1,12 @@
+// a-language: a seq answers a cycle after its trigger, so it cannot be a handler that answers its event
+// command:  graphix --no-cache a-language-seq-cycle-late.gx
+// expected for a "clocked block": seq=N0 in the cycle k becomes N
+// observed: "k=2 seq=10 direct=20", then "k=2 seq=20 direct=20": the seq's value arrives one cycle after `k`,
+//           where `k * 10` written directly arrives with `k`. A key handler must answer `Stop in the key's
+//           cycle, so its effects are sampled by hand, one `~` a statement.
+let k = count(sys::time::timer(duration:30.ms, 3)$);
+let n = 0;
+let r = seq k { n <- n + 1; k * 10 };
+let direct = k * 10;
+println("k=[k] seq=[r] direct=[direct] n=[n]");
+sys::exit(sys::time::after_idle(duration:200.ms, k ~ 0))

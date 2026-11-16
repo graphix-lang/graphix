@@ -1,0 +1,40 @@
+// t-typ-mod: a generic function that raises its argument and reads the
+// caught chain's `error` returns a value that is not of its declared type
+// when the argument is itself an error chain.
+//
+// `relay` is `fn(x: 'a) -> ['a, null]`. Inside it the catch binder is
+// `Error<ErrChain<'a>>`, expanded while 'a is a variable, so `e.0.error`
+// is typed 'a. Called with a chain ('a = ErrChain<`ArithError(string)>),
+// the raise extends that chain instead of nesting it, so at run time
+// `e.0.error` is the chain's own error, `ArithError(..), which the
+// function hands back as an ErrChain.
+//
+// Command:  graphix --check t-typ-mod-generic-chain-payload.gx   (exit 0)
+//           graphix-fuzz check t-typ-mod-generic-chain-payload.gx
+// Expected: `v` is a value of type ErrChain<`ArithError(string)> (a struct
+//           {cause, error, ori, pos}) in both engines, or the check refuses
+//           `relay`.
+// Observed: DIVERGENCE — fusion/JIT bug (interp != jit)
+//           interp: Trace([]) after logging "select c { .. }: no arm matches
+//             [abstract:.., "ArithError", "attempt to add with overflow"]:
+//             a coverage hole in the check"
+//           jit: "passed in: {cause: null, error: `ArithError(..), ori: ..,
+//             pos: ..} ||| came back: `ArithError(\"attempt to add with
+//             overflow\")"
+//           With `[v.error]` in place of `[v]` the JIT prints "null" for a
+//           field typed `ArithError(string).
+let out: string = never();
+let relay = |x: 'a| -> ['a, null] {
+  let r: ['a, null] = null;
+  catch(e) r <- e ~ e.0.error;
+  error(x)?;
+  r
+};
+{
+  catch(e0) out <- {
+    let c = relay(e0.0);
+    select c { null as _ => never(), v => "passed in: [e0.0] ||| came back: [v]" }
+  };
+  (i64:9223372036854775807 +? 1)?
+};
+out

@@ -1,0 +1,13 @@
+// A generated dynamic module whose body reaches the pure time arithmetic never loads.
+// gen_typed writes sys::time::{add_dur,scale,sub_dur,add,sub} for duration and
+// datetime values, but BODY_PACKAGES grants core, array, str, map, list and re
+// only, so such a body fails with "no module `time` in `sys`" and the program
+// takes the fallback arm the generator meant only for its negative variants.
+// command: graphix --no-cache fuzz-gen-b-body-packages-sys-time.gx
+// expected: "true" (the module loads; it does with `use sys::time;` added to the sig)
+// observed: "error:`DynamicLoadError(\"compile error ... no module `time` in `sys`\")"
+{
+  let v0 = mod d0 dynamic { sig { use core; use array; use str; use map; use list; use re; val g0: fn(a0: i64) -> bool }; source r#"let g0 = |v1: i64| -> bool (sys::time::add_dur(duration:1.s, duration:2.s)$ == duration:3.s)"# };
+  let v1 = select v0 { error as e => "[e]", null as _ => "[d0::g0(i64:1)]" };
+  v1
+}

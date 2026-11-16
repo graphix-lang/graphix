@@ -1,0 +1,15 @@
+// Title: the escape refusal's hint "(the bound of 'a, or Any)" names a type the
+//        program cannot write when the bound is Concrete, NoError or Singleton.
+// Command: timeout -s KILL 60 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache --check \
+//          design/review-2026-11-16/repro/tests-types-b-escape-hint-bound.gx
+// Step 1: `let y = never(); let t = 'a: Concrete |x: 'a| { y <- x; x }; t(1)`
+//   (lang::types::a_named_definition_writing_outside_is_told_what_it_hands_out)
+//   is refused: "'a escapes the definition: ... give that a type holding them
+//   all (the bound of 'a, or Any), or declare no 'a".
+// Step 2 (this file): y given the bound of 'a, as the hint says.
+// Expected: accepted, or a hint that names only what can be written.
+// Observed: parse error "can't use keyword as a type name" (`let y: Any` is
+// accepted; `let y: NoError` and `let y: Singleton` fail the same way).
+let y: Concrete = never();
+let t = 'a: Concrete |x: 'a| { y <- x; x };
+t(1)

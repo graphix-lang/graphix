@@ -1,0 +1,17 @@
+// Title: a field read of a generic call's result whose type is a union
+//   holding another call's union is refused, "expected tuple not
+//   (i64, i64)" (structs: "expected struct not { x: i64 }"); the REPL,
+//   which settles `v` between inputs, accepts the same statements.
+// Command: timeout -s KILL 10 graphix --no-cache tests-fusion-field-read-nested-union.gx
+// Expected: 2 (a union of tuples allows `.N` when every member has it).
+// Observed (HEAD e1be2fbf2):
+//   Error: ... in: v.0
+//       2: expected tuple not (i64, i64)
+//   The same three statements fed to the REPL one at a time print `2`.
+//   Without the middle binding (`pick((1, 2), (5, 6))`) or with `a: (i64,
+//   i64)` annotated it checks. This is the fusion_parity witness
+//   `tuple_union_binding` written as one file.
+let pick = |a, b| select 1 { 1 => a, _ => b };
+let w = pick((3, 4), (5, 6));
+let v = pick((1, 2), w);
+v.0 + 1

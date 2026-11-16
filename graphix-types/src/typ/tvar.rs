@@ -70,6 +70,15 @@ fn bound_cell_changes() {
     GROUND_EPOCH.fetch_add(1, atomic::Ordering::SeqCst);
 }
 
+// CR claude for claude: [structure/low] This file interleaves five mechanisms that
+// share only `TCell`'s fields: the ground proofs and the `ReachOrder`, `CycleWalk` and
+// `BarePath` walks, the task records (`OwnWrites`, `decided_of`), `Level`, the
+// settled-⊥ diagnostics and `TVar`'s own operations. A cell mutation must pass three
+// guards that live in three of them (an occurs walk, `decided`, `bound_cell_changes`),
+// and three mutators were found skipping one (`merge_one`'s lower bounds,
+// `add_cell_constraint`, `closes_cycle`). Move the reachability walks to `typ/reach.rs`
+// and the task records to `typ/task.rs` as plain file moves, leaving here the cell and
+// its mutators. Found by reading; not run. (t-tvar-a-08)
 type CellRef = Arc<CellLock>;
 
 /// Whether no open cell is reachable from `t` through the bindings,
@@ -2061,6 +2070,17 @@ fn settled_cause(container: &Type, contained: &Type, exact: bool) -> bool {
                         || settled_cause(&f.rtype, &g.rtype, exact)
                         || settled_cause(&f.throws, &g.throws, exact))
             }
+            // CR claude for claude: [bug/medium] Through a union this arm calls ANY
+            // settled cell the cause, so the note "settled when its input ended;
+            // declare e's type" attaches where another member fails. In the REPL, after
+            // `let e = []` and `let v = select true { true => e, false => 1.5 }`, `v ==
+            // "s"` and `let s: [string, i64] = v` both carry the note. Declaring `let
+            // e: Array<i64> = []` leaves both refused: the f64 member is the cause. The
+            // note should hold only where the relation would pass with the settled ⊥
+            // cells open (test that on copies), or at least judge a union member by
+            // member as the tuple arm does. probe:
+            // design/review-2026-11-16/repro/x-diagnostics-settled-note-union.sh
+            // (x-diagnostics-03)
             (Type::Set(_) | Type::Ref(_) | Type::App(..), _)
             | (_, Type::Set(_) | Type::Ref(_) | Type::App(..)) => {
                 let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
@@ -2286,6 +2306,22 @@ impl fmt::Display for TVar {
                         return write!(f, "]");
                     }
                     _ => {
+                        // CR claude for claude: [readability/medium] A generated cell
+                        // prints here as `'_<TVarId>: unbound`, and that id reaches
+                        // refusals: the ?/$ operand (Strip::of), `f is fn(x: '_8144:
+                        // unbound) -> ..` from a `<-`, let and compare mismatches, the
+                        // destructuring-let misfit, ConcreteRequired, AmbiguousMember
+                        // ("Array<'_8174: unbound> could go to ..") and printed
+                        // patterns. 28 of the 308 refusal cases in the graphix-lang
+                        // skill show one. The id is the global counter, so the CLI says
+                        // '_8144 where the LSP says '_8239 for the same program, and
+                        // the number names nothing the author wrote. Number generated
+                        // cells per message ('_1, '_2 in first-met order, as
+                        // Holders::number does for select) under
+                        // format_with_flags(DerefTVars), or name them after their
+                        // binding where the site knows it (Holders::name_cell). probe:
+                        // design/review-2026-11-16/repro/x-diagnostics-cell-id-leak.sh
+                        // (x-diagnostics-01)
                         let name = printed_name(self);
                         if let Some(Type::TVar(next)) = &typ
                             && printed_name(next) == name
@@ -2371,6 +2407,20 @@ impl Hash for TVar {
 }
 
 /// Hand a cell's bounds to the open cells of its binding `t`.
+// CR claude for claude: [bug/medium] A bind hands a cell's predicate conjuncts to the
+// open cells of its binding through this, with no test of `TVar::declared_here`, so a
+// body tightens a declared variable quietly whenever the variable sits under a
+// constructor of a call's argument. `'a: Any |x: 'a| uniq((x, 1))`, `uniq({a: x})`,
+// `json::write_str(`A(x))` and `'a: Any |x: Array<'a>| uniq(x)` all check; the
+// signature becomes `fn<'a: Any + Discernible>` and a call is then refused with "'a
+// must be Discernible". `uniq(x)` and `array::sort(x)` in the same definitions are
+// refused with "the body needs 'a within ..", as design/tvar_constraints.md (A body
+// adds no bound to a declared variable) says every such body is. The bind sites in
+// contains.rs have the `Env`: hand the bounds there through `require_body_bounds` while
+// `TVar::checking_a_body()`. Pin a tuple, a struct, a variant and an `Array<'a>`
+// parameter, and let must-reject family 2 wrap the variable's use in a constructor.
+// probe: design/review-2026-11-16/repro/t-tvar-b-quiet-bound-under-constructor.sh
+// (t-tvar-b-02)
 pub fn require_bounds(cons: &[Type], t: &Type) {
     handed_bounds(cons, t, &mut |tv, b| tv.add_cell_constraint(b))
 }
@@ -2512,6 +2562,14 @@ impl TVar {
 
     /// Claim the cell, generic or not, for `level` unless it already
     /// belongs at that depth or shallower.
+    // CR claude for claude: [perf/low] `claim` takes the cell's write lock before it
+    // compares levels, and `CellLock::write` counts a write and takes the cell's
+    // `Place` whatever it changes. `lower_in` calls it for every non-generic variable
+    // of every type bound, bounded or merged, so a bind marks each cell its type names
+    // as written: their `ReachOrder` numbers and those above them fall, `written_since`
+    // reports them changed, and a cell another task shares takes this thread's count in
+    // `written`. Read the level first and return when the cell is already at that depth
+    // or shallower. Found by reading; not measured. (t-tvar-a-06)
     pub(crate) fn claim(&self, level: Level) {
         let lowered = {
             let cell = self.cell();
@@ -2797,6 +2855,18 @@ impl TVar {
     }
 
     /// Add a conjunct to this var's cell constraints (deduped).
+    // CR claude for claude: [bug/high] Nothing checks that a conjunct added here does
+    // not reach the cell itself under a constructor: `narrow_cell` skips one that holds
+    // the cell bare (`holds_cell`), and `require_bounds` and `add_body_bound` check
+    // nothing. `Type::require_singleton` hands an open union member the known member
+    // beside it (`[z, Array<z>]` gives z the conjunct `Array<z>`), and
+    // `TypeRef::hold_bounds_of` a typedef parameter's bound over the same variable
+    // (`T<'x, 'x>` over `type T<'p: Array<'q>, 'q>`). The definition is accepted, and a
+    // call's check binds the cell to an array of itself and allocates until it is
+    // killed (6 GB in under a second). Refuse a conjunct whose `cycle_toward` the cell
+    // is `Cycle::Constructor`: as the infinite type from `add_body_bound`, and by
+    // `mark_cycle_refused` where a bind hands it. probe:
+    // design/review-2026-11-16/repro/t-tvar-a-self-conjunct-oom.sh (t-tvar-a-02)
     pub fn add_cell_constraint(&self, c: Type) {
         let cell = self.cell();
         let existing = cell.read().constraints.clone();
@@ -2830,6 +2900,16 @@ impl TVar {
     /// definition this cell is, which the variable's own bound does not
     /// imply, with the bound to write in the signature: its own conjuncts
     /// that none of `needs` implies, and `needs`.
+    // CR claude for claude: [bug/medium] The bound to write is printed with
+    // `PrintFlag::DerefTVars`, so one that names a variable reads `write 'a: Array<'d:
+    // unbound within Any>`, which no program can write. And
+    // `contains::undeclared_bound_note` passes a conjunct that holds the declared
+    // variable itself, so the fix can read `write 'a: Array<'a: unbound>`, a bound the
+    // check refuses ("'a's bound names 'a"). Print the bound as a program writes it
+    // (`Type::written_form`), and give no such note for a conjunct that reaches the
+    // declared cell. No pin covers a needed bound that names a variable. probe:
+    // design/review-2026-11-16/repro/t-tvar-a-undeclared-bound-unwritable.sh
+    // (t-tvar-a-05)
     pub(super) fn undeclared_bound(&self, env: &Env, needs: &[&Type]) -> CompactString {
         crate::format_with_flags(PrintFlag::DerefTVars | PrintFlag::ReplacePrims, || {
             let name = self.declared_name().unwrap_or_else(|| self.name.clone());
@@ -3008,6 +3088,16 @@ impl TVar {
 
     /// Whether self's cell merged into other's would be reachable from
     /// its own contents.
+    // CR claude for claude: [bug/high] The walk covers the merged cell's conjuncts and
+    // never its lower bounds, which `merge_one` moves into the survivor all the same. A
+    // cell standing above `Array<w>` merged into `w` (a `Singleton` bound's
+    // `UnionParts::merge_open`, which has no check before this one) leaves `w` above an
+    // array of itself, and the definition's check allocates until it is killed; with
+    // the select's arms the other way round the merge runs the other way and is
+    // refused. Walk the lower bounds too: refuse one that reaches the survivor under a
+    // constructor (`cycle_toward`), drop one that is the survivor. probe:
+    // design/review-2026-11-16/repro/t-tvar-a-merge-lower-bound-cycle-oom.gx
+    // (t-tvar-a-03)
     fn closes_cycle(&self, other: &Self) -> bool {
         let (s_cell, o_cell) = (self.cell(), other.cell());
         let scons = s_cell.read().constraints.clone();
@@ -3144,6 +3234,19 @@ impl TVar {
             let s = s_cell.read();
             (conjuncts, s.facts)
         };
+        // CR claude for claude: [risk/medium] `new_conjuncts` runs its identity walk
+        // here under the read guards of both cells (the temporaries of `o_cell.read()`
+        // and `s_cell.read()` live to the end of the statement), though the comment
+        // above says the dedup is computed lock-free because the walk can re-enter
+        // these cells. `add_lower`'s `held` and `TVar`'s `PartialEq` and `Ord` walk
+        // under a cell's read guard the same way. A second read of a
+        // `parking_lot::RwLock` on one thread blocks behind a queued writer, and
+        // another compile task queues one on a shared cell at any time (`mark_ground`,
+        // `CycleWalk::number`, every `claim`), so a parallel module check can deadlock.
+        // Clone the bounds and bindings out before walking them, as `mine` and `theirs`
+        // are. `TCell::add_constraint`'s doc forbids running it under a cell guard,
+        // while its `&mut TCell` exists only under one. Found by reading; not run.
+        // (t-tvar-a-04)
         let mut below = match same {
             true => LPooled::take(),
             false => new_conjuncts(&o_cell.read().lower, s_cell.read().lower.clone()),
@@ -3173,6 +3276,19 @@ impl TVar {
             let var_task = self.read().task;
             let into = || Some(Type::TVar(other.clone()));
             let from = || Some(Type::TVar(self.clone()));
+            // CR claude for claude: [bug/high] A merge of this task's cell into a cell
+            // an earlier task made asks `decided_of` of the survivor only when
+            // conjuncts move (`to_add`); the lower bounds in `below` are pushed into it
+            // unrecorded. So a module's check decides its parent's open binding without
+            // being refused (`let x = never()` in the parent, `g2([1], super::x)` over
+            // `'x: Array<['a, null]> |y: 'x, d: 'a|` in the module: x is i64
+            // afterwards), and a sibling whose own `add_lower` of that bound finds it
+            // held returns before `decided_as`: the check of two sibling modules is
+            // accepted or refused by the schedule (14 of 20 runs accepted). Ask
+            // `decided_of(o_task, ..)` when `below` is not empty too, and pin the
+            // single module's refusal. probe:
+            // design/review-2026-11-16/repro/t-tvar-a-sibling-modules-lower-bound-race.sh
+            // (t-tvar-a-01)
             if !decided_of(s_task, "cell", Some(s_cell.data_ptr().addr()), into)
                 || (!to_add.is_empty()
                     && !decided_of(o_task, "cell", Some(o_cell.data_ptr().addr()), from))
@@ -3293,6 +3409,12 @@ impl TVar {
     }
 
     /// Whether the cell holds the `Data` conjunct.
+    // CR claude for claude: [structure/low] `requires_concrete`, `requires_data` and
+    // `requires_function` are one body over three `Bound` variants, and `mark_settled`,
+    // `mark_bottom_fed` and `mark_cycle_refused` one lock, already-held, `decided`, set
+    // sequence over three `CellFact`s, the `decided` test written two ways. One
+    // `requires(&self, b: Bound)` and one private `mark(&self, fact: CellFact)` say
+    // each once. Found by reading; not run. (t-tvar-a-07)
     pub(crate) fn requires_data(&self) -> bool {
         self.cell()
             .read()
@@ -4267,6 +4389,18 @@ impl Drop for Printing {
 /// printed showed another cell under it, then numbered apart, so two
 /// instances' cells of one declared or inferred variable read as two. The
 /// handles of one declared variable's open cell share its name.
+// CR claude for claude: [bug/low] The first cell printed under a name takes it, so
+// where a callee's variable and a variable the definition being checked declares are
+// both `'a`, the program's own variable is the one numbered apart. `let f = 'a: Any |x:
+// 'a| uniq(x)` is refused with "type mismatch 'a: unbound within Discernible does not
+// contain 'a1: unbound within Any: the body needs 'a within Discernible .. write 'a:
+// Discernible": the first `'a` is uniq's, `'a1` is the program's, and the note
+// (`TVar::undeclared_bound`, formatted as a message of its own before `TypeMismatch`
+// prints) calls the program's variable `'a` again. Reserve the names
+// `Declared::current()` declares for their own cells when the outermost message starts,
+// so a call's copy numbers apart, and format the note inside the mismatch's message.
+// probe: design/review-2026-11-16/repro/t-tvar-b-declared-name-numbered-apart.gx
+// (t-tvar-b-04)
 pub(super) fn printed_name(tv: &TVar) -> ArcStr {
     if !crate::print_standing() || PRINT_DEPTH.get() == 0 {
         return tv.name.clone();
@@ -4951,6 +5085,14 @@ impl Type {
 
     /// Whether the cell at `addr` ([`ForeignWrite`]) is one of this type's,
     /// or one a cell it holds is bound to reaches.
+    // CR claude for claude: [readability/low] Two relations share this name in one
+    // file. This method asks whether the type reaches the cell at `addr` anywhere,
+    // through bindings. `contains::holds_cell`, imported above and called by
+    // `TVar::narrow_cell`, asks whether the cell is a member of the union `c`, so that
+    // every type it takes is in `c`. A reader of `t.holds_cell(c)` beside
+    // `holds_cell(env, &c, addr)` must open both to learn they differ. Rename this one
+    // `reaches_cell`, the word `ForeignWrite::held_by`'s doc already uses. Found by
+    // reading; not run. (t-tvar-b-05)
     fn holds_cell(&self, addr: usize) -> bool {
         fn go(t: &Type, addr: usize, seen: &mut AHashSet<usize>) -> bool {
             ensure_sufficient(|| match t {
@@ -5115,6 +5257,11 @@ impl Type {
         })
     }
 
+    // CR claude for claude: [structure/low] The last arm of `check_tvars_declared`
+    // repeats this body token for token: the `try_for_each_child` call that turns a
+    // child's `Err` into a `Break` and back. The arm above it already calls this
+    // function. Write the last arm as `t => t.check_parts_declared(declared)`. Found by
+    // reading; not run. (t-tvar-b-07)
     fn check_parts_declared(&self, declared: &AHashSet<ArcStr>) -> Result<()> {
         match self.try_for_each_child(&mut |c| match c.check_tvars_declared(declared) {
             Ok(()) => ControlFlow::Continue(()),
@@ -5729,6 +5876,15 @@ impl Type {
     /// `self` looked through ([`Self::head`]) where `pred` is the same
     /// constructor with the same parts (arity, tag, field names), or a
     /// union where `pred` is a constructor; `None` anywhere else.
+    // CR claude for claude: [structure/low] `open_over_any_inner`, `needs_split_inner`,
+    // `narrow_parts` and `own_parts` each follow this call with the same match: tuple
+    // with tuple and variant with variant zip their parts, struct with struct zips its
+    // fields, array with array and list with list pair their elements. That is four
+    // copies of a pairing this function has already validated (arity, tag, field
+    // names), each ending in a catch-all, so a constructor added here and missed in one
+    // of them is skipped silently. Return the pairs from here (the union as it stands,
+    // else the paired parts, the element case marked) and let each caller loop over
+    // them. Found by reading; not run. (t-tvar-b-06)
     fn shape_under(&self, env: &Env, p: &Type) -> Result<Option<Type>> {
         let Some(t) = self.head(env)? else { return Ok(None) };
         let same = match (&t, p) {
@@ -5989,6 +6145,19 @@ impl Type {
                 for e in ends.drain(..) {
                     let _ = Type::TVar(e).reset_tvars_int(&mut known, Fresh::Copy);
                 }
+                // CR claude for claude: [perf/medium] Each member narrows against a
+                // fresh copy of the predicate, so `Narrowing`'s memo, keyed by the
+                // predicate's nodes, never hits beneath it: a constructor pattern
+                // nested D deep over a recursive union two of whose members have its
+                // shape narrows 2^D times. `type T = [(T, i64), ([T, null], string),
+                // null]` under `select x { ((((v, _), _), _), _) => 1, _ => 0 }` takes
+                // 2 s to check at D=16 and 30 s at D=20 (debug build), doubling per
+                // level; `StructurePattern::meets` under `Select::check_undecided` then
+                // walks the pattern once per member the same way. Key the memo by the
+                // member and the node the copy was made from, or narrow each part once
+                // against the union of the members' parts. probe:
+                // design/review-2026-11-16/repro/c-pattern-nested-pattern-check-exponential.sh
+                // (c-pattern-04)
                 let copy = alt
                     .reset_tvars_int(&mut known, Fresh::Copy)
                     .unwrap_or_else(|| alt.clone());

@@ -275,6 +275,16 @@ mod parser;
 
 ## Sub-module Visibility
 
+<!-- CR claude for claude: [doc-drift/low] "Module and type names are visible whatever
+their order, but values are not" is only half true. It holds for a type the parent
+declares: a child reads a `type T` declared below its `mod child;`. It fails for a
+module: a sibling declared below `mod child;` can be imported (`use super::other;`
+checks), but nothing in it can be named, its types included ("undefined type other::Q in
+p::child", "other::w not defined"). Say that a child sees its parent's types whatever
+their order, and a sibling module's contents only when that sibling's `mod` stands above
+the child's. probe:
+design/review-2026-11-16/repro/book-modules-udt-later-module-invisible.sh
+(book-modules-udt-06) -->
 A sub-module sees nothing of its parent implicitly — it imports what it
 needs with `use super::...`. Module and type names are visible whatever
 their order, but values are not: a module's body runs where its `mod`
@@ -319,6 +329,17 @@ use super::{private_setup, public_helper};
 
 ### Impls Between Siblings
 
+<!-- CR claude for claude: [doc-drift/medium] The rules in this section and the next
+hold only for a module that has its own .gxi, which is a unit of the check
+(design/parallel_compile.md, Module checks). The two rules are: an undeclared impl is
+hidden from siblings, and a module may not decide a type the code around it left open. A
+sibling without an interface sees the hidden impl, so b's `Show::show(1)` is accepted
+unless b has a b.gxi. The p.gx / p/c.gx example below shows no p/c.gxi, so as written
+the check accepts it, contrary to "The check refuses it". Say that both rules are about
+modules with interfaces, add `p/c.gxi` to the example, and drop the `use super::Show;`
+that a.gx repeats, which "Use Statements" above says not to repeat. probe:
+design/review-2026-11-16/repro/book-modules-udt-interface-rules-need-gxi.sh
+(book-modules-udt-03) -->
 Siblings reach each other only through their interfaces, trait
 implementations included. An `impl` that a module with an interface
 adds in its body without declaring it in its `.gxi` is hidden while

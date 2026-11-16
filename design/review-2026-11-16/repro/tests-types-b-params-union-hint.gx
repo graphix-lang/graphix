@@ -1,0 +1,22 @@
+// Title: the write hint "declare b: B<[p0, p1]>" (write_mismatch's params_union)
+//        is refused when followed, wherever the written value's parameter is
+//        already decided.
+// Command: timeout -s KILL 60 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache --check \
+//          design/review-2026-11-16/repro/tests-types-b-params-union-hint.gx
+// Step 1: with `let b: B<i64> = B(1)` below, the check refuses `b <- c` with
+//   b is B<i64> and cannot hold B<string>; declare b: B<[i64, string]> where it is bound
+// Step 2 (this file): b declared as that hint says.
+// Expected: accepted.
+// Observed: refused again, with another hint:
+//   b is B<[i64, string]> and cannot hold B<string>;
+//   declare b: [B<string>, B<[i64, string]>] where it is bound
+// An abstract's parameters are invariant, so B<[i64, string]> holds no B<string>.
+// lang::types::payload_write_declares_the_parameters_union pins the same wrong
+// hint for a program whose `select c.0 { [h, ..] => h + 1, .. }` decided c's
+// parameter: declaring b: B<[Array<i64>, Array<Array<i64>>]> there is refused the
+// same way, and [B<Array<Array<i64>>>, B<Array<i64>>] is accepted.
+type B<'p> = Abstract<'p>;
+let b: B<[i64, string]> = B(1);
+let c: B<string> = B("s");
+b <- c;
+0

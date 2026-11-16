@@ -1,0 +1,18 @@
+// A `Sync` builtin on the CachedArgs wrapper has a value in an arm entered
+// after the program's first cycle, over arguments that stand.
+//
+// run: timeout -s KILL 20 graphix --no-cache design/review-2026-11-16/repro/x-sleep-wake-sync-ctor-in-late-arm.gx
+//
+// Arm `_` is entered at clk 2. design/bind_driven_bodies.md §1.5: "every
+// `Sync` or `Async` builtin" gives nothing until an input fires.
+//
+// expected by that rule: no output from clk 2 on (as with `count(null)` in
+// place of `sys::io::stdout(null)`).
+// observed: (2, 1, 1) (3, 1, 1) ... (7, 1, 1).
+{
+  let clk = array::iter(array::init(8, |i| i));
+  let sel = 0;
+  sel <- filter(clk, |c| c == 1) ~ 1;
+  let a = select sel { 0 => 0, _ => array::len([sys::io::stdout(null)]) };
+  clk ~ (clk, sel, a)
+}

@@ -1,0 +1,20 @@
+// Title: leaks.rs core_hook_sites_leave_no_bindings never rebuilds a hook site
+// The test's program is `(n, n ~ (T(1) == T(2)))`; its comment says a
+// comparison runs at each tick against the grown impl list. It does not:
+// the operands are constants, so `==` dispatches Eq once, at birth, and the
+// sample re-reads that stored value. This program puts a `dbg` in the Eq
+// method and runs the same shape for five ticks.
+// Command:
+//   timeout -s KILL 20 graphix --no-cache tests-lib-b-a-hook-site-never-rebuilt.gx 2>&1 | grep -c 'dbg(a.0)'
+//   (also with --no-fusion)
+// Expected if the test exercised the rebuild: 6 (birth plus five ticks).
+// Observed: 1 in both engines. Replacing the last line with
+// `(n, T(n) == T(2))` prints 6.
+{
+  type T = Abstract<i64>;
+  impl Eq for T { let eq = |a, b| { dbg(a.0); true } };
+  let n = 0;
+  n <- sys::time::timer(duration:0.01s, true) ~ n + 1;
+  sys::exit(select n { 5 => 0, _ => never() });
+  (n, n ~ (T(1) == T(2)))
+}

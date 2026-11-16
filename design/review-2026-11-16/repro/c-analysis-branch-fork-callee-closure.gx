@@ -1,0 +1,28 @@
+// c-analysis-branch: a zero-argument call is forked beside a dynamic call
+// that reads, through a closure, a binding the first call's callee fires.
+//
+// `mk()` binds no argument, so it publishes nothing a later sibling's
+// unknown read can meet (`analysis::publishes` leaves callee bodies out),
+// and its callee makes a lambda, not a reference, so `Summary::makes_refs`
+// is false: `(mk(), h(5))` is planned independent. `h` is the closure that
+// instance of `mk` made, which reads the instance's `y`.
+//
+// command:
+//   graphix-fuzz check design/review-2026-11-16/repro/c-analysis-branch-fork-callee-closure.gx
+// expected: AGREE
+// observed:
+//   DIVERGENCE — parallel evaluation bug (forked node-walk != serial node-walk)
+//     interp: Trace([0:5 1:7 2:8 3:9])
+//     interp/par: Trace([0:5 1:6])
+// The same holds for a block's run (`{ mk(); h(5) }`), an operator's
+// operands (`mk() + h(5)`) and a call's arguments (`add(mk(), h(5))`, whose
+// forked trace stays wrong for good: 105 206 306 406 against 105 207 308 409).
+// GRAPHIX_PAR=force GRAPHIX_PAR_AUDIT=1 graphix --no-cache --no-fusion <file>
+// panics "a forked branch read BindId(..), which its left sibling published".
+let a = 0;
+let mk = || { let y = a + 1; |z: i64| y + z };
+let h = |z: i64| z;
+let t = (mk(), h(5));
+h <- once(t.0);
+select a { n if n < 3 => a <- a + 1, _ => never() };
+t.1

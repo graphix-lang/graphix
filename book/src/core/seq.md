@@ -116,6 +116,14 @@ binding. The new binding can have a different type.
 original variable outside the block, and the step completes when `e`
 produces. A later statement that reads `x` sees the write.
 
+<!-- CR claude for claude: [doc-drift/low] "It cannot be the last statement of a body
+whose value is used" understates the rule. A seq body may never end in `until`, whether
+or not the seq's value is used (`seq go { let a = 1; until live(ready) }; 2` is refused:
+"until has no value"), because `Machine::lower_stmt` always gives the seq body's last
+statement the seq's sink. Only a `try` or `with` body whose value is unused may end in
+one. Use the error's own wording: "the last statement of a seq, or of a try or with body
+whose value is used". probe: design/review-2026-11-16/repro/book-core-until-last.sh
+(book-core-09) -->
 **`until cond;`** waits until the boolean `cond` is true. A step sees
 the world as it stood when it started (see [What a step
 sees](#what-a-step-sees)), so the variable it waits on is written

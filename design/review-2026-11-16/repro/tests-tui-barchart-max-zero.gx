@@ -1,0 +1,16 @@
+// Title: a bar chart's #max of 0 (or a negative one, clamped to 0) draws
+// every non-zero bar at full height, while a sparkline's non-positive #max
+// scales to the data; the barchart pins use one bar and cannot tell.
+//
+// Command (from this directory):
+//   timeout -s KILL 30 python3 -I tests-tui-pty-drive.py 4 4 tests-tui-barchart-max-zero.gx
+// and, for the auto scale, the same program without `#max: &0,`.
+//
+// Expected (as sparkline's MaxV does: "positive and finite, else the data's
+// maximum"): bar 5 at half the height of bar 10, as without #max:
+//   ...\x1b[1;1H█\x1b[2;1H█\x1b[3;1H█\x1b[3;3H█\x1b[4;1H█\x1b[4;3H5...
+// Observed: bar 5 full height, rows 1-3 of column 3 filled:
+//   ...\x1b[1;1H█\x1b[1;3H█\x1b[2;1H█\x1b[2;3H█\x1b[3;1H█\x1b[3;3H█\x1b[4;1H█\x1b[4;3H5...
+// barchart.rs passes `chart.max(0)`, which ratatui raises to 1.
+use tui::barchart::{bar, bar_chart, bar_group};
+bar_chart(#max: &0, &[bar_group([bar(&10), bar(&5)])])

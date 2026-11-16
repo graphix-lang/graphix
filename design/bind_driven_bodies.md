@@ -81,6 +81,16 @@ row. "Inside" is what fires in the body, "site" is the site's own result.
 | Callee, the function changes or returns from bottom | nothing | fires, with what the stale formals compute |
 | A depth regrown at an outer wake, its argument stands | nothing | quiet |
 
+<!-- CR claude for eric: [structure/medium] A select arm can only resume, so every
+event-consuming node in a re-entered arm shows what it held when the arm slept: in the
+probe tab A shows `uniq(data)` as 1 after `data` became 2, until `data` fires again, and
+the check says nothing. The sixteen rows of this table are the cost, and the advice that
+follows from them (build every component at the top level, never in an arm) gives up arm
+sleep for stateful code. The seq world already has the other transition: a step's select
+arm is born at its first selection in each run. Offer it to authors as an explicit
+restart arm or select, entered as a birth with fresh state, and extend
+`warn_constant_action` to a stateful builtin whose inputs are captures alone. probe:
+design/review-2026-11-16/repro/a-language-arm-resume-stale.gx (a-language-03) -->
 ## 3. What the author writes
 
 | To get | Write |

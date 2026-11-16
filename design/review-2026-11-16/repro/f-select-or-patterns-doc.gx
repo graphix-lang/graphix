@@ -1,0 +1,12 @@
+// f-select: design/or_patterns.md's JIT paragraph says explicit type predicates
+// on or-arms refuse and a binding or-pattern at an element or payload refuses;
+// both fuse (or_arm, SelectArmBind::Or).
+//
+// Command: graphix --no-cache f-select-or-patterns-doc.gx
+// Expected per the doc: a #[native] refusal for f (binding or at an element)
+//           and for g (an or-arm under a written test).
+// Observed: (7, 5, 0): both selects fuse whole.
+let f = |x: ([`A(i64), `B(i64), `C], i64)| #[native] select x { (`A(v) | `B(v), n) => v + n, (`C, n) => n };
+let g = |x: [`A(i64), `B(i64), `C, null]| #[native] select x { [`A(i64), `B(i64)] as `A(n) | `B(n) => n, _ => 0 };
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(f((`B(3), 4)), g(`A(5)), g(null))

@@ -1,0 +1,18 @@
+// A callback passed under a declared variable bounded by a function type: whether the
+// build accepts it depends on the NAME of the callback's unused parameter
+//
+// command:  graphix -n --check x-check-build-fn-bound-param-name.gx            (exit 0)
+//           GRAPHIX_ELAB_AUDIT=1 graphix -n --no-cache --expand x-check-build-fn-bound-param-name.gx  (exit 1)
+// expected: both accept, as both accept the same program with the parameter named as
+//           the bound names it: `apply(|v| 0)` builds and runs.
+// observed: --check passes; the build refuses
+//   ELAB-AUDIT instance-signature at ..: `g(3)`: an instance at fn(g: fn(a: _) -> i64) -> i64 of a
+//   definition typed fn<'f: fn(v: [i64, null]) -> i64>(g: 'f: unbound within fn(v: [i64, null]) -> i64) -> i64
+//   Error: .. in the instance of apply(|a| 0) at this call site: an instance at ..
+// The same for `let h = |a| 0; apply(h)`, for a two-parameter bound
+// (`'a: fn(p: [i64, string], q: i64) -> i64 |g: 'a| g(1, 2)` with `f(|a, b| b)`), and with
+// `[i64, string]` in place of `[i64, null]`. It builds when the parameter is annotated
+// (`|a: [i64, null]| 0`), when the lambda reads it at the union (`select a { .. }`), or when
+// the bound's parameter is not a union (`'f: fn(v: i64) -> i64` with `|a| 0`).
+let apply = 'f: fn(v: [i64, null]) -> i64 |g: 'f| g(3);
+apply(|a| 0)

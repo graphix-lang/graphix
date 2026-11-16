@@ -1,0 +1,24 @@
+// array::iterq re-delivers its last element when its select arm is re-entered.
+// IterQ::sleep keeps `out` (it takes back the in-flight element and keeps its
+// queue, as design/async_sleep_outputs.md says), and a select fires its arm's
+// standing value when the scrutinee fires, so the element delivered before the
+// sleep fires again at the wake. Event sources (iter, range, timer) clear their
+// output at sleep for exactly this reason ("a kept event would be re-raised as
+// if it were new"); iterq and queue do not. list::iterq and map::iterq share
+// the code.
+//
+// command: timeout -s KILL 10 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache collections-str-iterq-reentry-duplicate.gx
+// expected (each element once): last line [10, 11, 12, 13, 14, 15, 16]
+// observed: [10, 10, 11, 12, 13, 14, 15, 16]
+// control: replace both `false` arms of `awake` by nothing (`let awake = true;`):
+//          [10, 11, 12, 13, 14, 15, 16]
+let n = 0;
+n <- select n { x if x < 12 => x + 1, _ => never() };
+let awake = uniq(select n { 2 => false, 3 => false, _ => true });
+let r = select awake {
+  true => array::iterq(#clock: n, [10, 11, 12, 13, 14, 15, 16]),
+  false => never()
+};
+let acc: Array<i64> = [];
+acc <- r ~ array::push(acc, r);
+acc

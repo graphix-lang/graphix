@@ -1,6 +1,12 @@
 // A type not decided at a select is one unknown type there
 
 use anyhow::Result;
+// CR claude for claude: [structure/low] The predicate `|v: Result<&Value>| matches!(v,
+// Ok(Value::Array(a)) if as_i64s(a) == [..])` is written out 134 times in this file (82
+// more in select.rs, 30 in fusion_review.rs), and `matches!(v, Ok(Value::I64(n)))` 51
+// times, though testing::is already covers it. Add one predicate beside testing::is and
+// testing::prints, say `i64s(&'static [i64])`, and use `is(Value::I64(n))` for a single
+// value. Found by reading; not run. (tests-lang-rest-a-08)
 use graphix_package_core::{
     run,
     testing::{FuseExpect, as_i64s, prints, refused},
@@ -92,6 +98,17 @@ run!(undecided_parameter_taken_by_an_earlier_tag, r#"{
 
 // A guarded arm takes nothing: the arm after it meets the member, which its
 // partial struct pattern would decide.
+// CR claude for claude: [test-gap/low] No fixture pins what makes this program pass.
+// The same is true of undecided_member_beside_a_literal_refused,
+// element_tag_deciding_an_undecided_part_refused,
+// written_collection_test_with_an_open_variable_refused and
+// written_list_element_test_with_an_open_variable_refused (CLAUDE.md: a refusing rule
+// pins the refusal and the annotation that passes). Here the passing form is not
+// obvious. The refusal says to annotate `z`, but `z: {a: string, c: string}` is refused
+// again ("matches more than one member"), while naming every field, `(_, {a, c: _})`,
+// passes with `z` unannotated. Add the passing fixture for each. probe:
+// design/review-2026-11-16/repro/tests-lang-rest-a-guarded-tag-twin.sh
+// (tests-lang-rest-a-07)
 run!(undecided_member_beside_a_guarded_tag_refused, r#"{
     let b = false;
     let g = true;
@@ -1026,6 +1043,20 @@ run!(payload_part_an_arm_decides_over_two_shapes_then_written_apart_refused, r#"
 
 // A later arm's pattern decides the part before an earlier arm's body is
 // checked: the body's error is the select's.
+// CR claude for eric: [bug/medium] This pins a refusal that names a consequence, not
+// the cause. `x` is open before the arms, so `(`M, _)` deciding it is what the select
+// rule refuses ("(`M, _) tests a value of 'x, a type not decided at this select ...
+// annotate it"), and the check says exactly that when the guarded arm's body does not
+// read `a`. Here select.rs::typecheck0_with checks the first arm's body first and
+// returns its error at once. So the user is told "pattern `J will never match `M" about
+// a type they never wrote, and only reaches the real refusal after deleting the `J arm
+// as told. The dead-arm path already runs check_undecided before it returns. Doing the
+// same for a body or guard error (finish the arm walk, return check_undecided's refusal
+// if there is one, else the first body error) leaves the a_body_error_* fixtures'
+// refusals as they are, as far as I traced, and this fixture would then pin "(`M, _)
+// tests a value of 'x". probe:
+// design/review-2026-11-16/repro/tests-lang-rest-a-body-error-masks-undecided.sh
+// (tests-lang-rest-a-01)
 run!(an_earlier_body_over_a_part_a_later_arm_decides_is_its_error, r#"{
     let f = |b: bool, x| select (x, 0) {
         (a, _) if b => select a { `J => 1, `M => 2 },
@@ -2624,6 +2655,13 @@ run!(slice_element_binds_an_abstract_instance_written_later_refused, r#"{
     z
 }"#, refused("this pattern takes a value of W<string> too"); FuseExpect::None);
 
+// CR claude for claude: [structure/low] This fixture and
+// abstract_element_beside_a_rest_over_a_parameter_refused run the same program and pin
+// two parts of one refusal. slice_element_binds_an_unnamed_open_member_annotated is
+// also the same program as abstract_element_beside_a_rest_over_an_annotated_parameter.
+// Each copy costs four more runs and pins nothing new. Delete this pair, and move this
+// fixture's phrase into the other's predicate if both phrases matter. Found by reading;
+// not run. (tests-lang-rest-a-05)
 run!(slice_element_binds_an_unnamed_open_member_refused, r#"{
     type W<'a> = Abstract<'a>;
     let f = |x| select x { [W(p), ..] => p + 100, _ => 0 };
@@ -3602,6 +3640,18 @@ run!(wildcard_beside_a_bind_over_a_let_written_later, r#"{
     v
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(6))); FuseExpect::Jit);
 
+// CR claude for claude: [test-gap/medium] This refusal does not depend on its `(1, _)`
+// arm. With that arm deleted the program is refused in the same words, because `b` is
+// bound at one part and used as i64 in one arm and as string in another, which is a
+// rule of its own. The `_` rule this test is named for (select.md: a `_` beside a name
+// at that part stands as the unused name, so a call whose part is wider than the name's
+// type, `f((2, "a"))`, is refused) has no refusal pin. select.md's `no "type mismatch"`
+// case for this program has the same flaw. A change that let the `_` widen that part to
+// `Any` would pass both. Pin `let f = |s| select s { (1, _) => 0, (_, b) => b + 1 };
+// f((2, "a"))` refused with "(i64, i64) does not contain (i64, string)", here and as
+// the select.md case. probe:
+// design/review-2026-11-16/repro/tests-lang-rest-a-wildcard-pin-vacuous.sh
+// (tests-lang-rest-a-02)
 run!(wildcard_beside_a_bind_used_as_two_types_refused, r#"{
     let f = |s| select s { (1, _) => 0, (2, b) => b + 1, (_, b) => str::len(b) };
     f((2, 5))

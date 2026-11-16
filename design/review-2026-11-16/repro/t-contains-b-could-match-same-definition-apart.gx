@@ -1,0 +1,34 @@
+// Two applications of one typedef at apart parameters are read as sharing no value
+//
+// command:
+//   /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache --check <this file>
+//   timeout -s KILL 170 /home/eric/tmp/review-2026-11-16/bin/graphix-fuzz check <this file>
+//
+// W<i64> is `W([`K(i64), null]) and W<string> is `W([`K(string), null]):
+// `W(null) is a value of both. Type::could_match answers W<i64> against
+// W<string> by their parameters (i64 against string: apart), so the first
+// arm's `v` is typed `W(i64) alone and `n + 1` is i64 arithmetic. The value
+// `W(null) passes the first arm's test.
+//
+// expected: as the same test written without the name W,
+//     [`W(T<i64>), `W(i64)] as v => select v { `W(n) => n + 1 },
+//   which is refused: "cannot compute [i64, null] + i64".
+// observed: the check accepts, the node-walk logs
+//     arith error ... "can't add null"
+//   and
+//   DIVERGENCE — fusion/JIT bug (interp != jit)
+//     interp: Trace([])
+//     jit: Trace([0:1])
+//
+// With `V(i64) in place of `W(i64) and `select v { `V(n) => n + 1 }` both
+// engines log "no arm matches [.., "W", null]: a coverage hole in the check".
+// A single arm shows the same verdict as a refusal:
+//   let f = |x: W<string>| select x { W<i64> as v => 1, _ => 2 }; f(`W(null))
+//   "pattern `W(T<i64>) will never match `W(T<string>)", though `W(null) does.
+type T<'a> = [`K('a), null];
+type W<'a> = `W(T<'a>);
+let f = |x: [W<string>, `W(i64)]| select x {
+  [W<i64>, `W(i64)] as v => select v { `W(n) => n + 1 },
+  W<string> as w => 0
+};
+f(`W(null))

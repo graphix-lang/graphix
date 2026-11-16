@@ -1,0 +1,33 @@
+// A fold's new slot takes its accumulator FIRED, so entering or waking a
+// body fires a fold over a source and an init that both stand, where a map
+// over the same source stays quiet.
+//
+// Run:  graphix --no-cache p.gx          (JIT; the fold fuses)
+//       graphix --no-cache --no-fusion p.gx
+//       graphix-fuzz check p.gx           -> AGREE (both engines)
+//
+// The arm is first entered at n == 1 (not a birth: s and the init 0 stand),
+// then sleeps while s grows to [1, 2], then wakes at n == 4 with s standing.
+// CLAUDE.md: entering a collection slot is not an event, and a wake fires
+// nothing for anyone; bind_driven_bodies.md section 1: a fold's accumulator
+// fires when what feeds it fires (the init for slot 0, the slot before it);
+// section 2: a slot born at an outer wake is quiet.
+//
+// Expected (bind-driven):  (0, 0) then nothing more: cf stays 0, like cg.
+// Observed (both engines): (0, 0) (1, 0) (2, 0): the fold fires at the entry
+//                          and at the wake; the map never does.
+let n = 0;
+n <- array::iter([1, 2, 3, 4]);
+let m = select n { 1 => `A, 4 => `A, _ => `B };
+let s = [1];
+s <- filter(n, |v| v == 2) ~ [1, 2];
+let cf = 0;
+let cg = 0;
+select m {
+  `A => {
+    cf <- count(array::fold(s, 0, |acc, x| acc + 1));
+    cg <- count(array::map(s, |x| x + 1))
+  },
+  `B => null
+};
+(cf, cg)

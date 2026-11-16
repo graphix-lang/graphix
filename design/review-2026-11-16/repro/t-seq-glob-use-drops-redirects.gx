@@ -1,0 +1,18 @@
+// t-seq: a glob `use` in a seq body drops every redirect (snapshots, captures, seq-let cells)
+// Run: timeout -s KILL 30 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache design/review-2026-11-16/repro/t-seq-glob-use-drops-redirects.gx 2>&1 | grep -v WARN
+// Expected: a and b agree, each run reporting the x its request captured:
+//   "a go=2 x=20", "b go=2 x=20", "a go=4 x=40", "b go=4 x=40".
+// Observed: b prints x=210 and x=250: after `use str::*` the read of `x`
+// is no longer the request's capture, it is the live variable.
+// Also: `seq let c = t { let m = { use str::*; c }; m }` is refused with
+// "c not defined", since the seq let's name exists only as its cell.
+let step = 0;
+step <- select step { n if n < 30 => n + 1, _ => never() };
+let x = step * 10;
+let go = select step { 2 | 4 => step, _ => never() };
+let ready = false;
+ready <- select step { 20 => true, _ => never() };
+let a = seqq go { until live(ready); let v = { use str::len; x }; println("a go=[go] x=[v]"); v };
+let b = seqq go { until live(ready); let v = { use str::*; x }; println("b go=[go] x=[v]"); v };
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+(a, b)

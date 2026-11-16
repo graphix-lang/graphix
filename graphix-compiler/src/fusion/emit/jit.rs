@@ -1246,6 +1246,17 @@ impl Emission {
     /// Forget the kernels of the definitions in `dead` and their bodies,
     /// pushing the bodies' and thunks' ids to `funcs`. A cached body
     /// that calls one keeps its code in its record tree.
+    // CR claude for claude: [bug/medium] A kernel cached under a live definition's id
+    // is never forgotten when the callee its instance resolved has since been deleted.
+    // `kernels.retain` tests only the key's own `LambdaId`, and the callee's id is only
+    // in the key's `FnResolutions`. A root `let ap = |f: fn(x: i64) -> i64, x: i64|
+    // f(x)` and 3000 dropped inputs `ap(|x| x + i, 1)` take `FusionStats::retained`
+    // from 176 to 20076 and RssAnon up about 4.6 KB per input (flat with --no-fusion).
+    // `FusionStats::retained`'s doc says deleted code holds none of it after the next
+    // link. Also forget a kernel whose resolutions name a dead id, taking `dead` as a
+    // set, together with its body as for the key's own id. probe:
+    // design/review-2026-11-16/repro/x-leaks-repl-hof-kernels.sh,
+    // x-leaks-registry-counts.rs (hof_calls) (x-leaks-05)
     pub(crate) fn forget(&mut self, dead: &[LambdaId], funcs: &mut Vec<FuncId>) {
         self.thaw();
         debug_assert!(
@@ -1255,6 +1266,15 @@ impl Emission {
         let caches = &mut self.caches;
         let mut kernels: LPooled<AHashSet<KernelKey>> = LPooled::take();
         caches.kernels.retain(|(id, ..), info| {
+            // CR claude for claude: [perf/low] `dead` is a slice that
+            // FusionCtx::forget_def appends to on every deleted lambda and that only
+            // FusionCtx::link drains. A rebind that reuses its BoundKey's kernels, or a
+            // slot that reuses its prototype's table, never links, so a long-running
+            // program grows it without bound, and the next link pays dead.contains per
+            // cached kernel (O(kernels x dead)). Collect it into an
+            // LPooled<AHashSet<LambdaId>> here, and drain it at a cycle's start
+            // (FusionCtx::relocate_kernels running em.forget and jit.forget when
+            // nothing is in flight). Found by reading; not run. (f-jit-04)
             let gone = dead.contains(id);
             if gone {
                 kernels.insert(kernel_abi::kernel_key(&info.kernel));
@@ -1338,6 +1358,19 @@ pub struct Jit {
     arena: usize,
     /// Every compiled kernel body and spill thunk, by its id in [`Names`]; a
     /// caller's relocations name callees through it.
+    // CR claude for claude: [bug/critical] These records are keyed by FuncId, but
+    // FuncIds are numbered per Emission. fusion::fuse_instance gives a NonEmitting
+    // context (a forked branch binding a dynamic call at run time, or a compile_each
+    // prebind task) a fresh local Emission whose Names restart at the helper table's
+    // end. Its link then inserts and removes records at ids the root emission's cached
+    // lambda bodies still name, so a later root compile that calls a cached kernel
+    // installs the forked bind's body in its place. Under GRAPHIX_PAR=force a REPL
+    // session computes cube(4)+1 where it wrote sq(4)+1, and segfaults when the two
+    // signatures differ. Scope the id-to-record map to the emission that numbered it
+    // (keep it in Emission, dropped with a local one, and pass it to install_compiled
+    // and Jit::forget). Pin it with a bind in a forked branch followed by a root
+    // compile. probe: design/review-2026-11-16/repro/f-jit-emission-id-collision.sh
+    // (f-jit-01)
     records: BTreeMap<FuncId, Recorded>,
     /// The batch compiling while emission goes on; it installs before
     /// any later batch.
@@ -1882,6 +1915,19 @@ fn compile_region(
         meets_abstract,
         &mut fresh,
     );
+    // CR claude for claude: [perf/high] A refused region drops every callee body it
+    // emitted here, and build_region's forget_attempt drops its kernel signatures. A
+    // MAX_FRAME refusal is found only once the parent's body is emitted. So the retry
+    // that take_attempt/descend makes on each part rebuilds the whole callee closure,
+    // once per operand of a left-nested chain. On the 200-call probe program that is 5
+    // s and 606 MB to first output against 0.9 s at 180 calls; 240 calls take 14 s and
+    // 1.5 GB (417 MB serial: the nested fusion tasks hold their emissions until the
+    // joins); 300 take 37 s and 3.5 GB; the 400-module form is OOM-killed at 6 GB,
+    // where --no-fusion takes 2.6 s and 821 MB. When the refusal is the parent's own
+    // (its frame or its body), keep the fresh callee bodies and their cache records so
+    // a retry emits only its own parent. probe:
+    // design/review-2026-11-16/repro/x-perf-compile-capture-chain-defuse-cliff.py
+    // (x-perf-compile-02)
     if r.is_err() {
         profile::failed(&mut build_profile);
         // A fresh entry of a failed region would hand out an id that no

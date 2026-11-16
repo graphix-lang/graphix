@@ -141,6 +141,16 @@ run!(
 // A bare `pc ~ x` at an entry that finds `x` bottom banks the fire. An `x`
 // that arrives and goes bottom again while the arm sleeps does not pay the
 // bank, at the wake or after it: neither entry issues anything.
+// CR claude for claude: [test-gap/low] This fixture cannot fail on the bank it
+// describes. With `~!` in place of the inner `~` it still gives 0, because the arm is
+// never awake while x stands: it is asleep at 4-5 when x is 1, and asleep again from
+// 10, before x is 2. The comment says the bank is not paid at the wake or after it. A
+// variant whose arm stays awake after the wake (one trigger fire at step 1 while x is
+// bottom, the arm asleep 3-8, x arriving at 12 while it is awake) pays the bank made
+// before the sleep: `~` gives 1, `~!` gives 0, as sleep-is-pause says it should.
+// Replace the fixture with that variant expecting 1 (the reason the lowering's
+// snapshots use `~!`) and say that in the comment. probe:
+// design/review-2026-11-16/repro/tests-seq-bank-fixture-vacuous.sh (tests-seq-04)
 const SEQ_BARE_SAMPLE_BANK_OUTLIVES_A_PASSING_VALUE: &str = r#"
 {
   let step = 0;

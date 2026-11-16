@@ -1,0 +1,17 @@
+// Title: a FinalValues program that keeps one async call in flight (an accept
+// nobody connects to) is Timeout(Deadline) in every mode, so the oracle compares
+// none of its values: the settle loop waits REPLY_WAIT (10 s, unscaled) inside a
+// run deadline of 10 s (check/run) or 3 s (campaigns).
+// Command: graphix-fuzz check fuzz-main-aux-pending-reply-timeout.gx
+//          graphix-fuzz run fuzz-main-aux-pending-reply-timeout.gx
+// Expected: each engine a trace [0:5] (the value is deterministic: a constant at
+//   init), compared at final strength.
+// Observed: run: every mode "Timeout(Deadline)"; check (50 s): "AGREE (contained)".
+//   A JIT that answered 6 here would agree.
+// Control: the same program with `let z = throttle(i64:1);` added (an Excluded
+//   marker, which skips the FinalValues settle loop) runs Trace([0:5]) at once in
+//   every mode, so the loop's wait_replies is what times out.
+let l = sys::tcp::listen("127.0.0.1:0")$;
+let c = sys::tcp::accept(l, null);
+let v = i64:5;
+v

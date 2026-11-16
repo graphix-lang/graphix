@@ -1,0 +1,32 @@
+// Title: tui::browser shows another cell's value in a scrolled-in cell: the slot's throttle emits the value it held for the old path
+// Command: timeout -s KILL 7 graphix -n --no-cache gx-ui-browser-throttle-stale-cell.gx
+// Expected: after the two Down(1) moves the window is [b, c]; /local/thr6/c/x is never published,
+//   so row c's x cell shows "#SUB" for good: "c: x=#SUB y=1".
+// Observed: "c: x=94 y=1" (94 is whatever /local/thr6/a/x last held when slot 0 moved from a to c),
+//   and it stands forever. throttle(#rate, net::subscribe(path)) keeps its pending value across
+//   the slot's path change and delivers it after uniq(path) ~ "#SUB".
+use tui::{Tui, browser::{MoveCursor, browser}};
+let clock = sys::time::timer(duration:20.ms, true);
+let n = 0;
+n <- clock ~ n + 1;
+let pa = sys::net::publish("/local/thr6/a/x", n);
+let pb = sys::net::publish("/local/thr6/b/x", 7);
+let pc = sys::net::publish("/local/thr6/c/y", 1);
+let listed = sys::net::list("/local/thr6")$;
+let path: string = never();
+path <- select array::len(listed) { l if l == 3 => l ~ "/local/thr6", _ => never() };
+let cur: MoveCursor = never();
+let sel: [string, null] = never();
+let b: Tui = browser(#rate: duration:500.ms, #size: {width: 40, height: 3}, #cursor: cur, #selected_row: &mut sel, path);
+let shown = select b {
+  `Table(t) => {
+    let rows = *t.rows;
+    array::map(rows, |r| { let cs = (*r).cells; "[cs[0]$.content.spans]: x=[cs[1]$.content.spans] y=[cs[2]$.content.spans]" })
+  },
+  _ => never()
+};
+let go = sys::time::timer(duration:1.s, true);
+let k = 0;
+k <- go ~ k + 1;
+cur <- select k { 1 => k ~ `Down(1), 2 => k ~ `Down(1), _ => never() };
+"[k] [sel] [shown]"

@@ -1,0 +1,38 @@
+// db2: a subscription whose prefix went bottom, then woke with a value, fires null
+// Run from an empty scratch dir (it creates ./p7.db):
+//   cd $(mktemp -d) && timeout -s KILL 60 graphix --no-cache <this file>
+// Steps: x <- null (the prefix x$ goes bottom), the arm sleeps, x <- 2 while
+// asleep, the arm wakes (x$ is 2, quiet), x <- 2 fires the same prefix.
+// Expected: the last fire is a Subscription and the insert of key 2 is heard:
+//   ["sub abstract:", "sub abstract:", "ch \[`Insert(2, 20)\]"] or the like.
+// Observed: ["sub abstract:", "sub null"]: a null fired as Subscription<i64, i64>,
+//   and on_change never hears the insert.
+// Control: replace `on <- false;` and `on <- true;` with `null;` (no sleep):
+//   ["sub abstract:", "sub abstract:", "sub abstract:", "ch \[`Insert(2, 20)\]"].
+let d = db::open("p7.db")$;
+let t: db::Tree<i64, i64> = db::tree(d, null)$;
+let x: [i64, null] = 1;
+let on = true;
+let sub = select on { true => db::subscription::new(#prefix: x$, t), false => never() };
+let ch = db::subscription::on_change(sub);
+let log: Array<string> = [];
+log <- sub ~ array::push(log, "sub [sub]");
+log <- ch ~ array::push(log, "ch [ch]");
+let r = seq {
+  sys::time::timer(duration:50.ms, false);
+  x <- null;
+  sys::time::timer(duration:50.ms, false);
+  on <- false;
+  sys::time::timer(duration:50.ms, false);
+  x <- 2;
+  sys::time::timer(duration:50.ms, false);
+  on <- true;
+  sys::time::timer(duration:50.ms, false);
+  x <- 2;
+  sys::time::timer(duration:50.ms, false);
+  db::insert(t, 2, 20)?;
+  sys::time::timer(duration:100.ms, false);
+  log
+};
+sys::exit(sys::time::after_idle(duration:100.ms, r) ~ 0);
+r

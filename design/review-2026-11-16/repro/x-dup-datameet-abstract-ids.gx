@@ -1,0 +1,17 @@
+// Title: a type mismatch between two abstract types is reported as "not data"
+// Command: /home/eric/tmp/review-2026-11-16/bin/graphix --check design/review-2026-11-16/repro/x-dup-datameet-abstract-ids.gx
+// Expected: type mismatch A<'d: unbound within Data> does not contain B<fn() -> i64>
+//   (what the same program reports with `B(1)` in place of `B(|| 1)`)
+// Observed: fn() -> i64 is not data: data holds no function and no reference
+// Cause: contains.rs DataMeet::walk_inner pairs the parameters of any two
+// Abstract types (no id check), where contains and any_part_pair require
+// one id; making the function data would not make this program check.
+// Without the two Cast impls the same call is refused as
+// "B<'_N> has no Cast implementation", equally beside the point.
+type A<'a> = Abstract<'a>;
+type B<'a> = Abstract<'a>;
+impl<'a> Cast for A<'a> {};
+impl<'a> Cast for B<'a> {};
+let f = 'd: Data |x: A<'d>| 1;
+let b = B(|| 1);
+f(b)

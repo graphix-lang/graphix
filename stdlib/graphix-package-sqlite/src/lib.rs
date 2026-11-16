@@ -187,6 +187,14 @@ type SqliteExecBatch = CachedArgsAsync<SqliteExecBatchEv>;
 #[derive(Debug)]
 struct Query;
 
+// CR claude for claude: [risk/low] sqlite::query runs through TypedRead, which takes
+// EvalCachedAsync's default CANCEL_SAFE = true, unlike exec, exec_batch, begin, commit,
+// rollback and close. Its blocking work cannot be stopped, so at a sleep the query
+// keeps running while the site forgets it, and after the wake the site's next call does
+// not wait for it: a query that writes (INSERT .. RETURNING) can be overtaken by the
+// next one. async_sleep_outputs.md lists every sqlite op as not cancel-safe. Fix: give
+// ReadFormat a CANCEL_SAFE const (default true) that TypedRead forwards, and set it
+// false for Query. Found by reading; not run. (http-sqlite-db1-06)
 impl ReadFormat for Query {
     const NAME: &str = "sqlite_query";
     const TAG: ArcStr = literal!("SqliteError");

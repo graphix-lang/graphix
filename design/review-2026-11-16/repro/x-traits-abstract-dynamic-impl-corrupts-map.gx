@@ -1,0 +1,34 @@
+// A dynamic module's body implements a core trait for a type of the program
+// around it, which its sig only imports by name and declares no impl for. The
+// impl is global the moment the load compiles: a map the program built before
+// the load no longer finds its own keys, and `<` flips under standing values.
+//
+// Command:
+//   timeout -s KILL 12 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache \
+//     design/review-2026-11-16/repro/x-traits-abstract-dynamic-impl-corrupts-map.gx
+//
+// Expected: either the load is refused (the body writes an impl its sig does
+// not declare, for a type that is not the load's own), or every line reads
+//   .. m1=a m2=b m4=d m5=e len=5 .. lt=true
+//
+// Observed (the first line is before the load, the rest after it):
+//   n=1 st=ok m1=a m2=b m4=d m5=e len=5 ins=5 lt=true
+//   n=2 st=ok m1=error:`MapKeyError("map key K(…) not found") m2=error:.. m4=error:.. m5=error:.. len=5 ins=5 lt=false
+//
+// The body cannot read K's payload (the definition is not visible there),
+// yet it orders K by its printed form. design/traits.md §4 gives this very
+// case as the reason impls are coherent: "a map built under one Eq and
+// queried under another is silent corruption".
+type K = Abstract<i64>;
+let m = {K(1) => "a", K(2) => "b", K(3) => "c", K(4) => "d", K(5) => "e"};
+let clk = sys::time::timer(duration:200.ms, true);
+let go = once(clk);
+let src = never();
+src <- go ~ """impl Ord for K { let cmp = |a, b| { let x = "[a]"; let y = "[b]"; select x < y { true => `Greater, false => select x > y { true => `Less, false => `Equal } } } }; let v = 1""";
+let st = mod d dynamic {
+  sig { use core; use super::K; val v: i64 };
+  source src
+};
+let n = count(clk);
+sys::exit(sys::time::after_idle(duration:1000.ms, 0));
+println("n=[n] st=[select st { error as e => "[e]", null as _ => "ok" }] m1=[m{clk ~ K(1)}] m2=[m{clk ~ K(2)}] m4=[m{clk ~ K(4)}] m5=[m{clk ~ K(5)}] len=[map::len(clk ~ m)] ins=[map::len(map::insert(clk ~ m, K(1), "z"))] lt=[(clk ~ K(1)) < K(2)]")

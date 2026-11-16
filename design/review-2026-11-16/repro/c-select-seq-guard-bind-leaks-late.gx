@@ -1,0 +1,30 @@
+// Title: a guard's tentative bind of an arm that is NOT taken reaches a reader above the
+//   select as a late fire: PatternNode::bind_tentative delivers the bind through
+//   ExecCtx::deliver_took, whose store_fire queues a late delivery (Rt::late) for every
+//   reader the walk has passed, and PatternNode::retract puts back the event and the
+//   store but not that queue.
+// Command: timeout -s KILL 20 graphix --no-cache c-select-seq-guard-bind-leaks-late.gx
+//   (the same under --no-fusion; `graphix-fuzz check` prints AGREE: both engines)
+// The closure written to `f` in the guarded arm captures the arm's bind `n`; `out` calls
+// it from a statement ABOVE the select. x is 10 (arm taken), then 3 and 4 (guard false,
+// arm not taken), then 20 (taken), then 0 (not taken).
+// Expected (bind_driven_bodies.md §5: "A guard's tentative binds are retracted and
+//   stand nowhere"; the skill: a closure that left an arm "reads the arm's bindings as
+//   they stood when the arm fell asleep"): the last field is 10 while x is 3 and 4, and
+//   20 while x is 0, as it is with `let out = f(0)` moved BELOW the select:
+//   (2, 3, -1, 10) (3, 4, -1, 10) (4, 20, 20, 10) (5, 0, -1, 20)
+// Observed: the value the guard refused fires in `out` a cycle later:
+//   (2, 3, -1, 10) (3, 4, -1, 3) (4, 20, 20, 4) (5, 0, -1, 20) (5, 0, -1, 0)
+let i = 0;
+i <- filter(i + 1, |v| v < 6);
+let x = select i { 1 => 10, 2 => 3, 3 => 4, 4 => 20, _ => 0 };
+let f: fn(a: i64) -> i64 = |a: i64| -> i64 a;
+let out = f(0);
+let s = select x {
+  n if n > 5 => {
+    f <- (n ~ (|a: i64| -> i64 n + a));
+    n
+  },
+  _ => -1
+};
+(i, x, s, out)

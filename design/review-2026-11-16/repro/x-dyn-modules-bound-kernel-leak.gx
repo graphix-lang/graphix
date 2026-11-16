@@ -1,0 +1,16 @@
+// Each reload of a body that hands a lambda of its own to a function outside the module leaves a fused kernel behind
+// run: timeout -s KILL 170 graphix --no-cache design/review-2026-11-16/repro/x-dyn-modules-bound-kernel-leak.gx   (prints /proc/self/statm every 4000 reloads; add --no-fusion for the control)
+// expected: resident pages level off, as they do with --no-fusion and for a body that calls no outside function
+// observed: resident pages grow by about 1.4 a reload without bound (18791, 26722, 32333, 37897 at 0/4000/8000/12000 reloads); flat with --no-fusion
+let clk = sys::time::timer(duration:1.ms, true);
+let n = 0;
+n <- clk ~ n + 1;
+
+let st = mod foo dynamic {
+    sig { use opt; val f: fn(x: i64) -> i64 };
+    source "let f = |x: i64| { let y: \[i64, null\] = x; opt::or_default(opt::map(y, |v| v + 7), 0) + [n] }"
+};
+let rss = |t| select sys::fs::read_all(t ~ "/proc/self/statm") { error as e => "err", s => s };
+let m = select n % 4000 { 0 => n, _ => never() };
+println("n=[m] st=[m ~ st] use=[m ~ foo::f(1)] statm=[rss(m)]");
+sys::exit(n ~ select n { 16001 => 0, _ => never() })

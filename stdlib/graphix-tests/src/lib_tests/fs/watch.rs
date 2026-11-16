@@ -121,6 +121,18 @@ macro_rules! watch_test {
             let mut event_count = 0;
             $(let mut $state_name: $state_type = $state_init;)*
 
+            // CR claude for claude: [structure/medium] This wait loop, and its copies
+            // in test_watch_multiple_related_paths and
+            // test_watch_simultaneous_events_all_delivered, bypasses
+            // `testing::next_update`, which design/testing.md names as every test's
+            // wait for a value. When the runtime dies, `rx.recv()` yields `None`, the
+            // `Some(..)` pattern disables the branch on every pass, and the test sleeps
+            // out the whole `HANG_GUARD` (600 s). It then fails with 'the watch never
+            // established' or 'Did not receive ..' instead of 'the runtime died'. Drive
+            // the loops with `next_update(&ctx.rt, &mut rx, eid)`, which fails at once
+            // on a dead or settled runtime, and keep the no-event case as
+            // `tokio::time::timeout(NO_EVENT, next_update(..))`. Found by reading; not
+            // run. (tests-lib-b-c-03)
             'events: loop {
                 tokio::select! {
                     _ = &mut timeout => break,
@@ -688,6 +700,18 @@ async fn watch_hears_after_a_wake() -> Result<()> {
     };
     let dir = tempfile::tempdir()?;
     let d = escape_path(dir.path().display());
+    // CR claude for claude: [test-gap/low] watch_hears_after_a_wake orders the sleep,
+    // the wake and the write it must hear by three independent wall timers (300, 600,
+    // 1000 ms). It then ends the collection with `Collect::Quiet(1500 ms)`, a wall
+    // deadline on the path that must come. CLAUDE.md asks that each event follow from
+    // the one before it, and design/testing.md allows a wall window only for what must
+    // not come. On a loaded box the write can land before the woken `path` stream
+    // re-attaches, or the path can arrive after the window, and the test fails with no
+    // defect. Trigger the write on the wake (e.g. `#path: skip(#n: 1, filter(on, |o|
+    // o)) ~ "{d}/b"`) and collect `Collect::First(2)` ("off", then the path).
+    // watch_rebuilds_after_wake has the same shape: sample its sleep on the first
+    // Established (`on <- once(established) ~ false`) and its wake on the sleep. Found
+    // by reading; not run. (tests-lib-b-c-04)
     let code = format!(
         r#"{{
             use sys::fs::watch::{{self, *}};

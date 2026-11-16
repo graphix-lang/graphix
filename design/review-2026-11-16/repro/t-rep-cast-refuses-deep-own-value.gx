@@ -1,0 +1,20 @@
+// Title: cast<L>(a) refuses an in-language value that is already an L
+// once it nests past typ::cast::MAX_DATA_DEPTH (1024), while the type
+// test `L as _` over the same value admits it.
+// Command: timeout -s KILL 120 graphix --no-cache t-rep-cast-refuses-deep-own-value.gx
+// Expected: cast: ok / select: is L
+// Observed:
+//   cast: err error:`InvalidCast("can't cast 76 to i64: the data is nested too deep")
+//   select: is L
+type L = [`Nil, `Cons(i64, L)];
+let n = 1100;
+let init: L = `Nil;
+let t: L = array::fold(array::init(n, |i| i), init, |acc, i| `Cons(i, acc));
+let a: Any = t;
+let c = cast<L>(a);
+let cs = select c { error as e => "err [e]", _ => "ok" };
+let sel = select a { L as _ => "is L", _ => "not L" };
+println("cast: [cs]");
+println("select: [sel]");
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+0

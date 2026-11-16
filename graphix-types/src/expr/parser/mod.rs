@@ -283,6 +283,17 @@ fn doc_comment(i: &mut Input) -> R<Doc> {
 }
 
 /// An identifier: a first char by case, then letters, digits and `_`.
+// CR claude for claude: [readability/low] Where an expression is expected, the Expected
+// list never names a name, the commonest thing that stands there, because this fails
+// through `take_while1`'s `mismatch`, which expects nothing. The list also names `r`
+// (the first char `raw_string` reads, as if `r` alone were a token), shows a variant's
+// backtick as ``` (`Info::Token`'s "`{c}`" around a backtick), and names `package`,
+// `self` and `super`. `let x = 1 + ;` lists "... `!`, `r`, [<, ..., seq, ```, cast,
+// ..., package, self or super". Fix: expect "a name" here ("a type name" with `cap`),
+// have `raw_string` check its opener quietly or expect "a raw string", and render a
+// backtick token so it reads as one. Re-bless
+// `source_error_does_not_expect_printed_data`. probe:
+// design/review-2026-11-16/repro/t-parser-a-expected-list-names.sh (t-parser-a-06)
 fn ident_str<'a>(i: &mut Input<'a>, cap: bool) -> R<&'a str> {
     let m = i.mark();
     i.take_while1(|c| match cap {
@@ -303,6 +314,17 @@ fn fname(i: &mut Input) -> R<ArcStr> {
 
 /// [`fname`]; a refused reserved word is noted only when `note`, since a
 /// type path's segment is never a binding and a pattern head probes one.
+// CR claude for claude: [bug/low] A construct keyword written as a binding name
+// (`|type| 1`, `let (a, select) = ..`, `f(#type: 1)`) is refused with the caret one
+// past the word, often as "Unexpected `|`" or "Unexpected `)`", and no note names the
+// word. A non-construct word (`|abort|`) gets "`abort` is a reserved word" at the word,
+// but its caret is past the word too. Cause: the refusal is `because` at the input's
+// point after `ident_str`, and the note skips `Keyword::Construct` for every caller,
+// binding positions included, where no construct can start. Fix: refuse at the word's
+// start (`because_at` its mark), and note the word whatever its kind when the caller is
+// a binding position (`name`, the parameter and labeled-argument sites). probe:
+// design/review-2026-11-16/repro/t-parser-a-construct-keyword-binding.sh
+// (t-parser-a-04)
 fn fname_noting(i: &mut Input, note: bool) -> R<ArcStr> {
     let pos = i.pos();
     let s = ident_str(i, false)?;
@@ -443,6 +465,13 @@ fn separator_eol(i: &mut Input, sep: char, why: &'static str) -> R<Option<EolCom
 }
 
 /// Note why a `///` is refused where no doc can stand.
+// CR claude for claude: [readability/medium] This note assumes the file is a .gx, but
+// comment_line reaches it inside a .gxi too: a `///` above a type definition's struct
+// field or a use-group item in a .gxi is told "legal only in a .gxi interface file; a
+// .gx file comments with `//`". Say where a doc may stand (above an interface item or a
+// trait method; a field or an import takes `//`), or pass parse_sig's mode so the .gx
+// wording is used only in a .gx. probe:
+// design/review-2026-11-16/repro/t-parser-b-doc-in-gxi-field.sh (t-parser-b-03)
 fn note_doc_in_gx(i: &mut Input, pos: SourcePosition) {
     i.g.note_reason(pos, None, || {
         CompactString::const_new(
@@ -775,6 +804,17 @@ fn printed_scalar(i: &mut Input) -> R<Value> {
     Ok(v)
 }
 
+// CR claude for claude: [bug/low] The diagnostic arms here say things where they do not
+// apply. After an in-range integer the report reads "Unexpected integer literal"
+// (`int_range_note` always fails with `unexpected`) and "Expected .." (the slice-bound
+// arm's `look_ahead(string(".."))`). So `let x = 5ms;` says "Unexpected `m` /
+// Unexpected integer literal / Expected ..", where `5.0ms` says "Unexpected `m`". An
+// out-of-range integer adds `arrayexp::idx`'s "expected int". Every expression position
+// lists "duration:" next to "a value" (the `string` in `duration_unit_note`). Fix: make
+// the arms quiet where they have nothing to say. Test `..` and `duration:` with
+// `rest().starts_with`. Fail `idx`'s overflow and an in-range `int_range_note` with
+// `fail()`, keeping the range note. probe:
+// design/review-2026-11-16/repro/t-parser-a-literal-arm-labels.sh (t-parser-a-02)
 fn literal(i: &mut Input) -> R<Expr> {
     choice!(
         i,
@@ -1440,6 +1480,25 @@ fn expr_knot(i: &mut Input) -> R<Expr> {
                 lambdaexp::lambda_ahead(i)?;
                 lambdaexp::any_lambda(i)
             },
+            // CR claude for claude: [bug/medium] A syntax error inside a struct
+            // literal's field, a connect's right side, a seq trigger, a single-quoted
+            // string's splice or a lambda's return type is reported only as "the parser
+            // could not continue past this point", which is also the summary the editor
+            // shows. The same error elsewhere says "Unexpected `;`" and lists what was
+            // expected. Examples: `{a: (1 + }`, `x <- f(1,, 2)`, `"a [1 + ] b"`, `seq
+            // (t + ) { 1 }`, an unclosed `{a: 1`. Each of these is parsed inside an
+            // `attempt` that spans its whole body: this one, `brace`'s struct
+            // alternative, `seq_trigger`, `interp_part` and `lambda`'s `->`. The
+            // failure rolls back, a later alternative fails at an earlier point, and
+            // `parse_all` runs no labels pass because the returned failure is not the
+            // furthest point. Fix: commit once the construct is known. Attempt only
+            // `connect_target` (through `<-`). Let `struct_head` refuse `::` and drop
+            // the attempt around `structure`. Read the splice after its `[` without an
+            // attempt, noting the escape hint at the `[`. Attempt only the `->` of a
+            // return type. Guard `seq_trigger` with a lookahead instead of an attempt.
+            // probe:
+            // design/review-2026-11-16/repro/t-parser-a-wide-attempt-diagnostics.sh
+            // (t-parser-a-01)
             |i| i.attempt(connect),
             |i| arithexp::arith(i, true)
         )?;

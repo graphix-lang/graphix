@@ -4,6 +4,14 @@
 //! [`IdeMode::Lsp`]. Nothing here is read by the compiler itself.
 //! [`Ide`] owns all of them, shared via `Env.ide`.
 
+// CR claude for claude: [doc-drift/low] The module doc says nothing here is read by the
+// compiler, but the compiler reads it. `IdeMode::is_lsp` decides whether an unknown
+// builtin is refused or warned and compiled as `UnknownBuiltIn` (`node::lambda`).
+// `Env::push_reference` reads `Ide::lowered` to redirect a lowered name, and drops the
+// reference when the sink has no note for it. `IdeMode::Warnings` is the held-warning
+// buffer of every compile task, editor or not. Reword the doc to say what the module
+// holds: the editor's sinks, the mode that changes how an editor compile treats unknown
+// builtins, and a compile task's held warnings. Found by reading; not run. (t-misc-02)
 use crate::{
     BindId, SourcePosition,
     env::Bind,

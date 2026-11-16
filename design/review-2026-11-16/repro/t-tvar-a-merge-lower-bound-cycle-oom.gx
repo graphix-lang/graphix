@@ -1,0 +1,21 @@
+// Title: a merge moves a lower bound that holds the surviving cell under a
+//        constructor into it (TVar::closes_cycle walks the merged cell's
+//        conjuncts, never its lower bounds); the definition's check then
+//        allocates until it is killed.
+//
+// Command: timeout -s KILL 60 graphix --no-cache --check \
+//            design/review-2026-11-16/repro/t-tvar-a-merge-lower-bound-cycle-oom.gx
+//
+// Expected: refused, "cannot infer a finite type here": `q` stands above
+//           Array<w> (g2's 'a above the element of [[w]]) and the Singleton
+//           bound makes q and w one type, so w would hold an array of itself.
+// Observed: the check of `h` alone runs away: the review's wrapper killed it
+//           at its 6 GB cap in under a second (exit 251). GRAPHIX_DBG_BIND=1
+//           ends at `CELL-MERGE` of q's cell into w's. With the select's arms
+//           swapped (`{ true => q, false => w }`) the same definition checks:
+//           the merge then runs the other way and the walk from the survivor
+//           finds the bound.
+let g = 'a: Singleton |u: 'a| u;
+let g2 = 'x: Array<['a, null]> |y: 'x, d: 'a| -> 'a d;
+let h = |c, q, w| { let r = g2([[w]], q); g(select c { true => w, false => q }) };
+1

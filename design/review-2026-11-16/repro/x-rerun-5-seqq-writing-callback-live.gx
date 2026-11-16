@@ -1,0 +1,27 @@
+// Title: x-seq-sampling-01 / x-dup-01 variant: a seqq step that hands a builtin a callback
+//   which calls any function (even a pure one, `str::len`) or writes any variable makes
+//   every capture live; the same callbacks given to an intrinsic (array::map) keep the
+//   enqueue snapshot.
+// Command: timeout -s KILL 120 graphix-fuzz run x-rerun-5-seqq-writing-callback-live.gx
+//   (GXDBG_SEQPLAN=1 graphix --no-cache --no-fusion <file> prints "S1 reads all writes all"
+//   and "capture .. live true" for the filter steps)
+// Expected (seqq captures every outer variable the body only reads, at enqueue; nothing in
+//   any seqq here writes x): (0, 0, 0, 0, 0)
+// Observed (both engines, every mode): Trace([8:(0, 6, 6, 0, 0)]): c and e read x as it
+//   stands when the run passes `until` (6); b, d and f read the enqueue snapshot (0).
+//   analysis::writes_nothing counts an Apply or a Connect anywhere in the callback, and
+//   builtin_reach then answers Reach::All, which writes every capture.
+{
+  let step = 0;
+  step <- select step { n if n < 12 => n + 1, _ => never() };
+  let x = 0;
+  x <- step ~ step;
+  let z = 0;
+  let t = select step { 1 => 1, _ => never() };
+  let b = seqq t { until live(step) > 5; x };
+  let c = seqq t { until live(step) > 5; let y = filter(t, |v| str::len("[v]") > 0); x };
+  let e = seqq t { until live(step) > 5; let y = filter(t, |v| { z <- v; v > 0 }); x };
+  let d = seqq t { until live(step) > 5; let y = array::map([t], |v| str::len("[v]")); x };
+  let f = seqq t { until live(step) > 5; let y = array::map([t], |v| { z <- v; v }); x };
+  (b, c, e, d, f)
+}

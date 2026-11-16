@@ -1,0 +1,18 @@
+// x-recursion: a budget stop is reported as "a runaway recursion" whatever
+// was counted, and names both budgets though the cause is known
+//
+// command:
+//   GRAPHIX_ACTIVATION_BUDGET=50000 timeout -s KILL 30 \
+//     /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache \
+//     design/review-2026-11-16/repro/x-recursion-budget-message.gx
+//
+// expected: a message naming the activation budget and what it counts
+//   (calls and collection slots); the program holds no recursion.
+// observed:
+//   Error: a runaway recursion exceeded the runtime's budget
+//   (GRAPHIX_STACK_BUDGET or GRAPHIX_ACTIVATION_BUDGET) and it stopped
+// Without the variable it prints 1800030000.
+let data = array::init(60000, |j| j);
+let r = array::fold(array::map(data, |x| x + count(x)), 0, |a, b| a + b);
+sys::exit(r ~ 0);
+r

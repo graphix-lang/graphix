@@ -1,0 +1,20 @@
+// Title: a call widens a variable of a function that is NOT a fresh instance
+//        (its 'a is the cell of the binding `st` it writes), after an earlier
+//        argument of the same call read that cell at the narrow type: the
+//        check accepts and the runtime dies
+// Command: timeout -s KILL 15 graphix --no-cache x-typecheck-order-widen-shared-cell.gx
+//          (graphix --no-cache --check on it exits 0)
+// Expected: refused at `n`, "'a: i64 does not contain [i64, null]", as the
+//           same program is with `let a = h(1, 1); let r = h(g(a), n)`.
+// Observed: --check passes; the run prints
+//   thread 'graphix-runtime' panicked at graphix-compiler/src/fusion/kernel.rs:
+//   kernel param `arg`: runtime Null does not match the compiled Scalar(I64) slot
+//   Error: graphix runtime is dead            (exit 1)
+//   With --no-fusion: arith error .. "can't add null" from `v + 1` over `v: i64`.
+let n: [i64, null] = null;
+let st = never();
+let h = |x: 'a, y: 'a| -> 'a { st <- y; st };
+let g = |v: i64| v + 1;
+let r = h(g(h(1, 1)), n);
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+r

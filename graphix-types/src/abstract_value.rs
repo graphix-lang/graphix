@@ -136,6 +136,15 @@ impl GxAbstract {
     }
 
     fn params_key(&self) -> &[u8] {
+        // CR claude for claude: [perf/low] The key is made once per abstract VALUE:
+        // each `GxAbstract` owns its `params_key` cell and `Construct::update` mints a
+        // value an update, so sorting, deduplicating or comparing N values of a
+        // parametric abstract type builds N graphs and runs N refinements
+        // (`regular::key` allocates an unpooled `Vec`, an `AHashMap` and the output
+        // each time) over one `params` allocation the values share. Share the key cell
+        // among the values a `Construct` mints (it keeps the cell beside its cached
+        // `params` and hands both to `wrap`), so a comparison reads a key made once per
+        // site. Found by reading; not run. (t-settle-07)
         self.params_key.get_or_init(|| crate::typ::regular::key(&self.params))
     }
 }
@@ -182,6 +191,15 @@ enum Forms {
 /// changed; `depth` counts the implementations written through so far.
 /// One walk: each level's markers go ([`crate::rep::strip_with`]) or stay
 /// ([`crate::rep::map_parts`]) and each abstract writes as its data.
+// CR claude for claude: [bug/medium] This walk bounds only abstract nesting, but every
+// reader casts through cast_int, which refuses data nested past
+// typ::cast::MAX_DATA_DEPTH. So pack::write_bytes and db::insert accept a 1100-deep
+// user list (type L = [`Nil, `Cons(i64, L)]) that pack::read and every later db::get
+// refuse with "the data is nested too deep": the db holds a value no program can read
+// back. Count container levels here as cast_int counts them (a native list's spine
+// once) and refuse past MAX_DATA_DEPTH with an error naming the limit, which is the
+// rule MAX_DEPTH states: the writer refuses what no reader could read. probe:
+// design/review-2026-11-16/repro/t-rep-deep-write-unreadable.gx (t-rep-02)
 fn rewrite(v: &Value, depth: usize, forms: Forms) -> Result<Option<Value>> {
     match v {
         Value::Abstract(_)
@@ -266,6 +284,15 @@ impl fmt::Debug for GxAbstract {
                 return f.write_str(&s);
             }
             write!(f, "{}(", self.name)?;
+            // CR claude for claude: [bug/low] `fmt_naked` starts a new top-level print,
+            // so a scalar payload loses its numeric prefix and a string its bracket
+            // escapes, where `TVal` prints the payload nested. One value prints two
+            // ways by its static type: `[U(u8:3)]` at its type and `[U(3)]` under
+            // `Any`, `[N("x\[y\]")]` and `[N("x[y]")]`. Print the payload in the
+            // composite context, through a `tval` entry that starts at
+            // `PrintContext::Composite`. probe:
+            // design/review-2026-11-16/repro/t-cast-abstract-under-any-print.gx
+            // (t-cast-07)
             crate::typ::tval::fmt_naked(f, &self.payload)?;
             write!(f, ")")
         })

@@ -221,6 +221,16 @@ impl SigPairs {
 
     /// Pair the last deferred union by the first assignment of its
     /// members under which the rest settle.
+    // CR claude for claude: [perf/medium] `search` tries every assignment of this
+    // union's members and settles the rest of its group inside each one, so k linked
+    // six-member unions that cannot pair cost up to 720^k trials, each a clone of the
+    // pairing. A val whose signature and implementation hold three such unions over
+    // shared open variables gets no answer from `--check` in 170 s, where two are
+    // refused in 0.6 s; the language server runs the same check on every edit. Fail
+    // first: refuse a group in which some implementation member has no signature member
+    // it can pair with under the pairing as it stands, before permuting anything, and
+    // give the settle one trial budget that ends in a refusal naming the union. probe:
+    // design/review-2026-11-16/repro/t-fntyp-union-search-hang.sh (t-fntyp-02)
     fn search(&mut self, env: &Env, hist: &mut RefHist<AHashSet<RefPair>>) -> Result<()> {
         let Some(DeferredUnion { sig, imp, within }) = self.deferred.pop() else {
             return Ok(());
@@ -565,6 +575,18 @@ impl Type {
                     .0;
             // one definition at parameters that are apart may still share
             // a value, the empty array of each: its expansions say
+            // CR claude for claude: [bug/high] Outside `shared`, two applications of
+            // one definition whose parameters are apart are answered apart without
+            // their expansions, though a member that holds no parameter is a value of
+            // both: over `type T<'a> = [`K('a), null]; type W<'a> = `W(T<'a>)`,
+            // `W<i64>` and `W<string>` share `W(null)`. The arm `[W<i64>, `W(i64)] as
+            // v` over `[W<string>, `W(i64)]` then types `v` as `W(i64)`, takes
+            // `W(null)` at run time, and fused code answers 1 where the node-walk logs
+            // "can't add null"; the same test written `W(T<i64>)` is typed with the
+            // null. Return here only on a true and let a false fall to the expansion
+            // arm, as `shared` does. probe:
+            // design/review-2026-11-16/repro/t-contains-b-could-match-same-definition-apart.gx
+            // (t-contains-b-02)
             if alike || !hist.shared {
                 return Ok(alike);
             }
@@ -681,6 +703,19 @@ impl Type {
                         .collect::<Result<AndAc>>()?
                         .0)
             }
+            // CR claude for eric: [bug/high] Outside `shared`, could_match reads two
+            // arrays (and lists, maps) as apart where their elements are, though the
+            // empty one is a value of both and passes either's run-time test.
+            // Type::narrow_pattern_inner keeps only the members could_match admits, so
+            // over `[(Array<string>, f64), (Array<i64>, i64)]` the arm `(Array<i64>,
+            // [i64, f64]) as v` types `v.1` as i64, takes `([], 2.5)` at run time, and
+            // fused code answers 1 where the node-walk answers 3.5; with a variant
+            // member both engines log a coverage hole. Either keep a member whose value
+            // may pass the test (as cast.rs::may_pass judges it) and type its
+            // collection part as the test's over `_`, or refuse the arm naming the
+            // member. probe:
+            // design/review-2026-11-16/repro/t-contains-b-could-match-empty-array-narrowing.gx
+            // (t-contains-b-01)
             (Type::Array(t0), Type::Array(t1)) => t0.could_match_int(env, hist, t1),
             (Type::List(t0), Type::List(t1)) => t0.could_match_int(env, hist, t1),
             (Type::Primitive(p), Type::Array(_)) => Ok(p.contains(Typ::Array)),
@@ -935,6 +970,15 @@ impl Type {
                 hist.insert(key);
                 let r = e0.sig_matches_int(env, &e1, tvar_map, hist);
                 hist.remove(&key);
+                // CR claude for claude: [readability/low] Two references of one name
+                // over two definitions print alike in this note: `val f is declared
+                // fn(x: C) -> C but implemented fn(x: C) -> C: in return type:
+                // signature has C, implementation has C`, for a body that declares its
+                // own `C` beside the one its sig imports. Type::contains_mismatch tells
+                // such a pair apart (`the two C are different definitions, at .. and
+                // ..`): say the same here when the two sides print alike. probe:
+                // design/review-2026-11-16/repro/x-typecheck-generics-sig-mismatch-same-name.gx
+                // (x-typecheck-generics-06)
                 r.map_err(|e| {
                     let told = format_compact!(
                         "signature has {}, implementation has {}",

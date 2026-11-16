@@ -1137,6 +1137,16 @@ pub(super) fn emit_select_arms<R: Rt>(
     let impure = sel.arms.iter().rposition(|(pat, _)| {
         pat.guard.as_ref().is_some_and(|g| !guard_is_pure_of_binds(pat, &g.node))
     });
+    // CR claude for claude: [dead/low] `open`, and the `reached`, `mask`, `claims` and
+    // `still` computed from it, feed nothing. bind_mask is the pattern condition and
+    // bind_reach, the guard runs on bind_mask & clean, and the chain consults guards by
+    // its own control flow, so every prologue arm emits these instructions only for
+    // them to be deleted as dead code. The comments 'Bind masks carry reach and
+    // matching', 'masked by their arm's condition and reach', 'the chain stops at this
+    // arm when it takes it or its guard is bottom' and emit_or_chain's 'an arm the
+    // chain does not reach' describe this plane as if it gated something. Delete `open`
+    // and its uses, and say what the masks carry: the pattern condition and, below an
+    // unguarded arm, the narrowed test. Found by reading; not run. (f-select-05)
     let open = cx.b.declare_var(types::I8);
     let reaches_first = cx.b.ins().iconst(types::I8, 1);
     cx.b.def_var(open, reaches_first);
@@ -1347,6 +1357,12 @@ pub(super) fn emit_select_arms<R: Rt>(
                 // Schedule-free: pure and never bottom, so no undetermined
                 // case; a consulted guard's fire still folds into the
                 // accumulator (a constant in it fires at an init or a wake)
+                // CR claude for claude: [readability/low] The comment above says a
+                // constant in a pure guard 'fires at an init or a wake'. There is no
+                // init rule: a constant fires only where it is born (const_stale_gate),
+                // and a wake fires nothing for anyone (bind_driven_bodies.md). Say 'a
+                // constant in it fires only where it is born', or drop the parenthesis.
+                // Found by reading; not run. (f-select-08)
                 None => {
                     let gcv = g.node.emit_clif(cx)?;
                     let cur = cx.b.use_var(acc);
@@ -1650,6 +1666,21 @@ fn emit_predicate_test<R: Rt>(
             // Over any other union, one of variants alone included, the
             // value's own test against the predicate, as the node-walk tests
             // a written one.
+            // CR claude for claude: [perf/low] A written test over a scrutinee that is
+            // one variant type falls to "type predicate ... not lowerable". `` |x:
+            // `A([i64, null])| #[native] select x { `A(null) => 0, `A(i64) as `A(n) =>
+            // n } `` is refused, while the same test over `` [`A([i64, null]), `C] ``,
+            // over a tuple and over a struct builds. This path asks for a Type::Set
+            // scrutinee; a ValueKind::Variant scrutinee whose type is a lone
+            // Type::Variant can take graphix_value_is_a too. If that is not wanted,
+            // design/strict_fusion.md's coverage list should say a written variant test
+            // needs a union.
+            // lang::select::variant_union_part_member_leaves_the_other_members (its
+            // FuseExpect::Jit holds through other regions) and
+            // variant_bool_literals_beside_a_written_array_cover_the_payload run this
+            // recommended idiom in the node-walk alone. probe:
+            // design/review-2026-11-16/repro/tests-select-c-written-test-over-lone-variant-defuses.sh
+            // (tests-select-c-04)
             _ if matches!(scrut_typ, Type::Set(_))
                 && matches!(
                     scrut,
@@ -1945,6 +1976,23 @@ fn install_arm_binds(
                 let args = [list.0, list.1, j];
                 let (d, p) = match *kind {
                     LocalKind::Scalar(p) => {
+                        // CR claude for claude: [bug/medium] A scalar list-head bind is
+                        // read with graphix_list_get_value, an owned clone of whatever
+                        // the head holds, and only its payload word is kept: nothing
+                        // drops the clone. In the chain the head is a scalar whenever
+                        // the arm matched. A guarded arm whose guard is not
+                        // pure-of-binds, though, installs its binds in the prologue
+                        // over every value, so `` `A([<h, ..>]) if h / 2 > 0 `` clones
+                        // and leaks the string head of every `` `B(List<string>) ``
+                        // value that reaches the select. Fused peak RSS goes from 76 MB
+                        // to 159 MB between 20k and 400k evaluations, while i64 heads
+                        // stay flat. Read the head borrowed as LeafAt::words does
+                        // (graphix_list_head_borrowed, payload cast to the prim) or add
+                        // a typed scalar list-head helper family like VALARRAY_GET. Add
+                        // a leakcheck witness with a guarded list arm over another
+                        // variant's string list. probe:
+                        // design/review-2026-11-16/repro/f-select-list-head-scalar-leak.sh
+                        // (f-select-01)
                         let call = cx.call_helper("graphix_list_get_value", &args)?;
                         let raw = call[1];
                         (scalar_disc(cx.b, p), cast_u64_to_prim(cx.b, raw, p))
@@ -2029,6 +2077,16 @@ fn emit_select_value_arm<R: Rt>(
     // A never arm's fire follows the scrutinee and consulted guards,
     // independent of its arguments' fires. Its arguments still run.
     // Any other bottom-typed body's production contributes its own fire.
+    // CR claude for claude: [perf/low] Only a body that is itself a Never node reaches
+    // emit_never. `(never())` or a block ending in `never(y)` falls to the Type::Bottom
+    // branch, whose body.emit_clif reaches Never's default emit_clif ('the node-walk
+    // computes'), and a block refuses a Bottom tail, so the whole select de-fuses in
+    // value position. The same arm fuses in tail position, because
+    // fusion::tail_position sees through blocks and parens. Give Never an emit_clif
+    // that emits and discards its args and returns the TAINT|STALE placeholder of its
+    // frozen kind (Value for Bottom), and let a block return a Bottom-typed tail. The
+    // Type::Bottom branch here then takes both shapes. probe:
+    // design/review-2026-11-16/repro/f-select-never-in-block-defuses.gx (f-select-03)
     let never_args = match body.view() {
         NodeView::Never(n) => Some(&n.n),
         _ => None,
@@ -2285,6 +2343,16 @@ fn emit_structure_cond(
                 })?;
             Some(emit_variant_cond(cx, (disc, payload), tag, pbinds, &pred, binds)?)
         }
+        // CR claude for claude: [perf/medium] A list pattern over an option of a list
+        // goes straight to emit_list_pattern_cond with the scrutinee's own type, which
+        // must be a bare List. So `[<h, t..>]` over [List<i64>, null] refuses "list
+        // pattern over non-list [null, List<i64>]" and the whole select node-walks,
+        // while `[h, t..]` over [Array<i64>, null] fuses through emit_member_cond.
+        // Unwrap here as emit_member_cond does: test the discriminant for the array
+        // form (a null's placeholder reads as the empty list) and pass
+        // kernel_abi::nullable_inner's list type. probe:
+        // design/review-2026-11-16/repro/x-rerun-4-list-over-option-defuses.gx
+        // (x-rerun-4-03)
         p @ (StructPatternNode::Slice { kind: SliceKind::List, .. }
         | StructPatternNode::SlicePrefix { list: true, .. }) => {
             if has_tcond {
@@ -2297,6 +2365,16 @@ fn emit_structure_cond(
                 bail!("emit_clif: list pattern over a non-value scrutinee {scrut_typ}")
             };
             let whole = |id| SelectArmBind::Value { id, kind: LocalKind::Value };
+            // CR claude for claude: [perf/low] The list pattern reads its element type
+            // from scrut_typ, so over an option or a result of a list (`[List<i64>,
+            // null]`) emit_list_pattern_cond bails 'list pattern over non-list' and the
+            // select de-fuses. `[h, ..]` over `[Array<i64>, null]` fuses through
+            // emit_member_cond. Take the element type from the List member of the
+            // scrutinee that the arm's predicate (pred_typ) names, with typed only when
+            // the scrutinee is that list alone. graphix_list_match already returns 0
+            // for a value that is not a list. probe:
+            // design/review-2026-11-16/repro/f-select-optional-list-defuses.gx
+            // (f-select-04)
             Some(emit_list_pattern_cond(
                 cx,
                 p,
@@ -2467,6 +2545,19 @@ fn emit_variant_cond(
     let arity = cx.b.ins().iconst(types::I64, pbinds.len() as i64);
     let call = cx.call_helper("graphix_variant_tag_eq", &[v.0, v.1, tag_ptr, arity])?;
     let mut cond = call[0];
+    // CR claude for claude: [perf/high] Every payload leaf is emitted with exact =
+    // false, so a tuple, array or struct pattern inside a variant payload (`` `A([h,
+    // rest..]) ``) tests the payload with graphix_inferred_type_matches on every
+    // evaluation. That walks every element, while the node-walk's shape test is
+    // shallow. A tail loop `` `A([h, rest..]) => f(`A(rest), acc + h) `` is quadratic
+    // when fused: 1.4 s / 4.9 s / 18.9 s at n = 20k / 40k / 80k. The node-walk takes
+    // 4.4 s at 80k, and the same loop that binds the payload first and selects on it
+    // takes 0.2 s. A payload has the value's own type when the scrutinee has one case
+    // of this tag and arity and the predicate's payload type is that case's. Pass exact
+    // there and let LeafAt::array take value_array's disc test for an exact Payload.
+    // Keep the deep test only where another case of the same tag and arity could be
+    // read. probe: design/review-2026-11-16/repro/f-select-payload-slice-deep-test.sh
+    // (f-select-02)
     for (idx, (sub, elt)) in pbinds.iter().zip(elts.iter()).enumerate() {
         if let Some(c) =
             emit_leaf_cond(cx, LeafAt::Payload { v, idx }, sub, elt, false, binds)?

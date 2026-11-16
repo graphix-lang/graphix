@@ -1,0 +1,11 @@
+// A comment above a slice's end bound makes the formatter refuse the file.
+// Command: graphix fmt --stdout tests-expr-slice-end-comment.gx
+// Expected: the file printed back, the comment on its own line above `2`.
+// Observed: "formatter bug: the formatted text does not parse ... 1..// d",
+// exit 1: the pretty layout of ExprKind::ArraySlice writes the end bound's
+// comment right after `..`. With `#[sync]` in place of the comment it prints
+// `1..#[sync]` on one line instead.
+let x = [1, 2, 3];
+x[1..
+    // d
+    2]

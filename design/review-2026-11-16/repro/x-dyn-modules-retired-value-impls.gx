@@ -1,0 +1,21 @@
+// A value of a retired load's own type that the host still holds changes how it compares and prints a cycle after the reload
+// run: timeout -s KILL 30 graphix --no-cache design/review-2026-11-16/repro/x-dyn-modules-retired-value-impls.gx
+// expected: a and b print and compare the same way for as long as the host holds them (C-one, eq=true)
+// observed: a=C-one b=C-one eq=true through the reload cycle n=3, then a=C(1) b=C(2) eq=false from n=4
+let clk = sys::time::timer(duration:100.ms, true);
+let n = 0;
+n <- clk ~ n + 1;
+let srcs = [
+  "type C = Abstract<i64>; impl Display for C { let fmt = |c| \"C-one\" }; impl Eq for C { let eq = |a, b| true }; let v: Any = C(1); let w: Any = C(2)",
+  "let v: Any = 7; let w: Any = 8"
+];
+let st = mod foo dynamic {
+    sig { use core::{Display, Eq}; val v: Any; val w: Any };
+    source srcs[uniq(n / 3)]$
+};
+let a: Any = null;
+let b: Any = null;
+a <- once(foo::v);
+b <- once(foo::w);
+sys::exit(n ~ select n { 6 => 0, _ => never() });
+println("n=[n] st=[st]"); { let a2 = n ~ a; let b2 = n ~ b; println("a=[a2] b=[b2] eq=[a2 == b2]") }

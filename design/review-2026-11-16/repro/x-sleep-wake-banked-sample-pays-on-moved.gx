@@ -1,0 +1,25 @@
+// A banked `~` outside the arm pays when its argument leaves bottom by a
+// wake's quiet recompute (Tag::MOVED): an event for a reader outside.
+//
+// run: graphix-fuzz run design/review-2026-11-16/repro/x-sleep-wake-banked-sample-pays-on-moved.gx
+//
+// `*holder` reads arm 0's `late + 1`, bottom until `late` arrives at clk 4
+// while arm 0 sleeps (clk 2..5). At the wake (clk 6) it moves to 43 with no
+// fire. `s`, never asleep, banked the trigger of clk 0.
+// Each tick is (clk, sel, w, count(w)).
+//
+// expected: no fire at the wake: w stays 0, count(w) 1.
+// observed, both engines: 8:(7, 0, 43, 2).
+{
+  let clk = array::iter(array::init(10, |i| i));
+  let late = never<i64>();
+  late <- select clk { 3 => 42, _ => never() };
+  let sel = 0;
+  sel <- filter(clk, |c| c % 4 == 1) ~ (1 - sel);
+  let r = select sel { 0 => &(late + 1), _ => &(late + 100) };
+  let holder = once(r);
+  let s = once(clk) ~ *holder;
+  let w = 0;
+  w <- s;
+  clk ~ (clk, sel, w, count(w))
+}

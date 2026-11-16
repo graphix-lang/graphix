@@ -1,0 +1,18 @@
+// A result cell under two bounds that overlap, neither holding the other,
+// is refused as "unsatisfiable constraints" though a type satisfies both:
+// TVar::own_witness tries each conjunct as the witness and never their meet.
+//
+// command:
+//   timeout -s KILL 30 /home/eric/tmp/review-2026-11-16/bin/graphix --check --no-cache \
+//     design/review-2026-11-16/repro/t-settle-overlapping-bounds-unsatisfiable.gx
+// expected: accepted. `i64` is inside both `Number` and `[i64, string]`, so
+//   the parse reads an i64. The same program with `g`'s bound written
+//   `[Number, string]` (which holds `Number`) is accepted and settles the
+//   result to `Number`; with `v = never()` in place of the parse the body
+//   inline (`{ let v = never(); f(v); g(v); v }`) is accepted too.
+// observed:
+//   unsatisfiable constraints on '_NNNN: Concrete & NoError & Number & [i64, string]
+let f = 'a: Number |x: 'a| x;
+let g = 'b: [i64, string] |x: 'b| x;
+let p = |s: string| { let v = str::parse(s)$; f(v); g(v); v };
+p("1")

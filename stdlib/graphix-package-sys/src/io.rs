@@ -34,6 +34,14 @@ use crate::{
 #[derive(Debug, Default)]
 pub(crate) struct IoReadEv;
 
+// CR claude for eric: [risk/medium] Fifo is per call site, so a read pending on a quiet
+// stream blocks this site's read of any other stream for as long as the first stays
+// quiet: a site handed a new connection never reads it until the old one yields or is
+// closed. The same holds for the other stream evals and for a write to a peer that does
+// not read. Queue the stream evals by the stream they act on (the half's lock already
+// orders one stream's calls), or document on Read and Write that a site serves one
+// stream at a time. probe:
+// design/review-2026-11-16/repro/x-async-io-read-site-head-of-line.gx (x-async-io-05)
 impl EvalCachedAsync for IoReadEv {
     type Args = (Arc<Halves>, u64, Arc<ReadTicket>);
 
@@ -175,6 +183,18 @@ fn line_reader(
                 let mut guard = stream.reader().await;
                 let Some(s) = guard.as_mut() else { break };
                 s.compact();
+                // CR claude for claude: [bug/medium] The scan for newlines starts at
+                // pending.len(), which assumes pending holds only this reader's own
+                // leftover partial line. But Halves::reader splices into its front the
+                // bytes a read gave back when its site slept (ReadTicket::settle ->
+                // unread), and their newlines are never searched. A read that slept
+                // holding "a\nb\n", followed by lines on the same stream, delivers one
+                // line "a\nb\nc" instead of "a", "b", "c". Fix: keep a scanned mark in
+                // BufferedRead beside pending; BufferedRead::unread resets it to 0,
+                // compact subtracts what it drains, and line_reader reads the mark and
+                // stores held.len() back after draining. probe:
+                // design/review-2026-11-16/repro/sys-io-lines-skip-unread-newlines.gx
+                // Also reported as (x-async-io-02). (sys-io-02)
                 let scanned = s.pending.len();
                 s.pending.reserve(65536);
                 let read = stream
@@ -363,6 +383,21 @@ impl<R: Rt, const BATCHED: bool> Apply<R> for IoLines<BATCHED> {
             let task = tokio::spawn(reader).abort_handle();
             self.reading = Some(Reading { stream, task, queue, stopped });
         }
+        // CR claude for claude: [bug/medium] This pops a line from the queue the tokio
+        // reader fills whenever the node is walked, not only when its reply variable
+        // fired. So what a cycle delivers depends on whether the boundary was walked
+        // and on when the task last pushed: a clock tick that walks the statement
+        // (pruning off or audit, or any input of the enclosing body firing) delivers a
+        // line a cycle before the reader's wake would, and the wake walk of a sleeping
+        // arm fires a queued line, though a wake fires nothing. Fix: pop only in a
+        // cycle where `self.var.id` was delivered, and where a queue carries over to a
+        // new reader or the node wakes with lines queued, call
+        // `ctx.rt.set_var(self.var.id, Value::Null)` so the next line arrives as an
+        // event. probe:
+        // design/review-2026-11-16/repro/x-concurrency-lines-prune-audit.gx panics
+        // under GRAPHIX_PRUNE=audit ("a boundary nothing marked changed ...
+        // `Lines::lines(child.stdout$)`"), 8 of 10 runs, with GRAPHIX_PAR off or force.
+        // (x-concurrency-02)
         match self.reading.as_ref().and_then(|r| r.queue.pop()) {
             Some((value, more)) => {
                 if more {
@@ -532,6 +567,23 @@ pub(crate) type IoFlush = CachedArgsAsync<IoFlushEv>;
 #[derive(Debug, Default)]
 pub(crate) struct IoCloseEv;
 
+// CR claude for claude: [risk/low] Close is cancel-safe by default, but Halves::close
+// sets `closing` before it awaits the locks and the writer's shutdown, which can take
+// up to CLOSE_SHUTDOWN (a TLS close_notify to a peer that does not read, a File flush).
+// A close aborted in that window by its arm's sleep or its site's delete leaves a
+// stream that refuses every read and write (BrokenPipe) but whose read half and fd are
+// never released, so a child's stdin never sees EOF until the handle drops. Fix: const
+// CANCEL_SAFE: bool = false here; the close is bounded by CLOSE_SHUTDOWN. Found by
+// reading; not run. (sys-io-08)
+// CR claude for claude: [bug/medium] A close is aborted by its arm's sleep (CANCEL_SAFE
+// is the default true), and Halves::close is not safe to drop: it sets closing first,
+// then waits for the read half, which a waiting line reader or read holds for a moment.
+// Aborted there the stream is neither closed nor usable: reads fail with broken pipe,
+// the descriptor stays open and the peer never sees end of stream (13 of 25 runs). Mark
+// this eval not cancel-safe, and let a begun close finish under a delete too (run it in
+// its own task). probe:
+// design/review-2026-11-16/repro/x-async-io-close-aborted-half-closed.gx
+// (x-async-io-03)
 impl EvalCachedAsync for IoCloseEv {
     type Args = Arc<Halves>;
 
@@ -568,6 +620,19 @@ macro_rules! stdio {
                 cached: &CachedVals,
             ) -> Option<Value> {
                 cached.value(0)?;
+                // CR claude for eric: [bug/medium] Each fire of sys::io::stdin(trigger)
+                // wraps a fresh tokio::io::stdin() in its own Halves, so two handles
+                // read fd 0 into two separate read-ahead buffers. Two lines readers
+                // over two handles split the input by chunk and cut the line at the
+                // boundary in two: 20000 input lines come out as 20001, in an order
+                // that varies by run. A handle replaced by a new trigger fire also
+                // loses what its buffers held. Two readers of one handle split the
+                // lines but never break one. Fix: one Halves per process for each
+                // standard stream (a LazyLock<Arc<Halves>> that the stdio! wrappers
+                // clone into each Stream). That needs a ruling: it is a process-wide
+                // static, and closing one handle would then close them all. probe:
+                // design/review-2026-11-16/repro/sys-io-two-stdin-handles-split-input.sh
+                // (sys-io-04)
                 Some($wrap(StreamKind::$kind(tokio::io::$constructor())))
             }
         }

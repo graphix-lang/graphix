@@ -209,6 +209,15 @@ start() {
         exit 1
     }
     # The WHOLE box: one pool, so the 8x oversubscription is claimed once.
+    # CR claude for claude: [risk/medium] Without a workers argument this runs `ncpu *
+    # 8` workers, and `parallelism()` in lib.rs uses the same default for `graphix-fuzz
+    # soak`, `fuzz` and `generate`. fleet.sh measures a worker at about 375 MB on
+    # average and 575 MB at the top. A hand launch on a 16-thread box therefore runs 128
+    # workers: about 48 GB on average and 74 GB at the top. design/graphix_fuzz.md says
+    # soak.sh sets the memory-sized worker count; it does not. Fix: default to the
+    # lesser of `ncpu * 8` and the box's memory over a per-worker figure (as
+    # `regress_parallelism` bounds the in-process gate by MemTotal), or require the
+    # argument. Found by reading; not run. (fuzz-main-aux-05)
     workers=${2:-$(( $(ncpu) * 8 ))}
     seed=${3:-$(date +%s)}
     mix=${4:-}
@@ -286,6 +295,16 @@ start() {
     # the launched soak skips its own (GRAPHIX_FUZZ_GATED). Then the
     # generator's compile rate, which no finding would reveal.
     "$binary" regress
+    # CR claude for claude: [test-gap/medium] This gate compiles only gen_program's
+    # output. The reactive lane (ceremonies, schedule and callable twins, queue twins,
+    # callable ceremonies: about a quarter of the nov16b mix) has no compile-rate floor
+    # anywhere. reactive-check prints its rate but never fails, and no test compiles a
+    # schedule or callable twin or a callable ceremony. So a language change that makes
+    # one of those templates ill-typed wastes its slice of every soak, and shows only as
+    # a rising `refused` count in the progress lines. gen-check already honours
+    # `--reactive`, so the fix is one more gate line, `"$binary" gen-check --reactive
+    # 200 1`, plus a mention in the gate sentence of design/graphix_fuzz.md §7. Found by
+    # reading; not run. (fuzz-gen-b-01)
     "$binary" gen-check 200 1
 
     mkdir -p "$dir/state" "$dir/corpus"

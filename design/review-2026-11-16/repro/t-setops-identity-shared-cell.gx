@@ -1,0 +1,20 @@
+// Title: union_identical finds fn(x: 'a) -> 'a identical to fn(x: 'a) -> 'b
+//        (a cell beside itself records no pair in Identity::same, so 'a
+//        then pairs with 'b), which RefHist::shape_id keys alike, and
+//        matching_type's memo types g's part as f's.
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache \
+//          design/review-2026-11-16/repro/t-setops-identity-shared-cell.gx
+//          (and the same with --check: exit 0)
+// Expected: the check refuses the select, "type mismatch 'a: unbound does
+//           not contain ['b: unbound, 'a: unbound]", as it does when g is
+//           written `fn(x: 'c) -> 'b` (no shared cell: "'c does not contain
+//           'a") or the scrutinee `(g, f, n)` with `(q, _, _)`.
+// Observed: --check exits 0; the run logs
+//           "q(v): binding the callee failed: a run-time bind at q(v) did not
+//            type: an instance at fn(x: i64) -> i64 of a definition typed
+//            fn(x: i64) -> string" and r never has a value.
+let h = |f: fn(x: 'a) -> 'a, g: fn(x: 'a) -> 'b, n: [i64, null], v: 'a| -> 'a
+  select (f, g, n) { (Any, Any, i64) as (_, q, _) => q(v), _ => v };
+let r = h(|x: i64| x + 1, |x: i64| "[x]!", 1, 5) + 1;
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+r

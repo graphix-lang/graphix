@@ -46,6 +46,15 @@ run!(socket_union_dispatch, { let cd = crate::lib_tests::cert_dir(); format!(r#"
 
 // A client that never speaks connects first; the handshakes run at once,
 // so client 2's completes while the silent one is still pending.
+// CR claude for claude: [test-gap/low] This test and `tls_stream_before_cert` order
+// their two events by a 200 ms timer racing the other side's async work: here `silent`
+// must connect before `c2`, there both streams must arrive before the certificates.
+// Under the gate's load the race can go the other way (and `timer ~ addr` pays at
+// `addr`'s arrival, issuing both connects in one cycle), and the test then passes
+// without exercising what it is for. Derive each order from the earlier event:
+// `sys::tcp::connect(silent ~ addr)` here; in `tls_stream_before_cert`, gate `cert` and
+// `ca` on a binding written from the accepted streams (`go <- (server_tcp, client_tcp)
+// ~ true`) instead of `late`. Found by reading; not run. (tests-lib-b-a-04)
 run!(tls_accept_silent_client, { let cd = crate::lib_tests::cert_dir(); format!(r#"{{
     let cert = sys::fs::read_all_bin("{cd}/server.pem")$;
     let key = sys::fs::read_all_bin("{cd}/server.key")$;

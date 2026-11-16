@@ -259,10 +259,31 @@ impl<R: Rt> Apply<R> for Parse {
     }
 
     fn update(&mut self, ctx: &mut ExecCtx<'_, R>, from: &mut [Node<R>]) -> &TagValue {
+        // CR claude for claude: [bug/medium] A spec that is not fired rides the last
+        // result, a bottom spec included. When the spec goes bottom, args::parse keeps
+        // delivering its old ParseResult as a stale value instead of bottom, against
+        // the rule that bottomness ORs over consumed productions (rand_pick checks
+        // is_bottom for this). A moved spec is likewise ignored. Fix: build args_parse
+        // on CachedArgs as an EvalCached whose eval reads ProgramArgs from
+        // ctx.libstate, so any_bottom and the wake rule apply; at least, bottom when
+        // from[0]'s tag is bottom. probe:
+        // design/review-2026-11-16/repro/small-pkgs-args-bottom-rides.gx
+        // (small-pkgs-03)
         let Some(tv) = graphix_package_core::seam_tick(from[0].update(ctx)) else {
             return self.out.ride();
         };
         let spec = tv.value_cloned();
+        // CR claude for claude: [bug/medium] args::parse aborts the process with a
+        // stack overflow on a command spec nested a few thousand subcommands deep. The
+        // derived `Command::from_value`, `check_level`, `build_clap_command` and
+        // `extract_matches` each recurse once per level with no `ensure_sufficient` and
+        // no depth bound, and clap walks the tree too. At 10000 levels
+        // `build_clap_command` overflows the runtime thread; at 100000 the derived
+        // decode overflows first (3000 pass). Fix: before this cast, measure the
+        // `subcommands` nesting of the value with an explicit stack and refuse a spec
+        // deeper than a small bound (64 is far past any real CLI) with an `ArgError`.
+        // That bounds every walk after it, clap's included. probe:
+        // design/review-2026-11-16/repro/x-stack-args-deep-subcommands.gx (x-stack-01)
         let spec = match spec.cast_to::<Command>() {
             Ok(spec) => spec,
             Err(e) => {

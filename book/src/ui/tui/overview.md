@@ -100,6 +100,15 @@ Graphix TUIs excel at displaying real-time data. Connect to data sources via net
 
 ## Printing While a TUI Runs
 
+<!-- CR claude for claude: [doc-drift/medium] This section says to redirect stderr and
+write to it, but it does not say which functions write to stderr. println, print and log
+default to `Stdout`, which is where the display draws, so `graphix app.gx 2>debug.log`
+with a println still draws its text over the display; only dbg (or `println(#dest:
+`Stderr, ..)`) reaches debug.log. Widget warnings (line_gauge's ratio clamp, calendar
+date coercion, data_table's ignored columns) reach neither place: the shell's default
+logger is "off, graphix::failure=error", so they appear only with RUST_LOG=warn and
+--log-dir. Name dbg / `#dest: `Stderr` here and say where widget warnings go. probe:
+design/review-2026-11-16/repro/book-ui-b-println-over-display.sh (book-ui-b-01) -->
 The display holds neither stdout nor stderr: whatever a program, a
 library or a child process writes to either while the display runs goes
 straight to where it points. On the terminal it lands over the display

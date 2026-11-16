@@ -1,0 +1,11 @@
+// Title: a function whose result a type-directed op decides is refused at each call as "the type '_8144 must be fully known here ... annotate it"
+// Command: graphix --check design/review-2026-11-16/repro/x-diagnostics-concrete-required-call.gx
+// Expected: the refusal says that f's result (the 'b: Concrete of the str::parse inside it) is
+//   undecided at this call and names what to annotate: the binding that takes the result
+//   (`let v: i64 = f(1)`, which passes) or f's return type (`|x: i64| -> i64`, which passes).
+// Observed: "at line 11, column 1, in: f(1): the type '_8144 must be fully known here, a
+//   type-directed operation reads it: annotate it". '_8144 is a raw cell id (the LSP says
+//   '_8936 for the same program), no type-directed operation is written at f(1), and "it"
+//   names nothing the program holds. Same with json::read in place of str::parse.
+let f = |x: i64| str::parse("[x]")$;
+f(1)

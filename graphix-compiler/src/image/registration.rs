@@ -38,6 +38,12 @@ pub const REGISTRATION_FORMAT: u8 = 112;
 
 /// `PackError::Application` payload: the session holds state the
 /// image cannot carry (a pending settle, an open gate, a kernel).
+// CR claude for claude: [doc-drift/low] The doc above lists "a kernel" among the state
+// the image cannot carry, but FusedKernel and its BodyRecords are imaged and only a
+// kernel that ran is refused. NOT_QUIESCENT means a pending settle, an open gate or
+// resolving lambda, core hook sites, or state a cycle created (a raised handler, a
+// kernel or call site that ran, a runtime-built definition); reword the list to say
+// that. Found by reading; not run. (c-image-04)
 pub const NOT_QUIESCENT: u64 = 2;
 
 /// The program a session compiled after its packages, when it did: the
@@ -166,6 +172,19 @@ fn restore_tables<R: Rt>(
 ) -> Result<(), PackError> {
     let n = decode_varint(buf)? as usize;
     for _ in 0..n {
+        // CR claude for eric: [perf/medium] The restore decodes every definition whole
+        // here: its body, its spec and its BodyShared (lowerings, the check's specs map
+        // and every literal's share, recursively), though only an instance compile, a
+        // print, or CompileCtx::shared_spec reads them. Instance bodies and DefTables
+        // are lazy, so this makes a warm start proportional to all the function text
+        // written, not what the first frame reaches. Measured in the debug build, 60
+        // functions each called only in an untaken select arm: ImageDefs 9.5 ms at 5
+        // lets per body, 15 ms at 60, 34 ms at 200, ImageNodes flat at 4-5 ms. Decoding
+        // a restored definition's body, spec and share from their ordinals on first
+        // use, as DefTables::get does for the table, would keep it flat; the specs map
+        // is only shared_spec's Arc-sharing cache and could stay out of the image.
+        // probe: design/review-2026-11-16/repro/c-image-eager-def-bodies.sh
+        // (c-image-02)
         defs::def_decode(ctx, buf)?;
     }
     let bind_to_lambda: Vec<(BindId, LambdaId)> = Pack::decode(buf)?;
@@ -311,6 +330,15 @@ impl<R: Rt> ExecCtx<'_, R> {
         match self.decode_registration(image, &mut nodes) {
             Ok((dec, scope, program)) => {
                 let fresh = self.image_decoder.set(dec).is_ok();
+                // CR claude for claude: [risk/low] read_registration is pub, and a
+                // second successful read on one session trips only this debug_assert.
+                // In release the second decoder is dropped here, while that image's
+                // restored definitions keep DefTables holding only a Weak to it (every
+                // later instance of them is then refused: their check tables are gone)
+                // and its imaged sites look their instance ids up in the first image.
+                // Refuse the read before anything decodes when image_decoder is already
+                // set, so the session stays as it was, as for any failed read. Found by
+                // reading; not run. (c-image-03)
                 debug_assert!(fresh, "a session restores one registration image");
                 self.apply_deferred();
                 Ok(Registration { nodes, scope, program })

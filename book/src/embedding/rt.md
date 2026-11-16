@@ -19,6 +19,13 @@ runtime's thread to end.
 
 ## Setting it up
 
+<!-- CR claude for claude: [doc-drift/low] The embedding chapter never explains GXExt,
+the type parameter every handle, ShellBuilder and CustomDisplay carries (CLAUDE.md:
+embedder extensions via GXExt). Its one method, update_sources, polls the embedder's own
+async event sources between cycles, must be cancel safe, and delivers through variables
+the runtime watches (Rt::watch_var, Rt::spawn_var). Every example here uses NoExt, so an
+embedder with its own event source has nothing to go on. Add a short section with a
+minimal GXExt. Found by reading; not run. (book-modules-udt-15) -->
 The shell itself is the best example of using the `graphix-rt` crate. As we get
 further into internals, the details can change more often, but in general
 getting a Graphix runtime going involves the following:

@@ -99,6 +99,23 @@ pub(super) fn emit_tail_rebind_jump(
     for r in rebinds {
         let slot = &slots[r.slot];
         let id = param_id(ctx.tail.params, slot.bind_id);
+        // CR claude for claude: [bug/critical] A tail loop rebinds a formal whose
+        // pattern binds nothing into whatever capture shares its declared name.
+        // lowering::formal_slots names a `_` formal after the declared fn type's
+        // parameter and gives it no bind id, so lookup_slot falls back to a name search
+        // over the params from the end, where the captures sit after the formals. The
+        // rebind then drops the capture under the formal's kind and defines it with the
+        // new argument. `let a = 100; let rec f: fn(a: i64, n: i64) -> i64 = |_, n|
+        // select n { 0 => a, k => f(k * 1000, k - 1) }` gives 1000 fused and 100
+        // node-walked
+        // (design/review-2026-11-16/repro/f-call-flow-tail-rebind-capture-name.gx).
+        // With the formal declared `a: string`, the i64 capture is dropped as an ArcStr
+        // and the run aborts; a release build frees a wild pointer. Fix:
+        // compile_into_function binds the params first, in KernelSig::params order, so
+        // take `env.locals[r.slot]` and delete lookup_slot's id and name search; pin
+        // both programs in lang::fusion. probe:
+        // design/review-2026-11-16/repro/f-call-flow-tail-rebind-capture-drop.gx
+        // (f-call-flow-01)
         let vv = lookup_slot(env, ctx.tail.param_mark, slot, id)
             .ok_or_else(|| anyhow!("TailCall: slot `{}` not in env", slot.name))?;
         let borrowed = r.source == CompositeSource::Borrowed;
@@ -336,6 +353,22 @@ impl<'a, 'f, 'c> BodyCx<'a, 'f, 'c> {
     /// `event.born()` bit of wire slot 0 ([`kernel_abi::CTX_WIRE_SLOTS`]),
     /// or in a loop body that or the slot's first iteration, as a new slot
     /// is a new instance.
+    // CR claude for claude: [doc-drift/low] The doc above says the flag is set in a
+    // slot's first iteration, but `LoopFrame::run` gives every slot the enclosing run's
+    // flag, and design/bind_driven_bodies.md says a loop slot's first iteration is not
+    // a birth. Drop the clause: a loop body reads the enclosing run's flag. The stale
+    // clause describes exactly the new-slot fire `deliver_acc_to_new_slot` still makes
+    // (see the CR on FoldQ's fresh-slot seed). Found by reading; not run.
+    // (tests-select-a-04)
+    // CR claude for claude: [doc-drift/low] SlotView::born is always the enclosing
+    // view's born flag: LoopFrame::run takes it from born_flag() before installing the
+    // slot view, so at every depth it equals ctx.born_flag and this map_or is a no-op.
+    // The doc above, and SlotView::born's, still say a new slot is born, which
+    // bind-driven bodies retired; a reader trusting them misreads
+    // emit_callee_context_word and the builtin call's genuine-init stale mask. Fix:
+    // delete SlotView::born, return ctx.born_flag here, and say in both docs that a
+    // slot runs under the enclosing view (SlotView::new marks a new slot). Found by
+    // reading; not run. Also reported as (f-scaffold-body-02). (f-call-flow-04)
     pub fn born_flag(&self) -> ClifValue {
         self.env.slot.map_or(self.ctx.born_flag, |s| s.born)
     }

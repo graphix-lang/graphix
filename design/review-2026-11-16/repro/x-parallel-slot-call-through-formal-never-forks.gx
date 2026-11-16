@@ -1,0 +1,31 @@
+// Title: a collection callback that calls a function its enclosing function
+// took as a parameter never forks its slots, and `#[parallel]` on it is
+// accepted and silently runs in order.
+//
+// Command (node-walk, 4 workers; compare the wall time of the two modes):
+//   for m in off auto; do
+//     time GRAPHIX_PAR=$m GRAPHIX_EVAL_THREADS=4 \
+//       graphix --no-cache --no-fusion x-parallel-slot-call-through-formal-never-forks.gx
+//   done
+//   GXDBG_SEQPLAN=1 GRAPHIX_PAR=auto graphix --no-cache --no-fusion \
+//     x-parallel-slot-call-through-formal-never-forks.gx 2>&1 | grep SEQPLAN
+//   graphix --no-cache --check x-parallel-slot-call-through-formal-never-forks.gx
+//
+// Expected: `auto` runs the eight slots side by side, as it does when the
+// callback calls `heavy` by name (`array::map(xs, |x| heavy(x, t))`: 0.9 s
+// against 1.4 s here) or when the collection's callback is the formal itself
+// (`array::map(xs, f)`); or `--check` refuses the `#[parallel]`, naming the
+// call that serializes the slots.
+// Observed: `--check` accepts it (exit 0); off and auto take the same time
+// (1.6 s and 1.5 s, debug build), and the analysis prints
+//   SEQPLAN   opaque call f(x, t) at line: 28, column: 34 static=false applied=lambda
+// so each slot holds an opaque, ordered call and the slots are dependent.
+let n = 0;
+n <- select n { k if k < 30 => k + 1, _ => never() };
+let heavy = |x: i64, t: i64| -> i64
+  array::fold(array::init(3000, |i| i), x, |a, i| (a * 31 + i + t) % 1000003);
+let apply = |xs: Array<i64>, t: i64, f: fn(x: i64, t: i64) -> i64| -> Array<i64>
+  #[parallel] array::map(xs, |x| f(x, t));
+let r = apply([1, 2, 3, 4, 5, 6, 7, 8], n, heavy);
+sys::exit(select n { 30 => (r ~ 0), _ => never() });
+array::fold(r, 0, |a, v| a + v)

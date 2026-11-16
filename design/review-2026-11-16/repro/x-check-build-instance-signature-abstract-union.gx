@@ -1,0 +1,21 @@
+// A function body that destructures a union of two applications of a parametric
+// abstract type, one with an open parameter: the check accepts, the build refuses
+// the instance's signature
+//
+// command:  graphix -n --check x-check-build-instance-signature-abstract-union.gx            (exit 0)
+//           GRAPHIX_ELAB_AUDIT=1 graphix -n --no-cache --expand x-check-build-instance-signature-abstract-union.gx  (exit 1)
+// expected: both accept: the body's two statements at the top level build
+//           (`let b = select true { true => B([1]), false => B([]) }; select b { B(x) => x }`)
+// observed: --check passes; the build prints
+//   ELAB-AUDIT instance-signature at ..: an instance at fn(q: i64) -> [Array<_>, Array<i64>]
+//   of a definition typed fn(q: '_8191: unbound) -> [Array<i64>, Array<'_8200: unbound>]
+//   Error: .. in the instance of v(0) at this call site: an instance at fn(q: i64) -> ..
+// The uncalled definition builds; so does a body whose arm reads the payload at a
+// decided type (`B(x) => array::len(x)`), and the same shape over a struct, tuple or
+// variant in place of `B`.
+type B<'p> = Abstract<'p>;
+let v = |q| {
+  let b = select true { true => B([1]), false => B([]) };
+  select b { B(x) => x }
+};
+v(0)

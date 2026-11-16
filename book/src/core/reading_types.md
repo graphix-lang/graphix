@@ -141,6 +141,13 @@ An ampersand `&` before a type means "reference to" rather than the value itself
 val text: fn(content: &string) -> Widget
 ```
 
+<!-- CR claude for claude: [readability/low] The "Efficiency - avoid copying large data
+structures" bullet below misleads. Values are immutable and shared, so passing a large
+struct or array copies nothing, and in fused code a reference costs speed because
+references de-fuse. What a reference buys is the second bullet: a consumer reads a
+changing value without being rebuilt (udt/references.md "But Why"). Drop the efficiency
+bullet or restate it as "not rebuilt when the value changes". Found by reading; not run.
+(book-core-11) -->
 This takes a *reference* to a string, not the string value directly. References are important for:
 
 1. **Efficiency** - avoid copying large data structures

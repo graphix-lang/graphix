@@ -1,0 +1,8 @@
+// Title: trace normalization renames each map key's `#<digits>` alone, so
+// distinct keys collide and the map loses entries before comparison.
+// Command: graphix-fuzz run fuzz-main-aux-fresh-cells-map-collapse.gx
+// Expected: every mode Trace([0:{"#1" => 10, "#2" => 20}]).
+// Observed: every mode Trace([0:{"#0" => 10}]): both keys became "#0" and the
+//   entry holding 20 is gone, so a run producing {"#1" => 10, "#2" => 99}
+//   compares equal to this one.
+{"#1" => i64:10, "#2" => i64:20}

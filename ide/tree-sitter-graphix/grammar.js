@@ -1218,6 +1218,19 @@ module.exports = grammar({
     ),
 
     // Qop and or_never - postfix operators
+    // CR claude for claude: [bug/medium] qop and or_never accept an
+    // _arithmetic_expression operand, so a postfix followed by a tighter operator wraps
+    // the whole chain before it. `k ~ x$ + 1` parses as ((k ~ x)$) + 1 and `a + b? * c`
+    // as (a + b)? * c, while Graphix's parser applies ?/$ only to one term's postfix
+    // chain (arithexp::arith_term), and `(a + b)?` must be parenthesized there.
+    // Highlighting is unaffected, but expand-selection, textobjects and Emacs sexp
+    // motion act on nodes the program does not have. Fix: make both operands
+    // $._primary_expression alone, drop the two conflicts that become unnecessary
+    // ([$._expression, $.or_never], [$._expression, $.qop]), regenerate, and pin `k ~
+    // x$ + 1` in tree_sitter_compat::ts_tree_shapes. With that change the repo and
+    // netidx corpus parse with the same refusals. probe:
+    // design/review-2026-11-16/repro/ide-tooling-postfix-binds-binary.sh
+    // (ide-tooling-01)
     qop: $ => prec.left(seq(
       choice($._primary_expression, $._arithmetic_expression),
       '?',

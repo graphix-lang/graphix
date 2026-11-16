@@ -1,0 +1,22 @@
+// A failed reload leaves the last good body running (the book says the previous module is deleted whatever the outcome)
+// run: timeout -s KILL 30 graphix --no-cache design/review-2026-11-16/repro/x-dyn-modules-failed-reload-keeps-body.gx
+// expected: per book/src/modules/dynamic.md: foo::f stops answering after the first failed load
+// observed: f=2 .. f=5 through four failed loads (a parse error, a type mismatch, a missing val, an undefined name), all computed by the first body
+let clk = sys::time::timer(duration:100.ms, true);
+let n = 0;
+n <- clk ~ n + 1;
+let srcs = [
+  "let c = 0; let f = |x| x + 1",
+  "let f = |x| x +",
+  "let f = |x| \"str\"",
+  "let g = 1",
+  "let f = |x| x + undefined_name",
+  "let c = 5; let f = |x| x + 100"
+];
+let st = mod foo dynamic {
+    sig { val f: fn(x: i64) -> i64 };
+    source srcs[n]$
+};
+sys::exit(n ~ select n { 7 => 0, _ => never() });
+println("n=[n] st=[st]"); 
+println("f=[foo::f(n)]")

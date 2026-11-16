@@ -1,0 +1,17 @@
+// A dynamic module in a collection slot whose body calls a function of the program: a warm image start under forked evaluation segfaults in JIT code
+// run: sh design/review-2026-11-16/repro/x-dyn-modules-warm-par-segv.sh  (two runs sharing one XDG_CACHE_HOME, GRAPHIX_PAR=auto GRAPHIX_PAR_T=4; graphix-fuzz check x-dyn-modules-warm-par-segv-fuzz.gx dies the same way in its JitPar cold/warm session)
+// expected: both runs end with (40, [19, 20, 21])
+// observed: the first (cold) run does; the second (warm) run dies with SIGSEGV a few cycles in: a fused region of the loaded body calls what should be app's kernel and lands in a function that reads its first argument as a pointer (rdi = 2). Holds for GRAPHIX_PAR_T up to 400; not seen at the calibrated default, with --no-cache, or with GRAPHIX_PAR=off|force
+let n = 0;
+select n { k if k < 40 => n <- k + 1, _ => never() };
+let app = |x: i64| x + 8;
+let xs = select n % 4 { 0 => [1, 2, 3], 1 => [], 2 => [4, 5], _ => [4, 5, 6] };
+let r = array::map(xs, |i| {
+    let st = mod foo dynamic {
+        sig { use super::app; val f: fn(x: i64) -> i64 };
+        source "let f = |y| app(y) + [i]"
+    };
+    foo::f(10)
+});
+sys::exit(sys::time::after_idle(duration:400.ms, 0));
+(n, r)

@@ -18,6 +18,14 @@ use std::{
 /// level consumes between two checks (~420KB for an unoptimized
 /// `expr` parse level).
 #[doc(hidden)]
+// CR claude for claude: [doc-drift/low] The doc justifies this size with the combine
+// grammar's frames (~420KB per unoptimized `expr` parse level, from its `choice`
+// tuples), and that grammar is gone: the parser is hand-written now. The constant must
+// exceed the deepest stack any recursion uses between two `ensure_sufficient` checks.
+// Re-measure that with the current parser, checker and cast walks
+// (graphix-shell/tests/deep_nesting.rs is the probe) and state the invariant with the
+// new number, or with no number, never the stale one. Found by reading; not run.
+// (t-misc-01)
 pub const RED_ZONE: usize = 1024 * 1024;
 
 /// Size of each fresh segment. Segments are mmap'd on entry and
@@ -236,6 +244,13 @@ pub fn record_invocation(jit: bool) {
 /// and freed in one runtime's cycles, so it is released where it was
 /// charged.
 #[doc(hidden)]
+// CR claude for claude: [structure/low] This takes any `i64` but charges or releases an
+// activation only for exactly 1 or -1. Any other count moves `self_blocks` with no
+// activation, so the two counts drift apart silently, and a batched free would leak the
+// activation budget. Both callers (`graphix_site_child_block`, `free_self_block_tree`)
+// pass a literal 1 or -1. Take `born: bool` (or split into a born and a freed function)
+// so a count that skips the activation cannot be written. Found by reading; not run.
+// (t-misc-04)
 pub fn record_self_blocks(n: i64) {
     let Some(c) = current_control() else { return };
     // SAFETY: see `current_control`.
@@ -386,6 +401,15 @@ impl StopCause {
 /// Lock-free [`CtlFlag`] set, polled by loops and the run loop through
 /// [`Control::interrupted`]. Also this runtime's stack budget: the grown
 /// stack a recursion may hold before [`Control::stop`].
+// CR claude for claude: [structure/low] This crate is the static half, and `Control`
+// carries the run-time half into it: the evaluation pool, `ParMode`, `PruneMode`, the
+// activation budget and ten counters the test harness reads (`fused_runs`, `jit_runs`,
+// `forks`, `walked`, ..). Nothing in graphix-types reads any of them outside this file
+// and `eval_pool.rs`; graphix-compiler and graphix-rt are their only users, and every
+// package's build script compiles them through graphix-ast-pack. Keep the stop flags
+// and the stack budget here, which `ensure_sufficient` needs, and move the rest to a
+// struct in graphix-compiler that `ExecState` owns. Found by reading; uses counted with
+// git grep. (a-compiler-08)
 #[derive(Debug)]
 pub struct Control {
     flags: AtomicU32,
@@ -716,6 +740,19 @@ impl Control {
 
     /// Abort the runtime where it holds more than its activation budget.
     fn holds(&self, held: u64) {
+        // CR claude for eric: [bug/low] This stops a program that has no recursion and
+        // says a recursion did it. A node-walk collection's slots count against the
+        // activation budget and a fused loop's do not, so under
+        // GRAPHIX_ACTIVATION_BUDGET=50000 a 60000-element array::map with a stateful
+        // callback exits with "a runaway recursion exceeded the runtime's budget" while
+        // the same map with a pure callback prints its answer. The fuzzer's budget of
+        // 50000 makes every program holding more node-walk slots than that CONTAINED,
+        // never compared. Name what was held (calls, collection slots, kernel blocks)
+        // in this message and the shell's, and decide whether slots count at all: leave
+        // them out, or count a fused loop's too so the verdict does not depend on
+        // fusion. probe:
+        // design/review-2026-11-16/repro/x-engine-collections-activation-budget-wide-map.gx
+        // (x-engine-collections-02)
         if held > self.activation_budget() && self.stop(StopCause::Activations) {
             log::error!(
                 "activation budget ({}) exceeded by a recursion — aborting the runtime \
@@ -822,6 +859,15 @@ thread_local! {
 }
 
 /// Whether the runtime whose cycle this thread is running is stopping.
+// CR claude for claude: [structure/low] `interrupted`, `current_stack_budget` and
+// `abort_current_control_budget` each read `CURRENT` and dereference it in their own
+// unsafe block, repeating `current_control`. The SAFETY argument is written here and
+// cited as "see `interrupted`", while six other sites cite `current_control`, which
+// carries none. Write the three as `with_current_control(|c|
+// c.is_some_and(Control::interrupted))`, `with_current_control(|c|
+// c.map_or_else(default_budget, Control::stack_budget))` and `with_current_control(|c|
+// c.is_some_and(|c| c.stop(StopCause::Stack)))`. Put the one SAFETY argument on
+// `current_control`. Found by reading; not run. (t-misc-03)
 pub fn interrupted() -> bool {
     CURRENT.with(|c| {
         let p = c.get();

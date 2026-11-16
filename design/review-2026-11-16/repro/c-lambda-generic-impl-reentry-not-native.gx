@@ -1,0 +1,26 @@
+// A generic impl's method that reaches itself at its element type is taken
+// for a self-call: the nested call never binds statically and nothing fuses.
+//
+// command:  graphix --no-cache c-lambda-generic-impl-reentry-not-native.gx
+// expected: (6, 6): `two` is `one` one level deeper, a finite chain of three
+//           instances (Array<Array<i64>>, Array<i64>, i64), each known at the check
+// observed: the build refuses `two`'s #[native]:
+//             #[native] expression did not fully fuse to native code:
+//               - lambda `/Total/total` has no kernel: a self-call passes a formal
+//                 a value of another shape
+//           Without the attribute on `two` the program prints (6, 6) and
+//           `graphix-fuzz run` lists the same reason for every region of it.
+//
+// `Total::total(e)` inside the Array impl, at e: Array<i64>, resolves to the
+// definition whose instance at Array<Array<i64>> is being built;
+// CallSite::resolve_static_entered finds it active under the same (empty)
+// FnArgIdentity and records that instance as the site's static target, at
+// that instance's type.
+trait Total { val total: fn(self) -> i64 };
+impl Total for i64 { let total = |s| s };
+impl<'a: Total> Total for Array<'a> {
+    let total = |s| array::fold(s, 0, |acc, e| acc + Total::total(e))
+};
+let one = |xs: Array<i64>| #[native] Total::total(xs);
+let two = |xs: Array<Array<i64>>| #[native] Total::total(xs);
+(one([1, 2, 3]), two([[1, 2], [3]]))

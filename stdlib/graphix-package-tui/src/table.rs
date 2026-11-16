@@ -173,6 +173,17 @@ impl<X: GXExt> TuiWidget for TableW<X> {
 
     fn draw(&mut self, frame: &mut Frame, rect: Rect) -> Result<()> {
         let p = &self.p;
+        // CR claude for claude: [bug/medium] A row of 65536 cells with no `widths`
+        // crashes the display. ratatui's Table::get_column_widths divides by
+        // `col_count.max(1) as u16`, which is 0 there, and integer division by zero
+        // panics in release too. Below that, every column goes through ratatui's layout
+        // solver: 2^12 columns take seconds for the first frame and 2^14 none within 15
+        // s, though under the default widths no column is wider than 0 once the count
+        // exceeds the width. When `widths` is null, pass ratatui's default widths
+        // computed in usize (`width / count`). Cut the rows, header, footer and widths
+        // to at most rect.width columns. Add an UPSTREAM.md entry. probe:
+        // design/review-2026-11-16/repro/tui-widgets-table-many-columns.sh
+        // (tui-widgets-02)
         let mut table = Table::default().rows(self.rows.iter().map(|(_, r)| {
             r.t.as_ref().map_or_else(|| Row::default().height(1), |r| r.build())
         }));

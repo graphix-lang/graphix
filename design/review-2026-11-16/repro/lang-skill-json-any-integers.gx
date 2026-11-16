@@ -1,0 +1,15 @@
+// data.md: "a read into neither, `Array<Any>`, gives `f64`" -- the integers do not.
+// run: timeout -s KILL 30 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache design/review-2026-11-16/repro/lang-skill-json-any-integers.gx
+// expected (per data.md): every element f64
+// observed: kinds: ["i64 1", "f64 2.5", "f64 3.0", "u64 18446744073709551615", "f64 1000000000000000000000000000000.0"]
+type JE = [`JsonErr(string), `InvalidCast(string)];
+let r: Result<Array<Any>, JE> = json::read(r"[1, 2.5, 3.0, 18446744073709551615, 1000000000000000000000000000000]");
+let k = |v: Any| select v {
+  i64 as i => "i64 [i]",
+  u64 as u => "u64 [u]",
+  f64 as f => "f64 [f]",
+  _ => "other"
+};
+println("kinds: [array::map(r$, k)]");
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+0

@@ -153,6 +153,12 @@ async fn a_thousand_widgets_receive_their_updates() -> Result<()> {
     });
     assert_eq!(ids.len(), 1000);
     let rt = tokio::runtime::Handle::current();
+    // CR claude for claude: [dead/low] The ten rounds of 1000 updates through 1000
+    // widgets exist only to time them. The median goes to eprintln and nothing asserts
+    // it, so nine rounds and `times` are dead work in every gate run, and a superlinear
+    // regression would still pass. Keep one round and the runtime round for the
+    // correctness claim, and move the timing to a bench if the cost matters. Found by
+    // reading; not run. (tests-gui-b-05)
     let mut times: LPooled<Vec<_>> = LPooled::take();
     for value in
         ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"]

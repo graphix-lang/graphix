@@ -1,0 +1,28 @@
+// A collection callback's state belongs to a position, in a Map too
+//
+// Each element counts the ticks it has lived through. a joins at tick 1, b at
+// 2, c at 3; a leaves at tick 4.
+//
+// command:
+//   graphix --no-cache design/review-2026-11-16/repro/a-stdlib-slot-identity-positional.gx
+// expected, were a slot keyed by its key: at tick 4 b has lived 3 ticks, c 2
+//     {"b" => 3, "c" => 2}
+// observed: b takes over a's slot and count, c takes b's
+//     {"a" => 1}
+//     {"a" => 2, "b" => 1}
+//     {"a" => 3, "b" => 2, "c" => 1}
+//     {"b" => 4, "c" => 3}
+//     {"b" => 5, "c" => 4}
+//     {"b" => 6, "c" => 5}
+// array::map over ["a"], ["a", "b"], ["a", "b", "c"], ["b", "c"] does the same.
+let tick = sys::time::timer(duration:100.ms, 6)$;
+let n = count(tick);
+let conns = select n {
+  1 => {"a" => 0},
+  2 => {"a" => 0, "b" => 0},
+  3 => {"a" => 0, "b" => 0, "c" => 0},
+  _ => {"b" => 0, "c" => 0}
+};
+let view = map::map(conns, |(id, v)| (id, count(tick ~ id)));
+println(view);
+sys::exit(sys::time::after_idle(duration:500.ms, tick) ~ 0)

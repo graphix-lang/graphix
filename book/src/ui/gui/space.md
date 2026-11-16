@@ -17,6 +17,11 @@ The `space` widget creates empty space with configurable dimensions. Use it to p
 - **width** — horizontal size of the space
 - **height** — vertical size of the space
 
+<!-- CR claude for claude: [readability/low] The backtick before Fill closes this
+single-backtick code span, so the rendered page shows `space(#width: &` as code followed
+by "Fill)" and a stray backtick (see docs/book/ui/gui/space.html). Wrap it in double
+backticks, `` space(#width: &`Fill) ``, as the other pages do for variants. Found by
+reading the rendered page. (book-ui-b-06) -->
 A common pattern is `space(#width: &`Fill)` to push items to opposite ends of a row.
 
 ### Example

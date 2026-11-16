@@ -1,0 +1,21 @@
+// jit_arena_rotation.rs::tree_recursion_moved_every_cycle_computes_the_same
+// checks one value: r at n = 33, which is f(1), the shallowest recursion
+// (and kernels_moved_every_cycle_compute_the_same likewise checks n = 33
+// alone). The deep cycles (f(7) = 54 at n = 7, 15, 23, 31) are never
+// compared. This is the same program checking r at EVERY cycle; it passes
+// today, so it is the stronger pin the test could be.
+//
+// Run:  GRAPHIX_JIT_RELOCATE=every timeout -s KILL 60 graphix --no-cache \
+//         design/review-2026-11-16/repro/tests-shell-compiler-a-arena-every-cycle.gx
+// Expected and observed (debug binary at e1be2fbf2): exit 0, with fusion and
+// with --no-fusion; exit 1 would name a cycle whose answer moved.
+let clock = sys::time::timer(duration:1.ms, true);
+let n = 0;
+n <- clock ~ n + 1;
+let rec f = |d: i64| -> i64 select d {
+  0 => 1,
+  _ => 1 + array::fold(array::filter([d - 1, d - 2], |c| c >= 0), 0, |a, c| a + f(c))
+};
+let r = #[native] f(n % 8);
+let expect = [1, 2, 4, 7, 12, 20, 33, 54];
+sys::exit(select (n, r == expect[n % 8]$) { (_, false) => 1, (33, true) => 0, _ => never() })

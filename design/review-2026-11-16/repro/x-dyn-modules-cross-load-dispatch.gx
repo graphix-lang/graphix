@@ -1,0 +1,21 @@
+// A loaded body that dispatches through an impl another module's load registered keeps the retired impl after that module reloads
+// run: timeout -s KILL 30 graphix --no-cache design/review-2026-11-16/repro/x-dyn-modules-cross-load-dispatch.gx
+// expected: bar::g follows the impl registered now, as a call of a function outside every load does: no answer while foo has no impl (n=4..7), 2009.. once foo implements c + 2000 (n>=8)
+// observed: g=1005 .. 1012: bar::g runs foo's first impl (c + 1000) for good, while foo::f gives 4..7 and then 2008..
+let clk = sys::time::timer(duration:100.ms, true);
+let n = 0;
+n <- clk ~ n + 1;
+trait Sh { val sh: fn(self) -> i64 };
+let srcs = ["impl Sh for i64 { let sh = |c| c + 1000 }; let f = |x| Sh::sh(x)", "let f = |x| x", "impl Sh for i64 { let sh = |c| c + 2000 }; let f = |x| Sh::sh(x)"];
+let st = mod foo dynamic {
+    sig { use super::Sh; val f: fn(x: i64) -> i64 };
+    source srcs[uniq(n / 4)]$
+};
+let st2 = mod bar dynamic {
+    sig { use super::Sh; val g: fn(x: i64) -> i64 };
+    source select n { 1 => n ~ "let g = |x| Sh::sh(x) + 1", _ => never() }
+};
+sys::exit(n ~ select n { 11 => 0, _ => never() });
+println("n=[n] st=[st] st2=[st2]");
+println("f=[foo::f(n)]");
+println("g=[bar::g(n)]")

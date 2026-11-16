@@ -59,6 +59,15 @@ val flat_map: fn(v: ['a, null], f: fn(x: 'a) -> ['b, null] throws 'e) -> ['b, nu
 /// strict input-bool pairing.
 val filter: fn(v: ['a, null], f: fn(x: 'a) -> bool throws 'e) -> ['a, null] throws 'e;
 
+// CR claude for claude: [doc-drift/medium] This doc says f 'starts at v's first null',
+// but or_else calls f with no argument from a `null as _ => f()` arm. Under bind-driven
+// bodies, an effect or event source in f (a file read, a timer, an rpc) therefore acts
+// only where v is null in the program's first cycle. When v becomes null later, the
+// fallback never runs and the result is bottom, silently. A pure f is fine.
+// ok_or_else's doc ('as for or_else') has the same shape. State the rule in both docs
+// and show the effectful form, `select v { null as n => load(n ~ path), x => x }`
+// (checked: it performs at a later null), or give f the null as a parameter. probe:
+// design/review-2026-11-16/repro/gx-stdlib-opt-or-else-effect.gx (gx-stdlib-02)
 /// or_else(v, f): return v if non-null, otherwise return whatever f()
 /// produces. f runs only while v is null, as an arm of
 /// `select v { null as _ => f(), x => x }` does: it starts at v's first

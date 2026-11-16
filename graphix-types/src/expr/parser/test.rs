@@ -207,6 +207,16 @@ fn an_out_of_range_integer_literal_names_its_range() {
     assert!(msg.contains("note: at line: 1, column: 9: `256` is out of the range of u8"));
     let msg = parse_program("let s = [1, u8:300]");
     assert!(msg.contains("note: at line: 1, column: 13: `300` is out"), "{msg}");
+    // CR claude for claude: [bug/low] These cases assert that an out-of-range typed
+    // integer with whitespace after its colon gets no range note. `u8: 255` is a
+    // literal, yet `u8: 256` says the value parser's 'invalid unsigned integer', where
+    // `u8:256` names the range. int_range_note stopped reading the spaces because its
+    // note fell on a struct field (`{u8: 300`). State::note_literal_reason
+    // (Said::Literal) now suppresses a note wherever another reading parsed the
+    // literal's text, which is what keeps `{u8:300` clean. Read whitespace around the
+    // colon in int_range_note again, take its span from its start to the end it
+    // reached, and expect the range note here for `u8: 256`. probe:
+    // design/review-2026-11-16/repro/tests-parser-spaced-int-range.sh (tests-parser-04)
     for (src, at) in [("let a = u8: 256;\na", 16), ("let a = u8:\n256;\na", 4)] {
         let msg = parse_program(src);
         let line = if at == 4 { 2 } else { 1 };
@@ -1806,6 +1816,10 @@ fn nested_parens() {
 
 /// Forty levels of each nest that once parsed its inside twice per level:
 /// in linear time they return at once, doubling they would never return.
+// CR claude for claude: [style/low] The doc comment above narrates history ('that once
+// parsed its inside twice per level'). Say what the test asserts instead: forty levels
+// of each nest parse in time linear in depth, and a parse that read each level's inside
+// twice would not return. Found by reading; not run. (tests-parser-05)
 #[test]
 fn nests_parse_once_per_level() {
     let nest = |open: &str, inner: &str, close: &str| {
@@ -1877,6 +1891,17 @@ fn print_bare_chains_round_trip() {
 
 // `<` must not swallow the `-` of a connect.
 
+// CR claude for eric: [risk/medium] `x<-1` is the connect `x <- 1`: BinOp::Lt refuses a
+// following `-`, and expr_knot tries `connect` first. A connect is ⊥-typed, so a
+// comparison with a negative literal written without a space passes the check wherever
+// a value is read: a guard `n if n<-1`, `let b: bool = x<-1`, `f(x<-1)`, `[x<-1,
+// true]`. The program then writes the variable and the value never fires. In a guard
+// every selection is undecidable, so the select is silently bottom forever. Decide
+// whether the check refuses a connect whose ⊥ is read as a value (a guard, an operand,
+// an argument, an element, an annotated binding) and keeps it as a statement, an arm
+// body, a lambda body or a block's last expression. Then pin the refusal beside this
+// test. probe: design/review-2026-11-16/repro/tests-parser-lt-neg-guard.gx
+// (tests-parser-01)
 #[test]
 fn connect_not_lt_neg() {
     let e = parse_one("a <- b").unwrap();

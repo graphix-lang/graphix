@@ -1,0 +1,22 @@
+// SKILL.md "Entering a select arm is not an event ... Its constants never fire" states
+// what fires inside an arm, but not that the select's RESULT fires at every scrutinee
+// fire, carrying the taken arm's current value: a constant arm entered after the first
+// cycle included, and a re-match of the same arm included (design/organic_firing.md,
+// ruled deltas 1 and 3).
+// run: timeout -s KILL 30 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache design/review-2026-11-16/repro/lang-skill-select-result-fires.gx
+// a reader of the skill expects: label never shows "entered" (a constant in an arm
+//   entered later "never fires"), and count(label) stays at 1 while the arm re-matches
+// observed (both engines, --no-fusion too):
+//   n=0 label=start fires=1
+//   n=1 label=start fires=2
+//   n=2 label=start fires=3
+//   n=3 label=entered fires=4
+//   n=4 label=start fires=5
+let clock = sys::time::timer(duration:50.ms, 4);
+let n = 0;
+n <- clock ~ n + 1;
+let label = select n { 3 => "entered", _ => "start" };
+let fires = count(label);
+println("n=[n ~ n] label=[label ~ label] fires=[fires ~ fires]");
+sys::exit(sys::time::after_idle(duration:300.ms, n));
+0

@@ -1,0 +1,21 @@
+// A labeled default whose root expression the compiler lowers (a trait
+// method used as a value, a `seq` or a `seqq`) passes the check and is
+// refused by the build at the first call that omits the label.
+//
+// command: graphix --check x-engine-seq-errors-lowered-default-check-build.gx   (exit 0, no message)
+//          graphix --no-cache x-engine-seq-errors-lowered-default-check-build.gx
+//          graphix-fuzz check x-engine-seq-errors-lowered-default-check-build.gx
+// expected: the program runs and prints 2
+// observed: the run fails with
+//     in the instance of f(1) at this call site
+//     the default of #d, which its definition's check recorded no types of
+//   and graphix-fuzz check prints "DIVERGENCE — the check accepted what the
+//   build refused".
+// The same happens with a seq as the default:
+//     let go = 1; let f = |#d: i64 = seq go { go }, x: i64| d + x; f(1)
+// A default that only CONTAINS the lowered form builds: `(seq go { go })`,
+// `0 + seq go { go }`, `|v| Show::show(v)`.
+trait Show { val show: fn(self) -> i64 };
+impl Show for i64 { let show = |s| s + 1 };
+let f = |#d: fn(x: i64) -> i64 = Show::show, x: i64| d(x);
+f(1)

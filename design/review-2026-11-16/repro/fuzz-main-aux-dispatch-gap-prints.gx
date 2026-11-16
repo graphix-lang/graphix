@@ -1,0 +1,17 @@
+// callable-v1: handler=m0::handler; cx0=i64:7; cx0=i64:9
+// Title: the dispatch route's gap-cycle prints land in the first dispatch
+// epoch, anchored at the gap, so a deterministic program reports a divergence.
+// Command: graphix-fuzz check fuzz-main-aux-dispatch-gap-prints.gx
+//   (and graphix-fuzz run ... to see every mode)
+// Expected: AGREE. The program is deterministic; "born" printed by the
+//   callable's instance in the set-aside gap cycles is no dispatch's print.
+// Observed: DIVERGENCE — fusion/JIT bug on the dispatch route (interp != jit)
+//   interp/dispatch: ...stdout=[0+0:born | 1+0:born | 1+7:got 7 | 2+0:got 9]
+//   jit/dispatch:    ...stdout=[0+0:born | 1+0:born | 1+6:got 7 | 2+0:got 9]
+//   The offset of "got 7" is the number of gap cycles (6, 7 or 8 from run to
+//   run, cold and warm of one engine differ too): epoch 1 has no trace event,
+//   so its prints anchor at the first printed line, the gap's "born".
+{ let o = m0::observe; o }
+// file-v1: m0.gx
+let observe = i64:0;
+let handler = |x: i64| -> null { println("born"); println("got [x]"); null };

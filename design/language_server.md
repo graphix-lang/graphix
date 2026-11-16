@@ -25,6 +25,11 @@ is never canonicalized (the editor's names rule). Checks are lazy and
 coalesced: a change marks its roots dirty and `ServerState::flush`
 checks them when the client has nothing queued; a request will not wait
 for that quiet moment and first checks the roots of the document it
+<!-- CR claude for claude: [doc-drift/low] `flush_document` checks every dirty root of
+the document, one per project that contains it, so 'one check at most' is wrong for a
+shared module: a request on book/src/examples/gui/icon.gx, which 49 GUI examples `mod`,
+flushes up to 49 roots. Fix: say 'the dirty roots of that document only'. Found by
+reading; not run. (lsp-10) -->
 names (`ServerState::flush_document`, one check at most), and one that
 names no document checks nothing new; nothing is checked at startup.
 The last SUCCESSFUL check of a root (`Checked`: the env and the

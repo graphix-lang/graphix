@@ -1,0 +1,14 @@
+// Title: a list pattern over an option of a list de-fuses, where the same
+//   pattern over an option of an array fuses (the list half of the 2026-10-26
+//   repro f-select-defuse-list-member-payload-composite.gx; its payload half is fixed)
+// Command: timeout -s KILL 30 graphix --no-cache --expand x-rerun-4-list-over-option-defuses.gx
+// Expected: builds, as `|v: [Array<i64>, null]| -> i64 #[native] select v { [h, t..] => .., _ => 0 }`
+//   and `|v: List<i64>| -> i64 #[native] select v { [<h, t..>] => .., _ => 0 }` both do.
+// Observed: refused:
+//   #[native] expression did not fully fuse to native code:
+//     - emit_clif: list pattern over non-list [null, List<i64>]
+let f = |v: [List<i64>, null]| -> i64 #[native] select v {
+  [<h, t..>] => h + list::len(t),
+  _ => i64:0
+};
+f([<5, 6>])

@@ -53,6 +53,18 @@ impl<X: GXExt> TuiWidget for ListW<X> {
 
     fn draw(&mut self, frame: &mut Frame, rect: Rect) -> Result<()> {
         let p = &self.p;
+        // CR claude for claude: [perf/medium] Every frame builds a ratatui item, with
+        // its own span Vec, for every element of `items`, though only rect.height of
+        // them can show. A long list costs O(items) per redraw: with 2^18 lines a 1 ms
+        // selection timer gets through about 370 ticks in 6 s against about 2900 with 2
+        // lines. TableW::draw does the same with every row and cell. Window it as
+        // ParagraphW does. Every item is one row, so pass `items[s..e]` with `s =
+        // min(offset, selected)` and `e = max(offset, selected) + rect.height`, shift
+        // the selection and offset by `s`, and add `s` back to the state's offset after
+        // the render. For TableW, bound the end by summing the RowV heights and
+        // margins. probe:
+        // design/review-2026-11-16/repro/tui-widgets-list-full-rebuild.sh
+        // (tui-widgets-03)
         let mut list =
             List::new(p.items.t.iter().flatten().map(|l| into_borrowed_line(&l.0)));
         if let Some(Some(hs)) = &p.highlight_spacing.t {
@@ -61,6 +73,16 @@ impl<X: GXExt> TuiWidget for ListW<X> {
         if let Some(Some(s)) = &p.highlight_style.t {
             list = list.highlight_style(s.0);
         }
+        // CR claude for claude: [bug/low] The highlight symbol reaches ratatui uncut.
+        // ratatui's List rendering places items at `row_area.x +
+        // highlight_symbol.width() as u16`, so a 65535-column symbol in a list inside a
+        // bordered block panics under overflow checks; in release it wraps and the
+        // items vanish. This is the u16-width class the UPSTREAM.md entry "Chart and
+        // BarChart add text widths in u16" covers for charts and bars, at a site that
+        // fix did not reach. Cut it to the rect first, `sym.unicode_truncate(rect.width
+        // as usize).0`, and name the list in that UPSTREAM.md entry. probe:
+        // design/review-2026-11-16/repro/tui-widgets-list-highlight-overflow.sh
+        // (tui-widgets-06)
         if let Some(Some(sym)) = &p.highlight_symbol.t {
             list = list.highlight_symbol(sym.as_str());
         }

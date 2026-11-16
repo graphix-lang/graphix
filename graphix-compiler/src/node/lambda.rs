@@ -229,6 +229,15 @@ impl DefTable {
         }
         let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
         let default = |id: &ExprId| self.defaults.contains(id);
+        // CR claude for claude: [structure/low] `default_cells` and `settle_open` each
+        // write out the same three loops (the rows, the aux rows, each signature's
+        // parts that are not constraints, through `settle::position_cells`), differing
+        // only in which ids they keep; `for_each_row` is that walk already but for the
+        // constraint flag, and `own_typedefs` repeats the owning half of
+        // `seed_and_own`. A row kind added later has four walks to join. Hand
+        // `for_each_row`'s callback the constraint flag, as `for_each_type` does, and
+        // build both cell sets with it; have `seed_and_own` seed and then call
+        // `own_typedefs`. Found by reading; not run. (c-lambda-06)
         let rows = self.types.iter().filter(|(id, _)| default(id)).map(|(_, t)| t);
         let aux =
             self.aux.iter().filter(|(id, _)| default(id)).flat_map(|(_, ts)| ts.iter());
@@ -660,6 +669,18 @@ pub struct InstanceTypes {
 /// definition's signature `def`, by the cell's address: each bound to the
 /// instance's type ([`FnType::held_at`]). `None` when the instance's
 /// signature does not hold the definition's.
+// CR claude for claude: [bug/medium] `held_at` refuses a site signature the check
+// itself made. A body returning `[Array<i64>, Array<'x>]` with `'x` open (the payloads
+// of `select true { true => B([1]), false => B([]) }` over `type B<'p> = Abstract<'p>`,
+// read by `select b { B(x) => x }`) is called at a site whose settle binds `'x` to
+// bottom and leaves `[Array<_>, Array<i64>]`, where the definition's open member could
+// go to either. The check accepts the call and the build refuses 'an instance at fn(q:
+// i64) -> [Array<_>, Array<i64>] of a definition typed ..'; the same statements at the
+// top level build. Normalize the settled return first (a member holding bottom that
+// another member contains goes, as `joined_lower` does for bounds), or place the
+// settled cell at its member. probe:
+// design/review-2026-11-16/repro/x-check-build-instance-signature-abstract-union.gx
+// (x-check-build-05)
 fn instance_cells<R: Rt>(
     ctx: &CompileCtx<R>,
     def: &FnType,
@@ -681,6 +702,19 @@ impl InstanceTypes {
         root: ExprId,
     ) -> Result<Self> {
         match def.table.get() {
+            // CR claude for claude: [bug/medium] A labeled default whose root
+            // expression is lowered (a trait method used as a value, `#d: fn(x: i64) ->
+            // i64 = Show::show`; a `seq` or `seqq`) passes the check, and every call
+            // that omits the label fails the build with "the default of #d, which its
+            // definition's check recorded no types of": compile replaces the root by
+            // its lowering, so the table has rows for the lowered ids and none for
+            // `root`. A default that only contains the lowered form builds. Fix: record
+            // the root's row under the written expression's id when a lowering stands
+            // in for it, keep a default's lowering with its definition as a body's is,
+            // and pin both forms. probe:
+            // design/review-2026-11-16/repro/x-engine-seq-errors-lowered-default-check-build.gx
+            // (x-check-build-default-seq-fallback.gx shows a seq inside a default
+            // lowered again at the call). (x-engine-seq-errors-04)
             Some(tables) if tables.table.types.contains_key(&root) => Ok(Self {
                 tables: tables.clone(),
                 known: Known::default(),
@@ -1360,6 +1394,35 @@ impl<R: Rt> LambdaDef<R> {
             DefOrigin::Runtime => Around::nothing(),
         };
         let outer = ctx.body.replace(BodyCompile {
+            // CR claude for claude: [bug/medium] Every compile of a labeled default
+            // gets a new share, so `compiler::lowering` lowers a `seq` in the default
+            // again at each call that omits it, with new expression ids: the
+            // definition's table has no row for the lowered nodes and the bind checks
+            // them in full (`elab_audit::fallback`, one line a node). That check is not
+            // the definition's: `let s = {f: |x| x}; let t = 1; seq t { let a = s.f(1);
+            // s.f("s") }` as a default passes the check and is refused by the build
+            // ('i64 does not contain string'), and builds as a function's body. Keep
+            // one share per definition for its defaults, so the bind takes the check's
+            // lowering. The root-lowered default in
+            // design/review-2026-11-16/repro/x-engine-seq-errors-lowered-default-check-build.gx
+            // has the same cause. probe:
+            // design/review-2026-11-16/repro/x-check-build-default-seq-fallback.gx
+            // (x-check-build-03)
+            // CR claude for claude: [bug/high] Each compile of a labeled default gets a
+            // share of its own here, so `compiler::lowering` rewrites a default's seq
+            // or trait-method name afresh, with new expression ids, at every compile,
+            // where a body's compiles share one rewrite. `DefTable::record_defaults`
+            // keys rows by the check's ids and `InstanceTypes::of_default` asks for a
+            // row at the written default's id, which a lowered root never has: `|#show:
+            // fn(x: i64) -> string = Desc::desc, y: i64| show(y)` and `|#v: i64 = seq {
+            // .. }, y: i64| ..` pass the check and every bind that omits the label is
+            // refused ("the default of #show, which its definition's check recorded no
+            // types of"); at a run-time bind the call is bottom for good. A lowered
+            // part below the root has no rows either and is checked in full in each
+            // instance. Compile a definition's defaults under a share it keeps, and
+            // have `of_default` look for the row of the lowering's root. probe:
+            // design/review-2026-11-16/repro/c-lambda-default-lowered-root.gx
+            // (c-lambda-03)
             share: BodyShare::default(),
             checking: false,
             types,
@@ -1429,6 +1492,12 @@ impl<R: Rt> Pack for LambdaDef<R> {
 #[derive(Debug)]
 pub struct GXLambda<R: Rt> {
     /// wake catch-up: set by `sleep()`, taken by the next update
+    // CR claude for claude: [readability/low] The comment above calls this bit "wake
+    // catch-up", a mechanism that no longer exists: all the bit does is make the
+    // dispatch after a wake stand the formals' quiet productions (`QuietAtRoot::Stand`
+    // in `update`), which `WakeBit`'s own doc already says. The same line sits on the
+    // `slept` field of twelve other nodes (node/op.rs, array.rs, map.rs, data.rs).
+    // Delete them. Found by reading; not run. (c-lambda-07)
     slept: WakeBit,
     id: LambdaId,
     instance_id: LambdaInstanceId,
@@ -1549,6 +1618,16 @@ impl<R: Rt> GXLambda<R> {
     /// for the definition's own check, which checks the body. An
     /// instance its definition's check cannot type is a compiler bug.
     fn instance_types(&mut self, ctx: &CompileCtx<R>) -> Result<Option<InstanceTypes>> {
+        // CR claude for claude: [structure/low] `Typing::Prepared` wraps another
+        // `Typing`, so a prepared `Prepared`, and a `Prepared` reaching
+        // `Typing::instance_types`, are states the type allows and the code rules out
+        // by hand: this swap through a `Typing::Restored` placeholder with its
+        // `unreachable!()`, the `Prepared` arm of `Typing::instance_types` that nothing
+        // reaches, and the `(None, Typing::Substituted(..))` arm in `GXLambda::new` (a
+        // substituted typing gives types or an error, never `None`). Hold the
+        // construction's map beside the typing, `prepared: Option<Box<InstanceTypes>>`,
+        // taken by the first check, and delete the variant and the three arms. Found by
+        // reading; not run. (c-lambda-05)
         if matches!(self.typing, Typing::Prepared(_)) {
             let Typing::Prepared(prepared) =
                 mem::replace(&mut self.typing, Typing::Restored)
@@ -1620,6 +1699,18 @@ impl<R: Rt> Apply<R> for GXLambda<R> {
             publish_production(ctx, Feeds::Pattern(pat), tv, root);
         }
         // an interrupted dispatch is not a bottom: it rides its last result
+        // CR claude for claude: [bug/high] After a stop (a budget or the interrupt)
+        // this dispatch rides its last result, but the rest of the cycle's update pass
+        // still runs: a node fed by an input that fired and by a ridden call fires with
+        // a pair of values the program never computes, and the effects below it act. A
+        // file write lands with `account 3 balance 200` where account 3's balance is
+        // 300, println prints the same, and with fusion on `send_batch` still sends the
+        // cut cycle's batch, which the shell shows. Once the runtime is stopped nothing
+        // should fire: effect builtins, `<-` and raises return quietly when the control
+        // is stopped, and the cut cycle's batch is dropped; pin it with a stop
+        // mid-cycle and a write after it. probe:
+        // design/review-2026-11-16/repro/x-recursion-stop-torn-effects.gx
+        // (x-recursion-01)
         if ctx.control.interrupted() {
             return self.resident.ride();
         }
@@ -1660,6 +1751,18 @@ impl<R: Rt> Apply<R> for GXLambda<R> {
                     wrap!(self.body, self.body.typecheck0(ctx))?;
                     let body = self.body.typ().clone();
                     let rtype = &self.typ.rtype;
+                    // CR claude for claude: [bug/medium] A `let rec` whose body nests
+                    // its own result in a tuple, a struct or an array (`0 => null, _ =>
+                    // (n, f(n - 1))`) is refused here with `type mismatch null does not
+                    // contain [null, (i64, null)]`: the return cell took the first
+                    // arm's type and the second no longer fits. The same function over
+                    // variants gets the refusal that names the fix, a named recursive
+                    // type and an annotation, and with `type P = [null, (i64, P)]` and
+                    // `-> P` this one checks. When the return was not written and the
+                    // body's type holds the return's type as a proper part, tell that
+                    // refusal here too, and pin it. probe:
+                    // design/review-2026-11-16/repro/x-recursion-rec-return-mismatch.gx
+                    // (x-recursion-04)
                     let contain =
                         rtype.check_contains_rigid(&ctx.env, &body).map_err(|e| {
                             let method = ctx
@@ -1899,6 +2002,23 @@ impl<R: Rt> GXLambda<R> {
         })
     }
 
+    // CR claude for eric: [perf/medium] Every run-time instance of a body that holds a
+    // collection call (a recursive activation, a slot's callback) keeps about 17-25 KB
+    // for that call and spends about 100 us building it in the debug build, whether or
+    // not the call is ever dispatched; an ordinary user function call in the same place
+    // costs about 2.5 KB. Plain recursion measures 11-13 KB a level, 29-33 KB with one
+    // unreached array::map in its other arm, 47 KB with two unreached folds; a stateful
+    // slot 8-10 KB, 31-34 KB with one nested array::map. So a 100k-row map whose
+    // callback does not fuse and holds one nested collection call keeps about 3 GB, and
+    // a 200k-deep recursion through fold/map callbacks under --no-fusion passes 6 GB
+    // where the fused twin answers at once. The callee is built with its enclosing
+    // instance (Callee::Static), prototype slot and call included. Building it at the
+    // site's first dispatch in a run-time instance, as Callee::Imaged does, or sharing
+    // the defining instance's prototype instead of building one per instance, would
+    // remove the cost for calls that never run; which part holds the bytes is not
+    // measured. probe:
+    // design/review-2026-11-16/repro/x-engine-collections-collection-call-instance-cost.py
+    // (x-engine-collections-01)
     pub(super) fn new_collection(
         ctx: &mut CompileCtx<R>,
         id: LambdaId,
@@ -1975,6 +2095,16 @@ impl<R: Rt> GXLambda<R> {
                 a.pos.0,
                 origin.clone(),
             )?;
+            // CR claude for claude: [bug/medium] `covers` answers false for any union,
+            // so a formal's tuple or struct pattern over a union of same-shape members
+            // is refused as refutable. `array::map([(1, `A), (2, `B(1))], |(i, v)| i)`
+            // is refused "refutable patterns are not allowed in lambda arguments (i,
+            // v)", and so is `|{a, b}|` over a union of structs. Yet `let (i, v) = p`
+            // over the same value checks, because the let judges each member (bind.rs
+            // `fits_every_member`, `retype_by_member`). Fix: judge the formal the way
+            // the let does, and pin this message, which no test names today. probe:
+            // design/review-2026-11-16/repro/x-kind-markers-formal-union-of-tuples.sh
+            // Also reported as (x-rerun-3-01). (x-kind-markers-03)
             if !pattern.covers(&ctx.env, &atyp.typ, false) {
                 bail!(
                     "refutable patterns are not allowed in lambda arguments {}",
@@ -2466,6 +2596,15 @@ impl Lambda {
         let mut trait_quantifiers: LPooled<Vec<(TVar, Type)>> = LPooled::take();
         let mut param = |env: &Env, name: ArcStr, typ: &Type| -> Result<Type> {
             match &typ.scope_refs(&scope.lexical) {
+                // CR claude for claude: [bug/medium] A trait written as a parameter's
+                // type (`|x: Show|`, lowered here) or as a declared bound (`'a: Show`)
+                // records no IDE site. Hover and definition there answer nothing.
+                // References of `Show` list the `use`, the `Show::show` prefixes, the
+                // declaration and the impl head, but not these sites. `Impl::compile`
+                // records an impl head's trait as a `ModuleRefSite`. Fix: record one
+                // the same way wherever a written type or bound resolves to a trait,
+                // both here and where a declared quantifier's bound is resolved. probe:
+                // design/review-2026-11-16/repro/lsp-trait-in-type-position.py (lsp-03)
                 t @ Type::Ref(tr) if env.settled_trait_of_ref(tr)?.is_some() => {
                     let tv = TVar::empty_named(name);
                     trait_quantifiers.push((tv.clone(), t.clone()));
@@ -2543,9 +2682,32 @@ impl Lambda {
             ctx.env.warn(flags, &spec, pos, end, msg)?;
         }
         if let Some(builtin) = builtin {
+            // CR claude for eric: [bug/high] Only a dynamic module's body is refused a
+            // `'name` builtin body, so any script binds any registered builtin under a
+            // signature of its own, and nothing compares that signature with what the
+            // builtin returns. Fused code reads the result as the declared type: `|x:
+            // string| -> i64 'str_trim` yields a heap address where the node-walk logs
+            // and bottoms, and `|s: string| -> string 'str_len` aborts the process in
+            // graphix_shape_mismatch. A package author's wrong return type fails the
+            // same way. Refuse a builtin body outside the package that registered the
+            // name (tests opt in), check a scalar fast call's returned kind in the
+            // kernel as the Value path does and bottom with a logged failure, and have
+            // `run!` audit every builtin value against its site's resolved return type.
+            // probe: design/review-2026-11-16/repro/a-stdlib-builtin-sig-trusted.gx
+            // (a-stdlib-01)
             if flags.contains(CFlag::NoBuiltins) {
                 bail!("defining builtins is not allowed in this context")
             }
+            // CR claude for eric: [structure/medium] A builtin's signature is written
+            // twice by rule: the binding lambda must annotate every argument and the
+            // return here (`let trim = |s: string| -> string 'str_trim`), and the
+            // package's `.gxi` declares the same type again (`val trim: fn(s: string)
+            // -> string`). The stdlib holds about 420 such pairs and netidx-admin 74,
+            // and the scaffold `graphix package create` writes starts a new package
+            // with two. Where the module's interface declares the val, let the binding
+            // take its type from it (`let trim = 'str_trim`), keeping the annotated
+            // lambda for a builtin with labeled defaults, which an interface cannot
+            // state. Found by reading; not run. (a-packages-05)
             if argspec.iter().any(|a| a.constraint.is_none())
                 || matches!(l.vargs, Some(None))
             {
@@ -2770,6 +2932,17 @@ impl<R: Rt> DefGate<R> {
                         tv.name
                     )
                 }
+                // CR claude for claude: [bug/low] The hint `give that a type holding
+                // them all (the bound of 'a, or Any)` points at a type the program
+                // cannot write when the bound is Concrete, NoError or Singleton. Those
+                // are keywords, so `let y: Concrete = never()` is a parse error ("can't
+                // use keyword as a type name").
+                // lang::types::a_named_definition_writing_outside_is_told_what_it_hands_out
+                // pins this message for exactly `'a: Concrete`. Fix: name the bound
+                // only when it is a type a let can carry, say Any otherwise, and pin
+                // the annotated twin (`let y: Any = never()` checks). probe:
+                // design/review-2026-11-16/repro/tests-types-b-escape-hint-bound.gx
+                // (tests-types-b-03)
                 bail!(
                     "'{0} escapes the definition: the body hands a value of type '{0} \
                      to something outside it, which would have to hold every '{0} a \
@@ -3349,6 +3522,16 @@ impl<R: Rt> Update<R> for Lambda {
 /// outside a definition gate, once, at the innermost instance that
 /// raised it. The definition and call-site checks are meant to leave
 /// elaboration nothing to refuse.
+// CR claude for claude: [test-gap/low] The audit reports a refusal only from an
+// instance's own check (`leave`), the unify-back and the fallback. Two refusals of
+// programs the check accepted print nothing under GRAPHIX_ELAB_AUDIT=1: the site settle
+// drained after `typecheck1` (probe:
+// design/review-2026-11-16/repro/x-check-build-fnvalue-builtin-unread.gx) and a default
+// judged at the bind in `callsite::checked_default` (probe:
+// design/review-2026-11-16/repro/x-check-build-default-never-let.gx), though CLAUDE.md
+// says the audit reports elaboration refusing what the check accepted. Report in
+// `check_and_fuse_inner` for any error of `typecheck1` or of the settle drained after
+// it. (x-check-build-08)
 pub(crate) mod elab_audit {
     use crate::{dbgenv, expr::Expr};
     use anyhow::Result;

@@ -1,0 +1,14 @@
+// sys::time::now rides its last value while its trigger is bottom, where every
+// other builtin bottoms (design/dense_delivery.md R3 and ruled delta 13)
+// command: timeout -s KILL 30 graphix --no-cache x-builtin-effects-now-rides-bottom.gx 2>&1 | grep -v arith
+// expected: (1, false) (3, false) (5, false): at even n the trigger 10 / (n % 2) is
+//   bottom, so now(..) is bottom and so is the tuple (count(..) over the same
+//   trigger bottoms there, as rand::pick and every CachedArgs builtin do)
+// observed: (1, false) (2, false) (3, false) (4, false) (5, false) (6, false)
+let clk = sys::time::timer(duration:10.ms, true);
+let n = 0;
+n <- clk ~ n + 1;
+let t = sys::time::now(10 / (n % 2));
+let out = (n, is_err(t));
+sys::exit(select n > 5 { true => n ~ 0, false => never() });
+out

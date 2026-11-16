@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Read the workflow journal (first result per label wins) -> STATE/results.json:
 {key: {model, summary, findings[]}}, each finding with id <key>-NN.
-usage: collect.py JOURNAL.jsonl"""
+usage: collect.py JOURNAL.jsonl.. (a second run for reviewers the first lost is a second journal)"""
 import json, os, sys
 from collections import Counter
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -9,7 +9,7 @@ from cfg import STATE
 
 fable = set(json.load(open(STATE + '/args.json'))['fable'])
 reviews, lab = {}, {}
-for l in open(sys.argv[1]):
+for l in (l for j in sys.argv[1:] for l in open(j)):
     d = json.loads(l)
     if d['type'] == 'started': lab[d['agentId']] = d['label']
     elif d['type'] == 'result':

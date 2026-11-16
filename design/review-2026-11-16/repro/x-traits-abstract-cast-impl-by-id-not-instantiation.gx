@@ -1,0 +1,22 @@
+// The check asks whether an abstract type crosses data by its id alone: an
+// impl for one instantiation lets every other one through, and the cast,
+// the read and the writer then refuse at run time.
+//
+// Command:
+//   /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache --check <this file>   (accepted)
+//   timeout -s KILL 10 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache <this file>
+//
+// Expected: the check refuses each of the three, as it does with no impl at
+// all ("Box has no Cast implementation, so no read, cast or writer reaches
+// it", design/abstract_cast.md "No impl, no crossing").
+//
+// Observed: the check accepts, and the run prints
+//   (error:`JsonErr("Box has no Cast implementation"),
+//    error:`InvalidCast("can't cast \"s\" to Box<string>: it has no Cast implementation"),
+//    error:`InvalidCast("can't cast \"s\" to Box<string>: it has no Cast implementation"))
+type Box<'a> = Abstract<'a>;
+impl Cast for Box<i64> {};
+let v: Any = "s";
+let r: Result<Box<string>, [`JsonErr(string), `InvalidCast(string)]> = json::read("{\"Box\": \"s\"}");
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+(json::write_str(Box("s")), cast<Box<string>>(v), r)

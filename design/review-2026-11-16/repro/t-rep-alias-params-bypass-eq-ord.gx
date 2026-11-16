@@ -1,0 +1,31 @@
+// Title: a value cast to an abstract type at an alias-spelled instance
+// (W<I>, type I = i64) compares and orders by its representation, not by
+// the type's Eq/Ord impl, though GxAbstract identity (params_key) says
+// W<I> and W<i64> are one instantiation; a map holding such a key is
+// out of order and loses every lookup.
+// Command: timeout -s KILL 180 graphix-fuzz run t-rep-alias-params-bypass-eq-ord.gx
+// Expected: (false, false, false, false, 5, "two", "one", "three")
+//   -- Eq says no two values are equal, d < b2 agrees with e1 < b2 (the
+//   same value at the same type), and every present key is found.
+// Observed (every mode): (true, false, true, false, 5, null, null, null)
+//   b == d and d < b2 take the structural case (coretraits::pair compares
+//   a.typ() and b.typ() syntactically, so W<I> vs W<i64> is "no impl"),
+//   and the map's mixed order defeats map::get. Remove `d` from `m` and
+//   the lookups answer.
+type I = i64;
+type W<'a> = Abstract<('a, i64)>;
+impl<'a> Cast for W<'a> {};
+impl<'a> Eq for W<'a> {
+  let eq = |a, b| false;
+  let hash = |a| 0
+};
+impl<'a> Ord for W<'a> {
+  let cmp = |a, b| select a.0.1 < b.0.1 { true => `Greater, false => select a.0.1 == b.0.1 { true => `Equal, false => `Less } }
+};
+let b = W((0, 2));
+let c: Any = W((0, 2));
+let d: W<I> = cast<W<I>>(c)$;
+let e: W<i64> = cast<W<i64>>(c)$;
+let b2 = W((0, 3));
+let m = map::insert(map::insert(map::insert(map::insert({W((0, 1)) => "one"}, W((0, 3)), "three"), d, "two"), W((0, 4)), "four"), W((0, 0)), "zero");
+(b == d, b == b, d < b2, e < b2, map::len(m), map::get(m, d), map::get(m, W((0, 1))), map::get(m, W((0, 3))))

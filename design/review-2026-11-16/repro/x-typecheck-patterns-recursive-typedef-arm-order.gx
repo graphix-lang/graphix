@@ -1,0 +1,26 @@
+// Title: exhaustiveness over a recursive typedef depends on the order of the
+// arms: a three-deep ladder is refused when the base case comes first.
+// Command: graphix --no-cache --check x-typecheck-patterns-recursive-typedef-arm-order.gx
+// Expected: the check passes. The arms cover L: `Z, `S(`Z), `S(`S(`Z)) and
+//   `S(`S(`S(_))).
+// Observed: "missing match cases: no arm covers `S(L)"
+// The same arms with `Z last check:
+//   type L = [`S(L), `Z];
+//   |x: L| select x { `S(`Z) => 1, `S(`S(`Z)) => 2, `S(`S(`S(_))) => 3, `Z => 0 }
+// and so does the ladder over the type written out three links deep:
+//   |x: [`S([`S([`S(L), `Z]), `Z]), `Z]| select x { `Z => 0, `S(`Z) => 1, `S(`S(`Z)) => 2, `S(`S(`S(_))) => 3 }
+// and over the tuple form, in this order:
+//   type L = [(i64, L), null];
+//   |x: L| select x { null => 0, (_, null) => 1, (_, (_, null)) => 2, (_, (_, (_, _))) => 3 }
+// With `Z last, a dead arm after the complete ladder is accepted:
+//   |x: L| select x { `S(`S(`S(_))) => 3, `S(`S(`Z)) => 2, `S(`Z) => 1, `Z => 0, `S(_) => 9 }
+// The containment the exhaustiveness asks fails outside a select too, though the
+// two types hold the same values (the two-deep union `[`Z, `S(`Z), `S(`S(L))]` checks):
+//   type L = [`S(L), `Z];
+//   let f = |x: L| { let a: [`Z, `S(`Z), `S(`S(`Z)), `S(`S(`S(L)))] = x; a }; 1
+//   -> type mismatch [`S(`S(`S(L))), `S(`S(`Z)), `S(`Z), `Z] does not contain [`S(L), `Z]
+// The list form is refused the same way:
+//   type L = [`Cons(i64, L), `Nil];
+//   |x: L| select x { `Nil => 0, `Cons(a, `Nil) => a, `Cons(a, `Cons(b, `Nil)) => a + b, `Cons(a, `Cons(b, `Cons(c, _))) => a + b + c }
+type L = [`S(L), `Z];
+|x: L| select x { `Z => 0, `S(`Z) => 1, `S(`S(`Z)) => 2, `S(`S(`S(_))) => 3 }

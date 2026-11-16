@@ -1,0 +1,39 @@
+// cli.gx splits parse's Result with `args::ParseResult as r` and
+// `Error<'e> as e`; the book's idiom, `error as e => .., r => r`, checks
+// and runs the same.
+// Run: graphix --check design/review-2026-11-16/repro/examples-rest-cli-error-idiom.gx
+//      graphix --no-cache --no-netidx <this file> serve -p 9000
+// Expected/observed: --check exit 0; prints Command: ["serve"] and the values.
+let cli: args::ParseResult = select args::parse(
+    args::command(
+        #name: "example",
+        #version: "0.1.0",
+        #about: "An example CLI tool",
+        #subcommands: [
+            args::command(
+                #name: "serve",
+                [args::option(#name: "port", #short: "p", #default: "8080")]
+            )
+        ],
+        [
+            args::positional(#name: "file", #help: "Input file"),
+            args::option(#name: "count", #short: "n", #default: "1", #help: "Repeat count"),
+            args::flag(#name: "verbose", #short: "v", #help: "Verbose output")
+        ]
+    )
+) {
+    error as e => select e.0 {
+        `ArgHelp(text) => {
+            println(text);
+            sys::exit(text ~ 0)
+        },
+        `ArgError(text) => {
+            println(text);
+            sys::exit(text ~ 2)
+        }
+    },
+    r => r
+};
+println("Command: [cli.command]");
+println("Values: [cli.values]");
+sys::exit(cli ~ 0)

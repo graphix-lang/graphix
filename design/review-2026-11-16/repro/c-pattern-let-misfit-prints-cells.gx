@@ -1,0 +1,17 @@
+// Title: the refusal of a refutable let prints the pattern as the checker's
+//        own predicate, with its cells' internal names
+//
+// Command: /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache --check \
+//          design/review-2026-11-16/repro/c-pattern-let-misfit-prints-cells.gx
+//
+// Expected: a refusal that shows the pattern as written, e.g.
+//   refutable patterns are not allowed in let: (a, b) matches only part of
+//   [null, (i64, i64)]
+// Observed (the numbers vary):
+//   refutable patterns are not allowed in let: ('_8190: unbound, '_8191:
+//   unbound) matches only part of [null, (i64, i64)]
+let f = |x: [(i64, i64), null]| {
+    let (a, b) = x;
+    a
+};
+0

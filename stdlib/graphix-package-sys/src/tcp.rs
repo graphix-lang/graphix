@@ -37,6 +37,18 @@ impl EvalCachedAsync for TcpConnectEv {
     type Args = ArcStr;
 
     const NAME: &str = "sys_tcp_connect";
+    // CR claude for eric: [bug/medium] Because connect is not cancel-safe, a connect
+    // still in flight when its arm sleeps runs on, and the Fifo site's next connect
+    // waits for it (CachedArgsAsync::waits_on_old). Yet its reply is dropped unanswered
+    // when it comes, so nothing it 'already did' survives. A connect to a host that
+    // drops SYNs holds the woken site's connect to a live listener for the OS connect
+    // timeout (about 127 s on Linux): the repro sees nothing in 60 s, against an answer
+    // in 1 ms when the first address is live. TcpListenEv is the same case. Decide
+    // whether connect and listen become cancel-safe (an aborted connect closes its
+    // socket, which is what happens to an unanswered one anyway), and drop 'a
+    // connection or a bound listener' from the rationale in
+    // design/async_sleep_outputs.md. probe:
+    // design/review-2026-11-16/repro/sys-io-connect-held-after-sleep.sh (sys-io-05)
     const CANCEL_SAFE: bool = false;
 
     fn prepare_args(&mut self, cached: &CachedVals) -> Option<Self::Args> {

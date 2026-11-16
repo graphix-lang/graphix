@@ -24,6 +24,25 @@ use crate::mutate::Rng;
 
 /// What a generated dynamic module's sig imports: every package a
 /// generated body can reach.
+// CR claude for claude: [bug/low] The doc says this grants every package a generated
+// body can reach, but gen_typed writes `sys::time::{add_dur, scale, sub_dur, add, sub}`
+// for duration and datetime values. A positive dynamic module whose body draws one
+// fails to load with "no module `time` in `sys`", and the program takes the fallback
+// arm meant for the negative variants. Add `use sys::time;` here (it grants exactly
+// those paths). Keep the codec round trips out of dynamic bodies rather than granting
+// json, toml and pack: oracle_tier blanks string literals, so a reader inside a
+// raw-string source would sit in an Exact-tier program. Clear `inner.codecs` in
+// gen_dynamic_module. probe:
+// design/review-2026-11-16/repro/fuzz-gen-b-body-packages-sys-time.gx (fuzz-gen-b-04)
+// CR claude for claude: [bug/low] This list does not cover what a generated body can
+// reach. gen_dynamic_module generates the body from ctx.clone(), which inherits
+// ctx.codecs (json/pack/toml round trips), and a duration or datetime subexpression
+// draws sys::time::*. Such a body fails to load (`pack::read not defined`) and the use
+// takes its fallback arm, the path the 25% `use core;` sigs exist for. In `gen 6000 1`,
+// 10 of 1351 full-import bodies are affected. Clear codecs on the body's ctx and add
+// `use sys;` here. probe:
+// design/review-2026-11-16/repro/fuzz-gen-a-dynmod-body-unimported-package.gx
+// (fuzz-gen-a-03)
 const BODY_PACKAGES: &str = "use core; use array; use str; use map; use list; use re;";
 
 /// Feature probabilities and limits for one generation profile. All
@@ -293,6 +312,15 @@ pub(crate) struct GenCtx {
     collision_pool: Vec<String>,
     next: usize,
     /// Inside a seq body, where a `catch` is refused.
+    // CR claude for claude: [test-gap/low] Every scope cloned from a seq step's ctx
+    // copies this flag: callback_parts, fold_params, try_hof's init arm,
+    // try_map_builtin's callbacks. So consume_fallible never emits a catch inside a
+    // callback or lambda body generated in a step. Only a catch in the step's own text
+    // is refused; one in a callback or a called function checks and runs. The
+    // callee-catch-under-a-seq-run combination therefore gets no generated coverage.
+    // Clear no_catch on those cloned scopes. probe:
+    // design/review-2026-11-16/repro/fuzz-gen-a-seq-callback-catch.gx (the shape runs
+    // and agrees) (fuzz-gen-a-04)
     no_catch: bool,
     /// The program round-trips data through the codecs (`GenCfg::p_codecs`).
     codecs: bool,
@@ -536,6 +564,27 @@ fn gen_slots(
             stmts.push(gen_subprogram_stmt(ctx, rng, cfg, stats));
         } else if !ctx.codecs && chance(rng, cfg.p_ref) {
             stmts.extend(funcs::gen_ref_stmts(ctx, rng, cfg, stats));
+        // CR claude for claude: [bug/low] A codecs program is meant to draw no `<-`
+        // template, so that its async codec readers keep the FinalValues comparison.
+        // The ref and catch arms are gated on `!ctx.codecs`, but this arm is not.
+        // gen_queuefn_siblings writes a `t <- select t {..}` credit counter and a
+        // `queuefn(` call (a fire-count-sensitive builtin), and next to a
+        // json/toml/pack reader they make oracle_tier classify the whole program
+        // Excluded, so none of its values is compared. That breaks the rule stated in
+        // this module's doc and in GenCfg::p_codecs. Gate this arm on `!ctx.codecs`
+        // like the others. probe:
+        // design/review-2026-11-16/repro/fuzz-gen-b-codecs-queuefn-excluded.gx
+        // (fuzz-gen-b-03)
+        // CR claude for claude: [bug/low] A codec program can draw this arm. The
+        // queuefn template writes a `<-` and calls `queuefn(`, so oracle_tier makes the
+        // program Excluded and compares none of its values. That breaks this module's
+        // stated invariant: codec round trips or `<-` templates, never both. In `gen
+        // 6000 1`, 33 of the 205 codec programs are Excluded this way. Gate it as the
+        // ref and catch arms are: `!ctx.codecs && chance(rng, cfg.p_queuefn)`. Also,
+        // only about a third of the programs with ctx.codecs set ever emit a codec read
+        // (205 of ~600), yet all of them give up the ref and catch templates. probe:
+        // design/review-2026-11-16/repro/fuzz-gen-a-codec-queuefn-excluded.gx
+        // (fuzz-gen-a-01)
         } else if chance(rng, cfg.p_queuefn) {
             stmts.extend(funcs::gen_queuefn_siblings(ctx, rng));
         } else if chance(rng, cfg.p_union) {

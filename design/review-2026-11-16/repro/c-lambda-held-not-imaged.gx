@@ -1,0 +1,33 @@
+// A returned function's labeled default is lost by a warm image start: a
+// dynamic module that calls it, omitting the label, loads cold and fails warm.
+//
+// command:  graphix-fuzz check c-lambda-held-not-imaged.gx
+//           or, by hand, twice with one cache directory:
+//           XDG_CACHE_HOME=/some/empty/dir graphix c-lambda-held-not-imaged.gx
+// expected: 3 on every start; the fuzzer prints AGREE
+// observed: the first (cold) start prints 3; the second (warm) start prints
+//             dbg(e): error:`DynamicLoadError("compile error at: .. in: let v = g(2)
+//               0: at: line: 1, column: 9, in: g(2)
+//               1: at: line: 22, column: 25 .. in: z
+//               2: z not defined")
+//           graphix-fuzz: DIVERGENCE — image bug: the restored program differs
+//           from the cold one (interp)
+//
+// `g`'s type names the definition `mk`'s check made of the inner lambda; the
+// check keeps it registered with the bindings it captures (`BodyShared::held`)
+// so a later input's call finds the default `z`. image/defs.rs::shared_encode
+// writes no `held`, so after a restore `LambdaDef::restore_captures` has
+// nothing to put back.
+let mk = |z: i64| |#d = z, x: i64| d + x;
+let g = mk(1);
+let status = mod m dynamic {
+    sig {
+        use super::g;
+        val v: i64
+    };
+    source "let v = g(2)"
+};
+select status {
+    error as e => never(dbg(e)),
+    null as _ => m::v
+}

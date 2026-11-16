@@ -1,0 +1,28 @@
+// Title: Lines::lines pops its async-filled queue at any walk, so a walk pruning would skip delivers a line
+// Command: GRAPHIX_PAR=off GRAPHIX_PRUNE=audit graphix --no-cache --no-netidx design/review-2026-11-16/repro/x-concurrency-lines-prune-audit.gx
+//   (timing-dependent: 8 of 10 runs here; GRAPHIX_PAR=force fails the same way)
+// Expected: no audit panic: a cycle that delivered nothing the line reader's boundary
+//   reads (a clock tick) must change nothing there; the line waits for the reader's
+//   wake variable, as it does with pruning on.
+// Observed: thread panicked at graphix-compiler/src/node/prune.rs:
+//   GRAPHIX_PRUNE=audit: a boundary nothing marked changed in a cycle: ... published
+//   [(BindId(..), TagValue(String("l10"), Tag(0)))], queued ["notify_set"], at line: 11,
+//   column: 1 `let line = Lines::lines(child.stdout$)$`
+//   IoLines::update pops self.reading.queue (filled by a tokio task) on every walk, not
+//   only when its wake variable fired: what a cycle delivers depends on whether the
+//   boundary was walked, and on when the task last pushed.
+use sys::io::Lines;
+let child = sys::process::spawn(sys::process::options(
+  #args: ["-c", "for i in $(seq 1 40); do echo l$i; sleep 0.005; done"],
+  #stdio: sys::process::stdio(#stdout: `Pipe, #stderr: `Inherit),
+  #kill_on_drop: true,
+  "/bin/sh"
+))$;
+let clk = sys::time::timer(duration:1.ms, true);
+let n = 0;
+n <- clk ~ n + 1;
+let line = Lines::lines(child.stdout$)$;
+let seen = [];
+seen <- array::push(line ~ seen, line);
+sys::exit(select n > 300 { true => 0, false => never() });
+seen

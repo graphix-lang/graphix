@@ -1,0 +1,29 @@
+// x-async-io: http::serve fires its handle inside its arm at every wake
+//
+// command: timeout -s KILL 30 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache design/review-2026-11-16/repro/x-async-io-http-serve-fires-at-wake.gx
+//
+// The arm sleeps at n == 2 and wakes at n == 4. A wake fires nothing for
+// anyone (design/sleep_and_wake.md), so what reads `srv` in the arm must
+// not run again.
+//
+// expected: one line
+//   server value fired: 127.0.0.1:<port> n=0
+// observed: a second at the wake, and `wakes` counts 2
+//   server value fired: 127.0.0.1:<port> n=4
+let clk = sys::time::timer(duration:100.ms, 7);
+let n = 0;
+n <- clk ~ n + 1;
+let on = (n / 2) % 2 == 0;
+let wakes = 0;
+let r = select on {
+  true => {
+    let srv = http::serve(#addr: "127.0.0.1:0",
+      #handler: |req: http::Request| req ~ {body: "ok", headers: [], status: u16:200})$;
+    wakes <- srv ~ wakes + 1;
+    println("server value fired: [http::server_addr(srv)] n=[srv ~ n]");
+    srv
+  },
+  false => never()
+};
+sys::exit(sys::time::after_idle(duration:300.ms, n ~ 0));
+wakes

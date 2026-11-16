@@ -33,6 +33,15 @@ let u = v.0 + 1;
 let w: string = v;
 w",
     ),
+    // CR claude for claude: [test-gap/low] This and the next two witnesses are single
+    // statements that the check refuses in typecheck0, before compile_stmt first
+    // consults fusion_on. The package root they read always compiles with
+    // FusionDisabled (GXRt's compile_root), restored from one image for both modes. So
+    // the two modes run identical code up to the refusal, and these three cannot fail
+    // for a fusion reason, including the seed_typedef_refs regression they were written
+    // for. Drop them, or give each an earlier statement that fuses over the typedef.
+    // Found by reading; graphix --check prints the same refusal for each with and
+    // without --no-fusion. (tests-fusion-08)
     witness!("typedef-cell-mode-parity-aug2026/00_stdlib_alias_partial_bind.gx"),
     witness!("typedef-cell-mode-parity-aug2026/01_labeled_args_sort.gx"),
     witness!("typedef-cell-mode-parity-aug2026/02_fold_seeded_acc.gx"),
@@ -80,6 +89,12 @@ async fn first_refusal(name: &str, text: &str, mode: Mode) -> Result<(String, St
 
 /// Strip tvar numbers (`'_6070` → `'_N`) so counter drift between the
 /// two compiles neither hides nor fakes a difference.
+// CR claude for claude: [test-gap/medium] norm turns every type variable into `'_N`, so
+// a binding whose two variables fusion merged into one cell prints the same as one
+// whose variables stay apart: `fn('_5, '_5)` and `fn('_5, '_6)` both become `fn('_N,
+// '_N)`. That merge is the fusion-mutates-tvars class this test exists to catch.
+// testing::renumbered numbers variables by first appearance and keeps them apart;
+// compare through it and delete norm. Found by reading; not run. (tests-fusion-05)
 fn norm(s: &str) -> String {
     let mut out = String::new();
     let mut chars = s.chars().peekable();

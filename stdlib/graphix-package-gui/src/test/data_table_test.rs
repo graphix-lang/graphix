@@ -543,6 +543,16 @@ let result = data_table(
 #[tokio::test(flavor = "current_thread")]
 async fn sort_subscribes_newly_visible_rows() -> Result<()> {
     let n_rows: usize = 120;
+    // CR claude for claude: [structure/low] This publish/row-list loop is written again
+    // in `scrolling_moves_the_subscription_window`,
+    // `a_resort_delivers_the_cells_it_shows` and
+    // `sort_by_change_resorts_offscreen_rows`, each with a different string type
+    // (`String` + `format!`, `LPooled<String>` + `write!`).
+    // `table_update_keeps_view_and_edit`, `keyboard_scroll_moves_the_overlay` and
+    // `multiple_selections_use_program_order` rebuild the bare `"r{i}"` list too. Write
+    // one `fn rows(prefix, n) -> LPooled<String>` and one `fn publishes(prefix, n, col,
+    // value: impl Fn(usize) -> i64)` and use them in all of these. Found by reading;
+    // not run. (tests-gui-a-07)
     let mut publishes = String::new();
     let mut rows = String::new();
     for i in 0..n_rows {
@@ -691,6 +701,15 @@ let result = data_table(
     )
     .await?;
     h.drain().await?;
+    // CR claude for claude: [test-gap/low] This check usually proves nothing. The rows
+    // are listed in descending order, so the wait for "the descending sort" is met by
+    // the table's own order before any cpu value arrives. `heard` is false here because
+    // r0's value has not come yet, not because an off-screen sort-only cell stays out
+    // of on_update: a dispatch task that called on_update from the SortMarker role
+    // would pass whenever r0's value lands after this line. First wait for r0's sort
+    // value, e.g. until `dt_snapshot().grid.last()` is `["0"]` (the sort column is
+    // subscribed in every row, so the cell shows it). Found by reading; not run.
+    // (tests-gui-a-02)
     assert_eq!(h.get_watched("test::heard"), Some(&Value::Bool(false)), "r0 off-screen");
     h.set_var("test::flip", Value::I64(1))?;
     h.wait_until(
@@ -1801,6 +1820,12 @@ let result = data_table(
         snap.grid[0][ghost_i], "from-default",
         "virtual column must use its default, not a coincident publication",
     );
+    // CR claude for claude: [test-gap/low] A 100 ms wall-clock sleep stands in for the
+    // fact under test. Whether the virtual column subscribes is decided synchronously
+    // in `update_subscriptions` (`grid_columns` skips a column whose source is not
+    // `Netidx`), so assert it directly: `dt_subscribed_rows("ghost")` is empty and
+    // `dt_subscription_count()` is 1. Then delete the sleep, the drain and the second
+    // snapshot. Found by reading; not run. (tests-gui-a-03)
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     h.drain().await?;
     let snap = h.dt_snapshot();
@@ -1812,6 +1837,14 @@ let result = data_table(
 }
 
 /// Drain until `pred` holds of the table, or fail with `why`.
+// CR claude for claude: [structure/low] `settle` is `wait_until` with its arguments
+// swapped and the predicate behind `&`: a layer that adds nothing. The counted loops
+// `for _ in 0..N { h.drain() }` in `dt`, `a_connected_map_source_shows_every_update`,
+// `viewport_metrics_update_on_resize`, `stored_sort_column_subscribes_nothing` and
+// `selection_scrolls_to_its_exact_row` retry a `drain` that already waits for the
+// runtime to go idle, and a count waits for nothing outside it. Call `wait_until`
+// everywhere (or one `drain` where the effect stays inside the runtime), and delete
+// `settle` and the counted loops. Found by reading; not run. (tests-gui-a-08)
 async fn settle(
     h: &mut GuiTestHarness,
     why: &str,
@@ -2111,6 +2144,14 @@ let result = data_table(#table: &tbl)
     assert_eq!(h.dt().dt_sparkline_count(), 1, "the removed row's history goes");
     let live = h.dt().dt_sparkline_values("live", "load").unwrap_or_default();
     assert!(!live.contains(&5.0), "no fallback in a live row: {live:?}");
+    // CR claude for claude: [test-gap/low] This aging check cannot fail. The live row's
+    // history holds one point (its single published 1.0), and `age_sparkline` always
+    // keeps the last point before the window, so `dt_sparkline_len == Some(1)` holds
+    // whether or not `compute_sparkline_bounds` ages histories at a frame: deleting
+    // that `age_sparkline` call still passes. Push a second point first
+    // (`dt_push_sparkline("live", "load", Instant::now(), 2.0)`, assert `Some(2)`),
+    // then restamp, lay out, and assert that one point is left and that it is 2.0.
+    // Found by reading; not run. (tests-gui-a-01)
     let old = std::time::Instant::now() - std::time::Duration::from_secs(120);
     h.dt().dt_restamp_sparklines(old);
     let _ = h.view();

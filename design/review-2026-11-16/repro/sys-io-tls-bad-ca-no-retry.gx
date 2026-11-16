@@ -1,0 +1,22 @@
+// sys-io: a TLS connect refused for a bad #ca_cert never retries on the same stream
+// Command: timeout -s KILL 30 graphix --no-cache sys-io-tls-bad-ca-no-retry.gx
+// Expected: the first answer is the "no certificate" error; the fixed CA
+//   (`ca <- client ~ good`) then upgrades the same, untouched TCP stream:
+//   "connected" (replace the first CA by `good` and the program prints it).
+// Observed: only the error prints; TlsConnectEv::prepare_args recorded the
+//   stream in `started` before the config build failed, so the fixed CA
+//   starts no handshake and the program waits forever.
+let cd = "/home/eric/proj/graphix/stdlib/graphix-tests/certs";
+let cert = sys::fs::read_all_bin("[cd]/server.pem")$;
+let key = sys::fs::read_all_bin("[cd]/server.key")$;
+let good = sys::fs::read_all_bin("[cd]/ca.pem")$;
+let listener = sys::tcp::listen("127.0.0.1:0")$;
+let addr = sys::tcp::listener_addr(listener)$;
+let client_tcp = sys::tcp::connect(addr)$;
+let server_tcp = sys::tcp::accept(listener, client_tcp)$;
+let server = sys::tls::accept(#cert: cert, #key: key, server_tcp);
+let ca: [bytes, null] = buffer::from_string("not a certificate");
+let client = sys::tls::connect(#ca_cert: ca, "127.0.0.1", client_tcp);
+ca <- client ~ good;
+sys::exit(sys::time::after_idle(duration:2.s, client) ~ 0);
+select client { error as e => "[e]", _ => "connected" }

@@ -138,6 +138,15 @@ impl<R: Rt> SeqMachine<R> {
         })
     }
 
+    // CR claude for claude: [perf/low] One run of a seq whose N steps share a cycle
+    // costs O(N^2): 400/800/1600/3200 steps take 18/74/292/1190 ms, while the same
+    // chain of lets in a plain block takes under a millisecond. PAR and PRUNE off
+    // change nothing. c-prune-wake-05's per-step input count no longer matters; the
+    // step count does. The cause is not pinned here. The per-step work that grows with
+    // N is this loop's transition: ctx.deliver of the pc, which every step reads, and
+    // TrackedFires' enter, deliver, open, ran and deselect for each step. Fix: profile
+    // a 3200-step run and make a transition cost O(the step's own inputs). probe:
+    // design/review-2026-11-16/repro/x-rerun-1-seq-steps-quadratic.sh (x-rerun-1-04)
     fn update_serial(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
         let Self { spec: _, id: _, pc, pc_id, steps, current, tracked, expand: _ } = self;
         let (tracked, lets) = tracked.get_or_insert_with(|| {
@@ -197,6 +206,21 @@ impl<R: Rt> SeqMachine<R> {
                 ctx.rt.set_var(*pc_id, at);
                 break;
             }
+            // CR claude for claude: [perf/medium] A seq run costs O(steps^2). Each
+            // same-cycle handoff delivers pc through store_fire, which walks every
+            // reader of pc (about three per step, registered while the steps sleep),
+            // marks each one, and queues a late fire for every reader in a step already
+            // run this cycle and now deselected; notify_set walks them again. Each
+            // entered step also runs TrackedFires::enter, whose carried.retain scans
+            // every carried let fire (the N chained lets of the last run). A chain of
+            // 400 lets takes 15.4 ms per run and 1600 takes 281 ms, in about 3 cycles.
+            // Fix: write a same-cycle handoff's pc without the reader scan, since the
+            // entered step runs under View::Step and no Prune skips there, then deliver
+            // the last pc once with the scan for readers outside the machine
+            // (#seqidle); make enter walk per_arm[i] and take each input from carried.
+            // probe:
+            // design/review-2026-11-16/repro/x-perf-runtime-seq-steps-quadratic.sh Also
+            // reported as (x-stack-03). (x-perf-runtime-02)
             ctx.deliver(*pc_id, TagValue::fired(at), Notify::Roots);
             *current = Some(n);
             entered = true;

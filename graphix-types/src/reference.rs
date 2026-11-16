@@ -171,6 +171,17 @@ impl Lives {
                 .map(|id| (*id, st.pins.get(id).copied().unwrap_or(0)))
                 .collect()
         };
+        // CR claude for claude: [perf/medium] Whenever any orphan is made or loses a
+        // pin, this walks the allocation graph under the value of every orphan, the
+        // ones nothing touched included: `dirty` is one flag for the runtime. A closure
+        // from a deleted slot that keeps a 200,000-element array of tuples makes each
+        // cycle in which an unrelated escaping slot is born or deleted cost about 42 ms
+        // (debug) where it costs 0.3 ms without the standing orphan, linear in what
+        // orphans hold. Keep the set of orphans made or unpinned since the last
+        // collection in place of the flag and start the walk from those, following pins
+        // into other orphans; an orphan the walk does not reach keeps its verdict.
+        // probe: design/review-2026-11-16/repro/x-recursion-orphan-collect-rewalks.gx
+        // (x-recursion-03)
         let mut g = Graph::default();
         let mut pending: LPooled<Vec<BindId>> =
             orphans.iter().map(|(id, _)| *id).collect();
@@ -234,6 +245,14 @@ impl Lives {
 /// The allocations under the orphans' values, for [`Lives::collect`].
 #[derive(Default)]
 struct Graph {
+    // CR claude for claude: [perf/low] This map and Live.allocs are keyed by an
+    // allocation's address (Edge::id is Arc::as_ptr) but hash it as itself (nohash).
+    // Every user-space pointer has its top bits zero and its low bits aligned, so
+    // hashbrown's 7-bit tag filters nothing and each probe compares keys one by one
+    // (2.3-6.2x per op in the x-rerun-5-11 bench). ids::AddrMap/AddrSet exist for
+    // exactly this. Use them here, in Live, and for contains.rs's Expanded, which is
+    // keyed by ResolvedRef::def_key, also an address. Found by reading; not run.
+    // (x-rerun-4-05)
     allocs: IntMap<usize, Alloc>,
     /// Per binding walked (an orphan, or a cell a reference owns), the
     /// allocations its value holds.

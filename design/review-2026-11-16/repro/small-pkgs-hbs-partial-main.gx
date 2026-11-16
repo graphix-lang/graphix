@@ -1,0 +1,13 @@
+// hbs::render: a partial named `main` is replaced by the template itself
+// command: timeout -s KILL 60 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache small-pkgs-hbs-partial-main.gx
+// expected:
+//   <M>
+//   <M>
+// observed (both lines):
+//   error:`HbsErr("Error rendering \"main\" line 1, col 2: templates nest more than 128 deep")
+let r = hbs::render(#partials: {main: "M"}, "<{{> main}}>", {a: 1});
+println("[r]");
+let r2 = hbs::render(#partials: {main: "M", other: "{{> main}}"}, "<{{> other}}>", {a: 1});
+println("[r2]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+0

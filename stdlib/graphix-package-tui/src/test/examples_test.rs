@@ -43,6 +43,17 @@ async fn renders(name: &str) -> Result<()> {
 
 /// Every example renders, several at once: each runtime runs on a thread of
 /// its own.
+// CR claude for claude: [test-gap/medium] Ten of the 21 interactive TUI examples are
+// never driven with a key: input_vim, input_focus, input_propagation, input_raw,
+// layout_focus, overview_state, paragraph_scrollable, table_interactive,
+// browser_navigation and browser_commands. every_example_renders only asks for a first
+// frame, and the check is silent on an unsampled arm write. So input_vim's Insert arm
+// rewritten as `text <- "[text][c]"` (the skill's first trap: after one key the text
+// grows without end at 100% CPU) passes every gate. Give each of the ten a keyed test
+// like list_interactive_selects (for input_vim: i, h, i, Esc shows "`Normal: hi"; the
+// browser pair against a listing the test publishes). A self-loop then hangs drain, and
+// the test fails. probe:
+// design/review-2026-11-16/repro/examples-tui-undriven-selfloop.sh (examples-tui-01)
 #[tokio::test(flavor = "multi_thread")]
 async fn every_example_renders() -> Result<()> {
     let mut names = vec![];

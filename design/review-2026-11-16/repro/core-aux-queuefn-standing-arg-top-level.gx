@@ -1,0 +1,25 @@
+// queuefn: an argument whose fire was dropped beside a bottom argument never
+// reaches the wrapped function, at the top level, with no select arm.
+//
+// Command:
+//   timeout -s KILL 30 graphix --no-cache core-aux-queuefn-standing-arg-top-level.gx
+// Expected: ([(5, 7)], [(5, 7)])  (the direct call f(x, y$) answers (5, 7) when
+//   y arrives; the trigger c fires every cycle, so the wrapped call waits for
+//   nothing)
+// Observed: ([(5, 7)], [])  At c=0 x fires beside a bottom y$, so
+//   WrapperApply::update clears the delta; at c=2 only y fired, the delta
+//   holds y alone, and the site's binding for x is never written: f's x stays
+//   bottom forever. graphix-fuzz check AGREEs.
+let c = 0;
+c <- select c { n if n < 4 => n + 1, _ => never() };
+let f = |x: i64, y: i64| -> (i64, i64) (x, y);
+let q = queuefn(#trigger: c, f);
+let x = 5;
+let y: [i64, null] = select c { 0 => null, 2 => 7, _ => never() };
+let rd = f(x, y$);
+let rq = q(x, y$);
+let ld: Array<(i64, i64)> = [];
+ld <- rd ~ array::push(ld, rd);
+let lq: Array<(i64, i64)> = [];
+lq <- rq ~ array::push(lq, rq);
+select c { 4 => (ld, lq), _ => never() }

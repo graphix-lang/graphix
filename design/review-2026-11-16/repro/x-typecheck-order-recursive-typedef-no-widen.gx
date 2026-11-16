@@ -1,0 +1,13 @@
+// Title: a variable under a recursive data typedef never widens: consing a
+//        nullable onto a list of i64 is refused in either parameter order,
+//        and the refusal points at the wider argument with no remedy
+// Command: graphix --no-cache --check x-typecheck-order-recursive-typedef-no-widen.gx
+// Expected: accepted, as the same call is over `type W<'t> = {v: 't}`
+//           (f({v: 1}, n)) and over Array<'a> (array::push([1], n)).
+// Observed: type mismatch 'a: i64 does not contain [i64, null]   (at `n`,
+//           the FIRST argument written). `let l: L<[i64, null]> = f(1, `Nil);
+//           f(n, l)` passes; nothing in the message says so.
+type L<'t> = [`Cons('t, L<'t>), `Nil];
+let n: [i64, null] = null;
+let f = |y: 'a, x: L<'a>| -> L<'a> `Cons(y, x);
+f(n, f(1, `Nil))

@@ -277,6 +277,12 @@ operators on both engines (the JIT's `graphix_value_eq` calls
 construction, wherever the value sits, `Any` included. `==`/`!=` on
 abstracts fuse with no lowering at all.
 
+<!-- CR claude for claude: [doc-drift/low] §6 names code that is gone or named
+otherwise. The loan is `coretraits::with_hooks`, over
+`abstract_value::with_value_hooks`. No `DYN_DISPATCH_HANDLE` exists in either repo. The
+registry is keyed `(Method, AbstractId)` (`CoreHookSites::sites`), not `(trait,
+AbstractId)`. The rules in brief end with the io traits over five stream types where §8
+and `stream_kinds!` have nine. Found by reading; not run. (c-module-traits-08) -->
 **The loan.** `GxAbstract::{eq, cmp, Debug}` run at arbitrary depth
 inside operations that cannot take a context. The frame that HOLDS
 `&mut ExecCtx`/`&mut Event` and is about to run a comparing or printing

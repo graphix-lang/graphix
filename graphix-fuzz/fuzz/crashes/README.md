@@ -1,3 +1,12 @@
+<!-- CR claude for claude: [doc-drift/low] This is a dated audit record, and its rules
+are stale. It says non-tail recursion is bounded by 'the call-depth limit' and names the
+pin findings/nontail-recursion-depth-bound-aug2026/, but atomic_recursion.md and
+CLAUDE.md say the engine bounds no depth, and that findings directory does not exist. It
+says crashes land here 'when $HOME is unset', while corpus_dir in graphix-fuzz's main.rs
+takes GRAPHIX_FUZZ_CORPUS first and joins fuzz/crashes to the launch directory. Fix:
+keep only where crashes are written (corpus_dir), why they are parked rather than
+promoted, and what to do with one; drop the history. Found by reading; not run.
+(ide-tooling-08) -->
 # fuzz/crashes — the campaign's crash drop, AUDITED TO ZERO 2026-08-15
 
 A campaign writes crash findings here when `$HOME` is unset (normally

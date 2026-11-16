@@ -1,0 +1,17 @@
+// Title: book/src/modules/dynamic.md says a failed load deletes the previous module; the code keeps it.
+// Command: timeout -s KILL 20 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache book-modules-udt-dyn-failed-load-keeps-module.gx
+// Expected per the book ("Regardless of the outcome the previous loaded module, if any, will be deleted"):
+//   after the broken source, foo::add produces nothing more.
+// Observed: (null, 1), then (error:`DynamicLoadError(..), 1), then (error:`DynamicLoadError(..), 11):
+//   the last good load runs on (Module::update puts the set-aside body back on Err).
+let src = "let add = |x| x + 1";
+let t = sys::time::timer(duration:100.ms, false);
+src <- t ~ "let add = |x| x + \"broken\"";
+let status = mod foo dynamic {
+    sig { val add: fn(x: i64) -> i64 };
+    source src
+};
+let n = 0;
+n <- sys::time::timer(duration:300.ms, false) ~ 10;
+sys::exit(sys::time::after_idle(duration:600.ms, 0));
+(status, foo::add(n))

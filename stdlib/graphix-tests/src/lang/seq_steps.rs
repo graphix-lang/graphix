@@ -116,6 +116,15 @@ async fn let_fire_reaches_a_later_cycle(mode: Mode) -> Result<()> {
 // A let's fire a step read live at its own entry is not raised again to
 // that step in a later cycle: `a` fires once, so `count(a)` stays 1 and
 // the `until` never completes.
+// CR claude for claude: [test-gap/medium] This test cannot fail on what it names. An
+// until condition reads `a` through the step's entry snapshot (`any(pc, once(sin)) ~!
+// sin`, see --expand), which fires once per entry, so count(a) is 1 whatever the fire
+// tracker does with `a` later. A change that re-raised the carried let fire to the
+// awake step every cycle (TrackedFires::enter) still passes. `until live(count(a)) >=
+// 2` counts a's raw fires, as let_fire_reaches_a_later_cycle does, and stalls today.
+// With `>= 1` it completes, a control that the run reaches the until. Use the live
+// form. probe: design/review-2026-11-16/repro/tests-seq-until-count-vacuous.sh
+// (tests-seq-03)
 async fn let_fire_read_live_is_not_raised_again(mode: Mode) -> Result<()> {
     let code = r#"{
         let step = 0;

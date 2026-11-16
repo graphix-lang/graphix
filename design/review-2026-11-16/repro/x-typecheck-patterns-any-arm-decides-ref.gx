@@ -1,0 +1,26 @@
+// Title: an arm that takes a part out of an `Any` scrutinee and decides it a
+// reference in its body passes the check; any reference passes the run-time
+// test, so an i64 is written into a string variable.
+// Command: graphix --no-cache x-typecheck-patterns-any-arm-decides-ref.gx
+//   (and `--check`, which exits 0)
+// Expected: the check refuses the arm, as it refuses the written test
+//   `(&mut i64, i64) as (r, n)` over Any ("can't tell what the reference in
+//   .. refers to where the scrutinee may hold Any") and an arm that decides
+//   the part a function type ("can't match on a type holding a function").
+// Observed: --check exits 0. The run prints "s = str, out = 4", then the
+//   runtime thread panics:
+//     kernel param `s`: runtime I64(2) does not match the compiled String slot
+//     Error: runtime did not respond
+//   Under --no-fusion the string variable `s` silently holds 2.
+// The read-only form is unsound the same way:
+//   |x: Any| select x { (r, n) => { let q: &i64 = r; *q + n }, _ => 0 }
+// reads a `&string` as an i64 ("arith error .. Unexpected `s`").
+let f = |x: Any| select x { (r, n) => { *r <- n + 1; 0 }, _ => 0 };
+let s = "str";
+let v: Any = (&mut s, 1);
+let k = |a: string, b: string| str::len(a) + str::len(b);
+f(v);
+let out = k(s, "x");
+println("s = [s], out = [out]");
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+out

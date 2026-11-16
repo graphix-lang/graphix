@@ -1,0 +1,10 @@
+// Title: label-default reports MISPLACED when the lambda is called through a holder
+// Command: timeout -s KILL 170 /home/eric/tmp/review-2026-11-16/bin/graphix-fuzz typemorph design/review-2026-11-16/repro/fuzz-mutate-label-default-holder.gx
+// Expected: typemorph: no flips (the refusal is the family's own: `#a` made required,
+//   and `s.g(2)` omits it).
+// Observed:
+//   TYPEFLIP ... label-default#1: MISPLACED: N: missing required argument a
+//   mutant: { let f = |#a: i64, x: i64| -> i64 a + x; let s = { g: f }; let p = s.g(2); let w = |h: fn(x: i64) -> i64| -> i64 h(2); (p, w(f)) }
+// labels_default's right sites are the definition and the statements naming `f`
+// or a plain alias of it; `let p = s.g(2)` names only `s`, a struct holding `f`.
+{ let f = |#a: i64 = 1, x: i64| -> i64 a + x; let s = {g: f}; let p = s.g(2); let w = |h: fn(x: i64) -> i64| -> i64 h(2); (p, w(f)) }

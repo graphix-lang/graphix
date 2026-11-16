@@ -1,0 +1,23 @@
+// A dynamic module body that imports nothing wedges its host for good.
+//
+// command:  timeout -s KILL 40 graphix --no-cache a-packages-guest-wedges-host.gx
+// expected: the host keeps ticking ("tick 3" .. "tick 20") and exits 0, the
+//           guest's load reported failed or stopped in `status`
+// observed: "tick 0", "tick 1", "tick 2", then nothing: the guest's tail loop
+//           runs inside the host's cycle and never returns; the timeout kills
+//           the process (exit 137). With the body
+//             let rec f = |x: i64| -> i64 1 + f(x); let v = f(0)
+//           the process grows past a 6 GB cap instead (no budget is set by
+//           default, and a budget stops the whole runtime, not the load).
+let tick = sys::time::timer(duration:100.ms, true);
+let n = 0;
+n <- tick ~ n + 1;
+let src = n ~ "let rec f = |x: i64| -> i64 f(x + 1); let v = f(0)";
+let status = mod guest dynamic {
+    sig { val v: i64 };
+    source select n { 3 => src, _ => never() }
+};
+println("status [status]");
+println("tick [n]");
+sys::exit(select n { 20 => 0, _ => never() });
+n

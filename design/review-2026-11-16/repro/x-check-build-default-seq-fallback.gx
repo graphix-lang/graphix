@@ -1,0 +1,20 @@
+// A seq in a labeled default is lowered again at the call that omits it, has no
+// check-table row there, and is checked in full: the build refuses what the check accepted
+//
+// command:  graphix -n --check x-check-build-default-seq-fallback.gx            (exit 0)
+//           GRAPHIX_ELAB_AUDIT=1 graphix -n --no-cache --expand x-check-build-default-seq-fallback.gx  (exit 1)
+// expected: both accept: the same block as a function's body builds
+//           (`let w = |y: i64| { let s = {f: |x| x}; let t = 1; seq t { let a = s.f(1); s.f("s") } }; w(1)`)
+// observed: --check passes; the build prints
+//   ELAB-AUDIT fallback at ..: `core::filter(t, |x| x ~ #seqidle..)`: no check-table row: checked in full
+//   ELAB-AUDIT fallback at ..: `core::once(#seqsin.._0)`: no check-table row: checked in full
+//   ELAB-AUDIT fallback at ..: `s.f(#seqissued...1)`: no check-table row: checked in full   (and more)
+//   Error: .. in the instance of w(1) at this call site .. type mismatch i64 does not contain string
+// Every seq in a default prints the fallback lines, also where the build then passes
+// (`|#d = { let id = |x| x; let t = 1; seq t { id("s") } }, x: i64| x`).
+let w = |#d = {
+  let s = {f: |x| x};
+  let t = 1;
+  seq t { let a = s.f(1); s.f("s") }
+}, x: i64| x;
+w(1)

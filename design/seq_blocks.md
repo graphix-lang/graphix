@@ -6,6 +6,11 @@ Status: built 2026-09-07 (straight-line, `until`, `try … with`, `seqq`;
 `flush(..)` and the reset on sleep built 2026-09-19; the machine node,
 steps decided by dependency summaries, built 2026-09-24
 (`dependency_summaries.md`).
+<!-- CR claude for claude: [doc-drift/low] The pin list leaves out
+stdlib/graphix-tests/src/lang/seq_snapshot.rs, which pins §5's entry-snapshot rule
+(entry_snapshot_and_live, a_callee_reads_live, a_fixed_until_warns,
+a_write_through_a_reference_reads_it_at_entry). Add seq_snapshot to the brace list.
+Found by reading; not run. (tests-seq-09) -->
 Pins: `stdlib/graphix-tests/src/lang/{seq,seq_calls,seq_try,seq_errors,seqq,seq_shadow,seq_abort,seq_let,seq_steps,seq_lowering}.rs`,
 `graphix-fuzz/src/generate/reactive.rs` (`ceremony`, the differential lane's seq/seqq programs),
 `lib_tests/bottom.rs` (`strict_sample`, `strict_bottom`),
@@ -78,6 +83,17 @@ a LEVEL, and a level lives at module scope driven by a variable the
 steps write (§6). A seq block is an ordered issuer of effects that
 waits between them, not primarily a value producer.
 
+<!-- CR claude for eric: [structure/medium] Between a reactive body, where every write
+and effect is sampled by hand (about 252 `~` in the admin port's 4,378 lines, on 139 of
+its 326 connects), and a seq, whose value arrives the cycle after its trigger and so
+cannot answer a key handler's `Stop, there is no form that clocks a block of effects to
+one event in that event's cycle. The lowering of a seq block statement already samples
+each connect and call on the step's entry; the same lowering over one event, with no
+machine (`on e { a <- x; f(y); v }`), is not the sync subset: nothing runs in sequence
+inside the cycle. It would replace the first, second and fifth bite rules of the skill
+with one construct. Short of that, teach `|c| seq c { .. }` as the handler form where no
+answer is needed: no TUI or GUI example uses seq. probe:
+design/review-2026-11-16/repro/a-language-seq-cycle-late.gx (a-language-04) -->
 ## 3. Not the sync subset
 
 An earlier design (`sync { let mut ..; for v in a { .. } }`, removed
@@ -153,6 +169,15 @@ is `range(i, j)`.
 lists are not built; a `select` inside a seq is an ordinary expression
 step.
 
+<!-- CR claude for eric: [structure/medium] A seq has no step that waits for the next
+event of a stream, which is what request-then-reply over a socket needs. In the probe
+`let r2 = live(answers)` after a write completes at once on the previous reply, so three
+requests give the first reply, the first again, then the second; `once(live(answers))`
+does the same, `live(skip(#n: 1, answers))` stalls, and only `live(once(answers))` or
+`live(answers ~ answers)` wait, a spelling no doc shows. Give it a name (`next(e)` as a
+step, lowered to the form that works), or document `live(once(e))` in the seq chapter
+and the skill's seq.md with a `cases` pin. probe:
+design/review-2026-11-16/repro/a-language-seq-await-next-event.gx (a-language-05) -->
 ## 5. Semantics
 
 **Run.** A run starts when the trigger fires while no run is in

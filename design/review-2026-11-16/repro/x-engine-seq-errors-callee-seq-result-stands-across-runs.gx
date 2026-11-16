@@ -1,0 +1,27 @@
+// A seq inside a function a seq step calls keeps the previous run's value,
+// so a step whose callee combines two results completes on the first one
+// that fires, with the other still the last run's.
+//
+// command: graphix-fuzz run x-engine-seq-errors-callee-seq-result-stands-across-runs.gx
+//   (or: graphix --no-cache <file>)
+//
+// `pair(x)` is (a slow seq's x * 2, a fast seq's x * 3). Runs start for
+// go = 0, 10 and 20 (go = 1 is busy-dropped).
+// expected: r = (0, 0), (20, 30), (40, 60)
+// observed: r = (0, 0), (0, 30), (0, 60) (node-walk and JIT agree): in the
+//   second run the fast seq fires 30 while the slow seq's result cell still
+//   holds the first run's 0; the tuple fires, the step completes, the callee
+//   sleeps and the slow seq's run is aborted, so it never answers again.
+// The same two seqs written in the step's own text give the expected values:
+//   seq go { let p = (seq go { until live(step) > go + 4; go * 2 }, seq go { go * 3 }); p }
+// A collection callback shows it too:
+//   seq go { let xs = array::map([go, go + 1], |x| seq x { until live(step) > x + 2; x * 2 }); xs }
+//   gives [0, 2], [20, 2], [40, 22] where [0, 2], [20, 22], [40, 42] is meant.
+let step = 0;
+step <- select step { n if n < 40 => n + 1, _ => never() };
+let go = 0;
+go <- select step { 1 | 10 | 20 => step, _ => never() };
+let pair = |x: i64| (seq x { until live(step) > x + 4; x * 2 }, seq x { x * 3 });
+let r = seq go { let p = pair(go); p };
+dbg(r);
+step

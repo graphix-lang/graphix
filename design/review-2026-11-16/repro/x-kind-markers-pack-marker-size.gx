@@ -1,0 +1,15 @@
+// Title: every kind marker packs as a 19-byte netidx abstract (tag, length,
+// 16-byte uuid, kind byte), so pack and db values of composites are 2-4x
+// the size of the data they hold.
+// Command: timeout -s KILL 30 graphix --no-cache design/review-2026-11-16/repro/x-kind-markers-pack-marker-size.gx
+// Expected: a marker costs about the kind byte design/distinct_composite_forms.md
+//   says it packs as; a List<i64> of 1000 near the Array's 9003 bytes.
+// Observed: (u64:9003, u64:30021, u64:39003, u64:35003, u64:33003)
+//   Array<i64> 9003 B; the same as List<i64> 30021 B; Array<(i64, i64)> 39003 B;
+//   Array<{x: i64}> 35003 B; Array<`A(i64)> 33003 B.
+let a = array::init(1000, |i| i);
+let l = list::from_array(a);
+let t = array::map(a, |i| (i, i));
+let s = array::map(a, |i| {x: i});
+let v = array::map(a, |i| `A(i));
+(buffer::len(pack::write_bytes(a)$), buffer::len(pack::write_bytes(l)$), buffer::len(pack::write_bytes(t)$), buffer::len(pack::write_bytes(s)$), buffer::len(pack::write_bytes(v)$))

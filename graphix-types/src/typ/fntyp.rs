@@ -255,6 +255,17 @@ impl LambdaIds {
         self.0.read().own
     }
 
+    // CR claude for claude: [bug/medium] `link` adds a `Weak` to both sides, and
+    // nothing prunes a node's set except an `ids()` walk. A std `Weak` keeps the dead
+    // node's allocation, so a long-lived signature that later compiles keep linking
+    // grows by one dead node and one set entry each time. A dynamic module whose sig
+    // declares a function val leaks about 100 bytes per reload this way, in both
+    // engines: check_val's `sig_matches` links the sig's FnType to each load's lambda,
+    // and massif shows `LambdaIds::default` under `Lambda::compile` plus this set as
+    // the heap that grows. Prune dead links here (`strong_count() == 0`) whenever the
+    // set has doubled since the last prune; that keeps `link` amortized O(1). The
+    // leaks.rs reload pins assert `held()` only and cannot see this. probe:
+    // design/review-2026-11-16/repro/x-leaks-reload-exported-fn.gx (x-leaks-03)
     pub fn link(&self, other: &LambdaIds) {
         self.0.write().links.insert(other.as_link());
         other.0.write().links.insert(self.as_link());
@@ -917,6 +928,19 @@ impl FnType {
         }
         self.quantifiers = Arc::from_iter(names.drain(..));
         let ft = Arc::new(self);
+        // CR claude for eric: [structure/medium] This arm, `Aliasing::Known`,
+        // `DECLARED` and the readers of it (`declared`, `closed`, `declared_free`,
+        // `aliases_into`, `meet_declared`) exist for a signature parsed inside another
+        // signature. One that declares quantifiers there is refused by the check in
+        // every position (`rewrite_trait_args_inner` reads every part and bound of a
+        // signature with `scheme` false), so this bookkeeping and most of the
+        // nest-parse tests below keep correct and linear a state the language forbids.
+        // For Eric: refuse a quantified signature at parse depth above 1 in the
+        // parser's `fnshared`, with the `QUANTIFIED_FN` text. A nested signature then
+        // declares nothing, `declaring` returns it as it stands, the outermost
+        // `Aliasing::Every` walk aliases every name, and the items named here go. Found
+        // by reading; the refusals were run (35 positions), the deletion was not built.
+        // (t-fntyp-05)
         let nested = PARSE_DEPTH.with(|d| d.get()) > 1;
         let how = if nested { Aliasing::Known } else { Aliasing::Every };
         ft.alias_tvars_in(
@@ -2056,6 +2080,18 @@ impl FnType {
             .sig_matches_int(env, impl_rtype, tvar_map, hist)
             .context("in return type")?;
         let nothing = |t: &Type| matches!(t.deref_cloned(), Some(Type::Bottom));
+        // CR claude for eric: [bug/low] A val that declares `throws `E` over an
+        // implementation that throws nothing gets two verdicts. Over `let f = |x: i64|
+        // x` it passes, because the lambda's implicit throws slot is an open cell that
+        // pairs with anything, and the consumer is warned of an error nothing raises;
+        // over `let f: fn(x: i64) -> i64 = |x| x` it is refused, `the signature throws
+        // `E, the implementation throws nothing`, the one case where `nothing` sees
+        // `Bottom`. For Eric: is a val's throws exact, as its other parts are? If so,
+        // read an implicit slot still open as nothing in the val's check (a trait
+        // method's impls stay free to throw less); if not, accept the annotated form.
+        // Neither direction is pinned. probe:
+        // design/review-2026-11-16/repro/t-fntyp-val-throws-over-nothing.sh
+        // (t-fntyp-07)
         sig_throws
             .sig_matches_int(env, impl_throws, tvar_map, hist)
             .map_err(|e| {
@@ -2080,6 +2116,17 @@ impl FnType {
 
     /// The bounds of a signature against its implementation's, once the
     /// whole signature has paired its variables ([`SigPairs::finish`]).
+    // CR claude for claude: [structure/low] This function is 500 lines and three jobs:
+    // pairing the signature's bounds with the implementation's, placing each
+    // implementation cell that only bounds name (the `stands`/`settled` fixpoint and
+    // `beside`), and judging every implementation conjunct in the signature's terms.
+    // Some twenty closures share a dozen maps, and the `Cell` flags `as_signature` and
+    // `settling` change what `image_of` and `meet` mean partway down, so no step can be
+    // reviewed alone. Its one caller is `SigPairs::finish`. Move it beside `SigPairs`
+    // and split it at those seams into three functions, the placing step returning one
+    // struct of `impl_cells`, `copies`, `image`, `stands`, `settled` and `beside` for
+    // the judging step, with `settling` an argument. Found by reading; not run.
+    // (t-fntyp-06)
     pub(super) fn sig_bounds(
         &self,
         env: &Env,
@@ -2522,7 +2569,31 @@ impl FnType {
             match stood(tv) {
                 None => (),
                 Some(Type::TVar(sig_tv)) => {
+                    // CR claude for claude: [bug/low] Each undeclared conjunct bails on
+                    // its own, so the refusal names one bound at a time. `val double:
+                    // fn(x: 'a) -> 'a` over `|x| x + x` says "requires 'a: Number";
+                    // declaring that is refused for "'a: Singleton", and only the
+                    // second edit checks. The first refusal names an annotation that
+                    // does not make the program pass. Collect every conjunct of the
+                    // cell that no signature bound implies and name them together (`'a:
+                    // Number + Singleton`). probe:
+                    // design/review-2026-11-16/repro/tests-interfaces-image-one-bound-at-a-time.sh
+                    // (tests-interfaces-image-05)
                     for impl_tc in tv.cell_constraints() {
+                        // CR claude for claude: [bug/medium] This loop stops at the
+                        // first conjunct of the implementation's cell that no signature
+                        // bound implies, so the refusal names one missing bound at a
+                        // time. An arithmetic method needs 'a: Number + Singleton.
+                        // Under `val twice: fn(self, x: 'a) -> 'a` over `|c, x| x + x`
+                        // the refusal says "requires 'a: Number", and declaring exactly
+                        // that is refused "requires 'a: Singleton". A .gxi val behaves
+                        // the same. Collect every conjunct `declared` refuses for the
+                        // cell and name them together ("requires 'a: Number +
+                        // Singleton").
+                        // lang::traits::method_value_read_with_a_bound_the_declaration_lacks_is_refused
+                        // pins the partial text and must change with it. probe:
+                        // design/review-2026-11-16/repro/tests-traits-a-impl-requires-one-bound-at-a-time.sh
+                        // (tests-traits-a-03)
                         declared(sig_tv, &impl_tc)?
                     }
                 }
@@ -2701,6 +2772,15 @@ impl fmt::Display for ArgPrefix<'_> {
             FnArgKind::Labeled { name, has_default: true } => write!(f, "?#{name}: "),
             FnArgKind::Labeled { name, has_default: false } => write!(f, "#{name}: "),
             FnArgKind::Positional { name: Some(n) } => write!(f, "{n}: "),
+            // CR claude for claude: [readability/low] A positional parameter with no
+            // name (a pattern or `_` parameter) prints as its type alone, `fn((i64,
+            // i64)) -> i64`, and the type parser refuses a positional parameter without
+            // a name, so a type a diagnostic prints cannot be written back as an
+            // annotation: `let f: fn((i64, i64)) -> i64 = ..` is a parse error, and so
+            // is `fn(_: ..)`. Print it as `arg<i>: T`, the name
+            // `rewrite_trait_args_inner` gives an unnamed trait parameter, so every
+            // printed function type parses. Checked by running `--check` on the three
+            // forms. (t-fntyp-09)
             FnArgKind::Positional { name: None } => Ok(()),
         }
     }
@@ -2894,6 +2974,13 @@ impl FnType {
     }
 }
 
+// CR claude for claude: [readability/low] The test module starts here, a thousand lines
+// long, and 950 lines of production code follow it: the `Pack` impl, `param_bounds_of`,
+// `Meetings`, `Places`, `place_in_order`, `held_at`, `ReadCopies` and
+// `copied_in_two_places`. A reader takes the file's code as ended at `mod tests` and
+// misses the walks the build's instance check runs. Move the tests to the end of the
+// file, the placement walks to a file of their own and the read copies, which walk
+// `Type` and not `FnType`, to another. Found by reading; not run. (t-fntyp-08)
 #[cfg(test)]
 mod tests {
     use crate::expr::parser::parse_fn_type;
@@ -4202,6 +4289,19 @@ impl Meetings<'_> {
                     _ => Some(t.clone()),
                 };
                 match (named(own), named(at)) {
+                    // CR claude for claude: [bug/medium] The walk gives up after eight
+                    // typedef expansions (`expansions`) and then reports every open
+                    // cell beneath as standing at two places, so a valid implementation
+                    // whose bound crosses nine names is refused with a message naming
+                    // one place twice. Under `val f: fn<'b: T8<'a>>(x: 'b) -> 'b` over
+                    // a chain `type T1<'a> = {v: T0<'a>}` .., `let f = 'q: {v: .. ['p,
+                    // null]} |x: 'q| -> 'q x` passes with seven links and with eight is
+                    // told `'p` is held `at more than one place (T0<'a>, T0<'a>)`.
+                    // Bound the walk by the typedef pairs in progress, as
+                    // `sig_matches_inner` does with its `RefHist`, so only a typedef
+                    // met again under itself stops it; pin the nine-name chain. probe:
+                    // design/review-2026-11-16/repro/t-fntyp-bound-expansion-budget.sh
+                    // (t-fntyp-03)
                     (Some(own), Some(at)) if self.expansions > 0 => {
                         self.expansions -= 1;
                         self.go(&own, &at)

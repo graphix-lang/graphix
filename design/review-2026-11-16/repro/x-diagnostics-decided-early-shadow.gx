@@ -1,0 +1,10 @@
+// Title: the decided-early note names a binding by its NAME, so it attaches where the refusal reads a shadowing binding
+// Command: graphix --check design/review-2026-11-16/repro/x-diagnostics-decided-early-shadow.gx
+// Expected: the refusal of `1 + u` (the inner `u`, a string) alone, with no note: the parameter
+//   `u` is not read by the refusing expression, and annotating it does not lift the refusal.
+// Observed: "`u` (line 9, column 10 ...) was decided by the type of the parameter this argument is
+//   passed to, before the argument was checked, ...; annotate `u` with the type the argument needs",
+//   then "cannot compute i64 + string". Annotating `|u: i64|` gives the same refusal.
+let f = 'x: (['a, null], i64) |y: 'x| y;
+let g = |u| f((u, { let u = "a"; 1 + u }));
+g(1)

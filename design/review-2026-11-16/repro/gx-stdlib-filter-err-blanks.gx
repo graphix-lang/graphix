@@ -1,0 +1,20 @@
+// filter and filter_err, the two gates core names together, disagree on what a
+// rejected value leaves: filter keeps its last pass standing, filter_err goes
+// bottom (its body is `select e { error as e => e, _ => never() }`), so every
+// value built from filter_err(r) blanks while r is a success.
+// Command:
+//   timeout -s KILL 20 graphix --no-cache gx-stdlib-filter-err-blanks.gx
+// Observed:
+//   n=1 cf=1 / n=1 ce=1 / n=2 cf=1 / n=3 cf=2 / n=3 ce=2 / n=4 cf=3 / n=4 ce=3
+// At n=2 both gates reject; the cf line prints (filter rides), the ce line does
+// not (count over filter_err is bottom).
+let t = sys::time::timer(duration:50.ms, 4);
+let n = count(t);
+let f = filter(n, |x| x != 2);
+let cf = count(f);
+println("n=[n] cf=[cf]");
+let e = filter_err(select n { 2 => 0, _ => error(`E) });
+let ce = count(e);
+println("n=[n] ce=[ce]");
+sys::exit(sys::time::after_idle(duration:300.ms, t ~ 0));
+0

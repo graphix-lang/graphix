@@ -486,6 +486,17 @@ fn tree_params_of_result_type(t: &Type) -> Option<&[Type]> {
 /// A key or value type as its tree's meta stores it: printed with every
 /// typedef expanded, a recursive one by name inside its own expansion, so
 /// two programs agree on the text exactly when they agree on the type.
+// CR claude for eric: [bug/medium] The stored text names a recursive typedef where its
+// cycle closes, so it depends on the name. A tree made as Tree<string, L>, with `type L
+// = [`Cons(i64, L), `Nil]`, refuses to open as M (the same body under another name) or
+// as W<i64>, though the check holds them equal (`let y: M = x` with x: L checks).
+// Renaming the typedef locks a program out of its own data. The doc's "agree on the
+// text exactly when they agree on the type" does not hold. The text also unrolls the
+// cycle once more at the top than inside a container, because the resolved 'v arrives
+// expanded and Array<L> does not. Print a closed cycle as a back-reference by depth
+// instead of by name, from one unrolling. That changes the stored text of every
+// recursive type, so it needs a META_VERSION decision. probe:
+// design/review-2026-11-16/repro/db2-recursive-type-meta-by-name.gx (db2-04)
 fn stored_type(t: &Type, env: &Env) -> ArcStr {
     const MAX_DEPTH: usize = 256;
     fn expand(t: &Type, env: &Env, open: &mut Vec<*const ()>) -> Type {
@@ -1035,6 +1046,15 @@ impl TreeOpener for FromDb {
                     Some(n) => db.open_tree(n.as_bytes())?,
                 }
             };
+            // CR claude for claude: [risk/low] wrap_tree registers the tree's Watches
+            // (db.watches) after `creating` is released. A db::drop_tree of the name
+            // can land in between: it drops the sled tree and finds no watches of this
+            // handle to end. This handle then puts a fresh, never-ended Watches under
+            // the name. Its subscriptions never hear "the tree was dropped". The next
+            // db::tree of the name (a new tree, maybe of other types, since the drop
+            // removed the meta) shares that Watches, so its writes reach subscriptions
+            // on the dead handle. Build the TreeInner inside the creating block. Found
+            // by reading; not run. (db2-06)
             Ok(wrap_tree(db, tree, types.key))
         })
     }

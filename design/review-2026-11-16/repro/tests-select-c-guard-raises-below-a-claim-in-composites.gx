@@ -1,0 +1,52 @@
+// Title: test-gap probe for native_guard_below_a_claim_narrows_inside_a_composite:
+//   the same composites with a raising guard, so whether each guard runs below
+//   the claim (and sleeps where its pattern refuses the value) is observable.
+// Command: graphix-fuzz check tests-select-c-guard-raises-below-a-claim-in-composites.gx
+//   (or graphix --no-cache / --no-fusion; the result's first value)
+// Expected: (([0, 0, 0, 2], [0, 0, 0], [0, 0], [0, 0, 0], [0, 0, 1]), 7)
+//   7 raises: lit (0, 0); top (`A(3), 0) and (`B(1), 0); field {a: `A(1), b: 0};
+//   variant `V(0, 0); deep ((0, 4), `A(0)) and (("a", "b"), `B(0)). None for a
+//   value the guard's pattern refuses (("a", 0), (`C, 0), `V("a", 0), ...).
+// Observed (HEAD e1be2fbf2): as expected in both engines; AGREE under the fuzzer.
+//   The committed fixture uses `/`, which bottoms silently, so it observes none
+//   of this.
+let step = 0;
+step <- select step { n if n < 10 => n + 1, _ => never() };
+let caught = 0;
+let lit = |v: ([i64, string], i64)| -> i64 #[native] select v {
+  (_, 0) => 0,
+  (0, n) if (10 /? n)? > 1 => n,
+  (_, n) => n
+};
+let top = |v: ([`A(i64), `B(i64), `C], i64)| -> i64 #[native] select v {
+  (_, 0) => 0,
+  (`A(x), n) | (`B(x), n) if (10 /? n)? > 1 => x,
+  (_, n) => n
+};
+let field = |v: {a: [`A(i64), `B(i64), `C], b: i64}| -> i64 #[native] select v {
+  {a: _, b: 0} => 0,
+  {a: `A(x) | `B(x), b: n} if (10 /? n)? > 1 => x,
+  {a: _, b: n} => n
+};
+let variant = |v: `V([i64, string], i64)| -> i64 #[native] select v {
+  `V(_, 0) => 0,
+  `V(0, n) if (10 /? n)? > 1 => n,
+  `V(_, n) => n
+};
+let deep = |v: ([(i64, i64), (string, string)], [`A(i64), `B(i64), `C])| -> i64
+  #[native] select v {
+    (_, `A(0) | `B(0)) => 0,
+    (p, `A(x) | `B(x)) if (10 /? x)? > 1 => x,
+    (_, _) => 1
+  };
+let ls: Array<([i64, string], i64)> = [(0, 0), ("a", 0), (5, 0), (0, 2)];
+let ts: Array<([`A(i64), `B(i64), `C], i64)> = [(`A(3), 0), (`C, 0), (`B(1), 0)];
+let fs: Array<{a: [`A(i64), `B(i64), `C], b: i64}> = [{a: `A(1), b: 0}, {a: `C, b: 0}];
+let vs: Array<`V([i64, string], i64)> = [`V(0, 0), `V("a", 0), `V(1, 0)];
+let ds: Array<([(i64, i64), (string, string)], [`A(i64), `B(i64), `C])> =
+  [((0, 4), `A(0)), (("a", "b"), `B(0)), ((1, 6), `C)];
+let r = {
+  catch(e) caught <- e ~ caught + 1;
+  (array::map(ls, lit), array::map(ts, top), array::map(fs, field), array::map(vs, variant), array::map(ds, deep))
+};
+select step { 10 => (r, caught), _ => never() }

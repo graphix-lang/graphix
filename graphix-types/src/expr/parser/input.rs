@@ -211,6 +211,19 @@ impl<'a> Input<'a> {
 
     /// Forget what failures said since `held`: a parse that went on past
     /// where it started absorbed them.
+    // CR claude for claude: [bug/low] Whether a list's separator is named as expected
+    // depends on whitespace and on the list's length. `[1` says "Expected `,` or `]`",
+    // but `[1 ` and `[1, 2` say "Expected `]`". `let x = 1)` says "Expected `;` or end
+    // of input", but `let x = 1 )` says "Expected end of input". Cause: this keeps a
+    // failed alternative's labels only when the alternative started at the reported
+    // offset. The separator's `sptoken`, like a binop's `attempt(spaces; ..)`, skips
+    // the whitespace inside its attempt, so its failure stands at that offset while its
+    // start does not. `Input::many` also forgets the stopping iteration once the run
+    // has read anything. Fix: decide by where the failure stood (`Fail::at`) rather
+    // than where the alternative started, drop `many`'s rule for a failure at the
+    // reported offset, and pin these pairs. probe:
+    // design/review-2026-11-16/repro/t-parser-a-expected-depends-on-space.sh
+    // (t-parser-a-05)
     pub(super) fn drop_since(&mut self, held: Option<Held>) {
         if let Some(h) = held
             && self.g.mode != Mode::Labels(h.start)
@@ -274,6 +287,20 @@ impl<'a> Input<'a> {
     }
 
     /// A refusal here of what was read up to `pos`, saying why.
+    // CR claude for claude: [bug/low] This notes the reason and also labels the failure
+    // with it, so State::report prints the reason as the headline and again as a note
+    // at the same point. The summary an editor shows repeats it too. Affected: a
+    // one-tuple, a list pattern's suffix, flush in a seq, a duplicate fn-type argument,
+    // a block of one expression. refuse_from fails at its start and reports at the
+    // furthest point, so its headline is the generic 'could not continue' and the
+    // reason is only a note (struct fields unique, labeled before positional). Only a
+    // type list's refusal leads with its reason and says it once, and only
+    // a_refused_type_list_leads_with_its_reason pins that. a_refusal_says_why,
+    // a_one_element_tuple_is_refused and a_fn_type_names_each_argument_once check
+    // msg.contains(why), which both shapes pass. Make State::report lead with a
+    // refusal's reason for both helpers and drop a note that repeats the headline. Then
+    // assert the reason once under its header in those tests. probe:
+    // design/review-2026-11-16/repro/tests-parser-reason-twice.sh (tests-parser-02)
     pub(super) fn refuse(&mut self, pos: SourcePosition, why: &'static str) -> Fail {
         self.g.note_reason(pos, None, || CompactString::const_new(why));
         self.because(why)

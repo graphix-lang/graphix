@@ -1,0 +1,41 @@
+// A place reference fires where a body first makes it, and at a wake that finds it moved
+//
+// command:  timeout -s KILL 30 graphix --no-cache x-refs-place-ref-fires-on-entry-and-wake.gx
+// rule:     CLAUDE.md, "Bodies are bind-driven": entering a select arm is not an event and
+//           neither is waking one; nothing fires in a body but its binds. "a wake ... fires
+//           nothing for anyone". ByRef::update's own comment: "a reference is a constant:
+//           fired where it is born or moves, standing where a body first makes it".
+// expected: every counter stays 0: the arm is entered at step 3 (not the first cycle),
+//           sleeps at step 6, and wakes at step 10 after `i` moved while it slept. The
+//           plain reference `&x` and the plain read `a[i]$` show what is intended.
+// observed: the place reference and its dereference fire at the entry and again at the
+//           wake (place, deref: 1 after the entry, 2 after the wake); `&x` and `a[i]$`
+//           never do:
+//             (4, true, {deref: 1, place: 1, plain_read: 0, plain_ref: 0})
+//             (11, true, {deref: 2, place: 2, plain_read: 0, plain_ref: 0})
+let step = 0;
+step <- select step { s if s < 12 => s + 1, _ => never() };
+let mode = (step > 2 && step < 6) || step > 9;
+let a = [10, 20, 30];
+let x = 5;
+let i = 0;
+i <- (select step { 7 => null, _ => never() }) ~ 2;
+let place = 0;
+let deref = 0;
+let plain_ref = 0;
+let plain_read = 0;
+select mode {
+  true => {
+    let r = &a[i];
+    place <- r ~ place + 1;
+    deref <- *r ~ deref + 1;
+    let q = &x;
+    plain_ref <- q ~ plain_ref + 1;
+    let y = a[i]$;
+    plain_read <- y ~ plain_read + 1;
+    0
+  },
+  false => never()
+};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(step, mode, {place, deref, plain_ref, plain_read})

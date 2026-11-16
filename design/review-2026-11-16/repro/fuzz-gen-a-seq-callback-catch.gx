@@ -1,0 +1,17 @@
+// Title: a catch inside a function a seq step calls is legal, but GenCtx::no_catch keeps it out of every
+//        callback and lambda body generated inside a seq step (ctx.clone() copies the flag)
+// Command: graphix-fuzz check design/review-2026-11-16/repro/fuzz-gen-a-seq-callback-catch.gx
+// Expected and observed: AGREE (trace); the node-walk prints "r 7 errs 1", "r 9 errs 2".
+// The shape is valid and runs; the reactive generator never emits it (consume_fallible checks ctx.no_catch,
+// and callback_parts/fold_params/try_hof's init/try_map_builtin clone ctx with no_catch still set).
+let t = i64:1;
+t <- select t { s if s < i64:3 => s + i64:1, _ => never() };
+let errs = i64:0;
+let f = |k: i64, x: i64| -> i64 { catch(e) errs <- e ~ (errs + i64:1); let a = (k /? (x - i64:2))?; x };
+let r = seq let k = t {
+  let v = array::map([i64:1, i64:2, i64:3], |x| f(k, x));
+  let w = array::fold(v, i64:0, |acc, y| acc + y);
+  w + k
+};
+println("r [r] errs [errs]");
+r

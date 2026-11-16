@@ -850,6 +850,17 @@ pub fn flags_encode(
 /// left, each counted item taking at least one, so a corrupt count fails
 /// the read instead of sizing an allocation.
 #[doc(hidden)]
+// CR claude for claude: [risk/low] The bound here is the bytes left in `buf`. Inside a
+// definition, `buf` is `&image[at..]` (`decode_at`), so that is the rest of the whole
+// image, megabytes, not the definition's extent. Callers size allocations from the
+// count: `DefTable::image_decode`'s `AHashMap::with_capacity(n)` over `FnType` rows,
+// `CallSite::image_decode`'s `ArgMap::with_capacity_and_hasher`, and `decode_nodes`'
+// `Vec::with_capacity`. So one bad count in an image whose checksum matches (a writer
+// bug) can request gigabytes before the read fails, against what the doc promises. Fix:
+// cap the preallocation at the call sites (`n.min(remaining / min_item)` or a small
+// constant, as `record_decode` and `shared_map::node_decode` already do), or have
+// `count_decode` take the item's minimum encoded size, and correct the doc. Found by
+// reading; not run. (t-image-02)
 pub fn count_decode(buf: &mut impl Buf) -> Result<usize, PackError> {
     let n = decode_varint(buf)? as usize;
     if n > buf.remaining() {

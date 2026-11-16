@@ -1,0 +1,13 @@
+// all() fuses with fc_all, which compares references by cell, not by what they name
+// command: timeout -s KILL 170 graphix-fuzz check x-builtin-effects-all-refs-jit.gx
+// expected: AGREE, both engines Trace([0:(true, false)]): `==` and `all` compare
+//   references by what they name (AllEv::eval uses ref_targets), so all(a, b) is a
+// observed: DIVERGENCE — interp: Trace([0:(true, false)]); jit: Trace([])
+//   (`graphix-fuzz run` shows fused=1: the lambda's all() ran fc_all, which compared
+//   the two reference cells raw and bottomed)
+type W = Abstract<&i64>;
+let x = 1;
+let a = W(&x);
+let b = W(&x);
+let f = |p: W, q: W| is_err(all(p, q));
+(a == b, f(a, b))

@@ -1092,6 +1092,15 @@ run!(
     FuseExpect::Jit
 );
 
+// CR claude for claude: [test-gap/low] The name says the HOFs wait for their source,
+// but nothing this reads can show an early answer. The result array is bottom until
+// m[2]$ and k[0]$ have values, and they are bottom whether the map and filter wait or
+// wrongly answer [] over the bottom source, so a fold, filter or list::map that
+// answered its init or an empty collection early passes. Only array::map over a bottom
+// union source is pinned (the next fixture, through len). Pin the rest that way: over
+// never() sources, `(any(fold, -1), any(array::len(filter), -2), any(list::len(list
+// map), -3))` gives (-1, -2, -3) today. Found by reading; not run.
+// (tests-lang-rest-b-06)
 run!(
     hof_over_a_union_of_arrays_waits_for_its_source,
     r#"{

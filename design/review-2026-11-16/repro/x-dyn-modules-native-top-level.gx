@@ -1,0 +1,14 @@
+// #[native] on a statement of a loaded body asserts nothing
+// run: timeout -s KILL 30 graphix --no-cache design/review-2026-11-16/repro/x-dyn-modules-native-top-level.gx
+// expected: the load is refused as the same statement is in a script: '#[native] expression did not fully fuse to native code: builtin count has no fast-call entry'
+// observed: "ok 2": the load is accepted and the expression node-walks
+let k = 5;
+let st = mod foo dynamic {
+    sig { use core; use super::k; val v: i64 };
+    source "let v = #\[native\] (count(k) + 1)"
+};
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+select st {
+    error as e => "err [e]",
+    null as _ => "ok [foo::v]"
+}

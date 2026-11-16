@@ -1,0 +1,18 @@
+// A dynamic module's body can write a host binding its sig imports with a
+// plain `use`: the import is a read-write grant, and there is no read-only one.
+//
+// command:  timeout -s KILL 30 graphix --no-cache a-packages-guest-writes-import.gx
+// expected: the load is refused (the body writes a name it was only shown),
+//           or `limit` stays 10
+// observed: status null limit 10
+//           status null limit 99
+//           10
+//           99
+let limit = 10;
+let status = mod guest dynamic {
+    sig { use super::limit; val v: i64 };
+    source "limit <- 99; let v = 1"
+};
+println("status [status] limit [limit]");
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+limit

@@ -1,0 +1,18 @@
+// hbs::render panics the runtime thread when a partials value's Cast impl renders a template
+// command: timeout -s KILL 60 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache small-pkgs-hbs-reentrant-panic.gx
+// expected: `<inner>` printed (the abstract partials are written through Cast::to_value,
+//   whose own hbs::render is a pure call), then exit 0.
+// observed: thread 'graphix-runtime' panicked at stdlib/graphix-package-hbs/src/lib.rs:413:19:
+//   RefCell already borrowed / Error: runtime did not respond
+//   (--check accepts the program)
+type P = Abstract<{p: string}>;
+impl Cast for P {
+  let to_value = |x| {
+    let s = hbs::render("{{a}}", {a: x.0.p});
+    {p: s$}
+  }
+};
+let r = hbs::render(#partials: P({p: "inner"}), "<{{> p}}>", {a: 1});
+println("[r]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+0

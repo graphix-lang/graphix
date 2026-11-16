@@ -46,6 +46,11 @@ use tokio::{
 
 #[derive(Debug, Clone)]
 struct ClientValue {
+    // CR claude for claude: [structure/low] reqwest::Client is already a
+    // reference-counted handle (cheap Clone, shared pool), so Arc<reqwest::Client>
+    // here, in DEFAULT_CLIENT and in RequestArgs adds a second indirection and
+    // allocation for nothing. Hold reqwest::Client directly and clone it. Found by
+    // reading; not run. (http-sqlite-db1-07)
     inner: Arc<reqwest::Client>,
 }
 
@@ -171,6 +176,14 @@ impl<R: Rt> EvalCached<R> for HttpClientEv {
         let connect_timeout = cached.get::<Option<Duration>>(4)?;
         cached.value(5)?;
         let build = || {
+            // CR claude for claude: [bug/low] #redirect_limit: u32:0 builds
+            // Policy::limited(0), which answers every 3xx with a 'too many redirects'
+            // error, so no setting lets a program see a redirect's status or Location.
+            // Make 0 mean Policy::none() (the 3xx is the response) and say so in
+            // mod.gxi's `client` doc, which does not describe #redirect_limit at all.
+            // probe:
+            // design/review-2026-11-16/repro/http-sqlite-db1-redirect-limit-zero.gx
+            // (http-sqlite-db1-05)
             let mut builder = reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::limited(redirect_limit as usize));
             if let Some(timeout) = timeout {
@@ -474,6 +487,17 @@ fn build_hyper_response(v: &Value) -> hyper::Response<Full<Bytes>> {
         }
     };
     let mut response = hyper::Response::builder().status(status);
+    // CR claude for claude: [bug/low] Framing belongs to the server. A Reply's
+    // content-length is dropped here, but its transfer-encoding reaches hyper, which
+    // then frames the response from it. A duplicated chunked header is sent as
+    // `transfer-encoding: chunked, chunked` (chunked applied twice, which RFC 9112
+    // forbids and intermediaries frame differently). gzip is sent as
+    // `transfer-encoding: gzip, chunked` with `connection: close, chunked` over an
+    // uncompressed body. A program copying an upstream response's headers into its
+    // Reply does this unawares. Drop transfer-encoding beside content-length, and say
+    // so in the Reply doc. probe:
+    // design/review-2026-11-16/repro/x-security-http-reply-transfer-encoding.py
+    // (x-security-03)
     for h in headers.iter() {
         if let Some([Value::String(k), Value::String(v)]) =
             rep::read_tuple(h).map(rep::Parts::elems)
@@ -649,6 +673,16 @@ async fn serve_connection(
             handle_http_request(req, post.clone(), limits.max_body, limits.body_timeout);
         async move { Ok::<_, std::convert::Infallible>(resp.await) }
     });
+    // CR claude for claude: [bug/medium] Nothing bounds writing a response.
+    // header_timeout and body_timeout bound only what the server reads, so a client
+    // that requests an answer bigger than the socket buffers (16 MiB in the probe) and
+    // never reads it holds its connection and its max_connections permit until it
+    // disconnects. 768 such clients lock every other client out. Bound the write: add a
+    // `#send_timeout` to Limits and the gxi, enforced in
+    // MaybeTls::poll_write/poll_flush by a deadline armed while a write is pending and
+    // reset on progress. When it passes, fail the write with TimedOut, which closes the
+    // connection and frees the permit. probe:
+    // design/review-2026-11-16/repro/x-security-http-slow-read.py (x-security-02)
     let conn = hyper::server::conn::http1::Builder::new()
         .timer(hyper_util::rt::TokioTimer::new())
         .header_read_timeout(limits.header_timeout)
@@ -916,6 +950,18 @@ impl<R: Rt> HttpServe<R> {
             .map_err(|e| http_err(format_args!("tokio listener failed: {e}")))?;
         let (tx, rx) = mpsc::channel(100);
         ctx.rt.watch(rx);
+        // CR claude for claude: [bug/medium] Each start makes a new semaphore with
+        // max_connections permits, but connections accepted before a restart on the
+        // same socket live on, holding permits of the old one. After a restart (any
+        // change of cert, key, limits or max_connections) the server therefore admits
+        // max_connections more on top of those still open, and those keep their old
+        // Limits too. With #max_connections: 1 and a silent connection, a restart for a
+        // new #max_body lets a second connection be served at once. Fix: keep the
+        // semaphore in Listening beside the socket and conns, and on restart grow it
+        // with add_permits or shrink it with forget_permits instead of replacing it.
+        // probe:
+        // design/review-2026-11-16/repro/http-sqlite-db1-max-connections-restart.gx
+        // (http-sqlite-db1-04)
         let semaphore = Arc::new(Semaphore::new(s.max_connections));
         let post = Post { tx, id: self.var.id, inbox: self.inbox.clone() };
         let serve = serve_loop(listener, conns, s.tls, post, semaphore, s.limits);
@@ -939,6 +985,17 @@ impl<R: Rt> Apply<R> for HttpServe<R> {
     fn update(&mut self, ctx: &mut ExecCtx<'_, R>, from: &mut [Node<R>]) -> &TagValue {
         let woke = self.slept.take();
         let (addr, mut fired) = seam_arg(ctx, &mut from[0]);
+        // CR claude for eric: [bug/medium] A wake counts as an argument fire, so the
+        // server restarts and its new handle goes out Fired. A reader in the woken arm
+        // (a `<-` sampling the server, or a client built over it and the request after
+        // that) acts at the wake with no event behind it, against 'a wake fires nothing
+        // for anyone'; a CachedArgs builtin in the same arm stays quiet. Re-serving at
+        // the wake is documented (async_sleep_outputs.md), but its output should then
+        // be MOVED (TagValue::tagged(v, Tag::MOVED)), and a bottom argument at the wake
+        // a stale bottom, keeping Fired for a restart an argument fire caused. Needs a
+        // ruling on whether a re-attached server's handle is an event. probe:
+        // design/review-2026-11-16/repro/http-sqlite-db1-serve-fires-at-wake.gx Also
+        // reported as (x-async-io-08). (http-sqlite-db1-03)
         fired |= woke;
         let mut args: [Option<Value>; 6] = Default::default();
         for (i, arg) in args.iter_mut().enumerate() {

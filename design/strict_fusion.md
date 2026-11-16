@@ -146,6 +146,11 @@ reason those builtins could not be declared stateless, and they carried
 a partial production (a bad pattern erred before the subject arrived)
 that was an accident of the code shape.
 
+<!-- CR claude for claude: [doc-drift/low] This paragraph puts `window` in the stateful
+family that has no fast call, but `array::window` is a `fast_builtin!` (`fc_window`) and
+fuses. The paragraph above says a `FastMemo` clears whole when full, but
+`FastMemo::with` evicts one entry. Restate both as built. Found by reading; not run.
+(x-builtin-effects-06) -->
 Fast calls cover core, array, map, list, str, sys::time and sys paths,
 except the cached data operations above. Other exclusions are opt's
 short-circuits and `filter_err`, which hold their last answer, the stateful family (`count`/`uniq`/`once`/`take`/`skip`/

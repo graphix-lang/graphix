@@ -1,0 +1,22 @@
+// Title: sys::net::write keeps the values it queued in an earlier seq run
+// and writes them in a later one: Write has no Apply::reborn.
+// Command:
+//   timeout -s KILL 30 graphix --no-cache -n sys-net-write-queue-survives-seq-run.gx
+// Expected (a step's call is a fresh call each run, and Apply::reborn says a
+// builtin "forgets what its last run left"): runs 1-3 queue under a bottom
+// path and are forgotten; run 4, whose path is valid, writes 4 alone:
+//   last line [4]
+// Observed: run 4 writes every earlier run's value first:
+//   [1]  [1, 2]  [1, 2, 3]  [1, 2, 3, 4]
+let got: Array<i64> = [];
+sys::net::publish(#on_write: |v: i64| got <- v ~ array::push(got, v), "/local/sq", 0);
+let go = count(sys::time::timer(duration:100.ms, 4));
+let put = |n: i64| {
+  let q = select n { 4 => "/local/sq", _ => never() };
+  sys::net::write(q, n);
+  n
+};
+let r = seq let n = go { put(n); n };
+println("run [r]");
+sys::exit(sys::time::after_idle(duration:800.ms, go) ~ 0);
+got

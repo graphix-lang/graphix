@@ -1,0 +1,19 @@
+// Interpolation and cast<string> write a datetime and a duration differently,
+// and cast reads back only its own form
+//
+// command:
+//   graphix --no-cache design/review-2026-11-16/repro/a-stdlib-text-forms.gx
+// observed:
+//   ("2020-01-01 00:00:00 UTC", "2020-01-01T00:00:00+00:00")
+//   ("90.s", "90.0")
+//   error:`InvalidCast("can't cast \"2020-01-01 00:00:00 UTC\" to datetime: no primitive conversion")
+//   error:`InvalidCast("can't cast \"90.s\" to duration: no primitive conversion")
+//   error:`InvalidCast("can't cast aGk= to string: no primitive conversion")
+let d = datetime:"2020-01-01T00:00:00Z";
+let u = duration:90.s;
+println(("[d]", cast<string>(d)$));
+println(("[u]", cast<string>(u)$));
+println(cast<datetime>("[d]"));
+println(cast<duration>("[u]"));
+println(cast<string>(buffer::from_string("hi")));
+sys::exit(sys::time::after_idle(duration:300.ms, 0))

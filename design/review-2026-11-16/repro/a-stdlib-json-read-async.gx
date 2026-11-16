@@ -1,0 +1,28 @@
+// json::read answers in a later cycle than its input; str::parse and the json writers answer at once
+//
+// command:
+//   graphix --no-cache design/review-2026-11-16/repro/a-stdlib-json-read-async.gx
+// expected (a parse is a pure function of its text, as str::parse and
+//   json::write_str are): each line pairs a text with its own parse
+//     json 1 -> 1
+//     json 2 -> 2
+//     json 3 -> 3
+//     parse 1 -> 1
+//     parse 2 -> 2
+//     parse 3 -> 3
+// observed: the json lines pair each new text with the previous parse
+//     json 1 -> 1
+//     json 2 -> 1
+//     json 2 -> 2
+//     json 3 -> 2
+//     json 3 -> 3
+//     parse 1 -> 1
+//     parse 2 -> 2
+//     parse 3 -> 3
+let tick = sys::time::timer(duration:100.ms, 3)$;
+let text = "[count(tick)]";
+let j: i64 = json::read(text)$;
+let p: i64 = str::parse(text)$;
+println("json [text] -> [j]");
+println("parse [text] -> [p]");
+sys::exit(sys::time::after_idle(duration:500.ms, tick) ~ 0)

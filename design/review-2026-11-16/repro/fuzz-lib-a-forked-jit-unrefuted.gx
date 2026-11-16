@@ -1,0 +1,16 @@
+// Title: when the serial node-walk is contained (its activation budget) or
+// honestly slow, the forked JIT (Mode::JitPar) is compared with nothing that
+// ran: Pair::Par(JitPar)'s reference is the serial node-walk, and no pair
+// holds the forked JIT to the serial JIT.
+// Command: timeout -s KILL 180 graphix-fuzz check fuzz-lib-a-forked-jit-unrefuted.gx
+//          timeout -s KILL 180 graphix-fuzz run fuzz-lib-a-forked-jit-unrefuted.gx
+// Expected: the serial JIT's trace (100000, [2, 4, ..]) is the forked JIT's
+// reference once the node-walk cannot answer; a forked-JIT bug here diverges.
+// Observed: `run` shows Interp Timeout(ActivationBudget), Jit Trace; `check`
+// prints two "CONTAINED — the node-walk exceeded its stack or activation
+// budget; the kernel's value stands unrefuted" lines (Pair::Engine and
+// Pair::Par(JitPar)) and ends UNSURE: the JitPar run's value is never
+// compared with the serial JIT's.
+let rec f = |n: i64, acc: i64| -> i64 select n { 0 => acc, n => f(n - 1, acc + 1) };
+let xs = array::map([1, 2, 3, 4, 5, 6, 7, 8], |x| x * 2);
+(f(100000, 0), xs)

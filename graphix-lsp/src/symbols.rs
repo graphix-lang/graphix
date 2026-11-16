@@ -73,6 +73,13 @@ pub(crate) fn of_exprs(exprs: &[graphix_compiler::expr::Expr]) -> Vec<Symbol> {
                 (StructurePattern::Bind(name), _) => {
                     Some(sym(name, SymbolKind::VARIABLE, e.pos, end))
                 }
+                // CR claude for claude: [bug/low] A top-level `let` whose pattern is
+                // not a bare name (`let (lo, hi) = ..`, `let {x, y} = ..`) yields no
+                // symbol, so its names are missing from the outline and from
+                // workspace/symbol. Fix: emit a VARIABLE symbol for each name
+                // `StructurePattern::with_bound_names` gives, at that name's position.
+                // probe: design/review-2026-11-16/repro/lsp-destructured-symbols.py
+                // (lsp-05)
                 (_, _) => None,
             },
             ExprKind::TypeDef(td) => {

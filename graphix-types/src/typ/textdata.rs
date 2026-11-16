@@ -110,6 +110,17 @@ impl<'a> Walk<'a> {
         }
     }
 
+    // CR claude for claude: [perf/low] walk remembers only named types (Walk::named's
+    // `seen`), so its Tuple, Variant, Struct, Array and Map arms walk a shared type DAG
+    // as a tree. json::write_str or toml::write_str over a value typed (x, x) nested N
+    // deep checks in 2^N time (N=24/26/28: 168/565/2141 ms), and a typedef pair DAG 24
+    // deep takes 936 ms. `x == x`, uniq, sort and pack::write_bytes stay at about 40 ms
+    // since the c-lib-02 and t-typ-mod-03 fixes; this walk, reached through site_bounds
+    // and Type::text_refusal, is the site those fixes missed. Fix: remember each
+    // structural node walked (by address, with read_by, as Verdicts does for
+    // Type::holds) and skip it on a second visit. probe:
+    // design/review-2026-11-16/repro/x-rerun-1-textdata-dag-exponential.sh
+    // (x-rerun-1-03)
     fn walk(&mut self, t: &Type) -> Result<(), TextRefusal> {
         crate::stack::ensure_sufficient(|| match t {
             Type::TVar(tv) => match tv.binding() {
@@ -356,6 +367,17 @@ impl Type {
     /// members, that a TOML writer writes as the array of its `[key,
     /// value]` pairs (its key type is known and is not `string`), which a
     /// TOML document, a table, cannot be.
+    // CR claude for eric: [structure/low] TomlData's static rule that a TOML document
+    // is a table covers only one non-table root: a map whose key type is known and is
+    // not string. An i64, an array, a tuple or an Array<(string, T)> root is no table
+    // either. Yet `toml::write_str(1)` and `toml::write_str([1])` pass the check and
+    // answer TomlErr("unsupported i64 type") / ("unsupported array type") at run time,
+    // while a Map<i64, string> root is refused by the check. Generalize this walk to
+    // refuse every root member whose head is known and is not a struct, a string-keyed
+    // map or an abstract type, leaving Any and variables to the run, with the same "put
+    // it in a struct's field" remedy. probe:
+    // design/review-2026-11-16/repro/book-modules-udt-toml-root-only-maps.sh
+    // (book-modules-udt-13)
     pub fn toml_root_pairs(&self, env: &Env) -> Option<Type> {
         let walk = Walk::new(env);
         let mut members: SmallVec<[(Type, Type); 8]> = SmallVec::new();

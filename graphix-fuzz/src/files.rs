@@ -85,6 +85,14 @@ fn find_marker(text: &str) -> Option<usize> {
         .map(|(i, _)| i)
 }
 
+// CR claude for claude: [bug/low] `Subject::parse` mounts each section at `/{name}`
+// after the harness's own modules. A section named `test.gx` (the subject's own module)
+// or `inputs.gx` (the injected inputs) therefore silently replaces that module. `i64:1`
+// followed by `// file-v1: test.gx` with `let result = i64:2` runs as 2 in every mode,
+// and its body is never compiled. Fix: refuse the stems `test` and `inputs` here, or
+// have `Subject::parse` refuse a section whose path its table already holds. probe:
+// design/review-2026-11-16/repro/fuzz-main-aux-section-clobbers-body.gx
+// (fuzz-main-aux-06)
 fn validate_name(name: &str) -> Result<(), String> {
     let stem = name
         .strip_suffix(".gx")

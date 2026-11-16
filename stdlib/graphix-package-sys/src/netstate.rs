@@ -608,6 +608,16 @@ impl NetState {
         Ok(val)
     }
 
+    // CR claude for eric: [risk/medium] Every update is appended to the pending batch,
+    // and the flusher commits one batch at a time. With the publish timeout None (the
+    // CLI default and the unseeded default), UpdateBatch::commit awaits each client's
+    // bounded queue. One subscriber that stops reading (a suspended remote client)
+    // therefore keeps commit pending indefinitely, every later update of every
+    // publication piles up here without bound, and the other subscribers stop
+    // receiving. A plain netidx publisher would be slowed by commit's backpressure;
+    // this producer never waits. Decide the policy: a finite default publish timeout
+    // (drop the stalled client, as --publish-timeout does), or a bounded pending batch
+    // that coalesces per Id under a stall. Found by reading; not run. (sys-net-04)
     pub(crate) fn update_val(&self, val: &Val, value: Value) {
         {
             let mut batch = self.0.pending_publish_batch.lock();

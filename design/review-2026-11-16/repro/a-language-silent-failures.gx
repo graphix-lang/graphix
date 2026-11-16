@@ -1,0 +1,16 @@
+// a-language: three failures that say nothing in a default run
+// command:  graphix --no-cache a-language-silent-failures.gx
+//           graphix --no-cache --no-fusion a-language-silent-failures.gx
+// expected: each failure named once on stderr, by either engine
+// observed (default): only "tick 2: avg 100" and "tick 3: avg 50". The division by zero at tick 1, the dropped
+//           index error and the seq that stalls on it print nothing.
+// observed (--no-fusion): the division alone is reported ("arith error .. attempt to divide by zero").
+//           The dropped errors appear only in a log file, with RUST_LOG=warn and --log-dir both given.
+let tick = count(sys::time::timer(duration:30.ms, 3)$);
+let avg = |total: i64, n: i64| total / n;
+let shown = avg(100, tick - 1);
+println("tick [tick]: avg [shown]");
+let a = [1, 2, 3];
+println("element: [a[7]$]");
+let r = seq tick { let v = a[7]$; println("the seq got [v]"); v };
+sys::exit(sys::time::after_idle(duration:150.ms, tick ~ 0))

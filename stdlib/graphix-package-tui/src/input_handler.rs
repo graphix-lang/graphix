@@ -352,6 +352,18 @@ pub(super) struct InputHandlerW<X: GXExt> {
     handle_ref: Ref<X>,
     handle: Option<Callable<X>>,
     child: ChildW<X>,
+    // CR claude for eric: [bug/medium] Events waiting for the handler live in this
+    // widget and are dropped with it. A key whose handler switches the tree (a select
+    // over screens at the root, or a replaced child) has its answer held behind its
+    // writes. The root's new value reaches Screen::update first, the old tree is
+    // dropped with every key typed after that key, and the answer then matches nothing.
+    // With ten keys in one burst and each key flipping the root between two
+    // input_handler trees, 1 key is counted. Without the flip all 10 are, and a handler
+    // swap within one tree keeps them too. Fix: hold undelivered terminal events above
+    // the tree (Screen gives the tree the next event only when no handler has one in
+    // flight, and a rebuild ends the one in flight), or hand a dropped handler's queue
+    // to its replacement. Where type-ahead goes across a rebuild is a ruling. probe:
+    // design/review-2026-11-16/repro/tui-core-typeahead-lost.sh (tui-core-03)
     queued: VecDeque<Value>,
     in_flight: Option<(ExprId, Value)>,
 }

@@ -1,0 +1,18 @@
+// t-seq: `seq (t) { .. }` does not snapshot its trigger; `seq t { .. }` does
+// Run: timeout -s KILL 30 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache design/review-2026-11-16/repro/t-seq-paren-trigger-not-snapshotted.gx
+// The run starts at birth over t=0 and is busy through t=1 and t=2.
+// Expected (a bare-variable trigger's reads see the value the run started
+// with, design/seq_blocks.md §5; the parentheses are grouping): "a t=0",
+// "b t=0".
+// Observed: "a t=0", "b t=2": the parenthesized trigger is not recognized as
+// a variable, so the body reads `t` through each step's entry snapshot.
+let step = 0;
+step <- select step { n if n < 30 => n + 1, _ => never() };
+let t = 0;
+t <- select step { 2 => 1, 5 => 2, _ => never() };
+let ready = false;
+ready <- select step { 10 => true, _ => never() };
+let a = seq t { until live(ready); println("a t=[t]"); t };
+let b = seq (t) { until live(ready); println("b t=[t]"); t };
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+(a, b)

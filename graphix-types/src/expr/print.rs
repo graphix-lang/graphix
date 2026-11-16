@@ -727,6 +727,14 @@ fn sig_item_decorated(si: &SigItem) -> bool {
 /// exponent, an `f32` in its shortest form; a string escapes as an
 /// expression's does, and one inside another value as netidx's printer
 /// writes it.
+// CR claude for eric: [doc-drift/low] A literal written in hex, octal or binary comes
+// back in decimal, because the parser keeps only the value: `u32:0o755` formats as
+// `u32:493` and `u32:0xff00ff00` as `u32:4278255360`. design/formatter.md's list of
+// what the formatter normalizes does not name this, and it drops a choice the author
+// made, the kind str_form keeps for a string's delimiters. Either keep the radix beside
+// the literal (metadata that decides nothing) and print it under AsWritten, or list the
+// normalization in design/formatter.md. probe:
+// design/review-2026-11-16/repro/x-formatter-radix-lost.gx (x-formatter-04)
 pub(crate) struct Literal<'a>(pub &'a Value);
 
 impl fmt::Display for Literal<'_> {
@@ -1481,6 +1489,14 @@ fn write_fields(f: &mut Formatter<'_>, fields: &[(ArcStr, Expr)]) -> fmt::Result
 }
 
 /// The fields of a struct literal or a functional update, one to a line.
+// CR claude for claude: [structure/low] This loop, ApplyExpr::fmt_pretty_inner's
+// argument loop and SelectExpr::fmt_pretty_inner's arm loop each re-implement
+// `pretty_separated`: `item_sep` with the previous item's eol, then `item_end` with the
+// last item's eol and below. `pretty_items` and the Map layout already call
+// `pretty_separated`, so the comment rules for a comma list live in four places. Pass
+// each of these lists to `pretty_separated` with its item closure, an eol of the
+// value's `eol_of`, and the last value's `below_of`, and delete the copies. Found by
+// reading; not run. (t-print-03)
 fn pretty_fields(buf: &mut PrettyBuf, fields: &[(ArcStr, Expr)]) -> fmt::Result {
     buf.nested(|buf| {
         let fields = as_written(fields);
@@ -1952,6 +1968,19 @@ fn pretty_then(buf: &mut PrettyBuf, e: &Expr, suffix: &str) -> fmt::Result {
         let start = buf.mark();
         let col = buf.col();
         write!(buf, "{}{suffix}", Bare(e))?;
+        // CR claude for claude: [bug/low] Several layouts leave no room for the text
+        // that follows a child on its line, so the formatter writes lines past the
+        // width. This check uses `<=` and leaves nothing for the `;` or `,` after the
+        // suffix, while `fmt_flat` keeps one column (its newline) and
+        // `pretty_tail_bare` and `pretty_lookup` test with `<`. A select guard is laid
+        // out with no room for ` =>` (SelectExpr::fmt_pretty_inner), a map key with
+        // none for ` =>`, and a formal's type in `Arg::pretty_head` (and in
+        // `TraitMethod`) with none for its default's ` =`. Test with `<` here, and lay
+        // each of the others out under `with_tail` of the text that follows, as
+        // `BindExpr::fmt_pretty_inner` does for ` =`. It shows in the stdlib at the
+        // default width: tui's browser.gx formats
+        // `structure.columns[slot_item(first_col, col_slots, c)]$;` to 91 columns.
+        // probe: design/review-2026-11-16/repro/t-print-then-overflow.sh (t-print-02)
         if col + buf.width_since(start) + buf.tail <= buf.limit {
             return writeln!(buf);
         }
@@ -1965,6 +1994,15 @@ fn pretty_then(buf: &mut PrettyBuf, e: &Expr, suffix: &str) -> fmt::Result {
 
 /// Whether `e` ends with an impl that has no body, which reads a `{`
 /// printed after it as its body.
+// CR claude for claude: [bug/low] An impl with no methods prints without `{}`, so
+// whatever prints a `{` after an expression must notice one at its end. This walk does
+// so only for a select scrutinee, and it misses a `catch` handler. A seq trigger, bare
+// or bound, that ends in one (`seq a ~ |x| impl Foo for i64 {} { 1 }`) prints so that
+// the seq body reads back as the impl's body. The scrutinee `catch(e) impl Foo for i64
+// {}` breaks the same way. `graphix fmt` refuses all three as a formatter bug. Fix: add
+// `Catch` (its handler) here, and have `trigger_parens` parenthesize a trigger that
+// `ends_bodyless`. Pin both in format.rs's `seq_trigger_reads_back_as_written`. probe:
+// design/review-2026-11-16/repro/t-print-bodyless-impl-trigger.sh (t-print-01)
 fn ends_bodyless(e: &Expr) -> bool {
     use ExprKind::*;
     match &e.kind {
@@ -2103,6 +2141,18 @@ impl PrettyDisplay for ExprKind {
                 buf.nested(|buf| {
                     for (i, b) in bounds.iter().enumerate() {
                         if i > 0 {
+                            // CR claude for claude: [bug/medium] When the slice does
+                            // not fit flat, this writes `..` and then the end bound's
+                            // fmt_pretty, which prints the bound's comments and
+                            // attributes where the cursor stands. `x[1..\n// d\n2]`
+                            // prints `1..// d`, which does not parse, so `graphix fmt`
+                            // (and the language server's formatting) refuses a valid
+                            // file as a formatter bug; with `#[sync]` there it prints
+                            // `1..#[sync]` on the `..` line. Fix: after `..`, start a
+                            // new line when the end bound `shows` decorations, as
+                            // pretty_after does for a decorated tail. probe:
+                            // design/review-2026-11-16/repro/tests-expr-slice-end-comment.gx
+                            // (tests-expr-01)
                             write!(buf, "..")?
                         }
                         if let Some(b) = b {
@@ -2993,6 +3043,16 @@ fn pretty_prefixed(
 
 /// `t` where it stands on the line, flat when it fits, else laid out
 /// over lines; no newline after.
+// CR claude for claude: [bug/low] pretty_type lays a type out with no tail, so a caller
+// that writes more on the same line overruns the width. At width 90, a select arm's
+// written type test prints ` Array<{ <63..69 a's>: i64 }> as q =>` in 91..97 columns
+// (SelectExpr::fmt_pretty_inner), and a labeled default prints ` #d: Map<string, { <59
+// a's>: i64 }> =` in 91 (LambdaExpr::pretty_args through Arg::pretty_head).
+// x-rerun-3-07's fix put a tail only on BindExpr's annotation and pretty_lone_arg. Fix:
+// take the following text as a parameter, lay the type out under buf.with_tail, and
+// pass ` as <pattern> =>` and ` =` from those two callers. Extend
+// type_hugs_fit_the_width to cover both shapes. probe:
+// design/review-2026-11-16/repro/x-rerun-1-fmt-type-trailer-width.sh (x-rerun-1-05)
 fn pretty_type(buf: &mut PrettyBuf, t: &Type) -> fmt::Result {
     t.fmt_pretty(buf)?;
     buf.kill_newline();

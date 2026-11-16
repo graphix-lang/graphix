@@ -161,6 +161,18 @@ impl FusionStats {
         self.jit_kernels_moved += jit_kernels_moved;
     }
 
+    // CR claude for claude: [bug/medium] Each failure is kept for the context's
+    // lifetime with its `FusionSource`, whose `Arc<Origin>` holds the input's whole
+    // source text. So every REPL input or embedder compile with an unfusable lambda
+    // keeps its text after it is dropped. 3000 dropped inputs with a 4000-byte string
+    // and a lambda that writes a binding grow `failed` to 18120 entries and RssAnon by
+    // 21 MB, while the same input with a pure lambda stays flat. `failures_for_source`
+    // also scans the whole history. Keep only the failures of the compile in progress:
+    // the `#[native]` check and `--fusion-stats` read the current compile's, and
+    // `keep_new_failures` already takes a mark. Or drop a root's failures when the root
+    // is deleted. probe:
+    // design/review-2026-11-16/repro/x-leaks-repl-fusion-failure-pins-source.sh
+    // (x-leaks-04)
     fn record_failure(&mut self, spec: &Expr, reason: &str) {
         self.failed.push(FusionFailure {
             id: spec.id,
@@ -728,6 +740,29 @@ impl FusionCtx {
     }
 
     /// The definition `id` was deleted: the next link forgets its kernels.
+    // CR claude for claude: [bug/medium] Every deleted lambda node pushes its id here,
+    // and only `FusionCtx::link` clears `dead`. A running program links only at a
+    // compile or a run-time bind, so a fused program whose collection slots or seq
+    // steps hold lambdas grows this Vec by 8 bytes per deleted lambda for as long as it
+    // runs (flat with --no-fusion). The next link then pays `Emission::forget`'s
+    // `dead.contains` per cached kernel, which is O(kernels x deletions), and most of
+    // these ids name no cached kernel. Record an id only when the emission caches a
+    // kernel for it, or keep `dead` as an IntSet pruned of ids no kernel names, so it
+    // is bounded by the cache. probe:
+    // design/review-2026-11-16/repro/x-leaks-fusion-dead-lambdas.gx (x-leaks-01)
+    // CR claude for claude: [bug/medium] Every deleted Lambda node pushes its id here
+    // once the root has emitted anything, and only `link` drains `dead`; a running
+    // program links only when a compile or a run-time bind emits new code. Slots or
+    // bound instances that hold a lambda definition and churn take their kernels
+    // through `share::fuse_slot`, which emits nothing, so `dead` grows by 8 bytes a
+    // definition without bound: 3 million more slot lifetimes added about 28 MB of peak
+    // RSS, and none with --no-fusion or with the lambda defined outside the callback.
+    // The link that finally comes scans the whole list once for each cached kernel
+    // (`Emission::forget`). Record an id only where the emission holds a kernel of that
+    // definition (`Caches::kernels` is ordered by `LambdaId`: a range lookup),
+    // filtering a task's ids at its join as `records_dead` decides today. probe:
+    // design/review-2026-11-16/repro/f-mod-lowering-dead-defs-grow.py
+    // (f-mod-lowering-03)
     pub(crate) fn forget_def(&mut self, id: LambdaId) {
         if self.records_dead() {
             self.dead.push(id)
@@ -929,6 +964,17 @@ pub(crate) fn binary_operands<'a, R: Rt>(
 /// The children of `node`, the one child step every walk takes, in a
 /// deterministic order. A kernel has none: its feeders are outside its
 /// region.
+// CR claude for claude: [risk/low] A kernel's feeders are no longer all reads:
+// `try_fuse_feeding_args` makes a feeder of any argument that does not fuse, a subtree
+// that can hold effects, references, lambdas and calls with no static target, so "its
+// feeders are outside its region" no longer makes a kernel a leaf. Every walk through
+// here skips those nodes; the walks that must not each add the feeders by hand
+// (`analysis::arm_sleeps`, `local_summary`, `walked_call`, `native_residue`), while
+// `analysis::publishes`, `escaping`, `hands_out_callee_binds`, the `makes_ref` walk of
+// `independent` and `walk_static_graph` do not, so a fork verdict decided after fusion
+// rests on `local_summary` alone for what a fed argument publishes or hands out. Visit
+// a kernel's feeders that are not bare reads here and delete the four special cases.
+// Found by reading; not run. (f-mod-lowering-05)
 pub(crate) fn for_each_child<'a, R: Rt>(
     node: &'a Node<R>,
     f: &mut dyn FnMut(&'a Node<R>),
@@ -1019,6 +1065,17 @@ pub(crate) fn raises_to_handler<R: Rt>(n: &Node<R>) -> bool {
 /// Whether evaluating `node` can raise to a handler: a `?` under one
 /// that it reaches through statically resolved calls, or a call with no
 /// static target, whose body no walk sees.
+// CR claude for claude: [bug/high] A raise in a lambda handed to a builtin is not seen
+// here: the walk follows statically resolved lambda calls and counts a call with no
+// static target, but a builtin call is neither and its callback's body is not walked.
+// `try_fuse_feeding_args` therefore feeds `filter(x, |v| chk(2, v)? >= 0)` after a
+// fused argument that raises; the feeder runs before the kernel, and the two errors
+// reach their catch in the opposite order to the node-walk's (`Bad(2) before `Bad(1)).
+// Count a builtin call handed a function-typed argument as able to raise, as
+// `analysis::callback_facts` judges one, and pin it beside the fed-argument ordering
+// pin in fusion_review.rs. probe:
+// design/review-2026-11-16/repro/f-mod-lowering-fed-arg-raise-order.gx
+// (f-mod-lowering-02)
 pub(crate) fn may_raise_to_handler<R: Rt>(node: &Node<R>) -> bool {
     let mut any = false;
     for_each_reachable_node(node, &mut |n| {
@@ -1514,6 +1571,15 @@ pub(crate) fn fuse_parts<'a, R: Rt + 'a>(
 /// in order the result. A collection's prototype or slot walk matches
 /// its kernels by attempt order, so it runs in order. `visit` is told
 /// whether its part calls a function when the partition decided it.
+// CR claude for claude: [test-gap/low] design/jit_memory.md says the task walk decides
+// and emits what the serial walk does and names GRAPHIX_FUSE_SERIAL as the A/B, but no
+// test, gate or fuzzer mode sets the flag: the fusecheck manifest pins the task walk
+// against itself. A change here or in `Emission::join` that fuses another set of
+// regions under tasks (a kernel a task no longer finds, a body the join drops) would
+// pass every gate and show only as fusion that depends on the host's cores. Add a test
+// target of its own that compiles a corpus under both settings in child processes and
+// compares `FusionStats` (attempted, fused, failures by source and reason). Found by
+// reading; not run. (f-mod-lowering-06)
 pub(crate) fn fuse_each<'a, R: Rt + 'a>(
     ctx: &mut CompileCtx<R>,
     parts: impl IntoIterator<Item = &'a mut Node<R>>,
@@ -1629,6 +1695,20 @@ fn calls_a_function<R: Rt>(node: &Node<R>) -> bool {
 /// at its [`BoundKey`]. An instance whose walk fused nothing is walked
 /// again only when `asserted`: an assertion the bind reaches is checked
 /// by the walk.
+// CR claude for claude: [bug/critical] A dynamic module declared in a collection
+// callback, whose loaded body calls a function of the program, segfaults on a warm
+// image start under forked evaluation: the region fused here for the loaded function
+// calls what should be the outside function's kernel and lands in a function that reads
+// its first argument as a pointer (rdi = 2, the init word; the argument sits in r8). In
+// the crashing runs GRAPHIX_DBG_KERNELS shows the callee's kernel built once per slot
+// in the cycle after every earlier caller was deleted, and the next region defined
+// reuses it without building. Seen with GRAPHIX_PAR=auto and GRAPHIX_PAR_T up to 400,
+// the fuzzer's JitPar session pair; not with --no-cache, GRAPHIX_PAR=off or force, or
+// the calibrated threshold on this small program. Find whether the region links a
+// callee the eviction swept or one another branch's emission defined, and make a link
+// to a callee that is not installed a panic. probe:
+// design/review-2026-11-16/repro/x-dyn-modules-warm-par-segv.sh (and
+// x-dyn-modules-warm-par-segv-fuzz.gx under graphix-fuzz check) (x-dyn-modules-01)
 pub(crate) fn fuse_instance<R: Rt>(
     ctx: &mut CompileCtx<R>,
     top_id: ExprId,
@@ -1649,13 +1729,51 @@ pub(crate) fn fuse_instance<R: Rt>(
         Some(None) | None => (),
     }
     ctx.env.seed_typedef_refs();
+    // CR claude for claude: [bug/critical] A non-emitting compile task (a forked
+    // branch's bind, a slot's prebind) gets a fresh root emission here, and
+    // `Jit::emission` numbers its functions from the helper table's next id, the id the
+    // context's own emission started at. `Jit::records` is keyed by that id alone, so
+    // this task's link replaces the records of kernel bodies the context's emission
+    // still hands out from its cache, and removes one where the task's region parent
+    // takes the id. A later region that calls such a cached kernel links against
+    // another function's code: under GRAPHIX_PAR=force `g(a) + 2` answers with the
+    // kernel of `f` (18 for 1007), and where the two differ in ABI the process dies of
+    // SIGSEGV. The same link also forgets the task's `dead` list against the temporary
+    // emission and clears it, so the context's emission never forgets those
+    // definitions. Build a throwaway emission's records in a map of its own in
+    // `Jit::install_compiled` (nothing names them after its link) and leave `dead` for
+    // the join; pin a forced-fork bind followed by a root bind that calls a cached
+    // kernel. probe:
+    // design/review-2026-11-16/repro/f-mod-lowering-local-emission-ids.sh (and the
+    // script form, f-mod-lowering-local-emission-ids.gx) (f-mod-lowering-01)
     let local = matches!(*ctx.fusion.emission.lock(), EmissionSlot::NonEmitting);
     if local {
         *ctx.fusion.emission.get_mut() = EmissionSlot::Root(None);
     }
     let top = ctx.fusion.top_id.replace(top_id);
+    // CR claude for claude: [perf/low] The bound instance is walked as a prototype
+    // (`Share::Collect`), so the prototype walk of each collection in its body nests in
+    // this one, and the nested arm of `share::fuse_prototype` answers `None`: this
+    // instance's slots get no share. Its first slot's bind then misses `BoundKernels`
+    // and fuses the callback again from nothing, a second emission and link inside the
+    // cycle, and under GRAPHIX_PAR=force every slot's prebind task does (eight slots,
+    // eight compiles); the kernels this walk built are run by none of this instance's
+    // slots. Let the nested arm answer a `SlotShare` over the table this walk is
+    // building, the table behind a cell the outer arm fills when the walk ends, so the
+    // instance's own collections take the kernels its walk built. probe:
+    // design/review-2026-11-16/repro/f-mod-lowering-bound-callback-fused-twice.gx
+    // (f-mod-lowering-04)
     let result = TypeMemo::scope(|| share::fuse_prototype(ctx, |ctx| apply.fuse(ctx)));
     ctx.fusion.top_id = top;
+    // CR claude for claude: [bug/high] unlinked() counts only pending wrappers. When
+    // this bind's last region brings them to LINK_BATCH, link_batch moves them all into
+    // the in-flight batch, unlinked() is 0, and this link is skipped. The batch never
+    // installs, and the instance's kernels hit the assert in WrappedKernel::fn_ptr ('a
+    // kernel runs after its fusion pass links') in the same cycle; any multiple of 256
+    // regions in one bind does it. Call ctx.fusion.link() unconditionally here, since
+    // Jit::link finishes the in-flight batch and returns early on an empty pending.
+    // Alternatively, make FusionCtx::unlinked count the in-flight batch. probe:
+    // design/review-2026-11-16/repro/f-jit-runtime-bind-batch-unlinked.gx (f-jit-02)
     if ctx.fusion.unlinked() > 0 {
         ctx.fusion.link();
     }
@@ -1664,6 +1782,18 @@ pub(crate) fn fuse_instance<R: Rt>(
     }
     let shared = result?;
     if let Some(key) = key {
+        // CR claude for claude: [bug/medium] `BodyShared::bound` only grows. A function
+        // outside a dynamic module that a loaded body calls gets a `BoundKey` naming
+        // the load (a lambda the body passes, an impl it writes, a type it owns), so
+        // every reload adds an entry with its kernels to a definition that is never
+        // deleted, and `FusionCtx::forget_def` never reaches them. A body calling
+        // `opt::map(y, |v| ..)` costs about 5.6 KB of resident memory a reload without
+        // bound; it is flat with --no-fusion and where the key does not name the load.
+        // Drop a key's entry when a definition its resolutions name is forgotten or a
+        // load whose type it holds is gone, or keep a load's entries in its
+        // `LoadedBody`. Growth measured, cause found by reading. probe:
+        // design/review-2026-11-16/repro/x-dyn-modules-bound-kernel-leak.gx
+        // (x-dyn-modules-04)
         def.shared.lock().bound.insert(key, shared);
     }
     Ok(())
@@ -1823,6 +1953,15 @@ fn build_region<R: Rt>(
     drop(phase);
     if let Some(spec) = lambdas.collided {
         ctx.fusion.emission()?.forget_attempt();
+        // CR claude for claude: [bug/medium] The collision is recorded against the
+        // colliding call site, which sits in a callee's body. native_residue looks only
+        // at nodes under its target, so `#[native]` on the region reports "the
+        // node-walk computes `(array::map(xs, g), array::map(ys, g))`" and names no
+        // blocker (graphix-fuzz run shows the real reason). Also record the failure
+        // against the region root (`node.spec()`), naming the colliding site in the
+        // reason. The refused id the feeder retry reads can stay as it is. probe:
+        // design/review-2026-11-16/repro/tests-fusion-two-instances-region-refused.sh
+        // (tests-fusion-04)
         return refuse(
             ctx,
             spec,

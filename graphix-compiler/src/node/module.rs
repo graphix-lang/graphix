@@ -209,6 +209,18 @@ fn resolve_use_item(
         used: Default::default(),
     };
     // the prelude already provides every package name as a path root
+    // CR claude for claude: [bug/medium] This drops every import whose target scope is
+    // the root and whose name is a package, so `use super::db` (or `use package::db`)
+    // in a module declared at the top level is lost where the top level declares a
+    // binding `db`: the body gets `db not defined`, while `use super::db as d`, `use
+    // super::*` and `super::db` all work. A dynamic module's sig `use super::str` at
+    // the top level is accepted as a grant and grants nothing. Only a one-segment item
+    // (`use db;`) is the prelude's: test that the item has no prefix, as `later_use`
+    // and `compile_dynamic`'s package filter do, through one predicate the three share.
+    // Fix it with the CR on `Env::imported_view`, or the entry this installs grants the
+    // package to a dynamic body. probe:
+    // design/review-2026-11-16/repro/t-env-use-super-package-named-binding.sh
+    // (t-env-02)
     if &**entry.scope == "/" && entry.name == key && env.package_roots.contains(key) {
         return Ok(UseInstall::Nothing);
     }
@@ -423,6 +435,16 @@ fn bind_sig_item(
                 si_ori.clone(),
             )?;
         }
+        // CR claude for claude: [bug/medium] A dynamic module in a function body whose
+        // sig declares a trait passes the check, and then no source can load. The load
+        // splices the trait into the body, where `Trait::compile` refuses it (`trait Sh
+        // is in a function body`), for a source that never names the trait. A sig
+        // `impl` there is refused at the check by `impl_outside_functions`, and a
+        // static module's interface with a trait is refused at the check through its
+        // splice. Refuse it here by the same test, with one helper for the trait and
+        // the impl. probe:
+        // design/review-2026-11-16/repro/c-module-traits-sig-trait-in-fn-body.gx
+        // (c-module-traits-02)
         SigKind::Trait(t) => {
             let tref = traits::trait_ref(&scope.lexical, &t.name, si.pos, si_ori);
             let mut sigs = t
@@ -590,6 +612,19 @@ pub(crate) fn instance_picks_no_member(
 /// declared `declared` ([`hold_paired`]); `generalized` says its binding is
 /// generic in the cells its own definitions own, and `holder` what holds a
 /// cell of it ([`Holder::of`]).
+// CR claude for eric: [structure/medium] A val's declared type is compared with its
+// implementation's inferred type after the fact (`Type::sig_matches`, `hold_paired`,
+// `FnType::sig_bounds`) instead of being given to the implementing `let` as its
+// annotation, so the author writes the type twice: `val x: [i64, null]` over `let x =
+// 3` is refused until the let says `: [i64, null]`, and `val f: fn(n: i64) -> [i64,
+// null]` over `|n| n + 1` until the lambda says `-> [i64, null]`, though `n: i64` was
+// taken from the val. In netidx-admin about 20 of the 35 vals implemented in Graphix
+// restate a type (a regex count). The comparison is also a second subsumption judgment
+// beside `contains`, with 220 lines of rules in design/module_system.md and an
+// incompleteness it documents. Give the implementing `let` the val's type as its
+// annotation, its variables rigid as a declared signature's are, and keep `sig_matches`
+// for what no annotation can say. probe:
+// design/review-2026-11-16/repro/a-packages-val-is-not-an-annotation.sh (a-packages-04)
 fn check_val(
     env: &Env,
     open: &IntSet<LambdaId>,
@@ -609,6 +644,21 @@ fn check_val(
         });
         anyhow!("val {name} is declared {declared} but implemented {typ}: {e:#}{settled}")
     };
+    // CR claude for claude: [bug/critical] This comparison runs outside the module's
+    // own env (Module::check_body calls check_sig after it leaves with_restored_mut),
+    // so a lambda parameter whose whole annotation is a type name is compared with the
+    // declared type by name: a body-private type named like one the interface sees (the
+    // prelude's Number, a `use super::C`) is taken for the interface's
+    // (TypeRef::same_definition answers true for two open cells of one scope and name),
+    // and a private alias the interface does not see is `undefined type D in m`. So
+    // `type Number = string; let g = |x: Number| x` passes under `val g: fn(x: Number)
+    // -> string`, and `m::g(48)` runs string code over an i64: SIGSEGV under the JIT,
+    // and from a dynamic module's body a runtime panic (`value I64(41) is not a
+    // function`). Fill the implementation type's references under the module's env
+    // before the comparison, or refuse a body typedef whose name an interface val
+    // writes, as check_redefinition does for a type the interface declares. probe:
+    // design/review-2026-11-16/repro/x-typecheck-generics-sig-shadowed-param-type.sh
+    // (x-typecheck-generics-01)
     let pairs = declared.sig_matches(env, typ).map_err(refused)?;
     instance_picks_no_member(env, declared, typ).map_err(refused)?;
     let shared = |tv: &TVar| !tv.level().copied_by(open);
@@ -643,6 +693,17 @@ fn check_val(
             ", that of a binding outside its let: declare the val at one type, or give \
              that binding a type that holds every {v}"
         ),
+        // CR claude for claude: [bug/medium] Only a lambda implementation that is not
+        // generalized reaches this arm, which means a written let (`let h = |x| x; h <-
+        // |x| x`), and its second remedy cannot be followed. A let annotated `fn<'a:
+        // Any>(..)` is refused as a quantified function type outside a definition's
+        // signature. `'a: Any |x: 'a| ..` on the lambda gets this same advice again,
+        // because a written binding is never generalized. Only "declare the val at one
+        // type" makes the module check. Drop the second remedy here, the text
+        // `rank2_val_over_a_written_let_names_the_annotation` pins for it, and the
+        // "quantified annotation on the let" way out in design/module_system.md. probe:
+        // design/review-2026-11-16/repro/tests-interfaces-image-quantified-let-remedy.sh
+        // (tests-interfaces-image-01)
         (false, Holder::Lambda) => format_compact!(
             ": declare the val at one type, or annotate the implementation's let with \
              a quantified type (fn<{v}: ..>)"
@@ -1361,6 +1422,15 @@ fn check_sig_items<R: Rt>(
                 });
                 match (fulfilled.next(), fulfilled.next()) {
                     (None, _) => true,
+                    // CR claude for claude: [bug/low] The surrounding `at` places this
+                    // refusal at the signature's `impl T for X;`, and the duplicate is
+                    // named as "(at line: L, column: C)" with no file. Read in the
+                    // frame's file (the .gxi), that position points at nothing, and an
+                    // editor marks the declaration rather than the second impl. Place
+                    // the refusal at the duplicate's spec and name the first
+                    // implementation's position. probe:
+                    // design/review-2026-11-16/repro/tests-traits-a-implemented-twice-placed-at-gxi.sh
+                    // (tests-traits-a-07)
                     (Some(_), Some(dup)) => bail!(
                         "impl {} for {target} is implemented twice (at {})",
                         im.trait_name,
@@ -1729,6 +1799,19 @@ impl<R: Rt> Module<R> {
         let source = compile(ctx, flags, (*source).clone(), enclosing, top_id)?;
         ctx.env.declare_module_site(&scope.lexical, &spec.ori, spec.pos);
         let outside = ctx.env.clone();
+        // CR claude for eric: [bug/medium] A trait default body written in a dynamic
+        // module's sig is program text, but this only declares the sig (bind_sig,
+        // traits::method_decl). The default is spliced into the body and compiled at
+        // each load. So --check and the build accept `val d: fn(self) -> i64 = |s|
+        // T::m(s) + "x"`, and the error appears only as a DynamicLoadError at run time;
+        // a file module's .gxi refuses the same trait at the check. The default is also
+        // outside Expr::for_each_child (ModuleKind::Dynamic visits only `source`), so
+        // no walk over the program sees it. Either compile each sig trait default here,
+        // under the view the load gives the body (Env::imported_view of the sig's
+        // imports, the sig's traits declared), or refuse a default body in a dynamic
+        // sig. probe:
+        // design/review-2026-11-16/repro/t-expr-core-dynamic-sig-default-unchecked.gx
+        // (t-expr-core-01)
         let sig_decls = bind_sig(&mut ctx.env, &mut ctx.pending_imports, &scope, &sig)
             .context("binding module signature")?;
         // the body sees what the sig imports and nothing else, so an import
@@ -1853,6 +1936,19 @@ impl<R: Rt> Module<R> {
     ) -> Result<()> {
         let load = ctx.env.block_types.next_load();
         let ori = Arc::new(Origin::new(None, Source::Unspecified, text).loaded(load));
+        // CR claude for eric: [bug/medium] A default method that a dynamic module's sig
+        // writes is compiled only when a source loads: `add_interface_modules` splices
+        // it into the loaded text and the body's `Trait::compile` builds it in the
+        // body's imported view. So the program's check never sees it. A default with an
+        // undefined name and a type error passes `--check` and the build and fails
+        // every load, and a default that is right where it is written (`array::len`) is
+        // `not defined` at the load unless the sig also grants `array` to the guest. A
+        // static module's interface is refused at the check for the same default.
+        // Either compile and check a sig's defaults once with the module statement, in
+        // the env the sig is bound in, and splice the trait into a load without them,
+        // or refuse a default body in a dynamic sig in `bind_sig_item`. probe:
+        // design/review-2026-11-16/repro/c-module-traits-dyn-sig-default-compiled-in-guest.gx
+        // (c-module-traits-01)
         let exprs = add_interface_modules(parser::parse((*ori).clone())?, &self.sig);
         // saved before the scrub, so a failure puts back the imports the
         // body that keeps running registered
@@ -1908,6 +2004,15 @@ impl<R: Rt> Module<R> {
             .map_err(|e| input.refused(ctx, e))
             .and_then(|()| input.end(ctx, &self.env, None));
         ctx.pending_settles.pop().expect("load settle frame");
+        // CR claude for eric: [bug/medium] A loaded body's statements are never fused
+        // and the load drops what it added to the attribute census here unchecked, so
+        // `#[native]` on a statement of a loaded source asserts nothing: `let v =
+        // #[native] (count(k) + 1)` loads and node-walks where the same statement in a
+        // script is refused, and a pure one is not fused either. Inside a function of
+        // the body the attribute is checked when an instance binds. Refuse `#[native]`
+        // on a loaded body's statement at the load, or fuse loaded bodies. probe:
+        // design/review-2026-11-16/repro/x-dyn-modules-native-top-level.gx
+        // (x-dyn-modules-09)
         ctx.attr_census.lock().truncate(census);
         ctx.pending_imports = pending;
         ctx.pending_names = names;
@@ -1934,6 +2039,20 @@ impl<R: Rt> Module<R> {
     fn compile_inner(&mut self, ctx: &mut CompileCtx<R>, exprs: &[Expr]) -> Result<()> {
         let flags = match self.body {
             Body::Static => self.flags,
+            // CR claude for eric: [risk/medium] What a loaded body is denied is names
+            // (the imported view) and builtin markers (this flag); it is denied no
+            // resource. A body of operators alone, importing nothing, wedges the host's
+            // cycle for good with a tail loop (`let rec f = |x: i64| -> i64 f(x + 1);
+            // let v = f(0)`: the host's timer never ticks again), and its non-tail twin
+            // grows past 6 GB; the stack and activation budgets are unlimited by
+            // default and stop the whole runtime, not the load. So a sig is a naming
+            // discipline for code the host trusts not to hang it, which the book's
+            // dynamic chapter does not say. Either say so there, or charge budgets to
+            // the load (`Scope::load` names it at every call) so that exceeding one
+            // fails the load into its status: a per-load activation count and a
+            // back-edge check in kernels compiled under a load. probe:
+            // design/review-2026-11-16/repro/a-packages-guest-wedges-host.gx
+            // (a-packages-02)
             Body::Dynamic { .. } => self.flags | CFlag::NoBuiltins,
         };
         let dynamic = matches!(self.body, Body::Dynamic { .. });
@@ -1984,6 +2103,21 @@ impl<R: Rt> Module<R> {
             super::typecheck0_statements(ctx, nodes, catches, false)
         })?;
         match body {
+            // CR claude for claude: [bug/medium] A val implemented by a lambda whose
+            // parameter is annotated with a type the module's body declares (`type V =
+            // i64; let f = |x: V| x` under `val f: fn(x: i64) -> i64`) is refused,
+            // `undefined type V in foo`: a static module at the check, a dynamic one at
+            // its load. `check_sig` runs outside the body's env
+            // (`with_restored_mut(env, ..)` covers `typecheck0_statements` alone, and a
+            // dynamic body runs it in `sig_env`), so `Type::sig_matches_inner` cannot
+            // resolve a name of the implementation whose cell no earlier lookup filled.
+            // `let f: fn(x: V) -> i64 = |x| x` and `|x: i64| -> V x` pass only because
+            // their own checks filled it. Resolve the names each implemented val's type
+            // writes while the body's env is in force, before `check_sig`, or have
+            // `Lambda` resolve its written parameter types where it scopes them; pin
+            // both module kinds. probe:
+            // design/review-2026-11-16/repro/t-fntyp-private-alias-param.sh
+            // (t-fntyp-01)
             Body::Static => check_sig(ctx, *top_id, proxy, scope, sig, sig_binds, nodes),
             Body::Dynamic { sig_env, .. } => ctx.with_restored_mut(sig_env, |ctx| {
                 check_sig(ctx, *top_id, proxy, scope, sig, sig_binds, nodes)
@@ -2103,6 +2237,15 @@ impl<R: Rt> Module<R> {
     /// fresh names, as the first load did, while the body it replaces
     /// keeps the env it declared its names in.
     fn set_aside(&mut self) -> SetAside<R> {
+        // CR claude for claude: [structure/low] A loaded body is six loose fields of
+        // `Module` (`env`, `nodes`, `lets`, `catches`, `proxy`, `runs`) mirrored by
+        // `SetAside` and moved one by one here and in `put_back`. A per-body field
+        // added to `Module` and not to `SetAside` would stay with the wrong body across
+        // a failed reload, and nothing in the types says so. Hold the body as one
+        // `SetAside` field, so this is one `mem::replace` and `put_back` one
+        // assignment. `task` is read only for a static body (`static_task`), so it
+        // belongs in `Body::Static`. `Module::with` then takes nine arguments, not
+        // fourteen. Found by reading; not run. (c-module-traits-07)
         let env = mem::replace(&mut self.env, self.base.clone());
         SetAside {
             env,

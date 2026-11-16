@@ -144,6 +144,18 @@ impl<X: GXExt> TuiWidget for CalendarW<X> {
             // area, so a short one draws into a buffer of its own
             let rect = rect.intersection(frame.area());
             let buf = frame.buffer_mut();
+            // CR claude for claude: [bug/medium] A calendar shorter than its month
+            // draws no weeks unless its rect starts at the top of the screen. ratatui's
+            // Monthly::render_monthly draws a week only while `buf.area.height > y`,
+            // comparing an absolute row with the buffer's height. `self.short` is
+            // resized to `rect`, whose y is not 0. So a 3-row calendar at row 4 draws
+            // nothing, and one at row 1 draws two of its three week rows. Anchor the
+            // private buffer at row 0 (`Rect { y: 0, height: rect.bottom(), ..rect }`)
+            // and keep swapping only `rect.positions()`, so ratatui's bound becomes the
+            // rect's bottom. Add an UPSTREAM.md entry, and a pin with the calendar
+            // below another child: the a_short_calendar tests all draw at row 0. probe:
+            // design/review-2026-11-16/repro/tui-widgets-calendar-short-offset.sh
+            // (tui-widgets-01)
             self.short.resize(rect);
             for pos in rect.positions() {
                 mem::swap(&mut self.short[pos], &mut buf[pos]);

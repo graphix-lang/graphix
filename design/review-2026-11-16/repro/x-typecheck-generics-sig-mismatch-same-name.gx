@@ -1,0 +1,22 @@
+// A body that declares its own type under the name its sig imports is refused
+// with a message that prints both types alike.
+//
+// command:
+//   timeout -s KILL 20 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache -n -i \
+//     design/review-2026-11-16/repro/x-typecheck-generics-sig-mismatch-same-name.gx
+//
+// expected: a refusal that tells the two types apart (the `C` the sig imports
+//   from the program, the `C` the body declares)
+// observed: val f is declared fn(x: C) -> C but implemented fn(x: C) -> C: in
+//   return type: signature has C, implementation has C: type mismatch:
+//   signature has C, implementation has C
+type C = Abstract<i64>;
+let st = mod foo dynamic {
+  sig {
+    use super::C;
+    val f: fn(x: C) -> C
+  };
+  source "type C = Abstract<string>; let f = |x: C| C(\"s\")"
+};
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+dbg(st)

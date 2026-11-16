@@ -1,0 +1,27 @@
+// queuefn: a call released in the cycle its site falls asleep, or the cycle
+// before, is lost (design/queue_fn.md: "A site's sleep is a pause: its calls
+// keep their place in the queue and no release takes one while it sleeps").
+//
+// command: graphix-fuzz run x-engine-seq-errors-queuefn-sleep-loses-release.gx
+//   (or: graphix --no-cache <file>, and read the dbg lines)
+//
+// The site `qf(x)` queues x = 2 and x = 3 (x = 1 spends the first permit).
+// The trigger fires at step 5, 12, 13; the arm sleeps for steps 6..9.
+// expected: dbg(uniq(o)) prints 10, 20, 30
+// observed: dbg(uniq(o)) prints 10, 30 (node-walk and JIT agree): the
+//   trigger at step 5 dequeues x = 2 and writes the site's argument bindings
+//   for cycle 6, where the site is asleep; the call never runs and #count
+//   says it left the queue. The same happens with `n >= 5` (the trigger
+//   fires in the cycle of the sleep, before the select puts the arm to
+//   sleep). With `n >= 4` or `n >= 7` all three answers arrive.
+let step = 0;
+step <- select step { n if n < 30 => n + 1, _ => never() };
+let trig: Any = select step { 5 | 12 | 13 => step, _ => never() };
+let depth = 0;
+let qf = queuefn(#count: &mut depth, #trigger: trig, |x: i64| -> i64 x * 10);
+let x = select step { 1 | 2 | 3 => step, _ => never() };
+let awake = select step { n if n >= 6 && n < 10 => false, _ => true };
+let o = select awake { true => qf(x), false => never() };
+dbg(uniq(o));
+dbg(depth);
+step

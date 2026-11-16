@@ -1,0 +1,39 @@
+// Title: GRAPHIX_PRUNE=audit never lists a quiet publication that changed its
+// binding: Prune::audit compares each event entry with the store AFTER the
+// walk wrote it
+//
+// Command:
+//   GXDBG_LETBIND=1 GRAPHIX_PAR=off GRAPHIX_PRUNE=audit graphix --no-cache \
+//     design/review-2026-11-16/repro/x-prune-audit-published-vacuous.gx 2>&1 \
+//     | grep -a 'LETBIND line: 38, column: 1 \|GRAPHIX_PRUNE'
+//
+// The program is the reload that replaces an impl a standing call dispatches
+// to: at ep 9 the boundary of `let held = saved(5)`, which nothing marked,
+// recomputes 11 as 2010 and publishes it quietly (Tag(48), a moved stand).
+//
+// Expected: the audit's panic lists the publication, `published [(held, 2010)]`:
+// the entry differs from what the store held before the walk (11).
+// Observed:
+//   LETBIND line: 38, column: 1 tag=Tag(48) val=I64(2010) .. publishing=true
+//   GRAPHIX_PRUNE=audit: a boundary nothing marked changed in a cycle: .. ,
+//   published LPooled(ManuallyDrop { value: [] }), queued ["forget_writes",
+//   "forget_writes", "forget_writes", "notify_set"], at .. `let held = saved(5)`
+// `published` is empty: the audit's `standing` test reads the branch's store,
+// which ExecCtx::deliver/stand wrote just before the event entry, so a quiet
+// entry always equals it. The panic comes from the queued calls alone; the
+// same change published by a walk that queues none passes the audit.
+trait Sh { val sh: fn(self) -> i64 };
+let app = |x: Sh| Sh::sh(x) + 5;
+let ep = 0;
+ep <- select ep { n if n < 14 => n + 1, _ => never() };
+let src: string = never();
+src <- select ep {
+    2 => "use super::{Sh, app}; impl Sh for i64 { let sh = |c: i64| c + 1 }; let make = app",
+    8 => "use super::{Sh, app}; impl Sh for i64 { let sh = |c: i64| c + 2000 }; let make = app",
+    _ => never()
+};
+let s = mod d dynamic { sig { use super::{Sh, app}; val make: fn(x: i64) -> i64 }; source src };
+let saved: fn(x: i64) -> i64 = never();
+saved <- select ep { 4 => ep ~ d::make, _ => never() };
+let held = saved(5);
+(ep, held)

@@ -1,0 +1,23 @@
+// A value statically an array is read as a tuple by a union cast when its
+// elements need a conversion and its length is a tuple member's.
+//
+// Command:
+//   /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache t-cast-static-array-reads-as-tuple.gx
+//
+// Expected: all three are arrays: the source's static type says the value
+// is an array (Type::cast_from: the source "decides whether an unmarked
+// array is an array or a writer's data").
+//
+// Observed: the kind of the result follows the data.
+//   two i64 = [1, 2]
+//   two f64 = (1, 2)
+//   three f64 = [1, 2, 3]
+let p = |s: string, v: Any| println("[s] = [v]");
+let a: Array<i64> = [1, 2];
+let b: Array<f64> = [1.0, 2.0];
+let c: Array<f64> = [1.0, 2.0, 3.0];
+p("two i64", cast<[(i64, i64), Array<i64>]>(a));
+p("two f64", cast<[(i64, i64), Array<i64>]>(b));
+p("three f64", cast<[(i64, i64), Array<i64>]>(c));
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+0

@@ -304,6 +304,18 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
         let mut needs_resolve = false;
         let mut reconcile = false;
         let mut fired: Option<ArcStr> = None;
+        // CR claude for claude: [bug/medium] The table, sort_by and selection refs act
+        // on every delivery, including unchanged ones. A place reference such as
+        // `&app.sel` redelivers at every write of `app` (see TRef::update_changed). So
+        // an unrelated write re-runs apply_table_sync, a full reconcile and two sorts
+        // over every row, and an unchanged selection calls ensure_selection_visible,
+        // which scrolls the view back to the selection while the user is scrolled away.
+        // Child::update, Children::update and chart already skip a value equal to
+        // `last`. Do the same for these three refs, or use TRef::update_changed. Found
+        // by reading; not run (needs a display). Witness, which `graphix --check`
+        // passes:
+        // design/review-2026-11-16/repro/gui-datatable-unchanged-selection-yank.gx
+        // (gui-datatable-02)
         if id == self.table_ref.id {
             self.table_ref.last = Some(v.clone());
             needs_resolve = true;
@@ -354,6 +366,14 @@ impl<X: GXExt> GuiWidget<X> for DataTableW<X> {
                 && r.id == id
             {
                 r.last = Some(v.clone());
+                // CR claude for claude: [risk/low] The program's width is taken as is.
+                // A NaN makes every offset after its column NaN, so col_at_offset
+                // returns the last column and any Scroll leaves only the last column
+                // shown. A negative width makes offsets decrease. Drags are clamped to
+                // MIN_COL_WIDTH and history_seconds is sanitized, but this value is
+                // not. Filter it to finite and positive, clamp it to MIN_COL_WIDTH, and
+                // share the conversion with compile_column_refs, which duplicates this
+                // line. Found by reading; not run. (gui-datatable-06)
                 c.ref_width = v.clone().cast_to::<f64>().ok().map(|w| w as f32);
                 changed = true;
             }

@@ -160,6 +160,14 @@ u('book-ui-a','book: ui/ part A',sorted(ua),[],BK)
 u('book-ui-b','book: ui/ part B',sorted(ub),[],BK)
 u('ide-tooling','ide/** (tree-sitter grammar.js, scanner.c, queries, editor modes, zed ext), vendor.py, bench scripts, book theme js, xtask (cargo xtest), the review kit (review/)',g('ide/tree-sitter-graphix/grammar.js','ide/tree-sitter-graphix/src/scanner.c','ide/tree-sitter-graphix/queries/*.scm','ide/tree-sitter-graphix/*.rs','ide/editors/**/*.el','ide/editors/**/*.lua','ide/editors/**/*.ts','ide/editors/**/*.scm','ide/editors/**/*.rs','ide/editors/**/*.sh','vendor.py','bench/*.py','bench/*.sh','bench/collection/run.sh','book/theme/graphix-highlight.js','stdlib/graphix-tests/certs/gen.sh','xtask/src/*.rs','review/*.py','review/tools/*.py','review/*.js','review/probe-run','review/*.sh','review/README.md','bench/README.md','bench/collection/README.md','book/theme/README.md','graphix-fuzz/fuzz/crashes/README.md','graphix-package/src/skel/README.md','ide/README.md','ide/editors/helix/README.md','ide/editors/vim/README.md','ide/editors/zed/README.md'),[],'tree-sitter grammar vs the real parser (operators, precedence, seq/seqq/try/with/until/abort/flush, or-patterns, list literals [< >], place references, attributes, never<T>()), scanner.c memory safety, script robustness; xtask runs every test binary side by side: does it report every failure and count every binary?')
 
+# CR claude for claude: [test-gap/low] EXTS has no 'vim', 'json' or 'toml', so the vim
+# syntax files, the VS Code tmLanguage and language-configuration, and the helix/zed
+# configs are in no unit and are never printed as uncovered. These regex highlighters
+# have no gate, so review is their only check, and they have drifted: both color an
+# identifier named `ok` as a constant and mark `\x..`/`\u{..}` string escapes that the
+# parser refuses. Fix: add the three extensions (skipping the generated grammar.json,
+# node-types.json and package-lock.json) and give the editor files to the ide-tooling
+# unit. (ide-tooling-06)
 EXTS = ('rs', 'gx', 'gxi', 'js', 'c', 'scm', 'py', 'sh', 'el', 'lua', 'ts', 'md')
 SKIP = ('graphix-fuzz/findings', 'design/', 'docs/', 'ide/tree-sitter-graphix/src/parser.c')
 allf = subprocess.run(['git', 'ls-files'], capture_output=True, text=True).stdout.split()

@@ -1,0 +1,27 @@
+// A generic formal of one constructor refuses a union of that constructor's members
+//
+// command (each program below alone, in a file p.gx):
+//   /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache --check p.gx
+//
+// (1) this file as it stands:
+//   expected: checks. `array::len: fn(a: Array<'a>) -> i64` holds the value
+//             with 'a as [i64, string].
+//   observed: "type mismatch Array<'a: i64> does not contain
+//             [Array<i64>, Array<string>]"
+//
+// (2) the same value where the formal is a union with a bare variable:
+//     let f = |x: ['b, Array<'a>]| 0; let v: [Array<i64>, Array<string>] = [1]; f(v)
+//   observed: checks (Type::join_cell_sharing joins the members).
+//     With no bare variable, `|x: [null, Array<'a>]|`, it is refused as (1) is.
+//
+// (3) the names of two typedefs decide the verdict:
+//     type P = Array<i64>; type Q = Array<[i64, string]>;
+//     let f = |x: Array<'a>| 0; let v: [P, Q] = [1]; f(v)
+//   observed: "type mismatch Array<'a: i64> does not contain [P, Q]"
+//     type Q = Array<i64>; type P = Array<[i64, string]>;
+//     let f = |x: Array<'a>| 0; let v: [P, Q] = [1]; f(v)
+//   observed: checks
+//   and the same pair over `|x: [null, `B('a)]|` with P, Q = `B(i64), `B([i64, string]).
+let c = true;
+let v = select c { true => [1], false => ["a"] };
+array::len(v)

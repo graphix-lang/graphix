@@ -1,0 +1,16 @@
+// Title: Type::diff_one_part does not read a typedef name at the one
+//        differing position, so arms that cover a named union by its
+//        members inside a tuple, struct or variant leave the whole product
+//        reaching the arms after them, and a dead arm is accepted.
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache --check \
+//          design/review-2026-11-16/repro/t-setops-diff-one-part-named-union.gx
+// Expected: "unreachable arm: the earlier arms already cover the whole
+//           scrutinee, unused match cases" for the third arm, as the check
+//           says of the same select with the union written in place:
+//             |x: ([i64, null], i64)| select x { (null, _) => 0, (i64, i64) as (a, b) => 1, _ => 2 }
+//             |x: `K([i64, null])| select x { `K(null) => 0, `K(i64) as `K(n) => 1, _ => 2 }
+// Observed: exit 0.
+type O = [i64, null];
+let f = |x: (O, i64)| select x { (null, _) => 0, (i64, i64) as (a, b) => 1, _ => 2 };
+let g = |x: `K(O)| select x { `K(null) => 0, `K(i64) as `K(n) => 1, _ => 2 };
+0

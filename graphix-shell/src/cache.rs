@@ -362,6 +362,15 @@ impl RegistrationCache {
             build_id().ok_or_else(|| anyhow!("the executable has no build id"))?;
         let format = [image::REGISTRATION_FORMAT];
         let flags = flags.to_le_bytes();
+        // CR claude for claude: [perf/low] The keys name the build id and the root but
+        // not the host's ISA, yet `decode_registration` refuses an entry whose ISA
+        // description differs. That includes the registration entry, though it holds no
+        // native code. Two hosts running one binary over one cache directory (an NFS
+        // home) with different CPU features each refuse and then overwrite the other's
+        // entries, so every start on both is cold. Fix: put a digest of
+        // `isa_description()` and `build_fingerprint()` into both keys (or into the
+        // build directory's name), so each host keeps its own entries. probe:
+        // design/review-2026-11-16/repro/x-image-isa-not-in-key.sh (x-image-02)
         let registration = digest(&[&format, root.as_bytes()]);
         let program = program.and_then(|p| {
             let id = match p {

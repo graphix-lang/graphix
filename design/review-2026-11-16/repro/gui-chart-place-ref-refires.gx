@@ -1,0 +1,20 @@
+// gui-chart: a place reference re-delivers its unchanged element at every write of its root
+//
+// A chart fed `line(&st.hist)` gets its data through the reference's cell,
+// which mirrors `st.hist` and fires whenever `st` is written. ChartW::handle_update
+// takes every delivery with `TRef::update` (not `update_changed`), so a write of
+// `st.status` alone re-converts the whole series (XYData::from_value) and
+// clears the plot cache: a full plotters redraw per unrelated write.
+// This probe shows the firing on the language side: `*r` over `&s.hist`
+// counts every write of `s`, though `hist` never changes.
+//
+// Run: timeout -s KILL 30 graphix --no-cache gui-chart-place-ref-refires.gx
+// Expected (if an unchanged element did not re-deliver): 1, then exit
+// Observed: 1 2 3 ... 6 (one per write of `s.status`), then exit 0
+let s = {hist: [1.0, 2.0, 3.0], status: 0};
+let r = &s.hist;
+let t = sys::time::timer(duration:20.ms, true);
+s <- t ~ {s with status: s.status + 1};
+let n = count(*r);
+sys::exit(select n > 5 { true => 0, false => never() });
+n

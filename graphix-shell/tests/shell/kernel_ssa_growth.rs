@@ -11,6 +11,15 @@ use std::{
 
 /// Run `program` with fusion on: its exit status and, with `dump`, its
 /// CLIF.
+// CR claude for claude: [test-gap/low] Each test bounds the aliases or stores in the
+// CLIF dump, but none checks that a kernel was built. If `f` stops fusing (a de-fuse
+// regression), the dump is empty, the count is 0 and every bound holds, and
+// `long_owned_fold_chain_runs` then passes in the node-walk. Assert the dump holds `;;
+// clif f`, as shared_bodies.rs asserts its headers. `run` is also `common::graphix`
+// again without its hang deadline. Call `common::graphix(dir, program, &["--no-cache"],
+// &[("GRAPHIX_DUMP_CLIF", "1")])` instead. probe:
+// design/review-2026-11-16/repro/tests-shell-compiler-b-ssa-growth-vacuous.sh
+// (tests-shell-compiler-b-05)
 fn run(program: &str, dump: bool) -> (ExitStatus, String) {
     let dir = tempfile::tempdir().expect("a dir for the program");
     let file = dir.path().join("program.gx");

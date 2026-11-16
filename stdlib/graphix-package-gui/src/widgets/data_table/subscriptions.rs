@@ -193,6 +193,11 @@ impl SharedCellsInner {
     /// role takes the value it holds: one made again for its path while the
     /// dropped one's subscribe is still in flight hears its events under
     /// the dropped one's id (UPSTREAM.md).
+    // CR claude for claude: [style/low] The doc's last clause, about a re-made
+    // subscription hearing its events under the dropped one's id, describes the netidx
+    // bug fixed in c0c47111, which ../netidx contains; UPSTREAM.md records it as fixed.
+    // Cut the comment after "so its new role takes the value it holds." Found by
+    // reading; checked the netidx history. (gui-datatable-10)
     fn reconcile(
         &mut self,
         previous: &SubscriptionWindow,

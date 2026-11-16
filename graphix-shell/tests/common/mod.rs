@@ -47,6 +47,15 @@ pub fn repl(dir: &Path, args: &[&str], input: &str) -> Ran {
     let mut child =
         command(dir).args(args).stdin(Stdio::piped()).spawn().expect("run graphix");
     let mut stdin = child.stdin.take().expect("the REPL's stdin");
+    // CR claude for claude: [risk/low] The whole input is written before `finish`
+    // starts the threads that drain stdout and stderr, and before the `HANG` deadline
+    // starts. The REPL prints while it reads, so once its output fills the stdout pipe
+    // it stops reading stdin. This `write_all` then blocks once the stdin pipe is full,
+    // and the test hangs with nothing to end it: about 170 KB of `i + 0` lines does it
+    // today. Write the input from a thread of its own, or start the drains first, so
+    // `within_deadline` bounds the whole run. probe:
+    // design/review-2026-11-16/repro/tests-shell-compiler-b-repl-write-deadlock.py
+    // (tests-shell-compiler-b-06)
     stdin.write_all(input.as_bytes()).expect("write the REPL's input");
     drop(stdin);
     finish(dir, child)
@@ -62,6 +71,15 @@ fn command(dir: &Path) -> Command {
     cmd.arg("--no-netidx")
         .arg("--log-dir")
         .arg(&logs)
+        // CR claude for claude: [risk/low] The cache is the test's own, but the module
+        // search path is the developer's: `XDG_DATA_HOME` and `GRAPHIX_MODPATH` pass
+        // through. A script therefore resolves modules from ~/.local/share/graphix.
+        // `repl` passes no `--no-init`, so it runs the user's `init` module, whose
+        // output lands in `Ran::stdout`, which piped_flood.rs and script_exit.rs parse.
+        // Set `XDG_DATA_HOME` to a directory under `dir` and remove `GRAPHIX_MODPATH`
+        // here. probe:
+        // design/review-2026-11-16/repro/tests-shell-compiler-b-repl-user-init.sh
+        // (tests-shell-compiler-b-07)
         .env("XDG_CACHE_HOME", dir.join("cache"))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

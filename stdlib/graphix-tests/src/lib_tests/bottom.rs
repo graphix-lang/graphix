@@ -8,6 +8,14 @@ use graphix_package_core::testing::{Collect, Mode, TestCtx, collect, config};
 use netidx_value::Value;
 use tokio::sync::mpsc;
 
+// CR claude for claude: [structure/low] strict_bottom, strict_sample and
+// bottom_scrutinee_consults_no_guard each repeat the same runtime start, `with_ctx` and
+// shutdown. In four places they compile a `let NAME: T = never()` and look up its
+// `BindId`, and in four places they choose between `code` and `#[native]\n{code}`.
+// Factor three helpers in this file: one that runs a closure over a hand-driven runtime
+// for a `Mode`, `never_binding(ctx, flags, scope, decl, name) -> (Node, BindId)`, and
+// `spec(mode, code)`. That removes about fifty lines and keeps the three fixtures on
+// one setup. Found by reading; not run. (tests-lib-b-b-05)
 async fn strict_bottom(mode: Mode) -> Result<()> {
     let (tx, _rx) = mpsc::channel(10);
     let flags = mode.flags();

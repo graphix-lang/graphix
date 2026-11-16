@@ -1,0 +1,22 @@
+// sys-io: a woken watch::watch fires a new Watch at the wake itself
+// Command: mkdir -p /tmp/sys-io-wdir && timeout -s KILL 30 graphix --no-cache sys-io-watch-fires-at-wake.gx
+// The arm runs at birth, sleeps at 300 ms and wakes at 600 ms; nothing
+// fires meanwhile (the watcher, path and interest all stand).
+// Expected (CLAUDE.md: a wake is a resume and fires nothing for anyone):
+//   1, and nothing at the wake.
+// Observed: 1 then 2: WatchApply::sleep drops its watch and sets `slept`,
+//   and the update at the wake builds a new Watch and outputs it fired, so
+//   `count` ticks; a timer or after_idle resumed the same way fires nothing
+//   until its own event.
+use sys::fs::watch;
+let w = watch::create(null)$;
+let p = "/tmp/sys-io-wdir";
+let on = true;
+on <- sys::time::timer(duration:300.ms, false) ~ false;
+on <- sys::time::timer(duration:600.ms, false) ~ true;
+let n = select on {
+    true => count(watch::watch(#interest: [`Established], w, p)$),
+    false => never()
+};
+sys::exit(sys::time::after_idle(duration:1500.ms, n) ~ 0);
+n

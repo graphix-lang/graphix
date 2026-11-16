@@ -133,6 +133,14 @@ run!(
     is(Value::I64(16))
 );
 
+// CR claude for claude: [test-gap/low] The fixture is named for a write through the
+// captured reference after its slot is deleted, but its value, `x + k`, is 14 whether
+// `*p <- x` lands or goes nowhere. Return `*p + k` and read the call two calls in: `let
+// r = select n { k if k >= 4 => saved(k), _ => never() }; select n { 6 => r, _ =>
+// never() }`, expecting 15 (the write at n = 5 read back plus 10). A write that went
+// nowhere gives 20. probe:
+// design/review-2026-11-16/repro/tests-lang-rest-c-orphan-write-unobserved.gx
+// (tests-lang-rest-c-09)
 run!(
     a_saved_closure_writing_through_a_captured_reference_outlives_its_slot,
     r#"{

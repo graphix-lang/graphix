@@ -1,0 +1,18 @@
+// x-recursion: a recursive function that nests its own result is refused
+// with a bare mismatch, not the "declare a named recursive type" refusal
+//
+// command:
+//   /home/eric/tmp/review-2026-11-16/bin/graphix --check \
+//     design/review-2026-11-16/repro/x-recursion-rec-return-mismatch.gx
+//
+// expected: the refusal the variant twin gets
+//   (`let rec f = |n| select n { 0 => `Nil, _ => `Cons(n, f(n - 1)) }`):
+//   "cannot infer a finite type here: unification requires a type that
+//    contains itself ...; declare a named recursive type and annotate the
+//    binding"
+// observed:
+//   type mismatch null does not contain [null, (i64, null)]
+// (the same for a struct, `{v: n, next: f(n - 1)}`, and an array,
+// `[f(n - 1)]`). With `type P = [null, (i64, P)]` and `-> P` it checks.
+let rec f = |n| select n { 0 => null, _ => (n, f(n - 1)) };
+f(3)

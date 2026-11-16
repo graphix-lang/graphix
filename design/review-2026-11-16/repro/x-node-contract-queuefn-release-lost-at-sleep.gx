@@ -1,0 +1,19 @@
+// queuefn: a call released in the cycle before its site's arm sleeps is lost.
+// Run: timeout -s KILL 10 graphix --no-cache x-node-contract-queuefn-release-lost-at-sleep.gx
+// Expected: 10 then 20 (the second call, released by the trigger at cycle 4,
+//   answers once the arm wakes at cycle 7: a sleep is a pause, the call keeps
+//   its place, as it does when the arm sleeps before the release).
+// Observed: 10 only. WrapperApply's release writes the args with set_var, they
+//   land at cycle 5 while the site sleeps, and QueueState::wake counts the
+//   release as landed: the call is gone and f never runs it.
+// Control: change the `on` writer to `select ev { 2 => false, 6 => true, .. }`
+//   (asleep before the release) or drop the sleep: both print 10, 20.
+// graphix-fuzz check (with `r` in place of `dbg(r)`): AGREE, both engines lose it.
+let ev = array::iter([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+let t = select ev { 4 => true, _ => never() };
+let x = select ev { 1 => 1, 2 => 2, _ => never() };
+let on = true;
+on <- select ev { 4 => false, 6 => true, _ => never() };
+let q = queuefn(#trigger: t, |v: i64| v * 10);
+let r = select on { true => q(x), false => never() };
+dbg(r)

@@ -1,0 +1,28 @@
+// A constructor trait takes an alias of a union (and of a bare variable) as
+// an impl target, two such heads that both fit a type are not a conflict,
+// and the call takes whichever impl was written first.
+//
+// Command:
+//   timeout -s KILL 10 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache \
+//     design/review-2026-11-16/repro/x-traits-abstract-ctor-trait-alias-heads.gx
+//
+// Expected: the impls refused. design/traits.md: "Unions are never targets",
+// "a bare tvar as the whole target (blanket impl) is not offered", "two heads
+// that unify within the package are refused — no specialization", and §5
+// "`['a, null]` (Option) is a structural union and cannot be a target".
+//
+// Observed: the check accepts all three impls and the program prints
+//   (error:`E, error:`E)
+// With the `Res` and `Opt` impl lines swapped it prints (null, null), and
+// with the `Id` impl moved first ("s1", "s1"): `1` is an `Opt<i64>`, a
+// `Res<i64>` and an `Id<i64>`, and the first impl registered serves it.
+// graphix-fuzz check: AGREE (both engines take the same one).
+trait Functor { val fmap: fn(self<'a>, f: fn(x: 'a) -> 'b) -> self<'b> };
+type Opt<'a> = ['a, null];
+type Res<'a> = ['a, Error<`E>];
+type Id<'a> = 'a;
+impl Functor for Res<'_> { let fmap = |p, f| error(`E) };
+impl Functor for Opt<'_> { let fmap = |p, f| null };
+impl Functor for Id<'_> { let fmap = |p, f| f(p) };
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+(Functor::fmap(1, |x| "s[x]"), Functor::fmap("q", |x| "s1"))

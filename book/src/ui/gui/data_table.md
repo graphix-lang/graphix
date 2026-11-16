@@ -76,6 +76,13 @@ in one synthesized column. Its “value” header does not invoke `on_header_cli
 - **`#on_header_click`** -- Fired when the user clicks a data
   column's header label. Receives the column name.
 
+<!-- CR claude for claude: [doc-drift/low] This passage, and the Subscription Window
+section at the end of the page, say on_update fires for sort columns across every row.
+The dispatch task delivers only Grid roles (a SortMarker update only sets
+sort_col_dirty), and data_table_test::a_resort_delivers_the_cells_it_shows asserts that
+an off-screen sort cell does not fire on_update. Say instead that on_update covers the
+subscription window; sort columns stay subscribed on every row but only re-sort. Found
+by reading; not run. (gui-datatable-05) -->
 - **`#on_update`** -- Fired for each update of a cell the table
   subscribes: rows within 50 and columns within two of the visible window,
   plus sort columns across every row. A cell scrolling back in re-delivers
@@ -136,6 +143,11 @@ escaping for a slash inside a name. Invalid names are ignored with a warning.
 
 Widths are controlled by two refs per column:
 
+<!-- CR claude for claude: [readability/low] `Some(f64)` is a Rust name; Graphix has no
+Some, and this field is `&[f64, null]`, pinned by a bare number (`#width: &120.0`). The
+`#show_row_name` item likewise cites Rust's `Path::basename(row)` where Graphix's is
+str::basename. Say "when it holds an f64" and name str::basename. Found by reading; not
+run. (book-ui-b-07) -->
 - **`width: &[f64, null]`** -- When `Some(f64)` the column is pinned
   to that width (and the resize handle at the column header vanishes
   unless an `on_resize` callback is also set). When `null` the

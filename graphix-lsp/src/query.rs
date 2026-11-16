@@ -104,6 +104,12 @@ pub(crate) fn typedef_decl(name: &str, td: &TypeDef) -> CompactString {
     if !td.params().is_empty() {
         decl.push('>');
     }
+    // CR claude for claude: [bug/low] An abstract typedef's body prints as its own
+    // name, so hover on `type Counter = Abstract<i64>` reads `type Counter = Counter`,
+    // both in its defining module and outside it. A `use` completion's detail prints
+    // the same thing. Fix: print the body from `TypeDef::rep` as `Abstract<rep>` where
+    // it is present, and as a form that says the representation is hidden where it is
+    // not. probe: design/review-2026-11-16/repro/lsp-abstract-type-hover.py (lsp-04)
     let _ = write!(decl, " = {}", td.typ());
     decl
 }
@@ -200,6 +206,15 @@ impl<'a> Query<'a> {
             .or_else(|| ide.binds.iter().rev().find(|b| b.id == id))
     }
 
+    // CR claude for claude: [bug/medium] Types are looked up only in the env the check
+    // left, and that env no longer holds a type declared inside a function body. So
+    // `type Inner = ..` in `|x| { .. }` answers no hover or definition at its
+    // declaration or its uses, and `references` lacks its declaration. A block-local
+    // type at top level works. The admin TUI's function-local `type Then` in
+    // tui/local.gx hits this. Fix: record each typedef a check declares in an `Ide`
+    // sink, as `ide.binds` keeps the binds the env drops, and read it here and in
+    // `target`'s declaration loop, as `bind` falls back to `ide.binds`. probe:
+    // design/review-2026-11-16/repro/lsp-lambda-local-type.py (lsp-02)
     fn typedef(&self, scope: &ModPath, name: &str) -> Option<&'a TypeDef> {
         self.checked.env.lexical.typedefs.get(scope).and_then(|defs| defs.get(name))
     }
@@ -260,6 +275,18 @@ impl<'a> Query<'a> {
         for t in ide.type_refs.iter() {
             if let Some((written, after)) = on(&t.ori, t.pos, &t.name) {
                 if after == 0 {
+                    // CR claude for claude: [bug/medium] A type site's target is built
+                    // from its written basename. For `use util::Point as P`, `let p: P`
+                    // names `P` in canonical scope `/util`, so `typedef` finds nothing:
+                    // hover and definition answer nothing, and `references` of `Point`
+                    // omit every `P` site. `TypeRefSite` records only the canonical
+                    // scope its name resolved to, not the canonical name. Fix: record
+                    // the resolved typedef's canonical name in `TypeRefSite`, filled by
+                    // `Env::push_typedef_ref`, the resolve in `typ/mod.rs` and
+                    // `Type::record_ide_refs`, and build `Target::Type` from it here
+                    // and in `references`. probe:
+                    // design/review-2026-11-16/repro/lsp-aliased-type-import.py
+                    // (lsp-01)
                     let name = basename(&t.name).into();
                     return Some((
                         Target::Type(t.canonical_scope.clone(), name),
@@ -307,6 +334,18 @@ impl<'a> Query<'a> {
                 ));
             }
         }
+        // CR claude for claude: [bug/medium] A type declaration is found only as the
+        // one typedef the env holds, and nothing links an interface's `type T` to the
+        // typedef implementing it (vals have SigImplLink; types have nothing). In a
+        // module the implementation's `type Counter = Abstract<i64>` answers no hover,
+        // definition or references, and the type's references omit it. In a script's
+        // .gxi, `type Counter;` and every type its vals name answer nothing, because
+        // check_script_sig records neither the sig typedef nor its type refs. Fix:
+        // record a sig-to-implementation typedef link in both sig checks (and the type
+        // refs of a script sig's vals), accept either declaration site here as
+        // Target::Type, and list both in references, as sig_partner does for binds.
+        // probe: design/review-2026-11-16/repro/x-lsp-probe-interface-type-unlinked.py
+        // (x-lsp-probe-02)
         for (scope, defs) in &env.lexical.typedefs {
             if let Some(td) = defs.get(&*self.ident)
                 && in_file(td.ori(), self.file)

@@ -131,6 +131,12 @@ async fn circle_with_stroke_only() -> Result<()> {
 }
 
 #[tokio::test(flavor = "current_thread")]
+// CR claude for claude: [test-gap/low] The stroke is black on the black background the
+// screenshot clears to, so this test sees only the fill: a Circle arm that dropped the
+// stroke whenever a fill is set would pass. Draw the stroke in a colour (e.g. red,
+// width 3, radius 10, as `circle_with_stroke_only` does) and probe a ring pixel for it,
+// e.g. (7, 7), and an inner pixel for the fill, e.g. (2, 2). Found by reading; not run.
+// (tests-gui-a-04)
 async fn circle_with_both() -> Result<()> {
     let mut h = canvas_harness(
         1,

@@ -1,0 +1,19 @@
+// Title: the activation budget does not stop a collection's slot growth: under
+//   GRAPHIX_PAR=auto build_fresh prebinds every fresh slot's instance before the
+//   stop it charged is seen (c-collection-budget-slot-growth, 2026-10-26 repro,
+//   still reproduces)
+// Command:
+//   GRAPHIX_ACTIVATION_BUDGET=1000 timeout -s KILL 170 graphix --no-cache x-rerun-4-budget-slot-growth.gx
+//   GRAPHIX_PAR=off GRAPHIX_ACTIVATION_BUDGET=1000 timeout -s KILL 170 graphix --no-cache x-rerun-4-budget-slot-growth.gx
+// Expected: "a runaway recursion exceeded the runtime's budget" once about 1000
+//   slot instances are live, quickly and in little memory, in both modes.
+// Observed (debug binary at e1be2fbf2, 6 GB cap):
+//   default (PAR=auto): "[probe] OOM-KILLED: this run exceeded its 6G memory cap"
+//     after ~8 s;
+//   PAR=off: the budget error, but only after ~4.2 s (every slot shell is built
+//     first).
+//   With n = 20000 / 200000 the budget error comes after 0.29 s / 2.1 s (auto)
+//   and 0.13 s / 0.39 s (off): the time to stop grows with n, not with the budget.
+let n = array::iter([2000000]);
+let a = array::init(n, |i| i + count(i));
+array::len(a)

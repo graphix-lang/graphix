@@ -1,0 +1,11 @@
+// Title: unchecked decimal `+` and `*` do not wrap: an overflow bottoms (the
+// node-walk logs "decimal arithmetic error"), which CLAUDE.md's "Unchecked
+// `+ - *` wrap" does not say.
+// Command: timeout -s KILL 30 graphix --no-cache --no-fusion c-error-op-decimal-unchecked-overflow.gx
+// Expected (per CLAUDE.md as written): a wrapped value.
+// Observed: nothing printed; two lines
+//   arith error in file ... at line: 11, column: 2 "decimal arithmetic error"
+//   arith error in file ... at line: 11, column: 19 "decimal arithmetic error"
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+let m = decimal:79228162514264337593543950335.0;
+(m + decimal:1.0, m * decimal:2.0)

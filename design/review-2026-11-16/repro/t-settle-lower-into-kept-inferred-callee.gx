@@ -1,0 +1,27 @@
+// The check accepts what the build refuses: a definition's close passes its
+// body sites' lower bounds on to its signature only where the site's callee
+// DECLARES a quantifier (FnType::lower_into_kept returns at
+// `self.quantifiers.is_empty()`), and `f` below holds its bounded cells
+// under no declared name.
+//
+// command:
+//   timeout -s KILL 170 /home/eric/tmp/review-2026-11-16/bin/graphix-fuzz check \
+//     design/review-2026-11-16/repro/t-settle-lower-into-kept-inferred-callee.gx
+// expected: AGREE, the program printing "s", as it does with `f0` called
+//   directly (`let g = |u| f0(w0, u)`, the pin
+//   lang::types::lower_bound_reaches_the_bounds_own_cells_decided_by_a_caller_within_it);
+//   and with `g(1)` in place of `g("s")` the check refusing
+//   "[null, string] does not contain i64" as it does for `f0`.
+// observed:
+//   DIVERGENCE — the check accepted what the build refused
+//   build: ... in the instance of g("s") at this call site: an instance at
+//   fn(u: string) -> string of a definition typed
+//   fn(u: [null, string]) -> [null, string]
+//   (`--check` exits 0; GRAPHIX_ELAB_AUDIT=1 prints
+//   "ELAB-AUDIT instance-signature at ... `f(w0, u)`"; `g(1)` is accepted
+//   by the check and refused by the build the same way)
+let f0 = 'a0: ['a1, bool], 'a1: ['a2, duration] |x0: 'a0, x2: 'a2| x2;
+let f = |a, b| f0(a, b);
+let w0: [null, string] = null;
+let g = |u| f(w0, u);
+g("s")

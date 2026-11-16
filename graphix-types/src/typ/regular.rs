@@ -90,6 +90,18 @@ impl Graph {
                 match &members[..] {
                     [] => self.leaf(b'_', &[]),
                     [m] => *m,
+                    // CR claude for claude: [bug/medium] A union whose members are one
+                    // regular tree is keyed as a union node over that tree, not as the
+                    // tree: `key` deduplicates the members' ranks to one, but the
+                    // `Union` node stays. `B<[R, S]>` and `B<R>` over `type R = {a:
+                    // i64}; type S = {a: i64}` are one type to the check, yet two
+                    // abstract values of them with equal payloads compare unequal,
+                    // `array::dedup` keeps both and a map keyed by one misses the
+                    // other. Once the refinement settles, make a `Union` whose children
+                    // are one class stand for that class (forward it to the child and
+                    // refine again). probe:
+                    // design/review-2026-11-16/repro/t-settle-abstract-eq-union-of-one-tree.gx
+                    // (t-settle-04)
                     _ => self.push(Node::Union(members)),
                 }
             }
@@ -122,6 +134,18 @@ impl Graph {
             // a function, an application and a bound are compared as
             // they print
             Type::Fn(_) | Type::App(..) | Type::Bound(_) => {
+                // CR claude for claude: [bug/medium] A function type is keyed by its
+                // printed text, so the key takes its parameter names and the names of
+                // the typedefs it writes: `B<fn(x: i64) -> i64>` against `B<fn(y: i64)
+                // -> i64>`, and `B<fn(x: R) -> i64>` against `B<fn(x: S) -> i64>` over
+                // two typedefs of one body, are one type to the check and two keys.
+                // Abstract values of them with equal payloads compare unequal, since
+                // `GxAbstract::eq` reads the key before the payload or an `Eq` impl.
+                // Key a function as an ordered node: its labels and optional flags as
+                // the label, its argument, variadic, result and throws types as
+                // children. probe:
+                // design/review-2026-11-16/repro/t-settle-abstract-eq-fn-param-printed.gx
+                // (t-settle-05)
                 let s = format_compact!("{t}");
                 self.leaf(b'f', s.as_bytes())
             }

@@ -7,6 +7,13 @@ use super::{
     },
     wake::{self, ArmMask, TrackedFires},
 };
+// CR claude for claude: [style/low] `crate::typ::settle::position_cells` is written by
+// path ten times in this file and `crate::stack::ensure_sufficient` fourteen: import
+// both. Five of the `position_cells` calls are one walk, a pooled map filled and
+// filtered to its open cells (`Select::typecheck0_with` for an arm's own cells,
+// `Deciding::hold_written`, `built_standing`, `later_cells`,
+// `written_tests_undecided`), which `open_cells` and `open_among` below already are:
+// call them. Found by reading; not run. (c-select-seq-09)
 use crate::{
     BindId, CFlag, CompileCtx, ExecCtx, Node, NodeView, PrintFlag, Refs, Rt, Scope, Tag,
     TagValue, Update, View, bailat,
@@ -88,6 +95,16 @@ struct LazyArmFacts {
     sleep_on_deselect: ArmMask,
     /// Per arm: entered before. A first entry is the arm's birth, every
     /// later one a resume.
+    // CR claude for claude: [readability/low] This doc says a first entry is the arm's
+    // birth; `Select::update` says, and does, the opposite for a body's select (nothing
+    // in an arm is born; only a select of the seq machine's world births an arm), so
+    // the bit decides the late sleep of a pure arm and a step's select's view and
+    // nothing else. The same stale model is in `Select::update`'s note on a window with
+    // no arm ("so it resumes with catch-up": a body's arm is owed nothing) and in
+    // seq_machine.rs's module doc ("with `Select`'s catch-up": the catch-up is
+    // `TrackedFires`', which a body's select does not hold), and `seq_world`'s "stays
+    // as built" is history. Say what the bit decides and drop the rest. Found by
+    // reading; not run. (c-select-seq-05)
     entered: ArmMask,
     discriminants: Arc<ArmDiscriminants>,
     /// A value no arm matched was logged: once per select.
@@ -222,6 +239,14 @@ impl EmissionPlanes {
 
 /// Evaluate the taken arm. Only a select of the seq machine's world
 /// delivers anything to it.
+// CR claude for claude: [structure/low] The tracker's bracket around one evaluation
+// (`deliver`, `open`, the update, `ran`, `restore`, `evaluated`) is written out here,
+// in seq_machine.rs's `evaluate` and in callsite.rs's `wake` over an absent call's
+// captures, and a guard's run in `Select::update` opens and closes without the rest. A
+// copy that drops `restore` leaves catch-up fires in the event for the rest of the
+// cycle, and nothing but reading the copies shows they agree. Make it one method of
+// `TrackedFires` that takes the consumer, its refs and the update as a closure and
+// returns the update's result. Found by reading; not run. (c-select-seq-06)
 fn evaluate_arm<R: Rt>(
     tracked: &mut Option<TrackedFires>,
     arm: &mut (PatternNode<R>, Node<R>),
@@ -339,6 +364,25 @@ impl<R: Rt> Select<R> {
 /// the arm is taken in its root's first cycle
 /// (`design/bind_driven_bodies.md`). Nested lambdas, selects and seq
 /// machines are left to their own checks.
+// CR claude for eric: [bug/low] This warning runs only over select arms
+// (SelectNode::typecheck0). A collection callback's slot is the same kind of body
+// (design/bind_driven_bodies.md): a raise of a constant, a `<-` of a constant or an
+// effectful call with constant arguments in an array::map callback acts only in the
+// slots born in the program's first cycle. It silently never acts in a slot added
+// later, and the check says nothing. In the probe, slots 1..3 raise and print nothing,
+// and --check is silent. Should a collection whose source is not a constant run this
+// and warn_triggerless_seq over its callback body, with a message about slots added
+// after the first cycle? A constant source has every slot born then, so warning there
+// would be noise. probe:
+// design/review-2026-11-16/repro/x-rerun-4-slot-constant-no-warning.gx (x-rerun-4-04)
+// CR claude for eric: [structure/high] The check warns of a constant action in an arm
+// but not of the commonest handler mistake: a lambda that writes or performs Io and
+// never reads a named parameter, so nothing in it is driven by the call. In the probe
+// `let save = |c| select valid { .. }` shows its error text in the first cycle and
+// writes the file as soon as the form is valid, with no press at all. Warn where a
+// lambda whose `LambdaDef` facts say it writes or performs reads none of its named
+// parameters, and let `|_|` silence it; census both repos first. probe:
+// design/review-2026-11-16/repro/a-language-handler-ignores-event.gx (a-language-02)
 fn warn_constant_action<R: Rt>(
     ctx: &CompileCtx<R>,
     flags: BitFlags<CFlag>,
@@ -351,6 +395,15 @@ fn warn_constant_action<R: Rt>(
         refs.with_refs(|id| any |= !ctx.bind_to_lambda.contains_key(&id));
         !any
     };
+    // CR claude for claude: [readability/low] This warning says a write reading no
+    // variable "acts only if this arm is taken in the program's first cycle". A call a
+    // seq step makes is born again every run (SKILL.md), so an arm it takes writes each
+    // run: in the probe, `select m { `A => x <- 0, `B => x <- 1 }` in a function called
+    // from a seq step writes at n = 3 and n = 6 after two warnings saying it cannot.
+    // Word it for the rule as built ("taken as its body is born: the program's first
+    // cycle, or a call a seq step makes"), here and in warn_triggerless_seq. probe:
+    // design/review-2026-11-16/repro/x-diagnostics-arm-warning-seq-call.gx
+    // (x-diagnostics-10)
     let warn = |spec: &Expr, what: &str| {
         ctx.env.warn(
             flags,
@@ -372,6 +425,17 @@ fn warn_constant_action<R: Rt>(
         NodeView::Qop(q) if q.handler().is_some() && reads_nothing(&q.n) => {
             warn(n.spec(), "this raise")
         }
+        // CR claude for claude: [bug/low] The birth warning misses a write through a
+        // reference. An inline `*mr <- 6` gets no warning, because there is no
+        // ConnectDeref arm beside this one. A call to a function doing `*mr <- v` gets
+        // none either: analysis::node_facts gives a ConnectDeref STATEFUL, never EVENT,
+        // so acts_on_the_world takes it as acting on nothing. Both writes act only in
+        // the program's first cycle (count(m) stays 2 while the arm is entered at n =
+        // 0, 2, 4), where `m <- 6` and a callee doing `m <- v` warn. Add a ConnectDeref
+        // arm that warns when its right side reads nothing, and make a ConnectDeref
+        // EVENT under OwnTargets::Bound, since it may write any binding. probe:
+        // design/review-2026-11-16/repro/x-rerun-5-birth-warn-ref-write.gx
+        // (x-rerun-5-06)
         NodeView::Connect(c) if reads_nothing(&c.node) => warn(&c.spec, "this write"),
         NodeView::CallSite(cs)
             if cs.arg_nodes().all(|a| reads_nothing(a)) && acts_on_the_world(ctx, cs) =>
@@ -512,9 +576,40 @@ fn type_test<R: Rt>(p: &PatternNode<R>) -> Option<&Type> {
 
 /// Refuse a refutable atom that tests what an earlier unguarded one does,
 /// under the same type test: it matches nothing new.
+// CR claude for claude: [perf/low] This compares each arm's atoms with every earlier
+// unguarded arm, and Reach re-walks what still reaches at every arm (its doc says so),
+// so a select's check is quadratic in its arms. An 800-tag union with one arm per tag
+// takes 427 ms of Typecheck0 (109 ms at 400), and 1600 literal arms take 54 ms (14 at
+// 800). Key the earlier unguarded atoms by type test and head (literal value, tag,
+// shape) and compare a new atom only within its key and against earlier binds and
+// wildcards; index Reach's members by head as its doc describes. probe:
+// design/review-2026-11-16/repro/x-perf-compile-select-arms-quadratic.py
+// (x-perf-compile-06)
+// CR claude for claude: [bug/low] This finds a repeat only between arms whose type
+// tests are equal (an inferred test never equals a written one), and skips every atom
+// that covers its own test. So a written test repeated with a name or `_` (`Array<i64>
+// as _ => 0, Array<i64> as b => 1` over `Array<[i64, bool]>`) and a pattern repeated
+// across a written and an inferred test (`true => 0, bool as true => 1`) are accepted
+// as live arms wherever `Type::diff` cannot take the first arm out of what reaches.
+// Compare the tests by containment (the earlier arm's predicate holds the later atom's)
+// and drop the skip for a written test: `subsumes` already answers a name or `_`.
+// probe: design/review-2026-11-16/repro/c-select-seq-dead-arms-accepted.sh
+// (c-select-seq-02)
 fn check_repeats<R: Rt>(env: &Env, arms: &[(PatternNode<R>, Node<R>)]) -> Result<()> {
     for (i, (pat, body)) in arms.iter().enumerate() {
         for (sp, at) in pat.atoms() {
+            // CR claude for claude: [bug/low] This skips every atom that covers its own
+            // predicate, as a constructor pattern over its inferred predicate does, so
+            // only repeated literals are found here and a subsumed constructor arm is
+            // left to the diff, which loses a variant only whole or one position down.
+            // `S(`S(`S(_))) => 0, `S(`S(`S(`Z))) => 1, _ => 2` over three nested
+            // variants checks, and so does `S(`S(_)), `S(`S(`Z))` over `type L =
+            // [`S(L), `Z]`; one level shallower the second arm is refused. Fix: where
+            // an earlier unguarded arm `subsumes` the atom and its predicate holds the
+            // atom's, refuse the arm whether or not the atom covers its own predicate.
+            // probe:
+            // design/review-2026-11-16/repro/x-typecheck-patterns-nested-variant-dead-arm.gx
+            // (x-typecheck-patterns-07)
             if sp.covers(env, &at, !pat.explicit_type_predicate) {
                 continue;
             }
@@ -549,6 +644,14 @@ struct Dead(anyhow::Error);
 /// the last arm. Quadratic in the arm count (each arm re-walks what still
 /// reaches; 4000 tag arms check in about 2 s): member sets indexed by
 /// head would make it linear.
+// CR claude for claude: [structure/low] select.rs is 4700 lines holding three things
+// that share only `Select`: the node and its update, the coverage walk (`Reach`, the
+// ladders, `LiteralPool`, `PartPool`, `PoolGroup`: 2100 lines) and what the arms decide
+// of an undecided scrutinee (`Deciding`, `Decisions`, `Below`, `Uncovered`, the
+// `written_*` walks: 900 lines). A reader of the runtime must page past the checker and
+// back. Move the coverage walk and the undecided-type walk into files of their own
+// beside this one (node/select/coverage.rs, node/select/undecided.rs), a move with no
+// change of interface. Found by reading; not run. (c-select-seq-07)
 struct Reach {
     /// What still reaches the next arm.
     atype: Type,
@@ -837,7 +940,28 @@ impl Reach {
         let dead_at =
             |e: anyhow::Error| -> Result<Result<(), Dead>> { Ok(Err(Dead(e.at(site)))) };
         let empty = Type::Primitive(BitFlags::empty());
+        // CR claude for claude: [bug/low] An arm is found dead here only when
+        // `Type::diff` has emptied `atype`, but `Reach::exhausted` also accepts a
+        // select whose `covered` union holds the scrutinee while `atype` is not empty
+        // (written tests that split a union two positions deep). So a catch-all behind
+        // such arms is accepted, though the same select without it is judged
+        // exhaustive: `((bool, i64), bool) as _ => 0, ((i64, i64), bool) as _ => 1, _
+        // => 2` over `(([i64, bool], i64), bool)`. Before an arm that matches every
+        // value, ask what `exhausted` asks (the union of `covered` holds the scrutinee,
+        // its open cells held) and refuse the arm when it does. probe:
+        // design/review-2026-11-16/repro/c-select-seq-dead-arms-accepted.sh
+        // (c-select-seq-03)
         if checking && (self.wildcard || self.atype == empty) {
+            // CR claude for claude: [readability/medium] Over an unannotated parameter,
+            // `|x| select x { i64 as n => n, _ => 0 }` (or the skill's `null as _ => 0,
+            // v => v`), the test decides x's type, and this refusal then says the
+            // earlier arms "cover the whole scrutinee". It names neither x nor the test
+            // that decided it, nor the fix the skill gives (`|x: [i64, string]|`, which
+            // passes). Where a written test bound a scrutinee cell that was open before
+            // the arms, say so and name the binding to annotate through Holders, as the
+            // other select refusals do. probe:
+            // design/review-2026-11-16/repro/x-diagnostics-dead-arm-decided-param.gx
+            // (x-diagnostics-06)
             return dead_at(anyhow!(
                 "unreachable arm: the earlier arms already cover the whole scrutinee, \
                  unused match cases"
@@ -1163,6 +1287,18 @@ impl Reach {
         if !undecided.is_empty() && covered.contains_holding(env, scrut, undecided)? {
             return Ok(());
         }
+        // CR claude for claude: [bug/medium] Exhaustiveness over a recursive typedef
+        // depends on the order of the arms. Over `type L = [`S(L), `Z]`, the arms `Z,
+        // `S(`Z), `S(`S(`Z)), `S(`S(`S(_))) are refused, "no arm covers `S(L)", and the
+        // same arms with `Z last check; the list form (`Nil, `Cons(a, `Nil), ..) is
+        // refused alike, while the tuple form and the type written out three links deep
+        // check. This containment fails on its own: `[`Z, `S(`Z), `S(`S(`Z)),
+        // `S(`S(`S(L)))]` does not contain `L` in a `let` annotation, though the
+        // two-deep union does. Fix: have the containment distribute over the `S head
+        // through the recursive name as deep as the union's members go, or have the
+        // diff take `S(`Z) out of `S(L), and pin both orders. probe:
+        // design/review-2026-11-16/repro/x-typecheck-patterns-recursive-typedef-arm-order.gx
+        // (x-typecheck-patterns-05)
         if covered.contains_ordered(env, scrut)? {
             return Ok(());
         }
@@ -1617,6 +1753,18 @@ fn pooled_leaves(
                 });
                 return Ok(None);
             }
+            // CR claude for claude: [bug/medium] A variant at a position inside a
+            // tuple, struct or variant is pooled only when its payload matches
+            // anything; one with a refutable payload is `Miss::Unread` here, though a
+            // tuple or struct member at the same position is pooled under
+            // `Head::Composite`. So `|x: (`A(bool), i64)| select x { (`A(true), _) =>
+            // 0, (`A(false), _) => 1 }` is refused, "no arm covers (`A(bool), i64)",
+            // while `A(true), `A(false) at the top and ((true, _), _), ((false, _), _)
+            // check. Fix: give a variant member with a refutable payload a head of its
+            // own and count its payload positions under it, as `children` does for a
+            // composite member, and pin it. probe:
+            // design/review-2026-11-16/repro/x-typecheck-patterns-nested-variant-payload-pool.gx
+            // (x-typecheck-patterns-06)
             sp => match head_of(sp) {
                 Some(h) => Some(SmallVec::from_iter([h])),
                 None => return Ok(Some(Miss::Unread)),
@@ -1993,6 +2141,17 @@ impl Shape {
 
 /// A pool group's combinations are enumerated up to this many; a group
 /// over more positions never completes.
+// CR claude for eric: [bug/medium] [bug/medium] When the arms between them test 11 bool
+// positions, this cap stops pooling, and an exhaustive decision list (`(true, _, ..)`,
+// `(false, true, _, ..)`, ..., all `false`) is refused "missing match cases: no arm
+// covers (bool, ..., bool)". Over 10 positions the same ladder is accepted and a
+// trailing `_` is refused as unreachable, so adding one flag turns one refusal into the
+// other. Neither message names the cap or the `_` that fixes it. Variant heads escape
+// this because `Type::diff` splits them; bool literals and other literal pools do not.
+// Either decide coverage without enumerating the product, or make the refusal name the
+// cap and the `_` arm, and pin both sides in lang::select. probe:
+// design/review-2026-11-16/repro/tests-select-b-pool-cap-11-bools.gx
+// (tests-select-b-01)
 const MAX_POOL_COMBINATIONS: usize = 1024;
 
 /// Composite arms whose only refutable parts are bool literals and
@@ -2695,6 +2854,16 @@ impl<R: Rt> Update<R> for Select<R> {
             if pat.guard.is_none() {
                 continue;
             }
+            // CR claude for claude: [perf/low] Every update of the select runs
+            // `shape_matches` for each guarded arm, also when the scrutinee stands, and
+            // a test that needs the deep `is_a` walk costs the size of the value each
+            // time: a guarded arm with a written test over a standing 300000-element
+            // array takes 1.8 ms per update of the select in the node-walk (6.9 s
+            // against 1.7 s for the twin without the guard, 3000 updates). Where the
+            // scrutinee neither fired nor moved and the select did not wake, the
+            // verdict is `guard_ran.get(i)`: read it instead of testing again. probe:
+            // design/review-2026-11-16/repro/c-select-seq-guard-shape-test-every-update.sh
+            // (c-select-seq-04)
             let reach = live.filter(|v| {
                 let shallow = shallow[i]
                     .get_or_init(|| pat.shallow_discriminant(&ctx.env, scrutinee));
@@ -3123,6 +3292,15 @@ impl<R: Rt> Select<R> {
 
     /// `checking`: the definition's check, which also judges coverage,
     /// dead arms and guards; an instance does only what they decide.
+    // CR claude for claude: [structure/low] This function is 415 lines, and its arm
+    // loop does every per-arm judgment in sequence over a dozen shared locals:
+    // completion, the view the binds narrow over, the narrowing, the order of takers,
+    // the rep-collision judgments, the guard, the body, the Any closure and the
+    // coverage step. `check_undecided` takes eight parameters because of it. Take out
+    // the two blocks that only compute: the view an arm's binds narrow over (`reaching`
+    // through `uncovered_parts`, returning the view, its members and the copies) and
+    // the tests an arm defers (`Tested` through `defer_judgment`). What is left reads
+    // as the arm loop. Found by reading; not run. (c-select-seq-08)
     fn typecheck0_with(
         &mut self,
         ctx: &mut CompileCtx<R>,
@@ -3465,7 +3643,30 @@ impl<R: Rt> Select<R> {
                     wrap!(guard.node, bt.check_contains(&ctx.env, guard.node.typ()))?;
                 }
             }
+            // CR claude for claude: [bug/low] The arm's body is checked before
+            // `Reach::arm` judges the arm dead, so where nothing reaches the arm its
+            // binds are typed `[]` and the body's error is told in place of the
+            // unreachable arm: `|x| select x { null as _ => 0, v => v + 1 }` says
+            // "cannot compute [] + i64", where `v => v` says "unreachable arm". Fix:
+            // before the guard and body are checked, refuse the arm when checking and
+            // nothing reaches it (the wildcard is taken, or `reach.atype` is empty),
+            // with the message `Reach::arm` gives. probe:
+            // design/review-2026-11-16/repro/x-typecheck-patterns-dead-arm-body-error.gx
+            // (x-typecheck-patterns-08)
             wrap!(n, child(n, ctx))?;
+            // CR claude for claude: [bug/critical] Once the arm's guard and body are
+            // checked, only a function type inside an `Any` part is refused.
+            // `ref_over_any` ran before them, and only on a written test, so a part the
+            // arm decides a reference stands, and every reference passes the run-time
+            // test. `|x: Any| select x { (r, n) => { *r <- n + 1; 0 }, _ => 0 }` checks
+            // and writes an i64 into a string variable, and the next kernel that reads
+            // it panics the runtime thread; `let q: &i64 = r`, a guard and a written
+            // test's own variable pass the check the same way. Fix: refuse here a
+            // predicate, written or inferred, that holds a reference at or inside an
+            // `Any` part of what reaches the arm, as the written test `(&mut i64, i64)
+            // as (r, n)` is refused, and pin it. probe:
+            // design/review-2026-11-16/repro/x-typecheck-patterns-any-arm-decides-ref.gx
+            // (x-typecheck-patterns-02)
             let fn_over_any =
                 reaching.holds_any(&ctx.env) && pat.type_predicate.holds_fn(&ctx.env);
             if fn_over_any || pat.type_predicate.has_unbound() {

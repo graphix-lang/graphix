@@ -1,0 +1,12 @@
+// json::write_str writes a duration as f64 seconds, so json::read does not read back
+// a duration whose nanoseconds an f64 of its seconds cannot hold (past ~104 days)
+// command: timeout -s KILL 60 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache small-pkgs-json-duration-precision.gx
+// expected: the read gives back d and e: `... true true`
+// observed: 17280000.000000001s 1.000000001s {"d":17280000.0,"e":1.000000001} {d: 200.d, e: 1.000000001s} false true
+let d = duration:17280000.000000001s;
+let e = duration:1.000000001s;
+let j = json::write_str({d, e});
+let r: Result<{d: duration, e: duration}, [`JsonErr(string), `InvalidCast(string)]> = json::read(j$);
+println("[d] [e] [j] [r] [r$.d == d] [r$.e == e]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+0

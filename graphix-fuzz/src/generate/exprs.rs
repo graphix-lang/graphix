@@ -783,6 +783,17 @@ pub(super) fn gen_typed(
         GenType::Struct(fields) => {
             // functional update over a visible same-shaped struct, or a
             // fresh literal
+            // CR claude for claude: [test-gap/medium] This update arm, and
+            // try_accessor's slice and list-tail arms, need a visible binding of
+            // exactly the requested composite type. Every value-let draws its type
+            // independently from random_type, so such a binding almost never exists. In
+            // `gen 6000 1`, `{ v with f: .. }` appears 0 times, an array slice 9 times
+            // and the list tail ladder 5 times, so functional update is untested by the
+            // generator. Fix in gen_slots' value-let arm: part of the time, take `ty`
+            // from a visible non-function binding's type. Pin the replaced field where
+            // it could narrow, as gen_pinned does. probe:
+            // design/review-2026-11-16/repro/fuzz-gen-a-composite-consumers-unreached.sh
+            // (fuzz-gen-a-02)
             let sources = ctx.vars_of(ty);
             if !sources.is_empty() && rng.below(3) == 0 {
                 let src = sources[rng.below(sources.len())];

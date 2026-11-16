@@ -1,0 +1,21 @@
+// Title: a List or an abstract over a function type de-fuses every region
+// it crosses, though both cross a kernel as an opaque Value; a Map over
+// the same function type fuses.
+// Command:
+//   timeout -s KILL 120 graphix-fuzz run f-kernel-opaque-parts-defuse.gx
+// Expected: g, h and k each fuse their map (fused=3); the tuple element
+//   they carry is never read inside the loop.
+// Observed: fused=1 (only k, the Map). The failures read
+//   "an argument's type Array<'b: (i64, List<fn(x: i64) -> i64>)> has no
+//   kernel ABI form" and "a region of type (i64, Cb<fn(x: i64) -> i64>) has
+//   no kernel return". abi_kind says Value for both; Freeze::freeze_inner
+//   freezes a List's element and an Abstract's params, refusing a Fn part,
+//   where it keeps a Map and an Error as found.
+type Cb<'f> = Abstract<'f>;
+let c: Cb<fn(x: i64) -> i64> = Cb(|x| x + 1);
+let fs = [<|x: i64| x + 1, |x: i64| x * 2>];
+let m = {"a" => |x: i64| x + 1};
+let g = |xs: Array<i64>, fs: List<fn(x: i64) -> i64>| array::map(xs, |x| (x * 2, fs));
+let h = |xs: Array<i64>, c: Cb<fn(x: i64) -> i64>| array::map(xs, |x| (x * 2, c));
+let k = |xs: Array<i64>, m: Map<string, fn(x: i64) -> i64>| array::map(xs, |x| (x * 2, m));
+(array::len(g([1, 2, 3], fs)), array::len(h([1, 2, 3], c)), array::len(k([1, 2, 3], m)))

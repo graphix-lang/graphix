@@ -1,0 +1,18 @@
+// opt::or_else's doc says f "starts at v's first null"; an effectful f does not
+// start when v's first null comes after the program's first cycle.
+// Command:
+//   echo hello > /tmp/or_else_probe.txt
+//   timeout -s KILL 30 graphix --no-cache gx-stdlib-opt-or-else-effect.gx
+// Expected (per opt.gxi): "x", then "hello\n" once the timer writes null to v.
+// Observed: "x" only; the program exits after 800 ms with nothing more. The
+// fallback `|| sys::fs::read_all(..)$` is called from the `null as _ => f()` arm
+// of opt.gx's or_else with no argument, so under bind-driven bodies its read
+// never performs. Start v at null and the read does run ("hello\n", then "y"):
+// the effect acts only where the arm is taken in the program's first cycle.
+// ok_or_else has the same `null as _ => error(f())` shape.
+let v: [string, null] = "x";
+let t = sys::time::timer(duration:100.ms, false);
+v <- t ~ null;
+let r = opt::or_else(v, || sys::fs::read_all("/tmp/or_else_probe.txt")$);
+sys::exit(sys::time::after_idle(duration:800.ms, t ~ 0));
+r

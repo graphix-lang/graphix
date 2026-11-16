@@ -322,6 +322,16 @@ fn compile_module_inner<R: Rt>(
     // the module's own file, where its body's errors are
     let body_ori = value.implementation_origin().cloned();
     if ctx.env.ide.is_lsp() {
+        // CR claude for claude: [bug/low] A package root's `mod <pkg>` wrapper
+        // (RootFile::into_module) has no written name, but this site records it at 1:1
+        // of mod.gx. Query::references therefore lists a phantom reference of the
+        // package module there, the package name's length long, underlining whatever
+        // mod.gx starts with (`let local = ` in netidx-admin). definition reads this
+        // site's def_ori, so keep the site but mark it unwritten: make
+        // ModuleRefSite::pos an Option (None when name.at is NOWHERE) and skip such
+        // sites in Query::target and Query::references. probe:
+        // design/review-2026-11-16/repro/x-lsp-probe-package-phantom-reference.py
+        // (x-lsp-probe-05)
         ctx.env.push_module_reference(ModuleRefSite {
             pos: name.pos_or(spec.pos),
             ori: spec.ori.clone(),

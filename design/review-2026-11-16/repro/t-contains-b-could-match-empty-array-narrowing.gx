@@ -1,0 +1,34 @@
+// An arm's bind is typed without the member whose empty array passes its test
+//
+// command:
+//   /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache --check <this file>
+//   timeout -s KILL 170 /home/eric/tmp/review-2026-11-16/bin/graphix-fuzz check <this file>
+//
+// The first arm tests (Array<i64>, [i64, f64]). Type::could_match says it
+// cannot meet the member (Array<string>, f64), so `v` is typed
+// (Array<i64>, i64) and `v.1 + 1` is i64 arithmetic. The value ([], 2.5) is
+// of (Array<string>, f64), and the empty array passes the test for
+// Array<i64>, so the first arm takes it.
+//
+// expected: the check refuses the program, or types `v.1` as [i64, f64]
+//           (then `v.1 + 1` is refused: "cannot compute [i64, f64] + i64").
+// observed: the check accepts, and
+//   DIVERGENCE — fusion/JIT bug (interp != jit)
+//     interp: Trace([0:3.5])
+//     jit: Trace([0:1])
+//
+// The same with a union test and a struct (no tuple):
+//   let f = |x: [Array<string>, {w: i64}]| select x {
+//     [Array<i64>, {w: i64}] as v => v.w + 1,
+//     Array<string> as w => 0
+//   };
+//   f([])
+// observed: check accepts; interp: Trace([]), jit: Trace([0:1]); with
+//   `select v { `V(n) => n + 1 }` over a `V(i64) member in the struct's place
+//   both engines log "no arm matches []: a coverage hole in the check".
+// List<..> ([<>]) and Map<..> ({}) members check the same way.
+let f = |x: [(Array<string>, f64), (Array<i64>, i64)]| select x {
+  (Array<i64>, [i64, f64]) as v => v.1 + 1,
+  (Array<string>, f64) as w => 0
+};
+f(([], 2.5))

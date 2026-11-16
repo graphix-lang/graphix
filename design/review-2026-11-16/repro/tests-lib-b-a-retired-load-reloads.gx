@@ -1,0 +1,18 @@
+// Title: leaks.rs a_retired_loads_type_goes_with_its_last_function reloads
+// at every tick of its final loop, so "with no reload after" is never tested.
+// The test's module source is `select tick { 1 => "..", _ => ".." }` and its
+// final loop sets `tick` once per iteration; this program has the same shape
+// and prints at each load.
+// Command:
+//   timeout -s KILL 5 graphix --no-cache tests-lib-b-a-retired-load-reloads.gx
+// Expected if the source fired only when its text changed: "load B" twice
+// (birth, tick 2) and "load A" once.
+// Observed: "load B" at birth and at ticks 2, 3, 4 and 5: every set of `tick`
+// reloads the module, whose reload runs `Env::sweep_load_types`.
+{
+  let tick = 0;
+  tick <- select tick { s if s < 5 => s + 1, _ => never() };
+  let src = select tick { 1 => "let get = |x: i64| x + 1; println(\"load A\")", _ => "let get = |x: i64| x * 10; println(\"load B\")" };
+  let s = mod d dynamic { sig { use core; val get: fn(x: i64) -> i64 }; source src };
+  (tick, d::get(tick))
+}

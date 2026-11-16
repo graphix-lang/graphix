@@ -1,0 +1,22 @@
+// A reference delivered again unchanged makes the data table act as on a
+// change: an unchanged #selection scrolls the view back to it, and an
+// unchanged #table re-syncs, re-sorts and re-reconciles every row.
+// Command (needs a display; not run in the review, `graphix --check` passes):
+//   cargo run --bin graphix -- design/review-2026-11-16/repro/gui-datatable-unchanged-selection-yank.gx
+// Steps: scroll the table down past r0 with the wheel and wait a second.
+// Expected: the view stays where it was scrolled.
+// Read from DataTableW::handle_update: every write of `app` re-delivers
+// `&app.sel` unchanged (TRef::update_changed's doc), handle_update calls
+// ensure_selection_visible, and the view jumps back to r0 once a second.
+use gui::{window, data_table::data_table};
+let rows = array::init(500, |i| "r[i]");
+let app = {sel: ["r0/c0"], tick: 0, tbl: {rows, columns: ["c0", "c1"]}};
+app <- sys::time::timer(duration:1.s, true) ~ {app with tick: app.tick + 1};
+[&window(
+    #title: &"unchanged selection re-delivered",
+    &data_table(
+        #selection: &app.sel,
+        #on_select: |#path: string| app <- {app with sel: [path]},
+        #table: &app.tbl
+    )
+)]

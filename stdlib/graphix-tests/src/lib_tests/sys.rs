@@ -141,6 +141,14 @@ run!(after_idle_invalid_timeout, AFTER_IDLE_INVALID_TIMEOUT, |v: Result<&Value>|
     matches!(v, Ok(Value::Bool(true)))
 }; FuseExpect::None);
 
+// CR claude for claude: [test-gap/low] handle_accessors_are_sync and
+// born_builtins_and_parse_are_sync carry `; build_only`, the `run!` form for a refusal
+// only a build makes. But the check and the build both accept them, so the exemption
+// only drops the interp run's `testing::verdicts_agree` assertion. A check that began
+// refusing a `#[sync]` lambda, `sys::dirs::config_dir()` or `args::parse(never())`
+// would pass here. Remove `; build_only` from both. probe:
+// design/review-2026-11-16/repro/tests-lib-b-c-build-only-accepted.sh
+// (tests-lib-b-c-06)
 run!(handle_accessors_are_sync, r#"{
     #[sync]
     let peer = |s: sys::tcp::TcpStream| sys::tcp::Socket::peer_addr(s);

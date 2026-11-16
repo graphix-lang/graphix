@@ -1,0 +1,12 @@
+// A variable held at two places of ONE decided argument does not widen
+// as it does across two arguments: the verdict follows the order of the
+// argument's parts, and the refusal names no fix.
+// Command: graphix --no-cache --check tests-types-d-one-argument-no-widening.gx
+// Expected: accepted ('a = [i64, null]), as `first((x, 1))` and
+//   `|a: 'a, b: 'a| a` called `(1, x)` both are.
+// Observed: type mismatch ('a: i64, 'a: i64) does not contain (i64, [i64, null])
+//   (same for a struct `{a: 1, b: x}` at `{a: 'a, b: 'a}`, and for a
+//   let-bound `let t = (1, x); first(t)`).
+let first = |p: ('a, 'a)| p.0;
+let x: [i64, null] = null;
+first((1, x))

@@ -92,6 +92,16 @@ impl StructurePattern {
 
     /// Whether a struct pattern that leaves fields out (`{x, ..}`) is
     /// here or in a sub-pattern.
+    // CR claude for claude: [bug/medium] This counts a partial struct pattern inside an
+    // abstract type's payload, which completes against the declared representation when
+    // the pattern compiles, never against the scrutinee. Its three callers take such a
+    // pattern for one the value must complete: `Bind::compile` defers `let W({a, ..}) =
+    // w` and `complete_partial` refuses it, "match error W can't be matched by W"; the
+    // select refuses `W({a, ..})` over `Any`, "has no struct type to complete it"; and
+    // `Deciding::new` refuses it over an unannotated parameter, "a type not decided at
+    // this select". Each checks with `b: _` in place of `..`. Stop at `Abstract` here.
+    // probe: design/review-2026-11-16/repro/c-pattern-partial-struct-under-abstract.sh
+    // (c-pattern-03)
     pub fn has_partial_struct(&self) -> bool {
         crate::stack::ensure_sufficient(|| {
             let mut partial = matches!(self, Self::Struct { exhaustive: false, .. });
@@ -187,6 +197,18 @@ impl StructurePattern {
             }
             (_, Type::Set(ts)) => parts(env, ts.iter().map(|m| (Some(self), m)))
                 .map(|ts| Type::Set(Arc::from_iter(ts))),
+            // CR claude for claude: [bug/high] An Or's alternatives must not share one
+            // view. `seq` hands the first alternative's view of an open constructor
+            // `'c<'a>` to the next, so in `[h, t..] | [<h, t..>]` the list alternative
+            // is typed against `Array<'a>` and the or-name `t` becomes `Array<'a>`
+            // while it binds a List at run time (swapping the order makes it List). The
+            // check then accepts `array::len(t)` over a list: the engines diverge, and
+            // the JIT reads the list cell's marker word as an i64 (a heap address).
+            // Compute each alternative's view against `t` on its own and return the
+            // union of the differing views, so each alternative narrows against its own
+            // member as a separate arm does. Pin both orders. probe:
+            // design/review-2026-11-16/repro/t-parser-b-or-slice-collection-view.gx
+            // (t-parser-b-01)
             (P::Or(alts), _) => seq(env, alts.iter(), t),
             (_, Type::App(c, a)) if let Some(f) = Type::app_filled(c, a) => {
                 Some(self.collection_view_inner(env, &f).unwrap_or(f))
@@ -629,6 +651,17 @@ impl StructurePattern {
         elems: &[Self],
         over_any: &mut OverAny,
     ) -> Result<Option<Type>> {
+        // CR claude for claude: [bug/high] This reads a member's element type only from
+        // Array or List. Over an applied constructor (`c: 'c<{a: i64, b: i64}>`, which
+        // select completes against) no member has the slice's shape, so `{a, ..}`
+        // inside `[{a, ..}, ..]` or `[<{a, ..}, ..>]` is never completed. It stays the
+        // exact struct `{a}`, and the arm silently never matches: `fa([{a: 1, b: 2}])`
+        // gives 0 instead of 1 in every engine. parts_over and collection_view_inner
+        // already read `Type::App(_, elem)`; do the same here (or complete against the
+        // arm's collection view), and pin the array, list and tuple-nested forms.
+        // probe:
+        // design/review-2026-11-16/repro/t-parser-b-partial-struct-in-constructor-slice.gx
+        // (t-parser-b-02)
         let elem = |t: &Type| match (list, t) {
             (true, Type::List(t)) | (false, Type::Array(t)) => Some(t.clone()),
             _ => None,
@@ -1153,6 +1186,14 @@ fn slice_type(list: bool, elem: Type) -> Type {
 /// contributes none. An alias chain ends: a typedef recursing through
 /// unions and aliases alone is refused at its definition.
 #[doc(hidden)]
+// CR claude for claude: [structure/low] This family (union_members, _open, _with,
+// _stopping) is a Type walk (deref tvars, expand aliases once, flatten unions) that
+// bind.rs, the compiler's lib.rs and fusion's select emit import through `expr::`. It
+// has nothing to do with patterns. Three other functions share the name with different
+// contracts: typ::setops::union_members, node::callsite::union_members and
+// parser::typexp::union_members. Move this family into typ/ as Type methods and give
+// typexp's parser function a name that says it builds a union from listed items. Found
+// by reading; not run. (t-parser-b-06)
 pub fn union_members(env: &Env, t: &Type, out: &mut SmallVec<[Type; 8]>) -> Result<()> {
     union_members_open(env, t, out).map(|_| ())
 }

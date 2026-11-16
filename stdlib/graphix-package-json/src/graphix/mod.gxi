@@ -1,3 +1,14 @@
+// CR claude for eric: [structure/high] A struct target refuses an object holding a
+// field it does not name (the struct arm of `Type::cast_int`: "struct size mismatch"),
+// so a program cannot read the three fields it wants out of a document that has more,
+// as most API replies `http::rest` fetches do. `toml::read` of a config with one extra
+// key and `sqlite::query` over `select *` are refused the same way. The same read
+// coerces scalars (`"qty": "5"` reads as 5), and its error names neither a missing
+// field nor the path of a bad one: it prints the whole document. For the typed readers,
+// read the fields the target names and drop the rest, with a `#strict` label for the
+// closed reading, and put the field path in the error; `cast` can stay exact. The
+// book's json chapter says none of this. probe:
+// design/review-2026-11-16/repro/a-stdlib-json-extra-field.gx (a-stdlib-02)
 /// Parse JSON from a string or bytes.
 ///
 /// To parse a stream, read it first — `json::read(Read::read_all(f)?)`.

@@ -27,6 +27,11 @@ let result = 0
 async fn runtime(
     tx: mpsc::Sender<poolshark::global::GPooled<Vec<GXEvent>>>,
 ) -> Result<TestCtx> {
+    // CR claude for claude: [style/low] `runtime` expands
+    // `graphix_package::package_refs!()` again, as hook_loan.rs's
+    // nested_builtin_runs_unarmed does, although this binary's main.rs already defines
+    // `TEST_REGISTER` from the same macro and runtime_cost.rs uses it. Use
+    // `crate::TEST_REGISTER` in both. Found by reading; not run. (tests-lib-b-c-09)
     let packages: &[PackageRef] = graphix_package::package_refs!();
     let tbl = AHashMap::from_iter([(
         Path::from("/test.gx"),
@@ -246,6 +251,16 @@ async fn set_many_lands_in_one_cycle() -> Result<()> {
     let wid = w.exprs.last().context("no expr")?.id;
     gx.wait_idle().await?;
     while rx.try_recv().is_ok() {}
+    // CR claude for claude: [test-gap/low] The doc above says these two sends share an
+    // input batch because the test runs on a current_thread runtime. But the runtime
+    // loop runs on a thread of its own (`RuntimeThread::spawn`) and can wake on the
+    // first send and run it alone. Split batches give the same `[5, 0]`, `[1, 2]`, so
+    // the case the test names, 'a variable that already has a write waiting', goes
+    // unexercised, and a `set_many` that let `sy` land ahead of `sx`'s queued write
+    // would then pass. Make the shared batch certain: while the runtime waits for room
+    // in `send_batch` it pushes every input into the next cycle's sets, so make both
+    // sends while an undrained capacity-1 update channel holds it there. Then fix the
+    // comment. Found by reading; not run. (tests-lib-b-c-07)
     gx.set(sx, Value::I64(5))?;
     gx.set_many([(sx, Value::I64(1)), (sy, Value::I64(2))])?;
     gx.wait_idle().await?;

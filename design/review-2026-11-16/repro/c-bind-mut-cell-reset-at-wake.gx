@@ -1,0 +1,24 @@
+// Title: a `&mut <expr>` cell is reset to its initializer at every wake of its arm
+// Command: timeout -s KILL 100 /home/eric/tmp/review-2026-11-16/bin/graphix-fuzz run design/review-2026-11-16/repro/c-bind-mut-cell-reset-at-wake.gx
+//   (or: timeout -s KILL 5 graphix --no-cache <file> with the last line replaced by `o`)
+// The component keeps its selection in the cell its default argument makes
+// (`&mut null`, as tui's browser `#selected_row` and gui's window `#size` do).
+// It writes 99 at c = 0; the arm sleeps at odd c and wakes at even c.
+// Expected (sleep_and_wake.md: "A binding something writes (a `<-` target, a
+//   `&mut`'s referent) is state: at a wake it keeps the value it holds"):
+//   (0, null) (1, -1) (2, 99) (3, -1) (4, 99) (5, -1)
+//   which is what the same program prints with `let v: [i64, null] = null; comp(#sel: &mut v, c)`.
+// Observed, both engines (AGREE): (0, null) (1, -1) (2, null) (3, -1) (4, null) (5, -1)
+{
+  let c = array::iter([0, 1, 2, 3, 4, 5]);
+  let comp = |#sel: &mut [i64, null] = &mut null, t: i64| {
+    *sel <- select t { 0 => 99, _ => never() };
+    *sel
+  };
+  let out = select c % 2 == 0 {
+    true => comp(c),
+    false => -1
+  };
+  let o = (c, out);
+  array::group(o, |n, _| n == 6)
+}

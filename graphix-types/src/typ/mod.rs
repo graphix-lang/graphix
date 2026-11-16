@@ -897,6 +897,17 @@ pub fn abstract_uuid(path: &str) -> uuid::Uuid {
 /// Where a declaration is written, the same in every process: its source
 /// and position, and a source named by its text alone (a REPL input, an
 /// embedded program) by the text too.
+// CR claude for eric: [bug/medium] For an Unspecified or Program origin the place is
+// the text's hash and the position, not the origin's `load`. So a type a block or body
+// declares in a REPL input has the same `AbstractId` as one an earlier input with the
+// same text declared. Entering one line twice with `impl Eq for C` in a block is
+// refused, `conflicting implementation: Eq is already implemented for C`, while the
+// first input lives: the shell keeps the previous output through the next compile and a
+// `let` input for the session. `GXHandle::compile` of one text twice is refused the
+// same way. The origin's scope tag already includes its load (`Origin::loaded`). Adding
+// `ori.load` to the place here would give each input its own types, as it has its own
+// scopes. probe: design/review-2026-11-16/repro/x-leaks-repl-same-line-conflict.sh
+// (x-leaks-02)
 pub fn declaration_place(ori: &Origin, pos: SourcePosition) -> CompactString {
     match &ori.source {
         Source::File(_) | Source::Vfs(_) | Source::Netidx(_) => {
@@ -949,6 +960,16 @@ impl AbstractId {
         ori: &Origin,
         site: Option<&str>,
     ) -> Self {
+        // CR claude for claude: [structure/low] These lines are `env::crosses_body`
+        // (any component generated), `env::is_block_scope` (the last one is) and the
+        // block-component filter of `crate::written_scope`, written again with
+        // `starts_with('#')`; `Env::own_types` and `UnresolvableRef`'s Display do the
+        // same. So what makes a scope component generated is decided by
+        // `is_block_component` and by five inline copies. Two of those copies key an
+        // abstract type's identity and a load's types across processes and images. Fix:
+        // call `crosses_body` (made pub(crate)), `is_block_scope` and
+        // `is_block_component` instead of the inline tests. Found by reading; not run.
+        // (x-dup-07)
         let parts = || Path::parts(&scope.0);
         if !parts().any(|p| p.starts_with('#')) {
             return Self::of(scope, name);
@@ -969,6 +990,14 @@ impl AbstractId {
     /// This id, of a type `name` that the load `key` of a dynamic
     /// module's source declares and its interface does not: each load's
     /// type is its own ([`crate::env::LoadedBody`]).
+    // CR claude for eric: [bug/medium] A load's own type takes an id hashed from its
+    // base id and the load's key, and values of different abstract types order by id,
+    // so the order among the types one source declares changes with the load's number:
+    // the same text, reloaded unchanged, sorts `[C(1), D(1), E(1), F(1)]` a different
+    // way at most loads, and each slot of a module in a collection its own way. Order
+    // the own types of one load by their base ids (carry the base id beside the load in
+    // what the value's ordering reads). probe:
+    // design/review-2026-11-16/repro/x-dyn-modules-own-type-order.gx (x-dyn-modules-07)
     pub(crate) fn in_load(self, key: &str) -> Self {
         let (_, lo) = abstract_uuid(&format_compact!("{:x}@{key}", self.0)).as_u64_pair();
         AbstractId(lo)
@@ -2329,6 +2358,13 @@ impl PackTrait for Type {
     fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
         // outside bytes reach this (a value's abstract params): one level
         // per byte
+        // CR claude for claude: [doc-drift/low] The comment above says outside bytes
+        // reach this decode through a value's abstract params, but `GxAbstract::decode`
+        // refuses outside an image session (pin
+        // `abstract_value_decodes_only_under_an_image`), so only an image's bytes and a
+        // packed AST's reach here. The guard is still needed, since depth follows the
+        // bytes; the comment names a path that no longer exists. Delete it or say what
+        // does reach the decode. Found by reading; not run. (t-typ-mod-05)
         ensure_sufficient(|| {
             if image::is_decoding() {
                 image::object_decode(buf, |b| Self::shape_decode(b), |b| Self::decode(b))
@@ -2891,6 +2927,18 @@ impl Type {
             }
             Type::ByRef(Mutability::Mut, t) => t.mentions_self(),
             Type::Abstract { params, .. } => params.iter().any(Type::mentions_self),
+            // CR claude for claude: [bug/medium] `seen` keys a typedef by its
+            // definition and polarity, not by the application, so a second application
+            // of one typedef is never walked: over `type F<'a> = {cb: fn(d: 'a) ->
+            // string}` the result `(F<i64>, F<self>)` answers that `self` is not taken
+            // in, and `TraitDef::self_beyond_receiver` lets a union self call through.
+            // The check accepts `T::mk(v)` over `v: [i64, string]` and the build then
+            // refuses it with a type mismatch; with another typedef of the same body in
+            // the first slot the check refuses as intended. Key `seen` by the
+            // definition, the polarity and the parameters, as `Type::reaches_unguarded`
+            // keys its own. probe:
+            // design/review-2026-11-16/repro/t-typ-mod-self-taken-in-seen.gx
+            // (t-typ-mod-02)
             Type::Ref(tr) => match self.lookup_ref_probe(env) {
                 Some((key, body)) => {
                     !seen.contains(&(key, taken)) && {
@@ -3603,6 +3651,18 @@ impl Type {
     fn seed_walk(&self, env: &Env, seen: &mut AddrSet, bodies: bool) -> bool {
         fn go(t: &Type, env: &Env, seen: &mut AddrSet, bodies: bool) -> bool {
             ensure_sufficient(|| {
+                // CR claude for claude: [risk/low] A node or resolution cell already in
+                // `seen` answers true here, so the result is right only for the first
+                // walk over a `seen`: a later type sharing a node that holds a name
+                // `env` does not see gets true from `Type::seed_refs_seen` or
+                // `Type::seed_names_seen`, whose `seen` the caller shares across types.
+                // Every caller of those two discards the result today, and
+                // `Env::seed_typedef_refs_under`, which sets `seeded` from it, uses
+                // `Type::seed_refs` with a set of its own, so nothing is wrong yet; a
+                // caller that set a `seeded` flag from the shared form would skip an
+                // unseeded definition for good. Return `()` from the two `_seen` forms
+                // and keep the bool on `seed_refs` alone. Found by reading; not run.
+                // (t-typ-mod-04)
                 if let Some(node) = node_addr(t)
                     && !seen.insert(node)
                 {
@@ -3833,6 +3893,18 @@ impl Type {
     pub fn err_chain(payload: Type) -> Type {
         static CORE: LazyLock<ModPath> = LazyLock::new(|| ModPath::from(["core"]));
         static NAME: LazyLock<ModPath> = LazyLock::new(|| ModPath::from(["ErrChain"]));
+        // CR claude for eric: [bug/medium] This reference is resolved by name in
+        // whatever env expands it, and a dynamic module's body compiled under
+        // `Env::imported_view` has an empty `/core` unless its sig imports it. A body
+        // that uses only syntax (`catch(e) select e.0.error { .. }; (x +? 1)?`) fails
+        // to load with `undefined type ErrChain in core`, a name it never wrote;
+        // `catch(e) "[e]"` loads, and so does the same body once the sig says `use
+        // core::ErrChain;`. design/module_system.md says operators and syntax need no
+        // import. Either every view keeps core's `ErrChain` and the types it names, as
+        // a sig's traits are granted, or this ref carries core's definition in its cell
+        // and `Env::is_core_errchain` compares against that instead of the view's
+        // `/core`. probe: design/review-2026-11-16/repro/t-typ-mod-errchain-sandbox.gx
+        // (t-typ-mod-03)
         Type::Ref(Arc::new(TypeRef::synthetic(
             CORE.clone(),
             NAME.clone(),
@@ -3854,6 +3926,24 @@ impl Type {
                 JUDGING.with_borrow_mut(|j| j.pop());
             }
         }
+        // CR claude for eric: [bug/high] Whether a raised payload is an error chain is
+        // decided here while its variables are open, and the answer changes once an
+        // instance decides them. A bare variable is no chain, so in `|x: 'a| { catch(e)
+        // r <- e ~ e.0.error; error(x)?; r }` the binder is `ErrChain<'a>` and
+        // `e.0.error` is `'a`; called with a chain, the instance's raise extends that
+        // chain and `e.0.error` is the chain's own error, handed back as an `ErrChain`.
+        // A struct of the four field names over variables is judged a chain by the
+        // probe in the `Type::Struct` arm below, and an instance whose fields make it
+        // no chain is wrapped whole, so a result typed `string` holds the struct. The
+        // check accepts both; the JIT yields the mistyped value and the node-walk logs
+        // `a coverage hole in the check` (graphix-fuzz: DIVERGENCE). Needs a rule:
+        // refuse a read of a chain whose payload's chain-ness is undecided at the
+        // definition, naming the annotation, or decide the wrap from the definition's
+        // type for every instance. No pin has the catch inside the generic function
+        // (`generic_reraise_keeps_the_chain` catches outside). probe:
+        // design/review-2026-11-16/repro/t-typ-mod-generic-chain-payload.gx and
+        // design/review-2026-11-16/repro/t-typ-mod-generic-chain-lookalike.gx
+        // (t-typ-mod-01)
         if let Type::TVar(tv) = self {
             return match tv.binding() {
                 Some(t) => t.chain_error_type(env),

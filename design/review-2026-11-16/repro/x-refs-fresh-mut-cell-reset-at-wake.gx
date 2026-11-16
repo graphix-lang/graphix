@@ -1,0 +1,36 @@
+// A `&mut` over an unnamed expression loses what was written through it when its arm wakes
+//
+// command:  timeout -s KILL 30 graphix --no-cache x-refs-fresh-mut-cell-reset-at-wake.gx
+// rule:     CLAUDE.md, "Sleep is pause": "a binding something writes keeps the value it
+//           holds"; SKILL.md: "A binding something writes (a `<-` target, a `&mut`'s
+//           referent) is state: at a wake it keeps the value it holds, whatever its
+//           initializer would now compute."
+// expected: from step 3 on every line ends "50, 50, 50": the three cells were written 50
+//           at step 2 and nothing writes them again.
+// observed: at the wake (step 10) the two cells of `&mut (base + 0)` and `&mut 0` go back
+//           to their initializers, with no event; the named `&mut z` keeps 50:
+//             (9, false, 50, 50, 50)
+//             (10, true, 1, 0, 50)
+let step = 0;
+step <- select step { s if s < 12 => s + 1, _ => never() };
+let mode = step < 4 || step > 9;
+let base = 1;
+let h1: &mut i64 = never();
+let h2: &mut i64 = never();
+let h3: &mut i64 = never();
+select mode {
+  true => {
+    h1 <- once(&mut (base + 0));
+    h2 <- once(&mut 0);
+    let z = base + 0;
+    h3 <- once(&mut z);
+    0
+  },
+  false => never()
+};
+let t = select step { 2 => null, _ => never() };
+*h1 <- t ~ 50;
+*h2 <- t ~ 50;
+*h3 <- t ~ 50;
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(step, mode, *h1, *h2, *h3)

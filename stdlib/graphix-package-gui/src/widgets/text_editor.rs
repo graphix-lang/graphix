@@ -62,6 +62,22 @@ impl<X: GXExt> GuiWidget<X> for TextEditorW<X> {
     ) -> Result<bool> {
         let mut changed = self.p.update(id, v).context("text_editor")?;
         let mut sync = false;
+        // CR claude for claude: [bug/medium] Every delivery of the content reaches
+        // Echoes::delivered, an unchanged one included. A place reference such as
+        // `&doc.text` re-delivers its unchanged value at every write of `doc` (ByRef
+        // republishes its cell when the root fires; TRef::update_changed says the same
+        // of `&app.size`). If another field of `doc` is written between an edit's send
+        // and its echo, the stale text matches no send and retires them all. This
+        // editor is then rebuilt at the old text with its cursor clamped back, and the
+        // cursor stays there after the echo, so the next key lands before the last one
+        // typed. text_input does the same with a key typed in that window, and loses a
+        // character; the toggles flicker. Fix: take this content, text_input's value
+        // and the toggles' state through TRef::update_changed (move content and value
+        // out of props! the way the toggles' state is), so only a changed value is a
+        // program value; a same-value rejection is still judged at idle. Pin it: call a
+        // `|x| *n <- x` callable, press a key without draining, then drain. probe:
+        // design/review-2026-11-16/repro/gui-widgets-b-place-redelivers.gx (shows the
+        // re-delivery; the widget path was found by reading). (gui-widgets-b-01)
         if id == self.p.content.r.id
             && let Some(text) = &self.p.content.t
         {

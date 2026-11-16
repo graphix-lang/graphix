@@ -1,0 +1,46 @@
+// c-analysis-branch: a builtin that compares abstract values is forked
+// beside a sibling whose callee fires what the `Ord` impl reads.
+//
+// `analysis::runs_hooks` makes a `<`, an `==` or a string interpolation
+// over a value holding an abstract opaque (its core-trait impl's reads are
+// in no summary). A builtin handed such a value (`array::sort` here; a map
+// literal keyed by one diverges the same way) runs the same impl and is
+// not: its summary reads nothing unknown, so `(mk(1), array::sort(..))`
+// is planned independent, and the forked sort orders by the `y` of the
+// cycle before.
+//
+// command:
+//   GRAPHIX_PAR=off   graphix --no-cache --no-fusion <this file>   (serial)
+//   GRAPHIX_PAR=force graphix --no-cache --no-fusion <this file>   (forked)
+//   graphix-fuzz check <this file>
+// expected: the forked run prints what the serial one does, and the fuzzer
+//   AGREEs (as it does with `C(a + 10) < C(1)` in place of the sort)
+// observed, second line printed:
+//   serial: (0, [30, 11, 1])
+//   forked: (0, [1, 11, 30])      (three runs alike)
+// The fuzzer answered DIVERGENCE in each of five runs; the pair it names
+// varies from run to run: "parallel evaluation bug
+// (forked node-walk != serial node-walk)", "image bug: writing the program
+// image changed the program (jit)" between two forked runs, or
+// "nondeterminism: a deterministic program answered differently on a rerun
+// in the same engine". A map literal keyed by `C` in place of the sort
+// (`map::fold({C(a + 10) => 1, C(1) => 2, C(30) => 3}, 0, |acc: i64, kv:
+// (C, i64)| acc * 10 + kv.1)`) diverges the same way: 312 serial, 213 forked.
+type C = Abstract<i64>;
+let a = 0;
+let h = |z: i64| z;
+impl Eq for C { let eq = |x, y| x.0 == y.0 };
+impl Ord for C {
+    let cmp = |x, y| {
+        let k = h(0);
+        select (x.0 * k, y.0 * k) {
+            (p, q) if p < q => `Less,
+            (p, q) if p > q => `Greater,
+            _ => `Equal
+        }
+    }
+};
+let mk = |v: i64| { let y = 1 - 2 * (a % 2); h <- once(|z: i64| y + z); y + v };
+let t = (mk(1), array::map(array::sort([C(a + 10), C(1), C(30)]), |c: C| c.0));
+select a { n if n < 6 => a <- a + 1, _ => never() };
+t

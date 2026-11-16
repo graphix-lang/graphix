@@ -1,0 +1,41 @@
+// x-recursion: every cycle that makes or unpins an orphan re-walks the
+// values of ALL orphans
+//
+// A function value keeps the bindings it captured after their slot is
+// deleted (an orphan). `Lives::collect` runs at each cycle's start, and
+// whenever any orphan was made or lost a pin it walks the allocation graph
+// under every orphan's value. Here one closure from a deleted slot keeps a
+// 200,000-element array of tuples alive (`saved1`), and an unrelated slot
+// whose closure escapes is born and deleted every other cycle (`saved2`).
+//
+// command (N = 200000 below; edit it to 1000 for the baseline):
+//   time timeout -s KILL 120 /home/eric/tmp/review-2026-11-16/bin/graphix \
+//     --no-cache design/review-2026-11-16/repro/x-recursion-orphan-collect-rewalks.gx
+//
+// expected: a cycle costs what the churning slot costs, whatever the
+//   standing orphan holds.
+// observed (debug binary, 200 cycles): 8.7 s at N = 200000, against 0.9 s
+//   with the big binding never orphaned (`once_xs` stays `[1]`), 0.7 s with
+//   no churn (`xs` stays `[1]`), and 0.56 s for 2000 cycles at N = 1000;
+//   2000 cycles at N = 200000 take 85 s: about 42 ms a cycle, linear in N.
+let mkdata = |n: i64| array::init(n, |j| (j, "s[j]"));
+let bigdata = mkdata(200000);
+let i = 0;
+i <- select i { n if n < 200 => i + 1, _ => never() };
+let once_xs = select i { 0 => [1], _ => [] };
+let keep = array::map(once_xs, |x| {
+  let big = array::concat(bigdata, [(x, "t")]);
+  |n: i64| n + array::len(big)
+});
+let saved1: Array<fn(n: i64) -> i64> = never();
+saved1 <- select keep { [] => never(), a => a };
+let xs = select i % 2 { 0 => [i], _ => [] };
+let fs = array::map(xs, |x| {
+  let small = x + 1;
+  |n: i64| n + small
+});
+let saved2: Array<fn(n: i64) -> i64> = never();
+saved2 <- select fs { [] => never(), a => a };
+let r = (array::map(i ~ saved1, |f| f(0)), array::map(i ~ saved2, |f| f(0)));
+sys::exit(select i { 200 => 0, _ => never() });
+(i, r)

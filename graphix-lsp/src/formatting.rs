@@ -40,6 +40,12 @@ pub fn handle(
     let Some(doc) = state.document(uri) else {
         return Ok(None);
     };
+    // CR claude for claude: [dead/low] `state.document(uri)` already required
+    // uri_to_path(uri) to be Some, so the SourceKind::Program default and the `None =>
+    // FormatConfig::default()` arm below are dead, and they suggest pathless documents
+    // are formatted when they are not. Resolve the path first, look the document up by
+    // it, and call SourceKind::of_path and FormatConfig::for_file on it directly. Found
+    // by reading; not run. (x-lsp-probe-08)
     let path = uri_to_path(uri);
     let kind = path.as_deref().map_or(SourceKind::Program, SourceKind::of_path);
     let cfg = match path.as_deref() {

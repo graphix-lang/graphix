@@ -1,0 +1,30 @@
+// Read::read_exact's trait default (sys/io.gxi) goes bottom between chunks,
+// where the system streams' override (sys_io_read_exact) keeps its last answer.
+// Command:
+//   timeout -s KILL 10 graphix --no-cache gx-stdlib-read-exact-default-blanks.gx
+// Expected (as a File's read_exact behaves: the last answer stands while the
+// next read is in flight): one line per cycle x = 1..16, "abcd" until "efgh".
+// Observed: the line for x = 7 is missing: the second read's first chunk ("efg")
+// takes the default's `false => { ..; never() }` arm, the result is bottom for
+// that cycle, and every value built from it (this tuple) blanks. read_all and
+// write_exact's defaults have the same `never()` arm.
+use sys::io::Read;
+type Src = Abstract<bytes>;
+impl Read for Src {
+  let read = |s, n| -> Result<bytes, `IOError(string)> {
+    let pos: u64 = u64:0;
+    let data = s.0;
+    let avail = buffer::len(data) - pos;
+    let k = min(n, avail, u64:3);
+    let chunk = (s, n) ~ data[pos..(pos + k)]$;
+    pos <- chunk ~ pos + k;
+    chunk
+  }
+};
+let src = Src(buffer::from_string("abcdefghij"));
+let x = 0;
+x <- select x < 16 { true => x + 1, false => never() };
+let n = u64:4;
+n <- select x { 6 => u64:4, _ => never() };
+let a = Read::read_exact(src, n);
+(x, buffer::to_string(a$)$)

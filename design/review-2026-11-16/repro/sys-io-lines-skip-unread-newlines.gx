@@ -1,0 +1,22 @@
+// sys-io: a line reader merges the lines in bytes a reclaimed read gave back
+// Command: timeout -s KILL 30 graphix --no-cache sys-io-lines-skip-unread-newlines.gx
+//   (the child runs sys-io-lines-unread-emit.sh beside this file: it prints
+//   "a\nb\n" at 0.4 s and "c\n" at 0.9 s)
+// Expected: "a", "b", "c" (as printed when the `Read arm is never()).
+// Observed: one line "a\nb\nc". The read in the `Read arm slept in flight,
+//   took "a\nb\n" and gave it back to the stream (ReadTicket::settle); the
+//   reader spliced it into BufferedRead::pending, and line_reader starts its
+//   newline scan at `scanned = s.pending.len()`, past those newlines.
+use sys::io::{Read, Lines};
+let c = sys::process::spawn(sys::process::options(
+    #args: ["/home/eric/proj/graphix/design/review-2026-11-16/repro/sys-io-lines-unread-emit.sh"],
+    #stdio: sys::process::stdio(#stdout: `Pipe),
+    "/bin/sh"
+))$;
+let out = c.stdout$;
+let mode: [`Read, `Lines] = `Read;
+mode <- sys::time::timer(duration:150.ms, false) ~ `Lines;
+let r = select mode { `Read => Read::read(out, u64:100), `Lines => never() };
+let l = select mode { `Lines => Lines::lines(mode ~ out), `Read => never() };
+sys::exit(sys::time::after_idle(duration:1500.ms, l) ~ 0);
+l

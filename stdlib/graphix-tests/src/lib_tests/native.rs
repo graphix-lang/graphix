@@ -31,6 +31,16 @@ async fn native_on_lambda_literal_is_error() {
 
 // `#[native]` on a function binding is an error.
 #[tokio::test]
+// CR claude for eric: [risk/low] The placement rule this pins (`#[native]` on a
+// function is refused) lives in `Native::check_target`, which only the fusion walk runs
+// (`fusion::check_attribute_targets`). `graphix --check` and the language server accept
+// `{ #[native] let f = |x: i64| x + 1; f(2) }` and `--no-fusion` runs it, while a fused
+// build refuses it. The check already refuses `#[native(1)]`, and this rule needs only
+// the node's type, which the check has. Decide whether placement belongs in the check
+// (then pin it with `run!` fixtures, which also hold the check to the build) or stays
+// build-only as `testing.md` lists `#[native]`. probe:
+// design/review-2026-11-16/repro/tests-lib-b-a-native-placement-check.sh
+// (tests-lib-b-a-12)
 async fn native_on_lambda_binding_is_error() {
     let e = refusal(
         "{ #[native]\nlet f = |x: i64| x + i64:1; f(i64:2) }",
@@ -111,6 +121,12 @@ run!(native_hof_callback_fusable, "list::to_array(list::map(list::from_array([1,
 
 // An `array::init` callback calling a recursive lambda defined in an
 // earlier top-level statement fully fuses.
+// CR claude for claude: [test-gap/low] `f` answers 0 at every depth (`_ => f(n - 1)`
+// only reaches the base case), so `[0, 0, 0, 0]` holds for a kernel that skips the
+// recursion or returns the base case at once. The value pins nothing of the recursive
+// call the comment is about. Make each level count, `_ => n + f(n - 1)`, and expect
+// `[i64:0, i64:3, i64:10, i64:21]` (both engines give that today and the fuzzer
+// agrees). Found by reading; the variant was run. (tests-lib-b-a-07)
 run!(native_hof_callback_recursive_call_fuses, "{ \
                 let rec f = |n: i64| -> i64 select n { 0 => 0, _ => f(n - 1) }; \
                 array::init(4, |idx| #[native] { let a = idx * 2; f(a) }) \
@@ -147,6 +163,12 @@ async fn native_connect_in_callback_is_error() {
     // A connect is an effect and refuses emission, so `#[native]` on
     // this callback is a compile error.
     let e = refusal(prog, crate::TEST_REGISTER).await.unwrap();
+    // CR claude for claude: [test-gap/low] This asserts the prefix every fusion refusal
+    // shares, so it holds whichever rule refuses; the refusal here names two blockers
+    // (`connect is an effect` and `a region of type _ has no kernel return`). Assert
+    // `e.contains("connect is an effect")`, the rule the comment names. probe:
+    // design/review-2026-11-16/repro/tests-lib-b-a-native-connect-two-blockers.gx
+    // (tests-lib-b-a-06)
     assert!(e.contains("did not fully fuse"), "{e}");
 }
 

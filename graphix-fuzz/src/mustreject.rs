@@ -635,6 +635,15 @@ fn references(root: &Expr, types: &TypeMap, cap: usize, out: &mut Vec<RejectProb
                 ExprKind::ByRef(Mutability::Shared, x.clone()).to_expr(b.value.pos);
             let cand = rebind(None, shared);
             // a use of `r` before the write may need it writable too
+            // CR claude for claude: [bug/low] The sites of `&mut x` made `&x` are the
+            // write and the statements before it that name `r`, but an alias carries
+            // the read-only reference too. In `let p = r; let y = f(p)`, with `f`
+            // taking `&mut i64`, the refusal "&mut i64 does not contain &i64" lands at
+            // `f(p)` and is filed as MISPLACED. The generator puts its `&mut`
+            // references in tuples. Fix: follow the lets built from `r` up to the
+            // write, as `affected_stmts` does for retype. probe:
+            // design/review-2026-11-16/repro/fuzz-mutate-ref-write-alias.gx
+            // (fuzz-mutate-05)
             let uses = (0..w).filter(|&k| {
                 later[k].fold(false, &mut |m, n| {
                     m || matches!(&n.kind, ExprKind::Ref { name } if name.to_string() == *r.name)
@@ -771,6 +780,11 @@ fn disjoint_literal(t: &Type) -> Option<Expr> {
 /// argument.
 /// Whether `t` is a set of primitives or names a class of them (`Number`,
 /// `Int`, ..): a bound only those primitives meet.
+// CR claude for claude: [readability/low] The first two lines of this doc ("Whether a
+// type has no cell anywhere, so it cannot bend to a widened argument.") describe a
+// deleted function, not primitive_class: delete them. The module doc's family list also
+// stops at 11, while this file builds 13 (rigid-pattern), 14 (undecided-part) and 15
+// (variable-union). Found by reading; not run. (fuzz-mutate-07)
 fn primitive_class(t: &Type) -> bool {
     const CLASSES: [&str; 6] = ["Number", "Real", "Float", "Int", "Uint", "Sint"];
     match t {
@@ -856,6 +870,20 @@ fn open_init(types: &TypeMap, block: &[Expr], si: usize, value: &Expr) -> bool {
                     }
                 })
         }
+        // CR claude for claude: [bug/medium] earlier_let finds the last top-level `let`
+        // of a name before the statement, whatever binds that name in between (a select
+        // arm, a lambda parameter, an inner let), so open_init judges the wrong
+        // binding. Over `let x = 1; let n = never(); let v = select n { x => x }` it
+        // calls `v` decided, retype adds `v <- "tm"`, which decides `n`, and the
+        // refusal at `n + 1` is filed as MISPLACED. With an annotated top-level `x`,
+        // variant-widen widens an arm bind over `n` and is refused by the
+        // undecided-part rule, which is filed as WRONG REFUSAL. Generated programs
+        // reuse top-level names as arm binds (`bool as v20` beside `let v20`). Fix:
+        // resolve the name through the binding in force at the reference
+        // (`typemorph::for_each_reached` tracks it), and fall back to `types.cell` when
+        // that binding is not the top-level let. probe:
+        // design/review-2026-11-16/repro/fuzz-mutate-open-init-shadowed-name.sh
+        // (fuzz-mutate-02)
         ExprKind::Ref { .. } => match earlier_let(block, si, value) {
             Some((j, d)) => d.typ.is_none() && open_init(types, block, j, &d.value),
             None => types.cell(value),
@@ -1593,6 +1621,15 @@ fn labels_default(
         }))
         .to_expr_nopos();
         let cand = mutate::replace(root, at + 1, &lambda);
+        // CR claude for claude: [bug/low] The right sites are the definition and the
+        // statements naming `f` or a plain alias, but a struct or array holding `f`
+        // carries the now-required label too. `let s = {g: f}; let p = s.g(2)` is
+        // refused "missing required argument a" at `s.g(2)`, which is filed as
+        // MISPLACED. Fix: take the sites from `affected_stmts` over the root block's
+        // statements, which follows the lets built from `f` and what reads them, as
+        // retype and widen-hop already do. probe:
+        // design/review-2026-11-16/repro/fuzz-mutate-label-default-holder.gx
+        // (fuzz-mutate-04)
         let mut sites = vec![si];
         sites.extend(stmts.iter().skip(si + 1).filter(|(_, _, st)| {
             st.fold(false, &mut |m, n| m || matches!(&n.kind, ExprKind::Ref { name } if names.contains(&name.to_string().as_str())))
@@ -1998,6 +2035,18 @@ fn mono_reuse(
         // every value use shares the wrapped binding's cells, so the
         // checker refuses at whichever reached use conflicts first
         let mut sites = vec![si];
+        // CR claude for claude: [bug/medium] mono_reuse's right sites (the definition,
+        // and the statements naming `f` or a plain alias up to the second use) miss two
+        // ways the one instance reaches past a use of `f`. A use whose call holds a
+        // cell its uses decide (`f(n)` over `let n = never()`, `array::map(xs, f)` over
+        // `let xs = []`) gives that cell the instance's type, so the refusal lands at
+        // the cell's later reader. A holder (`let s = {g: f}`, `let s = [f]`) shares
+        // the instance, so `s.g("str")` refuses before the second use. Both are filed
+        // as MISPLACED. Fix: skip a use whose call has an argument `open_init` calls
+        // open, as `shared_var` does, and take the sites from `affected_stmts(block,
+        // si, f)`, which follows the lets built from `f`. probe:
+        // design/review-2026-11-16/repro/fuzz-mutate-mono-reuse-sites.sh
+        // (fuzz-mutate-01)
         sites.extend(values.iter().map(|(_, j)| *j).filter(|j| *j <= jb));
         sites.sort_unstable();
         sites.dedup();

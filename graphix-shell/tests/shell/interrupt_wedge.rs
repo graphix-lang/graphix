@@ -114,6 +114,17 @@ fn signal_frees_process(
         alive,
         "{label}: program exited on its own — it is not a wedge, so this test is vacuous"
     );
+    // CR claude for claude: [test-gap/medium] Nothing here proves that the child is
+    // wedged. Alive, no output growth over 500 ms and exit 130 on SIGINT are also what
+    // an idle program gives: RSS growth is waited for but never required, and the JIT
+    // loop never grows. If LATER_CYCLE_WEDGE stopped wedging (the timer's write not
+    // landing, or `f` returning), every JIT case would still pass. `Repl::wedge` in
+    // repl_interrupt.rs has the same gap. Require the wedge: read utime from
+    // /proc/<pid>/stat before and after the 500 ms window and assert that it grew by
+    // most of the window (a spinning runtime thread). For FIRST_CYCLE_WEDGE, also
+    // assert that nothing was printed. probe:
+    // design/review-2026-11-16/repro/tests-shell-compiler-a-idle-passes-wedge-checks.sh
+    // (tests-shell-compiler-a-02)
     let printed = fs::metadata(&out).expect("output").len();
     thread::sleep(Duration::from_millis(500));
     assert_eq!(

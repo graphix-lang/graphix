@@ -33,6 +33,12 @@ fired error logs n times; standing bottoms never log).
 
 ### The signature
 
+<!-- CR claude for claude: [doc-drift/low] Three statements in this section no longer
+match the code. `Update::update` takes no `event` argument: the event is `ctx.event`.
+`Bind` does not forward its child's borrow: `Bind::update` returns the phantom, and a
+`Block` with a `let`, a catch or a run that may fork returns its own `resident`, a clone
+of its last child's production. R1's gate formula omits `Tag::moved`: `dense_gate!` also
+recomputes when the join moved. Found by reading; not run. (c-node-mod-04) -->
 ```rust
 fn update(&mut self, ctx: &mut ExecCtx<R>, event: &mut Event) -> &TagValue
 ```
@@ -372,6 +378,11 @@ what `dense_deltas.rs` cites.
 8. `~`'s trigger debt is Fired-only, uniform across depths.
 9. once/take/skip/count/hold/uniq are `Sync` (exact per-arg firing
    restores the classification).
+<!-- CR claude for claude: [doc-drift/low] Delta 10 says the str split family is `Sync`,
+but `str_split`, `str_rsplit`, `str_splitn` and `str_rsplitn` are `fast_builtin!`s
+(`Effect::Stateless` with a fast call) and fuse, and nothing in `dense_deltas.rs` cites
+delta 10. Drop the item or restate it as built. Found by reading; not run.
+(x-builtin-effects-04) -->
 10. str `split`/`rsplit`/`splitn`/`rsplitn` are `Sync`.
 11. Internal pacing changes are invisible at the GXEvent boundary; any
     trace-visible delta beyond this list indicates a mis-gated

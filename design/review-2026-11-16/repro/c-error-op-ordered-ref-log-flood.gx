@@ -1,0 +1,17 @@
+// Title: a standing `<` over references hidden under Any logs its failure at
+// every cycle its statement updates, and the log names no site; a standing
+// integer divide by zero in the same tuple logs once, with its site.
+// Command: timeout -s KILL 30 graphix --no-cache c-error-op-ordered-ref-log-flood.gx 2>&1 | sort | uniq -c
+// Expected: one "references have no order" line (the fire that made the
+//   bottom), naming line 17, column 5, as the div0 line names its site.
+// Observed:
+//   1 arith error in file ... at line: 17, column: 12 "attempt to divide by zero"
+//   7 references have no order, including under Any
+let t = sys::time::timer(duration:10.ms, true);
+let c = count(t);
+let a = 1;
+let x: Any = &a;
+let y: Any = &a;
+let n = 3;
+sys::exit(select c > 5 { true => c ~ 0, false => never() });
+(c, x < y, n / (n - 3))

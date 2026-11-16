@@ -246,6 +246,21 @@ pub(crate) fn pairs_to_map<'a>(
     // insert_many keeps the first of equal keys, so it sees them last
     // first; an Ord that is no total order (a user impl) may panic its
     // sort, and the map is then built a pair at a time, wrong but whole
+    // CR claude for claude: [bug/high] This catch, and the one in core's sorted() for
+    // array::sort, are the only places that survive the sort panic a user Ord with no
+    // total order raises. Every other bulk build of a Value-keyed map sorts under the
+    // same hooks with no catch, and the panic kills the runtime ('graphix runtime is
+    // dead'). The unguarded sites are fc_map_union's insert_many, the two
+    // Map::from_iter in Type::cast_inner, and MapCollection::kept for ValueMap. In
+    // cast_inner the keys come from data (json, pack, netidx reads), so whether the
+    // sort trips is the data's choice. The kept site is the node-walk map::filter: the
+    // fused filter survives and prints 'filter 26', while --no-fusion dies. Fix: build
+    // every Value-keyed map through one helper that never runs Rust's sort under user
+    // hooks. It can insert pair by pair, and for kept it can remove the dropped keys
+    // from the already-ordered source. Then no catch_unwind needs to wrap code that
+    // runs Graphix hooks. probe:
+    // design/review-2026-11-16/repro/x-panics-map-ord-sort.gx,
+    // design/review-2026-11-16/repro/x-panics-map-ord-cast.gx (x-panics-01)
     let bulk = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         CMap::from_iter(kv.iter().rev().cloned())
     }));
@@ -748,6 +763,16 @@ fn take_source<R: Rt, C: MapCollection, S: Send>(
     Sourced { tag, source: Some(source), resized, back, paused, moved }
 }
 
+// CR claude for eric: [perf/medium] A node-walked slot costs several KB. array::init +
+// array::map(arr, |x| x + 1) over 1M elements is killed past 6 GB under --no-fusion,
+// while 500k fits (in 6.8 s) and init alone at 1M fits. With default flags, a 1M map
+// whose callback calls str::parse (node-walked, so the map cannot fuse) is killed the
+// same way after about 10 s. Any program that maps a million rows with an unfusable
+// callback cannot run in a few GB. Heap-profile what one slot holds (its CallSite and
+// instance, the element's store entry, its state) and shrink the largest part, or
+// decide that this per-element cost is the model to keep. Record the cost in
+// design/collection_intrinsics.md either way. probe:
+// design/review-2026-11-16/repro/x-rerun-5-nodewalk-slot-memory.sh (x-rerun-5-05)
 #[derive(Debug)]
 struct Slot<R: Rt> {
     id: BindId,
@@ -763,6 +788,18 @@ impl<R: Rt> Slot<R> {
         kind: CallKind,
     ) -> Self {
         let (id, element) = callback.slot_arg(ctx, 0, "collection_element", element_type);
+        // CR claude for claude: [bug/low] A slot whose callback is a builtin
+        // (`array::init(n, count)`) is never charged to the activation budget. Only a
+        // lambda instance's construction calls stack::activation_born, and a builtin
+        // callee builds none. With GRAPHIX_ACTIVATION_BUDGET=1000, 300000 `count` slots
+        // run to completion while `|i| count(i)` stops at the budget, though
+        // design/atomic_recursion.md and the book's recursion page say the budget
+        // counts collection slots. Fix: charge a slot whose call builds no lambda
+        // instance here and release it in Slot::delete (a lambda callback is already
+        // charged through its instance), or say in both docs that only lambda
+        // activations count. probe:
+        // design/review-2026-11-16/repro/x-rerun-3-builtin-slots-uncharged.sh
+        // (x-rerun-3-04)
         let call = callback.call(ctx, smallvec![element], kind);
         Self { id, call, state: SlotState::Bottom }
     }
@@ -1035,6 +1072,14 @@ fn merge_tag(current: Option<Tag>, next: Tag) -> Option<Tag> {
 /// first dispatch runs under a forced init view. The slots run in order
 /// when `rebound`, the cycle their callback changes, and are decided again
 /// once they are bound to it.
+// CR claude for claude: [doc-drift/low] The doc above says a fresh slot's first
+// dispatch 'runs under a forced init view'. It runs under ExecCtx::enter_body
+// (SlotViews::run): it is entered, nothing in it is born
+// (design/bind_driven_bodies.md). The same pre-bind-driven wording stands in
+// CallSite::prime_bound's doc ('under the init view', while its code calls enter_body)
+// and in ChildBlock's doc in fusion/emit_helpers.rs ('born with the init view'). Say
+// 'entered', or drop the clause, in all three. Found by reading; not run.
+// (c-collection-03)
 fn update_slots<R: Rt>(
     ctx: &mut ExecCtx<'_, R>,
     slots: &mut [Slot<R>],
@@ -1177,6 +1222,18 @@ fn ranges(n: usize, grain: usize) -> LPooled<Vec<(usize, usize)>> {
 /// ahead of their first updates, where `site` says the builds pay for
 /// it; a slot built in order binds at its first update. `call` is a
 /// slot's call.
+// CR claude for eric: [perf/high] A collection builds, checks and analyzes one instance
+// of its callback per element at run time (`CallSite::prebind`, `build_bound`), so a
+// callback that does not fuse costs a node graph per element. Filtering 400,000 short
+// strings with `re::is_match` peaks at 3.0 GB and 33 s of CPU on the debug binary,
+// against 97 MB and 1.2 s with `str::ends_with`; `str::parse` over 100,000 strings
+// takes 1.1 GB. Every `Effect::Stateless(None)` builtin (`str::parse`, the `re::*`
+// calls, the sorts, the json/toml/pack writers) puts an ordinary data loop on this
+// path, and nothing warns of it. A callback whose body `analysis::def_body_facts` finds
+// pure holds no per-slot state: evaluate one instance over the elements in order, as
+// the kernel loop and the tail driver do, and keep an instance per slot only for a body
+// that keeps state; or give those builtins fast-call entries. probe:
+// design/review-2026-11-16/repro/a-compiler-slot-cliff.sh (a-compiler-01)
 fn build_fresh<R: Rt, S: Send>(
     ctx: &mut ExecCtx<'_, R>,
     fresh: &mut [S],
@@ -1187,6 +1244,18 @@ fn build_fresh<R: Rt, S: Send>(
         return;
     }
     let prebind = |ctx: &mut CompileCtx<R>, slots: &mut [S]| {
+        // CR claude for claude: [bug/medium] The activation budget does not stop a
+        // collection's growth. Each prebound instance is charged
+        // (stack::activation_born), and the charge that passes the budget stops the
+        // runtime. But this loop never polls ctx.control.interrupted(), so it keeps
+        // building every remaining slot's instance. resize has already built every slot
+        // shell before anything checks the stop. With GRAPHIX_ACTIVATION_BUDGET=1000, a
+        // 2M-element array::init over a stateful callback is OOM-killed under the
+        // default GRAPHIX_PAR=auto instead of stopping, and under PAR=off it stops only
+        // after 4 s of shell building. Return here once ctx.control.interrupted() is
+        // true. In resize, stop adding slots once ctx.interrupted() is true, or charge
+        // a shell to the budget. probe:
+        // design/review-2026-11-16/repro/x-rerun-4-budget-slot-growth.gx (x-rerun-4-01)
         for slot in slots {
             if let Some(cs) =
                 call(slot).downcast_mut::<CallNode<R>>().and_then(CallNode::call_mut)
@@ -1217,6 +1286,20 @@ fn build_fresh<R: Rt, S: Send>(
     ctx.apply_deferred();
 }
 
+// CR claude for claude: [bug/high] This skips a standing slot's whole call when its
+// body's boundary is clean, but nothing checks the slot's function. A callback that
+// changed quietly (Tag::MOVED: a function value an arm's wake recomputed, held outside
+// through a reference) reaches the intrinsic's formal through ExecCtx::stand. That
+// never enters event.variables, so `rebound` in MapQ::update stays false. The body does
+// not read the function, so its boundary is clean too. Every idle slot keeps calling
+// the old callee: a pruned array::map, filter or find keeps the old callback's results
+// until the source moves or the callback fires, while unpruned they switch, and
+// GRAPHIX_PRUNE=audit panics. Fix: treat a callback whose store entry is stamped this
+// cycle (fired or stood moved) as rebound, or decline here when the slot's fnode was
+// marked this cycle. Pin a fired and a moved callback over a standing source in
+// lang::prune. probe:
+// design/review-2026-11-16/repro/c-collection-prune-skips-moved-callback.gx
+// (c-collection-01)
 fn skip_idle_slot<R: Rt>(ctx: &mut ExecCtx<'_, R>, slot: &mut Slot<R>) -> bool {
     let NodeView::CallSite(site) = slot.call.view() else { return false };
     if site.slept.is_set() || site.args.len() != 1 {
@@ -1349,9 +1432,44 @@ impl<R: Rt, C: MapCollection> Update<R> for MapQ<R, C> {
             }
         }
         let callback = self.callback.id;
+        // CR claude for claude: [bug/high] `rebound` sees only a callback written in
+        // the cycle the slots run. A callback that changes while the source is bottom
+        // (the early return above, before update_slots) is never treated as a rebind,
+        // and by the same reading neither is one that changes while this node sleeps.
+        // SlotSite::redecide never runs, so the slots keep the independence verdict the
+        // old callback earned. Under GRAPHIX_PAR=force, slots whose new callback calls
+        // an ORDERED queuefn fork and reach the queue in a different order each run,
+        // unlike the serial walk. The comment below describes the wake catch-up this
+        // fix relied on, which bind-driven bodies deleted. Fix: record the missed
+        // change (a pending-redecide bit set on the bottom return and in sleep, or a
+        // comparison of the callback value the slots last ran with) and redecide before
+        // update_slots; delete the catch-up comment. probe:
+        // design/review-2026-11-16/repro/x-rerun-1-collection-pause-rebind-fork.gx
+        // (x-rerun-1-01)
         let slots = woken_slots(ctx, old_len, paused, |ctx, mut views| {
             // after the paused slots' catch-up, which delivers a callback
             // that changed meanwhile
+            // CR claude for claude: [perf/low] `rebound` is true whenever the callback
+            // binding is delivered, also when it fires with the function the slots
+            // already call: the slot calls keep their instances, yet `update_slots`
+            // runs them in order and redecides the site. A callback that fires every
+            // cycle (`let f = select n { .. => g1, .. }` over an `n` that fires) never
+            // forks. Take the cycle as a rebind only when the delivered function is not
+            // the one slot 0's call is bound to. probe:
+            // design/review-2026-11-16/repro/x-parallel-callback-refired-never-forks.gx
+            // (x-parallel-03)
+            // CR claude for claude: [bug/high] `rebound` reads the event overlay alone,
+            // and a callback a wake moved is stood in the store with no overlay entry
+            // (`publish_production` -> `ExecCtx::stand`). So `skip_idle` stays on and
+            // `skip_idle_slot` skips every slot's call: the slots keep the old
+            // function's results where an unpruned walk rebinds them, and
+            // `update_slots` is not told to run them in order. `array::map`,
+            // `array::filter` and `list::map` diverge under `Pair::Prune`, and
+            // `GRAPHIX_PRUNE=audit` panics. Take the callback as rebound when its entry
+            // was delivered this cycle by overlay or by stamp (`read_var` answering
+            // `VarRead::Delivered`), and pin a moved callback in `lang::prune`. probe:
+            // design/review-2026-11-16/repro/c-prune-wake-idle-slot-moved-callback.gx
+            // (c-prune-wake-01)
             let rebound = ctx.event.variables.contains_key(&callback);
             views.skip_idle = !moved && !rebound && ctx.event.view == View::Cycle;
             update_slots(ctx, &mut self.slots, &mut self.fork, views, rebound)
@@ -1805,10 +1923,46 @@ impl<R: Rt, C: MapCollection> Update<R> for FoldQ<R, C> {
                 // A fresh slot is entered with its acc seeded by the chain's
                 // state as it stands.
                 if views.fresh(i) {
+                    // CR claude for claude: [bug/medium] A fresh slot's accumulator is
+                    // seeded as a fire whatever feeds it, and deliver_acc_to_new_slot
+                    // does the same in a kernel, so a fold fires in a cycle where
+                    // nothing fired for it: at its arm's wake when its source grew
+                    // during the sleep, and at any entry of a body after the birth (a
+                    // guard's flip over a standing scrutinee). There `x <-
+                    // array::fold(..)` writes and a count over the fold ticks, while a
+                    // map or array::len over the same source is quiet. CLAUDE.md says a
+                    // wake fires nothing and nothing fires in a body but its binds;
+                    // bind_driven_bodies.md says an accumulator fires when what feeds
+                    // it fires. Seed the slot with the tag of the init or of the slot
+                    // before it, in both engines, fix kernel_instance_state.md's "takes
+                    // its accumulator as delivered", and pin a fold at an outer wake
+                    // and at a guard-flip entry. probe:
+                    // design/review-2026-11-16/repro/x-engine-firing-fold-fires-at-entry.gx
+                    // (x-engine-firing-03)
                     let seed = match i {
                         0 if init.tag().is_bottom() => {
                             TagValue::tagged(Value::Null, Tag::FRESH_BOTTOM)
                         }
+                        // CR claude for claude: [bug/high] A fresh slot's acc is
+                        // delivered as a fire whatever its init did, so a fold whose
+                        // callback reads `acc` fires when its slots are first built in
+                        // a body entered after a birth (a select arm, a callee
+                        // activated with a standing argument).
+                        // design/bind_driven_bodies.md says an accumulator fires only
+                        // when the init or the slot before it fires. `select m { 0 =>
+                        // 100, _ => count(array::fold([1, 2, 3], 5, |acc, e| acc)) }`
+                        // counts 1 at the arm's first entry. `s <- array::fold(..)`
+                        // there writes, although the check warns that write acts only
+                        // in the program's first cycle; `|acc, e| e` and `array::map`
+                        // stay quiet. The kernel does the same in
+                        // `deliver_acc_to_new_slot` (fusion/emit/scaffold.rs), so both
+                        // engines agree on the wrong answer. Fix: seed a fresh slot's
+                        // acc with the tag of what feeds it (the init's tag for slot 0,
+                        // the previous slot's production for the rest), keep the
+                        // carried STALE in `deliver_acc_to_new_slot`, and pin both an
+                        // arm and a callee. probe:
+                        // design/review-2026-11-16/repro/tests-select-a-fold-acc-fires-at-entry.gx
+                        // (tests-select-a-01)
                         0 => TagValue::fired(init.value_cloned()),
                         _ => match &slots[i - 1].state {
                             SlotState::Bottom => {

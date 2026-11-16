@@ -1,0 +1,29 @@
+// c-lib: a run-time bound instance forgets the impls its statically called
+// helpers dispatch to, so it keeps a replaced impl after a reload.
+//
+// command:  graphix --no-cache c-lib-impl-reads-lost-in-fork.gx   (kill after it prints)
+//           (--no-fusion and GRAPHIX_PAR=off print the same; graphix-fuzz check says AGREE)
+// expected: " 2014 2014 [2014, 2015] 2015 2015 [2015, 2016] 2016 2016 [2016, 2017] 2017 2017 [2017, 2018] 2018 2018 [2018, 2019]"
+//           (what the program prints when `app` calls `Sh::sh(x)` itself instead of through
+//           `inner`: stdlib/graphix-tests/src/lang/modules.rs,
+//           a_call_of_an_outside_function_follows_a_reloaded_impl)
+// observed: " 15 15 [2014, 2015] 16 16 [2015, 2016] 17 17 [2016, 2017] 18 18 [2017, 2018] 19 19 [2018, 2019]"
+//           `d::make(ep)` and `held`, the instances alive across the reload at ep 6, still run
+//           the first body's `sh` (c + 1); only `late`, first called after it, runs the second's.
+trait Sh { val sh: fn(self) -> i64 };
+let inner = |x: Sh| Sh::sh(x);
+let app = |x: Sh| inner(x) + 5;
+let ep = 0;
+ep <- select ep { n if n < 14 => n + 1, _ => never() };
+let src: string = never();
+src <- select ep { 2 => "use super::{Sh, app}; impl Sh for i64 { let sh = |c: i64| c + 1 }; let make = app", 6 => "use super::{Sh, app}; impl Sh for i64 { let sh = |c: i64| c + 2000 }; let make = app", _ => never() };
+let s = mod d dynamic { sig { use super::{Sh, app}; val make: fn(x: i64) -> i64 }; source src };
+let saved: fn(x: i64) -> i64 = never();
+saved <- select ep { 4 => ep ~ d::make, _ => never() };
+let held = saved(ep);
+let xs: Array<i64> = never();
+xs <- select ep { 8 => [0, 1], _ => never() };
+let late = array::map(xs, |x| saved(x + ep));
+let seen = "";
+seen <- late ~ "[seen] [d::make(ep)] [held] [late]";
+select ep { 14 => ep ~ seen, _ => never() }

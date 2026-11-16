@@ -142,6 +142,15 @@ run!(
     ; FuseExpect::None
 );
 
+// CR claude for claude: [test-gap/low] This refusal and those of
+// impl_variable_met_in_a_method_body_named_as_declared and
+// test_inside_a_default_receiver_met_through_a_handle_told_as_self each tell the remedy
+// "write the type it tests, `T as [`J]`", and no fixture runs it. Add the passing form
+// beside each: `select [s] { Array<[`J, i64]> as [`J] => 1, _ => 2 }` over the
+// trait-typed parameter, the default's receiver and the impl's variable (today they
+// give 2, 2 and "o"). probe:
+// design/review-2026-11-16/repro/tests-traits-a-told-remedies-unpinned.sh
+// (tests-traits-a-06)
 run!(
     test_inside_a_trait_argument_met_through_a_handle_told_by_the_trait,
     refused("[`J] tests inside a value of the trait Show, which types none of its parts: write the type it tests, `T as [`J]`, or declare the parameter as a named variable bounded by the type it tests, `'a: T`"),
@@ -974,6 +983,13 @@ let csize = |c: Collection| Collection::fold(c, i64:0, |acc, x| acc + i64:1)
 
 // A `never()` arm is the identity of the dispatch union: `[⊥, Counter]`
 // dispatches on Counter.
+// CR claude for claude: [test-gap/low] This program forms no union: a never() arm adds
+// nothing to a select's type, so c is Counter and the call is the same static one
+// trait_basic_abstract pins (a written [_, Counter] normalizes the same way). The ⊥
+// member a dispatch still meets, a declared cell settled to ⊥, is pinned by
+// trait_union_dispatch_members_apart (f(null)). Delete the fixture. probe:
+// design/review-2026-11-16/repro/tests-traits-a-never-arm-forms-no-union.gx
+// (tests-traits-a-08)
 run!(
     trait_dispatch_never_arm_union,
     |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "Counter(3)"),
@@ -1441,6 +1457,14 @@ run!(
     "##
 );
 
+// CR claude for claude: [test-gap/medium] h declares 'a: Number + Show, so h([1.5]) is
+// refused by its own bound: an h that never calls Show::show gets the identical
+// message. So this fixture cannot catch a change that stops handing impl<'b: Show>'s
+// bound to a declared variable. Declare h over a bare 'a (`let h = |x: Array<'a>| ->
+// string Show::show(x)`). Today that form is refused "Array<'_: unbound within Show>
+// does not contain Array<f64>", and only because of the impl's bound. probe:
+// design/review-2026-11-16/repro/tests-traits-a-impl-bound-reaches-call-vacuous.sh
+// (tests-traits-a-01)
 run!(
     impl_head_bound_reaches_the_call,
     refused("does not contain Array<f64>"),
@@ -3120,6 +3144,13 @@ run!(
     |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "arr")
 );
 
+// CR claude for claude: [test-gap/medium] refused("Show") matches every refusal of this
+// program, because the error's context frames quote its text ("in: { trait Show { val
+// show: .."). A refusal for any other reason (the wrong member blamed, an unrelated
+// type mismatch) passes too. Pin the leaf this rule gives: refused("bool does not
+// implement Show"). probe:
+// design/review-2026-11-16/repro/tests-traits-a-recursive-typedef-show-vacuous.sh
+// (tests-traits-a-02)
 run!(trait_over_recursive_typedef_missing_impl, r#"{
     trait Show { val show: fn(self) -> string };
     impl Show for i64 { let show = |x| "i" };
@@ -3760,6 +3791,15 @@ run!(
 // A trait default is held to its method's assertion though no impl or
 // call takes it.
 run!(
+    // CR claude for claude: [test-gap/low] The comment says the default is held "though
+    // no impl or call takes it", but `impl Score for i64 { let score = |x| x }`
+    // inherits `bump`'s default. So this still passes if only defaults that some impl
+    // inherits are held to the assertion. A trait with no impl, and one whose impl
+    // overrides `bump`, are refused today, but neither is tested. Make the impl
+    // override `bump` (`let bump = |x| x`) so the fixture tests what the comment says.
+    // probe:
+    // design/review-2026-11-16/repro/tests-traits-b-default-assertion-no-impl-takes.sh
+    // (tests-traits-b-06)
     uncalled_trait_default_must_be_pure,
     r#"{
     trait Score {
@@ -4686,6 +4726,19 @@ run!(
 );
 
 run!(
+    // CR claude for claude: [readability/medium] This pins a bare containment mismatch.
+    // The message prints the declaration as `fn<'b: V + [null, 'self: unbound within
+    // V]>..`, a V bound on 'b that the trait never wrote, because the failed
+    // containment merged the lambda's own `self` into 'b. It names no fix. The two
+    // fixes the comment above names (write the label as 'b, or leave it unwritten) both
+    // check. Once the label has decided the lambda's `self`, the body's `self` is no
+    // longer the receiver's type: with `s: 'q`, `{ let r: self = s; 0 }` is refused
+    // with "'self: unbound does not contain 'q". Refuse with a told note saying that a
+    // default's written `self` is the lambda's own variable, decided here by the label,
+    // and naming both fixes, as traits::taker_refusal does for a method's own variable.
+    // Print the declaration as declared, and pin the note. probe:
+    // design/review-2026-11-16/repro/tests-traits-b-label-before-self-message.sh
+    // (tests-traits-b-02)
     default_method_label_written_at_the_bound_before_self_refused,
     refused("does not contain fn(#k: [null, 'self"),
     "/test.gx" => r#"
@@ -5052,6 +5105,18 @@ run!(
 ; FuseExpect::None);
 
 run!(
+    // CR claude for claude: [test-gap/medium] No fixture covers the Type::Abstract arm
+    // of Type::self_taken_in. `val mk: fn(self) -> Bx<self>` over `type Bx<'a> =
+    // Abstract<'a>`, called with a union self, is refused today. If that arm were
+    // deleted it would be accepted, returning Bx<string> where the call's type is
+    // Bx<[i64, string]>, and no test would fail. The refusal's text ("in another
+    // parameter, a variable's bound, or under a function parameter or a writable
+    // reference in its result") names nothing this call does, and design/traits.md's
+    // list omits an abstract type's parameter too. Add the repro program as a refusal
+    // fixture with a twin that selects by hand, and name an abstract type's parameter
+    // in the message and the doc. probe:
+    // design/review-2026-11-16/repro/tests-traits-b-union-self-abstract-param.gx
+    // (tests-traits-b-03)
     union_self_as_a_returned_writable_reference_refused,
     refused("T::mk takes `self` beyond it"),
     "/test.gx" => r#"
@@ -6785,6 +6850,18 @@ run!(
 );
 
 run!(
+    // CR claude for claude: [structure/low] This fixture is
+    // method_result_variable_beside_a_written_member, program and predicate alike, and
+    // method_written_member_beside_declared_union below is
+    // method_result_variable_beside_a_written_member_written.
+    // impl_self_in_a_dynamic_module_signature_names_the_target also runs the same
+    // program as
+    // impl_self_in_a_dynamic_module_signature_refusal_says_self_reads_the_target. That
+    // is twelve runtime starts per gate run that test nothing new. Delete these two
+    // later fixtures, and fold the two dynamic-module fixtures into one whose predicate
+    // requires both "undefined type W" and the told note. probe:
+    // design/review-2026-11-16/repro/tests-traits-b-duplicate-fixtures.py
+    // (tests-traits-b-05)
     method_unwritten_type_takes_the_declared_union,
     prints(r#"["x"]"#),
     "/test.gx" => r#"

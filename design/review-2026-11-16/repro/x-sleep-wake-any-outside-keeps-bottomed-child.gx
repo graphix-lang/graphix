@@ -1,0 +1,23 @@
+// An `any` outside a woken arm keeps a value whose source the wake moved to
+// bottom; an `any` inside the arm, and an operator outside, stand bottom.
+//
+// run: graphix-fuzz run design/review-2026-11-16/repro/x-sleep-wake-any-outside-keeps-bottomed-child.gx
+//
+// Arm 0's `opt$ + 1` is 6 until `opt` goes null at clk 4, while the arm
+// sleeps (clk 2..5); at the wake (clk 6) it is bottom, moved. `x` reads it
+// through a reference that left the arm. Each tick is (clk, sel, x).
+//
+// expected: no tick from clk 6 on (x is bottom, as `*holder + 0` in its
+// place is, and as `any(opt$ + 1, never())` written inside the arm is).
+// observed, both engines: 7:(6, 0, 6) 8:(7, 0, 6) 9:(8, 0, 6) 10:(9, 0, 6).
+{
+  let clk = array::iter(array::init(10, |i| i));
+  let opt: [i64, null] = 5;
+  opt <- select clk { 3 => null, _ => never() };
+  let sel = 0;
+  sel <- filter(clk, |c| c % 4 == 1) ~ (1 - sel);
+  let r = select sel { 0 => &(opt$ + 1), _ => &(opt$ + 100) };
+  let holder = once(r);
+  let x = any(*holder, never());
+  clk ~ (clk, sel, x)
+}

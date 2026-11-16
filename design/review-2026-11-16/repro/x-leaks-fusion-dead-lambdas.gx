@@ -1,0 +1,23 @@
+// x-leaks: FusionCtx::dead grows by one LambdaId per deleted lambda node
+// until a link, which a running program never reaches.
+//
+// Each cycle the collection grows by one slot (wrapping at 16), and each slot
+// builds a closure; a wrap deletes 15 slots, so 15 Lambda nodes, each of
+// which pushes its id onto FusionCtx::dead (forget_def).
+//
+// Run from the repo root, one at a time (the driver finds the process by
+// this file's path):
+//   timeout -s KILL 85 python3 design/review-2026-11-16/repro/x-leaks-watch.py 80 --every 20 -- --no-cache design/review-2026-11-16/repro/x-leaks-fusion-dead-lambdas.gx
+//   timeout -s KILL 85 python3 design/review-2026-11-16/repro/x-leaks-watch.py 80 --every 20 -- --no-cache --no-fusion design/review-2026-11-16/repro/x-leaks-fusion-dead-lambdas.gx
+// Expected: RssAnon flat in both, as with --no-fusion.
+// Observed (debug build, HEAD e1be2fbf2):
+//   fused:     43228 kB @ 0.74M cycles, 49320 kB @ 1.48M, 53416 kB @ 2.22M (~7 B/cycle)
+//   no-fusion: 36228 kB flat from 0.36M to 1.44M cycles
+// The same climb shows with a seq in each slot (its lowering holds lambdas)
+// and with a closure capturing slot state; never with --no-fusion.
+let n = 0;
+n <- n + 1;
+let xs = array::init(n % 16, |i| i);
+let gs = array::map(xs, |x| |y| y + 1);
+let r = array::len(gs);
+select n { x if x % 20000 == 0 => (x, r), _ => never() }

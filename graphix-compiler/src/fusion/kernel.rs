@@ -58,6 +58,13 @@ pub struct FusedKernel<R: Rt> {
     jit: WrappedKernel,
     /// Per-instance state words (wire slot 1): prev-length words. Zero means "no previous observation"; consumers store
     /// `value + 1`.
+    // CR claude for claude: [readability/low] The doc says these are prev-length words,
+    // with zero meaning no previous observation. The buffer also holds the root body's
+    // slot-chain anchor words (jit.slot_table_words), its activation-tree roots
+    // (jit.state_self_blocks) and the site blocks carved for its callees, which
+    // free_state frees and update's reclaim walks. Zero means 'none' only for the
+    // prev-length words. Say what the buffer holds and which words free_state owns.
+    // Found by reading; not run. (f-kernel-06)
     state: Box<[u64]>,
     /// The last result; ridden when no feeder fired. Bottom feeders may
     /// belong to untaken branches, so only running the kernel decides
@@ -324,7 +331,25 @@ impl<R: Rt> Update<R> for FusedKernel<R> {
             self.tree_size = 0;
         }
         // the feeders are a fork point, as a call's arguments are
+        // CR claude for claude: [readability/low] gather already returns the join of
+        // the feeders' tags, and the three any_* scans below re-derive it: any_updated
+        // is tag.triggers(), any_bottom is tag.is_bottom(), and any_updated ||
+        // any_moved is tag.triggers() || tag.moved(). Use the returned tag and drop the
+        // three passes over polled on every invocation. The gate then follows
+        // Tag::join's rules by construction. Found by reading; not run. (f-kernel-05)
         let (_, mut polled) = crate::node::gather(ctx, &mut self.feeders, &mut self.fork);
+        // CR claude for eric: [perf/medium] A kernel runs whole when any feeder fires,
+        // so a collection loop over an argument that did not fire is recomputed
+        // whenever a sibling argument does; the node-walk's MapQ rides it. `f(mode, a)`
+        // with `f = |m, xs| select m { `A => array::len(array::map(xs, |x| x + 1)), `B
+        // => 0 }` and `mode` firing each cycle costs 336 us per cycle fused against 4.7
+        // us node-walked at N=32000. Fusion makes the cycle O(N) where the node-walk's
+        // is O(1). Decide: (a) a fused loop keeps its last result and reuses it when
+        // its source and captures did not fire and it is not a wake (one
+        // firing-boundary word per loop), or (b) accept the cost and document it in
+        // strict_fusion.md and the #[native] chapter. probe:
+        // design/review-2026-11-16/repro/x-perf-runtime-kernel-reruns-standing-loop.sh
+        // (x-perf-runtime-04)
         let any_updated = polled.iter().any(|tv| tv.tag().triggers());
         let any_bottom = polled.iter().any(|tv| tv.tag().is_bottom());
         let any_moved = polled.iter().any(|tv| tv.tag().moved());
@@ -337,6 +362,18 @@ impl<R: Rt> Update<R> for FusedKernel<R> {
                 polled.iter().map(|tv| !tv.is_bottom()).collect::<Vec<_>>(),
             );
         }
+        // CR claude for claude: [perf/medium] The kernel re-runs its whole body at
+        // every visit while any input stands bottom or its last result was bottom, even
+        // when no input fired. In the probe, f(arr, k) with k never arriving runs its
+        // 2M-element fold on every tick of an unrelated counter in the same statement:
+        // 31 invocations, 28 with fired=[false, false], and the counter reaches 29.
+        // With `let k: i64 = 3` there are 2 invocations and the counter reaches 92. A
+        // quiet bottom needs a re-run only when the set of bottom inputs changed since
+        // the run that made the resident. Keep that set beside `resident`, and ride the
+        // resident when nothing triggered or moved, the set is unchanged, and this is
+        // neither an init nor a wake. probe:
+        // design/review-2026-11-16/repro/x-rerun-5-kernel-standing-bottom-reruns.gx
+        // (x-rerun-5-03)
         if !(any_updated
             || any_bottom
             || any_moved

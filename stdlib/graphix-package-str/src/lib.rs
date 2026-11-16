@@ -486,12 +486,36 @@ fn fc_parse(env: &Env, ft: &FnType, args: &[Value]) -> Option<Value> {
         return Some(errf!(TAG, "parse requires a concrete type annotation"));
     };
     // a string prints as its text, and a number as text the cast reads
+    // CR claude for claude: [bug/medium] Only a target whose members are all numbers
+    // reads its text exactly. A union holding an exact number goes through
+    // parse_literal_value, which reads bare number text as an f64 literal. So [decimal,
+    // null] parses "12345678901234567890.123456789" (the print of such a value) as
+    // decimal:12345678901234567000.0, [decimal, string] does the same, and [u64, null]
+    // refuses "18446744073709551615" as "can't cast 18446744073709552000.0".
+    // cast<[decimal, null]> and json::read read the same text exactly. When
+    // parse_literal_value yields an unprefixed number literal and the target holds an
+    // exact number (Type::holds_exact_number, json's rule), cast the original text
+    // instead. probe: design/review-2026-11-16/repro/x-rerun-4-parse-nullable-number.gx
+    // (x-rerun-4-02)
     let parsed = match &typ {
         Type::Primitive(p) if *p == Typ::String => return Some(Value::String(s.clone())),
         Type::Primitive(p) if !p.is_empty() && p.iter().all(|t| t.is_number()) => None,
         _ => parse_literal_value(s),
     };
     Some(match parsed {
+        // CR claude for claude: [bug/medium] The parsed literal is cast as writer's
+        // data (`cast_value`), so a union target reads an unmarked array as a tuple or
+        // a struct before an array member. But the literal is a program value: every
+        // tuple, struct, variant and list it spells is marked, so each unmarked array
+        // in it is an array literal. As a result, what Graphix prints does not read
+        // back. `x: [Array<i64>, (i64, i64)] = [1, 2]` prints `[1, 2]` and parses as
+        // `(1, 2)`. `[["x", 1]]` under `[Array<Array<[string, i64]>>, {x: i64}]` parses
+        // as `{x: 1}`. Fix: cast it with `cast_marked_value`, under which an unmarked
+        // array tries an array member first at every union position. A lone tuple or
+        // struct target still reads an array, so `str::parse::<(i64, i64)>("[1, 2]")`
+        // keeps working. probe:
+        // design/review-2026-11-16/repro/x-kind-markers-parse-print-roundtrip.gx
+        // (x-kind-markers-02)
         Some(v) => match typ.cast_value(env, v) {
             Value::Error(e) => errf!(TAG, "{}", ErrorText(&e)),
             v => v,

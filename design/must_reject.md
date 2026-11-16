@@ -49,6 +49,16 @@ again.
 
 ## The type map
 
+<!-- CR claude for eric: [test-gap/medium] The map holds no expression inside a lambda
+body: `graphix_compiler::record_expr_types` visits none. So every family that takes its
+site or its skip judgment from the map (3, 4, 5, 6, 8, 9 (b), 10, 11, 14 and the hop)
+never mutates inside a function, where declared variables, captures and parameters meet
+their rules. The same statements give retype, widen-hop, variant-widen and
+undecided-part sites at the top level and none in a body. record_expr_types says a body
+has no one type, but an instance takes its definition's check (DefTable). Decide whether
+the map records the definition check's body sites, or say here that the type-guided
+sites are top-level only. probe:
+design/review-2026-11-16/repro/fuzz-mutate-no-sites-in-bodies.sh (fuzz-mutate-03) -->
 The base is checked once with a type map: every expression's type,
 resolved (`resolve_tvars`, so later unification cannot move it) and
 keyed by its span in the body; nodes sharing a span answer with the

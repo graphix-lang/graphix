@@ -802,6 +802,22 @@ fn burst_clock(k: &str, input: &str, n: i64) -> [String; 2] {
 /// the implementation. `srcs[in % n]$` is total for any injected i64.
 /// Not pushed into `fires_per_injection`: two injections can select the same source,
 /// and an unchanged source need not re-fire downstream.
+// CR claude for claude: [test-gap/medium] Neither dynamic-module template reaches what
+// the 11-15 sandbox and retire work changed. These reload sources and
+// gen_dynamic_module's bodies define only `let` functions over scalars, and their sigs
+// grant whole packages. No generated load declares a type of its own, implements a
+// trait, is granted an outer binding (`use super::x`) or a single name (`use
+// array::len;`), and no function saved out of the module is called after a later
+// reload. So retiring a load's types, impls and names, and a saved function running its
+// own body after a reload, are exercised only by hand pins, and a crash, debug assert,
+// leak or cold/warm divergence there reaches no soak. Add a source variant that
+// declares `type C = Abstract<i64>` with an `impl Display for C` used inside `f`, a sig
+// granting an outer i64 binding through `use super::`, and a function saved out of the
+// module before a reload and called after it. Give gen_dynamic_module a single-name
+// grant variant. gen_dynamic_module's doc also lists a syntax-error outcome it never
+// draws. Found by reading; a hand-written template of this shape runs and agrees in
+// every mode: design/review-2026-11-16/repro/fuzz-gen-b-dynreload-retire-sketch.gx
+// (fuzz-gen-b-02)
 fn dyn_reload(
     ctx: &mut GenCtx,
     rng: &mut Rng,

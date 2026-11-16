@@ -64,6 +64,18 @@ async fn examples_compile() -> Result<()> {
         .map(|f| async move {
             let r = ShellBuilder::<NoExt>::default()
                 .cache(CacheMode::Off)
+                // CR claude for claude: [test-gap/medium] The examples build without
+                // CFlag::WarningsAreErrors, so a warning the check prints still passes
+                // the gate. Example: input_vim with its Insert write made constant
+                // (`mode <- `Insert`, the trap the input page names) prints "constants
+                // in an arm do not fire", and the build returns Ok. All 129 book
+                // examples and 43 bench programs check clean under -W error today.
+                // Adding CFlag::WarningsAreErrors here costs nothing, and every warning
+                // the check knows (a constant arm write, a catch that never reads its
+                // binder, `until` without `live`) then fails the gate for the
+                // documentation corpus. probe:
+                // design/review-2026-11-16/repro/examples-tui-warning-passes-gate.sh
+                // (examples-tui-02)
                 .enable_flags(CFlag::ExpandSeq.into())
                 .mode(Mode::Check(Load::File(f.clone())))
                 .build()
@@ -136,6 +148,21 @@ fn page_fences(page: &Path, text: &str, fences: &mut Vec<Fence>) {
                         body: String::new(),
                         shown: None,
                     }),
+                    // CR claude for claude: [test-gap/low] A fence opened with a bare
+                    // ``` is `Open::Other` and is never checked, though some hold
+                    // programs. book/src/udt/polymorphic.md has three (its FoodKind,
+                    // Point3 and refused Point3 examples) and udt/variants.md has one.
+                    // They have drifted. The page shows `{x: 1, y: 1, z: 3.14}` where
+                    // the program prints `{x: 1.0, y: 1.0, z: 3.14}`. It shows
+                    // `Point3<'a: [Int, Real]> does not contain {x: string, ..}` where
+                    // the check says `Point3<'a: unbound within Number> does not
+                    // contain { x: string, .. }`. Tag them: `graphix`,
+                    // `graphix,refused` with its transcript, or `graphix,ignore`. Then
+                    // have `page_fences` require an info string on every opening fence
+                    // (`text` for output and transcripts), so the next untagged program
+                    // is reported. probe:
+                    // design/review-2026-11-16/repro/tests-shell-compiler-b-untagged-fences.sh
+                    // (tests-shell-compiler-b-03)
                     None => Open::Other(String::new()),
                 })
             }
@@ -244,6 +271,20 @@ impl Repl {
     }
 
     fn statement(&mut self, e: Expr) -> Result<CompactString> {
+        // CR claude for claude: [structure/low] `Repl` re-implements the shell's REPL
+        // and drifts from it. `GX::compile` compiles each line under the session's
+        // flags, which in `Mode::Repl` hold `CFlag::ReplaceImports`. It also resolves
+        // the line's modules, prunes the last batch's `<-` targets from static
+        // resolution and opens a block-type load. The shell prints `-:` through
+        // formatting this file copies. Here each input compiles under `CheckOnly |
+        // FusionDisabled` alone. So `〉use array::len`, `〉use str::len`, `〉len("abc")`,
+        // which the REPL answers `-: i64`, is refused here as "`len` is already
+        // imported". A transcript that depends on the other steps is judged by rules
+        // the REPL does not apply. Compile with the REPL's flags, and move
+        // `GX::compile`'s per-line loop and the shell's readout into functions both
+        // call. probe:
+        // design/review-2026-11-16/repro/tests-shell-compiler-b-gate-repl-flags.sh
+        // (tests-shell-compiler-b-04)
         let (n, scope) = compile_stmt(
             &mut self.ctx.view(),
             CFlag::CheckOnly | CFlag::FusionDisabled,
@@ -287,6 +328,18 @@ impl Repl {
         while let Some(line) = lines.next() {
             let Some(input) = line.strip_prefix('〉') else { continue };
             let mut shown = None;
+            // CR claude for claude: [test-gap/medium] A transcript's refusal is checked
+            // only for refusing. The message on the page's `error:` line is dropped,
+            // whereas a `refused` fence's transcript must match (`shown_error`).
+            // book/src/functions/polymorphism.md's `eq(v, v)` shows "'a must be
+            // Discernible, but [..] holds ..". The check now says "[..] must be
+            // Discernible here, but it holds ..", and the gate is green. An input
+            // refused for a reason other than the one the page shows passes too. Keep
+            // the shown message (the text after `error: ... ` with its wrapped lines
+            // joined, or the last `N: ` line) and require the refusal's `{e:#}` to
+            // contain it, then update the page. probe:
+            // design/review-2026-11-16/repro/tests-shell-compiler-b-repl-refusal-text.sh
+            // (tests-shell-compiler-b-01)
             let mut refused = false;
             while let Some(line) = lines.next_if(|l| !l.starts_with('〉')) {
                 if let Some(typ) = line.strip_prefix("-:") {
@@ -302,6 +355,17 @@ impl Repl {
                     renumbered(&actual) == renumbered(shown),
                     "input {input}: the page shows -: {shown}, the check says -: {actual}"
                 );
+            // CR claude for claude: [test-gap/low] When a transcript shows a refused
+            // input, this checks only that the input is refused, never the message. A
+            // `refused` fence's message is compared through `shown_error`. Two book
+            // transcripts have drifted unnoticed: fundamental_types.md shows `in:
+            // i64:1` for `!1` (the printer now writes `1`), and polymorphism.md shows
+            // `'a must be Discernible, but ...` for `eq(v, v)` (now `[..] must be
+            // Discernible here, but it holds ...`). Compare the transcript's last line,
+            // after its `N: ` or `error: ... ` prefix, with the error chain as
+            // `fence_failure` does for a refused fence, and fix the two pages. probe:
+            // design/review-2026-11-16/repro/book-core-transcript-messages.sh
+            // (book-core-05)
             } else if refused {
                 anyhow::ensure!(
                     result.is_err(),
@@ -404,6 +468,16 @@ impl<'a> Case<'a> {
         // a parse error is a refusal too, of a program written wrong on purpose
         let verdict = |r: Result<Result<()>>| r.and_then(|r| r).err();
         match self {
+            // CR claude for claude: [test-gap/low] An `ok` case is judged by the check
+            // alone: `check` runs Mode::Check without CFlag::ExpandSeq, which adds
+            // CheckOnly, so the program is never elaborated or fused. An `ok` line the
+            // build refuses (elaboration refusing what the check accepted, a
+            // type-system bug by CLAUDE.md) or fusion panics on would pass the gate,
+            // while the book's example files are built with ExpandSeq. Judge an
+            // accepted case with the same ExpandSeq build examples_compile uses. All
+            // 351 ok lines build and agree under graphix-fuzz check today, so this is a
+            // gap, not a live failure. Found by running every ok line through `graphix
+            // --expand`; not run as a test. (lang-skill-06)
             Case::Accepted(program) => verdict(check(program).await),
             Case::Refused { text, program } => match verdict(check(program).await) {
                 None => Some(anyhow!("the case says refused, but the check accepts it")),
@@ -446,6 +520,17 @@ async fn fence_failure(f: &Fence) -> Option<String> {
         Claim::Fragment => parser::parse(Origin::unspecified(&f.body)).err(),
         Claim::ReplSetup => return None,
         Claim::Accepted if f.body.contains('〉') => return None,
+        // CR claude for claude: [test-gap/low] An accepted fence is only checked, never
+        // run. So the outputs the book prints after one (the `$ graphix test.gx`
+        // blocks: connect.md's 0..10, select.md's 42/15/7 and its slice, struct,
+        // variant and or-pattern outputs, semantics.md's `4` and `5 3 2`, labeled.md's
+        // 84, use.md's map output) and every transcript's value lines are pinned by
+        // nothing. No other test pins them either. A change to connect queuing, select
+        // firing or printing would leave them wrong with this gate green. For an
+        // untagged fence whose next plain fence starts with `$ graphix` and shows no
+        // `Error:`, run the program through the shell (as `common::graphix` does in the
+        // shell tests) and compare its printed lines. Skip fences that subscribe to
+        // netidx. Found by reading; not run. (book-core-06)
         Claim::Accepted => match check(&f.body).await {
             Ok(r) => r.err(),
             Err(e) => Some(e),

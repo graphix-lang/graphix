@@ -657,6 +657,20 @@ enum StopState {
 /// libstate: the stop signal (`tui::exit`, the stop keys), and the
 /// suspend channel (`tui::suspend`). The receiver is parked here until
 /// a display takes it, and handed back when that display ends.
+// CR claude for eric: [bug/medium] A request made while no display runs is kept for
+// whichever display starts next, including one from a program whose own display already
+// ended. request_exit records StopState::PendingExit after a stop key or an earlier
+// Requested left the state Idle, and install_stop then ends the next display at once. A
+// suspend asked after a display handed its receiver back waits in the parked channel
+// (headless stays false: no output is chosen at Ctrl-C), and the next display takes it
+// and suspends, while the resume signal is held by the old site. In the REPL, a
+// statement left running by an earlier line therefore ends a later display at once, or
+// leaves the terminal to nobody until Ctrl-C. Fix: when a display ends, refuse queued
+// and later suspends until the next output_chosen(true), and drop an exit asked after a
+// display ended instead of carrying it to the next one. What an exit asked with no
+// display up should mean in a REPL is a ruling. probe:
+// design/review-2026-11-16/repro/tui-core-stale-exit.sh,
+// design/review-2026-11-16/repro/tui-core-stale-suspend.sh (tui-core-01)
 struct TuiControlInner {
     stop: Mutex<StopState>,
     suspend_tx: mpsc::UnboundedSender<Suspend>,
@@ -1309,11 +1323,39 @@ async fn display<X: GXExt>(
                     }
                     match term.reading(screen.update(id, v), &mut liveness, &mut pending).await? {
                         ControlFlow::Continue(Ok(())) => (),
+                        // CR claude for claude: [bug/medium] These display() errors
+                        // (the draw, event and update ones) are logged under the
+                        // crate's own target. The shell turns that target off unless
+                        // the user passes --log-dir and RUST_LOG. A widget tree that
+                        // fails to build therefore leaves a blank or stale screen and
+                        // no message: an input_handler whose #[native] handler instance
+                        // does not fuse passes the check and the build, then draws
+                        // nothing and says nothing. The GUI logs the same failures
+                        // under FAILURE_TARGET and ends its display when nothing ever
+                        // opened, and the test harness returns them as errors. Fix: log
+                        // these with target: FAILURE_TARGET, and call
+                        // control.finish(Err(e)) when the root has never built
+                        // (Screen::source is None). probe:
+                        // design/review-2026-11-16/repro/tui-core-hidden-widget-error.sh
+                        // (tui-core-02)
                         ControlFlow::Continue(Err(e)) => error!("error handling update {e:?}"),
                         ControlFlow::Break(stop) => control.finish(Ok(stop)),
                     }
                 },
             },
+            // CR claude for claude: [test-gap/low] No test reaches this arm or the
+            // retake below it. The suspend tests are headless, and the PTY tests cover
+            // Live and Term::reading alone. So Term::Suspended, the retake on resume
+            // (Live::take, the size write, the repaint), the refusal of a second
+            // suspension and the resume that a dropped resume sender gives are all
+            // unpinned. Deleting the retake's screen.resize, or a Suspended arm that
+            // never returns, passes the suite. Add a PTY test using the Tty harness in
+            // graphix-shell's repl_interrupt.rs: a script suspends, runs `sh -c 'stty
+            // -a'` through sys::process with inherited stdio (it must see icanon) and
+            // resumes; assert the alternate screen is entered again and a frame drawn,
+            // and that a second suspension asked meanwhile answers TerminalError. Found
+            // by reading; the scenario runs as
+            // design/review-2026-11-16/repro/tui-core-suspend-child.sh. (tui-core-04)
             s = suspend_rx.next() => if let Some(Suspend { ack }) = s {
                 if let Term::Suspended(_) = term {
                     let _ = ack.send(Err(anyhow!("the display is already suspended")));

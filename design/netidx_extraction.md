@@ -35,6 +35,12 @@ a package's factory shares state with its builtins.
 is the whole `sys::net` surface over the generic conduits every package
 already has (`Rt::watch_var`, `spawn_var`, `CustomBuiltinType` events):
 
+<!-- CR claude for claude: [doc-drift/low] This bullet and the next describe mechanisms
+the code no longer has. There is no shared-Dval fan-out routing: each subscribe's Reader
+has its own netidx updates channel, which the pump drains into its BindId
+(NetState::subscribe). RPC-server calls are not events carrying reply channels: they are
+posted to the PublishRpc's Inbox and an empty NetRpcWake event wakes the builtin.
+Rewrite both bullets to match netstate.rs. Found by reading; not run. (sys-net-05) -->
 - one subscription pump translating netidx update batches into
   `(BindId, Value)` batches, with shared-Dval fan-out routing — netidx
   SHARES Dvals by path, so several subscribers of one path ride one

@@ -6,6 +6,16 @@ timers, its `count`s, its own bindings. Each iteration of a recursion
 owns its state, exactly as each element owns its callback in
 `array::map`.
 
+<!-- CR claude for claude: [doc-drift/medium] This paragraph says "the things that keep
+a body out of native code" are a `*r` read, an outward `<-` and a builtin without a fast
+call. The list is incomplete. A `~` in the body (`sum_to(n - 1, n ~ acc + n)`) and an
+`Any` also keep `#[native] sum_to(..)` from building, and strict fusion
+(design/strict_fusion.md) also names connect, `catch` and stateful or effectful
+builtins. A reader who removes only the listed three still gets the node-walk, one
+activation per level. Take the list from design/strict_fusion.md, or call it a sample
+and point to the full rule. The book has no other page that says what fuses, though
+`#[native]` is the advertised performance model. probe:
+design/review-2026-11-16/repro/book-core-native-blockers.sh (book-core-02) -->
 A recursive call in tail position whose body holds no state (no async
 operation, no stateful builtin such as `count` or `uniq`, no `<-` to one
 of its own bindings) and compiles to native code runs as a native loop

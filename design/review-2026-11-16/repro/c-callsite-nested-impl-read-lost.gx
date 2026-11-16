@@ -1,0 +1,29 @@
+// A run-time bind forgets the impls its statically bound callees dispatch to,
+// so a reload that replaces the impl leaves the call on the retired one.
+//
+// run: timeout -s KILL 20 graphix --no-cache c-callsite-nested-impl-read-lost.gx
+//
+// `wrap` and `app` are functions of the root; each body gives the val `wrap`
+// and its own impl of `Sh` for i64. The call through the val is a run-time
+// bind made outside every load, so it dispatches by the registry as it stands
+// (design/module_system.md): after the reload at ep 8 it must run `c + 2000`.
+//
+// expected: (9, 2014) (10, 2015) (11, 2016) (12, 2017) after the reload,
+//           as the same program gives with `let make = app` in both bodies
+// observed: (9, 15) (10, 16) (11, 17) (12, 18): the first body's impl, which
+//           the reload retired
+//           (the same under GRAPHIX_PRUNE=off; graphix-fuzz check prints AGREE,
+//           every engine keeps the retired impl)
+trait Sh { val sh: fn(self) -> i64 };
+let app = |x: Sh| Sh::sh(x) + 5;
+let wrap = |x: Sh| app(x);
+let ep = 0;
+ep <- select ep { n if n < 12 => n + 1, _ => never() };
+let src: string = never();
+src <- select ep {
+    2 => "use super::{Sh, wrap}; impl Sh for i64 { let sh = |c: i64| c + 1 }; let make = wrap",
+    8 => "use super::{Sh, wrap}; impl Sh for i64 { let sh = |c: i64| c + 2000 }; let make = wrap",
+    _ => never()
+};
+let s = mod d dynamic { sig { use super::{Sh, wrap}; val make: fn(x: i64) -> i64 }; source src };
+(ep, d::make(ep))

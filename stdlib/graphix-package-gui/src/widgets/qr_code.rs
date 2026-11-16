@@ -30,6 +30,24 @@ impl<X: GXExt> QrCodeW<X> {
         p.data.t.as_deref().and_then(|s| match widget::qr_code::Data::new(s) {
             Ok(d) => Some(d),
             Err(e) => {
+                // CR claude for claude: [bug/low] A data string the encoder refuses
+                // (over about 2331 bytes at iced's Medium correction, e.g. a long paste
+                // into the qr_code example's text_input) leaves the widget blank. This
+                // log uses the module's own target, which the shell keeps off unless
+                // RUST_LOG and --log-dir ask for it, so the program shows nothing and
+                // says nothing. It is a running program's failure: log it under
+                // graphix_compiler::FAILURE_TARGET, as canvas.rs does for its skipped
+                // geometry. Found by reading; not run. (gui-widgets-b-04)
+                // CR claude for claude: [bug/low] This failure is logged under the
+                // module's own target, which the shell's default logger turns off
+                // ("off, graphix::failure=error"). Data too long for a QR code
+                // therefore draws empty space with no message anywhere, though
+                // qr_code.md says it "logs an error". Log it under
+                // graphix_compiler::FAILURE_TARGET, as clipboard.rs::report does, so it
+                // reaches stderr by default. Found by reading; not run (the same logger
+                // hiding line_gauge's warning is shown by
+                // design/review-2026-11-16/repro/book-ui-b-println-over-display.sh).
+                // (book-ui-b-05)
                 error!("qr_code: failed to encode data: {e}");
                 None
             }

@@ -145,6 +145,19 @@ impl ServerState {
     /// The roots a file is checked under: every project containing it,
     /// else the file itself. An interface is checked with its
     /// implementation, and is a root of its own only before it has one.
+    // CR claude for claude: [bug/medium] The roots of a file come only from the disk
+    // scan's file_to_projects, so an open buffer's `mod` declarations, and a buffer not
+    // yet saved, never place a module in its project. A new unsaved module, or any
+    // module opened with no workspace folder, is checked as a script on its own:
+    // `super::` is refused and hover/definition answer nothing, while the open parent's
+    // check reads the same buffer and accepts it. And when an unsaved root buffer adds
+    // `mod b;`, edits to b.gx never dirty that root, so its diagnostics and hovers stay
+    // stale until a save. Fix: overlay open documents on the project graph (summarize
+    // each buffer in place of the disk file, add documents not on disk, rebuild when a
+    // buffer's `mod` declarations change), and with no workspace folder scan each open
+    // document's directory. probe:
+    // design/review-2026-11-16/repro/x-lsp-probe-new-module-is-a-script.py
+    // (x-lsp-probe-01)
     fn roots_of(&self, path: &Path) -> Vec<PathBuf> {
         if path.extension().is_some_and(|e| e == "gxi") {
             let gx = path.with_extension("gx");
@@ -198,6 +211,16 @@ impl ServerState {
     /// whose project gained or lost a file, or holds a file changed on
     /// disk, is checked again; one in no project reads what the scan does
     /// not see, so it always is. A root that stopped being one is retired.
+    // CR claude for claude: [risk/low] The server never registers a file watcher (no
+    // client/registerCapability for workspace/didChangeWatchedFiles), so only the VS
+    // Code extension, which watches on its own, reports disk changes. In Neovim, Helix
+    // or Zed, a module changed on disk outside the editor stays unchecked until some
+    // save. That save then pays a full rescan of every workspace root: measured with
+    // /home/eric/proj as the root, 3.5-4.3 s per save during which nothing is answered.
+    // Fix: register `**/*.{gx,gxi}` when the client offers dynamicRegistration, and
+    // make this incremental: re-summarize only the changed paths, and walk only for
+    // creations and deletions. probe:
+    // design/review-2026-11-16/repro/x-lsp-probe-no-file-watch.py (x-lsp-probe-06)
     pub fn saved(&mut self) -> Diagnostics {
         let workspace = scan(&self.workspace_roots, &self.workspace);
         let old = std::mem::replace(&mut self.workspace, workspace);
@@ -300,6 +323,17 @@ impl ServerState {
             .ok()
             .map(|c| c.as_ref().map(|c| self.warned(c)).unwrap_or_default());
         let r = self.roots.entry(root.to_path_buf()).or_default();
+        // CR claude for eric: [bug/medium] A failed check keeps the last good check's
+        // warnings, and publish_files sends them with the document's current version at
+        // ranges measured on the older text. An edit above a warning that leaves the
+        // buffer unparseable (most keystrokes while typing a statement) moves its
+        // squiggle onto unrelated text or past the end of a line, while claiming to be
+        // for the current version. Hovers answer from that check through the same
+        // shifted positions. Options: drop kept warnings on files whose text changed
+        // since they were found, publish them under the version they were found on, or
+        // shift them by the line diff. probe:
+        // design/review-2026-11-16/repro/x-lsp-probe-stale-warning-ranges.py
+        // (x-lsp-probe-04)
         if let (Ok(checked), Some(warnings)) = (result, warnings) {
             r.checked = checked;
             r.warnings = warnings;
@@ -416,6 +450,16 @@ impl ServerState {
 
     /// The check that answers queries about `path`: a root's whose last
     /// check succeeded, else the last successful check of any.
+    // CR claude for eric: [bug/medium] Queries answer only from a successful check, and
+    // GXRt::check drops its IDE sink and env at the first error. So in a project with a
+    // standing error, opened in this session, every file answers nothing: modules the
+    // check compiled before the error, and statements above it, as well as the erring
+    // one. Opening a project that has an error leaves the server with no hover,
+    // definition, references or types anywhere in it. Proposal: when a root has never
+    // checked clean, keep what the failed check's sink and env held at the error, and
+    // answer from that until a check succeeds. probe:
+    // design/review-2026-11-16/repro/x-lsp-probe-failed-check-answers-nothing.py
+    // (x-lsp-probe-03)
     pub(crate) fn checked_for(&self, path: &Path) -> Option<&Checked> {
         let roots = self.roots_of(path);
         let roots = || roots.iter().filter_map(|root| self.roots.get(root));

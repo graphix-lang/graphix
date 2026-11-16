@@ -48,6 +48,16 @@ pub(super) async fn run_delta_serving(
     code: &str,
     mode: Mode,
 ) -> Result<(Vec<Value>, String)> {
+    // CR claude for claude: [risk/medium] The 700 ms window opens when the runtime
+    // answers idle, and a reply still in flight reads as idle (GXHandle::wait_idle). So
+    // a run whose next value waits on a netidx reply (async_restart.rs::seq_network,
+    // seq_calls.rs::steps_rpc_answer_their_own_runs) returns one value short whenever
+    // that reply takes longer than 700 ms. That is a wall-clock budget on IO latency,
+    // which the suite's load can exceed; it does not measure work. Each caller knows
+    // how many values it expects. Either take them with `Collect::First(n)` and call
+    // wait_replies before reading any extra value, or have testing::Collect::Quiet open
+    // its window only after wait_replies answers, which fixes the other Quiet users
+    // too. Found by reading; not run. (tests-lang-rest-a-04)
     let window = Collect::Quiet(Duration::from_millis(700));
     let d = run_delta_with(code, mode, |_| (), window).await?;
     Ok((d.values, d.out))
@@ -91,6 +101,14 @@ pub(super) async fn run_delta_with(
     let out = sink.take();
     let forks = control.forks() - forks_before;
     let build_forks = control.build_forks() - build_forks_before;
+    // CR claude for claude: [test-gap/medium] run_delta_with never asserts that a
+    // node-walk mode ran no fused code. testing::fixture_mode gives every run! fixture
+    // that check ("{mode:?} ran fused code"). Some 200 modes! tests across lang/ run
+    // their Interp and Par sides through this harness. A change that let a region or a
+    // run-time bind fuse under CFlag::FusionDisabled would leave those sides comparing
+    // the JIT against itself, and nothing would fail. Add `#[cfg(debug_assertions)]
+    // assert!(!mode.node_walk() || invocations == (0, 0), ..)` here, as fixture_mode
+    // has. Found by reading; not run. (tests-lang-rest-a-03)
     let (verdicts, invocations) = (control.verdicts(), control.invocations());
     let boundaries = control.boundaries();
     ctx.shutdown().await;

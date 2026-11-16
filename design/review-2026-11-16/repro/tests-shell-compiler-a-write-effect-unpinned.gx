@@ -1,0 +1,16 @@
+// script_scope.rs::a_function_body_s_write_makes_its_let_one_instance passes
+// on `stdout.contains("(1, 1)")`, which is what the program prints in its
+// first cycle, before the write `self::j <- |x: i64| x + 1` lands. Whether
+// the write ever takes effect is not checked: a run that dropped it would
+// print "(1, 1)" alone and pass. Today it does land: "(2, 1)" follows.
+// (The "nested glob over a lambda" case checks "1", which its own
+// println(g(1)) prints whatever f becomes.)
+//
+// Run:  timeout -s KILL 30 graphix --no-cache --no-netidx \
+//         design/review-2026-11-16/repro/tests-shell-compiler-a-write-effect-unpinned.gx
+// Observed (debug binary at e1be2fbf2): (1, 1) / (2, 1) / null / null, exit 0
+let s = {f: |x| x};
+let j = s.f;
+let g = |v: i64| { self::j <- |x: i64| x + 1; v };
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+println((j(1), g(1)))

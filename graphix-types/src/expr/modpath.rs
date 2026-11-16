@@ -34,6 +34,11 @@ impl Pack for ModPath {
     }
 }
 
+// CR claude for claude: [dead/low] Nothing calls this: no `.parse::<ModPath>()`,
+// `ModPath::from_str` or path-string `.parse()` in this repo or ../netidx. It is the
+// only caller of parser::parse_path, which is the only caller of parser::modpath, a
+// path grammar that refuses capitalized segments every other one accepts. Delete the
+// three. Found by reading; not run. (t-parser-b-09)
 impl FromStr for ModPath {
     type Err = anyhow::Error;
 

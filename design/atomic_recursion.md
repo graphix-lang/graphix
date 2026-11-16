@@ -150,6 +150,13 @@ exceed it stops the runtime through the same `Control`
 stop as a timeout — containment, like the deadline, not a program
 outcome.
 
+<!-- CR claude for claude: [doc-drift/low] This paragraph says a node-walked activation
+holds about 20 KB of heap; tail_calls_are_calls.md says ~25 KB (2.5 GB at depth 100k)
+and recursive_activations.md says 15, 10 and 6.0 KB in turn, with fib(22) near 1 GB. The
+pin, activation_heap.rs, caps one at 5,170 bytes, and the debug binary measures 976 MB
+resident for 100,000 node-walked tail activations and 514 MB for fib(22). Keep one
+figure, in recursive_activations.md beside its pin, and have the other two docs cite it.
+Measured with the review's debug binary; no repro file. (x-recursion-09) -->
 The activation budget counts what a runaway recursion actually grows:
 live activations, each a call's instance, a collection slot's or a
 kernel's per-activation block, charged where a cycle binds one and

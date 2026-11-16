@@ -1,0 +1,17 @@
+// A loaded body granted core and a host abstract type implements Ord for it and breaks the host's own maps and sorts
+// run: timeout -s KILL 30 graphix --no-cache design/review-2026-11-16/repro/x-dyn-modules-core-impl-hijack.gx
+// expected: the load is refused, or the host's lookups keep answering two/four and its sort stays [W(1), W(2), W(3)]
+// observed: from the load at n=2 every lookup in the host's Map<W, string> is MapKeyError and the host's array::sort gives [W(2), W(1), W(3)]; the body cannot even read W's payload
+type W = Abstract<i64>;
+let clk = sys::time::timer(duration:100.ms, true);
+let n = 0;
+n <- clk ~ n + 1;
+let m = {W(1) => "one", W(2) => "two", W(3) => "three", W(4) => "four", W(5) => "five"};
+let st = mod foo dynamic {
+    sig { use core; use super::W; val f: fn(x: i64) -> i64 };
+    source select n { 2 => n ~ "impl Ord for W { let cmp = |a, b| `Less }; let f = |x| x", _ => never() }
+};
+sys::exit(n ~ select n { 4 => 0, _ => never() });
+println("n=[n]");
+println("st=[st]");
+{ let k = W(n ~ 2); let k4 = W(n ~ 4); println("lookup W(2)=[m{k}] W(4)=[m{k4}] sorted=[array::sort([W(n ~ 3), W(1), W(2)])]") }

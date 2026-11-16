@@ -406,6 +406,18 @@ impl Fallback {
 impl Source {
     fn parse(v: Option<&Value>) -> Self {
         match v {
+            // CR claude for eric: [risk/low] A source ref with no value yet parses as
+            // `Netidx`, so a column whose stored source (a string or a Map, which the
+            // interface says never subscribes) is still bottom when the table compiles
+            // subscribes `<row>/<col>` in every absolute row in the window. When
+            // `sort_by` names the column, it subscribes every row. Meanwhile a
+            // publication at that path shows in the cell and is passed to `on_update`,
+            // and the source's first value drops all of those subscriptions. Should a
+            // pending source subscribe nothing and show blank until it gives a value? A
+            // late `Netidx` source would then subscribe when it arrives, since
+            // `handle_update` already reconciles when `is_netidx` changes.
+            // `virtual_col_does_not_create_subscription` pins only a constant source.
+            // Found by reading; not run. (tests-gui-a-05)
             None | Some(Value::Null) => Source::Netidx(Fallback::None),
             Some(v) => match rep::variant(v) {
                 Some((tag, [payload])) if tag == "Netidx" => {
@@ -453,6 +465,11 @@ pub(super) struct ColumnState<X: GXExt> {
     pub(super) source: Option<SourceEntry<X>>,
     pub(super) width_ref: Option<Ref<X>>,
     pub(super) ref_width: Option<f32>,
+    // CR claude for claude: [structure/low] on_resize_ref plus on_resize is a Handler,
+    // and compile_column_refs and handle_update's on_resize branch re-implement
+    // Handler::compile and Handler::update by hand. Hold `on_resize:
+    // Option<Handler<X>>`, log a failed compile or update instead of propagating it,
+    // and delete the copies. Found by reading; not run. (gui-datatable-07)
     pub(super) on_resize_ref: Option<Ref<X>>,
     pub(super) on_resize: Option<Callable<X>>,
 }

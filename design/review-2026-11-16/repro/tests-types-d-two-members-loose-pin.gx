@@ -1,0 +1,18 @@
+// lang::types::two_array_members_of_declared_variables_one_cell_do_not_follow_the_names
+// pins refused("i64 does not contain"), which a WRONG answer also gives:
+// this variant makes 'b follow the first member alone ('b = 'p = string),
+// and is refused with "type mismatch i64 does not contain string", which
+// the test's predicate accepts.
+// Command: graphix --no-cache --check tests-types-d-two-members-loose-pin.gx
+// Expected (for the test to discriminate): a message the predicate rejects.
+// Observed: type mismatch i64 does not contain string
+// The real fixture is refused with "i64 does not contain ['p: string, 'q: i64]".
+{
+  let f = |x: ['a, Array<'b>]| -> 'b never();
+  let g = |p: 'q, q: 'p| {
+    let v: [Array<'p>, null] = null;
+    f(v)
+  };
+  let n: i64 = g(1, "s");
+  0
+}

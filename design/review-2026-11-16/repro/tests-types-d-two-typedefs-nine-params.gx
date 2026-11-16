@@ -1,0 +1,16 @@
+// Containment of two recursive typedefs whose recursion permutes their
+// parameters, over open cells, costs factorially in the parameter count:
+// lang::types::six_parameters_of_two_recursive_typedefs_with_one_body_check
+// pins 6 (0.1 s); this is the same program at 9 parameters, with D one
+// member wider than F (so not "one body"; one body behaves the same).
+// Command: graphix --no-cache --check tests-types-d-two-typedefs-nine-params.gx
+// Expected: checks (as at 6 parameters), in well under a second.
+// Observed (debug build): 7 params 0.3 s, 8 params 2.3 s, 9 params killed
+//   by a 6 GB memory cap after 11 s ("[probe] OOM-KILLED").
+{
+  type D<'a0, 'a1, 'a2, 'a3, 'a4, 'a5, 'a6, 'a7, 'a8> = [`N, `Z, `X(fn(x: 'a0) -> i64, D<'a1, 'a0, 'a2, 'a3, 'a4, 'a5, 'a6, 'a7, 'a8>), `Y(D<'a1, 'a2, 'a3, 'a4, 'a5, 'a6, 'a7, 'a8, 'a0>)];
+  type F<'a0, 'a1, 'a2, 'a3, 'a4, 'a5, 'a6, 'a7, 'a8> = [`N, `X(fn(x: 'a0) -> i64, F<'a1, 'a0, 'a2, 'a3, 'a4, 'a5, 'a6, 'a7, 'a8>), `Y(F<'a1, 'a2, 'a3, 'a4, 'a5, 'a6, 'a7, 'a8, 'a0>)];
+  let outer = |k: D<'q0, 'q1, 'q2, 'q3, 'q4, 'q5, 'q6, 'q7, 'q8>, z: 'q0| z;
+  let g: fn(k: F<Any, Any, Any, Any, Any, Any, Any, Any, Any>, z: i64) -> i64 = outer;
+  g(`N, 1)
+}

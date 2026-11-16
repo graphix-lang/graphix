@@ -1,0 +1,21 @@
+// Title: an or-arm whose alternatives are an array slice and a list slice over
+//   a Collection-bounded value types its shared rest bind by the FIRST
+//   alternative's collection (StructurePattern::collection_view_inner threads
+//   one view through the alternatives, `seq`), so a List reaches code typed
+//   Array<i64>: the check accepts, the engines diverge, and the JIT reads the
+//   list cell's marker as an i64 (a heap address) and adds 1 to it.
+// Command:
+//   timeout -s KILL 30 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache --check t-parser-b-or-slice-collection-view.gx
+//   timeout -s KILL 10 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache t-parser-b-or-slice-collection-view.gx
+//   timeout -s KILL 120 /home/eric/tmp/review-2026-11-16/bin/graphix-fuzz check t-parser-b-or-slice-collection-view.gx
+// Expected: `rest` returns [Array<'a>, List<'a>] (or the arm is refused), so
+//   `array::len(t)` is refused by the check.
+// Observed: --check exit 0 (`rest` is typed fn(c: 'c) -> Array<'c#elem>);
+//   the run prints (3, 140176395720752, [1, 21, 1]); graphix-fuzz check:
+//   DIVERGENCE interp Trace([]) (it logs "can't add abstract types") vs
+//   jit Trace([0:(3, <address>, [1, 21, 1])]).
+//   Swapping the alternatives (`[<h, t..>] | [h, t..]`) types `rest` as
+//   returning List<'c#elem> and an array flows as a List.
+let rest = 'c: Collection |c: 'c| select c { [h, t..] | [<h, t..>] => t, _ => never() };
+let t = rest([<10, 20, 30>]);
+(array::len(t), t[0]$, array::map(t, |x| x + 1))

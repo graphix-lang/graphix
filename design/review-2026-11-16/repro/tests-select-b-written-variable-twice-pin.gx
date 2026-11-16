@@ -1,0 +1,17 @@
+// Title: lang::select::written_variable_twice_over_an_undecided_part_is_refused pins a
+// type mismatch its own `let z: bool = a1` makes, not the open-variable rule it names.
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache --check design/review-2026-11-16/repro/tests-select-b-written-variable-twice-pin.gx
+// Observed (this file, the fixture verbatim): type mismatch bool does not contain [fn(x: i64) -> i64, 'q: unbound]
+// The same select with the arm's body `0` or `a0` is refused by the rule the test's comment
+// names ("binds a0 at 'q, a variable of the test's own that nothing decided by the arm's end"),
+// so deleting that refusal (PatternNode::open_written_bind) leaves this fixture refused and passing.
+let fa = |x: i64| x + 100;
+let k = |v: i64| {
+    let u = select v {
+        0 => {f0: null, f1: 7},
+        1 => {f0: null, f1: fa},
+        _ => {f0: 7, f1: [1, 2]}
+    };
+    select u { {f0: 'q, f1: 'q} as {f0: a0, f1: a1} => { let z: bool = a1; 0 } }
+};
+k(0)

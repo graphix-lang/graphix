@@ -1,0 +1,33 @@
+// A union cast reports "no member admits it" whatever its members said:
+// a Cast implementation's own refusal is lost as soon as its type is
+// optional.
+//
+// Command:
+//   /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache t-cast-union-drops-refusal.gx
+//
+// Expected: each line carries "not sorted", the reason `from_value` gave
+// (design/abstract_cast.md: "A from_value reports its refusal through its
+// `InvalidCast(why), which the cast's error repeats").
+//
+// Observed:
+//   plain: error:`InvalidCast("can't cast [3, 1] to Sorted: not sorted")
+//   optional: error:`InvalidCast("can't cast [3, 1] to [null, Sorted]: no member admits it")
+//   json: error:`InvalidCast("can't cast [[\"Sorted\", [2, 1]]] to [null, Sorted]: no member admits it")
+type Sorted = Abstract<Array<i64>>;
+impl Cast for Sorted {
+    let to_value = |s: Sorted| s.0;
+    let from_value = |v| select cast<Array<i64>>(v) {
+        error as e => e,
+        a => select array::sort(a) == a {
+            true => Sorted(a),
+            false => error(`InvalidCast("not sorted"))
+        }
+    }
+};
+let bad: Any = [3, 1];
+println("plain: [cast<Sorted>(bad)]");
+println("optional: [cast<[Sorted, null]>(bad)]");
+let r: Result<{s: [Sorted, null]}, [`JsonErr(string), `InvalidCast(string)]> = json::read("{\"s\": {\"Sorted\": \[2, 1\]}}");
+println("json: [r]");
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+0

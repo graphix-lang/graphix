@@ -1,0 +1,23 @@
+// A seqq reads a capture that went bottom as the last value it had; a seq
+// waits for it.
+//
+// command:  timeout -s KILL 4 graphix --no-cache x-seq-sampling-seqq-capture-reads-dead-level.gx
+//           (same with --no-fusion)
+// `x` is 0, 10, 20 over steps 0-2, bottom over steps 3-8 and 90.. from step 9;
+// the one trigger fires at step 5.
+// expected: the seqq, like the seq, waits for `x` and answers [5, 90] ("an
+//           absent input delays reading the present ones"; `~` banks "including
+//           when v has gone bottom after an earlier value")
+// observed: (.., qv = [5, 20], .., pv = [5, 90]): the seqq ran at once over
+//           the value `x` had before it went bottom.
+let step = 0;
+step <- select step { n if n < 12 => n + 1, _ => never() };
+let go = select step { 5 => step, _ => never() };
+let x = select step { n if n < 3 => n * 10, n if n >= 9 => n * 10, _ => never() };
+let q = seqq go { [go, x] };
+let p = seq go { [go, x] };
+let qs = 0; qs <- q ~ step;
+let ps = 0; ps <- p ~ step;
+let qv = [0, 0]; qv <- q;
+let pv = [0, 0]; pv <- p;
+(step, qs, qv, ps, pv)

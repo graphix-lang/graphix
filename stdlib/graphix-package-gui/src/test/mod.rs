@@ -18,6 +18,15 @@ use tokio::sync::OnceCell;
 
 use crate::widgets::{self, Child, Message, MessageShell};
 
+// CR claude for eric: [test-gap/medium] No test runs a book GUI example.
+// examples_compile only builds them, and CLAUDE.md leaves them to a hand run on a
+// desktop. This module already renders headless (Frame over headless_gpu,
+// GuiTestHarness clicks and calls, window_test's ResolvedWindow). An examples_test like
+// the tui package's would run them in the gate: every example draws a first frame, and
+// data_table_filter_sort, data_table_calculated and mouse_area are driven through their
+// callbacks. That would catch a semantics change that breaks an example's callback
+// logic, or a widget panic on an example's data, which today only a person at a display
+// can see. Found by reading; not run. (examples-gui-02)
 mod canvas_test;
 mod chart_test;
 mod clipboard_test;
@@ -412,6 +421,12 @@ impl GuiTestHarness {
         let _ = self.process_events(&[Event::Window(window::Event::Resized(viewport))]);
     }
 
+    // CR claude for claude: [readability/low] `view` lays out a frame and then builds a
+    // second `IcedElement` that every caller (34 of them) throws away, so its name and
+    // return type mislead. `render` and `process_events(&[])` already lay out a frame.
+    // Make it `fn layout(&mut self)` that runs `process_events(&[])` and returns
+    // nothing, or have the callers call `process_events(&[])`. Found by reading; not
+    // run. (tests-gui-a-09)
     fn view(&mut self) -> crate::widgets::IcedElement<'_> {
         // A `responsive`-wrapped widget fills its size-dependent state
         // during layout, not in `view()`, so lay out once first.
@@ -462,6 +477,14 @@ impl GuiTestHarness {
 
     /// Ctrl and a letter, the modifiers delivered first as the event loop
     /// does.
+    // CR claude for claude: [risk/low] Ctrl stays held after this helper: it sends
+    // `ModifiersChanged(CTRL)` but never `ModifiersChanged(empty)`, and iced's
+    // text_input takes its modifiers only from that event. Every later key in the same
+    // harness reaches a text input as a Ctrl chord: a `type_text("a")` after a
+    // `press_ctrl` selects all instead of typing. The event loop forwards the release.
+    // Append
+    // `Event::Keyboard(keyboard::Event::ModifiersChanged(keyboard::Modifiers::empty()))`
+    // after the press. Found by reading; not run. (tests-gui-a-06)
     fn press_ctrl(&mut self, c: &str) -> Vec<Message> {
         let ctrl = keyboard::Modifiers::CTRL;
         self.process_events(&[
@@ -654,6 +677,12 @@ impl clipboard::Clipboard for TestClipboard {
     }
 }
 
+// CR claude for claude: [structure/low] `expect_call` is `expect_call_with_args(msgs,
+// |_| true)` written out again, and `f64_arg` scans `msgs` twice: once in
+// `expect_call`, then again for the arguments. Keep one function that asserts exactly
+// one matching `Call` and returns its id and arguments, and build `expect_call`,
+// `expect_call_with_args` and `f64_arg` on it. Found by reading; not run.
+// (tests-gui-a-10)
 fn expect_call(msgs: &[Message]) -> CallableId {
     let calls: Vec<_> = msgs
         .iter()

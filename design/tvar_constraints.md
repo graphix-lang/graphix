@@ -1,3 +1,13 @@
+<!-- CR claude for eric: [readability/medium] This file is the type checker's rule book
+and the document changed most since the last review (391 commits). It is 37,450 words in
+113 paragraphs: the longest paragraph is 3,445 words, the median sentence 42, and 195
+sentences run past 60 words, one to 833. A rule cannot be found in it and no sentence is
+tied to the pin that fails when it stops being true; `architecture.md` and `builtins.md`
+have the same shape. The skill already has the remedy: a `graphix,cases` fence, one
+program a line, which `examples_compile.rs` checks. Give each section its model in a
+page, then its rules as a table of rule, enforcing function and a cases line, and let
+the gate read design/*.md as it reads the skill. probe:
+design/review-2026-11-16/repro/a-compiler-doc-stats.py (a-compiler-09) -->
 # TVar cell constraints
 
 Status: built 2026-07-12
@@ -28,6 +38,19 @@ problems:
    and collided with reality downstream, printing a wide-set mismatch
    instead of the violated constraint.
 
+<!-- CR claude for eric: [structure/high] The inference model here (one binding per
+cell, conjuncts, lower bounds added later) is held together by case rulings. Since
+7bd7c2ff0 this file grew from 528 to 3,835 lines, the five core files under
+graphix-types/src/typ (contains, tvar, setops, fntyp, settle) from about 8.3k to 23.4k
+lines without tests, and 885 of 2,316 commits touched typ. For that weight the check
+still refuses `compose`, a call of an unannotated function parameter, a field or tuple
+read of one, and an unannotated recursive function over a variant, all of which
+ML-family inference accepts, and this section says of a cell's two choices that neither
+is complete without an upper bound. By the rule that many rulings on one mechanism
+question the model: stop adding refusal rules, and spike inference that keeps lower and
+upper bounds on every variable (as MLsub, Simple-sub and MLstruct do) on a subset, then
+count how many of the present rules it makes theorems. probe:
+design/review-2026-11-16/repro/a-language-check-refusals.sh (a-language-01) -->
 ## The design
 
 The cell carries the constraint. `TCell` (`typ/tvar.rs`) holds
@@ -2581,6 +2604,12 @@ decided. Pins:
 
 ### `Concrete`: a conjunct that is a predicate
 
+<!-- CR claude for claude: [doc-drift/low] The bound sections name variants that no
+longer exist: `Type::Concrete` here, `Type::Function`, `Type::Singleton`,
+`Type::OneNumber`, `Type::Discernible`, `Type::NoError` and `Type::Ordered` in the
+sections below, and `Type::Data` in design/abstract_cast.md. The code has one variant
+for all of them, `Type::Bound(Bound::Concrete)` and so on (`typ::Bound`). The docs are
+stale: write `Bound::X`. Found by reading; not run. (t-tvar-b-08) -->
 `'b: Concrete` (`Type::Concrete`, parsed only as a bound) says whatever
 binds the cell is fully known: no open cell, no ⊥, no reference and no
 function in it (a value read from data can't be a reference: a number
@@ -2717,6 +2746,16 @@ variables in a signature), so only an inferred one meets it (`|c, a, b|
 select c { true => a, false => b }`), and a type that either member
 could take is refused (A union's member takes a type by rule).
 
+<!-- CR claude for claude: [doc-drift/low] This paragraph cites two pins that no longer
+exist. lang::types::instance_cell_at_a_bottom_place_is_bottom (beside
+instance_cells_only_bounds_hold_settle_to_their_bounds) was deleted by the D36 change.
+empty_array_into_a_typedef_union_of_two_arrays_is_decided_by_the_other_parameters (in
+the closing Pins list) is now
+empty_array_into_a_typedef_union_of_two_arrays_after_its_deciders_refused, which pins
+the opposite verdict: the empty array goes to neither member, "annotate it". Move the
+renamed refusal out of the "decided" list to where two-array unions are discussed, and
+replace or drop the deleted pin. Found by reading (grep and git log -S); not run.
+(tests-types-a-06) -->
 **An instance holds its signature cell by cell.** The instance's
 signature is the definition's at the types the call's check decided, and
 the call may have decided a union's members from other positions than the
@@ -2791,6 +2830,16 @@ only bounds name, are first settled to their bounds, the deepest first
 (`TVar::settle_bounds_first`), as the call's check leaves a variable it
 did not decide; the members are then decided and the containment has no
 choice to make (pins
+<!-- CR claude for claude: [doc-drift/low] [doc-drift/low] No test defines
+`lang::types::instance_cell_at_a_bottom_place_is_bottom`. It was deleted, and its
+program (`f(v0, never(), 1)` over the `'a0: [Array<P<'a1, 'a2>>, null], 'a1: R<'a2,
+'a3>, ..` chain) still checks and runs, so the rule that a cell at a bottom place is
+bottom has no pin. Restore the fixture under this name or drop the claim. In the pin
+list of the paragraph ending "The containment picks no member of a union by order",
+`empty_array_into_a_typedef_union_of_two_arrays_is_decided_by_the_other_parameters` is
+now `empty_array_into_a_typedef_union_of_two_arrays_after_its_deciders`. Found by
+checking every lang::types pin the design docs name against types.rs. (tests-types-d-06)
+-->
 `lang::types::instance_{cells_only_bounds_hold_settle_to_their_bounds,cell_at_a_bottom_place_is_bottom}`).
 Such a cell's bound holds the copy's own cells, never copies of them: in
 `'a0: ['a1, null], 'a1: ['a2, null], 'a2: ['a3, null], 'a3: ['a4, bool],

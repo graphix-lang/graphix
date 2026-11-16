@@ -1,0 +1,27 @@
+// c-lib: a definition assertion is enforced once: the refusal removes it, and the
+// next use of the same definition is accepted.
+//
+// command:  graphix --no-cache c-lib-def-assertion-enforced-once.gx   (kill after it prints)
+// expected: " | load at 3: refused | load at 6: refused | v = -1"
+//           (`g` is not tail recursive, so every body that calls it fails to load)
+// observed: " | load at 3: refused | load at 6: loaded | v = 4"
+//           the second load calls the same `g` and runs it: `check_def_assertions`
+//           (graphix-compiler/src/analysis.rs) removed the assertion when it failed.
+//
+// The same at the REPL:
+//   printf '%s\n' '#[tail_recursive] let rec g = |x: i64| -> i64 select x { 0 => 0, n => g(n - 1) + 1 }' 'g(3)' 'g(3)' | graphix --no-cache
+//   first g(3):  error ... #[tail_recursive]: this function recurses through a non-tail self-call ...
+//   second g(3): -: i64 / 3
+// and with `#[sync] let f = |x: i64| sys::time::timer(duration:1.s, false) ~ x` or
+// `#[pure] let p = |x: i64| count(x)`: the first call is refused, the second accepted.
+#[tail_recursive]
+let rec g = |x: i64| -> i64 select x { 0 => 0, n => g(n - 1) + 1 };
+let ep = 0;
+ep <- select ep { n if n < 8 => n + 1, _ => never() };
+let src: string = never();
+src <- select ep { 2 => "let v = g(3)", 5 => "let v = g(4)", _ => never() };
+let st = mod m dynamic { sig { use super::g; val v: i64 }; source src };
+let seen = "";
+seen <- st ~ "[seen] | load at [ep]: [select st { error as e => "refused", null as _ => "loaded" }]";
+let v = any(-1, m::v);
+select ep { 8 => ep ~ "[seen] | v = [v]", _ => never() }

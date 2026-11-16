@@ -1,0 +1,33 @@
+// A banked `~` is paid by a value a wake recomputed quietly, so a wake
+// fires an event, for a reader outside the arm.
+//
+// command:  timeout -s KILL 4 graphix --no-cache x-seq-sampling-bank-paid-by-wake.gx
+//           (same with --no-fusion; graphix-fuzz check prints AGREE)
+// `e` fires at step 3 while `h(1)` is bottom (`y` reads `src`, absent): one
+// trigger is banked. `src` is written at step 5 while the arm sleeps. The arm
+// wakes at step 7 and recomputes `y`; `h(1)` becomes 102 with no event.
+// expected: (.., 0, 0) for every step: "a wake fires nothing for anyone", and
+//           the skill says of a holder outside a woken arm "a `<-` from it does
+//           not write". The plain reader `pw <- plain ~ ..` indeed never writes.
+// observed: (8, 1, 0) ... (10, 1, 0): `writes <- s ~ writes + 1` wrote once,
+//           because the wake's moved value paid the bank.
+// The same inside the arm: select on { true => { let s = e ~ v; hits <- s ~ hits + 1; .. } }
+// with `e` fired before the sleep and `v` arriving during it writes `hits` at the wake.
+let step = 0;
+step <- select step { n if n < 10 => n + 1, _ => never() };
+let on = select step { 0 | 1 | 7 | 8 | 9 => true, _ => false };
+let src: i64 = never();
+src <- select step { 4 => 100, _ => never() };
+let h: fn(a: i64) -> i64 = never();
+select on {
+  true => { let y = src + 1; h <- once(on) ~ (|a: i64| a + y); count(on) },
+  false => 0
+};
+let e = select step { 3 => step, _ => never() };
+let s = e ~ h(1);
+let plain = h(1);
+let writes = 0;
+writes <- s ~ writes + 1;
+let pw = 0;
+pw <- plain ~ pw + 1;
+(step, writes, pw)

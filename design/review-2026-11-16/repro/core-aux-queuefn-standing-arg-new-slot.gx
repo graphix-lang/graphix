@@ -1,0 +1,16 @@
+// queuefn: a wrapper called in a collection slot added after birth never
+// answers when an argument is a standing capture.
+//
+// Command:
+//   timeout -s KILL 30 graphix --no-cache core-aux-queuefn-standing-arg-new-slot.gx
+// Expected: [101] then [101, 102], as rd = array::map(xs, |x| f(x, k)) gives
+// Observed: [101] only: the second slot's q(2, k) never writes k into its
+//   binding for y, so f(2, ⊥) never answers and the map stalls.
+let c = 0;
+c <- select c { n if n < 5 => n + 1, _ => never() };
+let k = 100;
+let f = |x: i64, y: i64| -> i64 x + y;
+let q = queuefn(#trigger: c, f);
+let xs = select c { n if n < 2 => [1], _ => [1, 2] };
+let rq = array::map(xs, |x| q(x, k));
+rq

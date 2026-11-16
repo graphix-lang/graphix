@@ -1,0 +1,10 @@
+// `use Collection::*`, the glob the book teaches, takes core's `filter` away
+//
+// command:
+//   graphix --check design/review-2026-11-16/repro/a-stdlib-collection-glob-shadows-filter.gx
+// expected: core's filter(v, pred) still gates a value
+// observed:
+//   type mismatch 'self: unbound within Collection<'a: unbound> does not contain i64
+use Collection::*;
+let x = 5;
+filter(x, |v| v > 3)

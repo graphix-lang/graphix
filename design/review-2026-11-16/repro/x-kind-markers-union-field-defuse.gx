@@ -1,0 +1,19 @@
+// Title: a field read over a union of structs (fields at different sorted
+// positions) or a union of tuples (different arities) never fuses.
+// Command: timeout -s KILL 30 graphix --no-cache --expand design/review-2026-11-16/repro/x-kind-markers-union-field-defuse.gx
+// Expected: checks (both reads are legal: every member has the field) and
+//   fuses whole as the single-type reads do.
+// Observed: #[native] refused:
+//   - emit_clif: struct field index unresolved          (s.b)
+//   - emit_clif: accessor source of type [(i64, i64), (i64, i64, i64)] isn't Tuple   (t.1, after removing s.b)
+// graphix-fuzz check agrees on values: this is lost fusion, not a wrong answer.
+type S = [{b: i64, c: i64}, {a: i64, b: i64}];
+type T = [(i64, i64), (i64, i64, i64)];
+let mk = |k: i64| -> S select k % 2 { 0 => {b: k, c: 100}, _ => {a: 200, b: k} };
+let mt = |k: i64| -> T select k % 2 { 0 => (k, 1), _ => (k, 2, 3) };
+let f = |k: i64| -> (i64, i64) #[native] {
+  let s = mk(k);
+  let t = mt(k);
+  (s.b, t.1)
+};
+f(1)

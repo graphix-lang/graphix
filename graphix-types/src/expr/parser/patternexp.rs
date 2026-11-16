@@ -255,6 +255,15 @@ pub(super) fn structure_pattern(i: &mut Input) -> R<StructurePattern> {
             | StructurePattern::Bind(_)
                 if all.is_some() =>
             {
+                // CR claude for eric: [structure/low] A capture over a literal pattern
+                // (`t@ 1`, `s@ "go"`, `t@ true`) is a parse error, yet `k@ pat => x <-
+                // k ~ v` is the form the book, the skill and `warn_constant_action`'s
+                // message give for acting when an arm is entered. A literal arm must
+                // sample the scrutinee by name instead, which needs a `let` whenever
+                // the scrutinee is an expression. Admit a capture over a literal: the
+                // bind is the event and its value the literal's. probe:
+                // design/review-2026-11-16/repro/a-language-check-refusals.sh (case 9)
+                // (a-language-11)
                 Err(i.refuse(end, "a capture `name@` takes a structure pattern"))
             }
             pat => Ok(pat),
@@ -296,6 +305,15 @@ pub(super) fn pattern(i: &mut Input) -> R<Pattern> {
             Ok(t)
         })
     })?;
+    // CR claude for eric: [risk/medium] An arm written `string => ..` or `i64 => ..`
+    // (the `as _` forgotten) parses as a catch-all bind named after the type, because
+    // fname admits primitive type names. The refusals that follow ("unreachable arm",
+    // "cannot compute [i64, string] + i64") never say why. With a null arm first,
+    // `string => "a string: [string]"` over `[i64, string, null]` checks and prints "a
+    // string: 1". No select arm in either repo binds a type name as its whole pattern.
+    // Should an arm whose whole pattern is a bare primitive type name be refused
+    // ("`string` binds a name; a type test is `string as _`"), or warned? probe:
+    // design/review-2026-11-16/repro/t-parser-b-type-name-binds.sh (t-parser-b-04)
     let structure_predicate = structure_pattern_or(i)?;
     let end = i.pos();
     let guard = i.optional(|i| {

@@ -426,6 +426,14 @@ run!(fold_acc_elem_body, FOLD_ACC_ELEM_BODY, prints("[i64:2]"); FuseExpect::Jit)
 
 // A bottoming predicate poisons the whole collection for that cycle:
 // three honest deliveries, so the group closes at n == 3.
+// CR claude for claude: [test-gap/medium] This fixture cannot tell a bottoming
+// predicate that poisons the collection (the rule its comment states) from one that
+// drops its element. The last iter value is 4, which the filter drops anyway, so both
+// print [[1, 2, 1], [1, 2, 2], [1, 2]], and a filter that skipped a bottom slot would
+// pass. Make the last value one the filter keeps, `array::iter([1, 2, 0, 1])`, and
+// expect [[1, 2, 1], [1, 2, 2], [1, 2, 1]]; dropping prints [.., [1, 2]] there. probe:
+// design/review-2026-11-16/repro/tests-lang-rest-c-filter-div0-vacuous.sh
+// (tests-lang-rest-c-04)
 const FILTER_DIV0_SLOT_CACHE: &str = r#"
 {
   let a = [1, 2, array::iter([1, 2, 0, 4]), 4, 5, 6, 7, 8];

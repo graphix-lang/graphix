@@ -1,0 +1,11 @@
+// Title: native.rs native_connect_in_callback_is_error pins only the prefix
+// every #[native] refusal shares
+// The test asserts e.contains("did not fully fuse"), which any blocker gives;
+// its comment says the connect is why. The refusal lists two blockers.
+// Command:
+//   timeout -s KILL 20 graphix --no-cache --expand tests-lib-b-a-native-connect-two-blockers.gx
+// Observed:
+//   #[native] expression did not fully fuse to native code:
+//     - connect is an effect
+//     - a region of type _ has no kernel return
+{ let last = { v: i64:0 }; array::map([1, 2, 3], |x| #[native] { last <- { v: x }; x }); last.v }

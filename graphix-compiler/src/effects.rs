@@ -64,6 +64,19 @@ impl LambdaFacts {
     /// What `#[pure]` asserts: what [`Self::sleeps`] refuses, but
     /// diagnostic output.
     pub fn is_pure_function(self) -> bool {
+        // CR claude for eric: [risk/medium] `#[pure]`, which core requires of every
+        // `Eq`, `Ord`, `Display` and `Cast` method, admits a body that reads a binding
+        // something writes: this asks only for sync, stateless, no world and no event.
+        // An `Ord::cmp` that reads `flip` is accepted. Once `flip <- true` lands, a
+        // standing `a < b` keeps `true` beside a fresh `K(1) < K(2)` that is `false`, a
+        // sorted array keeps the old order, and a map built before the write answers
+        // `MapKeyError` for a key it holds; both engines agree. The book says `#[pure]`
+        // holds a body to a pure function of its arguments. Rule on it: refuse a
+        // required-pure method that captures a binding something writes
+        // (`connect_targets`), or say in the book and design/traits.md that an
+        // implementation reads nothing that changes. probe:
+        // design/review-2026-11-16/repro/c-module-traits-pure-method-reads-written-binding.gx
+        // (c-module-traits-03)
         self.is_pure() && !self.world && !self.event
     }
 

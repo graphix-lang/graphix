@@ -1,0 +1,61 @@
+// What a tcp line server costs today: the accept loop is fed back by hand and
+// the connection array can only grow
+//
+// A line protocol with a sqlite store behind it: "SET k v", "GET k".
+//
+// command:
+//   graphix --no-cache design/review-2026-11-16/repro/a-stdlib-tcp-server.gx &
+//   printf 'SET a 1\nGET a\nGET zz\nBOGUS\n' | nc -q1 127.0.0.1 47411
+// observed: it works (three clients, twelve commands, every reply in order):
+//     OK
+//     VAL 1
+//     NIL
+//     ERR bad command
+// What it took, which no doc, example or test shows (every fixture accepts once):
+//   - `again <- conn` feeds each accepted stream back into accept's trigger
+//   - `conns` only grows: Lines::lines gives no event when the peer closes, and
+//     removing a stream from the array would hand every later connection's
+//     callback (its reader, its queued requests) to another stream
+//     (a-stdlib-slot-identity-positional.gx)
+//   - the per-line work is a `seqq`, since a reply made in a select arm is
+//     lost when the next line puts the arm to sleep
+// http::serve and sys::net::rpc need none of this: each request gets an
+// instance of the handler of its own.
+use sys::io::{Lines, Write};
+use sys::tcp::TcpStream;
+
+let db = sqlite::open(":memory:")$;
+let ready = sqlite::exec_batch(db, "create table kv (k text primary key, v text not null)")$;
+
+let set = |k: string, v: string| -> string
+  select sqlite::exec(db, "insert or replace into kv (k, v) values (?, ?)", [k, v]) {
+    error as e => "ERR [e]",
+    _ => "OK"
+  };
+let get = |k: string| -> string {
+  let rows: Result<Array<{v: string}>, [`SqliteError(string), `InvalidCast(string)]> =
+    sqlite::query(db, "select v from kv where k = ?", [k]);
+  select rows {
+    error as e => "ERR [e]",
+    [] => "NIL",
+    [r, ..] => "VAL [r.v]"
+  }
+};
+
+let serve = |c: TcpStream| seqq let ln = Lines::lines(c)$ {
+  let r = select str::split(#pat: " ", ln) {
+    ["SET", k, v] => set(k, v),
+    ["GET", k] => get(k),
+    _ => "ERR bad command"
+  };
+  Write::write_exact(c, buffer::from_string("[r]\n"))
+};
+
+let l = sys::tcp::listen("127.0.0.1:47411")$;
+let again: Any = never();
+let conn = sys::tcp::accept(ready ~ l, any(l, again))$;
+again <- conn;
+let conns: Array<TcpStream> = [];
+conns <- conn ~ array::push(conns, conn);
+array::map(conns, serve);
+println("listening on [sys::tcp::listener_addr(l)$]")

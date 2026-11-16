@@ -1,0 +1,24 @@
+// A moving place reference whose key changed while its arm slept fires its
+// readers at the wake: a connect writes in the wake cycle.
+//
+// run: graphix-fuzz run design/review-2026-11-16/repro/x-sleep-wake-moving-ref-fires-on-quiet-key.gx
+//
+// `n` is 1 when the arm falls asleep (clk 2) and 3 when it wakes (clk 6); it
+// does not fire at clk 6. The key `n % 3` goes 1 -> 0 while the arm sleeps.
+// Each tick is (clk, sel, n, a, w, count(w)).
+//
+// expected (a wake fires nothing): `a` is 10 at clk 6, and `w` keeps 20 until
+// `n` fires at clk 7.
+// observed, both engines: 7:(6, 0, 3, 10, 20, 3) 8:(7, 0, 4, 20, 10, 4):
+// `w <- *r` wrote 10 in the wake cycle.
+{
+  let clk = array::iter(array::init(10, |i| i));
+  let n = 0;
+  n <- filter(clk, |c| c % 2 == 0) ~ (n + 1);
+  let sel = 0;
+  sel <- filter(clk, |c| c % 4 == 1) ~ (1 - sel);
+  let arr = [10, 20, 30];
+  let w = 0;
+  let a = select sel { 0 => { let r = &arr[n % 3]; w <- *r; *r }, _ => -1 };
+  clk ~ (clk, sel, n, a, w, count(w))
+}

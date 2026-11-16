@@ -1,0 +1,12 @@
+// Title: the check accepts a call that instantiates a tested declared variable
+// at a function type; the build of the instance refuses it.
+// Command: graphix --no-cache --check x-typecheck-patterns-declared-var-test-at-function.gx
+//   then: graphix --no-cache x-typecheck-patterns-declared-var-test-at-function.gx
+// Expected: one verdict from the check and the build.
+// Observed: --check exits 0; the run fails to build with
+//     in the instance of f((1, 1), |b: string| "[b]!") at this call site
+//     can't match on a type holding a function: a test tells a function from a
+//     value, not one signature from another
+let f = |x: [(i64, i64), i64], y: 't| select x { ('t, i64) as (a, _) => a, _ => y };
+let h = f((1, 1), |b: string| "[b]!");
+h("s")

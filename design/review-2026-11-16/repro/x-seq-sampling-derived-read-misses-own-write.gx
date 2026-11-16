@@ -1,0 +1,17 @@
+// A seq step that reads a binding DERIVED from a variable an earlier step
+// wrote enters in the same cycle and reads the value from before the write.
+//
+// command:  timeout -s KILL 4 graphix --no-cache x-seq-sampling-derived-read-misses-own-write.gx
+//           (same with --no-fusion; graphix-fuzz check prints AGREE)
+// expected: [10, 5, 10]   ("a run sees its own effects": `b` is `a * 2`, and
+//           the step before wrote `a <- 5`)
+// observed: [0, 5, 10]    (one run reads `b` as 0 and then as 10, and
+//           d != g * 2; --expand shows `S0 -> S1 same`)
+// Under `seqq` the derived read is the enqueue snapshot for the whole run:
+//   seqq go { a <- 5; until live(nxt); let d = b; let g = a; [d, g] }  ->  [0, 5]
+let step = 0;
+step <- select step { n if n < 8 => n + 1, _ => never() };
+let go = select step { 2 => step, _ => never() };
+let a = 0;
+let b = a * 2;
+seq go { a <- 5; let d = b; let g = a; [d, g, b] }

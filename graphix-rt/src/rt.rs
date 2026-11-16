@@ -392,6 +392,14 @@ impl<X: GXExt> GXRt<X> {
     }
 
     /// Whether a spawned or custom task may still reply.
+    // CR claude for claude: [bug/medium] set_timer spawns every timer into `tasks`, so
+    // this counts armed timers as replies in flight. GXHandle::wait_replies says timers
+    // may still start cycles, but it waits every timer out and never answers while a
+    // repeating timer runs. The fuzzer's FinalValues settle then waits REPLY_WAIT per
+    // round. Give timers a JoinSet of their own, joined in the run loop's select, and
+    // count only tasks and custom_tasks here; outstanding() still counts `timers`.
+    // probe: design/review-2026-11-16/repro/rt-handle-contracts.rs
+    // (review_an_armed_timer_holds_wait_replies) (rt-01)
     pub(super) fn replies_pending(&self) -> bool {
         !self.tasks.is_empty() || !self.custom_tasks.is_empty()
     }

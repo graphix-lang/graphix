@@ -399,6 +399,15 @@ fn trigger_snapshot(
                 reads_name(body, n)
                     || seq.abort.is_some_and(|a| reads_name(std::slice::from_ref(a), n))
             };
+            // CR claude for claude: [bug/medium] A bare-variable trigger is recognized
+            // only as an unparenthesized Ref. So `seq (t) { .. t .. }` gets no trigger
+            // snapshot, and the body reads `t` through each step's entry snapshot: it
+            // sees a later, busy-dropped trigger's value where `seq t` sees the run's
+            // own. trigger_aliases and desugar_queued's trigger_names match the same
+            // way, so under `seqq (t)` a body write to `t` makes it a live capture.
+            // Match `e.unparen()` in all three. probe:
+            // design/review-2026-11-16/repro/t-seq-paren-trigger-not-snapshotted.gx
+            // (t-seq-02)
             if let ExprKind::Ref { name } = &e.kind
                 && let n = ArcStr::from(ref_key(name))
                 && (reads(&n) || aliases.iter().any(|a| reads(a)))
@@ -580,6 +589,17 @@ fn desugar_plain(
 /// event in the cycle it fires, so a request that arrives with it stays,
 /// unless the flush reads the run's request, which the queue produces:
 /// then the flush reaches the queue through a variable, a cycle late.
+// CR claude for eric: [bug/medium] A flush that fires after the queue released the next
+// request, and before that request's run enters, drops neither. The queue no longer
+// holds the request, and run_event's armed gate drops the fire as one before the run's
+// entry. With a run every 4 cycles, a flush at k=12, 13 or 14 still lets request 3 run,
+// and its value fires at k=15; requests 4..9 are dropped. seq_blocks.md §9 calls flush
+// an abort that also empties the queue and says the queue clears during handoffs, but
+// also that a dispatched request is no longer queued. Decide which holds. If nothing
+// pending should survive a flush, the queue's flush cancels its in-flight release (or
+// the machine treats a flush in its handoff as aborting the run it is about to enter).
+// Otherwise say so in §9 and the skill. probe:
+// design/review-2026-11-16/repro/x-rerun-5-flush-misses-dispatched.gx (x-rerun-5-04)
 fn run_events(
     out: &mut Vec<Expr>,
     spec: &Expr,
@@ -1101,6 +1121,17 @@ impl Machine<'_> {
 
     fn lower_stmt(&mut self, stmt: &Expr, sink: &Sink, visible: &Names) -> Result<Tails> {
         let pos = stmt.pos;
+        // CR claude for eric: [bug/low] Only `until` is refused here as the last
+        // statement whose value is used. A trailing `let` writes its value into the
+        // sink, so `seq t { let a = 1; let b = a + 1 }` is 2, and a try body in a seq
+        // ending in a let is accepted the same way. Every other block ending in a let
+        // is refused ('a let has none'), including one nested in a step since
+        // c-data-map-01's fix, and seq_blocks.md says that last statement must be an
+        // expression. Decide whether a seq body follows the block rule. If it does,
+        // refuse an ExprKind::Bind here when `sink` is not empty, as `until` is, and
+        // pin it for seq, try and with bodies. If not, document the let's value. probe:
+        // design/review-2026-11-16/repro/x-rerun-1-seq-body-trailing-let.gx
+        // (x-rerun-1-06)
         if let ExprKind::Until(cond) = &stmt.kind {
             if !sink.is_empty() {
                 return Err(anyhow!(
@@ -1179,6 +1210,14 @@ impl Machine<'_> {
                 };
                 (k, snap)
             }
+            // CR claude for claude: [bug/low] The connect's written target position
+            // (`at`) is dropped here. rewrite_target notes the cell at the statement's
+            // position, and the rebuilt connect gets WrittenAt::NOWHERE, so for `*r <-
+            // v` in a step the language server's reference site for `r` is the `*`
+            // (outside a seq it is the `r`). Pass `at.get().unwrap_or(pos)` to
+            // rewrite_target and keep `at` on the lowered connect, here, in lower_block
+            // and in rewrite_with's Connect arm. probe:
+            // design/review-2026-11-16/repro/t-seq-lsp-deref-target-site.py (t-seq-05)
             ExprKind::Connect { name, value, deref, .. } => {
                 let value = decorated(value, &stmt.dec);
                 let snap = self.snapshot(stmt, sink, visible);
@@ -1635,6 +1674,19 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
             args.push(expr.clone());
         }
     }
+    // CR claude for claude: [bug/high] A seqq capture built here takes a new value only
+    // when its variable fires (`any(x, activation ~ x)` under `core::hold`), and a wake
+    // fires nothing. So a seqq in a select arm queues every request after a wake with
+    // the value its captures had before the arm slept, until each fires again: with `x`
+    // written 10 -> 50 during the sleep, `seqq go { [go, x] }` answers [9, 10] three
+    // cycles after the wake while `seq go { [go, x] }` and `go ~ [go, x]` beside it
+    // answer [9, 50]. A screen arm calling a component that holds a seqq saves stale
+    // state this way, and a top-level seqq over a holder that moved at an arm's wake
+    // does too. Fix: give `BinOp::BankedSample` the plain tuple of the captured reads,
+    // whose `Held` argument follows quiet productions, and drop the seed and hold lets.
+    // probe:
+    // design/review-2026-11-16/repro/x-seq-sampling-seqq-capture-stale-after-wake.gx
+    // (x-seq-sampling-01)
     for (i, arg) in args.iter_mut().enumerate() {
         let name = format_compact!("{SEED}{id}_{i}");
         prelude.push(let_bind(
@@ -1649,6 +1701,18 @@ fn desugar_queued(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
             }
             .to_expr(pos),
         ));
+        // CR claude for eric: [doc-drift/medium] `hold(#clock: seed, seed)` keeps a
+        // capture's last value through bottom (`any(v, activation ~ v)` alone is bottom
+        // while v is). So a seqq request queued while a capture is bottom carries a
+        // stale value, where a seq step reading the same variable waits for it
+        // (design/seq_blocks.md §5: an absent input delays reading). In the probe,
+        // `role` is bottom from step 3 to step 29: seq reads 8, seqq reads 5 for both
+        // requests. The book documents the hold. seq_blocks.md §8 attributes it to
+        // activation, and the graphix-lang skill is silent. Decide the rule: drop the
+        // hold so a bottom capture waits, as an uninitialized one already does (and fix
+        // the book), or write the hold into §5, §8 and the skill. probe:
+        // design/review-2026-11-16/repro/t-seqq-capture-holds-through-bottom.gx Also
+        // reported as (x-seq-sampling-04). (t-seq-04)
         *arg = apply_core(
             pos,
             "hold",
@@ -1768,6 +1832,16 @@ fn apply_core(
 ) -> Expr {
     ExprKind::Apply(ApplyExpr {
         function: Arc::new(
+            // CR claude for claude: [bug/low] The seq lowering names its helpers by the
+            // path `core::filter` and `core::queue`, so a `seq`, `seqq` or `try` in a
+            // dynamic module's body fails to load unless the sig imports core, with
+            // `core::filter not defined` at a name the author never wrote; the book and
+            // the skill list only operators and literals as needing no import and say
+            // nothing of seq. Have the lowering reach core's bindings without a name
+            // lookup, as an operator does, or refuse with a message that asks for `use
+            // core;` in the sig. probe:
+            // design/review-2026-11-16/repro/x-dyn-modules-seq-needs-core.gx
+            // (x-dyn-modules-10)
             ExprKind::Ref { name: ModPath::from(["core", name]) }.to_expr(pos),
         ),
         args: Arc::from_iter(args),
@@ -2012,6 +2086,14 @@ fn callee_ref(e: &Expr) -> Option<&Expr> {
 fn strip_live(e: &Expr) -> Expr {
     ensure_sufficient(|| match &e.kind {
         ExprKind::Live(x) => strip_live(x),
+        // CR claude for claude: [readability/low] strip_live stops at a nested Seq, so
+        // a `live(..)` in a nested seq's trigger, which the outer step issues, stays in
+        // place, and the abort and flush clauses are never stripped. Both are refused
+        // with "`live` ... means nothing outside a seq block", though each is written
+        // inside a seq (the nested trigger inside a step). Both positions already read
+        // live: strip `live` from a nested seq's trigger here and from the clauses in
+        // run_events, or refuse with a message that names the clause. probe:
+        // design/review-2026-11-16/repro/t-seq-live-in-clause-refused.sh (t-seq-06)
         ExprKind::Seq(_) => e.clone(),
         _ => e.map_children(&mut strip_live),
     })
@@ -2141,6 +2223,17 @@ fn shadow_step(e: &Expr, map: &mut Names) {
         },
         ExprKind::Use { names, .. } => {
             for u in names.iter() {
+                // CR claude for claude: [bug/medium] A glob `use` clears every redirect
+                // for the rest of its scope, not just the names it brings in. After `{
+                // use str::*; x }`, a seqq reads `x` live instead of the request's
+                // capture, and a seq step reads it live instead of its entry snapshot.
+                // A `seq let` name or a `with` binder, which exist only as cells,
+                // become undefined: `seq let c = t { let m = { use str::*; c }; m }` is
+                // refused with "c not defined". Remove only the keys the glob's module
+                // binds (look each key up under the module through the env), or refuse
+                // a glob `use` in a seq body. probe:
+                // design/review-2026-11-16/repro/t-seq-glob-use-drops-redirects.gx
+                // (t-seq-03)
                 if u.is_glob() {
                     return map.clear();
                 }
@@ -2271,6 +2364,18 @@ fn rewrite_with_inner(e: &Expr, map: &Names, mode: Rewrite<'_>) -> Expr {
             ExprKind::Qop { arg, written }
         }
         // a reference is to the variable, never to a snapshot of it
+        // CR claude for claude: [bug/high] Only Cell redirects are kept for the whole
+        // operand of `&`, so a place's index or key (`&rows[sel]`, `&m{k}`, a slice
+        // bound) reads its variables live. It bypasses the step's entry snapshot, the
+        // seqq request's capture and the run's trigger snapshot. Under seqq, `let r =
+        // &mut rows[sel]; *r <- v` writes the row selected when the run executes, not
+        // the one the request captured. Under seq, `&vals[t]` with a bare event trigger
+        // waits for the next trigger and binds that trigger's index, and under seqq
+        // that run stalls. Only the place's root should reach the variable: keep the
+        // cells-only map for the root chain and rewrite every index, key and slice
+        // bound (and an operand that is not a place) with the full map. probe:
+        // design/review-2026-11-16/repro/t-seq-ref-index-seqq.gx and
+        // design/review-2026-11-16/repro/t-seq-ref-index-reads-live.gx (t-seq-01)
         ExprKind::ByRef(m, x) => {
             let cells = only(map, |r| matches!(r, Redirect::Cell(_)));
             let cells = cells.as_deref().unwrap_or(map);

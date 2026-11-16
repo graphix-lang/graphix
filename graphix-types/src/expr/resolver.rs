@@ -246,6 +246,15 @@ pub fn split_escaped(
 /// resolvers. `file:` is built in, other schemes look up `factories`,
 /// an entry with no registered scheme is a file path, read through
 /// `overrides`, and an empty entry (a trailing comma's) is nothing.
+// CR claude for claude: [doc-drift/low] The doc above says 'an entry with no registered
+// scheme is a file path', and book/src/shell.md says the same. The code skips, with a
+// warning, an entry whose scheme no factory reads (`modpath_skips_an_unread_scheme`
+// pins it), so `GRAPHIX_MODPATH=lib:mods` never searches the directory `lib:mods`.
+// Rewrite both to say that an entry with no scheme is a file path, that one whose
+// scheme no factory reads is skipped, and that `file:` is how to write a path whose
+// first component looks like a scheme. probe:
+// design/review-2026-11-16/repro/t-format-resolver-modpath-unregistered-scheme.sh
+// (t-format-resolver-06)
 pub fn parse_modpath(
     factories: &AHashMap<ArcStr, ResolverFactory>,
     libstate: &mut crate::LibState,
@@ -444,6 +453,21 @@ fn stray_interface(intf: &dyn fmt::Display, imp: &dyn fmt::Display) -> anyhow::E
     )
 }
 
+// CR claude for eric: [bug/medium] A module file reached through a symlink is paired
+// with the interface beside the link, never the one beside its real file, and its
+// submodules resolve beside the link. With `proj/common.gx -> ../shared/common.gx`, the
+// module loads with no interface even though `shared/common.gxi` exists: every item is
+// public and the interface is never checked. A root file goes the other way: the shell
+// canonicalizes it, `RootFile::load` names it by its canonical path, and its `.gxi` and
+// modules are found beside the real file. The language server passes buffers and so
+// names a linked root by the link. One file therefore means three things depending on
+// how it is reached, and `a_symlinked_module_is_in_its_project` treats linked modules
+// as supported. Decide whether a link is followed and apply that in all three places.
+// Following it here means canonicalizing the implementation `choose_layout` picked
+// (when no buffer supplied it) and taking the interface and `file_submodule_base` from
+// that path. probe:
+// design/review-2026-11-16/repro/t-format-resolver-linked-module-drops-interface.sh
+// (t-format-resolver-01)
 async fn resolve_from_files(
     parent: &Arc<Origin>,
     name: &Path,
@@ -757,6 +781,18 @@ impl RootFile {
             }
         };
         probe(&file, &Some(text.clone()));
+        // CR claude for eric: [bug/low] Only a root file read from disk has its `#!`
+        // line stripped. `parse_module` and the resolvers pass a module's text to
+        // `parser::parse` as it is, and `GXRt::load_exprs` does the same for a netidx
+        // root. So a file that `graphix --check` and `graphix fmt` accept as a script
+        // is a parse error ('Unexpected `#`') when another file loads it with `mod
+        // tool;`. Decide where a `#!` line is legal. If it is legal in any file, strip
+        // it where every file parse passes (in `parse_module` and `load_exprs`, or in
+        // `parse_all` at offset 0 as it does the BOM) and drop this special case. If it
+        // is legal only in a root script, refuse it in a module with a message that
+        // says so. probe:
+        // design/review-2026-11-16/repro/t-format-resolver-module-shebang.sh
+        // (t-format-resolver-03)
         let text = parser::without_shebang(&text);
         let intf = file.with_extension("gxi");
         let interface = match file.extension().and_then(|s| s.to_str()) {
@@ -1110,6 +1146,16 @@ impl LoadChain {
         let source = &chain_source(source);
         let mut cur = chain.as_ref();
         while let Some(c) = cur {
+            // CR claude for claude: [perf/low] Resolving a chain of nested module files
+            // is cubic in its length: `--check` of 250 files takes 0.14 s, 500 files
+            // 0.84 s, 1000 files 6.0 s (each `m.gx` holds `mod m;`, its module in
+            // `m/m.gx`). Each push canonicalizes the new file (a realpath over a path
+            // as long as the chain), and this check compares it with every link by
+            // `Source::eq`, a path compare as long as the chain. Fix: store a hash of
+            // each link's canonical source in `LoadChain` and compare hashes before
+            // paths, so a push costs one canonicalize and a pass of integer compares.
+            // probe: design/review-2026-11-16/repro/x-stack-module-chain-cubic.sh
+            // (x-stack-04)
             if c.source == *source {
                 let mut names: SmallVec<[&ArcStr; 4]> = SmallVec::new();
                 let mut back = chain.as_ref();

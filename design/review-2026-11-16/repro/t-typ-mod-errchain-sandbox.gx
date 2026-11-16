@@ -1,0 +1,15 @@
+// t-typ-mod: a dynamic module whose sig imports nothing cannot read its own
+// catch binder: `e.0` fails the load with "undefined type ErrChain in core",
+// a name the body never wrote.
+//
+// Command:  graphix --no-cache t-typ-mod-errchain-sandbox.gx
+// Expected: "4" (the body uses only syntax: `catch`, `?`, `+?`, a select);
+//           it prints "4" once the sig says `use core::ErrChain;`.
+// Observed: "error:`DynamicLoadError(\"compile error .. in: e.0\\n    6:
+//           undefined type ErrChain in core\")"
+let st = mod m dynamic {
+  sig { val f: fn(x: i64) -> i64 };
+  source r#"let f = |x: i64| -> i64 { catch(e) select e.0.error { `ArithError(s) => 0 }; (x +? 1)? }"#
+};
+sys::exit(sys::time::after_idle(duration:500.ms, 0));
+select st { error as e => "[e]", null as _ => "[m::f(3)]" }

@@ -1,0 +1,11 @@
+// json::read reads the JSON number -0 as +0.0 into a float target
+// command: timeout -s KILL 60 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache small-pkgs-json-negative-zero.gx
+// expected: -0.0 -0.0 (RFC 8259's -0 is negative zero; serde_json keeps "-0" out of
+//   its integer fast path precisely so a float reads it signed)
+// observed: 0.0 -0.0   ("-0" goes through visit_map's NUMBER_TOKEN path, where
+//   Number::as_i64 parses "-0" as the i64 0)
+let x: f64 = json::read("-0")$;
+let y: f64 = json::read("-0.0")$;
+println("[x] [y]");
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+0

@@ -1,0 +1,23 @@
+// Title: x-rerun-3-06 variant: the arm-birth warning misses a write through a reference,
+//   inline (`*mr <- 6`) and in a called function (`setr(6)`); `m <- 6` and `set(5)` warn.
+// Command: timeout -s KILL 10 graphix --no-cache x-rerun-5-birth-warn-ref-write.gx
+// Expected: a WARNING at `*mr <- 6` ("this write reads no variable, so it acts only if
+//   this arm is taken in the program's first cycle ...") and one at `setr(6)` ("this
+//   call ..."), as `m <- 6` inline and a function doing `m <- v` get.
+// Observed: no warning; the writes act only at the program's first cycle: count(m)
+//   stays 2 (those two writes) though the arm is entered at n = 0, 2, 4:
+//   (0, 1) (0, 2) (-1, 2) (2, 2) (-1, 2) (4, 2).
+//   warn_constant_action has no ConnectDeref arm, and analysis::node_facts gives a
+//   ConnectDeref STATEFUL, never EVENT, so acts_on_the_world misses setr.
+let clock = sys::time::timer(duration:10.ms, 4);
+let n = 0;
+n <- clock ~ n + 1;
+let m = never<i64>();
+let mr = &mut m;
+let setr = |v: i64| { *mr <- v; v };
+let r = select n % 2 {
+  0 => { *mr <- 6; setr(6); n },
+  _ => -1
+};
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+(r, count(m))

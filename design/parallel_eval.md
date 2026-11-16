@@ -130,6 +130,14 @@ publication set. A call with no static target also counts as an
 a callee that reaches one (`analysis::own_access`). A slot site's own
 call is the exception: a slot site decides again at every rebind.
 
+<!-- CR claude for claude: [doc-drift/low] `publishes` is described as the lets and
+pattern binds of a block and the error handlers both reach, and §3.3 calls leaving
+callee bodies out an over-approximation. `analysis::publishes` holds each bound id (a
+call's argument ids too), each reference's cell and each module's exports, and no
+handler: two siblings raising to one handler fork and `branch::merge_in_order` queues
+the later delivery. Leaving a callee's lets out under-approximates wherever a closure or
+a reference carries one out, which is what `hands_out_callee_binds` is for. Bring both
+paragraphs to the code. Found by reading; not run. (c-analysis-branch-12) -->
 `publishes` is new. It is the set of bind ids a subtree delivers within
 the cycle that a later sibling can name: the statement-level `let`s
 and pattern binds of a block, and the error handlers both reach. A
@@ -565,6 +573,11 @@ phase 2 audits the stdlib for it. A missed case shows as run-to-run
 nondeterminism, which the forced-parallel fuzzer pair can find in the
 stdlib.
 
+<!-- CR claude for claude: [doc-drift/low] The audit names two ordered builtins, but
+`sys_net_call`, `sys_net_call_id` and `sys_net_abort_call` also declare
+`BuiltIn::ORDERED`: the RPC table is `NetState`'s, as design/builtins.md says. List them
+here, or point at the registry's `builtin_ordered` instead of a count. Found by reading;
+not run. (x-builtin-effects-05) -->
 **The stdlib audit** (phase 2) found two ordered builtins:
 `core_queuefn` and, in the admin package, `netidx_admin_answer` (two
 answers to one question race for its one pending slot); both declare
@@ -718,6 +731,13 @@ that safe: they are independent.
 - **Two shared resources keep their locks:** the JIT (a kernel install,
   C/fusion/emit/jit.rs:1263) and the image decoder
   (C/node/callsite.rs:1768). Both are taken once per first use.
+<!-- CR claude for claude: [doc-drift/low] `TrackedMap::join` does detect a conflict: it
+asserts, in release builds too, that a fork's write replaces no different write made
+since the fork, so two branches' run-time binds leaving different values under one key
+panic the cycle. Say so here in place of "detects no conflict" and "Nothing asserts it".
+§5 also says the calibration pool has as many workers as a runtime's;
+`cost::CALIBRATION_WORKERS` caps it at two. Found by reading; not run. (x-parallel-06)
+-->
 - **Joins touch disjoint keys.** `TrackedMap::join` keeps the last join
   per key and detects no conflict. Runtime binds write fresh ids
   (`by_id`, `bind_to_lambda` keyed by new `BindId`s) and balanced pairs
@@ -945,6 +965,11 @@ atomic reads; a run that finds the site being decided runs in order.
 `Force` forks every loop of two or more slots in ranges of the forced
 grain.
 
+<!-- CR claude for claude: [doc-drift/low] This paragraph says the fuzzer's Par pair
+runs the fused JIT forced. In fact graphix_fuzz::fuzz_par runs Mode::JitPar at Auto,
+with the wake threshold fixed at AUTO_T (4 ticks), as design/graphix_fuzz.md says. That
+is what exercises par_loop::run's probe path, a probe run followed by forked ranges.
+Only the node-walk side is forced. Found by reading; not run. (f-kernel-03) -->
 **Testing.** Every `run!` fixture has a `jit_par` twin (fused, `Force`:
 each slot a chunk); `lang::par_loops` pins raise order and a find's
 lowest slot across chunks; `lang::par_attrs` the attributes over fused

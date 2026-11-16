@@ -1,0 +1,12 @@
+// The fuzzer's view of c-prune-wake-hook-stale-capture.gx: a core-trait hook
+// whose method reads a capture gives the node-walk and the JIT different
+// answers.
+//
+// Command:
+//   graphix-fuzz check design/review-2026-11-16/repro/c-prune-wake-hook-stale-capture-fuzz.gx
+// Expected: AGREE, `h` false at in1 = 2 (strict is true, 2 != 5).
+// Observed: DIVERGENCE — fusion/JIT bug (interp != jit)
+//   interp: ...; [0:(2, true)]; ...   stdout 3+0: h=true inline=true s=true
+//   jit:    ...; [0:(2, false)]; ...  stdout 3+0: h=false inline=false s=true
+// schedule-v1: cap=96 events=768; in0=i64:0 in1=i64:1; in0=i64:1; in1=i64:2; in1=i64:5; in0=i64:0; in1=i64:3
+{ type T = Abstract<i64>; let strict = in0 > i64:0; impl Eq for T { let eq = |a, b| !strict || a.0 == b.0 }; let x = T(in1); let y = T(i64:5); let h = x == y; println("h=[h] inline=[x == y] s=[strict]"); (in1, h) }

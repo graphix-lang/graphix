@@ -1,0 +1,30 @@
+// Title: the first run-time bind of a function that maps a collection
+//   compiles the callback's regions twice
+//
+// Command:
+//   GRAPHIX_DBG_KERNELS=1 GRAPHIX_PAR=off timeout -s KILL 20 \
+//     /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache \
+//     design/review-2026-11-16/repro/f-mod-lowering-bound-callback-fused-twice.gx 2>&1 | grep KERNEL
+//
+// Expected: the callback's region (`sq(v) + 1`) is defined once at the bind
+//   of the function `k` takes at the timer.
+// Observed: after the first value the same region is defined twice:
+//     KERNEL BUILT sq: ..
+//     KERNEL DEFINED sq: ..
+//     KERNEL DEFINED region_ExprId(N): ..      <- the bind's own walk
+//     KERNEL DEFINED region_ExprId(N): ..      <- the first slot's bind
+//
+// Cause: fusion::fuse_instance walks the bound instance under
+//   share::fuse_prototype (Share::Collect). The collection's own
+//   prototype walk nests in it, and the nested arm of fuse_prototype
+//   answers None, so this instance's slots get no share: the first slot's
+//   bind misses BoundKernels and fuses the callback again from nothing.
+//   The kernels the first walk built are kept for later binds of the
+//   definition and run by none of this instance's slots.
+let sq = |v: i64| v * v + 1;
+let k = |xs: Array<i64>| [(0, 0)];
+let t = sys::time::timer(duration:100.ms, false);
+k <- once(t) ~ (|xs: Array<i64>| array::map(xs, |v| (sq(v) + 1, count(v))));
+let r = k([1, 2, 3, 4]);
+sys::exit(sys::time::after_idle(duration:500.ms, 0));
+dbg(r)

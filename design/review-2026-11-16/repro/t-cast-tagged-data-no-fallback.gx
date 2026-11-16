@@ -1,0 +1,22 @@
+// A union cast refuses an array that already inhabits one of its members
+// when the array's first element spells another member's tag.
+//
+// Command:
+//   /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache t-cast-tagged-data-no-fallback.gx
+//
+// Expected: every line is ["A", "x"]: the value is an Array<string>, a member
+// of the target, so the cast holds it (the first line, whose source is
+// statically an array, does).
+//
+// Observed:
+//   typed: ["A", "x"]
+//   any: error:`InvalidCast("can't cast \"x\" to i64: no primitive conversion")
+//   parse: error:`ParseError("can't cast \"x\" to i64: no primitive conversion")
+let typed: Array<string> = ["A", "x"];
+let untyped: Any = typed;
+println("typed: [cast<[`A(i64), Array<string>]>(typed)]");
+println("any: [cast<[`A(i64), Array<string>]>(untyped)]");
+let p: Result<[`A(i64), Array<string>], `ParseError(string)> = str::parse("\[\"A\", \"x\"\]");
+println("parse: [p]");
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+0

@@ -1,5 +1,13 @@
 use tui::{layout::{child, layout}, text::text};
 
+// CR claude for claude: [readability/low] `selected_pane` is never written and nothing
+// here handles a key, so `#focused: &selected_pane` does nothing visible, yet
+// overview.md shows this example under its "Focus Management" bullet.
+// overview_styling.gx has the same shape: `is_selected = true` makes its "conditional"
+// select a constant. Either drop `#focused` and `selected_pane` here (layout_focus on
+// the layout page shows focus moving), or give it the Tab handler block_focus uses. Do
+// the same for overview_styling's `is_selected`. Found by reading; not run.
+// (examples-tui-07)
 let selected_pane = 0;
 let sidebar = text(&"Sidebar");
 let main_content = text(&"Main");

@@ -61,6 +61,14 @@ let result = paragraph(&"static")
 async fn suspend_receiver_survives_an_unwinding_display() -> Result<()> {
     use futures::StreamExt;
     let control = crate::TuiControl::default();
+    // CR claude for claude: [test-gap/low] The result of catch_unwind is thrown away,
+    // so a panic from either check inside the closure (the first take's unwrap, or the
+    // assert that a second take is refused) is caught and dropped along with the
+    // intended "display failure". As written, the pin cannot see two displays holding
+    // the suspend receiver at once. Fix: check the second take's refusal outside the
+    // closure, and check that the caught panic is the intended one: let e =
+    // catch_unwind(..).unwrap_err(); assert_eq!(e.downcast_ref::<&str>(),
+    // Some(&"display failure")). Found by reading; not run. (tests-tui-05)
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let _receiver = crate::SuspendReceiver::take(&control).unwrap();
         assert!(crate::SuspendReceiver::take(&control).is_err());

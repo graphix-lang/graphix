@@ -571,6 +571,14 @@ pub(super) fn callee_table(
 /// The leaf table of `stride` words a slot that `leaf_rt` describes,
 /// reached from the anchor `claim` through the enclosing loops `dirs`,
 /// sized for the innermost loop `leaf`; and its truncate record.
+// CR claude for claude: [structure/low] body.rs writes this function's table-leaf path
+// twice more. BodyCx::emit_slot_chain plus the StateSite::Loop arm of
+// claim_slot_tables, which builds the same TruncRec by hand, is chain_leaf with stride
+// 1 and no SiteLeaf; emit_slot_truncates repeats the Table/Blocks leaf ensure below.
+// Fix: the Loop arm calls `chain_leaf(self, 1, None, self.claim_anchor(n_dirs, None),
+// &enclosing, (len, src_disc))` and emit_slot_chain goes; one function ensures a leaf
+// from a TruncLeaf, called here and by emit_slot_truncates. Found by reading; not run.
+// (f-call-flow-03)
 fn chain_leaf(
     cx: &mut BodyCx,
     stride: u32,
@@ -812,6 +820,17 @@ fn emit_kernel_dispatch(
     cx.b.switch_to_block(grow_bl);
     cx.b.seal_block(grow_bl);
     let n = clif_args.len();
+    // CR claude for claude: [perf/high] Every checked call creates its own spill slot
+    // of 8*(args+2) bytes here, so a kernel's frame is the sum of its checked calls'
+    // arities, not the widest. Arity carries two words per transitive capture
+    // (external_reads), so a region summing 200 calls into capturing call chains gets a
+    // 329504-byte frame. It then passes MAX_FRAME and de-fuses whole, with no report
+    // unless #[native] asks; 180 such calls fuse. The slot is live only between the
+    // argument stores and the result loads around graphix_grow_stack, so one slot per
+    // function, sized to its widest checked call, serves every site. probe:
+    // design/review-2026-11-16/repro/x-perf-compile-grow-slot-per-site.py,
+    // design/review-2026-11-16/repro/x-perf-compile-capture-chain-defuse-cliff.py
+    // (x-perf-compile-01)
     let slot = cx.b.create_sized_stack_slot(StackSlotData::new(
         StackSlotKind::ExplicitSlot,
         (8 * (n + 2)) as u32,
@@ -857,6 +876,15 @@ pub(crate) fn emit_lambda_call_node<R: Rt>(
     let mut clif_args: SmallVec<[ClifValue; 24]> =
         SmallVec::with_capacity(slot_cvs.len() * 2 + 3);
     let context = emit_callee_context_word(cx);
+    // CR claude for claude: [dead/low] emit_site_block returns the child block's
+    // `fresh` flag, and this, its only caller, discards it: a fresh activation stopped
+    // being born when a first call became an entry. graphix_site_child_block still
+    // computes the flag and returns it through ChildBlock, a pair return that has no
+    // other use, with its own arm in jit_helpers!, its own decoder, and a doc that
+    // still says a fresh activation is born with the init view. Fix: return the block
+    // pointer as one word from graphix_site_child_block and a bare ClifValue from
+    // emit_site_block, and delete ChildBlock with its macro arm and decoder. Found by
+    // reading; not run. (f-call-flow-02)
     let (site_block, _) = emit_site_block(cx, info, is_self, cs.spec().id)?;
     clif_args.push(context);
     clif_args.push(cx.state_ptr());

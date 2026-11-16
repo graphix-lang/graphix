@@ -89,6 +89,13 @@ macro_rules! gathered {
 }
 pub(super) use {composite_plumbing, gathered};
 
+// CR claude for claude: [readability/low] The `slept` fields' doc line "wake catch-up:
+// set by sleep(), taken by dense_gate!" names a mechanism that was deleted (a wake is a
+// resume and fires nothing). The bit only makes the first update after a sleep
+// recompute, which WakeBit's own doc already says. The same line is on 13 fields:
+// Struct, StructWith, Tuple, Variant and Construct here; Map and MapRef in map.rs;
+// ArrayRef, ArraySlice and SeqLit in array.rs; two in op.rs and one in lambda.rs.
+// Delete them. Found by reading; not run. Also reported as (x-dup-09). (c-data-map-03)
 #[derive(Debug)]
 pub struct Struct<R: Rt> {
     /// wake catch-up: set by `sleep()`, taken by `dense_gate!`
@@ -175,6 +182,17 @@ impl<R: Rt> Update<R> for Struct<R> {
         dense_gate!(self.resident, tag, tag.is_bottom(), woke);
         // a field that did not fire holds what its pair in the resident
         // holds, unless a wake recomputed it
+        // CR claude for claude: [bug/high] A field whose production is Tag::MOVED takes
+        // the resident's old value here, because the reuse below tests only
+        // `triggers()`. A struct literal outside a woken body (over a value read
+        // through a reference or closure that left the arm) keeps the stale field: the
+        // node-walk gives `s.a == 2` where the JIT gives 4, and where the struct does
+        // not fuse both engines agree on the stale value, so the fuzzer cannot see it.
+        // If another field fires, the struct fires carrying the stale one. Reuse a
+        // field only when it neither fired nor moved, and pin a struct beside
+        // `wake_outside::a_tuple_over_a_moved_formal_stands`. probe:
+        // design/review-2026-11-16/repro/x-sleep-wake-struct-moved-field.gx and
+        // x-sleep-wake-struct-moved-field-agree.gx (x-sleep-wake-01)
         let held = match self.resident.is_bottom() || woke {
             true => None,
             false => self.resident.with_value(|v| {
@@ -186,6 +204,19 @@ impl<R: Rt> Update<R> for Struct<R> {
         let held = held.as_ref().and_then(rep::struct_fields);
         let iter =
             self.names.iter().zip(prods).enumerate().map(|(i, (name, tv))| match held {
+                // CR claude for claude: [bug/high] This reuses the resident's field for
+                // every child that did not trigger, including a child whose production
+                // is MOVED (a quiet value a wake recomputed: a closure or reference
+                // that left a woken arm, a select re-routed quietly, a moved collection
+                // element). The node-walk struct then keeps the old field value, while
+                // a tuple, the JIT and the bare read all take the new one. Take the
+                // held field only when the child neither triggers nor moved
+                // (`!(tv.tag().triggers() || tv.tag().moved())`), or drop `held` and
+                // build with `gathered!` as Tuple does. Add a struct case to
+                // wake_outside.rs, which pins `(x, 0).0` but has no struct. probe:
+                // design/review-2026-11-16/repro/c-data-map-struct-moved-field-held.gx
+                // (graphix-fuzz: interp gives 1 at clk 6, jit gives 3) Also reported as
+                // (x-engine-firing-01). (c-data-map-01)
                 Some(held) if !tv.tag().triggers() => held[i].clone(),
                 _ => rep::make_field(name.clone(), tv.value_cloned()),
             });
@@ -529,6 +560,17 @@ impl<R: Rt> Update<R> for StructRef<R> {
         NodeView::StructRef(self)
     }
 
+    // CR claude for claude: [perf/medium] Field reads over a union of structs (`s.a`),
+    // tuples (`t.0`) or errors (`e.0`), and `{s with ..}` over a union of structs,
+    // never fuse. emit_field_ref_node and emit_struct_with_node require a single struct
+    // or tuple type, so the kernel refuses the region and `#[native]` refuses the
+    // program, though the check accepts the read and the node-walk performs it. Where
+    // the members agree on the position (sorted_field_idx is Some; a tuple's `.N`
+    // always does), read that element of the value whatever member it is. Read a union
+    // of errors' payload as emit_abstract_ref_node reads one error's. Pin each form
+    // with FuseExpect::Jit. probe:
+    // design/review-2026-11-16/repro/c-data-map-union-field-read-never-fuses.gx Also
+    // reported as (x-kind-markers-06). (c-data-map-02)
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         let sorted_idx = self
             .sorted_field_idx
@@ -988,6 +1030,17 @@ fn union_of<R: Rt, T>(
             Some(m) => Some(m),
             None => read_bound(&ctx.env, one_bound(m))?,
         };
+        // CR claude for claude: [bug/medium] A member that expands to a union (a
+        // generic call's union held inside another call's union) makes union_of answer
+        // None. The field read then falls to deref_typ!, which refuses the normalized
+        // union. With `pick = |a, b| select 1 { 1 => a, _ => b }; let w = pick((3, 4),
+        // (5, 6)); let v = pick((1, 2), w);`, `v.0` is refused "expected tuple not
+        // (i64, i64)", and the struct form "expected struct not { x: i64 }". The REPL,
+        // which settles `v` between inputs, accepts the same statements and prints 2.
+        // Flatten such a member's members here, and let deref_typ! deref a bound TVar
+        // that normalize leaves instead of refusing it. probe:
+        // design/review-2026-11-16/repro/tests-fusion-field-read-nested-union.gx
+        // (tests-fusion-01)
         match m.as_ref().and_then(&part) {
             Some(p) => out.push(p),
             None => return Ok(None),
@@ -1120,6 +1173,13 @@ impl<R: Rt> Update<R> for TupleRef<R> {
     }
 }
 
+// CR claude for claude: [structure/low] Struct, Tuple and Variant each carry the same
+// typecheck0_with: check the children, then hold each child to its own entry of `typ`.
+// Each is guarded by a length check (Variant also checks its tag) and a `BUG:` arm that
+// cannot fire, since compile builds `typ` from these very children and nothing
+// reassigns it. Keep one loop, a free fn over (typs, nodes) the three call with their
+// part types, and drop the length, tag and BUG checks. Found by reading; not run.
+// (c-data-map-04)
 impl<R: Rt> Struct<R> {
     fn typecheck0_with(
         &mut self,

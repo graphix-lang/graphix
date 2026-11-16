@@ -1,0 +1,14 @@
+// Title: the program of the deleted pin lang::types::instance_cell_at_a_bottom_place_is_bottom
+// (still cited by design/tvar_constraints.md) still checks and runs.
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache design/review-2026-11-16/repro/tests-types-c-bottom-place-pin.gx
+// Expected (the deleted pin): []
+// Observed (HEAD e1be2fbf2): []   -- the rule is unpinned, not changed
+let result = {
+  type P<'x, 'y> = [Array<'x>, Array<'y>, null];
+  type R<'x, 'y> = [Array<('x, 'y)>, null];
+  let f = 'a0: [Array<P<'a1, 'a2>>, null], 'a1: R<'a2, 'a3>, 'a2: R<'a3, 'a3>, 'a3: i64 |x0: 'a0, x2: 'a2, x3: 'a3| x0;
+  let v0 = [];
+  f(v0, never(), 1)
+};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+result

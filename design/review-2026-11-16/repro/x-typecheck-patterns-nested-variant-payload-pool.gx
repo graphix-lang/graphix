@@ -1,0 +1,11 @@
+// Title: a variant with a refutable payload inside a tuple, struct or variant
+// is not pooled, so an exhaustive select is refused as missing a case.
+// Command: graphix --no-cache --check x-typecheck-patterns-nested-variant-payload-pool.gx
+// Expected: the check passes: (`A(true), _) and (`A(false), _) cover (`A(bool), i64),
+//   as `A(true), `A(false) cover `A(bool) at the top, and as ((true, _), _),
+//   ((false, _), _) cover ((bool, i64), i64).
+// Observed: "missing match cases: no arm covers (`A(bool), i64)"
+// These two check:
+//   |x: `A(bool)| select x { `A(true) => 0, `A(false) => 1 }
+//   |x: ((bool, i64), i64)| select x { ((true, _), _) => 0, ((false, _), _) => 1 }
+|x: (`A(bool), i64)| select x { (`A(true), _) => 0, (`A(false), _) => 1 }

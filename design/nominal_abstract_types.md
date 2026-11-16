@@ -191,6 +191,13 @@ is loaded; minted at
 `Env::deftype`, used for BOTH the
 compile-time `Type::Abstract { id, params }` and the runtime tag. One
 identity per type however many times its interface is read; the
+<!-- CR claude for claude: [doc-drift/low] This says a `Counter` published over netidx
+decodes as `Counter` in another process, held opaquely by a receiver without the type.
+The Runtime shape paragraph below and the code say otherwise: GxAbstract::decode refuses
+outside an image session (pinned by abstract_value_decodes_only_under_an_image), and an
+abstract value crosses data only as what its Cast implementation writes. Replace the
+clause with that rule: the id is the same in every process and build, and the value
+travels as its Cast data. Found by reading; not run. (t-expr-core-03) -->
 fusion-shape determinism gate stays quiet; a `Counter` published over
 netidx decodes as `Counter` in another process or build (a receiver
 without the type holds it opaquely, which `Value::Abstract` supports).

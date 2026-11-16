@@ -922,6 +922,15 @@ run!(write_through_aliased_reference_union, r#"{
 
 // A reference never equals an array of numbers, its root's bind id
 // among them: its comparison form holds the root as a reference.
+// CR claude for claude: [test-gap/low] The scan covers bind ids MINT_BASE to MINT_BASE
+// + 100000, which pins ref_targets only if `x` was minted among the process's first
+// 100000 ids. The counter is process-wide (ids.rs): the root image's minted extent,
+// every earlier fixture in this shared test binary and every collection slot they ran
+// all advance it before `x` is bound. In the gate, whether the window holds `x` depends
+// on test order, so the pin may miss a ref_targets that writes the root as a number
+// again. Pin ExecCtx::ref_targets in a graphix-compiler unit test instead (the form of
+// a reference to a known BindId against `[U64(id)]`) and drop the 100000-element scan.
+// Found by reading; not run. (tests-lang-rest-d-07)
 run!(reference_never_equals_an_array, r#"{
   let x = 1;
   let a: [&i64, Array<u64>] = &x;

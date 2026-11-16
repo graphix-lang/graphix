@@ -128,6 +128,16 @@ const CATCH_ARRAY_INDEX_FUSED: &str = r#"
 }
 "#;
 
+// CR claude for claude: [test-gap/low] FuseExpect::Jit asserts only that the build
+// fused some region, and this fixture fuses one besides `a[5]? * 2`. With that
+// expression replaced by `count(a)` the build still fuses a region, so the test passes
+// whether or not a handler-ful `?` fuses. qop_handler_deliver,
+// catch_in_inline_callback_per_instance and a_raise_given_up_reads_alike_fused also
+// claim a specific expression fuses while counting any region. Put #[native] on the
+// claimed expression in each (all build with it today), as testing.rs says a fixture
+// whose point is one expression's fusion does. probe:
+// design/review-2026-11-16/repro/tests-lang-rest-d-fuse-jit-blind.sh
+// (tests-lang-rest-d-05)
 run!(catch_array_index_fused, CATCH_ARRAY_INDEX_FUSED, |v: Result<&Value>| {
     matches!(v, Ok(Value::I64(1)))
 });
@@ -1128,6 +1138,16 @@ async fn catch_without_binder_warns(mode: Mode) -> Result<()> {
 
 modes!(catch_without_binder_warns);
 
+// CR claude for claude: [test-gap/medium] This test and
+// catch_ascription_refuses_open_callback match only 'does not contain', which most type
+// mismatches say. Both call with `B, which a check of the call alone would also refuse.
+// The rule refuses the definition: a call the handler fits (`run(error(`A))`, `run(||
+// 1)`) gets 'this error reaches a catch whose handler was checked to take
+// Error<ErrChain<`A>>'. Call with `A and `|| 1`, and pin that phrase as
+// catch_ascription_refuses_rigid_union_raise does, so moving the refusal from the
+// definition to the call fails them. probe:
+// design/review-2026-11-16/repro/tests-lang-rest-d-ascription-pin-weak.sh
+// (tests-lang-rest-d-04)
 run!(
     catch_ascription_refuses_open_raise,
     r#"{
@@ -1471,6 +1491,14 @@ fn past_the_pair_budget(body: &str) -> String {
 
 // Past the pair budget a `?` or `$` result type is still the operand less
 // its error.
+// CR claude for claude: [test-gap/low] `let w: Kept = v` only checks that v fits
+// [names, null]. A strip that also took the null (v: [names]) fits it too, so this test
+// and its _with_dollar twin cannot catch the strip past the pair budget taking too
+// much. Add a read that needs the null, `select v { null as _ => 1, _ => 2 }`, which is
+// refused as an unreachable arm if the null went, as
+// a_large_named_operand_strips_its_error does inside the budget. Found by reading; the
+// current build keeps the null (a [names] annotation on v is refused).
+// (tests-lang-rest-d-06)
 run!(
     an_operand_past_the_pair_budget_strips_its_error_with_q,
     past_the_pair_budget(

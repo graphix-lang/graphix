@@ -1,0 +1,24 @@
+// The skill says `x?` raises "to the nearest catch" and that `catch` installs a handler
+// "for the rest of its block", which reads as lexical. A `?` inside a function raises to
+// the catch around its CALL (design/catch.md: the dynamic chain), never the one around
+// its definition: the definer's catch below hears nothing, and reading its binder's
+// fields (`e.0.error`) is refused "expected tuple not _".
+// run: timeout -s KILL 30 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache design/review-2026-11-16/repro/lang-skill-catch-call-chain.gx
+// observed:
+//   n=0 r=0
+//   caller's catch heard `Boom(1)
+//   n=2 r=2
+let clock = sys::time::timer(duration:50.ms, 2);
+let n = 0;
+n <- clock ~ n + 1;
+let f = {
+  catch(e) println("definer's catch heard [e]");
+  |x| { let r: Result<i64, `Boom(i64)> = select x { 1 => error(`Boom(x)), v => v }; r? }
+};
+let r = {
+  catch(e) println("caller's catch heard [e.0.error]");
+  f(n)
+};
+println("n=[n] r=[r]");
+sys::exit(sys::time::after_idle(duration:300.ms, n));
+0

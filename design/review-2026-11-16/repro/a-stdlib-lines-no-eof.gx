@@ -1,0 +1,17 @@
+// Lines::lines gives no event at the end of its stream
+//
+// The file holds "one\ntwo\nthree". A program that wants to act once the
+// stream is read (sum a log, drop a closed connection) has nothing to wait for.
+//
+// command (from the repo root):
+//   printf 'one\ntwo\nthree' > /tmp/a-stdlib-lines.txt
+//   graphix --no-cache design/review-2026-11-16/repro/a-stdlib-lines-no-eof.gx
+// observed: three lines and then nothing; the program ends only by its idle timer
+//     line: one
+//     line: two
+//     line: three
+use sys::io::Lines;
+let f = sys::fs::open(`Read, "/tmp/a-stdlib-lines.txt")$;
+let ln = Lines::lines(f);
+println("line: [ln]");
+sys::exit(sys::time::after_idle(duration:500.ms, ln) ~ 0)

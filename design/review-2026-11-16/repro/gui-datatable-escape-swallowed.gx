@@ -1,0 +1,20 @@
+// The data table takes Escape (and Enter, Space) even when it does
+// nothing with it, so an enclosing keyboard_area never sees it.
+// Command (needs a display; not run in the review, `graphix --check` passes):
+//   cargo run --bin graphix -- design/review-2026-11-16/repro/gui-datatable-escape-swallowed.gx
+// Steps: click a cell of the table (it takes keyboard focus), press Escape.
+// Expected: "outer keyboard_area saw: Escape" (no edit is open).
+// Read from DataTableW::wrap_keyboard and KeyboardArea::update: the key
+// closure maps Escape to TableKeyAction::Escape whether or not an edit is
+// open, and keys_first captures every key the closure maps, so the label
+// keeps its old text.
+use gui::{window, column::column, text::text, data_table::data_table, keyboard_area::{KeyEvent, keyboard_area}};
+let last_key = "";
+let tbl = {rows: ["r0", "r1"], columns: ["c0"]};
+[&window(
+    #title: &"Escape with no edit open",
+    &keyboard_area(
+        #on_key_press: |e: KeyEvent| last_key <- e.key,
+        &column(&[text(&"outer keyboard_area saw: [last_key]"), data_table(#table: &tbl)])
+    )
+)]

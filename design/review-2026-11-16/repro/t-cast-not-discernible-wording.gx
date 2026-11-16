@@ -1,0 +1,13 @@
+// The Ordered refusal for an abstract type inside another type runs two
+// sentences together.
+//
+// Command:
+//   /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache --check t-cast-not-discernible-wording.gx
+//
+// Observed:
+//   Array<Box<[i64, f64]>> must be Ordered here, but it holds Box<[i64, f64]>
+//   has no Ord implementation, so its values compare by its representation,
+//   which can't tell them apart or order them here; implement Ord for it
+type Box<'a> = Abstract<'a>;
+let b: Box<[i64, f64]> = Box(1);
+array::sort([b])

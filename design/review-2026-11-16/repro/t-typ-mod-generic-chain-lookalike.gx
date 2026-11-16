@@ -1,0 +1,27 @@
+// t-typ-mod: the other direction of t-typ-mod-generic-chain-payload.gx.
+// `relay2` takes a struct with a chain's four field names whose field
+// types are variables. The definition's check judges that a chain
+// (`Type::chain_error_type` probes ErrChain<'a> against it with the cells
+// open), so the catch binder is ErrChain<'a> and `e.0.error` is 'a. The
+// call's struct is not a chain (cause: i64), so the raise wraps it whole
+// and `e.0.error` is the whole struct, handed back as a `string`.
+//
+// Command:  graphix --check t-typ-mod-generic-chain-lookalike.gx  (exit 0)
+//           graphix --no-cache t-typ-mod-generic-chain-lookalike.gx
+//           graphix --no-cache --no-fusion t-typ-mod-generic-chain-lookalike.gx
+// Expected: `c` is `[string, null]`: "null" then a line over the string
+//           "e", or the check refuses `relay2`.
+// Observed: fused:     "null" then "len+1 = 1, upper = "
+//           node-walk: "null" then the log line "select c { .. }: no arm
+//             matches [abstract:.., ["cause", i64:5], ["error", "e"],
+//             ["ori", true], ["pos", null]]: a coverage hole in the check"
+let relay2 = |x: {cause: 'c, error: 'a, ori: 'o, pos: 'p}| -> ['a, null] {
+  let r: ['a, null] = null;
+  catch(e) r <- e ~ e.0.error;
+  error(x)?;
+  r
+};
+let c = relay2({cause: 5, error: "e", ori: true, pos: null});
+let f = |s: string| -> i64 str::len(s) + 1;
+sys::exit(sys::time::after_idle(duration:500.ms, 0));
+select c { null as _ => "null", s => "len+1 = [f(s)], upper = [str::to_upper(s)]" }

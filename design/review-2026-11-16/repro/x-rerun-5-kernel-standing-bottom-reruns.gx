@@ -1,0 +1,22 @@
+// Title: a fused kernel with a standing-bottom input re-runs its whole body at every
+//   visit although no input fired (FusedKernel::update's `any_bottom` and
+//   bottom-resident conditions); f-kernel-standing-bottom-reruns from the 10-26 run, still so.
+// Command:
+//   GRAPHIX_DBG_INVOKE=1 timeout -s KILL 60 graphix --no-cache x-rerun-5-kernel-standing-bottom-reruns.gx 2>&1 | grep -c "KERNEL INVOKE"
+//   timeout -s KILL 60 graphix --no-cache x-rerun-5-kernel-standing-bottom-reruns.gx | tail -1
+// Expected: 2 invocations and the counter near 92, as with `let k: i64 = 3;`
+//   (a kernel whose inputs did not fire rides its resident).
+// Observed (debug review binary): 31 invocations, 28 of them
+//   "fired=[false, false] present=[false, true]", each folding 2M elements; the
+//   counter reaches 29 in the same window (with `let k: i64 = 3;`: 2 and 92).
+let f = |arr: Array<i64>, k: i64| {
+  let s = array::fold(arr, 0, |acc, x| acc + x);
+  select s > 0 { true => s, false => k }
+};
+let t = sys::time::timer(duration:1.ms, 300);
+let n = 0;
+n <- t ~ n + 1;
+let k: i64 = never();
+let arr = array::init(2000000, |i| i);
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+(count(f(arr, k)), n)

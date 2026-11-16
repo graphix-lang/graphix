@@ -1,0 +1,21 @@
+// Struct literal keeps a MOVED field's old value in the node-walk
+// Command: graphix-fuzz check c-data-map-struct-moved-field-held.gx
+//   (or: graphix --no-cache --no-fusion <this file>, ended by the timeout)
+// The arm holding mk(n) sleeps at clk 2 and wakes at clk 6, moving the
+// formal x from 1 to 3 with no fire; the closure held outside reads it.
+// Expected (as the tuple `(x, 0).0` gives, and the JIT gives here): the
+// row at clk 6 is (6, 3, 0, 3, 2).
+// Observed: the node-walk gives (6, 3, 0, 1, 2): Struct::update takes the
+// held field for every child that did not trigger, a MOVED child included.
+// graphix-fuzz: DIVERGENCE — interp 7:(6, 3, 0, 1, 2) vs jit 7:(6, 3, 0, 3, 2)
+let clk = array::iter(array::init(10, |i| i));
+let n = 0;
+n <- filter(clk, |c| c % 2 == 0) ~ (n + 1);
+let sel = 0;
+sel <- filter(clk, |c| c % 4 == 1) ~ (1 - sel);
+let mk = |x: i64| |y: i64| { let z = y; {a: x, b: 0}.a };
+let g = select sel { 0 => mk(n), _ => mk(n + 100) };
+let h = once(g);
+let k = 0;
+let v = select k { 0 => h(1), _ => -1 };
+clk ~ (clk, n, sel, v, count(v))

@@ -59,6 +59,18 @@ impl<X: GXExt> DataTableW<X> {
             | TableKeyAction::Down
             | TableKeyAction::Left
             | TableKeyAction::Right => {
+                // CR claude for claude: [bug/medium] When the selected cell is the
+                // row-name cell, `cur_col.max(first_data_col)` has already moved the
+                // cursor onto the first data column, and the Right arm then adds one
+                // more. So ArrowRight from a selected row path selects "r0/c1" instead
+                // of "r0/c0", and with a single data column it moves to the next row. A
+                // row path is selected whenever a table without #on_activate gets a
+                // click on the name column. Fix: an arm `TableKeyAction::Right if
+                // cur_col < first_data_col => ()` before the other Right arms, plus a
+                // pin for one and for two data columns. Found by reading; not run
+                // (needs a display). Witness, which `graphix --check` passes:
+                // design/review-2026-11-16/repro/gui-datatable-right-from-name.gx Also
+                // reported as (book-ui-b-02). (gui-datatable-01)
                 let (mut r, mut c) = (cur_row, cur_col.max(first_data_col));
                 match action {
                     TableKeyAction::Up => r = r.saturating_sub(1),

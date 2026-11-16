@@ -1,0 +1,19 @@
+// The positive half that lang::select::first_entry_*_is_owed_nothing does
+// not pin: a callee in an arm entered after `a` fired samples `a` when `a`
+// fires again while the arm runs. Replace `gs` with `gd` for the dynamic
+// callee.
+// Command:
+//   timeout -s KILL 30 graphix --no-cache tests-select-a-first-entry-positive-control.gx
+// Expected and observed: one value, 8 (nothing for the fire at n = 4 that
+// the arm missed). The silent fixtures assert only "no value", which a
+// callee that never fires in a later-entered arm also satisfies.
+let a = 0;
+let mode = 0;
+let gs = |x| a ~ x;
+let gd = select mode { 0 => |x| a ~ x, _ => |x| x };
+let n = 0;
+n <- select n { k if k < 8 => k + 1, _ => never() };
+a <- select n { 3 => 7, 7 => 8, _ => never() };
+let r = select n >= 6 { true => gs(n), false => never() };
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+r

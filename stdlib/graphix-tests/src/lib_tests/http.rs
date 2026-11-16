@@ -128,6 +128,15 @@ run!(http_invalid_header_is_500, r#"{
 }; FuseExpect::Jit);
 
 // A request the server holds when it sleeps is answered 500.
+// CR claude for claude: [bug/low] The server's arm sleeps on
+// `sys::time::timer(duration:300.ms, false)`, which does not come from the request
+// reaching the handler. When the server start plus the request take longer than 300 ms,
+// the server is torn down before it holds the request. The result is then an HTTPError
+// ("connection closed before message completed"), not the 500 this test is about. Drop
+// the timer and make `up <- req ~ false;` the handler's first statement: the 500 then
+// follows from the held request on every run. probe:
+// design/review-2026-11-16/repro/tests-lib-b-b-http-sleep-timer-races.sh
+// (tests-lib-b-b-02)
 run!(http_request_held_at_the_sleep_is_500, r#"{
     let up = true;
     up <- sys::time::timer(duration:300.ms, false) ~ false;
@@ -413,6 +422,18 @@ run!(http_serve_waits_for_its_cert, r#"{
 /// one, aborted at the sleep, does not stand as its value.
 #[tokio::test(flavor = "multi_thread")]
 async fn http_serve_forgets_its_server_asleep() -> Result<()> {
+    // CR claude for claude: [bug/low] This program puts the server's arm to sleep on
+    // `sys::time::timer(duration:300.ms, false)` and wakes it on a second, independent
+    // 600 ms timer. Neither comes from the event it must follow. When starting the
+    // server and answering the first request take longer than 300 ms (a debug build
+    // under the suite's load), the sleep aborts the request. The run then collects only
+    // "-", and the test fails although nothing is wrong. If the two timers land in one
+    // batch, the wake does not follow the sleep, and the claim goes untested. Derive
+    // both from the program: drop the timers, bind the last select as `out`, and write
+    // `n <- select out { "hello" => 1, "-" => 2, _ => never() }`. It still collects
+    // ["hello", "-"]. probe:
+    // design/review-2026-11-16/repro/tests-lib-b-b-http-sleep-timer-races.sh
+    // (tests-lib-b-b-01)
     const CODE: &str = r#"{
     let n = 0;
     n <- sys::time::timer(duration:300.ms, false) ~ 1;

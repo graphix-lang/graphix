@@ -488,6 +488,16 @@ let result = overlay(#layers: &layers, paragraph(&"JUST BASE"))
 }
 
 #[tokio::test]
+// CR claude for claude: [test-gap/low] No test checks that a key reaches only one
+// container child. This test has one layer, so OverlayW::handle_event sending to the
+// first layer instead of the top one still passes. No test puts a counting handler in
+// an unfocused layout child or an unselected tab, so LayoutW or TabsW sending to every
+// child passes too, against the rule in book/src/ui/tui/input.md: a handler in a pane
+// that is not focused, or in a tab that is not selected, sees no event at all. Fix: two
+// layers with counting handlers (only the top counts), and a counting handler in layout
+// child 1 and in tab 1 while child 0 and tab 0 hold the focus. Alternatively, in
+// examples_test::layout_nested_focus_scrolls_to_the_last_line, send Downs before the
+// Tab and assert that line 1 still shows. Found by reading; not run. (tests-tui-06)
 async fn overlay_top_layer_captures_input() -> Result<()> {
     let mut h = TuiTestHarness::new(
         r#"

@@ -1,0 +1,16 @@
+// Title: an Excluded (rand) program whose termination depends on a random
+// value is recorded as a divergence: Strength::Kind holds a Trace to a
+// Timeout, and the reference's single rerun catches the nondeterminism only
+// half the time.
+// Command: timeout -s KILL 170 graphix-fuzz check fuzz-lib-a-excluded-kind-divergence.gx
+//          (run it 3-4 times)
+// Expected: EXCLUDED or UNSURE every time (design/graphix_fuzz.md §3: an
+// Excluded program's "divergences never record"; whether it terminates is a
+// value of the program).
+// Observed (4 runs): NONDETERMINISTIC/UNSURE; "DIVERGENCE — image bug: writing
+// the program image changed the program (interp)" with interp/nocache
+// Timeout(ActivationBudget) vs interp/cold Trace([0:1]); the same DIVERGENCE
+// with the sides swapped; EXCLUDED.
+let rec spin = |n: i64| -> i64 1 + spin(n + 1);
+let r = rand::pick([true, false]);
+select r { true => spin(0), false => 1 }

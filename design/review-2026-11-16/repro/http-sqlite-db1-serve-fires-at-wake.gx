@@ -1,0 +1,20 @@
+// http::serve fires a new Server handle at its arm's wake, so a `<-`
+// sampling it writes with no event behind it ("a wake fires nothing for
+// anyone"). Control: the same arm over `http::client(..)` prints 0 1 -1 1.
+// Command: timeout -s KILL 30 graphix --no-cache http-sqlite-db1-serve-fires-at-wake.gx
+// Expected: 0, 1, -1, 1   (the wake re-serves but fires nothing; hits stays 1)
+// Observed: 0, 1, -1, 1, 2 (the restarted server's handle fires; hits counts the wake)
+let n = 0;
+n <- sys::time::timer(duration:300.ms, false) ~ 1;
+n <- sys::time::timer(duration:600.ms, false) ~ 2;
+let hits = 0;
+let v = select n % 2 == 0 {
+  true => {
+    let s = http::serve(#addr: "127.0.0.1:0", #handler: |req: http::Request| req ~ {body: "x", headers: [], status: u16:200})$;
+    hits <- s ~ hits + 1;
+    hits
+  },
+  false => -1
+};
+sys::exit(sys::time::after_idle(duration:1.s, n ~ 0));
+v

@@ -64,6 +64,15 @@ fn a_stdin_read_that_never_ends_does_not_hold_the_exit() {
     const TIMER: Duration = Duration::from_millis(500);
     /// what the exit may take once the program has asked to exit. Nothing
     /// here is owed the bound: paying it means the wait is back on the read.
+    // CR claude for claude: [risk/medium] This test times the child's exit against the
+    // wall clock (`TIMER + ALLOWANCE`, 2.5 s from its first output). It does so inside
+    // the shared `shell` binary, where every other test, and every other binary under
+    // `cargo xtest`, loads the box beside it. graphix-shell/tests/shell/main.rs says a
+    // test that times itself against the wall clock is a target of its own. Move it to
+    // its own `tests/*.rs` target and tie the bound to what the regression costs: a
+    // held exit spends `TIMER + TEARDOWN_BOUND`, so `teardown < TEARDOWN_BOUND` still
+    // tells the two apart, with seconds of room for load. Found by reading; not run.
+    // (tests-shell-compiler-b-02)
     const ALLOWANCE: Duration = Duration::from_secs(2);
     let program = "use sys::io::Lines;\n\
                    let l = Lines::lines(sys::io::stdin(null));\n\

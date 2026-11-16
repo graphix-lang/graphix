@@ -1,0 +1,17 @@
+// t-seq: a reference's index inside a seq step bypasses the run's trigger snapshot
+// Run: timeout -s KILL 30 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache design/review-2026-11-16/repro/t-seq-ref-index-reads-live.gx
+// Expected (the body's reads of the trigger name see the value the run
+// started with): "a: i=0 *r=10" then "a: i=2 *r=30"; a and b agree.
+// Observed: "a: i=0 *r=30" once. `&vals[i]` reads `i` live, which is bottom
+// at the step's entry, so the step waits for the NEXT trigger (step 8) and
+// binds the reference to vals[2] while the run's `i` is 0; the second trigger
+// is busy-dropped. Under seqq (swap `seq` for `seqq`) every later run stalls
+// for good, since `i` never fires again.
+let step = 0;
+step <- select step { n if n < 20 => n + 1, _ => never() };
+let vals = [10, 20, 30, 40];
+let i = select step { 2 => 0, 8 => 2, _ => never() };
+let a = seq i { let r = &vals[i]; println("a: i=[i] *r=[*r]"); *r };
+let b = seq i { let v = vals[i]$; println("b: i=[i] v=[v]"); v };
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+(a, b)

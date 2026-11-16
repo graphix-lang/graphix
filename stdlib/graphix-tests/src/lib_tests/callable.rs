@@ -275,6 +275,14 @@ async fn arm_wake_does_not_redeliver_the_key_to_the_woken_callee(
 /// the formal `e` itself. `ev` is a facet of `e`, so the landing arm's
 /// read of `ev` consumes `e`'s fire, and the panels callee woken by the
 /// screen change does not catch the key up.
+// CR claude for claude: [doc-drift/low] The doc above explains this test by the deleted
+// catch-up model ("the landing arm's read of `ev` consumes `e`'s fire, and the panels
+// callee ... does not catch the key up"). Outside a seq nothing is owed to a woken
+// body, and facet consumption lives only in the seq machine's TrackedFires. Whichever
+// name the landing arm read, the panels callee reads its formal stale. Restate it: this
+// case passes the formal `e` itself where DISPATCH passes the bind `ev`, and the callee
+// entered by the screen change reads it stale. Found by reading; not run.
+// (tests-lib-a-05)
 const ALIAS: &str = r#"
 let screen: [`Landing, `Panels] = `Landing;
 let opened = 0;

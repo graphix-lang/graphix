@@ -1,0 +1,17 @@
+// Title: the constant-write warning fires on an arm that a seq step's call takes and that writes every run
+// Command: timeout -s KILL 20 graphix --no-cache design/review-2026-11-16/repro/x-diagnostics-arm-warning-seq-call.gx
+// Expected: no warning, or one that allows for the seq-step exception: a call a step makes is a
+//   fresh call at every run, its body born again (SKILL.md), so `x <- 0` acts at n = 3 and
+//   `x <- 1` at n = 6.
+// Observed: two "this write reads no variable, so it acts only if this arm is taken in the
+//   program's first cycle ... constants in an arm do not fire" warnings on line 13, and then
+//   the program prints 100 100 100 100 0 0 0 1 1 1 ...: both writes act, after the first cycle.
+let clk = sys::time::timer(duration:30.ms, true);
+let n = 0;
+n <- clk ~ n + 1;
+let x = 100;
+let reset = |m| { select m { `A => x <- 0, `B => x <- 1 }; m };
+let go = filter(n, |v| v == 3 || v == 6);
+seq let k = go { let t = select k { 3 => `A, _ => `B }; reset(t) };
+sys::exit(filter(n, |v| v > 9) ~ 0);
+(n ~ x)

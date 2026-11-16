@@ -1,0 +1,17 @@
+// Title: the annotation dynamic_raise_names_the_catch_annotation's refusal names is unpinned
+// Without the annotation the load is refused, naming
+// `catch(e: Error<ErrChain<string>>)`; with it (below) the load succeeds,
+// which no test holds.
+// Command: timeout -s KILL 30 graphix --no-cache tests-modules-catch-annotation-twin.gx
+// Observed: null   (with a bare `catch(e)`: error:`DynamicLoadError("... this error
+// reaches a catch that saw no error when it was checked: annotate the catch
+// with the errors it takes, `catch(e: Error<ErrChain<string>>)`")
+let r = {
+    catch(e: Error<ErrChain<string>>) never(e);
+    mod foo dynamic {
+        sig { use core; val v: i64 };
+        source "let v = 1; let w = error(\"hello\")?"
+    }
+};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+r

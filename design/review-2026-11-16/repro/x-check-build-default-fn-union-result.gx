@@ -1,0 +1,27 @@
+// A labeled default that reads the result of a function returning a union whose members
+// hold open cells: the check accepts, the build refuses
+//
+// command:  graphix -n --check x-check-build-default-fn-union-result.gx            (exit 0)
+//           GRAPHIX_ELAB_AUDIT=1 graphix -n --no-cache --expand x-check-build-default-fn-union-result.gx  (exit 1)
+// expected: both accept: the same call in a function's body builds and runs
+//           (`let w = |y: i64| view(false).a + y; w(1)` prints 3), and so does it at the top level.
+// observed: --check passes; the build refuses, and the audit names it:
+//   ELAB-AUDIT unify-back at ..: `view(false)`: { a: i64, notes: Array<'_8196: unbound> } could
+//   go to { a: i64, notes: Array<'_8196_1: unbound> } or { a: i64, notes: Array<'_8197: unbound> }
+//   of the union [..], which nothing has decided, and the check picks none by order: write the
+//   type of what holds that union (a let, a parameter), so its members are decided
+//   Error: .. in the instance of view(false) at this call site ..
+// Passing the default (`w(#d: 3, 1)`) or never calling `w` builds.
+//
+// The same refusal for a function returning one of two functions, called in a default:
+//   let w = |#d = { let pick = |c, a, b| select c { true => a, false => b };
+//                   let f = |x: i64| x; pick(false, f, f)(1) }, x: i64| x + d;
+//   w(1)
+//   -> fn(x: i64) -> i64 could go to any of 2 members of the union fn(x: i64) -> i64, ..
+// and for `let mk = |a, b| [a, b]; mk(f, g)[0]$(1)` in a default.
+let view = |done: bool| select done {
+  true => {a: 1, notes: []},
+  false => {a: 2, notes: []}
+};
+let w = |#d = view(false).a, x: i64| x + d;
+w(1)

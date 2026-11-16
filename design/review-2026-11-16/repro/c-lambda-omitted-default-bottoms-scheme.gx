@@ -1,0 +1,26 @@
+// A call that omits a returned function's labeled default binds the
+// enclosing definition's declared variable to bottom: the check accepts
+// the program and the build refuses the factory's instance.
+//
+// command:  graphix --check c-lambda-omitted-default-bottoms-scheme.gx   (exit 0)
+//           graphix --no-cache c-lambda-omitted-default-bottoms-scheme.gx
+//           graphix-fuzz check c-lambda-omitted-default-bottoms-scheme.gx
+// expected: (1, 2); the fuzzer prints AGREE
+// observed: the build refuses:
+//             in the instance of mk(1) at this call site
+//             an instance at fn(x: i64) -> fn(?#pre: i64, y: i64) -> (i64, i64) of a
+//             definition typed fn(x: 'a: _) -> fn(?#pre: i64, y: i64) -> (i64, i64)
+//           graphix-fuzz: DIVERGENCE — the check accepted what the build refused
+//
+// GRAPHIX_DBG_BIND=1 graphix --check shows the default's inner call `len([x])`,
+// checked again at `a(2)`, aliasing its cell to mk's own 'a and then
+// "SETTLE-BOTTOM" on that cell.
+// It needs all three: a declared variable on the factory (`x: i64` runs), a
+// call inside the default (`#pre: 'a = x` runs; so does hoisting the call:
+// `{ let d = len([x]); |#pre: i64 = d, y: i64| .. }`), and a call that omits
+// the label (`a(#pre: 5, 2)` runs). A trait call does the same:
+// `|x: Show| |#pre: string = Show::show(x), y: i64| ..`.
+let len = |v: Array<'q>| array::len(v);
+let mk = |x: 'a| |#pre: i64 = len([x]), y: i64| (pre, y);
+let a = mk(1);
+a(2)

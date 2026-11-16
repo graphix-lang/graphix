@@ -1,0 +1,25 @@
+// Title: t-seq-01 still reproduces for a callee the compiler cannot trace: a
+//   seqq step's call through a function value from a select (or `id(f)`)
+//   counts as reading and writing every variable, so every seqq capture is
+//   read live instead of from the queued request.
+// Command: timeout -s KILL 30 graphix --no-cache x-rerun-3-seqq-untraced-callee-live.gx
+//   (--no-fusion the same; GXDBG_SEQPLAN=1 prints "opaque call g(..) static=false",
+//   "S0 reads all writes all", "capture .. live true")
+// Expected (SKILL.md: "seqq captures every outer variable the body only reads
+//   along with the queued request"): (1, 10) (2, 20) (3, 30), which is what the
+//   same program prints with `let g = |x: i64| x + 1;`, or with g passed as a
+//   function's formal.
+// Observed: (1, 30) (2, 30) (3, 30): `k` is read as it stands when the step
+//   ends, not as it stood when each request was queued.
+let b = true;
+let g = select b { true => |x: i64| x + 1, false => |x: i64| x + 2 };
+let k = 0;
+let t = never();
+let clock = sys::time::timer(duration:10.ms, 3);
+let n = 0;
+n <- clock ~ n + 1;
+t <- clock ~ n;
+k <- clock ~ k + 10;
+let r = seqq t { let a = sys::time::after_idle(duration:50.ms, g(t)); (a, k) };
+sys::exit(sys::time::after_idle(duration:400.ms, 0));
+r

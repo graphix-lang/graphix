@@ -614,10 +614,25 @@ pub trait Apply<R: Rt>: Debug + Send + Sync + Any {
 
     /// Delete any internally generated nodes.
     /// Each node of the body, when the application has one.
+    // CR claude for claude: [readability/low] The first doc line above, "Delete any
+    // internally generated nodes.", is Apply::delete's: this method visits the body's
+    // nodes and deletes nothing, and delete below has no doc. Move the line down onto
+    // delete. Found by reading; not run. (c-lib-05)
     fn for_each_body_mut(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
         let _ = f;
     }
 
+    // CR claude for claude: [doc-drift/low] The trait docs misstate the contract.
+    // `delete` has no doc, and its line (`Delete any internally generated nodes.`) sits
+    // on `for_each_body_mut`, which deletes nothing. Yet `delete` carries the
+    // obligation: release every `RtVar`, timer, task and ref the builtin made.
+    // `sleep`'s doc says the builtin keeps its output, but every event source (`Iter`,
+    // `Range`, `Timer`, `AfterIdle`, `Throttle`, `Subscribe`, `WatchStream`) clears it
+    // by design (design/async_sleep_outputs.md). The doc also does not say that a send
+    // through the builtin's own variable must be taken back (`InFlight`), the rule
+    // `Group` and `queuefn` break. Move the line here, state the release contract, and
+    // give `sleep` the output and take-back rules. Found by reading; not run.
+    // (x-node-contract-04)
     fn delete(&mut self, _ctx: &mut ExecCtx<'_, R>) {
         ()
     }
@@ -666,6 +681,12 @@ pub trait Apply<R: Rt>: Debug + Send + Sync + Any {
     /// Pause the builtin (an unselected arm): it keeps its state and its
     /// output, and aborts any operation in flight, which it does not
     /// restart unless an argument fires.
+    // CR claude for claude: [doc-drift/low] The doc above says a sleeping builtin keeps
+    // its output. An event source clears it by rule (design/async_sleep_outputs.md: its
+    // output is its last event, which does not survive the sleep), and `Iter`, `Range`
+    // and `Throttle` in graphix-package-core set `out` to the phantom at sleep, as the
+    // timers and subscriptions do. Say that state is kept, and that an event source's
+    // last event is not. Found by reading; not run. (core-lib-07)
     fn sleep(&mut self, _ctx: &mut ExecCtx<'_, R>);
 
     /// Start afresh: the update after a sleep is a birth (a seq step
@@ -1125,6 +1146,17 @@ impl<R: Rt> Attribute<R> for Native {
         {
             use std::fmt::Write;
             for failure in &report {
+                // CR claude for claude: [readability/low] The #[native] refusal prints
+                // each fusion blocker verbatim, so authors read "emit_clif: select
+                // scrutinee type Any doesn't freeze concrete". Over a g that writes a
+                // binding they also get "emit_clif: lambda call site `g(x)` not
+                // discovered — subtree node-walks; ...", which restates the bullet
+                // before it. Strip the `emit_clif: ` prefix here, drop a reason another
+                // bullet already contains, and word the common blockers (Any scrutinee,
+                // reference, stateful builtin) in the program's terms; fusion stats can
+                // keep the raw text. probe:
+                // design/review-2026-11-16/repro/x-diagnostics-native-internal-reasons.sh
+                // (x-diagnostics-09)
                 let _ = write!(reasons, "\n  - {}", failure.reason);
             }
             for spec in &walked {
@@ -1191,8 +1223,29 @@ fn native_residue<'a, 'n, R: Rt>(
 /// The log target of a running program's failures: an error nothing
 /// handles, a hot operator's failure, a definition assertion a run-time
 /// bind breaks. An embedder shows or routes them through its logger.
+// CR claude for eric: [structure/medium] Which failures an author hears of depends on
+// the engine and on two flags. In a default run of the probe a division by zero inside
+// a function, a `$` that drops an index error and a seq stalled on that `$` print
+// nothing; `--no-fusion` reports the division alone, and the dropped errors reach only
+// a log file when RUST_LOG=warn and --log-dir are both given. A kernel already guards a
+// zero divisor, so its cold path can report under this target as the node-walk's
+// `report_failure!` does, and the shell can honour RUST_LOG on stderr when no --log-dir
+// is given. probe: design/review-2026-11-16/repro/a-language-silent-failures.gx
+// (a-language-06)
 pub const FAILURE_TARGET: &str = "graphix::failure";
 
+// CR claude for eric: [structure/medium] `Rt` has one implementation (`GXRt<X>`), and
+// its parameter `GXExt` has one in production (`NoExt`, whose only method never
+// returns) and one in a test. Yet `R: Rt` is written on 1,113 lines here and in the
+// stdlib, every node, builtin and package type carries it, and none of that code can be
+// compiled in this crate: 23,572 functions (7.3 MB of 49.9 MB of text in the debug
+// `graphix`) are instantiated downstream for `GXRt<NoExt>`. Hold the extension as a
+// boxed trait object in the runtime (it is polled once a wake of the run loop) and make
+// the runtime concrete, or move the variable store the branch views already wrap
+// (`branch::RtView`) into this crate and leave timers and tasks behind a `dyn` handle:
+// `Node` loses its parameter. The cost is a mechanical edit of those lines and an API
+// break for external packages. probe:
+// design/review-2026-11-16/repro/a-compiler-rt-generic.sh (a-compiler-05)
 pub trait Rt: Debug + Any + Send + Sync {
     /// Called whenever a bound variable (or lambda) is referenced; `by`
     /// names the toplevel expression containing the reference, which must
@@ -1754,6 +1807,22 @@ impl<R: Rt> CompileCtx<R> {
             resolving_lambdas: Mutex::new(self.resolving_lambdas.lock().clone()),
             defaults_in_check: self.defaults_in_check.clone(),
             holder_reads: None,
+            // CR claude for claude: [bug/high] A compile task starts with no impl_reads
+            // and CompileCtx::join drops the fork's, so a dispatch made inside a
+            // statically called function's instance (CallSite::resolve_static_entered
+            // elaborates each in a fork) is never recorded by the run-time bind
+            // building the caller (CallSite::build_bound). The bound site then never
+            // sees impl_reads_moved, and after a dynamic module's reload replaces the
+            // impl it keeps running the retired body's method: with `let inner = |x:
+            // Sh| Sh::sh(x); let app = |x: Sh| inner(x) + 5`, `d::make(ep)` and a held
+            // `saved(ep)` answer 15 where the registered impl gives 2014; with
+            // `Sh::sh(x)` written in `app` itself they answer 2014. Give the fork an
+            // empty list when this context is collecting
+            // (`self.impl_reads.as_ref().map(|_| SmallVec::new())`), have join push the
+            // fork's reads into this one's, and pin the helper form beside
+            // a_call_of_an_outside_function_follows_a_reloaded_impl. probe:
+            // design/review-2026-11-16/repro/c-lib-impl-reads-lost-in-fork.gx
+            // (c-lib-01)
             impl_reads: None,
             fn_forward_resolutions: self.fn_forward_resolutions.fork(),
             body: self.body.clone(),
@@ -1949,6 +2018,19 @@ impl<R: Rt> CompileCtx<R> {
     /// a write is held to its type (`Connect::typecheck0_with`).
     /// The bindings `id` is one variable with ([`StaticCallees::join`]),
     /// each a target with it.
+    // CR claude for claude: [perf/low] A let chain of writable references (`let x_i =
+    // &mut x_{i-1}`) still checks in quadratic time: 0.57/1.98/8.01 s at
+    // 2500/5000/10000 lets. The `&` chain takes 0.10/0.12/0.16 s and a flat `&mut`
+    // program 0.13/0.16/0.24 s. GRAPHIX_PROFILE puts the time in BuildGraph and
+    // Typecheck0, both x4 per doubling. A `&` chain whose bindings are each written
+    // (`x_i <- x_i`) is quadratic too, so the cost is per written binding and grows
+    // with its nested reference type. Each such binding walks its whole type with a
+    // fresh seen set: holds_generic via generalized_earlier here, Type::claim_free in
+    // Bind's written-target loop, and monomorphic at its typecheck0. Stop these walks
+    // at the referent's shared type, as the `&` fix did, or memo them by node across
+    // the batch. Pin the &mut chain beside the `&` one. probe:
+    // design/review-2026-11-16/repro/x-rerun-2-mut-ref-chain-quadratic.sh
+    // (x-rerun-2-03)
     pub(crate) fn mark_connect_target(&mut self, id: BindId) -> Result<()> {
         let ids = self.static_callees.variable(id);
         if let Some(call) = ids.iter().find_map(|id| self.static_callees.held(*id)) {
@@ -2709,6 +2791,14 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
             true => TagValue::tagged(Value::Null, tag),
             false => tv.clone(),
         };
+        // CR claude for claude: [structure/low] This branch is `stand_moved` line for
+        // line: `store_insert_var` when there is no root, else `store_fire` with the
+        // late readers and `produced_var`, then `notify_marked_var`. Only the value
+        // handed to `late_var` differs (`tv` here, the bottom-normalized `stored`
+        // there), and no late reader of a bottom can tell them apart. Fix: `if
+        // tag.triggers() || tag.moved()` calls the one body with `stored`; rename
+        // `stand_moved` to say it is the fire path and drop its `#[cold]`. Found by
+        // reading; not run. Also reported as (x-prune-05). (x-dup-05)
         if tag.triggers() {
             match self.event.root {
                 None => self.rt.store_insert_var(var, stored),
@@ -2769,6 +2859,13 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
     /// next cycle, so each recomputes from the new value.
     #[cold]
     #[inline(never)]
+    // CR claude for claude: [structure/low] This body is the fire branch of
+    // deliver_took again: store_insert_var with no root, else store_fire, late_var for
+    // each passed reader, produced_var, then notify_marked_var. The two differ only in
+    // which copy late_var is handed, and those differ only in a bottom's placeholder
+    // payload. Keep the block in one inline method both call with the stored
+    // production, so a change to how an event reaches passed readers is made once.
+    // Found by reading; not run. (c-lib-03)
     fn stand_moved(
         &mut self,
         var: branch::Var,
@@ -2839,6 +2936,20 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
     }
 
     /// The reader a node at `top_id` inside the walk's boundary is.
+    // CR claude for claude: [structure/low] `reader`, `late_reader`, `stamped_reader`
+    // and `in_boundary` here repeat CompileCtx's four methods. They read a second
+    // `boundary` field, which `DerefMut` copies into `cx.boundary` and `Deref` does
+    // not: through `&ExecCtx`, CompileCtx's versions read a stale boundary, and only
+    // these shadowing copies keep callers off them. Fix: build the reader in one place
+    // (`prune::Reader::new(top_id, boundary, late, read)`) and have both contexts'
+    // methods call it, or keep the boundary in `cx` alone and set it in `in_boundary`.
+    // Found by reading; not run. (x-dup-06)
+    // CR claude for claude: [structure/low] reader, late_reader, stamped_reader and
+    // in_boundary here are copies of CompileCtx's, each over its own type's `boundary`.
+    // A reader recorded at compile time and one dropped at run time must compare equal,
+    // so a field added to prune::Reader has to be set alike in both copies. Stamp the
+    // four onto both types from the macro that already does so for with_restored
+    // (env_restore_methods!). Found by reading; not run. (c-lib-04)
     pub fn reader(&self, top_id: ExprId) -> prune::Reader {
         prune::Reader {
             root: top_id,
@@ -3147,6 +3258,18 @@ impl PendingSettle {
                 }
                 if let Err(e) = ftype.settle_terminal(env, rtype.as_ref(), exempt, &kept)
                 {
+                    // CR claude for claude: [readability/medium] A call to `let f = |x:
+                    // i64| str::parse("[x]")$` is refused here as "the type '_8144 must
+                    // be fully known here, a type-directed operation reads it: annotate
+                    // it". The cell is generated (the LSP prints '_8936), no
+                    // type-directed operation is written at `f(1)`, and "it" names
+                    // nothing. The fixes, `let v: i64 = f(1)` or `-> i64` on f, both
+                    // pass, but the message names neither. Where ftype and the call are
+                    // in hand, find the cell's place in ftype and say it: the call's
+                    // result (annotate the binding that takes it or the function's
+                    // return type), or the parameter it is. probe:
+                    // design/review-2026-11-16/repro/x-diagnostics-concrete-required-call.gx
+                    // (x-diagnostics-05)
                     let e = match e.downcast_ref::<typ::settle::ConcreteRequired>() {
                         Some(concrete)
                             if unread_callbacks
@@ -3334,6 +3457,19 @@ fn site_bounds(env: &Env, ftype: &FnType) -> Result<()> {
                         .cell_constraints()
                         .iter()
                         .any(|c| matches!(c, Type::Bound(Bound::Data)));
+                    // CR claude for claude: [bug/medium] The rule that a TOML document
+                    // is a table is enforced here for one root shape only: a map
+                    // written as pairs. A scalar, array, tuple, variant or null root
+                    // passes the check and then fails every write with toml's bare
+                    // "unsupported i64 type". TomlData also admits decimal and
+                    // duration, which leaf_to_toml refuses for every value (the book
+                    // states all of these as refused). Fix: turn Type::toml_root_pairs
+                    // into the root member that cannot be a table (anything but a
+                    // struct, a string-keyed map, an abstract value or Any), and refuse
+                    // decimal and duration in a TOML walk, naming the change as
+                    // toml_root_refusal does. probe:
+                    // design/review-2026-11-16/repro/small-pkgs-toml-root-check.sh
+                    // (small-pkgs-04)
                     if *b == Bound::TomlData
                         && written
                         && let Some(m) = t.toml_root_pairs(env)
@@ -3347,6 +3483,21 @@ fn site_bounds(env: &Env, ftype: &FnType) -> Result<()> {
                     }
                 }
                 Type::Bound(Bound::OneNumber) => {
+                    // CR claude for claude: [bug/medium] This judges a `OneNumber`
+                    // cell's binding only for members still open when the site settles.
+                    // A member open at the call and decided before the frame drains (a
+                    // `let e = never()` that a later `e <- 1.5` writes) leaves `[i64,
+                    // f64]` here, which has no open member, so the check accepts a `'a:
+                    // OneNumber` instantiated at two numeric types and the build
+                    // refuses the instance: `graphix-fuzz check` prints DIVERGENCE, the
+                    // check accepted what the build refused. Nothing else re-judges the
+                    // conjunct, since `Type::require_one_number` hands an open member
+                    // no bound beside a numeric one. Refuse here as well when
+                    // `t.one_number_holds(env, false, false)` is false, and pin the
+                    // top-level and the body-local program beside
+                    // `one_number_beside_an_open_member_refused`. probe:
+                    // design/review-2026-11-16/repro/t-tvar-b-onenumber-open-member-decided-later.gx
+                    // (t-tvar-b-01)
                     if t.one_number_open() {
                         format_with_flags(PrintFlag::DerefTVars, || {
                             bail!(
@@ -3376,11 +3527,41 @@ fn told(env: &Env, test: &Type, rest: &Type) -> Result<()> {
     let Some(why) = test.rep_collision_tested(env, Open::Unknown, rest) else {
         return Ok(());
     };
+    // CR claude for claude: [bug/medium] [bug/medium] For a declared variable this
+    // branch says it "isn't known here ... annotate it", but the author already wrote
+    // and bounded it. `'b: &string |x: [&i64, 'b]| select x { &i64 as r => 1, _ => 2 }`
+    // is told to annotate (and the variable prints as "'b: unbound within &string"),
+    // while `|x: [&i64, &string]|` gets the right advice, "wrap them in distinct
+    // variants". Read a rigid declared variable as its bound, so a collision with the
+    // bound is the ordinary untold refusal. For an unbounded one, say "bound 'b by a
+    // type of another runtime form", as the "tests inside a value of 'b" refusals do.
+    // The same test and message are copied in `discernible` and in
+    // `Type::bound_refusal` (contains.rs); one method on `Indiscernible` would carry
+    // the fix. Six lang::select fixtures (the open_member_* tests and
+    // select_over_a_bounded_quantifier_still_tells_forms) pin the bare "annotate it",
+    // and only the error case has a passing twin. probe:
+    // design/review-2026-11-16/repro/tests-select-b-declared-variable-form-says-annotate.gx
+    // (tests-select-b-02)
     let open = |t: &Type| matches!(t, Type::TVar(tv) if tv.open_cell().is_some());
     format_with_flags(PrintFlag::DerefTVars, || {
         if let Indiscernible::Pair(a, b) = &why
             && (open(a) || open(b))
         {
+            // CR claude for claude: [bug/medium] This refusal ends with "annotate it"
+            // and prints only generated cells, so it names nothing the program wrote.
+            // Over `|a| select a { [`Keep(r), ..] => r, _ => null }` it reads "tests
+            // for `Keep('_N) among '_M ... annotate it", but the fix is to annotate the
+            // parameter `a`. Over `|v: 'a| select v { Array<'b> as xs => xs, _ =>
+            // never() }` the fix is a bound on 'a, which no annotation gives. The
+            // pattern.rs refusals of this family name the binding or the bound ("bound
+            // 'a by the type it tests, `'a: T`"). Name the binding that holds the open
+            // cell, or the declared variable to bound. Then give
+            // lang::select::unannotated_slice_element_telling_rest_from_keep_refused
+            // and told_refusal_names_written_variable_once their passing twins (`a:
+            // Array<`Keep(i64)>`; `'a: [Array<i64>, i64]` with `Array<i64> as xs`).
+            // probe:
+            // design/review-2026-11-16/repro/tests-select-c-told-refusal-annotate-it.sh
+            // (tests-select-c-02)
             let known = if open(a) { b } else { a };
             bail!(
                 "this pattern tests for {test} among {rest}, but a type variable there \
@@ -3903,6 +4084,18 @@ impl std::fmt::Debug for DynScope {
 /// glue recursing into `parent`.
 impl Drop for DynNode {
     fn drop(&mut self) {
+        // CR claude for claude: [risk/low] This loop frees nothing past the first link
+        // of a chain of `Try` or `Machine` handlers. A node under one also holds its
+        // parent in `counter` (and in `machine` under a `Machine`), so
+        // `Arc::try_unwrap` of the parent fails and the loop breaks. The parent is then
+        // freed by the glue drop of those fields, which repeats the same failure one
+        // link up: the chain is released by recursion outside any stack guard, unlike
+        // what the comment says. A recursion through seq steps builds such a chain as
+        // deep as it recurses. Fix: take `machine` and `counter` before the loop, and
+        // take each unwrapped node's `machine` and `counter` before trying its parent.
+        // Pin it in deep_drop.rs with a 50000-link chain of `with_catch(..,
+        // HandlerKind::Machine)`. Found by reading; not run (today's cubic cost of
+        // recursion through seq keeps such a chain from getting deep). (x-stack-05)
         let mut next = self.parent.0.take();
         while let Some(handler) = next {
             match Arc::try_unwrap(handler.0) {
@@ -4183,6 +4376,15 @@ pub(crate) fn defer_written_names<R: Rt>(
     t: &Type,
     spec: &Expr,
 ) -> Result<()> {
+    // CR claude for claude: [bug/low] A bare annotation that is a trait written above
+    // it (`let x: Sh = 1`) fails inside `defer_unresolved_names` as "undefined type Sh"
+    // before `trait_as_type` is asked, and a cast target and a type test
+    // (`cast<Sh>(v)`, `Sh as s`) say the same below the declaration, where `Array<Sh>`
+    // and `never<Sh>()` say "trait Sh used as a type". The author is told the name is
+    // missing when it is declared on the line. Ask `trait_as_type` first here, and give
+    // the cast's target and the pattern's test the same refusal. probe:
+    // design/review-2026-11-16/repro/x-traits-abstract-trait-as-type-undefined.sh
+    // (x-traits-abstract-09)
     if defer_unresolved_names(ctx, t, spec, None)?
         && let Some(name) = t.trait_as_type(&ctx.env)
     {

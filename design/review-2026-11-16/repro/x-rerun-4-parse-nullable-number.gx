@@ -1,0 +1,21 @@
+// Title: str::parse into a union holding an exact number reads a bare number
+//   through f64: a printed [decimal, null] or [u64, null] does not read back
+//   (x-kind-markers-05 variant; the bare decimal and u64 targets are fixed)
+// Command: timeout -s KILL 30 graphix --no-cache x-rerun-4-parse-nullable-number.gx
+// Expected: each value reads back as printed:
+//   decimal:12345678901234567890.123456789, u64:18446744073709551615 and
+//   decimal:12345678901234567890.123456789 (as the bare `decimal` target,
+//   cast<[decimal, null]>(s) and json::read into [decimal, null] all give)
+// Observed:
+//   ("12345678901234567890.123456789", decimal:12345678901234567000.0,
+//    error:`ParseError("can't cast 18446744073709552000.0 to [u64, null]: no primitive conversion"),
+//    decimal:12345678901234567000.0, decimal:12345678901234567890.123456789)
+let x: [decimal, null] = decimal:12345678901234567890.123456789;
+let s = "[x]";
+let back: Result<[decimal, null], `ParseError(string)> = str::parse(s);
+let u: [u64, null] = u64:18446744073709551615;
+let backu: Result<[u64, null], `ParseError(string)> = str::parse("[u]");
+let backs: Result<[decimal, string], `ParseError(string)> = str::parse(s);
+let bare: Result<decimal, `ParseError(string)> = str::parse(s);
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+(s, back, backu, backs, bare)

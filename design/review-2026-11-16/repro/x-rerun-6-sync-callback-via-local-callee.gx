@@ -1,0 +1,14 @@
+// Title: c-lambda-04 variant: #[sync] passes on a definition whose builtin
+//   callback reaches the async fn parameter through another local lambda
+//   (callback_facts reads the callback's own ParamCalls, never those of the
+//   lambdas the callback calls).
+// Command: timeout -s KILL 10 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache x-rerun-6-sync-callback-via-local-callee.gx
+// Expected: refused, "#[sync]: this function is async" (as it is for
+//   `filter(v, |x| f(x))`, for `let g = |x| f(x); filter(v, g)`, and for a
+//   direct `let k = |y| f(y); k(v)` in the body).
+// Observed: accepted; prints 3. The same with the callback written as a
+//   literal: `filter(v, |x| { let k = |y| f(y); k(x) })`.
+#[sync]
+let d = |f: fn(v: i64) -> bool, v: i64| { let k = |y| f(y); let g = |x| k(x); filter(v, g) };
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+d(|x| sys::time::after_idle(duration:10.ms, x) > 0, 3)

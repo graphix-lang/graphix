@@ -1,0 +1,26 @@
+// array::group stops for good when its arm sleeps while it drains a backlog.
+// Group feeds each queued element to f through ctx.rt.set_var for the next
+// cycle; when the arm sleeps in that cycle the write lands on a sleeping f,
+// the wake fires nothing, and group waits forever for the answer (ready=false),
+// queueing every later v without bound.
+//
+// command: timeout -s KILL 20 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache collections-str-group-sleep-stuck.gx
+// expected: groups of two keep coming after the arm wakes (n reaches 14):
+//           [0, 1] ... then later pairs such as [.., ..] after n == 8
+// observed: [0, 1] printed (the second print is the select re-delivering at
+//           the wake) and nothing after, although f reads nothing absent:
+//             [0, 1]
+//             [0, 1]
+// control: delete the two `awake <-` lines: [0, 1], [2, 3], ... [12, 13].
+let n = 0;
+n <- select n { x if x < 14 => x + 1, _ => never() };
+let gate: bool = never();
+gate <- select n { 3 => true, _ => never() };
+let awake = true;
+awake <- select n { 6 => false, _ => never() };
+awake <- select n { 8 => true, _ => never() };
+let r = select awake {
+  true => array::group(n, |len, x| gate && (len == 2)),
+  false => never()
+};
+r

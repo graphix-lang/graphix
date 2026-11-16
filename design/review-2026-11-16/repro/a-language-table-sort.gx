@@ -1,0 +1,33 @@
+// a-language: sorting rows by a column, and the accidental loop the same table shows
+// command:  graphix --no-cache a-language-table-sort.gx
+// `array::sort` takes no key and the array package has no `reverse`, so a table sorted by a column is
+// map-to-pairs, sort, map back, once per column, and the row type must itself be `Ordered`.
+// observed: runs as written below. Remove `edit ~` from the `rows <-` line and the check still passes with no
+//           warning, and the program spins at 100% CPU from the first edit (it never reaches tick 5).
+type Row = {id: i64, name: string, qty: i64};
+let rows: Array<Row> = [
+  {id: 1, name: "pear", qty: 3},
+  {id: 2, name: "apple", qty: 7},
+  {id: 3, name: "plum", qty: 1}
+];
+let sort_by: [`Name, `Qty] = `Name;
+let filter_text = "";
+let edit: (i64, i64) = never();
+let tick = count(sys::time::timer(duration:30.ms, 6)$);
+select tick {
+  1 => sort_by <- tick ~ `Qty,
+  3 => filter_text <- tick ~ "p",
+  4 => edit <- tick ~ (3, 99),
+  5 => filter_text <- tick ~ "",
+  _ => never()
+};
+rows <- edit ~ array::map(rows, |r| select r.id == edit.0 { true => {r with qty: edit.1}, false => r });
+let shown = {
+  let kept = array::filter(rows, |r| str::contains(#part: filter_text, r.name));
+  select sort_by {
+    `Name => array::map(array::sort(array::map(kept, |r| (r.name, r))), |p| p.1),
+    `Qty => array::map(array::sort(array::map(kept, |r| (r.qty, r))), |p| p.1)
+  }
+};
+println("[tick]: [array::map(shown, |r| "[r.name]=[r.qty]")]");
+sys::exit(select tick { 6 => 0, _ => never() })

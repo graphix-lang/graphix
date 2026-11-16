@@ -1,0 +1,15 @@
+// Title: a seq's own body, or a try body in a seq, ending in a `let` is
+//   accepted and takes the let's value, while every other block ending in a
+//   let is refused ("a let has none"); c-data-map-01's fix refuses only a
+//   block NESTED in a step (variant of c-data-map-01).
+// Command: timeout -s KILL 10 graphix --no-cache x-rerun-1-seq-body-trailing-let.gx
+// Expected (the block rule, and design/seq_blocks.md "the last statement of a
+//   seq, or of a try or with body whose value is used, must be an expression"):
+//   refused, as `{ let a = 1; let b = a + 1 }` and
+//   `seq t { let a = (1, { let c = 2; let b = c + 1 }); a }` are.
+// Observed: --check passes; the run prints (2, 2).
+let t = sys::time::timer(duration:10.ms, false);
+let r = seq t { let a = 1; let b = a + 1 };
+let s = seq t { let d = try { let q = 1; let z = q + 1 } with(e) { 0 }; d };
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+(r, s)

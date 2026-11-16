@@ -172,6 +172,13 @@ cell for the rest).
   as for any pattern. The shallow discriminator (`PatternNode::shallow_discriminant`)
   shallows each alternative's member of the arm's predicate, as for any
   union predicate.
+<!-- CR claude for claude: [doc-drift/low] Three claims in this paragraph are stale.
+Explicit type predicates on or-arms fuse: or_arm takes each alternative's members of the
+written type and emits the test once. A binding or-pattern at an element or payload
+fuses (SelectArmBind::Or). The guard prologue no longer evaluates the guard on every
+invocation: it branches around the guard wherever its arm's pattern does not admit the
+value. Rewrite the paragraph to the code. probe:
+design/review-2026-11-16/repro/f-select-or-patterns-doc.gx (f-select-06) -->
 - **JIT**: or-arms emit natively via `emit_or_chain`
   (`fusion/emit/select.rs`). The alternatives' structure conditions
   run left to right in their own block runs (each via

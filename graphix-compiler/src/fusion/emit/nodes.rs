@@ -2,6 +2,12 @@
 //! casts, connect, string interpolation, and the composite
 //! producers/accessors (tuple/struct/variant/array/map).
 
+// CR claude for claude: [doc-drift/low] The module doc lists "connect" among this
+// file's emitters, but nothing here emits a connect (a connect node-walks under strict
+// fusion). It also leaves out what the file does hold: checked arithmetic, abstract
+// construction and payload reads, slices, map reads, `never` and the bottom
+// placeholders. Rewrite the list from the file's functions. Found by reading; not run.
+// (f-nodes-scalar-06)
 use crate::{
     BindId, Node, NodeView, Rt,
     expr::{Expr, ExprId},
@@ -58,6 +64,14 @@ pub(crate) fn emit_const_node(
     typ: &Type,
 ) -> Result<CompiledExpr> {
     // A constant fires at init only and is never tainted.
+    // CR claude for claude: [doc-drift/low] This comment, `producer_disc`'s and
+    // `emit_variant_new_node`'s say a constant "fires at init only", and the local is
+    // named `init`. The gate is `born_flag`, though: a constant fires where it is born,
+    // and in a loop body that includes each new slot's first iteration
+    // (`BodyCx::born_flag`). CLAUDE.md now rules there is no init rule. Rename the
+    // local to `born` here and in `producer_disc`, and say "fires where it is born" in
+    // the three docs, as `const_stale_gate` does. Found by reading; not run.
+    // (f-nodes-scalar-01)
     let init = cx.born_flag();
     match kernel_abi::abi_kind(typ) {
         Some(AbiKind::Scalar(prim)) => {
@@ -111,6 +125,13 @@ pub(crate) fn emit_map_new_node<R: Rt>(
         let typ = kernel_abi::freeze_for_abi(typ).unwrap_or_else(kernel_abi::map_type);
         return emit_const_node(cx, &v, &typ);
     }
+    // CR claude for claude: [structure/low] These seven lines (capacity,
+    // `open_value_buf`, push every entry, `close_buf`) are `emit_fields_into_buf`
+    // followed by `close_buf`, which `emit_list_new_node` already calls.
+    // `emit_seq_new_node` repeats the same loop with a marker pushed first. Call
+    // `emit_fields_into_buf` here, and give it an `Option<rep::Kind>` marker (counted
+    // in the capacity) so `emit_seq_new_node` uses it too. Found by reading; not run.
+    // (f-nodes-scalar-04)
     let cap = cx.b.ins().iconst(types::I64, entries.len() as i64);
     let buf = open_value_buf(cx, cap)?;
     let mut discs: SmallVec<[ClifValue; 8]> = SmallVec::new();
@@ -415,6 +436,13 @@ fn drop_operands(cx: &mut BodyCx, ops: &[ValueOperand]) -> Result<()> {
 /// core; over one float prim it is the unchecked operation, since float
 /// arithmetic follows IEEE and never fails; any other operands take
 /// that helper every time, borrowed.
+// CR claude for claude: [doc-drift/low] The doc says a failure builds its error through
+// `graphix_value_checked_<op>`, "the node-walk's `Value::checked_*` core". The helpers
+// call `node::op::arith` (through `value_arith`), whose integer path is `int_arith`
+// with its own messages and `x % -1` = 0. netidx's `Value::checked_*` is only `arith`'s
+// fallback for shapes that neither `int_arith` nor `decimal_checked` take. A reader
+// checking parity against `Value::checked_*` checks the wrong function. Name
+// `node::op::arith` as the shared core. Found by reading; not run. (f-nodes-scalar-02)
 pub(crate) fn emit_checked_arith_node<R: Rt>(
     cx: &mut BodyCx,
     op: ArithOp,
@@ -1162,6 +1190,31 @@ fn emit_accessor_source_node<R: Rt>(
     source: &Node<R>,
     want: AbiKind,
 ) -> Result<ArraySrc> {
+    // CR claude for claude: [perf/medium] A field read or functional update over a
+    // union of same-shape tuples, structs or errors never fuses. This check refuses any
+    // source that is not a bare Tuple/Struct, and emit_struct_with_node refuses a union
+    // outright. So `#[native] t.0` over `[(i64, `V(i64)), (i64, `W)]` is refused, and
+    // so are `s.a` and `{s with a: 7}` over a struct union and `e.0` over an Error
+    // union, while the node-walk answers each. Eric favoured reading such fields
+    // (cr-discuss #27), noting that a struct field's index can differ between members.
+    // Fix: accept a union source whose members all hold the read position at one index
+    // (always for a tuple's `.N` and an Error's `.0`; for a struct field only when its
+    // sorted index agrees in every member), read it from the union's encoded value, and
+    // otherwise keep a refusal that names the misaligned members. probe:
+    // design/review-2026-11-16/repro/x-rerun-3-union-field-native.sh (x-rerun-3-03)
+    // CR claude for claude: [perf/medium] A field read, a tuple index and a struct-with
+    // over a union of one-shape composites never fuse: this check wants a Struct/Tuple
+    // ABI kind and a union has neither. A let or parameter destructure over one fails
+    // the same way in the select emitter ('not lowerable'). The single-arm select the
+    // checker treats them as (`select v { (x, y) => .. }`, `T as {a, ..}`) fuses.
+    // Ordinary code hits it: `array::map(xs, |x| x.n)` over `[{act: `A, n: 1}, {act:
+    // `B, n: 2}]`, and `r.d.name` where a select joins `{d: Dom}` with `{d: {name:
+    // "y"}}`, which the checker keeps as a two-member union. Each node-walks its whole
+    // enclosing region. Lower these accessors through the select's member dispatch,
+    // reading at each member's sorted index, then flip the union_field_*
+    // FuseExpect::None pins in tuples_structs.rs. probe:
+    // design/review-2026-11-16/repro/tests-lang-rest-b-union-accessor-defuse.sh
+    // (tests-lang-rest-b-01)
     if cx.node_kind(source.typ()) != Some(want) {
         return Err(anyhow!(
             "emit_clif: accessor source of type {} isn't {want:?}",
@@ -1393,6 +1446,16 @@ pub(crate) fn emit_array_ref_node<R: Rt>(
     source: &Node<R>,
     idx: &Node<R>,
 ) -> Result<CompiledExpr> {
+    // CR claude for claude: [perf/low] A z32/z64/v32/v64 index has no PrimType, so this
+    // refuses it as 'index of non-integer type z64', and emit_array_slice_node refuses
+    // a varint slice bound the same way. The check admits every Typ::integer() index
+    // (array::check_index), the node-walk widens it (array::index_i64), and z64
+    // arithmetic fuses. So `|i: z64| #[native] (a[i], a[i..])` is refused by the build
+    // although the check accepts it. Widen a varint index to i64 here as index_i64 does
+    // (z signed, v unsigned and saturating), or at least name the varint type in the
+    // refusal. probe:
+    // design/review-2026-11-16/repro/c-collection-varint-index-defuses.gx
+    // (c-collection-02)
     let idx_prim = kernel_abi::scalar_prim(idx.typ())
         .filter(|p| p.is_integer())
         .ok_or_else(|| anyhow!("emit_clif: index of non-integer type {}", idx.typ()))?;
@@ -1530,6 +1593,14 @@ pub(crate) fn emit_array_slice_node<R: Rt>(
 /// Whether an integer `/` or `%` needs its divisor guarded: false only
 /// when the divisor is a constant that provably cannot be zero or meet
 /// a MIN dividend as -1. Sees through `ExplicitParens`.
+// CR claude for claude: [structure/low] `value_is_zero`, `value_is_neg_one` and
+// `value_is_int_min` are three per-variant matchers, and the last re-states the table
+// `PrimType::signed_int_min` already holds. Read the constant once as an integer
+// (`netidx_value::Num::of`, keeping `Num::Int`) and pass in the `prim` that
+// `emit_arith_node` already has. Then decide: no constant or 0 is guarded, -1 is
+// guarded unless the dividend is a constant other than `prim.signed_int_min()`, and
+// anything else is not. The three helpers go. Found by reading; not run.
+// (f-nodes-scalar-03)
 fn node_int_div_may_bottom<R: Rt>(lhs: &Node<R>, rhs: &Node<R>) -> bool {
     fn const_value<'a, R: Rt>(n: &'a Node<R>) -> Option<&'a Value> {
         match n.view() {

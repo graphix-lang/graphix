@@ -498,6 +498,15 @@ fn nearest<X: GXExt>(chart: &ChartW<X>, cursor: Point) -> Option<Hit> {
 }
 
 /// The tooltip of the point `hit`.
+// CR claude for claude: [bug/low] The tooltip prints values with fixed decimals:
+// `{x:.4}`/`{y:.4}` for an XY point, and `{:.2}` for candles, error bars, bars and pie
+// slices. A point at y = 3e-5 reads `(1.0000, 0.0000)`, a candle priced 0.0000123 reads
+// `O:0.00 H:0.00 L:0.00 C:0.00`, and x = 1.5e20 prints 21 integer digits. The axes
+// beside the tooltip write the same values through TickFormat, and the tooltip, the
+// place to read an exact value, should never show zero for a non-zero one. Format
+// tooltip numbers with a significant-digit rule (TickFormat over the plot's ranges, or
+// `{}`'s shortest round-trip form). Update the chart_test.rs pins that hold the fixed
+// forms. Found by reading; not run. (gui-chart-03)
 fn describe<X: GXExt>(chart: &ChartW<X>, hit: Hit) -> Option<SnapPoint> {
     let ds = chart.datasets.get(hit.ds)?;
     let categories = chart.bar_categories();

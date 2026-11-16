@@ -1,0 +1,17 @@
+// A catch (or a seq `with`) that no raise reaches refuses a handler reading
+// `e.0.error` with "expected tuple not _", which says nothing of the cause.
+//
+// command: graphix --check x-engine-seq-errors-catch-no-raise-diagnostic.gx
+// expected: a message naming the cause (no `?` under this catch raises, so
+//   its binder has no type), or a warning that the catch hears nothing
+// observed:
+//     at: line: 14, column: 29 ..., in: e.0
+//     expected tuple not _
+//   The same handler over `a[1]?` checks. With the handler `msg <- "[e]"`
+//   the program checks with no warning, though the catch can never hear an
+//   error. A seq's `try { a[1]$ } with(e) { msg <- "[e.0.error]"; 0 }` gives
+//   the same message.
+let a = [1, 2];
+let msg = "";
+let r = { catch(e) msg <- "[e.0.error]"; a[1]$ };
+r

@@ -1,0 +1,35 @@
+// A watch inside a function called in an inner arm that has never run, whose
+// outer arm sleeps (n = 4..7) and is re-entered (n = 8): the cold run treats
+// the watch's first update as a wake and establishes it over standing
+// arguments, firing at entry; a warm start decodes the function's instance
+// at that first update, never slept, and starts nothing. By the rules
+// (design/async_sleep_outputs.md: over arguments that stand, in a body
+// entered after the first cycle, an event source starts nothing until one
+// fires) the warm run is right and the cold run is wrong.
+//
+// Run, with a fresh cache:
+//   export XDG_CACHE_HOME=$(mktemp -d)
+//   graphix x-image-watch-never-run-wake.gx   # cold
+//   graphix x-image-watch-never-run-wake.gx   # warm
+// Expected (both runs): no output, exit 0.
+// Observed: cold (and --no-cache) prints
+//   (8, 1, abstract:)
+//   (9, 2, abstract:)
+//   (10, 3, abstract:)
+//   (11, 4, abstract:)
+// warm prints nothing.
+let clk = sys::time::timer(duration:10.ms, true);
+let n = 0;
+n <- clk ~ n + 1;
+let w = sys::fs::watch::create(null)$;
+let p = "/tmp";
+let int: Array<sys::fs::watch::Interest> = [`Established, `Create];
+let f = |k: i64| sys::fs::watch::watch(#interest: int, w, p);
+let z = 0;
+let out = select n % 8 < 4 {
+  true => select n > 6 { true => f(z), false => never() },
+  false => never()
+};
+let est = count(out);
+sys::exit(select n { 14 => 0, _ => never() });
+(n, est, out)

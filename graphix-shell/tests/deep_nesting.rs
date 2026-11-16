@@ -101,6 +101,20 @@ fn source(shape: &str, d: usize, mode: &str) -> String {
             let (types, body): (Vec<&str>, Vec<&str>) =
                 program.lines().partition(|l| l.starts_with("type "));
             let types: String = types.iter().map(|t| format!("{t}\n")).collect();
+            // CR claude for claude: [test-gap/medium] The twin mode does not fuse the
+            // nest it is meant to cover. `source` wraps the program as `|z| {
+            // <program>; z }`, and every `let x = <deep>` shape leaves `x` unused, so
+            // the fused region drops it. GRAPHIX_DUMP_CLIF of the twin is the same size
+            // at depth 10 and at depth 200 for parens, array, tuple, structlit, variant
+            // and select; returning `x` instead makes it grow with the depth. So for
+            // these nests no mode runs lowering or the JIT emitter on the small stack
+            // (only `call`, `lambdachain` and `calleechain` reach them), and an
+            // overflow there would go unseen. Fix: end the twin's body with the name
+            // the program's last `let` binds, and assert that the twin fused
+            // (`#[native]` on the pure shapes, or a fusion count). Correct the header's
+            // "(which fuses)" until it does. probe:
+            // design/review-2026-11-16/repro/tests-shell-compiler-a-twin-never-fuses-the-nest.sh
+            // (tests-shell-compiler-a-01)
             format!("{types}let twin = |z| {{\n{};\nz\n}};\ntwin(1)", body.join("\n"))
         }
         _ => program,
@@ -763,6 +777,14 @@ fn completes_within(args: &[&str], program: &str, budget: u64) {
 /// others its modules) exits within `budget` instructions, its threads'
 /// together, with its stderr; one that passes the budget is killed.
 #[cfg(target_os = "linux")]
+// CR claude for claude: [risk/low] `exits_within` pipes the child's stderr but reads it
+// only after the child exits. A run that writes more than a pipe buffer (64 KiB) to
+// stderr, such as a future warning over 20,000 lets, blocks in write, retires no
+// instructions and is reported as a hang after 600 s. common::within_deadline already
+// drains both pipes on threads for this reason. Make `exits_within` use it, with its
+// poll loop also checking the instruction budget beside the deadline, instead of
+// keeping a second spawn-and-poll loop. Found by reading; not run.
+// (tests-shell-compiler-a-08)
 fn exits_within(args: &[&str], files: &[(&str, &str)], budget: u64) -> Output {
     let dir = tempfile::tempdir().expect("a dir for the program");
     for (name, text) in files {
@@ -818,6 +840,19 @@ fn gi(n: u64) -> f64 {
 /// scope chain, not once per level.
 #[test]
 #[cfg(target_os = "linux")]
+// CR claude for claude: [perf/low] Nested `try` builds in near-cubic time, not the
+// quadratic the doc above says. --check at depths 248, 496, 700 and 993 costs 0.16,
+// 0.74, 1.91 and 5.32 s above an empty program (debug build): x4.6 and then x7.2 per
+// doubling. GRAPHIX_PROFILE puts it all in BuildGraph. A flat run of 1000 trys, nested
+// blocks and nested catches all stay cheap, so the cost is in how the try lowering
+// (`seq::desugar`, `Machine::lower_try`) and the compile of its machine handle nesting.
+// The 250 G budget, by far the loosest in the file, is what lets it pass. Profile the
+// 993-deep case's BuildGraph to find the walk repeated per enclosing level and make it
+// once per try. Pin the growth between two depths instead of one absolute budget. The
+// doc's first three lines describe `flattype`, the next test's subject: move them
+// there. probe:
+// design/review-2026-11-16/repro/tests-shell-compiler-a-nested-try-check-cubic.sh
+// (tests-shell-compiler-a-04)
 fn nested_trys_check_in_time() {
     checks_within(&program("trywith", 993), 250 * BILLION)
 }
@@ -1465,6 +1500,17 @@ fn generic_pair_call_chains_build_in_time() {
 /// signature (call-dag-arg-walk-01).
 #[test]
 #[cfg(target_os = "linux")]
+// CR claude for claude: [style/low] These comments cite review ids that are no longer
+// in the tree: (call-dag-arg-walk-01) here and on
+// generic_pair_call_chains_share_their_resolutions, and (x-panics-02) on
+// swallowed_error_logs.rs's an_empty_rand_range_is_logged. The "9.5 G before" and "14.5
+// G before" on the select-arm cost tests narrate history. The limitation this comment
+// names still holds and is now tracked nowhere: a chain of generic pair calls builds in
+// quadratic time but checks in linear time (--expand --no-fusion: 0.28, 0.85 and 3.30 s
+// at 640, 1280 and 2560 links). Drop the ids and the "before" figures, and record the
+// quadratic build in design/ (or a CR) where someone will find it. probe:
+// design/review-2026-11-16/repro/tests-shell-compiler-a-pair-chain-elab-quadratic.sh
+// (tests-shell-compiler-a-10)
 fn generic_pair_call_chains_check_in_linear_time() {
     let program = |links| {
         chain(
@@ -2016,6 +2062,12 @@ fn deep_nesting_does_not_overflow() {
             .env("XDG_CACHE_HOME", cache.path().join(format!("{shape}-{depth}-{mode}")))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
+            // CR claude for claude: [readability/low] A failing child's message is
+            // thrown away. `run_child` prints the error ("{shape}@{depth} {mode}:
+            // ..."), and a stack overflow prints its own line, both to this null
+            // stderr, so the parent's report says only "Some(5), not Some(0)" or
+            // "None". Pipe stderr and put each failing child's text in its `failed`
+            // entry. Found by reading; not run. (tests-shell-compiler-a-09)
             .stderr(Stdio::null())
             .spawn()
             .expect("spawn child")

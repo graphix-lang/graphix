@@ -16,6 +16,16 @@ trait Show {
 };
 ```
 
+<!-- CR claude for claude: [doc-drift/low] This paragraph says a method naming `self`
+only in its result is accepted and only a call to it is refused ("called without its
+self argument"). The check refuses the trait declaration itself, with or without a call:
+traits::method_decl bails "trait method mk takes no `self` argument, so no call can
+dispatch it". Cast::from_value, the core example, is refused at the call by another rule
+("Cast::from_value is called by casts and writers, never by a program"). Rewrite: every
+method of a program's trait takes `self`, and only a core trait's runtime method may
+name it only in its result. Pin it with a ```graphix,cases fence. probe:
+design/review-2026-11-16/repro/book-modules-udt-self-only-in-result.sh
+(book-modules-udt-04) -->
 Each item is a `val` with a function type. The type `self` is the
 receiver — the type implementing the trait — and a method takes it as
 a positional `self` parameter, written bare: `fn(self, n: u64) -> bytes`
@@ -258,6 +268,14 @@ A trait declared only in the `.gx` file is private to that module.
 
 ## The Core Traits: Eq, Ord and Display
 
+<!-- CR claude for claude: [doc-drift/low] The core trait declarations below leave out
+Eq's second method, `hash`. Core's mod.gxi declares `#[pure] val hash: fn(self) -> Any`,
+which the text further down introduces as something an implementation "can add". The
+Current limits bullet "`Hash` is not a trait: map keys hash structurally" is wrong on
+both counts. A Map is an ordered chunkmap keyed by Ord, as this page says above, never
+hashed, and a user type is hashed through Eq::hash (array::dedup). Show `hash` in the Eq
+declaration, and replace the bullet with "hashing is Eq::hash, not a trait of its own".
+Found by reading; not run. (book-modules-udt-08) -->
 Three traits are built into core and consulted by the language
 itself:
 
@@ -327,6 +345,16 @@ println([red, red]);
 println({fg: red, n: 3})
 ```
 
+<!-- CR claude for claude: [doc-drift/low] The last sentence of this paragraph, "A
+method that produces no value makes the comparison produce none", contradicts
+design/traits.md and the code. Under THE BOTTOM-KEY RULE, `a == b` on a hooked type
+whose impl bottoms answers by the bottom-key rule instead of bottoming the operator.
+With an Ord impl that bottoms on K(0), `K(0) < K(2)` answers true. The paragraph further
+down ("If an implementation produces no value for some pair...") states the right rule,
+but reads as if it covers only maps and sorts. Delete the sentence and say the
+bottom-key rule holds for the operators too. probe:
+design/review-2026-11-16/repro/book-modules-udt-bottoming-ord-answers.gx
+(book-modules-udt-05) -->
 Outside core only an abstract type may implement a core trait (the
 rule of the previous section). A core trait's method runs inside the
 comparison or the print, as many times as the comparison needs, a sort

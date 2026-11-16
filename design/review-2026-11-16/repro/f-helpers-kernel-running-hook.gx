@@ -1,0 +1,18 @@
+// Title: a node-walked Display hook run from inside a fused kernel loses
+// its fast fn's arithmetic diagnostic (kernel_running() is true there).
+// Command (from the repo root):
+//   timeout -s KILL 60 ~/tmp/review-2026-11-16/bin/graphix --no-cache \
+//     design/review-2026-11-16/repro/f-helpers-kernel-running-hook.gx
+//   timeout -s KILL 60 ~/tmp/review-2026-11-16/bin/graphix --no-cache --no-fusion \
+//     design/review-2026-11-16/repro/f-helpers-kernel-running-hook.gx
+// Expected: both runs log `divide: "arithmetic error"`: the hook body
+// (`&k` keeps it out of every kernel; GRAPHIX_DUMP_CLIF=1 shows only the
+// `K(1)` and `f` kernels) runs in the node-walk either way.
+// Observed: the fused run prints only "K(1)"; the --no-fusion run logs
+// `divide: "arithmetic error"` and then "K(1)".
+type K = Abstract<i64>;
+impl Display for K { let fmt = |k| { let r = &k; "[divide((*r).0, 0)]" } };
+let k = K(1);
+let f = |k: K| #[native] "[k]";
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+f(k)

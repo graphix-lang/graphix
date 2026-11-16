@@ -338,6 +338,14 @@ run!(
 // it, which only a union of two variables of the signature asks, is unpinned:
 // a union of two bare variables is refused, and one of members holding them
 // is formal-union-nested-01.
+// CR claude for claude: [readability/low] The name says the pairing waits for later
+// parameters, while the comment above says that question is unpinned and CLAUDE.md says
+// nothing waits for a later argument. What the fixture pins is a union with one
+// variable member (`['a, string]` against `['d, string]`) pairing with its
+// implementation's, which waits for nothing. Rename it for that
+// (`union_with_one_variable_member_pairs_with_its_implementations`) and drop the
+// finding id `formal-union-nested-01` from the comment. Found by reading; not run.
+// (tests-interfaces-image-08)
 run!(
     union_pairing_waits_for_later_parameters,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(0))),
@@ -1028,6 +1036,16 @@ run!(
 
 // An interface-only type declared after a `val` the implementation binds
 // by destructuring lands after that `let`, where the body can name it.
+// CR claude for claude: [test-gap/medium] This fixture cannot fail for the anchoring
+// its comment names. A gxi-only `type` needs no value and goes ahead of the whole body
+// (`resolver::needs_no_value`): T is in force above `let (a, c)` (a cast to T there
+// checks), and `let b: T` reads it wherever it lands. What places a gxi-only `mod` or
+// `use` after the val it follows is the destructuring anchor (`Anchor::of_expr`
+// collecting a pattern's names), and nothing pins it. Give the fixture gxi `val a: i64;
+// mod l; val w: i64; val c: i64` over `let (a, c) = (1, 1); let w = l::z + 1`; it is
+// refused "l::z not defined" when the anchor is missed. Fix the comment to match.
+// probe: design/review-2026-11-16/repro/tests-interfaces-image-type-not-anchored.sh
+// (tests-interfaces-image-03)
 run!(
     interface_type_anchored_after_destructuring,
     is(Value::I64(3)),
@@ -1484,6 +1502,15 @@ run!(
 ; FuseExpect::None);
 
 // A mismatch names the implemented type, not its cells.
+// CR claude for claude: [test-gap/medium] Nothing pins that a val declares exactly its
+// implementation's type. `val x: [i64, null]` over `let x = 3` is refused by
+// `Type::sig_matches` and checks once the let is annotated, but every refusal in this
+// file is a mismatch (f64 against i64, W<string> against W<i64>), never a declaration
+// wider than its implementation. A change that let sig_matches accept a wider
+// declaration would pass the whole suite while the skill still states the rule. Add the
+// refusal ("val x is declared [i64, null] but implemented i64") and its annotated twin,
+// and a function-result variant (`-> [i64, null]` over `|x| x + 1`). Found by reading;
+// the rule holds today (checked with --check). (tests-interfaces-image-04)
 run!(
     implemented_type_prints_resolved,
     refused("but implemented fn(x: f64) -> f64"),
@@ -3054,6 +3081,12 @@ run!(
 
 // A lambda binding something writes is one type for every reader: the
 // implementation that calls it is told that binding, by name.
+// CR claude for claude: [structure/low] 46 fixtures repeat the root `mod m; let result
+// = (m::f(1), m::f("s"))` and 45 the interface `val f: fn(x: 'a) -> 'a` verbatim, and
+// only the implementation varies. Add two consts beside this one (`F_AT_TWO_TYPES`,
+// `GENERIC_F`) and pass them where each fixture writes the strings. That removes about
+// ninety copies and makes the varying part stand out. Found by reading; not run.
+// (tests-interfaces-image-09)
 const WRITTEN_K: &str = "that of k, a binding outside its let that something writes, which holds one type for every reader: declare the val at one type, or give k a type that holds every 'a";
 
 run!(
@@ -3855,6 +3888,20 @@ run!(
 // A val whose type holds a variable is generic wherever its function types
 // stand (a typedef, a struct, an array): what is written through it must
 // be as general, and a writable reference to it is refused.
+// CR claude for claude: [test-gap/medium] This fixture,
+// write_through_a_struct_of_functions_val_refused and
+// write_through_an_array_of_functions_val_refused all write through `wr = |x| { m::f <-
+// x; x }`. Their refusal is for x being wr's own variable ("it holds a type variable of
+// the code around the write"), and it comes the same when wr is never called or is
+// called with a value as general as the val. The narrow `fn(x: i64) -> i64` they pass
+// is never judged, and the struct fixture pins wr's cell `'a1` as the written type. A
+// check that let a narrow write into a struct or array val through would keep all three
+// green, and no other fixture pins the array case. Write the narrow value directly
+// (`m::v <- [|x: i64| -> i64 x + 100]`) and pin "and Array<fn(x: i64) -> i64> is not"
+// (likewise the struct and the typedef). Keep one wr fixture, named for the
+// outer-variable rule. probe:
+// design/review-2026-11-16/repro/tests-interfaces-image-write-through-wr.sh
+// (tests-interfaces-image-02)
 run!(
     write_through_a_typedef_val_refused,
     refused("f is F<'a: unbound>, a generic binding, so what is written to it must be as general"),

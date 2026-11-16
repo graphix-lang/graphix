@@ -1,0 +1,31 @@
+// Title: examples-gui-warm-first-cycle-serial regressed differently: a kernel
+//   loop that meets an abstract value never forks, cold or warm, even under
+//   #[parallel] or GRAPHIX_PAR=force.
+// Command: GRAPHIX_DBG_PAR=1 timeout -s KILL 60 graphix --no-cache x-rerun-2-abstract-kernel-never-forks.gx
+//   (also with GRAPHIX_PAR=force; control: replace `C({r: ..})` by its `..`)
+// Expected: "PAR kernel loop: 7500 slots, 0 probed, N ranges" as the control
+//   prints (#[parallel] promises every fork point under it forks).
+// Observed: no "PAR kernel loop" line, and the loop runs serially (also the
+//   book's gui/mandelbrot example, whose loop builds gui::Color values: cold
+//   0.0145 s vs 0.0166 s with GRAPHIX_PAR=off; the 2026-10-26 cold run forked,
+//   0.0025 s). Core's `impl<'a> Cast for Transparent<'a>` makes
+//   coretraits::hooks_live true in every program, so FusedKernel::update runs
+//   every kernel whose meets_abstract is set under the value-hook loan, and
+//   par_loop::run never forks under a loan.
+type C = Abstract<{r: f64}>;
+let rec iterate = |zr: f64, zi: f64, cr: f64, ci: f64, i: i64| -> i64
+    select i {
+        0 => 0,
+        _ if zr * zr + zi * zi > 4.0 => i,
+        _ => iterate(zr * zr - zi * zi + cr, 2.0 * zr * zi + ci, cr, ci, i - 1)
+    };
+let start = cast<f64>(sys::time::now(once(null)))$;
+let xs = #[parallel] #[native] array::init(7500, |idx| {
+    let cr = -2.5 + cast<f64>(idx % 100)$ * 0.035;
+    let ci = -1.3 + cast<f64>(idx / 100)$ * 0.035;
+    C({r: cast<f64>(iterate(0.0, 0.0, cr, ci, 64))$})
+});
+let finish = cast<f64>(sys::time::now(xs))$;
+println("computed in [finish - start]s");
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+array::len(xs)

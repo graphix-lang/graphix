@@ -188,6 +188,15 @@ struct Params {
     fusion_stats: bool,
     /// do not execute the program, just veryify that it compiles and
     /// type checks.
+    // CR claude for claude: [doc-drift/medium] The help text says --check verifies that
+    // the program 'compiles and type checks', and --expand only 'check[s]' and prints.
+    // --check is the check alone (CFlag::CheckOnly, no elaboration and no fusion), so
+    // #[native], #[parallel], the definition assertions and elaboration refusals pass
+    // it; --expand is the build that refuses them. Say so in both helps, point --check
+    // at --expand for build-only refusals, and fix 'veryify'. CLAUDE.md's command block
+    // and the skill's 'Running and checking' need the same words. probe:
+    // design/review-2026-11-16/repro/x-doc-drift-check-passes-native-refusal.sh
+    // (x-doc-drift-02)
     #[arg(long = "check")]
     check: bool,
     /// check the program and print each seq's lowered machine
@@ -241,6 +250,21 @@ struct NetArgs {
 impl NetArgs {
     fn load(&self) -> Result<(Config, DesiredAuth)> {
         let cfg = match &self.config {
+            // CR claude for eric: [risk/medium] With no netidx config this falls back
+            // to netidx's local-only resolver. graphix binds 127.0.0.1:59200 and, when
+            // any process already holds the port, uses that process as its resolver
+            // with anonymous auth. When the bind succeeds, it re-executes itself as a
+            // resolver daemon that outlives the program. On a host with several users,
+            // whoever binds the port first resolves every other user's subscriptions,
+            // rpc calls and publications, and serves them `GRAPHIX_MODPATH=netidx:`
+            // modules and `graphix netidx:` scripts. Running any graphix program that
+            // touches sys::net once is enough to become that resolver. Decide the
+            // default: NetConfig::Internal (as --no-netidx) unless a config is found or
+            // a flag asks for the shared local resolver, or a resolver tied to the user
+            // (a socket or port file under XDG_RUNTIME_DIR). The book's netidx options
+            // section does not mention the fallback. probe:
+            // design/review-2026-11-16/repro/x-security-netidx-local-only.sh
+            // (x-security-01)
             None => Config::load_default_or_local_only(),
             Some(p) => Config::load(p),
         }

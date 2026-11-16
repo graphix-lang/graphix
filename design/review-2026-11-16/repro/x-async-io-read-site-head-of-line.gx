@@ -1,0 +1,24 @@
+// x-async-io: a read site whose stream argument changes never reads the new stream while the old stream's read is pending
+//
+// command: timeout -s KILL 30 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache design/review-2026-11-16/repro/x-async-io-read-site-head-of-line.gx
+//
+// The site reads stream a (its child never writes), then its argument
+// becomes stream b, whose data stands ready.
+//
+// expected: got=BBBB (as bytes) once the site is handed b
+// observed: no `got=` line at all: the read of b waits behind the read of a
+use sys::io::Read;
+let opts = |script| sys::process::options(
+  #stdio: sys::process::stdio(#stdout: `Pipe), #args: ["-c", script], "sh");
+// a never writes; b's data stands ready
+let a = sys::process::spawn(opts("sleep 20"))$.stdout$;
+let b = sys::process::spawn(opts("printf BBBB; sleep 20"))$.stdout$;
+let clk = sys::time::timer(duration:200.ms, 6);
+let n = 0;
+n <- clk ~ n + 1;
+let s = select n { 1 => n ~ a, 3 => n ~ b, _ => never() };
+let got = Read::read(s, u64:100);
+println("got=[got]");
+println("n=[n]");
+sys::exit(sys::time::after_idle(duration:500.ms, n ~ 0));
+got

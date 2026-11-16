@@ -59,6 +59,14 @@ fn check(path: &Path, quiet: bool, unchecked: bool) -> Result<Checked> {
         Err(e) if e.is::<Refused>() => return Err(e),
         Err(e) => return Ok(Checked::Unparsed(e)),
     };
+    // CR claude for claude: [bug/low] Given one file, `check` prints the formatted text
+    // and returns before the second pass. So the idempotence the doc promises for every
+    // file given is checked only when two or more files are given. The corpus harness
+    // run over a single file after a printer change reports a non-idempotent result as
+    // clean. Run the second pass in both cases and print `once` after it. Under
+    // `GXFMT_UNCHECKED`, no file's idempotence is checked, and a file that does not
+    // parse counts as bad among many where the checked path skips it. Found by reading;
+    // not run. (tests-shell-compiler-b-10)
     if !quiet {
         print!("{}", &*once);
         return Ok(Checked::Formatted);

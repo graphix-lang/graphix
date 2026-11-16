@@ -1,0 +1,28 @@
+// A struct literal keeps a field's old value when that field moved at a wake
+//
+// run:  /home/eric/tmp/review-2026-11-16/bin/graphix-fuzz check design/review-2026-11-16/repro/x-engine-firing-struct-field-moved.gx
+//       /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache --no-fusion <this file>
+//
+// `h` is a closure that left the arm; it reads the arm's `y`. `b` becomes 5
+// while the arm sleeps (cycles 2, 3); the arm wakes at cycle 4 and recomputes
+// `y` to 6, so `v = h(1000)` is 1006 from cycle 4 on, with no event
+// (Tag::MOVED). The tuple follows it; the struct literal does not.
+//
+// expected (the JIT prints this): ({f: 1006}, (1006, 0)) at cycles 4 and 5
+// observed, node-walk:            ({f: 1001}, (1006, 0)) at cycles 4 and 5
+// graphix-fuzz check: DIVERGENCE — fusion/JIT bug (interp != jit)
+{
+    let n = 0;
+    n <- select n { k if k < 5 => k + 1, _ => never() };
+    let b = 0;
+    b <- select n { 2 => 5, _ => never() };
+    let h = never();
+    select n % 4 < 2 {
+        true => { let y = b + 1; h <- once(|z: i64| z + y); y },
+        false => -1
+    };
+    let v = h(1000);
+    let s = {f: v};
+    let t = (v, 0);
+    n ~ (s, t)
+}

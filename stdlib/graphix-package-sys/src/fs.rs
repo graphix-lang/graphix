@@ -222,6 +222,31 @@ pub(crate) type ReadAllBin = CachedArgsAsync<ReadAllBinOp>;
 #[derive(Debug, Default)]
 pub(crate) struct WriteAllOp;
 
+// CR claude for claude: [bug/high] `WriteAllOp` and `WriteAllBinOp` keep the default
+// `CANCEL_SAFE = true`, but `tokio::fs::write` runs on a blocking thread that dropping
+// the future does not stop. The trait's own doc lists "work on a blocking thread" as
+// not cancel-safe. When the call's arm sleeps mid-write, the site answers nothing and
+// stops counting the call, but the write goes on. The site's next call after the wake
+// is not held behind it (`waits_on_old` sees no running call), so the stale write can
+// finish last and overwrite the newer one. Fix: `const CANCEL_SAFE: bool = false` on
+// `WriteAllOp` and `WriteAllBinOp`, and for the rule's sake on the other blocking fs
+// mutations (`RemoveFileOp`, `CreateDirOp`, `RemoveDirOp`). The sleep then lets the
+// write finish unanswered and the Fifo site's next call waits for it. Pin the
+// overtaking case. probe:
+// design/review-2026-11-16/repro/x-builtin-effects-write-all-sleep-race.gx (a 48 MB
+// write, an arm sleep, a wake and a 5-byte write leave the file 48 MB of zeros)
+// (x-builtin-effects-02)
+// CR claude for claude: [bug/high] WriteAllOp is cancel-safe by default, but tokio::fs
+// runs the write on the blocking pool, which an abort does not stop. When the arm
+// holding a write_all sleeps mid-write, the write goes on, and the woken site's next
+// call runs beside it instead of after it, so the stale write can land last. A 30 MB
+// write_all_bin cut off by a one-cycle sleep, followed by a write of "B" to the same
+// path, leaves the 30 MB on disk on every run (without the sleep: 1 byte).
+// WriteAllBinOp, RemoveFileOp and dir.rs's CreateDirOp and RemoveDirOp are the same
+// case. Fix: const CANCEL_SAFE: bool = false on these path operations that change the
+// filesystem. design/async_sleep_outputs.md already applies that rule to db and sqlite
+// work on a blocking thread; add these ops to its audit table. probe:
+// design/review-2026-11-16/repro/sys-io-write-all-lands-after-successor.sh (sys-io-01)
 impl EvalCachedAsync for WriteAllOp {
     type Args = (ArcStr, ArcStr);
 

@@ -1,0 +1,19 @@
+// Title: `Callee::Static`'s doc says a static call's first dispatch delivers
+//        its arguments fired and dispatches under View::Birth; it does not.
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache \
+//          design/review-2026-11-16/repro/x-doc-drift-static-first-dispatch-not-birth.gx
+//          (and again with --no-fusion)
+// Expected per the comment: the arm entered at n == 2 makes the call's first
+//   dispatch, `x` is delivered fired, `count(x)` gives 1 and "r=1" prints.
+// Observed (both engines): nothing prints but the final 0: the first dispatch
+//   is a body's entry (`ExecCtx::enter_body`), the standing argument fires
+//   nothing, as design/bind_driven_bodies.md section 2 says. The code is
+//   right; the comment is stale.
+let t = sys::time::timer(duration:50.ms, 3);
+let n = count(t);
+let c = 5;
+let f = |x| count(x);
+let r = select n { 2 => f(c), _ => never() };
+println("r=[r]");
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+0

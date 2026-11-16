@@ -124,6 +124,14 @@ pub fn clip_polyline(
 /// at its crossings of the view's bottom and top, its y then moved into
 /// the view. Each, filled down to the baseline clamped the same way, is
 /// exactly the visible part of the area under its run.
+// CR claude for claude: [readability/low] The doc says clip_area returns one outline
+// for each run clip_polyline would draw, and it does not. clip_area clips in x only, so
+// a line that leaves through the top and comes back is one outline here but two
+// polyline runs: pts [(1, 1), (5, 1e12), (9, 1)] in a 0..10 view give 1 and 2. Nothing
+// pairs the two results today, but the sentence invites it. Say what the function
+// returns: one outline per run of the line inside the view's x interval, cut where the
+// line crosses the view's bottom and top, with its y moved into the view. probe:
+// design/review-2026-11-16/repro/gui-chart-clip-area-runs.rs (gui-chart-05)
 pub fn clip_area(
     pts: &[(f64, f64)],
     view: View,

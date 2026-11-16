@@ -1218,6 +1218,22 @@ where
 
 /// A new slot's acc is delivered: the chain as it stands, fired. `disc`
 /// is the acc's carried disc; in a slot, its value delivered.
+// CR claude for eric: [bug/medium] A fold's new slot takes its accumulator fired
+// whether or not what feeds it fired. This function does it in kernels and
+// FoldQ::update's fresh-slot seed does it in the node-walk. So entering a body after
+// the program's birth, or waking one whose fold source grew while it slept, fires a
+// fold whose source and init both stand. A map over the same source stays quiet.
+// CLAUDE.md says entering a slot is not an event and a wake fires nothing for anyone.
+// design/bind_driven_bodies.md says a fold's accumulator fires when what feeds it fires
+// (the init for slot 0, the slot before it) and that a slot born at an outer wake is
+// quiet. design/kernel_instance_state.md says the opposite ("a fold's new slot takes
+// its accumulator as delivered"), and
+// graphix-fuzz/findings/review-fusion-oct2026/02_slot_birth_reads_standing.gx counts on
+// it. Rule which is intended. If bind-driven, seed the acc with the feeder's own tag in
+// both engines, delete this function and re-judge that pin. If delivered, write the
+// exception into bind_driven_bodies.md. probe:
+// design/review-2026-11-16/repro/f-scaffold-body-fold-new-slot-acc-fires.gx
+// (f-scaffold-body-01)
 fn deliver_acc_to_new_slot(cx: &mut BodyCx, disc: Variable) -> Option<ClifValue> {
     let s = cx.env.slot?;
     let d = cx.b.use_var(disc);

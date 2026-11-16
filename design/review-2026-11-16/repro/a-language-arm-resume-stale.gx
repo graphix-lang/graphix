@@ -1,0 +1,17 @@
+// a-language: a re-entered arm shows stale data through any event-consuming node, with no warning
+// command:  graphix --no-cache a-language-arm-resume-stale.gx
+// A tabbed view. Tab A shows `data` through `uniq`. The user leaves for tab B, `data` changes, the user returns.
+// expected by an author: "A shows 2" at tick 3
+// observed: "A shows 1 (plain read: 2)" at tick 3 and after, until `data` fires again.
+//           This is the rule as designed (a wake is a resume and delivers nothing); the check gives no warning.
+let tick = count(sys::time::timer(duration:30.ms, 4)$);
+let tab: [`A, `B] = `A;
+let data = 1;
+tab <- select tick { 1 => `B, 3 => `A, _ => never() };
+data <- select tick { 2 => 2, _ => never() };
+let view = select tab {
+  `A => "A shows [uniq(data)] (plain read: [data])",
+  `B => "B"
+};
+println("tick [tick] data=[data]: [view]");
+sys::exit(sys::time::after_idle(duration:200.ms, tick ~ 0))

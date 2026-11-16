@@ -85,6 +85,9 @@ let result = layout(&[child(
 /// A disabled handler steps aside: its child, nested handlers included,
 /// gets every event until it is enabled again (tests-tui-03, tui-core-07).
 #[tokio::test]
+// CR claude for claude: [style/low] The doc comment above ends with review finding ids,
+// (tests-tui-03, tui-core-07). That is history, which the comment rule forbids; delete
+// the parenthetical. Found by reading; not run. (tests-tui-07)
 async fn a_disabled_handler_steps_aside() -> Result<()> {
     let mut h = TuiTestHarness::new(
         r#"

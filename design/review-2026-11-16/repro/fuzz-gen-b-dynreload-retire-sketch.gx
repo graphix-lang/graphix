@@ -1,0 +1,19 @@
+// Sketch of the dyn_reload shape the generator never draws: a load that declares its
+// own type with a Display impl, a sig granting an outer binding (use super::lim), and
+// a function saved out of the module across reloads. It runs today and agrees in
+// every mode, so a template of this shape is a working subject for the 11-15
+// sandbox-and-retire code.
+// command: graphix-fuzz run fuzz-gen-b-dynreload-retire-sketch.gx
+// observed: every mode Trace([1:(5, 5)]; [0:(50, 5) 1:(50, 70)]; ...), AGREE
+// schedule-v1: cap=96 events=1024; in0=i64:1; in0=i64:2; in0=i64:3; in0=i64:4
+{
+  let lim = i64:10;
+  let srcs = [r#"type C = Abstract<i64>; impl Display for C { let fmt = |c| "C<[c.0]>" }; let f = |x: i64| -> i64 str::len("[C(x + lim)]")"#, r#"let f = |x: i64| -> i64 x * lim"#];
+  let st = mod dr0 dynamic { sig { use core; use str; use super::lim; val f: fn(x: i64) -> i64 }; source srcs[in0 % i64:2]$ };
+  let v = select st { error as e => i64:-1, null as _ => dr0::f(i64:5) };
+  let saved: fn(x: i64) -> i64 = never();
+  saved <- select st { error as _ => never(), null as _ => in0 ~ dr0::f };
+  let w = saved(i64:7);
+  println("[v] [w]");
+  (v, w)
+}

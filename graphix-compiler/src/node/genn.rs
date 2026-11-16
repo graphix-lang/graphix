@@ -94,6 +94,9 @@ pub fn apply_value<R: Rt>(
 }
 
 /// [`apply_value`], the function reporting `spec` as its source.
+// CR claude for claude: [dead/low] `apply_constant` has one caller, `apply_value`,
+// which passes `NOP` for `spec`: the function and its parameter are a layer nothing
+// uses. Fold it into `apply_value`. Found by reading; not run. (c-pattern-09)
 pub(crate) fn apply_constant<R: Rt>(
     f: Value,
     spec: Arc<Expr>,

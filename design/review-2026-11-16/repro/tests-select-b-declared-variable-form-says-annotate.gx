@@ -1,0 +1,11 @@
+// Title: a select's runtime-form refusal over a declared, bounded variable advises
+// "annotate it", which the author already did; the fix is variants or a narrower bound.
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache --check design/review-2026-11-16/repro/tests-select-b-declared-variable-form-says-annotate.gx
+// Expected: the same refusal the concrete type gets, e.g. for
+//   |x: [&i64, &string]| select x { &i64 as r => 1, _ => 2 }
+//   "this pattern can't tell &i64 from &string: both have the same runtime form; wrap them in distinct variants"
+// Observed: this pattern tests for &i64 among 'b: unbound within &string, but a type variable
+//   there isn't known here and may share &i64's runtime form: annotate it
+let f = 'b: &string |x: [&i64, 'b]| select x { &i64 as r => 1, _ => 2 };
+let s = "s";
+f(&s)

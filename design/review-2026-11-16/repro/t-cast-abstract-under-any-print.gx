@@ -1,0 +1,24 @@
+// An abstract value inside a composite typed Any prints its payload as a
+// top-level scalar: no numeric prefix, no bracket escapes.
+//
+// Command:
+//   /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache t-cast-abstract-under-any-print.gx
+//
+// Expected: each pair prints alike (the value is the same; data.md: printed
+// composites escape brackets in strings and keep numeric prefixes):
+//   [U(u8:3)] [U(u8:3)]
+//   [N("x\[y\]")] [N("x\[y\]")]
+//
+// Observed:
+//   [U(u8:3)] [U(3)]
+//   [N("x\[y\]")] [N("x[y]")]
+type U = Abstract<u8>;
+type N = Abstract<string>;
+let us = [U(u8:3)];
+let ua: Any = us;
+println("[us] [ua]");
+let ns = [N("x\[y\]")];
+let na: Any = ns;
+println("[ns] [na]");
+sys::exit(sys::time::after_idle(duration:200.ms, 0));
+0

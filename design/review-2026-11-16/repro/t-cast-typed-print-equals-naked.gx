@@ -1,0 +1,42 @@
+// The typed printer (TVal::fmt_inner) and the type-blind one
+// (fmt_naked_capped) print the same text for every composite form: each
+// value below prints alike at its static type and under Any.
+//
+// Command:
+//   /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache t-cast-typed-print-equals-naked.gx
+//
+// Observed: nine lines, each "<n> true: <typed> | <under Any>".
+// The two places they differ are defects of their own:
+// t-cast-abstract-under-any-print.gx and t-cast-function-prints-two-ways.gx.
+type R = [`Leaf(u8), `Node(R, R), `Nil];
+type P = Abstract<{x: f32, y: [i64, null]}>;
+let v1 = {a: u8:1, b: [1.5, 2.0], c: `X(1, "s\[t\]"), d: (decimal:1.50, f32:2.0, null), e: `Y};
+let v2 = [<(1, "a"), (2, "b")>];
+let v3 = {"k" => [u16:1], "j" => []};
+let v4: R = `Node(`Leaf(u8:1), `Node(`Nil, `Leaf(u8:2)));
+let v5: Array<[i64, string, Error<`E(string)>]> = [1, "x", error(`E("m\[n\]"))];
+let v6 = (datetime:"2020-01-01T00:00:00Z", duration:1.5s, bytes:AQID, true, 3.0, f32:3.0, z32:5, v64:7);
+let v7 = P({x: f32:1.0, y: null});
+let v8 = [P({x: f32:1.5, y: 2})];
+let v9: [Array<u8>, Array<string>] = [u8:1];
+let a1: Any = v1;
+let a2: Any = v2;
+let a3: Any = v3;
+let a4: Any = v4;
+let a5: Any = v5;
+let a6: Any = v6;
+let a7: Any = v7;
+let a8: Any = v8;
+let a9: Any = v9;
+let same = |n: i64, t: string, u: string| println("[n] [t == u]: [t] | [u]");
+same(1, "[v1]", "[a1]");
+same(2, "[v2]", "[a2]");
+same(3, "[v3]", "[a3]");
+same(4, "[v4]", "[a4]");
+same(5, "[v5]", "[a5]");
+same(6, "[v6]", "[a6]");
+same(7, "[v7]", "[a7]");
+same(8, "[v8]", "[a8]");
+same(9, "[v9]", "[a9]");
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+0

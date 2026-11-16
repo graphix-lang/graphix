@@ -1,0 +1,29 @@
+// A reader outside a woken arm fires when the reference it derefs was
+// retargeted quietly by the wake.
+//
+// run: graphix-fuzz run design/review-2026-11-16/repro/x-sleep-wake-deref-fires-on-quiet-retarget.gx
+//
+// Arm 0's `r` is `&b` when the arm falls asleep (n = 1) and `&a` when it
+// wakes (n = 3, `n` does not fire at clk 6). `h`, held outside the arm,
+// returns `r`. Each tick is (clk, sel, n, v, count(v), w).
+//
+// expected: `v` is 10 at clk 6 with no event: count(v) stays 2 and `w`
+// keeps 20 (the skill: "a `count` over it does not tick, a `<-` from it
+// does not write").
+// observed, both engines: 7:(6, 0, 3, 10, 3, 20) 8:(7, 0, 4, 20, 4, 10).
+{
+  let clk = array::iter(array::init(10, |i| i));
+  let n = 0;
+  n <- filter(clk, |c| c % 2 == 0) ~ (n + 1);
+  let sel = 0;
+  sel <- filter(clk, |c| c % 4 == 1) ~ (1 - sel);
+  let a = 10;
+  let b = 20;
+  let g = select sel { 0 => { let r = select n % 3 { 0 => &a, _ => &b }; |z: i64| r }, _ => |z: i64| &a };
+  let h = once(g);
+  let r2 = h(1);
+  let v = *r2;
+  let w = 0;
+  w <- v;
+  clk ~ (clk, sel, n, v, count(v), w)
+}

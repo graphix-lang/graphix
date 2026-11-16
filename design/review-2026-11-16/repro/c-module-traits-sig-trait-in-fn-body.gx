@@ -1,0 +1,22 @@
+// A dynamic module in a function body whose sig declares a trait passes the
+// check, and no source can ever load: the load splices the sig's trait into
+// the body, where `Trait::compile` refuses a trait in a function body.
+//
+// command:  graphix --check c-module-traits-sig-trait-in-fn-body.gx        (exit 0)
+//           timeout -s KILL 10 graphix --no-cache c-module-traits-sig-trait-in-fn-body.gx
+// expected: the check refuses the module statement, as it refuses a sig
+//           `impl` there ("impl .. is in a function body") and as a static
+//           module's interface is refused at the check for the same trait
+// observed: the check accepts; the run prints
+//           error:`DynamicLoadError("compile error at: line: 16, column: 11 .., in: trait Sh { val sh: fn(self) -> i64 }
+//             Caused by: trait Sh is in a function body; a trait is declared once, outside every function")
+//           for a source that never mentions the trait
+let f = |x: i64| {
+  let st = mod m dynamic {
+    sig { trait Sh { val sh: fn(self) -> i64 }; val v: i64 };
+    source "let v = 1"
+  };
+  select st { error as e => dbg(e), null as _ => x + m::v }
+};
+sys::exit(sys::time::after_idle(duration:300.ms, 0));
+f(1)

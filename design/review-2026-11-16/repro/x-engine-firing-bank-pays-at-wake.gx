@@ -1,0 +1,39 @@
+// A banked `~` inside an arm pays at the arm's wake when its argument
+// arrived while the arm slept: a fire at a wake, in both engines
+//
+// run:  /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache <this file>
+//       /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache --no-fusion <this file>
+//       (graphix-fuzz check says AGREE: both engines do it)
+//
+// The arm runs at n = 0, 1, sleeps at n = 2, 3 and wakes at n = 4. `go`
+// fires once, at n = 0, and finds `v` absent: the sample banks it. `v`
+// arrives at cycle 3, while the arm sleeps. At the wake nothing the sample
+// reads fires (`go` is stale, `v` is stale), yet it pays: the count ticks
+// and the connect writes 42.
+//
+// CLAUDE.md: a wake fires nothing for anyone; nothing is kept for a body
+// that does not run. design/organic_firing.md: "A sample keeps its bank
+// through an arm's sleep" (it does not say the wake pays it).
+//
+// rows: (n one cycle back, count(t), written w)
+// if a wake fires nothing:  (4, 0, -1) and on
+// observed, both engines:   (4, 1, 42) and on
+{
+    let n = 0;
+    n <- select n { k if k < 6 => k + 1, _ => never() };
+    let go = once(n);
+    let v = never<i64>();
+    v <- select n { 2 => 42, _ => never() };
+    let ct = 0; let w = -1;
+    select n % 4 < 2 {
+        true => {
+            let t = go ~ v;
+            ct <- count(t);
+            w <- t;
+            0
+        },
+        false => -1
+    };
+    let ln = -1; ln <- n;
+    (ln, ct, w)
+}

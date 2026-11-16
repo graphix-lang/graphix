@@ -1,0 +1,24 @@
+// A woken iterq (and queue) re-delivers its last element at the wake.
+// Command: timeout -s KILL 30 graphix --no-cache tests-lang-rest-d-iterq-wake-redelivers.gx
+// Expected (each element delivered once; design/async_sleep_outputs.md: a
+// kept event "would be re-raised as if it were new" when a select re-enters
+// the arm; iter clears its output for that reason):
+//   [10, 11, -1, 12, 13]
+// Observed: [10, 11, -1, 11, 12, 13] -- 11 is delivered again at the wake and
+// counted by `seen`. Replace the arm with `queue(#clock: clk, src)` where
+// `let src = array::iter([10, 11, 12, 13])` sits above `on`: same duplicate.
+// With `on <- select out { 11 => false, -1 => true, _ => never() }` (the
+// shape of iter_reentry_emits_no_old_element) the duplicate re-sleeps the
+// arm every other cycle and the program never settles.
+let on = true;
+let clk = 0;
+let out = select on { true => array::iterq(#clock: clk, [10, 11, 12, 13]), false => -1 };
+clk <- out ~ clk + 1;
+let seen = 0;
+seen <- out ~ seen + 1;
+on <- select seen { 2 => false, 3 => true, _ => never() };
+let log = [];
+log <- out ~ array::push(log, out);
+let tm = sys::time::after_idle(duration:300.ms, log);
+sys::exit(tm ~ 0);
+tm

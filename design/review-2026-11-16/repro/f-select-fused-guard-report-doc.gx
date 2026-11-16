@@ -1,0 +1,19 @@
+// f-select: SKILL.md says "Inside fused code a guard whose operand does not
+// read its arm's binds also reports where its pattern does not admit the
+// value". A kernel now runs a guard only where its arm admits the value
+// (emit_select_arms' prologue branches around it), so it does not.
+//
+// Command: graphix --no-cache f-select-fused-guard-report-doc.gx
+// Expected per SKILL.md: errs counts the raise at n = 2 (x = 2, d = 0), where
+//           the guard's pattern `1` does not admit 2, as well as at n = 4.
+// Observed: (n, r, errs) prints (2, 20, 0) and errs first reaches 1 after
+//           n = 4 (x = 1, d = 0), the same as --no-fusion; g is #[native].
+let n = 0;
+n <- select n { k if k < 8 => k + 1, _ => never() };
+let errs = 0;
+let r = {
+  catch(e) errs <- e ~ errs + 1;
+  let g = |x: i64, d: i64| #[native] select x { 1 if (10 /? d)? > 0 => 1, k => k * 10 };
+  g(n % 3, n % 2)
+};
+(n, r, errs)

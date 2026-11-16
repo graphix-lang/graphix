@@ -1,0 +1,19 @@
+// array_fold_midchain_fire's predicate is a lower bound: an extra fold fire passes it
+//
+// run:      graphix --no-cache tests-lib-a-fold-midchain-lower-bound.gx
+// This is ARRAY_FOLD_MIDCHAIN_FIRE (stdlib/graphix-tests/src/lib_tests/array.rs) with one
+// more init fire (array::iter over five elements): the fold fires 6 times, not 5, so
+// the cadence differs, yet the fixture's value -- the first update of
+// `filter(c, |n| n == 5)` -- is still 5 and its predicate passes.
+// expected (for a cadence pin): a value that tells 5 fires from 6
+// observed: (5, 6) -- the filter the fixture judges answers 5 while the fold fired 6 times
+let x = array::iter([1, 2, 3, 4, 5]);
+let evens: Array<i64> = array::fold([1, 2], [x], |acc, v| select v % 2 {
+  0 => [0],
+  _ => acc
+});
+let c = 0;
+c <- evens ~ c + 1;
+let total = sys::time::after_idle(duration:100.ms, c) ~ c;
+sys::exit(total ~ 0);
+(filter(c, |n| n == 5), total)

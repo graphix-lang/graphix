@@ -75,6 +75,14 @@ fn fc_is_empty(args: &[Value]) -> Option<Value> {
 
 graphix_package_core::fast_builtin!(IsEmpty, IsEmptyEv, "list_is_empty", fc_is_empty);
 
+// CR claude for claude: [perf/low] fc_nth and fc_drop clone every tail they pass, an
+// atomic refcount increment and decrement per cell, and repeat the same loop. Every
+// other walk in this file goes through ListIter, which clones each tail too.
+// graphix_types::list::heads walks by reference: nth is heads(&args[0]).nth(n as
+// usize).cloned(), drop is a borrowed walk that clones once at the end, and reverse,
+// take, to_array_rev, concat, flatten, sort, enumerate, zip and unzip can take
+// heads(list).cloned() in place of ListIter::new(list.clone()). Found by reading; not
+// run. (collections-str-03)
 fn fc_nth(args: &[Value]) -> Option<Value> {
     let list = &args[0];
     let n = match &args[1] {

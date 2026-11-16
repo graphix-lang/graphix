@@ -43,6 +43,14 @@ let handle_normal_mode_key = |e: KeyCode| -> [`Stop, `Continue] select e {
     e@ `Down => { cursor <- e ~ `Down(1); `Stop },
     e@ `Up => { cursor <- e ~ `Up(1); `Stop },
     e@ `Enter => { path <- (e ~ selected_row)$; `Stop },
+    // CR claude for claude: [readability/low] This arm is a hand-written null ladder.
+    // Both arms answer `Stop and the second only writes its bind, so it is `{ path <-
+    // (e ~ str::dirname(path))$; `Stop }`, the shape the Enter arm above already uses,
+    // and the skill names this ladder as one never to write. The `-> [`Stop,
+    // `Continue]` on handle_normal_mode_key and handle_command_mode_key is not asked
+    // for by the check either (only `|e: KeyCode|` is). The shorter arm, without those
+    // annotations, checks under -W error and behaves the same when driven in a terminal
+    // (Backspace goes up a level and does nothing at the root). (examples-tui-06)
     e@ `Backspace => select e ~ str::dirname(path) {
         null as _ => `Stop,
         s => {

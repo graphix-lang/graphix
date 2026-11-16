@@ -1,0 +1,15 @@
+// A field read over a union of structs never fuses; #[native] refuses it
+// Command: graphix --no-cache <this file>
+// Expected: 6 (the union's members both hold `a`, at the same sorted
+//   position; the same program over the one member type {a: i64, c: string}
+//   fuses and prints 6).
+// Observed: the build refuses:
+//   #[native] expression did not fully fuse to native code:
+//   - emit_clif: accessor source of type [{ a: i64, b: i64 }, { a: i64, c: string }] isn't Struct
+// graphix-fuzz run shows the same blocker for `.0` over [(i64, i64), (i64, string, i64)]
+// ("isn't Tuple"), over [Error<`A(i64)>, Error<`B(i64)>] ("isn't Tuple"), and for
+// `{s with b: 3}` over a union of structs ("struct-with source isn't a struct").
+let g = |s: [{a: i64, b: i64}, {a: i64, c: string}]| #[native] (s.a + 1);
+let y: [{a: i64, b: i64}, {a: i64, c: string}] = {a: 5, c: "z"};
+sys::exit(sys::time::after_idle(duration:100.ms, 0));
+g(y)

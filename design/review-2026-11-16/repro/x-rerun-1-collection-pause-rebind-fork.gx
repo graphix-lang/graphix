@@ -1,0 +1,36 @@
+// Title: a collection callback rebound while its source is bottom keeps the
+//   old slots' fork verdict, so forked slots call an ORDERED queuefn out of
+//   order (c-collection-03, still reproduces).
+// Command (run each, force several times):
+//   GRAPHIX_PAR=off   timeout -s KILL 30 graphix --no-cache x-rerun-1-collection-pause-rebind-fork.gx
+//   GRAPHIX_PAR=force timeout -s KILL 30 graphix --no-cache x-rerun-1-collection-pause-rebind-fork.gx
+// Expected (what off prints): (502, null, [502, 503, ..., 507, 600, 601, ...])
+// Observed under force: a different order each run, e.g.
+//   (507, 0, [507, 500, 502, 505, 503, 501, 607, 606, ...])
+// `f` turns from g1 (pure) to g2 (calls the queuefn) at n = 3 while `src` is
+// bottom (n = 3, 4): MapQ::update returns before update_slots, so `rebound`
+// is false when the slots next run and SlotSite::redecide never runs.
+// Without the bottom window (src = array::init(8, |j| j + 100 * n)) force
+// agrees with off.
+{
+    let clk = sys::time::timer(duration:1.ms, true);
+    let n = 0;
+    n <- clk ~ n + 1;
+    let got: Array<i64> = [];
+    let pop = clk ~! select n { k if k >= 3 => true, _ => never() };
+    let q = queuefn(#trigger: pop, |x: i64| -> i64 { got <- x ~ array::push(got, x); x });
+    let g1 = |x: i64| -> i64 x;
+    let g2 = |x: i64| -> i64 q(x);
+    let f = select uniq(n < 3) { true => g1, false => g2 };
+    let src = select n { k if (k >= 3) && (k < 5) => never(), k => array::init(8, |j| j + 100 * k) };
+    let r = array::map(src, f);
+    sys::exit(select n { k if k > 30 => 0, _ => never() });
+    select n {
+        k if k > 20 => (
+            got[0]$,
+            array::find(array::init(9, |j| j), |j| got[j + 1]$ < got[j]$),
+            got
+        ),
+        _ => never()
+    }
+}

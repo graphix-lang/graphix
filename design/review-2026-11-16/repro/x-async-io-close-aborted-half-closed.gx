@@ -1,0 +1,31 @@
+// x-async-io: a close aborted by its arm's sleep leaves the stream half closed
+//
+// command (nondeterministic, about half the runs show it):
+//   for i in $(seq 1 25); do timeout -s KILL 20 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache design/review-2026-11-16/repro/x-async-io-close-aborted-half-closed.gx 2>/dev/null | tr '\n' '|'; echo; done | sort | uniq -c
+//
+// The client has a line reader waiting, so the close waits a moment for
+// the read half; the arm that issued the close sleeps in the next cycle.
+//
+// expected, every run: the peer reads end of stream
+//   server read: bytes:==
+// observed, 13 runs of 25: the peer never reads end of stream, and the
+// client handle is neither closed nor usable:
+//   client lines after: error:`IOError("read failed: broken pipe")
+use sys::io::{Read, Lines, Close};
+let listener = sys::tcp::listen("127.0.0.1:0")?;
+let addr = sys::tcp::listener_addr(listener)?;
+let client = sys::tcp::connect(listener ~ addr)?;
+let server = sys::tcp::accept(listener, client)?;
+// the client has a line reader waiting on its peer
+let l = Lines::lines(client);
+let go = sys::time::after_idle(duration:100.ms, server ~ 1);
+let mode = true;
+mode <- go ~ false;
+// the close is issued in the cycle before its arm sleeps
+let closed = select mode { true => Close::close(go ~ client), false => never() };
+let eof = Read::read(server, u64:10);
+println("server read: [eof]");
+let again = Lines::lines(sys::time::after_idle(duration:300.ms, client));
+println("client lines after: [again]");
+sys::exit(sys::time::after_idle(duration:600.ms, server ~ 0));
+closed

@@ -8,6 +8,13 @@ use std::{
     path::{Path, PathBuf},
 };
 
+// CR claude for claude: [structure/low] These fields repeat Command::Fmt in main.rs,
+// which copies them across one by one. The `--interface` flag that both declare ('stdin
+// is an interface') is accepted beside FILES and silently ignored: `graphix fmt
+// --interface --stdout iface.gx` parses the file as a program and fails. Fix: derive
+// clap::Args here, make the subcommand `Fmt(fmt::Args)`, drop the copy, and give
+// `interface` `conflicts_with = "files"`. probe:
+// design/review-2026-11-16/repro/x-formatter-interface-flag-ignored.sh (x-formatter-05)
 pub struct Args {
     pub files: Vec<PathBuf>,
     pub check: bool,
@@ -65,6 +72,16 @@ pub fn run(args: Args) -> Result<()> {
                 return Ok(false);
             }
             let changed = *formatted != text;
+            // CR claude for eric: [bug/low] Persisting a temp file over the path
+            // replaces a file its user made read-only: a rename needs only the
+            // directory, so a 0444 file is rewritten where a plain write would be
+            // refused. It also cuts every hard link: the other names keep the old text,
+            // so 'a link stays a link' holds only for symlinks. Fix: refuse a read-only
+            // file as fs::write would, and write in place (or refuse) when the file has
+            // more than one link; or rule that the atomic replace wins and say so in
+            // the help. probe:
+            // design/review-2026-11-16/repro/x-formatter-readonly-hardlink.sh
+            // (x-formatter-03)
             if changed && !args.check {
                 // the whole file or the old one, and a link stays a link; the
                 // temporary is a fresh file of the formatting user's alone

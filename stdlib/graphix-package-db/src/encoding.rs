@@ -25,6 +25,25 @@ pub(crate) static ENCODE_MANY_POOL: LazyLock<Pool<Vec<GPooled<Vec<u8>>>>> =
 const MAX_DEPTH: usize = 64;
 
 /// `v` stored with its tuple, struct, variant and list kinds preserved.
+// CR claude for claude: [bug/medium] A value is stored at any nesting depth, and a
+// typed read refuses data nested deeper than typ::cast::MAX_DATA_DEPTH (1024):
+// db::insert commits a 1100-deep value that db::get then answers with "can't cast .. no
+// member admits it", for good. pack::write_bytes (fc_write_bytes) has the same gap, and
+// its walk of a 1.5 million deep value exhausts 6 GB. The JSON and TOML writers and db
+// keys refuse at write what their reader cannot read. Refuse a value deeper than
+// MAX_DATA_DEPTH here and in to_marked_data's walk, counting levels as cast_int does,
+// pin 1024 and 1025, and let the union cast name the depth. probe:
+// design/review-2026-11-16/repro/x-unsafe-pack-write-deeper-than-read.gx and
+// x-unsafe-db-value-deeper-than-read.gx (x-unsafe-01)
+// CR claude for claude: [bug/medium] small-pkgs-09 variant: nothing here bounds a
+// stored value's nesting, but db::get reads it back through a cast that refuses data
+// nested past typ::cast::MAX_DATA_DEPTH (1024). So db::insert of a 1100-element user
+// cons list (`type L = [`Cons(i64, L), `Nil]`) is acknowledged, and every later get of
+// the key fails with DbErr. pack::write_bytes (fc_write_bytes) has the same gap against
+// pack::read. Refuse a value nested MAX_DATA_DEPTH or deeper at write, sharing the
+// cast's constant, as json::write refuses its 128th container. probe:
+// design/review-2026-11-16/repro/x-rerun-6-pack-db-deep-write-unreadable.gx
+// (x-rerun-6-03)
 pub(crate) fn encode_value(v: &Value) -> Result<GPooled<Vec<u8>>> {
     let mut buf = ENCODE_POOL.take();
     buf.reserve(v.encoded_len());
@@ -100,6 +119,17 @@ pub(crate) fn decode_key(key_typ: Option<Typ>, mut data: &[u8]) -> Result<Value>
     Ok(v)
 }
 
+// CR claude for claude: [bug/high] A tagged key's type byte is the Typ bit position,
+// which puts decimal after bool, null, the abstract markers, duration and datetime, but
+// the language orders every number, decimal included, before every other kind
+// (netidx-value kind_cmp). So a tree keyed by [decimal, null], or a struct key with an
+// optional decimal field, holds null first: cursors, first/last, pop_min/pop_max,
+// get_lt/get_gt and cursor::range disagree with `<` and array::sort, against mod.gxi's
+// 'Keys are kept in the language's order'. Fix: tag through an order table that puts
+// every numeric type (decimal included) before bool, null and the rest, decode through
+// the same table, and bump META_VERSION. probe:
+// design/review-2026-11-16/repro/http-sqlite-db1-decimal-key-order.gx
+// (http-sqlite-db1-01)
 fn tag(t: Typ) -> u8 {
     (t as u64).trailing_zeros() as u8
 }
@@ -360,6 +390,15 @@ fn read_payload(t: Typ, data: &mut &[u8], depth: usize) -> Result<Value> {
             Value::Duration(Arc::new(Duration::new(secs, nanos)))
         }
         Typ::Error => Value::Error(ValError::new(read_tagged(data, depth + 1)?)),
+        // CR claude for claude: [structure/low] This decoder rebuilds composites by
+        // layout, which only rep.rs and list.rs may know. A run whose first element is
+        // the List marker becomes a list, any other run becomes an array kept with
+        // whatever marker it starts with, and Typ::Abstract below decodes a bare marker
+        // at any position. Values are read through rep::decode_marked_data, which
+        // admits markers only in well-formed composites, but keys from a damaged or
+        // imported tree skip that check. Factor decode_marked_data's validation walk
+        // into one rep function that both call, and run it over each decoded key. Found
+        // by reading; not run. (t-rep-06)
         Typ::Array => {
             let mut elts: LPooled<Vec<Value>> = LPooled::take();
             while take::<1>(data)?[0] != 0 {
@@ -541,6 +580,18 @@ mod test {
         let vs = values();
         for a in &vs {
             for b in &vs {
+                // CR claude for claude: [test-gap/medium] For two keys of different
+                // types this expects Typ's order, which is the encoding's own rule
+                // rather than the language's, so the test cannot fail when the two
+                // differ: values() mixes decimal with null and bool, and it passes
+                // while a [decimal, null] tree misorders. Compare with a.cmp(b) for
+                // every pair one key type can hold (skip only pairs of two different
+                // numeric types, which Ordered refuses), and add a struct key with a
+                // [decimal, null] field. Drop the doc comment's 'the db's documented
+                // byte order': mod.gxi documents the language's order. Found by
+                // reading; the bug it misses is probe:
+                // design/review-2026-11-16/repro/http-sqlite-db1-decimal-key-order.gx
+                // (http-sqlite-db1-02)
                 let want = match Typ::get(a) == Typ::get(b) {
                     true => a.cmp(b),
                     false => Typ::get(a).cmp(&Typ::get(b)),

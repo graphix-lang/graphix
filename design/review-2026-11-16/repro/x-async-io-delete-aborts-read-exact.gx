@@ -1,0 +1,26 @@
+// x-async-io: a read_exact aborted by its site's delete loses the bytes it had consumed
+//
+// command: timeout -s KILL 30 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache design/review-2026-11-16/repro/x-async-io-delete-aborts-read-exact.gx
+//
+// The slot's read_exact(out, 10) has taken AAAA when the slot is deleted
+// (the array shrinks); the stream lives on and is read again later.
+// A sleep in the same place lets the read finish and gives its bytes back
+// (lib_tests::tcp::tcp_read_across_sleep).
+//
+// expected: later read: AAAABBBBBB
+// observed: later read: BBBBBB
+use sys::io::Read;
+let opts = sys::process::options(
+  #stdio: sys::process::stdio(#stdout: `Pipe),
+  #args: ["-c", "printf AAAA; sleep 0.6; printf BBBBBB; sleep 2"], "sh");
+let out = sys::process::spawn(opts)$.stdout$;
+let xs = [1];
+xs <- sys::time::after_idle(duration:300.ms, out ~ array::filter(xs, |x| x > 1));
+// the slot's read_exact holds AAAA when the slot is deleted
+let rs = array::map(xs, |x| Read::read_exact(out, u64:10));
+println("slots: [rs]");
+let later = sys::time::after_idle(duration:1200.ms, out);
+let got = buffer::to_string_lossy(Read::read(later, u64:100)$);
+println("later read: [got]");
+sys::exit(sys::time::after_idle(duration:1800.ms, out ~ 0));
+got

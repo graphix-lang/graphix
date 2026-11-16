@@ -1,0 +1,10 @@
+// Title: a destructuring let of the wrong shape prints its pattern as a type of fresh cells
+// Command: graphix --check design/review-2026-11-16/repro/x-diagnostics-destructure-match-error.gx
+// Expected: the refusal names the pattern as written: "the pattern (a, b) cannot bind a value
+//   of (i64, i64, i64)" (a tuple of 3 against a pattern of 2).
+// Observed: "match error (i64, i64, i64) can't be matched by ('_8145: unbound, '_8146: unbound)".
+//   A seq trigger pattern (`seq let (a, b) = go { a }`) is refused the same way, at the seq's
+//   first column, with that frame printed twice.
+let p = (1, 2, 3);
+let (a, b) = p;
+a

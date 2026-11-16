@@ -1,0 +1,32 @@
+// Title: GRAPHIX_TASK_AUDIT reports a foreign write for every request a
+// server's handler takes when the handler raises.
+//
+// Command:
+//   GRAPHIX_TASK_AUDIT=1 graphix --no-cache --no-fusion \
+//     x-parallel-task-audit-relay-foreign-write.gx 2>&1 | grep -c FOREIGN-WRITE
+//
+// Expected: 0. Each request's bind writes only cells its own request made.
+// Observed: 4, one per request, under GRAPHIX_PAR=off as under force:
+//   FOREIGN-WRITE by task N to a cell of task 0
+//     tvar::decided_as <- TVar::write_binding <- node::error::join_raised
+//     <- Qop::typecheck0_instance <- .. <- CallSite::build_bound
+//     <- CallSite::prebind <- branch::fork_instances <- HttpServe::update
+// The cell is the request's own `ErrorRelay` bind, made by `ErrorRelay::new`
+// in `Handler::update` outside every compile task, so it belongs to task 0
+// and the instance's bind, a task of its own, is told it wrote a cell of an
+// earlier task.
+let handler = |req: http::Request| -> http::Reply {
+  let bad = select str::len(req.path) % 2 { 0 => error(req ~ `Bad(req.path))?, _ => 0 };
+  req ~ { body: "ok [bad]", headers: [], status: u16:200 }
+};
+let errs: Array<string> = [];
+let server = {
+  catch(e) errs <- e ~ array::push(errs, "[e.0.error]");
+  http::serve(#addr: "127.0.0.1:0", #handler: handler)$
+};
+let addr = http::server_addr(server);
+let client = http::default_client(server)$;
+let rs = array::init(4, |i| http::request(client, "http://[addr]/[str::join(#sep: "", array::init(i + 1, |j| "x"))]"));
+let codes = array::map(rs, |r| select r { error as _ => u16:0, v => v.status });
+sys::exit(sys::time::after_idle(duration:1000.ms, codes) ~ 0);
+codes

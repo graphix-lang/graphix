@@ -149,6 +149,15 @@ fn kernels_moved_every_cycle_compute_the_same() {
 #[test]
 fn tree_recursion_moved_every_cycle_computes_the_same() {
     let dir = tempfile::tempdir().expect("tempdir");
+    // CR claude for claude: [test-gap/low] This relocation pin checks one value: `r` at
+    // n = 33, which is f(1), the shallowest call. The deep cycles, where the slot-root
+    // chains are longest (f(7) = 54 at n = 7, 15, 23 and 31), are never compared, so a
+    // move that corrupted them and recovered by n = 33 would pass.
+    // `kernels_moved_every_cycle_compute_the_same` also checks only n = 33. Compare
+    // every cycle against a table: `select (n, r == expect[n % 8]$) { (_, false) => 1,
+    // (33, true) => 0, _ => never() }` passes today with fusion and without. probe:
+    // design/review-2026-11-16/repro/tests-shell-compiler-a-arena-every-cycle.gx
+    // (tests-shell-compiler-a-05)
     let program = "let clock = sys::time::timer(duration:1.ms, true);\n\
          let n = 0;\n\
          n <- clock ~ n + 1;\n\

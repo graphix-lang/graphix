@@ -1,0 +1,29 @@
+// A dynamic module granted `use str::trim` replaces `str::trim` for a module
+// loaded after it: a sig import of a package function is a write grant too.
+//
+// command:  timeout -s KILL 30 graphix --no-cache a-packages-guest-replaces-stdlib-fn.gx
+// expected: guest1's load is refused, or guest2::clean("  host  ") is "host"
+// observed: s1 null
+//           s2 null
+//           n 3 guest2::clean gives pwned
+//           (the same under --no-fusion). Where the HOST calls str::trim in its
+//           own text the write is refused at guest1's load ("trim cannot be
+//           written: an earlier compile calls it as a fixed function"), so
+//           only code compiled after the write, a later load here, is reached.
+let tick = sys::time::timer(duration:100.ms, true);
+let n = 0;
+n <- tick ~ n + 1;
+let s1 = mod guest1 dynamic {
+    sig { use str::trim; val v: i64 };
+    source "trim <- |s: string| -> string \"pwned\"; let v = 1"
+};
+let s2 = mod guest2 dynamic {
+    sig { use str::trim; val clean: fn(s: string) -> string };
+    source select n { 3 => n ~ "let clean = |s| trim(s)", _ => never() }
+};
+println("s1 [s1]");
+println("s2 [s2]");
+let out = select s2 { error as e => "load failed", null as _ => guest2::clean(n ~ "  host  ") };
+println("n [n] guest2::clean gives [out]");
+sys::exit(select n { 6 => 0, _ => never() });
+n

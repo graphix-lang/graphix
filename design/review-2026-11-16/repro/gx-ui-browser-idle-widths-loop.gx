@@ -1,0 +1,24 @@
+// Title: an idle tui::browser in Table mode recomputes its window every second forever (content_widths self-loop)
+// Command: timeout -s KILL 12 graphix -n --no-cache gx-ui-browser-idle-widths-loop.gx | tail -2
+// Expected: with no input and no value changes, the table's widths settle: wf stays at 1 or 2.
+// Observed: "1 1 13 1" after 12 s: *t.widths fires once a second. content_widths <- fold(throttle(1s, cells))
+//   re-fires name_width -> window -> first_col -> cells (in_order(first_col, ..)) -> throttle -> content_widths.
+use tui::{Tui, browser::browser};
+let names = ["a", "b", "c"];
+let pubs = array::map(names, |c| [sys::net::publish("/local/idle/row0/[c]", 1), sys::net::publish("/local/idle/row1/[c]", 2)]);
+let listed = sys::net::list_table("/local/idle")$;
+let path: string = never();
+path <- select (array::len(listed.rows), array::len(listed.columns)) {
+  l@ (2, 3) => l ~ "/local/idle",
+  _ => never()
+};
+let b: Tui = browser(#rate: duration:10.ms, #size: {width: 60, height: 6}, path);
+let fires = 0;
+fires <- b ~ fires + 1;
+let rows_fires = 0;
+rows_fires <- select b { `Table(t) => (*t.rows) ~ rows_fires + 1, _ => never() };
+let wf = 0;
+wf <- select b { `Table(t) => (*t.widths) ~ wf + 1, _ => never() };
+let hf = 0;
+hf <- select b { `Table(t) => (*t.header) ~ hf + 1, _ => never() };
+"[fires] [rows_fires] [wf] [hf]"

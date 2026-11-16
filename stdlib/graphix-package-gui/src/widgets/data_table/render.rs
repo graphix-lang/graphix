@@ -516,6 +516,18 @@ impl<X: GXExt> DataTableW<X> {
             )
             .on_key_press(move |key, _, _, _| {
                 let action = match key {
+                    // CR claude for claude: [bug/medium] Escape is mapped, and so
+                    // captured through keys_first, even when no edit is open, where
+                    // handle_table_key does nothing with it. Enter is captured with no
+                    // #on_activate, and Space on a cell that is not editable, so an
+                    // enclosing keyboard_area's Escape or Enter shortcut is dead while
+                    // the table has focus, which it has after any click on it. Return
+                    // None for Escape when `!editing` and for Enter when on_activate is
+                    // None, and pin it with an outer keyboard_area test. Found by
+                    // reading; not run (needs a display). Witness, which `graphix
+                    // --check` passes:
+                    // design/review-2026-11-16/repro/gui-datatable-escape-swallowed.gx
+                    // Also reported as (book-ui-b-04). (gui-datatable-04)
                     Key::Named(Named::Escape) => TableKeyAction::Escape,
                     _ if editing => return None,
                     Key::Named(Named::ArrowUp) => TableKeyAction::Up,

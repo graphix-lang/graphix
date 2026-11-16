@@ -517,6 +517,18 @@ run!(
 // settles open, at the definition when the definition owns the cell (a
 // function never called included), at each call when the signature
 // carries it.
+// CR claude for claude: [test-gap/low] This loop and nine like it in this file repeat
+// the match that unsound_acceptances::refused holds, and they hold less than run! does.
+// The nine are function_bounds_admit_only_functions, a_signature_types_its_calls,
+// recursive_fn_tail_rejected_at_every_depth, comparison_operands_are_one_type,
+// ordering_refuses_two_numeric_types, ordering_refuses_an_open_member_beside_a_number,
+// arithmetic_operands_are_one_type, discernible_refuses_one_runtime_form and
+// singleton_open_members_merge. eval_modes keeps only the build's message, so the
+// check's refusal (what --check and the language server show) is never held to the
+// phrase, and the first failing source hides the rest. Write each source as its own
+// run!(name, src, refused(phrase); FuseExpect::None), and the accepted ones with
+// is(..). Found by reading; the check's messages for all 39 sources contain their
+// phrases today. (tests-types-a-04)
 #[tokio::test(flavor = "current_thread")]
 async fn concrete_targets_are_known_where_they_settle() -> Result<()> {
     for src in [
@@ -3099,6 +3111,14 @@ mod unsound_acceptances {
         CONJUNCT_RIGID_TRAIT => "does not contain [i64, 'a",
         NO_ERROR_OPEN_MEMBER => "does not contain Error<",
         ABSTRACT_PATTERN_OVER_A_UNION => "patterns can't match",
+        // CR claude for claude: [test-gap/low] This phrase is also what the same
+        // program gives without rigidity. With 'a decided as string in the body, `m(1,
+        // |x| x * 2)` is refused at the call with "string does not contain i64", so the
+        // case passes whether or not a parameter's variable stays rigid through a
+        // callback's parameter type. Pin "'a: unbound does not contain string", and add
+        // a call only rigidity refuses, `m("s", |x| str::len(x))`. probe:
+        // design/review-2026-11-16/repro/tests-types-a-rigid-param-call-vacuous.sh
+        // (tests-types-a-03)
         RIGID_PARAM_CALL => "does not contain",
         TRAIT_BESIDE_UNSATISFIABLE => "unsatisfiable constraints",
     }
@@ -6752,6 +6772,18 @@ run!(
     FuseExpect::None
 );
 
+// CR claude for claude: [bug/medium] Following this fixture's hint (declare y: [i64,
+// string]) gets the program refused again, at `x <- t ~ 1`: `x is [i64, string],
+// inferred from an earlier use, and cannot hold i64; declare x: [i64, string]`. The
+// select binds x's cell to the payload's element set, which is two open cells, each
+// above [i64, string]. The containment of that set (`SET-T ['_a, '_b] >= i64` under
+// GRAPHIX_DBG_BIND, Type::contains_int's Set arm) refuses i64, although both cells'
+// lower bounds already hold it. write_mismatch then prints the set by its lower bound,
+// so the message contradicts itself. The program checks with `y: i64`, with `x <- 1`
+// above the select, or without the abstract. Fix: a type that every open member's lower
+// bound already holds should go into the set without binding anything, and the hinted
+// twin (y declared, x not) should be pinned as checking. probe:
+// design/review-2026-11-16/repro/tests-types-b-element-set-write.gx (tests-types-b-02)
 run!(
     payload_cells_bound_to_an_element_set,
     r#"{
@@ -7799,6 +7831,12 @@ run!(
 // The same arguments the other way round: neither is decided, so each
 // waits for the call's end and meets the parameter in order; the array
 // meets the numeric bound first.
+// CR claude for claude: [doc-drift/low] The comment above says neither argument is
+// decided, "so each waits for the call's end and meets the parameter in order". That is
+// the order-freedom mechanism removed by D36: a call meets its arguments in parameter
+// order and nothing waits (CLAUDE.md, callsite.rs::Widening). The array meets the
+// numeric bound first because it is the first argument. Rewrite the comment to say so.
+// Found by reading; not run. (tests-types-b-05)
 const MERGE_UNDER_A_CONSTRUCTOR_IN_A_CALL_ARRAY_FIRST: &str = r#"
 {
     type B<'p> = Abstract<'p>;
@@ -8771,6 +8809,19 @@ const AMBIGUOUS_MEMBER: &str =
 // annotate, the value where the type is its own and the parameters to
 // declare first where the union is a callback's own parameter; with the
 // cell decided, or the members deciding it alike, the program runs.
+// CR claude for claude: [test-gap/low] TWO_DECIDED_TAKERS is UndecidedTaker's fact,
+// which every site prints. So the three fixtures that pin it alone
+// (undecided_element_into_a_typedef_union_after_its_deciders_refused,
+// undecided_element_written_into_a_union_of_two_decided_arrays_refused,
+// typedef_union_of_function_types_untyped_lambda_after_the_deciders_refused) leave
+// unpinned the hint the comment above promises. A change to TakerUnion's annotate text,
+// or to the call site's naming of the binding, passes them. Today they print `annotate
+// `v``, `annotate the value (bind it to a let with its type written)` and `this
+// argument is undecided at this call; annotate it`. The write `x <- [v]` names no
+// binding where the call site names `v`. Pin each hint, and make the write name `v` too
+// if that is the intent. probe:
+// design/review-2026-11-16/repro/tests-types-b-undecided-taker-hints.sh
+// (tests-types-b-04)
 const TWO_DECIDED_TAKERS: &str = "and nothing has decided which";
 
 run!(
@@ -9427,6 +9478,17 @@ fn slice_arms(arms: usize, arm: &str, last: &str) -> String {
 // arm does. So the links the function's type reaches are few where the arms
 // share one cell, and grow with the arms and the members where an arm's copy
 // takes a member's cell, never by a factor at each arm.
+// CR claude for claude: [perf/low] This test bounds the links f's type reaches, which
+// does not measure the check's work. The 'nested' ladder it builds checks in about 210
+// ms at 24 arms, 480 ms at 32, 2.5 s at 48 and 9.4 s at 64 in the debug binary (about
+// arms^4.5), while the same ladder over `|x: Array<Array<'e>>|` stays at 80-130 ms. The
+// 'rest' ladder takes 3.2 s at 128 arms against 180 ms written. The cost is in the
+// unannotated path alone. The comment says the members the arms give the parameter are
+// one type, so type them as one member before the arms narrow against them, as the
+// written parameter does. Then bound a work counter of the check at 4 and 12 arms in
+// place of the links. probe:
+// design/review-2026-11-16/repro/tests-types-c-nested-slice-ladder-cost.sh
+// (tests-types-c-05)
 #[tokio::test(flavor = "current_thread")]
 async fn slice_arms_over_an_unannotated_parameter_copy_no_chain_of_cells() -> Result<()> {
     type Most = fn(usize) -> usize;
@@ -10200,6 +10262,14 @@ run!(
     prints(r#"[i64:1]"#)
 );
 
+// CR claude for claude: [test-gap/low] x stands first, so `f([1.5], 1, "s")` is refused
+// before 1 and "s" decide anything. It gets the same AmbiguousMember message that
+// argument_into_a_typedef_union_before_its_deciders_refused gets for `f([1], 1, "s")`,
+// so the case the name claims, an argument no decided member holds, is never reached.
+// Put the deciders first (`|y: 'a, z: 'b, x: P<'a, 'b>|`, `f(1, "s", [1.5])`, refused
+// `type mismatch P<'a: i64, 'b: string> does not contain Array<f64>`), or delete the
+// test as a duplicate. probe:
+// design/review-2026-11-16/repro/tests-types-c-weak-union-pins.sh (tests-types-c-07)
 run!(
     decided_argument_into_a_typedef_union_no_member_holds_it_refused,
     r#"{
@@ -10675,6 +10745,18 @@ run!(
 
 // An instance's cell that no position holds is what its bounds settle it
 // to, and one at a place holding ⊥ is ⊥, as the call's check left them.
+// CR claude for claude: [test-gap/low] The comment's second rule, a cell at a place
+// holding ⊥ is ⊥, has no pin. instance_cell_at_a_bottom_place_is_bottom was deleted,
+// though its program (`'a0: [Array<P<'a1, 'a2>>, null], 'a1: R<'a2, 'a3>, 'a2: R<'a3,
+// 'a3>, 'a3: i64 |x0: 'a0, x2: 'a2, x3: 'a3| x0` called `f(v0, never(), 1)` over `let
+// v0 = []`) still checks and prints `[]`. design/tvar_constraints.md still cites it. It
+// also cites
+// empty_array_into_a_typedef_union_of_two_arrays_is_decided_by_the_other_parameters as
+// a pin of the build agreeing with the check, but that program (`l(1, "s", [])`) is now
+// refused and pinned as
+// empty_array_into_a_typedef_union_of_two_arrays_after_its_deciders_refused. Restore
+// the bottom-place pin and fix both citations. probe:
+// design/review-2026-11-16/repro/tests-types-c-bottom-place-pin.gx (tests-types-c-06)
 run!(
     instance_cells_only_bounds_hold_settle_to_their_bounds,
     r#"{
@@ -11094,6 +11176,24 @@ run!(
 // earlier parameter has paired the variables the members pair one way
 // only and the call runs, and where nothing has the members could pair
 // either way and the call is refused, naming the annotation.
+// CR claude for eric: [bug/medium] These tests pin verdicts that depend on how a
+// typedef application spells its arguments, not on the union it names. F2<'d, 'c> and
+// F2<'c, 'd> are one type, [fn(q: 'c) -> i64, fn(q: 'd) -> i64], yet app(f, 1, "s") is
+// refused with one and runs with the other. G2 is F2 with its members listed in the
+// other order, and it flips both verdicts. A select of f with a twin whose x2 is G2<'a,
+// 'b> (the exact expansion of f's own F2<'b, 'a>) is refused, while the twin written
+// F2<'b, 'a> runs. The comment above says a call runs once an earlier parameter has
+// paired the variables, which the other-order test contradicts, and the Array analog is
+// refused in every spelling. The acceptances come from Type::applications_hold relating
+// two applications of one definition argument by argument. For a union whose members
+// hold distinct parameters, that is a pairing picked by parameter position, the very
+// choice AmbiguousMember refuses to make. Where it fails, the expansion runs over cells
+// the attempt merged, so the refusal prints `fn(q: 'c: 'd: unbound) -> i64 could go to
+// any of 2 members of the union fn(q: 'd: unbound) -> i64`. Decide the rule (pairing by
+// an earlier parameter runs in every spelling, or every spelling is refused as for
+// arrays), make applications_hold and the expansion agree with it, and pin a respelled
+// twin of each verdict. probe:
+// design/review-2026-11-16/repro/tests-types-c-union-member-order.sh (tests-types-c-01)
 run!(
     union_of_functions_the_formals_spell_in_the_other_order_is_refused_after_a_param,
     r#"{
@@ -12745,6 +12845,15 @@ const UNION_KEEPS_DISTINCT_CELLS: &str = r#"
 }
 "#;
 
+// CR claude for claude: [test-gap/low] refused("does not contain") holds whether the
+// select keeps [a] and [b] apart or makes them one array. Today the refusal comes from
+// the index over the union, `Array<string> does not contain [Array<string>,
+// Array<i64>]`; with a and b as one cell, the same call is refused `string does not
+// contain i64`, which matches too. A change that joined the arms' element cells would
+// pass this test. Pin the claim directly: `(pick(true, "x", 41), pick(false, "x", 41))`
+// checks and prints `[["x"], [i64:41]]`, which no merge allows. probe:
+// design/review-2026-11-16/repro/tests-types-c-union-keeps-distinct-cells-vacuous.sh
+// (tests-types-c-04)
 run!(union_keeps_distinct_cells, UNION_KEEPS_DISTINCT_CELLS, |v: Result<&Value>| {
     refused("does not contain")(v)
 }; FuseExpect::None);
@@ -13122,6 +13231,13 @@ run!(
 
 // Of two members that take the value's constructor the one a probe
 // admits it into has the parts, and so does one that holds the other.
+// CR claude for claude: [test-gap/low] `cannot hold f64` holds whether the admitting
+// member decides z as i64 or z takes both members' first parts, [i64, string]: z <- 2.5
+// is refused either way, and the twin's z <- 3 runs either way. A change that let z
+// take string, after which `("s", 1)` reaches f though no member of its bound holds it,
+// passes both tests. Write `z <- "s"` and pin `z is i64, inferred from an earlier use,
+// and cannot hold string`. probe:
+// design/review-2026-11-16/repro/tests-types-c-weak-union-pins.sh (tests-types-c-08)
 run!(union_bound_one_admitting_member_decides_the_cell, r#"{
     let f = 'a: [(i64, i64), (string, string)] |v: 'a| v;
     let z = never();
@@ -14013,6 +14129,15 @@ run!(
 // A variant reads only from data that names its tag: another variant's
 // written form, or an untagged array of the payload's length, is no value
 // of it (x-kind-markers-03).
+// CR claude for claude: [style/low] [style/low] The comment above cites a review
+// finding id, "(x-kind-markers-03)". a_union_prefers_the_member_its_elements_fit's
+// comment does the same with "(t-cast-setops-06, x-rerun-5-03)", and
+// partial_wrapper_bound_under_a_name_leaves_its_variable_undecided's opens "Beside
+// conjunct-lower-cycle-settle-01".
+// bound_closed_by_its_own_chain_settles_before_its_holder's comment ends "as a chain of
+// bounds nothing was produced into always did". These record where a test came from,
+// which the comment rule excludes. Drop the ids and the "always did" clause, and keep
+// the rule each comment states. Found by reading; not run. (tests-types-d-08)
 run!(
     a_variant_reads_only_its_own_tag,
     r#"{
@@ -14346,6 +14471,19 @@ run!(
 // reaching every other: the union of an expansion asks one trial of an
 // order for its members, and the placement that trial allows walks the
 // applications below with no trial of their own.
+// CR claude for eric: [perf/medium] [perf/medium] This pin stops at 6 parameters, and
+// the cost is already factorial there. The same two permuting definitions over open
+// cells check in 0.1 s at 6 parameters, 0.3 s at 7 and 2.3 s at 8; at 9 the check
+// passes a 6 GB memory cap within 11 s (debug build). The same happens when D has one
+// member more than F (so not one body), and through a call `h(x, 1)` with `x: F<i64,
+// ..>`. A six-line program can therefore exhaust the memory of `--check` and of the
+// language server. The walk of two definitions by their expansions (ContainsHist,
+// Type::place_in_order) has no bound, unlike setops::WALK_PAIRS for diff. This needs a
+// decision: bound the walk and say what a cut answers, or compare two definitions'
+// applications by their arguments where their bodies meet the parameters alike, as
+// Type::applications_hold does for one definition. Then pin 9 or more parameters.
+// probe: design/review-2026-11-16/repro/tests-types-d-two-typedefs-nine-params.gx
+// (tests-types-d-01)
 run!(
     six_parameters_of_two_recursive_typedefs_with_one_body_check,
     r#"{
@@ -15386,6 +15524,17 @@ const TWO_MEETS: &str = "and the check picks neither by order: write the part of
 // A lambda that two functions of its union could decide, which are not one
 // type, is refused wherever the three stand in the union, and runs once its
 // parameter is written.
+// CR claude for claude: [test-gap/low] [test-gap/low] This test runs each order through
+// testing::refusal, and so do field_read_refuses_a_capture_two_members_could_decide,
+// literal_refuses_a_capture_two_functions_could_decide_in_every_order and
+// field_read_names_the_two_functions_that_are_not_one_type;
+// literal_of_schemes_beside_two_functions_in_every_order uses testing::eval. Both
+// helpers build in Mode::Jit and never run the check, so only the one order that is
+// also a run! fixture is held to the rule that the check refuses exactly when the build
+// does. A check that disagreed with the build in another order would pass here. Use
+// testing::eval_modes in these loops: it holds the check to the build in Interp, and
+// the assertions stay the same. The check agrees in every order today (all 108
+// generated programs run with --check). (tests-types-d-09)
 #[tokio::test(flavor = "current_thread")]
 async fn field_read_refuses_a_lambda_two_members_could_decide() -> Result<()> {
     use graphix_package_core::testing::refusal;
@@ -17404,6 +17553,15 @@ run!(
     prints("[null]")
 );
 
+// CR claude for claude: [structure/low] [structure/low] The 15 fixtures from here to
+// two_struct_members_one_cell_are_refused_as_the_second_name_is_not_first are one
+// program over five shapes (Array, variant, tuple, Map, struct) in three forms: both
+// members held, the first-named type refused, and the second-named type refused. That
+// is about 290 lines differing only in the two typedef bodies, the formal's member and
+// `n`'s annotation. Generate them from one `fn` taking those strings, as
+// field_read_beside_two does for the field-read fixtures, so that a new shape is one
+// line and the three forms cannot drift apart. Found by reading; not run.
+// (tests-types-d-10)
 run!(
     two_array_members_one_cell_hold_it_together,
     r#"{
@@ -17482,6 +17640,16 @@ run!(
     FuseExpect::None
 );
 
+// CR claude for claude: [test-gap/low] [test-gap/low] refused("i64 does not contain")
+// accepts the wrong answer this test exists to exclude. Had the one cell followed the
+// first member alone ('b = 'p = string), the refusal would be "type mismatch i64 does
+// not contain string", which this predicate accepts. The fixture's actual refusal is
+// "i64 does not contain ['p: string, 'q: i64]": pin that, as the named-member twins pin
+// "[i64, string]", and add the accepted twin `let n: [i64, string] = g(1, "s")`, which
+// checks. written_primitive_union_still_refuses_what_the_check_breaks pins
+// refused("null") in the same way; pin "i64 does not contain null" there. probe:
+// design/review-2026-11-16/repro/tests-types-d-two-members-loose-pin.gx
+// (tests-types-d-04)
 run!(
     two_array_members_of_declared_variables_one_cell_do_not_follow_the_names,
     r#"{
@@ -17723,6 +17891,18 @@ run!(
 // it on copies, so the union written in either order is a verdict of its own
 // on the relation. A program whose argument holds an open variable is
 // pre-unified and refused in both orders.
+// CR claude for claude: [test-gap/medium] [test-gap/medium] This test and its
+// _in_the_other_order twin pin refused("type mismatch"), which any mismatch anywhere in
+// the fixture satisfies. The refusal itself names nothing to annotate ("type mismatch
+// [`X('b: [i64, null], 'c: i64, ..)..] does not contain [..]"). Yet annotating `z` with
+// the type the pre-unification already gave it, `|z: [i64, null]|`, makes the program
+// check. design/tvar_constraints.md says the refusal of an undecided argument whose
+// cells some decision could fit says "annotate it", but the undecided-argument path
+// (Widening::take) gives no note here. Pin the full message in both orders, pin the
+// lift, and have the refusal name `z`, or narrow the doc's promise to the case the code
+// covers. probe:
+// design/review-2026-11-16/repro/tests-types-d-open-argument-names-no-fix.gx
+// (tests-types-d-03)
 run!(
     union_of_arrays_beside_an_open_argument_is_refused_in_the_first_order,
     r#"{

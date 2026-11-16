@@ -26,6 +26,14 @@ The `scrollbar` widget adds a visual scrollbar indicator to scrollable content, 
 {{#include ../../examples/tui/scroll_basic.gx}}
 ```
 
+<!-- CR claude for claude: [doc-drift/low] Six TUI screenshots show programs their
+examples no longer are. scroll_basic.png shows one wrapped sentence for 50 'Line N'
+rows; scroll_paragraph.gif shows 'Very long text content...' for 100 lines;
+scroll_list.png shows 5 items for 30. paragraph_scrollable.gif (paragraph.md) shows a
+wrapped sentence for 60 numbered lines; paragraph_log_viewer.gif shows a syslog line for
+the simulated entries; block_focus.png (block.md) shows one block where the example
+draws two panes that Tab moves between. Re-capture them from the current examples. Found
+by reading; not run. (book-ui-a-02) -->
 ![Basic Scrollbar](./media/scroll_basic.png)
 
 ### Scrollable Paragraph

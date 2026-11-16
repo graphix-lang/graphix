@@ -1,0 +1,27 @@
+// A variable two parts of one argument share is decided by the part that sorts first
+//
+// command (each program alone, in a file p.gx):
+//   /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache --check p.gx
+//
+// Each pair differs only in a tag name or a field name; the solution
+// 'a = [i64, null] exists in both.
+//
+// (1) this file as it stands (struct fields, met in name order):
+//   expected: checks, as (2) does
+//   observed: "type mismatch { a: 'a: i64, b: 'a: i64 } does not contain
+//             { a: i64, b: [i64, null] }"
+// (2) let f = |x: {a: 'a, b: 'a}| 0; let n: [i64, null] = null; f({b: 1, a: n})
+//   observed: checks
+//
+// (3) let f = |x: [`A('a), `B('a)]| 0; let v: [`A(i64), `B([i64, null])] = `A(1); f(v)
+//   observed: "type mismatch [`A('a: i64), `B('a: i64)] does not contain
+//             [`A(i64), `B([i64, null])]"
+// (4) let f = |x: [`B('a), `A('a)]| 0; let v: [`B(i64), `A([i64, null])] = `B(1); f(v)
+//   observed: checks
+//
+// (5) two arguments settle alike in either order (Widening):
+//     let f = |x: 'a, y: 'a| 0; let n: [i64, null] = null; f(1, n)
+//   observed: checks
+let f = |x: {a: 'a, b: 'a}| 0;
+let n: [i64, null] = null;
+f({a: 1, b: n})

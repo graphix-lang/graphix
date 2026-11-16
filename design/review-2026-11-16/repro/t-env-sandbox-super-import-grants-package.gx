@@ -1,0 +1,30 @@
+// Title: a dynamic module's sig `use super::NAME` grants the whole package
+//        NAME, where the module is declared in a block
+//
+// Command (from the repo root; the body reads this file's sibling):
+//   cd design/review-2026-11-16/repro &&
+//   timeout -s KILL 30 /home/eric/tmp/review-2026-11-16/bin/graphix --no-cache \
+//     t-env-sandbox-super-import-grants-package.gx
+//
+// The sig below hands the body one binding, an i64 named `sys`, under the
+// name `handle`. Env::imported_view keeps `level/name` whole at every level
+// of a keyword-anchored import's chain, the root included, where `sys` is the
+// package: so the body, which should see `handle` and nothing else (not even
+// core), reads a file through `sys::fs::read_all`.
+//
+// Expected: "err error:`DynamicLoadError(..no module `fs` in `sys`..)", as
+//   the same body gets under `sig { use super::*; .. }` or `use super::other`.
+// Observed: "ok // Title: a dynamic module's sig `use super::NAME` grants ..."
+//   (the body read this file). The same holds with no local `sys` at all
+//   (`use super::sys` names the package through the root level), and for a
+//   function parameter named `sys`, `db`, `http`, ...
+let r = {
+  let sys = 42;
+  let st = mod m dynamic {
+    sig { use super::sys as handle; val w: Result<string, `IOError(string)> };
+    source "let w = sys::fs::read_all(\"t-env-sandbox-super-import-grants-package.gx\")"
+  };
+  select st { error as e => "err [e]", null as _ => "ok [m::w]" }
+};
+sys::exit(sys::time::after_idle(duration:400.ms, 0));
+r

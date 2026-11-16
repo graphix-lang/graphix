@@ -1,0 +1,14 @@
+// Title: function alternatives inside an Error payload do not meet
+//        (setops.rs part_count/part leave Type::Error out), so a call
+//        through them is refused where a tuple, array or variant payload
+//        checks.
+// Command: timeout -s KILL 30 /home/eric/tmp/review-2026-11-16/bin/graphix --check \
+//          design/review-2026-11-16/repro/t-setops-error-payload-fns-not-met.gx
+// Expected: exit 0, as with `(|x| x, 0)` / `(|x: i64| x + 1, 0)` and
+//           `(u.0)(1)`, or `` `F(|x| x) `` / `` `F(|x: i64| x + 1) ``.
+// Observed: "a call takes one function type, and this callee is one of
+//           fn(x: i64) -> i64 and fn(x: '_N: unbound) -> '_N: unbound; write
+//           one variable in both, or one written type in both"
+let b = true;
+let u = select b { true => error(|x| x), false => error(|x: i64| x + 1) };
+select u { error as e => (e.0)(1) }
