@@ -65,8 +65,8 @@ repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 # runs/s at 48 workers (1761280 runs in 10.4 h: fuzz 951040, generate 260672,
 # reactive 205056, typemorph 344512).
 HOSTS=(
-    "katana:6:4:darwin"
-    "washu-chan:12:1:linux"
+    "katana:8:4:darwin"
+    "washu-chan:16:1:linux"
     "aieka:16:4:linux"
     "ryouko:16:1:linux"
 )
