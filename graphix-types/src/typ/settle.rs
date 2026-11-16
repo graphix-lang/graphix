@@ -529,6 +529,24 @@ impl FnType {
                 })
             }
         });
+        // a position's lower bounds hold positions too: its cell settles to
+        // a witness made of them
+        let mut todo: LPooled<Vec<TVar>> = positional.values().cloned().collect();
+        while let Some(tv) = todo.pop() {
+            if exempt.contains(&tv.cell_addr()) {
+                continue;
+            }
+            for l in tv.cell_lower().iter() {
+                walk_positions(l, &mut nodes, &mut |tv| {
+                    let first = !tv.ground_now()
+                        && positional.insert(tv.cell_addr(), tv.clone()).is_none();
+                    if first {
+                        todo.push(tv.clone())
+                    }
+                    first
+                })
+            }
+        }
         let mut seen: LPooled<AHashSet<usize>> =
             tvs.values().map(|tv| tv.cell_addr()).collect();
         let mut more: LPooled<Vec<TVar>> = LPooled::take();

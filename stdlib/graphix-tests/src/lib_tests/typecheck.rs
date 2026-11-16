@@ -210,6 +210,28 @@ run!(
     FuseExpect::None
 );
 
+// A typed read under an abstract type's parameter is decided by the call
+// that makes the value, as a bare one is.
+run!(
+    parse_under_an_abstract_parameter_no_type,
+    r#"{
+    type B<'p> = Abstract<'p>;
+    let f = || B(str::parse("42"));
+    f();
+    1
+}"#,
+    refused("the type 'b must be fully known here"); FuseExpect::None);
+
+run!(
+    parse_under_an_abstract_parameter_typed,
+    r#"{
+    type B<'p> = Abstract<'p>;
+    let f = || B(str::parse("42"));
+    let b: B<Result<i64, `ParseError(string)>> = f();
+    b.0$
+}"#,
+    |v: Result<&Value>| { matches!(v, Ok(Value::I64(42))) }; FuseExpect::Jit);
+
 // RPC client type-aware casting.
 
 // call with a typed result.
