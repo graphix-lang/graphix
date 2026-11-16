@@ -12,7 +12,7 @@ use crate::SourcePosition;
 use crate::{
     AddrSet, Apply, ApplyView, BindId, BindMode, CFlag, CompileCtx, ExecCtx, InitFn,
     LambdaId, LambdaInstanceId, Node, NodeView, Refs, Rt, Scope, TagValue, Update,
-    dbgenv,
+    bailat, dbgenv,
     effects::{LambdaFacts, NoLoop, RecursionKind},
     env::{Bind, Env, Lexical},
     expr::{self, Arg, ArgKind, At, Expr, ExprId, LambdaBody, ModPath, Origin},
@@ -3183,7 +3183,7 @@ impl<R: Rt> Update<R> for Lambda {
             .downcast_ref::<LambdaDef<R>>()
             .ok_or_else(|| anyhow!("failed to unwrap lambda"))?;
         let spec: &Expr = &self.spec;
-        crate::defer_unresolved_names(ctx, &Type::Fn(def.typ.clone()), spec, None)?;
+        crate::defer_written_names(ctx, &Type::Fn(def.typ.clone()), spec)?;
         // Every arg, defaulted labeled ones included, checks as a Nop of
         // its declared type; the defaults themselves are checked after
         // the body (`check_defaults`), and again per omitting call site

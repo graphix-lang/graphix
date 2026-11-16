@@ -5287,6 +5287,54 @@ run!(
     FuseExpect::None
 );
 
+/// Neither does a `let`'s annotation or a function's signature.
+const ANNOTATION_ABOVE_ITS_TRAIT: &str = r#"
+{
+    let v: Array<Sh> = [1, 2];
+    trait Sh { val sh: fn(self) -> i64 };
+    impl Sh for i64 { let sh = |c| c * 10 };
+    v
+}
+"#;
+
+run!(
+    annotation_above_its_trait,
+    ANNOTATION_ABOVE_ITS_TRAIT,
+    refused("trait Sh used as a type above its declaration");
+    FuseExpect::None
+);
+
+const PARAMETER_ABOVE_ITS_TRAIT: &str = r#"
+{
+    let f = |a: Sh| 0;
+    trait Sh { val sh: fn(self) -> i64 };
+    impl Sh for i64 { let sh = |c| c * 10 };
+    0
+}
+"#;
+
+run!(
+    parameter_above_its_trait,
+    PARAMETER_ABOVE_ITS_TRAIT,
+    refused("trait Sh used as a type above its declaration");
+    FuseExpect::None
+);
+
+const PARAMETER_PART_ABOVE_ITS_TRAIT: &str = r#"
+{
+    let f = |a: Array<Sh>| 0;
+    trait Sh { val sh: fn(self) -> i64 };
+    0
+}
+"#;
+
+run!(
+    parameter_part_above_its_trait,
+    PARAMETER_PART_ABOVE_ITS_TRAIT,
+    refused("trait Sh used as a type above its declaration");
+    FuseExpect::None
+);
+
 const TYPEDEF_ARGUMENT_ABOVE_ITS_TRAIT: &str = r#"
 {
     type T<'a> = Array<'a>;
@@ -16546,6 +16594,22 @@ run!(
          before the argument was checked, as a type with an undecided part; \
          annotate `u` with the type the argument needs"
     );
+    FuseExpect::None
+);
+
+// A refusal that arose in an expression reading no such value is of another
+// cause, and names none.
+run!(
+    refusal_beside_a_value_decided_early_names_no_value,
+    r#"{
+  let f = 'x: (['a, null], i64) |y: 'x| y;
+  let g = |u| f((u, 1 + "a"));
+  g(1)
+}"#,
+    |v: Result<&Value>| matches!(v, Err(e) if {
+        let msg = format!("{e:#}");
+        msg.contains("cannot compute i64 + string") && !msg.contains("was decided by")
+    });
     FuseExpect::None
 );
 

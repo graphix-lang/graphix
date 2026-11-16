@@ -14,7 +14,7 @@ use crate::{
     LambdaId, LambdaInstanceId, Node, NodeView, Notify, Refs, ResolvingLambda, Rt, Scope,
     StaticHold, TagValue, Update, View, analysis, bailat, dbgenv, deref_typ,
     env::{Env, ImplDef, KeptView, Map},
-    expr::{ApplyExpr, At, Expr, ExprId, ExprKind, Told},
+    expr::{ApplyExpr, At, ErrorSite, Expr, ExprId, ExprKind, Told},
     fusion::{
         self,
         emit::{
@@ -54,7 +54,10 @@ use compact_str::{CompactString, format_compact};
 use enumflags2::BitFlags;
 use indexmap::{IndexMap, map::Entry as ArgEntry};
 use log::warn;
-use netidx_core::pack::{Pack, PackError, encode_varint};
+use netidx_core::{
+    pack::{Pack, PackError, encode_varint},
+    path::Path,
+};
 use netidx_value::Value;
 use nohash::{IntMap, IntSet};
 use poolshark::local::LPooled;
@@ -2420,18 +2423,11 @@ fn undecided_taker<R: Rt>(
     }
 }
 
-// CR claude for claude: [bug/low] decided_early attaches to any refusal inside the
-// argument, whatever its cause: `let f = 'x: (['a, null], i64) |y: 'x| y; let g = |u|
-// f((u, 1 + "a")); g(1)` is refused for `1 + "a"`, and the error still says `u` was
-// decided early and to annotate `u`, which does not help (`|u: i64|` is refused the same
-// way). The note should only appear where the refusing expression reads a binding that
-// stands on an early-bound cell, or where the leaf is about that cell's type. probe:
-// ~/ptmp/cr29/scratch/r27/27c/fp1.gx (decided-early-unrelated-refusal-01)
 /// A refusal `e` of the argument `n`, whose pre-unification with its formal
 /// bound the undecided cells `early` to types that hold undecided cells
-/// themselves, names the bindings `n` reads that stand on them: the
-/// argument's own check meets them so decided, and annotating them
-/// decides them as written.
+/// themselves, names the bindings that stand on them and that the
+/// expression it arose in reads: the argument's own check meets them so
+/// decided, and annotating them decides them as written.
 fn decided_early<R: Rt>(
     ctx: &CompileCtx<R>,
     n: &Node<R>,
@@ -2457,6 +2453,14 @@ fn decided_early<R: Rt>(
             binds.push(b)
         }
     });
+    if let Some(site) = e.downcast_ref::<ErrorSite>() {
+        binds.retain(|b| {
+            site.expr().fold(false, &mut |read, x| {
+                read || matches!(&x.kind, ExprKind::Ref { name }
+                    if Path::basename(&name.0) == Some(b.name.as_str()))
+            })
+        })
+    }
     binds.sort_by_key(|b| b.id);
     if binds.is_empty() {
         return e;

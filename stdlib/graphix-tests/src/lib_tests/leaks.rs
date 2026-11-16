@@ -8,6 +8,7 @@ use arcstr::{ArcStr, literal};
 use graphix_compiler::{
     BindId,
     expr::{ExprId, FilesResolver, VfsEntry},
+    typ::AbstractId,
 };
 use graphix_package_core::testing::{
     Events, Mode, TestCtx, config, fixture_runtime, next_update,
@@ -191,6 +192,31 @@ async fn core_hook_sites_leave_no_bindings() -> Result<()> {
         env.by_id.into_iter().filter(|(_, b)| b.name.starts_with("#seam")).count();
     ctx.shutdown().await;
     assert!(seams <= 2, "{seams} hook argument bindings after 5 rebuilds");
+    Ok(())
+}
+
+/// A core-trait hook site goes with the implementation it calls: a type
+/// each input declares anew leaves none behind.
+#[tokio::test(flavor = "current_thread")]
+async fn core_hook_sites_go_with_their_implementation() -> Result<()> {
+    let (tx, mut rx) = mpsc::channel(64);
+    let ctx = init(tx).await?;
+    for _ in 0..5 {
+        let (id, decl) = compile_one(
+            &ctx,
+            "{ type T = Abstract<i64>; impl Eq for T { let eq = |a, b| true }; T(1) == T(2) }",
+        )
+        .await?;
+        await_update(&ctx, &mut rx, id, |v| *v == Value::Bool(true)).await?;
+        drop(decl);
+    }
+    // a compile runs after the deletes the drops queued
+    let _last = compile_one(&ctx, "null").await?;
+    let env = ctx.rt.get_env().await?;
+    let seams =
+        env.by_id.into_iter().filter(|(_, b)| b.name.starts_with("#seam")).count();
+    ctx.shutdown().await;
+    assert_eq!(seams, 0, "{seams} hook argument bindings of deleted implementations");
     Ok(())
 }
 
@@ -460,24 +486,32 @@ async fn impls_and_types(ctx: &TestCtx) -> Result<(usize, usize)> {
     Ok((impls, env.abstract_reps.len()))
 }
 
-/// A load's type keeps its representation and its `Eq` past the reload
-/// that retires the load while a function made in it lives, and loses
-/// them once that function goes, with no reload after.
+/// The abstract types the env holds a representation of.
+async fn types(ctx: &TestCtx) -> Result<Vec<AbstractId>> {
+    let env = ctx.rt.get_env().await?;
+    Ok((&*env.abstract_reps).into_iter().map(|(id, _)| *id).collect())
+}
+
+/// A load's type keeps its representation, its name and its `Eq` past the
+/// reload that retires the load while a function made in it lives, and
+/// loses them once that function goes, with no reload after.
 async fn a_retired_loads_type_goes_with_its_last_function(mode: Mode) -> Result<()> {
     let (ctx, mut rx) = fixture_runtime([], crate::TEST_REGISTER, mode, |_| {}).await?;
     let roots = literal!("let tick: i64 = 0; let held: fn(x: i64) -> i64 = never();");
     let _roots = ctx.rt.compile(roots).await?;
     let before = impls_and_types(&ctx).await?;
-    let _module = ctx
-        .rt
-        .compile(literal!(
-            r#"let src = select tick {
-                 1 => "type C = Abstract<i64>; impl Eq for C { let eq = |a, b| a.0 != b.0 }; let get = |x: i64| select C(x) == C(x) { true => 0, false => x + 1 }",
-                 _ => "let get = |x: i64| x * 10"
-               };
-               let s = mod d dynamic { sig { use core; val get: fn(x: i64) -> i64 }; source src };"#
-        ))
-        .await?;
+    let declared = types(&ctx).await?;
+    // a type of the mode's own: the modes run side by side, and one name
+    // in one module is one id in each
+    let name = ArcStr::from(format!("C{mode:?}"));
+    let module = format!(
+        r#"let src = select tick {{
+             1 => "type {name} = Abstract<i64>; impl Eq for {name} {{ let eq = |a, b| a.0 != b.0 }}; let get = |x: i64| select {name}(x) == {name}(x) {{ true => 0, false => x + 1 }}",
+             _ => "let get = |x: i64| x * 10"
+           }};
+           let s = mod d dynamic {{ sig {{ use core; val get: fn(x: i64) -> i64 }}; source src }};"#
+    );
+    let _module = ctx.rt.compile(ArcStr::from(module)).await?;
     let tick = root_bind(&ctx, "tick").await?;
     let (e_held, _held) = compile_one(&ctx, "(tick, held(tick))").await?;
     ctx.rt.set(tick, 1i64)?;
@@ -486,11 +520,15 @@ async fn a_retired_loads_type_goes_with_its_last_function(mode: Mode) -> Result<
         .await
         .context("first load")?;
     drop(w);
+    let mut loaded = types(&ctx).await?;
+    loaded.retain(|id| !declared.contains(id));
     for n in 2..=5i64 {
         ctx.rt.set(tick, n)?;
         await_update(&ctx, &mut rx, e_held, is_pair(n, n + 1)).await.context("held")?;
         let kept = impls_and_types(&ctx).await?;
         assert_eq!(kept, (before.0 + 1, before.1 + 1), "{mode:?}: dropped at {n}");
+        let names: Vec<_> = loaded.iter().map(|id| id.name()).collect();
+        assert_eq!(names, [Some(name.clone())], "{mode:?}: unnamed at {n}");
     }
     let (id, w) = compile_one(&ctx, "{ held <- d::get; d::get(tick) }").await?;
     await_update(&ctx, &mut rx, id, |v| *v == Value::I64(50))
@@ -506,6 +544,7 @@ async fn a_retired_loads_type_goes_with_its_last_function(mode: Mode) -> Result<
     let after = impls_and_types(&ctx).await?;
     ctx.shutdown().await;
     assert_eq!(after, before, "{mode:?}: held past its last function");
+    assert_eq!(loaded[0].name(), None, "{mode:?}: named past its last function");
     Ok(())
 }
 

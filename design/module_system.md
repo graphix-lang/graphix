@@ -363,7 +363,13 @@ deletion and after each cycle's collection). A core hook site
 (`node::coretraits`) holds the impl's method where no collection counts
 it, so at a collection that may find a retired load gone
 (`Lives::changed`) the sites of the retired loads' types go first
-(`coretraits::drop_sites`), built again by the next call. A type the
+(`coretraits::drop_sites`), built again by the next call. The sites of
+any other type go where its implementation is given back
+(`Impl::give_back`), once the trait has none for it (pin
+`lib_tests::leaks::core_hook_sites_go_with_their_implementation`). A
+load's type is named for diagnostics while a load that took it lives
+(`AbstractId::named_by_load`, `load_gone`); a declaration's name stays.
+A type the
 interface declares is one type across reloads, compared and printed by
 the impl registered now. Pins: `lang::modules::
 a_function_saved_across_a_reload_compares_its_loads_type_by_its_loads_eq`,

@@ -1292,13 +1292,19 @@ impl<R: Rt> Impl<R> {
     /// implementation's entry is not identified with this one, so a
     /// reload that unregistered this body and registered a new one
     /// finds nothing to give back. A core impl of a load's own type stays
-    /// until the load is gone ([`Env::sweep_load_types`]).
+    /// until the load is gone ([`Env::sweep_load_types`]). The hook sites
+    /// of a type left with no implementation of a core trait go with it.
     fn give_back(&self, ctx: &mut ExecCtx<'_, R>) {
         match &self.fulfils {
             None if ctx.env.load_keeps_impl(&self.def) => (),
             None => {
                 ctx.keep_impl(&self.def);
-                ctx.env.unregister_impl(&self.def)
+                ctx.env.unregister_impl(&self.def);
+                if let Some(t) = CoreTrait::of_id(self.def.trait_id) {
+                    super::coretraits::drop_sites(ctx, |env, of, id| {
+                        of == t && !env.implements(t, id)
+                    })
+                }
             }
             Some(Fulfils { entry, narrowed: Some(declared) }) => {
                 ctx.env.replace_impl(entry, declared.clone())

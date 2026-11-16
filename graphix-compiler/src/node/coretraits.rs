@@ -28,7 +28,7 @@ use std::cmp::Ordering;
 use triomphe::Arc;
 
 /// A core trait method the runtime calls.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum Method {
     Eq,
     Hash,
@@ -264,24 +264,13 @@ impl<R: Rt> SiteEntry<R> {
     }
 }
 
-// CR claude for claude: [perf/low] An entry is replaced only when its own key is
-// looked up again under another `Version`, so the entry of a type no value
-// dispatches on any more stays, with its pooled sites, their argument bindings
-// and the method instances they hold, for the session. A block declaring `type T =
-// Abstract<i64>; impl Eq for T { .. }` and comparing two `T`s, compiled as a new
-// REPL input each time (each input's `T` is another id), leaves one entry per
-// input. A retired load's types are dropped (`drop_sites`, from
-// `ExecCtx::release_references`); the rest are not. Read from the code, not run.
-// To fix: drop an entry whose trait no longer has an impl for its id when the
-// impl list changes, or at the deletion that gave the impl back.
-// (stale-hook-site-entries-01)
 /// The per-context registry, keyed `(method, tag)`. An entry resolves on
 /// first use and is rebuilt when the trait's implementation list
 /// changes or a dynamic module loads ([`Version`]). The seam runs its sites over events of
 /// its own (`spare`, the ones not in a dispatch), never the caller's,
 /// so a loan lends the context to nothing but the dispatch.
 pub struct CoreHookSites<R: Rt> {
-    sites: AHashMap<(u8, AbstractId), SiteEntry<R>>,
+    sites: AHashMap<(Method, AbstractId), SiteEntry<R>>,
     spare: Vec<Event>,
     /// Bumped at each dynamic module load: a site built before it may
     /// call a method binding the load rebound.
@@ -399,7 +388,7 @@ impl<R: Rt> Default for BranchSites<R> {
 impl<R: Rt> BranchSites<R> {
     fn take(
         &mut self,
-        key: (u8, AbstractId),
+        key: (Method, AbstractId),
         typ: &Type,
         version: &Version,
     ) -> Option<Loan<R>> {
@@ -427,7 +416,7 @@ pub(crate) fn adopt<R: Rt>(ctx: &mut ExecCtx<'_, R>, sites: BranchSites<R>) {
 /// it returns to the pool it came from, or is deleted when the entry
 /// was rebuilt meanwhile.
 struct Loan<R: Rt> {
-    key: (u8, AbstractId),
+    key: (Method, AbstractId),
     version: Version,
     slot: usize,
     typ: Type,
@@ -447,7 +436,7 @@ enum Taken<R: Rt> {
 /// built and run outside it.
 fn take_site<R: Rt>(ctx: &mut ExecCtx<'_, R>, m: Method, typ: &Type) -> Taken<R> {
     let Type::Abstract { id, .. } = typ else { return Taken::None };
-    let key = (m as u8, *id);
+    let key = (m, *id);
     let impls = ctx.env.impls.get(&m.of().id()).cloned();
     if let RtView::Fork(f) = &mut ctx.rt {
         let generation = ctx.core_hook_sites.lock().generation;
@@ -506,15 +495,16 @@ fn take_site<R: Rt>(ctx: &mut ExecCtx<'_, R>, m: Method, typ: &Type) -> Taken<R>
     Taken::Site(Loan { key, version, slot, typ: typ.clone(), site })
 }
 
-/// Delete the pooled sites of the abstract types `gone` picks.
+/// Delete the pooled sites `gone` picks, by their trait and abstract type.
 pub(crate) fn drop_sites<R: Rt>(
     ctx: &mut ExecCtx<'_, R>,
-    gone: impl Fn(AbstractId) -> bool,
+    gone: impl Fn(&Env, CoreTrait, AbstractId) -> bool,
 ) {
     let mut dropped: LPooled<Vec<SiteEntry<R>>> = {
         let mut reg = ctx.core_hook_sites.lock();
-        let keys: LPooled<Vec<(u8, AbstractId)>> =
-            reg.sites.keys().filter(|(_, id)| gone(*id)).copied().collect();
+        let env = &ctx.cx.env;
+        let keys: LPooled<Vec<(Method, AbstractId)>> =
+            reg.sites.keys().filter(|(m, id)| gone(env, m.of(), *id)).copied().collect();
         keys.iter().filter_map(|k| reg.sites.remove(k)).collect()
     };
     if dropped.is_empty() {

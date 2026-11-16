@@ -547,8 +547,11 @@ narrower than the first is a mismatch). So `|u| f((u, u + 1))` at `'x: (['a,
 null], i64)` is refused where the union written in the parameter runs (D39
 (a)), and `typecheck_arg` makes the refusal name the bindings the argument
 reads whose cells the pre-unification bound to a type holding an undecided
-cell (`decided_early`): annotate them. Pins:
-`lang::types::undecided_value_decided_early_*`.
+cell (`decided_early`): annotate them. It names only the ones the
+expression the refusal arose in reads (its `ErrorSite`): a refusal of
+`1 + "a"` beside such a binding is of another cause. Pins:
+`lang::types::undecided_value_decided_early_*`,
+`refusal_beside_a_value_decided_early_names_no_value`.
 
 A variable does not widen where a function type of the signature holds
 it (the first argument decides it, a callback's parameter being typed by

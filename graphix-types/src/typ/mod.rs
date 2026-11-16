@@ -909,9 +909,18 @@ pub fn declaration_place(ori: &Origin, pos: SourcePosition) -> CompactString {
     }
 }
 
-/// The names of every abstract type minted in this process, for
+/// Who names an abstract type in [`ABSTRACT_NAMES`].
+enum NamedBy {
+    /// A declaration: the name stays.
+    Declaration,
+    /// So many live loads of a dynamic module, each its own type's
+    /// ([`AbstractId::in_load`]): the name goes with the last.
+    Loads(u32),
+}
+
+/// The names of the abstract types minted in this process, for
 /// diagnostics (`Type::Abstract` carries only the id).
-static ABSTRACT_NAMES: LazyLock<Mutex<IntMap<AbstractId, ArcStr>>> =
+static ABSTRACT_NAMES: LazyLock<Mutex<IntMap<AbstractId, (ArcStr, NamedBy)>>> =
     LazyLock::new(|| Mutex::new(IntMap::default()));
 
 impl AbstractId {
@@ -957,27 +966,51 @@ impl AbstractId {
         AbstractId(lo).named(name)
     }
 
-    // CR claude for claude: [perf/low] Each load of a dynamic module that declares a
-    // type of its own names a new id here, and `ABSTRACT_NAMES` is process-global and
-    // never shrinks: a module reloaded every second for a day adds 86400 entries. An
-    // entry cannot go with its load, since another context of the process (a test
-    // fixture, a second runtime) runs the same program to the same ids and prints its
-    // types by this map. To fix: name a load's type by its base id (the map keyed by
-    // the id before the key is mixed in, the base carried beside the id), or count
-    // the contexts naming each id. (load-type-names-01)
     /// This id, of a type `name` that the load `key` of a dynamic
     /// module's source declares and its interface does not: each load's
     /// type is its own ([`crate::env::LoadedBody`]).
-    pub(crate) fn in_load(self, key: &str, name: &str) -> Self {
+    pub(crate) fn in_load(self, key: &str) -> Self {
         let (_, lo) = abstract_uuid(&format_compact!("{:x}@{key}", self.0)).as_u64_pair();
-        AbstractId(lo).named(name)
+        AbstractId(lo)
     }
 
     /// This id, its declared name recorded for diagnostics: by a mint,
     /// and by a restored definition, which mints nothing.
     pub(crate) fn named(self, name: &str) -> Self {
-        ABSTRACT_NAMES.lock().entry(self).or_insert_with(|| ArcStr::from(name));
+        match ABSTRACT_NAMES.lock().entry(self) {
+            Entry::Occupied(mut e) => e.get_mut().1 = NamedBy::Declaration,
+            Entry::Vacant(e) => {
+                e.insert((ArcStr::from(name), NamedBy::Declaration));
+            }
+        }
         self
+    }
+
+    /// Record `name` for this id, a load's own type, while the load
+    /// lives ([`Self::load_gone`]).
+    pub(crate) fn named_by_load(self, name: &str) {
+        match ABSTRACT_NAMES.lock().entry(self) {
+            Entry::Occupied(mut e) => {
+                if let NamedBy::Loads(n) = &mut e.get_mut().1 {
+                    *n += 1
+                }
+            }
+            Entry::Vacant(e) => {
+                e.insert((ArcStr::from(name), NamedBy::Loads(1)));
+            }
+        }
+    }
+
+    /// A load that named this id ([`Self::named_by_load`]) is gone.
+    pub(crate) fn load_gone(self) {
+        if let Entry::Occupied(mut e) = ABSTRACT_NAMES.lock().entry(self)
+            && let NamedBy::Loads(n) = &mut e.get_mut().1
+        {
+            *n -= 1;
+            if *n == 0 {
+                e.remove();
+            }
+        }
     }
 
     /// The core type `Transparent<'a>`, which JSON and TOML write bare.
@@ -989,7 +1022,7 @@ impl AbstractId {
 
     /// The type's declared name, if this process has minted the id.
     pub fn name(&self) -> Option<ArcStr> {
-        ABSTRACT_NAMES.lock().get(self).cloned()
+        ABSTRACT_NAMES.lock().get(self).map(|(name, _)| name.clone())
     }
 
     pub fn inner(&self) -> u64 {
@@ -4058,6 +4091,31 @@ impl Type {
     /// are its scheme's, which each use picks.
     pub fn rewrite_declared_args(&self, env: &Env) -> Result<Type> {
         self.rewrite_written(env, true)
+    }
+
+    /// The trait a name of this written type means, outside every
+    /// variable's bounds: none where the type was written below the
+    /// trait ([`Self::rewrite_trait_args`]).
+    pub fn trait_as_type(&self, env: &Env) -> Option<ModPath> {
+        ensure_sufficient(|| match self {
+            Type::Ref(tr) if env.trait_of_ref(tr).is_some() => Some(tr.name.clone()),
+            Type::Ref(tr) => tr.params.iter().find_map(|p| p.trait_as_type(env)),
+            Type::TVar(_) => None,
+            Type::Fn(ft) => {
+                let FnType { args, vargs, rtype, throws, .. } = &**ft;
+                let parts = args.iter().map(|a| &a.typ).chain(vargs.iter());
+                parts.chain([rtype, throws]).find_map(|t| t.trait_as_type(env))
+            }
+            t => {
+                let mut found = None;
+                t.for_each_child(&mut |c| {
+                    if found.is_none() {
+                        found = c.trait_as_type(env)
+                    }
+                });
+                found
+            }
+        })
     }
 
     /// Refuse a function type with quantifiers of its own, written or a

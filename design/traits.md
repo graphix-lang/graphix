@@ -75,9 +75,19 @@ block declares first: the end of the block (`defer_typedef_names`) asks
 again of every name that was not a trait when the typedef compiled, and
 a body that still held a name unresolved there (a trait an enclosing
 block declares below it) asks once more when the check ends
-(`Pending::Body`). A trait as a parameter's bound stays legal above its
-declaration. Pins: `lang::types::typedef_above_its_trait` and its
-siblings.
+(`Pending::Body`). A trait as a typedef parameter's bound stays legal
+above its declaration. Pins: `lang::types::typedef_above_its_trait` and
+its siblings.
+
+A `let`'s annotation and a function's signature are met the same way,
+once every name their block declares is registered
+(`defer_written_names`): a name in one that means a trait outside a
+variable's bounds was written above the trait, where it meant nothing
+and nothing made a bound of it, so it is refused ("trait Sh used as a
+type above its declaration"), a parameter's own type included: a trait
+is a parameter's bound only below its declaration. Pins:
+`lang::types::annotation_above_its_trait`, `parameter_above_its_trait`,
+`parameter_part_above_its_trait`.
 
 ## 3. Dispatch is static, and a union self generates the select
 

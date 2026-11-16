@@ -2622,7 +2622,7 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
             let mut retired: LPooled<Vec<typ::AbstractId>> = LPooled::take();
             self.cx.env.block_types.retired_types(|t| retired.extend(t.iter().copied()));
             if !retired.is_empty() {
-                node::coretraits::drop_sites(self, |id| retired.contains(&id))
+                node::coretraits::drop_sites(self, |_, _, id| retired.contains(&id))
             }
         }
         let rt = &self.rt;
@@ -4172,6 +4172,27 @@ pub(crate) fn defer_unresolved_names<R: Rt>(
     let res = t.unresolved_names(&ctx.env, &mut names, union).at(spec);
     ctx.pending_names.extend(names.into_iter().map(|tr| Pending::Name(tr, spec.clone())));
     res
+}
+
+/// [`defer_unresolved_names`] of `t`, a type a definition wrote, met once
+/// every name its block declares is registered: a name that means a
+/// trait outside a variable's bounds meant nothing where it was written,
+/// so nothing made a bound of it ([`Type::rewrite_trait_args`]).
+pub(crate) fn defer_written_names<R: Rt>(
+    ctx: &mut CompileCtx<R>,
+    t: &Type,
+    spec: &Expr,
+) -> Result<()> {
+    if defer_unresolved_names(ctx, t, spec, None)?
+        && let Some(name) = t.trait_as_type(&ctx.env)
+    {
+        bailat!(
+            spec,
+            "trait {name} used as a type above its declaration: a trait is a bound, \
+             of a parameter or of a quantifier written below it"
+        )
+    }
+    Ok(())
 }
 
 /// Warn at each name the written type `t` holds that means a type its

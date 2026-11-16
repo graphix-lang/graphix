@@ -1358,6 +1358,16 @@ run!(
 );
 
 run!(
+    a_bound_holding_a_variable_a_method_meets_prints_once,
+    refused("x: 'a: unbound within Array<'b1: unbound within Number>) -> 'a: unbound within Array<'b1: unbound within Number>"),
+    "/test.gx" => r#"
+        trait T { val m: fn<'a: Array<'b>, 'b: Number>(self, x: 'a) -> 'a };
+        impl T for i64 { let m = |s, x| x };
+        let result: string = T::m
+    "#
+);
+
+run!(
     a_body_needing_more_of_a_variable_than_its_bound_is_refused_at_a_call,
     refused("the body needs 'c within Number, which the signature does not declare: write 'c: Number"),
     "/test.gx" => r#"

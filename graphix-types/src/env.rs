@@ -1094,7 +1094,8 @@ impl Drop for LoadedBody {
     fn drop(&mut self) {
         if let Some(own) = &self.own {
             let st = self.state.get_mut();
-            own.registry.bury(st.types.drain(..), st.core_impls.drain(..))
+            let types = st.types.drain(..).inspect(|id| id.load_gone());
+            own.registry.bury(types, st.core_impls.drain(..))
         }
     }
 }
@@ -1169,10 +1170,11 @@ impl LoadedBody {
             (!declares(b, own)).then_some((b, own))
         });
         let Some((b, own)) = owner else { return id };
-        let id = id.in_load(&own.key, name);
+        let id = id.in_load(&own.key);
         let mut st = b.state.write();
         if !st.types.contains(&id) {
             st.types.push(id);
+            id.named_by_load(name);
             if st.retired {
                 own.registry.0.write().retired_types.insert(id);
             }

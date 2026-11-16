@@ -11,7 +11,7 @@ use crate::{
         contains::{ContainsHist, cell_admits, find_open_cell, holds_cell},
         fntyp::Aliasing,
         node_addr,
-        setops::union_identical,
+        setops::{union_identical, written_identical},
     },
 };
 use ahash::{AHashMap, AHashSet};
@@ -2297,8 +2297,13 @@ impl fmt::Display for TVar {
                 }
                 let Some(t) = typ else {
                     write!(f, "unbound")?;
-                    for (i, c) in cons.iter().enumerate() {
-                        write!(f, "{}{c}", if i == 0 { " within " } else { " & " })?
+                    // a bound that differs from one printed by its cells'
+                    // identity alone reads as that one written again
+                    let once = cons.iter().enumerate().filter(|(i, c)| {
+                        !cons[..*i].iter().any(|p| written_identical(p, c))
+                    });
+                    for (n, (_, c)) in once.enumerate() {
+                        write!(f, "{}{c}", if n == 0 { " within " } else { " & " })?
                     }
                     for (i, t) in below.iter().enumerate() {
                         write!(f, "{}{t}", if i == 0 { " above " } else { " | " })?
@@ -3129,18 +3134,6 @@ impl TVar {
                 return;
             }
         }
-        // CR claude for claude: [readability/low] A bound holding a variable still
-        // prints twice where a trait method's bound meets the declared one: `trait T {
-        // val m: fn<'a: Array<'b>, 'b: Number>(self, x: 'a) -> 'a }` read as a value
-        // says "x: 'a: unbound within Array<'b1: ..> & Array<'b: ..>", the callee's
-        // copy (`'b1`) beside the written bound (`'b`). `retire_implied` keeps a
-        // conjunct that names a cell, because dropping one links the cells it names
-        // to the variable's (6 valid-program pins broke when it was tried). A fix
-        // compares the two conjuncts up to the renaming of the cells they name and
-        // keeps the one whose cells the signature owns. Message only: the verdict is
-        // right. probe: ~/ptmp/cr29/scratch/r24/24g/tmv/dupbound3.gx
-        // (declared-bound-doubled-02)
-
         // Dedup computed lock-free: the identity walk can re-enter these cells.
         let (mut to_add, facts) = if same {
             (LPooled::take(), BitFlags::empty())
