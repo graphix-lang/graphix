@@ -1,0 +1,35 @@
+#!/bin/bash
+# probe-run CAP REAL ARGS...: run REAL in its own scope in review-probes.slice
+# (per-run MemoryMax=CAP, no swap, a shared pool). An OOM kill is reported on
+# stdout and stderr and exits 251; a timeout kill stays 137 (timeout -s KILL
+# kills this script too, so nothing is printed then). REAL runs under
+# `setpriv --pdeathsig KILL`: without it a killed wrapper leaves REAL running,
+# and the orphans fill the slice's TasksMax.
+CAP=$1; shift; REAL=$1; shift
+POOL=${REVIEW_PROBE_POOL:-40G}
+UNIT=$XDG_RUNTIME_DIR/systemd/user/review-probes.slice
+if [ ! -f "$UNIT" ]; then
+  mkdir -p "$(dirname "$UNIT")"
+  printf '[Unit]\nDescription=Review probe processes (memory-capped)\n\n[Slice]\nMemoryMax=%s\nMemorySwapMax=0\nTasksMax=16384\n' "$POOL" > "$UNIT"
+  systemctl --user daemon-reload; systemctl --user start review-probes.slice
+fi
+SL=/sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/review.slice/review-probes.slice
+kills() { awk '$1=="oom_kill"{print $2}' "$1" 2>/dev/null || echo 0; }
+b=$(kills $SL/memory.events); bl=$(kills $SL/memory.events.local)
+systemd-run --user --scope --quiet --collect --slice=review-probes.slice \
+  -p MemoryMax=$CAP -p MemorySwapMax=0 -p OOMPolicy=continue -- /usr/bin/setpriv --pdeathsig KILL -- "$REAL" "$@"
+rc=$?
+a=$(kills $SL/memory.events); al=$(kills $SL/memory.events.local)
+if [ "$rc" -eq 137 ] && [ "$a" != "$b" ]; then
+  if [ "$al" != "$bl" ]; then
+    why="the shared $POOL probe pool ran out (several probes at once, maybe not this one's fault): rerun it alone"
+  else
+    why="this run exceeded its ${CAP} memory cap: the program's memory ran away (a finding if the program is reasonable)"
+  fi
+  msg="[probe] OOM-KILLED: $why. This is NOT a timeout."
+  echo "$msg"; echo "$msg" >&2
+  exit 251
+elif [ "$rc" -eq 137 ]; then
+  echo "[probe] killed by SIGKILL (not the timeout, not the memory cap)" >&2
+fi
+exit $rc
