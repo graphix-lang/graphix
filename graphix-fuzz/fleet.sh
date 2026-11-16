@@ -67,7 +67,7 @@ repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 HOSTS=(
     "katana:12:4:darwin"
     "washu-chan:24:1:linux"
-    "aieka:24:4:linux"
+    "aieka:27:4:linux"
     "ryouko:24:1:linux"
 )
 
