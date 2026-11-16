@@ -36,7 +36,7 @@ repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 # A 62GB box holds 80, but the compiler and runtime fork on their own and fill
 # its cores with far fewer: aieka does 55 runs/s at 32 and 44 at 80.
 
-# CR claude for claude: [test-gap/low] ryouko's timeout scale of 1 reports load as
+# XCR claude for claude: [test-gap/low] ryouko's timeout scale of 1 reports load as
 # divergences. Soak nov14b recorded three there
 # (fuzz/pending-triage/nov14b/ryouko/divergence_00000{1,2,3}.gx: a 100000-element
 # array::sort at every timer tick, and array::init(100000, |i| never() + t)), each
@@ -64,6 +64,19 @@ repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 # 605056, generate 183040, reactive 153024, typemorph 251200); washu-chan 47
 # runs/s at 48 workers (1761280 runs in 10.4 h: fuzz 951040, generate 260672,
 # reactive 205056, typemorph 344512).
+# 2026-11-16 claude: Soak nov15b recorded one more at 16 workers
+# (fuzz/pending-triage/nov15b/ryouko/divergence_000000.gx), and it and nov14b's
+# three are one fuzzer bug, not load alone: each program holds 100000 collection
+# slots, over the children's 50000-activation budget, so alone every run of them
+# ends Timeout(ActivationBudget) (graphix-fuzz run). Under load the tested run met
+# the deadline before its budget, and Oracle::settle's budget-beside-deadline step
+# then gave only the node-walk four times the activations and the slow budget, and
+# recorded its trace against the unconfirmed deadline. settle now runs the tested
+# side again with the same room and compares what both made (pin:
+# tests::a_deadline_beside_a_node_walk_budget_gets_the_same_room, which records a
+# divergence without the fix). No scale or worker change is needed for this;
+# delete this XCR when a soak on ryouko at the workers Eric set (24) records no
+# such finding.
 HOSTS=(
     "katana:12:4:darwin"
     "washu-chan:24:1:linux"

@@ -184,8 +184,11 @@ and `tests::mixed_construction_timeouts_retry_the_construction_side`.
 There is also a special case for a node-walk budget beside a JIT `Deadline`: the JIT's native loop counts
 no activations, so the node-walk aborts any recursion deeper than its
 budget whether or not it ends; the node-walk runs again at the slow
-budget with four times the activations, a trace there is a divergence
-(the JIT hung) and another abort leaves the check `unsure`. A Timeout beside
+budget with four times the activations, and another abort leaves the
+check `unsure`. A trace there sends the JIT's run the same way, with the
+same room, since a loaded box makes a deadline of a run that was on its
+way to its own budget: the two then agree or diverge on what they made
+(pin: `tests::a_deadline_beside_a_node_walk_budget_gets_the_same_room`). A Timeout beside
 anything else never agrees, a bottom or a print-only trace included; it is
 CONTAINED where the program reads the environment and the other run shows
 nothing, since a subscribe, a timer or a process that answers late decides
@@ -406,7 +409,8 @@ Three rules learned from a campaign that died of its own exhaust:
   (systemd-oomd killed the session), where at 8GB it aborts its own
   child. macOS enforces no `RLIMIT_AS`, so a darwin child instead
   watches its own resident size (`task_info`, every 100ms) and aborts
-  past the same cap.
+  past the same cap, with a line the parent reads as it reads a failed
+  allocation (`cap_death`).
 - **Other knobs.** `GRAPHIX_FUZZ_TIMEOUT_SCALE` multiplies every
   deadline (an integer, 1 to 100; `fleet.sh` sets it per host);
   `GRAPHIX_FUZZ_BATCH` is the pool's batch size (64; 1 disables

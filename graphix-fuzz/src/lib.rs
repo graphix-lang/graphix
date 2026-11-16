@@ -2400,7 +2400,8 @@ impl<'a> Oracle<'a> {
         // descents: the JIT's native loop counts no activations, so the
         // node-walk aborts any recursion deeper than its budget, ending or
         // not. The node-walk again with the room to finish refutes a JIT
-        // that hung; another abort says nothing.
+        // that, given the same room, does not finish too; another abort
+        // says nothing.
         if ra.mode.node_walk()
             && !rb.mode.node_walk()
             && ra.session == Session::NoCache
@@ -2415,21 +2416,22 @@ impl<'a> Oracle<'a> {
             self.confirmed = true;
             let budget = slow_budget(self.timeout);
             let opts = RunOpts {
-                activations: Some(ACTIVATION_BUDGET * 4),
+                activations: Some(self.activations.unwrap_or(ACTIVATION_BUDGET) * 4),
                 ..RunOpts::default()
             };
-            let again = run_subject(
-                self.code,
-                ra.mode,
-                ra.route,
-                SessionImage::None,
-                budget,
-                opts,
-            )
-            .await
-            .outcome;
+            let roomy = async |run: Run| {
+                let image = SessionImage::None;
+                run_subject(self.code, run.mode, run.route, image, budget, opts)
+                    .await
+                    .outcome
+            };
+            let again = roomy(ra).await;
             if matches!(again, Outcome::Trace(_)) {
-                return Settled::Diverge(pair, again, b);
+                let tested = roomy(rb).await;
+                if again.agrees_at(&tested, s) {
+                    return Settled::Agree;
+                }
+                return Settled::Diverge(pair, again, tested);
             }
             eprintln!(
                 "CONTAINED — the node-walk exceeded its budget beside a JIT deadline, \
@@ -5004,10 +5006,18 @@ fn mem_limit() -> u64 {
         .unwrap_or(8 << 30)
 }
 
-/// What a thread prints when the address-space cap refuses its stack: a
-/// new thread's own (glibc) or its signal stack (std).
-const ADDRESS_SPACE_DEATHS: [&str; 2] =
-    ["mmap failed to allocate stack", "failed to allocate an alternative stack"];
+/// What a darwin child prints before it ends itself past the cap
+/// ([`watch_resident`]).
+const RESIDENT_DEATH: &str = "memory limit: ";
+
+/// What a child the memory cap ends prints where no allocation failed: the
+/// cap refused a new thread's stack (glibc) or its signal stack (std), or
+/// a darwin child passed its resident cap.
+const ADDRESS_SPACE_DEATHS: [&str; 3] = [
+    "mmap failed to allocate stack",
+    "failed to allocate an alternative stack",
+    RESIDENT_DEATH,
+];
 
 /// The sizes of the allocations a line reports failed. Threads failing
 /// at once share a line (`memory allocation of memory allocation of 80
@@ -5017,6 +5027,21 @@ fn failed_requests(l: &str) -> impl Iterator<Item = u64> + '_ {
     l.match_indices(" bytes failed").filter_map(|(at, _)| {
         l[..at].rsplit_once("memory allocation of ")?.1.parse().ok()
     })
+}
+
+/// How the memory cap ended a child, by what it printed: `None` when it
+/// did not, else whether a failed request was no smaller than `cap`, which
+/// is a corrupt length (a runaway fails on a request below it).
+fn cap_death(stderr: &str, cap: u64) -> Option<bool> {
+    let (mut died, mut over) = (false, false);
+    for l in stderr.lines() {
+        for n in failed_requests(l) {
+            died = true;
+            over |= cap > 0 && n >= cap;
+        }
+        died |= ADDRESS_SPACE_DEATHS.iter().any(|d| l.contains(d));
+    }
+    died.then_some(over)
 }
 
 /// Cap this process like the children, unless the environment says
@@ -5083,7 +5108,7 @@ fn watch_resident(limit: u64) {
             let resident = info.resident_size;
             if r == libc::KERN_SUCCESS && resident > limit {
                 eprintln!(
-                    "memory limit: {resident} bytes resident, past the {limit}-byte cap"
+                    "{RESIDENT_DEATH}{resident} bytes resident, past the {limit}-byte cap"
                 );
                 std::process::abort();
             }
@@ -5461,23 +5486,10 @@ async fn died(
         }
         PoolResult::Crash(status)
     };
-    // A request above the cap is a corrupt length, not a runaway (a
-    // runaway fails on a request below it).
-    let cap = mem_limit();
-    let mut over_cap = false;
-    let mut address_space = false;
-    for l in stderr.lines() {
-        for n in failed_requests(l) {
-            address_space = true;
-            over_cap |= cap > 0 && n >= cap;
-        }
-        address_space |= ADDRESS_SPACE_DEATHS.iter().any(|d| l.contains(d));
-    }
-    if over_cap {
-        return crash("allocation over the address-space cap: ");
-    }
-    if !address_space {
-        return crash("");
+    match cap_death(stderr, mem_limit()) {
+        None => return crash(""),
+        Some(true) => return crash("allocation over the address-space cap: "),
+        Some(false) => (),
     }
     // The address-space cap stopped a runaway: containment, as the stack
     // budget's abort is, when the node-walk's run of the same path runs
@@ -6009,6 +6021,31 @@ mod tests {
                 assert_eq!(oracle.verdict(), Verdict::Unsure);
             }
         }
+    }
+
+    /// A tested run that met the deadline before its own budget, as a
+    /// loaded box makes one, is run again with the room the node-walk
+    /// takes to finish: both finish and agree.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_deadline_beside_a_node_walk_budget_gets_the_same_room() {
+        let code = "array::init(300, |i| i + 1)";
+        let budget = 100;
+        let opts = RunOpts { activations: Some(budget), ..RunOpts::default() };
+        let hang_guard = Duration::from_secs(300);
+        let (mode, route, image) = (Mode::Interp, Route::InLanguage, SessionImage::None);
+        let tight = run_subject(code, mode, route, image, hang_guard, opts).await.outcome;
+        assert!(
+            matches!(tight, Outcome::Timeout(Containment::ActivationBudget)),
+            "{tight:?}"
+        );
+        let pair = Pair::Engine;
+        let (ra, rb) = pair.runs().unwrap();
+        let mut oracle =
+            Oracle::new(code, OracleTier::Exact, Duration::from_secs(40), Some(budget));
+        oracle.runs.extend([(ra, tight), (rb, Outcome::Timeout(Containment::Deadline))]);
+        let settled = oracle.settle(pair).await;
+        assert!(matches!(settled, Settled::Agree), "the engines agree given the room");
+        assert_eq!(oracle.verdict(), Verdict::Unsure);
     }
 
     #[test]
@@ -6713,6 +6750,25 @@ mod tests {
             [80]
         );
         assert!(sizes("skipping backtrace printing").is_empty());
+    }
+
+    #[test]
+    fn cap_death_reads_every_way_the_cap_ends_a_child() {
+        let cap = 8 << 30;
+        assert_eq!(cap_death("memory allocation of 80 bytes failed", cap), Some(false));
+        assert_eq!(
+            cap_death("memory allocation of 9000000000 bytes failed", cap),
+            Some(true)
+        );
+        assert_eq!(
+            cap_death("thread 'x': mmap failed to allocate stack", cap),
+            Some(false)
+        );
+        // a darwin child's own stop
+        let resident = "RUN jit in-language\nmemory limit: 8610136064 bytes resident, past the \
+             8589934592-byte cap";
+        assert_eq!(cap_death(resident, cap), Some(false));
+        assert_eq!(cap_death("thread 'main' panicked at src/lib.rs:1:1:", cap), None);
     }
 
     /// How much fusion a probe demands under the JIT, beyond value
