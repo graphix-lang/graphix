@@ -55,6 +55,10 @@ pub struct VarInfo {
     /// The lower bounds that reached this variable out of a joining
     /// variable's bounds: those of one source are one type.
     joined: Vec<(Var, Ty)>,
+    /// The variables at this one's level that flow into it. What flows
+    /// into them is passed on as it arrives, so this is a record for
+    /// fixing, never walked when a bound is added.
+    feeders: Vec<Var>,
     /// Bound by a pattern over an `Any` part: with no use it is `Any`.
     over_any: bool,
     watches: Vec<(Watch, bool)>,
@@ -104,6 +108,7 @@ impl Solver {
             fixed: None,
             demanded: false,
             joined: vec![],
+            feeders: vec![],
             over_any: false,
             watches: vec![],
         });
@@ -198,7 +203,7 @@ impl Solver {
                         self.info_mut(*v).upper.push(b.clone());
                         match &b {
                             Ty::Var(w) if self.info(*w).level == lvl => {
-                                self.info_mut(*w).lower.push(a.clone())
+                                self.info_mut(*w).feeders.push(*v)
                             }
                             Ty::Var(_) => (),
                             b => self.demanded(*v, b)?,
@@ -343,6 +348,7 @@ impl Solver {
                 Ty::Var(u) => !seen.contains(u) && self.decided(*u, seen),
                 _ => true,
             })
+            || self.info(v).feeders.clone().iter().any(|u| !seen.contains(u) && self.decided(*u, seen))
     }
 
     /// `b` is a new upper bound of `v`: a use that needs a shape takes it
@@ -831,7 +837,9 @@ impl Solver {
         }
         let mut cands: Vec<Ty> = vec![];
         let mut groups: Vec<(Var, Vec<Ty>)> = vec![];
-        for l in self.info(v).lower.clone() {
+        let feeders = self.info(v).feeders.iter().filter(|u| !self.info(**u).quantified);
+        let feeders: Vec<Ty> = feeders.map(|u| Ty::Var(*u)).collect();
+        for l in self.info(v).lower.clone().into_iter().chain(feeders) {
             match self.shallow(&l) {
                 _ if matches!(&l, Ty::Var(u) if self.info(*u).demanded && !self.info(*u).over_any) => (),
                 // a variable nothing flows into says nothing as a lower
