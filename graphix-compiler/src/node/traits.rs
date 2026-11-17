@@ -15,9 +15,11 @@ use super::{
     genn::SynthCall,
     lambda::LambdaDef,
     module::{self, Holder},
+    solving,
 };
 use crate::{
-    BindId, CFlag, CompileCtx, DefAssertionKind, ExecCtx, Node, NodeView, Rt, Scope,
+    BindId, CFlag, CompileCtx, DefAssertionKind, ExecCtx, LambdaId, Node, NodeView, Rt,
+    Scope,
     SourcePosition, TagValue, Update, bailat,
     env::{
         Env, Glob, ImplDef, Map, TraitDef, TraitMethodDef, TraitMethodRef, TraitMethodSig,
@@ -35,8 +37,9 @@ use crate::{
     stack::ensure_sufficient,
     typ::{
         AmbiguousMember, CoreTrait, FnArgKind, FnType, TVar, TakerUnion, TraitId, Type,
-        TypeRef, UndecidedTaker, check_bounds_acyclic, seed_conjuncts,
-        settle::VariableUnion, tvar::RigidGate,
+        TypeRef, UndecidedTaker, bounds, check_bounds_acyclic, seed_conjuncts,
+        settle::VariableUnion,
+        tvar::{AtLevel, Level, RigidGate, current_level},
     },
     wrap,
 };
@@ -176,6 +179,23 @@ fn implements<R: Rt>(
             ),
         }
     })
+}
+
+/// Under a check by bounds, whether a method's body, whose binding holds
+/// the scheme `made`, is the `declared` signature for whatever each of the
+/// declaration's variables stands for: one instance of the body fits the
+/// declaration with its variables held as constants. The variables the
+/// body's check held as constants are the scheme's from here on.
+fn fits_declared<R: Rt>(ctx: &CompileCtx<R>, made: &Type, declared: &Type) -> Result<()> {
+    let outer = current_level();
+    solving(|s| s.quantify(made, outer.depth()));
+    let level = Level::Def { depth: outer.depth() + 1, owner: LambdaId::new() };
+    let _at = AtLevel::enter(level);
+    let declared = declared.reset_tvars();
+    declared.claim_free(level);
+    let _held = hold_declared(iter::once(&declared));
+    let one = solving(|s| s.instantiate(made, Level::GENERIC.depth() - 1, level));
+    declared.check_contains(&ctx.env, &one)
 }
 
 /// [`check_method_return`] of a method [`implements`] held to `declared`.
@@ -799,6 +819,22 @@ impl<R: Rt> Update<R> for Trait<R> {
         wrap!(self.defaults, self.defaults.typecheck0(ctx))?;
         drop(declared);
         let Some(record) = ctx.env.trait_def(self.def.id) else { return Ok(()) };
+        if bounds::active() {
+            for m in record.methods.iter() {
+                let Some(id) = m.default else { continue };
+                let Some(bind) = ctx.env.by_id.get(&id) else { continue };
+                let declared = Type::Fn(m.typ.clone());
+                fits_declared(ctx, &bind.typ.clone(), &declared).map_err(|e| {
+                    let told = format_compact!(
+                        "the default {} of trait {} does not implement the declared {declared}",
+                        m.name,
+                        self.def.name
+                    );
+                    Told::over(e, &told)
+                })?
+            }
+            return Ok(());
+        }
         // every written name in a method's signature must name something by
         // the check's end, and it writes no union of two of its variables
         for m in record.methods.iter() {
@@ -1484,6 +1520,24 @@ impl<R: Rt> Update<R> for Impl<R> {
         };
         wrap!(self.body, self.body.typecheck0(ctx).map_err(|e| self.method_written(e)))?;
         drop(declared);
+        if bounds::active() {
+            for d in self.trait_def.methods.iter() {
+                let Some(id) = self.def.methods.get(d.name.as_str()) else { continue };
+                let Some(bind) = ctx.env.by_id.get(id) else { continue };
+                let declared = Type::Fn(Arc::new(method_sig_at(&d.typ, &self.def.target)));
+                fits_declared(ctx, &bind.typ.clone(), &declared).map_err(|e| {
+                    let told = format_compact!(
+                        "method {} of impl {} for {} does not implement the declared {}",
+                        d.name,
+                        self.trait_def.name,
+                        self.def.target,
+                        declared.resolve_tvars()
+                    );
+                    Told::over(e, &told)
+                })?
+            }
+            return Ok(());
+        }
         // a user-annotated method must still fit the declared signature
         for d in self.trait_def.methods.iter() {
             let Some(id) = self.def.methods.get(d.name.as_str()) else { continue };

@@ -454,9 +454,7 @@ impl<R: Rt> Bind<R> {
             // value flows into
             let own = |annotation: Option<Type>| match annotation {
                 Some(t) => {
-                    if !matches!(held, Held::Definition(_)) {
-                        t.claim_free(current_level())
-                    }
+                    t.claim_free(current_level());
                     t
                 }
                 None => Type::empty_tvar(),
@@ -750,10 +748,10 @@ impl<R: Rt> Bind<R> {
                         self.pattern.ids(&mut |id| ctx.env.retype(id, value.clone()));
                         self.typ = value
                     }
+                    // the written type is the scheme: the value fits it,
+                    // and may be the very type written (a method's)
                     (true, _) => {
-                        wrap!(node, generalize(ctx, &value))?;
-                        let one = solving(|s| s.instantiate(&value, depth, level));
-                        wrap!(node, self.typ.check_contains(&ctx.env, &one))?;
+                        wrap!(node, self.typ.check_contains(&ctx.env, &value))?;
                         wrap!(node, generalize(ctx, &self.typ))?
                     }
                 }
