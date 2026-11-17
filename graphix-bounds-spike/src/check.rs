@@ -976,6 +976,7 @@ impl Checker {
             self.s.constrain(&scrutinee, &unsplit(&union(ts)))?
         }
         let id = self.s.select(arms);
+        self.s.selects[id].at = format!("{}:{}:{}", self.here.join("::"), sel.arg.pos.line, sel.arg.pos.column);
         self.s.watch(&scrutinee, Watch::Select(id))?;
         Ok(result)
     }

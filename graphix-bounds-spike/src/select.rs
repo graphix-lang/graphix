@@ -153,6 +153,10 @@ pub struct Select {
     /// reaches there is no dead arm.
     instance: bool,
     waiting: Vec<Ty>,
+    /// Where the select is written, for a refusal.
+    pub at: String,
+    /// What was passed down the arms.
+    seen: Vec<Ty>,
 }
 
 /// What one pattern makes of one type: the part it admits, what it leaves,
@@ -166,7 +170,7 @@ struct Routed {
 impl Solver {
     pub fn select(&mut self, arms: Vec<Arm>) -> usize {
         let hit = vec![false; arms.len()];
-        self.selects.push(Select { arms, hit, routed: false, instance: false, waiting: vec![] });
+        self.selects.push(Select { arms, hit, routed: false, instance: false, waiting: vec![], at: String::new(), seen: vec![] });
         self.selects.len() - 1
     }
 
@@ -518,9 +522,11 @@ impl Solver {
             }
         }
         if !matches!(reach, Ty::Bot) {
-            bail!("missing match cases: nothing matches {}", unsplit(&reach))
+            bail!("missing match cases: nothing matches {} ({})", unsplit(&reach), self.selects[id].at)
         }
         self.selects[id].routed = true;
+        let whole = unsplit(&self.deep(t));
+        self.selects[id].seen.push(whole);
         hits.into_iter().for_each(|i| self.selects[id].hit[i] = true);
         for (v, t) in binds {
             match unsplit(&t) {
@@ -557,7 +563,8 @@ impl Solver {
     pub(crate) fn dead_arms(&self) -> Result<()> {
         for s in self.selects.iter().filter(|s| s.routed && !s.instance) {
             if let Some(i) = s.hit.iter().position(|h| !h) {
-                bail!("pattern {} will never match: nothing reaches it", i + 1)
+                let seen: Vec<String> = s.seen.iter().map(|t| t.to_string()).collect();
+                bail!("pattern {} will never match: nothing reaches it ({}; the value is {})", i + 1, s.at, seen.join(" | "))
             }
         }
         Ok(())

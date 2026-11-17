@@ -807,24 +807,52 @@ impl Solver {
                 let direct = direct.iter().map(|l| self.copy(l, above, at, memo)).collect();
                 let info = self.info_mut(n);
                 (info.lower, info.upper, info.direct) = (ls, us, direct);
-                for (w, _) in self.info(*v).watches.clone() {
-                    if let Watch::Select(id) = w {
-                        let arms = self.select_arms(id);
-                        let arms = arms
-                            .into_iter()
-                            .map(|a| Arm {
-                                pat: a.pat.map_vars(&mut |u| {
-                                    match self.copy(&Ty::Var(u), above, at, memo) {
-                                        Ty::Var(n) => n,
-                                        _ => u,
-                                    }
-                                }),
-                                ..a
-                            })
-                            .collect();
-                        let id = self.select_instance(arms);
-                        self.info_mut(n).watches.push((Watch::Select(id), false))
-                    }
+                // the copy is used as the original is: what flows into it
+                // in this instance meets the same field reads, calls and
+                // selects, and the variables that feed it are copied too
+                let feeders = self.info(*v).feeders.clone();
+                let feeders = feeders
+                    .iter()
+                    .filter_map(|u| match self.copy(&Ty::Var(*u), above, at, memo) {
+                        Ty::Var(n) => Some(n),
+                        _ => None,
+                    })
+                    .collect();
+                self.info_mut(n).feeders = feeders;
+                for (w, fired) in self.info(*v).watches.clone() {
+                    let w = match w {
+                        Watch::Field { field, out } => {
+                            Watch::Field { field, out: self.copy(&out, above, at, memo) }
+                        }
+                        Watch::Index { i, out } => {
+                            Watch::Index { i, out: self.copy(&out, above, at, memo) }
+                        }
+                        Watch::Call { args, out } => Watch::Call {
+                            args: args
+                                .iter()
+                                .map(|(l, t, s)| (l.clone(), self.copy(t, above, at, memo), *s))
+                                .collect(),
+                            out: self.copy(&out, above, at, memo),
+                        },
+                        Watch::Select(id) => {
+                            let arms = self.select_arms(id);
+                            let arms = arms
+                                .into_iter()
+                                .map(|a| Arm {
+                                    pat: a.pat.map_vars(&mut |u| {
+                                        match self.copy(&Ty::Var(u), above, at, memo) {
+                                            Ty::Var(n) => n,
+                                            _ => u,
+                                        }
+                                    }),
+                                    ..a
+                                })
+                                .collect();
+                            Watch::Select(self.select_instance(arms))
+                        }
+                    };
+                    let fired = fired && !matches!(w, Watch::Select(_));
+                    self.info_mut(n).watches.push((w, fired))
                 }
                 Some(Ty::Var(n))
             }
@@ -1009,12 +1037,18 @@ impl Solver {
 
     fn fix_scope(&mut self, min: u32, last: bool, mark: usize) -> Result<()> {
         let mut progress = true;
-        while progress {
+        // at the input's end, uses that wait on each other are finished in
+        // whatever order is left
+        let mut ordered = true;
+        while progress || (last && ordered) {
+            if !progress {
+                ordered = false
+            }
             progress = false;
             // a pending use waits for any other whose result reaches what
             // it reads: (kind, index) and everything its result reaches
             let mut produced: Vec<((u8, usize), HashSet<Var>)> = vec![];
-            if !last {
+            if ordered {
                 let closure = |s: &Self, outs: Vec<Var>| {
                     let mut all = vec![];
                     outs.iter().for_each(|v| s.reach(&Ty::Var(*v), &mut all));
