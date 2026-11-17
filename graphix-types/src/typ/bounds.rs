@@ -8,7 +8,7 @@ use crate::{
     env::Env,
     stack::ensure_sufficient,
     typ::{
-        FnArgKind, FnArgType, FnType, Mutability, TVar, Type, node_addr,
+        Bound, FnArgKind, FnArgType, FnType, Mutability, TVar, Type, node_addr,
         setops::union_identical,
         tvar::{AtLevel, Level},
     },
@@ -40,6 +40,14 @@ pub struct Known {
     /// For a declared variable: the cells outside its definition that its
     /// values flow into. Each instance's type for it flows there.
     pub(crate) sinks: SmallVec<[TVar; 1]>,
+    /// A scheme's variable: each use of the scheme takes a copy, and
+    /// nothing fixes it.
+    pub(crate) quantified: bool,
+    /// Decided by what is demanded of it, nothing having flowed in: as a
+    /// lower bound of another cell it says nothing.
+    pub(crate) demanded: bool,
+    /// The check that bounded it has it in its list.
+    pub(crate) listed: bool,
 }
 
 /// The relation's own state for one check.
@@ -56,7 +64,18 @@ pub struct Solving {
     attempts: u32,
     /// A type below a union more than one of whose members could take it,
     /// waiting until both are decided.
-    held: Vec<(Type, Type)>,
+    /// The third is set where a scheme's variables hold the choice, so
+    /// each instance takes a copy.
+    held: Vec<(Type, Type, bool)>,
+    /// Every cell this check has bounded, in the order first met: a
+    /// definition's own are those met since it began.
+    cells: Vec<TVar>,
+    /// The cells being fixed, by address.
+    fixing: AHashSet<usize>,
+    /// Cells inside a generic definition that take more than one value
+    /// and whose one type its variables decide: each instance checks a
+    /// copy.
+    singles: Vec<TVar>,
     /// A held choice is being made: a decided member that does not fit is
     /// out.
     resolving: bool,
@@ -193,9 +212,15 @@ impl Solving {
     /// [`Self::constrain`] as a question: where `a` does not fit, every
     /// bound the try added is taken back and nothing is changed.
     pub fn attempt(&mut self, env: &Env, a: &Type, b: &Type) -> bool {
+        self.attempting(|s| s.constrain(env, a, b))
+    }
+
+    /// Whether `f` succeeds; where it does not, every bound it added is
+    /// taken back.
+    fn attempting(&mut self, f: impl FnOnce(&mut Self) -> Result<()>) -> bool {
         let (mark, held) = (self.added.len(), self.held.len());
         self.attempts += 1;
-        let fits = self.constrain(env, a, b).is_ok();
+        let fits = f(self).is_ok();
         self.attempts -= 1;
         if !fits {
             self.held.truncate(held);
@@ -370,6 +395,7 @@ impl Solving {
                     }
                 };
                 self.note(v, Added::Upper);
+                self.track(v);
                 if let Some(w) = vb {
                     if w.level().depth() == at.depth() {
                         known(w, |k| k.feeders.push(v.clone()));
@@ -424,6 +450,7 @@ impl Solving {
             }
         };
         self.note(w, Added::Lower);
+        self.track(w);
         if !edge {
             known(w, |k| k.direct.push(a.clone()));
             self.note(w, Added::Direct)
@@ -560,7 +587,7 @@ impl Solving {
                 (true, _) => Ok(()),
                 (false, [m]) => self.constrain(env, &Type::Primitive(rest), m),
                 (false, []) => mismatch(b, a),
-                (false, _) => Ok(self.held.push((a.clone(), b.clone()))),
+                (false, _) => Ok(self.held.push((a.clone(), b.clone(), false))),
             };
         }
         let takers: SmallVec<[&Type; 2]> =
@@ -579,10 +606,10 @@ impl Solving {
                 match (&loose[..], &cells[..]) {
                     ([m], []) | ([], [m]) => self.constrain(env, a, m),
                     ([], []) => mismatch(b, a),
-                    _ => Ok(self.held.push((a.clone(), b.clone()))),
+                    _ => Ok(self.held.push((a.clone(), b.clone(), false))),
                 }
             }
-            _ => Ok(self.held.push((a.clone(), b.clone()))),
+            _ => Ok(self.held.push((a.clone(), b.clone(), false))),
         }
     }
 
@@ -659,6 +686,527 @@ impl Solving {
         }
         self.constrain(env, &f.rtype, &g.rtype)?;
         self.constrain(env, &f.throws, &g.throws)
+    }
+
+    /// Have `v` among the cells this check fixes.
+    pub fn track(&mut self, v: &TVar) {
+        if !known(v, |k| std::mem::replace(&mut k.listed, true)) {
+            self.cells.push(v.clone())
+        }
+    }
+
+    /// How many cells the check has met: a definition's own are those met
+    /// after its mark.
+    pub fn mark(&self) -> usize {
+        self.cells.len()
+    }
+}
+
+/// `t` with every bound cell replaced by what it is bound to.
+fn deep(t: &Type) -> Type {
+    map_cells(t, &mut |_| None)
+}
+
+/// `t` with each open cell `f` answers for replaced, bound cells looked
+/// through.
+fn map_cells(t: &Type, f: &mut impl FnMut(&TVar) -> Option<Type>) -> Type {
+    ensure_sufficient(|| match t {
+        Type::TVar(tv) => match tv.binding() {
+            Some(b) => map_cells(&b, f),
+            None => f(tv).unwrap_or_else(|| t.clone()),
+        },
+        t => t.cow_children(&mut |c| Some(map_cells(c, f))).unwrap_or_else(|| t.clone()),
+    })
+}
+
+/// The unbound cells of `t`, each once, bound cells looked through;
+/// declared variables inside their definition too where `rigid`.
+fn cells_of(t: &Type, rigid: bool, out: &mut SmallVec<[TVar; 4]>) {
+    fn go(
+        t: &Type,
+        rigid: bool,
+        out: &mut SmallVec<[TVar; 4]>,
+        seen: &mut AHashSet<usize>,
+    ) {
+        ensure_sufficient(|| match t {
+            Type::TVar(tv) => match tv.binding() {
+                Some(b) => go(&b, rigid, out, seen),
+                None if (rigid || !tv.is_rigid())
+                    && !out.iter().any(|o| o.same_cell(tv)) =>
+                {
+                    out.push(tv.clone())
+                }
+                None => (),
+            },
+            t if node_addr(t).is_some_and(|n| !seen.insert(n)) => (),
+            t => {
+                let _ = t.try_for_each_child::<()>(&mut |c| {
+                    go(c, rigid, out, seen);
+                    ControlFlow::Continue(())
+                });
+            }
+        })
+    }
+    go(t, rigid, out, &mut LPooled::take())
+}
+
+fn open_cells(t: &Type) -> SmallVec<[TVar; 4]> {
+    let mut out = SmallVec::new();
+    cells_of(t, false, &mut out);
+    out
+}
+
+fn quantified(v: &TVar) -> bool {
+    v.cell().read().solving.as_ref().is_some_and(|k| k.quantified)
+}
+
+fn demanded(v: &TVar) -> bool {
+    v.cell().read().solving.as_ref().is_some_and(|k| k.demanded)
+}
+
+fn feeders(v: &TVar) -> SmallVec<[TVar; 1]> {
+    let cell = v.cell();
+    let c = cell.read();
+    c.solving.as_ref().map(|k| k.feeders.clone()).unwrap_or_default()
+}
+
+fn singleton(v: &TVar) -> bool {
+    v.cell_constraints().iter().any(|c| matches!(c, Type::Bound(Bound::Singleton)))
+}
+
+/// Whether anything says what `v` is: it is bound, or something that is
+/// no undecided cell flows into it.
+fn decided(v: &TVar, seen: &mut SmallVec<[usize; 8]>) -> bool {
+    seen.push(v.cell_addr());
+    let mut through = |u: &TVar| !seen.contains(&u.cell_addr()) && decided(u, seen);
+    v.is_bound()
+        || v.cell_lower().iter().any(|l| match open(&shallow(l)) {
+            Some(u) => through(u),
+            None => true,
+        })
+        || feeders(v).iter().any(|u| through(u))
+}
+
+impl Solving {
+    /// Every unbound cell reachable from `t` through bounds.
+    fn reach(&self, t: &Type, seen: &mut SmallVec<[TVar; 4]>) {
+        let mut found = SmallVec::new();
+        cells_of(t, true, &mut found);
+        for v in found {
+            if !seen.iter().any(|s| s.same_cell(&v)) {
+                seen.push(v.clone());
+                let (lower, upper) = (v.cell_lower(), v.cell_constraints());
+                lower.iter().chain(upper.iter()).for_each(|b| self.reach(b, seen));
+                feeders(&v).iter().for_each(|u| self.reach(&Type::TVar(u.clone()), seen))
+            }
+        }
+    }
+
+    /// Mark the variables of a declared scheme `t` as its own: those
+    /// deeper than `depth`.
+    pub fn quantify(&mut self, t: &Type, depth: u32) {
+        let mut kept = SmallVec::new();
+        self.reach(t, &mut kept);
+        for v in kept.iter().filter(|v| v.level().depth() > depth) {
+            known(v, |k| k.quantified = true)
+        }
+    }
+
+    /// Close the definition of a generic binding of type `t`, checked one
+    /// level deeper than `depth`: what `t` reaches stays, as the scheme's
+    /// variables; every other cell the check has met since `mark` is
+    /// fixed.
+    pub fn generalize(
+        &mut self,
+        env: &Env,
+        t: &Type,
+        depth: u32,
+        mark: usize,
+    ) -> Result<()> {
+        self.quantify(t, depth);
+        self.fix_scope(env, depth + 1, false, mark)?;
+        for v in self.cells[mark..].iter() {
+            let pending = v.level().depth() > depth
+                && !v.is_bound()
+                && !v.is_rigid()
+                && !quantified(v)
+                && !v.joins()
+                && v.cell_direct().len() > 1;
+            if pending {
+                self.singles.push(v.clone())
+            }
+        }
+        Ok(())
+    }
+
+    /// Fix every cell an input left open.
+    pub fn finish(&mut self, env: &Env) -> Result<()> {
+        self.fix_scope(env, 0, true, 0)
+    }
+
+    /// A use of the scheme `t`: a copy of it, at the level `at`, with a
+    /// cell of its own for each of the scheme's (those deeper than
+    /// `above`), bounded as the scheme's are.
+    pub fn instantiate(&mut self, t: &Type, above: u32, at: Level) -> Type {
+        let mut copies = LPooled::take();
+        let t = self.copy(t, above, at, &mut copies);
+        let mine = |t: &Type, copies: &AHashMap<usize, TVar>| {
+            let mut all = SmallVec::new();
+            cells_of(t, true, &mut all);
+            all.iter().any(|v| copies.contains_key(&v.cell_addr()))
+        };
+        // what the definition left to its instances
+        for (a, b, scheme) in self.held.clone() {
+            if scheme && (mine(&a, &copies) || mine(&b, &copies)) {
+                let pair = (
+                    self.copy(&a, above, at, &mut copies),
+                    self.copy(&b, above, at, &mut copies),
+                );
+                self.held.push((pair.0, pair.1, false))
+            }
+        }
+        for v in self.singles.clone() {
+            let mut all = SmallVec::new();
+            self.reach(&Type::TVar(v.clone()), &mut all);
+            if v.level().depth() > above
+                && all.iter().any(|u| copies.contains_key(&u.cell_addr()))
+            {
+                self.copy(&Type::TVar(v), above, at, &mut copies);
+            }
+        }
+        t
+    }
+
+    fn copy(
+        &mut self,
+        t: &Type,
+        above: u32,
+        at: Level,
+        copies: &mut AHashMap<usize, TVar>,
+    ) -> Type {
+        let mut made: SmallVec<[(TVar, TVar); 4]> = SmallVec::new();
+        let t = map_cells(t, &mut |v| {
+            if v.level().depth() <= above {
+                return None;
+            }
+            if let Some(n) = copies.get(&v.cell_addr()) {
+                return Some(Type::TVar(n.clone()));
+            }
+            let n = {
+                let _at = AtLevel::enter(at);
+                TVar::empty_named(v.name.clone())
+            };
+            copies.insert(v.cell_addr(), n.clone());
+            made.push((v.clone(), n.clone()));
+            Some(Type::TVar(n))
+        });
+        // the copy is bounded and fed as the original is
+        for (v, n) in made {
+            let (lower, mut upper) = (v.cell_lower(), v.cell_constraints());
+            let (join, direct, fed, sinks) = {
+                let cell = v.cell();
+                let c = cell.read();
+                match c.solving.as_ref() {
+                    Some(k) => (
+                        k.join && c.rigid_gates == 0,
+                        k.direct.clone(),
+                        k.feeders.clone(),
+                        k.sinks.clone(),
+                    ),
+                    None => Default::default(),
+                }
+            };
+            upper.extend(sinks.into_iter().map(Type::TVar));
+            let all = |s: &mut Self, ts: &[Type], copies: &mut AHashMap<usize, TVar>| {
+                ts.iter().map(|t| s.copy(t, above, at, copies)).collect()
+            };
+            let (lower, upper, direct): (
+                SmallVec<[Type; 1]>,
+                SmallVec<[Type; 1]>,
+                SmallVec<[Type; 1]>,
+            ) = (
+                all(self, &lower, copies),
+                all(self, &upper, copies),
+                all(self, &direct, copies),
+            );
+            let mut feeds: SmallVec<[TVar; 1]> = SmallVec::new();
+            for u in fed.iter() {
+                if let Type::TVar(u) =
+                    &self.copy(&Type::TVar(u.clone()), above, at, copies)
+                {
+                    feeds.push(u.clone())
+                }
+            }
+            {
+                let cell = n.cell();
+                let mut c = cell.write();
+                (c.lower, c.constraints) = (lower, upper);
+                let k = c.solving.get_or_insert_default();
+                (k.join, k.direct, k.feeders) = (join, direct, feeds)
+            }
+            self.track(&n)
+        }
+        t
+    }
+
+    fn fixable(&self, v: &TVar, min: u32) -> bool {
+        let mut all = SmallVec::new();
+        self.reach(&Type::TVar(v.clone()), &mut all);
+        all.iter().all(|u| u.level().depth() >= min && !quantified(u))
+    }
+
+    /// Fix the cells met since `mark` that are at `min` or deeper and that
+    /// no scheme variable reaches; with `last`, every cell left.
+    fn fix_scope(&mut self, env: &Env, min: u32, last: bool, mark: usize) -> Result<()> {
+        let mut progress = true;
+        // at the input's end, choices that wait on each other are made in
+        // whatever order is left
+        let mut ordered = true;
+        while progress || (last && ordered) {
+            if !progress {
+                ordered = false
+            }
+            progress = false;
+            // a held choice waits for any other whose result reaches what
+            // it reads
+            let mut produced: Vec<(usize, SmallVec<[TVar; 4]>)> = vec![];
+            if ordered {
+                for (i, (_, b, _)) in self.held.iter().enumerate() {
+                    let mut all = SmallVec::new();
+                    open_cells(b)
+                        .iter()
+                        .for_each(|v| self.reach(&Type::TVar(v.clone()), &mut all));
+                    produced.push((i, all))
+                }
+            }
+            let free = |i: usize, ins: &[TVar]| {
+                !produced.iter().any(|(k, c)| {
+                    *k != i && ins.iter().any(|v| c.iter().any(|u| u.same_cell(v)))
+                })
+            };
+            for i in (0..self.held.len()).rev() {
+                let (a, b, scheme) = self.held[i].clone();
+                if scheme {
+                    continue;
+                }
+                let (avs, bvs) = (open_cells(&a), open_cells(&b));
+                let ready = avs.iter().chain(bvs.iter()).all(|v| self.fixable(v, min));
+                if ready && free(i, &avs) {
+                    // a member something has decided is decided here; one
+                    // nothing has stays open, to take what the others do
+                    // not
+                    self.held.swap_remove(i);
+                    avs.iter().try_for_each(|v| self.fix(env, v))?;
+                    for v in bvs.iter() {
+                        if decided(v, &mut SmallVec::new()) {
+                            self.fix(env, v)?
+                        }
+                    }
+                    let n = self.held.len();
+                    self.resolving = true;
+                    let r = self.constrain(env, &deep(&a), &deep(&b));
+                    self.resolving = false;
+                    r?;
+                    progress |= self.held.len() == n
+                } else if avs.iter().chain(bvs.iter()).any(quantified) {
+                    self.held[i].2 = true
+                }
+            }
+        }
+        // a cell something flows into first: one nothing flows into may be
+        // decided by a cell that holds it
+        let (flowing, empty): (Vec<TVar>, Vec<TVar>) = self.cells[mark..]
+            .iter()
+            .cloned()
+            .partition(|v| decided(v, &mut SmallVec::new()));
+        // what a choice still held will decide is not known yet: it, and
+        // whatever it reaches, waits with the choice
+        let mut waiting: SmallVec<[TVar; 4]> = SmallVec::new();
+        if !last {
+            for (_, b, _) in self.held.iter() {
+                for v in open_cells(b) {
+                    self.reach(&Type::TVar(v), &mut waiting)
+                }
+            }
+        }
+        for v in flowing.into_iter().chain(empty) {
+            let mine = !v.is_bound()
+                && !v.is_rigid()
+                && !quantified(&v)
+                && v.level().depth() >= min;
+            let now = last
+                || (self.fixable(&v, min) && !waiting.iter().any(|w| w.same_cell(&v)));
+            if mine && now {
+                self.fix(env, &v)?
+            }
+        }
+        if last && let Some((a, b, _)) = self.held.iter().find(|h| !h.2) {
+            bail!(
+                "{a} could go to more than one member of the union {b}, and nothing has decided which"
+            )
+        }
+        Ok(())
+    }
+
+    /// Give `v` one type: the union of what flows into it, or, where
+    /// nothing does, the narrowest of what its uses demand.
+    fn fix(&mut self, env: &Env, v: &TVar) -> Result<()> {
+        if v.is_bound()
+            || v.is_rigid()
+            || quantified(v)
+            || !self.fixing.insert(v.cell_addr())
+        {
+            return Ok(());
+        }
+        let r = self.fixed(env, v);
+        self.fixing.remove(&v.cell_addr());
+        v.cell().write().set_binding(Some(r?));
+        Ok(())
+    }
+
+    fn fixed(&mut self, env: &Env, v: &TVar) -> Result<Type> {
+        // a cell nothing has decided may stay open inside a bound: a
+        // holder that shares it can still decide it
+        let mut flows: SmallVec<[Type; 4]> = SmallVec::new();
+        let fed = feeders(v).into_iter().filter(|u| !quantified(u)).map(Type::TVar);
+        for l in v.cell_lower().into_iter().chain(fed) {
+            if let Some(t) = self.settled(env, &l)?
+                && !matches!(t, Type::Bottom)
+            {
+                flows.push(t)
+            }
+        }
+        if !v.joins() {
+            let mut given: SmallVec<[Type; 4]> = SmallVec::new();
+            for l in v.cell_direct() {
+                if let Some(t) = self.settled(env, &l)?
+                    && !matches!(t, Type::Bottom)
+                    && !given.iter().any(|g| union_identical(g, &t))
+                {
+                    given.push(t)
+                }
+            }
+            if given.len() > 1 {
+                self.holder(env, &given)?
+            }
+        }
+        let single = singleton(v);
+        let t = match &flows[..] {
+            [] if single => Type::Bottom,
+            [] => {
+                let mut demands: SmallVec<[Type; 4]> = SmallVec::new();
+                for u in v.cell_constraints() {
+                    for w in open_cells(&u) {
+                        self.fix(env, &w)?
+                    }
+                    let u = deep(&u);
+                    let says = !matches!(u, Type::TVar(_) | Type::Bound(_))
+                        && !u.is_trait_ref(env);
+                    if says {
+                        demands.push(u)
+                    }
+                }
+                known(v, |k| k.demanded = true);
+                // a bound that names the cell itself decides nothing alone
+                let t = self.meet(env, &demands)?;
+                match open_cells(&t).iter().any(|u| u.same_cell(v)) {
+                    true => Type::Bottom,
+                    false => t,
+                }
+            }
+            [one] => one.clone(),
+            many => {
+                let all: SmallVec<[&Type; 4]> = many.iter().collect();
+                Type::union_exact(env, &all)?
+            }
+        };
+        let one =
+            matches!(&t, Type::Primitive(p) if p.exactly_one().is_some() || p.is_empty());
+        if single && !matches!(t, Type::Bottom) && !one {
+            // a declared variable is one type, which each call must give
+            // it
+            match &t {
+                Type::TVar(r) if r.is_rigid() => {
+                    let cell = r.cell();
+                    cell.write().add_constraint(Type::Bound(Bound::Singleton))
+                }
+                _ => bail!(
+                    "cannot compute with {t}: both operands must be one numeric type"
+                ),
+            }
+        }
+        Ok(t)
+    }
+
+    /// What a lower bound `l` says once the cells in it are fixed: nothing
+    /// for a cell nothing flows into (it is fixed from above, later).
+    fn settled(&mut self, env: &Env, l: &Type) -> Result<Option<Type>> {
+        if let Type::TVar(u) = l
+            && demanded(u)
+        {
+            return Ok(None);
+        }
+        let l = shallow(l);
+        Ok(match open(&l) {
+            Some(u) if !decided(u, &mut SmallVec::new()) => None,
+            Some(u) => {
+                self.fix(env, u)?;
+                u.binding().filter(|_| !demanded(u))
+            }
+            None => {
+                for u in open_cells(&l) {
+                    if self.fixing.contains(&u.cell_addr()) {
+                        bail!("infinite type: a variable holds itself in {l}")
+                    }
+                    if decided(&u, &mut SmallVec::new()) {
+                        self.fix(env, &u)?
+                    }
+                }
+                Some(deep(&l))
+            }
+        })
+    }
+
+    /// One of `ts` holds the others.
+    fn holder(&mut self, env: &Env, ts: &[Type]) -> Result<()> {
+        // one with a cell nothing has decided is tried last: that cell
+        // takes what the others need
+        let (decided, loose): (SmallVec<[&Type; 4]>, SmallVec<[&Type; 4]>) =
+            ts.iter().partition(|t| !t.has_free());
+        for t in decided.into_iter().chain(loose) {
+            if self.attempting(|s| ts.iter().try_for_each(|o| s.constrain(env, o, t))) {
+                return Ok(());
+            }
+        }
+        let t = &ts[0];
+        let other = ts.iter().find(|o| !self.attempt(env, o, t)).unwrap_or(t);
+        bail!(
+            "type mismatch {t} does not contain {other}: declare the type that holds both"
+        )
+    }
+
+    /// The one of `ts` every other holds; nothing demanded is bottom.
+    fn meet(&mut self, env: &Env, ts: &[Type]) -> Result<Type> {
+        if ts.is_empty() {
+            return Ok(Type::Bottom);
+        }
+        for t in ts {
+            if self.attempting(|s| ts.iter().try_for_each(|o| s.constrain(env, t, o))) {
+                return Ok(t.clone());
+            }
+        }
+        let common = ts.iter().try_fold(None, |acc: Option<_>, t| match (acc, t) {
+            (None, Type::Primitive(p)) => Some(Some(*p)),
+            (Some(a), Type::Primitive(p)) => Some(Some(a & *p)),
+            _ => None,
+        });
+        match common {
+            Some(Some(p)) if !p.is_empty() => Ok(Type::Primitive(p)),
+            _ => {
+                let all: Vec<String> = ts.iter().map(|t| t.to_string()).collect();
+                bail!("unsatisfiable constraints: {}", all.join(" & "))
+            }
+        }
     }
 }
 
@@ -877,5 +1425,118 @@ mod tests {
             &over(&env, "([Array<'a>, Array<string>], string)", &[("a", &ta)])
         ));
         assert_eq!(s.held.len(), 1);
+    }
+
+    fn fixed(v: &TVar) -> String {
+        v.binding().map(|t| t.to_string()).unwrap_or_else(|| "open".into())
+    }
+
+    #[test]
+    fn a_cell_is_fixed_to_what_flows_into_it() {
+        let (env, _) = typed(&[], "null");
+        let mut s = Solving::default();
+        let ((join, tj), (one, to)) = (var("j"), var("o"));
+        join.set_joins();
+        for t in ["i64", "string"] {
+            assert!(s.constrain(&env, &parsed(&env, t), &tj).is_ok())
+        }
+        // one of the values a cell of one type takes may hold the others
+        for t in ["i64", "[i64, null]"] {
+            assert!(s.constrain(&env, &parsed(&env, t), &to).is_ok())
+        }
+        assert!(s.finish(&env).is_ok());
+        assert_eq!(fixed(&join), "[i64, string]");
+        assert_eq!(fixed(&one), "[i64, null]");
+    }
+
+    #[test]
+    fn a_cell_of_one_type_takes_no_two_unrelated_values() {
+        let (env, _) = typed(&[], "null");
+        let mut s = Solving::default();
+        let (_, tt) = var("t");
+        for t in ["i64", "string"] {
+            assert!(s.constrain(&env, &parsed(&env, t), &tt).is_ok())
+        }
+        assert!(s.finish(&env).is_err());
+        // what another cell passes on is that cell's, not a second value
+        let mut s = Solving::default();
+        let ((e, te), (p, tp)) = (var("e"), var("p"));
+        e.set_joins();
+        for t in ["i64", "string"] {
+            assert!(s.constrain(&env, &parsed(&env, t), &te).is_ok())
+        }
+        assert!(s.constrain(&env, &te, &tp).is_ok());
+        assert!(s.finish(&env).is_ok());
+        assert_eq!(fixed(&p), "[i64, string]");
+    }
+
+    #[test]
+    fn a_cell_nothing_flows_into_is_what_its_uses_demand() {
+        let (env, _) = typed(&[], "null");
+        let mut s = Solving::default();
+        let ((a, ta), (b, tb), (c, _)) = (var("a"), var("b"), var("c"));
+        assert!(s.constrain(&env, &ta, &parsed(&env, "[i64, string]")).is_ok());
+        assert!(s.constrain(&env, &ta, &parsed(&env, "[i64, null]")).is_ok());
+        assert!(s.constrain(&env, &tb, &parsed(&env, "Array<i64>")).is_ok());
+        s.track(&c);
+        assert!(s.finish(&env).is_ok());
+        assert_eq!(fixed(&a), "i64");
+        assert_eq!(fixed(&b), "Array<i64>");
+        assert_eq!(fixed(&c), "_");
+    }
+
+    #[test]
+    fn each_use_of_a_scheme_has_cells_of_its_own() {
+        let (env, _) = typed(&[], "null");
+        let mut s = Solving::default();
+        let mark = s.mark();
+        let (a, ta) = var_at("a", 1);
+        s.track(&a);
+        let id = over(&env, "fn(x: 'a) -> 'a", &[("a", &ta)]);
+        assert!(s.generalize(&env, &id, 0, mark).is_ok());
+        assert!(!a.is_bound());
+        let ((r0, t0), (r1, t1)) = (var("r"), var("r"));
+        for (arg, out) in [("i64", &t0), ("string", &t1)] {
+            let call = over(&env, &format!("fn(x: {arg}) -> 'r"), &[("r", out)]);
+            let f = s.instantiate(&id, 0, Level::TOP);
+            assert!(s.constrain(&env, &f, &call).is_ok())
+        }
+        assert!(s.finish(&env).is_ok());
+        assert_eq!((fixed(&r0), fixed(&r1)), ("i64".into(), "string".into()));
+        assert!(!a.is_bound());
+    }
+
+    #[test]
+    fn what_a_definition_leaves_undecided_its_instance_decides() {
+        let (env, _) = typed(&[], "null");
+        let mut s = Solving::default();
+        let mark = s.mark();
+        let ((a, ta), (x, tx)) = (var_at("a", 1), var_at("x", 1));
+        // a local of the definition takes its parameter and a string
+        s.track(&a);
+        assert!(s.constrain(&env, &ta, &tx).is_ok());
+        assert!(s.constrain(&env, &parsed(&env, "string"), &tx).is_ok());
+        let f = over(&env, "fn(p: 'a) -> i64", &[("a", &ta)]);
+        assert!(s.generalize(&env, &f, 0, mark).is_ok());
+        assert!(!x.is_bound());
+        let ok = s.instantiate(&f, 0, Level::TOP);
+        assert!(s.constrain(&env, &ok, &parsed(&env, "fn(p: string) -> i64")).is_ok());
+        assert!(s.finish(&env).is_ok());
+        let no = s.instantiate(&f, 0, Level::TOP);
+        assert!(s.constrain(&env, &no, &parsed(&env, "fn(p: i64) -> i64")).is_ok());
+        assert!(s.finish(&env).is_err());
+    }
+
+    #[test]
+    fn a_held_choice_is_made_when_its_type_is_decided() {
+        let (env, _) = typed(&[], "null");
+        let mut s = Solving::default();
+        let ((a, ta), (x, tx)) = (var("a"), var("x"));
+        let both = over(&env, "[Array<'a>, Array<string>]", &[("a", &ta)]);
+        let one = over(&env, "Array<'x>", &[("x", &tx)]);
+        assert!(s.constrain(&env, &one, &both).is_ok());
+        assert!(s.constrain(&env, &parsed(&env, "i64"), &tx).is_ok());
+        assert!(s.finish(&env).is_ok());
+        assert_eq!((fixed(&x), fixed(&a)), ("i64".into(), "i64".into()));
     }
 }
