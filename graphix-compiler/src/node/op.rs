@@ -251,12 +251,10 @@ fn operand_type<'t>(env: &Env, lt: &'t Type, rt: &'t Type) -> Result<Option<&'t 
 /// Under a check by bounds, the one type both operands of an operator
 /// have: a cell each flows into and that flows into each; `singleton`
 /// where it must be a single type, as arithmetic's is.
-fn same_by_bounds(env: &Env, lt: &Type, rt: &Type, singleton: bool) -> Result<Type> {
+fn same_by_bounds(env: &Env, lt: &Type, rt: &Type, holds: Bound) -> Result<Type> {
     let v = TVar::default();
     super::solving(|s| {
-        if singleton {
-            s.declare(&v, Type::Bound(Bound::Singleton))
-        }
+        s.declare(&v, Type::Bound(holds));
         s.track(&v)
     });
     let v = Type::TVar(v);
@@ -385,7 +383,11 @@ macro_rules! compare_op {
                 if bounds::active() {
                     let t = wrap!(
                         self,
-                        same_by_bounds(&ctx.env, lt, rt, false).map_err(|e| {
+                        same_by_bounds(&ctx.env, lt, rt, match $ordered {
+                            true => Bound::Ordered,
+                            false => Bound::Discernible,
+                        })
+                        .map_err(|e| {
                             Told::over(
                                 e,
                                 "cannot compare: comparison is fn('a, 'a) -> bool — \
@@ -872,7 +874,7 @@ pub(crate) fn arith_rule(
             );
             Told::over(e, &told)
         };
-        let t = same_by_bounds(env, lt, rt, true).map_err(told)?;
+        let t = same_by_bounds(env, lt, rt, Bound::Singleton).map_err(told)?;
         Type::Primitive(Typ::number()).check_contains(env, &t).map_err(told)?;
         return match checked {
             true => out.check_contains(env, &bounds::union_of([t, ARITH_ERR.clone()])),

@@ -9,10 +9,10 @@ use crate::{
     env::Env,
     stack::ensure_sufficient,
     typ::{
-        AbstractId, Bound, FnArgKind, FnArgType, FnType, Mutability, TVar, Type,
+        AbstractId, Bound, FnArgKind, FnArgType, FnType, Mutability, Open, TVar, Type,
         node_addr,
         setops::strictly_identical,
-        tvar::{AtLevel, Level},
+        tvar::{AtLevel, Level, ShortName},
     },
 };
 use ahash::{AHashMap, AHashSet};
@@ -356,6 +356,12 @@ pub struct Solving {
     /// ones made since the outermost attempt began, in order.
     twins: AHashMap<(usize, bool, u32), (TVar, Level, TVar)>,
     twinned: Vec<(usize, bool, u32)>,
+    /// The declared variables being met are a signature others read
+    /// ([`fits`]): nothing it does not say holds of them.
+    sealed: bool,
+    /// The cells fixed that carry a predicate, which is judged of what
+    /// the cell holds once every cell is fixed ([`Self::judge`]).
+    judged: Vec<TVar>,
 }
 
 /// A kind of use a check may still owe when a definition closes.
@@ -589,6 +595,31 @@ impl Solving {
         }
         match (&a, &b) {
             (Type::Bottom, _) | (_, Type::Any) => return Ok(()),
+            // a declared variable holds a predicate its signature says it
+            // does; one that is one type at each call is all its own
+            // definition may leave unsaid, and an interface's may leave
+            // none
+            (Type::TVar(v), Type::Bound(p))
+                if v.is_rigid() && (self.sealed || *p != Bound::Singleton) =>
+            {
+                for own in v.cell_constraints().iter() {
+                    if own.implies(env, &b)? {
+                        return Ok(());
+                    }
+                }
+                let name = v.declared_name().unwrap_or_else(|| v.name.clone());
+                let name = ShortName(&name);
+                return match self.sealed {
+                    true => bail!(
+                        "the implementation requires '{name}: {b}, which the signature \
+                         does not declare"
+                    ),
+                    false => bail!(
+                        "the body needs '{name} within {b}, which the signature does \
+                         not declare: add {b} to the bound of '{name}"
+                    ),
+                };
+            }
             // a predicate on a cell is judged when the cell is decided
             (_, Type::Bound(_)) => return Ok(()),
             (Type::TVar(v), Type::TVar(w)) if v.same_cell(w) => return Ok(()),
@@ -1172,7 +1203,10 @@ pub fn fits(env: &Env, made: &Type, declared: &Type, outer: Level) -> Result<()>
         constants.iter().for_each(|v| v.claim(level));
         let _held: SmallVec<[_; 4]> = constants.iter().map(|v| v.open_rigid()).collect();
         let one = s.instantiate(made, Level::GENERIC.depth() - 1, level);
-        s.constrain(env, &one, &declared)?;
+        let sealed = std::mem::replace(&mut s.sealed, true);
+        let fit = s.constrain(env, &one, &declared);
+        s.sealed = sealed;
+        fit?;
         // the instance is decided here, where the declaration's
         // variables are still constants
         s.generalize(env, Type::BOTTOM, outer.depth(), mark)
@@ -1742,6 +1776,7 @@ impl Solving {
     /// Fix every cell an input left open.
     pub fn finish(&mut self, env: &Env) -> Result<()> {
         self.fix_scope(env, 0, true, 0)?;
+        self.judge(env)?;
         self.dead_arms(env)
     }
 
@@ -2175,6 +2210,40 @@ impl Solving {
         let r = self.fixed(env, v);
         self.fixing.remove(&v.cell_addr());
         v.cell().write().set_binding(Some(r?));
+        // a cell nothing flowed into holds no value to judge
+        if !demanded(v)
+            && v.cell_constraints().iter().any(|c| matches!(c, Type::Bound(_)))
+        {
+            self.judged.push(v.clone())
+        }
+        Ok(())
+    }
+
+    /// Each predicate a fixed cell carries holds of what the cell was
+    /// fixed to.
+    fn judge(&mut self, env: &Env) -> Result<()> {
+        for v in std::mem::take(&mut self.judged) {
+            // nothing is of every kind, and a variable is of the kinds
+            // its own bound says, which the relation held it to
+            let decided = |t: &Type| !matches!(t, Type::Bottom | Type::TVar(_));
+            let Some(t) = v.binding().map(|t| deep(&t)).filter(decided) else {
+                continue;
+            };
+            for p in v.cell_constraints().iter() {
+                match p {
+                    Type::Bound(Bound::Ordered | Bound::Discernible) => {
+                        let ordered = matches!(p, Type::Bound(Bound::Ordered));
+                        if let Some(why) = t.indiscernible(env, Open::Benign, ordered) {
+                            return Err(t.not_discernible(p, &v.name, &why));
+                        }
+                    }
+                    Type::Bound(_) if !p.contains(env, &t)? => {
+                        bail!("{t} must be {p} here")
+                    }
+                    _ => (),
+                }
+            }
+        }
         Ok(())
     }
 
