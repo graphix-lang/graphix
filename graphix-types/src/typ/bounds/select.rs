@@ -203,6 +203,32 @@ fn left(array: &Type, taken: u64, from: usize) -> Type {
     }
 }
 
+/// A select's walk over a pair of typedef names: the values in both (as
+/// a test or not), or those of the first not in the second.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Walk {
+    Both(bool),
+    Less(bool),
+}
+
+/// The walks over pairs of typedef names in progress. Names recur, so a
+/// pair met again inside itself is read without walking it: for the
+/// values in both, as all of the first, or of the test; for those left, as none, which
+/// holds where every pair so read ends with none left. Where one does
+/// not, the outermost pair is walked again reading each as all of the
+/// first. Either reading errs only toward more values.
+#[derive(Default)]
+pub(super) struct Walks {
+    /// Each pair in progress, and whether it was met again.
+    open: SmallVec<[(Walk, Type, Type, bool); 8]>,
+    /// What each pair finished inside the outermost gave.
+    done: Vec<(Walk, Type, Type, Type)>,
+    /// A pair read as leaving nothing left something.
+    wrong: bool,
+    /// A pair met again leaves all of its first type.
+    whole: bool,
+}
+
 fn plain(t: Type) -> Type {
     lengths(&t).map(|l| l.2).unwrap_or(t)
 }
@@ -423,7 +449,60 @@ impl Solving {
     /// The values in both `a` and `b`; where `b` is a `test`, the values
     /// of `a` that pass it, which is more where the test cannot tell.
     pub(super) fn both(&self, env: &Env, test: bool, a: &Type, b: &Type) -> Type {
-        ensure_sufficient(|| self.both_in(env, test, a, b))
+        self.paired(Walk::Both(test), a, b, || {
+            ensure_sufficient(|| self.both_in(env, test, a, b))
+        })
+    }
+
+    /// The walk `f` of `a` and `b`, once for a pair of typedef names
+    /// ([`Walks`]).
+    fn paired(&self, walk: Walk, a: &Type, b: &Type, f: impl Fn() -> Type) -> Type {
+        let (a, b) = match (shallow(a), shallow(b)) {
+            (a @ Type::Ref(_), b @ Type::Ref(_)) if !strictly_identical(&a, &b) => (a, b),
+            _ => return f(),
+        };
+        let same = |w: Walk, x: &Type, y: &Type| {
+            w == walk && strictly_identical(x, &a) && strictly_identical(y, &b)
+        };
+        {
+            let mut walks = self.walks.borrow_mut();
+            let whole = walks.whole;
+            if let Some(p) = walks.open.iter_mut().find(|p| same(p.0, &p.1, &p.2)) {
+                p.3 = true;
+                return match walk {
+                    Walk::Less(_) if !whole => Type::Bottom,
+                    // what passes a test is the test's type
+                    Walk::Both(true) => b,
+                    Walk::Less(_) | Walk::Both(false) => a,
+                };
+            }
+            if let Some(d) = walks.done.iter().find(|d| same(d.0, &d.1, &d.2)) {
+                return d.3.clone();
+            }
+            walks.open.push((walk, a.clone(), b.clone(), false))
+        }
+        let left = f();
+        let mut walks = self.walks.borrow_mut();
+        let met = walks.open.pop().is_some_and(|p| p.3);
+        walks.wrong |=
+            met && !walks.whole && matches!(walk, Walk::Less(_)) && !nothing(&left);
+        if !walks.open.is_empty() {
+            walks.done.push((walk, a, b, left.clone()));
+            return left;
+        }
+        walks.done.clear();
+        if !std::mem::take(&mut walks.wrong) {
+            return left;
+        }
+        walks.whole = true;
+        walks.open.push((walk, a, b, false));
+        drop(walks);
+        let left = f();
+        let mut walks = self.walks.borrow_mut();
+        walks.open.pop();
+        walks.done.clear();
+        walks.whole = false;
+        left
     }
 
     fn both_in(&self, env: &Env, test: bool, a: &Type, b: &Type) -> Type {
@@ -498,7 +577,9 @@ impl Solving {
     /// The values of `a` not in `b`; where `b` is a `test`, those that do
     /// not pass it.
     pub(super) fn less(&self, env: &Env, test: bool, a: &Type, b: &Type) -> Type {
-        ensure_sufficient(|| self.less_in(env, test, a, b))
+        self.paired(Walk::Less(test), a, b, || {
+            ensure_sufficient(|| self.less_in(env, test, a, b))
+        })
     }
 
     fn less_in(&self, env: &Env, test: bool, a: &Type, b: &Type) -> Type {

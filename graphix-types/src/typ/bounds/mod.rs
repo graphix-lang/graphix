@@ -346,6 +346,8 @@ pub struct Solving {
     /// a variable of the copy, and keeps what the original left to its
     /// instances.
     scheming: bool,
+    /// The pairs of typedef names a select's walk is inside.
+    walks: std::cell::RefCell<select::Walks>,
 }
 
 /// A kind of use a check may still owe when a definition closes.
