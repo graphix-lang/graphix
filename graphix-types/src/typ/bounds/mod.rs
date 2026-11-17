@@ -180,6 +180,9 @@ pub enum Use {
     Field { field: ArcStr, out: Type },
     /// A read of a tuple's element, or of an error's payload.
     Index { i: usize, out: Type },
+    /// A read of an element by its position: an array's element, or a
+    /// byte of `bytes`.
+    Element { out: Type },
     /// A call with `args`, whose result goes to `out`.
     Call { args: SmallVec<[Arg; 4]>, out: Type },
     /// A struct update: `out` takes the struct with each of `fields` at
@@ -213,6 +216,7 @@ impl Use {
         match self {
             Use::Field { .. } => "reading a struct",
             Use::Index { .. } => "reading a tuple",
+            Use::Element { .. } => "indexing an array",
             Use::Call { .. } => "reading a fn",
             Use::With { .. } => "updating a struct",
             Use::Select(_) | Use::Routed(..) => "a select",
@@ -225,6 +229,7 @@ impl Use {
         match self {
             Use::Field { field, out } => Use::Field { field: field.clone(), out: f(out) },
             Use::Index { i, out } => Use::Index { i: *i, out: f(out) },
+            Use::Element { out } => Use::Element { out: f(out) },
             Use::Call { args, out } => Use::Call {
                 args: args.iter().map(|(l, t)| (l.clone(), f(t))).collect(),
                 out: f(out),
@@ -252,7 +257,9 @@ impl Use {
 
     fn each(&self, f: &mut impl FnMut(&Type)) {
         match self {
-            Use::Field { out, .. } | Use::Index { out, .. } => f(out),
+            Use::Field { out, .. } | Use::Index { out, .. } | Use::Element { out } => {
+                f(out)
+            }
             Use::Call { args, out } => {
                 f(out);
                 args.iter().for_each(|(_, t)| f(t))
@@ -1486,7 +1493,13 @@ impl Solving {
     /// A use of `v` that met no value: it needs a shape nothing gave it.
     fn unread(&self, v: &TVar) -> Result<()> {
         let waits = |u: &Use| {
-            !matches!(u, Use::Select(_) | Use::Routed(..) | Use::Method { .. })
+            !matches!(
+                u,
+                Use::Select(_)
+                    | Use::Routed(..)
+                    | Use::Method { .. }
+                    | Use::Element { .. }
+            )
         };
         match uses(v).iter().find(|(u, met)| !met && waits(u)) {
             None => Ok(()),
@@ -2297,6 +2310,13 @@ impl Solving {
                 Some(t) => self.constrain(env, t, out).map(|()| true),
                 None => bail!("{a} has no element {i}"),
             },
+            (Type::Array(t), Use::Element { out }) => {
+                self.constrain(env, t, out).map(|()| true)
+            }
+            (Type::Primitive(p), Use::Element { out }) if *p == Typ::Bytes => {
+                self.constrain(env, &Type::Primitive(Typ::U8.into()), out).map(|()| true)
+            }
+            (_, Use::Element { .. }) => bail!("{a} is no array and no bytes"),
             (Type::Fn(ft), Use::Call { args, out }) => {
                 self.call(env, ft, args, out).map(|()| true)
             }

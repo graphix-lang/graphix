@@ -18,7 +18,10 @@ use crate::{
             opt_node_encode, put_tag,
         },
     },
-    typ::{TVar, Type, bounds},
+    typ::{
+        TVar, Type,
+        bounds::{self, Use},
+    },
     wrap,
 };
 use ahash::AHashSet;
@@ -666,6 +669,22 @@ impl<R: Rt> ArrayRef<R> {
         wrap!(self.source, child(&mut self.source, ctx))?;
         wrap!(self.i, child(&mut self.i, ctx))?;
         let source_typ = self.source.typ();
+        if bounds::active() {
+            // whatever the source turns out to be gives the element: an
+            // array's, or a byte
+            if check {
+                let bytes = Type::Primitive(Typ::Bytes.into());
+                let indexed = bounds::union_of([
+                    Type::Array(Arc::new(self.etyp.clone())),
+                    bytes,
+                ]);
+                wrap!(self, indexed.check_contains(&ctx.env, source_typ))?;
+                let read = Use::Element { out: self.etyp.clone() };
+                wrap!(self, super::solving(|s| s.watch(&ctx.env, source_typ, read)))?;
+                check_index(&ctx.env, &self.i)?
+            }
+            return Ok(());
+        }
         if known_bytes(&ctx.env, source_typ)? {
             let byte = Type::Primitive(Typ::U8.into());
             wrap!(self, self.etyp.check_contains(&ctx.env, &byte))?;
@@ -702,7 +721,13 @@ impl<R: Rt> ArraySlice<R> {
     ) -> Result<()> {
         wrap!(self.source, child(&mut self.source, ctx))?;
         let source_typ = self.source.typ();
-        if check && !known_bytes(&ctx.env, source_typ)? {
+        if check && bounds::active() {
+            let sliced = bounds::union_of([
+                Type::Array(Arc::new(super::joined())),
+                Type::Primitive(Typ::Bytes.into()),
+            ]);
+            wrap!(self, sliced.check_contains(&ctx.env, source_typ))?
+        } else if check && !known_bytes(&ctx.env, source_typ)? {
             let at = Type::Array(Arc::new(Type::empty_tvar()));
             wrap!(self, at.check_contains(&ctx.env, source_typ))?;
         }
