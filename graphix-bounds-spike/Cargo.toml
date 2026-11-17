@@ -13,3 +13,4 @@ graphix-types = { path = "../graphix-types" }
 netidx-core = { workspace = true }
 netidx-value = { workspace = true }
 triomphe = { workspace = true }
+ahash = { workspace = true }

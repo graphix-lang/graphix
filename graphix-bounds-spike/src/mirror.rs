@@ -9,11 +9,12 @@ use crate::{
     solve::{Arg, Kind, Solver, Watch},
     ty::{FnTy, Ty, Var},
 };
+use ahash::AHashMap;
 use arcstr::ArcStr;
 use graphix_types::{
     LambdaId,
     env::Env,
-    expr::WrittenAt,
+    expr::{ModPath, TypeDefBody, WrittenAt, parser::parse_type},
     typ::{
         Bound, FnArgKind, FnArgType, FnType, MapType, Mutability, TVar, Type,
         bounds::{self, Solving, Use, union_of},
@@ -36,6 +37,10 @@ pub struct Mirror {
     /// How many cells the port had met when the prototype had so many
     /// variables.
     marks: Vec<(usize, usize)>,
+    /// The prototype's recursive typedefs the mirror's environment has.
+    defs: Vec<u32>,
+    /// A typedef's body is being translated: a name in it is as written.
+    in_body: bool,
     /// The port's first refusal.
     pub refused: Option<String>,
     /// The first thing the program used that is not replayed.
@@ -143,6 +148,67 @@ impl Mirror {
         }
     }
 
+    /// A recursive typedef of the prototype's at `args`: a name the
+    /// mirror's environment defines, as `T<id>`.
+    fn named(&mut self, s: &Solver, id: u32, args: &[Ty]) -> Type {
+        let root = ModPath::root();
+        if !self.defs.contains(&id) {
+            let def = &s.defs[id as usize];
+            if matches!(def.body, Ty::Bot) {
+                self.skip("a typedef still being read");
+                return Type::Bottom;
+            }
+            self.defs.push(id);
+            let formals: Vec<(TVar, Option<Type>)> = (0..def.params.len())
+                .map(|i| (TVar::empty_named(ArcStr::from(format!("p{i}"))), None))
+                .collect();
+            for (v, (tv, _)) in def.params.iter().zip(formals.iter()) {
+                self.cells.insert(*v, tv.clone());
+            }
+            let outer = std::mem::replace(&mut self.in_body, true);
+            let body = self.typ(s, &def.body.clone());
+            self.in_body = outer;
+            let made = self.env.deftype(
+                &root,
+                &format!("T{id}"),
+                Arc::from(formals),
+                &TypeDefBody::Alias(body),
+                true,
+                None,
+                Default::default(),
+                Default::default(),
+                Arc::new(Default::default()),
+            );
+            if made.is_err() {
+                self.skip("a typedef the environment refuses");
+                return Type::Bottom;
+            }
+            self.env.seed_typedef_refs()
+        }
+        let formals: Vec<String> = (0..args.len()).map(|i| format!("'q{i}")).collect();
+        let written = match args.len() {
+            0 => format!("T{id}"),
+            _ => format!("T{id}<{}>", formals.join(", ")),
+        };
+        let Ok(t) = parse_type(&written) else {
+            self.skip("a typedef's name");
+            return Type::Bottom;
+        };
+        let at: AHashMap<ArcStr, Type> = args
+            .iter()
+            .enumerate()
+            .map(|(i, a)| (ArcStr::from(format!("q{i}")), self.typ(s, a)))
+            .collect();
+        match self.in_body {
+            true => t.replace_tvars(&at),
+            false => {
+                let t = t.scope_refs(&root).replace_tvars(&at);
+                t.seed_refs(&self.env);
+                t
+            }
+        }
+    }
+
     /// The prototype's type as the tree's.
     fn typ(&mut self, s: &Solver, t: &Ty) -> Type {
         let all = |m: &mut Self, ts: &[Ty]| -> Arc<[Type]> {
@@ -185,10 +251,7 @@ impl Mirror {
                 _ => Type::TVar(self.cell(s, *v, false)),
             },
             Ty::Rigid(v) => Type::TVar(self.cell(s, *v, true)),
-            Ty::Named(..) => {
-                self.skip("a recursive typedef");
-                Type::Bottom
-            }
+            Ty::Named(id, args) => self.named(s, *id, args),
             Ty::Abs(..) => {
                 self.skip("an abstract type");
                 Type::Bottom
