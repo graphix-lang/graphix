@@ -181,7 +181,24 @@ impl Checker {
                 }
                 SigKind::TypeDef(td) => self.typedef(module, td),
                 SigKind::Use { names, .. } => {
-                    let uses = names.iter().map(|i| parts(&i.path).join("::"));
+                    // `self::` is this module, `super::` the one around it
+                    let around = module.rsplit_once("::").map(|(m, _)| m).unwrap_or("");
+                    let uses = names.iter().map(|i| {
+                        let path = parts(&i.path);
+                        let base = match path[0].as_str() {
+                            "self" => Some(module),
+                            "super" => Some(around),
+                            _ => None,
+                        };
+                        match base {
+                            Some(b) => std::iter::once(b.to_string())
+                                .filter(|b| !b.is_empty())
+                                .chain(path[1..].iter().cloned())
+                                .collect::<Vec<_>>()
+                                .join("::"),
+                            None => path.join("::"),
+                        }
+                    });
                     self.mod_uses.entry(module.to_string()).or_default().extend(uses)
                 }
                 _ => (),
@@ -342,7 +359,7 @@ impl Checker {
             };
             let t = expand(self, args)?;
             if let Some(id) = self.typedefs[&full].recursive
-                && self.s.defs[id as usize].params.len() != names.len()
+                && matches!(self.s.defs[id as usize].body, Ty::Bot)
             {
                 let params: Vec<Var> =
                     names.iter().map(|_| self.s.fresh(0, Kind::Single)).collect();
@@ -444,6 +461,62 @@ impl Checker {
 
     fn number(&mut self) -> Result<Ty> {
         self.named(&["Number".to_string()], &[], "")
+    }
+
+    /// Check a module's body; with an interface, each `val` it declares must
+    /// hold what the body binds, and only those names are seen outside.
+    fn module(
+        &mut self,
+        exprs: &[Expr],
+        sig: Option<&[graphix_types::expr::SigItem]>,
+        prefix: &str,
+        lvl: u32,
+    ) -> Result<()> {
+        for item in sig.into_iter().flatten() {
+            match &item.kind {
+                SigKind::Use { names, .. } => {
+                    for i in names.iter() {
+                        let path = parts(&i.path);
+                        let full = path.join("::");
+                        self.uses.push(full.clone());
+                        self.aliases.insert(path[path.len() - 1].clone(), full);
+                    }
+                }
+                SigKind::TypeDef(td) => self.typedef(prefix, td),
+                _ => (),
+            }
+        }
+        self.infer_all(exprs, lvl)?;
+        let scope = self.scopes.last().unwrap().clone();
+        let Some(items) = sig else {
+            for (n, b) in scope {
+                self.mods.insert(format!("{prefix}::{n}"), b);
+            }
+            return Ok(());
+        };
+        for item in items.iter() {
+            if let SigKind::Bind(val) = &item.kind {
+                let made = match scope.get(&val.name.name) {
+                    Some(Binding::Mono(t)) => t.clone(),
+                    Some(Binding::Poly(l, t)) => self.s.instantiate(t, *l, lvl + 1),
+                    None => bail!("the interface declares {}, which the module does not bind", val.name.name),
+                };
+                // against the declaration its variables are rigid; outside
+                // the module they are a scheme's
+                let declared = |c: &mut Self, rigid: bool| {
+                    c.tvs.push(Scope { tvs: HashMap::new(), level: lvl + 1, rigid });
+                    let t = c.conv(&val.typ, prefix);
+                    c.tvs.pop();
+                    t
+                };
+                let held = declared(self, true)?;
+                self.s.constrain(&made, &held)?;
+                let t = declared(self, false)?;
+                self.s.quantify(&t, lvl);
+                self.mods.insert(format!("{prefix}::{}", val.name.name), Binding::Poly(lvl, t));
+            }
+        }
+        Ok(())
     }
 
     /// The error an operation that can fail returns.
@@ -834,8 +907,8 @@ impl Checker {
                 Ty::Bot
             }
             ExprKind::Module { name, value } => {
-                let exprs = match &**value {
-                    ModuleKind::Resolved { exprs, .. } => exprs.clone(),
+                let (exprs, sig) = match &**value {
+                    ModuleKind::Resolved { exprs, sig, .. } => (exprs.clone(), sig.clone()),
                     ModuleKind::Dynamic { .. } => unsupported("dynamic module")?,
                     ModuleKind::Unresolved { .. } => {
                         let mut dir = self.dir.clone().ok_or_else(|| Unsupported("module file".into()))?;
@@ -843,19 +916,20 @@ impl Checker {
                         let flat = dir.join(format!("{}.gx", name.name));
                         let file = if flat.exists() { flat } else { dir.join(format!("{}/mod.gx", name.name)) };
                         let text = fs::read_to_string(&file).map_err(|_| Unsupported(format!("module file {}", name.name)))?;
-                        parser::parse(Origin::unspecified(&text))?
+                        let sig = fs::read_to_string(file.with_extension("gxi"))
+                            .ok()
+                            .map(|text| parser::parse_sig(Origin::unspecified(&text)))
+                            .transpose()?;
+                        (parser::parse(Origin::unspecified(&text))?, sig)
                     }
                 };
                 self.scopes.push(HashMap::new());
                 self.here.push(name.name.to_string());
-                let r = self.infer_all(&exprs, lvl);
                 let prefix = self.here.join("::");
+                let r = self.module(&exprs, sig.as_ref().map(|s| &*s.items), &prefix, lvl);
                 self.here.pop();
-                let scope = self.scopes.pop().unwrap();
+                self.scopes.pop();
                 r?;
-                for (n, b) in scope {
-                    self.mods.insert(format!("{prefix}::{n}"), b);
-                }
                 Ty::Bot
             }
             ExprKind::TypeDef(td) => {
