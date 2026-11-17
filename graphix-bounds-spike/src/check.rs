@@ -1,4 +1,5 @@
 use crate::{
+    select::{Arm, Pat},
     solve::{Def, Kind, Solver, Watch},
     ty::{FnArg, FnTy, Ty, Var, union},
 };
@@ -7,12 +8,13 @@ use arcstr::ArcStr;
 use graphix_types::{
     expr::{
         ApplyExpr, ArgKind, BinOp, BindExpr, Expr, ExprKind, LambdaBody, LambdaExpr,
-        ModPath, Origin, SigKind, StructurePattern, TypeDefBody, TypeDefExpr, parser,
+        ModPath, Origin, Pattern, SelectExpr, SigKind, StructurePattern, TypeDefBody,
+        TypeDefExpr, parser,
     },
     typ::{Bound, FnArgKind, FnType, Mutability, TVar, Type},
 };
 use netidx_core::path::Path;
-use netidx_value::Typ;
+use netidx_value::{Typ, Value};
 use std::{collections::HashMap, fmt, fs, path::PathBuf, rc::Rc};
 
 /// A construct outside the prototype's subset: the program is not judged.
@@ -567,6 +569,114 @@ impl Checker {
         })
     }
 
+    fn structure(&mut self, p: &StructurePattern, lvl: u32) -> Result<(Pat, Option<bool>)> {
+        let named = |c: &mut Self, name: &Option<graphix_types::expr::Name>| {
+            name.as_ref().map(|n| {
+                let v = c.s.fresh(lvl, Kind::Join);
+                c.bind(&n.name, Binding::Mono(Ty::Var(v)));
+                v
+            })
+        };
+        let subs = |c: &mut Self, ps: &[StructurePattern]| -> Result<Vec<Pat>> {
+            ps.iter().map(|p| c.structure(p, lvl).map(|(p, _)| p)).collect()
+        };
+        Ok(match p {
+            StructurePattern::Ignore => (Pat::Any(None), None),
+            StructurePattern::Bind(n) => (Pat::Any(named(self, &Some(n.clone()))), None),
+            StructurePattern::Literal(v, _) => {
+                let boolean = match v {
+                    Value::Bool(b) => Some(*b),
+                    _ => None,
+                };
+                (Pat::Lit(Ty::prim(Typ::get(v)), matches!(v, Value::Null)), boolean)
+            }
+            StructurePattern::Tuple { all, binds } => {
+                (Pat::Tuple(named(self, all), subs(self, binds)?), None)
+            }
+            StructurePattern::Variant { all, tag, binds } => {
+                (Pat::Variant(named(self, all), tag.clone(), subs(self, binds)?), None)
+            }
+            StructurePattern::Struct { exhaustive, all, binds } => {
+                let all = named(self, all);
+                let mut fs = vec![];
+                for (n, p, _) in binds.iter() {
+                    fs.push((n.clone(), self.structure(p, lvl)?.0))
+                }
+                (Pat::Struct(all, fs, *exhaustive), None)
+            }
+            _ => unsupported("slice, abstract or or-pattern")?,
+        })
+    }
+
+    fn pattern(&mut self, p: &Pattern, lvl: u32) -> Result<Arm> {
+        let (inner, boolean) = self.structure(&p.structure_predicate, lvl)?;
+        let pat = match &p.type_predicate {
+            None => inner,
+            Some(t) => {
+                let t = self.conv(t, "")?;
+                if !self.s.is_ground(&t) {
+                    unsupported("a test that holds a variable")?
+                }
+                if let Pat::Any(Some(v)) = &inner {
+                    self.s.constrain(&Ty::Var(*v), &t)?
+                }
+                Pat::Test(t, Box::new(inner))
+            }
+        };
+        Ok(Arm { pat, guarded: p.guard.is_some(), boolean })
+    }
+
+    fn select(&mut self, sel: &SelectExpr, lvl: u32) -> Result<Ty> {
+        let scrutinee = self.infer(&sel.arg, lvl)?;
+        let result = self.s.fresh_ty(lvl, Kind::Join);
+        let mut arms = vec![];
+        for (p, body) in sel.arms.iter() {
+            self.scopes.push(HashMap::new());
+            let arm = (|| {
+                let arm = self.pattern(p, lvl)?;
+                if let Some(g) = &p.guard {
+                    let t = self.infer(g, lvl)?;
+                    self.s.constrain(&t, &Ty::prim(Typ::Bool))?
+                }
+                let t = self.infer(body, lvl)?;
+                self.s.constrain(&t, &result)?;
+                Ok::<_, anyhow::Error>(arm)
+            })();
+            self.scopes.pop();
+            arms.push(arm?)
+        }
+        // with no arm that admits everything, the arms' tests bound an
+        // undeclared scrutinee from above
+        let admitted: Option<Vec<Ty>> =
+            arms.iter().filter(|a| !a.guarded).map(|a| a.pat.admits()).collect();
+        if let (Ty::Var(_), Some(ts)) = (self.s.shallow(&scrutinee), admitted)
+            && arms.iter().all(|a| !a.guarded)
+        {
+            self.s.constrain(&scrutinee, &union(ts))?
+        }
+        let id = self.s.select(arms);
+        self.s.watch(&scrutinee, Watch::Select(id))?;
+        Ok(result)
+    }
+
+    fn stripped(&mut self, arg: &Expr, lvl: u32) -> Result<Ty> {
+        let t = self.infer(arg, lvl)?;
+        let t = self.s.shallow(&t);
+        let known = match &t {
+            Ty::Var(_) => false,
+            Ty::Union(ms) => ms.iter().any(|m| matches!(m, Ty::Error(_))) || self.s.is_ground(&t),
+            _ => true,
+        };
+        match known {
+            true => Ok(self.s.strip(&t)),
+            false => {
+                let out = self.s.fresh_ty(lvl, Kind::Join);
+                self.s.strips.push((t, out.clone()));
+                Ok(out)
+            }
+        }
+    }
+
     pub fn infer(&mut self, e: &Expr, lvl: u32) -> Result<Ty> {
         Ok(match &e.kind {
             ExprKind::NoOp => Ty::Bot,
@@ -648,8 +758,9 @@ impl Checker {
                 self.s.constrain(&t, &number)?;
                 t
             }
-            ExprKind::Select(_) => unsupported("select")?,
-            ExprKind::Qop { .. } | ExprKind::OrNever(_) => unsupported("? or $")?,
+            ExprKind::Select(sel) => self.select(sel, lvl)?,
+            ExprKind::Qop { arg, .. } => self.stripped(arg, lvl)?,
+            ExprKind::OrNever(arg) => self.stripped(arg, lvl)?,
             ExprKind::TypeCast { .. } => unsupported("cast")?,
             ExprKind::Module { .. } => unsupported("module")?,
             ExprKind::Trait(_) | ExprKind::Impl(_) => unsupported("trait")?,

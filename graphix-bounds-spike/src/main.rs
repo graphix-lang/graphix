@@ -1,4 +1,5 @@
 mod check;
+mod select;
 mod solve;
 mod ty;
 

@@ -1,6 +1,10 @@
-use crate::ty::{FnArg, FnTy, Ty, Var, union};
+use crate::{
+    select::{Arm, Select},
+    ty::{FnArg, FnTy, Ty, Var, union},
+};
 use anyhow::{Result, bail};
 use arcstr::ArcStr;
+use netidx_value::Typ;
 use std::{
     collections::{HashMap, HashSet},
     rc::Rc,
@@ -23,6 +27,7 @@ pub enum Watch {
     Field { field: ArcStr, out: Ty },
     Index { i: usize, out: Ty },
     Call { args: Vec<(Option<ArcStr>, Ty)>, out: Ty },
+    Select(usize),
 }
 
 impl Watch {
@@ -31,6 +36,7 @@ impl Watch {
             Watch::Field { .. } => "reading a struct",
             Watch::Index { .. } => "reading a tuple",
             Watch::Call { .. } => "reading a fn",
+            Watch::Select(_) => "a select",
         }
     }
 }
@@ -69,6 +75,10 @@ pub struct Solver {
     fixing: HashSet<Var>,
     /// The joining variable whose bounds are being passed on.
     via: Option<Var>,
+    pub selects: Vec<Select>,
+    /// The operand and the result of a `?` or `$` whose operand's type is
+    /// not known yet.
+    pub strips: Vec<(Ty, Ty)>,
     /// How many relations were taken apart, the prototype's cost measure.
     pub steps: u64,
 }
@@ -137,7 +147,7 @@ impl Solver {
         vs
     }
 
-    fn is_ground(&self, t: &Ty) -> bool {
+    pub(crate) fn is_ground(&self, t: &Ty) -> bool {
         self.open_vars(t).is_empty()
     }
 
@@ -151,7 +161,7 @@ impl Solver {
         l
     }
 
-    fn unfold(&self, id: u32, args: &[Ty]) -> Ty {
+    pub(crate) fn unfold(&self, id: u32, args: &[Ty]) -> Ty {
         let def = &self.defs[id as usize];
         def.body.map(&mut |t| match t {
             Ty::Var(v) => def.params.iter().position(|p| p == v).map(|i| args[i].clone()),
@@ -254,6 +264,8 @@ impl Solver {
                 }
             }
             (Ty::Prim(x), Ty::Prim(y)) if y.contains(*x) => Ok(()),
+            (Ty::Error(_), Ty::Prim(y)) if y.contains(Typ::Error) => Ok(()),
+            (Ty::Array(_), Ty::Prim(y)) if y.contains(Typ::Array) => Ok(()),
             (Ty::Array(x), Ty::Array(y))
             | (Ty::List(x), Ty::List(y))
             | (Ty::Error(x), Ty::Error(y))
@@ -430,7 +442,11 @@ impl Solver {
 
     /// `a`, which is no variable and no union, fits a member of `b`.
     fn below_union(&mut self, a: &Ty, ms: &[Ty], b: &Ty) -> Result<()> {
-        if ms.contains(a) {
+        let primitive = |bit| ms.iter().any(|m| matches!(m, Ty::Prim(p) if p.contains(bit)));
+        if ms.contains(a)
+            || (matches!(a, Ty::Error(_)) && primitive(Typ::Error))
+            || (matches!(a, Ty::Array(_)) && primitive(Typ::Array))
+        {
             return Ok(());
         }
         let open: Vec<&Ty> = ms.iter().filter(|m| matches!(m, Ty::Var(_))).collect();
@@ -470,6 +486,9 @@ impl Solver {
     /// Apply a use to one concrete lower bound; false where the bound says
     /// nothing (bottom).
     fn apply(&mut self, w: &Watch, a: &Ty) -> Result<bool> {
+        if let Watch::Select(id) = w {
+            return self.select_route(*id, a).map(|()| true);
+        }
         match (self.shallow(a), w) {
             (Ty::Bot, _) => Ok(false),
             (Ty::Union(ms), _) => {
@@ -509,6 +528,7 @@ impl Solver {
             (a, Watch::Field { field, .. }) => bail!("{a} has no field {field}"),
             (a, Watch::Index { i, .. }) => bail!("{a} has no element {i}"),
             (a, Watch::Call { .. }) => bail!("{a} is not a function"),
+            (_, Watch::Select(_)) => Ok(false),
         }
     }
 
@@ -601,6 +621,25 @@ impl Solver {
                 let us = us.iter().map(|u| self.copy(u, above, at, memo)).collect();
                 let info = self.info_mut(n);
                 (info.lower, info.upper) = (ls, us);
+                for (w, _) in self.info(*v).watches.clone() {
+                    if let Watch::Select(id) = w {
+                        let arms = self.select_arms(id);
+                        let arms = arms
+                            .into_iter()
+                            .map(|a| Arm {
+                                pat: a.pat.map_vars(&mut |u| {
+                                    match self.copy(&Ty::Var(u), above, at, memo) {
+                                        Ty::Var(n) => n,
+                                        _ => u,
+                                    }
+                                }),
+                                ..a
+                            })
+                            .collect();
+                        let id = self.select_instance(arms);
+                        self.info_mut(n).watches.push((Watch::Select(id), false))
+                    }
+                }
                 Some(Ty::Var(n))
             }
             _ => None,
@@ -629,7 +668,7 @@ impl Solver {
         for v in kept {
             if self.info(v).level > lvl {
                 self.info_mut(v).quantified = true;
-                if let Some((w, _)) = self.info(v).watches.iter().find(|(_, fired)| !fired) {
+                if let Some((w, _)) = self.info(v).watches.iter().find(|(w, fired)| !fired && !matches!(w, Watch::Select(_))) {
                     bail!("{} needs its type known here: annotate the binding", w.needs())
                 }
             }
@@ -639,7 +678,37 @@ impl Solver {
 
     /// Fix every variable an input left open.
     pub fn finish(&mut self) -> Result<()> {
-        self.fix_scope(0, true)
+        self.fix_scope(0, true)?;
+        self.dead_arms()
+    }
+
+    /// Fix every variable in `t`, those nothing has decided included.
+    pub(crate) fn fix_in(&mut self, t: &Ty) -> Result<()> {
+        loop {
+            let vs = self.open_vars(t);
+            if vs.is_empty() {
+                return Ok(());
+            }
+            vs.into_iter().try_for_each(|v| self.fix(v))?
+        }
+    }
+
+    /// What `?` and `$` leave of `t`: `t` less its errors, or, where it
+    /// holds none, less null.
+    pub fn strip(&self, t: &Ty) -> Ty {
+        let members = match t {
+            Ty::Union(ms) => ms.to_vec(),
+            t => vec![t.clone()],
+        };
+        let errors = members
+            .iter()
+            .any(|m| matches!(m, Ty::Error(_)) || matches!(m, Ty::Prim(p) if p.contains(Typ::Error)));
+        let gone = if errors { Typ::Error } else { Typ::Null };
+        union(members.into_iter().filter_map(|m| match m {
+            Ty::Error(_) if errors => None,
+            Ty::Prim(p) => Some(Ty::Prim(p & !gone)).filter(|_| !(p & !gone).is_empty()),
+            m => Some(m),
+        }))
     }
 
     fn fixable(&self, v: Var, min: u32) -> bool {
@@ -677,16 +746,34 @@ impl Solver {
                     self.held[i].2 = true
                 }
             }
+            let fixable = |s: &Self, t: &Ty| s.open_vars(t).iter().all(|v| s.fixable(*v, min));
+            progress |= self.select_waiting(&fixable)?;
+            for i in (0..self.strips.len()).rev() {
+                let (arg, out) = self.strips[i].clone();
+                if fixable(self, &arg) {
+                    self.strips.swap_remove(i);
+                    self.fix_in(&arg)?;
+                    let left = self.strip(&self.deep(&arg));
+                    self.constrain(&left, &out)?;
+                    progress = true
+                } else if self.open_vars(&arg).iter().any(|v| self.info(*v).quantified) {
+                    bail!("the type of the operand of ? or $ is not known here: annotate it")
+                }
+            }
         }
-        for i in 0..self.vars.len() as u32 {
-            let v = Var(i);
+        // a variable something flows into first: one nothing flows into may
+        // be decided by a variable that holds it
+        let order = (0..self.vars.len() as u32).map(Var);
+        let (decided, open): (Vec<Var>, Vec<Var>) =
+            order.partition(|v| self.decided(*v, &mut vec![]));
+        for v in decided.into_iter().chain(open) {
             if self.info(v).fixed.is_none()
                 && self.info(v).level >= min
                 && !self.info(v).quantified
                 && self.fixable(v, min)
             {
                 self.fix(v)?;
-                if let Some((w, _)) = self.info(v).watches.iter().find(|(_, fired)| !fired)
+                if let Some((w, _)) = self.info(v).watches.iter().find(|(w, fired)| !fired && !matches!(w, Watch::Select(_)))
                     && self.info(v).fixed != Some(Ty::Bot)
                 {
                     bail!("{} needs its type known here: annotate the binding", w.needs())
@@ -723,7 +810,9 @@ impl Solver {
                         if self.fixing.contains(&u) {
                             bail!("infinite type: a variable holds itself in {t}")
                         }
-                        self.fix(u)?
+                        if self.info(v).kind == Kind::Join || self.decided(u, &mut vec![]) {
+                            self.fix(u)?
+                        }
                     }
                     let src = self.info(v).joined.iter().find(|(_, j)| j == &l).map(|(s, _)| *s);
                     match (src, groups.iter_mut().find(|(s, _)| Some(*s) == src)) {
@@ -739,6 +828,8 @@ impl Solver {
         let ty = if !cands.is_empty() {
             match self.info(v).kind {
                 Kind::Join => union(cands),
+                // a variable nothing has decided may stay open inside the
+                // type: a later holder that shares it can still decide it
                 Kind::Single => self.holder(&cands)?,
             }
         } else if self.info(v).singleton {
@@ -769,7 +860,10 @@ impl Solver {
 
     /// The one of `ts` that holds the others.
     fn holder(&mut self, ts: &[Ty]) -> Result<Ty> {
-        for t in ts {
+        // a lower bound with a variable nothing has decided is tried last:
+        // that variable takes what the other lower bounds need
+        let (ground, open): (Vec<&Ty>, Vec<&Ty>) = ts.iter().partition(|t| self.is_ground(t));
+        for t in ground.into_iter().chain(open) {
             if ts.iter().all(|o| self.constrain(o, t).is_ok()) {
                 return Ok(t.clone());
             }
