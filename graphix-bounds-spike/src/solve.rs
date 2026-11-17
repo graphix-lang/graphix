@@ -138,6 +138,9 @@ pub struct Solver {
 }
 
 fn mismatch<T>(container: &Ty, t: &Ty) -> Result<T> {
+    if std::env::var("SPIKE_PANIC").is_ok() && matches!(container, Ty::Bot) {
+        panic!("type mismatch {container} does not contain {t}")
+    }
     bail!("type mismatch {container} does not contain {t}")
 }
 
@@ -567,7 +570,9 @@ impl Solver {
             _ if self.resolving && self.is_ground(a) => {
                 let (ground, loose): (Vec<&Ty>, Vec<&Ty>) =
                     cands.iter().partition(|m| self.is_ground(m));
-                if ground.iter().any(|m| self.constrain(a, m).is_ok()) {
+                if ground.iter().any(|m| self.constrain(a, m).is_ok())
+                    || (loose.is_empty() && open.is_empty() && matches!(self.less(a, b), Ty::Bot))
+                {
                     return Ok(());
                 }
                 match (loose.as_slice(), open.as_slice()) {
@@ -579,7 +584,11 @@ impl Solver {
             _ if !self.is_ground(a) || !self.is_ground(b) => {
                 Ok(self.held.push((a.clone(), b.clone(), false)))
             }
-            _ => match cands.iter().any(|m| self.constrain(a, m).is_ok()) {
+            // both decided: one member holds it, or the members hold it
+            // between them (a product of a union is a union of products)
+            _ => match cands.iter().any(|m| self.constrain(a, m).is_ok())
+                || matches!(self.less(a, b), Ty::Bot)
+            {
                 true => Ok(()),
                 false => mismatch(b, a),
             },
@@ -722,6 +731,34 @@ impl Solver {
                 self.held.push((a, b, false))
             }
         }
+        // a select of the definition that waits on one of its variables
+        // is the instance's to finish
+        for id in 0..self.selects.len() {
+            for t in self.select_waits(id) {
+                let mut mine = false;
+                t.each(&mut |t| {
+                    if let Ty::Var(v) | Ty::Rigid(v) = t {
+                        mine |= memo.contains_key(v)
+                    }
+                });
+                if mine {
+                    let arms = self.select_arms(id);
+                    let arms = arms
+                        .into_iter()
+                        .map(|a| Arm {
+                            pat: a.pat.map_vars(&mut |u| match self.copy(&Ty::Var(u), above, at, &mut memo) {
+                                Ty::Var(n) => n,
+                                _ => u,
+                            }),
+                            ..a
+                        })
+                        .collect();
+                    let new = self.select_instance(arms);
+                    let t = self.copy(&t, above, at, &mut memo);
+                    self.select_wait(new, t)
+                }
+            }
+        }
         t
     }
 
@@ -783,10 +820,18 @@ impl Solver {
                 for u in info.feeders.iter() {
                     self.reach(&Ty::Var(*u), seen)
                 }
+                // and what its uses produce
                 for (w, _) in info.watches.iter() {
-                    if let Watch::Select(id) = w {
-                        for u in self.select_vars(*id) {
-                            self.reach(&Ty::Var(u), seen)
+                    match w {
+                        Watch::Select(id) => {
+                            for u in self.select_vars(*id) {
+                                self.reach(&Ty::Var(u), seen)
+                            }
+                        }
+                        Watch::Field { out, .. } | Watch::Index { out, .. } => self.reach(out, seen),
+                        Watch::Call { args, out } => {
+                            self.reach(out, seen);
+                            args.iter().for_each(|(_, t, _)| self.reach(t, seen))
                         }
                     }
                 }
@@ -945,11 +990,34 @@ impl Solver {
         let order = (mark as u32..self.vars.len() as u32).map(Var);
         let (decided, open): (Vec<Var>, Vec<Var>) =
             order.partition(|v| self.decided(*v, &mut vec![]));
+        // what a use still waiting will produce is not known yet: its
+        // result, and whatever that reaches, waits with it
+        let mut awaited: Vec<Var> = vec![];
+        if !last {
+            for (_, out, payload) in self.strips.clone() {
+                awaited.extend(self.open_vars(&out));
+                awaited.extend(payload.iter().flat_map(|p| self.open_vars(p)))
+            }
+            for id in 0..self.selects.len() {
+                if !self.select_waits(id).is_empty() {
+                    awaited.extend(self.select_vars(id))
+                }
+            }
+            for (_, b, _) in self.held.clone() {
+                awaited.extend(self.open_vars(&b))
+            }
+        }
+        let mut waiting = vec![];
+        for v in awaited.iter() {
+            self.reach(&Ty::Var(*v), &mut waiting)
+        }
+        let waiting: HashSet<Var> = waiting.into_iter().collect();
+        let waits = |_: &Self, v: Var| waiting.contains(&v);
         for v in decided.into_iter().chain(open) {
             if self.info(v).fixed.is_none()
                 && self.info(v).level >= min
                 && !self.info(v).quantified
-                && (last || self.fixable(v, min))
+                && (last || (self.fixable(v, min) && (awaited.is_empty() || !waits(self, v))))
             {
                 self.fix(v)?;
                 if let Some((w, _)) = self.info(v).watches.iter().find(|(w, fired)| !fired && !matches!(w, Watch::Select(_)))

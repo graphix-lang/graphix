@@ -218,11 +218,16 @@ impl Checker {
             Some(root) => module.strip_prefix(root.as_str()).map(|m| m.trim_start_matches("::")),
             None => Some(module),
         };
-        let own = self.dir.as_ref().zip(inside.filter(|m| !m.is_empty())).map(|(d, module)| {
+        let own = self.dir.as_ref().zip(inside).map(|(d, module)| {
             let path = module.replace("::", "/");
             let flat = d.join(format!("{path}.gxi"));
-            if flat.exists() { flat } else { d.join(format!("{path}/mod.gxi")) }
+            match (module.is_empty(), flat.exists()) {
+                (true, _) => d.join("mod.gxi"),
+                (false, true) => flat,
+                (false, false) => d.join(format!("{path}/mod.gxi")),
+            }
         });
+        let own = own.filter(|_| self.root.is_some() || !module.is_empty());
         let file = match own {
             Some(own) if own.exists() => own,
             _ => file,
@@ -299,8 +304,15 @@ impl Checker {
         out
     }
 
+    /// The nearest thing `path` names: each candidate in turn, as one of
+    /// the program's own modules' bindings, then as a declared `val`.
     fn global(&mut self, path: &[String], lvl: u32) -> Result<Option<Ty>> {
         for full in self.candidates("", path) {
+            match self.mods.get(&full).cloned() {
+                Some(Binding::Mono(t)) => return Ok(Some(t)),
+                Some(Binding::Poly(l, t)) => return Ok(Some(self.s.instantiate(&t, l, lvl))),
+                None => (),
+            }
             if let Some((module, _)) = full.rsplit_once("::") {
                 self.load(module);
             }
@@ -498,8 +510,6 @@ impl Checker {
             [n] => self.scopes.iter().rev().find_map(|s| s.get(n.as_str())).cloned(),
             _ => None,
         };
-        let local = local
-            .or_else(|| self.candidates("", &path).iter().find_map(|c| self.mods.get(c).cloned()));
         match local {
             Some(Binding::Mono(t)) => Ok(t),
             Some(Binding::Poly(l, t)) => Ok(self.s.instantiate(&t, l, lvl)),
@@ -1134,12 +1144,15 @@ impl Checker {
                         (parser::parse(Origin::unspecified(&text))?, sig)
                     }
                 };
+                // what a module `use`s is its own
+                let outer = (self.aliases.clone(), self.uses.clone());
                 self.scopes.push(HashMap::new());
                 self.here.push(name.name.to_string());
                 let prefix = self.here.join("::");
                 let r = self.module(&exprs, sig.as_ref().map(|s| &*s.items), &prefix, lvl);
                 self.here.pop();
                 self.scopes.pop();
+                (self.aliases, self.uses) = outer;
                 r?;
                 Ty::Bot
             }

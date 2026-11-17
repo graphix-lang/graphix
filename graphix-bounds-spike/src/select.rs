@@ -180,6 +180,15 @@ impl Solver {
         self.selects[id].arms.clone()
     }
 
+    /// What a select still waits to pass down its arms.
+    pub(crate) fn select_waits(&self, id: usize) -> Vec<Ty> {
+        self.selects[id].waiting.clone()
+    }
+
+    pub(crate) fn select_wait(&mut self, id: usize, t: Ty) {
+        self.selects[id].waiting.push(t)
+    }
+
     /// The variables a select's patterns bind.
     pub(crate) fn select_vars(&self, id: usize) -> Vec<Var> {
         let mut vs = vec![];
