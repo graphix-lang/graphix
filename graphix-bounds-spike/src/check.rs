@@ -268,6 +268,9 @@ impl Checker {
     fn candidates(&self, module: &str, path: &[String]) -> Vec<String> {
         let here = self.here.join("::");
         let module = if module.is_empty() { here.as_str() } else { module };
+        if matches!(path[0].as_str(), "self" | "super" | "package") {
+            return vec![used(path, module, self.root.as_deref().unwrap_or(""))];
+        }
         let mut names = vec![];
         if let Some(full) = self.aliases.get(&path[0]) {
             names.push(std::iter::once(full.clone()).chain(path[1..].iter().cloned()).collect::<Vec<_>>().join("::"))
@@ -787,7 +790,7 @@ impl Checker {
             let at = Some((e.pos.line as u32, e.pos.column as u32));
             args.push((label.clone(), self.infer(e, lvl)?, at))
         }
-        let out = self.s.fresh_ty(lvl, Kind::Single);
+        let out = self.s.fresh_ty(lvl, Kind::Join);
         match self.s.shallow(&f) {
             Ty::Fn(ft) => {
                 self.s.call(&ft, &args, &out)?;
@@ -1202,7 +1205,7 @@ impl Checker {
                 Ty::Ref(matches!(m, Mutability::Mut), Rc::new(self.infer(e, lvl)?))
             }
             ExprKind::Deref(e) => {
-                let (t, out) = (self.infer(e, lvl)?, self.s.fresh_ty(lvl, Kind::Single));
+                let (t, out) = (self.infer(e, lvl)?, self.s.fresh_ty(lvl, Kind::Join));
                 self.s.constrain(&t, &Ty::Ref(false, Rc::new(out.clone())))?;
                 out
             }
@@ -1236,12 +1239,12 @@ impl Checker {
                 Ty::prim(Typ::String)
             }
             ExprKind::StructRef { source, field } => {
-                let (t, out) = (self.infer(source, lvl)?, self.s.fresh_ty(lvl, Kind::Single));
+                let (t, out) = (self.infer(source, lvl)?, self.s.fresh_ty(lvl, Kind::Join));
                 self.s.watch(&t, Watch::Field { field: field.name.clone(), out: out.clone() })?;
                 out
             }
             ExprKind::TupleRef { source, field } => {
-                let (t, out) = (self.infer(source, lvl)?, self.s.fresh_ty(lvl, Kind::Single));
+                let (t, out) = (self.infer(source, lvl)?, self.s.fresh_ty(lvl, Kind::Join));
                 self.s.watch(&t, Watch::Index { i: *field, out: out.clone() })?;
                 out
             }

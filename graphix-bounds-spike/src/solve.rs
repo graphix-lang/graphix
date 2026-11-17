@@ -55,9 +55,12 @@ pub struct VarInfo {
     /// Fixed with nothing flowing in, to what its uses demand: as a lower
     /// bound of another variable it says nothing.
     demanded: bool,
-    /// The lower bounds that reached this variable out of a joining
-    /// variable's bounds: those of one source are one type.
-    joined: Vec<(Var, Ty)>,
+    /// What flows into this variable other than along an edge from another
+    /// variable: an argument, an initial value, a write, a component of
+    /// something taken apart, and each variable that feeds it (but not what
+    /// that variable passes on). For a `Single` variable one of these must
+    /// hold the others.
+    direct: Vec<Ty>,
     /// The variables at this one's level that flow into it. What flows
     /// into them is passed on as it arrives, so this is a record for
     /// fixing, never walked when a bound is added.
@@ -117,8 +120,9 @@ pub struct Solver {
     /// it, so each instance takes a copy.
     held: Vec<(Ty, Ty, bool)>,
     fixing: HashSet<Var>,
-    /// The joining variable whose bounds are being passed on.
-    via: Option<Var>,
+    /// Set for the one relation that passes a variable's bound on to a
+    /// variable it feeds: what arrives that way is the feeder's, not new.
+    along_edge: bool,
     pub selects: Vec<Select>,
     /// What each abstract type is made of, where that has been seen.
     pub reps: HashMap<ArcStr, Def>,
@@ -148,7 +152,7 @@ impl Solver {
             quantified: false,
             fixed: None,
             demanded: false,
-            joined: vec![],
+            direct: vec![],
             feeders: vec![],
             over_any: false,
             watches: vec![],
@@ -237,6 +241,7 @@ impl Solver {
     /// `a` fits where `b` is wanted.
     pub fn constrain(&mut self, a: &Ty, b: &Ty) -> Result<()> {
         self.steps += 1;
+        let along_edge = std::mem::take(&mut self.along_edge);
         let (a, b) = (self.shallow(a), self.shallow(b));
         if a == b {
             return Ok(());
@@ -253,36 +258,32 @@ impl Solver {
                         self.info_mut(*v).upper.push(b.clone());
                         self.site(*v, false, &b);
                         match &b {
-                            Ty::Var(w) if self.info(*w).level == lvl => {
-                                self.info_mut(*w).feeders.push(*v)
+                            Ty::Var(w) => {
+                                if self.info(*w).level == lvl {
+                                    self.info_mut(*w).feeders.push(*v)
+                                }
+                                if !along_edge {
+                                    self.info_mut(*w).direct.push(a.clone());
+                                    self.site(*w, true, &a)
+                                }
                             }
-                            Ty::Var(_) => (),
                             b => self.demanded(*v, b)?,
                         }
-                        let via = self.pass_on(*v);
-                        let mine = self.via;
                         for l in self.info(*v).lower.clone() {
                             let from = self.sites.get(&(*v, true, l.clone())).copied();
-                            // a bound that came here out of a join keeps its source
-                            // (a join passes everything on as its own)
-                            let src = self.info(*v).joined.iter().find(|(_, j)| j == &l).map(|(s, _)| *s);
-                            self.via = match self.info(*v).kind {
-                                Kind::Join => mine,
-                                Kind::Single => src.or(mine),
-                            };
+                            self.along_edge = matches!(b, Ty::Var(_));
                             self.constrain(&l, &b).map_err(|e| self.ends(e, from, self.at))?
                         }
-                        self.via = via;
                         Ok(())
                     }
                     (Ty::Var(_), Ty::Var(w)) if self.info(*w).level >= lvl => {
-                        self.arrive(*w, &a)
+                        self.arrive(*w, &a, along_edge)
                     }
                     (Ty::Var(_), _) => {
                         let b = self.extrude(&b, false, lvl, &mut HashMap::new());
                         self.constrain(&a, &b)
                     }
-                    (_, Ty::Var(w)) if self.level(&a) <= lvl => self.arrive(*w, &a),
+                    (_, Ty::Var(w)) if self.level(&a) <= lvl => self.arrive(*w, &a, along_edge),
                     (_, _) => {
                         let a = self.extrude(&a, true, lvl, &mut HashMap::new());
                         self.constrain(&a, &b)
@@ -385,16 +386,12 @@ impl Solver {
         }
     }
 
-    fn arrive(&mut self, w: Var, a: &Ty) -> Result<()> {
+    fn arrive(&mut self, w: Var, a: &Ty, along_edge: bool) -> Result<()> {
         self.info_mut(w).lower.push(a.clone());
         self.site(w, true, a);
-        if let Some(src) = self.via
-            && src != w
-        {
-            self.info_mut(w).joined.push((src, a.clone()))
+        if !along_edge {
+            self.info_mut(w).direct.push(a.clone())
         }
-        // what a use makes of a join's bounds is one type too
-        let via = self.pass_on(w);
         if !matches!(a, Ty::Var(_)) {
             for i in 0..self.info(w).watches.len() {
                 let watch = self.info(w).watches[i].0.clone();
@@ -405,22 +402,10 @@ impl Solver {
         }
         for u in self.info(w).upper.clone() {
             let to = self.sites.get(&(w, false, u.clone())).copied();
+            self.along_edge = matches!(u, Ty::Var(_));
             self.constrain(a, &u).map_err(|e| self.ends(e, self.at, to))?
         }
-        self.via = via;
         Ok(())
-    }
-
-    /// Mark what follows as `v`'s bounds passed on, where `v` joins; the
-    /// mark to restore after.
-    fn pass_on(&mut self, v: Var) -> Option<Var> {
-        // the outermost join in passing is the source: what flows out of
-        // it through a join inside it is still one type
-        let outer = self.via;
-        if self.info(v).kind == Kind::Join && outer.is_none() {
-            self.via = Some(v)
-        }
-        outer
     }
 
     fn decided(&self, v: Var, seen: &mut Vec<Var>) -> bool {
@@ -666,14 +651,7 @@ impl Solver {
                 let mut fired = false;
                 for l in self.info(v).lower.clone() {
                     if !matches!(l, Ty::Var(_)) {
-                        let src = self.info(v).joined.iter().find(|(_, j)| j == &l).map(|(s, _)| *s);
-                        let via = self.via;
-                        self.via = match self.info(v).kind {
-                            Kind::Join => via.or(Some(v)),
-                            Kind::Single => src.or(via),
-                        };
-                        fired |= self.apply(&w, &l)?;
-                        self.via = via
+                        fired |= self.apply(&w, &l)?
                     }
                 }
                 self.info_mut(v).watches.push((w, fired));
@@ -764,14 +742,10 @@ impl Solver {
                 let (ls, us) = (self.info(*v).lower.clone(), self.info(*v).upper.clone());
                 let ls = ls.iter().map(|l| self.copy(l, above, at, memo)).collect();
                 let us = us.iter().map(|u| self.copy(u, above, at, memo)).collect();
-                // what came out of one join stays one bound in the copy
-                let joined = self.info(*v).joined.clone();
-                let joined = joined
-                    .iter()
-                    .map(|(src, l)| (*memo.get(src).unwrap_or(src), self.copy(l, above, at, memo)))
-                    .collect();
+                let direct = self.info(*v).direct.clone();
+                let direct = direct.iter().map(|l| self.copy(l, above, at, memo)).collect();
                 let info = self.info_mut(n);
-                (info.lower, info.upper, info.joined) = (ls, us, joined);
+                (info.lower, info.upper, info.direct) = (ls, us, direct);
                 for (w, _) in self.info(*v).watches.clone() {
                     if let Watch::Select(id) = w {
                         let arms = self.select_arms(id);
@@ -997,75 +971,34 @@ impl Solver {
         if self.info(v).fixed.is_some() || self.info(v).quantified || !self.fixing.insert(v) {
             return Ok(());
         }
+        // a variable nothing has decided may stay open inside a bound: a
+        // holder that shares it can still decide it
         let mut cands: Vec<Ty> = vec![];
-        let mut from: Vec<Option<Site>> = vec![];
-        let mut groups: Vec<(Var, Vec<Ty>)> = vec![];
         let feeders = self.info(v).feeders.iter().filter(|u| !self.info(**u).quantified);
         let feeders: Vec<Ty> = feeders.map(|u| Ty::Var(*u)).collect();
         for l in self.info(v).lower.clone().into_iter().chain(feeders) {
-            match self.shallow(&l) {
-                _ if matches!(&l, Ty::Var(u) if self.info(*u).demanded && !self.info(*u).over_any) => (),
-                // a variable nothing flows into says nothing as a lower
-                // bound; it is fixed from above, after this one. A name
-                // bound over `Any` does hold a value: it says what it is
-                // fixed to
-                Ty::Var(u) if !self.decided(u, &mut vec![]) && !self.info(u).over_any => (),
-                Ty::Var(u) => {
-                    self.fix(u)?;
-                    if let Some(t) = self.info(u).fixed.clone()
-                        && (!self.info(u).demanded || self.info(u).over_any)
-                    {
-                        cands.push(t);
-                        from.push(None)
-                    }
-                }
-                t => {
-                    for u in self.open_vars(&t) {
-                        if self.fixing.contains(&u) {
-                            bail!("infinite type: a variable holds itself in {t}")
-                        }
-                        if self.info(v).kind == Kind::Join || self.decided(u, &mut vec![]) {
-                            self.fix(u)?
-                        }
-                    }
-                    let src = self.info(v).joined.iter().find(|(_, j)| j == &l).map(|(s, _)| *s);
-                    match (src, groups.iter_mut().find(|(s, _)| Some(*s) == src)) {
-                        (None, _) => {
-                            cands.push(self.deep(&t));
-                            from.push(self.sites.get(&(v, true, l.clone())).copied())
-                        }
-                        (Some(_), Some((_, g))) => g.push(self.deep(&t)),
-                        (Some(s), None) => groups.push((s, vec![self.deep(&t)])),
-                    }
-                }
+            if let Some(t) = self.settled(v, &l)? {
+                cands.push(t)
             }
         }
-        cands.extend(groups.into_iter().map(|(_, g)| union(g)));
-        from.resize(cands.len(), None);
-        let live: Vec<bool> = cands.iter().map(|t| !matches!(t, Ty::Bot)).collect();
-        let mut keep = live.iter();
-        cands.retain(|_| *keep.next().unwrap());
-        let mut keep = live.iter();
-        from.retain(|_| *keep.next().unwrap());
-        let ty = if !cands.is_empty() {
-            match self.info(v).kind {
-                Kind::Join => union(cands),
-                // a variable nothing has decided may stay open inside the
-                // type: a later holder that shares it can still decide it
-                Kind::Single => self.holder(&cands, &from).map_err(|e| {
-                    match std::env::var("SPIKE_DEBUG") {
-                        Ok(_) => e.context(format!(
-                            "debug: '_{} level {} lower {:?} feeders {:?} joined {:?}",
-                            v.0,
-                            self.info(v).level,
-                            self.info(v).lower.iter().map(|t| t.to_string()).collect::<Vec<_>>(),
-                            self.info(v).feeders,
-                            self.info(v).joined.iter().map(|(s, t)| (s.0, t.to_string())).collect::<Vec<_>>()
-                        )),
-                        Err(_) => e,
-                    }
-                })?,
+        cands.retain(|t| !matches!(t, Ty::Bot));
+        if self.info(v).kind == Kind::Single {
+            let (mut given, mut from) = (vec![], vec![]);
+            for l in self.info(v).direct.clone() {
+                if let Some(t) = self.settled(v, &l)?
+                    && !matches!(t, Ty::Bot)
+                    && !given.contains(&t)
+                {
+                    given.push(t);
+                    from.push(self.sites.get(&(v, true, l.clone())).copied())
+                }
             }
+            if given.len() > 1 {
+                self.holder(&given, &from)?;
+            }
+        }
+        let ty = if !cands.is_empty() {
+            union(cands)
         } else if self.info(v).singleton {
             Ty::Bot
         } else {
@@ -1109,6 +1042,34 @@ impl Solver {
             bail!("a name bound inside an Any part: its uses do not decide a type a test can tell ({t})")
         }
         Ok(())
+    }
+
+    /// What a lower bound `l` of `v` says once the variables in it are
+    /// fixed: nothing for a variable nothing flows into (it is fixed from
+    /// above, after `v`), unless it is a name bound over `Any`, which holds
+    /// a value of the type it is fixed to.
+    fn settled(&mut self, v: Var, l: &Ty) -> Result<Option<Ty>> {
+        Ok(match self.shallow(l) {
+            _ if matches!(l, Ty::Var(u) if self.info(*u).demanded && !self.info(*u).over_any) => None,
+            Ty::Var(u) if !self.decided(u, &mut vec![]) && !self.info(u).over_any => None,
+            Ty::Var(u) => {
+                self.fix(u)?;
+                let said = !self.info(u).demanded || self.info(u).over_any;
+                self.info(u).fixed.clone().filter(|_| said)
+            }
+            t => {
+                for u in self.open_vars(&t) {
+                    if self.fixing.contains(&u) {
+                        bail!("infinite type: a variable holds itself in {t}")
+                    }
+                    if self.decided(u, &mut vec![]) {
+                        self.fix(u)?
+                    }
+                }
+                let _ = v;
+                Some(self.deep(&t))
+            }
+        })
     }
 
     /// The one of `ts` that holds the others.

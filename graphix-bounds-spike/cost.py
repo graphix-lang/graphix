@@ -33,5 +33,5 @@ for n in [int(a) for a in sys.argv[1:]] or [50, 200, 800]:
     today = time.time() - t
     os.unlink(f.name)
     lines = text.count('\n')
-    print(f'{n} blocks, {lines} lines: prototype {out[0]} {out[1][:30]} in {mine * 1000:.0f} ms, {out[-1]} steps; '
+    print(f'{n} blocks, {lines} lines: prototype {out[0]} {out[1][:30]} in {mine * 1000:.0f} ms, {out[2]} steps; '
           f'today rc={r.returncode} in {today * 1000:.0f} ms {r.stderr.strip()[-100:]}')

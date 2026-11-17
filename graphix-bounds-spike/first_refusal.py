@@ -2,7 +2,7 @@
 """Find the first top-level statement of a .gx file at which the prototype's verdict
 is not `ok`: checks each prefix that ends at a `;` outside every bracket.
 
-usage: bisect.py FILE.gx
+usage: first_refusal.py FILE.gx
 """
 import os, subprocess, sys
 spike = os.environ.get('SPIKE', os.path.expanduser('~/tmp/target/debug/graphix-bounds-spike'))
