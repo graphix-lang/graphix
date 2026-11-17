@@ -351,6 +351,11 @@ pub struct Solving {
     scheming: bool,
     /// The pairs of typedef names a select's walk is inside.
     walks: std::cell::RefCell<select::Walks>,
+    /// The twin each cell copied out has at a level, per polarity
+    /// ([`Self::extrude`]), with the cell, which it keeps alive; and the
+    /// ones made since the outermost attempt began, in order.
+    twins: AHashMap<(usize, bool, u32), (TVar, Level, TVar)>,
+    twinned: Vec<(usize, bool, u32)>,
 }
 
 /// A kind of use a check may still owe when a definition closes.
@@ -529,13 +534,16 @@ impl Solving {
     /// and where it succeeds too unless `keep`.
     fn trying(&mut self, keep: bool, f: impl FnOnce(&mut Self) -> Result<()>) -> bool {
         let (mark, held) = (self.added.len(), self.held.len());
-        let unfolded = self.unfolded.len();
+        let (unfolded, twinned) = (self.unfolded.len(), self.twinned.len());
         self.attempts += 1;
         let fits = f(self).is_ok();
         self.attempts -= 1;
         if !(fits && keep) {
             self.held.truncate(held);
             self.unfolded.truncate(unfolded);
+            for key in self.twinned.drain(twinned..) {
+                self.twins.remove(&key);
+            }
             for (v, what) in self.added.drain(mark..).rev() {
                 let cell = v.cell();
                 let mut c = cell.write();
@@ -550,7 +558,8 @@ impl Solving {
             }
         }
         if self.attempts == 0 {
-            self.added.clear()
+            self.added.clear();
+            self.twinned.clear()
         }
         fits
     }
@@ -759,13 +768,13 @@ impl Solving {
             }
             (Some(_), Some(w)) => self.arrive(env, w, a, edge),
             (Some(_), None) => {
-                let b = self.extrude(b, false, at, &mut LPooled::take());
+                let b = self.extrude(b, false, at);
                 self.escapes(&b, at)?;
                 self.constrain(env, a, &b)
             }
             (None, Some(w)) if depth(a) <= at.depth() => self.arrive(env, w, a, edge),
             (None, Some(_)) => {
-                let a = self.extrude(a, true, at, &mut LPooled::take());
+                let a = self.extrude(a, true, at);
                 self.escapes(&a, at)?;
                 self.constrain(env, &a, b)
             }
@@ -815,15 +824,10 @@ impl Solving {
     }
 
     /// A copy of `t` no deeper than `at`: each deeper cell gets a twin at
-    /// `at` per polarity, joined to it by a bound. A declared variable has
-    /// a twin only where its values flow out.
-    fn extrude(
-        &mut self,
-        t: &Type,
-        pos: bool,
-        at: Level,
-        twins: &mut AHashMap<(usize, bool), TVar>,
-    ) -> Type {
+    /// `at` per polarity, joined to it by a bound, and has that one twin
+    /// there however often it is copied out. A declared variable has a
+    /// twin only where its values flow out.
+    fn extrude(&mut self, t: &Type, pos: bool, at: Level) -> Type {
         if depth(t) <= at.depth() {
             return t.clone();
         }
@@ -834,9 +838,16 @@ impl Solving {
         let t = shallow(t);
         match &t {
             Type::TVar(v) => {
-                if let Some(n) = twins.get(&(v.cell_addr(), pos)) {
+                let key = (v.cell_addr(), pos, at.depth());
+                if let Some((_, level, n)) = self.twins.get(&key)
+                    && *level == at
+                {
                     return Type::TVar(n.clone());
                 }
+                let mut keep = |s: &mut Self, n: &TVar| {
+                    s.twins.insert(key, (v.clone(), at, n.clone()));
+                    s.twinned.push(key)
+                };
                 match (v.is_rigid(), pos) {
                     (true, false) => t.clone(),
                     (true, true) => {
@@ -851,7 +862,7 @@ impl Solving {
                         }
                         let n = twin(v);
                         n.set_joins();
-                        twins.insert((v.cell_addr(), pos), n.clone());
+                        keep(self, &n);
                         known(v, |k| k.sinks.push(n.clone()));
                         self.note(v, Added::Sink);
                         Type::TVar(n)
@@ -861,7 +872,7 @@ impl Solving {
                         if v.joins() {
                             n.set_joins()
                         }
-                        twins.insert((v.cell_addr(), pos), n.clone());
+                        keep(self, &n);
                         let (lower, upper) = (v.cell_lower(), v.cell_constraints());
                         let cell = v.cell();
                         match pos {
@@ -870,7 +881,7 @@ impl Solving {
                                 self.note(v, Added::Upper);
                                 let lower: SmallVec<[Type; 1]> = lower
                                     .iter()
-                                    .map(|l| self.extrude(l, pos, at, twins))
+                                    .map(|l| self.extrude(l, pos, at))
                                     .collect();
                                 n.cell().write().lower = lower
                             }
@@ -879,7 +890,7 @@ impl Solving {
                                 self.note(v, Added::Lower);
                                 let upper: SmallVec<[Type; 1]> = upper
                                     .iter()
-                                    .map(|u| self.extrude(u, pos, at, twins))
+                                    .map(|u| self.extrude(u, pos, at))
                                     .collect();
                                 n.cell().write().constraints = upper
                             }
@@ -891,21 +902,21 @@ impl Solving {
             Type::Fn(ft) => {
                 let args = ft.args.iter().map(|a| FnArgType {
                     kind: a.kind.clone(),
-                    typ: self.extrude(&a.typ, !pos, at, twins),
+                    typ: self.extrude(&a.typ, !pos, at),
                 });
                 let args = Arc::from_iter(args);
                 Type::Fn(Arc::new(FnType {
                     args,
-                    vargs: ft.vargs.as_ref().map(|t| self.extrude(t, !pos, at, twins)),
-                    rtype: self.extrude(&ft.rtype, pos, at, twins),
-                    throws: self.extrude(&ft.throws, pos, at, twins),
+                    vargs: ft.vargs.as_ref().map(|t| self.extrude(t, !pos, at)),
+                    rtype: self.extrude(&ft.rtype, pos, at),
+                    throws: self.extrude(&ft.throws, pos, at),
                     explicit_throws: ft.explicit_throws,
                     quantifiers: ft.quantifiers.clone(),
                     lambda_ids: ft.lambda_ids.clone(),
                 }))
             }
             other => other
-                .cow_children(&mut |c| Some(self.extrude(c, pos, at, twins)))
+                .cow_children(&mut |c| Some(self.extrude(c, pos, at)))
                 .unwrap_or_else(|| other.clone()),
         }
     }
@@ -1094,17 +1105,27 @@ pub fn strip(env: &Env, t: &Type) -> Result<(Type, SmallVec<[Type; 2]>)> {
 }
 
 /// The members of `t`, a name that stands for a union, an error or a
-/// primitive read as what it stands for.
+/// primitive read as what it stands for, each name once.
 fn members_of(env: &Env, t: &Type, out: &mut SmallVec<[Type; 4]>) -> Result<()> {
-    ensure_sufficient(|| match &shallow(t) {
-        Type::Set(ms) => ms.iter().try_for_each(|m| members_of(env, m, out)),
-        named @ Type::Ref(_) => match named.lookup_ref(env)? {
-            body @ Type::Set(_) => members_of(env, &body, out),
-            body @ (Type::Error(_) | Type::Primitive(_)) => Ok(out.push(body)),
-            _ => Ok(out.push(named.clone())),
-        },
-        t => Ok(out.push(t.clone())),
-    })
+    fn go(
+        env: &Env,
+        t: &Type,
+        out: &mut SmallVec<[Type; 4]>,
+        seen: &mut AHashSet<Type>,
+    ) -> Result<()> {
+        ensure_sufficient(|| match &shallow(t) {
+            Type::Set(ms) => ms.iter().try_for_each(|m| go(env, m, out, seen)),
+            named @ Type::Ref(_) if !seen.insert(named.clone()) => Ok(()),
+            named @ Type::Ref(_) => match named.lookup_ref(env)? {
+                body @ Type::Set(_) => go(env, &body, out, seen),
+                body @ (Type::Error(_) | Type::Primitive(_)) => Ok(out.push(body)),
+                _ => Ok(out.push(named.clone())),
+            },
+            t => Ok(out.push(t.clone())),
+        })
+    }
+    let mut seen: LPooled<AHashSet<Type>> = LPooled::take();
+    go(env, t, out, &mut seen)
 }
 
 /// Whether `t` is a scheme a check by bounds made: one of its cells is a
