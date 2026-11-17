@@ -46,8 +46,7 @@ struct TypeDef {
     /// What the name stands for; none for `type T;`.
     body: Option<Type>,
     recursive: Option<u32>,
-    /// The tag of an abstract type: its values are a variant of that tag
-    /// around the representation, which no other definition makes.
+    /// The name an abstract type is known by everywhere.
     nominal: Option<ArcStr>,
 }
 
@@ -140,11 +139,21 @@ impl Checker {
     }
 
     /// Check a program; the type of its last expression, every variable fixed.
-    pub fn program(&mut self, text: &str) -> Result<Ty> {
+    /// `sig` is the text of the interface file beside the program, if it
+    /// has one (a package's root).
+    pub fn program(&mut self, text: &str, sig: Option<&str>) -> Result<Ty> {
         let exprs = parser::parse(Origin::unspecified(text))?;
         let mut last = Ty::Bot;
-        for e in exprs.iter() {
-            last = self.infer(e, 0)?
+        match sig {
+            None => {
+                for e in exprs.iter() {
+                    last = self.infer(e, 0)?
+                }
+            }
+            Some(sig) => {
+                let sig = parser::parse_sig(Origin::unspecified(sig))?;
+                self.module(&exprs, Some(&sig.items), "", 0)?
+            }
         }
         self.s.finish()?;
         Ok(self.s.deep(&last))
@@ -167,6 +176,16 @@ impl Checker {
                     false => dir.join(format!("{}/mod.gxi", rest.join("/"))),
                 }
             }
+        };
+        // one of the program's own modules, by its interface file
+        let own = self.dir.as_ref().map(|d| {
+            let path = module.replace("::", "/");
+            let flat = d.join(format!("{path}.gxi"));
+            if flat.exists() { flat } else { d.join(format!("{path}/mod.gxi")) }
+        });
+        let file = match own {
+            Some(own) if own.exists() => own,
+            _ => file,
         };
         let sig = fs::read_to_string(&file)
             .ok()
@@ -214,7 +233,7 @@ impl Checker {
         };
         let (body, nominal) = match &td.body {
             TypeDefBody::Alias(body) => (Some(body.clone()), None),
-            TypeDefBody::Abstract(rep) => (rep.clone(), Some(format!("#abs:{name}").into())),
+            TypeDefBody::Abstract(rep) => (rep.clone(), Some(ArcStr::from(name.as_str()))),
         };
         let params = td.params.iter().map(|(tv, _)| tv.name.clone()).collect();
         let def = TypeDef { module: module.to_string(), params, body, recursive: None, nominal };
@@ -333,6 +352,25 @@ impl Checker {
             if def.params.len() != args.len() {
                 bail!("{full} takes {} type arguments", def.params.len())
             }
+            if let Some(tag) = def.nominal.clone() {
+                // what it is made of, once: seen wherever a definition with
+                // a representation is
+                if let (Some(body), false) = (def.body.clone(), self.s.reps.contains_key(&tag)) {
+                    let (names, home) = (def.params.clone(), def.module.clone());
+                    let params: Vec<Var> = names.iter().map(|_| self.s.fresh(0, Kind::Single)).collect();
+                    self.s.reps.insert(tag.clone(), Def { params: params.clone(), body: Ty::Bot });
+                    let tvs = names.into_iter().zip(params.iter().map(|v| Ty::Var(*v))).collect();
+                    self.tvs.push(Scope { tvs, level: 0, rigid: false });
+                    let rep = self.conv(&body, &home);
+                    self.tvs.pop();
+                    self.s.reps.get_mut(&tag).unwrap().body = rep?
+                }
+                return Ok(Ty::Abs(tag, args.into()));
+            }
+            let def = &self.typedefs[&full];
+            if def.params.len() != args.len() {
+                bail!("{full} takes {} type arguments", def.params.len())
+            }
             if let Some(id) = def.recursive {
                 return Ok(Ty::Named(id, args.into()));
             }
@@ -343,7 +381,6 @@ impl Checker {
                 return Ok(Ty::Named(id, args.into()));
             }
             let (names, body, home) = (def.params.clone(), def.body.clone(), def.module.clone());
-            let nominal = def.nominal.clone();
             let expand = |c: &mut Self, args: Vec<Ty>| -> Result<Ty> {
                 let tvs = names.iter().cloned().zip(args).collect();
                 c.tvs.push(Scope { tvs, level: 0, rigid: false });
@@ -351,11 +388,7 @@ impl Checker {
                 let t = body.as_ref().map(|b| c.conv(b, &home)).transpose();
                 c.expanding.pop();
                 c.tvs.pop();
-                Ok(match (&nominal, t?) {
-                    (Some(tag), t) => Ty::Variant(tag.clone(), t.into_iter().collect()),
-                    (None, Some(t)) => t,
-                    (None, None) => Ty::Bot,
-                })
+                Ok(t?.unwrap_or(Ty::Bot))
             };
             let t = expand(self, args)?;
             if let Some(id) = self.typedefs[&full].recursive
@@ -487,10 +520,23 @@ impl Checker {
             }
         }
         self.infer_all(exprs, lvl)?;
+        for item in sig.into_iter().flatten() {
+            if let SigKind::Module(name) = &item.kind {
+                let child = ExprKind::Module {
+                    name: name.clone(),
+                    value: ModuleKind::Unresolved { from_interface: true }.into(),
+                };
+                self.infer(&child.to_expr(Default::default()), lvl)?;
+            }
+        }
         let scope = self.scopes.last().unwrap().clone();
+        let full = |n: &str| match prefix {
+            "" => n.to_string(),
+            p => format!("{p}::{n}"),
+        };
         let Some(items) = sig else {
             for (n, b) in scope {
-                self.mods.insert(format!("{prefix}::{n}"), b);
+                self.mods.insert(full(&n), b);
             }
             return Ok(());
         };
@@ -513,7 +559,7 @@ impl Checker {
                 self.s.constrain(&made, &held)?;
                 let t = declared(self, false)?;
                 self.s.quantify(&t, lvl);
-                self.mods.insert(format!("{prefix}::{}", val.name.name), Binding::Poly(lvl, t));
+                self.mods.insert(full(&val.name.name), Binding::Poly(lvl, t));
             }
         }
         Ok(())
@@ -675,9 +721,11 @@ impl Checker {
             }
             args.push(FnArg { label, optional, ty })
         }
-        let body = match &l.body {
-            LambdaBody::Expr(e) => self.infer(e, lvl)?,
-            LambdaBody::Builtin(_) => unsupported("builtin body")?,
+        // a builtin's type is what its signature says
+        let body = match (&l.body, &l.rtype) {
+            (LambdaBody::Expr(e), _) => self.infer(e, lvl)?,
+            (LambdaBody::Builtin(_), Some(_)) => Ty::Bot,
+            (LambdaBody::Builtin(_), None) => unsupported("builtin with no return type")?,
         };
         let ret = match &l.rtype {
             None => body,
@@ -813,7 +861,7 @@ impl Checker {
             StructurePattern::Abstract { all, name, bind, .. } => {
                 let all = named(self, all);
                 match self.named_at(&parts(name), None, "", lvl)? {
-                    Ty::Variant(tag, _) => Pat::Variant(all, tag, vec![self.structure(bind, lvl)?]),
+                    Ty::Abs(tag, _) => Pat::Abs(all, tag, Box::new(self.structure(bind, lvl)?)),
                     _ => bail!("{} is not an abstract type", parts(name).join("::")),
                 }
             }
@@ -955,9 +1003,13 @@ impl Checker {
             }
             ExprKind::Construct { name, arg } => {
                 let (t, arg) = (self.named_at(&parts(name), None, "", lvl)?, self.infer(arg, lvl)?);
-                match &t {
-                    Ty::Variant(_, rep) if rep.len() == 1 => self.s.constrain(&arg, &rep[0])?,
-                    _ => bail!("{} has no constructor", parts(name).join("::")),
+                let rep = match &t {
+                    Ty::Abs(tag, args) => self.s.rep(tag, args),
+                    _ => None,
+                };
+                match rep {
+                    Some(rep) => self.s.constrain(&arg, &rep)?,
+                    None => bail!("{} has no constructor here", parts(name).join("::")),
                 }
                 t
             }

@@ -17,9 +17,9 @@ fn main() {
     let stdlib = env::var("GRAPHIX_STDLIB")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../stdlib"));
-    let judge = |text: &str, dir: Option<PathBuf>| {
+    let judge = |text: &str, dir: Option<PathBuf>, sig: Option<String>| {
         let mut c = Checker::new(stdlib.clone(), dir);
-        let verdict = match c.program(text) {
+        let verdict = match c.program(text, sig.as_deref()) {
             Ok(t) => format!("ok\t{t}"),
             Err(e) => match e.downcast_ref::<Unsupported>() {
                 Some(u) => format!("skip\t{}", u.0),
@@ -35,11 +35,15 @@ fn main() {
     };
     let files: Vec<String> = env::args().skip(1).collect();
     if files.is_empty() {
-        io::stdin().lock().lines().map_while(Result::ok).for_each(|l| judge(&l, None))
+        io::stdin().lock().lines().map_while(Result::ok).for_each(|l| judge(&l, None, None))
     } else {
         for f in files {
             match fs::read_to_string(&f) {
-                Ok(text) => judge(&text, PathBuf::from(&f).parent().map(PathBuf::from)),
+                Ok(text) => {
+                    let path = PathBuf::from(&f);
+                    let sig = fs::read_to_string(path.with_extension("gxi")).ok();
+                    judge(&text, path.parent().map(PathBuf::from), sig)
+                }
                 Err(e) => println!("skip\tunreadable: {e}\t0"),
             }
         }

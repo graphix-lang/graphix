@@ -29,6 +29,8 @@ pub enum Pat {
     /// and the name of the run the pattern leaves open, if it leaves one.
     Elems { all: Option<Var>, list: bool, elems: Vec<Pat>, open: Option<Option<Var>> },
     Or(Vec<Pat>),
+    /// An abstract type's constructor around what it holds.
+    Abs(Option<Var>, ArcStr, Box<Pat>),
 }
 
 impl Pat {
@@ -60,6 +62,10 @@ impl Pat {
                 }
             }
             Pat::Or(ps) => Pat::Or(all(ps)),
+            Pat::Abs(v, tag, p) => {
+                let p = Box::new(p.map_vars(f));
+                Pat::Abs(v.map(&mut *f), tag.clone(), p)
+            }
         }
     }
 
@@ -81,6 +87,7 @@ impl Pat {
             Pat::Elems { list: false, .. } => Some(Ty::Array(Rc::new(Ty::Any))),
             Pat::Elems { list: true, .. } => Some(Ty::List(Rc::new(Ty::Any))),
             Pat::Or(ps) => ps.iter().map(|p| p.admits()).collect::<Option<Vec<Ty>>>().map(union),
+            Pat::Abs(..) => None,
         }
     }
 }
@@ -357,6 +364,20 @@ impl Solver {
                 };
                 Routed { part: self.both(&t, lit), rest, binds: vec![] }
             }
+            (Pat::Abs(all, tag, p), Ty::Abs(t0, args)) if tag == t0 => match self.rep(tag, args) {
+                None => nothing(),
+                Some(rep) => {
+                    let r = self.route(p, &rep, open);
+                    match (&r.part, &r.rest) {
+                        (Ty::Bot, _) => nothing(),
+                        (_, rest) => Routed {
+                            part: t.clone(),
+                            rest: if matches!(rest, Ty::Bot) { Ty::Bot } else { t.clone() },
+                            binds: named(all, &t, r.binds),
+                        },
+                    }
+                }
+            },
             (Pat::Or(ps), _) => {
                 let (mut reach, mut parts, mut binds) = (t.clone(), vec![], vec![]);
                 for p in ps {

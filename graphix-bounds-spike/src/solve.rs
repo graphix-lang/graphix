@@ -120,6 +120,8 @@ pub struct Solver {
     /// The joining variable whose bounds are being passed on.
     via: Option<Var>,
     pub selects: Vec<Select>,
+    /// What each abstract type is made of, where that has been seen.
+    pub reps: HashMap<ArcStr, Def>,
     /// The operand and the result of a `?` or `$` whose operand's type is
     /// not known yet.
     pub strips: Vec<(Ty, Ty)>,
@@ -212,6 +214,15 @@ impl Solver {
             }
         });
         l
+    }
+
+    /// What a value of the abstract type `tag` at `args` holds.
+    pub fn rep(&self, tag: &ArcStr, args: &[Ty]) -> Option<Ty> {
+        let def = self.reps.get(tag)?;
+        Some(def.body.map(&mut |t| match t {
+            Ty::Var(v) => def.params.iter().position(|p| p == v).map(|i| args[i].clone()),
+            _ => None,
+        }))
     }
 
     pub(crate) fn unfold(&self, id: u32, args: &[Ty]) -> Ty {
@@ -342,6 +353,9 @@ impl Solver {
                 self.constrain(v0, v1)
             }
             (Ty::Tuple(xs), Ty::Tuple(ys)) if xs.len() == ys.len() => {
+                xs.iter().zip(ys.iter()).try_for_each(|(x, y)| self.constrain(x, y))
+            }
+            (Ty::Abs(t0, xs), Ty::Abs(t1, ys)) if t0 == t1 && xs.len() == ys.len() => {
                 xs.iter().zip(ys.iter()).try_for_each(|(x, y)| self.constrain(x, y))
             }
             (Ty::Variant(t0, xs), Ty::Variant(t1, ys)) if t0 == t1 && xs.len() == ys.len() => {
@@ -609,11 +623,10 @@ impl Solver {
                     None => bail!("{a} has no field {field}"),
                 }
             }
-            (Ty::Variant(tag, ts), Watch::Index { i: 0, out })
-                if tag.starts_with("#abs:") && ts.len() == 1 =>
-            {
-                self.constrain(&ts[0], out).map(|()| true)
-            }
+            (Ty::Abs(tag, args), Watch::Index { i: 0, out }) => match self.rep(&tag, &args) {
+                Some(rep) => self.constrain(&rep, out).map(|()| true),
+                None => bail!("{tag} is abstract here: its payload cannot be read"),
+            },
             (Ty::Error(t), Watch::Index { i: 0, out }) => self.constrain(&t, out).map(|()| true),
             (Ty::Tuple(ts), Watch::Index { i, out }) => match ts.get(*i) {
                 Some(t) => self.constrain(t, out).map(|()| true),

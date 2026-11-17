@@ -43,6 +43,9 @@ pub enum Ty {
     Rigid(Var),
     /// An application of a recursive typedef, unfolded when it is met.
     Named(u32, Rc<[Ty]>),
+    /// An abstract type at its parameters: equal only to itself. What it
+    /// is made of is known where its definition is seen.
+    Abs(ArcStr, Rc<[Ty]>),
 }
 
 /// What tells two members of a union apart without looking at a variable.
@@ -58,6 +61,7 @@ pub enum Head {
     Struct(Vec<ArcStr>),
     Variant(ArcStr, usize),
     Fn,
+    Abs(ArcStr),
     Open,
     Other,
 }
@@ -79,6 +83,7 @@ impl Ty {
             Ty::Struct(fs) => Head::Struct(fs.iter().map(|(n, _)| n.clone()).collect()),
             Ty::Variant(tag, ts) => Head::Variant(tag.clone(), ts.len()),
             Ty::Fn(_) => Head::Fn,
+            Ty::Abs(tag, _) => Head::Abs(tag.clone()),
             Ty::Var(_) | Ty::Rigid(_) => Head::Open,
             Ty::Bot | Ty::Any | Ty::Union(_) | Ty::Named(..) => Head::Other,
         }
@@ -101,6 +106,7 @@ impl Ty {
             Ty::Tuple(ts) => Ty::Tuple(all(ts, &mut |t| t.map(f))),
             Ty::Variant(tag, ts) => Ty::Variant(tag.clone(), all(ts, &mut |t| t.map(f))),
             Ty::Named(id, ts) => Ty::Named(*id, all(ts, &mut |t| t.map(f))),
+            Ty::Abs(tag, ts) => Ty::Abs(tag.clone(), all(ts, &mut |t| t.map(f))),
             Ty::Union(ts) => union(ts.iter().map(|t| t.map(f))),
             Ty::Struct(fs) => {
                 Ty::Struct(fs.iter().map(|(n, t)| (n.clone(), t.map(f))).collect())
@@ -127,7 +133,7 @@ impl Ty {
                 k.each(f);
                 v.each(f)
             }
-            Ty::Tuple(ts) | Ty::Variant(_, ts) | Ty::Named(_, ts) | Ty::Union(ts) => {
+            Ty::Tuple(ts) | Ty::Variant(_, ts) | Ty::Named(_, ts) | Ty::Union(ts) | Ty::Abs(_, ts) => {
                 ts.iter().for_each(|t| t.each(f))
             }
             Ty::Struct(fs) => fs.iter().for_each(|(_, t)| t.each(f)),
@@ -249,6 +255,12 @@ impl fmt::Display for Ty {
             }
             Ty::Var(v) => write!(f, "'_{}", v.0),
             Ty::Rigid(v) => write!(f, "'r{}", v.0),
+            Ty::Abs(tag, ts) if ts.is_empty() => write!(f, "{tag}"),
+            Ty::Abs(tag, ts) => {
+                write!(f, "{tag}<")?;
+                list(f, ts)?;
+                write!(f, ">")
+            }
             Ty::Named(id, ts) if ts.is_empty() => write!(f, "#{id}"),
             Ty::Named(id, ts) => {
                 write!(f, "#{id}<")?;
