@@ -613,7 +613,7 @@ impl Solving {
                 }
                 let name = v.declared_name().unwrap_or_else(|| v.name.clone());
                 let name = ShortName(&name);
-                return match self.sealed {
+                match self.sealed {
                     true => bail!(
                         "the implementation requires '{name}: {b}, which the signature \
                          does not declare"
@@ -622,7 +622,7 @@ impl Solving {
                         "the body needs '{name} within {b}, which the signature does \
                          not declare: add {b} to the bound of '{name}"
                     ),
-                };
+                }
             }
             // a predicate on a cell is judged when the cell is decided
             (_, Type::Bound(_)) => return Ok(()),
@@ -1183,6 +1183,36 @@ fn members_of(env: &Env, t: &Type, out: &mut SmallVec<[Type; 4]>) -> Result<()> 
     }
     let mut seen: LPooled<AHashSet<Type>> = LPooled::take();
     go(env, t, out, &mut seen)
+}
+
+/// A scheme's variable is of a finite type: nothing that flows into it
+/// holds the variable inside a type, directly or through the cells that
+/// flow in.
+fn finite(v: &TVar) -> Result<()> {
+    let mut seen: LPooled<AHashSet<(usize, bool)>> = LPooled::take();
+    let mut todo: SmallVec<[(Type, bool); 8]> =
+        v.cell_lower().into_iter().map(|l| (l, false)).collect();
+    while let Some((t, inside)) = todo.pop() {
+        match &shallow(&t) {
+            Type::TVar(u) if u.same_cell(v) && inside => bail!(
+                "infinite type: a value here would hold a value of its own type (a \
+                 function passed or returning itself, a collection holding itself); \
+                 declare a named recursive type and annotate the binding"
+            ),
+            Type::TVar(u) if u.same_cell(v) => (),
+            Type::TVar(u) => {
+                if seen.insert((u.cell_addr(), inside)) {
+                    todo.extend(u.cell_lower().into_iter().map(|l| (l, inside)))
+                }
+            }
+            t => {
+                let mut cells = SmallVec::new();
+                cells_of(t, true, &mut cells);
+                todo.extend(cells.into_iter().map(|u| (Type::TVar(u), true)))
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Record that the labeled parameter `label`, of the type `param`, which
@@ -1759,7 +1789,7 @@ impl Solving {
         self.reach(t, &mut kept);
         kept.iter()
             .filter(|v| v.level().depth() > depth && !v.is_bound())
-            .try_for_each(|v| self.unread(v))?;
+            .try_for_each(|v| self.unread(v).and_then(|()| finite(v)))?;
         self.fix_scope(env, depth + 1, false, mark)?;
         for v in self.cells[mark..].iter() {
             let pending = v.level().depth() > depth
