@@ -176,9 +176,10 @@ pub struct Known {
     /// For a scheme's variable: what its definition left to each
     /// instance, which a use of the scheme takes a copy of with the cell.
     pub(crate) left: SmallVec<[Left; 0]>,
-    /// For a declared variable a labeled parameter's type holds: the
-    /// label, the type of the default its definition gives it, and the
-    /// parameter's type. A call that omits the label passes the default.
+    /// For a cell a labeled parameter's type holds: the label, the type
+    /// of the default its definition gives it, and the parameter's type.
+    /// A call that omits the label passes the default, and no other
+    /// call's parameter takes it.
     pub(crate) defaults: SmallVec<[(ArcStr, Type, Type); 0]>,
 }
 
@@ -1216,16 +1217,23 @@ fn finite(v: &TVar) -> Result<()> {
 }
 
 /// Record that the labeled parameter `label`, of the type `param`, which
-/// holds the declared variable `v`, has a default of the type `default`:
-/// each call that leaves the label out passes it ([`Known::defaults`]).
+/// holds the cell `v`, has a default of the type `default`: each call
+/// that leaves the label out passes it ([`Known::defaults`]).
 pub fn defaulted(v: &TVar, label: ArcStr, default: Type, param: Type) {
     known(v, |k| k.defaults.push((label, default, param)))
 }
 
-/// The declared variables `t` holds.
-pub fn declared_in(t: &Type) -> SmallVec<[TVar; 4]> {
+/// The cells `t` holds that nothing has decided, declared variables
+/// among them.
+pub fn cells_in(t: &Type) -> SmallVec<[TVar; 4]> {
     let mut cells = SmallVec::new();
     cells_of(t, true, &mut cells);
+    cells
+}
+
+/// The declared variables `t` holds.
+fn declared_in(t: &Type) -> SmallVec<[TVar; 4]> {
+    let mut cells = cells_in(t);
     cells.retain(|v: &mut TVar| v.is_rigid());
     cells
 }

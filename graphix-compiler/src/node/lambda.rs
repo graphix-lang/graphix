@@ -3360,19 +3360,21 @@ fn judge_default<R: Rt>(
     node.typecheck0(ctx).and_then(|()| {
         let typ = node.typ().clone();
         if bounds::active() {
-            // a parameter over a declared variable takes the default
-            // where some instance of it does, and each call that leaves
-            // the label out is one that has to
-            return match (at.typ.has_rigid(), at.label()) {
-                (true, Some(label)) => {
-                    at.typ.reset_tvars().check_contains(&ctx.env, &typ)?;
-                    if let Some(v) = bounds::declared_in(&at.typ).first() {
-                        bounds::defaulted(v, label.clone(), typ, at.typ.clone())
-                    }
+            // a parameter whose type a call decides takes the default at
+            // each call that leaves the label out, and at no other; over a
+            // declared variable, some instance of it has to
+            let some_instance = |ctx: &mut CompileCtx<R>| match at.typ.has_rigid() {
+                true => at.typ.reset_tvars().check_contains(&ctx.env, &typ),
+                false => Ok(()),
+            };
+            return match (at.label(), bounds::cells_in(&at.typ).first()) {
+                (Some(label), Some(v)) => {
+                    some_instance(ctx)?;
+                    bounds::defaulted(v, label.clone(), typ.clone(), at.typ.clone());
                     Ok(())
                 }
-                (true, None) => at.typ.reset_tvars().check_contains(&ctx.env, &typ),
-                (false, _) => at.typ.check_contains(&ctx.env, &typ),
+                (_, Some(_)) => some_instance(ctx),
+                (_, None) => at.typ.check_contains(&ctx.env, &typ),
             };
         }
         let depth = def.level.depth();
