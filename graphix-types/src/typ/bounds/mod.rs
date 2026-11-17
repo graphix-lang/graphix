@@ -51,6 +51,30 @@ pub(crate) fn old_binding(of: &TVar, to: &Type) {
     }
 }
 
+/// Whether `t` is a cell a check by bounds left open: a scheme's variable.
+pub(crate) fn made(t: &Type) -> bool {
+    match t {
+        Type::TVar(tv) => {
+            let cell = tv.cell();
+            let c = cell.read();
+            c.binding.is_none() && c.solving.is_some()
+        }
+        _ => false,
+    }
+}
+
+/// The relation as it was is asked about a scheme's variable, outside any
+/// check by bounds: a path not yet the solver's. Traced where
+/// `GRAPHIX_BOUNDS_AUDIT` asks.
+pub(crate) fn met_outside(a: &Type, b: &Type) {
+    if std::env::var_os("GRAPHIX_BOUNDS_AUDIT").is_some_and(|v| v != "count") {
+        eprintln!(
+            "bounds audit: the old relation is asked about a scheme's variable ({a} over {b})\n{}",
+            std::backtrace::Backtrace::force_capture()
+        )
+    }
+}
+
 /// Begin a check by bounds on this thread: until [`end`], what a node
 /// asks of two types ([`Type::check_contains`], [`Type::contains`]) is
 /// asked of the solver.

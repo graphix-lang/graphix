@@ -4257,6 +4257,13 @@ impl Type {
         if let Some(fits) = asked {
             return Ok(fits);
         }
+        // a cell a check by bounds left open is a scheme's variable: its
+        // bounds reach each other, which this relation cannot walk, and it
+        // is no cell this relation may decide
+        if super::bounds::made(self) || super::bounds::made(t) {
+            super::bounds::met_outside(self, t);
+            return Ok(true);
+        }
         #[cfg(test)]
         CONTAINS_STEPS.with(|n| n.set(n.get() + 1));
         let held = ensure_sufficient(|| self.contains_int_inner(flags, env, hist, t));
