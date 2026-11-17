@@ -2846,6 +2846,7 @@ impl TVar {
 
     /// [`Self::write_binding`], lowering through `seen` ([`lower_in`]).
     fn write_binding_in(&self, t: Type, reaching: bool, seen: &mut Lowered) {
+        super::bounds::old_binding(self, &t);
         require_bounds(&self.cell_constraints(), &t);
         lower_in(&t, self.level(), seen);
         let cell = self.cell();

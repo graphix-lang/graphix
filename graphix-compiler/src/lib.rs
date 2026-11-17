@@ -1637,6 +1637,9 @@ pub struct CompileCtx<R: Rt> {
     /// writer in its scope. A re-drive's leftovers merge up to the
     /// parent frame.
     pub(crate) pending_settles: Vec<SettleFrame>,
+    /// Inputs are checked by bounds (`typ::bounds`): set once the root's
+    /// packages are compiled, where `GRAPHIX_BOUNDS` asks for it.
+    pub bounds: bool,
     /// Imports whose terminal name did not exist when the `use`
     /// compiled (`use self::sub::x` may precede `mod sub;`); re-checked
     /// by `check_pending_imports`, from `compile_top` and a module's load.
@@ -1827,6 +1830,7 @@ impl<R: Rt> CompileCtx<R> {
             fn_forward_resolutions: self.fn_forward_resolutions.fork(),
             body: self.body.clone(),
             pending_settles: vec![SettleFrame::default()],
+            bounds: self.bounds,
             pending_imports: Vec::new(),
             pending_names: Vec::new(),
             def_assertions: Arc::new(Mutex::new(Vec::new())),
@@ -1888,6 +1892,7 @@ impl<R: Rt> CompileCtx<R> {
             fn_forward_resolutions,
             body: _,
             pending_settles,
+            bounds: _,
             pending_imports,
             pending_names,
             def_assertions,
@@ -2420,6 +2425,7 @@ impl<R: Rt> ExecState<R> {
                 fn_forward_resolutions: TrackedMap::default(),
                 body: None,
                 pending_settles: vec![SettleFrame::default()],
+                bounds: false,
                 pending_imports: Vec::new(),
                 pending_names: Vec::new(),
                 def_assertions: Arc::new(Mutex::new(Vec::new())),
@@ -4146,8 +4152,18 @@ fn check_and_fuse_inner<R: Rt>(
     let st = Instant::now();
     let _level = typ::tvar::AtLevel::enter(typ::tvar::Level::TOP);
     let p = profile::phase(Phase::Typecheck0);
-    if let Err(e) = node
-        .typecheck0(ctx)
+    let bounds = ctx.bounds;
+    if bounds {
+        typ::bounds::begin()
+    }
+    let checked = node.typecheck0(ctx).and_then(|()| match bounds {
+        true => typ::bounds::end(&ctx.env),
+        false => Ok(()),
+    });
+    if checked.is_err() {
+        typ::bounds::abandon()
+    }
+    if let Err(e) = checked
         .and_then(|()| drain_pending_settles(ctx))
         .and_then(|()| check_pending_names(ctx))
         .and_then(|()| verify(ctx, node))
@@ -4940,6 +4956,7 @@ impl Saved {
             fn_forward_resolutions,
             body: _,
             pending_settles: _,
+            bounds: _,
             pending_imports: _,
             pending_names: _,
             def_assertions: _,

@@ -3665,6 +3665,9 @@ const HEAD_CHAIN_LIMIT: usize = 64;
 
 impl Type {
     pub fn check_contains(&self, env: &Env, t: &Self) -> Result<()> {
+        if let Some(r) = super::bounds::with(|s| s.constrain(env, t, self)) {
+            return r;
+        }
         let mut hist = ContainsHist::new();
         let ok = self.contains_int(ContainsFlags::Commit.into(), env, &mut hist, t)?;
         if graphix_dbg_bind() {
@@ -3685,6 +3688,9 @@ impl Type {
     /// [`Self::check_contains`] where the open cells `self` reaches take
     /// `t`'s parts as lower bounds ([`ContainsFlags::Lower`]).
     pub fn check_contains_lower(&self, env: &Env, t: &Self) -> Result<()> {
+        if let Some(r) = super::bounds::with(|s| s.constrain(env, t, self)) {
+            return r;
+        }
         let mut hist = ContainsHist::new();
         let flags = ContainsFlags::Commit | ContainsFlags::Lower;
         match self.contains_int(flags, env, &mut hist, t)? {
@@ -6645,6 +6651,9 @@ impl Type {
     }
 
     pub fn contains(&self, env: &Env, t: &Self) -> Result<bool> {
+        if let Some(fits) = super::bounds::with(|s| s.attempt(env, t, self)) {
+            return Ok(fits);
+        }
         let r = self.contains_int(
             ContainsFlags::Commit.into(),
             env,

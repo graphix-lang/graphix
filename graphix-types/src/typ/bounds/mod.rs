@@ -20,11 +20,76 @@ use arcstr::ArcStr;
 use netidx_value::Typ;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
-use std::ops::ControlFlow;
+use std::{cell::RefCell, ops::ControlFlow};
 use triomphe::Arc;
 
 mod select;
 pub use select::{Arm, Pat};
+
+thread_local! {
+    /// The solver of the check this thread is running, where the check is
+    /// by bounds.
+    static ACTIVE: RefCell<Option<Solving>> = const { RefCell::new(None) };
+    /// How many cells the old relation has bound since [`begin`]: under a
+    /// check by bounds each is a node not yet asking the solver.
+    static BOUND_BY_OLD: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+/// The old relation is binding a cell: counted under a check by bounds,
+/// and traced where `GRAPHIX_BOUNDS_AUDIT` asks.
+pub(crate) fn old_binding(of: &TVar, to: &Type) {
+    if let Some(n) = BOUND_BY_OLD.get() {
+        BOUND_BY_OLD.set(Some(n + 1));
+        if std::env::var_os("GRAPHIX_BOUNDS_AUDIT").is_some_and(|v| v != "count") {
+            eprintln!(
+                "bounds audit: the old relation binds '{} to {to}\n{}",
+                of.name,
+                std::backtrace::Backtrace::force_capture()
+            )
+        }
+    }
+}
+
+/// Begin a check by bounds on this thread: until [`end`], what a node
+/// asks of two types ([`Type::check_contains`], [`Type::contains`]) is
+/// asked of the solver.
+pub fn begin() {
+    ACTIVE.set(Some(Solving::default()));
+    BOUND_BY_OLD.set(Some(0))
+}
+
+/// End the check [`begin`] began: fix every cell it left open.
+pub fn end(env: &Env) -> Result<()> {
+    let old = BOUND_BY_OLD.take();
+    match ACTIVE.take() {
+        Some(mut solving) => {
+            if std::env::var_os("GRAPHIX_BOUNDS_AUDIT").is_some() {
+                eprintln!(
+                    "bounds audit: {} cells met, {} bound by the old relation",
+                    solving.cells.len(),
+                    old.unwrap_or(0)
+                )
+            }
+            solving.finish(env)
+        }
+        None => Ok(()),
+    }
+}
+
+/// Drop the check [`begin`] began, a refusal having ended it.
+pub fn abandon() {
+    ACTIVE.take();
+    BOUND_BY_OLD.take();
+}
+
+/// `f` over this thread's solver; none where no check by bounds is
+/// running, or where the solver itself is asking, of two decided types.
+pub fn with<T>(f: impl FnOnce(&mut Solving) -> T) -> Option<T> {
+    let mut solving = ACTIVE.take()?;
+    let r = f(&mut solving);
+    ACTIVE.set(Some(solving));
+    Some(r)
+}
 
 /// What the solver keeps of an open cell beside its bounds.
 #[derive(Debug, Default)]
