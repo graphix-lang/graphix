@@ -146,7 +146,7 @@ fn outside_parts<R: Rt>(
     e: &Expr,
     out: &mut SmallVec<[ExprId; 4]>,
 ) {
-    let mut part = |e: &Expr, out: &mut SmallVec<[ExprId; 4]>| match defines(ctx, scope, e)
+    let part = |e: &Expr, out: &mut SmallVec<[ExprId; 4]>| match defines(ctx, scope, e)
     {
         true => outside_parts(ctx, scope, e, out),
         false => out.push(e.id),
@@ -547,9 +547,20 @@ impl<R: Rt> Bind<R> {
                 None => Type::empty_tvar(),
             };
             if *rec {
+                // the name is its definition's own signature while the
+                // definition is checked: its body, built then, calls that
+                let annotated = annotation.is_some();
                 let typ = own(annotation);
                 let pattern = compile_pattern(ctx, &typ)?;
                 let node = compile(ctx, flags, value.clone(), &scope, top_id)?;
+                let typ = match annotated {
+                    true => typ,
+                    false => {
+                        let typ = node.typ().clone();
+                        pattern.ids(&mut |id| ctx.env.retype(id, typ.clone()));
+                        typ
+                    }
+                };
                 (node, pattern, typ)
             } else {
                 let node = compile(ctx, flags, value.clone(), &scope, top_id)?;
@@ -561,18 +572,15 @@ impl<R: Rt> Bind<R> {
                 };
                 let pattern = match pat.single_bind() {
                     Some(_) => compile_pattern(ctx, &typ)?,
-                    None => {
-                        // the names are cells of their own: the check
-                        // gives each its part of the value
-                        let shape = {
-                            let _generic = AtLevel::enter(Level::GENERIC);
-                            pat.infer_type_predicate(&ctx.env, &scope.lexical)?
-                                .any_as_tvar()
-                        };
-                        let pattern = compile_pattern(ctx, &shape)?;
-                        pattern.ids(&mut |id| ctx.env.retype(id, joined()));
-                        pattern
-                    }
+                    None => StructPatternNode::compile_shape(
+                        ctx,
+                        pat,
+                        Holder::Let,
+                        scope,
+                        spec.pos,
+                        spec.ori.clone(),
+                    )
+                    .at(&spec)?,
                 };
                 (node, pattern, typ)
             }
@@ -825,19 +833,11 @@ impl<R: Rt> Bind<R> {
                 let _at = AtLevel::enter(level);
                 wrap!(node, node.typecheck0(ctx))?;
                 let value = node.typ().clone();
-                match (b.typ.is_some(), b.rec) {
-                    (false, false) => wrap!(node, generalize(ctx, &value))?,
-                    (false, true) => {
-                        wrap!(node, self.typ.check_contains(&ctx.env, &value))?;
-                        wrap!(node, generalize(ctx, &value))?;
-                        // the name is the scheme from here on: inside the
-                        // definition it was one function
-                        self.pattern.ids(&mut |id| ctx.env.retype(id, value.clone()));
-                        self.typ = value
-                    }
+                match b.typ.is_some() {
+                    false => wrap!(node, generalize(ctx, &value))?,
                     // the written type is the scheme: one instance of
                     // the value fits it
-                    (true, _) => {
+                    true => {
                         wrap!(node, generalize(ctx, &value))?;
                         let one = solving(|s| s.instantiate(&value, depth, level));
                         wrap!(node, self.typ.check_contains(&ctx.env, &one))?;
@@ -856,7 +856,7 @@ impl<R: Rt> Bind<R> {
                 wrap!(node, self.typ.check_contains(&ctx.env, node.typ()))?;
                 if b.pattern.single_bind().is_none() {
                     let pat = self.pattern.by_bounds(ctx).at(&self.spec)?;
-                    super::pattern::destructure(ctx, pat, &self.typ, &self.spec)
+                    super::pattern::destructure(ctx, pat, &self.typ, self.spec.pos)
                         .at(&self.spec)?
                 }
             }

@@ -10,8 +10,7 @@ use crate::{
     BindId, CFlag, CompileCtx, ExecCtx, Notify, PrintFlag, Rt, Scope, Tag, TagValue,
     env::{ChangesLater, Env},
     expr::{
-        AbstractOf, Apart, Expr, ExprId, ManyMembers, Name, Origin, Pattern,
-        StructurePattern,
+        AbstractOf, Apart, ExprId, ManyMembers, Name, Origin, Pattern, StructurePattern,
         WrittenAt, union_members, union_members_open, union_members_with,
     },
     format_with_flags,
@@ -22,6 +21,7 @@ use crate::{
         AbstractId, ContainsFlags, IsAFlags, ShallowScrutinee, TVar, Type,
         bounds::{self, Arm, FALSE, Pat, TRUE, Use, unsplit},
         settle::position_cells,
+        tvar::{AtLevel, Level},
         tvar::{OpenOverAny, StandingEnds},
     },
 };
@@ -1096,7 +1096,7 @@ pub(crate) fn destructure<R: Rt>(
     ctx: &CompileCtx<R>,
     pat: Pat,
     t: &Type,
-    spec: &Expr,
+    pos: SourcePosition,
 ) -> Result<()> {
     // a value nothing has decided is at most what the pattern admits
     if t.with_deref(|t| t.is_none())
@@ -1104,7 +1104,7 @@ pub(crate) fn destructure<R: Rt>(
     {
         solving(|s| s.constrain(&ctx.env, t, &unsplit(&shape)))?
     }
-    let at = format_compact!("{}:{}", spec.pos.line, spec.pos.column);
+    let at = format_compact!("{}:{}", pos.line, pos.column);
     solving(|s| {
         let id = s.select(vec![Arm { pat, guarded: false }], at.as_str().into());
         s.watch(&ctx.env, t, Use::Select(id))
@@ -2252,6 +2252,35 @@ impl StructPatternNode {
             whole: spec,
         };
         Self::compile_with(ctx, cx, type_predicate, spec)
+    }
+
+    /// Under a check by bounds, the pattern compiled by its own shape,
+    /// each name a cell of its own: the check routes the value it stands
+    /// over to them ([`destructure`]).
+    pub(super) fn compile_shape<R: Rt>(
+        ctx: &mut CompileCtx<R>,
+        spec: &StructurePattern,
+        holder: Holder,
+        scope: &Scope,
+        pos: SourcePosition,
+        ori: Arc<Origin>,
+    ) -> Result<Self> {
+        let shape = {
+            let _generic = AtLevel::enter(Level::GENERIC);
+            spec.infer_type_predicate(&ctx.env, &scope.lexical)?.any_as_tvar()
+        };
+        let cx = PatCx {
+            scope,
+            pos,
+            ori: &ori,
+            inferred: true,
+            own_payloads: true,
+            holder,
+            whole: spec,
+        };
+        let pattern = Self::compile_with(ctx, cx, &shape, spec)?;
+        pattern.ids(&mut |id| ctx.env.retype(id, joined()));
+        Ok(pattern)
     }
 
     fn compile_with<R: Rt>(

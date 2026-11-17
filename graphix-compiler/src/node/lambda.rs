@@ -2087,6 +2087,25 @@ impl<R: Rt> GXLambda<R> {
                     return Err(e);
                 }
             }
+            // under a check by bounds a parameter taken apart is a
+            // select of one arm over it
+            if bounds::active()
+                && a.pattern.single_bind().is_none()
+                && !matches!(a.pattern, expr::StructurePattern::Ignore)
+            {
+                let pattern = StructPatternNode::compile_shape(
+                    ctx,
+                    &a.pattern,
+                    Holder::Formal,
+                    scope,
+                    a.pos.0,
+                    origin.clone(),
+                )?;
+                let parts = pattern.by_bounds(ctx)?;
+                super::pattern::destructure(ctx, parts, &atyp.typ, a.pos.0)?;
+                argpats.push(pattern);
+                continue;
+            }
             let pattern = StructPatternNode::compile(
                 ctx,
                 &atyp.typ,
