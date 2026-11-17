@@ -33,7 +33,8 @@ use crate::{
     },
     prune::ReadStamp,
     typ::{
-        CoreTrait, FnType, Mutability, ReadCopies, TVar, Type, bounds,
+        CoreTrait, FnType, Mutability, ReadCopies, TVar, Type,
+        bounds::{self, Use},
         tvar::{AtLevel, Level, current_level},
     },
     wrap,
@@ -2321,6 +2322,18 @@ impl<R: Rt> Place<R> {
                     kt.check_contains(&ctx.env, k.typ())?;
                     vt
                 }
+                PlaceStep::Tuple(i) if bounds::active() => {
+                    let out = joined();
+                    let read = Use::Index { i: *i, out: out.clone() };
+                    solving(|s| s.watch(&ctx.env, &cur, read))?;
+                    out
+                }
+                PlaceStep::Field(name) if bounds::active() => {
+                    let out = joined();
+                    let read = Use::Field { field: name.name.clone(), out: out.clone() };
+                    solving(|s| s.watch(&ctx.env, &cur, read))?;
+                    out
+                }
                 PlaceStep::Tuple(i) => {
                     one(&cur, tuple_field_types(ctx, &self.scope, &cur, *i)?)?
                 }
@@ -3170,6 +3183,19 @@ impl<R: Rt> ByRef<R> {
         let Type::ByRef(mutability, cell) = &self.typ else {
             bail!("BUG: a reference not typed as one")
         };
+        if bounds::active() {
+            // a reference to a value of the referent's type: a writable
+            // one of exactly that type
+            let t = match &self.referent {
+                Referent::Channel(n) => n.typ().clone(),
+                Referent::Place(p) => wrap!(
+                    self,
+                    p.elem_type(ctx, &self.spec, *mutability == Mutability::Mut)
+                )?,
+            };
+            let rtype = Type::ByRef(*mutability, Arc::new(t));
+            return wrap!(self, self.typ.check_contains(&ctx.env, &rtype));
+        }
         let t = match &self.referent {
             // A writable reference to a fresh cell only it reaches: the
             // initializer bounds the cell from below, the uses decide it,
@@ -3229,6 +3255,11 @@ impl<R: Rt> Deref<R> {
         wrap!(self.child, child(&mut self.child, ctx))?;
         if !check {
             return Ok(());
+        }
+        if bounds::active() {
+            super::joins(&self.typ);
+            let read = Type::ByRef(Mutability::Shared, Arc::new(self.typ.clone()));
+            return wrap!(self, read.check_contains(&ctx.env, self.child.typ()));
         }
         let targets = super::reference_targets(&ctx.env, self.child.typ())?;
         let Some(targets) = targets else {

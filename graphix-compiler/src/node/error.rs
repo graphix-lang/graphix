@@ -363,6 +363,14 @@ impl<R: Rt> Catch<R> {
         // nothing, from whatever task checks the raise
         let typ = Type::empty_tvar();
         match &typ {
+            // the errors raised under the catch flow into its binding,
+            // which holds at most what is written of it
+            Type::TVar(tv) if bounds::active() => {
+                tv.set_joins();
+                if let Some(written) = &c.constraint {
+                    written.check_contains(&ctx.env, &typ).at(&spec)?
+                }
+            }
             Type::TVar(tv) => {
                 tv.freeze();
                 tv.bind(c.constraint.clone().unwrap_or(Type::Bottom))
@@ -1658,6 +1666,10 @@ impl<R: Rt> Catch<R> {
             let Type::TVar(tv) = &bind.typ else {
                 bail!("BUG: seq capture cell is not a cell")
             };
+            if bounds::active() {
+                tv.set_joins();
+                return bind.typ.check_contains(&ctx.env, &etyp);
+            }
             // union the cell's content, not the cell
             let etyp = match &etyp {
                 Type::TVar(b) => b.binding().unwrap_or(Type::Bottom),
@@ -1674,6 +1686,59 @@ impl<R: Rt> Catch<R> {
 }
 
 impl<R: Rt> Qop<R> {
+    /// The check by bounds: the operand less its errors, or its null,
+    /// where its type is decided enough to say which; else the strip
+    /// waits for it. What a `?` raises reaches the handler as a chain over
+    /// the payloads of the errors taken off.
+    fn check_by_bounds(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
+        let env = &ctx.env;
+        let handler =
+            self.handler().and_then(|h| env.by_id.get(&h.id().0)).map(|b| b.typ.clone());
+        if matches!(self.spec.kind, ExprKind::Rethrow(_)) {
+            return match handler {
+                Some(h) => h.check_contains(env, self.n.typ()),
+                None => Ok(()),
+            };
+        }
+        super::joins(&self.typ);
+        let payload = match self.raises() {
+            false => None,
+            true => {
+                let payload = super::joined();
+                if let Some(h) = &handler {
+                    let chain = Type::err_chain(payload.clone());
+                    h.check_contains(env, &Type::Error(Arc::new(chain)))?
+                }
+                Some(payload)
+            }
+        };
+        let t = match self.n.typ().with_deref(|t| t.cloned()) {
+            Some(t @ Type::Ref(_)) => Some(t.lookup_ref(env)?),
+            t => t,
+        };
+        let known = match &t {
+            None => false,
+            Some(t @ Type::Set(ms)) => {
+                ms.iter().any(|m| matches!(m, Type::Error(_))) || !t.has_unbound()
+            }
+            Some(_) => true,
+        };
+        match t {
+            Some(t) if known => {
+                let (left, payloads) = bounds::strip(&t);
+                for (p, to) in payloads.iter().flat_map(|p| payload.iter().map(move |to| (p, to))) {
+                    to.check_contains(env, p)?
+                }
+                self.typ.check_contains(env, &left)
+            }
+            _ => {
+                let (operand, out) = (self.n.typ().clone(), self.typ.clone());
+                super::solving(|s| s.hold_strip(operand, out, payload));
+                Ok(())
+            }
+        }
+    }
+
     /// The raise joined into the handler's bind is state: an instance
     /// computes it too, over the strip its definition `decided`.
     fn typecheck0_with(
@@ -1684,6 +1749,12 @@ impl<R: Rt> Qop<R> {
         decided: Option<Strip>,
     ) -> Result<()> {
         wrap!(self.n, child(&mut self.n, ctx))?;
+        if bounds::active() {
+            return match check {
+                true => wrap!(self, self.check_by_bounds(ctx)),
+                false => Ok(()),
+            };
+        }
         let rethrow = matches!(self.spec.kind, ExprKind::Rethrow(_));
         if rethrow {
             if self.n.typ().with_deref(|t| matches!(t, Some(Type::Bottom))) {
