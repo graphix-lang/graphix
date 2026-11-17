@@ -10,15 +10,17 @@ use crate::{
     BindId, CFlag, CompileCtx, ExecCtx, Notify, PrintFlag, Rt, Scope, Tag, TagValue,
     env::{ChangesLater, Env},
     expr::{
-        AbstractOf, Apart, ExprId, ManyMembers, Name, Origin, Pattern, StructurePattern,
+        AbstractOf, Apart, Expr, ExprId, ManyMembers, Name, Origin, Pattern,
+        StructurePattern,
         WrittenAt, union_members, union_members_open, union_members_with,
     },
     format_with_flags,
-    node::{Held, Holders, compiler, list, prune::Prune},
+    node::{Held, Holders, compiler, list, prune::Prune, solving},
     prune::BoundaryRef,
     rep,
     typ::{
         AbstractId, ContainsFlags, IsAFlags, ShallowScrutinee, TVar, Type,
+        bounds::{Arm, FALSE, Pat, TRUE, Use, unsplit},
         settle::position_cells,
         tvar::{OpenOverAny, StandingEnds},
     },
@@ -1088,7 +1090,86 @@ impl<'a> CompiledAbstracts<'a> {
     }
 }
 
+/// Bind a pattern's names to the parts of a value of type `t`: a select of
+/// one arm, so the pattern must take every value.
+pub(crate) fn destructure<R: Rt>(
+    ctx: &CompileCtx<R>,
+    pat: Pat,
+    t: &Type,
+    spec: &Expr,
+) -> Result<()> {
+    // a value nothing has decided is at most what the pattern admits
+    if t.with_deref(|t| t.is_none())
+        && let Some(shape) = pat.admits()
+    {
+        solving(|s| s.constrain(&ctx.env, t, &unsplit(&shape)))?
+    }
+    let at = format_compact!("{}:{}", spec.pos.line, spec.pos.column);
+    solving(|s| {
+        let id = s.select(vec![Arm { pat, guarded: false }], at.as_str().into());
+        s.watch(&ctx.env, t, Use::Select(id))
+    })
+}
+
 impl StructPatternNode {
+    /// The pattern as the solver routes values through it: each name the
+    /// cell its binding is typed by.
+    pub(crate) fn by_bounds<R: Rt>(&self, ctx: &CompileCtx<R>) -> Result<Pat> {
+        let cell = |id: &BindId| match ctx.env.by_id.get(id).map(|b| &b.typ) {
+            Some(Type::TVar(tv)) => Ok(tv.clone()),
+            _ => bail!("BUG: a pattern's name {id:?} has no cell"),
+        };
+        let named = |id: &Option<BindId>| id.as_ref().map(cell).transpose();
+        let all = |ps: &[Self]| -> Result<Vec<Pat>> {
+            ps.iter().map(|p| p.by_bounds(ctx)).collect()
+        };
+        Ok(match self {
+            Self::Ignore => Pat::Any(None),
+            Self::Bind(id) => Pat::Any(Some(cell(id)?)),
+            Self::Literal(Value::Bool(b)) => {
+                Pat::Variant(None, if *b { TRUE } else { FALSE }, vec![])
+            }
+            Self::Literal(v) => {
+                Pat::Lit(Type::Primitive(Typ::get(v).into()), matches!(v, Value::Null))
+            }
+            Self::Slice { kind: SliceKind::Tuple, all: whole, binds } => {
+                Pat::Tuple(named(whole)?, all(binds)?)
+            }
+            Self::Slice { kind, all: whole, binds } => Pat::Elems {
+                all: named(whole)?,
+                list: *kind == SliceKind::List,
+                elems: all(binds)?,
+                open: None,
+            },
+            Self::SlicePrefix { list, all: whole, prefix, tail } => Pat::Elems {
+                all: named(whole)?,
+                list: *list,
+                elems: all(prefix)?,
+                open: Some(named(tail)?),
+            },
+            Self::SliceSuffix { all: whole, head, suffix } => Pat::Elems {
+                all: named(whole)?,
+                list: false,
+                elems: all(suffix)?,
+                open: Some(named(head)?),
+            },
+            Self::Struct { all: whole, width, binds } => {
+                let fs: Result<Vec<(ArcStr, Pat)>> = binds
+                    .iter()
+                    .map(|(n, _, p)| Ok((n.clone(), p.by_bounds(ctx)?)))
+                    .collect();
+                Pat::Struct(named(whole)?, fs?, matches!(width, StructWidth::Exact(_)))
+            }
+            Self::Variant { tag, all: whole, binds } => {
+                Pat::Variant(named(whole)?, tag.clone(), all(binds)?)
+            }
+            Self::Abstract { id, all: whole, bind, .. } => {
+                Pat::Abs(named(whole)?, *id, Box::new(bind.by_bounds(ctx)?))
+            }
+            Self::Or { alts } => Pat::Or(all(alts)?),
+        })
+    }
+
     /// Each name beneath a part of this pattern that tests inside a value
     /// of a rigid cell `typ` holds at that part's position, in any
     /// alternative or member.

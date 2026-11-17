@@ -7,6 +7,7 @@ use super::{
     pattern::{Holder, StructPatternNode, rigid_refusal},
     produce_constant,
     select::ArmDiscriminants,
+    solving,
 };
 use crate::SourcePosition;
 use crate::{
@@ -33,7 +34,7 @@ use crate::{
     stack::ensure_sufficient,
     typ::{
         FnArgKind, FnArgType, FnType, ResolvedRef, TVar, TraitId, Type, TypeMismatch,
-        check_bounds_acyclic,
+        bounds, check_bounds_acyclic,
         settle::VariableUnion,
         tvar::{AtLevel, Declaring, InTask, Level, RigidGate, TaskId, current_level},
     },
@@ -2861,17 +2862,41 @@ struct DefGate<R: Rt> {
     /// name, the return as `None`) whose cell is outside the definition at
     /// the gate's opening: a function something writes is one instance.
     unwritten: LPooled<Vec<(Option<ArcStr>, TVar)>>,
+    /// Under a check by bounds, how the definition closes.
+    bounds: Option<Closing>,
+}
+
+/// How a definition's check by bounds closes.
+#[derive(Clone, Copy)]
+enum Closing {
+    /// A lambda no binding names that declares no variable: checked at
+    /// the level around it, as any expression there.
+    Inline,
+    /// A definition of its own: the cells the check met since `mark` are
+    /// fixed, all but its signature's, which are the scheme's. Where no
+    /// binding names it, it then stands as one instance of that scheme.
+    Scheme { mark: usize, named: bool },
 }
 
 impl<R: Rt> DefGate<R> {
-    fn open(ctx: &mut CompileCtx<R>, def: &LambdaDef<R>) -> Self {
+    fn open(ctx: &mut CompileCtx<R>, def: &LambdaDef<R>, binding_names: bool) -> Self {
         let outer = current_level();
-        let at = AtLevel::enter(def.level);
-        let args = def.typ.args.iter().map(|at| Nop::new(at.typ.clone())).collect();
-        let (faux, scope) = RaiseProbe::open(ctx, &def.scope);
         let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         def.typ.collect_tvars_through_bounds(&mut named);
         named.retain(|name, _| !name.starts_with('_'));
+        let bounds = bounds::active().then(|| match binding_names || !named.is_empty() {
+            true => Closing::Scheme { mark: solving(|s| s.mark()), named: binding_names },
+            false => Closing::Inline,
+        });
+        let at = match bounds {
+            Some(Closing::Inline) => {
+                def.typ.claim(outer);
+                AtLevel::enter(outer)
+            }
+            _ => AtLevel::enter(def.level),
+        };
+        let args = def.typ.args.iter().map(|at| Nop::new(at.typ.clone())).collect();
+        let (faux, scope) = RaiseProbe::open(ctx, &def.scope);
         let mut seen: LPooled<AddrSet> = LPooled::take();
         for tv in named.values() {
             Type::TVar(tv.clone()).seed_names_seen(&ctx.env, &mut seen);
@@ -2912,6 +2937,7 @@ impl<R: Rt> DefGate<R> {
             _declaring: declaring,
             declared,
             unwritten,
+            bounds,
         }
     }
 
@@ -2921,6 +2947,9 @@ impl<R: Rt> DefGate<R> {
     /// variable the signature only names is lowered with that cell, and
     /// the definition is monomorphic in it.
     fn check_declared_kept(&self) -> Result<()> {
+        if self.bounds.is_some() {
+            return Ok(());
+        }
         for (tv, depth) in self.declared.iter() {
             if tv.level().depth() < *depth {
                 if let Some(fix) = self.unwritten_holding(tv) {
@@ -2985,21 +3014,39 @@ impl<R: Rt> DefGate<R> {
     /// The body's sites settle with the enclosing statement, all but the
     /// cells this signature reaches: those stay open, generalized where a
     /// binding names the definition, else its enclosing level's.
+    /// Under a check by bounds, the type the lambda stands as: one
+    /// instance of its scheme where no binding names a definition of its
+    /// own, else its signature.
     fn close(
         mut self,
         ctx: &mut CompileCtx<R>,
         spec: &Expr,
         table: Option<SArc<DefTable>>,
         named: bool,
-    ) -> Result<()> {
+    ) -> Result<Option<Type>> {
         let mut frame = ctx.pending_settles.pop().expect("gate settle frame");
         ctx.def_gate_depth -= 1;
-        match named {
-            true => {
+        let mut stands = None;
+        let mut closed = Ok(());
+        match (self.bounds, named) {
+            (Some(Closing::Inline), _) => (),
+            (Some(Closing::Scheme { mark, named }), _) => {
+                let sig = Type::Fn(self.sig.clone());
+                closed =
+                    solving(|s| s.generalize(&ctx.env, &sig, self.depth - 1, mark)).at(spec);
+                self.rigid.clear();
+                for (tv, _) in self.declared.iter() {
+                    solving(|s| s.own(tv))
+                }
+                if !named && closed.is_ok() {
+                    stands = Some(solving(|s| s.instantiate(&sig, self.depth - 1, self.outer)))
+                }
+            }
+            (None, true) => {
                 ctx.env.with_ide(|ide| self.tell_held(ide, spec));
                 self.sig.generalize(self.depth)
             }
-            false => self.sig.claim(self.outer),
+            (None, false) => self.sig.claim(self.outer),
         }
         let defaults = table.as_deref().map(DefTable::default_cells).unwrap_or_default();
         for s in frame.iter_mut() {
@@ -3032,7 +3079,7 @@ impl<R: Rt> DefGate<R> {
         ctx.rec_defs.remove(&self.def);
         self.faux.close(ctx);
         self.rigid.clear();
-        lowered.at(spec)
+        closed.and(lowered.at(spec)).map(|()| stands)
     }
 
     /// Tell the editor the quantifiers the close is about to generalize,
@@ -3255,6 +3302,9 @@ fn judge_default<R: Rt>(
 ) -> Result<()> {
     node.typecheck0(ctx).and_then(|()| {
         let typ = node.typ().clone();
+        if bounds::active() {
+            return at.typ.check_contains(&ctx.env, &typ);
+        }
         let depth = def.level.depth();
         let enclosing =
             |tv: &TVar| matches!(tv.level(), Level::Def { depth: d, .. } if d < depth);
@@ -3362,7 +3412,7 @@ impl<R: Rt> Update<R> for Lambda {
         // the body (`check_defaults`), and again per omitting call site
         // (`CallSite::check_omitted_defaults`), where one may narrow that
         // site's cells.
-        let mut gate = DefGate::open(ctx, def);
+        let mut gate = DefGate::open(ctx, def, self.named);
         let mut table = None;
         let mut captures: LPooled<AHashSet<(ModPath, CompactString)>> = LPooled::take();
         let res = (def.init)(
@@ -3453,10 +3503,17 @@ impl<R: Rt> Update<R> for Lambda {
         }
         let closed =
             gate.close(ctx, spec, def.table.get().map(|t| t.table.clone()), self.named);
+        if bounds::active() {
+            return res.and(closed).map(|stands| {
+                if let Some(t) = stands {
+                    self.typ = t
+                }
+            });
+        }
         // what the body bound is the signature: a call's types follow from
         // it without elaborating the body
         self.typ.unbind_vacuous_tvars();
-        res.and(closed)
+        res.and(closed.map(|_| ()))
     }
 
     /// A lambda an instance defines takes its signature from the

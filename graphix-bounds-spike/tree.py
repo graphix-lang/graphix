@@ -4,7 +4,10 @@ bounds switched on (GRAPHIX_BOUNDS=1) and compare each verdict with the
 prototype's. Also counts, per program, how often the old relation still bound a
 cell (GRAPHIX_BOUNDS_AUDIT): a program with none is checked by the solver alone.
 
-usage: tree.py [-v] [-j N]     (run it under a memory-capped scope)
+usage: tree.py [-v] [-j N] [-k TEXT] [-f FILE]   (run it under a memory-capped scope)
+  -k TEXT   only the cases whose place (file.md:line) holds TEXT
+  -f FILE   only the cases a line of FILE names by its place: an earlier
+            run's output, so the differences alone are run again
 """
 import collections, concurrent.futures, glob, os, re, subprocess, sys, tempfile
 
@@ -25,6 +28,13 @@ for f in sorted(glob.glob(f'{root}/ide/skills/graphix-lang/*.md')):
         m = fence and (re.match(r'ok (.*)$', t) or re.match(r'no "(?:[^"\\]|\\.)*" (.*)$', t))
         if m:
             cases.append((f'{os.path.basename(f)}:{n}', t.split(' ', 1)[0], m.group(1)))
+
+if '-k' in sys.argv:
+    text = sys.argv[sys.argv.index('-k') + 1]
+    cases = [c for c in cases if text in c[0]]
+if '-f' in sys.argv:
+    named = set(re.findall(r'\w+\.md:\d+', open(sys.argv[sys.argv.index('-f') + 1]).read()))
+    cases = [c for c in cases if c[0] in named]
 
 proto = subprocess.run([spike], input='\n'.join(c[2] for c in cases) + '\n',
                        capture_output=True, text=True).stdout.split('\n')[:-1]

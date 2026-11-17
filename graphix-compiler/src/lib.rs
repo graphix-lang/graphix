@@ -4152,17 +4152,9 @@ fn check_and_fuse_inner<R: Rt>(
     let st = Instant::now();
     let _level = typ::tvar::AtLevel::enter(typ::tvar::Level::TOP);
     let p = profile::phase(Phase::Typecheck0);
-    let bounds = ctx.bounds;
-    if bounds {
-        typ::bounds::begin()
-    }
-    let checked = node.typecheck0(ctx).and_then(|()| match bounds {
-        true => typ::bounds::end(&ctx.env),
-        false => Ok(()),
-    });
-    if checked.is_err() {
-        typ::bounds::abandon()
-    }
+    let bounds = typ::bounds::Check::begin(ctx.bounds);
+    let checked = node.typecheck0(ctx).and_then(|()| typ::bounds::end(&ctx.env));
+    drop(bounds);
     if let Err(e) = checked
         .and_then(|()| drain_pending_settles(ctx))
         .and_then(|()| check_pending_names(ctx))
@@ -5013,6 +5005,7 @@ fn compile_top<R: Rt>(
     build: impl FnOnce(&mut ExecCtx<'_, R>, &Expr, ExprId) -> Result<(Node<R>, Scope)>,
 ) -> Result<(Node<R>, Scope)> {
     let _profile = profile::phase(Phase::Compile);
+    let _bounds = typ::bounds::Check::begin(ctx.bounds);
     let input = Input::enter();
     let top_id = spec.id;
     ctx.open_compile_frame(top_id);

@@ -2,7 +2,7 @@ use super::{
     WakeBit,
     callsite::{Narrowing, check_hidden_defaults},
     compiler::compile,
-    dense_gate, one_bound, read_bound,
+    dense_gate, joined, one_bound, read_bound, solving,
 };
 use crate::cost::ForkSite;
 use crate::{
@@ -22,7 +22,10 @@ use crate::{
         nodes::{NodeTag, decode_node, decode_nodes, encode_nodes, put_tag},
     },
     rep,
-    typ::{AbstractId, Type},
+    typ::{
+        AbstractId, Type,
+        bounds::{self, Use},
+    },
     wrap,
 };
 use anyhow::{Result, anyhow, bail};
@@ -322,8 +325,11 @@ impl<R: Rt> StructWith<R> {
                 Ok(Replace::with(None, name.clone(), n))
             })
             .collect::<Result<Box<[_]>>>()?;
-        let typ = updated_type(ctx, source.typ(), &replace)
-            .unwrap_or_else(|_| Type::empty_tvar());
+        let typ = match bounds::active() {
+            true => joined(),
+            false => updated_type(ctx, source.typ(), &replace)
+                .unwrap_or_else(|_| Type::empty_tvar()),
+        };
         Ok(Self::with(spec, typ, source, replace))
     }
 }
@@ -494,9 +500,10 @@ impl<R: Rt> StructRef<R> {
     ) -> Result<Node<R>> {
         let source = compile(ctx, flags, source.clone(), scope, top_id)?;
         let (typ, sorted_field_idx) =
-            match struct_field_type(ctx, source.typ(), field_name) {
-                Ok((i, t)) => (t, i),
-                Err(_) => (Type::empty_tvar(), None),
+            match (bounds::active(), struct_field_type(ctx, source.typ(), field_name)) {
+                (true, _) => (joined(), None),
+                (false, Ok((i, t))) => (t, i),
+                (false, Err(_)) => (Type::empty_tvar(), None),
             };
         let field_name = field_name.clone();
         Ok(Self::with(spec, typ, source, sorted_field_idx, field_name))
@@ -1093,8 +1100,11 @@ impl<R: Rt> TupleRef<R> {
     ) -> Result<Node<R>> {
         let source = compile(ctx, flags, source.clone(), scope, top_id)?;
         let field = *field;
-        let typ = tuple_field_type(ctx, &scope.lexical, source.typ(), field)
-            .unwrap_or_else(|_| Type::empty_tvar());
+        let typ = match bounds::active() {
+            true => joined(),
+            false => tuple_field_type(ctx, &scope.lexical, source.typ(), field)
+                .unwrap_or_else(|_| Type::empty_tvar()),
+        };
         let scope = scope.lexical.clone();
         Ok(Self::with(spec, typ, source, field, scope))
     }
@@ -1221,6 +1231,15 @@ impl<R: Rt> StructWith<R> {
         check: bool,
     ) -> Result<()> {
         wrap!(self.source, child(&mut self.source, ctx))?;
+        if bounds::active() {
+            for rep in self.replace.iter_mut() {
+                wrap!(rep.n, child(&mut rep.n, ctx))?;
+            }
+            let fields =
+                self.replace.iter().map(|r| (r.name.clone(), r.n.typ().clone()));
+            let u = Use::With { fields: fields.collect(), out: self.typ.clone() };
+            return wrap!(self, solving(|s| s.watch(&ctx.env, self.source.typ(), u)));
+        }
         let styp = self.source.typ().clone();
         let mut fields = || -> Result<()> {
             for rep in self.replace.iter_mut() {
@@ -1247,6 +1266,10 @@ impl<R: Rt> StructRef<R> {
         check: bool,
     ) -> Result<()> {
         wrap!(self.source, child(&mut self.source, ctx))?;
+        if bounds::active() {
+            let u = Use::Field { field: self.field_name.clone(), out: self.typ.clone() };
+            return wrap!(self, solving(|s| s.watch(&ctx.env, self.source.typ(), u)));
+        }
         let etyp = struct_field_type(ctx, self.source.typ(), &self.field_name);
         let (idx, typ) = wrap!(self, etyp)?;
         self.sorted_field_idx = idx;
@@ -1373,6 +1396,10 @@ impl<R: Rt> TupleRef<R> {
         wrap!(self.source, child(&mut self.source, ctx))?;
         if !check {
             return Ok(());
+        }
+        if bounds::active() {
+            let u = Use::Index { i: self.field, out: self.typ.clone() };
+            return wrap!(self, solving(|s| s.watch(&ctx.env, self.source.typ(), u)));
         }
         let etyp = tuple_field_type(ctx, &self.scope, self.source.typ(), self.field);
         let etyp = wrap!(self, etyp)?;

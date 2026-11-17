@@ -24,7 +24,7 @@ use std::{cell::RefCell, ops::ControlFlow};
 use triomphe::Arc;
 
 mod select;
-pub use select::{Arm, Pat};
+pub use select::{Arm, FALSE, Pat, TRUE, unsplit};
 
 thread_local! {
     /// The solver of the check this thread is running, where the check is
@@ -56,6 +56,34 @@ pub(crate) fn old_binding(of: &TVar, to: &Type) {
 pub fn begin() {
     ACTIVE.set(Some(Solving::default()));
     BOUND_BY_OLD.set(Some(0))
+}
+
+/// A check by bounds from its input's compile on: one [`begin`]s where
+/// none is running, and is [`abandon`]ed when this drops unless [`end`]
+/// ended it.
+pub struct Check(bool);
+
+impl Check {
+    pub fn begin(by_bounds: bool) -> Self {
+        let begins = by_bounds && !active();
+        if begins {
+            begin()
+        }
+        Check(begins)
+    }
+}
+
+impl Drop for Check {
+    fn drop(&mut self) {
+        if self.0 {
+            abandon()
+        }
+    }
+}
+
+/// Whether a check by bounds is running on this thread.
+pub fn active() -> bool {
+    BOUND_BY_OLD.get().is_some()
 }
 
 /// End the check [`begin`] began: fix every cell it left open.
@@ -1181,12 +1209,24 @@ impl Solving {
     }
 
     /// Mark the variables of a declared scheme `t` as its own: those
-    /// deeper than `depth`.
+    /// deeper than `depth`. They leave the level of the definition that
+    /// made them ([`Level::GENERIC`]), so a use of the scheme copies them
+    /// wherever it stands.
     pub fn quantify(&mut self, t: &Type, depth: u32) {
         let mut kept = Cells::new();
         self.reach(t, &mut kept);
         for v in kept.iter().filter(|v| v.level().depth() > depth) {
-            known(v, |k| k.quantified = true)
+            known(v, |k| k.quantified = true);
+            v.generalize()
+        }
+    }
+
+    /// The declared variable `v` is its scheme's from here on: its
+    /// definition has closed, so it is no constant any more.
+    pub fn own(&mut self, v: &TVar) {
+        if !v.is_bound() {
+            known(v, |k| k.quantified = true);
+            v.generalize()
         }
     }
 
@@ -1227,7 +1267,8 @@ impl Solving {
                 && !v.joins()
                 && v.cell_direct().len() > 1;
             if pending {
-                self.singles.push(v.clone())
+                self.singles.push(v.clone());
+                v.generalize()
             }
         }
         Ok(())

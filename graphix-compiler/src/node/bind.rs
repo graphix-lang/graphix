@@ -7,13 +7,15 @@ use super::{
     pattern::{
         CompiledAbstracts, Holder, StructPatternNode, members_refusal, rigid_refusal,
     },
+    joined,
     place::{self, Path, RefPath},
     read_var_by,
     select::lower_view,
+    solving,
 };
 use crate::{
-    BindId, BuiltinBindInfo, CFlag, CompileCtx, ExecCtx, Node, NodeView, Notify,
-    PrintFlag, Refs, Rt, Scope, StaticHold, Tag, TagValue, Update, bailat,
+    BindId, BuiltinBindInfo, CFlag, CompileCtx, ExecCtx, LambdaId, Node, NodeView,
+    Notify, PrintFlag, Refs, Rt, Scope, StaticHold, Tag, TagValue, Update, bailat,
     compiler::compile,
     dbgenv,
     env::{self, Env},
@@ -31,7 +33,7 @@ use crate::{
     },
     prune::ReadStamp,
     typ::{
-        CoreTrait, FnType, Mutability, ReadCopies, TVar, Type,
+        CoreTrait, FnType, Mutability, ReadCopies, TVar, Type, bounds,
         tvar::{AtLevel, Level, current_level},
     },
     wrap,
@@ -60,6 +62,72 @@ enum Deferred {
     /// open cell, each name a fresh cell: held to every member of the
     /// value, each name typed by its part of each member.
     Shape(Type),
+}
+
+/// What a `let` binds, under a check by bounds.
+#[derive(Debug, Clone, Copy)]
+enum Held {
+    /// One value: its type flows into the binding's.
+    Value,
+    /// A definition (a lambda, data holding lambdas, a read of a generic
+    /// name's part) nothing writes: its value is checked at this level,
+    /// one deeper than the `let`, and what its type reaches there is the
+    /// binding's scheme.
+    Definition(Level),
+    /// Another generic binding's scheme, as it is (`let g = f`).
+    Scheme,
+}
+
+/// Whether a `let` of `e` that nothing writes is a definition: a lambda,
+/// a generic name, a read of a part of one, or data that holds one of
+/// those.
+fn defines<R: Rt>(ctx: &CompileCtx<R>, scope: &Scope, e: &Expr) -> bool {
+    let any = |es: &[Expr]| es.iter().any(|e| defines(ctx, scope, e));
+    match &e.kind {
+        ExprKind::Lambda(_) => true,
+        ExprKind::ExplicitParens(e) => defines(ctx, scope, e),
+        ExprKind::Block { exprs } => exprs.last().is_some_and(|last| {
+            matches!(expr_value(last).kind, ExprKind::Lambda(_))
+        }),
+        ExprKind::Struct(s) => s.args.iter().any(|(_, e)| defines(ctx, scope, e)),
+        ExprKind::Tuple { args }
+        | ExprKind::Variant { args, .. }
+        | ExprKind::Array { args }
+        | ExprKind::List { args } => any(args),
+        ExprKind::StructWith(w) => {
+            defines(ctx, scope, &w.source)
+                || w.replace.iter().any(|(_, e)| defines(ctx, scope, e))
+        }
+        ExprKind::StructRef { source, .. } | ExprKind::TupleRef { source, .. } => {
+            defines(ctx, scope, source)
+        }
+        ExprKind::Ref { name } => scheme_named(ctx, scope, name).is_some(),
+        _ => false,
+    }
+}
+
+/// `e` past grouping parentheses and the statements of a block it ends.
+fn expr_value(e: &Expr) -> &Expr {
+    match &e.kind {
+        ExprKind::ExplicitParens(e) => expr_value(e),
+        ExprKind::Block { exprs } => match exprs.last() {
+            Some(last) => expr_value(last),
+            None => e,
+        },
+        _ => e,
+    }
+}
+
+/// The scheme of the generic binding `name` names, which nothing writes.
+fn scheme_named<R: Rt>(
+    ctx: &CompileCtx<R>,
+    scope: &Scope,
+    name: &ModPath,
+) -> Option<Type> {
+    let (_, bind) = ctx.env.lookup_bind(&scope.lexical, name).ok()??;
+    let generic =
+        ctx.env.poly_binds.contains(&bind.id) && !ctx.connect_targets.contains(&bind.id);
+    generic.then(|| bind.typ.clone())
 }
 
 /// How the reads of generalized bindings in a `let`'s value copy them.
@@ -133,6 +201,8 @@ pub struct Bind<R: Rt> {
     pub(crate) around: Option<super::Lets>,
     /// The binding an alias (`let h = f`) binds statically.
     static_hold: Option<StaticHold>,
+    /// What the name holds, where the check is by bounds.
+    held: Held,
 }
 
 /// Rewrite a node into a block: each already-compiled operand becomes a
@@ -244,6 +314,7 @@ impl<R: Rt> Bind<R> {
             reraised: SmallVec::new(),
             around: None,
             static_hold: None,
+            held: Held::Value,
         })
     }
 
@@ -339,7 +410,81 @@ impl<R: Rt> Bind<R> {
         };
         let mut deferred = None;
         let mut narrowed = None;
-        let (node, pattern, typ) = if *rec {
+        let mut held = Held::Value;
+        let (node, pattern, typ) = if bounds::active() {
+            if *rec && pat.single_bind().is_none() {
+                bailat!(spec, "can't use rec on a complex pattern")
+            }
+            if *rec && !matches!(value.unparen().kind, ExprKind::Lambda(_)) {
+                bailat!(spec, "let rec may only be used for lambdas")
+            }
+            let unwritten = pat.single_bind().is_some_and(|n| {
+                !ctx.written.innermost().is_some_and(|w| {
+                    w.contains(&(spec.id, CompactString::from(n.as_str())))
+                })
+            });
+            let forwarded = match (&expr_value(value).kind, &annotation) {
+                (ExprKind::Ref { name }, None) if unwritten => {
+                    scheme_named(ctx, scope, name)
+                }
+                _ => None,
+            };
+            if forwarded.is_some() {
+                held = Held::Scheme
+            } else if unwritten && defines(ctx, scope, value) {
+                let depth = match current_level() {
+                    l if l.is_generic() => 1,
+                    l => l.depth() + 1,
+                };
+                held = Held::Definition(Level::Def { depth, owner: LambdaId::new() })
+            }
+            let _at = match held {
+                Held::Definition(level) => Some(AtLevel::enter(level)),
+                Held::Value | Held::Scheme => None,
+            };
+            // a name stands for its value's type as a scheme only where
+            // it is one; any other takes a cell of its own, which the
+            // value flows into
+            let own = |annotation: Option<Type>| match annotation {
+                Some(t) => {
+                    if !matches!(held, Held::Definition(_)) {
+                        t.claim_free(current_level())
+                    }
+                    t
+                }
+                None => Type::empty_tvar(),
+            };
+            if *rec {
+                let typ = own(annotation);
+                let pattern = compile_pattern(ctx, &typ)?;
+                let node = compile(ctx, flags, value.clone(), &scope, top_id)?;
+                (node, pattern, typ)
+            } else {
+                let node = compile(ctx, flags, value.clone(), &scope, top_id)?;
+                let typ = match (annotation, forwarded, held) {
+                    (Some(t), ..) => own(Some(t)),
+                    (None, Some(scheme), _) => scheme,
+                    (None, None, Held::Definition(_)) => node.typ().clone(),
+                    (None, None, _) => own(None),
+                };
+                let pattern = match pat.single_bind() {
+                    Some(_) => compile_pattern(ctx, &typ)?,
+                    None => {
+                        // the names are cells of their own: the check
+                        // gives each its part of the value
+                        let shape = {
+                            let _generic = AtLevel::enter(Level::GENERIC);
+                            pat.infer_type_predicate(&ctx.env, &scope.lexical)?
+                                .any_as_tvar()
+                        };
+                        let pattern = compile_pattern(ctx, &shape)?;
+                        pattern.ids(&mut |id| ctx.env.retype(id, joined()));
+                        pattern
+                    }
+                };
+                (node, pattern, typ)
+            }
+        } else if *rec {
             if pat.single_bind().is_none() {
                 bailat!(spec, "can't use rec on a complex pattern")
             }
@@ -471,7 +616,8 @@ impl<R: Rt> Bind<R> {
             }
             (node, pattern, typ)
         };
-        if deferred.is_none()
+        if !bounds::active()
+            && deferred.is_none()
             && !pattern.covers(&ctx.env, narrowed.as_ref().unwrap_or(&typ), false)
         {
             bailat!(spec, "refutable patterns are not allowed in let");
@@ -479,8 +625,14 @@ impl<R: Rt> Bind<R> {
         // Registered after the value compiled so a `let rec` body's
         // self-references keep the definition's cells.
         let mut node = node;
-        let passes = passes_generic(&ctx.env, b, &node);
-        if names_generic(&ctx.env, b, &node) {
+        let passes = !bounds::active() && passes_generic(&ctx.env, b, &node);
+        if !matches!(held, Held::Value) {
+            name_value(&mut node, true);
+            pattern.ids(&mut |id| {
+                ctx.env.poly_binds.insert(id);
+            });
+        }
+        if !bounds::active() && names_generic(&ctx.env, b, &node) {
             match passes {
                 true => name_passed(&ctx.env, &mut node),
                 false => name_value(&mut node, false),
@@ -515,7 +667,7 @@ impl<R: Rt> Bind<R> {
         // uses or an annotation decide what the value holds. A seqq's queued
         // value is the queue's instance, apart from the copy its steps share.
         let mut holder = false;
-        if holds_function(&ctx.env, &node) {
+        if !bounds::active() && holds_function(&ctx.env, &node) {
             let mut generalized = false;
             pattern.ids(&mut |id| {
                 if !ctx.connect_targets.contains(&id) {
@@ -548,7 +700,80 @@ impl<R: Rt> Bind<R> {
         {
             ctx.builtin_bindings.insert(id, info);
         }
-        Ok(Self::with(spec, typ, pattern, node, deferred, reads))
+        let mut bind = Self::with(spec, typ, pattern, node, deferred, reads);
+        if let Some(b) = bind.downcast_mut::<Self>() {
+            b.held = held
+        }
+        Ok(bind)
+    }
+
+    /// The check by bounds: the value's type flows into the binding's,
+    /// or, where the value is a definition, what its type reaches at the
+    /// definition's level becomes the binding's scheme.
+    fn check_by_bounds(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
+        let ExprKind::Bind(b) = &self.spec.kind else {
+            bail!("BUG: a let without its expression")
+        };
+        if b.typ.is_some() {
+            crate::defer_written_names(ctx, &self.typ, &self.spec)?;
+        }
+        // a write compiled after this let makes it one value after all
+        let written = written(ctx, &self.pattern);
+        if written {
+            mark_value(&mut self.node, true, Naming::Unnamed)
+        }
+        let node = &mut self.node;
+        match self.held {
+            Held::Definition(level) if !written => {
+                let mark = solving(|s| s.mark());
+                let depth = level.depth() - 1;
+                let generalize = |ctx: &CompileCtx<R>, t: &Type| {
+                    solving(|s| s.generalize(&ctx.env, t, depth, mark))
+                };
+                let _at = AtLevel::enter(level);
+                wrap!(node, node.typecheck0(ctx))?;
+                let value = node.typ().clone();
+                match (b.typ.is_some(), b.rec) {
+                    (false, false) => wrap!(node, generalize(ctx, &value))?,
+                    (false, true) => {
+                        wrap!(node, self.typ.check_contains(&ctx.env, &value))?;
+                        wrap!(node, generalize(ctx, &value))?;
+                        // the name is the scheme from here on: inside the
+                        // definition it was one function
+                        self.pattern.ids(&mut |id| ctx.env.retype(id, value.clone()));
+                        self.typ = value
+                    }
+                    (true, _) => {
+                        wrap!(node, generalize(ctx, &value))?;
+                        let one = solving(|s| s.instantiate(&value, depth, level));
+                        wrap!(node, self.typ.check_contains(&ctx.env, &one))?;
+                        wrap!(node, generalize(ctx, &self.typ))?
+                    }
+                }
+            }
+            Held::Definition(level) => {
+                let _at = AtLevel::enter(level);
+                wrap!(node, node.typecheck0(ctx))?;
+                wrap!(node, self.typ.check_contains(&ctx.env, node.typ()))?
+            }
+            Held::Scheme => wrap!(node, node.typecheck0(ctx))?,
+            Held::Value => {
+                wrap!(node, node.typecheck0(ctx))?;
+                wrap!(node, self.typ.check_contains(&ctx.env, node.typ()))?;
+                if b.pattern.single_bind().is_none() {
+                    let pat = self.pattern.by_bounds(ctx).at(&self.spec)?;
+                    super::pattern::destructure(ctx, pat, &self.typ, &self.spec)
+                        .at(&self.spec)?
+                }
+            }
+        }
+        self.settle_builtin_alias(ctx);
+        if let Some(fv) = self.lambda_def_value().or_else(|| self.aliased_lambda(ctx)) {
+            self.pattern.ids(&mut |id| {
+                ctx.bind_to_lambda.insert(id, fv.clone());
+            });
+        }
+        Ok(())
     }
 
     /// Fit the pattern to the value's type, which must be known by now.
@@ -938,6 +1163,9 @@ impl<R: Rt> Update<R> for Bind<R> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
+        if bounds::active() {
+            return self.check_by_bounds(ctx);
+        }
         if let ExprKind::Bind(b) = &self.spec.kind
             && b.typ.is_some()
         {
@@ -1608,6 +1836,28 @@ impl<R: Rt> Update<R> for Ref {
     /// reference to the instance being elaborated, which must share the
     /// definition's cells.
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
+        if bounds::active() {
+            // a use of a scheme takes a copy of the cells that are the
+            // scheme's by now; any other name is its binding's one type
+            let generic = ctx.env.poly_binds.contains(&self.id)
+                && !ctx.connect_targets.contains(&self.id);
+            if !generic || matches!(self.signature, Signature::Decided) {
+                return Ok(());
+            }
+            let Some(scheme) = ctx.env.by_id.get(&self.id).map(|b| b.typ.clone()) else {
+                bail!("BUG missing bind {:?}", self.id)
+            };
+            let one =
+                solving(|s| s.instantiate(&scheme, Level::GENERIC.depth() - 1, current_level()));
+            let held = mem::replace(&mut self.typ, one);
+            if matches!(
+                mem::replace(&mut self.signature, Signature::Decided),
+                Signature::Pending
+            ) {
+                held.check_contains(&ctx.env, &self.typ).map_err(|e| e.at(&*self.spec))?;
+            }
+            return Ok(());
+        }
         let poly = ctx.env.poly_binds.contains(&self.id);
         let def = match self.signature {
             Signature::Decided => return Ok(()),

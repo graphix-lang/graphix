@@ -90,6 +90,35 @@ impl Pat {
         }
     }
 
+    /// The widest type the pattern admits, the bound a test puts on a
+    /// scrutinee nothing has decided; none where it admits anything.
+    pub fn admits(&self) -> Option<Type> {
+        let all = |ps: &[Pat]| -> Arc<[Type]> {
+            Arc::from_iter(ps.iter().map(|p| p.admits().unwrap_or(Type::Any)))
+        };
+        match self {
+            Pat::Any(_) | Pat::Struct(_, _, false) | Pat::Abs(..) => None,
+            Pat::Test(t, _) | Pat::Lit(t, _) => Some(t.clone()),
+            Pat::Tuple(_, ps) => Some(Type::Tuple(all(ps))),
+            Pat::Variant(_, tag, ps) => {
+                Some(Type::Variant(tag.clone(), all(ps), WrittenAt::default()))
+            }
+            Pat::Struct(_, fs, true) => Some(Type::Struct(Arc::from_iter(
+                fs.iter().map(|(n, p)| {
+                    (n.clone(), p.admits().unwrap_or(Type::Any), WrittenAt::default())
+                }),
+            ))),
+            Pat::Elems { list: false, .. } => Some(Type::Array(Arc::new(Type::Any))),
+            Pat::Elems { list: true, .. } => Some(Type::List(Arc::new(Type::Any))),
+            Pat::Or(ps) => {
+                let ts: Option<SmallVec<[Type; 4]>> =
+                    ps.iter().map(|p| p.admits()).collect();
+                ts.map(union_of)
+            }
+            Pat::Whole(_, p) => p.admits(),
+        }
+    }
+
     fn cells(&self, out: &mut SmallVec<[TVar; 4]>) {
         self.map_cells(&mut |v| {
             out.push(v.clone());

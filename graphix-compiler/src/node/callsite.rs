@@ -3,10 +3,12 @@ use super::{
     bind::Ref,
     compiler::compile,
     error::{Qop, RaiseProbe, join_open_raised, join_raised},
+    joined, joins,
     lambda::{
         BuiltInLambda, GXLambda, InstanceTypes, Lambda, LambdaDef, same_parameters,
     },
     pattern::StructPatternNode,
+    solving,
     wake::{FreshFrame, TrackedFires},
 };
 use crate::{
@@ -37,6 +39,7 @@ use crate::{
     typ::{
         AmbiguousMember, AppKey, Brief, Carriers, ContainsFlags, FnArgKind, FnArgType,
         FnType, Mutability, TVar, TakerUnion, TraitId, Type, UndecidedTaker,
+        bounds::{self, Use},
         settle::{DataPositions, Expanded, Held, Reaching, Unrolling, settle_order},
         tvar::{AtLevel, BoundAt, Bounds, Judgment, Level, RigidGate},
     },
@@ -5406,9 +5409,71 @@ impl<R: Rt> CallSite<R> {
         &self.spec
     }
 
+    /// The check by bounds: each written argument is checked in the order
+    /// written, then fits its parameter where the callee's type is decided
+    /// here; a callee that is not is used as a function of these
+    /// arguments, or waits as a call for the type that reaches it.
+    fn check_by_bounds(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
+        let mut args: SmallVec<[bounds::Arg; 4]> = SmallVec::new();
+        for (key, arg) in self.args.iter_mut() {
+            let (ArgStage::Given, Some(n)) = (arg.stage, arg.node.as_mut()) else {
+                continue;
+            };
+            wrap!(n, n.typecheck0(ctx))?;
+            let label = match key {
+                ArgKey::Named(name) => Some(name.clone()),
+                ArgKey::Positional(_) => None,
+            };
+            args.push((label, n.typ().clone()))
+        }
+        joins(&self.rtype);
+        let callee = self.fnode.typ().clone();
+        let handler = self.scope.dynamic.handler();
+        match &callee.with_deref(|t| t.cloned()) {
+            Some(Type::Fn(ft)) => {
+                if self.ftype.is_none() {
+                    fill_omitted(&mut self.args, ft)?;
+                    self.ftype = Some(ft.clone())
+                }
+                wrap!(self, solving(|s| s.call(&ctx.env, ft, &args, &self.rtype)))?;
+                match handler {
+                    Some(h) => wrap!(self, join_raised(&ctx.env, &h, &ft.throws)),
+                    None => Ok(()),
+                }
+            }
+            None if args.iter().all(|(label, _)| label.is_none()) => {
+                let throws = match handler.and_then(|h| ctx.env.by_id.get(&h.id().0)) {
+                    Some(b) => b.typ.clone(),
+                    None => joined(),
+                };
+                let used = FnType {
+                    args: TArc::from_iter(args.iter().map(|(_, typ)| FnArgType {
+                        kind: FnArgKind::Positional { name: None },
+                        typ: typ.clone(),
+                    })),
+                    vargs: None,
+                    rtype: self.rtype.clone(),
+                    throws,
+                    explicit_throws: false,
+                    quantifiers: TArc::from_iter([]),
+                    lambda_ids: Default::default(),
+                };
+                let used = Type::Fn(TArc::new(used));
+                wrap!(self, used.check_contains(&ctx.env, &callee))
+            }
+            _ => {
+                let call = Use::Call { args, out: self.rtype.clone() };
+                wrap!(self, solving(|s| s.watch(&ctx.env, &callee, call)))
+            }
+        }
+    }
+
     pub(crate) fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         self.note_kept_view(ctx);
         wrap!(self.fnode, self.fnode.typecheck0(ctx))?;
+        if bounds::active() {
+            return self.check_by_bounds(ctx);
+        }
         let mut fresh = false;
         let mut self_call = false;
         let ftype = match self.ftype.as_ref() {

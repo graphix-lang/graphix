@@ -18,7 +18,7 @@ use crate::{
     },
     prune::BoundaryRef,
     rep,
-    typ::Type,
+    typ::{Type, bounds},
     wrap,
 };
 use anyhow::{Result, anyhow, bail};
@@ -191,7 +191,7 @@ impl RaiseProbe {
                 id,
                 name: "#faux".into(),
                 scope: scope.lexical.clone(),
-                typ: Type::empty_tvar(),
+                typ: super::joined(),
                 pos: SourcePosition::default(),
                 ori: Arc::new(Origin::default()),
                 binder: None,
@@ -204,6 +204,7 @@ impl RaiseProbe {
     /// `throws 'e` stays the cell.
     pub(crate) fn raised<R: Rt>(&self, ctx: &CompileCtx<R>) -> Type {
         match ctx.env.by_id.get(&self.0).map(|b| &b.typ) {
+            Some(t @ Type::TVar(_)) if bounds::active() => t.clone(),
             Some(Type::TVar(tv)) => tv.binding().unwrap_or(Type::Bottom),
             Some(t) => t.clone(),
             None => Type::Bottom,
@@ -226,6 +227,9 @@ pub(crate) fn join_raised(env: &Env, handler: &ErrorHandler, etyp: &Type) -> Res
     let Some(Type::TVar(tv)) = env.by_id.get(&catch).map(|b| &b.typ) else {
         bail!("BUG: catch {catch:?} has no inferred bind")
     };
+    if bounds::active() {
+        return Type::TVar(tv.clone()).check_contains(env, etyp);
+    }
     let joined = match tv.binding() {
         None => etyp.clone(),
         Some(t)
@@ -271,6 +275,9 @@ pub(crate) fn join_open_raised(
     let Some(Type::TVar(tv)) = env.by_id.get(&catch).map(|b| &b.typ) else {
         bail!("BUG: catch {catch:?} has no inferred bind")
     };
+    if bounds::active() {
+        return Type::TVar(tv.clone()).check_contains(env, etyp);
+    }
     match tv.binding() {
         Some(t @ Type::TVar(_))
             if t.deref_cloned().is_none() && t.contains(env, etyp)? =>
