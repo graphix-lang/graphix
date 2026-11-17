@@ -524,7 +524,27 @@ impl Mirror {
                 let at = ArcStr::from(s.selects[*id].at.as_str());
                 Use::Select(self.port.select(arms, at))
             }
-            Watch::Method { .. } => return self.skip("calling a method"),
+            Watch::Method { of, at, args, out, throws } => {
+                let typings: Vec<Type> =
+                    of.impls.iter().map(|t| self.typ(s, t)).collect();
+                let depth = match out {
+                    Ty::Var(v) => s.vars[v.0 as usize].level,
+                    _ => 0,
+                };
+                Use::Method {
+                    name: of.name.clone(),
+                    typings: Arc::from(typings),
+                    receiver: of.receiver,
+                    at: *at,
+                    args: args
+                        .iter()
+                        .map(|(l, t, _)| (l.clone(), self.typ(s, t)))
+                        .collect(),
+                    out: self.typ(s, out),
+                    throws: self.typ(s, throws),
+                    level: self.level(depth),
+                }
+            }
         };
         let t = self.typ(s, t);
         if self.live() {

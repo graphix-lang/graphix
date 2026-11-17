@@ -76,6 +76,22 @@ pub enum Use {
     With { fields: SmallVec<[(ArcStr, Type); 2]>, out: Type },
     /// The scrutinee of a select ([`Solving::select`]).
     Select(usize),
+    /// The receiver of a call of a method whose type the receiver's
+    /// decides (a trait whose `self` is a constructor): `typings` is the
+    /// method as each implementation types it, a scheme each; the call
+    /// takes the first whose `receiver`th positional parameter takes the
+    /// receiver, which is the `at`th of `args`. What the method raises
+    /// goes to `throws`, and the typing's cells are made at `level`.
+    Method {
+        name: ArcStr,
+        typings: Arc<[Type]>,
+        receiver: usize,
+        at: usize,
+        args: SmallVec<[Arg; 4]>,
+        out: Type,
+        throws: Type,
+        level: Level,
+    },
 }
 
 impl Use {
@@ -86,6 +102,7 @@ impl Use {
             Use::Call { .. } => "reading a fn",
             Use::With { .. } => "updating a struct",
             Use::Select(_) => "a select",
+            Use::Method { .. } => "calling a method",
         }
     }
 
@@ -103,6 +120,18 @@ impl Use {
                 out: f(out),
             },
             Use::Select(id) => Use::Select(*id),
+            Use::Method { name, typings, receiver, at, args, out, throws, level } => {
+                Use::Method {
+                    name: name.clone(),
+                    typings: typings.clone(),
+                    receiver: *receiver,
+                    at: *at,
+                    args: args.iter().map(|(l, t)| (l.clone(), f(t))).collect(),
+                    out: f(out),
+                    throws: f(throws),
+                    level: *level,
+                }
+            }
         }
     }
 
@@ -118,6 +147,11 @@ impl Use {
                 fields.iter().for_each(|(_, t)| f(t))
             }
             Use::Select(_) => (),
+            Use::Method { args, out, throws, .. } => {
+                f(out);
+                f(throws);
+                args.iter().for_each(|(_, t)| f(t))
+            }
         }
     }
 }
@@ -1081,7 +1115,8 @@ impl Solving {
 
     /// A use of `v` that met no value: it needs a shape nothing gave it.
     fn unread(&self, v: &TVar) -> Result<()> {
-        match uses(v).iter().find(|(u, met)| !met && !matches!(u, Use::Select(_))) {
+        let waits = |u: &Use| !matches!(u, Use::Select(_) | Use::Method { .. });
+        match uses(v).iter().find(|(u, met)| !met && waits(u)) {
             None => Ok(()),
             Some((u, _)) => {
                 bail!("{} needs its type known here: annotate the binding", u.needs())
@@ -1276,7 +1311,29 @@ impl Solving {
                     }
                     u => u.map(&mut |t| self.copy(t, above, at, copies)),
                 };
-                let met = *met && !matches!(u, Use::Select(_));
+                let u = match u {
+                    Use::Method {
+                        name,
+                        typings,
+                        receiver,
+                        at: nth,
+                        args,
+                        out,
+                        throws,
+                        ..
+                    } => Use::Method {
+                        name,
+                        typings,
+                        receiver,
+                        at: nth,
+                        args,
+                        out,
+                        throws,
+                        level: at,
+                    },
+                    u => u,
+                };
+                let met = *met && !matches!(u, Use::Select(_) | Use::Method { .. });
                 known(&n, |k| k.uses.push((u, met)))
             }
             self.track(&n)
@@ -1690,6 +1747,28 @@ impl Solving {
             return self.select_route(env, *id, a).map(|()| true);
         }
         let a = shallow(a);
+        if let Use::Method { typings, receiver, at, args, out, throws, level, .. } = u {
+            if matches!(a, Type::Bottom) {
+                return Ok(false);
+            }
+            // the implementation whose receiver takes the whole type; with
+            // none, a union's members each find their own below
+            for typed in typings.iter() {
+                let typed = self.instantiate(typed, 0, *level);
+                let Type::Fn(ft) = &typed else { continue };
+                let positional = ft
+                    .args
+                    .iter()
+                    .filter(|a| matches!(a.kind, FnArgKind::Positional { .. }));
+                let Some(formal) = positional.clone().nth(*receiver) else { continue };
+                if self.attempt(env, &a, &formal.typ) {
+                    let mut args = args.clone();
+                    args[*at].1 = a.clone();
+                    self.call(env, ft, &args, out)?;
+                    return self.constrain(env, &ft.throws, throws).map(|()| true);
+                }
+            }
+        }
         ensure_sufficient(|| match (&a, u) {
             (Type::Bottom, _) => Ok(false),
             (Type::Set(ms), _) => {
@@ -1759,6 +1838,7 @@ impl Solving {
             (_, Use::Call { .. }) => bail!("{a} is not a function"),
             (_, Use::With { .. }) => bail!("{a} is not a struct"),
             (_, Use::Select(_)) => Ok(false),
+            (_, Use::Method { name, .. }) => bail!("{a} has no implementation of {name}"),
         })
     }
 
