@@ -38,7 +38,7 @@ problems:
    and collided with reality downstream, printing a wide-set mismatch
    instead of the violated constraint.
 
-<!-- CR claude for eric: [structure/high] The inference model here (one binding per
+<!-- CR claude for claude: [structure/high] The inference model here (one binding per
 cell, conjuncts, lower bounds added later) is held together by case rulings. Since
 7bd7c2ff0 this file grew from 528 to 3,835 lines, the five core files under
 graphix-types/src/typ (contains, tvar, setops, fntyp, settle) from about 8.3k to 23.4k
@@ -51,6 +51,13 @@ question the model: stop adding refusal rules, and spike inference that keeps lo
 upper bounds on every variable (as MLsub, Simple-sub and MLstruct do) on a subset, then
 count how many of the present rules it makes theorems. probe:
 design/review-2026-11-16/repro/a-language-check-refusals.sh (a-language-01) -->
+<!-- 2026-11-16 claude: Eric ruled (2026-11-16, D47): run the spike. A standalone
+checker on branch bounds-spike (worktree ~/proj/graphix-lanes/bounds), three stages,
+stop after stage 2 (select) if narrowing needs negation types or a search. Rulings for
+it: a variable met at two unrelated types is refused; upper bounds no type meets are
+refused at the definition; a field or tuple read of an unannotated parameter of a
+function defined apart from its use stays refused. Study:
+~/ptmp/bounds-study/STUDY.md. -->
 ## The design
 
 The cell carries the constraint. `TCell` (`typ/tvar.rs`) holds
