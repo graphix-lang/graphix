@@ -1250,33 +1250,11 @@ impl Checker {
     }
 
     /// A struct with some fields replaced: each takes its new value's
-    /// type. Where the struct's shape is not known here the value keeps its
-    /// type, and each new value must be of its field's.
+    /// type.
     fn updated(&mut self, source: Ty, fields: Vec<(ArcStr, Ty)>, lvl: u32) -> Result<Ty> {
-        match self.s.shallow(&source) {
-            Ty::Struct(fs) => {
-                if let Some((n, _)) =
-                    fields.iter().find(|(n, _)| !fs.iter().any(|(m, _)| m == n))
-                {
-                    bail!("{source} has no field {n}")
-                }
-                let new =
-                    |n: &ArcStr| fields.iter().find(|(m, _)| m == n).map(|(_, t)| t);
-                Ok(Ty::Struct(
-                    fs.iter()
-                        .map(|(n, t)| (n.clone(), new(n).unwrap_or(t).clone()))
-                        .collect(),
-                ))
-            }
-            _ => {
-                for (field, t) in fields {
-                    let out = self.s.fresh_ty(lvl, Kind::Join);
-                    self.s.watch(&source, Watch::Field { field, out: out.clone() })?;
-                    self.s.constrain(&t, &out)?
-                }
-                Ok(source)
-            }
-        }
+        let out = self.s.fresh_ty(lvl, Kind::Join);
+        self.s.watch(&source, Watch::With { fields, out: out.clone() })?;
+        Ok(out)
     }
 
     fn lambda(&mut self, l: &LambdaExpr, lvl: u32, generic: bool) -> Result<Ty> {

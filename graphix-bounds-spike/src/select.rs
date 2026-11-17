@@ -458,6 +458,32 @@ impl Solver {
                 };
                 Routed { part: self.both(&t, lit), rest, binds: vec![] }
             }
+            (Pat::Abs(_, tag, p), Ty::Any) => match self.reps.get(tag) {
+                Some(def) => {
+                    // which instance it is is not known, so it is read at
+                    // `Any` parameters: a payload something could be
+                    // written into or called at those is given no name
+                    let args: Rc<[Ty]> = vec![Ty::Any; def.params.len()].into();
+                    let (mut taken, mut named) = (false, false);
+                    if let Some(rep) = self.rep(tag, &args) {
+                        rep.each(&mut |t| {
+                            taken |= matches!(t, Ty::Ref(true, _) | Ty::Fn(_))
+                        })
+                    }
+                    p.map_vars(&mut |v| {
+                        named = true;
+                        v
+                    });
+                    match taken && named {
+                        true => nothing(),
+                        false => {
+                            let r = self.route(pat, &Ty::Abs(tag.clone(), args));
+                            Routed { rest: Ty::Any, ..r }
+                        }
+                    }
+                }
+                None => nothing(),
+            },
             (Pat::Abs(all, tag, p), Ty::Abs(t0, args)) if tag == t0 => {
                 match self.rep(tag, args) {
                     None => nothing(),
@@ -581,7 +607,24 @@ impl Solver {
 
     /// Pass one lower bound of a select's scrutinee down its arms.
     pub(crate) fn select_route(&mut self, id: usize, t: &Ty) -> Result<()> {
-        if !self.is_ground(t) {
+        // a pattern never looks into a function's type, so that may be
+        // open; every other part must be decided
+        fn decided(t: &Ty) -> bool {
+            match t {
+                Ty::Var(_) => false,
+                Ty::Fn(_) => true,
+                Ty::Array(t) | Ty::List(t) | Ty::Error(t) | Ty::Ref(_, t) => decided(t),
+                Ty::Map(k, v) => decided(k) && decided(v),
+                Ty::Tuple(ts)
+                | Ty::Variant(_, ts)
+                | Ty::Named(_, ts)
+                | Ty::Union(ts)
+                | Ty::Abs(_, ts) => ts.iter().all(decided),
+                Ty::Struct(fs) => fs.iter().all(|(_, t)| decided(t)),
+                _ => true,
+            }
+        }
+        if !decided(&self.deep(t)) {
             self.selects[id].waiting.push(t.clone());
             return Ok(());
         }

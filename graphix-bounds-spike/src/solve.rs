@@ -39,6 +39,12 @@ pub enum Watch {
         args: Vec<Arg>,
         out: Ty,
     },
+    /// A struct update: `out` takes the struct with each of `fields` at
+    /// its new type.
+    With {
+        fields: Vec<(ArcStr, Ty)>,
+        out: Ty,
+    },
     Select(usize),
     /// A call of a method whose type its receiver decides: the watched
     /// value is the receiver, the `at`th of `args`; what the method
@@ -58,6 +64,7 @@ impl Watch {
             Watch::Field { .. } => "reading a struct",
             Watch::Index { .. } => "reading a tuple",
             Watch::Call { .. } => "reading a fn",
+            Watch::With { .. } => "updating a struct",
             Watch::Select(_) => "a select",
             Watch::Method { .. } => "calling a method",
         }
@@ -573,7 +580,7 @@ impl Solver {
             let watch = self.info(v).watches[i].0.clone();
             let shaped = matches!(
                 (&watch, b),
-                (Watch::Field { .. }, Ty::Struct(_))
+                (Watch::Field { .. } | Watch::With { .. }, Ty::Struct(_))
                     | (Watch::Index { .. }, Ty::Tuple(_))
                     | (Watch::Call { .. }, Ty::Fn(_))
             );
@@ -825,6 +832,17 @@ impl Solver {
                     None => bail!("{a} has no field {field}"),
                 }
             }
+            (Ty::Struct(fs), Watch::With { fields, out }) => {
+                if let Some((n, _)) =
+                    fields.iter().find(|(n, _)| !fs.iter().any(|(m, _)| m == n))
+                {
+                    bail!("{a} has no field {n}")
+                }
+                let new =
+                    |n: &ArcStr| fields.iter().find(|(m, _)| m == n).map(|(_, t)| t);
+                let fs = fs.iter().map(|(n, t)| (n.clone(), new(n).unwrap_or(t).clone()));
+                self.constrain(&Ty::Struct(fs.collect()), out).map(|()| true)
+            }
             (Ty::Abs(tag, args), Watch::Index { i: 0, out }) => {
                 match self.rep(&tag, &args) {
                     Some(rep) => self.constrain(&rep, out).map(|()| true),
@@ -844,6 +862,7 @@ impl Solver {
             (a, Watch::Field { field, .. }) => bail!("{a} has no field {field}"),
             (a, Watch::Index { i, .. }) => bail!("{a} has no element {i}"),
             (a, Watch::Call { .. }) => bail!("{a} is not a function"),
+            (a, Watch::With { .. }) => bail!("{a} is not a struct"),
             (a, Watch::Method { of, .. }) => {
                 bail!("{a} has no implementation of {}", of.name)
             }
@@ -1018,6 +1037,13 @@ impl Solver {
                         Watch::Index { i, out } => {
                             Watch::Index { i, out: self.copy(&out, above, at, memo) }
                         }
+                        Watch::With { fields, out } => Watch::With {
+                            fields: fields
+                                .iter()
+                                .map(|(n, t)| (n.clone(), self.copy(t, above, at, memo)))
+                                .collect(),
+                            out: self.copy(&out, above, at, memo),
+                        },
                         Watch::Call { args, out } => Watch::Call {
                             args: args
                                 .iter()
@@ -1077,6 +1103,10 @@ impl Solver {
                         }
                         Watch::Field { out, .. } | Watch::Index { out, .. } => {
                             self.reach(out, seen)
+                        }
+                        Watch::With { fields, out } => {
+                            self.reach(out, seen);
+                            fields.iter().for_each(|(_, t)| self.reach(t, seen))
                         }
                         Watch::Call { args, out } => {
                             self.reach(out, seen);
