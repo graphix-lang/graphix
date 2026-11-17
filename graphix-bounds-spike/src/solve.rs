@@ -46,6 +46,9 @@ pub struct VarInfo {
     /// Fixed with nothing flowing in, to what its uses demand: as a lower
     /// bound of another variable it says nothing.
     demanded: bool,
+    /// The lower bounds that reached this variable out of a joining
+    /// variable's bounds: those of one source are one type.
+    joined: Vec<(Var, Ty)>,
     watches: Vec<(Watch, bool)>,
 }
 
@@ -64,6 +67,8 @@ pub struct Solver {
     /// it, so each instance takes a copy.
     held: Vec<(Ty, Ty, bool)>,
     fixing: HashSet<Var>,
+    /// The joining variable whose bounds are being passed on.
+    via: Option<Var>,
     /// How many relations were taken apart, the prototype's cost measure.
     pub steps: u64,
 }
@@ -83,6 +88,7 @@ impl Solver {
             quantified: false,
             fixed: None,
             demanded: false,
+            joined: vec![],
             watches: vec![],
         });
         Var(self.vars.len() as u32 - 1)
@@ -177,9 +183,11 @@ impl Solver {
                             Ty::Var(_) => (),
                             b => self.demanded(*v, b)?,
                         }
+                        let via = self.pass_on(*v);
                         for l in self.info(*v).lower.clone() {
                             self.constrain(&l, &b)?
                         }
+                        self.via = via;
                         Ok(())
                     }
                     (Ty::Var(_), Ty::Var(w)) if self.info(*w).level >= lvl => {
@@ -194,6 +202,36 @@ impl Solver {
                         let a = self.extrude(&a, true, lvl, &mut HashMap::new());
                         self.constrain(&a, &b)
                     }
+                }
+            }
+            (Ty::Union(xs), Ty::Union(ys))
+                if ys.iter().filter(|m| matches!(m, Ty::Var(_))).count() == 1 =>
+            {
+                // what no closed member of `b` takes goes to its open member as one type
+                let closed = |x: &Ty| {
+                    ys.iter().any(|m| !matches!(m, Ty::Var(_)) && m.head() == x.head())
+                };
+                let mut rest = vec![];
+                for x in xs.iter() {
+                    match x {
+                        Ty::Prim(p) => {
+                            let left = ys.iter().fold(*p, |left, m| match m {
+                                Ty::Prim(q) => left & !*q,
+                                _ => left,
+                            });
+                            if !left.is_empty() {
+                                rest.push(Ty::Prim(left))
+                            }
+                        }
+                        x if ys.contains(x) => (),
+                        x if closed(x) => self.constrain(x, &b)?,
+                        x => rest.push(x.clone()),
+                    }
+                }
+                let open = ys.iter().find(|m| matches!(m, Ty::Var(_))).unwrap();
+                match rest.is_empty() {
+                    true => Ok(()),
+                    false => self.constrain(&union(rest), open),
                 }
             }
             (Ty::Union(ms), _) => ms.iter().try_for_each(|m| self.constrain(m, &b)),
@@ -246,6 +284,11 @@ impl Solver {
     /// `a` is a new lower bound of `w`.
     fn arrive(&mut self, w: Var, a: &Ty) -> Result<()> {
         self.info_mut(w).lower.push(a.clone());
+        if let Some(src) = self.via
+            && src != w
+        {
+            self.info_mut(w).joined.push((src, a.clone()))
+        }
         if !matches!(a, Ty::Var(_)) {
             for i in 0..self.info(w).watches.len() {
                 let watch = self.info(w).watches[i].0.clone();
@@ -254,10 +297,30 @@ impl Solver {
                 }
             }
         }
+        let via = self.pass_on(w);
         for u in self.info(w).upper.clone() {
             self.constrain(a, &u)?
         }
+        self.via = via;
         Ok(())
+    }
+
+    /// Mark what follows as `v`'s bounds passed on, where `v` joins; the
+    /// mark to restore after.
+    fn pass_on(&mut self, v: Var) -> Option<Var> {
+        match self.info(v).kind {
+            Kind::Join => self.via.replace(v),
+            Kind::Single => self.via,
+        }
+    }
+
+    fn decided(&self, v: Var, seen: &mut Vec<Var>) -> bool {
+        seen.push(v);
+        self.info(v).fixed.is_some()
+            || self.info(v).lower.iter().any(|l| match l {
+                Ty::Var(u) => !seen.contains(u) && self.decided(*u, seen),
+                _ => true,
+            })
     }
 
     /// `b` is a new upper bound of `v`: a use that needs a shape takes it
@@ -594,17 +657,23 @@ impl Solver {
                 if scheme {
                     continue;
                 }
-                let mut vs = self.open_vars(&a);
-                vs.extend(self.open_vars(&b));
-                if vs.iter().all(|v| self.fixable(*v, min)) {
+                let (avs, bvs) = (self.open_vars(&a), self.open_vars(&b));
+                let mut vs = avs.iter().chain(bvs.iter());
+                if vs.clone().all(|v| self.fixable(*v, min)) {
+                    // a member something has decided is decided here; one
+                    // nothing has stays open, to take what the others do not
                     self.held.swap_remove(i);
-                    vs.iter().try_for_each(|v| self.fix(*v))?;
-                    let (a, b) = (self.deep(&a), self.deep(&b));
-                    if self.constrain(&a, &b).is_err() {
-                        return self.ambiguous(&a, &b);
+                    avs.iter().try_for_each(|v| self.fix(*v))?;
+                    for v in bvs.iter() {
+                        if self.decided(*v, &mut vec![]) {
+                            self.fix(*v)?
+                        }
                     }
-                    progress = true
-                } else if vs.iter().any(|v| self.info(*v).quantified) {
+                    let (a, b) = (self.deep(&a), self.deep(&b));
+                    let n = self.held.len();
+                    self.constrain(&a, &b)?;
+                    progress |= self.held.len() == n
+                } else if vs.any(|v| self.info(*v).quantified) {
                     self.held[i].2 = true
                 }
             }
@@ -637,6 +706,7 @@ impl Solver {
             return Ok(());
         }
         let mut cands: Vec<Ty> = vec![];
+        let mut groups: Vec<(Var, Vec<Ty>)> = vec![];
         for l in self.info(v).lower.clone() {
             match self.shallow(&l) {
                 _ if matches!(&l, Ty::Var(u) if self.info(*u).demanded) => (),
@@ -655,10 +725,16 @@ impl Solver {
                         }
                         self.fix(u)?
                     }
-                    cands.push(self.deep(&t))
+                    let src = self.info(v).joined.iter().find(|(_, j)| j == &l).map(|(s, _)| *s);
+                    match (src, groups.iter_mut().find(|(s, _)| Some(*s) == src)) {
+                        (None, _) => cands.push(self.deep(&t)),
+                        (Some(_), Some((_, g))) => g.push(self.deep(&t)),
+                        (Some(s), None) => groups.push((s, vec![self.deep(&t)])),
+                    }
                 }
             }
         }
+        cands.extend(groups.into_iter().map(|(_, g)| union(g)));
         cands.retain(|t| !matches!(t, Ty::Bot));
         let ty = if !cands.is_empty() {
             match self.info(v).kind {

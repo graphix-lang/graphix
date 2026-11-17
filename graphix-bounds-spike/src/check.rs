@@ -186,8 +186,14 @@ impl Checker {
         Ok(None)
     }
 
-    fn tvar(&mut self, tv: &TVar, module: &str) -> Result<Ty> {
-        if let Some(t) = self.tvs.iter().rev().find_map(|s| s.tvs.get(&tv.name)) {
+    /// The variable a written name stands for; `own` where the innermost
+    /// definition declares it, whatever an enclosing one calls by that name.
+    fn tvar(&mut self, tv: &TVar, module: &str, own: bool) -> Result<Ty> {
+        let found = match own {
+            true => self.tvs.last().unwrap().tvs.get(&tv.name),
+            false => self.tvs.iter().rev().find_map(|s| s.tvs.get(&tv.name)),
+        };
+        if let Some(t) = found {
             return Ok(t.clone());
         }
         let (level, rigid) = {
@@ -273,7 +279,7 @@ impl Checker {
             Type::Ref(r) => self.named(&parts(&r.name), &r.params, module)?,
             Type::Fn(ft) => Ty::Fn(Rc::new(self.conv_fn(ft, module)?)),
             Type::Set(ts) => union(all(self, ts)?.iter().cloned()),
-            Type::TVar(tv) => self.tvar(tv, module)?,
+            Type::TVar(tv) => self.tvar(tv, module, false)?,
             Type::Error(t) => Ty::Error(Rc::new(self.conv(t, module)?)),
             Type::Array(t) => Ty::Array(Rc::new(self.conv(t, module)?)),
             Type::List(t) => Ty::List(Rc::new(self.conv(t, module)?)),
@@ -397,6 +403,8 @@ impl Checker {
                             let w = self.conv(written, "");
                             self.tvs.pop();
                             let w = w?;
+                            self.s.generalize(&t, lvl)?;
+                            let t = self.s.instantiate(&t, lvl, lvl + 1);
                             self.s.constrain(&t, &w)?;
                             w
                         }
@@ -452,7 +460,7 @@ impl Checker {
             unsupported("variadic lambda")?
         }
         for (tv, c) in l.constraints.iter() {
-            match self.tvar(tv, "")? {
+            match self.tvar(tv, "", true)? {
                 Ty::Var(v) | Ty::Rigid(v) => self.bound(v, c, "")?,
                 _ => (),
             }

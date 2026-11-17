@@ -1,0 +1,36 @@
+let f = |a| a + a; let x: f64 = f(f64:1.0); x
+[1, "a"]
+let f = |x: 'a, y: 'a| -> 'a y; f(1, "s")
+let f = |x: 'a, y: 'a| -> 'a y; let n: [i64, null] = null; f(1, n)
+let f = |x: 'a, y: 'a| -> 'a y; let n: [i64, null] = null; f(n, 1)
+let xs = [1]; let f = |x: [Array<i64>, Array<string>]| 0; f(xs)
+{ let xs = [1]; let f = |x: [Array<i64>, Array<string>]| 0; f(xs) }
+let f = |x: [Array<i64>, Array<string>]| 0; f([1])
+let f = |x: [Array<i64>, Array<string>]| 0; f([])
+let h = |x| x; let g = |k| k(1); (g(h), g(|x| x + 1))
+let v = never(); v <- 1; v
+let notice = null; notice <- "s"; notice
+let g = |a, b| a + b; g(1, 2.0)
+let a = [1, 2]; let b = array::map(a, |x| "[x]"); array::push(b, 3)
+let xs = [{qty: 1}, {qty: 2}]; array::map(xs, |x| x.qty)
+let xs = [{qty: 1}]; let g = |x| x.qty; array::map(xs, g)
+let xs = [{qty: 1}]; let g = |x: {qty: i64}| x.qty; array::map(xs, g)
+let xs = [(1, "a")]; array::map(xs, |p| (p.1, p.0))
+let h = |f: fn(x: 'a) -> 'b, v: 'a| -> 'b f(v); h(|x| x.qty, {qty: 1})
+let h = |v: 'a, f: fn(x: 'a) -> 'b| -> 'b f(v); h({qty: 1}, |x| x.qty)
+let xs = [{qty: 1}]; array::fold(xs, 0, |acc, x| acc + x.qty)
+let compose = |f, g| |x| g(f(x)); let h = compose(|x| x + 1, |x| "[x]"); h(1)
+let apply_twice = |f, x| f(f(x)); apply_twice(|x| x + 1, 1)
+let pair = |a, b| (a, b); let swap = |p| (p.1, p.0); swap(pair(1, "a"))
+let n: [i64, null] = 3; n + 1
+let x: [i64, null] = 3; x == 3
+let f = 'a: Number |a: 'a, b: 'a| a + b; f(1, 2)
+|a: Number, b: Number| a + b
+let mk = |z| |x| x; let h = mk(0); (h(1), h("s"))
+let mk = |z| |x| x; let a = mk(0); let b = mk(0); (a(1), b("s"))
+let f = { let n = 1; |x| x }; (f(1), f("s"))
+let s = {f: |x| x}; (s.f(1), s.f("a"))
+let id = |x| x; (id(1), id("a"))
+let rec fact = |n| n * fact(n - 1); fact(5)
+str::len("abc") + 1
+let g = |#greeting = "hello", name| "[greeting], [name]!"; g(#greeting: "hi", "world")
