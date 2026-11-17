@@ -605,6 +605,12 @@ impl Solver {
                     None => bail!("{a} has no field {field}"),
                 }
             }
+            (Ty::Variant(tag, ts), Watch::Index { i: 0, out })
+                if tag.starts_with("#abs:") && ts.len() == 1 =>
+            {
+                self.constrain(&ts[0], out).map(|()| true)
+            }
+            (Ty::Error(t), Watch::Index { i: 0, out }) => self.constrain(&t, out).map(|()| true),
             (Ty::Tuple(ts), Watch::Index { i, out }) => match ts.get(*i) {
                 Some(t) => self.constrain(t, out).map(|()| true),
                 None => bail!("{a} has no element {i}"),

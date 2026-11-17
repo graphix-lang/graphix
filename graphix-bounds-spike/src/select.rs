@@ -25,6 +25,10 @@ pub enum Pat {
     Variant(Option<Var>, ArcStr, Vec<Pat>),
     /// The named fields; `exhaustive` where the pattern names every field.
     Struct(Option<Var>, Vec<(ArcStr, Pat)>, bool),
+    /// An array or list by its elements: the whole, the elements written,
+    /// and the name of the run the pattern leaves open, if it leaves one.
+    Elems { all: Option<Var>, list: bool, elems: Vec<Pat>, open: Option<Option<Var>> },
+    Or(Vec<Pat>),
 }
 
 impl Pat {
@@ -46,6 +50,16 @@ impl Pat {
                 let fs = fs.iter().map(|(n, p)| (n.clone(), p.map_vars(f))).collect();
                 Pat::Struct(v.map(&mut *f), fs, *ex)
             }
+            Pat::Elems { all: v, list, elems, open } => {
+                let elems = all(elems);
+                Pat::Elems {
+                    all: v.map(&mut *f),
+                    list: *list,
+                    elems,
+                    open: open.map(|o| o.map(&mut *f)),
+                }
+            }
+            Pat::Or(ps) => Pat::Or(all(ps)),
         }
     }
 
@@ -64,6 +78,9 @@ impl Pat {
                 fs.iter().map(|(n, p)| (n.clone(), p.admits().unwrap_or(Ty::Any))).collect(),
             )),
             Pat::Struct(_, _, false) => None,
+            Pat::Elems { list: false, .. } => Some(Ty::Array(Rc::new(Ty::Any))),
+            Pat::Elems { list: true, .. } => Some(Ty::List(Rc::new(Ty::Any))),
+            Pat::Or(ps) => ps.iter().map(|p| p.admits()).collect::<Option<Vec<Ty>>>().map(union),
         }
     }
 }
@@ -339,6 +356,34 @@ impl Solver {
                     false => t.clone(),
                 };
                 Routed { part: self.both(&t, lit), rest, binds: vec![] }
+            }
+            (Pat::Or(ps), _) => {
+                let (mut reach, mut parts, mut binds) = (t.clone(), vec![], vec![]);
+                for p in ps {
+                    let r = self.route(p, &reach, open);
+                    parts.push(r.part);
+                    binds.extend(r.binds);
+                    reach = r.rest
+                }
+                Routed { part: union(parts), rest: reach, binds }
+            }
+            (Pat::Elems { all, list, elems, open: run }, Ty::Array(e) | Ty::List(e))
+                if *list == matches!(t, Ty::List(_)) =>
+            {
+                // a pattern that fixes a length leaves the other lengths
+                let rs: Vec<Routed> = elems.iter().map(|p| self.route(p, e, open)).collect();
+                if rs.iter().any(|r| matches!(r.part, Ty::Bot)) && !elems.is_empty() {
+                    return nothing();
+                }
+                let mut binds: Vec<(Var, Ty)> = rs.into_iter().flat_map(|r| r.binds).collect();
+                if let Some(Some(v)) = run {
+                    binds.push((*v, t.clone()))
+                }
+                let rest = match (elems.is_empty(), run) {
+                    (true, Some(_)) => Ty::Bot,
+                    _ => t.clone(),
+                };
+                Routed { binds: named(all, &t, binds), part: t.clone(), rest }
             }
             (Pat::Tuple(all, ps), Ty::Tuple(xs)) if ps.len() == xs.len() => {
                 product(all, &ps.iter().collect::<Vec<_>>(), xs, &|ts| Ty::Tuple(ts.into()))

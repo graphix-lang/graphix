@@ -7,7 +7,7 @@ use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use graphix_types::{
     expr::{
-        ApplyExpr, ArgKind, BinOp, BindExpr, Expr, ExprKind, LambdaBody, LambdaExpr,
+        ApplyExpr, ArgKind, BinOp, BindExpr, Expr, ExprKind, LambdaBody, LambdaExpr, ModuleKind,
         ModPath, Origin, Pattern, SelectExpr, SigKind, StructurePattern, TypeDefBody,
         TypeDefExpr, parser,
     },
@@ -43,8 +43,12 @@ enum Binding {
 struct TypeDef {
     module: String,
     params: Vec<ArcStr>,
-    body: Type,
+    /// What the name stands for; none for `type T;`.
+    body: Option<Type>,
     recursive: Option<u32>,
+    /// The tag of an abstract type: its values are a variant of that tag
+    /// around the representation, which no other definition makes.
+    nominal: Option<ArcStr>,
 }
 
 /// Where a written type's variables come from.
@@ -65,6 +69,16 @@ pub struct Checker {
     schemes: HashMap<String, Ty>,
     typedefs: HashMap<String, TypeDef>,
     expanding: Vec<String>,
+    /// Where the program's own `mod name;` files are.
+    dir: Option<PathBuf>,
+    /// The module being checked, outermost first.
+    here: Vec<String>,
+    /// What the program's own modules bind, by full name.
+    mods: HashMap<String, Binding>,
+    /// A name a `use` brought in, and what it stands for.
+    aliases: HashMap<String, String>,
+    /// What each interface file `use`s.
+    mod_uses: HashMap<String, Vec<String>>,
 }
 
 fn parts(p: &ModPath) -> Vec<String> {
@@ -105,7 +119,7 @@ fn value_of(e: &Expr) -> &Expr {
 }
 
 impl Checker {
-    pub fn new(stdlib: PathBuf) -> Self {
+    pub fn new(stdlib: PathBuf, dir: Option<PathBuf>) -> Self {
         Checker {
             s: Solver::default(),
             stdlib,
@@ -117,6 +131,11 @@ impl Checker {
             schemes: HashMap::new(),
             typedefs: HashMap::new(),
             expanding: vec![],
+            dir,
+            here: vec![],
+            mods: HashMap::new(),
+            aliases: HashMap::new(),
+            mod_uses: HashMap::new(),
         }
     }
 
@@ -161,6 +180,10 @@ impl Checker {
                     self.vals.insert(name, (b.typ.clone(), module.to_string()));
                 }
                 SigKind::TypeDef(td) => self.typedef(module, td),
+                SigKind::Use { names, .. } => {
+                    let uses = names.iter().map(|i| parts(&i.path).join("::"));
+                    self.mod_uses.entry(module.to_string()).or_default().extend(uses)
+                }
                 _ => (),
             }
         }
@@ -168,30 +191,48 @@ impl Checker {
     }
 
     fn typedef(&mut self, module: &str, td: &TypeDefExpr) {
-        if let TypeDefBody::Alias(body) = &td.body {
-            let name = match module {
-                "" => td.name.name.to_string(),
-                m => format!("{m}::{}", td.name.name),
-            };
-            let params = td.params.iter().map(|(tv, _)| tv.name.clone()).collect();
-            let def = TypeDef {
-                module: module.to_string(),
-                params,
-                body: body.clone(),
-                recursive: None,
-            };
-            self.typedefs.insert(name, def);
-        }
+        let name = match module {
+            "" => td.name.name.to_string(),
+            m => format!("{m}::{}", td.name.name),
+        };
+        let (body, nominal) = match &td.body {
+            TypeDefBody::Alias(body) => (Some(body.clone()), None),
+            TypeDefBody::Abstract(rep) => (rep.clone(), Some(format!("#abs:{name}").into())),
+        };
+        let params = td.params.iter().map(|(tv, _)| tv.name.clone()).collect();
+        let def = TypeDef { module: module.to_string(), params, body, recursive: None, nominal };
+        self.typedefs.insert(name, def);
     }
 
     /// The full names `path` may stand for, read in `module`, nearest first.
     fn candidates(&self, module: &str, path: &[String]) -> Vec<String> {
-        let name = path.join("::");
-        let mut out = vec![name.clone()];
-        if !module.is_empty() {
-            out.push(format!("{module}::{name}"))
+        let here = self.here.join("::");
+        let module = if module.is_empty() { here.as_str() } else { module };
+        let mut names = vec![];
+        if let Some(full) = self.aliases.get(&path[0]) {
+            names.push(std::iter::once(full.clone()).chain(path[1..].iter().cloned()).collect::<Vec<_>>().join("::"))
         }
-        out.extend(self.uses.iter().rev().map(|u| format!("{u}::{name}")));
+        names.push(path.join("::"));
+        let empty = vec![];
+        let theirs = self.mod_uses.get(module).unwrap_or(&empty);
+        let mut out = vec![];
+        for name in names {
+            // the module itself, then each module around it
+            let mut around = module;
+            while !around.is_empty() {
+                out.push(format!("{around}::{name}"));
+                around = around.rsplit_once("::").map(|(m, _)| m).unwrap_or("")
+            }
+            out.push(name.clone());
+            for u in theirs.iter().rev() {
+                out.push(format!("{u}::{name}"));
+                if u.rsplit("::").next() == Some(path[0].as_str()) {
+                    let rest: Vec<&str> = std::iter::once(u.as_str()).chain(path[1..].iter().map(|s| s.as_str())).collect();
+                    out.push(rest.join("::"))
+                }
+            }
+            out.extend(self.uses.iter().rev().map(|u| format!("{u}::{name}")));
+        }
         out
     }
 
@@ -255,11 +296,23 @@ impl Checker {
         for p in params {
             args.push(self.conv(p, module)?)
         }
+        self.named_at(path, Some(args), module, 0)
+    }
+
+    /// The type a name stands for at `args`; with none given, at a fresh
+    /// variable per parameter.
+    fn named_at(&mut self, path: &[String], args: Option<Vec<Ty>>, module: &str, lvl: u32) -> Result<Ty> {
         for full in self.candidates(module, path) {
             if let Some((m, _)) = full.rsplit_once("::") {
                 self.load(m);
             }
             let Some(def) = self.typedefs.get(&full) else { continue };
+            let n = def.params.len();
+            let args = match &args {
+                Some(args) => args.clone(),
+                None => (0..n).map(|_| self.s.fresh_ty(lvl, Kind::Single)).collect(),
+            };
+            let def = &self.typedefs[&full];
             if def.params.len() != args.len() {
                 bail!("{full} takes {} type arguments", def.params.len())
             }
@@ -273,14 +326,19 @@ impl Checker {
                 return Ok(Ty::Named(id, args.into()));
             }
             let (names, body, home) = (def.params.clone(), def.body.clone(), def.module.clone());
+            let nominal = def.nominal.clone();
             let expand = |c: &mut Self, args: Vec<Ty>| -> Result<Ty> {
                 let tvs = names.iter().cloned().zip(args).collect();
                 c.tvs.push(Scope { tvs, level: 0, rigid: false });
                 c.expanding.push(full.clone());
-                let t = c.conv(&body, &home);
+                let t = body.as_ref().map(|b| c.conv(b, &home)).transpose();
                 c.expanding.pop();
                 c.tvs.pop();
-                t
+                Ok(match (&nominal, t?) {
+                    (Some(tag), t) => Ty::Variant(tag.clone(), t.into_iter().collect()),
+                    (None, Some(t)) => t,
+                    (None, None) => Ty::Bot,
+                })
             };
             let t = expand(self, args)?;
             if let Some(id) = self.typedefs[&full].recursive
@@ -363,6 +421,8 @@ impl Checker {
             [n] => self.scopes.iter().rev().find_map(|s| s.get(n.as_str())).cloned(),
             _ => None,
         };
+        let local = local
+            .or_else(|| self.candidates("", &path).iter().find_map(|c| self.mods.get(c).cloned()));
         match local {
             Some(Binding::Mono(t)) => Ok(t),
             Some(Binding::Poly(l, t)) => Ok(self.s.instantiate(&t, l, lvl)),
@@ -384,6 +444,11 @@ impl Checker {
 
     fn number(&mut self) -> Result<Ty> {
         self.named(&["Number".to_string()], &[], "")
+    }
+
+    /// The error an operation that can fail returns.
+    fn failure(&self, tag: &str) -> Ty {
+        Ty::Error(Rc::new(Ty::Variant(tag.into(), [Ty::prim(Typ::String)].into())))
     }
 
     fn infer_all(&mut self, es: &[Expr], lvl: u32) -> Result<Vec<Ty>> {
@@ -599,11 +664,15 @@ impl Checker {
     }
 
     fn structure(&mut self, p: &StructurePattern, lvl: u32) -> Result<Pat> {
+        // a name the arm already binds (in another alternative) is that name
         let named = |c: &mut Self, name: &Option<graphix_types::expr::Name>| {
-            name.as_ref().map(|n| {
-                let v = c.s.fresh(lvl, Kind::Join);
-                c.bind(&n.name, Binding::Mono(Ty::Var(v)));
-                v
+            name.as_ref().map(|n| match c.scopes.last().unwrap().get(&n.name) {
+                Some(Binding::Mono(Ty::Var(v))) => *v,
+                _ => {
+                    let v = c.s.fresh(lvl, Kind::Join);
+                    c.bind(&n.name, Binding::Mono(Ty::Var(v)));
+                    v
+                }
             })
         };
         let subs = |c: &mut Self, ps: &[StructurePattern]| -> Result<Vec<Pat>> {
@@ -632,7 +701,32 @@ impl Checker {
                 }
                 Pat::Struct(all, fs, *exhaustive)
             }
-            _ => unsupported("slice, abstract or or-pattern")?,
+            StructurePattern::Slice { list, all, binds } => Pat::Elems {
+                all: named(self, all),
+                list: *list,
+                elems: subs(self, binds)?,
+                open: None,
+            },
+            StructurePattern::SlicePrefix { list, all, prefix, tail } => Pat::Elems {
+                all: named(self, all),
+                list: *list,
+                elems: subs(self, prefix)?,
+                open: Some(named(self, tail)),
+            },
+            StructurePattern::SliceSuffix { all, head, suffix } => Pat::Elems {
+                all: named(self, all),
+                list: false,
+                elems: subs(self, suffix)?,
+                open: Some(named(self, head)),
+            },
+            StructurePattern::Or(ps) => Pat::Or(subs(self, ps)?),
+            StructurePattern::Abstract { all, name, bind, .. } => {
+                let all = named(self, all);
+                match self.named_at(&parts(name), None, "", lvl)? {
+                    Ty::Variant(tag, _) => Pat::Variant(all, tag, vec![self.structure(bind, lvl)?]),
+                    _ => bail!("{} is not an abstract type", parts(name).join("::")),
+                }
+            }
         })
     }
 
@@ -725,17 +819,114 @@ impl Checker {
             }
             ExprKind::Use { names, .. } => {
                 for item in names.iter() {
-                    self.uses.push(parts(&item.path).join("::"))
+                    let path = parts(&item.path);
+                    let full = match self.aliases.get(&path[0]) {
+                        Some(a) => std::iter::once(a.clone()).chain(path[1..].iter().cloned()).collect::<Vec<_>>().join("::"),
+                        None => path.join("::"),
+                    };
+                    let name = match &item.rename {
+                        Some(n) => n.name.to_string(),
+                        None => path[path.len() - 1].clone(),
+                    };
+                    self.uses.push(full.clone());
+                    self.aliases.insert(name, full);
                 }
                 Ty::Bot
             }
-            ExprKind::TypeDef(td) => match &td.body {
-                TypeDefBody::Alias(_) => {
-                    self.typedef("", td);
-                    Ty::Bot
+            ExprKind::Module { name, value } => {
+                let exprs = match &**value {
+                    ModuleKind::Resolved { exprs, .. } => exprs.clone(),
+                    ModuleKind::Dynamic { .. } => unsupported("dynamic module")?,
+                    ModuleKind::Unresolved { .. } => {
+                        let mut dir = self.dir.clone().ok_or_else(|| Unsupported("module file".into()))?;
+                        self.here.iter().for_each(|m| dir.push(m));
+                        let flat = dir.join(format!("{}.gx", name.name));
+                        let file = if flat.exists() { flat } else { dir.join(format!("{}/mod.gx", name.name)) };
+                        let text = fs::read_to_string(&file).map_err(|_| Unsupported(format!("module file {}", name.name)))?;
+                        parser::parse(Origin::unspecified(&text))?
+                    }
+                };
+                self.scopes.push(HashMap::new());
+                self.here.push(name.name.to_string());
+                let r = self.infer_all(&exprs, lvl);
+                let prefix = self.here.join("::");
+                self.here.pop();
+                let scope = self.scopes.pop().unwrap();
+                r?;
+                for (n, b) in scope {
+                    self.mods.insert(format!("{prefix}::{n}"), b);
                 }
-                TypeDefBody::Abstract(_) => unsupported("abstract type")?,
-            },
+                Ty::Bot
+            }
+            ExprKind::TypeDef(td) => {
+                self.typedef(&self.here.join("::"), td);
+                Ty::Bot
+            }
+            ExprKind::Construct { name, arg } => {
+                let (t, arg) = (self.named_at(&parts(name), None, "", lvl)?, self.infer(arg, lvl)?);
+                match &t {
+                    Ty::Variant(_, rep) if rep.len() == 1 => self.s.constrain(&arg, &rep[0])?,
+                    _ => bail!("{} has no constructor", parts(name).join("::")),
+                }
+                t
+            }
+            ExprKind::ArrayRef { source, i } => {
+                let (t, _) = (self.infer(source, lvl)?, self.infer(i, lvl)?);
+                let elem = self.s.fresh_ty(lvl, Kind::Join);
+                self.s.constrain(&t, &Ty::Array(Rc::new(elem.clone())))?;
+                union([elem, self.failure("ArrayIndexError")])
+            }
+            ExprKind::ArraySlice { source, start, end } => {
+                let t = self.infer(source, lvl)?;
+                for e in start.iter().chain(end.iter()) {
+                    self.infer(e, lvl)?;
+                }
+                let elem = self.s.fresh_ty(lvl, Kind::Join);
+                let array = Ty::Array(Rc::new(elem));
+                self.s.constrain(&t, &array)?;
+                union([array, self.failure("ArrayIndexError")])
+            }
+            ExprKind::Map { args } => {
+                let (k, v) = (self.s.fresh_ty(lvl, Kind::Join), self.s.fresh_ty(lvl, Kind::Join));
+                for (ke, ve) in args.iter() {
+                    let (kt, vt) = (self.infer(ke, lvl)?, self.infer(ve, lvl)?);
+                    self.s.constrain(&kt, &k)?;
+                    self.s.constrain(&vt, &v)?
+                }
+                Ty::Map(Rc::new(k), Rc::new(v))
+            }
+            ExprKind::MapRef { source, key } => {
+                let (t, kt) = (self.infer(source, lvl)?, self.infer(key, lvl)?);
+                let v = self.s.fresh_ty(lvl, Kind::Join);
+                self.s.constrain(&t, &Ty::Map(Rc::new(kt), Rc::new(v.clone())))?;
+                union([v, self.failure("MapKeyError")])
+            }
+            ExprKind::StructWith(w) => {
+                let t = self.infer(&w.source, lvl)?;
+                for (_, e) in w.replace.iter() {
+                    self.infer(e, lvl)?;
+                }
+                t
+            }
+            ExprKind::TypeCast { expr, typ } => {
+                self.infer(expr, lvl)?;
+                union([self.conv(typ, "")?, self.failure("InvalidCast")])
+            }
+            ExprKind::ByRef(m, e) => {
+                Ty::Ref(matches!(m, Mutability::Mut), Rc::new(self.infer(e, lvl)?))
+            }
+            ExprKind::Deref(e) => {
+                let (t, out) = (self.infer(e, lvl)?, self.s.fresh_ty(lvl, Kind::Single));
+                self.s.constrain(&t, &Ty::Ref(false, Rc::new(out.clone())))?;
+                out
+            }
+            ExprKind::Connect { name, value, deref: true, .. } => {
+                let (target, v) = (self.lookup(name, lvl)?, self.infer(value, lvl)?);
+                let held = self.s.fresh_ty(lvl, Kind::Single);
+                self.s.constrain(&target, &Ty::Ref(true, Rc::new(held.clone())))?;
+                self.s.constrain(&v, &held)?;
+                Ty::Bot
+            }
             ExprKind::Bind(b) => self.let_bind(b, lvl)?,
             ExprKind::Ref { name } => self.lookup(name, lvl)?,
             // a lambda that declares variables is checked as a definition,
@@ -804,17 +995,9 @@ impl Checker {
             ExprKind::Select(sel) => self.select(sel, lvl)?,
             ExprKind::Qop { arg, .. } => self.stripped(arg, lvl)?,
             ExprKind::OrNever(arg) => self.stripped(arg, lvl)?,
-            ExprKind::TypeCast { .. } => unsupported("cast")?,
-            ExprKind::Module { .. } => unsupported("module")?,
             ExprKind::Trait(_) | ExprKind::Impl(_) => unsupported("trait")?,
             ExprKind::Seq(_) | ExprKind::SeqMachine(_) => unsupported("seq")?,
             ExprKind::Catch(_) | ExprKind::TryWith(_) => unsupported("catch")?,
-            ExprKind::ByRef(..) | ExprKind::Deref(_) => unsupported("reference")?,
-            ExprKind::Connect { .. } => unsupported("write through a reference")?,
-            ExprKind::ArrayRef { .. } | ExprKind::ArraySlice { .. } => unsupported("index")?,
-            ExprKind::MapRef { .. } | ExprKind::Map { .. } => unsupported("map")?,
-            ExprKind::StructWith(_) => unsupported("struct update")?,
-            ExprKind::Construct { .. } => unsupported("abstract constructor")?,
             _ => unsupported("expression kind")?,
         })
     }

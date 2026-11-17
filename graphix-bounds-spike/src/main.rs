@@ -17,8 +17,8 @@ fn main() {
     let stdlib = env::var("GRAPHIX_STDLIB")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../stdlib"));
-    let judge = |text: &str| {
-        let mut c = Checker::new(stdlib.clone());
+    let judge = |text: &str, dir: Option<PathBuf>| {
+        let mut c = Checker::new(stdlib.clone(), dir);
         let verdict = match c.program(text) {
             Ok(t) => format!("ok\t{t}"),
             Err(e) => match e.downcast_ref::<Unsupported>() {
@@ -35,11 +35,11 @@ fn main() {
     };
     let files: Vec<String> = env::args().skip(1).collect();
     if files.is_empty() {
-        io::stdin().lock().lines().map_while(Result::ok).for_each(|l| judge(&l))
+        io::stdin().lock().lines().map_while(Result::ok).for_each(|l| judge(&l, None))
     } else {
         for f in files {
             match fs::read_to_string(&f) {
-                Ok(text) => judge(&text),
+                Ok(text) => judge(&text, PathBuf::from(&f).parent().map(PathBuf::from)),
                 Err(e) => println!("skip\tunreadable: {e}\t0"),
             }
         }
