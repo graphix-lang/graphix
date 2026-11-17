@@ -72,9 +72,28 @@ impl Pat {
 pub struct Arm {
     pub pat: Pat,
     pub guarded: bool,
-    /// The boolean a literal arm tests, so `true` and `false` together
-    /// leave no bool.
-    pub boolean: Option<bool>,
+}
+
+/// Inside a select `bool` is the union of two tags, so that `true` and
+/// `false` arms each take their half.
+pub const TRUE: &str = "#true";
+pub const FALSE: &str = "#false";
+
+pub fn split(t: &Ty) -> Ty {
+    t.map(&mut |t| match t {
+        Ty::Prim(p) if p.contains(Typ::Bool) => {
+            let halves = [TRUE, FALSE].map(|tag| Ty::Variant(tag.into(), [].into()));
+            Some(union([Ty::Prim(*p & !Typ::Bool)].into_iter().chain(halves)))
+        }
+        _ => None,
+    })
+}
+
+pub fn unsplit(t: &Ty) -> Ty {
+    t.map(&mut |t| match t {
+        Ty::Variant(tag, _) if tag == TRUE || tag == FALSE => Some(Ty::prim(Typ::Bool)),
+        _ => None,
+    })
 }
 
 pub struct Select {
@@ -112,15 +131,44 @@ impl Solver {
         self.selects[id].arms.clone()
     }
 
+    /// The variables a select's patterns bind.
+    pub(crate) fn select_vars(&self, id: usize) -> Vec<Var> {
+        let mut vs = vec![];
+        for a in self.selects[id].arms.iter() {
+            a.pat.map_vars(&mut |v| {
+                vs.push(v);
+                v
+            });
+        }
+        vs
+    }
+
     fn has(t: &Ty, bit: Typ) -> bool {
         matches!(t, Ty::Prim(p) if p.contains(bit))
     }
 
+    /// `t` with a typedef at its top unfolded; a product with a component
+    /// nothing inhabits is nothing.
     fn expand(&self, t: &Ty) -> Ty {
+        let empty = |t: &Ty| matches!(t, Ty::Bot);
         match self.shallow(t) {
             Ty::Named(id, args) => self.expand(&self.unfold(id, &args)),
+            Ty::Tuple(ts) | Ty::Variant(_, ts) if ts.iter().any(empty) => Ty::Bot,
+            Ty::Struct(fs) if fs.iter().any(|(_, t)| empty(t)) => Ty::Bot,
             t => t,
         }
+    }
+
+    /// What the uses of `v` demand of it, as far as that is decided.
+    fn demand(&self, v: Var) -> Ty {
+        let mut demand = Ty::Any;
+        for u in self.vars[v.0 as usize].upper.iter() {
+            let u = self.deep(u);
+            if !matches!(u, Ty::Var(_)) && self.is_ground(&u) {
+                demand = self.both(&demand, &u)
+            }
+        }
+        demand
     }
 
     /// The values in both `a` and `b`.
@@ -223,12 +271,15 @@ impl Solver {
         }
     }
 
-    fn route(&self, pat: &Pat, t: &Ty) -> Routed {
+    /// `open` where the scrutinee was not decided when the select was
+    /// checked: there a name's type is what its uses demand, and that is
+    /// part of the arm's test.
+    fn route(&self, pat: &Pat, t: &Ty, open: bool) -> Routed {
         let t = self.expand(t);
         if let Ty::Union(ms) = &t {
             let (mut parts, mut rests, mut binds) = (vec![], vec![], vec![]);
             for m in ms.iter() {
-                let r = self.route(pat, m);
+                let r = self.route(pat, m, open);
                 parts.push(r.part);
                 rests.push(r.rest);
                 binds.extend(r.binds)
@@ -245,7 +296,8 @@ impl Solver {
         // each sub-pattern over its component; the part is a product, the
         // rest the products that fail in a first component
         let product = |all: &Option<Var>, ps: &[&Pat], xs: &[Ty], wrap: &dyn Fn(Vec<Ty>) -> Ty| {
-            let rs: Vec<Routed> = ps.iter().zip(xs).map(|(p, x)| self.route(p, x)).collect();
+            let rs: Vec<Routed> =
+                ps.iter().zip(xs).map(|(p, x)| self.route(p, x, open)).collect();
             let mut rests = vec![];
             for (i, r) in rs.iter().enumerate() {
                 if !matches!(r.rest, Ty::Bot) {
@@ -268,12 +320,18 @@ impl Solver {
         };
         match (pat, &t) {
             (_, Ty::Bot) => nothing(),
+            (Pat::Any(Some(v)), _) if open => {
+                let demand = split(&self.demand(*v));
+                let part = self.both(&t, &demand);
+                Routed { rest: self.less(&t, &demand), binds: named(&Some(*v), &part, vec![]), part }
+            }
             (Pat::Any(v), _) => {
                 Routed { part: t.clone(), rest: Ty::Bot, binds: named(v, &t, vec![]) }
             }
             (Pat::Test(test, p), _) => {
-                let r = self.route(p, &self.both(&t, test));
-                Routed { rest: union([self.less(&t, test), r.rest]), ..r }
+                let test = split(test);
+                let r = self.route(p, &self.both(&t, &test), open);
+                Routed { rest: union([self.less(&t, &test), r.rest]), ..r }
             }
             (Pat::Lit(lit, whole), _) => {
                 let rest = match whole {
@@ -328,30 +386,33 @@ impl Solver {
             self.selects[id].waiting.push(t.clone());
             return Ok(());
         }
-        let mut reach = self.deep(t);
-        let (mut seen, mut binds, mut hits) = ([false, false], vec![], vec![]);
+        let mut reach = split(&self.deep(t));
+        let (mut binds, mut hits) = (vec![], vec![]);
+        let open = self.selects[id].instance;
         for (i, arm) in self.selects[id].arms.iter().enumerate() {
-            let r = self.route(&arm.pat, &reach);
+            let r = self.route(&arm.pat, &reach, open);
             if !matches!(r.part, Ty::Bot) {
                 hits.push(i);
-                binds.extend(r.binds);
-                if let (Some(b), false) = (arm.boolean, arm.guarded) {
-                    seen[b as usize] = true
-                }
+                binds.extend(r.binds)
             }
             if !arm.guarded {
-                reach = r.rest;
-                if seen == [true, true] {
-                    reach = self.less(&reach, &Ty::prim(Typ::Bool))
-                }
+                reach = r.rest
             }
         }
         if !matches!(reach, Ty::Bot) {
-            bail!("missing match cases: nothing matches {reach}")
+            bail!("missing match cases: nothing matches {}", unsplit(&reach))
         }
         self.selects[id].routed = true;
         hits.into_iter().for_each(|i| self.selects[id].hit[i] = true);
-        binds.iter().try_for_each(|(v, t)| self.constrain(t, &Ty::Var(*v)))
+        for (v, t) in binds {
+            match unsplit(&t) {
+                // what a name holds of an `Any` part is whatever its uses
+                // demand, and the arm's test is built from that
+                Ty::Any => self.over_any(v),
+                t => self.constrain(&t, &Ty::Var(v))?,
+            }
+        }
+        Ok(())
     }
 
     /// Route what waited for a variable; true if anything was.

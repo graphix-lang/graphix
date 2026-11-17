@@ -1,5 +1,5 @@
 use crate::{
-    select::{Arm, Pat},
+    select::{Arm, FALSE, Pat, TRUE, unsplit},
     solve::{Def, Kind, Solver, Watch},
     ty::{FnArg, FnTy, Ty, Var, union},
 };
@@ -69,6 +69,31 @@ pub struct Checker {
 
 fn parts(p: &ModPath) -> Vec<String> {
     Path::parts(&p.0).map(String::from).collect()
+}
+
+fn holds_tvar(t: &Type) -> bool {
+    match t {
+        Type::TVar(_) => true,
+        Type::Ref(r) => r.params.iter().any(holds_tvar),
+        Type::Fn(ft) => {
+            ft.args.iter().any(|a| holds_tvar(&a.typ))
+                || ft.vargs.iter().any(holds_tvar)
+                || holds_tvar(&ft.rtype)
+                || holds_tvar(&ft.throws)
+        }
+        Type::Set(ts) | Type::Tuple(ts) | Type::Variant(_, ts, _) => ts.iter().any(holds_tvar),
+        Type::Error(t) | Type::Array(t) | Type::List(t) | Type::ByRef(_, t) => holds_tvar(t),
+        Type::Struct(fs) => fs.iter().any(|(_, t, _)| holds_tvar(t)),
+        Type::Map(m) => holds_tvar(&m.key) || holds_tvar(&m.value),
+        _ => false,
+    }
+}
+
+/// Whether a lambda's own annotations name a type variable.
+fn declares(l: &LambdaExpr) -> bool {
+    !l.constraints.is_empty()
+        || l.args.iter().any(|a| a.constraint.iter().any(holds_tvar))
+        || l.rtype.iter().any(holds_tvar)
 }
 
 fn value_of(e: &Expr) -> &Expr {
@@ -569,7 +594,7 @@ impl Checker {
         })
     }
 
-    fn structure(&mut self, p: &StructurePattern, lvl: u32) -> Result<(Pat, Option<bool>)> {
+    fn structure(&mut self, p: &StructurePattern, lvl: u32) -> Result<Pat> {
         let named = |c: &mut Self, name: &Option<graphix_types::expr::Name>| {
             name.as_ref().map(|n| {
                 let v = c.s.fresh(lvl, Kind::Join);
@@ -578,38 +603,37 @@ impl Checker {
             })
         };
         let subs = |c: &mut Self, ps: &[StructurePattern]| -> Result<Vec<Pat>> {
-            ps.iter().map(|p| c.structure(p, lvl).map(|(p, _)| p)).collect()
+            ps.iter().map(|p| c.structure(p, lvl)).collect()
         };
         Ok(match p {
-            StructurePattern::Ignore => (Pat::Any(None), None),
-            StructurePattern::Bind(n) => (Pat::Any(named(self, &Some(n.clone()))), None),
+            StructurePattern::Ignore => Pat::Any(None),
+            StructurePattern::Bind(n) => Pat::Any(named(self, &Some(n.clone()))),
+            StructurePattern::Literal(Value::Bool(b), _) => {
+                Pat::Variant(None, if *b { TRUE } else { FALSE }.into(), vec![])
+            }
             StructurePattern::Literal(v, _) => {
-                let boolean = match v {
-                    Value::Bool(b) => Some(*b),
-                    _ => None,
-                };
-                (Pat::Lit(Ty::prim(Typ::get(v)), matches!(v, Value::Null)), boolean)
+                Pat::Lit(Ty::prim(Typ::get(v)), matches!(v, Value::Null))
             }
             StructurePattern::Tuple { all, binds } => {
-                (Pat::Tuple(named(self, all), subs(self, binds)?), None)
+                Pat::Tuple(named(self, all), subs(self, binds)?)
             }
             StructurePattern::Variant { all, tag, binds } => {
-                (Pat::Variant(named(self, all), tag.clone(), subs(self, binds)?), None)
+                Pat::Variant(named(self, all), tag.clone(), subs(self, binds)?)
             }
             StructurePattern::Struct { exhaustive, all, binds } => {
                 let all = named(self, all);
                 let mut fs = vec![];
                 for (n, p, _) in binds.iter() {
-                    fs.push((n.clone(), self.structure(p, lvl)?.0))
+                    fs.push((n.clone(), self.structure(p, lvl)?))
                 }
-                (Pat::Struct(all, fs, *exhaustive), None)
+                Pat::Struct(all, fs, *exhaustive)
             }
             _ => unsupported("slice, abstract or or-pattern")?,
         })
     }
 
     fn pattern(&mut self, p: &Pattern, lvl: u32) -> Result<Arm> {
-        let (inner, boolean) = self.structure(&p.structure_predicate, lvl)?;
+        let inner = self.structure(&p.structure_predicate, lvl)?;
         let pat = match &p.type_predicate {
             None => inner,
             Some(t) => {
@@ -623,7 +647,7 @@ impl Checker {
                 Pat::Test(t, Box::new(inner))
             }
         };
-        Ok(Arm { pat, guarded: p.guard.is_some(), boolean })
+        Ok(Arm { pat, guarded: p.guard.is_some() })
     }
 
     fn select(&mut self, sel: &SelectExpr, lvl: u32) -> Result<Ty> {
@@ -652,7 +676,7 @@ impl Checker {
         if let (Ty::Var(_), Some(ts)) = (self.s.shallow(&scrutinee), admitted)
             && arms.iter().all(|a| !a.guarded)
         {
-            self.s.constrain(&scrutinee, &union(ts))?
+            self.s.constrain(&scrutinee, &unsplit(&union(ts)))?
         }
         let id = self.s.select(arms);
         self.s.watch(&scrutinee, Watch::Select(id))?;
@@ -703,6 +727,13 @@ impl Checker {
             },
             ExprKind::Bind(b) => self.let_bind(b, lvl)?,
             ExprKind::Ref { name } => self.lookup(name, lvl)?,
+            // a lambda that declares variables is checked as a definition,
+            // where they are rigid, and stands as its one instance
+            ExprKind::Lambda(l) if declares(l) => {
+                let t = self.lambda(l, lvl + 1, true)?;
+                self.s.generalize(&t, lvl)?;
+                self.s.instantiate(&t, lvl, lvl)
+            }
             ExprKind::Lambda(l) => self.lambda(l, lvl, false)?,
             ExprKind::Apply(a) => self.apply(a, lvl)?,
             ExprKind::Connect { name, value, deref: false, .. } => {
