@@ -522,7 +522,13 @@ impl Solving {
     }
 
     fn relate_in(&mut self, env: &Env, a: &Type, b: &Type, edge: bool) -> Result<()> {
-        let (a, b) = (flat(env, shallow(a))?, flat(env, shallow(b))?);
+        // an application whose constructor is decided is the type it makes
+        let applied = |t: Type| match &t {
+            Type::App(c, x) => Type::app_filled(c, x).unwrap_or(t),
+            _ => t,
+        };
+        let (a, b) = (applied(shallow(a)), applied(shallow(b)));
+        let (a, b) = (flat(env, a)?, flat(env, b)?);
         if std::env::var_os("GRAPHIX_BOUNDS_DEBUG").is_some() {
             eprintln!("relate {a} <= {b}")
         }
@@ -613,13 +619,28 @@ impl Solving {
             (Type::ByRef(Mutability::Mut, x), Type::ByRef(Mutability::Mut, y)) => {
                 self.equal(env, x, y)
             }
-            // one constructor variable applied twice: whatever it stands
-            // for, it holds its argument as a collection holds an element
-            (Type::App(c, x), Type::App(d, y))
-                if matches!((&shallow(c), &shallow(d)), (Type::TVar(v), Type::TVar(w)) if v.same_cell(w)) =>
-            {
+            // two applications: of one constructor, which holds its
+            // argument as a collection holds an element
+            (Type::App(c, x), Type::App(d, y)) => {
+                self.equal(env, c, d)?;
                 self.constrain(env, x, y)
             }
+            // an application of a constructor not decided yet, against a
+            // type that is one: its constructor and its argument
+            (_, Type::App(c, y)) => match Type::app_split(&a, env)? {
+                Some((ctor, arg)) => {
+                    self.constrain(env, &ctor, c)?;
+                    self.constrain(env, &arg, y)
+                }
+                None => mismatch(&b, &a),
+            },
+            (Type::App(c, x), _) => match Type::app_split(&b, env)? {
+                Some((ctor, arg)) => {
+                    self.constrain(env, c, &ctor)?;
+                    self.constrain(env, x, &arg)
+                }
+                None => mismatch(&b, &a),
+            },
             (Type::Map(m), Type::Map(n)) => {
                 self.constrain(env, &m.key, &n.key)?;
                 self.constrain(env, &m.value, &n.value)

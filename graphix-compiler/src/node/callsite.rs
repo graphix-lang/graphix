@@ -5425,6 +5425,9 @@ impl<R: Rt> CallSite<R> {
         let impls = ctx.env.impls_of(def.id);
         let typings = impls.iter().flat_map(|l| l.iter());
         let typings = typings.map(|im| bounds::method_typing(&sig, &im.target));
+        // last, as the trait declares it: a receiver whose constructor is
+        // a variable held to the trait is any implementor's
+        let typings = typings.chain(std::iter::once(sig.clone()));
         let before = &m.typ.args[..m.self_index.unwrap_or(0)];
         let receiver = before.iter().filter(|a| a.is_positional()).count();
         let name = format_compact!("{}::{}", def.name, m.name);
