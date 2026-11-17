@@ -1184,6 +1184,46 @@ pub fn method_typing(sig: &Type, target: &Type) -> Type {
     at(sig, target).unwrap_or_else(|| sig.clone())
 }
 
+/// What is demanded of a cell, `t`, less the members a predicate among
+/// the cell's `bounds` rules out: a value of `Result<'a, 'e>` demanded as
+/// `[i64, Error<'e>]` is an `i64` there, since `'a` holds no error.
+fn within(env: &Env, t: Type, bounds: &[Type]) -> Result<Type> {
+    let predicates = || bounds.iter().filter(|b| matches!(b, Type::Bound(_)));
+    if predicates().next().is_none() {
+        return Ok(t);
+    }
+    let mut members: SmallVec<[Type; 4]> = SmallVec::new();
+    members_of(env, &t, &mut members)?;
+    // a union of primitives is one member: each of them is judged
+    let members: SmallVec<[Type; 4]> = members
+        .into_iter()
+        .flat_map(|m| match &m {
+            Type::Primitive(p) if p.len() > 1 => {
+                p.iter().map(|bit| Type::Primitive(bit.into())).collect()
+            }
+            _ => SmallVec::<[Type; 4]>::from_iter([m]),
+        })
+        .collect();
+    if members.len() < 2 {
+        return Ok(t);
+    }
+    let mut kept: SmallVec<[Type; 4]> = SmallVec::new();
+    for m in members.iter() {
+        let mut holds = true;
+        for b in predicates() {
+            holds &= m.has_unbound() || b.contains(env, m)?
+        }
+        if holds {
+            kept.push(m.clone())
+        }
+    }
+    Ok(match kept.len() {
+        0 => t,
+        n if n == members.len() => t,
+        _ => union_of(kept),
+    })
+}
+
 /// The union `t` with each member that names a union replaced by that
 /// union's members: a type is taken by one member of a union, whatever
 /// names the union was written with.
@@ -2054,6 +2094,7 @@ impl Solving {
                 known(v, |k| k.demanded = true);
                 // a bound that names the cell itself decides nothing alone
                 let t = self.meet(env, &demands)?;
+                let t = within(env, t, &v.cell_constraints())?;
                 match open_cells(&t).iter().any(|u| u.same_cell(v)) {
                     true => Type::Bottom,
                     false => t,
