@@ -112,6 +112,9 @@ fn defines_among<R: Rt>(
         ExprKind::ExplicitParens(e) | ExprKind::SeqGuard(e) | ExprKind::Live(e) => {
             defines_among(ctx, scope, e, locals)
         }
+        // a seqq's capture of a definition is that definition, whichever
+        // of the queued copy and the name it reads
+        ExprKind::SeqCapture(c) => defines_among(ctx, scope, &c.live, locals),
         ExprKind::Block { exprs } => {
             let bound = locals.len();
             let Some((last, before)) = exprs.split_last() else { return false };
@@ -205,6 +208,10 @@ fn outside_among<R: Rt>(
     match &e.kind {
         ExprKind::ExplicitParens(e) | ExprKind::SeqGuard(e) | ExprKind::Live(e) => {
             outside_among(ctx, scope, e, locals, out)
+        }
+        ExprKind::SeqCapture(c) => {
+            out.push(c.snapshot.id);
+            outside_among(ctx, scope, &c.live, locals, out)
         }
         ExprKind::Block { exprs } => {
             let bound = locals.len();
@@ -325,6 +332,7 @@ fn expr_value(e: &Expr) -> &Expr {
         ExprKind::ExplicitParens(e) | ExprKind::SeqGuard(e) | ExprKind::Live(e) => {
             expr_value(e)
         }
+        ExprKind::SeqCapture(c) => expr_value(&c.live),
         ExprKind::Block { exprs } => match exprs.last() {
             Some(last) => expr_value(last),
             None => e,
