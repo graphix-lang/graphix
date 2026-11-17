@@ -34,6 +34,7 @@ use std::{
 };
 use triomphe::Arc;
 
+pub mod bounds;
 mod cast;
 pub use cast::{Carriers, CastInput, Indiscernible, IsAFlags, Open, ShallowScrutinee};
 mod contains;
