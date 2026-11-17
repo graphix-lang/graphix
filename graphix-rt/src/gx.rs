@@ -468,11 +468,13 @@ impl<X: GXExt> GX<X> {
                 // flags are fixed, so an image is a function of its root.
                 t.compile_root(CFlag::FusionDisabled.into(), root).await?;
             }
-            t.ctx.cx.bounds = std::env::var_os("GRAPHIX_BOUNDS").is_some();
             if let Some(tx) = save {
                 let _ = tx.send(t.registration_image());
             }
         }
+        // the packages keep the old check, restored or compiled: what is
+        // compiled from here on is checked by bounds where the switch says
+        t.ctx.cx.bounds = std::env::var_os("GRAPHIX_BOUNDS").is_some();
         info!("root init time: {:?}", st.elapsed());
         let st_after = Instant::now();
         if t.program.is_none()
