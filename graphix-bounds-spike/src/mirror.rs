@@ -269,6 +269,22 @@ impl Mirror {
         }
     }
 
+    /// A `?` or `$` whose operand is not decided yet.
+    pub fn hold_strip(
+        &mut self,
+        s: &Solver,
+        operand: &Ty,
+        out: &Ty,
+        raised: &Option<Ty>,
+    ) {
+        let (operand, out) = (self.typ(s, operand), self.typ(s, out));
+        let raised = raised.as_ref().map(|t| self.typ(s, t));
+        if self.live() {
+            self.port.hold_strip(operand, out, raised);
+            self.done(s, Ok(()))
+        }
+    }
+
     /// A use of whatever `t` turns out to be.
     pub fn watch(&mut self, s: &Solver, t: &Ty, w: &Watch) {
         let u = match w {

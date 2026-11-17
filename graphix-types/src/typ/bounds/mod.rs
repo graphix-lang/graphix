@@ -148,6 +148,10 @@ pub struct Solving {
     /// copy.
     singles: Vec<TVar>,
     selects: Vec<select::Select>,
+    /// The operand and the result of each `?` or `$` whose operand is not
+    /// decided yet; the third is where the payloads of the errors a `?`
+    /// raises go.
+    strips: Vec<(Type, Type, Option<Type>)>,
     /// A held choice is being made: a decided member that does not fit is
     /// out.
     resolving: bool,
@@ -161,6 +165,7 @@ pub struct Solving {
 enum Pending {
     Held,
     Select,
+    Strip,
 }
 
 #[derive(Clone, Copy)]
@@ -811,6 +816,34 @@ impl Solving {
     }
 }
 
+/// What `?` and `$` leave of the decided type `t`: `t` less its errors,
+/// or, where it holds none, less null. With it, the payloads of the errors
+/// taken off.
+pub fn strip(t: &Type) -> (Type, SmallVec<[Type; 2]>) {
+    let members: SmallVec<[Type; 4]> = match t {
+        Type::Set(ms) => ms.iter().cloned().collect(),
+        t => SmallVec::from_iter([t.clone()]),
+    };
+    let errors = members.iter().any(|m| {
+        matches!(m, Type::Error(_))
+            || matches!(m, Type::Primitive(p) if p.contains(Typ::Error))
+    });
+    let gone = if errors { Typ::Error } else { Typ::Null };
+    let payloads = members.iter().filter_map(|m| match m {
+        Type::Error(p) => Some((**p).clone()),
+        _ => None,
+    });
+    let payloads = payloads.collect();
+    let left = union_of(members.into_iter().filter_map(|m| match m {
+        Type::Error(_) if errors => None,
+        Type::Primitive(p) => {
+            Some(Type::Primitive(p & !gone)).filter(|_| !(p & !gone).is_empty())
+        }
+        m => Some(m),
+    }));
+    (left, payloads)
+}
+
 /// `t` with every bound cell replaced by what it is bound to.
 fn deep(t: &Type) -> Type {
     map_cells(t, &mut |_| None)
@@ -897,10 +930,12 @@ fn decided(v: &TVar, seen: &mut SmallVec<[usize; 8]>) -> bool {
 }
 
 impl Solving {
-    /// Every unbound cell reachable from `t` through bounds.
+    /// Every open cell reachable from `t` through bounds. A declared
+    /// variable inside its definition is a constant: it is not one, and
+    /// nothing is reached through it.
     fn reach(&self, t: &Type, seen: &mut SmallVec<[TVar; 4]>) {
         let mut found = SmallVec::new();
-        cells_of(t, true, &mut found);
+        cells_of(t, false, &mut found);
         for v in found {
             if !seen.iter().any(|s| s.same_cell(&v)) {
                 seen.push(v.clone());
@@ -1163,6 +1198,11 @@ impl Solving {
                         produced.push(((Pending::Select, id), closure(self, binds)))
                     }
                 }
+                for (i, (_, out, raised)) in self.strips.iter().enumerate() {
+                    let mut outs = open_cells(out);
+                    raised.iter().for_each(|p| outs.extend(open_cells(p)));
+                    produced.push(((Pending::Strip, i), closure(self, outs)))
+                }
             }
             let free = |key: (Pending, usize), ins: &[TVar]| {
                 !produced.iter().any(|(k, c)| {
@@ -1201,7 +1241,27 @@ impl Solving {
                 let ins = open_cells(t);
                 ins.iter().all(|v| s.fixable(v, min)) && free((Pending::Select, id), &ins)
             };
-            progress |= self.select_waiting(env, &ready)?
+            progress |= self.select_waiting(env, &ready)?;
+            for i in (0..self.strips.len()).rev() {
+                let (operand, out, raised) = self.strips[i].clone();
+                let ins = open_cells(&operand);
+                if ins.iter().all(|v| self.fixable(v, min))
+                    && free((Pending::Strip, i), &ins)
+                {
+                    self.strips.swap_remove(i);
+                    self.fix_in(env, &operand)?;
+                    let (left, payloads) = strip(&deep(&operand));
+                    self.constrain(env, &left, &out)?;
+                    for to in raised.iter() {
+                        payloads.iter().try_for_each(|p| self.constrain(env, p, to))?
+                    }
+                    progress = true
+                } else if ins.iter().any(quantified) {
+                    bail!(
+                        "the type of the operand of ? or $ is not known here: annotate it"
+                    )
+                }
+            }
         }
         // a cell something flows into first: one nothing flows into may be
         // decided by a cell that holds it
@@ -1225,6 +1285,13 @@ impl Solving {
                     }
                 }
             }
+            for (_, out, raised) in self.strips.iter() {
+                for v in
+                    open_cells(out).into_iter().chain(raised.iter().flat_map(open_cells))
+                {
+                    self.reach(&Type::TVar(v), &mut waiting)
+                }
+            }
         }
         for v in flowing.into_iter().chain(empty) {
             let mine = !v.is_bound()
@@ -1246,6 +1313,24 @@ impl Solving {
             )
         }
         Ok(())
+    }
+
+    /// Fix every cell of `t`, those nothing has decided included.
+    fn fix_in(&mut self, env: &Env, t: &Type) -> Result<()> {
+        loop {
+            let cells = open_cells(t);
+            if cells.is_empty() {
+                return Ok(());
+            }
+            cells.iter().try_for_each(|v| self.fix(env, v))?
+        }
+    }
+
+    /// Hold a `?` or `$` whose operand is not decided yet: `out` takes
+    /// what it leaves of the operand once that is, and `raised` the
+    /// payloads of the errors a `?` takes off.
+    pub fn hold_strip(&mut self, operand: Type, out: Type, raised: Option<Type>) {
+        self.strips.push((operand, out, raised))
     }
 
     /// Give `v` one type: the union of what flows into it, or, where

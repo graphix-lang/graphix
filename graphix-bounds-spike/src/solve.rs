@@ -323,7 +323,7 @@ impl Solver {
 
     /// The program holds a `?` or `$` whose operand is not known yet.
     pub fn hold_strip(&mut self, operand: Ty, out: Ty, raised: Option<Ty>) {
-        self.replay(|m, _| m.skipped("a held ? or $"));
+        self.replay(|m, s| m.hold_strip(s, &operand, &out, &raised));
         self.strips.push((operand, out, raised))
     }
 

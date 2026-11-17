@@ -4,7 +4,7 @@
 //! arm leaves must be nothing. A pattern tests only what is written in it,
 //! and a test admits what the run time cannot tell from it.
 
-use super::{Solving, alike, deep, open, open_cells, shallow, union_of};
+use super::{Solving, alike, deep, open, shallow, union_of};
 use crate::{
     env::Env,
     expr::WrittenAt,
@@ -733,7 +733,7 @@ impl Solving {
         for id in 0..self.selects.len() {
             for t in std::mem::take(&mut self.selects[id].waiting) {
                 if ready(self, id, &t) {
-                    open_cells(&t).iter().try_for_each(|v| self.fix(env, v))?;
+                    self.fix_in(env, &t)?;
                     self.select_route(env, id, &t)?;
                     progress = true
                 } else {
