@@ -1627,7 +1627,7 @@ impl Checker {
             }
             false => {
                 let out = self.s.fresh_ty(lvl, Kind::Join);
-                self.s.strips.push((t, out.clone(), payload));
+                self.s.hold_strip(t, out.clone(), payload);
                 Ok(out)
             }
         }

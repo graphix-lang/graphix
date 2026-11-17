@@ -93,6 +93,12 @@ enum Added {
     Sink,
 }
 
+/// The union of `ts` as they stand: flat, each member once, the primitives
+/// as one member. No two cells are made one, whatever the members share.
+pub fn union_of(ts: impl IntoIterator<Item = Type>) -> Type {
+    Type::flatten_set(ts)
+}
+
 /// `t` past the cells that are bound: an open cell, or a type that is no
 /// cell.
 fn shallow(t: &Type) -> Type {
@@ -307,7 +313,7 @@ impl Solving {
                     [one] => self.constrain(env, one, to),
                     many => {
                         let all: SmallVec<[&Type; 4]> = many.iter().collect();
-                        self.constrain(env, &Type::union_exact(env, &all)?, to)
+                        self.constrain(env, &union_of(all.into_iter().cloned()), to)
                     }
                 }
             }
@@ -383,7 +389,7 @@ impl Solving {
                 self.constrain(env, &through, &Type::TVar(to))?;
                 let members: SmallVec<[&Type; 4]> =
                     rest.iter().chain([&through]).collect();
-                self.constrain(env, a, &Type::union_exact(env, &members)?)
+                self.constrain(env, a, &union_of(members.into_iter().cloned()))
             }
             (Some(v), _) if depth(b) <= at.depth() => {
                 let cell = v.cell();
@@ -686,6 +692,13 @@ impl Solving {
         }
         self.constrain(env, &f.rtype, &g.rtype)?;
         self.constrain(env, &f.throws, &g.throws)
+    }
+
+    /// Declare `bound` of the open cell `v`, which nothing has flowed into
+    /// yet: every value of it will be one of `bound`.
+    pub fn declare(&mut self, v: &TVar, bound: Type) {
+        v.cell().write().add_constraint(bound);
+        self.track(v)
     }
 
     /// Have `v` among the cells this check fixes.
@@ -1117,7 +1130,7 @@ impl Solving {
             [one] => one.clone(),
             many => {
                 let all: SmallVec<[&Type; 4]> = many.iter().collect();
-                Type::union_exact(env, &all)?
+                union_of(all.into_iter().cloned())
             }
         };
         let one =

@@ -1,4 +1,5 @@
 use crate::{
+    mirror::Mirror,
     select::{Arm, Select},
     ty::{FnArg, FnTy, Method, Ty, Var, union},
 };
@@ -183,6 +184,15 @@ pub struct Solver {
     resolving: bool,
     /// How many relations were taken apart, the prototype's cost measure.
     pub steps: u64,
+    /// The ported solver, where the program is replayed into it.
+    pub mirror: Option<Box<Mirror>>,
+    /// How many of the solver's own entry points are running: only the
+    /// outermost call is the program's.
+    busy: u32,
+    /// The program was refused, and not by a call of the solver.
+    pub refused_outside: bool,
+    /// One of the program's calls of the solver refused.
+    pub refused_inside: bool,
 }
 
 fn mismatch<T>(container: &Ty, t: &Ty) -> Result<T> {
@@ -286,7 +296,43 @@ impl Solver {
     }
 
     /// `a` fits where `b` is wanted.
+    /// `f` over the mirror, where this call is the program's own.
+    fn replay(&mut self, f: impl FnOnce(&mut Mirror, &Solver)) {
+        if self.busy == 0
+            && let Some(mut m) = self.mirror.take()
+        {
+            f(&mut m, self);
+            self.mirror = Some(m)
+        }
+    }
+
+    /// `f`, as one entry of the solver.
+    fn entered<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
+        self.busy += 1;
+        let r = f(self);
+        self.busy -= 1;
+        r
+    }
+
+    /// [`Self::entered`] for an entry that may refuse.
+    fn judged(&mut self, f: impl FnOnce(&mut Self) -> Result<()>) -> Result<()> {
+        let r = self.entered(f);
+        self.refused_inside |= r.is_err() && self.busy == 0;
+        r
+    }
+
+    /// The program holds a `?` or `$` whose operand is not known yet.
+    pub fn hold_strip(&mut self, operand: Ty, out: Ty, raised: Option<Ty>) {
+        self.replay(|m, _| m.skipped("a held ? or $"));
+        self.strips.push((operand, out, raised))
+    }
+
     pub fn constrain(&mut self, a: &Ty, b: &Ty) -> Result<()> {
+        self.replay(|m, s| m.constrain(s, a, b));
+        self.judged(|s| s.constrain_own(a, b))
+    }
+
+    fn constrain_own(&mut self, a: &Ty, b: &Ty) -> Result<()> {
         self.steps += 1;
         let along_edge = std::mem::take(&mut self.along_edge);
         let (a, b) = (self.shallow(a), self.shallow(b));
@@ -924,6 +970,11 @@ impl Solver {
 
     /// Register a use of whatever `t` turns out to be.
     pub fn watch(&mut self, t: &Ty, w: Watch) -> Result<()> {
+        self.replay(|m, _| m.skipped(w.needs()));
+        self.judged(|s| s.watch_own(t, w))
+    }
+
+    fn watch_own(&mut self, t: &Ty, w: Watch) -> Result<()> {
         match self.shallow(t) {
             Ty::Var(v) => {
                 let mut fired = false;
@@ -947,6 +998,11 @@ impl Solver {
 
     /// A call of a function whose type is known.
     pub fn call(&mut self, ft: &FnTy, args: &[Arg], out: &Ty) -> Result<()> {
+        self.replay(|m, s| m.call(s, ft, args, out));
+        self.judged(|s| s.call_own(ft, args, out))
+    }
+
+    fn call_own(&mut self, ft: &FnTy, args: &[Arg], out: &Ty) -> Result<()> {
         let outer = self.at;
         let r = self.call_at(ft, args);
         self.at = outer;
@@ -985,6 +1041,12 @@ impl Solver {
     /// A copy of `t` with every variable deeper than `above` replaced by a
     /// fresh one at `at`, bounds included.
     pub fn instantiate(&mut self, t: &Ty, above: u32, at: u32) -> Ty {
+        let made = self.entered(|s| s.instantiate_own(t, above, at));
+        self.replay(|m, s| m.instantiate(s, t, above, at, &made));
+        made
+    }
+
+    fn instantiate_own(&mut self, t: &Ty, above: u32, at: u32) -> Ty {
         let mut memo = HashMap::new();
         let t = self.copy(t, above, at, &mut memo);
         for (a, b, scheme) in self.held.clone() {
@@ -1207,6 +1269,11 @@ impl Solver {
 
     /// Mark the variables of a declared scheme as its own.
     pub fn quantify(&mut self, t: &Ty, lvl: u32) {
+        self.replay(|m, s| m.quantify(s, t, lvl));
+        self.entered(|s| s.quantify_own(t, lvl))
+    }
+
+    fn quantify_own(&mut self, t: &Ty, lvl: u32) {
         let mut kept = vec![];
         self.reach(t, &mut kept);
         for v in kept {
@@ -1222,6 +1289,11 @@ impl Solver {
     /// `mark` is how many variables existed when the definition began: only
     /// later ones are its own.
     pub fn generalize(&mut self, t: &Ty, lvl: u32, mark: usize) -> Result<()> {
+        self.replay(|m, s| m.generalize(s, t, lvl, mark));
+        self.judged(|s| s.generalize_own(t, lvl, mark))
+    }
+
+    fn generalize_own(&mut self, t: &Ty, lvl: u32, mark: usize) -> Result<()> {
         let mut kept = vec![];
         self.reach(t, &mut kept);
         for v in kept {
@@ -1247,6 +1319,11 @@ impl Solver {
 
     /// Fix every variable an input left open.
     pub fn finish(&mut self) -> Result<()> {
+        self.replay(|m, s| m.finish(s));
+        self.judged(|s| s.finish_own())
+    }
+
+    fn finish_own(&mut self) -> Result<()> {
         self.fix_scope(0, true, 0)?;
         self.dead_arms()
     }

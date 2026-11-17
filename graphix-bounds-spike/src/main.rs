@@ -1,4 +1,5 @@
 mod check;
+mod mirror;
 mod select;
 mod solve;
 mod ty;
@@ -29,6 +30,9 @@ fn main() {
             Some(pkg.replace('-', "_"))
         });
         let mut c = Checker::new(stdlib.clone(), dir, root);
+        if env::var_os("SPIKE_PORT").is_some() {
+            c.s.mirror = Some(Box::default())
+        }
         let verdict = match c.program(text, sig.as_deref()) {
             Ok(t) => format!("ok\t{t}"),
             Err(e) => match e.downcast_ref::<Unsupported>() {
@@ -43,7 +47,13 @@ fn main() {
             },
         };
         let (module, line, column) = &c.last;
-        println!("{verdict}\t{}\t{module}:{line}:{column}", c.s.steps)
+        // the ported solver's verdict on the same calls
+        c.s.refused_outside = verdict.starts_with("no") && !c.s.refused_inside;
+        let port = match c.s.mirror.take() {
+            Some(mut m) => format!("\t{}", m.verdict(&c.s)),
+            None => String::new(),
+        };
+        println!("{verdict}\t{}\t{module}:{line}:{column}{port}", c.s.steps)
     };
     let files: Vec<String> = env::args().skip(1).collect();
     if files.is_empty() {
