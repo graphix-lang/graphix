@@ -1,0 +1,30 @@
+ok	i64
+no	missing match cases: nothing matches string (:1:34)
+no	pattern 3 will never match: nothing reaches it (:1:34; the value is [i64, string])
+ok	i64
+ok	(i64, i64)
+no	missing match cases: nothing matches bool (:1:20)
+ok	string
+ok	[i64, string]
+no	missing match cases: nothing matches bool (:1:22)
+ok	i64
+no	missing match cases: nothing matches `B (:1:35)
+ok	i64
+ok	string
+no	Parse error at line: 1, column: 65 Expected `)`      let t: ([i64, null], [i64, null]) = (1, null); select t { (null as _, _) => 0, (_, null as _) => 1, …                                                                     ^   note: at line: 1, column: 65: a `,` separates this item from the one before; at line: 1, column: 65
+no	Parse error at line: 1, column: 65 Expected `)`      let t: ([i64, null], [i64, null]) = (1, null); select t { (null as _, _) => 0, (a, b) => a + b }                                                                     ^   note: at line: 1, column: 65: a `,` separates this item from the one before; at line: 1, column: 65
+ok	i64
+ok	i64
+ok	i64
+ok	i64
+ok	i64
+no	the type of the operand of ? or $ is not known here: annotate it
+ok	i64
+ok	i64
+ok	[i64, Error<`ParseError(string)>]
+ok	string
+ok	i64
+no	pattern 2 will never match: nothing reaches it (:1:69; the value is Error<`E>)
+no	type mismatch [`Leaf(i64), `Node(Array<`Leaf(i64)>)] does not contain `Node(Array<[`Leaf(i64), `Node(Array<`Leaf(i64)>)]>); one value comes from elsewhere, the other from line 1, column 119: declare the type that holds both
+no	cannot compare: the value comes from line 1, column 32, and is used at line 1, column 32
+ok	i64

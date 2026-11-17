@@ -7,9 +7,9 @@ use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use graphix_types::{
     expr::{
-        ApplyExpr, ArgKind, BinOp, BindExpr, Expr, ExprKind, LambdaBody, LambdaExpr, ModuleKind,
-        ModPath, Origin, Pattern, SelectExpr, SigKind, StructurePattern, TypeDefBody,
-        TypeDefExpr, parser,
+        ApplyExpr, ArgKind, BinOp, BindExpr, Expr, ExprKind, LambdaBody, LambdaExpr,
+        ModPath, ModuleKind, Origin, Pattern, SelectExpr, SigKind, StructurePattern,
+        TypeDefBody, TypeDefExpr, parser,
     },
     typ::{Bound, FnArgKind, FnType, Mutability, TVar, Type},
 };
@@ -125,8 +125,12 @@ fn holds_tvar(t: &Type) -> bool {
                 || holds_tvar(&ft.rtype)
                 || holds_tvar(&ft.throws)
         }
-        Type::Set(ts) | Type::Tuple(ts) | Type::Variant(_, ts, _) => ts.iter().any(holds_tvar),
-        Type::Error(t) | Type::Array(t) | Type::List(t) | Type::ByRef(_, t) => holds_tvar(t),
+        Type::Set(ts) | Type::Tuple(ts) | Type::Variant(_, ts, _) => {
+            ts.iter().any(holds_tvar)
+        }
+        Type::Error(t) | Type::Array(t) | Type::List(t) | Type::ByRef(_, t) => {
+            holds_tvar(t)
+        }
         Type::Struct(fs) => fs.iter().any(|(_, t, _)| holds_tvar(t)),
         Type::Map(m) => holds_tvar(&m.key) || holds_tvar(&m.value),
         _ => false,
@@ -143,7 +147,9 @@ fn declares(l: &LambdaExpr) -> bool {
 fn value_of(e: &Expr) -> &Expr {
     match &e.kind {
         ExprKind::ExplicitParens(e) => value_of(e),
-        ExprKind::Block { exprs } if !exprs.is_empty() => value_of(&exprs[exprs.len() - 1]),
+        ExprKind::Block { exprs } if !exprs.is_empty() => {
+            value_of(&exprs[exprs.len() - 1])
+        }
         _ => e,
     }
 }
@@ -215,7 +221,9 @@ impl Checker {
         };
         // one of the program's own modules, by its interface file
         let inside = match &self.root {
-            Some(root) => module.strip_prefix(root.as_str()).map(|m| m.trim_start_matches("::")),
+            Some(root) => {
+                module.strip_prefix(root.as_str()).map(|m| m.trim_start_matches("::"))
+            }
             None => Some(module),
         };
         let own = self.dir.as_ref().zip(inside).map(|(d, module)| {
@@ -262,10 +270,18 @@ impl Checker {
         };
         let (body, nominal) = match &td.body {
             TypeDefBody::Alias(body) => (Some(body.clone()), None),
-            TypeDefBody::Abstract(rep) => (rep.clone(), Some(ArcStr::from(name.as_str()))),
+            TypeDefBody::Abstract(rep) => {
+                (rep.clone(), Some(ArcStr::from(name.as_str())))
+            }
         };
         let params = td.params.iter().map(|(tv, _)| tv.name.clone()).collect();
-        let def = TypeDef { module: module.to_string(), params, body, recursive: None, nominal };
+        let def = TypeDef {
+            module: module.to_string(),
+            params,
+            body,
+            recursive: None,
+            nominal,
+        };
         self.typedefs.insert(name, def);
     }
 
@@ -278,7 +294,12 @@ impl Checker {
         }
         let mut names = vec![];
         if let Some(full) = self.aliases.get(&path[0]) {
-            names.push(std::iter::once(full.clone()).chain(path[1..].iter().cloned()).collect::<Vec<_>>().join("::"))
+            names.push(
+                std::iter::once(full.clone())
+                    .chain(path[1..].iter().cloned())
+                    .collect::<Vec<_>>()
+                    .join("::"),
+            )
         }
         names.push(path.join("::"));
         let empty = vec![];
@@ -295,7 +316,9 @@ impl Checker {
             for u in theirs.iter().rev() {
                 out.push(format!("{u}::{name}"));
                 if u.rsplit("::").next() == Some(path[0].as_str()) {
-                    let rest: Vec<&str> = std::iter::once(u.as_str()).chain(path[1..].iter().map(|s| s.as_str())).collect();
+                    let rest: Vec<&str> = std::iter::once(u.as_str())
+                        .chain(path[1..].iter().map(|s| s.as_str()))
+                        .collect();
                     out.push(rest.join("::"))
                 }
             }
@@ -310,7 +333,9 @@ impl Checker {
         for full in self.candidates("", path) {
             match self.mods.get(&full).cloned() {
                 Some(Binding::Mono(t)) => return Ok(Some(t)),
-                Some(Binding::Poly(l, t)) => return Ok(Some(self.s.instantiate(&t, l, lvl))),
+                Some(Binding::Poly(l, t)) => {
+                    return Ok(Some(self.s.instantiate(&t, l, lvl)));
+                }
                 None => (),
             }
             if let Some((module, _)) = full.rsplit_once("::") {
@@ -376,7 +401,13 @@ impl Checker {
 
     /// The type a name stands for at `args`; with none given, at a fresh
     /// variable per parameter.
-    fn named_at(&mut self, path: &[String], args: Option<Vec<Ty>>, module: &str, lvl: u32) -> Result<Ty> {
+    fn named_at(
+        &mut self,
+        path: &[String],
+        args: Option<Vec<Ty>>,
+        module: &str,
+        lvl: u32,
+    ) -> Result<Ty> {
         for full in self.candidates(module, path) {
             if let Some((m, _)) = full.rsplit_once("::") {
                 self.load(m);
@@ -394,11 +425,20 @@ impl Checker {
             if let Some(tag) = def.nominal.clone() {
                 // what it is made of, once: seen wherever a definition with
                 // a representation is
-                if let (Some(body), false) = (def.body.clone(), self.s.reps.contains_key(&tag)) {
+                if let (Some(body), false) =
+                    (def.body.clone(), self.s.reps.contains_key(&tag))
+                {
                     let (names, home) = (def.params.clone(), def.module.clone());
-                    let params: Vec<Var> = names.iter().map(|_| self.s.fresh(0, Kind::Single)).collect();
-                    self.s.reps.insert(tag.clone(), Def { params: params.clone(), body: Ty::Bot });
-                    let tvs = names.into_iter().zip(params.iter().map(|v| Ty::Var(*v))).collect();
+                    let params: Vec<Var> =
+                        names.iter().map(|_| self.s.fresh(0, Kind::Single)).collect();
+                    self.s.reps.insert(
+                        tag.clone(),
+                        Def { params: params.clone(), body: Ty::Bot },
+                    );
+                    let tvs = names
+                        .into_iter()
+                        .zip(params.iter().map(|v| Ty::Var(*v)))
+                        .collect();
                     self.tvs.push(Scope { tvs, level: 0, rigid: false });
                     let rep = self.conv(&body, &home);
                     self.tvs.pop();
@@ -419,7 +459,8 @@ impl Checker {
                 self.typedefs.get_mut(&full).unwrap().recursive = Some(id);
                 return Ok(Ty::Named(id, args.into()));
             }
-            let (names, body, home) = (def.params.clone(), def.body.clone(), def.module.clone());
+            let (names, body, home) =
+                (def.params.clone(), def.body.clone(), def.module.clone());
             let expand = |c: &mut Self, args: Vec<Ty>| -> Result<Ty> {
                 let tvs = names.iter().cloned().zip(args).collect();
                 c.tvs.push(Scope { tvs, level: 0, rigid: false });
@@ -488,7 +529,9 @@ impl Checker {
         for a in ft.args.iter() {
             let (label, optional) = match &a.kind {
                 FnArgKind::Positional { .. } => (None, false),
-                FnArgKind::Labeled { name, has_default } => (Some(name.clone()), *has_default),
+                FnArgKind::Labeled { name, has_default } => {
+                    (Some(name.clone()), *has_default)
+                }
             };
             args.push(FnArg { label, optional, ty: self.conv(&a.typ, module)? })
         }
@@ -547,7 +590,8 @@ impl Checker {
                 SigKind::Use { names, .. } => {
                     for i in names.iter() {
                         let path = parts(&i.path);
-                        let full = used(&path, prefix, self.root.as_deref().unwrap_or(""));
+                        let full =
+                            used(&path, prefix, self.root.as_deref().unwrap_or(""));
                         self.uses.push(full.clone());
                         self.aliases.insert(path[path.len() - 1].clone(), full);
                     }
@@ -582,7 +626,10 @@ impl Checker {
                 let made = match scope.get(&val.name.name) {
                     Some(Binding::Mono(t)) => t.clone(),
                     Some(Binding::Poly(l, t)) => self.s.instantiate(t, *l, lvl + 1),
-                    None => bail!("the interface declares {}, which the module does not bind", val.name.name),
+                    None => bail!(
+                        "the interface declares {}, which the module does not bind",
+                        val.name.name
+                    ),
                 };
                 // against the declaration its variables are rigid; outside
                 // the module they are a scheme's
@@ -710,7 +757,8 @@ impl Checker {
             ExprKind::Block { exprs } if !exprs.is_empty() => {
                 self.scopes.push(HashMap::new());
                 let (last, before) = exprs.split_last().unwrap();
-                let r = self.infer_all(before, lvl).and_then(|_| self.definition(last, lvl));
+                let r =
+                    self.infer_all(before, lvl).and_then(|_| self.definition(last, lvl));
                 self.scopes.pop();
                 r
             }
@@ -812,7 +860,12 @@ impl Checker {
                     .into_iter()
                     .map(|(_, ty, _)| FnArg { label: None, optional: false, ty })
                     .collect();
-                let want = FnTy { args, vargs: None, ret: out.clone(), throws: self.handler(lvl) };
+                let want = FnTy {
+                    args,
+                    vargs: None,
+                    ret: out.clone(),
+                    throws: self.handler(lvl),
+                };
                 self.s.constrain(&f, &Ty::Fn(Rc::new(want)))?
             }
             f => self.s.watch(&f, Watch::Call { args, out: out.clone() })?,
@@ -846,12 +899,16 @@ impl Checker {
             | CheckedDiv | CheckedMod => {
                 let v = same(self, true).map_err(|e| anyhow!("cannot compute: {e}"))?;
                 let number = self.number()?;
-                self.s.constrain(&v, &number).map_err(|e| anyhow!("cannot compute: {e}"))?;
+                self.s
+                    .constrain(&v, &number)
+                    .map_err(|e| anyhow!("cannot compute: {e}"))?;
                 match op.is_checked() {
                     false => v,
                     true => {
-                        let payload =
-                            Ty::Variant("ArithError".into(), [Ty::prim(Typ::String)].into());
+                        let payload = Ty::Variant(
+                            "ArithError".into(),
+                            [Ty::prim(Typ::String)].into(),
+                        );
                         union([v, Ty::Error(Rc::new(payload))])
                     }
                 }
@@ -921,7 +978,9 @@ impl Checker {
             StructurePattern::Abstract { all, name, bind, .. } => {
                 let all = named(self, all);
                 match self.named_at(&parts(name), None, "", lvl)? {
-                    Ty::Abs(tag, _) => Pat::Abs(all, tag, Box::new(self.structure(bind, lvl)?)),
+                    Ty::Abs(tag, _) => {
+                        Pat::Abs(all, tag, Box::new(self.structure(bind, lvl)?))
+                    }
                     _ => bail!("{} is not an abstract type", parts(name).join("::")),
                 }
             }
@@ -976,7 +1035,12 @@ impl Checker {
             self.s.constrain(&scrutinee, &unsplit(&union(ts)))?
         }
         let id = self.s.select(arms);
-        self.s.selects[id].at = format!("{}:{}:{}", self.here.join("::"), sel.arg.pos.line, sel.arg.pos.column);
+        self.s.selects[id].at = format!(
+            "{}:{}:{}",
+            self.here.join("::"),
+            sel.arg.pos.line,
+            sel.arg.pos.column
+        );
         self.s.watch(&scrutinee, Watch::Select(id))?;
         Ok(result)
     }
@@ -999,7 +1063,12 @@ impl Checker {
             false => None,
             true => {
                 let payload = self.s.fresh_ty(lvl, Kind::Join);
-                let chain = self.named_at(&["ErrChain".to_string()], Some(vec![payload.clone()]), "", lvl)?;
+                let chain = self.named_at(
+                    &["ErrChain".to_string()],
+                    Some(vec![payload.clone()]),
+                    "",
+                    lvl,
+                )?;
                 let handler = self.handler(lvl);
                 self.s.constrain(&Ty::Error(Rc::new(chain)), &handler)?;
                 Some(payload)
@@ -1007,13 +1076,17 @@ impl Checker {
         };
         let known = match &t {
             Ty::Var(_) => false,
-            Ty::Union(ms) => ms.iter().any(|m| matches!(m, Ty::Error(_))) || self.s.is_ground(&t),
+            Ty::Union(ms) => {
+                ms.iter().any(|m| matches!(m, Ty::Error(_))) || self.s.is_ground(&t)
+            }
             _ => true,
         };
         match known {
             true => {
                 let (left, payloads) = self.s.strip(&t);
-                for (p, to) in payload.iter().flat_map(|to| payloads.iter().map(move |p| (p, to))) {
+                for (p, to) in
+                    payload.iter().flat_map(|to| payloads.iter().map(move |p| (p, to)))
+                {
                     self.s.constrain(p, to)?
                 }
                 Ok(left)
@@ -1063,7 +1136,8 @@ impl Checker {
                 Ty::Bot
             }
             ExprKind::TryWith(t) => {
-                let (raised, result) = (self.s.fresh_ty(lvl, Kind::Join), self.s.fresh_ty(lvl, Kind::Join));
+                let (raised, result) =
+                    (self.s.fresh_ty(lvl, Kind::Join), self.s.fresh_ty(lvl, Kind::Join));
                 if let Some(written) = &t.constraint {
                     let w = self.conv(written, "")?;
                     self.s.constrain(&raised, &w)?
@@ -1116,8 +1190,15 @@ impl Checker {
                 for item in names.iter() {
                     let path = parts(&item.path);
                     let full = match self.aliases.get(&path[0]) {
-                        Some(a) => std::iter::once(a.clone()).chain(path[1..].iter().cloned()).collect::<Vec<_>>().join("::"),
-                        None => used(&path, &self.here.join("::"), self.root.as_deref().unwrap_or("")),
+                        Some(a) => std::iter::once(a.clone())
+                            .chain(path[1..].iter().cloned())
+                            .collect::<Vec<_>>()
+                            .join("::"),
+                        None => used(
+                            &path,
+                            &self.here.join("::"),
+                            self.root.as_deref().unwrap_or(""),
+                        ),
                     };
                     let name = match &item.rename {
                         Some(n) => n.name.to_string(),
@@ -1130,14 +1211,28 @@ impl Checker {
             }
             ExprKind::Module { name, value } => {
                 let (exprs, sig) = match &**value {
-                    ModuleKind::Resolved { exprs, sig, .. } => (exprs.clone(), sig.clone()),
+                    ModuleKind::Resolved { exprs, sig, .. } => {
+                        (exprs.clone(), sig.clone())
+                    }
                     ModuleKind::Dynamic { .. } => unsupported("dynamic module")?,
                     ModuleKind::Unresolved { .. } => {
-                        let mut dir = self.dir.clone().ok_or_else(|| Unsupported("module file".into()))?;
-                        self.here.iter().skip(self.root.iter().count()).for_each(|m| dir.push(m));
+                        let mut dir = self
+                            .dir
+                            .clone()
+                            .ok_or_else(|| Unsupported("module file".into()))?;
+                        self.here
+                            .iter()
+                            .skip(self.root.iter().count())
+                            .for_each(|m| dir.push(m));
                         let flat = dir.join(format!("{}.gx", name.name));
-                        let file = if flat.exists() { flat } else { dir.join(format!("{}/mod.gx", name.name)) };
-                        let text = fs::read_to_string(&file).map_err(|_| Unsupported(format!("module file {}", name.name)))?;
+                        let file = if flat.exists() {
+                            flat
+                        } else {
+                            dir.join(format!("{}/mod.gx", name.name))
+                        };
+                        let text = fs::read_to_string(&file).map_err(|_| {
+                            Unsupported(format!("module file {}", name.name))
+                        })?;
                         let sig = fs::read_to_string(file.with_extension("gxi"))
                             .ok()
                             .map(|text| parser::parse_sig(Origin::unspecified(&text)))
@@ -1150,7 +1245,8 @@ impl Checker {
                 self.scopes.push(HashMap::new());
                 self.here.push(name.name.to_string());
                 let prefix = self.here.join("::");
-                let r = self.module(&exprs, sig.as_ref().map(|s| &*s.items), &prefix, lvl);
+                let r =
+                    self.module(&exprs, sig.as_ref().map(|s| &*s.items), &prefix, lvl);
                 self.here.pop();
                 self.scopes.pop();
                 (self.aliases, self.uses) = outer;
@@ -1162,7 +1258,8 @@ impl Checker {
                 Ty::Bot
             }
             ExprKind::Construct { name, arg } => {
-                let (t, arg) = (self.named_at(&parts(name), None, "", lvl)?, self.infer(arg, lvl)?);
+                let (t, arg) =
+                    (self.named_at(&parts(name), None, "", lvl)?, self.infer(arg, lvl)?);
                 let rep = match &t {
                     Ty::Abs(tag, args) => self.s.rep(tag, args),
                     _ => None,
@@ -1190,7 +1287,8 @@ impl Checker {
                 union([array, self.failure("ArrayIndexError")])
             }
             ExprKind::Map { args } => {
-                let (k, v) = (self.s.fresh_ty(lvl, Kind::Join), self.s.fresh_ty(lvl, Kind::Join));
+                let (k, v) =
+                    (self.s.fresh_ty(lvl, Kind::Join), self.s.fresh_ty(lvl, Kind::Join));
                 for (ke, ve) in args.iter() {
                     let (kt, vt) = (self.infer(ke, lvl)?, self.infer(ve, lvl)?);
                     self.s.constrain(&kt, &k)?;
@@ -1253,12 +1351,17 @@ impl Checker {
                 Ty::prim(Typ::String)
             }
             ExprKind::StructRef { source, field } => {
-                let (t, out) = (self.infer(source, lvl)?, self.s.fresh_ty(lvl, Kind::Join));
-                self.s.watch(&t, Watch::Field { field: field.name.clone(), out: out.clone() })?;
+                let (t, out) =
+                    (self.infer(source, lvl)?, self.s.fresh_ty(lvl, Kind::Join));
+                self.s.watch(
+                    &t,
+                    Watch::Field { field: field.name.clone(), out: out.clone() },
+                )?;
                 out
             }
             ExprKind::TupleRef { source, field } => {
-                let (t, out) = (self.infer(source, lvl)?, self.s.fresh_ty(lvl, Kind::Join));
+                let (t, out) =
+                    (self.infer(source, lvl)?, self.s.fresh_ty(lvl, Kind::Join));
                 self.s.watch(&t, Watch::Index { i: *field, out: out.clone() })?;
                 out
             }

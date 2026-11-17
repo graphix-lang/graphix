@@ -20,7 +20,12 @@ fn main() {
     let judge = |text: &str, dir: Option<PathBuf>, sig: Option<String>| {
         // a package's root module: .../graphix-package-<name>/src/graphix/mod.gx
         let root = dir.as_ref().filter(|_| sig.is_some()).and_then(|d| {
-            let pkg = d.parent()?.parent()?.file_name()?.to_str()?.strip_prefix("graphix-package-")?;
+            let pkg = d
+                .parent()?
+                .parent()?
+                .file_name()?
+                .to_str()?
+                .strip_prefix("graphix-package-")?;
             Some(pkg.replace('-', "_"))
         });
         let mut c = Checker::new(stdlib.clone(), dir, root);
@@ -30,7 +35,8 @@ fn main() {
                 Some(u) => format!("skip\t{}", u.0),
                 None => {
                     // the refusal, then where its two ends are
-                    let mut parts: Vec<String> = e.chain().map(|c| c.to_string()).collect();
+                    let mut parts: Vec<String> =
+                        e.chain().map(|c| c.to_string()).collect();
                     parts.reverse();
                     format!("no\t{}", parts.join("; ").replace(['\n', '\t'], " "))
                 }
@@ -41,7 +47,11 @@ fn main() {
     };
     let files: Vec<String> = env::args().skip(1).collect();
     if files.is_empty() {
-        io::stdin().lock().lines().map_while(Result::ok).for_each(|l| judge(&l, None, None))
+        io::stdin()
+            .lock()
+            .lines()
+            .map_while(Result::ok)
+            .for_each(|l| judge(&l, None, None))
     } else {
         for f in files {
             match fs::read_to_string(&f) {

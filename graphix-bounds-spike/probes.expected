@@ -1,0 +1,36 @@
+ok	f64
+ok	Array<[i64, string]>
+no	type mismatch i64 does not contain string; one value comes from line 1, column 35, the other from line 1, column 38: declare the type that holds both
+ok	[i64, null]
+ok	[i64, null]
+ok	i64
+ok	i64
+ok	i64
+ok	i64
+ok	(i64, i64)
+ok	i64
+no	type mismatch null does not contain string; one value comes from line 1, column 1, the other from line 1, column 20: declare the type that holds both
+no	cannot compute with [i64, f64]: both operands must be one numeric type
+no	type mismatch string does not contain i64; one value comes from line 1, column 63, the other from line 1, column 66: declare the type that holds both
+ok	Array<i64>
+no	reading a struct needs its type known here (line 1, column 34): annotate the binding
+ok	Array<i64>
+ok	Array<(string, i64)>
+ok	i64
+ok	i64
+ok	i64
+ok	string
+ok	i64
+no	reading a tuple needs its type known here (line 1, column 43): annotate the binding
+no	cannot compute: the value comes from line 1, column 25, and is used at line 1, column 25
+no	cannot compare: the value comes from line 1, column 25, and is used at line 1, column 25
+ok	i64
+no	cannot compute with [u8, i8, u16, i16, u32, v32, i32, z32, u64, v64, i64, z64, f32, f64, decimal]: both operands must be one numeric type
+no	type mismatch i64 does not contain string; one value comes from line 1, column 37, the other from line 1, column 43: declare the type that holds both
+ok	(i64, string)
+ok	(i64, string)
+no	type mismatch i64 does not contain string; one value comes from line 1, column 22, the other from line 1, column 30: declare the type that holds both
+ok	(i64, string)
+ok	i64
+ok	i64
+ok	string

@@ -133,9 +133,11 @@ impl Ty {
                 k.each(f);
                 v.each(f)
             }
-            Ty::Tuple(ts) | Ty::Variant(_, ts) | Ty::Named(_, ts) | Ty::Union(ts) | Ty::Abs(_, ts) => {
-                ts.iter().for_each(|t| t.each(f))
-            }
+            Ty::Tuple(ts)
+            | Ty::Variant(_, ts)
+            | Ty::Named(_, ts)
+            | Ty::Union(ts)
+            | Ty::Abs(_, ts) => ts.iter().for_each(|t| t.each(f)),
             Ty::Struct(fs) => fs.iter().for_each(|(_, t)| t.each(f)),
             Ty::Fn(ft) => {
                 ft.args.iter().for_each(|a| a.ty.each(f));

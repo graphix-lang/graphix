@@ -27,7 +27,12 @@ pub enum Pat {
     Struct(Option<Var>, Vec<(ArcStr, Pat)>, bool),
     /// An array or list by its elements: the whole, the elements written,
     /// and the name of the run the pattern leaves open, if it leaves one.
-    Elems { all: Option<Var>, list: bool, elems: Vec<Pat>, open: Option<Option<Var>> },
+    Elems {
+        all: Option<Var>,
+        list: bool,
+        elems: Vec<Pat>,
+        open: Option<Option<Var>>,
+    },
     Or(Vec<Pat>),
     /// An abstract type's constructor around what it holds.
     Abs(Option<Var>, ArcStr, Box<Pat>),
@@ -81,12 +86,16 @@ impl Pat {
             Pat::Tuple(_, ps) => Some(Ty::Tuple(all(ps))),
             Pat::Variant(_, tag, ps) => Some(Ty::Variant(tag.clone(), all(ps))),
             Pat::Struct(_, fs, true) => Some(Ty::Struct(
-                fs.iter().map(|(n, p)| (n.clone(), p.admits().unwrap_or(Ty::Any))).collect(),
+                fs.iter()
+                    .map(|(n, p)| (n.clone(), p.admits().unwrap_or(Ty::Any)))
+                    .collect(),
             )),
             Pat::Struct(_, _, false) => None,
             Pat::Elems { list: false, .. } => Some(Ty::Array(Rc::new(Ty::Any))),
             Pat::Elems { list: true, .. } => Some(Ty::List(Rc::new(Ty::Any))),
-            Pat::Or(ps) => ps.iter().map(|p| p.admits()).collect::<Option<Vec<Ty>>>().map(union),
+            Pat::Or(ps) => {
+                ps.iter().map(|p| p.admits()).collect::<Option<Vec<Ty>>>().map(union)
+            }
             Pat::Abs(..) => None,
         }
     }
@@ -146,7 +155,7 @@ fn left(array: &Ty, taken: u64, from: usize) -> Ty {
 }
 
 pub struct Select {
-    pub arms: Vec<Arm>,
+    pub(crate) arms: Vec<Arm>,
     hit: Vec<bool>,
     routed: bool,
     /// A copy made for an instance of a generic definition: an arm nothing
@@ -170,18 +179,25 @@ struct Routed {
 impl Solver {
     pub fn select(&mut self, arms: Vec<Arm>) -> usize {
         let hit = vec![false; arms.len()];
-        self.selects.push(Select { arms, hit, routed: false, instance: false, waiting: vec![], at: String::new(), seen: vec![] });
+        self.selects.push(Select {
+            arms,
+            hit,
+            routed: false,
+            instance: false,
+            waiting: vec![],
+            at: String::new(),
+            seen: vec![],
+        });
         self.selects.len() - 1
     }
 
-    pub(crate) fn select_instance(&mut self, arms: Vec<Arm>) -> usize {
+    /// A copy of select `of` with `arms`, made for an instance of the
+    /// generic definition `of` is in.
+    pub(crate) fn select_instance(&mut self, of: usize, arms: Vec<Arm>) -> usize {
         let id = self.select(arms);
         self.selects[id].instance = true;
+        self.selects[id].at = self.selects[of].at.clone();
         id
-    }
-
-    pub(crate) fn select_arms(&self, id: usize) -> Vec<Arm> {
-        self.selects[id].arms.clone()
     }
 
     /// What a select still waits to pass down its arms.
@@ -209,28 +225,26 @@ impl Solver {
         matches!(t, Ty::Prim(p) if p.contains(bit))
     }
 
-    /// `t` with a typedef at its top unfolded; a product with a component
-    /// nothing inhabits is nothing.
-    fn expand(&self, t: &Ty) -> Ty {
-        let empty = |t: &Ty| matches!(t, Ty::Bot);
+    /// No value has the type: a product with such a component, at any
+    /// depth. A named type is taken to have values.
+    fn empty(&self, t: &Ty) -> bool {
         match self.shallow(t) {
-            Ty::Named(id, args) => self.expand(&self.unfold(id, &args)),
-            Ty::Tuple(ts) | Ty::Variant(_, ts) if ts.iter().any(empty) => Ty::Bot,
-            Ty::Struct(fs) if fs.iter().any(|(_, t)| empty(t)) => Ty::Bot,
-            t => t,
+            Ty::Bot => true,
+            Ty::Tuple(ts) | Ty::Variant(_, ts) => ts.iter().any(|t| self.empty(t)),
+            Ty::Struct(fs) => fs.iter().any(|(_, t)| self.empty(t)),
+            Ty::Union(ms) => ms.iter().all(|t| self.empty(t)),
+            _ => false,
         }
     }
 
-    /// What the uses of `v` demand of it, as far as that is decided.
-    pub(crate) fn demand(&self, v: Var) -> Ty {
-        let mut demand = Ty::Any;
-        for u in self.vars[v.0 as usize].upper.iter() {
-            let u = self.deep(u);
-            if !matches!(u, Ty::Var(_)) && self.is_ground(&u) {
-                demand = self.both(&demand, &u)
-            }
+    /// `t` with a typedef at its top unfolded; a type with no value is
+    /// nothing.
+    fn expand(&self, t: &Ty) -> Ty {
+        match self.shallow(t) {
+            Ty::Named(id, args) => self.expand(&self.unfold(id, &args)),
+            t if self.empty(&t) => Ty::Bot,
+            t => t,
         }
-        demand
     }
 
     /// The values in both `a` and `b`.
@@ -244,13 +258,17 @@ impl Solver {
         match (&a, &b) {
             _ if a == b => a,
             (Ty::Any, t) | (t, Ty::Any) => t.clone(),
-            (Ty::Union(ms), t) | (t, Ty::Union(ms)) => union(ms.iter().map(|m| self.both(m, t))),
+            (Ty::Union(ms), t) | (t, Ty::Union(ms)) => {
+                union(ms.iter().map(|m| self.both(m, t)))
+            }
             (Ty::Prim(p), Ty::Prim(q)) if !(*p & *q).is_empty() => Ty::Prim(*p & *q),
-            (Ty::Error(_), p) | (p, Ty::Error(_)) if Self::has(p, Typ::Error) => match &a {
+            (Ty::Error(_), p) | (p, Ty::Error(_)) if Self::has(p, Typ::Error) => match &a
+            {
                 Ty::Error(_) => a,
                 _ => b,
             },
-            (Ty::Array(_), p) | (p, Ty::Array(_)) if Self::has(p, Typ::Array) => match &a {
+            (Ty::Array(_), p) | (p, Ty::Array(_)) if Self::has(p, Typ::Array) => match &a
+            {
                 Ty::Array(_) => a,
                 _ => b,
             },
@@ -263,12 +281,17 @@ impl Solver {
             (Ty::Tuple(xs), Ty::Tuple(ys)) if xs.len() == ys.len() => {
                 each(xs, ys).map(Ty::Tuple).unwrap_or(Ty::Bot)
             }
-            (Ty::Variant(t0, xs), Ty::Variant(t1, ys)) if t0 == t1 && xs.len() == ys.len() => {
+            (Ty::Variant(t0, xs), Ty::Variant(t1, ys))
+                if t0 == t1 && xs.len() == ys.len() =>
+            {
                 each(xs, ys).map(|ts| Ty::Variant(t0.clone(), ts)).unwrap_or(Ty::Bot)
             }
             (Ty::Struct(xs), Ty::Struct(ys)) if a.head() == b.head() => {
-                let fs: Vec<_> =
-                    xs.iter().zip(ys.iter()).map(|((n, x), (_, y))| (n.clone(), self.both(x, y))).collect();
+                let fs: Vec<_> = xs
+                    .iter()
+                    .zip(ys.iter())
+                    .map(|((n, x), (_, y))| (n.clone(), self.both(x, y)))
+                    .collect();
                 match fs.iter().any(|(_, t)| matches!(t, Ty::Bot)) {
                     true => Ty::Bot,
                     false => Ty::Struct(fs.into()),
@@ -320,13 +343,18 @@ impl Solver {
             (Ty::Tuple(xs), Ty::Tuple(ys)) if xs.len() == ys.len() => {
                 product(xs, ys, &|ts| Ty::Tuple(ts))
             }
-            (Ty::Variant(t0, xs), Ty::Variant(t1, ys)) if t0 == t1 && xs.len() == ys.len() => {
+            (Ty::Variant(t0, xs), Ty::Variant(t1, ys))
+                if t0 == t1 && xs.len() == ys.len() =>
+            {
                 product(xs, ys, &|ts| Ty::Variant(t0.clone(), ts))
             }
             (Ty::Struct(xs), Ty::Struct(ys)) if a.head() == b.head() => {
                 let names: Vec<ArcStr> = xs.iter().map(|(n, _)| n.clone()).collect();
-                let (xs, ys): (Vec<Ty>, Vec<Ty>) =
-                    xs.iter().zip(ys.iter()).map(|((_, x), (_, y))| (x.clone(), y.clone())).unzip();
+                let (xs, ys): (Vec<Ty>, Vec<Ty>) = xs
+                    .iter()
+                    .zip(ys.iter())
+                    .map(|((_, x), (_, y))| (x.clone(), y.clone()))
+                    .unzip();
                 product(&xs, &ys, &|ts| {
                     Ty::Struct(names.iter().cloned().zip(ts.iter().cloned()).collect())
                 })
@@ -335,15 +363,12 @@ impl Solver {
         }
     }
 
-    /// `open` where the scrutinee was not decided when the select was
-    /// checked: there a name's type is what its uses demand, and that is
-    /// part of the arm's test.
-    fn route(&self, pat: &Pat, t: &Ty, open: bool) -> Routed {
+    fn route(&self, pat: &Pat, t: &Ty) -> Routed {
         let t = self.expand(t);
         if let Ty::Union(ms) = &t {
             let (mut parts, mut rests, mut binds) = (vec![], vec![], vec![]);
             for m in ms.iter() {
-                let r = self.route(pat, m, open);
+                let r = self.route(pat, m);
                 parts.push(r.part);
                 rests.push(r.rest);
                 binds.extend(r.binds)
@@ -359,13 +384,17 @@ impl Solver {
         let nothing = || Routed { part: Ty::Bot, rest: t.clone(), binds: vec![] };
         // each sub-pattern over its component; the part is a product, the
         // rest the products that fail in a first component
-        let product = |all: &Option<Var>, ps: &[&Pat], xs: &[Ty], wrap: &dyn Fn(Vec<Ty>) -> Ty| {
+        let product = |all: &Option<Var>,
+                       ps: &[&Pat],
+                       xs: &[Ty],
+                       wrap: &dyn Fn(Vec<Ty>) -> Ty| {
             let rs: Vec<Routed> =
-                ps.iter().zip(xs).map(|(p, x)| self.route(p, x, open)).collect();
+                ps.iter().zip(xs).map(|(p, x)| self.route(p, x)).collect();
             let mut rests = vec![];
             for (i, r) in rs.iter().enumerate() {
                 if !matches!(r.rest, Ty::Bot) {
-                    let mut ts: Vec<Ty> = rs[..i].iter().map(|r| r.part.clone()).collect();
+                    let mut ts: Vec<Ty> =
+                        rs[..i].iter().map(|r| r.part.clone()).collect();
                     ts.push(r.rest.clone());
                     ts.extend(xs[i + 1..].iter().cloned());
                     if !ts.iter().any(|t| matches!(t, Ty::Bot)) {
@@ -384,17 +413,12 @@ impl Solver {
         };
         match (pat, &t) {
             (_, Ty::Bot) => nothing(),
-            (Pat::Any(Some(v)), _) if open => {
-                let demand = split(&self.demand(*v));
-                let part = self.both(&t, &demand);
-                Routed { rest: self.less(&t, &demand), binds: named(&Some(*v), &part, vec![]), part }
-            }
             (Pat::Any(v), _) => {
                 Routed { part: t.clone(), rest: Ty::Bot, binds: named(v, &t, vec![]) }
             }
             (Pat::Test(test, p), _) => {
                 let test = split(test);
-                let r = self.route(p, &self.both(&t, &test), open);
+                let r = self.route(p, &self.both(&t, &test));
                 Routed { rest: union([self.less(&t, &test), r.rest]), ..r }
             }
             (Pat::Lit(lit, whole), _) => {
@@ -404,24 +428,30 @@ impl Solver {
                 };
                 Routed { part: self.both(&t, lit), rest, binds: vec![] }
             }
-            (Pat::Abs(all, tag, p), Ty::Abs(t0, args)) if tag == t0 => match self.rep(tag, args) {
-                None => nothing(),
-                Some(rep) => {
-                    let r = self.route(p, &rep, open);
-                    match (&r.part, &r.rest) {
-                        (Ty::Bot, _) => nothing(),
-                        (_, rest) => Routed {
-                            part: t.clone(),
-                            rest: if matches!(rest, Ty::Bot) { Ty::Bot } else { t.clone() },
-                            binds: named(all, &t, r.binds),
-                        },
+            (Pat::Abs(all, tag, p), Ty::Abs(t0, args)) if tag == t0 => {
+                match self.rep(tag, args) {
+                    None => nothing(),
+                    Some(rep) => {
+                        let r = self.route(p, &rep);
+                        match (&r.part, &r.rest) {
+                            (Ty::Bot, _) => nothing(),
+                            (_, rest) => Routed {
+                                part: t.clone(),
+                                rest: if matches!(rest, Ty::Bot) {
+                                    Ty::Bot
+                                } else {
+                                    t.clone()
+                                },
+                                binds: named(all, &t, r.binds),
+                            },
+                        }
                     }
                 }
-            },
+            }
             (Pat::Or(ps), _) => {
                 let (mut reach, mut parts, mut binds) = (t.clone(), vec![], vec![]);
                 for p in ps {
-                    let r = self.route(p, &reach, open);
+                    let r = self.route(p, &reach);
                     parts.push(r.part);
                     binds.extend(r.binds);
                     reach = r.rest
@@ -429,11 +459,15 @@ impl Solver {
                 Routed { part: union(parts), rest: reach, binds }
             }
             (Pat::Elems { all, list, elems, open: run }, _)
-                if matches!(lengths(&t).map(|l| l.2).unwrap_or(t.clone()), Ty::Array(_) | Ty::List(_)) =>
+                if matches!(
+                    lengths(&t).map(|l| l.2).unwrap_or(t.clone()),
+                    Ty::Array(_) | Ty::List(_)
+                ) =>
             {
                 // a pattern takes the arrays of its length, or of its
                 // length and longer where it leaves a run open
-                let (taken, from, array) = lengths(&t).unwrap_or((0, usize::MAX, t.clone()));
+                let (taken, from, array) =
+                    lengths(&t).unwrap_or((0, usize::MAX, t.clone()));
                 let e = match &array {
                     Ty::Array(e) if !*list => e.clone(),
                     Ty::List(e) if *list => e.clone(),
@@ -441,12 +475,13 @@ impl Solver {
                 };
                 let n = elems.len();
                 let gone = n >= from || (run.is_none() && n < 64 && taken >> n & 1 == 1);
-                let rs: Vec<Routed> = elems.iter().map(|p| self.route(p, &e, open)).collect();
+                let rs: Vec<Routed> = elems.iter().map(|p| self.route(p, &e)).collect();
                 if gone || rs.iter().any(|r| matches!(r.part, Ty::Bot)) {
                     return nothing();
                 }
                 let whole = rs.iter().all(|r| matches!(r.rest, Ty::Bot));
-                let mut binds: Vec<(Var, Ty)> = rs.into_iter().flat_map(|r| r.binds).collect();
+                let mut binds: Vec<(Var, Ty)> =
+                    rs.into_iter().flat_map(|r| r.binds).collect();
                 if let Some(Some(v)) = run {
                     binds.push((*v, array.clone()))
                 }
@@ -458,16 +493,26 @@ impl Solver {
                 };
                 Routed { binds: named(all, &array, binds), part: array, rest }
             }
+            (Pat::Elems { list, .. }, Ty::Any) => {
+                let any = Rc::new(Ty::Any);
+                let r =
+                    self.route(pat, &if *list { Ty::List(any) } else { Ty::Array(any) });
+                Routed { rest: Ty::Any, ..r }
+            }
             (_, _) if lengths(&t).is_some() && !matches!(pat, Pat::Or(_)) => {
                 let (_, _, array) = lengths(&t).unwrap();
-                self.route(pat, &array, open)
+                self.route(pat, &array)
             }
             (Pat::Tuple(all, ps), Ty::Tuple(xs)) if ps.len() == xs.len() => {
-                product(all, &ps.iter().collect::<Vec<_>>(), xs, &|ts| Ty::Tuple(ts.into()))
+                product(all, &ps.iter().collect::<Vec<_>>(), xs, &|ts| {
+                    Ty::Tuple(ts.into())
+                })
             }
             (Pat::Tuple(all, ps), Ty::Any) => {
                 let xs = vec![Ty::Any; ps.len()];
-                let r = product(all, &ps.iter().collect::<Vec<_>>(), &xs, &|ts| Ty::Tuple(ts.into()));
+                let r = product(all, &ps.iter().collect::<Vec<_>>(), &xs, &|ts| {
+                    Ty::Tuple(ts.into())
+                });
                 Routed { rest: Ty::Any, ..r }
             }
             (Pat::Variant(all, tag, ps), Ty::Variant(t0, xs))
@@ -491,7 +536,9 @@ impl Solver {
                 let ignore = Pat::Any(None);
                 let ps: Vec<&Pat> = xs
                     .iter()
-                    .map(|(n, _)| fs.iter().find(|(m, _)| m == n).map(|(_, p)| p).unwrap_or(&ignore))
+                    .map(|(n, _)| {
+                        fs.iter().find(|(m, _)| m == n).map(|(_, p)| p).unwrap_or(&ignore)
+                    })
                     .collect();
                 let ts: Vec<Ty> = xs.iter().map(|(_, t)| t.clone()).collect();
                 product(all, &ps, &ts, &|ts| {
@@ -508,11 +555,10 @@ impl Solver {
             self.selects[id].waiting.push(t.clone());
             return Ok(());
         }
-        let mut reach = split(&self.deep(t));
+        let mut reach = self.expand(&split(&self.deep(t)));
         let (mut binds, mut hits) = (vec![], vec![]);
-        let open = self.selects[id].instance;
         for (i, arm) in self.selects[id].arms.iter().enumerate() {
-            let r = self.route(&arm.pat, &reach, open);
+            let r = self.route(&arm.pat, &reach);
             if !matches!(r.part, Ty::Bot) {
                 hits.push(i);
                 binds.extend(r.binds)
@@ -522,19 +568,21 @@ impl Solver {
             }
         }
         if !matches!(reach, Ty::Bot) {
-            bail!("missing match cases: nothing matches {} ({})", unsplit(&reach), self.selects[id].at)
+            if std::env::var("SPIKE_PANIC").is_ok() {
+                panic!("missing match cases: {reach}")
+            }
+            bail!(
+                "missing match cases: nothing matches {} ({})",
+                unsplit(&reach),
+                self.selects[id].at
+            )
         }
         self.selects[id].routed = true;
         let whole = unsplit(&self.deep(t));
         self.selects[id].seen.push(whole);
         hits.into_iter().for_each(|i| self.selects[id].hit[i] = true);
         for (v, t) in binds {
-            match unsplit(&t) {
-                // what a name holds of an `Any` part is whatever its uses
-                // demand, and the arm's test is built from that
-                Ty::Any => self.over_any(v),
-                t => self.constrain(&t, &Ty::Var(v))?,
-            }
+            self.constrain(&unsplit(&t), &Ty::Var(v))?
         }
         Ok(())
     }
@@ -564,7 +612,12 @@ impl Solver {
         for s in self.selects.iter().filter(|s| s.routed && !s.instance) {
             if let Some(i) = s.hit.iter().position(|h| !h) {
                 let seen: Vec<String> = s.seen.iter().map(|t| t.to_string()).collect();
-                bail!("pattern {} will never match: nothing reaches it ({}; the value is {})", i + 1, s.at, seen.join(" | "))
+                bail!(
+                    "pattern {} will never match: nothing reaches it ({}; the value is {})",
+                    i + 1,
+                    s.at,
+                    seen.join(" | ")
+                )
             }
         }
         Ok(())

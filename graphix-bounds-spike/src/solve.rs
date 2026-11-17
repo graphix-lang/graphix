@@ -65,8 +65,6 @@ pub struct VarInfo {
     /// into them is passed on as it arrives, so this is a record for
     /// fixing, never walked when a bound is added.
     feeders: Vec<Var>,
-    /// Bound by a pattern over an `Any` part: with no use it is `Any`.
-    over_any: bool,
     watches: Vec<(Watch, bool)>,
 }
 
@@ -102,7 +100,12 @@ impl std::fmt::Display for Two {
             Some((l, c)) => format!("line {l}, column {c}"),
             None => "elsewhere".to_string(),
         };
-        write!(f, "one value comes from {}, the other from {}: declare the type that holds both", at(&self.0), at(&self.1))
+        write!(
+            f,
+            "one value comes from {}, the other from {}: declare the type that holds both",
+            at(&self.0),
+            at(&self.1)
+        )
     }
 }
 
@@ -159,14 +162,9 @@ impl Solver {
             demanded: false,
             direct: vec![],
             feeders: vec![],
-            over_any: false,
             watches: vec![],
         });
         Var(self.vars.len() as u32 - 1)
-    }
-
-    pub(crate) fn over_any(&mut self, v: Var) {
-        self.info_mut(v).over_any = true
     }
 
     pub fn fresh_ty(&mut self, level: u32, kind: Kind) -> Ty {
@@ -277,7 +275,8 @@ impl Solver {
                         for l in self.info(*v).lower.clone() {
                             let from = self.sites.get(&(*v, true, l.clone())).copied();
                             self.along_edge = matches!(b, Ty::Var(_));
-                            self.constrain(&l, &b).map_err(|e| self.ends(e, from, self.at))?
+                            self.constrain(&l, &b)
+                                .map_err(|e| self.ends(e, from, self.at))?
                         }
                         Ok(())
                     }
@@ -288,7 +287,9 @@ impl Solver {
                         let b = self.extrude(&b, false, lvl, &mut HashMap::new());
                         self.constrain(&a, &b)
                     }
-                    (_, Ty::Var(w)) if self.level(&a) <= lvl => self.arrive(*w, &a, along_edge),
+                    (_, Ty::Var(w)) if self.level(&a) <= lvl => {
+                        self.arrive(*w, &a, along_edge)
+                    }
                     (_, _) => {
                         let a = self.extrude(&a, true, lvl, &mut HashMap::new());
                         self.constrain(&a, &b)
@@ -365,7 +366,9 @@ impl Solver {
             (Ty::Abs(t0, xs), Ty::Abs(t1, ys)) if t0 == t1 && xs.len() == ys.len() => {
                 xs.iter().zip(ys.iter()).try_for_each(|(x, y)| self.constrain(x, y))
             }
-            (Ty::Variant(t0, xs), Ty::Variant(t1, ys)) if t0 == t1 && xs.len() == ys.len() => {
+            (Ty::Variant(t0, xs), Ty::Variant(t1, ys))
+                if t0 == t1 && xs.len() == ys.len() =>
+            {
                 xs.iter().zip(ys.iter()).try_for_each(|(x, y)| self.constrain(x, y))
             }
             (Ty::Struct(xs), Ty::Struct(ys)) if a.head() == b.head() => xs
@@ -384,7 +387,12 @@ impl Solver {
         }
     }
 
-    fn ends(&self, e: anyhow::Error, from: Option<Site>, to: Option<Site>) -> anyhow::Error {
+    fn ends(
+        &self,
+        e: anyhow::Error,
+        from: Option<Site>,
+        to: Option<Site>,
+    ) -> anyhow::Error {
         match e.downcast_ref::<Ends>() {
             Some(_) => e,
             None => e.context(Ends(from, to)),
@@ -441,7 +449,12 @@ impl Solver {
                 Ty::Var(u) => !seen.contains(u) && self.decided(*u, seen),
                 _ => true,
             })
-            || self.info(v).feeders.clone().iter().any(|u| !seen.contains(u) && self.decided(*u, seen))
+            || self
+                .info(v)
+                .feeders
+                .clone()
+                .iter()
+                .any(|u| !seen.contains(u) && self.decided(*u, seen))
     }
 
     /// `b` is a new upper bound of `v`: a use that needs a shape takes it
@@ -464,7 +477,13 @@ impl Solver {
 
     /// A copy of `t` no deeper than `lvl`: each deeper variable gets a twin
     /// at `lvl` per polarity, joined to it by a bound.
-    fn extrude(&mut self, t: &Ty, pos: bool, lvl: u32, memo: &mut HashMap<(Var, bool), Var>) -> Ty {
+    fn extrude(
+        &mut self,
+        t: &Ty,
+        pos: bool,
+        lvl: u32,
+        memo: &mut HashMap<(Var, bool), Var>,
+    ) -> Ty {
         if self.level(t) <= lvl {
             return t.clone();
         }
@@ -493,7 +512,10 @@ impl Solver {
                 args: ft
                     .args
                     .iter()
-                    .map(|a| FnArg { ty: self.extrude(&a.ty, !pos, lvl, memo), ..a.clone() })
+                    .map(|a| FnArg {
+                        ty: self.extrude(&a.ty, !pos, lvl, memo),
+                        ..a.clone()
+                    })
                     .collect(),
                 vargs: ft.vargs.as_ref().map(|t| self.extrude(t, !pos, lvl, memo)),
                 ret: self.extrude(&ft.ret, pos, lvl, memo),
@@ -516,7 +538,11 @@ impl Solver {
         };
         let (fp, gp) = (positional(f), positional(g));
         let short = || -> Result<()> {
-            bail!("type mismatch: a function of {} arguments where one of {} is wanted", fp.len(), gp.len())
+            bail!(
+                "type mismatch: a function of {} arguments where one of {} is wanted",
+                fp.len(),
+                gp.len()
+            )
         };
         for (i, ga) in gp.iter().enumerate() {
             match (fp.get(i), &f.vargs) {
@@ -537,7 +563,9 @@ impl Solver {
                     bail!("type mismatch: #{} is required", ga.label.as_ref().unwrap())
                 }
                 Some(fa) => self.constrain(&ga.ty, &fa.ty)?,
-                None => bail!("type mismatch: no argument #{}", ga.label.as_ref().unwrap()),
+                None => {
+                    bail!("type mismatch: no argument #{}", ga.label.as_ref().unwrap())
+                }
             }
         }
         for fa in f.args.iter().filter(|a| a.label.is_some() && !a.optional) {
@@ -563,7 +591,8 @@ impl Solver {
             })
             .collect();
         let ms = &unfolded[..];
-        let primitive = |bit| ms.iter().any(|m| matches!(m, Ty::Prim(p) if p.contains(bit)));
+        let primitive =
+            |bit| ms.iter().any(|m| matches!(m, Ty::Prim(p) if p.contains(bit)));
         if ms.contains(a)
             || (matches!(a, Ty::Error(_)) && primitive(Typ::Error))
             || (matches!(a, Ty::Array(_)) && primitive(Typ::Array))
@@ -594,7 +623,9 @@ impl Solver {
                 let (ground, loose): (Vec<&Ty>, Vec<&Ty>) =
                     cands.iter().partition(|m| self.is_ground(m));
                 if ground.iter().any(|m| self.constrain(a, m).is_ok())
-                    || (loose.is_empty() && open.is_empty() && matches!(self.less(a, b), Ty::Bot))
+                    || (loose.is_empty()
+                        && open.is_empty()
+                        && matches!(self.less(a, b), Ty::Bot))
                 {
                     return Ok(());
                 }
@@ -619,7 +650,9 @@ impl Solver {
     }
 
     fn ambiguous(&self, a: &Ty, b: &Ty) -> Result<()> {
-        bail!("{a} could go to more than one member of the union {b}, and nothing has decided which")
+        bail!(
+            "{a} could go to more than one member of the union {b}, and nothing has decided which"
+        )
     }
 
     /// Apply a use to one concrete lower bound; false where the bound says
@@ -648,7 +681,10 @@ impl Solver {
                 }
                 match any {
                     true => Ok(true),
-                    false => bail!("{} needs its type known here: annotate the binding", w.needs()),
+                    false => bail!(
+                        "{} needs its type known here: annotate the binding",
+                        w.needs()
+                    ),
                 }
             }
             (Ty::Struct(fs), Watch::Field { field, out }) => {
@@ -657,11 +693,15 @@ impl Solver {
                     None => bail!("{a} has no field {field}"),
                 }
             }
-            (Ty::Abs(tag, args), Watch::Index { i: 0, out }) => match self.rep(&tag, &args) {
-                Some(rep) => self.constrain(&rep, out).map(|()| true),
-                None => bail!("{tag} is abstract here: its payload cannot be read"),
-            },
-            (Ty::Error(t), Watch::Index { i: 0, out }) => self.constrain(&t, out).map(|()| true),
+            (Ty::Abs(tag, args), Watch::Index { i: 0, out }) => {
+                match self.rep(&tag, &args) {
+                    Some(rep) => self.constrain(&rep, out).map(|()| true),
+                    None => bail!("{tag} is abstract here: its payload cannot be read"),
+                }
+            }
+            (Ty::Error(t), Watch::Index { i: 0, out }) => {
+                self.constrain(&t, out).map(|()| true)
+            }
             (Ty::Tuple(ts), Watch::Index { i, out }) => match ts.get(*i) {
                 Some(t) => self.constrain(t, out).map(|()| true),
                 None => bail!("{a} has no element {i}"),
@@ -751,7 +791,10 @@ impl Solver {
                 })
             }
             if scheme && mine {
-                let (a, b) = (self.copy(&a, above, at, &mut memo), self.copy(&b, above, at, &mut memo));
+                let (a, b) = (
+                    self.copy(&a, above, at, &mut memo),
+                    self.copy(&b, above, at, &mut memo),
+                );
                 self.held.push((a, b, false))
             }
         }
@@ -766,24 +809,37 @@ impl Solver {
                     }
                 });
                 if mine {
-                    let arms = self.select_arms(id);
-                    let arms = arms
-                        .into_iter()
-                        .map(|a| Arm {
-                            pat: a.pat.map_vars(&mut |u| match self.copy(&Ty::Var(u), above, at, &mut memo) {
-                                Ty::Var(n) => n,
-                                _ => u,
-                            }),
-                            ..a
-                        })
-                        .collect();
-                    let new = self.select_instance(arms);
+                    let new = self.copy_select(id, above, at, &mut memo);
                     let t = self.copy(&t, above, at, &mut memo);
                     self.select_wait(new, t)
                 }
             }
         }
         t
+    }
+
+    /// A select of a generic definition, for one instance of it.
+    fn copy_select(
+        &mut self,
+        id: usize,
+        above: u32,
+        at: u32,
+        memo: &mut HashMap<Var, Var>,
+    ) -> usize {
+        let arms = self.selects[id].arms.clone();
+        let arms = arms
+            .into_iter()
+            .map(|a| Arm {
+                pat: a.pat.map_vars(
+                    &mut |u| match self.copy(&Ty::Var(u), above, at, memo) {
+                        Ty::Var(n) => n,
+                        _ => u,
+                    },
+                ),
+                ..a
+            })
+            .collect();
+        self.select_instance(id, arms)
     }
 
     fn copy(&mut self, t: &Ty, above: u32, at: u32, memo: &mut HashMap<Var, Var>) -> Ty {
@@ -798,13 +854,13 @@ impl Solver {
                 };
                 let n = self.fresh(at, kind);
                 self.info_mut(n).singleton = self.info(*v).singleton;
-                self.info_mut(n).over_any = self.info(*v).over_any;
                 memo.insert(*v, n);
                 let (ls, us) = (self.info(*v).lower.clone(), self.info(*v).upper.clone());
                 let ls = ls.iter().map(|l| self.copy(l, above, at, memo)).collect();
                 let us = us.iter().map(|u| self.copy(u, above, at, memo)).collect();
                 let direct = self.info(*v).direct.clone();
-                let direct = direct.iter().map(|l| self.copy(l, above, at, memo)).collect();
+                let direct =
+                    direct.iter().map(|l| self.copy(l, above, at, memo)).collect();
                 let info = self.info_mut(n);
                 (info.lower, info.upper, info.direct) = (ls, us, direct);
                 // the copy is used as the original is: what flows into it
@@ -830,25 +886,14 @@ impl Solver {
                         Watch::Call { args, out } => Watch::Call {
                             args: args
                                 .iter()
-                                .map(|(l, t, s)| (l.clone(), self.copy(t, above, at, memo), *s))
+                                .map(|(l, t, s)| {
+                                    (l.clone(), self.copy(t, above, at, memo), *s)
+                                })
                                 .collect(),
                             out: self.copy(&out, above, at, memo),
                         },
                         Watch::Select(id) => {
-                            let arms = self.select_arms(id);
-                            let arms = arms
-                                .into_iter()
-                                .map(|a| Arm {
-                                    pat: a.pat.map_vars(&mut |u| {
-                                        match self.copy(&Ty::Var(u), above, at, memo) {
-                                            Ty::Var(n) => n,
-                                            _ => u,
-                                        }
-                                    }),
-                                    ..a
-                                })
-                                .collect();
-                            Watch::Select(self.select_instance(arms))
+                            Watch::Select(self.copy_select(id, above, at, memo))
                         }
                     };
                     let fired = fired && !matches!(w, Watch::Select(_));
@@ -880,7 +925,9 @@ impl Solver {
                                 self.reach(&Ty::Var(u), seen)
                             }
                         }
-                        Watch::Field { out, .. } | Watch::Index { out, .. } => self.reach(out, seen),
+                        Watch::Field { out, .. } | Watch::Index { out, .. } => {
+                            self.reach(out, seen)
+                        }
                         Watch::Call { args, out } => {
                             self.reach(out, seen);
                             args.iter().for_each(|(_, t, _)| self.reach(t, seen))
@@ -893,7 +940,9 @@ impl Solver {
 
     /// A use of `v` that needs a shape nothing gave it.
     fn unread(&self, v: Var) -> Result<()> {
-        let unfired = |(_, (w, fired)): &(usize, &(Watch, bool))| !fired && !matches!(w, Watch::Select(_));
+        let unfired = |(_, (w, fired)): &(usize, &(Watch, bool))| {
+            !fired && !matches!(w, Watch::Select(_))
+        };
         match self.info(v).watches.iter().enumerate().find(unfired) {
             None => Ok(()),
             Some((i, (w, _))) => match self.used_at.get(&(v, i)) {
@@ -901,7 +950,9 @@ impl Solver {
                     "{} needs its type known here (line {l}, column {c}): annotate the binding",
                     w.needs()
                 ),
-                None => bail!("{} needs its type known here: annotate the binding", w.needs()),
+                None => {
+                    bail!("{} needs its type known here: annotate the binding", w.needs())
+                }
             },
         }
     }
@@ -925,57 +976,6 @@ impl Solver {
     pub fn generalize(&mut self, t: &Ty, lvl: u32, mark: usize) -> Result<()> {
         let mut kept = vec![];
         self.reach(t, &mut kept);
-        // a name bound over an `Any` part is decided here, by the
-        // definition's own uses: its type is the arm's run-time test, which
-        // no instance may change
-        for v in kept.clone() {
-            if self.info(v).level > lvl && self.info(v).over_any && self.info(v).fixed.is_none() {
-                let t = self.demand(v);
-                self.testable(&t)?;
-                let info = self.info_mut(v);
-                (info.fixed, info.demanded) = (Some(t.clone()), true);
-                for u in self.info(v).upper.clone() {
-                    if matches!(u, Ty::Var(_)) {
-                        self.constrain(&t, &u)?
-                    }
-                }
-            }
-        }
-        // what a definition's own uses demand of a variable nothing flows
-        // into decides it, where they demand one decided type: `|act| ..
-        // desc(act) ..` takes `act` at `desc`'s parameter type. A bound an
-        // operator puts on its operands is not on the variable itself, so
-        // `|a| a + a` stays generic.
-        for v in kept.clone() {
-            let info = self.info(v);
-            let flows = info.lower.iter().any(|l| !matches!(l, Ty::Var(_)));
-            if info.level <= lvl || info.fixed.is_some() || info.singleton || flows {
-                continue;
-            }
-            let uppers: Vec<Ty> = info
-                .upper
-                .iter()
-                .map(|u| self.deep(u))
-                .filter(|u| !matches!(u, Ty::Var(_)) && self.is_ground(u))
-                .collect();
-            if uppers.is_empty() {
-                continue;
-            }
-            let t = self.meet(&uppers)?;
-            let info = self.info_mut(v);
-            (info.fixed, info.demanded) = (Some(t.clone()), true);
-            for u in self.info(v).upper.clone() {
-                if matches!(u, Ty::Var(_)) {
-                    self.constrain(&t, &u)?
-                }
-            }
-            for i in 0..self.info(v).watches.len() {
-                let watch = self.info(v).watches[i].0.clone();
-                if self.apply(&watch, &t)? {
-                    self.info_mut(v).watches[i].1 = true
-                }
-            }
-        }
         for v in kept {
             if self.info(v).level > lvl && self.info(v).fixed.is_none() {
                 self.info_mut(v).quantified = true;
@@ -1010,9 +1010,10 @@ impl Solver {
             Ty::Union(ms) => ms.to_vec(),
             t => vec![t.clone()],
         };
-        let errors = members
-            .iter()
-            .any(|m| matches!(m, Ty::Error(_)) || matches!(m, Ty::Prim(p) if p.contains(Typ::Error)));
+        let errors = members.iter().any(|m| {
+            matches!(m, Ty::Error(_))
+                || matches!(m, Ty::Prim(p) if p.contains(Typ::Error))
+        });
         let gone = if errors { Typ::Error } else { Typ::Null };
         let payloads = members
             .iter()
@@ -1069,7 +1070,9 @@ impl Solver {
                 }
             }
             let free = |key: (u8, usize), ins: &[Var]| {
-                !produced.iter().any(|(k, c)| *k != key && ins.iter().any(|v| c.contains(v)))
+                !produced
+                    .iter()
+                    .any(|(k, c)| *k != key && ins.iter().any(|v| c.contains(v)))
             };
             for i in (0..self.held.len()).rev() {
                 let (a, b, scheme) = self.held[i].clone();
@@ -1099,9 +1102,11 @@ impl Solver {
                     self.held[i].2 = true
                 }
             }
-            let fixable = |s: &Self, t: &Ty| s.open_vars(t).iter().all(|v| s.fixable(*v, min));
-            let ready =
-                |s: &Self, id: usize, t: &Ty| fixable(s, t) && free((2, id), &s.open_vars(t));
+            let fixable =
+                |s: &Self, t: &Ty| s.open_vars(t).iter().all(|v| s.fixable(*v, min));
+            let ready = |s: &Self, id: usize, t: &Ty| {
+                fixable(s, t) && free((2, id), &s.open_vars(t))
+            };
             progress |= self.select_waiting(&ready)?;
             for i in (0..self.strips.len()).rev() {
                 let (arg, out, raised) = self.strips[i].clone();
@@ -1110,12 +1115,16 @@ impl Solver {
                     self.fix_in(&arg)?;
                     let (left, payloads) = self.strip(&self.deep(&arg));
                     self.constrain(&left, &out)?;
-                    for p in raised.iter().flat_map(|r| payloads.iter().map(move |p| (p, r))) {
+                    for p in
+                        raised.iter().flat_map(|r| payloads.iter().map(move |p| (p, r)))
+                    {
                         self.constrain(p.0, p.1)?
                     }
                     progress = true
                 } else if self.open_vars(&arg).iter().any(|v| self.info(*v).quantified) {
-                    bail!("the type of the operand of ? or $ is not known here: annotate it")
+                    bail!(
+                        "the type of the operand of ? or $ is not known here: annotate it"
+                    )
                 }
             }
         }
@@ -1151,7 +1160,8 @@ impl Solver {
             if self.info(v).fixed.is_none()
                 && self.info(v).level >= min
                 && !self.info(v).quantified
-                && (last || (self.fixable(v, min) && (awaited.is_empty() || !waits(self, v))))
+                && (last
+                    || (self.fixable(v, min) && (awaited.is_empty() || !waits(self, v))))
             {
                 self.fix(v)?;
                 if self.info(v).fixed != Some(Ty::Bot) {
@@ -1168,7 +1178,10 @@ impl Solver {
     /// Give `v` one type: the union of what flows into it, or, where nothing
     /// does, the meet of what its uses demand.
     fn fix(&mut self, v: Var) -> Result<()> {
-        if self.info(v).fixed.is_some() || self.info(v).quantified || !self.fixing.insert(v) {
+        if self.info(v).fixed.is_some()
+            || self.info(v).quantified
+            || !self.fixing.insert(v)
+        {
             return Ok(());
         }
         // a variable nothing has decided may stay open inside a bound: a
@@ -1213,14 +1226,7 @@ impl Solver {
                 }
             }
             self.info_mut(v).demanded = true;
-            let t = match uppers.is_empty() && self.info(v).over_any {
-                true => Ty::Any,
-                false => self.meet(&uppers)?,
-            };
-            if self.info(v).over_any {
-                self.testable(&t)?
-            }
-            t
+            self.meet(&uppers)?
         };
         if self.info(v).singleton
             && !matches!(&ty, Ty::Bot)
@@ -1233,29 +1239,16 @@ impl Solver {
         Ok(())
     }
 
-    /// The type of a name bound over an `Any` part is the arm's run-time
-    /// test: it must be something a test can tell.
-    fn testable(&self, t: &Ty) -> Result<()> {
-        let mut opaque = false;
-        t.each(&mut |t| opaque |= matches!(t, Ty::Fn(_) | Ty::Ref(..)));
-        if matches!(t, Ty::Bot) || opaque {
-            bail!("a name bound inside an Any part: its uses do not decide a type a test can tell ({t})")
-        }
-        Ok(())
-    }
-
     /// What a lower bound `l` of `v` says once the variables in it are
     /// fixed: nothing for a variable nothing flows into (it is fixed from
-    /// above, after `v`), unless it is a name bound over `Any`, which holds
-    /// a value of the type it is fixed to.
+    /// above, after `v`).
     fn settled(&mut self, v: Var, l: &Ty) -> Result<Option<Ty>> {
         Ok(match self.shallow(l) {
-            _ if matches!(l, Ty::Var(u) if self.info(*u).demanded && !self.info(*u).over_any) => None,
-            Ty::Var(u) if !self.decided(u, &mut vec![]) && !self.info(u).over_any => None,
+            _ if matches!(l, Ty::Var(u) if self.info(*u).demanded) => None,
+            Ty::Var(u) if !self.decided(u, &mut vec![]) => None,
             Ty::Var(u) => {
                 self.fix(u)?;
-                let said = !self.info(u).demanded || self.info(u).over_any;
-                self.info(u).fixed.clone().filter(|_| said)
+                self.info(u).fixed.clone().filter(|_| !self.info(u).demanded)
             }
             t => {
                 for u in self.open_vars(&t) {
@@ -1276,7 +1269,8 @@ impl Solver {
     fn holder(&mut self, ts: &[Ty], from: &[Option<Site>]) -> Result<Ty> {
         // a lower bound with a variable nothing has decided is tried last:
         // that variable takes what the other lower bounds need
-        let (ground, open): (Vec<&Ty>, Vec<&Ty>) = ts.iter().partition(|t| self.is_ground(t));
+        let (ground, open): (Vec<&Ty>, Vec<&Ty>) =
+            ts.iter().partition(|t| self.is_ground(t));
         for t in ground.into_iter().chain(open) {
             if ts.iter().all(|o| self.constrain(o, t).is_ok()) {
                 return Ok(t.clone());
