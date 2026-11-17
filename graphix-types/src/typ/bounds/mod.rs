@@ -310,6 +310,10 @@ pub struct Solving {
     /// The scheme's cells the use being made has copied, whose
     /// [`Known::left`] it has still to take.
     copied: Vec<TVar>,
+    /// The copies being made are a scheme's too ([`specialize`]): each is
+    /// a variable of the copy, and keeps what the original left to its
+    /// instances.
+    scheming: bool,
 }
 
 /// A kind of use a check may still owe when a definition closes.
@@ -511,6 +515,9 @@ impl Solving {
 
     fn relate_in(&mut self, env: &Env, a: &Type, b: &Type, edge: bool) -> Result<()> {
         let (a, b) = (flat(env, shallow(a))?, flat(env, shallow(b))?);
+        if std::env::var_os("GRAPHIX_BOUNDS_DEBUG").is_some() {
+            eprintln!("relate {a} <= {b}")
+        }
         match (&a, &b) {
             (Type::Bottom, _) | (_, Type::Any) => return Ok(()),
             // a predicate on a cell is judged when the cell is decided
@@ -1056,6 +1063,70 @@ pub fn instance(env: &Env, def: &Type, at: &Type) -> Result<AHashMap<usize, TVar
     Ok(copies)
 }
 
+/// A type of a generic definition's check as one instance of the
+/// definition has it: each of the definition's cells is the instance's
+/// (`known`, by the cell's address), and a scheme the type holds beside
+/// (a generic definition inside the first) is copied as a scheme, over the
+/// instance's cells, the copies added to `known`.
+pub fn specialize(t: &Type, known: &mut AHashMap<usize, TVar>) -> Type {
+    let mut solving = Solving { scheming: true, ..Solving::default() };
+    let t = solving.copy(t, Level::GENERIC.depth() - 1, Level::GENERIC, known);
+    deep(&t)
+}
+
+/// Give each open cell of `own`, a type an instance compiled, the part of
+/// `row` at its place, where `row` is that type as the definition's check
+/// left it and the instance reads it ([`specialize`]). False where an
+/// open cell of `own` finds no part.
+pub fn take(own: &Type, row: &Type) -> bool {
+    let all = |xs: &[Type], ys: &[Type]| {
+        xs.len() == ys.len() && xs.iter().zip(ys.iter()).all(|(x, y)| take(x, y))
+    };
+    ensure_sufficient(|| match (own, row) {
+        (Type::TVar(v), row) => match v.binding() {
+            Some(b) => take(&b, row),
+            None => {
+                if !matches!(row, Type::TVar(r) if r.same_cell(v)) {
+                    v.cell().write().set_binding(Some(row.clone()))
+                }
+                true
+            }
+        },
+        (own, Type::TVar(r)) => match r.binding() {
+            Some(b) => take(own, &b),
+            None => !own.has_unbound(),
+        },
+        (Type::Fn(f), Type::Fn(g)) => {
+            f.args.len() == g.args.len()
+                && f.args.iter().zip(g.args.iter()).all(|(a, b)| take(&a.typ, &b.typ))
+                && match (&f.vargs, &g.vargs) {
+                    (Some(a), Some(b)) => take(a, b),
+                    (None, None) => true,
+                    _ => false,
+                }
+                && take(&f.rtype, &g.rtype)
+                && take(&f.throws, &g.throws)
+        }
+        (Type::Array(x), Type::Array(y))
+        | (Type::List(x), Type::List(y))
+        | (Type::Error(x), Type::Error(y))
+        | (Type::ByRef(_, x), Type::ByRef(_, y)) => take(x, y),
+        (Type::Map(m), Type::Map(n)) => take(&m.key, &n.key) && take(&m.value, &n.value),
+        (Type::Tuple(xs), Type::Tuple(ys))
+        | (Type::Set(xs), Type::Set(ys))
+        | (Type::Variant(_, xs, _), Type::Variant(_, ys, _))
+        | (Type::Abstract { params: xs, .. }, Type::Abstract { params: ys, .. }) => {
+            all(xs, ys)
+        }
+        (Type::Ref(a), Type::Ref(b)) => all(&a.params, &b.params),
+        (Type::Struct(xs), Type::Struct(ys)) => {
+            xs.len() == ys.len()
+                && xs.iter().zip(ys.iter()).all(|((_, x, _), (_, y, _))| take(x, y))
+        }
+        (own, _) => !own.has_unbound(),
+    })
+}
+
 /// A method of a trait whose `self` is a constructor, as the
 /// implementation for `target` (a type with a hole) types it: each
 /// `self<X>` of the declared `sig` is `target` with `X` in its hole.
@@ -1079,7 +1150,9 @@ fn flat(env: &Env, t: Type) -> Result<Type> {
     fn names_union(env: &Env, m: &Type) -> Result<Option<Type>> {
         Ok(match &shallow(m) {
             named @ Type::Ref(_) if !named.is_trait_ref(env) => {
-                Some(named.lookup_ref(env)?).filter(|body| matches!(body, Type::Set(_)))
+                // a union of primitives alone is one primitive type
+                Some(named.lookup_ref(env)?)
+                    .filter(|body| matches!(body, Type::Set(_) | Type::Primitive(_)))
             }
             _ => None,
         })
@@ -1614,6 +1687,12 @@ impl Solving {
             // this instance meets the same reads and calls
             for (u, met) in used.iter() {
                 let u = match u {
+                    Use::Routed(_, of) if self.scheming => {
+                        let of = self.template_copy(of, &mut |s, v| {
+                            s.copy_cell(v, above, at, copies)
+                        });
+                        Use::Routed(usize::MAX, of)
+                    }
                     Use::Routed(_, of) => {
                         let new = self.select_copy(of, &mut |s, v| {
                             s.copy_cell(v, above, at, copies)
@@ -1648,7 +1727,29 @@ impl Solving {
                     && !matches!(u, Use::Select(_) | Use::Routed(..) | Use::Method { .. });
                 known(&n, |k| k.uses.push((u, met)))
             }
-            self.track(&n)
+            if !self.scheming {
+                self.track(&n);
+                continue;
+            }
+            let left = v.cell().read().solving.as_ref().map(|k| k.left.clone());
+            for l in left.into_iter().flatten() {
+                let l = match l {
+                    Left::Held(pair) => Left::Held(Arc::new((
+                        self.copy(&pair.0, above, at, copies),
+                        self.copy(&pair.1, above, at, copies),
+                    ))),
+                    Left::Single(u) => Left::Single(self.copy_cell(&u, above, at, copies)),
+                    Left::Waiting(of, w) => {
+                        let of = self.template_copy(&of, &mut |s, v| {
+                            s.copy_cell(v, above, at, copies)
+                        });
+                        Left::Waiting(of, self.copy(&w, above, at, copies))
+                    }
+                };
+                known(&n, |k| k.left.push(l))
+            }
+            known(&n, |k| k.quantified = true);
+            n.generalize()
         }
         t
     }

@@ -2130,7 +2130,9 @@ fn check_in_tasks<R: Rt>(
         let r = task.run_task(|task| check(n, task));
         statement_result(r, n, module)
     };
-    match ctx.control.eval_pool() {
+    // the solver of a check by bounds is this thread's: its tasks run here,
+    // one after another
+    match ctx.control.eval_pool().filter(|_| !bounds::active()) {
         // CR claude for claude: [structure/low] Three functions fork a `CompileCtx` per
         // part, run the parts on the evaluation pool and join them in order: this one,
         // `fusion::fuse_each` and `branch::compile_each`. Only `compile_each` enters

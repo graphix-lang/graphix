@@ -354,6 +354,24 @@ impl Solving {
         new
     }
 
+    /// The select `of` as written, each cell its patterns bind through
+    /// `f`: the select of a copy of the scheme it is in.
+    pub(super) fn template_copy(
+        &mut self,
+        of: &Template,
+        f: &mut dyn FnMut(&mut Self, &TVar) -> TVar,
+    ) -> Arc<Template> {
+        let arms = of
+            .arms
+            .iter()
+            .map(|a| Arm {
+                pat: a.pat.map_cells(&mut |v| f(self, v)),
+                guarded: a.guarded,
+            })
+            .collect();
+        Arc::new(Template { arms, at: of.at.clone() })
+    }
+
     /// The cells a select's patterns bind.
     pub(super) fn select_cells(&self, id: usize) -> SmallVec<[TVar; 4]> {
         let mut out = SmallVec::new();

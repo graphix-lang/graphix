@@ -755,6 +755,11 @@ impl InstanceTypes {
             Some(outer) => t.rename_with(&outer.lock()),
             None => t.clone(),
         };
+        // a row a check by bounds made holds scheme cells: the instance's
+        // own, or those of a generic definition inside it
+        if bounds::scheme(&t) {
+            return bounds::specialize(&t, &mut self.known.lock());
+        }
         t.instantiate_with(&mut self.known.lock(), &self.open)
     }
 
@@ -3576,6 +3581,16 @@ impl<R: Rt> Update<R> for Lambda {
             elab_audit::fallback(&self.spec);
             return self.typecheck0(ctx);
         };
+        // a definition a check by bounds made generic is that scheme, as
+        // the instance holds it
+        if bounds::scheme(&row) {
+            if !bounds::take(&self.typ, &row) {
+                bailat!(self.spec, "BUG: a lambda's signature took no row")
+            }
+            def.join_facts(tables.table.facts);
+            def.table.set(tables);
+            return Ok(());
+        }
         {
             let _at = AtLevel::enter(level);
             self.typ.place_cells(&ctx.env, &row);
