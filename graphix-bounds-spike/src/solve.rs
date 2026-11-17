@@ -688,6 +688,9 @@ impl Solver {
                 for b in info.lower.iter().chain(info.upper.iter()) {
                     self.reach(b, seen)
                 }
+                for u in info.feeders.iter() {
+                    self.reach(&Ty::Var(*u), seen)
+                }
                 for (w, _) in info.watches.iter() {
                     if let Watch::Select(id) = w {
                         for u in self.select_vars(*id) {
@@ -705,8 +708,24 @@ impl Solver {
     pub fn generalize(&mut self, t: &Ty, lvl: u32) -> Result<()> {
         let mut kept = vec![];
         self.reach(t, &mut kept);
+        // a name bound over an `Any` part is decided here, by the
+        // definition's own uses: its type is the arm's run-time test, which
+        // no instance may change
+        for v in kept.clone() {
+            if self.info(v).level > lvl && self.info(v).over_any && self.info(v).fixed.is_none() {
+                let t = self.demand(v);
+                self.testable(&t)?;
+                let info = self.info_mut(v);
+                (info.fixed, info.demanded) = (Some(t.clone()), true);
+                for u in self.info(v).upper.clone() {
+                    if matches!(u, Ty::Var(_)) {
+                        self.constrain(&t, &u)?
+                    }
+                }
+            }
+        }
         for v in kept {
-            if self.info(v).level > lvl {
+            if self.info(v).level > lvl && self.info(v).fixed.is_none() {
                 self.info_mut(v).quantified = true;
                 if let Some((w, _)) = self.info(v).watches.iter().find(|(w, fired)| !fired && !matches!(w, Watch::Select(_))) {
                     bail!("{} needs its type known here: annotate the binding", w.needs())
@@ -901,12 +920,7 @@ impl Solver {
                 false => self.meet(&uppers)?,
             };
             if self.info(v).over_any {
-                // the arm's run-time test is this type
-                let mut opaque = false;
-                t.each(&mut |t| opaque |= matches!(t, Ty::Fn(_) | Ty::Ref(..)));
-                if matches!(t, Ty::Bot) || opaque {
-                    bail!("a name bound inside an Any part: its uses do not decide a type a test can tell ({t})")
-                }
+                self.testable(&t)?
             }
             t
         };
@@ -918,6 +932,17 @@ impl Solver {
         }
         self.info_mut(v).fixed = Some(ty);
         self.fixing.remove(&v);
+        Ok(())
+    }
+
+    /// The type of a name bound over an `Any` part is the arm's run-time
+    /// test: it must be something a test can tell.
+    fn testable(&self, t: &Ty) -> Result<()> {
+        let mut opaque = false;
+        t.each(&mut |t| opaque |= matches!(t, Ty::Fn(_) | Ty::Ref(..)));
+        if matches!(t, Ty::Bot) || opaque {
+            bail!("a name bound inside an Any part: its uses do not decide a type a test can tell ({t})")
+        }
         Ok(())
     }
 

@@ -160,7 +160,7 @@ impl Solver {
     }
 
     /// What the uses of `v` demand of it, as far as that is decided.
-    fn demand(&self, v: Var) -> Ty {
+    pub(crate) fn demand(&self, v: Var) -> Ty {
         let mut demand = Ty::Any;
         for u in self.vars[v.0 as usize].upper.iter() {
             let u = self.deep(u);
