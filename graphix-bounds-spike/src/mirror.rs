@@ -14,7 +14,8 @@ use arcstr::ArcStr;
 use graphix_types::{
     LambdaId,
     env::Env,
-    expr::{ModPath, TypeDefBody, WrittenAt, parser::parse_type},
+    env::{ImplDef, TraitMethodSig},
+    expr::{ModPath, TraitMethod, TypeDefBody, WrittenAt, parser::parse_type},
     typ::{
         Bound, FnArgKind, FnArgType, FnType, MapType, Mutability, TVar, Type,
         bounds::{self, Solving, Use, union_of},
@@ -41,6 +42,8 @@ pub struct Mirror {
     defs: Vec<u32>,
     /// The prototype's abstract types it has, each as `A<its place here>`.
     abs: Vec<ArcStr>,
+    /// The prototype's traits it has, each as `R<its place here>`.
+    traits: Vec<ArcStr>,
     /// A typedef's body is being translated: a name in it is as written.
     in_body: bool,
     /// The port's first refusal.
@@ -315,8 +318,15 @@ impl Mirror {
             Ty::Rigid(v) => Type::TVar(self.cell(s, *v, true)),
             Ty::Named(id, args) => self.named(s, *id, args),
             Ty::Abs(tag, args) => self.abstract_type(s, tag, args),
-            Ty::Trait(_) | Ty::Method(_) => {
-                self.skip("a trait");
+            Ty::Trait(name) => match self.traits.iter().position(|t| t == name) {
+                Some(n) => self.applied(s, &format!("R{n}"), &[]),
+                None => {
+                    self.skip("a trait the mirror has not met");
+                    Type::Bottom
+                }
+            },
+            Ty::Method(_) => {
+                self.skip("a method of a constructor trait");
                 Type::Bottom
             }
         }
@@ -401,6 +411,68 @@ impl Mirror {
                 bounds::Pat::Whole(self.cell(s, *v, false), Box::new(self.pat(s, p)))
             }
         }
+    }
+
+    /// The program declares the trait `name`: the mirror's environment
+    /// declares it as `R<n>`, with the methods as written.
+    pub fn trait_declared(&mut self, name: &str, methods: &[TraitMethod]) {
+        if self.traits.iter().any(|t| t == name) {
+            return;
+        }
+        let sigs = methods.iter().map(|m| TraitMethodSig {
+            name: m.name.name.clone(),
+            pos: Default::default(),
+            typ: m.typ.clone(),
+            self_index: m.self_index,
+            requires: Arc::from(Vec::<ArcStr>::new()),
+        });
+        let sigs: Vec<TraitMethodSig> = sigs.collect();
+        let n = self.traits.len();
+        let made = self.env.deftrait(
+            &ModPath::root(),
+            &ArcStr::from(format!("R{n}")),
+            sigs.into_iter(),
+            None,
+            Default::default(),
+            Arc::new(Default::default()),
+        );
+        match made {
+            Ok(_) => self.traits.push(ArcStr::from(name)),
+            // one the environment cannot hold is one no program is
+            // compared over
+            Err(_) => (),
+        }
+    }
+
+    /// The program implements the trait `name` for `target`.
+    pub fn implemented(&mut self, s: &Solver, name: &ArcStr, target: &Ty) {
+        let Some(n) = self.traits.iter().position(|t| t == name) else { return };
+        let before = self.skipped.clone();
+        let met: Vec<Var> = self.cells.keys().copied().collect();
+        let target = self.typ(s, target);
+        if before.is_none() && self.skipped.is_some() {
+            self.skipped = None;
+            self.cells.retain(|v, _| met.contains(v));
+            return;
+        }
+        let Ok(Some(trait_id)) = self
+            .env
+            .lookup_trait(&ModPath::root(), &ModPath::from_iter([format!("R{n}")]))
+        else {
+            return;
+        };
+        let mut params = AHashMap::default();
+        target.collect_tvars(&mut params);
+        let _ = self.env.register_impl(Arc::new(ImplDef {
+            trait_id,
+            target,
+            params: Arc::from_iter(params.into_values()),
+            scope: ModPath::root(),
+            methods: Default::default(),
+            declared: false,
+            pos: Default::default(),
+            ori: Arc::new(Default::default()),
+        }));
     }
 
     /// A `?` or `$` whose operand is not decided yet.

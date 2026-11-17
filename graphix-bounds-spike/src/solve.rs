@@ -321,6 +321,21 @@ impl Solver {
         r
     }
 
+    /// The program declares the trait `name`.
+    pub fn trait_declared(
+        &mut self,
+        name: &str,
+        methods: &[graphix_types::expr::TraitMethod],
+    ) {
+        self.replay(|m, _| m.trait_declared(name, methods))
+    }
+
+    /// The program implements `name` for `target`, a scheme.
+    pub fn implemented(&mut self, name: ArcStr, target: Ty) {
+        self.replay(|m, s| m.implemented(s, &name, &target));
+        self.impls.push((name, target))
+    }
+
     /// The program holds a `?` or `$` whose operand is not known yet.
     pub fn hold_strip(&mut self, operand: Ty, out: Ty, raised: Option<Ty>) {
         self.replay(|m, s| m.hold_strip(s, &operand, &out, &raised));

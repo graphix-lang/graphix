@@ -381,6 +381,7 @@ impl Checker {
         }
         let methods = t.methods.iter().cloned().collect();
         let decl = TraitDecl { module: module.to_string(), methods };
+        self.s.trait_declared(&name, &t.methods);
         self.traits.insert(name, decl);
     }
 
@@ -394,7 +395,7 @@ impl Checker {
         let target = self.apart(own, |c| c.impl_head(head, module));
         let (target, hole) = target?;
         self.s.quantify(&target, 0);
-        self.s.impls.push((name.as_str().into(), target));
+        self.s.implemented(name.as_str().into(), target);
         if hole.is_some() {
             let known = self.constructors.entry(name).or_default();
             known.push((module.to_string(), head.clone()))

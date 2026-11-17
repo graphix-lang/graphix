@@ -403,6 +403,16 @@ impl Solving {
                     }
                 }
             }
+            // whether a type has an implementation is asked of the whole
+            // type, once it is decided; a declared variable in it is a
+            // constant to the question
+            (_, Type::Ref(_)) if b.is_trait_ref(env) => match a.has_free() {
+                true => Ok(self.held.push((a.clone(), b.clone(), false))),
+                false => match b.contains(env, &a)? {
+                    true => Ok(()),
+                    false => bail!("{a} does not implement {b}"),
+                },
+            },
             (Type::Set(ms), _) => ms.iter().try_for_each(|m| self.constrain(env, m, &b)),
             (Type::Ref(_), _) | (_, Type::Ref(_)) => self.unfolded(env, &a, &b),
             // a declared variable is whatever its bounds say, and one
