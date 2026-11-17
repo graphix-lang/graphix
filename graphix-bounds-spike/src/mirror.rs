@@ -50,6 +50,8 @@ pub struct Mirror {
     pub refused: Option<String>,
     /// The first thing the program used that is not replayed.
     pub skipped: Option<String>,
+    /// How long the port's own calls took, the translation left out.
+    pub spent: std::time::Duration,
 }
 
 impl Mirror {
@@ -78,6 +80,9 @@ impl Mirror {
     pub fn verdict(&mut self, s: &Solver) -> String {
         if self.live() {
             self.finish(s)
+        }
+        if std::env::var_os("SPIKE_PORT_TIME").is_some() {
+            eprintln!("the port's own calls: {} ms", self.spent.as_millis())
         }
         match (&self.skipped, &self.refused) {
             (Some(why), _) => format!("skip {why}"),
@@ -338,7 +343,9 @@ impl Mirror {
             eprintln!("constrain {a} <= {b}")
         }
         if self.live() {
+            let started = std::time::Instant::now();
             let r = self.port.constrain(&self.env, &a, &b);
+            self.spent += started.elapsed();
             self.done(s, r)
         }
     }
@@ -358,7 +365,9 @@ impl Mirror {
             )
         }
         if self.live() {
+            let started = std::time::Instant::now();
             let r = self.port.call(&self.env, &ft, &args, &out);
+            self.spent += started.elapsed();
             self.done(s, r)
         }
     }
@@ -519,7 +528,9 @@ impl Mirror {
         };
         let t = self.typ(s, t);
         if self.live() {
+            let started = std::time::Instant::now();
             let r = self.port.watch(&self.env, &t, u);
+            self.spent += started.elapsed();
             self.done(s, r)
         }
     }
@@ -546,7 +557,9 @@ impl Mirror {
         if self.live() {
             let known = self.marks.iter().rev().find(|(vars, _)| *vars <= mark);
             let mark = known.map(|(_, cells)| *cells).unwrap_or(0);
+            let started = std::time::Instant::now();
             let r = self.port.generalize(&self.env, &t, depth, mark);
+            self.spent += started.elapsed();
             self.done(s, r)
         }
     }
@@ -558,7 +571,9 @@ impl Mirror {
         if self.live() {
             let at = self.level(at);
             let mut copies = AHashMap::default();
+            let started = std::time::Instant::now();
             let copy = self.port.instantiate_into(&t, above, at, &mut copies);
+            self.spent += started.elapsed();
             if std::env::var_os("BOUNDS_DEBUG").is_some() {
                 eprintln!("instantiate {t} => {copy}")
             }
@@ -577,7 +592,9 @@ impl Mirror {
 
     pub fn finish(&mut self, s: &Solver) {
         if self.live() {
+            let started = std::time::Instant::now();
             let r = self.port.finish(&self.env);
+            self.spent += started.elapsed();
             self.done(s, r)
         }
     }

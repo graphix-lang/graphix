@@ -915,6 +915,13 @@ fn cells_of(t: &Type, rigid: bool, out: &mut SmallVec<[TVar; 4]>) {
     go(t, rigid, out, &mut LPooled::take())
 }
 
+/// What [`Solving::held_back`] found: the cells it met, and those among
+/// them that may not be fixed yet, by address.
+struct HeldBack {
+    met: LPooled<AHashSet<usize>>,
+    back: LPooled<AHashSet<usize>>,
+}
+
 /// Cells, each once, in the order met.
 struct Cells {
     met: LPooled<Vec<TVar>>,
@@ -990,18 +997,74 @@ impl Solving {
         cells_of(t, false, &mut found);
         for v in found {
             if seen.insert(&v) {
-                let (lower, upper) = (v.cell_lower(), v.cell_constraints());
-                lower.iter().chain(upper.iter()).for_each(|b| self.reach(b, seen));
-                feeders(&v).iter().for_each(|u| self.reach(&Type::TVar(u.clone()), seen));
-                // and what its uses produce
-                for (u, _) in uses(&v).iter() {
-                    u.each(&mut |t| self.reach(t, seen));
-                    if let Use::Select(id) = u {
-                        for b in self.select_cells(*id) {
-                            self.reach(&Type::TVar(b), seen)
-                        }
-                    }
+                let mut next = SmallVec::new();
+                self.next(&v, &mut next);
+                next.iter().for_each(|u| self.reach(&Type::TVar(u.clone()), seen))
+            }
+        }
+    }
+
+    /// What the cell `v` reaches in one step: the open cells of its
+    /// bounds, the cells that feed it, and those its uses produce.
+    fn next(&self, v: &TVar, out: &mut SmallVec<[TVar; 4]>) {
+        let (lower, upper) = (v.cell_lower(), v.cell_constraints());
+        lower.iter().chain(upper.iter()).for_each(|b| cells_of(b, false, out));
+        out.extend(feeders(v).into_iter().filter(|u| !u.is_bound() && !u.is_rigid()));
+        for (u, _) in uses(v).iter() {
+            u.each(&mut |t| cells_of(t, false, out));
+            if let Use::Select(id) = u {
+                out.extend(self.select_cells(*id).into_iter().filter(|b| !b.is_bound()))
+            }
+        }
+    }
+
+    /// Of the cells reachable from `from`, those a definition closing at
+    /// `min` may not fix: each that reaches a cell shallower than `min` or
+    /// a scheme's variable.
+    fn held_back(&self, from: impl IntoIterator<Item = TVar>, min: u32) -> HeldBack {
+        let stops = |v: &TVar| v.level().depth() < min || quantified(v);
+        let mut held = HeldBack { met: LPooled::take(), back: LPooled::take() };
+        let mut under: LPooled<AHashMap<usize, SmallVec<[usize; 2]>>> = LPooled::take();
+        let mut work: LPooled<Vec<TVar>> = LPooled::take();
+        for v in from {
+            if !v.is_bound() && !v.is_rigid() && held.met.insert(v.cell_addr()) {
+                work.push(v)
+            }
+        }
+        while let Some(v) = work.pop() {
+            if stops(&v) {
+                held.back.insert(v.cell_addr());
+                continue;
+            }
+            let mut next = SmallVec::new();
+            self.next(&v, &mut next);
+            for u in next {
+                under.entry(u.cell_addr()).or_default().push(v.cell_addr());
+                if held.met.insert(u.cell_addr()) {
+                    work.push(u)
                 }
+            }
+        }
+        let mut work: LPooled<Vec<usize>> = held.back.iter().copied().collect();
+        while let Some(stop) = work.pop() {
+            for v in under.get(&stop).into_iter().flatten() {
+                if held.back.insert(*v) {
+                    work.push(*v)
+                }
+            }
+        }
+        held
+    }
+
+    /// Whether `v` may be fixed by a definition closing at `min`: nothing
+    /// it reaches is shallower or a scheme's variable.
+    fn fixable(&self, held: &HeldBack, v: &TVar, min: u32) -> bool {
+        match held.met.contains(&v.cell_addr()) {
+            true => !held.back.contains(&v.cell_addr()),
+            false => {
+                let mut all = Cells::new();
+                self.reach(&Type::TVar(v.clone()), &mut all);
+                all.iter().all(|u| u.level().depth() >= min && !quantified(u))
             }
         }
     }
@@ -1221,12 +1284,6 @@ impl Solving {
         t
     }
 
-    fn fixable(&self, v: &TVar, min: u32) -> bool {
-        let mut all = Cells::new();
-        self.reach(&Type::TVar(v.clone()), &mut all);
-        all.iter().all(|u| u.level().depth() >= min && !quantified(u))
-    }
-
     /// Fix the cells met since `mark` that are at `min` or deeper and that
     /// no scheme variable reaches; with `last`, every cell left.
     fn fix_scope(&mut self, env: &Env, min: u32, last: bool, mark: usize) -> Result<()> {
@@ -1239,6 +1296,16 @@ impl Solving {
                 ordered = false
             }
             progress = false;
+            let held = {
+                let own = self.cells[mark..].iter().cloned();
+                let pending = self.held.iter().flat_map(|(a, b, _)| [a, b]);
+                let pending =
+                    pending.chain(self.selects.iter().flat_map(|s| s.waiting.iter()));
+                let pending =
+                    pending.chain(self.strips.iter().map(|(operand, ..)| operand));
+                let pending: SmallVec<[TVar; 4]> = pending.flat_map(open_cells).collect();
+                self.held_back(own.chain(pending), min)
+            };
             // a pending use (a held choice, a select still waiting) waits
             // for any other whose result reaches what it reads: its kind
             // and index, and everything its result reaches
@@ -1273,7 +1340,8 @@ impl Solving {
                     continue;
                 }
                 let (avs, bvs) = (open_cells(&a), open_cells(&b));
-                let ready = avs.iter().chain(bvs.iter()).all(|v| self.fixable(v, min));
+                let ready =
+                    avs.iter().chain(bvs.iter()).all(|v| self.fixable(&held, v, min));
                 if ready && free((Pending::Held, i), &avs) {
                     // a member something has decided is decided here; one
                     // nothing has stays open, to take what the others do
@@ -1297,13 +1365,14 @@ impl Solving {
             }
             let ready = |s: &Self, id: usize, t: &Type| {
                 let ins = open_cells(t);
-                ins.iter().all(|v| s.fixable(v, min)) && free((Pending::Select, id), &ins)
+                ins.iter().all(|v| s.fixable(&held, v, min))
+                    && free((Pending::Select, id), &ins)
             };
             progress |= self.select_waiting(env, &ready)?;
             for i in (0..self.strips.len()).rev() {
                 let (operand, out, raised) = self.strips[i].clone();
                 let ins = open_cells(&operand);
-                if ins.iter().all(|v| self.fixable(v, min))
+                if ins.iter().all(|v| self.fixable(&held, v, min))
                     && free((Pending::Strip, i), &ins)
                 {
                     self.strips.swap_remove(i);
@@ -1321,6 +1390,7 @@ impl Solving {
                 }
             }
         }
+        let held = self.held_back(self.cells[mark..].iter().cloned(), min);
         // a cell something flows into first: one nothing flows into may be
         // decided by a cell that holds it
         let (flowing, empty): (Vec<TVar>, Vec<TVar>) = self.cells[mark..]
@@ -1356,7 +1426,7 @@ impl Solving {
                 && !v.is_rigid()
                 && !quantified(&v)
                 && v.level().depth() >= min;
-            let now = last || (self.fixable(&v, min) && !waiting.has(&v));
+            let now = last || (self.fixable(&held, &v, min) && !waiting.has(&v));
             if mine && now {
                 self.fix(env, &v)?;
                 if !matches!(v.binding(), Some(Type::Bottom)) {
