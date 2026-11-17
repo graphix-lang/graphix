@@ -13,6 +13,7 @@ use crate::{
         node_addr,
         setops::strictly_identical,
         tvar::{AtLevel, Level, ShortName},
+        variance,
     },
 };
 use ahash::{AHashMap, AHashSet};
@@ -880,7 +881,7 @@ impl Solving {
                 {
                     return Type::TVar(n.clone());
                 }
-                let mut keep = |s: &mut Self, n: &TVar| {
+                let keep = |s: &mut Self, n: &TVar| {
                     s.twins.insert(key, (v.clone(), at, n.clone()));
                     s.twinned.push(key)
                 };
@@ -1027,6 +1028,28 @@ impl Solving {
 
     /// A pair with a typedef's name on a side, by what the name stands for.
     fn unfolded(&mut self, env: &Env, a: &Type, b: &Type) -> Result<()> {
+        // two applications of one definition are related by their
+        // arguments, each as the definition's body meets its parameter,
+        // where the body leaves that no choice
+        if let (Type::Ref(ra), Type::Ref(rb)) = (a, b)
+            && ra.same_definition(rb, env)
+            && ra.params.len() == rb.params.len()
+            && let Some(meets) =
+                ra.resolve_peek(env).and_then(|def| variance::meets(env, &def))
+        {
+            let pairs = || ra.params.iter().zip(rb.params.iter()).zip(meets.iter());
+            if pairs().all(|((x, y), m)| !m.walk() || strictly_identical(x, y)) {
+                for ((x, y), m) in pairs().filter(|(_, m)| !m.walk()) {
+                    if m.holds() || m.holds_swapped() {
+                        self.constrain(env, x, y)?
+                    }
+                    if m.held() || m.held_swapped() {
+                        self.constrain(env, y, x)?
+                    }
+                }
+                return Ok(());
+            }
+        }
         let met =
             |(x, y): &(Type, Type)| strictly_identical(x, a) && strictly_identical(y, b);
         if self.unfolding.iter().any(met) || self.unfolded.iter().any(met) {

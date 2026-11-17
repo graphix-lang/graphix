@@ -426,10 +426,6 @@ pub struct Bind<R: Rt> {
     static_hold: Option<StaticHold>,
     /// What the name holds, where the check is by bounds.
     held: Held,
-    /// The pattern was compiled by its own shape, for a check by bounds
-    /// to route the value to its names: it takes its places from the
-    /// value's type once that is decided.
-    shaped: bool,
 }
 
 /// Rewrite a node into a block: each already-compiled operand becomes a
@@ -542,7 +538,6 @@ impl<R: Rt> Bind<R> {
             around: None,
             static_hold: None,
             held: Held::Value,
-            shaped: false,
         })
     }
 
@@ -986,11 +981,9 @@ impl<R: Rt> Bind<R> {
         {
             ctx.builtin_bindings.insert(id, info);
         }
-        let shaped = bounds::active() && pat.single_bind().is_none();
         let mut bind = Self::with(spec, typ, pattern, node, deferred, reads);
         if let Some(b) = bind.downcast_mut::<Self>() {
-            b.held = held;
-            b.shaped = shaped
+            b.held = held
         }
         Ok(bind)
     }
@@ -1523,7 +1516,10 @@ impl<R: Rt> Update<R> for Bind<R> {
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         wrap!(self.node, self.node.typecheck1(ctx))?;
-        if mem::take(&mut self.shaped) {
+        // a check by bounds routed the value to the pattern's names by
+        // the pattern's shape: it takes its places from the value's type
+        // now that is decided
+        if ctx.bounds {
             let typ = self.typ.resolve_tvars();
             self.pattern.realign(&ctx.env, &typ).at(&self.spec)?
         }
