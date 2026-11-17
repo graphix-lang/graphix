@@ -366,8 +366,10 @@ impl Solving {
     fn expand(&self, env: &Env, t: &Type) -> Type {
         let t = shallow(t);
         match &t {
+            // what a name stands for is read as any type a select meets:
+            // its `bool`s are the two tags
             Type::Ref(_) => match t.lookup_ref(env) {
-                Ok(e) => ensure_sufficient(|| self.expand(env, &e)),
+                Ok(e) => ensure_sufficient(|| self.expand(env, &split(&e))),
                 Err(_) => t,
             },
             t if self.empty(t) => Type::Bottom,

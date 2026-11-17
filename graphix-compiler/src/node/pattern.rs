@@ -2647,8 +2647,22 @@ impl StructPatternNode {
                 // an inferred predicate, at parameters of its own, the
                 // predicate's being the scrutinee's (`leaves` types its binds)
                 let (own, rep) = own.unwrap_or((atyp, rep));
-                let rep_cx = PatCx { inferred: false, ..cx };
-                let bind = Box::new(Self::compile_int(ctx, rep_cx, &rep, bind, mode)?);
+                let bind = match bounds::active() {
+                    // the payload stands by its own shape, as the pattern
+                    // around it does
+                    true => {
+                        let shape = bind
+                            .infer_type_predicate(&ctx.env, &cx.scope.lexical)?
+                            .any_as_tvar();
+                        let cx = PatCx { inferred: true, ..cx };
+                        Self::compile_int(ctx, cx, &shape, bind, mode)?
+                    }
+                    false => {
+                        let rep_cx = PatCx { inferred: false, ..cx };
+                        Self::compile_int(ctx, rep_cx, &rep, bind, mode)?
+                    }
+                };
+                let bind = Box::new(bind);
                 Self::Abstract { id, all, own, rep, bind }
             }
             StructurePattern::Struct { exhaustive, all, binds } => {

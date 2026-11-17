@@ -19,7 +19,7 @@ use crate::{
     compiler::compile,
     dbgenv,
     env::{self, Env},
-    expr::{self, At, Expr, ExprId, ExprKind, ModPath, PlaceAccess},
+    expr::{self, At, BinOp, Expr, ExprId, ExprKind, ModPath, PlaceAccess},
     format_with_flags,
     fusion::{
         descend,
@@ -103,6 +103,12 @@ fn defines<R: Rt>(ctx: &CompileCtx<R>, scope: &Scope, e: &Expr) -> bool {
             defines(ctx, scope, source)
         }
         ExprKind::Ref { name } => scheme_named(ctx, scope, name).is_some(),
+        // a sample of a definition is that definition
+        ExprKind::BinOp {
+            op: BinOp::Sample | BinOp::StrictSample | BinOp::BankedSample,
+            rhs,
+            ..
+        } => defines(ctx, scope, rhs),
         _ => false,
     }
 }

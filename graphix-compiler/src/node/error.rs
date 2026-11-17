@@ -1712,20 +1712,9 @@ impl<R: Rt> Qop<R> {
                 Some(payload)
             }
         };
-        let t = match self.n.typ().with_deref(|t| t.cloned()) {
-            Some(t @ Type::Ref(_)) => Some(t.lookup_ref(env)?),
-            t => t,
-        };
-        let known = match &t {
-            None => false,
-            Some(t @ Type::Set(ms)) => {
-                ms.iter().any(|m| matches!(m, Type::Error(_))) || !t.has_unbound()
-            }
-            Some(_) => true,
-        };
-        match t {
-            Some(t) if known => {
-                let (left, payloads) = bounds::strip(&t);
+        match self.n.typ().with_deref(|t| t.cloned()) {
+            Some(t) if bounds::strippable(env, &t)? => {
+                let (left, payloads) = bounds::strip(env, &t)?;
                 for (p, to) in payloads.iter().flat_map(|p| payload.iter().map(move |to| (p, to))) {
                     to.check_contains(env, p)?
                 }

@@ -486,7 +486,7 @@ impl Solving {
     }
 
     fn relate_in(&mut self, env: &Env, a: &Type, b: &Type, edge: bool) -> Result<()> {
-        let (a, b) = (shallow(a), shallow(b));
+        let (a, b) = (shallow(a), flat(env, shallow(b))?);
         match (&a, &b) {
             (Type::Bottom, _) | (_, Type::Any) => return Ok(()),
             // a predicate on a cell is judged when the cell is decided
@@ -970,11 +970,73 @@ impl Solving {
 /// What `?` and `$` leave of the decided type `t`: `t` less its errors,
 /// or, where it holds none, less null. With it, the payloads of the errors
 /// taken off.
-pub fn strip(t: &Type) -> (Type, SmallVec<[Type; 2]>) {
-    let members: SmallVec<[Type; 4]> = match t {
-        Type::Set(ms) => ms.iter().cloned().collect(),
-        t => SmallVec::from_iter([t.clone()]),
-    };
+pub fn strip(env: &Env, t: &Type) -> Result<(Type, SmallVec<[Type; 2]>)> {
+    let mut members: SmallVec<[Type; 4]> = SmallVec::new();
+    members_of(env, t, &mut members)?;
+    Ok(strip_members(members))
+}
+
+/// The members of `t`, a name that stands for a union, an error or a
+/// primitive read as what it stands for.
+fn members_of(env: &Env, t: &Type, out: &mut SmallVec<[Type; 4]>) -> Result<()> {
+    ensure_sufficient(|| match &shallow(t) {
+        Type::Set(ms) => ms.iter().try_for_each(|m| members_of(env, m, out)),
+        named @ Type::Ref(_) => match named.lookup_ref(env)? {
+            body @ Type::Set(_) => members_of(env, &body, out),
+            body @ (Type::Error(_) | Type::Primitive(_)) => Ok(out.push(body)),
+            _ => Ok(out.push(named.clone())),
+        },
+        t => Ok(out.push(t.clone())),
+    })
+}
+
+/// The union `t` with each member that names a union replaced by that
+/// union's members: a type is taken by one member of a union, whatever
+/// names the union was written with.
+fn flat(env: &Env, t: Type) -> Result<Type> {
+    fn names_union(env: &Env, m: &Type) -> Result<Option<Type>> {
+        Ok(match &shallow(m) {
+            named @ Type::Ref(_) if !named.is_trait_ref(env) => {
+                Some(named.lookup_ref(env)?).filter(|body| matches!(body, Type::Set(_)))
+            }
+            _ => None,
+        })
+    }
+    fn members(env: &Env, t: &Type, out: &mut SmallVec<[Type; 4]>) -> Result<()> {
+        ensure_sufficient(|| match &shallow(t) {
+            Type::Set(ms) => ms.iter().try_for_each(|m| members(env, m, out)),
+            m => match names_union(env, m)? {
+                Some(body) => members(env, &body, out),
+                None => Ok(out.push(m.clone())),
+            },
+        })
+    }
+    let Type::Set(ms) = &t else { return Ok(t) };
+    let mut named = false;
+    for m in ms.iter() {
+        named |= names_union(env, m)?.is_some()
+    }
+    if !named {
+        return Ok(t);
+    }
+    let mut out: SmallVec<[Type; 4]> = SmallVec::new();
+    members(env, &t, &mut out)?;
+    Ok(union_of(out))
+}
+
+/// Whether `?` or `$` can tell here what it takes off `t`: `t` holds an
+/// error, which is what goes, or nothing in it is undecided.
+pub fn strippable(env: &Env, t: &Type) -> Result<bool> {
+    let mut members: SmallVec<[Type; 4]> = SmallVec::new();
+    members_of(env, t, &mut members)?;
+    Ok(match &members[..] {
+        [Type::TVar(_)] => false,
+        [_] => true,
+        ms => ms.iter().any(|m| matches!(m, Type::Error(_))) || !t.has_unbound(),
+    })
+}
+
+fn strip_members(members: SmallVec<[Type; 4]>) -> (Type, SmallVec<[Type; 2]>) {
     let errors = members.iter().any(|m| {
         matches!(m, Type::Error(_))
             || matches!(m, Type::Primitive(p) if p.contains(Typ::Error))
@@ -1551,8 +1613,13 @@ impl Solving {
                     && free((Pending::Strip, i), &ins)
                 {
                     self.strips.swap_remove(i);
-                    self.fix_in(env, &operand)?;
-                    let (left, payloads) = strip(&deep(&operand));
+                    // the operand's own shape says what goes: what its
+                    // parts are is decided only where the shape does not
+                    ins.iter().try_for_each(|v| self.fix(env, v))?;
+                    if !strippable(env, &deep(&operand))? {
+                        self.fix_in(env, &operand)?
+                    }
+                    let (left, payloads) = strip(env, &deep(&operand))?;
                     self.constrain(env, &left, &out)?;
                     for to in raised.iter() {
                         payloads.iter().try_for_each(|p| self.constrain(env, p, to))?
