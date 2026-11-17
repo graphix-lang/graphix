@@ -252,8 +252,12 @@ impl Solver {
                         for l in self.info(*v).lower.clone() {
                             let from = self.sites.get(&(*v, true, l.clone())).copied();
                             // a bound that came here out of a join keeps its source
+                            // (a join passes everything on as its own)
                             let src = self.info(*v).joined.iter().find(|(_, j)| j == &l).map(|(s, _)| *s);
-                            self.via = src.or(mine);
+                            self.via = match self.info(*v).kind {
+                                Kind::Join => mine,
+                                Kind::Single => src.or(mine),
+                            };
                             self.constrain(&l, &b).map_err(|e| self.ends(e, from, self.at))?
                         }
                         self.via = via;
@@ -727,8 +731,14 @@ impl Solver {
                 let (ls, us) = (self.info(*v).lower.clone(), self.info(*v).upper.clone());
                 let ls = ls.iter().map(|l| self.copy(l, above, at, memo)).collect();
                 let us = us.iter().map(|u| self.copy(u, above, at, memo)).collect();
+                // what came out of one join stays one bound in the copy
+                let joined = self.info(*v).joined.clone();
+                let joined = joined
+                    .iter()
+                    .map(|(src, l)| (*memo.get(src).unwrap_or(src), self.copy(l, above, at, memo)))
+                    .collect();
                 let info = self.info_mut(n);
-                (info.lower, info.upper) = (ls, us);
+                (info.lower, info.upper, info.joined) = (ls, us, joined);
                 for (w, _) in self.info(*v).watches.clone() {
                     if let Watch::Select(id) = w {
                         let arms = self.select_arms(id);
@@ -997,7 +1007,19 @@ impl Solver {
                 Kind::Join => union(cands),
                 // a variable nothing has decided may stay open inside the
                 // type: a later holder that shares it can still decide it
-                Kind::Single => self.holder(&cands, &from)?,
+                Kind::Single => self.holder(&cands, &from).map_err(|e| {
+                    match std::env::var("SPIKE_DEBUG") {
+                        Ok(_) => e.context(format!(
+                            "debug: '_{} level {} lower {:?} feeders {:?} joined {:?}",
+                            v.0,
+                            self.info(v).level,
+                            self.info(v).lower.iter().map(|t| t.to_string()).collect::<Vec<_>>(),
+                            self.info(v).feeders,
+                            self.info(v).joined.iter().map(|(s, t)| (s.0, t.to_string())).collect::<Vec<_>>()
+                        )),
+                        Err(_) => e,
+                    }
+                })?,
             }
         } else if self.info(v).singleton {
             Ty::Bot

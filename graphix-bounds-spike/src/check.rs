@@ -552,13 +552,13 @@ impl Checker {
                     self.bind(name, Binding::Poly(l, t.clone()));
                     return Ok(self.s.instantiate(&t, l, lvl));
                 }
-                if let ExprKind::Lambda(l) = &value.kind {
+                if let ExprKind::Lambda(_) = &value.kind {
                     let mark = self.s.vars.len();
                     let me = self.s.fresh_ty(lvl + 1, Kind::Single);
                     if b.rec {
                         self.bind(name, Binding::Mono(me.clone()))
                     }
-                    let t = self.lambda(l, lvl + 1, true)?;
+                    let t = self.definition(&b.value, lvl + 1)?;
                     self.s.constrain(&t, &me)?;
                     let t = match &b.typ {
                         None => t,
@@ -611,6 +611,23 @@ impl Checker {
                 Ok(t)
             }
             _ => unsupported("let pattern"),
+        }
+    }
+
+    /// The lambda a generic `let` names, past grouping parentheses and the
+    /// statements of a block it ends, which are checked on the way.
+    fn definition(&mut self, e: &Expr, lvl: u32) -> Result<Ty> {
+        match &e.kind {
+            ExprKind::ExplicitParens(e) => self.definition(e, lvl),
+            ExprKind::Block { exprs } if !exprs.is_empty() => {
+                self.scopes.push(HashMap::new());
+                let (last, before) = exprs.split_last().unwrap();
+                let r = self.infer_all(before, lvl).and_then(|_| self.definition(last, lvl));
+                self.scopes.pop();
+                r
+            }
+            ExprKind::Lambda(l) => self.lambda(l, lvl, true),
+            _ => self.infer(e, lvl),
         }
     }
 
