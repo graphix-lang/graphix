@@ -390,9 +390,8 @@ impl Checker {
         let Some(name) = self.trait_named(&parts(&head.trait_name), module) else {
             return unsupported(format!("trait {}", parts(&head.trait_name).join("::")));
         };
-        self.tvs.push(Scope { tvs: HashMap::new(), level: 1, rigid: false });
-        let target = self.impl_head(head, module);
-        self.tvs.pop();
+        let own = Scope { tvs: HashMap::new(), level: 1, rigid: false };
+        let target = self.apart(own, |c| c.impl_head(head, module));
         let (target, hole) = target?;
         self.s.quantify(&target, 0);
         self.s.impls.push((name.as_str().into(), target));
@@ -428,16 +427,15 @@ impl Checker {
     fn method(&mut self, of: &str, m: &TraitMethod, module: &str, full: &str) -> Ty {
         let mut impls = vec![];
         for (home, head) in self.constructors.get(of).cloned().unwrap_or_default() {
-            self.tvs.push(Scope { tvs: HashMap::new(), level: 1, rigid: false });
-            let typed = (|| {
-                let (target, hole) = self.impl_head(&head, &home)?;
+            let own = Scope { tvs: HashMap::new(), level: 1, rigid: false };
+            let typed = self.apart(own, |c| {
+                let (target, hole) = c.impl_head(&head, &home)?;
                 let Some(hole) = hole else { bail!("no constructor") };
-                let outer = self.constructor.replace((target, hole));
-                let t = self.conv_fn(&m.typ, module);
-                self.constructor = outer;
+                let outer = c.constructor.replace((target, hole));
+                let t = c.conv_fn(&m.typ, module);
+                c.constructor = outer;
                 t
-            })();
-            self.tvs.pop();
+            });
             // an implementation the prototype cannot read takes no call
             if let Ok(ft) = typed {
                 let t = Ty::Fn(Rc::new(ft));
@@ -553,19 +551,16 @@ impl Checker {
                 let receiver = self.s.fresh(1, Kind::Single);
                 self.s.vars[receiver.0 as usize].upper.push(Ty::Trait(of.into()));
                 let tvs = HashMap::from([(ArcStr::from("self"), Ty::Var(receiver))]);
-                self.tvs.push(Scope { tvs, level: 1, rigid: false });
-                let t = self.conv_fn(&typ, &module);
-                self.tvs.pop();
+                let own = Scope { tvs, level: 1, rigid: false };
+                let t = self.apart(own, |c| c.conv_fn(&typ, &module));
                 let t = Ty::Fn(Rc::new(t?));
                 self.s.quantify(&t, 0);
                 self.schemes.insert(full.clone(), t);
             }
             if !self.schemes.contains_key(&full) {
                 let Some((typ, module)) = self.vals.get(&full).cloned() else { continue };
-                self.tvs.push(Scope { tvs: HashMap::new(), level: 1, rigid: false });
-                let t = self.conv(&typ, &module);
-                self.tvs.pop();
-                let t = t?;
+                let own = Scope { tvs: HashMap::new(), level: 1, rigid: false };
+                let t = self.apart(own, |c| c.conv(&typ, &module))?;
                 self.s.quantify(&t, 0);
                 self.schemes.insert(full.clone(), t);
             }
@@ -573,6 +568,16 @@ impl Checker {
             return Ok(Some(self.s.instantiate(&t, 0, lvl)));
         }
         Ok(None)
+    }
+
+    /// `f` with `own` as the only scope of type variables: a signature
+    /// read from elsewhere names variables of its own, whatever the
+    /// program around the read has declared by the same names.
+    fn apart<T>(&mut self, own: Scope, f: impl FnOnce(&mut Self) -> T) -> T {
+        let outer = std::mem::replace(&mut self.tvs, vec![own]);
+        let r = f(self);
+        self.tvs = outer;
+        r
     }
 
     /// The variable a written name stands for; `own` where the innermost
@@ -678,9 +683,8 @@ impl Checker {
                         .into_iter()
                         .zip(params.iter().map(|v| Ty::Var(*v)))
                         .collect();
-                    self.tvs.push(Scope { tvs, level: 0, rigid: false });
-                    let rep = self.conv(&body, &home);
-                    self.tvs.pop();
+                    let own = Scope { tvs, level: 0, rigid: false };
+                    let rep = self.apart(own, |c| c.conv(&body, &home));
                     self.s.reps.get_mut(&tag).unwrap().body = rep?
                 }
                 return Ok(Ty::Abs(tag, args.into()));
@@ -891,10 +895,8 @@ impl Checker {
                 // against the declaration its variables are rigid; outside
                 // the module they are a scheme's
                 let declared = |c: &mut Self, rigid: bool| {
-                    c.tvs.push(Scope { tvs: HashMap::new(), level: lvl + 1, rigid });
-                    let t = c.conv(&val.typ, prefix);
-                    c.tvs.pop();
-                    t
+                    let own = Scope { tvs: HashMap::new(), level: lvl + 1, rigid };
+                    c.apart(own, |c| c.conv(&val.typ, prefix))
                 };
                 let held = declared(self, true)?;
                 self.s.constrain(&made, &held)?;
@@ -1783,13 +1785,12 @@ impl Checker {
                 for item in sig.items.iter() {
                     match &item.kind {
                         SigKind::Bind(val) => {
-                            self.tvs.push(Scope {
+                            let own = Scope {
                                 tvs: HashMap::new(),
                                 level: lvl + 1,
                                 rigid: false,
-                            });
-                            let t = self.conv(&val.typ, &prefix);
-                            self.tvs.pop();
+                            };
+                            let t = self.apart(own, |c| c.conv(&val.typ, &prefix));
                             let t = t?;
                             self.s.quantify(&t, lvl);
                             let full = format!("{prefix}::{}", val.name.name);

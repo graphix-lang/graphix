@@ -8,7 +8,8 @@ use crate::{
     env::Env,
     stack::ensure_sufficient,
     typ::{
-        Bound, FnArgKind, FnArgType, FnType, Mutability, TVar, Type, node_addr,
+        AbstractId, Bound, FnArgKind, FnArgType, FnType, Mutability, TVar, Type,
+        node_addr,
         setops::strictly_identical,
         tvar::{AtLevel, Level},
     },
@@ -352,9 +353,10 @@ impl Solving {
             // a predicate on a cell is judged when the cell is decided
             (_, Type::Bound(_)) => return Ok(()),
             (Type::TVar(v), Type::TVar(w)) if v.same_cell(w) => return Ok(()),
-            // with no open cell on either side this is the relation over
-            // decided types
-            _ if !a.has_free() && !b.has_free() => {
+            // with no cell on either side, open or declared, this is the
+            // relation over decided types. A declared variable is not
+            // handed over: there it could take a bound nobody declared.
+            _ if !a.has_unbound() && !b.has_unbound() => {
                 return match b.contains(env, &a)? {
                     true => Ok(()),
                     false => mismatch(&b, &a),
@@ -842,6 +844,19 @@ pub fn strip(t: &Type) -> (Type, SmallVec<[Type; 2]>) {
         m => Some(m),
     }));
     (left, payloads)
+}
+
+/// What a value of the abstract type `id` at `params` holds, where the
+/// type is made in Graphix.
+fn rep(env: &Env, id: &AbstractId, params: &[Type]) -> Option<Type> {
+    let made = env.abstract_reps.get(id)?;
+    let at: AHashMap<ArcStr, Type> = made
+        .params
+        .iter()
+        .zip(params.iter())
+        .map(|((formal, _), p)| (formal.name.clone(), p.clone()))
+        .collect();
+    Some(made.rep.replace_tvars(&at))
 }
 
 /// `t` with every bound cell replaced by what it is bound to.
@@ -1611,6 +1626,12 @@ impl Solving {
                 let updated = Type::Struct(Arc::from_iter(fs));
                 self.constrain(env, &updated, out).map(|()| true)
             }
+            (Type::Abstract { id, params }, Use::Index { i: 0, out }) => {
+                match rep(env, id, params) {
+                    Some(rep) => self.constrain(env, &rep, out).map(|()| true),
+                    None => bail!("{a} is abstract here: its payload cannot be read"),
+                }
+            }
             (Type::Error(t), Use::Index { i: 0, out }) => {
                 self.constrain(env, t, out).map(|()| true)
             }
@@ -2086,5 +2107,18 @@ mod tests {
         let scrutinee = parsed(&env, "[&i64, &string]");
         assert!(s.watch(&env, &scrutinee, Use::Select(id)).is_ok());
         assert_eq!(shown(&v.cell_lower()), ["&[i64, string]"]);
+    }
+
+    #[test]
+    fn arithmetic_over_one_declared_variable() {
+        let (env, _) = typed(&[], "null");
+        let mut s = Solving::default();
+        let ((a, ta), (sum, ts)) = (var_at("a", 1), var_at("s", 1));
+        s.declare(&a, parsed(&env, "[i64, f64]"));
+        let _gate = a.open_rigid();
+        assert!(s.constrain(&env, &ta, &ts).is_ok());
+        assert!(s.constrain(&env, &ts, &ta).is_ok());
+        s.constrain(&env, &ts, &parsed(&env, "[i64, f64]")).unwrap();
+        let _ = sum;
     }
 }

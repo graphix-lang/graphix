@@ -34,6 +34,11 @@ while len(out) < len(progs):
     out += r
     if len(out) < len(progs):
         out.append('crash\t\t\t\tcrash')
+# where the port is meant to differ from the prototype, and why
+MEANT = {
+    'generics.md:269': 'an abstract type\'s parameter is one type (the tree\'s rule); the prototype let it widen',
+    'generics.md:282': 'the same; today refuses this one too',
+}
 tally, why = collections.Counter(), collections.Counter()
 for (at, prog), line in zip(progs, out):
     cols = line.split('\t')
@@ -43,6 +48,9 @@ for (at, prog), line in zip(progs, out):
         why[port if proto not in ('skip', 'crash') else f'prototype: {proto}'] += 1
         continue
     same = proto == port.split(' ')[0]
+    if not same and at in MEANT:
+        tally['differs as meant'] += 1
+        continue
     tally['same' if same else 'differs'] += 1
     if not same or '-v' in sys.argv:
         print(f'{"same" if same else "DIFFERS"} {at}: {prog}\n    prototype: {proto} {cols[1][:160]}\n    port:      {port[:200]}')

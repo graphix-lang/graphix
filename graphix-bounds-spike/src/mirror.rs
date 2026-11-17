@@ -39,6 +39,8 @@ pub struct Mirror {
     marks: Vec<(usize, usize)>,
     /// The prototype's recursive typedefs the mirror's environment has.
     defs: Vec<u32>,
+    /// The prototype's abstract types it has, each as `A<its place here>`.
+    abs: Vec<ArcStr>,
     /// A typedef's body is being translated: a name in it is as written.
     in_body: bool,
     /// The port's first refusal.
@@ -109,6 +111,17 @@ impl Mirror {
             TVar::empty_named(ArcStr::from(format!("v{}", v.0)))
         };
         self.cells.insert(v, tv.clone());
+        if std::env::var_os("BOUNDS_DEBUG").is_some() {
+            eprintln!(
+                "cell v{} rigid={rigid} upper={} lower={}",
+                v.0,
+                info.upper.len(),
+                info.lower.len()
+            );
+            if std::env::var_os("BOUNDS_TRACE").is_some() && rigid {
+                eprintln!("{}", std::backtrace::Backtrace::force_capture())
+            }
+        }
         if info.kind == Kind::Join && !rigid {
             tv.set_joins()
         }
@@ -148,47 +161,49 @@ impl Mirror {
         }
     }
 
-    /// A recursive typedef of the prototype's at `args`: a name the
-    /// mirror's environment defines, as `T<id>`.
-    fn named(&mut self, s: &Solver, id: u32, args: &[Ty]) -> Type {
-        let root = ModPath::root();
-        if !self.defs.contains(&id) {
-            let def = &s.defs[id as usize];
-            if matches!(def.body, Ty::Bot) {
-                self.skip("a typedef still being read");
-                return Type::Bottom;
-            }
-            self.defs.push(id);
-            let formals: Vec<(TVar, Option<Type>)> = (0..def.params.len())
-                .map(|i| (TVar::empty_named(ArcStr::from(format!("p{i}"))), None))
-                .collect();
-            for (v, (tv, _)) in def.params.iter().zip(formals.iter()) {
-                self.cells.insert(*v, tv.clone());
-            }
-            let outer = std::mem::replace(&mut self.in_body, true);
-            let body = self.typ(s, &def.body.clone());
-            self.in_body = outer;
-            let made = self.env.deftype(
-                &root,
-                &format!("T{id}"),
-                Arc::from(formals),
-                &TypeDefBody::Alias(body),
-                true,
-                None,
-                Default::default(),
-                Default::default(),
-                Arc::new(Default::default()),
-            );
-            if made.is_err() {
-                self.skip("a typedef the environment refuses");
-                return Type::Bottom;
-            }
-            self.env.seed_typedef_refs()
+    /// Define `name` in the mirror's environment: `params` formals, named
+    /// `p0` on, and the body `body` gives once the prototype's variables
+    /// `vars` stand for them.
+    fn define(
+        &mut self,
+        s: &Solver,
+        name: &str,
+        vars: &[Var],
+        params: usize,
+        body: impl FnOnce(&mut Self, &Solver) -> TypeDefBody,
+    ) {
+        let formals: Vec<(TVar, Option<Type>)> = (0..params)
+            .map(|i| (TVar::empty_named(ArcStr::from(format!("p{i}"))), None))
+            .collect();
+        for (v, (tv, _)) in vars.iter().zip(formals.iter()) {
+            self.cells.insert(*v, tv.clone());
         }
+        let outer = std::mem::replace(&mut self.in_body, true);
+        let body = body(self, s);
+        self.in_body = outer;
+        let made = self.env.deftype(
+            &ModPath::root(),
+            name,
+            Arc::from(formals),
+            &body,
+            true,
+            None,
+            Default::default(),
+            Default::default(),
+            Arc::new(Default::default()),
+        );
+        match made {
+            Ok(_) => self.env.seed_typedef_refs(),
+            Err(_) => self.skip("a typedef the environment refuses"),
+        }
+    }
+
+    /// The name `name` the mirror's environment defines, at `args`.
+    fn applied(&mut self, s: &Solver, name: &str, args: &[Ty]) -> Type {
         let formals: Vec<String> = (0..args.len()).map(|i| format!("'q{i}")).collect();
         let written = match args.len() {
-            0 => format!("T{id}"),
-            _ => format!("T{id}<{}>", formals.join(", ")),
+            0 => name.to_string(),
+            _ => format!("{name}<{}>", formals.join(", ")),
         };
         let Ok(t) = parse_type(&written) else {
             self.skip("a typedef's name");
@@ -202,11 +217,58 @@ impl Mirror {
         match self.in_body {
             true => t.replace_tvars(&at),
             false => {
-                let t = t.scope_refs(&root).replace_tvars(&at);
+                let t = t.scope_refs(&ModPath::root()).replace_tvars(&at);
                 t.seed_refs(&self.env);
                 t
             }
         }
+    }
+
+    /// A recursive typedef of the prototype's at `args`: a name the
+    /// mirror's environment defines, as `T<id>`.
+    fn named(&mut self, s: &Solver, id: u32, args: &[Ty]) -> Type {
+        if !self.defs.contains(&id) {
+            let def = &s.defs[id as usize];
+            if matches!(def.body, Ty::Bot) {
+                self.skip("a typedef still being read");
+                return Type::Bottom;
+            }
+            self.defs.push(id);
+            let (vars, body) = (def.params.clone(), def.body.clone());
+            self.define(s, &format!("T{id}"), &vars, vars.len(), |m, s| {
+                TypeDefBody::Alias(m.typ(s, &body))
+            })
+        }
+        self.applied(s, &format!("T{id}"), args)
+    }
+
+    /// An abstract type of the prototype's at `args`: a name the mirror's
+    /// environment defines, as `A<n>`, over what the prototype knows it is
+    /// made of.
+    fn abstract_type(&mut self, s: &Solver, tag: &ArcStr, args: &[Ty]) -> Type {
+        let n = match self.abs.iter().position(|t| t == tag) {
+            Some(n) => n,
+            None => {
+                let n = self.abs.len();
+                self.abs.push(tag.clone());
+                match s.reps.get(tag) {
+                    Some(def) if matches!(def.body, Ty::Bot) => {
+                        self.skip("an abstract type still being read")
+                    }
+                    Some(def) => {
+                        let (vars, body) = (def.params.clone(), def.body.clone());
+                        self.define(s, &format!("A{n}"), &vars, vars.len(), |m, s| {
+                            TypeDefBody::Abstract(Some(m.typ(s, &body)))
+                        })
+                    }
+                    None => self.define(s, &format!("A{n}"), &[], args.len(), |_, _| {
+                        TypeDefBody::Abstract(None)
+                    }),
+                }
+                n
+            }
+        };
+        self.applied(s, &format!("A{n}"), args)
     }
 
     /// The prototype's type as the tree's.
@@ -252,10 +314,7 @@ impl Mirror {
             },
             Ty::Rigid(v) => Type::TVar(self.cell(s, *v, true)),
             Ty::Named(id, args) => self.named(s, *id, args),
-            Ty::Abs(..) => {
-                self.skip("an abstract type");
-                Type::Bottom
-            }
+            Ty::Abs(tag, args) => self.abstract_type(s, tag, args),
             Ty::Trait(_) | Ty::Method(_) => {
                 self.skip("a trait");
                 Type::Bottom
@@ -322,9 +381,21 @@ impl Mirror {
                 open: open.as_ref().map(|o| named(self, o)),
             },
             Pat::Or(ps) => bounds::Pat::Or(all(self, ps)),
-            Pat::Abs(..) => {
-                self.skip("an abstract type");
-                bounds::Pat::Any(None)
+            Pat::Abs(v, tag, p) => {
+                // the type at whatever parameters, to learn which it is
+                let params = s.reps.get(tag).map(|d| d.params.len());
+                let any = vec![Ty::Any; params.unwrap_or(0)];
+                let known = params.is_some() || self.abs.contains(tag);
+                let whole = self.abstract_type(s, tag, &any);
+                match (known, whole.lookup_ref(&self.env)) {
+                    (true, Ok(Type::Abstract { id, .. })) => {
+                        bounds::Pat::Abs(named(self, v), id, Box::new(self.pat(s, p)))
+                    }
+                    _ => {
+                        self.skip("an abstract type the mirror has not met");
+                        bounds::Pat::Any(None)
+                    }
+                }
             }
             Pat::Whole(v, p) => {
                 bounds::Pat::Whole(self.cell(s, *v, false), Box::new(self.pat(s, p)))

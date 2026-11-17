@@ -4,18 +4,19 @@
 //! arm leaves must be nothing. A pattern tests only what is written in it,
 //! and a test admits what the run time cannot tell from it.
 
-use super::{Solving, alike, deep, open, shallow, union_of};
+use super::{Solving, alike, deep, open, rep, shallow, union_of};
 use crate::{
     env::Env,
     expr::WrittenAt,
     stack::ensure_sufficient,
-    typ::{TVar, Type, setops::strictly_identical},
+    typ::{AbstractId, Mutability, TVar, Type, setops::strictly_identical},
 };
 use anyhow::{Result, bail};
 use arcstr::{ArcStr, literal};
 use compact_str::format_compact;
 use netidx_value::Typ;
 use smallvec::SmallVec;
+use std::ops::ControlFlow;
 use triomphe::Arc;
 
 #[derive(Clone, Debug)]
@@ -40,6 +41,8 @@ pub enum Pat {
         open: Option<Option<TVar>>,
     },
     Or(Vec<Pat>),
+    /// An abstract type's constructor around what it holds.
+    Abs(Option<TVar>, AbstractId, Box<Pat>),
     /// A pattern, and a cell that takes the whole of what it admits.
     Whole(TVar, Box<Pat>),
 }
@@ -76,6 +79,10 @@ impl Pat {
                 Pat::Elems { all: v, list: *list, elems, open }
             }
             Pat::Or(ps) => Pat::Or(all(ps, f)),
+            Pat::Abs(v, id, p) => {
+                let v = named(v, f);
+                Pat::Abs(v, *id, Box::new(p.map_cells(f)))
+            }
             Pat::Whole(v, p) => {
                 let v = f(v);
                 Pat::Whole(v, Box::new(p.map_cells(f)))
@@ -177,6 +184,20 @@ fn has(t: &Type, bit: Typ) -> bool {
 
 fn nothing(t: &Type) -> bool {
     matches!(t, Type::Bottom) || matches!(t, Type::Primitive(p) if p.is_empty())
+}
+
+/// Whether a value of `t` holds something a value could be written into
+/// or called: a writable reference or a function.
+fn holds_taker(t: &Type) -> bool {
+    ensure_sufficient(|| match t {
+        Type::ByRef(Mutability::Mut, _) | Type::Fn(_) => true,
+        t => t
+            .try_for_each_child(&mut |c| match holds_taker(c) {
+                true => ControlFlow::Break(()),
+                false => ControlFlow::Continue(()),
+            })
+            .is_break(),
+    })
 }
 
 pub(super) struct Select {
@@ -550,6 +571,49 @@ impl Solving {
                     false => t.clone(),
                 };
                 Routed { part: self.both(env, true, &t, lit), rest, binds: vec![] }
+            }
+            (Pat::Abs(_, id, p), Type::Any) => match env.abstract_reps.get(id) {
+                Some(made) => {
+                    // which instance it is is not known, so it is read at
+                    // `Any` parameters: a payload something could be
+                    // written into or called at those is given no name
+                    let params: Arc<[Type]> =
+                        Arc::from_iter(made.params.iter().map(|_| Type::Any));
+                    let (mut taken, mut names) = (false, SmallVec::new());
+                    if let Some(rep) = rep(env, id, &params) {
+                        taken = holds_taker(&rep)
+                    }
+                    p.cells(&mut names);
+                    match taken && !names.is_empty() {
+                        true => none(),
+                        false => {
+                            let whole = Type::Abstract { id: *id, params };
+                            let r = self.route(env, pat, &whole);
+                            Routed { rest: Type::Any, ..r }
+                        }
+                    }
+                }
+                None => none(),
+            },
+            (Pat::Abs(all, id, p), Type::Abstract { id: have, params }) if id == have => {
+                match rep(env, id, params) {
+                    None => none(),
+                    Some(rep) => {
+                        let r = self.route(env, p, &rep);
+                        match nothing(&r.part) {
+                            true => none(),
+                            false => Routed {
+                                part: t.clone(),
+                                rest: if nothing(&r.rest) {
+                                    Type::Bottom
+                                } else {
+                                    t.clone()
+                                },
+                                binds: named(all, &t, r.binds),
+                            },
+                        }
+                    }
+                }
             }
             (Pat::Or(ps), _) => {
                 let (mut reach, mut parts, mut binds) = (t.clone(), vec![], vec![]);
