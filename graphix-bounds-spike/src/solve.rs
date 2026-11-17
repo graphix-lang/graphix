@@ -970,7 +970,7 @@ impl Solver {
 
     /// Register a use of whatever `t` turns out to be.
     pub fn watch(&mut self, t: &Ty, w: Watch) -> Result<()> {
-        self.replay(|m, _| m.skipped(w.needs()));
+        self.replay(|m, s| m.watch(s, t, &w));
         self.judged(|s| s.watch_own(t, w))
     }
 

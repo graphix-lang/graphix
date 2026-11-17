@@ -48,6 +48,69 @@ pub struct Known {
     pub(crate) demanded: bool,
     /// The check that bounded it has it in its list.
     pub(crate) listed: bool,
+    /// The uses waiting on what flows into the cell, and whether each has
+    /// met a value.
+    pub(crate) uses: SmallVec<[(Use, bool); 1]>,
+}
+
+/// A call's argument: its label, if it is passed by one, and its type.
+pub type Arg = (Option<ArcStr>, Type);
+
+/// A use that needs the shape of what it is given: it is applied to each
+/// decided type that flows into the cell it waits on, as that type
+/// arrives.
+#[derive(Debug, Clone)]
+pub enum Use {
+    /// A read of the field, which goes to `out`.
+    Field { field: ArcStr, out: Type },
+    /// A read of a tuple's element, or of an error's payload.
+    Index { i: usize, out: Type },
+    /// A call with `args`, whose result goes to `out`.
+    Call { args: SmallVec<[Arg; 4]>, out: Type },
+    /// A struct update: `out` takes the struct with each of `fields` at
+    /// its new type.
+    With { fields: SmallVec<[(ArcStr, Type); 2]>, out: Type },
+}
+
+impl Use {
+    fn needs(&self) -> &'static str {
+        match self {
+            Use::Field { .. } => "reading a struct",
+            Use::Index { .. } => "reading a tuple",
+            Use::Call { .. } => "reading a fn",
+            Use::With { .. } => "updating a struct",
+        }
+    }
+
+    /// The types the use holds, each through `f`.
+    fn map(&self, f: &mut impl FnMut(&Type) -> Type) -> Use {
+        match self {
+            Use::Field { field, out } => Use::Field { field: field.clone(), out: f(out) },
+            Use::Index { i, out } => Use::Index { i: *i, out: f(out) },
+            Use::Call { args, out } => Use::Call {
+                args: args.iter().map(|(l, t)| (l.clone(), f(t))).collect(),
+                out: f(out),
+            },
+            Use::With { fields, out } => Use::With {
+                fields: fields.iter().map(|(n, t)| (n.clone(), f(t))).collect(),
+                out: f(out),
+            },
+        }
+    }
+
+    fn each(&self, f: &mut impl FnMut(&Type)) {
+        match self {
+            Use::Field { out, .. } | Use::Index { out, .. } => f(out),
+            Use::Call { args, out } => {
+                f(out);
+                args.iter().for_each(|(_, t)| f(t))
+            }
+            Use::With { fields, out } => {
+                f(out);
+                fields.iter().for_each(|(_, t)| f(t))
+            }
+        }
+    }
 }
 
 /// The relation's own state for one check.
@@ -411,6 +474,8 @@ impl Solving {
                         known(w, |k| k.direct.push(a.clone()));
                         self.note(w, Added::Direct)
                     }
+                } else {
+                    self.demanded(env, v, b)?
                 }
                 lower.iter().try_for_each(|l| self.relate(env, l, b, vb.is_some()))
             }
@@ -460,6 +525,20 @@ impl Solving {
         if !edge {
             known(w, |k| k.direct.push(a.clone()));
             self.note(w, Added::Direct)
+        }
+        // a use of `w` meets the bound; where the bound is a cell, what
+        // that cell holds
+        let met = match open(a) {
+            Some(v) => flowing(v, &mut SmallVec::new()),
+            None => SmallVec::from_iter([a.clone()]),
+        };
+        for a in met.iter() {
+            for i in 0..uses(w).len() {
+                let u = uses(w)[i].0.clone();
+                if self.apply(env, &u, a)? {
+                    known(w, |k| k.uses[i].1 = true)
+                }
+            }
         }
         upper.iter().try_for_each(|u| self.relate(env, a, u, open(&shallow(u)).is_some()))
     }
@@ -810,7 +889,9 @@ impl Solving {
                 seen.push(v.clone());
                 let (lower, upper) = (v.cell_lower(), v.cell_constraints());
                 lower.iter().chain(upper.iter()).for_each(|b| self.reach(b, seen));
-                feeders(&v).iter().for_each(|u| self.reach(&Type::TVar(u.clone()), seen))
+                feeders(&v).iter().for_each(|u| self.reach(&Type::TVar(u.clone()), seen));
+                // and what its uses produce
+                uses(&v).iter().for_each(|(u, _)| u.each(&mut |t| self.reach(t, seen)))
             }
         }
     }
@@ -822,6 +903,16 @@ impl Solving {
         self.reach(t, &mut kept);
         for v in kept.iter().filter(|v| v.level().depth() > depth) {
             known(v, |k| k.quantified = true)
+        }
+    }
+
+    /// A use of `v` that met no value: it needs a shape nothing gave it.
+    fn unread(&self, v: &TVar) -> Result<()> {
+        match uses(v).iter().find(|(_, met)| !met) {
+            None => Ok(()),
+            Some((u, _)) => {
+                bail!("{} needs its type known here: annotate the binding", u.needs())
+            }
         }
     }
 
@@ -837,6 +928,11 @@ impl Solving {
         mark: usize,
     ) -> Result<()> {
         self.quantify(t, depth);
+        let mut kept = SmallVec::new();
+        self.reach(t, &mut kept);
+        kept.iter()
+            .filter(|v| v.level().depth() > depth && !v.is_bound())
+            .try_for_each(|v| self.unread(v))?;
         self.fix_scope(env, depth + 1, false, mark)?;
         for v in self.cells[mark..].iter() {
             let pending = v.level().depth() > depth
@@ -916,7 +1012,7 @@ impl Solving {
         // the copy is bounded and fed as the original is
         for (v, n) in made {
             let (lower, mut upper) = (v.cell_lower(), v.cell_constraints());
-            let (join, direct, fed, sinks) = {
+            let (join, direct, fed, sinks, used) = {
                 let cell = v.cell();
                 let c = cell.read();
                 match c.solving.as_ref() {
@@ -925,6 +1021,7 @@ impl Solving {
                         k.direct.clone(),
                         k.feeders.clone(),
                         k.sinks.clone(),
+                        k.uses.clone(),
                     ),
                     None => Default::default(),
                 }
@@ -956,6 +1053,12 @@ impl Solving {
                 (c.lower, c.constraints) = (lower, upper);
                 let k = c.solving.get_or_insert_default();
                 (k.join, k.direct, k.feeders) = (join, direct, feeds)
+            }
+            // the copy is used as the original is: what flows into it in
+            // this instance meets the same reads and calls
+            for (u, met) in used.iter() {
+                let u = u.map(&mut |t| self.copy(t, above, at, copies));
+                known(&n, |k| k.uses.push((u, *met)))
             }
             self.track(&n)
         }
@@ -1050,7 +1153,10 @@ impl Solving {
             let now = last
                 || (self.fixable(&v, min) && !waiting.iter().any(|w| w.same_cell(&v)));
             if mine && now {
-                self.fix(env, &v)?
+                self.fix(env, &v)?;
+                if !matches!(v.binding(), Some(Type::Bottom)) {
+                    self.unread(&v)?
+                }
             }
         }
         if last && let Some((a, b, _)) = self.held.iter().find(|h| !h.2) {
@@ -1220,6 +1326,178 @@ impl Solving {
                 bail!("unsatisfiable constraints: {}", all.join(" & "))
             }
         }
+    }
+}
+
+fn uses(v: &TVar) -> SmallVec<[(Use, bool); 1]> {
+    let cell = v.cell();
+    let c = cell.read();
+    c.solving.as_ref().map(|k| k.uses.clone()).unwrap_or_default()
+}
+
+/// Every type known to flow into `v`: its own lower bounds and those of
+/// the cells among them.
+fn flowing(v: &TVar, seen: &mut SmallVec<[usize; 8]>) -> SmallVec<[Type; 4]> {
+    seen.push(v.cell_addr());
+    let mut out = SmallVec::new();
+    for l in v.cell_lower().iter().map(shallow) {
+        match open(&l) {
+            Some(u) if !seen.contains(&u.cell_addr()) => out.extend(flowing(u, seen)),
+            Some(_) => (),
+            None => out.push(l),
+        }
+    }
+    out
+}
+
+impl Solving {
+    /// Register a use of whatever `t` turns out to be.
+    pub fn watch(&mut self, env: &Env, t: &Type, u: Use) -> Result<()> {
+        let t = shallow(t);
+        let Some(v) = open(&t) else { return self.apply(env, &u, &t).map(|_| ()) };
+        let mut met = false;
+        for l in flowing(v, &mut SmallVec::new()) {
+            met |= self.apply(env, &u, &l)?
+        }
+        known(v, |k| k.uses.push((u, met)));
+        self.track(v);
+        // a shape demanded of the cell serves, since nothing wider can
+        // flow in
+        for b in v.cell_constraints() {
+            if open(&shallow(&b)).is_none() {
+                self.demanded(env, v, &b)?
+            }
+        }
+        Ok(())
+    }
+
+    /// `b` is a new upper bound of `v`: a use that needs a shape takes it
+    /// from a shape demanded of `v`.
+    fn demanded(&mut self, env: &Env, v: &TVar, b: &Type) -> Result<()> {
+        let b = shallow(b);
+        for i in 0..uses(v).len() {
+            let u = uses(v)[i].0.clone();
+            let shaped = matches!(
+                (&u, &b),
+                (Use::Field { .. } | Use::With { .. }, Type::Struct(_))
+                    | (Use::Index { .. }, Type::Tuple(_))
+                    | (Use::Call { .. }, Type::Fn(_))
+            );
+            if shaped && self.apply(env, &u, &b)? {
+                known(v, |k| k.uses[i].1 = true)
+            }
+        }
+        Ok(())
+    }
+
+    /// Apply a use to one type that reaches it; false where the type says
+    /// nothing (bottom).
+    fn apply(&mut self, env: &Env, u: &Use, a: &Type) -> Result<bool> {
+        let a = shallow(a);
+        ensure_sufficient(|| match (&a, u) {
+            (Type::Bottom, _) => Ok(false),
+            (Type::Set(ms), _) => {
+                let mut any = false;
+                for m in ms.iter() {
+                    any |= self.apply(env, u, m)?
+                }
+                Ok(any)
+            }
+            (Type::Ref(_), _) => self.apply(env, u, &a.lookup_ref(env)?),
+            (Type::TVar(v), _) if v.is_rigid() => {
+                let mut any = false;
+                for b in v.cell_constraints() {
+                    if !matches!(b, Type::Bound(_)) && !b.is_trait_ref(env) {
+                        any |= self.apply(env, u, &b)?
+                    }
+                }
+                match any {
+                    true => Ok(true),
+                    false => {
+                        bail!(
+                            "{} needs its type known here: annotate the binding",
+                            u.needs()
+                        )
+                    }
+                }
+            }
+            (Type::TVar(_), _) => Ok(false),
+            (Type::Struct(fs), Use::Field { field, out }) => {
+                match fs.iter().find(|(n, ..)| n == field) {
+                    Some((_, t, _)) => self.constrain(env, t, out).map(|()| true),
+                    None => bail!("{a} has no field {field}"),
+                }
+            }
+            (Type::Struct(fs), Use::With { fields, out }) => {
+                if let Some((n, _)) =
+                    fields.iter().find(|(n, _)| !fs.iter().any(|(m, ..)| m == n))
+                {
+                    bail!("{a} has no field {n}")
+                }
+                let new =
+                    |n: &ArcStr| fields.iter().find(|(m, _)| m == n).map(|(_, t)| t);
+                let fs = fs
+                    .iter()
+                    .map(|(n, t, at)| (n.clone(), new(n).unwrap_or(t).clone(), *at));
+                let updated = Type::Struct(Arc::from_iter(fs));
+                self.constrain(env, &updated, out).map(|()| true)
+            }
+            (Type::Error(t), Use::Index { i: 0, out }) => {
+                self.constrain(env, t, out).map(|()| true)
+            }
+            (Type::Tuple(ts), Use::Index { i, out }) => match ts.get(*i) {
+                Some(t) => self.constrain(env, t, out).map(|()| true),
+                None => bail!("{a} has no element {i}"),
+            },
+            (Type::Fn(ft), Use::Call { args, out }) => {
+                self.call(env, ft, args, out).map(|()| true)
+            }
+            (_, Use::Field { field, .. }) => bail!("{a} has no field {field}"),
+            (_, Use::Index { i, .. }) => bail!("{a} has no element {i}"),
+            (_, Use::Call { .. }) => bail!("{a} is not a function"),
+            (_, Use::With { .. }) => bail!("{a} is not a struct"),
+        })
+    }
+
+    /// A call of a function whose type is known: each argument fits its
+    /// parameter, in the order written, and the result goes to `out`.
+    pub fn call(
+        &mut self,
+        env: &Env,
+        ft: &FnType,
+        args: &[Arg],
+        out: &Type,
+    ) -> Result<()> {
+        let labeled = |a: &FnArgType| match &a.kind {
+            FnArgKind::Labeled { name, has_default } => {
+                Some((name.clone(), *has_default))
+            }
+            FnArgKind::Positional { .. } => None,
+        };
+        let mut formals = ft.args.iter().filter(|a| labeled(a).is_none());
+        for (_, arg) in args.iter().filter(|(l, _)| l.is_none()) {
+            match (formals.next(), &ft.vargs) {
+                (Some(f), _) => self.constrain(env, arg, &f.typ)?,
+                (None, Some(v)) => self.constrain(env, arg, v)?,
+                (None, None) => bail!("too many arguments"),
+            }
+        }
+        if formals.next().is_some() {
+            bail!("missing argument")
+        }
+        for (label, arg) in args.iter().filter_map(|(l, t)| l.as_ref().map(|l| (l, t))) {
+            let named = |f: &&FnArgType| labeled(f).is_some_and(|(n, _)| &n == label);
+            match ft.args.iter().find(named) {
+                Some(f) => self.constrain(env, arg, &f.typ)?,
+                None => bail!("no argument #{label}"),
+            }
+        }
+        for (name, optional) in ft.args.iter().filter_map(labeled) {
+            if !optional && !args.iter().any(|(l, _)| l.as_ref() == Some(&name)) {
+                bail!("missing required argument #{name}")
+            }
+        }
+        self.constrain(env, &ft.rtype, out)
     }
 }
 
@@ -1551,5 +1829,38 @@ mod tests {
         assert!(s.constrain(&env, &parsed(&env, "i64"), &tx).is_ok());
         assert!(s.finish(&env).is_ok());
         assert_eq!((fixed(&x), fixed(&a)), ("i64".into(), "i64".into()));
+    }
+
+    #[test]
+    fn a_use_meets_each_value_as_it_arrives() {
+        let (env, _) = typed(&[], "null");
+        let mut s = Solving::default();
+        let ((_, tv), (out, to)) = (var("v"), var("out"));
+        out.set_joins();
+        let read = super::Use::Field { field: ArcStr::from("a"), out: to.clone() };
+        assert!(s.watch(&env, &tv, read).is_ok());
+        assert!(s.constrain(&env, &parsed(&env, "{a: i64, b: string}"), &tv).is_ok());
+        assert_eq!(shown(&out.cell_lower()), ["i64"]);
+        assert!(!s.attempt(&env, &parsed(&env, "{b: string}"), &tv));
+        // a call, of a cell that turns out to be a function
+        let ((_, tf), (r, tr)) = (var("f"), var("r"));
+        let args = [(None, parsed(&env, "i64"))];
+        let call = super::Use::Call { args: args.into_iter().collect(), out: tr };
+        assert!(s.watch(&env, &tf, call).is_ok());
+        assert!(s.constrain(&env, &parsed(&env, "fn(x: i64) -> string"), &tf).is_ok());
+        assert_eq!(shown(&r.cell_lower()), ["string"]);
+        assert!(!s.attempt(&env, &parsed(&env, "fn(x: string) -> string"), &tf));
+    }
+
+    #[test]
+    fn a_use_nothing_reaches_needs_an_annotation() {
+        let (env, _) = typed(&[], "null");
+        let mut s = Solving::default();
+        let mark = s.mark();
+        let ((_, tp), (_, to)) = (var_at("p", 1), var_at("o", 1));
+        let read = super::Use::Field { field: ArcStr::from("a"), out: to.clone() };
+        assert!(s.watch(&env, &tp, read).is_ok());
+        let f = over(&env, "fn(p: 'p) -> 'o", &[("p", &tp), ("o", &to)]);
+        assert!(s.generalize(&env, &f, 0, mark).is_err());
     }
 }

@@ -5,7 +5,7 @@
 //! yet is not compared.
 
 use crate::{
-    solve::{Arg, Kind, Solver},
+    solve::{Arg, Kind, Solver, Watch},
     ty::{FnTy, Ty, Var},
 };
 use arcstr::ArcStr;
@@ -15,7 +15,7 @@ use graphix_types::{
     expr::WrittenAt,
     typ::{
         Bound, FnArgKind, FnArgType, FnType, MapType, Mutability, TVar, Type,
-        bounds::{Solving, union_of},
+        bounds::{Solving, Use, union_of},
         tvar::{AtLevel, Level, RigidGate},
     },
 };
@@ -207,31 +207,39 @@ impl Mirror {
         }
     }
 
-    /// A call of a function whose type is known: its arguments fit its
-    /// parameters, and its result goes to `out`.
+    /// A call of a function whose type is known.
     pub fn call(&mut self, s: &Solver, ft: &FnTy, args: &[Arg], out: &Ty) {
-        let f = Type::Fn(Arc::new(self.fn_typ(s, ft)));
-        let args = args.iter().map(|(label, t, _)| FnArgType {
-            kind: match label {
-                None => FnArgKind::Positional { name: None },
-                Some(name) => {
-                    FnArgKind::Labeled { name: name.clone(), has_default: false }
-                }
-            },
-            typ: self.typ(s, t),
-        });
-        let args: Vec<FnArgType> = args.collect();
-        let wanted = Type::Fn(Arc::new(FnType {
-            args: Arc::from(args),
-            vargs: None,
-            rtype: self.typ(s, out),
-            throws: Type::Any,
-            explicit_throws: false,
-            quantifiers: Arc::from(Vec::<ArcStr>::new()),
-            lambda_ids: Default::default(),
-        }));
+        let ft = self.fn_typ(s, ft);
+        let args: Vec<_> =
+            args.iter().map(|(label, t, _)| (label.clone(), self.typ(s, t))).collect();
+        let out = self.typ(s, out);
         if self.live() {
-            let r = self.port.constrain(&self.env, &f, &wanted);
+            let r = self.port.call(&self.env, &ft, &args, &out);
+            self.done(s, r)
+        }
+    }
+
+    /// A use of whatever `t` turns out to be.
+    pub fn watch(&mut self, s: &Solver, t: &Ty, w: &Watch) {
+        let u = match w {
+            Watch::Field { field, out } => {
+                Use::Field { field: field.clone(), out: self.typ(s, out) }
+            }
+            Watch::Index { i, out } => Use::Index { i: *i, out: self.typ(s, out) },
+            Watch::Call { args, out } => Use::Call {
+                args: args.iter().map(|(l, t, _)| (l.clone(), self.typ(s, t))).collect(),
+                out: self.typ(s, out),
+            },
+            Watch::With { fields, out } => Use::With {
+                fields: fields.iter().map(|(n, t)| (n.clone(), self.typ(s, t))).collect(),
+                out: self.typ(s, out),
+            },
+            Watch::Select(_) => return self.skip("a select"),
+            Watch::Method { .. } => return self.skip("calling a method"),
+        };
+        let t = self.typ(s, t);
+        if self.live() {
+            let r = self.port.watch(&self.env, &t, u);
             self.done(s, r)
         }
     }
