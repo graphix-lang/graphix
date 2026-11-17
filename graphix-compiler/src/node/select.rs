@@ -83,6 +83,9 @@ pub struct Select<R: Rt> {
     discriminants: Option<Arc<ArmDiscriminants>>,
     /// The compile's flags, for the definition check's warnings.
     flags: BitFlags<CFlag>,
+    /// Under a check by bounds, what reaches each arm: the cell the
+    /// solver gives the part of the scrutinee the arm's pattern takes.
+    reaches: SmallVec<[Type; 4]>,
 }
 
 /// Facts about the arms that need the sealed scrutinee type or the
@@ -292,6 +295,7 @@ impl<R: Rt> Select<R> {
             arm_facts: None,
             discriminants: None,
             flags,
+            reaches: SmallVec::new(),
         })
     }
 
@@ -2806,7 +2810,8 @@ impl<R: Rt> Update<R> for Select<R> {
             arm_facts,
             discriminants: _,
             flags,
-        } = self;
+            reaches: _,
+} = self;
         let LazyArmFacts {
             tracked,
             sleep_on_deselect,
@@ -3083,7 +3088,8 @@ impl<R: Rt> Update<R> for Select<R> {
             arm_facts: _,
             discriminants: _,
             flags: _,
-        } = self;
+            reaches: _,
+} = self;
         arg.node.delete(ctx);
         for (pat, arm) in arms {
             arm.delete(ctx);
@@ -3104,7 +3110,8 @@ impl<R: Rt> Update<R> for Select<R> {
             arm_facts,
             discriminants: _,
             flags: _,
-        } = self;
+            reaches: _,
+} = self;
         slept.set();
         let stopped = wake::stopped(ctx);
         let mut tracked = arm_facts.as_mut().and_then(|f| f.tracked.as_mut());
@@ -3134,7 +3141,8 @@ impl<R: Rt> Update<R> for Select<R> {
             arm_facts: _,
             discriminants: _,
             flags: _,
-        } = self;
+            reaches: _,
+} = self;
         arg.node.refs(refs);
         for arm in arms {
             arm_refs(arm, refs);
@@ -3180,6 +3188,17 @@ impl<R: Rt> Update<R> for Select<R> {
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         self.arg.node.typecheck1(ctx)?;
+        // a check by bounds decided what reaches each arm after the
+        // patterns were built: they take their places from it now
+        for ((pat, n), reach) in self.arms.iter_mut().zip(self.reaches.drain(..)) {
+            let reach = reach.resolve_tvars();
+            if !reach.is_uninhabited() {
+                wrap!(n, pat.structure_predicate.realign(&ctx.env, &reach))?
+            }
+            if !pat.explicit_type_predicate {
+                pat.type_predicate = reach
+            }
+        }
         for (pat, n) in self.arms.iter_mut() {
             if pat.explicit_type_predicate
                 && let Some(t) = pat.type_predicate.blind_bottoms()
@@ -3249,6 +3268,14 @@ impl<R: Rt> Select<R> {
                 }
                 false => inner,
             };
+            // what reaches the arm is what its pattern is run against: an
+            // arm with no test of its own tests for it
+            let reach = super::joined_cell();
+            let arm = bounds::Pat::Whole(reach.clone(), Box::new(arm));
+            self.reaches.push(Type::TVar(reach.clone()));
+            if !pat.explicit_type_predicate {
+                pat.type_predicate = Type::TVar(reach)
+            }
             if let Some(guard) = &mut pat.guard {
                 wrap!(guard.node, guard.node.typecheck0(ctx))?;
                 wrap!(guard.node, bool.check_contains(&ctx.env, guard.node.typ()))?
