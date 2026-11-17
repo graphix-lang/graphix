@@ -1330,11 +1330,23 @@ pub fn strippable(env: &Env, t: &Type) -> Result<bool> {
     })
 }
 
-fn strip_members(members: SmallVec<[Type; 4]>) -> (Type, SmallVec<[Type; 2]>) {
-    let errors = members.iter().any(|m| {
+/// Whether `?` and `$` take the errors off `t`, a type they can tell
+/// that of ([`strippable`]): it holds one. They take the null otherwise.
+pub fn strips_errors(env: &Env, t: &Type) -> Result<bool> {
+    let mut members: SmallVec<[Type; 4]> = SmallVec::new();
+    members_of(env, t, &mut members)?;
+    Ok(holds_errors(&members))
+}
+
+fn holds_errors(members: &[Type]) -> bool {
+    members.iter().any(|m| {
         matches!(m, Type::Error(_))
             || matches!(m, Type::Primitive(p) if p.contains(Typ::Error))
-    });
+    })
+}
+
+fn strip_members(members: SmallVec<[Type; 4]>) -> (Type, SmallVec<[Type; 2]>) {
+    let errors = holds_errors(&members);
     let gone = if errors { Typ::Error } else { Typ::Null };
     let payloads = members.iter().filter_map(|m| match m {
         Type::Error(p) => Some((**p).clone()),

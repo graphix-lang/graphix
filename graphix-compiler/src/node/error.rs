@@ -1168,6 +1168,19 @@ impl<R: Rt> Qop<R> {
         }
     }
 
+    /// Take off what a check by bounds says goes from an operand of the
+    /// type `t`, where `t` is decided enough to say.
+    fn strip_of(&mut self, env: &Env, t: &Type) -> Result<()> {
+        if bounds::strippable(env, t)? {
+            self.strip = match bounds::strips_errors(env, t)? {
+                true => Strip::Error,
+                false => Strip::Null,
+            };
+            self.raised = Self::raised_typ(self.strip, &self.n)
+        }
+        Ok(())
+    }
+
     /// The type of what a raise here carries.
     fn raised_typ(strip: Strip, n: &Node<R>) -> Type {
         match strip {
@@ -1192,6 +1205,17 @@ impl<R: Rt> Update<R> for Qop<R> {
 
     fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
         f(&mut self.n)
+    }
+
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
+        wrap!(self.n, self.n.typecheck1(ctx))?;
+        // an operand a check by bounds decided after this node was
+        // checked says what goes only now
+        if ctx.bounds && !matches!(self.spec.kind, ExprKind::Rethrow(_)) {
+            let t = self.n.typ().resolve_tvars();
+            wrap!(self, self.strip_of(&ctx.env, &t))?
+        }
+        Ok(())
     }
 
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
@@ -1714,6 +1738,7 @@ impl<R: Rt> Qop<R> {
         };
         match self.n.typ().with_deref(|t| t.cloned()) {
             Some(t) if bounds::strippable(env, &t)? => {
+                self.strip_of(env, &t)?;
                 let (left, payloads) = bounds::strip(env, &t)?;
                 for (p, to) in payloads.iter().flat_map(|p| payload.iter().map(move |to| (p, to))) {
                     to.check_contains(env, p)?
