@@ -59,7 +59,10 @@ pub struct Solver {
     pub vars: Vec<VarInfo>,
     pub defs: Vec<Def>,
     cache: HashSet<(Ty, Ty)>,
-    held: Vec<(Ty, Ty)>,
+    /// A type below a union with more than one member that could take it,
+    /// waiting for both to be ground; true where a scheme's variables hold
+    /// it, so each instance takes a copy.
+    held: Vec<(Ty, Ty, bool)>,
     fixing: HashSet<Var>,
     /// How many relations were taken apart, the prototype's cost measure.
     pub steps: u64,
@@ -167,6 +170,13 @@ impl Solver {
                 match (&a, &b) {
                     (Ty::Var(v), _) if self.level(&b) <= lvl => {
                         self.info_mut(*v).upper.push(b.clone());
+                        match &b {
+                            Ty::Var(w) if self.info(*w).level == lvl => {
+                                self.info_mut(*w).lower.push(a.clone())
+                            }
+                            Ty::Var(_) => (),
+                            b => self.demanded(*v, b)?,
+                        }
                         for l in self.info(*v).lower.clone() {
                             self.constrain(&l, &b)?
                         }
@@ -246,6 +256,24 @@ impl Solver {
         }
         for u in self.info(w).upper.clone() {
             self.constrain(a, &u)?
+        }
+        Ok(())
+    }
+
+    /// `b` is a new upper bound of `v`: a use that needs a shape takes it
+    /// from a shape demanded of `v`, since nothing wider can flow in.
+    fn demanded(&mut self, v: Var, b: &Ty) -> Result<()> {
+        for i in 0..self.info(v).watches.len() {
+            let watch = self.info(v).watches[i].0.clone();
+            let shaped = matches!(
+                (&watch, b),
+                (Watch::Field { .. }, Ty::Struct(_))
+                    | (Watch::Index { .. }, Ty::Tuple(_))
+                    | (Watch::Call { .. }, Ty::Fn(_))
+            );
+            if shaped && self.apply(&watch, b)? {
+                self.info_mut(v).watches[i].1 = true
+            }
         }
         Ok(())
     }
@@ -352,31 +380,23 @@ impl Solver {
                 (true, _) => Ok(()),
                 (false, [m]) => self.constrain(&Ty::Prim(rest), m),
                 (false, []) => mismatch(b, a),
-                (false, _) => self.ambiguous(a, b),
+                (false, _) => Ok(self.held.push((a.clone(), b.clone(), false))),
             };
         }
         let head = a.head();
-        let cands: Vec<&Ty> = ms.iter().filter(|m| m.head() == head).collect();
+        let cands: Vec<&Ty> =
+            ms.iter().filter(|m| !matches!(m, Ty::Var(_)) && m.head() == head).collect();
         match (cands.as_slice(), open.as_slice()) {
             ([m], []) => self.constrain(a, m),
             ([], [m]) => self.constrain(a, m),
             ([], []) => mismatch(b, a),
-            _ if !self.is_ground(a) => {
-                self.held.push((a.clone(), b.clone()));
-                Ok(())
+            _ if !self.is_ground(a) || !self.is_ground(b) => {
+                Ok(self.held.push((a.clone(), b.clone(), false)))
             }
-            _ => {
-                let (ground, loose): (Vec<&Ty>, Vec<&Ty>) =
-                    cands.iter().partition(|m| self.is_ground(m));
-                if ground.iter().any(|m| self.constrain(a, m).is_ok()) {
-                    return Ok(());
-                }
-                match (loose.as_slice(), open.as_slice()) {
-                    ([m], []) | ([], [m]) => self.constrain(a, m),
-                    ([], []) => mismatch(b, a),
-                    _ => self.ambiguous(a, b),
-                }
-            }
+            _ => match cands.iter().any(|m| self.constrain(a, m).is_ok()) {
+                true => Ok(()),
+                false => mismatch(b, a),
+            },
         }
     }
 
@@ -440,6 +460,11 @@ impl Solver {
                     }
                 }
                 self.info_mut(v).watches.push((w, fired));
+                for u in self.info(v).upper.clone() {
+                    if !matches!(u, Ty::Var(_)) {
+                        self.demanded(v, &u)?
+                    }
+                }
                 Ok(())
             }
             t => self.apply(&w, &t).map(|_| ()),
@@ -476,7 +501,23 @@ impl Solver {
     /// A copy of `t` with every variable deeper than `above` replaced by a
     /// fresh one at `at`, bounds included.
     pub fn instantiate(&mut self, t: &Ty, above: u32, at: u32) -> Ty {
-        self.copy(t, above, at, &mut HashMap::new())
+        let mut memo = HashMap::new();
+        let t = self.copy(t, above, at, &mut memo);
+        for (a, b, scheme) in self.held.clone() {
+            let mut mine = false;
+            for t in [&a, &b] {
+                t.each(&mut |t| {
+                    if let Ty::Var(v) | Ty::Rigid(v) = t {
+                        mine |= memo.contains_key(v)
+                    }
+                })
+            }
+            if scheme && mine {
+                let (a, b) = (self.copy(&a, above, at, &mut memo), self.copy(&b, above, at, &mut memo));
+                self.held.push((a, b, false))
+            }
+        }
+        t
     }
 
     fn copy(&mut self, t: &Ty, above: u32, at: u32, memo: &mut HashMap<Var, Var>) -> Ty {
@@ -549,16 +590,22 @@ impl Solver {
         while progress {
             progress = false;
             for i in (0..self.held.len()).rev() {
-                let (a, b) = self.held[i].clone();
-                let vs = self.open_vars(&a);
+                let (a, b, scheme) = self.held[i].clone();
+                if scheme {
+                    continue;
+                }
+                let mut vs = self.open_vars(&a);
+                vs.extend(self.open_vars(&b));
                 if vs.iter().all(|v| self.fixable(*v, min)) {
                     self.held.swap_remove(i);
                     vs.iter().try_for_each(|v| self.fix(*v))?;
-                    let a = self.deep(&a);
-                    self.constrain(&a, &b)?;
+                    let (a, b) = (self.deep(&a), self.deep(&b));
+                    if self.constrain(&a, &b).is_err() {
+                        return self.ambiguous(&a, &b);
+                    }
                     progress = true
                 } else if vs.iter().any(|v| self.info(*v).quantified) {
-                    return self.ambiguous(&a, &b);
+                    self.held[i].2 = true
                 }
             }
         }
@@ -577,7 +624,7 @@ impl Solver {
                 }
             }
         }
-        if last && let Some((a, b)) = self.held.first() {
+        if last && let Some((a, b, _)) = self.held.iter().find(|h| !h.2) {
             return self.ambiguous(a, b);
         }
         Ok(())
