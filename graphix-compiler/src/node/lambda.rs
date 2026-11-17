@@ -3057,16 +3057,17 @@ impl<R: Rt> DefGate<R> {
     /// The body's sites settle with the enclosing statement, all but the
     /// cells this signature reaches: those stay open, generalized where a
     /// binding names the definition, else its enclosing level's.
-    /// Under a check by bounds, the type the lambda stands as: one
-    /// instance of its scheme where no binding names a definition of its
-    /// own, else its signature.
+    /// Under a check by bounds, where no binding names a definition of
+    /// its own, the one instance of its scheme the lambda stands as: its
+    /// type, and its cell for each of the scheme's, by that cell's
+    /// address.
     fn close(
         mut self,
         ctx: &mut CompileCtx<R>,
         spec: &Expr,
         table: Option<SArc<DefTable>>,
         named: bool,
-    ) -> Result<Option<Type>> {
+    ) -> Result<Option<(Type, AHashMap<usize, TVar>)>> {
         let mut frame = ctx.pending_settles.pop().expect("gate settle frame");
         ctx.def_gate_depth -= 1;
         let mut stands = None;
@@ -3082,7 +3083,11 @@ impl<R: Rt> DefGate<R> {
                     solving(|s| s.own(tv))
                 }
                 if !named && closed.is_ok() {
-                    stands = Some(solving(|s| s.instantiate(&sig, self.depth - 1, self.outer)))
+                    let mut copies = AHashMap::default();
+                    let one = solving(|s| {
+                        s.instantiate_into(&sig, self.depth - 1, self.outer, &mut copies)
+                    });
+                    stands = Some((one, copies))
                 }
             }
             (None, true) => {
@@ -3532,6 +3537,7 @@ impl<R: Rt> Update<R> for Lambda {
                 check_defaults(ctx, def, &gate.scope, &mut captures, &mut defaults)
             })
             .and_then(|()| gate.check_declared_kept().at(spec));
+        let mut checked = None;
         if res.is_ok()
             && (table.is_some() || !captures.is_empty() || !defaults.is_empty())
         {
@@ -3544,16 +3550,31 @@ impl<R: Rt> Update<R> for Lambda {
                 .drain()
                 .map(|(scope, name)| Captured::new(&def.scope.lexical, scope, name))
                 .collect();
-            def.table.set(Tables { table: SArc::new(table), outer: None });
+            checked = Some(SArc::new(table));
         }
         for n in defaults.drain(..) {
             ctx.discard(n)
         }
-        let closed =
-            gate.close(ctx, spec, def.table.get().map(|t| t.table.clone()), self.named);
+        if !bounds::active()
+            && let Some(table) = checked.take()
+        {
+            def.table.set(Tables { table, outer: None })
+        }
+        let table = checked.clone().or_else(|| def.table.get().map(|t| t.table.clone()));
+        let closed = gate.close(ctx, spec, table, self.named);
         if bounds::active() {
+            // a lambda that stands as one instance of its scheme reads its
+            // check's types as that instance has them
+            let one = closed.as_ref().ok().and_then(|stands| stands.as_ref());
+            if let Some(table) = checked {
+                let table = match one {
+                    Some((_, copies)) => SArc::new(table.renamed(copies)),
+                    None => table,
+                };
+                def.table.set(Tables { table, outer: None })
+            }
             return res.and(closed).map(|stands| {
-                if let Some(t) = stands {
+                if let Some((t, _)) = stands {
                     self.typ = t
                 }
             });
