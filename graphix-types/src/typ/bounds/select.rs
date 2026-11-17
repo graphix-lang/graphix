@@ -213,16 +213,22 @@ enum Walk {
 
 /// The walks over pairs of typedef names in progress. Names recur, so a
 /// pair met again inside itself is read without walking it: for the
-/// values in both, as all of the first, or of the test; for those left, as none, which
-/// holds where every pair so read ends with none left. Where one does
-/// not, the outermost pair is walked again reading each as all of the
-/// first. Either reading errs only toward more values.
+/// values in both, as all of the first, or of the test; for those left,
+/// as none, which holds where every pair so read ends with none left.
+/// Where one does not, the outermost pair is walked again reading each as
+/// all of the first. What a pair inside the outermost gives, where it
+/// rests on such a reading, is kept as a name and never as its unfolding,
+/// which grows with every pair it passes through. Each reading errs only
+/// toward more values.
 #[derive(Default)]
 pub(super) struct Walks {
     /// Each pair in progress, and whether it was met again.
     open: SmallVec<[(Walk, Type, Type, bool); 8]>,
-    /// What each pair finished inside the outermost gave.
-    done: Vec<(Walk, Type, Type, Type)>,
+    /// What each pair finished inside the outermost gave, and whether it
+    /// rests on a pair read without a walk.
+    done: Vec<(Walk, Type, Type, Type, bool)>,
+    /// How many times a pair was read without a walk.
+    rested: usize,
     /// A pair read as leaving nothing left something.
     wrong: bool,
     /// A pair met again leaves all of its first type.
@@ -454,40 +460,58 @@ impl Solving {
         })
     }
 
-    /// The walk `f` of `a` and `b`, once for a pair of typedef names
-    /// ([`Walks`]).
+    /// The walk `f` of `a` and `b`, once for a pair holding a typedef's
+    /// name ([`Walks`]).
     fn paired(&self, walk: Walk, a: &Type, b: &Type, f: impl Fn() -> Type) -> Type {
+        // names recur out of step, so a pair with one name is a pair
         let (a, b) = match (shallow(a), shallow(b)) {
-            (a @ Type::Ref(_), b @ Type::Ref(_)) if !strictly_identical(&a, &b) => (a, b),
+            (a, b)
+                if (matches!(a, Type::Ref(_)) || matches!(b, Type::Ref(_)))
+                    && !strictly_identical(&a, &b) =>
+            {
+                (a, b)
+            }
             _ => return f(),
         };
         let same = |w: Walk, x: &Type, y: &Type| {
             w == walk && strictly_identical(x, &a) && strictly_identical(y, &b)
         };
-        {
+        // every value the pair could give, by name
+        let all = || match walk {
+            Walk::Both(true) => b.clone(),
+            Walk::Less(_) | Walk::Both(false) => a.clone(),
+        };
+        let before = {
             let mut walks = self.walks.borrow_mut();
             let whole = walks.whole;
             if let Some(p) = walks.open.iter_mut().find(|p| same(p.0, &p.1, &p.2)) {
                 p.3 = true;
+                walks.rested += 1;
                 return match walk {
                     Walk::Less(_) if !whole => Type::Bottom,
-                    // what passes a test is the test's type
-                    Walk::Both(true) => b,
-                    Walk::Less(_) | Walk::Both(false) => a,
+                    _ => all(),
                 };
             }
             if let Some(d) = walks.done.iter().find(|d| same(d.0, &d.1, &d.2)) {
-                return d.3.clone();
+                let (left, rests) = (d.3.clone(), d.4);
+                walks.rested += rests as usize;
+                return left;
             }
-            walks.open.push((walk, a.clone(), b.clone(), false))
-        }
+            walks.open.push((walk, a.clone(), b.clone(), false));
+            walks.rested
+        };
         let left = f();
         let mut walks = self.walks.borrow_mut();
         let met = walks.open.pop().is_some_and(|p| p.3);
+        let rests = walks.rested != before;
         walks.wrong |=
             met && !walks.whole && matches!(walk, Walk::Less(_)) && !nothing(&left);
         if !walks.open.is_empty() {
-            walks.done.push((walk, a, b, left.clone()));
+            let left = match rests && !nothing(&left) {
+                true => all(),
+                false => left,
+            };
+            walks.done.push((walk, a.clone(), b.clone(), left.clone(), rests));
             return left;
         }
         walks.done.clear();
@@ -495,7 +519,7 @@ impl Solving {
             return left;
         }
         walks.whole = true;
-        walks.open.push((walk, a, b, false));
+        walks.open.push((walk, a.clone(), b.clone(), false));
         drop(walks);
         let left = f();
         let mut walks = self.walks.borrow_mut();

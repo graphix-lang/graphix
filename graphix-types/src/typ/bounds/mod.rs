@@ -308,6 +308,9 @@ pub struct Solving {
     /// The pairs holding a typedef's name that are being related: a pair
     /// met again inside itself holds.
     unfolding: Vec<(Type, Type)>,
+    /// The pairs related to their end inside the outermost of those: one
+    /// met again has added every bound it adds.
+    unfolded: Vec<(Type, Type)>,
     /// What each cell has had added since the outermost attempt began, in
     /// order, each the last of its list when added: a failed attempt takes
     /// its own back.
@@ -526,11 +529,13 @@ impl Solving {
     /// and where it succeeds too unless `keep`.
     fn trying(&mut self, keep: bool, f: impl FnOnce(&mut Self) -> Result<()>) -> bool {
         let (mark, held) = (self.added.len(), self.held.len());
+        let unfolded = self.unfolded.len();
         self.attempts += 1;
         let fits = f(self).is_ok();
         self.attempts -= 1;
         if !(fits && keep) {
             self.held.truncate(held);
+            self.unfolded.truncate(unfolded);
             for (v, what) in self.added.drain(mark..).rev() {
                 let cell = v.cell();
                 let mut c = cell.write();
@@ -977,7 +982,7 @@ impl Solving {
     fn unfolded(&mut self, env: &Env, a: &Type, b: &Type) -> Result<()> {
         let met =
             |(x, y): &(Type, Type)| strictly_identical(x, a) && strictly_identical(y, b);
-        if self.unfolding.iter().any(met) {
+        if self.unfolding.iter().any(met) || self.unfolded.iter().any(met) {
             return Ok(());
         }
         let expand = |t: &Type| match t {
@@ -988,6 +993,11 @@ impl Solving {
         self.unfolding.push((a.clone(), b.clone()));
         let r = self.constrain(env, &x, &y);
         self.unfolding.pop();
+        match self.unfolding.is_empty() {
+            true => self.unfolded.clear(),
+            false if r.is_ok() => self.unfolded.push((a.clone(), b.clone())),
+            false => (),
+        }
         // a refusal names the types as they were written
         r.map_err(|e| match e.to_string().starts_with("type mismatch") {
             true => anyhow::anyhow!("type mismatch {b} does not contain {a}"),
@@ -1362,13 +1372,41 @@ fn deep(t: &Type) -> Type {
 /// `t` with each open cell `f` answers for replaced, bound cells looked
 /// through.
 fn map_cells(t: &Type, f: &mut impl FnMut(&TVar) -> Option<Type>) -> Type {
-    ensure_sufficient(|| match t {
-        Type::TVar(tv) => match tv.binding() {
-            Some(b) => map_cells(&b, f),
-            None => f(tv).unwrap_or_else(|| t.clone()),
-        },
-        t => t.cow_children(&mut |c| Some(map_cells(c, f))).unwrap_or_else(|| t.clone()),
-    })
+    // a part many places share is mapped once, and one nothing changes
+    // in stays shared: `f` gives a cell the same answer wherever it is
+    fn go(
+        t: &Type,
+        f: &mut impl FnMut(&TVar) -> Option<Type>,
+        mapped: &mut AHashMap<usize, Option<Type>>,
+    ) -> Option<Type> {
+        ensure_sufficient(|| match t {
+            Type::TVar(tv) => match tv.binding() {
+                Some(b) => {
+                    let addr = tv.cell_addr();
+                    if let Some(r) = mapped.get(&addr) {
+                        return r.clone();
+                    }
+                    let r = Some(go(&b, f, mapped).unwrap_or(b));
+                    mapped.insert(addr, r.clone());
+                    r
+                }
+                None => f(tv),
+            },
+            t => {
+                let addr = node_addr(t);
+                if let Some(r) = addr.and_then(|a| mapped.get(&a)) {
+                    return r.clone();
+                }
+                let r = t.cow_children(&mut |c| go(c, f, mapped));
+                if let Some(a) = addr {
+                    mapped.insert(a, r.clone());
+                }
+                r
+            }
+        })
+    }
+    let mut mapped: LPooled<AHashMap<usize, Option<Type>>> = LPooled::take();
+    go(t, f, &mut mapped).unwrap_or_else(|| t.clone())
 }
 
 /// The unbound cells of `t`, each once, bound cells looked through;
