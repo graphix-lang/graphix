@@ -1001,8 +1001,13 @@ impl Checker {
                     }
                 };
                 let held = self.method_held(m, &module, None, lvl + 1)?;
+                // a value that is no lambda and no generic name is computed
+                // once, outside the implementation
                 let own = self.s.vars.len();
-                let mut t = self.definition(&b.value, lvl + 2)?;
+                let mut t = match self.holds_generic(&b.value) {
+                    true => self.definition(&b.value, lvl + 2)?,
+                    false => self.infer(&b.value, lvl)?,
+                };
                 // a method that writes types of its own is a definition
                 // of its own, and one instance of it is the method
                 let writes = matches!(&value_of(&b.value).kind, ExprKind::Lambda(l) if declares(l));

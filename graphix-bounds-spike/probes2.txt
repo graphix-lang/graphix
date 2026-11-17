@@ -28,3 +28,11 @@ let r = select true { true => never(), false => error(`E) }; select r { error as
 let rec sum = |t| select t { `Leaf(n) => n, `Node(kids) => array::fold(array::map(kids, sum), 0, |a, x| a + x) }; sum(`Node([`Leaf(1), `Node([`Leaf(2)])]))
 let n: [i64, null] = 3; select n == null { true => 0, false => 1 }
 let f = |o| select o { null as _ => 0, n => n + 1 }; let a: [i64, null] = 1; f(a)
+let y = 1; let f = |x: 'a| -> 'a y; f("s")
+let y = never(); let f = |x: 'a| -> 'a { y <- x; x }; f(1); y
+type B<'p> = Abstract<'p>; let f = |a, b| { let x = B([a]); x <- B([b]); x.0 }; f(1, "s")
+let s = {g: |x| x}; let j = s.g; j <- |x: i64| x + 1; j("s")
+type W<'a> = Abstract<&mut 'a>; |x: Any| select x { W(r) => *r <- "s", _ => never() }
+let k = |v| { let t = (|x| x, 1); let (r, n) = t; r(v) }; k(2)
+use Collection::*; let f = |c| len(c); (f([1]), f([<"a">]))
+trait T { val m: fn(self) -> i64 }; impl T for i64 { let m = |s| s }; let f = |x: T| T::m(x); (f(1), f("s"))

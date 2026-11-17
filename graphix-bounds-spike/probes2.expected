@@ -28,3 +28,11 @@ no	pattern 2 will never match: nothing reaches it (:1:69; the value is Error<`E>
 no	type mismatch [`Leaf(i64), `Node(Array<`Leaf(i64)>)] does not contain `Node(Array<[`Leaf(i64), `Node(Array<`Leaf(i64)>)]>); one value comes from elsewhere, the other from line 1, column 119: declare the type that holds both
 no	cannot compare: the value comes from line 1, column 32, and is used at line 1, column 32
 ok	i64
+no	a declared type variable meets a value from outside the definition that declares it ('r3)
+ok	i64
+no	type mismatch B<Array<i64>> does not contain B<Array<string>>; one value comes from elsewhere, the other from elsewhere: declare the type that holds both
+no	type mismatch i64 does not contain string; the value comes from line 1, column 34, and is used at line 1, column 55
+no	pattern 1 will never match: nothing reaches it (:1:49; the value is Any)
+ok	i64
+ok	(i64, i64)
+no	string does not implement T; the value comes from line 1, column 104, and is used at a signature

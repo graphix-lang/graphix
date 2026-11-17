@@ -92,6 +92,9 @@ pub struct VarInfo {
     /// into them is passed on as it arrives, so this is a record for
     /// fixing, never walked when a bound is added.
     feeders: Vec<Var>,
+    /// For a declared variable: the variables outside its definition that
+    /// its values flow into. Each instance's type for it flows there.
+    sinks: Vec<Var>,
     watches: Vec<(Watch, bool)>,
 }
 
@@ -156,6 +159,10 @@ pub struct Solver {
     /// variable it feeds: what arrives that way is the feeder's, not new.
     along_edge: bool,
     pub selects: Vec<Select>,
+    /// Variables inside a generic definition that take more than one
+    /// value and whose one type its variables decide: each instance checks
+    /// a copy.
+    singles: Vec<Var>,
     /// What each abstract type is made of, where that has been seen.
     pub reps: HashMap<ArcStr, Def>,
     /// Each implementation: its trait, and its target as a scheme whose
@@ -195,6 +202,7 @@ impl Solver {
             demanded: false,
             direct: vec![],
             feeders: vec![],
+            sinks: vec![],
             watches: vec![],
         });
         Var(self.vars.len() as u32 - 1)
@@ -318,6 +326,7 @@ impl Solver {
                     }
                     (Ty::Var(_), _) => {
                         let b = self.extrude(&b, false, lvl, &mut HashMap::new());
+                        self.escapes(&b, lvl)?;
                         self.constrain(&a, &b)
                     }
                     (_, Ty::Var(w)) if self.level(&a) <= lvl => {
@@ -325,6 +334,7 @@ impl Solver {
                     }
                     (_, _) => {
                         let a = self.extrude(&a, true, lvl, &mut HashMap::new());
+                        self.escapes(&a, lvl)?;
                         self.constrain(&a, &b)
                     }
                 }
@@ -413,6 +423,17 @@ impl Solver {
             (Ty::Fn(f), Ty::Fn(g)) => self.fn_below(f, g),
             _ => mismatch(&b, &a),
         }
+    }
+
+    /// What is still deeper than `lvl` once its variables have twins there
+    /// is a declared variable of a definition `lvl` is outside of.
+    fn escapes(&self, t: &Ty, lvl: u32) -> Result<()> {
+        if self.level(t) > lvl {
+            bail!(
+                "a declared type variable meets a value from outside the definition that declares it ({t})"
+            )
+        }
+        Ok(())
     }
 
     /// `a`, which is no variable, is of a type that implements trait `t`:
@@ -604,6 +625,17 @@ impl Solver {
             return t.clone();
         }
         match self.shallow(t) {
+            // a declared variable's values may flow out of its definition:
+            // each instance's type for it follows them
+            Ty::Rigid(v) if pos => {
+                if let Some(n) = memo.get(&(v, pos)) {
+                    return Ty::Var(*n);
+                }
+                let n = self.fresh(lvl, Kind::Join);
+                memo.insert((v, pos), n);
+                self.info_mut(v).sinks.push(n);
+                Ty::Var(n)
+            }
             Ty::Var(v) => {
                 if let Some(n) = memo.get(&(v, pos)) {
                     return Ty::Var(*n);
@@ -952,6 +984,15 @@ impl Solver {
                 self.held.push((a, b, false))
             }
         }
+        // a variable of the definition whose one type the scheme's
+        // variables decide is the instance's to check
+        for v in self.singles.clone() {
+            let mut all = vec![];
+            self.reach(&Ty::Var(v), &mut all);
+            if self.info(v).level > above && all.iter().any(|u| memo.contains_key(u)) {
+                self.copy(&Ty::Var(v), above, at, &mut memo);
+            }
+        }
         // a select of the definition that waits on one of its variables
         // is the instance's to finish
         for id in 0..self.selects.len() {
@@ -1009,7 +1050,9 @@ impl Solver {
                 let n = self.fresh(at, kind);
                 self.info_mut(n).singleton = self.info(*v).singleton;
                 memo.insert(*v, n);
-                let (ls, us) = (self.info(*v).lower.clone(), self.info(*v).upper.clone());
+                let (ls, mut us) =
+                    (self.info(*v).lower.clone(), self.info(*v).upper.clone());
+                us.extend(self.info(*v).sinks.iter().map(|n| Ty::Var(*n)));
                 let ls = ls.iter().map(|l| self.copy(l, above, at, memo)).collect();
                 let us = us.iter().map(|u| self.copy(u, above, at, memo)).collect();
                 let direct = self.info(*v).direct.clone();
@@ -1167,7 +1210,19 @@ impl Solver {
                 self.unread(v)?
             }
         }
-        self.fix_scope(lvl + 1, false, mark)
+        self.fix_scope(lvl + 1, false, mark)?;
+        for v in (mark as u32..self.vars.len() as u32).map(Var) {
+            let info = self.info(v);
+            if info.level > lvl
+                && info.fixed.is_none()
+                && !info.quantified
+                && info.kind == Kind::Single
+                && info.direct.len() > 1
+            {
+                self.singles.push(v)
+            }
+        }
+        Ok(())
     }
 
     /// Fix every variable an input left open.
