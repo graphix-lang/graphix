@@ -5,6 +5,7 @@
 //! yet is not compared.
 
 use crate::{
+    select::Pat,
     solve::{Arg, Kind, Solver, Watch},
     ty::{FnTy, Ty, Var},
 };
@@ -15,7 +16,7 @@ use graphix_types::{
     expr::WrittenAt,
     typ::{
         Bound, FnArgKind, FnArgType, FnType, MapType, Mutability, TVar, Type,
-        bounds::{Solving, Use, union_of},
+        bounds::{self, Solving, Use, union_of},
         tvar::{AtLevel, Level, RigidGate},
     },
 };
@@ -201,6 +202,9 @@ impl Mirror {
 
     pub fn constrain(&mut self, s: &Solver, a: &Ty, b: &Ty) {
         let (a, b) = (self.typ(s, a), self.typ(s, b));
+        if std::env::var_os("BOUNDS_DEBUG").is_some() {
+            eprintln!("constrain {a} <= {b}")
+        }
         if self.live() {
             let r = self.port.constrain(&self.env, &a, &b);
             self.done(s, r)
@@ -213,9 +217,55 @@ impl Mirror {
         let args: Vec<_> =
             args.iter().map(|(label, t, _)| (label.clone(), self.typ(s, t))).collect();
         let out = self.typ(s, out);
+        if std::env::var_os("BOUNDS_DEBUG").is_some() {
+            let args: Vec<String> = args.iter().map(|(_, t)| t.to_string()).collect();
+            eprintln!(
+                "call {} ({}) -> {out}",
+                Type::Fn(Arc::new(ft.clone())),
+                args.join(", ")
+            )
+        }
         if self.live() {
             let r = self.port.call(&self.env, &ft, &args, &out);
             self.done(s, r)
+        }
+    }
+
+    /// The prototype's pattern as the port's.
+    fn pat(&mut self, s: &Solver, p: &Pat) -> bounds::Pat {
+        let named = |m: &mut Self, v: &Option<Var>| v.map(|v| m.cell(s, v, false));
+        let all = |m: &mut Self, ps: &[Pat]| -> Vec<bounds::Pat> {
+            ps.iter().map(|p| m.pat(s, p)).collect()
+        };
+        match p {
+            Pat::Any(v) => bounds::Pat::Any(named(self, v)),
+            Pat::Test(t, p) => {
+                bounds::Pat::Test(self.typ(s, t), Box::new(self.pat(s, p)))
+            }
+            Pat::Lit(t, whole) => bounds::Pat::Lit(self.typ(s, t), *whole),
+            Pat::Tuple(v, ps) => bounds::Pat::Tuple(named(self, v), all(self, ps)),
+            Pat::Variant(v, tag, ps) => {
+                bounds::Pat::Variant(named(self, v), tag.clone(), all(self, ps))
+            }
+            Pat::Struct(v, fs, exhaustive) => {
+                let v = named(self, v);
+                let fs = fs.iter().map(|(n, p)| (n.clone(), self.pat(s, p))).collect();
+                bounds::Pat::Struct(v, fs, *exhaustive)
+            }
+            Pat::Elems { all: v, list, elems, open } => bounds::Pat::Elems {
+                all: named(self, v),
+                list: *list,
+                elems: all(self, elems),
+                open: open.as_ref().map(|o| named(self, o)),
+            },
+            Pat::Or(ps) => bounds::Pat::Or(all(self, ps)),
+            Pat::Abs(..) => {
+                self.skip("an abstract type");
+                bounds::Pat::Any(None)
+            }
+            Pat::Whole(v, p) => {
+                bounds::Pat::Whole(self.cell(s, *v, false), Box::new(self.pat(s, p)))
+            }
         }
     }
 
@@ -234,7 +284,15 @@ impl Mirror {
                 fields: fields.iter().map(|(n, t)| (n.clone(), self.typ(s, t))).collect(),
                 out: self.typ(s, out),
             },
-            Watch::Select(_) => return self.skip("a select"),
+            Watch::Select(id) => {
+                let arms = s.selects[*id].arms.iter().map(|a| bounds::Arm {
+                    pat: self.pat(s, &a.pat),
+                    guarded: a.guarded,
+                });
+                let arms: Vec<bounds::Arm> = arms.collect();
+                let at = ArcStr::from(s.selects[*id].at.as_str());
+                Use::Select(self.port.select(arms, at))
+            }
             Watch::Method { .. } => return self.skip("calling a method"),
         };
         let t = self.typ(s, t);
@@ -278,6 +336,9 @@ impl Mirror {
         if self.live() {
             let at = self.level(at);
             let copy = self.port.instantiate(&t, above, at);
+            if std::env::var_os("BOUNDS_DEBUG").is_some() {
+                eprintln!("instantiate {t} => {copy}")
+            }
             self.align(s, made, &copy);
             self.done(s, Ok(()))
         }
@@ -329,8 +390,43 @@ impl Mirror {
                 self.align(s, &f.throws, &g.throws)
             }
             (Ty::Union(xs), Type::Set(ys)) => {
-                // the members are in each side's own order: the one cell
-                // among them is paired, and a union with more is not
+                // the members are in each side's own order: each is paired
+                // with the one of its kind, and the one new variable among
+                // them with the one cell
+                let kin = |x: &Ty, y: &Type| match (x, y) {
+                    (Ty::Array(_), Type::Array(_))
+                    | (Ty::List(_), Type::List(_))
+                    | (Ty::Error(_), Type::Error(_))
+                    | (Ty::Map(..), Type::Map(_))
+                    | (Ty::Fn(_), Type::Fn(_))
+                    | (Ty::Ref(..), Type::ByRef(..)) => true,
+                    (Ty::Tuple(a), Type::Tuple(b)) => a.len() == b.len(),
+                    (Ty::Variant(t, a), Type::Variant(u, b, _)) => {
+                        t == u && a.len() == b.len()
+                    }
+                    (Ty::Struct(a), Type::Struct(b)) => {
+                        a.len() == b.len()
+                            && a.iter().zip(b.iter()).all(|(x, y)| x.0 == y.0)
+                    }
+                    _ => false,
+                };
+                for x in xs.iter() {
+                    let mut of_kind = ys.iter().filter(|y| kin(x, y));
+                    match (of_kind.next(), of_kind.next()) {
+                        (Some(y), None) => self.align(s, x, y),
+                        (Some(_), Some(_)) => {
+                            let mut new = false;
+                            x.each(&mut |t| {
+                                new |=
+                                    matches!(t, Ty::Var(v) if !self.cells.contains_key(v))
+                            });
+                            if new {
+                                self.skip("an instance with a union of one kind")
+                            }
+                        }
+                        (None, _) => (),
+                    }
+                }
                 let open = |m: &Self, t: &Ty| match t {
                     Ty::Var(v) => !m.cells.contains_key(v),
                     _ => false,

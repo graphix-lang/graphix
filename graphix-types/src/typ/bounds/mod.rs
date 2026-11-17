@@ -9,7 +9,7 @@ use crate::{
     stack::ensure_sufficient,
     typ::{
         Bound, FnArgKind, FnArgType, FnType, Mutability, TVar, Type, node_addr,
-        setops::union_identical,
+        setops::strictly_identical,
         tvar::{AtLevel, Level},
     },
 };
@@ -21,6 +21,9 @@ use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::ops::ControlFlow;
 use triomphe::Arc;
+
+mod select;
+pub use select::{Arm, Pat};
 
 /// What the solver keeps of an open cell beside its bounds.
 #[derive(Debug, Default)]
@@ -70,6 +73,8 @@ pub enum Use {
     /// A struct update: `out` takes the struct with each of `fields` at
     /// its new type.
     With { fields: SmallVec<[(ArcStr, Type); 2]>, out: Type },
+    /// The scrutinee of a select ([`Solving::select`]).
+    Select(usize),
 }
 
 impl Use {
@@ -79,6 +84,7 @@ impl Use {
             Use::Index { .. } => "reading a tuple",
             Use::Call { .. } => "reading a fn",
             Use::With { .. } => "updating a struct",
+            Use::Select(_) => "a select",
         }
     }
 
@@ -95,6 +101,7 @@ impl Use {
                 fields: fields.iter().map(|(n, t)| (n.clone(), f(t))).collect(),
                 out: f(out),
             },
+            Use::Select(id) => Use::Select(*id),
         }
     }
 
@@ -109,6 +116,7 @@ impl Use {
                 f(out);
                 fields.iter().for_each(|(_, t)| f(t))
             }
+            Use::Select(_) => (),
         }
     }
 }
@@ -139,12 +147,20 @@ pub struct Solving {
     /// and whose one type its variables decide: each instance checks a
     /// copy.
     singles: Vec<TVar>,
+    selects: Vec<select::Select>,
     /// A held choice is being made: a decided member that does not fit is
     /// out.
     resolving: bool,
     /// The cells made to carry what one cell passes to a union's open
     /// member, by address.
     passing: AHashMap<usize, TVar>,
+}
+
+/// A kind of use a check may still owe when a definition closes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Pending {
+    Held,
+    Select,
 }
 
 #[derive(Clone, Copy)]
@@ -234,7 +250,7 @@ fn mismatch<T>(wanted: &Type, got: &Type) -> Result<T> {
 
 /// Add `t` to `bounds` unless it is there; false if it was.
 fn record(bounds: &mut SmallVec<[Type; 1]>, t: &Type) -> bool {
-    match bounds.iter().any(|b| union_identical(b, t)) {
+    match bounds.iter().any(|b| strictly_identical(b, t)) {
         true => false,
         false => {
             bounds.push(t.clone());
@@ -365,7 +381,7 @@ impl Solving {
                                 rest.push(Type::Primitive(left))
                             }
                         }
-                        x if ys.iter().any(|m| union_identical(m, x)) => (),
+                        x if ys.iter().any(|m| strictly_identical(m, x)) => (),
                         x if decided(x) => self.constrain(env, x, &b)?,
                         x => rest.push(x.clone()),
                     }
@@ -655,7 +671,7 @@ impl Solving {
         let primitive = |bit: Typ| {
             members.iter().any(|m| matches!(m, Type::Primitive(p) if p.contains(bit)))
         };
-        if members.iter().any(|m| union_identical(m, a))
+        if members.iter().any(|m| strictly_identical(m, a))
             || (matches!(a, Type::Error(_)) && primitive(Typ::Error))
             || (matches!(a, Type::Array(_)) && primitive(Typ::Array))
         {
@@ -700,7 +716,8 @@ impl Solving {
 
     /// A pair with a typedef's name on a side, by what the name stands for.
     fn unfolded(&mut self, env: &Env, a: &Type, b: &Type) -> Result<()> {
-        let met = |(x, y): &(Type, Type)| union_identical(x, a) && union_identical(y, b);
+        let met =
+            |(x, y): &(Type, Type)| strictly_identical(x, a) && strictly_identical(y, b);
         if self.unfolding.iter().any(met) {
             return Ok(());
         }
@@ -891,7 +908,14 @@ impl Solving {
                 lower.iter().chain(upper.iter()).for_each(|b| self.reach(b, seen));
                 feeders(&v).iter().for_each(|u| self.reach(&Type::TVar(u.clone()), seen));
                 // and what its uses produce
-                uses(&v).iter().for_each(|(u, _)| u.each(&mut |t| self.reach(t, seen)))
+                for (u, _) in uses(&v).iter() {
+                    u.each(&mut |t| self.reach(t, seen));
+                    if let Use::Select(id) = u {
+                        for b in self.select_cells(*id) {
+                            self.reach(&Type::TVar(b), seen)
+                        }
+                    }
+                }
             }
         }
     }
@@ -908,7 +932,7 @@ impl Solving {
 
     /// A use of `v` that met no value: it needs a shape nothing gave it.
     fn unread(&self, v: &TVar) -> Result<()> {
-        match uses(v).iter().find(|(_, met)| !met) {
+        match uses(v).iter().find(|(u, met)| !met && !matches!(u, Use::Select(_))) {
             None => Ok(()),
             Some((u, _)) => {
                 bail!("{} needs its type known here: annotate the binding", u.needs())
@@ -950,7 +974,8 @@ impl Solving {
 
     /// Fix every cell an input left open.
     pub fn finish(&mut self, env: &Env) -> Result<()> {
-        self.fix_scope(env, 0, true, 0)
+        self.fix_scope(env, 0, true, 0)?;
+        self.dead_arms()
     }
 
     /// A use of the scheme `t`: a copy of it, at the level `at`, with a
@@ -983,7 +1008,35 @@ impl Solving {
                 self.copy(&Type::TVar(v), above, at, &mut copies);
             }
         }
+        // a select of the definition that waits on one of its variables
+        // is the instance's to finish
+        for id in 0..self.selects.len() {
+            for w in self.selects[id].waiting.clone() {
+                if mine(&w, &copies) {
+                    let new = self.select_copy(id, &mut |s, v| {
+                        s.copy_cell(v, above, at, &mut copies)
+                    });
+                    let w = self.copy(&w, above, at, &mut copies);
+                    self.select_wait(new, w)
+                }
+            }
+        }
         t
+    }
+
+    /// The copy of the cell `v`, or `v` where it is no deeper than
+    /// `above`.
+    fn copy_cell(
+        &mut self,
+        v: &TVar,
+        above: u32,
+        at: Level,
+        copies: &mut AHashMap<usize, TVar>,
+    ) -> TVar {
+        match &self.copy(&Type::TVar(v.clone()), above, at, copies) {
+            Type::TVar(n) => n.clone(),
+            _ => v.clone(),
+        }
     }
 
     fn copy(
@@ -1057,8 +1110,16 @@ impl Solving {
             // the copy is used as the original is: what flows into it in
             // this instance meets the same reads and calls
             for (u, met) in used.iter() {
-                let u = u.map(&mut |t| self.copy(t, above, at, copies));
-                known(&n, |k| k.uses.push((u, *met)))
+                let u = match u {
+                    Use::Select(id) => {
+                        Use::Select(self.select_copy(*id, &mut |s, v| {
+                            s.copy_cell(v, above, at, copies)
+                        }))
+                    }
+                    u => u.map(&mut |t| self.copy(t, above, at, copies)),
+                };
+                let met = *met && !matches!(u, Use::Select(_));
+                known(&n, |k| k.uses.push((u, met)))
             }
             self.track(&n)
         }
@@ -1083,21 +1144,29 @@ impl Solving {
                 ordered = false
             }
             progress = false;
-            // a held choice waits for any other whose result reaches what
-            // it reads
-            let mut produced: Vec<(usize, SmallVec<[TVar; 4]>)> = vec![];
+            // a pending use (a held choice, a select still waiting) waits
+            // for any other whose result reaches what it reads: its kind
+            // and index, and everything its result reaches
+            let mut produced: Vec<((Pending, usize), SmallVec<[TVar; 4]>)> = vec![];
             if ordered {
-                for (i, (_, b, _)) in self.held.iter().enumerate() {
+                let closure = |s: &Self, outs: SmallVec<[TVar; 4]>| {
                     let mut all = SmallVec::new();
-                    open_cells(b)
-                        .iter()
-                        .for_each(|v| self.reach(&Type::TVar(v.clone()), &mut all));
-                    produced.push((i, all))
+                    outs.iter().for_each(|v| s.reach(&Type::TVar(v.clone()), &mut all));
+                    all
+                };
+                for (i, (_, b, _)) in self.held.iter().enumerate() {
+                    produced.push(((Pending::Held, i), closure(self, open_cells(b))))
+                }
+                for id in 0..self.selects.len() {
+                    if !self.selects[id].waiting.is_empty() {
+                        let binds = self.select_cells(id);
+                        produced.push(((Pending::Select, id), closure(self, binds)))
+                    }
                 }
             }
-            let free = |i: usize, ins: &[TVar]| {
+            let free = |key: (Pending, usize), ins: &[TVar]| {
                 !produced.iter().any(|(k, c)| {
-                    *k != i && ins.iter().any(|v| c.iter().any(|u| u.same_cell(v)))
+                    *k != key && ins.iter().any(|v| c.iter().any(|u| u.same_cell(v)))
                 })
             };
             for i in (0..self.held.len()).rev() {
@@ -1107,7 +1176,7 @@ impl Solving {
                 }
                 let (avs, bvs) = (open_cells(&a), open_cells(&b));
                 let ready = avs.iter().chain(bvs.iter()).all(|v| self.fixable(v, min));
-                if ready && free(i, &avs) {
+                if ready && free((Pending::Held, i), &avs) {
                     // a member something has decided is decided here; one
                     // nothing has stays open, to take what the others do
                     // not
@@ -1128,6 +1197,11 @@ impl Solving {
                     self.held[i].2 = true
                 }
             }
+            let ready = |s: &Self, id: usize, t: &Type| {
+                let ins = open_cells(t);
+                ins.iter().all(|v| s.fixable(v, min)) && free((Pending::Select, id), &ins)
+            };
+            progress |= self.select_waiting(env, &ready)?
         }
         // a cell something flows into first: one nothing flows into may be
         // decided by a cell that holds it
@@ -1142,6 +1216,13 @@ impl Solving {
             for (_, b, _) in self.held.iter() {
                 for v in open_cells(b) {
                     self.reach(&Type::TVar(v), &mut waiting)
+                }
+            }
+            for id in 0..self.selects.len() {
+                if !self.selects[id].waiting.is_empty() {
+                    for v in self.select_cells(id) {
+                        self.reach(&Type::TVar(v), &mut waiting)
+                    }
                 }
             }
         }
@@ -1200,7 +1281,7 @@ impl Solving {
             for l in v.cell_direct() {
                 if let Some(t) = self.settled(env, &l)?
                     && !matches!(t, Type::Bottom)
-                    && !given.iter().any(|g| union_identical(g, &t))
+                    && !given.iter().any(|g| strictly_identical(g, &t))
                 {
                     given.push(t)
                 }
@@ -1393,6 +1474,9 @@ impl Solving {
     /// Apply a use to one type that reaches it; false where the type says
     /// nothing (bottom).
     fn apply(&mut self, env: &Env, u: &Use, a: &Type) -> Result<bool> {
+        if let Use::Select(id) = u {
+            return self.select_route(env, *id, a).map(|()| true);
+        }
         let a = shallow(a);
         ensure_sufficient(|| match (&a, u) {
             (Type::Bottom, _) => Ok(false),
@@ -1456,6 +1540,7 @@ impl Solving {
             (_, Use::Index { i, .. }) => bail!("{a} has no element {i}"),
             (_, Use::Call { .. }) => bail!("{a} is not a function"),
             (_, Use::With { .. }) => bail!("{a} is not a struct"),
+            (_, Use::Select(_)) => Ok(false),
         })
     }
 
@@ -1862,5 +1947,59 @@ mod tests {
         assert!(s.watch(&env, &tp, read).is_ok());
         let f = over(&env, "fn(p: 'p) -> 'o", &[("p", &tp), ("o", &to)]);
         assert!(s.generalize(&env, &f, 0, mark).is_err());
+    }
+
+    #[test]
+    fn a_select_gives_each_arm_what_its_pattern_admits() {
+        use super::{Arm, Pat, Use};
+        let (env, _) = typed(&[], "null");
+        let mut s = Solving::default();
+        let ((n, tn), (r, tr)) = (var("n"), var("r"));
+        n.set_joins();
+        r.set_joins();
+        let arms = vec![
+            Arm {
+                pat: Pat::Test(parsed(&env, "i64"), Box::new(Pat::Any(Some(n.clone())))),
+                guarded: false,
+            },
+            Arm { pat: Pat::Any(Some(r.clone())), guarded: false },
+        ];
+        let id = s.select(arms, ArcStr::from("here"));
+        let scrutinee = parsed(&env, "[i64, string, null]");
+        assert!(s.watch(&env, &scrutinee, Use::Select(id)).is_ok());
+        assert_eq!(shown(&n.cell_lower()), ["i64"]);
+        assert_eq!(shown(&r.cell_lower()), ["[null, string]"]);
+        assert!(s.finish(&env).is_ok());
+        let _ = (tn, tr);
+    }
+
+    #[test]
+    fn a_select_must_take_every_value_and_have_no_dead_arm() {
+        use super::{Arm, Pat, Use};
+        let (env, _) = typed(&[], "null");
+        let test = |t: &str| Arm {
+            pat: Pat::Test(parsed(&env, t), Box::new(Pat::Any(None))),
+            guarded: false,
+        };
+        let mut s = Solving::default();
+        let id = s.select(vec![test("i64")], ArcStr::from("here"));
+        let scrutinee = parsed(&env, "[i64, string]");
+        assert!(s.watch(&env, &scrutinee, Use::Select(id)).is_err());
+        let mut s = Solving::default();
+        let id = s.select(vec![test("i64"), test("string")], ArcStr::from("here"));
+        assert!(s.watch(&env, &parsed(&env, "i64"), Use::Select(id)).is_ok());
+        assert!(s.finish(&env).is_err());
+        // a test admits what the run time cannot tell from it
+        let mut s = Solving::default();
+        let (v, _) = var("v");
+        v.set_joins();
+        let arm = Arm {
+            pat: Pat::Test(parsed(&env, "&i64"), Box::new(Pat::Any(Some(v.clone())))),
+            guarded: false,
+        };
+        let id = s.select(vec![arm], ArcStr::from("here"));
+        let scrutinee = parsed(&env, "[&i64, &string]");
+        assert!(s.watch(&env, &scrutinee, Use::Select(id)).is_ok());
+        assert_eq!(shown(&v.cell_lower()), ["&[i64, string]"]);
     }
 }
