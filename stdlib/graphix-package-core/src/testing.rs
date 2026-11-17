@@ -418,6 +418,105 @@ async fn fixture_test(f: &RunFixture, mode: Mode, check: bool) -> Result<()> {
     Ok(())
 }
 
+/// What a fixture gives under the check by bounds, where that is not what
+/// its own predicate says: the check as it is and the check by bounds are
+/// both tested until one replaces the other, and where they differ by rule
+/// (a refusal's words, a program one refuses and the other takes) the
+/// difference is written in `graphix-tests/bounds.manifest`, a line a
+/// fixture: its name, `refuses` or `accepts`, and the refusal's last
+/// message or the value printed.
+#[derive(Debug)]
+enum ByBounds {
+    Refuses(String),
+    Accepts(String),
+}
+
+impl ByBounds {
+    fn observed(v: Result<&Value>) -> Self {
+        match v {
+            Ok(v) => Self::Accepts(v.to_string()),
+            Err(e) => Self::Refuses(renumbered(&e.root_cause().to_string()).to_string()),
+        }
+    }
+
+    fn holds(&self, v: Result<&Value>) -> bool {
+        match (self, v) {
+            (Self::Accepts(text), Ok(v)) => *text == v.to_string(),
+            (Self::Refuses(text), Err(e)) => {
+                renumbered(&format!("{e:#}")).contains(text.as_str())
+            }
+            _ => false,
+        }
+    }
+
+    fn line(&self, name: &str) -> String {
+        let flat = |s: &str| s.replace('\\', "\\\\").replace('\n', "\\n").replace('\t', " ");
+        match self {
+            Self::Refuses(text) => format!("{name}\trefuses\t{}", flat(text)),
+            Self::Accepts(text) => format!("{name}\taccepts\t{}", flat(text)),
+        }
+    }
+}
+
+/// Whether the tests run with the check by bounds switched on.
+pub fn by_bounds() -> bool {
+    std::env::var_os("GRAPHIX_BOUNDS").is_some()
+}
+
+static BY_BOUNDS: LazyLock<ahash::AHashMap<String, ByBounds>> = LazyLock::new(|| {
+    let path = std::env::var("GRAPHIX_BOUNDS_MANIFEST").unwrap_or_else(|_| {
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../graphix-tests/bounds.manifest").into()
+    });
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let unflat = |s: &str| s.replace("\\n", "\n").replace("\\\\", "\\");
+    let entry = |line: &str| {
+        let mut parts = line.splitn(3, '\t');
+        let (name, kind, text) = (parts.next()?, parts.next()?, parts.next()?);
+        let expected = match kind {
+            "refuses" => ByBounds::Refuses(unflat(text)),
+            "accepts" => ByBounds::Accepts(unflat(text)),
+            _ => return None,
+        };
+        Some((name.to_string(), expected))
+    };
+    text.lines().filter(|l| !l.starts_with('#')).filter_map(entry).collect()
+});
+
+/// The fixture's predicate over `v`: under the check by bounds, what the
+/// manifest says of it where it says anything. With `GRAPHIX_BOUNDS_BLESS`
+/// naming a file, a fixture that fails there has what it gave appended to
+/// the file, to be reviewed and moved to the manifest.
+fn expected(f: &RunFixture, mode: Mode, v: Result<&Value>) -> bool {
+    if !by_bounds() {
+        return (f.pred)(v);
+    }
+    let held = match BY_BOUNDS.get(f.name) {
+        Some(expected) => expected.holds(match &v {
+            Ok(v) => Ok(*v),
+            Err(e) => Err(anyhow::anyhow!("{e:#}")),
+        }),
+        None => (f.pred)(match &v {
+            Ok(v) => Ok(*v),
+            Err(e) => Err(anyhow::anyhow!("{e:#}")),
+        }),
+    };
+    if !held
+        && mode == Mode::Interp
+        && let Ok(path) = std::env::var("GRAPHIX_BOUNDS_BLESS")
+    {
+        use std::io::Write as _;
+        static FILE: Mutex<()> = Mutex::new(());
+        let _one = FILE.lock();
+        let line = ByBounds::observed(v).line(f.name);
+        if let Ok(mut file) =
+            std::fs::OpenOptions::new().create(true).append(true).open(path)
+        {
+            let _ = writeln!(file, "{line}");
+        }
+    }
+    held
+}
+
 async fn fixture_mode(
     f: &RunFixture,
     mode: Mode,
@@ -425,7 +524,6 @@ async fn fixture_mode(
     check_shape: bool,
     check: bool,
 ) -> Result<FuseObserved> {
-    let pred = &f.pred;
     let (ctx, mut rx) = fixture_runtime(
         f.files.iter().map(|(path, code)| (*path, VfsEntry::from(code.clone()))),
         f.register,
@@ -452,9 +550,9 @@ async fn fixture_mode(
                 bail!("the runtime died compiling the fixture ({dead:#}): {e:#}")
             }
             if let Some(c) = check_refusal {
-                assert!(pred(dbg!(Err(c))), "the check's refusal")
+                assert!(expected(f, mode, dbg!(Err(c))), "the check's refusal")
             }
-            assert!(pred(dbg!(Err(e))))
+            assert!(expected(f, mode, dbg!(Err(e))))
         }
         Ok(res) => {
             let eid = res.exprs[0].id;
@@ -466,7 +564,7 @@ async fn fixture_mode(
             let v = next_update_raw(&ctx.rt, &mut rx, eid).await?;
             let v = observed(&ctx, &res.exprs[0].typ, v).await?;
             eprintln!("{v}");
-            assert!(pred(Ok(&v)));
+            assert!(expected(f, mode, Ok(&v)));
         }
     }
     let invocations = ctx.rt.control().invocations();
