@@ -159,6 +159,9 @@ pub struct Solver {
     /// variable it feeds: what arrives that way is the feeder's, not new.
     along_edge: bool,
     pub selects: Vec<Select>,
+    /// The variables made to carry what one variable passes to a union's
+    /// open member.
+    passing: HashSet<Var>,
     /// Variables inside a generic definition that take more than one
     /// value and whose one type its variables decide: each instance checks
     /// a copy.
@@ -298,6 +301,23 @@ impl Solver {
                 }
                 let lvl = self.info(*v).level;
                 match (&a, &b) {
+                    // what one variable passes to a union's open member
+                    // reaches that member as one feeder, as it would had
+                    // the two met directly
+                    (Ty::Var(_), Ty::Union(ms))
+                        if ms.iter().filter(|m| matches!(m, Ty::Var(_))).count() == 1
+                            && !ms.iter().any(
+                                |m| matches!(m, Ty::Var(w) if self.passing.contains(w)),
+                            ) =>
+                    {
+                        let open = ms.iter().find(|m| matches!(m, Ty::Var(_))).unwrap();
+                        let through = self.fresh(self.level(open), Kind::Join);
+                        self.passing.insert(through);
+                        self.constrain(&Ty::Var(through), open)?;
+                        let rest = ms.iter().filter(|m| *m != open).cloned();
+                        let b = union(rest.chain([Ty::Var(through)]));
+                        self.constrain(&a, &b)
+                    }
                     (Ty::Var(v), _) if self.level(&b) <= lvl => {
                         self.info_mut(*v).upper.push(b.clone());
                         self.site(*v, false, &b);
@@ -1466,7 +1486,12 @@ impl Solver {
                 }
             }
             self.info_mut(v).demanded = true;
-            self.meet(&uppers)?
+            // a bound that names the variable itself decides nothing alone
+            let t = self.meet(&uppers)?;
+            match self.open_vars(&t).contains(&v) {
+                true => Ty::Bot,
+                false => t,
+            }
         };
         if self.info(v).singleton
             && !matches!(&ty, Ty::Bot)
