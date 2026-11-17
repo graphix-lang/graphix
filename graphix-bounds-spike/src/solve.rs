@@ -248,8 +248,12 @@ impl Solver {
                             b => self.demanded(*v, b)?,
                         }
                         let via = self.pass_on(*v);
+                        let mine = self.via;
                         for l in self.info(*v).lower.clone() {
                             let from = self.sites.get(&(*v, true, l.clone())).copied();
+                            // a bound that came here out of a join keeps its source
+                            let src = self.info(*v).joined.iter().find(|(_, j)| j == &l).map(|(s, _)| *s);
+                            self.via = src.or(mine);
                             self.constrain(&l, &b).map_err(|e| self.ends(e, from, self.at))?
                         }
                         self.via = via;
@@ -767,10 +771,23 @@ impl Solver {
         }
     }
 
+    /// Mark the variables of a declared scheme as its own.
+    pub fn quantify(&mut self, t: &Ty, lvl: u32) {
+        let mut kept = vec![];
+        self.reach(t, &mut kept);
+        for v in kept {
+            if self.info(v).level > lvl {
+                self.info_mut(v).quantified = true
+            }
+        }
+    }
+
     /// Close the definition of a generic binding of type `t`, checked one
     /// level above `lvl`: what `t` reaches stays, as the scheme's variables;
     /// every other variable of the definition is fixed.
-    pub fn generalize(&mut self, t: &Ty, lvl: u32) -> Result<()> {
+    /// `mark` is how many variables existed when the definition began: only
+    /// later ones are its own.
+    pub fn generalize(&mut self, t: &Ty, lvl: u32, mark: usize) -> Result<()> {
         let mut kept = vec![];
         self.reach(t, &mut kept);
         // a name bound over an `Any` part is decided here, by the
@@ -797,12 +814,12 @@ impl Solver {
                 }
             }
         }
-        self.fix_scope(lvl + 1, false)
+        self.fix_scope(lvl + 1, false, mark)
     }
 
     /// Fix every variable an input left open.
     pub fn finish(&mut self) -> Result<()> {
-        self.fix_scope(0, true)?;
+        self.fix_scope(0, true, 0)?;
         self.dead_arms()
     }
 
@@ -841,7 +858,7 @@ impl Solver {
         all.iter().all(|v| self.info(*v).level >= min && !self.info(*v).quantified)
     }
 
-    fn fix_scope(&mut self, min: u32, last: bool) -> Result<()> {
+    fn fix_scope(&mut self, min: u32, last: bool, mark: usize) -> Result<()> {
         let mut progress = true;
         while progress {
             progress = false;
@@ -890,14 +907,14 @@ impl Solver {
         }
         // a variable something flows into first: one nothing flows into may
         // be decided by a variable that holds it
-        let order = (0..self.vars.len() as u32).map(Var);
+        let order = (mark as u32..self.vars.len() as u32).map(Var);
         let (decided, open): (Vec<Var>, Vec<Var>) =
             order.partition(|v| self.decided(*v, &mut vec![]));
         for v in decided.into_iter().chain(open) {
             if self.info(v).fixed.is_none()
                 && self.info(v).level >= min
                 && !self.info(v).quantified
-                && self.fixable(v, min)
+                && (last || self.fixable(v, min))
             {
                 self.fix(v)?;
                 if let Some((w, _)) = self.info(v).watches.iter().find(|(w, fired)| !fired && !matches!(w, Watch::Select(_)))
@@ -916,7 +933,7 @@ impl Solver {
     /// Give `v` one type: the union of what flows into it, or, where nothing
     /// does, the meet of what its uses demand.
     fn fix(&mut self, v: Var) -> Result<()> {
-        if self.info(v).fixed.is_some() || !self.fixing.insert(v) {
+        if self.info(v).fixed.is_some() || self.info(v).quantified || !self.fixing.insert(v) {
             return Ok(());
         }
         let mut cands: Vec<Ty> = vec![];

@@ -205,7 +205,9 @@ impl Checker {
                 self.tvs.push(Scope { tvs: HashMap::new(), level: 1, rigid: false });
                 let t = self.conv(&typ, &module);
                 self.tvs.pop();
-                self.schemes.insert(full.clone(), t?);
+                let t = t?;
+                self.s.quantify(&t, 0);
+                self.schemes.insert(full.clone(), t);
             }
             let t = self.schemes[&full].clone();
             return Ok(Some(self.s.instantiate(&t, 0, lvl)));
@@ -413,6 +415,7 @@ impl Checker {
                     return Ok(self.s.instantiate(&t, l, lvl));
                 }
                 if let ExprKind::Lambda(l) = &value.kind {
+                    let mark = self.s.vars.len();
                     let me = self.s.fresh_ty(lvl + 1, Kind::Single);
                     if b.rec {
                         self.bind(name, Binding::Mono(me.clone()))
@@ -430,13 +433,13 @@ impl Checker {
                             let w = self.conv(written, "");
                             self.tvs.pop();
                             let w = w?;
-                            self.s.generalize(&t, lvl)?;
+                            self.s.generalize(&t, lvl, mark)?;
                             let t = self.s.instantiate(&t, lvl, lvl + 1);
                             self.s.constrain(&t, &w)?;
                             w
                         }
                     };
-                    self.s.generalize(&t, lvl)?;
+                    self.s.generalize(&t, lvl, mark)?;
                     self.bind(name, Binding::Poly(lvl, t.clone()));
                     return Ok(self.s.instantiate(&t, lvl, lvl));
                 }
@@ -738,8 +741,9 @@ impl Checker {
             // a lambda that declares variables is checked as a definition,
             // where they are rigid, and stands as its one instance
             ExprKind::Lambda(l) if declares(l) => {
+                let mark = self.s.vars.len();
                 let t = self.lambda(l, lvl + 1, true)?;
-                self.s.generalize(&t, lvl)?;
+                self.s.generalize(&t, lvl, mark)?;
                 self.s.instantiate(&t, lvl, lvl)
             }
             ExprKind::Lambda(l) => self.lambda(l, lvl, false)?,
