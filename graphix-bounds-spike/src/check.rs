@@ -1756,12 +1756,57 @@ impl Checker {
                 }
                 Ty::Bot
             }
+            ExprKind::Module { name, value }
+                if let ModuleKind::Dynamic { sig, source } = &**value =>
+            {
+                // its names are what its signature declares; the body is
+                // loaded when the program runs, and the statement's value
+                // says whether that worked
+                self.infer(source, lvl)?;
+                let prefix: Vec<String> =
+                    self.here.iter().cloned().chain([name.name.to_string()]).collect();
+                let prefix = prefix.join("::");
+                let root = self.root.clone().unwrap_or_default();
+                for item in sig.items.iter() {
+                    match &item.kind {
+                        SigKind::Use { names, .. } => {
+                            let uses = names
+                                .iter()
+                                .map(|i| used(&parts(&i.path), &prefix, &root));
+                            self.mod_uses.entry(prefix.clone()).or_default().extend(uses)
+                        }
+                        SigKind::TypeDef(td) => self.typedef(&prefix, td),
+                        SigKind::Trait(t) => self.declare_trait(&prefix, t),
+                        _ => (),
+                    }
+                }
+                for item in sig.items.iter() {
+                    match &item.kind {
+                        SigKind::Bind(val) => {
+                            self.tvs.push(Scope {
+                                tvs: HashMap::new(),
+                                level: lvl + 1,
+                                rigid: false,
+                            });
+                            let t = self.conv(&val.typ, &prefix);
+                            self.tvs.pop();
+                            let t = t?;
+                            self.s.quantify(&t, lvl);
+                            let full = format!("{prefix}::{}", val.name.name);
+                            self.mods.insert(full, Binding::Poly(lvl, t));
+                        }
+                        SigKind::Impl(head) => self.declare_impl(&prefix, head)?,
+                        _ => (),
+                    }
+                }
+                Ty::Prim(Typ::Null | Typ::Error)
+            }
             ExprKind::Module { name, value } => {
                 let (exprs, sig) = match &**value {
                     ModuleKind::Resolved { exprs, sig, .. } => {
                         (exprs.clone(), sig.clone())
                     }
-                    ModuleKind::Dynamic { .. } => unsupported("dynamic module")?,
+                    ModuleKind::Dynamic { .. } => unreachable!(),
                     ModuleKind::Unresolved { .. } => {
                         let mut dir = self
                             .dir
