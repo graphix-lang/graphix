@@ -23,7 +23,12 @@ fn main() {
             Ok(t) => format!("ok\t{t}"),
             Err(e) => match e.downcast_ref::<Unsupported>() {
                 Some(u) => format!("skip\t{}", u.0),
-                None => format!("no\t{}", format!("{e:#}").replace(['\n', '\t'], " ")),
+                None => {
+                    // the refusal, then where its two ends are
+                    let mut parts: Vec<String> = e.chain().map(|c| c.to_string()).collect();
+                    parts.reverse();
+                    format!("no\t{}", parts.join("; ").replace(['\n', '\t'], " "))
+                }
             },
         };
         println!("{verdict}\t{}", c.s.steps)

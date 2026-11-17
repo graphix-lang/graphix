@@ -536,15 +536,16 @@ impl Checker {
         let f = self.infer(&a.function, lvl)?;
         let mut args = vec![];
         for (label, e) in a.args.iter() {
-            args.push((label.clone(), self.infer(e, lvl)?))
+            let at = Some((e.pos.line as u32, e.pos.column as u32));
+            args.push((label.clone(), self.infer(e, lvl)?, at))
         }
         let out = self.s.fresh_ty(lvl, Kind::Single);
         match self.s.shallow(&f) {
             Ty::Fn(ft) => self.s.call(&ft, &args, &out)?,
-            Ty::Var(_) if args.iter().all(|(l, _)| l.is_none()) => {
+            Ty::Var(_) if args.iter().all(|(l, ..)| l.is_none()) => {
                 let args = args
                     .into_iter()
-                    .map(|(_, ty)| FnArg { label: None, optional: false, ty })
+                    .map(|(_, ty, _)| FnArg { label: None, optional: false, ty })
                     .collect();
                 let want = FnTy { args, vargs: None, ret: out.clone(), throws: Ty::Any };
                 self.s.constrain(&f, &Ty::Fn(Rc::new(want)))?
@@ -702,6 +703,13 @@ impl Checker {
     }
 
     pub fn infer(&mut self, e: &Expr, lvl: u32) -> Result<Ty> {
+        let outer = self.s.at.replace((e.pos.line as u32, e.pos.column as u32));
+        let t = self.infer_at(e, lvl);
+        self.s.at = outer;
+        t
+    }
+
+    fn infer_at(&mut self, e: &Expr, lvl: u32) -> Result<Ty> {
         Ok(match &e.kind {
             ExprKind::NoOp => Ty::Bot,
             ExprKind::Constant(v) => Ty::prim(Typ::get(v)),

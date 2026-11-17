@@ -22,11 +22,14 @@ pub enum Kind {
 
 /// A use that needs the shape of what flows into a variable. It is applied
 /// to each concrete lower bound as it arrives.
+/// A call's argument: its label, its type and where it is written.
+pub type Arg = (Option<ArcStr>, Ty, Option<Site>);
+
 #[derive(Clone, Debug)]
 pub enum Watch {
     Field { field: ArcStr, out: Ty },
     Index { i: usize, out: Ty },
-    Call { args: Vec<(Option<ArcStr>, Ty)>, out: Ty },
+    Call { args: Vec<Arg>, out: Ty },
     Select(usize),
 }
 
@@ -69,8 +72,43 @@ pub struct Def {
     pub body: Ty,
 }
 
+/// Where in the source a bound was made: line and column.
+pub type Site = (u32, u32);
+
+/// Both ends of a refusal: where the value comes from and where it is used.
+#[derive(Debug)]
+pub struct Ends(pub Option<Site>, pub Option<Site>);
+
+impl std::fmt::Display for Ends {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let at = |s: &Option<Site>| match s {
+            Some((l, c)) => format!("line {l}, column {c}"),
+            None => "a signature".to_string(),
+        };
+        write!(f, "the value comes from {}, and is used at {}", at(&self.0), at(&self.1))
+    }
+}
+
+/// The two values a variable may not hold together.
+#[derive(Debug)]
+pub struct Two(pub Option<Site>, pub Option<Site>);
+
+impl std::fmt::Display for Two {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let at = |s: &Option<Site>| match s {
+            Some((l, c)) => format!("line {l}, column {c}"),
+            None => "elsewhere".to_string(),
+        };
+        write!(f, "one value comes from {}, the other from {}: declare the type that holds both", at(&self.0), at(&self.1))
+    }
+}
+
 #[derive(Default)]
 pub struct Solver {
+    /// The expression being checked.
+    pub at: Option<Site>,
+    /// Where each bound was first made: (variable, is a lower bound, bound).
+    sites: HashMap<(Var, bool, Ty), Site>,
     pub vars: Vec<VarInfo>,
     pub defs: Vec<Def>,
     cache: HashSet<(Ty, Ty)>,
@@ -201,6 +239,7 @@ impl Solver {
                 match (&a, &b) {
                     (Ty::Var(v), _) if self.level(&b) <= lvl => {
                         self.info_mut(*v).upper.push(b.clone());
+                        self.site(*v, false, &b);
                         match &b {
                             Ty::Var(w) if self.info(*w).level == lvl => {
                                 self.info_mut(*w).feeders.push(*v)
@@ -210,7 +249,8 @@ impl Solver {
                         }
                         let via = self.pass_on(*v);
                         for l in self.info(*v).lower.clone() {
-                            self.constrain(&l, &b)?
+                            let from = self.sites.get(&(*v, true, l.clone())).copied();
+                            self.constrain(&l, &b).map_err(|e| self.ends(e, from, self.at))?
                         }
                         self.via = via;
                         Ok(())
@@ -309,8 +349,22 @@ impl Solver {
     }
 
     /// `a` is a new lower bound of `w`.
+    fn site(&mut self, v: Var, lower: bool, t: &Ty) {
+        if let Some(at) = self.at {
+            self.sites.entry((v, lower, t.clone())).or_insert(at);
+        }
+    }
+
+    fn ends(&self, e: anyhow::Error, from: Option<Site>, to: Option<Site>) -> anyhow::Error {
+        match e.downcast_ref::<Ends>() {
+            Some(_) => e,
+            None => e.context(Ends(from, to)),
+        }
+    }
+
     fn arrive(&mut self, w: Var, a: &Ty) -> Result<()> {
         self.info_mut(w).lower.push(a.clone());
+        self.site(w, true, a);
         if let Some(src) = self.via
             && src != w
         {
@@ -326,7 +380,8 @@ impl Solver {
         }
         let via = self.pass_on(w);
         for u in self.info(w).upper.clone() {
-            self.constrain(a, &u)?
+            let to = self.sites.get(&(w, false, u.clone())).copied();
+            self.constrain(a, &u).map_err(|e| self.ends(e, self.at, to))?
         }
         self.via = via;
         Ok(())
@@ -587,9 +642,18 @@ impl Solver {
     }
 
     /// A call of a function whose type is known.
-    pub fn call(&mut self, ft: &FnTy, args: &[(Option<ArcStr>, Ty)], out: &Ty) -> Result<()> {
+    pub fn call(&mut self, ft: &FnTy, args: &[Arg], out: &Ty) -> Result<()> {
+        let outer = self.at;
+        let r = self.call_at(ft, args);
+        self.at = outer;
+        r?;
+        self.constrain(&ft.ret, out)
+    }
+
+    fn call_at(&mut self, ft: &FnTy, args: &[Arg]) -> Result<()> {
         let mut formals = ft.args.iter().filter(|a| a.label.is_none());
-        for (_, arg) in args.iter().filter(|(l, _)| l.is_none()) {
+        for (_, arg, at) in args.iter().filter(|(l, ..)| l.is_none()) {
+            self.at = at.or(self.at);
             match (formals.next(), &ft.vargs) {
                 (Some(f), _) => self.constrain(arg, &f.ty)?,
                 (None, Some(v)) => self.constrain(arg, v)?,
@@ -599,18 +663,19 @@ impl Solver {
         if formals.next().is_some() {
             bail!("missing argument")
         }
-        for (label, arg) in args.iter().filter(|(l, _)| l.is_some()) {
+        for (label, arg, at) in args.iter().filter(|(l, ..)| l.is_some()) {
+            self.at = at.or(self.at);
             match ft.args.iter().find(|f| &f.label == label) {
                 Some(f) => self.constrain(arg, &f.ty)?,
                 None => bail!("no argument #{}", label.as_ref().unwrap()),
             }
         }
         for f in ft.args.iter().filter(|f| f.label.is_some() && !f.optional) {
-            if !args.iter().any(|(l, _)| l == &f.label) {
+            if !args.iter().any(|(l, ..)| l == &f.label) {
                 bail!("missing required argument #{}", f.label.as_ref().unwrap())
             }
         }
-        self.constrain(&ft.ret, out)
+        Ok(())
     }
 
     /// A copy of `t` with every variable deeper than `above` replaced by a
@@ -855,6 +920,7 @@ impl Solver {
             return Ok(());
         }
         let mut cands: Vec<Ty> = vec![];
+        let mut from: Vec<Option<Site>> = vec![];
         let mut groups: Vec<(Var, Vec<Ty>)> = vec![];
         let feeders = self.info(v).feeders.iter().filter(|u| !self.info(**u).quantified);
         let feeders: Vec<Ty> = feeders.map(|u| Ty::Var(*u)).collect();
@@ -871,7 +937,8 @@ impl Solver {
                     if let Some(t) = self.info(u).fixed.clone()
                         && (!self.info(u).demanded || self.info(u).over_any)
                     {
-                        cands.push(t)
+                        cands.push(t);
+                        from.push(None)
                     }
                 }
                 t => {
@@ -885,7 +952,10 @@ impl Solver {
                     }
                     let src = self.info(v).joined.iter().find(|(_, j)| j == &l).map(|(s, _)| *s);
                     match (src, groups.iter_mut().find(|(s, _)| Some(*s) == src)) {
-                        (None, _) => cands.push(self.deep(&t)),
+                        (None, _) => {
+                            cands.push(self.deep(&t));
+                            from.push(self.sites.get(&(v, true, l.clone())).copied())
+                        }
                         (Some(_), Some((_, g))) => g.push(self.deep(&t)),
                         (Some(s), None) => groups.push((s, vec![self.deep(&t)])),
                     }
@@ -893,13 +963,18 @@ impl Solver {
             }
         }
         cands.extend(groups.into_iter().map(|(_, g)| union(g)));
-        cands.retain(|t| !matches!(t, Ty::Bot));
+        from.resize(cands.len(), None);
+        let live: Vec<bool> = cands.iter().map(|t| !matches!(t, Ty::Bot)).collect();
+        let mut keep = live.iter();
+        cands.retain(|_| *keep.next().unwrap());
+        let mut keep = live.iter();
+        from.retain(|_| *keep.next().unwrap());
         let ty = if !cands.is_empty() {
             match self.info(v).kind {
                 Kind::Join => union(cands),
                 // a variable nothing has decided may stay open inside the
                 // type: a later holder that shares it can still decide it
-                Kind::Single => self.holder(&cands)?,
+                Kind::Single => self.holder(&cands, &from)?,
             }
         } else if self.info(v).singleton {
             Ty::Bot
@@ -947,7 +1022,7 @@ impl Solver {
     }
 
     /// The one of `ts` that holds the others.
-    fn holder(&mut self, ts: &[Ty]) -> Result<Ty> {
+    fn holder(&mut self, ts: &[Ty], from: &[Option<Site>]) -> Result<Ty> {
         // a lower bound with a variable nothing has decided is tried last:
         // that variable takes what the other lower bounds need
         let (ground, open): (Vec<&Ty>, Vec<&Ty>) = ts.iter().partition(|t| self.is_ground(t));
@@ -957,8 +1032,8 @@ impl Solver {
             }
         }
         let t = &ts[0];
-        let o = ts.iter().find(|o| self.constrain(o, t).is_err()).unwrap_or(t);
-        mismatch(t, o)
+        let i = ts.iter().position(|o| self.constrain(o, t).is_err()).unwrap_or(0);
+        mismatch::<Ty>(t, &ts[i]).map_err(|e| e.context(Two(from[0], from[i])))
     }
 
     /// The one of `ts` every other holds; nothing demanded is bottom.
