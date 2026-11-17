@@ -486,7 +486,7 @@ impl Solving {
     }
 
     fn relate_in(&mut self, env: &Env, a: &Type, b: &Type, edge: bool) -> Result<()> {
-        let (a, b) = (shallow(a), flat(env, shallow(b))?);
+        let (a, b) = (flat(env, shallow(a))?, flat(env, shallow(b))?);
         match (&a, &b) {
             (Type::Bottom, _) | (_, Type::Any) => return Ok(()),
             // a predicate on a cell is judged when the cell is decided
@@ -1328,7 +1328,7 @@ impl Solving {
                 && !quantified(v)
                 && !v.joins()
                 && v.cell_direct().len() > 1;
-            if pending {
+            if pending && !v.level().is_generic() {
                 self.singles.push(v.clone());
                 v.generalize()
             }

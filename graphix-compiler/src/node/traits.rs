@@ -188,14 +188,23 @@ fn implements<R: Rt>(
 /// body's check held as constants are the scheme's from here on.
 fn fits_declared<R: Rt>(ctx: &CompileCtx<R>, made: &Type, declared: &Type) -> Result<()> {
     let outer = current_level();
-    solving(|s| s.quantify(made, outer.depth()));
+    let mark = solving(|s| {
+        s.quantify(made, outer.depth());
+        s.mark()
+    });
     let level = Level::Def { depth: outer.depth() + 1, owner: LambdaId::new() };
     let _at = AtLevel::enter(level);
     let declared = declared.reset_tvars();
-    declared.claim_free(level);
+    match &declared {
+        Type::Fn(ft) => ft.claim(level),
+        t => t.claim_free(level),
+    }
     let _held = hold_declared(iter::once(&declared));
     let one = solving(|s| s.instantiate(made, Level::GENERIC.depth() - 1, level));
-    declared.check_contains(&ctx.env, &one)
+    declared.check_contains(&ctx.env, &one)?;
+    // the instance is decided here, where the declaration's variables
+    // are still constants
+    solving(|s| s.generalize(&ctx.env, Type::BOTTOM, outer.depth(), mark))
 }
 
 /// [`check_method_return`] of a method [`implements`] held to `declared`.

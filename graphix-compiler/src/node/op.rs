@@ -17,7 +17,7 @@ use crate::{
     node::error::{diagnostic_site, report_failure},
     stack::ensure_sufficient,
     typ::{
-        Bound, ContainsFlags, Type,
+        Bound, ContainsFlags, TVar, Type, bounds,
         tvar::{require_body_bounds, settled_cause_note},
     },
     wrap,
@@ -248,11 +248,33 @@ fn operand_type<'t>(env: &Env, lt: &'t Type, rt: &'t Type) -> Result<Option<&'t 
     Ok(one.then_some(lt))
 }
 
+/// Under a check by bounds, the one type both operands of an operator
+/// have: a cell each flows into and that flows into each; `singleton`
+/// where it must be a single type, as arithmetic's is.
+fn same_by_bounds(env: &Env, lt: &Type, rt: &Type, singleton: bool) -> Result<Type> {
+    let v = TVar::default();
+    super::solving(|s| {
+        if singleton {
+            s.declare(&v, Type::Bound(Bound::Singleton))
+        }
+        s.track(&v)
+    });
+    let v = Type::TVar(v);
+    for t in [lt, rt] {
+        v.check_contains(env, t)?;
+        t.check_contains(env, &v)?
+    }
+    Ok(v)
+}
+
 /// An operand whose type is known must be in `bound` now; an open cell,
 /// alone or a member of a union, carries `bound` as a constraint for
 /// later: binding it to `bound` would claim every type the bound admits
 /// at once.
 pub(super) fn constrain_operand(env: &Env, bound: &Type, t: &Type) -> Result<()> {
+    if bounds::active() {
+        return bound.check_contains(env, t);
+    }
     ensure_sufficient(|| match t {
         Type::TVar(tv) => match tv.binding() {
             Some(b) => constrain_operand(env, bound, &b),
@@ -360,6 +382,25 @@ macro_rules! compare_op {
         impl<R: Rt> $name<R> {
             fn typecheck_own(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
                 let (lt, rt) = (self.lhs.typ(), self.rhs.typ());
+                if bounds::active() {
+                    let t = wrap!(
+                        self,
+                        same_by_bounds(&ctx.env, lt, rt, false).map_err(|e| {
+                            Told::over(
+                                e,
+                                "cannot compare: comparison is fn('a, 'a) -> bool — \
+                                 both operands must be one type",
+                            )
+                        })
+                    )?;
+                    let judgment = crate::PendingSettle::Discernible {
+                        typ: t,
+                        what: crate::Discerned::Compared { ordered: $ordered },
+                        spec: self.spec.clone(),
+                    };
+                    super::defer_judgment(ctx, judgment);
+                    return Ok(());
+                }
                 match wrap!(self, operand_type(&ctx.env, lt, rt))? {
                     Some(t) => {
                         let bound = match $ordered {
@@ -821,9 +862,25 @@ pub(crate) fn arith_rule(
     rt: &Type,
     out: &Type,
 ) -> Result<()> {
+    let checked = op.is_checked();
+    if bounds::active() {
+        let told = |e| {
+            let told = format_compact!(
+                "cannot compute with {}: arithmetic is fn<'a: Number + Singleton>(x: \
+                 'a, y: 'a) -> 'a — both operands must be one numeric type",
+                op.token()
+            );
+            Told::over(e, &told)
+        };
+        let t = same_by_bounds(env, lt, rt, true).map_err(told)?;
+        Type::Primitive(Typ::number()).check_contains(env, &t).map_err(told)?;
+        return match checked {
+            true => out.check_contains(env, &bounds::union_of([t, ARITH_ERR.clone()])),
+            false => out.check_contains(env, &t),
+        };
+    }
     // A declared `'a: Number` formal is rigid while its def gate is
     // open: `x + f64:0.` must reject, not bind 'a.
-    let checked = op.is_checked();
     let Some(t) = operand_type(env, lt, rt)? else {
         return crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
             // CR claude for claude: [readability/medium] "(cast one side explicitly)"

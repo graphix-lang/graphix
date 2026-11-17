@@ -2311,7 +2311,7 @@ pub(crate) fn defer_settle<R: Rt>(
     ctx: &mut CompileCtx<R>,
     settle: impl FnOnce() -> PendingSettle,
 ) {
-    if ctx.def_gate_depth == 0 {
+    if ctx.def_gate_depth == 0 && !bounds::active() {
         ctx.pending_settles.last_mut().expect("settle frame").push(settle())
     }
 }

@@ -3303,7 +3303,12 @@ fn judge_default<R: Rt>(
     node.typecheck0(ctx).and_then(|()| {
         let typ = node.typ().clone();
         if bounds::active() {
-            return at.typ.check_contains(&ctx.env, &typ);
+            // a parameter over a declared variable takes the default
+            // where some instance of it does
+            return match at.typ.has_rigid() {
+                true => at.typ.reset_tvars().check_contains(&ctx.env, &typ),
+                false => at.typ.check_contains(&ctx.env, &typ),
+            };
         }
         let depth = def.level.depth();
         let enclosing =
