@@ -574,6 +574,13 @@ impl Solving {
             (Type::ByRef(Mutability::Mut, x), Type::ByRef(Mutability::Mut, y)) => {
                 self.equal(env, x, y)
             }
+            // one constructor variable applied twice: whatever it stands
+            // for, it holds its argument as a collection holds an element
+            (Type::App(c, x), Type::App(d, y))
+                if matches!((&shallow(c), &shallow(d)), (Type::TVar(v), Type::TVar(w)) if v.same_cell(w)) =>
+            {
+                self.constrain(env, x, y)
+            }
             (Type::Map(m), Type::Map(n)) => {
                 self.constrain(env, &m.key, &n.key)?;
                 self.constrain(env, &m.value, &n.value)
@@ -997,6 +1004,22 @@ fn members_of(env: &Env, t: &Type, out: &mut SmallVec<[Type; 4]>) -> Result<()> 
         },
         t => Ok(out.push(t.clone())),
     })
+}
+
+/// A method of a trait whose `self` is a constructor, as the
+/// implementation for `target` (a type with a hole) types it: each
+/// `self<X>` of the declared `sig` is `target` with `X` in its hole.
+pub fn method_typing(sig: &Type, target: &Type) -> Type {
+    fn at(t: &Type, target: &Type) -> Option<Type> {
+        ensure_sufficient(|| match t {
+            Type::App(head, arg) if matches!(&**head, Type::TVar(v) if &*v.name == "self") => {
+                let arg = at(arg, target).unwrap_or_else(|| (**arg).clone());
+                target.fill_hole(&arg)
+            }
+            t => t.cow_children(&mut |c| at(c, target)),
+        })
+    }
+    at(sig, target).unwrap_or_else(|| sig.clone())
 }
 
 /// The union `t` with each member that names a union replaced by that

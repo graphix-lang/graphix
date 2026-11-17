@@ -41,7 +41,7 @@ use crate::{
         FnType, Mutability, TVar, TakerUnion, TraitId, Type, UndecidedTaker,
         bounds::{self, Use},
         settle::{DataPositions, Expanded, Held, Reaching, Unrolling, settle_order},
-        tvar::{AtLevel, BoundAt, Bounds, Judgment, Level, RigidGate},
+        tvar::{AtLevel, BoundAt, Bounds, Judgment, Level, RigidGate, current_level},
     },
     wrap,
 };
@@ -5409,6 +5409,28 @@ impl<R: Rt> CallSite<R> {
         &self.spec
     }
 
+    /// Where the callee is a method of a trait whose `self` is a
+    /// constructor (`self<'a>`): its name, the method as each
+    /// implementation types it, and which positional argument is the
+    /// receiver.
+    fn constructor_method(
+        &self,
+        ctx: &CompileCtx<R>,
+    ) -> Option<(ArcStr, TArc<[Type]>, usize)> {
+        let NodeView::Ref(r) = self.fnode.view() else { return None };
+        let method = ctx.env.trait_methods.get(&r.id)?;
+        let def = ctx.env.trait_def(method.trait_id).filter(|d| d.hole)?;
+        let m = def.methods.get(method.index)?;
+        let sig = Type::Fn(m.typ.clone());
+        let impls = ctx.env.impls_of(def.id);
+        let typings = impls.iter().flat_map(|l| l.iter());
+        let typings = typings.map(|im| bounds::method_typing(&sig, &im.target));
+        let before = &m.typ.args[..m.self_index.unwrap_or(0)];
+        let receiver = before.iter().filter(|a| a.is_positional()).count();
+        let name = format_compact!("{}::{}", def.name, m.name);
+        Some((name.as_str().into(), typings.collect(), receiver))
+    }
+
     /// The check by bounds: each written argument is checked in the order
     /// written, then fits its parameter where the callee's type is decided
     /// here; a callee that is not is used as a function of these
@@ -5429,6 +5451,29 @@ impl<R: Rt> CallSite<R> {
         joins(&self.rtype);
         let callee = self.fnode.typ().clone();
         let handler = self.scope.dynamic.handler();
+        if let Some((name, typings, receiver)) = self.constructor_method(ctx) {
+            // the receiver's type says which implementation types the call
+            let positional = args.iter().enumerate().filter(|(_, a)| a.0.is_none());
+            let Some((at, of)) = positional.map(|(i, a)| (i, a.1.clone())).nth(receiver)
+            else {
+                bailat!(self.spec, "{name} is called without its receiver")
+            };
+            let throws = match handler.and_then(|h| ctx.env.by_id.get(&h.id().0)) {
+                Some(b) => b.typ.clone(),
+                None => joined(),
+            };
+            let call = Use::Method {
+                name,
+                typings,
+                receiver,
+                at,
+                args,
+                out: self.rtype.clone(),
+                throws,
+                level: current_level(),
+            };
+            return wrap!(self, solving(|s| s.watch(&ctx.env, &of, call)));
+        }
         match &callee.with_deref(|t| t.cloned()) {
             Some(Type::Fn(ft)) => {
                 if self.ftype.is_none() {
