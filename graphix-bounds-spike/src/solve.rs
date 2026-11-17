@@ -1387,7 +1387,13 @@ impl Solver {
             && !matches!(&ty, Ty::Bot)
             && !matches!(&ty, Ty::Prim(p) if p.exactly_one().is_some())
         {
-            bail!("cannot compute with {ty}: both operands must be one numeric type")
+            // a declared variable is one type, which each call must give it
+            match &ty {
+                Ty::Rigid(r) => self.info_mut(*r).singleton = true,
+                _ => bail!(
+                    "cannot compute with {ty}: both operands must be one numeric type"
+                ),
+            }
         }
         self.info_mut(v).fixed = Some(ty);
         self.fixing.remove(&v);

@@ -254,6 +254,16 @@ impl Solver {
         }
     }
 
+    /// What a declared variable is known to be: its bounds, anything with
+    /// none.
+    fn bound_of(&self, v: Var) -> Ty {
+        self.vars[v.0 as usize]
+            .upper
+            .iter()
+            .filter(|u| !matches!(u, Ty::Var(_) | Ty::Trait(_)))
+            .fold(Ty::Any, |b, u| self.both(&b, &split(&self.deep(u))))
+    }
+
     /// The values in both `a` and `b`.
     pub fn both(&self, a: &Ty, b: &Ty) -> Ty {
         let plain = |t: Ty| lengths(&t).map(|l| l.2).unwrap_or(t);
@@ -265,6 +275,7 @@ impl Solver {
         match (&a, &b) {
             _ if a == b => a,
             (Ty::Any, t) | (t, Ty::Any) => t.clone(),
+            (Ty::Rigid(v), t) | (t, Ty::Rigid(v)) => self.both(&self.bound_of(*v), t),
             (Ty::Union(ms), t) | (t, Ty::Union(ms)) => {
                 union(ms.iter().map(|m| self.both(m, t)))
             }
@@ -332,6 +343,7 @@ impl Solver {
         match (&a, &b) {
             _ if a == b => Ty::Bot,
             (_, Ty::Any) | (Ty::Bot, _) => Ty::Bot,
+            (Ty::Rigid(v), _) => self.less(&self.bound_of(*v), &b),
             (Ty::Union(ms), _) => union(ms.iter().map(|m| self.less(m, &b))),
             (_, Ty::Union(ms)) => ms.iter().fold(a.clone(), |a, m| self.less(&a, m)),
             (Ty::Prim(p), Ty::Prim(q)) => match *p & !*q {
@@ -381,12 +393,7 @@ impl Solver {
             return r;
         }
         if let (Ty::Rigid(v), false) = (&t, matches!(pat, Pat::Any(_))) {
-            let bound = self.vars[v.0 as usize]
-                .upper
-                .iter()
-                .filter(|u| !matches!(u, Ty::Var(_) | Ty::Trait(_)))
-                .fold(Ty::Any, |b, u| self.both(&b, &split(&self.deep(u))));
-            return self.route(pat, &bound);
+            return self.route(pat, &self.bound_of(*v));
         }
         if let Ty::Union(ms) = &t {
             let (mut parts, mut rests, mut binds) = (vec![], vec![], vec![]);
@@ -579,6 +586,9 @@ impl Solver {
             return Ok(());
         }
         let mut reach = self.expand(&split(&self.deep(t)));
+        if matches!(reach, Ty::Bot) {
+            return Ok(());
+        }
         let (mut binds, mut hits) = (vec![], vec![]);
         for (i, arm) in self.selects[id].arms.iter().enumerate() {
             let r = self.route(&arm.pat, &reach);
@@ -663,7 +673,10 @@ impl Solver {
 
     /// An arm of a select that was judged and that nothing reaches.
     pub(crate) fn dead_arms(&self) -> Result<()> {
-        for s in self.selects.iter().filter(|s| s.routed && !s.instance) {
+        // a select still waiting is one of a generic definition, whose
+        // instances give it its values
+        let judged = |s: &&Select| s.routed && !s.instance && s.waiting.is_empty();
+        for s in self.selects.iter().filter(judged) {
             if let Some(i) = s.hit.iter().position(|h| !h) {
                 let seen: Vec<String> = s.seen.iter().map(|t| t.to_string()).collect();
                 bail!(

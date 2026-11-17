@@ -16,7 +16,12 @@ use graphix_types::{
 };
 use netidx_core::path::Path;
 use netidx_value::{Typ, Value};
-use std::{collections::HashMap, fmt, fs, path::PathBuf, rc::Rc};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt, fs,
+    path::PathBuf,
+    rc::Rc,
+};
 
 /// A construct outside the prototype's subset: the program is not judged.
 #[derive(Debug)]
@@ -104,6 +109,9 @@ pub struct Checker {
     /// The error handlers in force, innermost last: each a variable the
     /// errors raised under it flow into.
     handlers: Vec<Ty>,
+    /// The names each enclosing run of statements writes (a `<-` target, a
+    /// `&mut`'s referent): a `let` of one is not generic.
+    written: Vec<HashSet<ArcStr>>,
 }
 
 /// A `use` path read in `module`: `self::` is that module, `super::` the
@@ -186,6 +194,25 @@ fn declares(l: &LambdaExpr) -> bool {
         || l.rtype.iter().any(holds_tvar)
 }
 
+/// The names `e` writes: the targets of its `<-` and the referents of its
+/// `&mut`, at any depth.
+fn writes(e: &Expr, out: &mut HashSet<ArcStr>) {
+    let name = |n: &ModPath| match parts(n).as_slice() {
+        [n] => Some(ArcStr::from(n.as_str())),
+        _ => None,
+    };
+    match &e.kind {
+        ExprKind::Connect { name: n, deref: false, .. } => out.extend(name(n)),
+        ExprKind::ByRef(Mutability::Mut, r) => {
+            if let ExprKind::Ref { name: n } = &value_of(r).kind {
+                out.extend(name(n))
+            }
+        }
+        _ => (),
+    }
+    e.for_each_child(&mut |c| writes(c, out))
+}
+
 fn value_of(e: &Expr) -> &Expr {
     match &e.kind {
         ExprKind::ExplicitParens(e) => value_of(e),
@@ -222,6 +249,7 @@ impl Checker {
             last: (String::new(), 0, 0),
             in_pattern: vec![],
             handlers: vec![],
+            written: vec![],
         }
     }
 
@@ -232,11 +260,7 @@ impl Checker {
         let exprs = parser::parse(Origin::unspecified(text))?;
         let mut last = Ty::Bot;
         match sig {
-            None => {
-                for e in exprs.iter() {
-                    last = self.infer(e, 0)?
-                }
-            }
+            None => last = self.infer_all(&exprs, 0)?.pop().unwrap_or(Ty::Bot),
             Some(sig) => {
                 let sig = parser::parse_sig(Origin::unspecified(sig))?;
                 let prefix = self.here.join("::");
@@ -1014,7 +1038,12 @@ impl Checker {
     }
 
     fn infer_all(&mut self, es: &[Expr], lvl: u32) -> Result<Vec<Ty>> {
-        es.iter().map(|e| self.infer(e, lvl)).collect()
+        let mut written = HashSet::new();
+        es.iter().for_each(|e| writes(e, &mut written));
+        self.written.push(written);
+        let ts = es.iter().map(|e| self.infer(e, lvl)).collect();
+        self.written.pop();
+        ts
     }
 
     /// The type of a collection literal's elements: a variable they all
@@ -1032,16 +1061,18 @@ impl Checker {
         match &b.pattern {
             StructurePattern::Bind(name) => {
                 let name = &name.name;
+                let written = self.written.iter().any(|w| w.contains(name));
                 if let ExprKind::Ref { name: other } = &value.kind
                     && let [n] = parts(other).as_slice()
                     && let Some(Binding::Poly(l, t)) =
                         self.scopes.iter().rev().find_map(|s| s.get(n.as_str())).cloned()
                     && b.typ.is_none()
+                    && !written
                 {
                     self.bind(name, Binding::Poly(l, t.clone()));
                     return Ok(self.s.instantiate(&t, l, lvl));
                 }
-                if let ExprKind::Lambda(_) = &value.kind {
+                if !written && self.holds_generic(&b.value) {
                     let mark = self.s.vars.len();
                     let me = self.s.fresh_ty(lvl + 1, Kind::Single);
                     if b.rec {
@@ -1108,9 +1139,51 @@ impl Checker {
         self.s.watch(t, Watch::Select(id))
     }
 
-    /// The lambda a generic `let` names, past grouping parentheses and the
-    /// statements of a block it ends, which are checked on the way.
+    /// Whether a `let` of `e` is generic: a lambda, a generic name, a read
+    /// of a field of one, or data that holds one of those.
+    fn holds_generic(&self, e: &Expr) -> bool {
+        let any = |es: &[Expr]| es.iter().any(|e| self.holds_generic(e));
+        match &e.kind {
+            ExprKind::Lambda(_) => true,
+            ExprKind::ExplicitParens(e) => self.holds_generic(e),
+            ExprKind::Block { .. } => matches!(value_of(e).kind, ExprKind::Lambda(_)),
+            ExprKind::Struct(s) => s.args.iter().any(|(_, e)| self.holds_generic(e)),
+            ExprKind::Tuple { args }
+            | ExprKind::Variant { args, .. }
+            | ExprKind::Array { args }
+            | ExprKind::List { args } => any(args),
+            ExprKind::StructWith(w) => {
+                self.holds_generic(&w.source)
+                    || w.replace.iter().any(|(_, e)| self.holds_generic(e))
+            }
+            ExprKind::StructRef { source, .. } | ExprKind::TupleRef { source, .. } => {
+                self.holds_generic(source)
+            }
+            ExprKind::Ref { name } => match parts(name).as_slice() {
+                [n] => matches!(
+                    self.scopes.iter().rev().find_map(|s| s.get(n.as_str())),
+                    Some(Binding::Poly(..))
+                ),
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
+    /// A part of a generic `let`'s value: of the definition where it is
+    /// generic itself, else computed once, outside it.
+    fn part(&mut self, e: &Expr, lvl: u32) -> Result<Ty> {
+        match self.holds_generic(e) {
+            true => self.definition(e, lvl),
+            false => self.infer(e, lvl - 1),
+        }
+    }
+
+    /// The value of a generic `let`, its own variables at `lvl`: a lambda,
+    /// past grouping parentheses and the statements of a block it ends, or
+    /// data holding lambdas, each part by `part`.
     fn definition(&mut self, e: &Expr, lvl: u32) -> Result<Ty> {
+        let generic = self.holds_generic(e);
         match &e.kind {
             ExprKind::ExplicitParens(e) => self.definition(e, lvl),
             ExprKind::Block { exprs } if !exprs.is_empty() => {
@@ -1122,7 +1195,87 @@ impl Checker {
                 r
             }
             ExprKind::Lambda(l) => self.lambda(l, lvl, true),
+            ExprKind::Struct(s) if generic => {
+                let mut fs = vec![];
+                for (n, e) in s.args.iter() {
+                    fs.push((n.clone(), self.part(e, lvl)?))
+                }
+                fs.sort_by(|a, b| a.0.cmp(&b.0));
+                Ok(Ty::Struct(fs.into()))
+            }
+            ExprKind::Tuple { args } if generic => {
+                let ts: Result<Vec<Ty>> =
+                    args.iter().map(|e| self.part(e, lvl)).collect();
+                Ok(Ty::Tuple(ts?.into()))
+            }
+            ExprKind::Variant { tag, args } if generic => {
+                let ts: Result<Vec<Ty>> =
+                    args.iter().map(|e| self.part(e, lvl)).collect();
+                Ok(Ty::Variant(tag.clone(), ts?.into()))
+            }
+            ExprKind::Array { args } | ExprKind::List { args } if generic => {
+                let elem = self.s.fresh_ty(lvl, Kind::Join);
+                for e in args.iter() {
+                    let t = self.part(e, lvl)?;
+                    self.s.constrain(&t, &elem)?
+                }
+                Ok(match &e.kind {
+                    ExprKind::List { .. } => Ty::List(Rc::new(elem)),
+                    _ => Ty::Array(Rc::new(elem)),
+                })
+            }
+            ExprKind::StructWith(w) if generic => {
+                let source = self.part(&w.source, lvl)?;
+                let mut fields = vec![];
+                for (n, e) in w.replace.iter() {
+                    fields.push((n.clone(), self.part(e, lvl)?))
+                }
+                self.updated(source, fields, lvl)
+            }
+            ExprKind::StructRef { source, field } if generic => {
+                let (t, out) =
+                    (self.part(source, lvl)?, self.s.fresh_ty(lvl, Kind::Join));
+                let field = field.name.clone();
+                self.s.watch(&t, Watch::Field { field, out: out.clone() })?;
+                Ok(out)
+            }
+            ExprKind::TupleRef { source, field } if generic => {
+                let (t, out) =
+                    (self.part(source, lvl)?, self.s.fresh_ty(lvl, Kind::Join));
+                self.s.watch(&t, Watch::Index { i: *field, out: out.clone() })?;
+                Ok(out)
+            }
             _ => self.infer(e, lvl),
+        }
+    }
+
+    /// A struct with some fields replaced: each takes its new value's
+    /// type. Where the struct's shape is not known here the value keeps its
+    /// type, and each new value must be of its field's.
+    fn updated(&mut self, source: Ty, fields: Vec<(ArcStr, Ty)>, lvl: u32) -> Result<Ty> {
+        match self.s.shallow(&source) {
+            Ty::Struct(fs) => {
+                if let Some((n, _)) =
+                    fields.iter().find(|(n, _)| !fs.iter().any(|(m, _)| m == n))
+                {
+                    bail!("{source} has no field {n}")
+                }
+                let new =
+                    |n: &ArcStr| fields.iter().find(|(m, _)| m == n).map(|(_, t)| t);
+                Ok(Ty::Struct(
+                    fs.iter()
+                        .map(|(n, t)| (n.clone(), new(n).unwrap_or(t).clone()))
+                        .collect(),
+                ))
+            }
+            _ => {
+                for (field, t) in fields {
+                    let out = self.s.fresh_ty(lvl, Kind::Join);
+                    self.s.watch(&source, Watch::Field { field, out: out.clone() })?;
+                    self.s.constrain(&t, &out)?
+                }
+                Ok(source)
+            }
         }
     }
 
@@ -1376,6 +1529,15 @@ impl Checker {
                 for v in self.s.vars[mark..].iter_mut() {
                     v.kind = Kind::Join
                 }
+                let mut declared = false;
+                t.each(&mut |t| declared |= matches!(t, Ty::Rigid(_)));
+                if declared {
+                    bail!(
+                        "a test cannot name a declared type variable ({t}): write `_` there, and the name takes the value's own type"
+                    )
+                }
+                // `_` in a test is whatever is there, too
+                let t = t.map(&mut |t| matches!(t, Ty::Bot).then_some(Ty::Any));
                 let test = t.map(&mut |t| matches!(t, Ty::Var(_)).then_some(Ty::Any));
                 let whole = match &inner {
                     Pat::Any(Some(v)) => *v,
@@ -1705,11 +1867,12 @@ impl Checker {
                 union([v, self.failure("MapKeyError")])
             }
             ExprKind::StructWith(w) => {
-                let t = self.infer(&w.source, lvl)?;
-                for (_, e) in w.replace.iter() {
-                    self.infer(e, lvl)?;
+                let source = self.infer(&w.source, lvl)?;
+                let mut fields = vec![];
+                for (n, e) in w.replace.iter() {
+                    fields.push((n.clone(), self.infer(e, lvl)?))
                 }
-                t
+                self.updated(source, fields, lvl)?
             }
             ExprKind::TypeCast { expr, typ } => {
                 self.infer(expr, lvl)?;
