@@ -443,15 +443,30 @@ fn mismatch<T>(wanted: &Type, got: &Type) -> Result<T> {
     bail!("type mismatch {wanted} does not contain {got}")
 }
 
-/// Add `t` to `bounds` unless it is there; false if it was.
-fn record(bounds: &mut SmallVec<[Type; 1]>, t: &Type) -> bool {
-    match bounds.iter().any(|b| strictly_identical(b, t)) {
-        true => false,
-        false => {
-            bounds.push(t.clone());
-            true
-        }
+/// Add `t` to the lower bounds of the cell of `v`, or to the upper ones,
+/// unless it is there; the bounds on the cell's other side where it was
+/// added. The bound may hold the cell, so nothing is compared under the
+/// cell's lock.
+fn record(v: &TVar, t: &Type, lower: bool) -> Option<SmallVec<[Type; 1]>> {
+    let cell = v.cell();
+    let had = {
+        let c = cell.read();
+        if lower { c.lower.clone() } else { c.constraints.clone() }
+    };
+    if had.iter().any(|b| strictly_identical(b, t)) {
+        return None;
     }
+    let mut c = cell.write();
+    Some(match lower {
+        true => {
+            c.lower.push(t.clone());
+            c.constraints.clone()
+        }
+        false => {
+            c.constraints.push(t.clone());
+            c.lower.clone()
+        }
+    })
 }
 
 /// `f` over what the solver keeps of the cell of `v`.
@@ -720,14 +735,7 @@ impl Solving {
                 self.constrain(env, a, &union_of(members.into_iter().cloned()))
             }
             (Some(v), _) if depth(b) <= at.depth() => {
-                let cell = v.cell();
-                let lower = {
-                    let mut c = cell.write();
-                    match record(&mut c.constraints, b) {
-                        true => c.lower.clone(),
-                        false => return Ok(()),
-                    }
-                };
+                let Some(lower) = record(v, b, false) else { return Ok(()) };
                 self.note(v, Added::Upper);
                 self.track(v);
                 if let Some(w) = vb {
@@ -777,14 +785,7 @@ impl Solving {
     /// `a` is a new lower bound of the open cell `w`: it must fit whatever
     /// is demanded of `w`.
     fn arrive(&mut self, env: &Env, w: &TVar, a: &Type, edge: bool) -> Result<()> {
-        let cell = w.cell();
-        let upper = {
-            let mut c = cell.write();
-            match record(&mut c.lower, a) {
-                true => c.constraints.clone(),
-                false => return Ok(()),
-            }
-        };
+        let Some(upper) = record(w, a, true) else { return Ok(()) };
         self.note(w, Added::Lower);
         self.track(w);
         if !edge {
