@@ -176,6 +176,10 @@ pub struct Known {
     /// For a scheme's variable: what its definition left to each
     /// instance, which a use of the scheme takes a copy of with the cell.
     pub(crate) left: SmallVec<[Left; 0]>,
+    /// For a declared variable a labeled parameter's type holds: the
+    /// label, the type of the default its definition gives it, and the
+    /// parameter's type. A call that omits the label passes the default.
+    pub(crate) defaults: SmallVec<[(ArcStr, Type, Type); 0]>,
 }
 
 /// A check a generic definition could not finish, because the types its
@@ -1087,6 +1091,28 @@ impl Solving {
             self.constrain(env, gv, fv)?
         }
         let (fl, gl) = (labeled(f), labeled(g));
+        // a label of `f` that `g` hides or leaves optional is left out by
+        // a call through `g`. Where `g` declares variables for it, each
+        // call picks them, and the call that leaves the label out is held
+        // to the default: `g` carries it as `f` does.
+        for (name, optional, fa) in fl.iter().filter(|(_, optional, _)| *optional) {
+            let _ = optional;
+            match gl.iter().find(|(n, ..)| n == name) {
+                Some((_, false, _)) => (),
+                Some((_, true, ga)) if let Some(v) = declared_in(ga).first() => {
+                    let mut cells = SmallVec::new();
+                    cells_of(fa, true, &mut cells);
+                    for c in cells.iter() {
+                        for (label, default, _) in known(c, |k| k.defaults.clone()) {
+                            if &label == name {
+                                defaulted(v, label, default, ga.clone())
+                            }
+                        }
+                    }
+                }
+                Some((_, true, _)) | None => self.omitted(env, name, fa)?,
+            }
+        }
         for (name, optional, ga) in gl.iter() {
             match fl.iter().find(|(n, ..)| n == name) {
                 Some((_, false, _)) if *optional => {
@@ -1157,6 +1183,21 @@ fn members_of(env: &Env, t: &Type, out: &mut SmallVec<[Type; 4]>) -> Result<()> 
     }
     let mut seen: LPooled<AHashSet<Type>> = LPooled::take();
     go(env, t, out, &mut seen)
+}
+
+/// Record that the labeled parameter `label`, of the type `param`, which
+/// holds the declared variable `v`, has a default of the type `default`:
+/// each call that leaves the label out passes it ([`Known::defaults`]).
+pub fn defaulted(v: &TVar, label: ArcStr, default: Type, param: Type) {
+    known(v, |k| k.defaults.push((label, default, param)))
+}
+
+/// The declared variables `t` holds.
+pub fn declared_in(t: &Type) -> SmallVec<[TVar; 4]> {
+    let mut cells = SmallVec::new();
+    cells_of(t, true, &mut cells);
+    cells.retain(|v: &mut TVar| v.is_rigid());
+    cells
 }
 
 /// Whether `t` is a scheme a check by bounds made: one of its cells is a
@@ -1892,7 +1933,7 @@ impl Solving {
         // the copy is bounded and fed as the original is
         for (v, n) in made {
             let (lower, mut upper) = (v.cell_lower(), v.cell_constraints());
-            let (join, direct, fed, sinks, used) = {
+            let (join, direct, fed, sinks, used, defaults) = {
                 let cell = v.cell();
                 let c = cell.read();
                 match c.solving.as_ref() {
@@ -1902,10 +1943,18 @@ impl Solving {
                         k.feeders.clone(),
                         k.sinks.clone(),
                         k.uses.clone(),
+                        k.defaults.clone(),
                     ),
                     None => Default::default(),
                 }
             };
+            let defaults: SmallVec<[(ArcStr, Type, Type); 0]> = defaults
+                .iter()
+                .map(|(label, default, param)| {
+                    let default = self.copy(default, above, at, copies);
+                    (label.clone(), default, self.copy(param, above, at, copies))
+                })
+                .collect();
             upper.extend(sinks.into_iter().map(Type::TVar));
             let all = |s: &mut Self, ts: &[Type], copies: &mut AHashMap<usize, TVar>| {
                 ts.iter().map(|t| s.copy(t, above, at, copies)).collect()
@@ -1932,7 +1981,8 @@ impl Solving {
                 let mut c = cell.write();
                 (c.lower, c.constraints) = (lower, upper);
                 let k = c.solving.get_or_insert_default();
-                (k.join, k.direct, k.feeders) = (join, direct, feeds)
+                (k.join, k.direct, k.feeders) = (join, direct, feeds);
+                k.defaults = defaults
             }
             // the copy is used as the original is: what flows into it in
             // this instance meets the same reads and calls
@@ -2606,12 +2656,37 @@ impl Solving {
                 None => bail!("no argument #{label}"),
             }
         }
-        for (name, optional) in ft.args.iter().filter_map(labeled) {
-            if !optional && !args.iter().any(|(l, _)| l.as_ref() == Some(&name)) {
-                bail!("missing required argument #{name}")
+        for a in ft.args.iter() {
+            let Some((name, optional)) = labeled(a) else { continue };
+            match args.iter().any(|(l, _)| l.as_ref() == Some(&name)) {
+                true => (),
+                false if optional => self.omitted(env, &name, &a.typ)?,
+                false => bail!("missing required argument #{name}"),
             }
         }
         self.constrain(env, &ft.rtype, out)
+    }
+
+    /// A function whose parameter for the label `name` is `formal` is
+    /// called without it: the default its definition gives the label goes
+    /// to the parameter ([`defaulted`]).
+    fn omitted(&mut self, env: &Env, name: &ArcStr, formal: &Type) -> Result<()> {
+        let mut cells = SmallVec::new();
+        cells_of(formal, true, &mut cells);
+        for v in cells.iter() {
+            let given = known(v, |k| k.defaults.clone());
+            for (label, default, param) in given.iter() {
+                if label == name {
+                    self.constrain(env, default, param).map_err(|e| {
+                        e.context(format!(
+                            "the default of #{name} is passed here, where the call \
+                             leaves #{name} out"
+                        ))
+                    })?
+                }
+            }
+        }
+        Ok(())
     }
 }
 

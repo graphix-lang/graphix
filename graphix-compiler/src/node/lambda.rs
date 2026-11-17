@@ -3361,10 +3361,18 @@ fn judge_default<R: Rt>(
         let typ = node.typ().clone();
         if bounds::active() {
             // a parameter over a declared variable takes the default
-            // where some instance of it does
-            return match at.typ.has_rigid() {
-                true => at.typ.reset_tvars().check_contains(&ctx.env, &typ),
-                false => at.typ.check_contains(&ctx.env, &typ),
+            // where some instance of it does, and each call that leaves
+            // the label out is one that has to
+            return match (at.typ.has_rigid(), at.label()) {
+                (true, Some(label)) => {
+                    at.typ.reset_tvars().check_contains(&ctx.env, &typ)?;
+                    if let Some(v) = bounds::declared_in(&at.typ).first() {
+                        bounds::defaulted(v, label.clone(), typ, at.typ.clone())
+                    }
+                    Ok(())
+                }
+                (true, None) => at.typ.reset_tvars().check_contains(&ctx.env, &typ),
+                (false, _) => at.typ.check_contains(&ctx.env, &typ),
             };
         }
         let depth = def.level.depth();

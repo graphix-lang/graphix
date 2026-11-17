@@ -335,7 +335,20 @@ fn checked_default<R: Rt>(
     // and the instance's types are its scheme's: nothing is left to relate
     let judged = ctx.bounds && matches!(judge, Judge::Bind);
     let res = res.and_then(|()| match site.and_then(|s| label(s)) {
-        _ if judged => Ok(()),
+        // what is left is to see that the instance was given what the
+        // site was checked with, both decided by now
+        Some(t) if judged => {
+            let (t, typ) = (t.resolve_tvars(), typ.resolve_tvars());
+            let decided = !t.has_unbound() && !typ.has_unbound();
+            match decided && !t.contains(&ctx.env, &typ)? {
+                true => bail!(
+                    "type mismatch {t} does not contain {typ}: the default of #{name} \
+                     is passed where the call leaves #{name} out"
+                ),
+                false => Ok(()),
+            }
+        }
+        None if judged => Ok(()),
         Some(t) => {
             // the signature's variables are a copy's, held rigid, which a
             // cell every use shares must not meet; a label the signature
