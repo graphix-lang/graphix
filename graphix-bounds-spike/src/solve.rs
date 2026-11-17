@@ -641,6 +641,7 @@ impl Solver {
                 };
                 let n = self.fresh(at, kind);
                 self.info_mut(n).singleton = self.info(*v).singleton;
+                self.info_mut(n).over_any = self.info(*v).over_any;
                 memo.insert(*v, n);
                 let (ls, us) = (self.info(*v).lower.clone(), self.info(*v).upper.clone());
                 let ls = ls.iter().map(|l| self.copy(l, above, at, memo)).collect();
@@ -832,14 +833,16 @@ impl Solver {
         let mut groups: Vec<(Var, Vec<Ty>)> = vec![];
         for l in self.info(v).lower.clone() {
             match self.shallow(&l) {
-                _ if matches!(&l, Ty::Var(u) if self.info(*u).demanded) => (),
+                _ if matches!(&l, Ty::Var(u) if self.info(*u).demanded && !self.info(*u).over_any) => (),
                 // a variable nothing flows into says nothing as a lower
-                // bound; it is fixed from above, after this one
-                Ty::Var(u) if !self.decided(u, &mut vec![]) => (),
+                // bound; it is fixed from above, after this one. A name
+                // bound over `Any` does hold a value: it says what it is
+                // fixed to
+                Ty::Var(u) if !self.decided(u, &mut vec![]) && !self.info(u).over_any => (),
                 Ty::Var(u) => {
                     self.fix(u)?;
                     if let Some(t) = self.info(u).fixed.clone()
-                        && !self.info(u).demanded
+                        && (!self.info(u).demanded || self.info(u).over_any)
                     {
                         cands.push(t)
                     }
@@ -880,15 +883,24 @@ impl Solver {
                     self.fix(w)?
                 }
                 let u = self.deep(&u);
-                if !matches!(u, Ty::Var(_) | Ty::Bot) {
+                if !matches!(u, Ty::Var(_)) {
                     uppers.push(u)
                 }
             }
             self.info_mut(v).demanded = true;
-            match uppers.is_empty() && self.info(v).over_any {
+            let t = match uppers.is_empty() && self.info(v).over_any {
                 true => Ty::Any,
                 false => self.meet(&uppers)?,
+            };
+            if self.info(v).over_any {
+                // the arm's run-time test is this type
+                let mut opaque = false;
+                t.each(&mut |t| opaque |= matches!(t, Ty::Fn(_) | Ty::Ref(..)));
+                if matches!(t, Ty::Bot) || opaque {
+                    bail!("a name bound inside an Any part: its uses do not decide a type a test can tell ({t})")
+                }
             }
+            t
         };
         if self.info(v).singleton
             && !matches!(&ty, Ty::Bot)
