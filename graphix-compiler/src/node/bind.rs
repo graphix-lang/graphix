@@ -104,7 +104,7 @@ fn defines_among<R: Rt>(
     e: &Expr,
     locals: &mut SmallVec<[ArcStr; 4]>,
 ) -> bool {
-    let mut any = |es: &[Expr], locals: &mut SmallVec<[ArcStr; 4]>| {
+    let any = |es: &[Expr], locals: &mut SmallVec<[ArcStr; 4]>| {
         es.iter().any(|e| defines_among(ctx, scope, e, locals))
     };
     match &e.kind {

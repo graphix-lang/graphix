@@ -125,6 +125,35 @@ impl Pat {
             v.clone()
         });
     }
+
+    /// The abstract type whose constructor here takes nothing out of a
+    /// value whose instance is not known ([`blind`]).
+    fn blind(&self, env: &Env) -> Option<ArcStr> {
+        match self {
+            Pat::Any(_) | Pat::Lit(..) => None,
+            Pat::Abs(_, id, p) => blind(env, id, p).or_else(|| p.blind(env)),
+            Pat::Test(_, p) | Pat::Whole(_, p) => p.blind(env),
+            Pat::Tuple(_, ps) | Pat::Variant(_, _, ps) | Pat::Or(ps) => {
+                ps.iter().find_map(|p| p.blind(env))
+            }
+            Pat::Elems { elems, .. } => elems.iter().find_map(|p| p.blind(env)),
+            Pat::Struct(_, fs, _) => fs.iter().find_map(|(_, p)| p.blind(env)),
+        }
+    }
+}
+
+/// The name of the abstract type `id` where its constructor around `p`
+/// may take nothing out of a value whose instance is not known: `p` names
+/// a part, and read at `Any` parameters the payload holds something a
+/// value could be written into or called.
+fn blind(env: &Env, id: &AbstractId, p: &Pat) -> Option<ArcStr> {
+    let made = env.abstract_reps.get(id)?;
+    let params: SmallVec<[Type; 4]> = made.params.iter().map(|_| Type::Any).collect();
+    let mut names = SmallVec::new();
+    p.cells(&mut names);
+    let taken = rep(env, id, &params)
+        .is_some_and(|r| holds_taker(env, &r, &mut SmallVec::new()));
+    (taken && !names.is_empty()).then(|| made.name.clone())
 }
 
 #[derive(Clone, Debug)]
@@ -248,12 +277,25 @@ fn nothing(t: &Type) -> bool {
 }
 
 /// Whether a value of `t` holds something a value could be written into
-/// or called: a writable reference or a function.
-fn holds_taker(t: &Type) -> bool {
+/// or called: a writable reference or a function, behind any name.
+fn holds_taker(env: &Env, t: &Type, seen: &mut SmallVec<[Type; 4]>) -> bool {
+    let named = |t: &Type, what: Option<Type>, seen: &mut SmallVec<[Type; 4]>| {
+        match seen.iter().any(|s| strictly_identical(s, t)) {
+            true => false,
+            false => {
+                seen.push(t.clone());
+                what.is_none_or(|t| holds_taker(env, &t, seen))
+            }
+        }
+    };
     ensure_sufficient(|| match t {
         Type::ByRef(Mutability::Mut, _) | Type::Fn(_) => true,
+        Type::Ref(_) => named(t, t.lookup_ref(env).ok(), seen),
+        Type::Abstract { id, params } if env.abstract_reps.get(id).is_some() => {
+            named(t, rep(env, id, params), seen)
+        }
         t => t
-            .try_for_each_child(&mut |c| match holds_taker(c) {
+            .try_for_each_child(&mut |c| match holds_taker(env, c, seen) {
                 true => ControlFlow::Break(()),
                 false => ControlFlow::Continue(()),
             })
@@ -775,16 +817,10 @@ impl Solving {
             (Pat::Abs(_, id, p), Type::Any) => match env.abstract_reps.get(id) {
                 Some(made) => {
                     // which instance it is is not known, so it is read at
-                    // `Any` parameters: a payload something could be
-                    // written into or called at those is given no name
+                    // `Any` parameters
                     let params: Arc<[Type]> =
                         Arc::from_iter(made.params.iter().map(|_| Type::Any));
-                    let (mut taken, mut names) = (false, SmallVec::new());
-                    if let Some(rep) = rep(env, id, &params) {
-                        taken = holds_taker(&rep)
-                    }
-                    p.cells(&mut names);
-                    match taken && !names.is_empty() {
+                    match blind(env, id, p).is_some() {
                         true => none(),
                         false => {
                             let whole = Type::Abstract { id: *id, params };
@@ -1009,18 +1045,28 @@ impl Solving {
     }
 
     /// An arm of a select that was judged and that nothing reaches.
-    pub(super) fn dead_arms(&self) -> Result<()> {
+    pub(super) fn dead_arms(&self, env: &Env) -> Result<()> {
         // a select still waiting is one of a generic definition, whose
         // instances give it its values
         let judged = |s: &&Select| s.routed && !s.instance && s.waiting.is_empty();
         for s in self.selects.iter().filter(judged) {
             if let Some(i) = s.hit.iter().position(|h| !h) {
                 let seen: Vec<String> = s.seen.iter().map(|t| t.to_string()).collect();
+                let (at, seen) = (&s.template.at, seen.join(" | "));
+                if let Some(name) = s.template.arms[i].pat.blind(env) {
+                    bail!(
+                        "pattern {} takes nothing: {name}(..) names part of a payload \
+                         something could be written into or called, which it may only \
+                         where the value is known to be one instance of {name}; write \
+                         the instance in a type test, `{name}<T> as {name}(..)` ({at}; \
+                         the value is {seen})",
+                        i + 1
+                    )
+                }
                 bail!(
-                    "pattern {} will never match: nothing reaches it ({}; the value is {})",
-                    i + 1,
-                    s.template.at,
-                    seen.join(" | ")
+                    "pattern {} will never match: nothing reaches it ({at}; the value \
+                     is {seen})",
+                    i + 1
                 )
             }
         }

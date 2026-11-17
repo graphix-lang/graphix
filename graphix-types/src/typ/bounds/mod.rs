@@ -1709,7 +1709,7 @@ impl Solving {
     /// Fix every cell an input left open.
     pub fn finish(&mut self, env: &Env) -> Result<()> {
         self.fix_scope(env, 0, true, 0)?;
-        self.dead_arms()
+        self.dead_arms(env)
     }
 
     /// A use of the scheme `t`: a copy of it, at the level `at`, with a
