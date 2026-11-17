@@ -1042,8 +1042,20 @@ impl Solving {
     /// cell of its own for each of the scheme's (those deeper than
     /// `above`), bounded as the scheme's are.
     pub fn instantiate(&mut self, t: &Type, above: u32, at: Level) -> Type {
-        let mut copies = LPooled::take();
-        let t = self.copy(t, above, at, &mut copies);
+        self.instantiate_into(t, above, at, &mut LPooled::take())
+    }
+
+    /// [`Self::instantiate`], with the instance's cells in `copies`, each
+    /// under the address of the scheme's cell it is the copy of: what
+    /// reads the definition's types at this instance maps them through it.
+    pub fn instantiate_into(
+        &mut self,
+        t: &Type,
+        above: u32,
+        at: Level,
+        copies: &mut AHashMap<usize, TVar>,
+    ) -> Type {
+        let t = self.copy(t, above, at, copies);
         let mine = |t: &Type, copies: &AHashMap<usize, TVar>| {
             let mut all = SmallVec::new();
             cells_of(t, true, &mut all);
@@ -1051,11 +1063,9 @@ impl Solving {
         };
         // what the definition left to its instances
         for (a, b, scheme) in self.held.clone() {
-            if scheme && (mine(&a, &copies) || mine(&b, &copies)) {
-                let pair = (
-                    self.copy(&a, above, at, &mut copies),
-                    self.copy(&b, above, at, &mut copies),
-                );
+            if scheme && (mine(&a, copies) || mine(&b, copies)) {
+                let pair =
+                    (self.copy(&a, above, at, copies), self.copy(&b, above, at, copies));
                 self.held.push((pair.0, pair.1, false))
             }
         }
@@ -1065,18 +1075,17 @@ impl Solving {
             if v.level().depth() > above
                 && all.iter().any(|u| copies.contains_key(&u.cell_addr()))
             {
-                self.copy(&Type::TVar(v), above, at, &mut copies);
+                self.copy(&Type::TVar(v), above, at, copies);
             }
         }
         // a select of the definition that waits on one of its variables
         // is the instance's to finish
         for id in 0..self.selects.len() {
             for w in self.selects[id].waiting.clone() {
-                if mine(&w, &copies) {
-                    let new = self.select_copy(id, &mut |s, v| {
-                        s.copy_cell(v, above, at, &mut copies)
-                    });
-                    let w = self.copy(&w, above, at, &mut copies);
+                if mine(&w, copies) {
+                    let new = self
+                        .select_copy(id, &mut |s, v| s.copy_cell(v, above, at, copies));
+                    let w = self.copy(&w, above, at, copies);
                     self.select_wait(new, w)
                 }
             }

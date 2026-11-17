@@ -193,6 +193,8 @@ pub struct Solver {
     pub refused_outside: bool,
     /// One of the program's calls of the solver refused.
     pub refused_inside: bool,
+    /// The last instance made: each variable of the scheme and its copy.
+    pub copied: Vec<(Var, Var)>,
 }
 
 fn mismatch<T>(container: &Ty, t: &Ty) -> Result<T> {
@@ -1107,6 +1109,7 @@ impl Solver {
                 }
             }
         }
+        self.copied = memo.into_iter().collect();
         t
     }
 

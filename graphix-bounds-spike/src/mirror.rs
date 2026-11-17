@@ -551,16 +551,25 @@ impl Mirror {
         }
     }
 
-    /// A use of a scheme: the port's copy stands for the prototype's, cell
-    /// for variable.
+    /// A use of a scheme: each copy the port made stands for the copy the
+    /// prototype made of the same variable.
     pub fn instantiate(&mut self, s: &Solver, t: &Ty, above: u32, at: u32, made: &Ty) {
         let t = self.typ(s, t);
         if self.live() {
             let at = self.level(at);
-            let copy = self.port.instantiate(&t, above, at);
+            let mut copies = AHashMap::default();
+            let copy = self.port.instantiate_into(&t, above, at, &mut copies);
             if std::env::var_os("BOUNDS_DEBUG").is_some() {
                 eprintln!("instantiate {t} => {copy}")
             }
+            for (of, copied) in s.copied.iter() {
+                let cell = self.cells.get(of).and_then(|c| copies.get(&c.cell_addr()));
+                if let Some(cell) = cell.cloned() {
+                    self.cells.entry(*copied).or_insert(cell);
+                }
+            }
+            // a variable the result shows that only one side copied is
+            // paired by its place
             self.align(s, made, &copy);
             self.done(s, Ok(()))
         }
