@@ -124,7 +124,8 @@ pub struct Solver {
     pub reps: HashMap<ArcStr, Def>,
     /// The operand and the result of a `?` or `$` whose operand's type is
     /// not known yet.
-    pub strips: Vec<(Ty, Ty)>,
+    /// The third is where the payloads of the errors it raises go, for `?`.
+    pub strips: Vec<(Ty, Ty, Option<Ty>)>,
     /// A held choice is being resolved: a decided member that does not fit
     /// is out.
     resolving: bool,
@@ -865,7 +866,8 @@ impl Solver {
 
     /// What `?` and `$` leave of `t`: `t` less its errors, or, where it
     /// holds none, less null.
-    pub fn strip(&self, t: &Ty) -> Ty {
+    /// With it, the payloads of the errors taken off.
+    pub fn strip(&self, t: &Ty) -> (Ty, Vec<Ty>) {
         let members = match t {
             Ty::Union(ms) => ms.to_vec(),
             t => vec![t.clone()],
@@ -874,11 +876,19 @@ impl Solver {
             .iter()
             .any(|m| matches!(m, Ty::Error(_)) || matches!(m, Ty::Prim(p) if p.contains(Typ::Error)));
         let gone = if errors { Typ::Error } else { Typ::Null };
-        union(members.into_iter().filter_map(|m| match m {
+        let payloads = members
+            .iter()
+            .filter_map(|m| match m {
+                Ty::Error(p) => Some((**p).clone()),
+                _ => None,
+            })
+            .collect();
+        let left = union(members.into_iter().filter_map(|m| match m {
             Ty::Error(_) if errors => None,
             Ty::Prim(p) => Some(Ty::Prim(p & !gone)).filter(|_| !(p & !gone).is_empty()),
             m => Some(m),
-        }))
+        }));
+        (left, payloads)
     }
 
     fn fixable(&self, v: Var, min: u32) -> bool {
@@ -922,12 +932,15 @@ impl Solver {
             let fixable = |s: &Self, t: &Ty| s.open_vars(t).iter().all(|v| s.fixable(*v, min));
             progress |= self.select_waiting(&fixable)?;
             for i in (0..self.strips.len()).rev() {
-                let (arg, out) = self.strips[i].clone();
+                let (arg, out, raised) = self.strips[i].clone();
                 if fixable(self, &arg) {
                     self.strips.swap_remove(i);
                     self.fix_in(&arg)?;
-                    let left = self.strip(&self.deep(&arg));
+                    let (left, payloads) = self.strip(&self.deep(&arg));
                     self.constrain(&left, &out)?;
+                    for p in raised.iter().flat_map(|r| payloads.iter().map(move |p| (p, r))) {
+                        self.constrain(p.0, p.1)?
+                    }
                     progress = true
                 } else if self.open_vars(&arg).iter().any(|v| self.info(*v).quantified) {
                     bail!("the type of the operand of ? or $ is not known here: annotate it")

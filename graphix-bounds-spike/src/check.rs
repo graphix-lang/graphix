@@ -86,6 +86,9 @@ pub struct Checker {
     pub last: (String, i32, i32),
     /// The names the pattern being built has bound so far.
     in_pattern: Vec<(ArcStr, Var)>,
+    /// The error handlers in force, innermost last: each a variable the
+    /// errors raised under it flow into.
+    handlers: Vec<Ty>,
 }
 
 /// A `use` path read in `module`: `self::` is that module, `super::` the
@@ -165,6 +168,7 @@ impl Checker {
             mod_uses: HashMap::new(),
             last: (String::new(), 0, 0),
             in_pattern: vec![],
+            handlers: vec![],
         }
     }
 
@@ -710,8 +714,20 @@ impl Checker {
     }
 
     fn lambda_in(&mut self, l: &LambdaExpr, lvl: u32) -> Result<Ty> {
+        let outer = std::mem::take(&mut self.handlers);
+        let throws = self.handler(lvl);
+        let t = self.lambda_body(l, throws, lvl);
+        self.handlers = outer;
+        t
+    }
+
+    fn lambda_body(&mut self, l: &LambdaExpr, throws: Ty, lvl: u32) -> Result<Ty> {
         if l.vargs.is_some() {
             unsupported("variadic lambda")?
+        }
+        if let Some(written) = &l.throws {
+            let w = self.conv(written, "")?;
+            self.s.constrain(&throws, &w)?
         }
         for (tv, c) in l.constraints.iter() {
             match self.tvar(tv, "", true)? {
@@ -759,7 +775,7 @@ impl Checker {
                 ret
             }
         };
-        Ok(Ty::Fn(Rc::new(FnTy { args, vargs: None, ret, throws: Ty::Bot })))
+        Ok(Ty::Fn(Rc::new(FnTy { args, vargs: None, ret, throws })))
     }
 
     fn apply(&mut self, a: &ApplyExpr, lvl: u32) -> Result<Ty> {
@@ -771,13 +787,17 @@ impl Checker {
         }
         let out = self.s.fresh_ty(lvl, Kind::Single);
         match self.s.shallow(&f) {
-            Ty::Fn(ft) => self.s.call(&ft, &args, &out)?,
+            Ty::Fn(ft) => {
+                self.s.call(&ft, &args, &out)?;
+                let handler = self.handler(lvl);
+                self.s.constrain(&ft.throws, &handler)?
+            }
             Ty::Var(_) if args.iter().all(|(l, ..)| l.is_none()) => {
                 let args = args
                     .into_iter()
                     .map(|(_, ty, _)| FnArg { label: None, optional: false, ty })
                     .collect();
-                let want = FnTy { args, vargs: None, ret: out.clone(), throws: Ty::Any };
+                let want = FnTy { args, vargs: None, ret: out.clone(), throws: self.handler(lvl) };
                 self.s.constrain(&f, &Ty::Fn(Rc::new(want)))?
             }
             f => self.s.watch(&f, Watch::Call { args, out: out.clone() })?,
@@ -945,19 +965,46 @@ impl Checker {
         Ok(result)
     }
 
-    fn stripped(&mut self, arg: &Expr, lvl: u32) -> Result<Ty> {
+    /// The handler an error raised here reaches.
+    fn handler(&mut self, lvl: u32) -> Ty {
+        if self.handlers.is_empty() {
+            let top = self.s.fresh_ty(lvl, Kind::Join);
+            self.handlers.push(top)
+        }
+        self.handlers[self.handlers.len() - 1].clone()
+    }
+
+    /// `e?` where `raises`, `e$` where not: `e` less its errors, or its
+    /// null. A raised error reaches the handler as `Error<ErrChain<payload>>`.
+    fn stripped(&mut self, arg: &Expr, raises: bool, lvl: u32) -> Result<Ty> {
         let t = self.infer(arg, lvl)?;
         let t = self.s.shallow(&t);
+        let payload = match raises {
+            false => None,
+            true => {
+                let payload = self.s.fresh_ty(lvl, Kind::Join);
+                let chain = self.named_at(&["ErrChain".to_string()], Some(vec![payload.clone()]), "", lvl)?;
+                let handler = self.handler(lvl);
+                self.s.constrain(&Ty::Error(Rc::new(chain)), &handler)?;
+                Some(payload)
+            }
+        };
         let known = match &t {
             Ty::Var(_) => false,
             Ty::Union(ms) => ms.iter().any(|m| matches!(m, Ty::Error(_))) || self.s.is_ground(&t),
             _ => true,
         };
         match known {
-            true => Ok(self.s.strip(&t)),
+            true => {
+                let (left, payloads) = self.s.strip(&t);
+                for (p, to) in payload.iter().flat_map(|to| payloads.iter().map(move |p| (p, to))) {
+                    self.s.constrain(p, to)?
+                }
+                Ok(left)
+            }
             false => {
                 let out = self.s.fresh_ty(lvl, Kind::Join);
-                self.s.strips.push((t, out.clone()));
+                self.s.strips.push((t, out.clone(), payload));
                 Ok(out)
             }
         }
@@ -977,10 +1024,77 @@ impl Checker {
             ExprKind::Constant(v) => Ty::prim(Typ::get(v)),
             ExprKind::ExplicitParens(e) => self.infer(e, lvl)?,
             ExprKind::Block { exprs } => {
+                // a `catch` in the block is in force to the block's end
+                let handlers = self.handlers.len();
                 self.scopes.push(HashMap::new());
                 let ts = self.infer_all(exprs, lvl);
                 self.scopes.pop();
+                self.handlers.truncate(handlers.max(1).min(self.handlers.len()));
                 ts?.pop().unwrap_or(Ty::Bot)
+            }
+            ExprKind::Catch(c) => {
+                let raised = self.s.fresh_ty(lvl, Kind::Join);
+                if let Some(written) = &c.constraint {
+                    let w = self.conv(written, "")?;
+                    self.s.constrain(&raised, &w)?
+                }
+                self.scopes.push(HashMap::new());
+                self.bind(&c.bind.name, Binding::Mono(raised.clone()));
+                let r = self.infer(&c.handler, lvl);
+                self.scopes.pop();
+                r?;
+                self.handlers.push(raised);
+                Ty::Bot
+            }
+            ExprKind::TryWith(t) => {
+                let (raised, result) = (self.s.fresh_ty(lvl, Kind::Join), self.s.fresh_ty(lvl, Kind::Join));
+                if let Some(written) = &t.constraint {
+                    let w = self.conv(written, "")?;
+                    self.s.constrain(&raised, &w)?
+                }
+                self.handlers.push(raised.clone());
+                self.scopes.push(HashMap::new());
+                let body = self.infer_all(&t.body, lvl);
+                self.scopes.pop();
+                self.handlers.pop();
+                self.scopes.push(HashMap::new());
+                self.bind(&t.bind.name, Binding::Mono(raised));
+                let handled = self.infer_all(&t.handler, lvl);
+                self.scopes.pop();
+                for last in [body?.pop(), handled?.pop()].into_iter().flatten() {
+                    self.s.constrain(&last, &result)?
+                }
+                result
+            }
+            ExprKind::Seq(seq) => {
+                self.scopes.push(HashMap::new());
+                let r = (|| {
+                    match &seq.trigger {
+                        Some(graphix_types::expr::SeqTrigger::Expr(e)) => {
+                            self.infer(e, lvl)?;
+                        }
+                        Some(graphix_types::expr::SeqTrigger::Bind(b)) => {
+                            self.let_bind(b, lvl)?;
+                        }
+                        None => (),
+                    }
+                    if let Some(abort) = &seq.abort {
+                        self.infer(abort, lvl)?;
+                    }
+                    self.infer_all(&seq.body, lvl)
+                })();
+                self.scopes.pop();
+                r?.pop().unwrap_or(Ty::Bot)
+            }
+            ExprKind::Until(e) | ExprKind::Live(e) => self.infer(e, lvl)?,
+            ExprKind::SeqGuard(e) | ExprKind::SeqAbort(e) => {
+                self.infer(e, lvl)?;
+                Ty::Bot
+            }
+            ExprKind::Rethrow(e) => {
+                let (t, handler) = (self.infer(e, lvl)?, self.handler(lvl));
+                self.s.constrain(&t, &handler)?;
+                Ty::Bot
             }
             ExprKind::Use { names, .. } => {
                 for item in names.iter() {
@@ -1163,11 +1277,10 @@ impl Checker {
                 t
             }
             ExprKind::Select(sel) => self.select(sel, lvl)?,
-            ExprKind::Qop { arg, .. } => self.stripped(arg, lvl)?,
-            ExprKind::OrNever(arg) => self.stripped(arg, lvl)?,
+            ExprKind::Qop { arg, .. } => self.stripped(arg, true, lvl)?,
+            ExprKind::OrNever(arg) => self.stripped(arg, false, lvl)?,
             ExprKind::Trait(_) | ExprKind::Impl(_) => unsupported("trait")?,
-            ExprKind::Seq(_) | ExprKind::SeqMachine(_) => unsupported("seq")?,
-            ExprKind::Catch(_) | ExprKind::TryWith(_) => unsupported("catch")?,
+
             _ => unsupported("expression kind")?,
         })
     }
