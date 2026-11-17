@@ -229,16 +229,29 @@ fn holds_taker(t: &Type) -> bool {
     })
 }
 
-pub(super) struct Select {
+/// A select as written: its arms, and where it is. A use of a scheme's
+/// variable holds it, so each instance routes its own values down a copy.
+#[derive(Debug)]
+pub struct Template {
     pub(super) arms: Vec<Arm>,
+    at: ArcStr,
+}
+
+impl Template {
+    /// The cells the patterns bind.
+    pub(super) fn cells(&self, out: &mut SmallVec<[TVar; 4]>) {
+        self.arms.iter().for_each(|a| a.pat.cells(out))
+    }
+}
+
+pub(super) struct Select {
+    pub(super) template: Arc<Template>,
     hit: Vec<bool>,
     routed: bool,
     /// A copy made for an instance of a generic definition: an arm
     /// nothing reaches there is no dead arm.
     instance: bool,
     pub(super) waiting: Vec<Type>,
-    /// Where the select is written, for a refusal.
-    at: ArcStr,
     /// What was passed down the arms.
     seen: Vec<Type>,
 }
@@ -311,33 +324,32 @@ impl Solving {
     pub fn select(&mut self, arms: Vec<Arm>, at: ArcStr) -> usize {
         let hit = vec![false; arms.len()];
         self.selects.push(Select {
-            arms,
+            template: Arc::new(Template { arms, at }),
             hit,
             routed: false,
             instance: false,
             waiting: vec![],
-            at,
             seen: vec![],
         });
         self.selects.len() - 1
     }
 
-    /// A copy of select `id` for an instance of the generic definition it
-    /// is in, each cell its patterns bind through `f`.
+    /// A copy of the select `of` for an instance of the generic
+    /// definition it is in, each cell its patterns bind through `f`.
     pub(super) fn select_copy(
         &mut self,
-        id: usize,
+        of: &Template,
         f: &mut dyn FnMut(&mut Self, &TVar) -> TVar,
     ) -> usize {
-        let arms = self.selects[id].arms.clone();
-        let arms: Vec<Arm> = arms
+        let arms: Vec<Arm> = of
+            .arms
             .iter()
             .map(|a| Arm {
                 pat: a.pat.map_cells(&mut |v| f(self, v)),
                 guarded: a.guarded,
             })
             .collect();
-        let new = self.select(arms, self.selects[id].at.clone());
+        let new = self.select(arms, of.at.clone());
         self.selects[new].instance = true;
         new
     }
@@ -345,7 +357,7 @@ impl Solving {
     /// The cells a select's patterns bind.
     pub(super) fn select_cells(&self, id: usize) -> SmallVec<[TVar; 4]> {
         let mut out = SmallVec::new();
-        self.selects[id].arms.iter().for_each(|a| a.pat.cells(&mut out));
+        self.selects[id].template.cells(&mut out);
         out
     }
 
@@ -796,7 +808,7 @@ impl Solving {
             return Ok(());
         }
         let (mut binds, mut hits) = (vec![], vec![]);
-        for (i, arm) in self.selects[id].arms.iter().enumerate() {
+        for (i, arm) in self.selects[id].template.clone().arms.iter().enumerate() {
             let r = self.route(env, &arm.pat, &reach);
             if !nothing(&r.part) {
                 hits.push(i);
@@ -810,7 +822,7 @@ impl Solving {
             bail!(
                 "missing match cases: nothing matches {} ({})",
                 unsplit(&reach),
-                self.selects[id].at
+                self.selects[id].template.at
             )
         }
         self.selects[id].routed = true;
@@ -884,7 +896,7 @@ impl Solving {
                 bail!(
                     "pattern {} will never match: nothing reaches it ({}; the value is {})",
                     i + 1,
-                    s.at,
+                    s.template.at,
                     seen.join(" | ")
                 )
             }

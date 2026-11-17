@@ -24,7 +24,7 @@ use std::{cell::RefCell, ops::ControlFlow};
 use triomphe::Arc;
 
 mod select;
-pub use select::{Arm, FALSE, Pat, TRUE, unsplit};
+pub use select::{Arm, FALSE, Pat, TRUE, Template, unsplit};
 
 thread_local! {
     /// The solver of the check this thread is running, where the check is
@@ -148,6 +148,23 @@ pub struct Known {
     /// The uses waiting on what flows into the cell, and whether each has
     /// met a value.
     pub(crate) uses: SmallVec<[(Use, bool); 1]>,
+    /// For a scheme's variable: what its definition left to each
+    /// instance, which a use of the scheme takes a copy of with the cell.
+    pub(crate) left: SmallVec<[Left; 0]>,
+}
+
+/// A check a generic definition could not finish, because the types its
+/// instances give its variables decide it.
+#[derive(Debug, Clone)]
+pub(crate) enum Left {
+    /// A type below a union more than one of whose members could take
+    /// it.
+    Held(Arc<(Type, Type)>),
+    /// A cell inside the definition that takes more than one value, and
+    /// must be of one type in each instance.
+    Single(TVar),
+    /// A select waiting on a type.
+    Waiting(Arc<Template>, Type),
 }
 
 /// A call's argument: its label, if it is passed by one, and its type.
@@ -169,6 +186,9 @@ pub enum Use {
     With { fields: SmallVec<[(ArcStr, Type); 2]>, out: Type },
     /// The scrutinee of a select ([`Solving::select`]).
     Select(usize),
+    /// [`Use::Select`] as a cell keeps it: with the select as written,
+    /// which a later copy of the cell is routed down a copy of.
+    Routed(usize, Arc<Template>),
     /// The receiver of a call of a method whose type the receiver's
     /// decides (a trait whose `self` is a constructor): `typings` is the
     /// method as each implementation types it, a scheme each; the call
@@ -194,7 +214,7 @@ impl Use {
             Use::Index { .. } => "reading a tuple",
             Use::Call { .. } => "reading a fn",
             Use::With { .. } => "updating a struct",
-            Use::Select(_) => "a select",
+            Use::Select(_) | Use::Routed(..) => "a select",
             Use::Method { .. } => "calling a method",
         }
     }
@@ -213,6 +233,7 @@ impl Use {
                 out: f(out),
             },
             Use::Select(id) => Use::Select(*id),
+            Use::Routed(id, of) => Use::Routed(*id, of.clone()),
             Use::Method { name, typings, receiver, at, args, out, throws, level } => {
                 Use::Method {
                     name: name.clone(),
@@ -239,7 +260,7 @@ impl Use {
                 f(out);
                 fields.iter().for_each(|(_, t)| f(t))
             }
-            Use::Select(_) => (),
+            Use::Select(_) | Use::Routed(..) => (),
             Use::Method { args, out, throws, .. } => {
                 f(out);
                 f(throws);
@@ -286,6 +307,9 @@ pub struct Solving {
     /// The cells made to carry what one cell passes to a union's open
     /// member, by address.
     passing: AHashMap<usize, TVar>,
+    /// The scheme's cells the use being made has copied, whose
+    /// [`Known::left`] it has still to take.
+    copied: Vec<TVar>,
 }
 
 /// A kind of use a check may still owe when a definition closes.
@@ -1245,8 +1269,10 @@ impl Solving {
         out.extend(feeders(v).into_iter().filter(|u| !u.is_bound() && !u.is_rigid()));
         for (u, _) in uses(v).iter() {
             u.each(&mut |t| cells_of(t, false, out));
-            if let Use::Select(id) = u {
-                out.extend(self.select_cells(*id).into_iter().filter(|b| !b.is_bound()))
+            if let Use::Routed(_, of) = u {
+                let mut binds = SmallVec::new();
+                of.cells(&mut binds);
+                out.extend(binds.into_iter().filter(|b| !b.is_bound()))
             }
         }
     }
@@ -1326,7 +1352,9 @@ impl Solving {
 
     /// A use of `v` that met no value: it needs a shape nothing gave it.
     fn unread(&self, v: &TVar) -> Result<()> {
-        let waits = |u: &Use| !matches!(u, Use::Select(_) | Use::Method { .. });
+        let waits = |u: &Use| {
+            !matches!(u, Use::Select(_) | Use::Routed(..) | Use::Method { .. })
+        };
         match uses(v).iter().find(|(u, met)| !met && waits(u)) {
             None => Ok(()),
             Some((u, _)) => {
@@ -1362,10 +1390,48 @@ impl Solving {
                 && v.cell_direct().len() > 1;
             if pending && !v.level().is_generic() {
                 self.singles.push(v.clone());
-                v.generalize()
+                v.generalize();
+                // each instance whose variables it reaches checks a copy
+                let mut reached = Cells::new();
+                self.reach(&Type::TVar(v.clone()), &mut reached);
+                for u in reached.iter().filter(|u| !u.same_cell(v)) {
+                    self.leave(&Type::TVar(u.clone()), |ls| {
+                        let same = |l: &Left| matches!(l, Left::Single(w) if w.same_cell(v));
+                        (!ls.iter().any(same)).then(|| Left::Single(v.clone()))
+                    })
+                }
+            }
+        }
+        // a select still waiting waits for an instance's types
+        for id in 0..self.selects.len() {
+            let of = self.selects[id].template.clone();
+            for w in self.selects[id].waiting.clone() {
+                self.leave(&w, |ls| {
+                    let same = |l: &Left| match l {
+                        Left::Waiting(t, u) => {
+                            Arc::ptr_eq(t, &of) && strictly_identical(u, &w)
+                        }
+                        _ => false,
+                    };
+                    (!ls.iter().any(same)).then(|| Left::Waiting(of.clone(), w.clone()))
+                })
             }
         }
         Ok(())
+    }
+
+    /// Leave a check to the instances of the scheme whose variables `t`
+    /// holds: each of those variables keeps what `left` gives for it.
+    fn leave(&self, t: &Type, left: impl Fn(&[Left]) -> Option<Left>) {
+        let mut cells = SmallVec::new();
+        cells_of(t, true, &mut cells);
+        for v in cells.iter().filter(|v| v.is_rigid() || v.level().is_generic()) {
+            known(v, |k| {
+                if let Some(l) = left(&k.left) {
+                    k.left.push(l)
+                }
+            })
+        }
     }
 
     /// Fix every cell an input left open.
@@ -1391,41 +1457,46 @@ impl Solving {
         at: Level,
         copies: &mut AHashMap<usize, TVar>,
     ) -> Type {
+        let outer = std::mem::take(&mut self.copied);
         let t = self.copy(t, above, at, copies);
-        let mine = |t: &Type, copies: &AHashMap<usize, TVar>| {
-            let mut all = SmallVec::new();
-            cells_of(t, true, &mut all);
-            all.iter().any(|v| copies.contains_key(&v.cell_addr()))
-        };
-        // what the definition left to its instances
-        for (a, b, scheme) in self.held.clone() {
-            if scheme && (mine(&a, copies) || mine(&b, copies)) {
-                let pair =
-                    (self.copy(&a, above, at, copies), self.copy(&b, above, at, copies));
-                self.held.push((pair.0, pair.1, false))
-            }
-        }
-        for v in self.singles.clone() {
-            let mut all = Cells::new();
-            self.reach(&Type::TVar(v.clone()), &mut all);
-            if v.level().depth() > above
-                && all.iter().any(|u| copies.contains_key(&u.cell_addr()))
-            {
-                self.copy(&Type::TVar(v), above, at, copies);
-            }
-        }
-        // a select of the definition that waits on one of its variables
-        // is the instance's to finish
-        for id in 0..self.selects.len() {
-            for w in self.selects[id].waiting.clone() {
-                if mine(&w, copies) {
-                    let new = self
-                        .select_copy(id, &mut |s, v| s.copy_cell(v, above, at, copies));
-                    let w = self.copy(&w, above, at, copies);
-                    self.select_wait(new, w)
+        // what the definition left to its instances, each once
+        let mut done: SmallVec<[Left; 4]> = SmallVec::new();
+        while let Some(v) = self.copied.pop() {
+            let left = v.cell().read().solving.as_ref().map(|k| k.left.clone());
+            for l in left.into_iter().flatten() {
+                let seen = |d: &Left| match (d, &l) {
+                    (Left::Held(p), Left::Held(q)) => Arc::ptr_eq(p, q),
+                    (Left::Single(u), Left::Single(w)) => u.same_cell(w),
+                    (Left::Waiting(s, u), Left::Waiting(t, w)) => {
+                        Arc::ptr_eq(s, t) && strictly_identical(u, w)
+                    }
+                    _ => false,
+                };
+                if done.iter().any(seen) {
+                    continue;
                 }
+                match &l {
+                    Left::Held(pair) => {
+                        let a = self.copy(&pair.0, above, at, copies);
+                        let b = self.copy(&pair.1, above, at, copies);
+                        self.held.push((a, b, false))
+                    }
+                    Left::Single(u) => {
+                        self.copy(&Type::TVar(u.clone()), above, at, copies);
+                    }
+                    // a select that waited on one of the scheme's
+                    // variables is the instance's to finish
+                    Left::Waiting(of, w) => {
+                        let new = self
+                            .select_copy(of, &mut |s, v| s.copy_cell(v, above, at, copies));
+                        let w = self.copy(w, above, at, copies);
+                        self.select_wait(new, w)
+                    }
+                }
+                done.push(l)
             }
         }
+        self.copied = outer;
         t
     }
 
@@ -1465,6 +1536,7 @@ impl Solving {
             };
             copies.insert(v.cell_addr(), n.clone());
             made.push((v.clone(), n.clone()));
+            self.copied.push(v.clone());
             Some(Type::TVar(n))
         });
         // the copy is bounded and fed as the original is
@@ -1516,10 +1588,11 @@ impl Solving {
             // this instance meets the same reads and calls
             for (u, met) in used.iter() {
                 let u = match u {
-                    Use::Select(id) => {
-                        Use::Select(self.select_copy(*id, &mut |s, v| {
+                    Use::Routed(_, of) => {
+                        let new = self.select_copy(of, &mut |s, v| {
                             s.copy_cell(v, above, at, copies)
-                        }))
+                        });
+                        Use::Routed(new, self.selects[new].template.clone())
                     }
                     u => u.map(&mut |t| self.copy(t, above, at, copies)),
                 };
@@ -1545,7 +1618,8 @@ impl Solving {
                     },
                     u => u,
                 };
-                let met = *met && !matches!(u, Use::Select(_) | Use::Method { .. });
+                let met = *met
+                    && !matches!(u, Use::Select(_) | Use::Routed(..) | Use::Method { .. });
                 known(&n, |k| k.uses.push((u, met)))
             }
             self.track(&n)
@@ -1629,7 +1703,18 @@ impl Solving {
                     r?;
                     progress |= self.held.len() == n
                 } else if avs.iter().chain(bvs.iter()).any(quantified) {
-                    self.held[i].2 = true
+                    self.held[i].2 = true;
+                    let pair = Type::Tuple(Arc::from_iter([a.clone(), b.clone()]));
+                    self.leave(&pair, |ls| {
+                        let same = |l: &Left| match l {
+                            Left::Held(p) => {
+                                strictly_identical(&p.0, &a) && strictly_identical(&p.1, &b)
+                            }
+                            _ => false,
+                        };
+                        (!ls.iter().any(same))
+                            .then(|| Left::Held(Arc::new((a.clone(), b.clone()))))
+                    })
                 }
             }
             let ready = |s: &Self, id: usize, t: &Type| {
@@ -1920,6 +2005,10 @@ fn flowing(v: &TVar, seen: &mut SmallVec<[usize; 8]>) -> SmallVec<[Type; 4]> {
 impl Solving {
     /// Register a use of whatever `t` turns out to be.
     pub fn watch(&mut self, env: &Env, t: &Type, u: Use) -> Result<()> {
+        let u = match u {
+            Use::Select(id) => Use::Routed(id, self.selects[id].template.clone()),
+            u => u,
+        };
         let t = shallow(t);
         let Some(v) = open(&t) else { return self.apply(env, &u, &t).map(|_| ()) };
         let mut met = false;
@@ -1960,7 +2049,7 @@ impl Solving {
     /// Apply a use to one type that reaches it; false where the type says
     /// nothing (bottom).
     fn apply(&mut self, env: &Env, u: &Use, a: &Type) -> Result<bool> {
-        if let Use::Select(id) = u {
+        if let Use::Select(id) | Use::Routed(id, _) = u {
             return self.select_route(env, *id, a).map(|()| true);
         }
         let a = shallow(a);
@@ -2054,7 +2143,7 @@ impl Solving {
             (_, Use::Index { i, .. }) => bail!("{a} has no element {i}"),
             (_, Use::Call { .. }) => bail!("{a} is not a function"),
             (_, Use::With { .. }) => bail!("{a} is not a struct"),
-            (_, Use::Select(_)) => Ok(false),
+            (_, Use::Select(_) | Use::Routed(..)) => Ok(false),
             (_, Use::Method { name, .. }) => bail!("{a} has no implementation of {name}"),
         })
     }
