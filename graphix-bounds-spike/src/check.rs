@@ -92,12 +92,13 @@ pub struct Checker {
 }
 
 /// A `use` path read in `module`: `self::` is that module, `super::` the
-/// one around it.
-fn used(path: &[String], module: &str) -> String {
+/// one around it, `package::` the root of the program's package.
+fn used(path: &[String], module: &str, root: &str) -> String {
     let around = module.rsplit_once("::").map(|(m, _)| m).unwrap_or("");
     let base = match path[0].as_str() {
         "self" => Some(module),
         "super" => Some(around),
+        "package" => Some(root),
         _ => None,
     };
     match base {
@@ -239,7 +240,8 @@ impl Checker {
                 }
                 SigKind::TypeDef(td) => self.typedef(module, td),
                 SigKind::Use { names, .. } => {
-                    let uses = names.iter().map(|i| used(&parts(&i.path), module));
+                    let root = self.root.clone().unwrap_or_default();
+                    let uses = names.iter().map(|i| used(&parts(&i.path), module, &root));
                     self.mod_uses.entry(module.to_string()).or_default().extend(uses)
                 }
                 _ => (),
@@ -532,7 +534,7 @@ impl Checker {
                 SigKind::Use { names, .. } => {
                     for i in names.iter() {
                         let path = parts(&i.path);
-                        let full = used(&path, prefix);
+                        let full = used(&path, prefix, self.root.as_deref().unwrap_or(""));
                         self.uses.push(full.clone());
                         self.aliases.insert(path[path.len() - 1].clone(), full);
                     }
@@ -1101,7 +1103,7 @@ impl Checker {
                     let path = parts(&item.path);
                     let full = match self.aliases.get(&path[0]) {
                         Some(a) => std::iter::once(a.clone()).chain(path[1..].iter().cloned()).collect::<Vec<_>>().join("::"),
-                        None => used(&path, &self.here.join("::")),
+                        None => used(&path, &self.here.join("::"), self.root.as_deref().unwrap_or("")),
                     };
                     let name = match &item.rename {
                         Some(n) => n.name.to_string(),

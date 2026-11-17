@@ -393,6 +393,8 @@ impl Solver {
         {
             self.info_mut(w).joined.push((src, a.clone()))
         }
+        // what a use makes of a join's bounds is one type too
+        let via = self.pass_on(w);
         if !matches!(a, Ty::Var(_)) {
             for i in 0..self.info(w).watches.len() {
                 let watch = self.info(w).watches[i].0.clone();
@@ -401,7 +403,6 @@ impl Solver {
                 }
             }
         }
-        let via = self.pass_on(w);
         for u in self.info(w).upper.clone() {
             let to = self.sites.get(&(w, false, u.clone())).copied();
             self.constrain(a, &u).map_err(|e| self.ends(e, self.at, to))?
@@ -413,10 +414,13 @@ impl Solver {
     /// Mark what follows as `v`'s bounds passed on, where `v` joins; the
     /// mark to restore after.
     fn pass_on(&mut self, v: Var) -> Option<Var> {
-        match self.info(v).kind {
-            Kind::Join => self.via.replace(v),
-            Kind::Single => self.via,
+        // the outermost join in passing is the source: what flows out of
+        // it through a join inside it is still one type
+        let outer = self.via;
+        if self.info(v).kind == Kind::Join && outer.is_none() {
+            self.via = Some(v)
         }
+        outer
     }
 
     fn decided(&self, v: Var, seen: &mut Vec<Var>) -> bool {
@@ -536,6 +540,18 @@ impl Solver {
 
     /// `a`, which is no variable and no union, fits a member of `b`.
     fn below_union(&mut self, a: &Ty, ms: &[Ty], b: &Ty) -> Result<()> {
+        if ms.contains(a) {
+            return Ok(());
+        }
+        // a member that is a typedef's name is met as what it stands for
+        let unfolded: Vec<Ty> = ms
+            .iter()
+            .map(|m| match m {
+                Ty::Named(id, args) => self.unfold(*id, args),
+                m => m.clone(),
+            })
+            .collect();
+        let ms = &unfolded[..];
         let primitive = |bit| ms.iter().any(|m| matches!(m, Ty::Prim(p) if p.contains(bit)));
         if ms.contains(a)
             || (matches!(a, Ty::Error(_)) && primitive(Typ::Error))
@@ -652,7 +668,10 @@ impl Solver {
                     if !matches!(l, Ty::Var(_)) {
                         let src = self.info(v).joined.iter().find(|(_, j)| j == &l).map(|(s, _)| *s);
                         let via = self.via;
-                        self.via = src.or(via);
+                        self.via = match self.info(v).kind {
+                            Kind::Join => via.or(Some(v)),
+                            Kind::Single => src.or(via),
+                        };
                         fired |= self.apply(&w, &l)?;
                         self.via = via
                     }
