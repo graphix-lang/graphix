@@ -36,3 +36,9 @@ type W<'a> = Abstract<&mut 'a>; |x: Any| select x { W(r) => *r <- "s", _ => neve
 let k = |v| { let t = (|x| x, 1); let (r, n) = t; r(v) }; k(2)
 use Collection::*; let f = |c| len(c); (f([1]), f([<"a">]))
 trait T { val m: fn(self) -> i64 }; impl T for i64 { let m = |s| s }; let f = |x: T| T::m(x); (f(1), f("s"))
+let a = 1; let b = "s"; let v = true; let t = select v { true => (&a, 1), false => (&b, 2) }; select t { (&i64, i64) as (r, n) => *r + n, _ => 0 }
+let a = 1; let b = "s"; let v = true; let t = select v { true => (&a, 1), false => (&b, 2) }; select t { (&i64, i64) as (r, n) => n, _ => 0 }
+let a = 1; let b = "s"; let v = true; let t = select v { true => (&a, 1), false => (&b, 2) }; select t { (&i64, i64) as (r, n) => *r }
+let a = 1; let b = "s"; let v = true; let e: Array<string> = []; let t = select v { true => ([1], &a), false => (e, &b) }; select t { (Array<i64>, &i64) as (x, r) => *r, _ => 0 }
+let a = 1; let b = "s"; let c = 2.5; let v = 0; let t = select v { 0 => (&mut a, 1), 1 => (&mut b, 2), _ => (&mut c, 3) }; select t { ([&mut i64, &mut string], i64) as (r, n) => n, _ => 0 }
+let b = true; let t = select b { true => (|x: i64| x, 1), false => (|y: string| y, 2) }; select t { (fn(x: i64) -> i64, i64) as (r, n) => r(n) }

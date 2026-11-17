@@ -793,7 +793,7 @@ impl Solver {
                 if ground.iter().any(|m| self.constrain(a, m).is_ok())
                     || (loose.is_empty()
                         && open.is_empty()
-                        && matches!(self.less(a, b), Ty::Bot))
+                        && matches!(self.less_as(false, a, b), Ty::Bot))
                 {
                     return Ok(());
                 }
@@ -809,7 +809,7 @@ impl Solver {
             // both decided: one member holds it, or the members hold it
             // between them (a product of a union is a union of products)
             _ => match cands.iter().any(|m| self.constrain(a, m).is_ok())
-                || matches!(self.less(a, b), Ty::Bot)
+                || matches!(self.less_as(false, a, b), Ty::Bot)
             {
                 true => Ok(()),
                 false => mismatch(b, a),

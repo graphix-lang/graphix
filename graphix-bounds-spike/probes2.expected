@@ -36,3 +36,9 @@ no	pattern 1 will never match: nothing reaches it (:1:49; the value is Any)
 ok	i64
 ok	(i64, i64)
 no	string does not implement T; the value comes from line 1, column 104, and is used at a signature
+no	type mismatch [u8, i8, u16, i16, u32, v32, i32, z32, u64, v64, i64, z64, f32, f64, decimal] does not contain string; the value comes from a signature, and is used at line 1, column 131
+no	pattern 2 will never match: nothing reaches it (:1:102; the value is (&i64, i64) | (&string, i64))
+no	type mismatch i64 does not contain string; the value comes from line 1, column 12, and is used at line 1, column 95
+ok	[i64, string]
+no	pattern 2 will never match: nothing reaches it (:1:131; the value is (&mut i64, i64) | (&mut string, i64) | (&mut f64, i64))
+no	type mismatch string does not contain i64; the value comes from line 1, column 15, and is used at line 1, column 90

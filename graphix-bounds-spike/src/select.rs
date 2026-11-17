@@ -264,20 +264,37 @@ impl Solver {
             .fold(Ty::Any, |b, u| self.both(&b, &split(&self.deep(u))))
     }
 
-    /// The values in both `a` and `b`.
+    /// The values of `a` that pass a run-time test for `b`.
     pub fn both(&self, a: &Ty, b: &Ty) -> Ty {
+        self.both_as(true, a, b)
+    }
+
+    /// The values in both `a` and `b`; where `b` is a `test`, the values of
+    /// `a` that pass it, which is more where the test cannot tell.
+    fn both_as(&self, test: bool, a: &Ty, b: &Ty) -> Ty {
         let plain = |t: Ty| lengths(&t).map(|l| l.2).unwrap_or(t);
         let (a, b) = (plain(self.expand(a)), plain(self.expand(b)));
         let each = |xs: &[Ty], ys: &[Ty]| -> Option<Rc<[Ty]>> {
-            let ts: Rc<[Ty]> = xs.iter().zip(ys).map(|(x, y)| self.both(x, y)).collect();
+            let ts: Rc<[Ty]> =
+                xs.iter().zip(ys).map(|(x, y)| self.both_as(test, x, y)).collect();
             (!ts.iter().any(|t| matches!(t, Ty::Bot))).then_some(ts)
         };
         match (&a, &b) {
             _ if a == b => a,
             (Ty::Any, t) | (t, Ty::Any) => t.clone(),
-            (Ty::Rigid(v), t) | (t, Ty::Rigid(v)) => self.both(&self.bound_of(*v), t),
-            (Ty::Union(ms), t) | (t, Ty::Union(ms)) => {
-                union(ms.iter().map(|m| self.both(m, t)))
+            (Ty::Rigid(v), t) | (t, Ty::Rigid(v)) => {
+                self.both_as(test, &self.bound_of(*v), t)
+            }
+            (Ty::Union(ms), t) => union(ms.iter().map(|m| self.both_as(test, m, t))),
+            (t, Ty::Union(ms)) => union(ms.iter().map(|m| self.both_as(test, t, m))),
+            // a test tells a reference or a function from what is none, and
+            // an abstract type made outside Graphix by its name: the value
+            // keeps the type it had
+            (Ty::Ref(..), Ty::Ref(..)) | (Ty::Fn(_), Ty::Fn(_)) if test => a,
+            (Ty::Abs(t0, _), Ty::Abs(t1, _))
+                if test && t0 == t1 && !self.reps.contains_key(t0) =>
+            {
+                a
             }
             (Ty::Prim(p), Ty::Prim(q)) if !(*p & *q).is_empty() => Ty::Prim(*p & *q),
             (Ty::Error(_), p) | (p, Ty::Error(_)) if Self::has(p, Typ::Error) => match &a
@@ -290,9 +307,9 @@ impl Solver {
                 Ty::Array(_) => a,
                 _ => b,
             },
-            (Ty::Array(x), Ty::Array(y)) => Ty::Array(Rc::new(self.both(x, y))),
-            (Ty::List(x), Ty::List(y)) => Ty::List(Rc::new(self.both(x, y))),
-            (Ty::Error(x), Ty::Error(y)) => match self.both(x, y) {
+            (Ty::Array(x), Ty::Array(y)) => Ty::Array(Rc::new(self.both_as(test, x, y))),
+            (Ty::List(x), Ty::List(y)) => Ty::List(Rc::new(self.both_as(test, x, y))),
+            (Ty::Error(x), Ty::Error(y)) => match self.both_as(test, x, y) {
                 Ty::Bot => Ty::Bot,
                 t => Ty::Error(Rc::new(t)),
             },
@@ -308,7 +325,7 @@ impl Solver {
                 let fs: Vec<_> = xs
                     .iter()
                     .zip(ys.iter())
-                    .map(|((n, x), (_, y))| (n.clone(), self.both(x, y)))
+                    .map(|((n, x), (_, y))| (n.clone(), self.both_as(test, x, y)))
                     .collect();
                 match fs.iter().any(|(_, t)| matches!(t, Ty::Bot)) {
                     true => Ty::Bot,
@@ -319,18 +336,27 @@ impl Solver {
         }
     }
 
-    /// The values of `a` a test for `b` does not take.
+    /// The values of `a` a run-time test for `b` does not take.
     pub fn less(&self, a: &Ty, b: &Ty) -> Ty {
+        self.less_as(true, a, b)
+    }
+
+    /// The values of `a` not in `b`; where `b` is a `test`, those that do
+    /// not pass it.
+    pub(crate) fn less_as(&self, test: bool, a: &Ty, b: &Ty) -> Ty {
         let plain = |t: Ty| lengths(&t).map(|l| l.2).unwrap_or(t);
         let (a, b) = (plain(self.expand(a)), plain(self.expand(b)));
         // a product less a product: the tuples that differ from it in a first component
         let product = |xs: &[Ty], ys: &[Ty], wrap: &dyn Fn(Rc<[Ty]>) -> Ty| -> Ty {
             let mut out = vec![];
             for i in 0..xs.len() {
-                let left = self.less(&xs[i], &ys[i]);
+                let left = self.less_as(test, &xs[i], &ys[i]);
                 if !matches!(left, Ty::Bot) {
-                    let mut ts: Vec<Ty> =
-                        xs[..i].iter().zip(ys).map(|(x, y)| self.both(x, y)).collect();
+                    let mut ts: Vec<Ty> = xs[..i]
+                        .iter()
+                        .zip(ys)
+                        .map(|(x, y)| self.both_as(test, x, y))
+                        .collect();
                     ts.push(left);
                     ts.extend(xs[i + 1..].iter().cloned());
                     if !ts.iter().any(|t| matches!(t, Ty::Bot)) {
@@ -343,9 +369,17 @@ impl Solver {
         match (&a, &b) {
             _ if a == b => Ty::Bot,
             (_, Ty::Any) | (Ty::Bot, _) => Ty::Bot,
-            (Ty::Rigid(v), _) => self.less(&self.bound_of(*v), &b),
-            (Ty::Union(ms), _) => union(ms.iter().map(|m| self.less(m, &b))),
-            (_, Ty::Union(ms)) => ms.iter().fold(a.clone(), |a, m| self.less(&a, m)),
+            (Ty::Rigid(v), _) => self.less_as(test, &self.bound_of(*v), &b),
+            (Ty::Union(ms), _) => union(ms.iter().map(|m| self.less_as(test, m, &b))),
+            (Ty::Ref(..), Ty::Ref(..)) | (Ty::Fn(_), Ty::Fn(_)) if test => Ty::Bot,
+            (Ty::Abs(t0, _), Ty::Abs(t1, _))
+                if test && t0 == t1 && !self.reps.contains_key(t0) =>
+            {
+                Ty::Bot
+            }
+            (_, Ty::Union(ms)) => {
+                ms.iter().fold(a.clone(), |a, m| self.less_as(test, &a, m))
+            }
             (Ty::Prim(p), Ty::Prim(q)) => match *p & !*q {
                 left if left.is_empty() => Ty::Bot,
                 left => Ty::Prim(left),
@@ -355,7 +389,7 @@ impl Solver {
             (Ty::Array(x), Ty::Array(y))
             | (Ty::List(x), Ty::List(y))
             | (Ty::Error(x), Ty::Error(y))
-                if matches!(self.less(x, y), Ty::Bot) =>
+                if matches!(self.less_as(test, x, y), Ty::Bot) =>
             {
                 Ty::Bot
             }
