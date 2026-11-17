@@ -90,35 +90,71 @@ enum Held {
 }
 
 /// Whether a `let` of `e` that nothing writes is a definition: a lambda,
-/// a generic name, a read of a part of one, or data that holds one of
-/// those.
+/// a generic name, a read of a part of one, a sample of one, or data, a
+/// block or an `any` that holds one of those.
 fn defines<R: Rt>(ctx: &CompileCtx<R>, scope: &Scope, e: &Expr) -> bool {
-    let any = |es: &[Expr]| es.iter().any(|e| defines(ctx, scope, e));
+    defines_among(ctx, scope, e, &mut SmallVec::new())
+}
+
+/// [`defines`], where `locals` are the names the blocks around `e` have
+/// bound to definitions so far.
+fn defines_among<R: Rt>(
+    ctx: &CompileCtx<R>,
+    scope: &Scope,
+    e: &Expr,
+    locals: &mut SmallVec<[ArcStr; 4]>,
+) -> bool {
+    let mut any = |es: &[Expr], locals: &mut SmallVec<[ArcStr; 4]>| {
+        es.iter().any(|e| defines_among(ctx, scope, e, locals))
+    };
     match &e.kind {
         ExprKind::Lambda(_) => true,
-        ExprKind::ExplicitParens(e) => defines(ctx, scope, e),
-        ExprKind::Block { exprs } => exprs.last().is_some_and(|last| {
-            matches!(expr_value(last).kind, ExprKind::Lambda(_))
-        }),
-        ExprKind::Struct(s) => s.args.iter().any(|(_, e)| defines(ctx, scope, e)),
+        ExprKind::ExplicitParens(e) | ExprKind::SeqGuard(e) | ExprKind::Live(e) => {
+            defines_among(ctx, scope, e, locals)
+        }
+        ExprKind::Block { exprs } => {
+            let bound = locals.len();
+            let Some((last, before)) = exprs.split_last() else { return false };
+            for stmt in before.iter() {
+                if let ExprKind::Bind(b) = &stmt.kind
+                    && let Some(name) = b.pattern.single_bind()
+                    && b.typ.is_none()
+                    && defines_among(ctx, scope, &b.value, locals)
+                {
+                    locals.push(name.clone())
+                }
+            }
+            let defined = defines_among(ctx, scope, last, locals);
+            locals.truncate(bound);
+            defined
+        }
+        ExprKind::Struct(s) => {
+            s.args.iter().any(|(_, e)| defines_among(ctx, scope, e, locals))
+        }
         ExprKind::Tuple { args }
         | ExprKind::Variant { args, .. }
         | ExprKind::Array { args }
-        | ExprKind::List { args } => any(args),
+        | ExprKind::List { args }
+        | ExprKind::Any { args } => any(args, locals),
         ExprKind::StructWith(w) => {
-            defines(ctx, scope, &w.source)
-                || w.replace.iter().any(|(_, e)| defines(ctx, scope, e))
+            defines_among(ctx, scope, &w.source, locals)
+                || w.replace.iter().any(|(_, e)| defines_among(ctx, scope, e, locals))
         }
         ExprKind::StructRef { source, .. } | ExprKind::TupleRef { source, .. } => {
-            defines(ctx, scope, source)
+            defines_among(ctx, scope, source, locals)
         }
-        ExprKind::Ref { name } => scheme_named(ctx, scope, name).is_some(),
+        ExprKind::Ref { name } => {
+            let local = netidx_core::path::Path::basename(&**name)
+                .filter(|_| netidx_core::path::Path::levels(&**name) == 1)
+                .is_some_and(|n| locals.iter().any(|l| l.as_str() == n));
+            local || scheme_named(ctx, scope, name).is_some()
+        }
         // a sample of a definition is that definition
         ExprKind::BinOp {
             op: BinOp::Sample | BinOp::StrictSample | BinOp::BankedSample,
             rhs,
             ..
-        } => defines(ctx, scope, rhs),
+        } => defines_among(ctx, scope, rhs, locals),
         _ => false,
     }
 }
@@ -146,29 +182,57 @@ fn outside_parts<R: Rt>(
     e: &Expr,
     out: &mut SmallVec<[ExprId; 4]>,
 ) {
-    let part = |e: &Expr, out: &mut SmallVec<[ExprId; 4]>| match defines(ctx, scope, e)
-    {
-        true => outside_parts(ctx, scope, e, out),
-        false => out.push(e.id),
+    outside_among(ctx, scope, e, &mut SmallVec::new(), out)
+}
+
+/// [`outside_parts`], where `locals` are the names the blocks around `e`
+/// have bound to definitions so far.
+fn outside_among<R: Rt>(
+    ctx: &CompileCtx<R>,
+    scope: &Scope,
+    e: &Expr,
+    locals: &mut SmallVec<[ArcStr; 4]>,
+    out: &mut SmallVec<[ExprId; 4]>,
+) {
+    let part = |e: &Expr,
+                locals: &mut SmallVec<[ArcStr; 4]>,
+                out: &mut SmallVec<[ExprId; 4]>| {
+        match defines_among(ctx, scope, e, locals) {
+            true => outside_among(ctx, scope, e, locals, out),
+            false => out.push(e.id),
+        }
     };
     match &e.kind {
-        ExprKind::ExplicitParens(e) => outside_parts(ctx, scope, e, out),
-        ExprKind::Block { exprs } => {
-            if let Some(last) = exprs.last() {
-                outside_parts(ctx, scope, last, out)
-            }
+        ExprKind::ExplicitParens(e) | ExprKind::SeqGuard(e) | ExprKind::Live(e) => {
+            outside_among(ctx, scope, e, locals, out)
         }
-        ExprKind::Struct(s) => s.args.iter().for_each(|(_, e)| part(e, out)),
+        ExprKind::Block { exprs } => {
+            let bound = locals.len();
+            let Some((last, before)) = exprs.split_last() else { return };
+            for stmt in before.iter() {
+                if let ExprKind::Bind(b) = &stmt.kind
+                    && let Some(name) = b.pattern.single_bind()
+                    && b.typ.is_none()
+                    && defines_among(ctx, scope, &b.value, locals)
+                {
+                    locals.push(name.clone())
+                }
+            }
+            outside_among(ctx, scope, last, locals, out);
+            locals.truncate(bound)
+        }
+        ExprKind::Struct(s) => s.args.iter().for_each(|(_, e)| part(e, locals, out)),
         ExprKind::Tuple { args }
         | ExprKind::Variant { args, .. }
         | ExprKind::Array { args }
-        | ExprKind::List { args } => args.iter().for_each(|e| part(e, out)),
+        | ExprKind::List { args }
+        | ExprKind::Any { args } => args.iter().for_each(|e| part(e, locals, out)),
         ExprKind::StructWith(w) => {
-            part(&w.source, out);
-            w.replace.iter().for_each(|(_, e)| part(e, out))
+            part(&w.source, locals, out);
+            w.replace.iter().for_each(|(_, e)| part(e, locals, out))
         }
         ExprKind::StructRef { source, .. } | ExprKind::TupleRef { source, .. } => {
-            part(source, out)
+            part(source, locals, out)
         }
         ExprKind::BinOp {
             op: BinOp::Sample | BinOp::StrictSample | BinOp::BankedSample,
@@ -176,7 +240,7 @@ fn outside_parts<R: Rt>(
             rhs,
         } => {
             out.push(lhs.id);
-            part(rhs, out)
+            part(rhs, locals, out)
         }
         _ => (),
     }
@@ -258,7 +322,9 @@ fn literal_part_types<'a>(
 /// `e` past grouping parentheses and the statements of a block it ends.
 fn expr_value(e: &Expr) -> &Expr {
     match &e.kind {
-        ExprKind::ExplicitParens(e) => expr_value(e),
+        ExprKind::ExplicitParens(e) | ExprKind::SeqGuard(e) | ExprKind::Live(e) => {
+            expr_value(e)
+        }
         ExprKind::Block { exprs } => match exprs.last() {
             Some(last) => expr_value(last),
             None => e,

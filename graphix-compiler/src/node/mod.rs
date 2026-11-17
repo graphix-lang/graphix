@@ -4649,6 +4649,15 @@ impl<R: Rt> Any<R> {
         if !check {
             return Ok(());
         }
+        if bounds::active() {
+            // whichever fires is the value: each flows into a cell that
+            // may join them
+            joins(&self.typ);
+            for n in self.n.iter() {
+                wrap!(n, self.typ.check_contains(&ctx.env, n.typ()))?
+            }
+            return Ok(());
+        }
         let fn_of = |t: &Type| {
             t.with_deref(|t| match t {
                 Some(Type::Fn(f)) => Some(f.clone()),
