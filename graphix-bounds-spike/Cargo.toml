@@ -1,0 +1,14 @@
+[package]
+name = "graphix-bounds-spike"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "A spike: type inference for Graphix that keeps lower and upper bounds on every variable"
+
+[dependencies]
+anyhow = { workspace = true }
+arcstr = { workspace = true }
+enumflags2 = { workspace = true }
+graphix-types = { path = "../graphix-types" }
+netidx-core = { workspace = true }
+netidx-value = { workspace = true }

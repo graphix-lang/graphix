@@ -159,6 +159,7 @@ members = [
     "graphix-shell",
     "graphix-compiler",
     "graphix-types",
+    "graphix-bounds-spike",
     "graphix-rt",
     "graphix-derive",
     "graphix-ast-pack",
