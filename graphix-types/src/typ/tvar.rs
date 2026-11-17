@@ -1767,11 +1767,14 @@ pub struct TCell {
     pub(crate) place: Option<Box<Place>>,
     /// The [`cell_writes`] count of the thread that last wrote the cell.
     pub(crate) written: u64,
+    /// What the bounds solver keeps of the cell beside its bounds
+    /// ([`super::bounds::Known`]), once it has something to keep.
+    pub(crate) solving: Option<Box<super::bounds::Known>>,
 }
 
 // Every node-walked activation holds a cell.
 #[cfg(target_pointer_width = "64")]
-const _: () = assert!(size_of::<TCell>() <= 208);
+const _: () = assert!(size_of::<TCell>() <= 216);
 
 /// What [`Type::tvar_occurrences`] found: each variable met, once, and
 /// which cells occur more than once, a shared node's cells once per sight.
@@ -1900,6 +1903,7 @@ impl Default for TCell {
             resolved: None,
             place: None,
             written: 0,
+            solving: None,
         }
     }
 }
