@@ -1827,6 +1827,16 @@ impl Solving {
         at: Level,
         copies: &mut AHashMap<usize, TVar>,
     ) -> Type {
+        ensure_sufficient(|| self.copy_in(t, above, at, copies))
+    }
+
+    fn copy_in(
+        &mut self,
+        t: &Type,
+        above: u32,
+        at: Level,
+        copies: &mut AHashMap<usize, TVar>,
+    ) -> Type {
         let mut made: SmallVec<[(TVar, TVar); 4]> = SmallVec::new();
         let t = map_cells(t, &mut |v| {
             if v.level().depth() <= above {
@@ -2351,8 +2361,8 @@ impl Solving {
         }
         known(v, |k| k.uses.push((u, met)));
         self.track(v);
-        // a shape demanded of the cell serves, since nothing wider can
-        // flow in
+        // where nothing has flowed in, a shape demanded of the cell
+        // serves, since nothing wider can
         for b in v.cell_constraints() {
             if open(&shallow(&b)).is_none() {
                 self.demanded(env, v, &b)?
@@ -2361,12 +2371,17 @@ impl Solving {
         Ok(())
     }
 
-    /// `b` is a new upper bound of `v`: a use that needs a shape takes it
-    /// from a shape demanded of `v`.
+    /// `b` is an upper bound of `v`: a use that needs a shape, and that
+    /// nothing reaching `v` has given one, takes it from a shape demanded
+    /// of `v`. One that has its shape reads what flows in, which is no
+    /// wider than any demand.
     fn demanded(&mut self, env: &Env, v: &TVar, b: &Type) -> Result<()> {
         let b = shallow(b);
         for i in 0..uses(v).len() {
-            let u = uses(v)[i].0.clone();
+            let (u, met) = uses(v)[i].clone();
+            if met {
+                continue;
+            }
             let shaped = matches!(
                 (&u, &b),
                 (Use::Field { .. } | Use::With { .. }, Type::Struct(_))

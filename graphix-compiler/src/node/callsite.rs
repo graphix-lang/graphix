@@ -277,7 +277,9 @@ fn checked_default<R: Rt>(
             load: f.env.body.clone(),
         };
         let types = match judge {
-            Judge::Bind => Some(InstanceTypes::of_default(ctx, f, name, expr.id)?),
+            Judge::Bind => {
+                Some(InstanceTypes::of_default(ctx, f, name, expr.id, site)?)
+            }
             Judge::Check(_) => None,
         };
         // a check outside the definition reads its scheme, whose cells it
@@ -329,7 +331,11 @@ fn checked_default<R: Rt>(
         }
         Judge::Bind => Ok(()),
     };
+    // a check by bounds judged the default where the site was checked,
+    // and the instance's types are its scheme's: nothing is left to relate
+    let judged = ctx.bounds && matches!(judge, Judge::Bind);
     let res = res.and_then(|()| match site.and_then(|s| label(s)) {
+        _ if judged => Ok(()),
         Some(t) => {
             // the signature's variables are a copy's, held rigid, which a
             // cell every use shares must not meet; a label the signature

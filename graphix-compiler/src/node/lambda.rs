@@ -704,11 +704,14 @@ fn instance_cells<R: Rt>(
 impl InstanceTypes {
     /// The types of `def`'s default of the label `name`, at `root`, as its
     /// check recorded them, each open cell its definition owns copied.
+    /// Where the check was by bounds they are the scheme's, and the
+    /// default's are those of the instance `site` calls.
     pub(crate) fn of_default<R: Rt>(
         ctx: &CompileCtx<R>,
         def: &LambdaDef<R>,
         name: &ArcStr,
         root: ExprId,
+        site: Option<&FnType>,
     ) -> Result<Self> {
         match def.table.get() {
             // CR claude for claude: [bug/medium] A labeled default whose root
@@ -724,11 +727,17 @@ impl InstanceTypes {
             // design/review-2026-11-16/repro/x-engine-seq-errors-lowered-default-check-build.gx
             // (x-check-build-default-seq-fallback.gx shows a seq inside a default
             // lowered again at the call). (x-engine-seq-errors-04)
-            Some(tables) if tables.table.types.contains_key(&root) => Ok(Self {
-                tables: tables.clone(),
-                known: Known::default(),
-                open: ctx.rec_defs.clone(),
-            }),
+            Some(tables) if tables.table.types.contains_key(&root) => {
+                let known = site
+                    .filter(|_| ctx.bounds)
+                    .and_then(|site| instance_cells(ctx, &def.typ, site))
+                    .unwrap_or_default();
+                Ok(Self {
+                    tables: tables.clone(),
+                    known: SArc::new(Mutex::new(known)),
+                    open: ctx.rec_defs.clone(),
+                })
+            }
             _ => bail!(
                 "the default of #{name}, which its definition's check recorded no types of"
             ),
