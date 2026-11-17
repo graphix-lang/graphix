@@ -365,6 +365,15 @@ impl Solver {
 
     fn route(&self, pat: &Pat, t: &Ty) -> Routed {
         let t = self.expand(t);
+        // a pattern that looks into a declared variable sees its bound
+        if let (Ty::Rigid(v), false) = (&t, matches!(pat, Pat::Any(_))) {
+            let bound = self.vars[v.0 as usize]
+                .upper
+                .iter()
+                .filter(|u| !matches!(u, Ty::Var(_) | Ty::Trait(_)))
+                .fold(Ty::Any, |b, u| self.both(&b, &split(&self.deep(u))));
+            return self.route(pat, &bound);
+        }
         if let Ty::Union(ms) = &t {
             let (mut parts, mut rests, mut binds) = (vec![], vec![], vec![]);
             for m in ms.iter() {
@@ -581,10 +590,41 @@ impl Solver {
         let whole = unsplit(&self.deep(t));
         self.selects[id].seen.push(whole);
         hits.into_iter().for_each(|i| self.selects[id].hit[i] = true);
+        // a name takes every part routed to it, as one type
+        let mut names: Vec<(Var, Vec<Ty>)> = vec![];
         for (v, t) in binds {
-            self.constrain(&unsplit(&t), &Ty::Var(v))?
+            match names.iter_mut().find(|(n, _)| *n == v) {
+                Some((_, ts)) => ts.push(t),
+                None => names.push((v, vec![t])),
+            }
+        }
+        for (v, ts) in names {
+            let t = self.absorbed(&unsplit(&union(ts)));
+            self.constrain(&t, &Ty::Var(v))?
         }
         Ok(())
+    }
+
+    /// A ground union less each member another member holds: the part of
+    /// `Array<string>` an `Array<i64>` test takes is the empty array, which
+    /// `Array<i64>` holds.
+    fn absorbed(&mut self, t: &Ty) -> Ty {
+        let Ty::Union(ms) = t else { return t.clone() };
+        if !self.is_ground(t) {
+            return t.clone();
+        }
+        let mut kept: Vec<Ty> = vec![];
+        for m in ms.iter() {
+            let held = |s: &mut Self, m: &Ty, by: &Ty| {
+                m.head() == by.head() && s.constrain(m, by).is_ok()
+            };
+            if kept.iter().any(|k| held(self, m, k)) {
+                continue;
+            }
+            kept.retain(|k| !held(self, k, m));
+            kept.push(m.clone())
+        }
+        union(kept)
     }
 
     /// Route what waited for a variable; true if anything was.

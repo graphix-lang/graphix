@@ -1,6 +1,6 @@
 use crate::{
     select::{Arm, Select},
-    ty::{FnArg, FnTy, Ty, Var, union},
+    ty::{FnArg, FnTy, Method, Ty, Var, union},
 };
 use anyhow::{Result, bail};
 use arcstr::ArcStr;
@@ -27,10 +27,29 @@ pub type Arg = (Option<ArcStr>, Ty, Option<Site>);
 
 #[derive(Clone, Debug)]
 pub enum Watch {
-    Field { field: ArcStr, out: Ty },
-    Index { i: usize, out: Ty },
-    Call { args: Vec<Arg>, out: Ty },
+    Field {
+        field: ArcStr,
+        out: Ty,
+    },
+    Index {
+        i: usize,
+        out: Ty,
+    },
+    Call {
+        args: Vec<Arg>,
+        out: Ty,
+    },
     Select(usize),
+    /// A call of a method whose type its receiver decides: the watched
+    /// value is the receiver, the `at`th of `args`; what the method
+    /// raises goes to `throws`.
+    Method {
+        of: Rc<Method>,
+        at: usize,
+        args: Vec<Arg>,
+        out: Ty,
+        throws: Ty,
+    },
 }
 
 impl Watch {
@@ -40,6 +59,7 @@ impl Watch {
             Watch::Index { .. } => "reading a tuple",
             Watch::Call { .. } => "reading a fn",
             Watch::Select(_) => "a select",
+            Watch::Method { .. } => "calling a method",
         }
     }
 }
@@ -131,6 +151,12 @@ pub struct Solver {
     pub selects: Vec<Select>,
     /// What each abstract type is made of, where that has been seen.
     pub reps: HashMap<ArcStr, Def>,
+    /// Each implementation: its trait, and its target as a scheme whose
+    /// variables are those deeper than level 0.
+    pub impls: Vec<(ArcStr, Ty)>,
+    /// A trait with a method that takes `self` beyond its receiver, and
+    /// that method: no one implementation serves a union of implementors.
+    pub beyond: HashMap<ArcStr, ArcStr>,
     /// The operand and the result of a `?` or `$` whose operand's type is
     /// not known yet.
     /// The third is where the payloads of the errors it raises go, for `?`.
@@ -326,6 +352,7 @@ impl Solver {
                     false => self.constrain(&union(rest), open),
                 }
             }
+            (_, Ty::Trait(t)) => self.implements(&a, t),
             (Ty::Union(ms), _) => ms.iter().try_for_each(|m| self.constrain(m, &b)),
             (Ty::Named(id, args), _) | (_, Ty::Named(id, args)) => {
                 if !self.cache.insert((a.clone(), b.clone())) {
@@ -337,14 +364,15 @@ impl Solver {
                     _ => self.constrain(&a, &t),
                 }
             }
-            (_, Ty::Union(ms)) => self.below_union(&a, ms, &b),
             (Ty::Rigid(v), _) => {
                 let bounds = self.info(*v).upper.clone();
-                match bounds.iter().any(|u| self.constrain(u, &b).is_ok()) {
-                    true => Ok(()),
-                    false => mismatch(&b, &a),
+                match (bounds.iter().any(|u| self.constrain(u, &b).is_ok()), &b) {
+                    (true, _) => Ok(()),
+                    (false, Ty::Union(ms)) => self.below_union(&a, ms, &b),
+                    (false, _) => mismatch(&b, &a),
                 }
             }
+            (_, Ty::Union(ms)) => self.below_union(&a, ms, &b),
             (Ty::Prim(x), Ty::Prim(y)) if y.contains(*x) => Ok(()),
             (Ty::Error(_), Ty::Prim(y)) if y.contains(Typ::Error) => Ok(()),
             (Ty::Array(_), Ty::Prim(y)) if y.contains(Typ::Array) => Ok(()),
@@ -377,6 +405,87 @@ impl Solver {
                 .try_for_each(|((_, x), (_, y))| self.constrain(x, y)),
             (Ty::Fn(f), Ty::Fn(g)) => self.fn_below(f, g),
             _ => mismatch(&b, &a),
+        }
+    }
+
+    /// `a`, which is no variable, is of a type that implements trait `t`:
+    /// a union where each member does, any other type where one
+    /// implementation's target is that type.
+    fn implements(&mut self, a: &Ty, t: &ArcStr) -> Result<()> {
+        let b = Ty::Trait(t.clone());
+        let none = |a: &Ty| -> Result<()> { bail!("{a} does not implement {t}") };
+        let several = match a {
+            Ty::Union(_) => true,
+            Ty::Prim(p) => p.exactly_one().is_none(),
+            _ => false,
+        };
+        if several && let Some(m) = self.beyond.get(t) {
+            bail!(
+                "{a} does not implement {t}: {t}::{m} takes `self` beyond its receiver; select the member, then call"
+            )
+        }
+        match a {
+            Ty::Union(ms) => {
+                for (i, x) in ms.iter().enumerate() {
+                    for y in ms[i + 1..].iter() {
+                        let alike = x.head() == y.head()
+                            && !matches!(x, Ty::Prim(_) | Ty::Abs(..))
+                            && self.is_ground(x)
+                            && self.is_ground(y);
+                        if alike
+                            && self.constrain(x, y).is_err()
+                            && self.constrain(y, x).is_err()
+                        {
+                            bail!(
+                                "{x} and {y} may share a value, neither of which holds the other: give the value one member's type"
+                            )
+                        }
+                    }
+                }
+                ms.iter().try_for_each(|m| self.constrain(m, &b))
+            }
+            Ty::Named(id, args) => match self.cache.insert((a.clone(), b.clone())) {
+                true => self.constrain(&self.unfold(*id, args), &b),
+                false => Ok(()),
+            },
+            Ty::Rigid(v) => {
+                let bounds = self.info(*v).upper.clone();
+                match bounds.iter().any(|u| self.constrain(u, &b).is_ok()) {
+                    true => Ok(()),
+                    false => none(a),
+                }
+            }
+            Ty::Prim(p) if several => {
+                p.iter().try_for_each(|bit| self.constrain(&Ty::prim(bit), &b))
+            }
+            a => {
+                let head = a.head();
+                let targets: Vec<Ty> = self
+                    .impls
+                    .iter()
+                    .filter(|(name, target)| name == t && target.head() == head)
+                    .map(|(_, target)| target.clone())
+                    .collect();
+                let lvl = self.level(a);
+                let mut same = |s: &mut Self, target: &Ty| -> Result<()> {
+                    let target = s.instantiate(target, 0, lvl);
+                    s.constrain(a, &target)?;
+                    s.constrain(&target, a)
+                };
+                match (targets.as_slice(), self.is_ground(a)) {
+                    ([], _) => none(a),
+                    ([target], false) => same(self, target),
+                    (targets, true) => {
+                        match targets.iter().any(|t| same(self, t).is_ok()) {
+                            true => Ok(()),
+                            false => none(a),
+                        }
+                    }
+                    (_, false) => bail!(
+                        "{a} is not decided where {t} is asked of it, and more than one implementation could take it: annotate it"
+                    ),
+                }
+            }
         }
     }
 
@@ -661,6 +770,29 @@ impl Solver {
         if let Watch::Select(id) = w {
             return self.select_route(*id, a).map(|()| true);
         }
+        if let Watch::Method { of, at, args, out, throws } = w {
+            let a = self.shallow(a);
+            if matches!(a, Ty::Bot) {
+                return Ok(false);
+            }
+            // the implementation whose receiver takes the whole type; with
+            // none, a union's members each find their own below
+            let lvl = self.level(&a).max(self.level(out));
+            for typed in of.impls.iter() {
+                let Ty::Fn(ft) = self.instantiate(typed, 0, lvl) else { continue };
+                let Some(formal) =
+                    ft.args.iter().filter(|a| a.label.is_none()).nth(of.receiver)
+                else {
+                    continue;
+                };
+                if self.constrain(&a, &formal.ty).is_ok() {
+                    let mut args = args.clone();
+                    args[*at].1 = a.clone();
+                    self.call(&ft, &args, out)?;
+                    return self.constrain(&ft.throws, throws).map(|()| true);
+                }
+            }
+        }
         match (self.shallow(a), w) {
             (Ty::Bot, _) => Ok(false),
             (Ty::Union(ms), _) => {
@@ -712,6 +844,9 @@ impl Solver {
             (a, Watch::Field { field, .. }) => bail!("{a} has no field {field}"),
             (a, Watch::Index { i, .. }) => bail!("{a} has no element {i}"),
             (a, Watch::Call { .. }) => bail!("{a} is not a function"),
+            (a, Watch::Method { of, .. }) => {
+                bail!("{a} has no implementation of {}", of.name)
+            }
             (_, Watch::Select(_)) => Ok(false),
         }
     }
@@ -895,8 +1030,23 @@ impl Solver {
                         Watch::Select(id) => {
                             Watch::Select(self.copy_select(id, above, at, memo))
                         }
+                        Watch::Method { of, at: receiver, args, out, throws } => {
+                            Watch::Method {
+                                of,
+                                at: receiver,
+                                args: args
+                                    .iter()
+                                    .map(|(l, t, s)| {
+                                        (l.clone(), self.copy(t, above, at, memo), *s)
+                                    })
+                                    .collect(),
+                                out: self.copy(&out, above, at, memo),
+                                throws: self.copy(&throws, above, at, memo),
+                            }
+                        }
                     };
-                    let fired = fired && !matches!(w, Watch::Select(_));
+                    let fired =
+                        fired && !matches!(w, Watch::Select(_) | Watch::Method { .. });
                     self.info_mut(n).watches.push((w, fired))
                 }
                 Some(Ty::Var(n))
@@ -932,6 +1082,11 @@ impl Solver {
                             self.reach(out, seen);
                             args.iter().for_each(|(_, t, _)| self.reach(t, seen))
                         }
+                        Watch::Method { args, out, throws, .. } => {
+                            self.reach(out, seen);
+                            self.reach(throws, seen);
+                            args.iter().for_each(|(_, t, _)| self.reach(t, seen))
+                        }
                     }
                 }
             }
@@ -941,7 +1096,7 @@ impl Solver {
     /// A use of `v` that needs a shape nothing gave it.
     fn unread(&self, v: Var) -> Result<()> {
         let unfired = |(_, (w, fired)): &(usize, &(Watch, bool))| {
-            !fired && !matches!(w, Watch::Select(_))
+            !fired && !matches!(w, Watch::Select(_) | Watch::Method { .. })
         };
         match self.info(v).watches.iter().enumerate().find(unfired) {
             None => Ok(()),
@@ -1221,7 +1376,7 @@ impl Solver {
                     self.fix(w)?
                 }
                 let u = self.deep(&u);
-                if !matches!(u, Ty::Var(_)) {
+                if !matches!(u, Ty::Var(_) | Ty::Trait(_)) {
                     uppers.push(u)
                 }
             }

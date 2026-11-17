@@ -1,15 +1,16 @@
 use crate::{
     select::{Arm, FALSE, Pat, TRUE, unsplit},
     solve::{Def, Kind, Solver, Watch},
-    ty::{FnArg, FnTy, Ty, Var, union},
+    ty::{FnArg, FnTy, Method, Ty, Var, union},
 };
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use graphix_types::{
     expr::{
-        ApplyExpr, ArgKind, BinOp, BindExpr, Expr, ExprKind, LambdaBody, LambdaExpr,
-        ModPath, ModuleKind, Origin, Pattern, SelectExpr, SigKind, StructurePattern,
-        TypeDefBody, TypeDefExpr, parser,
+        ApplyExpr, ArgKind, BinOp, BindExpr, Expr, ExprKind, ImplExpr, ImplHead,
+        LambdaBody, LambdaExpr, ModPath, ModuleKind, Origin, Pattern, SelectExpr,
+        SigKind, StructurePattern, TraitExpr, TraitMethod, TypeDefBody, TypeDefExpr,
+        parser,
     },
     typ::{Bound, FnArgKind, FnType, Mutability, TVar, Type},
 };
@@ -50,6 +51,11 @@ struct TypeDef {
     nominal: Option<ArcStr>,
 }
 
+struct TraitDecl {
+    module: String,
+    methods: Rc<[TraitMethod]>,
+}
+
 /// Where a written type's variables come from.
 struct Scope {
     tvs: HashMap<ArcStr, Ty>,
@@ -67,6 +73,15 @@ pub struct Checker {
     vals: HashMap<String, (Type, String)>,
     schemes: HashMap<String, Ty>,
     typedefs: HashMap<String, TypeDef>,
+    traits: HashMap<String, TraitDecl>,
+    /// The implementations of each trait whose `self` is a constructor
+    /// (`self<'a>`): the module each is read in, and its head.
+    constructors: HashMap<String, Vec<(String, ImplHead)>>,
+    /// What `self<X>` stands for where an implementation of such a trait
+    /// is read: its target, and the variable in the target's hole.
+    constructor: Option<(Ty, Var)>,
+    /// The variable `'_` stands for in the target being read.
+    hole: Option<Var>,
     expanding: Vec<String>,
     /// Where the program's own `mod name;` files are.
     dir: Option<PathBuf>,
@@ -137,6 +152,33 @@ fn holds_tvar(t: &Type) -> bool {
     }
 }
 
+/// Whether `t` names the type `self`: anywhere where `taken` is none, else
+/// only where a value of it is taken in (`taken` at the top, the other way
+/// under a function's parameter, both ways under a writable reference).
+fn names_self(t: &Type, taken: Option<bool>) -> bool {
+    let any = |ts: &[Type]| ts.iter().any(|t| names_self(t, taken));
+    match t {
+        Type::TVar(tv) if &*tv.name == "self" => taken != Some(false),
+        Type::TVar(tv) => tv.cell_constraints().iter().any(|c| names_self(c, None)),
+        Type::Fn(ft) => {
+            let under = taken.map(|t| !t);
+            ft.args.iter().any(|a| names_self(&a.typ, under))
+                || ft.vargs.iter().any(|t| names_self(t, under))
+                || names_self(&ft.rtype, taken)
+                || names_self(&ft.throws, taken)
+        }
+        Type::ByRef(Mutability::Mut, t) => names_self(t, None),
+        Type::Error(t) | Type::Array(t) | Type::List(t) | Type::ByRef(_, t) => {
+            names_self(t, taken)
+        }
+        Type::Set(ts) | Type::Tuple(ts) | Type::Variant(_, ts, _) => any(ts),
+        Type::Ref(r) => any(&r.params),
+        Type::Struct(fs) => fs.iter().any(|(_, t, _)| names_self(t, taken)),
+        Type::Map(m) => names_self(&m.key, taken) || names_self(&m.value, taken),
+        _ => false,
+    }
+}
+
 /// Whether a lambda's own annotations name a type variable.
 fn declares(l: &LambdaExpr) -> bool {
     !l.constraints.is_empty()
@@ -166,6 +208,10 @@ impl Checker {
             vals: HashMap::new(),
             schemes: HashMap::new(),
             typedefs: HashMap::new(),
+            traits: HashMap::new(),
+            constructors: HashMap::new(),
+            constructor: None,
+            hole: None,
             expanding: vec![],
             dir,
             here: root.iter().cloned().collect(),
@@ -257,7 +303,15 @@ impl Checker {
                     let uses = names.iter().map(|i| used(&parts(&i.path), module, &root));
                     self.mod_uses.entry(module.to_string()).or_default().extend(uses)
                 }
+                SigKind::Trait(t) => self.declare_trait(module, t),
                 _ => (),
+            }
+        }
+        // a target the prototype cannot read is an implementation it does
+        // not know of
+        for item in sig.iter().flat_map(|s| s.items.iter()) {
+            if let SigKind::Impl(head) = &item.kind {
+                let _ = self.declare_impl(module, head);
             }
         }
         found
@@ -283,6 +337,109 @@ impl Checker {
             nominal,
         };
         self.typedefs.insert(name, def);
+    }
+
+    fn declare_trait(&mut self, module: &str, t: &TraitExpr) {
+        let name = match module {
+            "" => t.name.name.to_string(),
+            m => format!("{m}::{}", t.name.name),
+        };
+        // a union of implementors is served member by member, which a
+        // method that takes `self` anywhere but as its receiver rules out
+        let beyond = t.methods.iter().find(|m| {
+            let others =
+                m.typ.args.iter().enumerate().filter(|(i, _)| Some(*i) != m.self_index);
+            others.clone().any(|(_, a)| names_self(&a.typ, None))
+                || names_self(&m.typ.rtype, Some(false))
+        });
+        if let Some(m) = beyond {
+            self.s.beyond.insert(name.as_str().into(), m.name.name.clone());
+        }
+        let methods = t.methods.iter().cloned().collect();
+        let decl = TraitDecl { module: module.to_string(), methods };
+        self.traits.insert(name, decl);
+    }
+
+    /// Record an implementation an interface declares, or one about to be
+    /// checked: its target, as a scheme.
+    fn declare_impl(&mut self, module: &str, head: &ImplHead) -> Result<()> {
+        let Some(name) = self.trait_named(&parts(&head.trait_name), module) else {
+            return unsupported(format!("trait {}", parts(&head.trait_name).join("::")));
+        };
+        self.tvs.push(Scope { tvs: HashMap::new(), level: 1, rigid: false });
+        let target = self.impl_head(head, module);
+        self.tvs.pop();
+        let (target, hole) = target?;
+        self.s.quantify(&target, 0);
+        self.s.impls.push((name.as_str().into(), target));
+        if hole.is_some() {
+            let known = self.constructors.entry(name).or_default();
+            known.push((module.to_string(), head.clone()))
+        }
+        Ok(())
+    }
+
+    /// An implementation's variables with their bounds, then its target,
+    /// read in the innermost scope; and the variable in the target's hole,
+    /// where it is a constructor (`Array<'_>`).
+    fn impl_head(&mut self, head: &ImplHead, module: &str) -> Result<(Ty, Option<Var>)> {
+        for (tv, c) in head.constraints.iter() {
+            if let Ty::Var(v) | Ty::Rigid(v) = self.tvar(tv, module, true)? {
+                self.bound(v, c, module)?
+            }
+        }
+        let level = self.tvs.last().unwrap().level;
+        let hole = self.s.fresh(level, Kind::Single);
+        let outer = self.hole.replace(hole);
+        let target = self.conv(&head.target, module);
+        self.hole = outer;
+        let target = target?;
+        let mut holed = false;
+        target.each(&mut |t| holed |= matches!(t, Ty::Var(v) if *v == hole));
+        Ok((target, holed.then_some(hole)))
+    }
+
+    /// A method of a trait whose `self` is a constructor, as each
+    /// implementation types it.
+    fn method(&mut self, of: &str, m: &TraitMethod, module: &str, full: &str) -> Ty {
+        let mut impls = vec![];
+        for (home, head) in self.constructors.get(of).cloned().unwrap_or_default() {
+            self.tvs.push(Scope { tvs: HashMap::new(), level: 1, rigid: false });
+            let typed = (|| {
+                let (target, hole) = self.impl_head(&head, &home)?;
+                let Some(hole) = hole else { bail!("no constructor") };
+                let outer = self.constructor.replace((target, hole));
+                let t = self.conv_fn(&m.typ, module);
+                self.constructor = outer;
+                t
+            })();
+            self.tvs.pop();
+            // an implementation the prototype cannot read takes no call
+            if let Ok(ft) = typed {
+                let t = Ty::Fn(Rc::new(ft));
+                self.s.quantify(&t, 0);
+                impls.push(t)
+            }
+        }
+        let before = &m.typ.args[..m.self_index.unwrap_or(0)];
+        let receiver = before
+            .iter()
+            .filter(|a| matches!(a.kind, FnArgKind::Positional { .. }))
+            .count();
+        Ty::Method(Rc::new(Method { name: full.into(), impls, receiver }))
+    }
+
+    /// The trait `path` names, read in `module`.
+    fn trait_named(&mut self, path: &[String], module: &str) -> Option<String> {
+        for full in self.candidates(module, path) {
+            if let Some((m, _)) = full.rsplit_once("::") {
+                self.load(m);
+            }
+            if self.traits.contains_key(&full) {
+                return Some(full);
+            }
+        }
+        None
     }
 
     /// The full names `path` may stand for, read in `module`, nearest first.
@@ -339,7 +496,37 @@ impl Checker {
                 None => (),
             }
             if let Some((module, _)) = full.rsplit_once("::") {
-                self.load(module);
+                // the module the name is in, or the one its trait is in
+                if !self.load(module)
+                    && let Some((around, _)) = module.rsplit_once("::")
+                {
+                    self.load(around);
+                }
+            }
+            if !self.schemes.contains_key(&full)
+                && let Some((of, method)) = full.rsplit_once("::")
+                && let Some(decl) = self.traits.get(of)
+                && let Some(m) = decl.methods.iter().find(|m| &*m.name.name == method)
+            {
+                let constructor = m
+                    .self_index
+                    .is_some_and(|i| matches!(m.typ.args[i].typ, Type::App(..)));
+                if constructor {
+                    let (m, module) = (m.clone(), decl.module.clone());
+                    return Ok(Some(self.method(of, &m, &module, &full)));
+                }
+                // the trait's signature, `self` a variable of the scheme
+                // that only an implementor fits
+                let (typ, module) = (m.typ.clone(), decl.module.clone());
+                let receiver = self.s.fresh(1, Kind::Single);
+                self.s.vars[receiver.0 as usize].upper.push(Ty::Trait(of.into()));
+                let tvs = HashMap::from([(ArcStr::from("self"), Ty::Var(receiver))]);
+                self.tvs.push(Scope { tvs, level: 1, rigid: false });
+                let t = self.conv_fn(&typ, &module);
+                self.tvs.pop();
+                let t = Ty::Fn(Rc::new(t?));
+                self.s.quantify(&t, 0);
+                self.schemes.insert(full.clone(), t);
             }
             if !self.schemes.contains_key(&full) {
                 let Some((typ, module)) = self.vals.get(&full).cloned() else { continue };
@@ -383,6 +570,12 @@ impl Checker {
         match c {
             Type::Bound(Bound::Singleton) => self.s.vars[v.0 as usize].singleton = true,
             Type::Bound(_) => (),
+            Type::Ref(r)
+                if r.params.is_empty()
+                    && let Some(name) = self.trait_named(&parts(&r.name), module) =>
+            {
+                self.s.vars[v.0 as usize].upper.push(Ty::Trait(name.into()))
+            }
             c => {
                 let c = self.conv(c, module)?;
                 self.s.vars[v.0 as usize].upper.push(c)
@@ -411,6 +604,20 @@ impl Checker {
         for full in self.candidates(module, path) {
             if let Some((m, _)) = full.rsplit_once("::") {
                 self.load(m);
+            }
+            if self.traits.contains_key(&full) {
+                // a trait written as a type is a variable of its own that
+                // only an implementor fits
+                if !self.expanding.is_empty() {
+                    bail!("trait {} used as a type", path.join("::"))
+                }
+                let (level, rigid) = {
+                    let s = self.tvs.last().unwrap();
+                    (s.level, s.rigid)
+                };
+                let v = self.s.fresh(level, Kind::Single);
+                self.s.vars[v.0 as usize].upper.push(Ty::Trait(full.into()));
+                return Ok(if rigid { Ty::Rigid(v) } else { Ty::Var(v) });
             }
             let Some(def) = self.typedefs.get(&full) else { continue };
             let n = def.params.len();
@@ -518,8 +725,20 @@ impl Checker {
                 Rc::new(self.conv(&m.value, module)?),
             ),
             Type::Abstract { .. } => unsupported("abstract type")?,
-            Type::App(..) => unsupported("type application")?,
-            Type::Hole => unsupported("type hole")?,
+            Type::App(c, arg) => match (&**c, self.constructor.clone()) {
+                (Type::TVar(tv), Some((target, hole))) if &*tv.name == "self" => {
+                    let arg = self.conv(arg, module)?;
+                    target.map(&mut |t| match t {
+                        Ty::Var(v) if *v == hole => Some(arg.clone()),
+                        _ => None,
+                    })
+                }
+                _ => unsupported("type application")?,
+            },
+            Type::Hole => match self.hole {
+                Some(v) => Ty::Var(v),
+                None => unsupported("type hole")?,
+            },
             Type::Bound(b) => unsupported(format!("bound {b:?} as a type"))?,
         })
     }
@@ -597,7 +816,13 @@ impl Checker {
                     }
                 }
                 SigKind::TypeDef(td) => self.typedef(prefix, td),
+                SigKind::Trait(t) => self.declare_trait(prefix, t),
                 _ => (),
+            }
+        }
+        for item in sig.into_iter().flatten() {
+            if let SigKind::Impl(head) = &item.kind {
+                self.declare_impl(prefix, head)?
             }
         }
         self.infer_all(exprs, lvl)?;
@@ -647,6 +872,132 @@ impl Checker {
             }
         }
         Ok(())
+    }
+
+    /// A method's declared type with `self` standing for `receiver` and
+    /// every variable of its own rigid: what a body written for it must be.
+    fn method_held(
+        &mut self,
+        m: &TraitMethod,
+        module: &str,
+        receiver: Option<Ty>,
+        lvl: u32,
+    ) -> Result<Ty> {
+        let tvs = receiver.into_iter().map(|t| (ArcStr::from("self"), t)).collect();
+        self.tvs.push(Scope { tvs, level: lvl, rigid: true });
+        let t = self.conv_fn(&m.typ, module);
+        self.tvs.pop();
+        Ok(Ty::Fn(Rc::new(t?)))
+    }
+
+    /// A trait: its methods are names of its own, and each default is a
+    /// body for any implementor.
+    fn trait_decl(&mut self, t: &TraitExpr, lvl: u32) -> Result<()> {
+        let module = self.here.join("::");
+        self.declare_trait(&module, t);
+        let name = match module.as_str() {
+            "" => t.name.name.to_string(),
+            m => format!("{m}::{}", t.name.name),
+        };
+        for m in t.methods.iter() {
+            let Some(default) = &m.default else { continue };
+            let mark = self.s.vars.len();
+            let receiver = self.s.fresh(lvl + 1, Kind::Single);
+            self.s.vars[receiver.0 as usize].upper.push(Ty::Trait(name.as_str().into()));
+            let receiver = Ty::Rigid(receiver);
+            let held = self.method_held(m, &module, Some(receiver.clone()), lvl + 1)?;
+            let tvs = HashMap::from([(ArcStr::from("self"), receiver)]);
+            self.tvs.push(Scope { tvs, level: lvl + 1, rigid: true });
+            let made = self.definition(default, lvl + 1);
+            self.tvs.pop();
+            let made = made?;
+            self.s.constrain(&made, &held)?;
+            self.s.generalize(&made, lvl, mark)?
+        }
+        Ok(())
+    }
+
+    /// An implementation: each method it writes is a body for the trait's
+    /// declaration of it, with `self` the target.
+    fn implementation(&mut self, im: &ImplExpr, lvl: u32) -> Result<()> {
+        let path = parts(&im.head.trait_name);
+        let Some(name) = self.trait_named(&path, "") else {
+            bail!("no trait {} here", path.join("::"))
+        };
+        self.declare_impl("", &im.head)?;
+        let (module, methods) = {
+            let decl = &self.traits[&name];
+            (decl.module.clone(), decl.methods.clone())
+        };
+        let mut written = vec![];
+        for e in im.methods.iter() {
+            match &e.kind {
+                ExprKind::Bind(b) => match &b.pattern {
+                    StructurePattern::Bind(n) => {
+                        written.push((n.name.clone(), b.clone()))
+                    }
+                    _ => bail!("a method is a `let` of one name"),
+                },
+                _ => bail!("an implementation holds only its methods"),
+            }
+        }
+        if let Some((n, _)) =
+            written.iter().find(|(n, _)| !methods.iter().any(|m| &m.name.name == n))
+        {
+            bail!("{name} has no method {n}")
+        }
+        let mark = self.s.vars.len();
+        let outer = self.constructor.take();
+        self.tvs.push(Scope { tvs: HashMap::new(), level: lvl + 1, rigid: true });
+        let r = (|| {
+            let (target, hole) = self.impl_head(&im.head, "")?;
+            match hole {
+                Some(hole) => self.constructor = Some((target, hole)),
+                None => {
+                    self.tvs.last_mut().unwrap().tvs.insert("self".into(), target);
+                }
+            }
+            let mut made = vec![];
+            for m in methods.iter() {
+                let Some((_, b)) = written.iter().find(|(n, _)| n == &m.name.name) else {
+                    match &m.default {
+                        Some(_) => continue,
+                        None => bail!(
+                            "the implementation of {name} is missing {}",
+                            m.name.name
+                        ),
+                    }
+                };
+                let held = self.method_held(m, &module, None, lvl + 1)?;
+                let own = self.s.vars.len();
+                let mut t = self.definition(&b.value, lvl + 2)?;
+                // a method that writes types of its own is a definition
+                // of its own, and one instance of it is the method
+                let writes = matches!(&value_of(&b.value).kind, ExprKind::Lambda(l) if declares(l));
+                if writes || b.typ.is_some() {
+                    self.s.generalize(&t, lvl + 1, own)?;
+                    t = self.s.instantiate(&t, lvl + 1, lvl + 1)
+                }
+                if let Some(written) = &b.typ {
+                    self.tvs.push(Scope {
+                        tvs: HashMap::new(),
+                        level: lvl + 1,
+                        rigid: false,
+                    });
+                    let w = self.conv(written, "");
+                    self.tvs.pop();
+                    let w = w?;
+                    self.s.constrain(&t, &w)?;
+                    t = w
+                }
+                self.s.constrain(&t, &held)?;
+                made.push(t)
+            }
+            Ok(Ty::Tuple(made.into()))
+        })();
+        self.tvs.pop();
+        self.constructor = outer;
+        self.s.generalize(&r?, lvl, mark)
     }
 
     /// The error an operation that can fail returns.
@@ -854,6 +1205,19 @@ impl Checker {
                 self.s.call(&ft, &args, &out)?;
                 let handler = self.handler(lvl);
                 self.s.constrain(&ft.throws, &handler)?
+            }
+            Ty::Method(of) => {
+                let positional = args.iter().enumerate().filter(|(_, a)| a.0.is_none());
+                let Some((at, receiver)) =
+                    positional.map(|(i, a)| (i, a.1.clone())).nth(of.receiver)
+                else {
+                    bail!("{} is called without its receiver", of.name)
+                };
+                let throws = self.handler(lvl);
+                self.s.watch(
+                    &receiver,
+                    Watch::Method { of, at, args, out: out.clone(), throws },
+                )?
             }
             Ty::Var(_) if args.iter().all(|(l, ..)| l.is_none()) => {
                 let args = args
@@ -1188,7 +1552,19 @@ impl Checker {
             }
             ExprKind::Use { names, .. } => {
                 for item in names.iter() {
-                    let path = parts(&item.path);
+                    let mut path = parts(&item.path);
+                    if item.is_glob() {
+                        // every name of a module, or of a trait
+                        path.pop();
+                        let full = used(
+                            &path,
+                            &self.here.join("::"),
+                            self.root.as_deref().unwrap_or(""),
+                        );
+                        let full = self.trait_named(&path, "").unwrap_or(full);
+                        self.uses.push(full);
+                        continue;
+                    }
                     let full = match self.aliases.get(&path[0]) {
                         Some(a) => std::iter::once(a.clone())
                             .chain(path[1..].iter().cloned())
@@ -1204,6 +1580,7 @@ impl Checker {
                         Some(n) => n.name.to_string(),
                         None => path[path.len() - 1].clone(),
                     };
+                    let full = self.trait_named(&path, "").unwrap_or(full);
                     self.uses.push(full.clone());
                     self.aliases.insert(name, full);
                 }
@@ -1401,7 +1778,14 @@ impl Checker {
             ExprKind::Select(sel) => self.select(sel, lvl)?,
             ExprKind::Qop { arg, .. } => self.stripped(arg, true, lvl)?,
             ExprKind::OrNever(arg) => self.stripped(arg, false, lvl)?,
-            ExprKind::Trait(_) | ExprKind::Impl(_) => unsupported("trait")?,
+            ExprKind::Trait(t) => {
+                self.trait_decl(t, lvl)?;
+                Ty::Bot
+            }
+            ExprKind::Impl(im) => {
+                self.implementation(im, lvl)?;
+                Ty::Bot
+            }
 
             _ => unsupported("expression kind")?,
         })

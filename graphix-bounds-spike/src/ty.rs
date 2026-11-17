@@ -46,6 +46,19 @@ pub enum Ty {
     /// An abstract type at its parameters: equal only to itself. What it
     /// is made of is known where its definition is seen.
     Abs(ArcStr, Rc<[Ty]>),
+    /// The types that implement a trait: an upper bound only.
+    Trait(ArcStr),
+    /// A trait's method whose type depends on its receiver's: only called.
+    Method(Rc<Method>),
+}
+
+/// A method as each implementation types it: a call takes the first whose
+/// receiver parameter (the `receiver`th positional one) takes its receiver.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct Method {
+    pub name: ArcStr,
+    pub impls: Vec<Ty>,
+    pub receiver: usize,
 }
 
 /// What tells two members of a union apart without looking at a variable.
@@ -85,7 +98,12 @@ impl Ty {
             Ty::Fn(_) => Head::Fn,
             Ty::Abs(tag, _) => Head::Abs(tag.clone()),
             Ty::Var(_) | Ty::Rigid(_) => Head::Open,
-            Ty::Bot | Ty::Any | Ty::Union(_) | Ty::Named(..) => Head::Other,
+            Ty::Bot
+            | Ty::Any
+            | Ty::Union(_)
+            | Ty::Named(..)
+            | Ty::Trait(_)
+            | Ty::Method(_) => Head::Other,
         }
     }
 
@@ -97,7 +115,13 @@ impl Ty {
             ts.iter().map(|t| f(t)).collect()
         };
         match self {
-            Ty::Bot | Ty::Any | Ty::Prim(_) | Ty::Var(_) | Ty::Rigid(_) => self.clone(),
+            Ty::Bot
+            | Ty::Any
+            | Ty::Prim(_)
+            | Ty::Var(_)
+            | Ty::Rigid(_)
+            | Ty::Trait(_)
+            | Ty::Method(_) => self.clone(),
             Ty::Array(t) => Ty::Array(Rc::new(t.map(f))),
             Ty::List(t) => Ty::List(Rc::new(t.map(f))),
             Ty::Error(t) => Ty::Error(Rc::new(t.map(f))),
@@ -127,7 +151,13 @@ impl Ty {
     pub fn each(&self, f: &mut impl FnMut(&Ty)) {
         f(self);
         match self {
-            Ty::Bot | Ty::Any | Ty::Prim(_) | Ty::Var(_) | Ty::Rigid(_) => (),
+            Ty::Bot
+            | Ty::Any
+            | Ty::Prim(_)
+            | Ty::Var(_)
+            | Ty::Rigid(_)
+            | Ty::Trait(_)
+            | Ty::Method(_) => (),
             Ty::Array(t) | Ty::List(t) | Ty::Error(t) | Ty::Ref(_, t) => t.each(f),
             Ty::Map(k, v) => {
                 k.each(f);
@@ -257,6 +287,8 @@ impl fmt::Display for Ty {
             }
             Ty::Var(v) => write!(f, "'_{}", v.0),
             Ty::Rigid(v) => write!(f, "'r{}", v.0),
+            Ty::Trait(name) => write!(f, "{name}"),
+            Ty::Method(m) => write!(f, "{}", m.name),
             Ty::Abs(tag, ts) if ts.is_empty() => write!(f, "{tag}"),
             Ty::Abs(tag, ts) => {
                 write!(f, "{tag}<")?;
