@@ -5451,6 +5451,30 @@ impl<R: Rt> CallSite<R> {
         joins(&self.rtype);
         let callee = self.fnode.typ().clone();
         let handler = self.scope.dynamic.handler();
+        // what the site uses its callee as: a function of the arguments
+        // written. Where the callee's own type is not decided here it is
+        // the site's signature, which the bind fits the callee to.
+        let used = |throws: Type| FnType {
+            args: TArc::from_iter(args.iter().map(|(label, typ)| FnArgType {
+                kind: match label {
+                    Some(name) => {
+                        FnArgKind::Labeled { name: name.clone(), has_default: false }
+                    }
+                    None => FnArgKind::Positional { name: None },
+                },
+                typ: typ.clone(),
+            })),
+            vargs: None,
+            rtype: self.rtype.clone(),
+            throws,
+            explicit_throws: false,
+            quantifiers: TArc::from_iter([]),
+            lambda_ids: Default::default(),
+        };
+        let raised = match handler.as_ref().and_then(|h| ctx.env.by_id.get(&h.id().0)) {
+            Some(b) => b.typ.clone(),
+            None => joined(),
+        };
         if let Some((name, typings, receiver)) = self.constructor_method(ctx) {
             // the receiver's type says which implementation types the call
             let positional = args.iter().enumerate().filter(|(_, a)| a.0.is_none());
@@ -5458,10 +5482,9 @@ impl<R: Rt> CallSite<R> {
             else {
                 bailat!(self.spec, "{name} is called without its receiver")
             };
-            let throws = match handler.and_then(|h| ctx.env.by_id.get(&h.id().0)) {
-                Some(b) => b.typ.clone(),
-                None => joined(),
-            };
+            if self.ftype.is_none() {
+                self.ftype = Some(TArc::new(used(raised.clone())))
+            }
             let call = Use::Method {
                 name,
                 typings,
@@ -5469,7 +5492,7 @@ impl<R: Rt> CallSite<R> {
                 at,
                 args,
                 out: self.rtype.clone(),
-                throws,
+                throws: raised,
                 level: current_level(),
             };
             return wrap!(self, solving(|s| s.watch(&ctx.env, &of, call)));
@@ -5487,26 +5510,16 @@ impl<R: Rt> CallSite<R> {
                 }
             }
             None if args.iter().all(|(label, _)| label.is_none()) => {
-                let throws = match handler.and_then(|h| ctx.env.by_id.get(&h.id().0)) {
-                    Some(b) => b.typ.clone(),
-                    None => joined(),
-                };
-                let used = FnType {
-                    args: TArc::from_iter(args.iter().map(|(_, typ)| FnArgType {
-                        kind: FnArgKind::Positional { name: None },
-                        typ: typ.clone(),
-                    })),
-                    vargs: None,
-                    rtype: self.rtype.clone(),
-                    throws,
-                    explicit_throws: false,
-                    quantifiers: TArc::from_iter([]),
-                    lambda_ids: Default::default(),
-                };
-                let used = Type::Fn(TArc::new(used));
-                wrap!(self, used.check_contains(&ctx.env, &callee))
+                let used = TArc::new(used(raised));
+                if self.ftype.is_none() {
+                    self.ftype = Some(used.clone())
+                }
+                wrap!(self, Type::Fn(used).check_contains(&ctx.env, &callee))
             }
             _ => {
+                if self.ftype.is_none() {
+                    self.ftype = Some(TArc::new(used(raised)))
+                }
                 let call = Use::Call { args, out: self.rtype.clone() };
                 wrap!(self, solving(|s| s.watch(&ctx.env, &callee, call)))
             }

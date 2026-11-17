@@ -2527,6 +2527,17 @@ pub(crate) fn fit_callee<R: Rt>(
     site: &FnType,
     def_typ: &FnType,
 ) -> Result<FnType> {
+    // a definition a check by bounds made generic: the instance the
+    // site's view decides, with its types
+    let scheme = Type::Fn(Arc::new(def_typ.clone()));
+    if bounds::scheme(&scheme) {
+        let view = Type::Fn(Arc::new(site.clone()));
+        let mut known = bounds::instance(&ctx.env, &scheme, &view)?;
+        return match &bounds::specialize(&scheme, &mut known) {
+            Type::Fn(ft) => Ok((**ft).clone()),
+            _ => bail!("BUG: a function type's instance is no function type"),
+        };
+    }
     let copy = def_typ.instantiate(&ctx.rec_defs);
     site.check_contains(&ctx.env, &copy)?;
     Ok(copy)

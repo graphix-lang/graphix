@@ -932,7 +932,11 @@ impl Solving {
         self.unfolding.push((a.clone(), b.clone()));
         let r = self.constrain(env, &x, &y);
         self.unfolding.pop();
-        r
+        // a refusal names the types as they were written
+        r.map_err(|e| match e.to_string().starts_with("type mismatch") {
+            true => anyhow::anyhow!("type mismatch {b} does not contain {a}"),
+            false => e,
+        })
     }
 
     /// `f` may be called wherever `g` may be.

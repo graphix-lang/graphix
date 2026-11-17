@@ -1491,8 +1491,14 @@ fn cell_encode(cell: &Arc<CellLock>, buf: &mut impl BufMut) -> Result<(), PackEr
                     resolved: _,
                     place: _,
                     written: _,
-                    solving: _,
+                    solving,
                 } = &*c;
+                // a cell a check by bounds left open is a scheme's, and what
+                // it keeps for its instances has no codec yet: the write
+                // fails and the session runs cold
+                if solving.is_some() && binding.is_none() {
+                    return Err(PackError::InvalidFormat);
+                }
                 if *rigid_gates != 0 {
                     log::warn!(
                         "a tvar cell with {} open rigid gate(s) cannot be imaged: typ={:?} constraints={:?}",
