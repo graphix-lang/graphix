@@ -36,6 +36,8 @@ pub enum Pat {
     Or(Vec<Pat>),
     /// An abstract type's constructor around what it holds.
     Abs(Option<Var>, ArcStr, Box<Pat>),
+    /// A pattern, and a variable that takes the whole of what it admits.
+    Whole(Var, Box<Pat>),
 }
 
 impl Pat {
@@ -71,6 +73,10 @@ impl Pat {
                 let p = Box::new(p.map_vars(f));
                 Pat::Abs(v.map(&mut *f), tag.clone(), p)
             }
+            Pat::Whole(v, p) => {
+                let v = f(*v);
+                Pat::Whole(v, Box::new(p.map_vars(f)))
+            }
         }
     }
 
@@ -97,6 +103,7 @@ impl Pat {
                 ps.iter().map(|p| p.admits()).collect::<Option<Vec<Ty>>>().map(union)
             }
             Pat::Abs(..) => None,
+            Pat::Whole(_, p) => p.admits(),
         }
     }
 }
@@ -366,6 +373,13 @@ impl Solver {
     fn route(&self, pat: &Pat, t: &Ty) -> Routed {
         let t = self.expand(t);
         // a pattern that looks into a declared variable sees its bound
+        if let Pat::Whole(v, p) = pat {
+            let mut r = self.route(p, &t);
+            if !matches!(r.part, Ty::Bot) {
+                r.binds.push((*v, r.part.clone()))
+            }
+            return r;
+        }
         if let (Ty::Rigid(v), false) = (&t, matches!(pat, Pat::Any(_))) {
             let bound = self.vars[v.0 as usize]
                 .upper

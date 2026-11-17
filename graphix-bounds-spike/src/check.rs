@@ -1357,14 +1357,31 @@ impl Checker {
         let pat = match &p.type_predicate {
             None => inner,
             Some(t) => {
-                let t = self.conv(t, "")?;
-                if !self.s.is_ground(&t) {
-                    unsupported("a test that holds a variable")?
+                // a variable the test writes for the first time stands for
+                // whatever is there: the test admits anything in its place,
+                // and the variable takes what the arm is given
+                let mark = self.s.vars.len();
+                self.tvs.push(Scope { tvs: HashMap::new(), level: lvl, rigid: false });
+                let t = self.conv(t, "");
+                self.tvs.pop();
+                let t = t?;
+                for v in self.s.vars[mark..].iter_mut() {
+                    v.kind = Kind::Join
                 }
-                if let Pat::Any(Some(v)) = &inner {
-                    self.s.constrain(&Ty::Var(*v), &t)?
+                let test = t.map(&mut |t| matches!(t, Ty::Var(_)).then_some(Ty::Any));
+                let whole = match &inner {
+                    Pat::Any(Some(v)) => *v,
+                    _ => self.s.fresh(lvl, Kind::Join),
+                };
+                self.s.constrain(&Ty::Var(whole), &t)?;
+                match (&inner, self.s.is_ground(&t)) {
+                    (Pat::Any(Some(_)), _) | (_, true) => {
+                        Pat::Test(test, Box::new(inner))
+                    }
+                    (_, false) => {
+                        Pat::Test(test, Box::new(Pat::Whole(whole, Box::new(inner))))
+                    }
                 }
-                Pat::Test(t, Box::new(inner))
             }
         };
         Ok(Arm { pat, guarded: p.guard.is_some() })
