@@ -449,8 +449,11 @@ impl Checker {
         if matches!(path[0].as_str(), "self" | "super" | "package") {
             return vec![used(path, module, self.root.as_deref().unwrap_or(""))];
         }
+        // what the module being checked `use`s names nothing in another's
+        // interface
+        let mine = module == here;
         let mut names = vec![];
-        if let Some(full) = self.aliases.get(&path[0]) {
+        if mine && let Some(full) = self.aliases.get(&path[0]) {
             names.push(
                 std::iter::once(full.clone())
                     .chain(path[1..].iter().cloned())
@@ -479,7 +482,12 @@ impl Checker {
                     out.push(rest.join("::"))
                 }
             }
-            out.extend(self.uses.iter().rev().map(|u| format!("{u}::{name}")));
+            match mine {
+                true => {
+                    out.extend(self.uses.iter().rev().map(|u| format!("{u}::{name}")))
+                }
+                false => out.push(format!("core::{name}")),
+            }
         }
         out
     }
