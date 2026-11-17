@@ -112,6 +112,8 @@ pub struct Solver {
     pub at: Option<Site>,
     /// Where each bound was first made: (variable, is a lower bound, bound).
     sites: HashMap<(Var, bool, Ty), Site>,
+    /// Where each use of a variable was written: (variable, which use).
+    used_at: HashMap<(Var, usize), Site>,
     pub vars: Vec<VarInfo>,
     pub defs: Vec<Def>,
     cache: HashSet<(Ty, Ty)>,
@@ -395,7 +397,13 @@ impl Solver {
         if !along_edge {
             self.info_mut(w).direct.push(a.clone())
         }
-        if !matches!(a, Ty::Var(_)) {
+        // a use of `w` sees the bound; where the bound is a variable (one
+        // from outside the definition `w` is in), what that variable holds
+        let seen = match a {
+            Ty::Var(v) => self.flowing(*v, &mut vec![]),
+            a => vec![a.clone()],
+        };
+        for a in seen.iter() {
             for i in 0..self.info(w).watches.len() {
                 let watch = self.info(w).watches[i].0.clone();
                 if self.apply(&watch, a)? {
@@ -409,6 +417,21 @@ impl Solver {
             self.constrain(a, &u).map_err(|e| self.ends(e, self.at, to))?
         }
         Ok(())
+    }
+
+    /// Every type known to flow into `v`: its own lower bounds and those
+    /// of the variables among them.
+    fn flowing(&self, v: Var, seen: &mut Vec<Var>) -> Vec<Ty> {
+        seen.push(v);
+        let mut out = vec![];
+        for l in self.info(v).lower.iter() {
+            match l {
+                Ty::Var(u) if !seen.contains(u) => out.extend(self.flowing(*u, seen)),
+                Ty::Var(_) => (),
+                l => out.push(l.clone()),
+            }
+        }
+        out
     }
 
     fn decided(&self, v: Var, seen: &mut Vec<Var>) -> bool {
@@ -658,10 +681,11 @@ impl Solver {
         match self.shallow(t) {
             Ty::Var(v) => {
                 let mut fired = false;
-                for l in self.info(v).lower.clone() {
-                    if !matches!(l, Ty::Var(_)) {
-                        fired |= self.apply(&w, &l)?
-                    }
+                for l in self.flowing(v, &mut vec![]) {
+                    fired |= self.apply(&w, &l)?
+                }
+                if let Some(at) = self.at {
+                    self.used_at.insert((v, self.info(v).watches.len()), at);
                 }
                 self.info_mut(v).watches.push((w, fired));
                 for u in self.info(v).upper.clone() {
@@ -839,6 +863,21 @@ impl Solver {
         }
     }
 
+    /// A use of `v` that needs a shape nothing gave it.
+    fn unread(&self, v: Var) -> Result<()> {
+        let unfired = |(_, (w, fired)): &(usize, &(Watch, bool))| !fired && !matches!(w, Watch::Select(_));
+        match self.info(v).watches.iter().enumerate().find(unfired) {
+            None => Ok(()),
+            Some((i, (w, _))) => match self.used_at.get(&(v, i)) {
+                Some((l, c)) => bail!(
+                    "{} needs its type known here (line {l}, column {c}): annotate the binding",
+                    w.needs()
+                ),
+                None => bail!("{} needs its type known here: annotate the binding", w.needs()),
+            },
+        }
+    }
+
     /// Mark the variables of a declared scheme as its own.
     pub fn quantify(&mut self, t: &Ty, lvl: u32) {
         let mut kept = vec![];
@@ -874,12 +913,45 @@ impl Solver {
                 }
             }
         }
+        // what a definition's own uses demand of a variable nothing flows
+        // into decides it, where they demand one decided type: `|act| ..
+        // desc(act) ..` takes `act` at `desc`'s parameter type. A bound an
+        // operator puts on its operands is not on the variable itself, so
+        // `|a| a + a` stays generic.
+        for v in kept.clone() {
+            let info = self.info(v);
+            let flows = info.lower.iter().any(|l| !matches!(l, Ty::Var(_)));
+            if info.level <= lvl || info.fixed.is_some() || info.singleton || flows {
+                continue;
+            }
+            let uppers: Vec<Ty> = info
+                .upper
+                .iter()
+                .map(|u| self.deep(u))
+                .filter(|u| !matches!(u, Ty::Var(_)) && self.is_ground(u))
+                .collect();
+            if uppers.is_empty() {
+                continue;
+            }
+            let t = self.meet(&uppers)?;
+            let info = self.info_mut(v);
+            (info.fixed, info.demanded) = (Some(t.clone()), true);
+            for u in self.info(v).upper.clone() {
+                if matches!(u, Ty::Var(_)) {
+                    self.constrain(&t, &u)?
+                }
+            }
+            for i in 0..self.info(v).watches.len() {
+                let watch = self.info(v).watches[i].0.clone();
+                if self.apply(&watch, &t)? {
+                    self.info_mut(v).watches[i].1 = true
+                }
+            }
+        }
         for v in kept {
             if self.info(v).level > lvl && self.info(v).fixed.is_none() {
                 self.info_mut(v).quantified = true;
-                if let Some((w, _)) = self.info(v).watches.iter().find(|(w, fired)| !fired && !matches!(w, Watch::Select(_))) {
-                    bail!("{} needs its type known here: annotate the binding", w.needs())
-                }
+                self.unread(v)?
             }
         }
         self.fix_scope(lvl + 1, false, mark)
@@ -939,6 +1011,32 @@ impl Solver {
         let mut progress = true;
         while progress {
             progress = false;
+            // a pending use waits for any other whose result reaches what
+            // it reads: (kind, index) and everything its result reaches
+            let mut produced: Vec<((u8, usize), HashSet<Var>)> = vec![];
+            if !last {
+                let closure = |s: &Self, outs: Vec<Var>| {
+                    let mut all = vec![];
+                    outs.iter().for_each(|v| s.reach(&Ty::Var(*v), &mut all));
+                    all.into_iter().collect::<HashSet<Var>>()
+                };
+                for (i, (_, b, _)) in self.held.iter().enumerate() {
+                    produced.push(((1, i), closure(self, self.open_vars(b))))
+                }
+                for id in 0..self.selects.len() {
+                    if !self.select_waits(id).is_empty() {
+                        produced.push(((2, id), closure(self, self.select_vars(id))))
+                    }
+                }
+                for (i, (_, out, payload)) in self.strips.iter().enumerate() {
+                    let mut outs = self.open_vars(out);
+                    outs.extend(payload.iter().flat_map(|p| self.open_vars(p)));
+                    produced.push(((3, i), closure(self, outs)))
+                }
+            }
+            let free = |key: (u8, usize), ins: &[Var]| {
+                !produced.iter().any(|(k, c)| *k != key && ins.iter().any(|v| c.contains(v)))
+            };
             for i in (0..self.held.len()).rev() {
                 let (a, b, scheme) = self.held[i].clone();
                 if scheme {
@@ -946,7 +1044,7 @@ impl Solver {
                 }
                 let (avs, bvs) = (self.open_vars(&a), self.open_vars(&b));
                 let mut vs = avs.iter().chain(bvs.iter());
-                if vs.clone().all(|v| self.fixable(*v, min)) {
+                if vs.clone().all(|v| self.fixable(*v, min)) && free((1, i), &avs) {
                     // a member something has decided is decided here; one
                     // nothing has stays open, to take what the others do not
                     self.held.swap_remove(i);
@@ -968,10 +1066,12 @@ impl Solver {
                 }
             }
             let fixable = |s: &Self, t: &Ty| s.open_vars(t).iter().all(|v| s.fixable(*v, min));
-            progress |= self.select_waiting(&fixable)?;
+            let ready =
+                |s: &Self, id: usize, t: &Ty| fixable(s, t) && free((2, id), &s.open_vars(t));
+            progress |= self.select_waiting(&ready)?;
             for i in (0..self.strips.len()).rev() {
                 let (arg, out, raised) = self.strips[i].clone();
-                if fixable(self, &arg) {
+                if fixable(self, &arg) && free((3, i), &self.open_vars(&arg)) {
                     self.strips.swap_remove(i);
                     self.fix_in(&arg)?;
                     let (left, payloads) = self.strip(&self.deep(&arg));
@@ -1020,10 +1120,8 @@ impl Solver {
                 && (last || (self.fixable(v, min) && (awaited.is_empty() || !waits(self, v))))
             {
                 self.fix(v)?;
-                if let Some((w, _)) = self.info(v).watches.iter().find(|(w, fired)| !fired && !matches!(w, Watch::Select(_)))
-                    && self.info(v).fixed != Some(Ty::Bot)
-                {
-                    bail!("{} needs its type known here: annotate the binding", w.needs())
+                if self.info(v).fixed != Some(Ty::Bot) {
+                    self.unread(v)?
                 }
             }
         }

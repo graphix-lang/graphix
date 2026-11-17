@@ -534,11 +534,14 @@ impl Solver {
     }
 
     /// Route what waited for a variable; true if anything was.
-    pub(crate) fn select_waiting(&mut self, fixable: &dyn Fn(&Self, &Ty) -> bool) -> Result<bool> {
+    pub(crate) fn select_waiting(
+        &mut self,
+        ready: &dyn Fn(&Self, usize, &Ty) -> bool,
+    ) -> Result<bool> {
         let mut progress = false;
         for id in 0..self.selects.len() {
             for t in std::mem::take(&mut self.selects[id].waiting) {
-                if fixable(self, &t) {
+                if ready(self, id, &t) {
                     self.fix_in(&t)?;
                     self.select_route(id, &t)?;
                     progress = true
