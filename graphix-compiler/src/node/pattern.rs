@@ -15,12 +15,12 @@ use crate::{
         WrittenAt, union_members, union_members_open, union_members_with,
     },
     format_with_flags,
-    node::{Held, Holders, compiler, list, prune::Prune, solving},
+    node::{Held, Holders, compiler, joined, list, prune::Prune, solving},
     prune::BoundaryRef,
     rep,
     typ::{
         AbstractId, ContainsFlags, IsAFlags, ShallowScrutinee, TVar, Type,
-        bounds::{Arm, FALSE, Pat, TRUE, Use, unsplit},
+        bounds::{self, Arm, FALSE, Pat, TRUE, Use, unsplit},
         settle::position_cells,
         tvar::{OpenOverAny, StandingEnds},
     },
@@ -3753,6 +3753,34 @@ impl<R: Rt> PatternNode<R> {
             | Type::Ref(_) => (),
         }
         let sp = &spec.structure_predicate;
+        if bounds::active() {
+            // the structure stands by its own shape and its names are
+            // cells: the check routes what reaches the arm to them
+            let shape = sp.infer_type_predicate(&ctx.env, &scope.lexical)?;
+            let cx = PatCx {
+                scope,
+                pos,
+                ori: &ori,
+                inferred: true,
+                own_payloads: true,
+                holder: Holder::Arm,
+                whole: sp,
+            };
+            let structure_predicate =
+                StructPatternNode::compile_with(ctx, cx, &shape, sp)?;
+            structure_predicate.ids(&mut |id| ctx.env.retype(id, joined()));
+            let guard = spec
+                .guard
+                .as_ref()
+                .map(|g| {
+                    Prune::compile(ctx, |ctx| {
+                        compiler::compile(ctx, flags, g.clone(), &scope, top_id)
+                    })
+                })
+                .transpose()?
+                .map(Held::new);
+            return Ok(Self::with(explicit, type_predicate, structure_predicate, guard));
+        }
         if explicit {
             let ids = StructurePattern::abstracts_at(&ctx.env, &scope.lexical);
             if let Some(tv) = sp.meets_rigid(&ctx.env, &ids, &type_predicate)? {

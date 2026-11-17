@@ -18,11 +18,11 @@ use crate::{
             opt_node_encode, put_tag,
         },
     },
-    typ::{TVar, Type},
+    typ::{TVar, Type, bounds},
     wrap,
 };
 use ahash::AHashSet;
-use anyhow::Result;
+use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError};
@@ -731,6 +731,17 @@ impl<R: Rt, K: SeqKind> SeqLit<R, K> {
             wrap!(n, child(n, ctx))?
         }
         if !check {
+            return Ok(());
+        }
+        if bounds::active() {
+            // the elements flow into one cell, which may join them
+            let (Type::Array(e) | Type::List(e)) = &self.typ else {
+                bail!("BUG: a literal that is no array and no list")
+            };
+            super::joins(e);
+            for n in self.n.iter() {
+                wrap!(n, e.check_contains(&ctx.env, n.typ()))?
+            }
             return Ok(());
         }
         let bottom = Type::Bottom;

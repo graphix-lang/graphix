@@ -18,10 +18,10 @@ use crate::{
         ImageBuf,
         nodes::{NodeTag, decode_node, put_tag},
     },
-    typ::{Bound, NakedPrefix, TVar, Type, tvar::require_body_bounds},
+    typ::{Bound, NakedPrefix, TVar, Type, bounds, tvar::require_body_bounds},
     wrap,
 };
-use anyhow::Result;
+use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use immutable_chunkmap::map::Map as CMap;
@@ -168,6 +168,18 @@ impl<R: Rt> Map<R> {
             wrap!(n, child(n, ctx))?
         }
         if !check {
+            return Ok(());
+        }
+        if bounds::active() {
+            // the keys flow into one cell and the values into another,
+            // each of which may join what it takes
+            let Type::Map(m) = &self.typ else { bail!("BUG: a map literal's type") };
+            super::joins(&m.key);
+            super::joins(&m.value);
+            for (k, v) in self.entries() {
+                wrap!(k, m.key.check_contains(&ctx.env, k.typ()))?;
+                wrap!(v, m.value.check_contains(&ctx.env, v.typ()))?
+            }
             return Ok(());
         }
         let bottom = Type::Bottom;

@@ -5,6 +5,7 @@ use super::{
         ArmMatch, CompiledAbstracts, Holder, PatternNode, SliceKind, StructPatternNode,
         Tested, members_refusal, rigid_refusal, written_named, written_refusal,
     },
+    solving,
     wake::{self, ArmMask, TrackedFires},
 };
 // CR claude for claude: [style/low] `crate::typ::settle::position_cells` is written by
@@ -32,6 +33,7 @@ use crate::{
     typ::{
         AbstractId, Brief, ContainsFlags, InfiniteType, NodeKey, Open, ShallowScrutinee,
         TVar, Type, TypeMismatch,
+        bounds::{self, Arm, Use, unsplit},
     },
     wrap,
 };
@@ -3143,7 +3145,10 @@ impl<R: Rt> Update<R> for Select<R> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx), true)?;
+        match bounds::active() {
+            true => self.check_by_bounds(ctx)?,
+            false => self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx), true)?,
+        }
         if self.flags.intersects(CFlag::SeqStep | CFlag::RunEvent) {
             return Ok(());
         }
@@ -3225,6 +3230,56 @@ impl<R: Rt> Update<R> for Select<R> {
 }
 
 impl<R: Rt> Select<R> {
+    /// The check by bounds: the select is one use of its scrutinee. Each
+    /// arm's guard and body are checked with the pattern's names as cells,
+    /// and the solver routes each type that reaches the scrutinee down the
+    /// arms, to those cells.
+    fn check_by_bounds(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
+        wrap!(self.arg.node, self.arg.node.typecheck0(ctx))?;
+        super::joins(&self.typ);
+        let bool = Type::Primitive(Typ::Bool.into());
+        let mut arms = Vec::with_capacity(self.arms.len());
+        for (pat, n) in self.arms.iter_mut() {
+            let inner = wrap!(n, pat.structure_predicate.by_bounds(ctx))?;
+            let arm = match pat.explicit_type_predicate {
+                true => {
+                    let whole = super::joined_cell();
+                    let test = &pat.type_predicate;
+                    wrap!(n, solving(|s| s.tested(&ctx.env, test, inner, whole)))?
+                }
+                false => inner,
+            };
+            if let Some(guard) = &mut pat.guard {
+                wrap!(guard.node, guard.node.typecheck0(ctx))?;
+                wrap!(guard.node, bool.check_contains(&ctx.env, guard.node.typ()))?
+            }
+            wrap!(n, n.typecheck0(ctx))?;
+            wrap!(n, self.typ.check_contains(&ctx.env, n.typ()))?;
+            arms.push(Arm { pat: arm, guarded: pat.guard.is_some() })
+        }
+        // with no arm that admits everything, the arms' tests bound a
+        // scrutinee nothing has decided from above
+        let scrut = self.arg.node.typ().clone();
+        let admitted: Option<SmallVec<[Type; 8]>> =
+            arms.iter().map(|a| a.pat.admits()).collect();
+        if scrut.with_deref(|t| t.is_none())
+            && arms.iter().all(|a| !a.guarded)
+            && let Some(ts) = admitted
+        {
+            let most = unsplit(&bounds::union_of(ts));
+            wrap!(self.arg.node, most.check_contains(&ctx.env, &scrut))?
+        }
+        let at = self.arg.node.spec().pos;
+        let at = format_compact!("{}:{}", at.line, at.column);
+        wrap!(
+            self,
+            solving(|s| {
+                let id = s.select(arms, at.as_str().into());
+                s.watch(&ctx.env, &scrut, Use::Select(id))
+            })
+        )
+    }
+
     /// What the check derived for the arms ([`super::lambda::DefTable`]):
     /// each arm's completed predicate, then the types of its pattern's
     /// binds in [`StructPatternNode::ids`] order.

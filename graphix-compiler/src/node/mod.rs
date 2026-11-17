@@ -2083,10 +2083,15 @@ pub(crate) fn joins(t: &Type) {
 }
 
 /// A fresh cell that may hold a union nobody wrote.
+pub(crate) fn joined_cell() -> TVar {
+    let tv = TVar::default();
+    tv.set_joins();
+    tv
+}
+
+/// [`joined_cell`] as a type.
 pub(crate) fn joined() -> Type {
-    let t = Type::empty_tvar();
-    joins(&t);
-    t
+    Type::TVar(joined_cell())
 }
 
 /// A statement's check result: its errors carry the statement, and in a

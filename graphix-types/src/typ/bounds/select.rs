@@ -272,6 +272,40 @@ fn routable(t: &Type) -> bool {
 }
 
 impl Solving {
+    /// The pattern of an arm that writes the test `t` over the structure
+    /// `inner`. A variable the test writes, or `_`, stands for whatever is
+    /// there: the test admits anything in its place, and the variable
+    /// takes what the arm is given. `whole` is a cell for the arm's whole
+    /// value, used where the structure names none.
+    pub fn tested(
+        &mut self,
+        env: &Env,
+        t: &Type,
+        inner: Pat,
+        whole: TVar,
+    ) -> Result<Pat> {
+        let mut own: SmallVec<[TVar; 4]> = SmallVec::new();
+        super::cells_of(t, true, &mut own);
+        if let Some(v) = own.iter().find(|v| v.is_rigid()) {
+            bail!(
+                "a test cannot name a declared type variable ('{}): write `_` there, and the name takes the value's own type",
+                v.name
+            )
+        }
+        own.iter().for_each(|v| v.set_joins());
+        let t = map_parts(t, &mut |t| matches!(t, Type::Bottom).then_some(Type::Any));
+        let test = super::map_cells(&t, &mut |_| Some(Type::Any));
+        let whole = match &inner {
+            Pat::Any(Some(v)) => v.clone(),
+            _ => whole,
+        };
+        self.constrain(env, &Type::TVar(whole.clone()), &t)?;
+        Ok(match (&inner, own.is_empty()) {
+            (Pat::Any(Some(_)), _) | (_, true) => Pat::Test(test, Box::new(inner)),
+            (_, false) => Pat::Test(test, Box::new(Pat::Whole(whole, Box::new(inner)))),
+        })
+    }
+
     /// A select of `arms`, written at `at`: a use to register on its
     /// scrutinee.
     pub fn select(&mut self, arms: Vec<Arm>, at: ArcStr) -> usize {
