@@ -201,6 +201,9 @@ fn fits_declared<R: Rt>(ctx: &CompileCtx<R>, made: &Type, declared: &Type) -> Re
     }
     let _held = hold_declared(iter::once(&declared));
     let one = solving(|s| s.instantiate(made, Level::GENERIC.depth() - 1, level));
+    if std::env::var_os("GRAPHIX_BOUNDS_DEBUG").is_some() {
+        eprintln!("fits_declared: made {made:?}\n  one {one:?}\n  declared {declared:?}")
+    }
     declared.check_contains(&ctx.env, &one)?;
     // the instance is decided here, where the declaration's variables
     // are still constants

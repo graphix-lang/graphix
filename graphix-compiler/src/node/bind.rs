@@ -50,7 +50,7 @@ use netidx_core::pack::{Pack, PackError, encode_varint};
 use netidx_value::Value;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
-use std::{any::Any, iter, mem};
+use std::{any::Any, cell::RefCell, iter, mem};
 use triomphe::Arc;
 
 /// A `let` pattern's fit to its value, which waits for the value's check.
@@ -63,6 +63,16 @@ enum Deferred {
     /// open cell, each name a fresh cell: held to every member of the
     /// value, each name typed by its part of each member.
     Shape(Type),
+}
+
+/// The parts recorded for a definition's compile ([`OUTSIDE`]), dropped
+/// with it.
+struct OutsideParts(usize);
+
+impl Drop for OutsideParts {
+    fn drop(&mut self) {
+        OUTSIDE.with_borrow_mut(|parts| parts.truncate(self.0))
+    }
 }
 
 /// What a `let` binds, under a check by bounds.
@@ -110,6 +120,65 @@ fn defines<R: Rt>(ctx: &CompileCtx<R>, scope: &Scope, e: &Expr) -> bool {
             ..
         } => defines(ctx, scope, rhs),
         _ => false,
+    }
+}
+
+thread_local! {
+    /// The parts of the definitions being compiled that are no definition
+    /// themselves, each with the level around its definition.
+    static OUTSIDE: RefCell<Vec<(ExprId, Level)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The level around the definition `e` is a part of, where `e` is no
+/// definition itself ([`outside_parts`]).
+pub(super) fn outside(e: &Expr) -> Option<Level> {
+    OUTSIDE.with_borrow(|parts| {
+        parts.iter().rev().find(|(id, _)| *id == e.id).map(|(_, level)| *level)
+    })
+}
+
+/// The parts of a definition's value `e` that are computed once, outside
+/// it: a part of the data it is built of that is no definition itself,
+/// and what a sample of one is sampled by.
+fn outside_parts<R: Rt>(
+    ctx: &CompileCtx<R>,
+    scope: &Scope,
+    e: &Expr,
+    out: &mut SmallVec<[ExprId; 4]>,
+) {
+    let mut part = |e: &Expr, out: &mut SmallVec<[ExprId; 4]>| match defines(ctx, scope, e)
+    {
+        true => outside_parts(ctx, scope, e, out),
+        false => out.push(e.id),
+    };
+    match &e.kind {
+        ExprKind::ExplicitParens(e) => outside_parts(ctx, scope, e, out),
+        ExprKind::Block { exprs } => {
+            if let Some(last) = exprs.last() {
+                outside_parts(ctx, scope, last, out)
+            }
+        }
+        ExprKind::Struct(s) => s.args.iter().for_each(|(_, e)| part(e, out)),
+        ExprKind::Tuple { args }
+        | ExprKind::Variant { args, .. }
+        | ExprKind::Array { args }
+        | ExprKind::List { args } => args.iter().for_each(|e| part(e, out)),
+        ExprKind::StructWith(w) => {
+            part(&w.source, out);
+            w.replace.iter().for_each(|(_, e)| part(e, out))
+        }
+        ExprKind::StructRef { source, .. } | ExprKind::TupleRef { source, .. } => {
+            part(source, out)
+        }
+        ExprKind::BinOp {
+            op: BinOp::Sample | BinOp::StrictSample | BinOp::BankedSample,
+            lhs,
+            rhs,
+        } => {
+            out.push(lhs.id);
+            part(rhs, out)
+        }
+        _ => (),
     }
 }
 
@@ -409,7 +478,10 @@ impl<R: Rt> Bind<R> {
             }
             None => None,
         };
-        let _cells = declares_method.then(|| MethodCells::enter(minted));
+        // under a check by bounds the method's lambda has variables of
+        // its own, and one instance of it is held to the written type
+        let _cells = (declares_method && !bounds::active())
+            .then(|| MethodCells::enter(minted));
         let compile_pattern = |ctx: &mut CompileCtx<R>, typ: &Type| {
             let ori = spec.ori.clone();
             StructPatternNode::compile(ctx, typ, pat, Holder::Let, scope, spec.pos, ori)
@@ -445,6 +517,16 @@ impl<R: Rt> Bind<R> {
                 };
                 held = Held::Definition(Level::Def { depth, owner: LambdaId::new() })
             }
+            let outer = current_level();
+            let parts = OUTSIDE.with_borrow(|parts| parts.len());
+            if let Held::Definition(_) = held {
+                let mut ids: SmallVec<[ExprId; 4]> = SmallVec::new();
+                outside_parts(ctx, scope, value, &mut ids);
+                OUTSIDE.with_borrow_mut(|parts| {
+                    parts.extend(ids.into_iter().map(|id| (id, outer)))
+                })
+            }
+            let _parts = OutsideParts(parts);
             let _at = match held {
                 Held::Definition(level) => Some(AtLevel::enter(level)),
                 Held::Value | Held::Scheme => None,
@@ -453,8 +535,13 @@ impl<R: Rt> Bind<R> {
             // it is one; any other takes a cell of its own, which the
             // value flows into
             let own = |annotation: Option<Type>| match annotation {
+                // a written function type's own variables are the
+                // binding's, as any other it writes
                 Some(t) => {
-                    t.claim_free(current_level());
+                    match &t {
+                        Type::Fn(ft) => ft.claim(current_level()),
+                        t => t.claim_free(current_level()),
+                    }
                     t
                 }
                 None => Type::empty_tvar(),
@@ -748,10 +835,12 @@ impl<R: Rt> Bind<R> {
                         self.pattern.ids(&mut |id| ctx.env.retype(id, value.clone()));
                         self.typ = value
                     }
-                    // the written type is the scheme: the value fits it,
-                    // and may be the very type written (a method's)
+                    // the written type is the scheme: one instance of
+                    // the value fits it
                     (true, _) => {
-                        wrap!(node, self.typ.check_contains(&ctx.env, &value))?;
+                        wrap!(node, generalize(ctx, &value))?;
+                        let one = solving(|s| s.instantiate(&value, depth, level));
+                        wrap!(node, self.typ.check_contains(&ctx.env, &one))?;
                         wrap!(node, generalize(ctx, &self.typ))?
                     }
                 }

@@ -5026,8 +5026,11 @@ fn compile_top<R: Rt>(
         }
     };
     info!("compile time {:?}", st.elapsed());
-    // the input's value is what it names, as a `let` names its value
-    node::bind::name_value(&mut node, true);
+    // the input's value is what it names, as a `let` names its value;
+    // under a check by bounds it is one value, as any expression is
+    if !typ::bounds::active() {
+        node::bind::name_value(&mut node, true);
+    }
     if let Err(err) = check_pending_imports(ctx) {
         let err = input.refused(ctx, err);
         return Err(abandon_stmt(ctx, node, saved, err));

@@ -29,7 +29,7 @@ use crate::{
         op::{CheckedAdd, CheckedDiv, CheckedMod, CheckedMul, CheckedSub},
     },
     stack::ensure_sufficient,
-    typ::{TVar, Type},
+    typ::{TVar, Type, tvar::AtLevel},
 };
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Context, Result};
@@ -51,6 +51,9 @@ pub(crate) fn compile<R: Rt>(
     scope: &Scope,
     top_id: ExprId,
 ) -> Result<Node<R>> {
+    // a part of a definition's value that is no definition itself is
+    // one value, of the level around the definition
+    let _outside = super::bind::outside(&spec).map(AtLevel::enter);
     ensure_sufficient(|| compile_inner(ctx, flags, spec, scope, top_id, false))
 }
 

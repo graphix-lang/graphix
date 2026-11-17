@@ -741,6 +741,15 @@ impl Solving {
                 match (v.is_rigid(), pos) {
                     (true, false) => t.clone(),
                     (true, true) => {
+                        if std::env::var_os("GRAPHIX_BOUNDS_DEBUG").is_some() {
+                            eprintln!(
+                                "sink of '{} (depth {}) at depth {}\n{}",
+                                v.name,
+                                v.level().depth(),
+                                at.depth(),
+                                std::backtrace::Backtrace::force_capture()
+                            )
+                        }
                         let n = twin(v);
                         n.set_joins();
                         twins.insert((v.cell_addr(), pos), n.clone());
