@@ -687,6 +687,14 @@ fn instance_cells<R: Rt>(
     def: &FnType,
     instance: &FnType,
 ) -> Option<AHashMap<usize, TVar>> {
+    // a definition checked by bounds is a scheme whose cells carry what
+    // each instance has to decide: the instance's types are a copy of
+    // them, fixed where the copy is used as the instance's signature
+    let scheme = Type::Fn(Arc::new(def.clone()));
+    if bounds::scheme(&scheme) {
+        let at = Type::Fn(Arc::new(instance.clone()));
+        return bounds::instance(&ctx.env, &scheme, &at).ok();
+    }
     // every open cell of the signature is the instance's own copy, a cell
     // no closed gate owns included, so the check binds nothing another
     // instance reads

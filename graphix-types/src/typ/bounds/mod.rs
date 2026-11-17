@@ -1030,6 +1030,32 @@ fn members_of(env: &Env, t: &Type, out: &mut SmallVec<[Type; 4]>) -> Result<()> 
     })
 }
 
+/// Whether `t` is a scheme a check by bounds made: one of its cells is a
+/// scheme's variable there.
+pub fn scheme(t: &Type) -> bool {
+    let mut cells = SmallVec::new();
+    cells_of(t, true, &mut cells);
+    cells.iter().any(quantified)
+}
+
+/// The types of the instance of the scheme `def` that is used as `at`, a
+/// decided type: a copy of each of the scheme's cells, fixed, under the
+/// address of the cell it is the copy of. An instance is built from its
+/// definition's check through this, in whatever task builds it.
+pub fn instance(env: &Env, def: &Type, at: &Type) -> Result<AHashMap<usize, TVar>> {
+    let mut solving = Solving::default();
+    let mut copies = AHashMap::default();
+    let one = solving.instantiate_into(
+        def,
+        Level::GENERIC.depth() - 1,
+        Level::TOP,
+        &mut copies,
+    );
+    solving.constrain(env, &one, at)?;
+    solving.finish(env)?;
+    Ok(copies)
+}
+
 /// A method of a trait whose `self` is a constructor, as the
 /// implementation for `target` (a type with a hole) types it: each
 /// `self<X>` of the declared `sig` is `target` with `X` in its hole.
