@@ -405,14 +405,26 @@ impl Solving {
         self.attempting(|s| s.constrain(env, a, b))
     }
 
+    /// Whether `a` would fit where `b` is wanted, asked without leaving a
+    /// bound behind either way.
+    pub fn probe(&mut self, env: &Env, a: &Type, b: &Type) -> bool {
+        self.trying(false, |s| s.constrain(env, a, b))
+    }
+
     /// Whether `f` succeeds; where it does not, every bound it added is
     /// taken back.
     fn attempting(&mut self, f: impl FnOnce(&mut Self) -> Result<()>) -> bool {
+        self.trying(true, f)
+    }
+
+    /// Whether `f` succeeds. What it added is taken back where it fails,
+    /// and where it succeeds too unless `keep`.
+    fn trying(&mut self, keep: bool, f: impl FnOnce(&mut Self) -> Result<()>) -> bool {
         let (mark, held) = (self.added.len(), self.held.len());
         self.attempts += 1;
         let fits = f(self).is_ok();
         self.attempts -= 1;
-        if !fits {
+        if !(fits && keep) {
             self.held.truncate(held);
             for (v, what) in self.added.drain(mark..).rev() {
                 let cell = v.cell();

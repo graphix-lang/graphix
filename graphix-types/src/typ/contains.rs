@@ -4247,6 +4247,16 @@ impl Type {
         hist: &mut ContainsHist,
         t: &Self,
     ) -> Result<bool> {
+        // under a check by bounds every question a node asks is the
+        // solver's, whichever way it was asked: one that commits is an
+        // attempt, any other a probe that leaves nothing behind
+        let asked = super::bounds::with(|s| match flags.contains(ContainsFlags::Commit) {
+            true => s.attempt(env, t, self),
+            false => s.probe(env, t, self),
+        });
+        if let Some(fits) = asked {
+            return Ok(fits);
+        }
         #[cfg(test)]
         CONTAINS_STEPS.with(|n| n.set(n.get() + 1));
         let held = ensure_sufficient(|| self.contains_int_inner(flags, env, hist, t));
