@@ -182,6 +182,79 @@ fn outside_parts<R: Rt>(
     }
 }
 
+/// Where `pat` takes apart a literal of its own shape (a tuple pattern
+/// over a tuple literal, a struct pattern over a struct literal, nested),
+/// each name it binds with the expression it names; false where it does
+/// not, or where it tests anything.
+fn literal_parts<'a>(
+    pat: &'a expr::StructurePattern,
+    e: &'a Expr,
+    out: &mut SmallVec<[(&'a ArcStr, &'a Expr); 4]>,
+) -> bool {
+    use expr::StructurePattern as P;
+    let e = e.unparen();
+    match (pat, &e.kind) {
+        (P::Ignore, _) => true,
+        (P::Bind(n), _) => {
+            out.push((&n.name, e));
+            true
+        }
+        (P::Tuple { all: None, binds }, ExprKind::Tuple { args }) => {
+            binds.len() == args.len()
+                && binds.iter().zip(args.iter()).all(|(p, e)| literal_parts(p, e, out))
+        }
+        (P::Struct { exhaustive: true, all: None, binds }, ExprKind::Struct(s)) => {
+            binds.len() == s.args.len()
+                && binds.iter().all(|(field, p, _)| {
+                    match s.args.iter().find(|(name, _)| name == field) {
+                        Some((_, e)) => literal_parts(p, e, out),
+                        None => false,
+                    }
+                })
+        }
+        _ => false,
+    }
+}
+
+/// The type each name of `pat` has where `pat` takes apart a literal `e`
+/// ([`literal_parts`]) of type `t`.
+fn literal_part_types<'a>(
+    pat: &'a expr::StructurePattern,
+    e: &Expr,
+    t: &Type,
+    out: &mut SmallVec<[(&'a ArcStr, Type); 4]>,
+) -> bool {
+    use expr::StructurePattern as P;
+    let e = e.unparen();
+    let t = t.with_deref(|t| t.cloned());
+    match (pat, &e.kind, &t) {
+        (P::Ignore, ..) => true,
+        (P::Bind(n), _, Some(t)) => {
+            out.push((&n.name, t.clone()));
+            true
+        }
+        (P::Tuple { binds, .. }, ExprKind::Tuple { args }, Some(Type::Tuple(ts))) => {
+            binds.len() == ts.len()
+                && binds
+                    .iter()
+                    .zip(args.iter())
+                    .zip(ts.iter())
+                    .all(|((p, e), t)| literal_part_types(p, e, t, out))
+        }
+        (P::Struct { binds, .. }, ExprKind::Struct(s), Some(Type::Struct(fs))) => {
+            binds.iter().all(|(field, p, _)| {
+                let e = s.args.iter().find(|(name, _)| name == field);
+                let t = fs.iter().find(|(name, ..)| name == field);
+                match (e, t) {
+                    (Some((_, e)), Some((_, t, _))) => literal_part_types(p, e, t, out),
+                    _ => false,
+                }
+            })
+        }
+        _ => false,
+    }
+}
+
 /// `e` past grouping parentheses and the statements of a block it ends.
 fn expr_value(e: &Expr) -> &Expr {
     match &e.kind {
@@ -490,6 +563,7 @@ impl<R: Rt> Bind<R> {
         let mut deferred = None;
         let mut narrowed = None;
         let mut held = Held::Value;
+        let mut parts_generic: Option<SmallVec<[ArcStr; 4]>> = None;
         let (node, pattern, typ) = if bounds::active() {
             if *rec && pat.single_bind().is_none() {
                 bailat!(spec, "can't use rec on a complex pattern")
@@ -508,15 +582,36 @@ impl<R: Rt> Bind<R> {
                 }
                 _ => None,
             };
+            // a pattern over a literal of its own shape names the
+            // literal's parts: those that are definitions are generic
+            let mut named: SmallVec<[(&ArcStr, &Expr); 4]> = SmallVec::new();
+            let parts_defined = pat.single_bind().is_none()
+                && annotation.is_none()
+                && literal_parts(pat, value, &mut named)
+                && named.iter().any(|(_, e)| defines(ctx, scope, e))
+                && !named.iter().any(|(n, _)| {
+                    ctx.written.innermost().is_some_and(|w| {
+                        w.contains(&(spec.id, CompactString::from(n.as_str())))
+                    })
+                });
             if forwarded.is_some() {
                 held = Held::Scheme
-            } else if unwritten && defines(ctx, scope, value) {
+            } else if parts_defined || (unwritten && defines(ctx, scope, value)) {
                 let depth = match current_level() {
                     l if l.is_generic() => 1,
                     l => l.depth() + 1,
                 };
                 held = Held::Definition(Level::Def { depth, owner: LambdaId::new() })
             }
+            let generic_parts: SmallVec<[ArcStr; 4]> = match parts_defined {
+                true => named
+                    .iter()
+                    .filter(|(_, e)| defines(ctx, scope, e))
+                    .map(|(n, _)| (*n).clone())
+                    .collect(),
+                false => SmallVec::new(),
+            };
+            parts_generic = Some(generic_parts).filter(|_| parts_defined);
             let outer = current_level();
             let parts = OUTSIDE.with_borrow(|parts| parts.len());
             if let Held::Definition(_) = held {
@@ -728,9 +823,21 @@ impl<R: Rt> Bind<R> {
         let passes = !bounds::active() && passes_generic(&ctx.env, b, &node);
         if !matches!(held, Held::Value) {
             name_value(&mut node, true);
+            let mut generic: SmallVec<[BindId; 4]> = SmallVec::new();
             pattern.ids(&mut |id| {
-                ctx.env.poly_binds.insert(id);
+                let named = |names: &SmallVec<[ArcStr; 4]>| {
+                    ctx.env
+                        .by_id
+                        .get(&id)
+                        .is_some_and(|b| names.iter().any(|n| n.as_str() == b.name))
+                };
+                if parts_generic.as_ref().is_none_or(named) {
+                    generic.push(id)
+                }
             });
+            for id in generic {
+                ctx.env.poly_binds.insert(id);
+            }
         }
         if !bounds::active() && names_generic(&ctx.env, b, &node) {
             match passes {
@@ -834,7 +941,37 @@ impl<R: Rt> Bind<R> {
                 wrap!(node, node.typecheck0(ctx))?;
                 let value = node.typ().clone();
                 match b.typ.is_some() {
-                    false => wrap!(node, generalize(ctx, &value))?,
+                    false => {
+                        wrap!(node, generalize(ctx, &value))?;
+                        // a pattern over a literal: each name is its part
+                        let mut parts: SmallVec<[(&ArcStr, Type); 4]> = SmallVec::new();
+                        if b.pattern.single_bind().is_none() {
+                            if !literal_part_types(&b.pattern, &b.value, &value, &mut parts) {
+                                bailat!(self.spec, "BUG: a pattern over a literal lost its parts")
+                            }
+                            let mut ids: SmallVec<[BindId; 4]> = SmallVec::new();
+                            self.pattern.ids(&mut |id| ids.push(id));
+                            for id in ids {
+                                let part = ctx.env.by_id.get(&id).and_then(|bind| {
+                                    parts.iter().find(|(n, _)| n.as_str() == bind.name)
+                                });
+                                // a definition's name is its scheme; any
+                                // other part flows into its name's cell
+                                match part {
+                                    Some((_, t)) if ctx.env.poly_binds.contains(&id) => {
+                                        ctx.env.retype(id, t.clone())
+                                    }
+                                    Some((_, t)) => {
+                                        let held = ctx.env.by_id.get(&id).map(|b| b.typ.clone());
+                                        if let Some(held) = held {
+                                            wrap!(node, held.check_contains(&ctx.env, t))?
+                                        }
+                                    }
+                                    None => (),
+                                }
+                            }
+                        }
+                    }
                     // the written type is the scheme: one instance of
                     // the value fits it
                     true => {
@@ -848,7 +985,12 @@ impl<R: Rt> Bind<R> {
             Held::Definition(level) => {
                 let _at = AtLevel::enter(level);
                 wrap!(node, node.typecheck0(ctx))?;
-                wrap!(node, self.typ.check_contains(&ctx.env, node.typ()))?
+                wrap!(node, self.typ.check_contains(&ctx.env, node.typ()))?;
+                if b.pattern.single_bind().is_none() {
+                    let pat = self.pattern.by_bounds(ctx).at(&self.spec)?;
+                    super::pattern::destructure(ctx, pat, &self.typ, self.spec.pos)
+                        .at(&self.spec)?
+                }
             }
             Held::Scheme => wrap!(node, node.typecheck0(ctx))?,
             Held::Value => {
