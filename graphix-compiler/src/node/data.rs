@@ -519,6 +519,19 @@ impl<R: Rt> Update<R> for StructRef<R> {
         f(&mut self.source)
     }
 
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
+        wrap!(self.source, self.source.typecheck1(ctx))?;
+        // a check by bounds decides the struct after the read is checked:
+        // the field's place is known only now
+        if ctx.bounds && self.sorted_field_idx.is_none() {
+            let source = self.source.typ().resolve_tvars();
+            if let Ok((idx, _)) = struct_field_type(ctx, &source, &self.field_name) {
+                self.sorted_field_idx = idx
+            }
+        }
+        Ok(())
+    }
+
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::StructRef, buf);
         self.spec.encode(buf)?;
