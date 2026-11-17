@@ -18,7 +18,12 @@ fn main() {
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../stdlib"));
     let judge = |text: &str, dir: Option<PathBuf>, sig: Option<String>| {
-        let mut c = Checker::new(stdlib.clone(), dir);
+        // a package's root module: .../graphix-package-<name>/src/graphix/mod.gx
+        let root = dir.as_ref().filter(|_| sig.is_some()).and_then(|d| {
+            let pkg = d.parent()?.parent()?.file_name()?.to_str()?.strip_prefix("graphix-package-")?;
+            Some(pkg.replace('-', "_"))
+        });
+        let mut c = Checker::new(stdlib.clone(), dir, root);
         let verdict = match c.program(text, sig.as_deref()) {
             Ok(t) => format!("ok\t{t}"),
             Err(e) => match e.downcast_ref::<Unsupported>() {
@@ -31,7 +36,8 @@ fn main() {
                 }
             },
         };
-        println!("{verdict}\t{}", c.s.steps)
+        let (module, line, column) = &c.last;
+        println!("{verdict}\t{}\t{module}:{line}:{column}", c.s.steps)
     };
     let files: Vec<String> = env::args().skip(1).collect();
     if files.is_empty() {

@@ -70,6 +70,9 @@ pub struct Checker {
     expanding: Vec<String>,
     /// Where the program's own `mod name;` files are.
     dir: Option<PathBuf>,
+    /// The package the program is the root of, if it is one: its modules
+    /// are `root::name`.
+    root: Option<String>,
     /// The module being checked, outermost first.
     here: Vec<String>,
     /// What the program's own modules bind, by full name.
@@ -78,6 +81,30 @@ pub struct Checker {
     aliases: HashMap<String, String>,
     /// What each interface file `use`s.
     mod_uses: HashMap<String, Vec<String>>,
+    /// The module and position of the expression last entered: where a
+    /// refusal or an unsupported construct is.
+    pub last: (String, i32, i32),
+    /// The names the pattern being built has bound so far.
+    in_pattern: Vec<(ArcStr, Var)>,
+}
+
+/// A `use` path read in `module`: `self::` is that module, `super::` the
+/// one around it.
+fn used(path: &[String], module: &str) -> String {
+    let around = module.rsplit_once("::").map(|(m, _)| m).unwrap_or("");
+    let base = match path[0].as_str() {
+        "self" => Some(module),
+        "super" => Some(around),
+        _ => None,
+    };
+    match base {
+        Some(b) => std::iter::once(b.to_string())
+            .filter(|b| !b.is_empty())
+            .chain(path[1..].iter().cloned())
+            .collect::<Vec<_>>()
+            .join("::"),
+        None => path.join("::"),
+    }
 }
 
 fn parts(p: &ModPath) -> Vec<String> {
@@ -118,7 +145,7 @@ fn value_of(e: &Expr) -> &Expr {
 }
 
 impl Checker {
-    pub fn new(stdlib: PathBuf, dir: Option<PathBuf>) -> Self {
+    pub fn new(stdlib: PathBuf, dir: Option<PathBuf>, root: Option<String>) -> Self {
         Checker {
             s: Solver::default(),
             stdlib,
@@ -131,10 +158,13 @@ impl Checker {
             typedefs: HashMap::new(),
             expanding: vec![],
             dir,
-            here: vec![],
+            here: root.iter().cloned().collect(),
+            root,
             mods: HashMap::new(),
             aliases: HashMap::new(),
             mod_uses: HashMap::new(),
+            last: (String::new(), 0, 0),
+            in_pattern: vec![],
         }
     }
 
@@ -152,7 +182,8 @@ impl Checker {
             }
             Some(sig) => {
                 let sig = parser::parse_sig(Origin::unspecified(sig))?;
-                self.module(&exprs, Some(&sig.items), "", 0)?
+                let prefix = self.here.join("::");
+                self.module(&exprs, Some(&sig.items), &prefix, 0)?
             }
         }
         self.s.finish()?;
@@ -178,7 +209,11 @@ impl Checker {
             }
         };
         // one of the program's own modules, by its interface file
-        let own = self.dir.as_ref().map(|d| {
+        let inside = match &self.root {
+            Some(root) => module.strip_prefix(root.as_str()).map(|m| m.trim_start_matches("::")),
+            None => Some(module),
+        };
+        let own = self.dir.as_ref().zip(inside.filter(|m| !m.is_empty())).map(|(d, module)| {
             let path = module.replace("::", "/");
             let flat = d.join(format!("{path}.gxi"));
             if flat.exists() { flat } else { d.join(format!("{path}/mod.gxi")) }
@@ -200,24 +235,7 @@ impl Checker {
                 }
                 SigKind::TypeDef(td) => self.typedef(module, td),
                 SigKind::Use { names, .. } => {
-                    // `self::` is this module, `super::` the one around it
-                    let around = module.rsplit_once("::").map(|(m, _)| m).unwrap_or("");
-                    let uses = names.iter().map(|i| {
-                        let path = parts(&i.path);
-                        let base = match path[0].as_str() {
-                            "self" => Some(module),
-                            "super" => Some(around),
-                            _ => None,
-                        };
-                        match base {
-                            Some(b) => std::iter::once(b.to_string())
-                                .filter(|b| !b.is_empty())
-                                .chain(path[1..].iter().cloned())
-                                .collect::<Vec<_>>()
-                                .join("::"),
-                            None => path.join("::"),
-                        }
-                    });
+                    let uses = names.iter().map(|i| used(&parts(&i.path), module));
                     self.mod_uses.entry(module.to_string()).or_default().extend(uses)
                 }
                 _ => (),
@@ -510,7 +528,7 @@ impl Checker {
                 SigKind::Use { names, .. } => {
                     for i in names.iter() {
                         let path = parts(&i.path);
-                        let full = path.join("::");
+                        let full = used(&path, prefix);
                         self.uses.push(full.clone());
                         self.aliases.insert(path[path.len() - 1].clone(), full);
                     }
@@ -637,27 +655,32 @@ impl Checker {
                 Ok(held)
             }
             StructurePattern::Ignore => self.infer(&b.value, lvl),
-            StructurePattern::Tuple { all: None, binds } => {
+            pattern => {
                 let t = self.infer(&b.value, lvl)?;
-                if let Some(written) = &b.typ {
-                    let w = self.conv(written, "")?;
-                    self.s.constrain(&t, &w)?
-                }
-                for (i, p) in binds.iter().enumerate() {
-                    match p {
-                        StructurePattern::Ignore => (),
-                        StructurePattern::Bind(name) => {
-                            let out = self.s.fresh_ty(lvl, Kind::Single);
-                            self.s.watch(&t, Watch::Index { i, out: out.clone() })?;
-                            self.bind(&name.name, Binding::Mono(out))
-                        }
-                        _ => unsupported("nested let pattern")?,
+                let t = match &b.typ {
+                    None => t,
+                    Some(written) => {
+                        let w = self.conv(written, "")?;
+                        self.s.constrain(&t, &w)?;
+                        w
                     }
-                }
+                };
+                self.destructure(pattern, &t, lvl)?;
                 Ok(t)
             }
-            _ => unsupported("let pattern"),
         }
+    }
+
+    /// Bind a pattern's names to the parts of a value: a select of one arm,
+    /// so the pattern must take every value.
+    fn destructure(&mut self, p: &StructurePattern, t: &Ty, lvl: u32) -> Result<()> {
+        self.in_pattern.clear();
+        let pat = self.structure(p, lvl)?;
+        if let (Ty::Var(_), Some(shape)) = (self.s.shallow(t), pat.admits()) {
+            self.s.constrain(t, &unsplit(&shape))?
+        }
+        let id = self.s.select(vec![Arm { pat, guarded: false }]);
+        self.s.watch(t, Watch::Select(id))
     }
 
     /// The lambda a generic `let` names, past grouping parentheses and the
@@ -700,8 +723,7 @@ impl Checker {
         for a in l.args.iter() {
             let name = match &a.pattern {
                 StructurePattern::Bind(n) => Some(n.name.clone()),
-                StructurePattern::Ignore => None,
-                _ => unsupported("argument pattern")?,
+                _ => None,
             };
             let ty = match &a.constraint {
                 Some(t) => self.conv(t, "")?,
@@ -716,8 +738,10 @@ impl Checker {
                     (name.clone(), true)
                 }
             };
-            if let Some(name) = &name {
-                self.bind(name, Binding::Mono(ty.clone()))
+            match (&name, &a.pattern) {
+                (Some(name), _) => self.bind(name, Binding::Mono(ty.clone())),
+                (None, StructurePattern::Ignore) => (),
+                (None, pattern) => self.destructure(pattern, &ty, lvl)?,
             }
             args.push(FnArg { label, optional, ty })
         }
@@ -802,13 +826,14 @@ impl Checker {
     }
 
     fn structure(&mut self, p: &StructurePattern, lvl: u32) -> Result<Pat> {
-        // a name the arm already binds (in another alternative) is that name
+        // a name the pattern already binds (in another alternative) is that name
         let named = |c: &mut Self, name: &Option<graphix_types::expr::Name>| {
-            name.as_ref().map(|n| match c.scopes.last().unwrap().get(&n.name) {
-                Some(Binding::Mono(Ty::Var(v))) => *v,
-                _ => {
+            name.as_ref().map(|n| match c.in_pattern.iter().find(|(m, _)| m == &n.name) {
+                Some((_, v)) => *v,
+                None => {
                     let v = c.s.fresh(lvl, Kind::Join);
                     c.bind(&n.name, Binding::Mono(Ty::Var(v)));
+                    c.in_pattern.push((n.name.clone(), v));
                     v
                 }
             })
@@ -869,6 +894,7 @@ impl Checker {
     }
 
     fn pattern(&mut self, p: &Pattern, lvl: u32) -> Result<Arm> {
+        self.in_pattern.clear();
         let inner = self.structure(&p.structure_predicate, lvl)?;
         let pat = match &p.type_predicate {
             None => inner,
@@ -939,6 +965,7 @@ impl Checker {
 
     pub fn infer(&mut self, e: &Expr, lvl: u32) -> Result<Ty> {
         let outer = self.s.at.replace((e.pos.line as u32, e.pos.column as u32));
+        self.last = (self.here.join("::"), e.pos.line, e.pos.column);
         let t = self.infer_at(e, lvl);
         self.s.at = outer;
         t
@@ -960,7 +987,7 @@ impl Checker {
                     let path = parts(&item.path);
                     let full = match self.aliases.get(&path[0]) {
                         Some(a) => std::iter::once(a.clone()).chain(path[1..].iter().cloned()).collect::<Vec<_>>().join("::"),
-                        None => path.join("::"),
+                        None => used(&path, &self.here.join("::")),
                     };
                     let name = match &item.rename {
                         Some(n) => n.name.to_string(),
@@ -977,7 +1004,7 @@ impl Checker {
                     ModuleKind::Dynamic { .. } => unsupported("dynamic module")?,
                     ModuleKind::Unresolved { .. } => {
                         let mut dir = self.dir.clone().ok_or_else(|| Unsupported("module file".into()))?;
-                        self.here.iter().for_each(|m| dir.push(m));
+                        self.here.iter().skip(self.root.iter().count()).for_each(|m| dir.push(m));
                         let flat = dir.join(format!("{}.gx", name.name));
                         let file = if flat.exists() { flat } else { dir.join(format!("{}/mod.gx", name.name)) };
                         let text = fs::read_to_string(&file).map_err(|_| Unsupported(format!("module file {}", name.name)))?;

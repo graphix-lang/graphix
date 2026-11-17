@@ -116,8 +116,33 @@ pub fn split(t: &Ty) -> Ty {
 pub fn unsplit(t: &Ty) -> Ty {
     t.map(&mut |t| match t {
         Ty::Variant(tag, _) if tag == TRUE || tag == FALSE => Some(Ty::prim(Typ::Bool)),
-        _ => None,
+        t => lengths(t).map(|(_, _, inner)| unsplit(&inner)),
     })
+}
+
+/// Inside a select, the arrays of a type that earlier arms left: those
+/// whose length is not in `taken` (a bit per length under 64) and is under
+/// `from`. Written as a variant around the array type.
+const LENGTHS: &str = "#lengths:";
+
+fn lengths(t: &Ty) -> Option<(u64, usize, Ty)> {
+    match t {
+        Ty::Variant(tag, ts) if tag.starts_with(LENGTHS) && ts.len() == 1 => {
+            let (taken, from) = tag[LENGTHS.len()..].split_once(':')?;
+            Some((taken.parse().ok()?, from.parse().ok()?, ts[0].clone()))
+        }
+        _ => None,
+    }
+}
+
+fn left(array: &Ty, taken: u64, from: usize) -> Ty {
+    match (taken, from) {
+        (0, usize::MAX) => array.clone(),
+        (taken, from) if from <= 64 && (0..from).all(|n| taken >> n & 1 == 1) => Ty::Bot,
+        (taken, from) => {
+            Ty::Variant(format!("{LENGTHS}{taken}:{from}").into(), [array.clone()].into())
+        }
+    }
 }
 
 pub struct Select {
@@ -197,7 +222,8 @@ impl Solver {
 
     /// The values in both `a` and `b`.
     pub fn both(&self, a: &Ty, b: &Ty) -> Ty {
-        let (a, b) = (self.expand(a), self.expand(b));
+        let plain = |t: Ty| lengths(&t).map(|l| l.2).unwrap_or(t);
+        let (a, b) = (plain(self.expand(a)), plain(self.expand(b)));
         let each = |xs: &[Ty], ys: &[Ty]| -> Option<Rc<[Ty]>> {
             let ts: Rc<[Ty]> = xs.iter().zip(ys).map(|(x, y)| self.both(x, y)).collect();
             (!ts.iter().any(|t| matches!(t, Ty::Bot))).then_some(ts)
@@ -241,7 +267,8 @@ impl Solver {
 
     /// The values of `a` a test for `b` does not take.
     pub fn less(&self, a: &Ty, b: &Ty) -> Ty {
-        let (a, b) = (self.expand(a), self.expand(b));
+        let plain = |t: Ty| lengths(&t).map(|l| l.2).unwrap_or(t);
+        let (a, b) = (plain(self.expand(a)), plain(self.expand(b)));
         // a product less a product: the tuples that differ from it in a first component
         let product = |xs: &[Ty], ys: &[Ty], wrap: &dyn Fn(Rc<[Ty]>) -> Ty| -> Ty {
             let mut out = vec![];
@@ -388,23 +415,39 @@ impl Solver {
                 }
                 Routed { part: union(parts), rest: reach, binds }
             }
-            (Pat::Elems { all, list, elems, open: run }, Ty::Array(e) | Ty::List(e))
-                if *list == matches!(t, Ty::List(_)) =>
+            (Pat::Elems { all, list, elems, open: run }, _)
+                if matches!(lengths(&t).map(|l| l.2).unwrap_or(t.clone()), Ty::Array(_) | Ty::List(_)) =>
             {
-                // a pattern that fixes a length leaves the other lengths
-                let rs: Vec<Routed> = elems.iter().map(|p| self.route(p, e, open)).collect();
-                if rs.iter().any(|r| matches!(r.part, Ty::Bot)) && !elems.is_empty() {
+                // a pattern takes the arrays of its length, or of its
+                // length and longer where it leaves a run open
+                let (taken, from, array) = lengths(&t).unwrap_or((0, usize::MAX, t.clone()));
+                let e = match &array {
+                    Ty::Array(e) if !*list => e.clone(),
+                    Ty::List(e) if *list => e.clone(),
+                    _ => return nothing(),
+                };
+                let n = elems.len();
+                let gone = n >= from || (run.is_none() && n < 64 && taken >> n & 1 == 1);
+                let rs: Vec<Routed> = elems.iter().map(|p| self.route(p, &e, open)).collect();
+                if gone || rs.iter().any(|r| matches!(r.part, Ty::Bot)) {
                     return nothing();
                 }
+                let whole = rs.iter().all(|r| matches!(r.rest, Ty::Bot));
                 let mut binds: Vec<(Var, Ty)> = rs.into_iter().flat_map(|r| r.binds).collect();
                 if let Some(Some(v)) = run {
-                    binds.push((*v, t.clone()))
+                    binds.push((*v, array.clone()))
                 }
-                let rest = match (elems.is_empty(), run) {
-                    (true, Some(_)) => Ty::Bot,
-                    _ => t.clone(),
+                let rest = match (whole, run) {
+                    (false, _) => t.clone(),
+                    (true, Some(_)) => left(&array, taken, n.min(from)),
+                    (true, None) if n < 64 => left(&array, taken | 1 << n, from),
+                    (true, None) => t.clone(),
                 };
-                Routed { binds: named(all, &t, binds), part: t.clone(), rest }
+                Routed { binds: named(all, &array, binds), part: array, rest }
+            }
+            (_, _) if lengths(&t).is_some() && !matches!(pat, Pat::Or(_)) => {
+                let (_, _, array) = lengths(&t).unwrap();
+                self.route(pat, &array, open)
             }
             (Pat::Tuple(all, ps), Ty::Tuple(xs)) if ps.len() == xs.len() => {
                 product(all, &ps.iter().collect::<Vec<_>>(), xs, &|ts| Ty::Tuple(ts.into()))
