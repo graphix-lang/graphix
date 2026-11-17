@@ -15,11 +15,9 @@ use super::{
     genn::SynthCall,
     lambda::LambdaDef,
     module::{self, Holder},
-    solving,
 };
 use crate::{
-    BindId, CFlag, CompileCtx, DefAssertionKind, ExecCtx, LambdaId, Node, NodeView, Rt,
-    Scope,
+    BindId, CFlag, CompileCtx, DefAssertionKind, ExecCtx, Node, NodeView, Rt, Scope,
     SourcePosition, TagValue, Update, bailat,
     env::{
         Env, Glob, ImplDef, Map, TraitDef, TraitMethodDef, TraitMethodRef, TraitMethodSig,
@@ -39,7 +37,7 @@ use crate::{
         AmbiguousMember, CoreTrait, FnArgKind, FnType, TVar, TakerUnion, TraitId, Type,
         TypeRef, UndecidedTaker, bounds, check_bounds_acyclic, seed_conjuncts,
         settle::VariableUnion,
-        tvar::{AtLevel, Level, RigidGate, current_level},
+        tvar::{RigidGate, current_level},
     },
     wrap,
 };
@@ -187,27 +185,7 @@ fn implements<R: Rt>(
 /// declaration with its variables held as constants. The variables the
 /// body's check held as constants are the scheme's from here on.
 fn fits_declared<R: Rt>(ctx: &CompileCtx<R>, made: &Type, declared: &Type) -> Result<()> {
-    let outer = current_level();
-    let mark = solving(|s| {
-        s.quantify(made, outer.depth());
-        s.mark()
-    });
-    let level = Level::Def { depth: outer.depth() + 1, owner: LambdaId::new() };
-    let _at = AtLevel::enter(level);
-    let declared = declared.reset_tvars();
-    match &declared {
-        Type::Fn(ft) => ft.claim(level),
-        t => t.claim_free(level),
-    }
-    let _held = hold_declared(iter::once(&declared));
-    let one = solving(|s| s.instantiate(made, Level::GENERIC.depth() - 1, level));
-    if std::env::var_os("GRAPHIX_BOUNDS_DEBUG").is_some() {
-        eprintln!("fits_declared: made {made:?}\n  one {one:?}\n  declared {declared:?}")
-    }
-    declared.check_contains(&ctx.env, &one)?;
-    // the instance is decided here, where the declaration's variables
-    // are still constants
-    solving(|s| s.generalize(&ctx.env, Type::BOTTOM, outer.depth(), mark))
+    bounds::fits(&ctx.env, made, declared, current_level())
 }
 
 /// [`check_method_return`] of a method [`implements`] held to `declared`.

@@ -5,6 +5,7 @@
 //! consistent with each other.
 
 use crate::{
+    LambdaId,
     env::Env,
     stack::ensure_sufficient,
     typ::{
@@ -1065,6 +1066,35 @@ pub fn instance(env: &Env, def: &Type, at: &Type) -> Result<AHashMap<usize, TVar
     solving.constrain(env, &one, at)?;
     solving.finish(env)?;
     Ok(copies)
+}
+
+/// Whether what a binding holds, whose type its check left as `made`, is
+/// the `declared` type for whatever each of the declaration's variables
+/// stands for: one instance of `made` fits the declaration with its
+/// variables held as constants. `outer` is the level the declaration is
+/// read at. Asked of the solver the check is running, where there is one,
+/// since a cell of `made` the check has not decided takes the bound.
+pub fn fits(env: &Env, made: &Type, declared: &Type, outer: Level) -> Result<()> {
+    let fits = |s: &mut Solving| {
+        let mark = s.mark();
+        s.quantify(made, outer.depth());
+        let level = Level::Def { depth: outer.depth() + 1, owner: LambdaId::new() };
+        let _at = AtLevel::enter(level);
+        let declared = declared.reset_tvars();
+        let mut constants = SmallVec::new();
+        cells_of(&declared, true, &mut constants);
+        constants.iter().for_each(|v| v.claim(level));
+        let _held: SmallVec<[_; 4]> = constants.iter().map(|v| v.open_rigid()).collect();
+        let one = s.instantiate(made, Level::GENERIC.depth() - 1, level);
+        s.constrain(env, &one, &declared)?;
+        // the instance is decided here, where the declaration's
+        // variables are still constants
+        s.generalize(env, Type::BOTTOM, outer.depth(), mark)
+    };
+    match with(fits) {
+        Some(r) => r,
+        None => fits(&mut Solving::default()),
+    }
 }
 
 /// A type of a generic definition's check as one instance of the

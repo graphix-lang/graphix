@@ -633,6 +633,7 @@ fn check_val(
     typ: &Type,
     generalized: bool,
     holder: impl Fn(&TVar) -> Holder,
+    by_bounds: bool,
 ) -> Result<()> {
     let refused = |e: anyhow::Error| {
         let settled = match settled_note(env, &[typ]) {
@@ -644,6 +645,12 @@ fn check_val(
         });
         anyhow!("val {name} is declared {declared} but implemented {typ}: {e:#}{settled}")
     };
+    // a binding a check by bounds typed is its declaration where one
+    // instance of it fits the declaration, its variables constants
+    if by_bounds {
+        let outer = crate::typ::tvar::current_level();
+        return crate::typ::bounds::fits(env, typ, declared, outer).map_err(refused);
+    }
     // CR claude for claude: [bug/critical] This comparison runs outside the module's
     // own env (Module::check_body calls check_sig after it leaves with_restored_mut),
     // so a lambda parameter whose whole annotation is a type name is compared with the
@@ -1385,6 +1392,7 @@ fn check_sig_items<R: Rt>(
                 typ,
                 generalized_impl(ctx, id),
                 |tv| Holder::of(ctx, id, tv),
+                ctx.bounds,
             )?;
             if ctx.connect_targets.contains(&proxy_id) {
                 ctx.check_val_written(&inner.name, &proxy_bind.typ, typ)?
@@ -1532,6 +1540,7 @@ pub fn check_script_sig<R: Rt>(
                     &bind.typ,
                     generalized_impl(ctx, bind.id),
                     |tv| Holder::of(ctx, bind.id, tv),
+                    ctx.bounds,
                 )
                 .context(ParserContext { ori: bind.ori.clone(), pos: bind.pos })?;
                 // the language server sees the val as a module's: a binding
