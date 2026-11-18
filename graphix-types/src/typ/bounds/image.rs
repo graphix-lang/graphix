@@ -389,6 +389,7 @@ impl Known {
         let Known {
             feeders,
             sinks,
+            from,
             quantified,
             demanded,
             made,
@@ -399,6 +400,7 @@ impl Known {
         } = self;
         put_all(feeders, buf)?;
         put_all(sinks, buf)?;
+        put_all(from, buf)?;
         quantified.encode(buf)?;
         demanded.encode(buf)?;
         made.encode(buf)?;
@@ -419,7 +421,7 @@ impl Known {
     }
 
     pub(crate) fn image_decode(buf: &mut impl Buf) -> Result<Self, PackError> {
-        let (feeders, sinks) = (get_all(buf)?, get_all(buf)?);
+        let (feeders, sinks, from) = (get_all(buf)?, get_all(buf)?, get_all(buf)?);
         let (quantified, demanded, made) =
             (bool::decode(buf)?, bool::decode(buf)?, bool::decode(buf)?);
         let uses = (0..get_len(buf)?)
@@ -434,6 +436,7 @@ impl Known {
         Ok(Known {
             feeders,
             sinks,
+            from,
             quantified,
             demanded,
             made,

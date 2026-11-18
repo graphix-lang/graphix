@@ -209,6 +209,11 @@ pub struct Known {
     /// For a declared variable: the cells outside its definition that its
     /// values flow into. Each instance's type for it flows there.
     pub(crate) sinks: SmallVec<[TVar; 1]>,
+    /// Every cell a value may reach this one from, however the flow was
+    /// made: a cell flowing in at any depth, a twin it was extruded to or
+    /// from, a cell whose use produces into it (a select's scrutinee for
+    /// its binds). What could ever reach a cell is read here alone.
+    pub(crate) from: SmallVec<[TVar; 1]>,
     /// A scheme's variable: each use of the scheme takes a copy, and
     /// nothing fixes it.
     pub(crate) quantified: bool,
@@ -234,6 +239,26 @@ pub struct Known {
 }
 
 impl Left {
+    /// The cells the check left names.
+    fn cells(&self, out: &mut SmallVec<[TVar; 4]>) {
+        match self {
+            Left::Held(p) => {
+                cells_of(&p.0, true, out);
+                cells_of(&p.1, true, out)
+            }
+            Left::Compared(p) => {
+                cells_of(&p.0, true, out);
+                cells_of(&p.1, true, out)
+            }
+            Left::Asked(a) => cells_of(&a.0, true, out),
+            Left::Single(u) => out.push(u.clone()),
+            Left::Waiting(of, w) => {
+                of.cells(out);
+                cells_of(w, true, out)
+            }
+        }
+    }
+
     /// Whether the two are one check left to an instance. Each cell of a
     /// scheme the check reaches lists it, and a restored image gives each
     /// list its own copy: the same types over the same cells are it.
@@ -518,6 +543,7 @@ enum Added {
     Upper,
     Feeder,
     Sink,
+    From,
 }
 
 /// The union of `ts` as they stand: flat, each member once, the primitives
@@ -791,6 +817,7 @@ impl Solving {
                     (Added::Upper, _) => drop(c.constraints.pop()),
                     (Added::Feeder, Some(k)) => drop(k.feeders.pop()),
                     (Added::Sink, Some(k)) => drop(k.sinks.pop()),
+                    (Added::From, Some(k)) => drop(k.from.pop()),
                     (_, None) => (),
                 }
             }
@@ -805,6 +832,23 @@ impl Solving {
     fn note(&mut self, v: &TVar, what: Added) {
         if self.attempts > 0 {
             self.added.push((v.clone(), what))
+        }
+    }
+
+    /// Record that a value may reach the cell `to` from the cell `from`.
+    fn sent(&mut self, to: &TVar, from: &TVar) {
+        if to.same_cell(from) || to.is_bound() {
+            return;
+        }
+        let new = known(to, |k| match k.from.iter().any(|u| u.same_cell(from)) {
+            true => false,
+            false => {
+                k.from.push(from.clone());
+                true
+            }
+        });
+        if new {
+            self.note(to, Added::From)
         }
     }
 
@@ -1058,6 +1102,13 @@ impl Solving {
                 let Some(lower) = record(v, b, false) else { return Ok(()) };
                 self.note(v, Added::Upper);
                 self.track(v);
+                // a declared variable takes the flow too, once its
+                // definition has closed
+                if let Type::TVar(w) = b
+                    && !w.is_bound()
+                {
+                    self.sent(w, v)
+                }
                 if let Some(w) = vb {
                     if w.level().depth() == at.depth() {
                         known(w, |k| k.feeders.push(v.clone()));
@@ -1092,6 +1143,12 @@ impl Solving {
         let Some(upper) = record(w, a, true) else { return Ok(()) };
         self.note(w, Added::Lower);
         self.track(w);
+        if let Type::TVar(u) = a
+            && !u.is_bound()
+        {
+            let u = u.clone();
+            self.sent(w, &u)
+        }
         // a use of `w` meets the bound; where the bound is a cell, what
         // that cell holds
         let met = match open(a) {
@@ -1169,6 +1226,7 @@ impl Solving {
                             true => {
                                 cell.write().constraints.push(Type::TVar(n.clone()));
                                 self.note(v, Added::Upper);
+                                self.sent(&n, v);
                                 let lower: SmallVec<[Type; 1]> = lower
                                     .iter()
                                     .map(|l| self.extrude(l, pos, at))
@@ -1178,10 +1236,18 @@ impl Solving {
                             false => {
                                 cell.write().lower.push(Type::TVar(n.clone()));
                                 self.note(v, Added::Lower);
+                                self.sent(v, &n);
                                 let upper: SmallVec<[Type; 1]> = upper
                                     .iter()
                                     .map(|u| self.extrude(u, pos, at))
                                     .collect();
+                                for u in upper.iter() {
+                                    if let Type::TVar(u) = u
+                                        && !u.is_bound()
+                                    {
+                                        self.sent(u, &n)
+                                    }
+                                }
                                 n.cell().write().constraints = upper
                             }
                         }
@@ -2198,6 +2264,94 @@ fn fixes(v: &TVar, min: u32) -> bool {
     !v.is_bound() && !v.is_rigid() && !quantified(v) && v.level().depth() >= min
 }
 
+/// The open cells of `t` where it takes a value (a function's argument, a
+/// writable reference, a parameter of an abstract or named type, which are
+/// read both ways), `positive` where `t` itself gives one.
+fn negative_cells(t: &Type, positive: bool, out: &mut SmallVec<[TVar; 8]>) {
+    ensure_sufficient(|| match t {
+        Type::TVar(v) => match v.binding() {
+            Some(b) => negative_cells(&b, positive, out),
+            None if !positive => out.push(v.clone()),
+            None => (),
+        },
+        Type::Fn(f) => {
+            for a in f.args.iter() {
+                negative_cells(&a.typ, !positive, out)
+            }
+            if let Some(v) = &f.vargs {
+                negative_cells(v, !positive, out)
+            }
+            negative_cells(&f.rtype, positive, out);
+            negative_cells(&f.throws, positive, out)
+        }
+        Type::ByRef(Mutability::Mut, x) => {
+            negative_cells(x, false, out);
+            negative_cells(x, true, out)
+        }
+        Type::Abstract { params, .. } => params.iter().for_each(|p| {
+            negative_cells(p, false, out);
+            negative_cells(p, true, out)
+        }),
+        Type::Ref(r) => r.params.iter().for_each(|p| {
+            negative_cells(p, false, out);
+            negative_cells(p, true, out)
+        }),
+        Type::App(c, x) => [c, x].into_iter().for_each(|p| {
+            negative_cells(p, false, out);
+            negative_cells(p, true, out)
+        }),
+        t => t.for_each_child(&mut |c| negative_cells(c, positive, out)),
+    })
+}
+
+/// For [`Solving::copy_frozen`]: the value of the scheme's variable `v`,
+/// one of `set`, the variables nothing outside reaches: the union of what
+/// flows into it, each of them inside it at its own value (⊥ where nothing
+/// flows in). A type holding itself through them has none.
+fn frozen(
+    v: &TVar,
+    set: &AHashMap<usize, TVar>,
+    memo: &mut AHashMap<usize, Option<Type>>,
+) -> Option<Type> {
+    ensure_sufficient(|| {
+        if let Some(t) = v.binding() {
+            return Some(deep(&t));
+        }
+        if !set.contains_key(&v.cell_addr()) {
+            return None;
+        }
+        if let Some(r) = memo.get(&v.cell_addr()) {
+            return r.clone();
+        }
+        memo.insert(v.cell_addr(), None);
+        let mut parts: SmallVec<[Type; 2]> = SmallVec::new();
+        let mut settled = true;
+        for l in v.cell_lower().iter() {
+            // a cell of the set flowing straight in adds what it has, which
+            // is among these lower bounds already
+            if let Type::TVar(u) = &shallow(l)
+                && set.contains_key(&u.cell_addr())
+            {
+                continue;
+            }
+            let l = map_cells(l, &mut |c| match frozen(c, set, memo) {
+                Some(t) => Some(t),
+                None => {
+                    settled = false;
+                    None
+                }
+            });
+            parts.push(deep(&l))
+        }
+        let r = settled.then(|| match &parts[..] {
+            [] => Type::Bottom,
+            _ => union_of(parts.drain(..)),
+        });
+        memo.insert(v.cell_addr(), r.clone());
+        r
+    })
+}
+
 /// Whether anything says what `v` is: it is bound, or something that is
 /// no undecided cell flows into it.
 fn decided(v: &TVar) -> bool {
@@ -2543,6 +2697,7 @@ impl Solving {
         copies: &mut AHashMap<usize, TVar>,
     ) -> Type {
         let outer = std::mem::take(&mut self.copied);
+        self.copy_frozen(t, at, copies);
         let t = self.copy(t, above, at, copies);
         // what the definition left to its instances, each once
         let mut done: SmallVec<[Left; 4]> = SmallVec::new();
@@ -2585,6 +2740,123 @@ impl Solving {
         }
         self.copied = outer;
         t
+    }
+
+    /// Settle in `copies`, before the scheme `t` is copied, each of its
+    /// variables whose value no instance could change: every value that
+    /// reaches it is decided inside the closed definition, or none does.
+    /// No parameter of `t`, use, check left to the instances, default or
+    /// type naming it inside reaches such a variable; its copy is that
+    /// value, so an instance does not copy what the definition made it of.
+    fn copy_frozen(&mut self, t: &Type, at: Level, copies: &mut AHashMap<usize, TVar>) {
+        let mut reached = Cells::new();
+        self.reach(t, &mut reached);
+        if !reached.iter().any(quantified) {
+            return;
+        }
+        let mut inputs: SmallVec<[TVar; 8]> = SmallVec::new();
+        negative_cells(t, true, &mut inputs);
+        let mut named: SmallVec<[TVar; 4]> = SmallVec::new();
+        let inside = |l: &Type, named: &mut SmallVec<[TVar; 4]>| {
+            if !matches!(deep(l), Type::TVar(_)) {
+                cells_of(l, true, named)
+            }
+        };
+        for v in reached.iter() {
+            v.cell_lower().iter().for_each(|l| inside(l, &mut named));
+            v.cell_constraints().iter().for_each(|u| inside(u, &mut named));
+            let (used, left, defaults) =
+                known(v, |k| (k.uses.clone(), k.left.clone(), k.defaults.clone()));
+            for (u, _) in used.iter() {
+                u.each(&mut |t| cells_of(t, true, &mut named));
+                if let Use::Routed(_, of) = u {
+                    of.cells(&mut named)
+                }
+            }
+            if !left.is_empty() {
+                named.push(v.clone())
+            }
+            for l in left.iter() {
+                l.cells(&mut named)
+            }
+            for (_, default, param) in defaults.iter() {
+                cells_of(default, true, &mut named);
+                cells_of(param, true, &mut named)
+            }
+        }
+        let barred: AHashSet<usize> =
+            inputs.iter().chain(named.iter()).map(|v| v.cell_addr()).collect();
+        // every variable of the scheme no input touches, then less each
+        // joined to something not in the set, until none is
+        // a variable the definition declared is decided by each instance
+        let open = |v: &TVar| {
+            !quantified(v)
+                || v.is_rigid()
+                || !v.name.starts_with('_')
+                || barred.contains(&v.cell_addr())
+                || !uses(v).is_empty()
+                || known(v, |k| k.made || k.demanded || !k.defaults.is_empty())
+        };
+        let mut set: AHashMap<usize, TVar> = reached
+            .iter()
+            .filter(|v| quantified(v) && !v.is_bound() && !open(v))
+            .map(|v| (v.cell_addr(), v.clone()))
+            .collect();
+        // a flow may be kept by either end, so a variable joined to
+        // anything outside the set, either way, could take its values
+        let sources = |v: &TVar| -> SmallVec<[TVar; 4]> {
+            let mut out = SmallVec::new();
+            v.cell_lower().iter().for_each(|l| cells_of(l, true, &mut out));
+            v.cell_constraints().iter().for_each(|u| cells_of(u, true, &mut out));
+            out.extend(feeders(v).into_iter().filter(|u| !u.is_bound()));
+            out.extend(
+                known(v, |k| k.from.clone()).into_iter().filter(|u| !u.is_bound()),
+            );
+            out
+        };
+        loop {
+            let out: SmallVec<[usize; 4]> = set
+                .iter()
+                .filter(|(_, v)| {
+                    sources(v).iter().any(|u| !set.contains_key(&u.cell_addr()))
+                })
+                .map(|(a, _)| *a)
+                .collect();
+            if out.is_empty() {
+                break;
+            }
+            out.iter().for_each(|a| drop(set.remove(a)))
+        }
+        // what flows into a feeder is already among the cell's lower bounds
+        let mut memo: LPooled<AHashMap<usize, Option<Type>>> = LPooled::take();
+        let addrs: SmallVec<[usize; 8]> = set.keys().copied().collect();
+        for a in addrs {
+            let v = set[&a].clone();
+            if copies.contains_key(&a) {
+                continue;
+            }
+            let Some(value) = frozen(&v, &set, &mut memo) else { continue };
+            let n = {
+                let _at = AtLevel::enter(at);
+                TVar::empty_named(v.name.clone())
+            };
+            // its predicates are judged of the value, as a fixed cell's
+            let predicates: SmallVec<[Type; 1]> = v
+                .cell_constraints()
+                .into_iter()
+                .filter(|c| matches!(c, Type::Bound(_)))
+                .collect();
+            {
+                let cell = n.cell();
+                let mut c = cell.write();
+                c.constraints = predicates.clone();
+                c.set_binding(Some(value));
+            }
+            if !predicates.is_empty() {
+                self.judged.push(n.clone())
+            }
+            copies.insert(a, n);
+        }
     }
 
     /// The copy of the cell `v`, or `v` where it is no deeper than
@@ -2639,7 +2911,7 @@ impl Solving {
         // the copy is bounded and fed as the original is
         for (v, n) in made {
             let (lower, mut upper) = (v.cell_lower(), v.cell_constraints());
-            let (fed, sinks, used, defaults) = {
+            let (fed, sinks, used, defaults, from) = {
                 let cell = v.cell();
                 let c = cell.read();
                 match c.solving.as_ref() {
@@ -2648,6 +2920,7 @@ impl Solving {
                         k.sinks.clone(),
                         k.uses.clone(),
                         k.defaults.clone(),
+                        k.from.clone(),
                     ),
                     None => Default::default(),
                 }
@@ -2673,12 +2946,21 @@ impl Solving {
                     feeds.push(u.clone())
                 }
             }
+            let mut sent_from: SmallVec<[TVar; 1]> = SmallVec::new();
+            for u in from.iter() {
+                if let Type::TVar(u) =
+                    &self.copy(&Type::TVar(u.clone()), above, at, copies)
+                {
+                    sent_from.push(u.clone())
+                }
+            }
             {
                 let cell = n.cell();
                 let mut c = cell.write();
                 (c.lower, c.constraints) = (lower, upper);
                 let k = c.solving.get_or_insert_default();
                 k.feeders = feeds;
+                k.from = sent_from;
                 k.defaults = defaults
             }
             // the copy is used as the original is: what flows into it in
@@ -3429,13 +3711,22 @@ impl Solving {
         for l in flowing(v, &mut SmallVec::new()) {
             met |= self.apply(env, &u, &l)?
         }
-        known(v, |k| k.uses.push((u, met)));
-        self.track(v);
+        let mut produced: SmallVec<[TVar; 4]> = SmallVec::new();
+        u.each(&mut |t| cells_of(t, false, &mut produced));
+        if let Use::Routed(_, of) = &u {
+            of.cells(&mut produced)
+        }
+        let v = v.clone();
+        for p in produced.iter() {
+            self.sent(p, &v)
+        }
+        known(&v, |k| k.uses.push((u, met)));
+        self.track(&v);
         // where nothing has flowed in, a shape demanded of the cell
         // serves, since nothing wider can
         for b in v.cell_constraints() {
             if open(&shallow(&b)).is_none() {
-                self.demanded(env, v, &b)?
+                self.demanded(env, &v, &b)?
             }
         }
         Ok(())
