@@ -763,13 +763,17 @@ impl Solving {
             },
             (Type::Error(_), p) if has(p, Typ::Error) => Type::Bottom,
             (Type::Array(_), p) if has(p, Typ::Array) => Type::Bottom,
-            (Type::Array(x), Type::Array(y))
-            | (Type::List(x), Type::List(y))
-            | (Type::Error(x), Type::Error(y))
+            (Type::Array(x), Type::Array(y)) | (Type::List(x), Type::List(y))
                 if nothing(&self.less(env, test, x, y)) =>
             {
                 Type::Bottom
             }
+            // an error holds one value: what is left of it is an error
+            // of what is left of that
+            (Type::Error(x), Type::Error(y)) => match self.less(env, test, x, y) {
+                left if nothing(&left) => Type::Bottom,
+                left => Type::Error(Arc::new(left)),
+            },
             (Type::Tuple(xs), Type::Tuple(ys)) if xs.len() == ys.len() => {
                 product(xs, ys, &Type::Tuple)
             }
