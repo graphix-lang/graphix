@@ -404,6 +404,8 @@ pub(super) struct Select {
     pub(super) waiting: Vec<Type>,
     /// What was passed down the arms.
     seen: Vec<Type>,
+    /// How each arm is written, for a refusal to name it.
+    written: Option<Arc<[ArcStr]>>,
 }
 
 /// What one pattern makes of one type: the part it admits, what it
@@ -524,8 +526,14 @@ impl Solving {
             instance: false,
             waiting: vec![],
             seen: vec![],
+            written: None,
         });
         self.selects.len() - 1
+    }
+
+    /// Name the arms of the select `id` as they are written.
+    pub fn name_arms(&mut self, id: usize, written: Arc<[ArcStr]>) {
+        self.selects[id].written = Some(written)
     }
 
     /// A copy of the select `of` for an instance of the generic
@@ -1310,20 +1318,22 @@ impl Solving {
             if let Some(i) = s.hit.iter().position(|h| !h) {
                 let seen: Vec<String> = s.seen.iter().map(|t| t.to_string()).collect();
                 let (at, seen) = (&s.template.at, seen.join(" | "));
+                let arm = match s.written.as_ref().and_then(|w| w.get(i)) {
+                    Some(w) => format_compact!("{w}"),
+                    None => format_compact!("{}", i + 1),
+                };
                 if let Some(name) = s.template.arms[i].pat.blind(env) {
                     bail!(
-                        "pattern {} takes nothing: {name}(..) names part of a payload \
+                        "pattern {arm} takes nothing: {name}(..) names part of a payload \
                          something could be written into or called, which it may only \
                          where the value is known to be one instance of {name}; write \
                          the instance in a type test, `{name}<T> as {name}(..)` ({at}; \
-                         the value is {seen})",
-                        i + 1
+                         the value is {seen})"
                     )
                 }
                 bail!(
-                    "pattern {} will never match: nothing reaches it ({at}; the value \
-                     is {seen})",
-                    i + 1
+                    "pattern {arm} will never match: nothing reaches it ({at}; the value \
+                     is {seen})"
                 )
             }
         }

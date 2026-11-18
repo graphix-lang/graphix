@@ -3293,10 +3293,30 @@ impl<R: Rt> Select<R> {
         }
         let at = self.arg.node.spec().pos;
         let at = format_compact!("{}:{}", at.line, at.column);
+        // an arm is named by the type it tests for, an abstract one by its
+        // name, or by its pattern
+        let written: Arc<[ArcStr]> = match &self.spec.kind {
+            ExprKind::Select(se) => {
+                let named = |(p, _): &(Pattern, Expr)| -> ArcStr {
+                    let text = match &p.type_predicate {
+                        Some(t @ Type::Ref(_)) => match t.lookup_ref(&ctx.env) {
+                            Ok(a @ Type::Abstract { .. }) => format_compact!("{a}"),
+                            _ => format_compact!("{t}"),
+                        },
+                        Some(t) => format_compact!("{t}"),
+                        None => format_compact!("{}", p.structure_predicate),
+                    };
+                    text.as_str().into()
+                };
+                Arc::from_iter(se.arms.iter().map(named))
+            }
+            _ => Arc::from_iter([]),
+        };
         wrap!(
             self,
             solving(|s| {
                 let id = s.select(arms, at.as_str().into());
+                s.name_arms(id, written);
                 s.watch(&ctx.env, &scrut, Use::Select(id))
             })
         )
