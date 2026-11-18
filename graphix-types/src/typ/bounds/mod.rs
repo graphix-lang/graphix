@@ -1856,7 +1856,7 @@ impl Solving {
         self.reach(t, &mut kept);
         kept.iter()
             .filter(|v| v.level().depth() > depth && !v.is_bound())
-            .try_for_each(|v| self.unread(v).and_then(|()| finite(v)))?;
+            .try_for_each(finite)?;
         self.fix_scope(env, depth + 1, false, mark)?;
         for v in self.cells[mark..].iter() {
             let pending = v.level().depth() > depth

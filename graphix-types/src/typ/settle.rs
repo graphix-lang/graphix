@@ -1147,6 +1147,11 @@ impl VariableUnion {
     /// constructor ([`Type::shares_constructor`]) hold two distinct ones.
     #[doc(hidden)]
     pub fn of(union: &Type, own: &dyn Fn(&TVar) -> bool) -> Option<Self> {
+        // a check by bounds gives a value to the member a later argument
+        // decides, and refuses it only where none does
+        if super::bounds::active() {
+            return None;
+        }
         let Type::Set(ms) = union else { return None };
         let mut vars: SmallVec<[&TVar; 4]> = SmallVec::new();
         for m in ms.iter() {
