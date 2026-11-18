@@ -1233,7 +1233,15 @@ pub fn strip(env: &Env, t: &Type, raises: bool) -> Result<(Type, SmallVec<[Type;
              it to a type whose error is (a Result), or use $"
         )
     }
-    Ok(strip_members(members))
+    let (left, mut payloads) = strip_members(members);
+    // a raise extends a chain rather than nesting it: an error that is a
+    // chain already is raised as what the chain is over
+    for p in payloads.iter_mut().filter(|_| raises) {
+        if let Some(error) = deep(p).chain_error_type(env)? {
+            *p = error
+        }
+    }
+    Ok((left, payloads))
 }
 
 /// The members of `t`, a name that stands for a union, an error or a
