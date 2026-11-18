@@ -1755,6 +1755,7 @@ pub fn take(own: &Type, row: &Type) -> bool {
             all(xs, ys)
         }
         (Type::Ref(a), Type::Ref(b)) => all(&a.params, &b.params),
+        (Type::App(c, x), Type::App(d, y)) => take(c, d) && take(x, y),
         (Type::Struct(xs), Type::Struct(ys)) => {
             xs.len() == ys.len()
                 && xs.iter().zip(ys.iter()).all(|((_, x, _), (_, y, _))| take(x, y))
