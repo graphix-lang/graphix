@@ -41,6 +41,8 @@ thread_local! {
     /// How many cells the old relation has bound since [`begin`]: under a
     /// check by bounds each is a node not yet asking the solver.
     static BOUND_BY_OLD: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+    /// Whether [`BOUND_BY_OLD`] counts for a build ([`Build`]) or a check.
+    static BUILDING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// The old relation is binding a cell: counted under a check by bounds,
@@ -49,8 +51,9 @@ pub(crate) fn old_binding(of: &TVar, to: &Type) {
     if let Some(n) = BOUND_BY_OLD.get() {
         BOUND_BY_OLD.set(Some(n + 1));
         if std::env::var_os("GRAPHIX_BOUNDS_AUDIT").is_some_and(|v| v != "count") {
+            let phase = if BUILDING.get() { "build" } else { "check" };
             eprintln!(
-                "bounds audit: the old relation binds '{} to {to}\n{}",
+                "bounds audit: the old relation binds ({phase}) '{} to {to}\n{}",
                 of.name,
                 std::backtrace::Backtrace::force_capture()
             )
@@ -90,7 +93,9 @@ pub(crate) fn met_outside(a: &Type, b: &Type) {
 /// asked of the solver.
 pub fn begin() {
     ACTIVE.set(Some(Solving::default()));
-    BOUND_BY_OLD.set(Some(0))
+    if !BUILDING.get() {
+        BOUND_BY_OLD.set(Some(0))
+    }
 }
 
 /// A check by bounds from its input's compile on: one [`begin`]s where
@@ -105,6 +110,14 @@ impl Check {
             begin()
         }
         Check(begins)
+    }
+
+    /// [`end`] the check this began, if it began one.
+    pub fn end(mut self, env: &Env) -> Result<()> {
+        match std::mem::take(&mut self.0) {
+            true => end(env),
+            false => Ok(()),
+        }
     }
 }
 
@@ -123,7 +136,10 @@ pub fn active() -> bool {
 
 /// End the check [`begin`] began: fix every cell it left open.
 pub fn end(env: &Env) -> Result<()> {
-    let old = BOUND_BY_OLD.take();
+    let old = match BUILDING.get() {
+        true => BOUND_BY_OLD.get(),
+        false => BOUND_BY_OLD.take(),
+    };
     match ACTIVE.take() {
         Some(mut solving) => {
             if std::env::var_os("GRAPHIX_BOUNDS_AUDIT").is_some() {
@@ -142,7 +158,37 @@ pub fn end(env: &Env) -> Result<()> {
 /// Drop the check [`begin`] began, a refusal having ended it.
 pub fn abandon() {
     ACTIVE.take();
-    BOUND_BY_OLD.take();
+    if !BUILDING.get() {
+        BOUND_BY_OLD.take();
+    }
+}
+
+/// The build after a check by bounds, from typecheck1 on: a cell the old
+/// relation binds there is the build typing a node for itself, counted
+/// (and traced) where `GRAPHIX_BOUNDS_AUDIT` asks.
+pub struct Build(bool);
+
+impl Build {
+    pub fn begin(by_bounds: bool) -> Self {
+        let audit = by_bounds
+            && std::env::var_os("GRAPHIX_BOUNDS_AUDIT").is_some()
+            && BOUND_BY_OLD.get().is_none();
+        if audit {
+            BOUND_BY_OLD.set(Some(0));
+            BUILDING.set(true)
+        }
+        Build(audit)
+    }
+}
+
+impl Drop for Build {
+    fn drop(&mut self) {
+        if self.0 {
+            BUILDING.set(false);
+            let n = BOUND_BY_OLD.take().unwrap_or(0);
+            eprintln!("bounds audit: the build bound {n} cells by the old relation")
+        }
+    }
 }
 
 /// `f` over this thread's solver; none where no check by bounds is

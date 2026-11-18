@@ -471,8 +471,11 @@ pub(crate) fn lower_over_operands<R: Rt>(
             ValueReads::Inherit,
         ));
     }
+    // under a check by bounds what the build lowers to is checked by it
+    let check = crate::typ::bounds::Check::begin(ctx.bounds);
     let mut body = compile(ctx, flags, body, &scope, top_id)?;
     body.typecheck0(ctx)?;
+    check.end(&ctx.env)?;
     body.typecheck1(ctx)?;
     let bspec = Expr::synth(
         spec,
