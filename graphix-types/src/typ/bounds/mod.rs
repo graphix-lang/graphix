@@ -2438,10 +2438,9 @@ impl Solving {
                     }
                 }
             }
-            // nothing is of every kind, a variable is of the kinds its own
-            // bound says, which the relation held it to, and a cell nothing
-            // flowed into holds no value to judge
-            if matches!(t, Type::Bottom | Type::TVar(_)) || demanded(&v) {
+            // nothing is of every kind, and a variable is of the kinds its
+            // own bound says, which the relation held it to
+            if matches!(t, Type::Bottom | Type::TVar(_)) {
                 continue;
             }
             for p in v.cell_constraints().iter() {
@@ -2455,10 +2454,17 @@ impl Solving {
                             return Err(t.not_discernible(p, &v.name, &why));
                         }
                     }
-                    Type::Bound(_) if !p.contains(env, &t)? => {
-                        bail!("{t} must be {p} here")
-                    }
+                    Type::Bound(Bound::Data) if !p.contains(env, &t)? => bail!(
+                        "{t} is not data: data holds no function and no reference"
+                    ),
                     _ => (),
+                }
+            }
+            for p in v.cell_constraints().iter() {
+                let judged_above =
+                    matches!(p, Type::Bound(Bound::Ordered | Bound::Discernible));
+                if matches!(p, Type::Bound(_)) && !judged_above && !p.contains(env, &t)? {
+                    bail!("{t} must be {p} here")
                 }
             }
         }
