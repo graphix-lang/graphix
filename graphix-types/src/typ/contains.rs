@@ -3917,11 +3917,16 @@ impl Type {
                  it: {advice}"
             ));
         }
-        let part = DataMeet::new(env).walk(meet)?;
-        Some(anyhow::anyhow!(
+        DataMeet::new(env).walk(meet).map(|part| part.no_data())
+    }
+
+    /// The refusal of this type, which is or holds a function or a
+    /// reference, as data.
+    pub(crate) fn no_data(&self) -> anyhow::Error {
+        anyhow::anyhow!(
             "{} is not data: data holds no function and no reference",
-            Brief(&part)
-        ))
+            Brief(self)
+        )
     }
 
     /// An open cell bounded by a trait refuses a type with a member that

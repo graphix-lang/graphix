@@ -410,6 +410,28 @@ pub fn union_of(ts: impl IntoIterator<Item = Type>) -> Type {
     Type::flatten_set(ts)
 }
 
+/// The union of the decided types `ts`, less each one another holds: a
+/// name and what it stands for are one type.
+fn join(env: &Env, ts: &[Type]) -> Result<Type> {
+    let mut kept: SmallVec<[&Type; 4]> = SmallVec::new();
+    for t in ts.iter() {
+        let mut held = false;
+        for k in kept.iter().filter(|k| !k.has_free() && !t.has_free()) {
+            held |= k.contains(env, t)?
+        }
+        if !held {
+            let mut holds: SmallVec<[bool; 4]> = SmallVec::new();
+            for k in kept.iter() {
+                holds.push(!k.has_free() && !t.has_free() && t.contains(env, k)?)
+            }
+            let mut holds = holds.into_iter();
+            kept.retain(|_| !holds.next().unwrap_or(false));
+            kept.push(t)
+        }
+    }
+    Ok(union_of(kept.into_iter().cloned()))
+}
+
 /// `t` past the cells that are bound: an open cell, or a type that is no
 /// cell.
 fn shallow(t: &Type) -> Type {
@@ -2588,9 +2610,7 @@ impl Solving {
                     }
                 }
                 Type::Bound(Bound::Data) if !p.contains(env, t)? => {
-                    return Err(t
-                        .not_data(env, &[], [t, t])
-                        .unwrap_or_else(|| anyhow::anyhow!("{t} must be {p} here")));
+                    return Err(t.not_data(env, &[], [t, t]).unwrap_or_else(|| t.no_data()));
                 }
                 Type::Bound(b @ (Bound::JsonData | Bound::TomlData)) => {
                     let format = match b {
@@ -2682,10 +2702,7 @@ impl Solving {
                 }
             }
             [one] => one.clone(),
-            many => {
-                let all: SmallVec<[&Type; 4]> = many.iter().collect();
-                union_of(all.into_iter().cloned())
-            }
+            many => join(env, many)?,
         };
         let one =
             matches!(&t, Type::Primitive(p) if p.exactly_one().is_some() || p.is_empty());
