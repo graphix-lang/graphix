@@ -413,7 +413,10 @@ enum Added {
 /// The union of `ts` as they stand: flat, each member once, the primitives
 /// as one member. No two cells are made one, whatever the members share.
 pub fn union_of(ts: impl IntoIterator<Item = Type>) -> Type {
-    Type::flatten_set(ts)
+    match Type::flatten_set(ts) {
+        Type::Primitive(p) if p.is_empty() => Type::Bottom,
+        t => t,
+    }
 }
 
 /// The union of the decided types `ts`, less each one another holds: a
