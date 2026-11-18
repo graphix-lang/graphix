@@ -174,6 +174,10 @@ impl<R: Rt> Map<R> {
             // the keys flow into one cell and the values into another,
             // each of which may join what it takes
             let Type::Map(m) = &self.typ else { bail!("BUG: a map literal's type") };
+            // a key has an order
+            if let Type::TVar(key) = &m.key {
+                super::solving(|s| s.declare(key, Type::Bound(Bound::Ordered)))
+            }
             for (k, v) in self.entries() {
                 wrap!(k, m.key.check_contains(&ctx.env, k.typ()))?;
                 wrap!(v, m.value.check_contains(&ctx.env, v.typ()))?

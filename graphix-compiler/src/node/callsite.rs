@@ -5524,6 +5524,9 @@ impl<R: Rt> CallSite<R> {
                     self.ftype = Some(ft.clone())
                 }
                 wrap!(self, solving(|s| s.call(&ctx.env, ft, &args, &self.rtype)))?;
+                let judgment =
+                    crate::PendingSettle::Bounds { ftype: ft.clone(), spec: self.spec.clone() };
+                super::defer_judgment(ctx, judgment);
                 match handler {
                     Some(h) => wrap!(self, join_raised(&ctx.env, &h, &ft.throws)),
                     None => Ok(()),

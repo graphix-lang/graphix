@@ -80,7 +80,7 @@ use std::{
     any::Any,
     cell::{Cell, RefCell},
     collections::{VecDeque, hash_map::Entry},
-    fmt::{Debug, Write as _},
+    fmt::Debug,
     mem,
     sync::{
         self, LazyLock,
@@ -3148,6 +3148,9 @@ pub(crate) enum PendingSettle {
         sigs: SmallVec<[triomphe::Arc<FnType>; 1]>,
         spec: Arc<Expr>,
     },
+    /// A call site a check by bounds decided: what its callee's bounds
+    /// ask of the decided types beyond the check ([`site_bounds`]).
+    Bounds { ftype: triomphe::Arc<FnType>, spec: Arc<Expr> },
     /// A cell an operation leaves for its context to decide (an
     /// operator's operand, a constructed value's parameter), settled once
     /// the frame's sites have.
@@ -3323,7 +3326,10 @@ impl PendingSettle {
                     (element_binds(env, test, shape, elems, &mut ends), spec)
                 }
                 PendingSettle::Site { ftype, spec, .. } => {
-                    (site_bounds(env, ftype), spec)
+                    (site_bounds(env, ftype, true), spec)
+                }
+                PendingSettle::Bounds { ftype, spec } => {
+                    (site_bounds(env, ftype, false), spec)
                 }
                 _ => continue,
             };
@@ -3335,38 +3341,20 @@ impl PendingSettle {
     }
 }
 
-/// The members of the union `union` a refusal names: those but the open
-/// cells a program did not name, or "another" where there are none.
-fn known_members(union: &Type) -> CompactString {
-    let mut out = CompactString::default();
-    let members = match union {
-        Type::Set(ms) => &ms[..],
-        t => std::slice::from_ref(t),
-    };
-    for m in members {
-        if !matches!(m, Type::TVar(tv) if tv.binding().is_none() && tv.name.starts_with('_'))
-        {
-            let sep = if out.is_empty() { "" } else { ", " };
-            let _ = write!(out, "{sep}{m}");
-        }
-    }
-    if out.is_empty() {
-        out.push_str("another")
-    }
-    out
-}
-
 /// The bounds a call's settled cells must meet beyond their check: a
 /// `Discernible` cell's binding, and the map keys a `Concrete` one's (a
 /// map read from data).
-fn site_bounds(env: &Env, ftype: &FnType) -> Result<()> {
+fn site_bounds(env: &Env, ftype: &FnType, compared: bool) -> Result<()> {
     let mut tvs: LPooled<AHashMap<ArcStr, typ::TVar>> = LPooled::take();
     ftype.collect_tvars(&mut tvs);
     for tv in tvs.values() {
         let Some(t) = tv.binding() else { continue };
         for c in tv.cell_constraints().iter() {
             match c {
-                Type::Bound(Bound::Discernible) | Type::Bound(Bound::Ordered) => {
+                // a check by bounds judged these of the cell it fixed
+                Type::Bound(Bound::Discernible) | Type::Bound(Bound::Ordered)
+                    if compared =>
+                {
                     discernible(env, &t, &Discerned::Bound(tv.clone(), c.clone()))?
                 }
                 Type::Bound(Bound::Concrete) => discernible(env, &t, &Discerned::Keys)?,
@@ -3376,84 +3364,7 @@ fn site_bounds(env: &Env, ftype: &FnType) -> Result<()> {
                         _ => "TOML",
                     };
                     if let Some(why) = t.text_refusal(env) {
-                        let r = |t: &Type| t.resolve_tvars();
-                        let what = || format_compact!("{}", r(&t));
-                        let (what, why) = match &why {
-                            typ::TextRefusal::Untagged { union, member, .. }
-                                if let Type::TVar(cell) = member
-                                    && cell.binding().is_none() =>
-                            {
-                                match cell.name.starts_with('_') {
-                                    true => (
-                                        format_compact!(
-                                            "a type not known yet beside {}",
-                                            known_members(&r(union))
-                                        ),
-                                        format_compact!(
-                                            "beside another member a member needs a tag \
-                                             (a variant's, or an abstract type's name): \
-                                             annotate the value's type"
-                                        ),
-                                    ),
-                                    false => (
-                                        what(),
-                                        format_compact!(
-                                            "'{} may be any type, and beside another \
-                                             member in {} it would need a tag (a \
-                                             variant's, or an abstract type's name)",
-                                            cell.name,
-                                            r(union)
-                                        ),
-                                    ),
-                                }
-                            }
-                            typ::TextRefusal::Untagged {
-                                union,
-                                member,
-                                read_by: None,
-                            } => (
-                                what(),
-                                format_compact!(
-                                    "{} in {} has no tag (a variant's, or an abstract \
-                                     type's name), so what another member writes as \
-                                     {name} data may read back as it",
-                                    r(member),
-                                    r(union)
-                                ),
-                            ),
-                            typ::TextRefusal::Untagged {
-                                union,
-                                member,
-                                read_by: Some(a),
-                            } => (
-                                what(),
-                                format_compact!(
-                                    "{} in {} has no tag: in the data {a}'s from_value \
-                                     reads, abstract values are written bare, so what \
-                                     another member writes there may read back as it",
-                                    r(member),
-                                    r(union)
-                                ),
-                            ),
-                            typ::TextRefusal::SharedTag { union, tag, a, b } => (
-                                what(),
-                                format_compact!(
-                                    "{} and {} in {} share the tag {tag}, so what one \
-                                     writes as {name} data may read back as the other",
-                                    r(a),
-                                    r(b),
-                                    r(union)
-                                ),
-                            ),
-                            typ::TextRefusal::Transparent(t) => (
-                                what(),
-                                format_compact!(
-                                    "{} holds a type that is not abstract, which {name} \
-                                     writes bare already",
-                                    r(t)
-                                ),
-                            ),
-                        };
+                        let (what, why) = why.told(name, &t);
                         match tv.name.starts_with('_') {
                             true => bail!("{c} refuses {what}: {why}"),
                             false => bail!("'{}: {c} refuses {what}: {why}", tv.name),

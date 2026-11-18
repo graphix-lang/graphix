@@ -21,6 +21,7 @@ use crate::{
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, bail};
 use arcstr::ArcStr;
+use compact_str::format_compact;
 use netidx_value::Typ;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
@@ -198,6 +199,10 @@ pub(crate) enum Left {
     /// The operands of a comparison, one of whose types must hold the
     /// other's, and whether it is an ordering.
     Compared(Arc<(Type, Type, bool)>),
+    /// A type one of the definition's cells was fixed to, the predicates
+    /// that cell carries and its name: they hold of what the type is in
+    /// each instance.
+    Asked(Arc<(Type, SmallVec<[Type; 1]>, ArcStr)>),
 }
 
 /// A call's argument: its label, if it is passed by one, and its type.
@@ -372,6 +377,10 @@ pub struct Solving {
     /// The operands of each comparison, and whether it is an ordering,
     /// judged with them ([`Self::compare`]).
     compared: Vec<(Type, Type, bool)>,
+    /// What a definition asked of a type its variables decide, which
+    /// this instance of it judges: the type, the predicates and the name
+    /// of the variable they bound.
+    asked: Vec<Arc<(Type, SmallVec<[Type; 1]>, ArcStr)>>,
 }
 
 /// A kind of use a check may still owe when a definition closes.
@@ -1894,7 +1903,7 @@ impl Solving {
                 && !v.is_bound()
                 && !v.is_rigid()
                 && !quantified(v)
-                && singleton(v);
+                && v.cell_constraints().iter().any(|c| matches!(c, Type::Bound(_)));
             if pending && !v.level().is_generic() {
                 self.singles.push(v.clone());
                 v.generalize();
@@ -1902,12 +1911,42 @@ impl Solving {
                 let mut reached = Cells::new();
                 self.reach(&Type::TVar(v.clone()), &mut reached);
                 for u in reached.iter().filter(|u| !u.same_cell(v)) {
+                    // what stands between it and those variables is the
+                    // instance's too: the copy reads no cell of the
+                    // definition
+                    if u.level().depth() > depth
+                        && !u.is_bound()
+                        && !u.is_rigid()
+                        && !quantified(u)
+                        && !u.level().is_generic()
+                    {
+                        u.generalize()
+                    }
                     self.leave(&Type::TVar(u.clone()), |ls| {
                         let same = |l: &Left| matches!(l, Left::Single(w) if w.same_cell(v));
                         (!ls.iter().any(same)).then(|| Left::Single(v.clone()))
                     })
                 }
             }
+        }
+        // a predicate of a type a variable of the scheme is part of is
+        // each instance's to judge
+        let (left, mine): (Vec<_>, Vec<_>) = std::mem::take(&mut self.judged)
+            .into_iter()
+            .partition(|v| v.binding().is_some_and(|t| scheme(&t)));
+        self.judged = mine;
+        for v in left {
+            let Some(t) = v.binding() else { continue };
+            let predicates: SmallVec<[Type; 1]> = v
+                .cell_constraints()
+                .into_iter()
+                .filter(|c| matches!(c, Type::Bound(_)))
+                .collect();
+            let asked = Arc::new((t, predicates, v.name.clone()));
+            self.leave(&asked.0, |ls| {
+                let same = |l: &Left| matches!(l, Left::Asked(a) if Arc::ptr_eq(a, &asked));
+                (!ls.iter().any(same)).then(|| Left::Asked(asked.clone()))
+            })
         }
         // a comparison whose operands a variable of the scheme decides is
         // each instance's to judge
@@ -1990,6 +2029,7 @@ impl Solving {
                 let seen = |d: &Left| match (d, &l) {
                     (Left::Held(p), Left::Held(q)) => Arc::ptr_eq(p, q),
                     (Left::Compared(p), Left::Compared(q)) => Arc::ptr_eq(p, q),
+                    (Left::Asked(p), Left::Asked(q)) => Arc::ptr_eq(p, q),
                     (Left::Single(u), Left::Single(w)) => u.same_cell(w),
                     (Left::Waiting(s, u), Left::Waiting(t, w)) => {
                         Arc::ptr_eq(s, t) && strictly_identical(u, w)
@@ -2009,6 +2049,10 @@ impl Solving {
                         let a = self.copy(&pair.0, above, at, copies);
                         let b = self.copy(&pair.1, above, at, copies);
                         self.compared.push((a, b, pair.2))
+                    }
+                    Left::Asked(asked) => {
+                        let t = self.copy(&asked.0, above, at, copies);
+                        self.asked.push(Arc::new((t, asked.1.clone(), asked.2.clone())))
                     }
                     Left::Single(u) => {
                         self.copy(&Type::TVar(u.clone()), above, at, copies);
@@ -2182,6 +2226,11 @@ impl Solving {
                         self.copy(&pair.0, above, at, copies),
                         self.copy(&pair.1, above, at, copies),
                         pair.2,
+                    ))),
+                    Left::Asked(asked) => Left::Asked(Arc::new((
+                        self.copy(&asked.0, above, at, copies),
+                        asked.1.clone(),
+                        asked.2.clone(),
                     ))),
                     Left::Single(u) => Left::Single(self.copy_cell(&u, above, at, copies)),
                     Left::Waiting(of, w) => {
@@ -2438,35 +2487,11 @@ impl Solving {
                     }
                 }
             }
-            // nothing is of every kind, and a variable is of the kinds its
-            // own bound says, which the relation held it to
-            if matches!(t, Type::Bottom | Type::TVar(_)) {
-                continue;
-            }
-            for p in v.cell_constraints().iter() {
-                match p {
-                    Type::Bound(Bound::Ordered | Bound::Discernible) => {
-                        let ordered = matches!(p, Type::Bound(Bound::Ordered));
-                        let why = numbers_ordered(|| {
-                            t.indiscernible(env, Open::Benign, ordered)
-                        });
-                        if let Some(why) = why {
-                            return Err(t.not_discernible(p, &v.name, &why));
-                        }
-                    }
-                    Type::Bound(Bound::Data) if !p.contains(env, &t)? => bail!(
-                        "{t} is not data: data holds no function and no reference"
-                    ),
-                    _ => (),
-                }
-            }
-            for p in v.cell_constraints().iter() {
-                let judged_above =
-                    matches!(p, Type::Bound(Bound::Ordered | Bound::Discernible));
-                if matches!(p, Type::Bound(_)) && !judged_above && !p.contains(env, &t)? {
-                    bail!("{t} must be {p} here")
-                }
-            }
+            self.hold(env, &v.name, &v.cell_constraints(), &t)?
+        }
+        for asked in std::mem::take(&mut self.asked) {
+            let (t, predicates, name) = &*asked;
+            self.hold(env, name, predicates, &deep(t))?
         }
         let number = Type::Primitive(Typ::number());
         for (a, b, ordered) in std::mem::take(&mut self.compared) {
@@ -2486,6 +2511,48 @@ impl Solving {
                          other, so the two are never equal"
                     ),
                 }
+            }
+        }
+        Ok(())
+    }
+
+    /// Each predicate among `bounds` holds of the decided type `t`, which
+    /// the variable `name` stands for. Nothing is of every kind, and a
+    /// variable is of the kinds its own bound says, which the relation
+    /// held it to.
+    fn hold(&self, env: &Env, name: &ArcStr, bounds: &[Type], t: &Type) -> Result<()> {
+        if matches!(t, Type::Bottom | Type::TVar(_)) {
+            return Ok(());
+        }
+        let named = |what: &Type| match name.starts_with('_') {
+            true => format_compact!("{what}"),
+            false => format_compact!("'{name}: {what}"),
+        };
+        for p in bounds.iter() {
+            match p {
+                Type::Bound(Bound::Ordered | Bound::Discernible) => {
+                    let ordered = matches!(p, Type::Bound(Bound::Ordered));
+                    let why =
+                        numbers_ordered(|| t.indiscernible(env, Open::Benign, ordered));
+                    if let Some(why) = why {
+                        return Err(t.not_discernible(p, name, &why));
+                    }
+                }
+                Type::Bound(Bound::Data) if !p.contains(env, t)? => {
+                    bail!("{t} is not data: data holds no function and no reference")
+                }
+                Type::Bound(b @ (Bound::JsonData | Bound::TomlData)) => {
+                    let format = match b {
+                        Bound::JsonData => "JSON",
+                        _ => "TOML",
+                    };
+                    if let Some(why) = t.text_refusal(env) {
+                        let (what, why) = why.told(format, t);
+                        bail!("{} refuses {what}: {why}", named(p))
+                    }
+                }
+                Type::Bound(_) if !p.contains(env, t)? => bail!("{t} must be {p} here"),
+                _ => (),
             }
         }
         Ok(())
