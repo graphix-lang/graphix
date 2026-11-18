@@ -1256,6 +1256,17 @@ impl Solving {
             false if r.is_ok() => self.unfolded.push((a.clone(), b.clone())),
             false => (),
         }
+        // CR claude for claude: [readability/low] This rename puts the outer pair in
+        // place of the inner mismatch even where a side still holds an open cell, so
+        // the message names the solver's cell instead of the type that failed:
+        // lang::functions::default_hidden_by_a_throws is refused, correctly, as
+        // "type mismatch ErrChain<`Big> does not contain ErrChain<'_0>" where the
+        // inner relation said "`Big does not contain `Small". Keeping the inner
+        // message whenever a side has an open cell was tried and changed some 20
+        // pinned messages, several for the worse (a written name lost); a better
+        // rule might print each open cell at its lower bound, or keep the inner
+        // message only when the outer pair would print a cell. Eric 11-18: fix the
+        // wording eventually, too small for now. (bounds-wording-01)
         // a refusal names the types as they were written
         r.map_err(|e| match e.to_string().starts_with("type mismatch") {
             true => anyhow::anyhow!("type mismatch {b} does not contain {a}"),
