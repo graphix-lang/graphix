@@ -797,6 +797,23 @@ run!(
     "#
 );
 
+// A value of an abstract type made where nothing decided its parameter is a
+// value of every instance where the representation only reads it (D50): the
+// dispatch over [W<⊥>, W<i64>] takes it.
+run!(
+    trait_union_dispatch_takes_a_value_made_at_bottom,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "w 0 w 1"),
+    "/test.gx" => r#"
+        trait Show { val show: fn(self) -> string };
+        type W<'a> = Abstract<Array<'a>>;
+        impl<'a> Show for W<'a> { let show = |x| "w [array::len(x.0)]" };
+        let g = |x: [W<'a>, W<i64>]| Show::show(x);
+        let e = W([]);
+        let wi: W<i64> = W([1]);
+        let result = "[g(e)] [g(wi)]"
+    "#
+);
+
 // The refusal prints the union a select inferred.
 run!(
     trait_union_dispatch_crossing_names_an_inferred_union,

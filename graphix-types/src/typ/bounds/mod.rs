@@ -576,6 +576,71 @@ fn shaped(env: &Env, t: &Type) -> Result<Option<Type>> {
     Ok(strippable(env, &shape)?.then_some(shape))
 }
 
+/// Whether the parameter `x` at position `i` of the abstract type `id` is ⊥
+/// where the representation holds that parameter only as a value it reads
+/// (D50): a value made there holds nothing an instance at any other
+/// parameter could contradict, so it is below every one.
+pub(super) fn bottom_below(env: &Env, id: &AbstractId, i: usize, x: &Type) -> bool {
+    if !matches!(deep(x), Type::Bottom) {
+        return false;
+    }
+    let Some(made) = env.abstract_reps.get(id) else { return false };
+    let Some((formal, _)) = made.params.get(i) else { return false };
+    read_only(&made.rep, formal, true)
+}
+
+/// Whether `t` holds an abstract type or a named type at a ⊥ parameter,
+/// which the solver's own relation meets (D50), not the old one.
+fn at_bottom(t: &Type) -> bool {
+    let bottom = |ps: &[Type]| ps.iter().any(|p| matches!(deep(p), Type::Bottom));
+    ensure_sufficient(|| match t {
+        Type::Abstract { params, .. } if bottom(params) => true,
+        Type::Ref(r) if bottom(&r.params) => true,
+        Type::TVar(v) => v.binding().is_some_and(|b| at_bottom(&b)),
+        t => {
+            let mut found = false;
+            t.for_each_child(&mut |c| found = found || at_bottom(c));
+            found
+        }
+    })
+}
+
+/// Whether `formal` stands in `t` only where a value is read: never under
+/// a writable reference, a function's argument, another abstract type or a
+/// named type (whose variance this does not look into). `reads` is false
+/// below a place that is not read-only.
+fn read_only(t: &Type, formal: &TVar, reads: bool) -> bool {
+    ensure_sufficient(|| match t {
+        Type::TVar(v) if v.same_cell(formal) || v.name == formal.name => reads,
+        Type::TVar(v) => match v.binding() {
+            Some(b) => read_only(&b, formal, reads),
+            None => true,
+        },
+        Type::Array(x) | Type::List(x) | Type::Error(x) => read_only(x, formal, reads),
+        Type::ByRef(Mutability::Shared, x) => read_only(x, formal, reads),
+        Type::ByRef(Mutability::Mut, x) => read_only(x, formal, false),
+        Type::Map(m) => {
+            read_only(&m.key, formal, reads) && read_only(&m.value, formal, reads)
+        }
+        Type::Tuple(xs) | Type::Set(xs) | Type::Variant(_, xs, _) => {
+            xs.iter().all(|x| read_only(x, formal, reads))
+        }
+        Type::Struct(fs) => fs.iter().all(|(_, x, _)| read_only(x, formal, reads)),
+        Type::Fn(f) => {
+            f.args.iter().all(|a| read_only(&a.typ, formal, false))
+                && f.vargs.as_ref().is_none_or(|v| read_only(v, formal, false))
+                && read_only(&f.rtype, formal, reads)
+                && read_only(&f.throws, formal, reads)
+        }
+        Type::Abstract { params, .. } => {
+            params.iter().all(|x| read_only(x, formal, false))
+        }
+        Type::Ref(r) => r.params.iter().all(|x| read_only(x, formal, false)),
+        Type::App(c, x) => read_only(c, formal, false) && read_only(x, formal, false),
+        _ => true,
+    })
+}
+
 /// What `t` stands for, through its cells' bindings and every name.
 fn stands_for(env: &Env, t: &Type) -> Result<Type> {
     let mut t = shallow(t);
@@ -822,7 +887,7 @@ impl Solving {
             // with no cell on either side, open or declared, this is the
             // relation over decided types. A declared variable is not
             // handed over: there it could take a bound nobody declared.
-            _ if !a.has_unbound() && !b.has_unbound() => {
+            _ if !a.has_unbound() && !b.has_unbound() && !at_bottom(&a) => {
                 return match b.contains(env, &a)? {
                     true => Ok(()),
                     false => mismatch(&b, &a),
@@ -957,10 +1022,15 @@ impl Solving {
                 .iter()
                 .zip(ys.iter())
                 .try_for_each(|(x, y)| self.constrain(env, &x.1, &y.1)),
-            (Type::Abstract { params: xs, .. }, Type::Abstract { params: ys, .. })
+            (Type::Abstract { id, params: xs }, Type::Abstract { params: ys, .. })
                 if alike(&a, &b) && xs.len() == ys.len() =>
             {
-                xs.iter().zip(ys.iter()).try_for_each(|(x, y)| self.equal(env, x, y))
+                let below = |i: usize, x: &Type| bottom_below(env, id, i, x);
+                xs.iter()
+                    .zip(ys.iter())
+                    .enumerate()
+                    .filter(|(i, (x, _))| !below(*i, x))
+                    .try_for_each(|(_, (x, y))| self.equal(env, x, y))
             }
             (Type::Fn(f), Type::Fn(g)) => self.fn_below(env, f, g),
             // the primitive `error` holds every error and `array` every
@@ -1263,9 +1333,14 @@ impl Solving {
         // where the body leaves that no choice, or where an instance's
         // signature is met with its definition's: each argument there is
         // what the instance made of the definition's
+        // a parameter at ⊥ is met by what the name stands for (D50)
+        let bottom = |r: &crate::typ::TypeRef| {
+            r.params.iter().any(|p| matches!(deep(p), Type::Bottom))
+        };
         if let (Type::Ref(ra), Type::Ref(rb)) = (a, b)
             && ra.same_definition(rb, env)
             && ra.params.len() == rb.params.len()
+            && !bottom(ra)
             && let Some(meets) =
                 ra.resolve_peek(env).and_then(|def| variance::meets(env, &def))
         {

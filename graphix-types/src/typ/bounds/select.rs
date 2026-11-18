@@ -418,12 +418,15 @@ struct Routed {
 
 /// Whether two lists of an abstract type's parameters are the same
 /// types; unknown where one holds a variable, which an instance decides.
-fn same_params(env: &Env, ps: &[Type], qs: &[Type]) -> Option<bool> {
+fn same_params(env: &Env, id: &AbstractId, ps: &[Type], qs: &[Type]) -> Option<bool> {
     if ps.len() != qs.len() {
         return Some(false);
     }
     let mut known = true;
-    for (p, q) in ps.iter().zip(qs.iter()).filter(|(p, q)| !strictly_identical(p, q)) {
+    let differ = |(i, (p, q)): &(usize, (&Type, &Type))| {
+        !strictly_identical(p, q) && !super::bottom_below(env, id, *i, p)
+    };
+    for (_, (p, q)) in ps.iter().zip(qs.iter()).enumerate().filter(differ) {
         match super::cells_in(p).is_empty() && super::cells_in(q).is_empty() {
             false => known = false,
             true => {
@@ -776,7 +779,7 @@ impl Solving {
             (
                 Type::Abstract { id: x, params: ps },
                 Type::Abstract { id: y, params: qs },
-            ) if test && x == y => match same_params(env, ps, qs) {
+            ) if test && x == y => match same_params(env, x, ps, qs) {
                 Some(true) => a,
                 Some(false) => Type::Bottom,
                 None => b,
@@ -848,7 +851,9 @@ impl Solving {
             (
                 Type::Abstract { id: x, params: ps },
                 Type::Abstract { id: y, params: qs },
-            ) if test && x == y && same_params(env, ps, qs) == Some(true) => Type::Bottom,
+            ) if test && x == y && same_params(env, x, ps, qs) == Some(true) => {
+                Type::Bottom
+            }
             // an error holds one value: what is left of it is an error
             // of what is left of that
             (Type::Error(x), Type::Error(y)) => match self.less(env, test, x, y) {
