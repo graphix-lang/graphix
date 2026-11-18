@@ -338,42 +338,46 @@ struct Routed {
     binds: Vec<(TVar, Type)>,
 }
 
-/// A pattern never looks into a function's type, so that may be open;
-/// every other part must be decided.
-fn routable(t: &Type) -> bool {
+/// The open cells of `t` a pattern could look into: every one but those
+/// of a function's type, which no pattern looks into.
+fn undecided(t: &Type, out: &mut SmallVec<[TVar; 4]>) {
+    let mut each = |ts: &mut dyn Iterator<Item = &Type>| ts.for_each(|t| undecided(t, out));
     match t {
-        Type::TVar(tv) => tv.is_rigid(),
-        Type::Fn(_) => true,
+        Type::TVar(tv) if tv.is_rigid() => (),
+        Type::TVar(tv) => {
+            if !out.iter().any(|u| u.same_cell(tv)) {
+                out.push(tv.clone())
+            }
+        }
         Type::Array(t) | Type::List(t) | Type::Error(t) | Type::ByRef(_, t) => {
-            routable(t)
+            each(&mut std::iter::once(&**t))
         }
-        Type::Map(m) => routable(&m.key) && routable(&m.value),
-        Type::Tuple(ts) | Type::Variant(_, ts, _) | Type::Set(ts) => {
-            ts.iter().all(routable)
-        }
-        Type::Abstract { params, .. } => params.iter().all(routable),
-        Type::Ref(r) => r.params.iter().all(routable),
-        Type::Struct(fs) => fs.iter().all(|(_, t, _)| routable(t)),
-        _ => true,
+        Type::Map(m) => each(&mut [&m.key, &m.value].into_iter()),
+        Type::Tuple(ts) | Type::Variant(_, ts, _) | Type::Set(ts) => each(&mut ts.iter()),
+        Type::Abstract { params, .. } => each(&mut params.iter()),
+        Type::Ref(r) => each(&mut r.params.iter()),
+        Type::Struct(fs) => each(&mut fs.iter().map(|(_, t, _)| t)),
+        _ => (),
     }
 }
 
-/// Whether `pat` looks into a part of `t` that is not decided: a name or
-/// a wildcard takes whatever is there, decided or not.
-fn looks(pat: &Pat, t: &Type) -> bool {
-    let parts = |ps: &[Pat], ts: &[Type]| ps.iter().zip(ts).any(|(p, t)| looks(p, t));
+/// The cells of `t`, undecided, that `pat` looks into: a name or a
+/// wildcard takes whatever is there, decided or not.
+fn looked(pat: &Pat, t: &Type, out: &mut SmallVec<[TVar; 4]>) {
     match (pat, t) {
-        (Pat::Any(_), _) => false,
-        (Pat::Whole(_, p), _) => looks(p, t),
-        (Pat::Or(ps), _) => ps.iter().any(|p| looks(p, t)),
-        (_, Type::Set(ms)) => ms.iter().any(|m| looks(pat, m)),
-        (Pat::Tuple(_, ps), Type::Tuple(ts)) if ps.len() == ts.len() => parts(ps, ts),
+        (Pat::Any(_), _) => (),
+        (Pat::Whole(_, p), _) => looked(p, t, out),
+        (Pat::Or(ps), _) => ps.iter().for_each(|p| looked(p, t, out)),
+        (_, Type::Set(ms)) => ms.iter().for_each(|m| looked(pat, m, out)),
+        (Pat::Tuple(_, ps), Type::Tuple(ts)) if ps.len() == ts.len() => {
+            ps.iter().zip(ts.iter()).for_each(|(p, t)| looked(p, t, out))
+        }
         (Pat::Variant(_, tag, ps), Type::Variant(u, ts, _))
             if tag == u && ps.len() == ts.len() =>
         {
-            parts(ps, ts)
+            ps.iter().zip(ts.iter()).for_each(|(p, t)| looked(p, t, out))
         }
-        _ => !routable(t),
+        _ => undecided(t, out),
     }
 }
 
@@ -979,7 +983,7 @@ impl Solving {
     /// Pass one type that reaches a select's scrutinee down its arms.
     pub(super) fn select_route(&mut self, env: &Env, id: usize, t: &Type) -> Result<()> {
         let whole = deep(t);
-        if self.selects[id].template.arms.iter().any(|a| looks(&a.pat, &whole)) {
+        if !self.looked(id, &whole).is_empty() {
             self.selects[id].waiting.push(t.clone());
             return Ok(());
         }
@@ -1044,6 +1048,13 @@ impl Solving {
         union_of(kept)
     }
 
+    /// The undecided cells of `t` the arms of the select `id` look into.
+    fn looked(&self, id: usize, t: &Type) -> SmallVec<[TVar; 4]> {
+        let mut out = SmallVec::new();
+        self.selects[id].template.arms.iter().for_each(|a| looked(&a.pat, t, &mut out));
+        out
+    }
+
     /// Route what waited for a cell; true if anything was.
     pub(super) fn select_waiting(
         &mut self,
@@ -1054,7 +1065,15 @@ impl Solving {
         for id in 0..self.selects.len() {
             for t in std::mem::take(&mut self.selects[id].waiting) {
                 if ready(self, id, &t) {
-                    self.fix_in(env, &t)?;
+                    // what an arm looks into is fixed; what it only names
+                    // stays open for the name's uses to reach
+                    loop {
+                        let cells = self.looked(id, &deep(&t));
+                        if cells.is_empty() {
+                            break;
+                        }
+                        cells.iter().try_for_each(|v| self.fix(env, v))?
+                    }
                     self.select_route(env, id, &t)?;
                     progress = true
                 } else {

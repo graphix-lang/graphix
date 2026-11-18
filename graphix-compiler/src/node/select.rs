@@ -3336,8 +3336,12 @@ impl<R: Rt> Select<R> {
                 true => {
                     pat.type_predicate.seed_refs(&ctx.env);
                 }
+                // after a check by bounds the pattern takes its places
+                // from the decided type, in typecheck1
                 false => {
-                    pat.structure_predicate.realign(&ctx.env, tp).at(n.spec())?;
+                    if !ctx.bounds {
+                        pat.structure_predicate.realign(&ctx.env, tp).at(n.spec())?;
+                    }
                     pat.type_predicate = tp.clone();
                 }
             }
