@@ -9,7 +9,8 @@ use crate::{
     env::Env,
     stack::ensure_sufficient,
     typ::{
-        AbstractId, Bound, FnArgKind, FnArgType, FnType, Mutability, Open, TVar, Type,
+        AbstractId, Bound, ContainsFlags, FnArgKind, FnArgType, FnType, Mutability, Open,
+        TVar, Type,
         node_addr,
         setops::strictly_identical,
         tvar::{AtLevel, Level, ShortName},
@@ -55,6 +56,9 @@ pub(crate) fn old_binding(of: &TVar, to: &Type) {
 /// Whether `t` is a cell a check by bounds left open: a scheme's variable.
 pub(crate) fn made(t: &Type) -> bool {
     match t {
+        // a declared variable is read by its bound, which that relation
+        // does
+        Type::TVar(tv) if tv.is_rigid() => false,
         Type::TVar(tv) => {
             let cell = tv.cell();
             let c = cell.read();
@@ -627,6 +631,38 @@ impl Solving {
                          not declare: add {b} to the bound of '{name}"
                     ),
                 }
+            }
+            // a signature others read says what holds of a type its
+            // variables are part of, whatever they stand for: the relation
+            // over decided types reads each by its declared bound
+            (_, Type::Bound(_))
+                if self.sealed && !matches!(a, Type::TVar(_)) && a.has_rigid() =>
+            {
+                // a comparison reaches the values a variable stands for
+                // inside data: each such variable is held to the
+                // predicate
+                if let Type::Bound(Bound::Ordered | Bound::Discernible) = &b {
+                    let mut reached = SmallVec::new();
+                    compared(env, &a, &mut reached, &mut SmallVec::new());
+                    for v in reached.iter() {
+                        if !v.conjunct_implies(env, &b)? {
+                            let name = v.declared_name().unwrap_or_else(|| v.name.clone());
+                            bail!(
+                                "the implementation requires '{}: {b}, which the \
+                                 signature does not declare",
+                                ShortName(&name)
+                            )
+                        }
+                    }
+                }
+                let flags = ContainsFlags::RigidCheck | ContainsFlags::Sealed;
+                return match b.contains_with_flags(flags, env, &a)? {
+                    true => Ok(()),
+                    false => bail!(
+                        "the implementation requires {a} to be {b}, which the \
+                         signature's bounds do not say"
+                    ),
+                };
             }
             // a predicate on a cell is judged when the cell is decided
             (_, Type::Bound(_)) => return Ok(()),
@@ -1220,6 +1256,39 @@ fn members_of(env: &Env, t: &Type, out: &mut SmallVec<[Type; 4]>) -> Result<()> 
     go(env, t, out, &mut seen)
 }
 
+/// The declared variables of `t` that a comparison of two of its values
+/// reaches: those not behind a function, a reference or an abstract type,
+/// which compare by identity.
+fn compared(
+    env: &Env,
+    t: &Type,
+    out: &mut SmallVec<[TVar; 4]>,
+    seen: &mut SmallVec<[Type; 4]>,
+) {
+    ensure_sufficient(|| match &shallow(t) {
+        Type::TVar(v) if v.is_rigid() => {
+            if !out.iter().any(|u| u.same_cell(v)) {
+                out.push(v.clone())
+            }
+        }
+        Type::Fn(_) | Type::ByRef(..) | Type::Abstract { .. } => (),
+        named @ Type::Ref(_) => {
+            if !seen.iter().any(|s| strictly_identical(s, named)) {
+                seen.push(named.clone());
+                if let Ok(body) = named.lookup_ref(env) {
+                    compared(env, &body, out, seen)
+                }
+            }
+        }
+        t => {
+            let _ = t.try_for_each_child::<()>(&mut |c| {
+                compared(env, c, out, seen);
+                ControlFlow::Continue(())
+            });
+        }
+    })
+}
+
 /// A scheme's variable is of a finite type: nothing that flows into it
 /// holds the variable inside a type, directly or through the cells that
 /// flow in.
@@ -1311,8 +1380,23 @@ pub fn fits(env: &Env, made: &Type, declared: &Type, outer: Level) -> Result<()>
         let level = Level::Def { depth: outer.depth() + 1, owner: LambdaId::new() };
         let _at = AtLevel::enter(level);
         let declared = declared.reset_tvars();
-        let mut constants = SmallVec::new();
+        // the declaration's variables, those only its bounds name among
+        // them
+        let mut constants: SmallVec<[TVar; 4]> = SmallVec::new();
         cells_of(&declared, true, &mut constants);
+        let mut next = 0;
+        while let Some(v) = constants.get(next).cloned() {
+            for bound in v.cell_constraints().iter() {
+                let mut named = SmallVec::new();
+                cells_of(bound, true, &mut named);
+                for u in named {
+                    if !constants.iter().any(|k| k.same_cell(&u)) {
+                        constants.push(u)
+                    }
+                }
+            }
+            next += 1
+        }
         constants.iter().for_each(|v| v.claim(level));
         let _held: SmallVec<[_; 4]> = constants.iter().map(|v| v.open_rigid()).collect();
         let one = s.instantiate(made, Level::GENERIC.depth() - 1, level);
