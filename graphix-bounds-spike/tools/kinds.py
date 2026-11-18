@@ -12,7 +12,7 @@ another value), unknown (no run! found)
 import collections, glob, os, re, sys
 
 root = os.path.expanduser('~/proj/graphix-lanes/bounds/stdlib/graphix-tests/src')
-REFUSAL = re.compile(r'\b(refused|refused_renumbered|holds_itself|refused_at|refuses)\s*\(|Err\(')
+REFUSAL = re.compile(r'\b\w*refus\w*\s*[(,;]|holds_itself\s*\(|is_err|Err\(')
 bodies = {}
 for f in glob.glob(f'{root}/**/*.rs', recursive=True):
     src = open(f).read()
