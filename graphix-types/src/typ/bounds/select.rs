@@ -9,7 +9,7 @@ use crate::{
     env::Env,
     expr::WrittenAt,
     stack::ensure_sufficient,
-    typ::{AbstractId, Mutability, TVar, Type, setops::strictly_identical},
+    typ::{AbstractId, Bound, Mutability, TVar, Type, setops::strictly_identical},
 };
 use anyhow::{Result, bail};
 use arcstr::{ArcStr, literal};
@@ -383,10 +383,10 @@ impl Template {
 pub(super) struct Select {
     pub(super) template: Arc<Template>,
     hit: Vec<bool>,
-    routed: bool,
+    pub(super) routed: bool,
     /// A copy made for an instance of a generic definition: an arm
     /// nothing reaches there is no dead arm.
-    instance: bool,
+    pub(super) instance: bool,
     pub(super) waiting: Vec<Type>,
     /// What was passed down the arms.
     seen: Vec<Type>,
@@ -687,7 +687,14 @@ impl Solving {
             _ if strictly_identical(&a, &b) => a,
             (Type::Any, t) | (t, Type::Any) => t.clone(),
             (Type::TVar(v), t) | (t, Type::TVar(v)) => {
-                self.both(env, test, &self.bound_of(env, v), t)
+                let r = self.both(env, test, &self.bound_of(env, v), t);
+                // a variable that holds no error has none in common with
+                // anything
+                let errors = Type::Primitive(Typ::Error.into());
+                match v.cell_constraints().contains(&Type::Bound(Bound::NoError)) {
+                    true => self.less(env, false, &r, &errors),
+                    false => r,
+                }
             }
             (Type::Set(ms), t) => union_of(ms.iter().map(|m| self.both(env, test, m, t))),
             (t, Type::Set(ms)) => union_of(ms.iter().map(|m| self.both(env, test, t, m))),
@@ -872,7 +879,17 @@ impl Solving {
             _ => None,
         });
         if let (Some((var, left)), false) = (within, matches!(pat, Pat::Any(_))) {
-            let r = self.route(env, pat, &left);
+            let mut r = self.route(env, pat, &left);
+            // a variable that holds no error gives a pattern none
+            let no_error = matches!(&var, Type::TVar(v)
+                if v.cell_constraints().contains(&Type::Bound(Bound::NoError)));
+            if no_error {
+                let errors = Type::Primitive(Typ::Error.into());
+                r.part = self.less(env, false, &r.part, &errors);
+                if nothing(&r.part) {
+                    return Routed { part: Type::Bottom, rest: t.clone(), binds: vec![] };
+                }
+            }
             let rest = match nothing(&r.rest) {
                 true => Type::Bottom,
                 false => tag(&ArcStr::from(WITHIN), [var, r.rest.clone()]),

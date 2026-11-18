@@ -3515,8 +3515,16 @@ impl<R: Rt> ByRef<R> {
         };
         if bounds::active() {
             // a reference to a value of the referent's type: a writable
-            // one of exactly that type
+            // one of exactly that type. A writable reference to an
+            // expression no binding names is to a cell of its own, which
+            // the expression's values flow into and its uses decide
             let t = match &self.referent {
+                Referent::Channel(n)
+                    if *mutability == Mutability::Mut
+                        && !(&**n as &dyn Any).is::<Ref>() =>
+                {
+                    return wrap!(self, cell.check_contains(&ctx.env, n.typ()));
+                }
                 Referent::Channel(n) => n.typ().clone(),
                 Referent::Place(p) => wrap!(
                     self,

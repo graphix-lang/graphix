@@ -2005,8 +2005,10 @@ impl ErrorRelay {
         scope: &Scope,
         top_id: ExprId,
     ) -> (Self, Scope) {
+        // a check by bounds gives the cell what the function raises as it
+        // flows in; today's check joins each raise into its binding
         let typ = Type::empty_tvar();
-        if let Type::TVar(tv) = &typ {
+        if let (Type::TVar(tv), false) = (&typ, ctx.bounds) {
             tv.freeze();
             tv.bind(Type::Bottom);
         }

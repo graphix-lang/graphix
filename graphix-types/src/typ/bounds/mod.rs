@@ -825,6 +825,10 @@ impl Solving {
                 xs.iter().zip(ys.iter()).try_for_each(|(x, y)| self.equal(env, x, y))
             }
             (Type::Fn(f), Type::Fn(g)) => self.fn_below(env, f, g),
+            // the primitive `error` holds every error and `array` every
+            // array, whatever they are of
+            (Type::Error(_), Type::Primitive(p)) if p.contains(Typ::Error) => Ok(()),
+            (Type::Array(_), Type::Primitive(p)) if p.contains(Typ::Array) => Ok(()),
             _ => mismatch(&b, &a),
         }
     }
@@ -892,7 +896,11 @@ impl Solving {
                 }
             }
         }
-        upper.iter().try_for_each(|u| self.relate(env, a, u))
+        upper.iter().try_for_each(|u| {
+            self.relate(env, a, u).inspect_err(|_| {
+                debug(|| format!("'{} takes {a}, and is wanted as {u:?}", ShortName(&w.name)))
+            })
+        })
     }
 
     /// A copy of `t` no deeper than `at`: each deeper cell gets a twin at
@@ -2443,8 +2451,27 @@ impl Solving {
     }
 
     /// Fix the cells met since `mark` that are at `min` or deeper and that
-    /// no scheme variable reaches; with `last`, every cell left.
+    /// no scheme variable reaches; with `last`, every cell left. A cell
+    /// a pending use will still give a value waits for it: the uses are
+    /// paid and the cells fixed in rounds, until a round fixes none.
     fn fix_scope(&mut self, env: &Env, min: u32, last: bool, mark: usize) -> Result<()> {
+        while self.fix_round(env, min, last, mark, false)? {}
+        match last {
+            true => self.fix_round(env, min, last, mark, true).map(|_| ()),
+            false => Ok(()),
+        }
+    }
+
+    /// One round of [`Self::fix_scope`]; true if it fixed a cell. With
+    /// `force`, what is left is fixed whatever still waits.
+    fn fix_round(
+        &mut self,
+        env: &Env,
+        min: u32,
+        last: bool,
+        mark: usize,
+        force: bool,
+    ) -> Result<bool> {
         let mut progress = true;
         // at the input's end, choices that wait on each other are made in
         // whatever order is left
@@ -2477,8 +2504,11 @@ impl Solving {
                 for (i, (_, b, _)) in self.held.iter().enumerate() {
                     produced.push(((Pending::Held, i), closure(self, open_cells(b))))
                 }
+                // a select nothing has reached yet produces its names too
                 for id in 0..self.selects.len() {
-                    if !self.selects[id].waiting.is_empty() {
+                    let pending = !self.selects[id].waiting.is_empty()
+                        || !(self.selects[id].routed || self.selects[id].instance);
+                    if pending {
                         let binds = self.select_cells(id);
                         produced.push(((Pending::Select, id), closure(self, binds)))
                     }
@@ -2609,14 +2639,31 @@ impl Solving {
         // what a choice still held will decide is not known yet: it, and
         // whatever it reaches, waits with the choice
         let mut waiting = Cells::new();
-        if !last {
+        if !force {
+            // what a use will give once its cell takes a value: a name a
+            // pattern binds, a field read's result
+            for v in self.cells[mark..].iter().filter(|v| !v.is_bound()) {
+                for (u, _) in uses(v).iter().filter(|(_, met)| !met) {
+                    let mut outs = SmallVec::new();
+                    u.each(&mut |t| cells_of(t, false, &mut outs));
+                    if let Use::Routed(_, of) = u {
+                        of.cells(&mut outs)
+                    }
+                    for o in outs.iter().filter(|o| !o.is_bound()) {
+                        self.reach(&Type::TVar(o.clone()), &mut waiting)
+                    }
+                }
+            }
             for (_, b, _) in self.held.iter() {
                 for v in open_cells(b) {
                     self.reach(&Type::TVar(v), &mut waiting)
                 }
             }
+            // a select nothing has reached yet names nothing so far
             for id in 0..self.selects.len() {
-                if !self.selects[id].waiting.is_empty() {
+                let pending = !self.selects[id].waiting.is_empty()
+                    || !(self.selects[id].routed || self.selects[id].instance);
+                if pending {
                     for v in self.select_cells(id) {
                         self.reach(&Type::TVar(v), &mut waiting)
                     }
@@ -2663,25 +2710,27 @@ impl Solving {
                 self.held.swap_remove(i);
             }
         }
+        let mut fixed = false;
         for v in flowing.into_iter().chain(empty) {
             let mine = !v.is_bound()
                 && !v.is_rigid()
                 && !quantified(&v)
                 && v.level().depth() >= min;
-            let now = last || (self.fixable(&held, &v, min) && !waiting.has(&v));
+            let now = force || (self.fixable(&held, &v, min) && !waiting.has(&v));
             if mine && now {
                 self.fix(env, &v)?;
+                fixed = true;
                 if !matches!(v.binding(), Some(Type::Bottom)) {
                     self.unread(&v)?
                 }
             }
         }
-        if last && let Some((a, b, _)) = self.held.iter().find(|h| !h.2) {
+        if force && let Some((a, b, _)) = self.held.iter().find(|h| !h.2) {
             bail!(
                 "{a} could go to more than one member of the union {b}, and nothing has decided which"
             )
         }
-        Ok(())
+        Ok(fixed)
     }
 
     /// Fix every cell of `t`, those nothing has decided included.
@@ -2730,7 +2779,9 @@ impl Solving {
         }
         let r = self.fixed(env, v);
         self.fixing.remove(&v.cell_addr());
-        v.cell().write().set_binding(Some(r?));
+        let r = r?;
+        debug(|| format!("fix '{} := {r}", ShortName(&v.name)));
+        v.cell().write().set_binding(Some(r));
         // a flow from a cell that was being fixed around this one was
         // left out: what that cell is now fits here, or no finite type
         // holds both
