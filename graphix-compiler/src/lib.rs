@@ -3148,9 +3148,6 @@ pub(crate) enum PendingSettle {
         sigs: SmallVec<[triomphe::Arc<FnType>; 1]>,
         spec: Arc<Expr>,
     },
-    /// A call site a check by bounds decided: what its callee's bounds
-    /// ask of the decided types beyond the check ([`site_bounds`]).
-    Bounds { ftype: triomphe::Arc<FnType>, spec: Arc<Expr> },
     /// A cell an operation leaves for its context to decide (an
     /// operator's operand, a constructed value's parameter), settled once
     /// the frame's sites have.
@@ -3326,10 +3323,7 @@ impl PendingSettle {
                     (element_binds(env, test, shape, elems, &mut ends), spec)
                 }
                 PendingSettle::Site { ftype, spec, .. } => {
-                    (site_bounds(env, ftype, true), spec)
-                }
-                PendingSettle::Bounds { ftype, spec } => {
-                    (site_bounds(env, ftype, false), spec)
+                    (site_bounds(env, ftype), spec)
                 }
                 _ => continue,
             };
@@ -3344,17 +3338,14 @@ impl PendingSettle {
 /// The bounds a call's settled cells must meet beyond their check: a
 /// `Discernible` cell's binding, and the map keys a `Concrete` one's (a
 /// map read from data).
-fn site_bounds(env: &Env, ftype: &FnType, compared: bool) -> Result<()> {
+fn site_bounds(env: &Env, ftype: &FnType) -> Result<()> {
     let mut tvs: LPooled<AHashMap<ArcStr, typ::TVar>> = LPooled::take();
     ftype.collect_tvars(&mut tvs);
     for tv in tvs.values() {
         let Some(t) = tv.binding() else { continue };
         for c in tv.cell_constraints().iter() {
             match c {
-                // a check by bounds judged these of the cell it fixed
-                Type::Bound(Bound::Discernible) | Type::Bound(Bound::Ordered)
-                    if compared =>
-                {
+                Type::Bound(Bound::Discernible) | Type::Bound(Bound::Ordered) => {
                     discernible(env, &t, &Discerned::Bound(tv.clone(), c.clone()))?
                 }
                 Type::Bound(Bound::Concrete) => discernible(env, &t, &Discerned::Keys)?,
@@ -3634,24 +3625,23 @@ fn discernible(env: &Env, typ: &Type, what: &Discerned) -> Result<()> {
     if let Discerned::Bound(tv, bound) = what {
         return Err(typ.not_discernible(bound, &tv.name, &why));
     }
+    if let Discerned::Keys = what {
+        return Err(why.as_map_key());
+    }
     format_with_flags(PrintFlag::DerefTVars, || {
         let typ = typ.resolve_tvars();
-        match (what, why) {
-            (Discerned::Compared { .. }, Indiscernible::Abstract(a, kind)) => bail!(
+        match why {
+            Indiscernible::Abstract(a, kind) => bail!(
                 "can't compare values of {typ}: {}",
                 Indiscernible::by_representation(&a, kind)
             ),
-            (_, Indiscernible::Abstract(a, kind)) => bail!(
-                "a map key type can't hold {}",
-                Indiscernible::by_representation(&a, kind)
-            ),
-            (Discerned::Compared { .. }, Indiscernible::Pair(a, b)) => bail!(
+            Indiscernible::Pair(a, b) => bail!(
                 "can't compare values of {typ}: {} and {} have the same runtime \
                  form; wrap them in distinct variants",
                 a.resolve_tvars(),
                 b.resolve_tvars()
             ),
-            (Discerned::Compared { .. }, Indiscernible::Unordered(r))
+            Indiscernible::Unordered(r)
                 if r.resolve_tvars() == typ =>
             {
                 let (kind, how) = Indiscernible::unordered_kind(&r);
@@ -3659,7 +3649,7 @@ fn discernible(env: &Env, typ: &Type, what: &Discerned) -> Result<()> {
                     "can't order {kind}s: they have no order (== and != compare them {how})"
                 )
             }
-            (Discerned::Compared { .. }, Indiscernible::Unordered(r)) => {
+            Indiscernible::Unordered(r) => {
                 let (kind, how) = Indiscernible::unordered_kind(&r);
                 bail!(
                     "can't order values of {typ}: it holds the {kind} {}, and {kind}s have \
@@ -3667,39 +3657,16 @@ fn discernible(env: &Env, typ: &Type, what: &Discerned) -> Result<()> {
                     r.resolve_tvars()
                 )
             }
-            (_, Indiscernible::Pair(a, b)) => bail!(
-                "{} and {} can't share a map key type: they have the same runtime \
-                 form; wrap them in distinct variants",
-                a.resolve_tvars(),
-                b.resolve_tvars()
-            ),
-            (Discerned::Compared { .. }, Indiscernible::Numbers(n)) => bail!(
+            Indiscernible::Numbers(n) => bail!(
                 "can't order values of {typ}: it holds {}, {}",
                 n.resolve_tvars(),
                 Indiscernible::NUMBERS
             ),
-            (_, Indiscernible::Numbers(n)) => bail!(
-                "a map key type can't hold {}, {}",
-                n.resolve_tvars(),
-                Indiscernible::NUMBERS
-            ),
-            (Discerned::Compared { .. }, Indiscernible::OpenNumber(n)) => bail!(
+            Indiscernible::OpenNumber(n) => bail!(
                 "can't order values of {typ}: it holds {}, {}",
                 n.resolve_tvars(),
                 Indiscernible::OPEN_NUMBER
             ),
-            (_, Indiscernible::OpenNumber(n)) => bail!(
-                "a map key type can't hold {}, {}",
-                n.resolve_tvars(),
-                Indiscernible::OPEN_NUMBER
-            ),
-            (_, Indiscernible::Unordered(r)) => {
-                let (kind, _) = Indiscernible::unordered_kind(&r);
-                bail!(
-                    "a map key type can't hold the {kind} {}: {kind}s have no order",
-                    r.resolve_tvars()
-                )
-            }
         }
     })
 }

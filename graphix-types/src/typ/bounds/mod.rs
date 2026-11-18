@@ -13,6 +13,7 @@ use crate::{
         TVar, Type,
         cast::numbers_ordered,
         node_addr,
+        toml_root_refusal,
         setops::strictly_identical,
         tvar::{AtLevel, Level, ShortName},
         variance,
@@ -2549,6 +2550,20 @@ impl Solving {
                     if let Some(why) = t.text_refusal(env) {
                         let (what, why) = why.told(format, t);
                         bail!("{} refuses {what}: {why}", named(p))
+                    }
+                    let written = bounds.contains(&Type::Bound(Bound::Data));
+                    if *b == Bound::TomlData
+                        && written
+                        && let Some(m) = t.toml_root_pairs(env)
+                    {
+                        let why = toml_root_refusal(Some(&m));
+                        bail!("{} refuses {t}: {why}", named(p))
+                    }
+                }
+                Type::Bound(Bound::Concrete) => {
+                    let why = numbers_ordered(|| t.map_key_failure(env, Open::Benign));
+                    if let Some(why) = why {
+                        return Err(why.as_map_key());
                     }
                 }
                 Type::Bound(_) if !p.contains(env, t)? => bail!("{t} must be {p} here"),
