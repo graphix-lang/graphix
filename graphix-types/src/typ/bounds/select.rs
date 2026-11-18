@@ -885,7 +885,10 @@ impl Solving {
                 if let Some(Some(v)) = run {
                     binds.push((v.clone(), array.clone()))
                 }
+                // an array of nothing is the empty array alone
+                let empty = nothing(&plain(Type::clone(&e)));
                 let rest = match (whole, run) {
+                    _ if empty => Type::Bottom,
                     (false, _) => t.clone(),
                     (true, Some(_)) => left(&array, taken, n.min(from)),
                     (true, None) if n < 64 => left(&array, taken | 1 << n, from),
