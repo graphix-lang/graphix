@@ -207,9 +207,9 @@ pub type Arg = (Option<ArcStr>, Type);
 #[derive(Debug, Clone)]
 pub enum Use {
     /// A read of the field, which goes to `out`.
-    Field { field: ArcStr, out: Type },
+    Field { field: ArcStr, out: Type, write: bool },
     /// A read of a tuple's element, or of an error's payload.
-    Index { i: usize, out: Type },
+    Index { i: usize, out: Type, write: bool },
     /// A read of an element by its position: an array's element, or a
     /// byte of `bytes`.
     Element { out: Type },
@@ -257,8 +257,10 @@ impl Use {
     /// The types the use holds, each through `f`.
     fn map(&self, f: &mut impl FnMut(&Type) -> Type) -> Use {
         match self {
-            Use::Field { field, out } => Use::Field { field: field.clone(), out: f(out) },
-            Use::Index { i, out } => Use::Index { i: *i, out: f(out) },
+            Use::Field { field, out, write } => {
+                Use::Field { field: field.clone(), out: f(out), write: *write }
+            }
+            Use::Index { i, out, write } => Use::Index { i: *i, out: f(out), write: *write },
             Use::Element { out } => Use::Element { out: f(out) },
             Use::Call { args, out } => Use::Call {
                 args: args.iter().map(|(l, t)| (l.clone(), f(t))).collect(),
@@ -711,25 +713,34 @@ impl Solving {
             (Type::ByRef(Mutability::Mut, x), Type::ByRef(Mutability::Mut, y)) => {
                 self.equal(env, x, y)
             }
-            // two applications: of one constructor, which holds its
-            // argument as a collection holds an element
+            // two applications of one constructor nothing has decided:
+            // how it holds its argument is not known, so the arguments
+            // are one type
             (Type::App(c, x), Type::App(d, y)) => {
                 self.equal(env, c, d)?;
-                self.constrain(env, x, y)
+                self.equal(env, x, y)
             }
             // an application of a constructor not decided yet, against a
-            // type that is one: its constructor and its argument
+            // type that is one: the type's constructor, and the argument
+            // as that constructor holds it (an array's element may be
+            // narrower, a cell written through may not)
             (_, Type::App(c, y)) => match Type::app_split(&a, env)? {
                 Some((ctor, arg)) => {
                     self.constrain(env, &ctor, c)?;
-                    self.constrain(env, &arg, y)
+                    match ctor.fill_hole(y) {
+                        Some(filled) => self.constrain(env, &a, &filled),
+                        None => self.equal(env, &arg, y),
+                    }
                 }
                 None => mismatch(&b, &a),
             },
             (Type::App(c, x), _) => match Type::app_split(&b, env)? {
                 Some((ctor, arg)) => {
                     self.constrain(env, c, &ctor)?;
-                    self.constrain(env, x, &arg)
+                    match ctor.fill_hole(x) {
+                        Some(filled) => self.constrain(env, &filled, &b),
+                        None => self.equal(env, x, &arg),
+                    }
                 }
                 None => mismatch(&b, &a),
             },
@@ -2575,6 +2586,22 @@ impl Solving {
         Ok(())
     }
 
+    /// The part `t` of a value goes to `out`, the place a read or a
+    /// reference stands for. One that may be written through takes the
+    /// part's exact type: what is written must fit every value the place
+    /// may be a part of.
+    fn part(&mut self, env: &Env, t: &Type, out: &Type, write: bool) -> Result<()> {
+        match write {
+            false => self.constrain(env, t, out),
+            true => self.equal(env, t, out).map_err(|e| {
+                e.context(
+                    "a writable reference to a part of a union needs the part to be \
+                     one type in every member",
+                )
+            }),
+        }
+    }
+
     /// Apply a use to one type that reaches it; false where the type says
     /// nothing (bottom).
     fn apply(&mut self, env: &Env, u: &Use, a: &Type) -> Result<bool> {
@@ -2632,9 +2659,9 @@ impl Solving {
                 }
             }
             (Type::TVar(_), _) => Ok(false),
-            (Type::Struct(fs), Use::Field { field, out }) => {
+            (Type::Struct(fs), Use::Field { field, out, write }) => {
                 match fs.iter().find(|(n, ..)| n == field) {
-                    Some((_, t, _)) => self.constrain(env, t, out).map(|()| true),
+                    Some((_, t, _)) => self.part(env, t, out, *write).map(|()| true),
                     None => bail!("{a} has no field {field}"),
                 }
             }
@@ -2652,17 +2679,17 @@ impl Solving {
                 let updated = Type::Struct(Arc::from_iter(fs));
                 self.constrain(env, &updated, out).map(|()| true)
             }
-            (Type::Abstract { id, params }, Use::Index { i: 0, out }) => {
+            (Type::Abstract { id, params }, Use::Index { i: 0, out, .. }) => {
                 match rep(env, id, params) {
                     Some(rep) => self.constrain(env, &rep, out).map(|()| true),
                     None => bail!("{a} is abstract here: its payload cannot be read"),
                 }
             }
-            (Type::Error(t), Use::Index { i: 0, out }) => {
+            (Type::Error(t), Use::Index { i: 0, out, .. }) => {
                 self.constrain(env, t, out).map(|()| true)
             }
-            (Type::Tuple(ts), Use::Index { i, out }) => match ts.get(*i) {
-                Some(t) => self.constrain(env, t, out).map(|()| true),
+            (Type::Tuple(ts), Use::Index { i, out, write }) => match ts.get(*i) {
+                Some(t) => self.part(env, t, out, *write).map(|()| true),
                 None => bail!("{a} has no element {i}"),
             },
             (Type::Array(t), Use::Element { out }) => {
@@ -3087,7 +3114,7 @@ mod tests {
         let mut s = Solving::default();
         let ((_, tv), (out, to)) = (var("v"), var("out"));
         out.set_joins();
-        let read = super::Use::Field { field: ArcStr::from("a"), out: to.clone() };
+        let read = super::Use::Field { field: ArcStr::from("a"), out: to.clone(), write: false };
         assert!(s.watch(&env, &tv, read).is_ok());
         assert!(s.constrain(&env, &parsed(&env, "{a: i64, b: string}"), &tv).is_ok());
         assert_eq!(shown(&out.cell_lower()), ["i64"]);
@@ -3108,7 +3135,7 @@ mod tests {
         let mut s = Solving::default();
         let mark = s.mark();
         let ((_, tp), (_, to)) = (var_at("p", 1), var_at("o", 1));
-        let read = super::Use::Field { field: ArcStr::from("a"), out: to.clone() };
+        let read = super::Use::Field { field: ArcStr::from("a"), out: to.clone(), write: false };
         assert!(s.watch(&env, &tp, read).is_ok());
         let f = over(&env, "fn(p: 'p) -> 'o", &[("p", &tp), ("o", &to)]);
         assert!(s.generalize(&env, &f, 0, mark).is_err());

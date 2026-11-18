@@ -2645,13 +2645,17 @@ impl<R: Rt> Place<R> {
                 }
                 PlaceStep::Tuple(i) if bounds::active() => {
                     let out = joined();
-                    let read = Use::Index { i: *i, out: out.clone() };
+                    let read = Use::Index { i: *i, out: out.clone(), write: writable };
                     solving(|s| s.watch(&ctx.env, &cur, read))?;
                     out
                 }
                 PlaceStep::Field(name) if bounds::active() => {
                     let out = joined();
-                    let read = Use::Field { field: name.name.clone(), out: out.clone() };
+                    let read = Use::Field {
+                        field: name.name.clone(),
+                        out: out.clone(),
+                        write: writable,
+                    };
                     solving(|s| s.watch(&ctx.env, &cur, read))?;
                     out
                 }

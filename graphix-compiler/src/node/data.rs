@@ -1280,7 +1280,11 @@ impl<R: Rt> StructRef<R> {
     ) -> Result<()> {
         wrap!(self.source, child(&mut self.source, ctx))?;
         if bounds::active() {
-            let u = Use::Field { field: self.field_name.clone(), out: self.typ.clone() };
+            let u = Use::Field {
+                field: self.field_name.clone(),
+                out: self.typ.clone(),
+                write: false,
+            };
             return wrap!(self, solving(|s| s.watch(&ctx.env, self.source.typ(), u)));
         }
         let etyp = struct_field_type(ctx, self.source.typ(), &self.field_name);
@@ -1411,7 +1415,7 @@ impl<R: Rt> TupleRef<R> {
             return Ok(());
         }
         if bounds::active() {
-            let u = Use::Index { i: self.field, out: self.typ.clone() };
+            let u = Use::Index { i: self.field, out: self.typ.clone(), write: false };
             return wrap!(self, solving(|s| s.watch(&ctx.env, self.source.typ(), u)));
         }
         let etyp = tuple_field_type(ctx, &self.scope, self.source.typ(), self.field);
