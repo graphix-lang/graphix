@@ -3113,33 +3113,33 @@ impl Indiscernible {
     /// The refusal of a map key type for this reason.
     pub fn as_map_key(&self) -> anyhow::Error {
         format_with_flags(PrintFlag::DerefTVars, || match self {
-                Indiscernible::Abstract(a, kind) => anyhow::anyhow!(
-                    "a map key type can't hold {}",
-                    Indiscernible::by_representation(a, *kind)
-                ),
-                Indiscernible::Pair(a, b) => anyhow::anyhow!(
-                    "{} and {} can't share a map key type: they have the same runtime \
+            Indiscernible::Abstract(a, kind) => anyhow::anyhow!(
+                "a map key type can't hold {}",
+                Indiscernible::by_representation(a, *kind)
+            ),
+            Indiscernible::Pair(a, b) => anyhow::anyhow!(
+                "{} and {} can't share a map key type: they have the same runtime \
                      form; wrap them in distinct variants",
-                    a.resolve_tvars(),
-                    b.resolve_tvars()
-                ),
-                Indiscernible::Numbers(n) => anyhow::anyhow!(
-                    "a map key type can't hold {}, {}",
-                    n.resolve_tvars(),
-                    Indiscernible::NUMBERS
-                ),
-                Indiscernible::OpenNumber(n) => anyhow::anyhow!(
-                    "a map key type can't hold {}, {}",
-                    n.resolve_tvars(),
-                    Indiscernible::OPEN_NUMBER
-                ),
-                Indiscernible::Unordered(r) => {
-                    let (kind, _) = Indiscernible::unordered_kind(r);
-                    anyhow::anyhow!(
-                        "a map key type can't hold the {kind} {}: {kind}s have no order",
-                        r.resolve_tvars()
-                    )
-                }
+                a.resolve_tvars(),
+                b.resolve_tvars()
+            ),
+            Indiscernible::Numbers(n) => anyhow::anyhow!(
+                "a map key type can't hold {}, {}",
+                n.resolve_tvars(),
+                Indiscernible::NUMBERS
+            ),
+            Indiscernible::OpenNumber(n) => anyhow::anyhow!(
+                "a map key type can't hold {}, {}",
+                n.resolve_tvars(),
+                Indiscernible::OPEN_NUMBER
+            ),
+            Indiscernible::Unordered(r) => {
+                let (kind, _) = Indiscernible::unordered_kind(r);
+                anyhow::anyhow!(
+                    "a map key type can't hold the {kind} {}: {kind}s have no order",
+                    r.resolve_tvars()
+                )
+            }
         })
     }
 
@@ -3202,7 +3202,7 @@ thread_local! {
 /// `f`, with an ordering taking a type that holds two numeric types: the
 /// check by bounds judges `Ordered` so (D47 follow-up 5). The clause that
 /// refuses them goes with the check it belongs to.
-pub(crate) fn numbers_ordered<R>(f: impl FnOnce() -> R) -> R {
+pub fn numbers_ordered<R>(f: impl FnOnce() -> R) -> R {
     let was = NUMBERS_ORDERED.replace(true);
     let r = f();
     NUMBERS_ORDERED.set(was);

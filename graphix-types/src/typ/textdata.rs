@@ -72,11 +72,7 @@ impl TextRefusal {
                     ),
                 }
             }
-            Self::Untagged {
-                union,
-                member,
-                read_by: None,
-            } => (
+            Self::Untagged { union, member, read_by: None } => (
                 what(),
                 format_compact!(
                     "{} in {} has no tag (a variant's, or an abstract \
@@ -86,11 +82,7 @@ impl TextRefusal {
                     r(union)
                 ),
             ),
-            Self::Untagged {
-                union,
-                member,
-                read_by: Some(a),
-            } => (
+            Self::Untagged { union, member, read_by: Some(a) } => (
                 what(),
                 format_compact!(
                     "{} in {} has no tag: in the data {a}'s from_value \

@@ -2281,7 +2281,7 @@ pub(crate) fn with_runtime_settles<R: Rt, T>(
     // a runtime bind elaborates: what it defers is no check's
     ctx.pending_names.truncate(names);
     let pending = ctx.pending_settles.pop().expect("runtime settle frame");
-    let _ = PendingSettle::drain(&pending, &ctx.env, |spec, e| {
+    let _ = PendingSettle::drain(&pending, &ctx.env, ctx.bounds, |spec, e| {
         let msg = format_compact!("a run-time bind's settle at {spec} refused: {e:#}");
         error::report_failure!(&msg);
         Ok(())

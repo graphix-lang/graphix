@@ -3251,12 +3251,18 @@ impl SettleFrame {
 
 impl PendingSettle {
     /// Run every site settle of `frame`, then every cell settle, then
-    /// every rule judged over the settled cells.
+    /// every rule judged over the settled cells: under a check by bounds,
+    /// by its rules (any two numbers have an order).
     pub(crate) fn drain(
         frame: &SettleFrame,
         env: &Env,
+        by_bounds: bool,
         mut on_err: impl FnMut(&Arc<Expr>, anyhow::Error) -> Result<()>,
     ) -> Result<()> {
+        let judged = |f: &mut dyn FnMut() -> Result<()>| match by_bounds {
+            true => typ::numbers_ordered(f),
+            false => f(),
+        };
         let mut reached: LPooled<AHashMap<usize, AHashSet<usize>>> = LPooled::take();
         for s in frame.iter() {
             if let PendingSettle::Site {
@@ -3336,14 +3342,14 @@ impl PendingSettle {
                     (outer.check_contains(env, inner), spec)
                 }
                 PendingSettle::Discernible { typ, what, spec } => {
-                    (discernible(env, typ, what), spec)
+                    (judged(&mut || discernible(env, typ, what)), spec)
                 }
                 PendingSettle::Told { test, rest, spec } => (told(env, test, rest), spec),
                 PendingSettle::ElementBinds { test, shape, elems, spec } => {
                     (element_binds(env, test, shape, elems, &mut ends), spec)
                 }
                 PendingSettle::Site { ftype, spec, .. } => {
-                    (site_bounds(env, ftype), spec)
+                    (judged(&mut || site_bounds(env, ftype)), spec)
                 }
                 _ => continue,
             };
@@ -4122,7 +4128,7 @@ pub fn fusion_on(flags: BitFlags<CFlag>) -> bool {
 pub(crate) fn drain_pending_settles<R: Rt>(ctx: &mut CompileCtx<R>) -> Result<()> {
     use expr::At;
     let pending = mem::take(ctx.pending_settles.last_mut().expect("root settle frame"));
-    PendingSettle::drain(&pending, &ctx.env, |spec, e| Err(e.at(&**spec)))
+    PendingSettle::drain(&pending, &ctx.env, ctx.bounds, |spec, e| Err(e.at(&**spec)))
 }
 
 /// A question a check leaves open until it ends.

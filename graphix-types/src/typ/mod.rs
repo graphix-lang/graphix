@@ -36,7 +36,9 @@ use triomphe::Arc;
 
 pub mod bounds;
 mod cast;
-pub use cast::{Carriers, CastInput, Indiscernible, IsAFlags, Open, ShallowScrutinee};
+pub use cast::{
+    Carriers, CastInput, Indiscernible, IsAFlags, Open, ShallowScrutinee, numbers_ordered,
+};
 mod contains;
 pub use contains::ContainsFlags;
 pub(crate) use contains::find_impl;
