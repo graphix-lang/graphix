@@ -6,7 +6,7 @@
 
 use crate::{
     LambdaId,
-    env::Env,
+    env::{Env, TraitMethodRef},
     expr::ModPath,
     stack::ensure_sufficient,
     typ::{
@@ -257,6 +257,16 @@ pub enum Use {
     /// A write through a reference: `value` goes to what each writable
     /// reference reaching the cell refers to.
     Write { value: Type },
+    /// The receiver of a call of the trait method `method` (`name`) that
+    /// leaves out `labels`, each with the call's type for it: the
+    /// implementation the receiver's type decides passes its own default,
+    /// of its parameter's type. Its typing's cells are made at `level`.
+    Defaults {
+        method: TraitMethodRef,
+        name: ArcStr,
+        labels: SmallVec<[(ArcStr, Type); 1]>,
+        level: Level,
+    },
     /// The scrutinee of a select ([`Solving::select`]).
     Select(usize),
     /// [`Use::Select`] as a cell keeps it: with the select as written,
@@ -289,6 +299,7 @@ impl Use {
             Use::Call { .. } => "reading a fn",
             Use::With { .. } => "updating a struct",
             Use::Write { .. } => "writing through a reference",
+            Use::Defaults { .. } => "calling a method",
             Use::Select(_) | Use::Routed(..) => "a select",
             Use::Method { .. } => "calling a method",
         }
@@ -313,6 +324,12 @@ impl Use {
                 out: f(out),
             },
             Use::Write { value } => Use::Write { value: f(value) },
+            Use::Defaults { method, name, labels, level } => Use::Defaults {
+                method: *method,
+                name: name.clone(),
+                labels: labels.iter().map(|(l, t)| (l.clone(), f(t))).collect(),
+                level: *level,
+            },
             Use::Select(id) => Use::Select(*id),
             Use::Routed(id, of) => Use::Routed(*id, of.clone()),
             Use::Method { name, typings, receiver, at, args, out, throws, level } => {
@@ -345,6 +362,7 @@ impl Use {
                 fields.iter().for_each(|(_, t)| f(t))
             }
             Use::Select(_) | Use::Routed(..) => (),
+            Use::Defaults { labels, .. } => labels.iter().for_each(|(_, t)| f(t)),
             Use::Method { args, out, throws, .. } => {
                 f(out);
                 f(throws);
@@ -3380,6 +3398,39 @@ impl Solving {
                 )
             }
             (_, Use::Write { .. }) => bail!("expected a reference not {a}"),
+            (t, Use::Defaults { method, name, labels, level }) => {
+                let Some(im) = env.find_impl(method.trait_id, t)? else {
+                    return Ok(false);
+                };
+                let typ = match im
+                    .methods
+                    .get(name.as_str())
+                    .and_then(|id| env.by_id.get(id))
+                {
+                    Some(b) => b.typ.clone(),
+                    None => return Ok(false),
+                };
+                let typ = match scheme(&typ) {
+                    true => self.instantiate(&typ, Level::GENERIC.depth() - 1, *level),
+                    false => typ,
+                };
+                let typ = deep(&typ);
+                let Type::Fn(ft) = &typ else { return Ok(false) };
+                for (label, slot) in labels.iter() {
+                    if let Some(p) = ft.args.iter().find(|a| a.label() == Some(label)) {
+                        // the implementation's default rides on the
+                        // variable its check held the label to
+                        self.omitted(env, label, &p.typ)?;
+                        self.constrain(env, &p.typ, slot).map_err(|e| {
+                            e.context(format!(
+                                "the default of #{label} is passed where the call leaves \
+                                 #{label} out"
+                            ))
+                        })?
+                    }
+                }
+                Ok(true)
+            }
             (_, Use::Field { field, .. }) => bail!("{a} has no field {field}"),
             (_, Use::Index { i, .. }) => bail!("{a} has no element {i}"),
             (_, Use::Call { .. }) => bail!("{a} is not a function"),

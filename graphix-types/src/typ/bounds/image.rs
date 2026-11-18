@@ -246,6 +246,17 @@ impl Use {
                 buf.put_u8(7);
                 value.encode(buf)
             }
+            Use::Defaults { method, name, labels, level } => {
+                buf.put_u8(8);
+                method.encode(buf)?;
+                name.encode(buf)?;
+                put_len(labels.len(), buf);
+                for (label, t) in labels.iter() {
+                    label.encode(buf)?;
+                    t.encode(buf)?
+                }
+                level.encode(buf)
+            }
             // a cell keeps a select as its template: the select itself is
             // its check's
             Use::Select(_) => Err(PackError::InvalidFormat),
@@ -306,6 +317,14 @@ impl Use {
                 }
             }
             7 => Use::Write { value: Type::decode(buf)? },
+            8 => {
+                let method = crate::env::TraitMethodRef::decode(buf)?;
+                let name = ArcStr::decode(buf)?;
+                let labels = (0..get_len(buf)?)
+                    .map(|_| Ok((ArcStr::decode(buf)?, Type::decode(buf)?)))
+                    .collect::<Result<_, PackError>>()?;
+                Use::Defaults { method, name, labels, level: Level::decode(buf)? }
+            }
             _ => return Err(PackError::InvalidFormat),
         })
     }

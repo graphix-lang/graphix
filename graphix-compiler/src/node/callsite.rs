@@ -5459,6 +5459,38 @@ impl<R: Rt> CallSite<R> {
         Some((name.as_str().into(), typings.collect(), receiver))
     }
 
+    /// A call of a trait method that leaves out labels the trait gives
+    /// defaults: the receiver's implementation passes its own, as its
+    /// parameter's type ([`Use::Defaults`]), on the receiver's type.
+    fn method_defaults(
+        &self,
+        ctx: &CompileCtx<R>,
+        ft: &FnType,
+        args: &[bounds::Arg],
+    ) -> Option<(Type, Use)> {
+        let NodeView::Ref(r) = self.fnode.view() else { return None };
+        let method = *ctx.env.trait_methods.get(&r.id)?;
+        let def = ctx.env.trait_def(method.trait_id)?;
+        let m = def.methods.get(method.index)?;
+        let before = &m.typ.args[..m.self_index?];
+        let receiver = before.iter().filter(|a| a.is_positional()).count();
+        let of = args.iter().filter(|(l, _)| l.is_none()).nth(receiver)?.1.clone();
+        let left = ft.args.iter().filter_map(|a| match &a.kind {
+            FnArgKind::Labeled { name, has_default: true }
+                if !args.iter().any(|(l, _)| l.as_ref() == Some(name)) =>
+            {
+                Some((name.clone(), a.typ.clone()))
+            }
+            _ => None,
+        });
+        let labels: SmallVec<[(ArcStr, Type); 1]> = left.collect();
+        if labels.is_empty() {
+            return None;
+        }
+        let name = m.name.clone();
+        Some((of, Use::Defaults { method, name, labels, level: current_level() }))
+    }
+
     /// The check by bounds: each written argument is checked in the order
     /// written, then fits its parameter where the callee's type is decided
     /// here; a callee that is not is used as a function of these
@@ -5531,6 +5563,9 @@ impl<R: Rt> CallSite<R> {
                     self.ftype = Some(ft.clone())
                 }
                 wrap!(self, solving(|s| s.call(&ctx.env, ft, &args, &self.rtype)))?;
+                if let Some((of, defaults)) = self.method_defaults(ctx, ft, &args) {
+                    wrap!(self, solving(|s| s.watch(&ctx.env, &of, defaults)))?
+                }
                 match handler {
                     Some(h) => wrap!(self, join_raised(&ctx.env, &h, &ft.throws)),
                     None => Ok(()),
