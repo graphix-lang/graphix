@@ -165,6 +165,9 @@ pub struct Known {
     /// Decided by what is demanded of it, nothing having flowed in: as a
     /// lower bound of another cell it says nothing.
     pub(crate) demanded: bool,
+    /// A call made gives a value of this type: an operation that reads
+    /// the type to know what to make will read it.
+    pub(crate) made: bool,
     /// The check that bounded it has it in its list.
     pub(crate) listed: bool,
     /// The uses waiting on what flows into the cell, and whether each has
@@ -193,8 +196,8 @@ pub(crate) enum Left {
     /// A select waiting on a type.
     Waiting(Arc<Template>, Type),
     /// The operands of a comparison, one of whose types must hold the
-    /// other's.
-    Compared(Arc<(Type, Type)>),
+    /// other's, and whether it is an ordering.
+    Compared(Arc<(Type, Type, bool)>),
 }
 
 /// A call's argument: its label, if it is passed by one, and its type.
@@ -366,9 +369,9 @@ pub struct Solving {
     /// The cells fixed that carry a predicate, which is judged of what
     /// the cell holds once every cell is fixed ([`Self::judge`]).
     judged: Vec<TVar>,
-    /// The operands of each comparison, judged with them
-    /// ([`Self::compare`]).
-    compared: Vec<(Type, Type)>,
+    /// The operands of each comparison, and whether it is an ordering,
+    /// judged with them ([`Self::compare`]).
+    compared: Vec<(Type, Type, bool)>,
 }
 
 /// A kind of use a check may still owe when a definition closes.
@@ -1219,6 +1222,14 @@ fn compared(
     })
 }
 
+/// Whether an operation reads the type `v` stands for to know what to do:
+/// it is bounded `Concrete` or `Function`.
+fn reads_type(v: &TVar) -> bool {
+    v.cell_constraints()
+        .iter()
+        .any(|c| matches!(c, Type::Bound(Bound::Concrete | Bound::Function)))
+}
+
 /// A scheme's variable is of a finite type: nothing that flows into it
 /// holds the variable inside a type, directly or through the cells that
 /// flow in.
@@ -1871,10 +1882,10 @@ impl Solving {
         // each instance's to judge
         let (left, mine): (Vec<_>, Vec<_>) = std::mem::take(&mut self.compared)
             .into_iter()
-            .partition(|(a, b)| scheme(a) || scheme(b));
+            .partition(|(a, b, _)| scheme(a) || scheme(b));
         self.compared = mine;
-        for (a, b) in left {
-            let pair = Arc::new((a, b));
+        for pair in left {
+            let pair = Arc::new(pair);
             for t in [&pair.0, &pair.1] {
                 self.leave(t, |ls| {
                     let same = |l: &Left| matches!(l, Left::Compared(p) if Arc::ptr_eq(p, &pair));
@@ -1966,7 +1977,7 @@ impl Solving {
                     Left::Compared(pair) => {
                         let a = self.copy(&pair.0, above, at, copies);
                         let b = self.copy(&pair.1, above, at, copies);
-                        self.compared.push((a, b))
+                        self.compared.push((a, b, pair.2))
                     }
                     Left::Single(u) => {
                         self.copy(&Type::TVar(u.clone()), above, at, copies);
@@ -2139,6 +2150,7 @@ impl Solving {
                     Left::Compared(pair) => Left::Compared(Arc::new((
                         self.copy(&pair.0, above, at, copies),
                         self.copy(&pair.1, above, at, copies),
+                        pair.2,
                     ))),
                     Left::Single(u) => Left::Single(self.copy_cell(&u, above, at, copies)),
                     Left::Waiting(of, w) => {
@@ -2361,10 +2373,7 @@ impl Solving {
         let r = self.fixed(env, v);
         self.fixing.remove(&v.cell_addr());
         v.cell().write().set_binding(Some(r?));
-        // a cell nothing flowed into holds no value to judge
-        if !demanded(v)
-            && v.cell_constraints().iter().any(|c| matches!(c, Type::Bound(_)))
-        {
+        if v.cell_constraints().iter().any(|c| matches!(c, Type::Bound(_))) {
             self.judged.push(v.clone())
         }
         Ok(())
@@ -2374,12 +2383,36 @@ impl Solving {
     /// fixed to.
     fn judge(&mut self, env: &Env) -> Result<()> {
         for v in std::mem::take(&mut self.judged) {
-            // nothing is of every kind, and a variable is of the kinds
-            // its own bound says, which the relation held it to
-            let decided = |t: &Type| !matches!(t, Type::Bottom | Type::TVar(_));
-            let Some(t) = v.binding().map(|t| deep(&t)).filter(decided) else {
-                continue;
+            let Some(t) = v.binding().map(|t| deep(&t)) else { continue };
+            // an operation that reads a type to know what to make (a parse,
+            // a typed read) needs one where its value is made, or where
+            // something was asked of the type: nothing decided this
+            let asked = |v: &TVar| {
+                v.cell_constraints().iter().any(|c| !matches!(c, Type::Bound(_)))
             };
+            if matches!(t, Type::Bottom) && (known(&v, |k| k.made) || asked(&v)) {
+                for p in v.cell_constraints().iter() {
+                    match p {
+                        Type::Bound(Bound::Concrete) => bail!(
+                            "the type '{} must be known here, an operation reads it to \
+                             know what to make: annotate where its result goes",
+                            ShortName(&v.name)
+                        ),
+                        Type::Bound(Bound::Function) => bail!(
+                            "the type '{} must be a function here, an operation reads \
+                             its signature: annotate it",
+                            ShortName(&v.name)
+                        ),
+                        _ => (),
+                    }
+                }
+            }
+            // nothing is of every kind, a variable is of the kinds its own
+            // bound says, which the relation held it to, and a cell nothing
+            // flowed into holds no value to judge
+            if matches!(t, Type::Bottom | Type::TVar(_)) || demanded(&v) {
+                continue;
+            }
             for p in v.cell_constraints().iter() {
                 match p {
                     Type::Bound(Bound::Ordered | Bound::Discernible) => {
@@ -2398,23 +2431,34 @@ impl Solving {
                 }
             }
         }
-        for (a, b) in std::mem::take(&mut self.compared) {
+        let number = Type::Primitive(Typ::number());
+        for (a, b, ordered) in std::mem::take(&mut self.compared) {
             let (a, b) = (deep(&a), deep(&b));
+            // numbers of two types have an order, and are never equal
+            if ordered && number.contains(env, &a)? && number.contains(env, &b)? {
+                continue;
+            }
             if !a.contains(env, &b)? && !b.contains(env, &a)? {
-                bail!(
-                    "cannot compare {a} with {b}: neither type holds the other, so \
-                     the two are never equal and have no order worth asking for"
-                )
+                match ordered {
+                    true => bail!(
+                        "cannot order {a} against {b}: neither type holds the \
+                         other, so the answer never depends on the values"
+                    ),
+                    false => bail!(
+                        "cannot compare {a} with {b}: neither type holds the \
+                         other, so the two are never equal"
+                    ),
+                }
             }
         }
         Ok(())
     }
 
-    /// The operands of a comparison: one's type holds the other's, judged
-    /// once both are decided, by each instance where a generic
-    /// definition's variables decide them.
-    pub fn compare(&mut self, a: Type, b: Type) {
-        self.compared.push((a, b))
+    /// The operands of a comparison: one's type holds the other's, or,
+    /// for an ordering, both are numbers; judged once both are decided, by
+    /// each instance where a generic definition's variables decide them.
+    pub fn compare(&mut self, a: Type, b: Type, ordered: bool) {
+        self.compared.push((a, b, ordered))
     }
 
     fn fixed(&mut self, env: &Env, v: &TVar) -> Result<Type> {
@@ -2434,11 +2478,19 @@ impl Solving {
             [] if single => Type::Bottom,
             [] => {
                 let mut demands: SmallVec<[Type; 4]> = SmallVec::new();
+                // the variables of a definition it is demanded as
+                let mut variables: SmallVec<[TVar; 2]> = SmallVec::new();
                 for u in v.cell_constraints() {
                     for w in open_cells(&u) {
                         self.fix(env, &w)?
                     }
                     let u = deep(&u);
+                    if let Type::TVar(w) = &u
+                        && (w.is_rigid() || quantified(w))
+                        && !variables.iter().any(|x| x.same_cell(w))
+                    {
+                        variables.push(w.clone())
+                    }
                     let says = !matches!(u, Type::TVar(_) | Type::Bound(_))
                         && !u.is_trait_ref(env);
                     if says {
@@ -2451,6 +2503,12 @@ impl Solving {
                 let t = within(env, t, &v.cell_constraints())?;
                 match open_cells(&t).iter().any(|u| u.same_cell(v)) {
                     true => Type::Bottom,
+                    // demanded as one variable of a definition and as
+                    // nothing else, it is that variable: each instance
+                    // gives it its type
+                    false if matches!(t, Type::Bottom) && variables.len() == 1 => {
+                        Type::TVar(variables.swap_remove(0))
+                    }
                     false => t,
                 }
             }
@@ -2767,6 +2825,9 @@ impl Solving {
                 false if optional => self.omitted(env, &name, &a.typ)?,
                 false => bail!("missing required argument #{name}"),
             }
+        }
+        for v in cells_in(&ft.rtype).iter().filter(|v| reads_type(v)) {
+            known(v, |k| k.made = true)
         }
         self.constrain(env, &ft.rtype, out)
     }

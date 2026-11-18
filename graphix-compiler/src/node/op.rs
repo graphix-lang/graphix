@@ -273,7 +273,7 @@ fn compared_by_bounds(env: &Env, lt: &Type, rt: &Type, holds: Bound) -> Result<(
     super::solving(|s| {
         s.declare(&v, Type::Bound(holds));
         s.track(&v);
-        s.compare(lt.clone(), rt.clone())
+        s.compare(lt.clone(), rt.clone(), holds == Bound::Ordered)
     });
     let v = Type::TVar(v);
     [lt, rt].into_iter().try_for_each(|t| v.check_contains(env, t))
