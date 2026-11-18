@@ -1417,6 +1417,25 @@ pub fn instance(env: &Env, def: &Type, at: &Type) -> Result<AHashMap<usize, TVar
     Ok(copies)
 }
 
+/// Hold each open cell `t` passes to a typedef's bounded parameter to the
+/// bound, as an expansion of the name does.
+fn bounded_by_names(env: &Env, t: &Type) -> Result<()> {
+    ensure_sufficient(|| {
+        if let Type::Ref(tr) = t
+            && let Some(def) = tr.resolve_peek(env)
+        {
+            tr.hold_bounds_of(env, &def, true)?;
+        }
+        match t.try_for_each_child(&mut |c| match bounded_by_names(env, c) {
+            Ok(()) => ControlFlow::Continue(()),
+            Err(e) => ControlFlow::Break(e),
+        }) {
+            ControlFlow::Break(e) => Err(e),
+            ControlFlow::Continue(()) => Ok(()),
+        }
+    })
+}
+
 /// Whether what a binding holds, whose type its check left as `made`, is
 /// the `declared` type for whatever each of the declaration's variables
 /// stands for: one instance of `made` fits the declaration with its
@@ -1430,6 +1449,11 @@ pub fn fits(env: &Env, made: &Type, declared: &Type, outer: Level) -> Result<()>
         let level = Level::Def { depth: outer.depth() + 1, owner: LambdaId::new() };
         let _at = AtLevel::enter(level);
         let held = declared.reset_tvars();
+        // a variable passed to a typedef's bounded parameter is within
+        // the bound, as wherever the name is written: here, and in each
+        // instance a client takes of the declaration
+        bounded_by_names(env, &held)?;
+        bounded_by_names(env, declared)?;
         // the declaration's variables, those only its bounds name among
         // them
         let mut constants: SmallVec<[TVar; 4]> = SmallVec::new();
