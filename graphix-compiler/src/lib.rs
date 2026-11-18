@@ -2113,6 +2113,30 @@ impl<R: Rt> CompileCtx<R> {
         val: &Type,
         imp: &Type,
     ) -> Result<()> {
+        let refused = || {
+            format_with_flags(PrintFlag::DerefTVars, || {
+                bail!(
+                    "val {name} is written, and what is written lands on its \
+                     implementation, of type {}, which the val's {val} does not fit: \
+                     annotate the implementation's let with the val's type",
+                    typ::Brief(imp)
+                )
+            })
+        };
+        // under a check by bounds what is written flows into the
+        // implementation's binding; where that is generic, the val's
+        // type, as general as it is declared, is the implementation's
+        // for whatever each of the implementation's variables stands for
+        if self.bounds {
+            let fit = match typ::bounds::scheme(imp) {
+                true => {
+                    let level = typ::tvar::current_level();
+                    typ::bounds::fits(&self.env, val, imp, level)
+                }
+                false => imp.check_contains(&self.env, val),
+            };
+            return fit.or_else(|_| refused());
+        }
         let held = self.monomorphic(imp);
         let mut cells: LPooled<AHashMap<usize, typ::TVar>> = LPooled::take();
         held.reached_cells(&mut cells);
@@ -2139,14 +2163,7 @@ impl<R: Rt> CompileCtx<R> {
             });
         match fits {
             true => Ok(()),
-            false => format_with_flags(PrintFlag::DerefTVars, || {
-                bail!(
-                    "val {name} is written, and what is written lands on its \
-                     implementation, of type {}, which the val's {val} does not fit: \
-                     annotate the implementation's let with the val's type",
-                    typ::Brief(imp)
-                )
-            }),
+            false => refused(),
         }
     }
 
