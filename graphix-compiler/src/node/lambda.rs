@@ -3595,18 +3595,28 @@ impl<R: Rt> Update<R> for Lambda {
         // its declared type; the defaults themselves are checked after
         // the body (`check_defaults`), and again per omitting call site
         // (`CallSite::check_omitted_defaults`), where one may narrow that
-        // site's cells.
+        // site's cells. A check by bounds checks them first: a call in the
+        // body that leaves a label out takes the default its parameter
+        // records.
         let mut gate = DefGate::open(ctx, def, self.named);
         let mut table = None;
         let mut captures: LPooled<AHashSet<(ModPath, CompactString)>> = LPooled::take();
-        let res = (def.init)(
-            &gate.scope,
-            ctx,
-            &mut gate.args,
-            BindMode::Definition,
-            ExprId::new(),
-        )
-        .at(spec);
+        let mut defaults: LPooled<Vec<Node<R>>> = LPooled::take();
+        let by_bounds = bounds::active();
+        let res = match by_bounds {
+            true => check_defaults(ctx, def, &gate.scope, &mut captures, &mut defaults),
+            false => Ok(()),
+        };
+        let res = res.and_then(|()| {
+            (def.init)(
+                &gate.scope,
+                ctx,
+                &mut gate.args,
+                BindMode::Definition,
+                ExprId::new(),
+            )
+            .at(spec)
+        });
         let res = res.and_then(|mut f| {
             let ftyp = f.typ().clone();
             // fn-typed params knot like self-calls: a call to `f` unifies
@@ -3662,10 +3672,12 @@ impl<R: Rt> Update<R> for Lambda {
             });
             capture_impls(def, &ctx.env, &mut captures);
         }
-        let mut defaults: LPooled<Vec<Node<R>>> = LPooled::take();
         let res = res
-            .and_then(|()| {
-                check_defaults(ctx, def, &gate.scope, &mut captures, &mut defaults)
+            .and_then(|()| match by_bounds {
+                true => Ok(()),
+                false => {
+                    check_defaults(ctx, def, &gate.scope, &mut captures, &mut defaults)
+                }
             })
             .and_then(|()| gate.check_declared_kept().at(spec));
         let mut checked = None;

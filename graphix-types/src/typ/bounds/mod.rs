@@ -517,6 +517,19 @@ fn shallow(t: &Type) -> Type {
     }
 }
 
+/// The shape of a strip's operand `t` where it is an open cell whose
+/// lower bounds decide it: their union, if a strip can take it apart.
+fn shaped(env: &Env, t: &Type) -> Result<Option<Type>> {
+    let t = shallow(t);
+    let Type::TVar(v) = &t else { return Ok(None) };
+    let lower = v.cell_lower();
+    if lower.is_empty() || lower.iter().any(|l| open(&shallow(l)).is_some()) {
+        return Ok(None);
+    }
+    let shape = union_of(lower.iter().cloned());
+    Ok(strippable(env, &shape)?.then_some(shape))
+}
+
 /// What `t` stands for, through its cells' bindings and every name.
 fn stands_for(env: &Env, t: &Type) -> Result<Type> {
     let mut t = shallow(t);
@@ -2790,6 +2803,17 @@ impl Solving {
                     bail!(
                         "the type of the operand of ? or $ is not known here: annotate it"
                     )
+                } else if let Some(shape) = shaped(env, &operand)? {
+                    // what goes is decided by the operand's shape, where only
+                    // its parts wait: they stay what they are, and what is
+                    // raised meets them as they do
+                    self.strips.swap_remove(i);
+                    let (left, payloads) = strip(env, &shape, raised.is_some())?;
+                    self.constrain(env, &left, &out)?;
+                    for to in raised.iter() {
+                        payloads.iter().try_for_each(|p| self.constrain(env, p, to))?
+                    }
+                    progress = true
                 }
             }
         }

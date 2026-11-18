@@ -1047,3 +1047,5 @@ graphix_tests::lang::functions::two_defaults_holding_defaulted_fns_of_two_types	
 graphix_tests::lang::functions::default_of_another_type_written_to_a_field	accepts	"a"
 graphix_tests::lang::functions::default_through_a_narrower_fn_type	refuses	type mismatch i64 does not contain [i64, string]
 graphix_tests::lang::traits::eq_only_abstract_does_not_supply_order	accepts	[abstract:JVoMMX6SS05huC1vE8mkfQi6lPpwWa2zpwFCAAYAAAAAAAAAAQ==, abstract:JVoMMX6SS05huC1vE8mkfQi6lPpwWa2zpwFCAAk/+AAAAAAAAA==, abstract:JVoMMX6SS05huC1vE8mkfQi6lPpwWa2zpwFCAAYAAAAAAAAAAg==]
+graphix_tests::lang::functions::a_self_calls_omitted_default_is_checked	accepts	i64:0
+graphix_tests::lang::functions::default_hidden_by_a_throws	refuses	type mismatch ErrChain<`Big> does not contain ErrChain<'_0>
