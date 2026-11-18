@@ -972,7 +972,6 @@ graphix_tests::lang::types::typedef_union_of_variables_refused_at_its_use	refuse
 graphix_tests::lang::types::uncovered_primitive_refused_by_the_open_members_bound	refuses	type mismatch Number does not contain [i64, string]
 graphix_tests::lang::types::undecided_argument_at_two_variables_of_disjoint_bounds_refused	refuses	type mismatch string does not contain i64
 graphix_tests::lang::types::undecided_binding_at_two_variables_of_disjoint_bounds_refused	refuses	unsatisfiable constraints: string & i64
-graphix_tests::lang::types::undecided_value_under_a_union_bound_takes_what_a_later_callback_decides	refuses	type mismatch 'a does not contain Any
 graphix_tests::lang::types::undecided_value_under_a_union_bound_takes_what_a_later_callback_decides_refused	refuses	type mismatch 'a does not contain Any
 graphix_tests::lang::types::union_bound_a_decided_variable_member_leaves_one_taker	refuses	type mismatch [string, Array<i64>] does not contain Array<f64>
 graphix_tests::lang::types::union_bound_a_recursive_name_decides_the_cell	refuses	type mismatch T does not contain string
