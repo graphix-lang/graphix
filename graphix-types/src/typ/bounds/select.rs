@@ -852,6 +852,26 @@ impl Solving {
         if let (Type::TVar(v), false) = (&t, matches!(pat, Pat::Any(_))) {
             return self.route(env, pat, &self.bound_of(env, v));
         }
+        // a value over a declared constructor may be any implementor's:
+        // a pattern that looks into it sees each, and takes nothing from
+        // what is left, since another implementor may come
+        if let Type::App(head, arg) = &t
+            && let Type::TVar(c) = &**head
+            && c.is_rigid()
+            && !matches!(pat, Pat::Any(_))
+        {
+            let bounds = c.cell_constraints();
+            let traits = bounds.iter().filter_map(|b| match b {
+                Type::Ref(tr) => env.trait_of_ref(tr),
+                _ => None,
+            });
+            let impls = traits.filter_map(|id| env.impls_of(id));
+            let members: Vec<Type> = impls
+                .flat_map(|l| l.iter().filter_map(|im| im.target.fill_hole(arg)).collect::<Vec<_>>())
+                .collect();
+            let r = self.route(env, pat, &split(&union_of(members)));
+            return Routed { rest: t.clone(), ..r };
+        }
         if let Type::Set(ms) = &t {
             let (mut parts, mut rests, mut binds) = (vec![], vec![], vec![]);
             for m in ms.iter() {
