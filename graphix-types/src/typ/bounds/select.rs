@@ -1205,6 +1205,39 @@ impl Solving {
         }
     }
 
+    /// A pattern that leaves fields out reads the fields it names by one
+    /// struct's layout: the struct members of what reaches the `i`th arm
+    /// of select `id`, its `part`, all have the same fields.
+    fn one_layout(&self, id: usize, i: usize, part: &Type) -> Result<()> {
+        let part = unsplit(part);
+        let Type::Set(ms) = &part else { return Ok(()) };
+        let names = |m: &Type| match m {
+            Type::Struct(fs) => {
+                Some(fs.iter().map(|(n, ..)| n.clone()).collect::<Vec<_>>())
+            }
+            _ => None,
+        };
+        let mut members = ms.iter().filter_map(|m| names(m).map(|n| (m, n)));
+        let Some((a, first)) = members.next() else { return Ok(()) };
+        if let Some((b, _)) = members.find(|(_, n)| *n != first) {
+            let s = &self.selects[id];
+            let at = &s.template.at;
+            match s.written.as_ref().and_then(|w| w.get(i)) {
+                Some(arm) => bail!(
+                    "the pattern {arm} leaves fields out, and {a} and {b} reach it, \
+                     whose fields differ, so it has no one layout to read: take the \
+                     member you mean, `T as {arm}` ({at})"
+                ),
+                None => bail!(
+                    "this pattern leaves fields out, and {a} and {b} reach it, whose \
+                     fields differ, so it has no one layout to read: bind the value \
+                     whole and take it apart in a select ({at})"
+                ),
+            }
+        }
+        Ok(())
+    }
+
     /// Pass one type that reaches a select's scrutinee down its arms.
     pub(super) fn select_route(&mut self, env: &Env, id: usize, t: &Type) -> Result<()> {
         let whole = deep(t);
@@ -1220,6 +1253,9 @@ impl Solving {
         let (mut binds, mut hits) = (vec![], vec![]);
         for (i, arm) in self.selects[id].template.clone().arms.iter().enumerate() {
             let r = self.route(env, &arm.pat, &reach);
+            if let Pat::Struct(_, _, false) = &arm.pat {
+                self.one_layout(id, i, &r.part)?
+            }
             if !nothing(&r.part) {
                 hits.push(i);
                 binds.extend(r.binds)

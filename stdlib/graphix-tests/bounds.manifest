@@ -1051,3 +1051,4 @@ graphix_tests::lang::functions::a_self_calls_omitted_default_is_checked	accepts	
 graphix_tests::lang::functions::default_hidden_by_a_throws	refuses	type mismatch ErrChain<`Big> does not contain ErrChain<'_0>
 graphix_tests::lang::select::abstract_constructor_over_any_advises_the_tag	accepts	i64:0
 graphix_tests::lang::errors::a_strip_waits_for_what_its_operand_has_yet_to_take	accepts	[["cfg", i64:3], ["k", i64:1]]
+graphix_tests::lang::tuples_structs::parameter_partial_struct_over_members_that_share_no_fields_refused	refuses	this pattern leaves fields out, and { a: i64, b: string } and { a: i64, c: f64 } reach it, whose fields differ, so it has no one layout to read: bind the value whole and take it apart in a select (2:14)
