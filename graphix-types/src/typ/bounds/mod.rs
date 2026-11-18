@@ -382,6 +382,10 @@ pub struct Solving {
     /// The operands of each comparison, and whether it is an ordering,
     /// judged with them ([`Self::compare`]).
     compared: Vec<(Type, Type, bool)>,
+    /// A flow left out of a cell's fixing because its source was being
+    /// fixed around it: the source and the cell, checked once both are
+    /// fixed ([`Self::fix`]).
+    cycles: Vec<(TVar, TVar)>,
     /// What a definition asked of a type its variables decide, which
     /// this instance of it judges: the type, the predicates and the name
     /// of the variable they bound.
@@ -1287,24 +1291,30 @@ fn reads_type(v: &TVar) -> bool {
         .any(|c| matches!(c, Type::Bound(Bound::Concrete | Bound::Function)))
 }
 
-/// A scheme's variable is of a finite type: nothing that flows into it
-/// holds the variable inside a type, directly or through the cells that
-/// flow in.
+fn infinite() -> anyhow::Error {
+    anyhow::anyhow!(
+        "infinite type: a value here would hold a value of its own type (a function \
+         passed or returning itself, a collection holding itself); declare a named \
+         recursive type and annotate the binding"
+    )
+}
+
+/// A cell is of a finite type: nothing that flows into it holds the cell
+/// inside a type, directly or through the cells that flow in.
 fn finite(v: &TVar) -> Result<()> {
     let mut seen: LPooled<AHashSet<(usize, bool)>> = LPooled::take();
-    let mut todo: SmallVec<[(Type, bool); 8]> =
-        v.cell_lower().into_iter().map(|l| (l, false)).collect();
+    let flows = |u: &TVar, inside: bool| {
+        let fed = feeders(u).into_iter().map(Type::TVar);
+        u.cell_lower().into_iter().chain(fed).map(move |l| (l, inside))
+    };
+    let mut todo: SmallVec<[(Type, bool); 8]> = flows(v, false).collect();
     while let Some((t, inside)) = todo.pop() {
         match &shallow(&t) {
-            Type::TVar(u) if u.same_cell(v) && inside => bail!(
-                "infinite type: a value here would hold a value of its own type (a \
-                 function passed or returning itself, a collection holding itself); \
-                 declare a named recursive type and annotate the binding"
-            ),
+            Type::TVar(u) if u.same_cell(v) && inside => return Err(infinite()),
             Type::TVar(u) if u.same_cell(v) => (),
             Type::TVar(u) => {
                 if seen.insert((u.cell_addr(), inside)) {
-                    todo.extend(u.cell_lower().into_iter().map(|l| (l, inside)))
+                    todo.extend(flows(u, inside))
                 }
             }
             t => {
@@ -2530,6 +2540,15 @@ impl Solving {
         let r = self.fixed(env, v);
         self.fixing.remove(&v.cell_addr());
         v.cell().write().set_binding(Some(r?));
+        // a flow from a cell that was being fixed around this one was
+        // left out: what that cell is now fits here, or no finite type
+        // holds both
+        if self.fixing.is_empty() {
+            for (from, to) in std::mem::take(&mut self.cycles) {
+                let (from, to) = (Type::TVar(from), Type::TVar(to));
+                self.constrain(env, &deep(&from), &deep(&to)).map_err(|_| infinite())?
+            }
+        }
         if v.cell_constraints().iter().any(|c| matches!(c, Type::Bound(_))) {
             self.judged.push(v.clone())
         }
@@ -2662,10 +2681,17 @@ impl Solving {
         let mut flows: SmallVec<[Type; 4]> = SmallVec::new();
         let fed = feeders(v).into_iter().filter(|u| !quantified(u)).map(Type::TVar);
         for l in v.cell_lower().into_iter().chain(fed) {
-            if let Some(t) = self.settled(env, &l)?
-                && !matches!(t, Type::Bottom)
-            {
-                flows.push(t)
+            match self.settled(env, &l)? {
+                Some(Type::Bottom) => (),
+                Some(t) => flows.push(t),
+                None => {
+                    if let Type::TVar(u) = &shallow(&l)
+                        && !u.same_cell(v)
+                        && self.fixing.contains(&u.cell_addr())
+                    {
+                        self.cycles.push((u.clone(), v.clone()))
+                    }
+                }
             }
         }
         let single = singleton(v);
