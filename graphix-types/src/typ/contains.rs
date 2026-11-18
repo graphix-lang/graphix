@@ -3944,7 +3944,7 @@ impl Type {
     }
 
     /// Why `t` fails the trait bound `c`, when `c` is a trait reference.
-    fn bound_refusal(
+    pub(super) fn bound_refusal(
         env: &Env,
         c: &Self,
         t: &Self,

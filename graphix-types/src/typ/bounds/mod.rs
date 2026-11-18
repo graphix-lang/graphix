@@ -2979,7 +2979,8 @@ impl Solving {
                 self.constrain(env, &deep(&from), &deep(&to)).map_err(|_| infinite())?
             }
         }
-        if v.cell_constraints().iter().any(|c| matches!(c, Type::Bound(_))) {
+        let judged = |c: &Type| matches!(c, Type::Bound(_)) || c.is_trait_ref(env);
+        if v.cell_constraints().iter().any(judged) {
             self.judged.push(v.clone())
         }
         Ok(())
@@ -3054,8 +3055,20 @@ impl Solving {
             true => format_compact!("{what}"),
             false => format_compact!("'{name}: {what}"),
         };
+        let union = match t {
+            Type::Set(_) => true,
+            Type::Primitive(p) => p.len() > 1,
+            _ => false,
+        };
         for p in bounds.iter() {
             match p {
+                // a union's members met the trait one by one as they flowed
+                // in; a call over the whole tests each member
+                Type::Ref(_) if union && p.is_trait_ref(env) => {
+                    if let Some(e) = Type::bound_refusal(env, p, t, &mut Vec::new()) {
+                        return Err(e);
+                    }
+                }
                 Type::Bound(Bound::Ordered | Bound::Discernible) => {
                     let ordered = matches!(p, Type::Bound(Bound::Ordered));
                     let why =
