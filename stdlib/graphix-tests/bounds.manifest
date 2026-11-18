@@ -227,7 +227,6 @@ graphix_tests::lang::quantified::a_parameter_cell_merged_with_a_callee_prints_un
 graphix_tests::lang::quantified::a_printed_quantifier_is_not_read_for_a_cell_of_its_name	refuses	val g is declared fn(y: Array<i64>, x: string) -> string but implemented fn<'a1: Number>(y: '_0: unbound within Array<'a: unbound>, x: 'a1: unbound within Number) -> 'a1: unbound within Number: type mismatch Number does not contain string
 graphix_tests::lang::quantified::a_printed_quantifier_is_renamed_inside_a_binding_too	refuses	val g is declared fn(y: Array<i64>, x: string) -> string but implemented fn<'a1: Number>(y: '_0: unbound within Array<'a: unbound>, x: 'a1: unbound within Number) -> Array<'a1: unbound within Number>: type mismatch Number does not contain string
 graphix_tests::lang::quantified::a_refused_write_to_a_generic_binding_prints_its_header	refuses	type mismatch i64 does not contain 'a
-graphix_tests::lang::quantified::a_seqq_step_in_a_holder_decides_the_holders_copy	refuses	type mismatch { g: fn(x: i64) -> i64 } does not contain { g: fn(x: _) -> _ }
 graphix_tests::lang::quantified::a_slice_ladder_cell_merged_with_a_callee_prints_under_one_name	refuses	type mismatch string does not contain fn(x: '_0) -> '_1
 graphix_tests::lang::quantified::a_trait_bound_a_call_meets_prints_once	refuses	type mismatch string does not contain fn<'q: T>(s: 'q) -> i64
 graphix_tests::lang::quantified::a_union_over_two_declared_variables_prints_both_members	refuses	type mismatch i64 does not contain fn(p: 'a) -> '_0
@@ -302,7 +301,7 @@ graphix_tests::lang::select::any_part_cell_the_arm_leaves_open_a_later_statement
 graphix_tests::lang::select::any_part_cell_the_guard_bounds_undecided_refused	refuses	type mismatch Number does not contain Any
 graphix_tests::lang::select::arm_bind_over_members_decides_their_open_parts	refuses	type mismatch i64 does not contain string
 graphix_tests::lang::select::arm_matching_no_value_of_a_declared_variable_refused	refuses	pattern 1 will never match: nothing reaches it (2:49; the value is 'b)
-graphix_tests::lang::select::arms_binding_one_variant_part_used_as_one_type_refuse_another_value	refuses	type mismatch i64 does not contain [i64, string]
+graphix_tests::lang::select::arms_binding_one_variant_part_used_as_one_type_refuse_another_value	refuses	type mismatch i64 does not contain string
 graphix_tests::lang::select::bool_beside_slice_product_dead_arm_refused	refuses	pattern 3 will never match: nothing reaches it (1:45; the value is (bool, Array<i64>))
 graphix_tests::lang::select::bool_pair_ladder_dead_tail	refuses	pattern 4 will never match: nothing reaches it (3:44; the value is (bool, bool))
 graphix_tests::lang::select::bool_struct_field_repeated_at_one_of_two_members_is_dead	refuses	pattern 4 will never match: nothing reaches it (1:86; the value is (i64, E))
@@ -393,7 +392,6 @@ graphix_tests::lang::select::parameterized_abstract_constructor_over_any_advises
 graphix_tests::lang::select::partial_struct_ambiguous_at_its_arm	refuses	pattern 2 will never match: nothing reaches it (3:12; the value is [{ x: i64, y: string }, { x: i64, z: f64 }])
 graphix_tests::lang::select::partial_struct_call_copies_a_later_annotation_took_read_through_the_built_value	refuses	{ a: Array<string>, c: Array<_> } could go to more than one member of the union [{ a: Array<i64>, c: Array<'q> }, { a: Array<string>, c: Array<'r> }], and nothing has decided which
 graphix_tests::lang::select::partial_struct_call_copies_a_written_variable_took_read_through_a_built_again_value	refuses	{ a: Array<string>, c: Array<_> } could go to more than one member of the union [{ a: Array<i64>, c: Array<'q> }, { a: Array<string>, c: Array<'r> }], and nothing has decided which
-graphix_tests::lang::select::partial_struct_empty_cells_a_definition_hands_to_a_caller_function_are_two_members	refuses	type mismatch _ does not contain i64
 graphix_tests::lang::select::partial_struct_in_a_slice_over_any_refused	refuses	pattern 1 will never match: nothing reaches it (2:33; the value is Any)
 graphix_tests::lang::select::partial_struct_in_a_variant_over_any_refused	refuses	pattern 1 will never match: nothing reaches it (2:33; the value is Any)
 graphix_tests::lang::select::partial_struct_over_any_elements_refused	refuses	pattern 1 will never match: nothing reaches it (2:34; the value is Array<Any>)
@@ -592,7 +590,7 @@ graphix_tests::lang::select_undecided::payload_bind_beside_a_later_literal_refus
 graphix_tests::lang::select_undecided::payload_bind_beside_a_literal_in_a_nested_payload_refused	refuses	type mismatch i64 does not contain string
 graphix_tests::lang::select_undecided::payload_bind_beside_a_null_refused	refuses	type mismatch i64 does not contain null
 graphix_tests::lang::select_undecided::payload_bind_beside_an_earlier_literal_refused	refuses	type mismatch i64 does not contain string
-graphix_tests::lang::select_undecided::payload_part_an_arm_decides_over_two_shapes_then_written_apart_refused	refuses	type mismatch [i64, Array<i64>] does not contain Array<string>
+graphix_tests::lang::select_undecided::payload_part_an_arm_decides_over_two_shapes_then_written_apart_refused	refuses	type mismatch i64 does not contain string
 graphix_tests::lang::select_undecided::payload_tag_deciding_an_undecided_part_refused	refuses	pattern 1 will never match: nothing reaches it (3:20; the value is `A(`M))
 graphix_tests::lang::select_undecided::referent_bind_beside_a_bind_at_its_part_refused	refuses	type mismatch i64 does not contain string
 graphix_tests::lang::select_undecided::referent_bind_takes_its_part_of_what_was_built_refused	refuses	type mismatch i64 does not contain string
@@ -801,7 +799,7 @@ graphix_tests::lang::types::bound_name_parameter_beside_an_argument_breaking_its
 graphix_tests::lang::types::bound_name_parameter_no_error_beside_an_error_argument_refused	refuses	unsatisfiable constraints: Result<Error<`Q>, `E>
 graphix_tests::lang::types::call_through_a_chooser_s_result_of_two_labels_refused	refuses	no argument #a
 graphix_tests::lang::types::call_through_a_chooser_s_result_of_two_signatures_refused	refuses	type mismatch string does not contain i64
-graphix_tests::lang::types::call_through_a_written_name_passed_itself_is_refused	refuses	type mismatch _ does not contain string
+graphix_tests::lang::types::call_through_a_written_name_passed_itself_is_refused	refuses	infinite type: a variable holds itself in { f: fn(x: '_0) -> '_1 }
 graphix_tests::lang::types::callback_of_no_result_into_a_union_bound_under_a_function_refused	refuses	type mismatch [fn(v: i64) -> i64, fn(v: i64) -> string] does not contain fn(v: _) -> _
 graphix_tests::lang::types::callback_parameter_union_of_two_decided_arrays_under_a_wider_later_position_refused	refuses	type mismatch [Array<i64>, Array<string>] does not contain Array<[i64, string]>
 graphix_tests::lang::types::chained_struct_update_over_a_name_written_later_shares_its_type	refuses	type mismatch i64 does not contain string
@@ -867,7 +865,6 @@ graphix_tests::lang::types::operand_with_two_numeric_members	refuses	cannot comp
 graphix_tests::lang::types::option_member_refused_at_its_use	refuses	i64 could go to more than one member of the union [null, 'b, 'a], and nothing has decided which
 graphix_tests::lang::types::parse_unannotated_in_callback_err	refuses	the type 'b must be known here, an operation reads it to know what to make: annotate where its result goes
 graphix_tests::lang::types::part_bound_in_three_literal_arms_used_as_two_types_refused	refuses	type mismatch i64 does not contain string
-graphix_tests::lang::types::part_bound_in_three_slice_arms_used_as_two_types_refused	refuses	missing match cases: nothing matches (Array<_>, string) (2:22)
 graphix_tests::lang::types::partial_wrapper_bound_over_a_union_of_its_variable_declared_wider_is_refused	refuses	type mismatch Array<O<'a4>> does not contain 'c3
 graphix_tests::lang::types::partial_wrapper_bound_over_a_union_of_its_variable_needs_the_callees_bound_declared	refuses	type mismatch Array<O<'a4>> does not contain 'b3
 graphix_tests::lang::types::partial_wrapper_bound_over_a_union_of_its_variable_refuses_a_member_the_callee_does_not_hold	refuses	type mismatch O<'b4> does not contain string
@@ -958,7 +955,6 @@ graphix_tests::lang::types::typedef_in_a_body_above_the_module_a_glob_imports_fr
 graphix_tests::lang::types::typedef_in_a_body_above_the_module_it_imports_from_refused	refuses	type mismatch '_0: unbound does not contain [i64, Foo<T>]
 graphix_tests::lang::types::typedef_union_of_function_types_no_decided_member_takes_refused	refuses	type mismatch [fn(x: i64) -> i64, fn(x: string) -> i64] does not contain fn(x: f64) -> i64
 graphix_tests::lang::types::typedef_union_of_function_types_refused_at_its_use	refuses	fn(x: i64) -> i64 could go to more than one member of the union [fn(x: 'a) -> i64, fn(x: 'b) -> i64], and nothing has decided which
-graphix_tests::lang::types::typedef_union_of_function_types_untyped_lambda_after_the_deciders_refused	refuses	type mismatch [fn(x: i64) -> i64, fn(x: string) -> i64] does not contain fn(x: _) -> i64
 graphix_tests::lang::types::typedef_union_of_variables_refused_at_its_use	refuses	i64 could go to more than one member of the union ['a, 'b], and nothing has decided which
 graphix_tests::lang::types::uncovered_primitive_refused_by_the_open_members_bound	refuses	type mismatch Number does not contain [i64, string]
 graphix_tests::lang::types::undecided_argument_at_two_variables_of_disjoint_bounds_refused	refuses	type mismatch string does not contain i64
@@ -968,7 +964,7 @@ graphix_tests::lang::types::union_bound_a_decided_variable_member_leaves_one_tak
 graphix_tests::lang::types::union_bound_a_recursive_name_decides_the_cell	refuses	type mismatch T does not contain string
 graphix_tests::lang::types::union_bound_an_abstract_member_takes_no_array	refuses	type mismatch [i64, null] does not contain string
 graphix_tests::lang::types::union_bound_an_open_variable_member_holds_a_bare_undecided_value	refuses	type mismatch [Array<string>, Array<i64>] does not contain Array<f64>
-graphix_tests::lang::types::union_bound_members_decided_alike_bound_an_empty_array	refuses	type mismatch [null, Array<i64>, Array<i64>] does not contain Array<string>
+graphix_tests::lang::types::union_bound_members_decided_alike_bound_an_empty_array	refuses	unsatisfiable constraints: string & i64
 graphix_tests::lang::types::union_bound_one_admitting_member_decides_the_cell	refuses	type mismatch [(i64, i64), (string, string)] does not contain (f64, i64)
 graphix_tests::lang::types::union_bound_one_named_member_decides_the_cell	refuses	type mismatch [i64, null] does not contain string
 graphix_tests::lang::types::union_bound_read_only_member_decides_writable_reference	refuses	type mismatch [null, &i64] does not contain &mut '_0
@@ -985,7 +981,6 @@ graphix_tests::lang::types::union_field_place_needs_one_field_type	refuses	type 
 graphix_tests::lang::types::union_formal_still_refuses_a_mismatch	refuses	type mismatch f64 does not contain string
 graphix_tests::lang::types::union_trait_self_argument	refuses	type mismatch Comb does not contain [A, B]
 graphix_tests::lang::types::union_tuple_place_needs_one_field_type	refuses	type mismatch i64 does not contain string
-graphix_tests::lang::types::untyped_lambda_into_a_union_of_two_function_types_refused	refuses	type mismatch [fn(x: i64) -> i64, fn(x: string) -> i64] does not contain fn(x: _) -> i64
 graphix_tests::lang::types::variable_a_bound_of_a_bound_writes_is_rigid_in_the_body	refuses	type mismatch 'a2 does not contain i64
 graphix_tests::lang::types::variable_in_a_typedef_union_does_not_widen_refused	refuses	type mismatch [Array<i64>, Array<string>] does not contain Array<[i64, null]>
 graphix_tests::lang::types::variable_union_in_a_bound_refused	refuses	i64 could go to more than one member of the union ['a, 'b], and nothing has decided which
