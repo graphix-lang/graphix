@@ -1971,7 +1971,12 @@ impl Solving {
             .cell_constraints()
             .iter()
             .map(deep)
-            .filter(|u| !matches!(u, Type::TVar(_) | Type::Bound(_)) && !u.is_trait_ref(env))
+            // nothing is asked of a cell wanted as nothing but that
+            // nothing flows into it, which its flows are held to
+            .filter(|u| {
+                !matches!(u, Type::TVar(_) | Type::Bound(_) | Type::Bottom)
+                    && !u.is_trait_ref(env)
+            })
             .collect();
         let mut common = Type::Any;
         for (i, u) in asked.iter().enumerate() {
