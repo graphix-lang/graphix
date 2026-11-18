@@ -11,6 +11,7 @@ use crate::{
     typ::{
         AbstractId, Bound, ContainsFlags, FnArgKind, FnArgType, FnType, Mutability, Open,
         TVar, Type,
+        cast::numbers_ordered,
         node_addr,
         setops::strictly_identical,
         tvar::{AtLevel, Level, ShortName},
@@ -200,6 +201,9 @@ pub(crate) enum Left {
     Single(TVar),
     /// A select waiting on a type.
     Waiting(Arc<Template>, Type),
+    /// The operands of a comparison, one of whose types must hold the
+    /// other's.
+    Compared(Arc<(Type, Type)>),
 }
 
 /// A call's argument: its label, if it is passed by one, and its type.
@@ -374,6 +378,9 @@ pub struct Solving {
     /// The cells fixed that carry a predicate, which is judged of what
     /// the cell holds once every cell is fixed ([`Self::judge`]).
     judged: Vec<TVar>,
+    /// The operands of each comparison, judged with them
+    /// ([`Self::compare`]).
+    compared: Vec<(Type, Type)>,
 }
 
 /// A kind of use a check may still owe when a definition closes.
@@ -615,7 +622,7 @@ impl Solving {
                 if v.is_rigid() && (self.sealed || *p != Bound::Singleton) =>
             {
                 for own in v.cell_constraints().iter() {
-                    if own.implies(env, &b)? {
+                    if numbers_ordered(|| own.implies(env, &b))? {
                         return Ok(());
                     }
                 }
@@ -645,7 +652,7 @@ impl Solving {
                     let mut reached = SmallVec::new();
                     compared(env, &a, &mut reached, &mut SmallVec::new());
                     for v in reached.iter() {
-                        if !v.conjunct_implies(env, &b)? {
+                        if !numbers_ordered(|| v.conjunct_implies(env, &b))? {
                             let name = v.declared_name().unwrap_or_else(|| v.name.clone());
                             bail!(
                                 "the implementation requires '{}: {b}, which the \
@@ -656,7 +663,7 @@ impl Solving {
                     }
                 }
                 let flags = ContainsFlags::RigidCheck | ContainsFlags::Sealed;
-                return match b.contains_with_flags(flags, env, &a)? {
+                return match numbers_ordered(|| b.contains_with_flags(flags, env, &a))? {
                     true => Ok(()),
                     false => bail!(
                         "the implementation requires {a} to be {b}, which the \
@@ -1922,8 +1929,7 @@ impl Solving {
                 && !v.is_bound()
                 && !v.is_rigid()
                 && !quantified(v)
-                && !v.joins()
-                && v.cell_direct().len() > 1;
+                && singleton(v);
             if pending && !v.level().is_generic() {
                 self.singles.push(v.clone());
                 v.generalize();
@@ -1936,6 +1942,21 @@ impl Solving {
                         (!ls.iter().any(same)).then(|| Left::Single(v.clone()))
                     })
                 }
+            }
+        }
+        // a comparison whose operands a variable of the scheme decides is
+        // each instance's to judge
+        let (left, mine): (Vec<_>, Vec<_>) = std::mem::take(&mut self.compared)
+            .into_iter()
+            .partition(|(a, b)| scheme(a) || scheme(b));
+        self.compared = mine;
+        for (a, b) in left {
+            let pair = Arc::new((a, b));
+            for t in [&pair.0, &pair.1] {
+                self.leave(t, |ls| {
+                    let same = |l: &Left| matches!(l, Left::Compared(p) if Arc::ptr_eq(p, &pair));
+                    (!ls.iter().any(same)).then(|| Left::Compared(pair.clone()))
+                })
             }
         }
         // a select still waiting waits for an instance's types
@@ -2003,6 +2024,7 @@ impl Solving {
             for l in left.into_iter().flatten() {
                 let seen = |d: &Left| match (d, &l) {
                     (Left::Held(p), Left::Held(q)) => Arc::ptr_eq(p, q),
+                    (Left::Compared(p), Left::Compared(q)) => Arc::ptr_eq(p, q),
                     (Left::Single(u), Left::Single(w)) => u.same_cell(w),
                     (Left::Waiting(s, u), Left::Waiting(t, w)) => {
                         Arc::ptr_eq(s, t) && strictly_identical(u, w)
@@ -2017,6 +2039,11 @@ impl Solving {
                         let a = self.copy(&pair.0, above, at, copies);
                         let b = self.copy(&pair.1, above, at, copies);
                         self.held.push((a, b, false))
+                    }
+                    Left::Compared(pair) => {
+                        let a = self.copy(&pair.0, above, at, copies);
+                        let b = self.copy(&pair.1, above, at, copies);
+                        self.compared.push((a, b))
                     }
                     Left::Single(u) => {
                         self.copy(&Type::TVar(u.clone()), above, at, copies);
@@ -2192,6 +2219,10 @@ impl Solving {
             for l in left.into_iter().flatten() {
                 let l = match l {
                     Left::Held(pair) => Left::Held(Arc::new((
+                        self.copy(&pair.0, above, at, copies),
+                        self.copy(&pair.1, above, at, copies),
+                    ))),
+                    Left::Compared(pair) => Left::Compared(Arc::new((
                         self.copy(&pair.0, above, at, copies),
                         self.copy(&pair.1, above, at, copies),
                     ))),
@@ -2439,7 +2470,10 @@ impl Solving {
                 match p {
                     Type::Bound(Bound::Ordered | Bound::Discernible) => {
                         let ordered = matches!(p, Type::Bound(Bound::Ordered));
-                        if let Some(why) = t.indiscernible(env, Open::Benign, ordered) {
+                        let why = numbers_ordered(|| {
+                            t.indiscernible(env, Open::Benign, ordered)
+                        });
+                        if let Some(why) = why {
                             return Err(t.not_discernible(p, &v.name, &why));
                         }
                     }
@@ -2450,7 +2484,23 @@ impl Solving {
                 }
             }
         }
+        for (a, b) in std::mem::take(&mut self.compared) {
+            let (a, b) = (deep(&a), deep(&b));
+            if !a.contains(env, &b)? && !b.contains(env, &a)? {
+                bail!(
+                    "cannot compare {a} with {b}: neither type holds the other, so \
+                     the two are never equal and have no order worth asking for"
+                )
+            }
+        }
         Ok(())
+    }
+
+    /// The operands of a comparison: one's type holds the other's, judged
+    /// once both are decided, by each instance where a generic
+    /// definition's variables decide them.
+    pub fn compare(&mut self, a: Type, b: Type) {
+        self.compared.push((a, b))
     }
 
     fn fixed(&mut self, env: &Env, v: &TVar) -> Result<Type> {
@@ -2463,20 +2513,6 @@ impl Solving {
                 && !matches!(t, Type::Bottom)
             {
                 flows.push(t)
-            }
-        }
-        if !v.joins() {
-            let mut given: SmallVec<[Type; 4]> = SmallVec::new();
-            for l in v.cell_direct() {
-                if let Some(t) = self.settled(env, &l)?
-                    && !matches!(t, Type::Bottom)
-                    && !given.iter().any(|g| strictly_identical(g, &t))
-                {
-                    given.push(t)
-                }
-            }
-            if given.len() > 1 {
-                self.holder(env, &given)?
             }
         }
         let single = singleton(v);

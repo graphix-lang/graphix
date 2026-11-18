@@ -265,6 +265,20 @@ fn same_by_bounds(env: &Env, lt: &Type, rt: &Type, holds: Bound) -> Result<Type>
     Ok(v)
 }
 
+/// A comparison's operands under a check by bounds: what both may be
+/// holds the predicate `holds`, and one's type holds the other's
+/// (`Solving::compare`); neither decides the other's.
+fn compared_by_bounds(env: &Env, lt: &Type, rt: &Type, holds: Bound) -> Result<()> {
+    let v = TVar::default();
+    super::solving(|s| {
+        s.declare(&v, Type::Bound(holds));
+        s.track(&v);
+        s.compare(lt.clone(), rt.clone())
+    });
+    let v = Type::TVar(v);
+    [lt, rt].into_iter().try_for_each(|t| v.check_contains(env, t))
+}
+
 /// An operand whose type is known must be in `bound` now; an open cell,
 /// alone or a member of a union, carries `bound` as a constraint for
 /// later: binding it to `bound` would claim every type the bound admits
@@ -381,26 +395,11 @@ macro_rules! compare_op {
             fn typecheck_own(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
                 let (lt, rt) = (self.lhs.typ(), self.rhs.typ());
                 if bounds::active() {
-                    let t = wrap!(
-                        self,
-                        same_by_bounds(&ctx.env, lt, rt, match $ordered {
-                            true => Bound::Ordered,
-                            false => Bound::Discernible,
-                        })
-                        .map_err(|e| {
-                            Told::over(
-                                e,
-                                "cannot compare: comparison is fn('a, 'a) -> bool — \
-                                 both operands must be one type",
-                            )
-                        })
-                    )?;
-                    let judgment = crate::PendingSettle::Discernible {
-                        typ: t,
-                        what: crate::Discerned::Compared { ordered: $ordered },
-                        spec: self.spec.clone(),
+                    let holds = match $ordered {
+                        true => Bound::Ordered,
+                        false => Bound::Discernible,
                     };
-                    super::defer_judgment(ctx, judgment);
+                    wrap!(self, compared_by_bounds(&ctx.env, lt, rt, holds))?;
                     return Ok(());
                 }
                 match wrap!(self, operand_type(&ctx.env, lt, rt))? {

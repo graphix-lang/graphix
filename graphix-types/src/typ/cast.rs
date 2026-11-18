@@ -2553,7 +2553,7 @@ fn open_collision(
         if typed.is_empty() {
             return match shares_form(env, t) {
                 true => pair(),
-                false => (ordered && holds_number(env, t))
+                false => (ordered && !NUMBERS_ORDERED.get() && holds_number(env, t))
                     .then(|| Indiscernible::OpenNumber(t.clone())),
             };
         }
@@ -2983,7 +2983,7 @@ fn rep_collision(
                     (_, Type::Set(ts)) => pairs(&mut ts.iter().map(|t| (a, t))),
                     (Type::Primitive(p), Type::Primitive(q)) => {
                         let numbers = (*p | *q) & Typ::number();
-                        (ordered && numbers.len() > 1)
+                        (ordered && !NUMBERS_ORDERED.get() && numbers.len() > 1)
                             .then(|| Indiscernible::Numbers(Type::Primitive(numbers)))
                     }
                     (Type::Array(x), Type::Array(y))
@@ -3160,6 +3160,22 @@ impl Indiscernible {
     }
 }
 
+thread_local! {
+    /// The judgment in progress orders numbers of different types, as the
+    /// run-time order does ([`numbers_ordered`]).
+    static NUMBERS_ORDERED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// `f`, with an ordering taking a type that holds two numeric types: the
+/// check by bounds judges `Ordered` so (D47 follow-up 5). The clause that
+/// refuses them goes with the check it belongs to.
+pub(crate) fn numbers_ordered<R>(f: impl FnOnce() -> R) -> R {
+    let was = NUMBERS_ORDERED.replace(true);
+    let r = f();
+    NUMBERS_ORDERED.set(was);
+    r
+}
+
 fn rep_ambiguity(
     env: &Env,
     seen: &mut Expanded<Type>,
@@ -3199,7 +3215,11 @@ fn rep_ambiguity(
             };
             let ordered = refs && !keys_only;
             match &t {
-                Type::Primitive(p) if ordered && (*p & Typ::number()).len() > 1 => {
+                Type::Primitive(p)
+                    if ordered
+                        && !NUMBERS_ORDERED.get()
+                        && (*p & Typ::number()).len() > 1 =>
+                {
                     Some(Indiscernible::Numbers(t.clone()))
                 }
                 Type::Set(ts) => {
