@@ -1460,6 +1460,36 @@ pub fn fits(env: &Env, made: &Type, declared: &Type, outer: Level) -> Result<()>
     }
 }
 
+/// Whether a value of the type `written`, as general as it is declared,
+/// may stand where readers take the scheme `held` at its instances: one
+/// instance of `written` is `held` for whatever each of `held`'s
+/// variables stands for. A variable of `held` is a cell nothing flows
+/// into, a constant here; its other cells are what flows into them.
+pub fn written_fits(env: &Env, written: &Type, held: &Type, outer: Level) -> Result<()> {
+    let fits = |s: &mut Solving| {
+        let mark = s.mark();
+        let level = Level::Def { depth: outer.depth() + 1, owner: LambdaId::new() };
+        let _at = AtLevel::enter(level);
+        let one = s.instantiate(held, Level::GENERIC.depth() - 1, level);
+        let mut cells = Cells::new();
+        s.reach(&one, &mut cells);
+        let (flowed, constants): (SmallVec<[TVar; 4]>, SmallVec<[TVar; 4]>) =
+            cells.iter().cloned().partition(|v| decided(v, &mut SmallVec::new()));
+        constants.iter().for_each(|v| v.claim(level));
+        let _held: SmallVec<[_; 4]> = constants.iter().map(|v| v.open_rigid()).collect();
+        flowed.iter().try_for_each(|v| s.fix(env, v))?;
+        let sealed = std::mem::replace(&mut s.sealed, true);
+        let fit = s.constrain(env, &written.reset_tvars(), &deep(&one));
+        s.sealed = sealed;
+        fit?;
+        s.generalize(env, Type::BOTTOM, outer.depth(), mark)
+    };
+    match with(fits) {
+        Some(r) => r,
+        None => fits(&mut Solving::default()),
+    }
+}
+
 /// A type of a generic definition's check as one instance of the
 /// definition has it: each of the definition's cells is the instance's
 /// (`known`, by the cell's address), and a scheme the type holds beside

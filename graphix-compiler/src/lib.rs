@@ -2131,7 +2131,7 @@ impl<R: Rt> CompileCtx<R> {
             let fit = match typ::bounds::scheme(imp) {
                 true => {
                     let level = typ::tvar::current_level();
-                    typ::bounds::fits(&self.env, val, imp, level)
+                    typ::bounds::written_fits(&self.env, val, imp, level)
                 }
                 false => imp.check_contains(&self.env, val),
             };

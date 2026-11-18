@@ -2166,8 +2166,7 @@ impl<R: Rt> Update<R> for Ref {
         if bounds::active() {
             // a use of a scheme takes a copy of the cells that are the
             // scheme's by now; any other name is its binding's one type
-            let generic = ctx.env.poly_binds.contains(&self.id)
-                && !ctx.connect_targets.contains(&self.id);
+            let generic = ctx.env.poly_binds.contains(&self.id);
             if !generic || matches!(self.signature, Signature::Decided) {
                 return Ok(());
             }
