@@ -56,20 +56,36 @@ pub enum StructWidth {
     /// A partial pattern over a predicate inferred from the fields it
     /// names, which nothing completed.
     AtLeast(usize),
+    /// A pattern over struct types that put a field it names at different
+    /// places: at least this many fields, each read by its name.
+    Named(usize),
 }
 
 impl StructWidth {
     pub fn admits(self, len: usize) -> bool {
         match self {
             Self::Exact(n) => len == n,
-            Self::AtLeast(n) => len >= n,
+            Self::AtLeast(n) | Self::Named(n) => len >= n,
         }
     }
 
-    fn parts(self) -> (bool, usize) {
+    fn parts(self) -> (u8, usize) {
         match self {
-            Self::Exact(n) => (false, n),
-            Self::AtLeast(n) => (true, n),
+            Self::Exact(n) => (0, n),
+            Self::AtLeast(n) => (1, n),
+            Self::Named(n) => (2, n),
+        }
+    }
+
+    /// The field `name` of the struct `fields`, at `i` where every
+    /// struct the pattern takes has it there.
+    fn field<'a>(self, fields: &'a [Value], name: &ArcStr, i: usize) -> Option<&'a Value> {
+        match self {
+            Self::Named(_) => rep::field_named(fields, name).map(|(_, v)| v),
+            Self::Exact(_) | Self::AtLeast(_) => match rep::field_at(fields, i) {
+                Some((field, v)) if field == name => Some(v),
+                _ => None,
+            },
         }
     }
 }
@@ -84,10 +100,12 @@ impl Pack for StructWidth {
     }
 
     fn decode(buf: &mut impl bytes::Buf) -> Result<Self, PackError> {
-        Ok(match <(bool, usize)>::decode(buf)? {
-            (false, n) => Self::Exact(n),
-            (true, n) => Self::AtLeast(n),
-        })
+        match <(u8, usize)>::decode(buf)? {
+            (0, n) => Ok(Self::Exact(n)),
+            (1, n) => Ok(Self::AtLeast(n)),
+            (2, n) => Ok(Self::Named(n)),
+            _ => Err(PackError::UnknownTag),
+        }
     }
 }
 
@@ -2192,6 +2210,58 @@ impl StructPatternNode {
         self.realign_with(env, typ, true)
     }
 
+    /// [`Self::realign`] after a check by bounds, where `typ` may be a
+    /// union of struct types one struct pattern takes: where they put a
+    /// field it names at different places, the pattern reads its fields
+    /// by name ([`StructWidth::Named`]).
+    pub(super) fn realign_decided(&mut self, env: &Env, typ: &Type) -> Result<()> {
+        crate::stack::ensure_sufficient(|| {
+            let Self::Struct { binds, width, all: _ } = self else {
+                return self.realign_with(env, typ, true);
+            };
+            let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+            if struct_fields(env, typ).is_some()
+                || union_members(env, typ, &mut members).is_err()
+            {
+                return self.realign_with(env, typ, true);
+            }
+            let taken = |fs: &Arc<[(ArcStr, Type, WrittenAt)]>| {
+                width.admits(fs.len())
+                    && binds.iter().all(|(n, _, _)| fs.iter().any(|(f, _, _)| f == n))
+            };
+            let structs: SmallVec<[_; 4]> = members
+                .iter()
+                .filter_map(|m| struct_fields(env, m))
+                .filter(taken)
+                .collect();
+            let Some(first) = structs.first() else { return Ok(()) };
+            let place = |fs: &Arc<[(ArcStr, Type, WrittenAt)]>, name: &ArcStr| {
+                fs.iter().position(|(f, _, _)| f == name)
+            };
+            let agree = structs.iter().all(|fs| {
+                fs.len() == first.len()
+                    && binds.iter().all(|(n, _, _)| place(fs, n) == place(first, n))
+            });
+            let named = binds.len();
+            for (name, index, p) in binds.iter_mut() {
+                if let Some(i) = place(first, name).filter(|_| agree) {
+                    *index = i
+                }
+                let parts: SmallVec<[&Type; 4]> = structs
+                    .iter()
+                    .filter_map(|fs| fs.iter().find(|(f, _, _)| f == &*name))
+                    .map(|(_, t, _)| t)
+                    .collect();
+                p.realign_decided(env, &Type::union(env, &parts)?)?
+            }
+            *width = match agree {
+                true => StructWidth::Exact(first.len()),
+                false => StructWidth::Named(named),
+            };
+            Ok(())
+        })
+    }
+
     fn realign_with(&mut self, env: &Env, typ: &Type, inferred: bool) -> Result<()> {
         crate::stack::ensure_sufficient(|| {
             let Some(ts) = self.child_types(env, typ, inferred) else { return Ok(()) };
@@ -2958,9 +3028,7 @@ impl StructPatternNode {
                         f(*id, v.clone())
                     }
                     for (name, i, n) in binds.iter() {
-                        if let Some((field, v)) = rep::field_at(a, *i)
-                            && field == name
-                        {
+                        if let Some(v) = width.field(a, name, *i) {
                             n.bind(v, f)
                         }
                     }
@@ -3033,9 +3101,8 @@ impl StructPatternNode {
             Self::Struct { all: _, width, binds } => match rep::struct_fields(v) {
                 Some(a) => {
                     width.admits(a.len())
-                        && binds.iter().all(|(name, i, p)| match rep::field_at(a, *i) {
-                            Some((field, v)) if field == name => p.is_match(v),
-                            _ => false,
+                        && binds.iter().all(|(name, i, p)| {
+                            width.field(a, name, *i).is_some_and(|v| p.is_match(v))
                         })
                 }
                 _ => false,

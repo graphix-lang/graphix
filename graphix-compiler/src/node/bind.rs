@@ -1521,7 +1521,7 @@ impl<R: Rt> Update<R> for Bind<R> {
         // now that is decided
         if ctx.bounds {
             let typ = self.typ.resolve_tvars();
-            self.pattern.realign(&ctx.env, &typ).at(&self.spec)?
+            self.pattern.realign_decided(&ctx.env, &typ).at(&self.spec)?
         }
         Ok(())
     }

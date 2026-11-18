@@ -657,6 +657,12 @@ fn emit_composite_pattern_cond_inner(
                 StructWidth::AtLeast(n) => {
                     (leaves, IntCC::SignedGreaterThanOrEqual, crate::rep::STRUCT_BASE + n)
                 }
+                StructWidth::Named(_) => {
+                    return Err(anyhow!(
+                        "emit_clif: a struct pattern over struct types that put its \
+                         fields at different places reads them by name"
+                    ));
+                }
             }
         }
         _ => return Err(anyhow!("emit_clif: not a composite structural pattern")),

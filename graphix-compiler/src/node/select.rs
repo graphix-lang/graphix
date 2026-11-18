@@ -3186,7 +3186,7 @@ impl<R: Rt> Update<R> for Select<R> {
         for (pat, n) in self.arms.iter_mut().filter(|_| ctx.bounds) {
             let tested = pat.type_predicate.resolve_tvars();
             if !tested.is_uninhabited() {
-                wrap!(n, pat.structure_predicate.realign(&ctx.env, &tested))?
+                wrap!(n, pat.structure_predicate.realign_decided(&ctx.env, &tested))?
             }
             if !pat.explicit_type_predicate {
                 pat.type_predicate = tested
