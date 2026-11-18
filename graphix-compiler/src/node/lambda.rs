@@ -710,6 +710,11 @@ fn instance_cells<R: Rt>(
     // each instance has to decide: the instance's types are a copy of
     // them, fixed where the copy is used as the instance's signature
     let scheme = Type::Fn(Arc::new(def.clone()));
+    // a definition a check by bounds decided whole is every instance's
+    // types as it stands: the check held each call's view to it
+    if ctx.bounds && bounds::cells_in(&scheme).is_empty() {
+        return Some(AHashMap::default());
+    }
     if bounds::scheme(&scheme) {
         let at = Type::Fn(Arc::new(instance.clone()));
         return bounds::instance(&ctx.env, &scheme, &at, leaves)
@@ -2649,8 +2654,12 @@ pub(crate) fn fit_callee<R: Rt>(
     def_typ: &FnType,
 ) -> Result<FnType> {
     // a definition a check by bounds made generic: the instance the
-    // site's view decides, with its types
+    // site's view decides, with its types; one it decided whole is its
+    // own instance
     let scheme = Type::Fn(Arc::new(def_typ.clone()));
+    if ctx.bounds && bounds::cells_in(&scheme).is_empty() {
+        return Ok(def_typ.clone());
+    }
     if bounds::scheme(&scheme) {
         let view = Type::Fn(Arc::new(site.clone()));
         let mut known = bounds::instance(&ctx.env, &scheme, &view, &[])?;
