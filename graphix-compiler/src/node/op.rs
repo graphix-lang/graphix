@@ -258,7 +258,9 @@ fn same_by_bounds(env: &Env, lt: &Type, rt: &Type, holds: Bound) -> Result<Type>
         s.track(&v)
     });
     let v = Type::TVar(v);
-    for t in [lt, rt] {
+    // an operand that is never there is of every type: it ties nothing
+    let never = |t: &Type| t.with_deref(|t| matches!(t, Some(Type::Bottom)));
+    for t in [lt, rt].into_iter().filter(|t| !never(t)) {
         v.check_contains(env, t)?;
         t.check_contains(env, &v)?
     }
