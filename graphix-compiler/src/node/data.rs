@@ -2,7 +2,7 @@ use super::{
     WakeBit,
     callsite::{Narrowing, check_hidden_defaults},
     compiler::compile,
-    dense_gate, joined, one_bound, read_bound, solving,
+    dense_gate, one_bound, read_bound, solving,
 };
 use crate::cost::ForkSite;
 use crate::{
@@ -326,7 +326,7 @@ impl<R: Rt> StructWith<R> {
             })
             .collect::<Result<Box<[_]>>>()?;
         let typ = match bounds::active() {
-            true => joined(),
+            true => Type::empty_tvar(),
             false => updated_type(ctx, source.typ(), &replace)
                 .unwrap_or_else(|_| Type::empty_tvar()),
         };
@@ -501,7 +501,7 @@ impl<R: Rt> StructRef<R> {
         let source = compile(ctx, flags, source.clone(), scope, top_id)?;
         let (typ, sorted_field_idx) =
             match (bounds::active(), struct_field_type(ctx, source.typ(), field_name)) {
-                (true, _) => (joined(), None),
+                (true, _) => (Type::empty_tvar(), None),
                 (false, Ok((i, t))) => (t, i),
                 (false, Err(_)) => (Type::empty_tvar(), None),
             };
@@ -1114,7 +1114,7 @@ impl<R: Rt> TupleRef<R> {
         let source = compile(ctx, flags, source.clone(), scope, top_id)?;
         let field = *field;
         let typ = match bounds::active() {
-            true => joined(),
+            true => Type::empty_tvar(),
             false => tuple_field_type(ctx, &scope.lexical, source.typ(), field)
                 .unwrap_or_else(|_| Type::empty_tvar()),
         };

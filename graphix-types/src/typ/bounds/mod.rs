@@ -153,15 +153,6 @@ pub fn with<T>(f: impl FnOnce(&mut Solving) -> T) -> Option<T> {
 /// What the solver keeps of an open cell beside its bounds.
 #[derive(Debug, Default)]
 pub struct Known {
-    /// Its lower bounds may form a union nobody wrote: an array literal's
-    /// element, a select's result. Any other cell is of one type, so one
-    /// of the bounds in `direct` must hold the others.
-    pub(crate) join: bool,
-    /// What reached the cell other than along an edge from another cell:
-    /// an argument, an initial value, a write, a part of something taken
-    /// apart, and each cell that feeds it (but not what that cell passes
-    /// on).
-    pub(crate) direct: SmallVec<[Type; 1]>,
     /// The cells at this one's depth that flow into it. What flows into
     /// them is passed on as it arrives, so this is a record for fixing.
     pub(crate) feeders: SmallVec<[TVar; 1]>,
@@ -395,7 +386,6 @@ enum Pending {
 enum Added {
     Lower,
     Upper,
-    Direct,
     Feeder,
     Sink,
 }
@@ -509,32 +499,12 @@ fn known<R>(v: &TVar, f: impl FnOnce(&mut Known) -> R) -> R {
     f(c.solving.get_or_insert_default())
 }
 
-impl TVar {
-    /// Whether the cell's lower bounds may form a union nobody wrote.
-    pub fn joins(&self) -> bool {
-        self.cell().read().solving.as_ref().is_some_and(|k| k.join)
-    }
-
-    /// Let the cell's lower bounds form a union: it is where values of
-    /// different types meet by the program's own structure.
-    pub fn set_joins(&self) {
-        known(self, |k| k.join = true)
-    }
-
-    /// What reached the cell other than along an edge from another cell.
-    pub fn cell_direct(&self) -> SmallVec<[Type; 1]> {
-        let cell = self.cell();
-        let c = cell.read();
-        c.solving.as_ref().map(|k| k.direct.clone()).unwrap_or_default()
-    }
-}
-
 impl Solving {
     /// `a` fits where `b` is wanted. An open cell on either side takes the
     /// other as a bound, and the bound meets every bound the cell has on
     /// its other side.
     pub fn constrain(&mut self, env: &Env, a: &Type, b: &Type) -> Result<()> {
-        self.relate(env, a, b, false)
+        self.relate(env, a, b)
     }
 
     /// [`Self::constrain`] as a question: where `a` does not fit, every
@@ -575,7 +545,6 @@ impl Solving {
                 match (what, c.solving.as_mut()) {
                     (Added::Lower, _) => drop(c.lower.pop()),
                     (Added::Upper, _) => drop(c.constraints.pop()),
-                    (Added::Direct, Some(k)) => drop(k.direct.pop()),
                     (Added::Feeder, Some(k)) => drop(k.feeders.pop()),
                     (Added::Sink, Some(k)) => drop(k.sinks.pop()),
                     (_, None) => (),
@@ -595,13 +564,11 @@ impl Solving {
         }
     }
 
-    /// `edge`: the relation passes a cell's bound on to a cell it feeds,
-    /// so what arrives is the feeder's and not new to the cell fed.
-    fn relate(&mut self, env: &Env, a: &Type, b: &Type, edge: bool) -> Result<()> {
-        ensure_sufficient(|| self.relate_in(env, a, b, edge))
+    fn relate(&mut self, env: &Env, a: &Type, b: &Type) -> Result<()> {
+        ensure_sufficient(|| self.relate_in(env, a, b))
     }
 
-    fn relate_in(&mut self, env: &Env, a: &Type, b: &Type, edge: bool) -> Result<()> {
+    fn relate_in(&mut self, env: &Env, a: &Type, b: &Type) -> Result<()> {
         // an application whose constructor is decided is the type it makes
         let applied = |t: Type| match &t {
             Type::App(c, x) => Type::app_filled(c, x).unwrap_or(t),
@@ -686,7 +653,7 @@ impl Solving {
             _ => (),
         }
         if open(&a).is_some() || open(&b).is_some() {
-            return self.cells(env, &a, &b, edge);
+            return self.cells(env, &a, &b);
         }
         match (&a, &b) {
             // what no decided member of `b` takes goes to its open member
@@ -820,7 +787,7 @@ impl Solving {
     /// `a` or `b` is an open cell. A bound is kept by the deeper of the two
     /// sides, so nothing a cell holds is deeper than the cell: where the
     /// other side is deeper, it is first copied out to the cell's depth.
-    fn cells(&mut self, env: &Env, a: &Type, b: &Type, edge: bool) -> Result<()> {
+    fn cells(&mut self, env: &Env, a: &Type, b: &Type) -> Result<()> {
         let (va, vb) = (open(a), open(b));
         let at = va.or(vb).unwrap().level();
         match (va, vb) {
@@ -831,7 +798,6 @@ impl Solving {
                     let _at = AtLevel::enter(to.level());
                     TVar::empty_named(to.name.clone())
                 };
-                through.set_joins();
                 self.passing.insert(through.cell_addr(), through.clone());
                 let through = Type::TVar(through);
                 self.constrain(env, &through, &Type::TVar(to))?;
@@ -848,22 +814,18 @@ impl Solving {
                         known(w, |k| k.feeders.push(v.clone()));
                         self.note(w, Added::Feeder)
                     }
-                    if !edge {
-                        known(w, |k| k.direct.push(a.clone()));
-                        self.note(w, Added::Direct)
-                    }
                 } else {
                     self.demanded(env, v, b)?
                 }
-                lower.iter().try_for_each(|l| self.relate(env, l, b, vb.is_some()))
+                lower.iter().try_for_each(|l| self.relate(env, l, b))
             }
-            (Some(_), Some(w)) => self.arrive(env, w, a, edge),
+            (Some(_), Some(w)) => self.arrive(env, w, a),
             (Some(_), None) => {
                 let b = self.extrude(b, false, at);
                 self.escapes(&b, at)?;
                 self.constrain(env, a, &b)
             }
-            (None, Some(w)) if depth(a) <= at.depth() => self.arrive(env, w, a, edge),
+            (None, Some(w)) if depth(a) <= at.depth() => self.arrive(env, w, a),
             (None, Some(_)) => {
                 let a = self.extrude(a, true, at);
                 self.escapes(&a, at)?;
@@ -889,14 +851,10 @@ impl Solving {
 
     /// `a` is a new lower bound of the open cell `w`: it must fit whatever
     /// is demanded of `w`.
-    fn arrive(&mut self, env: &Env, w: &TVar, a: &Type, edge: bool) -> Result<()> {
+    fn arrive(&mut self, env: &Env, w: &TVar, a: &Type) -> Result<()> {
         let Some(upper) = record(w, a, true) else { return Ok(()) };
         self.note(w, Added::Lower);
         self.track(w);
-        if !edge {
-            known(w, |k| k.direct.push(a.clone()));
-            self.note(w, Added::Direct)
-        }
         // a use of `w` meets the bound; where the bound is a cell, what
         // that cell holds
         let met = match open(a) {
@@ -911,7 +869,7 @@ impl Solving {
                 }
             }
         }
-        upper.iter().try_for_each(|u| self.relate(env, a, u, open(&shallow(u)).is_some()))
+        upper.iter().try_for_each(|u| self.relate(env, a, u))
     }
 
     /// A copy of `t` no deeper than `at`: each deeper cell gets a twin at
@@ -952,7 +910,6 @@ impl Solving {
                             )
                         }
                         let n = twin(v);
-                        n.set_joins();
                         keep(self, &n);
                         known(v, |k| k.sinks.push(n.clone()));
                         self.note(v, Added::Sink);
@@ -960,9 +917,6 @@ impl Solving {
                     }
                     (false, _) => {
                         let n = twin(v);
-                        if v.joins() {
-                            n.set_joins()
-                        }
                         keep(self, &n);
                         let (lower, upper) = (v.cell_lower(), v.cell_constraints());
                         let cell = v.cell();
@@ -2116,13 +2070,11 @@ impl Solving {
         // the copy is bounded and fed as the original is
         for (v, n) in made {
             let (lower, mut upper) = (v.cell_lower(), v.cell_constraints());
-            let (join, direct, fed, sinks, used, defaults) = {
+            let (fed, sinks, used, defaults) = {
                 let cell = v.cell();
                 let c = cell.read();
                 match c.solving.as_ref() {
                     Some(k) => (
-                        k.join && c.rigid_gates == 0,
-                        k.direct.clone(),
                         k.feeders.clone(),
                         k.sinks.clone(),
                         k.uses.clone(),
@@ -2142,15 +2094,8 @@ impl Solving {
             let all = |s: &mut Self, ts: &[Type], copies: &mut AHashMap<usize, TVar>| {
                 ts.iter().map(|t| s.copy(t, above, at, copies)).collect()
             };
-            let (lower, upper, direct): (
-                SmallVec<[Type; 1]>,
-                SmallVec<[Type; 1]>,
-                SmallVec<[Type; 1]>,
-            ) = (
-                all(self, &lower, copies),
-                all(self, &upper, copies),
-                all(self, &direct, copies),
-            );
+            let (lower, upper): (SmallVec<[Type; 1]>, SmallVec<[Type; 1]>) =
+                (all(self, &lower, copies), all(self, &upper, copies));
             let mut feeds: SmallVec<[TVar; 1]> = SmallVec::new();
             for u in fed.iter() {
                 if let Type::TVar(u) =
@@ -2164,7 +2109,7 @@ impl Solving {
                 let mut c = cell.write();
                 (c.lower, c.constraints) = (lower, upper);
                 let k = c.solving.get_or_insert_default();
-                (k.join, k.direct, k.feeders) = (join, direct, feeds);
+                k.feeders = feeds;
                 k.defaults = defaults
             }
             // the copy is used as the original is: what flows into it in
@@ -2591,24 +2536,6 @@ impl Solving {
                 Some(deep(&l))
             }
         })
-    }
-
-    /// One of `ts` holds the others.
-    fn holder(&mut self, env: &Env, ts: &[Type]) -> Result<()> {
-        // one with a cell nothing has decided is tried last: that cell
-        // takes what the others need
-        let (decided, loose): (SmallVec<[&Type; 4]>, SmallVec<[&Type; 4]>) =
-            ts.iter().partition(|t| !t.has_free());
-        for t in decided.into_iter().chain(loose) {
-            if self.attempting(|s| ts.iter().try_for_each(|o| s.constrain(env, o, t))) {
-                return Ok(());
-            }
-        }
-        let t = &ts[0];
-        let other = ts.iter().find(|o| !self.attempt(env, o, t)).unwrap_or(t);
-        bail!(
-            "type mismatch {t} does not contain {other}: declare the type that holds both"
-        )
     }
 
     /// The one of `ts` every other holds; nothing demanded is bottom.
@@ -3079,7 +3006,6 @@ mod tests {
         assert!(a.cell_lower().is_empty());
         assert!(s.constrain(&env, &parsed(&env, "[i64, null]"), &opt).is_ok());
         assert_eq!(shown(&a.cell_lower()), ["i64"]);
-        assert_eq!(shown(&a.cell_direct()), ["i64"]);
     }
 
     #[test]
@@ -3091,9 +3017,7 @@ mod tests {
         assert!(s.constrain(&env, &parsed(&env, "Array<i64>"), &te).is_ok());
         let opt = over(&env, "['a, null]", &[("a", &ta)]);
         assert!(s.constrain(&env, &te, &opt).is_ok());
-        // both of the cell's types reach 'a, but as one thing met directly
         assert_eq!(a.cell_lower().len(), 2);
-        assert_eq!(a.cell_direct().len(), 1);
     }
 
     #[test]
@@ -3124,7 +3048,6 @@ mod tests {
         let (env, _) = typed(&[], "null");
         let mut s = Solving::default();
         let ((join, tj), (one, to)) = (var("j"), var("o"));
-        join.set_joins();
         for t in ["i64", "string"] {
             assert!(s.constrain(&env, &parsed(&env, t), &tj).is_ok())
         }
@@ -3138,18 +3061,18 @@ mod tests {
     }
 
     #[test]
-    fn a_cell_of_one_type_takes_no_two_unrelated_values() {
+    fn a_cell_holds_the_union_of_what_flows_into_it() {
         let (env, _) = typed(&[], "null");
         let mut s = Solving::default();
-        let (_, tt) = var("t");
+        let (t, tt) = var("t");
         for t in ["i64", "string"] {
             assert!(s.constrain(&env, &parsed(&env, t), &tt).is_ok())
         }
-        assert!(s.finish(&env).is_err());
-        // what another cell passes on is that cell's, not a second value
+        assert!(s.finish(&env).is_ok());
+        assert_eq!(fixed(&t), "[i64, string]");
+        // through another cell too
         let mut s = Solving::default();
         let ((e, te), (p, tp)) = (var("e"), var("p"));
-        e.set_joins();
         for t in ["i64", "string"] {
             assert!(s.constrain(&env, &parsed(&env, t), &te).is_ok())
         }
@@ -3200,18 +3123,20 @@ mod tests {
         let mut s = Solving::default();
         let mark = s.mark();
         let ((a, ta), (x, tx)) = (var_at("a", 1), var_at("x", 1));
-        // a local of the definition takes its parameter and a string
+        // an operand of arithmetic in the definition takes its parameter
+        // and an i64: it is one numeric type in each instance
         s.track(&a);
+        s.declare(&x, Type::Bound(crate::typ::Bound::Singleton));
         assert!(s.constrain(&env, &ta, &tx).is_ok());
-        assert!(s.constrain(&env, &parsed(&env, "string"), &tx).is_ok());
+        assert!(s.constrain(&env, &parsed(&env, "i64"), &tx).is_ok());
         let f = over(&env, "fn(p: 'a) -> i64", &[("a", &ta)]);
         assert!(s.generalize(&env, &f, 0, mark).is_ok());
         assert!(!x.is_bound());
         let ok = s.instantiate(&f, 0, Level::TOP);
-        assert!(s.constrain(&env, &ok, &parsed(&env, "fn(p: string) -> i64")).is_ok());
+        assert!(s.constrain(&env, &ok, &parsed(&env, "fn(p: i64) -> i64")).is_ok());
         assert!(s.finish(&env).is_ok());
         let no = s.instantiate(&f, 0, Level::TOP);
-        assert!(s.constrain(&env, &no, &parsed(&env, "fn(p: i64) -> i64")).is_ok());
+        assert!(s.constrain(&env, &no, &parsed(&env, "fn(p: f64) -> i64")).is_ok());
         assert!(s.finish(&env).is_err());
     }
 
@@ -3233,7 +3158,6 @@ mod tests {
         let (env, _) = typed(&[], "null");
         let mut s = Solving::default();
         let ((_, tv), (out, to)) = (var("v"), var("out"));
-        out.set_joins();
         let read = super::Use::Field { field: ArcStr::from("a"), out: to.clone(), write: false };
         assert!(s.watch(&env, &tv, read).is_ok());
         assert!(s.constrain(&env, &parsed(&env, "{a: i64, b: string}"), &tv).is_ok());
@@ -3267,8 +3191,6 @@ mod tests {
         let (env, _) = typed(&[], "null");
         let mut s = Solving::default();
         let ((n, tn), (r, tr)) = (var("n"), var("r"));
-        n.set_joins();
-        r.set_joins();
         let arms = vec![
             Arm {
                 pat: Pat::Test(parsed(&env, "i64"), Box::new(Pat::Any(Some(n.clone())))),
@@ -3304,7 +3226,6 @@ mod tests {
         // a test admits what the run time cannot tell from it
         let mut s = Solving::default();
         let (v, _) = var("v");
-        v.set_joins();
         let arm = Arm {
             pat: Pat::Test(parsed(&env, "&i64"), Box::new(Pat::Any(Some(v.clone())))),
             guarded: false,

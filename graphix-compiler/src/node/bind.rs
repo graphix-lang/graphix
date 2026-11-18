@@ -7,7 +7,6 @@ use super::{
     pattern::{
         CompiledAbstracts, Holder, StructPatternNode, members_refusal, rigid_refusal,
     },
-    joined,
     place::{self, Path, RefPath},
     read_var_by,
     select::lower_view,
@@ -2644,13 +2643,13 @@ impl<R: Rt> Place<R> {
                     vt
                 }
                 PlaceStep::Tuple(i) if bounds::active() => {
-                    let out = joined();
+                    let out = Type::empty_tvar();
                     let read = Use::Index { i: *i, out: out.clone(), write: writable };
                     solving(|s| s.watch(&ctx.env, &cur, read))?;
                     out
                 }
                 PlaceStep::Field(name) if bounds::active() => {
-                    let out = joined();
+                    let out = Type::empty_tvar();
                     let read = Use::Field {
                         field: name.name.clone(),
                         out: out.clone(),
@@ -3582,7 +3581,6 @@ impl<R: Rt> Deref<R> {
             return Ok(());
         }
         if bounds::active() {
-            super::joins(&self.typ);
             let read = Type::ByRef(Mutability::Shared, Arc::new(self.typ.clone()));
             return wrap!(self, read.check_contains(&ctx.env, self.child.typ()));
         }

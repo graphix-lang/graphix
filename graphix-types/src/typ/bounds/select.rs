@@ -379,7 +379,6 @@ impl Solving {
                 v.name
             )
         }
-        own.iter().for_each(|v| v.set_joins());
         let t = map_parts(t, &mut |t| matches!(t, Type::Bottom).then_some(Type::Any));
         let test = super::map_cells(&t, &mut |_| Some(Type::Any));
         let whole = match &inner {

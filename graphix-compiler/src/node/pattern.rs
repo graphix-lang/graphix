@@ -14,7 +14,7 @@ use crate::{
         WrittenAt, union_members, union_members_open, union_members_with,
     },
     format_with_flags,
-    node::{Held, Holders, compiler, joined, list, prune::Prune, solving},
+    node::{Held, Holders, compiler, list, prune::Prune, solving},
     prune::BoundaryRef,
     rep,
     typ::{
@@ -2349,7 +2349,7 @@ impl StructPatternNode {
             whole: spec,
         };
         let pattern = Self::compile_with(ctx, cx, &shape, spec)?;
-        pattern.ids(&mut |id| ctx.env.retype(id, joined()));
+        pattern.ids(&mut |id| ctx.env.retype(id, Type::empty_tvar()));
         Ok(pattern)
     }
 
@@ -3878,7 +3878,7 @@ impl<R: Rt> PatternNode<R> {
             };
             let structure_predicate =
                 StructPatternNode::compile_with(ctx, cx, &shape, sp)?;
-            structure_predicate.ids(&mut |id| ctx.env.retype(id, joined()));
+            structure_predicate.ids(&mut |id| ctx.env.retype(id, Type::empty_tvar()));
             let guard = spec
                 .guard
                 .as_ref()

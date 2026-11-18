@@ -3,7 +3,6 @@ use super::{
     bind::Ref,
     compiler::compile,
     error::{Qop, RaiseProbe, join_open_raised, join_raised},
-    joined, joins,
     lambda::{
         BuiltInLambda, GXLambda, InstanceTypes, Lambda, LambdaDef, same_parameters,
     },
@@ -5470,7 +5469,6 @@ impl<R: Rt> CallSite<R> {
             };
             args.push((label, n.typ().clone()))
         }
-        joins(&self.rtype);
         let callee = self.fnode.typ().clone();
         let handler = self.scope.dynamic.handler();
         // what the site uses its callee as: a function of the arguments
@@ -5495,7 +5493,7 @@ impl<R: Rt> CallSite<R> {
         };
         let raised = match handler.as_ref().and_then(|h| ctx.env.by_id.get(&h.id().0)) {
             Some(b) => b.typ.clone(),
-            None => joined(),
+            None => Type::empty_tvar(),
         };
         if let Some((name, typings, receiver)) = self.constructor_method(ctx) {
             // the receiver's type says which implementation types the call

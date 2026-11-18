@@ -6227,7 +6227,7 @@ run!(
 // signature, which a monomorphic recursion narrows.
 run!(
     a_self_calls_omitted_default_is_checked,
-    r#"{ let rec g = |#s = 0, x: i64| g(x - -1); g(#s: "top", 1) }"#,
+    r#"{ let rec g = |#s = 0, x: i64| select x { 0 => 0, _ => g(x - 1) }; g(#s: "top", 1) }"#,
     refused("type mismatch i64 does not contain string")
 );
 

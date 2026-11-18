@@ -174,8 +174,6 @@ impl<R: Rt> Map<R> {
             // the keys flow into one cell and the values into another,
             // each of which may join what it takes
             let Type::Map(m) = &self.typ else { bail!("BUG: a map literal's type") };
-            super::joins(&m.key);
-            super::joins(&m.value);
             for (k, v) in self.entries() {
                 wrap!(k, m.key.check_contains(&ctx.env, k.typ()))?;
                 wrap!(v, m.value.check_contains(&ctx.env, v.typ()))?

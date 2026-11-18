@@ -723,7 +723,7 @@ impl<R: Rt> ArraySlice<R> {
         let source_typ = self.source.typ();
         if check && bounds::active() {
             let sliced = bounds::union_of([
-                Type::Array(Arc::new(super::joined())),
+                Type::Array(Arc::new(Type::empty_tvar())),
                 Type::Primitive(Typ::Bytes.into()),
             ]);
             wrap!(self, sliced.check_contains(&ctx.env, source_typ))?
@@ -763,7 +763,6 @@ impl<R: Rt, K: SeqKind> SeqLit<R, K> {
             let (Type::Array(e) | Type::List(e)) = &self.typ else {
                 bail!("BUG: a literal that is no array and no list")
             };
-            super::joins(e);
             for n in self.n.iter() {
                 wrap!(n, e.check_contains(&ctx.env, n.typ()))?
             }

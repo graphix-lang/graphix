@@ -2074,26 +2074,6 @@ pub(crate) fn solving<T>(f: impl FnOnce(&mut Solving) -> T) -> T {
     bounds::with(f).expect("a check by bounds is running")
 }
 
-/// `t`, where it is a cell, may hold a union nobody wrote: a literal's
-/// element, a read's result, a call's.
-pub(crate) fn joins(t: &Type) {
-    if let Type::TVar(tv) = t {
-        tv.set_joins()
-    }
-}
-
-/// A fresh cell that may hold a union nobody wrote.
-pub(crate) fn joined_cell() -> TVar {
-    let tv = TVar::default();
-    tv.set_joins();
-    tv
-}
-
-/// [`joined_cell`] as a type.
-pub(crate) fn joined() -> Type {
-    Type::TVar(joined_cell())
-}
-
 /// A statement's check result: its errors carry the statement, and in a
 /// module's body the module's origin.
 fn statement_result<R: Rt>(r: Result<()>, n: &Node<R>, module: bool) -> Result<()> {
@@ -4652,7 +4632,6 @@ impl<R: Rt> Any<R> {
         if bounds::active() {
             // whichever fires is the value: each flows into a cell that
             // may join them
-            joins(&self.typ);
             for n in self.n.iter() {
                 wrap!(n, self.typ.check_contains(&ctx.env, n.typ()))?
             }

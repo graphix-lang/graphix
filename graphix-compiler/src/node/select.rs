@@ -3248,14 +3248,13 @@ impl<R: Rt> Select<R> {
     /// arms, to those cells.
     fn check_by_bounds(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         wrap!(self.arg.node, self.arg.node.typecheck0(ctx))?;
-        super::joins(&self.typ);
         let bool = Type::Primitive(Typ::Bool.into());
         let mut arms = Vec::with_capacity(self.arms.len());
         for (pat, n) in self.arms.iter_mut() {
             let inner = wrap!(n, pat.structure_predicate.by_bounds(ctx))?;
             let arm = match pat.explicit_type_predicate {
                 true => {
-                    let whole = super::joined_cell();
+                    let whole = TVar::default();
                     let test = &pat.type_predicate;
                     wrap!(n, solving(|s| s.tested(&ctx.env, test, inner, whole)))?
                 }
@@ -3266,7 +3265,7 @@ impl<R: Rt> Select<R> {
             let arm = match pat.explicit_type_predicate {
                 true => arm,
                 false => {
-                    let reach = super::joined_cell();
+                    let reach = TVar::default();
                     pat.type_predicate = Type::TVar(reach.clone());
                     bounds::Pat::Whole(reach, Box::new(arm))
                 }

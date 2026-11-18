@@ -191,7 +191,7 @@ impl RaiseProbe {
                 id,
                 name: "#faux".into(),
                 scope: scope.lexical.clone(),
-                typ: super::joined(),
+                typ: Type::empty_tvar(),
                 pos: SourcePosition::default(),
                 ori: Arc::new(Origin::default()),
                 binder: None,
@@ -366,7 +366,6 @@ impl<R: Rt> Catch<R> {
             // the errors raised under the catch flow into its binding,
             // which holds at most what is written of it
             Type::TVar(tv) if bounds::active() => {
-                tv.set_joins();
                 if let Some(written) = &c.constraint {
                     written.check_contains(&ctx.env, &typ).at(&spec)?
                 }
@@ -1691,7 +1690,6 @@ impl<R: Rt> Catch<R> {
                 bail!("BUG: seq capture cell is not a cell")
             };
             if bounds::active() {
-                tv.set_joins();
                 return bind.typ.check_contains(&ctx.env, &etyp);
             }
             // union the cell's content, not the cell
@@ -1724,11 +1722,10 @@ impl<R: Rt> Qop<R> {
                 None => Ok(()),
             };
         }
-        super::joins(&self.typ);
         let payload = match self.raises() {
             false => None,
             true => {
-                let payload = super::joined();
+                let payload = Type::empty_tvar();
                 if let Some(h) = &handler {
                     let chain = Type::err_chain(payload.clone());
                     h.check_contains(env, &Type::Error(Arc::new(chain)))?
