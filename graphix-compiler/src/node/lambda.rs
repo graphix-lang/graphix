@@ -3767,7 +3767,12 @@ impl<R: Rt> Update<R> for Lambda {
             def.table.set(tables);
             return Ok(());
         }
-        {
+        // one the check decided whole is placed the same way
+        if ctx.bounds {
+            if !bounds::take(&self.typ, &row) {
+                bailat!(self.spec, "BUG: a lambda's signature took no row")
+            }
+        } else {
             let _at = AtLevel::enter(level);
             self.typ.place_cells(&ctx.env, &row);
             if let (Type::Fn(own), Type::Fn(row)) = (&self.typ, &row) {
