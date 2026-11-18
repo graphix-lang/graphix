@@ -686,6 +686,7 @@ fn instance_cells<R: Rt>(
     ctx: &CompileCtx<R>,
     def: &FnType,
     instance: &FnType,
+    leaves: &[ArcStr],
 ) -> Option<AHashMap<usize, TVar>> {
     // a definition checked by bounds is a scheme whose cells carry what
     // each instance has to decide: the instance's types are a copy of
@@ -693,7 +694,7 @@ fn instance_cells<R: Rt>(
     let scheme = Type::Fn(Arc::new(def.clone()));
     if bounds::scheme(&scheme) {
         let at = Type::Fn(Arc::new(instance.clone()));
-        return bounds::instance(&ctx.env, &scheme, &at)
+        return bounds::instance(&ctx.env, &scheme, &at, leaves)
             .inspect_err(|e| {
                 bounds::debug(|| format!("instance of {scheme} at {at}: {e:#}"))
             })
@@ -734,7 +735,9 @@ impl InstanceTypes {
             Some(tables) if tables.table.types.contains_key(&root) => {
                 let known = site
                     .filter(|_| ctx.bounds)
-                    .and_then(|site| instance_cells(ctx, &def.typ, site))
+                    .and_then(|site| {
+                        instance_cells(ctx, &def.typ, site, std::slice::from_ref(name))
+                    })
                     .unwrap_or_default();
                 Ok(Self {
                     tables: tables.clone(),
@@ -757,7 +760,7 @@ impl InstanceTypes {
         instance: &FnType,
     ) -> Option<Self> {
         let open = ctx.rec_defs.clone();
-        let known = instance_cells(ctx, def, instance)?;
+        let known = instance_cells(ctx, def, instance, &[])?;
         Some(Self { tables, known: SArc::new(Mutex::new(known)), open })
     }
 
@@ -1984,10 +1987,12 @@ impl<R: Rt> GXLambda<R> {
             (Some(types), Typing::Substituted(_, def)) => {
                 written_tvars(def, Some(&types.known.lock()))
             }
-            (None, Typing::Substituted(_, def)) => match instance_cells(ctx, def, &typ) {
-                Some(known) => written_tvars(def, Some(&known)),
-                None => LPooled::take(),
-            },
+            (None, Typing::Substituted(_, def)) => {
+                match instance_cells(ctx, def, &typ, &[]) {
+                    Some(known) => written_tvars(def, Some(&known)),
+                    None => LPooled::take(),
+                }
+            }
             (_, _) => written_tvars(&typ, None),
         };
         let own = typ.clone();
@@ -2554,7 +2559,7 @@ pub(crate) fn fit_callee<R: Rt>(
     let scheme = Type::Fn(Arc::new(def_typ.clone()));
     if bounds::scheme(&scheme) {
         let view = Type::Fn(Arc::new(site.clone()));
-        let mut known = bounds::instance(&ctx.env, &scheme, &view)?;
+        let mut known = bounds::instance(&ctx.env, &scheme, &view, &[])?;
         return match &bounds::specialize(&scheme, &mut known) {
             Type::Fn(ft) => Ok((**ft).clone()),
             _ => bail!("BUG: a function type's instance is no function type"),

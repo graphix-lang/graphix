@@ -53,14 +53,7 @@ graphix_tests::lang::functions::default_hidden_under_a_tuple_member	refuses	cann
 graphix_tests::lang::functions::default_hidden_under_a_variant_member	refuses	cannot compare i64 with string: neither type holds the other, so the two are never equal
 graphix_tests::lang::functions::default_hidden_under_an_element_member	refuses	cannot compare i64 with string: neither type holds the other, so the two are never equal
 graphix_tests::lang::functions::default_hidden_under_an_optional_struct	refuses	cannot compare i64 with string: neither type holds the other, so the two are never equal
-graphix_tests::lang::functions::default_holding_a_defaulted_fn_behind_a_closed_optional_formal	refuses	unsatisfiable constraints: i64 & string
-graphix_tests::lang::functions::default_holding_a_defaulted_fn_behind_a_closed_typedefs_fn	refuses	unsatisfiable constraints: i64 & string
-graphix_tests::lang::functions::default_holding_a_defaulted_fn_behind_a_formal_that_fixes_it	refuses	type mismatch i64 does not contain string: declare the type that holds both
-graphix_tests::lang::functions::default_holding_a_defaulted_fn_of_a_returned_fn_called_two_ways	refuses	unsatisfiable constraints: i64 & string
-graphix_tests::lang::functions::default_holding_a_defaulted_fn_of_another_type_than_an_argument	refuses	type mismatch i64 does not contain string: declare the type that holds both
-graphix_tests::lang::functions::default_holding_one_of_two_defaulted_fns_of_two_types	refuses	unsatisfiable constraints: i64 & string
 graphix_tests::lang::functions::default_of_another_type_behind_an_abstract_annotation	refuses	type mismatch C<string> does not contain C<'_0>
-graphix_tests::lang::functions::default_of_another_type_written_behind_a_functions_return	refuses	unsatisfiable constraints: string & i64
 graphix_tests::lang::functions::default_under_a_bodys_annotation_of_another_type_than_a_call_passes	refuses	type mismatch i64 does not contain string: declare the type that holds both
 graphix_tests::lang::functions::environment_cell_makes_the_definition_monomorphic	refuses	cannot compute with [i64, f64]: both operands must be one numeric type
 graphix_tests::lang::functions::flat_map_bare_element_refused	refuses	type mismatch Array<'b> does not contain i64
@@ -77,7 +70,6 @@ graphix_tests::lang::functions::lambdamatch5	refuses	missing match cases: nothin
 graphix_tests::lang::functions::list_map_fn_element_fold_rejected	refuses	type mismatch Number does not contain fn(#clock: Any, v: 'a) -> 'a
 graphix_tests::lang::functions::omitted_default_widens_the_result	refuses	type mismatch i64 does not contain null
 graphix_tests::lang::functions::one_met_default_names_no_annotation	refuses	cannot compare i64 with string: neither type holds the other, so the two are never equal
-graphix_tests::lang::functions::open_default_through_a_fn_type	refuses	type mismatch string does not contain i64: declare the type that holds both
 graphix_tests::lang::functions::operand_refuses_mixed_numeric_element	refuses	type mismatch i64 does not contain f64
 graphix_tests::lang::functions::operand_refuses_nullable_element	refuses	type mismatch Number does not contain Option<'a>
 graphix_tests::lang::functions::rec_rtype_rejects_error_arm	refuses	type mismatch i64 does not contain Error<'a: unbound above i64>
@@ -86,7 +78,6 @@ graphix_tests::lang::functions::required_label_connect_refused	refuses	type mism
 graphix_tests::lang::functions::returned_function_type_parenthesized_before_the_throws	refuses	type mismatch i64 does not contain fn(x: i64) -> '_0
 graphix_tests::lang::functions::rigid_element_to_a_concrete_container	refuses	type mismatch i64 does not contain 'r
 graphix_tests::lang::functions::rtype_rejects_error_arm	refuses	type mismatch i64 does not contain Error<'a: unbound above i64>
-graphix_tests::lang::functions::two_defaults_holding_defaulted_fns_of_two_types	refuses	unsatisfiable constraints: i64 & string
 graphix_tests::lang::functions::two_undecided_arguments_first_refused	refuses	the type 'b must be known here, an operation reads it to know what to make: annotate where its result goes
 graphix_tests::lang::functions::two_undecided_arguments_last_refused	refuses	the type 'b must be known here, an operation reads it to know what to make: annotate where its result goes
 graphix_tests::lang::functions::undecided_argument_last_refused	refuses	the type 'b must be known here, an operation reads it to know what to make: annotate where its result goes
@@ -99,7 +90,6 @@ graphix_tests::lang::functions::undecided_parameter_within_a_conjunct_after_two_
 graphix_tests::lang::functions::undecided_parameter_within_a_conjunct_builtin_refused	refuses	type mismatch [Real, Sint] does not contain string
 graphix_tests::lang::functions::undecided_parameter_within_a_conjunct_refused	refuses	type mismatch Number does not contain string
 graphix_tests::lang::functions::writable_reference_variable_does_not_widen	refuses	type mismatch u64 does not contain [u64, null]
-graphix_tests::lang::functions::written_defaulted_fn_of_another_type_than_an_argument	refuses	type mismatch i64 does not contain string: declare the type that holds both
 graphix_tests::lang::functions::written_fn_type_exact_position_narrower_refused	refuses	type mismatch i64 does not contain [i64, null]
 graphix_tests::lang::functions::written_fn_type_exact_position_narrower_refused_reversed	refuses	type mismatch i64 does not contain [i64, null]
 graphix_tests::lang::functions::written_fn_type_first_position_types_the_result	refuses	type mismatch i64 does not contain [i64, null]
@@ -878,8 +868,6 @@ graphix_tests::lang::types::wrapper_empty_array_into_a_typedef_union_nothing_dec
 graphix_tests::lang::types::wrapper_into_a_bound_union_of_two_undecided_refused	accepts	[[null], null]
 graphix_tests::lang::types::nested_function_into_a_bound_union_of_two_undecided_refused	accepts	[[null], null]
 graphix_tests::lang::types::variable_union_in_a_bound_refused	accepts	i64:1
-graphix_tests::lang::functions::default_behind_a_typedef_reference_write	refuses	unsatisfiable constraints: string & i64
-graphix_tests::lang::functions::default_of_another_type_written_to_a_field	refuses	unsatisfiable constraints: string & i64
 graphix_tests::lang::functions::default_written_through_a_parameters_reference	refuses	type mismatch string does not contain i64
 graphix_tests::lang::interfaces::aliased_function_val_over_an_outer_binding_refused	refuses	val f is declared F<'a> but implemented fn(x: '_0: unbound within '_1: unbound & '_2: unbound) -> '_2: unbound: where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type
 graphix_tests::lang::interfaces::rank2_val_over_an_outer_binding_refused	refuses	val h is declared fn<'a: Any>(x: 'a) -> 'a but implemented fn(x: '_0: unbound within '_1: unbound & '_2: unbound) -> '_2: unbound: where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type
@@ -1053,3 +1041,12 @@ graphix_tests::lang::tuples_structs::struct_update_narrows_a_replaced_field	refu
 graphix_tests::lang::types::select_arms_at_two_depths_over_two_calls_payloads	refuses	pattern [[h, ..], ..] will never match: nothing reaches it (6:20; the value is Array<Array<_>> | Array<string>)
 graphix_tests::lang::types::payload_bounds_refused_together_bind_nothing	refuses	pattern (1, "a") will never match: nothing reaches it (6:20; the value is (string, string))
 graphix_tests::lang::select::shared_residual_dead_arm_is_brief	refuses	pattern i64 will never match: nothing reaches it (5:10; the value is [Error<T>, Error<U>, `A])
+graphix_tests::lang::functions::default_of_another_type_written_behind_a_functions_return	accepts	"q"
+graphix_tests::lang::functions::default_holding_a_defaulted_fn_of_another_type_than_an_argument	accepts	"1"
+graphix_tests::lang::functions::default_behind_a_typedef_reference_write	accepts	"a"
+graphix_tests::lang::functions::default_holding_one_of_two_defaulted_fns_of_two_types	accepts	"1"
+graphix_tests::lang::functions::default_holding_a_defaulted_fn_behind_a_formal_that_fixes_it	accepts	"1"
+graphix_tests::lang::functions::written_defaulted_fn_of_another_type_than_an_argument	accepts	"1"
+graphix_tests::lang::functions::two_defaults_holding_defaulted_fns_of_two_types	accepts	"1 s"
+graphix_tests::lang::functions::default_of_another_type_written_to_a_field	accepts	"a"
+graphix_tests::lang::functions::default_through_a_narrower_fn_type	refuses	type mismatch i64 does not contain [i64, string]

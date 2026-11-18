@@ -418,6 +418,12 @@ pub struct Solving {
     /// a typedef application in it is the definition's with each argument
     /// what the instance made of it.
     deriving: bool,
+    /// The labels the derived instance's call leaves out, whose defaults it
+    /// passes.
+    leaves: SmallVec<[ArcStr; 1]>,
+    /// The next function relation is the derived instance's signature met
+    /// with its definition's: its defaults are what its call passes.
+    signature: bool,
     /// The cells fixed that carry a predicate, which is judged of what
     /// the cell holds once every cell is fixed ([`Self::judge`]).
     judged: Vec<TVar>,
@@ -1212,6 +1218,7 @@ impl Solving {
 
     /// `f` may be called wherever `g` may be.
     fn fn_below(&mut self, env: &Env, f: &FnType, g: &FnType) -> Result<()> {
+        let signature = std::mem::take(&mut self.signature);
         let positional = |ft: &FnType| -> SmallVec<[Type; 4]> {
             let args = ft.args.iter();
             args.filter(|a| matches!(a.kind, FnArgKind::Positional { .. }))
@@ -1261,7 +1268,19 @@ impl Solving {
                 Some((_, true, ga)) if let Some(v) = declared_in(ga).first() => {
                     carry(name, fa, v, ga)
                 }
-                Some((_, true, _)) | None => self.omitted(env, name, fa)?,
+                // an instance's signature is its own: it holds the default
+                // where its call leaves a label it lists out, and no call
+                // goes through it
+                Some((_, true, _)) if signature => {
+                    if self.leaves.contains(name) {
+                        self.omitted(env, name, fa)?
+                    }
+                }
+                Some((_, true, ga)) => {
+                    self.omitted(env, name, fa)?;
+                    self.passed_default(env, name, fa, ga)?
+                }
+                None => self.omitted(env, name, fa)?,
             }
         }
         for (name, optional, ga) in gl.iter() {
@@ -1494,8 +1513,18 @@ pub fn debug(what: impl FnOnce() -> String) {
 /// decided type: a copy of each of the scheme's cells, fixed, under the
 /// address of the cell it is the copy of. An instance is built from its
 /// definition's check through this, in whatever task builds it.
-pub fn instance(env: &Env, def: &Type, at: &Type) -> Result<AHashMap<usize, TVar>> {
-    let mut solving = Solving { deriving: true, ..Solving::default() };
+pub fn instance(
+    env: &Env,
+    def: &Type,
+    at: &Type,
+    leaves: &[ArcStr],
+) -> Result<AHashMap<usize, TVar>> {
+    let mut solving = Solving {
+        deriving: true,
+        leaves: leaves.iter().cloned().collect(),
+        signature: true,
+        ..Solving::default()
+    };
     let mut copies = AHashMap::default();
     let one = solving.instantiate_into(
         def,
@@ -3410,6 +3439,38 @@ impl Solving {
     /// A function whose parameter for the label `name` is `formal` is
     /// called without it: the default its definition gives the label goes
     /// to the parameter ([`defaulted`]).
+    /// A function whose label `name`, of the parameter `formal`, has a
+    /// default goes where a function type keeps the label optional at
+    /// `wanted`: a call through that type that leaves the label out is
+    /// compiled as passing a `wanted`, and passes the default. A parameter
+    /// of a written type has a default of that type.
+    fn passed_default(
+        &mut self,
+        env: &Env,
+        name: &ArcStr,
+        formal: &Type,
+        wanted: &Type,
+    ) -> Result<()> {
+        let told = |e: anyhow::Error| {
+            e.context(format!(
+                "the default of #{name} is passed where a call through a function \
+                 type with ?#{name}: {wanted} leaves #{name} out"
+            ))
+        };
+        let cells = cells_in(formal);
+        if cells.is_empty() {
+            return self.constrain(env, formal, wanted).map_err(told);
+        }
+        for v in cells.iter() {
+            for (label, default, _) in known(v, |k| k.defaults.clone()).iter() {
+                if label == name {
+                    self.constrain(env, default, wanted).map_err(told)?
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn omitted(&mut self, env: &Env, name: &ArcStr, formal: &Type) -> Result<()> {
         let mut cells = SmallVec::new();
         cells_of(formal, true, &mut cells);
