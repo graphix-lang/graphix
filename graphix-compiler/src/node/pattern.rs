@@ -2795,8 +2795,10 @@ impl StructPatternNode {
                 type_predicate.check_contains_ordered(&ctx.env, &atyp)?;
                 // the predicate is this abstract type, as a variant pattern's is
                 // its variant: a union around it would make the arm refutable by
-                // a tag test nothing performs
-                if !matches!(type_predicate.deref_cloned(), Some(Type::Abstract { id: t, .. }) if t == id)
+                // a tag test nothing performs. A check by bounds routes the arm
+                // by the tag the match tests
+                if !ctx.bounds
+                    && !matches!(type_predicate.deref_cloned(), Some(Type::Abstract { id: t, .. }) if t == id)
                 {
                     let tag = if params.is_empty() {
                         format_compact!("{name}")
