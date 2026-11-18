@@ -204,8 +204,23 @@ pub fn unsplit(t: &Type) -> Type {
             .map(|(_, _, inner)| inner)
             .or_else(|| payload_left(t).map(|(whole, _)| whole))
             .or_else(|| elems_left(t).map(|(array, ..)| array))
+            .or_else(|| within_left(t).map(|(var, _)| var))
             .map(|inner| unsplit(&inner)),
     })
+}
+
+/// Inside a select, the values of a declared variable that earlier arms
+/// left: those in the second type, a part of its bound. Written as a
+/// variant around the variable and that part.
+const WITHIN: &str = "#within";
+
+fn within_left(t: &Type) -> Option<(Type, Type)> {
+    match t {
+        Type::Variant(name, ts, _) if name.as_str() == WITHIN && ts.len() == 2 => {
+            Some((ts[0].clone(), ts[1].clone()))
+        }
+        _ => None,
+    }
 }
 
 /// Inside a select, the arrays of one length that earlier arms left:
@@ -311,6 +326,7 @@ fn plain(t: Type) -> Type {
         .map(|l| l.2)
         .or_else(|| payload_left(&t).map(|p| p.0))
         .or_else(|| elems_left(&t).map(|e| e.0))
+        .or_else(|| within_left(&t).map(|w| w.0))
         .unwrap_or(t)
 }
 
@@ -848,9 +864,20 @@ impl Solving {
             }
             return r;
         }
-        // a pattern that looks into a declared variable sees its bound
-        if let (Type::TVar(v), false) = (&t, matches!(pat, Pat::Any(_))) {
-            return self.route(env, pat, &self.bound_of(env, v));
+        // a pattern that looks into a declared variable sees its bound,
+        // or what the arms before left of it; what it leaves is still
+        // the variable, for an arm that names it
+        let within = within_left(&t).or_else(|| match &t {
+            Type::TVar(v) => Some((t.clone(), self.bound_of(env, v))),
+            _ => None,
+        });
+        if let (Some((var, left)), false) = (within, matches!(pat, Pat::Any(_))) {
+            let r = self.route(env, pat, &left);
+            let rest = match nothing(&r.rest) {
+                true => Type::Bottom,
+                false => tag(&ArcStr::from(WITHIN), [var, r.rest.clone()]),
+            };
+            return Routed { rest, ..r };
         }
         // a value over a declared constructor may be any implementor's:
         // a pattern that looks into it sees each, and takes nothing from
