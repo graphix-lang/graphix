@@ -2017,6 +2017,13 @@ impl Solving {
         mark: usize,
     ) -> Result<()> {
         self.quantify(t, depth);
+        // a default is made anew by each call that leaves its label out:
+        // what its type leaves open is each instance's
+        for v in cells_in(t).iter() {
+            for (_, default, _) in known(v, |k| k.defaults.clone()).iter() {
+                self.quantify(default, depth)
+            }
+        }
         let mut kept = Cells::new();
         self.reach(t, &mut kept);
         for v in kept.iter().filter(|v| v.level().depth() > depth && !v.is_bound()) {
