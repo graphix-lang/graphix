@@ -346,9 +346,6 @@ pub struct Solving {
     /// A held choice is being made: a decided member that does not fit is
     /// out.
     resolving: bool,
-    /// The cells made to carry what one cell passes to a union's open
-    /// member, by address.
-    passing: AHashMap<usize, TVar>,
     /// The scheme's cells the use being made has copied, whose
     /// [`Known::left`] it has still to take.
     copied: Vec<TVar>,
@@ -791,20 +788,6 @@ impl Solving {
         let (va, vb) = (open(a), open(b));
         let at = va.or(vb).unwrap().level();
         match (va, vb) {
-            // what one cell passes to a union's open member reaches that
-            // member as one feeder, as it would had the two met directly
-            (Some(_), _) if let Some((to, rest)) = self.passes(b) => {
-                let through = {
-                    let _at = AtLevel::enter(to.level());
-                    TVar::empty_named(to.name.clone())
-                };
-                self.passing.insert(through.cell_addr(), through.clone());
-                let through = Type::TVar(through);
-                self.constrain(env, &through, &Type::TVar(to))?;
-                let members: SmallVec<[&Type; 4]> =
-                    rest.iter().chain([&through]).collect();
-                self.constrain(env, a, &union_of(members.into_iter().cloned()))
-            }
             (Some(v), _) if depth(b) <= at.depth() => {
                 let Some(lower) = record(v, b, false) else { return Ok(()) };
                 self.note(v, Added::Upper);
@@ -833,20 +816,6 @@ impl Solving {
             }
             (None, None) => unreachable!(),
         }
-    }
-
-    /// The open member of the union `b` and its other members, where `b`
-    /// is a union with one open member that carries nothing yet.
-    fn passes(&self, b: &Type) -> Option<(TVar, SmallVec<[Type; 4]>)> {
-        let Type::Set(ms) = b else { return None };
-        let ms: SmallVec<[Type; 4]> = ms.iter().map(shallow).collect();
-        let mut cells = ms.iter().filter_map(open);
-        let (to, None) = (cells.next()?.clone(), cells.next()) else { return None };
-        if self.passing.contains_key(&to.cell_addr()) {
-            return None;
-        }
-        let rest = ms.iter().filter(|m| open(m).is_none()).cloned().collect();
-        Some((to, rest))
     }
 
     /// `a` is a new lower bound of the open cell `w`: it must fit whatever
