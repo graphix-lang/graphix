@@ -584,6 +584,9 @@ pub enum BindMode<'a> {
     Dynamic(&'a FnType, Option<&'a KeptView>),
     Static {
         instance: &'a FnType,
+        /// The copy of the definition's scheme the call's own read of it
+        /// took, which the check by bounds fixed: the instance's types.
+        copies: Option<&'a triomphe::Arc<AHashMap<usize, TVar>>>,
     },
 }
 
@@ -3658,9 +3661,7 @@ fn discernible(env: &Env, typ: &Type, what: &Discerned) -> Result<()> {
                 a.resolve_tvars(),
                 b.resolve_tvars()
             ),
-            Indiscernible::Unordered(r)
-                if r.resolve_tvars() == typ =>
-            {
+            Indiscernible::Unordered(r) if r.resolve_tvars() == typ => {
                 let (kind, how) = Indiscernible::unordered_kind(&r);
                 bail!(
                     "can't order {kind}s: they have no order (== and != compare them {how})"

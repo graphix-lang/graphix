@@ -2984,6 +2984,10 @@ pub struct CallSite<R: Rt> {
     /// the instance a run-time bind builds dispatches to them as a static
     /// call's does.
     kept: Option<Box<KeptView>>,
+    /// Under a check by bounds, the copy of a generic binding's scheme
+    /// the site's function, a read of it, took: the check fixes it, and
+    /// the static instance is built at it.
+    copies: Option<TArc<AHashMap<usize, TVar>>>,
 }
 
 /// The registered builtin a site calls by name: its function is a
@@ -3041,6 +3045,7 @@ impl<R: Rt> CallSite<R> {
             step_due: false,
             impl_reads: None,
             kept: None,
+            copies: None,
             decoded: false,
             fork: ForkSite::default(),
             static_holds: SmallVec::new(),
@@ -3838,15 +3843,19 @@ impl<R: Rt> CallSite<R> {
             bail!("statically resolving an untyped call site: {}", self.spec)
         }
         let site_ftype = self.ftype.as_ref().unwrap().resolve_tvars();
-        let instance_ftype = match self.instance_signature(ctx, &site_ftype, f)? {
-            Some(fitted) => fitted.resolve_tvars(),
-            None => site_ftype,
-        };
+        let (instance_ftype, fitted) =
+            match self.instance_signature(ctx, &site_ftype, f)? {
+                Some(fitted) => (fitted.resolve_tvars(), true),
+                None => (site_ftype, false),
+            };
+        // a call through a read of a generic binding is an instance of the
+        // copy the read took, as the check fixed it
+        let copies = self.copies.clone().filter(|_| ctx.bounds && !fitted);
         let apply = self.init_prepared_bind(
             ctx,
             scope,
             f,
-            BindMode::Static { instance: &instance_ftype },
+            BindMode::Static { instance: &instance_ftype, copies: copies.as_ref() },
         )?;
         let instance_ftype = apply.typ().as_ref().clone();
         // `site_ftype` is a deep clone: the instance's inferred return is
@@ -5546,6 +5555,11 @@ impl<R: Rt> CallSite<R> {
 
     pub(crate) fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         self.note_kept_view(ctx);
+        if bounds::active()
+            && let Some(r) = self.fnode.downcast_mut::<super::bind::Ref>()
+        {
+            self.copies = wrap!(self.fnode, r.copy_scheme(ctx))?.map(TArc::new);
+        }
         wrap!(self.fnode, self.fnode.typecheck0(ctx))?;
         if bounds::active() {
             return self.check_by_bounds(ctx);

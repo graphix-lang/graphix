@@ -764,6 +764,29 @@ impl InstanceTypes {
         Some(Self { tables, known: SArc::new(Mutex::new(known)), open })
     }
 
+    /// The types of an instance a call builds through a read of a generic
+    /// binding, at the copy of the scheme the read took, which the check
+    /// fixed: no second solve need find them again. `None` where the
+    /// read's scheme is not the definition's own (a val's declaration is
+    /// another).
+    fn copied<R: Rt>(
+        ctx: &CompileCtx<R>,
+        table: &SArc<DefTables>,
+        def: &Arc<FnType>,
+        copies: &AHashMap<usize, TVar>,
+    ) -> Option<Self> {
+        let tables = table.get()?;
+        let sig = Type::Fn(def.clone());
+        if !bounds::cells_in(&sig).iter().all(|c| copies.contains_key(&c.cell_addr())) {
+            return None;
+        }
+        Some(Self {
+            tables: tables.clone(),
+            known: SArc::new(Mutex::new(copies.clone())),
+            open: ctx.rec_defs.clone(),
+        })
+    }
+
     /// A row read from this definition's check, renamed through the
     /// enclosing instance's map, then instantiated through this one's.
     fn instance_of(&self, t: &Type) -> Type {
@@ -1973,13 +1996,24 @@ impl<R: Rt> GXLambda<R> {
     ) -> Result<Self> {
         let origin = body.ori.clone();
         let instance_id = LambdaInstanceId::new();
-        let types = {
-            let mut p = profile::phase(Phase::InstanceCheck);
-            profile::instance(&mut p, instance_id, id, &body);
-            elab_audit::enter();
-            let res = typing.instance_types(ctx, id, &typ);
-            elab_audit::leave(ctx.def_gate_depth, "instance-signature", &body, &res);
-            res?
+        // a construction may bring the instance's types made already
+        let (typing, prepared) = match typing {
+            Typing::Prepared(prepared) => {
+                let (typing, types) = *prepared;
+                (typing, Some(types))
+            }
+            typing => (typing, None),
+        };
+        let types = match prepared {
+            Some(types) => Some(types),
+            None => {
+                let mut p = profile::phase(Phase::InstanceCheck);
+                profile::instance(&mut p, instance_id, id, &body);
+                elab_audit::enter();
+                let res = typing.instance_types(ctx, id, &typ);
+                elab_audit::leave(ctx.def_gate_depth, "instance-signature", &body, &res);
+                res?
+            }
         };
         // what a type the body writes names: the instance's variables,
         // under the definition's names
@@ -2521,6 +2555,12 @@ fn instantiate<R: Rt>(
 ) -> Result<Box<dyn Apply<R>>> {
     let typing = match mode {
         BindMode::Definition => Typing::Definition,
+        BindMode::Static { copies: Some(copies), .. }
+            if let Some(types) = InstanceTypes::copied(ctx, table, def_typ, copies) =>
+        {
+            let substituted = Typing::Substituted(table.clone(), def_typ.clone());
+            Typing::Prepared(Box::new((substituted, types)))
+        }
         BindMode::Static { .. } | BindMode::Dynamic(..) => {
             Typing::Substituted(table.clone(), def_typ.clone())
         }
@@ -2539,7 +2579,7 @@ fn instance_type<R: Rt>(
     def_typ: &Arc<FnType>,
 ) -> Result<Arc<FnType>> {
     Ok(match mode {
-        BindMode::Static { instance } => Arc::new(instance.clone()),
+        BindMode::Static { instance, .. } => Arc::new(instance.clone()),
         BindMode::Dynamic(r, _) if same_parameters(r, def_typ) => Arc::new(r.clone()),
         BindMode::Dynamic(r, _) => Arc::new(fit_callee(ctx, r, def_typ)?),
         BindMode::Definition => def_typ.clone(),

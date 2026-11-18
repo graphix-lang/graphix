@@ -92,7 +92,7 @@ const SIZES: [i64; 3] = [1, 5_000, 20_000];
 /// Deep enough that the tree outweighs what compiling held at its peak.
 const FUSED_SIZES: [i64; 3] = [20_000, 80_000, 160_000];
 const MAX_BYTES_PER_ACTIVATION: i64 = 5_170;
-const MAX_BYTES_PER_SLOT: i64 = 3_156;
+const MAX_BYTES_PER_SLOT: i64 = 3_164;
 const MAX_BYTES_PER_FUSED_ACTIVATION: i64 = 192;
 
 /// The most heap bytes, over what was live before it compiled, that

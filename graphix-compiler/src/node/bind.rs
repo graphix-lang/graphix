@@ -2031,6 +2031,37 @@ fn fits_every_member<R: Rt>(
 }
 
 impl Ref {
+    /// Under a check by bounds, a read of a scheme takes a copy of the
+    /// cells that are the scheme's by now; any other name is its
+    /// binding's one type. The copy's cells, by the address of the
+    /// scheme's cell each copies: a call through the read builds its
+    /// instance at them.
+    pub(crate) fn copy_scheme<R: Rt>(
+        &mut self,
+        ctx: &mut CompileCtx<R>,
+    ) -> Result<Option<AHashMap<usize, TVar>>> {
+        let generic = ctx.env.poly_binds.contains(&self.id);
+        if !generic || matches!(self.signature, Signature::Decided) {
+            return Ok(None);
+        }
+        let Some(scheme) = ctx.env.by_id.get(&self.id).map(|b| b.typ.clone()) else {
+            bail!("BUG missing bind {:?}", self.id)
+        };
+        let mut copies = AHashMap::default();
+        let one = solving(|s| {
+            let above = Level::GENERIC.depth() - 1;
+            s.instantiate_into(&scheme, above, current_level(), &mut copies)
+        });
+        let held = mem::replace(&mut self.typ, one);
+        if matches!(
+            mem::replace(&mut self.signature, Signature::Decided),
+            Signature::Pending
+        ) {
+            held.check_contains(&ctx.env, &self.typ).map_err(|e| e.at(&*self.spec))?;
+        }
+        Ok(Some(copies))
+    }
+
     /// The signature a reference to the generalized `ft` holds: the
     /// definition's own cells in a rec knot or a gate parameter, the
     /// innermost active instance (a bare value reference has no
@@ -2170,27 +2201,7 @@ impl<R: Rt> Update<R> for Ref {
     /// definition's cells.
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         if bounds::active() {
-            // a use of a scheme takes a copy of the cells that are the
-            // scheme's by now; any other name is its binding's one type
-            let generic = ctx.env.poly_binds.contains(&self.id);
-            if !generic || matches!(self.signature, Signature::Decided) {
-                return Ok(());
-            }
-            let Some(scheme) = ctx.env.by_id.get(&self.id).map(|b| b.typ.clone()) else {
-                bail!("BUG missing bind {:?}", self.id)
-            };
-            let one = solving(|s| {
-                s.instantiate(&scheme, Level::GENERIC.depth() - 1, current_level())
-            });
-            let held = mem::replace(&mut self.typ, one);
-            if matches!(
-                mem::replace(&mut self.signature, Signature::Decided),
-                Signature::Pending
-            ) {
-                held.check_contains(&ctx.env, &self.typ)
-                    .map_err(|e| e.at(&*self.spec))?;
-            }
-            return Ok(());
+            return self.copy_scheme(ctx).map(|_| ());
         }
         let poly = ctx.env.poly_binds.contains(&self.id);
         let def = match self.signature {
