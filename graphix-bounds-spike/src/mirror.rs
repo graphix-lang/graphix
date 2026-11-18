@@ -130,9 +130,6 @@ impl Mirror {
                 eprintln!("{}", std::backtrace::Backtrace::force_capture())
             }
         }
-        if info.kind == Kind::Join && !rigid {
-            tv.set_joins()
-        }
         if info.singleton {
             self.port.declare(&tv, Type::Bound(Bound::Singleton))
         }
@@ -504,9 +501,11 @@ impl Mirror {
     pub fn watch(&mut self, s: &Solver, t: &Ty, w: &Watch) {
         let u = match w {
             Watch::Field { field, out } => {
-                Use::Field { field: field.clone(), out: self.typ(s, out) }
+                Use::Field { field: field.clone(), out: self.typ(s, out), write: false }
             }
-            Watch::Index { i, out } => Use::Index { i: *i, out: self.typ(s, out) },
+            Watch::Index { i, out } => {
+                Use::Index { i: *i, out: self.typ(s, out), write: false }
+            }
             Watch::Call { args, out } => Use::Call {
                 args: args.iter().map(|(l, t, _)| (l.clone(), self.typ(s, t))).collect(),
                 out: self.typ(s, out),

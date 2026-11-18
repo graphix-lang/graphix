@@ -3041,7 +3041,7 @@ mod tests {
         assert_eq!(fixed(&t), "[i64, string]");
         // through another cell too
         let mut s = Solving::default();
-        let ((e, te), (p, tp)) = (var("e"), var("p"));
+        let ((_, te), (p, tp)) = (var("e"), var("p"));
         for t in ["i64", "string"] {
             assert!(s.constrain(&env, &parsed(&env, t), &te).is_ok())
         }
