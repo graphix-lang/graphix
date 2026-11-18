@@ -1640,8 +1640,7 @@ pub struct CompileCtx<R: Rt> {
     /// writer in its scope. A re-drive's leftovers merge up to the
     /// parent frame.
     pub(crate) pending_settles: Vec<SettleFrame>,
-    /// Inputs are checked by bounds (`typ::bounds`): set once the root's
-    /// packages are compiled, where `GRAPHIX_BOUNDS` asks for it.
+    /// Inputs are checked by bounds (`typ::bounds`), the one check.
     pub bounds: bool,
     /// Imports whose terminal name did not exist when the `use`
     /// compiled (`use self::sub::x` may precede `mod sub;`); re-checked
@@ -2445,7 +2444,7 @@ impl<R: Rt> ExecState<R> {
                 fn_forward_resolutions: TrackedMap::default(),
                 body: None,
                 pending_settles: vec![SettleFrame::default()],
-                bounds: false,
+                bounds: true,
                 pending_imports: Vec::new(),
                 pending_names: Vec::new(),
                 def_assertions: Arc::new(Mutex::new(Vec::new())),

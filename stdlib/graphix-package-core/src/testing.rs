@@ -471,9 +471,9 @@ impl ByBounds {
     }
 }
 
-/// Whether the tests run with the check by bounds switched on.
+/// Whether the tests run with the check by bounds: always, the one check.
 pub fn by_bounds() -> bool {
-    std::env::var_os("GRAPHIX_BOUNDS").is_some()
+    true
 }
 
 static BY_BOUNDS: LazyLock<ahash::AHashMap<String, ByBounds>> = LazyLock::new(|| {

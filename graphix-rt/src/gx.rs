@@ -452,8 +452,6 @@ impl<X: GXExt> GX<X> {
             .map(|(max_events, max_cycles)| TraceState::new(max_events, max_cycles));
         let st = Instant::now();
         let RegistrationImage { restore, save } = cfg.registration.unwrap_or_default();
-        // `GRAPHIX_BOUNDS=all`: the packages are checked by bounds too
-        t.ctx.cx.bounds = std::env::var("GRAPHIX_BOUNDS").is_ok_and(|v| v == "all");
         for (what, bytes) in restore {
             match t.restore_registration(bytes) {
                 Ok(()) => {
@@ -474,9 +472,6 @@ impl<X: GXExt> GX<X> {
                 let _ = tx.send(t.registration_image());
             }
         }
-        // the packages keep the old check, restored or compiled: what is
-        // compiled from here on is checked by bounds where the switch says
-        t.ctx.cx.bounds = std::env::var_os("GRAPHIX_BOUNDS").is_some();
         info!("root init time: {:?}", st.elapsed());
         let st_after = Instant::now();
         if t.program.is_none()

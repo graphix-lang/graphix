@@ -371,9 +371,7 @@ impl RegistrationCache {
         // `isa_description()` and `build_fingerprint()` into both keys (or into the
         // build directory's name), so each host keeps its own entries. probe:
         // design/review-2026-11-16/repro/x-image-isa-not-in-key.sh (x-image-02)
-        // which check made the entry is part of what it is
-        let check = std::env::var("GRAPHIX_BOUNDS").unwrap_or_default();
-        let registration = digest(&[&format, root.as_bytes(), check.as_bytes()]);
+        let registration = digest(&[&format, root.as_bytes()]);
         let program = program.and_then(|p| {
             let id = match p {
                 Load::File(path) => path.to_string_lossy().into_owned().into_bytes(),
@@ -391,7 +389,6 @@ impl RegistrationCache {
             Some(digest(&[
                 &format,
                 root.as_bytes(),
-                check.as_bytes(),
                 &flags,
                 &[matches!(p, Load::File(_)) as u8],
                 &id,
