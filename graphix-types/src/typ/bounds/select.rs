@@ -384,6 +384,27 @@ struct Routed {
     binds: Vec<(TVar, Type)>,
 }
 
+/// Whether two lists of an abstract type's parameters are the same
+/// types; unknown where one holds a variable, which an instance decides.
+fn same_params(env: &Env, ps: &[Type], qs: &[Type]) -> Option<bool> {
+    if ps.len() != qs.len() {
+        return Some(false);
+    }
+    let mut known = true;
+    for (p, q) in ps.iter().zip(qs.iter()).filter(|(p, q)| !strictly_identical(p, q)) {
+        match super::cells_in(p).is_empty() && super::cells_in(q).is_empty() {
+            false => known = false,
+            true => {
+                let holds = |a: &Type, b: &Type| a.contains(env, b).unwrap_or(false);
+                if !holds(p, q) || !holds(q, p) {
+                    return Some(false);
+                }
+            }
+        }
+    }
+    known.then_some(true)
+}
+
 /// The open cells of `t` a pattern could look into: every one but those
 /// of a function's type, which no pattern looks into.
 fn undecided(t: &Type, out: &mut SmallVec<[TVar; 4]>) {
@@ -704,6 +725,17 @@ impl Solving {
                     false => Type::Struct(Arc::from_iter(fs)),
                 }
             }
+            // a value of an abstract type passes a test of it where its
+            // parameters are the test's; one over a variable may
+            (Type::Abstract { id: x, params: ps }, Type::Abstract { id: y, params: qs })
+                if test && x == y =>
+            {
+                match same_params(env, ps, qs) {
+                    Some(true) => a,
+                    Some(false) => Type::Bottom,
+                    None => b,
+                }
+            }
             _ => Type::Bottom,
         }
     }
@@ -765,6 +797,11 @@ impl Solving {
             (Type::Array(_), p) if has(p, Typ::Array) => Type::Bottom,
             (Type::Array(x), Type::Array(y)) | (Type::List(x), Type::List(y))
                 if nothing(&self.less(env, test, x, y)) =>
+            {
+                Type::Bottom
+            }
+            (Type::Abstract { id: x, params: ps }, Type::Abstract { id: y, params: qs })
+                if test && x == y && same_params(env, ps, qs) == Some(true) =>
             {
                 Type::Bottom
             }
