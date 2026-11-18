@@ -774,6 +774,12 @@ impl InstanceTypes {
         t.instantiate_with(&mut self.known.lock(), &self.open)
     }
 
+    /// The type of the node at `id` as its definition's check left it,
+    /// over the definition's own variables.
+    pub(crate) fn definitions(&self, id: ExprId) -> Option<&Type> {
+        self.tables.table.types.get(&id)
+    }
+
     /// The type the definition's check settled for the node at `id`.
     pub(crate) fn typ(&mut self, id: ExprId) -> Option<Type> {
         let t = self.tables.table.types.get(&id)?;

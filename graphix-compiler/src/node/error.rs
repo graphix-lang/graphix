@@ -772,6 +772,16 @@ impl Strip {
         Ok(())
     }
 
+    /// What a check by bounds says goes from an operand of the type `t`,
+    /// where `t` is decided enough to say.
+    fn by_bounds(env: &Env, t: &Type) -> Result<Option<Self>> {
+        Ok(match (bounds::strippable(env, t)?, bounds::strips_errors(env, t)?) {
+            (false, _) => None,
+            (true, true) => Some(Self::Error),
+            (true, false) => Some(Self::Null),
+        })
+    }
+
     /// The strip a definition's check recorded as its removed type.
     fn of_removed(t: &Type) -> Option<Self> {
         [Self::Error, Self::Null].into_iter().find(|s| s.removed() == *t)
@@ -1083,6 +1093,8 @@ pub struct Qop<R: Rt> {
     pub(crate) mode: QopMode,
     /// What a raise carries ([`Self::raised_typ`]).
     raised: Type,
+    /// An instance whose strip its definition decided.
+    of_definition: bool,
     resident: TagValue,
 }
 
@@ -1102,6 +1114,7 @@ impl<R: Rt> Qop<R> {
             strip,
             mode,
             raised,
+            of_definition: false,
             resident: TagValue::phantom(),
         })
     }
@@ -1170,11 +1183,8 @@ impl<R: Rt> Qop<R> {
     /// Take off what a check by bounds says goes from an operand of the
     /// type `t`, where `t` is decided enough to say.
     fn strip_of(&mut self, env: &Env, t: &Type) -> Result<()> {
-        if bounds::strippable(env, t)? {
-            self.strip = match bounds::strips_errors(env, t)? {
-                true => Strip::Error,
-                false => Strip::Null,
-            };
+        if let Some(strip) = Strip::by_bounds(env, t)? {
+            self.strip = strip;
             self.raised = Self::raised_typ(self.strip, &self.n)
         }
         Ok(())
@@ -1210,7 +1220,8 @@ impl<R: Rt> Update<R> for Qop<R> {
         wrap!(self.n, self.n.typecheck1(ctx))?;
         // an operand a check by bounds decided after this node was
         // checked says what goes only now
-        if ctx.bounds && !matches!(self.spec.kind, ExprKind::Rethrow(_)) {
+        let own = ctx.bounds && !self.of_definition;
+        if own && !matches!(self.spec.kind, ExprKind::Rethrow(_)) {
             let t = self.n.typ().resolve_tvars();
             wrap!(self, self.strip_of(&ctx.env, &t))?
         }
@@ -1274,7 +1285,21 @@ impl<R: Rt> Update<R> for Qop<R> {
         types: &mut super::lambda::InstanceTypes,
     ) -> Result<()> {
         let row = types.settle(ctx, &self.spec, &self.typ)?;
-        let decided = types.aux(self.spec.id).and_then(|r| Strip::of_removed(&r[0]));
+        let decided = match ctx.bounds {
+            // the strip is the definition's, over the operand as the
+            // definition sees it: an instance that gives a variable an
+            // error takes off what every instance does
+            true => {
+                let seen = types.definitions(self.n.spec().id).map(Type::resolve_tvars);
+                let strip = match &seen {
+                    Some(t) => Strip::by_bounds(&ctx.env, t)?,
+                    None => None,
+                };
+                self.of_definition = strip.is_some();
+                strip
+            }
+            false => types.aux(self.spec.id).and_then(|r| Strip::of_removed(&r[0])),
+        };
         self.typecheck0_with(
             ctx,
             &mut |n, ctx| n.typecheck0_instance(ctx, types),

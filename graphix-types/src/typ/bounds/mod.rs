@@ -1236,7 +1236,15 @@ pub fn strip(env: &Env, t: &Type, raises: bool) -> Result<(Type, SmallVec<[Type;
              it to a type whose error is (a Result), or use $"
         )
     }
+    let null = !holds_errors(&members);
     let (left, mut payloads) = strip_members(members);
+    // a `?` that takes a null off raises a `NullError` of the operand's
+    // text
+    if raises && null {
+        let text = Type::Primitive(Typ::String.into());
+        let raised = (ArcStr::from("NullError"), Arc::from_iter([text]));
+        payloads.push(Type::Variant(raised.0, raised.1, Default::default()))
+    }
     // a raise extends a chain rather than nesting it: an error that is a
     // chain already is raised as what the chain is over
     for p in payloads.iter_mut().filter(|_| raises) {
@@ -1693,10 +1701,16 @@ fn flat(env: &Env, t: Type) -> Result<Type> {
 pub fn strippable(env: &Env, t: &Type) -> Result<bool> {
     let mut members: SmallVec<[Type; 4]> = SmallVec::new();
     members_of(env, t, &mut members)?;
+    // what a member holds inside is nothing to the strip: only a member
+    // nothing has decided could still be an error or null. A definition's
+    // own variable is decided for it, whatever an instance gives it
+    let open = |m: &Type| {
+        matches!(m, Type::TVar(v) if !v.is_rigid() && !v.level().is_generic())
+    };
     Ok(match &members[..] {
         [Type::TVar(_)] => false,
         [_] => true,
-        ms => ms.iter().any(|m| matches!(m, Type::Error(_))) || !t.has_unbound(),
+        ms => ms.iter().any(|m| matches!(m, Type::Error(_))) || !ms.iter().any(open),
     })
 }
 
