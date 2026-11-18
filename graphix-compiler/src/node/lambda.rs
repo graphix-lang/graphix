@@ -2649,9 +2649,10 @@ pub(crate) fn fit_callee<R: Rt>(
     def_typ: &FnType,
 ) -> Result<FnType> {
     // a definition a check by bounds made generic: the instance the
-    // site's view decides, with its types
+    // site's view decides, with its types; under a check by bounds one it
+    // decided whole is held to the view by the same relation
     let scheme = Type::Fn(Arc::new(def_typ.clone()));
-    if bounds::scheme(&scheme) {
+    if bounds::scheme(&scheme) || (ctx.bounds && !scheme.has_unbound()) {
         let view = Type::Fn(Arc::new(site.clone()));
         let mut known = bounds::instance(&ctx.env, &scheme, &view, &[])?;
         return match &bounds::specialize(&scheme, &mut known) {
