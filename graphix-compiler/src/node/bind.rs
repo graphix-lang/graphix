@@ -2041,8 +2041,22 @@ impl Ref {
         ctx: &mut CompileCtx<R>,
     ) -> Result<Option<AHashMap<usize, TVar>>> {
         let generic = ctx.env.poly_binds.contains(&self.id);
-        if !generic || matches!(self.signature, Signature::Decided) {
-            return Ok(None);
+        match self.signature {
+            Signature::Decided => return Ok(None),
+            // a read made before its binding was known takes the binding's
+            // one type
+            Signature::Pending if !generic => {
+                let Some(t) = ctx.env.by_id.get(&self.id).map(|b| b.typ.clone()) else {
+                    return Ok(None);
+                };
+                let held = mem::replace(&mut self.typ, t);
+                self.signature = Signature::Decided;
+                held.check_contains(&ctx.env, &self.typ)
+                    .map_err(|e| e.at(&*self.spec))?;
+                return Ok(None);
+            }
+            _ if !generic => return Ok(None),
+            _ => (),
         }
         let Some(scheme) = ctx.env.by_id.get(&self.id).map(|b| b.typ.clone()) else {
             bail!("BUG missing bind {:?}", self.id)
