@@ -698,8 +698,14 @@ impl Solving {
                 if ys.iter().filter(|m| open(&shallow(m)).is_some()).count() == 1 =>
             {
                 let ys: SmallVec<[Type; 4]> = ys.iter().map(shallow).collect();
-                let decided =
-                    |x: &Type| ys.iter().any(|m| open(m).is_none() && alike(m, x));
+                // a typedef's name is met as what it stands for
+                let stood = |t: &Type| match t {
+                    Type::Ref(_) => t.lookup_ref(env).unwrap_or_else(|_| t.clone()),
+                    t => t.clone(),
+                };
+                let shapes: SmallVec<[Type; 4]> =
+                    ys.iter().filter(|m| open(m).is_none()).map(stood).collect();
+                let decided = |x: &Type| shapes.iter().any(|m| alike(m, &stood(x)));
                 let mut rest: SmallVec<[Type; 4]> = SmallVec::new();
                 for x in xs.iter().map(shallow) {
                     match &x {

@@ -2217,7 +2217,8 @@ impl StructPatternNode {
     pub(super) fn realign_decided(&mut self, env: &Env, typ: &Type) -> Result<()> {
         crate::stack::ensure_sufficient(|| {
             let Self::Struct { binds, width, all: _ } = self else {
-                return self.realign_with(env, typ, true);
+                let Some(ts) = self.decided_children(env, typ) else { return Ok(()) };
+                return self.realign_children(ts, &mut |p, t| p.realign_decided(env, t));
             };
             let mut members: SmallVec<[Type; 8]> = SmallVec::new();
             if struct_fields(env, typ).is_some()
@@ -2280,25 +2281,64 @@ impl StructPatternNode {
                     }
                     Ok(())
                 }
-                Self::Ignore | Self::Literal(_) | Self::Bind(_) => Ok(()),
-                Self::Or { alts: ps }
-                | Self::Variant { binds: ps, .. }
-                | Self::Slice { binds: ps, .. }
-                | Self::SlicePrefix { prefix: ps, .. }
-                | Self::SliceSuffix { suffix: ps, .. } => {
-                    for (p, t) in ps.iter_mut().zip(ts) {
-                        if let Some((t, _)) = t {
-                            p.realign_with(env, &t, sub)?
-                        }
-                    }
-                    Ok(())
-                }
-                Self::Abstract { bind, .. } => match ts.into_iter().next().flatten() {
-                    Some((t, _)) => bind.realign_with(env, &t, sub),
-                    None => Ok(()),
-                },
+                _ => self.realign_children(ts, &mut |p, t| p.realign_with(env, t, sub)),
             }
         })
+    }
+
+    /// `f` over each sub-pattern of a pattern that is no struct's, with
+    /// the type among `ts` it stands over ([`Self::child_types`]).
+    fn realign_children(
+        &mut self,
+        ts: SmallVec<[Option<(Type, usize)>; 8]>,
+        f: &mut dyn FnMut(&mut Self, &Type) -> Result<()>,
+    ) -> Result<()> {
+        match self {
+            Self::Ignore | Self::Literal(_) | Self::Bind(_) | Self::Struct { .. } => Ok(()),
+            Self::Or { alts: ps }
+            | Self::Variant { binds: ps, .. }
+            | Self::Slice { binds: ps, .. }
+            | Self::SlicePrefix { prefix: ps, .. }
+            | Self::SliceSuffix { suffix: ps, .. } => {
+                for (p, t) in ps.iter_mut().zip(ts) {
+                    if let Some((t, _)) = t {
+                        f(p, &t)?
+                    }
+                }
+                Ok(())
+            }
+            Self::Abstract { bind, .. } => match ts.into_iter().next().flatten() {
+                Some((t, _)) => f(bind, &t),
+                None => Ok(()),
+            },
+        }
+    }
+
+    /// The type each sub-pattern stands over in the decided `typ`: every
+    /// alternative over the whole of it, every element over the element
+    /// type, and over a union the parts of each member this pattern's
+    /// shape takes, joined place by place.
+    fn decided_children(
+        &self,
+        env: &Env,
+        typ: &Type,
+    ) -> Option<SmallVec<[Option<(Type, usize)>; 8]>> {
+        if let Some(ts) = self.child_types(env, typ, false) {
+            return Some(ts);
+        }
+        let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+        union_members(env, typ, &mut members).ok()?;
+        let taken: SmallVec<[_; 4]> =
+            members.iter().filter_map(|m| self.child_types(env, m, false)).collect();
+        let places = taken.first()?.len();
+        let joined = (0..places).map(|i| {
+            let parts: SmallVec<[&Type; 4]> = taken
+                .iter()
+                .filter_map(|ts| ts.get(i)?.as_ref().map(|(t, _)| t))
+                .collect();
+            Some((Type::union(env, &parts).ok()?, i)).filter(|_| !parts.is_empty())
+        });
+        Some(joined.collect())
     }
 
     /// Compile `spec` against the explicit type `type_predicate` (a
