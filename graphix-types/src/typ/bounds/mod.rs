@@ -27,7 +27,7 @@ use compact_str::format_compact;
 use netidx_value::Typ;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
-use std::{cell::RefCell, ops::ControlFlow};
+use std::{cell::RefCell, ops::ControlFlow, sync::LazyLock};
 use triomphe::Arc;
 
 mod image;
@@ -661,9 +661,7 @@ impl Solving {
         };
         let (a, b) = (applied(shallow(a)), applied(shallow(b)));
         let (a, b) = (flat(env, a)?, flat(env, b)?);
-        if std::env::var_os("GRAPHIX_BOUNDS_DEBUG").is_some() {
-            eprintln!("relate {a} <= {b}")
-        }
+        debug(|| format!("relate {a} <= {b}"));
         match (&a, &b) {
             (Type::Bottom, _) | (_, Type::Any) => return Ok(()),
             // a declared variable holds a predicate its signature says it
@@ -979,15 +977,14 @@ impl Solving {
                         if self.sealed {
                             self.sunk.get_or_insert_with(|| v.clone());
                         }
-                        if std::env::var_os("GRAPHIX_BOUNDS_DEBUG").is_some() {
-                            eprintln!(
-                                "sink of '{} (depth {}) at depth {}\n{}",
+                        debug(|| {
+                            let depth = v.level().depth();
+                            format!(
+                                "sink of '{} (depth {depth}) at depth {}",
                                 v.name,
-                                v.level().depth(),
-                                at.depth(),
-                                std::backtrace::Backtrace::force_capture()
+                                at.depth()
                             )
-                        }
+                        });
                         let n = twin(v);
                         keep(self, &n);
                         known(v, |k| k.sinks.push(n.clone()));
@@ -1486,7 +1483,9 @@ pub fn scheme(t: &Type) -> bool {
 
 /// Print `what` to stderr where `GRAPHIX_BOUNDS_DEBUG` is set.
 pub fn debug(what: impl FnOnce() -> String) {
-    if std::env::var_os("GRAPHIX_BOUNDS_DEBUG").is_some() {
+    static ON: LazyLock<bool> =
+        LazyLock::new(|| std::env::var_os("GRAPHIX_BOUNDS_DEBUG").is_some());
+    if *ON {
         eprintln!("{}", what())
     }
 }
@@ -1608,7 +1607,7 @@ pub fn written_fits(env: &Env, written: &Type, held: &Type, outer: Level) -> Res
         let mut cells = Cells::new();
         s.reach(&one, &mut cells);
         let (flowed, constants): (SmallVec<[TVar; 4]>, SmallVec<[TVar; 4]>) =
-            cells.iter().cloned().partition(|v| decided(v, &mut SmallVec::new()));
+            cells.iter().cloned().partition(|v| decided(v));
         constants.iter().for_each(|v| v.claim(level));
         let _held: SmallVec<[_; 4]> = constants.iter().map(|v| v.open_rigid()).collect();
         flowed.iter().try_for_each(|v| s.fix(env, v))?;
@@ -1986,15 +1985,28 @@ fn singleton(v: &TVar) -> bool {
 
 /// Whether anything says what `v` is: it is bound, or something that is
 /// no undecided cell flows into it.
-fn decided(v: &TVar, seen: &mut SmallVec<[usize; 8]>) -> bool {
-    seen.push(v.cell_addr());
-    let mut through = |u: &TVar| !seen.contains(&u.cell_addr()) && decided(u, seen);
-    v.is_bound()
-        || v.cell_lower().iter().any(|l| match open(&shallow(l)) {
-            Some(u) => through(u),
-            None => true,
-        })
-        || feeders(v).iter().any(|u| through(u))
+fn decided(v: &TVar) -> bool {
+    let mut seen: LPooled<AHashSet<usize>> = LPooled::take();
+    let mut work: SmallVec<[TVar; 8]> = SmallVec::from_iter([v.clone()]);
+    seen.insert(v.cell_addr());
+    while let Some(v) = work.pop() {
+        if v.is_bound() {
+            return true;
+        }
+        for l in v.cell_lower().iter() {
+            match open(&shallow(l)) {
+                Some(u) if seen.insert(u.cell_addr()) => work.push(u.clone()),
+                Some(_) => (),
+                None => return true,
+            }
+        }
+        for u in feeders(&v) {
+            if seen.insert(u.cell_addr()) {
+                work.push(u)
+            }
+        }
+    }
+    false
 }
 
 impl Solving {
@@ -2616,7 +2628,7 @@ impl Solving {
                     // not
                     self.held.swap_remove(i);
                     for v in bvs.iter() {
-                        if decided(v, &mut SmallVec::new()) {
+                        if decided(v) {
                             self.fix(env, v)?
                         }
                     }
@@ -2626,7 +2638,7 @@ impl Solving {
                     // and the member decides them; with none they are
                     // fixed too
                     let said = |v: &TVar| {
-                        decided(v, &mut SmallVec::new())
+                        decided(v)
                             || v.cell_constraints().iter().any(|u| {
                                 let u = deep(u);
                                 !matches!(u, Type::TVar(_) | Type::Bound(_))
@@ -2712,10 +2724,8 @@ impl Solving {
         let held = self.held_back(self.cells[mark..].iter().cloned(), min);
         // a cell something flows into first: one nothing flows into may be
         // decided by a cell that holds it
-        let (flowing, empty): (Vec<TVar>, Vec<TVar>) = self.cells[mark..]
-            .iter()
-            .cloned()
-            .partition(|v| decided(v, &mut SmallVec::new()));
+        let (flowing, empty): (Vec<TVar>, Vec<TVar>) =
+            self.cells[mark..].iter().cloned().partition(|v| decided(v));
         // what a choice still held will decide is not known yet: it, and
         // whatever it reaches, waits with the choice
         let mut waiting = Cells::new();
@@ -2834,8 +2844,7 @@ impl Solving {
                 .filter(|(v, what)| matches!(what, Added::Upper) && u.same_cell(v));
             let uppers = u.cell_constraints();
             let uppers = &uppers[uppers.len() - added.count()..];
-            !decided(u, &mut SmallVec::new())
-                && uppers.iter().any(|t| !strictly_identical(t, &uppers[0]))
+            !decided(u) && uppers.iter().any(|t| !strictly_identical(t, &uppers[0]))
         })
     }
 
@@ -3090,7 +3099,7 @@ impl Solving {
         }
         let l = shallow(l);
         Ok(match open(&l) {
-            Some(u) if !decided(u, &mut SmallVec::new()) => None,
+            Some(u) if !decided(u) => None,
             Some(u) => {
                 self.fix(env, u)?;
                 u.binding().filter(|_| !demanded(u))
@@ -3100,7 +3109,7 @@ impl Solving {
                     if self.fixing.contains(&u.cell_addr()) {
                         bail!("infinite type: a variable holds itself in {l}")
                     }
-                    if decided(&u, &mut SmallVec::new()) {
+                    if decided(&u) {
                         self.fix(env, &u)?
                     }
                 }
