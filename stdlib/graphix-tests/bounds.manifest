@@ -1,5 +1,4 @@
 graphix_tests::lang::arrays::array_indexing5	refuses	type mismatch i64 does not contain Error<`ArrayIndexError(string)>
-graphix_tests::lang::attributes::tail_recursive_mutual_instance	refuses	#[tail_recursive]: this function recurses through a non-tail self-call or mutual recursion — every recursive call must be in tail position
 graphix_tests::lang::byref::mut_of_value_in_definition_refused	refuses	type mismatch string does not contain Array<'_0>
 graphix_tests::lang::byref::mut_of_value_infinite_in_definition_refused	refuses	infinite type: a value here would hold a value of its own type (a function passed or returning itself, a collection holding itself); declare a named recursive type and annotate the binding
 graphix_tests::lang::cast_trait::db_tree_of_a_handle_refused	refuses	Db has no Cast implementation, so no read, cast or writer reaches it: it is a Rust type, which crosses data only where its package implements Cast for it
