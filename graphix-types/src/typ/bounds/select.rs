@@ -200,8 +200,25 @@ pub fn unsplit(t: &Type) -> Type {
         Type::Variant(name, _, _) if *name == TRUE || *name == FALSE => {
             Some(Type::Primitive(Typ::Bool.into()))
         }
-        t => lengths(t).map(|(_, _, inner)| unsplit(&inner)),
+        t => lengths(t)
+            .map(|(_, _, inner)| inner)
+            .or_else(|| payload_left(t).map(|(whole, _)| whole))
+            .map(|inner| unsplit(&inner)),
     })
+}
+
+/// Inside a select, the values of an abstract type that earlier arms
+/// left: those whose payload is of the second type. Written as a variant
+/// around the abstract type and what is left of its payload.
+const PAYLOAD: &str = "#payload";
+
+fn payload_left(t: &Type) -> Option<(Type, Type)> {
+    match t {
+        Type::Variant(name, ts, _) if name.as_str() == PAYLOAD && ts.len() == 2 => {
+            Some((ts[0].clone(), ts[1].clone()))
+        }
+        _ => None,
+    }
 }
 
 /// Inside a select, the arrays of a type that earlier arms left: those
@@ -265,7 +282,7 @@ pub(super) struct Walks {
 }
 
 fn plain(t: Type) -> Type {
-    lengths(&t).map(|l| l.2).unwrap_or(t)
+    lengths(&t).map(|l| l.2).or_else(|| payload_left(&t).map(|p| p.0)).unwrap_or(t)
 }
 
 fn has(t: &Type, bit: Typ) -> bool {
@@ -853,24 +870,29 @@ impl Solving {
                 }
                 None => none(),
             },
-            (Pat::Abs(all, id, p), Type::Abstract { id: have, params }) if id == have => {
-                match rep(env, id, params) {
-                    None => none(),
-                    Some(rep) => {
-                        let r = self.route(env, p, &rep);
-                        match nothing(&r.part) {
-                            true => none(),
-                            false => Routed {
-                                part: t.clone(),
-                                rest: if nothing(&r.rest) {
-                                    Type::Bottom
-                                } else {
-                                    t.clone()
-                                },
-                                binds: named(all, &t, r.binds),
-                            },
-                        }
+            // what the arms before left of an abstract type's payload,
+            // or all of it
+            (Pat::Abs(all, id, p), _)
+                if let Some((whole, payload)) = payload_left(&t).or_else(|| match &t {
+                    Type::Abstract { id: have, params } => {
+                        Some((t.clone(), rep(env, have, params)?))
                     }
+                    _ => None,
+                }) && matches!(&whole, Type::Abstract { id: have, .. } if have == id) =>
+            {
+                let r = self.route(env, p, &payload);
+                match nothing(&r.part) {
+                    true => none(),
+                    false => Routed {
+                        part: whole.clone(),
+                        rest: match nothing(&r.rest) {
+                            true => Type::Bottom,
+                            false => {
+                                tag(&ArcStr::from(PAYLOAD), [whole.clone(), r.rest.clone()])
+                            }
+                        },
+                        binds: named(all, &whole, r.binds),
+                    },
                 }
             }
             (Pat::Or(ps), _) => {
