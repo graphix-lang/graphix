@@ -1050,3 +1050,4 @@ graphix_tests::lang::traits::eq_only_abstract_does_not_supply_order	accepts	[abs
 graphix_tests::lang::functions::a_self_calls_omitted_default_is_checked	accepts	i64:0
 graphix_tests::lang::functions::default_hidden_by_a_throws	refuses	type mismatch ErrChain<`Big> does not contain ErrChain<'_0>
 graphix_tests::lang::select::abstract_constructor_over_any_advises_the_tag	accepts	i64:0
+graphix_tests::lang::errors::a_strip_waits_for_what_its_operand_has_yet_to_take	accepts	[["cfg", i64:3], ["k", i64:1]]

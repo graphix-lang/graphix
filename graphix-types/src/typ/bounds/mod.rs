@@ -2162,6 +2162,13 @@ impl Solving {
         held
     }
 
+    /// Whether `t` reaches a scheme's variable.
+    fn reaches_scheme(&self, t: &Type) -> bool {
+        let mut all = Cells::new();
+        self.reach(t, &mut all);
+        all.iter().any(quantified)
+    }
+
     /// Whether `v` may be fixed by a definition closing at `min`: nothing
     /// it reaches is shallower or a scheme's variable.
     fn fixable(&self, held: &HeldBack, v: &TVar, min: u32) -> bool {
@@ -2804,9 +2811,12 @@ impl Solving {
                     bail!(
                         "the type of the operand of ? or $ is not known here: annotate it"
                     )
-                } else if let Some(shape) = shaped(env, &operand)? {
-                    // what goes is decided by the operand's shape, where only
-                    // its parts wait: they stay what they are, and what is
+                } else if self.reaches_scheme(&operand)
+                    && let Some(shape) = shaped(env, &operand)?
+                {
+                    // the operand of a closed definition reaching its
+                    // scheme's variables: what goes is decided by its
+                    // shape, its parts stay what they are, and what is
                     // raised meets them as they do
                     self.strips.swap_remove(i);
                     let (left, payloads) = strip(env, &shape, raised.is_some())?;

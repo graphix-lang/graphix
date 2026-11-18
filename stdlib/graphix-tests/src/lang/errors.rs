@@ -1678,3 +1678,22 @@ run!(
     is(Value::I64(1));
     FuseExpect::Jit
 );
+
+// A `$` whose operand has had only `null` flow in so far, the field read
+// that brings the struct still waiting, strips nothing before it arrives.
+run!(
+    a_strip_waits_for_what_its_operand_has_yet_to_take,
+    r#"{
+  let selected = |xs, i| select xs[i] { error as _ => null, x => x };
+  type Row = { install: { local_ca: [{ cfg: [i64, null] }, null] } };
+  let f = |rows: Array<Row>, sel: i64, run: [`A, `B]| {
+    let current = opt::map(selected(rows, sel), |r| r.install);
+    let lca = select current { null as _ => null, d => d.local_ca };
+    let req = never();
+    req <- select run { x@ `A => { cfg: (x ~ lca)$.cfg$, k: 1 }, _ => never() };
+    req
+  };
+  f([{ install: { local_ca: { cfg: 3 } } }], 0, `A)
+}"#,
+    refused("unreachable arm")
+);
