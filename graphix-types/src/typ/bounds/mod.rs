@@ -1056,7 +1056,15 @@ impl Solving {
             _ if self.resolving && (self.placing || !a.has_free()) => {
                 let (decided, loose): (SmallVec<[&Type; 2]>, SmallVec<[&Type; 2]>) =
                     takers.iter().copied().partition(|m| !m.has_free());
-                if decided.iter().any(|m| self.attempt(env, a, m)) {
+                // a value with open parts goes to every decided member
+                // that takes it, together: no order among them decides it
+                if a.has_free() {
+                    let fits: SmallVec<[&Type; 2]> =
+                        decided.iter().copied().filter(|m| self.probe(env, a, m)).collect();
+                    if !fits.is_empty() {
+                        return fits.iter().try_for_each(|m| self.constrain(env, a, m));
+                    }
+                } else if decided.iter().any(|m| self.attempt(env, a, m)) {
                     return Ok(());
                 }
                 // a member written in the value's shape takes it before a
@@ -2404,26 +2412,51 @@ impl Solving {
                             self.fix(env, v)?
                         }
                     }
-                    // a value with open parts goes to a decided member
-                    // that takes it as it stands, and the member decides
-                    // the parts; with none, the parts are fixed first
+                    // a part something says the type of, from below or
+                    // above, is fixed; a value whose other parts are open
+                    // goes to a decided member that takes it as it stands,
+                    // and the member decides them; with none they are
+                    // fixed too
+                    let said = |v: &TVar| {
+                        decided(v, &mut SmallVec::new())
+                            || v.cell_constraints().iter().any(|u| {
+                                let u = deep(u);
+                                !matches!(u, Type::TVar(_) | Type::Bound(_))
+                                    && !u.is_trait_ref(env)
+                            })
+                    };
+                    for v in avs.iter().filter(|v| said(v)) {
+                        self.fix(env, v)?
+                    }
                     let (a, b) = (deep(&a), deep(&b));
-                    (self.resolving, self.placing) = (true, !avs.is_empty());
+                    (self.resolving, self.placing) = (true, a.has_free());
+                    let parts = open_cells(&a);
                     let placed = self.placing
                         && self.attempting(|s| {
-                            let n = s.held.len();
+                            let (n, mark) = (s.held.len(), s.added.len());
                             s.constrain(env, &a, &b)?;
-                            match s.held.len() == n {
+                            // members give an open part values; two of
+                            // them never decide one from above two ways
+                            let from_above = parts.iter().any(|u| {
+                                let added = s.added[mark..].iter().filter(|(v, what)| {
+                                    matches!(what, Added::Upper) && u.same_cell(v)
+                                });
+                                let uppers = u.cell_constraints();
+                                let uppers = &uppers[uppers.len() - added.count()..];
+                                !decided(u, &mut SmallVec::new())
+                                    && uppers.iter().any(|t| !strictly_identical(t, &uppers[0]))
+                            });
+                            match s.held.len() == n && !from_above {
                                 true => Ok(()),
-                                false => bail!("no member takes it yet"),
+                                false => bail!("no member takes it as it stands"),
                             }
                         });
                     (self.resolving, self.placing) = (false, false);
+                    avs.iter().try_for_each(|v| self.fix(env, v))?;
                     if placed {
                         progress = true;
                         continue;
                     }
-                    avs.iter().try_for_each(|v| self.fix(env, v))?;
                     let n = self.held.len();
                     self.resolving = true;
                     let r = self.constrain(env, &deep(&a), &b);
