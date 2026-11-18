@@ -2588,7 +2588,9 @@ impl Solving {
                     }
                 }
                 Type::Bound(Bound::Data) if !p.contains(env, t)? => {
-                    return Err(t.not_data(env, &[], [t, t]));
+                    return Err(t
+                        .not_data(env, &[], [t, t])
+                        .unwrap_or_else(|| anyhow::anyhow!("{t} must be {p} here")));
                 }
                 Type::Bound(b @ (Bound::JsonData | Bound::TomlData)) => {
                     let format = match b {

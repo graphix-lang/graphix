@@ -3880,7 +3880,7 @@ impl Type {
         let (bound, data) = if open(t) { (t, self) } else { (self, t) };
         let mut own: LPooled<Vec<AbstractId>> = LPooled::take();
         bound.abstract_ids(env, &mut *own);
-        Some(data.not_data(env, &own, [self, t]))
+        data.not_data(env, &own, [self, t])
     }
 
     /// Why this type, a writer's value or a read's target, is not data:
@@ -3891,7 +3891,7 @@ impl Type {
         env: &Env,
         own: &[AbstractId],
         meet: [&Type; 2],
-    ) -> anyhow::Error {
+    ) -> Option<anyhow::Error> {
         if let Some(a) = self.uncastable_but(env, &|id| own.contains(&id)) {
             let minted = matches!(&a, Self::Abstract { id, .. }
                 if env.abstract_reps.get(id).is_some());
@@ -3912,16 +3912,16 @@ impl Type {
                           implements Cast for it"
                 }
             };
-            return anyhow::anyhow!(
+            return Some(anyhow::anyhow!(
                 "{a} has no Cast implementation, so no read, cast or writer reaches \
                  it: {advice}"
-            );
+            ));
         }
-        let part = DataMeet::new(env).walk(meet).unwrap_or_else(|| self.clone());
-        anyhow::anyhow!(
+        let part = DataMeet::new(env).walk(meet)?;
+        Some(anyhow::anyhow!(
             "{} is not data: data holds no function and no reference",
             Brief(&part)
-        )
+        ))
     }
 
     /// An open cell bounded by a trait refuses a type with a member that
