@@ -1135,15 +1135,7 @@ impl Solving {
             match gl.iter().find(|(n, ..)| n == name) {
                 Some((_, false, _)) => (),
                 Some((_, true, ga)) if let Some(v) = declared_in(ga).first() => {
-                    let mut cells = SmallVec::new();
-                    cells_of(fa, true, &mut cells);
-                    for c in cells.iter() {
-                        for (label, default, _) in known(c, |k| k.defaults.clone()) {
-                            if &label == name {
-                                defaulted(v, label, default, ga.clone())
-                            }
-                        }
-                    }
+                    carry(name, fa, v, ga)
                 }
                 Some((_, true, _)) | None => self.omitted(env, name, fa)?,
             }
@@ -1304,6 +1296,20 @@ pub fn defaulted(v: &TVar, label: ArcStr, default: Type, param: Type) {
     known(v, |k| k.defaults.push((label, default, param)))
 }
 
+/// The default a function gives the label `name`, whose parameter is
+/// `from`, is the default of a function type that keeps the label
+/// optional over its own variable `v`, in the parameter `to`.
+fn carry(name: &ArcStr, from: &Type, v: &TVar, to: &Type) {
+    for c in cells_in(from).iter() {
+        for (label, default, _) in known(c, |k| k.defaults.clone()) {
+            let carried = known(v, |k| k.defaults.iter().any(|(l, ..)| l == name));
+            if &label == name && !carried {
+                defaulted(v, label, deep(&default), to.clone())
+            }
+        }
+    }
+}
+
 /// The cells `t` holds that nothing has decided, declared variables
 /// among them.
 pub fn cells_in(t: &Type) -> SmallVec<[TVar; 4]> {
@@ -1357,11 +1363,11 @@ pub fn fits(env: &Env, made: &Type, declared: &Type, outer: Level) -> Result<()>
         s.quantify(made, outer.depth());
         let level = Level::Def { depth: outer.depth() + 1, owner: LambdaId::new() };
         let _at = AtLevel::enter(level);
-        let declared = declared.reset_tvars();
+        let held = declared.reset_tvars();
         // the declaration's variables, those only its bounds name among
         // them
         let mut constants: SmallVec<[TVar; 4]> = SmallVec::new();
-        cells_of(&declared, true, &mut constants);
+        cells_of(&held, true, &mut constants);
         let mut next = 0;
         while let Some(v) = constants.get(next).cloned() {
             for bound in v.cell_constraints().iter() {
@@ -1379,9 +1385,23 @@ pub fn fits(env: &Env, made: &Type, declared: &Type, outer: Level) -> Result<()>
         let _held: SmallVec<[_; 4]> = constants.iter().map(|v| v.open_rigid()).collect();
         let one = s.instantiate(made, Level::GENERIC.depth() - 1, level);
         let sealed = std::mem::replace(&mut s.sealed, true);
-        let fit = s.constrain(env, &one, &declared);
+        let fit = s.constrain(env, &one, &held);
         s.sealed = sealed;
         fit?;
+        // a default the declaration keeps optional over its own variables
+        // is passed by its clients' calls: the declaration carries it
+        let own = cells_in(declared);
+        let at: AHashMap<ArcStr, Type> =
+            own.iter().map(|v| (v.name.clone(), Type::TVar(v.clone()))).collect();
+        for c in constants.iter() {
+            let Some(v) = own.iter().find(|v| v.name == c.name) else { continue };
+            for (label, default, param) in known(c, |k| k.defaults.clone()) {
+                let carried = known(v, |k| k.defaults.iter().any(|(l, ..)| *l == label));
+                if !carried {
+                    defaulted(v, label, deep(&default), param.replace_tvars(&at))
+                }
+            }
+        }
         // the instance is decided here, where the declaration's
         // variables are still constants
         s.generalize(env, Type::BOTTOM, outer.depth(), mark)
@@ -2568,7 +2588,7 @@ impl Solving {
                     }
                 }
                 Type::Bound(Bound::Data) if !p.contains(env, t)? => {
-                    bail!("{t} is not data: data holds no function and no reference")
+                    return Err(t.not_data(env, &[], [t, t]));
                 }
                 Type::Bound(b @ (Bound::JsonData | Bound::TomlData)) => {
                     let format = match b {
