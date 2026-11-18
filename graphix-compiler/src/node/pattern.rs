@@ -2503,6 +2503,8 @@ impl StructPatternNode {
         // that type: a name binds at it, and a pattern that tests or takes it
         // apart is refused
         let binds = matches!(spec, StructurePattern::Bind(_) | StructurePattern::Ignore);
+        // under a check by bounds a name binds at the type as written
+        let written = ctx.bounds.then(|| type_predicate.clone());
         let mut type_predicate = type_predicate.clone();
         while let Type::Ref(tr) = &type_predicate {
             if super::later_typedef(ctx, tr) {
@@ -2666,7 +2668,8 @@ impl StructPatternNode {
                 Self::Literal(v.clone())
             }
             StructurePattern::Bind(name) => {
-                Self::Bind(leaf_bind(ctx, cx, name, type_predicate, &mut mode)?)
+                let at = written.as_ref().unwrap_or(type_predicate);
+                Self::Bind(leaf_bind(ctx, cx, name, at, &mut mode)?)
             }
             StructurePattern::SlicePrefix { list, all, prefix, tail } => {
                 let (all, tail, prefix) = Self::compile_slice(

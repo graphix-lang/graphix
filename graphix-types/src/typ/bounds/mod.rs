@@ -517,6 +517,17 @@ fn shallow(t: &Type) -> Type {
     }
 }
 
+/// What `t` stands for, through its cells' bindings and every name.
+fn stands_for(env: &Env, t: &Type) -> Result<Type> {
+    let mut t = shallow(t);
+    while let Type::Ref(_) = &t
+        && !t.is_trait_ref(env)
+    {
+        t = shallow(&t.lookup_ref(env)?)
+    }
+    Ok(t)
+}
+
 /// The cell `t` is, where it is one the solver may bound: open, and no
 /// declared variable inside its own definition.
 fn open(t: &Type) -> Option<&TVar> {
@@ -816,7 +827,12 @@ impl Solving {
                 },
             },
             (Type::Set(ms), _) => ms.iter().try_for_each(|m| self.constrain(env, m, &b)),
-            (Type::Ref(_), _) | (_, Type::Ref(_)) => self.unfolded(env, &a, &b),
+            // a name against an application is split by its own parameters
+            (Type::Ref(_), _) | (_, Type::Ref(_))
+                if !matches!((&a, &b), (Type::App(..), _) | (_, Type::App(..))) =>
+            {
+                self.unfolded(env, &a, &b)
+            }
             // a declared variable is whatever its bounds say, and one
             // suffices
             (Type::TVar(v), _) => {
@@ -3127,8 +3143,8 @@ impl Solving {
             [one] => one.clone(),
             many => join(env, many)?,
         };
-        let one =
-            matches!(&t, Type::Primitive(p) if p.exactly_one().is_some() || p.is_empty());
+        let one = matches!(&stands_for(env, &t)?,
+            Type::Primitive(p) if p.exactly_one().is_some() || p.is_empty());
         if single && !matches!(t, Type::Bottom) && !one {
             // a declared variable is one type, which each call must give
             // it

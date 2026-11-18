@@ -20,7 +20,7 @@ graphix_tests::lang::datetime::datetime_arith15	refuses	type mismatch datetime d
 graphix_tests::lang::datetime::datetime_arith16	refuses	type mismatch datetime does not contain i64
 graphix_tests::lang::datetime::datetime_arith17	refuses	type mismatch duration does not contain datetime
 graphix_tests::lang::errors::a_large_named_operand_raises_its_error	refuses	type mismatch `Other does not contain `E
-graphix_tests::lang::errors::a_write_hint_names_a_writable_type	refuses	type mismatch i64 does not contain string
+graphix_tests::lang::errors::a_write_hint_names_a_writable_type	refuses	type mismatch Box<i64> does not contain Box<'_0>
 graphix_tests::lang::errors::callback_throws_reach_an_inner_catch	refuses	type mismatch bool does not contain 'e
 graphix_tests::lang::errors::callback_throws_reach_the_callers_catch	refuses	type mismatch i64 does not contain Error<ErrChain<'_0>>
 graphix_tests::lang::errors::catch_ascription_refuses_rigid_union_raise	refuses	type mismatch `A does not contain 'e
@@ -566,7 +566,7 @@ graphix_tests::lang::traits::trait_impl_bound_crossing_names_the_members	refuses
 graphix_tests::lang::traits::trait_impl_bound_crossing_nested_under_two_impls	refuses	type mismatch Show does not contain Array<Array<U>>
 graphix_tests::lang::traits::trait_impl_bound_form_collision_names_the_members	refuses	type mismatch Show does not contain Array<U>
 graphix_tests::lang::traits::trait_impl_bound_missing_impl_names_the_type	refuses	type mismatch Show does not contain Array<bool>
-graphix_tests::lang::traits::trait_impl_bound_recursive_type_names_the_failing_member	refuses	type mismatch Show does not contain [Array<T>, (i64, i64)]
+graphix_tests::lang::traits::trait_impl_bound_recursive_type_names_the_failing_member	refuses	type mismatch Show does not contain T
 graphix_tests::lang::traits::trait_method_value_prints_the_traits_names	refuses	type mismatch string does not contain fn<'b: Number>(self: T, x: 'b) -> 'b
 graphix_tests::lang::traits::trait_method_value_variable_named_apart_in_a_message	refuses	type mismatch string does not contain fn(self: T, x: 'a1) -> 'a1
 graphix_tests::lang::traits::trait_missing_impl_named	refuses	type mismatch Show does not contain i64
@@ -678,7 +678,6 @@ graphix_tests::lang::types::definition_binding_open_parts_holds_its_argument	ref
 graphix_tests::lang::types::explicit_type_vars1	refuses	cannot compute with [u32, i64]: both operands must be one numeric type
 graphix_tests::lang::types::field_read_of_an_instance_leaves_a_signature_union_of_functions_to_its_call_refused	refuses	fn(q: 'b) -> i64 could go to more than one member of the union [fn(q: 'a) -> i64, fn(q: 'b) -> i64], and nothing has decided which
 graphix_tests::lang::types::field_read_result_of_a_signature_union_of_functions_is_no_one_function	refuses	type mismatch [fn(q: [i64, string]) -> i64, fn(q: string) -> i64] does not contain fn(q: i64) -> i64
-graphix_tests::lang::types::fn_body_typedef_cycle_through_a_later_module_type	refuses	type mismatch '_0: unbound does not contain [i64, Zed<T>]
 graphix_tests::lang::types::function_type_every_position_held	refuses	type mismatch i64 does not contain bool
 graphix_tests::lang::types::function_type_every_position_held_in_a_field	refuses	type mismatch [i64, string] does not contain bool
 graphix_tests::lang::types::function_type_every_position_held_in_a_union	refuses	type mismatch [i64, string] does not contain bool
@@ -746,7 +745,6 @@ graphix_tests::lang::types::rec_self_let_bound_in_array_arg_rejects	refuses	infi
 graphix_tests::lang::types::rec_union_result_infinite_rejects	refuses	infinite type: a value here would hold a value of its own type (a function passed or returning itself, a collection holding itself); declare a named recursive type and annotate the binding
 graphix_tests::lang::types::reference_bound_reaches_a_writable_referent	refuses	type mismatch [i64, null] does not contain string
 graphix_tests::lang::types::refusal_beside_a_value_decided_early_names_no_value	refuses	type mismatch i64 does not contain string
-graphix_tests::lang::types::result_success_bound_reaches_a_generic_call	refuses	[i64, Error<`F>] must be NoError here
 graphix_tests::lang::types::result_success_holding_an_error_refused	refuses	type mismatch Result<[i64, Error<`F>], `E> does not contain i64
 graphix_tests::lang::types::rigid_survives_alias	refuses	type mismatch i64 does not contain 'a
 graphix_tests::lang::types::same_name_definitions_are_told_apart	refuses	type mismatch Error<ErrChain<E>> does not contain Error<ErrChain<E>>
@@ -778,8 +776,6 @@ graphix_tests::lang::types::two_array_members_one_cell_are_not_the_first_member	
 graphix_tests::lang::types::two_array_members_one_cell_are_not_the_last_member	refuses	type mismatch [null, Array<string>] does not contain Array<i64>
 graphix_tests::lang::types::two_undecided_elements_of_a_bound_widen_its_variable	refuses	type mismatch [i64, null] does not contain string
 graphix_tests::lang::types::two_undecided_elements_under_a_bound_keep_what_decides_its_variable	refuses	type mismatch i64 does not contain string
-graphix_tests::lang::types::typedef_in_a_body_above_the_module_a_glob_imports_from_refused	refuses	type mismatch '_0: unbound does not contain [i64, Foo<T>]
-graphix_tests::lang::types::typedef_in_a_body_above_the_module_it_imports_from_refused	refuses	type mismatch '_0: unbound does not contain [i64, Foo<T>]
 graphix_tests::lang::types::typedef_union_of_function_types_no_decided_member_takes_refused	refuses	type mismatch [fn(x: i64) -> i64, fn(x: string) -> i64] does not contain fn(x: f64) -> i64
 graphix_tests::lang::types::uncovered_primitive_refused_by_the_open_members_bound	refuses	type mismatch Number does not contain [i64, string]
 graphix_tests::lang::types::undecided_argument_at_two_variables_of_disjoint_bounds_refused	refuses	type mismatch string does not contain i64
@@ -931,21 +927,21 @@ graphix_tests::lang::select::coverage_all_bind_second_arm_dead	refuses	pattern (
 graphix_tests::lang::select::catch_all_behind_a_pool_over_a_referent_the_arms_decide_is_dead	refuses	pattern _ will never match: nothing reaches it (1:117; the value is (bool, string) | (`L, `Z))
 graphix_tests::lang::select::abstract_payload_fn_result_over_any_is_any	refuses	pattern W(g) takes nothing: W(..) names part of a payload something could be written into or called, which it may only where the value is known to be one instance of W; write the instance in a type test, `W<T> as W(..)` (3:29; the value is Any)
 graphix_tests::lang::select::any_part_cell_the_arm_bounds_undecided_in_a_struct_refused	refuses	pattern { a, b } will never match: nothing reaches it (2:29; the value is Any)
-graphix_tests::lang::select::coverage_reads_a_bound_abstract_parameter_through	refuses	pattern Array<S> will never match: nothing reaches it (9:29; the value is Error<R<i64>> | Array<Box<i64>>)
+graphix_tests::lang::select::coverage_reads_a_bound_abstract_parameter_through	refuses	pattern Array<S> will never match: nothing reaches it (9:29; the value is Error<R<i64>> | Array<R<i64>>)
 graphix_tests::lang::select::dead_arm_over_a_variable_met_through_a_call_named_as_declared	refuses	pattern `C will never match: nothing reaches it (2:69; the value is 'b)
 graphix_tests::lang::select::list_element_admitting_no_member_is_dead	refuses	pattern [<`C, t..>] will never match: nothing reaches it (1:51; the value is List<[`A, `B]>)
 graphix_tests::lang::select::bool_struct_field_repeated_at_one_of_two_members_is_dead	refuses	pattern (n, { a: true, d: _ }) will never match: nothing reaches it (1:86; the value is (i64, E))
 graphix_tests::lang::select::bool_pair_ladder_dead_tail	refuses	pattern _ will never match: nothing reaches it (3:44; the value is (bool, bool))
 graphix_tests::lang::select::bool_beside_slice_product_dead_arm_refused	refuses	pattern (true, [a, b]) will never match: nothing reaches it (1:45; the value is (bool, Array<i64>))
 graphix_tests::lang::select::abstract_payload_in_a_function_argument_over_any_refused	refuses	pattern W(g) takes nothing: W(..) names part of a payload something could be written into or called, which it may only where the value is known to be one instance of W; write the instance in a type test, `W<T> as W(..)` (4:29; the value is Any)
-graphix_tests::lang::select::coverage_reads_a_bound_map_parameter_through	refuses	pattern Array<R<i64>> will never match: nothing reaches it (8:29; the value is Error<Map<i64, i64>> | Array<R<i64>>)
+graphix_tests::lang::select::coverage_reads_a_bound_map_parameter_through	refuses	pattern Array<R<i64>> will never match: nothing reaches it (8:29; the value is Error<R<i64>> | Array<R<i64>>)
 graphix_tests::lang::select::literal_after_wildcard_in_struct_unreachable	refuses	pattern { b: "s", c: true } will never match: nothing reaches it (1:64; the value is { b: string, c: bool })
 graphix_tests::lang::select::dead_arm_over_a_true_resting_on_a_failed_pair_is_refused	refuses	pattern [`F(A), `G(C)] will never match: nothing reaches it (21:29; the value is [`F(B), `G(D)])
 graphix_tests::lang::select::abstract_payload_in_an_any_part_under_a_writable_reference_refused	refuses	pattern [W(r), ..] takes nothing: W(..) names part of a payload something could be written into or called, which it may only where the value is known to be one instance of W; write the instance in a type test, `W<T> as W(..)` (4:36; the value is Array<Any>)
 graphix_tests::lang::select::abstract_alias_pattern_beside_a_declared_variable_refused	refuses	pattern _ will never match: nothing reaches it (4:56; the value is [W<string>, 'b])
 graphix_tests::lang::select::literal_after_bind_in_tuple_unreachable	refuses	pattern (3, true) will never match: nothing reaches it (1:55; the value is (i64, bool))
 graphix_tests::lang::select::coverage_reads_a_map_literals_cells_through	refuses	pattern Array<S> will never match: nothing reaches it (5:29; the value is Error<Map<i64, i64>> | Array<Map<i64, i64>>)
-graphix_tests::lang::select::coverage_reads_a_bound_map_parameter_through_beside_a_variant	refuses	pattern `Zz will never match: nothing reaches it (8:29; the value is Error<Map<i64, i64>> | Array<R<i64>>)
+graphix_tests::lang::select::coverage_reads_a_bound_map_parameter_through_beside_a_variant	refuses	pattern `Zz will never match: nothing reaches it (8:29; the value is Error<R<i64>> | Array<R<i64>>)
 graphix_tests::lang::select::abstract_payload_under_a_writable_reference_over_any_refused	refuses	pattern W(r) takes nothing: W(..) names part of a payload something could be written into or called, which it may only where the value is known to be one instance of W; write the instance in a type test, `W<T> as W(..)` (4:29; the value is Any)
 graphix_tests::lang::select::dead_arm_after_a_deep_test_is_refused	refuses	pattern Error<U> will never match: nothing reaches it (5:29; the value is [Error<T>, Error<U>, `A])
 graphix_tests::lang::select::nested_slice_dead_arm_refused	refuses	pattern ([a, b, ..], _) will never match: nothing reaches it (2:34; the value is (Array<i64>, i64))

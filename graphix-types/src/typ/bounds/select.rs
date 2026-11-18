@@ -1216,6 +1216,7 @@ impl Solving {
         if nothing(&reach) {
             return Ok(());
         }
+        let reached = unsplit(&reach);
         let (mut binds, mut hits) = (vec![], vec![]);
         for (i, arm) in self.selects[id].template.clone().arms.iter().enumerate() {
             let r = self.route(env, &arm.pat, &reach);
@@ -1235,7 +1236,7 @@ impl Solving {
             )
         }
         self.selects[id].routed = true;
-        self.selects[id].seen.push(unsplit(&whole));
+        self.selects[id].seen.push(reached);
         hits.into_iter().for_each(|i| self.selects[id].hit[i] = true);
         // a name takes every part routed to it, as one type
         let mut names: Vec<(TVar, Vec<Type>)> = vec![];
