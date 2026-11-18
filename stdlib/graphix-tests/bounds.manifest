@@ -45,7 +45,7 @@ graphix_tests::lang::functions::default_hidden_by_a_field	refuses	cannot compare
 graphix_tests::lang::functions::default_hidden_by_a_fn_type	refuses	cannot compare i64 with string: neither type holds the other, so the two are never equal
 graphix_tests::lang::functions::default_hidden_by_a_generic_result	refuses	type mismatch string does not contain i64
 graphix_tests::lang::functions::default_hidden_by_a_reference_write	refuses	cannot compute with [i64, f64]: both operands must be one numeric type
-graphix_tests::lang::functions::default_hidden_by_a_return_type	refuses	type mismatch fn(x: f64) -> f64 does not contain fn(?#d: 'a: Number, x: 'a: Number) -> _
+graphix_tests::lang::functions::default_hidden_by_a_return_type	refuses	type mismatch fn(x: f64) -> f64 does not contain fn(?#d: 'a: Number, x: 'a: Number) -> Number
 graphix_tests::lang::functions::default_hidden_by_a_with_update	refuses	cannot compute with [i64, f64]: both operands must be one numeric type
 graphix_tests::lang::functions::default_hidden_by_an_annotation	refuses	cannot compare i64 with string: neither type holds the other, so the two are never equal
 graphix_tests::lang::functions::default_hidden_under_a_read_only_reference_member	refuses	cannot compare i64 with string: neither type holds the other, so the two are never equal
@@ -72,9 +72,11 @@ graphix_tests::lang::functions::generic_function_copies_refuse_a_monomorphic_wri
 graphix_tests::lang::functions::generic_function_elements_stay_generic	refuses	cannot compute with [i64, f32]: both operands must be one numeric type
 graphix_tests::lang::functions::generic_function_literals_in_an_array	refuses	cannot compute with [u8, f64]: both operands must be one numeric type
 graphix_tests::lang::functions::generic_function_returned_through_a_select	refuses	cannot compute with [u8, f64]: both operands must be one numeric type
+graphix_tests::lang::functions::generic_function_value_with_an_unannotated_parameter	refuses	cannot compute with Number: both operands must be one numeric type
 graphix_tests::lang::functions::lambdamatch3	refuses	missing match cases: nothing matches { bar: i64, baz: i64 } (3:12)
 graphix_tests::lang::functions::lambdamatch5	refuses	missing match cases: nothing matches string (3:12)
 graphix_tests::lang::functions::list_map_fn_element_fold_rejected	refuses	type mismatch Number does not contain fn(#clock: Any, v: 'a) -> 'a
+graphix_tests::lang::functions::omitted_default_widens_the_result	refuses	type mismatch i64 does not contain null
 graphix_tests::lang::functions::one_met_default_names_no_annotation	refuses	cannot compare i64 with string: neither type holds the other, so the two are never equal
 graphix_tests::lang::functions::open_default_through_a_fn_type	refuses	type mismatch string does not contain i64: declare the type that holds both
 graphix_tests::lang::functions::operand_refuses_mixed_numeric_element	refuses	type mismatch i64 does not contain f64
@@ -159,7 +161,7 @@ graphix_tests::lang::interfaces::generic_val_over_a_written_let_refused	refuses	
 graphix_tests::lang::interfaces::generic_val_whose_argument_a_written_let_holds_refused	refuses	val set is declared fn(g: fn(x: 'a) -> 'a) -> null but implemented fn(g: '_0: unbound within fn(x: '_1: unbound within '_2: unbound) -> '_2: unbound) -> null: a declared type variable meets a value from outside the definition that declares it (fn(x: 'a) -> 'a)
 graphix_tests::lang::interfaces::interface_labeled_argument_mismatch_names_the_label	refuses	val f is declared fn(#b: i64, x: i64) -> i64 but implemented fn(#b: string, x: i64) -> i64: type mismatch string does not contain i64
 graphix_tests::lang::interfaces::interface_unbounded_variable_under_a_bounded_implementation_refused	refuses	val f is declared fn(x: [null, 'b]) -> string but implemented fn<'a: [null, Number]>(x: 'a: unbound within [null, Number]) -> string: type mismatch [Number, null] does not contain 'b
-graphix_tests::lang::interfaces::narrow_write_through_a_val_of_alike_named_functions_refused	refuses	type mismatch i64 does not contain 'a
+graphix_tests::lang::interfaces::narrow_write_through_a_val_of_alike_named_functions_refused	refuses	val c is written, and what is written lands on its implementation, of type { f: fn(x: '_0: unbound within '_1: unbound) -> '_1: unbound, g: fn(x: '_2: unbound within '_3: unbound) -> '_3: unbound }, which the val's { f: fn(x: 'a: unbound) -> 'a: unbound, g: fn(x: 'a: unbound) -> 'a: unbound } does not fit: annotate the implementation's let with the val's type
 graphix_tests::lang::interfaces::nested_signature_variables_stay_distinct	refuses	val f is declared fn(x: Array<'a>, y: Array<'b>) -> Array<'a> but implemented fn(x: 'c: unbound, y: 'c: unbound) -> 'c: unbound: type mismatch 'a does not contain 'b
 graphix_tests::lang::interfaces::open_union_call_refused	refuses	Array<i64> could go to more than one member of the union [A<'a>, B<'b>], and nothing has decided which
 graphix_tests::lang::interfaces::open_union_without_a_pairing_is_refused	refuses	val f is declared fn(x: [A<'a>, B<'b>], y: 'a, z: 'a) -> 'a but implemented fn(x: [A<'b: unbound>, B<'a: unbound>], y: 'a: unbound, z: 'b: unbound) -> 'a: unbound: type mismatch [A<'a>, B<'a>] does not contain Array<'b>
@@ -200,6 +202,8 @@ graphix_tests::lang::interfaces::write_through_a_struct_of_functions_val_refused
 graphix_tests::lang::interfaces::write_through_a_typedef_val_after_a_call_takes_it_refused	refuses	type mismatch F<'a> does not contain fn(x: i64) -> i64
 graphix_tests::lang::interfaces::write_through_a_typedef_val_after_an_annotated_read_refused	refuses	type mismatch F<'a> does not contain fn(x: i64) -> i64
 graphix_tests::lang::interfaces::write_through_a_val_deciding_a_bound_variable_refused	refuses	type mismatch [i64, null] does not contain 'b
+graphix_tests::lang::interfaces::write_through_a_val_of_alike_named_functions_refused	refuses	val c is written, and what is written lands on its implementation, of type { f: fn(x: '_0: unbound within '_1: unbound) -> '_1: unbound, g: fn(x: '_2: unbound within '_3: unbound) -> '_3: unbound }, which the val's { f: fn(x: 'a: unbound) -> 'a: unbound, g: fn(x: 'a: unbound) -> 'a: unbound } does not fit: annotate the implementation's let with the val's type
+graphix_tests::lang::interfaces::write_through_a_val_of_alike_named_typedefs_refused	refuses	val c is written, and what is written lands on its implementation, of type { f: fn(x: '_0: unbound within '_1: unbound) -> '_1: unbound, g: fn(x: '_2: unbound within '_3: unbound) -> '_3: unbound }, which the val's { f: F<'a: unbound>, g: F<'a: unbound> } does not fit: annotate the implementation's let with the val's type
 graphix_tests::lang::interfaces::write_through_an_array_of_functions_val_refused	refuses	val v is written, and what is written lands on its implementation, of type Array<fn(x: '_0: unbound within '_1: unbound) -> '_1: unbound>, which the val's Array<fn(x: 'a: unbound) -> 'a: unbound> does not fit: annotate the implementation's let with the val's type
 graphix_tests::lang::interfaces::written_val_capturing_a_struct_holding_a_call_result_names_one_type	refuses	val f is declared fn(x: 'a) -> 'a but implemented [fn(x: '_0: unbound within '_1: unbound within '_2: unbound within '_3: unbound within '_4: unbound & '_5: unbound within '_6: unbound) -> '_4: unbound, fn(x: '_7: unbound within '_1: unbound within '_2: unbound within '_3: unbound within '_4: unbound & '_5: unbound within '_6: unbound) -> '_6: unbound]: a declared type variable meets a value from outside the definition that declares it (fn(x: 'a) -> 'a)
 graphix_tests::lang::interfaces::written_val_over_an_outer_binding_names_one_type	refuses	val f is declared fn(x: 'a) -> 'a but implemented [fn(x: '_0: unbound within '_1: unbound & '_2: unbound) -> '_2: unbound, fn(x: '_3: unbound within '_1: unbound & '_4: unbound) -> '_4: unbound]: a declared type variable meets a value from outside the definition that declares it (fn(x: 'a) -> 'a)
@@ -244,6 +248,7 @@ graphix_tests::lang::quantified::two_instances_of_an_inferred_generic_name_their
 graphix_tests::lang::quantified::two_instances_of_an_inferred_generic_print_apart_in_a_callee	refuses	type mismatch i64 does not contain ('_0, '_1)
 graphix_tests::lang::quantified::two_instances_of_an_inferred_generic_print_apart_in_a_union	refuses	type mismatch i64 does not contain fn(p: '_0) -> '_1
 graphix_tests::lang::select::a_capture_type_is_the_same_at_every_select	refuses	type mismatch `K([([([([(T0, T2), `K(T1)], T1), `K(T2)], T0), `K([([(T0, T2), `K(T1)], T1), `K(T2)])], T0), `K(T0)]) does not contain `K([(T1, T0), `K(T0)])
+graphix_tests::lang::select::a_slice_arm_its_siblings_cover_is_dead	refuses	pattern 3 will never match: nothing reaches it (1:48; the value is Array<bool>)
 graphix_tests::lang::select::abstract_alias_pattern_beside_a_declared_variable_refused	refuses	pattern 2 will never match: nothing reaches it (4:56; the value is [W<string>, 'b])
 graphix_tests::lang::select::abstract_alias_pattern_inside_a_declared_variable_refused	refuses	type mismatch f64 does not contain i64
 graphix_tests::lang::select::abstract_capture_inside_an_any_value_is_the_widest_instance	refuses	type mismatch i64 does not contain Any
@@ -255,7 +260,6 @@ graphix_tests::lang::select::abstract_payload_bounded_parameter_over_any_is_no_o
 graphix_tests::lang::select::abstract_payload_fn_result_over_any_is_any	refuses	pattern 1 takes nothing: W(..) names part of a payload something could be written into or called, which it may only where the value is known to be one instance of W; write the instance in a type test, `W<T> as W(..)` (3:29; the value is Any)
 graphix_tests::lang::select::abstract_payload_in_a_function_argument_over_any_refused	refuses	pattern 1 takes nothing: W(..) names part of a payload something could be written into or called, which it may only where the value is known to be one instance of W; write the instance in a type test, `W<T> as W(..)` (4:29; the value is Any)
 graphix_tests::lang::select::abstract_payload_in_an_any_part_under_a_writable_reference_refused	refuses	pattern 1 takes nothing: W(..) names part of a payload something could be written into or called, which it may only where the value is known to be one instance of W; write the instance in a type test, `W<T> as W(..)` (4:36; the value is Array<Any>)
-graphix_tests::lang::select::abstract_payload_inside_a_declared_variable_refused	refuses	missing match cases: nothing matches W<'b> (3:65)
 graphix_tests::lang::select::abstract_payload_inside_an_any_value_is_any	refuses	type mismatch i64 does not contain Any
 graphix_tests::lang::select::abstract_payload_literal_beside_an_any_name	refuses	type mismatch i64 does not contain Any
 graphix_tests::lang::select::abstract_payload_name_inside_an_any_value_is_any	refuses	type mismatch i64 does not contain Any
@@ -276,6 +280,7 @@ graphix_tests::lang::select::abstract_payload_under_a_payload_name_under_a_map_i
 graphix_tests::lang::select::abstract_payload_under_a_writable_reference_over_any_refused	refuses	pattern 1 takes nothing: W(..) names part of a payload something could be written into or called, which it may only where the value is known to be one instance of W; write the instance in a type test, `W<T> as W(..)` (4:29; the value is Any)
 graphix_tests::lang::select::abstract_written_test_at_the_bound_covers_no_instance_refused	refuses	missing match cases: nothing matches W<'b> (3:60)
 graphix_tests::lang::select::alternative_cells_not_decided_by_another	refuses	type mismatch i64 does not contain [i64, null]
+graphix_tests::lang::select::an_arm_after_one_over_a_large_named_error_payload_is_dead	refuses	pattern 2 will never match: nothing reaches it (4:16; the value is [null, Error<W<[`K0, `K1, `K10, `K11, `K12, `K13, `K14, `K15, `K16, `K17, `K18, `K19, `K2, `K20, `K21, `K22, `K23, `K24, `K25, `K26, `K27, `K28, `K29, `K3, `K30, `K31, `K32, `K33, `K34, `K35, `K36, `K37, `K38, `K39, `K4, `K5, `K6, `K7, `K8, `K9]>>])
 graphix_tests::lang::select::an_arm_after_one_over_a_large_named_type_is_dead	refuses	pattern 2 will never match: nothing reaches it (4:16; the value is [null, W<[`K0, `K1, `K10, `K11, `K12, `K13, `K14, `K15, `K16, `K17, `K18, `K19, `K2, `K20, `K21, `K22, `K23, `K24, `K25, `K26, `K27, `K28, `K29, `K3, `K30, `K31, `K32, `K33, `K34, `K35, `K36, `K37, `K38, `K39, `K4, `K5, `K6, `K7, `K8, `K9]>])
 graphix_tests::lang::select::an_or_pattern_short_of_its_union_refused	refuses	type mismatch ([`A, `B], Any) does not contain ([`A, `B, `C], i64)
 graphix_tests::lang::select::any_part_cell_a_bind_of_a_bounded_declared_variable_refused	refuses	type mismatch 't does not contain Any
@@ -286,7 +291,9 @@ graphix_tests::lang::select::any_part_cell_a_return_type_does_not_decide_refused
 graphix_tests::lang::select::any_part_cell_a_written_tests_variable_bounds_undecided_refused	refuses	type mismatch Number does not contain Any
 graphix_tests::lang::select::any_part_cell_a_written_tests_variable_leaves_open_is_any_refused	refuses	type mismatch Number does not contain Any
 graphix_tests::lang::select::any_part_cell_an_unbounded_declared_variable_is_the_calls_type	refuses	a test cannot name a declared type variable ('t): write `_` there, and the name takes the value's own type
+graphix_tests::lang::select::any_part_cell_another_arm_does_not_decide	refuses	type mismatch i64 does not contain Any
 graphix_tests::lang::select::any_part_cell_at_the_top_level_refused	refuses	type mismatch Number does not contain Any
+graphix_tests::lang::select::any_part_cell_decided_or_written_is_tested	refuses	type mismatch Number does not contain Any
 graphix_tests::lang::select::any_part_cell_decided_to_a_function_refused	refuses	type mismatch fn(x: i64) -> i64 does not contain Any
 graphix_tests::lang::select::any_part_cell_decided_to_a_function_under_a_part_refused	refuses	type mismatch fn(x: i64) -> i64 does not contain Any
 graphix_tests::lang::select::any_part_cell_decided_to_an_open_function_refused	refuses	type mismatch fn(x: 'a) -> 'b throws 'e does not contain Any
@@ -309,15 +316,15 @@ graphix_tests::lang::select::bound_naming_a_bounded_variable_written	refuses	a t
 graphix_tests::lang::select::capture_arms_inside_a_declared_variable_refused	refuses	type mismatch 'b: unbound within [`A(i64), `B(i64)] does not contain [`A(i64), `B(i64)]: a call picks 'b, and the body's value need not be of the type it picks; drop `-> 'b`, or write the body's type, `-> [`A(i64), `B(i64)]`
 graphix_tests::lang::select::capture_over_a_bounded_open_cell	refuses	type mismatch 'a: unbound within (i64, string) does not contain (i64, string): a call picks 'a, and the body's value need not be of the type it picks; drop `-> 'a`, or write the body's type, `-> (i64, string)`
 graphix_tests::lang::select::catch_all_behind_a_pool_over_a_referent_the_arms_decide_is_dead	refuses	pattern 4 will never match: nothing reaches it (1:117; the value is (bool, string) | (`L, `Z))
-graphix_tests::lang::select::collection_parameter_element_bind_decides_the_element	refuses	pattern 1 will never match: nothing reaches it (2:58; the value is Collection<'_0>)
-graphix_tests::lang::select::collection_parameter_element_pattern_arith_refused	refuses	pattern 1 will never match: nothing reaches it (2:40; the value is Collection<'_0>)
-graphix_tests::lang::select::collection_parameter_element_pattern_refused	refuses	pattern 1 will never match: nothing reaches it (2:58; the value is Collection<'_0>)
-graphix_tests::lang::select::collection_variable_element_bind_keeps_the_variable	refuses	pattern 1 will never match: nothing reaches it (2:85; the value is 'c<'b>)
-graphix_tests::lang::select::collection_variable_element_pattern_refused	refuses	pattern 1 will never match: nothing reaches it (2:75; the value is 'c<'b>)
-graphix_tests::lang::select::collection_variable_element_written_test_types_binds	refuses	pattern 1 will never match: nothing reaches it (2:85; the value is 'c<'b>)
-graphix_tests::lang::select::collection_variable_list_element_bind_keeps_the_variable	refuses	pattern 1 will never match: nothing reaches it (2:85; the value is 'c<'b>)
-graphix_tests::lang::select::collection_variable_list_element_pattern_refused	refuses	pattern 1 will never match: nothing reaches it (2:82; the value is 'c<'b>)
-graphix_tests::lang::select::collection_variable_tuple_element_pattern_refused	refuses	pattern 1 will never match: nothing reaches it (2:74; the value is 'c<'b>)
+graphix_tests::lang::select::collection_parameter_element_bind_decides_the_element	refuses	type mismatch string does not contain i64
+graphix_tests::lang::select::collection_parameter_element_pattern_arith_refused	refuses	type mismatch f64 does not contain Any
+graphix_tests::lang::select::collection_parameter_element_pattern_refused	refuses	type mismatch [null, string] does not contain Any
+graphix_tests::lang::select::collection_variable_element_bind_keeps_the_variable	refuses	type mismatch string does not contain 'b
+graphix_tests::lang::select::collection_variable_element_pattern_refused	refuses	type mismatch f64 does not contain i64
+graphix_tests::lang::select::collection_variable_element_written_test_types_binds	refuses	type mismatch string does not contain i64
+graphix_tests::lang::select::collection_variable_list_element_bind_keeps_the_variable	refuses	type mismatch string does not contain 'b
+graphix_tests::lang::select::collection_variable_list_element_pattern_refused	refuses	type mismatch f64 does not contain i64
+graphix_tests::lang::select::collection_variable_tuple_element_pattern_refused	refuses	type mismatch f64 does not contain i64
 graphix_tests::lang::select::constructor_over_union_refutable_in_let	refuses	type mismatch `A(Any) does not contain [`A(i64), `B]
 graphix_tests::lang::select::containment_variable_a_bound_of_a_bound_names_is_split	refuses	type mismatch [(i64, `A), (i64, `B), (null, [`A, `B]), (`X, `A), (`X, `B)] does not contain ('b, [`A, `B])
 graphix_tests::lang::select::containment_variable_beside_null_is_its_bound	refuses	type mismatch [(`A, [null, 'b]), (`B, null)] does not contain ([`A, `B], [null, 'b])
@@ -330,9 +337,12 @@ graphix_tests::lang::select::coverage_reads_a_bound_map_parameter_through	refuse
 graphix_tests::lang::select::coverage_reads_a_bound_map_parameter_through_beside_a_variant	refuses	pattern 2 will never match: nothing reaches it (8:29; the value is Error<Map<i64, i64>> | Array<R<i64>>)
 graphix_tests::lang::select::coverage_reads_a_map_literals_cells_through	refuses	pattern 2 will never match: nothing reaches it (5:29; the value is Error<Map<i64, i64>> | Array<Map<i64, i64>>)
 graphix_tests::lang::select::covered_product_leaves_catch_all_nothing	refuses	pattern 5 will never match: nothing reaches it (1:64; the value is ([`X, `Y], [`A, `B]))
+graphix_tests::lang::select::dead_arm_after_a_deep_test_is_refused	refuses	pattern 4 will never match: nothing reaches it (5:29; the value is [Error<T>, Error<U>, `A])
 graphix_tests::lang::select::dead_arm_over_a_true_resting_on_a_failed_pair_is_refused	refuses	pattern 1 will never match: nothing reaches it (21:29; the value is [`F(B), `G(D)])
 graphix_tests::lang::select::dead_arm_over_a_variable_met_through_a_call_named_as_declared	refuses	pattern 1 will never match: nothing reaches it (2:69; the value is 'b)
 graphix_tests::lang::select::dead_arm_over_names_in_progress_is_refused_at_any_length	refuses	pattern 1 will never match: nothing reaches it (11:29; the value is [Error<K1>, Error<L1>, Error<N1>])
+graphix_tests::lang::select::destructure_under_an_any_part_beside_a_typed_member	refuses	type mismatch string does not contain Any
+graphix_tests::lang::select::destructure_under_an_any_part_tests_the_arms_types	refuses	type mismatch Number does not contain Any
 graphix_tests::lang::select::distribution_variable_beside_a_variant_is_its_bound	refuses	missing match cases: nothing matches (`B, [i64, string]) (2:74)
 graphix_tests::lang::select::distribution_variable_beside_null_is_its_bound	refuses	missing match cases: nothing matches (`B, [i64, string]) (2:70)
 graphix_tests::lang::select::generic_select_telling_quantifier_bound_refused	refuses	type mismatch [null, 'c: unbound] does not contain [null, ['c: unbound, &i64]]: a call picks 'c, and the body's value need not be of the type it picks; drop `-> [null, 'c]`, or write the body's type, `-> [null, 'c, &i64]`
@@ -360,10 +370,11 @@ graphix_tests::lang::select::names_arm_bind_holds_a_member_a_union_part_admits	r
 graphix_tests::lang::select::names_arm_bind_holds_a_member_an_undecided_part_admits	refuses	type mismatch string does not contain i64
 graphix_tests::lang::select::names_arm_bind_holds_both_function_types	refuses	type mismatch string does not contain i64
 graphix_tests::lang::select::nested_abstract_payload_is_no_one_instance	refuses	type mismatch Number does not contain [i64, bool]
+graphix_tests::lang::select::nested_destructure_over_a_recursive_any_member	refuses	type mismatch Number does not contain Any
 graphix_tests::lang::select::nested_partial_struct_over_an_any_part_refused	refuses	pattern 1 will never match: nothing reaches it (3:10; the value is (i64, Any))
 graphix_tests::lang::select::nested_partial_struct_over_any_refused	refuses	pattern 1 will never match: nothing reaches it (2:33; the value is Any)
 graphix_tests::lang::select::nested_partial_struct_under_a_test_of_undecided_members_refused	refuses	{ a: Array<i64>, c: i64 } could go to more than one member of the union [{ a: Array<i64>, c: 'p }, { a: Array<i64>, c: 'q }], and nothing has decided which
-graphix_tests::lang::select::nested_slice_collection_element_bind_keeps_the_variable	refuses	pattern 1 will never match: nothing reaches it (2:92; the value is ('c<'b>, i64))
+graphix_tests::lang::select::nested_slice_collection_element_bind_keeps_the_variable	refuses	type mismatch string does not contain 'b
 graphix_tests::lang::select::nested_slice_dead_arm_refused	refuses	pattern 2 will never match: nothing reaches it (2:34; the value is (Array<i64>, i64))
 graphix_tests::lang::select::nested_slice_ladder_dead_wildcard_refused	refuses	pattern 3 will never match: nothing reaches it (2:34; the value is (Array<i64>, i64))
 graphix_tests::lang::select::nested_slice_ladder_leaves_other_member	refuses	missing match cases: nothing matches `B (2:44)
@@ -403,7 +414,7 @@ graphix_tests::lang::select::pattern_error_site	refuses	bound variables must hav
 graphix_tests::lang::select::pattern_inside_a_declared_variable_refused	refuses	type mismatch f64 does not contain i64
 graphix_tests::lang::select::pattern_inside_a_declared_variable_written_types_the_bind	refuses	type mismatch f64 does not contain i64
 graphix_tests::lang::select::pool_arm_repeated_over_a_referent_the_arms_decide_is_dead	refuses	pattern 3 will never match: nothing reaches it (1:117; the value is (bool, string) | (`L, `Z))
-graphix_tests::lang::select::pool_covers_only_its_own_abstract_instantiation	refuses	missing match cases: nothing matches [Box<i64>, Box<bool>] (3:45)
+graphix_tests::lang::select::pool_covers_only_its_own_abstract_instantiation	refuses	missing match cases: nothing matches Box<i64> (3:45)
 graphix_tests::lang::select::pool_over_a_referent_the_arms_decide_needs_the_cover_arm	refuses	type mismatch (bool, Any) does not contain (`L, `Z)
 graphix_tests::lang::select::pool_reads_the_abstract_payload_of_the_scrutinee	refuses	missing match cases: nothing matches Box<[`A, `B]> (3:37)
 graphix_tests::lang::select::pool_takes_no_composite_head_beside_a_variable	refuses	missing match cases: nothing matches `B([i64, string]) (2:80)
@@ -428,7 +439,7 @@ graphix_tests::lang::select::product_test_a_declared_variable_part_tells_nothing
 graphix_tests::lang::select::product_test_a_part_both_members_share_tells_nothing	refuses	type mismatch i64 does not contain string
 graphix_tests::lang::select::product_test_a_told_member_hides_no_later_one	refuses	type mismatch Number does not contain [i64, string]
 graphix_tests::lang::select::product_test_an_array_part_tells_nothing	refuses	type mismatch i64 does not contain string
-graphix_tests::lang::select::recursive_difference_keeps_what_it_did_not_cover	refuses	missing match cases: nothing matches Error<T> (6:23)
+graphix_tests::lang::select::recursive_difference_keeps_what_it_did_not_cover	refuses	missing match cases: nothing matches Error<Array<T>> (6:23)
 graphix_tests::lang::select::repeated_bool_arm_unreachable	refuses	pattern 2 will never match: nothing reaches it (1:37; the value is bool)
 graphix_tests::lang::select::repeated_tuple_arm_unreachable	refuses	pattern 2 will never match: nothing reaches it (1:46; the value is (bool, bool))
 graphix_tests::lang::select::rest_typed_from_scrutinee	refuses	type mismatch Number does not contain [i64, null]
@@ -460,12 +471,14 @@ graphix_tests::lang::select::slice_bind_inside_an_any_part_beside_a_name_refused
 graphix_tests::lang::select::slice_bind_inside_an_any_part_beside_a_rest_refused	refuses	type mismatch i64 does not contain Any
 graphix_tests::lang::select::slice_bind_inside_an_any_part_beside_a_wildcard_refused	refuses	type mismatch Number does not contain Any
 graphix_tests::lang::select::slice_bind_inside_an_any_part_beside_an_untyped_name_refused	refuses	type mismatch i64 does not contain Any
+graphix_tests::lang::select::slice_binds_inside_an_any_part_typed_by_the_test	refuses	type mismatch Number does not contain Any
 graphix_tests::lang::select::slice_element_bare_tag_admitting_no_member_is_dead	refuses	pattern 1 will never match: nothing reaches it (1:52; the value is Array<[`A, `B]>)
 graphix_tests::lang::select::slice_element_bind_beside_a_tag_an_any_part_may_hold_refused	refuses	type mismatch i64 does not contain string
 graphix_tests::lang::select::slice_element_bind_beside_a_tag_two_members_share_refused	refuses	type mismatch i64 does not contain [i64, string]
 graphix_tests::lang::select::slice_element_bind_beside_a_union_holding_any_refused	refuses	type mismatch i64 does not contain string
 graphix_tests::lang::select::slice_element_bind_in_a_partial_struct_of_two_widths_refused	refuses	type mismatch i64 does not contain [i64, string]
 graphix_tests::lang::select::slice_element_bind_under_a_union_inside_a_member_both_admitted_refused	refuses	type mismatch i64 does not contain [i64, string]
+graphix_tests::lang::select::slice_element_binds_hold_every_member	refuses	type mismatch string does not contain Any
 graphix_tests::lang::select::slice_element_literal_over_another_member_is_a_dead_arm	refuses	pattern 1 will never match: nothing reaches it (1:47; the value is Array<(i64, string)>)
 graphix_tests::lang::select::slice_element_literal_over_another_number_type_is_a_dead_arm	refuses	pattern 1 will never match: nothing reaches it (1:36; the value is Array<u8>)
 graphix_tests::lang::select::slice_element_tag_admitting_no_member_is_dead	refuses	pattern 1 will never match: nothing reaches it (1:69; the value is Array<[(`A, i64), (`B, string)]>)
@@ -473,6 +486,7 @@ graphix_tests::lang::select::slice_elements_share_an_open_type	refuses	type mism
 graphix_tests::lang::select::slice_inside_a_tuple_admitting_no_member_is_dead	refuses	pattern 1 will never match: nothing reaches it (1:66; the value is (Array<Array<[`A, `B]>>, i64))
 graphix_tests::lang::select::slice_name_beside_a_wildcard_over_any_refused	refuses	type mismatch i64 does not contain Any
 graphix_tests::lang::select::slice_nested_binds_hold_every_member	refuses	type mismatch string does not contain [i64, string]
+graphix_tests::lang::select::slice_rest_over_any_takes_a_names_type_or_any_value	refuses	type mismatch Number does not contain Any
 graphix_tests::lang::select::slice_struct_element_over_a_union_claims_nothing	refuses	missing match cases: nothing matches Array<[i64, { a: i64 }]> (1:59)
 graphix_tests::lang::select::slice_suffix_element_admitting_no_member_is_dead	refuses	pattern 1 will never match: nothing reaches it (1:65; the value is Array<[`A(i64), `B(string)]>)
 graphix_tests::lang::select::slice_suffix_tuple_element_over_a_union_claims_nothing	refuses	missing match cases: nothing matches Array<[i64, (i64, i64)]> (1:61)
@@ -546,7 +560,7 @@ graphix_tests::lang::select::written_test_typedef_holding_bottom_at_an_element_r
 graphix_tests::lang::select::written_test_typedef_holding_bottom_inside_a_declared_variable_refused	refuses	pattern 1 will never match: nothing reaches it (3:62; the value is ('b, i64))
 graphix_tests::lang::select::written_test_typedef_holding_bottom_returning_the_variable_refused	refuses	type mismatch 'b: unbound within [`A(i64), `B(i64)] does not contain [`A(i64), `B(i64)]: a call picks 'b, and the body's value need not be of the type it picks; drop `-> 'b`, or write the body's type, `-> [`A(i64), `B(i64)]`
 graphix_tests::lang::select::written_test_typedef_of_bottom_inside_a_declared_variable_refused	refuses	pattern 1 will never match: nothing reaches it (3:73; the value is 'b)
-graphix_tests::lang::select::written_test_variable_in_an_abstract_payload_refused	refuses	pattern 1 will never match: nothing reaches it (3:58; the value is W<'b>)
+graphix_tests::lang::select::written_test_variable_in_an_abstract_payload_refused	refuses	type mismatch f64 does not contain Any
 graphix_tests::lang::select::written_tests_over_a_variable_its_bound_names_cover_it	refuses	missing match cases: nothing matches (string, [`A, `B]) (2:77)
 graphix_tests::lang::select::written_union_bind_beside_a_literal_loses_the_part_it_rules_out	refuses	pattern 1 will never match: nothing reaches it (3:68; the value is i64)
 graphix_tests::lang::select::written_union_bind_beside_a_literal_two_members_admit_refused	refuses	type mismatch i64 does not contain [i64, string]
@@ -624,7 +638,6 @@ graphix_tests::lang::select_undecided::widened_open_element_refused	refuses	type
 graphix_tests::lang::select_undecided::wildcard_member_holding_a_bind_inside_is_not_decided_by_a_caller_refused	refuses	type mismatch i64 does not contain string
 graphix_tests::lang::select_undecided::written_abstract_payload_test_with_an_open_variable_refused	refuses	pattern 1 will never match: nothing reaches it (3:50; the value is W<[i64, `A(i64)]>)
 graphix_tests::lang::select_undecided::written_array_element_test_with_an_open_variable_over_any_refused	refuses	type mismatch i64 does not contain Any
-graphix_tests::lang::select_undecided::written_collection_test_with_an_open_variable_refused	refuses	pattern 1 will never match: nothing reaches it (2:70; the value is 'c<[i64, `Keep(i64)]>)
 graphix_tests::lang::select_undecided::written_nested_constructor_beside_a_catch_all	refuses	a test cannot name a declared type variable ('b): write `_` there, and the name takes the value's own type
 graphix_tests::lang::select_undecided::written_nested_constructor_covers_its_member_alone	refuses	a test cannot name a declared type variable ('b): write `_` there, and the name takes the value's own type
 graphix_tests::lang::select_undecided::written_or_test_with_an_open_variable_over_any_refused	refuses	type mismatch i64 does not contain [i64, Any]
@@ -959,6 +972,7 @@ graphix_tests::lang::types::typedef_union_of_variables_refused_at_its_use	refuse
 graphix_tests::lang::types::uncovered_primitive_refused_by_the_open_members_bound	refuses	type mismatch Number does not contain [i64, string]
 graphix_tests::lang::types::undecided_argument_at_two_variables_of_disjoint_bounds_refused	refuses	type mismatch string does not contain i64
 graphix_tests::lang::types::undecided_binding_at_two_variables_of_disjoint_bounds_refused	refuses	unsatisfiable constraints: string & i64
+graphix_tests::lang::types::undecided_value_under_a_union_bound_takes_what_a_later_callback_decides	refuses	type mismatch 'a does not contain Any
 graphix_tests::lang::types::undecided_value_under_a_union_bound_takes_what_a_later_callback_decides_refused	refuses	type mismatch 'a does not contain Any
 graphix_tests::lang::types::union_bound_a_decided_variable_member_leaves_one_taker	refuses	type mismatch [string, Array<i64>] does not contain Array<f64>
 graphix_tests::lang::types::union_bound_a_recursive_name_decides_the_cell	refuses	type mismatch T does not contain string
