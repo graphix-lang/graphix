@@ -2495,17 +2495,7 @@ impl Solving {
                         && self.attempting(|s| {
                             let (n, mark) = (s.held.len(), s.added.len());
                             s.constrain(env, &a, &b)?;
-                            // members give an open part values; two of
-                            // them never decide one from above two ways
-                            let from_above = parts.iter().any(|u| {
-                                let added = s.added[mark..].iter().filter(|(v, what)| {
-                                    matches!(what, Added::Upper) && u.same_cell(v)
-                                });
-                                let uppers = u.cell_constraints();
-                                let uppers = &uppers[uppers.len() - added.count()..];
-                                !decided(u, &mut SmallVec::new())
-                                    && uppers.iter().any(|t| !strictly_identical(t, &uppers[0]))
-                            });
+                            let from_above = s.decided_two_ways(&parts, mark);
                             match s.held.len() == n && !from_above {
                                 true => Ok(()),
                                 false => bail!("no member takes it as it stands"),
@@ -2602,6 +2592,39 @@ impl Solving {
                 }
             }
         }
+        // a decided value nothing has decided between is no choice where
+        // the members that take it are over the same cells: it goes to
+        // each, before the cells nothing decided are fixed
+        for i in (0..self.held.len()).rev().filter(|_| last) {
+            let (a, b, scheme) = self.held[i].clone();
+            let (a, b) = (deep(&a), deep(&b));
+            if a.has_free() {
+                continue;
+            }
+            // a union behind a typedef's name is met as what it stands for
+            let b = match &b {
+                Type::Ref(_) => b.lookup_ref(env)?,
+                _ => b,
+            };
+            let Type::Set(ms) = &b else { continue };
+            if scheme {
+                continue;
+            }
+            let fits: SmallVec<[Type; 2]> =
+                ms.iter().filter(|m| self.probe(env, &a, m)).cloned().collect();
+            let over = |m: &Type| {
+                let mut cells: SmallVec<[usize; 4]> =
+                    open_cells(m).iter().map(|v| v.cell_addr()).collect();
+                cells.sort_unstable();
+                cells.dedup();
+                cells
+            };
+            let same = fits.iter().all(|m| over(m) == over(&fits[0]));
+            let all = |s: &mut Self| fits.iter().try_for_each(|m| s.constrain(env, &a, m));
+            if !fits.is_empty() && same && self.attempting(all) {
+                self.held.swap_remove(i);
+            }
+        }
         for v in flowing.into_iter().chain(empty) {
             let mine = !v.is_bound()
                 && !v.is_rigid()
@@ -2639,6 +2662,22 @@ impl Solving {
     /// payloads of the errors a `?` takes off.
     pub fn hold_strip(&mut self, operand: Type, out: Type, raised: Option<Type>) {
         self.strips.push((operand, out, raised))
+    }
+
+    /// Whether the bounds added since `mark` gave one of `parts`, a cell
+    /// nothing flows into, two different upper bounds: members give an
+    /// open part values, and two of them never decide one from above two
+    /// ways.
+    fn decided_two_ways(&self, parts: &[TVar], mark: usize) -> bool {
+        parts.iter().any(|u| {
+            let added = self.added[mark..]
+                .iter()
+                .filter(|(v, what)| matches!(what, Added::Upper) && u.same_cell(v));
+            let uppers = u.cell_constraints();
+            let uppers = &uppers[uppers.len() - added.count()..];
+            !decided(u, &mut SmallVec::new())
+                && uppers.iter().any(|t| !strictly_identical(t, &uppers[0]))
+        })
     }
 
     /// Give `v` one type: the union of what flows into it, or, where
