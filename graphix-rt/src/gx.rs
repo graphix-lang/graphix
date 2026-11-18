@@ -452,14 +452,8 @@ impl<X: GXExt> GX<X> {
             .map(|(max_events, max_cycles)| TraceState::new(max_events, max_cycles));
         let st = Instant::now();
         let RegistrationImage { restore, save } = cfg.registration.unwrap_or_default();
-        // `GRAPHIX_BOUNDS=all`: the packages are checked by bounds too, so
-        // no registration another check made is restored or saved
-        let all = std::env::var("GRAPHIX_BOUNDS").is_ok_and(|v| v == "all");
-        t.ctx.cx.bounds = all;
-        let (restore, save) = match all {
-            true => (Default::default(), None),
-            false => (restore, save),
-        };
+        // `GRAPHIX_BOUNDS=all`: the packages are checked by bounds too
+        t.ctx.cx.bounds = std::env::var("GRAPHIX_BOUNDS").is_ok_and(|v| v == "all");
         for (what, bytes) in restore {
             match t.restore_registration(bytes) {
                 Ok(()) => {

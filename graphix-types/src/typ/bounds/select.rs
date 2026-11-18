@@ -374,6 +374,19 @@ pub struct Template {
 }
 
 impl Template {
+    pub(super) fn parts(&self) -> (&[Arm], &ArcStr) {
+        (&self.arms, &self.at)
+    }
+
+    pub(super) fn of_parts(arms: Vec<Arm>, at: ArcStr) -> Self {
+        Self { arms, at }
+    }
+
+    /// Whether the two are the select written at one place.
+    pub(super) fn written_at(&self, other: &Self) -> bool {
+        self.at == other.at && self.arms.len() == other.arms.len()
+    }
+
     /// The cells the patterns bind.
     pub(super) fn cells(&self, out: &mut SmallVec<[TVar; 4]>) {
         self.arms.iter().for_each(|a| a.pat.cells(out))

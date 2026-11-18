@@ -1491,14 +1491,8 @@ fn cell_encode(cell: &Arc<CellLock>, buf: &mut impl BufMut) -> Result<(), PackEr
                     resolved: _,
                     place: _,
                     written: _,
-                    solving,
+                    solving: _,
                 } = &*c;
-                // a cell a check by bounds left open is a scheme's, and what
-                // it keeps for its instances has no codec yet: the write
-                // fails and the session runs cold
-                if solving.is_some() && binding.is_none() {
-                    return Err(PackError::InvalidFormat);
-                }
                 if *rigid_gates != 0 {
                     log::warn!(
                         "a tvar cell with {} open rigid gate(s) cannot be imaged: typ={:?} constraints={:?}",
@@ -1522,7 +1516,17 @@ fn cell_encode(cell: &Arc<CellLock>, buf: &mut impl BufMut) -> Result<(), PackEr
             slice_encode(&below, buf)?;
             facts.bits().encode(buf)?;
             naming.encode(buf)?;
-            level.encode(buf)
+            level.encode(buf)?;
+            // what a check by bounds keeps of the cell for a scheme's
+            // instances
+            let c = cell.read();
+            match c.solving.as_ref() {
+                None => false.encode(buf),
+                Some(k) => {
+                    true.encode(buf)?;
+                    k.image_encode(buf)
+                }
+            }
         },
     )
 }
@@ -1573,6 +1577,10 @@ fn cell_decode(buf: &mut impl Buf) -> Result<Arc<CellLock>, PackError> {
             c.facts = facts;
             c.naming = naming;
             drop(c);
+            if bool::decode(sub)? {
+                let known = crate::typ::bounds::Known::image_decode(sub)?;
+                cell.write().solving = Some(Box::new(known))
+            }
             Ok(cell)
         },
         |b| cell_decode(b),

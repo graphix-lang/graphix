@@ -30,6 +30,7 @@ use smallvec::SmallVec;
 use std::{cell::RefCell, ops::ControlFlow};
 use triomphe::Arc;
 
+mod image;
 mod select;
 pub use select::{Arm, FALSE, Pat, TRUE, Template, unsplit};
 
@@ -184,6 +185,31 @@ pub struct Known {
     /// A call that omits the label passes the default, and no other
     /// call's parameter takes it.
     pub(crate) defaults: SmallVec<[(ArcStr, Type, Type); 0]>,
+}
+
+impl Left {
+    /// Whether the two are one check left to an instance. Each cell of a
+    /// scheme the check reaches lists it, and a restored image gives each
+    /// list its own copy: the same types over the same cells are it.
+    fn same(&self, other: &Self) -> bool {
+        let id = strictly_identical;
+        match (self, other) {
+            (Left::Held(p), Left::Held(q)) => {
+                Arc::ptr_eq(p, q) || (id(&p.0, &q.0) && id(&p.1, &q.1))
+            }
+            (Left::Compared(p), Left::Compared(q)) => {
+                Arc::ptr_eq(p, q) || (id(&p.0, &q.0) && id(&p.1, &q.1) && p.2 == q.2)
+            }
+            (Left::Asked(p), Left::Asked(q)) => {
+                Arc::ptr_eq(p, q) || (id(&p.0, &q.0) && p.2 == q.2)
+            }
+            (Left::Single(u), Left::Single(w)) => u.same_cell(w),
+            (Left::Waiting(s, u), Left::Waiting(t, w)) => {
+                (Arc::ptr_eq(s, t) || s.written_at(t)) && id(u, w)
+            }
+            _ => false,
+        }
+    }
 }
 
 /// A check a generic definition could not finish, because the types its
@@ -2228,17 +2254,7 @@ impl Solving {
         while let Some(v) = self.copied.pop() {
             let left = v.cell().read().solving.as_ref().map(|k| k.left.clone());
             for l in left.into_iter().flatten() {
-                let seen = |d: &Left| match (d, &l) {
-                    (Left::Held(p), Left::Held(q)) => Arc::ptr_eq(p, q),
-                    (Left::Compared(p), Left::Compared(q)) => Arc::ptr_eq(p, q),
-                    (Left::Asked(p), Left::Asked(q)) => Arc::ptr_eq(p, q),
-                    (Left::Single(u), Left::Single(w)) => u.same_cell(w),
-                    (Left::Waiting(s, u), Left::Waiting(t, w)) => {
-                        Arc::ptr_eq(s, t) && strictly_identical(u, w)
-                    }
-                    _ => false,
-                };
-                if done.iter().any(seen) {
+                if done.iter().any(|d| d.same(&l)) {
                     continue;
                 }
                 match &l {
