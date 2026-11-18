@@ -2650,7 +2650,8 @@ impl<R: Rt> Place<R> {
                 }
                 PlaceStep::Tuple(i) if bounds::active() => {
                     let out = Type::empty_tvar();
-                    let read = Use::Index { i: *i, out: out.clone(), write: writable };
+                    let (out_, from) = (out.clone(), self.scope.clone());
+                    let read = Use::Index { i: *i, out: out_, write: writable, from };
                     solving(|s| s.watch(&ctx.env, &cur, read))?;
                     out
                 }

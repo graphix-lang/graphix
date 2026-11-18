@@ -7,6 +7,7 @@
 use crate::{
     LambdaId,
     env::Env,
+    expr::ModPath,
     stack::ensure_sufficient,
     typ::{
         AbstractId, Bound, ContainsFlags, FnArgKind, FnArgType, FnType, Mutability, Open,
@@ -216,8 +217,9 @@ pub type Arg = (Option<ArcStr>, Type);
 pub enum Use {
     /// A read of the field, which goes to `out`.
     Field { field: ArcStr, out: Type, write: bool },
-    /// A read of a tuple's element, or of an error's payload.
-    Index { i: usize, out: Type, write: bool },
+    /// A read of a tuple's element, or of a payload: an error's, or an
+    /// abstract type's where its definition is visible from `from`.
+    Index { i: usize, out: Type, write: bool, from: ModPath },
     /// A read of an element by its position: an array's element, or a
     /// byte of `bytes`.
     Element { out: Type },
@@ -268,7 +270,9 @@ impl Use {
             Use::Field { field, out, write } => {
                 Use::Field { field: field.clone(), out: f(out), write: *write }
             }
-            Use::Index { i, out, write } => Use::Index { i: *i, out: f(out), write: *write },
+            Use::Index { i, out, write, from } => {
+                Use::Index { i: *i, out: f(out), write: *write, from: from.clone() }
+            }
             Use::Element { out } => Use::Element { out: f(out) },
             Use::Call { args, out } => Use::Call {
                 args: args.iter().map(|(l, t)| (l.clone(), f(t))).collect(),
@@ -1168,10 +1172,16 @@ impl Solving {
 
 /// What `?` and `$` leave of the decided type `t`: `t` less its errors,
 /// or, where it holds none, less null. With it, the payloads of the errors
-/// taken off.
-pub fn strip(env: &Env, t: &Type) -> Result<(Type, SmallVec<[Type; 2]>)> {
+/// taken off, which a `?` raises (`raises`) and so must know.
+pub fn strip(env: &Env, t: &Type, raises: bool) -> Result<(Type, SmallVec<[Type; 2]>)> {
     let mut members: SmallVec<[Type; 4]> = SmallVec::new();
     members_of(env, t, &mut members)?;
+    if raises && members.iter().any(|m| matches!(m, Type::Any)) {
+        bail!(
+            "the operand of ? has type {t}, so the error it raises is not known: cast \
+             it to a type whose error is (a Result), or use $"
+        )
+    }
     Ok(strip_members(members))
 }
 
@@ -2358,7 +2368,8 @@ impl Solving {
                     if !strippable(env, &deep(&operand))? {
                         self.fix_in(env, &operand)?
                     }
-                    let (left, payloads) = strip(env, &deep(&operand))?;
+                    let (left, payloads) =
+                        strip(env, &deep(&operand), raised.is_some())?;
                     self.constrain(env, &left, &out)?;
                     for to in raised.iter() {
                         payloads.iter().try_for_each(|p| self.constrain(env, p, to))?
@@ -2872,16 +2883,19 @@ impl Solving {
                 let updated = Type::Struct(Arc::from_iter(fs));
                 self.constrain(env, &updated, out).map(|()| true)
             }
-            (Type::Abstract { id, params }, Use::Index { i: 0, out, .. }) => {
-                match rep(env, id, params) {
+            (Type::Abstract { id, params }, Use::Index { i: 0, out, from, .. }) => {
+                match env.abstract_rep(*id, from).and_then(|_| rep(env, id, params)) {
                     Some(rep) => self.constrain(env, &rep, out).map(|()| true),
-                    None => bail!("{a} is abstract here: its payload cannot be read"),
+                    None => bail!(
+                        "the definition of {a} is not visible here, so its payload \
+                         cannot be read"
+                    ),
                 }
             }
             (Type::Error(t), Use::Index { i: 0, out, .. }) => {
                 self.constrain(env, t, out).map(|()| true)
             }
-            (Type::Tuple(ts), Use::Index { i, out, write }) => match ts.get(*i) {
+            (Type::Tuple(ts), Use::Index { i, out, write, .. }) => match ts.get(*i) {
                 Some(t) => self.part(env, t, out, *write).map(|()| true),
                 None => bail!("{a} has no element {i}"),
             },
@@ -3323,15 +3337,24 @@ mod tests {
     }
 
     #[test]
-    fn a_use_nothing_reaches_needs_an_annotation() {
+    fn a_use_nothing_reaches_is_each_instances() {
         let (env, _) = typed(&[], "null");
         let mut s = Solving::default();
         let mark = s.mark();
-        let ((_, tp), (_, to)) = (var_at("p", 1), var_at("o", 1));
-        let read = super::Use::Field { field: ArcStr::from("a"), out: to.clone(), write: false };
+        let ((p, tp), (o, to)) = (var_at("p", 1), var_at("o", 1));
+        s.track(&p);
+        s.track(&o);
+        let (field, from) = (ArcStr::from("a"), to.clone());
+        let read = super::Use::Field { field, out: from, write: false };
         assert!(s.watch(&env, &tp, read).is_ok());
         let f = over(&env, "fn(p: 'p) -> 'o", &[("p", &tp), ("o", &to)]);
-        assert!(s.generalize(&env, &f, 0, mark).is_err());
+        assert!(s.generalize(&env, &f, 0, mark).is_ok());
+        let ok = s.instantiate(&f, 0, Level::TOP);
+        let has = parsed(&env, "fn(p: {a: i64}) -> i64");
+        assert!(s.constrain(&env, &ok, &has).is_ok() && s.finish(&env).is_ok());
+        let no = s.instantiate(&f, 0, Level::TOP);
+        let lacks = parsed(&env, "fn(p: {b: i64}) -> i64");
+        assert!(s.constrain(&env, &no, &lacks).is_err() || s.finish(&env).is_err());
     }
 
     #[test]

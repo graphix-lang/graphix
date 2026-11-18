@@ -1415,7 +1415,8 @@ impl<R: Rt> TupleRef<R> {
             return Ok(());
         }
         if bounds::active() {
-            let u = Use::Index { i: self.field, out: self.typ.clone(), write: false };
+            let (i, out, from) = (self.field, self.typ.clone(), self.scope.clone());
+            let u = Use::Index { i, out, write: false, from };
             return wrap!(self, solving(|s| s.watch(&ctx.env, self.source.typ(), u)));
         }
         let etyp = tuple_field_type(ctx, &self.scope, self.source.typ(), self.field);

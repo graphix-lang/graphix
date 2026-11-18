@@ -504,7 +504,7 @@ impl Mirror {
                 Use::Field { field: field.clone(), out: self.typ(s, out), write: false }
             }
             Watch::Index { i, out } => {
-                Use::Index { i: *i, out: self.typ(s, out), write: false }
+                Use::Index { i: *i, out: self.typ(s, out), write: false, from: ModPath::root() }
             }
             Watch::Call { args, out } => Use::Call {
                 args: args.iter().map(|(l, t, _)| (l.clone(), self.typ(s, t))).collect(),

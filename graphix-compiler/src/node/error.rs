@@ -1736,7 +1736,7 @@ impl<R: Rt> Qop<R> {
         match self.n.typ().with_deref(|t| t.cloned()) {
             Some(t) if bounds::strippable(env, &t)? => {
                 self.strip_of(env, &t)?;
-                let (left, payloads) = bounds::strip(env, &t)?;
+                let (left, payloads) = bounds::strip(env, &t, payload.is_some())?;
                 for (p, to) in payloads.iter().flat_map(|p| payload.iter().map(move |to| (p, to))) {
                     to.check_contains(env, p)?
                 }
