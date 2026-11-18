@@ -1983,6 +1983,12 @@ fn singleton(v: &TVar) -> bool {
     v.cell_constraints().iter().any(|c| matches!(c, Type::Bound(Bound::Singleton)))
 }
 
+/// Whether a definition closing at `min` may fix `v`: an open cell of
+/// its own, no scheme's variable.
+fn fixes(v: &TVar, min: u32) -> bool {
+    !v.is_bound() && !v.is_rigid() && !quantified(v) && v.level().depth() >= min
+}
+
 /// Whether anything says what `v` is: it is bound, or something that is
 /// no undecided cell flows into it.
 fn decided(v: &TVar) -> bool {
@@ -2082,6 +2088,9 @@ impl Solving {
     /// Whether `v` may be fixed by a definition closing at `min`: nothing
     /// it reaches is shallower or a scheme's variable.
     fn fixable(&self, held: &HeldBack, v: &TVar, min: u32) -> bool {
+        if v.level().depth() < min || quantified(v) {
+            return false;
+        }
         match held.met.contains(&v.cell_addr()) {
             true => !held.back.contains(&v.cell_addr()),
             false => {
@@ -2574,7 +2583,7 @@ impl Solving {
             }
             progress = false;
             let held = {
-                let own = self.cells[mark..].iter().cloned();
+                let own = self.cells[mark..].iter().filter(|v| fixes(v, min)).cloned();
                 let pending = self.held.iter().flat_map(|(a, b, _)| [a, b]);
                 let pending =
                     pending.chain(self.selects.iter().flat_map(|s| s.waiting.iter()));
@@ -2721,18 +2730,21 @@ impl Solving {
                 }
             }
         }
-        let held = self.held_back(self.cells[mark..].iter().cloned(), min);
+        let mine: Vec<TVar> =
+            self.cells[mark..].iter().filter(|v| fixes(v, min)).cloned().collect();
+        let held = self.held_back(mine.iter().cloned(), min);
         // a cell something flows into first: one nothing flows into may be
         // decided by a cell that holds it
         let (flowing, empty): (Vec<TVar>, Vec<TVar>) =
-            self.cells[mark..].iter().cloned().partition(|v| decided(v));
+            mine.into_iter().partition(|v| decided(v));
         // what a choice still held will decide is not known yet: it, and
         // whatever it reaches, waits with the choice
         let mut waiting = Cells::new();
         if !force {
             // what a use will give once its cell takes a value: a name a
             // pattern binds, a field read's result
-            for v in self.cells[mark..].iter().filter(|v| !v.is_bound()) {
+            for v in self.cells[mark..].iter().filter(|v| !v.is_bound() && !quantified(v))
+            {
                 for (u, _) in uses(v).iter().filter(|(_, met)| !met) {
                     let mut outs = SmallVec::new();
                     u.each(&mut |t| cells_of(t, false, &mut outs));
@@ -2794,10 +2806,7 @@ impl Solving {
         }
         let mut fixed = false;
         for v in flowing.into_iter().chain(empty) {
-            let mine = !v.is_bound()
-                && !v.is_rigid()
-                && !quantified(&v)
-                && v.level().depth() >= min;
+            let mine = fixes(&v, min);
             let now = force || (self.fixable(&held, &v, min) && !waiting.has(&v));
             if mine && now {
                 self.fix(env, &v)?;
