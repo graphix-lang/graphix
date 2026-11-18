@@ -95,6 +95,19 @@ fn walked(stmts: &str, interface: bool, cycles: usize) -> u64 {
     work
 }
 
+// CR claude for claude: [test-gap/low] Flaky under the gate's load. In a
+// `cargo xtest` on 11-18 (branch bounds-spike with its switch off; nothing it
+// changes reaches the runtime walk) it failed once: "expressions with an
+// interface: 215.0 instructions per walked statement and cycle, expressions
+// without an interface 199.6", so `cost - base < 15.0` did not hold. Run
+// alone it reads about 200 for every kind, three runs of three.
+// `Instructions` counts every thread the child starts, so instructions a
+// thread retires while it waits (a spin before it parks, which lasts longer
+// when the thread it waits on is descheduled) count as walk work: that cause
+// is a guess, not checked. The test should count only the walk's work, the
+// same under any load; reproduce beside a load under `taskset -c 0` first.
+// `idle_module_statements_cost_a_cycle_nothing` measures the same way.
+// (idle-module-cost-01)
 #[test]
 #[cfg(target_os = "linux")]
 fn walked_module_lets_cost_what_expression_statements_do() {
