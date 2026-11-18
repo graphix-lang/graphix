@@ -70,7 +70,7 @@ pub(crate) fn made(t: &Type) -> bool {
         Type::TVar(tv) => {
             let cell = tv.cell();
             let c = cell.read();
-            c.binding.is_none() && c.solving.is_some()
+            c.binding.is_none() && c.solving.as_ref().is_some_and(|k| !k.only_from())
         }
         _ => false,
     }
@@ -236,6 +236,34 @@ pub struct Known {
     /// A call that omits the label passes the default, and no other
     /// call's parameter takes it.
     pub(crate) defaults: SmallVec<[(ArcStr, Type, Type); 0]>,
+}
+
+impl Known {
+    /// Whether this records nothing but the cells flowing in: a cell the
+    /// solver only saw a flow reach, no cell of a check's.
+    fn only_from(&self) -> bool {
+        let Known {
+            feeders,
+            sinks,
+            from: _,
+            quantified,
+            demanded,
+            made,
+            listed,
+            uses,
+            left,
+            defaults,
+        } = self;
+        feeders.is_empty()
+            && sinks.is_empty()
+            && !quantified
+            && !demanded
+            && !made
+            && !listed
+            && uses.is_empty()
+            && left.is_empty()
+            && defaults.is_empty()
+    }
 }
 
 impl Left {
@@ -1102,10 +1130,9 @@ impl Solving {
                 let Some(lower) = record(v, b, false) else { return Ok(()) };
                 self.note(v, Added::Upper);
                 self.track(v);
-                // a declared variable takes the flow too, once its
-                // definition has closed
                 if let Type::TVar(w) = b
                     && !w.is_bound()
+                    && !w.is_rigid()
                 {
                     self.sent(w, v)
                 }
@@ -2946,14 +2973,14 @@ impl Solving {
                     feeds.push(u.clone())
                 }
             }
-            let mut sent_from: SmallVec<[TVar; 1]> = SmallVec::new();
-            for u in from.iter() {
-                if let Type::TVar(u) =
-                    &self.copy(&Type::TVar(u.clone()), above, at, copies)
-                {
-                    sent_from.push(u.clone())
-                }
-            }
+            // a source is the copy this instance has made of it, or else the
+            // cell itself, which reads as outside any scheme the copy is
+            // part of; making copies for sources alone would copy what the
+            // scheme never reaches
+            let sent_from: SmallVec<[TVar; 1]> = from
+                .iter()
+                .map(|u| copies.get(&u.cell_addr()).cloned().unwrap_or_else(|| u.clone()))
+                .collect();
             {
                 let cell = n.cell();
                 let mut c = cell.write();
