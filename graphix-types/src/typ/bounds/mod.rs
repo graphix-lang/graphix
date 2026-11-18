@@ -359,6 +359,8 @@ pub struct Solving {
     /// A held choice is being made: a decided member that does not fit is
     /// out.
     resolving: bool,
+    /// The choice is tried for a value whose parts are still open.
+    placing: bool,
     /// The scheme's cells the use being made has copied, whose
     /// [`Known::left`] it has still to take.
     copied: Vec<TVar>,
@@ -1051,7 +1053,7 @@ impl Solving {
             ([], []) => mismatch(b, a),
             // the choice is made once `a` is decided: a decided member
             // takes it or is out, and what is left takes it if it is one
-            _ if self.resolving && !a.has_free() => {
+            _ if self.resolving && (self.placing || !a.has_free()) => {
                 let (decided, loose): (SmallVec<[&Type; 2]>, SmallVec<[&Type; 2]>) =
                     takers.iter().copied().partition(|m| !m.has_free());
                 if decided.iter().any(|m| self.attempt(env, a, m)) {
@@ -2397,15 +2399,34 @@ impl Solving {
                     // nothing has stays open, to take what the others do
                     // not
                     self.held.swap_remove(i);
-                    avs.iter().try_for_each(|v| self.fix(env, v))?;
                     for v in bvs.iter() {
                         if decided(v, &mut SmallVec::new()) {
                             self.fix(env, v)?
                         }
                     }
+                    // a value with open parts goes to a decided member
+                    // that takes it as it stands, and the member decides
+                    // the parts; with none, the parts are fixed first
+                    let (a, b) = (deep(&a), deep(&b));
+                    (self.resolving, self.placing) = (true, !avs.is_empty());
+                    let placed = self.placing
+                        && self.attempting(|s| {
+                            let n = s.held.len();
+                            s.constrain(env, &a, &b)?;
+                            match s.held.len() == n {
+                                true => Ok(()),
+                                false => bail!("no member takes it yet"),
+                            }
+                        });
+                    (self.resolving, self.placing) = (false, false);
+                    if placed {
+                        progress = true;
+                        continue;
+                    }
+                    avs.iter().try_for_each(|v| self.fix(env, v))?;
                     let n = self.held.len();
                     self.resolving = true;
-                    let r = self.constrain(env, &deep(&a), &deep(&b));
+                    let r = self.constrain(env, &deep(&a), &b);
                     self.resolving = false;
                     r?;
                     progress |= self.held.len() == n

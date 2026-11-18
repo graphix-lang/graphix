@@ -358,6 +358,25 @@ fn routable(t: &Type) -> bool {
     }
 }
 
+/// Whether `pat` looks into a part of `t` that is not decided: a name or
+/// a wildcard takes whatever is there, decided or not.
+fn looks(pat: &Pat, t: &Type) -> bool {
+    let parts = |ps: &[Pat], ts: &[Type]| ps.iter().zip(ts).any(|(p, t)| looks(p, t));
+    match (pat, t) {
+        (Pat::Any(_), _) => false,
+        (Pat::Whole(_, p), _) => looks(p, t),
+        (Pat::Or(ps), _) => ps.iter().any(|p| looks(p, t)),
+        (_, Type::Set(ms)) => ms.iter().any(|m| looks(pat, m)),
+        (Pat::Tuple(_, ps), Type::Tuple(ts)) if ps.len() == ts.len() => parts(ps, ts),
+        (Pat::Variant(_, tag, ps), Type::Variant(u, ts, _))
+            if tag == u && ps.len() == ts.len() =>
+        {
+            parts(ps, ts)
+        }
+        _ => !routable(t),
+    }
+}
+
 impl Solving {
     /// The pattern of an arm that writes the test `t` over the structure
     /// `inner`. A variable the test writes, or `_`, stands for whatever is
@@ -960,7 +979,7 @@ impl Solving {
     /// Pass one type that reaches a select's scrutinee down its arms.
     pub(super) fn select_route(&mut self, env: &Env, id: usize, t: &Type) -> Result<()> {
         let whole = deep(t);
-        if !routable(&whole) {
+        if self.selects[id].template.arms.iter().any(|a| looks(&a.pat, &whole)) {
             self.selects[id].waiting.push(t.clone());
             return Ok(());
         }
