@@ -203,8 +203,33 @@ pub fn unsplit(t: &Type) -> Type {
         t => lengths(t)
             .map(|(_, _, inner)| inner)
             .or_else(|| payload_left(t).map(|(whole, _)| whole))
+            .or_else(|| elems_left(t).map(|(array, ..)| array))
             .map(|inner| unsplit(&inner)),
     })
+}
+
+/// Inside a select, the arrays of one length that earlier arms left:
+/// those whose elements, as a tuple of that length, are of the second
+/// type. Written as a variant around the array type and the tuples.
+const ELEMS: &str = "#elems:";
+
+fn elems_left(t: &Type) -> Option<(Type, usize, Type)> {
+    match t {
+        Type::Variant(name, ts, _) if name.starts_with(ELEMS) && ts.len() == 2 => {
+            Some((ts[0].clone(), name[ELEMS.len()..].parse().ok()?, ts[1].clone()))
+        }
+        _ => None,
+    }
+}
+
+fn elems(array: &Type, n: usize, tuples: Type) -> Type {
+    match nothing(&tuples) {
+        true => Type::Bottom,
+        false => {
+            let name = format_compact!("{ELEMS}{n}");
+            tag(&ArcStr::from(name.as_str()), [array.clone(), tuples])
+        }
+    }
 }
 
 /// Inside a select, the values of an abstract type that earlier arms
@@ -282,7 +307,11 @@ pub(super) struct Walks {
 }
 
 fn plain(t: Type) -> Type {
-    lengths(&t).map(|l| l.2).or_else(|| payload_left(&t).map(|p| p.0)).unwrap_or(t)
+    lengths(&t)
+        .map(|l| l.2)
+        .or_else(|| payload_left(&t).map(|p| p.0))
+        .or_else(|| elems_left(&t).map(|e| e.0))
+        .unwrap_or(t)
 }
 
 fn has(t: &Type, bit: Typ) -> bool {
@@ -905,6 +934,36 @@ impl Solving {
                 }
                 Routed { part: union_of(parts), rest: reach, binds }
             }
+            // the arrays of one length the arms before left: a pattern
+            // of that length, or a shorter one with a run, takes them as
+            // the tuple of their elements
+            (Pat::Elems { all, list, elems: ps, open: run }, _)
+                if let Some((array, n, tuples)) = elems_left(&t) =>
+            {
+                let kind = matches!(&array, Type::List(_)) == *list;
+                let fits = match run {
+                    None => ps.len() == n,
+                    Some(_) => ps.len() <= n,
+                };
+                if !kind || !fits {
+                    return none();
+                }
+                let mut ps = ps.clone();
+                ps.resize(n, Pat::Any(None));
+                let r = self.route(env, &Pat::Tuple(None, ps), &tuples);
+                if nothing(&r.part) {
+                    return none();
+                }
+                let mut binds = r.binds;
+                if let Some(Some(v)) = run {
+                    binds.push((v.clone(), array.clone()))
+                }
+                Routed {
+                    binds: named(all, &array, binds),
+                    rest: elems(&array, n, r.rest),
+                    part: array,
+                }
+            }
             (Pat::Elems { all, list, elems, open: run }, _)
                 if matches!(plain(t.clone()), Type::Array(_) | Type::List(_)) =>
             {
@@ -934,6 +993,18 @@ impl Solving {
                 let empty = nothing(&plain(Type::clone(&e)));
                 let rest = match (whole, run) {
                     _ if empty => Type::Bottom,
+                    // the arrays of this length it does not take are
+                    // kept as the tuples of their elements, for the arms
+                    // after to take
+                    (false, None) if n < 64 => {
+                        let each = Type::Tuple(Arc::from_iter((0..n).map(|_| (*e).clone())));
+                        let tuple = Pat::Tuple(None, elems.clone());
+                        let rest = self.route(env, &tuple, &each).rest;
+                        union_of([
+                            left(&array, taken | 1 << n, from),
+                            self::elems(&array, n, rest),
+                        ])
+                    }
                     (false, _) => t.clone(),
                     (true, Some(_)) => left(&array, taken, n.min(from)),
                     (true, None) if n < 64 => left(&array, taken | 1 << n, from),
