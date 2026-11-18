@@ -5459,6 +5459,12 @@ impl<R: Rt> CallSite<R> {
         Some((name.as_str().into(), typings.collect(), receiver))
     }
 
+    /// The copy of a generic binding's scheme this site's function read
+    /// took, which the check fixed ([`CallSite::copies`]).
+    pub(crate) fn copies(&self) -> Option<&AHashMap<usize, TVar>> {
+        self.copies.as_deref()
+    }
+
     /// A call of a trait method that leaves out labels the trait gives
     /// defaults: the receiver's implementation passes its own, as its
     /// parameter's type ([`Use::Defaults`]), on the receiver's type.
@@ -5809,6 +5815,9 @@ impl<R: Rt> CallSite<R> {
         types: &mut InstanceTypes,
     ) -> Result<()> {
         self.note_kept_view(ctx);
+        if ctx.bounds {
+            self.copies = types.call_copies(self.spec.id).map(TArc::new);
+        }
         let ftype = match self.ftype.is_none() {
             true => types.ftype(self.spec.id),
             false => None,

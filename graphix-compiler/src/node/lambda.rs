@@ -130,6 +130,12 @@ pub struct DefTable {
     /// open: a call's bind narrows them by its own view of the label. Only
     /// the definition's check reads it.
     defaults: AHashSet<ExprId>,
+    /// Under a check by bounds, the copy of a generic binding's scheme
+    /// each call site through a read of it took, by the address of the
+    /// scheme's cell each copies: an instance's call is an instance of
+    /// that copy as the instance has it. Not imaged: a restored
+    /// definition's calls find their instances' types again.
+    copies: AHashMap<ExprId, Box<[(usize, TVar)]>>,
 }
 
 #[derive(Debug, Clone, netidx_derive::Pack)]
@@ -203,6 +209,7 @@ impl DefTable {
             calls_captured,
             captures,
             defaults: AHashSet::default(),
+            copies: AHashMap::default(),
         }
     }
 
@@ -403,6 +410,10 @@ impl DefTable {
                     if let Some(ft) = cs.ftype.as_ref() {
                         self.ftypes.insert(id, (**ft).clone());
                     }
+                    if let Some(copies) = cs.copies() {
+                        let pairs = copies.iter().map(|(a, v)| (*a, v.clone()));
+                        self.copies.insert(id, pairs.collect());
+                    }
                 }
                 NodeView::Lambda(l) => {
                     let def = l.def_value().downcast_ref::<LambdaDef<R>>();
@@ -473,6 +484,13 @@ impl DefTable {
                 self.calls_captured.clone(),
                 self.captures.clone(),
             );
+            let rename =
+                |v: &TVar| known.get(&v.cell_addr()).cloned().unwrap_or(v.clone());
+            table.copies = self
+                .copies
+                .iter()
+                .map(|(id, cs)| (*id, cs.iter().map(|(a, v)| (*a, rename(v))).collect()))
+                .collect();
             table.own_typedefs();
             table
         })
@@ -780,6 +798,10 @@ impl InstanceTypes {
         if !bounds::cells_in(&sig).iter().all(|c| copies.contains_key(&c.cell_addr())) {
             return None;
         }
+        // a copy the check left open is no instance's types
+        if copies.values().any(|v| !bounds::cells_in(&Type::TVar(v.clone())).is_empty()) {
+            return None;
+        }
         Some(Self {
             tables: tables.clone(),
             known: SArc::new(Mutex::new(copies.clone())),
@@ -854,6 +876,38 @@ impl InstanceTypes {
 
     /// What the node at `id` derived beside its own type, in its order
     /// ([`DefTable::aux`]).
+    /// The copy of a generic binding's scheme the definition's call site
+    /// at `id` took, as this instance has it: each cell, the scheme's and
+    /// the copy's, through the enclosing instance's map, then this one's
+    /// (a scheme the body defines is the instance's own copy of it).
+    pub(crate) fn call_copies(&mut self, id: ExprId) -> Option<AHashMap<usize, TVar>> {
+        let pairs = self.tables.table.copies.get(&id)?.clone();
+        let outer = |addr: usize| match &self.tables.outer {
+            Some(outer) => outer.lock().get(&addr).cloned(),
+            None => None,
+        };
+        let renamed: SmallVec<[(usize, TVar); 8]> = pairs
+            .iter()
+            .map(|(a, d)| {
+                let a = outer(*a).map(|t| t.cell_addr()).unwrap_or(*a);
+                (a, outer(d.cell_addr()).unwrap_or_else(|| d.clone()))
+            })
+            .collect();
+        let mut out = AHashMap::default();
+        for (addr, d) in renamed {
+            let _ = self.instance_of(&Type::TVar(d.clone()));
+            let known = self.known.lock();
+            let key = known.get(&addr).map(|t| t.cell_addr()).unwrap_or(addr);
+            let v = known.get(&d.cell_addr()).cloned().unwrap_or(d);
+            // a copy this instance has not settled is no instance's types
+            if !bounds::cells_in(&Type::TVar(v.clone())).is_empty() {
+                return None;
+            }
+            out.insert(key, v);
+        }
+        Some(out)
+    }
+
     pub(crate) fn aux(&mut self, id: ExprId) -> Option<SmallVec<[Type; 8]>> {
         let ts = self.tables.table.aux.get(&id)?;
         Some(ts.iter().map(|t| self.instance_of(t)).collect())
