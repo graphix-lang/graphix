@@ -626,8 +626,8 @@ impl<R: Rt> Bind<R> {
         };
         // under a check by bounds the method's lambda has variables of
         // its own, and one instance of it is held to the written type
-        let _cells = (declares_method && !bounds::active())
-            .then(|| MethodCells::enter(minted));
+        let _cells =
+            (declares_method && !bounds::active()).then(|| MethodCells::enter(minted));
         let compile_pattern = |ctx: &mut CompileCtx<R>, typ: &Type| {
             let ori = spec.ori.clone();
             StructPatternNode::compile(ctx, typ, pat, Holder::Let, scope, spec.pos, ori)
@@ -746,10 +746,10 @@ impl<R: Rt> Bind<R> {
                             StructPatternNode::named_before(ctx, &typ).at(&spec)?
                         }
                         StructPatternNode::compile_shape(
-                        ctx,
-                        pat,
-                        Holder::Let,
-                        scope,
+                            ctx,
+                            pat,
+                            Holder::Let,
+                            scope,
                             spec.pos,
                             spec.ori.clone(),
                         )
@@ -1025,8 +1025,13 @@ impl<R: Rt> Bind<R> {
                         // a pattern over a literal: each name is its part
                         let mut parts: SmallVec<[(&ArcStr, Type); 4]> = SmallVec::new();
                         if b.pattern.single_bind().is_none() {
-                            if !literal_part_types(&b.pattern, &b.value, &value, &mut parts) {
-                                bailat!(self.spec, "BUG: a pattern over a literal lost its parts")
+                            if !literal_part_types(
+                                &b.pattern, &b.value, &value, &mut parts,
+                            ) {
+                                bailat!(
+                                    self.spec,
+                                    "BUG: a pattern over a literal lost its parts"
+                                )
                             }
                             let mut ids: SmallVec<[BindId; 4]> = SmallVec::new();
                             self.pattern.ids(&mut |id| ids.push(id));
@@ -1041,7 +1046,8 @@ impl<R: Rt> Bind<R> {
                                         ctx.env.retype(id, t.clone())
                                     }
                                     Some((_, t)) => {
-                                        let held = ctx.env.by_id.get(&id).map(|b| b.typ.clone());
+                                        let held =
+                                            ctx.env.by_id.get(&id).map(|b| b.typ.clone());
                                         if let Some(held) = held {
                                             wrap!(node, held.check_contains(&ctx.env, t))?
                                         }
@@ -2173,14 +2179,16 @@ impl<R: Rt> Update<R> for Ref {
             let Some(scheme) = ctx.env.by_id.get(&self.id).map(|b| b.typ.clone()) else {
                 bail!("BUG missing bind {:?}", self.id)
             };
-            let one =
-                solving(|s| s.instantiate(&scheme, Level::GENERIC.depth() - 1, current_level()));
+            let one = solving(|s| {
+                s.instantiate(&scheme, Level::GENERIC.depth() - 1, current_level())
+            });
             let held = mem::replace(&mut self.typ, one);
             if matches!(
                 mem::replace(&mut self.signature, Signature::Decided),
                 Signature::Pending
             ) {
-                held.check_contains(&ctx.env, &self.typ).map_err(|e| e.at(&*self.spec))?;
+                held.check_contains(&ctx.env, &self.typ)
+                    .map_err(|e| e.at(&*self.spec))?;
             }
             return Ok(());
         }

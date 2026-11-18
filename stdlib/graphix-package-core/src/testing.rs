@@ -413,8 +413,12 @@ async fn fixture_test(f: &RunFixture, mode: Mode, check: bool) -> Result<()> {
         return Ok(());
     }
     let _invocations = fixture_mode(f, Mode::Jit, true, true, false).await?;
+    // the expectation is the fixture's verdict's: one the manifest
+    // replaces under the check by bounds says nothing of what fuses
     #[cfg(debug_assertions)]
-    check_fuse_expectation(_invocations, f.expect);
+    if !(by_bounds() && BY_BOUNDS.contains_key(f.name)) {
+        check_fuse_expectation(_invocations, f.expect);
+    }
     Ok(())
 }
 
@@ -424,25 +428,32 @@ async fn fixture_test(f: &RunFixture, mode: Mode, check: bool) -> Result<()> {
 /// (a refusal's words, a program one refuses and the other takes) the
 /// difference is written in `graphix-tests/bounds.manifest`, a line a
 /// fixture: its name, `refuses` or `accepts`, and the refusal's last
-/// message or the value printed.
+/// message or the value printed; or `settles`, a program whose value never
+/// comes.
 #[derive(Debug)]
 enum ByBounds {
     Refuses(String),
     Accepts(String),
+    Settles,
 }
 
 impl ByBounds {
-    fn observed(v: Result<&Value>) -> Self {
+    /// What a run gave: `None` where the runtime settled before a value.
+    fn observed(v: Option<Result<&Value>>) -> Self {
         match v {
-            Ok(v) => Self::Accepts(v.to_string()),
-            Err(e) => Self::Refuses(renumbered(&e.root_cause().to_string()).to_string()),
+            None => Self::Settles,
+            Some(Ok(v)) => Self::Accepts(v.to_string()),
+            Some(Err(e)) => {
+                Self::Refuses(renumbered(&e.root_cause().to_string()).to_string())
+            }
         }
     }
 
-    fn holds(&self, v: Result<&Value>) -> bool {
+    fn holds(&self, v: Option<Result<&Value>>) -> bool {
         match (self, v) {
-            (Self::Accepts(text), Ok(v)) => *text == v.to_string(),
-            (Self::Refuses(text), Err(e)) => {
+            (Self::Settles, None) => true,
+            (Self::Accepts(text), Some(Ok(v))) => *text == v.to_string(),
+            (Self::Refuses(text), Some(Err(e))) => {
                 renumbered(&format!("{e:#}")).contains(text.as_str())
             }
             _ => false,
@@ -450,10 +461,12 @@ impl ByBounds {
     }
 
     fn line(&self, name: &str) -> String {
-        let flat = |s: &str| s.replace('\\', "\\\\").replace('\n', "\\n").replace('\t', " ");
+        let flat =
+            |s: &str| s.replace('\\', "\\\\").replace('\n', "\\n").replace('\t', " ");
         match self {
             Self::Refuses(text) => format!("{name}\trefuses\t{}", flat(text)),
             Self::Accepts(text) => format!("{name}\taccepts\t{}", flat(text)),
+            Self::Settles => format!("{name}\tsettles\t"),
         }
     }
 }
@@ -475,6 +488,7 @@ static BY_BOUNDS: LazyLock<ahash::AHashMap<String, ByBounds>> = LazyLock::new(||
         let expected = match kind {
             "refuses" => ByBounds::Refuses(unflat(text)),
             "accepts" => ByBounds::Accepts(unflat(text)),
+            "settles" => ByBounds::Settles,
             _ => return None,
         };
         Some((name.to_string(), expected))
@@ -487,18 +501,29 @@ static BY_BOUNDS: LazyLock<ahash::AHashMap<String, ByBounds>> = LazyLock::new(||
 /// naming a file, a fixture that fails there has what it gave appended to
 /// the file, to be reviewed and moved to the manifest.
 fn expected(f: &RunFixture, mode: Mode, v: Result<&Value>) -> bool {
-    if !by_bounds() {
-        return (f.pred)(v);
+    match by_bounds() {
+        false => (f.pred)(v),
+        true => by_manifest(f, mode, Some(v)),
+    }
+}
+
+/// Under the check by bounds, a program the runtime settled before its
+/// value came: what the manifest says of it. A fixture's own predicate
+/// always wants a value or a refusal.
+fn settled(f: &RunFixture, mode: Mode) -> bool {
+    by_bounds() && by_manifest(f, mode, None)
+}
+
+fn by_manifest(f: &RunFixture, mode: Mode, v: Option<Result<&Value>>) -> bool {
+    fn again<'a>(v: &Result<&'a Value>) -> Result<&'a Value> {
+        match v {
+            Ok(v) => Ok(*v),
+            Err(e) => Err(anyhow::anyhow!("{e:#}")),
+        }
     }
     let held = match BY_BOUNDS.get(f.name) {
-        Some(expected) => expected.holds(match &v {
-            Ok(v) => Ok(*v),
-            Err(e) => Err(anyhow::anyhow!("{e:#}")),
-        }),
-        None => (f.pred)(match &v {
-            Ok(v) => Ok(*v),
-            Err(e) => Err(anyhow::anyhow!("{e:#}")),
-        }),
+        Some(expected) => expected.holds(v.as_ref().map(again)),
+        None => v.as_ref().is_some_and(|v| (f.pred)(again(v))),
     };
     if !held
         && mode == Mode::Interp
@@ -561,10 +586,17 @@ async fn fixture_mode(
                     ctx.rt.match_shape(eid, spec).await?;
                 }
             }
-            let v = next_update_raw(&ctx.rt, &mut rx, eid).await?;
-            let v = observed(&ctx, &res.exprs[0].typ, v).await?;
-            eprintln!("{v}");
-            assert!(expected(f, mode, Ok(&v)));
+            match next_update_or_settle(&ctx.rt, &mut rx, eid).await? {
+                Some(v) => {
+                    let v = observed(&ctx, &res.exprs[0].typ, v).await?;
+                    eprintln!("{v}");
+                    assert!(expected(f, mode, Ok(&v)));
+                }
+                None if by_bounds() => {
+                    assert!(settled(f, mode), "the runtime settled without an update")
+                }
+                None => bail!("the runtime settled without an update of {eid:?}"),
+            }
         }
     }
     let invocations = ctx.rt.control().invocations();
@@ -700,6 +732,18 @@ pub async fn next_update_raw(
     rx: &mut Events,
     id: ExprId,
 ) -> Result<Value> {
+    match next_update_or_settle(rt, rx, id).await? {
+        Some(v) => Ok(v),
+        None => bail!("the runtime settled without an update of {id:?}"),
+    }
+}
+
+/// [`next_update_raw`], `None` where the runtime settles first.
+async fn next_update_or_settle(
+    rt: &GXHandle<NoExt>,
+    rx: &mut Events,
+    id: ExprId,
+) -> Result<Option<Value>> {
     let settled = rt.wait_settled();
     tokio::pin!(settled);
     tokio::select! {
@@ -707,7 +751,7 @@ pub async fn next_update_raw(
             loop {
                 let mut batch = rx.recv().await.context("the runtime died")?;
                 if let Some(v) = update_of(&mut batch, id) {
-                    break Ok(v);
+                    break Ok(Some(v));
                 }
             }
         } => v,
@@ -716,10 +760,10 @@ pub async fn next_update_raw(
             // every update is in the stream before the settle answers
             while let Ok(mut batch) = rx.try_recv() {
                 if let Some(v) = update_of(&mut batch, id) {
-                    return Ok(v);
+                    return Ok(Some(v));
                 }
             }
-            bail!("the runtime settled without an update of {id:?}")
+            Ok(None)
         }
         () = tokio::time::sleep(HANG_GUARD) => {
             bail!("no update of {id:?} in {HANG_GUARD:?}")

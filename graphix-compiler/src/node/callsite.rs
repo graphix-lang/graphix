@@ -276,9 +276,7 @@ fn checked_default<R: Rt>(
             load: f.env.body.clone(),
         };
         let types = match judge {
-            Judge::Bind => {
-                Some(InstanceTypes::of_default(ctx, f, name, expr.id, site)?)
-            }
+            Judge::Bind => Some(InstanceTypes::of_default(ctx, f, name, expr.id, site)?),
             Judge::Check(_) => None,
         };
         // a check outside the definition reads its scheme, whose cells it

@@ -373,6 +373,24 @@ impl<R: Rt> Update<R> for StructWith<R> {
         self.replace.iter_mut().for_each(|r| f(&mut r.n))
     }
 
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
+        wrap!(self.source, self.source.typecheck1(ctx))?;
+        for rep in self.replace.iter_mut() {
+            wrap!(rep.n, rep.n.typecheck1(ctx))?
+        }
+        // a check by bounds decides the struct after the update is
+        // checked: each field's place is known only now
+        if ctx.bounds {
+            let source = self.source.typ().resolve_tvars();
+            for rep in self.replace.iter_mut().filter(|r| r.index.is_none()) {
+                if let Ok((idx, _)) = struct_field_types(ctx, &source, &rep.name) {
+                    rep.index = idx
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
         put_tag(NodeTag::StructWith, buf);
         self.spec.encode(buf)?;
@@ -1248,8 +1266,7 @@ impl<R: Rt> StructWith<R> {
             for rep in self.replace.iter_mut() {
                 wrap!(rep.n, child(&mut rep.n, ctx))?;
             }
-            let fields =
-                self.replace.iter().map(|r| (r.name.clone(), r.n.typ().clone()));
+            let fields = self.replace.iter().map(|r| (r.name.clone(), r.n.typ().clone()));
             let u = Use::With { fields: fields.collect(), out: self.typ.clone() };
             return wrap!(self, solving(|s| s.watch(&ctx.env, self.source.typ(), u)));
         }

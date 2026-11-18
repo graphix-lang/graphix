@@ -1122,6 +1122,9 @@ pub(crate) fn emit_struct_with_node<R: Rt>(
             }
             _ => Err(anyhow!("emit_clif: struct-with source isn't a struct")),
         })?;
+    if let Some(r) = replace.iter().find(|r| r.index.is_none()) {
+        bail!("emit_clif: struct-with field {} has no place in the source", r.name)
+    }
     let arr = emit_accessor_source_node(cx, source, AbiKind::Struct)?;
     let (arr_ptr, src_disc) = (arr.ptr, arr.disc);
     // A tainted source does not abort: the reads below are guarded and

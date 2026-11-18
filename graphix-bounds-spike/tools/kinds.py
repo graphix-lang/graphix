@@ -5,7 +5,7 @@ refusal predicate.
 
 usage: kinds.py <bless file> [-k KIND] [-g] [-M]
 kinds: message (both refuse, other words), accepted (a refusal expected,
-bounds accepts), refused (a value expected, bounds refuses), value (both run,
+bounds accepts, its value or nothing), lost (a value expected, none came), refused (a value expected, bounds refuses), value (both run,
 another value), unknown (no run! found)
 -g groups the texts, -M prints the manifest lines of the message kind
 """
@@ -34,7 +34,8 @@ for line in open(sys.argv[1]):
     else:
         wants_refusal = bool(REFUSAL.search(body))
         kind = {(True, 'refuses'): 'message', (True, 'accepts'): 'accepted',
-                (False, 'refuses'): 'refused', (False, 'accepts'): 'value'}[(wants_refusal, got)]
+                (True, 'settles'): 'accepted', (False, 'refuses'): 'refused',
+                (False, 'accepts'): 'value', (False, 'settles'): 'lost'}[(wants_refusal, got)]
     rows.append((name, kind, text))
 
 if '-M' in sys.argv:

@@ -60,6 +60,12 @@ impl Meets {
         self.0 & Self::WALK != 0
     }
 
+    /// Whether a position is known: a walked one keeps what its places
+    /// ask where the scan saw them all.
+    pub(crate) fn asks(self) -> bool {
+        self.0 & Self::QUESTIONS != 0
+    }
+
     pub(crate) fn holds(self) -> bool {
         self.0 & Self::HOLDS != 0
     }
@@ -197,7 +203,7 @@ impl<'a> Scan<'a> {
             Type::Set(ms) => {
                 let at = match at.walk() || self.apart(d, ms) {
                     true => at,
-                    false => Meets::TO_WALK,
+                    false => Meets(at.0 | Meets::WALK),
                 };
                 for m in ms.iter() {
                     self.walk(d, m, at)

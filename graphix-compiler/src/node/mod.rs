@@ -1878,6 +1878,9 @@ impl<'a> Writes<'a> {
                 if let Some(a) = &sq.abort {
                     self.expr(a)
                 }
+                if let expr::SeqKind::Queued { flush: Some(f) } = &sq.kind {
+                    self.expr(f)
+                }
                 self.scoped(|w| {
                     match &sq.trigger {
                         Some(expr::SeqTrigger::Bind(b)) => {
@@ -4543,6 +4546,10 @@ impl<R: Rt> ConnectDeref<R> {
             None => bail!("BUG missing bind {:?}", self.src_id),
             Some(bind) => bind.typ.clone(),
         };
+        if bounds::active() {
+            let write = bounds::Use::Write { value: rhs.clone() };
+            return wrap!(self, solving(|s| s.watch(&ctx.env, &btyp, write)));
+        }
         let targets = reference_targets(&ctx.env, &btyp);
         match wrap!(self, targets)? {
             // an unbound reference is inferred writable at the written type

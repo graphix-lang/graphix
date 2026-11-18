@@ -2806,7 +2806,7 @@ impl<R: Rt> Update<R> for Select<R> {
             arm_facts,
             discriminants: _,
             flags,
-} = self;
+        } = self;
         let LazyArmFacts {
             tracked,
             sleep_on_deselect,
@@ -3083,7 +3083,7 @@ impl<R: Rt> Update<R> for Select<R> {
             arm_facts: _,
             discriminants: _,
             flags: _,
-} = self;
+        } = self;
         arg.node.delete(ctx);
         for (pat, arm) in arms {
             arm.delete(ctx);
@@ -3104,7 +3104,7 @@ impl<R: Rt> Update<R> for Select<R> {
             arm_facts,
             discriminants: _,
             flags: _,
-} = self;
+        } = self;
         slept.set();
         let stopped = wake::stopped(ctx);
         let mut tracked = arm_facts.as_mut().and_then(|f| f.tracked.as_mut());
@@ -3134,7 +3134,7 @@ impl<R: Rt> Update<R> for Select<R> {
             arm_facts: _,
             discriminants: _,
             flags: _,
-} = self;
+        } = self;
         arg.node.refs(refs);
         for arm in arms {
             arm_refs(arm, refs);
@@ -3184,13 +3184,14 @@ impl<R: Rt> Update<R> for Select<R> {
         // patterns were built: they take their places from what the arm
         // tests for now
         for (pat, n) in self.arms.iter_mut().filter(|_| ctx.bounds) {
-            let tested = pat.type_predicate.resolve_tvars();
+            let tested = match pat.explicit_type_predicate {
+                true => bounds::written_test(&pat.type_predicate),
+                false => pat.type_predicate.resolve_tvars(),
+            };
             if !tested.is_uninhabited() {
                 wrap!(n, pat.structure_predicate.realign_decided(&ctx.env, &tested))?
             }
-            if !pat.explicit_type_predicate {
-                pat.type_predicate = tested
-            }
+            pat.type_predicate = tested
         }
         for (pat, n) in self.arms.iter_mut() {
             if pat.explicit_type_predicate
@@ -3327,19 +3328,22 @@ impl<R: Rt> Select<R> {
         let mut rows = rows.iter();
         for (pat, n) in self.arms.iter_mut() {
             let tp = rows.next().ok_or_else(|| anyhow!("BUG: a select row short"))?;
-            // the predicate's cells are its binds' (an inferred predicate
-            // is built from them), bound by position before it is replaced
-            pat.type_predicate.take_row(tp);
             match pat.explicit_type_predicate {
                 // the type test reads the names it writes at run time, where
                 // the body's typedefs are gone: resolve them here
                 true => {
+                    pat.type_predicate.take_row(tp);
                     pat.type_predicate.seed_refs(&ctx.env);
                 }
-                // after a check by bounds the pattern takes its places
-                // from the decided type, in typecheck1
+                // the predicate's cells are its binds' (an inferred predicate
+                // is built from them), bound by position before it is
+                // replaced. After a check by bounds the row is what reached
+                // the arm, which says nothing of positions: each bind takes
+                // its own row, and the pattern its places from the decided
+                // type, in typecheck1
                 false => {
                     if !ctx.bounds {
+                        pat.type_predicate.take_row(tp);
                         pat.structure_predicate.realign(&ctx.env, tp).at(n.spec())?;
                     }
                     pat.type_predicate = tp.clone();

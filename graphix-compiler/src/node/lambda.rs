@@ -694,7 +694,9 @@ fn instance_cells<R: Rt>(
     if bounds::scheme(&scheme) {
         let at = Type::Fn(Arc::new(instance.clone()));
         return bounds::instance(&ctx.env, &scheme, &at)
-            .inspect_err(|e| bounds::debug(|| format!("instance of {scheme} at {at}: {e:#}")))
+            .inspect_err(|e| {
+                bounds::debug(|| format!("instance of {scheme} at {at}: {e:#}"))
+            })
             .ok();
     }
     // every open cell of the signature is the instance's own copy, a cell
@@ -3096,8 +3098,8 @@ impl<R: Rt> DefGate<R> {
             (Some(Closing::Inline), _) => (),
             (Some(Closing::Scheme { mark, named }), _) => {
                 let sig = Type::Fn(self.sig.clone());
-                closed =
-                    solving(|s| s.generalize(&ctx.env, &sig, self.depth - 1, mark)).at(spec);
+                closed = solving(|s| s.generalize(&ctx.env, &sig, self.depth - 1, mark))
+                    .at(spec);
                 self.rigid.clear();
                 for (tv, _) in self.declared.iter() {
                     solving(|s| s.own(tv))

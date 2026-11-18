@@ -674,10 +674,8 @@ impl<R: Rt> ArrayRef<R> {
             // array's, or a byte
             if check {
                 let bytes = Type::Primitive(Typ::Bytes.into());
-                let indexed = bounds::union_of([
-                    Type::Array(Arc::new(self.etyp.clone())),
-                    bytes,
-                ]);
+                let indexed =
+                    bounds::union_of([Type::Array(Arc::new(self.etyp.clone())), bytes]);
                 wrap!(self, indexed.check_contains(&ctx.env, source_typ))?;
                 let read = Use::Element { out: self.etyp.clone() };
                 wrap!(self, super::solving(|s| s.watch(&ctx.env, source_typ, read)))?;

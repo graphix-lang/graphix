@@ -242,6 +242,10 @@ impl Use {
                 }
                 out.encode(buf)
             }
+            Use::Write { value } => {
+                buf.put_u8(7);
+                value.encode(buf)
+            }
             // a cell keeps a select as its template: the select itself is
             // its check's
             Use::Select(_) => Err(PackError::InvalidFormat),
@@ -301,6 +305,7 @@ impl Use {
                     level: Level::decode(buf)?,
                 }
             }
+            7 => Use::Write { value: Type::decode(buf)? },
             _ => return Err(PackError::InvalidFormat),
         })
     }
@@ -362,8 +367,17 @@ impl Known {
     /// What a restored cell needs of this: everything but its place in
     /// the list of the check that made it.
     pub(crate) fn image_encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
-        let Known { feeders, sinks, quantified, demanded, made, listed: _, uses, left, defaults } =
-            self;
+        let Known {
+            feeders,
+            sinks,
+            quantified,
+            demanded,
+            made,
+            listed: _,
+            uses,
+            left,
+            defaults,
+        } = self;
         put_all(feeders, buf)?;
         put_all(sinks, buf)?;
         quantified.encode(buf)?;

@@ -79,7 +79,12 @@ impl StructWidth {
 
     /// The field `name` of the struct `fields`, at `i` where every
     /// struct the pattern takes has it there.
-    fn field<'a>(self, fields: &'a [Value], name: &ArcStr, i: usize) -> Option<&'a Value> {
+    fn field<'a>(
+        self,
+        fields: &'a [Value],
+        name: &ArcStr,
+        i: usize,
+    ) -> Option<&'a Value> {
         match self {
             Self::Named(_) => rep::field_named(fields, name).map(|(_, v)| v),
             Self::Exact(_) | Self::AtLeast(_) => match rep::field_at(fields, i) {
@@ -2294,7 +2299,9 @@ impl StructPatternNode {
         f: &mut dyn FnMut(&mut Self, &Type) -> Result<()>,
     ) -> Result<()> {
         match self {
-            Self::Ignore | Self::Literal(_) | Self::Bind(_) | Self::Struct { .. } => Ok(()),
+            Self::Ignore | Self::Literal(_) | Self::Bind(_) | Self::Struct { .. } => {
+                Ok(())
+            }
             Self::Or { alts: ps }
             | Self::Variant { binds: ps, .. }
             | Self::Slice { binds: ps, .. }

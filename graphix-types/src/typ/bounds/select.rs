@@ -103,11 +103,11 @@ impl Pat {
             Pat::Variant(_, tag, ps) => {
                 Some(Type::Variant(tag.clone(), all(ps), WrittenAt::default()))
             }
-            Pat::Struct(_, fs, true) => Some(Type::Struct(Arc::from_iter(
-                fs.iter().map(|(n, p)| {
+            Pat::Struct(_, fs, true) => {
+                Some(Type::Struct(Arc::from_iter(fs.iter().map(|(n, p)| {
                     (n.clone(), p.admits().unwrap_or(Type::Any), WrittenAt::default())
-                }),
-            ))),
+                }))))
+            }
             Pat::Elems { list: false, .. } => Some(Type::Array(Arc::new(Type::Any))),
             Pat::Elems { list: true, .. } => Some(Type::List(Arc::new(Type::Any))),
             Pat::Or(ps) => {
@@ -151,8 +151,8 @@ fn blind(env: &Env, id: &AbstractId, p: &Pat) -> Option<ArcStr> {
     let params: SmallVec<[Type; 4]> = made.params.iter().map(|_| Type::Any).collect();
     let mut names = SmallVec::new();
     p.cells(&mut names);
-    let taken = rep(env, id, &params)
-        .is_some_and(|r| holds_taker(env, &r, &mut SmallVec::new()));
+    let taken =
+        rep(env, id, &params).is_some_and(|r| holds_taker(env, &r, &mut SmallVec::new()));
     (taken && !names.is_empty()).then(|| made.name.clone())
 }
 
@@ -341,13 +341,14 @@ fn nothing(t: &Type) -> bool {
 /// Whether a value of `t` holds something a value could be written into
 /// or called: a writable reference or a function, behind any name.
 fn holds_taker(env: &Env, t: &Type, seen: &mut SmallVec<[Type; 4]>) -> bool {
-    let named = |t: &Type, what: Option<Type>, seen: &mut SmallVec<[Type; 4]>| {
-        match seen.iter().any(|s| strictly_identical(s, t)) {
-            true => false,
-            false => {
-                seen.push(t.clone());
-                what.is_none_or(|t| holds_taker(env, &t, seen))
-            }
+    let named = |t: &Type, what: Option<Type>, seen: &mut SmallVec<[Type; 4]>| match seen
+        .iter()
+        .any(|s| strictly_identical(s, t))
+    {
+        true => false,
+        false => {
+            seen.push(t.clone());
+            what.is_none_or(|t| holds_taker(env, &t, seen))
         }
     };
     ensure_sufficient(|| match t {
@@ -437,7 +438,8 @@ fn same_params(env: &Env, ps: &[Type], qs: &[Type]) -> Option<bool> {
 /// The open cells of `t` a pattern could look into: every one but those
 /// of a function's type, which no pattern looks into.
 fn undecided(t: &Type, out: &mut SmallVec<[TVar; 4]>) {
-    let mut each = |ts: &mut dyn Iterator<Item = &Type>| ts.for_each(|t| undecided(t, out));
+    let mut each =
+        |ts: &mut dyn Iterator<Item = &Type>| ts.for_each(|t| undecided(t, out));
     match t {
         Type::TVar(tv) if tv.is_rigid() => (),
         Type::TVar(tv) => {
@@ -763,15 +765,14 @@ impl Solving {
             }
             // a value of an abstract type passes a test of it where its
             // parameters are the test's; one over a variable may
-            (Type::Abstract { id: x, params: ps }, Type::Abstract { id: y, params: qs })
-                if test && x == y =>
-            {
-                match same_params(env, ps, qs) {
-                    Some(true) => a,
-                    Some(false) => Type::Bottom,
-                    None => b,
-                }
-            }
+            (
+                Type::Abstract { id: x, params: ps },
+                Type::Abstract { id: y, params: qs },
+            ) if test && x == y => match same_params(env, ps, qs) {
+                Some(true) => a,
+                Some(false) => Type::Bottom,
+                None => b,
+            },
             _ => Type::Bottom,
         }
     }
@@ -836,11 +837,10 @@ impl Solving {
             {
                 Type::Bottom
             }
-            (Type::Abstract { id: x, params: ps }, Type::Abstract { id: y, params: qs })
-                if test && x == y && same_params(env, ps, qs) == Some(true) =>
-            {
-                Type::Bottom
-            }
+            (
+                Type::Abstract { id: x, params: ps },
+                Type::Abstract { id: y, params: qs },
+            ) if test && x == y && same_params(env, ps, qs) == Some(true) => Type::Bottom,
             // an error holds one value: what is left of it is an error
             // of what is left of that
             (Type::Error(x), Type::Error(y)) => match self.less(env, test, x, y) {
@@ -924,7 +924,9 @@ impl Solving {
             });
             let impls = traits.filter_map(|id| env.impls_of(id));
             let members: Vec<Type> = impls
-                .flat_map(|l| l.iter().filter_map(|im| im.target.fill_hole(arg)).collect::<Vec<_>>())
+                .flat_map(|l| {
+                    l.iter().filter_map(|im| im.target.fill_hole(arg)).collect::<Vec<_>>()
+                })
                 .collect();
             let r = self.route(env, pat, &split(&union_of(members)));
             return Routed { rest: t.clone(), ..r };
@@ -1020,12 +1022,14 @@ impl Solving {
             // what the arms before left of an abstract type's payload,
             // or all of it
             (Pat::Abs(all, id, p), _)
-                if let Some((whole, payload)) = payload_left(&t).or_else(|| match &t {
-                    Type::Abstract { id: have, params } => {
-                        Some((t.clone(), rep(env, have, params)?))
-                    }
-                    _ => None,
-                }) && matches!(&whole, Type::Abstract { id: have, .. } if have == id) =>
+                if let Some((whole, payload)) =
+                    payload_left(&t).or_else(|| match &t {
+                        Type::Abstract { id: have, params } => {
+                            Some((t.clone(), rep(env, have, params)?))
+                        }
+                        _ => None,
+                    })
+                    && matches!(&whole, Type::Abstract { id: have, .. } if have == id) =>
             {
                 let r = self.route(env, p, &payload);
                 match nothing(&r.part) {
@@ -1034,9 +1038,10 @@ impl Solving {
                         part: whole.clone(),
                         rest: match nothing(&r.rest) {
                             true => Type::Bottom,
-                            false => {
-                                tag(&ArcStr::from(PAYLOAD), [whole.clone(), r.rest.clone()])
-                            }
+                            false => tag(
+                                &ArcStr::from(PAYLOAD),
+                                [whole.clone(), r.rest.clone()],
+                            ),
                         },
                         binds: named(all, &whole, r.binds),
                     },
@@ -1115,7 +1120,8 @@ impl Solving {
                     // kept as the tuples of their elements, for the arms
                     // after to take
                     (false, None) if n < 64 => {
-                        let each = Type::Tuple(Arc::from_iter((0..n).map(|_| (*e).clone())));
+                        let each =
+                            Type::Tuple(Arc::from_iter((0..n).map(|_| (*e).clone())));
                         let tuple = Pat::Tuple(None, elems.clone());
                         let rest = self.route(env, &tuple, &each).rest;
                         union_of([

@@ -14,8 +14,8 @@ use crate::{
         TVar, Type,
         cast::numbers_ordered,
         node_addr,
-        toml_root_refusal,
         setops::strictly_identical,
+        toml_root_refusal,
         tvar::{AtLevel, Level, ShortName},
         variance,
     },
@@ -254,6 +254,9 @@ pub enum Use {
     /// A struct update: `out` takes the struct with each of `fields` at
     /// its new type.
     With { fields: SmallVec<[(ArcStr, Type); 2]>, out: Type },
+    /// A write through a reference: `value` goes to what each writable
+    /// reference reaching the cell refers to.
+    Write { value: Type },
     /// The scrutinee of a select ([`Solving::select`]).
     Select(usize),
     /// [`Use::Select`] as a cell keeps it: with the select as written,
@@ -285,6 +288,7 @@ impl Use {
             Use::Element { .. } => "indexing an array",
             Use::Call { .. } => "reading a fn",
             Use::With { .. } => "updating a struct",
+            Use::Write { .. } => "writing through a reference",
             Use::Select(_) | Use::Routed(..) => "a select",
             Use::Method { .. } => "calling a method",
         }
@@ -308,6 +312,7 @@ impl Use {
                 fields: fields.iter().map(|(n, t)| (n.clone(), f(t))).collect(),
                 out: f(out),
             },
+            Use::Write { value } => Use::Write { value: f(value) },
             Use::Select(id) => Use::Select(*id),
             Use::Routed(id, of) => Use::Routed(*id, of.clone()),
             Use::Method { name, typings, receiver, at, args, out, throws, level } => {
@@ -327,9 +332,10 @@ impl Use {
 
     fn each(&self, f: &mut impl FnMut(&Type)) {
         match self {
-            Use::Field { out, .. } | Use::Index { out, .. } | Use::Element { out } => {
-                f(out)
-            }
+            Use::Field { out, .. }
+            | Use::Index { out, .. }
+            | Use::Element { out }
+            | Use::Write { value: out } => f(out),
             Use::Call { args, out } => {
                 f(out);
                 args.iter().for_each(|(_, t)| f(t))
@@ -404,6 +410,14 @@ pub struct Solving {
     /// The declared variables being met are a signature others read
     /// ([`fits`]): nothing it does not say holds of them.
     sealed: bool,
+    /// A variable of a sealed signature whose values a copy out carried to
+    /// a cell outside: its callers, reading the signature alone, would not
+    /// carry theirs.
+    sunk: Option<TVar>,
+    /// An instance's signature is met with its definition's ([`instance`]):
+    /// a typedef application in it is the definition's with each argument
+    /// what the instance made of it.
+    deriving: bool,
     /// The cells fixed that carry a predicate, which is judged of what
     /// the cell holds once every cell is fixed ([`Self::judge`]).
     judged: Vec<TVar>,
@@ -691,7 +705,8 @@ impl Solving {
                     compared(env, &a, &mut reached, &mut SmallVec::new());
                     for v in reached.iter() {
                         if !numbers_ordered(|| v.conjunct_implies(env, &b))? {
-                            let name = v.declared_name().unwrap_or_else(|| v.name.clone());
+                            let name =
+                                v.declared_name().unwrap_or_else(|| v.name.clone());
                             bail!(
                                 "the implementation requires '{}: {b}, which the \
                                  signature does not declare",
@@ -890,12 +905,14 @@ impl Solving {
             (Some(_), None) => {
                 let b = self.extrude(b, false, at);
                 self.escapes(&b, at)?;
+                self.sinks_sealed()?;
                 self.constrain(env, a, &b)
             }
             (None, Some(w)) if depth(a) <= at.depth() => self.arrive(env, w, a),
             (None, Some(_)) => {
                 let a = self.extrude(a, true, at);
                 self.escapes(&a, at)?;
+                self.sinks_sealed()?;
                 self.constrain(env, &a, b)
             }
             (None, None) => unreachable!(),
@@ -924,7 +941,9 @@ impl Solving {
         }
         upper.iter().try_for_each(|u| {
             self.relate(env, a, u).inspect_err(|_| {
-                debug(|| format!("'{} takes {a}, and is wanted as {u:?}", ShortName(&w.name)))
+                debug(|| {
+                    format!("'{} takes {a}, and is wanted as {u:?}", ShortName(&w.name))
+                })
             })
         })
     }
@@ -957,6 +976,9 @@ impl Solving {
                 match (v.is_rigid(), pos) {
                     (true, false) => t.clone(),
                     (true, true) => {
+                        if self.sealed {
+                            self.sunk.get_or_insert_with(|| v.clone());
+                        }
                         if std::env::var_os("GRAPHIX_BOUNDS_DEBUG").is_some() {
                             eprintln!(
                                 "sink of '{} (depth {}) at depth {}\n{}",
@@ -1020,6 +1042,25 @@ impl Solving {
             other => other
                 .cow_children(&mut |c| Some(self.extrude(c, pos, at)))
                 .unwrap_or_else(|| other.clone()),
+        }
+    }
+
+    /// A variable of a signature others read whose values the definition
+    /// writes outside it: a caller reads the signature alone, and would
+    /// not carry its own values there.
+    fn sinks_sealed(&mut self) -> Result<()> {
+        match self.sunk.take() {
+            None => Ok(()),
+            Some(v) => {
+                let name = v.declared_name().unwrap_or_else(|| v.name.clone());
+                let name = ShortName(&name);
+                bail!(
+                    "where the signature declares '{name}, a type each use picks, the \
+                     implementation writes it to a binding outside its let, which has one \
+                     type all uses share: give that binding a type that holds every \
+                     '{name}, or declare the signature at one type"
+                )
+            }
         }
     }
 
@@ -1096,8 +1137,11 @@ impl Solving {
                 // a value with open parts goes to every decided member
                 // that takes it, together: no order among them decides it
                 if a.has_free() {
-                    let fits: SmallVec<[&Type; 2]> =
-                        decided.iter().copied().filter(|m| self.probe(env, a, m)).collect();
+                    let fits: SmallVec<[&Type; 2]> = decided
+                        .iter()
+                        .copied()
+                        .filter(|m| self.probe(env, a, m))
+                        .collect();
                     if !fits.is_empty() {
                         return fits.iter().try_for_each(|m| self.constrain(env, a, m));
                     }
@@ -1120,7 +1164,9 @@ impl Solving {
     fn unfolded(&mut self, env: &Env, a: &Type, b: &Type) -> Result<()> {
         // two applications of one definition are related by their
         // arguments, each as the definition's body meets its parameter,
-        // where the body leaves that no choice
+        // where the body leaves that no choice, or where an instance's
+        // signature is met with its definition's: each argument there is
+        // what the instance made of the definition's
         if let (Type::Ref(ra), Type::Ref(rb)) = (a, b)
             && ra.same_definition(rb, env)
             && ra.params.len() == rb.params.len()
@@ -1128,8 +1174,10 @@ impl Solving {
                 ra.resolve_peek(env).and_then(|def| variance::meets(env, &def))
         {
             let pairs = || ra.params.iter().zip(rb.params.iter()).zip(meets.iter());
-            if pairs().all(|((x, y), m)| !m.walk() || strictly_identical(x, y)) {
-                for ((x, y), m) in pairs().filter(|(_, m)| !m.walk()) {
+            let deriving = self.deriving;
+            let by_argument = |m: &variance::Meets| !m.walk() || (deriving && m.asks());
+            if pairs().all(|((x, y), m)| by_argument(m) || strictly_identical(x, y)) {
+                for ((x, y), m) in pairs().filter(|(_, m)| by_argument(m)) {
                     if m.holds() || m.holds_swapped() {
                         self.constrain(env, x, y)?
                     }
@@ -1289,8 +1337,8 @@ pub fn strip(env: &Env, t: &Type, raises: bool) -> Result<(Type, SmallVec<[Type;
     Ok((left, payloads))
 }
 
-/// The members of `t`, a name that stands for a union, an error or a
-/// primitive read as what it stands for, each name once.
+/// The members of `t`, a name that stands for a union, an error, a
+/// primitive or `Any` read as what it stands for, each name once.
 fn members_of(env: &Env, t: &Type, out: &mut SmallVec<[Type; 4]>) -> Result<()> {
     fn go(
         env: &Env,
@@ -1303,7 +1351,9 @@ fn members_of(env: &Env, t: &Type, out: &mut SmallVec<[Type; 4]>) -> Result<()> 
             named @ Type::Ref(_) if !seen.insert(named.clone()) => Ok(()),
             named @ Type::Ref(_) => match named.lookup_ref(env)? {
                 body @ Type::Set(_) => go(env, &body, out, seen),
-                body @ (Type::Error(_) | Type::Primitive(_)) => Ok(out.push(body)),
+                body @ (Type::Error(_) | Type::Primitive(_) | Type::Any) => {
+                    Ok(out.push(body))
+                }
                 _ => Ok(out.push(named.clone())),
             },
             t => Ok(out.push(t.clone())),
@@ -1446,7 +1496,7 @@ pub fn debug(what: impl FnOnce() -> String) {
 /// address of the cell it is the copy of. An instance is built from its
 /// definition's check through this, in whatever task builds it.
 pub fn instance(env: &Env, def: &Type, at: &Type) -> Result<AHashMap<usize, TVar>> {
-    let mut solving = Solving::default();
+    let mut solving = Solving { deriving: true, ..Solving::default() };
     let mut copies = AHashMap::default();
     let one = solving.instantiate_into(
         def,
@@ -1644,7 +1694,8 @@ pub fn take(own: &Type, row: &Type) -> bool {
 pub fn method_typing(sig: &Type, target: &Type) -> Type {
     fn at(t: &Type, target: &Type) -> Option<Type> {
         ensure_sufficient(|| match t {
-            Type::App(head, arg) if matches!(&**head, Type::TVar(v) if &*v.name == "self") => {
+            Type::App(head, arg) if matches!(&**head, Type::TVar(v) if &*v.name == "self") =>
+            {
                 let arg = at(arg, target).unwrap_or_else(|| (**arg).clone());
                 target.fill_hole(&arg)
             }
@@ -1738,9 +1789,8 @@ pub fn strippable(env: &Env, t: &Type) -> Result<bool> {
     // what a member holds inside is nothing to the strip: only a member
     // nothing has decided could still be an error or null. A definition's
     // own variable is decided for it, whatever an instance gives it
-    let open = |m: &Type| {
-        matches!(m, Type::TVar(v) if !v.is_rigid() && !v.level().is_generic())
-    };
+    let open =
+        |m: &Type| matches!(m, Type::TVar(v) if !v.is_rigid() && !v.level().is_generic());
     Ok(match &members[..] {
         [Type::TVar(_)] => false,
         [_] => true,
@@ -1801,6 +1851,12 @@ fn deep(t: &Type) -> Type {
 
 /// `t` with each open cell `f` answers for replaced, bound cells looked
 /// through.
+/// The run-time test of a test written in a select: a variable it writes
+/// stands for whatever is there, as [`Solving::tested`] routes it.
+pub fn written_test(t: &Type) -> Type {
+    map_cells(t, &mut |_| Some(Type::Any))
+}
+
 fn map_cells(t: &Type, f: &mut impl FnMut(&TVar) -> Option<Type>) -> Type {
     // a part many places share is mapped once, and one nothing changes
     // in stays shared: `f` gives a cell the same answer wherever it is
@@ -2151,7 +2207,8 @@ impl Solving {
                         u.generalize()
                     }
                     self.leave(&Type::TVar(u.clone()), |ls| {
-                        let same = |l: &Left| matches!(l, Left::Single(w) if w.same_cell(v));
+                        let same =
+                            |l: &Left| matches!(l, Left::Single(w) if w.same_cell(v));
                         (!ls.iter().any(same)).then(|| Left::Single(v.clone()))
                     })
                 }
@@ -2172,7 +2229,8 @@ impl Solving {
                 .collect();
             let asked = Arc::new((t, predicates, v.name.clone()));
             self.leave(&asked.0, |ls| {
-                let same = |l: &Left| matches!(l, Left::Asked(a) if Arc::ptr_eq(a, &asked));
+                let same =
+                    |l: &Left| matches!(l, Left::Asked(a) if Arc::ptr_eq(a, &asked));
                 (!ls.iter().any(same)).then(|| Left::Asked(asked.clone()))
             })
         }
@@ -2278,8 +2336,9 @@ impl Solving {
                     // a select that waited on one of the scheme's
                     // variables is the instance's to finish
                     Left::Waiting(of, w) => {
-                        let new = self
-                            .select_copy(of, &mut |s, v| s.copy_cell(v, above, at, copies));
+                        let new = self.select_copy(of, &mut |s, v| {
+                            s.copy_cell(v, above, at, copies)
+                        });
                         let w = self.copy(w, above, at, copies);
                         self.select_wait(new, w)
                     }
@@ -2426,7 +2485,10 @@ impl Solving {
                     u => u,
                 };
                 let met = *met
-                    && !matches!(u, Use::Select(_) | Use::Routed(..) | Use::Method { .. });
+                    && !matches!(
+                        u,
+                        Use::Select(_) | Use::Routed(..) | Use::Method { .. }
+                    );
                 known(&n, |k| k.uses.push((u, met)))
             }
             if !self.scheming {
@@ -2450,7 +2512,9 @@ impl Solving {
                         asked.1.clone(),
                         asked.2.clone(),
                     ))),
-                    Left::Single(u) => Left::Single(self.copy_cell(&u, above, at, copies)),
+                    Left::Single(u) => {
+                        Left::Single(self.copy_cell(&u, above, at, copies))
+                    }
                     Left::Waiting(of, w) => {
                         let of = self.template_copy(&of, &mut |s, v| {
                             s.copy_cell(v, above, at, copies)
@@ -2603,7 +2667,8 @@ impl Solving {
                     self.leave(&pair, |ls| {
                         let same = |l: &Left| match l {
                             Left::Held(p) => {
-                                strictly_identical(&p.0, &a) && strictly_identical(&p.1, &b)
+                                strictly_identical(&p.0, &a)
+                                    && strictly_identical(&p.1, &b)
                             }
                             _ => false,
                         };
@@ -2631,8 +2696,7 @@ impl Solving {
                     if !strippable(env, &deep(&operand))? {
                         self.fix_in(env, &operand)?
                     }
-                    let (left, payloads) =
-                        strip(env, &deep(&operand), raised.is_some())?;
+                    let (left, payloads) = strip(env, &deep(&operand), raised.is_some())?;
                     self.constrain(env, &left, &out)?;
                     for to in raised.iter() {
                         payloads.iter().try_for_each(|p| self.constrain(env, p, to))?
@@ -2693,9 +2757,8 @@ impl Solving {
                 }
             }
         }
-        // a decided value nothing has decided between is no choice where
-        // the members that take it are over the same cells: it goes to
-        // each, before the cells nothing decided are fixed
+        // a decided value nothing has decided between goes to every member
+        // that takes it, before the cells nothing decided are fixed
         for i in (0..self.held.len()).rev().filter(|_| last) {
             let (a, b, scheme) = self.held[i].clone();
             let (a, b) = (deep(&a), deep(&b));
@@ -2713,16 +2776,9 @@ impl Solving {
             }
             let fits: SmallVec<[Type; 2]> =
                 ms.iter().filter(|m| self.probe(env, &a, m)).cloned().collect();
-            let over = |m: &Type| {
-                let mut cells: SmallVec<[usize; 4]> =
-                    open_cells(m).iter().map(|v| v.cell_addr()).collect();
-                cells.sort_unstable();
-                cells.dedup();
-                cells
-            };
-            let same = fits.iter().all(|m| over(m) == over(&fits[0]));
-            let all = |s: &mut Self| fits.iter().try_for_each(|m| s.constrain(env, &a, m));
-            if !fits.is_empty() && same && self.attempting(all) {
+            let all =
+                |s: &mut Self| fits.iter().try_for_each(|m| s.constrain(env, &a, m));
+            if !fits.is_empty() && self.attempting(all) {
                 self.held.swap_remove(i);
             }
         }
@@ -2893,7 +2949,9 @@ impl Solving {
                     }
                 }
                 Type::Bound(Bound::Data) if !p.contains(env, t)? => {
-                    return Err(t.not_data(env, &[], [t, t]).unwrap_or_else(|| t.no_data()));
+                    return Err(t
+                        .not_data(env, &[], [t, t])
+                        .unwrap_or_else(|| t.no_data()));
                 }
                 Type::Bound(b @ (Bound::JsonData | Bound::TomlData)) => {
                     let format = match b {
@@ -3138,6 +3196,7 @@ impl Solving {
                 (Use::Field { .. } | Use::With { .. }, Type::Struct(_))
                     | (Use::Index { .. }, Type::Tuple(_))
                     | (Use::Call { .. }, Type::Fn(_))
+                    | (Use::Write { .. }, Type::ByRef(..))
             );
             if shaped && self.apply(env, &u, &b)? {
                 known(v, |k| k.uses[i].1 = true)
@@ -3265,6 +3324,15 @@ impl Solving {
             (Type::Fn(ft), Use::Call { args, out }) => {
                 self.call(env, ft, args, out).map(|()| true)
             }
+            (Type::ByRef(Mutability::Mut, t), Use::Write { value }) => {
+                self.constrain(env, value, t).map(|()| true)
+            }
+            (Type::ByRef(Mutability::Shared, _), Use::Write { .. }) => {
+                bail!(
+                    "can't write through a read-only reference ({a}): take it with `&mut`"
+                )
+            }
+            (_, Use::Write { .. }) => bail!("expected a reference not {a}"),
             (_, Use::Field { field, .. }) => bail!("{a} has no field {field}"),
             (_, Use::Index { i, .. }) => bail!("{a} has no element {i}"),
             (_, Use::Call { .. }) => bail!("{a} is not a function"),
@@ -3677,7 +3745,8 @@ mod tests {
         let (env, _) = typed(&[], "null");
         let mut s = Solving::default();
         let ((_, tv), (out, to)) = (var("v"), var("out"));
-        let read = super::Use::Field { field: ArcStr::from("a"), out: to.clone(), write: false };
+        let read =
+            super::Use::Field { field: ArcStr::from("a"), out: to.clone(), write: false };
         assert!(s.watch(&env, &tv, read).is_ok());
         assert!(s.constrain(&env, &parsed(&env, "{a: i64, b: string}"), &tv).is_ok());
         assert_eq!(shown(&out.cell_lower()), ["i64"]);

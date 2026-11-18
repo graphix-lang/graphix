@@ -1355,11 +1355,17 @@ fn formal_slots<R: Rt>(
         tail_invariant: Vec::new(),
     };
     for (i, fa) in g.typ().args.iter().enumerate() {
+        let id = g.args().get(i).and_then(|p| p.single_bind_id());
         let name = match &fa.kind {
             FnArgKind::Positional { name: Some(n) } => n.clone(),
             FnArgKind::Labeled { name, .. } => name.clone(),
+            // a declared signature leaves its receiver unnamed: the
+            // formal's binding names it
             FnArgKind::Positional { name: None } => {
-                return Err("a formal has no name".into());
+                match id.and_then(|id| ec.env.by_id.get(&id)) {
+                    Some(b) => ArcStr::from(b.name.as_str()),
+                    None => return Err("a formal has no name".into()),
+                }
             }
         };
         let arg_typ = expand_refs(&fa.typ, &ec.env);
@@ -1378,7 +1384,6 @@ fn formal_slots<R: Rt>(
         let no_slot = || format_compact!("formal `{name}` has no kernel encoding");
         let kt = freeze_in_env(&fa.typ, &ec.env).ok_or_else(no_slot)?;
         let kind = param_kind(&kt).ok_or_else(no_slot)?;
-        let id = g.args().get(i).and_then(|p| p.single_bind_id());
         // A destructured formal refuses: a name-only slot would let a
         // same-named body leaf resolve to the whole composite.
         if id.is_none() {

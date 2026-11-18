@@ -1514,7 +1514,8 @@ impl<R: Rt> Update<R> for Impl<R> {
             for d in self.trait_def.methods.iter() {
                 let Some(id) = self.def.methods.get(d.name.as_str()) else { continue };
                 let Some(bind) = ctx.env.by_id.get(id) else { continue };
-                let declared = Type::Fn(Arc::new(method_sig_at(&d.typ, &self.def.target)));
+                let declared =
+                    Type::Fn(Arc::new(method_sig_at(&d.typ, &self.def.target)));
                 fits_declared(ctx, &bind.typ.clone(), &declared).map_err(|e| {
                     let told = format_compact!(
                         "method {} of impl {} for {} does not implement the declared {}",
