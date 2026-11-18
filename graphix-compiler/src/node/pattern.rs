@@ -2324,6 +2324,24 @@ impl StructPatternNode {
         Self::compile_with(ctx, cx, type_predicate, spec)
     }
 
+    /// A written type a pattern takes apart names no type a later
+    /// statement of its block declares or may import: the name would
+    /// mean that one where the pattern is checked.
+    pub(super) fn named_before<R: Rt>(ctx: &CompileCtx<R>, written: &Type) -> Result<()> {
+        let mut t = written.clone();
+        while let Type::Ref(tr) = &t {
+            if super::later_typedef(ctx, tr) {
+                bail!(
+                    "{} names the type a later statement of this block declares: \
+                     declare it before this pattern",
+                    tr.name
+                )
+            }
+            t = t.lookup_ref_peek(&ctx.env)?
+        }
+        Ok(())
+    }
+
     /// Under a check by bounds, the pattern compiled by its own shape,
     /// each name a cell of its own: the check routes the value it stands
     /// over to them ([`destructure`]).

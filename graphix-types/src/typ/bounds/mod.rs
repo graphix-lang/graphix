@@ -1821,6 +1821,36 @@ impl Solving {
         }
     }
 
+    /// What is asked of the scheme's variable `v` can be met: some value
+    /// is of every type it is used as. One that cannot is a parameter no
+    /// call can pass.
+    fn meetable(&self, env: &Env, v: &TVar) -> Result<()> {
+        let asked: SmallVec<[Type; 4]> = v
+            .cell_constraints()
+            .iter()
+            .map(deep)
+            .filter(|u| !matches!(u, Type::TVar(_) | Type::Bound(_)) && !u.is_trait_ref(env))
+            .collect();
+        let mut common = Type::Any;
+        for (i, u) in asked.iter().enumerate() {
+            // as a test meets them: two function types, two references
+            // or two abstract types may share values no walk can list
+            common = self.both(env, true, &common, &select::split(u));
+            if matches!(common, Type::Bottom) {
+                bail!(
+                    "a value here is used as {} and as {u}, and no value is both: \
+                     nothing can be passed for it",
+                    asked[..i]
+                        .iter()
+                        .map(|t| t.to_string())
+                        .collect::<SmallVec<[String; 2]>>()
+                        .join(" and as ")
+                )
+            }
+        }
+        Ok(())
+    }
+
     /// A use of `v` that met no value: it needs a shape nothing gave it.
     fn unread(&self, v: &TVar) -> Result<()> {
         let waits = |u: &Use| {
@@ -1854,9 +1884,10 @@ impl Solving {
         self.quantify(t, depth);
         let mut kept = Cells::new();
         self.reach(t, &mut kept);
-        kept.iter()
-            .filter(|v| v.level().depth() > depth && !v.is_bound())
-            .try_for_each(finite)?;
+        for v in kept.iter().filter(|v| v.level().depth() > depth && !v.is_bound()) {
+            finite(v)?;
+            self.meetable(env, v)?
+        }
         self.fix_scope(env, depth + 1, false, mark)?;
         for v in self.cells[mark..].iter() {
             let pending = v.level().depth() > depth

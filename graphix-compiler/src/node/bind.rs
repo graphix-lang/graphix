@@ -732,6 +732,7 @@ impl<R: Rt> Bind<R> {
                 (node, pattern, typ)
             } else {
                 let node = compile(ctx, flags, value.clone(), &scope, top_id)?;
+                let written = annotation.is_some();
                 let typ = match (annotation, forwarded, held) {
                     (Some(t), ..) => own(Some(t)),
                     (None, Some(scheme), _) => scheme,
@@ -740,15 +741,20 @@ impl<R: Rt> Bind<R> {
                 };
                 let pattern = match pat.single_bind() {
                     Some(_) => compile_pattern(ctx, &typ)?,
-                    None => StructPatternNode::compile_shape(
+                    None => {
+                        if written {
+                            StructPatternNode::named_before(ctx, &typ).at(&spec)?
+                        }
+                        StructPatternNode::compile_shape(
                         ctx,
                         pat,
                         Holder::Let,
                         scope,
-                        spec.pos,
-                        spec.ori.clone(),
-                    )
-                    .at(&spec)?,
+                            spec.pos,
+                            spec.ori.clone(),
+                        )
+                        .at(&spec)?
+                    }
                 };
                 (node, pattern, typ)
             }

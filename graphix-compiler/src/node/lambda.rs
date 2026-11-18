@@ -2115,6 +2115,9 @@ impl<R: Rt> GXLambda<R> {
                 && a.pattern.single_bind().is_none()
                 && !matches!(a.pattern, expr::StructurePattern::Ignore)
             {
+                if a.constraint.is_some() {
+                    StructPatternNode::named_before(ctx, &atyp.typ)?
+                }
                 let pattern = StructPatternNode::compile_shape(
                     ctx,
                     &a.pattern,
