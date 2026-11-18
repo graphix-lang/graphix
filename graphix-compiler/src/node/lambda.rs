@@ -693,7 +693,9 @@ fn instance_cells<R: Rt>(
     let scheme = Type::Fn(Arc::new(def.clone()));
     if bounds::scheme(&scheme) {
         let at = Type::Fn(Arc::new(instance.clone()));
-        return bounds::instance(&ctx.env, &scheme, &at).ok();
+        return bounds::instance(&ctx.env, &scheme, &at)
+            .inspect_err(|e| bounds::debug(|| format!("instance of {scheme} at {at}: {e:#}")))
+            .ok();
     }
     // every open cell of the signature is the instance's own copy, a cell
     // no closed gate owns included, so the check binds nothing another

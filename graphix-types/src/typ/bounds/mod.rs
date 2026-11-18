@@ -1381,6 +1381,13 @@ pub fn scheme(t: &Type) -> bool {
     cells.iter().any(quantified)
 }
 
+/// Print `what` to stderr where `GRAPHIX_BOUNDS_DEBUG` is set.
+pub fn debug(what: impl FnOnce() -> String) {
+    if std::env::var_os("GRAPHIX_BOUNDS_DEBUG").is_some() {
+        eprintln!("{}", what())
+    }
+}
+
 /// The types of the instance of the scheme `def` that is used as `at`, a
 /// decided type: a copy of each of the scheme's cells, fixed, under the
 /// address of the cell it is the copy of. An instance is built from its
@@ -2776,10 +2783,20 @@ impl Solving {
                 Some(Type::Bottom) => (),
                 Some(t) => flows.push(t),
                 None => {
+                    // a cell being fixed around this one flows into it:
+                    // the two are one type, and what flows into that
+                    // cell flows on into this one
                     if let Type::TVar(u) = &shallow(&l)
                         && !u.same_cell(v)
                         && self.fixing.contains(&u.cell_addr())
                     {
+                        let mut seen = SmallVec::from_iter([v.cell_addr()]);
+                        for t in flowing(u, &mut seen) {
+                            match self.settled(env, &t)? {
+                                None | Some(Type::Bottom) => (),
+                                Some(t) => flows.push(t),
+                            }
+                        }
                         self.cycles.push((u.clone(), v.clone()))
                     }
                 }
