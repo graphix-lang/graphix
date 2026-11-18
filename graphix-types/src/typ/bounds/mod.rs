@@ -963,6 +963,18 @@ impl Solving {
         Ok(())
     }
 
+    /// The decided `a` goes to the one of `cells`, open members of the
+    /// union `b`, whose bounds admit it; among two or more it waits.
+    fn among(&mut self, env: &Env, a: &Type, b: &Type, cells: &[&Type]) -> Result<()> {
+        let admit: SmallVec<[&Type; 2]> =
+            cells.iter().copied().filter(|m| self.probe(env, a, m)).collect();
+        match &admit[..] {
+            [m] => self.constrain(env, a, m),
+            [] => mismatch(b, a),
+            _ => Ok(self.held.push((a.clone(), b.clone(), false))),
+        }
+    }
+
     /// `a`, which is no open cell and no union, fits a member of the union
     /// `b`, whose members are `ms`.
     fn below_union(&mut self, env: &Env, a: &Type, ms: &[Type], b: &Type) -> Result<()> {
@@ -994,6 +1006,9 @@ impl Solving {
                 (true, _) => Ok(()),
                 (false, [m]) => self.constrain(env, &Type::Primitive(rest), m),
                 (false, []) => mismatch(b, a),
+                (false, _) if self.resolving => {
+                    self.among(env, &Type::Primitive(rest), b, &cells)
+                }
                 (false, _) => Ok(self.held.push((a.clone(), b.clone(), false))),
             };
         }
@@ -1010,9 +1025,11 @@ impl Solving {
                 if decided.iter().any(|m| self.attempt(env, a, m)) {
                     return Ok(());
                 }
-                match (&loose[..], &cells[..]) {
-                    ([m], []) | ([], [m]) => self.constrain(env, a, m),
-                    ([], []) => mismatch(b, a),
+                // a member written in the value's shape takes it before a
+                // bare variable does
+                match &loose[..] {
+                    [m] if self.attempt(env, a, m) => Ok(()),
+                    [] | [_] => self.among(env, a, b, &cells),
                     _ => Ok(self.held.push((a.clone(), b.clone(), false))),
                 }
             }
