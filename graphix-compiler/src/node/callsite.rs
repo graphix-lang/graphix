@@ -891,12 +891,6 @@ fn union_members(
     }
 }
 
-/// `t` printed through its cells as they stand: a snapshot that a later
-/// bind does not reach.
-fn printed_deref(t: &Type) -> String {
-    crate::format_with_flags(crate::PrintFlag::DerefTVars, || t.to_string())
-}
-
 fn compile_apply_args<R: Rt>(
     ctx: &mut CompileCtx<R>,
     flags: BitFlags<CFlag>,
@@ -2203,66 +2197,40 @@ impl<R: Rt> CallSite<R> {
             BindMode::Static { instance: &instance_ftype, copies: copies.as_ref() },
         )?;
         let instance_ftype = apply.typ().as_ref().clone();
-        // `site_ftype` is a deep clone: the instance's inferred return is
-        // unified back into the site's live rtype cell, the cells both
-        // leave open first, which no member of a union beside one takes.
-        if let Some(site_ft) = self.ftype.as_ref() {
-            let before =
-                dbgenv::graphix_elab_audit().then(|| printed_deref(&site_ft.rtype));
-            if !site_ft.rtype.prove_ground() {
-                instance_ftype.rtype.place_open_cells(&ctx.env, &site_ft.rtype);
-            }
-            // CR claude for claude: [bug/medium] At the bind of an omitted labeled
-            // default this unify-back refuses what the check accepted. A static call in
-            // the default whose result is a union of members holding open cells
-            // (`view(false).a` over `select done { true => {a: 1, notes: []}, false =>
-            // {a: 2, notes: []} }`, or `pick(false, f, f)(1)` over two functions) fails
-            // with 'could go to .. or ..': the site's return holds one copied cell
-            // beside one original, the instance's one member over the original, which
-            // points at the copy `InstanceTypes::of_default` makes of the default's
-            // rows. The same call in a function's body or at the top level builds. Give
-            // the default's bind the cell map a body instance has, and pin the program
-            // under GRAPHIX_ELAB_AUDIT. probe:
-            // design/review-2026-11-16/repro/x-check-build-default-fn-union-result.gx
-            // (x-check-build-02)
-            if let Err(e) = site_ft.rtype.check_contains(&ctx.env, &instance_ftype.rtype)
-            {
-                if ctx.def_gate_depth == 0 {
-                    super::lambda::elab_audit::report(
-                        "unify-back",
-                        &self.spec,
-                        format_args!("{e:#}"),
-                    );
-                }
-                ctx.discard_apply(apply);
-                return Err(e.at(self.fnode.spec()));
-            }
-            if let Some(before) = before
-                && ctx.def_gate_depth == 0
-            {
-                let after = printed_deref(&site_ft.rtype);
-                // CR claude for claude: [bug/low] This fires on a valid program: in
-                // `let w = |u| { let v = |q| 'a: {n: i64} |s: 'a| s.n; v(u) }; w(0)`
-                // the instance of `v` returns its lambda with `'a` bound to its bound
-                // where the site's row left it 'unbound within { n: i64 }', and
-                // `shell::elab_audit` pins that an instance decides nothing its call's
-                // check left open. Nothing is refused and no verdict changes that I
-                // could find. Either the instance's read of a declared variable's bound
-                // (`s.n`) should not bind the cell, or the report should pass a cell
-                // narrowed to its own bound. probe:
-                // design/review-2026-11-16/repro/x-check-build-unify-back-audit.gx
-                // (x-check-build-09)
-                if before != after {
-                    super::lambda::elab_audit::report(
-                        "unify-back",
-                        &self.spec,
-                        format_args!(
-                            "narrowed the site's return from {before} to {after}"
-                        ),
-                    );
-                }
-            }
-        }
+        // XCR claude for claude: [bug/medium] At the bind of an omitted labeled
+        // default this unify-back refuses what the check accepted. A static call in
+        // the default whose result is a union of members holding open cells
+        // (`view(false).a` over `select done { true => {a: 1, notes: []}, false =>
+        // {a: 2, notes: []} }`, or `pick(false, f, f)(1)` over two functions) fails
+        // with 'could go to .. or ..': the site's return holds one copied cell
+        // beside one original, the instance's one member over the original, which
+        // points at the copy `InstanceTypes::of_default` makes of the default's
+        // rows. The same call in a function's body or at the top level builds. Give
+        // the default's bind the cell map a body instance has, and pin the program
+        // under GRAPHIX_ELAB_AUDIT. probe:
+        // design/review-2026-11-16/repro/x-check-build-default-fn-union-result.gx
+        // (x-check-build-02)
+        // 2026-11-19 claude: Moved here with the unify-back it named, which is
+        // deleted: a static bind relates nothing back into its site. The probe's
+        // three programs build and the audit is silent. Pins
+        // lang::functions::a_default_reading_a_union_result_of_open_members (3) and
+        // a_default_calling_one_of_two_functions (2).
+
+        // XCR claude for claude: [bug/low] This fires on a valid program: in
+        // `let w = |u| { let v = |q| 'a: {n: i64} |s: 'a| s.n; v(u) }; w(0)`
+        // the instance of `v` returns its lambda with `'a` bound to its bound
+        // where the site's row left it 'unbound within { n: i64 }', and
+        // `shell::elab_audit` pins that an instance decides nothing its call's
+        // check left open. Nothing is refused and no verdict changes that I
+        // could find. Either the instance's read of a declared variable's bound
+        // (`s.n`) should not bind the cell, or the report should pass a cell
+        // narrowed to its own bound. probe:
+        // design/review-2026-11-16/repro/x-check-build-unify-back-audit.gx
+        // (x-check-build-09)
+        // 2026-11-19 claude: Moved here with the unify-back and its narrowing
+        // report, both deleted. The probe's program runs with the audit silent.
+        // Pin graphix-shell/tests/shell/elab_audit.rs
+        // a_read_of_a_declared_variables_bound_narrows_nothing.
         Ok((apply, instance_ftype))
     }
 

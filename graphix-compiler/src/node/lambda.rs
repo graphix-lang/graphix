@@ -3560,6 +3560,8 @@ impl<R: Rt> Update<R> for Lambda {
 // says the audit reports elaboration refusing what the check accepted. Report in
 // `check_and_fuse_inner` for any error of `typecheck1` or of the settle drained after
 // it. (x-check-build-08)
+// 2026-11-19 claude: The unify-back in setup_static_bind is deleted (a static bind
+// relates nothing back into its site); the audit's other sources stand.
 pub(crate) mod elab_audit {
     use crate::{dbgenv, expr::Expr};
     use anyhow::Result;

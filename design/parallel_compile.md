@@ -614,16 +614,13 @@ Instance setup is now 9% of the samples, the definitions' checks 8%.
 ## The audit
 
 `GRAPHIX_ELAB_AUDIT=1` reports every error an instance's check raises
-outside a definition gate, and every narrowing the instance's return makes
-to its static site. `=bt` adds a backtrace. Over the gate and `regress` it
+outside a definition gate. `=bt` adds a backtrace. Over the gate and `regress` it
 reports:
 
 - the type-directed builtin hooks above.
 
-The unify-back at `setup_static_bind` narrows no site: an instance holds
-open what its call's check left open, and its result's open cells are the
-call's (`Type::place_open_cells`, `design/tvar_constraints.md`, An
-instance holds its signature cell by cell; pin
+A static bind relates nothing back into its site: the instance's types
+are its definition's check's, and the site's are its own check's (pin
 `graphix-shell/tests/shell/elab_audit.rs`). Once the audit is clean it
 becomes a finding that every fuzz lane records.
 

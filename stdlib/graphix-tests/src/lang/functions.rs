@@ -4248,6 +4248,27 @@ run!(default_under_a_bodys_annotation_of_another_type_than_a_call_passes, r#"
 }
 "#, refused("string does not contain i64"); FuseExpect::None);
 
+// A default that calls a function returning a union of members holding
+// open cells builds as the call does in a body.
+run!(a_default_reading_a_union_result_of_open_members, r#"
+{
+    let view = |done: bool| select done {
+        true => {a: 1, notes: []},
+        false => {a: 2, notes: []}
+    };
+    let w = |#d = view(false).a, x: i64| x + d;
+    w(1)
+}
+"#, prints("i64:3"); FuseExpect::Jit);
+
+run!(a_default_calling_one_of_two_functions, r#"
+{
+    let w = |#d = { let pick = |c, a, b| select c { true => a, false => b };
+                    let f = |x: i64| x; pick(false, f, f)(1) }, x: i64| x + d;
+    w(1)
+}
+"#, prints("i64:2"); FuseExpect::Jit);
+
 run!(default_under_a_bodys_optional_annotation, r#"
 {
     let j = 0;
