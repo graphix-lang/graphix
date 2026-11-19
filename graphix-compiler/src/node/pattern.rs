@@ -1113,6 +1113,45 @@ impl<'a> CompiledAbstracts<'a> {
     }
 }
 
+// XCR claude for claude: [bug/low] Only the value's top-level members are fitted one
+// by one; a union under a constructor falls to plain containment, which binds the
+// pattern's cells to its first member and fails on the next. So `let ((a, b), c) =
+// v` over `([(i64, i64), (string, string)], bool)` is refused, "matches only part
+// of", though the pattern matches every value; `let (p, c) = v; let (a, b) = p` and
+// a select arm `((a, b), c)` check. Judge the fit by `Type::narrow_pattern`, as a
+// select arm does, for one member as for several; `StructPatternNode::covers` has
+// to go member by member with it. probe:
+// design/review-2026-11-16/repro/c-pattern-written-union-destructure-refutable.sh
+// (programs 8, 9 and 11) (c-pattern-06)
+// 2026-11-18 claude: On bounds-spike the old let fit (fits_every_member, misfit) is
+// deleted with the old check; a let's pattern is a one-arm select (destructure).
+// The probe's eleven programs all check now, 8 included. No pin yet: pin programs
+// 8, 9 and 11 before this is cleared.
+
+// CR claude for claude: [readability/low] The refusal prints `ptyp`, the checker's
+// predicate for the pattern, whose cells nothing bound when the fit failed: `let (a, b)
+// = x` over `[(i64, i64), null]` says "('_8190: unbound, '_8191: unbound) matches only
+// part of [null, (i64, i64)]", and a refused abstract pattern "(W, '_8187: unbound)".
+// Print the pattern as written, which each caller holds in its spec. probe:
+// design/review-2026-11-16/repro/c-pattern-let-misfit-prints-cells.gx (c-pattern-07)
+// 2026-11-18 claude: On bounds-spike the old let fit is deleted with the old check; a
+// let's pattern is a one-arm select (destructure). Its refusal over [(i64, i64), null]
+// now reads 'type mismatch (Any, Any) does not contain [null, (i64, i64)]': no cell
+// ids, but still not the pattern as written.
+
+// CR claude for claude: [readability/low] `let (a, b) = p` over `(i64, i64,
+// i64)` is refused as "match error (i64, i64, i64) can't be matched by ('_8145:
+// unbound, '_8146: unbound)". ptyp is the pattern's predicate, a fresh cell per
+// bind, so the author sees cell ids where they wrote `(a, b)`. Print the
+// pattern as written ("the pattern (a, b) cannot bind a value of (i64, i64,
+// i64)"), and likewise at the other `match error` sites in this file. probe:
+// design/review-2026-11-16/repro/x-diagnostics-destructure-match-error.gx
+// (x-diagnostics-08)
+// 2026-11-18 claude: On bounds-spike the old let fit is deleted with the old
+// check; a let's pattern is a one-arm select (destructure). The probe now reads
+// 'type mismatch (Any, Any) does not contain (i64, i64, i64)': still not the
+// pattern as written.
+
 /// Bind a pattern's names to the parts of a value of type `t`: a select of
 /// one arm, so the pattern must take every value.
 pub(crate) fn destructure<R: Rt>(
@@ -2900,21 +2939,6 @@ impl StructPatternNode {
         let mut names = SmallVec::new();
         merge_leaves(env, parts, &mut names)?;
         Ok(names)
-    }
-
-    /// Retype each name a `let`'s pattern, compiled against `shape`, the
-    /// value's type `typ` narrowed per member, binds by
-    /// [`Self::names_by_member`].
-    pub(super) fn retype_by_member<R: Rt>(
-        &self,
-        ctx: &mut CompileCtx<R>,
-        typ: &Type,
-        shape: &Type,
-    ) -> Result<()> {
-        for Leaf { id, typ, .. } in self.names_by_member(&ctx.env, typ, shape)? {
-            ctx.env.retype(id, typ)
-        }
-        Ok(())
     }
 
     /// For a tuple destructure pattern `(a, b, …)` with only simple

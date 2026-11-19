@@ -56,7 +56,7 @@ use parking_lot::Mutex;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::{
-    cell::{OnceCell, RefCell},
+    cell::OnceCell,
     cmp::Ordering,
     fmt,
     hash::Hash,
@@ -64,39 +64,6 @@ use std::{
     sync::{Arc as SArc, OnceLock, Weak},
 };
 use triomphe::Arc;
-
-thread_local! {
-    static METHOD_CELLS: RefCell<LPooled<AHashMap<usize, TVar>>> =
-        RefCell::new(LPooled::take());
-}
-
-/// The cells a method's annotation minted from the declared signature
-/// ([`Type::scope_refs_with`]), by the cell each was minted from, `self`
-/// apart, while the method's value compiles: the signature the value's
-/// lambda takes from the declaration holds those cells and no copy of its
-/// own.
-#[must_use]
-pub(super) struct MethodCells(LPooled<AHashMap<usize, TVar>>);
-
-impl MethodCells {
-    pub(super) fn enter(mut cells: LPooled<AHashMap<usize, TVar>>) -> Self {
-        cells.retain(|_, tv| &*tv.name != "self");
-        Self(METHOD_CELLS.replace(cells))
-    }
-
-    fn current() -> LPooled<AHashMap<usize, TVar>> {
-        let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-        METHOD_CELLS
-            .with_borrow(|m| cells.extend(m.iter().map(|(a, tv)| (*a, tv.clone()))));
-        cells
-    }
-}
-
-impl Drop for MethodCells {
-    fn drop(&mut self) {
-        METHOD_CELLS.set(mem::take(&mut self.0))
-    }
-}
 
 /// What a definition's check settled, by the expression id of each node
 /// of its body: an instance takes its types from here instead of checking
@@ -426,6 +393,9 @@ impl DefTable {
                 }
                 NodeView::Catch(c) => {
                     self.aux.insert(id, c.aux_types(checked));
+                }
+                NodeView::Bind(b) if b.pattern.single_bind_id().is_none() => {
+                    self.aux.insert(id, b.aux_types(checked));
                 }
                 NodeView::Qop(q) => {
                     self.aux.insert(id, Box::new([q.strip.removed()]));
@@ -2707,10 +2677,8 @@ impl Lambda {
             ctors.push((tv.name.clone(), Type::TVar(elem)));
         }
         // a written type, as the definition's signature holds it
-        let minted = MethodCells::current();
         let written = |env: &Env, t: &Type| -> Result<Type> {
             let mut copies: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-            copies.extend(minted.iter().map(|(a, tv)| (*a, tv.clone())));
             Ok(t.scope_refs_with(&scope.lexical, &mut copies)
                 .rewrite_trait_args(env)?
                 .apply_ctor_quantifiers(&ctors))
