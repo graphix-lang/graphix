@@ -494,6 +494,12 @@ fn ctrl_c_at_a_terminal_prompt_keeps_the_session() {
     assert_eq!(status.code(), Some(0), "{shown}");
 }
 
+// CR claude for claude: [bug/medium] Flaky under `cargo xtest`'s load: `Tty::line` returns
+// at the first of its `shows` it sees, and the shell prints "error: in expr x + 100" and
+// "Caused by:" before the cause, so `shown` can stop short of "x not defined" and the
+// assert fails though the shell is right (once in an xtest run on bounds-spike, 11-19;
+// five runs of it alone pass). Wait for what the assert reads, "not defined", not for
+// "error", so the assert follows from the event awaited. (tests-repl-interrupt-01)
 /// Ctrl-\ at an idle prompt abandons the line and resets the session.
 #[test]
 fn ctrl_backslash_at_a_terminal_prompt_resets_the_session() {

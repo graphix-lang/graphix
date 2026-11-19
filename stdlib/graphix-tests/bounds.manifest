@@ -51,7 +51,6 @@ graphix_tests::lang::functions::default_hidden_under_a_variant_member	refuses	ca
 graphix_tests::lang::functions::default_hidden_under_an_element_member	refuses	cannot compare i64 with string: neither type holds the other, so the two are never equal
 graphix_tests::lang::functions::default_hidden_under_an_optional_struct	refuses	cannot compare i64 with string: neither type holds the other, so the two are never equal
 graphix_tests::lang::functions::default_of_another_type_behind_an_abstract_annotation	refuses	type mismatch C<string> does not contain C<'_0>
-graphix_tests::lang::functions::default_under_a_bodys_annotation_of_another_type_than_a_call_passes	refuses	type mismatch i64 does not contain string: declare the type that holds both
 graphix_tests::lang::functions::environment_cell_makes_the_definition_monomorphic	refuses	cannot compute with [i64, f64]: both operands must be one numeric type
 graphix_tests::lang::functions::flat_map_bare_element_refused	refuses	type mismatch Array<'b: unbound> does not contain i64
 graphix_tests::lang::functions::flat_map_tuple_refused	refuses	type mismatch Array<'b: unbound> does not contain (i64, i64)

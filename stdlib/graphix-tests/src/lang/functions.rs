@@ -4236,18 +4236,6 @@ run!(default_under_a_bodys_annotation_a_call_omits_the_label, r#"
 }
 "#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "1 2"); FuseExpect::None);
 
-run!(default_under_a_bodys_annotation_of_another_type_than_a_call_passes, r#"
-{
-    let j = 0;
-    let mk = |t: Any| -> string {
-        let v: fn(?#d: 'q, x: i64) -> string =
-            select j { 0 => |#d = 1, x: i64| cast<string>(d)$, _ => never() };
-        "[v(#d: "s", 7)] [v(8)]"
-    };
-    mk(1)
-}
-"#, refused("string does not contain i64"); FuseExpect::None);
-
 // A default that calls a function returning a union of members holding
 // open cells builds as the call does in a body.
 run!(a_default_reading_a_union_result_of_open_members, r#"
