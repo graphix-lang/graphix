@@ -3246,47 +3246,6 @@ impl<R: Rt> Select<R> {
     /// arm's guard and body are checked with the pattern's names as cells,
     /// and the solver routes each type that reaches the scrutinee down the
     /// arms, to those cells.
-    // CR claude for claude: [bug/medium] [bug/medium] For a declared variable this
-    // branch says it "isn't known here ... annotate it", but the author already wrote
-    // and bounded it. `'b: &string |x: [&i64, 'b]| select x { &i64 as r => 1, _ => 2 }`
-    // is told to annotate (and the variable prints as "'b: unbound within &string"),
-    // while `|x: [&i64, &string]|` gets the right advice, "wrap them in distinct
-    // variants". Read a rigid declared variable as its bound, so a collision with the
-    // bound is the ordinary untold refusal. For an unbounded one, say "bound 'b by a
-    // type of another runtime form", as the "tests inside a value of 'b" refusals do.
-    // The same test and message are copied in `discernible` and in
-    // `Type::bound_refusal` (contains.rs); one method on `Indiscernible` would carry
-    // the fix. Six lang::select fixtures (the open_member_* tests and
-    // select_over_a_bounded_quantifier_still_tells_forms) pin the bare "annotate it",
-    // and only the error case has a passing twin. probe:
-    // design/review-2026-11-16/repro/tests-select-b-declared-variable-form-says-annotate.gx
-    // (tests-select-b-02)
-    // 2026-11-19 claude: On bounds-spike the old settle drain's told(), where this judgment
-    // was made, is deleted with the old check (every module ran the same with the drain
-    // off); a select's tests are the solver's (check_by_bounds), where this moved. Re-probe
-    // under the new check before closing.
-
-    // CR claude for claude: [bug/medium] This refusal ends with "annotate it"
-    // and prints only generated cells, so it names nothing the program wrote.
-    // Over `|a| select a { [`Keep(r), ..] => r, _ => null }` it reads "tests
-    // for `Keep('_N) among '_M ... annotate it", but the fix is to annotate the
-    // parameter `a`. Over `|v: 'a| select v { Array<'b> as xs => xs, _ =>
-    // never() }` the fix is a bound on 'a, which no annotation gives. The
-    // pattern.rs refusals of this family name the binding or the bound ("bound
-    // 'a by the type it tests, `'a: T`"). Name the binding that holds the open
-    // cell, or the declared variable to bound. Then give
-    // lang::select::unannotated_slice_element_telling_rest_from_keep_refused
-    // and told_refusal_names_written_variable_once their passing twins (`a:
-    // Array<`Keep(i64)>`; `'a: [Array<i64>, i64]` with `Array<i64> as xs`).
-    // probe:
-    // design/review-2026-11-16/repro/tests-select-c-told-refusal-annotate-it.sh
-    // (tests-select-c-02)
-    // 2026-11-19 claude: On bounds-spike the old settle drain's told(), where
-    // this judgment was made, is deleted with the old check (every module ran
-    // the same with the drain off); a select's tests are the solver's
-    // (check_by_bounds), where this moved. Re-probe under the new check before
-    // closing.
-
     fn check_by_bounds(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         wrap!(self.arg.node, self.arg.node.typecheck0(ctx))?;
         let bool = Type::Primitive(Typ::Bool.into());
@@ -3573,6 +3532,9 @@ impl<R: Rt> Select<R> {
         for i in 0..self.arms.len() {
             let (pat, n) = &mut self.arms[i];
             let mut settled = reach.settled.get_mut(i).and_then(Option::take);
+            if checking && pat.explicit_type_predicate {
+                super::defer_written_map_keys(ctx, &pat.type_predicate, &self.spec)
+            }
             let step = deciding.again();
             // a refusal about the pattern points at the pattern
             let site = match spec_pats.get(i) {
@@ -3723,6 +3685,7 @@ impl<R: Rt> Select<R> {
                 let mut tests: SmallVec<[Tested; 4]> = smallvec![Tested {
                     test: pat.type_predicate.clone(),
                     among: reaching.clone(),
+                    open_shape: None,
                 }];
                 if !pat.explicit_type_predicate {
                     pat.structure_predicate.element_tests(
@@ -3732,7 +3695,18 @@ impl<R: Rt> Select<R> {
                         &mut tests,
                     );
                 }
-                for Tested { test, among } in tests {
+                let spec = Arc::new(site.clone());
+                let mut element_binds: SmallVec<[crate::PendingSettle; 2]> =
+                    SmallVec::new();
+                for Tested { test, among, open_shape } in tests {
+                    element_binds.extend(open_shape.map(|shape| {
+                        crate::PendingSettle::ElementBinds {
+                            test: test.clone(),
+                            shape,
+                            elems: among.clone(),
+                            spec: spec.clone(),
+                        }
+                    }));
                     let Ok(rest) = among.diff(&ctx.env, &test) else { continue };
                     let collision = match pat.explicit_type_predicate {
                         true => test.rep_collision_written(&ctx.env, &rest),
@@ -3744,6 +3718,14 @@ impl<R: Rt> Select<R> {
                         }))
                         .at(&site);
                     }
+                    let spec = spec.clone();
+                    super::defer_judgment(
+                        ctx,
+                        crate::PendingSettle::Told { test, rest, spec },
+                    );
+                }
+                for judgment in element_binds {
+                    super::defer_judgment(ctx, judgment)
                 }
             }
             // The guard typechecks after the narrowing so it sees the

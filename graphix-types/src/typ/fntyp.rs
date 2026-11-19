@@ -1322,6 +1322,15 @@ impl FnType {
         f(cx, throws, false);
     }
 
+    pub fn unbind_tvars(&self) {
+        self.for_each_type(&mut |t| t.unbind_tvars())
+    }
+
+    /// [`Type::unbind_vacuous_tvars`] over the signature.
+    pub fn unbind_vacuous_tvars(&self) {
+        self.for_each_type(&mut |t| t.unbind_vacuous_tvars())
+    }
+
     pub fn reset_tvars(&self) -> Self {
         self.reset_tvars_int(&mut LPooled::take(), Fresh::Copy)
     }
@@ -1535,6 +1544,21 @@ impl FnType {
         }
     }
 
+    /// A reference's copy of the scheme (`Fresh::Scheme`) under the open
+    /// gates `open`.
+    #[doc(hidden)]
+    pub fn scheme(&self, open: &IntSet<LambdaId>) -> Self {
+        self.reset_tvars_int(&mut LPooled::take(), Fresh::Scheme(open))
+    }
+
+    /// One instance of the scheme under the open gates `open`: what a
+    /// call copies is a fresh cell at the current level, which every use of
+    /// the copy shares (`Fresh::Instantiate`).
+    #[doc(hidden)]
+    pub fn one_instance(&self, open: &IntSet<LambdaId>) -> Self {
+        self.reset_tvars_int(&mut LPooled::take(), Fresh::Instantiate(open))
+    }
+
     /// A quantifier an earlier compile task left open: the check decided
     /// it open, so a later task compares the type as any instance of
     /// itself and never writes the cell (`tvar::earlier_task`), except an
@@ -1634,6 +1658,19 @@ impl FnType {
                 f.add_cell_constraint(walk(&c, known));
             }
         }
+    }
+
+    /// The open quantifiers of every function type the signature holds, by
+    /// cell: a generic function's a scheme holds.
+    pub fn inner_quantifiers(&self, out: &mut AHashMap<usize, TVar>) {
+        let mut seen: LPooled<AHashSet<usize>> = LPooled::take();
+        self.for_each_part(&mut |t, _| {
+            t.quantifiers_seen(true, &mut seen, &mut |_, tv| {
+                if let Some(open) = tv.open_cell() {
+                    out.insert(open.cell_addr(), open);
+                }
+            })
+        });
     }
 
     /// A copy whose own open quantifiers are fresh cells; every other cell

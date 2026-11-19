@@ -118,6 +118,12 @@ impl Pack for StructWidth {
 pub(super) struct Tested {
     pub(super) test: Type,
     pub(super) among: Type,
+    /// What the structure of a slice's element admits
+    /// ([`StructPatternNode::footprint`]), where `among`, the element type
+    /// the slice stands over, holds a member nothing has decided (a rest
+    /// the arms brought): the element binds a value of whatever that
+    /// member becomes wherever its structure takes one.
+    pub(super) open_shape: Option<Type>,
 }
 
 #[derive(Debug)]
@@ -1754,7 +1760,12 @@ impl StructPatternNode {
                 for ((c, t), p) in children.iter().zip(&ts).zip(&parts) {
                     let (Some((t, _)), Some((p, _))) = (t, p) else { continue };
                     if slice && !matches!(c, Self::Bind(_) | Self::Ignore) {
-                        out.push(Tested { test: t.clone(), among: p.clone() })
+                        let open = union_members_open(env, p, &mut SmallVec::new());
+                        let open_shape = match open {
+                            Ok(true) => c.footprint(env, t, true),
+                            Ok(false) | Err(_) => None,
+                        };
+                        out.push(Tested { test: t.clone(), among: p.clone(), open_shape })
                     }
                     c.element_tests(env, t, p, out)
                 }

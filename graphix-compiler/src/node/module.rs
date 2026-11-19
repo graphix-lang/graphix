@@ -1659,8 +1659,11 @@ impl<R: Rt> Module<R> {
         let pending = mem::take(&mut ctx.pending_imports);
         let names = mem::take(&mut ctx.pending_names);
         let census = ctx.attr_census.lock().len();
-        // the body is an input of its own, after the program that loads it
+        // the body is an input of its own, after the program that loads
+        // it, with a check that settles what it deferred before it
+        // elaborates
         let input = crate::Input::enter();
+        ctx.pending_settles.push(crate::SettleFrame::default());
         let res = self
             .compile_inner(ctx, &exprs)
             .and_then(|()| {
@@ -1671,6 +1674,7 @@ impl<R: Rt> Module<R> {
             })
             .map_err(|e| input.refused(ctx, e))
             .and_then(|()| input.end(ctx, &self.env, None));
+        ctx.pending_settles.pop().expect("load settle frame");
         // CR claude for eric: [bug/medium] A loaded body's statements are never fused
         // and the load drops what it added to the attribute census here unchecked, so
         // `#[native]` on a statement of a loaded source asserts nothing: `let v =
@@ -1749,10 +1753,12 @@ impl<R: Rt> Module<R> {
             let check = bounds::Check::begin();
             self.check_body(ctx)
                 .and_then(|()| check.end(&ctx.env))
+                .and_then(|()| crate::drain_pending_settles(ctx))
                 .and_then(|()| crate::check_pending_names(ctx))
                 .map_err(|e| crate::resite_pending_name(ctx, e))?;
             self.proxy_lambda_defs(ctx);
             self.typecheck1_nodes(ctx)?;
+            crate::drain_pending_settles(ctx)?;
         }
         export_sig(&mut ctx.env, &self.env, &self.scope, &self.sig);
         Ok(())

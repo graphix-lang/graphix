@@ -2573,28 +2573,6 @@ impl Solving {
         }
     }
 
-    // XCR claude for claude: [bug/high] This returns before passing any lower bound
-    // when the site's callee DECLARES no quantifier, but a function whose bounds
-    // were inferred (`let f = |a, b| f0(a, b)` over a declared `f0`) holds its
-    // bounded cells under no declared name. A definition that calls it closes with
-    // its signature's cell above nothing, so the check accepts what the build
-    // refuses: `let g = |u| f(w0, u); g("s")` passes `--check` and the build says
-    // "an instance at fn(u: string) -> string of a definition typed fn(u: [null,
-    // string]) -> [null, string]", and `g(1)` is accepted by the check where `f0`
-    // called directly is refused. Test the reached cells instead (return when none
-    // is open with a conjunct), and pin the
-    // `lower_bound_reaches_the_bounds_own_cells_*` programs through an inferred
-    // wrapper. probe:
-    // design/review-2026-11-16/repro/t-settle-lower-into-kept-inferred-callee.gx
-    // (graphix-fuzz check prints DIVERGENCE) (t-settle-02)
-    // 2026-11-19 claude: On bounds-spike lower_into_kept is deleted with the old
-    // check: a definition's close is the solver's generalize, where this moved.
-    // The probe: --check and --no-cache --expand both exit 0 for g("s"), so check
-    // and build agree. With g(1) the check accepts: 'a2 takes [null, string, i64],
-    // sound under the rule that a cell's type is the union of what flows in (Eric
-    // 11-17, R1 dropped). No pin yet: pin both programs as accepted before this is
-    // cleared.
-
     /// Close the definition of a generic binding of type `t`, checked one
     /// level deeper than `depth`: what `t` reaches stays, as the scheme's
     /// variables; every other cell the check has met since `mark` is
@@ -3456,63 +3434,6 @@ impl Solving {
         }
         Ok(())
     }
-
-    // CR claude for claude: [readability/medium] A call to `let f = |x:
-    // i64| str::parse("[x]")$` is refused here as "the type '_8144 must
-    // be fully known here, a type-directed operation reads it: annotate
-    // it". The cell is generated (the LSP prints '_8936), no
-    // type-directed operation is written at `f(1)`, and "it" names
-    // nothing. The fixes, `let v: i64 = f(1)` or `-> i64` on f, both
-    // pass, but the message names neither. Where ftype and the call are
-    // in hand, find the cell's place in ftype and say it: the call's
-    // result (annotate the binding that takes it or the function's
-    // return type), or the parameter it is. probe:
-    // design/review-2026-11-16/repro/x-diagnostics-concrete-required-call.gx
-    // (x-diagnostics-05)
-    // 2026-11-19 claude: On bounds-spike the old settle drain (settle_terminal,
-    // where this was refused) is deleted with the old check; the solver's judge
-    // refuses the case, moved here: 'the type 'b must be known here, an
-    // operation reads it to know what to make: annotate where its result goes'.
-    // It names a bare variable still; the fix proposed (name the call's result
-    // or the parameter) applies to that message.
-
-    // CR claude for claude: [bug/medium] The rule that a TOML document
-    // is a table is enforced here for one root shape only: a map
-    // written as pairs. A scalar, array, tuple, variant or null root
-    // passes the check and then fails every write with toml's bare
-    // "unsupported i64 type". TomlData also admits decimal and
-    // duration, which leaf_to_toml refuses for every value (the book
-    // states all of these as refused). Fix: turn Type::toml_root_pairs
-    // into the root member that cannot be a table (anything but a
-    // struct, a string-keyed map, an abstract value or Any), and refuse
-    // decimal and duration in a TOML walk, naming the change as
-    // toml_root_refusal does. probe:
-    // design/review-2026-11-16/repro/small-pkgs-toml-root-check.sh
-    // (small-pkgs-04)
-    // 2026-11-19 claude: On bounds-spike the old settle drain's site_bounds,
-    // where this sat, is deleted with the old check (every module ran the same
-    // with the drain off); predicates on a fixed cell are the solver's judge,
-    // where this moved. Re-probe under the new check before closing.
-
-    // CR claude for claude: [bug/medium] This judges a `OneNumber`
-    // cell's binding only for members still open when the site settles.
-    // A member open at the call and decided before the frame drains (a
-    // `let e = never()` that a later `e <- 1.5` writes) leaves `[i64,
-    // f64]` here, which has no open member, so the check accepts a `'a:
-    // OneNumber` instantiated at two numeric types and the build
-    // refuses the instance: `graphix-fuzz check` prints DIVERGENCE, the
-    // check accepted what the build refused. Nothing else re-judges the
-    // conjunct, since `Type::require_one_number` hands an open member
-    // no bound beside a numeric one. Refuse here as well when
-    // `t.one_number_holds(env, false, false)` is false, and pin the
-    // top-level and the body-local program beside
-    // `one_number_beside_an_open_member_refused`. probe:
-    // design/review-2026-11-16/repro/t-tvar-b-onenumber-open-member-decided-later.gx
-    // (t-tvar-b-01)
-    // 2026-11-19 claude: On bounds-spike the old settle drain's site_bounds, where
-    // this sat, is deleted with the old check (every module ran the same with the
-    // drain off); predicates on a fixed cell are the solver's judge, where this
-    // moved. Re-probe under the new check before closing.
 
     /// Each predicate a fixed cell carries holds of what the cell was
     /// fixed to.

@@ -1322,6 +1322,16 @@ impl<R: Rt> Construct<R> {
             Narrowing::Constructed,
         );
         wrap!(self.arg, defaults)?;
+        if let Type::Abstract { params, .. } = &self.typ {
+            for p in params.iter() {
+                if let Type::TVar(tv) = p {
+                    super::defer_settle(ctx, || crate::PendingSettle::Operand {
+                        tv: tv.clone(),
+                        spec: self.spec.clone(),
+                    })
+                }
+            }
+        }
         Ok(())
     }
 }
