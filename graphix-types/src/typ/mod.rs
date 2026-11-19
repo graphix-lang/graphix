@@ -1613,7 +1613,7 @@ impl TypeRef {
                     tvar::require_bounds(std::slice::from_ref(&bound), arg)
                 }
                 None => {
-                    if !bound.contains_with_flags(BitFlags::empty(), env, arg)? {
+                    if !bound.decided_holds(env, arg)? {
                         return Ok(false);
                     }
                 }
@@ -3246,171 +3246,6 @@ impl Type {
         })
     }
 
-    /// Pre-unify a declared parameter type with an argument's type
-    /// before the argument typechecks, so an unannotated callback's
-    /// parameters take the declared types. A function-typed argument
-    /// unifies its parameter positions only; anything else whole. A
-    /// union's member that two could take is left to the argument's own
-    /// check, which meets the argument decided.
-    #[doc(hidden)]
-    pub fn pre_unify_arg(env: &Env, declared: &Type, actual: &Type) -> Result<()> {
-        let mut hist = contains::ContainsHist::early();
-        Self::pre_unify_seen(
-            env,
-            &mut hist,
-            declared,
-            actual,
-            &mut LPooled::take(),
-            false,
-        )
-    }
-
-    /// [`Self::pre_unify_arg`] with a formal's open copy for the declared
-    /// type. A part of the argument that holds a declared variable and no
-    /// undecided cell takes nothing from the copy and is passed over: the
-    /// variable would be one cell with the copy's, within the copy's
-    /// bounds, over cells no instance has.
-    #[doc(hidden)]
-    pub fn pre_unify_copy(env: &Env, open: &Type, actual: &Type) -> Result<()> {
-        let mut hist = contains::ContainsHist::early();
-        Self::pre_unify_seen(env, &mut hist, open, actual, &mut LPooled::take(), true)
-    }
-
-    /// [`Self::pre_unify_arg`], or [`Self::pre_unify_copy`] where `copy`,
-    /// each pair of shared nodes (`seen`) pre-unified once. `seen` holds
-    /// each pair it keys, so an address stays its node's for the whole
-    /// walk, and the parts unify under one walk state: what one part's
-    /// probes found, the next part reads.
-    fn pre_unify_seen(
-        env: &Env,
-        hist: &mut contains::ContainsHist,
-        declared: &Type,
-        actual: &Type,
-        seen: &mut AHashMap<(usize, usize), (Type, Type)>,
-        copy: bool,
-    ) -> Result<()> {
-        ensure_sufficient(|| {
-            if copy && !actual.has_free() && actual.has_rigid() {
-                return Ok(());
-            }
-            let d = match declared.deref_cloned() {
-                Some(t @ Type::Ref(_)) => Some(t.lookup_ref(env)?),
-                d => d,
-            };
-            let a = actual.deref_cloned();
-            if let (Some(d), Some(a)) = (&d, &a)
-                && let (Some(dn), Some(an)) = (node_addr(d), node_addr(a))
-            {
-                match seen.entry((dn, an)) {
-                    Entry::Occupied(_) => return Ok(()),
-                    Entry::Vacant(e) => e.insert((d.clone(), a.clone())),
-                };
-            }
-            let each =
-                |ds: &[Type],
-                 as_: &[Type],
-                 hist: &mut contains::ContainsHist,
-                 seen: &mut AHashMap<(usize, usize), (Type, Type)>| {
-                    ds.iter().zip(as_.iter()).try_for_each(|(d, a)| {
-                        Self::pre_unify_seen(env, hist, d, a, seen, copy)
-                    })
-                };
-            let whole = |hist: &mut contains::ContainsHist| {
-                let flags = contains::ContainsFlags::Commit.into();
-                match declared.contains_int(flags, env, hist, actual) {
-                    Err(e) if e.is::<AmbiguousMember>() => Ok(()),
-                    r => r.map(|_| ()),
-                }
-            };
-            if let (None, Type::TVar(tv), Some(Type::Fn(_))) = (&d, declared, &a)
-                && let Some(cell) = tv.open_cell()
-                && cell.bound_takers_ambiguous(env, actual)?
-            {
-                return Ok(());
-            }
-            match (&d, &a) {
-                (Some(Type::Fn(d)), Some(Type::Fn(a))) => d.pre_unify_params(env, a),
-                // a part pre-unifies as the whole would
-                (Some(Type::ByRef(_, d)), Some(Type::ByRef(_, a)))
-                | (Some(Type::Array(d)), Some(Type::Array(a)))
-                | (Some(Type::List(d)), Some(Type::List(a))) => {
-                    Self::pre_unify_seen(env, hist, d, a, seen, copy)
-                }
-                (Some(Type::Tuple(ds)), Some(Type::Tuple(as_)))
-                    if ds.len() == as_.len() =>
-                {
-                    each(ds, as_, hist, seen)
-                }
-                (Some(Type::Variant(t0, ds, _)), Some(Type::Variant(t1, as_, _)))
-                    if t0 == t1 && ds.len() == as_.len() =>
-                {
-                    each(ds, as_, hist, seen)
-                }
-                (Some(Type::Struct(ds)), Some(Type::Struct(as_)))
-                    if ds.len() == as_.len()
-                        && ds
-                            .iter()
-                            .zip(as_.iter())
-                            .all(|((n0, ..), (n1, ..))| n0 == n1) =>
-                {
-                    ds.iter().zip(as_.iter()).try_for_each(|((_, d, _), (_, a, _))| {
-                        Self::pre_unify_seen(env, hist, d, a, seen, copy)
-                    })
-                }
-                // a union two of whose members admit the argument leaves
-                // the choice to the argument's own check
-                (Some(Type::Set(ms)), _) => {
-                    let mut admit: Option<&Type> = None;
-                    for m in ms.iter() {
-                        if m.contains_with_flags(BitFlags::empty(), env, actual)? {
-                            if admit.is_some() {
-                                return Ok(());
-                            }
-                            admit = Some(m);
-                        }
-                    }
-                    // the one admitting constructor holds the argument
-                    // whole: its parts pre-unify as the member's would
-                    let structural = |t: &Type| {
-                        t.with_deref(|t| {
-                            matches!(
-                                t,
-                                Some(
-                                    Type::Tuple(_)
-                                        | Type::Struct(_)
-                                        | Type::Variant(..)
-                                        | Type::Array(_)
-                                        | Type::List(_)
-                                        | Type::ByRef(..)
-                                )
-                            )
-                        })
-                    };
-                    match admit {
-                        Some(m) if structural(m) && structural(actual) => {
-                            Self::pre_unify_seen(env, hist, m, actual, seen, copy)
-                        }
-                        _ => whole(hist),
-                    }
-                }
-                (Some(Type::Primitive(ps)), _) if ps.len() > 1 => {
-                    let mut admitting = 0;
-                    for p in ps.iter() {
-                        if Type::Primitive(p.into()).contains_with_flags(
-                            BitFlags::empty(),
-                            env,
-                            actual,
-                        )? {
-                            admitting += 1;
-                        }
-                    }
-                    if admitting > 1 { Ok(()) } else { whole(hist) }
-                }
-                _ => whole(hist),
-            }
-        })
-    }
-
     /// The name of the element a constructor quantifier `q` is applied
     /// to; a fn type lists it among its quantifiers, so a call copies it.
     pub fn elem_name(q: &str) -> ArcStr {
@@ -3935,11 +3770,7 @@ impl Type {
                     return Ok(None);
                 }
                 let error = fields[1].1.clone();
-                let fits = Type::err_chain(error.clone()).contains_with_flags(
-                    BitFlags::empty(),
-                    env,
-                    self,
-                )?;
+                let fits = Type::err_chain(error.clone()).decided_holds(env, self)?;
                 Ok(fits.then_some(error))
             }
             Type::Set(ts) if !ts.is_empty() => {

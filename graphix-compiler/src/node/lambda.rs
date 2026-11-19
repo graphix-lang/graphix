@@ -3119,11 +3119,7 @@ fn picked_return(
         .map(|(_, tv)| tv)
         .filter(|tv| !tv.generated() && tv.is_rigid() && tv.binding().is_none())
         .collect();
-    if picked.is_empty()
-        || !rtype
-            .reset_tvars()
-            .contains_with_flags(BitFlags::empty(), env, body)
-            .unwrap_or(false)
+    if picked.is_empty() || !rtype.reset_tvars().decided_holds(env, body).unwrap_or(false)
     {
         return e;
     }

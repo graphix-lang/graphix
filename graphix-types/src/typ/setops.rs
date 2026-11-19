@@ -6,9 +6,7 @@ use crate::{
     typ::{
         Bound, Brief, ContainsFlags, FnType, Kept, Lazy, NodeKey, NodePairs, RefHist,
         RefPair, TVar, Type, TypeRef,
-        contains::{
-            AmbiguousMember, ContainsHist, find_open_cell, on_copies, renaming_linked,
-        },
+        contains::{AmbiguousMember, find_open_cell, on_copies, renaming_linked},
         fntyp::LambdaIds,
         node_addr,
         tvar::{Fresh, StandingEnds, cell_writes, written_since},
@@ -26,9 +24,6 @@ use triomphe::Arc;
 struct MatchingTypes {
     memo: RefHist<AHashMap<RefPair, Kept<Type>>>,
     refs: LPooled<AHashSet<(Option<usize>, Option<usize>)>>,
-    /// One containment walk for every probe the narrowing asks: a pair of
-    /// shared parts is probed once, whichever pair of the narrowing meets it.
-    contains: ContainsHist,
     /// Type a part holding a rigid cell by the written test's part
     /// ([`Type::matching_parts`]).
     inside: bool,
@@ -36,12 +31,7 @@ struct MatchingTypes {
 
 impl MatchingTypes {
     fn new(inside: bool) -> Self {
-        MatchingTypes {
-            memo: RefHist::new(),
-            refs: LPooled::take(),
-            contains: ContainsHist::new(),
-            inside,
-        }
+        MatchingTypes { memo: RefHist::new(), refs: LPooled::take(), inside }
     }
 }
 
@@ -1497,12 +1487,14 @@ fn open_cells(f: &Type) -> (bool, bool) {
 /// cells weld pair by pair ([`renaming_linked`]), which decides no member
 /// of a union the signature holds over its own variables, and any other
 /// two hold each other.
-fn fns_join(env: &Env, hist: &mut ContainsHist, a: &Type, b: &Type) -> Result<bool> {
-    if renaming_linked(env, a, b, true) {
-        return Ok(true);
+fn fns_join(env: &Env, pairs: &[(&Type, &Type)]) -> bool {
+    let mut rest: SmallVec<[(&Type, &Type); 2]> = SmallVec::new();
+    for (a, b) in pairs {
+        if !renaming_linked(env, a, b, true) {
+            rest.push((a, b))
+        }
     }
-    let commit = ContainsFlags::Commit.into();
-    Ok(a.contains_int(commit, env, hist, b)? && b.contains_int(commit, env, hist, a)?)
+    super::bounds::unifies(env, &rest)
 }
 
 /// Whether the function types `a` and `b` meet: one is a renaming of the
@@ -1512,17 +1504,16 @@ fn fns_meet(env: &Env, a: &Type, b: &Type) -> Result<bool> {
     if renaming_linked(env, a, b, false) {
         return Ok(true);
     }
-    let probe = BitFlags::empty();
-    Ok(a.contains_with_flags(probe, env, b)?
-        && b.contains_with_flags(probe, env, a)?
-        && on_copies(None, [a, b], |[a, b], trial| fns_join(env, trial, &a, &b))?)
+    Ok(a.decided_holds(env, b)?
+        && b.decided_holds(env, a)?
+        && on_copies(None, [a, b], |[a, b], _| Ok(fns_join(env, &[(&a, &b)])))?)
 }
 
 /// Whether `a` meets `b` and `c` meets `d` at once, on copies that share
 /// their cells ([`fns_meet`]).
 fn fns_meet_both(env: &Env, [a, b]: [&Type; 2], [c, d]: [&Type; 2]) -> Result<bool> {
-    on_copies(None, [a, b, c, d], |[a, b, c, d], trial| {
-        Ok(fns_join(env, trial, &a, &b)? && fns_join(env, trial, &c, &d)?)
+    on_copies(None, [a, b, c, d], |[a, b, c, d], _| {
+        Ok(fns_join(env, &[(&a, &b), (&c, &d)]))
     })
 }
 
@@ -1608,10 +1599,7 @@ impl Type {
         params[i] = p0.union_int(env, hist, merge, &mut kept, p1)?;
         let merged =
             Type::Ref(Arc::new(t0.with_params(Arc::from_iter(params.drain(..)))));
-        let probe = BitFlags::empty();
-        if merged.contains_with_flags(probe, env, self)?
-            && merged.contains_with_flags(probe, env, t)?
-        {
+        if merged.decided_holds(env, self)? && merged.decided_holds(env, t)? {
             welds.absorb(&mut kept);
             Ok(merged)
         } else {
@@ -2706,16 +2694,10 @@ impl Type {
                         | Self::Struct(_)
                 ) && p.shares_constructor(t);
                 let rigid_inside = walk.inside && same_shape && t.has_rigid();
-                let probe = BitFlags::empty();
-                if !rigid_inside
-                    && !p.has_unbound()
-                    && p.contains_int(probe, env, &mut walk.contains, t)?
-                {
+                if !rigid_inside && !p.has_unbound() && p.decided_holds(env, t)? {
                     return Ok(t.clone());
                 }
-                if !t.has_unbound()
-                    && t.contains_int(probe, env, &mut walk.contains, p)?
-                {
+                if !t.has_unbound() && t.decided_holds(env, p)? {
                     return Ok(p.clone());
                 }
                 if !p.could_match(env, t)? {

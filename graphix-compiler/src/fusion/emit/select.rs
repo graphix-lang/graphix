@@ -22,7 +22,6 @@ use arcstr::ArcStr;
 use cranelift_codegen::ir::{
     Block, BlockArg, InstBuilder, Value as ClifValue, condcodes::IntCC, types,
 };
-use enumflags2::BitFlags;
 use netidx_value::{Typ, Value};
 use smallvec::SmallVec;
 use triomphe::Arc;
@@ -1495,7 +1494,7 @@ fn emit_inferred_guard_cond(
         }
         None => (pred, true),
     };
-    if pred.contains_with_flags(BitFlags::empty(), env, scrut_typ).unwrap_or(false) {
+    if pred.decided_holds(env, scrut_typ).unwrap_or(false) {
         return Ok((None, whole));
     }
     let cond = match &pred {
@@ -1603,8 +1602,7 @@ fn emit_narrowed_test<R: Rt>(
 ) -> Result<Option<ClifValue>> {
     let env = cx.ctx.type_env;
     let pred = resolve_node_typ(cx.ctx, &pat.type_predicate);
-    let holds =
-        |t: &Type| pred.contains_with_flags(BitFlags::empty(), env, t).unwrap_or(false);
+    let holds = |t: &Type| pred.decided_holds(env, t).unwrap_or(false);
     let by_structure = || {
         pat.structure_predicate.matched_part(env, scrut_typ).is_some_and(|t| holds(&t))
     };
@@ -1780,7 +1778,7 @@ fn type_test_is_trivial<R: Rt>(
     let env = cx.ctx.type_env;
     !scrut_typ.holds_abstract(env)
         && resolve_node_typ(cx.ctx, &pat.type_predicate)
-            .contains_with_flags(BitFlags::empty(), env, scrut_typ)
+            .decided_holds(env, scrut_typ)
             .unwrap_or(false)
 }
 

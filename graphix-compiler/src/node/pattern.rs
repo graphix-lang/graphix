@@ -231,9 +231,8 @@ fn leaf_bind<R: Rt>(
             Some((id, _)) if cx.inferred => Ok(*id),
             Some((id, t0)) => {
                 let id = *id;
-                let probe = BitFlags::empty();
-                if !(t0.contains_with_flags(probe, &ctx.env, typ)?
-                    && typ.contains_with_flags(probe, &ctx.env, t0)?)
+                if !(t0.decided_holds(&ctx.env, typ)?
+                    && typ.decided_holds(&ctx.env, t0)?)
                 {
                     let u = Type::union(&ctx.env, &[t0, typ])?;
                     map.insert(name.clone(), (id, u.clone()));

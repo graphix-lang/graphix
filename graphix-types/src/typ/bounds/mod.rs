@@ -10,8 +10,7 @@ use crate::{
     expr::ModPath,
     stack::ensure_sufficient,
     typ::{
-        AbstractId, Bound, ContainsFlags, FnArgKind, FnArgType, FnType, Mutability, Open,
-        TVar, Type,
+        AbstractId, Bound, FnArgKind, FnArgType, FnType, Mutability, Open, TVar, Type,
         cast::numbers_ordered,
         node_addr,
         setops::strictly_identical,
@@ -193,6 +192,14 @@ impl Drop for Build {
             eprintln!("bounds audit: the build bound {n} cells by the old relation")
         }
     }
+}
+
+/// Whether each pair can be made one type at once, by a solver of its
+/// own that keeps nothing. The solver marks every open cell it meets as a
+/// check's, so the open cells of `pairs` are copies no one else holds.
+pub fn unifies(env: &Env, pairs: &[(&Type, &Type)]) -> bool {
+    Solving::default()
+        .trying(false, |s| pairs.iter().try_for_each(|(a, b)| s.equal(env, a, b)))
 }
 
 /// `f` over this thread's solver; none where no check by bounds is
@@ -948,8 +955,8 @@ impl Solving {
                         }
                     }
                 }
-                let flags = ContainsFlags::RigidCheck | ContainsFlags::Sealed;
-                return match numbers_ordered(|| b.contains_with_flags(flags, env, &a))? {
+                return match numbers_ordered(|| super::holds::holds_sealed(env, &b, &a))?
+                {
                     true => Ok(()),
                     false => bail!(
                         "the implementation requires {a} to be {b}, which the \

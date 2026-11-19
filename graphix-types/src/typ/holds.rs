@@ -25,36 +25,26 @@ use std::borrow::Cow;
 
 /// [`holds`] of two function types.
 pub fn holds_fn(env: &Env, a: &FnType, b: &FnType) -> Result<bool> {
-    Holds {
-        env,
-        names: LPooled::take(),
-        memo: LPooled::take(),
-        trail: LPooled::take(),
-        depth: 0,
-        relied: NONE,
-        invariant: false,
-        expansions: LPooled::take(),
-        idents: LPooled::take(),
-        keep: LPooled::take(),
-    }
-    .function(a, b)
+    Holds::new(env).function(a, b)
+}
+
+/// [`holds`] over a fixed signature's variables: one meets a predicate
+/// only where its own bounds imply it.
+pub fn holds_sealed(env: &Env, a: &Type, b: &Type) -> Result<bool> {
+    let mut h = Holds::new(env);
+    h.sealed = true;
+    h.go(a, b)
+}
+
+/// `t`'s structural identity, its cells by their own: two types with one
+/// identity are one type.
+pub(crate) fn identity(env: &Env, t: &Type) -> u128 {
+    Holds::new(env).ident(t)
 }
 
 /// Whether every value of `b` is a value of `a`.
 pub fn holds(env: &Env, a: &Type, b: &Type) -> Result<bool> {
-    Holds {
-        env,
-        names: LPooled::take(),
-        memo: LPooled::take(),
-        trail: LPooled::take(),
-        depth: 0,
-        relied: NONE,
-        invariant: false,
-        expansions: LPooled::take(),
-        idents: LPooled::take(),
-        keep: LPooled::take(),
-    }
-    .go(a, b)
+    Holds::new(env).go(a, b)
 }
 
 /// What a failed alternative takes back ([`Holds::attempt`]).
@@ -96,6 +86,9 @@ struct Holds<'e> {
     relied: usize,
     /// The walk asks for one type, not a holder ([`Self::equal`]).
     invariant: bool,
+    /// A declared variable meets a predicate only where its own bounds
+    /// imply it: the fixed signature others read ([`holds_sealed`]).
+    sealed: bool,
     /// Each name's expansion, once: one node for every meeting of it.
     expansions: LPooled<AHashMap<Side, Option<Type>>>,
 }
@@ -124,7 +117,22 @@ enum Cell {
     Open,
 }
 
-impl Holds<'_> {
+impl<'e> Holds<'e> {
+    fn new(env: &'e Env) -> Self {
+        Holds {
+            env,
+            names: LPooled::take(),
+            memo: LPooled::take(),
+            trail: LPooled::take(),
+            depth: 0,
+            relied: NONE,
+            invariant: false,
+            sealed: false,
+            expansions: LPooled::take(),
+            idents: LPooled::take(),
+            keep: LPooled::take(),
+        }
+    }
     fn go(&mut self, a: &Type, b: &Type) -> Result<bool> {
         ensure_sufficient(|| {
             let (a, b) = (decided(a), decided(b));
@@ -264,7 +272,32 @@ impl Holds<'_> {
             // when only their bounds tell
             (T::TVar(x), T::TVar(y)) => match (self.cell(x), self.cell(y)) {
                 (Cell::Rigid, Cell::Rigid) => self.by_bounds(a, y),
-                _ => Ok(true),
+                // this one's bounds must admit the other's: what it holds
+                // at least (its lower bounds), and what it may be at most
+                // where it says (one of its own bounds)
+                _ => {
+                    let (lower, upper) = (y.cell_lower(), y.cell_constraints());
+                    for c in x.cell_constraints().iter() {
+                        for l in lower.iter() {
+                            if !self.go(c, l)? {
+                                return Ok(false);
+                            }
+                        }
+                        if !upper.is_empty() {
+                            let mut held = false;
+                            for u in upper.iter() {
+                                if self.attempt(c, u)? {
+                                    held = true;
+                                    break;
+                                }
+                            }
+                            if !held {
+                                return Ok(false);
+                            }
+                        }
+                    }
+                    Ok(true)
+                }
             },
             (_, T::Bottom) => Ok(true),
             (T::Bound(p), t) => self.predicate(*p, t),
@@ -665,13 +698,21 @@ impl Holds<'_> {
     /// Whether `t` meets the predicate `p`.
     fn predicate(&mut self, p: Bound, t: &Type) -> Result<bool> {
         let env = self.env;
+        if self.sealed
+            && let Type::TVar(tv) = t
+            && tv.binding().is_none()
+            && tv.is_rigid()
+        {
+            return tv.conjunct_implies(env, &Type::Bound(p));
+        }
+        let sealed = self.sealed;
         Ok(match p {
             Bound::Concrete => t.concrete_holds(env),
             Bound::Data => t.data_holds(env),
             Bound::Function => t.function_holds(env, false)?,
             Bound::Singleton => t.singleton_holds(env, false)?,
-            Bound::OneNumber => t.one_number_holds(env, false, false)?,
-            Bound::NoError => !t.may_be_error(env, false, false)?,
+            Bound::OneNumber => t.one_number_holds(env, false, sealed)?,
+            Bound::NoError => !t.may_be_error(env, false, sealed)?,
             Bound::Discernible => t.discernible(env, false),
             Bound::Ordered => t.discernible(env, true),
             Bound::JsonData | Bound::TomlData => true,

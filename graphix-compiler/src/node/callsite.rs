@@ -4209,10 +4209,8 @@ impl<R: Rt> CallSite<R> {
         };
         wrap!(self.fnode, self.fnode.typecheck0_instance(ctx, types))?;
         fill_omitted(&mut self.args, &ftype)?;
-        // a lambda argument learns its parameters' types from the formal
         for (farg, key) in ftype.args.iter().zip(ArgKey::of_formals(&ftype.args)) {
             if let Some(n) = self.args.get_mut(&key).and_then(|a| a.node.as_mut()) {
-                Type::pre_unify_arg(&ctx.env, &farg.typ, n.typ())?;
                 wrap!(n, n.typecheck0_instance(ctx, types))?;
                 // a callback formal's other cells (its return) are decided
                 // here, in the instance's task, not by its elaboration
@@ -4221,12 +4219,11 @@ impl<R: Rt> CallSite<R> {
                 }
             }
         }
-        if let Some(typ) = &ftype.vargs {
+        if ftype.vargs.is_some() {
             let positional = ftype.args.iter().filter(|a| a.is_positional()).count();
             for key in ArgKey::variadic(positional) {
                 let Some(arg) = self.args.get_mut(&key) else { break };
                 if let Some(n) = arg.node.as_mut() {
-                    Type::pre_unify_arg(&ctx.env, typ, n.typ())?;
                     wrap!(n, n.typecheck0_instance(ctx, types))?;
                 }
             }

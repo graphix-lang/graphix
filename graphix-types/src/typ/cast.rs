@@ -1888,7 +1888,7 @@ impl Type {
                                     // parameters are invariant: each one equal
                                     && params.iter().zip(g.params.iter()).all(|(p, gp)| {
                                     let holds = |a: &Type, b: &Type| {
-                                        a.contains_with_flags(BitFlags::empty(), env, b)
+                                        a.decided_holds(env, b)
                                             .unwrap_or(false)
                                     };
                                     holds(p, gp) && holds(gp, p)
@@ -2367,10 +2367,7 @@ fn shallowify(env: &Env, p: &Type, m: Option<&Type>) -> Type {
     let blank = p.cow_children(&mut |pp| {
         let own = |mp: &&Type| {
             holds_any(mp, env, &mut ShapeSeen::default())
-                && !(!mp.has_unbound()
-                    && pp
-                        .contains_with_flags(BitFlags::empty(), env, mp)
-                        .unwrap_or(false))
+                && !(!mp.has_unbound() && pp.decided_holds(env, mp).unwrap_or(false))
         };
         match parts.next().filter(own) {
             Some(mp) => shallow_part(env, pp, mp),

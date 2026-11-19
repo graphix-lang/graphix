@@ -3042,9 +3042,10 @@ fn write_mismatch(
     let infinite = held.meets_itself(&written);
     // what an earlier input left open was settled to ⊥ at its end: the
     // declaration writes the type there
-    let settled = bind.typ.fill_settled(&written).filter(|t| {
-        t.contains_with_flags(BitFlags::empty(), env, &written).unwrap_or(false)
-    });
+    let settled = bind
+        .typ
+        .fill_settled(&written)
+        .filter(|t| t.decided_holds(env, &written).unwrap_or(false));
     let inferred = match &bind.typ {
         _ if settled.is_some() => ", settled when its input ended,",
         Type::TVar(tv) if tv.bottom_fed() => ", inferred from an earlier use,",

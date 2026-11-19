@@ -8,7 +8,7 @@ use crate::{
     format_with_flags, image,
     typ::{
         Bound, Mutability, TVar, TVarsSeen, Type,
-        contains::{ContainsFlags, ContainsHist, UndecidedTaker, any_part_pair},
+        contains::{ContainsFlags, ContainsHist, any_part_pair},
         key_text,
         matches::{MatchHist, SigMatch, SigPairs},
         normalize::NormCx,
@@ -1938,22 +1938,6 @@ impl FnType {
         Ok(())
     }
 
-    /// The parameter positions of [`Self::contains`] alone: pushes a
-    /// declared signature's parameter types into an argument function
-    /// before its body is typechecked. Return and throws are what the
-    /// body determines and are left open, and so is a declared type two
-    /// decided members of the argument's union could take
-    /// ([`UndecidedTaker`]): the argument's own check meets it.
-    pub fn pre_unify_params(&self, env: &Env, t: &Self) -> Result<()> {
-        let mut hist = ContainsHist::new();
-        self.align(t).0.into_iter().try_for_each(|(s, t)| {
-            match t.typ.contains_int(super::contains::QUERY, env, &mut hist, &s.typ) {
-                Err(e) if e.is::<UndecidedTaker>() => Ok(()),
-                r => r.map(drop),
-            }
-        })
-    }
-
     pub fn sig_matches(&self, env: &Env, impl_fn: &Self) -> Result<SigMatch> {
         let (mut pairs, mut hist) = (SigPairs::default(), super::RefHist::new());
         self.sig_matches_int(env, impl_fn, &mut pairs, &mut hist)?;
@@ -2258,8 +2242,7 @@ impl FnType {
         // cell's part of the signature and whether an instance holds
         // exactly that there, and the cells that are their witness.
         let holds = |own: &Type, at: &Type| {
-            let sealed = ContainsFlags::RigidCheck | ContainsFlags::Sealed;
-            own.contains_with_flags(sealed, env, at).unwrap_or(false)
+            super::holds::holds_sealed(env, own, at).unwrap_or(false)
         };
         let slot: LPooled<AHashMap<usize, usize>> = copies
             .iter()
@@ -2582,11 +2565,7 @@ impl FnType {
                     }
                     for impl_tc in tv.cell_constraints() {
                         let ok = in_sig(&impl_tc)
-                            .contains_with_flags(
-                                ContainsFlags::RigidCheck | ContainsFlags::Sealed,
-                                env,
-                                sig_type,
-                            )
+                            .decided_holds(env, sig_type)
                             .unwrap_or(false);
                         if !ok {
                             let undeclared = match &impl_tc {

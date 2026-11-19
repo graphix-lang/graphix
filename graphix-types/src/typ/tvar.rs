@@ -2877,7 +2877,7 @@ impl TVar {
             return Ok(());
         }
         for e in self.cell_constraints().iter() {
-            if c.contains_with_flags(BitFlags::empty(), env, e)? {
+            if c.decided_holds(env, e)? {
                 return Ok(());
             }
         }

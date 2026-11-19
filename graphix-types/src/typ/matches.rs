@@ -8,14 +8,13 @@ use crate::{
     typ::{
         AndAc, Bound, FnType, Kept, Lazy, NodeKey, NodePairs, RefHist, RefPair, TVar,
         Type,
-        contains::{ContainsHist, find_open_cell},
+        contains::find_open_cell,
         setops::{Pairs, Unfoldings, def_pair, memo_on, strictly_identical},
     },
 };
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, bail};
 use compact_str::{CompactString, format_compact};
-use enumflags2::BitFlags;
 use indexmap::IndexMap;
 use netidx_value::Typ;
 use poolshark::local::LPooled;
@@ -297,9 +296,8 @@ thread_local! {
 }
 
 /// could_match's walk state: its pairs in progress (assumed to overlap),
-/// each with its node in [`Rests`] once one is met in progress, the pairs
-/// found apart, and a memo of its own for the containment questions it
-/// asks.
+/// each with its node in [`Rests`] once one is met in progress, and the
+/// pairs found apart.
 pub(super) struct MatchHist {
     pub(super) hist: RefHist<AHashMap<RefPair, Entered>>,
     /// The pairs found apart, wherever they were found: assuming that pairs
@@ -307,7 +305,6 @@ pub(super) struct MatchHist {
     /// no pair in progress, as at the top of the walk, whose answer it
     /// leaves as the walk without it gives.
     refuted: Lazy<AHashMap<RefPair, Kept<()>>>,
-    contains: ContainsHist,
     /// The node pairs found to overlap resting on no pair in progress,
     /// which overlap wherever they are asked.
     found: NodePairs,
@@ -342,7 +339,6 @@ impl MatchHist {
         MatchHist {
             hist: RefHist::new(),
             refuted: Lazy::new(),
-            contains: ContainsHist::new(),
             found: NodePairs::default(),
             apart: NodePairs::default(),
             rests: Rests::new(),
@@ -667,7 +663,7 @@ impl Type {
             (t0, Self::Primitive(s)) => {
                 for t1 in s.iter() {
                     let t1 = Type::Primitive(t1.into());
-                    if t0.contains_int(BitFlags::empty(), env, &mut hist.contains, &t1)? {
+                    if t0.decided_holds(env, &t1)? {
                         return Ok(true);
                     }
                 }
@@ -687,9 +683,7 @@ impl Type {
                 Type::Abstract { id: id1, params: p1 },
             ) if hist.shared && env.abstract_reps.contains_key(id0) => {
                 let mut same = |(t0, t1): (&Type, &Type)| -> Result<bool> {
-                    let mut holds = |a: &Type, b: &Type| {
-                        a.contains_int(BitFlags::empty(), env, &mut hist.contains, b)
-                    };
+                    let holds = |a: &Type, b: &Type| a.decided_holds(env, b);
                     Ok(t0.has_unbound()
                         || t1.has_unbound()
                         || (holds(t0, t1)? && holds(t1, t0)?))
@@ -896,10 +890,7 @@ impl Type {
             && members.iter().all(|m| match meets(self, env, m) {
                 Ok(false) => true,
                 Ok(true) => {
-                    !m.has_unbound()
-                        && self
-                            .contains_with_flags(BitFlags::empty(), env, m)
-                            .unwrap_or(false)
+                    !m.has_unbound() && self.decided_holds(env, m).unwrap_or(false)
                 }
                 Err(_) => false,
             })
@@ -1000,9 +991,8 @@ impl Type {
             | (_, Self::Set(_) | Self::Primitive(_))
                 if !self.has_unbound() && !impl_type.has_unbound() =>
             {
-                let f = BitFlags::empty();
-                if self.contains_with_flags(f, env, impl_type)?
-                    && impl_type.contains_with_flags(f, env, self)?
+                if self.decided_holds(env, impl_type)?
+                    && impl_type.decided_holds(env, self)?
                 {
                     Ok(())
                 } else {

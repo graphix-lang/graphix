@@ -23,7 +23,6 @@ use crate::{
 };
 use arcstr::ArcStr;
 use compact_str::{CompactString, format_compact};
-use enumflags2::BitFlags;
 use netidx_value::Value;
 use nohash::IntSet;
 use poolshark::local::LPooled;
@@ -1674,10 +1673,7 @@ fn self_calls_abi_consistent<R: Rt>(
                 return;
             };
             // A probe: fusion must not bind a cell the typechecker sees.
-            if !formal_kt
-                .contains_with_flags(BitFlags::empty(), &ec.env, &arg_kt)
-                .unwrap_or(false)
-            {
+            if !formal_kt.decided_holds(&ec.env, &arg_kt).unwrap_or(false) {
                 ok = false;
                 return;
             }

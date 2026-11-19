@@ -92,12 +92,6 @@ pub enum ContainsFlags {
     Conjunct,
 }
 
-/// The relation outside a check by bounds, and the solver's own over
-/// decided types: a probe that binds nothing, in which a declared
-/// variable is a constant, holding only itself and Bottom.
-pub(crate) const QUERY: BitFlags<ContainsFlags> =
-    enumflags2::make_bitflags!(ContainsFlags::{RigidCheck});
-
 /// What a trial on copies takes from the walk it is made in
 /// ([`ContainsHist::seed`]).
 #[derive(Clone, Copy)]
@@ -2347,11 +2341,7 @@ impl Type {
         // the bound holds whatever types the declaring side's variables take
         let mut gates: LPooled<Vec<RigidGate>> = LPooled::take();
         hold_rigid_through_bounds(self, &mut LPooled::take(), &mut gates);
-        c.contains_with_flags(
-            ContainsFlags::RigidCheck | ContainsFlags::Sealed,
-            env,
-            self,
-        )
+        c.decided_holds(env, self)
     }
 }
 
@@ -4109,7 +4099,7 @@ impl Type {
     /// that each hold the other the first met stays, and a member
     /// another holds stands before the first that does.
     pub fn dispatch_arms(env: &Env, t: &Self) -> Result<SmallVec<[Type; 8]>> {
-        let holds = |a: &Type, b: &Type| a.contains_with_flags(BitFlags::empty(), env, b);
+        let holds = |a: &Type, b: &Type| a.decided_holds(env, b);
         let mut arms: SmallVec<[Type; 8]> = SmallVec::new();
         let mut shared = false;
         for m in Self::dispatch_members(env, t)? {
@@ -4194,7 +4184,7 @@ impl Type {
         if self.has_unbound() || t.has_unbound() {
             return Ok(true);
         }
-        let holds = |a: &Type, b: &Type| a.contains_with_flags(BitFlags::empty(), env, b);
+        let holds = |a: &Type, b: &Type| a.decided_holds(env, b);
         Ok(!(holds(self, t)? || holds(t, self)?))
     }
 
@@ -6712,15 +6702,6 @@ impl Type {
         }
         r
     }
-
-    pub fn contains_with_flags(
-        &self,
-        flags: BitFlags<ContainsFlags>,
-        env: &Env,
-        t: &Self,
-    ) -> Result<bool> {
-        self.contains_int(flags, env, &mut ContainsHist::new(), t)
-    }
 }
 
 #[cfg(test)]
@@ -8042,7 +8023,7 @@ mod tests {
         let left = ts[0].diff(&env, &us[0]).unwrap();
         NORMALIZED.with(|n| n.set(0));
         CONTAINS_STEPS.with(|n| n.set(0));
-        assert!(!left.contains_with_flags(BitFlags::empty(), &env, &us[1]).unwrap());
+        assert!(!left.decided_holds(&env, &us[1]).unwrap());
         let (normalized, steps) =
             (NORMALIZED.with(|n| n.get()), CONTAINS_STEPS.with(|n| n.get()));
         assert!(normalized <= steps, "{normalized} nodes normalized in {steps} steps");
@@ -8570,7 +8551,7 @@ mod tests {
                 let _gate = e.open_rigid();
                 let (tz, te) = (Type::TVar(z), Type::TVar(e.clone()));
                 let (t0, t1) = if holder { (&tz, &te) } else { (&te, &tz) };
-                let held = t0.contains_with_flags(flags, &env, t1).unwrap();
+                let held = t0.decided_holds(&env, t1).unwrap();
                 assert_eq!(held, holds, "{t0} ⊇ {t1} under {flags:?}");
                 assert!(!e.is_bound(), "{flags:?}");
                 assert_eq!(e.cell_constraints().len(), 1, "{flags:?}");
@@ -8791,6 +8772,22 @@ pub(super) fn find_impl_with(
             None => Ok(None),
         };
     }
+    // an impl's bound can ask the question again of the type it is being
+    // tried for: met again, it is answered by the impl being tried
+    thread_local! {
+        static TRYING: std::cell::RefCell<Vec<(TraitId, u128, Arc<ImplDef>)>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+    }
+    let key = super::holds::identity(env, t);
+    let trying = TRYING.with_borrow(|s| {
+        s.iter()
+            .rev()
+            .find(|(id, k, _)| *id == trait_id && *k == key)
+            .map(|(.., im)| im.clone())
+    });
+    if trying.is_some() {
+        return Ok(trying);
+    }
     let wanted = t.with_deref(|t| t.and_then(Type::resolved_abstract));
     for im in list.iter().filter(|im| !env.impl_hidden(im)) {
         if let (Some(a), Some(b)) = (im.target.resolved_abstract(), wanted)
@@ -8803,12 +8800,13 @@ pub(super) fn find_impl_with(
         } else {
             im.target.reset_tvars()
         };
-        let hc = head.contains_int(ContainsFlags::Commit.into(), env, hist, t)?;
-        let tc = hc && t.contains_int(ContainsFlags::Commit.into(), env, hist, &head)?;
+        TRYING.with_borrow_mut(|s| s.push((trait_id, key, im.clone())));
+        let fits = super::bounds::unifies(env, &[(&head, t)]);
+        TRYING.with_borrow_mut(|s| s.pop());
         if graphix_dbg_bind() {
-            eprintln!("FIND-IMPL head={head:?} t={t:?} head>=t={hc} t>=head={tc}");
+            eprintln!("FIND-IMPL head={head:?} t={t:?} fits={fits}");
         }
-        if hc && tc {
+        if fits {
             return Ok(Some(im.clone()));
         }
     }

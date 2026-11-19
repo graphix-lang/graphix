@@ -636,8 +636,7 @@ impl Strip {
                 Some(open) => {
                     let mut held = false;
                     for m in members.iter().filter(|m| !open_member(m)) {
-                        held |=
-                            m.contains_with_flags(BitFlags::empty(), &ctx.env, &err)?
+                        held |= m.decided_holds(&ctx.env, &err)?
                     }
                     (!held).then_some(open)
                 }
@@ -677,7 +676,7 @@ impl Strip {
             })?
         }
         let null = Type::Primitive(Typ::Null.into());
-        let holds = |t: &Type| typ.contains_with_flags(BitFlags::empty(), &ctx.env, t);
+        let holds = |t: &Type| typ.decided_holds(&ctx.env, t);
         // an open member holds both: the strip is the one that takes a
         // member out, the error form when neither does (`Any`)
         let takes = |strip: Self| -> Result<bool> {
