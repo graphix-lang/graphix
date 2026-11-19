@@ -289,6 +289,10 @@ impl<R: Rt> MapRef<R> {
     ) -> Result<()> {
         wrap!(self.source, child(&mut self.source, ctx))?;
         wrap!(self.key, child(&mut self.key, ctx))?;
+        // an instance's type is its row
+        if ctx.bounds && !check {
+            return Ok(());
+        }
         // the map's key type holds the key, not the other way around
         let kt = Type::empty_tvar();
         let mt = Type::map(kt.clone(), self.vtyp.clone());
@@ -366,9 +370,7 @@ impl<R: Rt> Update<R> for MapRef<R> {
         }
     }
 
-    // The element cell binds from the source as in the check; the
-    // index needs no judging.
-    super::typed_by_row!(source);
+    super::typed_by_row!();
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         wrap!(self.source, self.source.typecheck1(ctx))?;

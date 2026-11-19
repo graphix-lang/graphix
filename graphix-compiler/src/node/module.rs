@@ -29,7 +29,7 @@ use crate::{
     stack::ensure_sufficient,
     typ::{
         AmbiguousMember, Brief, FnArgKind, FnArgType, FnType, SigMatch, TVar, Type,
-        UnresolvableRef, Written,
+        UnresolvableRef, Written, bounds,
         settle::{DataPositions, VariableUnion},
         tvar::{ForeignWrite, InTask, OwnWrites, TaskId, new_task, settled_note},
     },
@@ -2088,7 +2088,9 @@ impl<R: Rt> Module<R> {
         self.lets = node::Lets::wire(&mut self.nodes);
         self.runs = Runs::default();
         if let Body::Dynamic { .. } = &self.body {
+            let check = bounds::Check::begin(ctx.bounds);
             self.check_body(ctx)
+                .and_then(|()| check.end(&ctx.env))
                 .and_then(|()| crate::drain_pending_settles(ctx))
                 .and_then(|()| crate::check_pending_names(ctx))
                 .map_err(|e| crate::resite_pending_name(ctx, e))?;

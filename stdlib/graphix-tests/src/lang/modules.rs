@@ -1501,8 +1501,8 @@ const LOADED_BUILTIN_IN_A_LAMBDA: &str = r#"
 run!(loaded_builtin_in_a_lambda, LOADED_BUILTIN_IN_A_LAMBDA,
     load_refused("defining builtins is not allowed"); FuseExpect::Jit);
 
-// A loaded body's top-level cells are monomorphic: a function writing one
-// is not generalized over it.
+// A loaded body checks as a program's top level does: a function writing a
+// top-level cell stays generic, and the cell takes what every call writes.
 const LOADED_BODY_IS_TOP_LEVEL: &str = r#"
 {
     let status = mod foo dynamic {
@@ -1514,12 +1514,12 @@ const LOADED_BODY_IS_TOP_LEVEL: &str = r#"
             let w = f(1)
         """
     };
-    select status { error as e => e, null as _ => never() }
+    select status { error as e => e, null as _ => foo::w }
 }
 "#;
 
 run!(loaded_body_is_top_level, LOADED_BODY_IS_TOP_LEVEL,
-    load_refused("type mismatch"); FuseExpect::Jit);
+    is(Value::I64(1)); FuseExpect::Jit);
 
 // A loaded body settles what its check deferred before it elaborates.
 const LOADED_BODY_SETTLES: &str = r#"

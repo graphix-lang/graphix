@@ -917,6 +917,19 @@ run!(
     prints("[i64:1, i64:5, i64:2, i64:1, i64:5, i64:2, i64:1, [i64:1, i64:5, i64:1]]")
 );
 
+// A capture under a pattern that waits for its value until the input's end
+// takes the value: a read of a field the value lacks is refused.
+run!(
+    let_partial_struct_capture_is_typed_when_its_value_waits,
+    r#"{
+    let k = {n: 5, p: 1, q: 2};
+    let all = k;
+    let (j, w@ {q, ..}) = (1, k);
+    (all.p, w.zzz)
+}"#,
+    refused("has no field zzz")
+);
+
 // A field read over a union of structs of one shape, or of tuples of one
 // arity, reads the field every member holds at one index: a typedef and
 // its expansion, records differing in a variant field.

@@ -1737,13 +1737,43 @@ impl<R: Rt> Qop<R> {
     /// where its type is decided enough to say which; else the strip
     /// waits for it. What a `?` raises reaches the handler as a chain over
     /// the payloads of the errors taken off.
+    /// The refusal of a raise that a sealed catch, whose handler was
+    /// checked before it, cannot take: one naming the annotation where the
+    /// catch saw no error.
+    fn unfit(&self, env: &Env, handler: &Type, e: anyhow::Error) -> anyhow::Error {
+        if !self.handler().is_some_and(|h| h.sealed()) {
+            return e;
+        }
+        let raised = || {
+            let t = self.n.typ().with_deref(|t| t.cloned())?;
+            if matches!(self.spec.kind, ExprKind::Rethrow(_)) {
+                return Some(t);
+            }
+            let (_, payloads) = bounds::strip(env, &t, true).ok()?;
+            let chain = Type::err_chain(bounds::union_of(payloads));
+            Some(Type::Error(Arc::new(chain)))
+        };
+        let nothing = handler.with_deref(|t| matches!(t, Some(Type::Bottom)));
+        format_with_flags(PrintFlag::DerefTVars, || match raised() {
+            Some(etyp) if nothing => anyhow!(
+                "this error reaches a catch that saw no error when it was checked: \
+                 annotate the catch with the errors it takes, `catch(e: {etyp})`"
+            ),
+            _ => anyhow!(
+                "this error reaches a catch whose handler was checked to take {handler}: {e}"
+            ),
+        })
+    }
+
     fn check_by_bounds(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         let env = &ctx.env;
         let handler =
             self.handler().and_then(|h| env.by_id.get(&h.id().0)).map(|b| b.typ.clone());
         if matches!(self.spec.kind, ExprKind::Rethrow(_)) {
             return match handler {
-                Some(h) => h.check_contains(env, self.n.typ()),
+                Some(h) => h
+                    .check_contains(env, self.n.typ())
+                    .map_err(|e| self.unfit(env, &h, e)),
                 None => Ok(()),
             };
         }
@@ -1752,8 +1782,8 @@ impl<R: Rt> Qop<R> {
             true => {
                 let payload = Type::empty_tvar();
                 if let Some(h) = &handler {
-                    let chain = Type::err_chain(payload.clone());
-                    h.check_contains(env, &Type::Error(Arc::new(chain)))?
+                    let chain = Type::Error(Arc::new(Type::err_chain(payload.clone())));
+                    h.check_contains(env, &chain).map_err(|e| self.unfit(env, h, e))?
                 }
                 Some(payload)
             }
@@ -1765,7 +1795,10 @@ impl<R: Rt> Qop<R> {
                 for (p, to) in
                     payloads.iter().flat_map(|p| payload.iter().map(move |to| (p, to)))
                 {
-                    to.check_contains(env, p)?
+                    to.check_contains(env, p).map_err(|e| match &handler {
+                        Some(h) => self.unfit(env, h, e),
+                        None => e,
+                    })?
                 }
                 self.typ.check_contains(env, &left)
             }

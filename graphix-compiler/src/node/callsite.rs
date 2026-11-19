@@ -3679,6 +3679,10 @@ impl<R: Rt> CallSite<R> {
                 .and_then(|a| a.node.as_ref())
             {
                 wrap!(node, farg.typ.check_contains(&ctx.env, node.typ()))?;
+                // the check by bounds judged the defaults the value carries
+                if ctx.bounds {
+                    continue;
+                }
                 wrap!(
                     node,
                     check_hidden_defaults(

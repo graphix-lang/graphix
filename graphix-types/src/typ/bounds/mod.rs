@@ -3343,6 +3343,15 @@ impl Solving {
                 self.held.swap_remove(i);
             }
         }
+        // a select still waiting at the input's end, on cells it may fix,
+        // is routed over what it looks into before the names it binds are
+        // fixed: they take what it routes to them
+        if force {
+            let mine = |s: &Self, id: usize, t: &Type| {
+                s.looked(id, &deep(t)).iter().all(|v| fixes(v, min))
+            };
+            self.select_waiting(env, &mine)?;
+        }
         let mut fixed = false;
         for v in flowing.into_iter().chain(empty) {
             let mine = fixes(&v, min);

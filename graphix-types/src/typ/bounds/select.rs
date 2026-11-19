@@ -1316,7 +1316,7 @@ impl Solving {
     }
 
     /// The undecided cells of `t` the arms of the select `id` look into.
-    fn looked(&self, id: usize, t: &Type) -> SmallVec<[TVar; 4]> {
+    pub(super) fn looked(&self, id: usize, t: &Type) -> SmallVec<[TVar; 4]> {
         let mut out = SmallVec::new();
         self.selects[id].template.arms.iter().for_each(|a| looked(&a.pat, t, &mut out));
         out

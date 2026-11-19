@@ -295,9 +295,7 @@ impl<R: Rt> Update<R> for ArrayRef<R> {
         self.resident.set(TagValue::tagged(v, tag))
     }
 
-    // The element cell binds from the source as in the check; the
-    // index needs no judging.
-    super::typed_by_row!(source);
+    super::typed_by_row!();
 
     fn typ(&self) -> &Type {
         &self.typ
@@ -429,9 +427,7 @@ impl<R: Rt> Update<R> for ArraySlice<R> {
         self.resident.set(TagValue::tagged(v, tag))
     }
 
-    // The element cell binds from the source as in the check; the
-    // index needs no judging.
-    super::typed_by_row!(source);
+    super::typed_by_row!();
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.slept.set();
@@ -668,6 +664,10 @@ impl<R: Rt> ArrayRef<R> {
     ) -> Result<()> {
         wrap!(self.source, child(&mut self.source, ctx))?;
         wrap!(self.i, child(&mut self.i, ctx))?;
+        // an instance's type is its row
+        if ctx.bounds && !check {
+            return Ok(());
+        }
         let source_typ = self.source.typ();
         if bounds::active() {
             // whatever the source turns out to be gives the element: an
@@ -718,6 +718,13 @@ impl<R: Rt> ArraySlice<R> {
         check: bool,
     ) -> Result<()> {
         wrap!(self.source, child(&mut self.source, ctx))?;
+        for i in [self.start.as_mut(), self.end.as_mut()].into_iter().flatten() {
+            wrap!(i, child(i, ctx))?;
+        }
+        // an instance's type is its row
+        if ctx.bounds && !check {
+            return Ok(());
+        }
         let source_typ = self.source.typ();
         if check && bounds::active() {
             let sliced = bounds::union_of([
@@ -733,13 +740,13 @@ impl<R: Rt> ArraySlice<R> {
         // is decided in its typecheck0 (a select) is related here
         let Type::Set(members) = &self.typ else { unreachable!() };
         wrap!(self, members[0].check_contains(&ctx.env, source_typ))?;
-        for i in [self.start.as_mut(), self.end.as_mut()].into_iter().flatten() {
-            wrap!(i, child(i, ctx))?;
-            if check {
-                check_index(&ctx.env, i)?;
-            }
+        match check {
+            true => [self.start.as_ref(), self.end.as_ref()]
+                .into_iter()
+                .flatten()
+                .try_for_each(|i| check_index(&ctx.env, i)),
+            false => Ok(()),
         }
-        Ok(())
     }
 }
 

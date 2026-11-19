@@ -383,9 +383,8 @@ impl<R: Rt> Update<R> for StructWith<R> {
         if ctx.bounds {
             let source = self.source.typ().resolve_tvars();
             for rep in self.replace.iter_mut().filter(|r| r.index.is_none()) {
-                if let Ok((idx, _)) = struct_field_types(ctx, &source, &rep.name) {
-                    rep.index = idx
-                }
+                let found = struct_field_types(ctx, &source, &rep.name);
+                rep.index = wrap!(rep.n, found)?.0
             }
         }
         Ok(())
@@ -543,9 +542,9 @@ impl<R: Rt> Update<R> for StructRef<R> {
         // the field's place is known only now
         if ctx.bounds && self.sorted_field_idx.is_none() {
             let source = self.source.typ().resolve_tvars();
-            if let Ok((idx, _)) = struct_field_type(ctx, &source, &self.field_name) {
-                self.sorted_field_idx = idx
-            }
+            let (idx, _) =
+                wrap!(self, struct_field_type(ctx, &source, &self.field_name))?;
+            self.sorted_field_idx = idx
         }
         Ok(())
     }
@@ -1262,9 +1261,14 @@ impl<R: Rt> StructWith<R> {
         check: bool,
     ) -> Result<()> {
         wrap!(self.source, child(&mut self.source, ctx))?;
-        if bounds::active() {
+        // an instance's types are its rows, and typecheck1 finds each
+        // field's place
+        if bounds::active() || (ctx.bounds && !check) {
             for rep in self.replace.iter_mut() {
                 wrap!(rep.n, child(&mut rep.n, ctx))?;
+            }
+            if !check {
+                return Ok(());
             }
             let fields = self.replace.iter().map(|r| (r.name.clone(), r.n.typ().clone()));
             let u = Use::With { fields: fields.collect(), out: self.typ.clone() };
@@ -1296,6 +1300,11 @@ impl<R: Rt> StructRef<R> {
         check: bool,
     ) -> Result<()> {
         wrap!(self.source, child(&mut self.source, ctx))?;
+        // an instance's type is its row, and typecheck1 finds the field's
+        // place
+        if ctx.bounds && !check {
+            return Ok(());
+        }
         if bounds::active() {
             let u = Use::Field {
                 field: self.field_name.clone(),
