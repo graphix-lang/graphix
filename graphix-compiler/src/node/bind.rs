@@ -26,7 +26,7 @@ use crate::{
     },
     prune::ReadStamp,
     typ::{
-        CoreTrait, FnType, Mutability, TVar, Type,
+        CoreTrait, Mutability, TVar, Type,
         bounds::{self, Use},
         tvar::{AtLevel, Level, current_level},
     },
@@ -332,15 +332,6 @@ fn scheme_named<R: Rt>(
     let generic =
         ctx.env.poly_binds.contains(&bind.id) && !ctx.connect_targets.contains(&bind.id);
     generic.then(|| bind.typ.clone())
-}
-
-/// A read of a holder whose type is `t`: the copy the holder's value being
-/// checked shares, else a copy of its own.
-fn holder_read<R: Rt>(ctx: &mut CompileCtx<R>, t: &Type, named: bool) -> Option<Type> {
-    match named {
-        true => t.scheme_read(&ctx.rec_defs, &|ft| shares(ctx, ft)),
-        false => t.instance_read(&ctx.rec_defs, &|ft| shares(ctx, ft)),
-    }
 }
 
 #[derive(Debug)]
@@ -1249,30 +1240,6 @@ pub(crate) enum Signature {
     Decided,
 }
 
-/// A fresh instance of a generalized signature under the open gates.
-fn instance(ft: &FnType, open: &nohash::IntSet<crate::LambdaId>, named: bool) -> FnType {
-    let fresh = match named {
-        true => ft.scheme(open),
-        false => ft.one_instance(open),
-    };
-    fresh.alias_tvars(&mut LPooled::take());
-    fresh
-}
-
-/// A signature the open gates are still checking: a rec knot's, whose
-/// references share its cells.
-fn rec_knot<R: Rt>(ctx: &CompileCtx<R>, ft: &FnType) -> bool {
-    !ctx.rec_defs.is_empty()
-        && ft.lambda_ids.ids().iter().any(|id| ctx.rec_defs.contains(id))
-}
-
-/// A read of a binding whose type holds `ft` shares its cells: a rec knot's
-/// signature, or one an active instance resolves.
-fn shares<R: Rt>(ctx: &CompileCtx<R>, ft: &FnType) -> bool {
-    rec_knot(ctx, ft)
-        || ft.lambda_ids.own().is_some_and(|id| ctx.resolving_innermost(id).is_some())
-}
-
 /// `let g = f`, `let j = s.g` with `f`, `s` generalized and no annotation:
 /// the binding shares the read's copy of the scheme; unifying with a fresh
 /// instance would pin it.
@@ -1567,22 +1534,6 @@ impl Ref {
         Ok(Some(copies))
     }
 
-    /// The signature a reference to the generalized `ft` holds: the
-    /// definition's own cells in a rec knot or a gate parameter, the
-    /// innermost active instance (a bare value reference has no
-    /// arguments to key an instance identity on), else fresh cells.
-    fn decide<R: Rt>(&self, ctx: &mut CompileCtx<R>, ft: Arc<FnType>) -> Arc<FnType> {
-        if rec_knot(ctx, &ft) || ctx.def_gate_params.contains_key(&self.id) {
-            return ft;
-        }
-        if let Some(active) =
-            ft.lambda_ids.own().and_then(|id| ctx.resolving_innermost(id))
-        {
-            return Arc::new(active.ftype);
-        }
-        Arc::new(instance(&ft, &ctx.rec_defs, self.naming != Naming::Unnamed))
-    }
-
     /// Replays the reference registration `compile` made with the runtime.
     pub(crate) fn image_decode<R: Rt>(
         ctx: &mut ExecCtx<'_, R>,
@@ -1693,38 +1644,12 @@ impl<R: Rt> Update<R> for Ref {
     /// reference to the instance being elaborated, which must share the
     /// definition's cells.
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
-        if bounds::active() {
-            return self.copy_scheme(ctx).map(|_| ());
+        // outside a check (the build reading a call's arguments again) a
+        // read decides nothing: the check took its copy
+        if !bounds::active() {
+            return Ok(());
         }
-        let poly = ctx.env.poly_binds.contains(&self.id);
-        let def = match self.signature {
-            Signature::Decided => return Ok(()),
-            Signature::Binding if !poly => return Ok(()),
-            Signature::Binding => self.typ.clone(),
-            Signature::Pending => match ctx.env.by_id.get(&self.id) {
-                None => bail!("BUG missing bind {:?}", self.id),
-                Some(b) => b.typ.clone(),
-            },
-        };
-        let ft = def.with_deref(|t| match t {
-            Some(Type::Fn(ft)) if poly => Some(ft.clone()),
-            _ => None,
-        });
-        let signature = match (ft, self.signature) {
-            (Some(ft), _) => Type::Fn(self.decide(ctx, ft)),
-            (None, Signature::Pending) => {
-                holder_read(ctx, &def, self.naming != Naming::Unnamed).unwrap_or(def)
-            }
-            (None, _) => return Ok(()),
-        };
-        let held = mem::replace(&mut self.typ, signature);
-        if matches!(
-            mem::replace(&mut self.signature, Signature::Decided),
-            Signature::Pending
-        ) {
-            held.check_contains(&ctx.env, &self.typ).map_err(|e| e.at(&*self.spec))?;
-        }
-        Ok(())
+        self.copy_scheme(ctx).map(|_| ())
     }
 
     fn view(&self) -> NodeView<'_, R> {

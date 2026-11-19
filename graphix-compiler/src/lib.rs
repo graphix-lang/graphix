@@ -1459,14 +1459,6 @@ impl<R: Rt> CompileCtx<R> {
             .map(|f| f.r.clone())
     }
 
-    /// The innermost active instantiation of `def`, whatever its
-    /// identity: what a bare value reference inside a resolving body
-    /// refers to.
-    pub(crate) fn resolving_innermost(&self, def: LambdaId) -> Option<ResolvingLambda> {
-        let stack = self.resolving_lambdas.lock();
-        stack.iter().find(|f| f.def == def).map(|f| f.r.clone())
-    }
-
     /// Enter the check of `id`'s default for `label`; false when it is
     /// already in progress.
     pub(crate) fn enter_default(&mut self, id: LambdaId, label: &ArcStr) -> bool {
