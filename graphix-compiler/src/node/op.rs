@@ -517,12 +517,6 @@ impl<R: Rt> Unary<R> {
                     constrain_operand(&ctx.env, &Self::negatable(), self.n.typ())
                 )?;
                 wrap!(self, self.typ.check_contains(&ctx.env, self.n.typ()))?;
-                defer_operand(ctx, &self.n);
-                super::defer_settle(ctx, || crate::PendingSettle::Contains {
-                    outer: Self::negatable(),
-                    inner: self.n.typ().clone(),
-                    spec: Arc::new(self.n.spec().clone()),
-                });
                 Ok(())
             }
         }
@@ -801,16 +795,6 @@ pub(crate) fn arith_rule(
     }
 }
 
-/// Defer an operator's settle of the operand `n` to the check's settle.
-fn defer_operand<R: Rt>(ctx: &mut CompileCtx<R>, n: &Node<R>) {
-    if let Type::TVar(tv) = n.typ() {
-        super::defer_settle(ctx, || crate::PendingSettle::Operand {
-            tv: tv.clone(),
-            spec: Arc::new(n.spec().clone()),
-        })
-    }
-}
-
 macro_rules! arith_op {
     ($name:ident, $checked:tt, $base:ident) => {
         binary_node!($name, Type::empty_tvar(), settles: true, {
@@ -853,8 +837,6 @@ macro_rules! arith_op {
                         &self.typ
                     )
                 )?;
-                defer_operand(ctx, &self.lhs);
-                defer_operand(ctx, &self.rhs);
                 Ok(())
             }
         }

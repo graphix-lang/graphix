@@ -55,13 +55,13 @@ use crate::{
         callsite::{CallSite, may_hold_fn},
         lambda::{GXLambda, LambdaDef},
     },
-    typ::{Bound, CopySites, FnType, Indiscernible, Open, TVar, Type, tvar::Judgment},
+    typ::{CopySites, FnType, TVar, Type, tvar::Judgment},
 };
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, bail};
 use arcstr::ArcStr;
 pub use enumflags2::BitFlags;
-use expr::{Attr, Expr, Told, union_members_with};
+use expr::{Attr, Expr, Told};
 use futures::channel::mpsc;
 use log::{info, warn};
 use netidx_value::{Abstract, ValArray, Value, abstract_type::AbstractWrapper};
@@ -75,8 +75,8 @@ use poolshark::{
 use smallvec::SmallVec;
 use std::{
     any::Any,
-    cell::{Cell, RefCell},
-    collections::{VecDeque, hash_map::Entry},
+    cell::Cell,
+    collections::hash_map::Entry,
     fmt::Debug,
     mem,
     sync::{
@@ -1620,12 +1620,6 @@ pub struct CompileCtx<R: Rt> {
     /// outside every definition compiles once and is lowered where it
     /// stands.
     pub(crate) body: Option<node::lambda::BodyCompile>,
-    /// Deferred terminal settles, one frame per resolution scope. A
-    /// call site pushes its resolved signature into the current frame;
-    /// statement boundaries drain it, so a settle runs only after every
-    /// writer in its scope. A re-drive's leftovers merge up to the
-    /// parent frame.
-    pub(crate) pending_settles: Vec<SettleFrame>,
     /// Imports whose terminal name did not exist when the `use`
     /// compiled (`use self::sub::x` may precede `mod sub;`); re-checked
     /// by `check_pending_imports`, from `compile_top` and a module's load.
@@ -1814,7 +1808,6 @@ impl<R: Rt> CompileCtx<R> {
             impl_reads: None,
             fn_forward_resolutions: self.fn_forward_resolutions.fork(),
             body: self.body.clone(),
-            pending_settles: vec![SettleFrame::default()],
             pending_imports: Vec::new(),
             pending_names: Vec::new(),
             def_assertions: Arc::new(Mutex::new(Vec::new())),
@@ -1874,7 +1867,6 @@ impl<R: Rt> CompileCtx<R> {
             impl_reads: _,
             fn_forward_resolutions,
             body: _,
-            pending_settles,
             pending_imports,
             pending_names,
             def_assertions,
@@ -1895,10 +1887,6 @@ impl<R: Rt> CompileCtx<R> {
         self.connect_targets.join(connect_targets);
         self.builtin_bindings.join(builtin_bindings);
         self.fn_forward_resolutions.join(fn_forward_resolutions);
-        let frame = self.pending_settles.last_mut().expect("root settle frame");
-        for later in pending_settles {
-            frame.append(later)
-        }
         self.pending_imports.extend(pending_imports);
         self.pending_names.extend(pending_names);
         if !Arc::ptr_eq(&self.def_assertions, &def_assertions) {
@@ -2391,7 +2379,6 @@ impl<R: Rt> ExecState<R> {
                 impl_reads: None,
                 fn_forward_resolutions: TrackedMap::default(),
                 body: None,
-                pending_settles: vec![SettleFrame::default()],
                 pending_imports: Vec::new(),
                 pending_names: Vec::new(),
                 def_assertions: Arc::new(Mutex::new(Vec::new())),
@@ -3055,8 +3042,6 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
         self.attr_absorbed.lock().clear();
         self.pending_imports.clear();
         self.pending_names.clear();
-        self.pending_settles.clear();
-        self.pending_settles.push(SettleFrame::default());
         self.fusion.top_id = Some(top_id);
     }
 
@@ -3092,540 +3077,6 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
         self.body = None;
     }
     env_restore_methods!();
-}
-
-/// What the check defers to its statement's settle; see
-/// [`CompileCtx::pending_settles`].
-pub(crate) enum PendingSettle {
-    /// A call site's terminal settle.
-    Site {
-        /// The site's resolved signature.
-        ftype: FnType,
-        /// The site's return-type cell.
-        rtype: Option<typ::TVar>,
-        unread_callbacks: SmallVec<[typ::TVar; 1]>,
-        /// Cells (by address) exempt from settling: an omitted defaulted
-        /// argument's.
-        exempt: AHashSet<usize>,
-        /// The signatures of the enclosing definitions: what they reach
-        /// is generalized, settled by each call.
-        sigs: SmallVec<[triomphe::Arc<FnType>; 1]>,
-        spec: Arc<Expr>,
-    },
-    /// A cell an operation leaves for its context to decide (an
-    /// operator's operand, a constructed value's parameter), settled once
-    /// the frame's sites have.
-    Operand { tv: typ::TVar, spec: Arc<Expr> },
-    /// A `let`'s cell over the initializer type `init`: ⊥ when `init` is
-    /// ⊥ and no writer or reader decided the cell.
-    LetOverBottom { tv: typ::TVar, init: Type, spec: Arc<Expr> },
-    /// A definition's body, settled once its sites have: a cell its gate
-    /// created that nothing bounded binds ⊥, the signature's `exempt`.
-    Body {
-        table: std::sync::Arc<node::lambda::DefTable>,
-        owner: LambdaId,
-        exempt: AHashSet<usize>,
-        spec: Arc<Expr>,
-    },
-    /// `outer ⊇ inner`, judged once the frame's cells have settled.
-    Contains { outer: Type, inner: Type, spec: Arc<Expr> },
-    /// A compared type, or a map's type, that must hold no union of two
-    /// members with one runtime form (only map keys for `Keys`), open
-    /// cells read as any type they may yet bind.
-    Discernible { typ: Type, what: Discerned, spec: Arc<Expr> },
-    /// A select arm's type test against what else reaches it: no two
-    /// members with one runtime form, open cells read as any type they
-    /// may yet bind.
-    Told { test: Type, rest: Type, spec: Arc<Expr> },
-    /// A select arm's slice element typed `test`, whose structure admits
-    /// `shape`, over the element type `elems`, a member of it open at the
-    /// select: `test`, which typed the element's binds, holds what the
-    /// element takes of every member.
-    ElementBinds { test: Type, shape: Type, elems: Type, spec: Arc<Expr> },
-}
-
-/// What a [`PendingSettle::Discernible`] judges.
-pub(crate) enum Discerned {
-    Keys,
-    /// A call's cell with the bound (`Discernible` or `Ordered`).
-    Bound(typ::TVar, Type),
-}
-
-/// The settles a check deferred, in the order they settle, held as
-/// chunks so a join moves the shorter side's chunks, never the settles.
-#[derive(Default)]
-pub(crate) struct SettleFrame(VecDeque<Vec<PendingSettle>>);
-
-impl SettleFrame {
-    pub(crate) fn push(&mut self, settle: PendingSettle) {
-        match self.0.back_mut() {
-            Some(chunk) => chunk.push(settle),
-            None => self.0.push_back(vec![settle]),
-        }
-    }
-
-    /// `later`'s settles after this frame's.
-    pub(crate) fn append(&mut self, mut later: SettleFrame) {
-        if self.0.len() < later.0.len() {
-            mem::swap(self, &mut later);
-            while let Some(chunk) = later.0.pop_back() {
-                self.0.push_front(chunk)
-            }
-        } else {
-            self.0.extend(later.0)
-        }
-    }
-
-    pub(crate) fn is_empty(&self) -> bool {
-        self.0.iter().all(|chunk| chunk.is_empty())
-    }
-
-    pub(crate) fn iter(&self) -> impl Iterator<Item = &PendingSettle> {
-        self.0.iter().flatten()
-    }
-
-    pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = &mut PendingSettle> {
-        self.0.iter_mut().flatten()
-    }
-}
-
-impl PendingSettle {
-    /// Run every site settle of `frame`, then every cell settle, then
-    /// every rule judged over the settled cells: under a check by bounds,
-    /// by its rules (any two numbers have an order).
-    pub(crate) fn drain(
-        frame: &SettleFrame,
-        env: &Env,
-        mut on_err: impl FnMut(&Arc<Expr>, anyhow::Error) -> Result<()>,
-    ) -> Result<()> {
-        let judged = |f: &mut dyn FnMut() -> Result<()>| typ::numbers_ordered(f);
-        let mut reached: LPooled<AHashMap<usize, AHashSet<usize>>> = LPooled::take();
-        for s in frame.iter() {
-            if let PendingSettle::Site {
-                ftype,
-                rtype,
-                exempt,
-                sigs,
-                spec,
-                unread_callbacks,
-            } = s
-            {
-                let mut kept: SmallVec<[&AHashSet<usize>; 2]> = SmallVec::new();
-                for sig in sigs.iter() {
-                    reached.entry(triomphe::Arc::as_ptr(sig).addr()).or_insert_with(
-                        || {
-                            let mut cells: LPooled<AHashMap<usize, typ::TVar>> =
-                                LPooled::take();
-                            sig.reached_cells(&mut cells);
-                            cells.keys().copied().collect()
-                        },
-                    );
-                }
-                for sig in sigs.iter() {
-                    kept.push(&reached[&triomphe::Arc::as_ptr(sig).addr()]);
-                }
-                if let Err(e) = ftype.settle_terminal(env, rtype.as_ref(), exempt, &kept)
-                {
-                    // CR claude for claude: [readability/medium] A call to `let f = |x:
-                    // i64| str::parse("[x]")$` is refused here as "the type '_8144 must
-                    // be fully known here, a type-directed operation reads it: annotate
-                    // it". The cell is generated (the LSP prints '_8936), no
-                    // type-directed operation is written at `f(1)`, and "it" names
-                    // nothing. The fixes, `let v: i64 = f(1)` or `-> i64` on f, both
-                    // pass, but the message names neither. Where ftype and the call are
-                    // in hand, find the cell's place in ftype and say it: the call's
-                    // result (annotate the binding that takes it or the function's
-                    // return type), or the parameter it is. probe:
-                    // design/review-2026-11-16/repro/x-diagnostics-concrete-required-call.gx
-                    // (x-diagnostics-05)
-                    let e = match e.downcast_ref::<typ::settle::ConcreteRequired>() {
-                        Some(concrete)
-                            if unread_callbacks
-                                .iter()
-                                .any(|tv| tv.cell_addr() == concrete.0.cell_addr()) =>
-                        {
-                            concrete.unread_callback()
-                        }
-                        _ => e,
-                    };
-                    on_err(spec, e)?
-                }
-            }
-        }
-        for s in frame.iter() {
-            let res = match s {
-                PendingSettle::Operand { tv, spec } => (tv.settle(env), spec),
-                PendingSettle::LetOverBottom { tv, init, spec } => {
-                    let bottom = init.with_deref(|t| matches!(t, Some(Type::Bottom)));
-                    (if bottom { tv.settle_or_bottom(env) } else { Ok(()) }, spec)
-                }
-                PendingSettle::Body { table, owner, exempt, spec } => {
-                    (table.settle_open(env, *owner, exempt), spec)
-                }
-                _ => continue,
-            };
-            if let (Err(e), spec) = res {
-                on_err(spec, e)?
-            }
-        }
-        let mut ends: LPooled<OpenEnds> = LPooled::take();
-        for s in frame.iter() {
-            if matches!(s, PendingSettle::Contains { .. }) {
-                ends.clear()
-            }
-            let res = match s {
-                PendingSettle::Contains { outer, inner, spec } => {
-                    (outer.check_contains(env, inner), spec)
-                }
-                PendingSettle::Discernible { typ, what, spec } => {
-                    (judged(&mut || discernible(env, typ, what)), spec)
-                }
-                PendingSettle::Told { test, rest, spec } => (told(env, test, rest), spec),
-                PendingSettle::ElementBinds { test, shape, elems, spec } => {
-                    (element_binds(env, test, shape, elems, &mut ends), spec)
-                }
-                PendingSettle::Site { ftype, spec, .. } => {
-                    (judged(&mut || site_bounds(env, ftype)), spec)
-                }
-                _ => continue,
-            };
-            if let (Err(e), spec) = res {
-                on_err(spec, e)?
-            }
-        }
-        Ok(())
-    }
-}
-
-/// The bounds a call's settled cells must meet beyond their check: a
-/// `Discernible` cell's binding, and the map keys a `Concrete` one's (a
-/// map read from data).
-fn site_bounds(env: &Env, ftype: &FnType) -> Result<()> {
-    let mut tvs: LPooled<AHashMap<ArcStr, typ::TVar>> = LPooled::take();
-    ftype.collect_tvars(&mut tvs);
-    for tv in tvs.values() {
-        let Some(t) = tv.binding() else { continue };
-        for c in tv.cell_constraints().iter() {
-            match c {
-                Type::Bound(Bound::Discernible) | Type::Bound(Bound::Ordered) => {
-                    discernible(env, &t, &Discerned::Bound(tv.clone(), c.clone()))?
-                }
-                Type::Bound(Bound::Concrete) => discernible(env, &t, &Discerned::Keys)?,
-                Type::Bound(b @ (Bound::JsonData | Bound::TomlData)) => {
-                    let name = match b {
-                        Bound::JsonData => "JSON",
-                        _ => "TOML",
-                    };
-                    if let Some(why) = t.text_refusal(env) {
-                        let (what, why) = why.told(name, &t);
-                        match tv.name.starts_with('_') {
-                            true => bail!("{c} refuses {what}: {why}"),
-                            false => bail!("'{}: {c} refuses {what}: {why}", tv.name),
-                        }
-                    }
-                    let written = tv
-                        .cell_constraints()
-                        .iter()
-                        .any(|c| matches!(c, Type::Bound(Bound::Data)));
-                    // CR claude for claude: [bug/medium] The rule that a TOML document
-                    // is a table is enforced here for one root shape only: a map
-                    // written as pairs. A scalar, array, tuple, variant or null root
-                    // passes the check and then fails every write with toml's bare
-                    // "unsupported i64 type". TomlData also admits decimal and
-                    // duration, which leaf_to_toml refuses for every value (the book
-                    // states all of these as refused). Fix: turn Type::toml_root_pairs
-                    // into the root member that cannot be a table (anything but a
-                    // struct, a string-keyed map, an abstract value or Any), and refuse
-                    // decimal and duration in a TOML walk, naming the change as
-                    // toml_root_refusal does. probe:
-                    // design/review-2026-11-16/repro/small-pkgs-toml-root-check.sh
-                    // (small-pkgs-04)
-                    if *b == Bound::TomlData
-                        && written
-                        && let Some(m) = t.toml_root_pairs(env)
-                    {
-                        let t = t.resolve_tvars();
-                        let why = typ::toml_root_refusal(Some(&m.resolve_tvars()));
-                        match tv.name.starts_with('_') {
-                            true => bail!("{c} refuses {t}: {why}"),
-                            false => bail!("'{}: {c} refuses {t}: {why}", tv.name),
-                        }
-                    }
-                }
-                Type::Bound(Bound::OneNumber) => {
-                    // CR claude for claude: [bug/medium] This judges a `OneNumber`
-                    // cell's binding only for members still open when the site settles.
-                    // A member open at the call and decided before the frame drains (a
-                    // `let e = never()` that a later `e <- 1.5` writes) leaves `[i64,
-                    // f64]` here, which has no open member, so the check accepts a `'a:
-                    // OneNumber` instantiated at two numeric types and the build
-                    // refuses the instance: `graphix-fuzz check` prints DIVERGENCE, the
-                    // check accepted what the build refused. Nothing else re-judges the
-                    // conjunct, since `Type::require_one_number` hands an open member
-                    // no bound beside a numeric one. Refuse here as well when
-                    // `t.one_number_holds(env, false, false)` is false, and pin the
-                    // top-level and the body-local program beside
-                    // `one_number_beside_an_open_member_refused`. probe:
-                    // design/review-2026-11-16/repro/t-tvar-b-onenumber-open-member-decided-later.gx
-                    // (t-tvar-b-01)
-                    if t.one_number_open() {
-                        format_with_flags(PrintFlag::DerefTVars, || {
-                            bail!(
-                                "'{}: OneNumber holds {t}, an open member of which may \
-                                 yet be another numeric type: annotate it",
-                                tv.name
-                            )
-                        })?
-                    }
-                }
-                _ => (),
-            }
-        }
-    }
-    Ok(())
-}
-
-/// The open cell each cell of the types a settle frame's element tests
-/// read stands for, by the cell's address, the cell held so its address
-/// is its own: the tests of one frame read the types it holds, which
-/// only a [`PendingSettle::Contains`] binds.
-type OpenEnds = AHashMap<usize, (typ::TVar, Option<typ::TVar>)>;
-
-/// Whether a select arm testing for `test` tells it from `rest`, what
-/// else reaches the arm, open cells read as any type they may yet bind.
-fn told(env: &Env, test: &Type, rest: &Type) -> Result<()> {
-    let Some(why) = test.rep_collision_tested(env, Open::Unknown, rest) else {
-        return Ok(());
-    };
-    // CR claude for claude: [bug/medium] [bug/medium] For a declared variable this
-    // branch says it "isn't known here ... annotate it", but the author already wrote
-    // and bounded it. `'b: &string |x: [&i64, 'b]| select x { &i64 as r => 1, _ => 2 }`
-    // is told to annotate (and the variable prints as "'b: unbound within &string"),
-    // while `|x: [&i64, &string]|` gets the right advice, "wrap them in distinct
-    // variants". Read a rigid declared variable as its bound, so a collision with the
-    // bound is the ordinary untold refusal. For an unbounded one, say "bound 'b by a
-    // type of another runtime form", as the "tests inside a value of 'b" refusals do.
-    // The same test and message are copied in `discernible` and in
-    // `Type::bound_refusal` (contains.rs); one method on `Indiscernible` would carry
-    // the fix. Six lang::select fixtures (the open_member_* tests and
-    // select_over_a_bounded_quantifier_still_tells_forms) pin the bare "annotate it",
-    // and only the error case has a passing twin. probe:
-    // design/review-2026-11-16/repro/tests-select-b-declared-variable-form-says-annotate.gx
-    // (tests-select-b-02)
-    let open = |t: &Type| matches!(t, Type::TVar(tv) if tv.open_cell().is_some());
-    format_with_flags(PrintFlag::DerefTVars, || {
-        if let Indiscernible::Pair(a, b) = &why
-            && (open(a) || open(b))
-        {
-            // CR claude for claude: [bug/medium] This refusal ends with "annotate it"
-            // and prints only generated cells, so it names nothing the program wrote.
-            // Over `|a| select a { [`Keep(r), ..] => r, _ => null }` it reads "tests
-            // for `Keep('_N) among '_M ... annotate it", but the fix is to annotate the
-            // parameter `a`. Over `|v: 'a| select v { Array<'b> as xs => xs, _ =>
-            // never() }` the fix is a bound on 'a, which no annotation gives. The
-            // pattern.rs refusals of this family name the binding or the bound ("bound
-            // 'a by the type it tests, `'a: T`"). Name the binding that holds the open
-            // cell, or the declared variable to bound. Then give
-            // lang::select::unannotated_slice_element_telling_rest_from_keep_refused
-            // and told_refusal_names_written_variable_once their passing twins (`a:
-            // Array<`Keep(i64)>`; `'a: [Array<i64>, i64]` with `Array<i64> as xs`).
-            // probe:
-            // design/review-2026-11-16/repro/tests-select-c-told-refusal-annotate-it.sh
-            // (tests-select-c-02)
-            let known = if open(a) { b } else { a };
-            bail!(
-                "this pattern tests for {test} among {rest}, but a type variable there \
-                 isn't known here and may share {known}'s runtime form: annotate it"
-            )
-        }
-        Err(why.untold("this pattern"))
-    })
-}
-
-/// Whether `test`, which typed a slice element's binds, holds what the
-/// element takes of each member of `elems`, the element type its slice
-/// stands over as the frame settled it: the part of the member `shape`,
-/// what the element's structure admits, holds. A member decided after
-/// the select (a write to a scrutinee the arms decided) is one the binds
-/// never met.
-fn element_binds(
-    env: &Env,
-    test: &Type,
-    shape: &Type,
-    elems: &Type,
-    ends: &mut OpenEnds,
-) -> Result<()> {
-    let ends = RefCell::new(ends);
-    let open_cells = |t: &Type, out: &mut AHashMap<usize, typ::TVar>| {
-        let mut cells: LPooled<AHashMap<usize, typ::TVar>> = LPooled::take();
-        typ::settle::position_cells(t, &mut cells);
-        let mut ends = ends.borrow_mut();
-        for (addr, tv) in cells.drain() {
-            let (_, end) = ends.entry(addr).or_insert_with(|| {
-                let end = tv.open_cell();
-                (tv, end)
-            });
-            if let Some(o) = end {
-                out.insert(o.cell_addr(), o.clone());
-            }
-        }
-    };
-    let mut held: LPooled<AHashMap<usize, typ::TVar>> = LPooled::take();
-    open_cells(test, &mut held);
-    let holds = |t: &Type| {
-        let mut beside: LPooled<AHashMap<usize, typ::TVar>> = LPooled::take();
-        open_cells(t, &mut beside);
-        beside.retain(|addr, _| !held.contains_key(addr));
-        let open: SmallVec<[typ::TVar; 8]> =
-            held.values().chain(beside.values()).cloned().collect();
-        test.contains_holding(env, t, &open)
-    };
-    match unheld_member(env, shape, &holds, elems, &mut SmallVec::new())? {
-        None => Ok(()),
-        Some(m) => format_with_flags(PrintFlag::DerefTVars, || {
-            let test = test.resolve_tvars();
-            match &m {
-                Type::TVar(tv) => {
-                    let open = match tv.name.starts_with('_') {
-                        true => format_compact!("a type not yet known here"),
-                        false => format_compact!("'{}", tv.name),
-                    };
-                    bail!(
-                        "this pattern takes a value of any type that {open} becomes \
-                         and that has its structure, and this select typed the \
-                         pattern's binds for {test} alone: annotate the scrutinee's \
-                         type where it is built"
-                    )
-                }
-                m => bail!(
-                    "this pattern takes a value of {} too, a type its scrutinee \
-                     was given after this select typed the pattern's binds for \
-                     {test}: annotate the scrutinee's type where it is built",
-                    m.resolve_tvars()
-                ),
-            }
-        }),
-    }
-}
-
-/// A member of `t` that `shape` admits a value of and `holds` does not
-/// hold the part `shape` takes of. A member still open is any value of a
-/// bound of its that is a type, each of which holds every value of it,
-/// and any value `shape` admits where it has none; `seen` holds the open
-/// cells met, a bound reaching its own cell adding nothing.
-fn unheld_member(
-    env: &Env,
-    shape: &Type,
-    holds: &dyn Fn(&Type) -> Result<bool>,
-    t: &Type,
-    seen: &mut SmallVec<[usize; 4]>,
-) -> Result<Option<Type>> {
-    let mut members: SmallVec<[Type; 8]> = SmallVec::new();
-    let mut open: SmallVec<[typ::TVar; 2]> = SmallVec::new();
-    union_members_with(env, t, &mut members, &mut |tv| open.push(tv.clone()))?;
-    let mut judged: SmallVec<[Type; 8]> = SmallVec::new();
-    let mut ends = typ::tvar::StandingEnds::default();
-    for m in members.iter() {
-        if matches!(m, Type::Bottom) || m.walks_as_one_of(&judged, &mut ends) {
-            continue;
-        }
-        judged.push(m.clone());
-        if !shape.could_match(env, m)? || holds(m)? {
-            continue;
-        }
-        let taken = shape.matching_type(env, m)?;
-        if !taken.is_uninhabited() && !holds(&taken)? {
-            return Ok(Some(m.clone()));
-        }
-    }
-    for tv in open.iter() {
-        if seen.contains(&tv.cell_addr()) {
-            continue;
-        }
-        seen.push(tv.cell_addr());
-        let bounds = tv.typed_bounds(env);
-        let mut unheld = match bounds.is_empty() && !holds(shape)? {
-            true => Some(Type::TVar(tv.clone())),
-            false => None,
-        };
-        for b in bounds.iter() {
-            unheld =
-                stack::ensure_sufficient(|| unheld_member(env, shape, holds, b, seen))?;
-            if unheld.is_none() {
-                break;
-            }
-        }
-        if unheld.is_some() {
-            return Ok(unheld);
-        }
-    }
-    Ok(None)
-}
-
-fn discernible(env: &Env, typ: &Type, what: &Discerned) -> Result<()> {
-    let found = match what {
-        Discerned::Bound(_, bound) => {
-            typ.indiscernible(env, Open::Unknown, *bound == Type::Bound(Bound::Ordered))
-        }
-        Discerned::Keys => typ.map_key_failure(env, Open::Unknown),
-    };
-    let Some(why) = found else { return Ok(()) };
-    let open = |t: &Type| matches!(t, Type::TVar(tv) if tv.open_cell().is_some());
-    if let Indiscernible::Pair(a, b) = &why
-        && (open(a) || open(b))
-    {
-        let known = if open(a) { b } else { a };
-        let typ = typ.resolve_tvars();
-        bail!(
-            "the members of {typ} must have distinct runtime forms, but a type variable \
-             in it isn't known here and may share {known}'s: annotate it"
-        )
-    }
-    if let Discerned::Bound(tv, bound) = what {
-        return Err(typ.not_discernible(bound, &tv.name, &why));
-    }
-    if let Discerned::Keys = what {
-        return Err(why.as_map_key());
-    }
-    format_with_flags(PrintFlag::DerefTVars, || {
-        let typ = typ.resolve_tvars();
-        match why {
-            Indiscernible::Abstract(a, kind) => bail!(
-                "can't compare values of {typ}: {}",
-                Indiscernible::by_representation(&a, kind)
-            ),
-            Indiscernible::Pair(a, b) => bail!(
-                "can't compare values of {typ}: {} and {} have the same runtime \
-                 form; wrap them in distinct variants",
-                a.resolve_tvars(),
-                b.resolve_tvars()
-            ),
-            Indiscernible::Unordered(r) if r.resolve_tvars() == typ => {
-                let (kind, how) = Indiscernible::unordered_kind(&r);
-                bail!(
-                    "can't order {kind}s: they have no order (== and != compare them {how})"
-                )
-            }
-            Indiscernible::Unordered(r) => {
-                let (kind, how) = Indiscernible::unordered_kind(&r);
-                bail!(
-                    "can't order values of {typ}: it holds the {kind} {}, and {kind}s have \
-                     no order (== and != compare them {how})",
-                    r.resolve_tvars()
-                )
-            }
-            Indiscernible::Numbers(n) => bail!(
-                "can't order values of {typ}: it holds {}, {}",
-                n.resolve_tvars(),
-                Indiscernible::NUMBERS
-            ),
-            Indiscernible::OpenNumber(n) => bail!(
-                "can't order values of {typ}: it holds {}, {}",
-                n.resolve_tvars(),
-                Indiscernible::OPEN_NUMBER
-            ),
-        }
-    })
 }
 
 /// A deferred import-existence check; see [`CompileCtx::pending_imports`].
@@ -3990,14 +3441,10 @@ fn check_and_fuse_inner<R: Rt>(
     let bounds = typ::bounds::Check::begin();
     let checked = node.typecheck0(ctx).and_then(|()| typ::bounds::end(&ctx.env));
     drop(bounds);
-    if let Err(e) = checked
-        .and_then(|()| drain_pending_settles(ctx))
-        .and_then(|()| check_pending_names(ctx))
-        .and_then(|()| verify(ctx, node))
+    if let Err(e) =
+        checked.and_then(|()| check_pending_names(ctx)).and_then(|()| verify(ctx, node))
     {
         let e = resite_pending_name(ctx, e);
-        ctx.pending_settles.clear();
-        ctx.pending_settles.push(SettleFrame::default());
         ctx.pending_names.clear();
         return Err(e);
     }
@@ -4011,13 +3458,8 @@ fn check_and_fuse_inner<R: Rt>(
     let _audit = typ::bounds::Build::begin();
     let p = profile::phase(Phase::Typecheck1);
     if let Err(e) = node.typecheck1(ctx) {
-        ctx.pending_settles.clear();
-        ctx.pending_settles.push(SettleFrame::default());
         return Err(e);
     }
-    drop(p);
-    let p = profile::phase(Phase::Settle);
-    drain_pending_settles(ctx)?;
     drop(p);
     info!("typecheck time {:?}", st.elapsed());
     let tail_loops = analysis::analyze(node, ctx)?;
@@ -4054,15 +3496,6 @@ pub(crate) fn seed_node_types<R: Rt>(env: &Env, node: &Node<R>, seen: &mut AddrS
 /// Whether a compile under `flags` asks for fusion.
 pub fn fusion_on(flags: BitFlags<CFlag>) -> bool {
     !flags.contains(CFlag::FusionDisabled)
-}
-
-/// Drain the deferred terminal settles ([`CompileCtx::pending_settles`])
-/// after a top-level statement, once every writer for the drained
-/// sites has run.
-pub(crate) fn drain_pending_settles<R: Rt>(ctx: &mut CompileCtx<R>) -> Result<()> {
-    use expr::At;
-    let pending = mem::take(ctx.pending_settles.last_mut().expect("root settle frame"));
-    PendingSettle::drain(&pending, &ctx.env, |spec, e| Err(e.at(&**spec)))
 }
 
 /// A question a check leaves open until it ends.
@@ -4782,7 +4215,6 @@ impl Saved {
             impl_reads: _,
             fn_forward_resolutions,
             body: _,
-            pending_settles: _,
             pending_imports: _,
             pending_names: _,
             def_assertions: _,
@@ -5209,44 +4641,5 @@ mod static_callees_tests {
                 (gone, outer, n)
             );
         }
-    }
-}
-
-#[cfg(test)]
-mod unheld_member_tests {
-    use super::*;
-    use std::cell::Cell;
-
-    fn arrays_of(elem: Type, n: usize) -> Type {
-        Type::Set(Arc::from_iter((0..n).map(|_| Type::Array(Arc::new(elem.clone())))))
-    }
-
-    fn judgments(elems: &Type) -> usize {
-        let judged = Cell::new(0);
-        let holds = |_: &Type| {
-            judged.set(judged.get() + 1);
-            Ok(true)
-        };
-        let shape = Type::Any;
-        let none =
-            unheld_member(&Env::default(), &shape, &holds, elems, &mut SmallVec::new())
-                .unwrap();
-        assert!(none.is_none());
-        judged.get()
-    }
-
-    #[test]
-    fn members_walked_alike_are_judged_once() {
-        let i64 = Type::Primitive(netidx_value::Typ::I64.into());
-        assert_eq!(judgments(&arrays_of(i64.clone(), 1)), 1);
-        assert_eq!(judgments(&arrays_of(i64, 12)), 1);
-    }
-
-    #[test]
-    fn members_that_differ_are_each_judged() {
-        let members =
-            [netidx_value::Typ::I64, netidx_value::Typ::F64, netidx_value::Typ::Bool]
-                .map(|t| Type::Array(Arc::new(Type::Primitive(t.into()))));
-        assert_eq!(judgments(&Type::Set(Arc::from_iter(members))), 3);
     }
 }

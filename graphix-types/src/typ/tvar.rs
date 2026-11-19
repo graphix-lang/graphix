@@ -15,7 +15,7 @@ use crate::{
     },
 };
 use ahash::{AHashMap, AHashSet};
-use anyhow::{Error, Result, bail};
+use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
 use compact_str::{CompactString, format_compact};
@@ -850,15 +850,6 @@ impl Level {
             Self::Top => 0,
             Self::Def { depth, .. } => *depth,
             Self::Generic | Self::Written => u32::MAX,
-        }
-    }
-
-    /// The definition that owns the cell.
-    #[doc(hidden)]
-    pub fn owner(&self) -> Option<LambdaId> {
-        match self {
-            Self::Def { owner, .. } => Some(*owner),
-            Self::Top | Self::Generic | Self::Written => None,
         }
     }
 
@@ -2156,13 +2147,6 @@ pub(super) enum CopiedEnd {
     Bound(Type),
 }
 
-/// How many lower bounds and conjuncts a cell holds ([`TVar::bounds`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Bounds {
-    lower: usize,
-    conjuncts: usize,
-}
-
 #[derive(Clone)]
 pub struct TVar(ManuallyDrop<Arc<TVarInner>>);
 
@@ -2436,21 +2420,6 @@ impl Type {
     pub(super) fn is_quiet_bound(&self) -> bool {
         matches!(self, Type::Bound(Bound::Singleton))
     }
-}
-
-/// [`require_bounds`] for a body: the variable of a definition being
-/// checked that `t` reaches takes none its signature does not declare, and
-/// the first such is refused with the bound to write.
-pub fn require_body_bounds(env: &Env, cons: &[Type], t: &Type) -> Result<()> {
-    let mut refused: Option<Error> = None;
-    handed_bounds(cons, t, &mut |tv, b| {
-        if refused.is_none()
-            && let Err(e) = tv.add_body_bound(env, b)
-        {
-            refused = Some(e)
-        }
-    });
-    refused.map_or(Ok(()), Err)
 }
 
 /// Each conjunct the bounds `cons` hand an open cell of `t`, a type
@@ -3068,13 +3037,6 @@ impl TVar {
             || scons.iter().any(|c| would_cycle_inner(&o_cell, c))
     }
 
-    /// How many lower bounds and conjuncts the cell holds.
-    pub fn bounds(&self) -> Bounds {
-        let cell = self.cell();
-        let c = cell.read();
-        Bounds { lower: c.lower.len(), conjuncts: c.constraints.len() }
-    }
-
     /// Merge self's cell into other's for a unification-driven merge:
     /// bypasses the `frozen` gate [`Self::alias`] honors (frozen means
     /// name-aliasing already happened) but keeps its occurs checks.
@@ -3368,15 +3330,6 @@ impl TVar {
             .any(|c| matches!(c, Type::Bound(Bound::Data)))
     }
 
-    /// Whether the cell holds the `Function` conjunct.
-    pub(crate) fn requires_function(&self) -> bool {
-        self.cell()
-            .read()
-            .constraints
-            .iter()
-            .any(|c| matches!(c, Type::Bound(Bound::Function)))
-    }
-
     /// Bind self to `binding` (other's, read by the caller), merging
     /// other's constraints into self's cell.
     pub(super) fn copy(&self, other: &Self, binding: Type) {
@@ -3429,10 +3382,6 @@ impl TVar {
             sc.constraints.clone()
         };
         require_bounds(&cons, &binding);
-    }
-
-    pub fn normalize(&self) -> Self {
-        self.normalize_int(&mut super::normalize::NormCx::take())
     }
 
     pub(super) fn normalize_int(&self, cx: &mut super::normalize::NormCx) -> Self {
@@ -4701,24 +4650,6 @@ impl Type {
         }
         for tv in parts.open.iter() {
             hand(tv, Type::Bound(Bound::OneNumber))
-        }
-    }
-
-    /// An open member of a `OneNumber` cell's binding beside a numeric one,
-    /// or two open members beside none: one may yet be another numeric type
-    /// than the rest, which no bound on either can rule out, so the
-    /// definition that leaves them open is refused (annotate it).
-    pub fn one_number_open(&self) -> bool {
-        let mut parts = UnionParts::new(Measure::Numbers);
-        if self.union_parts(None, &mut parts).is_err() {
-            return false;
-        }
-        match (parts.known, parts.open.split_first()) {
-            (_, None) => false,
-            (0, Some((first, rest))) => {
-                rest.iter().any(|tv| tv.cell_addr() != first.cell_addr())
-            }
-            (_, Some(_)) => true,
         }
     }
 
@@ -7475,8 +7406,8 @@ enum Measure {
 }
 
 /// Why a union's rigid member keeps it from being one type.
-enum Apart<'a> {
-    BesideKnown(&'a TVar),
+enum Apart {
+    BesideKnown,
     TwoRigid,
 }
 
@@ -7511,11 +7442,11 @@ impl UnionParts {
 
     /// A rigid open member that cannot be made one type with the rest:
     /// beside a known member, or beside another rigid cell.
-    fn rigid_apart(&self) -> Option<Apart<'_>> {
+    fn rigid_apart(&self) -> Option<Apart> {
         let mut rigid = self.open.iter().filter(|tv| tv.is_rigid());
         let a = rigid.next()?;
         match self.known > 0 {
-            true => Some(Apart::BesideKnown(a)),
+            true => Some(Apart::BesideKnown),
             false => {
                 rigid.any(|b| b.cell_addr() != a.cell_addr()).then_some(Apart::TwoRigid)
             }

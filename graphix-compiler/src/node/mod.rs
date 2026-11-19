@@ -1,7 +1,6 @@
 use crate::{
     BindId, CAST_ERR, CAST_ERR_TAG, CFlag, CompileCtx, Event, ExecCtx, Node, NodeView,
-    ParMode, PendingSettle, PrintFlag, Refs, Restore, Rt, Scope, Tag, TagValue, Update,
-    View,
+    ParMode, PrintFlag, Refs, Restore, Rt, Scope, Tag, TagValue, Update, View,
     branch::{fork_point, timed},
     cost::{ForkSite, Meter},
     defer_unresolved_names, env, errf,
@@ -2260,17 +2259,14 @@ fn typecheck0_modules<'a, R: Rt>(
     Ok(())
 }
 
-/// Run a runtime bind `f` as a compile task of its own, in a settle
-/// frame of its own, and settle what it deferred when it returns: no
-/// statement boundary follows a bind at run time. Its cells are top
-/// level, as a static bind's are. A refused settle is a
-/// compiler bug, logged. Binds in parallel branches run concurrently:
-/// one that changes a cell the program's compile created is a race.
-pub(crate) fn with_runtime_settles<R: Rt, T>(
+/// Run a runtime bind `f` as a compile task of its own. Its cells are top
+/// level, as a static bind's are. Binds in parallel branches run
+/// concurrently: one that changes a cell the program's compile created is
+/// a race.
+pub(crate) fn as_runtime_bind<R: Rt, T>(
     ctx: &mut CompileCtx<R>,
     f: impl FnOnce(&mut CompileCtx<R>) -> Result<T>,
 ) -> Result<T> {
-    ctx.pending_settles.push(crate::SettleFrame::default());
     let names = ctx.pending_names.len();
     let _task = InTask::enter(new_task());
     let _level = AtLevel::enter(Level::TOP);
@@ -2280,59 +2276,16 @@ pub(crate) fn with_runtime_settles<R: Rt, T>(
     };
     // a runtime bind elaborates: what it defers is no check's
     ctx.pending_names.truncate(names);
-    let pending = ctx.pending_settles.pop().expect("runtime settle frame");
-    let _ = PendingSettle::drain(&pending, &ctx.env, |spec, e| {
-        let msg = format_compact!("a run-time bind's settle at {spec} refused: {e:#}");
-        error::report_failure!(&msg);
-        Ok(())
-    });
     res
 }
 
-/// Defer `settle` to the check's settle of the current frame. A
-/// definition's body defers nothing: its cells are its signature's,
-/// settled by each call.
-pub(crate) fn defer_settle<R: Rt>(
-    ctx: &mut CompileCtx<R>,
-    settle: impl FnOnce() -> PendingSettle,
-) {
-    if ctx.def_gate_depth == 0 && !bounds::active() {
-        ctx.pending_settles.last_mut().expect("settle frame").push(settle())
-    }
+/// A statement's `typecheck1`.
+fn typecheck1_statement<R: Rt>(n: &mut Node<R>, ctx: &mut CompileCtx<R>) -> Result<()> {
+    n.typecheck1(ctx)
 }
 
-/// A map type written in `t`, which makes values of it out of others (a
-/// cast's target, a type test), takes keys of distinct runtime forms, as
-/// a literal's do: judged at the statement's settle. Every other map
-/// value comes from a producer judged already.
-pub(crate) fn defer_written_map_keys<R: Rt>(
-    ctx: &mut CompileCtx<R>,
-    t: &Type,
-    spec: &Arc<Expr>,
-) {
-    if t.holds_map(&ctx.env) {
-        let what = crate::Discerned::Keys;
-        let judgment =
-            PendingSettle::Discernible { typ: t.clone(), what, spec: spec.clone() };
-        defer_judgment(ctx, judgment)
-    }
-}
-
-/// Defer a judgment that only reads types to the check's settle of the
-/// current frame, a definition's body included: its open cells read as
-/// any type, and a later instance's types are its definition's.
-pub(crate) fn defer_judgment<R: Rt>(ctx: &mut CompileCtx<R>, judgment: PendingSettle) {
-    ctx.pending_settles.last_mut().expect("settle frame").push(judgment)
-}
-
-/// A statement's `typecheck1`, then the settles it deferred.
-fn typecheck1_settled<R: Rt>(n: &mut Node<R>, ctx: &mut CompileCtx<R>) -> Result<()> {
-    n.typecheck1(ctx)?;
-    crate::drain_pending_settles(ctx)
-}
-
-/// Elaborate a body's statements (`typecheck1`, then each one's
-/// settles) in [`evaluation_order`], each in a compile task forked from
+/// Elaborate a body's statements (`typecheck1`) in [`evaluation_order`],
+/// each in a compile task forked from
 /// the body's state before any runs: no statement's elaboration reads
 /// another's. The tasks join in order; the first error in order is the
 /// body's. A bind at run time elaborates them in order on its own
@@ -2346,7 +2299,7 @@ pub(crate) fn typecheck1_statements<R: Rt>(
 ) -> Result<()> {
     let order: LPooled<Vec<usize>> = evaluation_order(nodes.len(), catches).collect();
     if order.len() < 2 || RUNTIME_BIND.get() {
-        return typecheck_in_order(ctx, nodes, catches, module, typecheck1_settled);
+        return typecheck_in_order(ctx, nodes, catches, module, typecheck1_statement);
     }
     let mut slots: LPooled<Vec<Option<&mut Node<R>>>> =
         nodes.iter_mut().map(Some).collect();
@@ -2357,7 +2310,7 @@ pub(crate) fn typecheck1_statements<R: Rt>(
             (n, ctx.fork(), new_task())
         })
         .collect();
-    check_in_tasks(ctx, work, module, typecheck1_settled)
+    check_in_tasks(ctx, work, module, typecheck1_statement)
 }
 
 impl<R: Rt> Block<R> {
@@ -3697,7 +3650,6 @@ impl<R: Rt> Update<R> for TypeCast<R> {
                 self.target
             )
         }
-        defer_written_map_keys(ctx, &self.target, &self.spec);
         Ok(())
     }
 

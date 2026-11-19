@@ -8869,11 +8869,6 @@ mod tests {
         Type::TVar(p.clone()).check_contains(&env, &Type::TVar(q.clone())).unwrap();
         assert!(p.same_cell(&q));
         assert!(p.cell_lower().iter().all(|l| !p.would_cycle(l)));
-        p.settle(&env).unwrap();
-        let both = Type::Primitive(Typ::I64 | Typ::Null);
-        let settled = p.binding().unwrap();
-        assert!(both.contains(&env, &settled).unwrap(), "{settled}");
-        assert!(settled.contains(&env, &both).unwrap(), "{settled}");
     }
 
     /// `x` over the union `O` names, `b` its parameter there.
@@ -8947,8 +8942,6 @@ mod tests {
         assert!(x.same_cell(&b));
         let lower = x.cell_lower();
         assert!(lower.iter().all(|l| !x.would_cycle(l)), "{lower:?}");
-        x.settle(&env).unwrap();
-        assert_eq!(x.binding(), Some(Type::Primitive(Typ::Null | Typ::String)));
     }
 
     /// A declared var on a cycle of open cells is every one of them.

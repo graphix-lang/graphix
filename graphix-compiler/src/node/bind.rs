@@ -928,16 +928,9 @@ impl<R: Rt> Bind<R> {
         Ok(())
     }
 
-    /// What the binding tells the rest of the check: the settle of a
-    /// `let` over ⊥, and the lambda a name binds.
+    /// What the binding tells the rest of the check: the lambda a name
+    /// binds.
     fn publish(&mut self, ctx: &mut CompileCtx<R>) {
-        if let Type::TVar(tv) = &self.typ {
-            super::defer_settle(ctx, || crate::PendingSettle::LetOverBottom {
-                tv: tv.clone(),
-                init: self.node.typ().clone(),
-                spec: self.spec.clone(),
-            });
-        }
         self.settle_builtin_alias(ctx);
         if let Some(fv) = self.lambda_def_value().or_else(|| self.aliased_lambda(ctx)) {
             self.pattern.ids(&mut |id| {

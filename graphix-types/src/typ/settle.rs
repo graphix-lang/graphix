@@ -8,7 +8,7 @@ use crate::{
     env::Env,
     format_with_flags,
     typ::{
-        AppKey, Bound, FnType, TVar, Type, TypeRef, Written,
+        Bound, FnType, TVar, Type, Written,
         contains::{ContainsHist, InfiniteType},
         setops::{Welds, apply_welds, lower_collapses, strictly_identical},
         tvar::{CellFact, Fresh, Level, would_cycle_open},
@@ -23,11 +23,10 @@ use smallvec::SmallVec;
 use std::{
     error::Error,
     fmt::{self, Write},
-    ops::ControlFlow,
 };
 
 #[derive(Debug)]
-pub struct ConcreteRequired(pub TVar);
+pub(crate) struct ConcreteRequired(pub TVar);
 
 impl fmt::Display for ConcreteRequired {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -42,15 +41,7 @@ impl fmt::Display for ConcreteRequired {
 
 impl Error for ConcreteRequired {}
 
-impl ConcreteRequired {
-    pub fn unread_callback(&self) -> anyhow::Error {
-        anyhow::anyhow!(
-            "the quantifier '{} must be fully known but is unread through an optional \
-             callback at this call: pass a typed handler or a typed null",
-            super::tvar::ShortName(&self.0.name)
-        )
-    }
-}
+impl ConcreteRequired {}
 
 /// `below` less each decided bound holding ⊥ in a part that another decided
 /// bound contains: it adds no value to a witness (`Array<_>` beside
@@ -115,7 +106,7 @@ fn conjuncts_reach(holder: &TVar, tv: &TVar, seen: &mut AddrSet) -> bool {
 /// the open cells its conjuncts hold above what it took
 /// ([`TVar::settle_witness`]); cells neither of which reaches the other
 /// stand by name.
-pub fn settle_order(tvs: &mut [TVar]) {
+pub(crate) fn settle_order(tvs: &mut [TVar]) {
     if tvs.len() < 2 {
         return;
     }
@@ -240,15 +231,6 @@ impl TVar {
                 apply_welds(&mut welds)
             }
         }
-    }
-
-    /// Bind an unbound cell once its writers are checked: to ⊥ when only
-    /// ⊥ was produced into it ([`CellFact::BottomFed`], and no lower bound
-    /// but ⊥), whatever constrains it, else as [`Self::settle_witness`].
-    ///
-    /// [`CellFact::BottomFed`]: super::tvar::CellFact::BottomFed
-    pub fn settle(&self, env: &Env) -> Result<()> {
-        self.settle_in(env, &mut ContainsHist::new())
     }
 
     /// [`Self::settle`] in `hist`, a walk earlier settles may share.
@@ -455,16 +437,6 @@ impl TVar {
         )
     }
 
-    /// Bind an unbound cell nothing will read to ⊥, whatever its bounds; a
-    /// bound one is untouched.
-    pub fn settle_unread(&self) {
-        let cell = self.cell();
-        let mut cell = cell.write();
-        if cell.binding.is_none() && !super::tvar::earlier_task(&cell) {
-            cell.set_binding(Some(Type::Bottom));
-        }
-    }
-
     /// Bind an unbound cell to ⊥; a bound one is untouched.
     fn settle_bottom(&self) -> Result<()> {
         let cell = self.cell();
@@ -517,343 +489,11 @@ impl Type {
     }
 }
 
-/// Record which settle-set members `t` references, descending through
-/// non-member cells' bindings and constraints but stopping at members
-/// (their reach is their own edge list) and at cells proved ground, which
-/// reach no open member.
-fn settle_refs(
-    t: &Type,
-    index: &AHashMap<usize, usize>,
-    visited: &mut AHashSet<usize>,
-    out: &mut SmallVec<[usize; 4]>,
-) {
-    crate::stack::ensure_sufficient(|| match t {
-        Type::TVar(tv) => {
-            let addr = tv.cell_addr();
-            if let Some(&i) = index.get(&addr) {
-                out.push(i);
-            } else if !tv.ground_now() && visited.insert(addr) {
-                let (bound, cons, below) = {
-                    let cell = tv.cell();
-                    let cell = cell.read();
-                    (cell.binding.clone(), cell.constraints.clone(), cell.lower.clone())
-                };
-                for t in bound.iter().chain(cons.iter()).chain(below.iter()) {
-                    settle_refs(t, index, visited, out);
-                }
-            }
-        }
-        // a shared node's address is another allocation than any cell's
-        t if t.shared_identity().is_some_and(|n| !visited.insert(n)) => (),
-        Type::Fn(ft) => ft.for_each_type(&mut |t| settle_refs(t, index, visited, out)),
-        t => t.for_each_child(&mut |c| settle_refs(c, index, visited, out)),
-    })
-}
-
-impl FnType {
-    /// Terminal settle of a call site's resolved signature in
-    /// dependency order: a member settles only after every member its
-    /// binding, constraints or lower bounds reach, but for one that waits
-    /// for it ([`TerminalRun::waits`]). Ordering keys are (name, TVarId)
-    /// only — `cell_addr` is ASLR-dependent and used for identity alone.
-    /// `exempt` cells, and every cell in `kept` (what the enclosing
-    /// definitions' signatures reach now), are ordered but not settled.
-    pub fn settle_terminal(
-        &self,
-        env: &Env,
-        rtype_cell: Option<&TVar>,
-        exempt: &AHashSet<usize>,
-        kept: &[&AHashSet<usize>],
-    ) -> Result<()> {
-        let mut tvs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-        self.collect_tvars(&mut tvs);
-        // the cells a binding holds are positions this site reads too; a
-        // cell proved ground holds no open one, so it is passed by
-        let mut positional: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-        let mut nodes: LPooled<AHashSet<usize>> = LPooled::take();
-        self.for_each_part(&mut |t, constraint| {
-            if !constraint {
-                walk_positions(t, &mut nodes, &mut |tv| {
-                    !tv.ground_now()
-                        && positional.insert(tv.cell_addr(), tv.clone()).is_none()
-                })
-            }
-        });
-        // a position's lower bounds hold positions too: its cell settles to
-        // a witness made of them
-        let mut todo: LPooled<Vec<TVar>> = positional.values().cloned().collect();
-        while let Some(tv) = todo.pop() {
-            if exempt.contains(&tv.cell_addr()) {
-                continue;
-            }
-            for l in tv.cell_lower().iter() {
-                walk_positions(l, &mut nodes, &mut |tv| {
-                    let first = !tv.ground_now()
-                        && positional.insert(tv.cell_addr(), tv.clone()).is_none();
-                    if first {
-                        todo.push(tv.clone())
-                    }
-                    first
-                })
-            }
-        }
-        let mut seen: LPooled<AHashSet<usize>> =
-            tvs.values().map(|tv| tv.cell_addr()).collect();
-        let mut more: LPooled<Vec<TVar>> = LPooled::take();
-        more.extend(rtype_cell.filter(|tv| seen.insert(tv.cell_addr())).cloned());
-        more.extend(
-            positional.values().filter(|tv| seen.insert(tv.cell_addr())).cloned(),
-        );
-        // a cell only a bound of a bound names is the site's to settle too,
-        // and so is one a lower bound holds: a position of the witness its
-        // cell settles to
-        let mut todo: LPooled<Vec<TVar>> = LPooled::take();
-        todo.extend(tvs.values().chain(more.iter()).cloned());
-        let mut walked: LPooled<AHashSet<usize>> = LPooled::take();
-        nodes.clear();
-        while let Some(tv) = todo.pop() {
-            let below = match exempt.contains(&tv.cell_addr()) {
-                true => SmallVec::new(),
-                false => tv.cell_lower(),
-            };
-            for c in tv.cell_constraints().iter().chain(below.iter()) {
-                walk_positions(c, &mut nodes, &mut |tv| {
-                    let addr = tv.cell_addr();
-                    let first = !tv.ground_now() && walked.insert(addr);
-                    if first && seen.insert(addr) {
-                        todo.push(tv.clone());
-                        more.push(tv.clone());
-                    }
-                    first
-                })
-            }
-        }
-        let named = more.drain(..).map(|tv| (tv.name.clone(), tv));
-        let nodes = super::fntyp::sorted_tvars(tvs.drain().chain(named));
-        let mut index: LPooled<AHashMap<usize, usize>> = LPooled::take();
-        for (i, (_, tv)) in nodes.iter().enumerate() {
-            index.insert(tv.cell_addr(), i);
-        }
-        let mut edges: LPooled<Vec<SmallVec<[usize; 4]>>> = LPooled::take();
-        let mut holders: LPooled<Vec<SmallVec<[usize; 4]>>> = LPooled::take();
-        holders.resize(nodes.len(), SmallVec::new());
-        for (i, (_, tv)) in nodes.iter().enumerate() {
-            let mut out: SmallVec<[usize; 4]> = SmallVec::new();
-            let mut visited: LPooled<AHashSet<usize>> = LPooled::take();
-            let (bound, cons, below) = {
-                let cell = tv.cell();
-                let cell = cell.read();
-                (cell.binding.clone(), cell.constraints.clone(), cell.lower.clone())
-            };
-            for t in cons.iter() {
-                settle_refs(t, &index, &mut visited, &mut out);
-            }
-            if bound.is_none() {
-                for &j in out.iter() {
-                    if j != i && holders[j].last() != Some(&i) {
-                        holders[j].push(i)
-                    }
-                }
-            }
-            for t in bound.iter().chain(below.iter()) {
-                settle_refs(t, &index, &mut visited, &mut out);
-            }
-            out.sort_unstable();
-            out.dedup();
-            edges.push(out);
-        }
-        // an enclosing definition's signature is settled by each call,
-        // what it reaches as it stands now; a quantifier of a function
-        // type the signature holds is its callers' to pick
-        let mut quantifiers: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-        self.inner_quantifiers(&mut quantifiers);
-        let owned: LPooled<Vec<TVar>> = quantifiers.values().cloned().collect();
-        for tv in owned.iter() {
-            for c in tv.cell_constraints().iter() {
-                reached_cells(c, &mut quantifiers)
-            }
-        }
-        // a `Concrete` or `Function` cell met only inside a conjunct is no
-        // position of the signature: nothing reads it, so it is left as
-        // it stands
-        let left = |tv: &TVar| {
-            let addr = tv.cell_addr();
-            exempt.contains(&addr)
-                || quantifiers.contains_key(&addr)
-                || kept.iter().any(|k| k.contains(&addr))
-                || (!positional.contains_key(&addr)
-                    && (tv.requires_concrete() || tv.requires_function()))
-        };
-        let mut run = TerminalRun {
-            env,
-            nodes: &nodes,
-            edges: &edges,
-            holders: &holders,
-            left: &left,
-            turns: LPooled::take(),
-            feeds: LPooled::take(),
-            passed: LPooled::take(),
-            hist: ContainsHist::new(),
-        };
-        run.turns.resize(nodes.len(), Turn::Unmet);
-        run.feeds.resize(nodes.len(), Feeds::Unasked);
-        run.passed.resize(nodes.len(), 0);
-        for i in 0..nodes.len() {
-            run.take(i)?
-        }
-        for i in 0..nodes.len() {
-            if run.turns[i] == Turn::Waiting {
-                run.settle(i)?
-            }
-        }
-        Ok(())
-    }
-}
-
-/// Where a cell stands in a terminal settle's run.
-#[derive(Clone, Copy, PartialEq)]
-enum Turn {
-    Unmet,
-    /// the cells it reaches are being taken
-    Met,
-    /// left open for a cell whose conjuncts reach it
-    /// ([`TerminalRun::waits`])
-    Waiting,
-    Settled,
-}
-
-/// Whether a cell's settle may put the cells its conjuncts hold above a
-/// type ([`TerminalRun::feeds`]).
-#[derive(Clone, Copy)]
-enum Feeds {
-    Unasked,
-    Asked,
-    No,
-    Yes,
-}
-
-/// A terminal settle's run over its cells, `nodes`: a cell settles after
-/// the cells it reaches, but for one that [waits](Self::waits).
-struct TerminalRun<'a> {
-    env: &'a Env,
-    nodes: &'a [(ArcStr, TVar)],
-    /// for each cell, the cells its binding, conjuncts and lower bounds
-    /// reach
-    edges: &'a [SmallVec<[usize; 4]>],
-    /// for each cell, the open cells whose conjuncts reach it
-    holders: &'a [SmallVec<[usize; 4]>],
-    /// the cells the site orders and does not settle
-    left: &'a dyn Fn(&TVar) -> bool,
-    turns: LPooled<Vec<Turn>>,
-    feeds: LPooled<Vec<Feeds>>,
-    /// for each cell, how many of its `holders`, from the first, feed it
-    /// no more: one that does not [feed](Self::feeds) never will again
-    passed: LPooled<Vec<usize>>,
-    /// the walk the run's settles share, so a probe's verdict over a cell
-    /// whose reach no settle wrote is not walked again
-    hist: ContainsHist,
-}
+impl FnType {}
 
 #[cfg(test)]
 thread_local! {
     static FEEDS_ASKED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-impl TerminalRun<'_> {
-    fn take(&mut self, i: usize) -> Result<()> {
-        if self.turns[i] != Turn::Unmet {
-            return Ok(());
-        }
-        self.turns[i] = Turn::Met;
-        crate::stack::ensure_sufficient(|| {
-            let edges = self.edges;
-            for &j in edges[i].iter() {
-                self.take(j)?
-            }
-            if self.waits(i) {
-                self.turns[i] = Turn::Waiting;
-                return Ok(());
-            }
-            self.settle(i)
-        })
-    }
-
-    /// Settle cell `i`, then the cells that waited for it alone.
-    fn settle(&mut self, i: usize) -> Result<()> {
-        self.turns[i] = Turn::Settled;
-        let tv = &self.nodes[i].1;
-        if !(self.left)(tv) {
-            tv.settle_or_bottom_in(self.env, &mut self.hist)?
-        }
-        crate::stack::ensure_sufficient(|| {
-            let edges = self.edges;
-            for &j in edges[i].iter() {
-                if self.turns[j] == Turn::Waiting && !self.waits(j) {
-                    self.settle(j)?
-                }
-            }
-            Ok(())
-        })
-    }
-
-    /// Whether cell `i` settles after a cell whose conjuncts reach it. A
-    /// cell that stands above a type commits its conjuncts over it when it
-    /// settles ([`TVar::settle_witness`]), which puts the cells they hold
-    /// above their part of it, and a cell settled before that has no part.
-    /// So a cell that would settle to ⊥ or to a type holding an open cell
-    /// (it is open, above no type, and a ⊥ was produced into it or its
-    /// conjuncts are no closed type) waits for the cells that may
-    /// [feed](Self::feeds) it. Any other settles first, so its holder
-    /// holds it decided.
-    fn waits(&mut self, i: usize) -> bool {
-        let tv = &self.nodes[i].1;
-        if self.holders[i].is_empty() || tv.is_bound() || tv.above_a_type() {
-            return false;
-        }
-        if !tv.bottom_fed() {
-            let mut types = tv.cell_constraints();
-            types.retain(|c| !c.is_predicate() && !c.is_trait_ref(self.env));
-            if !types.is_empty() && !types.iter().any(|c| c.has_unbound()) {
-                return false;
-            }
-        }
-        let holders = self.holders;
-        while let Some(&h) = holders[i].get(self.passed[i]) {
-            if self.feeds(h) {
-                return true;
-            }
-            self.passed[i] += 1
-        }
-        false
-    }
-
-    /// Whether cell `h`, not yet settled, may put the cells its conjuncts
-    /// hold above a type when it settles: it stands above one, or a cell
-    /// whose conjuncts reach it may put it above one.
-    fn feeds(&mut self, h: usize) -> bool {
-        #[cfg(test)]
-        FEEDS_ASKED.with(|n| n.set(n.get() + 1));
-        if self.turns[h] == Turn::Settled {
-            return false;
-        }
-        match self.feeds[h] {
-            Feeds::Yes => true,
-            Feeds::No | Feeds::Asked => false,
-            Feeds::Unasked => {
-                self.feeds[h] = Feeds::Asked;
-                let tv = &self.nodes[h].1;
-                let yes = !tv.is_bound()
-                    && !(self.left)(tv)
-                    && (tv.above_a_type()
-                        || crate::stack::ensure_sufficient(|| {
-                            let holders = self.holders;
-                            holders[h].iter().any(|&g| self.feeds(g))
-                        }));
-                self.feeds[h] = if yes { Feeds::Yes } else { Feeds::No };
-                yes
-            }
-        }
-    }
 }
 
 impl FnType {
@@ -864,106 +504,6 @@ impl FnType {
     pub fn reached_cells(&self, out: &mut AHashMap<usize, TVar>) {
         let mut nodes: LPooled<AddrSet> = LPooled::take();
         self.for_each_type(&mut |t| reached(t, out, &mut nodes))
-    }
-
-    /// The decided lower bounds of this site's open cells whose conjuncts
-    /// reach a cell of `kept` (a definition's signature, left open for its
-    /// callers), passed on to the cells those conjuncts hold, as a settle
-    /// of the cell does ([`TVar::commit_conjuncts`]): a caller of the
-    /// definition then meets a kept cell above what the site put there, not
-    /// above nothing until the site settles. Each cell passes before the
-    /// cells its conjuncts hold, so a chain passes down it. An error where
-    /// a conjunct does not hold a lower bound: the signature stands above
-    /// what its own bound cannot take.
-    pub fn lower_into_kept(&self, env: &Env, kept: &AHashMap<usize, TVar>) -> Result<()> {
-        fn children(tv: &TVar) -> SmallVec<[TVar; 2]> {
-            let mut out = SmallVec::new();
-            for c in tv.cell_constraints().iter() {
-                super::contains::find_open_cell(c, false, &mut |o| {
-                    out.push(o.clone());
-                    false
-                });
-            }
-            out
-        }
-        fn reaches(
-            tv: &TVar,
-            kept: &AHashMap<usize, TVar>,
-            memo: &mut AHashMap<usize, bool>,
-        ) -> bool {
-            let addr = tv.cell_addr();
-            if kept.contains_key(&addr) {
-                return true;
-            }
-            if let Some(r) = memo.get(&addr) {
-                return *r;
-            }
-            memo.insert(addr, false);
-            let r = crate::stack::ensure_sufficient(|| {
-                children(tv).iter().any(|c| reaches(c, kept, memo))
-            });
-            memo.insert(addr, r);
-            r
-        }
-        fn postorder(tv: &TVar, seen: &mut AHashSet<usize>, out: &mut Vec<TVar>) {
-            if seen.insert(tv.cell_addr()) {
-                crate::stack::ensure_sufficient(|| {
-                    for c in children(tv).iter() {
-                        postorder(c, seen, out)
-                    }
-                });
-                out.push(tv.clone())
-            }
-        }
-        // CR claude for claude: [bug/high] This returns before passing any lower bound
-        // when the site's callee DECLARES no quantifier, but a function whose bounds
-        // were inferred (`let f = |a, b| f0(a, b)` over a declared `f0`) holds its
-        // bounded cells under no declared name. A definition that calls it closes with
-        // its signature's cell above nothing, so the check accepts what the build
-        // refuses: `let g = |u| f(w0, u); g("s")` passes `--check` and the build says
-        // "an instance at fn(u: string) -> string of a definition typed fn(u: [null,
-        // string]) -> [null, string]", and `g(1)` is accepted by the check where `f0`
-        // called directly is refused. Test the reached cells instead (return when none
-        // is open with a conjunct), and pin the
-        // `lower_bound_reaches_the_bounds_own_cells_*` programs through an inferred
-        // wrapper. probe:
-        // design/review-2026-11-16/repro/t-settle-lower-into-kept-inferred-callee.gx
-        // (graphix-fuzz check prints DIVERGENCE) (t-settle-02)
-        if self.quantifiers.is_empty() {
-            return Ok(());
-        }
-        let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-        self.reached_cells(&mut cells);
-        let mut seen: LPooled<AHashSet<usize>> = LPooled::take();
-        let mut order: LPooled<Vec<TVar>> = LPooled::take();
-        let named = cells.drain().map(|(_, tv)| (tv.name.clone(), tv));
-        for (_, tv) in super::fntyp::sorted_tvars(named).iter() {
-            postorder(tv, &mut seen, &mut order)
-        }
-        let mut memo: LPooled<AHashMap<usize, bool>> = LPooled::take();
-        for tv in order.iter().rev() {
-            if !tv.is_bound()
-                && !tv.is_rigid()
-                && !kept.contains_key(&tv.cell_addr())
-                && reaches(tv, kept, &mut memo)
-            {
-                for l in tv.cell_lower().iter().filter(|l| !l.has_unbound()) {
-                    if !tv.commit_conjuncts(env, l)? {
-                        let shown = crate::format_with_flags(
-                            crate::PrintFlag::DerefTVars,
-                            || compact_str::format_compact!("{}", Type::TVar(tv.clone())),
-                        );
-                        bail!(
-                            "{shown}: the body puts {l} above it, which the variables \
-                             the definition declares cannot hold, since each call picks \
-                             them anew: annotate the parameter with a type holding {l}, \
-                             or declare no variable"
-                        )
-                    }
-                }
-            }
-        }
-        Ok(())
     }
 }
 
@@ -1081,7 +621,7 @@ impl Type {
     /// Every type variable [`Self::variable_outside_functions`] finds,
     /// keyed by its cell.
     #[doc(hidden)]
-    pub fn variables_outside_functions(
+    pub(crate) fn variables_outside_functions(
         &self,
         env: &Env,
         out: &mut AHashMap<usize, TVar>,
@@ -1327,225 +867,6 @@ impl OutsideFunctions<'_> {
     }
 }
 
-/// How a type holds one occurrence of a variable.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-#[doc(hidden)]
-pub struct Held {
-    /// Under a function type, or a typedef application the walk does not
-    /// expand, whose expansion may hold it under one.
-    pub function: bool,
-    /// Under a writable reference, a nominal type or a constructor
-    /// application, which hold it exactly.
-    pub exact: bool,
-    /// In a union beside another member holding an open cell, told only
-    /// by a walk that [`DataPositions::telling_members`]: which member
-    /// takes a type depends on what the cells are.
-    pub member: bool,
-}
-
-impl Held {
-    /// As data: a value of a wider type is well typed there.
-    pub fn data(&self) -> bool {
-        !self.function && !self.exact
-    }
-}
-
-/// A walk of every type variable under a type, through bindings, with how
-/// each occurrence is held. A shared node is walked once for each way it
-/// is held, and a typedef application by its [`AppKey`] once for each
-/// way it is held, then again only where its walk does not
-/// [`Unrolling::passes`]; each is kept so its keys stay its own. A caller
-/// takes a variable told once as held under a function for held so,
-/// whatever else is told of it: an application holding no other variable
-/// is passed by.
-#[doc(hidden)]
-pub struct DataPositions<'a> {
-    env: &'a Env,
-    members: bool,
-    /// The applications under expansion, each as it is held, for a walk
-    /// [`Self::passing_repeats`].
-    repeats: Option<SmallVec<[(AppKey, Held); 4]>>,
-    unrolling: Unrolling,
-    seen: LPooled<AHashMap<(usize, Held), Type>>,
-    applied: LPooled<AHashMap<(AppKey, Held), (Type, Expanded)>>,
-    /// The cells told as held under a function, each with every cell
-    /// under its binding.
-    sunk: LPooled<AddrSet>,
-}
-
-impl<'a> DataPositions<'a> {
-    pub fn new(env: &'a Env) -> Self {
-        DataPositions {
-            env,
-            members: false,
-            repeats: None,
-            unrolling: Unrolling::default(),
-            seen: LPooled::take(),
-            applied: LPooled::take(),
-            sunk: LPooled::take(),
-        }
-    }
-
-    /// Tell [`Held::member`] too.
-    pub fn telling_members(self) -> Self {
-        DataPositions { members: true, ..self }
-    }
-
-    /// Pass by an application met inside its own expansion, held as that
-    /// expansion is: it holds its variables as the expansion told them.
-    /// Any other application of a definition under expansion is still
-    /// taken for holding them under a function.
-    pub fn passing_repeats(self) -> Self {
-        DataPositions { repeats: Some(SmallVec::new()), ..self }
-    }
-
-    fn beneath_function(&mut self, t: &Type, held: Held, f: &mut dyn FnMut(&TVar, Held)) {
-        let held = Held { function: true, ..held };
-        t.for_each_child(&mut |c| self.walk(c, held, f))
-    }
-
-    /// Whether every variable `t` writes is told as held under a function.
-    fn all_sunk(&self, t: &Type) -> bool {
-        crate::stack::ensure_sufficient(|| match t {
-            Type::TVar(tv) => self.sunk.contains(&tv.cell_addr()),
-            t => t
-                .try_for_each_child(&mut |c| match self.all_sunk(c) {
-                    true => ControlFlow::Continue(()),
-                    false => ControlFlow::Break(()),
-                })
-                .is_continue(),
-        })
-    }
-
-    pub fn walk(&mut self, t: &Type, held: Held, f: &mut dyn FnMut(&TVar, Held)) {
-        crate::stack::ensure_sufficient(|| match t {
-            Type::TVar(tv) => {
-                f(tv, held);
-                if held.function {
-                    self.sunk.insert(tv.cell_addr());
-                }
-                if self.seen.insert((tv.cell_addr(), held), t.clone()).is_none()
-                    && let Some(b) = tv.binding()
-                {
-                    self.walk(&b, held, f)
-                }
-            }
-            t if t
-                .shared_identity()
-                .is_some_and(|n| self.seen.insert((n, held), t.clone()).is_some()) => {}
-            Type::Ref(tr)
-                if let Some(key) = tr.probe_def_key(self.env)
-                    && !self.unrolling.is_open(key) =>
-            {
-                if self.all_sunk(t) {
-                    return;
-                }
-                let app = (tr.app_key(key), held);
-                if let Some((_, expanded)) = self.applied.get(&app)
-                    && self.unrolling.passes(expanded)
-                {
-                    return;
-                }
-                match t.lookup_ref_probe(self.env) {
-                    Some((_, whole)) => {
-                        self.unrolling.enter(key);
-                        if let Some(open) = &mut self.repeats {
-                            open.push(app.clone())
-                        }
-                        self.walk(&whole, held, f);
-                        if let Some(open) = &mut self.repeats {
-                            open.pop();
-                        }
-                        let expanded = self.unrolling.leave(tr);
-                        self.applied.insert(app, (t.clone(), expanded));
-                    }
-                    None => self.beneath_function(t, held, f),
-                }
-            }
-            Type::Ref(tr)
-                if let Some(open) = &self.repeats
-                    && let Some(key) = tr.probe_def_key(self.env)
-                    && open.contains(&(tr.app_key(key), held)) => {}
-            Type::Fn(_) | Type::Ref(_) => self.beneath_function(t, held, f),
-            Type::ByRef(super::Mutability::Mut, _)
-            | Type::Abstract { .. }
-            | Type::App(..) => {
-                let held = Held { exact: true, ..held };
-                t.for_each_child(&mut |c| self.walk(c, held, f))
-            }
-            Type::Set(ms)
-                if self.members
-                    && !held.member
-                    && ms.iter().filter(|m| m.has_unbound()).nth(1).is_some() =>
-            {
-                let held = Held { member: true, ..held };
-                ms.iter().for_each(|m| self.walk(m, held, f))
-            }
-            t => t.for_each_child(&mut |c| self.walk(c, held, f)),
-        })
-    }
-}
-
-/// The definitions an application's walk expanded at an application
-/// holding a variable ([`Unrolling`]).
-#[doc(hidden)]
-pub type Expanded = SmallVec<[usize; 4]>;
-
-/// The typedef applications a walk is expanding, innermost last, for a
-/// walk that stops at a definition met inside its own expansion and takes
-/// the stop for whatever the variables it holds may be. Each keeps the
-/// definitions its walk has expanded at an application holding a
-/// variable: where one of those is open, a walk of the application stops
-/// there instead, so one walked before finds what it found then only
-/// where none of them is ([`Self::passes`]).
-#[doc(hidden)]
-#[derive(Default)]
-pub struct Unrolling(SmallVec<[(usize, Expanded); 4]>);
-
-impl Unrolling {
-    /// Whether the walk is inside an application of `def`.
-    pub fn is_open(&self, def: usize) -> bool {
-        self.0.iter().any(|(d, _)| *d == def)
-    }
-
-    /// Whether an application whose walk expanded `expanded` finds here
-    /// what it found then; where it does, the applications around it
-    /// count those as expanded too.
-    pub fn passes(&mut self, expanded: &Expanded) -> bool {
-        if expanded.iter().any(|d| self.is_open(*d)) {
-            return false;
-        }
-        if let Some((_, outer)) = self.0.last_mut() {
-            union_into(outer, expanded)
-        }
-        true
-    }
-
-    pub fn enter(&mut self, def: usize) {
-        self.0.push((def, SmallVec::new()))
-    }
-
-    /// Leave `tr`, the application entered last: what its walk expanded.
-    pub fn leave(&mut self, tr: &TypeRef) -> Expanded {
-        let (def, mut expanded) = self.0.pop().expect("an application was entered");
-        if !tr.params.iter().all(|p| p.tvar_free()) {
-            union_into(&mut expanded, &[def])
-        }
-        if let Some((_, outer)) = self.0.last_mut() {
-            union_into(outer, &expanded)
-        }
-        expanded
-    }
-}
-
-fn union_into(into: &mut Expanded, from: &[usize]) {
-    for d in from {
-        if !into.contains(d) {
-            into.push(*d)
-        }
-    }
-}
-
 fn reached_cells(t: &Type, out: &mut AHashMap<usize, TVar>) {
     reached(t, out, &mut LPooled::take())
 }
@@ -1569,52 +890,6 @@ fn reached(t: &Type, out: &mut AHashMap<usize, TVar>, nodes: &mut AddrSet) {
         Type::Fn(ft) => ft.for_each_type(&mut |t| reached(t, out, nodes)),
         t => t.for_each_child(&mut |c| reached(c, out, nodes)),
     })
-}
-
-/// Which of some cells a set of types reaches, as [`Type::reached_cells`]
-/// reaches cells: breadth first, each cell and shared node once, until
-/// every one is found.
-#[doc(hidden)]
-pub struct Reaching(LPooled<AHashSet<usize>>);
-
-impl Reaching {
-    /// Which of `cells`, by address, `types` reach.
-    pub fn of<'a>(
-        cells: impl IntoIterator<Item = usize>,
-        types: impl IntoIterator<Item = &'a Type>,
-    ) -> Self {
-        let mut left: LPooled<AHashSet<usize>> = cells.into_iter().collect();
-        let mut walked: LPooled<AHashSet<usize>> = LPooled::take();
-        let mut nodes: LPooled<AddrSet> = LPooled::take();
-        let mut next: LPooled<Vec<Type>> = types.into_iter().cloned().collect();
-        let mut i = 0;
-        while i < next.len() && !left.is_empty() {
-            let t = next[i].clone();
-            i += 1;
-            match &t {
-                Type::TVar(tv) => {
-                    let addr = tv.cell_addr();
-                    if walked.insert(addr) {
-                        left.remove(&addr);
-                        let cell = tv.cell();
-                        let cell = cell.read();
-                        next.extend(cell.binding.iter().cloned());
-                        next.extend(cell.constraints.iter().cloned());
-                        next.extend(cell.lower.iter().cloned());
-                    }
-                }
-                t if t.shared_identity().is_some_and(|n| !nodes.insert(n)) => (),
-                Type::Fn(ft) => ft.for_each_type(&mut |t| next.push(t.clone())),
-                t => t.for_each_child(&mut |c| next.push(c.clone())),
-            }
-        }
-        Self(left)
-    }
-
-    /// Whether the types reach the cell at `addr`, one of those asked.
-    pub fn reached(&self, addr: usize) -> bool {
-        !self.0.contains(&addr)
-    }
 }
 
 /// The cells `t` holds as positions, through bindings, never through
@@ -1693,29 +968,6 @@ impl Type {
 mod test {
     use super::*;
     use crate::typ::tvar::AtLevel;
-    use compact_str::format_compact;
-
-    /// A call's terminal settle decides `'a4`, which only the bound of a
-    /// bound names: the signature holds no open cell after it.
-    #[test]
-    fn a_terminal_settle_decides_a_bound_of_a_bound() {
-        let (env, t) = Env::typed_at_root(
-            &[],
-            "fn<'a0: [Array<'a1>, null], 'a1: [Array<'a2>, null], 'a2: [Array<'a3>, null], \
-             'a3: [Array<'a4>, null], 'a4: Number>(x: ('a0, 'a1)) -> i64",
-        )
-        .unwrap();
-        let Type::Fn(ft) = &t else { panic!("{t} is no function type") };
-        ft.alias_tvars(&mut LPooled::take());
-        ft.settle_terminal(&env, None, &AHashSet::default(), &[]).unwrap();
-        let mut cells: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-        ft.collect_tvars_through_bounds(&mut cells);
-        let mut open: Vec<&ArcStr> =
-            cells.iter().filter(|(_, tv)| !tv.is_bound()).map(|(n, _)| n).collect();
-        open.sort();
-        assert_eq!(cells.len(), 5, "{cells:?}");
-        assert!(open.is_empty(), "open after the settle: {open:?}");
-    }
 
     fn open(name: &'static str) -> TVar {
         TVar::empty_named(ArcStr::from(name))
@@ -1792,125 +1044,6 @@ mod test {
         assert!(p.is_bound());
         assert_eq!(steps(&|| p.settle_witness(&env).unwrap()), 0);
         assert_eq!(steps(&|| p.weld_lower()), 0);
-    }
-
-    /// A decided lower bound holding ⊥ in a part is no member of the
-    /// witness where another decided bound contains it; one nothing
-    /// contains, and one that holds an open cell, stay members.
-    #[test]
-    fn a_witness_leaves_out_a_bound_holding_bottom_that_another_contains() {
-        let _level = AtLevel::enter(Level::TOP);
-        let (env, i64_t) = Env::typed_at_root(&[], "i64").unwrap();
-        let array = |t: &Type| Type::Array(triomphe::Arc::new(t.clone()));
-        let witness = |below: &[Type]| {
-            let p = open("p");
-            below.iter().for_each(|l| p.add_lower(l.clone()));
-            p.witness(&env).unwrap().unwrap()
-        };
-        let settled = open("a");
-        settled.settle_unread();
-        for empty in [array(&Type::Bottom), array_of(&settled)] {
-            for below in [[empty.clone(), array(&i64_t)], [array(&i64_t), empty.clone()]]
-            {
-                let w = witness(&below);
-                assert!(strictly_identical(&w, &array(&i64_t)), "{w}");
-            }
-            let w = witness(&[empty.clone(), array(&array(&Type::Bottom))]);
-            assert!(strictly_identical(&w, &array(&array(&Type::Bottom))), "{w}");
-            let w = witness(&[empty, i64_t.clone()]);
-            assert!(matches!(&w, Type::Set(ms) if ms.len() == 2), "{w}");
-        }
-        let w = witness(&[array_of(&open("b")), array(&i64_t)]);
-        assert!(matches!(&w, Type::Set(ms) if ms.len() == 2), "{w}");
-    }
-
-    /// A call's terminal settle decides the cell a lower bound of its
-    /// signature's cell holds: the witness holds no open cell after it.
-    #[test]
-    fn a_terminal_settle_decides_a_cell_a_lower_bound_holds() {
-        let _level = AtLevel::enter(Level::TOP);
-        let (env, t) = Env::typed_at_root(&[], "fn(x: 'p) -> i64").unwrap();
-        let Type::Fn(ft) = &t else { panic!("{t} is no function type") };
-        ft.alias_tvars(&mut LPooled::take());
-        let mut cells: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-        ft.collect_tvars(&mut cells);
-        let p = cells.get("p").unwrap().clone();
-        p.set_level(Level::TOP);
-        let (a, b) = (open("a"), open("b"));
-        p.add_lower(array_of(&b));
-        b.add_lower(array_of(&a));
-        ft.settle_terminal(&env, None, &AHashSet::default(), &[]).unwrap();
-        assert!(matches!(a.binding(), Some(Type::Bottom)), "{a:?}");
-        assert!(!p.binding().unwrap().has_unbound(), "{p:?}");
-    }
-
-    /// A call's terminal settle takes a cell that stands above a type
-    /// before the cells its bound holds, down a chain: each takes its part
-    /// of what the cell before it settled to.
-    #[test]
-    fn a_terminal_settle_takes_a_cell_above_a_type_before_its_bounds_cells() {
-        let _level = AtLevel::enter(Level::TOP);
-        let (env, t) = Env::typed_at_root(
-            &[],
-            "fn<'p: ['a, null], 'a: ['b, null]>(x: 'p, y: 'b) -> i64",
-        )
-        .unwrap();
-        let (_, i64_t) = Env::typed_at_root(&[], "i64").unwrap();
-        let Type::Fn(ft) = &t else { panic!("{t} is no function type") };
-        ft.alias_tvars(&mut LPooled::take());
-        let mut cells: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-        ft.collect_tvars_through_bounds(&mut cells);
-        for tv in cells.values() {
-            tv.set_level(Level::TOP)
-        }
-        cells["p"].add_lower(i64_t.clone());
-        cells["b"].mark_bottom_fed();
-        ft.settle_terminal(&env, None, &AHashSet::default(), &[]).unwrap();
-        for name in ["p", "a", "b"] {
-            let bound = cells[name].binding().unwrap();
-            assert!(strictly_identical(&bound, &i64_t), "'{name}: {bound}");
-        }
-    }
-
-    /// A cell that waits asks each cell whose conjuncts reach it whether it
-    /// may still feed it once, however many of them settle before the last:
-    /// a call's terminal settle is linear in its cells.
-    #[test]
-    fn a_waiting_cell_asks_each_holder_once() {
-        const HOLDERS: usize = 200;
-        let _level = AtLevel::enter(Level::TOP);
-        let mut sig: LPooled<String> = LPooled::take();
-        sig.push_str("fn<'x: string");
-        for i in 0..HOLDERS {
-            write!(sig, ", 'a{i}: ['b{i}, null], 'b{i}: [Array<'x>, bool]").unwrap()
-        }
-        sig.push_str(">(x: 'x");
-        for i in 0..HOLDERS {
-            write!(sig, ", p{i}: 'a{i}").unwrap()
-        }
-        sig.push_str(") -> i64");
-        let (env, t) = Env::typed_at_root(&[], &sig).unwrap();
-        let (_, bool_t) = Env::typed_at_root(&[], "bool").unwrap();
-        let Type::Fn(ft) = &t else { panic!("{t} is no function type") };
-        ft.alias_tvars(&mut LPooled::take());
-        let mut cells: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-        ft.collect_tvars_through_bounds(&mut cells);
-        for tv in cells.values() {
-            tv.set_level(Level::TOP)
-        }
-        for i in 0..HOLDERS {
-            cells[format_compact!("a{i}").as_str()].add_lower(bool_t.clone())
-        }
-        cells["x"].mark_bottom_fed();
-        FEEDS_ASKED.with(|n| n.set(0));
-        ft.settle_terminal(&env, None, &AHashSet::default(), &[]).unwrap();
-        let asked = FEEDS_ASKED.with(|n| n.get());
-        assert!(asked <= 8 * HOLDERS, "{asked} asks for {HOLDERS} holders");
-        assert!(matches!(cells["x"].binding(), Some(Type::Bottom)), "{:?}", cells["x"]);
-        for i in 0..HOLDERS {
-            let bound = cells[format_compact!("b{i}").as_str()].binding().unwrap();
-            assert!(strictly_identical(&bound, &bool_t), "'b{i}: {bound}");
-        }
     }
 
     /// A run of settles takes a cell after the cells whose bounds reach
