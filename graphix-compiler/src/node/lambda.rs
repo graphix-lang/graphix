@@ -78,6 +78,9 @@ pub struct DefTable {
     /// lists it: a select's arm predicates and pattern binds, a catch's
     /// error binds, what a `?` or `$` strips.
     aux: AHashMap<ExprId, Box<[Type]>>,
+    /// The types the check gave the names of the formals taken apart, in
+    /// the formals' order, each in [`StructPatternNode::ids`] order.
+    formals: Box<[Type]>,
     /// The table of each lambda literal of the body, by its id.
     lambdas: AHashMap<ExprId, SArc<DefTable>>,
     /// The typedefs the rows name, owned here: a block's is in the env
@@ -152,11 +155,37 @@ pub struct Tables {
     outer: Option<Known>,
 }
 
+/// Which rows of a [`DefTable`] a walk takes.
+enum RowsOf<'a> {
+    /// Every row, the formals' included.
+    All,
+    /// The rows of these nodes.
+    Nodes(&'a AHashSet<ExprId>),
+}
+
+impl RowsOf<'_> {
+    fn has(&self, id: &ExprId) -> bool {
+        match self {
+            Self::All => true,
+            Self::Nodes(ids) => ids.contains(id),
+        }
+    }
+}
+
+/// Each name the formals taken apart bind, in [`DefTable::formals`] order:
+/// a formal that is one name is the signature's, and has no row.
+fn for_taken_apart(formals: &[StructPatternNode], f: &mut impl FnMut(BindId)) {
+    for p in formals.iter().filter(|p| p.single_bind_id().is_none()) {
+        p.ids(&mut |id| f(id))
+    }
+}
+
 impl DefTable {
     fn with(
         types: AHashMap<ExprId, Type>,
         ftypes: AHashMap<ExprId, FnType>,
         aux: AHashMap<ExprId, Box<[Type]>>,
+        formals: Box<[Type]>,
         lambdas: AHashMap<ExprId, SArc<DefTable>>,
         typedefs: Vec<SArc<ResolvedRef>>,
         facts: LambdaFacts,
@@ -169,6 +198,7 @@ impl DefTable {
             types,
             ftypes,
             aux,
+            formals,
             lambdas,
             typedefs,
             facts,
@@ -182,7 +212,8 @@ impl DefTable {
 
     /// Every type the table's rows hold but the signatures'.
     fn rows(&self) -> impl Iterator<Item = &Type> {
-        self.types.values().chain(self.aux.values().flat_map(|ts| ts.iter()))
+        let aux = self.aux.values().flat_map(|ts| ts.iter());
+        self.types.values().chain(aux).chain(self.formals.iter())
     }
 
     /// Every type the table holds: its rows, then each function type's
@@ -203,6 +234,7 @@ impl DefTable {
     /// binds are in `checked`, the check's environment.
     fn record<R: Rt>(
         body: &Node<R>,
+        formals: &[StructPatternNode],
         def_env: &Lexical,
         checked: &Env,
         facts: LambdaFacts,
@@ -214,19 +246,19 @@ impl DefTable {
         table.add_rows(body, checked, &mut |n| {
             capture_names(n, def_env, checked, captures)
         });
-        table.seed_and_own(def_env, checked, |_| true);
+        let mut taken: LPooled<Vec<Type>> = LPooled::take();
+        for_taken_apart(formals, &mut |id| {
+            taken.push(checked.by_id.get(&id).map_or(Type::Bottom, |b| b.typ.clone()))
+        });
+        table.formals = Box::from_iter(taken.drain(..));
+        table.seed_and_own(def_env, checked, RowsOf::All);
         table
     }
 
-    /// Fill every name the rows `of` an id hold, in the definition's
-    /// environment (a block's own types through the registry of block
-    /// types), and own what they name.
-    fn seed_and_own(
-        &mut self,
-        def_env: &Lexical,
-        checked: &Env,
-        of: impl Fn(&ExprId) -> bool,
-    ) {
+    /// Fill every name the rows `of` hold, in the definition's environment
+    /// (a block's own types through the registry of block types), and own
+    /// what they name.
+    fn seed_and_own(&mut self, def_env: &Lexical, checked: &Env, of: RowsOf) {
         let mut env = checked.clone();
         env.lexical = def_env.clone();
         let mut seen: LPooled<AddrSet> = LPooled::take();
@@ -242,16 +274,19 @@ impl DefTable {
         self.typedefs.extend(defs.drain().map(|(_, r)| r));
     }
 
-    /// Every type the rows `of` an id hold, signatures' parts included.
-    fn for_each_row(&self, of: &impl Fn(&ExprId) -> bool, f: &mut impl FnMut(&Type)) {
-        for (_, t) in self.types.iter().filter(|(id, _)| of(id)) {
+    /// Every type the rows `of` hold, signatures' parts included.
+    fn for_each_row(&self, of: &RowsOf, f: &mut impl FnMut(&Type)) {
+        for (_, t) in self.types.iter().filter(|(id, _)| of.has(id)) {
             f(t)
         }
-        for (_, ts) in self.aux.iter().filter(|(id, _)| of(id)) {
+        for (_, ts) in self.aux.iter().filter(|(id, _)| of.has(id)) {
             ts.iter().for_each(&mut *f)
         }
-        for (_, ft) in self.ftypes.iter().filter(|(id, _)| of(id)) {
+        for (_, ft) in self.ftypes.iter().filter(|(id, _)| of.has(id)) {
             ft.for_each_part(&mut |t, _| f(t))
+        }
+        if let RowsOf::All = of {
+            self.formals.iter().for_each(&mut *f)
         }
     }
 
@@ -271,7 +306,7 @@ impl DefTable {
             });
         }
         if !ids.is_empty() {
-            self.seed_and_own(def_env, checked, |id| ids.contains(id));
+            self.seed_and_own(def_env, checked, RowsOf::Nodes(&ids));
             self.defaults.extend(ids.drain());
         }
     }
@@ -363,6 +398,7 @@ impl DefTable {
                         (*id, ts.iter().map(|t| t.rename_with(known)).collect())
                     })
                     .collect(),
+                self.formals.iter().map(|t| t.rename_with(known)).collect(),
                 self.lambdas
                     .iter()
                     .map(|(id, t)| (*id, SArc::new(t.renamed(known))))
@@ -414,6 +450,10 @@ impl DefTable {
                         t.encode(buf)?;
                     }
                 }
+                encode_varint(table.formals.len() as u64, buf);
+                for t in table.formals.iter() {
+                    t.encode(buf)?;
+                }
                 encode_varint(table.lambdas.len() as u64, buf);
                 for (id, l) in table.lambdas.iter() {
                     id.encode(buf)?;
@@ -463,6 +503,9 @@ impl DefTable {
                     aux.insert(id, ts);
                 }
                 let n = image::count_decode(sub)?;
+                let formals =
+                    (0..n).map(|_| Type::decode(sub)).collect::<Result<_, _>>()?;
+                let n = image::count_decode(sub)?;
                 let mut lambdas = AHashMap::with_capacity(n);
                 for _ in 0..n {
                     lambdas.insert(ExprId::decode(sub)?, Self::image_decode(sub)?);
@@ -484,6 +527,7 @@ impl DefTable {
                     types,
                     ftypes,
                     aux,
+                    formals,
                     lambdas,
                     typedefs,
                     facts,
@@ -799,6 +843,25 @@ impl InstanceTypes {
     pub(crate) fn aux(&mut self, id: ExprId) -> Option<SmallVec<[Type; 8]>> {
         let ts = self.tables.table.aux.get(&id)?;
         Some(ts.iter().map(|t| self.instance_of(t)).collect())
+    }
+
+    /// Give each name the instance's formals taken apart bind its row
+    /// ([`DefTable::formals`]).
+    fn take_formals(&self, env: &Env, formals: &[StructPatternNode]) -> Result<()> {
+        let mut rows = self.tables.table.formals.iter();
+        let mut short = false;
+        for_taken_apart(formals, &mut |id| match rows.next() {
+            None => short = true,
+            Some(row) => {
+                if let Some(b) = env.by_id.get(&id) {
+                    b.typ.take_row(&self.instance_of(row));
+                }
+            }
+        });
+        if short || rows.next().is_some() {
+            bail!("BUG: an instance's formals and its definition's rows differ")
+        }
+        Ok(())
     }
 
     pub(crate) fn arm_discriminants(
@@ -1746,6 +1809,7 @@ impl<R: Rt> Apply<R> for GXLambda<R> {
             let env = self.env.clone();
             ctx.with_restored(env, |ctx| match types {
                 Some(mut types) => {
+                    types.take_formals(&ctx.env, &self.args)?;
                     wrap!(self.body, self.body.typecheck0_instance(ctx, &mut types))
                 }
                 None => {
@@ -1808,6 +1872,13 @@ impl<R: Rt> Apply<R> for GXLambda<R> {
         _resolved: &FnType,
     ) -> Result<()> {
         let _elaboration = profile::elaboration(self.instance_id);
+        // a formal taken apart was compiled by its own shape: it takes its
+        // places from the signature now that is decided
+        for (pat, at) in self.args.iter_mut().zip(self.typ.args.iter()) {
+            if pat.single_bind_id().is_none() {
+                pat.realign_decided(&ctx.env, &at.typ.resolve_tvars())?
+            }
+        }
         elab_audit::enter();
         let env = self.env.clone();
         let body = &mut self.body;
@@ -2100,13 +2171,15 @@ impl<R: Rt> GXLambda<R> {
                     return Err(e);
                 }
             }
-            // under a check by bounds a parameter taken apart is a
-            // select of one arm over it
-            if bounds::active()
+            // a parameter taken apart is a select of one arm over it under
+            // a check by bounds; an instance's takes its names' types from
+            // its definition's check ([`DefTable::formals`])
+            let by_rows = !matches!(typing, Typing::Definition);
+            if (bounds::active() || by_rows)
                 && a.pattern.single_bind().is_none()
                 && !matches!(a.pattern, expr::StructurePattern::Ignore)
             {
-                if a.constraint.is_some() {
+                if a.constraint.is_some() && !by_rows {
                     StructPatternNode::named_before(ctx, &atyp.typ)?
                 }
                 let pattern = StructPatternNode::compile_shape(
@@ -2117,8 +2190,10 @@ impl<R: Rt> GXLambda<R> {
                     a.pos.0,
                     origin.clone(),
                 )?;
-                let parts = pattern.by_bounds(ctx)?;
-                super::pattern::destructure(ctx, parts, &atyp.typ, a.pos.0)?;
+                if !by_rows {
+                    let parts = pattern.by_bounds(ctx)?;
+                    super::pattern::destructure(ctx, parts, &atyp.typ, a.pos.0)?;
+                }
                 argpats.push(pattern);
                 continue;
             }
@@ -2131,7 +2206,7 @@ impl<R: Rt> GXLambda<R> {
                 a.pos.0,
                 origin.clone(),
             )?;
-            // CR claude for claude: [bug/medium] `covers` answers false for any union,
+            // XCR claude for claude: [bug/medium] `covers` answers false for any union,
             // so a formal's tuple or struct pattern over a union of same-shape members
             // is refused as refutable. `array::map([(1, `A), (2, `B(1))], |(i, v)| i)`
             // is refused "refutable patterns are not allowed in lambda arguments (i,
@@ -2141,6 +2216,15 @@ impl<R: Rt> GXLambda<R> {
             // the let does, and pin this message, which no test names today. probe:
             // design/review-2026-11-16/repro/x-kind-markers-formal-union-of-tuples.sh
             // Also reported as (x-rerun-3-01). (x-kind-markers-03)
+            // 2026-11-19 claude: On bounds-spike an instance's formal taken apart
+            // compiles by its own shape and takes its names' types from its
+            // definition's check (DefTable::formals), realigned against the decided
+            // signature at typecheck1, as a let and a select arm do; this covers
+            // refusal stays only for a definition built outside a check. The probe's
+            // three programs check, build (--expand) and run ([1, 2]). Pins:
+            // lang::tuples_structs::formal_tuple_pattern_over_a_union_of_tuples and
+            // formal_struct_pattern_over_a_union_of_structs; with instances sent down
+            // this path again both fail with this message.
             if !pattern.covers(&ctx.env, &atyp.typ, false) {
                 bail!(
                     "refutable patterns are not allowed in lambda arguments {}",
@@ -3464,6 +3548,7 @@ impl<R: Rt> Update<R> for Lambda {
                     .collect();
                 table = Some(DefTable::record(
                     &g.body,
+                    g.args(),
                     &g.env,
                     &ctx.env,
                     facts,

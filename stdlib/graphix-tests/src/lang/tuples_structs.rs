@@ -930,6 +930,26 @@ run!(
     refused("has no field zzz")
 );
 
+// A formal taken apart over a union of tuples of one arity, or of structs
+// with the fields it names, takes every member, as a let does.
+run!(
+    formal_tuple_pattern_over_a_union_of_tuples,
+    r#"{
+    let xs = [(1, `A), (2, `B(1))];
+    array::map(xs, |(i, v)| i)
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if &a[..] == [Value::I64(1), Value::I64(2)])
+);
+
+run!(
+    formal_struct_pattern_over_a_union_of_structs,
+    r#"{
+    let xs = [{a: 1, b: `A}, {a: 2, b: `B(1)}];
+    array::map(xs, |{a, b}| a)
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if &a[..] == [Value::I64(1), Value::I64(2)])
+);
+
 // A field read over a union of structs of one shape, or of tuples of one
 // arity, reads the field every member holds at one index: a typedef and
 // its expansion, records differing in a variant field.
