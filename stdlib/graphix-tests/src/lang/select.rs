@@ -13959,3 +13959,17 @@ async fn slice_bind_refusal_is_the_same_every_run() -> Result<()> {
     );
     Ok(())
 }
+
+// An arm that takes a part out of an `Any` scrutinee and uses it as a
+// reference is refused: any reference passes the run-time test, so the arm
+// could write a value of one type into a variable of another.
+run!(
+    arm_over_any_deciding_a_reference_is_refused,
+    r#"{
+    let f = |x: Any| select x { (r, n) => { *r <- n + 1; 0 }, _ => 0 };
+    let s = "str";
+    let v: Any = (&mut s, 1);
+    f(v)
+}"#,
+    refused("expected a reference not Any")
+);

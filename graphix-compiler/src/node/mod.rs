@@ -2874,44 +2874,6 @@ impl<'a> Holders<'a> {
         Type::TVar(TVar::empty_named(format_compact!("_{}", i + 1).as_str().into()))
     }
 
-    /// The binding to annotate where the cell `tv` stands for is a part of
-    /// a binding's type where the select `at` tests it, named: among the
-    /// bindings [`Self::nameable`] admits whose type holds the cell outside
-    /// a function type, the nearest one written above `at`, else the one
-    /// written first.
-    pub(crate) fn name_part(
-        &mut self,
-        env: &'a env::Env,
-        tv: &TVar,
-        at: &Expr,
-    ) -> Option<Type> {
-        fn holds(t: &Type, cell: usize, seen: &mut AHashSet<usize>) -> bool {
-            crate::stack::ensure_sufficient(|| match t {
-                Type::TVar(tv) if tv.stands_for() == cell => true,
-                t if t.shared_identity().is_some_and(|n| !seen.insert(n)) => false,
-                Type::TVar(tv) => tv.binding().is_some_and(|b| holds(&b, cell, seen)),
-                Type::Fn(_) => false,
-                t => {
-                    let mut found = false;
-                    t.for_each_child(&mut |c| found = found || holds(c, cell, seen));
-                    found
-                }
-            })
-        }
-        let cell = tv.stands_for();
-        let held = || {
-            env.by_id.iter().map(|(_, b)| &**b).filter(|b| {
-                Self::nameable(b) && holds(&b.typ, cell, &mut LPooled::take())
-            })
-        };
-        let pos = |b: &env::Bind| (b.pos.line, b.pos.column);
-        let b = held()
-            .filter(|b| *b.ori == *at.ori && pos(b) <= (at.pos.line, at.pos.column))
-            .max_by_key(|b| pos(b))
-            .or_else(|| held().min_by_key(|b| pos(b)))?;
-        Some(self.name(b, Role::Typ))
-    }
-
     /// [`Self::name_cell`] where a hint names the cell.
     pub(crate) fn name_open(&mut self, tv: &TVar) -> Option<Type> {
         match Self::waits(tv) {
