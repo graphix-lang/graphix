@@ -472,3 +472,15 @@ const INDEX_UNTYPED_PARAM: &str = r#"
 "#;
 
 run!(index_untyped_param, INDEX_UNTYPED_PARAM, prints(r#"["a", "c"]"#));
+
+// An index into, and the length of, a value typed as a union of two array
+// types read the element any member holds.
+const INDEX_UNION_OF_ARRAYS: &str = r#"
+{
+  let e: Array<i64> = [1, 2];
+  let xs: [Array<string>, Array<i64>] = e;
+  (xs[1]$, array::len(xs))
+}
+"#;
+
+run!(index_union_of_arrays, INDEX_UNION_OF_ARRAYS, prints("[i64:2, i64:2]"));

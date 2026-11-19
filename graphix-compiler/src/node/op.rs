@@ -15,7 +15,6 @@ use crate::{
         nodes::{NodeTag, decode_node, put_tag},
     },
     node::error::{diagnostic_site, report_failure},
-    stack::ensure_sufficient,
     typ::{Bound, TVar, Type, bounds},
     wrap,
 };
@@ -250,24 +249,6 @@ fn compared_by_bounds(env: &Env, lt: &Type, rt: &Type, holds: Bound) -> Result<(
     });
     let v = Type::TVar(v);
     [lt, rt].into_iter().try_for_each(|t| v.check_contains(env, t))
-}
-
-/// An operand whose type is known must be in `bound` now; an open cell,
-/// alone or a member of a union, carries `bound` as a constraint for
-/// later: binding it to `bound` would claim every type the bound admits
-/// at once.
-pub(super) fn constrain_operand(env: &Env, bound: &Type, t: &Type) -> Result<()> {
-    if bounds::active() {
-        return bound.check_contains(env, t);
-    }
-    ensure_sufficient(|| match t {
-        Type::TVar(tv) => match tv.binding() {
-            Some(b) => constrain_operand(env, bound, &b),
-            None => tv.narrow_cell(env, bound.clone()),
-        },
-        Type::Set(ts) => ts.iter().try_for_each(|m| constrain_operand(env, bound, m)),
-        t => bound.check_contains(env, t),
-    })
 }
 
 macro_rules! compare_op {
@@ -512,10 +493,7 @@ impl<R: Rt> Unary<R> {
                 wrap!(self.n, Type::boolean().check_contains(&ctx.env, self.n.typ()))
             }
             UnaryOp::Neg => {
-                wrap!(
-                    self.n,
-                    constrain_operand(&ctx.env, &Self::negatable(), self.n.typ())
-                )?;
+                wrap!(self.n, Self::negatable().check_contains(&ctx.env, self.n.typ()))?;
                 wrap!(self, self.typ.check_contains(&ctx.env, self.n.typ()))?;
                 Ok(())
             }

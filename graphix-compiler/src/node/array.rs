@@ -34,10 +34,9 @@ use triomphe::Arc;
 
 defetyp!(ERR, ERR_TAG, "ArrayIndexError", "Error<`{}(string)>");
 
-/// An array index or slice bound: any integer. An open cell is narrowed
-/// to the integers, as an arithmetic operand is to the numbers.
+/// An array index or slice bound: any integer.
 pub(super) fn check_index<R: Rt>(env: &Env, i: &Node<R>) -> Result<()> {
-    wrap!(i, super::op::constrain_operand(env, &Type::Primitive(Typ::integer()), i.typ()))
+    wrap!(i, Type::Primitive(Typ::integer()).check_contains(env, i.typ()))
 }
 
 #[derive(Debug)]
@@ -126,14 +125,6 @@ pub(crate) fn index_i64(v: &Value) -> Option<i64> {
 /// counts from the start, negative from the end. Unchecked against `len`.
 fn offset(len: usize, i: i64) -> Option<usize> {
     usize::try_from(if i < 0 { len as i64 + i } else { i }).ok()
-}
-
-/// An indexed or sliced source is bytes only when its type says so; a
-/// source not known yet (an open cell) is assumed to be an array.
-fn known_bytes(env: &Env, source: &Type) -> Result<bool> {
-    let bytes = Type::Primitive(Typ::Bytes.into());
-    Ok(!source.with_deref(|t| t.is_none())
-        && bytes.contains_with_flags(BitFlags::empty(), env, source)?)
 }
 
 /// The position index `i` names in a sequence of `len` elements.
@@ -603,44 +594,35 @@ impl<R: Rt> ArrayRef<R> {
             return Ok(());
         }
         let source_typ = self.source.typ();
-        if bounds::active() {
-            // whatever the source turns out to be gives the element: an
-            // array's, or a byte
-            if check {
-                let bytes = Type::Primitive(Typ::Bytes.into());
-                let indexed =
-                    bounds::union_of([Type::Array(Arc::new(self.etyp.clone())), bytes]);
-                wrap!(self, indexed.check_contains(&ctx.env, source_typ))?;
-                let read = Use::Element { out: self.etyp.clone() };
-                wrap!(self, super::solving(|s| s.watch(&ctx.env, source_typ, read)))?;
-                check_index(&ctx.env, &self.i)?
-            }
-            return Ok(());
-        }
-        if known_bytes(&ctx.env, source_typ)? {
-            let byte = Type::Primitive(Typ::U8.into());
-            wrap!(self, self.etyp.check_contains(&ctx.env, &byte))?;
-        } else {
-            let at = Type::Array(Arc::new(self.etyp.clone()));
-            // CR claude for eric: [bug/low] An index over a source typed as a union of
-            // two array types is refused here with "Array<i64> does not contain
-            // [Array<i64>, Array<string>]": the element variable takes the first member
-            // and the second fails, so the message states a requirement nobody wrote
-            // and names nothing to annotate. ArraySlice refuses the same source, and
-            // array::len and array::map refuse it with the same shape of message. A
-            // tuple union's `.0` reads the union of its members and a slice pattern
-            // over this same value checks, so the value can be taken apart but not
-            // indexed or measured. Either relate each array member separately and union
-            // the element types into etyp, or refuse in words that say to select on the
-            // value or give it one array type. probe:
-            // design/review-2026-11-16/repro/x-engine-collections-index-union-of-arrays.gx
-            // (x-engine-collections-03)
-            wrap!(self, at.check_contains(&ctx.env, source_typ))?;
-        }
-        match check {
-            true => check_index(&ctx.env, &self.i),
-            false => Ok(()),
-        }
+        // XCR claude for eric: [bug/low] An index over a source typed as a union of
+        // two array types is refused here with "Array<i64> does not contain
+        // [Array<i64>, Array<string>]": the element variable takes the first member
+        // and the second fails, so the message states a requirement nobody wrote
+        // and names nothing to annotate. ArraySlice refuses the same source, and
+        // array::len and array::map refuse it with the same shape of message. A
+        // tuple union's `.0` reads the union of its members and a slice pattern
+        // over this same value checks, so the value can be taken apart but not
+        // indexed or measured. Either relate each array member separately and union
+        // the element types into etyp, or refuse in words that say to select on the
+        // value or give it one array type. probe:
+        // design/review-2026-11-16/repro/x-engine-collections-index-union-of-arrays.gx
+        // (x-engine-collections-03)
+        // 2026-11-19 claude: On bounds-spike the old relation here (the element
+        // variable taking the first member) is deleted with the old check; the
+        // solver's Use::Element reads the element each member holds, the first option
+        // above. The probe's four forms (xs[0], xs[0..1], array::len(xs),
+        // array::map(xs, |x| 1)) check and build (--expand exit 0). Pin:
+        // lang::arrays::index_union_of_arrays (an index and a len over [Array<string>,
+        // Array<i64>], prints [i64:2, i64:2]).
+
+        // whatever the source turns out to be gives the element: an array's,
+        // or a byte
+        let bytes = Type::Primitive(Typ::Bytes.into());
+        let indexed = bounds::union_of([Type::Array(Arc::new(self.etyp.clone())), bytes]);
+        wrap!(self, indexed.check_contains(&ctx.env, source_typ))?;
+        let read = Use::Element { out: self.etyp.clone() };
+        wrap!(self, super::solving(|s| s.watch(&ctx.env, source_typ, read)))?;
+        check_index(&ctx.env, &self.i)
     }
 }
 
