@@ -3262,12 +3262,6 @@ impl UndecidedTaker {
         self.at
     }
 
-    /// Whether what the type throws is the only part of it nothing has
-    /// decided.
-    pub fn throws_only(&self) -> bool {
-        self.throws_only
-    }
-
     /// The refusal without what to annotate, for a site that names it.
     pub fn fact(&self) -> impl std::fmt::Display + '_ {
         struct Fact<'a>(&'a UndecidedTaker);
