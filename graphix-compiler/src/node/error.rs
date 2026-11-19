@@ -275,17 +275,7 @@ pub(crate) fn join_open_raised(
     let Some(Type::TVar(tv)) = env.by_id.get(&catch).map(|b| &b.typ) else {
         bail!("BUG: catch {catch:?} has no inferred bind")
     };
-    if bounds::active() {
-        return Type::TVar(tv.clone()).check_contains(env, etyp);
-    }
-    match tv.binding() {
-        Some(t @ Type::TVar(_))
-            if t.deref_cloned().is_none() && t.contains(env, etyp)? =>
-        {
-            Ok(())
-        }
-        _ => join_raised(env, handler, etyp),
-    }
+    Type::TVar(tv.clone()).check_contains(env, etyp)
 }
 
 impl<R: Rt> Catch<R> {
@@ -1699,22 +1689,10 @@ impl<R: Rt> Catch<R> {
                 .by_id
                 .get(&cap)
                 .ok_or_else(|| anyhow!("BUG: seq capture cell vanished"))?;
-            let Type::TVar(tv) = &bind.typ else {
+            if !matches!(&bind.typ, Type::TVar(_)) {
                 bail!("BUG: seq capture cell is not a cell")
-            };
-            if bounds::active() {
-                return bind.typ.check_contains(&ctx.env, &etyp);
             }
-            // union the cell's content, not the cell
-            let etyp = match &etyp {
-                Type::TVar(b) => b.binding().unwrap_or(Type::Bottom),
-                t => t.clone(),
-            };
-            let joined = match tv.binding() {
-                None => etyp.clone(),
-                Some(t) => Type::union(&ctx.env, &[&t, &etyp])?,
-            };
-            tv.bind(joined);
+            return bind.typ.check_contains(&ctx.env, &etyp);
         }
         Ok(())
     }

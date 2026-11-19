@@ -10,11 +10,10 @@
 use super::{
     Block,
     bind::lower_over_operands,
-    callsite::{ArgKey, CallSite, check_method_return},
+    callsite::{ArgKey, CallSite},
     coretraits::method_ftype,
     genn::SynthCall,
     lambda::LambdaDef,
-    module::{self, Holder},
 };
 use crate::{
     BindId, CFlag, CompileCtx, DefAssertionKind, ExecCtx, Node, NodeView, Rt, Scope,
@@ -36,7 +35,6 @@ use crate::{
     typ::{
         AmbiguousMember, CoreTrait, FnArgKind, FnType, TVar, TakerUnion, TraitId, Type,
         TypeRef, UndecidedTaker, bounds, check_bounds_acyclic, seed_conjuncts,
-        settle::VariableUnion,
         tvar::{RigidGate, current_level},
     },
     wrap,
@@ -50,7 +48,6 @@ use netidx_core::pack::{Pack, PackError, encode_varint};
 use netidx_value::Value;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
-use std::{cell::OnceCell, iter};
 use triomphe::Arc;
 
 /// The declared signature of a trait method, scoped to the declaring
@@ -80,104 +77,42 @@ pub(crate) fn method_sig(
     Ok(FnType { quantifiers: Arc::from_iter(quantifiers.drain(..)), ..ft })
 }
 
-/// Whether `implemented`, a method's type as its body checked it, is
-/// the `declared` signature: its shape, its variables, and no bound the
-/// declaration does not carry ([`FnType::sig_matches`], as an interface
-/// `val` is checked); and a cell of the body no use copies is held as an
-/// interface `val`'s is ([`module::hold_paired`]). `id` is the body's
-/// binding. A body that is a lambda has its cells copied by each call but
-/// those a binding it captures holds; any other body's are judged by their
-/// level, as a `val`'s implementation's are. `reads` says whether the
-/// body took its value's type ([`reads_binding`]).
-fn implements<R: Rt>(
-    ctx: &CompileCtx<R>,
-    declared: &FnType,
-    implemented: &Type,
-    id: BindId,
-    reads: impl Fn() -> bool,
-) -> Result<()> {
-    let told = |e: anyhow::Error| match reads() {
-        true => Told::over(
-            e,
-            "its value reads a binding, so the method has exactly that binding's \
-             type; written as a lambda it takes the declared one",
-        ),
-        false => e,
-    };
-    let Some(ft) = implemented.with_deref(|t| match t {
-        Some(Type::Fn(ft)) => Some(ft.clone()),
-        _ => None,
-    }) else {
-        // CR claude for claude: [readability/low] When a method's value reads a binding
-        // still undecided at the impl (`let h = never(); impl T for i64 { let m = h };
-        // h <- ..`), `implemented` is an open cell. The leaf is then "'_8187 is not a
-        // function": a generated variable, and false, since h is a function. Annotating
-        // `h` makes it check, but nothing names `h`. For an unbound cell, refuse naming
-        // the read binding as undecided here and to annotate it, as
-        // callsite::undecided_binds words it. Pin that leaf in
-        // lang::traits::method_value_read_of_an_undecided_binding_is_refused, which
-        // today pins only the told note. probe:
-        // design/review-2026-11-16/repro/tests-traits-b-undecided-method-read.sh
-        // (tests-traits-b-04)
-        return Err(told(anyhow!("{implemented} is not a function")));
-    };
-    let pairs = declared.sig_matches(&ctx.env, &ft).map_err(told)?;
-    module::instance_picks_no_member(
-        &ctx.env,
-        &Type::Fn(Arc::new(declared.clone())),
-        implemented,
-    )?;
-    let captured: OnceCell<Option<LPooled<AHashMap<usize, TVar>>>> = OnceCell::new();
-    let captured = || captured.get_or_init(|| module::captured_cells(ctx, id));
-    let shared = |tv: &TVar| {
-        !tv.level().copied_by(&ctx.rec_defs)
-            && captured().as_ref().is_none_or(|c| c.contains_key(&tv.cell_addr()))
-    };
-    // CR claude for claude: [bug/medium] When the method returns what the shared
-    // binding holds, the hint "give {b} a type that holds every {v}" cannot work.
-    // Examples are `|s, x| k(s, x)` over a written `k`, and `st.k(x)` over `{k: |x| { y
-    // <- x; y }}`. With `y: Any` the check refuses again: "'a: unbound does not contain
-    // Any". lang::traits::method_over_a_written_lambda_names_it,
-    // method_over_a_struct_of_lambdas_names_what_they_write and
-    // method_over_a_struct_of_a_named_helper_names_what_it_writes pin this hint, and
-    // method_handing_a_written_lambda_its_argument_annotated had to change the method
-    // body too. Give the binding hint only where the method does not return the
-    // binding's value. Otherwise say the method returns one type for every call, so it
-    // should return what the call passed or the method should be declared at one type.
-    // Pin a passing program for each of these refusals. module::check_val's `give {b} a
-    // type` arms carry the same hint. probe:
-    // design/review-2026-11-16/repro/tests-traits-b-remedy-does-not-pass.sh
-    // (tests-traits-b-01)
-    module::hold_paired(&ctx.env, "method", &pairs, shared, |tv, v| {
-        match (Holder::of(ctx, id, tv), module::generalized_impl(ctx, id)) {
-            (Holder::Captured(b), _) => format_compact!(
-                ", that of {b}, a binding outside its let: give {b} a type that holds \
-                 every {v}"
-            ),
-            (Holder::Written(b), _) => format_compact!(
-                ", that of {b}, a binding outside its let that something writes, which \
-                 holds one type for every reader: give {b} a type that holds every {v}"
-            ),
-            (Holder::Instance(b), _) => format_compact!(
-                ", that of {b}, a binding outside its let holding a function that is \
-                 one instance, as a call's result is: write a lambda over variables of \
-                 its own in that function's place"
-            ),
-            (Holder::Lambda, _) => format_compact!(
-                ", that of a binding outside its let: give that binding a type that \
-                 holds every {v}"
-            ),
-            (Holder::NoLambda, true) => {
-                format_compact!(": make the method a lambda over variables of its own")
-            }
-            (Holder::NoLambda, false) => format_compact!(
-                ": its value is neither a lambda nor, with no annotation, a generic \
-                 binding's read, so no call copies its types; make the method a \
-                 lambda over variables of its own"
-            ),
-        }
-    })
-}
+// CR claude for claude: [bug/medium] When the method returns what the shared
+// binding holds, the hint "give {b} a type that holds every {v}" cannot work.
+// Examples are `|s, x| k(s, x)` over a written `k`, and `st.k(x)` over `{k: |x| { y
+// <- x; y }}`. With `y: Any` the check refuses again: "'a: unbound does not contain
+// Any". lang::traits::method_over_a_written_lambda_names_it,
+// method_over_a_struct_of_lambdas_names_what_they_write and
+// method_over_a_struct_of_a_named_helper_names_what_it_writes pin this hint, and
+// method_handing_a_written_lambda_its_argument_annotated had to change the method
+// body too. Give the binding hint only where the method does not return the
+// binding's value. Otherwise say the method returns one type for every call, so it
+// should return what the call passed or the method should be declared at one type.
+// Pin a passing program for each of these refusals. module::check_val's `give {b} a
+// type` arms carry the same hint. probe:
+// design/review-2026-11-16/repro/tests-traits-b-remedy-does-not-pass.sh
+// (tests-traits-b-01)
+// 2026-11-18 claude: On bounds-spike the old method check (implements, hold_paired
+// and its 'give {b} a type' hints) is deleted with the old check; a method is held
+// to its declaration by fits_declared, whose refusal does not give that hint. The
+// fixtures named here pass by their bounds.manifest lines. Re-probe the wording
+// under the new check before closing.
+
+// CR claude for claude: [readability/low] When a method's value reads a binding
+// still undecided at the impl (`let h = never(); impl T for i64 { let m = h };
+// h <- ..`), `implemented` is an open cell. The leaf is then "'_8187 is not a
+// function": a generated variable, and false, since h is a function. Annotating
+// `h` makes it check, but nothing names `h`. For an unbound cell, refuse naming
+// the read binding as undecided here and to annotate it, as
+// callsite::undecided_binds words it. Pin that leaf in
+// lang::traits::method_value_read_of_an_undecided_binding_is_refused, which
+// today pins only the told note. probe:
+// design/review-2026-11-16/repro/tests-traits-b-undecided-method-read.sh
+// (tests-traits-b-04)
+// 2026-11-18 claude: On bounds-spike the old method check (implements, where
+// this leaf was made) is deleted with the old check; a method is held to its
+// declaration by fits_declared. Re-probe what the refusal says now for an
+// undecided method read.
 
 /// Under a check by bounds, whether a method's body, whose binding holds
 /// the scheme `made`, is the `declared` signature for whatever each of the
@@ -186,22 +121,6 @@ fn implements<R: Rt>(
 /// body's check held as constants are the scheme's from here on.
 fn fits_declared<R: Rt>(ctx: &CompileCtx<R>, made: &Type, declared: &Type) -> Result<()> {
     bounds::fits(&ctx.env, made, declared, current_level())
-}
-
-/// [`check_method_return`] of a method [`implements`] held to `declared`.
-fn returns_declared<R: Rt>(
-    ctx: &mut CompileCtx<R>,
-    top_id: ExprId,
-    declared: &FnType,
-    implemented: &Type,
-) -> Result<()> {
-    match implemented.with_deref(|t| match t {
-        Some(Type::Fn(ft)) => Some(ft.clone()),
-        _ => None,
-    }) {
-        Some(ft) => check_method_return(ctx, top_id, declared, &ft),
-        None => Ok(()),
-    }
 }
 
 /// A trait method as the trait declares it: its signature
@@ -809,50 +728,18 @@ impl<R: Rt> Update<R> for Trait<R> {
         wrap!(self.defaults, self.defaults.typecheck0(ctx))?;
         drop(declared);
         let Some(record) = ctx.env.trait_def(self.def.id) else { return Ok(()) };
-        if bounds::active() {
-            for m in record.methods.iter() {
-                let Some(id) = m.default else { continue };
-                let Some(bind) = ctx.env.by_id.get(&id) else { continue };
-                let declared = Type::Fn(m.typ.clone());
-                fits_declared(ctx, &bind.typ.clone(), &declared).map_err(|e| {
-                    let told = format_compact!(
-                        "the default {} of trait {} does not implement the declared {declared}",
-                        m.name,
-                        self.def.name
-                    );
-                    Told::over(e, &told)
-                })?
-            }
-            return Ok(());
-        }
-        // every written name in a method's signature must name something by
-        // the check's end, and it writes no union of two of its variables
-        for m in record.methods.iter() {
-            let mut union =
-                |u: &Type| match VariableUnion::of(u, &|tv| &*tv.name != "self") {
-                    None => Ok(()),
-                    Some(e) => Err(anyhow!("trait method {}: {e}", m.name)),
-                };
-            let t = Type::Fn(m.typ.clone());
-            crate::defer_unresolved_names(ctx, &t, &self.spec, Some(&mut union))?;
-        }
         for m in record.methods.iter() {
             let Some(id) = m.default else { continue };
             let Some(bind) = ctx.env.by_id.get(&id) else { continue };
-            let implemented = bind.typ.clone();
-            let declared = m.typ.reset_tvars();
-            let reads = || self.default_reads_binding(&m.name);
-            implements(ctx, &declared, &implemented, id, reads).map_err(|e| {
+            let declared = Type::Fn(m.typ.clone());
+            fits_declared(ctx, &bind.typ.clone(), &declared).map_err(|e| {
                 let told = format_compact!(
                     "the default {} of trait {} does not implement the declared {declared}",
                     m.name,
                     self.def.name
                 );
                 Told::over(e, &told)
-            })?;
-            returns_declared(ctx, self.spec.id, &declared, &implemented).with_context(
-                || format!("in the default {} of trait {}", m.name, self.def.name),
-            )?;
+            })?
         }
         Ok(())
     }
@@ -1388,12 +1275,6 @@ impl<R: Rt> Impl<R> {
         }
     }
 
-    /// Whether method `name` took its value's type: it writes no
-    /// annotation and [`signature_of`] gave it none.
-    fn method_reads_binding(&self, name: &str) -> bool {
-        self.unannotated_method(name, true)
-    }
-
     /// Whether method `name` took the declared signature as its
     /// annotation ([`signature_of`]).
     fn method_took_declared(&self, name: &str) -> bool {
@@ -1510,33 +1391,11 @@ impl<R: Rt> Update<R> for Impl<R> {
         };
         wrap!(self.body, self.body.typecheck0(ctx).map_err(|e| self.method_written(e)))?;
         drop(declared);
-        if bounds::active() {
-            for d in self.trait_def.methods.iter() {
-                let Some(id) = self.def.methods.get(d.name.as_str()) else { continue };
-                let Some(bind) = ctx.env.by_id.get(id) else { continue };
-                let declared =
-                    Type::Fn(Arc::new(method_sig_at(&d.typ, &self.def.target)));
-                fits_declared(ctx, &bind.typ.clone(), &declared).map_err(|e| {
-                    let told = format_compact!(
-                        "method {} of impl {} for {} does not implement the declared {}",
-                        d.name,
-                        self.trait_def.name,
-                        self.def.target,
-                        declared.resolve_tvars()
-                    );
-                    Told::over(e, &told)
-                })?
-            }
-            return Ok(());
-        }
-        // a user-annotated method must still fit the declared signature
         for d in self.trait_def.methods.iter() {
             let Some(id) = self.def.methods.get(d.name.as_str()) else { continue };
             let Some(bind) = ctx.env.by_id.get(id) else { continue };
-            let implemented = bind.typ.clone();
-            let declared = method_sig_at(&d.typ, &self.def.target);
-            let reads = || self.method_reads_binding(&d.name);
-            implements(ctx, &declared, &implemented, *id, reads).map_err(|e| {
+            let declared = Type::Fn(Arc::new(method_sig_at(&d.typ, &self.def.target)));
+            fits_declared(ctx, &bind.typ.clone(), &declared).map_err(|e| {
                 let told = format_compact!(
                     "method {} of impl {} for {} does not implement the declared {}",
                     d.name,
@@ -1545,33 +1404,7 @@ impl<R: Rt> Update<R> for Impl<R> {
                     declared.resolve_tvars()
                 );
                 Told::over(e, &told)
-            })?;
-            // a method that took the declared signature is that signature
-            if !self.method_took_declared(&d.name) {
-                let expected =
-                    Type::Fn(Arc::new(method_sig_at(&d.typ, &self.def.target)));
-                let _declared = hold_declared(iter::once(&expected));
-                expected.check_contains(&ctx.env, &implemented).map_err(|e| {
-                    let e = taker_refusal(&e).unwrap_or(e);
-                    let told = format_compact!(
-                        "method {} of impl {} for {} has type {}, the trait declares {}",
-                        d.name,
-                        self.trait_def.name,
-                        self.def.target,
-                        implemented.resolve_tvars(),
-                        expected.resolve_tvars()
-                    );
-                    Told::over(e, &told)
-                })?;
-            }
-            returns_declared(ctx, self.spec.id, &declared, &implemented).with_context(
-                || {
-                    format!(
-                        "in method {} of impl {} for {}",
-                        d.name, self.trait_def.name, self.def.target
-                    )
-                },
-            )?;
+            })?
         }
         Ok(())
     }

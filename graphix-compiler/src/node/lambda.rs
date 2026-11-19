@@ -3332,27 +3332,6 @@ fn picked_return(
     })
 }
 
-/// Whether `t` holds an unbound cell `f` accepts.
-fn holds_unbound(t: &Type, f: &impl Fn(&TVar) -> bool) -> bool {
-    fn go(t: &Type, f: &impl Fn(&TVar) -> bool, seen: &mut AHashSet<usize>) -> bool {
-        crate::stack::ensure_sufficient(|| match t {
-            Type::TVar(tv) => {
-                seen.insert(tv.cell_addr())
-                    && match tv.binding() {
-                        Some(b) => go(&b, f, seen),
-                        None => f(tv),
-                    }
-            }
-            t => {
-                let mut found = false;
-                t.for_each_child(&mut |c| found = found || go(c, f, seen));
-                found
-            }
-        })
-    }
-    go(t, f, &mut LPooled::take())
-}
-
 fn capture_id(
     id: BindId,
     outer: &Lexical,
@@ -3445,7 +3424,7 @@ fn check_defaults<R: Rt>(
                 compile(ctx, flags, expr.clone(), scope, ExprId::new())
             })?;
             super::bind::name_value(&mut node, true);
-            let res = judge_default(ctx, def, at, &mut node);
+            let res = judge_default(ctx, at, &mut node);
             Ok::<_, anyhow::Error>((node, res))
         })?;
         if let Err(e) = res {
@@ -3465,62 +3444,26 @@ fn check_defaults<R: Rt>(
 /// lexical environment the default compiled in.
 fn judge_default<R: Rt>(
     ctx: &mut CompileCtx<R>,
-    def: &LambdaDef<R>,
     at: &FnArgType,
     node: &mut Node<R>,
 ) -> Result<()> {
     node.typecheck0(ctx).and_then(|()| {
         let typ = node.typ().clone();
-        if bounds::active() {
-            // a parameter whose type a call decides takes the default at
-            // each call that leaves the label out, and at no other; over a
-            // declared variable, some instance of it has to
-            let some_instance = |ctx: &mut CompileCtx<R>| match at.typ.has_rigid() {
-                true => at.typ.reset_tvars().check_contains(&ctx.env, &typ),
-                false => Ok(()),
-            };
-            return match (at.label(), bounds::cells_in(&at.typ).first()) {
-                (Some(label), Some(v)) => {
-                    some_instance(ctx)?;
-                    bounds::defaulted(v, label.clone(), typ.clone(), at.typ.clone());
-                    Ok(())
-                }
-                (_, Some(_)) => some_instance(ctx),
-                (_, None) => at.typ.check_contains(&ctx.env, &typ),
-            };
-        }
-        let depth = def.level.depth();
-        let enclosing =
-            |tv: &TVar| matches!(tv.level(), Level::Def { depth: d, .. } if d < depth);
-        if at.typ.has_unbound()
-            && holds_unbound(&typ, &|tv| !tv.is_rigid() && enclosing(tv))
-        {
-            bail!(
-                "default reads an enclosing open type: annotate the factory's \
-                     parameter or give the defaulted parameter a closed type"
-            );
-        }
-        let declared = holds_unbound(&typ, &|tv| tv.is_rigid() && enclosing(tv));
-        match &at.typ {
-            // no call instantiates an enclosing definition's variable the
-            // default sits under: the default fits for every instance of it,
-            // or not at all
-            _ if declared => at.typ.check_contains(&ctx.env, &typ),
-            // each conjunct narrows the default's open cells, which
-            // may be the environment's, rather than deciding them
-            Type::TVar(tv) if !tv.is_bound() => tv
-                .cell_constraints()
-                .iter()
-                .try_for_each(|c| super::op::constrain_operand(&ctx.env, c, &typ)),
-            // a variable inside the type is checked as any instance of
-            // it: each omitting call checks the default again
-            t => {
-                let held = match t.has_unbound() {
-                    true => t.reset_tvars(),
-                    false => t.clone(),
-                };
-                held.check_contains(&ctx.env, &typ)
+        // a parameter whose type a call decides takes the default at each
+        // call that leaves the label out, and at no other; over a declared
+        // variable, some instance of it has to
+        let some_instance = |ctx: &mut CompileCtx<R>| match at.typ.has_rigid() {
+            true => at.typ.reset_tvars().check_contains(&ctx.env, &typ),
+            false => Ok(()),
+        };
+        match (at.label(), bounds::cells_in(&at.typ).first()) {
+            (Some(label), Some(v)) => {
+                some_instance(ctx)?;
+                bounds::defaulted(v, label.clone(), typ.clone(), at.typ.clone());
+                Ok(())
             }
+            (_, Some(_)) => some_instance(ctx),
+            (_, None) => at.typ.check_contains(&ctx.env, &typ),
         }
     })
 }

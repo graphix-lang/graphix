@@ -18,7 +18,7 @@ use crate::{
         ImageBuf,
         nodes::{NodeTag, decode_node, put_tag},
     },
-    typ::{Bound, NakedPrefix, TVar, Type, bounds, tvar::require_body_bounds},
+    typ::{Bound, NakedPrefix, Type},
     wrap,
 };
 use anyhow::{Result, bail};
@@ -27,7 +27,6 @@ use enumflags2::BitFlags;
 use immutable_chunkmap::map::Map as CMap;
 use netidx_core::pack::{Pack, PackError, encode_varint};
 use netidx_value::Value;
-use poolshark::local::LPooled;
 use triomphe::Arc;
 
 defetyp!(ERR, ERR_TAG, "MapKeyError", "Error<`{}(string)>");
@@ -170,62 +169,17 @@ impl<R: Rt> Map<R> {
         if !check {
             return Ok(());
         }
-        if bounds::active() {
-            // the keys flow into one cell and the values into another,
-            // each of which may join what it takes
-            let Type::Map(m) = &self.typ else { bail!("BUG: a map literal's type") };
-            // a key has an order
-            if let Type::TVar(key) = &m.key {
-                super::solving(|s| s.declare(key, Type::Bound(Bound::Ordered)))
-            }
-            for (k, v) in self.entries() {
-                wrap!(k, m.key.check_contains(&ctx.env, k.typ()))?;
-                wrap!(v, m.value.check_contains(&ctx.env, v.typ()))?
-            }
-            return Ok(());
+        // the keys flow into one cell and the values into another,
+        // each of which may join what it takes
+        let Type::Map(m) = &self.typ else { bail!("BUG: a map literal's type") };
+        // a key has an order
+        if let Type::TVar(key) = &m.key {
+            super::solving(|s| s.declare(key, Type::Bound(Bound::Ordered)))
         }
-        let bottom = Type::Bottom;
-        let mut kts: LPooled<Vec<&Type>> = LPooled::take();
-        let mut vts: LPooled<Vec<&Type>> = LPooled::take();
-        kts.push(&bottom);
-        vts.push(&bottom);
         for (k, v) in self.entries() {
-            kts.push(k.typ());
-            vts.push(v.typ());
+            wrap!(k, m.key.check_contains(&ctx.env, k.typ()))?;
+            wrap!(v, m.value.check_contains(&ctx.env, v.typ()))?
         }
-        let ktype = wrap!(self, Type::union(&ctx.env, &kts))?;
-        wrap!(
-            self,
-            require_body_bounds(&ctx.env, &[Type::Bound(Bound::Ordered)], &ktype)
-        )?;
-        let vtype = wrap!(self, super::array::element_union(&ctx.env, &vts))?;
-        let bound = match &self.typ {
-            Type::Map(m) => {
-                let shared = Arc::count(m) > 1;
-                super::array::bind_part(&m.key, shared, &ktype)
-                    && super::array::bind_part(&m.value, shared, &vtype)
-            }
-            _ => false,
-        };
-        if !bound {
-            let rtype = Type::map(ktype, vtype);
-            self.typ.check_contains(&ctx.env, &rtype).map_err(|e| {
-                match (&self.typ, &rtype) {
-                    (Type::Map(m), Type::Map(r)) => TVar::refusal_over(
-                        &m.value,
-                        &r.value,
-                        TVar::refusal_over(&m.key, &r.key, e),
-                    ),
-                    _ => e,
-                }
-            })?;
-        }
-        let judgment = crate::PendingSettle::Discernible {
-            typ: self.typ.clone(),
-            what: crate::Discerned::Keys,
-            spec: self.spec.clone(),
-        };
-        super::defer_judgment(ctx, judgment);
         Ok(())
     }
 }

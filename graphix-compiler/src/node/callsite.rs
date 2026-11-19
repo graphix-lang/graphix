@@ -347,20 +347,6 @@ fn checked_default<R: Rt>(
         }
         None if judged => Ok(()),
         Some(t) => {
-            // the signature's variables are a copy's, held rigid, which a
-            // cell every use shares must not meet; a label the signature
-            // hides holds the callee's own, which a call picks with it
-            if let Judge::Check(Narrowing::Method) = judge
-                && t.has_rigid()
-                && node.typ().has_shared_open(&ctx.rec_defs)
-            {
-                let note = undecided_binds(ctx, &node, "here")
-                    .unwrap_or(CompactString::const_new("annotate the binding it reads"));
-                bail!(
-                    "the declared #{name} holds a variable each call picks, and \
-                     this default's type is not decided: {note}"
-                )
-            }
             match join {
                 Some(join) => {
                     let undecided = typ
@@ -475,7 +461,6 @@ fn judge_hidden_defaults<R: Rt>(
                 Some(value),
                 Judge::Check(match narrowing {
                     Narrowing::Constructed => Narrowing::Constructed,
-                    Narrowing::Method => Narrowing::Method,
                     Narrowing::Site
                     | Narrowing::Written
                     | Narrowing::Copy
@@ -486,8 +471,7 @@ fn judge_hidden_defaults<R: Rt>(
                     Narrowing::Site
                     | Narrowing::Written
                     | Narrowing::Copy
-                    | Narrowing::Instance
-                    | Narrowing::Method => None,
+                    | Narrowing::Instance => None,
                 },
             );
             ctx.leave_default(f.id, name);
@@ -638,11 +622,6 @@ pub(crate) enum Narrowing {
     /// definition's verdict, given before the body's calls decided the
     /// declaration. One that names none is judged as it stands.
     Instance,
-    /// A method's declared return ([`check_method_return`]): a call reads
-    /// the trait's signature, which names no implementation's function,
-    /// so every function is judged as the signature stands, its
-    /// variables rigid, and a default under one of them is decided.
-    Method,
 }
 
 impl Narrowing {
@@ -660,12 +639,6 @@ impl Narrowing {
                 "a function read through a typedef's function type is not known \
                  where it is called, so this default must fit the declared type as \
                  it is written: write the default's type in the declared type",
-            ),
-            Narrowing::Method => Some(
-                "a method is called through its trait's signature, which names no \
-                 implementation's function, so this default must fit the declared \
-                 return type as it is written: write the default's type in the \
-                 trait's signature",
             ),
         }
     }
@@ -705,37 +678,6 @@ pub(crate) fn check_hidden_defaults<R: Rt>(
     let walk =
         &mut HiddenWalk { narrowing, visited: LPooled::take(), copies: LPooled::take() };
     hidden_defaults_at(ctx, flags, scope, top_id, declared, value, 0, walk)
-}
-
-/// The defaults of the functions a method's value returns, judged where
-/// the method is held to its `declared` signature: against the declared
-/// return as it is written, every variable of the signature rigid, and
-/// on copies of both, which decide nothing of the method's own type or
-/// of its impl's. The method's own defaults are left to its calls.
-pub(crate) fn check_method_return<R: Rt>(
-    ctx: &mut CompileCtx<R>,
-    top_id: ExprId,
-    declared: &FnType,
-    implemented: &FnType,
-) -> Result<()> {
-    if !may_hold_fn(&declared.rtype, &mut LPooled::take())
-        || !holds_defaulted(ctx, &implemented.rtype, &mut LPooled::take())
-    {
-        return Ok(());
-    }
-    let declared = declared.reset_tvars();
-    let mut own: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-    declared.collect_tvars_through_bounds(&mut own);
-    let _gates: LPooled<Vec<RigidGate>> =
-        own.values().map(|tv| tv.open_rigid()).collect();
-    let value = implemented.rtype.instantiate_with(&mut LPooled::take(), &ctx.rec_defs);
-    let walk = &mut HiddenWalk {
-        narrowing: Narrowing::Method,
-        visited: LPooled::take(),
-        copies: LPooled::take(),
-    };
-    let (flags, scope) = (BitFlags::empty(), Scope::root());
-    hidden_defaults_at(ctx, flags, &scope, top_id, &declared.rtype, &value, 0, walk)
 }
 
 /// Whether a reader of `formal` finds every definition `value` may be:

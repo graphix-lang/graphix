@@ -2,11 +2,8 @@ use super::{
     VarRead, WakeBit, audit_quiet,
     callsite::{Narrowing, check_hidden_defaults},
     coretraits::with_hooks,
-    data::{struct_field_types, tuple_field_types},
     lambda::{DefBody, DefOrigin, LambdaDef, MethodCells},
-    pattern::{
-        CompiledAbstracts, Holder, StructPatternNode, members_refusal, rigid_refusal,
-    },
+    pattern::{Holder, StructPatternNode, members_refusal, rigid_refusal},
     place::{self, Path, RefPath},
     read_var_by,
     select::lower_view,
@@ -1003,6 +1000,20 @@ impl<R: Rt> Bind<R> {
         let ExprKind::Bind(b) = &self.spec.kind else {
             bail!("BUG: a let without its expression")
         };
+        // CR claude for claude: [bug/low] The deferred check reaches only
+        // annotations the let's compile got through. A bare `let x: T = 1` above
+        // `trait T` is refused by `Bind::compile`, before the block's names are
+        // registered, as "undefined type T", on the line that declares T; `let x:
+        // (T, i64)` gets "trait T used as a type above its declaration", and a
+        // `type T` declared below is in force above. Let the compile leave a name
+        // it cannot resolve to this check, which knows by then that it is a trait,
+        // and pin the bare form beside lang::types::annotation_above_its_trait.
+        // probe:
+        // design/review-2026-11-16/repro/c-bind-bare-trait-annotation-undefined-type.sh
+        // (c-bind-09)
+        // 2026-11-18 claude: Moved with the deferred-name check into
+        // Bind::check_by_bounds, where the check by bounds runs it; the old typecheck0
+        // path is deleted.
         if b.typ.is_some() {
             crate::defer_written_names(ctx, &self.typ, &self.spec)?;
         }
@@ -1487,45 +1498,7 @@ impl<R: Rt> Update<R> for Bind<R> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
-        if bounds::active() {
-            return self.check_by_bounds(ctx);
-        }
-        if let ExprKind::Bind(b) = &self.spec.kind
-            && b.typ.is_some()
-        {
-            // CR claude for claude: [bug/low] The deferred check reaches only
-            // annotations the let's compile got through. A bare `let x: T = 1` above
-            // `trait T` is refused by `Bind::compile`, before the block's names are
-            // registered, as "undefined type T", on the line that declares T; `let x:
-            // (T, i64)` gets "trait T used as a type above its declaration", and a
-            // `type T` declared below is in force above. Let the compile leave a name
-            // it cannot resolve to this check, which knows by then that it is a trait,
-            // and pin the bare form beside lang::types::annotation_above_its_trait.
-            // probe:
-            // design/review-2026-11-16/repro/c-bind-bare-trait-annotation-undefined-type.sh
-            // (c-bind-09)
-            crate::defer_written_names(ctx, &self.typ, &self.spec)?;
-        }
-        // every write compiled before this check is a target by now, the
-        // ones no block's walk found included: the value's reads are its own,
-        // and a written single name's are one instance of what they read
-        if written(ctx, &self.pattern) {
-            self.reads = ValueReads::Own;
-            if self.pattern.single_bind_id().is_some() {
-                mark_value(&mut self.node, true, Naming::Unnamed)
-            }
-        }
-        let node = &mut self.node;
-        self.reads.within(ctx, |ctx| wrap!(node, node.typecheck0(ctx)))?;
-        if let ExprKind::Bind(b) = &self.spec.kind {
-            let ids = CompiledAbstracts::new(&self.pattern, &b.pattern);
-            let ids = |p: &expr::StructurePattern| ids.get(p);
-            refuse_inside_rigid(&ctx.env, &ids, &self.spec, &b.pattern, &self.typ)?;
-        }
-        self.check_value(ctx, Narrowing::Copy)?;
-        self.complete_deferred(ctx)?;
-        self.publish(ctx);
-        Ok(())
+        self.check_by_bounds(ctx)
     }
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
@@ -2648,23 +2621,6 @@ impl<R: Rt> Place<R> {
         spec: &Expr,
         writable: bool,
     ) -> Result<Type> {
-        let one = |cur: &Type, ts: LPooled<Vec<Type>>| -> Result<Type> {
-            match ts.iter().skip(1).find(|t| **t != ts[0]) {
-                Some(other) if writable => {
-                    format_with_flags(PrintFlag::DerefTVars, || {
-                        bail!(
-                            "a writable reference to a field of {cur} would write {} into a \
-                         member whose field is {other}: the members' fields differ",
-                            ts[0]
-                        )
-                    })
-                }
-                _ => {
-                    let ts: LPooled<Vec<&Type>> = ts.iter().collect();
-                    Type::union(&ctx.env, &ts)
-                }
-            }
-        };
         let mut cur = self.root.typ().clone();
         for step in &self.steps {
             cur = match step {
@@ -2681,15 +2637,25 @@ impl<R: Rt> Place<R> {
                     kt.check_contains(&ctx.env, k.typ())?;
                     vt
                 }
-                PlaceStep::Tuple(i) if bounds::active() => {
+                PlaceStep::Tuple(i) => {
                     let out = Type::empty_tvar();
                     let (out_, from) = (out.clone(), self.scope.clone());
                     let read = Use::Index { i: *i, out: out_, write: writable, from };
                     solving(|s| s.watch(&ctx.env, &cur, read))?;
                     out
                 }
-                PlaceStep::Field(name) if bounds::active() => {
+                PlaceStep::Field(name) => {
                     let out = Type::empty_tvar();
+                    // the language server shows the field at the read's
+                    // type, which the check fills
+                    if ctx.env.ide.is_lsp() {
+                        ctx.env.push_field_ref(FieldRefSite {
+                            pos: name.pos_or(spec.pos),
+                            ori: spec.ori.clone(),
+                            name: name.name.clone(),
+                            typ: out.clone(),
+                        });
+                    }
                     let read = Use::Field {
                         field: name.name.clone(),
                         out: out.clone(),
@@ -2697,22 +2663,6 @@ impl<R: Rt> Place<R> {
                     };
                     solving(|s| s.watch(&ctx.env, &cur, read))?;
                     out
-                }
-                PlaceStep::Tuple(i) => {
-                    one(&cur, tuple_field_types(ctx, &self.scope, &cur, *i)?)?
-                }
-                PlaceStep::Field(name) => {
-                    let (_, ts) = struct_field_types(ctx, &cur, &name.name)?;
-                    let t = one(&cur, ts)?;
-                    if ctx.env.ide.is_lsp() {
-                        ctx.env.push_field_ref(FieldRefSite {
-                            pos: name.pos_or(spec.pos),
-                            ori: spec.ori.clone(),
-                            name: name.name.clone(),
-                            typ: t.clone(),
-                        });
-                    }
-                    t
                 }
             };
         }
@@ -3547,73 +3497,23 @@ impl<R: Rt> ByRef<R> {
         let Type::ByRef(mutability, cell) = &self.typ else {
             bail!("BUG: a reference not typed as one")
         };
-        if bounds::active() {
-            // a reference to a value of the referent's type: a writable
-            // one of exactly that type. A writable reference to an
-            // expression no binding names is to a cell of its own, which
-            // the expression's values flow into and its uses decide
-            let t = match &self.referent {
-                Referent::Channel(n)
-                    if *mutability == Mutability::Mut
-                        && !(&**n as &dyn Any).is::<Ref>() =>
-                {
-                    return wrap!(self, cell.check_contains(&ctx.env, n.typ()));
-                }
-                Referent::Channel(n) => n.typ().clone(),
-                Referent::Place(p) => wrap!(
-                    self,
-                    p.elem_type(ctx, &self.spec, *mutability == Mutability::Mut)
-                )?,
-            };
-            let rtype = Type::ByRef(*mutability, Arc::new(t));
-            return wrap!(self, self.typ.check_contains(&ctx.env, &rtype));
-        }
+        // a reference to a value of the referent's type: a writable
+        // one of exactly that type. A writable reference to an
+        // expression no binding names is to a cell of its own, which
+        // the expression's values flow into and its uses decide
         let t = match &self.referent {
-            // A writable reference to a fresh cell only it reaches: the
-            // initializer bounds the cell from below, the uses decide it,
-            // and one nothing decides settles to the initializer's type.
             Referent::Channel(n)
                 if *mutability == Mutability::Mut && !(&**n as &dyn Any).is::<Ref>() =>
             {
-                wrap!(self, cell.check_contains_lower(&ctx.env, n.typ()))?;
-                if let Type::TVar(tv) = &**cell {
-                    super::defer_settle(ctx, || crate::PendingSettle::Operand {
-                        tv: tv.clone(),
-                        spec: self.spec.clone(),
-                    })
-                }
-                return Ok(());
+                return wrap!(self, cell.check_contains(&ctx.env, n.typ()));
             }
             Referent::Channel(n) => n.typ().clone(),
             Referent::Place(p) => {
-                // a writable place through `*r` writes through `r`
-                if *mutability == Mutability::Mut
-                    && let Some(d) = (&*p.root as &dyn Any).downcast_ref::<Deref<R>>()
-                {
-                    let through =
-                        Type::ByRef(Mutability::Mut, Arc::new(Type::empty_tvar()));
-                    wrap!(self, through.check_contains(&ctx.env, d.child.typ()))?;
-                }
-                let t = wrap!(
-                    self,
-                    p.elem_type(ctx, &self.spec, *mutability == Mutability::Mut)
-                )?;
-                if *mutability == Mutability::Mut
-                    && let Some(r) = (&*p.root as &dyn Any).downcast_ref::<Ref>()
-                    && narrows_generic(ctx, r)
-                    && crate::holds_generic(&t)
-                {
-                    return Err(narrowing_refusal(ctx, r).at(&*self.spec));
-                }
-                t
+                wrap!(self, p.elem_type(ctx, &self.spec, *mutability == Mutability::Mut))?
             }
         };
-        if cell.shares_content(&t) || super::array::bind_element(cell, &t) {
-            return Ok(());
-        }
-        let rtype = Type::ByRef(*mutability, Arc::new(t.clone()));
-        let checked = self.typ.check_contains(&ctx.env, &rtype);
-        wrap!(self, checked.map_err(|e| TVar::refusal_over(cell, &t, e)))
+        let rtype = Type::ByRef(*mutability, Arc::new(t));
+        wrap!(self, self.typ.check_contains(&ctx.env, &rtype))
     }
 }
 
@@ -3628,20 +3528,7 @@ impl<R: Rt> Deref<R> {
         if !check {
             return Ok(());
         }
-        if bounds::active() {
-            let read = Type::ByRef(Mutability::Shared, Arc::new(self.typ.clone()));
-            return wrap!(self, read.check_contains(&ctx.env, self.child.typ()));
-        }
-        let targets = super::reference_targets(&ctx.env, self.child.typ())?;
-        let Some(targets) = targets else {
-            bail!(
-                "dereferencing needs the reference's type known here: annotate \
-                 the binding"
-            );
-        };
-        let types: LPooled<Vec<&Type>> = targets.iter().map(|(_, t)| t).collect();
-        let typ = Type::union(&ctx.env, &types)?;
-        wrap!(self, self.typ.check_contains(&ctx.env, &typ))?;
-        Ok(())
+        let read = Type::ByRef(Mutability::Shared, Arc::new(self.typ.clone()));
+        wrap!(self, read.check_contains(&ctx.env, self.child.typ()))
     }
 }

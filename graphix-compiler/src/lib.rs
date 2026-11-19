@@ -3165,10 +3165,6 @@ pub(crate) enum PendingSettle {
 
 /// What a [`PendingSettle::Discernible`] judges.
 pub(crate) enum Discerned {
-    /// A compared type: ordered by `<` and the like, else by `==`/`!=`.
-    Compared {
-        ordered: bool,
-    },
     Keys,
     /// A call's cell with the bound (`Discernible` or `Ordered`).
     Bound(typ::TVar, Type),
@@ -3587,9 +3583,6 @@ fn unheld_member(
 
 fn discernible(env: &Env, typ: &Type, what: &Discerned) -> Result<()> {
     let found = match what {
-        Discerned::Compared { ordered } => {
-            typ.indiscernible(env, Open::Unknown, *ordered)
-        }
         Discerned::Bound(_, bound) => {
             typ.indiscernible(env, Open::Unknown, *bound == Type::Bound(Bound::Ordered))
         }
@@ -4887,11 +4880,6 @@ fn compile_top<R: Rt>(
         }
     };
     info!("compile time {:?}", st.elapsed());
-    // the input's value is what it names, as a `let` names its value;
-    // under a check by bounds it is one value, as any expression is
-    if !typ::bounds::active() {
-        node::bind::name_value(&mut node, true);
-    }
     if let Err(err) = check_pending_imports(ctx) {
         let err = input.refused(ctx, err);
         return Err(abandon_stmt(ctx, node, saved, err));

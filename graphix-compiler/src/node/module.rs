@@ -1,6 +1,6 @@
 use crate::{
-    BindId, CFlag, CompileCtx, ExecCtx, LambdaId, Node, Notify, PendingImport, PrintFlag,
-    Refs, Rt, Saved, Scope, StaticCallees, Tag, TagValue, Update, View,
+    BindId, CFlag, CompileCtx, ExecCtx, Node, Notify, PendingImport, PrintFlag, Refs, Rt,
+    Saved, Scope, StaticCallees, Tag, TagValue, Update, View,
     compiler::compile,
     env::{
         Env, Glob, ImplDef, ImportEntry, Lexical, LoadedBody, Map, TraitDef, Unsettled,
@@ -18,19 +18,14 @@ use crate::{
         self, ImageBuf,
         nodes::{NodeTag, decode_node, decode_nodes, encode_nodes, put_tag},
     },
-    node::{
-        self, Nop, Runs,
-        bind::Bind,
-        lambda::{LambdaDef, place_order},
-        traits,
-    },
+    node::{self, Nop, Runs, bind::Bind, traits},
     profile::{self, Phase},
     shared_map::SharedMap,
     stack::ensure_sufficient,
     typ::{
-        AmbiguousMember, Brief, FnArgKind, FnArgType, FnType, SigMatch, TVar, Type,
-        UnresolvableRef, Written, bounds,
-        settle::{DataPositions, VariableUnion},
+        Brief, FnArgKind, FnArgType, FnType, TVar, Type, UnresolvableRef, Written,
+        bounds,
+        settle::VariableUnion,
         tvar::{ForeignWrite, InTask, OwnWrites, TaskId, new_task, settled_note},
     },
     wrap,
@@ -46,7 +41,6 @@ use netidx_core::{
 };
 use netidx_value::{Typ, Value};
 use poolshark::local::LPooled;
-use smallvec::SmallVec;
 use std::{
     fmt::Write,
     mem,
@@ -575,38 +569,6 @@ fn impl_sig(target: &Type, params: &[TVar]) -> FnType {
     }
 }
 
-/// A use through `declared`, a val's or a method's declaration, builds its
-/// instance by holding the implementation's own type at what the use
-/// picked: where that would choose between two undecided members of a
-/// union the implementation holds, whatever the use picks, the build would
-/// refuse what the use's check, which reads `declared` alone, accepts.
-/// Judged over copies as the build holds an instance
-/// ([`FnType::held_at`]), the declaration's variables held rigid.
-pub(crate) fn instance_picks_no_member(
-    env: &Env,
-    declared: &Type,
-    implemented: &Type,
-) -> Result<()> {
-    if !implemented.may_choose_member(env) {
-        return Ok(());
-    }
-    let held = declared.reset_tvars();
-    let mut tvs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-    held.collect_tvars(&mut tvs);
-    let _gates: LPooled<Vec<_>> = tvs.values().map(|tv| tv.open_rigid()).collect();
-    let fits = |placed: bool| {
-        let own = implemented.reset_tvars();
-        if placed {
-            own.place_cells(env, &held)
-        }
-        held.check_contains(env, &own)
-    };
-    match fits(false).or_else(|_| fits(true)) {
-        Err(e) if e.downcast_ref::<AmbiguousMember>().is_some() => Err(e),
-        _ => Ok(()),
-    }
-}
-
 /// Refuse an implementation of `val name` whose type `typ` is not the
 /// declared `declared` ([`hold_paired`]); `generalized` says its binding is
 /// generic in the cells its own definitions own, and `holder` what holds a
@@ -678,241 +640,6 @@ fn check_val(env: &Env, name: &str, declared: &Type, typ: &Type) -> Result<()> {
     // it fits the declaration, its variables constants
     let outer = crate::typ::tvar::current_level();
     crate::typ::bounds::fits(env, typ, declared, outer).map_err(refused)
-}
-
-/// What holds a cell of an implementation's binding outside its value.
-pub(crate) enum Holder {
-    /// A binding the lambdas the implementation holds capture, by name.
-    Captured(CompactString),
-    /// A binding the lambdas the implementation holds capture that holds
-    /// a function and that something writes, by name: no read copies its
-    /// type.
-    Written(CompactString),
-    /// A binding the lambdas the implementation holds capture that holds
-    /// the cell only in functions that are one instance (a call's result),
-    /// by name: no lambda they hold captures what holds it.
-    Instance(CompactString),
-    /// The implementation is a lambda, and no binding it captures holds
-    /// the cell.
-    Lambda,
-    /// The implementation is no lambda, and no binding the lambdas it
-    /// holds capture holds the cell.
-    NoLambda,
-}
-
-impl Holder {
-    /// What holds `tv` for the implementation's binding `id`: a binding the
-    /// lambdas it holds capture, or the lambdas those capture, whose type
-    /// reaches the cell, the binding an annotation can widen. One whose own
-    /// type is the cell comes first, then one that holds it in data, then
-    /// one that holds a function and that something writes, then one that
-    /// holds it only in functions no lambda of which captures what holds
-    /// it (one instance, a call's result, which a lambda in its place makes
-    /// generic where no annotation does), then one that holds it in
-    /// lambdas it holds as data (a struct of them), which are followed to
-    /// what they capture; of two alike the nearer, then the one the program
-    /// writes first: a binding built from another is written after it. A
-    /// written binding's lambdas are not followed: every read of it shares
-    /// its type, whatever they capture.
-    pub(crate) fn of<R: Rt>(ctx: &CompileCtx<R>, id: BindId, tv: &TVar) -> Self {
-        use crate::env::Bind as Held;
-        #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-        enum Holds {
-            Itself,
-            InData,
-            Written,
-            InInstance,
-            InLambdas,
-        }
-        let mut level: SmallVec<[&LambdaDef<R>; 4]> = SmallVec::new();
-        held_lambdas(ctx, id, &mut level);
-        if level.is_empty() {
-            return Self::NoLambda;
-        }
-        let written_before = |b: &Held, f: &Held| {
-            place_order((&b.ori, b.pos), (&f.ori, f.pos)).then(b.id.cmp(&f.id)).is_lt()
-        };
-        let reaches = |t: &Type| {
-            let mut reached: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-            t.reached_cells(&mut reached);
-            reached.contains_key(&tv.cell_addr())
-        };
-        let in_data = |t: &Type| {
-            let mut data = false;
-            DataPositions::new(&ctx.env).walk(t, Default::default(), &mut |c, at| {
-                data |= !at.function && c.same_cell(tv)
-            });
-            data
-        };
-        let leads_on = |def: &LambdaDef<R>| {
-            let mut leads = false;
-            def.captured_ids(&mut |id| {
-                leads |= ctx.env.by_id.get(&id).is_some_and(|b| reaches(&b.typ))
-            });
-            leads
-        };
-        let mut seen: LPooled<AHashSet<BindId>> = LPooled::take();
-        let mut followed: LPooled<AHashSet<LambdaId>> = LPooled::take();
-        let mut best: Option<((Holds, usize), &Held)> = None;
-        let mut next: SmallVec<[&LambdaDef<R>; 4]> = SmallVec::new();
-        let mut depth = 0;
-        while !level.is_empty() {
-            for def in level.drain(..).filter(|d| followed.insert(d.id)) {
-                def.captured_ids(&mut |id| {
-                    let Some(b) = ctx.env.by_id.get(&id) else { return };
-                    if !seen.insert(id) || !reaches(&b.typ) {
-                        return;
-                    }
-                    let mut holds_fn = false;
-                    b.typ.each_held_fn(&mut |_| holds_fn = true);
-                    let how = if holds_fn && ctx.connect_targets.contains(&id) {
-                        Holds::Written
-                    } else {
-                        let before = next.len();
-                        held_lambdas(ctx, id, &mut next);
-                        if next.len() > before && held_lambda(ctx, id).is_some() {
-                            return;
-                        }
-                        match &b.typ {
-                            Type::TVar(t) if t.stands_for() == tv.stands_for() => {
-                                Holds::Itself
-                            }
-                            t if in_data(t) => Holds::InData,
-                            _ if next[before..].iter().any(|d| leads_on(d)) => {
-                                Holds::InLambdas
-                            }
-                            _ => Holds::InInstance,
-                        }
-                    };
-                    let rank = (how, depth);
-                    if best.is_none_or(|(r, f)| {
-                        rank < r || (rank == r && written_before(b, f))
-                    }) {
-                        best = Some((rank, b))
-                    }
-                });
-            }
-            if let Some(((Holds::Itself, _), b)) = best {
-                return Self::Captured(b.name.clone());
-            }
-            mem::swap(&mut level, &mut next);
-            depth += 1;
-        }
-        match (best, held_lambda(ctx, id)) {
-            (Some(((Holds::Written, _), b)), _) => Self::Written(b.name.clone()),
-            (Some(((Holds::InInstance, _), b)), _) => Self::Instance(b.name.clone()),
-            (Some((_, b)), _) => Self::Captured(b.name.clone()),
-            (None, Some(_)) => Self::Lambda,
-            (None, None) => Self::NoLambda,
-        }
-    }
-}
-
-/// Hold an implementation to the declaration (a `val`, or a trait
-/// method's, `what`) that `pairs` matched it with. A cell of the
-/// implementation that is `shared`, one type all its uses share, may not
-/// stand where the declaration has a variable each use picks (`remedy`
-/// names the way out, given the cell and the variable); else the
-/// declaration decides it, as an annotation on the implementation's `let`
-/// would.
-pub(crate) fn hold_paired(
-    env: &Env,
-    what: &str,
-    pairs: &SigMatch,
-    shared: impl Fn(&TVar) -> bool,
-    remedy: impl Fn(&TVar, &TVar) -> CompactString,
-) -> Result<()> {
-    for (tv, sig) in pairs.paired() {
-        if tv.is_bound() || !shared(tv) {
-            continue;
-        }
-        if let Some(v) = free_variable(sig) {
-            let at = match sig {
-                Type::TVar(s) if s.same_cell(&v) => format_compact!("{v}, a type"),
-                sig => format_compact!("{sig}, whose {v}"),
-            };
-            bail!(
-                "where the {what} declares {at} each use picks, the implementation has \
-                 one type all uses share{}",
-                remedy(tv, &v)
-            )
-        }
-        let cell = Type::TVar(tv.clone());
-        sig.check_contains(env, &cell).and_then(|()| cell.check_contains(env, sig))?
-    }
-    Ok(())
-}
-
-/// The open cell of `t`, first by name, that no function type in `t`
-/// quantifies.
-fn free_variable(t: &Type) -> Option<TVar> {
-    let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-    t.reached_cells(&mut cells);
-    let mut quantified: LPooled<AHashSet<usize>> = LPooled::take();
-    t.each_quantifier(&mut |_, tv| {
-        quantified.insert(tv.cell_addr());
-    });
-    cells
-        .values()
-        .filter(|tv| !tv.is_bound() && !quantified.contains(&tv.cell_addr()))
-        .min_by(|a, b| a.name.cmp(&b.name))
-        .cloned()
-}
-
-/// The lambdas the binding `id` holds: its own when it is a lambda, else,
-/// where its value is data or a generic binding's read of a function, those
-/// its type's function types carry, in the order the program writes them.
-/// Any other function (a call's result) is one instance whatever the
-/// lambdas behind it capture.
-fn held_lambdas<'a, R: Rt>(
-    ctx: &'a CompileCtx<R>,
-    id: BindId,
-    out: &mut SmallVec<[&'a LambdaDef<R>; 4]>,
-) {
-    if let Some(def) = held_lambda(ctx, id) {
-        return out.push(def);
-    }
-    let Some(b) = ctx.env.by_id.get(&id) else { return };
-    if b.typ.with_deref(|t| matches!(t, Some(Type::Fn(_)))) && !generalized_impl(ctx, id)
-    {
-        return;
-    }
-    let start = out.len();
-    b.typ.each_held_fn(&mut |ft| {
-        for lid in ft.lambda_ids.ids().iter() {
-            let def =
-                ctx.lambda_defs.get(lid).and_then(|v| v.downcast_ref::<LambdaDef<R>>());
-            out.extend(def);
-        }
-    });
-    out[start..].sort_by(|a, b| a.written_order(b))
-}
-
-/// The lambda the binding `id` holds, if it holds one.
-fn held_lambda<R: Rt>(ctx: &CompileCtx<R>, id: BindId) -> Option<&LambdaDef<R>> {
-    ctx.bind_to_lambda.get(&id).and_then(|v| v.downcast_ref::<LambdaDef<R>>())
-}
-
-/// Every cell the types of the bindings captured by the lambda the binding
-/// `id` holds reach; `None` where it holds no lambda.
-pub(crate) fn captured_cells<R: Rt>(
-    ctx: &CompileCtx<R>,
-    id: BindId,
-) -> Option<LPooled<AHashMap<usize, TVar>>> {
-    let def = held_lambda(ctx, id)?;
-    let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-    def.captured_ids(&mut |id| {
-        if let Some(b) = ctx.env.by_id.get(&id) {
-            b.typ.reached_cells(&mut cells)
-        }
-    });
-    Some(cells)
-}
-
-/// Whether the implementation's binding `id` is generic in the cells its
-/// own definitions own: a generalized binding nothing writes.
-pub(crate) fn generalized_impl<R: Rt>(ctx: &CompileCtx<R>, id: BindId) -> bool {
-    ctx.env.poly_binds.contains(&id) && !ctx.connect_targets.contains(&id)
 }
 
 /// Refuse `val name: typ` where its type variable stands outside every

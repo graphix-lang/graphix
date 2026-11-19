@@ -4910,6 +4910,21 @@ impl Type {
             (Type::Ref(a), Type::Ref(b)) if a.name == b.name => {
                 each(&a.params, &b.params, seen)
             }
+            (Type::Fn(f), Type::Fn(g))
+                if f.args.len() == g.args.len()
+                    && f.vargs.is_some() == g.vargs.is_some() =>
+            {
+                let args = f.args.iter().zip(g.args.iter());
+                let ok =
+                    args.fold(true, |ok, (a, b)| a.typ.take_row_at(&b.typ, seen) & ok);
+                let vargs = match (&f.vargs, &g.vargs) {
+                    (Some(a), Some(b)) => a.take_row_at(b, seen),
+                    _ => true,
+                };
+                ok & vargs
+                    & f.rtype.take_row_at(&g.rtype, seen)
+                    & f.throws.take_row_at(&g.throws, seen)
+            }
             (t, _) => !t.has_unbound(),
         }
     }

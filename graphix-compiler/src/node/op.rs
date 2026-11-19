@@ -16,13 +16,10 @@ use crate::{
     },
     node::error::{diagnostic_site, report_failure},
     stack::ensure_sufficient,
-    typ::{
-        Bound, ContainsFlags, TVar, Type, bounds,
-        tvar::{require_body_bounds, settled_cause_note},
-    },
+    typ::{Bound, TVar, Type, bounds},
     wrap,
 };
-use anyhow::{Result, bail};
+use anyhow::Result;
 use arcstr::{ArcStr, literal};
 use compact_str::format_compact;
 use enumflags2::BitFlags;
@@ -222,32 +219,6 @@ macro_rules! gated_operands {
     }};
 }
 
-/// The one type both operands of a binary operator have, or `None`: each
-/// contains the other, probed both ways without binding (a failed binding
-/// walk cannot be undone), then committed both ways. A ⊥ operand never
-/// produces, so the other operand's type stands.
-fn operand_type<'t>(env: &Env, lt: &'t Type, rt: &'t Type) -> Result<Option<&'t Type>> {
-    let bottom = |t: &Type| t.with_deref(|t| matches!(t, Some(Type::Bottom)));
-    if bottom(rt) {
-        return Ok(Some(lt));
-    }
-    if bottom(lt) {
-        return Ok(Some(rt));
-    }
-    let probe = ContainsFlags::RigidCheck.into();
-    let commit = ContainsFlags::Commit | ContainsFlags::RigidCheck;
-    // a union of undecided members is decided by what must hold it
-    let (first, second) = match lt.holds_open_union() && !rt.holds_open_union() {
-        true => (rt, lt),
-        false => (lt, rt),
-    };
-    let one = lt.contains_with_flags(probe, env, rt)?
-        && rt.contains_with_flags(probe, env, lt)?
-        && first.contains_with_flags(commit, env, second)?
-        && second.contains_with_flags(commit, env, first)?;
-    Ok(one.then_some(lt))
-}
-
 /// Under a check by bounds, the one type both operands of an operator
 /// have: a cell each flows into and that flows into each; `singleton`
 /// where it must be a single type, as arithmetic's is.
@@ -297,38 +268,6 @@ pub(super) fn constrain_operand(env: &Env, bound: &Type, t: &Type) -> Result<()>
         Type::Set(ts) => ts.iter().try_for_each(|m| constrain_operand(env, bound, m)),
         t => bound.check_contains(env, t),
     })
-}
-
-/// The numeric primitives a value of `t` may be, through bound cells,
-/// unions and typedefs. An open cell and `Any` contribute none.
-fn numeric_members(env: &Env, t: &Type) -> Result<BitFlags<Typ>> {
-    ensure_sufficient(|| {
-        t.with_deref(|t| match t {
-            Some(Type::Primitive(p)) => Ok(*p & Typ::number()),
-            Some(Type::Set(ts)) => ts
-                .iter()
-                .try_fold(BitFlags::empty(), |acc, t| Ok(acc | numeric_members(env, t)?)),
-            Some(t @ Type::Ref(_)) => match t.lookup_ref_with(env, false)? {
-                Some(t) => numeric_members(env, &t),
-                None => Ok(BitFlags::empty()),
-            },
-            _ => Ok(BitFlags::empty()),
-        })
-    })
-}
-
-/// Operands of one type that may be two numeric types would compute by
-/// promotion: arithmetic refuses them.
-fn refuse_mixed_numeric(env: &Env, t: &Type) -> Result<()> {
-    if numeric_members(env, t)?.len() > 1 {
-        crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
-            bail!(
-                "cannot compute with values of {t}: it holds more than one numeric type (cast to one)"
-            )
-        })
-    } else {
-        Ok(())
-    }
 }
 
 macro_rules! compare_op {
@@ -396,48 +335,12 @@ macro_rules! compare_op {
         impl<R: Rt> $name<R> {
             fn typecheck_own(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
                 let (lt, rt) = (self.lhs.typ(), self.rhs.typ());
-                if bounds::active() {
-                    let holds = match $ordered {
-                        true => Bound::Ordered,
-                        false => Bound::Discernible,
-                    };
-                    wrap!(self, compared_by_bounds(&ctx.env, lt, rt, holds))?;
-                    return Ok(());
-                }
-                match wrap!(self, operand_type(&ctx.env, lt, rt))? {
-                    Some(t) => {
-                        let bound = match $ordered {
-                            true => Type::Bound(Bound::Ordered),
-                            false => Type::Bound(Bound::Discernible),
-                        };
-                        wrap!(
-                            self,
-                            require_body_bounds(&ctx.env, std::slice::from_ref(&bound), &t)
-                        )?;
-                        let judgment = crate::PendingSettle::Discernible {
-                            typ: t.clone(),
-                            what: crate::Discerned::Compared { ordered: $ordered },
-                            spec: self.spec.clone(),
-                        };
-                        super::defer_judgment(ctx, judgment);
-                        Ok(())
-                    }
-                    None => wrap!(
-                        self,
-                        $crate::format_with_flags($crate::PrintFlag::DerefTVars, || {
-                            let settled = settled_cause_note(&ctx.env, lt, rt, true);
-                            let settled = match &settled {
-                                Some(n) => format_compact!(": {n}"),
-                                None => format_compact!(""),
-                            };
-                            bail!(
-                                "cannot compare {lt} with {rt}: comparison is \
-                                 fn('a, 'a) -> bool — both operands must be one \
-                                 type{settled}"
-                            )
-                        })
-                    ),
-                }
+                let holds = match $ordered {
+                    true => Bound::Ordered,
+                    false => Bound::Discernible,
+                };
+                wrap!(self, compared_by_bounds(&ctx.env, lt, rt, holds))?;
+                Ok(())
             }
         }
     };
@@ -866,71 +769,35 @@ pub(crate) fn arith_rule(
     out: &Type,
 ) -> Result<()> {
     let checked = op.is_checked();
-    if bounds::active() {
-        let told = |e| {
-            let told = format_compact!(
-                "cannot compute with {}: arithmetic is fn<'a: Number + Singleton>(x: \
-                 'a, y: 'a) -> 'a — both operands must be one numeric type",
-                op.token()
-            );
-            Told::over(e, &told)
-        };
-        let t = same_by_bounds(env, lt, rt, Bound::Singleton).map_err(told)?;
-        Type::Primitive(Typ::number()).check_contains(env, &t).map_err(told)?;
-        return match checked {
-            true => out.check_contains(env, &bounds::union_of([t, ARITH_ERR.clone()])),
-            false => out.check_contains(env, &t),
-        };
-    }
-    // A declared `'a: Number` formal is rigid while its def gate is
-    // open: `x + f64:0.` must reject, not bind 'a.
-    let Some(t) = operand_type(env, lt, rt)? else {
-        return crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
-            // CR claude for claude: [readability/medium] "(cast one side explicitly)"
-            // never works as written: cast returns a Result, so `cast<i64>(x) + 1` over
-            // a nullable x and `cast<f64>(x) + y` for i64 + f64 are refused again with
-            // the same advice. The common case, a nullable or a Result operand (`x + 1`
-            // over `[i64, null]`, `a[1] + 1`), needs `x$`, which the message never
-            // names, and `s + 1` over a string misses the interpolation hint that
-            // string + string gets. Choose the advice from the operands: `x$`/`x?` on
-            // an operand Strip::of would take, `cast<T>(x)$` for two numeric
-            // primitives, interpolation for a string, nothing otherwise. probe:
-            // design/review-2026-11-16/repro/x-diagnostics-arith-cast-advice.sh
-            // (x-diagnostics-02)
-            bail!(
-                "cannot compute {lt} {} {rt}: arithmetic is \
-                 fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a — both operands must \
-                 be one numeric type (cast one side explicitly)",
-                op.token()
-            )
-        });
-    };
-    // The operands are one type now, so one bound covers both. A known
-    // operand must be numeric at typecheck0; the def-time acceptance gate
-    // for a lambda body runs only there.
-    constrain_operand(env, &Type::Primitive(Typ::number()), t).map_err(|e| {
-        let told = crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
-            let join = match t.with_deref(
-                |t| matches!(t, Some(Type::Primitive(p)) if *p == Typ::String),
-            ) {
-                true => " (to join strings, interpolate: \"[a][b]\")",
-                false => "",
-            };
-            format_compact!(
-                "cannot compute {lt} {} {rt}: arithmetic takes numbers{join}",
-                op.token()
-            )
-        });
+    // CR claude for claude: [readability/medium] "(cast one side explicitly)"
+    // never works as written: cast returns a Result, so `cast<i64>(x) + 1` over
+    // a nullable x and `cast<f64>(x) + y` for i64 + f64 are refused again with
+    // the same advice. The common case, a nullable or a Result operand (`x + 1`
+    // over `[i64, null]`, `a[1] + 1`), needs `x$`, which the message never
+    // names, and `s + 1` over a string misses the interpolation hint that
+    // string + string gets. Choose the advice from the operands: `x$`/`x?` on
+    // an operand Strip::of would take, `cast<T>(x)$` for two numeric
+    // primitives, interpolation for a string, nothing otherwise. probe:
+    // design/review-2026-11-16/repro/x-diagnostics-arith-cast-advice.sh
+    // (x-diagnostics-02)
+    // 2026-11-18 claude: On bounds-spike the old operand rule and its '(cast
+    // one side explicitly)' text are deleted with the old check; the refusal is
+    // now 'cannot compute with +: arithmetic is fn<'a: Number + Singleton>...'
+    // over the solver's leaf, which gives no advice at all. The fix proposed
+    // (advice chosen from the operands) applies to that message.
+    let told = |e| {
+        let told = format_compact!(
+            "cannot compute with {}: arithmetic is fn<'a: Number + Singleton>(x: \
+             'a, y: 'a) -> 'a — both operands must be one numeric type",
+            op.token()
+        );
         Told::over(e, &told)
-    })?;
-    refuse_mixed_numeric(env, t)?;
-    t.narrow_singleton(env)?;
+    };
+    let t = same_by_bounds(env, lt, rt, Bound::Singleton).map_err(told)?;
+    Type::Primitive(Typ::number()).check_contains(env, &t).map_err(told)?;
     match checked {
-        true => out.check_contains(
-            env,
-            &Type::Set(Arc::from_iter([t.clone(), ARITH_ERR.clone()])),
-        ),
-        false => out.check_contains(env, t),
+        true => out.check_contains(env, &bounds::union_of([t, ARITH_ERR.clone()])),
+        false => out.check_contains(env, &t),
     }
 }
 

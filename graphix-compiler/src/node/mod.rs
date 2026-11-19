@@ -4497,39 +4497,6 @@ fn held_cells(held: &Type, out: &mut AHashMap<usize, TVar>) {
     out.retain(|_, tv| !tv.is_bound());
 }
 
-fn reference_targets(
-    env: &env::Env,
-    typ: &Type,
-) -> Result<Option<LPooled<Vec<(Mutability, Type)>>>> {
-    fn collect(
-        env: &env::Env,
-        typ: &Type,
-        out: &mut Vec<(Mutability, Type)>,
-    ) -> Result<bool> {
-        crate::stack::ensure_sufficient(|| match typ.deref_cloned().as_ref() {
-            None => Ok(false),
-            Some(t @ Type::Ref(_)) => collect(env, &t.lookup_ref(env)?, out),
-            Some(Type::Set(ts)) => {
-                for t in ts.iter() {
-                    if !collect(env, t, out)? {
-                        bail!("expected a reference not {t}");
-                    }
-                }
-                Ok(true)
-            }
-            Some(Type::ByRef(m, t)) => {
-                out.push((*m, (**t).clone()));
-                Ok(true)
-            }
-            Some(t) => format_with_flags(PrintFlag::DerefTVars, || {
-                bail!("expected a reference not {t}")
-            }),
-        })
-    }
-    let mut targets = LPooled::take();
-    Ok(collect(env, typ, &mut targets)?.then_some(targets))
-}
-
 impl<R: Rt> ConnectDeref<R> {
     fn typecheck0_with(
         &mut self,
@@ -4546,43 +4513,8 @@ impl<R: Rt> ConnectDeref<R> {
             None => bail!("BUG missing bind {:?}", self.src_id),
             Some(bind) => bind.typ.clone(),
         };
-        if bounds::active() {
-            let write = bounds::Use::Write { value: rhs.clone() };
-            return wrap!(self, solving(|s| s.watch(&ctx.env, &btyp, write)));
-        }
-        let targets = reference_targets(&ctx.env, &btyp);
-        match wrap!(self, targets)? {
-            // an unbound reference is inferred writable at the written type
-            None => {
-                let typ = Type::ByRef(Mutability::Mut, Arc::new(rhs.clone()));
-                wrap!(self, btyp.check_contains(&ctx.env, &typ))
-            }
-            // a write must fit every reference the binding may hold
-            Some(mut targets) => {
-                for (m, t) in targets.drain(..) {
-                    if m == Mutability::Shared {
-                        bail!(
-                            "can't write through a read-only reference ({btyp}): take it with `&mut`"
-                        )
-                    }
-                    let contain = |t: &Type| t.check_contains(&ctx.env, rhs);
-                    wrap!(self, contain(&t))?;
-                    wrap!(
-                        self,
-                        callsite::check_hidden_defaults(
-                            ctx,
-                            BitFlags::empty(),
-                            &Scope::root(),
-                            self.spec.id,
-                            &t,
-                            rhs,
-                            callsite::Narrowing::Written
-                        )
-                    )?;
-                }
-                Ok(())
-            }
-        }
+        let write = bounds::Use::Write { value: rhs.clone() };
+        wrap!(self, solving(|s| s.watch(&ctx.env, &btyp, write)))
     }
 }
 
@@ -4636,33 +4568,11 @@ impl<R: Rt> Any<R> {
         if !check {
             return Ok(());
         }
-        if bounds::active() {
-            // whichever fires is the value: each flows into a cell that
-            // may join them
-            for n in self.n.iter() {
-                wrap!(n, self.typ.check_contains(&ctx.env, n.typ()))?
-            }
-            return Ok(());
+        // whichever fires is the value: each flows into a cell that
+        // may join them
+        for n in self.n.iter() {
+            wrap!(n, self.typ.check_contains(&ctx.env, n.typ()))?
         }
-        let fn_of = |t: &Type| {
-            t.with_deref(|t| match t {
-                Some(Type::Fn(f)) => Some(f.clone()),
-                _ => None,
-            })
-        };
-        // a passed read's two reads share one copy of a generic function,
-        // which meeting would pin to one instance
-        let one_copy = self.fired_at_entry(&ctx.env)
-            && fn_of(self.n[0].typ())
-                .zip(fn_of(self.n[1].typ()))
-                .is_some_and(|(f, g)| Arc::ptr_eq(&f, &g));
-        let bottom = Type::Bottom;
-        let mut ts: LPooled<Vec<&Type>> = LPooled::take();
-        ts.push(&bottom);
-        ts.extend(self.n.iter().skip(one_copy as usize).map(|n| n.typ()));
-        let rtyp = wrap!(self, Type::union_of_alternatives(&ctx.env, &ts))?;
-        let rtyp = if rtyp == Type::Bottom { Type::empty_tvar() } else { rtyp };
-        self.typ.check_contains(&ctx.env, &rtyp)?;
         Ok(())
     }
 }

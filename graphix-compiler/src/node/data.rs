@@ -1303,17 +1303,8 @@ impl<R: Rt> StructRef<R> {
         if !check {
             return Ok(());
         }
-        if bounds::active() {
-            let u = Use::Field {
-                field: self.field_name.clone(),
-                out: self.typ.clone(),
-                write: false,
-            };
-            return wrap!(self, solving(|s| s.watch(&ctx.env, self.source.typ(), u)));
-        }
-        let etyp = struct_field_type(ctx, self.source.typ(), &self.field_name);
-        let (idx, typ) = wrap!(self, etyp)?;
-        self.sorted_field_idx = idx;
+        // the language server shows the field at the read's type, which the
+        // check fills
         if let ExprKind::StructRef { field, .. } = &self.spec.kind
             && ctx.env.ide.is_lsp()
         {
@@ -1321,13 +1312,15 @@ impl<R: Rt> StructRef<R> {
                 pos: field.pos_or(self.spec.pos),
                 ori: self.spec.ori.clone(),
                 name: field.name.clone(),
-                typ: typ.clone(),
+                typ: self.typ.clone(),
             });
         }
-        match check {
-            true => wrap!(self, self.typ.check_contains(&ctx.env, &typ)),
-            false => Ok(()),
-        }
+        let u = Use::Field {
+            field: self.field_name.clone(),
+            out: self.typ.clone(),
+            write: false,
+        };
+        wrap!(self, solving(|s| s.watch(&ctx.env, self.source.typ(), u)))
     }
 }
 

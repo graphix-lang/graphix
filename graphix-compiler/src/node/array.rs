@@ -19,86 +19,20 @@ use crate::{
         },
     },
     typ::{
-        TVar, Type,
+        Type,
         bounds::{self, Use},
     },
     wrap,
 };
-use ahash::AHashSet;
 use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError};
 use netidx_value::{PBytes, Typ, ValArray, Value};
-use poolshark::local::LPooled;
-use std::{fmt::Debug, iter, marker::PhantomData, mem, ops::Range};
+use std::{fmt::Debug, iter, marker::PhantomData, ops::Range};
 use triomphe::Arc;
 
 defetyp!(ERR, ERR_TAG, "ArrayIndexError", "Error<`{}(string)>");
-
-/// What makes two of a literal's element types the very same type: a
-/// primitive by value, a cell by its binding cell, a composite by the
-/// parts it shares, anything else by address.
-#[derive(PartialEq, Eq, Hash)]
-struct SameType(mem::Discriminant<Type>, u64, u64);
-
-impl SameType {
-    // CR claude for claude: [perf/low] A tuple, struct, array or map is keyed here by
-    // its Arc address. The element types of separately written literals (`[{name: "a",
-    // v: 1}, {name: "b", v: 2}, ..]`) therefore never dedupe, and every one reaches
-    // Type::union_of_alternatives. A literal of 5000/10000/20000 struct rows checks in
-    // 162/369/1128 ms, against 89/97/114 ms for the same count of integers. The
-    // x-perf-compile-08 fix made only primitives linear. Fix: key a composite by its
-    // discriminant and a hash of its parts' SameType keys. Drop the third u64, which is
-    // 0 in every arm. Map literals stay superlinear too (80000 entries 2.3 s, whether
-    // the keys or the values are uniform), so Map::typecheck0_with's path has a
-    // per-entry cost of its own to find. probe:
-    // design/review-2026-11-16/repro/x-rerun-1-literal-composite-union-quadratic.sh
-    // (x-rerun-1-02)
-    fn of(t: &Type) -> Self {
-        fn at<T: ?Sized>(p: *const T) -> u64 {
-            p.cast::<u8>().addr() as u64
-        }
-        let (a, b) = match t {
-            Type::Primitive(p) => (p.bits(), 0),
-            Type::TVar(tv) => (tv.cell_addr() as u64, 0),
-            Type::Array(e) | Type::List(e) => (at(Arc::as_ptr(e)), 0),
-            Type::Map(m) => (at(Arc::as_ptr(m)), 0),
-            Type::Tuple(ts) => (at(Arc::as_ptr(ts)), 0),
-            Type::Struct(fs) => (at(Arc::as_ptr(fs)), 0),
-            t => (at(t), 0),
-        };
-        Self(mem::discriminant(t), a, b)
-    }
-}
-
-/// The union of a literal's element types `ts`, `⊥` first: an element of
-/// the very type of an earlier one adds nothing, and one type left is its
-/// own union. A call through an element accepts each alike: functions
-/// meet.
-pub(super) fn element_union(env: &Env, ts: &[&Type]) -> Result<Type> {
-    let mut seen: LPooled<AHashSet<SameType>> = LPooled::take();
-    let mut distinct: LPooled<Vec<&Type>> = LPooled::take();
-    distinct.extend(ts.iter().copied().filter(|t| seen.insert(SameType::of(t))));
-    match &distinct[..] {
-        [_, one] => Ok((*one).clone()),
-        ts => Type::union_of_alternatives(env, ts),
-    }
-}
-
-/// Bind the cell `slot` holds, a literal's own element cell, to `t`
-/// without an occurs walk of `t`'s whole depth, when `t` cannot reach the
-/// cell: nothing else holds `slot`, or `t` reaches no open cell
-/// ([`TVar::bind_unshared`]). False, binding nothing, otherwise.
-pub(super) fn bind_element(slot: &Arc<Type>, t: &Type) -> bool {
-    bind_part(slot, Arc::count(slot) > 1, t)
-}
-
-/// [`bind_element`] of a cell in a node that holds more than one part:
-/// `shared` when anything but its owner holds the node.
-pub(super) fn bind_part(slot: &Type, shared: bool, t: &Type) -> bool {
-    !matches!(t, Type::Bottom) && TVar::bind_unshared(slot, shared, t)
-}
 
 /// An array index or slice bound: any integer. An open cell is narrowed
 /// to the integers, as an arithmetic operand is to the numbers.
@@ -726,15 +660,12 @@ impl<R: Rt> ArraySlice<R> {
             return Ok(());
         }
         let source_typ = self.source.typ();
-        if check && bounds::active() {
+        if check {
             let sliced = bounds::union_of([
                 Type::Array(Arc::new(Type::empty_tvar())),
                 Type::Primitive(Typ::Bytes.into()),
             ]);
             wrap!(self, sliced.check_contains(&ctx.env, source_typ))?
-        } else if check && !known_bytes(&ctx.env, source_typ)? {
-            let at = Type::Array(Arc::new(Type::empty_tvar()));
-            wrap!(self, at.check_contains(&ctx.env, source_typ))?;
         }
         // `typ` copied the source's type at compile; a source whose type
         // is decided in its typecheck0 (a select) is related here
@@ -763,34 +694,31 @@ impl<R: Rt, K: SeqKind> SeqLit<R, K> {
         if !check {
             return Ok(());
         }
-        if bounds::active() {
-            // the elements flow into one cell, which may join them
-            let (Type::Array(e) | Type::List(e)) = &self.typ else {
-                bail!("BUG: a literal that is no array and no list")
-            };
-            for n in self.n.iter() {
-                wrap!(n, e.check_contains(&ctx.env, n.typ()))?
-            }
-            return Ok(());
-        }
-        let bottom = Type::Bottom;
-        let mut ts: LPooled<Vec<&Type>> = LPooled::take();
-        ts.push(&bottom);
-        ts.extend(self.n.iter().map(|n| n.typ()));
-        let union = wrap!(self, element_union(&ctx.env, &ts))?;
-        if let Type::Array(e) | Type::List(e) = &self.typ
-            && bind_element(e, &union)
-        {
-            return Ok(());
-        }
-        let rtype = match &union {
-            Type::Bottom => K::typ(Type::empty_tvar()),
-            t => K::typ(t.clone()),
+        // CR claude for claude: [perf/low] A tuple, struct, array or map is keyed here by
+        // its Arc address. The element types of separately written literals (`[{name: "a",
+        // v: 1}, {name: "b", v: 2}, ..]`) therefore never dedupe, and every one reaches
+        // Type::union_of_alternatives. A literal of 5000/10000/20000 struct rows checks in
+        // 162/369/1128 ms, against 89/97/114 ms for the same count of integers. The
+        // x-perf-compile-08 fix made only primitives linear. Fix: key a composite by its
+        // discriminant and a hash of its parts' SameType keys. Drop the third u64, which is
+        // 0 in every arm. Map literals stay superlinear too (80000 entries 2.3 s, whether
+        // the keys or the values are uniform), so Map::typecheck0_with's path has a
+        // per-entry cost of its own to find. probe:
+        // design/review-2026-11-16/repro/x-rerun-1-literal-composite-union-quadratic.sh
+        // (x-rerun-1-02)
+        // 2026-11-18 claude: On bounds-spike the literal's old union path (element_union,
+        // SameType) is deleted with the old check: the elements flow into one solver cell.
+        // The cost this measured is not re-measured under the solver: run the probe again,
+        // literals and map literals both.
+
+        // the elements flow into one cell, which may join them
+        let (Type::Array(e) | Type::List(e)) = &self.typ else {
+            bail!("BUG: a literal that is no array and no list")
         };
-        self.typ.check_contains(&ctx.env, &rtype).map_err(|e| match &self.typ {
-            Type::Array(slot) | Type::List(slot) => TVar::refusal_over(slot, &union, e),
-            _ => e,
-        })
+        for n in self.n.iter() {
+            wrap!(n, e.check_contains(&ctx.env, n.typ()))?
+        }
+        Ok(())
     }
 }
 

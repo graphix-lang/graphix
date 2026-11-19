@@ -1331,20 +1331,29 @@ impl Solving {
         let mut progress = false;
         for id in 0..self.selects.len() {
             for t in std::mem::take(&mut self.selects[id].waiting) {
-                if ready(self, id, &t) {
-                    // what an arm looks into is fixed; what it only names
-                    // stays open for the name's uses to reach
-                    loop {
-                        let cells = self.looked(id, &deep(&t));
-                        if cells.is_empty() {
-                            break;
-                        }
-                        cells.iter().try_for_each(|v| self.fix(env, v))?
+                if !ready(self, id, &t) {
+                    self.selects[id].waiting.push(t);
+                    continue;
+                }
+                // what an arm looks into is fixed; what it only names stays
+                // open for the name's uses to reach. Fixing may show a cell
+                // nothing here fixes (a declared variable): it waits on
+                let stuck = loop {
+                    let cells = self.looked(id, &deep(&t));
+                    if cells.is_empty() {
+                        break false;
                     }
-                    self.select_route(env, id, &t)?;
-                    progress = true
-                } else {
-                    self.selects[id].waiting.push(t)
+                    cells.iter().try_for_each(|v| self.fix(env, v))?;
+                    if !cells.iter().any(|v| v.is_bound()) {
+                        break true;
+                    }
+                };
+                match stuck {
+                    true => self.selects[id].waiting.push(t),
+                    false => {
+                        self.select_route(env, id, &t)?;
+                        progress = true
+                    }
                 }
             }
         }
