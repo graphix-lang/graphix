@@ -918,75 +918,6 @@ impl<R: Rt> Update<R> for Construct<R> {
     }
 }
 
-/// The type of `.field` over `source`: a tuple's field, an error's
-/// payload, or an abstract type's payload where its definition is
-/// visible from `scope`.
-pub(crate) fn tuple_field_type<R: Rt>(
-    ctx: &CompileCtx<R>,
-    scope: &ModPath,
-    source: &Type,
-    field: usize,
-) -> Result<Type> {
-    let ts = tuple_field_types(ctx, scope, source, field)?;
-    let ts: LPooled<Vec<&Type>> = ts.iter().collect();
-    Type::union_of_alternatives(&ctx.env, &ts)
-}
-
-/// [`tuple_field_type`] per member of a union source (one type for any
-/// other): what a write through the field must fit, each of them.
-pub(crate) fn tuple_field_types<R: Rt>(
-    ctx: &CompileCtx<R>,
-    scope: &ModPath,
-    source: &Type,
-    field: usize,
-) -> Result<LPooled<Vec<Type>>> {
-    if let Some(members) = union_of(ctx, source, |t| match t {
-        Type::Tuple(flds) => Some(flds.clone()),
-        _ => None,
-    })? {
-        return members
-            .iter()
-            .map(|flds| flds.get(field).cloned())
-            .collect::<Option<LPooled<Vec<Type>>>>()
-            .ok_or_else(|| anyhow!("in tuple, no such field {}", field));
-    }
-    // errors: the field is each one's payload
-    if let Some(mut members) = union_of(ctx, source, |t| match t {
-        Type::Error(t) => Some((**t).clone()),
-        _ => None,
-    })? {
-        if field != 0 {
-            bail!("no such field {}", field);
-        }
-        return Ok(LPooled::from_iter(members.drain(..)));
-    }
-    let one = |t: Type| -> LPooled<Vec<Type>> { LPooled::from_iter([t]) };
-    deref_typ!("tuple", ctx, source,
-        Some(Type::Tuple(flds)) => flds
-            .get(field)
-            .map(|t| one(t.clone()))
-            .ok_or_else(|| anyhow!("in tuple, no such field {}", field)),
-        Some(Type::Error(t)) => {
-            if field != 0 {
-                bail!("no such field {}", field);
-            }
-            Ok(one((**t).clone()))
-        },
-        Some(Type::Abstract { id, params }) => {
-            if field != 0 {
-                bail!("no such field {}: an abstract type has only its payload .0", field);
-            }
-            match ctx.env.abstract_rep(*id, scope) {
-                Some(r) => Ok(one(r.instantiate_with(params))),
-                None => bail!(
-                    "the definition of this abstract type is not visible here, so \
-                     its payload cannot be read"
-                ),
-            }
-        }
-    )
-}
-
 /// The field's common sorted position, when its members agree, and its type.
 pub(crate) fn struct_field_type<R: Rt>(
     ctx: &CompileCtx<R>,
@@ -1416,13 +1347,8 @@ impl<R: Rt> TupleRef<R> {
         if !check {
             return Ok(());
         }
-        if bounds::active() {
-            let (i, out, from) = (self.field, self.typ.clone(), self.scope.clone());
-            let u = Use::Index { i, out, write: false, from };
-            return wrap!(self, solving(|s| s.watch(&ctx.env, self.source.typ(), u)));
-        }
-        let etyp = tuple_field_type(ctx, &self.scope, self.source.typ(), self.field);
-        let etyp = wrap!(self, etyp)?;
-        wrap!(self, self.typ.check_contains(&ctx.env, &etyp))
+        let (i, out, from) = (self.field, self.typ.clone(), self.scope.clone());
+        let u = Use::Index { i, out, write: false, from };
+        wrap!(self, solving(|s| s.watch(&ctx.env, self.source.typ(), u)))
     }
 }

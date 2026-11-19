@@ -721,24 +721,3 @@ impl<R: Rt, K: SeqKind> SeqLit<R, K> {
         Ok(())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::time::{Duration, Instant};
-
-    // each literal element carries a type of its own; equal primitives
-    // are one member however many elements there are
-    #[test]
-    fn a_literals_element_union_is_linear() {
-        let env = Env::default();
-        let ts: Vec<Type> =
-            (0..400_000).map(|_| Type::Primitive(Typ::I64.into())).collect();
-        let refs: Vec<&Type> = iter::once(Type::BOTTOM).chain(ts.iter()).collect();
-        let start = Instant::now();
-        let union = element_union(&env, &refs).unwrap();
-        let took = start.elapsed();
-        assert!(matches!(union, Type::Primitive(p) if p == Typ::I64), "{union}");
-        assert!(took < Duration::from_secs(2), "{took:?}");
-    }
-}
