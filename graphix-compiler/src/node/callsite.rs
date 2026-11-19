@@ -1657,9 +1657,6 @@ pub struct CallSite<R: Rt> {
     /// A collection slot's share of its prototype's kernels, taken by
     /// the instance it binds.
     pub(crate) share: Option<SlotShare>,
-    /// The check did not see every default this site omits: the cells
-    /// they reach stay open for the bind.
-    defaults_open: bool,
     /// The bound callee's function went bottom and its instance sleeps.
     absent: Option<Box<Absent>>,
     /// A seq step issued this call while its function was bottom and
@@ -1735,7 +1732,6 @@ impl<R: Rt> CallSite<R> {
             top_id,
             resident: TagValue::phantom(),
             share: None,
-            defaults_open: true,
             absent: None,
             step_due: false,
             impl_reads: None,
@@ -2198,41 +2194,6 @@ impl<R: Rt> CallSite<R> {
         })
     }
 
-    /// This site's terminal settle of still-unbound constrained cells,
-    /// deferred to the statement boundary. Cells reachable from an
-    /// omitted default the check did not see are exempt: the default
-    /// binds them at the bind.
-    fn pending_settle(
-        &self,
-        ftype: &FnType,
-        unread_callbacks: SmallVec<[TVar; 1]>,
-    ) -> crate::PendingSettle {
-        let mut dtv: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-        for farg in ftype.args.iter().filter(|_| self.defaults_open) {
-            if let FnArgKind::Labeled { name, .. } = &farg.kind
-                && let Some(a) = self.args.get(&ArgKey::Named(name.clone()))
-                && a.stage.is_default()
-            {
-                crate::typ::settle::position_cells(&farg.typ, &mut dtv);
-            }
-        }
-        let exempt: AHashSet<usize> = dtv.drain().map(|(addr, _)| addr).collect();
-        // The call's own result cell joins the settle set: a literal ⊥
-        // rtype unifies without binding it.
-        let rtype = match &self.rtype {
-            Type::TVar(tv) => Some(tv.clone()),
-            _ => None,
-        };
-        crate::PendingSettle::Site {
-            sigs: smallvec::SmallVec::new(),
-            unread_callbacks,
-            ftype: ftype.clone(),
-            rtype,
-            exempt,
-            spec: self.spec.clone(),
-        }
-    }
-
     fn instance_ftype(&self) -> Option<FnType> {
         self.callee.apply().map(|apply| apply.typ().resolve_tvars())
     }
@@ -2439,7 +2400,7 @@ impl<R: Rt> CallSite<R> {
             let (scope, flags) = (self.scope.clone(), self.flags);
             // The lazy-bound body's typecheck defers settles no statement
             // boundary will drain.
-            let (defaults, tail_loops) = super::with_runtime_settles(ctx, |ctx| {
+            let (defaults, tail_loops) = super::as_runtime_bind(ctx, |ctx| {
                 let setup_span = perfdbg::span(&perfdbg::SETUP_NS);
                 let (apply, defaults, params) =
                     self.setup_dynamic_bind(ctx, &scope, flags, f)?;
@@ -4351,22 +4312,10 @@ impl<R: Rt> CallSite<R> {
                 wrap!(n, n.typecheck1(ctx))?;
             }
         }
-        let ftype = match self.ftype.as_ref() {
-            Some(ftype) => ftype.clone(),
-            None => return Ok(None),
-        };
-        // A settle frame for this site's re-drives; leftovers merge up and
-        // drain only after this site's writers have run.
-        ctx.pending_settles.push(crate::SettleFrame::default());
-        let res = self.typecheck1_resolve(ctx);
-        let leftover = ctx.pending_settles.pop().expect("settle frame");
-        ctx.pending_settles.last_mut().expect("root settle frame").append(leftover);
-        if let Some(lowered) = res? {
-            return Ok(Some(lowered));
+        if self.ftype.is_none() {
+            return Ok(None);
         }
-        let settle = self.pending_settle(&ftype, SmallVec::new());
-        ctx.pending_settles.last_mut().expect("root settle frame").push(settle);
-        Ok(None)
+        self.typecheck1_resolve(ctx)
     }
 
     pub(crate) fn refs(&self, refs: &mut Refs) {

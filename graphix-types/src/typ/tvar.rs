@@ -4704,24 +4704,6 @@ impl Type {
         }
     }
 
-    /// An open member of a `OneNumber` cell's binding beside a numeric one,
-    /// or two open members beside none: one may yet be another numeric type
-    /// than the rest, which no bound on either can rule out, so the
-    /// definition that leaves them open is refused (annotate it).
-    pub fn one_number_open(&self) -> bool {
-        let mut parts = UnionParts::new(Measure::Numbers);
-        if self.union_parts(None, &mut parts).is_err() {
-            return false;
-        }
-        match (parts.known, parts.open.split_first()) {
-            (_, None) => false,
-            (0, Some((first, rest))) => {
-                rest.iter().any(|tv| tv.cell_addr() != first.cell_addr())
-            }
-            (_, Some(_)) => true,
-        }
-    }
-
     /// Bind each open cell of `self` to the part of `row` at its
     /// position: `self` an expression's type as an instance compiled it,
     /// `row` the same expression's type as its definition's check left

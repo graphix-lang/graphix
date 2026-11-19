@@ -196,87 +196,6 @@ impl DefTable {
         }
     }
 
-    /// The open cells the rows of the labeled defaults hold, by address:
-    /// a call's bind narrows them, so no site settle binds them.
-    fn default_cells(&self) -> AHashSet<usize> {
-        if self.defaults.is_empty() {
-            return AHashSet::default();
-        }
-        let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-        let default = |id: &ExprId| self.defaults.contains(id);
-        // CR claude for claude: [structure/low] `default_cells` and `settle_open` each
-        // write out the same three loops (the rows, the aux rows, each signature's
-        // parts that are not constraints, through `settle::position_cells`), differing
-        // only in which ids they keep; `for_each_row` is that walk already but for the
-        // constraint flag, and `own_typedefs` repeats the owning half of
-        // `seed_and_own`. A row kind added later has four walks to join. Hand
-        // `for_each_row`'s callback the constraint flag, as `for_each_type` does, and
-        // build both cell sets with it; have `seed_and_own` seed and then call
-        // `own_typedefs`. Found by reading; not run. (c-lambda-06)
-        let rows = self.types.iter().filter(|(id, _)| default(id)).map(|(_, t)| t);
-        let aux =
-            self.aux.iter().filter(|(id, _)| default(id)).flat_map(|(_, ts)| ts.iter());
-        for t in rows.chain(aux) {
-            crate::typ::settle::position_cells(t, &mut cells)
-        }
-        for (_, ft) in self.ftypes.iter().filter(|(id, _)| default(id)) {
-            ft.for_each_part(&mut |t, constraint| {
-                if !constraint {
-                    crate::typ::settle::position_cells(t, &mut cells)
-                }
-            })
-        }
-        cells.keys().copied().collect()
-    }
-
-    /// Bind to ⊥ every open cell of the table's that `owner`'s gate
-    /// created, but its signature (`exempt`) does not reach: nothing
-    /// bounded it, and an instance reads the table as the check left it.
-    pub(crate) fn settle_open(
-        &self,
-        env: &Env,
-        owner: LambdaId,
-        exempt: &AHashSet<usize>,
-    ) -> Result<()> {
-        let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-        let body = |id: &ExprId| !self.defaults.contains(id);
-        let rows = self.types.iter().filter(|(id, _)| body(id)).map(|(_, t)| t);
-        let aux =
-            self.aux.iter().filter(|(id, _)| body(id)).flat_map(|(_, ts)| ts.iter());
-        for t in rows.chain(aux) {
-            crate::typ::settle::position_cells(t, &mut cells)
-        }
-        for (_, ft) in self.ftypes.iter().filter(|(id, _)| body(id)) {
-            ft.for_each_part(&mut |t, constraint| {
-                if !constraint {
-                    crate::typ::settle::position_cells(t, &mut cells)
-                }
-            })
-        }
-        let mut quantifiers: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-        self.for_each_type(&mut |t, _| {
-            t.each_quantifier(&mut |_, tv| {
-                if let Some(open) = tv.open_cell() {
-                    for c in open.cell_constraints().iter() {
-                        c.reached_cells(&mut quantifiers)
-                    }
-                    quantifiers.insert(open.cell_addr(), open);
-                }
-            })
-        });
-        for (addr, tv) in cells.iter() {
-            if !exempt.contains(addr)
-                && !quantifiers.contains_key(addr)
-                && !tv.is_bound()
-                && !tv.requires_concrete()
-                && tv.level().owner() == Some(owner)
-            {
-                tv.settle_or_bottom(env)?;
-            }
-        }
-        Ok(())
-    }
-
     /// The check of `body`, whose typedefs are in `env`: every type
     /// reference a row holds is resolved there now, so no instance looks
     /// a name up by a scope only this check had (an image relocates the
@@ -3055,7 +2974,6 @@ impl<R: Rt> DefGate<R> {
             .collect();
         ctx.rec_defs.insert(def.id);
         ctx.def_gate_depth += 1;
-        ctx.pending_settles.push(crate::SettleFrame::default());
         Self {
             def: def.id,
             depth: def.level.depth(),
@@ -3154,10 +3072,8 @@ impl<R: Rt> DefGate<R> {
         mut self,
         ctx: &mut CompileCtx<R>,
         spec: &Expr,
-        table: Option<SArc<DefTable>>,
         named: bool,
     ) -> Result<Option<(Type, AHashMap<usize, TVar>)>> {
-        let mut frame = ctx.pending_settles.pop().expect("gate settle frame");
         ctx.def_gate_depth -= 1;
         let mut stands = None;
         let mut closed = Ok(());
@@ -3185,38 +3101,10 @@ impl<R: Rt> DefGate<R> {
             }
             (None, false) => self.sig.claim(self.outer),
         }
-        let defaults = table.as_deref().map(DefTable::default_cells).unwrap_or_default();
-        for s in frame.iter_mut() {
-            if let crate::PendingSettle::Site { sigs, exempt, .. } = s {
-                sigs.push(self.sig.clone());
-                exempt.extend(defaults.iter().copied());
-            }
-        }
-        let mut sig: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-        self.sig.reached_cells(&mut sig);
-        let mut lowered = Ok(());
-        if !sig.is_empty() {
-            for s in frame.iter() {
-                if let crate::PendingSettle::Site { ftype, .. } = s
-                    && lowered.is_ok()
-                {
-                    lowered = ftype.lower_into_kept(&ctx.env, &sig)
-                }
-            }
-        }
-        if let Some(table) = table {
-            frame.push(crate::PendingSettle::Body {
-                table,
-                owner: self.def,
-                exempt: sig.keys().copied().collect(),
-                spec: Arc::new(spec.clone()),
-            });
-        }
-        ctx.pending_settles.last_mut().expect("root settle frame").append(frame);
         ctx.rec_defs.remove(&self.def);
         self.faux.close(ctx);
         self.rigid.clear();
-        closed.and(lowered.at(spec)).map(|()| stands)
+        closed.map(|()| stands)
     }
 
     /// Tell the editor the quantifiers the close is about to generalize,
@@ -3407,6 +3295,20 @@ fn check_defaults<R: Rt>(
     }
     Ok(())
 }
+
+// CR claude for claude: [structure/low] `default_cells` and `settle_open` each
+// write out the same three loops (the rows, the aux rows, each signature's
+// parts that are not constraints, through `settle::position_cells`), differing
+// only in which ids they keep; `for_each_row` is that walk already but for the
+// constraint flag, and `own_typedefs` repeats the owning half of
+// `seed_and_own`. A row kind added later has four walks to join. Hand
+// `for_each_row`'s callback the constraint flag, as `for_each_type` does, and
+// build both cell sets with it; have `seed_and_own` seed and then call
+// `own_typedefs`. Found by reading; not run. (c-lambda-06)
+// 2026-11-19 claude: On bounds-spike the old settle machinery (default_cells,
+// settle_open, the Body settle) is deleted with the old check; a default is
+// judged by judge_default under the solver, where this moved. Re-probe under
+// the new check before closing.
 
 /// The default `node` of the parameter `at` checked against it, in the
 /// lexical environment the default compiled in.
@@ -3614,8 +3516,7 @@ impl<R: Rt> Update<R> for Lambda {
         {
             def.table.set(Tables { table, outer: None })
         }
-        let table = checked.clone().or_else(|| def.table.get().map(|t| t.table.clone()));
-        let closed = gate.close(ctx, spec, table, self.named);
+        let closed = gate.close(ctx, spec, self.named);
         if bounds::active() {
             // a lambda that stands as one instance of its scheme reads its
             // check's types as that instance has them

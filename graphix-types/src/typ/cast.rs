@@ -663,16 +663,6 @@ impl Type {
         self.check_cast_int(env, &mut Verdicts::new())
     }
 
-    /// Whether a map type is written in this type, through the
-    /// definitions it names (an abstract's hidden one excepted).
-    pub fn holds_map(&self, env: &Env) -> bool {
-        self.holds(env, &mut Verdicts::new(), &|t| match t {
-            Type::Map { .. } => Some(true),
-            Type::Abstract { .. } => Some(false),
-            _ => None,
-        })
-    }
-
     /// Whether a part of this type reads a number exactly: an integer or
     /// a decimal, or an abstract type, whose `Cast` reads what it likes.
     pub fn holds_exact_number(&self, env: &Env) -> bool {

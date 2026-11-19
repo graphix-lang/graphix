@@ -42,15 +42,7 @@ impl fmt::Display for ConcreteRequired {
 
 impl Error for ConcreteRequired {}
 
-impl ConcreteRequired {
-    pub fn unread_callback(&self) -> anyhow::Error {
-        anyhow::anyhow!(
-            "the quantifier '{} must be fully known but is unread through an optional \
-             callback at this call: pass a typed handler or a typed null",
-            super::tvar::ShortName(&self.0.name)
-        )
-    }
-}
+impl ConcreteRequired {}
 
 /// `below` less each decided bound holding ⊥ in a part that another decided
 /// bound contains: it adds no value to a witness (`Array<_>` beside
@@ -864,106 +856,6 @@ impl FnType {
     pub fn reached_cells(&self, out: &mut AHashMap<usize, TVar>) {
         let mut nodes: LPooled<AddrSet> = LPooled::take();
         self.for_each_type(&mut |t| reached(t, out, &mut nodes))
-    }
-
-    /// The decided lower bounds of this site's open cells whose conjuncts
-    /// reach a cell of `kept` (a definition's signature, left open for its
-    /// callers), passed on to the cells those conjuncts hold, as a settle
-    /// of the cell does ([`TVar::commit_conjuncts`]): a caller of the
-    /// definition then meets a kept cell above what the site put there, not
-    /// above nothing until the site settles. Each cell passes before the
-    /// cells its conjuncts hold, so a chain passes down it. An error where
-    /// a conjunct does not hold a lower bound: the signature stands above
-    /// what its own bound cannot take.
-    pub fn lower_into_kept(&self, env: &Env, kept: &AHashMap<usize, TVar>) -> Result<()> {
-        fn children(tv: &TVar) -> SmallVec<[TVar; 2]> {
-            let mut out = SmallVec::new();
-            for c in tv.cell_constraints().iter() {
-                super::contains::find_open_cell(c, false, &mut |o| {
-                    out.push(o.clone());
-                    false
-                });
-            }
-            out
-        }
-        fn reaches(
-            tv: &TVar,
-            kept: &AHashMap<usize, TVar>,
-            memo: &mut AHashMap<usize, bool>,
-        ) -> bool {
-            let addr = tv.cell_addr();
-            if kept.contains_key(&addr) {
-                return true;
-            }
-            if let Some(r) = memo.get(&addr) {
-                return *r;
-            }
-            memo.insert(addr, false);
-            let r = crate::stack::ensure_sufficient(|| {
-                children(tv).iter().any(|c| reaches(c, kept, memo))
-            });
-            memo.insert(addr, r);
-            r
-        }
-        fn postorder(tv: &TVar, seen: &mut AHashSet<usize>, out: &mut Vec<TVar>) {
-            if seen.insert(tv.cell_addr()) {
-                crate::stack::ensure_sufficient(|| {
-                    for c in children(tv).iter() {
-                        postorder(c, seen, out)
-                    }
-                });
-                out.push(tv.clone())
-            }
-        }
-        // CR claude for claude: [bug/high] This returns before passing any lower bound
-        // when the site's callee DECLARES no quantifier, but a function whose bounds
-        // were inferred (`let f = |a, b| f0(a, b)` over a declared `f0`) holds its
-        // bounded cells under no declared name. A definition that calls it closes with
-        // its signature's cell above nothing, so the check accepts what the build
-        // refuses: `let g = |u| f(w0, u); g("s")` passes `--check` and the build says
-        // "an instance at fn(u: string) -> string of a definition typed fn(u: [null,
-        // string]) -> [null, string]", and `g(1)` is accepted by the check where `f0`
-        // called directly is refused. Test the reached cells instead (return when none
-        // is open with a conjunct), and pin the
-        // `lower_bound_reaches_the_bounds_own_cells_*` programs through an inferred
-        // wrapper. probe:
-        // design/review-2026-11-16/repro/t-settle-lower-into-kept-inferred-callee.gx
-        // (graphix-fuzz check prints DIVERGENCE) (t-settle-02)
-        if self.quantifiers.is_empty() {
-            return Ok(());
-        }
-        let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-        self.reached_cells(&mut cells);
-        let mut seen: LPooled<AHashSet<usize>> = LPooled::take();
-        let mut order: LPooled<Vec<TVar>> = LPooled::take();
-        let named = cells.drain().map(|(_, tv)| (tv.name.clone(), tv));
-        for (_, tv) in super::fntyp::sorted_tvars(named).iter() {
-            postorder(tv, &mut seen, &mut order)
-        }
-        let mut memo: LPooled<AHashMap<usize, bool>> = LPooled::take();
-        for tv in order.iter().rev() {
-            if !tv.is_bound()
-                && !tv.is_rigid()
-                && !kept.contains_key(&tv.cell_addr())
-                && reaches(tv, kept, &mut memo)
-            {
-                for l in tv.cell_lower().iter().filter(|l| !l.has_unbound()) {
-                    if !tv.commit_conjuncts(env, l)? {
-                        let shown = crate::format_with_flags(
-                            crate::PrintFlag::DerefTVars,
-                            || compact_str::format_compact!("{}", Type::TVar(tv.clone())),
-                        );
-                        bail!(
-                            "{shown}: the body puts {l} above it, which the variables \
-                             the definition declares cannot hold, since each call picks \
-                             them anew: annotate the parameter with a type holding {l}, \
-                             or declare no variable"
-                        )
-                    }
-                }
-            }
-        }
-        Ok(())
     }
 }
 

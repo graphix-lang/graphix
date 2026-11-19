@@ -319,7 +319,7 @@ fn build_site<R: Rt>(
     let types = m.arg_types(&h.typ).into_iter();
     // built mid-cycle, as a run-time bind is: a task of its own, its
     // settles drained when it returns
-    let call = super::with_runtime_settles(ctx, |ctx| {
+    let call = super::as_runtime_bind(ctx, |ctx| {
         SynthCall::build(ctx, &Scope::root(), &prefix, h.bind, &h.ftype, types, top_id)
     });
     ctx.apply_deferred();
