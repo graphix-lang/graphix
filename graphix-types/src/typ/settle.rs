@@ -8,7 +8,7 @@ use crate::{
     env::Env,
     format_with_flags,
     typ::{
-        AppKey, Bound, FnType, TVar, Type, TypeRef, Written,
+        Bound, FnType, TVar, Type, Written,
         contains::{ContainsHist, InfiniteType},
         setops::{Welds, apply_welds, lower_collapses, strictly_identical},
         tvar::{CellFact, Fresh, Level, would_cycle_open},
@@ -23,7 +23,6 @@ use smallvec::SmallVec;
 use std::{
     error::Error,
     fmt::{self, Write},
-    ops::ControlFlow,
 };
 
 #[derive(Debug)]
@@ -232,15 +231,6 @@ impl TVar {
                 apply_welds(&mut welds)
             }
         }
-    }
-
-    /// Bind an unbound cell once its writers are checked: to ⊥ when only
-    /// ⊥ was produced into it ([`CellFact::BottomFed`], and no lower bound
-    /// but ⊥), whatever constrains it, else as [`Self::settle_witness`].
-    ///
-    /// [`CellFact::BottomFed`]: super::tvar::CellFact::BottomFed
-    pub fn settle(&self, env: &Env) -> Result<()> {
-        self.settle_in(env, &mut ContainsHist::new())
     }
 
     /// [`Self::settle`] in `hist`, a walk earlier settles may share.
@@ -874,212 +864,6 @@ impl OutsideFunctions<'_> {
             },
             t => t.for_each_child(&mut |c| self.walk(c, out)),
         })
-    }
-}
-
-/// How a type holds one occurrence of a variable.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-#[doc(hidden)]
-pub struct Held {
-    /// Under a function type, or a typedef application the walk does not
-    /// expand, whose expansion may hold it under one.
-    pub function: bool,
-    /// Under a writable reference, a nominal type or a constructor
-    /// application, which hold it exactly.
-    pub exact: bool,
-    /// In a union beside another member holding an open cell, told only
-    /// by a walk that [`DataPositions::telling_members`]: which member
-    /// takes a type depends on what the cells are.
-    pub member: bool,
-}
-
-impl Held {
-    /// As data: a value of a wider type is well typed there.
-    pub fn data(&self) -> bool {
-        !self.function && !self.exact
-    }
-}
-
-/// A walk of every type variable under a type, through bindings, with how
-/// each occurrence is held. A shared node is walked once for each way it
-/// is held, and a typedef application by its [`AppKey`] once for each
-/// way it is held, then again only where its walk does not
-/// [`Unrolling::passes`]; each is kept so its keys stay its own. A caller
-/// takes a variable told once as held under a function for held so,
-/// whatever else is told of it: an application holding no other variable
-/// is passed by.
-#[doc(hidden)]
-pub struct DataPositions<'a> {
-    env: &'a Env,
-    members: bool,
-    /// The applications under expansion, each as it is held, for a walk
-    /// [`Self::passing_repeats`].
-    repeats: Option<SmallVec<[(AppKey, Held); 4]>>,
-    unrolling: Unrolling,
-    seen: LPooled<AHashMap<(usize, Held), Type>>,
-    applied: LPooled<AHashMap<(AppKey, Held), (Type, Expanded)>>,
-    /// The cells told as held under a function, each with every cell
-    /// under its binding.
-    sunk: LPooled<AddrSet>,
-}
-
-impl<'a> DataPositions<'a> {
-    pub fn new(env: &'a Env) -> Self {
-        DataPositions {
-            env,
-            members: false,
-            repeats: None,
-            unrolling: Unrolling::default(),
-            seen: LPooled::take(),
-            applied: LPooled::take(),
-            sunk: LPooled::take(),
-        }
-    }
-
-    fn beneath_function(&mut self, t: &Type, held: Held, f: &mut dyn FnMut(&TVar, Held)) {
-        let held = Held { function: true, ..held };
-        t.for_each_child(&mut |c| self.walk(c, held, f))
-    }
-
-    /// Whether every variable `t` writes is told as held under a function.
-    fn all_sunk(&self, t: &Type) -> bool {
-        crate::stack::ensure_sufficient(|| match t {
-            Type::TVar(tv) => self.sunk.contains(&tv.cell_addr()),
-            t => t
-                .try_for_each_child(&mut |c| match self.all_sunk(c) {
-                    true => ControlFlow::Continue(()),
-                    false => ControlFlow::Break(()),
-                })
-                .is_continue(),
-        })
-    }
-
-    pub fn walk(&mut self, t: &Type, held: Held, f: &mut dyn FnMut(&TVar, Held)) {
-        crate::stack::ensure_sufficient(|| match t {
-            Type::TVar(tv) => {
-                f(tv, held);
-                if held.function {
-                    self.sunk.insert(tv.cell_addr());
-                }
-                if self.seen.insert((tv.cell_addr(), held), t.clone()).is_none()
-                    && let Some(b) = tv.binding()
-                {
-                    self.walk(&b, held, f)
-                }
-            }
-            t if t
-                .shared_identity()
-                .is_some_and(|n| self.seen.insert((n, held), t.clone()).is_some()) => {}
-            Type::Ref(tr)
-                if let Some(key) = tr.probe_def_key(self.env)
-                    && !self.unrolling.is_open(key) =>
-            {
-                if self.all_sunk(t) {
-                    return;
-                }
-                let app = (tr.app_key(key), held);
-                if let Some((_, expanded)) = self.applied.get(&app)
-                    && self.unrolling.passes(expanded)
-                {
-                    return;
-                }
-                match t.lookup_ref_probe(self.env) {
-                    Some((_, whole)) => {
-                        self.unrolling.enter(key);
-                        if let Some(open) = &mut self.repeats {
-                            open.push(app.clone())
-                        }
-                        self.walk(&whole, held, f);
-                        if let Some(open) = &mut self.repeats {
-                            open.pop();
-                        }
-                        let expanded = self.unrolling.leave(tr);
-                        self.applied.insert(app, (t.clone(), expanded));
-                    }
-                    None => self.beneath_function(t, held, f),
-                }
-            }
-            Type::Ref(tr)
-                if let Some(open) = &self.repeats
-                    && let Some(key) = tr.probe_def_key(self.env)
-                    && open.contains(&(tr.app_key(key), held)) => {}
-            Type::Fn(_) | Type::Ref(_) => self.beneath_function(t, held, f),
-            Type::ByRef(super::Mutability::Mut, _)
-            | Type::Abstract { .. }
-            | Type::App(..) => {
-                let held = Held { exact: true, ..held };
-                t.for_each_child(&mut |c| self.walk(c, held, f))
-            }
-            Type::Set(ms)
-                if self.members
-                    && !held.member
-                    && ms.iter().filter(|m| m.has_unbound()).nth(1).is_some() =>
-            {
-                let held = Held { member: true, ..held };
-                ms.iter().for_each(|m| self.walk(m, held, f))
-            }
-            t => t.for_each_child(&mut |c| self.walk(c, held, f)),
-        })
-    }
-}
-
-/// The definitions an application's walk expanded at an application
-/// holding a variable ([`Unrolling`]).
-#[doc(hidden)]
-pub type Expanded = SmallVec<[usize; 4]>;
-
-/// The typedef applications a walk is expanding, innermost last, for a
-/// walk that stops at a definition met inside its own expansion and takes
-/// the stop for whatever the variables it holds may be. Each keeps the
-/// definitions its walk has expanded at an application holding a
-/// variable: where one of those is open, a walk of the application stops
-/// there instead, so one walked before finds what it found then only
-/// where none of them is ([`Self::passes`]).
-#[doc(hidden)]
-#[derive(Default)]
-pub(crate) struct Unrolling(SmallVec<[(usize, Expanded); 4]>);
-
-impl Unrolling {
-    /// Whether the walk is inside an application of `def`.
-    pub fn is_open(&self, def: usize) -> bool {
-        self.0.iter().any(|(d, _)| *d == def)
-    }
-
-    /// Whether an application whose walk expanded `expanded` finds here
-    /// what it found then; where it does, the applications around it
-    /// count those as expanded too.
-    pub fn passes(&mut self, expanded: &Expanded) -> bool {
-        if expanded.iter().any(|d| self.is_open(*d)) {
-            return false;
-        }
-        if let Some((_, outer)) = self.0.last_mut() {
-            union_into(outer, expanded)
-        }
-        true
-    }
-
-    pub fn enter(&mut self, def: usize) {
-        self.0.push((def, SmallVec::new()))
-    }
-
-    /// Leave `tr`, the application entered last: what its walk expanded.
-    pub fn leave(&mut self, tr: &TypeRef) -> Expanded {
-        let (def, mut expanded) = self.0.pop().expect("an application was entered");
-        if !tr.params.iter().all(|p| p.tvar_free()) {
-            union_into(&mut expanded, &[def])
-        }
-        if let Some((_, outer)) = self.0.last_mut() {
-            union_into(outer, &expanded)
-        }
-        expanded
-    }
-}
-
-fn union_into(into: &mut Expanded, from: &[usize]) {
-    for d in from {
-        if !into.contains(d) {
-            into.push(*d)
-        }
     }
 }
 
