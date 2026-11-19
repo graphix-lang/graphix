@@ -765,7 +765,7 @@ fn alike(a: &Type, b: &Type) -> bool {
 }
 
 fn mismatch<T>(wanted: &Type, got: &Type) -> Result<T> {
-    bail!("type mismatch {wanted} does not contain {got}")
+    Err(super::contains::TypeMismatch::plain(wanted, got))
 }
 
 /// Add `t` to the lower bounds of the cell of `v`, or to the upper ones,

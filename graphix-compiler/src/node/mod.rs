@@ -4360,8 +4360,11 @@ impl<R: Rt> Connect<R> {
                         }
                         _ => e,
                     },
-                    // a write a lowering built has no declaration to point at
-                    Some(_) if !crate::is_lowered(&bind.name) => {
+                    // a write a lowering built has no declaration to point
+                    // at, and a refusal of parts of the two is told as it is
+                    Some(m)
+                        if !crate::is_lowered(&bind.name) && m.refuses(t, written) =>
+                    {
                         let mut refs = Refs::without_callees();
                         self.node.refs(&mut refs);
                         let mut reads = false;

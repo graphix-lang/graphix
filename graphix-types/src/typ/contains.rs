@@ -2912,7 +2912,6 @@ pub(super) fn renaming_linked(env: &Env, t0: &Type, t1: &Type, commit: bool) -> 
 
 /// A non-containment report that formats lazily: callers probe these
 /// errors, and rendering a large type eagerly is tree-cost.
-#[derive(Debug)]
 // CR claude for eric: [structure/low] About 1,300 lines of this file decide no
 // containment: this type and its notes, AmbiguousMember's and UndecidedTaker's
 // messages, DataMeet, same_name_apart, kept_bare, contains_mismatch and the trait,
@@ -3489,6 +3488,38 @@ fn same_name_apart(
         })
     }
     walk(t0, t1, &mut LPooled::take())
+}
+
+impl TypeMismatch {
+    /// Whether this refuses `actual` to `expected` themselves, not one part
+    /// of them to another.
+    pub fn refuses(&self, expected: &Type, actual: &Type) -> bool {
+        super::setops::strictly_identical(&self.expected, expected)
+            && super::setops::strictly_identical(&self.actual, actual)
+    }
+
+    /// `expected` refusing `actual` with no note: a check by bounds refuses
+    /// so, and wording a refusal decides nothing of either side.
+    pub(crate) fn plain(expected: &Type, actual: &Type) -> anyhow::Error {
+        anyhow::Error::new(TypeMismatch {
+            expected: expected.clone(),
+            actual: actual.clone(),
+            apart: None,
+            kept_bare: false,
+            infinite: false,
+            settled: None,
+            unmet: None,
+            undeclared: None,
+            held: HeldQuantifiers::of([expected, actual]),
+        })
+    }
+}
+
+/// A refusal is read as its message, never as the cells of its types.
+impl std::fmt::Debug for TypeMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, f)
+    }
 }
 
 impl std::error::Error for TypeMismatch {}
