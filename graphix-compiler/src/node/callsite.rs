@@ -2,7 +2,7 @@ use super::{
     NOP, Nop, WakeBit,
     bind::Ref,
     compiler::compile,
-    error::{Qop, RaiseProbe, join_open_raised, join_raised},
+    error::{RaiseProbe, join_raised},
     lambda::{
         BuiltInLambda, GXLambda, InstanceTypes, Lambda, LambdaDef, same_parameters,
     },
@@ -2052,39 +2052,6 @@ impl<R: Rt> CallSite<R> {
         node
     }
 
-    /// What the call raises joins the enclosing catch's type; with no
-    /// catch, `check` judges it an unhandled error.
-    fn raise_throws(
-        &self,
-        ctx: &CompileCtx<R>,
-        ftype: &FnType,
-        check: bool,
-    ) -> Result<()> {
-        // a definition's own `throws 'e` (a call through a `fn(..) throws
-        // 'e` parameter) still reaches the catch: it joins as the cell
-        let Some(t) = ftype.throws.deref_cloned() else {
-            let rigid = match &ftype.throws {
-                Type::TVar(tv) => tv.open_cell().is_some_and(|c| c.is_rigid()),
-                _ => false,
-            };
-            return match self.scope.dynamic.handler() {
-                Some(h) if rigid => join_open_raised(&ctx.env, &h, &ftype.throws),
-                _ => Ok(()),
-            };
-        };
-        match self.scope.dynamic.handler() {
-            Some(h) => join_raised(&ctx.env, &h, &t),
-            // it doesn't throw any errors
-            None if t == Type::Bottom || !check => Ok(()),
-            None => Qop::<R>::check_unhandled(
-                &ctx.env,
-                self.flags,
-                &self.spec,
-                format_args!("error {t} raised from function call {}", self.fnode.spec()),
-            ),
-        }
-    }
-
     /// The signature this site's instance of `f` runs with where the
     /// site's `view` lists other parameters than `f`'s (`None`: the view):
     /// a call's copy of `f`'s fitted to it, each label the view hides
@@ -4125,7 +4092,13 @@ impl<R: Rt> CallSite<R> {
     /// written, then fits its parameter where the callee's type is decided
     /// here; a callee that is not is used as a function of these
     /// arguments, or waits as a call for the type that reaches it.
-    fn check_by_bounds(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
+    /// `in_program`: the call is the program's, not one the build makes,
+    /// which no catch it could be warned of covers.
+    fn check_by_bounds(
+        &mut self,
+        ctx: &mut CompileCtx<R>,
+        in_program: bool,
+    ) -> Result<()> {
         let mut args: SmallVec<[bounds::Arg; 4]> = SmallVec::new();
         for (key, arg) in self.args.iter_mut() {
             let (ArgStage::Given, Some(n)) = (arg.stage, arg.node.as_mut()) else {
@@ -4198,7 +4171,17 @@ impl<R: Rt> CallSite<R> {
                 }
                 match handler {
                     Some(h) => wrap!(self, join_raised(&ctx.env, &h, &ft.throws)),
-                    None => Ok(()),
+                    None => {
+                        if in_program && self.flags.contains(CFlag::WarnUnhandled) {
+                            ctx.pending_names.push(crate::Pending::Raise {
+                                raised: ft.throws.clone(),
+                                at: (*self.spec).clone(),
+                                callee: Some(self.fnode.spec().clone()),
+                                flags: self.flags,
+                            })
+                        }
+                        Ok(())
+                    }
                 }
             }
             None if args.iter().all(|(label, _)| label.is_none()) => {
@@ -4245,7 +4228,7 @@ impl<R: Rt> CallSite<R> {
         // checked by the solver in a check of its own). The probe now: --check
         // exit 0, --no-cache --expand exit 0. No pin yet: pin the probe's program
         // as accepted before this is cleared.
-        self.check_by_bounds(ctx)?;
+        self.check_by_bounds(ctx, !check.began())?;
         check.end(&ctx.env)
     }
 
@@ -4290,7 +4273,6 @@ impl<R: Rt> CallSite<R> {
                 }
             }
         }
-        self.raise_throws(ctx, &ftype, false)?;
         if !types.settle(ctx, &self.spec, &self.rtype)? {
             wrap!(self.fnode, self.rtype.check_contains(&ctx.env, &ftype.rtype))?;
         }

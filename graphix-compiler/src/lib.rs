@@ -3511,6 +3511,10 @@ pub(crate) enum Pending {
     /// block: once the check ends, no name in it may mean a trait
     /// ([`Type::rewrite_trait_args`]).
     Body(Type, Expr),
+    /// A raise at `at` no catch covers, of what `raised` holds once the
+    /// check ends: one that raises something is warned of. `callee` names
+    /// the function a call raises from.
+    Raise { raised: Type, at: Expr, callee: Option<Expr>, flags: BitFlags<CFlag> },
 }
 
 /// What of a pending typedef's shape is still open.
@@ -3553,6 +3557,20 @@ pub(crate) fn check_pending_names<R: Rt>(ctx: &mut CompileCtx<R>) -> Result<()> 
             }
             Pending::Body(t, spec) => {
                 t.rewrite_trait_args(&ctx.env).at(&spec)?;
+            }
+            Pending::Raise { raised, at, callee, flags } => {
+                if let Some(t) = raised.deref_cloned()
+                    && t != Type::Bottom
+                {
+                    let told = match callee {
+                        Some(f) => format_compact!(
+                            "error {} raised from function call {f}",
+                            t.resolve_tvars()
+                        ),
+                        None => format_compact!("error raised by ?"),
+                    };
+                    node::error::Qop::<R>::check_unhandled(&ctx.env, flags, &at, told)?;
+                }
             }
         }
     }
@@ -3622,7 +3640,7 @@ pub(crate) fn recheck_pending_typedefs<R: Rt>(
                 }
             }
         }
-        Pending::Name(..) | Pending::Body(..) => true,
+        Pending::Name(..) | Pending::Body(..) | Pending::Raise { .. } => true,
     });
     res
 }

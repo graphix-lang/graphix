@@ -658,6 +658,25 @@ fn an_uncaught_error_is_a_warning() {
     assert_eq!(c.warnings("a.gx"), vec![]);
 }
 
+/// A call no catch covers is a warning where its function raises, and not
+/// where it raises nothing.
+#[test]
+fn an_uncaught_raise_from_a_call_is_a_warning() {
+    let mut c = Client::start(&[("a.gx", "let f = |x: i64| error(`E(x))?;\nf(1)\n")]);
+    c.open("a.gx");
+    assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
+    assert_eq!(
+        c.warnings("a.gx"),
+        [(
+            "f(1)".into(),
+            "error Error<ErrChain<`E(i64)>> raised from function call f will not be caught"
+                .into()
+        )]
+    );
+    c.edit("a.gx", "let f = |x: i64| x + 1;\nf(1)\n");
+    assert_eq!(c.warnings("a.gx"), vec![]);
+}
+
 /// An import nothing looks a name up through is a warning at the name; a
 /// module's interface imports count, and so does a use through `as`.
 #[test]

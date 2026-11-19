@@ -222,26 +222,6 @@ pub(crate) fn join_raised(env: &Env, handler: &ErrorHandler, etyp: &Type) -> Res
     let Some(Type::TVar(tv)) = env.by_id.get(&catch).map(|b| &b.typ) else {
         bail!("BUG: catch {catch:?} has no inferred bind")
     };
-    // outside a check (the build binding an instance) nothing joins: the
-    // check related every raise to its catch
-    if !bounds::active() {
-        return Ok(());
-    }
-    Type::TVar(tv.clone()).check_contains(env, etyp)
-}
-
-/// Join an open raised type (a callback's `throws 'e`) into `catch`: two
-/// open cells are one (a gate's `'e` and a call's instantiation of it),
-/// anything else joins as a union member.
-pub(crate) fn join_open_raised(
-    env: &Env,
-    handler: &ErrorHandler,
-    etyp: &Type,
-) -> Result<()> {
-    let (catch, _) = handler.id();
-    let Some(Type::TVar(tv)) = env.by_id.get(&catch).map(|b| &b.typ) else {
-        bail!("BUG: catch {catch:?} has no inferred bind")
-    };
     Type::TVar(tv.clone()).check_contains(env, etyp)
 }
 
@@ -1227,7 +1207,22 @@ impl<R: Rt> Update<R> for Qop<R> {
             // link that raised it. probe:
             // design/review-2026-11-16/repro/c-error-op-seq-rethrow-diagnostic.gx
             // (c-error-op-03)
-            Self::check_unhandled(&ctx.env, *flags, &self.spec, "error raised by ?")?;
+            match self.spec.kind {
+                // a seq's rethrow raises only what its run raised, which
+                // is known once the check ends
+                ExprKind::Rethrow(_) => ctx.pending_names.push(crate::Pending::Raise {
+                    raised: self.n.typ().clone(),
+                    at: (*self.spec).clone(),
+                    callee: None,
+                    flags: *flags,
+                }),
+                _ => Self::check_unhandled(
+                    &ctx.env,
+                    *flags,
+                    &self.spec,
+                    "error raised by ?",
+                )?,
+            }
         }
         wrap!(self, self.check_by_bounds(ctx))
     }

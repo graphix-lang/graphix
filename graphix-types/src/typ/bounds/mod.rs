@@ -112,6 +112,11 @@ impl Check {
         Check(begins)
     }
 
+    /// Whether this began the check, rather than joining one running.
+    pub fn began(&self) -> bool {
+        self.0
+    }
+
     /// [`end`] the check this began, if it began one.
     pub fn end(mut self, env: &Env) -> Result<()> {
         match std::mem::take(&mut self.0) {
