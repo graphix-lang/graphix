@@ -1,6 +1,6 @@
 use crate::{
     AddrMap, AddrSet, PRINT_FLAGS, PrintFlag, SourcePosition,
-    dbgenv::{graphix_dbg_bind, gxdbg_typeref},
+    dbgenv::gxdbg_typeref,
     env::Env,
     expr::{ModPath, Origin, Source, WrittenAt},
     format_with_flags,
@@ -37,10 +37,9 @@ use triomphe::Arc;
 pub mod bounds;
 mod cast;
 pub use cast::{
-    Carriers, CastInput, Indiscernible, IsAFlags, Open, ShallowScrutinee, numbers_ordered,
+    CastInput, Indiscernible, IsAFlags, Open, ShallowScrutinee, numbers_ordered,
 };
 mod contains;
-pub use contains::ContainsFlags;
 pub(crate) use contains::find_impl;
 pub use contains::{
     AmbiguousMember, InfiniteType, TakerUnion, TypeMismatch, UndecidedTaker,
@@ -49,7 +48,6 @@ pub(crate) mod expansive;
 pub mod fntyp;
 pub mod holds;
 mod matches;
-pub use matches::SigMatch;
 mod normalize;
 pub use normalize::{NormKey, norm_key};
 mod print;
@@ -125,13 +123,6 @@ impl Type {
     /// an abstract type's id).
     pub fn node_key(&self) -> Option<NodeKey> {
         Some((self.shared_identity()?, self.name_word()))
-    }
-
-    /// What a walk that meets one application of a typedef many times
-    /// keys each of its parameters by ([`ParamKey`]); the application must
-    /// be held while the key is, so the identities stay its parameters'.
-    pub fn param_key(&self) -> ParamKey {
-        self.param_key_with(&mut |_| None)
     }
 
     /// [`Self::param_key`], each named type applied to parameters under
@@ -332,37 +323,6 @@ impl TypeRef {
     pub(super) fn app_key_with(&self, def: usize, app: AppWords<'_>) -> AppKey {
         (def, self.params.iter().map(|p| p.param_key_with(app)).collect())
     }
-
-    /// The cells [`Self::app_key_with`] keys by address, into `out`: held,
-    /// each address stays its cell's. An application under this one that
-    /// the key holds by its id (`by_id`) is passed by: its own key's cells
-    /// are held already.
-    pub(crate) fn key_cells(
-        &self,
-        by_id: &dyn Fn(&Type) -> bool,
-        out: &mut Vec<Arc<tvar::CellLock>>,
-    ) {
-        struct Walk<'a> {
-            by_id: &'a dyn Fn(&Type) -> bool,
-            out: &'a mut Vec<Arc<tvar::CellLock>>,
-            seen: LPooled<AddrSet>,
-        }
-        fn walk(t: &Type, w: &mut Walk) {
-            ensure_sufficient(|| match t {
-                Type::TVar(tv) => {
-                    if w.seen.insert(tv.cell_addr()) {
-                        w.out.push(tv.cell())
-                    }
-                }
-                Type::Fn(f) if !f.quantifiers.is_empty() => (),
-                Type::Ref(r) if !r.params.is_empty() && (w.by_id)(t) => (),
-                t if node_addr(t).is_some_and(|a| !w.seen.insert(a)) => (),
-                t => t.for_each_child(&mut |c| walk(c, w)),
-            })
-        }
-        let mut w = Walk { by_id, out, seen: LPooled::take() };
-        self.params.iter().for_each(|p| walk(p, &mut w))
-    }
 }
 
 /// The typedef applications a walk has expanded, by [`AppKey`], each held
@@ -430,11 +390,6 @@ impl NodePairs {
         if let Some(f) = &mut self.found {
             f.clear()
         }
-    }
-
-    /// Start a walk over the pairs found by earlier ones.
-    pub(super) fn restart(&mut self) {
-        self.seen = 0
     }
 }
 
@@ -528,22 +483,6 @@ impl Held {
             Type::TVar(tv) => Held::Cell { _cell: tv.cell() },
             t => Held::Node { _node: t.clone() },
         }
-    }
-}
-
-/// [`norm_key`] extended with `Ref`, keyed by its node, an abstract type
-/// by its parameters' node and its id, and the leaves whose content fits
-/// the key: a primitive by its bits, `Any` and `⊥`.
-fn probe_key(t: &Type) -> Option<NormKey> {
-    let d = mem::discriminant(t);
-    match t {
-        Type::Ref(r) => Some((d, Arc::as_ptr(r).addr(), 0)),
-        Type::Abstract { id, params } => {
-            Some((d, (**params).as_ptr().addr(), id.0 as usize))
-        }
-        Type::Primitive(p) => Some((d, p.bits() as usize, 0)),
-        Type::Any | Type::Bottom => Some((d, 0, 0)),
-        t => norm_key(t),
     }
 }
 
@@ -1540,13 +1479,6 @@ impl TypeRef {
     #[doc(hidden)]
     pub fn def_key(&self) -> Option<usize> {
         self.resolved().map(|r| r.def_key())
-    }
-
-    /// The key of the definition [`Type::lookup_ref_probe`] expands this
-    /// by, found without expanding it; fills nothing.
-    #[doc(hidden)]
-    pub fn probe_def_key(&self, env: &Env) -> Option<usize> {
-        self.resolve_peek(env).map(|r| r.def_key())
     }
 
     /// Whether two references name one definition: an open cell names
@@ -3140,19 +3072,6 @@ impl Type {
         })
     }
 
-    /// The reference behind a type variable: a cell bound (through
-    /// other cells) to a reference or to a filled constructor
-    /// application.
-    pub(crate) fn ref_behind(&self) -> Option<Type> {
-        match self {
-            Type::TVar(_) => self.with_deref(|t| match t {
-                Some(t @ Type::Ref(_)) => Some(t.clone()),
-                _ => None,
-            }),
-            _ => None,
-        }
-    }
-
     /// The other side of a constructor application, dereferenced and
     /// [`Self::decompose`]d: a reference by name, a bare alias through
     /// its expansion.
@@ -3166,57 +3085,6 @@ impl Type {
             Type::Ref(tr) if tr.params.is_empty() => Ok(t.lookup_ref(env)?.decompose()),
             _ => Ok(None),
         }
-    }
-
-    /// [`Self::app_split`] for a receiver that lost its name (a cell
-    /// holding a typedef's expansion): each registered head of the
-    /// constructor variable's trait bounds is tried, and the one that
-    /// contains the receiver and determines the element is the
-    /// constructor. Only a `commit` binds the receiver's open cells; a
-    /// probe decides on a copy.
-    pub(crate) fn app_split_for(
-        ctor: &Type,
-        t: &Type,
-        env: &Env,
-        commit: bool,
-    ) -> Result<Option<(Type, Type)>> {
-        if let Some(parts) = Self::app_split(t, env)? {
-            return Ok(Some(parts));
-        }
-        let Some(t) = t.deref_cloned() else { return Ok(None) };
-        let Type::TVar(cv) = ctor else { return Ok(None) };
-        // A head is kept when it contains the receiver and determines the
-        // element; a proper subtype (`[`Nil]` under `List<'_>`) leaves the
-        // element open and is not this constructor. Each head is tried on
-        // a private copy of the receiver, so a rejected one binds nothing.
-        let fits = |head: &Type, t: &Type| -> Result<Option<(Type, Type)>> {
-            let head = head.reset_tvars();
-            let elem = Type::empty_tvar();
-            let Some(filled) = head.fill_hole(&elem) else { return Ok(None) };
-            Ok((filled.contains(env, t)? && elem.with_deref(|e| e.is_some()))
-                .then(|| (head.resolve_tvars(), elem.resolve_tvars())))
-        };
-        for c in cv.cell_constraints().iter() {
-            let Type::Ref(tr) = c else { continue };
-            let Some(tid) = env.trait_of_ref(tr) else { continue };
-            let Some(heads) = env.impls_of(tid) else { continue };
-            for im in heads.iter() {
-                if !matches!(im.target, Type::Ref(_)) {
-                    continue;
-                }
-                let Some(copy) = fits(&im.target, &t.reset_tvars())? else { continue };
-                if !commit {
-                    return Ok(Some(copy));
-                }
-                if let Some(r) = fits(&im.target, &t)? {
-                    if graphix_dbg_bind() {
-                        eprintln!("APP-SPLIT recovered ctor={:?} elem={:?}", r.0, r.1);
-                    }
-                    return Ok(Some(r));
-                }
-            }
-        }
-        Ok(None)
     }
 
     /// How a trait signature spells its receiver: `applied` if `self`
@@ -4214,160 +4082,6 @@ impl Type {
             Type::Fn(ft) => Some(Type::Fn(Arc::new(ft.scope_refs_with(scope, copies)))),
             t => t.cow_children(&mut |c| c.scope_refs_int(scope, copies)),
         }
-    }
-
-    /// An inferred predicate as it decides a scrutinee no type has decided,
-    /// where a `_` stands at a position of a tuple, struct or variant at
-    /// which another arm's predicate in `others` holds a name (an open
-    /// cell): the `Any` there, and every `Any` inside a tuple, struct or
-    /// variant standing there, is a cell of its own, as an unused name's
-    /// is, so the part is what the names' uses make it. `None` where no
-    /// `_` stands so. The elements of an array or list share one type, where
-    /// a `_` stays `Any`.
-    pub fn wildcards_beside_binds(&self, others: &[&Type]) -> Option<Type> {
-        fn members<'a>(ts: &[&'a Type], out: &mut SmallVec<[&'a Type; 8]>) {
-            for t in ts {
-                match t {
-                    Type::Set(ms) => out.extend(ms.iter()),
-                    t => out.push(t),
-                }
-            }
-        }
-        fn cells(t: &Type) -> Option<Type> {
-            ensure_sufficient(|| match t {
-                Type::Any => Some(Type::empty_tvar()),
-                Type::Set(ms) => each(ms.len(), &mut |i| cells(&ms[i])).map(|parts| {
-                    Type::Set(Arc::from_iter(
-                        ms.iter().zip(parts).map(|(m, p)| p.unwrap_or_else(|| m.clone())),
-                    ))
-                }),
-                Type::Tuple(ts) => each(ts.len(), &mut |i| cells(&ts[i])).map(|parts| {
-                    Type::Tuple(Arc::from_iter(
-                        ts.iter().zip(parts).map(|(m, p)| p.unwrap_or_else(|| m.clone())),
-                    ))
-                }),
-                Type::Variant(tag, ts, at) => {
-                    each(ts.len(), &mut |i| cells(&ts[i])).map(|parts| {
-                        Type::Variant(
-                            tag.clone(),
-                            Arc::from_iter(
-                                ts.iter()
-                                    .zip(parts)
-                                    .map(|(m, p)| p.unwrap_or_else(|| m.clone())),
-                            ),
-                            *at,
-                        )
-                    })
-                }
-                Type::Struct(fs) => {
-                    each(fs.len(), &mut |i| cells(&fs[i].1)).map(|parts| {
-                        Type::Struct(Arc::from_iter(fs.iter().zip(parts).map(
-                            |((n, t, at), p)| {
-                                (n.clone(), p.unwrap_or_else(|| t.clone()), *at)
-                            },
-                        )))
-                    })
-                }
-                _ => None,
-            })
-        }
-        fn part(t: &Type, beside: &[&Type]) -> Option<Type> {
-            match beside
-                .iter()
-                .any(|o| matches!(o, Type::TVar(tv) if tv.open_cell().is_some()))
-            {
-                true => cells(t),
-                false => match t {
-                    Type::Any => None,
-                    t => t.wildcards_beside_binds(beside),
-                },
-            }
-        }
-        fn each(
-            n: usize,
-            of: &mut dyn FnMut(usize) -> Option<Type>,
-        ) -> Option<SmallVec<[Option<Type>; 8]>> {
-            let parts: SmallVec<[Option<Type>; 8]> = (0..n).map(&mut *of).collect();
-            parts.iter().any(Option::is_some).then_some(parts)
-        }
-        ensure_sufficient(|| {
-            let mut ms: SmallVec<[&Type; 8]> = SmallVec::new();
-            members(others, &mut ms);
-            match self {
-                Type::Set(alts) => {
-                    let parts = each(alts.len(), &mut |i| {
-                        alts[i].wildcards_beside_binds(others)
-                    })?;
-                    Some(Type::Set(Arc::from_iter(
-                        alts.iter()
-                            .zip(parts)
-                            .map(|(a, p)| p.unwrap_or_else(|| a.clone())),
-                    )))
-                }
-                Type::Tuple(ts) => {
-                    let parts = each(ts.len(), &mut |k| {
-                        let beside: SmallVec<[&Type; 8]> = ms
-                            .iter()
-                            .filter_map(|o| match o {
-                                Type::Tuple(os) if os.len() == ts.len() => Some(&os[k]),
-                                _ => None,
-                            })
-                            .collect();
-                        part(&ts[k], &beside)
-                    })?;
-                    Some(Type::Tuple(Arc::from_iter(
-                        ts.iter().zip(parts).map(|(t, p)| p.unwrap_or_else(|| t.clone())),
-                    )))
-                }
-                Type::Variant(tag, ts, at) => {
-                    let parts = each(ts.len(), &mut |k| {
-                        let beside: SmallVec<[&Type; 8]> = ms
-                            .iter()
-                            .filter_map(|o| match o {
-                                Type::Variant(otag, os, _)
-                                    if otag == tag && os.len() == ts.len() =>
-                                {
-                                    Some(&os[k])
-                                }
-                                _ => None,
-                            })
-                            .collect();
-                        part(&ts[k], &beside)
-                    })?;
-                    Some(Type::Variant(
-                        tag.clone(),
-                        Arc::from_iter(
-                            ts.iter()
-                                .zip(parts)
-                                .map(|(t, p)| p.unwrap_or_else(|| t.clone())),
-                        ),
-                        *at,
-                    ))
-                }
-                Type::Struct(fs) => {
-                    let parts = each(fs.len(), &mut |k| {
-                        let name = &fs[k].0;
-                        let beside: SmallVec<[&Type; 8]> = ms
-                            .iter()
-                            .filter_map(|o| match o {
-                                Type::Struct(os) => os
-                                    .iter()
-                                    .find(|(n, _, _)| n == name)
-                                    .map(|(_, t, _)| t),
-                                _ => None,
-                            })
-                            .collect();
-                        part(&fs[k].1, &beside)
-                    })?;
-                    Some(Type::Struct(Arc::from_iter(fs.iter().zip(parts).map(
-                        |((n, t, at), p)| {
-                            (n.clone(), p.unwrap_or_else(|| t.clone()), *at)
-                        },
-                    ))))
-                }
-                _ => None,
-            }
-        })
     }
 
     /// A unification view of this type with every `Any` leaf replaced

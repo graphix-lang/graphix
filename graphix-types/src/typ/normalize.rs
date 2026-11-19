@@ -679,20 +679,6 @@ impl Type {
         (flat, members_changed || flat_changed)
     }
 
-    /// The normal form of the union of `members`, of one its own, in the
-    /// pass `cx`, whose memo takes the members' nodes and not the union
-    /// asked for.
-    pub(super) fn normal_union<'a>(
-        members: impl Iterator<Item = &'a Self> + Clone,
-        cx: &mut NormCx,
-    ) -> Self {
-        let mut first_two = members.clone();
-        match (first_two.next(), first_two.next()) {
-            (Some(m), None) => m.normalize_int(cx).unwrap_or_else(|| m.clone()),
-            _ => Self::normalize_members(members, cx).0,
-        }
-    }
-
     /// The one member `self` and `t` merge into; the live cells a
     /// collapse pairs go on `welds`, which a `None` leaves to be dropped.
     fn merge(&self, t: &Self, cx: &mut FlatCx, welds: &mut Welds) -> Option<Self> {
@@ -1012,71 +998,6 @@ pub(super) mod tests {
         }
     }
 
-    /// One alternative joins nothing, however many times its node stands
-    /// and whatever `⊥` stands beside it: a union it holds, at its top or
-    /// under a constructor, keeps the members a renaming of two live
-    /// cells would make one, and the cells stay two.
-    #[test]
-    fn a_union_of_one_alternative_keeps_its_union_of_renamings() {
-        let env = Env::default();
-        let written = "([fn(q: 'c) -> i64, fn(q: 'd) -> i64], 'c, 'd)";
-        let t = crate::expr::parser::parse_type(written).unwrap();
-        t.alias_tvars(&mut AHashMap::default());
-        let Type::Tuple(fs) = &t else { unreachable!() };
-        let (Type::TVar(c), Type::TVar(d)) = (&fs[1], &fs[2]) else { unreachable!() };
-        let unions: [fn(&Env, &[&Type]) -> anyhow::Result<Type>; 4] = [
-            Type::union,
-            Type::union_exact,
-            Type::union_of_alternatives,
-            Type::union_exact_of_alternatives,
-        ];
-        for union in unions {
-            for ts in [&[&fs[0]][..], &[&fs[0], &fs[0]], &[&Type::Bottom, &fs[0]]] {
-                let read = union(&env, ts).unwrap();
-                assert!(matches!(&read, Type::Set(ms) if ms.len() == 2), "{read}");
-            }
-            let read = union(&env, &[&t, &t]).unwrap();
-            let Type::Tuple(parts) = &read else { unreachable!() };
-            assert!(matches!(&parts[0], Type::Set(ms) if ms.len() == 2), "{read}");
-            assert!(c.stands_for() != d.stands_for(), "{read}");
-        }
-    }
-
-    /// A union one alternative of a join holds keeps its members as they
-    /// stand, beside another alternative and beside a second union of the
-    /// same shape, and members that are one type meet or collapse only
-    /// across alternatives.
-    #[test]
-    fn a_join_of_alternatives_keeps_the_union_one_of_them_holds() {
-        let env = Env::default();
-        let written = "([fn(q: 'c) -> i64, fn(q: 'd) -> i64], 'c, 'd)";
-        let t = crate::expr::parser::parse_type(written).unwrap();
-        t.alias_tvars(&mut AHashMap::default());
-        let Type::Tuple(fs) = &t else { unreachable!() };
-        let (Type::TVar(c), Type::TVar(d)) = (&fs[1], &fs[2]) else { unreachable!() };
-        let Type::Set(members) = &fs[0] else { unreachable!() };
-        let null = Type::Primitive(Typ::Null.into());
-        let unions: [fn(&Env, &[&Type]) -> anyhow::Result<Type>; 4] = [
-            Type::union,
-            Type::union_exact,
-            Type::union_of_alternatives,
-            Type::union_exact_of_alternatives,
-        ];
-        for union in unions {
-            let read = union(&env, &[&fs[0], &null]).unwrap();
-            assert!(matches!(&read, Type::Set(ms) if ms.len() == 3), "{read}");
-            assert!(c.stands_for() != d.stands_for(), "{read}");
-        }
-        let (p, q) = (&members[0], &members[1]);
-        let read = Type::union_exact_of_members(&env, &[p, q]).unwrap();
-        assert!(matches!(&read, Type::Set(ms) if ms.len() == 2), "{read}");
-        let read = Type::union_exact_of_parts(&env, &[p, q], &[0, 0]).unwrap();
-        assert!(matches!(&read, Type::Set(ms) if ms.len() == 2), "{read}");
-        assert!(c.stands_for() != d.stands_for(), "{read}");
-        let read = Type::union_exact_of_parts(&env, &[p, q], &[0, 1]).unwrap();
-        assert!(!matches!(&read, Type::Set(_)), "{read}");
-    }
-
     /// A node shared by both sides compares equal without walking it.
     #[test]
     fn ordering_does_not_walk_a_shared_node() {
@@ -1085,13 +1006,6 @@ pub(super) mod tests {
         let a = Type::Set(Arc::from_iter(members.iter().cloned()));
         let b = Type::Set(Arc::from_iter(members.iter().cloned()));
         assert_eq!(a.cmp(&b), Ordering::Equal);
-    }
-
-    /// Collecting a capture type's open cells walks each shared node once.
-    #[test]
-    fn narrowing_collects_cells_once_per_node() {
-        let (s, _) = error_ladder(64);
-        s.narrow_per_member(&Env::default(), &[]).unwrap();
     }
 
     /// The forward links from `tv` to the cell it stands for.
@@ -1130,58 +1044,6 @@ pub(super) mod tests {
         }
         assert_eq!(links(&c), 0);
         assert_eq!(c.cell_lower().len(), 1);
-    }
-
-    /// Arms that take apart a slice inside a slice (`[[a0, .., t..], u..]`)
-    /// narrow against members that hold the inner cell beside an array of
-    /// it, where an arm's copy takes the cell: each copy copies the cell,
-    /// never the links to it, so the links grow by the pairs narrowed, not
-    /// by a factor at each.
-    #[test]
-    fn narrowing_nested_slice_arms_copies_no_chain_of_links() {
-        let env = Env::default();
-        let n = 4;
-        let (arms, cells): (Vec<Type>, Vec<Vec<TVar>>) = (1..=n)
-            .rev()
-            .map(|k| {
-                let mut cells: Vec<TVar> = (0..=k + 1)
-                    .map(|i| TVar::empty_named(arcstr::format!("c{k}_{i}")))
-                    .collect();
-                let rest = Type::TVar(cells.pop().unwrap());
-                let inner = Type::Set(cells.iter().cloned().map(Type::TVar).collect());
-                let elems =
-                    Type::Set(Arc::from_iter([Type::Array(Arc::new(inner)), rest]));
-                (Type::Array(Arc::new(elems)), cells)
-            })
-            .unzip();
-        let scrut = Type::TVar(TVar::empty_named("x".into()));
-        let union = Type::union_exact(&env, &arms.iter().collect::<Vec<_>>()).unwrap();
-        assert!(union.decided_holds(&env, &scrut).unwrap());
-        for arm in arms.iter() {
-            assert!(scrut.narrow_pattern(&env, arm).unwrap());
-        }
-        let most = cells.iter().flatten().map(links).max().unwrap();
-        assert!(most <= 2 * n * n, "{most} links after {n} arms");
-    }
-
-    /// A member walked as a member before it is dropped: one type with it,
-    /// a union's members but its open cells in order. An array of a union of
-    /// two arrays one type with each other walks apart from an array of one
-    /// of them.
-    #[test]
-    fn members_walked_as_one_before_are_dropped() {
-        let (c, d) = (TVar::empty_named("c".into()), TVar::empty_named("d".into()));
-        let (cs, ds) = (|k| slice_of(&c, k), |k| slice_of(&d, k));
-        let mut members: SmallVec<[Type; 8]> =
-            SmallVec::from_iter([cs(2), ds(1), cs(1), cs(3), ds(2)]);
-        Type::drop_repeated(&mut members);
-        assert_eq!(&members[..], &[cs(2), ds(1)]);
-        let nested = |k| Type::Array(Arc::new(cs(k)));
-        let two = Type::Array(Arc::new(Type::Set(Arc::from_iter([cs(1), cs(2)]))));
-        let mut members: SmallVec<[Type; 8]> =
-            SmallVec::from_iter([nested(1), two.clone(), nested(2)]);
-        Type::drop_repeated(&mut members);
-        assert_eq!(&members[..], &[nested(1), two]);
     }
 
     /// A union of named or abstract members normalizes in linear time:
@@ -1247,62 +1109,5 @@ pub(super) mod tests {
         assert!(matches!(&apart, Type::Set(ms) if ms.len() == 2), "{apart:?}");
         let joined = Type::flatten_set([pair(&i, &c0), pair(&s, &c0)]);
         assert!(matches!(&joined, Type::Tuple(_)), "{joined:?}");
-    }
-
-    /// Cells `c_0 = i64`, `c_k = (c_k-1, c_k-1)`, proved ground: what
-    /// `c_depth` holds.
-    pub(in crate::typ) fn ground_pair_chain(depth: usize) -> Vec<TVar> {
-        let mut cells: Vec<TVar> = vec![TVar::empty_named(arcstr::literal!("c"))];
-        cells[0].bind(Type::Primitive(Typ::I64.into()));
-        for _ in 0..depth {
-            let last = Type::TVar(cells[cells.len() - 1].clone());
-            let c = TVar::empty_named(arcstr::literal!("c"));
-            c.bind(Type::Tuple(Arc::from_iter([last.clone(), last])));
-            cells.push(c);
-        }
-        assert!(Type::TVar(cells[depth].clone()).prove_ground());
-        cells
-    }
-
-    /// `measure` while `top`'s proof stands: a write to a bound cell, which
-    /// a test on another thread may make, moves the ground epoch and drops
-    /// what the cells keep, so `measure` runs again over a new proof until
-    /// no such write fell inside it.
-    pub(in crate::typ) fn while_ground<T>(
-        top: &TVar,
-        mut measure: impl FnMut() -> T,
-    ) -> T {
-        for _ in 0..100_000 {
-            assert!(Type::TVar(top.clone()).prove_ground());
-            let r = measure();
-            if top.ground_now() {
-                return r;
-            }
-        }
-        panic!("the ground epoch moved under every measure")
-    }
-
-    /// A ground cell keeps what it resolved to: a chain of them resolves
-    /// a link at a time once, then each link of it at once, over the
-    /// first resolution's parts.
-    #[test]
-    fn a_ground_chain_resolves_once() {
-        let depth = 64;
-        let cells = ground_pair_chain(depth);
-        let walked = |tv: &TVar| {
-            RESOLVED.with(|n| n.set(0));
-            let r = Type::TVar(tv.clone()).resolve_tvars();
-            (r, RESOLVED.with(|n| n.get()))
-        };
-        let ((first, n), (again, n_again), (below, n_below)) =
-            while_ground(&cells[depth], || {
-                (walked(&cells[depth]), walked(&cells[depth]), walked(&cells[depth - 1]))
-            });
-        assert!(n <= 3 * depth + 2, "the first resolution walked {n} nodes");
-        assert_eq!(n_again, 1, "a second resolution walked {n_again} nodes");
-        assert!(again.shares_content(&first));
-        assert_eq!(n_below, 1, "a link's resolution walked {n_below} nodes");
-        let Type::Tuple(parts) = &first else { panic!("not a pair") };
-        assert!(below.shares_content(&parts[0]));
     }
 }

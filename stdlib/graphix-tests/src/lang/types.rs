@@ -17809,3 +17809,112 @@ run!(
     refused("type mismatch");
     FuseExpect::None
 );
+
+run!(
+    a_union_through_a_cell_that_holds_it_is_an_infinite_type,
+    r#"{
+  let c = true;
+  let b = never();
+  let a = [b];
+  b <- select c { true => a, false => null };
+  a
+}"#,
+    refused("infinite type");
+    FuseExpect::None
+);
+
+run!(
+    a_union_of_two_constructions_meets_a_generic_formal_of_that_constructor,
+    r#"{
+  let c = true;
+  let v = select c { true => [1], false => ["a"] };
+  let t: [(i64, string), (f64, i64)] = (1, "z");
+  let k = |u: ('a, 'b)| 1;
+  let s: [{a: i64, b: f64}, {a: string, b: i64}] = {a: 1, b: 1.5};
+  let m = |u: {a: 'a, b: 'b}| 2;
+  let l: [List<i64>, List<string>] = [<1>];
+  array::len(v) + k(t) + m(s) + list::len(l)
+}"#,
+    is(Value::I64(5));
+    FuseExpect::Jit
+);
+
+run!(
+    a_variable_two_parts_of_one_argument_share_takes_both_in_either_order,
+    r#"{
+  let f = |x: {a: 'a, b: 'a}| 0;
+  let n: [i64, null] = null;
+  let g = |x: [`A('a), `B('a)]| 1;
+  let v: [`A(i64), `B([i64, null])] = `A(1);
+  let w: [`B(i64), `A([i64, null])] = `B(1);
+  f({a: 1, b: n}) + f({a: n, b: 1}) + g(v) + g(w)
+}"#,
+    is(Value::I64(2));
+    FuseExpect::Jit
+);
+
+run!(
+    a_cell_within_no_error_meets_a_decided_union_at_one_variable,
+    r#"{
+  let mk = 'r: NoError |x: 'r| -> 'r x;
+  let z = never();
+  let r = mk(z);
+  let e: [i64, Error<`E>] = 1;
+  let f = |a: 'q, b: 'q| 0;
+  f(e, r)
+}"#,
+    is(Value::I64(0));
+    FuseExpect::Jit
+);
+
+run!(
+    a_function_bound_bounds_a_callback_whatever_its_parameter_is_named,
+    r#"{
+  let e = never();
+  let f = 'a: fn(x: i64) -> [i64, null] |g: 'a| g(1)$ + 1;
+  let r = f(|y| e);
+  e <- "s";
+  r
+}"#,
+    refused("[i64, null] does not contain string");
+    FuseExpect::None
+);
+
+run!(
+    a_bound_holding_another_variable_leaves_an_undecided_argument_open,
+    r#"{
+  let f = 'a: ['b, Array<[i64, null]>] |x: 'a, y: 'b| x;
+  let z = never();
+  let r = f([z], "q");
+  z <- 1;
+  z + 1
+}"#,
+    is(Value::I64(2));
+    FuseExpect::Jit
+);
+
+run!(
+    a_written_test_types_each_function_part_as_its_own,
+    r#"{
+  let h = |f: fn(x: 'a) -> 'a, g: fn(x: 'b) -> 'b, n: [i64, null], x: 'a| -> 'a
+    select (f, g, n) { (Any, Any, i64) as (_, q, _) => q(x), _ => x };
+  h(|x: i64| x + 1, |s: string| "[s]!", 1, 5) + 1
+}"#,
+    refused("'b: unbound does not contain 'a: unbound");
+    FuseExpect::None
+);
+
+run!(
+    a_written_test_over_two_function_parts_keeps_them_two_instances,
+    r#"{
+  let mk = |z| |x| x;
+  let a = mk(0);
+  let b = mk(0);
+  let n: [i64, null] = 1;
+  let r = select (a, b, n) { (Any, Any, i64) as (_, _, k) => k, _ => 0 };
+  let s = b("s");
+  a(1) + r
+}"#,
+    is(Value::I64(2));
+    FuseExpect::None
+);

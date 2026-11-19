@@ -522,35 +522,6 @@ impl<T> Verdicts<T> {
     }
 }
 
-/// Whether each of several types in one `Env` can carry a function or an
-/// unknown part, sharing what the searches decided of the definitions
-/// they name: a chain of names is walked to its end once, not once per
-/// type that enters it. A verdict stands only while no cell of the types
-/// asked is bound or bounded: ask no more of one after a check that may.
-pub struct Carriers {
-    fns: Verdicts<bool>,
-    unknown: Verdicts<bool>,
-}
-
-impl Carriers {
-    pub fn new() -> Self {
-        Self {
-            fns: Verdicts::judging(Judgment::HoldsFn),
-            unknown: Verdicts::judging(Judgment::HoldsUnknown),
-        }
-    }
-
-    /// [`Type::holds_fn`] of `t`.
-    pub fn holds_fn(&mut self, env: &Env, t: &Type) -> bool {
-        t.holds_fn_in(env, &mut self.fns)
-    }
-
-    /// [`Type::holds_fn`] or [`Type::holds_unknown`] of `t`.
-    pub fn carries(&mut self, env: &Env, t: &Type) -> bool {
-        t.holds_fn_in(env, &mut self.fns) || t.holds_unknown_in(env, &mut self.unknown)
-    }
-}
-
 /// `decide` the application `k` once per walk. A repeat while it is being
 /// decided answers `cycle`, an assumption that holds coinductively for
 /// `k` itself; a decision that read the assumption of an application
@@ -696,57 +667,6 @@ impl Type {
             Type::Fn(_) => Some(false),
             _ => None,
         })
-    }
-
-    /// Whether a reference this type test holds sits where `reaching`
-    /// admits `Any`: there the test would take a reference to anything
-    /// for one to its type.
-    pub fn ref_over_any(&self, env: &Env, reaching: &Type) -> bool {
-        fn go(env: &Env, seen: &mut RepSeen, p: &Type, r: &Type) -> bool {
-            ensure_sufficient(|| {
-                let (Some(p), Some(r)) = (p.deref_cloned(), r.deref_cloned()) else {
-                    return false;
-                };
-                let at = seen.pair_at(env, &p, &r);
-                walk(seen, at, false, |seen| {
-                    let expand = |t: &Type| match t {
-                        Type::Ref(_) => t.lookup_ref(env).ok(),
-                        t => Some(t.clone()),
-                    };
-                    let (Some(p), Some(r)) = (expand(&p), expand(&r)) else {
-                        return false;
-                    };
-                    match (&p, &r) {
-                        (_, Type::Any) => p.holds_ref(env),
-                        (Type::Set(ps), _) => ps.iter().any(|p| go(env, seen, p, &r)),
-                        (_, Type::Set(rs)) => rs.iter().any(|r| go(env, seen, &p, r)),
-                        (Type::Tuple(ps), Type::Tuple(rs)) if ps.len() == rs.len() => {
-                            ps.iter().zip(rs.iter()).any(|(p, r)| go(env, seen, p, r))
-                        }
-                        (Type::Array(p), Type::Array(r))
-                        | (Type::List(p), Type::List(r))
-                        | (Type::Error(p), Type::Error(r))
-                        | (Type::ByRef(_, p), Type::ByRef(_, r)) => go(env, seen, p, r),
-                        (Type::Struct(ps), Type::Struct(rs)) => {
-                            ps.iter().any(|(n, p, _)| {
-                                rs.iter().any(|(m, r, _)| n == m && go(env, seen, p, r))
-                            })
-                        }
-                        (Type::Variant(pt, ps, _), Type::Variant(rt, rs, _))
-                            if pt == rt && ps.len() == rs.len() =>
-                        {
-                            ps.iter().zip(rs.iter()).any(|(p, r)| go(env, seen, p, r))
-                        }
-                        (Type::Map(p), Type::Map(r)) => {
-                            go(env, seen, &p.key, &r.key)
-                                || go(env, seen, &p.value, &r.value)
-                        }
-                        _ => false,
-                    }
-                })
-            })
-        }
-        self.holds_ref(env) && go(env, &mut RepSeen::default(), self, reaching)
     }
 
     /// Whether the type holds `Any` or an open cell anywhere: a part a
@@ -2067,12 +1987,6 @@ impl Type {
     pub fn shallow_discriminant(&self, env: &Env, scrutinee: &Type) -> Option<Type> {
         ShallowScrutinee::new(scrutinee.clone()).discriminant(env, self)
     }
-
-    /// Whether this type is `Any` or holds it where a pattern reads:
-    /// outside every function type and reference.
-    pub fn holds_any(&self, env: &Env) -> bool {
-        holds_any(self, env, &mut ShapeSeen::default())
-    }
 }
 
 /// The scrutinee and its referenced definitions must stay fixed while these facts are used.
@@ -2757,9 +2671,6 @@ enum Subject {
     /// binds and does not test; a union of the test's types every value
     /// of a member it holds ([`holds`]).
     Binds,
-    /// A select arm's written test at its arm: as [`Self::Binds`], but a
-    /// cell is the type it took.
-    Written,
 }
 
 /// Whether `t`, a part of a select arm's test, is `b` or a union holding
@@ -3051,30 +2962,6 @@ impl Type {
     /// definition must rule out.
     pub fn rep_collision_open(&self, env: &Env, t: &Type) -> Option<Indiscernible> {
         test_collision(env, Subject::Beside, Open::Unknown, self, t)
-    }
-
-    /// [`Self::rep_collision`] for a select arm testing for `self` among
-    /// `t`: a cell of the test's, bound or open, is a part the arm binds
-    /// and does not test (a bind, a slice's rest), so it collides with
-    /// nothing, and neither does a part of `t` that a union of the
-    /// test's holds; under [`Open::Unknown`] an open cell of `t`'s may be
-    /// any type, even where the arm's capture shares it.
-    pub fn rep_collision_tested(
-        &self,
-        env: &Env,
-        open: Open,
-        t: &Type,
-    ) -> Option<Indiscernible> {
-        test_collision(env, Subject::Binds, open, self, t)
-    }
-
-    /// [`Self::rep_collision`] for a select arm's written test `self`
-    /// among `t`: a variable of the test's is the type it took, since one
-    /// written twice tests at one part what another decided, and a part
-    /// of `t` that a union of the test's holds collides with nothing: a
-    /// value of it that passes is typed as it.
-    pub fn rep_collision_written(&self, env: &Env, t: &Type) -> Option<Indiscernible> {
-        test_collision(env, Subject::Written, Open::Benign, self, t)
     }
 }
 
@@ -4139,43 +4026,6 @@ pub(crate) mod tests {
         }
     }
 
-    // A ground cell keeps what a search found under its binding while the
-    // binding stands: once it is replaced, a search walks it again, and a
-    // proof at the later epoch keeps nothing found under the old one.
-    #[test]
-    fn a_ground_cell_forgets_its_findings_when_its_binding_changes() {
-        let (env, _) = typed(&[], "i64");
-        let cell = TVar::empty_named(literal!("c"));
-        cell.bind(parsed(&env, "(i64, i64)"));
-        let pair = Type::Tuple(Arc::from_iter([
-            Type::TVar(cell.clone()),
-            Type::TVar(cell.clone()),
-        ]));
-        assert!(pair.prove_ground());
-        assert!(!pair.holds_fn(&env));
-        cell.bind(parsed(&env, "(fn(x: i64) -> i64, i64)"));
-        assert!(pair.prove_ground());
-        assert!(pair.holds_fn(&env));
-    }
-
-    // What a search found by looking a type reference up is the env's
-    // word, not the binding's: a ground cell keeps none of it, and a
-    // search in an env that resolves the name finds what it names.
-    #[test]
-    fn a_ground_cell_keeps_no_finding_that_looked_a_name_up() {
-        let (bare, _) = typed(&[], "i64");
-        let (named, _) = typed(&[("F", "fn(x: i64) -> i64")], "i64");
-        let cell = TVar::empty_named(literal!("c"));
-        cell.bind(parsed(&bare, "(F, i64)"));
-        let pair = Type::Tuple(Arc::from_iter([
-            Type::TVar(cell.clone()),
-            Type::TVar(cell.clone()),
-        ]));
-        assert!(pair.prove_ground());
-        assert!(!pair.holds_fn(&bare));
-        assert!(pair.holds_fn(&named));
-    }
-
     // A search that finds nothing under an application while a definition
     // it names is being decided says nothing of the application: `B`'s
     // `C<i64>` is first met inside `A`, before `A`'s own `_`, and `W`
@@ -4391,121 +4241,6 @@ pub(crate) mod tests {
         assert!(t.rep_collision(&env, &r).is_none());
     }
 
-    /// A written test's union types each value of a member it holds,
-    /// whatever else of the union shares that member's form; a member it
-    /// does not hold passes as one it does.
-    #[test]
-    fn a_written_tests_union_collides_with_no_member_it_holds() {
-        let (env, _) = typed(&[], "null");
-        let test = parsed(&env, "([fn(x: i64) -> i64, fn(y: string) -> string], i64)");
-        let held =
-            parsed(&env, "[(fn(x: i64) -> i64, i64), (fn(y: string) -> string, i64)]");
-        let other = parsed(&env, "[(fn(x: i64) -> i64, i64), (fn(z: f64) -> f64, i64)]");
-        assert!(test.rep_collision(&env, &held).is_some());
-        assert!(test.rep_collision_written(&env, &held).is_none());
-        assert!(test.rep_collision_written(&env, &other).is_some());
-        let narrow = parsed(&env, "(fn(x: i64) -> i64, i64)");
-        assert!(narrow.rep_collision_written(&env, &held).is_some());
-    }
-
-    /// A select arm's test collides with another product at a part only
-    /// where every other part of the test passes a value of its
-    /// counterpart: no value of the other product passes the test
-    /// otherwise. An empty array, list or map passes any such test, and a
-    /// part not decided passes every value.
-    #[test]
-    fn a_product_test_is_told_by_another_part() {
-        let defs = [
-            ("T", "[`A(T), `B]"),
-            ("U", "[`C(U), `D]"),
-            ("L", "[`Cons(i64, L), `Nil]"),
-            ("M", "[`Cons(string, M), `Nil]"),
-        ];
-        let (env, _) = typed(&defs, "null");
-        let judged = |test: &str, rest: &str| {
-            let (test, rest) = (parsed(&env, test), parsed(&env, rest));
-            assert!(test.rep_collision(&env, &rest).is_some(), "{test} beside {rest}");
-            let written = test.rep_collision_written(&env, &rest).is_some();
-            let tested =
-                test.rep_collision_tested(&env, super::Open::Unknown, &rest).is_some();
-            assert_eq!(written, tested, "{test} among {rest}");
-            written
-        };
-        let told = [
-            ("(&i64, i64)", "(&string, string)"),
-            ("(&i64, i64)", "(&string, [string, null])"),
-            ("{f: fn(x: i64) -> i64, n: i64}", "{f: fn(y: string) -> string, n: string}"),
-            ("`K(&i64, i64)", "`K(&string, null)"),
-            ("((&i64, i64), i64)", "((&string, string), i64)"),
-            ("((&i64, i64), i64)", "((&string, i64), string)"),
-            ("(&i64, `A)", "(&string, `B)"),
-            ("(&i64, (i64, i64))", "(&string, (i64, i64, i64))"),
-            ("(&i64, {a: i64})", "(&string, {b: i64})"),
-            ("(&i64, Array<i64>)", "(&string, (i64, i64))"),
-            ("(&i64, Array<i64>)", "(&string, List<i64>)"),
-            ("(&i64, Error<`A>)", "(&string, Error<`B>)"),
-            ("(&i64, array)", "(&string, Map<string, i64>)"),
-            ("(&i64, i64)", "(&string, &i64)"),
-            ("(&i64, T)", "(&string, U)"),
-        ];
-        for (test, rest) in told {
-            assert!(!judged(test, rest), "{test} among {rest}");
-        }
-        let untold = [
-            ("(&i64, i64)", "(&string, i64)"),
-            ("(&i64, [i64, null])", "(&string, [string, null])"),
-            ("(&i64, Array<i64>)", "(&string, Array<string>)"),
-            ("(&i64, List<i64>)", "(&string, List<string>)"),
-            ("(&i64, Map<string, i64>)", "(&string, Map<i64, string>)"),
-            ("(&i64, array)", "(&string, Array<string>)"),
-            ("(&i64, i64)", "(&string, Any)"),
-            ("(&i64, i64)", "(&string, 'a)"),
-            ("(&i64, fn(x: i64) -> i64)", "(&string, fn(y: string) -> string)"),
-            ("(&i64, L)", "(&string, M)"),
-            ("((&i64, i64), [i64, string])", "((&string, i64), string)"),
-        ];
-        for (test, rest) in untold {
-            assert!(judged(test, rest), "{test} among {rest}");
-        }
-    }
-
-    /// A member another part tells from a product test clears no pair of
-    /// names for the members after it: one that passes the test collides
-    /// in either order, met again or reached through a name under it.
-    #[test]
-    fn a_told_member_clears_no_pair_for_the_next() {
-        let defs = [
-            ("X", "{r: &i64}"),
-            ("Y", "{r: &string}"),
-            ("PA", "(DA, &i64)"),
-            ("PB", "(DB, &string)"),
-            ("DA", "[`N(PA), `E]"),
-            ("DB", "[`N(PB), `E]"),
-        ];
-        let (env, _) = typed(&defs, "null");
-        let cases = [
-            ("(X, i64)", "(Y, string)", "(Y, i64)"),
-            ("(PA, i64, DA)", "(PB, string, DB)", "(PA, i64, DB)"),
-        ];
-        for (test, told, passes) in cases {
-            let test = parsed(&env, test);
-            for members in [[told, passes], [passes, told]] {
-                let rest = Type::Set(Arc::from_iter(members.map(|m| parsed(&env, m))));
-                assert!(
-                    test.rep_collision_written(&env, &rest).is_some(),
-                    "{test} among {rest}"
-                );
-                let open = super::Open::Unknown;
-                assert!(
-                    test.rep_collision_tested(&env, open, &rest).is_some(),
-                    "{test} among {rest}"
-                );
-            }
-            let told = parsed(&env, told);
-            assert!(test.rep_collision_written(&env, &told).is_none(), "{test}, {told}");
-        }
-    }
-
     /// A cell with two bounds that are types collides where each bound
     /// does, and a bound that collides clears no pair of names for the
     /// parts of the walk after it.
@@ -4539,41 +4274,6 @@ pub(crate) mod tests {
         assert!(!judged("`K(&i64, i64)", "`K(&string, null)"));
         assert!(judged("(&i64, Array<i64>)", "(&string, Array<string>)"));
         assert!(judged("(&i64, i64)", "(&string, 'a)"));
-    }
-
-    /// What tells a product test's part from its counterpart is looked
-    /// for within a budget: over two DAGs of tuples 64 deep, 2^64 pairs
-    /// read as trees, the part may pass and the walk ends.
-    #[test]
-    fn a_part_past_the_pass_budget_may_pass() {
-        let (env, _) = typed(&[], "null");
-        let mut t = parsed(&env, "`Y");
-        for _ in 0..64 {
-            t = Type::Tuple(Arc::from_iter([t.clone(), t]));
-        }
-        let product = |r: &str| Type::Tuple(Arc::from_iter([parsed(&env, r), t.clone()]));
-        let (test, rest) = (product("&i64"), product("&string"));
-        assert!(test.rep_collision_written(&env, &rest).is_some());
-    }
-
-    // A written test that is a DAG of named unions looks for the member
-    // it holds through each name once per union it meets, not once per
-    // path: 39 names under 39 unions, not 2^19 paths.
-    #[test]
-    fn a_written_test_reads_each_name_of_a_union_dag_once() {
-        let defs = union_dag(20);
-        let defs: Vec<(&str, &str)> = defs.iter().map(|(n, b)| (&**n, &**b)).collect();
-        let (env, test) = typed(&defs, "L20");
-        let steps = |rest: &str| {
-            let rest = parsed(&env, rest);
-            super::WRITTEN_HOLDS.with(|n| n.set(0));
-            let r = test.rep_collision_written(&env, &rest);
-            (r.is_some(), super::WRITTEN_HOLDS.with(|n| n.get()))
-        };
-        let (collides, n) = steps("`D(i64)");
-        assert!(!collides && n <= 4 * 39 * 39, "{n} steps");
-        let (collides, n) = steps("`C");
-        assert!(!collides && n <= 4 * 39, "{n} steps");
     }
 
     /// `type L1 = [`A, `B]; type M1 = [`A, `C]` and, to `n`, `type Li =

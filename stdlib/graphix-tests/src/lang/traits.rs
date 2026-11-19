@@ -6726,3 +6726,15 @@ run!(
         let result = T::m(1)
     "#
 );
+
+run!(
+    a_function_passed_where_a_trait_bounds_the_receiver,
+    r#"{
+  trait T { val m: fn(self) -> i64 };
+  impl T for fn(x: i64) -> i64 { let m = |s| s(1) };
+  let f = |x: i64| -> i64 x + 1;
+  T::m(f)
+}"#,
+    is(Value::I64(2));
+    FuseExpect::Jit
+);

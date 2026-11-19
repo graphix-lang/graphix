@@ -3826,6 +3826,9 @@ impl<R: Rt> CallSite<R> {
     // notes) is deleted with the old check: a call is checked by
     // CallSite::check_by_bounds, and a call the build makes by the same in a check
     // of its own. Re-probe under the new check before closing.
+    // 2026-11-19 claude: Carriers, and the carries walk this names, is deleted on
+    // bounds-spike with the rest of the old relation: nothing called it after the
+    // old call check went.
 
     // CR claude for claude: [bug/low] This filter compares names, not bindings, so a
     // refusal that reads a shadowing `u` keeps the outer `u`. In `let g = |u| f((u, {

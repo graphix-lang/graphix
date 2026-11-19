@@ -8,9 +8,9 @@ use crate::{
     format_with_flags, image,
     typ::{
         Bound, Mutability, TVar, TVarsSeen, Type,
-        contains::{ContainsFlags, ContainsHist, any_part_pair},
+        contains::any_part_pair,
         key_text,
-        matches::{MatchHist, SigMatch, SigPairs},
+        matches::{MatchHist, SigPairs},
         normalize::NormCx,
         setops::strictly_identical,
         tvar::{self, Fresh, Level, RigidGate},
@@ -1535,20 +1535,6 @@ impl FnType {
         }
     }
 
-    /// A quantifier an earlier compile task left open: the check decided
-    /// it open, so a later task compares the type as any instance of
-    /// itself and never writes the cell (`tvar::earlier_task`), except an
-    /// input's own check, to which an earlier input's is one type
-    /// (`tvar::in_input`).
-    fn has_earlier_quantifier(&self) -> bool {
-        if super::tvar::in_input() {
-            return false;
-        }
-        let mut any = false;
-        self.open_quantifiers(|_, open| any |= open.earlier_task());
-        any
-    }
-
     /// Each of the signature's own quantifiers, as the signature names it.
     pub fn each_quantifier(&self, mut f: impl FnMut(&ArcStr, &TVar)) {
         if self.quantifiers.is_empty() {
@@ -1611,47 +1597,6 @@ impl FnType {
                 f(tv, open)
             }
         })
-    }
-
-    /// Map each of the signature's own open quantifiers to a fresh cell
-    /// in `known`, its conjuncts copied through `walk`: every call picks
-    /// them anew, whatever gate owns them.
-    fn fresh_quantifiers(
-        &self,
-        known: &mut AHashMap<usize, TVar>,
-        walk: impl Fn(&Type, &mut AHashMap<usize, TVar>) -> Type,
-    ) {
-        let mut opens: LPooled<Vec<TVar>> = LPooled::take();
-        self.open_quantifiers(|_, open| opens.push(open));
-        for tv in opens.iter() {
-            known
-                .entry(tv.cell_addr())
-                .or_insert_with(|| TVar::empty_named(tv.name.clone()));
-        }
-        for tv in opens.iter() {
-            let f = known[&tv.cell_addr()].clone();
-            for c in tv.cell_constraints() {
-                f.add_cell_constraint(walk(&c, known));
-            }
-        }
-    }
-
-    /// A copy whose own open quantifiers are fresh cells; every other cell
-    /// is shared.
-    fn fresh_own_quantifiers(&self) -> Self {
-        let mut known: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-        let image = |known: &AHashMap<usize, TVar>, a| {
-            known.get(&a).map(|f| Type::TVar(f.clone()))
-        };
-        let walk = |c: &Type, known: &mut AHashMap<usize, TVar>| {
-            c.swap_cells(&|a| image(known, a))
-        };
-        self.fresh_quantifiers(&mut known, walk);
-        if known.is_empty() {
-            return self.clone();
-        }
-        self.cow_walk(|t| Some(t.swap_cells(&|a| image(&known, a))))
-            .unwrap_or_else(|| self.clone())
     }
 
     /// A call's copy of the signature under the open gates `open`
@@ -1810,127 +1755,6 @@ impl FnType {
         super::holds::holds_fn(env, self, t)
     }
 
-    /// Arguments are contravariant: each of `t`'s parameters must admit
-    /// what `self`'s callers pass, and a label `self` lets a caller omit
-    /// must be one `t` defaults.
-    pub(super) fn contains_int(
-        &self,
-        flags: BitFlags<ContainsFlags>,
-        env: &Env,
-        hist: &mut ContainsHist,
-        t: &Self,
-    ) -> Result<bool> {
-        // A quantifier self has not picked stands for every type its bound
-        // admits, since each call through the value picks it anew: t must
-        // fit it held rigid, wherever the type stands; one an earlier task
-        // left open is held rigid in a copy.
-        let copy;
-        let this = match self.has_earlier_quantifier() {
-            true => {
-                copy = self.fresh_own_quantifiers();
-                &copy
-            }
-            false => self,
-        };
-        let gates = this.open_quantifier_gates();
-        let outer = (!gates.is_empty()).then(|| hist.gate());
-        let r = this.contains_gated(flags, env, hist, t);
-        if let Some(outer) = outer {
-            hist.ungate(outer)
-        }
-        drop(gates);
-        r
-    }
-
-    /// [`Self::contains_int`] with self's open quantifiers held rigid.
-    fn contains_gated(
-        &self,
-        flags: BitFlags<ContainsFlags>,
-        env: &Env,
-        hist: &mut ContainsHist,
-        t: &Self,
-    ) -> Result<bool> {
-        // a type whose quantifier an earlier task left open is any instance
-        // of itself: its quantifiers are fresh for this comparison, so
-        // self's bind them
-        let fresh;
-        let t = match t.has_earlier_quantifier() {
-            true => {
-                fresh = t.fresh_own_quantifiers();
-                &fresh
-            }
-            false => t,
-        };
-        let (pairs, ok) = self.align(t);
-        if !ok || pairs.iter().any(|(s, t)| s.has_default() && !t.has_default()) {
-            return Ok(false);
-        }
-        let vargs = match (&t.vargs, &self.vargs) {
-            (Some(tv), Some(sv)) => Some((tv, sv)),
-            (None, None) => None,
-            (_, _) => return Ok(false),
-        };
-        let args = flags ^ ContainsFlags::Contra;
-        // each position as (container, contained, flags), in order, the
-        // bounds between the result and the throws
-        let mut positions: SmallVec<[Option<(&Type, &Type, _)>; 8]> =
-            pairs.iter().map(|(s, t)| Some((&t.typ, &s.typ, args))).collect();
-        positions.extend(vargs.map(|(tv, sv)| Some((tv, sv, args))));
-        positions.push(Some((&self.rtype, &t.rtype, flags)));
-        positions.push(None);
-        positions.push(Some((&self.throws, &t.throws, flags)));
-        for p in positions.iter() {
-            let holds = match p {
-                Some((c, t, flags)) => c.contains_int(*flags, env, hist, t)?,
-                None => {
-                    self.bounds_hold(flags, env, hist)?
-                        && t.bounds_hold(flags, env, hist)?
-                }
-            };
-            if !holds {
-                return Ok(false);
-            }
-        }
-        Ok(true)
-    }
-
-    /// Rigid gates on a scheme's quantifiers no call has picked: what each
-    /// meets must hold for every type its bound admits.
-    fn open_quantifier_gates(&self) -> LPooled<Vec<super::tvar::RigidGate>> {
-        let mut gates: LPooled<Vec<super::tvar::RigidGate>> = LPooled::take();
-        self.open_quantifiers(|tv, open| {
-            if open.level().is_generic() {
-                gates.push(tv.open_rigid())
-            }
-        });
-        gates
-    }
-
-    /// Every declared bound holds for its bound variable. An open one
-    /// (its cell open at the end of any forward link) stays open: it
-    /// stands for one type the bound admits, and its cell enforces the
-    /// bound at every binding.
-    fn bounds_hold(
-        &self,
-        flags: BitFlags<ContainsFlags>,
-        env: &Env,
-        hist: &mut ContainsHist,
-    ) -> Result<bool> {
-        for (tv, tc) in self.constraint_view().iter() {
-            if tv.open_cell().is_none()
-                && !tc.contains_int(
-                    flags | ContainsFlags::Conjunct,
-                    env,
-                    hist,
-                    &Type::TVar(tv.clone()),
-                )?
-            {
-                return Ok(false);
-            }
-        }
-        Ok(true)
-    }
-
     pub fn check_contains(&self, env: &Env, other: &Self) -> Result<()> {
         if !self.contains(env, other)? {
             bail!("Fn type mismatch {self} does not contain {other}")
@@ -1938,7 +1762,7 @@ impl FnType {
         Ok(())
     }
 
-    pub fn sig_matches(&self, env: &Env, impl_fn: &Self) -> Result<SigMatch> {
+    pub fn sig_matches(&self, env: &Env, impl_fn: &Self) -> Result<()> {
         let (mut pairs, mut hist) = (SigPairs::default(), super::RefHist::new());
         self.sig_matches_int(env, impl_fn, &mut pairs, &mut hist)?;
         pairs.finished(env, &mut hist)
@@ -4099,36 +3923,6 @@ impl Meetings<'_> {
     }
 }
 
-/// Whether two members of a union are open cells, and not one cell.
-fn two_open_cells(ms: &[Type]) -> bool {
-    let mut open = ms.iter().filter_map(|m| match m {
-        Type::TVar(tv) => tv.open_cell(),
-        _ => None,
-    });
-    open.next().is_some_and(|first| open.any(|tv| !tv.same_cell(&first)))
-}
-
-/// Whether `t` holds a union two of whose members are two open cells,
-/// which a containment of it decides only through their other positions.
-fn holds_open_union(t: &Type) -> bool {
-    fn go(t: &Type, seen: &mut AHashSet<usize>) -> bool {
-        crate::stack::ensure_sufficient(|| match t {
-            Type::TVar(tv) => match tv.binding() {
-                Some(b) => seen.insert(tv.cell_addr()) && go(&b, seen),
-                None => false,
-            },
-            Type::Set(ms) if two_open_cells(ms) => true,
-            t if super::node_addr(t).is_some_and(|n| !seen.insert(n)) => false,
-            t => {
-                let mut found = false;
-                t.for_each_child(&mut |c| found = found || go(c, seen));
-                found
-            }
-        })
-    }
-    go(t, &mut LPooled::take())
-}
-
 /// Whether a bound of the open cell `tv` holds an open cell: binding `tv`
 /// decides another cell.
 fn decides_others(tv: &TVar) -> bool {
@@ -4388,15 +4182,6 @@ impl Type {
     pub fn place_cells(&self, env: &Env, at: &Self) {
         place_in_order(env, |f| Places::new(env, f).types(self, at))
     }
-
-    /// Make each open cell of `self` the open cell that stands at a place
-    /// of its own in `at`, wherever the two types are built alike: two
-    /// copies of one type hold one cell where both leave it open,
-    /// whichever member of a union beside it could take it.
-    pub fn place_open_cells(&self, env: &Env, at: &Self) {
-        Places::new(env, &mut |place, tv, at| place_at_open(env, place, tv, at))
-            .types(self, at)
-    }
 }
 
 impl FnType {
@@ -4498,15 +4283,6 @@ impl FnType {
                 })
             })?;
         Ok((own, known))
-    }
-}
-
-impl Type {
-    /// Whether this type holds a union two of whose members are two open
-    /// cells: a type going into it decides neither, so an equality
-    /// relates it as the contained side first.
-    pub fn holds_open_union(&self) -> bool {
-        holds_open_union(self)
     }
 }
 

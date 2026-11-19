@@ -51,17 +51,6 @@ struct DeferredUnion {
     within: SmallVec<[RefPair; 2]>,
 }
 
-/// A finished signature match ([`Type::sig_matches`]).
-pub struct SigMatch(SigPairs);
-
-impl SigMatch {
-    /// Each open implementation cell the match paired, in the order the
-    /// walk met it, with the signature's type at its place.
-    pub fn paired(&self) -> impl Iterator<Item = (&TVar, &Type)> {
-        self.0.cells.values().map(|(tv, t)| (tv, t))
-    }
-}
-
 /// The most members an open union's pairing searches over; a larger one
 /// pairs in stored order.
 const MAX_PAIRED_MEMBERS: usize = 6;
@@ -107,14 +96,13 @@ impl SigPairs {
         r
     }
 
-    /// End a signature match ([`Self::finish`]) and give what it paired.
+    /// End a signature match ([`Self::finish`]).
     pub(super) fn finished(
         mut self,
         env: &Env,
         hist: &mut RefHist<AHashSet<RefPair>>,
-    ) -> Result<SigMatch> {
-        self.finish(env, hist)?;
-        Ok(SigMatch(self))
+    ) -> Result<()> {
+        self.finish(env, hist)
     }
 
     /// End a signature match: pair the deferred unions, then judge every
@@ -896,7 +884,7 @@ impl Type {
             })
     }
 
-    pub fn sig_matches(&self, env: &Env, impl_type: &Self) -> Result<SigMatch> {
+    pub fn sig_matches(&self, env: &Env, impl_type: &Self) -> Result<()> {
         let (mut pairs, mut hist) = (SigPairs::default(), RefHist::new());
         self.sig_matches_int(env, impl_type, &mut pairs, &mut hist)?;
         pairs.finished(env, &mut hist)

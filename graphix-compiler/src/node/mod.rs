@@ -4344,21 +4344,19 @@ impl<R: Rt> Connect<R> {
                         },
                     ),
                     None => match e.downcast_ref::<AmbiguousMember>() {
-                        Some(a) if a.in_holder() && !crate::is_lowered(&bind.name) => {
-                            format_with_flags(
-                                PrintFlag::DerefTVars | PrintFlag::ReplacePrims,
-                                || {
-                                    anyhow!(
-                                        "{} is {held}: {}; declare {}'s type where it \
+                        Some(a) if !crate::is_lowered(&bind.name) => format_with_flags(
+                            PrintFlag::DerefTVars | PrintFlag::ReplacePrims,
+                            || {
+                                anyhow!(
+                                    "{} is {held}: {}; declare {}'s type where it \
                                          is bound ({})",
-                                        bind.name,
-                                        a.fact(),
-                                        bind.name,
-                                        BoundAt(bind, Some(&self.spec.ori))
-                                    )
-                                },
-                            )
-                        }
+                                    bind.name,
+                                    a.fact(),
+                                    bind.name,
+                                    BoundAt(bind, Some(&self.spec.ori))
+                                )
+                            },
+                        ),
                         _ => e,
                     },
                     // a write a lowering built has no declaration to point

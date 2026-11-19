@@ -75,18 +75,6 @@ pub(crate) fn made(t: &Type) -> bool {
     }
 }
 
-/// The relation as it was is asked about a scheme's variable, outside any
-/// check by bounds: a path not yet the solver's. Traced where
-/// `GRAPHIX_BOUNDS_AUDIT` asks.
-pub(crate) fn met_outside(a: &Type, b: &Type) {
-    if std::env::var_os("GRAPHIX_BOUNDS_AUDIT").is_some_and(|v| v != "count") {
-        eprintln!(
-            "bounds audit: the old relation is asked about a scheme's variable ({a} over {b})\n{}",
-            std::backtrace::Backtrace::force_capture()
-        )
-    }
-}
-
 /// Begin a check by bounds on this thread: until [`end`], what a node
 /// asks of two types ([`Type::check_contains`], [`Type::contains`]) is
 /// asked of the solver.
@@ -1356,6 +1344,43 @@ impl Solving {
             _ => Ok(self.held.push((a.clone(), b.clone(), false))),
         }
     }
+
+    // CR claude for claude: [bug/low] A union the cell's constraints
+    // refuse whole goes to one member here, which was written for `['b,
+    // null] ⊇ 'r` under a typed bound. For a read's `'b: Concrete` it
+    // narrows the written target without a word: `let y: Result<[null,
+    // {v: i64, next: &i64}], ..> = json::read(s)` checks with 'b `null`
+    // alone and every object answers `can't cast .. to null`, and with
+    // two data members beside the reference the refusal is `'b could go
+    // to null or { v: i64 } .. annotate the value`, which names the
+    // wrong problem. `cast<[null, {v: i64, next: &i64}]>` and the
+    // struct alone are refused for the reference. Where the refusing
+    // conjunct is a predicate, refuse here naming the member it
+    // refuses, or give the cell every member it admits. probe:
+    // design/review-2026-11-16/repro/x-typecheck-generics-read-target-union-nondata.sh
+    // (x-typecheck-generics-05)
+    // 2026-11-19 claude: Moved here unchanged from Type::contains_dispatch, deleted on
+    // bounds-spike with the old relation's walk (holds.rs and this solver replace it).
+    // Re-probed with the check by bounds before and after the deletion: unchanged,
+    // cases 1 and 2 are accepted with the read target narrowed to null and to Nil, and
+    // the reads answer InvalidCast and ParseError.
+
+    // CR claude for claude: [bug/medium] The shape of a member is taken through
+    // a Type::Ref only, so a member that is a bound cell (a select arm's type,
+    // `error(`A)` written in an arm) has no constructor here and is never
+    // joined with its sibling. `filter_err(select c { 0 => 1, 1 => error(`A), _
+    // => error(`B) })` is refused (`Result<'a, 'b: `B> does not contain [i64,
+    // Error<'a1: `B>, Error<'a2: `A>]`) while the same select under `let r:
+    // [i64, Error<`A>, Error<`B>]` is accepted with 'b both tags. Take the
+    // shape through a bound cell as through a name, for the taker probe and for
+    // join_ctor's group. probe:
+    // design/review-2026-11-16/repro/x-typecheck-generics-error-members-in-cells-not-joined.sh
+    // (x-typecheck-generics-04)
+    // 2026-11-19 claude: Moved here unchanged from join_cell_sharing, deleted on bounds-spike
+    // with the old relation's walk. Re-probed with the check by bounds before and after the
+    // deletion: both programs are refused now, the written-let one too, "type mismatch [i64,
+    // Error<`B>] does not contain Error<`A>": a union of two error members below Result<'a,
+    // 'e> does not give 'e both tags.
 
     /// `a`, which is no open cell and no union, fits a member of the union
     /// `b`, whose members are `ms`.

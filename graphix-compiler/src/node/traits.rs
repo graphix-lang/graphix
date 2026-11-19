@@ -396,7 +396,7 @@ fn taker_refusal(e: &anyhow::Error) -> Option<anyhow::Error> {
         (Some(u), _) if u.at() == TakerUnion::Holder => {
             Some(anyhow!("{}: {REMEDY}", u.fact()))
         }
-        (_, Some(a)) if a.in_holder() => Some(anyhow!("{}: {REMEDY}", a.fact())),
+        (_, Some(a)) => Some(anyhow!("{}: {REMEDY}", a.fact())),
         _ => None,
     }
 }

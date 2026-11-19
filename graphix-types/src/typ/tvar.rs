@@ -8,7 +8,7 @@ use crate::{
     typ::{
         Bound, FnType, Mutability, NodeKey, NodePairs, PRINT_FLAGS, PrintFlag, RefKey,
         TVarsSeen, Type,
-        contains::{ContainsHist, cell_admits, find_open_cell, holds_cell},
+        contains::{cell_admits, find_open_cell},
         fntyp::Aliasing,
         node_addr,
         setops::{union_identical, written_identical},
@@ -319,68 +319,10 @@ impl ReachOrder {
         }
     }
 
-    /// Whether no cell numbered `n` reached has been written.
-    fn stands(&self, n: u64) -> bool {
-        self.0.lock().stands(n)
-    }
-
     /// How many writes have taken a number, where `n` stands.
     fn standing(&self, n: u64) -> Option<u64> {
         let numbers = self.0.lock();
         numbers.stands(n).then_some(numbers.writes)
-    }
-}
-
-/// A var's cell and the place it held, while that stands: nothing the var
-/// reaches has been written since.
-pub(super) struct Standing {
-    cell: CellRef,
-    place: Place,
-}
-
-impl Standing {
-    /// `tv`'s cell with its place where that stands, the cells it reaches
-    /// numbered first where it holds none that does.
-    pub(super) fn of(tv: &TVar) -> Option<Self> {
-        let cell = tv.cell();
-        let stands = |cell: &CellLock| cell.read().place().filter(|p| p.by.stands(p.n));
-        let place = stands(&cell).or_else(|| {
-            let mut walk = CycleWalk::numbering();
-            let _ = walk.go(&Type::TVar(tv.clone()), Toward::Any, false);
-            walk.number();
-            stands(&cell)
-        })?;
-        Some(Self { cell, place })
-    }
-
-    /// Whether `tv` reads the cell still and its place stands.
-    pub(super) fn holds(&self, tv: &TVar) -> bool {
-        let Self { cell, place } = self;
-        Arc::ptr_eq(&tv.cell(), cell)
-            && cell
-                .read()
-                .place
-                .as_ref()
-                .is_some_and(|p| Arc::ptr_eq(&p.by, &place.by) && p.n == place.n)
-            && place.by.stands(place.n)
-    }
-}
-
-impl Type {
-    /// Whether no open cell is reachable from this type through bindings,
-    /// conjuncts and lower bounds. When none is, every bound cell it
-    /// reaches is proved ground ([`TVar::ground_now`]) until a bound cell
-    /// changes, so a walk looking for open cells passes it by; a cell
-    /// proved already is not walked again.
-    #[doc(hidden)]
-    pub fn prove_ground(&self) -> bool {
-        let epoch = ground_epoch();
-        let mut walked: LPooled<Vec<CellRef>> = LPooled::take();
-        let ground = reaches_no_open_cell(self, epoch, &mut LPooled::take(), &mut walked);
-        if ground {
-            mark_ground(&mut walked, epoch)
-        }
-        ground
     }
 }
 
@@ -457,15 +399,6 @@ impl Toward {
     }
 }
 
-/// The vars on the paths [`Cycle::Bare`] names from `t` to the cell at
-/// `addr`, by the edges `toward` takes: each var `t` holds or reaches
-/// through cells and unions alone whose cell reaches that cell so.
-pub(super) fn bare_path(addr: usize, t: &Type, toward: Toward) -> LPooled<Vec<TVar>> {
-    let mut walk = BarePath { addr, reaches: LPooled::take(), on: LPooled::take() };
-    walk.go(t, toward);
-    walk.on
-}
-
 /// What [`Type::open_over_any`] has done: the node pairs it walked whole
 /// since it last bound a cell, and the cells it bound. `inside`: every
 /// cell open inside a part that is `Any` is bound too
@@ -493,85 +426,6 @@ impl fmt::Display for OpenOverAny {
 }
 
 impl std::error::Error for OpenOverAny {}
-
-struct BarePath {
-    addr: usize,
-    /// Per node or cell and direction, whether it reaches the cell; false
-    /// while it is walked.
-    reaches: LPooled<AHashMap<(usize, u8), bool>>,
-    on: LPooled<Vec<TVar>>,
-}
-
-impl BarePath {
-    fn go(&mut self, t: &Type, toward: Toward) -> bool {
-        ensure_sufficient(|| {
-            let key = match t {
-                Type::TVar(tv) if tv.cell_addr() == self.addr => return true,
-                Type::TVar(tv) => Some(tv.cell_addr()),
-                t => node_addr(t),
-            };
-            if let Some(key) = key {
-                match self.reaches.entry((key, toward as u8)) {
-                    Entry::Occupied(e) => return *e.get(),
-                    Entry::Vacant(e) => {
-                        e.insert(false);
-                    }
-                }
-            }
-            let reaches = match t {
-                Type::Set(ms) => ms.iter().fold(false, |r, m| self.go(m, toward) | r),
-                Type::Ref(r) => {
-                    let def = r.resolved();
-                    r.params.iter().enumerate().fold(false, |reaches, (i, p)| {
-                        let guarded = def.as_ref().is_some_and(|d| d.param_guarded(i));
-                        (!guarded && self.go(p, Toward::Any)) | reaches
-                    })
-                }
-                Type::TVar(tv) => {
-                    let edges = toward.edges(&tv.cell().read());
-                    let reaches = edges.iter().fold(false, |r, e| self.go(e, toward) | r);
-                    if reaches {
-                        self.on.push(tv.clone());
-                    }
-                    reaches
-                }
-                _ => false,
-            };
-            if reaches && let Some(key) = key {
-                self.reaches.insert((key, toward as u8), true);
-            }
-            reaches
-        })
-    }
-}
-
-/// Whether `t` is a cell of `on`.
-fn is_cell_of(on: &AddrSet, t: &Type) -> bool {
-    match t {
-        Type::TVar(v) => {
-            on.contains(&v.cell_addr())
-                || v.open_cell().is_some_and(|o| on.contains(&o.cell_addr()))
-        }
-        _ => false,
-    }
-}
-
-/// Whether `t` is a cell of `on` or holds one as [`BarePath`] reaches it:
-/// a union's member, or a parameter a name's body holds under no
-/// constructor, which is a member of the union it names.
-fn holds_cell_of(on: &AddrSet, t: &Type) -> bool {
-    ensure_sufficient(|| match t {
-        Type::TVar(_) => is_cell_of(on, t),
-        Type::Set(ms) => ms.iter().any(|m| holds_cell_of(on, m)),
-        Type::Ref(r) => {
-            let def = r.resolved();
-            r.params.iter().enumerate().any(|(i, p)| {
-                !def.as_ref().is_some_and(|d| d.param_guarded(i)) && holds_cell_of(on, p)
-            })
-        }
-        _ => false,
-    })
-}
 
 /// How `t` reaches the cell at `addr` by the edges `toward` takes, a
 /// constructor path over a bare one.
@@ -660,12 +514,6 @@ impl<'a> CycleWalk<'a> {
             true => Visits::PerState(LPooled::take()),
         };
         Self { addr: cell.data_ptr().addr(), visits, bare: false }
-    }
-
-    /// A walk toward no cell: it numbers what it walks.
-    fn numbering() -> Self {
-        let visits = Visits::Once(LPooled::take(), Numbering::toward(None));
-        Self { addr: 0, visits, bare: false }
     }
 
     fn tracking(&self) -> bool {
@@ -1623,9 +1471,7 @@ fn lower_in(t: &Type, level: Level, seen: &mut Lowered) {
 }
 
 /// How a copy of a type treats its cells: `Copy` makes a fresh cell per
-/// cell at the source's level; `CopyBeside` is `Copy` that keeps a part its
-/// oracle finds holds no cell and no function type, as `Copy` would, without
-/// walking it; `Instantiate` is a call's copy, a fresh cell at the
+/// cell at the source's level; `Instantiate` is a call's copy, a fresh cell at the
 /// current level per cell a call copies ([`Level::copied_by`] the open
 /// gates), every other cell shared; `Scheme` is `Instantiate` whose fresh
 /// cells are generic, a reference's copy of the scheme it names; `Generic`
@@ -1634,7 +1480,6 @@ fn lower_in(t: &Type, level: Level, seen: &mut Lowered) {
 #[derive(Clone, Copy)]
 pub(crate) enum Fresh<'a> {
     Copy,
-    CopyBeside(&'a dyn Fn(&Type) -> bool),
     Instantiate(&'a IntSet<LambdaId>),
     Scheme(&'a IntSet<LambdaId>),
     Generic,
@@ -2134,17 +1979,6 @@ pub struct TVarLink {
 pub struct TVarInner {
     pub name: ArcStr,
     pub(crate) link: RwLock<TVarLink>,
-}
-
-/// The word [`TVar::copied_reads`] puts between two cells of a chain: after a
-/// cell's words, the next word says whether the chain ends there.
-const CHAIN_ON: u64 = 2;
-
-/// Where [`TVar::copied_reads`] ends.
-pub(super) enum CopiedEnd {
-    /// An open cell, by its address.
-    Open(usize),
-    Bound(Type),
 }
 
 #[derive(Clone)]
@@ -2868,22 +2702,6 @@ impl TVar {
         })
     }
 
-    /// Narrow the cell by `c` unless a conjunct already is at least
-    /// that narrow (a probe in `env`: `c` contains it), or `c` holds the
-    /// cell itself ([`holds_cell`]): no cell stands in its own bound.
-    #[doc(hidden)]
-    pub fn narrow_cell(&self, env: &Env, c: Type) -> Result<()> {
-        if holds_cell(env, &c, self.cell_addr()) {
-            return Ok(());
-        }
-        for e in self.cell_constraints().iter() {
-            if c.decided_holds(env, e)? {
-                return Ok(());
-            }
-        }
-        self.add_body_bound(env, c)
-    }
-
     /// Add the conjunct `c` a body needs of the cell: the variable of a
     /// definition being checked takes none its signature does not declare,
     /// but `Singleton`, which its operators say of one type each call picks.
@@ -2899,11 +2717,6 @@ impl TVar {
             true => Ok(self.add_cell_constraint(c)),
             false => bail!("{}", self.undeclared_bound(env, &[&c])),
         }
-    }
-
-    /// Replace the cell's constraint conjunction.
-    pub(super) fn set_cell_constraints(&self, constraints: SmallVec<[Type; 1]>) {
-        self.read().cell.write().constraints = constraints;
     }
 
     /// The cell's constraint conjunction (cloned out).
@@ -2956,48 +2769,6 @@ impl TVar {
             c.lower.retain(|e| !union_member(&t, e));
             c.lower.push(t)
         }
-    }
-
-    /// Drop each bound of the open cell that is a cell of `on`, each such
-    /// member of a union lower bound, and each conjunct union holding one,
-    /// a name as the union `members` writes it out: merged with those
-    /// cells, the cell is each of them, so `'r ⊇ [T, 'r]` holds by `T`
-    /// and `'r ⊆ [T, 'r]` always. `dropped` takes each bound that goes.
-    pub(super) fn drop_bounds_on(
-        &self,
-        on: &AddrSet,
-        members: &dyn Fn(&Type) -> Result<SmallVec<[Type; 8]>>,
-        dropped: &mut Vec<Type>,
-    ) -> Result<()> {
-        let cell = self.cell();
-        let (lower, cons) = {
-            let c = cell.read();
-            (c.lower.clone(), c.constraints.clone())
-        };
-        if !lower.iter().chain(cons.iter()).any(|t| holds_cell_of(on, t)) {
-            return Ok(());
-        }
-        let mut kept: SmallVec<[Type; 1]> = SmallVec::new();
-        for l in lower {
-            if !holds_cell_of(on, &l) {
-                kept.push(l);
-                continue;
-            }
-            let mut rest = members(&l)?;
-            rest.retain(|m| !is_cell_of(on, m));
-            match rest.len() {
-                0 | 1 => kept.extend(rest.pop()),
-                _ => kept.push(Type::Set(Arc::from_iter(rest.drain(..)))),
-            }
-            dropped.push(l);
-        }
-        dropped.extend(cons.iter().filter(|c| holds_cell_of(on, c)).cloned());
-        let mut c = cell.write();
-        if decided(&c) {
-            c.lower = kept;
-            c.constraints = cons.into_iter().filter(|c| !holds_cell_of(on, c)).collect();
-        }
-        Ok(())
     }
 
     pub fn read<'a>(&'a self) -> RwLockReadGuard<'a, TVarLink> {
@@ -3330,60 +3101,6 @@ impl TVar {
             .any(|c| matches!(c, Type::Bound(Bound::Data)))
     }
 
-    /// Bind self to `binding` (other's, read by the caller), merging
-    /// other's constraints into self's cell.
-    pub(super) fn copy(&self, other: &Self, binding: Type) {
-        let s_cell = self.cell();
-        // Occurs check as in [`Self::alias`].
-        if would_cycle_inner(&s_cell, &Type::TVar(other.clone())) {
-            self.mark_cycle_refused();
-            return;
-        }
-        let o_cell = other.cell();
-        if Arc::ptr_eq(&s_cell, &o_cell) {
-            return;
-        }
-        let ocons = o_cell.read().constraints.clone();
-        if graphix_dbg_bind() {
-            eprintln!(
-                "COPY '{}({:x}) <= '{}: {binding:?}",
-                self.name,
-                s_cell.data_ptr().addr(),
-                other.name
-            );
-        }
-        if let Some(id) = crate::dbgenv::graphix_dbg_bind_bt_id()
-            && id == self.read().id.inner().to_string()
-        {
-            eprintln!(
-                "BT for write to '{}({}):\n{}",
-                self.name,
-                id,
-                std::backtrace::Backtrace::force_capture()
-            );
-        }
-        let existing = s_cell.read().constraints.clone();
-        let mut to_add = new_conjuncts(&existing, ocons);
-        let level = s_cell.read().level;
-        lower(&binding, level);
-        for c in to_add.iter() {
-            lower(c, level)
-        }
-        let cons = {
-            let mut sc = s_cell.write();
-            if !decided_as(&sc, &binding) {
-                return;
-            }
-            if sc.binding.is_some() {
-                bound_cell_changes();
-            }
-            sc.set_binding(Some(binding.clone()));
-            sc.constraints.extend(to_add.drain(..));
-            sc.constraints.clone()
-        };
-        require_bounds(&cons, &binding);
-    }
-
     pub(super) fn normalize_int(&self, cx: &mut super::normalize::NormCx) -> Self {
         // First visit only. Clone the binding out, normalize unlocked,
         // write back: the lock is non-reentrant.
@@ -3457,63 +3174,6 @@ impl TVar {
             && !cell.level.is_generic()
     }
 
-    /// What a walk on a copy of this var reads of the cells of its chain of
-    /// bindings: for each cell its facts, level, naming kind and whether
-    /// it is held rigid or an earlier task created it, pushed as words. The
-    /// end of the chain, with the cell's address if it is open, or the type
-    /// it is bound to; `None` where a cell on the chain holds a conjunct or
-    /// a lower bound, which the copy carries beside it.
-    pub(super) fn copied_reads(&self, words: &mut Vec<u64>) -> Option<CopiedEnd> {
-        let mut tv = self.clone();
-        loop {
-            let cell = tv.cell();
-            let c = cell.read();
-            if !c.constraints.is_empty() || !c.lower.is_empty() {
-                return None;
-            }
-            let naming = match c.naming.by() {
-                NamedBy::Own => 0,
-                NamedBy::CallCopy => 1,
-                NamedBy::Taken(_) => 2,
-            };
-            words.push(
-                c.facts.bits() as u64
-                    | ((c.rigid_gates > 0) as u64) << 8
-                    | (earlier_task(&c) as u64) << 9
-                    | naming << 10,
-            );
-            match c.level {
-                Level::Top => words.push(0),
-                Level::Def { depth, owner } => {
-                    words.extend([1, depth as u64, owner.inner()])
-                }
-                Level::Generic => words.push(2),
-                Level::Written => words.push(3),
-            }
-            match &c.binding {
-                Some(Type::TVar(next)) => {
-                    let next = next.clone();
-                    drop(c);
-                    words.push(CHAIN_ON);
-                    tv = next;
-                }
-                Some(t) => return Some(CopiedEnd::Bound(t.clone())),
-                None => return Some(CopiedEnd::Open(cell_addr(&c))),
-            }
-        }
-    }
-
-    /// Bind the open cell to ⊥ as a requirement; see
-    /// [`CellFact::BottomRequired`].
-    pub(super) fn bind_bottom_required(&self) {
-        self.bind(Type::Bottom);
-        let cell = self.cell();
-        let mut c = cell.write();
-        if decided(&c) {
-            c.facts |= CellFact::BottomRequired;
-        }
-    }
-
     /// Whether the cell holds ⊥ as its input's end settled it.
     pub(super) fn settled_bottom(&self) -> bool {
         let cell = self.cell();
@@ -3535,19 +3195,6 @@ impl TVar {
     #[doc(hidden)]
     pub fn bottom_fed(&self) -> bool {
         self.cell().read().facts.contains(CellFact::BottomFed)
-    }
-
-    /// Record a ⊥ produced into the open cell; see [`CellFact::BottomFed`].
-    pub(super) fn mark_bottom_fed(&self) {
-        if graphix_dbg_bind() {
-            eprintln!("BOTTOM-FED '{}({:x})", self.name, self.cell_addr());
-        }
-        let cell = self.cell();
-        let mut c = cell.write();
-        if !c.facts.contains(CellFact::BottomFed) && !decided(&c) {
-            return;
-        }
-        c.facts |= CellFact::BottomFed;
     }
 
     /// Record an occurs-check refusal; see [`CellFact::CycleRefused`].
@@ -3652,7 +3299,7 @@ impl TVar {
             return f.named_as(self);
         }
         let f = match how {
-            Fresh::Copy | Fresh::CopyBeside(_) => self.fresh_copy(),
+            Fresh::Copy => self.fresh_copy(),
             Fresh::Instantiate(open) if self.level().copied_by(open) => {
                 let f = TVar::empty_named(self.name.clone());
                 f.cell().write().naming = Naming::call_copy();
@@ -4536,59 +4183,6 @@ impl Type {
         Ok(None)
     }
 
-    /// `self` without the members a value of which may be an error, its
-    /// type references expanded, ⊥ when nothing is left; `None` when `Any`
-    /// is a member.
-    pub(crate) fn without_errors(&self, env: &Env) -> Result<Option<Type>> {
-        fn go(t: &Type, env: &Env, out: &mut LPooled<Vec<Type>>) -> Result<bool> {
-            ensure_sufficient(|| match t {
-                Type::Any => Ok(false),
-                Type::Error(_) | Type::Bottom => Ok(true),
-                Type::Primitive(p) => {
-                    let mut p = *p;
-                    p.remove(netidx_value::Typ::Error);
-                    if !p.is_empty() {
-                        out.push(Type::Primitive(p))
-                    }
-                    Ok(true)
-                }
-                Type::Set(ts) => {
-                    for t in ts.iter() {
-                        if !go(t, env, out)? {
-                            return Ok(false);
-                        }
-                    }
-                    Ok(true)
-                }
-                Type::TVar(tv) => match tv.binding() {
-                    Some(b) => go(&b, env, out),
-                    None => Ok({
-                        out.push(t.clone());
-                        true
-                    }),
-                },
-                Type::Ref(_) if t.may_be_error(env, false, false)? => {
-                    go(&t.lookup_ref(env)?, env, out)
-                }
-                t => Ok({
-                    out.push(t.clone());
-                    true
-                }),
-            })
-        }
-        let mut out: LPooled<Vec<Type>> = LPooled::take();
-        if !go(self, env, &mut out)? {
-            return Ok(None);
-        }
-        if out.is_empty() {
-            return Ok(Some(Type::Bottom));
-        }
-        Ok(Some(match out.len() {
-            1 => out.pop().unwrap(),
-            _ => Type::Set(Arc::from_iter(out.drain(..))).normalize(),
-        }))
-    }
-
     /// The open members of a `NoError` cell's binding are each `NoError`.
     fn require_no_error(&self, hand: &mut dyn FnMut(&TVar, Type)) {
         let mut parts = UnionParts::new(Measure::Members);
@@ -5183,12 +4777,6 @@ impl Type {
         self.open_beneath_in(true, &|tv| !tv.is_rigid())
     }
 
-    /// The first open cell not held rigid beneath, through bindings
-    /// ([`Self::has_free`]).
-    pub fn first_free(&self) -> Option<TVar> {
-        self.first_open(&|tv| !tv.is_rigid())
-    }
-
     /// The first open cell `counts` beneath, through bindings.
     pub fn first_open(&self, counts: &dyn Fn(&TVar) -> bool) -> Option<TVar> {
         let found = std::cell::RefCell::new(None);
@@ -5340,67 +4928,6 @@ impl Type {
     /// with it.
     fn open_over_any(&self, env: &Env, pred: &Type) -> Result<()> {
         self.open_over_any_int(env, pred, &mut AnyWalk::default())
-    }
-
-    /// [`Self::open_over_any`] once the arm of the test `pred` is checked,
-    /// `self` being what reaches it: each cell still open inside a part
-    /// that is `Any` is `Any` too. The run-time test passes every value at
-    /// an open cell, so nothing decided of it later would be tested. A
-    /// cell that cannot be `Any` is [`OpenOverAny`], a declared variable
-    /// among them: a call that leaves it undecided tests nothing there. A
-    /// declared variable `Any` meets stands, and so does a function type's.
-    /// With `fns`, a part of `pred` at or inside an `Any` part that holds
-    /// a function type is refused: the test tells a function from a value,
-    /// not one signature from another.
-    pub fn close_over_any(&self, env: &Env, pred: &Type, fns: bool) -> Result<()> {
-        let mut walk = AnyWalk { inside: true, fns, ..AnyWalk::default() };
-        self.open_over_any_int(env, pred, &mut walk)
-    }
-
-    /// The first open cell beneath `self`, through bindings and outside
-    /// every function type, that `of` holds and `beside` does not, and
-    /// that is not held rigid: as the variable written in `of` that is
-    /// that cell, else the one whose binding holds it, the least name
-    /// first; the cell itself where `of` writes neither.
-    pub fn open_cell_of(&self, of: &Type, beside: &Type) -> Option<TVar> {
-        let mut own: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-        super::settle::position_cells(of, &mut own);
-        let mut theirs: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-        super::settle::position_cells(beside, &mut theirs);
-        let open = find_open_cell(self, false, &mut |tv| {
-            let addr = tv.cell_addr();
-            !tv.is_rigid() && own.contains_key(&addr) && !theirs.contains_key(&addr)
-        })?;
-        let rank = |tv: &TVar| {
-            let is_open = tv.open_cell().is_some_and(|c| c.same_cell(&open));
-            let holds = || {
-                let t = Type::TVar(tv.clone());
-                find_open_cell(&t, false, &mut |c| c.same_cell(&open)).is_some()
-            };
-            match is_open || holds() {
-                true => Some((!is_open, tv.name.clone())),
-                false => None,
-            }
-        };
-        let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-        of.collect_tvars(&mut named);
-        let written = named
-            .values()
-            .filter(|tv| !tv.name.starts_with('_'))
-            .filter_map(|tv| rank(tv).map(|r| (r, tv)))
-            .min_by(|(r0, _), (r1, _)| r0.cmp(r1))
-            .map(|(_, tv)| tv.clone());
-        Some(written.unwrap_or(open))
-    }
-
-    /// [`Self::close_over_any`] before the arm of the inferred test `pred`
-    /// is checked, for the abstract types `pred` holds alone: the test
-    /// of an abstract type reads its tag, never a parameter, so inside a
-    /// part that is `Any` each parameter is the widest instance's
-    /// ([`AbstractRep::widest`]), whatever the arm does with it.
-    pub fn widen_abstracts_over_any(&self, env: &Env, pred: &Type) -> Result<()> {
-        let mut walk = AnyWalk { inside: true, abstracts: true, ..AnyWalk::default() };
-        self.open_over_any_int(env, pred, &mut walk)
     }
 
     /// The parameters of each abstract type `self` holds as a part a
@@ -5685,33 +5212,6 @@ impl Type {
         (own && out.len() > 1).then_some(out)
     }
 
-    /// `self` with each part of a tuple, struct or variant that is a union
-    /// of two or more open cells and nothing else, none of them `kept`,
-    /// made `Any`; `None` when no part is. Each such cell is one arm's bind
-    /// of the part ([`Self::binds_beside`]), so the part decides nothing of
-    /// the scrutinee's: a settle that contained the scrutinee's part in
-    /// the union would commit each of its members to the first cell.
-    pub fn binds_apart(&self, kept: &AHashMap<usize, TVar>) -> Option<Type> {
-        fn only_binds(t: &Type, kept: &AHashMap<usize, TVar>) -> bool {
-            matches!(t, Type::Set(ms) if ms.len() > 1 && ms.iter().all(|m| matches!(
-                m,
-                Type::TVar(tv) if tv.open_cell().is_some_and(|o| !kept.contains_key(&o.cell_addr()))
-            )))
-        }
-        ensure_sufficient(|| {
-            let part = |c: &Type| match only_binds(c, kept) {
-                true => Some(Type::Any),
-                false => c.binds_apart(kept),
-            };
-            match self {
-                Type::Tuple(_) | Type::Variant(..) | Type::Struct(_) => {
-                    self.cow_children(&mut |c| part(c))
-                }
-                t => t.cow_children(&mut |c| c.binds_apart(kept)),
-            }
-        })
-    }
-
     /// `self` looked through its bindings and typedef names to what they
     /// stand for; `None` for an open cell. A chain of names ends: a
     /// typedef naming itself through names alone is refused.
@@ -5819,24 +5319,6 @@ impl Type {
                 _ => walk.contains(env, self, pred),
             }
         })
-    }
-
-    /// `members ⊇ self` for a select arm's predicate over what reaches the
-    /// arm, `members` being the members of that union it can match: each
-    /// open cell of self takes the union of its parts over every member and
-    /// each alternative of self that matches it, where containment against
-    /// the union commits it to the first member, and is `Any` where that
-    /// union is ([`Self::open_over_any`]). A cell a matching alternative
-    /// leaves open stays open. A part is the member's own, never a copy:
-    /// what the arm decides of its bind decides the member's cells. A cell
-    /// of self that is itself a member's part (self typed the scrutinee)
-    /// holds the other parts as that member's part: each open cell among
-    /// them is that cell, and it takes the union of the rest. Such a cell
-    /// is not copied for the member that holds it alone at the same part,
-    /// and a copy holds one cell for each open cell of self, whatever
-    /// forwards to it.
-    pub fn narrow_per_member(&self, env: &Env, members: &[Type]) -> Result<()> {
-        self.narrow_per_member_in(env, members, &mut Narrowing::new())
     }
 
     fn narrow_per_member_in(
@@ -6106,72 +5588,6 @@ impl Type {
             .unwrap_or_else(|| self.clone())
     }
 
-    /// [`Self::reset_tvars`], each part `plain` answers for, one holding
-    /// no cell and no function type, kept without a walk.
-    pub(super) fn reset_tvars_beside(&self, plain: &dyn Fn(&Type) -> bool) -> Type {
-        self.reset_tvars_int(&mut LPooled::take(), Fresh::CopyBeside(plain))
-            .unwrap_or_else(|| self.clone())
-    }
-
-    /// `self ⊇ t` with each of `held`, open cells, one type equal only to
-    /// itself, whatever it becomes: over copies of both, each of `held`
-    /// copied to one fresh cell held rigid, so it decides no cell.
-    #[doc(hidden)]
-    pub fn contains_holding(&self, env: &Env, t: &Type, held: &[TVar]) -> Result<bool> {
-        let mut known: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-        let gates: SmallVec<[RigidGate; 4]> = held
-            .iter()
-            .map(|tv| {
-                let c = TVar::empty_named(tv.name.clone());
-                let gate = c.open_rigid();
-                known.insert(tv.cell_addr(), c);
-                gate
-            })
-            .collect();
-        let outer = self.reset_tvars_int(&mut known, Fresh::Copy);
-        let inner = t.reset_tvars_int(&mut known, Fresh::Copy);
-        let outer = outer.as_ref().unwrap_or(self);
-        let inner = inner.as_ref().unwrap_or(t);
-        let r = outer.decided_holds(env, inner);
-        drop(gates);
-        r
-    }
-
-    /// `self ⊇ t` over a copy of self's cells but those `known` maps
-    /// already (to themselves), so binding a copy to a part of `t` binds
-    /// none of self's cells; a copy still open after, a part an open cell
-    /// of `t` took, is its source cell again, unless that cell is held
-    /// rigid, which no pattern decides. `false` when one cannot be.
-    #[doc(hidden)]
-    pub fn contains_through_copy(
-        &self,
-        env: &Env,
-        known: &mut AHashMap<usize, TVar>,
-        t: &Type,
-    ) -> Result<bool> {
-        let mut sources: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-        self.reached_cells(&mut sources);
-        let copy =
-            self.reset_tvars_int(known, Fresh::Copy).unwrap_or_else(|| self.clone());
-        let mut pairs: LPooled<Vec<(TVar, TVar)>> = sources
-            .drain()
-            .filter_map(|(addr, s)| {
-                let c = known.get(&addr)?;
-                (!c.same_cell(&s)).then(|| (s, c.clone()))
-            })
-            .collect();
-        pairs.sort_by_key(|(_, c)| c.read().id);
-        let _ = copy.decided_holds(env, t);
-        for (s, c) in
-            pairs.iter().filter(|(_, c)| c.open_cell().is_some_and(|o| !o.is_rigid()))
-        {
-            if !Type::TVar(s.clone()).decided_holds(env, &Type::TVar(c.clone()))? {
-                return Ok(false);
-            }
-        }
-        Ok(true)
-    }
-
     /// A typedef's params and body over fresh cells this task owns, with
     /// their alias topology: what [`crate::env::Env::deftype`] aliases and
     /// freezes in place, so a definition built elsewhere is never written.
@@ -6216,11 +5632,6 @@ impl Type {
         nodes: &mut CopyMemo,
         how: Fresh<'_>,
     ) -> Option<Type> {
-        if let Fresh::CopyBeside(plain) = how
-            && plain(self)
-        {
-            return None;
-        }
         ensure_sufficient(|| match self {
             Type::TVar(tv) => {
                 Some(Type::TVar(
@@ -6256,21 +5667,6 @@ impl Type {
     #[doc(hidden)]
     pub fn rename_with(&self, known: &AHashMap<usize, TVar>) -> Type {
         self.rename_int(known).unwrap_or_else(|| self.clone())
-    }
-
-    /// Self with each open cell `apart` maps, by its address, replaced by
-    /// an empty cell of its name and level, one for each cell, and every
-    /// bound cell by its binding; any other open cell is kept. The copies,
-    /// by the address of the cell each stands for.
-    #[doc(hidden)]
-    pub fn cells_apart(
-        &self,
-        apart: &AHashMap<usize, TVar>,
-    ) -> (Type, LPooled<AHashMap<usize, TVar>>) {
-        let mut copies: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-        copies.extend(apart.iter().map(|(a, tv)| (*a, tv.fresh_copy())));
-        let t = self.rename_int(&copies).unwrap_or_else(|| self.clone());
-        (t, copies)
     }
 
     /// Self with each open cell `image` maps, by its address, replaced by
@@ -6564,9 +5960,12 @@ impl Type {
 /// nothing, so its verdict is the same on every path that meets it, and a
 /// predicate that shares its parts is narrowed once per pair of nodes.
 struct Narrowing {
-    /// The one containment walk of every pair the narrowing contains
-    /// ([`Self::contains`]).
-    contains: ContainsHist,
+    /// The names the narrowing met ([`Self::pair`]).
+    refs: super::RefHist<AHashMap<super::RefPair, usize>>,
+    /// Whether each shared node reaches an open cell ([`Self::open`]), the
+    /// node held so its address is not recycled under its key.
+    open_nodes: super::Lazy<AddrMap<bool>>,
+    open_pins: super::Lazy<Vec<super::Held>>,
     held: NodePairs,
     failed: NodePairs,
     /// The pairs of shared nodes being narrowed ([`Self::pair`]), each
@@ -6582,7 +5981,9 @@ struct Narrowing {
 impl Narrowing {
     fn new() -> Self {
         Narrowing {
-            contains: ContainsHist::ordered(),
+            refs: super::RefHist::new(),
+            open_nodes: super::Lazy::new(),
+            open_pins: super::Lazy::new(),
             held: NodePairs::default(),
             failed: NodePairs::default(),
             open: LPooled::take(),
@@ -6592,14 +5993,47 @@ impl Narrowing {
 
     fn key(&mut self, t: &Type, pred: &Type) -> Option<(NodeKey, NodeKey)> {
         let k = self.held.key(t, pred)?;
-        (self.contains.closed(t) && self.contains.closed(pred)).then_some(k)
+        (!self.open(t) && !self.open(pred)).then_some(k)
     }
 
     /// A pair [`Self::key`] keys, by its sides' structure
     /// ([`super::RefHist::param_id`]): a named type's unfolding is built
     /// anew at each visit, and is the pair the narrowing left.
     fn pair(&mut self, env: &Env, t: &Type, pred: &Type) -> (usize, usize) {
-        (self.contains.param_id(t, env), self.contains.param_id(pred, env))
+        (self.refs.param_id(t, env), self.refs.param_id(pred, env))
+    }
+
+    /// Whether `t` reaches an open cell through bindings. Within a
+    /// narrowing a node that reaches none stays so (cells only bind).
+    fn open(&mut self, t: &Type) -> bool {
+        ensure_sufficient(|| {
+            let key = t.shared_identity();
+            if let Some(k) = key {
+                if let Some(o) = self.open_nodes.get().and_then(|m| m.get(&k)) {
+                    return *o;
+                }
+                self.open_pins.get_mut().push(super::Held::of(t));
+                // a binding that reaches its own cell is open
+                self.open_nodes.get_mut().insert(k, true);
+            }
+            let open = match t {
+                Type::TVar(tv) if tv.ground_now() => false,
+                Type::TVar(tv) => match tv.binding() {
+                    Some(b) => self.open(&b),
+                    None => true,
+                },
+                t => {
+                    t.try_for_each_child(&mut |p| match self.open(p) {
+                        true => ControlFlow::Break(()),
+                        false => ControlFlow::Continue(()),
+                    }) == ControlFlow::Break(())
+                }
+            };
+            if let Some(k) = key {
+                self.open_nodes.get_mut().insert(k, open);
+            }
+            open
+        })
     }
 
     /// `t ⊇ pred` over decided types ([`Type::decided_holds`]).
@@ -6678,44 +6112,6 @@ mod tests {
             let walked = CYCLE_CELLS.get();
             assert!(walked <= 40 * n, "{walked} cells walked, last first: {last_first}");
         }
-    }
-
-    /// A numbering's written ranges keep every number a write may have
-    /// reached, and stay few however the writes and the numbers given
-    /// between them alternate.
-    #[test]
-    fn written_ranges_hold_every_number_a_write_reached() {
-        let order = ReachOrder::default();
-        let mut stands: Vec<bool> = Vec::new();
-        let mut seed = 7u64;
-        let mut rand = |n: u64| {
-            seed =
-                seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-            (seed >> 33) % n
-        };
-        for _ in 0..2000 {
-            let len = 1 + rand(4);
-            let first = order.take(len, None).unwrap();
-            assert_eq!(first as usize, stands.len());
-            stands.extend((0..len).map(|_| true));
-            // a write near the top, as a chain bound link by link makes
-            let n = stands.len() as u64 - 1 - rand(6.min(stands.len() as u64));
-            order.wrote(n);
-            stands[n as usize..].fill(false);
-            for (n, stood) in stands.iter().enumerate() {
-                assert!(*stood || !order.stands(n as u64), "{n} stands, written");
-            }
-            assert!(order.0.lock().written.len() <= 16);
-        }
-        let below = order.take(1, None).unwrap();
-        let met = order.standing(below).unwrap();
-        assert!(order.take(1, Some(met)).is_some());
-        order.wrote(0);
-        assert!((0..=below + 1).all(|n| !order.stands(n)));
-        // a walk that met the numbering before a write numbers nothing
-        assert!(order.take(1, Some(met)).is_none());
-        let above = order.take(1, None).unwrap();
-        assert!(order.take(1, order.standing(above)).is_some());
     }
 
     /// Two threads that read one chain of open cells, as two compile tasks
@@ -6828,81 +6224,6 @@ mod tests {
             }
             t => t.for_each_child(&mut |c| reached_afresh(c, seen)),
         })
-    }
-
-    /// Over the cells of two chains bound, bounded, merged and unbound at
-    /// random, cycles among them, the occurs check answers as a walk that
-    /// trusts no number does, and so does a var's standing place: it
-    /// holds only while what the var reaches is what it reached.
-    #[test]
-    fn numbered_cells_answer_as_a_fresh_walk_does() {
-        let mut seed = 0x9E3779B97F4A7C15u64;
-        let mut rand = |n: usize| {
-            seed =
-                seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-            (seed >> 33) as usize % n
-        };
-        let reaches = |from: &TVar, to: &TVar| {
-            let mut seen: LPooled<AddrSet> = LPooled::take();
-            reached_afresh(&Type::TVar(from.clone()), &mut seen);
-            seen.contains(&to.cell_addr())
-        };
-        let reach_of = |from: &TVar| {
-            let mut seen: LPooled<AddrSet> = LPooled::take();
-            reached_afresh(&Type::TVar(from.clone()), &mut seen);
-            let mut cells: Vec<usize> = seen.iter().copied().collect();
-            cells.sort_unstable();
-            cells
-        };
-        let (mut numbered, mut passed, mut stood) = (0, 0, 0);
-        for _ in 0..150 {
-            // two chains, each long enough to take a numbering of its own
-            let mut cells = chain_of_bounds("c", 40 + rand(40));
-            cells.extend(chain_of_bounds("d", 40 + rand(40)));
-            let n = cells.len();
-            let mut held: Vec<(usize, Standing, Vec<usize>)> = Vec::new();
-            for _ in 0..200 {
-                let (a, b, c) = (&cells[rand(n)], &cells[rand(n)], &cells[rand(n)]);
-                match rand(12) {
-                    0 => a.add_cell_constraint(array_of(b)),
-                    1 if !reaches(b, a) => a.add_lower(Type::TVar(b.clone())),
-                    2 if !reaches(b, a) && !reaches(c, a) => {
-                        a.add_lower(Type::Tuple(Arc::from_iter([
-                            Type::TVar(b.clone()),
-                            Type::TVar(c.clone()),
-                        ])))
-                    }
-                    3 if !a.is_bound() && !reaches(b, a) => a.bind(array_of(b)),
-                    4 => a.alias_cells(b),
-                    5 => a.unbind(),
-                    6 => {
-                        if let Some(s) = Standing::of(a) {
-                            let at = cells.iter().position(|c| c.same_cell(a)).unwrap();
-                            held.push((at, s, reach_of(a)))
-                        }
-                    }
-                    _ => (),
-                }
-                for _ in 0..4 {
-                    let (from, to) = (&cells[rand(n)], &cells[rand(n)]);
-                    let walked = CYCLE_CELLS.get();
-                    let found = would_cycle_inner(&to.cell(), &Type::TVar(from.clone()));
-                    assert_eq!(found, reaches(from, to));
-                    numbered += from.cell().read().place.is_some() as usize;
-                    passed += (!found && CYCLE_CELLS.get() - walked <= 2) as usize;
-                }
-                for (at, s, reach) in held.iter() {
-                    if s.holds(&cells[*at]) {
-                        assert_eq!(*reach, reach_of(&cells[*at]));
-                        stood += 1
-                    }
-                }
-            }
-        }
-        assert!(
-            numbered > 1000 && passed > 1000 && stood > 1000,
-            "{numbered} {passed} {stood}"
-        );
     }
 
     /// A chain of open cells, each the lower bound of the next, merged

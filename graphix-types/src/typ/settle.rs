@@ -9,14 +9,13 @@ use crate::{
     format_with_flags,
     typ::{
         Bound, FnType, TVar, Type,
-        contains::{ContainsHist, InfiniteType},
+        contains::InfiniteType,
         setops::{Welds, apply_welds, lower_collapses, strictly_identical},
         tvar::{CellFact, Fresh, Level, would_cycle_open},
     },
 };
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, bail};
-use enumflags2::BitFlags;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::{
@@ -45,26 +44,21 @@ impl ConcreteRequired {}
 /// `below` less each decided bound holding ⊥ in a part that another decided
 /// bound contains: it adds no value to a witness (`Array<_>` beside
 /// `Array<i64>`). Of two that contain each other the first stays.
-fn joined_lower<'a>(
-    env: &Env,
-    hist: &mut ContainsHist,
-    below: &'a [Type],
-) -> Result<LPooled<Vec<&'a Type>>> {
+fn joined_lower<'a>(env: &Env, below: &'a [Type]) -> Result<LPooled<Vec<&'a Type>>> {
     let holds_bottom = |l: &Type| {
         l.has_bottom()
             && !l.with_deref(|l| matches!(l, Some(Type::Bottom)))
             && !l.has_unbound()
     };
     let mut kept: LPooled<Vec<&Type>> = LPooled::take();
-    let empty = BitFlags::empty();
     for (i, l) in below.iter().enumerate() {
         let mut contained = false;
         if below.len() > 1 && holds_bottom(l) {
             for (j, k) in below.iter().enumerate() {
                 if j != i
                     && !k.has_unbound()
-                    && k.contains_int(empty, env, hist, l)?
-                    && (j < i || !l.contains_int(empty, env, hist, k)?)
+                    && k.decided_holds(env, l)?
+                    && (j < i || !l.decided_holds(env, k)?)
                 {
                     contained = true;
                     break;
@@ -86,43 +80,6 @@ enum Witness {
     Conjunct(Type),
 }
 
-/// Whether a conjunct of `holder`, or of an open cell one holds, holds
-/// `tv`'s cell.
-fn conjuncts_reach(holder: &TVar, tv: &TVar, seen: &mut AddrSet) -> bool {
-    crate::stack::ensure_sufficient(|| {
-        holder.cell_constraints().iter().any(|c| {
-            let found = super::contains::find_open_cell(c, true, &mut |o| {
-                o.same_cell(tv)
-                    || (seen.insert(o.cell_addr()) && conjuncts_reach(o, tv, seen))
-            });
-            found.is_some()
-        })
-    })
-}
-
-/// Put `tvs` in the order a run of settles takes them: a cell after those
-/// whose conjuncts reach it, since a settle at a cell's lower bounds puts
-/// the open cells its conjuncts hold above what it took
-/// ([`TVar::settle_witness`]); cells neither of which reaches the other
-/// stand by name.
-pub(crate) fn settle_order(tvs: &mut [TVar]) {
-    if tvs.len() < 2 {
-        return;
-    }
-    tvs.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.read().id.cmp(&b.read().id)));
-    for i in 0..tvs.len() {
-        let left = &tvs[i..];
-        let reached = |k: usize| {
-            left.iter().enumerate().any(|(j, o)| {
-                j != k && conjuncts_reach(o, &left[k], &mut LPooled::take())
-            })
-        };
-        if let Some(k) = (0..left.len()).find(|&k| !reached(k)) {
-            tvs[i..=i + k].rotate_right(1)
-        }
-    }
-}
-
 impl Witness {
     /// The witness with a conjunct's generic cells copied and its live
     /// cells shared.
@@ -141,7 +98,7 @@ impl TVar {
     /// scheme's cells must not join live inference) and its live cells
     /// shared, so it keeps its relations.
     pub(crate) fn witness(&self, env: &Env) -> Result<std::result::Result<Type, bool>> {
-        Ok(self.own_witness(env, &mut ContainsHist::new())?.map(Witness::shared))
+        Ok(self.own_witness(env)?.map(Witness::shared))
     }
 
     /// The union of the cell's lower bounds, else the narrowest conjunct
@@ -150,11 +107,7 @@ impl TVar {
     /// traits or self-referential, or a set only `Singleton` refuses: a
     /// member would do, and no walk here can choose it). Bound and
     /// unbounded cells have none.
-    fn own_witness(
-        &self,
-        env: &Env,
-        hist: &mut ContainsHist,
-    ) -> Result<std::result::Result<Witness, bool>> {
+    fn own_witness(&self, env: &Env) -> Result<std::result::Result<Witness, bool>> {
         let (cons, below) = {
             let cell = self.cell();
             let cell = cell.read();
@@ -170,10 +123,10 @@ impl TVar {
             if below.iter().any(|l| would_cycle_open(&cell, l)) {
                 return Ok(Err(false));
             }
-            let below = joined_lower(env, hist, &below)?;
+            let below = joined_lower(env, &below)?;
             let w = Type::union(env, &below)?;
             for c in cons.iter() {
-                if !c.contains_int(BitFlags::empty(), env, hist, &w)? {
+                if !c.decided_holds(env, &w)? {
                     return Ok(Err(true));
                 }
             }
@@ -199,7 +152,7 @@ impl TVar {
                 continue;
             }
             for o in cons.iter() {
-                if !o.contains_int(BitFlags::empty(), env, hist, c)? {
+                if !o.decided_holds(env, c)? {
                     // `Singleton` refuses the set, not its members: one of
                     // them may still fit
                     candidates |= !matches!(o, Type::Bound(Bound::Singleton));
@@ -232,13 +185,14 @@ impl TVar {
         }
     }
 
-    /// [`Self::settle`] in `hist`, a walk earlier settles may share.
-    fn settle_in(&self, env: &Env, hist: &mut ContainsHist) -> Result<()> {
+    /// Bind the cell: a ⊥-fed cell below no type to ⊥, any other to its
+    /// witness ([`Self::settle_witness`]).
+    fn settle_in(&self, env: &Env) -> Result<()> {
         if self.cell().read().facts.contains(CellFact::BottomFed) && !self.above_a_type()
         {
             return self.settle_bottom();
         }
-        self.settle_witness_in(env, hist)
+        self.settle_witness(env)
     }
 
     /// Whether a lower bound of the cell is more than ⊥.
@@ -255,16 +209,12 @@ impl TVar {
     ///
     /// [witness]: Self::witness
     pub fn settle_witness(&self, env: &Env) -> Result<()> {
-        self.settle_witness_in(env, &mut ContainsHist::new())
-    }
-
-    fn settle_witness_in(&self, env: &Env, hist: &mut ContainsHist) -> Result<()> {
         if self.earlier_task() {
             return Ok(());
         }
         self.weld_lower();
-        let settled = match self.own_witness(env, hist)? {
-            Ok(w) => self.settle_at(env, hist, w)?,
+        let settled = match self.own_witness(env)? {
+            Ok(w) => self.settle_at(env, w)?,
             Err(unsatisfiable) => !unsatisfiable,
         };
         if settled {
@@ -307,14 +257,15 @@ impl TVar {
         })
     }
 
-    /// Bind the cell to its witness `w` as a containment binds a cell: at
-    /// the union of its lower bounds its conjuncts commit over it first
-    /// ([`Self::commit_conjuncts`]), so a cell a conjunct holds stands
-    /// above what this one took. False, the cell left open, where a
-    /// conjunct does not hold it.
-    fn settle_at(&self, env: &Env, hist: &mut ContainsHist, w: Witness) -> Result<bool> {
+    /// Bind the cell to its witness `w`. At the union of its lower bounds,
+    /// only where each conjunct holds it and holds no open cell: a
+    /// conjunct's open cell must stand above what this one takes, which the
+    /// solver records as a lower bound arrives and a settle does not. False,
+    /// the cell left open, otherwise.
+    fn settle_at(&self, env: &Env, w: Witness) -> Result<bool> {
         if let Witness::Lower(w) = &w
-            && !self.commit_conjuncts_in(env, hist, w)?
+            && (self.cell_constraints().iter().any(|c| c.has_unbound())
+                || !super::contains::cell_admits(self, env, w)?)
         {
             return Ok(false);
         }
@@ -354,7 +305,7 @@ impl TVar {
     ///
     /// [own witness]: Self::own_witness
     pub(super) fn bounds_witness(&self, env: &Env) -> Option<Type> {
-        match self.own_witness(env, &mut ContainsHist::new()) {
+        match self.own_witness(env) {
             Ok(Ok(Witness::Lower(w) | Witness::Conjunct(w))) => Some(w),
             _ => None,
         }
@@ -374,14 +325,8 @@ impl TVar {
     /// refused instead. Only the terminal walk uses this (an earlier call
     /// would foreclose writers not yet typechecked).
     pub fn settle_or_bottom(&self, env: &Env) -> Result<()> {
-        self.settle_or_bottom_in(env, &mut ContainsHist::new())
-    }
-
-    /// [`Self::settle_or_bottom`] in `hist`, a walk earlier settles may
-    /// share.
-    fn settle_or_bottom_in(&self, env: &Env, hist: &mut ContainsHist) -> Result<()> {
         if !self.cell_constraints().is_empty() || !self.cell_lower().is_empty() {
-            self.settle_in(env, hist)?;
+            self.settle_in(env)?;
         }
         self.settle_bottom()
     }
@@ -882,29 +827,11 @@ mod test {
         assert_eq!(steps(&|| p.weld_lower()), 0);
     }
 
-    /// A run of settles takes a cell after the cells whose bounds reach
-    /// it, whatever their names.
+    /// A settle at a cell's lower bounds whose bound holds an open cell
+    /// leaves the cell open and the open cell as it was: that cell would
+    /// have to stand above what this one took.
     #[test]
-    fn a_run_of_settles_takes_a_bounds_holder_first() {
-        let (_, t) = Env::typed_at_root(
-            &[],
-            "fn<'m: ['z, null], 'z: ['a, null]>(x: 'a, y: 'm, z: 'z, w: 'b) -> i64",
-        )
-        .unwrap();
-        let Type::Fn(ft) = &t else { panic!("{t} is no function type") };
-        ft.alias_tvars(&mut LPooled::take());
-        let mut cells: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-        ft.collect_tvars(&mut cells);
-        let mut tvs: Vec<TVar> = cells.values().cloned().collect();
-        settle_order(&mut tvs);
-        let names: Vec<&str> = tvs.iter().map(|tv| tv.name.as_str()).collect();
-        assert_eq!(names, ["b", "m", "z", "a"]);
-    }
-
-    /// A settle at a cell's lower bounds binds it as a containment does:
-    /// the open cell its bound holds stands above what the cell took.
-    #[test]
-    fn a_settle_at_lower_bounds_commits_the_conjuncts() {
+    fn a_settle_at_lower_bounds_under_an_open_conjunct_leaves_the_cell_open() {
         let _level = AtLevel::enter(Level::TOP);
         let (env, t) =
             Env::typed_at_root(&[], "fn<'p: ['a, null]>(x: 'p, y: 'a) -> i64").unwrap();
@@ -917,10 +844,8 @@ mod test {
         p.set_level(Level::TOP);
         a.set_level(Level::TOP);
         p.add_lower(i64_t.clone());
+        assert!(p.settle_witness(&env).is_err(), "{p:?}");
+        assert!(!p.is_bound(), "{p:?}");
         assert!(a.cell_lower().is_empty(), "{a:?}");
-        p.settle_witness(&env).unwrap();
-        assert!(strictly_identical(&p.binding().unwrap(), &i64_t), "{p:?}");
-        let below = a.cell_lower();
-        assert!(matches!(&below[..], [l] if strictly_identical(l, &i64_t)), "{a:?}");
     }
 }

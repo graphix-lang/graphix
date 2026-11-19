@@ -14,7 +14,7 @@
 //! hold each other but where both are themselves alone: then only through
 //! their bounds.
 
-use super::{Bound, FnType, Mutability, TVar, Type, contains::ContainsFlags, node_addr};
+use super::{Bound, FnType, Mutability, TVar, Type, node_addr};
 use crate::{env::Env, stack::ensure_sufficient};
 use ahash::AHashMap;
 use anyhow::Result;
@@ -771,6 +771,6 @@ impl Type {
     /// Whether `t` implements the trait `tid`, as a check over decided
     /// types asks it.
     fn implements(tid: super::TraitId, env: &Env, t: &Type) -> Result<bool> {
-        Type::trait_holds(tid, env, t, ContainsFlags::RigidCheck.into())
+        Type::trait_holds(tid, env, t)
     }
 }
