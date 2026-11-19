@@ -5412,7 +5412,7 @@ impl Type {
                 for (i, p) in params.iter().enumerate() {
                     match widest.as_ref().and_then(|w| w.get(i)) {
                         Some(w) if !matches!(w, Type::Any) => {
-                            w.contains_ordered(env, p)?;
+                            w.decided_holds(env, p)?;
                         }
                         _ => p.any_beneath(env, walk)?,
                     }
@@ -5459,7 +5459,7 @@ impl Type {
             let Some(tv) = find_open_cell(self, false, &mut unseen) else { break };
             let any = match tv.is_rigid() {
                 true => cell_admits(&tv, env, &Type::Any),
-                false => Type::TVar(tv.clone()).contains_ordered(env, &Type::Any),
+                false => Type::TVar(tv.clone()).decided_holds(env, &Type::Any),
             };
             if !any.unwrap_or(false) {
                 bail!(OpenOverAny(tv))
@@ -5496,7 +5496,7 @@ impl Type {
             }
             let Some(p) = pred.deref_cloned() else {
                 if matches!(self.head(env)?, Some(Type::Any)) {
-                    pred.contains_ordered(env, &Type::Any)?;
+                    pred.decided_holds(env, &Type::Any)?;
                     walk.binds += 1;
                     walk.walked.clear()
                 }
@@ -5784,7 +5784,7 @@ impl Type {
                     let held = match t.binds_beside(p) {
                         Some(cells) => {
                             p.narrow_per_member_in(env, &cells, walk)?;
-                            t.contains_ordered(env, p)?
+                            t.decided_holds(env, p)?
                         }
                         None => t.narrow_pattern_in(env, p, walk)?,
                     };
@@ -6077,7 +6077,7 @@ impl Type {
                 let held: SmallVec<[(usize, &Type); 4]> = match own {
                     true => {
                         for o in open.drain(..) {
-                            cell.contains_ordered(env, &Type::TVar(o))?;
+                            cell.decided_holds(env, &Type::TVar(o))?;
                         }
                         rest_alts.iter().copied().zip(rest.iter()).collect()
                     }
@@ -6090,7 +6090,7 @@ impl Type {
                     held.iter().map(|(a, _)| *a as u32).collect();
                 let p: SmallVec<[&Type; 4]> = held.iter().map(|(_, t)| *t).collect();
                 let joined = Type::union_exact_of_parts(env, &p, &tags)?;
-                if joined.contains_ordered(env, &cell)? && c.binding().is_none() {
+                if joined.decided_holds(env, &cell)? && c.binding().is_none() {
                     joined.open_over_any(env, &cell)?
                 }
             }
@@ -6132,7 +6132,7 @@ impl Type {
         let inner = t.reset_tvars_int(&mut known, Fresh::Copy);
         let outer = outer.as_ref().unwrap_or(self);
         let inner = inner.as_ref().unwrap_or(t);
-        let r = outer.contains_ordered(env, inner);
+        let r = outer.decided_holds(env, inner);
         drop(gates);
         r
     }
@@ -6161,11 +6161,11 @@ impl Type {
             })
             .collect();
         pairs.sort_by_key(|(_, c)| c.read().id);
-        let _ = copy.contains_ordered(env, t);
+        let _ = copy.decided_holds(env, t);
         for (s, c) in
             pairs.iter().filter(|(_, c)| c.open_cell().is_some_and(|o| !o.is_rigid()))
         {
-            if !Type::TVar(s.clone()).contains_ordered(env, &Type::TVar(c.clone()))? {
+            if !Type::TVar(s.clone()).decided_holds(env, &Type::TVar(c.clone()))? {
                 return Ok(false);
             }
         }
@@ -6602,11 +6602,9 @@ impl Narrowing {
         (self.contains.param_id(t, env), self.contains.param_id(pred, env))
     }
 
-    /// `t ⊇ pred` as [`Type::contains_ordered`] decides it, in the one walk:
-    /// a pair of parts that holds no cell is contained once, whichever
-    /// member and alternative meet it.
+    /// `t ⊇ pred` over decided types ([`Type::decided_holds`]).
     fn contains(&mut self, env: &Env, t: &Type, pred: &Type) -> Result<bool> {
-        t.contains_ordered_in(env, &mut self.contains, pred)
+        t.decided_holds(env, pred)
     }
 }
 

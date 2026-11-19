@@ -1765,7 +1765,7 @@ impl StructPatternNode {
         } else {
             Type::Array(Arc::new(Type::empty_tvar()))
         };
-        typ.check_contains_ordered(&ctx.env, &want)?;
+        typ.check_contains(&ctx.env, &want)?;
         let et = typ.with_deref(|t| match t {
             Some(Type::Array(et)) if !list => Some((**et).clone()),
             Some(Type::List(et)) if list => Some((**et).clone()),
@@ -1857,7 +1857,7 @@ impl StructPatternNode {
             };
             let shape = shape.any_as_tvar();
             if !type_predicate.narrow_pattern(env, &shape)? {
-                type_predicate.check_contains_ordered(env, &shape)?;
+                type_predicate.check_contains(env, &shape)?;
             }
             let prior: SmallVec<[(BindId, Type); 4]> = match &mode {
                 BindMode::Reuse(map) => map.values().cloned().collect(),
@@ -1968,7 +1968,7 @@ impl StructPatternNode {
             }
             StructurePattern::Ignore => Self::Ignore,
             StructurePattern::Literal(v, _) => {
-                type_predicate.check_contains_ordered(&ctx.env, &Type::of_literal(v)?)?;
+                type_predicate.check_contains(&ctx.env, &Type::of_literal(v)?)?;
                 Self::Literal(v.clone())
             }
             StructurePattern::Bind(name) => {
@@ -2021,7 +2021,7 @@ impl StructPatternNode {
                 // an open predicate takes the tuple's shape; a tuple has it,
                 // and a check would expand the names its elements hold
                 if !matches!(type_predicate.deref_cloned(), Some(Type::Tuple(_))) {
-                    type_predicate.check_contains_ordered(
+                    type_predicate.check_contains(
                         &ctx.env,
                         &Type::Tuple(Arc::from_iter(
                             binds.iter().map(|_| Type::empty_tvar()),
@@ -2046,7 +2046,7 @@ impl StructPatternNode {
             }
             StructurePattern::Variant { all, tag, binds } => {
                 if !matches!(type_predicate.deref_cloned(), Some(Type::Variant(..))) {
-                    type_predicate.check_contains_ordered(
+                    type_predicate.check_contains(
                         &ctx.env,
                         &Type::Variant(
                             tag.clone(),
@@ -2095,7 +2095,7 @@ impl StructPatternNode {
                 };
                 let (atyp, rep) = r.instantiate(id);
                 let own = cx.own_payloads.then(|| r.instantiate(id));
-                type_predicate.check_contains_ordered(&ctx.env, &atyp)?;
+                type_predicate.check_contains(&ctx.env, &atyp)?;
                 // the arm is routed by the tag the match tests
                 let all = bind_all(ctx, cx, all, type_predicate, &mut mode)?;
                 // the payload checks against the declared representation; under
@@ -2133,7 +2133,7 @@ impl StructPatternNode {
                 // (c-pattern-01)
                 match &type_predicate {
                     Type::Struct(_) => (),
-                    _ if *exhaustive => type_predicate.check_contains_ordered(
+                    _ if *exhaustive => type_predicate.check_contains(
                         &ctx.env,
                         &Type::Struct(Arc::from_iter(binds.iter().map(
                             |(name, _, _)| {

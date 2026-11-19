@@ -1156,7 +1156,7 @@ pub(super) mod tests {
             .unzip();
         let scrut = Type::TVar(TVar::empty_named("x".into()));
         let union = Type::union_exact(&env, &arms.iter().collect::<Vec<_>>()).unwrap();
-        assert!(union.contains_ordered(&env, &scrut).unwrap());
+        assert!(union.decided_holds(&env, &scrut).unwrap());
         for arm in arms.iter() {
             assert!(scrut.narrow_pattern(&env, arm).unwrap());
         }

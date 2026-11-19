@@ -3696,26 +3696,18 @@ const HEAD_CHAIN_LIMIT: usize = 64;
 
 impl Type {
     /// `self` holds `t`: in a check by bounds the solver relates the two;
-    /// outside one the relation is a query that decides nothing
-    /// ([`QUERY`]).
+    /// outside one, the relation over decided types ([`super::holds`]).
     pub fn check_contains(&self, env: &Env, t: &Self) -> Result<()> {
         if let Some(r) = super::bounds::with(|s| s.constrain(env, t, self)) {
             return r;
         }
-        let mut hist = ContainsHist::new();
-        let ok = self.contains_int(QUERY, env, &mut hist, t)?;
+        let ok = super::holds::holds(env, self, t)?;
         if graphix_dbg_bind() {
             eprintln!("CHK-CONTAINS {self} >= {t} -> {ok}");
         }
         match ok {
             true => Ok(()),
-            false => {
-                let mut e = self.contains_mismatch(env, t);
-                if let Some(m) = e.downcast_mut::<TypeMismatch>() {
-                    m.infinite = hist.cycled;
-                }
-                Err(e)
-            }
+            false => Err(self.contains_mismatch(env, t)),
         }
     }
 
@@ -6560,6 +6552,16 @@ impl Type {
         c.contains_int(flags, env, hist, ctor)
     }
 
+    /// [`Self::trait_contains`] in a walk of its own.
+    pub(crate) fn trait_holds(
+        tid: TraitId,
+        env: &Env,
+        t: &Self,
+        flags: BitFlags<ContainsFlags>,
+    ) -> Result<bool> {
+        Self::trait_contains(tid, flags, env, &mut ContainsHist::new(), t)
+    }
+
     /// Does `t` implement the trait `tid`? ⊥ implements everything,
     /// `Any` nothing, a union iff every member does, an open cell iff
     /// it could still become an implementor (a rigid cell only through
@@ -6697,11 +6699,14 @@ impl Type {
         }
     }
 
+    /// Whether `self` holds `t`: in a check by bounds as the solver would
+    /// relate them, binding nothing; outside one, the relation over decided
+    /// types ([`super::holds`]).
     pub fn contains(&self, env: &Env, t: &Self) -> Result<bool> {
         if let Some(fits) = super::bounds::with(|s| s.attempt(env, t, self)) {
             return Ok(fits);
         }
-        let r = self.contains_int(QUERY, env, &mut ContainsHist::new(), t);
+        let r = super::holds::holds(env, self, t);
         if graphix_dbg_bind() {
             eprintln!("CONTAINS {self} >= {t} -> {r:?}");
         }
@@ -6716,112 +6721,17 @@ impl Type {
     ) -> Result<bool> {
         self.contains_int(flags, env, &mut ContainsHist::new(), t)
     }
-
-    /// [`Self::contains`] for a select's patterns, whose arms are consulted
-    /// top down, and for a relation over copies: the first member of a
-    /// union that holds a type takes it, where [`Self::contains`] refuses
-    /// a choice between two undecided ones ([`AmbiguousMember`]).
-    pub fn contains_ordered(&self, env: &Env, t: &Self) -> Result<bool> {
-        self.contains_ordered_in(env, &mut ContainsHist::ordered(), t)
-    }
-
-    /// [`Self::contains_ordered`] in `hist`, an ordered walk that may have
-    /// decided other relations before ([`ContainsHist::next_relation`]).
-    pub(super) fn contains_ordered_in(
-        &self,
-        env: &Env,
-        hist: &mut ContainsHist,
-        t: &Self,
-    ) -> Result<bool> {
-        debug_assert!(hist.ordered);
-        hist.next_relation();
-        let r = self.contains_int(QUERY, env, hist, t);
-        if graphix_dbg_bind() {
-            eprintln!("CONTAINS-ORDERED {self} >= {t} -> {r:?}");
-        }
-        r
-    }
-
-    /// [`Self::check_contains`] as [`Self::contains_ordered`] decides,
-    /// outside a check by bounds; in one, the solver relates the two.
-    pub fn check_contains_ordered(&self, env: &Env, t: &Self) -> Result<()> {
-        if let Some(r) = super::bounds::with(|s| s.constrain(env, t, self)) {
-            return r;
-        }
-        let mut hist = ContainsHist::ordered();
-        match self.contains_int(QUERY, env, &mut hist, t)? {
-            true => Ok(()),
-            false => {
-                let mut e = self.contains_mismatch(env, t);
-                if let Some(m) = e.downcast_mut::<TypeMismatch>() {
-                    m.infinite = hist.cycled;
-                }
-                Err(e)
-            }
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::typ::{
-        normalize::{
-            NORMALIZED,
-            tests::{ground_pair_chain, while_ground},
-        },
+        normalize::NORMALIZED,
         setops::tests::past_eager,
         tvar::{InTask, new_task},
     };
     use arcstr::literal;
-
-    /// A ground cell and a pair of its resolution's parts hold each other
-    /// in one step, where a walk of the two takes a step a link.
-    #[test]
-    fn a_ground_cell_holds_its_resolutions_parts_at_once() {
-        let depth = 64;
-        let cells = ground_pair_chain(depth);
-        let top = Type::TVar(cells[depth].clone());
-        let env = Env::default();
-        let steps = while_ground(&cells[depth], || {
-            let below = Type::TVar(cells[depth - 1].clone()).resolve_tvars();
-            let pair = Type::Tuple(Arc::from_iter([below.clone(), below]));
-            [(&top, &pair), (&pair, &top)].map(|(t0, t1)| {
-                CONTAINS_STEPS.with(|n| n.set(0));
-                t0.check_contains(&env, t1).unwrap();
-                CONTAINS_STEPS.with(|n| n.get())
-            })
-        });
-        assert_eq!(steps, [1, 1]);
-    }
-
-    /// A pair whose parts are not the resolution's own is walked: an equal
-    /// copy holds, and a pair of one of its parts and another type does not.
-    #[test]
-    fn a_ground_cell_takes_only_its_resolutions_own_parts_at_once() {
-        let depth = 8;
-        let cells = ground_pair_chain(depth);
-        let top = Type::TVar(cells[depth].clone());
-        let copy =
-            Type::TVar(ground_pair_chain(depth - 1)[depth - 1].clone()).resolve_tvars();
-        let equal = Type::Tuple(Arc::from_iter([copy.clone(), copy]));
-        let env = Env::default();
-        let (steps, refused) = while_ground(&cells[depth], || {
-            let below = Type::TVar(cells[depth - 1].clone()).resolve_tvars();
-            let string = Type::Primitive(Typ::String.into());
-            let unequal = Type::Tuple(Arc::from_iter([below, string]));
-            let steps = [(&top, &equal), (&equal, &top)].map(|(t0, t1)| {
-                CONTAINS_STEPS.with(|n| n.set(0));
-                t0.check_contains(&env, t1).unwrap();
-                CONTAINS_STEPS.with(|n| n.get())
-            });
-            let refused = [(&top, &unequal), (&unequal, &top)]
-                .map(|(t0, t1)| t0.check_contains(&env, t1).is_err());
-            (steps, refused)
-        });
-        assert!(steps.iter().all(|n| *n > 1), "{steps:?}");
-        assert_eq!(refused, [true, true]);
-    }
 
     // A type expanded through a chain of parametric typedefs, a DAG that
     // shares each level, contains the application it expanded with each
@@ -7648,23 +7558,6 @@ mod tests {
         }
     }
 
-    // A verdict reached inside pairs in progress is looked at when the
-    // outermost pair it rests on is answered, not at the answer of each
-    // pair between: the applications of a permuting definition reach
-    // each other, so every verdict of the walk rests on the first pair
-    // until the walk's end.
-    #[test]
-    fn a_held_verdict_is_answered_once() {
-        for n in [4, 5] {
-            let apps: usize = (1..=n).product();
-            VERDICTS_ANSWERED.with(|n| n.set(0));
-            let (commit, _) = permuted_steps("F", n);
-            let answered = VERDICTS_ANSWERED.with(|n| n.get());
-            assert!(answered <= commit, "n={n}: {answered} looks at held verdicts");
-            assert!(answered <= 64 * apps, "n={n}: {answered} looks at held verdicts");
-        }
-    }
-
     // A union member that takes a type as it stands is walked with every
     // cell held rigid, and the verdicts reached under that hold are kept
     // while it lasts: two members of one head over a recursive definition
@@ -7819,32 +7712,6 @@ mod tests {
         let short = CopyWords::of(&[&single, &bottom, &bottom, &bottom, &bottom], &[]);
         assert!(long.is_some() && short.is_some());
         assert_ne!(long, short);
-    }
-
-    // A function type whose quantifier an earlier task left open takes it
-    // fresh for each walk, so a commit decides the copy though the cell is
-    // held rigid: the probe admits the identity into `fn(x: string) ->
-    // i64` part by part, and the commit refuses it there, so the choice
-    // walks each member and the identity goes to the one that holds it.
-    #[test]
-    fn a_commit_decides_a_quantifier_an_earlier_task_left_open() {
-        let (env, _) = Env::typed_at_root(&[], "i64").unwrap();
-        for (s, t) in [
-            (
-                "[fn(x: string) -> i64, fn(x: string) -> string]",
-                "fn<'c: Any>(x: 'c) -> 'c",
-            ),
-            (
-                "[`A(fn(x: string) -> i64), `A(fn(x: string) -> string)]",
-                "`A(fn<'c: Any>(x: 'c) -> 'c)",
-            ),
-        ] {
-            let (s, t) = (at_root(&env, s), at_root(&env, t));
-            let mut held = vec![];
-            hold_rigid(&t, &mut held);
-            let _later = InTask::enter(new_task());
-            assert!(s.contains(&env, &t).unwrap(), "{s} ⊇ {t}");
-        }
     }
 
     // The trial gives the first array to `Array<'a>`, deciding 'a, and

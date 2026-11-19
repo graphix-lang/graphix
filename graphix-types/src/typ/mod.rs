@@ -47,6 +47,7 @@ pub use contains::{
 };
 pub(crate) mod expansive;
 pub mod fntyp;
+pub mod holds;
 mod matches;
 pub use matches::SigMatch;
 mod normalize;

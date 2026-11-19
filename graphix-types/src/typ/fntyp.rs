@@ -1807,7 +1807,7 @@ impl FnType {
     }
 
     pub fn contains(&self, env: &Env, t: &Self) -> Result<bool> {
-        self.contains_int(super::contains::QUERY, env, &mut ContainsHist::new(), t)
+        super::holds::holds_fn(env, self, t)
     }
 
     /// Arguments are contravariant: each of `t`'s parameters must admit
