@@ -700,7 +700,7 @@ judged by level, as a val's implementation's are. One whose value reads
 a binding (a name, or a field or tuple of one) takes no annotation from
 the declaration (`traits::signature_of`): its `let` is typed as any
 `let` of that read, so a read of a generalized binding (`let put = s.g`,
-a default `= s.g`) forwards the scheme (`bind::forwards`), which each
+a default `= s.g`) forwards the scheme (`bind::Held::Scheme`), which each
 call copies, and the declaration must be the binding's type and no
 wider, as a val's must (`let m = f` over `f: fn(s: i64) -> i64` under
 `fn(self) -> [i64, null]` is refused; `|s| f(s)`, or the annotation

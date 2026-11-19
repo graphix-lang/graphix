@@ -4709,8 +4709,14 @@ impl Type {
             },
             (t, Type::TVar(r)) => match r.binding() {
                 Some(b) => t.take_row_at(&b, seen),
-                None => !t.has_unbound(),
+                None => match &r.cell_lower()[..] {
+                    [lower] => t.take_row_at(lower, seen),
+                    _ => !t.has_unbound(),
+                },
             },
+            (Type::App(c, x), Type::App(d, y)) => {
+                c.take_row_at(d, seen) & x.take_row_at(y, seen)
+            }
             (Type::Set(a), Type::Set(b)) | (Type::Tuple(a), Type::Tuple(b)) => {
                 each(a, b, seen)
             }

@@ -479,6 +479,13 @@ destructured_and_written! {
 }
 
 run!(
+    a_literal_s_name_beside_a_written_one_is_generic,
+    r#"{ let (f, n) = (|x| x, 1); n <- 2; (f(1), f("s")) }"#,
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::None
+);
+
+run!(
     a_name_taken_from_a_holder_beside_a_written_one_is_generic,
     "{ let s = {f: |x| x, g: |y| y}; let {f, g} = s; f <- |x: i64| x + 1; \
        (f(1), g(\"s\"), g(2)) }",

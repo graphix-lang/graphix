@@ -4461,20 +4461,6 @@ impl<R: Rt> Never<R> {
 }
 
 impl<R: Rt> Any<R> {
-    /// Whether this is a seq lowering's `any(#seqpc ~! v, v)`: `v` fired at
-    /// its step's entry, then tracked, both alternatives one read's value.
-    pub(crate) fn fired_at_entry(&self, env: &env::Env) -> bool {
-        let [at_entry, v] = &self.n[..] else { return false };
-        let NodeView::Sample(s) = at_entry.view() else { return false };
-        let read = |n: &Node<R>| match n.view() {
-            NodeView::Ref(r) => Some(r.id),
-            _ => None,
-        };
-        s.is_strict()
-            && bind::reads_lowered(env, &s.trigger, crate::expr::seq::is_pc)
-            && read(&s.arg.node).is_some_and(|id| read(v) == Some(id))
-    }
-
     fn typecheck0_with(
         &mut self,
         ctx: &mut CompileCtx<R>,
@@ -4497,11 +4483,6 @@ impl<R: Rt> Any<R> {
 }
 
 impl<R: Rt> Sample<R> {
-    /// `~!`: a trigger finding the argument absent produces bottom.
-    pub(crate) fn is_strict(&self) -> bool {
-        matches!(self.banking, Banking::Strict)
-    }
-
     fn typecheck0_with(
         &mut self,
         ctx: &mut CompileCtx<R>,

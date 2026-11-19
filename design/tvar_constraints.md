@@ -1688,8 +1688,7 @@ An image carries each cell's level and each definition's depth.
   .., _ => never() }; v(#d: "s", 7)` holds `'q: string` and never needs
   the default), and with no call it settles to bottom. So an instance,
   whose `let` reads the variable as its definition's check left it, takes
-  the definition's verdict on such a function and judges nothing
-  (`Narrowing::Instance`); the function a typedef names, below, it judges
+  the definition's verdict on such a function and judges nothing; the function a typedef names, below, it judges
   as it stands, as its definition did. Pins
   `lang::functions::default_under_a_bodys_annotation_no_call` and its
   neighbours. A function type a typedef's body writes

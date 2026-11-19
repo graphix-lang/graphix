@@ -456,17 +456,13 @@ fn judge_hidden_defaults<R: Rt>(
                 Some(value),
                 Judge::Check(match narrowing {
                     Narrowing::Constructed => Narrowing::Constructed,
-                    Narrowing::Site
-                    | Narrowing::Written
-                    | Narrowing::Copy
-                    | Narrowing::Instance => Narrowing::Site,
+                    Narrowing::Site | Narrowing::Written | Narrowing::Copy => {
+                        Narrowing::Site
+                    }
                 }),
                 match narrowing {
                     Narrowing::Constructed => Some(&mut bound),
-                    Narrowing::Site
-                    | Narrowing::Written
-                    | Narrowing::Copy
-                    | Narrowing::Instance => None,
+                    Narrowing::Site | Narrowing::Written | Narrowing::Copy => None,
                 },
             );
             ctx.leave_default(f.id, name);
@@ -612,11 +608,6 @@ pub(crate) enum Narrowing {
     /// none (a typedef's body writes it) is judged as it stands, since
     /// no call will.
     Copy,
-    /// [`Self::Copy`] in an instance, whose types are its definition's
-    /// check's: a function that names the value's definitions keeps the
-    /// definition's verdict, given before the body's calls decided the
-    /// declaration. One that names none is judged as it stands.
-    Instance,
 }
 
 impl Narrowing {
@@ -630,7 +621,7 @@ impl Narrowing {
                  reader, so this default must fit its type as it is written: write \
                  the default's type in the binding's type",
             ),
-            Narrowing::Copy | Narrowing::Instance => Some(
+            Narrowing::Copy => Some(
                 "a function read through a typedef's function type is not known \
                  where it is called, so this default must fit the declared type as \
                  it is written: write the default's type in the declared type",
@@ -806,7 +797,6 @@ fn hidden_defaults_at<R: Rt>(
                 Narrowing::Copy if names_definitions(formal, fv) => {
                     judge(ctx, &formal.reset_tvars_with(&mut walk.copies))
                 }
-                Narrowing::Instance if names_definitions(formal, fv) => Ok(()),
                 narrowing => match narrowing.note() {
                     Some(note) if formal.has_unbound() => {
                         judge(ctx, formal).map_err(|e| Told::over(e, note))

@@ -1,6 +1,5 @@
 use super::{
     VarRead, WakeBit, audit_quiet,
-    callsite::{Narrowing, check_hidden_defaults},
     coretraits::with_hooks,
     lambda::{DefBody, DefOrigin, LambdaDef},
     pattern::{Holder, StructPatternNode},
@@ -782,6 +781,26 @@ impl<R: Rt> Bind<R> {
         if b.typ.is_some() {
             crate::defer_written_names(ctx, &self.typ, &self.spec)?;
         }
+        // XCR claude for claude: [bug/low] `written` is true when any name of the
+        // pattern is written, and the whole value is then held to one instance:
+        // `let (f, n) = (|x| x, 1); n <- 2; (f(1), f("s"))` is refused at `f("s")`
+        // ("i64 does not contain string", naming neither the write nor a fix)
+        // though nothing writes `f`, while `Bind::compile` generalizes the
+        // unwritten names of such a pattern and the forwarded form (`let s = (|x|
+        // x, 1); let (f, n) = s; n <- 2`) keeps `f` generic through `type_leaves`.
+        // Hold only the written leaves to one instance, as `type_leaves` does, or
+        // say in generics.md that one written name makes every sibling one instance
+        // and name the write in the refusal. probe:
+        // design/review-2026-11-16/repro/c-bind-written-sibling-pins-unwritten-lambda.sh
+        // (c-bind-07)
+        // 2026-11-19 claude: Moved here from Bind::check_value, deleted with Bind's
+        // instance fallback (a let with no row is related in a check of its own now).
+        // The check by bounds accepts the probe's three programs: a written name of a
+        // pattern over a literal holds only itself to one instance (Held::Definition's
+        // parts, check_by_bounds). Pin:
+        // lang::quantified::a_literal_s_name_beside_a_written_one_is_generic ([i64:1,
+        // "s"]).
+
         // a write compiled after this let makes it one value after all
         let written = written(ctx, &self.pattern);
         if written {
@@ -872,58 +891,6 @@ impl<R: Rt> Bind<R> {
             self.pattern.ids(&mut |id| {
                 ctx.bind_to_lambda.insert(id, fv.clone());
             });
-        }
-        Ok(())
-    }
-
-    /// Whether the binding forwards its value's scheme (`let g = f`): a
-    /// single name something writes holds an instance of its own instead.
-    fn forwards(&self, ctx: &CompileCtx<R>) -> bool {
-        matches!(&self.spec.kind, ExprKind::Bind(b)
-            if forwards(&ctx.env, b, &self.node)
-                && !(b.pattern.single_bind().is_some() && written(ctx, &self.pattern)))
-    }
-
-    /// The binding holds its value's type, unless it forwards it. A
-    /// binding nothing writes judges its value's hidden defaults by
-    /// `unwritten`.
-    fn check_value(&self, ctx: &mut CompileCtx<R>, unwritten: Narrowing) -> Result<()> {
-        if !self.forwards(ctx) {
-            let written = written(ctx, &self.pattern);
-            // CR claude for claude: [bug/low] `written` is true when any name of the
-            // pattern is written, and the whole value is then held to one instance:
-            // `let (f, n) = (|x| x, 1); n <- 2; (f(1), f("s"))` is refused at `f("s")`
-            // ("i64 does not contain string", naming neither the write nor a fix)
-            // though nothing writes `f`, while `Bind::compile` generalizes the
-            // unwritten names of such a pattern and the forwarded form (`let s = (|x|
-            // x, 1); let (f, n) = s; n <- 2`) keeps `f` generic through `type_leaves`.
-            // Hold only the written leaves to one instance, as `type_leaves` does, or
-            // say in generics.md that one written name makes every sibling one instance
-            // and name the write in the refusal. probe:
-            // design/review-2026-11-16/repro/c-bind-written-sibling-pins-unwritten-lambda.sh
-            // (c-bind-07)
-            let value = match written {
-                true => ctx.monomorphic(self.node.typ()),
-                false => self.node.typ().clone(),
-            };
-            let annotated =
-                matches!(&self.spec.kind, ExprKind::Bind(b) if b.typ.is_some());
-            let contain = |t: &Type| t.check_contains(&ctx.env, &value);
-            wrap!(self.node, contain(&self.typ))?;
-            if annotated {
-                let scope = Scope::root();
-                let (flags, top) = (BitFlags::empty(), self.spec.id);
-                let narrowing = match written {
-                    true => Narrowing::Written,
-                    false => unwritten,
-                };
-                wrap!(
-                    self.node,
-                    check_hidden_defaults(
-                        ctx, flags, &scope, top, &self.typ, &value, narrowing
-                    )
-                )?;
-            }
         }
         Ok(())
     }
@@ -1165,11 +1132,14 @@ impl<R: Rt> Update<R> for Bind<R> {
         let node = &mut self.node;
         wrap!(node, node.typecheck0_instance(ctx, types))?;
         // a name forwarding a generic binding holds that binding's scheme,
-        // which no instance's row may bind
+        // which no instance's row may bind; a let its definition's check
+        // left no row holds its value's type, related in a check of its own
         if !matches!(self.held, Held::Scheme)
             && !types.settle(ctx, &self.spec, &self.typ)?
         {
-            self.check_value(ctx, Narrowing::Instance)?;
+            let check = bounds::Check::begin();
+            wrap!(self.node, self.typ.check_contains(&ctx.env, self.node.typ()))
+                .and_then(|()| check.end(&ctx.env))?
         }
         // each name a pattern binds takes its own row
         if let Some(rows) = types.aux(self.spec.id) {
@@ -1231,90 +1201,6 @@ pub(crate) enum Signature {
     /// reaches it first unifies into the definition's cells.
     Pending,
     Decided,
-}
-
-/// `let g = f`, `let j = s.g` with `f`, `s` generalized and no annotation:
-/// the binding shares the read's copy of the scheme; unifying with a fresh
-/// instance would pin it.
-fn forwards<R: Rt>(env: &Env, b: &expr::BindExpr, node: &Node<R>) -> bool {
-    b.typ.is_none() && (reads_generic(env, node) || passes_generic(env, b, node))
-}
-
-/// Whether the binding is a seq lowering's that passes on a generalized
-/// binding's read (`expr::seq::passes_on`): nothing writes it, so it
-/// carries the scheme. Past the step's guard and a block's final
-/// expression, its value is one of the lowering's [`Passing`] forms, or
-/// what a `let` outside a seq forwards.
-fn passes_generic<R: Rt>(env: &Env, b: &expr::BindExpr, node: &Node<R>) -> bool {
-    fn passed<R: Rt>(env: &Env, node: &Node<R>) -> bool {
-        let node = value_of(node);
-        match (node.view(), passing(env, node)) {
-            (NodeView::SeqGuard(g), _) => passed(env, &g.n),
-            (NodeView::Sample(s), Some(Passing::Snapshot)) => {
-                reads_generic(env, &s.arg.node)
-            }
-            (NodeView::Any(a), Some(Passing::EntryFire)) => reads_generic(env, &a.n[1]),
-            (NodeView::TupleRef(t), Some(Passing::Statement)) => match t.source.view() {
-                NodeView::Tuple(parts) => reads_generic(env, &parts.n[t.field]),
-                _ => false,
-            },
-            (NodeView::SeqCapture(c), Some(Passing::Capture)) => c.scheme,
-            _ => reads_generic(env, node),
-        }
-    }
-    b.pattern.single_bind().is_some_and(|n| expr::seq::passes_on(n)) && passed(env, node)
-}
-
-/// A form only a seq lowering builds, which passes one read on whole: the
-/// names it reads are the lowering's, which a program cannot write.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Passing {
-    /// A step's entry snapshot, `.. ~! #seqsin`.
-    Snapshot,
-    /// A value fired at its step's entry, then tracked: `any(#seqpc ~! v, v)`
-    /// ([`super::Any::fired_at_entry`]).
-    EntryFire,
-    /// A `{ .. }` statement's value, the last of its items': `(#seqb.., ..).n`.
-    Statement,
-    /// A `seqq` request's capture of a variable, typed by its live read
-    /// where the variable is generalized ([`super::seq_machine::SeqCapture`]).
-    Capture,
-}
-
-fn passing<R: Rt>(env: &Env, node: &Node<R>) -> Option<Passing> {
-    match node.view() {
-        NodeView::Sample(s)
-            if s.is_strict()
-                && reads_lowered(env, &s.arg.node, expr::seq::is_entry_input) =>
-        {
-            Some(Passing::Snapshot)
-        }
-        NodeView::Any(a) if a.fired_at_entry(env) => Some(Passing::EntryFire),
-        NodeView::TupleRef(t) => match t.source.view() {
-            NodeView::Tuple(parts)
-                if parts.n.get(t.field).is_some_and(|p| {
-                    reads_lowered(env, p, expr::seq::is_statement_value)
-                }) =>
-            {
-                Some(Passing::Statement)
-            }
-            _ => None,
-        },
-        NodeView::SeqCapture(_) => Some(Passing::Capture),
-        _ => None,
-    }
-}
-
-/// Whether `node` reads a seq lowering's binding whose name `is` holds.
-pub(super) fn reads_lowered<R: Rt>(
-    env: &Env,
-    node: &Node<R>,
-    is: fn(&str) -> bool,
-) -> bool {
-    match node.view() {
-        NodeView::Ref(r) => env.by_id.get(&r.id).is_some_and(|b| is(&b.name)),
-        _ => false,
-    }
 }
 
 /// Whether `node`, past grouping parentheses and a block's final
