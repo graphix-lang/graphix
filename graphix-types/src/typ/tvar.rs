@@ -3368,15 +3368,6 @@ impl TVar {
             .any(|c| matches!(c, Type::Bound(Bound::Data)))
     }
 
-    /// Whether the cell holds the `Function` conjunct.
-    pub(crate) fn requires_function(&self) -> bool {
-        self.cell()
-            .read()
-            .constraints
-            .iter()
-            .any(|c| matches!(c, Type::Bound(Bound::Function)))
-    }
-
     /// Bind self to `binding` (other's, read by the caller), merging
     /// other's constraints into self's cell.
     pub(super) fn copy(&self, other: &Self, binding: Type) {
@@ -7457,8 +7448,8 @@ enum Measure {
 }
 
 /// Why a union's rigid member keeps it from being one type.
-enum Apart<'a> {
-    BesideKnown(&'a TVar),
+enum Apart {
+    BesideKnown,
     TwoRigid,
 }
 
@@ -7493,11 +7484,11 @@ impl UnionParts {
 
     /// A rigid open member that cannot be made one type with the rest:
     /// beside a known member, or beside another rigid cell.
-    fn rigid_apart(&self) -> Option<Apart<'_>> {
+    fn rigid_apart(&self) -> Option<Apart> {
         let mut rigid = self.open.iter().filter(|tv| tv.is_rigid());
         let a = rigid.next()?;
         match self.known > 0 {
-            true => Some(Apart::BesideKnown(a)),
+            true => Some(Apart::BesideKnown),
             false => {
                 rigid.any(|b| b.cell_addr() != a.cell_addr()).then_some(Apart::TwoRigid)
             }
