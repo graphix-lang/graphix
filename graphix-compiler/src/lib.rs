@@ -56,8 +56,8 @@ use crate::{
         lambda::{GXLambda, LambdaDef},
     },
     typ::{
-        Bound, ContainsFlags, CopySites, FnType, Indiscernible, Open, ReadCopies, TVar,
-        Type, tvar::Judgment,
+        Bound, CopySites, FnType, Indiscernible, Open, ReadCopies, TVar, Type,
+        tvar::Judgment,
     },
 };
 use ahash::{AHashMap, AHashSet};
@@ -1640,8 +1640,6 @@ pub struct CompileCtx<R: Rt> {
     /// writer in its scope. A re-drive's leftovers merge up to the
     /// parent frame.
     pub(crate) pending_settles: Vec<SettleFrame>,
-    /// Inputs are checked by bounds (`typ::bounds`), the one check.
-    pub bounds: bool,
     /// Imports whose terminal name did not exist when the `use`
     /// compiled (`use self::sub::x` may precede `mod sub;`); re-checked
     /// by `check_pending_imports`, from `compile_top` and a module's load.
@@ -1832,7 +1830,6 @@ impl<R: Rt> CompileCtx<R> {
             fn_forward_resolutions: self.fn_forward_resolutions.fork(),
             body: self.body.clone(),
             pending_settles: vec![SettleFrame::default()],
-            bounds: self.bounds,
             pending_imports: Vec::new(),
             pending_names: Vec::new(),
             def_assertions: Arc::new(Mutex::new(Vec::new())),
@@ -1894,7 +1891,6 @@ impl<R: Rt> CompileCtx<R> {
             fn_forward_resolutions,
             body: _,
             pending_settles,
-            bounds: _,
             pending_imports,
             pending_names,
             def_assertions,
@@ -2125,48 +2121,17 @@ impl<R: Rt> CompileCtx<R> {
                 )
             })
         };
-        // under a check by bounds what is written flows into the
-        // implementation's binding; where that is generic, the val's
-        // type, as general as it is declared, is the implementation's
-        // for whatever each of the implementation's variables stands for
-        if self.bounds {
-            let fit = match typ::bounds::scheme(imp) {
-                true => {
-                    let level = typ::tvar::current_level();
-                    typ::bounds::written_fits(&self.env, val, imp, level)
-                }
-                false => imp.check_contains(&self.env, val),
-            };
-            return fit.or_else(|_| refused());
-        }
-        let held = self.monomorphic(imp);
-        let mut cells: LPooled<AHashMap<usize, typ::TVar>> = LPooled::take();
-        held.reached_cells(&mut cells);
-        let rigid: LPooled<Vec<(typ::TVar, SmallVec<[Type; 1]>)>> = cells
-            .values()
-            .filter(|tv| !tv.is_bound())
-            .map(|tv| (tv.clone(), tv.cell_constraints()))
-            .collect();
-        let _gates: LPooled<Vec<_>> =
-            rigid.iter().map(|(tv, _)| tv.open_rigid()).collect();
-        // the val's cells take the implementation's argument parts as lower
-        // bounds, so its result decides them too; a rigid cell takes on the
-        // bounds of the open cells merged into it: a bound its own do not
-        // imply narrows it
-        let solve = ContainsFlags::Commit | ContainsFlags::LowerInArgs;
-        let fits = held
-            .contains_with_flags(solve, &self.env, &self.monomorphic(val))
-            .unwrap_or(false)
-            && rigid.iter().all(|(tv, own)| {
-                tv.cell_constraints().iter().all(|c| {
-                    *c == Type::Any
-                        || own.iter().any(|q| q.implies(&self.env, c).unwrap_or(false))
-                })
-            });
-        match fits {
-            true => Ok(()),
-            false => refused(),
-        }
+        // what is written flows into the implementation's binding; where
+        // that is generic, the val's type, as general as it is declared, is
+        // the implementation's for whatever each of its variables stands for
+        let fit = match typ::bounds::scheme(imp) {
+            true => {
+                let level = typ::tvar::current_level();
+                typ::bounds::written_fits(&self.env, val, imp, level)
+            }
+            false => imp.check_contains(&self.env, val),
+        };
+        fit.or_else(|_| refused())
     }
 
     /// Join `inner`, a body's binding implementing an interface `val`, with
@@ -2444,7 +2409,6 @@ impl<R: Rt> ExecState<R> {
                 fn_forward_resolutions: TrackedMap::default(),
                 body: None,
                 pending_settles: vec![SettleFrame::default()],
-                bounds: true,
                 pending_imports: Vec::new(),
                 pending_names: Vec::new(),
                 def_assertions: Arc::new(Mutex::new(Vec::new())),
@@ -3255,13 +3219,9 @@ impl PendingSettle {
     pub(crate) fn drain(
         frame: &SettleFrame,
         env: &Env,
-        by_bounds: bool,
         mut on_err: impl FnMut(&Arc<Expr>, anyhow::Error) -> Result<()>,
     ) -> Result<()> {
-        let judged = |f: &mut dyn FnMut() -> Result<()>| match by_bounds {
-            true => typ::numbers_ordered(f),
-            false => f(),
-        };
+        let judged = |f: &mut dyn FnMut() -> Result<()>| typ::numbers_ordered(f);
         let mut reached: LPooled<AHashMap<usize, AHashSet<usize>>> = LPooled::take();
         for s in frame.iter() {
             if let PendingSettle::Site {
@@ -4053,7 +4013,7 @@ fn check_and_fuse_inner<R: Rt>(
     let st = Instant::now();
     let _level = typ::tvar::AtLevel::enter(typ::tvar::Level::TOP);
     let p = profile::phase(Phase::Typecheck0);
-    let bounds = typ::bounds::Check::begin(ctx.bounds);
+    let bounds = typ::bounds::Check::begin();
     let checked = node.typecheck0(ctx).and_then(|()| typ::bounds::end(&ctx.env));
     drop(bounds);
     if let Err(e) = checked
@@ -4074,7 +4034,7 @@ fn check_and_fuse_inner<R: Rt>(
     // an instance elaborates under its definition's env, where a type
     // its signature carries in from the caller's scope does not resolve
     ctx.env.seed_typedef_refs();
-    let _audit = typ::bounds::Build::begin(ctx.bounds);
+    let _audit = typ::bounds::Build::begin();
     let p = profile::phase(Phase::Typecheck1);
     if let Err(e) = node.typecheck1(ctx) {
         ctx.pending_settles.clear();
@@ -4128,7 +4088,7 @@ pub fn fusion_on(flags: BitFlags<CFlag>) -> bool {
 pub(crate) fn drain_pending_settles<R: Rt>(ctx: &mut CompileCtx<R>) -> Result<()> {
     use expr::At;
     let pending = mem::take(ctx.pending_settles.last_mut().expect("root settle frame"));
-    PendingSettle::drain(&pending, &ctx.env, ctx.bounds, |spec, e| Err(e.at(&**spec)))
+    PendingSettle::drain(&pending, &ctx.env, |spec, e| Err(e.at(&**spec)))
 }
 
 /// A question a check leaves open until it ends.
@@ -4850,7 +4810,6 @@ impl Saved {
             fn_forward_resolutions,
             body: _,
             pending_settles: _,
-            bounds: _,
             pending_imports: _,
             pending_names: _,
             def_assertions: _,
@@ -4907,7 +4866,7 @@ fn compile_top<R: Rt>(
     build: impl FnOnce(&mut ExecCtx<'_, R>, &Expr, ExprId) -> Result<(Node<R>, Scope)>,
 ) -> Result<(Node<R>, Scope)> {
     let _profile = profile::phase(Phase::Compile);
-    let _bounds = typ::bounds::Check::begin(ctx.bounds);
+    let _bounds = typ::bounds::Check::begin();
     let input = Input::enter();
     let top_id = spec.id;
     ctx.open_compile_frame(top_id);

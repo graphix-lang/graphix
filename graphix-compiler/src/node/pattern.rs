@@ -2503,8 +2503,8 @@ impl StructPatternNode {
         // that type: a name binds at it, and a pattern that tests or takes it
         // apart is refused
         let binds = matches!(spec, StructurePattern::Bind(_) | StructurePattern::Ignore);
-        // under a check by bounds a name binds at the type as written
-        let written = ctx.bounds.then(|| type_predicate.clone());
+        // a name binds at the type as written
+        let written = type_predicate.clone();
         let mut type_predicate = type_predicate.clone();
         while let Type::Ref(tr) = &type_predicate {
             if super::later_typedef(ctx, tr) {
@@ -2668,8 +2668,7 @@ impl StructPatternNode {
                 Self::Literal(v.clone())
             }
             StructurePattern::Bind(name) => {
-                let at = written.as_ref().unwrap_or(type_predicate);
-                Self::Bind(leaf_bind(ctx, cx, name, at, &mut mode)?)
+                Self::Bind(leaf_bind(ctx, cx, name, &written, &mut mode)?)
             }
             StructurePattern::SlicePrefix { list, all, prefix, tail } => {
                 let (all, tail, prefix) = Self::compile_slice(
@@ -2780,7 +2779,7 @@ impl StructPatternNode {
                 if let Some(pos) = at.get() {
                     ctx.env.push_typedef_ref(&td, name, &cx.scope.lexical, pos, cx.ori);
                 }
-                let Type::Abstract { id, params } = td.typ() else {
+                let Type::Abstract { id, .. } = td.typ() else {
                     bail!("{name} is not an abstract type, so it has no constructor")
                 };
                 let id = *id;
@@ -2793,24 +2792,7 @@ impl StructPatternNode {
                 let (atyp, rep) = r.instantiate(id);
                 let own = cx.own_payloads.then(|| r.instantiate(id));
                 type_predicate.check_contains_ordered(&ctx.env, &atyp)?;
-                // the predicate is this abstract type, as a variant pattern's is
-                // its variant: a union around it would make the arm refutable by
-                // a tag test nothing performs. A check by bounds routes the arm
-                // by the tag the match tests
-                if !ctx.bounds
-                    && !matches!(type_predicate.deref_cloned(), Some(Type::Abstract { id: t, .. }) if t == id)
-                {
-                    let tag = if params.is_empty() {
-                        format_compact!("{name}")
-                    } else {
-                        format_compact!("{name}<..>")
-                    };
-                    return format_with_flags(PrintFlag::DerefTVars, || {
-                        bail!(
-                            "{name}(..) patterns can't match {type_predicate}: test the tag first, `{tag} as x`"
-                        )
-                    });
-                }
+                // the arm is routed by the tag the match tests
                 let all = bind_all(ctx, cx, all, type_predicate, &mut mode)?;
                 // the payload checks against the declared representation; under
                 // an inferred predicate, at parameters of its own, the

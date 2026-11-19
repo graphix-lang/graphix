@@ -472,7 +472,7 @@ pub(crate) fn lower_over_operands<R: Rt>(
         ));
     }
     // under a check by bounds what the build lowers to is checked by it
-    let check = crate::typ::bounds::Check::begin(ctx.bounds);
+    let check = crate::typ::bounds::Check::begin();
     let mut body = compile(ctx, flags, body, &scope, top_id)?;
     body.typecheck0(ctx)?;
     check.end(&ctx.env)?;
@@ -1530,13 +1530,11 @@ impl<R: Rt> Update<R> for Bind<R> {
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         wrap!(self.node, self.node.typecheck1(ctx))?;
-        // a check by bounds routed the value to the pattern's names by
-        // the pattern's shape: it takes its places from the value's type
-        // now that is decided
-        if ctx.bounds {
-            let typ = self.typ.resolve_tvars();
-            self.pattern.realign_decided(&ctx.env, &typ).at(&self.spec)?
-        }
+        // the check routed the value to the pattern's names by the
+        // pattern's shape: it takes its places from the value's type now
+        // that is decided
+        let typ = self.typ.resolve_tvars();
+        self.pattern.realign_decided(&ctx.env, &typ).at(&self.spec)?;
         Ok(())
     }
 

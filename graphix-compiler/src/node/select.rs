@@ -3180,10 +3180,9 @@ impl<R: Rt> Update<R> for Select<R> {
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         self.arg.node.typecheck1(ctx)?;
-        // a check by bounds decided what reaches each arm after the
-        // patterns were built: they take their places from what the arm
-        // tests for now
-        for (pat, n) in self.arms.iter_mut().filter(|_| ctx.bounds) {
+        // the check decided what reaches each arm after the patterns were
+        // built: they take their places from what the arm tests for now
+        for (pat, n) in self.arms.iter_mut() {
             let tested = match pat.explicit_type_predicate {
                 true => bounds::written_test(&pat.type_predicate),
                 false => pat.type_predicate.resolve_tvars(),
@@ -3355,19 +3354,10 @@ impl<R: Rt> Select<R> {
                     pat.type_predicate.take_row(tp);
                     pat.type_predicate.seed_refs(&ctx.env);
                 }
-                // the predicate's cells are its binds' (an inferred predicate
-                // is built from them), bound by position before it is
-                // replaced. After a check by bounds the row is what reached
-                // the arm, which says nothing of positions: each bind takes
-                // its own row, and the pattern its places from the decided
-                // type, in typecheck1
-                false => {
-                    if !ctx.bounds {
-                        pat.type_predicate.take_row(tp);
-                        pat.structure_predicate.realign(&ctx.env, tp).at(n.spec())?;
-                    }
-                    pat.type_predicate = tp.clone();
-                }
+                // the row is what reached the arm, which says nothing of
+                // positions: each bind takes its own row, and the pattern
+                // its places from the decided type, in typecheck1
+                false => pat.type_predicate = tp.clone(),
             }
             let mut ids: SmallVec<[BindId; 4]> = SmallVec::new();
             pat.structure_predicate.ids(&mut |id| ids.push(id));

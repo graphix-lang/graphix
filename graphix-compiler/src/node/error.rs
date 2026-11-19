@@ -782,11 +782,6 @@ impl Strip {
         })
     }
 
-    /// The strip a definition's check recorded as its removed type.
-    fn of_removed(t: &Type) -> Option<Self> {
-        [Self::Error, Self::Null].into_iter().find(|s| s.removed() == *t)
-    }
-
     pub(crate) fn removed(self) -> Type {
         match self {
             Self::Error => Type::Primitive(Typ::Error.into()),
@@ -1218,10 +1213,9 @@ impl<R: Rt> Update<R> for Qop<R> {
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         wrap!(self.n, self.n.typecheck1(ctx))?;
-        // an operand a check by bounds decided after this node was
-        // checked says what goes only now
-        let own = ctx.bounds && !self.of_definition;
-        if own && !matches!(self.spec.kind, ExprKind::Rethrow(_)) {
+        // an operand the check decided after this node was checked says
+        // what goes only now
+        if !self.of_definition && !matches!(self.spec.kind, ExprKind::Rethrow(_)) {
             let t = self.n.typ().resolve_tvars();
             wrap!(self, self.strip_of(&ctx.env, &t))?
         }
@@ -1285,21 +1279,15 @@ impl<R: Rt> Update<R> for Qop<R> {
         types: &mut super::lambda::InstanceTypes,
     ) -> Result<()> {
         let row = types.settle(ctx, &self.spec, &self.typ)?;
-        let decided = match ctx.bounds {
-            // the strip is the definition's, over the operand as the
-            // definition sees it: an instance that gives a variable an
-            // error takes off what every instance does
-            true => {
-                let seen = types.definitions(self.n.spec().id).map(Type::resolve_tvars);
-                let strip = match &seen {
-                    Some(t) => Strip::by_bounds(&ctx.env, t)?,
-                    None => None,
-                };
-                self.of_definition = strip.is_some();
-                strip
-            }
-            false => types.aux(self.spec.id).and_then(|r| Strip::of_removed(&r[0])),
+        // the strip is the definition's, over the operand as the definition
+        // sees it: an instance that gives a variable an error takes off what
+        // every instance does
+        let seen = types.definitions(self.n.spec().id).map(Type::resolve_tvars);
+        let decided = match &seen {
+            Some(t) => Strip::by_bounds(&ctx.env, t)?,
+            None => None,
         };
+        self.of_definition = decided.is_some();
         self.typecheck0_with(
             ctx,
             &mut |n, ctx| n.typecheck0_instance(ctx, types),
@@ -2040,13 +2028,8 @@ impl ErrorRelay {
         scope: &Scope,
         top_id: ExprId,
     ) -> (Self, Scope) {
-        // a check by bounds gives the cell what the function raises as it
-        // flows in; today's check joins each raise into its binding
+        // the check gives the cell what the function raises as it flows in
         let typ = Type::empty_tvar();
-        if let (Type::TVar(tv), false) = (&typ, ctx.bounds) {
-            tv.freeze();
-            tv.bind(Type::Bottom);
-        }
         let lexical = scope.append_block("ca", top_id.inner()).lexical;
         let bind_id = ctx
             .env

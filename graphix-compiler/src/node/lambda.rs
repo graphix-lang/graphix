@@ -752,7 +752,6 @@ impl InstanceTypes {
             // lowered again at the call). (x-engine-seq-errors-04)
             Some(tables) if tables.table.types.contains_key(&root) => {
                 let known = site
-                    .filter(|_| ctx.bounds)
                     .and_then(|site| {
                         instance_cells(ctx, &def.typ, site, std::slice::from_ref(name))
                     })
@@ -2648,11 +2647,11 @@ pub(crate) fn fit_callee<R: Rt>(
     site: &FnType,
     def_typ: &FnType,
 ) -> Result<FnType> {
-    // a definition a check by bounds made generic: the instance the
-    // site's view decides, with its types; under a check by bounds one it
-    // decided whole is held to the view by the same relation
+    // a definition the check made generic: the instance the site's view
+    // decides, with its types; one it decided whole is held to the view by
+    // the same relation
     let scheme = Type::Fn(Arc::new(def_typ.clone()));
-    if bounds::scheme(&scheme) || (ctx.bounds && !scheme.has_unbound()) {
+    if bounds::scheme(&scheme) || !scheme.has_unbound() {
         let view = Type::Fn(Arc::new(site.clone()));
         let mut known = bounds::instance(&ctx.env, &scheme, &view, &[])?;
         return match &bounds::specialize(&scheme, &mut known) {
@@ -3768,17 +3767,8 @@ impl<R: Rt> Update<R> for Lambda {
             return Ok(());
         }
         // one the check decided whole is placed the same way
-        if ctx.bounds {
-            if !bounds::take(&self.typ, &row) {
-                bailat!(self.spec, "BUG: a lambda's signature took no row")
-            }
-        } else {
-            let _at = AtLevel::enter(level);
-            self.typ.place_cells(&ctx.env, &row);
-            if let (Type::Fn(own), Type::Fn(row)) = (&self.typ, &row) {
-                row.pre_unify_params(&ctx.env, own).at(&self.spec)?;
-            }
-            self.typ.check_contains(&ctx.env, &row).at(&self.spec)?;
+        if !bounds::take(&self.typ, &row) {
+            bailat!(self.spec, "BUG: a lambda's signature took no row")
         }
         match self.named {
             true => def.typ.generalize(def.level.depth()),

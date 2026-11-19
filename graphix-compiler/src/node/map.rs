@@ -290,7 +290,7 @@ impl<R: Rt> MapRef<R> {
         wrap!(self.source, child(&mut self.source, ctx))?;
         wrap!(self.key, child(&mut self.key, ctx))?;
         // an instance's type is its row
-        if ctx.bounds && !check {
+        if !check {
             return Ok(());
         }
         // the map's key type holds the key, not the other way around

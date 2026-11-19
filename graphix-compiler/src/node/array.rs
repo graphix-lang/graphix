@@ -665,7 +665,7 @@ impl<R: Rt> ArrayRef<R> {
         wrap!(self.source, child(&mut self.source, ctx))?;
         wrap!(self.i, child(&mut self.i, ctx))?;
         // an instance's type is its row
-        if ctx.bounds && !check {
+        if !check {
             return Ok(());
         }
         let source_typ = self.source.typ();
@@ -722,7 +722,7 @@ impl<R: Rt> ArraySlice<R> {
             wrap!(i, child(i, ctx))?;
         }
         // an instance's type is its row
-        if ctx.bounds && !check {
+        if !check {
             return Ok(());
         }
         let source_typ = self.source.typ();

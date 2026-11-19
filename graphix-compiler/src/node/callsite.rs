@@ -328,9 +328,9 @@ fn checked_default<R: Rt>(
         }
         Judge::Bind => Ok(()),
     };
-    // a check by bounds judged the default where the site was checked,
-    // and the instance's types are its scheme's: nothing is left to relate
-    let judged = ctx.bounds && matches!(judge, Judge::Bind);
+    // the check judged the default where the site was checked, and the
+    // instance's types are its scheme's: nothing is left to relate
+    let judged = matches!(judge, Judge::Bind);
     let res = res.and_then(|()| match site.and_then(|s| label(s)) {
         // what is left is to see that the instance was given what the
         // site was checked with, both decided by now
@@ -3679,22 +3679,6 @@ impl<R: Rt> CallSite<R> {
                 .and_then(|a| a.node.as_ref())
             {
                 wrap!(node, farg.typ.check_contains(&ctx.env, node.typ()))?;
-                // the check by bounds judged the defaults the value carries
-                if ctx.bounds {
-                    continue;
-                }
-                wrap!(
-                    node,
-                    check_hidden_defaults(
-                        ctx,
-                        flags,
-                        &self.scope,
-                        self.top_id,
-                        &farg.typ,
-                        node.typ(),
-                        Narrowing::Site
-                    )
-                )?;
             }
         }
         Ok(Some(fitted))
@@ -3854,7 +3838,7 @@ impl<R: Rt> CallSite<R> {
             };
         // a call through a read of a generic binding is an instance of the
         // copy the read took, as the check fixed it
-        let copies = self.copies.clone().filter(|_| ctx.bounds && !fitted);
+        let copies = self.copies.clone().filter(|_| !fitted);
         let apply = self.init_prepared_bind(
             ctx,
             scope,
@@ -5819,9 +5803,7 @@ impl<R: Rt> CallSite<R> {
         types: &mut InstanceTypes,
     ) -> Result<()> {
         self.note_kept_view(ctx);
-        if ctx.bounds {
-            self.copies = types.call_copies(self.spec.id).map(TArc::new);
-        }
+        self.copies = types.call_copies(self.spec.id).map(TArc::new);
         let ftype = match self.ftype.is_none() {
             true => types.ftype(self.spec.id),
             false => None,

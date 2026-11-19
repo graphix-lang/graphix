@@ -272,7 +272,7 @@ impl<R: Rt> SynthCall<R> {
         };
         let mut call = Self { site, args };
         // a call the build or the runtime makes is checked as a program's is
-        let check = crate::typ::bounds::Check::begin(ctx.bounds);
+        let check = crate::typ::bounds::Check::begin();
         let checked = call.site.typecheck0(ctx).and_then(|()| check.end(&ctx.env));
         match checked.and_then(|()| call.site.typecheck1(ctx)) {
             Ok(()) => Ok(call),

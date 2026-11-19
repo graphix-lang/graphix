@@ -45,7 +45,6 @@ use netidx_core::{
     path::Path,
 };
 use netidx_value::{Typ, Value};
-use nohash::IntSet;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::{
@@ -625,16 +624,7 @@ pub(crate) fn instance_picks_no_member(
 // annotation, its variables rigid as a declared signature's are, and keep `sig_matches`
 // for what no annotation can say. probe:
 // design/review-2026-11-16/repro/a-packages-val-is-not-an-annotation.sh (a-packages-04)
-fn check_val(
-    env: &Env,
-    open: &IntSet<LambdaId>,
-    name: &str,
-    declared: &Type,
-    typ: &Type,
-    generalized: bool,
-    holder: impl Fn(&TVar) -> Holder,
-    by_bounds: bool,
-) -> Result<()> {
+fn check_val(env: &Env, name: &str, declared: &Type, typ: &Type) -> Result<()> {
     let refused = |e: anyhow::Error| {
         let settled = match settled_note(env, &[typ]) {
             Some(n) => format_compact!(": {n}"),
@@ -645,13 +635,7 @@ fn check_val(
         });
         anyhow!("val {name} is declared {declared} but implemented {typ}: {e:#}{settled}")
     };
-    // a binding a check by bounds typed is its declaration where one
-    // instance of it fits the declaration, its variables constants
-    if by_bounds {
-        let outer = crate::typ::tvar::current_level();
-        return crate::typ::bounds::fits(env, typ, declared, outer).map_err(refused);
-    }
-    // CR claude for claude: [bug/critical] This comparison runs outside the module's
+    // XCR claude for claude: [bug/critical] This comparison runs outside the module's
     // own env (Module::check_body calls check_sig after it leaves with_restored_mut),
     // so a lambda parameter whose whole annotation is a type name is compared with the
     // declared type by name: a body-private type named like one the interface sees (the
@@ -666,65 +650,34 @@ fn check_val(
     // writes, as check_redefinition does for a type the interface declares. probe:
     // design/review-2026-11-16/repro/x-typecheck-generics-sig-shadowed-param-type.sh
     // (x-typecheck-generics-01)
-    let pairs = declared.sig_matches(env, typ).map_err(refused)?;
-    instance_picks_no_member(env, declared, typ).map_err(refused)?;
-    let shared = |tv: &TVar| !tv.level().copied_by(open);
-    let is_function = declared.with_deref(|t| matches!(t, Some(Type::Fn(_))));
-    hold_paired(env, "val", &pairs, shared, |tv, v| match (generalized, holder(tv)) {
-        (true, Holder::Captured(b)) => format_compact!(
-            ", that of {b}, a binding outside its let: declare the val at one type, or \
-             give {b} a type that holds every {v}"
-        ),
-        (false, Holder::Captured(b)) => format_compact!(
-            ", that of {b}, a binding outside its let: declare the val at one type"
-        ),
-        (true, Holder::Written(b)) => format_compact!(
-            ", that of {b}, a binding outside its let that something writes, which \
-             holds one type for every reader: declare the val at one type, or give {b} \
-             a type that holds every {v}"
-        ),
-        (false, Holder::Written(b)) => format_compact!(
-            ", that of {b}, a binding outside its let that something writes: declare \
-             the val at one type"
-        ),
-        (true, Holder::Instance(b)) => format_compact!(
-            ", that of {b}, a binding outside its let holding a function that is one \
-             instance, as a call's result is: declare the val at one type, or write a \
-             lambda over variables of its own in that function's place"
-        ),
-        (false, Holder::Instance(b)) => format_compact!(
-            ", that of {b}, a binding outside its let holding a function that is one \
-             instance, as a call's result is: declare the val at one type"
-        ),
-        (true, Holder::Lambda) => format_compact!(
-            ", that of a binding outside its let: declare the val at one type, or give \
-             that binding a type that holds every {v}"
-        ),
-        // CR claude for claude: [bug/medium] Only a lambda implementation that is not
-        // generalized reaches this arm, which means a written let (`let h = |x| x; h <-
-        // |x| x`), and its second remedy cannot be followed. A let annotated `fn<'a:
-        // Any>(..)` is refused as a quantified function type outside a definition's
-        // signature. `'a: Any |x: 'a| ..` on the lambda gets this same advice again,
-        // because a written binding is never generalized. Only "declare the val at one
-        // type" makes the module check. Drop the second remedy here, the text
-        // `rank2_val_over_a_written_let_names_the_annotation` pins for it, and the
-        // "quantified annotation on the let" way out in design/module_system.md. probe:
-        // design/review-2026-11-16/repro/tests-interfaces-image-quantified-let-remedy.sh
-        // (tests-interfaces-image-01)
-        (false, Holder::Lambda) => format_compact!(
-            ": declare the val at one type, or annotate the implementation's let with \
-             a quantified type (fn<{v}: ..>)"
-        ),
-        (_, Holder::NoLambda) if is_function => format_compact!(
-            ": declare the val at one type, or make the implementation a lambda over \
-             variables of its own"
-        ),
-        (_, Holder::NoLambda) => format_compact!(
-            ": declare the val at one type, or make the implementation a literal of \
-             lambdas over variables of their own"
-        ),
-    })
-    .map_err(refused)
+    // 2026-11-18 claude: On bounds-spike the old comparison this sat on (sig_matches,
+    // hold_paired) is deleted with the old check; the val is held to its declaration by
+    // bounds::fits. The probe now gives: case 1 (body's Number over the prelude's)
+    // refused, case 2 (dynamic body's own C) refused at the load, case 3 (private alias
+    // D = i64) accepted. No fixture pins the three cases yet: pin them before this is
+    // cleared.
+
+    // XCR claude for claude: [bug/medium] Only a lambda implementation that is not
+    // generalized reaches this arm, which means a written let (`let h = |x| x; h <-
+    // |x| x`), and its second remedy cannot be followed. A let annotated `fn<'a:
+    // Any>(..)` is refused as a quantified function type outside a definition's
+    // signature. `'a: Any |x: 'a| ..` on the lambda gets this same advice again,
+    // because a written binding is never generalized. Only "declare the val at one
+    // type" makes the module check. Drop the second remedy here, the text
+    // `rank2_val_over_a_written_let_names_the_annotation` pins for it, and the
+    // "quantified annotation on the let" way out in design/module_system.md. probe:
+    // design/review-2026-11-16/repro/tests-interfaces-image-quantified-let-remedy.sh
+    // (tests-interfaces-image-01)
+    // 2026-11-18 claude: On bounds-spike the arm and its remedy text are deleted
+    // with the old check; rank2_val_over_a_written_let_names_the_annotation passes
+    // by its bounds.manifest line, the check's own message. Left: the fixture's
+    // written text and the 'quantified annotation on the let' way out in
+    // design/module_system.md, for the manifest fold (step 4 of the plan).
+
+    // a binding the check typed is its declaration where one instance of
+    // it fits the declaration, its variables constants
+    let outer = crate::typ::tvar::current_level();
+    crate::typ::bounds::fits(env, typ, declared, outer).map_err(refused)
 }
 
 /// What holds a cell of an implementation's binding outside its value.
@@ -1384,16 +1337,7 @@ fn check_sig_items<R: Rt>(
             };
             let typ = implementation_type(bind, inner);
             proxy_bind.typ.unbind_tvars();
-            check_val(
-                &ctx.env,
-                &ctx.rec_defs,
-                &inner.name,
-                &proxy_bind.typ,
-                typ,
-                generalized_impl(ctx, id),
-                |tv| Holder::of(ctx, id, tv),
-                ctx.bounds,
-            )?;
+            check_val(&ctx.env, &inner.name, &proxy_bind.typ, typ)?;
             if ctx.connect_targets.contains(&proxy_id) {
                 ctx.check_val_written(&inner.name, &proxy_bind.typ, typ)?
             }
@@ -1532,17 +1476,8 @@ pub fn check_script_sig<R: Rt>(
                     ft.generalize(0)
                 }
                 check_interface_names(&view, scope, si, Some(&declared)).map_err(at)?;
-                check_val(
-                    &ctx.env,
-                    &ctx.rec_defs,
-                    name.name.as_str(),
-                    &declared,
-                    &bind.typ,
-                    generalized_impl(ctx, bind.id),
-                    |tv| Holder::of(ctx, bind.id, tv),
-                    ctx.bounds,
-                )
-                .context(ParserContext { ori: bind.ori.clone(), pos: bind.pos })?;
+                check_val(&ctx.env, name.name.as_str(), &declared, &bind.typ)
+                    .context(ParserContext { ori: bind.ori.clone(), pos: bind.pos })?;
                 // the language server sees the val as a module's: a binding
                 // of its own, with its doc, linked to the script's
                 if ctx.env.ide.is_lsp() {
@@ -2088,7 +2023,7 @@ impl<R: Rt> Module<R> {
         self.lets = node::Lets::wire(&mut self.nodes);
         self.runs = Runs::default();
         if let Body::Dynamic { .. } = &self.body {
-            let check = bounds::Check::begin(ctx.bounds);
+            let check = bounds::Check::begin();
             self.check_body(ctx)
                 .and_then(|()| check.end(&ctx.env))
                 .and_then(|()| crate::drain_pending_settles(ctx))

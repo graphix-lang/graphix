@@ -378,14 +378,12 @@ impl<R: Rt> Update<R> for StructWith<R> {
         for rep in self.replace.iter_mut() {
             wrap!(rep.n, rep.n.typecheck1(ctx))?
         }
-        // a check by bounds decides the struct after the update is
-        // checked: each field's place is known only now
-        if ctx.bounds {
-            let source = self.source.typ().resolve_tvars();
-            for rep in self.replace.iter_mut().filter(|r| r.index.is_none()) {
-                let found = struct_field_types(ctx, &source, &rep.name);
-                rep.index = wrap!(rep.n, found)?.0
-            }
+        // the check decides the struct after the update is checked: each
+        // field's place is known only now
+        let source = self.source.typ().resolve_tvars();
+        for rep in self.replace.iter_mut().filter(|r| r.index.is_none()) {
+            let found = struct_field_types(ctx, &source, &rep.name);
+            rep.index = wrap!(rep.n, found)?.0
         }
         Ok(())
     }
@@ -538,9 +536,9 @@ impl<R: Rt> Update<R> for StructRef<R> {
 
     fn typecheck1(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         wrap!(self.source, self.source.typecheck1(ctx))?;
-        // a check by bounds decides the struct after the read is checked:
-        // the field's place is known only now
-        if ctx.bounds && self.sorted_field_idx.is_none() {
+        // the check decides the struct after the read is checked: the
+        // field's place is known only now
+        if self.sorted_field_idx.is_none() {
             let source = self.source.typ().resolve_tvars();
             let (idx, _) =
                 wrap!(self, struct_field_type(ctx, &source, &self.field_name))?;
@@ -1263,7 +1261,7 @@ impl<R: Rt> StructWith<R> {
         wrap!(self.source, child(&mut self.source, ctx))?;
         // an instance's types are its rows, and typecheck1 finds each
         // field's place
-        if bounds::active() || (ctx.bounds && !check) {
+        if bounds::active() || !check {
             for rep in self.replace.iter_mut() {
                 wrap!(rep.n, child(&mut rep.n, ctx))?;
             }
@@ -1302,7 +1300,7 @@ impl<R: Rt> StructRef<R> {
         wrap!(self.source, child(&mut self.source, ctx))?;
         // an instance's type is its row, and typecheck1 finds the field's
         // place
-        if ctx.bounds && !check {
+        if !check {
             return Ok(());
         }
         if bounds::active() {

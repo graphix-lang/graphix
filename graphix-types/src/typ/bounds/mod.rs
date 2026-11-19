@@ -104,8 +104,8 @@ pub fn begin() {
 pub struct Check(bool);
 
 impl Check {
-    pub fn begin(by_bounds: bool) -> Self {
-        let begins = by_bounds && !active();
+    pub fn begin() -> Self {
+        let begins = !active();
         if begins {
             begin()
         }
@@ -169,9 +169,8 @@ pub fn abandon() {
 pub struct Build(bool);
 
 impl Build {
-    pub fn begin(by_bounds: bool) -> Self {
-        let audit = by_bounds
-            && std::env::var_os("GRAPHIX_BOUNDS_AUDIT").is_some()
+    pub fn begin() -> Self {
+        let audit = std::env::var_os("GRAPHIX_BOUNDS_AUDIT").is_some()
             && BOUND_BY_OLD.get().is_none();
         if audit {
             BOUND_BY_OLD.set(Some(0));
