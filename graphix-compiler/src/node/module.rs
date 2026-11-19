@@ -23,9 +23,7 @@ use crate::{
     shared_map::SharedMap,
     stack::ensure_sufficient,
     typ::{
-        Brief, FnArgKind, FnArgType, FnType, TVar, Type, UnresolvableRef, Written,
-        bounds,
-        settle::VariableUnion,
+        Brief, FnArgKind, FnArgType, FnType, TVar, Type, UnresolvableRef, bounds,
         tvar::{ForeignWrite, InTask, OwnWrites, TaskId, new_task, settled_note},
     },
     wrap,
@@ -825,8 +823,7 @@ fn interface_env(env: &Env, scope: &ModPath, sig: &Sig) -> Result<Env> {
 /// Refuse a name the interface item `si` writes that the interface
 /// neither imports nor declares: each resolves in `view`
 /// ([`interface_env`]) alone, which fills its cell. `val` is a `val`
-/// item's declared type, which may not write a union of two of its
-/// variables in a function type ([`VariableUnion`]).
+/// item's declared type.
 fn check_interface_names(
     view: &Env,
     scope: &ModPath,
@@ -861,21 +858,7 @@ fn interface_names(
     val: Option<&Type>,
 ) -> Result<()> {
     match &si.kind {
-        SigKind::Bind(BindSig { name, .. }) => val.map_or(Ok(()), |t| {
-            let mut res = Ok(());
-            t.for_each_written(false, &mut |w| {
-                if res.is_ok() {
-                    res = match w {
-                        Written::Name(tr) => tr.resolve_only_in(view),
-                        Written::Union(u) => match VariableUnion::of(u, &|_| true) {
-                            None => Ok(()),
-                            Some(e) => Err(anyhow!("val {}: {e}", name.name)),
-                        },
-                    }
-                }
-            });
-            res
-        }),
+        SigKind::Bind(_) => val.map_or(Ok(()), |t| t.resolve_names_only_in(view)),
         SigKind::TypeDef(td) => {
             let Some(def) =
                 view.lexical.typedefs.get(scope).and_then(|m| m.get(td.name.as_str()))

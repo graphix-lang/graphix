@@ -3526,37 +3526,23 @@ impl Type {
     /// now ([`TypeRef::names_something`]), into `out`: a name's
     /// parameters and a variable's bounds included, a variable's binding
     /// (inferred, not written) not. A name that does resolve is refused
-    /// where it is applied wrongly ([`TypeRef::check_application`]). Each
-    /// union it writes in a function type goes to `union`
-    /// ([`Self::for_each_written`]). True when some name means a trait.
+    /// where it is applied wrongly ([`TypeRef::check_application`]). True
+    /// when some name means a trait.
     #[doc(hidden)]
-    pub fn unresolved_names(
-        &self,
-        env: &Env,
-        out: &mut Vec<TypeRef>,
-        mut union: Option<&mut dyn FnMut(&Type) -> Result<()>>,
-    ) -> Result<bool> {
-        let judged = union.is_some();
+    pub fn unresolved_names(&self, env: &Env, out: &mut Vec<TypeRef>) -> Result<bool> {
         let mut res = Ok(());
         let mut trait_named = false;
-        let mut each = |w: Written<'_>| {
+        self.for_each_written_name(&mut |tr| {
             if res.is_ok() {
-                res = match w {
-                    Written::Name(tr) => match tr.means(env) {
-                        Some(m) => {
-                            trait_named |= m == NameMeans::Trait;
-                            tr.check_application(env)
-                        }
-                        None => Ok(out.push(tr.clone())),
-                    },
-                    Written::Union(u) => union.as_mut().map_or(Ok(()), |f| f(u)),
+                res = match tr.means(env) {
+                    Some(m) => {
+                        trait_named |= m == NameMeans::Trait;
+                        tr.check_application(env)
+                    }
+                    None => Ok(out.push(tr.clone())),
                 }
             }
-        };
-        match judged {
-            true => self.written_walk::<true>(false, &mut each),
-            false => self.written_walk::<false>(false, &mut each),
-        }
+        });
         res.map(|()| trait_named)
     }
 
@@ -3572,59 +3558,26 @@ impl Type {
         res
     }
 
-    /// Each name this written type holds, its variables' bounds' included.
+    /// Each name this written type holds, under any constructor, a
+    /// typedef's arguments and its variables' bounds included, no typedef
+    /// looked through.
     #[doc(hidden)]
     pub fn for_each_written_name(&self, f: &mut impl FnMut(&TypeRef)) {
-        self.written_walk::<false>(false, &mut |w| {
-            if let Written::Name(tr) = w {
-                f(tr)
-            }
-        })
-    }
-
-    /// Each name this written type holds and each union it writes in a
-    /// function type (its parameters, result, throws and its variables'
-    /// bounds; the whole of it where `in_fn`), under any constructor, a
-    /// typedef's arguments included, no typedef looked through.
-    #[doc(hidden)]
-    pub fn for_each_written(&self, in_fn: bool, f: &mut impl FnMut(Written<'_>)) {
-        self.written_walk::<true>(in_fn, f)
-    }
-
-    fn written_walk<const UNIONS: bool>(
-        &self,
-        in_fn: bool,
-        f: &mut impl FnMut(Written<'_>),
-    ) {
-        fn go<const UNIONS: bool>(
-            t: &Type,
-            in_fn: bool,
-            seen: &mut AddrSet,
-            f: &mut impl FnMut(Written<'_>),
-        ) {
+        fn go(t: &Type, seen: &mut AddrSet, f: &mut impl FnMut(&TypeRef)) {
             ensure_sufficient(|| match t {
                 Type::Ref(tr) => {
-                    f(Written::Name(tr));
-                    tr.params.iter().for_each(|p| go::<UNIONS>(p, in_fn, seen, f))
+                    f(tr);
+                    tr.params.iter().for_each(|p| go(p, seen, f))
                 }
-                Type::TVar(tv) if seen.insert(tv.cell_addr()) => tv
-                    .cell_constraints()
-                    .iter()
-                    .for_each(|c| go::<UNIONS>(c, true, seen, f)),
+                Type::TVar(tv) if seen.insert(tv.cell_addr()) => {
+                    tv.cell_constraints().iter().for_each(|c| go(c, seen, f))
+                }
                 Type::TVar(_) => (),
-                Type::Fn(ft) => ft.for_each_type(&mut |t| go::<UNIONS>(t, true, seen, f)),
-                t => {
-                    if UNIONS
-                        && in_fn
-                        && let Type::Set(_) = t
-                    {
-                        f(Written::Union(t))
-                    }
-                    t.for_each_child(&mut |c| go::<UNIONS>(c, in_fn, seen, f))
-                }
+                Type::Fn(ft) => ft.for_each_type(&mut |t| go(t, seen, f)),
+                t => t.for_each_child(&mut |c| go(c, seen, f)),
             })
         }
-        go::<UNIONS>(self, in_fn, &mut LPooled::take(), f)
+        go(self, &mut LPooled::take(), f)
     }
 
     /// Fill the resolution cell of every `Type::Ref` reachable from
@@ -4658,13 +4611,4 @@ fn ctor_quantifiers(ft: &FnType, env: &Env) -> LPooled<Vec<(ArcStr, Type)>> {
 pub enum NameMeans {
     Type,
     Trait,
-}
-
-/// What a written type holds, as [`Type::for_each_written`] meets it.
-#[doc(hidden)]
-pub enum Written<'a> {
-    /// A name.
-    Name(&'a TypeRef),
-    /// A union written in a function type.
-    Union(&'a Type),
 }

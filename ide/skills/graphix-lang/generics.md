@@ -87,18 +87,14 @@ no "i64 does not contain string" let f = |x: 'e, c: bool, a, b| -> 'e select c {
 no "drop `-> 'e`, or write the body's type" |x: 'e, c: bool, a| -> 'e select c { true => a, false => 1 }
 ```
 
-A signature may not write a union of two of its type variables, `|x:
-['a, 'b]|`, `Array<['a, 'b]>`, `-> ['a, 'b, null]`, a `.gxi` val's or a
-trait method's alike, nor a function type a `let` annotation writes: no
-value's type says which variable it takes. Keep one variable there
-(`['a, null]` and a trait method's `[self, 'a]` are fine) or write the
-types (`[i64, string]`). In an impl, `self` is the impl's target, so
-`[self, 'a]` in `impl T for i64` is `[i64, 'a]`, one variable beside a
-written type.
+A signature may write a union of its type variables (`|x: ['a, 'b], y:
+'a, z: 'b|`): each call decides them, and an argument there must fit a
+member as decided. In an impl, `self` is the impl's target, so `[self,
+'a]` in `impl T for i64` is `[i64, 'a]`.
 
 ```graphix,cases
-no "union of the type variables" |x: ['a, 'b]| 1
-no "union of the type variables" |x: Array<['a, 'b]>| 1
+ok let f = |x: ['a, 'b], y: 'a, z: 'b| -> (Array<'a>, Array<'b>) ([y], [z]); f("t", 1, "s")
+no "[i64, string] does not contain bool" let f = |x: ['a, 'b], y: 'a, z: 'b| -> (Array<'a>, Array<'b>) ([y], [z]); f(true, 1, "s")
 ok |x: ['a, null]| 1
 ok trait T { val m: fn(self, x: [self, 'a]) -> i64 }; impl T for i64 { let m = |s, x| 0 }; T::m(1, 2)
 ok trait T { val m: fn(self, x: [i64, string]) -> i64 }; impl T for i64 { let m = |s, x: [self, 'c]| 0 }; T::m(1, "q")
@@ -200,7 +196,7 @@ no "picks none by order" let f = |s| select s { (1, b) => 0, (2, (x, y)) => x, (
 ok let f = |s| select s { (1, b) => 0, (2, (x, y)) => x, (3, (x, y, z)) => x, (_, b) => 0 }; let g = |u: (i64, i64)| f((2, u)); g((5, 6))
 ok let f = |s: (Array<'e>, 'b)| select s { ([a, c, ..], b) => (a, b), ([d], b) => (b, d), ([], b) => (b, b) }; f(([1, 2], "q"))
 no "picks none by order" type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<'a, 'b>| 0; f([1])
-no "union of the type variables" trait T { val m: fn(self) -> i64 }; impl<'a, 'b> T for Array<['a, 'b]> { let m = |s| 0 }; T::m([1])
+no "picks none by order" trait T { val m: fn(self) -> i64 }; impl<'a, 'b> T for Array<['a, 'b]> { let m = |s| 0 }; T::m([1])
 no "trait Sh used as a type" type T = Array<Sh>; trait Sh { val m: fn(self) -> i64 }; 0
 no "trait Sh used as a type" trait Sh { val m: fn(self) -> i64 }; type T = Array<Sh>; 0
 ok type T<'a: Sh> = Array<'a>; trait Sh { val m: fn(self) -> i64 }; impl Sh for i64 { let m = |s| 1 }; let v: T<i64> = [1]; v
@@ -573,8 +569,7 @@ A default that raises through a variable its factory declares
 (`|k: Result<i64, 'e>| |#d = k?, x: i64| ..`) raises what each call that
 made the function picked for `'e`, which only the returned function's
 `throws` names: write it there, or close `'e`. A call inside the factory
-needs neither. Two such variables cannot be written together in a `throws`
-(a union of two variables): close all but one.
+needs neither.
 
 ```graphix,cases
 no "write `throws Error<ErrChain<'e>>` in the type of the function it returns" let mk = |k: Result<i64, 'e>| |#d = k?, x: i64| d + x; { catch(e) 0; mk(error(`E))(7) }

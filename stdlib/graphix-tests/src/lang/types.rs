@@ -8292,15 +8292,11 @@ async fn holder_chain_stays_a_dag() -> Result<()> {
     Ok(())
 }
 
-// A written function type may not hold a union of two of its definition's
-// type variables: no value's type says which of them it takes. One
-// variable beside written types, a union of written types and a data union
-// in a body's annotation stand.
-const VARIABLE_UNION: &str =
-    "is a union of the type variables 'a and 'b in a function's signature";
+// A written function type may hold a union of its type variables: each
+// call decides them, and a value takes a member its type fits.
 
 run!(
-    variable_union_in_a_parameter_refused,
+    variable_union_in_a_parameter,
     r#"{
   let f = |x: ['a, 'b], y: 'a, z: 'b| -> (Array<'a>, Array<'b>) ([y], [z]);
   let u = never();
@@ -8308,7 +8304,15 @@ run!(
   u <- "t";
   r
 }"#,
-    refused(VARIABLE_UNION);
+    prints(r#"[[i64:1], ["s"]]"#)
+);
+run!(
+    variable_union_holds_no_type_its_members_do_not,
+    r#"{
+  let f = |x: ['a, 'b], y: 'a, z: 'b| -> (Array<'a>, Array<'b>) ([y], [z]);
+  f(true, 1, "s")
+}"#,
+    refused("[i64, string] does not contain bool");
     FuseExpect::None
 );
 run!(
@@ -8324,50 +8328,18 @@ run!(
     FuseExpect::Jit
 );
 run!(
-    variable_union_beside_a_written_type_refused,
-    r#"{ let f = |x: i64, k: fn(z: ['a, 'b, null]) -> i64| -> i64 x; f(1, |z| 0) }"#,
-    refused(VARIABLE_UNION);
-    FuseExpect::None
-);
-run!(
     one_variable_beside_written_types,
     r#"{ let f = |x: i64, k: fn(z: ['a, string, null]) -> i64| -> i64 x; f(1, |z| 0) }"#,
     prints("i64:1");
     FuseExpect::Jit
 );
 run!(
-    variable_union_under_an_array_refused,
-    r#"{ let f = |x: Array<['a, 'b]>, y: 'a| -> 'a y; f([1], 2) }"#,
-    refused(VARIABLE_UNION);
-    FuseExpect::None
-);
-run!(
-    variable_union_in_a_struct_field_refused,
-    r#"{ let f = |x: {v: ['a, 'b]}, y: 'a| -> 'a y; f({v: 1}, 2) }"#,
-    refused(VARIABLE_UNION);
-    FuseExpect::None
-);
-run!(
-    variable_union_in_the_result_refused,
+    variable_union_in_the_result,
     r#"{ let f = |c: bool, x: 'a, y: 'b| -> ['a, 'b] select c { true => x, false => y }; f(true, 1, "s") }"#,
-    refused(VARIABLE_UNION);
-    FuseExpect::None
+    prints("i64:1")
 );
-run!(
-    variable_union_in_a_bound_refused,
-    r#"{ let f = 'c: ['a, 'b] |x: 'c| x; f(1) }"#,
-    refused(VARIABLE_UNION);
-    FuseExpect::None
-);
-// The union the source writes is judged, a typedef's argument included; a
-// typedef applied in a signature is not looked through, and its own body's
-// union is its parameters', not the definition's.
-run!(
-    variable_union_as_a_typedef_argument_refused,
-    r#"{ type M<'x> = ['x, null]; let f = |x: M<['a, 'b]>, y: 'a| -> 'a y; f(null, 2) }"#,
-    refused(VARIABLE_UNION);
-    FuseExpect::None
-);
+// A union of variables behind a typedef meets a value at its use, where the
+// arguments before it decide its members.
 run!(
     typedef_union_of_variables_refused_at_its_use,
     r#"{ type E<'p, 'q> = ['p, 'q]; let f = |x: Array<E<'a, 'b>>| -> i64 0; f([1]) }"#,
@@ -8411,16 +8383,6 @@ run!(
     r#"{ type E<'p, 'q> = ['p, 'q]; let f = |x: Array<E<i64, 'a>>, y: 'a| -> 'a y; f([1], 2) }"#,
     prints("i64:2");
     FuseExpect::Jit
-);
-run!(
-    variable_union_in_an_annotated_function_refused,
-    r#"{
-  let f: fn(x: ['a, 'b]) -> (Array<'a>, Array<'b>) = |x| ([], []);
-  let g = |p, q| { let u = never(); let r = f(u); u <- p; u <- q; r };
-  g(1, "s")
-}"#,
-    refused(VARIABLE_UNION);
-    FuseExpect::None
 );
 run!(
     annotated_function_at_written_types,
@@ -8482,60 +8444,13 @@ run!(
     prints("i64:0")
 );
 
-// Two members of one constructor holding two distinct variables of the
-// definition ask the same question: which member a value takes. Two
-// constructors, one variable among them, a typedef's written name against
-// another constructor and a data union in a body's annotation stand.
-const NESTED_UNION: &str =
-    "is a union of the type variables 'c and 'd, held by its members";
+// Two members of one constructor holding two distinct variables are
+// decided as a union of variables is.
 
 run!(
-    nested_variable_union_refused,
-    r#"{ let f = |x: [Array<'c>, Array<'d>], y: 'd, z: 'c| -> i64 0; f([1], 1, "s") }"#,
-    refused(NESTED_UNION);
-    FuseExpect::None
-);
-run!(
-    nested_variable_union_written_last_refused,
+    nested_variable_union_written_last,
     r#"{ let f = |y: 'd, z: 'c, x: [Array<'c>, Array<'d>]| -> i64 0; f(1, "s", [1]) }"#,
-    refused(NESTED_UNION);
-    FuseExpect::None
-);
-run!(
-    nested_variable_union_at_two_positions_refused,
-    r#"{ let f = |x: [('c, i64), (i64, 'd)], y: 'c| -> 'c y; f((1, 2), 3) }"#,
-    refused(NESTED_UNION);
-    FuseExpect::None
-);
-run!(
-    nested_variable_union_through_a_function_type_refused,
-    r#"{ let f = |k: [Array<'c>, Array<fn(x: 'd) -> i64>], y: 'c| -> 'c y; f([1], 1) }"#,
-    refused(NESTED_UNION);
-    FuseExpect::None
-);
-run!(
-    nested_variable_union_of_struct_fields_refused,
-    r#"{ let f = |x: [{v: 'c}, {v: 'd}], y: 'c| -> 'c y; f({v: 1}, 2) }"#,
-    refused(NESTED_UNION);
-    FuseExpect::None
-);
-run!(
-    nested_variable_union_of_variants_refused,
-    r#"{ let f = |x: [`A('c), `A('d), `B], y: 'c| -> 'c y; f(`B, 2) }"#,
-    refused(NESTED_UNION);
-    FuseExpect::None
-);
-run!(
-    nested_variable_union_of_one_typedef_refused,
-    r#"{ type M<'x> = Array<'x>; let f = |x: [M<'c>, M<'d>], y: 'c| -> 'c y; f([1], 2) }"#,
-    refused(NESTED_UNION);
-    FuseExpect::None
-);
-run!(
-    nested_variable_union_in_the_result_refused,
-    r#"{ let f = |x: 'c, y: 'd| -> [Array<'c>, Array<'d>, null] null; f(1, "s") }"#,
-    refused(NESTED_UNION);
-    FuseExpect::None
+    prints("i64:0")
 );
 run!(
     nested_union_of_one_variable_beside_a_written_type,
@@ -8586,37 +8501,12 @@ run!(
 );
 
 // Two function types the source writes in one union are two members
-// unless they name the same variables: a variable is its name there, so
-// the rule above judges both, and a typedef's body keeps what it wrote.
-// A member written twice is one member.
+// unless they name the same variables: a variable is its name there, and a
+// typedef's body keeps what it wrote. A member written twice is one member.
 run!(
-    nested_variable_union_of_function_types_refused,
+    nested_variable_union_of_function_types,
     r#"{ let f = |k: [fn(x: 'c) -> i64, fn(x: 'd) -> i64], y: 'c, z: 'd| -> i64 0; f(|x: i64| 0, 1, "s") }"#,
-    refused(NESTED_UNION);
-    FuseExpect::None
-);
-run!(
-    nested_variable_union_of_function_types_refused_whatever_the_argument,
-    r#"{ let f = |k: [fn(x: 'c) -> i64, fn(x: 'd) -> i64], y: 'c, z: 'd| -> i64 0; f(|x: string| 0, 1, "s") }"#,
-    refused(NESTED_UNION);
-    FuseExpect::None
-);
-run!(
-    nested_variable_union_of_swapped_function_types_refused,
-    r#"{ let f = |k: [fn(x: 'c) -> 'd, fn(x: 'd) -> 'c], y: 'c, z: 'd| -> i64 0; f(|x: i64| "s", 1, "s") }"#,
-    refused(NESTED_UNION);
-    FuseExpect::None
-);
-run!(
-    nested_variable_union_of_arrays_of_function_types_refused,
-    r#"{ let f = |k: [Array<fn(x: 'c) -> i64>, Array<fn(x: 'd) -> i64>], y: 'c, z: 'd| -> i64 0; f([|x: i64| 0], 1, "s") }"#,
-    refused(NESTED_UNION);
-    FuseExpect::None
-);
-run!(
-    nested_variable_union_of_function_fields_refused,
-    r#"{ let f = |k: [{g: fn(x: 'c) -> i64}, {g: fn(x: 'd) -> i64}], y: 'c, z: 'd| -> i64 0; f({g: |x: i64| 0}, 1, "s") }"#,
-    refused(NESTED_UNION);
+    prints("i64:0");
     FuseExpect::None
 );
 run!(
@@ -8740,16 +8630,6 @@ run!(
 // A name applied to a function type is told apart the same way: two
 // applications are one member only where their arguments name the same
 // variables, as written and behind a typedef.
-run!(
-    nested_variable_union_of_named_function_types_refused,
-    r#"{
-  type T<'a> = {v: 'a};
-  let f = |k: [T<fn(x: 'c) -> i64>, T<fn(x: 'd) -> i64>], y: 'c, z: 'd| -> i64 0;
-  f({v: |x: i64| 0}, 1, "s")
-}"#,
-    refused(NESTED_UNION);
-    FuseExpect::None
-);
 run!(
     named_function_type_written_twice_is_one_member,
     r#"{

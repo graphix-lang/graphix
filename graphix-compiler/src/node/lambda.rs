@@ -35,7 +35,6 @@ use crate::{
     typ::{
         FnArgKind, FnArgType, FnType, ResolvedRef, TVar, TraitId, Type, TypeMismatch,
         bounds, check_bounds_acyclic,
-        settle::VariableUnion,
         tvar::{AtLevel, Declaring, InTask, Level, RigidGate, TaskId, current_level},
     },
     wrap,
@@ -56,7 +55,6 @@ use parking_lot::Mutex;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::{
-    cell::OnceCell,
     cmp::Ordering,
     fmt,
     hash::Hash,
@@ -965,15 +963,8 @@ pub struct BodyShared {
 /// A type written in a body: its same-named variables are one variable,
 /// and one a definition around the body declares (a nested fn type's own
 /// quantifiers are its own) is the innermost such definition's; any other
-/// is the written type's own (`Level::Written`). Where `judged`, a
-/// function type it writes holds no union of two of its own variables
-/// ([`Type::variable_union`]); an impl method's annotation is judged at its
-/// impl.
-pub(crate) fn body_annotation<R: Rt>(
-    ctx: &CompileCtx<R>,
-    t: &Type,
-    judged: bool,
-) -> Result<()> {
+/// is the written type's own (`Level::Written`).
+pub(crate) fn body_annotation<R: Rt>(ctx: &CompileCtx<R>, t: &Type) -> Result<()> {
     let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
     enclosing_tvars(ctx, &mut known);
     let enclosing: LPooled<AHashSet<ArcStr>> = known.keys().cloned().collect();
@@ -981,16 +972,7 @@ pub(crate) fn body_annotation<R: Rt>(
     for (_, tv) in known.iter().filter(|(name, _)| !enclosing.contains(*name)) {
         tv.own_written()
     }
-    if judged && written_own(&known, &enclosing) > 1 {
-        t.variable_union(&|tv| !enclosing.contains(&tv.name))?
-    }
     Ok(())
-}
-
-/// How many of the variables `known` names a type wrote, not one of
-/// `enclosing`: a union of two of them needs two.
-fn written_own(known: &AHashMap<ArcStr, TVar>, enclosing: &AHashSet<ArcStr>) -> usize {
-    known.keys().filter(|n| !n.starts_with('_') && !enclosing.contains(*n)).count()
 }
 
 /// The variables the definitions around the body being compiled declare,
@@ -2689,37 +2671,8 @@ impl Lambda {
             .chain(l.rtype.iter())
             .chain(l.throws.iter())
             .chain(l.constraints.iter().map(|(_, tc)| tc));
-        let constrained: OnceCell<LPooled<AHashSet<ArcStr>>> = OnceCell::new();
-        let outer: OnceCell<LPooled<AHashMap<ArcStr, TVar>>> = OnceCell::new();
-        let own = |tv: &TVar| {
-            constrained
-                .get_or_init(|| {
-                    l.constraints.iter().map(|(c, _)| c.name.clone()).collect()
-                })
-                .contains(&tv.name)
-                || !outer
-                    .get_or_init(|| {
-                        let mut known = LPooled::take();
-                        enclosing_tvars(ctx, &mut known);
-                        known
-                    })
-                    .contains_key(&tv.name)
-        };
-        let mut union = None;
         for t in signature {
-            crate::warn_written(ctx, flags, &t.scope_refs(&scope.lexical), &mut |u| {
-                if union.is_none() {
-                    union = VariableUnion::of(u, &own)
-                }
-            })?;
-        }
-        // a lambda in a method's value is judged at its method
-        // (traits::written_method_unions), where the method's own lambda is
-        // told from what its trait fills in
-        if let Some(e) = union
-            && !method_value(scope)
-        {
-            return Err(e.into());
+            crate::warn_later_block_names(ctx, flags, &t.scope_refs(&scope.lexical))?
         }
         if l.vargs.is_some() && matches!(l.body, LambdaBody::Expr(_)) {
             bail!("a variadic argument (`@args`) is for builtins only")

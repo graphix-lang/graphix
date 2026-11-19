@@ -531,7 +531,7 @@ impl<R: Rt> Bind<R> {
                     true => t.rewrite_declared_args(&ctx.env)?,
                     false => t.rewrite_trait_args(&ctx.env)?,
                 };
-                super::lambda::body_annotation(ctx, &t, !declares_method)?;
+                super::lambda::body_annotation(ctx, &t)?;
                 // the method's scheme is the trait's declaration, which
                 // `traits::implements` holds the binding to: the
                 // annotation's own variables are written ones, claimed by

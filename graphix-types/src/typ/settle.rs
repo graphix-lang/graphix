@@ -8,7 +8,7 @@ use crate::{
     env::Env,
     format_with_flags,
     typ::{
-        Bound, FnType, TVar, Type, Written,
+        Bound, FnType, TVar, Type,
         contains::{ContainsHist, InfiniteType},
         setops::{Welds, apply_welds, lower_collapses, strictly_identical},
         tvar::{CellFact, Fresh, Level, would_cycle_open},
@@ -16,7 +16,6 @@ use crate::{
 };
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, bail};
-use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
@@ -598,6 +597,15 @@ fn reach_new(
     })
 }
 
+// CR claude for claude: [structure/low] From `variable_outside_functions` to
+// `Unrolling` this file holds walks no settle calls and that call no settle:
+// `VariableUnion`, `OutsideFunctions`, `Held`, `DataPositions` and `Unrolling` serve
+// signature checks and a call's widening in callsite.rs, lambda.rs, traits.rs and
+// module.rs, and the module's header names only the settle phase. Move them to a module
+// of their own (typ/positions.rs), so settle.rs is the settle and each is found by its
+// file's name. Found by reading; not run. (t-settle-09)
+// 2026-11-19 claude: Moved here from above VariableUnion, which is deleted with its
+// rule (Eric ruled 11-19: drop the variable-union rule); the rest of the CR stands.
 impl Type {
     /// [`FnType::reached_cells`] for a type.
     #[doc(hidden)]
@@ -628,179 +636,6 @@ impl Type {
     ) {
         OutsideFunctions { env, expanding: Expanding::default(), nodes: LPooled::take() }
             .walk(self, out);
-    }
-}
-
-/// A union written in a function type with two or more of the variables
-/// `own` admits as members of their own, or two members of one constructor
-/// that hold two distinct such variables: which of them a value takes, no
-/// type says ([`Type::variable_union`]).
-#[derive(Debug)]
-// CR claude for claude: [structure/low] From `variable_outside_functions` to
-// `Unrolling` this file holds walks no settle calls and that call no settle:
-// `VariableUnion`, `OutsideFunctions`, `Held`, `DataPositions` and `Unrolling` serve
-// signature checks and a call's widening in callsite.rs, lambda.rs, traits.rs and
-// module.rs, and the module's header names only the settle phase. Move them to a module
-// of their own (typ/positions.rs), so settle.rs is the settle and each is found by its
-// file's name. Found by reading; not run. (t-settle-09)
-pub struct VariableUnion {
-    pub union: Type,
-    pub vars: SmallVec<[ArcStr; 4]>,
-    /// The two members of one constructor that hold `vars`, where the
-    /// union's members are not the variables themselves.
-    pub members: Option<(Type, Type)>,
-}
-
-impl fmt::Display for VariableUnion {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} is a union of the type variables ", self.union)?;
-        for (i, v) in self.vars.iter().enumerate() {
-            let sep = match i {
-                0 => "",
-                i if i + 1 == self.vars.len() => " and ",
-                _ => ", ",
-            };
-            write!(f, "{sep}'{v}")?
-        }
-        match &self.members {
-            None => write!(
-                f,
-                " in a function's signature: no value's type says which of them it takes; \
-                 keep one variable there, or write the types in their place (a union of \
-                 written types, such as [i64, string])"
-            ),
-            Some((a, b)) => write!(
-                f,
-                ", held by its members {a} and {b} under one constructor, in a function's \
-                 signature: no value's type says which member it takes; write one variable \
-                 in both, or a written type in place of one of them"
-            ),
-        }
-    }
-}
-
-impl Error for VariableUnion {}
-
-impl VariableUnion {
-    /// The written union `union` refused where two or more of its members
-    /// are distinct variables `own` admits, or two members of one
-    /// constructor ([`Type::shares_constructor`]) hold two distinct ones.
-    #[doc(hidden)]
-    pub fn of(union: &Type, own: &dyn Fn(&TVar) -> bool) -> Option<Self> {
-        // a check by bounds gives a value to the member a later argument
-        // decides, and refuses it only where none does
-        if super::bounds::active() {
-            return None;
-        }
-        let Type::Set(ms) = union else { return None };
-        let mut vars: SmallVec<[&TVar; 4]> = SmallVec::new();
-        for m in ms.iter() {
-            if let Type::TVar(tv) = m
-                && own(tv)
-                && !vars.iter().any(|v| v.name == tv.name)
-            {
-                vars.push(tv)
-            }
-        }
-        if vars.len() >= 2 {
-            let mut vars: SmallVec<[&ArcStr; 4]> =
-                vars.iter().map(|tv| &tv.name).collect();
-            vars.sort();
-            return Some(VariableUnion {
-                union: union.clone(),
-                vars: vars.into_iter().cloned().collect(),
-                members: None,
-            });
-        }
-        let held: SmallVec<[(&Type, LPooled<Vec<ArcStr>>); 4]> = ms
-            .iter()
-            .filter(|m| !matches!(m, Type::TVar(_)))
-            .map(|m| {
-                let mut vs = LPooled::take();
-                own_vars(m, own, &mut vs);
-                (m, vs)
-            })
-            .filter(|(_, vs)| !vs.is_empty())
-            .collect();
-        for (i, (a, avs)) in held.iter().enumerate() {
-            for (b, bvs) in held[i + 1..].iter() {
-                if !a.shares_constructor(b) {
-                    continue;
-                }
-                let distinct = avs
-                    .iter()
-                    .find(|v| !bvs.contains(v))
-                    .zip(bvs.iter().find(|w| !avs.contains(w)))
-                    .or_else(|| {
-                        avs.iter()
-                            .find_map(|v| bvs.iter().find(|w| *w != v).map(|w| (v, w)))
-                    });
-                if let Some((v, w)) = distinct {
-                    let (v, w) = if v <= w { (v, w) } else { (w, v) };
-                    return Some(VariableUnion {
-                        union: union.clone(),
-                        vars: [v.clone(), w.clone()].into_iter().collect(),
-                        members: Some(((*a).clone(), (*b).clone())),
-                    });
-                }
-            }
-        }
-        None
-    }
-}
-
-/// The distinct variables `own` admits that the written type `t` names,
-/// through every constructor, no typedef looked through.
-fn own_vars(t: &Type, own: &dyn Fn(&TVar) -> bool, out: &mut Vec<ArcStr>) {
-    crate::stack::ensure_sufficient(|| match t {
-        Type::TVar(tv) => {
-            if own(tv) && !out.contains(&tv.name) {
-                out.push(tv.name.clone())
-            }
-        }
-        t => t.for_each_child(&mut |c| own_vars(c, own, out)),
-    })
-}
-
-impl Type {
-    /// Refuse the first union written in a function type this written type
-    /// holds (itself included), in a part, its parameters, result, throws
-    /// and its variables' bounds, under any constructor, two or more of
-    /// whose members are distinct variables `own` admits
-    /// ([`Type::for_each_written`]). A typedef is not looked through.
-    #[doc(hidden)]
-    pub fn variable_union(
-        &self,
-        own: &dyn Fn(&TVar) -> bool,
-    ) -> Result<(), VariableUnion> {
-        self.variable_union_in(false, own)
-    }
-
-    /// [`Self::variable_union`] of a written part of a function type: a
-    /// parameter's, the result's, the throws' or a bound's type.
-    #[doc(hidden)]
-    pub fn signature_variable_union(
-        &self,
-        own: &dyn Fn(&TVar) -> bool,
-    ) -> Result<(), VariableUnion> {
-        self.variable_union_in(true, own)
-    }
-
-    fn variable_union_in(
-        &self,
-        in_fn: bool,
-        own: &dyn Fn(&TVar) -> bool,
-    ) -> Result<(), VariableUnion> {
-        let mut res = Ok(());
-        self.for_each_written(in_fn, &mut |w| {
-            if res.is_ok()
-                && let Written::Union(u) = w
-                && let Some(e) = VariableUnion::of(u, own)
-            {
-                res = Err(e)
-            }
-        });
-        res
     }
 }
 
@@ -968,6 +803,7 @@ impl Type {
 mod test {
     use super::*;
     use crate::typ::tvar::AtLevel;
+    use arcstr::ArcStr;
 
     fn open(name: &'static str) -> TVar {
         TVar::empty_named(ArcStr::from(name))

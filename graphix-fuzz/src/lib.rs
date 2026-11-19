@@ -6590,9 +6590,6 @@ mod tests {
             // an argument the call leaves undecided takes the others' join
             ("{ let g = |x: 'a, y: 'a| -> 'a y; let r = g(1, 2); r }", "open-arg#"),
             ("{ let g = |x: 'a, y: 'a, z: 'a| -> 'a z; g(1, 2, 3) }", "open-arg#"),
-            // a written function type holds no union of two of its variables
-            ("{ let g = |x: 'a, y: 'a| -> 'a y; g(1, 2) }", "variable-union#"),
-            ("{ let g = |x| x; g(1) }", "variable-union#"),
         ] {
             let rep = typemorph_subject(prog, per, TM_CAP).await.unwrap();
             assert!(rep.base == TmVerdict::Accept, "{prog}");
@@ -6604,17 +6601,6 @@ mod tests {
                 rep.rejects
             );
         }
-        // family 15's three shapes are each refused: two variables, two
-        // arrays of them, two function types a renaming would make one
-        let prog = "{ let g = |x| x; let h = |x| x; let k = |x| x; (g(1), h(1), k(1)) }";
-        let rep = typemorph_subject(prog, per, TM_CAP).await.unwrap();
-        let unions: Vec<_> =
-            rep.rejects.iter().filter(|p| p.id.starts_with("variable-union#")).collect();
-        assert!(
-            unions.len() == 3 && unions.iter().all(|p| p.verdict.is_none()),
-            "{prog}: {:?}",
-            rep.rejects
-        );
         // family 2 asks more of an `Any`-bounded variable than its bound says,
         // in the third of its sites: refused, naming the bound to write
         let prog = "{ let f = 'a: Any |x: 'a| -> i64 1; let g = 'a: Any |x: 'a| -> i64 2; \

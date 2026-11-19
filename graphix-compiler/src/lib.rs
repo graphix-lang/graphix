@@ -3647,17 +3647,15 @@ pub(crate) fn recheck_pending_typedefs<R: Rt>(
 
 /// Record the names `t`, written at `spec`, holds that do not resolve
 /// yet ([`CompileCtx::pending_names`]); refuse one that resolves and is
-/// applied wrongly; each union it writes in a function type goes to
-/// `union`. True when some name in `t` means a trait.
+/// applied wrongly. True when some name in `t` means a trait.
 pub(crate) fn defer_unresolved_names<R: Rt>(
     ctx: &mut CompileCtx<R>,
     t: &Type,
     spec: &Expr,
-    union: Option<&mut dyn FnMut(&Type) -> Result<()>>,
 ) -> Result<bool> {
     use expr::At;
     let mut names = Vec::new();
-    let res = t.unresolved_names(&ctx.env, &mut names, union).at(spec);
+    let res = t.unresolved_names(&ctx.env, &mut names).at(spec);
     ctx.pending_names.extend(names.into_iter().map(|tr| Pending::Name(tr, spec.clone())));
     res
 }
@@ -3680,7 +3678,7 @@ pub(crate) fn defer_written_names<R: Rt>(
     // the cast's target and the pattern's test the same refusal. probe:
     // design/review-2026-11-16/repro/x-traits-abstract-trait-as-type-undefined.sh
     // (x-traits-abstract-09)
-    if defer_unresolved_names(ctx, t, spec, None)?
+    if defer_unresolved_names(ctx, t, spec)?
         && let Some(name) = t.trait_as_type(&ctx.env)
     {
         bailat!(
@@ -3706,24 +3704,6 @@ pub(crate) fn warn_later_block_names<R: Rt>(
     }
     let mut res = Ok(());
     t.for_each_written_name(&mut |tr| warn_later_block_name(ctx, flags, tr, &mut res));
-    res
-}
-
-/// [`warn_later_block_names`] of a written part of a function type,
-/// handing each union it writes to `union` in every compile.
-pub(crate) fn warn_written<R: Rt>(
-    ctx: &CompileCtx<R>,
-    flags: BitFlags<CFlag>,
-    t: &Type,
-    union: &mut dyn FnMut(&Type),
-) -> Result<()> {
-    let warn = !ctx.body.as_ref().is_some_and(|b| !b.checking);
-    let mut res = Ok(());
-    t.for_each_written(true, &mut |w| match w {
-        typ::Written::Union(u) => union(u),
-        typ::Written::Name(tr) if warn => warn_later_block_name(ctx, flags, tr, &mut res),
-        typ::Written::Name(_) => (),
-    });
     res
 }
 

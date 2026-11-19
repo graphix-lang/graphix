@@ -21,7 +21,7 @@ costs more: when in doubt, read it.
 | before you | read |
 |---|---|
 | write a `seq` or `seqq`, or debug one that stalls | `seq.md` |
-| write a generic function, or hold lambdas in data; or the check refuses a type variable, a bound, a quantifier, a union of variables or a "generic binding" | `generics.md` |
+| write a generic function, or hold lambdas in data; or the check refuses a type variable, a bound, a quantifier or a "generic binding" | `generics.md` |
 | select over a declared type variable or a value still undecided; or the check says "tests inside a value of", "not decided at this select" or "same runtime form" | `select.md` |
 | write a `.gxi`, a module or a trait | `modules.md` |
 | read or write JSON, TOML or pack, cast, parse, or print a number | `data.md` |

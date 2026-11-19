@@ -3946,7 +3946,7 @@ impl Env {
         };
         let Some(rep) = &td.rep else { return Ok(()) };
         let mut unresolved = Vec::new();
-        let _ = rep.unresolved_names(self, &mut unresolved, None);
+        let _ = rep.unresolved_names(self, &mut unresolved);
         if unresolved.is_empty() && !self.rep_unchanged(old, td.def.params(), rep) {
             bail!("{}", rep_changed(name, &old.rep))
         }

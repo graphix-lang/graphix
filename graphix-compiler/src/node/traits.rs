@@ -241,70 +241,6 @@ pub(crate) fn impl_outside_functions(
     Ok(())
 }
 
-/// Refuse a union of two variables a method writes itself, in its `let`'s
-/// annotation `typ` or a lambda its `value` writes outside every lambda's
-/// body, a labeled default's included ([`Type::variable_union`]): those
-/// lambdas compile in the method's scope, which a lambda's own check
-/// leaves to this one. The method's own lambda (the value, through
-/// parentheses) holds what its trait's declaration fills in, judged at the
-/// trait, and there a variable `own` refuses is the trait's (a default's
-/// `self`) or the impl's (its head's); an impl's `self` is its target here
-/// ([`self_as_target`]). Every variable of any other lambda is its own,
-/// since no definition encloses a method's scope.
-fn written_method_unions(
-    typ: Option<&Type>,
-    value: &Expr,
-    own: &dyn Fn(&TVar) -> bool,
-) -> Result<()> {
-    if let Some(t) = typ {
-        t.variable_union(own)?
-    }
-    let method = value.unparen();
-    match &method.kind {
-        ExprKind::Lambda(l) => {
-            signature_unions(method, l, own)?;
-            l.args
-                .iter()
-                .filter_map(|a| a.kind.default())
-                .try_for_each(method_scope_lambdas)
-        }
-        _ => method_scope_lambdas(value),
-    }
-}
-
-fn signature_unions(e: &Expr, l: &LambdaExpr, own: &dyn Fn(&TVar) -> bool) -> Result<()> {
-    let written = l.args.iter().filter_map(|a| a.constraint.as_ref());
-    let written = written
-        .chain(l.constraints.iter().map(|(_, t)| t))
-        .chain(l.rtype.iter())
-        .chain(l.throws.iter());
-    for t in written {
-        t.signature_variable_union(own).map_err(anyhow::Error::from).at(e)?
-    }
-    Ok(())
-}
-
-fn method_scope_lambdas(e: &Expr) -> Result<()> {
-    ensure_sufficient(|| match &e.kind {
-        ExprKind::Lambda(l) => {
-            signature_unions(e, l, &|_| true)?;
-            l.args
-                .iter()
-                .filter_map(|a| a.kind.default())
-                .try_for_each(method_scope_lambdas)
-        }
-        _ => {
-            let mut res = Ok(());
-            e.for_each_child(&mut |c| {
-                if res.is_ok() {
-                    res = method_scope_lambdas(c)
-                }
-            });
-            res
-        }
-    })
-}
-
 /// Whether `t` mentions `self`, in a bound its function type's header
 /// declares too: a signature's `val` holds its quantifiers' bounds.
 fn mentions_self(t: &Type) -> bool {
@@ -602,7 +538,6 @@ impl<R: Rt> Trait<R> {
             // bound under a name no method call reaches (`#show`): a
             // bare `show` in a sibling default is the dispatcher
             if let Some(body) = &m.default {
-                written_method_unions(None, body, &|tv| &*tv.name != "self").at(body)?;
                 default_module_sigs(body)?;
                 let sig = d.typ.reset_tvars();
                 let private = format_compact!("#{}", m.name.name);
@@ -1118,8 +1053,6 @@ impl<R: Rt> Impl<R> {
             if !provided.insert(name.name.clone()) {
                 bailat!(m, "method {name} is implemented twice");
             }
-            let own = |tv: &TVar| !params.iter().any(|h| h.name == tv.name);
-            written_method_unions(b.typ.as_ref(), &b.value, &own).at(m)?;
             let sig = method_sig_at(&decl.typ, &target);
             let b = BindExpr {
                 rec: b.rec,
@@ -1386,15 +1319,6 @@ impl<R: Rt> Update<R> for Impl<R> {
         // decides them
         let _gates: LPooled<Vec<_>> =
             self.def.params.iter().map(|tv| tv.open_rigid()).collect();
-        // the target is every method's `self`
-        wrap!(
-            self,
-            self.def.target.signature_variable_union(&|_| true).map_err(|e| anyhow!(
-                "impl {} for {}: {e}",
-                self.trait_def.name,
-                self.def.target
-            ))
-        )?;
         // a method that took the declared signature ([`signature_of`])
         // decides none of its variables
         let declared = {

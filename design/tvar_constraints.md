@@ -734,76 +734,6 @@ members that could take the formal's: it passes over that one, so a later
 position may decide the variable before the callback's own check (A
 union's member takes a type by rule).
 
-### A union of variables in a signature
-
-A written function type may not hold a union written with two or more
-distinct bare type variables of its own (`['a, 'b]`, `['a, 'b, null]`),
-at any part (a parameter, a callback's parameter, the result, the throws,
-a bound) and under any constructor as the source writes it
-(`Array<['a, 'b]>`, `{v: ['a, 'b]}`, `M<['a, 'b]>`): the walk of a
-written type's names (`Type::for_each_written`, which every name check
-rides) hands each union it writes in a function type to
-`VariableUnion::of` and looks through no typedef, so `E<'a, 'b>` over
-`type E<'p, 'q> = ['p, 'q]`, `['a, Id<'b>]` over `type Id<'x> = 'x` and
-`['a, M<'b>]` over `type M<'x> = ['x, null]` pass this rule (a typedef's
-own body writes a union of its parameters, not of the definition's
-variables) and are refused where a value meets them (below, A union's
-member takes a type by rule). It is judged
-where the type is written: a lambda's signature as it compiles, in the
-walk that warns of a later block's names (`warn_written`; a variable an
-enclosing definition declares is not its own; a method in an impl or a
-trait's default body is judged over the types it writes itself, an impl
-`let`'s annotation and every lambda its value writes outside a lambda's
-body: in its own lambda's signature, the rest being its trait's
-declaration, an impl's head variables are the impl's and a default's
-`self` the trait's (an impl's `self` is its target in every type the
-impl writes, so `[self, 'c]` there is one variable beside a written
-type), and every
-other lambda there (one a call that builds it is handed, a labeled
-default's, one in a block) names variables of its own, as at the top
-level, since no definition encloses a method's scope:
-`traits::written_method_unions`), a `.gxi` val in the walk that resolves
-its names in the interface (`module::check_interface_names`), a trait
-method's declaration in the walk that defers its names (`Trait::typecheck0`,
-where `self`, a written type at every impl, is no variable) and a
-function type a body's annotation writes
-(`lambda::body_annotation`: a `let`'s, a select's type test,
-`never<T>`). No value's type says which
-variable such a member takes, so whichever relation meets it first would decide (a call's
-argument first, an instance's signature last), and the refusal names the
-annotation that passes: one variable there, or written types (`[i64,
-string]`). One variable beside written types (`['a, null]`) is a member
-a value's type picks, and a data union in an annotation (`let v: ['r,
-'q] = ..`) is no signature: the value written into it is refused at the
-choice (below). An impl's target is every method's `self`, so a union of
-two of the head's variables there (`impl<'a, 'b> T for Array<['a, 'b]>`)
-is refused as one in a signature (`Impl::typecheck0`).
-
-Two members of one constructor that hold two distinct variables of the
-definition ask the same question (`[Array<'c>, Array<'d>]`: a `[1]`
-fits either), and are refused the same way, at the same sites, naming
-the two members: write one variable in both, or a written type in place
-of one (`VariableUnion::of`, `Type::shares_constructor`). One
-constructor is two arrays, lists, maps, errors, references or function
-types, tuples of one arity, structs of one field set, variants of one
-tag and arity, one abstract type, one typedef by its written name, or
-one constructor variable applied (`[self<'c>, self<'d>]`); a variable
-anywhere inside a member counts (`[('c, i64), (i64, 'd)]`, `[Array<'c>,
-Array<fn(x: 'd) -> i64>]`). Members of two constructors (`[Array<'c>,
-Map<string, 'd>]`, `` [`A('c), `B('d)] ``), one variable among them
-(`[Array<'c>, Array<string>]`) and two typedefs of one expansion
-(`[A<'c>, B<'d>]` over `type A<'x> = Array<'x>` and `B` alike) stand:
-the rule reads the written form only. That form keeps what the source
-wrote apart: as a union is parsed, a variable is its name and bounds, so
-two members are one only where they are written alike
-(`Type::flatten_written`, `setops::written_identical`). `fn(x: 'c) ->
-i64` beside `fn(x: 'd) -> i64` is two members, which the rule refuses in
-a signature and a typedef's body keeps; a member written twice (`[('c,
-'d), ('c, 'd)]`) is one.
-
-The written-form rule is the earlier message, at the definition; the
-rule below is what makes the choice sound, whatever the source wrote.
-
 ### A union's member takes a type by rule, never by order
 
 A containment that puts a type into a union (`contains.rs`: `set_commit`,
@@ -3732,16 +3662,7 @@ references name the target is told the recursive type alone
   quantifier's bound (a definition's, a written `fn<..>`'s, an impl
   head's) may not reach it, directly, under a constructor or through
   another's bound (`'a: 'a`, `'a: Array<'a>`, `'a: 'b, 'b: 'a`;
-  `check_bounds_acyclic`): a recursive bound is a recursive type; a
-  written function type (a lambda's signature, a `.gxi` val, a trait
-  method, one a body's annotation writes) holds no union written with two
-  or more of its own bare variables (`['a, 'b]`, under any constructor as
-  written; a typedef is not looked through; a trait's `self` and an impl's
-  head are no method's own, and an impl's `self` is its target), nor two
-  members of one constructor holding two distinct
-  ones (`[Array<'c>, Array<'d>]`), refused, naming one variable or written
-  types as the fix
-  (`Type::variable_union`); a type that two undecided members of a union
+  `check_bounds_acyclic`): a recursive bound is a recursive type; a type that two undecided members of a union
   could take goes to neither, refused naming what holds the union
   (`AmbiguousMember`); a def's declared tvars are
   rigid in its body check: none binds to a concrete type or ⊥, no

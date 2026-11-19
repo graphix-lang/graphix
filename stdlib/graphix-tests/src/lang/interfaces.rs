@@ -1373,42 +1373,6 @@ run!(
     "/test/m.gx" => "let f = |x: [A<'b>, B<'a>], y: 'a, z: 'b| -> 'a y"
 ; FuseExpect::None);
 
-// Two members of one constructor holding two variables: the val is
-// refused, whatever its implementation writes.
-run!(
-    val_nested_variable_union_refused,
-    refused("val f: [Array<'a>, Array<'b>] is a union of the type variables 'a and 'b, held by"),
-    "/test.gx" => r#"mod inner; let result = inner::f([1], |n: i64| n, 1, "s")"#,
-    "/test/inner.gxi" => "val f: fn(x: [Array<'a>, Array<'b>], g: fn(n: i64) -> i64, y: 'a, z: 'b) -> i64",
-    "/test/inner.gx" => "let f = |x: [Array<i64>, Array<string>], g: fn(n: i64) -> i64, y: i64, z: string| -> i64 0"
-; FuseExpect::None);
-
-run!(
-    val_nested_variable_union_of_function_types_refused,
-    refused("is a union of the type variables 'a and 'b, held by its members fn(n: 'a) -> i64 and fn(n: 'b) -> i64"),
-    "/test.gx" => r#"mod inner; let result = inner::f(|n: i64| n, 1, "s")"#,
-    "/test/inner.gxi" => "val f: fn(k: [fn(n: 'a) -> i64, fn(n: 'b) -> i64], y: 'a, z: 'b) -> i64",
-    "/test/inner.gx" => "let f = |k: [fn(n: i64) -> i64, fn(n: string) -> i64], y: i64, z: string| -> i64 0"
-; FuseExpect::None);
-
-run!(
-    implementation_nested_variable_union_refused,
-    refused("is a union of the type variables 'c and 'd, held by"),
-    "/test.gx" => r#"mod inner; let result = inner::f([1], |n: i64| n, 1, "s")"#,
-    "/test/inner.gxi" => "val f: fn(x: [Array<i64>, Array<string>], g: fn(n: i64) -> i64, y: i64, z: string) -> i64",
-    "/test/inner.gx" => "let f = |x: [Array<'c>, Array<'d>], g: fn(n: i64) -> i64, y: 'd, z: 'c| -> i64 0"
-; FuseExpect::None);
-
-// A val may not write a union of two of its variables: no value's type
-// says which of them it takes.
-run!(
-    val_variable_union_refused,
-    refused("val f: ['a, 'b] is a union of the type variables 'a and 'b"),
-    "/test.gx" => "mod m; let result = m::f(1, 2)",
-    "/test/m.gxi" => "val f: fn(x: ['a, 'b], y: 'a) -> 'a;",
-    "/test/m.gx" => "let f = |x: [i64, string], y: i64| -> i64 y"
-; FuseExpect::None);
-
 run!(
     val_union_of_written_types,
     is(Value::I64(2)),

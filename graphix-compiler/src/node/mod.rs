@@ -1924,7 +1924,7 @@ pub(crate) fn defer_typedef_names<R: Rt>(
         def.params().iter().filter_map(|(_, c)| c.clone()).collect();
     for t in bodies.iter() {
         let before = ctx.pending_names.len();
-        if defer_unresolved_names(ctx, t, &td.spec, None)? {
+        if defer_unresolved_names(ctx, t, &td.spec)? {
             t.rewrite_trait_args(&ctx.env).at(&td.spec)?;
         }
         if ctx.pending_names.len() > before {
@@ -1932,7 +1932,7 @@ pub(crate) fn defer_typedef_names<R: Rt>(
         }
     }
     for t in bounds.iter() {
-        defer_unresolved_names(ctx, t, &td.spec, None)?;
+        defer_unresolved_names(ctx, t, &td.spec)?;
     }
     Ok(())
 }
@@ -3681,7 +3681,7 @@ impl<R: Rt> Never<R> {
                 let t = t.scope_refs(&scope.lexical);
                 crate::warn_later_block_names(ctx, flags, &t)?;
                 let t = t.rewrite_trait_args(&ctx.env)?;
-                lambda::body_annotation(ctx, &t, true)?;
+                lambda::body_annotation(ctx, &t)?;
                 t
             }
             None => Type::Bottom,
@@ -3738,7 +3738,7 @@ impl<R: Rt> Update<R> for Never<R> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
-        defer_unresolved_names(ctx, &self.typ, &self.spec, None)?;
+        defer_unresolved_names(ctx, &self.typ, &self.spec)?;
         // each application of a definition T names holds its parameter
         // bounds, as where a contains expands it
         fn applications(t: &Type, env: &env::Env, r: &mut Result<()>) {

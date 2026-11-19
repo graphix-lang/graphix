@@ -551,9 +551,8 @@ a change elsewhere most often breaks.
 - **A def's declared tvars are rigid in its body check**: none binds to a
   concrete type or ⊥, no two unify, none escapes into a cell outside the
   definition. A call instantiates them freely.
-- A written function type holds no union of two or more of its own bare
-  variables (`['a, 'b]`, `Type::variable_union`), and a quantified function
-  type stands only as a declared signature's top (`typ::QUANTIFIED_FN`).
+- A quantified function type stands only as a declared signature's top
+  (`typ::QUANTIFIED_FN`).
 - A type that two undecided members of a union could take goes to neither
   (`contains.rs::AmbiguousMember`), and neither does an undecided type
   that two decided members would decide differently (`UndecidedTaker`):
