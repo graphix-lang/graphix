@@ -216,8 +216,8 @@ impl RaiseProbe {
     }
 }
 
-/// Join `etyp`, an error type raised to `handler`'s catch, into the type
-/// its bind infers. A sealed catch takes only what its bind holds.
+/// `etyp`, an error type raised to `handler`'s catch, flows into the
+/// type its bind infers.
 pub(crate) fn join_raised(env: &Env, handler: &ErrorHandler, etyp: &Type) -> Result<()> {
     // a raise of nothing joins nothing
     if etyp.with_deref(|t| matches!(t, Some(Type::Bottom))) {
@@ -227,40 +227,12 @@ pub(crate) fn join_raised(env: &Env, handler: &ErrorHandler, etyp: &Type) -> Res
     let Some(Type::TVar(tv)) = env.by_id.get(&catch).map(|b| &b.typ) else {
         bail!("BUG: catch {catch:?} has no inferred bind")
     };
-    if bounds::active() {
-        return Type::TVar(tv.clone()).check_contains(env, etyp);
+    // outside a check (the build binding an instance) nothing joins: the
+    // check related every raise to its catch
+    if !bounds::active() {
+        return Ok(());
     }
-    let joined = match tv.binding() {
-        None => etyp.clone(),
-        Some(t)
-            if !etyp.has_unbound()
-                && t.contains_with_flags(BitFlags::empty(), env, etyp)? =>
-        {
-            return Ok(());
-        }
-        Some(t)
-            if handler.sealed()
-                && !etyp.has_unbound()
-                && t.with_deref(|t| matches!(t, None | Some(Type::Bottom))) =>
-        {
-            format_with_flags(PrintFlag::DerefTVars, || {
-                bail!(
-                    "this error reaches a catch that saw no error when it was checked: \
-                     annotate the catch with the errors it takes, `catch(e: {etyp})`"
-                )
-            })?
-        }
-        Some(t) if handler.sealed() => {
-            return t.check_contains(env, etyp).map_err(|e| {
-                anyhow!(
-                    "this error reaches a catch whose handler was checked to take {t}: {e}"
-                )
-            });
-        }
-        Some(t) => Type::union(env, &[&t, etyp])?,
-    };
-    tv.bind(joined);
-    Ok(())
+    Type::TVar(tv.clone()).check_contains(env, etyp)
 }
 
 /// Join an open raised type (a callback's `throws 'e`) into `catch`: two
@@ -951,23 +923,6 @@ pub(crate) fn deliver_error<R: Rt>(
     } else {
         ctx.deliver(id, TagValue::fired(v), Notify::Walk)
     }
-}
-
-/// The error type a `?` delivers for `etyp`: what it raises wrapped in
-/// an `ErrChain`, once. A raise of chains extends them rather than
-/// nesting them (`wrap_error`), so a chain arriving from a callee's
-/// throws keeps its type.
-fn fix_echain_typ<R: Rt>(ctx: &CompileCtx<R>, etyp: &Type) -> Result<Type> {
-    let Some(payload) = raised_payload(&ctx.env, etyp)? else {
-        return format_with_flags(PrintFlag::DerefTVars, || {
-            bail!("expected error not {etyp}")
-        });
-    };
-    let chain = match payload.chain_error_type(&ctx.env)? {
-        Some(error) => Type::err_chain(error),
-        None => Type::err_chain(payload),
-    };
-    Ok(Type::Error(Arc::new(chain)))
 }
 
 /// What the errors of `t` carry, the union of their payloads, or `None`
@@ -1852,20 +1807,6 @@ impl<R: Rt> Qop<R> {
             // probe: design/review-2026-11-16/repro/tests-fusion-arm-raise-defuses.sh
             // (tests-fusion-02)
             wrap!(self, self.typ.check_contains(&ctx.env, &rtyp))?;
-        }
-        if let Some(handler) = self.handler() {
-            let etyp = match self.strip {
-                Strip::Error => Strip::Error.taken(&ctx.env, self.n.typ())?,
-                Strip::Null => NULL_ERR.clone(),
-            };
-            // an instance's operand may be narrower than its definition's
-            // (a callback's formal at a slot's element type): it raises nothing
-            if etyp.is_uninhabited() {
-                return Ok(());
-            }
-            let etyp =
-                if rethrow { etyp } else { wrap!(self, fix_echain_typ(ctx, &etyp))? };
-            join_raised(&ctx.env, handler, &etyp)?;
         }
         Ok(())
     }
