@@ -2002,8 +2002,10 @@ impl<R: Rt> Update<R> for Module<R> {
         ctx: &mut CompileCtx<R>,
         types: &mut crate::node::lambda::InstanceTypes,
     ) -> Result<()> {
-        if let Body::Dynamic { .. } = self.body {
-            return self.typecheck0(ctx);
+        // the check judged a dynamic module's signature and source: an
+        // instance types the source from its rows
+        if let Body::Dynamic { source, .. } = &mut self.body {
+            return wrap!(source, source.typecheck0_instance(ctx, types));
         }
         let _task = InTask::enter(self.task);
         let Self { env, nodes, catches, top_id, proxy, scope, sig, sig_binds, .. } = self;
