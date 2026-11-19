@@ -2790,48 +2790,6 @@ impl TVar {
         }
     }
 
-    /// Bind the open, flexible, unbounded var `slot` holds to `t`, which
-    /// is not a var, without an occurs walk of `t`'s whole depth, when
-    /// `t` cannot reach the var's cell: nothing but `slot` holds the var
-    /// and nothing but the var holds the cell, and either nothing but its
-    /// owner holds the node `slot` sits in (`shared` false: a type reaches
-    /// a cell only through a clone of one of the three) or `t` reaches no
-    /// open cell at all. False, binding nothing, when any of that fails.
-    pub fn bind_unshared(slot: &Type, shared: bool, t: &Type) -> bool {
-        let Type::TVar(tv) = slot else { return false };
-        if Arc::count(&tv.0) != 1
-            || Arc::count(&tv.read().cell) != 1
-            || matches!(t, Type::TVar(_))
-            || tv.is_bound()
-            || tv.is_rigid()
-            || !tv.cell_constraints().is_empty()
-            || !tv.cell_lower().is_empty()
-        {
-            return false;
-        }
-        let epoch = ground_epoch();
-        let mut walked: LPooled<Vec<CellRef>> = LPooled::take();
-        if shared && !reaches_no_open_cell(t, epoch, &mut LPooled::take(), &mut walked) {
-            return false;
-        }
-        tv.bind(t.clone());
-        if shared {
-            walked.push(tv.cell());
-            mark_ground(&mut walked, epoch);
-        }
-        true
-    }
-
-    /// `e`, the refusal of the var `slot` holds against `t`, as the
-    /// infinite type when `t` reaches the var's cell under a constructor.
-    pub fn refusal_over(slot: &Type, t: &Type, e: Error) -> Error {
-        let Type::TVar(tv) = slot else { return e };
-        match cycle_toward(&tv.cell(), t, Toward::Any) {
-            Some(Cycle::Constructor) => Error::new(super::contains::InfiniteType),
-            Some(Cycle::Bare) | None => e,
-        }
-    }
-
     /// Bind the cell, replacing any binding.
     #[doc(hidden)]
     pub fn bind(&self, t: Type) {
@@ -3115,24 +3073,6 @@ impl TVar {
         let cell = self.cell();
         let c = cell.read();
         Bounds { lower: c.lower.len(), conjuncts: c.constraints.len() }
-    }
-
-    /// Make self, an undecided copy of `cell` made with `made` bounds, the
-    /// cell it copies: its alias where `cell` is open, bound to it where it
-    /// is decided. A copy `cell` reaches stays apart: the two as one type
-    /// would be infinite. So does a copy holding a bound it was not made
-    /// with beside a decided `cell`: the argument it became one cell with
-    /// brought the bound, and the relation the caller makes next binds it,
-    /// or refuses what the bound does not fit.
-    pub fn rejoin(&self, cell: &Self, made: Bounds) {
-        if self.is_bound() || self.same_cell(cell) || self.closes_cycle(cell) {
-            return;
-        }
-        match cell.is_bound() {
-            true if self.bounds() != made => (),
-            true => self.bind(Type::TVar(cell.clone())),
-            false => self.alias(cell),
-        }
     }
 
     /// Merge self's cell into other's for a unification-driven merge:
@@ -3524,18 +3464,6 @@ impl TVar {
         }
         c.set_binding(None);
         c.facts.remove(CellFact::BottomRequired);
-    }
-
-    /// Clear the cell's lower bounds; the binding and the conjuncts stay.
-    pub fn drop_lower(&self) {
-        let cell = self.cell();
-        let mut c = cell.write();
-        if !c.lower.is_empty() && decided(&c) {
-            if c.binding.is_some() {
-                bound_cell_changes();
-            }
-            c.lower.clear();
-        }
     }
 
     /// Open a rigid gate on the open cell this var stands for
@@ -4794,34 +4722,6 @@ impl Type {
         }
     }
 
-    /// [`Self::require_singleton`] for an operand whose type must be one
-    /// type: an open cell's existing conjuncts may already say so.
-    pub fn narrow_singleton(&self, env: &Env) -> Result<()> {
-        let mut parts = UnionParts::new(Measure::Members);
-        self.union_parts(Some((env, false)), &mut parts)?;
-        match parts.rigid_apart() {
-            None => (),
-            Some(Apart::TwoRigid) => bail!(
-                "{} must be one type, but its type variables may differ",
-                self.resolve_tvars()
-            ),
-            Some(Apart::BesideKnown(tv)) => bail!(
-                "{} must be one type, but the declared variable '{} may differ from \
-                 its other members",
-                self.resolve_tvars(),
-                ShortName(&tv.name)
-            ),
-        }
-        parts.merge_open();
-        match parts.narrowing() {
-            None => Ok(()),
-            Some(narrow) => parts
-                .open
-                .drain(..)
-                .try_for_each(|tv| tv.narrow_cell(env, narrow.clone())),
-        }
-    }
-
     /// Bind each open cell of `self` to the part of `row` at its
     /// position: `self` an expression's type as an instance compiled it,
     /// `row` the same expression's type as its definition's check left
@@ -5363,13 +5263,6 @@ impl Type {
             }
         });
         found.into_inner()
-    }
-
-    /// An open cell no call copies ([`Level::copied_by`]) anywhere
-    /// beneath, through bindings: one every use shares.
-    #[doc(hidden)]
-    pub fn has_shared_open(&self, open: &IntSet<LambdaId>) -> bool {
-        self.open_beneath(&|tv| !tv.level().copied_by(open))
     }
 
     /// An open cell held rigid anywhere beneath, through bindings.

@@ -1792,22 +1792,22 @@ impl Type {
         self.cast_with(env, None, v, CastInput::Data, true)
     }
 
-    /// [`Self::cast_value`] of a `v` statically of type `src`, which
-    /// decides whether an unmarked array is an array or a writer's data:
-    /// a union reads an array as an array member it inhabits first.
     // CR claude for claude: [dead/low] Nothing calls this in either repository:
     // `TypeCast::update` and the fused cast site call `cast_with`.
     // design/distinct_composite_forms.md still says both engines' casts call it, and
     // design/strict_fusion.md and design/tvar_constraints.md cite it. Delete it, move
     // its sentence on what a static source decides to `cast_with`, and point the three
     // docs there. Found by reading; not run. (t-cast-10)
-    pub fn cast_from(&self, env: &Env, src: &Type, v: Value) -> Value {
-        self.cast_with(env, Some(src), v, CastInput::Data, true).unwrap_or_else(|e| e)
-    }
+    // 2026-11-19 claude: On bounds-spike cast_from is deleted (it had no caller) and
+    // its sentence on what a static source decides is now in cast_with's doc, where
+    // this CR moved. Left: the three design docs that cite cast_from.
 
     /// A cast with its input format and static map-key check decision.
     /// `check_keys` may be false only when the target contains neither Any
-    /// nor an abstract type whose representation a cast can enter.
+    /// nor an abstract type whose representation a cast can enter. A
+    /// static source `src` decides whether an unmarked array is an array or
+    /// a writer's data: a union reads an array as an array member it
+    /// inhabits first.
     pub fn cast_with(
         &self,
         env: &Env,

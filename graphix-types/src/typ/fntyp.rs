@@ -4745,18 +4745,6 @@ impl Type {
     ) -> Option<Type> {
         ReadCopies::default().read(self, open, keep)
     }
-
-    /// [`Self::scheme_read`] taking one instance of each signature
-    /// ([`FnType::one_instance`]): a read no binding names.
-    #[doc(hidden)]
-    pub fn instance_read(
-        &self,
-        open: &IntSet<LambdaId>,
-        keep: &dyn Fn(&FnType) -> bool,
-    ) -> Option<Type> {
-        let mut copies = ReadCopies::default();
-        ReadWalk { open, keep, copies: &mut copies, generic: false }.go(self)
-    }
 }
 
 /// The copies reads take ([`Type::scheme_read`]) through one cell map:
