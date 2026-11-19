@@ -1723,6 +1723,8 @@ impl<R: Rt> Module<R> {
             Body::Dynamic { .. } => self.flags | CFlag::NoBuiltins,
         };
         let dynamic = matches!(self.body, Body::Dynamic { .. });
+        // a loaded body is checked as an input is, from its compile on
+        let check = dynamic.then(bounds::Check::begin);
         let scope = self.scope.in_view(&self.env);
         let compiled = ctx.with_restored_mut(&mut self.env, |ctx| {
             if dynamic {
@@ -1745,8 +1747,7 @@ impl<R: Rt> Module<R> {
         (self.nodes, self.catches) = compiled?;
         self.lets = node::Lets::wire(&mut self.nodes);
         self.runs = Runs::default();
-        if let Body::Dynamic { .. } = &self.body {
-            let check = bounds::Check::begin();
+        if let Some(check) = check {
             self.check_body(ctx)
                 .and_then(|()| check.end(&ctx.env))
                 .and_then(|()| crate::check_pending_names(ctx))
