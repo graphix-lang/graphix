@@ -4217,9 +4217,13 @@ impl Type {
         Some(t.not_discernible(&bound, &tv.name, &why))
     }
 
-    /// [`Self::check_contains`] with rigid enforcement; the def gate's
-    /// acceptance checks only.
+    /// [`Self::check_contains`] with rigid enforcement (the def gate's
+    /// acceptance checks): in a check by bounds the solver relates the two,
+    /// holding a definition's declared variables rigid itself.
     pub fn check_contains_rigid(&self, env: &Env, t: &Self) -> Result<()> {
+        if let Some(r) = super::bounds::with(|s| s.constrain(env, t, self)) {
+            return r;
+        }
         let flags = ContainsFlags::Commit | ContainsFlags::RigidCheck;
         let ok = self.contains_int(flags, env, &mut ContainsHist::new(), t)?;
         if ok { Ok(()) } else { Err(self.contains_mismatch(env, t)) }
@@ -6729,8 +6733,12 @@ impl Type {
         r
     }
 
-    /// [`Self::check_contains`] as [`Self::contains_ordered`] decides.
+    /// [`Self::check_contains`] as [`Self::contains_ordered`] decides,
+    /// outside a check by bounds; in one, the solver relates the two.
     pub fn check_contains_ordered(&self, env: &Env, t: &Self) -> Result<()> {
+        if let Some(r) = super::bounds::with(|s| s.constrain(env, t, self)) {
+            return r;
+        }
         let mut hist = ContainsHist::ordered();
         match self.contains_int(ContainsFlags::Commit.into(), env, &mut hist, t)? {
             true => Ok(()),
