@@ -2,6 +2,7 @@ use super::{VarRead, read_var, wake::FreshFrame};
 use crate::{
     BindId, CFlag, CompileCtx, ErrorHandler, ExecCtx, HandlerKind, Node, NodeView,
     Notify, PrintFlag, Refs, Rt, Scope, SourcePosition, Tag, TagValue, Update, View,
+    bailat,
     compiler::compile,
     defetyp,
     env::{Bind, Env},
@@ -200,15 +201,9 @@ impl RaiseProbe {
         (Self(id), scope.with_catch((id, ExprId::new()), HandlerKind::Catch))
     }
 
-    /// What was raised: ⊥ when nothing joined; an open callback's
-    /// `throws 'e` stays the cell.
+    /// What was raised: the cell the raises joined into.
     pub(crate) fn raised<R: Rt>(&self, ctx: &CompileCtx<R>) -> Type {
-        match ctx.env.by_id.get(&self.0).map(|b| &b.typ) {
-            Some(t @ Type::TVar(_)) if bounds::active() => t.clone(),
-            Some(Type::TVar(tv)) => tv.binding().unwrap_or(Type::Bottom),
-            Some(t) => t.clone(),
-            None => Type::Bottom,
-        }
+        ctx.env.by_id.get(&self.0).map_or(Type::Bottom, |b| b.typ.clone())
     }
 
     pub(crate) fn close<R: Rt>(&self, ctx: &mut CompileCtx<R>) {
@@ -1215,30 +1210,60 @@ impl<R: Rt> Update<R> for Qop<R> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx), true, None)
+        wrap!(self.n, self.n.typecheck0(ctx))?;
+        // warned once, at the definition's check: an instance compiles
+        // under its call site's handlers, which raise_throws judges
+        if let QopMode::Raise { handler: None, flags, .. } = &self.mode {
+            // CR claude for claude: [bug/medium] A seq whose run raises with no catch
+            // above it is warned here as "error raised by ? will not be caught" at the
+            // `seq` keyword, where there is no `?`: the machine's handler is a
+            // compiler-made Rethrow whose spec is the seq's. At run time the same
+            // Rethrow's handler-less branch in Qop::update logs "unhandled error <seq
+            // site> {cause: null, error: `A(1), ori: {..}, pos: {column: i32:3, line:
+            // i32:16}}". That is the whole chain with typed integers and the real raise
+            // site buried in it, where a handler-less `?` logs only its payload at its
+            // own site. Fix: for ExprKind::Rethrow, word the warning for the seq. When
+            // the payload is a chain, log its `error` (chain_error) at the site of the
+            // link that raised it. probe:
+            // design/review-2026-11-16/repro/c-error-op-seq-rethrow-diagnostic.gx
+            // (c-error-op-03)
+            Self::check_unhandled(&ctx.env, *flags, &self.spec, "error raised by ?")?;
+        }
+        wrap!(self, self.check_by_bounds(ctx))
     }
 
+    /// The strip is the definition's, over the operand as the definition
+    /// sees it: an instance that gives a variable an error takes off what
+    /// every instance does. The raise joined into the handler's bind is
+    /// state: an instance computes it too.
     fn typecheck0_instance(
         &mut self,
         ctx: &mut CompileCtx<R>,
         types: &mut super::lambda::InstanceTypes,
     ) -> Result<()> {
         let row = types.settle(ctx, &self.spec, &self.typ)?;
-        // the strip is the definition's, over the operand as the definition
-        // sees it: an instance that gives a variable an error takes off what
-        // every instance does
         let seen = types.definitions(self.n.spec().id).map(Type::resolve_tvars);
         let decided = match &seen {
             Some(t) => Strip::by_bounds(&ctx.env, t)?,
             None => None,
         };
         self.of_definition = decided.is_some();
-        self.typecheck0_with(
-            ctx,
-            &mut |n, ctx| n.typecheck0_instance(ctx, types),
-            !row,
-            decided,
-        )
+        wrap!(self.n, self.n.typecheck0_instance(ctx, types))?;
+        if matches!(self.spec.kind, ExprKind::Rethrow(_))
+            && self.n.typ().with_deref(|t| matches!(t, Some(Type::Bottom)))
+        {
+            return Ok(());
+        }
+        let op = if self.raises() { '?' } else { '$' };
+        let (strip, left) = wrap!(self, strip_typ(ctx, op, self.n.typ(), decided))?;
+        self.strip = strip;
+        self.raised = Self::raised_typ(strip, &self.n);
+        // where the definition's check left this node no row, its type is
+        // what the strip leaves of the operand
+        if !row && !bounds::take(&self.typ, &left) {
+            bailat!(self.spec, "BUG: a strip's result took no row")
+        }
+        Ok(())
     }
 
     fn view(&self) -> NodeView<'_, R> {
@@ -1654,10 +1679,6 @@ impl<R: Rt> Catch<R> {
 }
 
 impl<R: Rt> Qop<R> {
-    /// The check by bounds: the operand less its errors, or its null,
-    /// where its type is decided enough to say which; else the strip
-    /// waits for it. What a `?` raises reaches the handler as a chain over
-    /// the payloads of the errors taken off.
     /// The refusal of a raise that a sealed catch, whose handler was
     /// checked before it, cannot take: one naming the annotation where the
     /// catch saw no error.
@@ -1686,6 +1707,48 @@ impl<R: Rt> Qop<R> {
         })
     }
 
+    // CR claude for claude: [bug/medium] When the operand is only an error,
+    // strip_typ returns Type::Bottom, but this site only checks that the Qop's
+    // fresh cell (Qop::compile's empty_tvar) contains it, so the cell stays open.
+    // never() is typed Type::Bottom and a select absorbs it; this open cell is not
+    // absorbed. As a result, `select x { 2 => error(`E(x))?, _ => x }` keeps an
+    // undecided member: a later `select v { 0 => 1, n => n }` is refused asking to
+    // annotate v (accepted with never()), and at the top level the select cannot
+    // fuse ('a region of type '_N: unbound has no kernel return').
+    // lang::errors::arm_input_raise_delivers pins that as FuseExpect::None, and its
+    // #[native] twin fuses only through `let v: i64`. Bind the cell to Type::Bottom
+    // when the strip leaves nothing, as strip_typ's doc promises, then flip that
+    // fixture to FuseExpect::Jit. probe:
+    // design/review-2026-11-16/repro/tests-lang-rest-d-raise-arm-leaves-select-open.gx
+    // (tests-lang-rest-d-02)
+    // 2026-11-19 claude: On bounds-spike Qop's old path (typecheck0_with, the strip's
+    // check_contains) is deleted with the old check: a definition's Qop is checked by
+    // check_by_bounds, an instance's takes its row. Moved here unchanged. The probe
+    // now checks (--check exit 0). Not cleared: flip
+    // lang::errors::arm_input_raise_delivers as the text says and pin the probe first.
+
+    // CR claude for claude: [perf/medium] When the operand is always what the
+    // op strips (`error(`E(x))?`, `error(..)$`), `rtyp` is ⊥ and self.typ is
+    // left an unbound cell. Fusion cannot classify that cell: a select arm
+    // holding the raise refuses its region ("a region of type '_N: unbound has
+    // no kernel return"), and a `never(error(..)?)` arm's discarded argument
+    // refuses emission ("doesn't classify — can't drop it"). strict_fusion.md
+    // says both fuse (emit_qop_always_bad). `#[native] select x { 2 =>
+    // error(`E(x))$, _ => x }` at the top level is refused, while with `let w:
+    // i64 =` it fuses and both engines agree. Settle the cell to ⊥ where the
+    // strip leaves nothing, or freeze such a cell as ⊥ in fusion. Then
+    // lang::fusion's never_arm_args_raise and arm_raise_standing_input fuse.
+    // probe: design/review-2026-11-16/repro/tests-fusion-arm-raise-defuses.sh
+    // (tests-fusion-02)
+    // 2026-11-19 claude: Moved here unchanged with Qop's old path (deleted on
+    // bounds-spike). The probe now: d and b fuse and print 1, 3; c as before; a
+    // (`never(error(`E(x))$)`) is still refused 'a region of type _ has no
+    // kernel return'.
+
+    /// The check by bounds: the operand less its errors, or its null,
+    /// where its type is decided enough to say which; else the strip
+    /// waits for it. What a `?` raises reaches the handler as a chain over
+    /// the payloads of the errors taken off.
     fn check_by_bounds(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         let env = &ctx.env;
         let handler =
@@ -1729,86 +1792,6 @@ impl<R: Rt> Qop<R> {
                 Ok(())
             }
         }
-    }
-
-    /// The raise joined into the handler's bind is state: an instance
-    /// computes it too, over the strip its definition `decided`.
-    fn typecheck0_with(
-        &mut self,
-        ctx: &mut CompileCtx<R>,
-        child: &mut super::Child<'_, R>,
-        check: bool,
-        decided: Option<Strip>,
-    ) -> Result<()> {
-        wrap!(self.n, child(&mut self.n, ctx))?;
-        if bounds::active() {
-            return match check {
-                true => wrap!(self, self.check_by_bounds(ctx)),
-                false => Ok(()),
-            };
-        }
-        let rethrow = matches!(self.spec.kind, ExprKind::Rethrow(_));
-        if rethrow {
-            if self.n.typ().with_deref(|t| matches!(t, Some(Type::Bottom))) {
-                return match check {
-                    true => self.typ.check_contains(&ctx.env, &Type::Bottom),
-                    false => Ok(()),
-                };
-            }
-        }
-        // warned once, at the definition's check: an instance compiles
-        // under its call site's handlers, which raise_throws judges
-        if check && let QopMode::Raise { handler: None, flags, .. } = &self.mode {
-            // CR claude for claude: [bug/medium] A seq whose run raises with no catch
-            // above it is warned here as "error raised by ? will not be caught" at the
-            // `seq` keyword, where there is no `?`: the machine's handler is a
-            // compiler-made Rethrow whose spec is the seq's. At run time the same
-            // Rethrow's handler-less branch in Qop::update logs "unhandled error <seq
-            // site> {cause: null, error: `A(1), ori: {..}, pos: {column: i32:3, line:
-            // i32:16}}". That is the whole chain with typed integers and the real raise
-            // site buried in it, where a handler-less `?` logs only its payload at its
-            // own site. Fix: for ExprKind::Rethrow, word the warning for the seq. When
-            // the payload is a chain, log its `error` (chain_error) at the site of the
-            // link that raised it. probe:
-            // design/review-2026-11-16/repro/c-error-op-seq-rethrow-diagnostic.gx
-            // (c-error-op-03)
-            Self::check_unhandled(&ctx.env, *flags, &self.spec, "error raised by ?")?;
-        }
-        let op = if self.raises() { '?' } else { '$' };
-        // CR claude for claude: [bug/medium] When the operand is only an error,
-        // strip_typ returns Type::Bottom, but this site only checks that the Qop's
-        // fresh cell (Qop::compile's empty_tvar) contains it, so the cell stays open.
-        // never() is typed Type::Bottom and a select absorbs it; this open cell is not
-        // absorbed. As a result, `select x { 2 => error(`E(x))?, _ => x }` keeps an
-        // undecided member: a later `select v { 0 => 1, n => n }` is refused asking to
-        // annotate v (accepted with never()), and at the top level the select cannot
-        // fuse ('a region of type '_N: unbound has no kernel return').
-        // lang::errors::arm_input_raise_delivers pins that as FuseExpect::None, and its
-        // #[native] twin fuses only through `let v: i64`. Bind the cell to Type::Bottom
-        // when the strip leaves nothing, as strip_typ's doc promises, then flip that
-        // fixture to FuseExpect::Jit. probe:
-        // design/review-2026-11-16/repro/tests-lang-rest-d-raise-arm-leaves-select-open.gx
-        // (tests-lang-rest-d-02)
-        let (strip, rtyp) = wrap!(self, strip_typ(ctx, op, self.n.typ(), decided))?;
-        self.strip = strip;
-        self.raised = Self::raised_typ(strip, &self.n);
-        if check {
-            // CR claude for claude: [perf/medium] When the operand is always what the
-            // op strips (`error(`E(x))?`, `error(..)$`), `rtyp` is ⊥ and self.typ is
-            // left an unbound cell. Fusion cannot classify that cell: a select arm
-            // holding the raise refuses its region ("a region of type '_N: unbound has
-            // no kernel return"), and a `never(error(..)?)` arm's discarded argument
-            // refuses emission ("doesn't classify — can't drop it"). strict_fusion.md
-            // says both fuse (emit_qop_always_bad). `#[native] select x { 2 =>
-            // error(`E(x))$, _ => x }` at the top level is refused, while with `let w:
-            // i64 =` it fuses and both engines agree. Settle the cell to ⊥ where the
-            // strip leaves nothing, or freeze such a cell as ⊥ in fusion. Then
-            // lang::fusion's never_arm_args_raise and arm_raise_standing_input fuse.
-            // probe: design/review-2026-11-16/repro/tests-fusion-arm-raise-defuses.sh
-            // (tests-fusion-02)
-            wrap!(self, self.typ.check_contains(&ctx.env, &rtyp))?;
-        }
-        Ok(())
     }
 }
 

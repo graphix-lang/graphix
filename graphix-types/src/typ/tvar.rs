@@ -6551,24 +6551,6 @@ impl Type {
             }
         })
     }
-
-    /// Reopen every cell bound to ⊥: at a definition's gate that is a
-    /// vacuous fact (`throws := ⊥`, the body observed nothing). Every other
-    /// binding stays, shared with the cells it relates.
-    #[doc(hidden)]
-    pub fn unbind_vacuous_tvars(&self) {
-        ensure_sufficient(|| match self {
-            Type::TVar(tv) => {
-                let required = tv.cell().read().facts.contains(CellFact::BottomRequired);
-                debug_assert!(!required || tv.binding() == Some(Type::Bottom));
-                if !required && tv.binding().is_some_and(|t| t == Type::Bottom) {
-                    tv.unbind()
-                }
-            }
-            Type::Ref(_) => (),
-            t => t.for_each_child(&mut |c| c.unbind_vacuous_tvars()),
-        })
-    }
 }
 
 /// A narrowing's walk: the verdicts of the pairs of shared nodes it

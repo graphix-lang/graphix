@@ -2171,17 +2171,40 @@ impl<R: Rt> GXLambda<R> {
                     return Err(e);
                 }
             }
-            // a parameter taken apart is a select of one arm over it under
-            // a check by bounds; an instance's takes its names' types from
-            // its definition's check ([`DefTable::formals`])
-            let by_rows = !matches!(typing, Typing::Definition);
-            if (bounds::active() || by_rows)
-                && a.pattern.single_bind().is_none()
+            // a parameter taken apart is a select of one arm over it in its
+            // definition's check; an instance's takes its names' types from
+            // that check ([`DefTable::formals`])
+            if a.pattern.single_bind().is_none()
                 && !matches!(a.pattern, expr::StructurePattern::Ignore)
             {
-                if a.constraint.is_some() && !by_rows {
+                let checked = matches!(typing, Typing::Definition);
+                if checked && a.constraint.is_some() {
                     StructPatternNode::named_before(ctx, &atyp.typ)?
                 }
+                // XCR claude for claude: [bug/medium] `covers` answers false for any union,
+                // so a formal's tuple or struct pattern over a union of same-shape members
+                // is refused as refutable. `array::map([(1, `A), (2, `B(1))], |(i, v)| i)`
+                // is refused "refutable patterns are not allowed in lambda arguments (i,
+                // v)", and so is `|{a, b}|` over a union of structs. Yet `let (i, v) = p`
+                // over the same value checks, because the let judges each member (bind.rs
+                // `fits_every_member`, `retype_by_member`). Fix: judge the formal the way
+                // the let does, and pin this message, which no test names today. probe:
+                // design/review-2026-11-16/repro/x-kind-markers-formal-union-of-tuples.sh
+                // Also reported as (x-rerun-3-01). (x-kind-markers-03)
+                // 2026-11-19 claude: On bounds-spike an instance's formal taken apart
+                // compiles by its own shape and takes its names' types from its
+                // definition's check (DefTable::formals), realigned against the decided
+                // signature at typecheck1, as a let and a select arm do; this covers
+                // refusal stays only for a definition built outside a check. The probe's
+                // three programs check, build (--expand) and run ([1, 2]). Pins:
+                // lang::tuples_structs::formal_tuple_pattern_over_a_union_of_tuples and
+                // formal_struct_pattern_over_a_union_of_structs; with instances sent down
+                // this path again both fail with this message.
+                // 2026-11-19 claude: Every definition is now checked in a session (a
+                // literal an instance compiles with no row is checked alone,
+                // Lambda::check_alone), so a formal taken apart always takes this path and
+                // the covers refusal is deleted with the typed compile of such formals;
+                // moved here unchanged.
                 let pattern = StructPatternNode::compile_shape(
                     ctx,
                     &a.pattern,
@@ -2190,7 +2213,7 @@ impl<R: Rt> GXLambda<R> {
                     a.pos.0,
                     origin.clone(),
                 )?;
-                if !by_rows {
+                if checked {
                     let parts = pattern.by_bounds(ctx)?;
                     super::pattern::destructure(ctx, parts, &atyp.typ, a.pos.0)?;
                 }
@@ -2206,31 +2229,6 @@ impl<R: Rt> GXLambda<R> {
                 a.pos.0,
                 origin.clone(),
             )?;
-            // XCR claude for claude: [bug/medium] `covers` answers false for any union,
-            // so a formal's tuple or struct pattern over a union of same-shape members
-            // is refused as refutable. `array::map([(1, `A), (2, `B(1))], |(i, v)| i)`
-            // is refused "refutable patterns are not allowed in lambda arguments (i,
-            // v)", and so is `|{a, b}|` over a union of structs. Yet `let (i, v) = p`
-            // over the same value checks, because the let judges each member (bind.rs
-            // `fits_every_member`, `retype_by_member`). Fix: judge the formal the way
-            // the let does, and pin this message, which no test names today. probe:
-            // design/review-2026-11-16/repro/x-kind-markers-formal-union-of-tuples.sh
-            // Also reported as (x-rerun-3-01). (x-kind-markers-03)
-            // 2026-11-19 claude: On bounds-spike an instance's formal taken apart
-            // compiles by its own shape and takes its names' types from its
-            // definition's check (DefTable::formals), realigned against the decided
-            // signature at typecheck1, as a let and a select arm do; this covers
-            // refusal stays only for a definition built outside a check. The probe's
-            // three programs check, build (--expand) and run ([1, 2]). Pins:
-            // lang::tuples_structs::formal_tuple_pattern_over_a_union_of_tuples and
-            // formal_struct_pattern_over_a_union_of_structs; with instances sent down
-            // this path again both fail with this message.
-            if !pattern.covers(&ctx.env, &atyp.typ, false) {
-                bail!(
-                    "refutable patterns are not allowed in lambda arguments {}",
-                    a.pattern
-                )
-            }
             argpats.push(pattern);
         }
         let mut p = profile::phase(Phase::InstanceGraph);
@@ -2970,6 +2968,14 @@ impl Lambda {
             resident: TagValue::stale(def),
         })
     }
+
+    /// A literal an instance compiles with no row of its definition's
+    /// check (a builtin, an id two nodes share) is checked as a program's
+    /// are, in a check of its own.
+    fn check_alone<R: Rt>(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
+        let check = bounds::Check::begin();
+        Update::<R>::typecheck0(self, ctx).and_then(|()| check.end(&ctx.env))
+    }
 }
 
 /// A definition's gate: its body checks once, over a `Nop` per declared
@@ -2990,15 +2996,9 @@ struct DefGate<R: Rt> {
     scope: Scope,
     rigid: LPooled<Vec<RigidGate>>,
     _declaring: Declaring,
-    /// Each quantifier the definition declares, at the depth it had at the
-    /// gate's opening.
-    declared: LPooled<Vec<(TVar, u32)>>,
-    /// The parts of the signature left to inference (a parameter by its
-    /// name, the return as `None`) whose cell is outside the definition at
-    /// the gate's opening: a function something writes is one instance.
-    unwritten: LPooled<Vec<(Option<ArcStr>, TVar)>>,
-    /// Under a check by bounds, how the definition closes.
-    bounds: Option<Closing>,
+    /// Each quantifier the definition declares.
+    declared: LPooled<Vec<TVar>>,
+    closing: Closing,
 }
 
 /// How a definition's check by bounds closes.
@@ -3019,16 +3019,16 @@ impl<R: Rt> DefGate<R> {
         let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         def.typ.collect_tvars_through_bounds(&mut named);
         named.retain(|name, _| !name.starts_with('_'));
-        let bounds = bounds::active().then(|| match binding_names || !named.is_empty() {
+        let closing = match binding_names || !named.is_empty() {
             true => Closing::Scheme { mark: solving(|s| s.mark()), named: binding_names },
             false => Closing::Inline,
-        });
-        let at = match bounds {
-            Some(Closing::Inline) => {
+        };
+        let at = match closing {
+            Closing::Inline => {
                 def.typ.claim(outer);
                 AtLevel::enter(outer)
             }
-            _ => AtLevel::enter(def.level),
+            Closing::Scheme { .. } => AtLevel::enter(def.level),
         };
         let args = def.typ.args.iter().map(|at| Nop::new(at.typ.clone())).collect();
         let (faux, scope) = RaiseProbe::open(ctx, &def.scope);
@@ -3040,22 +3040,7 @@ impl<R: Rt> DefGate<R> {
         let quantified = def.typ.quantifiers.iter().filter_map(|q| named.get(q));
         let declaring =
             Declaring::enter(named.values().cloned(), quantified.clone().cloned());
-        let declared = quantified.map(|tv| (tv.clone(), tv.level().depth())).collect();
-        let outside = |t: &Type| match t {
-            Type::TVar(c)
-                if c.name.starts_with('_') && c.level().depth() < def.level.depth() =>
-            {
-                Some(c.clone())
-            }
-            _ => None,
-        };
-        let unwritten = def
-            .typ
-            .args
-            .iter()
-            .filter_map(|a| Some((Some(a.name()?.clone()), outside(&a.typ)?)))
-            .chain(outside(&def.typ.rtype).map(|c| (None, c)))
-            .collect();
+        let declared = quantified.cloned().collect();
         ctx.rec_defs.insert(def.id);
         ctx.def_gate_depth += 1;
         Self {
@@ -3070,31 +3055,36 @@ impl<R: Rt> DefGate<R> {
             rigid,
             _declaring: declaring,
             declared,
-            unwritten,
-            bounds,
+            closing,
         }
     }
 
-    /// A quantifier the definition declares stays its own: the body binds
-    /// no cell outside the definition to a type holding it (which would
-    /// lower it to that cell's depth), since each call picks it anew. A
-    /// variable the signature only names is lowered with that cell, and
-    /// the definition is monomorphic in it.
-    fn check_declared_kept(&self) -> Result<()> {
-        if self.bounds.is_some() {
-            return Ok(());
-        }
-        for (tv, depth) in self.declared.iter() {
-            if tv.level().depth() < *depth {
-                if let Some(fix) = self.unwritten_holding(tv) {
-                    bail!(
-                        "'{0} escapes the definition through its own signature: \
-                         a function something writes is one instance, so what its \
-                         signature leaves unwritten is a cell outside it; {fix}, or \
-                         declare no '{0}",
-                        tv.name
-                    )
+    /// What the body raised.
+    fn thrown(&self, ctx: &CompileCtx<R>) -> Type {
+        self.faux.raised(ctx)
+    }
+
+    /// A definition of its own becomes its scheme; where no binding names
+    /// it, the one instance of that scheme the lambda stands as: its type,
+    /// and its cell for each of the scheme's, by that cell's address.
+    fn close(
+        mut self,
+        ctx: &mut CompileCtx<R>,
+        spec: &Expr,
+    ) -> Result<Option<(Type, AHashMap<usize, TVar>)>> {
+        ctx.def_gate_depth -= 1;
+        let mut stands = None;
+        let mut closed = Ok(());
+        match self.closing {
+            Closing::Inline => (),
+            Closing::Scheme { mark, named } => {
+                if named {
+                    ctx.env.with_ide(|ide| self.tell_held(ide, spec))
                 }
+                let sig = Type::Fn(self.sig.clone());
+                closed = solving(|s| s.generalize(&ctx.env, &sig, self.depth - 1, mark))
+                    .at(spec);
+                self.rigid.clear();
                 // CR claude for claude: [bug/low] The hint `give that a type holding
                 // them all (the bound of 'a, or Any)` points at a type the program
                 // cannot write when the bound is Concrete, NoError or Singleton. Those
@@ -3106,69 +3096,13 @@ impl<R: Rt> DefGate<R> {
                 // the annotated twin (`let y: Any = never()` checks). probe:
                 // design/review-2026-11-16/repro/tests-types-b-escape-hint-bound.gx
                 // (tests-types-b-03)
-                bail!(
-                    "'{0} escapes the definition: the body hands a value of type '{0} \
-                     to something outside it, which would have to hold every '{0} a \
-                     call picks; give that a type holding them all (the bound of '{0}, \
-                     or Any), or declare no '{0}",
-                    tv.name
-                )
-            }
-        }
-        Ok(())
-    }
-
-    /// The annotation that keeps `tv` the definition's, where a part of the
-    /// signature left unwritten holds it.
-    fn unwritten_holding(&self, tv: &TVar) -> Option<CompactString> {
-        let (part, cell) = self.unwritten.iter().find(|(_, cell)| {
-            let mut reached: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-            Type::TVar(cell.clone()).reached_cells(&mut reached);
-            reached.values().any(|c| c.same_cell(tv))
-        })?;
-        let written = Type::TVar(cell.clone()).written_form(&mut |c| {
-            self.declared
-                .iter()
-                .find(|(tv, _)| tv.same_cell(c))
-                .map(|(tv, _)| Type::TVar(tv.clone()))
-        });
-        Some(match (part, written) {
-            (None, Some(t)) => format_compact!("write its return type, `-> {t}`"),
-            (None, None) => format_compact!("write its return type"),
-            (Some(name), Some(t)) => format_compact!("write `{name}: {t}`"),
-            (Some(name), None) => format_compact!("write `{name}`'s type"),
-        })
-    }
-
-    /// What the body raised.
-    fn thrown(&self, ctx: &CompileCtx<R>) -> Type {
-        self.faux.raised(ctx)
-    }
-
-    /// The body's sites settle with the enclosing statement, all but the
-    /// cells this signature reaches: those stay open, generalized where a
-    /// binding names the definition, else its enclosing level's.
-    /// Under a check by bounds, where no binding names a definition of
-    /// its own, the one instance of its scheme the lambda stands as: its
-    /// type, and its cell for each of the scheme's, by that cell's
-    /// address.
-    fn close(
-        mut self,
-        ctx: &mut CompileCtx<R>,
-        spec: &Expr,
-        named: bool,
-    ) -> Result<Option<(Type, AHashMap<usize, TVar>)>> {
-        ctx.def_gate_depth -= 1;
-        let mut stands = None;
-        let mut closed = Ok(());
-        match (self.bounds, named) {
-            (Some(Closing::Inline), _) => (),
-            (Some(Closing::Scheme { mark, named }), _) => {
-                let sig = Type::Fn(self.sig.clone());
-                closed = solving(|s| s.generalize(&ctx.env, &sig, self.depth - 1, mark))
-                    .at(spec);
-                self.rigid.clear();
-                for (tv, _) in self.declared.iter() {
+                // 2026-11-19 claude: On bounds-spike a declared variable's own values may
+                // flow out of its definition and each instance's type follows (STATE
+                // decision 37), so this refusal, its hint and check_declared_kept are
+                // deleted with the old check; moved here, where the declared variables are
+                // owned. The pin it names fails at the bounds-spike baseline and is likely
+                // obsolete with its fixture (step 4).
+                for tv in self.declared.iter() {
                     solving(|s| s.own(tv))
                 }
                 if !named && closed.is_ok() {
@@ -3179,11 +3113,6 @@ impl<R: Rt> DefGate<R> {
                     stands = Some((one, copies))
                 }
             }
-            (None, true) => {
-                ctx.env.with_ide(|ide| self.tell_held(ide, spec));
-                self.sig.generalize(self.depth)
-            }
-            (None, false) => self.sig.claim(self.outer),
         }
         ctx.rec_defs.remove(&self.def);
         self.faux.close(ctx);
@@ -3489,21 +3418,14 @@ impl<R: Rt> Update<R> for Lambda {
         let spec: &Expr = &self.spec;
         crate::defer_written_names(ctx, &Type::Fn(def.typ.clone()), spec)?;
         // Every arg, defaulted labeled ones included, checks as a Nop of
-        // its declared type; the defaults themselves are checked after
-        // the body (`check_defaults`), and again per omitting call site
-        // (`CallSite::check_omitted_defaults`), where one may narrow that
-        // site's cells. A check by bounds checks them first: a call in the
+        // its declared type. The defaults are checked first: a call in the
         // body that leaves a label out takes the default its parameter
         // records.
         let mut gate = DefGate::open(ctx, def, self.named);
         let mut table = None;
         let mut captures: LPooled<AHashSet<(ModPath, CompactString)>> = LPooled::take();
         let mut defaults: LPooled<Vec<Node<R>>> = LPooled::take();
-        let by_bounds = bounds::active();
-        let res = match by_bounds {
-            true => check_defaults(ctx, def, &gate.scope, &mut captures, &mut defaults),
-            false => Ok(()),
-        };
+        let res = check_defaults(ctx, def, &gate.scope, &mut captures, &mut defaults);
         let res = res.and_then(|()| {
             (def.init)(
                 &gate.scope,
@@ -3570,14 +3492,6 @@ impl<R: Rt> Update<R> for Lambda {
             });
             capture_impls(def, &ctx.env, &mut captures);
         }
-        let res = res
-            .and_then(|()| match by_bounds {
-                true => Ok(()),
-                false => {
-                    check_defaults(ctx, def, &gate.scope, &mut captures, &mut defaults)
-                }
-            })
-            .and_then(|()| gate.check_declared_kept().at(spec));
         let mut checked = None;
         if res.is_ok()
             && (table.is_some() || !captures.is_empty() || !defaults.is_empty())
@@ -3596,33 +3510,22 @@ impl<R: Rt> Update<R> for Lambda {
         for n in defaults.drain(..) {
             ctx.discard(n)
         }
-        if !bounds::active()
-            && let Some(table) = checked.take()
-        {
+        let closed = gate.close(ctx, spec);
+        // a lambda that stands as one instance of its scheme reads its
+        // check's types as that instance has them
+        let one = closed.as_ref().ok().and_then(|stands| stands.as_ref());
+        if let Some(table) = checked {
+            let table = match one {
+                Some((_, copies)) => SArc::new(table.renamed(copies)),
+                None => table,
+            };
             def.table.set(Tables { table, outer: None })
         }
-        let closed = gate.close(ctx, spec, self.named);
-        if bounds::active() {
-            // a lambda that stands as one instance of its scheme reads its
-            // check's types as that instance has them
-            let one = closed.as_ref().ok().and_then(|stands| stands.as_ref());
-            if let Some(table) = checked {
-                let table = match one {
-                    Some((_, copies)) => SArc::new(table.renamed(copies)),
-                    None => table,
-                };
-                def.table.set(Tables { table, outer: None })
+        res.and(closed).map(|stands| {
+            if let Some((t, _)) = stands {
+                self.typ = t
             }
-            return res.and(closed).map(|stands| {
-                if let Some((t, _)) = stands {
-                    self.typ = t
-                }
-            });
-        }
-        // what the body bound is the signature: a call's types follow from
-        // it without elaborating the body
-        self.typ.unbind_vacuous_tvars();
-        res.and(closed.map(|_| ()))
+        })
     }
 
     /// A lambda an instance defines takes its signature from the
@@ -3643,7 +3546,7 @@ impl<R: Rt> Update<R> for Lambda {
             false => types.lambda(self.spec.id),
             true => None,
         };
-        let Some(tables) = tables else { return self.typecheck0(ctx) };
+        let Some(tables) = tables else { return self.check_alone(ctx) };
         let level = def.level;
         let row = {
             let _at = AtLevel::enter(level);
@@ -3651,7 +3554,7 @@ impl<R: Rt> Update<R> for Lambda {
         };
         let Some(row) = row else {
             elab_audit::fallback(&self.spec);
-            return self.typecheck0(ctx);
+            return self.check_alone(ctx);
         };
         // a definition a check by bounds made generic is that scheme, as
         // the instance holds it
