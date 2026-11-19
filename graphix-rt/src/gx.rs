@@ -1453,10 +1453,10 @@ impl<X: GXExt> GX<X> {
         // naming the parameter to annotate. probe:
         // design/review-2026-11-16/repro/rt-handle-contracts.rs
         // (review_a_generic_callable) (rt-07)
-        let ftype = lb.typ.instantiate(&nohash::IntSet::default());
+        let callee = lb.typ.instantiate(&nohash::IntSet::default());
         let ftype = FnType {
-            args: ftype.args.iter().filter(|a| !a.has_default()).cloned().collect(),
-            ..ftype
+            args: callee.args.iter().filter(|a| !a.has_default()).cloned().collect(),
+            ..callee.clone()
         };
         // a call is the delivery of its arguments: with none it would run
         // once, now, and never when called
@@ -1473,7 +1473,7 @@ impl<X: GXExt> GX<X> {
                 genn::reference(&mut self.ctx.view(), *id, arg.typ.clone(), eid)
             })
             .collect::<smallvec::SmallVec<[_; 2]>>();
-        let fnode = genn::constant(v.clone(), Type::Fn(lb.typ.clone()));
+        let fnode = genn::constant(v.clone(), Type::Fn(Arc::new(callee)));
         let mut n = genn::apply(fnode, Scope::root(), argn, &ftype, eid)?;
         self.ctx.view().open_compile_frame(eid);
         if let Err(e) =
