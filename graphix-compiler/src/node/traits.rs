@@ -114,6 +114,20 @@ pub(crate) fn method_sig(
 // declaration by fits_declared. Re-probe what the refusal says now for an
 // undecided method read.
 
+// CR claude for claude: [structure/low] Which binding a trait call reaches is
+// worked out here for the check and again in `resolve_trait_call` and
+// `lower_trait_union` for the build: the same alias expansion, open-cell test
+// and union test over the self type.
+// `im.methods.get(name).copied().or(m.default)` is written four times, in these
+// three and in `coretraits::method_bind`. The check's verdict on an omitted
+// default holds only while the copies agree. Give `TraitMethodDef` one
+// `bind_in(&ImplDef) -> Option<BindId>`, and have both callers read one
+// function that classifies the resolved self type (bottom, open, core, union
+// members, one type). Found by reading; not run. (c-module-traits-06)
+// 2026-11-19 claude: On bounds-spike the old method check (decided_methods) is
+// deleted with the old check; a method is held to its declaration by
+// fits_declared. Re-probe under the new check before closing.
+
 /// Under a check by bounds, whether a method's body, whose binding holds
 /// the scheme `made`, is the `declared` signature for whatever each of the
 /// declaration's variables stands for: one instance of the body fits the
@@ -1481,77 +1495,6 @@ impl<R: Rt> Update<R> for Impl<R> {
 }
 
 impl<R: Rt> CallSite<R> {
-    /// The bindings of the methods this trait call dispatches to, when its
-    /// self argument's type, as the check leaves it, decides the impls
-    /// alone: no cell open in it, no constructor trait, no core trait that
-    /// lowers to an operator. A union self dispatches per member, one
-    /// binding for each.
-    pub(super) fn decided_methods(
-        &self,
-        ctx: &CompileCtx<R>,
-        ftype: &FnType,
-    ) -> SmallVec<[BindId; 2]> {
-        // CR claude for claude: [structure/low] Which binding a trait call reaches is
-        // worked out here for the check and again in `resolve_trait_call` and
-        // `lower_trait_union` for the build: the same alias expansion, open-cell test
-        // and union test over the self type.
-        // `im.methods.get(name).copied().or(m.default)` is written four times, in these
-        // three and in `coretraits::method_bind`. The check's verdict on an omitted
-        // default holds only while the copies agree. Give `TraitMethodDef` one
-        // `bind_in(&ImplDef) -> Option<BindId>`, and have both callers read one
-        // function that classifies the resolved self type (bottom, open, core, union
-        // members, one type). Found by reading; not run. (c-module-traits-06)
-        let mut binds = SmallVec::new();
-        let NodeView::Ref(r) = self.fnode.view() else { return binds };
-        let Some(tm) = ctx.env.trait_methods.get(&r.id).copied() else { return binds };
-        let Some(def) = ctx.env.trait_def(tm.trait_id) else { return binds };
-        let m = &def.methods[tm.index];
-        let Some(self_t) = m.self_index.and_then(|i| ftype.args.get(i)) else {
-            return binds;
-        };
-        let mut self_t = self_t.typ.resolve_tvars().normalize();
-        let open = |t: &Type| {
-            let mut tvs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-            t.collect_tvars(&mut tvs);
-            tvs.values().any(|tv| Type::TVar(tv.clone()).has_unbound())
-        };
-        if def.hole || CoreTrait::of_id(def.id).is_some_and(|c| c.structural()) {
-            return binds;
-        }
-        while let Type::Ref(tr) = &self_t
-            && ctx.env.trait_of_ref(tr).is_none()
-        {
-            match self_t.lookup_ref(&ctx.env) {
-                Ok(t) => self_t = t,
-                Err(_) => return binds,
-            }
-        }
-        let union = match &self_t {
-            Type::Set(_) => true,
-            Type::Primitive(p) => p.len() > 1,
-            _ => false,
-        };
-        if matches!(self_t, Type::Bottom) || open(&self_t) {
-            return binds;
-        }
-        let members = match union {
-            true => match Type::dispatch_members(&ctx.env, &self_t) {
-                Ok(members) => members,
-                Err(_) => return binds,
-            },
-            false => SmallVec::from_elem(self_t, 1),
-        };
-        for mem in members.iter() {
-            if let Ok(Some(im)) = ctx.env.find_impl(def.id, mem)
-                && let Some(bind) = im.methods.get(m.name.as_str()).copied().or(m.default)
-                && !binds.contains(&bind)
-            {
-                binds.push(bind)
-            }
-        }
-        binds
-    }
-
     /// Resolve a trait method call to an implementation by the self
     /// argument's type. A self type nothing produced into settles to ⊥
     /// and the call is a standing bottom; a union self type lowers to a

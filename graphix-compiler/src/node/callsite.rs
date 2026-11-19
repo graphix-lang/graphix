@@ -13,9 +13,9 @@ use super::{
 use crate::{
     Apply, ApplyView, BindId, BindMode, CFlag, CompileCtx, ExecCtx, FnArgIdentity,
     LambdaId, LambdaInstanceId, Node, NodeView, Notify, Refs, ResolvingLambda, Rt, Scope,
-    StaticHold, TagValue, Update, View, analysis, bailat, dbgenv, deref_typ,
+    StaticHold, TagValue, Update, View, analysis, bailat, dbgenv,
     env::{Env, ImplDef, KeptView, Map},
-    expr::{ApplyExpr, At, ErrorSite, Expr, ExprId, ExprKind, Told},
+    expr::{ApplyExpr, At, Expr, ExprId, ExprKind, Told},
     fusion::{
         self,
         emit::{
@@ -36,11 +36,9 @@ use crate::{
     prune::BoundaryRef,
     stack::ensure_sufficient,
     typ::{
-        AmbiguousMember, AppKey, Brief, Carriers, ContainsFlags, FnArgKind, FnArgType,
-        FnType, Mutability, TVar, TakerUnion, TraitId, Type, UndecidedTaker,
+        FnArgKind, FnArgType, FnType, TVar, TraitId, Type,
         bounds::{self, Use},
-        settle::{DataPositions, Expanded, Held, Reaching, Unrolling, settle_order},
-        tvar::{AtLevel, BoundAt, Bounds, Judgment, Level, RigidGate, current_level},
+        tvar::{AtLevel, BoundAt, Judgment, Level, RigidGate, current_level},
     },
     wrap,
 };
@@ -56,10 +54,7 @@ use compact_str::{CompactString, format_compact};
 use enumflags2::BitFlags;
 use indexmap::{IndexMap, map::Entry as ArgEntry};
 use log::warn;
-use netidx_core::{
-    pack::{Pack, PackError, encode_varint},
-    path::Path,
-};
+use netidx_core::pack::{Pack, PackError, encode_varint};
 use netidx_value::Value;
 use nohash::{IntMap, IntSet};
 use poolshark::local::LPooled;
@@ -735,47 +730,6 @@ fn holds_defaulted<R: Rt>(
     })
 }
 
-/// The unbound variables of a scheme (no definition owns them) that `t`
-/// holds, by name.
-fn scheme_variables(t: &Type, names: &mut SmallVec<[ArcStr; 2]>) {
-    fn go(t: &Type, names: &mut SmallVec<[ArcStr; 2]>, seen: &mut AHashSet<usize>) {
-        ensure_sufficient(|| match t {
-            Type::TVar(tv) => {
-                if seen.insert(tv.cell_addr()) {
-                    match tv.binding() {
-                        Some(b) => go(&b, names, seen),
-                        None if tv.level().is_generic() && !names.contains(&tv.name) => {
-                            names.push(tv.name.clone())
-                        }
-                        None => (),
-                    }
-                }
-            }
-            t => t.for_each_child(&mut |c| go(c, names, seen)),
-        })
-    }
-    go(t, names, &mut LPooled::take())
-}
-
-/// Whether `t` holds a variable called `name`, bound or not.
-fn names_variable(t: &Type, name: &ArcStr) -> bool {
-    fn go(t: &Type, name: &ArcStr, seen: &mut AHashSet<usize>) -> bool {
-        ensure_sufficient(|| match t {
-            Type::TVar(tv) => {
-                tv.name == *name
-                    || (seen.insert(tv.cell_addr())
-                        && tv.binding().is_some_and(|b| go(&b, name, seen)))
-            }
-            t => {
-                let mut found = false;
-                t.for_each_child(&mut |c| found = found || go(c, name, seen));
-                found
-            }
-        })
-    }
-    go(t, name, &mut LPooled::take())
-}
-
 /// Typedefs expand this deep at most on one path of the walk, so a
 /// recursive one ends.
 const MAX_EXPANSIONS: u8 = 16;
@@ -987,88 +941,6 @@ fn walk_step() {
     WALK_STEPS.with(|n| n.set(n.get() + 1));
 }
 
-/// A callee that is one of two or more function types: no one call takes
-/// them all.
-struct FnUnion<'a>(&'a [Type]);
-
-impl FnUnion<'_> {
-    /// The refusal of a call through `union`, where every member is a
-    /// function type, written or named.
-    fn refusal(env: &Env, union: &Type) -> Option<anyhow::Error> {
-        let is_fn = |m: &Type| matches!(opened(env, m, &mut 0), Some(Type::Fn(_)));
-        match union {
-            Type::Set(ms) if ms.len() > 1 && ms.iter().all(is_fn) => {
-                Some(anyhow!("{}", FnUnion(ms)))
-            }
-            _ => None,
-        }
-    }
-
-    /// The one function type a call through the union `t` takes: its only
-    /// member once two that meet are one, or the join of members that meet
-    /// as a select's alternatives do ([`Type::union_of_alternatives`]) and
-    /// hold no open cell but the ones the checker made and feeds from
-    /// below. Every member's definition stays a definition it may be
-    /// ([`LambdaIds::link`](crate::typ::fntyp::LambdaIds::link)).
-    fn one_function(env: &Env, t: &Type) -> Result<Option<Type>> {
-        let Some(t) = t.deref_cloned() else { return Ok(None) };
-        let Type::Set(_) = &t else { return Ok(None) };
-        let mut fns: LPooled<Vec<Type>> = LPooled::take();
-        union_members(&t.normalize(), &mut fns, &mut |m| Some(m.clone()));
-        for m in fns.iter_mut() {
-            match opened(env, m, &mut 0) {
-                Some(open) => *m = open,
-                None => return Ok(None),
-            }
-        }
-        let decided = |m: &Type| {
-            matches!(m, Type::Fn(_))
-                && m.first_open(&|tv| {
-                    !tv.cell_constraints().is_empty()
-                        || !tv.generated()
-                        || !(tv.bottom_fed() || !tv.cell_lower().is_empty())
-                })
-                .is_none()
-        };
-        match &fns[..] {
-            [one] if matches!(one, Type::Fn(_)) => return Ok(Some(one.clone())),
-            [first, rest @ ..] if !rest.is_empty() && fns.iter().all(decided) => {
-                let members: LPooled<Vec<&Type>> = fns.iter().collect();
-                let met = Type::union_of_alternatives(env, &members)?;
-                let (Type::Fn(first), Type::Fn(met)) = (first, &met) else {
-                    return Ok(None);
-                };
-                for m in rest {
-                    if let Type::Fn(m) = m {
-                        first.lambda_ids.link(&m.lambda_ids)
-                    }
-                }
-                Ok(Some(Type::Fn(met.clone())))
-            }
-            _ => Ok(None),
-        }
-    }
-}
-
-impl fmt::Display for FnUnion<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "a call takes one function type, and this callee is one of ")?;
-        for (i, m) in self.0.iter().enumerate() {
-            let sep = match i {
-                0 => "",
-                i if i + 1 == self.0.len() => " and ",
-                _ => ", ",
-            };
-            write!(f, "{sep}{}", Brief(m))?
-        }
-        let all = match self.0.len() {
-            2 => "both",
-            _ => "each",
-        };
-        write!(f, "; write one variable in {all}, or one written type in {all}")
-    }
-}
-
 /// Fit a site's arguments to its signature: a placeholder for each
 /// defaulted label it omits; a missing or unknown label, or a wrong
 /// positional count, is refused.
@@ -1108,179 +980,6 @@ fn fill_omitted<R: Rt>(args: &mut ArgMap<R>, ftype: &FnType) -> Result<()> {
         bail!("too many positional arguments, expected {required}, received {provided}")
     }
     Ok(())
-}
-
-/// The cells of a formal's open copy ([`Widening::opening`]), each by the
-/// address of the formal's cell it copies.
-type Copies = LPooled<AHashMap<usize, TVar>>;
-
-/// How a formal stands to its argument's check ([`Widening::opening`]).
-enum Opening {
-    /// It holds no widenable variable: the argument pre-unifies with it.
-    Closed,
-    /// It holds one, and the argument does not pre-unify.
-    Open,
-    /// It holds one: the copy the argument pre-unifies with, and its cells.
-    Copy(Type, Copies),
-}
-
-/// A formal's cells, each with its copy in the formal's open copy and the
-/// bounds the copy was made with: the cell's, less the lower bounds of a
-/// variable the copy opens.
-type Copied = LPooled<Vec<(TVar, TVar, Bounds)>>;
-
-/// How a call's argument stands once its own check is done.
-enum ArgFit {
-    /// Every cell it holds outside function types is decided: it fits its
-    /// formal as the arguments before it left it, or widens the variables
-    /// it holds wider ([`Widening::join`]).
-    Decided,
-    /// It holds a cell nothing has decided outside function types, at a
-    /// formal holding a widenable variable: it takes what the formal holds
-    /// so far, and the variables it met widen no more ([`Widening::pin`]).
-    /// It pre-unified with the copy of these cells.
-    Undecided(Copied),
-}
-
-/// An argument that could go to either of two undecided members of its
-/// parameter's type: the parameters before it decide them, or the
-/// parameter is what to annotate.
-fn ambiguous_parameter(e: anyhow::Error) -> anyhow::Error {
-    match e.downcast_ref::<AmbiguousMember>() {
-        // CR claude for claude: [bug/medium] Every refusal through here tells the
-        // author to 'declare the parameters that decide them before this one', whether
-        // or not a later parameter decides the members. Over `|#y: 'a = 1, #z: 'b =
-        // "s", x: P<'a, 'b>|`, `f([1])` gets that advice although #y and #z already
-        // stand before x: they are omitted defaults, met after the written arguments,
-        // and `f(#y: 1, #z: "s", [1])` checks. Over `|y: 'a, x: P3<'a, 'b, 'c>|` and
-        // `|x: E<'a, 'b>|`, no parameter holds the open members' variables, so only
-        // writing x's type helps. Name the reorder only where a later parameter holds a
-        // variable of the members the argument could go to, and name passing the
-        // labeled arguments where the deciders are omitted defaults. Pin the remedy in
-        // lang::types::argument_into_a_typedef_union_before_the_omitted_defaults_refused
-        // and argument_into_a_three_member_typedef_union_two_left_open_refused, which
-        // pin only the fact today. probe:
-        // design/review-2026-11-16/repro/tests-types-c-ambiguous-remedy.sh
-        // (tests-types-c-03)
-        Some(a) if a.in_holder() => anyhow!(
-            "{}: a call's arguments are met in the order of the parameters, so declare \
-             the parameters that decide them before this one, or write the type of the \
-             parameter this argument is passed to, where the function is defined",
-            a.fact()
-        ),
-        _ => e,
-    }
-}
-
-/// Check a call's argument node, whose formal's type is `typ`,
-/// answering how it stands. Where the formal holds a widenable variable
-/// ([`Widening::opening`]) an argument holding an undecided cell
-/// pre-unifies with the formal's open copy, which refuses no argument
-/// wider than the ones before it. An expression whose type its own check
-/// has yet to make is not pre-unified with the copy, and neither is one
-/// holding no undecided cell, nor a part of one that holds a declared
-/// variable and no undecided cell ([`Type::pre_unify_copy`]): a declared
-/// variable it holds would be one cell with the copy's, within the copy's
-/// bounds, over cells no instance has. `pinned` is what a refusal adds
-/// where an undecided argument pinned a variable of the formal. `opening`
-/// is [`Widening::opening`] of the formal, told whether the argument
-/// pre-unifies with a copy.
-fn typecheck_arg<R: Rt>(
-    ctx: &mut CompileCtx<R>,
-    typ: &Type,
-    opening: impl FnOnce(&Env, bool) -> Opening,
-    pinned: Option<CompactString>,
-    prebound: &AHashSet<usize>,
-    n: &mut Node<R>,
-) -> Result<ArgFit> {
-    // A reference instantiates its signature in its own typecheck0,
-    // which must precede the pre-unify.
-    let named = matches!(n.view(), NodeView::Ref(_));
-    if named {
-        wrap!(n, n.typecheck0(ctx))?;
-    }
-    let made = named || n.typ().with_deref(|t| t.is_some());
-    let opening = opening(&ctx.env, made && n.typ().has_free());
-    let note = match opening {
-        Opening::Closed if n.typ().has_free_in_data() => {
-            decided_elsewhere(&ctx.env, typ, prebound, n.typ())?
-        }
-        _ => None,
-    };
-    // CR claude for claude: [readability/low] Two common refusals reach here with no
-    // note: `let h = mk(0); (h(1), h("s"))`, where h is one instance, and `f("s")`
-    // where f writes its parameter into a captured `let a = 1`. Both say only "type
-    // mismatch i64 does not contain string" at the argument. The fixes pass (`let h =
-    // |x| mk(0)(x)`, `let a: [i64, string] = 1`), and a direct `a <- "s"` already names
-    // the declaration, but the call says nothing. Add the note here: for a callee
-    // binding bind::names_generic does not generalize, say it is one instance and to
-    // write a lambda; for a formal that is a written binding's cell, reuse
-    // generic_target's "declare a: .. where it is bound". probe:
-    // design/review-2026-11-16/repro/x-diagnostics-instance-arg-no-cause.sh
-    // (x-diagnostics-11)
-    let refused = |e: anyhow::Error| match pinned.as_ref().or(note.as_ref()) {
-        Some(note) => Told::over(e, note),
-        None => e,
-    };
-    let bounds: SmallVec<[(usize, Bounds); 4]> = match &opening {
-        Opening::Copy(_, copies) => {
-            copies.iter().map(|(cell, copy)| (*cell, copy.bounds())).collect()
-        }
-        Opening::Closed | Opening::Open => SmallVec::new(),
-    };
-    let mut open_cells: LPooled<Vec<TVar>> = LPooled::take();
-    if !matches!(opening, Opening::Open) && made && n.typ().has_free() {
-        Reach::default().go(n.typ(), &mut |_| false, &mut |tv| {
-            if !tv.is_bound() && !tv.is_rigid() {
-                open_cells.push(tv.clone())
-            }
-            false
-        });
-    }
-    match &opening {
-        Opening::Closed => {
-            Type::pre_unify_arg(&ctx.env, typ, n.typ()).map_err(refused)?
-        }
-        Opening::Copy(open, _) => {
-            Type::pre_unify_copy(&ctx.env, open, n.typ()).map_err(refused)?
-        }
-        Opening::Open => (),
-    }
-    open_cells.retain(|tv| tv.binding().is_some_and(|b| b.has_free()));
-    wrap!(n, n.typecheck0(ctx)).map_err(|e| {
-        let e = refused(e);
-        match e.is::<UndecidedTaker>() || open_cells.is_empty() {
-            true => undecided_taker(ctx, n, e),
-            false => decided_early(ctx, n, &open_cells, e),
-        }
-    })?;
-    Ok(match opening {
-        Opening::Closed => ArgFit::Decided,
-        _ if !n.typ().has_free_in_data() => ArgFit::Decided,
-        Opening::Open => ArgFit::Undecided(LPooled::take()),
-        Opening::Copy(_, copies) => {
-            let mut copied: Copied = LPooled::take();
-            Reach::default().go(typ, &mut |_| false, &mut |tv| {
-                let cell = tv.cell_addr();
-                if let Some(copy) = copies.get(&cell)
-                    && let Some((_, made)) = bounds.iter().find(|(c, _)| *c == cell)
-                {
-                    copied.push((tv.clone(), copy.clone(), *made))
-                }
-                false
-            });
-            ArgFit::Undecided(copied)
-        }
-    })
-}
-
-/// Make each cell of a formal's open copy that nothing decided the
-/// formal's cell it copies ([`TVar::rejoin`]): what an undecided argument
-/// took from the copy in its pre-unification is then the formal's own.
-fn rejoin(copied: &Copied) {
-    for (cell, copy, made) in copied.iter() {
-        copy.rejoin(cell, *made)
-    }
 }
 
 /// `f`'s signature as a call through `site` instantiates it to pass the
@@ -1699,952 +1398,6 @@ pub(crate) fn carried_out(
         });
         reached.map(|(q, _)| (q.clone(), tv))
     })
-}
-
-/// Whether `t` holds a type variable under an abstract type, a type
-/// application or a writable reference, outside any function type: such a position
-/// fixes the variable exactly, so its argument is checked first and the
-/// order a call writes its arguments in decides nothing. A function's
-/// positions stay in order: an earlier argument types a callback's.
-/// `clean` holds the typedef applications found to hold none, each by its
-/// [`AppKey`], so an application the type reaches by many paths is walked
-/// once where [`Unrolling::passes`]. A finding that one does may rest on a
-/// definition met inside its own expansion, which stands for every
-/// variable it holds, so it is not kept.
-fn holds_invariantly(
-    env: &Env,
-    t: &Type,
-    unrolling: &mut Unrolling,
-    clean: &mut AHashMap<AppKey, (Type, Expanded)>,
-) -> bool {
-    ensure_sufficient(|| match t {
-        Type::TVar(tv) => {
-            tv.binding().is_some_and(|b| holds_invariantly(env, &b, unrolling, clean))
-        }
-        Type::Fn(_) => false,
-        Type::Ref(tr)
-            if let Some(key) = tr.probe_def_key(env)
-                && !unrolling.is_open(key) =>
-        {
-            let app = tr.app_key(key);
-            if let Some((_, expanded)) = clean.get(&app)
-                && unrolling.passes(expanded)
-            {
-                return false;
-            }
-            let Some((_, whole)) = t.lookup_ref_probe(env) else {
-                return holds_a_variable(t);
-            };
-            unrolling.enter(key);
-            let r = holds_invariantly(env, &whole, unrolling, clean);
-            let expanded = unrolling.leave(tr);
-            if !r {
-                clean.entry(app).or_insert((t.clone(), expanded));
-            }
-            r
-        }
-        Type::Abstract { .. }
-        | Type::App(..)
-        | Type::Ref(_)
-        | Type::ByRef(Mutability::Mut, _) => holds_a_variable(t),
-        t => {
-            let mut any = false;
-            t.for_each_child(&mut |c| {
-                any = any || holds_invariantly(env, c, unrolling, clean)
-            });
-            any
-        }
-    })
-}
-
-fn holds_a_variable(t: &Type) -> bool {
-    let mut tvars: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-    t.collect_tvars(&mut tvars);
-    !tvars.is_empty()
-}
-
-/// A fresh instance's type variables that widen to an argument wider
-/// than the ones before it: open in the definition `def`, and met only as
-/// data in `inst` and in the bounds of the cells it reaches, so a value
-/// of a wider type is well typed wherever the signature holds one, and a
-/// bound that held what its variable took holds it still. One standing
-/// in a union beside another undecided member is not: which member takes
-/// a type turns on what the cells are, so the first argument that meets
-/// it decides it. A variable only the bounds hold is none of them: it stays
-/// as the first argument that reached it through a bound decided it, and
-/// `bound_held` collects the decided ones, for the refusal that names them
-/// ([`bound_held_note`]).
-fn widenable(
-    env: &Env,
-    def: &FnType,
-    inst: &FnType,
-    mut bound_held: Option<&mut AHashMap<ArcStr, TVar>>,
-) -> LPooled<AHashMap<ArcStr, TVar>> {
-    let mut at_def: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-    def.collect_tvars(&mut at_def);
-    let mut found: LPooled<AHashMap<ArcStr, (TVar, bool)>> = LPooled::take();
-    // CR claude for claude: [bug/medium] This walk does not pass repeats, so
-    // `DataPositions::walk` tells a recursive typedef's own application inside its
-    // expansion as held under a function, and no variable of a recursive data typedef
-    // widens. `type L<'t> = [`Cons('t, L<'t>), `Nil]` with `|y: 'a, x: L<'a>|` refuses
-    // `f(n, f(1, `Nil))` over `n: [i64, null]` at `n`, the first argument written
-    // (`holds_invariantly` hoists the list), with no remedy named; `type W<'t> = {v:
-    // 't}` and `Array<'a>` widen. Add `.passing_repeats()` here as the bounds walk
-    // below has, and pin the cons program in both parameter orders beside a recursive
-    // typedef that holds a function, which must stay refused. probe:
-    // design/review-2026-11-16/repro/x-typecheck-order-recursive-typedef-no-widen.gx
-    // (x-typecheck-order-04)
-    let mut positions = DataPositions::new(env).telling_members();
-    inst.for_each_type(&mut |t| {
-        positions.walk(t, Held::default(), &mut |tv, held| {
-            found.entry(tv.name.clone()).or_insert_with(|| (tv.clone(), true)).1 &=
-                held.data() && !held.member
-        })
-    });
-    let mut bounds = DataPositions::new(env).passing_repeats();
-    let mut bounded: LPooled<Vec<TVar>> =
-        found.values().map(|(tv, _)| tv.clone()).collect();
-    let mut walked: LPooled<AHashSet<usize>> = LPooled::take();
-    while let Some(tv) = bounded.pop() {
-        if !walked.insert(tv.cell_addr()) {
-            continue;
-        }
-        for c in tv.cell_constraints() {
-            bounds.walk(&c, Held::default(), &mut |tv, held| {
-                if let Some((_, data)) = found.get_mut(&tv.name) {
-                    *data &= held.data()
-                } else if let Some(only) = bound_held.as_deref_mut() {
-                    only.insert(tv.name.clone(), tv.clone());
-                }
-                bounded.push(tv.clone())
-            })
-        }
-    }
-    if let Some(only) = bound_held {
-        let mut reached: LPooled<Vec<TVar>> = at_def.values().cloned().collect();
-        walked.clear();
-        while let Some(tv) = reached.pop() {
-            if !walked.insert(tv.cell_addr()) {
-                continue;
-            }
-            for c in tv.cell_constraints() {
-                let mut under: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-                c.collect_tvars(&mut under);
-                for (name, tv) in under.drain() {
-                    if !at_def.contains_key(&name) {
-                        at_def.insert(name, tv.clone());
-                    }
-                    reached.push(tv)
-                }
-            }
-        }
-        only.retain(|name, tv| {
-            tv.is_bound()
-                && !tv.is_rigid()
-                && at_def.get(name).is_some_and(|d| !d.is_bound())
-        })
-    }
-    // CR claude for claude: [bug/critical] This filter takes a variable for a fresh
-    // instance's when the definition's cell is unbound, but `FnType::instantiate`
-    // shares every cell it does not copy: the cell of a binding the function writes
-    // (`let st = never(); let h = |x: 'a, y: 'a| -> 'a { st <- y; st }`) or of a
-    // one-instance function is the same cell in `def` and `inst`. `Widening::cells` is
-    // computed before the first argument is checked, so in `h(g(h(1, 1)), n)` the inner
-    // call binds the shared cell to i64, `g(v: i64)` accepts it, and `n` then widens it
-    // to [i64, null]: the check passes and the run panics in `fusion::kernel` ("runtime
-    // Null does not match the compiled Scalar(I64) slot"), or with --no-fusion adds to
-    // a null. Keep a variable only where the instance's cell is a copy
-    // (`!d.same_cell(tv)`), and pin the program as refused at `n`. probe:
-    // design/review-2026-11-16/repro/x-typecheck-order-widen-shared-cell.gx
-    // (x-typecheck-order-01)
-    found
-        .drain()
-        .filter(|(name, (tv, data))| {
-            *data && !tv.is_rigid() && at_def.get(name).is_some_and(|d| !d.is_bound())
-        })
-        .map(|(name, (tv, _))| (name, tv))
-        .collect()
-}
-
-/// How a fresh instance's arguments settle its [`widenable`] variables.
-/// Each argument meets its formal where the call's order puts it, as the
-/// arguments before it left the formal, and the omitted defaults after
-/// the written arguments: nothing waits. A decided one that does not fit
-/// is probed once against the formal with those variables open, and
-/// widens the variables it holds wider; one neither wider nor narrower is
-/// the mismatch, and one two undecided members of the formal could take is
-/// refused. An undecided one takes the formal as it stands, and the
-/// variables it met widen no more ([`Self::pin`]).
-struct Widening {
-    fresh: bool,
-    cells: Option<LPooled<AHashMap<ArcStr, TVar>>>,
-    /// The variables an undecided argument met ([`Self::pin`]).
-    pinned: LPooled<AHashSet<ArcStr>>,
-}
-
-impl Widening {
-    fn new(fresh: bool) -> Self {
-        Self { fresh, cells: None, pinned: LPooled::take() }
-    }
-
-    /// This widening as it stands over `copy`, a copy of the signature it
-    /// widened through `known`: what the copy takes widens nothing of the
-    /// original.
-    fn fork(&self, known: &AHashMap<usize, TVar>) -> Self {
-        let cells = self.cells.as_ref().map(|cells| {
-            cells
-                .iter()
-                .map(|(name, tv)| {
-                    let own = known.get(&tv.cell_addr()).unwrap_or(tv);
-                    (name.clone(), own.clone())
-                })
-                .collect()
-        });
-        Self { fresh: self.fresh, cells, pinned: self.pinned.iter().cloned().collect() }
-    }
-
-    fn cells<'a>(
-        cells: &'a mut Option<LPooled<AHashMap<ArcStr, TVar>>>,
-        env: &Env,
-        def: &Type,
-        inst: &FnType,
-    ) -> &'a AHashMap<ArcStr, TVar> {
-        cells.get_or_insert_with(|| {
-            def.with_deref(|t| match t {
-                Some(Type::Fn(def)) => widenable(env, def, inst, None),
-                _ => LPooled::take(),
-            })
-        })
-    }
-
-    /// A copy of `formal` with the variables `names` unbound, and the
-    /// copy's variables by name.
-    fn open<'a>(
-        formal: &Type,
-        names: impl Iterator<Item = &'a ArcStr>,
-    ) -> (Type, LPooled<AHashMap<ArcStr, TVar>>) {
-        let open = formal.reset_tvars();
-        let mut opened: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-        open.collect_tvars(&mut opened);
-        for name in names {
-            if let Some(tv) = opened.get(name) {
-                tv.unbind()
-            }
-        }
-        (open, opened)
-    }
-
-    /// What `formal` stands for: a cell that is not widenable is what it
-    /// is bound to, so an inferred parameter that took a type holding
-    /// widenable variables opens as a written one does.
-    fn standing(cells: &AHashMap<ArcStr, TVar>, formal: &Type) -> Type {
-        let mut t = formal.clone();
-        while let Type::TVar(tv) = &t
-            && !cells.contains_key(&tv.name)
-            && let Some(b) = tv.binding()
-        {
-            t = b
-        }
-        t
-    }
-
-    /// The widenable variables `formal` holds.
-    fn held(
-        &mut self,
-        env: &Env,
-        def: &Type,
-        inst: &FnType,
-        formal: &Type,
-    ) -> LPooled<AHashMap<ArcStr, TVar>> {
-        let mut held: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-        if !self.fresh {
-            return held;
-        }
-        let cells = Self::cells(&mut self.cells, env, def, inst);
-        Self::standing(cells, formal).collect_tvars(&mut held);
-        held.retain(|name, _| cells.contains_key(name));
-        held
-    }
-
-    /// The formal an argument is pre-unified with where `formal` holds a
-    /// widenable variable, and its cells: a copy with those variables open,
-    /// above no lower bound, and every other cell the formal's own, so the
-    /// pre-unification refuses no argument wider than the ones before it,
-    /// which [`Self::join`] then widens, and none narrower than what a
-    /// bound's holder put the variable above. The copy is made only where
-    /// `copy` says the argument may pre-unify with it.
-    fn opening(
-        &mut self,
-        env: &Env,
-        def: &Type,
-        inst: &FnType,
-        formal: &Type,
-        copy: bool,
-    ) -> Opening {
-        if !self.fresh {
-            return Opening::Closed;
-        }
-        let cells = Self::cells(&mut self.cells, env, def, inst);
-        let formal = &Self::standing(cells, formal);
-        let mut all: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-        formal.collect_tvars(&mut all);
-        if !all.keys().any(|name| cells.contains_key(name)) {
-            return Opening::Closed;
-        }
-        if !copy {
-            return Opening::Open;
-        }
-        let kept: LPooled<AHashMap<ArcStr, Type>> = all
-            .iter()
-            .filter(|(name, _)| !cells.contains_key(*name))
-            .map(|(name, tv)| (name.clone(), Type::TVar(tv.clone())))
-            .collect();
-        let mut copies: Copies = LPooled::take();
-        let open = formal.replace_tvars_copied(&kept, &mut copies);
-        let widened = |name: &ArcStr| cells.contains_key(name) && all.contains_key(name);
-        for tv in copies.values().filter(|tv| widened(&tv.name)) {
-            tv.unbind();
-            tv.drop_lower()
-        }
-        Opening::Copy(open, copies)
-    }
-
-    /// The widenable variables `formal` reaches widen no more: an
-    /// undecided argument met it, so a cell outside the call may now be
-    /// one of them, or be bound to a type holding one, and whatever read
-    /// that cell since read it as the variable stood.
-    fn pin(&mut self, formal: &Type) {
-        if let Some(cells) = self.cells.as_mut() {
-            Reach::default().go(formal, &mut |_| false, &mut |tv| {
-                if cells.remove(&tv.name).is_some() {
-                    self.pinned.insert(tv.name.clone());
-                }
-                false
-            });
-        }
-    }
-
-    /// What a mismatch at `formal` adds where an undecided argument
-    /// pinned a variable it holds.
-    fn pinned_note(&self, formal: &Type) -> Option<CompactString> {
-        let mut held: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-        formal.collect_tvars(&mut held);
-        let mut names: SmallVec<[&ArcStr; 2]> =
-            held.keys().filter(|name| self.pinned.contains(*name)).collect();
-        names.sort();
-        let (first, rest) = names.split_first()?;
-        let mut note =
-            format_compact!("an undecided argument before this one met '{first}");
-        for name in rest {
-            write!(note, ", '{name}").unwrap();
-        }
-        note.push_str(
-            ", which the arguments after it can no longer widen: pass the widest \
-             argument first, or annotate the undecided one",
-        );
-        Some(note)
-    }
-
-    /// A decided argument or omitted default of type `typ` meets `formal`:
-    /// it fits as the formal stands, or widens the variables it holds
-    /// wider; else the mismatch error, or the refusal of a choice between
-    /// undecided members, naming the parameter to write.
-    fn join(
-        &mut self,
-        env: &Env,
-        def: &Type,
-        inst: &FnType,
-        formal: &Type,
-        typ: &Type,
-    ) -> Result<()> {
-        let fits = match formal.contains(env, typ) {
-            Ok(false) => self.widen(env, def, inst, formal, typ),
-            fits => fits,
-        };
-        let res = match fits {
-            Ok(true) => Ok(()),
-            Ok(false) => formal.check_contains(env, typ),
-            Err(e) => Err(ambiguous_parameter(e)),
-        };
-        res.map_err(|e| {
-            if e.is::<UndecidedTaker>() {
-                return e;
-            }
-            let held = bound_held_note(env, def, inst, formal, typ);
-            // CR claude for claude: [bug/medium] This adds the 'undecided argument
-            // before this one' note to every refusal at a formal holding a pinned
-            // variable, bound failures included. `map::insert({}, &x, 1)` is refused
-            // for ordering a reference and then told to pass the widest argument first
-            // or annotate `{}`. Neither can make it pass: a Map<&i64, i64> annotation
-            // is refused too, and the key cannot come before the map. A function key
-            // gets the same text. Attach the note only where the refusal is a
-            // containment that widening would have admitted, never to a bound (Ordered,
-            // Number...) failure. lang::byref::byref_map_insert_refused passes with the
-            // misleading text. probe:
-            // design/review-2026-11-16/repro/tests-lang-rest-d-pinned-note-on-bound.gx
-            // (tests-lang-rest-d-03)
-            match (held, self.pinned_note(formal)) {
-                (Some(note), _) | (None, Some(note)) => anyhow!("{e}: {note}"),
-                (None, None) => e,
-            }
-        })
-    }
-
-    /// An argument or omitted default of type `typ` holding an undecided
-    /// cell meets `formal` as it stands, and pins what it met; `note`
-    /// says what a refusal asks to annotate.
-    fn take(
-        &mut self,
-        env: &Env,
-        def: &Type,
-        inst: &FnType,
-        formal: &Type,
-        typ: &Type,
-        note: impl FnOnce() -> Option<CompactString>,
-    ) -> Result<()> {
-        let held = self.held(env, def, inst, formal);
-        let note = match held.values().any(|tv| tv.is_bound())
-            && annotation_may_fit(env, formal, &held, typ)?
-        {
-            true => note(),
-            false => None,
-        };
-        let res = formal.check_contains(env, typ).map_err(ambiguous_parameter);
-        self.pin(formal);
-        res.map_err(|e| match note {
-            Some(note) if !e.is::<UndecidedTaker>() => anyhow!("{e}: {note}"),
-            Some(_) | None => e,
-        })
-    }
-
-    /// The argument `n` met `formal`: join or take it, or the error.
-    fn fit<R: Rt>(
-        &mut self,
-        ctx: &CompileCtx<R>,
-        def: &Type,
-        inst: &FnType,
-        formal: &Type,
-        n: &Node<R>,
-        fit: ArgFit,
-    ) -> Result<()> {
-        let env = &ctx.env;
-        let res = match fit {
-            ArgFit::Decided => self.join(env, def, inst, formal, n.typ()),
-            ArgFit::Undecided(copied) => {
-                rejoin(&copied);
-                let note = || Some(undecided_note(ctx, n, false));
-                self.take(env, def, inst, formal, n.typ(), note)
-            }
-        };
-        match res {
-            Err(e) if e.is::<UndecidedTaker>() => Err(undecided_taker(ctx, n, e)),
-            res => wrap!(n, res),
-        }
-    }
-
-    /// An omitted default of type `typ` meets `formal` as a written
-    /// argument does, after the written ones; `undecided` names the
-    /// bindings a refusal of an undecided one asks to annotate.
-    fn join_default(
-        &mut self,
-        env: &Env,
-        def: &Type,
-        inst: &FnType,
-        formal: &Type,
-        typ: &Type,
-        undecided: Option<CompactString>,
-    ) -> Result<()> {
-        if typ.has_free_in_data() && !self.held(env, def, inst, formal).is_empty() {
-            self.take(env, def, inst, formal, typ, || undecided)
-        } else {
-            self.join(env, def, inst, formal, typ)
-        }
-    }
-
-    /// Settle each of `cells` that `formal` holds undecided above a lower
-    /// bound, at the union of its lower bounds: it binds to no argument
-    /// that does not hold them, and whatever it becomes holds them, so an
-    /// argument inside them fits and a wider one widens it. A settle puts
-    /// the variables its variable's bounds hold above what it took, so
-    /// each settles after the variables whose bounds reach it.
-    fn settle_bounded(env: &Env, cells: &AHashMap<ArcStr, TVar>, formal: &Type) {
-        let mut held: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-        formal.collect_tvars(&mut held);
-        let mut held: LPooled<Vec<TVar>> = held
-            .drain()
-            .filter(|(name, _)| cells.contains_key(name))
-            .map(|(_, tv)| tv)
-            .collect();
-        settle_order(&mut held);
-        for tv in held.iter() {
-            if !tv.is_bound() && !tv.cell_lower().is_empty() {
-                let _ = tv.settle_witness(env);
-            }
-        }
-    }
-
-    /// An argument of type `typ` did not fit `formal`: widen the variables
-    /// it holds wider and check it, or the mismatch error. False when it
-    /// is neither wider nor narrower than a variable. A widening that
-    /// leaves a decided cell below one of its lower bounds
-    /// ([`Self::below_bounds`]) is undone, and the mismatch names both. A
-    /// widened variable's conjuncts commit over its wider type
-    /// ([`TVar::commit_conjuncts`]), and one that does not hold it undoes
-    /// the widening too.
-    // CR claude for eric: [bug/medium] [bug/medium] A variable held at two places of
-    // one decided argument does not widen the way it does across two arguments. `widen`
-    // probes the opened formal with `open.contains(typ)`, which binds the open copy to
-    // the first part and then fails at the second, so it never sees the wider type.
-    // Over `let first = |p: ('a, 'a)| p.0` and `x: [i64, null]`, `first((1, x))` is
-    // refused with "('a: i64, 'a: i64) does not contain (i64, [i64, null])", while
-    // `first((x, 1))` runs and so does `|a: 'a, b: 'a|` called with `(1, x)`. A struct
-    // at `{a: 'a, b: 'a}`, `[(1, x)]` at `Array<('a, 'a)>` and a let-bound tuple are
-    // refused the same way. design/tvar_constraints.md says two decided arguments
-    // settle a variable alike in either order and says nothing about the parts of one
-    // argument ("two parts of one position" is its rule for a function held at a
-    // function type). No test pins either verdict, and the refusal names no fix.
-    // Decide: widen within one argument as across arguments, or keep
-    // first-part-decides, document and pin it, and have the refusal say to write the
-    // wider part first or to annotate. probe:
-    // design/review-2026-11-16/repro/tests-types-d-one-argument-no-widening.gx
-    // (tests-types-d-02)
-    fn widen(
-        &mut self,
-        env: &Env,
-        def: &Type,
-        inst: &FnType,
-        formal: &Type,
-        typ: &Type,
-    ) -> Result<bool> {
-        let check = || formal.check_contains(env, typ).map(|()| true);
-        // CR claude for claude: [bug/medium] `has_unbound` counts rigid cells and cells
-        // inside function types, which `typecheck_arg` did not count when it called
-        // this argument decided (`has_free_in_data`). So no widening happens for an
-        // argument that mentions a declared variable of the enclosing definition or
-        // holds a lambda literal (its open `throws`): `|p: 'p, n: [i64, null]|
-        // array::push([(1, p)], (n, p))` is refused with a bare mismatch, while `p:
-        // string` and the wide argument first both pass. Test `typ.has_free_in_data()`
-        // here (the closing `check()` binds the argument's function cells for real),
-        // together with relating the old binding into the new one after the rebind
-        // below. probe:
-        // design/review-2026-11-16/repro/x-typecheck-order-widen-refused-beside-open-cell.gx
-        // (x-typecheck-order-03)
-        if !self.fresh || typ.has_unbound() {
-            return check();
-        }
-        let cells = Self::cells(&mut self.cells, env, def, inst);
-        if cells.is_empty() {
-            return check();
-        }
-        Self::settle_bounded(env, cells, formal);
-        let (open, opened) = Self::open(formal, cells.keys());
-        if !open.contains(env, typ)? {
-            return match open.discernible_refusal(env, typ) {
-                Some(e) => Err(e),
-                None => check(),
-            };
-        }
-        // every variable the argument holds wider than it stands widens; one
-        // that is neither wider nor narrower defers the argument until a
-        // later one widens it, whatever the order
-        // CR claude for claude: [readability/low] The comment above this line says an
-        // argument neither wider nor narrower than a variable is deferred until a later
-        // one widens it, whatever the order. Nothing is deferred: `incomparable`
-        // returns false below and `join` reports the mismatch where the argument is
-        // written, which is the ruled behaviour and what this function's doc comment
-        // says. Delete the comment. Found by reading; not run. (x-typecheck-order-06)
-        // CR claude for claude: [doc-drift/low] The comment above says an argument
-        // neither wider nor narrower than a variable is deferred until a later one
-        // widens it, whatever the order. Nothing defers: `incomparable` makes `widen`
-        // answer false and `join` reports the mismatch at this argument, as
-        // design/tvar_constraints.md rules (`f(`A, `B, ab)` over three `'a` is refused
-        // at `` `B ``). Say that it is the mismatch here. probe: run by hand, no repro
-        // saved. Also reported as (tests-types-d-07). (c-callsite-09)
-        let probe = ContainsFlags::RigidCheck.into();
-        let mut wider: LPooled<Vec<(TVar, Type, Type)>> = LPooled::take();
-        let mut incomparable = false;
-        for (name, cell) in cells.iter() {
-            let (Some(new), Some(old)) =
-                (opened.get(name).and_then(|tv| tv.binding()), cell.binding())
-            else {
-                continue;
-            };
-            if old.contains_with_flags(probe, env, &new)? {
-                continue;
-            }
-            if new.contains_with_flags(probe, env, &old)? {
-                wider.push((cell.clone(), old, new));
-            } else {
-                incomparable = true;
-            }
-        }
-        if !wider.is_empty() {
-            let stood = Self::below_bounds(env, inst)?;
-            // CR claude for claude: [bug/high] The variable is rebound to the wider
-            // argument's type after two probes, and the old binding is dropped
-            // unrelated to it. An earlier argument that held an open cell inside a
-            // function type (decided by `has_free_in_data`: `(1, h)` over `let h = |q|
-            // { st <- q; st }`) is then tied to nothing: `array::push([(1, h)], (n,
-            // g))` with `g: fn(q: i64) -> i64`, then `st <- "s"`, passes the check and
-            // the build refuses the instance; over a user function the run-time bind
-            // fails (ELAB-AUDIT instance-signature). Written `(h, 1)` and `(g, n)` the
-            // failed `formal.contains` in `join` happens to bind the cell first and the
-            // check refuses correctly. Relate the old binding into the new one for real
-            // after the bind (`new.check_contains(env, &old)`), undoing the widening
-            // where that fails, and pin both element orders. probe:
-            // design/review-2026-11-16/repro/x-typecheck-order-widen-drops-open-fn-cells.gx
-            // (and ..-build.gx) (x-typecheck-order-02)
-            for (cell, _, new) in wider.iter() {
-                cell.bind(new.clone())
-            }
-            let mut left = Self::below_bounds(env, inst)?;
-            left.retain(|(tv, i, _)| {
-                !stood.iter().any(|(s, j, _)| s.same_cell(tv) && i == j)
-            });
-            if let Some((_, _, note)) = left.iter().min_by(|a, b| a.2.cmp(&b.2)) {
-                for (cell, old, _) in wider.drain(..) {
-                    cell.bind(old)
-                }
-                let Err(e) = formal.check_contains(env, typ) else { return Ok(true) };
-                bail!("{e}: {note}")
-            }
-            wider.sort_by(|a, b| a.0.name.cmp(&b.0.name));
-            for i in 0..wider.len() {
-                if !wider[i].0.commit_conjuncts(env, &wider[i].2)? {
-                    for (cell, old, _) in wider.drain(..) {
-                        cell.bind(old)
-                    }
-                    return check();
-                }
-            }
-        }
-        // CR claude for claude: [bug/low] An argument neither wider nor narrower than
-        // what the variable holds ends as `check_contains`'s bare mismatch:
-        // `array::push([`Red, `Green], `Blue)` says only "'a: [`Green, `Red] does not
-        // contain `Blue", while the same call with a wider second argument passes.
-        // Every other refusal of `Widening` names what to annotate; this one should say
-        // that no union is made of two arguments and that the earlier argument takes a
-        // type holding both (`let xs: Array<[`Red, `Green, `Blue]> = ..` passes). Add
-        // the note in `join` as `pinned_note` is added, and pin it. probe:
-        // design/review-2026-11-16/repro/x-typecheck-order-incomparable-args-no-remedy.gx
-        // (x-typecheck-order-05)
-        if incomparable {
-            return Ok(false);
-        }
-        check()
-    }
-
-    /// Each decided cell `inst` reaches that does not hold one of its lower
-    /// bounds, with the bound's index and what a refusal says of it. A
-    /// widening adds one where a variable the bound holds widened after the
-    /// cell was decided.
-    fn below_bounds(
-        env: &Env,
-        inst: &FnType,
-    ) -> Result<LPooled<Vec<(TVar, usize, CompactString)>>> {
-        let mut reached: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-        inst.reached_cells(&mut reached);
-        let probe = ContainsFlags::RigidCheck.into();
-        let mut below: LPooled<Vec<(TVar, usize, CompactString)>> = LPooled::take();
-        for tv in reached.values() {
-            let Some(held) = tv.binding() else { continue };
-            for (i, l) in tv.cell_lower().iter().enumerate() {
-                if held.contains_with_flags(probe, env, l)? {
-                    continue;
-                }
-                let note = crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
-                    format_compact!(
-                        "the function builds a value of type {l} into a type another \
-                         argument of this call decided as {held}; annotate that \
-                         argument so its type holds both (bind it to a `let` with its \
-                         type written)"
-                    )
-                });
-                below.push((tv.clone(), i, note))
-            }
-        }
-        Ok(below)
-    }
-}
-
-/// What a decided argument of type `typ` refused at `formal` asks to
-/// annotate where it is wider than a variable only the bounds of the
-/// parameters hold: an argument before this one decided that variable, and
-/// the bounds never widen it. None when no such variable would take `typ`
-/// wider than it stands.
-fn bound_held_note(
-    env: &Env,
-    def: &Type,
-    inst: &FnType,
-    formal: &Type,
-    typ: &Type,
-) -> Option<CompactString> {
-    if typ.has_unbound() {
-        return None;
-    }
-    let mut held: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-    def.with_deref(|t| {
-        if let Some(Type::Fn(def)) = t {
-            widenable(env, def, inst, Some(&mut held));
-        }
-    });
-    if held.is_empty() {
-        return None;
-    }
-    let mut copies: Copies = LPooled::take();
-    let open = formal.replace_tvars_copied(&AHashMap::new(), &mut copies);
-    let mut opened: SmallVec<[(&ArcStr, &TVar, TVar); 2]> = SmallVec::new();
-    for (name, tv) in held.iter() {
-        if let Some(copy) = copies.get(&tv.cell_addr()) {
-            copy.unbind();
-            copy.drop_lower();
-            opened.push((name, tv, copy.clone()))
-        }
-    }
-    if opened.is_empty() || !open.contains(env, typ).ok()? {
-        return None;
-    }
-    let probe = ContainsFlags::RigidCheck.into();
-    let mut wider: SmallVec<[(&ArcStr, &TVar); 2]> = SmallVec::new();
-    for (name, cell, copy) in opened.iter() {
-        let (Some(old), Some(new)) = (cell.binding(), copy.binding()) else { continue };
-        if !old.contains_with_flags(probe, env, &new).ok()?
-            && new.contains_with_flags(probe, env, &old).ok()?
-        {
-            wider.push((name, cell))
-        }
-    }
-    let mut inner: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-    for (_, cell) in wider.iter() {
-        for c in cell.cell_constraints() {
-            c.collect_tvars(&mut inner)
-        }
-    }
-    let mut wider: SmallVec<[&ArcStr; 2]> = wider
-        .iter()
-        .map(|(name, _)| *name)
-        .filter(|name| !inner.contains_key(*name))
-        .collect();
-    wider.sort();
-    let (first, rest) = wider.split_first()?;
-    let mut note = format_compact!("'{first}");
-    for name in rest {
-        write!(note, ", '{name}").unwrap();
-    }
-    note.push_str(match rest.is_empty() {
-        true => " is held only by the bounds of the parameters, and an argument before this one decided it narrower than this argument holds",
-        false => " are held only by the bounds of the parameters, and an argument before this one decided them narrower than this argument holds",
-    });
-    note.push_str("; annotate that argument with a type that holds both (bind it to a `let` with its type written)");
-    Some(note)
-}
-
-/// Whether some decision of the undecided cells the type `arg` holds outside
-/// function types could fit it to `formal`, whose widenable variables are
-/// `held`: on copies, it fits the formal with them fresh, and what it gives
-/// each holds or is held by what the call gave it, which an argument
-/// decided so would widen.
-fn annotation_may_fit(
-    env: &Env,
-    formal: &Type,
-    held: &AHashMap<ArcStr, TVar>,
-    arg: &Type,
-) -> Result<bool> {
-    if !arg.has_free_in_data() {
-        return Ok(false);
-    }
-    let fresh: AHashMap<ArcStr, TVar> =
-        held.keys().map(|name| (name.clone(), TVar::empty_named(name.clone()))).collect();
-    let open: AHashMap<ArcStr, Type> =
-        fresh.iter().map(|(name, tv)| (name.clone(), Type::TVar(tv.clone()))).collect();
-    let open = formal.replace_tvars(&open);
-    let arg = arg.reset_tvars();
-    if !open.contains_ordered(env, &arg)? {
-        return Ok(false);
-    }
-    for (name, tv) in held.iter() {
-        let (Some(given), Some(new)) =
-            (tv.binding(), fresh.get(name).and_then(|c| c.binding()))
-        else {
-            continue;
-        };
-        let given = given.reset_tvars();
-        if !new.contains_ordered(env, &given)? && !given.contains_ordered(env, &new)? {
-            return Ok(false);
-        }
-    }
-    Ok(true)
-}
-
-/// What a refusal of an argument of type `arg`, holding an undecided cell,
-/// at a formal the call did not open asks to annotate: where an earlier
-/// argument of this call decided a written variable `formal` holds outside
-/// function types to a type a wider decision could make hold `arg`
-/// ([`annotation_may_fit`]), the argument that decided it, since annotating
-/// `arg` widens nothing. `prebound` holds the cells bound before the call's
-/// arguments were checked.
-fn decided_elsewhere(
-    env: &Env,
-    formal: &Type,
-    prebound: &AHashSet<usize>,
-    arg: &Type,
-) -> Result<Option<CompactString>> {
-    let mut decided: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-    formal.collect_tvars(&mut decided);
-    decided.retain(|_, tv| {
-        tv.is_bound() && !tv.generated() && !prebound.contains(&tv.cell_addr())
-    });
-    if decided.is_empty() {
-        return Ok(None);
-    }
-    let mut outside: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-    formal.variables_outside_functions(env, &mut outside);
-    decided.retain(|_, tv| outside.contains_key(&tv.cell_addr()));
-    if decided.is_empty() || !annotation_may_fit(env, formal, &decided, arg)? {
-        return Ok(None);
-    }
-    let mut names: SmallVec<[&ArcStr; 2]> = decided.keys().collect();
-    names.sort();
-    let mut note = CompactString::const_new(
-        "this argument is undecided at this call, and another argument decided ",
-    );
-    for (i, name) in names.iter().enumerate() {
-        let sep = if i == 0 { "" } else { ", " };
-        write!(note, "{sep}'{name}").unwrap();
-    }
-    note.push_str(
-        " before it; annotate that argument as wide as this one (bind it to a `let` \
-         with its type written)",
-    );
-    Ok(Some(note))
-}
-
-/// What to annotate where the argument `n` is undecided at its call: the
-/// bindings it reads whose types are undecided, else the argument.
-fn undecided_note<R: Rt>(
-    ctx: &CompileCtx<R>,
-    n: &Node<R>,
-    throws_only: bool,
-) -> CompactString {
-    undecided_binds(ctx, n, "at this call").unwrap_or(CompactString::const_new(
-        match throws_only {
-            true => {
-                "what this argument throws is undecided at this call; write the \
-                 lambda's throws (`-> T throws E`), or bind it to a `let` with its \
-                 type written"
-            }
-            false => {
-                "this argument is undecided at this call; annotate it (bind it to a \
-                 `let` with its type written)"
-            }
-        },
-    ))
-}
-
-/// A refusal of the argument `n` for a type nothing has decided at a
-/// union two decided members of which could take it ([`UndecidedTaker`])
-/// names what to annotate, at the argument: the argument where the type
-/// is its own, the parameters that decide the formal's where the union is
-/// the argument's, and the argument's union where the argument is decided
-/// and the type is one the function builds into it.
-fn undecided_taker<R: Rt>(
-    ctx: &CompileCtx<R>,
-    n: &Node<R>,
-    e: anyhow::Error,
-) -> anyhow::Error {
-    match e.downcast_ref::<UndecidedTaker>() {
-        Some(u) if u.at() == TakerUnion::Value => wrap!(
-            n,
-            anyhow!(
-                "{}: a call's arguments are met in the order of the parameters, so \
-                 declare the parameters that decide it before this one, or give this \
-                 argument's own parameter one member's type",
-                u.fact()
-            )
-        ),
-        Some(u) if !n.typ().has_free() => wrap!(
-            n,
-            anyhow!(
-                "{}: the function builds that type into this argument's, which the \
-                 arguments have yet to decide; give this argument one member's type",
-                u.fact()
-            )
-        ),
-        Some(u) => {
-            wrap!(n, anyhow!("{}: {}", u.fact(), undecided_note(ctx, n, u.throws_only())))
-        }
-        None => e,
-    }
-}
-
-/// A refusal `e` of the argument `n`, whose pre-unification with its formal
-/// bound the undecided cells `early` to types that hold undecided cells
-/// themselves, names the bindings that stand on them and that the
-/// expression it arose in reads: the argument's own check meets them so
-/// decided, and annotating them decides them as written.
-fn decided_early<R: Rt>(
-    ctx: &CompileCtx<R>,
-    n: &Node<R>,
-    early: &[TVar],
-    e: anyhow::Error,
-) -> anyhow::Error {
-    let mut refs = Refs::without_callees();
-    n.refs(&mut refs);
-    let mut binds: SmallVec<[_; 2]> = SmallVec::new();
-    refs.with_external_refs(|id| {
-        if let Some(b) = ctx.env.by_id.get(&id)
-            && !crate::is_lowered(&b.name)
-            && !b.typ.with_deref(|t| matches!(t, Some(Type::Fn(_))))
-            && early.iter().any(|tv| {
-                let mut hit = false;
-                Reach::default().go(&b.typ, &mut |_| false, &mut |c| {
-                    hit = hit || c.cell_addr() == tv.cell_addr();
-                    hit
-                });
-                hit
-            })
-        {
-            binds.push(b)
-        }
-    });
-    // CR claude for claude: [bug/low] This filter compares names, not bindings, so a
-    // refusal that reads a shadowing `u` keeps the outer `u`. In `let g = |u| f((u, {
-    // let u = "a"; 1 + u }))` the note says the parameter `u` was decided early and to
-    // annotate it, but the refusal is the inner string `u` in `1 + u`, and `|u: i64|`
-    // is refused the same way. Retain a binding only where the refusing expression
-    // reads that bind id (Refs over the site's node, or each Ref resolved in its
-    // scope). probe:
-    // design/review-2026-11-16/repro/x-diagnostics-decided-early-shadow.gx
-    // (x-diagnostics-04)
-    if let Some(site) = e.downcast_ref::<ErrorSite>() {
-        binds.retain(|b| {
-            site.expr().fold(false, &mut |read, x| {
-                read || matches!(&x.kind, ExprKind::Ref { name }
-                    if Path::basename(&name.0) == Some(b.name.as_str()))
-            })
-        })
-    }
-    binds.sort_by_key(|b| b.id);
-    if binds.is_empty() {
-        return e;
-    }
-    let mut names = CompactString::new("");
-    for (i, b) in binds.iter().enumerate() {
-        let sep = if i == 0 { "" } else { ", " };
-        write!(names, "{sep}`{}` ({})", b.name, BoundAt(b, None)).unwrap();
-    }
-    let (verb, annotate) = match binds.len() {
-        1 => ("was", format_compact!("annotate `{}`", binds[0].name)),
-        _ => ("were", CompactString::const_new("annotate them")),
-    };
-    Told::over(
-        e,
-        &format_compact!(
-            "{names} {verb} decided by the type of the parameter this argument is \
-             passed to, before the argument was checked, as a type with an undecided \
-             part; {annotate} with the type the argument needs"
-        ),
-    )
 }
 
 /// The bindings `n` reads whose types are undecided `at` the place that
@@ -3303,37 +2056,6 @@ impl<R: Rt> CallSite<R> {
         node
     }
 
-    /// A function passed where a fn type is expected is called through it:
-    /// each default of its definition that such a call may omit, the
-    /// formal hiding the label or making it optional, is judged here, at
-    /// the parameter as the formal instantiates it.
-    fn check_value_defaults(
-        &self,
-        ctx: &mut CompileCtx<R>,
-        ftype: &FnType,
-    ) -> Result<()> {
-        let mut flags = self.flags;
-        flags.remove(CFlag::WarnUnhandled);
-        for (farg, key) in ftype.args.iter().zip(ArgKey::of_formals(&ftype.args)) {
-            let Some(n) = self.args.get(&key).and_then(|a| a.node.as_ref()) else {
-                continue;
-            };
-            wrap!(
-                n,
-                check_hidden_defaults(
-                    ctx,
-                    flags,
-                    &self.scope,
-                    self.top_id,
-                    &farg.typ,
-                    n.typ(),
-                    Narrowing::Site
-                )
-            )?;
-        }
-        Ok(())
-    }
-
     /// What the call raises joins the enclosing catch's type; with no
     /// catch, `check` judges it an unhandled error.
     fn raise_throws(
@@ -3364,231 +2086,6 @@ impl<R: Rt> CallSite<R> {
                 &self.spec,
                 format_args!("error {t} raised from function call {}", self.fnode.spec()),
             ),
-        }
-    }
-
-    /// Check every default this site omits, for each definition the
-    /// callee may be. False when one is not known here: its default
-    /// narrows the site's cells at its bind. `carriers` collects the
-    /// labels whose default can carry a value of a cell its type holds.
-    /// Each default joins `widening` as a written argument does.
-    fn check_omitted_defaults(
-        &self,
-        ctx: &mut CompileCtx<R>,
-        ftype: &FnType,
-        carriers: &mut SmallVec<[ArcStr; 2]>,
-        widening: &mut Widening,
-    ) -> Result<bool> {
-        let omitted = |name: &ArcStr| {
-            self.args
-                .get(&ArgKey::Named(name.clone()))
-                .is_some_and(|a| a.stage.is_default())
-        };
-        if !ftype.args.iter().any(|a| a.label().is_some_and(omitted)) {
-            return Ok(true);
-        }
-        let mut flags = self.flags;
-        flags.remove(CFlag::WarnUnhandled);
-        // the definitions the callee may be: by its type's lambda ids, else
-        // (a restored interface `val`'s type carries none) by the binding
-        // the function names
-        let mut defs = written_defs(ctx, ftype);
-        let from_value = !defs.is_empty();
-        if !from_value {
-            let bind = match self.fnode.view() {
-                NodeView::Ref(r) => Some(r.id),
-                _ => None,
-            };
-            let mut binds = self.decided_methods(ctx, ftype);
-            if binds.is_empty() {
-                binds.extend(bind);
-            }
-            defs.extend(
-                binds.iter().filter_map(|b| ctx.bind_to_lambda.get(b)).cloned().map(Some),
-            );
-            sort_written::<R>(&mut defs);
-        }
-        // the impls a trait call dispatches to are not one value an annotation holds
-        let shared: &[Option<Value>] = if from_value { &defs } else { &[] };
-        let callee = self.fnode.typ();
-        let join_in = |widening: &mut Widening,
-                       sig: &FnType,
-                       env: &Env,
-                       name: &ArcStr,
-                       formal: &Type,
-                       typ: &Type,
-                       undecided| {
-            widening.join_default(env, callee, sig, formal, typ, undecided).map_err(|e| {
-                match met_defaults::<R>(shared, name) {
-                    Some(shared) => Told::over(e, &shared),
-                    None => e,
-                }
-            })
-        };
-        let per_member = !from_value && defs.len() > 1;
-        let mut known = !defs.is_empty();
-        for def in defs.iter() {
-            let Some(f) = def.as_ref().and_then(|v| v.downcast_ref::<LambdaDef<R>>())
-            else {
-                known = false;
-                continue;
-            };
-            let (copy, mut forked);
-            let (sig, widening) = match per_member {
-                true => {
-                    let mut copies = LPooled::take();
-                    copy = ftype.reset_tvars_with(&mut copies);
-                    forked = widening.fork(&copies);
-                    (&copy, &mut forked)
-                }
-                false => (ftype, &mut *widening),
-            };
-            for (farg, argspec) in f.typ.args.iter().zip(f.argspec.iter()) {
-                let Some(name) = farg.label().filter(|n| omitted(n)) else { continue };
-                let Some(expr) = argspec.kind.default() else {
-                    known = false;
-                    continue;
-                };
-                // a default that reaches its own label's check again (`let
-                // rec f = |#a = f(1), b| b`) is not known here: the run-time
-                // bind narrows it
-                if ctx.default_in_check(f.id, name) {
-                    known = false;
-                    continue;
-                }
-                let mut join =
-                    |env: &Env, name: &ArcStr, formal: &Type, typ: &Type, undecided| {
-                        join_in(widening, sig, env, name, formal, typ, undecided)
-                    };
-                let (probe, covered) = RaiseProbe::open(ctx, &self.scope);
-                let node = self.checked_default(
-                    ctx,
-                    flags,
-                    &covered,
-                    f,
-                    name,
-                    expr,
-                    &mut Refs::default(),
-                    Some(sig),
-                    Judge::Check(Narrowing::Site),
-                    Some(&mut join),
-                );
-                let raised = probe.raised(ctx);
-                probe.close(ctx);
-                let node = node.map_err(|e| met_default_note::<R>(e, shared, name))?;
-                if let Err(e) = self.join_default_raise(&ctx.env, ftype, &raised).at(expr)
-                {
-                    ctx.discard(node);
-                    return Err(e);
-                }
-                if Carriers::new().carries(&ctx.env, node.typ()) {
-                    carriers.push(name.clone());
-                }
-                ctx.discard(node);
-            }
-        }
-        Ok(known)
-    }
-
-    /// What an omitted default raises joins this site's catch. A variable
-    /// of a definition whose check has closed stands for a different type
-    /// in each call that made the function, which only the function's
-    /// `throws` names: the catch takes the instance from there.
-    fn join_default_raise(&self, env: &Env, ftype: &FnType, raised: &Type) -> Result<()> {
-        if *raised == Type::Bottom {
-            return Ok(());
-        }
-        let mut scheme: SmallVec<[ArcStr; 2]> = SmallVec::new();
-        scheme_variables(raised, &mut scheme);
-        if let Some(missing) = scheme.iter().find(|n| !names_variable(&ftype.throws, n)) {
-            let raised = raised.resolve_tvars();
-            match scheme.len() {
-                1 => bail!(
-                    "this default raises {raised}, through the variable '{missing} of the \
-                     function that made this one, which no call of it decides: write \
-                     `throws {raised}` in the type of the function it returns, or close \
-                     '{missing} where it is declared"
-                ),
-                _ => {
-                    let mut vars = LPooled::<String>::take();
-                    for (i, n) in scheme.iter().enumerate() {
-                        let _ = write!(vars, "{}'{n}", if i == 0 { "" } else { ", " });
-                    }
-                    bail!(
-                        "this default raises {raised}, through the variables {vars} of the \
-                         function that made this one, which no call of it decides and a \
-                         function type cannot name together: close all but one of them \
-                         where they are declared"
-                    )
-                }
-            }
-        }
-        let Some(h) = self.scope.dynamic.handler() else { return Ok(()) };
-        match raised {
-            Type::Set(members) if !scheme.is_empty() => {
-                let closed: SmallVec<[&Type; 4]> = members
-                    .iter()
-                    .filter(|m| {
-                        let mut held = SmallVec::new();
-                        scheme_variables(m, &mut held);
-                        held.is_empty()
-                    })
-                    .collect();
-                match closed.is_empty() {
-                    true => Ok(()),
-                    false => join_raised(env, &h, &Type::union(env, &closed)?),
-                }
-            }
-            _ if !scheme.is_empty() => Ok(()),
-            Type::TVar(_) => join_open_raised(env, &h, raised),
-            _ => join_raised(env, &h, raised),
-        }
-    }
-
-    /// Cells the result and throws do not hold, and no argument this
-    /// call passes or omits can carry a value of.
-    fn for_each_unread(
-        &self,
-        env: &Env,
-        ftype: &FnType,
-        carriers: &[ArcStr],
-        mut f: impl FnMut(&ArcStr, &TVar),
-    ) {
-        // CR claude for claude: [perf/medium] This walk runs for every fresh call
-        // before it is known that any cell could be unread: `Carriers::carries` expands
-        // each written argument's type through its typedefs even where `tvs` is empty,
-        // a signature with no type variable. 500 calls of `|w: Any, x: i64| x` with a
-        // value of a 600-variant recursive union check in 9.1 s against 0.13 s without
-        // that argument (debug build), and a `gui::Widget` argument costs about 0.3 ms
-        // a call. Return here when `tvs` is empty, judge `carried` only for a formal
-        // that holds one of the cells, and in `typecheck0` collect `unread` before the
-        // `callbacks` filter. probe:
-        // design/review-2026-11-16/repro/c-callsite-unread-walk-per-call.sh
-        // (c-callsite-05)
-        let mut tvs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-        ftype.collect_tvars(&mut tvs);
-        let mut carry = Carriers::new();
-        let mut roots: SmallVec<[&Type; 8]> = SmallVec::new();
-        roots.push(&ftype.rtype);
-        roots.push(&ftype.throws);
-        roots.extend(ftype.vargs.as_ref());
-        for (farg, key) in ftype.args.iter().zip(ArgKey::of_formals(&ftype.args)) {
-            let carried = match self.args.get(&key) {
-                Some(a) if a.stage.is_default() => {
-                    farg.label().is_some_and(|l| carriers.contains(l))
-                }
-                Some(a) => a.node.as_ref().is_none_or(|n| carry.carries(env, n.typ())),
-                None => true,
-            };
-            if carried {
-                roots.push(&farg.typ)
-            }
-        }
-        let read = Reaching::of(tvs.values().map(|tv| tv.cell_addr()), roots);
-        for (name, tv) in tvs.iter() {
-            if !read.reached(tv.cell_addr()) {
-                f(name, tv)
-            }
         }
     }
 
@@ -5427,6 +3924,242 @@ impl<R: Rt> CallSite<R> {
         Some((of, Use::Defaults { method, name, labels, level: current_level() }))
     }
 
+    // CR claude for claude: [perf/medium] This walk runs for every fresh call
+    // before it is known that any cell could be unread: `Carriers::carries` expands
+    // each written argument's type through its typedefs even where `tvs` is empty,
+    // a signature with no type variable. 500 calls of `|w: Any, x: i64| x` with a
+    // value of a 600-variant recursive union check in 9.1 s against 0.13 s without
+    // that argument (debug build), and a `gui::Widget` argument costs about 0.3 ms
+    // a call. Return here when `tvs` is empty, judge `carried` only for a formal
+    // that holds one of the cells, and in `typecheck0` collect `unread` before the
+    // `callbacks` filter. probe:
+    // design/review-2026-11-16/repro/c-callsite-unread-walk-per-call.sh
+    // (c-callsite-05)
+    // 2026-11-19 claude: On bounds-spike the old call check this sat on (Widening,
+    // typecheck_arg, the omitted- and value-default checks, the undecided-taker
+    // notes) is deleted with the old check: a call is checked by
+    // CallSite::check_by_bounds, and a call the build makes by the same in a check
+    // of its own. Re-probe under the new check before closing.
+
+    // CR claude for claude: [bug/low] This filter compares names, not bindings, so a
+    // refusal that reads a shadowing `u` keeps the outer `u`. In `let g = |u| f((u, {
+    // let u = "a"; 1 + u }))` the note says the parameter `u` was decided early and to
+    // annotate it, but the refusal is the inner string `u` in `1 + u`, and `|u: i64|`
+    // is refused the same way. Retain a binding only where the refusing expression
+    // reads that bind id (Refs over the site's node, or each Ref resolved in its
+    // scope). probe:
+    // design/review-2026-11-16/repro/x-diagnostics-decided-early-shadow.gx
+    // (x-diagnostics-04)
+    // 2026-11-19 claude: On bounds-spike the old call check this sat on (Widening,
+    // typecheck_arg, the omitted- and value-default checks, the undecided-taker notes)
+    // is deleted with the old check: a call is checked by CallSite::check_by_bounds,
+    // and a call the build makes by the same in a check of its own. Re-probe under the
+    // new check before closing.
+
+    // CR claude for claude: [bug/medium] This adds the 'undecided argument
+    // before this one' note to every refusal at a formal holding a pinned
+    // variable, bound failures included. `map::insert({}, &x, 1)` is refused
+    // for ordering a reference and then told to pass the widest argument first
+    // or annotate `{}`. Neither can make it pass: a Map<&i64, i64> annotation
+    // is refused too, and the key cannot come before the map. A function key
+    // gets the same text. Attach the note only where the refusal is a
+    // containment that widening would have admitted, never to a bound (Ordered,
+    // Number...) failure. lang::byref::byref_map_insert_refused passes with the
+    // misleading text. probe:
+    // design/review-2026-11-16/repro/tests-lang-rest-d-pinned-note-on-bound.gx
+    // (tests-lang-rest-d-03)
+    // 2026-11-19 claude: On bounds-spike the old call check this sat on
+    // (Widening, typecheck_arg, the omitted- and value-default checks, the
+    // undecided-taker notes) is deleted with the old check: a call is checked
+    // by CallSite::check_by_bounds, and a call the build makes by the same in a
+    // check of its own. Re-probe under the new check before closing.
+
+    // CR claude for eric: [bug/medium] [bug/medium] A variable held at two places of
+    // one decided argument does not widen the way it does across two arguments. `widen`
+    // probes the opened formal with `open.contains(typ)`, which binds the open copy to
+    // the first part and then fails at the second, so it never sees the wider type.
+    // Over `let first = |p: ('a, 'a)| p.0` and `x: [i64, null]`, `first((1, x))` is
+    // refused with "('a: i64, 'a: i64) does not contain (i64, [i64, null])", while
+    // `first((x, 1))` runs and so does `|a: 'a, b: 'a|` called with `(1, x)`. A struct
+    // at `{a: 'a, b: 'a}`, `[(1, x)]` at `Array<('a, 'a)>` and a let-bound tuple are
+    // refused the same way. design/tvar_constraints.md says two decided arguments
+    // settle a variable alike in either order and says nothing about the parts of one
+    // argument ("two parts of one position" is its rule for a function held at a
+    // function type). No test pins either verdict, and the refusal names no fix.
+    // Decide: widen within one argument as across arguments, or keep
+    // first-part-decides, document and pin it, and have the refusal say to write the
+    // wider part first or to annotate. probe:
+    // design/review-2026-11-16/repro/tests-types-d-one-argument-no-widening.gx
+    // (tests-types-d-02)
+    // 2026-11-19 claude: On bounds-spike the old call check this sat on (Widening,
+    // typecheck_arg, the omitted- and value-default checks, the undecided-taker notes)
+    // is deleted with the old check: a call is checked by CallSite::check_by_bounds,
+    // and a call the build makes by the same in a check of its own. Re-probe under the
+    // new check before closing.
+
+    // CR claude for claude: [bug/medium] `has_unbound` counts rigid cells and cells
+    // inside function types, which `typecheck_arg` did not count when it called
+    // this argument decided (`has_free_in_data`). So no widening happens for an
+    // argument that mentions a declared variable of the enclosing definition or
+    // holds a lambda literal (its open `throws`): `|p: 'p, n: [i64, null]|
+    // array::push([(1, p)], (n, p))` is refused with a bare mismatch, while `p:
+    // string` and the wide argument first both pass. Test `typ.has_free_in_data()`
+    // here (the closing `check()` binds the argument's function cells for real),
+    // together with relating the old binding into the new one after the rebind
+    // below. probe:
+    // design/review-2026-11-16/repro/x-typecheck-order-widen-refused-beside-open-cell.gx
+    // (x-typecheck-order-03)
+    // 2026-11-19 claude: On bounds-spike the old call check this sat on (Widening,
+    // typecheck_arg, the omitted- and value-default checks, the undecided-taker notes)
+    // is deleted with the old check: a call is checked by CallSite::check_by_bounds, and
+    // a call the build makes by the same in a check of its own. Re-probe under the new
+    // check before closing. Eric ruled 11-17 (D47 follow-up 5, the rule review) that the
+    // argument-order rules are cut, so this is likely moot.
+
+    // CR claude for claude: [readability/low] The comment above this line says an
+    // argument neither wider nor narrower than a variable is deferred until a later
+    // one widens it, whatever the order. Nothing is deferred: `incomparable`
+    // returns false below and `join` reports the mismatch where the argument is
+    // written, which is the ruled behaviour and what this function's doc comment
+    // says. Delete the comment. Found by reading; not run. (x-typecheck-order-06)
+    // 2026-11-19 claude: On bounds-spike the old call check this sat on (Widening,
+    // typecheck_arg, the omitted- and value-default checks, the undecided-taker
+    // notes) is deleted with the old check: a call is checked by
+    // CallSite::check_by_bounds, and a call the build makes by the same in a check
+    // of its own. Re-probe under the new check before closing. Eric ruled 11-17
+    // (D47 follow-up 5, the rule review) that the argument-order rules are cut, so
+    // this is likely moot.
+
+    // CR claude for claude: [doc-drift/low] The comment above says an argument
+    // neither wider nor narrower than a variable is deferred until a later one
+    // widens it, whatever the order. Nothing defers: `incomparable` makes `widen`
+    // answer false and `join` reports the mismatch at this argument, as
+    // design/tvar_constraints.md rules (`f(`A, `B, ab)` over three `'a` is refused
+    // at `` `B ``). Say that it is the mismatch here. probe: run by hand, no repro
+    // saved. Also reported as (tests-types-d-07). (c-callsite-09)
+    // 2026-11-19 claude: On bounds-spike the old call check this sat on (Widening,
+    // typecheck_arg, the omitted- and value-default checks, the undecided-taker
+    // notes) is deleted with the old check: a call is checked by
+    // CallSite::check_by_bounds, and a call the build makes by the same in a check
+    // of its own. Eric ruled 11-17 (D47 follow-up 5, the rule review) that the
+    // argument-order rules are cut, so this is likely moot.
+
+    // CR claude for claude: [bug/high] The variable is rebound to the wider
+    // argument's type after two probes, and the old binding is dropped
+    // unrelated to it. An earlier argument that held an open cell inside a
+    // function type (decided by `has_free_in_data`: `(1, h)` over `let h = |q|
+    // { st <- q; st }`) is then tied to nothing: `array::push([(1, h)], (n,
+    // g))` with `g: fn(q: i64) -> i64`, then `st <- "s"`, passes the check and
+    // the build refuses the instance; over a user function the run-time bind
+    // fails (ELAB-AUDIT instance-signature). Written `(h, 1)` and `(g, n)` the
+    // failed `formal.contains` in `join` happens to bind the cell first and the
+    // check refuses correctly. Relate the old binding into the new one for real
+    // after the bind (`new.check_contains(env, &old)`), undoing the widening
+    // where that fails, and pin both element orders. probe:
+    // design/review-2026-11-16/repro/x-typecheck-order-widen-drops-open-fn-cells.gx
+    // (and ..-build.gx) (x-typecheck-order-02)
+    // 2026-11-19 claude: On bounds-spike the old call check this sat on (Widening,
+    // typecheck_arg, the omitted- and value-default checks, the undecided-taker
+    // notes) is deleted with the old check: a call is checked by
+    // CallSite::check_by_bounds, and a call the build makes by the same in a check
+    // of its own. Re-probe under the new check before closing. Eric ruled 11-17
+    // (D47 follow-up 5, the rule review) that the argument-order rules are cut, so
+    // this is likely moot.
+
+    // CR claude for claude: [bug/low] An argument neither wider nor narrower than
+    // what the variable holds ends as `check_contains`'s bare mismatch:
+    // `array::push([`Red, `Green], `Blue)` says only "'a: [`Green, `Red] does not
+    // contain `Blue", while the same call with a wider second argument passes.
+    // Every other refusal of `Widening` names what to annotate; this one should say
+    // that no union is made of two arguments and that the earlier argument takes a
+    // type holding both (`let xs: Array<[`Red, `Green, `Blue]> = ..` passes). Add
+    // the note in `join` as `pinned_note` is added, and pin it. probe:
+    // design/review-2026-11-16/repro/x-typecheck-order-incomparable-args-no-remedy.gx
+    // (x-typecheck-order-05)
+    // 2026-11-19 claude: On bounds-spike the old call check this sat on (Widening,
+    // typecheck_arg, the omitted- and value-default checks, the undecided-taker
+    // notes) is deleted with the old check: a call is checked by
+    // CallSite::check_by_bounds, and a call the build makes by the same in a check of
+    // its own. Re-probe under the new check before closing. Eric ruled 11-17 (D47
+    // follow-up 5, the rule review) that the argument-order rules are cut, so this is
+    // likely moot.
+
+    // CR claude for claude: [bug/medium] This walk does not pass repeats, so
+    // `DataPositions::walk` tells a recursive typedef's own application inside its
+    // expansion as held under a function, and no variable of a recursive data typedef
+    // widens. `type L<'t> = [`Cons('t, L<'t>), `Nil]` with `|y: 'a, x: L<'a>|` refuses
+    // `f(n, f(1, `Nil))` over `n: [i64, null]` at `n`, the first argument written
+    // (`holds_invariantly` hoists the list), with no remedy named; `type W<'t> = {v:
+    // 't}` and `Array<'a>` widen. Add `.passing_repeats()` here as the bounds walk
+    // below has, and pin the cons program in both parameter orders beside a recursive
+    // typedef that holds a function, which must stay refused. probe:
+    // design/review-2026-11-16/repro/x-typecheck-order-recursive-typedef-no-widen.gx
+    // (x-typecheck-order-04)
+    // 2026-11-19 claude: On bounds-spike the old call check this sat on (Widening,
+    // typecheck_arg, the omitted- and value-default checks, the undecided-taker notes)
+    // is deleted with the old check: a call is checked by CallSite::check_by_bounds,
+    // and a call the build makes by the same in a check of its own. Re-probe under the
+    // new check before closing. Eric ruled 11-17 (D47 follow-up 5, the rule review)
+    // that the argument-order rules are cut, so this is likely moot.
+
+    // CR claude for claude: [bug/critical] This filter takes a variable for a fresh
+    // instance's when the definition's cell is unbound, but `FnType::instantiate`
+    // shares every cell it does not copy: the cell of a binding the function writes
+    // (`let st = never(); let h = |x: 'a, y: 'a| -> 'a { st <- y; st }`) or of a
+    // one-instance function is the same cell in `def` and `inst`. `Widening::cells` is
+    // computed before the first argument is checked, so in `h(g(h(1, 1)), n)` the inner
+    // call binds the shared cell to i64, `g(v: i64)` accepts it, and `n` then widens it
+    // to [i64, null]: the check passes and the run panics in `fusion::kernel` ("runtime
+    // Null does not match the compiled Scalar(I64) slot"), or with --no-fusion adds to
+    // a null. Keep a variable only where the instance's cell is a copy
+    // (`!d.same_cell(tv)`), and pin the program as refused at `n`. probe:
+    // design/review-2026-11-16/repro/x-typecheck-order-widen-shared-cell.gx
+    // (x-typecheck-order-01)
+    // 2026-11-19 claude: On bounds-spike the old call check this sat on (Widening,
+    // typecheck_arg, the omitted- and value-default checks, the undecided-taker notes)
+    // is deleted with the old check: a call is checked by CallSite::check_by_bounds,
+    // and a call the build makes by the same in a check of its own. Re-probe under the
+    // new check before closing. Eric ruled 11-17 (D47 follow-up 5, the rule review)
+    // that the argument-order rules are cut, so this is likely moot.
+
+    // CR claude for claude: [readability/low] Two common refusals reach here with no
+    // note: `let h = mk(0); (h(1), h("s"))`, where h is one instance, and `f("s")`
+    // where f writes its parameter into a captured `let a = 1`. Both say only "type
+    // mismatch i64 does not contain string" at the argument. The fixes pass (`let h =
+    // |x| mk(0)(x)`, `let a: [i64, string] = 1`), and a direct `a <- "s"` already names
+    // the declaration, but the call says nothing. Add the note here: for a callee
+    // binding bind::names_generic does not generalize, say it is one instance and to
+    // write a lambda; for a formal that is a written binding's cell, reuse
+    // generic_target's "declare a: .. where it is bound". probe:
+    // design/review-2026-11-16/repro/x-diagnostics-instance-arg-no-cause.sh
+    // (x-diagnostics-11)
+    // 2026-11-19 claude: On bounds-spike the old call check this sat on (Widening,
+    // typecheck_arg, the omitted- and value-default checks, the undecided-taker notes)
+    // is deleted with the old check: a call is checked by CallSite::check_by_bounds,
+    // and a call the build makes by the same in a check of its own. Re-probe under the
+    // new check before closing.
+
+    // CR claude for claude: [bug/medium] Every refusal through here tells the
+    // author to 'declare the parameters that decide them before this one', whether
+    // or not a later parameter decides the members. Over `|#y: 'a = 1, #z: 'b =
+    // "s", x: P<'a, 'b>|`, `f([1])` gets that advice although #y and #z already
+    // stand before x: they are omitted defaults, met after the written arguments,
+    // and `f(#y: 1, #z: "s", [1])` checks. Over `|y: 'a, x: P3<'a, 'b, 'c>|` and
+    // `|x: E<'a, 'b>|`, no parameter holds the open members' variables, so only
+    // writing x's type helps. Name the reorder only where a later parameter holds a
+    // variable of the members the argument could go to, and name passing the
+    // labeled arguments where the deciders are omitted defaults. Pin the remedy in
+    // lang::types::argument_into_a_typedef_union_before_the_omitted_defaults_refused
+    // and argument_into_a_three_member_typedef_union_two_left_open_refused, which
+    // pin only the fact today. probe:
+    // design/review-2026-11-16/repro/tests-types-c-ambiguous-remedy.sh
+    // (tests-types-c-03)
+    // 2026-11-19 claude: On bounds-spike the old call check this sat on (Widening,
+    // typecheck_arg, the omitted- and value-default checks, the undecided-taker
+    // notes) is deleted with the old check: a call is checked by
+    // CallSite::check_by_bounds, and a call the build makes by the same in a check
+    // of its own. Re-probe under the new check before closing.
+
     /// The check by bounds: each written argument is checked in the order
     /// written, then fits its parameter where the callee's type is decided
     /// here; a callee that is not is used as a function of these
@@ -5525,218 +4258,34 @@ impl<R: Rt> CallSite<R> {
     }
 
     pub(crate) fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
+        // a call the build makes (a collection's callback, a lowering) is
+        // checked as a program's are, in a check of its own
+        let check = bounds::Check::begin();
         self.note_kept_view(ctx);
-        if bounds::active()
-            && let Some(r) = self.fnode.downcast_mut::<super::bind::Ref>()
-        {
+        if let Some(r) = self.fnode.downcast_mut::<super::bind::Ref>() {
             self.copies = wrap!(self.fnode, r.copy_scheme(ctx))?.map(TArc::new);
         }
         wrap!(self.fnode, self.fnode.typecheck0(ctx))?;
-        if bounds::active() {
-            return self.check_by_bounds(ctx);
-        }
-        let mut fresh = false;
-        let mut self_call = false;
-        let ftype = match self.ftype.as_ref() {
-            Some(ftype) => ftype, // already initialized
-            None => {
-                let one = FnUnion::one_function(&ctx.env, self.fnode.typ())?;
-                let callee = one.as_ref().unwrap_or(self.fnode.typ());
-                let ftype = deref_typ!("fn", ctx, callee; FnUnion::refusal;
-                    Some(Type::Fn(ftype)) => Ok(ftype.clone())
-                )?;
-                // A self-call inside the def-time body check unifies against
-                // the def's own cells (`ExecCtx::rec_defs`).
-                let is_rec_self_call = !ctx.rec_defs.is_empty()
-                    && ftype.lambda_ids.ids().iter().any(|id| ctx.rec_defs.contains(id));
-                let identity = self.fn_arg_identity(ctx);
-                let active_ftype = ftype
-                    .lambda_ids
-                    .own()
-                    .and_then(|id| ctx.resolving(id, &identity))
-                    .map(|active| active.ftype);
-                // A call to the enclosing def's fn-typed param during its gate.
-                let is_param_knot = !ctx.def_gate_params.is_empty()
-                    && matches!(
-                        self.fnode.view(),
-                        NodeView::Ref(r) if ctx.def_gate_params.contains_key(&r.id)
-                    );
-                let ftype = if let Some(active) = active_ftype {
-                    active
-                } else if is_rec_self_call {
-                    self_call = true;
-                    // A shallow clone shares the def's TVar cells.
-                    (*ftype).clone()
-                } else if is_param_knot {
-                    (*ftype).clone()
-                } else {
-                    fresh = true;
-                    ftype.instantiate(&ctx.rec_defs)
-                };
-                fill_omitted(&mut self.args, &ftype)?;
-                self.ftype = Some(TArc::new(ftype));
-                self.ftype.as_ref().unwrap()
-            }
-        };
-        let mut widening = Widening::new(fresh);
-        let mut unrolling = Unrolling::default();
-        let mut clean: LPooled<AHashMap<AppKey, (Type, Expanded)>> = LPooled::take();
-        let mut formals: SmallVec<[_; 8]> = ftype
-            .args
-            .iter()
-            .zip(ArgKey::of_formals(&ftype.args))
-            .map(|(farg, key)| {
-                let fixed =
-                    holds_invariantly(&ctx.env, &farg.typ, &mut unrolling, &mut clean);
-                (!fixed, farg, key)
-            })
-            .collect();
-        formals.sort_by_key(|(later, ..)| *later);
-        let mut prebound: LPooled<AHashSet<usize>> = LPooled::take();
-        {
-            let mut cells: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-            for farg in ftype.args.iter() {
-                farg.typ.collect_tvars(&mut cells);
-            }
-            if let Some(typ) = &ftype.vargs {
-                typ.collect_tvars(&mut cells);
-            }
-            prebound.extend(
-                cells.values().filter(|tv| tv.is_bound()).map(|tv| tv.cell_addr()),
-            );
-        }
-        for (_, farg, key) in formals {
-            let Some(arg) = self.args.get_mut(&key) else { continue };
-            if arg.stage == ArgStage::Placeholder {
-                continue;
-            }
-            if let Some(n) = arg.node.as_mut() {
-                let pinned = widening.pinned_note(&farg.typ);
-                let def = self.fnode.typ();
-                let opening =
-                    |env: &Env, copy| widening.opening(env, def, ftype, &farg.typ, copy);
-                let fit = typecheck_arg(ctx, &farg.typ, opening, pinned, &prebound, n)?;
-                widening.fit(ctx, self.fnode.typ(), ftype, &farg.typ, n, fit)?;
-            }
-        }
-        if let Some(typ) = &ftype.vargs {
-            let positional = ftype.args.iter().filter(|a| a.is_positional()).count();
-            for key in ArgKey::variadic(positional) {
-                let Some(arg) = self.args.get_mut(&key) else { break };
-                if let Some(n) = arg.node.as_mut() {
-                    let pinned = widening.pinned_note(typ);
-                    let def = self.fnode.typ();
-                    let opening =
-                        |env: &Env, copy| widening.opening(env, def, ftype, typ, copy);
-                    let fit = typecheck_arg(ctx, typ, opening, pinned, &prebound, n)?;
-                    widening.fit(ctx, self.fnode.typ(), ftype, typ, n, fit)?;
-                }
-            }
-        }
-        // the judgments below and the site's settle pass by each cell the
-        // arguments left reaching no open cell
-        for farg in ftype.args.iter() {
-            farg.typ.prove_ground();
-        }
-        if let Some(typ) = &ftype.vargs {
-            typ.prove_ground();
-        }
-        let mut carriers = SmallVec::new();
-        // a recursive call shares its definition's cells, which the
-        // defaults it omits narrow as a fresh instance's
-        if fresh || self_call {
-            self.defaults_open =
-                !self.check_omitted_defaults(ctx, ftype, &mut carriers, &mut widening)?;
-        }
-        self.check_value_defaults(ctx, ftype)?;
-        let mut unread_callbacks = SmallVec::new();
-        if fresh && !self.defaults_open {
-            // CR claude for claude: [bug/medium] A builtin's unread quantifiers settle
-            // to bottom only where `static_builtin` names the builtin through the
-            // site's own binding. A call through a value the static resolution traces
-            // to the same builtin (`let f = (sys::net::publish, 1).0; f(path, v)`, a
-            // `mk()` returning it, or `let f = sys::net::publish` as a seq step, which
-            // the lowering makes a call's result) takes the other branch when the bind
-            // checks the site again, and is refused 'the quantifier 'a must be fully
-            // known but is unread through an optional callback' after the check, which
-            // left the omitted `#on_write` open, accepted it. The direct call builds.
-            // Settle them wherever the resolved callee is a builtin, or refuse at the
-            // check too. probe:
-            // design/review-2026-11-16/repro/x-check-build-fnvalue-builtin-unread.gx
-            // (x-check-build-06)
-            if static_builtin(ctx, self).is_some() {
-                self.for_each_unread(&ctx.env, ftype, &carriers, |name, tv| {
-                    if ftype.quantifiers.contains(name) {
-                        tv.settle_unread();
-                    }
-                });
-            } else {
-                let mut carry = Carriers::new();
-                let callbacks: SmallVec<[&Type; 4]> = ftype
-                    .args
-                    .iter()
-                    .filter(|a| carry.holds_fn(&ctx.env, &a.typ))
-                    .map(|a| &a.typ)
-                    .collect();
-                let mut unread: LPooled<Vec<TVar>> = LPooled::take();
-                self.for_each_unread(&ctx.env, ftype, &carriers, |_, tv| {
-                    unread.push(tv.clone())
-                });
-                let called =
-                    Reaching::of(unread.iter().map(|tv| tv.cell_addr()), callbacks);
-                unread_callbacks
-                    .extend(unread.drain(..).filter(|tv| called.reached(tv.cell_addr())));
-            }
-        }
-        // A constrained cell reachable from the rtype/throws but no arg is
-        // produced by the callee's body: settle it to its witness before an
-        // annotation could narrow it unsoundly. Its writers are not checked
-        // yet, so a ⊥-fed cell is not ⊥ here. A quantifier, the callee's own,
-        // of a function type the signature holds, or an enclosing
-        // definition's (rigid in its body: a callback parameter's result), is
-        // its callers' to pick.
-        {
-            let mut quantifiers: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-            ftype.inner_quantifiers(&mut quantifiers);
-            let mut arg_tvs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-            for a in ftype.args.iter() {
-                a.typ.collect_tvars(&mut arg_tvs);
-            }
-            if let Some(t) = &ftype.vargs {
-                t.collect_tvars(&mut arg_tvs);
-            }
-            let arg_cells: LPooled<AHashSet<usize>> =
-                arg_tvs.drain().map(|(_, tv)| tv.cell_addr()).collect();
-            let mut rt_tvs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-            ftype.rtype.collect_tvars(&mut rt_tvs);
-            ftype.throws.collect_tvars(&mut rt_tvs);
-            // the callee's declared quantifiers were rigid in its check, so
-            // its body produced nothing into them: the caller narrows them
-            let mut produced: LPooled<Vec<TVar>> = rt_tvs
-                .drain()
-                .filter(|(name, tv)| {
-                    let addr = tv.cell_addr();
-                    !arg_cells.contains(&addr)
-                        && !quantifiers.contains_key(&addr)
-                        && !ftype.quantifiers.contains(name)
-                        && !tv.is_rigid()
-                        && !tv.is_bound()
-                })
-                .map(|(_, tv)| tv)
-                .collect();
-            settle_order(&mut produced);
-            for tv in produced.iter() {
-                wrap!(self, tv.settle_witness(&ctx.env))?;
-            }
-        }
-        self.raise_throws(ctx, ftype, true)?;
-        wrap!(self.fnode, self.rtype.check_contains(&ctx.env, &ftype.rtype))?;
-        // the check settles before elaboration (typecheck1) runs; a
-        // definition's check runs no typecheck1, its gate's frame hands the
-        // settle to the enclosing statement
-        let settle = self.pending_settle(ftype, unread_callbacks);
-        ctx.pending_settles.last_mut().expect("settle frame").push(settle);
-        Ok(())
+        // XCR claude for claude: [bug/medium] A builtin's unread quantifiers settle
+        // to bottom only where `static_builtin` names the builtin through the
+        // site's own binding. A call through a value the static resolution traces
+        // to the same builtin (`let f = (sys::net::publish, 1).0; f(path, v)`, a
+        // `mk()` returning it, or `let f = sys::net::publish` as a seq step, which
+        // the lowering makes a call's result) takes the other branch when the bind
+        // checks the site again, and is refused 'the quantifier 'a must be fully
+        // known but is unread through an optional callback' after the check, which
+        // left the omitted `#on_write` open, accepted it. The direct call builds.
+        // Settle them wherever the resolved callee is a builtin, or refuse at the
+        // check too. probe:
+        // design/review-2026-11-16/repro/x-check-build-fnvalue-builtin-unread.gx
+        // (x-check-build-06)
+        // 2026-11-19 claude: On bounds-spike the second check at bind time that
+        // refused this is deleted with the old check (a call the build makes is
+        // checked by the solver in a check of its own). The probe now: --check
+        // exit 0, --no-cache --expand exit 0. No pin yet: pin the probe's program
+        // as accepted before this is cleared.
+        self.check_by_bounds(ctx)?;
+        check.end(&ctx.env)
     }
 
     pub(crate) fn typecheck0_instance(
