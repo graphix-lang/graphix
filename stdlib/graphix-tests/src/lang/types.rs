@@ -17474,7 +17474,7 @@ run!(
   let n: string = f(v);
   0
 }"#,
-    refused("string does not contain [i64, string]");
+    refused("string does not contain i64");
     FuseExpect::None
 );
 
@@ -17917,4 +17917,15 @@ run!(
 }"#,
     is(Value::I64(2));
     FuseExpect::None
+);
+
+run!(
+    two_error_members_from_select_arms_meet_one_result,
+    r#"{
+  let c = 1;
+  let r = select c { 0 => 1, 1 => error(`A), _ => error(`B) };
+  filter_err(r).0
+}"#,
+    prints("\"A\"");
+    FuseExpect::Jit
 );

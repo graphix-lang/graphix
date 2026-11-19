@@ -1365,23 +1365,6 @@ impl Solving {
     // cases 1 and 2 are accepted with the read target narrowed to null and to Nil, and
     // the reads answer InvalidCast and ParseError.
 
-    // CR claude for claude: [bug/medium] The shape of a member is taken through
-    // a Type::Ref only, so a member that is a bound cell (a select arm's type,
-    // `error(`A)` written in an arm) has no constructor here and is never
-    // joined with its sibling. `filter_err(select c { 0 => 1, 1 => error(`A), _
-    // => error(`B) })` is refused (`Result<'a, 'b: `B> does not contain [i64,
-    // Error<'a1: `B>, Error<'a2: `A>]`) while the same select under `let r:
-    // [i64, Error<`A>, Error<`B>]` is accepted with 'b both tags. Take the
-    // shape through a bound cell as through a name, for the taker probe and for
-    // join_ctor's group. probe:
-    // design/review-2026-11-16/repro/x-typecheck-generics-error-members-in-cells-not-joined.sh
-    // (x-typecheck-generics-04)
-    // 2026-11-19 claude: Moved here unchanged from join_cell_sharing, deleted on bounds-spike
-    // with the old relation's walk. Re-probed with the check by bounds before and after the
-    // deletion: both programs are refused now, the written-let one too, "type mismatch [i64,
-    // Error<`B>] does not contain Error<`A>": a union of two error members below Result<'a,
-    // 'e> does not give 'e both tags.
-
     /// `a`, which is no open cell and no union, fits a member of the union
     /// `b`, whose members are `ms`.
     fn below_union(&mut self, env: &Env, a: &Type, ms: &[Type], b: &Type) -> Result<()> {
@@ -3207,7 +3190,8 @@ impl Solving {
                 !produced.iter().any(|(k, c)| *k != key && ins.iter().any(|v| c.has(v)))
             };
             for i in (0..self.held.len()).rev() {
-                let (a, b, scheme) = self.held[i].clone();
+                // a group placed together leaves fewer behind
+                let Some((a, b, scheme)) = self.held.get(i).cloned() else { continue };
                 if scheme {
                     continue;
                 }
@@ -3215,56 +3199,36 @@ impl Solving {
                 let ready =
                     avs.iter().chain(bvs.iter()).all(|v| self.fixable(&held, v, min));
                 if ready && free((Pending::Held, i), &avs) {
+                    // the values waiting on one union are placed together:
+                    // its members are decided once, before any of them
+                    // arrives, so no value decides a member another goes to
+                    let mut group: SmallVec<[usize; 2]> = SmallVec::new();
+                    for (j, (aj, bj, sj)) in self.held.iter().enumerate() {
+                        let ins = open_cells(aj);
+                        let joins = j == i
+                            || (!sj
+                                && strictly_identical(bj, &b)
+                                && ins.iter().all(|v| self.fixable(&held, v, min))
+                                && free((Pending::Held, j), &ins));
+                        if joins {
+                            group.push(j)
+                        }
+                    }
+                    let mut values: SmallVec<[Type; 2]> = SmallVec::new();
+                    for j in group.into_iter().rev() {
+                        values.push(self.held.swap_remove(j).0)
+                    }
                     // a member something has decided is decided here; one
                     // nothing has stays open, to take what the others do
                     // not
-                    self.held.swap_remove(i);
                     for v in bvs.iter() {
                         if decided(v) {
                             self.fix(env, v)?
                         }
                     }
-                    // a part something says the type of, from below or
-                    // above, is fixed; a value whose other parts are open
-                    // goes to a decided member that takes it as it stands,
-                    // and the member decides them; with none they are
-                    // fixed too
-                    let said = |v: &TVar| {
-                        decided(v)
-                            || v.cell_constraints().iter().any(|u| {
-                                let u = deep(u);
-                                !matches!(u, Type::TVar(_) | Type::Bound(_))
-                                    && !u.is_trait_ref(env)
-                            })
-                    };
-                    for v in avs.iter().filter(|v| said(v)) {
-                        self.fix(env, v)?
+                    for a in values {
+                        progress |= self.place_held(env, &a, &b)?
                     }
-                    let (a, b) = (deep(&a), deep(&b));
-                    (self.resolving, self.placing) = (true, a.has_free());
-                    let parts = open_cells(&a);
-                    let placed = self.placing
-                        && self.attempting(|s| {
-                            let (n, mark) = (s.held.len(), s.added.len());
-                            s.constrain(env, &a, &b)?;
-                            let from_above = s.decided_two_ways(&parts, mark);
-                            match s.held.len() == n && !from_above {
-                                true => Ok(()),
-                                false => bail!("no member takes it as it stands"),
-                            }
-                        });
-                    (self.resolving, self.placing) = (false, false);
-                    avs.iter().try_for_each(|v| self.fix(env, v))?;
-                    if placed {
-                        progress = true;
-                        continue;
-                    }
-                    let n = self.held.len();
-                    self.resolving = true;
-                    let r = self.constrain(env, &deep(&a), &b);
-                    self.resolving = false;
-                    r?;
-                    progress |= self.held.len() == n
                 } else if avs.iter().chain(bvs.iter()).any(quantified) {
                     self.held[i].2 = true;
                     let pair = Type::Tuple(Arc::from_iter([a.clone(), b.clone()]));
@@ -3461,6 +3425,49 @@ impl Solving {
             let uppers = &uppers[uppers.len() - added.count()..];
             !decided(u) && uppers.iter().any(|t| !strictly_identical(t, &uppers[0]))
         })
+    }
+
+    /// Place the value `a` that waited on the union `b`. A part something
+    /// says the type of, from below or above, is fixed; a value whose other
+    /// parts are open goes to a decided member that takes it as it stands,
+    /// and the member decides them; with none they are fixed too. Whether
+    /// the placement is made.
+    fn place_held(&mut self, env: &Env, a: &Type, b: &Type) -> Result<bool> {
+        let avs = open_cells(a);
+        let said = |v: &TVar| {
+            decided(v)
+                || v.cell_constraints().iter().any(|u| {
+                    let u = deep(u);
+                    !matches!(u, Type::TVar(_) | Type::Bound(_)) && !u.is_trait_ref(env)
+                })
+        };
+        for v in avs.iter().filter(|v| said(v)) {
+            self.fix(env, v)?
+        }
+        let (a, b) = (deep(a), deep(b));
+        (self.resolving, self.placing) = (true, a.has_free());
+        let parts = open_cells(&a);
+        let placed = self.placing
+            && self.attempting(|s| {
+                let (n, mark) = (s.held.len(), s.added.len());
+                s.constrain(env, &a, &b)?;
+                let from_above = s.decided_two_ways(&parts, mark);
+                match s.held.len() == n && !from_above {
+                    true => Ok(()),
+                    false => bail!("no member takes it as it stands"),
+                }
+            });
+        (self.resolving, self.placing) = (false, false);
+        avs.iter().try_for_each(|v| self.fix(env, v))?;
+        if placed {
+            return Ok(true);
+        }
+        let n = self.held.len();
+        self.resolving = true;
+        let r = self.constrain(env, &a, &b);
+        self.resolving = false;
+        r?;
+        Ok(self.held.len() == n)
     }
 
     /// Give `v` one type: the union of what flows into it, or, where

@@ -745,7 +745,6 @@ graphix_tests::lang::types::struct_update_over_a_name_written_later_shares_its_t
 graphix_tests::lang::types::trait_bound_is_read_through_as_no_typedef	refuses	reading a struct needs its type known here: annotate the binding
 graphix_tests::lang::types::tuple_cycle_written	refuses	type mismatch i64 does not contain string
 graphix_tests::lang::types::two_array_members_one_cell_are_not_the_first_member	refuses	type mismatch i64 does not contain string
-graphix_tests::lang::types::two_array_members_one_cell_are_not_the_last_member	refuses	type mismatch [null, Array<string>] does not contain Array<i64>
 graphix_tests::lang::types::two_undecided_elements_of_a_bound_widen_its_variable	refuses	type mismatch [i64, null] does not contain string
 graphix_tests::lang::types::two_undecided_elements_under_a_bound_keep_what_decides_its_variable	refuses	type mismatch i64 does not contain string
 graphix_tests::lang::types::typedef_union_of_function_types_no_decided_member_takes_refused	refuses	type mismatch [fn(x: i64) -> i64, fn(x: string) -> i64] does not contain fn(x: f64) -> i64
