@@ -325,12 +325,7 @@ impl<R: Rt> StructWith<R> {
                 Ok(Replace::with(None, name.clone(), n))
             })
             .collect::<Result<Box<[_]>>>()?;
-        let typ = match bounds::active() {
-            true => Type::empty_tvar(),
-            false => updated_type(ctx, source.typ(), &replace)
-                .unwrap_or_else(|_| Type::empty_tvar()),
-        };
-        Ok(Self::with(spec, typ, source, replace))
+        Ok(Self::with(spec, Type::empty_tvar(), source, replace))
     }
 }
 
@@ -514,14 +509,8 @@ impl<R: Rt> StructRef<R> {
         field_name: &ArcStr,
     ) -> Result<Node<R>> {
         let source = compile(ctx, flags, source.clone(), scope, top_id)?;
-        let (typ, sorted_field_idx) =
-            match (bounds::active(), struct_field_type(ctx, source.typ(), field_name)) {
-                (true, _) => (Type::empty_tvar(), None),
-                (false, Ok((i, t))) => (t, i),
-                (false, Err(_)) => (Type::empty_tvar(), None),
-            };
         let field_name = field_name.clone();
-        Ok(Self::with(spec, typ, source, sorted_field_idx, field_name))
+        Ok(Self::with(spec, Type::empty_tvar(), source, None, field_name))
     }
 }
 
@@ -1128,11 +1117,7 @@ impl<R: Rt> TupleRef<R> {
     ) -> Result<Node<R>> {
         let source = compile(ctx, flags, source.clone(), scope, top_id)?;
         let field = *field;
-        let typ = match bounds::active() {
-            true => Type::empty_tvar(),
-            false => tuple_field_type(ctx, &scope.lexical, source.typ(), field)
-                .unwrap_or_else(|_| Type::empty_tvar()),
-        };
+        let typ = Type::empty_tvar();
         let scope = scope.lexical.clone();
         Ok(Self::with(spec, typ, source, field, scope))
     }

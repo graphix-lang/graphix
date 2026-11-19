@@ -19,7 +19,7 @@ use crate::{
     rep,
     typ::{
         AbstractId, ContainsFlags, IsAFlags, ShallowScrutinee, TVar, Type,
-        bounds::{self, Arm, FALSE, Pat, TRUE, Use, unsplit},
+        bounds::{Arm, FALSE, Pat, TRUE, Use, unsplit},
         settle::position_cells,
         tvar::{AtLevel, Level},
         tvar::{OpenOverAny, StandingEnds},
@@ -2230,22 +2230,6 @@ impl StructPatternNode {
         })
     }
 
-    /// The id of every [`Leaf::fresh`] name: each capture and every
-    /// name an or-pattern binds.
-    pub(super) fn fresh_ids(&self, f: &mut impl FnMut(BindId)) {
-        crate::stack::ensure_sufficient(|| match self {
-            Self::Or { .. } => self.ids(&mut *f),
-            // a payload compiled against its written rep: its binds are typed
-            Self::Abstract { .. } => self.whole_binds().for_each(&mut *f),
-            _ => {
-                self.whole_binds().for_each(&mut *f);
-                for c in self.children() {
-                    c.fresh_ids(f)
-                }
-            }
-        })
-    }
-
     /// Re-derive the struct binders' field indexes from a completed
     /// type predicate: a partial pattern compiles against the fields it
     /// names, so its indexes are wrong once the select typecheck
@@ -2837,21 +2821,17 @@ impl StructPatternNode {
                 // an inferred predicate, at parameters of its own, the
                 // predicate's being the scrutinee's (`leaves` types its binds)
                 let (own, rep) = own.unwrap_or((atyp, rep));
-                let bind = match bounds::active() {
-                    // the payload stands by its own shape, as the pattern
-                    // around it does
-                    true => {
-                        let shape = bind
-                            .infer_type_predicate(&ctx.env, &cx.scope.lexical)?
-                            .any_as_tvar();
-                        let cx = PatCx { inferred: true, ..cx };
-                        Self::compile_int(ctx, cx, &shape, bind, mode)?
-                    }
-                    false => {
-                        let rep_cx = PatCx { inferred: false, ..cx };
-                        Self::compile_int(ctx, rep_cx, &rep, bind, mode)?
-                    }
-                };
+                // the payload stands by its own shape, as the pattern around
+                // it does
+                let shape =
+                    bind.infer_type_predicate(&ctx.env, &cx.scope.lexical)?.any_as_tvar();
+                let bind = Self::compile_int(
+                    ctx,
+                    PatCx { inferred: true, ..cx },
+                    &shape,
+                    bind,
+                    mode,
+                )?;
                 let bind = Box::new(bind);
                 Self::Abstract { id, all, own, rep, bind }
             }
@@ -3939,62 +3919,20 @@ impl<R: Rt> PatternNode<R> {
             | Type::Ref(_) => (),
         }
         let sp = &spec.structure_predicate;
-        if bounds::active() {
-            // the structure stands by its own shape and its names are
-            // cells: the check routes what reaches the arm to them
-            let shape = sp.infer_type_predicate(&ctx.env, &scope.lexical)?;
-            let cx = PatCx {
-                scope,
-                pos,
-                ori: &ori,
-                inferred: true,
-                own_payloads: true,
-                holder: Holder::Arm,
-                whole: sp,
-            };
-            let structure_predicate =
-                StructPatternNode::compile_with(ctx, cx, &shape, sp)?;
-            structure_predicate.ids(&mut |id| ctx.env.retype(id, Type::empty_tvar()));
-            let guard = spec
-                .guard
-                .as_ref()
-                .map(|g| {
-                    Prune::compile(ctx, |ctx| {
-                        compiler::compile(ctx, flags, g.clone(), &scope, top_id)
-                    })
-                })
-                .transpose()?
-                .map(Held::new);
-            return Ok(Self::with(explicit, type_predicate, structure_predicate, guard));
-        }
-        if explicit {
-            let ids = StructurePattern::abstracts_at(&ctx.env, &scope.lexical);
-            if let Some(tv) = sp.meets_rigid(&ctx.env, &ids, &type_predicate)? {
-                let tp = &type_predicate;
-                return Err(rigid_refusal(&ctx.env, &ids, sp, tp, &tv, Holder::Arm));
-            }
-        }
+        // the structure stands by its own shape and its names are
+        // cells: the check routes what reaches the arm to them
+        let shape = sp.infer_type_predicate(&ctx.env, &scope.lexical)?;
         let cx = PatCx {
             scope,
             pos,
             ori: &ori,
-            inferred: !explicit,
-            own_payloads: !explicit,
+            inferred: true,
+            own_payloads: true,
             holder: Holder::Arm,
-            whole: &spec.structure_predicate,
+            whole: sp,
         };
-        let structure_predicate = StructPatternNode::compile_with(
-            ctx,
-            cx,
-            &type_predicate,
-            &spec.structure_predicate,
-        )?;
-        let mut retype = |id| ctx.env.retype(id, Type::empty_tvar());
-        if explicit {
-            structure_predicate.ids(&mut retype);
-        } else {
-            structure_predicate.fresh_ids(&mut retype);
-        }
+        let structure_predicate = StructPatternNode::compile_with(ctx, cx, &shape, sp)?;
+        structure_predicate.ids(&mut |id| ctx.env.retype(id, Type::empty_tvar()));
         let guard = spec
             .guard
             .as_ref()
