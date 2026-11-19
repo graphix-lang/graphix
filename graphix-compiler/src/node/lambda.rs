@@ -1785,7 +1785,7 @@ impl<R: Rt> Apply<R> for GXLambda<R> {
             {
                 wrap!(arg, arg.typecheck0(ctx))?;
                 if types.is_none() {
-                    wrap!(arg, typ.check_contains_rigid(&ctx.env, &arg.typ()))?;
+                    wrap!(arg, typ.check_contains(&ctx.env, &arg.typ()))?;
                 }
             }
             let env = self.env.clone();
@@ -1810,18 +1810,17 @@ impl<R: Rt> Apply<R> for GXLambda<R> {
                     // refusal here too, and pin it. probe:
                     // design/review-2026-11-16/repro/x-recursion-rec-return-mismatch.gx
                     // (x-recursion-04)
-                    let contain =
-                        rtype.check_contains_rigid(&ctx.env, &body).map_err(|e| {
-                            let method = ctx
-                                .lambda_defs
-                                .get(&self.id)
-                                .and_then(|d| d.downcast_ref::<LambdaDef<R>>())
-                                .is_some_and(|d| method_value(&d.scope));
-                            match method {
-                                true => e,
-                                false => picked_return(&ctx.env, rtype, &body, e),
-                            }
-                        });
+                    let contain = rtype.check_contains(&ctx.env, &body).map_err(|e| {
+                        let method = ctx
+                            .lambda_defs
+                            .get(&self.id)
+                            .and_then(|d| d.downcast_ref::<LambdaDef<R>>())
+                            .is_some_and(|d| method_value(&d.scope));
+                        match method {
+                            true => e,
+                            false => picked_return(&ctx.env, rtype, &body, e),
+                        }
+                    });
                     wrap!(self.body, contain)?;
                     let top = self.body.spec().id;
                     wrap!(
@@ -2375,7 +2374,7 @@ impl<R: Rt> Apply<R> for BuiltInLambda<R> {
             } else {
                 self.typ.vargs.as_ref().unwrap()
             };
-            wrap!(args[i], atyp.check_contains_rigid(&ctx.env, &args[i].typ()))?
+            wrap!(args[i], atyp.check_contains(&ctx.env, &args[i].typ()))?
         }
         self.apply.typecheck0(ctx, args)
     }

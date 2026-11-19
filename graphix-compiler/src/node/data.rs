@@ -1262,7 +1262,7 @@ impl<R: Rt> Construct<R> {
         if !check {
             return Ok(());
         }
-        let contain = |t: &Type| t.check_contains_lower(&ctx.env, &self.arg.typ());
+        let contain = |t: &Type| t.check_contains(&ctx.env, &self.arg.typ());
         wrap!(self.arg, contain(&self.rep))?;
         let defaults = check_hidden_defaults(
             ctx,

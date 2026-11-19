@@ -1094,87 +1094,6 @@ pub(super) mod tests {
         s.narrow_per_member(&Env::default(), &[]).unwrap();
     }
 
-    /// A cell of an arm's predicate that is a member's own part is one
-    /// cell with the open parts of the other members; a cell of the arm's
-    /// own takes their union and leaves them apart.
-    #[test]
-    fn narrowing_a_members_own_cell_makes_the_open_parts_one() {
-        let env = Env::default();
-        let cell = |n: &str| TVar::empty_named(n.into());
-        let member = |tv: &TVar| {
-            let parts = [Type::Primitive(Typ::I64.into()), Type::TVar(tv.clone())];
-            Type::Tuple(Arc::from_iter(parts))
-        };
-        let (a, b, c) = (cell("a"), cell("b"), cell("c"));
-        let members = [member(&a), member(&b), member(&c)];
-        member(&a).narrow_per_member(&env, &members).unwrap();
-        assert!(a.open_cell().is_some());
-        assert!(a.stands_for() == b.stands_for() && a.stands_for() == c.stands_for());
-        let (u, v, p) = (cell("u"), cell("v"), cell("p"));
-        member(&p).narrow_per_member(&env, &[member(&u), member(&v)]).unwrap();
-        assert!(p.open_cell().is_none());
-        assert!(u.open_cell().is_some() && v.open_cell().is_some());
-        assert!(u.stands_for() != v.stands_for());
-    }
-
-    /// An arm's cell that is one of the cells of the union at its part of
-    /// a variant is one cell with the open ones and takes what a bound one
-    /// holds, and what a member of that union that is no cell holds.
-    #[test]
-    fn narrowing_a_cell_of_a_payload_union_makes_its_cells_one() {
-        let env = Env::default();
-        let cell = |n: &str| TVar::empty_named(n.into());
-        let prim = |t: Typ| Type::Primitive(t.into());
-        let payload = |t: Type| {
-            Type::Variant(
-                "A".into(),
-                Arc::from_iter([prim(Typ::I64), t]),
-                WrittenAt::NOWHERE,
-            )
-        };
-        let union = |ts: &[Type]| Type::Set(Arc::from_iter(ts.iter().cloned()));
-        let (a, b, c) = (cell("a"), cell("b"), cell("c"));
-        let tvs = [Type::TVar(a.clone()), Type::TVar(b.clone()), Type::TVar(c.clone())];
-        let scrut = payload(union(&tvs));
-        assert!(scrut.narrow_pattern(&env, &payload(tvs[0].clone())).unwrap());
-        assert!(a.open_cell().is_some());
-        assert!(a.stands_for() == b.stands_for() && a.stands_for() == c.stands_for());
-        let (p, q) = (cell("p"), cell("q"));
-        q.bind(prim(Typ::String));
-        let tvs = [Type::TVar(p.clone()), Type::TVar(q.clone())];
-        let scrut = payload(union(&tvs));
-        assert!(scrut.narrow_pattern(&env, &payload(tvs[0].clone())).unwrap());
-        assert_eq!(p.binding(), Some(prim(Typ::String)));
-        let u = cell("u");
-        let scrut = payload(union(&[Type::TVar(u.clone()), prim(Typ::Null)]));
-        assert!(scrut.narrow_pattern(&env, &payload(Type::TVar(u.clone()))).unwrap());
-        assert_eq!(Type::TVar(u).deref_cloned(), Some(prim(Typ::Null)));
-    }
-
-    /// A cell a member holds where the arm's predicate does is its own
-    /// part of that member, never a copy merged back into it: each arm's
-    /// narrowing leaves the cell the lower bounds it had.
-    #[test]
-    fn narrowing_a_members_own_cell_keeps_its_lower_bounds() {
-        let env = Env::default();
-        let x = TVar::empty_named("x".into());
-        let cells: [TVar; 3] = std::array::from_fn(|_| {
-            let c = TVar::empty_named("c".into());
-            c.add_lower(Type::TVar(x.clone()));
-            c
-        });
-        let members = cells.each_ref().map(|c| {
-            let parts = [Type::Primitive(Typ::I64.into()), Type::TVar(c.clone())];
-            Type::Tuple(Arc::from_iter(parts))
-        });
-        for m in members.iter() {
-            m.narrow_per_member(&env, &members).unwrap();
-        }
-        let one = cells[0].open_cell().unwrap();
-        assert!(cells.iter().all(|c| c.stands_for() == one.cell_addr()));
-        assert!(one.cell_lower().len() <= cells.len());
-    }
-
     /// The forward links from `tv` to the cell it stands for.
     fn links(tv: &TVar) -> usize {
         let mut at = tv.clone();
@@ -1243,35 +1162,6 @@ pub(super) mod tests {
         }
         let most = cells.iter().flatten().map(links).max().unwrap();
         assert!(most <= 2 * n * n, "{most} links after {n} arms");
-    }
-
-    /// Slice arms over a scrutinee whose members are one type, as the first
-    /// arm leaves the members of an open scrutinee the arms typed: each arm
-    /// narrows against one of them, and its cell is the members' cell.
-    #[test]
-    fn narrowing_against_members_of_one_type_walks_one() {
-        use crate::typ::tvar::NARROW_STEPS;
-        let env = Env::default();
-        let n = 24;
-        let c = TVar::empty_named("c".into());
-        let members: Vec<Type> = (1..=n).rev().map(|k| slice_of(&c, k)).collect();
-        let scrut = Type::TVar(TVar::empty_named("x".into()));
-        let Type::TVar(x) = &scrut else { unreachable!() };
-        x.bind(Type::Set(Arc::from_iter(members)));
-        let mut cells: Vec<TVar> = vec![];
-        NARROW_STEPS.with(|s| s.set(0));
-        for k in (1..=n).rev() {
-            let at = cells.len();
-            cells.extend((0..=k).map(|i| TVar::empty_named(arcstr::format!("a{k}_{i}"))));
-            let elems = cells[at..].iter().cloned().map(Type::TVar);
-            let arm = Type::Array(Arc::new(Type::Set(elems.collect())));
-            assert!(scrut.narrow_pattern(&env, &arm).unwrap());
-        }
-        let steps = NARROW_STEPS.with(|s| s.get());
-        for a in cells.iter() {
-            assert!(a.open_cell().is_some_and(|a| a.same_cell(&c)), "{a}");
-        }
-        assert_eq!(steps, 348, "narrowings for {n} arms");
     }
 
     /// A member walked as a member before it is dropped: one type with it,

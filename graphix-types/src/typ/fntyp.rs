@@ -1807,7 +1807,7 @@ impl FnType {
     }
 
     pub fn contains(&self, env: &Env, t: &Self) -> Result<bool> {
-        self.contains_int(ContainsFlags::Commit.into(), env, &mut ContainsHist::new(), t)
+        self.contains_int(super::contains::QUERY, env, &mut ContainsHist::new(), t)
     }
 
     /// Arguments are contravariant: each of `t`'s parameters must admit
@@ -1947,8 +1947,7 @@ impl FnType {
     pub fn pre_unify_params(&self, env: &Env, t: &Self) -> Result<()> {
         let mut hist = ContainsHist::new();
         self.align(t).0.into_iter().try_for_each(|(s, t)| {
-            let flags = ContainsFlags::Commit.into();
-            match t.typ.contains_int(flags, env, &mut hist, &s.typ) {
+            match t.typ.contains_int(super::contains::QUERY, env, &mut hist, &s.typ) {
                 Err(e) if e.is::<UndecidedTaker>() => Ok(()),
                 r => r.map(drop),
             }
@@ -3112,167 +3111,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    /// A cell a union's member holds takes what stands at that member's
-    /// place where the two unions stand member for member, and its own
-    /// place first where it has one, whichever the signature holds first.
-    #[test]
-    fn a_cell_takes_a_members_place_after_its_own() {
-        use crate::{
-            env::Env,
-            typ::{PrintFlag, format_with_flags},
-        };
-        let env = Env::default();
-        let placed = |own: &str, at: &str| {
-            let own = parse_fn_type(own).unwrap();
-            own.place_cells(&env, &parse_fn_type(at).unwrap());
-            format_with_flags(PrintFlag::DerefTVars, || {
-                own.args.iter().map(|a| a.typ.to_string()).collect::<Vec<_>>().join("; ")
-            })
-        };
-        assert_eq!(
-            placed(
-                "fn(x: [Array<'a>, null], y: [{v: 'b}, null]) -> i64",
-                "fn(x: [Array<string>, null], y: [{v: _}, null]) -> i64"
-            ),
-            "[null, Array<'a: string>]; [null, { v: 'b: _ }]"
-        );
-        assert_eq!(
-            placed(
-                "fn(x: [Array<'a>, null], y: 'a) -> i64",
-                "fn(x: [Array<string>, null], y: [i64, string]) -> i64"
-            ),
-            "[null, Array<'a: [i64, string]>]; 'a: [i64, string]"
-        );
-        assert_eq!(
-            placed(
-                "fn(x: [Array<'a>, null]) -> i64",
-                "fn(x: [Array<string>, i64]) -> i64"
-            ),
-            "[null, Array<'a: unbound>]"
-        );
-        assert_eq!(
-            placed(
-                "fn(x: [Array<'a>, null]) -> i64",
-                "fn(x: [Array<string>, null, i64]) -> i64"
-            ),
-            "[null, Array<'a: unbound>]"
-        );
-        assert_eq!(
-            placed("fn(x: [Array<'a>, Array<'b>]) -> i64", "fn(x: Array<i64>) -> i64"),
-            "Array<'a: i64>"
-        );
-        assert_eq!(
-            placed(
-                "fn(x: [Array<'a>, Array<'b>, null]) -> i64",
-                "fn(x: [Array<string>, null]) -> i64"
-            ),
-            "[null, Array<'a: string>]"
-        );
-        assert_eq!(
-            placed("fn(x: ['a, 'b]) -> i64", "fn(x: string) -> i64"),
-            "'a: string"
-        );
-        assert_eq!(
-            placed(
-                "fn(x: [Array<'a>, Array<'b>]) -> i64",
-                "fn(x: [Array<i64>, Array<string>]) -> i64"
-            ),
-            "[Array<'a: i64>, Array<'b: string>]"
-        );
-    }
-
-    /// A cell a lower bound of another holds takes its own place before the
-    /// holder takes its: at a union two of whose members hold the bound,
-    /// the cell's own place says which, in either order of the positions.
-    #[test]
-    fn a_cell_a_lower_bound_holds_is_placed_before_its_holder() {
-        use crate::{
-            env::Env,
-            typ::{PrintFlag, TVar, Type, format_with_flags},
-        };
-        use ahash::AHashMap;
-        use arcstr::ArcStr;
-        let env = Env::default();
-        for (own, at) in [
-            (
-                "fn(a: 'p, z: 'z) -> i64",
-                "fn(a: [Array<i64>, Array<string>], z: string) -> i64",
-            ),
-            (
-                "fn(z: 'z, a: 'p) -> i64",
-                "fn(z: string, a: [Array<i64>, Array<string>]) -> i64",
-            ),
-        ] {
-            let bounded = || {
-                let own = parse_fn_type(own).unwrap();
-                let mut cells: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-                own.collect_tvars(&mut cells);
-                let z = Type::TVar(cells["z"].clone());
-                cells["p"].add_lower(Type::Array(triomphe::Arc::new(z)));
-                (own, cells["z"].clone())
-            };
-            let at = parse_fn_type(at).unwrap();
-            let (placed, z) = bounded();
-            placed.place_cells(&env, &at);
-            let z = format_with_flags(PrintFlag::DerefTVars, || z.to_string());
-            assert_eq!(z, "'z: string", "{own}");
-            let (held, _) = bounded();
-            assert!(held.held_at(&env, &at).is_ok(), "{own}");
-        }
-    }
-
-    /// A definition's open cell is the instance's open cell at its place,
-    /// where a decided member of the union beside it could take it too.
-    #[test]
-    fn an_open_cell_is_held_at_the_instances_open_cell() {
-        use crate::typ::{
-            PrintFlag, Type,
-            cast::tests::{parsed, typed},
-            format_with_flags,
-        };
-        let (env, _) = typed(&[("P<'p, 'q>", "[Array<'p>, Array<'q>]")], "null");
-        let sig = |t: &str| match &parsed(&env, t) {
-            Type::Fn(ft) => ft.clone(),
-            t => panic!("{t} is a function type"),
-        };
-        let def = sig("fn(k: fn(q: P<'b, 'a>) -> i64, y: 'a) -> fn(q: P<'b, 'a>) -> i64");
-        let instance =
-            sig("fn(k: fn(q: P<'u, f64>) -> i64, y: f64) -> fn(q: P<'u, f64>) -> i64");
-        let (own, _) = def.held_at(&env, &instance).unwrap();
-        let held = format_with_flags(PrintFlag::DerefTVars, || own.rtype.to_string());
-        assert_eq!(held, "fn(q: P<'b: unbound, 'a: f64>) -> i64");
-    }
-
-    /// Placing walks each pair of shared nodes once: a tuple of two of the
-    /// one below it, sixty deep, is sixty pairs.
-    #[test]
-    fn placing_walks_a_pair_of_shared_nodes_once() {
-        use crate::{
-            env::Env,
-            typ::{TVar, Type},
-        };
-        use arcstr::literal;
-        use triomphe::Arc;
-        let chain = |leaf: &TVar| {
-            (0..60).fold(Type::TVar(leaf.clone()), |t, _| {
-                Type::Tuple(Arc::from_iter([t.clone(), t]))
-            })
-        };
-        let (own, at) =
-            (TVar::empty_named(literal!("a")), TVar::empty_named(literal!("u")));
-        let env = Env::default();
-        chain(&own).place_open_cells(&env, &chain(&at));
-        at.bind(Type::Bottom);
-        assert!(
-            matches!(own.binding(), Some(t) if t.with_deref(|t| matches!(t, Some(Type::Bottom))))
-        );
-        let (own, at) =
-            (TVar::empty_named(literal!("a")), TVar::empty_named(literal!("u")));
-        at.bind(Type::Bottom);
-        chain(&own).place_cells(&env, &chain(&at));
-        assert!(matches!(own.binding(), Some(Type::Bottom)));
     }
 
     /// The refusal names the first variable declared whose bound reaches

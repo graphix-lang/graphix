@@ -426,7 +426,7 @@ fn judge_hidden_defaults<R: Rt>(
          _: &ArcStr,
          label: &Type,
          default: &Type,
-         _: Option<CompactString>| { label.check_contains_lower(env, default) };
+         _: Option<CompactString>| { label.check_contains(env, default) };
     for def in defs.iter() {
         let Some(f) = def.downcast_ref::<LambdaDef<R>>() else { continue };
         for (a, spec) in f.typ.args.iter().zip(f.argspec.iter()) {

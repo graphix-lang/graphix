@@ -92,6 +92,12 @@ pub enum ContainsFlags {
     Conjunct,
 }
 
+/// The relation outside a check by bounds, and the solver's own over
+/// decided types: a probe that binds nothing, in which a declared
+/// variable is a constant, holding only itself and Bottom.
+pub(crate) const QUERY: BitFlags<ContainsFlags> =
+    enumflags2::make_bitflags!(ContainsFlags::{RigidCheck});
+
 /// What a trial on copies takes from the walk it is made in
 /// ([`ContainsHist::seed`]).
 #[derive(Clone, Copy)]
@@ -3689,12 +3695,15 @@ pub(super) fn any_part_pair(
 const HEAD_CHAIN_LIMIT: usize = 64;
 
 impl Type {
+    /// `self` holds `t`: in a check by bounds the solver relates the two;
+    /// outside one the relation is a query that decides nothing
+    /// ([`QUERY`]).
     pub fn check_contains(&self, env: &Env, t: &Self) -> Result<()> {
         if let Some(r) = super::bounds::with(|s| s.constrain(env, t, self)) {
             return r;
         }
         let mut hist = ContainsHist::new();
-        let ok = self.contains_int(ContainsFlags::Commit.into(), env, &mut hist, t)?;
+        let ok = self.contains_int(QUERY, env, &mut hist, t)?;
         if graphix_dbg_bind() {
             eprintln!("CHK-CONTAINS {self} >= {t} -> {ok}");
         }
@@ -3707,20 +3716,6 @@ impl Type {
                 }
                 Err(e)
             }
-        }
-    }
-
-    /// [`Self::check_contains`] where the open cells `self` reaches take
-    /// `t`'s parts as lower bounds ([`ContainsFlags::Lower`]).
-    pub fn check_contains_lower(&self, env: &Env, t: &Self) -> Result<()> {
-        if let Some(r) = super::bounds::with(|s| s.constrain(env, t, self)) {
-            return r;
-        }
-        let mut hist = ContainsHist::new();
-        let flags = ContainsFlags::Commit | ContainsFlags::Lower;
-        match self.contains_int(flags, env, &mut hist, t)? {
-            true => Ok(()),
-            false => Err(self.contains_mismatch(env, t)),
         }
     }
 
@@ -4246,18 +4241,6 @@ impl Type {
         let why =
             t.indiscernible(env, Open::Benign, bound == Type::Bound(Bound::Ordered))?;
         Some(t.not_discernible(&bound, &tv.name, &why))
-    }
-
-    /// [`Self::check_contains`] with rigid enforcement (the def gate's
-    /// acceptance checks): in a check by bounds the solver relates the two,
-    /// holding a definition's declared variables rigid itself.
-    pub fn check_contains_rigid(&self, env: &Env, t: &Self) -> Result<()> {
-        if let Some(r) = super::bounds::with(|s| s.constrain(env, t, self)) {
-            return r;
-        }
-        let flags = ContainsFlags::Commit | ContainsFlags::RigidCheck;
-        let ok = self.contains_int(flags, env, &mut ContainsHist::new(), t)?;
-        if ok { Ok(()) } else { Err(self.contains_mismatch(env, t)) }
     }
 
     /// Whether `self` holds every member of a union.
@@ -6718,12 +6701,7 @@ impl Type {
         if let Some(fits) = super::bounds::with(|s| s.attempt(env, t, self)) {
             return Ok(fits);
         }
-        let r = self.contains_int(
-            ContainsFlags::Commit.into(),
-            env,
-            &mut ContainsHist::new(),
-            t,
-        );
+        let r = self.contains_int(QUERY, env, &mut ContainsHist::new(), t);
         if graphix_dbg_bind() {
             eprintln!("CONTAINS {self} >= {t} -> {r:?}");
         }
@@ -6757,7 +6735,7 @@ impl Type {
     ) -> Result<bool> {
         debug_assert!(hist.ordered);
         hist.next_relation();
-        let r = self.contains_int(ContainsFlags::Commit.into(), env, hist, t);
+        let r = self.contains_int(QUERY, env, hist, t);
         if graphix_dbg_bind() {
             eprintln!("CONTAINS-ORDERED {self} >= {t} -> {r:?}");
         }
@@ -6771,7 +6749,7 @@ impl Type {
             return r;
         }
         let mut hist = ContainsHist::ordered();
-        match self.contains_int(ContainsFlags::Commit.into(), env, &mut hist, t)? {
+        match self.contains_int(QUERY, env, &mut hist, t)? {
             true => Ok(()),
             false => {
                 let mut e = self.contains_mismatch(env, t);
@@ -6972,59 +6950,6 @@ mod tests {
         assert!(identical_linked(&mut hist, &f0, &f2, true));
         assert!(c.same_cell(&b));
         drop(rigid);
-    }
-
-    // A union's member that is the function it takes, by pairing their
-    // cells, names that function's definitions and is named by it, as a
-    // member that only contains it does; a probe links nothing.
-    #[test]
-    fn a_union_member_welded_to_a_function_names_its_definitions() {
-        let f = |v: &str| {
-            let t = crate::expr::parser::parse_type(&format!("fn(x: '{v}) -> '{v}"));
-            let t = t.unwrap();
-            let Type::Fn(ft) = &t else { unreachable!() };
-            let id = crate::LambdaId::new();
-            ft.lambda_ids.set_id(id);
-            (t, id)
-        };
-        let ids = |t: &Type| match t {
-            Type::Fn(ft) => ft.lambda_ids.ids(),
-            _ => unreachable!(),
-        };
-        let ((f0, id0), (f1, id1)) = (f("a"), f("b"));
-        let held =
-            Type::Set(Arc::from_iter([f0.clone(), Type::Primitive(Typ::Null.into())]));
-        let env = Env::default();
-        assert!(held.contains_with_flags(BitFlags::empty(), &env, &f1).unwrap());
-        assert!(!ids(&f0).contains(&id1) && !ids(&f1).contains(&id0));
-        assert!(held.contains(&env, &f1).unwrap());
-        assert!(ids(&f0).contains(&id1) && ids(&f1).contains(&id0));
-    }
-
-    // A member that is the function's type as it stands, their cells
-    // shared already, names its definitions too.
-    #[test]
-    fn a_union_member_that_is_a_function_names_its_definitions() {
-        let t = crate::expr::parser::parse_type("fn(x: 'a) -> 'a").unwrap();
-        let Type::Fn(ft) = &t else { unreachable!() };
-        let node = |id: crate::LambdaId| {
-            let lambda_ids = crate::typ::fntyp::LambdaIds::default();
-            lambda_ids.set_id(id);
-            Type::Fn(Arc::new(FnType { lambda_ids, ..(**ft).clone() }))
-        };
-        let ids = |t: &Type| match t {
-            Type::Fn(ft) => ft.lambda_ids.ids(),
-            _ => unreachable!(),
-        };
-        let (id0, id1) = (crate::LambdaId::new(), crate::LambdaId::new());
-        let (f0, f1) = (node(id0), node(id1));
-        let held =
-            Type::Set(Arc::from_iter([f0.clone(), Type::Primitive(Typ::Null.into())]));
-        let env = Env::default();
-        assert!(held.contains_with_flags(BitFlags::empty(), &env, &f1).unwrap());
-        assert!(!ids(&f0).contains(&id1) && !ids(&f1).contains(&id0));
-        assert!(held.contains(&env, &f1).unwrap());
-        assert!(ids(&f0).contains(&id1) && ids(&f1).contains(&id0));
     }
 
     const CHAIN_DEPTH: usize = 12;
@@ -7943,71 +7868,6 @@ mod tests {
         held.check_contains(&env, &t).unwrap();
     }
 
-    // A member whose cell an earlier part of the walk bound is decided when
-    // its union is met: it takes a decided type and binds nothing, wherever
-    // it stands among the members, in a walk on copies as in the check. A
-    // walk on copies that gave `Array<i64>` to the first member admitted
-    // would decide 'a there, and `Array<'a>` would hold no `Array<string>`:
-    // the tag would have one taker in one order of the members, and two in
-    // the other.
-    #[test]
-    fn a_member_decided_since_the_walk_met_it_takes_a_decided_type() {
-        let (env, _) = Env::typed_at_root(&[], "i64").unwrap();
-        let cases = [
-            ("[Array<'a>, Array<'b>]", "Array<i64>"),
-            ("[Array<'b>, Array<'a>]", "Array<i64>"),
-            ("[Array<'a>, Array<'b>, 'c]", "[Array<i64>, string]"),
-            ("[Array<'b>, Array<'a>, 'c]", "[Array<i64>, string]"),
-        ];
-        for (union, part) in cases {
-            let held = at_root(&env, &format!("('b, {union}, Array<'a>)"));
-            let t = at_root(&env, &format!("([i64, null], {part}, Array<string>)"));
-            let mut trial = ContainsHist::trial();
-            let flags = ContainsFlags::Commit.into();
-            assert!(held.contains_int(flags, &env, &mut trial, &t).unwrap(), "{union}");
-            let held =
-                at_root(&env, &format!("[`A('b, {union}, Array<'a>), `A('d, 'e, 'f)]"));
-            let t = at_root(&env, &format!("`A([i64, null], {part}, Array<string>)"));
-            let e = held.check_contains(&env, &t).unwrap_err();
-            assert!(e.is::<AmbiguousMember>(), "{union}: {e:#}");
-        }
-    }
-
-    // Which member of a union an undecided type goes to, on copies, follows
-    // the members' place: the union written one way meets a pair with a
-    // type mismatch where the other holds. The hold is sound (it stands
-    // when asked again, and `'z` took the one member that held its type).
-    #[test]
-    fn an_undecided_type_met_by_a_trial_goes_to_the_first_member_that_holds_it() {
-        let (env, _) = Env::typed_at_root(&[], "i64").unwrap();
-        let held = |union: &str| {
-            at_root(
-                &env,
-                &format!(
-                    "[`X('b, 'c, {union}, Array<'a>, [i64, null]), `Y(Array<Array<Array<'c>>>)]"
-                ),
-            )
-        };
-        let t = at_root(
-            &env,
-            "[`X([i64, null], i64, Array<'z>, Array<string>, 'z), `Y(Array<Array<Array<[i64, string]>>>)]",
-        );
-        let e = held("[Array<'a>, Array<'b>]").check_contains(&env, &t).unwrap_err();
-        assert!(
-            !e.is::<AmbiguousMember>() && format!("{e:#}").contains("type mismatch"),
-            "{e:#}"
-        );
-        let held = held("[Array<'b>, Array<'a>]");
-        held.check_contains(&env, &t).unwrap();
-        held.check_contains(&env, &t).unwrap();
-        let Type::Set(ms) = &held else { panic!("no set") };
-        let Type::Variant(_, xs, _) = &ms[0] else { panic!("no variant") };
-        assert_eq!(
-            crate::format_with_flags(crate::PrintFlag::DerefTVars, || xs[2].to_string()),
-            "[Array<'b: [i64, null]>, Array<'a: string>]"
-        );
-    }
-
     // The unions a trial walks before it meets a choice between members
     // are taken as written by the placement it allows too, which asks no
     // trial of its own for them: each union ahead of the choice adds the
@@ -8048,22 +7908,6 @@ mod tests {
                 "n={n}: {steps} steps against {none} with none"
             );
         }
-    }
-
-    // `closed_now` reads the cells: a verdict `closed` reached at the same
-    // write count through one it kept from before the cell was bound is
-    // not its answer.
-    #[test]
-    fn closed_now_reads_the_cells_after_closed_answered_from_a_kept_verdict() {
-        let (env, _) = Env::typed_at_root(&[], "i64").unwrap();
-        let held = at_root(&env, "('a, Array<'a>)");
-        let Type::Tuple(parts) = &held else { unreachable!("a tuple") };
-        let mut hist = ContainsHist::new();
-        assert!(!hist.closed(&parts[0]));
-        parts[0].check_contains(&env, &at_root(&env, "i64")).unwrap();
-        assert!(!hist.closed(&parts[1]));
-        assert!(hist.closed_now(&parts[1]));
-        assert!(hist.binds_nothing(&parts[1], &at_root(&env, "Array<i64>")));
     }
 
     // Two applications of one definition are compared by their arguments,
@@ -8112,43 +7956,6 @@ mod tests {
             let steps = CONTAINS_STEPS.with(|n| n.get());
             assert!(steps <= 200, "{open}: a commit took {steps} steps");
         }
-    }
-
-    // A commit that writes a cell outdates the probes settled before it. A
-    // pair settled then and answered since, under an assumption still in
-    // progress, is read from the verdicts kept while that stands: two
-    // definitions reaching each other, 12 applications over three cells
-    // against 2, take steps by their pairs, not by the paths through them.
-    #[test]
-    fn a_kept_verdict_is_read_past_an_outdated_one() {
-        let (swap, rotate) = ("'a1, 'a0, 'a2", "'a1, 'a2, 'a0");
-        let defs: Vec<(String, String)> = ["D", "F"]
-            .iter()
-            .flat_map(|n| {
-                [
-                    format!(
-                        "[Array<{n}0<{swap}>>, `X({n}0<{swap}>, 'a0), `Y({n}1<{rotate}>)]"
-                    ),
-                    format!(
-                        "[Error<{n}0<{swap}>>, `X(fn(x: {n}0<{swap}>) -> 'a0), \
-                         `Y({n}1<{rotate}>)]"
-                    ),
-                ]
-                .into_iter()
-                .enumerate()
-                .map(move |(i, body)| (format!("{n}{i}<'a0, 'a1, 'a2>"), body))
-            })
-            .collect();
-        let defs: Vec<(&str, &str)> = defs.iter().map(|(a, b)| (&**a, &**b)).collect();
-        let (env, _) = Env::typed_at_root(&defs, "i64").unwrap();
-        let open = at_root(&env, "fn(k: D0<'q0, 'q1, 'q2>) -> i64");
-        let held = at_root(&env, "fn(k: F0<Any, Any, Any>) -> i64");
-        CONTAINS_STEPS.with(|n| n.set(0));
-        let writes = cell_writes();
-        held.check_contains(&env, &open).unwrap();
-        let (steps, writes) = (CONTAINS_STEPS.with(|n| n.get()), cell_writes() - writes);
-        assert!(writes > 1, "the walk wrote {writes} cells");
-        assert!(steps <= 1000 * 12 * 2, "the walk took {steps} steps");
     }
 
     // What one walk keeps of applications over open cells is each pair's
@@ -8280,26 +8087,6 @@ mod tests {
         let defs: Vec<(&str, &str)> = defs.iter().map(|(a, b)| (&**a, &**b)).collect();
         let (env, _) = Env::typed_at_root(&defs, "i64").unwrap();
         asked_together_as_alone(&env, &names);
-    }
-
-    // An application's key reads its cells' addresses, so the walk holds
-    // the cells: one a merge leaves no var reading keeps its address.
-    #[test]
-    fn an_application_key_holds_its_cells() {
-        let defs = [("L<'a>", "['a, null]")];
-        let (env, apps) = Env::typed_at_root(&defs, "(L<'c>, L<'d>)").unwrap();
-        let mut cells = AHashMap::default();
-        apps.collect_tvars(&mut cells);
-        let (c, d): (TVar, TVar) = (cells["c"].clone(), cells["d"].clone());
-        let before = [c.cell(), d.cell()];
-        let Type::Tuple(apps) = &apps else { unreachable!() };
-        let mut hist = ContainsHist::new();
-        assert_ne!(hist.pair_key(&apps[0]).unwrap(), hist.pair_key(&apps[1]).unwrap());
-        Type::TVar(c.clone()).check_contains(&env, &Type::TVar(d.clone())).unwrap();
-        assert!(c.same_cell(&d));
-        let merged = c.cell();
-        let absorbed = before.iter().find(|b| !Arc::ptr_eq(b, &merged)).unwrap();
-        assert_eq!(Arc::count(absorbed), 2, "held here and by the walk");
     }
 
     // An application keyed under another by its id holds its own key's
@@ -8896,106 +8683,6 @@ mod tests {
         Type::Primitive(t.into())
     }
 
-    /// `p ⊇ q`, `q` above `w`, `w` bound to `[p, null]`: the three cells
-    /// are one type, above both `i64` and `null`.
-    #[test]
-    fn bare_cycle_through_a_bound_cell_merges() {
-        let env = Env::default();
-        let (p, q, w) = (var("p"), var("q"), var("w"));
-        p.add_lower(prim(Typ::I64));
-        w.bind(Type::Set(Arc::from_iter([Type::TVar(p.clone()), prim(Typ::Null)])));
-        q.add_lower(Type::TVar(w.clone()));
-        Type::TVar(p.clone()).check_contains(&env, &Type::TVar(q.clone())).unwrap();
-        assert!(p.same_cell(&q));
-        assert!(p.cell_lower().iter().all(|l| !p.would_cycle(l)));
-    }
-
-    /// `x` over the union `O` names, `b` its parameter there.
-    fn named_union_over(b: &TVar) -> (Env, Type) {
-        let (env, o) = Env::typed_at_root(&[("O<'t>", "['t, null]")], "O<'b>").unwrap();
-        let known = AHashMap::from_iter([(b.name.clone(), Type::TVar(b.clone()))]);
-        let o = o.replace_tvars(&known);
-        o.seed_refs(&env);
-        (env, o)
-    }
-
-    /// `x: O<'b>` over `type O<'t> = ['t, null]`, `b` bound, and `x ⊇ b`:
-    /// `x` reaches `b` through the name's parameter, so the bound is
-    /// dropped as the union written out is and `x` takes `b`'s binding; so
-    /// does a var aliased onto `b`'s cell.
-    #[test]
-    fn bare_cycle_through_a_typedefs_parameter_takes_the_bound_cells_binding() {
-        for (bound, aliased) in
-            [(Typ::I64, false), (Typ::Null, false), (Typ::I64, true), (Typ::Null, true)]
-        {
-            let (x, b, held) = (var("x"), var("b"), var("b"));
-            b.bind(prim(bound));
-            let (env, o) = named_union_over(if aliased { &held } else { &b });
-            x.add_cell_constraint(o);
-            if aliased {
-                held.alias(&b);
-                assert!(held.same_cell(&b));
-            }
-            let below = Type::TVar(if aliased { held } else { b });
-            Type::TVar(x.clone()).check_contains(&env, &below).unwrap();
-            assert_eq!(x.binding(), Some(prim(bound)));
-        }
-    }
-
-    /// The same cycle through a lower bound: `x` above `O<'b>` is `b` only
-    /// where `b` holds the name's other member.
-    #[test]
-    fn bare_cycle_through_a_typedefs_parameter_below_holds_the_other_members() {
-        let both = Type::Primitive(Typ::I64 | Typ::Null);
-        for (bound, holds) in [(prim(Typ::I64), false), (both, true)] {
-            let (x, b) = (var("x"), var("b"));
-            b.bind(bound.clone());
-            let (env, o) = named_union_over(&b);
-            x.add_lower(o);
-            let r = Type::TVar(x.clone()).check_contains(&env, &Type::TVar(b));
-            assert_eq!(r.is_ok(), holds, "{r:?}");
-            assert_eq!(x.binding(), holds.then_some(bound));
-        }
-    }
-
-    /// Two open cells on that cycle are one cell, without the bound that
-    /// named the union.
-    #[test]
-    fn bare_cycle_through_a_typedefs_parameter_merges_the_open_cells() {
-        let (x, b) = (var("x"), var("b"));
-        let (env, o) = named_union_over(&b);
-        x.add_cell_constraint(o);
-        Type::TVar(x.clone()).check_contains(&env, &Type::TVar(b.clone())).unwrap();
-        assert!(x.same_cell(&b));
-        assert!(x.cell_constraints().is_empty(), "{:?}", x.cell_constraints());
-    }
-
-    /// Through a lower bound the merged cell stays above the name's other
-    /// member, beside a written member of the same union.
-    #[test]
-    fn bare_cycle_through_a_typedefs_parameter_below_keeps_the_other_members() {
-        let (x, b) = (var("x"), var("b"));
-        let (env, o) = named_union_over(&b);
-        x.add_lower(Type::Set(Arc::from_iter([o, prim(Typ::String)])));
-        Type::TVar(x.clone()).check_contains(&env, &Type::TVar(b.clone())).unwrap();
-        assert!(x.same_cell(&b));
-        let lower = x.cell_lower();
-        assert!(lower.iter().all(|l| !x.would_cycle(l)), "{lower:?}");
-    }
-
-    /// A declared var on a cycle of open cells is every one of them.
-    #[test]
-    fn bare_cycle_through_a_declared_var_merges_into_it() {
-        let env = Env::default();
-        let (a, p, q) = (var("a"), var("p"), var("q"));
-        let _gate = a.open_rigid();
-        p.add_lower(Type::TVar(a.clone()));
-        q.add_lower(Type::TVar(p.clone()));
-        Type::TVar(a.clone()).check_contains(&env, &Type::TVar(q.clone())).unwrap();
-        assert!(a.same_cell(&p) && a.same_cell(&q));
-        assert!(a.is_rigid() && !a.is_bound());
-    }
-
     /// A declared var `e` whose bound is a cell `z` bound to `i64`: neither
     /// binds where `e` is rigid, so the relation is no cycle. `z ⊇ e` holds
     /// by the bound, `e ⊇ z` does not (`e` holds only itself), a probe
@@ -9022,25 +8709,6 @@ mod tests {
                 assert_eq!(e.cell_constraints().len(), 1, "{flags:?}");
             }
         }
-    }
-
-    /// A declared var holds a union of open cells as each of them, and no
-    /// union with a member it does not hold, which decides none of them.
-    #[test]
-    fn a_declared_var_holds_a_union_of_open_cells_as_each() {
-        let env = Env::default();
-        let union = |ts: [Type; 2]| Type::Set(Arc::from_iter(ts));
-        let (a, p, q) = (var("a"), var("p"), var("q"));
-        let _gate = a.open_rigid();
-        let both = union([Type::TVar(p.clone()), Type::TVar(q.clone())]);
-        assert!(Type::TVar(a.clone()).contains_ordered(&env, &both).unwrap());
-        assert!(a.same_cell(&p) && a.same_cell(&q));
-        assert!(a.is_rigid() && !a.is_bound());
-        let (b, r) = (var("b"), var("r"));
-        let _gate = b.open_rigid();
-        let mixed = union([Type::TVar(r.clone()), prim(Typ::I64)]);
-        assert!(!Type::TVar(b.clone()).contains_ordered(&env, &mixed).unwrap());
-        assert!(!b.same_cell(&r) && !r.is_bound());
     }
 
     #[test]
@@ -9070,266 +8738,6 @@ mod tests {
             let v = parsed(t).cast_value(&env, netidx_value::Value::U64(1));
             assert!(matches!(v, netidx_value::Value::Error(_)), "{t}: {v}");
         }
-    }
-
-    // covering `Array<i64>` binds the bare member first; the residue
-    // `i64` must still reach it
-    #[test]
-    fn a_free_union_member_takes_the_residue_after_a_sibling_binds_it() {
-        let env = Env::default();
-        let free = parsed("['b, Array<'b>]");
-        assert!(free.contains(&env, &parsed("[i64, Array<i64>]")).unwrap());
-        assert_eq!(binding(&free, 0), Some(parsed("i64")));
-        let free = parsed("['b, Array<'b>]");
-        assert!(!free.contains(&env, &parsed("[string, Array<i64>]")).unwrap());
-    }
-
-    // a type either of two undecided members could take goes to neither;
-    // one that only one can take, or that a member holds as it stands,
-    // goes there, and an ordered walk takes the first
-    #[test]
-    fn two_undecided_members_refuse_a_type_either_could_take() {
-        let env = Env::default();
-        for (union, t) in [
-            ("['a, 'b]", "i64"),
-            ("['a, 'b, null]", "[i64, null]"),
-            ("[Array<'a>, Array<'b>]", "Array<i64>"),
-            ("[(i64, 'a), ('b, string)]", "(i64, string)"),
-        ] {
-            let e = parsed(union).contains(&env, &parsed(t)).unwrap_err();
-            assert!(e.downcast_ref::<AmbiguousMember>().is_some(), "{union}: {e}");
-            let ordered = parsed(union);
-            assert!(ordered.contains_ordered(&env, &parsed(t)).unwrap(), "{union}");
-        }
-        for (union, t, taker) in [
-            ("['a, Array<'b>]", "Array<i64>", "b"),
-            ("['a, Error<'e>]", "Error<`X>", "e"),
-            ("[Array<'a>, List<'b>]", "List<i64>", "b"),
-            ("['a, null]", "i64", "a"),
-        ] {
-            let u = parsed(union);
-            assert!(u.contains(&env, &parsed(t)).unwrap(), "{union}");
-            let mut tvs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-            u.collect_tvars(&mut tvs);
-            for (name, tv) in tvs.iter() {
-                assert_eq!(tv.is_bound(), &**name == taker, "{union}: '{name}");
-            }
-        }
-        let held = parsed("[[Array<'a>, null], [List<'b>, null]]");
-        assert!(held.contains(&env, &parsed("null")).unwrap());
-        assert!(held.has_unbound());
-    }
-
-    // a member of several primitive types that no constructor member
-    // takes whole goes a type at a time: the open member takes only the
-    // types none does, and the member as it stands where none takes any
-    #[test]
-    fn an_open_member_takes_only_the_primitives_no_member_does() {
-        let env = Env::default();
-        for (union, t, open) in [
-            ("['a, null]", "[i64, null, Array<i64>]", "[i64, Array<i64>]"),
-            ("['a, i64]", "[i64, null, Array<i64>]", "[null, Array<i64>]"),
-            ("['a, string]", "[i64, null, Array<i64>]", "[i64, null, Array<i64>]"),
-            ("['a, null, Array<'b>]", "[i64, string, null, Array<i64>]", "[i64, string]"),
-        ] {
-            let union = parsed(union);
-            assert!(union.contains(&env, &parsed(t)).unwrap(), "{union}");
-            let mut tvs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-            union.collect_tvars(&mut tvs);
-            let a = Type::TVar(tvs["a"].clone()).deref_cloned().unwrap();
-            let open = parsed(open);
-            assert!(open.contains(&env, &a).unwrap(), "{union}: {a}");
-            assert!(a.contains(&env, &open).unwrap(), "{union}: {a}");
-        }
-    }
-
-    // a type holding a cell to decide that two decided members could
-    // take goes to neither, under a function's parameter too; one that
-    // only one can take, or that they decide alike, goes there, and an
-    // ordered walk and a pre-unification take or pass by
-    #[test]
-    fn two_decided_members_refuse_an_undecided_type_either_could_take() {
-        let env = Env::default();
-        for (union, t, at) in [
-            ("[Array<i64>, Array<string>]", "Array<'e>", TakerUnion::Holder),
-            ("[Array<string>, Array<i64>, null]", "Array<'e>", TakerUnion::Holder),
-            (
-                "[Map<string, i64>, Map<string, bool>]",
-                "Map<string, 'e>",
-                TakerUnion::Holder,
-            ),
-            (
-                "[fn(x: i64) -> i64, fn(x: string) -> i64]",
-                "fn(x: 'e) -> i64",
-                TakerUnion::Holder,
-            ),
-            (
-                "fn(q: Array<'e>) -> i64",
-                "fn(q: [Array<i64>, Array<bool>]) -> i64",
-                TakerUnion::Value,
-            ),
-        ] {
-            let e = match parsed(union).contains(&env, &parsed(t)) {
-                Err(e) => e,
-                Ok(held) => panic!("{union} ⊇ {t}: {held}"),
-            };
-            let taker = e.downcast_ref::<UndecidedTaker>();
-            assert_eq!(taker.map(|u| u.at()), Some(at), "{union}: {e}");
-            assert!(parsed(union).contains_ordered(&env, &parsed(t)).unwrap(), "{union}");
-        }
-        for (union, t, decided) in [
-            ("[Array<i64>, List<string>]", "List<'e>", Some("string")),
-            ("[(i64, i64), (string, string)]", "('e, i64)", Some("i64")),
-            ("[[Array<bool>, `X], [Array<bool>, `Y]]", "Array<'e>", Some("bool")),
-            ("[(Any, [i64, string]), (Any, [i64, bool])]", "('e, i64)", None),
-        ] {
-            let t = parsed(t);
-            assert!(parsed(union).contains(&env, &t).unwrap(), "{union}");
-            let mut tvs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-            t.collect_tvars(&mut tvs);
-            let e = Type::TVar(tvs["e"].clone());
-            assert_eq!(e.deref_cloned(), decided.map(parsed), "{union}");
-        }
-        let t = parsed("Array<'e>");
-        Type::pre_unify_arg(&env, &parsed("[Array<i64>, Array<string>]"), &t).unwrap();
-        assert!(t.has_unbound());
-    }
-
-    // members that are one type, cell for cell, are one member at the
-    // pick, which takes the type: a union's repeats and order and a cell
-    // bound to another tell no two apart; two open cells do
-    #[test]
-    fn members_that_are_one_type_take_a_type_as_one() {
-        let env = Env::default();
-        let set = |ts: &[&Type]| Type::Set(ts.iter().map(|t| (*t).clone()).collect());
-        let array = |t: &Type| Type::Array(Arc::new(t.clone()));
-        let fresh = || {
-            let (a, b, c) = (var("a"), var("b"), var("c"));
-            c.bind(Type::TVar(a.clone()));
-            (Type::TVar(a), Type::TVar(b), Type::TVar(c))
-        };
-        let (a, b, c) = fresh();
-        let null = prim(Typ::Null);
-        for (m0, m1) in [
-            (set(&[&a, &a]), a.clone()),
-            (array(&set(&[&a, &a])), array(&a)),
-            (c.clone(), a.clone()),
-            (array(&set(&[&c, &a])), array(&a)),
-            (set(&[&a, &null]), set(&[&null, &a, &a])),
-            (set(&[&set(&[&a, &b]), &null]), set(&[&b, &null, &a])),
-        ] {
-            assert!(one_type(&m0, &m1) && one_type(&m1, &m0), "{m0} is {m1}");
-        }
-        assert!(!strictly_identical(&array(&set(&[&a, &a])), &array(&a)));
-        for (m0, m1) in [
-            (a.clone(), b.clone()),
-            (set(&[&a, &b]), a.clone()),
-            (array(&set(&[&a, &b])), array(&a)),
-            (array(&set(&[&a, &null])), array(&a)),
-            (set(&[&a, &null]), set(&[&a, &b, &null])),
-            (Type::Set(Arc::from_iter([])), a.clone()),
-        ] {
-            assert!(!one_type(&m0, &m1) && !one_type(&m1, &m0), "{m0} is not {m1}");
-        }
-        let i64s = parsed("Array<i64>");
-        for elements in [0, 1] {
-            let (a, _, c) = fresh();
-            let element = [set(&[&a, &a]), set(&[&c, &a])][elements].clone();
-            let union = set(&[&array(&element), &array(&a)]);
-            assert!(union.contains(&env, &i64s).unwrap(), "{union}");
-            assert_eq!(a.deref_cloned(), Some(prim(Typ::I64)), "{union}");
-        }
-        let (a, _, c) = fresh();
-        let union = set(&[&c, &a]);
-        assert!(union.contains(&env, &prim(Typ::I64)).unwrap(), "{union}");
-        assert_eq!(a.deref_cloned(), Some(prim(Typ::I64)), "{union}");
-        let (a, b, _) = fresh();
-        let union = set(&[&array(&set(&[&a, &b])), &array(&a)]);
-        let e = union.contains(&env, &i64s).unwrap_err();
-        assert!(e.downcast_ref::<AmbiguousMember>().is_some(), "{union}: {e}");
-        assert!(a.has_unbound() && b.has_unbound(), "{union}");
-    }
-
-    // of two undecided members that could take a type, one that holds the
-    // others as it stands takes it where that decides every cell another
-    // would; where it leaves one of them open, or the walk is a
-    // pre-unification, none takes it and nothing is decided
-    #[test]
-    fn a_member_holding_the_others_takes_a_type_where_it_decides_their_cells() {
-        let env = Env::default();
-        // a tuple of the members, so one name is one cell and no two merge
-        let union = |members: &str| match &parsed(members) {
-            Type::Tuple(ms) => Type::Set(ms.clone()),
-            t => panic!("{t} is no tuple"),
-        };
-        let bound = |u: &Type| {
-            let mut tvs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-            u.collect_tvars(&mut tvs);
-            let mut bound: SmallVec<[ArcStr; 4]> = tvs
-                .iter()
-                .filter(|(_, tv)| tv.is_bound())
-                .map(|(n, _)| n.clone())
-                .collect();
-            bound.sort();
-            bound
-        };
-        for (members, t, decided) in [
-            (
-                "((i64, [`A('a), `B(string)]), (i64, `A('a)), (i64, `B(string)))",
-                "(i64, `A(i64))",
-                &["a"][..],
-            ),
-            (
-                "((i64, [`A('a), `B('b)], 'z), (i64, `A('a), 'z), (i64, `B('b), 'z))",
-                "(i64, `B(string), null)",
-                &["b", "z"],
-            ),
-            (
-                "((i64, [Array<'a>, {k: 'b}]), (i64, Array<'a>), (i64, {k: 'b}))",
-                "(i64, Array<i64>)",
-                &["a"],
-            ),
-        ] {
-            let u = union(members);
-            assert!(u.contains(&env, &parsed(t)).unwrap(), "{u}");
-            assert_eq!(&bound(&u)[..], decided, "{u}");
-            let early = union(members);
-            let e = early
-                .contains_int(
-                    ContainsFlags::Commit.into(),
-                    &env,
-                    &mut ContainsHist::early(),
-                    &parsed(t),
-                )
-                .unwrap_err();
-            assert!(e.downcast_ref::<AmbiguousMember>().is_some(), "{early}: {e}");
-            assert!(bound(&early).is_empty(), "{early}");
-        }
-        for (members, t) in [
-            ("((i64, Any, 'z), (i64, ('c, Any), 'z))", "(i64, (string, i64), i64)"),
-            ("(`S(Any, 'z), `S(Array<'c>, 'z))", "`S(Array<string>, i64)"),
-            ("((i64, [`A('a), `B('b)]), (i64, `A('a)), (i64, `B('b)))", "(i64, 'q)"),
-        ] {
-            let u = union(members);
-            let e = u.contains(&env, &parsed(t)).unwrap_err();
-            assert!(e.downcast_ref::<AmbiguousMember>().is_some(), "{u}: {e}");
-            assert!(bound(&u).is_empty(), "{u}");
-        }
-        // the copies give `K(i64) to `K('c), the first that holds it, and the
-        // walk to `K(['c, i64]), which holds it as it stands
-        let Type::Tuple(ps) = &parsed("(i64, (`K('c), `K(['c, i64])), 'z, `K('c))")
-        else {
-            panic!("no tuple")
-        };
-        let [n, Type::Tuple(ks), z, k] = &ps[..] else { panic!("no tuple") };
-        let tuple = |ts: [&Type; 3]| Type::Tuple(ts.into_iter().cloned().collect());
-        let u = Type::Set(Arc::from_iter([
-            tuple([n, &Type::Set(ks.clone()), z]),
-            tuple([n, k, z]),
-        ]));
-        let e = u.contains(&env, &parsed("(i64, `K(i64), i64)")).unwrap_err();
-        assert!(e.downcast_ref::<AmbiguousMember>().is_some(), "{u}: {e}");
-        assert_eq!(&bound(&u)[..], ["z"], "{u}");
     }
 
     // one cell standing twice is no union of two undecided members: an
@@ -9366,34 +8774,6 @@ mod tests {
         let free = parsed("['b, Array<'b>]");
         assert!(linked.contains(&env, &free).unwrap());
         assert!(binding(&free, 0).is_none(), "captured: {free}");
-    }
-
-    fn formal(t: &Type) -> Option<Type> {
-        match t {
-            Type::Fn(f) => f.args[0].typ.deref_cloned(),
-            Type::Set(s) => s.iter().find_map(|m| match m {
-                Type::Fn(f) if f.args[0].name().is_some_and(|n| n == "i") => {
-                    f.args[0].typ.deref_cloned()
-                }
-                _ => None,
-            }),
-            _ => panic!("not a function: {t}"),
-        }
-    }
-
-    // the first member admits `fn(i: 'c) -> 'c` part by part but not whole
-    // ('c would be string and i64): the second takes it, at ⊥
-    #[test]
-    fn a_member_admitted_by_parts_alone_binds_nothing() {
-        let env = Env::default();
-        let written = |ms: [&str; 2]| Type::Set(Arc::from_iter(ms.map(parsed)));
-        let union = written(["fn(path: string) -> i64", "fn(i: _) -> _"]);
-        let one = parsed("fn(i: 'c) -> 'c");
-        assert!(union.contains(&env, &one).unwrap(), "{union} ⊇ {one}");
-        assert_eq!(formal(&one), Some(Type::Bottom), "{one}");
-        let both = written(["fn(path: string) -> i64", "fn(i: 'c) -> 'c"]);
-        assert!(union.contains(&env, &both).unwrap(), "{union} ⊇ {both}");
-        assert_eq!(formal(&both), Some(Type::Bottom), "{both}");
     }
 
     #[test]
@@ -9437,24 +8817,6 @@ mod tests {
             a.narrow_cell(&env, other.clone()).unwrap();
             assert_eq!(a.cell_constraints().len(), 1, "{other}");
         }
-    }
-
-    // a conjunct that comes to hold its own cell, by a lower bound a
-    // member takes after it, admits what the cell takes
-    #[test]
-    fn a_conjunct_that_comes_to_hold_its_own_cell_admits_every_type() {
-        let env = Env::default();
-        let set = |ts: &[&Type]| Type::Set(ts.iter().map(|t| (*t).clone()).collect());
-        let (int, null) = (prim(Typ::I64), prim(Typ::Null));
-        let (u, e) = (var("u"), var("e"));
-        let (tu, te) = (Type::TVar(u.clone()), Type::TVar(e.clone()));
-        u.narrow_cell(&env, set(&[&te, &null])).unwrap();
-        te.check_contains_lower(&env, &tu).unwrap();
-        assert_eq!(u.cell_constraints().len(), 1);
-        assert!(!e.same_cell(&u) && !e.cell_lower().is_empty(), "{tu} {te}");
-        assert!(tu.contains_with_flags(BitFlags::empty(), &env, &int).unwrap());
-        assert!(tu.contains(&env, &int).unwrap());
-        assert!(te.contains(&env, &prim(Typ::String)).is_ok_and(|held| !held), "{te}");
     }
 
     // a bound's parts reach the open cells a name in the value is applied

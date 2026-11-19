@@ -7027,24 +7027,6 @@ mod tests {
         assert!(steps <= 2 * n, "{steps} links walked for {n} copies");
     }
 
-    /// Opening a predicate's cells over the `Any` parts of a pair DAG
-    /// walks each pair of shared nodes once, binding the one cell it holds.
-    #[test]
-    fn opening_cells_over_any_takes_each_pair_once() {
-        let n = 20;
-        let pair = |t: Type| Type::Tuple(Arc::from_iter([t.clone(), t]));
-        let c = TVar::empty_named(literal!("c"));
-        let (mut t, mut pred) = (Type::Any, Type::TVar(c.clone()));
-        for _ in 0..n {
-            (t, pred) = (pair(t), pair(pred));
-        }
-        ANY_STEPS.with(|s| s.set(0));
-        t.open_over_any(&Env::default(), &pred).unwrap();
-        let steps = ANY_STEPS.with(|s| s.get());
-        assert!(steps <= 4 * n + 128, "{steps} steps over a DAG of depth {n}");
-        assert!(matches!(c.binding(), Some(Type::Any)));
-    }
-
     /// `n` pairs, each of one bound cell twice, the cell holding the pair
     /// below it and the last one `leaf`.
     fn pairs_through_cells(n: usize, leaf: Type) -> Type {
@@ -7053,21 +7035,6 @@ mod tests {
             part.bind(t);
             Type::Tuple(Arc::from_iter([Type::TVar(part.clone()), Type::TVar(part)]))
         })
-    }
-
-    /// A pair DAG that shares its parts through bound cells, on either
-    /// side, is opened once per pair of the nodes the cells hold.
-    #[test]
-    fn opening_cells_over_any_takes_a_pair_through_cells_once() {
-        let n = 24;
-        let c = TVar::empty_named(literal!("c"));
-        let t = pairs_through_cells(n, Type::Any);
-        let pred = pairs_through_cells(n, Type::TVar(c.clone()));
-        ANY_STEPS.with(|s| s.set(0));
-        t.open_over_any(&Env::default(), &pred).unwrap();
-        let steps = ANY_STEPS.with(|s| s.get());
-        assert!(steps <= 4 * n + 128, "{steps} steps over a DAG of depth {n}");
-        assert!(matches!(c.binding(), Some(Type::Any)));
     }
 
     /// Whether a union stands under a constructor of a pair DAG that

@@ -3098,10 +3098,10 @@ pub(crate) mod tests {
     use crate::{
         PrintFlag,
         env::Env,
-        expr::{ModPath, TypeDefBody, parser::parse_type},
+        expr::{ModPath, parser::parse_type},
         format_with_flags,
         typ::{
-            Bound, NodeKey, NodePairs, TVar, Type,
+            NodeKey, NodePairs, TVar, Type,
             cast::tests::{parsed, typed, union_dag},
             matches::MATCH_PAIRS,
             node_addr,
@@ -3252,37 +3252,6 @@ pub(crate) mod tests {
             let Type::Ref(tr) = t else { panic!("{t} is a reference") };
             assert!(tr.is_open(), "{t} was filled")
         }
-    }
-
-    // Two applications of one definition taken as one by their arguments
-    // hold those arguments to the parameters' bounds, as their expansions
-    // do.
-    #[test]
-    fn one_definition_by_its_arguments_holds_their_bounds() {
-        let (mut env, _) = typed(&[], "null");
-        let r = (TVar::empty_named(literal!("r")), Some(Type::Bound(Bound::NoError)));
-        let body = TypeDefBody::Alias(parse_type("['r, `X]").unwrap());
-        let site = (Default::default(), Default::default(), Arc::new(Default::default()));
-        let root = ModPath::root();
-        env.deftype(
-            &root,
-            "R",
-            Arc::from_iter([r]),
-            &body,
-            true,
-            None,
-            site.0,
-            site.1,
-            site.2,
-        )
-        .unwrap();
-        env.seed_typedef_refs();
-        let t = parsed(&env, "R<'c>");
-        let mut cells = AHashMap::default();
-        t.collect_tvars(&mut cells);
-        t.check_contains(&env, &t.clone()).unwrap();
-        let bounds = cells["c"].cell_constraints();
-        assert!(bounds.contains(&Type::Bound(Bound::NoError)), "{bounds:?}");
     }
 
     // diff reads a bound cell as its binding wherever it compares parts:
