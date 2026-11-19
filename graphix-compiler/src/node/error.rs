@@ -254,6 +254,34 @@ impl<R: Rt> Catch<R> {
         self.own_handler.machine().map_or(0, |m| m.abort_stamp())
     }
 
+    /// The errors raised under the catch flow into its binding, which
+    /// holds at most what is written of it. A block holds this before the
+    /// region the catch covers, which is checked ahead of the catch, so its
+    /// raises meet what is written; the catch's own check holds it where
+    /// no block did (an input that is one catch).
+    pub(crate) fn hold_written(&self, ctx: &CompileCtx<R>) -> Result<()> {
+        match self.written() {
+            Some(written) => written.check_contains(&ctx.env, &self.binder(ctx)?),
+            None => Ok(()),
+        }
+    }
+
+    /// The type the catch's binding is written with.
+    fn written(&self) -> Option<&Type> {
+        match &self.spec.kind {
+            ExprKind::Catch(c) => c.constraint.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// The type of the catch's binding.
+    fn binder(&self, ctx: &CompileCtx<R>) -> Result<Type> {
+        match ctx.env.by_id.get(&self.bind_id) {
+            Some(b) => Ok(b.typ.clone()),
+            None => bail!("BUG: catch bind vanished"),
+        }
+    }
+
     pub(crate) fn image_decode(
         ctx: &mut ExecCtx<'_, R>,
         buf: &mut &[u8],
@@ -296,23 +324,7 @@ impl<R: Rt> Catch<R> {
             t.refuse_quantified_fns(&ctx.env).at(&spec)?;
         }
         let catch_scope = scope.append_place("ca", &spec, None);
-        // an ascribed catch takes its type now, so a raise it covers writes
-        // nothing, from whatever task checks the raise
         let typ = Type::empty_tvar();
-        match &typ {
-            // the errors raised under the catch flow into its binding,
-            // which holds at most what is written of it
-            Type::TVar(tv) if bounds::active() => {
-                if let Some(written) = &c.constraint {
-                    written.check_contains(&ctx.env, &typ).at(&spec)?
-                }
-            }
-            Type::TVar(tv) => {
-                tv.freeze();
-                tv.bind(c.constraint.clone().unwrap_or(Type::Bottom))
-            }
-            _ => unreachable!(),
-        }
         let bind_id = ctx
             .env
             .bind_variable(
@@ -521,12 +533,14 @@ impl<R: Rt> Update<R> for Catch<R> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
+        wrap!(self, self.hold_written(ctx))?;
         self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx), true)
     }
 
     /// The error bind and the capture take the types their definition's
     /// check left them ([`Catch::aux_types`]); whether `T` covers the
-    /// region's throws was judged there.
+    /// region's throws was judged there. With no row the binder holds what
+    /// is written of it, or nothing.
     fn typecheck0_instance(
         &mut self,
         ctx: &mut CompileCtx<R>,
@@ -534,11 +548,16 @@ impl<R: Rt> Update<R> for Catch<R> {
     ) -> Result<()> {
         self.unused_warning = None;
         match types.aux(self.spec.id) {
-            None => self.typecheck0_with(
-                ctx,
-                &mut |n, ctx| n.typecheck0_instance(ctx, types),
-                false,
-            ),
+            None => {
+                if let Type::TVar(tv) = &self.binder(ctx)? {
+                    tv.bind(self.written().cloned().unwrap_or(Type::Bottom))
+                }
+                self.typecheck0_with(
+                    ctx,
+                    &mut |n, ctx| n.typecheck0_instance(ctx, types),
+                    false,
+                )
+            }
             Some(rows) => {
                 for (id, row) in self.bind_ids().zip(rows.iter()) {
                     if let Some(Type::TVar(tv)) = ctx.env.by_id.get(&id).map(|b| &b.typ) {
@@ -1653,12 +1672,7 @@ impl<R: Rt> Catch<R> {
         // the capture cell's type is the union of every covering
         // handler's throws
         if let Some(cap) = abort.capture() {
-            let etyp = ctx
-                .env
-                .by_id
-                .get(&self.bind_id)
-                .map(|b| b.typ.clone())
-                .ok_or_else(|| anyhow!("BUG: catch bind vanished"))?;
+            let etyp = self.binder(ctx)?;
             let bind = ctx
                 .env
                 .by_id

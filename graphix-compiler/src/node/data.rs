@@ -22,10 +22,7 @@ use crate::{
         nodes::{NodeTag, decode_node, decode_nodes, encode_nodes, put_tag},
     },
     rep,
-    typ::{
-        AbstractId, Type,
-        bounds::{self, Use},
-    },
+    typ::{AbstractId, Type, bounds::Use},
     wrap,
 };
 use anyhow::{Result, anyhow, bail};
@@ -327,34 +324,6 @@ impl<R: Rt> StructWith<R> {
             .collect::<Result<Box<[_]>>>()?;
         Ok(Self::with(spec, Type::empty_tvar(), source, replace))
     }
-}
-
-/// The type of `{source with ..replace}`: the source's, each replaced
-/// field holding its replacement's type, as a literal's field does.
-fn updated_type<R: Rt>(
-    ctx: &CompileCtx<R>,
-    source: &Type,
-    replace: &[Replace<R>],
-) -> Result<Type> {
-    let updated = |flds: &[(ArcStr, Type, WrittenAt)]| {
-        Type::Struct(Arc::from_iter(flds.iter().map(|(name, t, at)| {
-            let t = match replace.iter().rev().find(|r| &r.name == name) {
-                Some(r) => r.n.typ(),
-                None => t,
-            };
-            (name.clone(), t.clone(), *at)
-        })))
-    };
-    if let Some(members) = union_of(ctx, source, |t| match t {
-        Type::Struct(flds) => Some(updated(flds)),
-        _ => None,
-    })? {
-        let members: LPooled<Vec<&Type>> = members.iter().collect();
-        return Type::union(&ctx.env, &members);
-    }
-    deref_typ!("struct", ctx, source,
-        Some(Type::Struct(flds)) => Ok(updated(flds))
-    )
 }
 
 impl<R: Rt> Update<R> for StructWith<R> {
@@ -1167,7 +1136,8 @@ impl<R: Rt> Struct<R> {
 }
 
 impl<R: Rt> StructWith<R> {
-    /// Each replacement's field index is state: an instance finds it too.
+    /// An instance's types are its rows, and typecheck1 finds each
+    /// field's place.
     fn typecheck0_with(
         &mut self,
         ctx: &mut CompileCtx<R>,
@@ -1175,33 +1145,15 @@ impl<R: Rt> StructWith<R> {
         check: bool,
     ) -> Result<()> {
         wrap!(self.source, child(&mut self.source, ctx))?;
-        // an instance's types are its rows, and typecheck1 finds each
-        // field's place
-        if bounds::active() || !check {
-            for rep in self.replace.iter_mut() {
-                wrap!(rep.n, child(&mut rep.n, ctx))?;
-            }
-            if !check {
-                return Ok(());
-            }
-            let fields = self.replace.iter().map(|r| (r.name.clone(), r.n.typ().clone()));
-            let u = Use::With { fields: fields.collect(), out: self.typ.clone() };
-            return wrap!(self, solving(|s| s.watch(&ctx.env, self.source.typ(), u)));
+        for rep in self.replace.iter_mut() {
+            wrap!(rep.n, child(&mut rep.n, ctx))?;
         }
-        let styp = self.source.typ().clone();
-        let mut fields = || -> Result<()> {
-            for rep in self.replace.iter_mut() {
-                rep.index = struct_field_types(ctx, &styp, &rep.name)?.0;
-                wrap!(rep.n, child(&mut rep.n, ctx))?;
-            }
-            Ok(())
-        };
-        wrap!(self, fields())?;
         if !check {
             return Ok(());
         }
-        let typ = wrap!(self, updated_type(ctx, &styp, &self.replace))?;
-        wrap!(self, self.typ.check_contains(&ctx.env, &typ))
+        let fields = self.replace.iter().map(|r| (r.name.clone(), r.n.typ().clone()));
+        let u = Use::With { fields: fields.collect(), out: self.typ.clone() };
+        wrap!(self, solving(|s| s.watch(&ctx.env, self.source.typ(), u)))
     }
 }
 

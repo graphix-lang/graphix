@@ -2164,6 +2164,11 @@ pub(crate) fn typecheck0_statements<R: Rt>(
     catches: &[usize],
     module: bool,
 ) -> Result<()> {
+    for n in catches.iter().map(|i| &nodes[*i]) {
+        if let NodeView::Catch(c) = n.view() {
+            statement_result(c.hold_written(ctx), n, module)?
+        }
+    }
     let order: LPooled<Vec<usize>> = evaluation_order(nodes.len(), catches).collect();
     let mut slots: LPooled<Vec<Option<&mut Node<R>>>> =
         nodes.iter_mut().map(Some).collect();
