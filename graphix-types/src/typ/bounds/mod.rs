@@ -2444,6 +2444,16 @@ fn quantified(v: &TVar) -> bool {
     v.cell().read().solving.as_ref().is_some_and(|k| k.quantified)
 }
 
+/// Whether `v` is a cell of the definition closing over `depth` that its
+/// check left neither decided nor the scheme's.
+fn open_own(v: &TVar, depth: u32) -> bool {
+    v.level().depth() > depth
+        && !v.is_bound()
+        && !v.is_rigid()
+        && !quantified(v)
+        && !v.level().is_generic()
+}
+
 fn demanded(v: &TVar) -> bool {
     v.cell().read().solving.as_ref().is_some_and(|k| k.demanded)
 }
@@ -2917,29 +2927,13 @@ impl Solving {
         }
         self.fix_scope(env, depth + 1, false, mark)?;
         for v in self.cells[mark..].iter() {
-            let pending = v.level().depth() > depth
-                && !v.is_bound()
-                && !v.is_rigid()
-                && !quantified(v)
+            let pending = open_own(v, depth)
                 && v.cell_constraints().iter().any(|c| matches!(c, Type::Bound(_)));
-            if pending && !v.level().is_generic() {
+            if pending {
                 self.singles.push(v.clone());
-                v.generalize();
                 // each instance whose variables it reaches checks a copy
-                let mut reached = Cells::new();
-                self.reach(&Type::TVar(v.clone()), &mut reached);
+                let reached = self.instances_own(v, depth);
                 for u in reached.iter().filter(|u| !u.same_cell(v)) {
-                    // what stands between it and those variables is the
-                    // instance's too: the copy reads no cell of the
-                    // definition
-                    if u.level().depth() > depth
-                        && !u.is_bound()
-                        && !u.is_rigid()
-                        && !quantified(u)
-                        && !u.level().is_generic()
-                    {
-                        u.generalize()
-                    }
                     self.leave(&Type::TVar(u.clone()), |ls| {
                         let same =
                             |l: &Left| matches!(l, Left::Single(w) if w.same_cell(v));
@@ -2987,7 +2981,7 @@ impl Solving {
         for id in 0..self.selects.len() {
             let of = self.selects[id].template.clone();
             for w in self.selects[id].waiting.clone() {
-                self.leave(&w, |ls| {
+                let waits = |ls: &[Left]| {
                     let same = |l: &Left| match l {
                         Left::Waiting(t, u) => {
                             Arc::ptr_eq(t, &of) && strictly_identical(u, &w)
@@ -2995,10 +2989,34 @@ impl Solving {
                         _ => false,
                     };
                     (!ls.iter().any(same)).then(|| Left::Waiting(of.clone(), w.clone()))
-                })
+                };
+                // a value waiting on a cell of the definition it left
+                // undecided is each instance's, as its type is made of the
+                // scheme's variables: those variables carry it
+                let mut cells = SmallVec::new();
+                cells_of(&w, true, &mut cells);
+                for c in cells.iter().filter(|c| open_own(c, depth)) {
+                    for u in self.instances_own(c, depth).iter() {
+                        self.leave(&Type::TVar(u.clone()), &waits)
+                    }
+                }
+                self.leave(&w, &waits)
             }
         }
         Ok(())
+    }
+
+    /// Make the closing definition's cell `v` each instance's, with what
+    /// stands between it and the scheme's variables it reaches, so a copy
+    /// reads no cell of the definition; the cells it reaches.
+    fn instances_own(&self, v: &TVar, depth: u32) -> Cells {
+        v.generalize();
+        let mut reached = Cells::new();
+        self.reach(&Type::TVar(v.clone()), &mut reached);
+        for u in reached.iter().filter(|u| open_own(u, depth)) {
+            u.generalize()
+        }
+        reached
     }
 
     /// Leave a check to the instances of the scheme whose variables `t`
@@ -3007,11 +3025,11 @@ impl Solving {
         let mut cells = SmallVec::new();
         cells_of(t, true, &mut cells);
         for v in cells.iter().filter(|v| v.is_rigid() || v.level().is_generic()) {
-            known(v, |k| {
-                if let Some(l) = left(&k.left) {
-                    k.left.push(l)
-                }
-            })
+            // `left` reads cells, `v` among them, so not under its lock
+            let ls = known(v, |k| k.left.clone());
+            if let Some(l) = left(&ls) {
+                known(v, |k| k.left.push(l))
+            }
         }
     }
 

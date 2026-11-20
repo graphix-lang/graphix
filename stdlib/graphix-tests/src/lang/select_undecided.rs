@@ -3715,3 +3715,40 @@ run!(standing_tests_that_leave_a_member_uncovered_annotated, r#"{
     };
     [f(0, `A, true), f(0, `B, true)]
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 3]); FuseExpect::Jit);
+
+// A value a generic definition's select waits on is routed by each call,
+// one whose type is a cell of the definition made of its variables too
+// (the element of `[[x]]`).
+run!(waiting_value_inside_a_definitions_cell_is_routed_by_each_call, r#"{
+    let f = |x, c: bool| {
+        let b = select c { true => [x], false => [[x]] };
+        select b { [h, ..] => h, _ => never() }
+    };
+    f(1, true) + 1
+}"#, refused("i64 does not contain Array<i64>"); FuseExpect::None);
+
+run!(waiting_value_inside_a_definitions_cell_written_later, r#"{
+    let f = |x| {
+        let b = [x];
+        b <- [[x]];
+        select b { [h, ..] => h, _ => never() }
+    };
+    f(1) + 1
+}"#, refused("i64 does not contain Array<i64>"); FuseExpect::None);
+
+run!(waiting_value_inside_a_definitions_tuple_cell, r#"{
+    let f = |x, c: bool| {
+        let b = select c { true => (x, 1), false => ((x, x), 1) };
+        select b { (0, _) => 0, (h, _) => h }
+    };
+    f(1, true) + 1
+}"#, refused("i64 does not contain (i64, i64)"); FuseExpect::None);
+
+run!(waiting_value_inside_a_definitions_cell_routed, r#"{
+    let f = |x, c: bool| {
+        let b = select c { true => [x], false => [[x]] };
+        select b { [h, ..] => h, _ => never() }
+    };
+    let r = f(1, false);
+    select r { i64 as n => "n [n]", Array<i64> as a => "a [a]" }
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "a [1]"); FuseExpect::Jit);
