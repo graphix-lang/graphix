@@ -10467,14 +10467,14 @@ run!(null_literal_pools_beside_variants, r#"{
   [f(`P(`A)), f(`P(null)), g((`A, 5)), g((null, 2))]
 }"#, |v: Result<&Value>| matches!(v, Ok(v) if v.to_string() == "[i64:1, i64:0, i64:5, i64:0]"); FuseExpect::Jit);
 
-// A literal pattern is typed as the same literal in an expression is.
-run!(an_error_literal_pattern_is_typed_by_its_payload, r#"{
+// A literal pattern is typed as the same literal in an expression is: an
+// error literal of another payload type tests a type the value never is.
+run!(an_error_literal_of_another_payload_type_is_dead, r#"{
   let r: [i64, Error<string>] = error("x");
   select r { error:1 => 1, _ => 2 }
-}"#, prints("i64:2"); FuseExpect::None);
+}"#, refused("will never match: nothing reaches it"); FuseExpect::None);
 
-// A literal of another payload type is a value-level dead arm (allowed,
-// 3b); a type test of a type the value never is stays refused (3a).
+// A type test of a type the value never is is a dead arm too (3a).
 run!(an_error_type_test_of_another_payload_is_dead, r#"{
   let r: [i64, Error<string>] = error("x");
   select r { Error<i64> as e => 1, _ => 2 }

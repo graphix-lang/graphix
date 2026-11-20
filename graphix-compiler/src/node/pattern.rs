@@ -1005,9 +1005,7 @@ impl StructPatternNode {
             Self::Literal(Value::Bool(b)) => {
                 Pat::Variant(None, if *b { TRUE } else { FALSE }, vec![])
             }
-            Self::Literal(v) => {
-                Pat::Lit(Type::Primitive(Typ::get(v).into()), matches!(v, Value::Null))
-            }
+            Self::Literal(v) => Pat::Lit(Type::of_literal(v)?, matches!(v, Value::Null)),
             Self::Slice { kind: SliceKind::Tuple, all: whole, binds } => {
                 Pat::Tuple(named(whole)?, all(binds)?)
             }
