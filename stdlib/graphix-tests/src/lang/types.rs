@@ -11735,7 +11735,7 @@ run!(
   let g = select c { true => f, false => |y: 'a, x: P<'a, 'b>| (x, y) };
   g("t", ["s"]).1
 }"#,
-    refused("type mismatch Number does not contain 'a");
+    refused("type mismatch Number does not contain string");
     FuseExpect::None
 );
 run!(
@@ -16355,11 +16355,20 @@ run!(
     declared_variable_under_two_unions_of_a_callees_bound_keeps_the_bounds_of_its_variable,
     r#"{
   let g = 'b: (['c, null], ['c, i64]), 'c: [string, null, i64] |s: 'c, x: 'b| -> 'b x;
-  let f = |u, w: (['a, null], ['a, null])| g(u, w);
+  let f = 'a: Any |u, w: (['a, null], ['a, null])| g(u, w);
   f(1, (2, 2))
 }"#,
     refused("type mismatch [i64, null, string] does not contain 'a");
     FuseExpect::None
+);
+run!(
+    bare_variable_under_two_unions_of_a_callees_bound_takes_the_bound,
+    r#"{
+  let g = 'b: (['c, null], ['c, i64]), 'c: [string, null, i64] |s: 'c, x: 'b| -> 'b x;
+  let f = |u, w: (['a, null], ['a, null])| g(u, w);
+  f(1, (2, 2))
+}"#,
+    prints("[i64:2, i64:2]")
 );
 run!(
     declared_variable_under_two_unions_of_a_callees_bound_declared_within_its_bound,

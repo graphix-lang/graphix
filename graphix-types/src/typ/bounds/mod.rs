@@ -901,6 +901,25 @@ impl Solving {
         fits
     }
 
+    /// Whether `v` is a variable its definition's text writes in a
+    /// position but does not declare: it is one type at each call, as a
+    /// declared one is, and its bound is what its body needs of it. A
+    /// question (an attempt) asks what holds of it and adds nothing.
+    fn bare(&self, v: &TVar) -> bool {
+        self.attempts == 0
+            && v.is_rigid()
+            && !self.sealed
+            && v.declared_name().is_some()
+            && !v.declared_here()
+    }
+
+    /// The bare variable `v` takes the conjunct `c`.
+    fn takes(&mut self, v: &TVar, c: &Type) {
+        if record(v, c, false).is_some() {
+            self.note(v, Added::Upper)
+        }
+    }
+
     fn note(&mut self, v: &TVar, what: Added) {
         if self.attempts > 0 {
             self.added.push((v.clone(), what))
@@ -950,6 +969,9 @@ impl Solving {
                     if numbers_ordered(|| own.implies(env, &b))? {
                         return Ok(());
                     }
+                }
+                if self.bare(v) {
+                    return Ok(self.takes(v, &b));
                 }
                 let name = v.declared_name().unwrap_or_else(|| v.name.clone());
                 let name = ShortName(&name);
@@ -1086,6 +1108,9 @@ impl Solving {
                 let bounds = v.cell_constraints();
                 match (bounds.iter().any(|u| self.attempt(env, u, &b)), &b) {
                     (true, _) => Ok(()),
+                    (false, Type::Primitive(p)) if p.len() > 1 && self.bare(v) => {
+                        Ok(self.takes(v, &b))
+                    }
                     (false, Type::Set(ms)) => self.below_union(env, &a, ms, &b),
                     (false, _) => mismatch(&b, &a),
                 }
