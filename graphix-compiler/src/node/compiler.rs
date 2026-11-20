@@ -66,6 +66,7 @@ pub(crate) fn compile_statement_expr<R: Rt>(
     scope: &Scope,
     top_id: ExprId,
 ) -> Result<Node<R>> {
+    let _outside = super::bind::outside(&spec).map(AtLevel::enter);
     ensure_sufficient(|| compile_inner(ctx, flags, spec, scope, top_id, true))
 }
 

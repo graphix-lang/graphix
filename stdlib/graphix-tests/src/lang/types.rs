@@ -12223,6 +12223,30 @@ run!(
     prints(r#"[i64:1, "s", i64:0]"#)
 );
 
+// A block's value reads the block's own names: one a nearer `let` binds to
+// a value is no generic name around the block.
+run!(
+    a_blocks_value_reads_its_own_binding_not_a_generic_one_around_it,
+    r#"{ let f = |x| x; let a = { let f = 0; f }; a(5) }"#,
+    refused_renumbered("fn(i64) -> '_0: unbound does not contain i64");
+    FuseExpect::None
+);
+
+// What a block's statement binds is made once, and every instance of the
+// definition the block ends in shares it: a write through one is a write
+// to all.
+run!(
+    a_blocks_binding_a_returned_closure_writes_is_one_binding,
+    r#"{
+    let h = { let y0 = []; let g0 = |x| { y0 <- [x]; x }; |u| (u, y0, g0) };
+    let w: (i64, Array<string>, i64) = (0, h(0).1, 1);
+    let a = h(0).2(5);
+    0
+}"#,
+    refused("string does not contain i64");
+    FuseExpect::None
+);
+
 // A writable reference in a function body to a function its block holds
 // makes it a `<-` target as a write there does: one compile, nothing
 // generalized it.

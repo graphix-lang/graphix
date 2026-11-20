@@ -76,15 +76,45 @@ fn defines<R: Rt>(ctx: &CompileCtx<R>, scope: &Scope, e: &Expr) -> bool {
     defines_among(ctx, scope, e, &mut SmallVec::new())
 }
 
+/// A name a block around an expression has bound so far, and whether it
+/// is bound to a definition: the latest binding of a name shadows the
+/// others.
+type Local = (ArcStr, bool);
+
+/// The names `stmts`, a block's statements before its value, bind, after
+/// those `locals` holds.
+fn bind_locals<R: Rt>(
+    ctx: &CompileCtx<R>,
+    scope: &Scope,
+    stmts: &[Expr],
+    locals: &mut SmallVec<[Local; 4]>,
+) {
+    for stmt in stmts {
+        let ExprKind::Bind(b) = &stmt.kind else { continue };
+        let defined = b.pattern.single_bind().is_some()
+            && b.typ.is_none()
+            && defines_among(ctx, scope, &b.value, locals);
+        b.pattern.with_names(&mut |name| locals.push((name.clone(), defined)))
+    }
+}
+
+/// Whether the latest of `locals` to bind the plain name `name` binds a
+/// definition; `None` where none binds it.
+fn local_defines(locals: &[Local], name: &str) -> Option<bool> {
+    let base = netidx_core::path::Path::basename(name)
+        .filter(|_| netidx_core::path::Path::levels(name) == 1)?;
+    locals.iter().rev().find(|(l, _)| l.as_str() == base).map(|(_, d)| *d)
+}
+
 /// [`defines`], where `locals` are the names the blocks around `e` have
-/// bound to definitions so far.
+/// bound so far.
 fn defines_among<R: Rt>(
     ctx: &CompileCtx<R>,
     scope: &Scope,
     e: &Expr,
-    locals: &mut SmallVec<[ArcStr; 4]>,
+    locals: &mut SmallVec<[Local; 4]>,
 ) -> bool {
-    let any = |es: &[Expr], locals: &mut SmallVec<[ArcStr; 4]>| {
+    let any = |es: &[Expr], locals: &mut SmallVec<[Local; 4]>| {
         es.iter().any(|e| defines_among(ctx, scope, e, locals))
     };
     match &e.kind {
@@ -98,15 +128,7 @@ fn defines_among<R: Rt>(
         ExprKind::Block { exprs } => {
             let bound = locals.len();
             let Some((last, before)) = exprs.split_last() else { return false };
-            for stmt in before.iter() {
-                if let ExprKind::Bind(b) = &stmt.kind
-                    && let Some(name) = b.pattern.single_bind()
-                    && b.typ.is_none()
-                    && defines_among(ctx, scope, &b.value, locals)
-                {
-                    locals.push(name.clone())
-                }
-            }
+            bind_locals(ctx, scope, before, locals);
             let defined = defines_among(ctx, scope, last, locals);
             locals.truncate(bound);
             defined
@@ -126,12 +148,10 @@ fn defines_among<R: Rt>(
         ExprKind::StructRef { source, .. } | ExprKind::TupleRef { source, .. } => {
             defines_among(ctx, scope, source, locals)
         }
-        ExprKind::Ref { name } => {
-            let local = netidx_core::path::Path::basename(&**name)
-                .filter(|_| netidx_core::path::Path::levels(&**name) == 1)
-                .is_some_and(|n| locals.iter().any(|l| l.as_str() == n));
-            local || scheme_named(ctx, scope, name).is_some()
-        }
+        ExprKind::Ref { name } => match local_defines(locals, &**name) {
+            Some(defined) => defined,
+            None => scheme_named(ctx, scope, name).is_some(),
+        },
         // a sample of a definition is that definition
         ExprKind::BinOp {
             op: BinOp::Sample | BinOp::StrictSample | BinOp::BankedSample,
@@ -169,22 +189,21 @@ fn outside_parts<R: Rt>(
 }
 
 /// [`outside_parts`], where `locals` are the names the blocks around `e`
-/// have bound to definitions so far.
+/// have bound so far.
 fn outside_among<R: Rt>(
     ctx: &CompileCtx<R>,
     scope: &Scope,
     e: &Expr,
-    locals: &mut SmallVec<[ArcStr; 4]>,
+    locals: &mut SmallVec<[Local; 4]>,
     out: &mut SmallVec<[ExprId; 4]>,
 ) {
-    let part = |e: &Expr,
-                locals: &mut SmallVec<[ArcStr; 4]>,
-                out: &mut SmallVec<[ExprId; 4]>| {
-        match defines_among(ctx, scope, e, locals) {
-            true => outside_among(ctx, scope, e, locals, out),
-            false => out.push(e.id),
-        }
-    };
+    let part =
+        |e: &Expr, locals: &mut SmallVec<[Local; 4]>, out: &mut SmallVec<[ExprId; 4]>| {
+            match defines_among(ctx, scope, e, locals) {
+                true => outside_among(ctx, scope, e, locals, out),
+                false => out.push(e.id),
+            }
+        };
     match &e.kind {
         ExprKind::ExplicitParens(e) | ExprKind::SeqGuard(e) | ExprKind::Live(e) => {
             outside_among(ctx, scope, e, locals, out)
@@ -193,17 +212,24 @@ fn outside_among<R: Rt>(
             out.push(c.snapshot.id);
             outside_among(ctx, scope, &c.live, locals, out)
         }
+        // a statement that binds no definition runs once, and every
+        // instance shares what it binds
         ExprKind::Block { exprs } => {
             let bound = locals.len();
             let Some((last, before)) = exprs.split_last() else { return };
             for stmt in before.iter() {
-                if let ExprKind::Bind(b) = &stmt.kind
-                    && let Some(name) = b.pattern.single_bind()
-                    && b.typ.is_none()
-                    && defines_among(ctx, scope, &b.value, locals)
-                {
-                    locals.push(name.clone())
+                let defined = match &stmt.kind {
+                    ExprKind::Bind(b) => {
+                        b.pattern.single_bind().is_some()
+                            && b.typ.is_none()
+                            && defines_among(ctx, scope, &b.value, locals)
+                    }
+                    _ => false,
+                };
+                if !defined {
+                    out.push(stmt.id)
                 }
+                bind_locals(ctx, scope, std::slice::from_ref(stmt), locals)
             }
             outside_among(ctx, scope, last, locals, out);
             locals.truncate(bound)
@@ -306,17 +332,13 @@ fn literal_part_types<'a>(
     }
 }
 
-/// `e` past grouping parentheses and the statements of a block it ends.
+/// `e` past grouping parentheses and seq wrappers.
 fn expr_value(e: &Expr) -> &Expr {
     match &e.kind {
         ExprKind::ExplicitParens(e) | ExprKind::SeqGuard(e) | ExprKind::Live(e) => {
             expr_value(e)
         }
         ExprKind::SeqCapture(c) => expr_value(&c.live),
-        ExprKind::Block { exprs } => match exprs.last() {
-            Some(last) => expr_value(last),
-            None => e,
-        },
         _ => e,
     }
 }
