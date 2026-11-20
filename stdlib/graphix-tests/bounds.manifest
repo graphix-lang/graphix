@@ -722,6 +722,7 @@ graphix_tests::lang::types::select_before_a_write_of_its_own_payload_through_a_l
 graphix_tests::lang::types::select_before_a_write_of_the_selected_element	refuses	type mismatch i64 does not contain Array<i64>
 graphix_tests::lang::types::select_before_a_write_of_the_selected_element_built_known	refuses	type mismatch i64 does not contain Array<i64>
 graphix_tests::lang::types::select_before_a_write_reading_its_payload_in_a_lambda	refuses	infinite type: a variable holds itself in Array<'_0>
+graphix_tests::lang::types::select_before_a_write_reading_its_payload_through_a_function	refuses	infinite type: a variable holds itself in Array<'_0>
 graphix_tests::lang::types::select_before_a_write_reading_its_payload_through_a_reference	refuses	infinite type: a variable holds itself in Array<'_0>
 graphix_tests::lang::types::select_before_a_write_reading_its_payload_through_a_write	refuses	infinite type: a variable holds itself in Array<'_0>
 graphix_tests::lang::types::select_element_of_two_payload_bounds_takes_no_arithmetic	refuses	type mismatch i64 does not contain Array<i64>
