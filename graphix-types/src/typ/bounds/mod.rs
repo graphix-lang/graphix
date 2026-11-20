@@ -4042,7 +4042,10 @@ impl Solving {
     /// Register a use of whatever `t` turns out to be.
     pub fn watch(&mut self, env: &Env, t: &Type, u: Use) -> Result<()> {
         let u = match u {
-            Use::Select(id) => Use::Routed(id, self.selects[id].template.clone()),
+            Use::Select(id) => {
+                self.select_scrutinee(id, t.clone());
+                Use::Routed(id, self.selects[id].template.clone())
+            }
             u => u,
         };
         let t = shallow(t);

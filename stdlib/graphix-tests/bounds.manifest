@@ -979,10 +979,10 @@ graphix_tests::lang::select_undecided::tag_deciding_a_later_written_part_refused
 graphix_tests::lang::select_undecided::undecided_part_of_a_destructured_binding	refuses	pattern _ will never match: nothing reaches it (2:55; the value is (`J, i64))
 graphix_tests::lang::select_undecided::test_deciding_a_member_an_arm_body_drops_before_a_dead_arm_refused	refuses	pattern w will never match: nothing reaches it (5:12; the value is { a: i64 })
 graphix_tests::lang::select_undecided::element_tag_deciding_an_undecided_part_refused	refuses	pattern [`J] will never match: nothing reaches it (3:20; the value is Array<`M>)
-graphix_tests::lang::select_undecided::whole_holder_destructured_before_a_dead_arm_refused	refuses	pattern _ will never match: nothing reaches it (4:16; the value is (i64, i64))
+graphix_tests::lang::select_undecided::whole_holder_destructured_before_a_dead_arm_refused	accepts	i64:6
 graphix_tests::lang::select_undecided::written_test_after_bool_head_is_dead	refuses	pattern (bool, i64) will never match: nothing reaches it (2:45; the value is (bool, [i64, null]))
 graphix_tests::lang::select_undecided::written_test_deciding_an_undecided_part_refused	refuses	pattern (`J, i64) will never match: nothing reaches it (3:20; the value is (`M, i64))
-graphix_tests::lang::select_undecided::written_test_behind_an_arm_a_decided_member_takes_refused	refuses	pattern i64 will never match: nothing reaches it (4:16; the value is null)
+graphix_tests::lang::select_undecided::written_test_behind_an_arm_a_decided_member_takes_refused	accepts	i64:1
 graphix_tests::lang::select_undecided::written_test_missing_a_declared_variable_member_is_dead_by_parts	refuses	pattern (bool, [i64, null]) will never match: nothing reaches it (2:77; the value is ['a, (bool, [i64, null])])
 graphix_tests::lang::select_undecided::written_union_test_of_two_undecided_parts_refused	refuses	pattern [(`J, Any, i64), (`J, i64, Any)] will never match: nothing reaches it (6:20; the value is (`K, i64, i64) | (`J, string, string))
 graphix_tests::lang::select_undecided::written_union_test_of_an_undecided_part_before_a_literal_refused	refuses	pattern (`J, [i64, string]) will never match: nothing reaches it (5:20; the value is (`K, i64) | (`J, bool))

@@ -433,6 +433,9 @@ pub(super) struct Select {
     pub(super) waiting: Vec<Type>,
     /// What was passed down the arms.
     seen: Vec<Type>,
+    /// The scrutinee: a part of it nothing decides at the definition (a
+    /// declared variable, a parameter) reaches the arms by its type alone.
+    scrutinees: Vec<Type>,
     /// How each arm is written, for a refusal to name it.
     written: Option<Arc<[ArcStr]>>,
 }
@@ -558,6 +561,7 @@ impl Solving {
             instance: false,
             waiting: vec![],
             seen: vec![],
+            scrutinees: vec![],
             written: None,
         });
         self.selects.len() - 1
@@ -1424,7 +1428,24 @@ impl Solving {
         // instances give it its values
         let judged = |s: &&Select| s.routed && !s.instance && s.waiting.is_empty();
         for s in self.selects.iter().filter(judged) {
-            if let Some(i) = s.hit.iter().position(|h| !h) {
+            let mut hit = s.hit.clone();
+            // an arm is dead where the arms before it took its whole type: a
+            // part of the scrutinee nothing decides here reaches the arms
+            // its type does
+            for t in s.scrutinees.iter().map(deep) {
+                if super::cells_in(&t).is_empty() {
+                    continue;
+                }
+                let mut reach = self.expand(env, &split(&t));
+                for (i, arm) in s.template.arms.iter().enumerate() {
+                    let r = self.route(env, &arm.pat, &reach);
+                    hit[i] |= !nothing(&r.part);
+                    if !arm.guarded {
+                        reach = r.rest
+                    }
+                }
+            }
+            if let Some(i) = hit.iter().position(|h| !h) {
                 let seen: Vec<String> = s.seen.iter().map(|t| t.to_string()).collect();
                 let (at, seen) = (&s.template.at, seen.join(" | "));
                 let arm = match s.written.as_ref().and_then(|w| w.get(i)) {
@@ -1447,6 +1468,11 @@ impl Solving {
             }
         }
         Ok(())
+    }
+
+    /// Have the select `id` know its scrutinee `t`.
+    pub(super) fn select_scrutinee(&mut self, id: usize, t: Type) {
+        self.selects[id].scrutinees.push(t)
     }
 
     /// Have the select `id` wait on `t`.
