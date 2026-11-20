@@ -2025,9 +2025,10 @@ pub fn method_typing(sig: &Type, target: &Type) -> Type {
     at(sig, target).unwrap_or_else(|| sig.clone())
 }
 
-/// What is demanded of a cell, `t`, less the members a predicate among
-/// the cell's `bounds` rules out: a value of `Result<'a, 'e>` demanded as
-/// `[i64, Error<'e>]` is an `i64` there, since `'a` holds no error.
+/// What is demanded of a cell nothing flows into, `t`, less the members a
+/// predicate among the cell's `bounds` rules out: a value of
+/// `Result<'a, 'e>` demanded as `[i64, Error<'e>]` is an `i64` there,
+/// since `'a` holds no error, and one demanded as `Error<'e>` alone is ⊥.
 fn within(env: &Env, t: Type, bounds: &[Type]) -> Result<Type> {
     let predicates = || bounds.iter().filter(|b| matches!(b, Type::Bound(_)));
     if predicates().next().is_none() {
@@ -2045,7 +2046,7 @@ fn within(env: &Env, t: Type, bounds: &[Type]) -> Result<Type> {
             _ => SmallVec::<[Type; 4]>::from_iter([m]),
         })
         .collect();
-    if members.len() < 2 {
+    if members.is_empty() {
         return Ok(t);
     }
     let mut kept: SmallVec<[Type; 4]> = SmallVec::new();
@@ -2058,7 +2059,22 @@ fn within(env: &Env, t: Type, bounds: &[Type]) -> Result<Type> {
             kept.push(m.clone())
         }
     }
+    // ⊥ holds no value, so it meets every predicate but those that refuse
+    // it (a read target is `Concrete`)
+    let bottom_admitted = predicates().all(|b| {
+        matches!(
+            b,
+            Type::Bound(
+                Bound::NoError
+                    | Bound::Singleton
+                    | Bound::OneNumber
+                    | Bound::Ordered
+                    | Bound::Discernible
+            )
+        )
+    });
     Ok(match kept.len() {
+        0 if bottom_admitted => Type::Bottom,
         0 => t,
         n if n == members.len() => t,
         _ => union_of(kept),
@@ -3811,8 +3827,13 @@ impl Solving {
             [one] => one.clone(),
             many => join(env, many)?,
         };
-        let one = matches!(&stands_for(env, &t)?,
-            Type::Primitive(p) if p.exactly_one().is_some() || p.is_empty());
+        // one type: a single primitive, or one constructor (an array, a
+        // tuple, a function); a union or an open cell is not
+        let one = match &stands_for(env, &t)? {
+            Type::Primitive(p) => p.exactly_one().is_some() || p.is_empty(),
+            Type::Set(_) | Type::TVar(_) | Type::Any => false,
+            _ => true,
+        };
         if single && !matches!(t, Type::Bottom) && !one {
             // a declared variable is one type, which each call must give
             // it
@@ -3821,9 +3842,10 @@ impl Solving {
                     let cell = r.cell();
                     cell.write().add_constraint(Type::Bound(Bound::Singleton))
                 }
-                _ => bail!(
+                _ if Type::Primitive(Typ::number()).contains(env, &t)? => bail!(
                     "cannot compute with {t}: both operands must be one numeric type"
                 ),
+                _ => bail!("{t} is more than one type, where `Singleton` asks for one"),
             }
         }
         Ok(t)
@@ -3866,6 +3888,22 @@ impl Solving {
         for t in ts {
             if self.attempting(|s| ts.iter().try_for_each(|o| s.constrain(env, t, o))) {
                 return Ok(t.clone());
+            }
+        }
+        // the members of a union that every other bound holds meet them all
+        for t in ts {
+            let Type::Set(ms) = t else { continue };
+            let kept: SmallVec<[Type; 4]> = ms
+                .iter()
+                .filter(|m| ts.iter().all(|o| self.probe(env, m, o)))
+                .cloned()
+                .collect();
+            if kept.is_empty() {
+                continue;
+            }
+            let u = union_of(kept);
+            if self.attempting(|s| ts.iter().try_for_each(|o| s.constrain(env, &u, o))) {
+                return Ok(u);
             }
         }
         let common = ts.iter().try_fold(None, |acc: Option<_>, t| match (acc, t) {
