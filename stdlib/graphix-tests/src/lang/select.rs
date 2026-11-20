@@ -2579,8 +2579,8 @@ run!(
     };
     [h((1, "a")), h(("b", 2))]
 }"#,
-    refused("unreachable or-pattern alternative: the earlier arms and alternatives already cover everything");
-    FuseExpect::None
+    prints(r#"["1", "b"]"#);
+    FuseExpect::Jit
 );
 
 // The same patterns as arms: the second arm's whole type is taken (3a).

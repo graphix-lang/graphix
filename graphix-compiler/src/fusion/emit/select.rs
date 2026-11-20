@@ -11,7 +11,7 @@ use crate::{
     },
     node::{
         op::CmpOp,
-        pattern::{PatternNode, SliceKind, StructPatternNode, StructWidth, set_members},
+        pattern::{PatternNode, SliceKind, StructPatternNode, StructWidth},
         select::Select,
     },
     stack,
@@ -2626,7 +2626,8 @@ enum AltSource {
 }
 
 /// The [`OrArm`] of the or-pattern arm `pat`, whose alternatives are
-/// `alts`; its written test, if any, is emitted here.
+/// `alts`: each tests against the members of the arm's predicate its
+/// structure may admit. Its written test, if any, is emitted here.
 fn or_arm<R: Rt>(
     cx: &mut BodyCx,
     pat: &PatternNode<R>,
@@ -2635,9 +2636,6 @@ fn or_arm<R: Rt>(
     scrut_typ: &Type,
 ) -> Result<OrArm> {
     let pred = &pat.type_predicate;
-    if !pat.explicit_type_predicate {
-        return Ok(OrArm { alt_types: set_members(pred, alts.len()), test: None });
-    }
     let env = cx.ctx.type_env;
     let mut members: SmallVec<[Type; 8]> = SmallVec::new();
     union_members(env, pred, &mut members)?;
@@ -2653,7 +2651,10 @@ fn or_arm<R: Rt>(
             }
         })
         .collect();
-    let test = emit_type_test(cx, pat, scrut, scrut_typ)?;
+    let test = match pat.explicit_type_predicate {
+        true => emit_type_test(cx, pat, scrut, scrut_typ)?,
+        false => None,
+    };
     Ok(OrArm { alt_types: Some(alt_types), test })
 }
 
