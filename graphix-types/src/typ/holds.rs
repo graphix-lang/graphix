@@ -429,8 +429,17 @@ impl<'e> Holds<'e> {
 
     /// A union holds a tuple, struct or variant whose parts are unions
     /// where it holds each one their members make: `[(`A, `C), (`B, `C)]`
-    /// holds `([`A, `B], `C)`.
+    /// holds `([`A, `B], `C)`. A combination no member holds as written is
+    /// split again by the bounds of the declared variables among its parts,
+    /// whose values are those of their bounds: `[(`A, `X), (`A, `Y), (`B,
+    /// 'b)]` holds `([`A, `B], 'b)` for `'b: [`X, `Y]`.
     fn distributed(&mut self, ms: &[Type], b: &Type) -> Result<bool> {
+        self.distributed_by(ms, b, 0)
+    }
+
+    /// [`Self::distributed`], `splits` times split by bounds already.
+    fn distributed_by(&mut self, ms: &[Type], b: &Type, splits: u8) -> Result<bool> {
+        const SPLITS: u8 = 4;
         const MOST: usize = 256;
         let parts: &[Type] = match b {
             Type::Tuple(ts) | Type::Variant(_, ts, _) => ts,
@@ -444,7 +453,7 @@ impl<'e> Holds<'e> {
         let mut alts: SmallVec<[SmallVec<[Type; 4]>; 8]> = SmallVec::new();
         let mut count = 1usize;
         for f in fields.iter() {
-            let a = self.alternatives(f)?;
+            let a = self.alternatives(f, splits > 0)?;
             count = count.saturating_mul(a.len());
             alts.push(a);
         }
@@ -468,6 +477,8 @@ impl<'e> Holds<'e> {
             let held = ms.iter().try_fold(false, |held, m| {
                 Ok::<_, anyhow::Error>(held || self.attempt(m, &one)?)
             })?;
+            let held =
+                held || (splits < SPLITS && self.distributed_by(ms, &one, splits + 1)?);
             self.keep.push(one);
             if !held {
                 return Ok(false);
@@ -488,9 +499,22 @@ impl<'e> Holds<'e> {
     }
 
     /// The types a part may be one of: a union's members, through a
-    /// typedef; each primitive of several.
-    fn alternatives(&mut self, t: &Type) -> Result<SmallVec<[Type; 4]>> {
+    /// typedef; each primitive of several; `by_bound`, a declared variable's
+    /// one decided bound's.
+    fn alternatives(&mut self, t: &Type, by_bound: bool) -> Result<SmallVec<[Type; 4]>> {
         let t = decided(t).into_owned();
+        if by_bound
+            && let Type::TVar(v) = &t
+            && v.is_rigid()
+            && let [bound] = &v
+                .cell_constraints()
+                .into_iter()
+                .filter(|c| !matches!(c, Type::Bound(_)))
+                .collect::<SmallVec<[Type; 2]>>()[..]
+            && !bound.has_free()
+        {
+            return self.alternatives(bound, false);
+        }
         let t = match &t {
             Type::Ref(_)
                 if self

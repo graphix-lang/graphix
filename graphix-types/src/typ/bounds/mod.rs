@@ -1385,6 +1385,11 @@ impl Solving {
         {
             return Ok(());
         }
+        // two decided types: the relation over them says, a value's parts
+        // spread over the members that take them
+        if !a.has_free() && !b.has_free() && super::holds::holds(env, b, a)? {
+            return Ok(());
+        }
         let cells: SmallVec<[&Type; 2]> =
             members.iter().filter(|m| open(m).is_some()).collect();
         if let Type::Primitive(p) = a {
