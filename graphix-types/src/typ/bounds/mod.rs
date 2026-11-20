@@ -2756,17 +2756,26 @@ impl Solving {
     /// is of every type it is used as. One that cannot is a parameter no
     /// call can pass.
     fn meetable(&self, env: &Env, v: &TVar) -> Result<()> {
-        let asked: SmallVec<[Type; 4]> = v
-            .cell_constraints()
-            .iter()
-            .map(deep)
-            // nothing is asked of a cell wanted as nothing but that
-            // nothing flows into it, which its flows are held to
-            .filter(|u| {
-                !matches!(u, Type::TVar(_) | Type::Bound(_) | Type::Bottom)
-                    && !u.is_trait_ref(env)
-            })
-            .collect();
+        // what is asked of the cells it is wanted as is asked of it
+        let mut asked: SmallVec<[Type; 4]> = SmallVec::new();
+        let mut seen: SmallVec<[usize; 4]> = SmallVec::from_iter([v.cell_addr()]);
+        let mut work: SmallVec<[TVar; 4]> = SmallVec::from_iter([v.clone()]);
+        while let Some(w) = work.pop() {
+            for u in w.cell_constraints().iter().map(deep) {
+                match &u {
+                    Type::TVar(c) if !seen.contains(&c.cell_addr()) => {
+                        seen.push(c.cell_addr());
+                        work.push(c.clone())
+                    }
+                    // nothing is asked of a cell wanted as nothing but
+                    // that nothing flows into it, which its flows are
+                    // held to
+                    Type::TVar(_) | Type::Bound(_) | Type::Bottom => (),
+                    _ if u.is_trait_ref(env) => (),
+                    _ => asked.push(u),
+                }
+            }
+        }
         let mut common = Type::Any;
         for (i, u) in asked.iter().enumerate() {
             // as a test meets them: two function types, two references

@@ -672,7 +672,7 @@ graphix_tests::lang::types::partial_wrapper_bound_over_a_union_of_its_variable_r
 graphix_tests::lang::types::partial_wrapper_bound_wider_than_the_callees_is_refused	refuses	type mismatch T<O<'a4>> does not contain 'c3
 graphix_tests::lang::types::payload_bound_in_two_guarded_arms_used_as_two_types_refused	refuses	type mismatch i64 does not contain string
 graphix_tests::lang::types::payload_bound_in_two_literal_arms_holds_an_undecided_payload	refuses	type mismatch i64 does not contain string
-graphix_tests::lang::types::payload_bound_in_two_literal_arms_of_a_built_variant_used_as_two_types_refused	refuses	type mismatch i64 does not contain string
+graphix_tests::lang::types::payload_bound_in_two_literal_arms_of_a_built_variant_used_as_two_types_refused	refuses	a value here is used as string and as i64, and no value is both: nothing can be passed for it
 graphix_tests::lang::types::payload_bound_in_two_literal_arms_of_a_second_select_used_as_two_types_refused	refuses	type mismatch i64 does not contain string
 graphix_tests::lang::types::payload_bound_in_two_literal_arms_over_a_let_written_later_refused	refuses	type mismatch i64 does not contain string
 graphix_tests::lang::types::payload_bound_in_two_literal_arms_over_an_outer_arms_bind_used_as_two_types_refused	refuses	type mismatch i64 does not contain string
@@ -744,7 +744,7 @@ graphix_tests::lang::types::two_undecided_elements_of_a_bound_widen_its_variable
 graphix_tests::lang::types::two_undecided_elements_under_a_bound_keep_what_decides_its_variable	refuses	type mismatch i64 does not contain string
 graphix_tests::lang::types::typedef_union_of_function_types_no_decided_member_takes_refused	refuses	type mismatch [fn(x: i64) -> i64, fn(x: string) -> i64] does not contain fn(x: f64) -> i64
 graphix_tests::lang::types::uncovered_primitive_refused_by_the_open_members_bound	refuses	type mismatch Number does not contain [i64, string]
-graphix_tests::lang::types::undecided_argument_at_two_variables_of_disjoint_bounds_refused	refuses	type mismatch string does not contain i64
+graphix_tests::lang::types::undecided_argument_at_two_variables_of_disjoint_bounds_refused	refuses	a value here is used as Number and as string, and no value is both: nothing can be passed for it
 graphix_tests::lang::types::undecided_binding_at_two_variables_of_disjoint_bounds_refused	refuses	unsatisfiable constraints: string & i64
 graphix_tests::lang::types::union_bound_a_decided_variable_member_leaves_one_taker	refuses	type mismatch [string, Array<i64>] does not contain Array<f64>
 graphix_tests::lang::types::union_bound_a_recursive_name_decides_the_cell	refuses	type mismatch T does not contain string
