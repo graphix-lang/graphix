@@ -410,6 +410,7 @@ pub fn lexical_decode(buf: &mut impl Buf) -> Result<Lexical, PackError> {
 impl Pack for Env {
     fn encoded_len(&self) -> usize {
         let Env {
+            arenas: _,
             by_id,
             byref_chain,
             lexical,
@@ -458,6 +459,7 @@ impl Pack for Env {
 
     fn encode(&self, buf: &mut impl BufMut) -> Result<(), PackError> {
         let Env {
+            arenas: _,
             by_id,
             byref_chain,
             lexical,
@@ -492,7 +494,7 @@ impl Pack for Env {
 
     fn decode(buf: &mut impl Buf) -> Result<Self, PackError> {
         let lexical = lexical_decode(buf)?;
-        Ok(Env {
+        let mut env = Env {
             by_id: RelocatedMap::<BindId, Arc<Bind>>::decode(buf)?.0.into(),
             byref_chain: RelocatedMap::decode(buf)?.0.into(),
             names: SharedMap::decode(buf)?.0.into(),
@@ -505,6 +507,11 @@ impl Pack for Env {
             block_types: BlockTypes::decode(buf)?,
             lexical,
             ..Env::default()
-        })
+        };
+        // its types' cells are the decode's epoch's
+        if let Some(arena) = crate::typ::tvar::current_arena() {
+            env.arenas.hold(&arena)
+        }
+        Ok(env)
     }
 }

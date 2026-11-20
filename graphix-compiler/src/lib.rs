@@ -4275,6 +4275,8 @@ fn compile_top<R: Rt>(
     ctx.open_compile_frame(top_id);
     ctx.env.sweep_names();
     let saved = Saved::take(ctx);
+    ctx.env.arenas.hold(input.arena());
+    ctx.env.with_ide(|ide| ide.arenas.hold(input.arena()));
     let outer = ctx.env.enter_input();
     let st = Instant::now();
     let build_profile = profile::phase(Phase::BuildGraph);
@@ -4315,22 +4317,36 @@ fn compile_top<R: Rt>(
 /// A top-level input while it compiles: a REPL input, a script or a
 /// dynamic module's load. It is a compile task of its own: what an
 /// earlier input made reads as decided, and a decision about it is not
-/// made.
+/// made. It is a compile epoch: the cells it makes are its arena's, which
+/// the env it compiles into keeps.
 pub(crate) struct Input {
     since: BindId,
     writes: typ::tvar::OwnWrites,
+    arena: typ::tvar::ArenaRef,
+    _in_arena: typ::tvar::InArena,
     _task: typ::tvar::InTask,
     _level: typ::tvar::AtLevel,
 }
 
 impl Input {
     pub(crate) fn enter() -> Self {
+        Self::enter_in(typ::tvar::Arena::new())
+    }
+
+    /// [`Self::enter`] into `arena`, which the caller has its holder keep.
+    pub(crate) fn enter_in(arena: typ::tvar::ArenaRef) -> Self {
         use typ::tvar::{AtLevel, InTask, Level, OwnWrites, new_task};
         let _level = AtLevel::enter(Level::TOP);
         let task = new_task();
         let _task = InTask::enter(task);
         let writes = OwnWrites::enter_input(task);
-        Self { since: BindId::new(), writes, _task, _level }
+        let _in_arena = typ::tvar::InArena::enter(arena.clone());
+        Self { since: BindId::new(), writes, arena, _in_arena, _task, _level }
+    }
+
+    /// The input's arena, for the env its types go into to keep.
+    pub(crate) fn arena(&self) -> &typ::tvar::ArenaRef {
+        &self.arena
     }
 
     /// The end of the input, once its checks pass: what it leaves open
@@ -4373,6 +4389,12 @@ impl Input {
                 earlier_binds(ctx, self.since, &writes)
             )
         })
+    }
+}
+
+impl Drop for Input {
+    fn drop(&mut self) {
+        self.arena.sweep()
     }
 }
 

@@ -216,6 +216,9 @@ pub(crate) fn method_ftype(env: &Env, bind: BindId) -> Option<Arc<FnType>> {
 struct HookSite<R: Rt> {
     call: SynthCall<R>,
     first: bool,
+    /// The arena of the bind that built `call`: last, so the call goes
+    /// before its cells do.
+    _arena: crate::typ::tvar::ArenaRef,
 }
 
 /// The hook of one implementation and a pool of sites bound at one
@@ -323,7 +326,8 @@ fn build_site<R: Rt>(
         SynthCall::build(ctx, &Scope::root(), &prefix, h.bind, &h.ftype, types, top_id)
     });
     ctx.apply_deferred();
-    Ok(HookSite { call: call?, first: true })
+    let (call, _arena) = call?;
+    Ok(HookSite { call, first: true, _arena })
 }
 
 /// What a dispatch found.

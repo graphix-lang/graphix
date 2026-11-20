@@ -1074,6 +1074,9 @@ impl BodyShared {
 
 pub struct LambdaDef<R: Rt> {
     pub id: LambdaId,
+    /// The arena of the epoch that made the definition: a function value
+    /// can outlive what else holds it (exported, stored in a variable).
+    pub arena: Option<crate::typ::tvar::ArenaRef>,
     pub env: Lexical,
     pub scope: Scope,
     pub argspec: Arc<[Arg]>,
@@ -1243,6 +1246,7 @@ impl<R: Rt> LambdaDef<R> {
     ) -> Self {
         LambdaDef {
             id,
+            arena: crate::typ::tvar::current_arena(),
             env,
             scope,
             argspec,

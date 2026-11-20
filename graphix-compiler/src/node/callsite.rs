@@ -1664,6 +1664,9 @@ pub struct CallSite<R: Rt> {
     /// the site's function, a read of it, took: the check fixes it, and
     /// the static instance is built at it.
     copies: Option<TArc<AHashMap<usize, TVar>>>,
+    /// The arena of the run-time bind that built `callee`'s instance:
+    /// last, so the instance goes before its cells do.
+    bound_arena: Option<crate::typ::tvar::ArenaRef>,
 }
 
 /// The registered builtin a site calls by name: its function is a
@@ -1724,6 +1727,7 @@ impl<R: Rt> CallSite<R> {
             decoded: false,
             fork: ForkSite::default(),
             static_holds: SmallVec::new(),
+            bound_arena: None,
         }
     }
 
@@ -2325,7 +2329,7 @@ impl<R: Rt> CallSite<R> {
             let (scope, flags) = (self.scope.clone(), self.flags);
             // The lazy-bound body's typecheck defers settles no statement
             // boundary will drain.
-            let (defaults, tail_loops) = super::as_runtime_bind(ctx, |ctx| {
+            let ((defaults, tail_loops), arena) = super::as_runtime_bind(ctx, |ctx| {
                 let setup_span = perfdbg::span(&perfdbg::SETUP_NS);
                 let (apply, defaults, params) =
                     self.setup_dynamic_bind(ctx, &scope, flags, f)?;
@@ -2334,6 +2338,7 @@ impl<R: Rt> CallSite<R> {
                 Self::unregister_fn_params(ctx, params);
                 res.map(|tail_loops| (defaults, tail_loops))
             })?;
+            self.bound_arena = Some(arena);
             if !ctx.fusion.disabled() {
                 let recorded = ctx.fusion.stats.failed.len();
                 let fused = self.fuse_bound(ctx, f, tail_loops);

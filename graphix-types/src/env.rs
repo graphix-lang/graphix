@@ -13,6 +13,7 @@ use crate::{
         AbstractId, CoreTrait, FnType, ResolvedRef, TVar, TraitId, Type, TypeRef,
         Unguarded,
         expansive::{Blind, Expansive, through_aliases},
+        tvar::ArenaRef,
         variance,
     },
 };
@@ -1106,6 +1107,9 @@ pub struct LoadedBody {
     /// Never held across a call into the env: a name looked up under it
     /// reads it again.
     state: RwLock<LoadedState>,
+    /// The arena of a source load's compile: what the load made holds
+    /// this view of it, and so the cells it made.
+    _arena: Option<ArenaRef>,
 }
 
 /// A load's own types: every abstract type declared at its module's scope
@@ -1168,6 +1172,7 @@ impl LoadedBody {
             scope,
             own: None,
             state: RwLock::default(),
+            _arena: None,
         })
     }
 
@@ -1177,6 +1182,7 @@ impl LoadedBody {
         outer: Option<Arc<LoadedBody>>,
         scope: ModPath,
         own: OwnTypes,
+        arena: ArenaRef,
     ) -> Arc<Self> {
         Arc::new(Self {
             outer,
@@ -1184,6 +1190,7 @@ impl LoadedBody {
             scope,
             own: Some(own),
             state: RwLock::default(),
+            _arena: Some(arena),
         })
     }
 
@@ -1258,6 +1265,7 @@ impl LoadedBody {
             scope: own.scope.clone(),
             own: None,
             state: RwLock::default(),
+            _arena: None,
         })
     }
 
@@ -1486,8 +1494,27 @@ fn name_kept<'a>(named: impl Iterator<Item = (&'a ModPath, BindId)>, view: &mut 
     }
 }
 
+/// The arenas of the compile epochs whose types an env holds: an env
+/// keeps them ([`Arena`](crate::typ::tvar::Arena)).
+#[derive(Clone, Debug, Default)]
+pub struct Arenas(Arc<Vec<ArenaRef>>);
+
+impl Arenas {
+    pub fn hold(&mut self, a: &ArenaRef) {
+        if !self.0.iter().any(|b| ArenaRef::ptr_eq(a, b)) {
+            Arc::make_mut(&mut self.0).push(a.clone())
+        }
+    }
+
+    pub fn join(&mut self, other: &Arenas) {
+        other.0.iter().for_each(|a| self.hold(a))
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Env {
+    /// The arenas of the epochs whose types this env holds.
+    pub arenas: Arenas,
     pub by_id: TrackedMap<BindId, Arc<Bind>>,
     pub byref_chain: TrackedMap<BindId, BindId>,
     pub lexical: Lexical,
@@ -1554,6 +1581,7 @@ impl Env {
     #[doc(hidden)]
     pub fn fork(&self) -> Self {
         Self {
+            arenas: self.arenas.clone(),
             by_id: self.by_id.fork(),
             byref_chain: self.byref_chain.fork(),
             names: self.names.fork(),
@@ -1577,7 +1605,9 @@ impl Env {
     /// Write back what the task `fork` wrote to the global registries.
     #[doc(hidden)]
     pub fn join(&mut self, fork: Self) {
+        self.arenas.join(&fork.arenas);
         let Self {
+            arenas: _,
             by_id,
             byref_chain,
             lexical: _,
@@ -4241,6 +4271,8 @@ impl Env {
         // every registry by name: one a new field adds is cleared here, or
         // named exempt
         let Env {
+            // what keeps the cells of the types, not a registry
+            arenas: _,
             by_id,
             byref_chain,
             // the lexical maps, which unbind_lexical_under cleared

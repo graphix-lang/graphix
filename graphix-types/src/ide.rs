@@ -14,7 +14,7 @@
 // builtins, and a compile task's held warnings. Found by reading; not run. (t-misc-02)
 use crate::{
     BindId, SourcePosition,
-    env::Bind,
+    env::{Arenas, Bind},
     expr::{ModPath, Origin, WrittenPath},
     typ::{TVar, Type},
 };
@@ -251,6 +251,9 @@ impl IdeMode {
 /// into `Env.ide` only under an LSP-style check.
 #[derive(Debug)]
 pub struct Ide {
+    /// The arenas of the epochs whose types the records hold: a record
+    /// outlives a failed input, and its types' cells must too.
+    pub arenas: Arenas,
     /// Every binding the check created, in order, including the
     /// short-lived ones (lambda parameters, block lets, pattern binds)
     /// the env has dropped by the time tooling asks.
@@ -308,6 +311,7 @@ impl Ide {
         static HELD_SPAN_POOL: LazyLock<Pool<Vec<HeldSpan>>> =
             LazyLock::new(|| Pool::new(32, 4096));
         Self {
+            arenas: Arenas::default(),
             binds: BIND_POOL.take(),
             references: REFERENCE_SITE_POOL.take(),
             module_references: MODULE_REF_SITE_POOL.take(),
@@ -326,6 +330,7 @@ impl Ide {
     /// Move every record of `other` after this one's.
     fn append(&mut self, other: &mut Ide) {
         let Self {
+            arenas,
             binds,
             references,
             module_references,
@@ -339,6 +344,7 @@ impl Ide {
             lowered,
             held,
         } = other;
+        self.arenas.join(arenas);
         self.binds.append(binds);
         self.references.append(references);
         self.module_references.append(module_references);

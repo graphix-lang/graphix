@@ -132,6 +132,7 @@ pub(crate) fn def_encode<R: Rt>(
 ) -> Result<(), PackError> {
     let LambdaDef {
         id,
+        arena: _,
         env,
         scope,
         argspec,

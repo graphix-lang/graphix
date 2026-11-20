@@ -532,9 +532,13 @@ impl StructurePattern {
                         false => Apart::Decided,
                     };
                     let members = [(*first).clone(), m.clone()];
-                    return Err(
-                        ManyMembers { pattern: self.clone(), members, apart }.into()
-                    );
+                    return Err(ManyMembers {
+                        pattern: self.clone(),
+                        members,
+                        apart,
+                        _arena: crate::typ::tvar::current_arena(),
+                    }
+                    .into());
                 }
             }
         }
@@ -711,11 +715,13 @@ pub struct ManyMembers {
     pub pattern: StructurePattern,
     pub members: [Type; 2],
     pub apart: Apart,
+    /// The arena of the epoch that refused, which its types' cells need.
+    pub _arena: Option<crate::typ::tvar::ArenaRef>,
 }
 
 impl fmt::Display for ManyMembers {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let Self { pattern, members: [a, b], apart } = self;
+        let Self { pattern, members: [a, b], apart, _arena: _ } = self;
         format_with_flags(PrintFlag::DerefTVars, || match apart {
             Apart::Undecided => write!(
                 f,

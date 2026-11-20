@@ -1609,7 +1609,7 @@ pub(crate) fn as_part<T>(
 ) -> T {
     with_control(control, || {
         let _tokio = tokio.map(|h| h.enter());
-        let _cx = live.cx.enter();
+        let _cx = live.cx.clone().enter();
         let _part = live.part();
         f()
     })

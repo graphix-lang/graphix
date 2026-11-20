@@ -1632,8 +1632,14 @@ impl<R: Rt> Module<R> {
             self.spec.pos,
             interface,
         );
-        let load =
-            LoadedBody::of_source(env.body.clone(), self.scope.lexical.clone(), own);
+        // the load is a compile epoch of its own: its view keeps the arena
+        let arena = crate::typ::tvar::Arena::new();
+        let load = LoadedBody::of_source(
+            env.body.clone(),
+            self.scope.lexical.clone(),
+            own,
+            arena.clone(),
+        );
         self.env.body = Some(load.clone());
         let sig_env = match &self.body {
             Body::Static => None,
@@ -1643,7 +1649,7 @@ impl<R: Rt> Module<R> {
         let names = mem::take(&mut ctx.pending_names);
         let census = ctx.attr_census.lock().len();
         // the body is an input of its own, after the program that loads it
-        let input = crate::Input::enter();
+        let input = crate::Input::enter_in(arena);
         let res = self
             .compile_inner(ctx, &exprs)
             .and_then(|()| {

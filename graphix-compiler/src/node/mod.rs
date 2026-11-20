@@ -27,7 +27,8 @@ use crate::{
         TypeMismatch, TypeRef,
         bounds::{self, Solving},
         tvar::{
-            AtLevel, BoundAt, InTask, Level, TaskContext, TaskId, current_task, new_task,
+            Arena, ArenaRef, AtLevel, BoundAt, InArena, InTask, Level, TaskContext,
+            TaskId, current_task, new_task,
         },
     },
 };
@@ -2108,7 +2109,7 @@ fn check_in_tasks<R: Rt>(
     let cx = TaskContext::current();
     let mut results: LPooled<Vec<Result<()>>> = LPooled::take();
     let check_task = |(n, task, id): &mut (&mut Node<R>, CompileCtx<R>, TaskId)| {
-        let _cx = cx.with_task(*id).enter();
+        let _cx = cx.clone().with_task(*id).enter();
         let r = task.run_task(|task| check(n, task));
         statement_result(r, n, module)
     };
@@ -2267,21 +2268,25 @@ fn typecheck0_modules<'a, R: Rt>(
 /// Run a runtime bind `f` as a compile task of its own. Its cells are top
 /// level, as a static bind's are. Binds in parallel branches run
 /// concurrently: one that changes a cell the program's compile created is
-/// a race.
+/// a race. It is a compile epoch of its own: the caller keeps the arena
+/// with what the bind built.
 pub(crate) fn as_runtime_bind<R: Rt, T>(
     ctx: &mut CompileCtx<R>,
     f: impl FnOnce(&mut CompileCtx<R>) -> Result<T>,
-) -> Result<T> {
+) -> Result<(T, ArenaRef)> {
     let names = ctx.pending_names.len();
     let _task = InTask::enter(new_task());
     let _level = AtLevel::enter(Level::TOP);
+    let arena = Arena::new();
     let res = {
+        let _in_arena = InArena::enter(arena.clone());
         let _restore = Restore::replace(&RUNTIME_BIND, true);
         f(ctx)
     };
     // a runtime bind elaborates: what it defers is no check's
     ctx.pending_names.truncate(names);
-    res
+    arena.sweep();
+    res.map(|t| (t, arena))
 }
 
 /// A statement's `typecheck1`.

@@ -1639,7 +1639,7 @@ pub(crate) fn fuse_each<'a, R: Rt + 'a>(
         &mut work,
         &mut results,
         |(i, n, task)| {
-            let _cx = cx.enter();
+            let _cx = cx.clone().enter();
             (
                 *i,
                 task.run_task(|task| {

@@ -12,8 +12,8 @@ use crate::{
         node_addr,
         setops::{renames, strictly_identical, strictly_same_unordered, union_identical},
         tvar::{
-            CellFact, Cycle, Declared, Fresh, HeldQuantifiers, RigidGate, Toward,
-            cycle_toward, settled_cause_note,
+            ArenaRef, CellFact, Cycle, Declared, Fresh, HeldQuantifiers, RigidGate,
+            Toward, current_arena, cycle_toward, settled_cause_note,
         },
     },
 };
@@ -555,6 +555,9 @@ pub(super) fn renaming_linked(env: &Env, t0: &Type, t1: &Type, commit: bool) -> 
 pub struct TypeMismatch {
     expected: Type,
     actual: Type,
+    /// The arena of the epoch that refused: a refusal outlives a failed
+    /// input, and its types' cells must too.
+    _arena: Option<ArenaRef>,
     /// A name the two sides write at one place for two definitions, and
     /// where each is written: taken while the definitions are in scope.
     apart: Option<(ModPath, SourcePosition, SourcePosition)>,
@@ -1112,6 +1115,7 @@ impl TypeMismatch {
             unmet: None,
             undeclared: None,
             held: HeldQuantifiers::of([expected, actual]),
+            _arena: current_arena(),
         })
     }
 }
@@ -1404,6 +1408,7 @@ impl Type {
             unmet: unmet_bound_note(env, &[self, t]),
             undeclared: undeclared_bound_note(env, self, t),
             held: HeldQuantifiers::of([self, t]),
+            _arena: current_arena(),
         })
     }
 
@@ -1895,7 +1900,7 @@ impl Type {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::typ::{RefHist, RefPair, tvar::CellLock};
+    use crate::typ::{RefHist, RefPair, tvar::CellRef};
     use arcstr::literal;
     use enumflags2::BitFlags;
 
@@ -2123,7 +2128,7 @@ mod tests {
 
     /// `c` and `d`, two open vars, merged after `met` saw each: the cell
     /// the merge left no var reading.
-    fn absorbed_after(mut met: impl FnMut(&Type)) -> Arc<CellLock> {
+    fn absorbed_after(mut met: impl FnMut(&Type)) -> CellRef {
         let [c, d] = ["c", "d"].map(|n| TVar::empty_named(n.into()));
         let before = [c.cell(), d.cell()];
         met(&Type::TVar(c.clone()));
@@ -2131,7 +2136,7 @@ mod tests {
         Type::TVar(c.clone()).check_contains(&Env::default(), &Type::TVar(d)).unwrap();
         let merged = c.cell();
         let [x, y] = before;
-        if Arc::ptr_eq(&x, &merged) { y } else { x }
+        if CellRef::ptr_eq(&x, &merged) { y } else { x }
     }
 
     // And so an open var's id, and an abstract type's, which reads its
@@ -2144,7 +2149,12 @@ mod tests {
         let absorbed = absorbed_after(|t| {
             hist.ref_id(t, &env).unwrap();
         });
-        assert_eq!(Arc::count(&absorbed), 2, "held here and by the walk");
+        let CellRef::Own(absorbed) = absorbed else { panic!("a test's cell is its own") };
+        assert_eq!(
+            std::sync::Arc::strong_count(&absorbed),
+            2,
+            "held here and by the walk"
+        );
         let abstract_over = |p: Typ| Type::Abstract {
             id: AbstractId::of(&ModPath::root(), "A"),
             params: Arc::from_iter([Type::Primitive(p.into())]),
