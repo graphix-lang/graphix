@@ -130,6 +130,15 @@ impl Pat {
         });
     }
 
+    /// The type a test written at the top of this pattern names.
+    fn written_test(&self) -> Option<&Type> {
+        match self {
+            Pat::Test(t, _) => Some(t),
+            Pat::Whole(_, p) => p.written_test(),
+            _ => None,
+        }
+    }
+
     /// Whether a name takes the whole of what this pattern admits.
     fn captures(&self) -> bool {
         match self {
@@ -1356,6 +1365,17 @@ impl Solving {
         let reached = unsplit(&reach);
         let (mut binds, mut hits) = (vec![], vec![]);
         for (i, arm) in self.selects[id].template.clone().arms.iter().enumerate() {
+            // a run-time test can't tell apart two types with one run-time
+            // form: every reference has one
+            if let Some(test) = arm.pat.written_test()
+                && test.ref_over_any(env, &unsplit(&reach))
+            {
+                bail!(
+                    "this pattern can't tell what the reference in {test} refers to where \
+                     the scrutinee may hold Any: every reference has one runtime form ({})",
+                    self.selects[id].template.at
+                )
+            }
             let r = self.route(env, &arm.pat, &reach);
             if let Pat::Struct(_, _, false) = &arm.pat {
                 self.one_layout(id, i, &r.part)?
