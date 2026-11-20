@@ -123,7 +123,7 @@ run!(undecided_member_beside_a_guarded_tag_refused, r#"{
 run!(arm_cells_are_decided, r#"{
     let f = |x| select x { `A(0) => 1, `A(n) => n, `B(_) => 2 };
     [f(`A(3)), f(`B("s"))]
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 2]); FuseExpect::None);
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 2]); FuseExpect::Jit);
 
 run!(undecided_payload_members_refused, r#"{
     let b = true;
@@ -1217,7 +1217,7 @@ run!(tag_over_an_annotated_open_part_below_an_abstract_parameter, r#"{
     type W<'a> = Abstract<'a>;
     let f = |x: [`J, `M]| select W([x, 0]).0 { [`J, _] => 1, _ => 3 };
     [f(`M), f(`J)]
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 1]); FuseExpect::None);
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 1]); FuseExpect::Jit);
 
 run!(tag_testing_a_never_let_below_a_reference_refused, r#"{
     let z = never();
@@ -2208,7 +2208,7 @@ run!(tuple_tags_deciding_a_whole_abstract_parameter, r#"{
     type W<'a> = Abstract<'a>;
     let f = |x| select W(x).0 { (`J, _) => 1, (`M, _) => 3 };
     [f((`M, 1)), f((`J, 1))]
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 1]); FuseExpect::None);
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [3, 1]); FuseExpect::Jit);
 
 run!(partial_struct_over_a_whole_abstract_parameter_refused, r#"{
     type W<'a> = Abstract<'a>;
@@ -2890,17 +2890,17 @@ run!(wildcard_beside_a_shape_in_a_struct, r#"{
 run!(wildcard_beside_a_shape_in_a_variants_payload, r#"{
     let f = |s| select s { `S(`C(1)) => 1, `S((2, _)) => 2, `S(_) => 0 };
     [f(`S(`C(1))), f(`S((2, "x"))), f(`S(7)), f(`S(`C("s")))]
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 2, 0, 0]); FuseExpect::None);
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 2, 0, 0]); FuseExpect::Jit);
 
 run!(wildcard_beside_a_literal_of_another_type, r#"{
     let f = |s| select s { (1, _) => 0, (_, "a") => 1, (_, _) => 2 };
     [f((2, 5)), f((2, "a")), f((1, null))]
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [2, 1, 0]); FuseExpect::None);
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [2, 1, 0]); FuseExpect::Jit);
 
 run!(wildcard_arm_behind_a_null_test_is_live, r#"{
     let f = |s| select s { (1, _) => 0, (_, null) => 1, (_, _) => 2 };
     [f((1, null)), f((2, null)), f((2, 5))]
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 1, 2]); FuseExpect::None);
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 1, 2]); FuseExpect::Jit);
 
 run!(wildcard_part_of_one_instance_called_at_two_types, r#"{
     let mk = |z| |s| select s { (1, _) => 0, (_, _) => 1 };
@@ -2914,7 +2914,7 @@ run!(wildcard_part_of_a_let_written_at_two_types, r#"{
     s <- (1, "a");
     s <- (2, 3);
     v
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(0))); FuseExpect::None);
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(0))); FuseExpect::Jit);
 
 run!(wildcard_part_of_a_parsed_value, r#"{
     let p = str::parse("(2, \"s\")")$;
@@ -2938,7 +2938,7 @@ run!(bind_beside_arms_that_take_the_part_apart_as_tuples, r#"{
 run!(bind_beside_arms_that_take_the_part_apart_as_a_slice_and_a_struct, r#"{
     let f = |s| select s { (1, b) => 10, (2, [x, ..]) => x, (3, {a, c}) => a, (_, b) => 99 };
     [f((1, [5])), f((1, {a: 4, c: "s"})), f((2, [6, 7])), f((3, {a: 4, c: "s"})), f((3, [6]))]
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [10, 10, 6, 4, 99]); FuseExpect::None);
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [10, 10, 6, 4, 99]); FuseExpect::Jit);
 
 run!(bind_beside_arms_that_take_the_part_apart_in_a_struct, r#"{
     let f = |s| select s {
@@ -3034,7 +3034,7 @@ run!(bind_beside_arms_that_take_the_part_apart_takes_an_argument_holding_a_cell,
 run!(bind_beside_arms_that_take_the_part_apart_takes_an_empty_array, r#"{
     let f = |s| select s { (1, b) => 10, (2, [x, ..]) => x, (3, {a, c}) => a, (_, b) => 99 };
     [f((2, [])), f((2, [4])), f((1, []))]
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [99, 4, 10]); FuseExpect::None);
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [99, 4, 10]); FuseExpect::Jit);
 
 run!(bind_beside_arms_that_take_the_part_apart_takes_each_member_of_a_union, r#"{
     let f = |s| select s { (1, b) => 10, (2, `A(x)) => x, (3, `B(y)) => str::len(y), (_, b) => 99 };
@@ -3068,7 +3068,7 @@ run!(bind_beside_arms_that_take_the_part_apart_takes_an_annotated_argument, r#"{
     let f = |s| select s { (1, b) => 10, (2, (x, y)) => x, (3, (x, y, z)) => x, (_, b) => 99 };
     let g = |u: (i64, i64)| f((2, u));
     g((5, 6))
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(5))); FuseExpect::None);
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::I64(5))); FuseExpect::Jit);
 
 // A union built after an arm's pattern decided a cell (the select's own
 // result, an arm's body, a guard) may drop the member that held the cell

@@ -6168,7 +6168,7 @@ run!(
         };
         let result = T::mk(1)(7)
     "#
-    ; FuseExpect::None
+    ; FuseExpect::Jit
 );
 
 run!(

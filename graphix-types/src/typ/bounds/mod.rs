@@ -1000,6 +1000,13 @@ impl Solving {
             // a predicate on a cell is judged when the cell is decided
             (_, Type::Bound(_)) => return Ok(()),
             (Type::TVar(v), Type::TVar(w)) if v.same_cell(w) => return Ok(()),
+            (Type::TVar(v), Type::Set(ms))
+                if ms
+                    .iter()
+                    .any(|m| matches!(&shallow(m), Type::TVar(w) if w.same_cell(v))) =>
+            {
+                return Ok(());
+            }
             // with no cell on either side, open or declared, this is the
             // relation over decided types. A declared variable is not
             // handed over: there it could take a bound nobody declared.

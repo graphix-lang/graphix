@@ -647,7 +647,7 @@ const ARM_INPUT_RAISE_DELIVERS: &str = r#"
 }
 "#;
 
-run!(arm_input_raise_delivers, ARM_INPUT_RAISE_DELIVERS, is(Value::I64(1)); FuseExpect::None);
+run!(arm_input_raise_delivers, ARM_INPUT_RAISE_DELIVERS, is(Value::I64(1)); FuseExpect::Jit);
 
 const ARM_INPUT_RAISE_NATIVE: &str = r#"
 {
