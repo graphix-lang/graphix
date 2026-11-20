@@ -141,10 +141,44 @@ pub fn end(env: &Env) -> Result<()> {
                     old.unwrap_or(0)
                 )
             }
-            solving.finish(env)
+            let finished = solving.finish(env);
+            solving.release();
+            finished
         }
         None => Ok(()),
     }
+}
+
+/// Give up what a check learned of the cell `v`, which it decided: the
+/// cell is its binding from here on. Its lower bounds, the upper bounds
+/// that hold cells and what the solver kept of it would only hold the
+/// cells it was related to, which hold it in turn. Its declared
+/// predicates stay with it.
+fn release(v: &TVar) {
+    let cell = v.cell();
+    let upper = cell.read().constraints.clone();
+    let (learned, declared): (SmallVec<[Type; 1]>, SmallVec<[Type; 1]>) =
+        upper.into_iter().partition(names_a_cell);
+    let held = {
+        let mut c = cell.write();
+        let lower = std::mem::take(&mut c.lower);
+        c.constraints = declared;
+        (c.solving.take(), lower, learned)
+    };
+    drop(held)
+}
+
+/// Whether `t` holds a cell, bound or not.
+fn names_a_cell(t: &Type) -> bool {
+    ensure_sufficient(|| match t {
+        Type::TVar(_) => true,
+        t => t
+            .try_for_each_child::<()>(&mut |c| match names_a_cell(c) {
+                true => ControlFlow::Break(()),
+                false => ControlFlow::Continue(()),
+            })
+            .is_break(),
+    })
 }
 
 /// Drop the check [`begin`] began, a refusal having ended it.
@@ -1935,9 +1969,9 @@ pub fn instance(
         Level::TOP,
         &mut copies,
     );
-    solving.constrain(env, &one, at)?;
-    solving.finish(env)?;
-    Ok(copies)
+    let derived = solving.constrain(env, &one, at).and_then(|()| solving.finish(env));
+    solving.release();
+    derived.map(|()| copies)
 }
 
 /// Hold each open cell `t` passes to a typedef's bounded parameter to the
@@ -3038,6 +3072,12 @@ impl Solving {
         self.fix_scope(env, 0, true, 0)?;
         self.judge(env)?;
         self.dead_arms(env)
+    }
+
+    /// The check is over: give up what it learned of each cell it
+    /// decided ([`release`]).
+    fn release(&self) {
+        self.cells.iter().filter(|v| v.is_bound()).for_each(release)
     }
 
     /// A use of the scheme `t`: a copy of it, at the level `at`, with a
