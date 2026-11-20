@@ -6662,9 +6662,10 @@ run!(
     FuseExpect::None
 );
 
-// A binding something writes is one function for every call: each call,
-// static or through a value, is an instance of the one type its check
-// gave the binding, here `y: [i64, string]`.
+// A comparison is judged where the check decides its operands' types: a
+// binding something writes is one function, here `y: [i64, string]`, and
+// a value held in data is its copy's type. A call's instance, narrower,
+// is not judged again.
 run!(written_binding_with_a_declared_variable_is_one_function, r#"
 {
     let t = 'a: Number |x: 'a, y| -> bool x == y;
@@ -6692,5 +6693,36 @@ run!(written_binding_called_at_one_type_that_cannot_compare, r#"
     let t = 'a: Number |x: 'a, y| -> bool x == y;
     let r = &mut t;
     t(1, "s")
+}
+"#, refused("cannot compare i64 with string"); FuseExpect::None);
+
+run!(generic_function_called_through_data_at_two_types, r#"
+{
+    let t = |x, y| x == y;
+    let fs = [t];
+    let g = fs[0]$;
+    [g(1, 2), g(1, "s"), g(1, 1)]
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a))
+    if a[..] == [Value::Bool(false), Value::Bool(false), Value::Bool(true)]);
+    FuseExpect::None);
+
+run!(generic_function_with_a_declared_variable_called_through_data_at_two_types, r#"
+{
+    let t = 'a: Number |x: 'a, y| -> bool x == y;
+    let fs = [t];
+    let g = fs[0]$;
+    [g(1, 2), g(1, "s"), g(1, 1)]
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a))
+    if a[..] == [Value::Bool(false), Value::Bool(false), Value::Bool(true)]);
+    FuseExpect::None);
+
+run!(generic_function_called_through_data_at_one_type_that_cannot_compare, r#"
+{
+    let t = |x, y| x == y;
+    let fs = [t];
+    let g = fs[0]$;
+    g(1, "s")
 }
 "#, refused("cannot compare i64 with string"); FuseExpect::None);

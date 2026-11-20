@@ -3030,6 +3030,9 @@ impl Solving {
                         let b = self.copy(&pair.1, above, at, copies);
                         self.held.push((a, b, false))
                     }
+                    // a comparison is judged where the check decided the
+                    // types of its operands; a call's instance is within them
+                    Left::Compared(_) if self.deriving => (),
                     Left::Compared(pair) => {
                         let a = self.copy(&pair.0, above, at, copies);
                         let b = self.copy(&pair.1, above, at, copies);

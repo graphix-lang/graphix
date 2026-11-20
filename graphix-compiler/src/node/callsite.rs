@@ -2047,11 +2047,10 @@ impl<R: Rt> CallSite<R> {
         view: &FnType,
         f: &LambdaDef<R>,
     ) -> Result<Option<FnType>> {
-        let sig = f.table.built_from(&f.typ);
-        if same_parameters(view, &sig) {
+        if same_parameters(view, &f.typ) {
             return Ok(None);
         }
-        let fitted = super::lambda::fit_callee(ctx, view, &sig)?;
+        let fitted = super::lambda::fit_callee(ctx, view, &f.typ)?;
         let mut flags = self.flags;
         flags.remove(CFlag::WarnUnhandled);
         for farg in fitted.args.iter() {
@@ -2104,7 +2103,7 @@ impl<R: Rt> CallSite<R> {
                     .with_context(|| context(&self.spec))?
                     .unwrap_or(view)
             }
-            None => f.table.built_from(&f.typ).instantiate(&ctx.rec_defs),
+            None => f.typ.instantiate(&ctx.rec_defs),
         };
         let mode = BindMode::Dynamic(&view, self.kept.as_deref());
         let mut apply = (f.init)(scope, ctx, &mut self.arg_refs, mode, self.top_id)

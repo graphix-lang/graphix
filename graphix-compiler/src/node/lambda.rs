@@ -104,10 +104,6 @@ pub struct DefTable {
     /// that copy as the instance has it. Not imaged: a restored
     /// definition's calls find their instances' types again.
     copies: AHashMap<ExprId, Box<[(usize, TVar)]>>,
-    /// The one instance of its scheme a definition no binding names
-    /// stands as: every call of it is a call of that one function, so
-    /// every instance is built from it.
-    stands: Option<Arc<FnType>>,
 }
 
 #[derive(Debug, Clone, netidx_derive::Pack)]
@@ -209,7 +205,6 @@ impl DefTable {
             captures,
             defaults: AHashSet::default(),
             copies: AHashMap::default(),
-            stands: None,
         }
     }
 
@@ -419,7 +414,6 @@ impl DefTable {
                 .iter()
                 .map(|(id, cs)| (*id, cs.iter().map(|(a, v)| (*a, rename(v))).collect()))
                 .collect();
-            table.stands = self.stands.as_ref().map(|s| Arc::new(s.rename_with(known)));
             table.own_typedefs();
             table
         })
@@ -478,13 +472,6 @@ impl DefTable {
                     lid.encode(buf)?;
                     i.encode(buf)?;
                 }
-                match &table.stands {
-                    None => buf.put_u8(0),
-                    Some(s) => {
-                        buf.put_u8(1);
-                        s.encode(buf)?
-                    }
-                }
                 Ok(())
             },
         )
@@ -534,11 +521,7 @@ impl DefTable {
                 let calls_captured = (0..n)
                     .map(|_| Ok((LambdaId::decode(sub)?, u32::decode(sub)?)))
                     .collect::<Result<_, _>>()?;
-                let stands = match u8::decode(sub)? {
-                    0 => None,
-                    _ => Some(Arc::new(FnType::decode(sub)?)),
-                };
-                let mut table = DefTable::with(
+                Ok(SArc::new(DefTable::with(
                     types,
                     ftypes,
                     aux,
@@ -549,9 +532,7 @@ impl DefTable {
                     calls_own,
                     calls_captured,
                     captures,
-                );
-                table.stands = stands;
-                Ok(SArc::new(table))
+                )))
             },
             |b| Self::image_decode(b),
         )
@@ -621,19 +602,6 @@ impl DefTables {
 
     pub(crate) fn set(&self, tables: Tables) {
         let _ = self.tables.set(tables);
-    }
-
-    /// The signature the instances of a definition typed `typ` are built
-    /// from: the one instance its check stood it as ([`DefTable::stands`]),
-    /// or `typ`. A lambda an enclosing instance defines has that instance's
-    /// copy placed at `typ` already ([`Lambda::typecheck0_instance`]).
-    pub(crate) fn built_from(&self, typ: &Arc<FnType>) -> Arc<FnType> {
-        match self.get() {
-            Some(Tables { table, outer: None }) => {
-                table.stands.clone().unwrap_or_else(|| typ.clone())
-            }
-            Some(_) | None => typ.clone(),
-        }
     }
 }
 
@@ -2590,10 +2558,6 @@ fn instantiate<R: Rt>(
     table: &SArc<DefTables>,
     build: impl FnOnce(&mut CompileCtx<R>, Arc<FnType>, Typing) -> Result<GXLambda<R>>,
 ) -> Result<Box<dyn Apply<R>>> {
-    let def_typ = &match mode {
-        BindMode::Definition => def_typ.clone(),
-        BindMode::Static { .. } | BindMode::Dynamic(..) => table.built_from(def_typ),
-    };
     let typing = match mode {
         BindMode::Definition => Typing::Definition,
         BindMode::Static { copies: Some(copies), .. }
@@ -3496,17 +3460,11 @@ impl<R: Rt> Update<R> for Lambda {
         }
         let closed = gate.close(ctx, spec);
         // a lambda that stands as one instance of its scheme reads its
-        // check's types as that instance has them, and is built from it
+        // check's types as that instance has them
         let one = closed.as_ref().ok().and_then(|stands| stands.as_ref());
         if let Some(table) = checked {
             let table = match one {
-                Some((t, copies)) => {
-                    let mut table = table.renamed(copies);
-                    if let Type::Fn(ft) = t {
-                        table.stands = Some(ft.clone())
-                    }
-                    SArc::new(table)
-                }
+                Some((_, copies)) => SArc::new(table.renamed(copies)),
                 None => table,
             };
             def.table.set(Tables { table, outer: None })
