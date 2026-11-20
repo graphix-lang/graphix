@@ -10,7 +10,8 @@ use crate::{
     expr::WrittenAt,
     stack::ensure_sufficient,
     typ::{
-        AbstractId, Bound, Mutability, TVar, Type, node_addr, setops::strictly_identical,
+        AbstractId, Bound, Mutability, TVar, Type, cast::Indiscernible, node_addr,
+        setops::strictly_identical,
     },
 };
 use ahash::AHashMap;
@@ -1367,14 +1368,45 @@ impl Solving {
         for (i, arm) in self.selects[id].template.clone().arms.iter().enumerate() {
             // a run-time test can't tell apart two types with one run-time
             // form: every reference has one
-            if let Some(test) = arm.pat.written_test()
-                && test.ref_over_any(env, &unsplit(&reach))
-            {
-                bail!(
-                    "this pattern can't tell what the reference in {test} refers to where \
-                     the scrutinee may hold Any: every reference has one runtime form ({})",
-                    self.selects[id].template.at
-                )
+            if let Some(test) = arm.pat.written_test() {
+                let reached = unsplit(&reach);
+                if test.ref_over_any(env, &reached) {
+                    bail!(
+                        "this pattern can't tell what the reference in {test} refers to \
+                         where the scrutinee may hold Any: every reference has one \
+                         runtime form ({})",
+                        self.selects[id].template.at
+                    )
+                }
+                // a declared variable in a member the test does not hold whole
+                // may be another type of the test's form, which the test takes
+                // for its own unless it holds every type of that form; decided
+                // members of one form are each taken, and the bind holds them all
+                let members = match &reached {
+                    Type::Set(ms) => ms.iter().cloned().collect(),
+                    t => SmallVec::<[Type; 4]>::from_iter([t.clone()]),
+                };
+                let unknown =
+                    |t: &Type| matches!(t, Type::TVar(v) if v.open_cell().is_some());
+                let holds_its_form = |t: &Type| {
+                    let widest = t.cow_children(&mut |_| Some(Type::Any));
+                    widest.is_none_or(|w| t.contains(env, &w).unwrap_or(false))
+                };
+                for m in members.iter() {
+                    if !test.contains(env, m).unwrap_or(false)
+                        && let Some(c) = test.rep_collision_open(env, m)
+                        && let Indiscernible::Pair(a, b) = &c
+                        && let Some(told) = match (unknown(a), unknown(b)) {
+                            (false, true) => Some(a),
+                            (true, false) => Some(b),
+                            _ => None,
+                        }
+                        && !holds_its_form(told)
+                    {
+                        let untold = c.untold("this pattern");
+                        bail!("{untold} ({})", self.selects[id].template.at)
+                    }
+                }
             }
             let r = self.route(env, &arm.pat, &reach);
             if let Pat::Struct(_, _, false) = &arm.pat {
