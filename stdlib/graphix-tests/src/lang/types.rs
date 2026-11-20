@@ -6865,7 +6865,7 @@ run!(
     let r = { catch(e) e ~ select e.0.error { `A => -1 }; f(v) };
     "[r] end"
 }"#,
-    refused("type mismatch [i64, Error<`A>] does not contain Error<`B>");
+    refused("declare 'a: NoError");
     FuseExpect::None
 );
 
@@ -6877,7 +6877,7 @@ run!(
     let r = { catch(e) e ~ select e.0.error { `A => -1 }; f(v) };
     "[r] end"
 }"#,
-    refused("missing match cases: nothing matches `B (4:35)");
+    refused("declare 'a: NoError");
     FuseExpect::None
 );
 

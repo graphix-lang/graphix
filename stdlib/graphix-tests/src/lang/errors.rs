@@ -1710,3 +1710,19 @@ run!(
     settles();
     FuseExpect::Jit
 );
+
+// `?` over a declared variable beside an error raises whatever error the
+// variable holds, past the handler it was checked against: the variable
+// must hold none.
+run!(
+    question_over_a_declared_variable_beside_an_error_needs_no_error,
+    r#"{ let f = |x: ['a, Error<`A>]| x?; let r = { catch(e) e ~ 0; f(error(`B)) }; r }"#,
+    refused("declare 'a: NoError");
+    FuseExpect::None
+);
+
+run!(
+    question_over_a_no_error_variable_beside_an_error_takes_the_value,
+    r#"{ let f = 'a: NoError |x: ['a, Error<`A>]| x?; f(1) }"#,
+    prints("i64:1")
+);

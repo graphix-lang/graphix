@@ -686,7 +686,7 @@ impl Strip {
             Ok(Self::Null)
         } else if holds(&err)? {
             if op == '?' {
-                Self::open_member_raising_nothing(&ctx.env, typ)?;
+                Self::open_member_raising_nothing(&ctx.env, typ, false)?;
             }
             Ok(Self::Error)
         } else if holds(&null)? {
@@ -703,11 +703,20 @@ impl Strip {
     /// `?` raises the errors its operand's decided members hold, and the
     /// handler it joins them into is fixed there: an open member without
     /// `NoError` may later hold an error that is raised and joined into
-    /// nothing, so it is refused, naming the bound to declare.
-    fn open_member_raising_nothing(env: &Env, typ: &Type) -> Result<()> {
+    /// nothing, so it is refused, naming the bound to declare. With
+    /// `declared_only`, only a declared variable is: the check by bounds
+    /// decides an open cell after the operand's check.
+    fn open_member_raising_nothing(
+        env: &Env,
+        typ: &Type,
+        declared_only: bool,
+    ) -> Result<()> {
         for m in Type::dispatch_members(env, typ)? {
             let Type::TVar(tv) = &m else { continue };
-            if tv.binding().is_some() || !tv.may_hold_error(env)? {
+            if tv.binding().is_some()
+                || (declared_only && !tv.is_rigid())
+                || !tv.may_hold_error(env)?
+            {
                 continue;
             }
             let name = format_compact!("{tv}");
@@ -1783,6 +1792,9 @@ impl<R: Rt> Qop<R> {
         match self.n.typ().with_deref(|t| t.cloned()) {
             Some(t) if bounds::strippable(env, &t)? => {
                 self.strip_of(env, &t)?;
+                if payload.is_some() && matches!(self.strip, Strip::Error) {
+                    Strip::open_member_raising_nothing(env, &t, true)?
+                }
                 let (left, payloads) = bounds::strip(env, &t, payload.is_some())?;
                 for (p, to) in
                     payloads.iter().flat_map(|p| payload.iter().map(move |to| (p, to)))
