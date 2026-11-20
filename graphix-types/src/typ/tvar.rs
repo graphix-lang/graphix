@@ -33,7 +33,6 @@ use std::{
     hash::Hash,
     mem::{self, ManuallyDrop},
     ops::{ControlFlow, Deref},
-    sync::OnceLock,
     sync::atomic::{self, AtomicU64},
 };
 use triomphe::Arc;
@@ -105,6 +104,14 @@ pub(crate) enum CellLink {
     /// A reference inside a scheme's state to one of the scheme's own
     /// cells: the scheme keeps it, so nothing points back.
     Viewing(CellWeak),
+}
+
+/// A var's link as an image writes it ([`CellLink`]).
+pub(crate) enum LinkImage {
+    Owning(CellRef),
+    Viewing(CellRef),
+    /// A definition's own cell, forwarded to the scheme's cell `.1`.
+    Forward(std::sync::Arc<Scheme>, u32),
 }
 
 /// A link's cell, borrowed where the link keeps it.
@@ -2587,6 +2594,19 @@ impl TVar {
                 written: 0,
             }),
         })))
+    }
+
+    /// The var's id, frozen flag and link as an image writes them.
+    pub(crate) fn link_image(&self) -> (TVarId, bool, LinkImage) {
+        let link = self.read();
+        let kind = match &link.cell {
+            CellLink::Owning(c) => match c.1.forwarded() {
+                Some((s, i)) => LinkImage::Forward(s.clone(), *i),
+                None => LinkImage::Owning(c.clone()),
+            },
+            CellLink::Viewing(_) => LinkImage::Viewing(link.cell.get().clone()),
+        };
+        (link.id, link.frozen, kind)
     }
 
     /// Whether the var reads a scheme's cell: however it links to it, a

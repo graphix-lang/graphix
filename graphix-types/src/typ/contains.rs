@@ -1895,7 +1895,7 @@ impl Type {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::typ::{RefHist, RefPair, tvar::{CellLock, CellRef}};
+    use crate::typ::{RefHist, RefPair, tvar::CellRef};
     use arcstr::literal;
     use enumflags2::BitFlags;
 

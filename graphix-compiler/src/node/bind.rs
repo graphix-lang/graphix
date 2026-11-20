@@ -820,6 +820,7 @@ impl<R: Rt> Bind<R> {
                 match b.typ.is_some() {
                     false => {
                         wrap!(node, generalize(ctx, &value))?;
+                        solving(|s| s.seal(&value));
                         // a pattern over a literal: each name is its part
                         let mut parts: SmallVec<[(&ArcStr, Type); 4]> = SmallVec::new();
                         if b.pattern.single_bind().is_none() {
@@ -859,9 +860,11 @@ impl<R: Rt> Bind<R> {
                     // the value fits it
                     true => {
                         wrap!(node, generalize(ctx, &value))?;
+                        solving(|s| s.seal(&value));
                         let one = solving(|s| s.instantiate(&value, depth, level));
                         wrap!(node, self.typ.check_contains(&ctx.env, &one))?;
-                        wrap!(node, generalize(ctx, &self.typ))?
+                        wrap!(node, generalize(ctx, &self.typ))?;
+                        solving(|s| s.seal(&self.typ))
                     }
                 }
             }

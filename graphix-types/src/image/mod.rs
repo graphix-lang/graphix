@@ -23,7 +23,7 @@ use crate::{
     typ::{
         FnType, MapType, ResolvedRef, TVar, Type,
         fntyp::LambdaIds,
-        tvar::{CellLock, CellRef, TCell, TVarId},
+        tvar::{CellLink, CellLock, CellRef, LinkImage, Scheme, TCell, TVarId},
     },
 };
 use ahash::AHashMap;
@@ -220,6 +220,7 @@ pub struct ImageEncoder {
     origins: Table<usize, Arc<Origin>>,
     tvars: Table<usize, TVar>,
     cells: Table<usize, CellRef>,
+    schemes: Table<usize, sync::Arc<Scheme>>,
     /// Expressions by the address of the session's clone
     /// ([`expr_key`]).
     pub(crate) exprs: Table<usize>,
@@ -295,6 +296,7 @@ pub enum Obj {
     Origin(Arc<Origin>),
     TVar(TVar),
     Cell(CellRef),
+    Scheme(sync::Arc<Scheme>),
     Expr(Box<Expr>),
     Type(Type),
     FnType(Box<FnType>),
@@ -345,6 +347,7 @@ object!(Resolved, Resolved);
 object!(Arc<Origin>, Origin);
 object!(TVar, TVar);
 object!(CellRef, Cell);
+object!(sync::Arc<Scheme>, Scheme);
 object!(box Expr, Expr);
 object!(Type, Type);
 object!(box FnType, FnType);
@@ -1458,12 +1461,60 @@ pub(crate) fn tvar_encode(tv: &TVar, buf: &mut impl BufMut) -> Result<(), PackEr
         |e| &mut e.tvars,
         buf,
         |buf| {
-            let (id, frozen, cell) = tv.parts();
+            let (id, frozen, link) = tv.link_image();
             tv.name.encode(buf)?;
             id.encode(buf)?;
             frozen.encode(buf)?;
-            cell_encode(&cell, buf)
+            match link {
+                LinkImage::Owning(cell) => {
+                    buf.put_u8(0);
+                    cell_encode(&cell, buf)
+                }
+                LinkImage::Viewing(cell) => {
+                    buf.put_u8(1);
+                    cell_encode(&cell, buf)
+                }
+                LinkImage::Forward(scheme, i) => {
+                    buf.put_u8(2);
+                    scheme_encode(&scheme, buf)?;
+                    i.encode(buf)
+                }
+            }
         },
+    )
+}
+
+/// A scheme once per image: its cells, each the scheme's to keep.
+fn scheme_encode(
+    scheme: &sync::Arc<Scheme>,
+    buf: &mut impl BufMut,
+) -> Result<(), PackError> {
+    let key = sync::Arc::as_ptr(scheme) as usize;
+    object_encode(
+        &key,
+        |k| (*k, scheme.clone()),
+        |e| &mut e.schemes,
+        buf,
+        |buf| {
+            encode_varint(scheme.cells.len() as u64, buf);
+            scheme.cells.iter().try_for_each(|c| cell_encode(c, buf))
+        },
+    )
+}
+
+/// A scheme as [`scheme_encode`] wrote it. Nothing its cells hold leads
+/// back to it, so it is entered once they are decoded.
+fn scheme_decode(buf: &mut impl Buf) -> Result<sync::Arc<Scheme>, PackError> {
+    object_decode(
+        buf,
+        |sub| {
+            let n = count_decode(sub)?;
+            let cells = (0..n).map(|_| cell_decode(sub)).collect::<Result<_, _>>()?;
+            let scheme = sync::Arc::new(Scheme { cells });
+            scheme.cells.iter().for_each(|c| c.owned_by_scheme());
+            Ok(scheme)
+        },
+        |b| scheme_decode(b),
     )
 }
 
@@ -1544,8 +1595,17 @@ pub(crate) fn tvar_decode(buf: &mut impl Buf) -> Result<TVar, PackError> {
             let placeholder = CellRef::new(CellLock::default());
             let tv = TVar::from_parts(name, id, frozen, placeholder);
             enter(Obj::TVar(tv.clone()))?;
-            let cell = cell_decode(sub)?;
-            tv.write().cell = crate::typ::tvar::CellLink::Owning(cell);
+            let link = match u8::decode(sub)? {
+                0 => CellLink::Owning(cell_decode(sub)?),
+                1 => CellLink::Viewing(CellRef::downgrade(&cell_decode(sub)?)),
+                2 => {
+                    let scheme = scheme_decode(sub)?;
+                    let i = u32::decode(sub)?;
+                    CellLink::Owning(CellRef::new(CellLock::forwarding(scheme, i)))
+                }
+                _ => return Err(PackError::InvalidFormat),
+            };
+            tv.write().cell = link;
             Ok(tv)
         },
         |b| tvar_decode(b),

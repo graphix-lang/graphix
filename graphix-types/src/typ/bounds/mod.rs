@@ -2110,6 +2110,8 @@ pub fn written_fits(env: &Env, written: &Type, held: &Type, outer: Level) -> Res
 pub fn specialize(t: &Type, known: &mut AHashMap<usize, TVar>) -> Type {
     let mut solving = Solving { scheming: true, ..Solving::default() };
     let t = solving.copy(t, Level::GENERIC.depth() - 1, Level::GENERIC, known);
+    // the copy is a scheme of the instance's: it owns its cells too
+    solving.seal(&t);
     deep(&t)
 }
 
@@ -3086,7 +3088,10 @@ impl Solving {
             cells: made.iter().map(|n| n.cell()).collect(),
         });
         scheme.cells.iter().for_each(|c| c.owned_by_scheme());
-        for (i, o) in originals.iter().enumerate() {
+        // a cell the definition's check still decides for its own nodes
+        // (a generic cell no scheme variable, which instances copy too)
+        // stays the check's; the scheme has its copy
+        for (i, o) in originals.iter().enumerate().filter(|(_, o)| quantified(o)) {
             release(o);
             o.forward(&scheme, i as u32)
         }
