@@ -684,6 +684,7 @@ graphix_tests::lang::types::payload_bounds_reach_a_binding_together	refuses	type
 graphix_tests::lang::types::payload_cycle_an_instance_closes	refuses	type mismatch i64 does not contain Array<_>
 graphix_tests::lang::types::payload_cycle_through_a_typedef	refuses	infinite type: a variable holds itself in Bx<'a>
 graphix_tests::lang::types::payload_cycle_through_a_typedef_named_twice	refuses	infinite type: a variable holds itself in [null, Q<i64>, Q<'a>]
+graphix_tests::lang::types::payload_cycle_through_an_argument	refuses	infinite type: a variable holds itself in fn(x: '_0) -> '_1
 graphix_tests::lang::types::payload_cycle_under_a_constructor	refuses	infinite type: a variable holds itself in Array<'_0>
 graphix_tests::lang::types::payload_cycle_under_a_constructor_known	refuses	infinite type: a variable holds itself in Array<'_0>
 graphix_tests::lang::types::payload_cycle_write_alone	refuses	infinite type: a variable holds itself in Array<'_0>
