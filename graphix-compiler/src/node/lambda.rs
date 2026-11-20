@@ -3057,9 +3057,6 @@ impl<R: Rt> DefGate<R> {
                 for tv in self.declared.iter() {
                     solving(|s| s.own(tv))
                 }
-                if closed.is_ok() {
-                    solving(|s| s.seal(&sig))
-                }
                 if !named && closed.is_ok() {
                     let mut copies = AHashMap::default();
                     let one = solving(|s| {

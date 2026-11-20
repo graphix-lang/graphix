@@ -473,7 +473,7 @@ impl<A> Kept<A> {
 /// the key stands: a var's cell, which a merge takes from the var; any
 /// other node itself.
 enum Held {
-    Cell { _cell: tvar::CellRef },
+    Cell { _cell: Arc<tvar::CellLock> },
     Node { _node: Type },
 }
 
