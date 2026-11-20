@@ -538,6 +538,10 @@ pub struct Solving {
     /// decided yet; the third is where the payloads of the errors a `?`
     /// raises go.
     strips: Vec<(Type, Type, Option<Type>)>,
+    /// What meets core's `ErrChain` over a payload not decided yet: a raise
+    /// extends a payload that is a chain, never nests it, so the chain is
+    /// not known until the payload is.
+    chains: Vec<Chained>,
     /// A held choice is being made: a decided member that does not fit is
     /// out.
     resolving: bool,
@@ -607,6 +611,44 @@ enum Pending {
     Held,
     Select,
     Strip,
+    Chain,
+}
+
+/// What waits for the payload of a chain to be decided ([`Solving::chains`]).
+#[derive(Clone)]
+enum Chained {
+    /// The read of the error the chain holds.
+    Read(Use, Type),
+    /// A relation, a side of which is the chain.
+    Relation(Type, Type),
+}
+
+impl Chained {
+    /// The cells of the payloads it waits for.
+    fn ins(&self, env: &Env) -> SmallVec<[TVar; 4]> {
+        let mut ins = SmallVec::new();
+        let mut of = |t: &Type| {
+            if let Some(p) = chain_payload(env, t) {
+                ins.extend(open_cells(&p))
+            }
+        };
+        match self {
+            Chained::Read(_, chain) => of(chain),
+            Chained::Relation(a, b) => {
+                of(a);
+                of(b)
+            }
+        }
+        ins
+    }
+
+    /// The open cells what it gives goes to.
+    fn outs(&self) -> SmallVec<[TVar; 4]> {
+        match self {
+            Chained::Read(u, _) => use_outs(u),
+            Chained::Relation(_, b) => open_cells(b),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -871,12 +913,14 @@ impl Solving {
     /// and where it succeeds too unless `keep`.
     fn trying(&mut self, keep: bool, f: impl FnOnce(&mut Self) -> Result<()>) -> bool {
         let (mark, held) = (self.added.len(), self.held.len());
+        let chains = self.chains.len();
         let (unfolded, twinned) = (self.unfolded.len(), self.twinned.len());
         self.attempts += 1;
         let fits = f(self).is_ok();
         self.attempts -= 1;
         if !(fits && keep) {
             self.held.truncate(held);
+            self.chains.truncate(chains);
             self.unfolded.truncate(unfolded);
             for key in self.twinned.drain(twinned..) {
                 self.twins.remove(&key);
@@ -1042,6 +1086,12 @@ impl Solving {
         }
         if open(&a).is_some() || open(&b).is_some() {
             return self.cells(env, &a, &b);
+        }
+        let waits = |t: &Type| {
+            chain_payload(env, t).is_some_and(|p| undecided_chain_payload(&shallow(&p)))
+        };
+        if waits(&a) || waits(&b) {
+            return Ok(self.chains.push(Chained::Relation(a.clone(), b.clone())));
         }
         match (&a, &b) {
             // what no decided member of `b` takes goes to its open member
@@ -1729,7 +1779,15 @@ pub fn strip(env: &Env, t: &Type, raises: bool) -> Result<(Type, SmallVec<[Type;
     // a raise extends a chain rather than nesting it: an error that is a
     // chain already is raised as what the chain is over
     for p in payloads.iter_mut().filter(|_| raises) {
-        if let Some(error) = deep(p).chain_error_type(env)? {
+        let decided = deep(p);
+        if chain_shaped_over_variables(&decided) {
+            bail!(
+                "whether this raises an error chain is not known here: a struct of a \
+                 chain's fields whose cause, ori or pos is a variable is a chain at some \
+                 calls and not at others; give those fields types"
+            )
+        }
+        if let Some(error) = decided.chain_error_type(env)? {
             *p = error
         }
     }
@@ -2504,6 +2562,67 @@ fn open_cells(t: &Type) -> SmallVec<[TVar; 4]> {
     let mut out = SmallVec::new();
     cells_of(t, false, &mut out);
     out
+}
+
+/// The payload of core's `ErrChain<payload>`.
+fn chain_payload(env: &Env, t: &Type) -> Option<Type> {
+    let Type::Ref(tr) = t else { return None };
+    let r = tr.resolve_pure(env)?;
+    match &tr.params[..] {
+        [payload] if env.is_core_errchain(&r) => Some(payload.clone()),
+        _ => None,
+    }
+}
+
+/// Whether `t` is a struct of a chain's four fields whose cause, ori or
+/// pos is a variable: whether it is a chain is each instance's to say.
+fn chain_shaped_over_variables(t: &Type) -> bool {
+    const NAMES: [&str; 4] = ["cause", "error", "ori", "pos"];
+    let Type::Struct(fields) = t else { return false };
+    fields.len() == NAMES.len()
+        && fields.iter().zip(NAMES).all(|((n, _, _), m)| n.as_str() == m)
+        && fields.iter().any(|(n, t, _)| {
+            n.as_str() != "error"
+                && matches!(shallow(t), Type::TVar(ref v) if !v.is_bound())
+        })
+}
+
+/// What a chain over `payload` holds as its error: the payload's own
+/// error where it is a chain, which a raise extends, else the payload.
+fn chain_error(env: &Env, payload: Type) -> Result<Type> {
+    Ok(payload.chain_error_type(env)?.unwrap_or(payload))
+}
+
+/// Whether it is not decided yet if `payload`, a chain's, is a chain: an
+/// open cell, or a union holding one.
+fn undecided_chain_payload(payload: &Type) -> bool {
+    let undecided = |t: &Type| open(t).is_some();
+    undecided(payload)
+        || matches!(payload, Type::Set(ms) if ms.iter().any(|m| undecided(&shallow(m))))
+}
+
+/// Whether the declared variable `v` may stand for a chain: each of its
+/// bounds admits one.
+fn may_be_chain(env: &Env, v: &TVar) -> Result<bool> {
+    let chain = Type::err_chain(Type::Bottom);
+    for c in v.cell_constraints().iter() {
+        if !matches!(c, Type::Bound(_))
+            && !c.is_trait_ref(env)
+            && !c.has_unbound()
+            && !c.decided_holds(env, &chain)?
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// The open cells what the use `u` gives goes to.
+fn use_outs(u: &Use) -> SmallVec<[TVar; 4]> {
+    let mut outs = SmallVec::new();
+    u.each(&mut |t| cells_of(t, false, &mut outs));
+    outs.retain(|v: &mut TVar| !v.is_bound());
+    outs
 }
 
 fn quantified(v: &TVar) -> bool {
@@ -3526,7 +3645,9 @@ impl Solving {
                     pending.chain(self.selects.iter().flat_map(|s| s.waiting.iter()));
                 let pending =
                     pending.chain(self.strips.iter().map(|(operand, ..)| operand));
-                let pending: SmallVec<[TVar; 4]> = pending.flat_map(open_cells).collect();
+                let mut pending: SmallVec<[TVar; 4]> =
+                    pending.flat_map(open_cells).collect();
+                self.chains.iter().for_each(|c| pending.extend(c.ins(env)));
                 self.held_back(own.chain(pending), min)
             };
             // a pending use (a held choice, a select still waiting) waits
@@ -3555,6 +3676,9 @@ impl Solving {
                     let mut outs = open_cells(out);
                     raised.iter().for_each(|p| outs.extend(open_cells(p)));
                     produced.push(((Pending::Strip, i), closure(self, outs)))
+                }
+                for (i, c) in self.chains.iter().enumerate() {
+                    produced.push(((Pending::Chain, i), closure(self, c.outs())))
                 }
             }
             let free = |key: (Pending, usize), ins: &[TVar]| {
@@ -3689,6 +3813,35 @@ impl Solving {
                     progress = true
                 }
             }
+            for i in (0..self.chains.len()).rev() {
+                let chained = self.chains[i].clone();
+                let ins = chained.ins(env);
+                if ins.iter().all(|v| self.fixable(&held, v, min))
+                    && free((Pending::Chain, i), &ins)
+                {
+                    self.chains.swap_remove(i);
+                    ins.iter().try_for_each(|v| self.fix(env, v))?;
+                    match &chained {
+                        Chained::Read(u, chain) => drop(self.apply(env, u, chain)?),
+                        Chained::Relation(a, b) => {
+                            match (chain_payload(env, a), chain_payload(env, b)) {
+                                (Some(p), Some(q)) => {
+                                    let (p, q) =
+                                        (chain_error(env, p)?, chain_error(env, q)?);
+                                    self.relate(env, &p, &q)?
+                                }
+                                _ => self.relate(env, a, b)?,
+                            }
+                        }
+                    }
+                    progress = true
+                } else if ins.iter().any(quantified) {
+                    bail!(
+                        "the error of this chain is not known here: what was raised may \
+                         be a chain itself, which the raise extends; annotate it"
+                    )
+                }
+            }
         }
         let mine: Vec<TVar> =
             self.cells[mark..].iter().filter(|v| fixes(v, min)).cloned().collect();
@@ -3735,6 +3888,11 @@ impl Solving {
                 for v in
                     open_cells(out).into_iter().chain(raised.iter().flat_map(open_cells))
                 {
+                    self.reach(&Type::TVar(v), &mut waiting)
+                }
+            }
+            for c in self.chains.iter() {
+                for v in c.outs() {
                     self.reach(&Type::TVar(v), &mut waiting)
                 }
             }
@@ -3801,6 +3959,37 @@ impl Solving {
                 return Ok(());
             }
             cells.iter().try_for_each(|v| self.fix(env, v))?
+        }
+    }
+
+    /// The read `u` of the error the chain `chain` over `payload` holds. A
+    /// payload that is a chain is extended by the raise, so the read waits
+    /// until the payload is decided; a declared variable that may be a
+    /// chain leaves it unknown in its definition.
+    fn chain_read(
+        &mut self,
+        env: &Env,
+        u: &Use,
+        chain: &Type,
+        payload: &Type,
+    ) -> Result<bool> {
+        let payload = shallow(payload);
+        match &payload {
+            Type::TVar(v) if v.is_rigid() && may_be_chain(env, v)? => {
+                let name = v.declared_name().unwrap_or_else(|| v.name.clone());
+                let name = ShortName(&name);
+                bail!(
+                    "the error of a chain raised over '{name} is not known here: where \
+                     a call makes '{name} a chain, the raise extends that chain and its \
+                     error is the chain's own; give '{name} a bound no chain meets, or \
+                     a type"
+                )
+            }
+            t if undecided_chain_payload(t) => {
+                self.chains.push(Chained::Read(u.clone(), chain.clone()));
+                Ok(true)
+            }
+            _ => self.apply(env, u, &chain.lookup_ref(env)?),
         }
     }
 
@@ -4427,6 +4616,12 @@ impl Solving {
                     any |= self.apply(env, u, m)?
                 }
                 Ok(any)
+            }
+            (Type::Ref(_), Use::Field { field, .. }) if field == "error" => {
+                match chain_payload(env, &a) {
+                    Some(payload) => self.chain_read(env, u, &a, &payload),
+                    None => self.apply(env, u, &a.lookup_ref(env)?),
+                }
             }
             (Type::Ref(_), _) => self.apply(env, u, &a.lookup_ref(env)?),
             (Type::TVar(v), _) if v.is_rigid() => {

@@ -380,7 +380,7 @@ run!(
 
 run!(
     throws_mismatch_names_the_written_types,
-    refused_renumbered("val f is declared fn(x: i64) -> i64 throws Error<ErrChain<`A>> but implemented fn(x: i64) -> i64: type mismatch ErrChain<`A> does not contain ErrChain<'_0>"),
+    refused("val f is declared fn(x: i64) -> i64 throws Error<ErrChain<`A>> but implemented fn(x: i64) -> i64: type mismatch `A does not contain `Zero"),
     "/test.gx" => r#"
         mod inner;
         let result = inner::f(1)

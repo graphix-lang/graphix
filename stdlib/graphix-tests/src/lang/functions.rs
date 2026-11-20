@@ -5024,7 +5024,7 @@ run!(default_hidden_by_a_throws, r#"
     catch(e) r <- e ~ 1;
     g(0) ~ r
 }
-"#, refused_renumbered("type mismatch ErrChain<`Big> does not contain ErrChain<'_0>"); FuseExpect::None);
+"#, refused("type mismatch `Big does not contain `Small"); FuseExpect::None);
 
 // A default a fn type hides narrows the label of the function it is
 // passed as, so what decides the result later meets the default's type.
@@ -6708,7 +6708,7 @@ run!(
     };
     r$
 }"#,
-    refused("ErrChain<`Z> does not contain ErrChain<");
+    refused("type mismatch `Z does not contain `E");
     FuseExpect::None
 );
 
@@ -6736,7 +6736,7 @@ run!(
 run!(
     a_default_raising_through_two_of_the_factorys_variables,
     A_DEFAULT_RAISING_THROUGH_TWO_OF_THE_FACTORYS_VARIABLES,
-    refused_renumbered("type mismatch ErrChain<'e> does not contain ErrChain<'_0>");
+    refused("type mismatch 'e: unbound does not contain 'f: unbound");
     FuseExpect::None
 );
 
@@ -6750,7 +6750,7 @@ run!(
 run!(
     a_default_raising_through_the_factorys_variable_declared_another_type,
     A_DEFAULT_RAISING_THROUGH_THE_FACTORYS_VARIABLE_THAT_THROWS_ANOTHER_TYPE,
-    refused_renumbered("type mismatch ErrChain<`Z> does not contain ErrChain<'_0>");
+    refused("type mismatch `Z does not contain 'e");
     FuseExpect::None
 );
 

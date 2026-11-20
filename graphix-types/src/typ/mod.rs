@@ -3590,7 +3590,7 @@ impl Type {
                 JUDGING.with_borrow_mut(|j| j.pop());
             }
         }
-        // CR claude for eric: [bug/high] Whether a raised payload is an error chain is
+        // XCR claude for claude: [bug/high] Whether a raised payload is an error chain is
         // decided here while its variables are open, and the answer changes once an
         // instance decides them. A bare variable is no chain, so in `|x: 'a| { catch(e)
         // r <- e ~ e.0.error; error(x)?; r }` the binder is `ErrChain<'a>` and
@@ -3608,6 +3608,23 @@ impl Type {
         // design/review-2026-11-16/repro/t-typ-mod-generic-chain-payload.gx and
         // design/review-2026-11-16/repro/t-typ-mod-generic-chain-lookalike.gx
         // (t-typ-mod-01)
+        // 2026-11-20 claude: Eric ruled (2026-11-20, Q-K): flatten error chains as the
+        // run time does: a chain over a chain is that chain, a read of the error of a
+        // chain over a still-generic payload inside its definition is refused naming an
+        // annotation, the printer prints a chain of a chain as the chain, and no user
+        // type may be named ErrChain.
+        // 2026-11-20 claude: Fixed on bounds-spike: a .error read or a relation meeting
+        // core's ErrChain over a payload not decided yet waits in the fixing loop until
+        // the payload is (Solving::chains, Chained); a .error read over ErrChain<'a>, 'a
+        // a declared variable whose bounds admit a chain, is refused
+        // (Solving::chain_read); a raise of a struct of a chain's four fields whose
+        // cause, ori or pos is a variable is refused (bounds::strip,
+        // chain_shaped_over_variables). Both probes are refused. Pins:
+        // lang::errors::chain_error_over_a_declared_variable_is_refused,
+        // chain_error_over_a_variable_no_chain_meets,
+        // raise_of_a_chain_shaped_struct_over_variables_is_refused,
+        // generic_reraise_keeps_the_chain, generic_reraise_reads_the_first_error,
+        // generic_reraise_error_is_not_a_chain.
         if let Type::TVar(tv) = self {
             return match tv.binding() {
                 Some(t) => t.chain_error_type(env),

@@ -10,6 +10,7 @@ use crate::{
 use arcstr::ArcStr;
 use compact_str::{CompactString, format_compact};
 use enumflags2::BitFlags;
+use netidx_core::path::Path;
 use netidx_value::Typ;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
@@ -17,6 +18,24 @@ use std::{
     cell::Cell,
     fmt::{self, Write},
 };
+
+/// What `tr` prints as where it is core's `ErrChain` over a chain: that
+/// chain, which a raise extends rather than nests.
+fn chain_of_a_chain(tr: &TypeRef) -> Option<Type> {
+    let errchain = |tr: &TypeRef| Path::basename(&tr.name.0) == Some("ErrChain");
+    let ([payload], true) = (&tr.params[..], errchain(tr)) else { return None };
+    let mut payload = payload.clone();
+    while PRINT_FLAGS.get().contains(PrintFlag::DerefTVars)
+        && let Type::TVar(tv) = &payload
+        && let Some(t) = tv.binding()
+    {
+        payload = t
+    }
+    match &payload {
+        Type::Ref(inner) if errchain(inner) && inner.params.len() == 1 => Some(payload),
+        _ => None,
+    }
+}
 
 /// A set's members in print order: canonical, or under `AsWritten` the
 /// members nobody wrote first and then the written ones as written.
@@ -339,6 +358,9 @@ impl Type {
             Self::Bottom => write!(f, "_"),
             Self::Any => write!(f, "Any"),
             Self::Ref(tr) => {
+                if let Some(chain) = chain_of_a_chain(tr) {
+                    return write!(f, "{chain}");
+                }
                 let TypeRef { name, params, .. } = &**tr;
                 write!(f, "{name}")?;
                 if !params.is_empty() {
@@ -610,6 +632,9 @@ impl Type {
             Self::Bottom => writeln!(buf, "_"),
             Self::Any => writeln!(buf, "Any"),
             Self::Ref(tr) => {
+                if let Some(chain) = chain_of_a_chain(tr) {
+                    return chain.pretty(buf, notes);
+                }
                 let TypeRef { name, params, .. } = &**tr;
                 match &params[..] {
                     [] => writeln!(buf, "{name}"),

@@ -973,6 +973,85 @@ run!(generic_reraise_keeps_the_chain, GENERIC_RERAISE_KEEPS_THE_CHAIN, |v: Resul
     s.starts_with(r#"error:[["cause", [["cause", null], ["error", "Zero"]"#)
 });
 
+// A generic re-raise extends the chain it is given: its error is the first
+// raise's, typed so where the payload is decided.
+run!(
+    generic_reraise_reads_the_first_error,
+    r#"{
+    let must = |r: Result<i64, 'e>| -> i64 r?;
+    let inner = |x: i64| -> i64 select x { 0 => error(`Zero)?, x => x };
+    let relay = |x: i64| -> [i64, Error<ErrChain<`Zero>>] {
+        let r: [i64, Error<ErrChain<`Zero>>] = never();
+        catch(e) r <- e;
+        r <- inner(x);
+        r
+    };
+    let out = never();
+    catch(e) out <- select e.0.error { `Zero => "zero" };
+    must(relay(0));
+    out
+}"#,
+    prints(r#""zero""#)
+);
+run!(
+    generic_reraise_error_is_not_a_chain,
+    r#"{
+    let must = |r: Result<i64, 'e>| -> i64 r?;
+    let inner = |x: i64| -> i64 select x { 0 => error(`Zero)?, x => x };
+    let relay = |x: i64| -> [i64, Error<ErrChain<`Zero>>] {
+        let r: [i64, Error<ErrChain<`Zero>>] = never();
+        catch(e) r <- e;
+        r <- inner(x);
+        r
+    };
+    let out: ErrChain<`Zero> = never();
+    catch(e) out <- e.0.error;
+    must(relay(0));
+    out
+}"#,
+    refused("type mismatch ErrChain<`Zero> does not contain `Zero");
+    FuseExpect::None
+);
+
+// Inside its definition, the error of a chain raised over a declared
+// variable is not known: a call that makes the variable a chain gets that
+// chain extended. A bound no chain meets says it.
+run!(
+    chain_error_over_a_declared_variable_is_refused,
+    r#"{
+    let f = |x: 'a| -> 'a { let r: 'a = never(); catch(e) r <- e ~ e.0.error; error(x)?; r };
+    f(1)
+}"#,
+    refused("the error of a chain raised over 'a is not known here");
+    FuseExpect::None
+);
+run!(
+    chain_error_over_a_variable_no_chain_meets,
+    r#"{
+    let f = 'a: Number |x: 'a| -> 'a { let r: 'a = never(); catch(e) r <- e ~ e.0.error; error(x)?; r };
+    f(1)
+}"#,
+    prints("i64:1");
+    FuseExpect::None
+);
+
+// A struct of a chain's fields over variables is a chain at some calls and
+// not at others, so what raising it makes is not known in its definition.
+run!(
+    raise_of_a_chain_shaped_struct_over_variables_is_refused,
+    r#"{
+    let relay = |x: {cause: 'c, error: 'a, ori: 'o, pos: 'p}| -> ['c, null] {
+        let r: ['c, null] = null;
+        catch(e) r <- e ~ e.0.error.cause;
+        error(x)?;
+        r
+    };
+    relay({cause: 5, error: {cause: 1, error: 2, ori: 3, pos: 4}, ori: true, pos: null})
+}"#,
+    refused("whether this raises an error chain is not known here");
+    FuseExpect::None
+);
+
 // A chain written in a block joins the chain a fresh `?` raises: two
 // references to ErrChain are one definition whatever scope wrote them.
 run!(
@@ -1058,14 +1137,13 @@ run!(
     "#
 ; FuseExpect::Jit);
 
-// A raise is typed with core's ErrChain whatever a program names
-// ErrChain: `r.ori` is core's origin struct.
-run!(err_chain_is_cores_under_a_shadowing_type, r#"{
+// The name of core's error chain is core's alone.
+run!(a_shadowing_type_named_errchain_is_refused, r#"{
   type ErrChain<'a> = {cause: i64, error: 'a, ori: i64, pos: string};
   let r = never();
   { catch(e) r <- e.0; error(`A(1))? };
   r.ori + 1
-}"#, refused("type mismatch i64 does not contain Ori"); FuseExpect::None);
+}"#, refused("ErrChain is the name of core's error chain: no other type may take it"); FuseExpect::None);
 
 // `?` raises its operand's error part, which an Any operand does not say.
 run!(
@@ -1443,7 +1521,7 @@ run!(
     };
     go(1, 1)
 }"#,
-    refused("type mismatch `Other does not contain `E");
+    refused("missing match cases: nothing matches `E");
     FuseExpect::None
 );
 

@@ -3728,6 +3728,9 @@ impl Env {
         defer: bool,
     ) -> Result<(Unguarded, Option<Arc<AbstractRep>>)> {
         let TypeDefSite { public, doc, pos, decl, ori } = site;
+        if name == "ErrChain" && *scope != ModPath::from(["core"]) {
+            bail!("ErrChain is the name of core's error chain: no other type may take it")
+        }
         if self.lexical.typedefs.get(scope).and_then(|m| m.get(name)).is_some() {
             bail!("{name} is already defined {}", in_scope(scope))
         }
