@@ -9,12 +9,16 @@ use crate::{
     env::Env,
     expr::WrittenAt,
     stack::ensure_sufficient,
-    typ::{AbstractId, Bound, Mutability, TVar, Type, setops::strictly_identical},
+    typ::{
+        AbstractId, Bound, Mutability, TVar, Type, node_addr, setops::strictly_identical,
+    },
 };
+use ahash::AHashMap;
 use anyhow::{Result, bail};
 use arcstr::{ArcStr, literal};
 use compact_str::format_compact;
 use netidx_value::Typ;
+use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::ops::ControlFlow;
 use triomphe::Arc;
@@ -172,17 +176,35 @@ fn tag(name: &ArcStr, parts: impl IntoIterator<Item = Type>) -> Type {
 }
 
 /// `t` with each part `f` answers for replaced, a part's own parts after
-/// it; a union is rebuilt as one.
+/// it; a union is rebuilt as one. A node `t` shares is mapped once: `t`
+/// holds every node it reaches for the whole walk, so no address is reused.
 fn map_parts(t: &Type, f: &mut impl FnMut(&Type) -> Option<Type>) -> Type {
-    ensure_sufficient(|| match f(t) {
-        Some(t) => t,
-        None => match t {
-            Type::Set(ms) => union_of(ms.iter().map(|m| map_parts(m, f))),
-            t => t
-                .cow_children(&mut |c| Some(map_parts(c, f)))
-                .unwrap_or_else(|| t.clone()),
-        },
-    })
+    fn go(
+        t: &Type,
+        f: &mut impl FnMut(&Type) -> Option<Type>,
+        done: &mut AHashMap<usize, Type>,
+    ) -> Type {
+        ensure_sufficient(|| {
+            let key = node_addr(t);
+            if let Some(mapped) = key.and_then(|k| done.get(&k)) {
+                return mapped.clone();
+            }
+            let mapped = match f(t) {
+                Some(t) => t,
+                None => match t {
+                    Type::Set(ms) => union_of(ms.iter().map(|m| go(m, f, done))),
+                    t => t
+                        .cow_children(&mut |c| Some(go(c, f, done)))
+                        .unwrap_or_else(|| t.clone()),
+                },
+            };
+            if let Some(k) = key {
+                done.insert(k, mapped.clone());
+            }
+            mapped
+        })
+    }
+    go(t, f, &mut LPooled::take())
 }
 
 pub fn split(t: &Type) -> Type {
