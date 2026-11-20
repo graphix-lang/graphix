@@ -8175,6 +8175,19 @@ run!(
     refused("does not decide the type of `a`")
 );
 
+// A struct pattern naming every field takes a declared variable's values
+// that have those fields, whatever their types: its binds are Any.
+run!(
+    struct_pattern_beside_a_declared_variable_binds_any_refused,
+    r#"{
+    let f = |x: ['a, {a: 'b}]| select x { {a} => a, _ => never() };
+    let n = f({a: "s"});
+    n + 1
+}"#,
+    refused("i64 does not contain Any");
+    FuseExpect::None
+);
+
 run!(
     any_part_cell_the_arm_bounds_undecided_in_a_struct_refused,
     r#"{
