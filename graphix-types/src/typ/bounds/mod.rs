@@ -1719,32 +1719,118 @@ fn infinite() -> anyhow::Error {
     )
 }
 
-/// A cell is of a finite type: nothing that flows into it holds the cell
-/// inside a type, directly or through the cells that flow in.
-fn finite(v: &TVar) -> Result<()> {
-    let mut seen: LPooled<AHashSet<(usize, bool)>> = LPooled::take();
-    let flows = |u: &TVar, inside: bool| {
-        let fed = feeders(u).into_iter().map(Type::TVar);
-        u.cell_lower().into_iter().chain(fed).map(move |l| (l, inside))
-    };
-    let mut todo: SmallVec<[(Type, bool); 8]> = flows(v, false).collect();
-    while let Some((t, inside)) = todo.pop() {
-        match &shallow(&t) {
-            Type::TVar(u) if u.same_cell(v) && inside => return Err(infinite()),
-            Type::TVar(u) if u.same_cell(v) => (),
-            Type::TVar(u) => {
-                if seen.insert((u.cell_addr(), inside)) {
-                    todo.extend(flows(u, inside))
+/// The cells of `roots` are of finite types: nothing that flows into one
+/// holds it inside a type, directly or through the cells that flow in. One
+/// pass over the cells they reach: a cell holds itself inside a type where
+/// a cycle through it passes inside a type, so where its strongly connected
+/// component (by what flows into what) holds such an edge between two of
+/// its own cells.
+fn finite_all<'a>(roots: impl IntoIterator<Item = &'a TVar>) -> Result<()> {
+    struct Graph {
+        index: LPooled<AHashMap<usize, usize>>,
+        nodes: LPooled<Vec<TVar>>,
+        work: LPooled<Vec<usize>>,
+    }
+    impl Graph {
+        fn add(&mut self, v: &TVar) -> usize {
+            let n = self.nodes.len();
+            match self.index.entry(v.cell_addr()) {
+                std::collections::hash_map::Entry::Occupied(e) => *e.get(),
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert(n);
+                    self.nodes.push(v.clone());
+                    self.work.push(n);
+                    n
                 }
-            }
-            t => {
-                let mut cells = SmallVec::new();
-                cells_of(t, true, &mut cells);
-                todo.extend(cells.into_iter().map(|u| (Type::TVar(u), true)))
             }
         }
     }
-    Ok(())
+    let mut g =
+        Graph { index: LPooled::take(), nodes: LPooled::take(), work: LPooled::take() };
+    let roots: SmallVec<[usize; 8]> = roots.into_iter().map(|v| g.add(v)).collect();
+    // each cell's edges: to what flows into it, `true` where inside a type
+    let mut edges: LPooled<Vec<SmallVec<[(usize, bool); 4]>>> = LPooled::take();
+    while let Some(i) = g.work.pop() {
+        let u = g.nodes[i].clone();
+        let mut out: SmallVec<[(usize, bool); 4]> = SmallVec::new();
+        let fed = feeders(&u).into_iter().map(Type::TVar);
+        for l in u.cell_lower().into_iter().chain(fed) {
+            match &shallow(&l) {
+                Type::TVar(w) => out.push((g.add(w), false)),
+                t => {
+                    let mut cells = SmallVec::new();
+                    cells_of(t, true, &mut cells);
+                    out.extend(cells.iter().map(|c| (g.add(c), true)))
+                }
+            }
+        }
+        if edges.len() <= i {
+            edges.resize_with(i + 1, SmallVec::new)
+        }
+        edges[i] = out;
+    }
+    edges.resize_with(g.nodes.len(), SmallVec::new);
+    // Tarjan's components, without recursion
+    const NONE: usize = usize::MAX;
+    let n = g.nodes.len();
+    let (mut order, mut low, mut comp): (Vec<usize>, Vec<usize>, Vec<usize>) =
+        (vec![NONE; n], vec![0; n], vec![NONE; n]);
+    let mut on: Vec<bool> = vec![false; n];
+    let (mut stack, mut calls): (Vec<usize>, Vec<(usize, usize)>) = (vec![], vec![]);
+    let (mut next, mut comps) = (0, 0);
+    for s in 0..n {
+        if order[s] != NONE {
+            continue;
+        }
+        order[s] = next;
+        low[s] = next;
+        next += 1;
+        stack.push(s);
+        on[s] = true;
+        calls.push((s, 0));
+        while let Some(&(v, e)) = calls.last() {
+            if let Some(&(w, _)) = edges[v].get(e) {
+                calls.last_mut().unwrap().1 += 1;
+                if order[w] == NONE {
+                    order[w] = next;
+                    low[w] = next;
+                    next += 1;
+                    stack.push(w);
+                    on[w] = true;
+                    calls.push((w, 0))
+                } else if on[w] {
+                    low[v] = low[v].min(order[w])
+                }
+                continue;
+            }
+            calls.pop();
+            if let Some(&(p, _)) = calls.last() {
+                low[p] = low[p].min(low[v])
+            }
+            if low[v] == order[v] {
+                while let Some(w) = stack.pop() {
+                    on[w] = false;
+                    comp[w] = comps;
+                    if w == v {
+                        break;
+                    }
+                }
+                comps += 1
+            }
+        }
+    }
+    let mut infinite_comp: Vec<bool> = vec![false; comps];
+    for (i, out) in edges.iter().enumerate() {
+        for &(j, inside) in out.iter() {
+            if inside && comp[i] == comp[j] {
+                infinite_comp[comp[i]] = true
+            }
+        }
+    }
+    match roots.iter().any(|&r| infinite_comp[comp[r]]) {
+        true => Err(infinite()),
+        false => Ok(()),
+    }
 }
 
 /// Record that the labeled parameter `label`, of the type `param`, which
@@ -2672,8 +2758,13 @@ impl Solving {
         }
         let mut kept = Cells::new();
         self.reach(t, &mut kept);
-        for v in kept.iter().filter(|v| v.level().depth() > depth && !v.is_bound()) {
-            finite(v)?;
+        let own: SmallVec<[TVar; 8]> = kept
+            .iter()
+            .filter(|v| v.level().depth() > depth && !v.is_bound())
+            .cloned()
+            .collect();
+        finite_all(own.iter())?;
+        for v in own.iter() {
             self.meetable(env, v)?
         }
         self.fix_scope(env, depth + 1, false, mark)?;
