@@ -53,6 +53,51 @@ pub enum Pat {
 }
 
 impl Pat {
+    /// Whether every value `other` admits, this pattern admits, whatever
+    /// the scrutinee's type: its structure alone takes all of `other`'s.
+    fn covers(&self, other: &Pat) -> bool {
+        ensure_sufficient(|| match (self, other) {
+            (Pat::Whole(_, p), q) => p.covers(q),
+            (p, Pat::Whole(_, q)) => p.covers(q),
+            (Pat::Any(_), _) => true,
+            (Pat::Or(ps), q) if ps.iter().any(|p| p.covers(q)) => true,
+            (p, Pat::Or(qs)) => qs.iter().all(|q| p.covers(q)),
+            (Pat::Test(t, p), Pat::Test(u, q)) => t == u && p.covers(q),
+            (Pat::Lit(t, true), Pat::Lit(u, true)) => t == u,
+            (Pat::Tuple(_, ps), Pat::Tuple(_, qs)) => {
+                ps.len() == qs.len() && ps.iter().zip(qs).all(|(p, q)| p.covers(q))
+            }
+            (Pat::Variant(_, a, ps), Pat::Variant(_, b, qs)) => {
+                a == b
+                    && ps.len() == qs.len()
+                    && ps.iter().zip(qs).all(|(p, q)| p.covers(q))
+            }
+            (Pat::Struct(_, fs, exhaustive), Pat::Struct(_, gs, other_exhaustive)) => {
+                (!exhaustive || (*other_exhaustive && fs.len() == gs.len()))
+                    && fs.iter().all(|(n, p)| {
+                        gs.iter().find(|(m, _)| m == n).is_some_and(|(_, q)| p.covers(q))
+                    })
+            }
+            (Pat::Abs(_, a, p), Pat::Abs(_, b, q)) => a == b && p.covers(q),
+            _ => false,
+        })
+    }
+
+    /// Whether the pattern tests a value of a type by a literal of it: a
+    /// dead arm that does is a value-level one.
+    fn tests_a_value(&self) -> bool {
+        ensure_sufficient(|| match self {
+            Pat::Lit(_, whole) => !whole,
+            Pat::Any(_) => false,
+            Pat::Test(_, p) | Pat::Abs(_, _, p) | Pat::Whole(_, p) => p.tests_a_value(),
+            Pat::Tuple(_, ps) | Pat::Variant(_, _, ps) | Pat::Or(ps) => {
+                ps.iter().any(Pat::tests_a_value)
+            }
+            Pat::Struct(_, fs, _) => fs.iter().any(|(_, p)| p.tests_a_value()),
+            Pat::Elems { elems, .. } => elems.iter().any(Pat::tests_a_value),
+        })
+    }
+
     /// The pattern with each cell it binds through `f`.
     pub(super) fn map_cells(&self, f: &mut dyn FnMut(&TVar) -> TVar) -> Pat {
         let named =
@@ -1513,10 +1558,33 @@ impl Solving {
 
     /// An arm of a select that was judged and that nothing reaches.
     pub(super) fn dead_arms(&self, env: &Env) -> Result<()> {
+        // a select the routing below does not judge (one of a generic
+        // definition, whose instances give it its values) has no value to
+        // route: an arm an earlier one takes whole by its structure is dead
+        // whatever the scrutinee turns out to be; a value-level one is not
+        // refused (a literal after a wildcard)
+        let judged = |s: &Select| s.routed && !s.instance && s.waiting.is_empty();
+        for s in self.selects.iter().filter(|s| !judged(s)) {
+            let arms = &s.template.arms;
+            for (j, later) in arms.iter().enumerate() {
+                let covered =
+                    arms[..j].iter().any(|a| !a.guarded && a.pat.covers(&later.pat));
+                if covered && !later.pat.tests_a_value() {
+                    let arm = match s.written.as_ref().and_then(|w| w.get(j)) {
+                        Some(w) => format_compact!("{w}"),
+                        None => format_compact!("{}", j + 1),
+                    };
+                    bail!(
+                        "pattern {arm} will never match: nothing reaches it ({}; an earlier \
+                         arm takes every value it would)",
+                        s.template.at
+                    )
+                }
+            }
+        }
         // a select still waiting is one of a generic definition, whose
         // instances give it its values
-        let judged = |s: &&Select| s.routed && !s.instance && s.waiting.is_empty();
-        for s in self.selects.iter().filter(judged) {
+        for s in self.selects.iter().filter(|s| judged(s)) {
             let mut hit = s.hit.clone();
             // an arm is dead where the arms before it took its whole type: a
             // part of the scrutinee nothing decides here reaches the arms

@@ -3809,3 +3809,26 @@ run!(waiting_value_inside_a_definitions_cell_routed, r#"{
     let r = f(1, false);
     select r { i64 as n => "n [n]", Array<i64> as a => "a [a]" }
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "a [1]"); FuseExpect::Jit);
+
+// An arm an earlier arm takes whole by its structure is dead over a value
+// nothing has decided too; a literal behind a wildcard is a value-level
+// dead arm, which is allowed.
+run!(
+    tag_behind_a_wildcard_over_an_undecided_parameter_is_dead,
+    "{ let f = |x| select x { _ => 3, `J => 1 }; f(`J) }",
+    refused("pattern `J will never match: nothing reaches it");
+    FuseExpect::None
+);
+
+run!(
+    payload_behind_a_whole_tag_over_an_undecided_parameter_is_dead,
+    "{ let f = |x| select x { `A(a) => 1, `A(null) => 2, _ => 3 }; f(`A(null)) }",
+    refused("pattern `A(null) will never match: nothing reaches it");
+    FuseExpect::None
+);
+
+run!(
+    literal_behind_a_wildcard_over_an_undecided_parameter_is_allowed,
+    "{ let f = |x| select x { _ => 3, 5 => 1 }; f(5) }",
+    prints("i64:3")
+);
