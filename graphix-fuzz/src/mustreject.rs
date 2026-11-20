@@ -16,7 +16,7 @@ use graphix_compiler::{
     SourcePosition,
     env::Env,
     expr::{
-        ApplyExpr, ArgKind, BinOp, BindExpr, Expr, ExprKind, LambdaBody, LambdaExpr,
+        ApplyExpr, Arg, ArgKind, BinOp, BindExpr, Expr, ExprKind, LambdaBody, LambdaExpr,
         ModPath, Name, Origin, Pattern, SelectExpr, Source, StructurePattern, WrittenAt,
         parser,
     },
@@ -1953,7 +1953,7 @@ fn mono_reuse(
         }
         let firsts: Vec<(Typ, usize)> =
             uses.iter().filter_map(|(t, j)| Some((primitive(t)?, *j))).collect();
-        let Some((_, (_, jb))) = firsts.iter().enumerate().find_map(|(n, a)| {
+        let Some(((ta, _), (_, jb))) = firsts.iter().enumerate().find_map(|(n, a)| {
             firsts[n + 1..].iter().find(|b| b.0 != a.0).map(|b| (a, b))
         }) else {
             continue;
@@ -1970,10 +1970,30 @@ fn mono_reuse(
         let held = ExprKind::Ref { name: ModPath::from(["tm__0"]) }.to_expr_nopos();
         let writer =
             ExprKind::ByRef(Mutability::Mut, Arc::new(held.clone())).to_expr_nopos();
+        // the one instance is a cell every value of it flows into: a value
+        // taking only the first use's type, written there, is what the
+        // other use's argument cannot pass
+        let mut narrow = l.as_ref().clone();
+        let mut args: Vec<Arg> = narrow.args.iter().cloned().collect();
+        let Some(first) = args.iter_mut().find(|a| matches!(a.kind, ArgKind::Positional))
+        else {
+            continue;
+        };
+        first.constraint = Some(Type::Primitive((*ta).into()));
+        narrow.args = Arc::from(args);
+        let narrowed = ExprKind::Lambda(Arc::new(narrow)).to_expr_nopos();
+        let write = ExprKind::Connect {
+            name: ModPath::from(["tm__1"]),
+            at: Default::default(),
+            value: Arc::new(narrowed),
+            deref: true,
+        }
+        .to_expr_nopos();
         let wrapped = ExprKind::Block {
             exprs: Arc::from_iter([
                 bind("tm__0", b.value.clone()),
                 bind("tm__1", writer),
+                write,
                 held,
             ]),
         }

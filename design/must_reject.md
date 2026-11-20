@@ -87,17 +87,19 @@ open. Not where any such use's is a decided type of many values: it may be
 the one the others fit. Not a lambda that declares a variable and leaves a parameter or its
 return unannotated: in a written binding that is a cell outside the
 definition, and meeting the variable is its escape, refused first.
-Mutation: route the lambda through a binding something writes, `let f =
-{ let tm__0 = |..| ..; let tm__1 = &mut tm__0; tm__0 }`. Rule: a binding
-something writes is not generalized (the value restriction,
-`CompileCtx::monomorphic`; a written name's cells are claimed for its
-level at its binding, and a merge takes the lower of its two cells'
-levels, so a holder's copy that meets them is that one instance too,
-`TVar::merge_one`), and `f`, a `let` of a block whose value names it,
-forwards that one instance (`bind::names_generic`; a single name
-something writes holds an instance of its own, `Bind::forwards`, pinned
-by `lang::interfaces::written_alias_of_*`), so every use, a call's
-included, shares its cells and the two uses meet in one instance:
+Mutation: route the lambda through a binding something writes, and write
+it the lambda with its first parameter annotated at the first use's type,
+`let f = { let tm__0 = |..| ..; let tm__1 = &mut tm__0; *tm__1 <- |x: T,
+..| ..; tm__0 }`. Rule: a binding something writes is not generalized
+(the value restriction, `CompileCtx::monomorphic`), and `f`, a `let` of a
+block whose value names it, forwards that one instance
+(`bind::names_generic`; a single name something writes holds an instance
+of its own, `Bind::forwards`, pinned by
+`lang::interfaces::written_alias_of_*`), so every use, a call's included,
+shares its cells. The instance's type is the union of what flows into it
+(R1 is dropped), so the two uses alone meet as the union and check; the
+written value takes only the first use's type, and a call through the
+instance may reach it, so the other use's argument is refused:
 `f(1); f(1.5)` over it is refused. A block alone would not hold it: a
 `let` of a block whose value is a lambda, a generalized binding or a
 field or tuple read of one generalizes (Generalization, "Generic only
