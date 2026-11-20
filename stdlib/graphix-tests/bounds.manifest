@@ -654,7 +654,6 @@ graphix_tests::lang::types::function_type_every_position_held_in_a_field	refuses
 graphix_tests::lang::types::function_type_every_position_held_in_a_union	refuses	type mismatch [i64, string] does not contain bool
 graphix_tests::lang::types::lambda_constraint	refuses	type mismatch Number does not contain string
 graphix_tests::lang::types::list_cycle_written	refuses	type mismatch i64 does not contain [i64, string]
-graphix_tests::lang::types::literal_outside_what_a_union_bounds_variable_member_took_refused	refuses	type mismatch [Array<f64>, Array<i64>] does not contain Array<[i64, string]>
 graphix_tests::lang::types::map_bound_reaches_an_open_key	refuses	type mismatch [i64, string] does not contain f64
 graphix_tests::lang::types::merge_under_a_constructor	refuses	type mismatch Number does not contain Array<'_0: unbound>
 graphix_tests::lang::types::merge_under_a_constructor_in_a_call	refuses	type mismatch Number does not contain Array<'_0: unbound>

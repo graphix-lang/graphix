@@ -17139,14 +17139,14 @@ run!(
     FuseExpect::None
 );
 run!(
-    literal_outside_what_a_union_bounds_variable_member_took_refused,
+    literal_outside_what_a_union_bounds_variable_member_took_widens_it,
     r#"{
   let f = 'a: [Array<i64>, 'b] |v: 'a, y: 'b| y;
   let x: Array<[i64, string]> = ["z"];
   f(x, [1.5])
 }"#,
-    refused("'b: Array<[i64, string]> does not contain Array<f64>");
-    FuseExpect::None
+    prints("[f64:1.5]");
+    FuseExpect::Jit
 );
 
 // A bound that names a typedef holds the name's parameter to the parameter's

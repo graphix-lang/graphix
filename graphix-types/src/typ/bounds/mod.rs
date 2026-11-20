@@ -2398,6 +2398,26 @@ fn frozen(
     })
 }
 
+/// What the decided cell `v` stands as: its lower bounds, a member that
+/// is itself a decided cell read through to its own, so the head is
+/// decided and only parts under a constructor stay open; a cell met again
+/// inside its own bounds stays open.
+fn standing_head(v: &TVar, seen: &mut AHashSet<usize>) -> Type {
+    ensure_sufficient(|| {
+        seen.insert(v.cell_addr());
+        let mut members: SmallVec<[Type; 4]> = SmallVec::new();
+        for l in v.cell_lower().iter() {
+            match open(&shallow(l)) {
+                Some(u) if decided(&u) && !seen.contains(&u.cell_addr()) => {
+                    members.push(standing_head(&u, seen))
+                }
+                _ => members.push(l.clone()),
+            }
+        }
+        union_of(members)
+    })
+}
+
 /// Whether anything says what `v` is: it is bound, or something that is
 /// no undecided cell flows into it.
 fn decided(v: &TVar) -> bool {
@@ -3220,11 +3240,39 @@ impl Solving {
                     }
                     // a member something has decided is decided here; one
                     // nothing has stays open, to take what the others do
-                    // not
+                    // not. A decided member stands as its lower bounds, whose
+                    // own open cells (a literal's element) may still widen:
+                    // where every value takes the union as it stands, the
+                    // values meet it so before its members are fixed
+                    let stands: LPooled<AHashMap<usize, Type>> = bvs
+                        .iter()
+                        .filter(|v| !v.is_bound() && decided(v))
+                        .map(|v| (v.cell_addr(), standing_head(v, &mut LPooled::take())))
+                        .collect();
+                    let standing =
+                        deep(&b).swap_cells(&|addr| stands.get(&addr).cloned());
+                    let met = !stands.is_empty()
+                        && values.iter().all(|a| !a.has_free())
+                        && self.attempting(|s| {
+                            let n = s.held.len();
+                            s.resolving = true;
+                            let r = values
+                                .iter()
+                                .try_for_each(|a| s.constrain(env, a, &standing));
+                            s.resolving = false;
+                            match r.is_ok() && s.held.len() == n {
+                                true => Ok(()),
+                                false => bail!("a value takes no member as it stands"),
+                            }
+                        });
                     for v in bvs.iter() {
                         if decided(v) {
                             self.fix(env, v)?
                         }
+                    }
+                    if met {
+                        progress = true;
+                        continue;
                     }
                     for a in values {
                         progress |= self.place_held(env, &a, &b)?
