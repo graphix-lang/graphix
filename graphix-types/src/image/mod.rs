@@ -23,7 +23,7 @@ use crate::{
     typ::{
         FnType, MapType, ResolvedRef, TVar, Type,
         fntyp::LambdaIds,
-        tvar::{CellLock, TCell, TVarId},
+        tvar::{CellLock, CellRef, TCell, TVarId},
     },
 };
 use ahash::AHashMap;
@@ -219,7 +219,7 @@ pub struct ImageEncoder {
     resolveds: Table<usize, Resolved>,
     origins: Table<usize, Arc<Origin>>,
     tvars: Table<usize, TVar>,
-    cells: Table<usize, Arc<CellLock>>,
+    cells: Table<usize, CellRef>,
     /// Expressions by the address of the session's clone
     /// ([`expr_key`]).
     pub(crate) exprs: Table<usize>,
@@ -294,7 +294,7 @@ pub enum Obj {
     Resolved(Resolved),
     Origin(Arc<Origin>),
     TVar(TVar),
-    Cell(Arc<CellLock>),
+    Cell(CellRef),
     Expr(Box<Expr>),
     Type(Type),
     FnType(Box<FnType>),
@@ -344,7 +344,7 @@ object!(RefCell, RefCell);
 object!(Resolved, Resolved);
 object!(Arc<Origin>, Origin);
 object!(TVar, TVar);
-object!(Arc<CellLock>, Cell);
+object!(CellRef, Cell);
 object!(box Expr, Expr);
 object!(Type, Type);
 object!(box FnType, FnType);
@@ -1467,8 +1467,8 @@ pub(crate) fn tvar_encode(tv: &TVar, buf: &mut impl BufMut) -> Result<(), PackEr
     )
 }
 
-fn cell_encode(cell: &Arc<CellLock>, buf: &mut impl BufMut) -> Result<(), PackError> {
-    let key = Arc::as_ptr(cell) as usize;
+fn cell_encode(cell: &CellRef, buf: &mut impl BufMut) -> Result<(), PackError> {
+    let key = CellRef::as_ptr(cell) as usize;
     object_encode(
         &key,
         |k| (*k, cell.clone()),
@@ -1541,11 +1541,11 @@ pub(crate) fn tvar_decode(buf: &mut impl Buf) -> Result<TVar, PackError> {
             let frozen = bool::decode(sub)?;
             // Entered over a placeholder before its cell: the cell's
             // bound type or a constraint can reach this wrapper.
-            let placeholder = Arc::new(CellLock::default());
+            let placeholder = CellRef::new(CellLock::default());
             let tv = TVar::from_parts(name, id, frozen, placeholder);
             enter(Obj::TVar(tv.clone()))?;
             let cell = cell_decode(sub)?;
-            tv.write().cell = cell;
+            tv.write().cell = crate::typ::tvar::CellLink::Owning(cell);
             Ok(tv)
         },
         |b| tvar_decode(b),
@@ -1553,14 +1553,14 @@ pub(crate) fn tvar_decode(buf: &mut impl Buf) -> Result<TVar, PackError> {
     )
 }
 
-fn cell_decode(buf: &mut impl Buf) -> Result<Arc<CellLock>, PackError> {
+fn cell_decode(buf: &mut impl Buf) -> Result<CellRef, PackError> {
     shared_decode(
         buf,
-        built::<Arc<CellLock>>,
+        built::<CellRef>,
         |sub| {
             // Entered before its contents: a bound type can reach the
             // cell again.
-            let cell = Arc::new(CellLock::default());
+            let cell = CellRef::new(CellLock::default());
             enter(Obj::Cell(cell.clone()))?;
             let typ = Pack::decode(sub)?;
             let constraints: Vec<_> = Pack::decode(sub)?;

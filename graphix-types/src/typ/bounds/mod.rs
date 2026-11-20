@@ -15,7 +15,7 @@ use crate::{
         node_addr,
         setops::strictly_identical,
         toml_root_refusal,
-        tvar::{AtLevel, Level, ShortName},
+        tvar::{AtLevel, Level, Scheme, ShortName},
         variance,
     },
 };
@@ -550,6 +550,9 @@ pub struct Solving {
     /// a variable of the copy, and keeps what the original left to its
     /// instances.
     scheming: bool,
+    /// The copy is the one [`Solving::seal`] makes: a cell another scheme
+    /// owns already is that scheme's, and is not copied.
+    sealing: bool,
     /// The pairs of typedef names a select's walk is inside.
     walks: std::cell::RefCell<select::Walks>,
     /// How many captures stand over the pattern a select's routing is at.
@@ -3053,6 +3056,108 @@ impl Solving {
         reached
     }
 
+    /// The definition whose signature is `t` has closed: its variables
+    /// move into cells a [`Scheme`] owns. Each reference among them is a
+    /// view that keeps nothing, and each of the definition's own cells
+    /// forwards to its copy, keeping the scheme: every var that links to
+    /// it reads the copy. What holds the definition's types holds the
+    /// scheme through them, and nothing the scheme holds leads back.
+    pub fn seal(&mut self, t: &Type) {
+        let mut sealer = Solving { scheming: true, sealing: true, ..Solving::default() };
+        let mut copies = AHashMap::default();
+        sealer.copy(t, Level::GENERIC.depth() - 1, Level::GENERIC, &mut copies);
+        let originals = std::mem::take(&mut sealer.copied);
+        if originals.is_empty() {
+            return;
+        }
+        let made: SmallVec<[TVar; 8]> =
+            originals.iter().map(|o| copies[&o.cell_addr()].clone()).collect();
+        let mut index: AHashMap<usize, usize> = AHashMap::default();
+        for (i, (o, n)) in originals.iter().zip(made.iter()).enumerate() {
+            index.insert(o.cell_addr(), i);
+            index.insert(n.cell_addr(), i);
+        }
+        let views: SmallVec<[TVar; 8]> = made.iter().map(TVar::viewing).collect();
+        let view = |v: &TVar| index.get(&v.cell_addr()).map(|i| views[*i].clone());
+        for n in made.iter() {
+            sealer.view_state(n, &view)
+        }
+        let scheme = std::sync::Arc::new(Scheme {
+            cells: made.iter().map(|n| n.cell()).collect(),
+        });
+        scheme.cells.iter().for_each(|c| c.owned_by_scheme());
+        for (i, o) in originals.iter().enumerate() {
+            release(o);
+            o.forward(&scheme, i as u32)
+        }
+    }
+
+    /// The state of the scheme's cell `n`, each cell of the scheme it
+    /// names through `view`, a decided cell by what it was decided to.
+    fn view_state(&mut self, n: &TVar, view: &dyn Fn(&TVar) -> Option<TVar>) {
+        let ty = |t: &Type| map_cells(t, &mut |v| view(v).map(Type::TVar));
+        let cells = |vs: &SmallVec<[TVar; 1]>| -> SmallVec<[TVar; 1]> {
+            vs.iter()
+                .filter(|v| !v.is_bound())
+                .map(|v| view(v).unwrap_or_else(|| v.clone()))
+                .collect()
+        };
+        let cell = n.cell();
+        let (lower, upper, known) = {
+            let mut c = cell.write();
+            (
+                std::mem::take(&mut c.lower),
+                std::mem::take(&mut c.constraints),
+                c.solving.take(),
+            )
+        };
+        let lower = lower.iter().map(ty).collect();
+        let upper = upper.iter().map(ty).collect();
+        let known = known.map(|mut k| {
+            k.feeders = cells(&k.feeders);
+            k.sinks = cells(&k.sinks);
+            k.from = cells(&k.from);
+            let cell_of = |_: &mut Self, v: &TVar| view(v).unwrap_or_else(|| v.clone());
+            k.uses = k
+                .uses
+                .iter()
+                .map(|(u, met)| {
+                    let u = match u {
+                        Use::Routed(i, of) => {
+                            Use::Routed(*i, self.template_copy(of, &mut { cell_of }))
+                        }
+                        u => u.map(&mut |t| ty(t)),
+                    };
+                    (u, *met)
+                })
+                .collect();
+            k.left = k
+                .left
+                .iter()
+                .map(|l| match l {
+                    Left::Held(p) => Left::Held(Arc::new((ty(&p.0), ty(&p.1)))),
+                    Left::Compared(p) => {
+                        Left::Compared(Arc::new((ty(&p.0), ty(&p.1), p.2)))
+                    }
+                    Left::Asked(a) => Left::Asked(Arc::new((
+                        ty(&a.0),
+                        a.1.iter().map(ty).collect(),
+                        a.2.clone(),
+                    ))),
+                    Left::Single(u) => Left::Single(view(u).unwrap_or_else(|| u.clone())),
+                    Left::Waiting(of, w) => {
+                        Left::Waiting(self.template_copy(of, &mut { cell_of }), ty(w))
+                    }
+                })
+                .collect();
+            k.defaults =
+                k.defaults.iter().map(|(l, d, p)| (l.clone(), ty(d), ty(p))).collect();
+            k
+        });
+        let mut c = cell.write();
+        (c.lower, c.constraints, c.solving) = (lower, upper, known);
+    }
+
     /// Leave a check to the instances of the scheme whose variables `t`
     /// holds: each of those variables keeps what `left` gives for it.
     fn leave(&self, t: &Type, left: impl Fn(&[Left]) -> Option<Left>) {
@@ -3296,8 +3401,9 @@ impl Solving {
         copies: &mut AHashMap<usize, TVar>,
     ) -> Type {
         let mut made: SmallVec<[(TVar, TVar); 4]> = SmallVec::new();
+        let sealing = self.sealing;
         let t = map_cells(t, &mut |v| {
-            if v.level().depth() <= above {
+            if v.level().depth() <= above || (sealing && v.sealed()) {
                 return None;
             }
             if let Some(n) = copies.get(&v.cell_addr()) {

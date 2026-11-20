@@ -33,6 +33,7 @@ use std::{
     hash::Hash,
     mem::{self, ManuallyDrop},
     ops::{ControlFlow, Deref},
+    sync::OnceLock,
     sync::atomic::{self, AtomicU64},
 };
 use triomphe::Arc;
@@ -79,7 +80,64 @@ fn bound_cell_changes() {
 // `add_cell_constraint`, `closes_cycle`). Move the reachability walks to `typ/reach.rs`
 // and the task records to `typ/task.rs` as plain file moves, leaving here the cell and
 // its mutators. Found by reading; not run. (t-tvar-a-08)
-type CellRef = Arc<CellLock>;
+pub(crate) type CellRef = std::sync::Arc<CellLock>;
+type CellWeak = std::sync::Weak<CellLock>;
+
+/// The cells of a closed definition's scheme, which it owns. A cell of
+/// the definition forwards to its copy here and keeps them all
+/// ([`CellLock`]); a reference inside their state to one of them keeps
+/// nothing ([`CellLink`]).
+pub struct Scheme {
+    pub(crate) cells: Box<[CellRef]>,
+}
+
+impl fmt::Debug for Scheme {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Scheme({} cells)", self.cells.len())
+    }
+}
+
+/// How a var holds its cell.
+#[derive(Debug)]
+pub(crate) enum CellLink {
+    /// The var keeps the cell.
+    Owning(CellRef),
+    /// A reference inside a scheme's state to one of the scheme's own
+    /// cells: the scheme keeps it, so nothing points back.
+    Viewing(CellWeak),
+}
+
+/// A link's cell, borrowed where the link keeps it.
+pub(crate) enum CellGuard<'a> {
+    Borrowed(&'a CellRef),
+    Owned(CellRef),
+}
+
+impl std::ops::Deref for CellGuard<'_> {
+    type Target = CellRef;
+
+    fn deref(&self) -> &CellRef {
+        match self {
+            CellGuard::Borrowed(c) => c,
+            CellGuard::Owned(c) => c,
+        }
+    }
+}
+
+impl CellLink {
+    pub(crate) fn get(&self) -> CellGuard<'_> {
+        match self {
+            CellLink::Owning(c) => match c.1.forwarded() {
+                Some((s, i)) => CellGuard::Borrowed(&s.cells[*i as usize]),
+                None => CellGuard::Borrowed(c),
+            },
+            CellLink::Viewing(w) => CellGuard::Owned(
+                w.upgrade()
+                    .expect("a scheme's cell is read after its scheme was dropped"),
+            ),
+        }
+    }
+}
 
 /// Whether no open cell is reachable from `t` through the bindings,
 /// constraints and lower bounds [`would_cycle_inner`] walks: then `t`
@@ -825,8 +883,71 @@ fn count_write() -> u64 {
 
 /// A cell's lock: each write counts toward [`cell_writes`] and takes the
 /// cell's [`Place`], whatever it changes.
+///
+/// A closed definition's scheme ([`Scheme`]) seals its cells: each of
+/// the definition's own forwards to its copy, and each copy is the
+/// scheme's.
 #[derive(Debug, Default)]
-pub struct CellLock(RwLock<TCell>);
+pub struct CellLock(RwLock<TCell>, Sealed);
+
+/// What sealed a cell, set once: nothing (null), the scheme that owns it
+/// ([`Sealed::OWNED`]), or, for a definition's own cell, its copy in the
+/// scheme, which every var that links to the cell reads, and which keeps
+/// the scheme (a boxed scheme and index). One word: every activation
+/// holds a cell.
+#[derive(Default)]
+pub(crate) struct Sealed(std::sync::atomic::AtomicPtr<(std::sync::Arc<Scheme>, u32)>);
+
+impl Sealed {
+    const OWNED: *mut (std::sync::Arc<Scheme>, u32) = std::ptr::dangling_mut();
+
+    fn set(&self, to: *mut (std::sync::Arc<Scheme>, u32)) -> bool {
+        use std::sync::atomic::Ordering::{AcqRel, Acquire};
+        self.0.compare_exchange(std::ptr::null_mut(), to, AcqRel, Acquire).is_ok()
+    }
+
+    fn forward(&self, scheme: std::sync::Arc<Scheme>, i: u32) {
+        let to = Box::into_raw(Box::new((scheme, i)));
+        if !self.set(to) {
+            // SAFETY: `to` was just made from a box no one else saw.
+            drop(unsafe { Box::from_raw(to) })
+        }
+    }
+
+    /// The copy a definition's cell forwards to.
+    fn forwarded(&self) -> Option<&(std::sync::Arc<Scheme>, u32)> {
+        let p = self.0.load(std::sync::atomic::Ordering::Acquire);
+        match p.is_null() || p == Self::OWNED {
+            true => None,
+            // SAFETY: a forward is set once and freed only with the cell.
+            false => Some(unsafe { &*p }),
+        }
+    }
+
+    fn owned(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Acquire) == Self::OWNED
+    }
+}
+
+impl Drop for Sealed {
+    fn drop(&mut self) {
+        let p = *self.0.get_mut();
+        if !p.is_null() && p != Self::OWNED {
+            // SAFETY: a forward is a box this slot owns alone.
+            drop(unsafe { Box::from_raw(p) })
+        }
+    }
+}
+
+impl fmt::Debug for Sealed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match (self.owned(), self.forwarded()) {
+            (true, _) => write!(f, "Owned"),
+            (false, Some((_, i))) => write!(f, "Forward({i})"),
+            (false, None) => write!(f, "-"),
+        }
+    }
+}
 
 /// The cells whose conjuncts an alias walk has passed under one scope of
 /// quantifier names: passing them again aliases nothing. A scope passes
@@ -835,7 +956,7 @@ pub struct CellLock(RwLock<TCell>);
 /// under names the scope declares. Each cell is held, so its address
 /// stays its own while the walk lasts.
 pub(super) struct ConjunctsPassed {
-    cells: RefCell<LPooled<AHashMap<usize, Arc<CellLock>>>>,
+    cells: RefCell<LPooled<AHashMap<usize, CellRef>>>,
     own: LPooled<AHashSet<ArcStr>>,
     /// The scope's own cells the walk met, in the order met, whose
     /// conjuncts it passes at the scope's end ([`FnType::alias_scope`]).
@@ -911,7 +1032,29 @@ impl ConjunctsPassed {
 
 impl CellLock {
     pub(crate) fn new(cell: TCell) -> Self {
-        Self(RwLock::new(cell))
+        Self(RwLock::new(cell), Sealed::default())
+    }
+
+    /// A cell that forwards to the scheme's cell `i` ([`Self::forward`]).
+    pub(crate) fn forwarding(scheme: std::sync::Arc<Scheme>, i: u32) -> Self {
+        let cell = Self::default();
+        cell.forward(scheme, i);
+        cell
+    }
+
+    /// Forward the cell to the scheme's cell `i`, its copy.
+    pub(crate) fn forward(&self, scheme: std::sync::Arc<Scheme>, i: u32) {
+        self.1.forward(scheme, i)
+    }
+
+    /// The cell is a scheme's own.
+    pub(crate) fn owned_by_scheme(&self) {
+        self.1.set(Sealed::OWNED);
+    }
+
+    /// Whether the cell is a scheme's own.
+    pub(crate) fn is_schemes(&self) -> bool {
+        self.1.owned()
     }
 
     #[inline]
@@ -1750,7 +1893,7 @@ impl Default for TCell {
 /// left, so the close decrements this cell and not whatever the var
 /// reads by then.
 pub struct RigidGate {
-    cell: Arc<CellLock>,
+    cell: CellRef,
 }
 
 impl Drop for RigidGate {
@@ -1968,7 +2111,7 @@ impl fmt::Display for BoundAt<'_> {
 pub struct TVarLink {
     pub(crate) id: TVarId,
     pub(crate) frozen: bool,
-    pub(crate) cell: Arc<CellLock>,
+    pub(crate) cell: CellLink,
     /// The compile task that created the var ([`written`]).
     task: TaskId,
     /// The [`cell_writes`] count of the thread that last wrote the link.
@@ -2180,7 +2323,7 @@ impl Default for TVar {
     fn default() -> Self {
         let id = TVarId::new();
         let name = ArcStr::from(format_compact!("_{}", id.0).as_str());
-        Self::from_parts(name, id, false, Arc::new(CellLock::default()))
+        Self::from_parts(name, id, false, CellRef::new(CellLock::default()))
     }
 }
 
@@ -2199,7 +2342,7 @@ impl Deref for TVar {
 impl PartialEq for TVar {
     fn eq(&self, other: &Self) -> bool {
         let (c0, c1) = (self.end_cell(), other.end_cell());
-        Arc::ptr_eq(&c0, &c1) || c0.read().binding == c1.read().binding
+        CellRef::ptr_eq(&c0, &c1) || c0.read().binding == c1.read().binding
     }
 }
 
@@ -2214,7 +2357,7 @@ impl PartialOrd for TVar {
 impl Ord for TVar {
     fn cmp(&self, other: &Self) -> Ordering {
         let (c0, c1) = (self.end_cell(), other.end_cell());
-        if Arc::ptr_eq(&c0, &c1) {
+        if CellRef::ptr_eq(&c0, &c1) {
             Ordering::Equal
         } else {
             c0.read().binding.cmp(&c1.read().binding)
@@ -2303,7 +2446,7 @@ impl TVar {
     }
 
     pub fn empty_named(name: ArcStr) -> Self {
-        Self::from_parts(name, TVarId::new(), false, Arc::new(CellLock::default()))
+        Self::from_parts(name, TVarId::new(), false, CellRef::new(CellLock::default()))
     }
 
     /// A fresh variable no definition owns yet, as written in source.
@@ -2400,7 +2543,7 @@ impl TVar {
             name,
             TVarId::new(),
             false,
-            Arc::new(CellLock::new(TCell::bound(typ))),
+            CellRef::new(CellLock::new(TCell::bound(typ))),
         )
     }
 
@@ -2409,18 +2552,47 @@ impl TVar {
         name: ArcStr,
         id: TVarId,
         frozen: bool,
-        cell: Arc<CellLock>,
+        cell: CellRef,
     ) -> Self {
         Self(ManuallyDrop::new(Arc::new(TVarInner {
             name,
             link: RwLock::new(TVarLink {
                 id,
                 frozen,
-                cell,
+                cell: CellLink::Owning(cell),
                 task: TASK.get(),
                 written: 0,
             }),
         })))
+    }
+
+    /// Forward this var's own cell to the scheme's cell `i`, its copy.
+    pub(crate) fn forward(&self, scheme: &std::sync::Arc<Scheme>, i: u32) {
+        if let CellLink::Owning(c) = &self.read().cell {
+            c.forward(scheme.clone(), i)
+        }
+    }
+
+    /// This var's cell, referred to from inside the scheme that owns it:
+    /// it keeps nothing.
+    pub(crate) fn viewing(&self) -> Self {
+        let (id, frozen, cell) = self.parts();
+        Self(ManuallyDrop::new(Arc::new(TVarInner {
+            name: self.name.clone(),
+            link: RwLock::new(TVarLink {
+                id,
+                frozen,
+                cell: CellLink::Viewing(CellRef::downgrade(&cell)),
+                task: TASK.get(),
+                written: 0,
+            }),
+        })))
+    }
+
+    /// Whether the var reads a scheme's cell: however it links to it, a
+    /// definition's own cell that forwards there among the ways.
+    pub(crate) fn sealed(&self) -> bool {
+        self.read().cell.get().is_schemes()
     }
 
     /// The same cell under another name.
@@ -2430,9 +2602,9 @@ impl TVar {
     }
 
     /// The wrapper's id and frozen flag, and its cell.
-    pub(crate) fn parts(&self) -> (TVarId, bool, Arc<CellLock>) {
+    pub(crate) fn parts(&self) -> (TVarId, bool, CellRef) {
         let link = self.read();
-        (link.id, link.frozen, link.cell.clone())
+        (link.id, link.frozen, link.cell.get().clone())
     }
 
     /// Identity of the wrapper: equal for clones of one `TVar`.
@@ -2441,23 +2613,24 @@ impl TVar {
     }
 
     /// The cell this var reads now.
-    pub(crate) fn cell(&self) -> Arc<CellLock> {
-        self.read().cell.clone()
+    pub(crate) fn cell(&self) -> CellRef {
+        self.read().cell.get().clone()
     }
 
     /// The cell's binding, cloned out (never recurse under the guard).
     pub fn binding(&self) -> Option<Type> {
-        self.read().cell.read().binding.clone()
+        self.read().cell.get().read().binding.clone()
     }
 
     pub fn is_bound(&self) -> bool {
-        self.read().cell.read().binding.is_some()
+        self.read().cell.get().read().binding.is_some()
     }
 
     fn ground_judgment(&self, j: Judgment) -> Ground {
         let epoch = ground_epoch();
         let link = self.read();
-        let c = link.cell.read();
+        let cell = link.cell.get();
+        let c = cell.read();
         match &c.binding {
             Some(_) if c.ground == epoch && c.kept.clear.contains(j) => {
                 Ground::Kept(false)
@@ -2466,7 +2639,7 @@ impl TVar {
                 Ground::Kept(true)
             }
             Some(b) if c.ground == epoch => {
-                Ground::Unjudged { cell: link.cell.clone(), binding: b.clone(), epoch }
+                Ground::Unjudged { cell: (*cell).clone(), binding: b.clone(), epoch }
             }
             _ => Ground::Unproved,
         }
@@ -2527,10 +2700,11 @@ impl TVar {
         let epoch = ground_epoch();
         let (cell, binding) = {
             let link = self.read();
-            let c = link.cell.read();
+            let held = link.cell.get();
+            let c = held.read();
             match (&c.binding, &c.resolved) {
                 (Some(_), Some(r)) if c.ground == epoch => return Some((**r).clone()),
-                (Some(b), None) if c.ground == epoch => (link.cell.clone(), b.clone()),
+                (Some(b), None) if c.ground == epoch => ((*held).clone(), b.clone()),
                 _ => return None,
             }
         };
@@ -2550,7 +2724,8 @@ impl TVar {
     /// nothing.
     pub(super) fn ground_now(&self) -> bool {
         let link = self.read();
-        let c = link.cell.read();
+        let cell = link.cell.get();
+        let c = cell.read();
         c.binding.is_some() && c.ground == ground_epoch()
     }
 
@@ -2721,7 +2896,7 @@ impl TVar {
 
     /// The cell's constraint conjunction (cloned out).
     pub fn cell_constraints(&self) -> SmallVec<[Type; 1]> {
-        self.read().cell.read().constraints.clone()
+        self.read().cell.get().read().constraints.clone()
     }
 
     /// Whether one of the cell's conjuncts implies the bound `c`
@@ -2743,7 +2918,7 @@ impl TVar {
 
     /// The cell's lower bounds (cloned out).
     pub fn cell_lower(&self) -> SmallVec<[Type; 1]> {
-        self.read().cell.read().lower.clone()
+        self.read().cell.get().read().lower.clone()
     }
 
     /// Bound the open cell from below by `t` (deduped, and a bound that a
@@ -2856,7 +3031,7 @@ impl TVar {
             // two cells earlier tasks made stay apart; the unification this
             // check needed of them is a decision it may not make
             (true, true) => {
-                if !Arc::ptr_eq(&s_cell, &o_cell) {
+                if !CellRef::ptr_eq(&s_cell, &o_cell) {
                     written_of(
                         s_cell.read().task,
                         "cell",
@@ -2874,7 +3049,7 @@ impl TVar {
             }
             _ => (),
         }
-        let same = Arc::ptr_eq(&s_cell, &o_cell);
+        let same = CellRef::ptr_eq(&s_cell, &o_cell);
         if how == Merge::Name && self.read().frozen {
             return;
         }
@@ -2936,8 +3111,8 @@ impl TVar {
                 Type::TVar(v) => match v.open_cell() {
                     Some(o)
                         if !o.is_rigid()
-                            && !Arc::ptr_eq(&o.cell(), &s_cell)
-                            && !Arc::ptr_eq(&o.cell(), &o_cell) =>
+                            && !CellRef::ptr_eq(&o.cell(), &s_cell)
+                            && !CellRef::ptr_eq(&o.cell(), &o_cell) =>
                     {
                         absorb.push(o);
                         false
@@ -3024,7 +3199,7 @@ impl TVar {
             let mut sc = s_cell.write();
             sc.set_binding(Some(Type::TVar(other.clone())));
         }
-        s.cell = o_cell;
+        s.cell = CellLink::Owning(o_cell);
         drop(s);
         if !level.is_generic() {
             other.claim(level)
@@ -3042,7 +3217,7 @@ impl TVar {
     fn alias_enclosing(&self, other: &Self) {
         let (id, cell) = {
             let o = other.read();
-            (o.id, o.cell.clone())
+            (o.id, o.cell.get().clone())
         };
         let renamed = {
             let mut l = self.write();
@@ -3057,10 +3232,10 @@ impl TVar {
         // already forwards to the enclosing one
         if renamed
             && let Some(end) = self.open_cell()
-            && Arc::ptr_eq(&end.cell(), &cell)
+            && CellRef::ptr_eq(&end.cell(), &cell)
         {
             let mut l = self.write();
-            l.cell = cell;
+            l.cell = CellLink::Owning(cell);
             l.id = id;
             l.frozen = true;
             return;
@@ -3158,7 +3333,7 @@ impl TVar {
 
     #[doc(hidden)]
     pub fn is_rigid(&self) -> bool {
-        self.read().cell.read().rigid_gates > 0
+        self.read().cell.get().read().rigid_gates > 0
     }
 
     /// Whether the cell is open with nothing to say what it is: no
@@ -3229,7 +3404,7 @@ impl TVar {
 
     /// The cell this var stands for: its own, or the end of the forward
     /// links merges left ([`Self::open_cell`], bound or not).
-    fn end_cell(&self) -> Arc<CellLock> {
+    fn end_cell(&self) -> CellRef {
         let mut cell = self.cell();
         loop {
             let next = match &cell.read().binding {
@@ -3251,7 +3426,7 @@ impl TVar {
     /// Identity of the shared binding cell, for set membership tests.
     #[doc(hidden)]
     pub fn cell_addr(&self) -> usize {
-        self.read().cell.data_ptr().addr()
+        self.read().cell.get().data_ptr().addr()
     }
 
     /// `self`'s cell under `like`'s name when a program wrote that name: a
@@ -3292,7 +3467,7 @@ impl TVar {
             return f.named_as(self);
         }
         if !fresh.is_empty()
-            && matches!(self.read().cell.read().binding, Some(Type::TVar(_)))
+            && matches!(self.read().cell.get().read().binding, Some(Type::TVar(_)))
             && let Some(end) = memo.ends().open_cell(self)
             && let Some(f) = fresh.get(&end)
         {
@@ -6595,7 +6770,7 @@ fn cell_contents<R>(tv: &TVar, f: impl FnOnce(Option<&Type>, &[Type]) -> R) -> O
             WRITING.with_borrow_mut(|w| w.pop());
         }
     }
-    let cell = tv.read().cell.clone();
+    let cell = tv.read().cell.get().clone();
     let key = cell.data_ptr().addr();
     if WRITING.with_borrow(|w| w.contains(&key)) {
         return None;
