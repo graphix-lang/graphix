@@ -2972,7 +2972,8 @@ impl Type {
     }
 
     /// Each function type this type holds outside any other function type,
-    /// bindings followed: the function values a holder of this type may carry.
+    /// bindings followed, and what flows into a cell still open: the
+    /// function values a holder of this type may carry.
     pub fn each_held_fn(&self, f: &mut impl FnMut(&FnType)) {
         self.held_fns_seen(&mut LPooled::take(), f)
     }
@@ -2980,10 +2981,13 @@ impl Type {
     fn held_fns_seen(&self, seen: &mut AHashSet<usize>, f: &mut impl FnMut(&FnType)) {
         ensure_sufficient(|| match self {
             Type::TVar(tv) => {
-                if seen.insert(tv.cell_addr())
-                    && let Some(b) = tv.binding()
-                {
-                    b.held_fns_seen(seen, f)
+                if seen.insert(tv.cell_addr()) {
+                    match tv.binding() {
+                        Some(b) => b.held_fns_seen(seen, f),
+                        None => {
+                            tv.cell_lower().iter().for_each(|t| t.held_fns_seen(seen, f))
+                        }
+                    }
                 }
             }
             t if node_addr(t).is_some_and(|n| !seen.insert(n)) => (),

@@ -3846,6 +3846,10 @@ impl Solving {
     /// Give `v` one type: the union of what flows into it, or, where
     /// nothing does, the narrowest of what its uses demand.
     fn fix(&mut self, env: &Env, v: &TVar) -> Result<()> {
+        ensure_sufficient(|| self.fix_cell(env, v))
+    }
+
+    fn fix_cell(&mut self, env: &Env, v: &TVar) -> Result<()> {
         if v.is_bound()
             || v.is_rigid()
             || quantified(v)
