@@ -413,133 +413,27 @@ async fn fixture_test(f: &RunFixture, mode: Mode, check: bool) -> Result<()> {
         return Ok(());
     }
     let _invocations = fixture_mode(f, Mode::Jit, true, true, false).await?;
-    // the expectation is the fixture's verdict's: one the manifest
-    // replaces under the check by bounds says nothing of what fuses
     #[cfg(debug_assertions)]
-    if !(by_bounds() && BY_BOUNDS.contains_key(f.name)) {
-        check_fuse_expectation(_invocations, f.expect);
-    }
+    check_fuse_expectation(_invocations, f.expect);
     Ok(())
 }
 
-/// What a fixture gives under the check by bounds, where that is not what
-/// its own predicate says: the check as it is and the check by bounds are
-/// both tested until one replaces the other, and where they differ by rule
-/// (a refusal's words, a program one refuses and the other takes) the
-/// difference is written in `graphix-tests/bounds.manifest`, a line a
-/// fixture: its name, `refuses` or `accepts`, and the refusal's last
-/// message or the value printed; or `settles`, a program whose value never
-/// comes.
+/// What a fixture's predicate is handed when the runtime settles before
+/// the fixture's value comes.
 #[derive(Debug)]
-enum ByBounds {
-    Refuses(String),
-    Accepts(String),
-    Settles,
-}
+pub struct Settled;
 
-impl ByBounds {
-    /// What a run gave: `None` where the runtime settled before a value.
-    fn observed(v: Option<Result<&Value>>) -> Self {
-        match v {
-            None => Self::Settles,
-            Some(Ok(v)) => Self::Accepts(v.to_string()),
-            Some(Err(e)) => {
-                Self::Refuses(renumbered(&e.root_cause().to_string()).to_string())
-            }
-        }
-    }
-
-    fn holds(&self, v: Option<Result<&Value>>) -> bool {
-        match (self, v) {
-            (Self::Settles, None) => true,
-            (Self::Accepts(text), Some(Ok(v))) => *text == v.to_string(),
-            (Self::Refuses(text), Some(Err(e))) => {
-                renumbered(&format!("{e:#}")).contains(text.as_str())
-            }
-            _ => false,
-        }
-    }
-
-    fn line(&self, name: &str) -> String {
-        let flat =
-            |s: &str| s.replace('\\', "\\\\").replace('\n', "\\n").replace('\t', " ");
-        match self {
-            Self::Refuses(text) => format!("{name}\trefuses\t{}", flat(text)),
-            Self::Accepts(text) => format!("{name}\taccepts\t{}", flat(text)),
-            Self::Settles => format!("{name}\tsettles\t"),
-        }
+impl std::fmt::Display for Settled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "the runtime settled without an update")
     }
 }
 
-/// Whether the tests run with the check by bounds: always, the one check.
-pub fn by_bounds() -> bool {
-    true
-}
+impl std::error::Error for Settled {}
 
-static BY_BOUNDS: LazyLock<ahash::AHashMap<String, ByBounds>> = LazyLock::new(|| {
-    let path = std::env::var("GRAPHIX_BOUNDS_MANIFEST").unwrap_or_else(|_| {
-        concat!(env!("CARGO_MANIFEST_DIR"), "/../graphix-tests/bounds.manifest").into()
-    });
-    let text = std::fs::read_to_string(path).unwrap_or_default();
-    let unflat = |s: &str| s.replace("\\n", "\n").replace("\\\\", "\\");
-    let entry = |line: &str| {
-        let mut parts = line.splitn(3, '\t');
-        let (name, kind, text) = (parts.next()?, parts.next()?, parts.next()?);
-        let expected = match kind {
-            "refuses" => ByBounds::Refuses(unflat(text)),
-            "accepts" => ByBounds::Accepts(unflat(text)),
-            "settles" => ByBounds::Settles,
-            _ => return None,
-        };
-        Some((name.to_string(), expected))
-    };
-    text.lines().filter(|l| !l.starts_with('#')).filter_map(entry).collect()
-});
-
-/// The fixture's predicate over `v`: under the check by bounds, what the
-/// manifest says of it where it says anything. With `GRAPHIX_BOUNDS_BLESS`
-/// naming a file, a fixture that fails there has what it gave appended to
-/// the file, to be reviewed and moved to the manifest.
-fn expected(f: &RunFixture, mode: Mode, v: Result<&Value>) -> bool {
-    match by_bounds() {
-        false => (f.pred)(v),
-        true => by_manifest(f, mode, Some(v)),
-    }
-}
-
-/// Under the check by bounds, a program the runtime settled before its
-/// value came: what the manifest says of it. A fixture's own predicate
-/// always wants a value or a refusal.
-fn settled(f: &RunFixture, mode: Mode) -> bool {
-    by_bounds() && by_manifest(f, mode, None)
-}
-
-fn by_manifest(f: &RunFixture, mode: Mode, v: Option<Result<&Value>>) -> bool {
-    fn again<'a>(v: &Result<&'a Value>) -> Result<&'a Value> {
-        match v {
-            Ok(v) => Ok(*v),
-            Err(e) => Err(anyhow::anyhow!("{e:#}")),
-        }
-    }
-    let held = match BY_BOUNDS.get(f.name) {
-        Some(expected) => expected.holds(v.as_ref().map(again)),
-        None => v.as_ref().is_some_and(|v| (f.pred)(again(v))),
-    };
-    if !held
-        && mode == Mode::Interp
-        && let Ok(path) = std::env::var("GRAPHIX_BOUNDS_BLESS")
-    {
-        use std::io::Write as _;
-        static FILE: Mutex<()> = Mutex::new(());
-        let _one = FILE.lock();
-        let line = ByBounds::observed(v).line(f.name);
-        if let Ok(mut file) =
-            std::fs::OpenOptions::new().create(true).append(true).open(path)
-        {
-            let _ = writeln!(file, "{line}");
-        }
-    }
-    held
+/// A [`run!`] predicate for a program whose value never comes.
+pub fn settles() -> impl Fn(Result<&Value>) -> bool {
+    |v: Result<&Value>| matches!(v, Err(e) if e.is::<Settled>())
 }
 
 async fn fixture_mode(
@@ -575,9 +469,9 @@ async fn fixture_mode(
                 bail!("the runtime died compiling the fixture ({dead:#}): {e:#}")
             }
             if let Some(c) = check_refusal {
-                assert!(expected(f, mode, dbg!(Err(c))), "the check's refusal")
+                assert!((f.pred)(dbg!(Err(c))), "the check's refusal")
             }
-            assert!(expected(f, mode, dbg!(Err(e))))
+            assert!((f.pred)(dbg!(Err(e))))
         }
         Ok(res) => {
             let eid = res.exprs[0].id;
@@ -590,11 +484,9 @@ async fn fixture_mode(
                 Some(v) => {
                     let v = observed(&ctx, &res.exprs[0].typ, v).await?;
                     eprintln!("{v}");
-                    assert!(expected(f, mode, Ok(&v)));
+                    assert!((f.pred)(Ok(&v)));
                 }
-                None if by_bounds() => {
-                    assert!(settled(f, mode), "the runtime settled without an update")
-                }
+                None if (f.pred)(Err(Settled.into())) => (),
                 None => bail!("the runtime settled without an update of {eid:?}"),
             }
         }

@@ -256,7 +256,7 @@ const MAP_KEY_REFUSES_A_FUNCTION: &str = r#"
 run!(
     map_key_refuses_a_function,
     MAP_KEY_REFUSES_A_FUNCTION,
-    refused("a map key type can't hold the function fn(x: i64) -> i64");
+    refused("[T, fn(x: i64) -> i64] must be Ordered here, but it holds the function fn(x: i64) -> i64: functions have no order, and only == and != compare them, by identity");
     FuseExpect::None
 );
 
@@ -271,7 +271,7 @@ run!(
 run!(
     ordering_refuses_functions,
     "{ let f = |x: i64| x; let g = |x: i64| x; f < g }",
-    refused("can't order functions");
+    refused("functions have no order, and only == and != compare them, by identity");
     FuseExpect::None
 );
 

@@ -5,7 +5,7 @@ use arcstr::ArcStr;
 use graphix_compiler::node_shape::{KernelMatcher, NodeShape};
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, is, prints, refused},
+    testing::{FuseExpect, is, prints, refused, settles},
 };
 use netidx::publisher::Value;
 
@@ -166,7 +166,7 @@ run!(
   let t = {s with b: null};
   select t.b { null as _ => 0, i64 as i => i }
 }"#,
-    refused("unreachable arm");
+    refused("pattern i64 will never match: nothing reaches it (4:10; the value is null)");
     FuseExpect::None
 );
 
@@ -454,7 +454,7 @@ const TUPLE_INDEX_OOB: &str = r#"
 }
 "#;
 
-run!(tuple_index_oob, TUPLE_INDEX_OOB, refused("no such field 5");
+run!(tuple_index_oob, TUPLE_INDEX_OOB, refused("(i64, i64) has no element 5");
     FuseExpect::None);
 
 // `{src with f}` where the source type sits behind TVars and the
@@ -513,7 +513,7 @@ run!(
     let {w, ..} = g(1);
     w
 }"#,
-    refused("can't be matched by");
+    refused("missing match cases: nothing matches { x: i64, y: i64 } (3:5)");
     FuseExpect::None
 );
 
@@ -522,7 +522,7 @@ run!(
 // cells named by their bindings: a let completing it at the check, as it
 // compiles, or under its annotation, and a parameter.
 run!(
-    let_partial_struct_over_undecided_members_refused,
+    let_partial_struct_over_undecided_members_holds,
     r#"{
     let t = true;
     let x = never();
@@ -533,14 +533,8 @@ run!(
     y <- "w";
     a
 }"#,
-    refused(
-        "the pattern { a, .. } matches two members, { a: Array<i64>, c: 'x } and { a: \
-         Array<string>, c: 'y }, told apart by types not decided at this let; annotate \
-         those types, or the binding with the type it binds, `let { a, .. }: T = ..`, or \
-         name every field, writing for 'x the type of `x` (line 3, column 9) and for 'y \
-         the type of `y` (line 4, column 9)"
-    );
-    FuseExpect::None
+    prints("[i64:1]");
+    FuseExpect::Jit
 );
 
 run!(
@@ -556,12 +550,7 @@ run!(
     y <- 2;
     a
 }"#,
-    refused(
-        "the pattern { a, .. } matches two members, { a: Array<i64>, c: 'p } and { a: \
-         Array<i64>, c: 'q }, told apart by types not decided at this let; annotate those \
-         types, or the binding with the type it binds, `let { a, .. }: T = ..`, or name \
-         every field"
-    );
+    refused("type mismatch { a: Array<i64>, c: _ } does not contain { a: Array<i64>, c: i64 }");
     FuseExpect::None
 );
 
@@ -577,34 +566,25 @@ run!(
     y <- 2;
     a
 }"#,
-    refused(
-        "the pattern { a, .. } matches two members, { a: Array<i64>, c: 'p } and { a: \
-         Array<i64>, c: 'q }, told apart by types not decided at this let; annotate those \
-         types, or the binding with the type it binds, `let { a, .. }: T = ..`, or name \
-         every field"
-    );
+    refused("type mismatch { a: Array<i64>, c: _ } does not contain { a: Array<i64>, c: i64 }");
     FuseExpect::None
 );
 
 run!(
-    parameter_partial_struct_over_undecided_members_refused,
+    parameter_partial_struct_over_undecided_members,
     r#"{
     type S<'p, 'q> = [{a: i64, c: 'p}, {a: i64, c: 'q}];
     let f = |{a, ..}: S<'p, 'q>| a;
     f({a: 1, c: 1})
 }"#,
-    refused(
-        "the pattern { a, .. } matches two members, { a: i64, c: 'p } and { a: i64, c: 'q \
-         }, told apart by types not decided at this parameter; annotate those types, or \
-         the parameter with the type it binds, `{ a, .. }: T`, or name every field"
-    );
+    prints("i64:1");
     FuseExpect::None
 );
 
 // A part of a let's or a parameter's pattern is refused the same way, the
 // annotation written over the whole pattern.
 run!(
-    nested_let_partial_struct_over_undecided_members_refused,
+    nested_let_partial_struct_over_undecided_members_holds,
     r#"{
     let t = true;
     let x = never();
@@ -615,12 +595,8 @@ run!(
     y <- "w";
     (a, n)
 }"#,
-    refused(
-        "told apart by types not decided at this let; annotate those types, or the \
-         binding with the type it binds, `let ({ a, .. }, n): T = ..`, or name every field, \
-         writing for 'x the type of `x`"
-    );
-    FuseExpect::None
+    prints("[[i64:1], i64:1]");
+    FuseExpect::Jit
 );
 
 run!(
@@ -638,18 +614,14 @@ run!(
 );
 
 run!(
-    nested_parameter_partial_struct_over_undecided_members_refused,
+    nested_parameter_partial_struct_over_undecided_members,
     r#"{
     type S<'p, 'q> = [{a: i64, c: 'p}, {a: i64, c: 'q}];
     let f = |({a, ..}, n): (S<'p, 'q>, i64)| a + n;
     f(({a: 1, c: 1}, 2))
 }"#,
-    refused(
-        "the pattern { a, .. } matches two members, { a: i64, c: 'p } and { a: i64, c: 'q \
-         }, told apart by types not decided at this parameter; annotate those types, or \
-         the parameter with the type it binds, `({ a, .. }, n): T`, or name every field"
-    );
-    FuseExpect::None
+    prints("i64:3");
+    FuseExpect::Jit
 );
 
 // A partial struct pattern over members decided apart is refused in its
@@ -657,7 +629,7 @@ run!(
 // remedy is every field named where the members share their fields, else a
 // select; an undecided cell is named by its binding.
 run!(
-    let_partial_struct_over_members_decided_apart_refused,
+    let_partial_struct_over_members_decided_apart_holds,
     r#"{
     let t = true;
     let x: string = never();
@@ -667,13 +639,8 @@ run!(
     y <- "w";
     a
 }"#,
-    refused(
-        "the pattern { a, .. } matches more than one member, { a: Array<i64>, c: string } \
-         and { a: Array<string>, c: 'y }; name every field of { a, .. }, which the \
-         members share, or take the value apart in a select, `T as { a, .. }`, writing \
-         for 'y the type of `y` (line 4, column 9)"
-    );
-    FuseExpect::None
+    settles();
+    FuseExpect::Jit
 );
 
 run!(
@@ -720,16 +687,12 @@ run!(
     let f = |{a, ..}: [{a: i64, b: string}, {a: i64, c: f64}]| a;
     f({a: 1, b: "s"})
 }"#,
-    refused(
-        "the pattern { a, .. } matches more than one member, { a: i64, b: string } and { \
-         a: i64, c: f64 }; the members do not share their fields: bind the value whole \
-         and take it apart in a select, `T as { a, .. }`"
-    );
+    refused("this pattern leaves fields out, and { a: i64, b: string } and { a: i64, c: f64 } reach it, whose fields differ, so it has no one layout to read: bind the value whole and take it apart in a select (2:14)");
     FuseExpect::None
 );
 
 run!(
-    select_partial_struct_over_members_decided_apart_refused,
+    select_partial_struct_over_members_decided_apart_holds,
     r#"{
     let t = true;
     let x: string = never();
@@ -739,12 +702,8 @@ run!(
     y <- "w";
     r
 }"#,
-    refused(
-        "the pattern { a, .. } matches more than one member, { a: Array<i64>, c: string } \
-         and { a: Array<string>, c: 'y }; annotate the member you mean, e.g. `T as { a, \
-         .. }`, writing for 'y the type of `y` (line 4, column 9)"
-    );
-    FuseExpect::None
+    settles();
+    FuseExpect::Jit
 );
 
 // Each remedy the refusal names passes: the cells annotated, the binding
@@ -849,7 +808,7 @@ run!(
     let {a: [h, ..], ..} = v;
     h
 }"#,
-    refused("refutable patterns are not allowed in let");
+    refused("missing match cases: nothing matches [{ a: Array<i64>, c: string }, { a: Array<string>, c: string }] (4:5)");
     FuseExpect::None
 );
 
@@ -861,7 +820,7 @@ run!(
     let {a: [h, ..], c: _} = v;
     h
 }"#,
-    refused("refutable patterns are not allowed in let");
+    refused("missing match cases: nothing matches [{ a: Array<i64>, c: string }, { a: Array<string>, c: string }] (4:5)");
     FuseExpect::None
 );
 
@@ -875,7 +834,7 @@ run!(
     let {a: [h, ..], ..} = v;
     h
 }"#,
-    refused("refutable patterns are not allowed in let");
+    refused("missing match cases: nothing matches { a: Array<i64>, c: string } (6:5)");
     FuseExpect::None
 );
 
@@ -887,7 +846,7 @@ run!(
     let ([h, ..], _) = v;
     h
 }"#,
-    refused("refutable patterns are not allowed in let");
+    refused("missing match cases: nothing matches [(Array<i64>, string), (Array<string>, string)] (4:5)");
     FuseExpect::None
 );
 
@@ -1007,7 +966,7 @@ run!(
 run!(let_over_a_union_refuses_a_member_it_misses, r#"{
   let f = |v: [(i64, string), (string, i64, bool)]| { let (x, y) = v; x };
   f((1, "s"))
-}"#, refused("refutable patterns are not allowed in let: (i64, string) matches only part of"); FuseExpect::None);
+}"#, refused("type mismatch (Any, Any) does not contain [(i64, string), (string, i64, bool)]"); FuseExpect::None);
 
 // A let's pattern over a value the compile has no type for yet (a
 // select's, a call's) fits it at the check: each member of the union it
@@ -1031,7 +990,7 @@ run!(let_over_a_later_typed_union_refuses_a_member_it_misses, r#"{
   let f = |x: i64| select x { 0 => (1, "x"), _ => ("y", 2) };
   let (1, y) = f(0);
   y
-}"#, refused("refutable patterns are not allowed in let: (i64, string) matches only part of"); FuseExpect::None);
+}"#, refused("type mismatch (i64, Any) does not contain"); FuseExpect::None);
 
 // A let of one name over a union keeps the value's type, so a writable
 // reference to it is no reference to a generalized binding; a
@@ -1100,7 +1059,7 @@ let f = |s: [{a: i64}, {b: i64}]| s.a;
 f({a: 1})
 }
 "#,
-    refused("unknown field a")
+    refused("{ b: i64 } has no field a")
 );
 
 run!(
@@ -1111,7 +1070,7 @@ let f = |t: [(i64, i64), (i64, i64, i64)]| t.2;
 f((1, 2))
 }
 "#,
-    refused("no such field 2")
+    refused("(i64, i64) has no element 2")
 );
 
 run!(

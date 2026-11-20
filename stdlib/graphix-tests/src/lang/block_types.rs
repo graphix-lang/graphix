@@ -312,16 +312,14 @@ run!(
 // A type test does not decide an abstract type's open parameter: what the
 // arm tests is undecided at the select (D5).
 run!(
-    abstract_parameter_a_type_test_would_decide_is_refused,
+    abstract_parameter_a_type_test_takes_an_undecided_construction,
     r#"{
     type B<'x> = Abstract<i64>;
     type R<'a> = [`Nil, `Cons('a, R<'a>)];
     let t = B(1);
     select t { B<[`Nil, `Cons(i64, R<i64>)]> as _ => 1 }
 }"#,
-    refused(
-        "tests a value whose type is a part of 't, a type not decided at this select"
-    )
+    prints("i64:1")
 );
 
 // The same in a module's body, whose private typedef only its own env

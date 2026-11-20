@@ -319,14 +319,14 @@ run!(queuefn_immediate, QUEUEFN_IMMEDIATE, |v: Result<&Value>| {
 run!(
     queuefn_refuses_defaulted_label,
     "queuefn(#trigger: never(), |#scale: i64 = 10, x: i64| -> i64 x * scale)(5)",
-    refused("within Function does not contain");
+    refused("fn(?#scale: i64, x: i64) -> i64 must be Function here");
     FuseExpect::None
 );
 
 run!(
     queuefn_refuses_variadic,
     "queuefn(#trigger: never(), max)(1, 5)",
-    refused("within Function does not contain");
+    refused("fn(a: i64, @args: i64) -> i64 must be Function here");
     FuseExpect::None
 );
 

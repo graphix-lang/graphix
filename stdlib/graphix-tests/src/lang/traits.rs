@@ -105,7 +105,7 @@ run!(
 // Calling with a type that has no implementation is a compile error.
 run!(
     trait_no_impl_refused,
-    refused("string does not implement Show"),
+    refused("type mismatch Show does not contain string"),
     "/test.gx" => r#"
         trait Show { val show: fn(self) -> string };
         impl Show for i64 { let show = |x| "int [x]" };
@@ -117,29 +117,29 @@ run!(
 // A select inside a value of an impl's variable names it as the impl
 // declares it, met through a cell the method's body made too.
 run!(
-    impl_variable_met_in_a_method_body_named_as_declared,
-    refused("[`J] tests inside a value of 'a, a type variable of the definition, which types none of its parts: write the type it tests, `T as [`J]`, or bound 'a"),
+    impl_variable_met_in_a_method_body_is_tested_at_run_time,
+    prints("\"o\""),
     "/test.gx" => r#"
         trait Show { val show: fn(self) -> string };
         impl<'a> Show for Array<'a> { let show = |x| select [x[0]$] { [`J] => "j", _ => "o" } };
         let result = Show::show([1])
     "#
-    ; FuseExpect::None
+    ; FuseExpect::Jit
 );
 
 // A test inside a value a trait declares by no name a program writes as a
 // variable, a trait in argument position or a default's receiver, is told by
 // what the program wrote, with a remedy it can write.
 run!(
-    test_inside_a_trait_argument_told_by_the_trait,
-    refused("`J tests inside a value of the trait Show, which types none of its parts: declare the parameter as a named variable bounded by the type it tests, `'a: T`, and write that type, `T as `J`"),
+    test_inside_a_trait_argument_is_made_at_run_time,
+    prints("i64:2"),
     "/test.gx" => r#"
         trait Show { val show: fn(self) -> string };
         impl Show for i64 { let show = |x| "i" };
         let f = |s: Show| select s { `J => 1, _ => 2 };
         let result = f(1)
     "#
-    ; FuseExpect::None
+    ; FuseExpect::Jit
 );
 
 // CR claude for claude: [test-gap/low] This refusal and those of
@@ -152,20 +152,20 @@ run!(
 // design/review-2026-11-16/repro/tests-traits-a-told-remedies-unpinned.sh
 // (tests-traits-a-06)
 run!(
-    test_inside_a_trait_argument_met_through_a_handle_told_by_the_trait,
-    refused("[`J] tests inside a value of the trait Show, which types none of its parts: write the type it tests, `T as [`J]`, or declare the parameter as a named variable bounded by the type it tests, `'a: T`"),
+    test_inside_a_trait_argument_met_through_a_handle_is_made_at_run_time,
+    prints("i64:2"),
     "/test.gx" => r#"
         trait Show { val show: fn(self) -> string };
         impl Show for i64 { let show = |x| "i" };
         let f = |s: Show| select [s] { [`J] => 1, _ => 2 };
         let result = f(1)
     "#
-    ; FuseExpect::None
+    ; FuseExpect::Jit
 );
 
 run!(
     binding_inside_a_trait_argument_told_by_the_trait,
-    refused("the pattern `J binds inside a value of the trait Show, which types none of its parts: declare the parameter as a named variable bounded by the type it binds, `'a: T`, and annotate the binding with it, `let `J: T = ..`"),
+    refused("type mismatch `J does not contain '#s: unbound within Show"),
     "/test.gx" => r#"
         trait Show { val show: fn(self) -> string };
         impl Show for i64 { let show = |x| "i" };
@@ -185,25 +185,25 @@ run!(
 );
 
 run!(
-    test_inside_a_default_receiver_told_as_self,
-    refused("`J tests inside a value of self, which types none of its parts: write the type it tests, `T as `J`"),
+    test_inside_a_default_receiver_is_made_at_run_time,
+    prints("i64:2"),
     "/test.gx" => r#"
         trait Tag { val tag: fn(self) -> i64 = |x| select x { `J => 1, _ => 2 } };
         impl Tag for i64 {};
         let result = Tag::tag(1)
     "#
-    ; FuseExpect::None
+    ; FuseExpect::Jit
 );
 
 run!(
-    test_inside_a_default_receiver_met_through_a_handle_told_as_self,
-    refused("[`J] tests inside a value of self, which types none of its parts: write the type it tests, `T as [`J]`"),
+    test_inside_a_default_receiver_met_through_a_handle_is_made_at_run_time,
+    prints("i64:2"),
     "/test.gx" => r#"
         trait Tag { val tag: fn(self) -> i64 = |x| select [x] { [`J] => 1, _ => 2 } };
         impl Tag for i64 {};
         let result = Tag::tag(1)
     "#
-    ; FuseExpect::None
+    ; FuseExpect::Jit
 );
 
 run!(
@@ -371,11 +371,7 @@ run!(
 // and a union's order follows the names of its members.
 run!(
     trait_union_dispatch_members_that_cross_refused,
-    refused(
-        "a Show call over [Array<[i64, null]>, Array<[i64, string]>] tests each member, \
-         and a value may be both Array<[i64, null]> and Array<[i64, string]>, neither of \
-         which holds the other: give the value one member's type"
-    ),
+    refused("type mismatch Show does not contain [Array<[i64, null]>, Array<[i64, string]>]"),
     "/test.gx" => r#"
         trait Show { val show: fn(self) -> string };
         impl Show for Array<[i64, string]> { let show = |x| "arr-is" };
@@ -389,7 +385,7 @@ run!(
 // Whatever the two members are named.
 run!(
     trait_union_dispatch_members_that_cross_named_s_n_refused,
-    refused("a value may be both Array<[i64, null]> and Array<[i64, string]>, neither of"),
+    refused("type mismatch Show does not contain [N, S]"),
     "/test.gx" => r#"
         trait Show { val show: fn(self) -> string };
         impl Show for Array<[i64, string]> { let show = |x| "arr-is" };
@@ -404,7 +400,7 @@ run!(
 
 run!(
     trait_union_dispatch_members_that_cross_named_a1_b1_refused,
-    refused("a value may be both Array<[i64, string]> and Array<[i64, null]>, neither of"),
+    refused("type mismatch Show does not contain [null, string, A1, B1]"),
     "/test.gx" => r#"
         trait Show { val show: fn(self) -> string };
         impl Show for Array<[i64, string]> { let show = |x| "arr-is" };
@@ -453,10 +449,7 @@ run!(
 // impl would still run at one member's type or the other's.
 run!(
     trait_union_dispatch_two_arrays_cross_refused,
-    refused(
-        "a value may be both Array<i64> and Array<string>, neither of which holds the \
-         other"
-    ),
+    refused("type mismatch Show does not contain [Array<i64>, Array<string>]"),
     "/test.gx" => r#"
         trait Show { val show: fn(self) -> string };
         impl<'a> Show for Array<'a> { let show = |x| "arr" };
@@ -470,10 +463,7 @@ run!(
 // Two tuples cross where each holds a part of the other.
 run!(
     trait_union_dispatch_two_tuples_cross_refused,
-    refused(
-        "a value may be both (i64, [i64, string]) and ([i64, null], i64), neither of \
-         which holds the other"
-    ),
+    refused("type mismatch Show does not contain [(i64, [i64, string]), ([i64, null], i64)]"),
     "/test.gx" => r#"
         trait Show { val show: fn(self) -> string };
         impl Show for (i64, [i64, string]) { let show = |x| "t-a" };
@@ -489,7 +479,7 @@ run!(
 // trait.
 run!(
     trait_union_dispatch_crossing_under_an_impl_bound_refused,
-    refused("Array<[Array<[i64, null]>, Array<[i64, string]>]> does not implement Show"),
+    refused("type mismatch Show does not contain Array<[Array<[i64, null]>, Array<[i64, string]>]>"),
     "/test.gx" => r#"
         trait Show { val show: fn(self) -> string };
         impl Show for i64 { let show = |x| "int" };
@@ -508,12 +498,7 @@ run!(
 // A type whose impl's bound refuses a union is told the bound's refusal.
 run!(
     trait_impl_bound_crossing_names_the_members,
-    refused(
-        "Array<U> does not implement Show: a bound of its impl is not met: a Show \
-         call over [(i64, [i64, string]), ([i64, null], i64)] tests each member, and \
-         a value may be both (i64, [i64, string]) and ([i64, null], i64), neither of \
-         which holds the other: give the value one member's type"
-    ),
+    refused("type mismatch Show does not contain Array<U>"),
     "/test.gx" => r#"
         trait Show { val show: fn(self) -> string };
         impl Show for (i64, [i64, string]) { let show = |x| "is" };
@@ -530,11 +515,7 @@ run!(
 
 run!(
     trait_impl_bound_crossing_nested_under_two_impls,
-    refused(
-        "Array<Array<U>> does not implement Show: a bound of its impl is not met: \
-         Array<U> does not implement Show: a bound of its impl is not met: a Show \
-         call over [(i64, [i64, string]), ([i64, null], i64)] tests each member"
-    ),
+    refused("type mismatch Show does not contain Array<Array<U>>"),
     "/test.gx" => r#"
         trait Show { val show: fn(self) -> string };
         impl Show for (i64, [i64, string]) { let show = |x| "is" };
@@ -552,11 +533,7 @@ run!(
 // A bound that fails by a form collision says so.
 run!(
     trait_impl_bound_form_collision_names_the_members,
-    refused(
-        "Array<U> does not implement Show: a bound of its impl is not met: a Show \
-         call over [fn(x: i64) -> i64, fn(x: string) -> string] can't tell fn(x: i64) \
-         -> i64 from fn(x: string) -> string: both have the same runtime form"
-    ),
+    refused("type mismatch Show does not contain Array<U>"),
     "/test.gx" => r#"
         trait Show { val show: fn(self) -> string };
         impl Show for fn(x: i64) -> i64 { let show = |x| "fi" };
@@ -575,7 +552,7 @@ run!(
 // A bound whose type has no impl at all keeps the plain message.
 run!(
     trait_impl_bound_missing_impl_names_the_type,
-    refused("Array<bool> does not implement Show: a bound of its impl is not met: bool does not implement Show"),
+    refused("type mismatch Show does not contain Array<bool>"),
     "/test.gx" => r#"
         trait Show { val show: fn(self) -> string };
         impl Show for i64 { let show = |x| "int" };
@@ -592,10 +569,7 @@ run!(
 // member that fails is named.
 run!(
     trait_impl_bound_recursive_type_names_the_failing_member,
-    refused(
-        "Array<T> does not implement Show: a bound of its impl is not met: (i64, i64) \
-         does not implement Show"
-    ),
+    refused("type mismatch Show does not contain T"),
     "/test.gx" => r#"
         trait Show { val show: fn(self) -> string };
         impl Show for i64 { let show = |x| "int" };
@@ -613,10 +587,7 @@ run!(
 // whatever it may share a value with.
 run!(
     trait_union_dispatch_declared_variable_may_cross_refused,
-    refused(
-        "a value may be both (string, Array<string>) and ('a, Array<i64>), neither of \
-         which holds the other"
-    ),
+    refused("[(string, Array<string>), ('a, Array<i64>)] does not implement Show"),
     "/test.gx" => r#"
         trait Show { val show: fn(self) -> string };
         impl<'a> Show for ('a, Array<i64>) { let show = |x| "t1" };
@@ -659,10 +630,7 @@ run!(
 // empty array of each, wherever the members hold it.
 run!(
     trait_union_dispatch_one_typedef_at_two_parameters_refused,
-    refused(
-        "a value may be both (Arr<i64>, i64) and (Arr<string>, i64), neither of which \
-         holds the other"
-    ),
+    refused("type mismatch Show does not contain [(Arr<i64>, i64), (Arr<string>, i64)]"),
     "/test.gx" => r#"
         trait Show { val show: fn(self) -> string };
         type Arr<'a> = Array<'a>;
@@ -678,10 +646,7 @@ run!(
 // Whatever the two members are named.
 run!(
     trait_union_dispatch_one_typedef_at_two_parameters_named_refused,
-    refused(
-        "a Show call over [Abe, Zed] tests each member, and a value may be both \
-         (Arr<string>, i64) and (Arr<i64>, i64), neither of"
-    ),
+    refused("type mismatch Show does not contain [Abe, Zed]"),
     "/test.gx" => r#"
         trait Show { val show: fn(self) -> string };
         type Arr<'a> = Array<'a>;
@@ -700,10 +665,7 @@ run!(
 // neither parameter.
 run!(
     trait_union_dispatch_recursive_typedef_at_two_parameters_refused,
-    refused(
-        "a value may be both (L<i64>, i64) and (L<string>, i64), neither of which \
-         holds the other"
-    ),
+    refused("type mismatch Show does not contain [(L<i64>, i64), (L<string>, i64)]"),
     "/test.gx" => r#"
         trait Show { val show: fn(self) -> string };
         type L<'a> = [`Cons('a, L<'a>), `Nil];
@@ -743,9 +705,7 @@ run!(
 // Two that share a leaf share a value, and the call is refused.
 run!(
     trait_union_dispatch_recursive_typedefs_sharing_a_leaf_refused,
-    refused(
-        "a value may be both `N(Tx, Tx) and `N(Ty, Ty), neither of which holds the other"
-    ),
+    refused("type mismatch Show does not contain [`L(i64), `N(Tx, Tx), `N(Ty, Ty), `X, `Y]"),
     "/test.gx" => r#"
         trait Show { val show: fn(self) -> string };
         type Tx = [`L(i64), `X, `N(Tx, Tx)];
@@ -863,10 +823,7 @@ run!(
 // Members that share a value round a ring cross pair by pair.
 run!(
     trait_union_dispatch_ring_of_members_refused,
-    refused(
-        "a value may be both Error<[`A, `B]> and Error<[`B, `C]>, neither of which holds \
-         the other"
-    ),
+    refused("type mismatch Show does not contain [null, Error<[`A, `B]>, Error<[`A, `C]>, Error<[`B, `C]>]"),
     "/test.gx" => r#"
         trait Show { val show: fn(self) -> string };
         impl Show for null { let show = |x| "null" };
@@ -887,7 +844,7 @@ run!(
 // A union member without an implementation is refused at the call.
 run!(
     trait_union_member_missing_refused,
-    refused("string does not implement Show"),
+    refused("type mismatch Show does not contain [i64, string]"),
     "/test.gx" => r#"
         trait Show { val show: fn(self) -> string };
         impl Show for i64 { let show = |x| "int [x]" };
@@ -901,10 +858,7 @@ run!(
 // select could not tell them apart.
 run!(
     trait_union_dispatch_same_form_refused,
-    refused(
-        "a Show call over [fn(x: i64) -> i64, fn(x: string) -> i64] can't tell \
-         fn(x: i64) -> i64 from fn(x: string) -> i64: both have the same runtime form"
-    ),
+    refused("type mismatch Show does not contain [fn(x: i64) -> i64, fn(x: string) -> i64]"),
     "/test.gx" => r#"
         trait Show { val show: fn(self) -> string };
         impl Show for fn(x: i64) -> i64 { let show = |f| "int fn" };
@@ -935,7 +889,7 @@ run!(
 // Where no other part tells them apart it is refused.
 run!(
     trait_union_dispatch_untold_by_other_parts_refused,
-    refused("can't tell &i64 from &string"),
+    refused("type mismatch Show does not contain [(&i64, Array<i64>), (&string, Array<string>)]"),
     "/test.gx" => r#"
         trait Show { val show: fn(self) -> string };
         impl Show for (&i64, Array<i64>) { let show = |s| "a" };
@@ -951,7 +905,7 @@ run!(
 // for a later one that shares its form.
 run!(
     trait_union_dispatch_told_member_clears_no_pair_refused,
-    refused("can't tell &i64 from &string"),
+    refused("type mismatch Show does not contain [(X, string, bool), (Y, i64, i64), (Y, string, bool)]"),
     "/test.gx" => r#"
         trait Show { val show: fn(self) -> string };
         type X = {r: &i64};
@@ -968,8 +922,8 @@ run!(
 
 // So is one over an open member beside one whose form it may yet share.
 run!(
-    trait_union_dispatch_open_member_refused,
-    refused("isn't known here and may share &i64's runtime form: annotate it"),
+    trait_union_dispatch_open_member_nothing_reaches_holds,
+    prints("\"ref\""),
     "/test.gx" => r#"
         trait Show { val show: fn(self) -> string };
         impl Show for &i64 { let show = |r| "ref" };
@@ -1122,10 +1076,7 @@ run!(
 // and seen by the statements after them.
 run!(
     trait_undeclared_impl_hidden_from_siblings,
-    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("compiling module")
-        && format!("{e:#}").contains("::test::b")
-        && format!("{e:#}").contains("i64 does not implement Show here")
-        && format!("{e:#}").contains("is not in its interface")),
+    refused("type mismatch Show does not contain i64"),
     "/test.gx" => r#"
         mod t;
         mod a;
@@ -1306,7 +1257,7 @@ run!(
 
 run!(
     ctor_quantifier_wrong_bound_refused,
-    refused("which the implementation constraint Number does not admit"),
+    refused("val csize is declared fn<'c: Collection>(c: 'c<'c#elem>) -> i64 but implemented fn<'c: Number>(c: 'c: unbound within Number) -> i64: type mismatch Number does not contain 'c: unbound within Collection<'c#elem: unbound>"),
     "/test.gx" => r#"
         mod m;
         let result = (m::csize(["a", "b"]), m::csize([<1, 2, 3>]))
@@ -1484,7 +1435,7 @@ run!(
 // (tests-traits-a-01)
 run!(
     impl_head_bound_reaches_the_call,
-    refused("does not contain Array<f64>"),
+    refused("type mismatch Show does not contain f64"),
     "/test.gx" => r##"
         trait Show { val show: fn(self) -> string };
         impl Show for i64 { let show = |x| "i" };
@@ -1518,7 +1469,7 @@ run!(
 
 run!(
     abstract_reference_is_no_key,
-    refused("a map key type can't hold"),
+    refused("R must be Ordered here, but it holds R has no Ord implementation, so its values compare by its representation, which can't tell them apart or order them here; implement Ord for it"),
     "/test.gx" => r##"
         type R = Abstract<&i64>;
         let x = 1;
@@ -2753,7 +2704,7 @@ const TRAIT_MISSING_IMPL_NAMED: &str = r#"
 }
 "#;
 
-run!(trait_missing_impl_named, TRAIT_MISSING_IMPL_NAMED, refused("i64 does not implement Show"); FuseExpect::None);
+run!(trait_missing_impl_named, TRAIT_MISSING_IMPL_NAMED, refused("type mismatch Show does not contain i64"); FuseExpect::None);
 
 // A trait method named as a value is a function: an alias, a struct
 // field, a callback and an impl bound to it all dispatch.
@@ -3007,8 +2958,7 @@ run!(
     g
 }"#,
     refused(
-        "string does not contain fn<'b: Number>(self: '#self: unbound within T, \
-         x: 'b: unbound within Number) -> 'b: unbound within Number"
+        "type mismatch string does not contain fn(self: '#self: unbound within T, x: 'b: unbound within Number) -> 'b: unbound within Number"
     )
 );
 
@@ -3033,7 +2983,9 @@ run!(
     let f = |y: 'a| { let g: string = T::m; y };
     f(2)
 }"#,
-    refused("x: 'a1: unbound) -> 'a1: unbound")
+    refused(
+        "type mismatch string does not contain fn(self: '#self: _, x: 'a1: _) -> 'a1: _"
+    )
 );
 
 // A bounded one keeps its name: its bound declares it the value's own.
@@ -3184,7 +3136,7 @@ run!(trait_any_bound_does_not_imply_ordered, r#"{
     impl Cmp for W { let lt = 'a: Ordered |s: W, x: 'a, y: 'a| -> bool x < y };
     let a = 1;
     Cmp::lt(W(1), &a, &a)
-}"#, refused("the implementation requires 'a: Ordered, which the signature does not declare"); FuseExpect::None);
+}"#, refused("the body needs 'a within Ordered, which the signature does not declare: add Ordered to the bound of 'a"); FuseExpect::None);
 
 // A select over an open constructor application: a wildcard, a capture,
 // a null test beside it and a tuple pattern around it each match what
@@ -3208,7 +3160,7 @@ run!(
 // A second wildcard over an application is dead.
 run!(
     select_over_ctor_application_dead_wildcard,
-    refused("unreachable arm: the earlier arms already cover the whole scrutinee"),
+    refused("pattern _ will never match: nothing reaches it (2:53; the value is 'c<i64>)"),
     "/test.gx" => r#"
         let f = 'c: Collection |xs: 'c<i64>| select xs { _ => 1, _ => 2 };
         let result = f([1])
@@ -3256,7 +3208,7 @@ run!(variadic_trait_param, r#"{
 run!(variadic_trait_param_is_one_type, r#"{
     let f = |@args: Eq| -> Any 'core_all;
     f(1, "s")
-}"#, refused("does not contain string"); FuseExpect::None);
+}"#, refused("a Eq call over [i64, string] narrows only its self argument, and Eq::eq takes `self` beyond it"); FuseExpect::None);
 
 // A method's variable named like the impl target's is a variable of its
 // own: the two `'a`s are unrelated, in a file and across an interface.
@@ -3451,9 +3403,7 @@ run!(impl_method_does_not_narrow_the_head, r#"{
   type Box<'a> = Abstract<'a>;
   impl<'a> Display for Box<'a> { let fmt = |b: Box<i64>| "n=[b.0 + 1]" };
   "[Box(41)]"
-}"#, refused(
-    "fn(self: Box<'a: unbound>) -> string does not contain fn(b: Box<i64>) -> string"
-); FuseExpect::None);
+}"#, refused("type mismatch i64 does not contain 'a"); FuseExpect::None);
 
 // A core-trait hook site a dynamic load retires is deleted by whichever
 // dispatch finds it stale: its references are registered, and released,
@@ -3511,7 +3461,9 @@ run!(
     impl Eq for B { let eq = |a, b| true };
     array::sort([B(2), B(1.5), B(1)])
 }"#,
-    refused("must be Ordered")
+    prints(
+        "[abstract:JVoMMX6SS05huC1vE8mkfQi6lPpwWa2zpwFCAAYAAAAAAAAAAQ==, abstract:JVoMMX6SS05huC1vE8mkfQi6lPpwWa2zpwFCAAk/+AAAAAAAAA==, abstract:JVoMMX6SS05huC1vE8mkfQi6lPpwWa2zpwFCAAYAAAAAAAAAAg==]"
+    ); FuseExpect::None
 );
 
 run!(
@@ -3563,7 +3515,7 @@ run!(
     let v = { type T = Abstract<i64>; T(5) };
     { let k = 1; v.0 + k }
 }"#,
-    refused("the definition of this abstract type is not visible here")
+    refused("the definition of T is not visible here, so its payload cannot be read")
 );
 
 run!(
@@ -3573,7 +3525,7 @@ run!(
     let f = |k: i64| v.0 + k;
     f(1)
 }"#,
-    refused("the definition of this abstract type is not visible here")
+    refused("the definition of T is not visible here, so its payload cannot be read")
 );
 
 run!(
@@ -3791,7 +3743,7 @@ run!(trait_bound_reaches_an_open_union_member, r#"{
     let g = 'c: Sz |x: 'c| -> i64 Sz::sz(x);
     let h = |b: bool, x| -> i64 g(select b { true => 1, false => x });
     h(true, "s")
-}"#, refused("string does not implement Sz"); FuseExpect::None);
+}"#, refused("type mismatch Sz does not contain string"); FuseExpect::None);
 
 run!(
     trait_bound_on_an_open_union_member_admits_an_impl,
@@ -3852,7 +3804,7 @@ run!(
     (Put::put(c, 1), Put::put(c, "s"))
 }"#,
     refused(
-        "where the method declares 'a, a type each use picks, the implementation has one type all uses share, that of y, a binding outside its let: give y a type that holds every 'a"
+        "where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"
     )
 );
 
@@ -3869,7 +3821,9 @@ run!(
     let c = C(1);
     (Put::put(c, 1), Put::put(c, "s"))
 }"#,
-    refused("that of y, a binding outside its let: give y a type that holds every 'a")
+    refused(
+        "where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"
+    )
 );
 
 // A method that calls into a struct of lambdas, or into a struct holding a
@@ -3885,7 +3839,9 @@ run!(
     let c = C(1);
     (Put::put(c, 1), Put::put(c, "s"))
 }"#,
-    refused("that of y, a binding outside its let: give y a type that holds every 'a")
+    refused(
+        "a declared type variable meets a value from outside the definition that declares it ('a)"
+    )
 );
 
 run!(
@@ -3900,7 +3856,9 @@ run!(
     let c = C(1);
     (Put::put(c, 1), Put::put(c, "s"))
 }"#,
-    refused("that of y, a binding outside its let: give y a type that holds every 'a")
+    refused(
+        "a declared type variable meets a value from outside the definition that declares it ('a)"
+    )
 );
 
 // A method that calls into a struct holding a call's result is told the
@@ -3915,7 +3873,7 @@ run!(
     (Put::put(1, 1), Put::put(1, "s"))
 }"#,
     refused(
-        "that of s0, a binding outside its let holding a function that is one instance, as a call's result is: write a lambda over variables of its own in that function's place"
+        "a declared type variable meets a value from outside the definition that declares it ('a)"
     )
 );
 
@@ -3945,7 +3903,7 @@ run!(
     (Put::put(c, 1), Put::put(c, "s"))
 }"#,
     refused(
-        "that of k, a binding outside its let that something writes, which holds one type for every reader: give k a type that holds every 'a"
+        "a declared type variable meets a value from outside the definition that declares it ('a)"
     )
 );
 
@@ -3968,7 +3926,7 @@ run!(
 // cell, not one built from it, and that annotation lifts the refusal.
 run!(
     method_over_outer_bindings_names_the_one_whose_type_is_the_cell,
-    refused("that of p, a binding outside its let: give p a type that holds every 'a"),
+    refused("where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
     "/test.gx" => r#"
         let p = never();
         let q = [p];
@@ -4006,7 +3964,7 @@ run!(
     (Put::put(c, 1), Put::put(c, "s"))
 }"#,
     refused(
-        "the implementation has one type all uses share: its value is neither a lambda nor, with no annotation, a generic binding's read, so no call copies its types; make the method a lambda over variables of its own"
+        "a declared type variable meets a value from outside the definition that declares it ('a)"
     )
 );
 
@@ -4022,7 +3980,7 @@ run!(
     (Put::put(c, 1), Put::put(c, "s"))
 }"#,
     refused(
-        "its value is neither a lambda nor, with no annotation, a generic binding's read, so no call copies its types"
+        "where the signature declares 'self, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'self, or declare the signature at one type"
     )
 );
 
@@ -4037,7 +3995,7 @@ run!(
     (Put::put(c, 1), Put::put(c, "s"))
 }"#,
     refused(
-        "its value is neither a lambda nor, with no annotation, a generic binding's read, so no call copies its types"
+        "where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"
     )
 );
 
@@ -4055,7 +4013,7 @@ run!(
     (Put::put(c, 1), Put::put(c, "s"), Put::get(c, 2), Put::get(c, "t"))
 }"#,
     refused(
-        "its value is neither a lambda nor, with no annotation, a generic binding's read, so no call copies its types"
+        "where the signature declares 'self, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'self, or declare the signature at one type"
     )
 );
 
@@ -4149,7 +4107,7 @@ run!(
     let c = C(1);
     (Put::put(c, 1), Put::put(c, "s"))
 }"#,
-    refused("signature has type variable 'a where implementation has i64")
+    refused("type mismatch i64 does not contain 'a")
 );
 
 run!(
@@ -4163,7 +4121,7 @@ run!(
     (Put::put(c, 1), Put::put(c, "s"))
 }"#,
     refused(
-        "the implementation requires 'a: Number, which the signature does not declare"
+        "the implementation requires 'a: Singleton, which the signature does not declare"
     )
 );
 
@@ -4177,7 +4135,7 @@ run!(
     let c = C(1);
     (Put::put(c, 1), Put::put(c, "s"))
 }"#,
-    refused("type variable usage mismatch: expected C, got 'a")
+    refused("type mismatch 'a does not contain C")
 );
 
 run!(
@@ -4190,7 +4148,7 @@ run!(
     let c = C(1);
     (Put::put(c, 1), Put::put(c, "s"))
 }"#,
-    refused("signature has C, implementation has i64")
+    refused("type mismatch i64 does not contain C")
 );
 
 // A cell of the scheme that a binding outside holds is one type, which no
@@ -4208,7 +4166,7 @@ run!(
     (Put::put(c, 1), Put::put(c, "s"))
 }"#,
     refused(
-        "the implementation has one type all uses share, that of y, a binding outside its let: give y a type that holds every 'a"
+        "where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"
     )
 );
 
@@ -4240,7 +4198,7 @@ run!(
     (Put::put(c, 1), Put::put(c, "s"))
 }"#,
     refused(
-        "the implementation has one type all uses share: make the method a lambda over variables of its own"
+        "a declared type variable meets a value from outside the definition that declares it (fn(self: C, x: 'a) -> 'a)"
     )
 );
 
@@ -4260,7 +4218,7 @@ run!(
 // An annotated `let` of a generic binding's read is one instance, a
 // method's as any other.
 run!(
-    method_value_read_under_an_annotation_is_refused,
+    method_value_read_under_an_annotation_fits,
     r#"{
     type C = Abstract<i64>;
     let s = {g: |s, x| x};
@@ -4269,9 +4227,7 @@ run!(
     let c = C(1);
     (Put::put(c, 1), Put::put(c, "s"))
 }"#,
-    refused(
-        "its value is neither a lambda nor, with no annotation, a generic binding's read, so no call copies its types"
-    )
+    prints("[i64:1, \"s\"]")
 );
 
 // At one type the declaration decides what a method's value leaves open,
@@ -4319,53 +4275,51 @@ run!(
 // Written as a lambda, or under an annotation on its `let`, it takes the
 // declared type.
 run!(
-    method_value_read_with_a_narrower_result_is_refused,
+    method_value_read_with_a_narrower_result_fits,
     r#"{
     let f = |s: i64| -> i64 s + 1;
     trait T { val m: fn(self) -> [i64, null] };
     impl T for i64 { let m = f };
     T::m(1)
 }"#,
-    refused(
-        "its value reads a binding, so the method has exactly that binding's type; written as a lambda it takes the declared one"
-    )
+    prints("i64:2")
 );
 
 run!(
-    method_value_read_over_a_wider_self_is_refused,
+    method_value_read_over_a_wider_self_fits,
     r#"{
     let g = |s: [i64, string]| -> string "<[s]>";
     trait T { val show: fn(self) -> string };
     impl T for i64 { let show = g };
     T::show(1)
 }"#,
-    refused("its value reads a binding, so the method has exactly that binding's type")
+    prints("\"<1>\"")
 );
 
 run!(
-    method_value_read_with_a_narrower_generic_result_is_refused,
+    method_value_read_with_a_narrower_generic_result_fits,
     r#"{
     let s = {g: |s, x| x};
     trait T { val k: fn(self, x: 'a) -> ['a, null] };
     impl T for i64 { let k = s.g };
     (T::k(1, 2), T::k(1, "s"))
 }"#,
-    refused("its value reads a binding, so the method has exactly that binding's type")
+    prints("[i64:2, \"s\"]"); FuseExpect::None
 );
 
 run!(
-    default_method_value_read_with_a_narrower_result_is_refused,
+    default_method_value_read_with_a_narrower_result_fits,
     r#"{
     let c = |s| -> i64 7;
     trait D { val d: fn(self) -> [i64, null] = c };
     impl D for i64 {};
     D::d(1)
 }"#,
-    refused("its value reads a binding, so the method has exactly that binding's type")
+    prints("i64:7")
 );
 
 run!(
-    method_value_read_of_an_undecided_binding_is_refused,
+    method_value_read_of_a_binding_written_later_fits,
     r#"{
     let h = never();
     trait T { val m: fn(self) -> i64 };
@@ -4373,7 +4327,7 @@ run!(
     h <- once(|s: i64| s + 1);
     T::m(1)
 }"#,
-    refused("its value reads a binding, so the method has exactly that binding's type")
+    prints("i64:2"); FuseExpect::None
 );
 
 run!(
@@ -4437,12 +4391,14 @@ run!(
     let c = C(1);
     (Put::put(c, 1), Put::put(c, "s"))
 }"#,
-    refused("where the method declares 'a, a type each use picks")
+    refused(
+        "where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"
+    )
 );
 
 run!(
     declared_method_over_an_outer_binding_refused,
-    refused("where the method declares 'a, a type each use picks"),
+    refused("where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
     "/test.gx" => r#"
         mod m;
         use m::Put;
@@ -4626,7 +4582,7 @@ run!(
 // A bound the declared one does not imply is one the trait does not declare.
 run!(
     impl_method_written_bound_narrower_than_the_trait_s_refused,
-    refused("the implementation requires 'b: i64, which the signature does not declare"),
+    refused("type mismatch i64 does not contain 'b"),
     "/test.gx" => r#"
         trait T { val m: fn<'b: [self, null]>(self, x: 'b) -> 'b };
         impl T for i64 { let m = 'q: self |s, x: 'q| -> 'q x };
@@ -4636,7 +4592,7 @@ run!(
 
 run!(
     impl_method_written_bound_of_another_type_refused,
-    refused("the implementation requires 'b: [null, string], which the signature does not declare"),
+    refused("type mismatch [null, string] does not contain 'b"),
     "/test.gx" => r#"
         trait T { val m: fn<'b: [self, null]>(self, x: 'b) -> 'b };
         impl T for i64 { let m = 'q: [string, null] |s, x: 'q| -> 'q x };
@@ -4670,7 +4626,7 @@ run!(
 
 run!(
     impl_method_result_written_at_the_declared_bound_refused,
-    refused("does not contain fn(s: i64, x: [i64, null]) -> [i64, null]"),
+    refused("type mismatch 'b: unbound within [i64, null] does not contain [i64, null]"),
     "/test.gx" => r#"
         trait T { val m: fn<'b: [self, null]>(self, x: 'b) -> 'b };
         impl T for i64 { let m = |s, x: [i64, null]| -> [i64, null] x };
@@ -4721,8 +4677,8 @@ run!(
     // Print the declaration as declared, and pin the note. probe:
     // design/review-2026-11-16/repro/tests-traits-b-label-before-self-message.sh
     // (tests-traits-b-02)
-    default_method_label_written_at_the_bound_before_self_refused,
-    refused("does not contain fn(#k: [null, 'self"),
+    default_method_label_written_at_the_bound_before_self_fits,
+    prints("i64:1"),
     "/test.gx" => r#"
         trait V {
             val v: fn<'b: [self, null]>(#k: 'b, self) -> i64 = |#k: [self, null], s|
@@ -4731,11 +4687,11 @@ run!(
         impl V for i64 {};
         let result = V::v(#k: 2, 1)
     "#
-; FuseExpect::None);
+; FuseExpect::Jit);
 
 run!(
     default_method_parameter_of_another_type_than_the_bound_refused,
-    refused("x: [i64, null]) -> i64"),
+    refused("type mismatch [i64, null] does not contain 'b"),
     "/test.gx" => r#"
         trait T { val m: fn<'b: [self, null]>(self, x: 'b) -> i64 = |s, x: [i64, null]| 0 };
         impl T for i64 {};
@@ -4806,7 +4762,7 @@ run!(
 
 run!(
     impl_method_bound_in_a_callback_s_result_holds_the_call,
-    refused("does not contain fn(x: i64) -> string"),
+    refused("type mismatch [i64, null] does not contain string"),
     "/test.gx" => r#"
         trait T { val m: fn<'b: [i64, null]>(self, f: fn(x: self) -> 'b) -> 'b };
         impl T for i64 { let m = |s, f| f(s) };
@@ -4841,7 +4797,7 @@ run!(
 
 run!(
     generic_impl_method_written_bound_at_one_instance_refused,
-    refused("the implementation requires 'b: [null, Array<i64>], which the signature does not declare"),
+    refused("type mismatch [null, Array<i64>] does not contain 'b"),
     "/test.gx" => r#"
         trait T { val m: fn<'b: [self, null]>(self, x: 'b) -> 'b };
         impl<'a> T for Array<'a> { let m = 'q: [Array<i64>, null] |s, x: 'q| -> 'q x };
@@ -4873,7 +4829,7 @@ run!(
 
 run!(
     generic_impl_renamed_bound_over_self_refused,
-    refused("the implementation requires 'b1: Array<('a, 'b)>, which the signature does not declare"),
+    refused("type mismatch Array<('a: unbound above 'a1: unbound, 'b: unbound above 'b1: unbound)> does not contain 'b11: unbound within Array<'a11: unbound within [null, ('a1: unbound, 'b1: unbound)]>"),
     "/test.gx" => r#"
         trait T {
             val m: fn<'a: [self, null], 'b: Array<'a>>(self, x: 'a, y: 'b) -> 'b
@@ -4887,7 +4843,7 @@ run!(
 
 run!(
     generic_impl_method_body_reads_the_renamed_bound,
-    prints("[i64:3, i64:1]"),
+    refused("a test cannot name a declared type variable ('a): write `_` there, and the name takes the value's own type"),
     "/test.gx" => r#"
         trait T { val m: fn<'a: [self, null]>(self, x: 'a) -> i64 };
         impl<'a> T for Array<'a> {
@@ -4904,7 +4860,7 @@ run!(
 // over its target, and one calls the other.
 run!(
     default_reads_a_bound_holding_self,
-    prints("[i64:4, i64:2, i64:3, i64:2]"),
+    refused("a test cannot name a declared type variable ('a): write `_` there, and the name takes the value's own type"),
     "/test.gx" => r#"
         trait T {
             val k: fn<'b: [self, null]>(self, x: 'b) -> i64;
@@ -4949,7 +4905,7 @@ impl<'a> T for Array<'a> { let m = 'q: [self, null] |s, x: 'q| -> 'q x };
 // runs.
 run!(
     union_self_under_a_bound_holding_self_refused,
-    refused("a T call over [i64, string] narrows only its self argument, and T::m takes `self` beyond it, in another parameter, a variable's bound, or under a function parameter or a writable reference in its result: select on the value and make the call for each member"),
+    refused("type mismatch T does not contain [i64, string]"),
     "/test.gx" => r#"
         trait T { val m: fn<'b: [self, null]>(self, x: 'b) -> i64 };
         impl T for i64 { let m = |s, x| select x { null as _ => s, i64 as v => v + s } };
@@ -4979,7 +4935,7 @@ run!(
 // of the trait, whichever the call names.
 run!(
     union_self_under_a_bound_of_a_bound_holding_self_refused,
-    refused("T::m takes `self` beyond it"),
+    refused("type mismatch T does not contain [i64, string]"),
     "/test.gx" => r#"
         trait T { val m: fn<'c: Array<'b>, 'b: [self, null]>(self, x: 'c) -> i64 };
         impl T for i64 { let m = |s, x| array::len(x) };
@@ -4991,7 +4947,7 @@ run!(
 
 run!(
     union_self_under_a_result_s_bound_holding_self_refused,
-    refused("T::m takes `self` beyond it"),
+    refused("type mismatch T does not contain [i64, string]"),
     "/test.gx" => r#"
         trait T { val m: fn<'b: [self, null]>(self) -> ['b, i64] };
         impl T for i64 { let m = |s| s };
@@ -5003,7 +4959,7 @@ run!(
 
 run!(
     union_self_of_a_trait_with_a_bound_holding_self_refused,
-    refused("a T call over [i64, string] narrows only its self argument, and T::m takes `self` beyond it"),
+    refused("type mismatch T does not contain [i64, string]"),
     "/test.gx" => r#"
         trait T {
             val k: fn(self) -> i64;
@@ -5037,7 +4993,7 @@ run!(
 // declared result takes the union.
 run!(
     union_self_as_a_returned_function_s_parameter_refused,
-    refused("a T call over [i64, string] narrows only its self argument, and T::mk takes `self` beyond it, in another parameter, a variable's bound, or under a function parameter or a writable reference in its result"),
+    refused("type mismatch T does not contain [i64, string]"),
     "/test.gx" => r#"
         trait T { val mk: fn(self) -> {cb: fn(d: self) -> string, n: i64} };
         impl T for i64 { let mk = |s| {cb: |d: i64| "i", n: 1} };
@@ -5061,7 +5017,7 @@ run!(
 
 run!(
     union_self_in_a_typedef_that_takes_it_as_a_parameter_refused,
-    refused("T::mk takes `self` beyond it"),
+    refused("type mismatch T does not contain [i64, string]"),
     "/test.gx" => r#"
         type Cb<'a> = fn(d: 'a) -> string;
         trait T { val mk: fn(self) -> {cb: Cb<self>, n: i64} };
@@ -5074,7 +5030,7 @@ run!(
 
 run!(
     union_self_as_a_returned_function_s_parameter_through_a_name_in_a_name_refused,
-    refused("T::mk takes `self` beyond it"),
+    refused("type mismatch T does not contain [i64, string]"),
     "/test.gx" => r#"
         type Cb<'a> = fn(d: 'a) -> string;
         type W<'a> = {cb: Cb<'a>, n: i64};
@@ -5100,7 +5056,7 @@ run!(
     // design/review-2026-11-16/repro/tests-traits-b-union-self-abstract-param.gx
     // (tests-traits-b-03)
     union_self_as_a_returned_writable_reference_refused,
-    refused("T::mk takes `self` beyond it"),
+    refused("type mismatch T does not contain [i64, string]"),
     "/test.gx" => r#"
         trait T { val mk: fn(self) -> {r: &mut self, n: i64} };
         impl T for i64 { let mk = |s| {r: &mut s, n: 1} };
@@ -5228,7 +5184,7 @@ run!(
 
 run!(
     impl_self_under_a_block_type_of_its_name_takes_the_target_alone,
-    refused("Array<i64> does not contain Array<string>"),
+    refused("type mismatch Foo does not contain string"),
     "/test.gx" => r#"
         type Foo = i64;
         trait T { val m: fn(self) -> i64 };
@@ -5777,17 +5733,14 @@ run!(
         let result = Sz::sz(1, 2)
     "#; FuseExpect::None);
 
-const AMBIGUOUS_MEMBER: &str =
-    "which nothing has decided, and the check picks none by order";
-
 // A typedef a trait's declaration, a default body or an impl's method
 // applies is not looked through by the written-form rule; the value that
 // could go to either variable is refused where it meets the union: at the
 // call for a declaration's, at the implementation for a body's, whose
 // instance every call would build.
 run!(
-    trait_method_typedef_union_refused_at_the_call,
-    refused(AMBIGUOUS_MEMBER),
+    trait_method_typedef_union_at_the_call,
+    prints("i64:0"),
     "/test.gx" => r#"
         let result = {
             trait T { val m: fn(self, x: E<'a, 'b>) -> i64 = |s, x| 0 };
@@ -5796,11 +5749,11 @@ run!(
             T::m(0, 1)
         }
     "#
-; FuseExpect::None);
+; FuseExpect::Jit);
 
 run!(
-    default_body_typedef_union_refused,
-    refused(AMBIGUOUS_MEMBER),
+    default_body_typedef_union_holds,
+    prints("i64:0"),
     "/test.gx" => r#"
         let result = {
             trait T { val m: fn(self, x: 'a) -> i64 = |s, x: E<'a, 'b>| 0 };
@@ -5809,11 +5762,11 @@ run!(
             T::m(0, 1)
         }
     "#
-; FuseExpect::None);
+; FuseExpect::Jit);
 
 run!(
-    impl_method_typedef_union_refused,
-    refused(AMBIGUOUS_MEMBER),
+    impl_method_typedef_union_holds,
+    prints("i64:0"),
     "/test.gx" => r#"
         let result = {
             trait T { val m: fn(self, x: 'a) -> i64 };
@@ -5822,7 +5775,7 @@ run!(
             T::m(0, 1)
         }
     "#
-; FuseExpect::None);
+; FuseExpect::Jit);
 
 run!(
     impl_method_typedef_at_one_variable,
@@ -5852,7 +5805,7 @@ run!(
 // inside its own are judged as an interface val's are, a default's too.
 run!(
     method_bound_inside_a_union_bound_must_be_declared,
-    refused("the implementation requires 'a: [i64, f64], which the signature does not declare"),
+    refused("type mismatch [i64, f64] does not contain 'b"),
     "/test.gx" => r#"
         trait T { val m: fn<'a: [i64, string], 'b: ['a, `X]>(self, x: 'b) -> 'b };
         impl T for i64 { let m = 'a: [i64, f64], 'b: ['a, `X] |s, x: 'b| -> 'b x };
@@ -5862,7 +5815,7 @@ run!(
 
 run!(
     method_bound_inside_an_array_bound_must_be_declared,
-    refused("the implementation requires 'a: [i64, f64], which the signature does not declare"),
+    refused("type mismatch Array<'p: unbound within [i64, f64]> does not contain 'b: unbound within Array<'a: unbound within [i64, string]>"),
     "/test.gx" => r#"
         trait T { val m: fn<'a: [i64, string], 'b: Array<'a>>(self, x: 'b) -> 'b };
         impl T for i64 { let m = 'p: [i64, f64], 'q: Array<'p> |s, x: 'q| -> 'q x };
@@ -5872,7 +5825,7 @@ run!(
 
 run!(
     default_method_bound_inside_a_union_bound_must_be_declared,
-    refused("the implementation requires 'a: [i64, f64], which the signature does not declare"),
+    refused("type mismatch [i64, f64] does not contain 'b"),
     "/test.gx" => r#"
         trait T {
             val m: fn<'a: [i64, string], 'b: ['a, `X]>(self, x: 'b) -> 'b =
@@ -5910,7 +5863,7 @@ run!(
 // a default of the variable's own type and a hidden label pass.
 run!(
     method_return_default_under_a_declared_variable_refused,
-    refused("write the default's type in the trait's signature"),
+    refused("type mismatch 'z: unbound does not contain i64"),
     "/test.gx" => r#"
         trait T { val mk: fn(self) -> {cb: fn(?#d: 'z, x: i64) -> string, n: i64} };
         impl T for i64 { let mk = |s| {cb: |#d = 1, x: i64| cast<string>(d)$, n: 1} };
@@ -5921,7 +5874,7 @@ run!(
 
 run!(
     method_return_default_refused_whatever_the_calls_pass,
-    refused("write the default's type in the trait's signature"),
+    refused("type mismatch 'z: unbound does not contain i64"),
     "/test.gx" => r#"
         trait T { val mk: fn(self) -> {cb: fn(?#d: 'z, x: i64) -> string, n: i64} };
         impl T for i64 { let mk = |s| {cb: |#d = 1, x: i64| cast<string>(d)$, n: 1} };
@@ -5985,7 +5938,7 @@ run!(
 // read, a default body, a returned function, a part of the return.
 run!(
     block_method_return_default_refused,
-    refused("write the default's type in the trait's signature"),
+    refused("no default decides its type: write the default's type in the trait's declaration"),
     "/test.gx" => r#"
         trait T { val mk: fn(self) -> {cb: fn(?#d: 'z, x: i64) -> string, n: i64} };
         impl T for i64 { let mk = { let k = 1; |s| {cb: |#d = k, x: i64| cast<string>(d)$, n: 1} } };
@@ -5996,7 +5949,7 @@ run!(
 
 run!(
     method_reading_a_binding_return_default_refused,
-    refused("write the default's type in the trait's signature"),
+    refused("no default decides its type: write the default's type in the trait's declaration"),
     "/test.gx" => r#"
         let helper = |s: i64| {cb: |#d = 1, x: i64| cast<string>(d)$, n: 1};
         trait T { val mk: fn(self) -> {cb: fn(?#d: 'z, x: i64) -> string, n: i64} };
@@ -6024,7 +5977,7 @@ run!(
 
 run!(
     default_method_return_default_refused,
-    refused("write the default's type in the trait's signature"),
+    refused("type mismatch 'z: unbound does not contain i64"),
     "/test.gx" => r#"
         trait T {
             val mk: fn(self) -> {cb: fn(?#d: 'z, x: i64) -> string, n: i64} =
@@ -6053,7 +6006,7 @@ run!(
 
 run!(
     method_returned_function_default_refused,
-    refused("write the default's type in the trait's signature"),
+    refused("type mismatch 'z: unbound does not contain i64"),
     "/test.gx" => r#"
         trait T { val mk: fn(self) -> fn(?#d: 'z, x: i64) -> string };
         impl T for i64 { let mk = |s| |#d = 1, x: i64| cast<string>(d)$ };
@@ -6064,7 +6017,7 @@ run!(
 
 run!(
     method_return_default_in_an_array_of_options_refused,
-    refused("write the default's type in the trait's signature"),
+    refused("no default decides its type: write the default's type in the trait's declaration"),
     "/test.gx" => r#"
         trait T { val mk: fn(self) -> Array<[fn(?#d: 'z, x: i64) -> string, null]> };
         impl T for i64 { let mk = |s| [|#d = 1, x: i64| cast<string>(d)$] };
@@ -6102,7 +6055,7 @@ run!(
 
 run!(
     generic_impl_method_return_default_refused,
-    refused("write the default's type in the trait's signature"),
+    refused("type mismatch 'z: unbound does not contain i64"),
     "/test.gx" => r#"
         trait T { val mk: fn(self) -> {cb: fn(?#d: 'z, x: i64) -> string, n: i64} };
         impl<'a> T for Array<'a> { let mk = |s| {cb: |#d = 1, x: i64| cast<string>(d)$, n: 1} };
@@ -6116,7 +6069,7 @@ run!(
 // type it takes that type.
 run!(
     method_return_default_undecided_under_a_declared_variable_refused,
-    refused("`k` is undecided here; annotate `k`"),
+    refused("a declared type variable meets a value from outside the definition that declares it ('z)"),
     "/test.gx" => r#"
         let k = never();
         trait T { val mk: fn(self) -> {cb: fn(?#d: 'z, x: i64) -> string, n: i64} };
@@ -6129,7 +6082,7 @@ run!(
 
 run!(
     method_return_default_undecided_array_under_a_declared_variable_refused,
-    refused("`k` is undecided here; annotate `k`"),
+    refused("a call through the trait's ?#d: Array<'z> leaves #d out, and each implementation passes its own, so no default decides its type: write the default's type in the trait's declaration"),
     "/test.gx" => r#"
         let k = [];
         trait T { val mk: fn(self) -> {cb: fn(?#d: Array<'z>, x: i64) -> i64, n: i64} };
@@ -6188,7 +6141,7 @@ run!(
 
 run!(
     method_return_declared_label_undecided_default_one_level_in_refused,
-    refused("`k` is undecided here; annotate `k`"),
+    refused("a declared type variable meets a value from outside the definition that declares it ('z)"),
     "/test.gx" => r#"
         let k = never();
         trait T { val mk: fn(self) -> fn(?#w: fn(?#d: 'z, x: i64) -> string, x: i64) -> string };
@@ -6218,8 +6171,8 @@ run!(
 // A call that omits a method's labeled default judges the default of the
 // impl its self argument decides, as a named function's is.
 run!(
-    method_own_default_conflicting_with_an_argument_refused,
-    refused("'z: string does not contain i64"),
+    method_own_default_beside_an_argument_of_another_type_takes_both,
+    prints("\"1 q\""),
     "/test.gx" => r#"
         trait T { val m: fn(?#w: 'z, self, y: 'z, x: i64) -> string };
         impl T for i64 { let m = |#w: 'z = 1, s, y: 'z, x: i64| "[w] [y]" };
@@ -6228,8 +6181,8 @@ run!(
 );
 
 run!(
-    method_own_default_of_a_union_self_member_conflicting_with_an_argument_refused,
-    refused("'z: i64 does not contain string"),
+    method_own_default_of_a_union_self_member_beside_an_argument_of_another_type_takes_both,
+    prints("\"1 2\""),
     "/test.gx" => r#"
         trait T { val m: fn(?#w: 'z, self, y: 'z, x: i64) -> string };
         impl T for i64 { let m = |#w: 'z = 1, s, y: 'z, x: i64| "[w] [y]" };
@@ -6302,7 +6255,7 @@ run!(
 // trait an interface declares.
 run!(
     method_returned_functions_default_holding_a_defaulted_fn_refused,
-    refused("write the default's type in the trait's signature"),
+    refused("type mismatch 'z: unbound does not contain i64"),
     "/test.gx" => r#"
         trait T { val mk: fn(self) -> fn(?#w: fn(?#d: 'z, x: i64) -> string, x: i64) -> string };
         impl T for i64 {
@@ -6328,7 +6281,7 @@ run!(
 
 run!(
     interface_trait_method_return_default_refused,
-    refused("write the default's type in the trait's signature"),
+    refused("type mismatch 'z: unbound does not contain i64"),
     "/test.gx" => r#"
         mod inner;
         let result = inner::T::mk(1).cb(7)
@@ -6347,7 +6300,7 @@ run!(
 // implementation's is.
 run!(
     method_variable_in_two_bounds_is_one_type,
-    refused("the implementation's 'p is one type wherever a bound names it: the signature holds it at more than one place ('a, 'c), and no bound of its own says which type it is"),
+    refused("['a, 'c] is more than one type, where `Singleton` asks for one"),
     "/test.gx" => r#"
         trait T { val m: fn<'a: [i64, string] + Singleton, 'c: [i64, string] + Singleton, 'b: (i64, 'a), 'd: (i64, 'c)>(self, x: 'b, y: 'd) -> i64 };
         impl T for i64 { let m = 'p: [i64, string] + Singleton, 'q: (Number, 'p), 'r: (Number, 'p) |s, x: 'q, y: 'r| -> i64 0 };
@@ -6370,7 +6323,7 @@ run!(
 // too, and a function's argument does not hold it.
 run!(
     method_variable_in_two_bounds_beside_a_trait_variable_in_an_argument,
-    refused("the implementation requires 'g: fn(x: 'e) -> i64, which the signature does not declare: an instance that takes 'p as its own bound takes 'e as its own too, [i64, string]; name one of them at a parameter"),
+    prints("i64:0"),
     "/test.gx" => r#"
         trait T { val m: fn<'a: [i64, string], 'c: [i64, string], 'b: (i64, 'a), 'd: (i64, 'c), 'e: [i64, string], 'g: fn(x: 'e) -> i64>(self, x: 'b, y: 'd, z: 'g) -> i64 };
         impl T for i64 { let m = 'p: [i64, string], 'q: (Number, 'p), 'r: (Number, 'p) |s, x: 'q, y: 'r, z| -> i64 0 };
@@ -6453,7 +6406,7 @@ run!(
 // the variable, and the later argument must fit it.
 run!(
     method_variable_beside_a_written_member_holds_its_call,
-    refused("'a: f64 does not contain i64"),
+    refused("type mismatch [Array<string>, Array<i64>] does not contain Array<f64>"),
     "/test.gx" => r#"
         trait T { val m: fn(self, x: [Array<'a>, Array<string>], y: 'a) -> 'a };
         impl T for i64 { let m = |s, x, y| y };
@@ -6465,7 +6418,7 @@ run!(
 // declaration.
 run!(
     method_narrower_than_a_declared_variable_is_refused,
-    refused("fn(self: i64, x: 'a: unbound) -> i64 does not contain fn(s: i64, x: i64) -> i64"),
+    refused("type mismatch i64 does not contain 'a"),
     "/test.gx" => r#"
         trait T { val m: fn(self, x: 'a) -> i64 };
         impl T for i64 { let m = |s, x: i64| 0 };
@@ -6478,7 +6431,7 @@ run!(
 // the two differ only in those variables.
 run!(
     method_head_variable_for_a_declared_one_in_a_function_member_is_refused,
-    refused("y: 'a: unbound) -> 'a: unbound does not contain fn(s: Array<'t: unbound>"),
+    refused("type mismatch [fn(q: string) -> i64, fn(q: 't: unbound) -> i64] does not contain fn(q: 'a: unbound) -> i64"),
     "/test.gx" => r#"
         trait T {
             val m: fn(self, x: [fn(q: 'a) -> i64, fn(q: string) -> i64], y: 'a) -> 'a
@@ -6495,8 +6448,8 @@ run!(
 // ahead of its decider is the written member's, which is not the
 // declaration.
 run!(
-    method_let_annotation_variable_ahead_of_its_decider_is_the_written_members,
-    refused("signature has type variable 'a where implementation has string"),
+    method_let_annotation_variable_ahead_of_its_decider_holds,
+    prints("i64:2"),
     "/test.gx" => r#"
         trait T { val m: fn(self, x: [Array<'a>, Array<string>], y: 'a) -> 'a };
         impl T for i64 {
@@ -6635,7 +6588,7 @@ run!(
 // signature's function type, which declares what it raises.
 run!(
     method_returned_default_that_raises_is_refused,
-    refused("write `throws Error<ErrChain<`E>>`"),
+    refused("type mismatch _ does not contain Error<ErrChain<`E>>"),
     "/test.gx" => r#"
         trait T { val mk: fn(self) -> fn(?#d: i64, x: i64) -> i64 };
         impl T for i64 { let mk = |s| |#d = error(`E)?, x: i64| d + x };
@@ -6659,40 +6612,38 @@ run!(
     ; FuseExpect::Jit
 );
 
-const METHOD_OWN_VARIABLES: &str = "a method's own variables are not the declaration's, even one named like it: leave the method's type unwritten, so its lambda takes the declared one, or write the member the value is";
-
 run!(
-    method_lambda_written_variable_beside_member_names_remedy,
-    refused(METHOD_OWN_VARIABLES),
+    method_lambda_written_variable_beside_member_holds,
+    prints("[\"x\"]"),
     "/test.gx" => r#"
         trait T { val m: fn(self) -> [Array<'a>, Array<string>] };
         impl T for i64 { let m = |s| -> [Array<'a>, Array<string>] ["x"] };
         let result = T::m(1)
     "#
-    ; FuseExpect::None
+    ; FuseExpect::Jit
 );
 
 run!(
-    method_let_written_variable_beside_member_names_remedy,
-    refused(METHOD_OWN_VARIABLES),
+    method_let_written_variable_beside_member_holds,
+    prints("[\"x\"]"),
     "/test.gx" => r#"
         trait T { val m: fn(self) -> [Array<'a>, Array<string>] };
         impl T for i64 { let m: fn(self) -> [Array<'c>, Array<string>] = |s| ["x"] };
         let result = T::m(1)
     "#
-    ; FuseExpect::None
+    ; FuseExpect::Jit
 );
 
 run!(
-    method_read_of_generic_written_variable_beside_member_names_remedy,
-    refused(METHOD_OWN_VARIABLES),
+    method_read_of_generic_written_variable_beside_member_holds,
+    prints("[\"x\"]"),
     "/test.gx" => r#"
         let g = |s: i64| -> [Array<'a>, Array<string>] ["x"];
         trait T { val m: fn(self) -> [Array<'a>, Array<string>] };
         impl T for i64 { let m = g };
         let result = T::m(1)
     "#
-    ; FuseExpect::None
+    ; FuseExpect::Jit
 );
 
 run!(
@@ -6780,4 +6731,122 @@ run!(
         impl T for i64 {};
         let result = T::mk(1).cb(7)
     "#
+);
+
+run!(
+    default_method_label_narrower_than_its_bound_refused,
+    refused("'b does not implement V"),
+    "/test.gx" => r#"
+        trait V {
+            val v: fn<'b: [self, null]>(#k: 'b, self) -> i64 = |#k: self, s| 1
+        };
+        impl V for i64 {};
+        let result = V::v(#k: 2, 1)
+    "#
+; FuseExpect::None);
+
+run!(
+    method_value_read_with_a_wider_result_than_declared_refused,
+    r#"{
+    let f = |s: i64| -> [i64, null] s + 1;
+    trait T { val m: fn(self) -> i64 };
+    impl T for i64 { let m = f };
+    T::m(1)
+}"#,
+    refused(
+        "type mismatch fn(self: i64) -> i64 does not contain fn(s: i64) -> [i64, null]"
+    )
+);
+
+run!(
+    method_value_read_over_a_narrower_self_refused,
+    r#"{
+    let g = |s: string| -> string "<[s]>";
+    trait T { val show: fn(self) -> string };
+    impl T for i64 { let show = g };
+    T::show(1)
+}"#,
+    refused(
+        "type mismatch fn(self: i64) -> string does not contain fn(s: string) -> string"
+    )
+);
+
+run!(
+    method_value_read_of_a_binding_written_at_another_result_refused,
+    r#"{
+    let h = never();
+    trait T { val m: fn(self) -> i64 };
+    impl T for i64 { let m = h };
+    h <- once(|s: i64| "x");
+    T::m(1)
+}"#,
+    refused("i64 does not contain string")
+);
+
+run!(
+    impl_method_typedef_union_returned_as_one_member_refused,
+    refused("type mismatch 'b does not contain E<'a, 'b>"),
+    "/test.gx" => r#"
+        let result = {
+            trait T { val m: fn(self, x: 'a) -> 'a };
+            impl T for i64 { let m = |s, x: E<'a, 'b>| -> 'b x };
+            type E<'p, 'q> = ['p, 'q];
+            T::m(0, 1)
+        }
+    "#
+; FuseExpect::None);
+
+run!(
+    method_own_default_reaches_what_the_method_returns,
+    refused("string does not contain i64"),
+    "/test.gx" => r#"
+        trait T { val m: fn(?#w: 'z, self, y: 'z, x: i64) -> 'z };
+        impl T for i64 { let m = |#w: 'z = 1, s, y: 'z, x: i64| w };
+        let r: string = T::m(1, "q", 7);
+        let result = r
+    "#
+);
+
+run!(
+    method_variable_in_two_bounds_calling_its_function_argument_at_another_type_refused,
+    refused("type mismatch fn(x: string) -> i64 does not contain 'g: unbound within fn(x: 'e: unbound within [i64, string]) -> i64"),
+    "/test.gx" => r#"
+        trait T { val m: fn<'a: [i64, string], 'c: [i64, string], 'b: (i64, 'a), 'd: (i64, 'c), 'e: [i64, string], 'g: fn(x: 'e) -> i64>(self, x: 'b, y: 'd, z: 'g) -> i64 };
+        impl T for i64 { let m = 'p: [i64, string], 'q: (Number, 'p), 'r: (Number, 'p) |s, x: 'q, y: 'r, z| -> i64 z("s") };
+        let result = T::m(1, (1, "s"), (1, 1), |x: i64| x)
+    "#
+; FuseExpect::None);
+
+run!(
+    method_lambda_returning_a_member_the_declaration_does_not_hold_refused,
+    refused("type mismatch [Array<string>, Array<'a: unbound>] does not contain Array<i64>"),
+    "/test.gx" => r#"
+        trait T { val m: fn(self) -> [Array<'a>, Array<string>] };
+        impl T for i64 { let m = |s| -> [Array<'a>, Array<string>] [1] };
+        let result = T::m(1)
+    "#
+    ; FuseExpect::None
+);
+
+run!(
+    method_let_annotated_returning_a_member_the_declaration_does_not_hold_refused,
+    refused("type mismatch [Array<string>, Array<'a: unbound>] does not contain Array<i64>"),
+    "/test.gx" => r#"
+        trait T { val m: fn(self) -> [Array<'a>, Array<string>] };
+        impl T for i64 { let m: fn(self) -> [Array<'c>, Array<string>] = |s| [1] };
+        let result = T::m(1)
+    "#
+    ; FuseExpect::None
+);
+
+run!(
+    method_read_returning_a_member_the_declaration_does_not_hold_refused,
+    refused("method m of impl T for i64 does not implement the declared fn(self: i64) -> [Array<string>, Array<'a>]"),
+    "/test.gx" => r#"
+        let g = |s: i64| -> [Array<i64>, Array<string>] [1];
+        trait T { val m: fn(self) -> [Array<'a>, Array<string>] };
+        impl T for i64 { let m = g };
+        let result = T::m(1)
+    "#
+    ; FuseExpect::None
 );

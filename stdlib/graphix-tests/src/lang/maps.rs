@@ -4,7 +4,7 @@ use anyhow::Result;
 use arcstr::ArcStr;
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, is, refused},
+    testing::{FuseExpect, is, prints},
 };
 use netidx::publisher::Value;
 
@@ -142,7 +142,7 @@ const MAP_REF_WRONG_TYPE: &str = r#"
 }
 "#;
 
-run!(map_ref_wrong_type, MAP_REF_WRONG_TYPE, refused("i64 does not contain string"); FuseExpect::None);
+run!(map_ref_of_a_key_of_another_type_is_not_found, MAP_REF_WRONG_TYPE, prints(r#"error:["MapKeyError", "map key \"a\" not found"]"#); FuseExpect::Jit);
 
 const MAP_NESTED: &str = r#"
 {

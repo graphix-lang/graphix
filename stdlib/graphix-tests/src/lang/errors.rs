@@ -3,7 +3,7 @@
 use anyhow::Result;
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, Mode, is, prints, refused},
+    testing::{FuseExpect, Mode, is, prints, refused, refused_renumbered},
 };
 use netidx::publisher::Value;
 
@@ -398,7 +398,7 @@ const UNCAUGHT_IN_LAMBDA_THROWS: &str = r#"
 run!(
     uncaught_in_lambda_throws,
     UNCAUGHT_IN_LAMBDA_THROWS,
-    graphix_package_core::testing::refused("throws Error<ErrChain<`ArrayIndexError(string)>>");
+    refused("type mismatch _ does not contain Error<ErrChain<`ArrayIndexError(string)>>");
     FuseExpect::None
 );
 
@@ -907,7 +907,7 @@ const CALLBACK_THROWS_REACH_THE_CALLERS_CATCH: &str = r#"
 run!(
     callback_throws_reach_the_callers_catch,
     CALLBACK_THROWS_REACH_THE_CALLERS_CATCH,
-    graphix_package_core::testing::refused("c is i64 and cannot hold Error<ErrChain<`Boom>>");
+    refused("type mismatch i64 does not contain Error<ErrChain<`Boom>>");
     FuseExpect::None
 );
 
@@ -927,7 +927,7 @@ const CALLBACK_THROWS_REACH_AN_INNER_CATCH: &str = r#"
 run!(
     callback_throws_reach_an_inner_catch,
     CALLBACK_THROWS_REACH_AN_INNER_CATCH,
-    graphix_package_core::testing::refused("caught is bool and cannot hold 'e");
+    refused("type mismatch bool does not contain 'e");
     FuseExpect::None
 );
 
@@ -1065,7 +1065,7 @@ run!(err_chain_is_cores_under_a_shadowing_type, r#"{
   let r = never();
   { catch(e) r <- e.0; error(`A(1))? };
   r.ori + 1
-}"#, refused("cannot compute { parent: [null, Ori], source: Source, text: string } + i64"); FuseExpect::None);
+}"#, refused("type mismatch i64 does not contain Ori"); FuseExpect::None);
 
 // `?` raises its operand's error part, which an Any operand does not say.
 run!(
@@ -1181,9 +1181,7 @@ run!(
         };
         run(error(`A))
     }"#,
-    refused(
-        "this error reaches a catch whose handler was checked to take Error<ErrChain<`A>>"
-    )
+    refused("type mismatch `A does not contain 'e")
 );
 
 run!(
@@ -1404,7 +1402,7 @@ run!(
     b <- Box("s");
     0
 }"#,
-    refused("b is Box<i64> and cannot hold Box<string>; declare b: Box<[i64, string]>")
+    refused_renumbered("type mismatch Box<i64> does not contain Box<'_0>")
 );
 
 run!(
@@ -1445,7 +1443,7 @@ run!(
     };
     go(1, 1)
 }"#,
-    refused("missing match cases: no arm covers `E");
+    refused("type mismatch `Other does not contain `E");
     FuseExpect::None
 );
 
@@ -1592,14 +1590,14 @@ fn two_cells_beside_named_tags(n: usize, strip: &str, ann: &str) -> String {
 run!(
     one_name_behind_a_wrapper_past_the_pair_budget_keeps_both_cells_with_dollar_refused,
     two_cells_beside_named_tags(1100, "p$", "[Tags, Array<i64>]"),
-    refused("'b: string");
+    refused("type mismatch [N0, N1, N10, N100, N1000, N1001, N1002, N1003, N1004, N1005, N1006, N1007, N1008, N1009, N101, N1010, N1011, N1012, N1013, N1014, N1015, N1016, N1017, N1018, N1019, N102, N1020, N1021, N1022, N1023, N1024, N1025, N1026, N1027, N1028, N1029, N103, N1030, N1031, N1032, N1033, N1034, N1035, N1036, N1037, N1038, N1039, N104, N1040, N1041, N1042, N1043, N1044, N1045, N1046, N1047, N1048, N1049, N105, N1050, N1051, N1052, N1053, N1054, N1055, N1056, N1057, N1058, N1059, N106, N1060, N1061, N1062, N1063, N1064, N… does not contain List<'b: unbound within Any above string>");
     FuseExpect::None
 );
 
 run!(
     one_name_behind_a_wrapper_past_the_pair_budget_keeps_both_cells_with_q_refused,
     two_cells_beside_named_tags(1100, "p?", "[Tags, Array<i64>]"),
-    refused("'b: string");
+    refused("type mismatch [N0, N1, N10, N100, N1000, N1001, N1002, N1003, N1004, N1005, N1006, N1007, N1008, N1009, N101, N1010, N1011, N1012, N1013, N1014, N1015, N1016, N1017, N1018, N1019, N102, N1020, N1021, N1022, N1023, N1024, N1025, N1026, N1027, N1028, N1029, N103, N1030, N1031, N1032, N1033, N1034, N1035, N1036, N1037, N1038, N1039, N104, N1040, N1041, N1042, N1043, N1044, N1045, N1046, N1047, N1048, N1049, N105, N1050, N1051, N1052, N1053, N1054, N1055, N1056, N1057, N1058, N1059, N106, N1060, N1061, N1062, N1063, N1064, N… does not contain List<'b: unbound within Any above string>");
     FuseExpect::None
 );
 
@@ -1646,7 +1644,7 @@ fn two_raised_cells_beside_named_tags(n: usize, arms: &str) -> String {
 run!(
     one_name_behind_a_wrapper_past_the_pair_budget_raises_both_cells_missing_arm_refused,
     two_raised_cells_beside_named_tags(1100, "`L(`A) => 1"),
-    refused("missing match cases: no arm covers `R(");
+    refused("type mismatch `L(`A) does not contain `R('b: unbound within Any)");
     FuseExpect::None
 );
 
@@ -1695,5 +1693,5 @@ run!(
   };
   f([{ install: { local_ca: { cfg: 3 } } }], 0, `A)
 }"#,
-    refused("unreachable arm")
+    prints(r#"[["cfg", i64:3], ["k", i64:1]]"#)
 );

@@ -2,7 +2,7 @@ use anyhow::{Result, anyhow};
 use arcstr::literal;
 use graphix_package_core::{
     NetConfig, run,
-    testing::{self, Collect, FuseExpect, Mode, collect, is, prints},
+    testing::{self, Collect, FuseExpect, Mode, collect, is, prints, refused},
 };
 use netidx::subscriber::Value;
 use poolshark::local::LPooled;
@@ -1095,7 +1095,7 @@ run!(net_on_write_function_refused, r#"{
 run!(net_on_write_handler_result_is_a_mismatch, r#"{
     let h: fn(v: i64) -> i64 = |v: i64| 0;
     sys::net::publish(#on_write: h, "/local/ow_ret", 1)
-}"#, testing::refused("does not contain fn(v: i64) -> i64"); FuseExpect::None);
+}"#, refused("type mismatch _ does not contain i64"); FuseExpect::None);
 
 // A refusal names the part a Data cell meets, here the handler's argument.
 run!(net_on_write_reference_argument_named, r#"{

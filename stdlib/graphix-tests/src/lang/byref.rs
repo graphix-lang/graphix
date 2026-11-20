@@ -1367,7 +1367,7 @@ run!(any_reference_cast_abstract_map_is_refused, r#"{
 run!(
     mut_of_value_in_definition_refused,
     "{ let f = |x: i64| { let r: &mut string = &mut [x]; str::len(*r) }; f(1) }",
-    refused("&mut string does not contain &mut Array<i64>");
+    refused("type mismatch string does not contain Array<i64>");
     FuseExpect::None
 );
 run!(
@@ -1377,15 +1377,15 @@ run!(
     FuseExpect::None
 );
 run!(
-    mut_of_value_written_in_definition_refused,
+    mut_of_value_written_in_definition_holds_both,
     r#"{ let f = |x: i64| { let r = &mut [x]; *r <- ["s"]; 0 }; f(1) }"#,
-    refused("Array<i64> does not contain Array<string>");
+    prints("i64:0");
     FuseExpect::None
 );
 run!(
     mut_of_value_infinite_in_definition_refused,
     "{ let rec f = |x| f(&mut [f]); 0 }",
-    refused("cannot infer a finite type here");
+    refused("infinite type: a value here would hold a value of its own type (a function passed or returning itself, a collection holding itself); declare a named recursive type and annotate the binding");
     FuseExpect::None
 );
 run!(

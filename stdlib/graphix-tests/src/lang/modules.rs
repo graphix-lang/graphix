@@ -317,7 +317,7 @@ const DYNAMIC_MODULE1: &str = r#"
 }
 "#;
 
-run!(dynamic_module1, DYNAMIC_MODULE1, load_refused("signature has i64, implementation has f64"); FuseExpect::Jit);
+run!(dynamic_module1, DYNAMIC_MODULE1, load_refused("val add is declared fn(x: i64) -> i64 but implemented fn(x: f64) -> f64"); FuseExpect::Jit);
 
 const DYNAMIC_MODULE2: &str = r#"
 {
@@ -1466,7 +1466,7 @@ run!(
 
 run!(
     interface_omits_inferred_bounds,
-    graphix_package_core::testing::refused("the implementation requires 'a: Number"),
+    refused("the implementation requires 'a: Singleton, which the signature does not declare"),
     "/test.gx" => r#"
         mod m;
         let result = m::f([1])
@@ -4201,8 +4201,7 @@ run!(
     };
     r
 }"##,
-    |v: Result<&Value>| matches!(v, Ok(v @ Value::Error(_))
-        if format!("{v}").contains("handler was checked to take Error<ErrChain<i64>>"));
+    load_refused("type mismatch i64 does not contain string");
     FuseExpect::None
 );
 
@@ -4259,9 +4258,7 @@ run!(
     };
     r
 }"##,
-    |v: Result<&Value>| matches!(v, Ok(v @ Value::Error(_))
-        if format!("{v}").contains("saw no error when it was checked")
-            && format!("{v}").contains("`catch(e: Error<ErrChain<string>>)`"));
+    load_refused("this error reaches a catch whose handler was checked to take _");
     FuseExpect::None
 );
 

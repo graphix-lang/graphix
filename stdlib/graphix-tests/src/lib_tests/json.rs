@@ -822,12 +822,21 @@ run!(
 );
 
 run!(
-    json_open_member_beside_a_tag_refused,
+    json_open_member_beside_a_tag_judged_at_the_call,
     r#"{
     let f = |b: bool, x| json::write_str(select b { true => `A, false => x });
     f(true, `B)
 }"#,
-    refused("JsonData refuses")
+    prints(r#""\"A\"""#)
+);
+
+run!(
+    json_open_member_beside_a_tag_refused_at_an_untagged_call,
+    r#"{
+    let f = |b: bool, x| json::write_str(select b { true => `A, false => x });
+    f(true, 5)
+}"#,
+    refused("'a: JsonData refuses [i64, `A]: i64 in [i64, `A] has no tag")
 );
 
 run!(
@@ -845,7 +854,7 @@ run!(
 // written, at the definition, never at a call's type. One over a type the
 // definition knows is refused.
 run!(
-    json_transparent_over_a_definitions_variable_writes,
+    json_transparent_over_a_definitions_variable_judged_at_the_call,
     r#"{
     type Port = Abstract<u16>;
     impl Cast for Port {};
@@ -853,7 +862,7 @@ run!(
     let o = |x| json::write_str([Transparent(x), null]);
     (w(Port(u16:80))$, w(3)$, o(1)$)
 }"#,
-    prints(r#"["80", "3", "[1,null]"]"#);
+    refused("'a: JsonData refuses Transparent<i64>: Transparent<i64> holds a type that is not abstract, which JSON writes bare already");
     FuseExpect::None
 );
 
@@ -1043,27 +1052,39 @@ let rb: Result<Bx, E> = json::read(json::write_str(b)$);
 // A member not known yet beside a tag is refused without the cell's
 // generated name; a definition's declared variable is named.
 run!(
-    json_open_member_refusal_names_no_cell,
+    json_open_member_in_an_array_beside_a_tag_judged_at_the_call,
     r#"{
     let w = |x| json::write_str([x, `A]);
     w(`B)
 }"#,
-    |v: Result<&Value>| matches!(v, Err(e) if {
-        let m = format!("{e:#}");
-        m.contains("JsonData refuses a type not known yet beside `A: beside another member a member needs a tag")
-            && !m.contains("'_")
-    })
+    prints(r#""[\"B\",\"A\"]""#); FuseExpect::None
 );
 
 run!(
-    json_declared_variable_beside_a_tag_refused,
+    json_open_member_in_an_array_beside_a_tag_refused_at_an_untagged_call,
+    r#"{
+    let w = |x| json::write_str([x, `A]);
+    w(5)
+}"#,
+    refused("'a: JsonData refuses Array<[i64, `A]>: i64 in [i64, `A] has no tag")
+);
+
+run!(
+    json_declared_variable_beside_a_tag_judged_at_the_call,
     r#"{
     let w = 'a: JsonData |x: 'a| json::write_str([x, `A]);
     w(`B)
 }"#,
-    refused(
-        "'a may be any type, and beside another member in ['a, `A] it would need a tag"
-    )
+    prints(r#""[\"B\",\"A\"]""#); FuseExpect::None
+);
+
+run!(
+    json_declared_variable_beside_a_tag_refused_at_an_untagged_call,
+    r#"{
+    let w = 'a: JsonData |x: 'a| json::write_str([x, `A]);
+    w(5)
+}"#,
+    refused("'a: JsonData refuses Array<[i64, `A]>: i64 in [i64, `A] has no tag")
 );
 
 // A refusal at a generic definition's call names the type it refuses, not
@@ -1094,7 +1115,9 @@ run!(
     let v: [i64, string] = 3;
     w([v])
 }"#,
-    refused("JsonData refuses Array<[i64, string]>: i64 in [i64, string] has no tag")
+    refused(
+        "'a: JsonData refuses Array<[`A, Box<Array<[i64, string]>>]>: i64 in [i64, string] has no tag (a variant's, or an abstract type's name), so what another member writes as JSON data may read back as it"
+    )
 );
 
 run!(

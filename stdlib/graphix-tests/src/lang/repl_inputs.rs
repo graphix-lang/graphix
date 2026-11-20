@@ -1009,12 +1009,7 @@ const LOAD_WRITE_HELD: &str = r#"{
 run!(
     load_write_is_held_to_the_program_binding,
     LOAD_WRITE_HELD,
-    |v: anyhow::Result<&Value>| matches!(
-        v,
-        Ok(Value::String(s))
-            if s.contains("val h is declared fn(x: 'a) -> 'a but implemented fn(x: _) -> _")
-                && s.contains("it holds the type of `y`")
-    );
+    |v: anyhow::Result<&Value>| matches!(v, Ok(Value::String(s)) if s.contains("val h is declared fn(x: 'a) -> 'a but implemented") && s.contains("type mismatch _ does not contain 'a"));
     FuseExpect::Jit
 );
 

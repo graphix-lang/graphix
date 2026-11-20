@@ -131,7 +131,7 @@ const DATETIME_ARITH10: &str = r#"
 }
 "#;
 
-run!(datetime_arith10, DATETIME_ARITH10, refused("cannot compute duration + u32"); FuseExpect::None);
+run!(datetime_arith10, DATETIME_ARITH10, refused("type mismatch duration does not contain u32"); FuseExpect::None);
 
 const DATETIME_ARITH11: &str = r#"
 {
@@ -140,7 +140,7 @@ const DATETIME_ARITH11: &str = r#"
 }
 "#;
 
-run!(datetime_arith11, DATETIME_ARITH11, refused("cannot compute duration - u32"); FuseExpect::None);
+run!(datetime_arith11, DATETIME_ARITH11, refused("type mismatch duration does not contain u32"); FuseExpect::None);
 
 const DATETIME_ARITH12: &str = r#"
 {
@@ -149,7 +149,7 @@ const DATETIME_ARITH12: &str = r#"
 }
 "#;
 
-run!(datetime_arith12, DATETIME_ARITH12, refused("cannot compute datetime - i64"); FuseExpect::None);
+run!(datetime_arith12, DATETIME_ARITH12, refused("type mismatch datetime does not contain i64"); FuseExpect::None);
 
 const DATETIME_ARITH13: &str = r#"
 {
@@ -158,7 +158,7 @@ const DATETIME_ARITH13: &str = r#"
 }
 "#;
 
-run!(datetime_arith13, DATETIME_ARITH13, refused("cannot compute datetime + i64"); FuseExpect::None);
+run!(datetime_arith13, DATETIME_ARITH13, refused("type mismatch datetime does not contain i64"); FuseExpect::None);
 
 const DATETIME_ARITH14: &str = r#"
 {
@@ -167,7 +167,7 @@ const DATETIME_ARITH14: &str = r#"
 }
 "#;
 
-run!(datetime_arith14, DATETIME_ARITH14, refused("cannot compute datetime * i64"); FuseExpect::None);
+run!(datetime_arith14, DATETIME_ARITH14, refused("type mismatch datetime does not contain i64"); FuseExpect::None);
 
 const DATETIME_ARITH15: &str = r#"
 {
@@ -176,7 +176,7 @@ const DATETIME_ARITH15: &str = r#"
 }
 "#;
 
-run!(datetime_arith15, DATETIME_ARITH15, refused("cannot compute datetime / i64"); FuseExpect::None);
+run!(datetime_arith15, DATETIME_ARITH15, refused("type mismatch datetime does not contain i64"); FuseExpect::None);
 
 const DATETIME_ARITH16: &str = r#"
 {
@@ -185,7 +185,7 @@ const DATETIME_ARITH16: &str = r#"
 }
 "#;
 
-run!(datetime_arith16, DATETIME_ARITH16, refused("cannot compute datetime % i64"); FuseExpect::None);
+run!(datetime_arith16, DATETIME_ARITH16, refused("type mismatch datetime does not contain i64"); FuseExpect::None);
 
 const DATETIME_ARITH17: &str = r#"
 {
@@ -194,7 +194,7 @@ const DATETIME_ARITH17: &str = r#"
 }
 "#;
 
-run!(datetime_arith17, DATETIME_ARITH17, refused("cannot compute duration - datetime"); FuseExpect::None);
+run!(datetime_arith17, DATETIME_ARITH17, refused("type mismatch duration does not contain datetime"); FuseExpect::None);
 
 const DATETIME_ARITH18: &str = r#"
     duration:1.s *? duration:2.s

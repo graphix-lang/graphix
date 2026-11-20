@@ -185,7 +185,7 @@ const ARRAY_INDEXING5: &str = r#"
 }
 "#;
 
-run!(array_indexing5, ARRAY_INDEXING5, refused("cannot compute ["); FuseExpect::None);
+run!(array_indexing5, ARRAY_INDEXING5, refused("type mismatch i64 does not contain Error<`ArrayIndexError(string)>"); FuseExpect::None);
 
 const ARRAY_INDEXING6: &str = r#"
 {
