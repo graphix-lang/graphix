@@ -2436,6 +2436,21 @@ fn made_by_calls(ft: &FnType) {
     }
 }
 
+/// An open cell at `depth` or shallower that `v` is produced into by a use
+/// of: a field, an element or a payload read of a value still undecided.
+fn produced_from_outside(v: &TVar, depth: u32) -> Option<TVar> {
+    let sources = known(v, |k| k.from.clone());
+    sources.into_iter().find(|w| {
+        !w.is_bound()
+            && w.level().depth() <= depth
+            && uses(w).iter().any(|(u, _)| {
+                let mut produced: SmallVec<[TVar; 4]> = SmallVec::new();
+                u.each(&mut |t| cells_of(t, false, &mut produced));
+                produced.iter().any(|p| p.same_cell(v))
+            })
+    })
+}
+
 /// Whether an operation makes values at the type of `v`, or of a cell that
 /// flows into it: a builtin's read, or the argument it hands a function.
 fn made_at(v: &TVar) -> bool {
@@ -2738,6 +2753,13 @@ impl Solving {
         let mut kept = Cells::new();
         self.reach(t, &mut kept);
         for v in kept.iter().filter(|v| v.level().depth() > depth) {
+            // a cell a use of an open cell outside produces into takes
+            // that cell's values as they come, after any copy is made:
+            // it is the outer cell's, which every instance shares
+            if let Some(w) = produced_from_outside(v, depth) {
+                v.claim(w.level());
+                continue;
+            }
             known(v, |k| k.quantified = true);
             v.generalize()
         }
