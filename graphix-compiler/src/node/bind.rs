@@ -1892,6 +1892,39 @@ impl<R: Rt> Place<R> {
         fuse_parts(keys, ctx).map(|_| ())
     }
 
+    /// Whether the part the steps reach in the type of the binding `r`
+    /// names holds a variable a read of the binding copies; where a step
+    /// does not resolve, whether what it stands on does.
+    fn part_holds_generic(&self, ctx: &CompileCtx<R>, r: &Ref) -> bool {
+        let Some(bind) = ctx.env.by_id.get(&r.id) else { return true };
+        let mut t = bind.typ.clone();
+        for step in &self.steps {
+            let Some(mut whole) = t.with_deref(|b| b.cloned()) else {
+                return crate::holds_generic(&t);
+            };
+            if let Type::Ref(_) = &whole {
+                match whole.lookup_ref(&ctx.env) {
+                    Ok(named) => whole = named,
+                    Err(_) => return crate::holds_generic(&whole),
+                }
+            }
+            let part = match (step, &whole) {
+                (PlaceStep::Field(n), Type::Struct(fs)) => {
+                    fs.iter().find(|(f, ..)| *f == n.name).map(|(_, t, _)| t.clone())
+                }
+                (PlaceStep::Tuple(i), Type::Tuple(ts)) => ts.get(*i).cloned(),
+                (PlaceStep::Index(_), Type::Array(e)) => Some(Type::clone(e)),
+                (PlaceStep::Key(..), Type::Map(m)) => Some(m.value.clone()),
+                _ => None,
+            };
+            match part {
+                Some(part) => t = part,
+                None => return crate::holds_generic(&whole),
+            }
+        }
+        crate::holds_generic(&t)
+    }
+
     /// The element type: each step's accessor rule over the root's type,
     /// without the access's failure (a place handles that at runtime). A
     /// writable field step over a union needs every member's field to be
@@ -2087,12 +2120,14 @@ impl<R: Rt> ByRef<R> {
         if let Mutability::Mut = mutability {
             let (named, place) = match &referent {
                 Referent::Place(p) => {
-                    ((&*p.root as &dyn Any).downcast_ref::<Ref>(), true)
+                    ((&*p.root as &dyn Any).downcast_ref::<Ref>(), Some(p))
                 }
-                Referent::Channel(c) => ((&**c as &dyn Any).downcast_ref::<Ref>(), false),
+                Referent::Channel(c) => ((&**c as &dyn Any).downcast_ref::<Ref>(), None),
             };
             if let Some(r) = named {
-                if !place && narrows_generic(ctx, r) {
+                if narrows_generic(ctx, r)
+                    && place.is_none_or(|p| p.part_holds_generic(ctx, r))
+                {
                     return Err(narrowing_refusal(ctx, r).at(&spec));
                 }
                 ctx.mark_connect_target(r.id).map_err(|e| e.at(&spec))?;

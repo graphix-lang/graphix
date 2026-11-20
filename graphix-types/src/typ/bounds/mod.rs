@@ -2425,6 +2425,24 @@ fn feeders(v: &TVar) -> SmallVec<[TVar; 1]> {
     c.solving.as_ref().map(|k| k.feeders.clone()).unwrap_or_default()
 }
 
+/// Whether an operation makes values at the type of `v`, or of a cell that
+/// flows into it: a builtin's read, or the argument it hands a function.
+fn made_at(v: &TVar) -> bool {
+    let mut seen: SmallVec<[usize; 8]> = SmallVec::new();
+    let mut work: SmallVec<[TVar; 4]> = SmallVec::from_iter([v.clone()]);
+    while let Some(u) = work.pop() {
+        if seen.contains(&u.cell_addr()) {
+            continue;
+        }
+        seen.push(u.cell_addr());
+        if reads_type(&u) {
+            return true;
+        }
+        work.extend(feeders(&u))
+    }
+    false
+}
+
 fn singleton(v: &TVar) -> bool {
     v.cell_constraints().iter().any(|c| matches!(c, Type::Bound(Bound::Singleton)))
 }
@@ -3706,6 +3724,19 @@ impl Solving {
         let r = self.fixed(env, v);
         self.fixing.remove(&v.cell_addr());
         let r = r?;
+        // a cell nothing flows into takes the type its uses demand, and
+        // where an operation makes values at it (a builtin's read, a
+        // handler's argument) they are of that type: a select waiting on
+        // the cell routes it
+        let routes =
+            || uses(v).iter().any(|(u, met)| !met && matches!(u, Use::Routed(..)));
+        if v.cell_lower().is_empty()
+            && !matches!(r, Type::Bottom)
+            && routes()
+            && made_at(v)
+        {
+            self.constrain(env, &r, &Type::TVar(v.clone()))?
+        }
         debug(|| format!("fix '{} := {r}", ShortName(&v.name)));
         v.cell().write().set_binding(Some(r));
         // a flow from a cell that was being fixed around this one was
