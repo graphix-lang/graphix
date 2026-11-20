@@ -6661,3 +6661,36 @@ run!(
     refused("which the function type it is called through does not declare");
     FuseExpect::None
 );
+
+// A binding something writes is one function for every call: each call,
+// static or through a value, is an instance of the one type its check
+// gave the binding, here `y: [i64, string]`.
+run!(written_binding_with_a_declared_variable_is_one_function, r#"
+{
+    let t = 'a: Number |x: 'a, y| -> bool x == y;
+    let r = &mut t;
+    [t(1, 2), t(1, "s"), t(1, 1)]
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a))
+    if a[..] == [Value::Bool(false), Value::Bool(false), Value::Bool(true)]);
+    FuseExpect::None);
+
+run!(written_binding_called_through_data_is_one_function, r#"
+{
+    let t = 'a: Number |x: 'a, y| -> bool x == y;
+    let r = &mut t;
+    let fs = [t];
+    let g = fs[0]$;
+    [g(1, 2), g(1, "s"), g(1, 1)]
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a))
+    if a[..] == [Value::Bool(false), Value::Bool(false), Value::Bool(true)]);
+    FuseExpect::None);
+
+run!(written_binding_called_at_one_type_that_cannot_compare, r#"
+{
+    let t = 'a: Number |x: 'a, y| -> bool x == y;
+    let r = &mut t;
+    t(1, "s")
+}
+"#, refused("cannot compare i64 with string"); FuseExpect::None);
