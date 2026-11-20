@@ -4,7 +4,7 @@ use anyhow::Result;
 use arcstr::ArcStr;
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, is, prints},
+    testing::{FuseExpect, is, refused},
 };
 use netidx::publisher::Value;
 
@@ -142,7 +142,9 @@ const MAP_REF_WRONG_TYPE: &str = r#"
 }
 "#;
 
-run!(map_ref_of_a_key_of_another_type_is_not_found, MAP_REF_WRONG_TYPE, prints(r#"error:["MapKeyError", "map key \"a\" not found"]"#); FuseExpect::Jit);
+// A lookup is held to the comparison rule: a key no key of the map can
+// equal is refused, as `1 == "a"` is.
+run!(map_ref_of_a_key_of_another_type_is_refused, MAP_REF_WRONG_TYPE, refused("cannot compare i64 with string"); FuseExpect::None);
 
 const MAP_NESTED: &str = r#"
 {
