@@ -1724,7 +1724,7 @@ fn members_of(env: &Env, t: &Type, out: &mut SmallVec<[Type; 4]>) -> Result<()> 
             Type::Set(ms) => ms.iter().try_for_each(|m| go(env, m, out, seen)),
             named @ Type::Ref(_) if !seen.insert(named.clone()) => Ok(()),
             named @ Type::Ref(_) => match named.lookup_ref(env)? {
-                body @ Type::Set(_) => go(env, &body, out, seen),
+                body @ (Type::Set(_) | Type::Ref(_)) => go(env, &body, out, seen),
                 body @ (Type::Error(_) | Type::Primitive(_) | Type::Any) => {
                     Ok(out.push(body))
                 }

@@ -3,7 +3,7 @@
 use anyhow::Result;
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, Mode, is, prints, refused, refused_renumbered},
+    testing::{FuseExpect, Mode, is, prints, refused, refused_renumbered, settles},
 };
 use netidx::publisher::Value;
 
@@ -1694,4 +1694,19 @@ run!(
   f([{ install: { local_ca: { cfg: 3 } } }], 0, `A)
 }"#,
     prints(r#"[["cfg", i64:3], ["k", i64:1]]"#)
+);
+
+// `$` takes the error off a name that stands for another name of a union
+// holding one: what it lets through is the value alone.
+run!(
+    strip_through_a_typedef_naming_a_typedef_types_the_value,
+    r#"{ type R = Result<string, `E>; let o: R = "ok"; let s = o$; str::len(s) }"#,
+    prints("i64:2")
+);
+
+run!(
+    strip_through_a_typedef_naming_a_typedef_passes_no_error,
+    r#"{ type R = Result<string, `E>; let r: R = error(`E); r$ }"#,
+    settles();
+    FuseExpect::Jit
 );
