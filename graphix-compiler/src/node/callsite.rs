@@ -4173,7 +4173,7 @@ impl<R: Rt> CallSite<R> {
         let check = bounds::Check::begin();
         self.note_kept_view(ctx);
         if let Some(r) = self.fnode.downcast_mut::<super::bind::Ref>() {
-            self.copies = wrap!(self.fnode, r.copy_scheme(ctx))?.map(TArc::new);
+            self.copies = wrap!(self.fnode, r.copy_scheme(ctx, false))?.map(TArc::new);
         }
         wrap!(self.fnode, self.fnode.typecheck0(ctx))?;
         // XCR claude for claude: [bug/medium] A builtin's unread quantifiers settle

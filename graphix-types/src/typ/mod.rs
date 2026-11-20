@@ -393,6 +393,13 @@ impl NodePairs {
     }
 }
 
+impl Type {
+    /// Whether `self` and `other` are one shared node ([`node_addr`]).
+    pub fn same_node(&self, other: &Type) -> bool {
+        node_addr(self).is_some_and(|a| node_addr(other) == Some(a))
+    }
+}
+
 /// The address of a composite's content allocation, its low bits telling
 /// apart the kinds (and a reference's mutability) that can wrap one
 /// allocation, and of a named type applied to parameters, for walks that

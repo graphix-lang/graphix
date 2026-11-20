@@ -1006,11 +1006,11 @@ run!(
 // What a step decides of the holder's copy holds for the holder's other
 // parts, as a `seq` step's and a plain part's decision does.
 run!(
-    a_seqq_step_in_a_holder_decides_nothing_of_its_other_parts,
+    a_seqq_step_in_a_holder_decides_the_holders_copy,
     "{ let k = |p: {g: fn(x: i64) -> i64}| 0; let s = {g: |x| x}; \
        let t = {a: s, b: seqq 1 { k(s) }}; (t.a.g(\"x\"), t.b) }",
-    prints("[\"x\", i64:0]");
-    FuseExpect::Jit
+    refused("unsatisfiable constraints: i64 & string");
+    FuseExpect::None
 );
 
 run!(

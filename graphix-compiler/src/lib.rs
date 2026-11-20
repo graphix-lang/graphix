@@ -1588,6 +1588,9 @@ pub struct CompileCtx<R: Rt> {
     /// self-call inside such a body unifies against the def's own
     /// ftype cells (monomorphic recursion), not a freshening.
     pub(crate) rec_defs: nohash::IntSet<LambdaId>,
+    /// The copies the value reads of a holder's literal being checked
+    /// share, one per generic binding ([`node::bind::HolderReads`]).
+    pub(crate) holder_reads: Option<node::bind::HolderReads>,
     /// The fn-typed parameter BindIds of the defs being body-checked, with
     /// their definition and position: a call through one unifies against
     /// the param's own declared cells, so `f(v)` types as the def's rigid 'b.
@@ -1783,6 +1786,7 @@ impl<R: Rt> CompileCtx<R> {
             block_typedefs: self.block_typedefs.clone(),
             builtin_bindings: self.builtin_bindings.fork(),
             rec_defs: self.rec_defs.clone(),
+            holder_reads: None,
             def_gate_params: self.def_gate_params.clone(),
             instance_fn_params: self.instance_fn_params.clone(),
             fn_param_args: self.fn_param_args.clone(),
@@ -1858,6 +1862,7 @@ impl<R: Rt> CompileCtx<R> {
             block_typedefs: _,
             builtin_bindings,
             rec_defs: _,
+            holder_reads: _,
             def_gate_params: _,
             instance_fn_params: _,
             fn_param_args: _,
@@ -2370,6 +2375,7 @@ impl<R: Rt> ExecState<R> {
                 block_typedefs: Vec::new(),
                 builtin_bindings: TrackedMap::default(),
                 rec_defs: nohash::IntSet::default(),
+                holder_reads: None,
                 def_gate_params: nohash::IntMap::default(),
                 instance_fn_params: AHashMap::default(),
                 fn_param_args: nohash::IntMap::default(),
@@ -4204,6 +4210,7 @@ impl Saved {
             block_typedefs: _,
             builtin_bindings,
             rec_defs: _,
+            holder_reads: _,
             def_gate_params: _,
             instance_fn_params: _,
             fn_param_args: _,

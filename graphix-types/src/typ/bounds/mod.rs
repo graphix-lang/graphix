@@ -542,6 +542,10 @@ pub struct Solving {
     /// extends a payload that is a chain, never nests it, so the chain is
     /// not known until the payload is.
     chains: Vec<Chained>,
+    /// The copy each part of the scheme an instantiation is copying has
+    /// made, by address: a part its type and a cell's bound share is
+    /// copied once.
+    copied_parts: Option<LPooled<AHashMap<usize, Option<Type>>>>,
     /// A held choice is being made: a decided member that does not fit is
     /// out.
     resolving: bool,
@@ -2456,6 +2460,16 @@ pub fn written_test(t: &Type) -> Type {
 }
 
 fn map_cells(t: &Type, f: &mut impl FnMut(&TVar) -> Option<Type>) -> Type {
+    map_cells_in(t, f, &mut LPooled::take())
+}
+
+/// [`map_cells`] with the parts mapped so far, by address, which calls
+/// with one `f` share.
+fn map_cells_in(
+    t: &Type,
+    f: &mut impl FnMut(&TVar) -> Option<Type>,
+    mapped: &mut AHashMap<usize, Option<Type>>,
+) -> Type {
     // a part many places share is mapped once, and one nothing changes
     // in stays shared: `f` gives a cell the same answer wherever it is
     fn go(
@@ -2489,8 +2503,7 @@ fn map_cells(t: &Type, f: &mut impl FnMut(&TVar) -> Option<Type>) -> Type {
             }
         })
     }
-    let mut mapped: LPooled<AHashMap<usize, Option<Type>>> = LPooled::take();
-    go(t, f, &mut mapped).unwrap_or_else(|| t.clone())
+    go(t, f, mapped).unwrap_or_else(|| t.clone())
 }
 
 /// The unbound cells of `t`, each once, bound cells looked through;
@@ -3249,6 +3262,7 @@ impl Solving {
         copies: &mut AHashMap<usize, TVar>,
     ) -> Type {
         let outer = std::mem::take(&mut self.copied);
+        let outer_parts = self.copied_parts.replace(LPooled::take());
         self.copy_frozen(t, at, copies);
         let t = self.copy(t, above, at, copies);
         // what the definition left to its instances, each once
@@ -3294,6 +3308,7 @@ impl Solving {
             }
         }
         self.copied = outer;
+        self.copied_parts = outer_parts;
         t
     }
 
@@ -3447,22 +3462,37 @@ impl Solving {
         copies: &mut AHashMap<usize, TVar>,
     ) -> Type {
         let mut made: SmallVec<[(TVar, TVar); 4]> = SmallVec::new();
-        let t = map_cells(t, &mut |v| {
-            if v.level().depth() <= above {
-                return None;
+        let mut parts = self.copied_parts.take();
+        let mut own: LPooled<AHashMap<usize, Option<Type>>>;
+        let mapped = match parts.as_mut() {
+            Some(parts) => &mut **parts,
+            None => {
+                own = LPooled::take();
+                &mut *own
             }
-            if let Some(n) = copies.get(&v.cell_addr()) {
-                return Some(Type::TVar(n.clone()));
-            }
-            let n = {
-                let _at = AtLevel::enter(at);
-                TVar::empty_named(v.name.clone())
-            };
-            copies.insert(v.cell_addr(), n.clone());
-            made.push((v.clone(), n.clone()));
-            self.copied.push(v.clone());
-            Some(Type::TVar(n))
-        });
+        };
+        let copied = &mut self.copied;
+        let t = map_cells_in(
+            t,
+            &mut |v| {
+                if v.level().depth() <= above {
+                    return None;
+                }
+                if let Some(n) = copies.get(&v.cell_addr()) {
+                    return Some(Type::TVar(n.clone()));
+                }
+                let n = {
+                    let _at = AtLevel::enter(at);
+                    TVar::empty_named(v.name.clone())
+                };
+                copies.insert(v.cell_addr(), n.clone());
+                made.push((v.clone(), n.clone()));
+                copied.push(v.clone());
+                Some(Type::TVar(n))
+            },
+            mapped,
+        );
+        self.copied_parts = parts;
         // the copy is bounded and fed as the original is
         for (v, n) in made {
             let (lower, mut upper) = (v.cell_lower(), v.cell_constraints());

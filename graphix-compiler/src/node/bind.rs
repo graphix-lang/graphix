@@ -69,6 +69,40 @@ enum Held {
     Scheme,
 }
 
+/// The copies the value reads of a holder's literal share: each generic
+/// binding it reads is one copy of that binding's scheme, made at the
+/// holder's level, so a chain of holders each reading the last twice holds
+/// one copy a link. A call through a read takes a copy of its own.
+pub(crate) struct HolderReads {
+    level: Level,
+    /// The binding read, its scheme, and the copy: a binding that is
+    /// another's scheme as it is (`let t = x`) shares that one's copy.
+    copies: SmallVec<[(BindId, Type, Type); 4]>,
+}
+
+impl HolderReads {
+    fn copy_of(&self, id: BindId, scheme: &Type) -> Option<&Type> {
+        self.copies
+            .iter()
+            .find(|(of, s, _)| *of == id || s.same_node(scheme))
+            .map(|(_, _, copy)| copy)
+    }
+}
+
+/// Whether `e` is a literal that holds its parts: an array, list, map,
+/// tuple, variant or struct.
+fn holds_literally(e: &Expr) -> bool {
+    matches!(
+        e.kind,
+        ExprKind::Array { .. }
+            | ExprKind::List { .. }
+            | ExprKind::Map { .. }
+            | ExprKind::Tuple { .. }
+            | ExprKind::Variant { .. }
+            | ExprKind::Struct(_)
+    )
+}
+
 /// Whether a `let` of `e` that nothing writes is a definition: a lambda,
 /// a generic name, a read of a part of one, a sample of one, or data, a
 /// block or an `any` that holds one of those.
@@ -782,7 +816,22 @@ impl<R: Rt> Bind<R> {
     /// The check by bounds: the value's type flows into the binding's,
     /// or, where the value is a definition, what its type reaches at the
     /// definition's level becomes the binding's scheme.
+    /// The check of the `let`. A written or annotated one's value reads
+    /// copies of their own, inside a holder's literal too.
     fn check_by_bounds(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
+        let ExprKind::Bind(b) = &self.spec.kind else {
+            bail!("BUG: a let without its expression")
+        };
+        let own = b.typ.is_some() || written(ctx, &self.pattern);
+        let outer = own.then(|| ctx.holder_reads.take()).flatten();
+        let checked = self.check_value(ctx);
+        if outer.is_some() {
+            ctx.holder_reads = outer
+        }
+        checked
+    }
+
+    fn check_value(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
         let ExprKind::Bind(b) = &self.spec.kind else {
             bail!("BUG: a let without its expression")
         };
@@ -837,7 +886,18 @@ impl<R: Rt> Bind<R> {
                     solving(|s| s.generalize(&ctx.env, t, depth, mark))
                 };
                 let _at = AtLevel::enter(level);
-                wrap!(node, node.typecheck0(ctx))?;
+                let opens = b.typ.is_none()
+                    && ctx.holder_reads.is_none()
+                    && holds_literally(&b.value);
+                if opens {
+                    ctx.holder_reads =
+                        Some(HolderReads { level, copies: SmallVec::new() })
+                }
+                let checked = wrap!(node, node.typecheck0(ctx));
+                if opens {
+                    ctx.holder_reads = None
+                }
+                checked?;
                 let value = node.typ().clone();
                 match b.typ.is_some() {
                     false => {
@@ -1398,6 +1458,7 @@ impl Ref {
     pub(crate) fn copy_scheme<R: Rt>(
         &mut self,
         ctx: &mut CompileCtx<R>,
+        shared: bool,
     ) -> Result<Option<AHashMap<usize, TVar>>> {
         let generic = ctx.env.poly_binds.contains(&self.id);
         match self.signature {
@@ -1421,10 +1482,21 @@ impl Ref {
             bail!("BUG missing bind {:?}", self.id)
         };
         let mut copies = AHashMap::default();
-        let one = solving(|s| {
-            let above = Level::GENERIC.depth() - 1;
-            s.instantiate_into(&scheme, above, current_level(), &mut copies)
-        });
+        let mut reads = ctx.holder_reads.as_mut().filter(|_| shared);
+        let one = match reads.as_ref().and_then(|r| r.copy_of(self.id, &scheme)) {
+            Some(one) => one.clone(),
+            None => {
+                let at = reads.as_ref().map_or_else(current_level, |r| r.level);
+                let one = solving(|s| {
+                    let above = Level::GENERIC.depth() - 1;
+                    s.instantiate_into(&scheme, above, at, &mut copies)
+                });
+                if let Some(r) = reads.as_mut() {
+                    r.copies.push((self.id, scheme.clone(), one.clone()))
+                }
+                one
+            }
+        };
         let held = mem::replace(&mut self.typ, one);
         if matches!(
             mem::replace(&mut self.signature, Signature::Decided),
@@ -1550,7 +1622,7 @@ impl<R: Rt> Update<R> for Ref {
         if !bounds::active() {
             return Ok(());
         }
-        self.copy_scheme(ctx).map(|_| ())
+        self.copy_scheme(ctx, true).map(|_| ())
     }
 
     fn view(&self) -> NodeView<'_, R> {
