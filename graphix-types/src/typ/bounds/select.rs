@@ -342,6 +342,13 @@ pub(super) struct Walks {
     /// A pair met again leaves all of its first type.
     whole: bool,
 }
+/// Whether `t` is a residual's marker around the type it is a part of.
+fn marked(t: &Type) -> bool {
+    lengths(t).is_some()
+        || payload_left(t).is_some()
+        || elems_left(t).is_some()
+        || within_left(t).is_some()
+}
 
 fn plain(t: Type) -> Type {
     lengths(&t)
@@ -810,6 +817,34 @@ impl Solving {
         }
     }
 
+    /// What of `t` passes the type test `test` (`passes`), or fails it. A
+    /// part of `t` the arms before left as a marker (arrays of some lengths,
+    /// what is left of a payload) is a part of the type it marks: it passes
+    /// whole where that type holds nothing outside the test, fails whole
+    /// where it holds nothing of it, and keeps its marker either way.
+    fn by_test(&self, env: &Env, t: &Type, test: &Type, passes: bool) -> Type {
+        match t {
+            Type::Set(ms) => {
+                union_of(ms.iter().map(|m| self.by_test(env, m, test, passes)))
+            }
+            m if marked(m) => {
+                let whole = plain(m.clone());
+                let some = match passes {
+                    true => self.both(env, true, &whole, test),
+                    false => self.less(env, true, &whole, test),
+                };
+                match nothing(&some) {
+                    true => Type::Bottom,
+                    false => m.clone(),
+                }
+            }
+            t => match passes {
+                true => self.both(env, true, t, test),
+                false => self.less(env, true, t, test),
+            },
+        }
+    }
+
     /// The values of `a` not in `b`; where `b` is a `test`, those that do
     /// not pass it.
     pub(super) fn less(&self, env: &Env, test: bool, a: &Type, b: &Type) -> Type {
@@ -1026,8 +1061,9 @@ impl Solving {
             },
             (Pat::Test(test, p), _) => {
                 let test = split(test);
-                let r = self.route(env, p, &self.both(env, true, &t, &test));
-                let rest = union_of([self.less(env, true, &t, &test), r.rest.clone()]);
+                let r = self.route(env, p, &self.by_test(env, &t, &test, true));
+                let rest =
+                    union_of([self.by_test(env, &t, &test, false), r.rest.clone()]);
                 Routed { rest, ..r }
             }
             (Pat::Lit(lit, whole), _) => {
