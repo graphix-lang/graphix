@@ -134,7 +134,7 @@ pub(crate) fn method_sig(
 /// declaration with its variables held as constants. The variables the
 /// body's check held as constants are the scheme's from here on.
 fn fits_declared<R: Rt>(ctx: &CompileCtx<R>, made: &Type, declared: &Type) -> Result<()> {
-    bounds::fits(&ctx.env, made, declared, current_level())
+    bounds::fits(&ctx.env, made, declared, current_level(), true)
 }
 
 /// A trait method as the trait declares it: its signature

@@ -528,6 +528,15 @@ pub struct Solving {
     /// The declared variables being met are a signature others read
     /// ([`fits`]): nothing it does not say holds of them.
     sealed: bool,
+    /// The sealed signature is a trait method's, which each implementation
+    /// fits: no implementation's default in what the method returns
+    /// decides its variables, so a default it keeps optional there fits
+    /// the label for every value of them.
+    shared: bool,
+    /// The next function relation is that trait method's own signature:
+    /// its labels are left to the calls that omit them, which judge the
+    /// default of the implementation `self` picks.
+    method: bool,
     /// A variable of a sealed signature whose values a copy out carried to
     /// a cell outside: its callers, reading the signature alone, would not
     /// carry theirs.
@@ -1520,6 +1529,9 @@ impl Solving {
         // through it: what its result's type is read to make is made
         made_by_calls(f);
         let signature = std::mem::take(&mut self.signature);
+        let own = std::mem::take(&mut self.method);
+        let shared = self.shared;
+        self.shared = shared && !own;
         let positional = |ft: &FnType| -> SmallVec<[Type; 4]> {
             let args = ft.args.iter();
             args.filter(|a| matches!(a.kind, FnArgKind::Positional { .. }))
@@ -1566,7 +1578,10 @@ impl Solving {
             let _ = optional;
             match gl.iter().find(|(n, ..)| n == name) {
                 Some((_, false, _)) => (),
-                Some((_, true, ga)) if let Some(v) = declared_in(ga).first() => {
+                Some((_, true, ga))
+                    if !self.shared
+                        && let Some(v) = declared_in(ga).first() =>
+                {
                     carry(name, fa, v, ga)
                 }
                 // an instance's signature is its own: it holds the default
@@ -1598,6 +1613,7 @@ impl Solving {
         {
             bail!("type mismatch: #{name} is required")
         }
+        self.shared = shared;
         self.constrain(env, &f.rtype, &g.rtype)?;
         self.constrain(env, &f.throws, &g.throws)
     }
@@ -1949,7 +1965,15 @@ fn bounded_by_names(env: &Env, t: &Type) -> Result<()> {
 /// variables held as constants. `outer` is the level the declaration is
 /// read at. Asked of the solver the check is running, where there is one,
 /// since a cell of `made` the check has not decided takes the bound.
-pub fn fits(env: &Env, made: &Type, declared: &Type, outer: Level) -> Result<()> {
+/// `shared` where the declaration is a trait method's, which each of its
+/// implementations fits ([`Solving::shared`]).
+pub fn fits(
+    env: &Env,
+    made: &Type,
+    declared: &Type,
+    outer: Level,
+    shared: bool,
+) -> Result<()> {
     let fits = |s: &mut Solving| {
         let mark = s.mark();
         s.quantify(made, outer.depth());
@@ -1982,15 +2006,17 @@ pub fn fits(env: &Env, made: &Type, declared: &Type, outer: Level) -> Result<()>
         let _held: SmallVec<[_; 4]> = constants.iter().map(|v| v.open_rigid()).collect();
         let one = s.instantiate(made, Level::GENERIC.depth() - 1, level);
         let sealed = std::mem::replace(&mut s.sealed, true);
+        let outside = std::mem::replace(&mut s.shared, shared);
+        s.method = shared;
         let fit = s.constrain(env, &one, &held);
-        s.sealed = sealed;
+        (s.sealed, s.shared, s.method) = (sealed, outside, false);
         fit?;
         // a default the declaration keeps optional over its own variables
         // is passed by its clients' calls: the declaration carries it
         let own = cells_in(declared);
         let at: AHashMap<ArcStr, Type> =
             own.iter().map(|v| (v.name.clone(), Type::TVar(v.clone()))).collect();
-        for c in constants.iter() {
+        for c in constants.iter().filter(|_| !shared) {
             let Some(v) = own.iter().find(|v| v.name == c.name) else { continue };
             for (label, default, param) in known(c, |k| k.defaults.clone()) {
                 let carried = known(v, |k| k.defaults.iter().any(|(l, ..)| *l == label));
@@ -4486,11 +4512,21 @@ impl Solving {
         formal: &Type,
         wanted: &Type,
     ) -> Result<()> {
-        let told = |e: anyhow::Error| {
-            e.context(format!(
+        let shared = self.shared;
+        let told = |e: anyhow::Error| match shared {
+            true => Told::over(
+                e,
+                &format!(
+                    "the default of #{name} is passed where a call through the \
+                     trait's ?#{name}: {wanted} leaves #{name} out, and each \
+                     implementation passes its own, so no default decides its type: \
+                     write the default's type in the trait's declaration"
+                ),
+            ),
+            false => e.context(format!(
                 "the default of #{name} is passed where a call through a function \
                  type with ?#{name}: {wanted} leaves #{name} out"
-            ))
+            )),
         };
         let cells = cells_in(formal);
         if cells.is_empty() {

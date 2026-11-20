@@ -6738,3 +6738,46 @@ run!(
     is(Value::I64(2));
     FuseExpect::Jit
 );
+
+// Each implementation of a trait method fits its declaration, so no
+// implementation's default decides one of the declaration's variables: a
+// default the declaration keeps optional fits the label as it is written.
+run!(
+    an_impls_default_narrowing_a_trait_variable_refused,
+    refused("write the default's type in the trait's declaration"),
+    "/test.gx" => r#"
+        let k: Array<string> = ["b"];
+        trait T { val mk: fn(self) -> {cb: fn(?#d: Array<'z>, x: i64) -> i64, n: i64} };
+        impl T for i64 {
+            let mk = { let j = 1; |s| {cb: |#d = k, x: i64| array::len(d) + x, n: j} }
+        };
+        let result = T::mk(1).cb(7)
+    "#
+);
+
+run!(
+    an_impls_default_the_trait_declares,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(8))),
+    "/test.gx" => r#"
+        let k: Array<string> = ["b"];
+        trait T { val mk: fn(self) -> {cb: fn(?#d: Array<string>, x: i64) -> i64, n: i64} };
+        impl T for i64 {
+            let mk = { let j = 1; |s| {cb: |#d = k, x: i64| array::len(d) + x, n: j} }
+        };
+        let result = T::mk(1).cb(7)
+    "#
+);
+
+run!(
+    a_trait_defaults_default_narrowing_a_trait_variable_refused,
+    refused("write the default's type in the trait's declaration"),
+    "/test.gx" => r#"
+        let k: Array<string> = ["b"];
+        trait T {
+            val mk: fn(self) -> {cb: fn(?#d: Array<'z>, x: i64) -> i64, n: i64} =
+                { let j = 1; |s| {cb: |#d = k, x: i64| array::len(d) + x, n: j} }
+        };
+        impl T for i64 {};
+        let result = T::mk(1).cb(7)
+    "#
+);

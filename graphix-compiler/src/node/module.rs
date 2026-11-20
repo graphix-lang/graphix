@@ -637,7 +637,7 @@ fn check_val(env: &Env, name: &str, declared: &Type, typ: &Type) -> Result<()> {
     // a binding the check typed is its declaration where one instance of
     // it fits the declaration, its variables constants
     let outer = crate::typ::tvar::current_level();
-    crate::typ::bounds::fits(env, typ, declared, outer).map_err(refused)
+    crate::typ::bounds::fits(env, typ, declared, outer, false).map_err(refused)
 }
 
 /// Refuse `val name: typ` where its type variable stands outside every
