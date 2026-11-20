@@ -1516,6 +1516,9 @@ impl Solving {
 
     /// `f` may be called wherever `g` may be.
     fn fn_below(&mut self, env: &Env, f: &FnType, g: &FnType) -> Result<()> {
+        // a function that goes where a function type is held is called
+        // through it: what its result's type is read to make is made
+        made_by_calls(f);
         let signature = std::mem::take(&mut self.signature);
         let positional = |ft: &FnType| -> SmallVec<[Type; 4]> {
             let args = ft.args.iter();
@@ -2425,6 +2428,14 @@ fn feeders(v: &TVar) -> SmallVec<[TVar; 1]> {
     c.solving.as_ref().map(|k| k.feeders.clone()).unwrap_or_default()
 }
 
+/// What the result's type of a function its calls are made through is
+/// read to make (a parse, a typed read) is made by those calls.
+fn made_by_calls(ft: &FnType) {
+    for v in cells_in(&ft.rtype).iter().filter(|v| reads_type(v)) {
+        known(v, |k| k.made = true)
+    }
+}
+
 /// Whether an operation makes values at the type of `v`, or of a cell that
 /// flows into it: a builtin's read, or the argument it hands a function.
 fn made_at(v: &TVar) -> bool {
@@ -3186,7 +3197,7 @@ impl Solving {
         // the copy is bounded and fed as the original is
         for (v, n) in made {
             let (lower, mut upper) = (v.cell_lower(), v.cell_constraints());
-            let (fed, sinks, used, defaults, from) = {
+            let (fed, sinks, used, defaults, from, by_calls) = {
                 let cell = v.cell();
                 let c = cell.read();
                 match c.solving.as_ref() {
@@ -3196,6 +3207,7 @@ impl Solving {
                         k.uses.clone(),
                         k.defaults.clone(),
                         k.from.clone(),
+                        k.made,
                     ),
                     None => Default::default(),
                 }
@@ -3236,7 +3248,9 @@ impl Solving {
                 let k = c.solving.get_or_insert_default();
                 k.feeders = feeds;
                 k.from = sent_from;
-                k.defaults = defaults
+                k.defaults = defaults;
+                // a call the definition makes makes it in every instance
+                k.made = by_calls
             }
             // the copy is used as the original is: what flows into it in
             // this instance meets the same reads and calls

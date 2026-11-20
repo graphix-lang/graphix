@@ -787,6 +787,8 @@ graphix_tests::lib_tests::map::ordering_refuses_functions	refuses	fn(x: i64) -> 
 graphix_tests::lib_tests::net::net_on_write_handler_result_is_a_mismatch	refuses	type mismatch _ does not contain i64
 graphix_tests::lib_tests::process::child_stdin_does_not_read	refuses	type mismatch Read does not contain ChildStdin
 graphix_tests::lib_tests::sys::stdin_write_err	refuses	type mismatch Write does not contain Stdin
+graphix_tests::lib_tests::typecheck::hof_map_json_untyped	refuses	the type 'b must be known here, an operation reads it to know what to make: annotate where its result goes
+graphix_tests::lib_tests::typecheck::parse_under_an_abstract_parameter_no_type	refuses	the type 'b must be known here, an operation reads it to know what to make: annotate where its result goes
 graphix_tests::lib_tests::typecheck::json_no_type	refuses	the type 'b must be known here, an operation reads it to know what to make: annotate where its result goes
 graphix_tests::lib_tests::typecheck::pack_no_type	refuses	the type 'b must be known here, an operation reads it to know what to make: annotate where its result goes
 graphix_tests::lib_tests::typecheck::str_parse_no_type	refuses	the type 'b must be known here, an operation reads it to know what to make: annotate where its result goes
