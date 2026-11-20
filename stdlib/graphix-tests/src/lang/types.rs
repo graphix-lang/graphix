@@ -13577,18 +13577,20 @@ run!(
     "#
 );
 
-// A union with an open member hands it what no constructor member holds
-// as the commit would decide it: Array<'d>, with 'd the declared 'a,
-// cannot take Array<i64>, so 'c does.
+// The array could go to 'c or to Array<'d>, so it waits; the string goes
+// to 'c alone and decides it, and a decided member takes no other type.
 run!(
-    rigid_cell_guides_the_member_placement,
-    is(Value::I64(0)),
+    a_member_decided_before_a_waiting_value_takes_no_other_refused,
+    refused(
+        "Array<i64> goes to no member of ['c, Array<'d>]: what reached the \
+         union before it decided 'c as string, and a decided member takes no other type"
+    ),
     "/test.gx" => r#"
         let g = |w: 'd, v: ['c, Array<'d>]| 0;
         let f = |x: 'a, t: bool| -> i64 g(x, select t { true => [1, 2], false => "s" });
         let result = f(1, true)
     "#
-);
+; FuseExpect::None);
 
 // A declared variable is a constant to the distribution law: in its own
 // body, `P([i64, string], 'a) is covered by `P(i64, 'a) | `P(string, 'a),

@@ -279,11 +279,12 @@ run!(
     prints("[true, true, i64:1]")
 );
 
-// A parameter an annotation or a write decides, written inline, names the
-// typedef its scope means there: equal types compare equal, and a block's
-// own `R` is another type.
+// A parameter an annotation decides, written inline, names the typedef its
+// scope means there: equal types compare equal, and a block's own `R` is
+// another type. A write decides nothing of what a construction carries:
+// `v`'s `B(1)` carries ⊥, unlike `a`'s, whose binding is annotated.
 run!(
-    abstract_parameters_an_annotation_or_a_write_decides_compare,
+    abstract_parameters_an_annotation_decides_compare,
     r#"{
     type B<'x> = Abstract<i64>;
     type R<'a> = [`Nil, `Cons('a, R<'a>)];
@@ -292,18 +293,20 @@ run!(
     let q = { let w: B<[`Nil, `Cons(i64, R<i64>)]> = t; 1 };
     let v = B(1);
     v <- never<B<[`Nil, `Cons(i64, R<i64>)]>>();
+    let a: B<[`Nil, `Cons(i64, R<i64>)]> = B(1);
+    a <- never<B<[`Nil, `Cons(i64, R<i64>)]>>();
     let o = {
         type R<'a> = [`X('a)];
         let b = B(1);
         let w: B<[`Nil, `Cons(i64, R<i64>)]> = b;
         b
     };
-    let xs: Array<Any> = [c, t, v, o];
+    let xs: Array<Any> = [c, t, v, a, o];
     let m: Map<Any, i64> = {};
     let n = array::fold(xs, m, |acc, x| map::insert(acc, x, 1));
-    (array::map(xs, |x| x == xs[0]$), xs[1]$ == xs[3]$, map::len(n), q)
+    (array::map(xs, |x| x == xs[0]$), xs[1]$ == xs[4]$, map::len(n), q)
 }"#,
-    prints("[[true, true, true, false], false, i64:2, i64:1]")
+    prints("[[true, true, false, true, false], false, i64:3, i64:1]")
 );
 
 // A type test does not decide an abstract type's open parameter: what the

@@ -7,7 +7,7 @@
 use crate::{
     LambdaId,
     env::{Env, TraitMethodRef},
-    expr::ModPath,
+    expr::{ModPath, Told},
     stack::ensure_sufficient,
     typ::{
         AbstractId, Bound, FnArgKind, FnArgType, FnType, Mutability, Open, TVar, Type,
@@ -26,7 +26,7 @@ use compact_str::format_compact;
 use netidx_value::Typ;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
-use std::{cell::RefCell, ops::ControlFlow, sync::LazyLock};
+use std::{cell::RefCell, fmt::Write, ops::ControlFlow, sync::LazyLock};
 use triomphe::Arc;
 
 mod image;
@@ -2525,6 +2525,45 @@ fn standing_head(v: &TVar, seen: &mut AHashSet<usize>) -> Type {
     })
 }
 
+/// `e`, refusing the value `a` that waited on the union `b`, told of the
+/// cells of `fixed` that are members of `b` and would have taken `a` open:
+/// what reached them first decided them.
+fn decided_before(
+    env: &Env,
+    e: anyhow::Error,
+    a: &Type,
+    b: &Type,
+    fixed: &[TVar],
+) -> anyhow::Error {
+    let ms: &[Type] = match b {
+        Type::Set(ms) => ms,
+        _ => &[],
+    };
+    let takers: SmallVec<[&TVar; 2]> = fixed
+        .iter()
+        .filter(|v| ms.iter().any(|m| matches!(m, Type::TVar(m) if m.same_cell(v))))
+        .filter(|v| super::contains::cell_admits(v, env, a).unwrap_or(false))
+        .collect();
+    if takers.is_empty() {
+        return e;
+    }
+    let mut was: LPooled<String> = LPooled::take();
+    for (i, v) in takers.iter().enumerate() {
+        let t = v.binding().map(|t| deep(&t)).unwrap_or(Type::Bottom);
+        let sep = match i {
+            0 => "",
+            _ if i + 1 == takers.len() => " and ",
+            _ => ", ",
+        };
+        let _ = write!(was, "{sep}{v} as {t}");
+    }
+    let told = format_compact!(
+        "{a} goes to no member of {b}: what reached the union before it decided \
+         {was}, and a decided member takes no other type"
+    );
+    Told::over(e, &told)
+}
+
 /// Whether anything says what `v` is: it is bound, or something that is
 /// no undecided cell flows into it.
 fn decided(v: &TVar) -> bool {
@@ -3377,17 +3416,17 @@ impl Solving {
                                 false => bail!("a value takes no member as it stands"),
                             }
                         });
-                    for v in bvs.iter() {
-                        if decided(v) {
-                            self.fix(env, v)?
-                        }
+                    let mut fixed: SmallVec<[TVar; 2]> = SmallVec::new();
+                    for v in bvs.iter().filter(|v| decided(v)) {
+                        self.fix(env, v)?;
+                        fixed.push(v.clone())
                     }
                     if met {
                         progress = true;
                         continue;
                     }
                     for a in values {
-                        progress |= self.place_held(env, &a, &b)?
+                        progress |= self.place_held(env, &a, &b, &fixed)?
                     }
                 } else if avs.iter().chain(bvs.iter()).any(quantified) {
                     self.held[i].2 = true;
@@ -3591,8 +3630,14 @@ impl Solving {
     /// says the type of, from below or above, is fixed; a value whose other
     /// parts are open goes to a decided member that takes it as it stands,
     /// and the member decides them; with none they are fixed too. Whether
-    /// the placement is made.
-    fn place_held(&mut self, env: &Env, a: &Type, b: &Type) -> Result<bool> {
+    /// the placement is made. `fixed` are the members decided before it.
+    fn place_held(
+        &mut self,
+        env: &Env,
+        a: &Type,
+        b: &Type,
+        fixed: &[TVar],
+    ) -> Result<bool> {
         let avs = open_cells(a);
         let said = |v: &TVar| {
             decided(v)
@@ -3604,13 +3649,13 @@ impl Solving {
         for v in avs.iter().filter(|v| said(v)) {
             self.fix(env, v)?
         }
-        let (a, b) = (deep(a), deep(b));
+        let (a, union) = (deep(a), deep(b));
         (self.resolving, self.placing) = (true, a.has_free());
         let parts = open_cells(&a);
         let placed = self.placing
             && self.attempting(|s| {
                 let (n, mark) = (s.held.len(), s.added.len());
-                s.constrain(env, &a, &b)?;
+                s.constrain(env, &a, &union)?;
                 let from_above = s.decided_two_ways(&parts, mark);
                 match s.held.len() == n && !from_above {
                     true => Ok(()),
@@ -3624,9 +3669,9 @@ impl Solving {
         }
         let n = self.held.len();
         self.resolving = true;
-        let r = self.constrain(env, &a, &b);
+        let r = self.constrain(env, &a, &union);
         self.resolving = false;
-        r?;
+        r.map_err(|e| decided_before(env, e, &a, b, fixed))?;
         Ok(self.held.len() == n)
     }
 

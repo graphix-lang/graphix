@@ -291,13 +291,14 @@ What reaches each arm, exhaustiveness, undecided types at a select, patterns ins
   scrutinee that is no union), the part is closed and `x` is `['b,
   null]`. The name does not hold `'c`, so the arm's body cannot decide it
   (`x$ + 1` is refused, as it is under the closed test `Array<[i64,
-  null]>`). The narrowing of what reaches the arm decides a `'c` that
-  another part of the test stands over a decided type with, and the
-  run-time test tests it: `(Array<'c>, Array<['c, null]>)` over
-  `[(Array<i64>, Array<'b>), i64]` passes an `Array<[i64, null]>` alone
-  at the second part, as it does where the settle runs and where an
-  instance checks again, and `x` is `'b` all the same (pin
-  `lang::select::written_test_own_variable_another_part_decides_is_tested_over_a_declared_one`).
+  null]>`). A test's own variable takes every type it meets, from each
+  part of the test: `(Array<'c>, Array<['c, null]>)` over `[(Array<i64>,
+  Array<'b>), i64]` makes `'c` `[i64, 'b]`, so the second part holds
+  `Array<'b>` whole and every value passes (pin
+  `lang::select::written_test_own_variable_takes_every_part_it_meets`);
+  written in concrete types, `(Array<i64>, Array<[i64, null]>)` passes an
+  `Array<[i64, null]>` alone at the second part (pin
+  `lang::select::written_test_of_concrete_types_inside_a_declared_variable`).
   A slice over an open constructor's
   application (`'c<'b>`, a `c: Collection` parameter's element) stands
   over the slice's collection, `Array<'b>` or `List<'b>`, the values its

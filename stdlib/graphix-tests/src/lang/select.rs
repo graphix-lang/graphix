@@ -13187,15 +13187,43 @@ run!(
     FuseExpect::None
 );
 
-// A written test's own variable that another part of the test decides is
-// tested where it stands over a declared variable: the name under it is
-// the declared variable, and holds only the values that pass.
+// A written test's own variable takes every type it meets, from each part
+// of the test: over a declared variable it holds that variable whole, and
+// every value passes.
 run!(
-    written_test_own_variable_another_part_decides_is_tested_over_a_declared_one,
+    written_test_own_variable_takes_every_part_it_meets,
     r#"{
-        let tup = |v: [((i64, i64), 'a), i64]| select v { (('b, i64), ['b, null]) as ((y, _), x) => y, i64 as n => n, (_, _) => -1 };
         let arr = |v: [(Array<i64>, Array<'a>), i64]| select v { (Array<'b>, Array<['b, null]>) as ([y, ..], [x, ..]) => select x { null as _ => 0, _ => y }, _ => -1 };
         let rev = |v: [(Array<'a>, Array<i64>), i64]| select v { (Array<['b, null]>, Array<'b>) as ([x, ..], [y, ..]) => select x { null as _ => 0, _ => y }, _ => -1 };
+        let u: [i64, string] = "s";
+        let w: [i64, string] = 5;
+        [
+            arr(([1], ["abc"])), arr(([1], [7])), arr(([1], [null])), arr(([1], [u])), arr(([1], [w, u])), arr(4),
+            rev((["abc"], [1])), rev(([7], [1])), rev(([w], [1]))
+        ]
+    }"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::Array(a))
+        if as_i64s(a) == [1, 1, 0, 1, 1, -1, 1, 1, 1]);
+    FuseExpect::Jit
+);
+
+run!(
+    written_test_own_variable_over_a_declared_one_leaves_nothing_refused,
+    refused("pattern (_, _) will never match: nothing reaches it"),
+    "/test.gx" => r#"
+        let tup = |v: [((i64, i64), 'a), i64]| select v { (('b, i64), ['b, null]) as ((y, _), x) => y, i64 as n => n, (_, _) => -1 };
+        let result = tup(3)
+    "#
+; FuseExpect::None);
+
+// Written in concrete types, a test inside a declared variable holds only
+// the values that pass.
+run!(
+    written_test_of_concrete_types_inside_a_declared_variable,
+    r#"{
+        let tup = |v: [((i64, i64), 'a), i64]| select v { ((i64, i64), [i64, null]) as ((y, _), x) => y, i64 as n => n, (_, _) => -1 };
+        let arr = |v: [(Array<i64>, Array<'a>), i64]| select v { (Array<i64>, Array<[i64, null]>) as ([y, ..], [x, ..]) => select x { null as _ => 0, _ => y }, _ => -1 };
+        let rev = |v: [(Array<'a>, Array<i64>), i64]| select v { (Array<[i64, null]>, Array<i64>) as ([x, ..], [y, ..]) => select x { null as _ => 0, _ => y }, _ => -1 };
         let u: [i64, string] = "s";
         let w: [i64, string] = 5;
         [
