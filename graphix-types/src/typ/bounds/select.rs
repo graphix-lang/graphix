@@ -130,34 +130,52 @@ impl Pat {
         });
     }
 
+    /// Whether a name takes the whole of what this pattern admits.
+    fn captures(&self) -> bool {
+        match self {
+            Pat::Whole(..) => true,
+            Pat::Tuple(all, _)
+            | Pat::Variant(all, ..)
+            | Pat::Struct(all, ..)
+            | Pat::Elems { all, .. }
+            | Pat::Abs(all, ..) => all.is_some(),
+            Pat::Any(_) | Pat::Lit(..) | Pat::Test(..) | Pat::Or(_) => false,
+        }
+    }
+
     /// The abstract type whose constructor here takes nothing out of a
-    /// value whose instance is not known ([`blind`]).
-    fn blind(&self, env: &Env) -> Option<ArcStr> {
+    /// value whose instance is not known ([`blind`]), `captured` where a
+    /// capture stands over this pattern.
+    fn blind(&self, env: &Env, captured: bool) -> Option<ArcStr> {
+        let captured = captured || self.captures();
         match self {
             Pat::Any(_) | Pat::Lit(..) => None,
-            Pat::Abs(_, id, p) => blind(env, id, p).or_else(|| p.blind(env)),
-            Pat::Test(_, p) | Pat::Whole(_, p) => p.blind(env),
-            Pat::Tuple(_, ps) | Pat::Variant(_, _, ps) | Pat::Or(ps) => {
-                ps.iter().find_map(|p| p.blind(env))
+            Pat::Abs(_, id, p) => {
+                blind(env, id, p, captured).or_else(|| p.blind(env, captured))
             }
-            Pat::Elems { elems, .. } => elems.iter().find_map(|p| p.blind(env)),
-            Pat::Struct(_, fs, _) => fs.iter().find_map(|(_, p)| p.blind(env)),
+            Pat::Test(_, p) | Pat::Whole(_, p) => p.blind(env, captured),
+            Pat::Tuple(_, ps) | Pat::Variant(_, _, ps) | Pat::Or(ps) => {
+                ps.iter().find_map(|p| p.blind(env, captured))
+            }
+            Pat::Elems { elems, .. } => elems.iter().find_map(|p| p.blind(env, captured)),
+            Pat::Struct(_, fs, _) => fs.iter().find_map(|(_, p)| p.blind(env, captured)),
         }
     }
 }
 
 /// The name of the abstract type `id` where its constructor around `p`
-/// may take nothing out of a value whose instance is not known: `p` names
-/// a part, and read at `Any` parameters the payload holds something a
-/// value could be written into or called.
-fn blind(env: &Env, id: &AbstractId, p: &Pat) -> Option<ArcStr> {
+/// may take nothing out of a value whose instance is not known: a name
+/// takes a part of it (inside `p`, or the whole where `captured`), and
+/// read at `Any` parameters the payload holds something a value could be
+/// written into or called.
+fn blind(env: &Env, id: &AbstractId, p: &Pat, captured: bool) -> Option<ArcStr> {
     let made = env.abstract_reps.get(id)?;
     let params: SmallVec<[Type; 4]> = made.params.iter().map(|_| Type::Any).collect();
     let mut names = SmallVec::new();
     p.cells(&mut names);
     let taken =
         rep(env, id, &params).is_some_and(|r| holds_taker(env, &r, &mut SmallVec::new()));
-    (taken && !names.is_empty()).then(|| made.name.clone())
+    (taken && (captured || !names.is_empty())).then(|| made.name.clone())
 }
 
 #[derive(Clone, Debug)]
@@ -946,7 +964,13 @@ impl Solving {
     }
 
     fn route(&self, env: &Env, pat: &Pat, t: &Type) -> Routed {
-        ensure_sufficient(|| self.route_in(env, pat, t))
+        ensure_sufficient(|| {
+            let captured = pat.captures() as u32;
+            self.captures.set(self.captures.get() + captured);
+            let r = self.route_in(env, pat, t);
+            self.captures.set(self.captures.get() - captured);
+            r
+        })
     }
 
     fn route_in(&self, env: &Env, pat: &Pat, t: &Type) -> Routed {
@@ -1083,7 +1107,7 @@ impl Solving {
                     // `Any` parameters
                     let params: Arc<[Type]> =
                         Arc::from_iter(made.params.iter().map(|_| Type::Any));
-                    match blind(env, id, p).is_some() {
+                    match blind(env, id, p, self.captures.get() > 0).is_some() {
                         true => none(),
                         false => {
                             let whole = Type::Abstract { id: *id, params };
@@ -1267,6 +1291,19 @@ impl Solving {
                         fields.map(|(x, t)| (x.0.clone(), t, x.2)),
                     ))
                 })
+            }
+            // a pattern naming every field takes the structs of those
+            // fields, whatever their types
+            (Pat::Struct(all, fs, true), Type::Any) => {
+                let ps: Vec<&Pat> = fs.iter().map(|(_, p)| p).collect();
+                let r = product(all, &ps, &any(fs.len()), &|ts| {
+                    Type::Struct(Arc::from_iter(
+                        fs.iter()
+                            .zip(ts)
+                            .map(|((n, _), t)| (n.clone(), t, WrittenAt::default())),
+                    ))
+                });
+                Routed { rest: Type::Any, ..r }
             }
             _ => none(),
         }
@@ -1452,7 +1489,7 @@ impl Solving {
                     Some(w) => format_compact!("{w}"),
                     None => format_compact!("{}", i + 1),
                 };
-                if let Some(name) = s.template.arms[i].pat.blind(env) {
+                if let Some(name) = s.template.arms[i].pat.blind(env, false) {
                     bail!(
                         "pattern {arm} takes nothing: {name}(..) names part of a payload \
                          something could be written into or called, which it may only \

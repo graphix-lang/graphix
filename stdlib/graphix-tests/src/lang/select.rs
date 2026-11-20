@@ -2437,7 +2437,7 @@ run!(
     f((W(&mut i), 1));
     i + 1
 }"#,
-    refused("no instance of W holds every other's payload");
+    refused("pattern t@ (W(_), _) takes nothing: W(..) names part of a payload something could be written into or called");
     FuseExpect::None
 );
 

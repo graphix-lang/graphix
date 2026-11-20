@@ -1905,10 +1905,16 @@ impl<R: Rt> Place<R> {
         let mut cur = self.root.typ().clone();
         for step in &self.steps {
             cur = match step {
+                // a writable step's part is the part's own type: a write
+                // through it is a write of the whole
                 PlaceStep::Index(i) => {
                     super::array::check_index(&ctx.env, i)?;
                     let et = Type::empty_tvar();
-                    Type::Array(Arc::new(et.clone())).check_contains(&ctx.env, &cur)?;
+                    let at = Type::Array(Arc::new(et.clone()));
+                    at.check_contains(&ctx.env, &cur)?;
+                    if writable {
+                        cur.check_contains(&ctx.env, &at)?
+                    }
                     et
                 }
                 PlaceStep::Key(k, _) => {
@@ -1916,6 +1922,9 @@ impl<R: Rt> Place<R> {
                     let mt = Type::map(kt.clone(), vt.clone());
                     mt.check_contains(&ctx.env, &cur)?;
                     kt.check_contains(&ctx.env, k.typ())?;
+                    if writable {
+                        cur.check_contains(&ctx.env, &mt)?
+                    }
                     vt
                 }
                 PlaceStep::Tuple(i) => {

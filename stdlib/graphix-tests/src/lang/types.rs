@@ -496,14 +496,14 @@ run!(
 run!(
     concrete_refuses_a_reference_through_a_typedef,
     r#"{ type R = &i64; let r: Result<R, `ParseError(string)> = str::parse("42"); r }"#,
-    refused("does not contain ['b: unbound within Concrete & NoError");
+    refused("R is not data: data holds no function and no reference");
     FuseExpect::None
 );
 run!(
     concrete_refuses_a_function_through_a_typedef,
     r#"{ type F = fn(x: i64) -> i64;
          let r: Result<F, `ParseError(string)> = str::parse("42"); r }"#,
-    refused("does not contain ['b: unbound within Concrete & NoError");
+    refused("F is not data: data holds no function and no reference");
     FuseExpect::None
 );
 run!(

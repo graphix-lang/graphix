@@ -677,6 +677,11 @@ impl<R: Rt> Update<R> for Trait<R> {
         wrap!(self.defaults, self.defaults.typecheck0(ctx))?;
         drop(declared);
         let Some(record) = ctx.env.trait_def(self.def.id) else { return Ok(()) };
+        // every written name in a method's signature must name something by
+        // the check's end
+        for m in record.methods.iter() {
+            crate::defer_unresolved_names(ctx, &Type::Fn(m.typ.clone()), &self.spec)?;
+        }
         for m in record.methods.iter() {
             let Some(id) = m.default else { continue };
             let Some(bind) = ctx.env.by_id.get(&id) else { continue };

@@ -518,6 +518,8 @@ pub struct Solving {
     scheming: bool,
     /// The pairs of typedef names a select's walk is inside.
     walks: std::cell::RefCell<select::Walks>,
+    /// How many captures stand over the pattern a select's routing is at.
+    captures: std::cell::Cell<u32>,
     /// The twin each cell copied out has at a level, per polarity
     /// ([`Self::extrude`]), with the cell, which it keeps alive; and the
     /// ones made since the outermost attempt began, in order.
@@ -2164,9 +2166,25 @@ fn within(env: &Env, t: Type, bounds: &[Type]) -> Result<Type> {
             )
         )
     });
+    // where no member meets them all, the members that hold no error are
+    // still what is demanded, and the other predicates are judged of them
+    let error_free = || -> Result<SmallVec<[Type; 4]>> {
+        let mut out = SmallVec::new();
+        if bounds.contains(&Type::Bound(Bound::NoError)) {
+            for m in members.iter() {
+                if Type::Bound(Bound::NoError).contains(env, m)? {
+                    out.push(m.clone())
+                }
+            }
+        }
+        Ok(out)
+    };
     Ok(match kept.len() {
         0 if bottom_admitted => Type::Bottom,
-        0 => t,
+        0 => match error_free()? {
+            free if free.is_empty() || free.len() == members.len() => t,
+            free => union_of(free),
+        },
         n if n == members.len() => t,
         _ => union_of(kept),
     })
@@ -3881,6 +3899,18 @@ impl Solving {
                     let why = numbers_ordered(|| t.map_key_failure(env, Open::Benign));
                     if let Some(why) = why {
                         return Err(why.as_map_key());
+                    }
+                    if !t.data_holds(env) {
+                        return Err(t
+                            .not_data(env, &[], [t, t])
+                            .unwrap_or_else(|| t.no_data()));
+                    }
+                    if !t.concrete_holds(env) {
+                        bail!(
+                            "the type {t} must be fully known here, an operation reads it \
+                             to know what to make, and nothing decides a part of it: \
+                             annotate it"
+                        )
                     }
                 }
                 Type::Bound(_) if !p.contains(env, t)? => bail!("{t} must be {p} here"),

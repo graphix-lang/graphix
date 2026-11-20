@@ -1,7 +1,6 @@
 graphix_tests::lang::arrays::array_indexing5	refuses	type mismatch i64 does not contain Error<`ArrayIndexError(string)>
 graphix_tests::lang::byref::mut_of_value_in_definition_refused	refuses	type mismatch string does not contain Array<i64>
 graphix_tests::lang::byref::mut_of_value_infinite_in_definition_refused	refuses	infinite type: a value here would hold a value of its own type (a function passed or returning itself, a collection holding itself); declare a named recursive type and annotate the binding
-graphix_tests::lang::cast_trait::read_without_cast_refused	refuses	[Box, Error<[`InvalidCast(string), `JsonErr(string)]>] must be NoError here
 graphix_tests::lang::collection::collection_returned_function_is_one_instance	refuses	cannot compute with [i64, f64]: both operands must be one numeric type
 graphix_tests::lang::collection::collection_union_receiver_rejected	refuses	null has no implementation of Collection::map
 graphix_tests::lang::collection::filter_map_bare_value_refused	refuses	type mismatch [null, `Keep('b: unbound)] does not contain i64
@@ -623,8 +622,6 @@ graphix_tests::lang::types::callback_of_no_result_into_a_union_bound_under_a_fun
 graphix_tests::lang::types::callback_parameter_union_of_two_decided_arrays_under_a_wider_later_position_refused	refuses	type mismatch [Array<i64>, Array<string>] does not contain Array<[i64, string]>
 graphix_tests::lang::types::chained_struct_update_over_a_name_written_later_shares_its_type	refuses	type mismatch i64 does not contain string
 graphix_tests::lang::types::closure_passes_rec_self_in_array_rejects	refuses	infinite type: a value here would hold a value of its own type (a function passed or returning itself, a collection holding itself); declare a named recursive type and annotate the binding
-graphix_tests::lang::types::concrete_refuses_a_function_through_a_typedef	refuses	[F, Error<`ParseError(string)>] must be NoError here
-graphix_tests::lang::types::concrete_refuses_a_reference_through_a_typedef	refuses	[R, Error<`ParseError(string)>] must be NoError here
 graphix_tests::lang::types::connect_sample_select_shape_err	refuses	{ b: f64, y: i64 } has no field n
 graphix_tests::lang::types::connect_self_nesting_annotated_rejected	refuses	type mismatch Array<i64> does not contain i64
 graphix_tests::lang::types::connect_self_nesting_rejected	refuses	type mismatch Array<'a: unbound within i64 above i64> does not contain i64
@@ -886,7 +883,7 @@ graphix_tests::lang::select::nested_partial_struct_over_any_refused	refuses	patt
 graphix_tests::lang::select::coverage_all_bind_second_arm_dead	refuses	pattern (c, d) will never match: nothing reaches it (2:56; the value is [(i64, string), (string, i64)])
 graphix_tests::lang::select::catch_all_behind_a_pool_over_a_referent_the_arms_decide_is_dead	refuses	pattern _ will never match: nothing reaches it (1:117; the value is (bool, string) | (`L, `Z))
 graphix_tests::lang::select::abstract_payload_fn_result_over_any_is_any	refuses	pattern W(g) takes nothing: W(..) names part of a payload something could be written into or called, which it may only where the value is known to be one instance of W; write the instance in a type test, `W<T> as W(..)` (3:29; the value is Any)
-graphix_tests::lang::select::any_part_cell_the_arm_bounds_undecided_in_a_struct_refused	refuses	pattern { a, b } will never match: nothing reaches it (2:29; the value is Any)
+graphix_tests::lang::select::any_part_cell_the_arm_bounds_undecided_in_a_struct_refused	refuses	type mismatch Number does not contain Any
 graphix_tests::lang::select::coverage_reads_a_bound_abstract_parameter_through	refuses	pattern Array<S> will never match: nothing reaches it (9:29; the value is Error<R<i64>> | Array<R<i64>>)
 graphix_tests::lang::select::dead_arm_over_a_variable_met_through_a_call_named_as_declared	refuses	pattern `C will never match: nothing reaches it (2:69; the value is 'b)
 graphix_tests::lang::select::list_element_admitting_no_member_is_dead	refuses	pattern [<`C, t..>] will never match: nothing reaches it (1:51; the value is List<[`A, `B]>)
