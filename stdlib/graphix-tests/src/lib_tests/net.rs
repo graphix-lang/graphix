@@ -1064,7 +1064,7 @@ run!(net_on_write_inferred_part_refused, r#"{
     let n: i64 = -1;
     sys::net::publish(#on_write: |v| { let (a, b) = v; n <- a }, "/local/ow_part", 0);
     n
-}"#, testing::refused("must be fully known"); FuseExpect::None);
+}"#, testing::refused("i64 does not contain Any"); FuseExpect::None);
 
 // A write while the handler is null reaches nothing; one after it arrives
 // is taken.

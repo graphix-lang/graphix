@@ -4167,3 +4167,18 @@ run!(
     "/test/m.gxi" => "val c: {f: fn(x: 'a) -> 'a, n: i64}",
     "/test/m.gx" => "let c = {f: |x| x, n: 0}"
 );
+
+// A part of a generic val that holds none of its variables narrows
+// nothing: a writable reference to it checks.
+run!(
+    mut_ref_to_a_monomorphic_field_of_a_generic_val,
+    is(Value::I64(5)),
+    "/test.gx" => r#"
+        mod m;
+        let r = &mut m::c.n;
+        *r <- 5;
+        let result = select m::c.n { 0 => never(), n => n }
+    "#,
+    "/test/m.gxi" => "val c: {f: fn(x: 'a) -> 'a, n: i64}",
+    "/test/m.gx" => "let c = {f: |x| x, n: 0}"
+; FuseExpect::None);
