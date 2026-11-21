@@ -4366,9 +4366,12 @@ impl<R: Rt> Connect<R> {
                         _ => e,
                     },
                     // a write a lowering built has no declaration to point
-                    // at, and a refusal of parts of the two is told as it is
+                    // at, and a refusal of parts of the two is told as it is,
+                    // unless it is of what an earlier input settled
                     Some(m)
-                        if !crate::is_lowered(&bind.name) && m.refuses(t, written) =>
+                        if !crate::is_lowered(&bind.name)
+                            && (m.refuses(t, written)
+                                || bind.typ.fill_settled(written).is_some()) =>
                     {
                         let mut refs = Refs::without_callees();
                         self.node.refs(&mut refs);
