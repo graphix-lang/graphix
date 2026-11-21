@@ -18192,3 +18192,19 @@ run!(
     prints("\"A\"");
     FuseExpect::Jit
 );
+
+// A function whose body takes apart a union of two applications of an
+// abstract type, one with an open parameter, builds as its check accepts.
+run!(
+    an_instance_over_a_union_of_abstract_applications_builds,
+    r#"{
+  type B<'p> = Abstract<'p>;
+  let v = |q| {
+    let b = select true { true => B([1]), false => B([]) };
+    select b { B(x) => x }
+  };
+  v(0)
+}"#,
+    prints("[i64:1]");
+    FuseExpect::Jit
+);

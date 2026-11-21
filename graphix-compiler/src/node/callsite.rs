@@ -352,7 +352,7 @@ fn checked_default<R: Rt>(
                 }
                 None => {
                     if matches!(judge, Judge::Bind) {
-                        typ.place_cells(&ctx.env, &t);
+                        typ.take_row(&t);
                     }
                     // CR claude for claude: [bug/medium] At the bind this holds the
                     // label as the site's check settled it against the default as the

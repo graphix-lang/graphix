@@ -2147,6 +2147,29 @@ pub fn instance(
     at: &Type,
     leaves: &[ArcStr],
 ) -> Result<AHashMap<usize, TVar>> {
+    instance_above(env, def, at, leaves, Level::GENERIC.depth() - 1)
+}
+
+/// [`instance`] of a definition no check made generic: each open cell a
+/// definition owns is the instance's copy, and one the top level holds is
+/// the program's one type.
+pub fn instance_of_owned(
+    env: &Env,
+    def: &Type,
+    at: &Type,
+    leaves: &[ArcStr],
+) -> Result<AHashMap<usize, TVar>> {
+    instance_above(env, def, at, leaves, Level::TOP.depth())
+}
+
+/// [`instance`], copying the cells deeper than `above`.
+fn instance_above(
+    env: &Env,
+    def: &Type,
+    at: &Type,
+    leaves: &[ArcStr],
+    above: u32,
+) -> Result<AHashMap<usize, TVar>> {
     let mut solving = Solving {
         deriving: true,
         leaves: leaves.iter().cloned().collect(),
@@ -2154,12 +2177,7 @@ pub fn instance(
         ..Solving::default()
     };
     let mut copies = AHashMap::default();
-    let one = solving.instantiate_into(
-        def,
-        Level::GENERIC.depth() - 1,
-        Level::TOP,
-        &mut copies,
-    );
+    let one = solving.instantiate_into(def, above, Level::TOP, &mut copies);
     let derived = solving.constrain(env, &one, at).and_then(|()| solving.finish(env));
     solving.release();
     derived.map(|()| copies)

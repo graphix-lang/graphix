@@ -616,43 +616,24 @@ pub struct InstanceTypes {
 }
 
 /// The copy the instance at `instance` holds of each open cell of its
-/// definition's signature `def`, by the cell's address: each bound to the
-/// instance's type ([`FnType::held_at`]). `None` when the instance's
-/// signature does not hold the definition's.
-// CR claude for claude: [bug/medium] `held_at` refuses a site signature the check
-// itself made. A body returning `[Array<i64>, Array<'x>]` with `'x` open (the payloads
-// of `select true { true => B([1]), false => B([]) }` over `type B<'p> = Abstract<'p>`,
-// read by `select b { B(x) => x }`) is called at a site whose settle binds `'x` to
-// bottom and leaves `[Array<_>, Array<i64>]`, where the definition's open member could
-// go to either. The check accepts the call and the build refuses 'an instance at fn(q:
-// i64) -> [Array<_>, Array<i64>] of a definition typed ..'; the same statements at the
-// top level build. Normalize the settled return first (a member holding bottom that
-// another member contains goes, as `joined_lower` does for bounds), or place the
-// settled cell at its member. probe:
-// design/review-2026-11-16/repro/x-check-build-instance-signature-abstract-union.gx
-// (x-check-build-05)
+/// definition's signature `def`, by the cell's address, fixed by the
+/// instance's type: a scheme's cells, or where no check made `def` generic
+/// the cells a definition owns ([`bounds::instance_of_owned`]). `None`
+/// when the instance's signature does not hold the definition's.
 fn instance_cells<R: Rt>(
     ctx: &CompileCtx<R>,
     def: &FnType,
     instance: &FnType,
     leaves: &[ArcStr],
 ) -> Option<AHashMap<usize, TVar>> {
-    // a definition checked by bounds is a scheme whose cells carry what
-    // each instance has to decide: the instance's types are a copy of
-    // them, fixed where the copy is used as the instance's signature
-    let scheme = Type::Fn(Arc::new(def.clone()));
-    if bounds::scheme(&scheme) {
-        let at = Type::Fn(Arc::new(instance.clone()));
-        return bounds::instance(&ctx.env, &scheme, &at, leaves)
-            .inspect_err(|e| {
-                bounds::debug(|| format!("instance of {scheme} at {at}: {e:#}"))
-            })
-            .ok();
-    }
-    // every open cell of the signature is the instance's own copy, a cell
-    // no closed gate owns included, so the check binds nothing another
-    // instance reads
-    def.held_at(&ctx.env, instance).ok().map(|(_, known)| known)
+    let def = Type::Fn(Arc::new(def.clone()));
+    let at = Type::Fn(Arc::new(instance.clone()));
+    let fit = match bounds::scheme(&def) {
+        true => bounds::instance(&ctx.env, &def, &at, leaves),
+        false => bounds::instance_of_owned(&ctx.env, &def, &at, leaves),
+    };
+    fit.inspect_err(|e| bounds::debug(|| format!("instance of {def} at {at}: {e:#}")))
+        .ok()
 }
 
 impl InstanceTypes {
