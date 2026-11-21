@@ -4689,9 +4689,11 @@ impl Solving {
             let Some(t) = v.binding().map(|t| deep(&t)) else { continue };
             // an operation that reads a type to know what to make (a parse,
             // a typed read) needs one where its value is made, or where
-            // something was asked of the type: nothing decided this
-            let asked =
-                |v: &TVar| v.cell_above().iter().any(|c| !matches!(c, Type::Bound(_)));
+            // something was asked of the type: nothing decided this. A cell
+            // wanted as nothing (an instance at ⊥) is asked nothing
+            let asked = |v: &TVar| {
+                v.cell_above().iter().any(|c| !matches!(c, Type::Bound(_) | Type::Bottom))
+            };
             if matches!(t, Type::Bottom) && (known(&v, |k| k.made) || asked(&v)) {
                 for p in v.cell_above().iter() {
                     match p {

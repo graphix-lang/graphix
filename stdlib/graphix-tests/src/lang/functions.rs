@@ -6884,3 +6884,17 @@ run!(array_defaults_of_two_types_reach_the_result_refused, r#"{
     let r: string = fs[0]$(7);
     r
 }"#, refused("string does not contain i64"); FuseExpect::None);
+
+// A run-time bind of a written function builds its instance at the types
+// the check decided for the binding's call: a variable nothing decides
+// there is ⊥, which a `Concrete` bound nothing asks of admits, at the
+// call and at the bind alike.
+run!(run_time_bind_at_a_bottom_variable_of_a_concrete_bound, r#"
+{
+    let f = 'a: Concrete |#h: [fn(v: 'a) -> i64, null] = null, x: i64| x + 1;
+    let k = 'b: Concrete |#h: [fn(v: 'b) -> i64, null] = null, x: i64| x;
+    let t = f;
+    t <- k;
+    select t(3) { 3 => "k", _ => never() }
+}
+"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "k"); FuseExpect::None);
