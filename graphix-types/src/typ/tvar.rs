@@ -2301,7 +2301,7 @@ impl TVar {
 
     /// Point this handle at `other`'s cell: a variable a parse wrote by a
     /// name before it knew which variable the name is, whose own cell
-    /// holds nothing yet ([`super::fntyp::quantifiers_end`]).
+    /// holds nothing yet ([`super::fntyp::ParseDepth::quantifiers_end`]).
     pub(crate) fn point_at(&self, other: &TVar) {
         let (id, cell) = other.parts();
         let mut l = self.write();
@@ -3981,7 +3981,6 @@ impl Type {
             Type::TVar(tv) => {
                 known.entry(tv.name.clone()).or_insert_with(|| tv.clone());
             }
-            Type::Fn(ft) if super::fntyp::declared_free(ft, known) => (),
             // a nested fn type's own quantifiers are its own, whatever an
             // enclosing signature names alike; a node it shares with the
             // outside names them there, so it is walked apart
@@ -4089,7 +4088,6 @@ impl Type {
             Type::TVar(tv) => {
                 known.entry(tv.name.clone()).or_insert_with(|| tv.clone());
             }
-            Type::Fn(ft) if super::fntyp::closed(ft) => (),
             Type::Fn(ft) => {
                 let mut inner: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
                 super::fntyp::position_cells(ft, &mut inner);

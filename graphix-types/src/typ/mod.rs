@@ -65,7 +65,7 @@ pub mod tvar;
 
 pub use fntyp::{
     CopySites, FnArgKind, FnArgType, FnType, ParseDepth, ReadCopies,
-    check_bounds_acyclic, declared_name, quantifiers_end, seed_conjuncts, written_name,
+    check_bounds_acyclic, declared_name, seed_conjuncts, written_name,
 };
 pub use tval::{Naked, NakedPrefix, PlainScalar, TVal};
 pub use tvar::TVar;

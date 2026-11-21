@@ -15,8 +15,8 @@ use crate::{
         TypeNote, TypeNotes, WrittenAt, WrittenPath, get_origin, noted_items,
     },
     typ::{
-        Bound, FnArgKind, FnArgType, FnType, ParseDepth, TVar, Type, TypeRef,
-        check_bounds_acyclic, declared_name, quantifiers_end, written_name,
+        Bound, FnArgKind, FnArgType, FnType, ParseDepth, QUANTIFIED_FN, TVar, Type,
+        TypeRef, check_bounds_acyclic, declared_name, written_name,
     },
 };
 use arcstr::{ArcStr, literal};
@@ -135,8 +135,13 @@ pub(super) fn angle_list<O>(
     Ok(items)
 }
 
-fn fnconstraints(i: &mut Input) -> R<LPooled<Vec<(TVar, Type)>>> {
+fn fnconstraints(i: &mut Input, nest: &ParseDepth) -> R<LPooled<Vec<(TVar, Type)>>> {
     i.spaces();
+    if nest.nested() && i.peek() == Some('<') {
+        let at = i.pos();
+        i.g.note_reason(at, None, || CompactString::const_new(QUANTIFIED_FN));
+        return Err(i.because(QUANTIFIED_FN));
+    }
     Ok(match i.optional(|i| angle_list(i, &tvar_bound))? {
         Some(mut cs) => flatten_bounds(cs.drain(..)),
         None => LPooled::take(),
@@ -209,9 +214,9 @@ pub(super) fn fntype(i: &mut Input) -> R<FnType> {
 
 fn fnshared(i: &mut Input) -> R<Arc<FnType>> {
     keyword(i, "fn")?;
-    let _nest = ParseDepth::enter();
-    let constraints = fnconstraints(i)?;
-    quantifiers_end();
+    let nest = ParseDepth::enter();
+    let constraints = fnconstraints(i, &nest)?;
+    nest.quantifiers_end();
     let mut args = fnargs(i)?;
     i.spstring("->")?;
     let rtype = typ(i)?;

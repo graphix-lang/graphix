@@ -349,13 +349,8 @@ thread_local! {
     static CUTS: Cell<u64> = const { Cell::new(0) };
     /// How deep signature parses nest on this thread.
     static PARSE_DEPTH: Cell<usize> = const { Cell::new(0) };
-    /// The variables of the signatures being parsed, innermost last.
-    static NAMES: RefCell<Vec<SigNames>> = const { RefCell::new(Vec::new()) };
-    /// For the outermost signature's parse: each signature declared inside
-    /// it, with the cells it holds from outside itself as its declaration
-    /// left them, which the parse's walks read rather than walk it again.
-    static DECLARED: RefCell<AddrMap<(Arc<FnType>, Vec<(ArcStr, TVar)>)>> =
-        RefCell::new(AddrMap::default());
+    /// The variables of the outermost signature being parsed.
+    static NAMES: RefCell<Option<SigNames>> = const { RefCell::new(None) };
 }
 
 #[derive(Default)]
@@ -422,114 +417,55 @@ impl Drop for PartsDepth {
 }
 
 /// One signature's parse, which the signatures it holds are parsed
-/// inside; the outermost forgets the declared signatures and the
-/// positions memo on its way out, unwind too.
+/// inside; the outermost forgets its variables and the positions memo on
+/// its way out, unwind too.
 pub struct ParseDepth;
 
 impl ParseDepth {
     pub fn enter() -> Self {
-        PARSE_DEPTH.with(|d| d.set(d.get() + 1));
-        NAMES.with_borrow_mut(|n| n.push(SigNames::default()));
+        let depth = PARSE_DEPTH.with(|d| {
+            d.set(d.get() + 1);
+            d.get()
+        });
+        if depth == 1 {
+            NAMES.with_borrow_mut(|n| *n = Some(SigNames::default()));
+        }
         ParseDepth
     }
-}
 
-/// One signature's variables while it parses: its own quantifiers, and in
-/// the outermost every other name its parse writes.
-struct SigNames {
-    own: AHashMap<ArcStr, TVar>,
-    /// While its quantifiers parse, the variables their bounds write by a
-    /// name the signature has not declared yet: which variable each is
-    /// waits for the declarations' end ([`quantifiers_end`]).
-    waiting: Option<Vec<(ArcStr, TVar)>>,
-}
-
-impl Default for SigNames {
-    fn default() -> Self {
-        Self { own: AHashMap::default(), waiting: Some(Vec::new()) }
+    /// Whether this signature is parsed inside another, whose variables
+    /// are all it writes.
+    pub fn nested(&self) -> bool {
+        PARSE_DEPTH.with(|d| d.get()) > 1
     }
-}
 
-/// The variable a signature's quantifier `name` is: the innermost
-/// signature's own, whatever an enclosing one names alike. Outside a
-/// signature's parse, a variable of its own.
-pub fn declared_name(name: ArcStr) -> TVar {
-    NAMES.with_borrow_mut(|n| match n.last_mut() {
-        Some(sig) => sig
-            .own
-            .entry(name.clone())
-            .or_insert_with(|| TVar::empty_generic(name))
-            .clone(),
-        None => TVar::empty_generic(name),
-    })
-}
-
-/// The variable `name` written in a type is: the quantifier of the
-/// innermost signature being parsed that declares it, else the outermost
-/// signature's variable of that name. One written in a signature's bounds
-/// before the signature's declarations end waits for them. Outside a
-/// signature's parse, a variable of its own, which the compile names
-/// ([`Type::scope_refs_named`]).
-pub fn written_name(name: ArcStr) -> TVar {
-    NAMES.with_borrow_mut(|n| {
-        let len = n.len();
-        name_in(n, len, name.clone(), || TVar::empty_generic(name))
-    })
-}
-
-/// The variable `name` is among the signatures `n[..upto]`: `found`'s
-/// handle where it waits there or is the first of its name.
-fn name_in(
-    n: &mut [SigNames],
-    upto: usize,
-    name: ArcStr,
-    found: impl FnOnce() -> TVar,
-) -> TVar {
-    for sig in n[..upto].iter_mut().rev() {
-        if let Some(tv) = sig.own.get(&name) {
-            return tv.clone();
+    /// The outermost signature's declarations are parsed: each variable
+    /// its bounds wrote by a name it had not declared yet is the variable
+    /// that name is now.
+    pub fn quantifiers_end(&self) {
+        if self.nested() {
+            return;
         }
-        if let Some(waiting) = &mut sig.waiting {
-            let tv = found();
-            waiting.push((name, tv.clone()));
-            return tv;
-        }
-    }
-    match n.first_mut() {
-        Some(outermost) => outermost.own.entry(name).or_insert_with(found).clone(),
-        None => found(),
-    }
-}
-
-/// The innermost signature's declarations are parsed: each variable its
-/// bounds wrote by a name it had not declared yet is the variable that
-/// name is now, its quantifier or an enclosing signature's.
-pub fn quantifiers_end() {
-    NAMES.with_borrow_mut(|n| {
-        let Some(i) = n.len().checked_sub(1) else { return };
-        for (name, tv) in n[i].waiting.take().unwrap_or_default() {
-            let named = match n[i].own.get(&name) {
-                Some(q) => q.clone(),
-                None => name_in(n, i, name, || tv.clone()),
-            };
-            if !named.same_cell(&tv) {
-                tv.point_at(&named)
+        NAMES.with_borrow_mut(|n| {
+            let Some(sig) = n else { return };
+            for (name, tv) in sig.waiting.take().unwrap_or_default() {
+                let named = sig.names.entry(name).or_insert_with(|| tv.clone()).clone();
+                if !named.same_cell(&tv) {
+                    tv.point_at(&named)
+                }
             }
-        }
-    })
+        })
+    }
 }
 
 impl Drop for ParseDepth {
     fn drop(&mut self) {
-        NAMES.with_borrow_mut(|n| {
-            n.pop();
-        });
         let outermost = PARSE_DEPTH.with(|d| {
             d.set(d.get() - 1);
             d.get() == 0
         });
         if outermost {
-            DECLARED.with_borrow_mut(|m| m.clear());
+            NAMES.with_borrow_mut(|n| *n = None);
             if PARTS_DEPTH.with(|d| d.get()) == 0 {
                 POSITIONS.with_borrow_mut(|m| m.clear());
             }
@@ -537,34 +473,55 @@ impl Drop for ParseDepth {
     }
 }
 
-/// `f` of the cells `ft` holds from outside itself, where it is a
-/// signature declared inside the parse in progress; `None` for any other.
-fn declared<R>(ft: &Arc<FnType>, f: impl FnOnce(&[(ArcStr, TVar)]) -> R) -> Option<R> {
-    if PARSE_DEPTH.with(|d| d.get()) == 0 {
-        return None;
+/// The outermost signature's variables while it parses, by name: its
+/// quantifiers and every other name its parse writes.
+struct SigNames {
+    names: AHashMap<ArcStr, TVar>,
+    /// While its quantifiers parse, the variables their bounds write by a
+    /// name the signature has not declared yet: which variable each is
+    /// waits for the declarations' end ([`ParseDepth::quantifiers_end`]).
+    waiting: Option<Vec<(ArcStr, TVar)>>,
+}
+
+impl Default for SigNames {
+    fn default() -> Self {
+        Self { names: AHashMap::default(), waiting: Some(Vec::new()) }
     }
-    DECLARED.with_borrow(|m| m.get(&(Arc::as_ptr(ft) as usize)).map(|(_, free)| f(free)))
 }
 
-/// Whether `ft` is a signature the parse in progress declared naming no
-/// variable from outside itself: a walk for an enclosing signature's
-/// variables finds none in it.
-pub(super) fn closed(ft: &Arc<FnType>) -> bool {
-    declared(ft, <[_]>::is_empty).unwrap_or(false)
-}
-
-/// Where `ft` is a signature the parse in progress declared, the cells it
-/// holds from outside itself into `known`, and true.
-pub(super) fn declared_free(
-    ft: &Arc<FnType>,
-    known: &mut AHashMap<ArcStr, TVar>,
-) -> bool {
-    declared(ft, |free| {
-        for (name, tv) in free {
-            known.entry(name.clone()).or_insert_with(|| tv.clone());
-        }
+/// The variable the signature's quantifier `name` is. Outside a
+/// signature's parse, a variable of its own.
+pub fn declared_name(name: ArcStr) -> TVar {
+    NAMES.with_borrow_mut(|n| match n {
+        Some(sig) => sig
+            .names
+            .entry(name.clone())
+            .or_insert_with(|| TVar::empty_generic(name))
+            .clone(),
+        None => TVar::empty_generic(name),
     })
-    .is_some()
+}
+
+/// The variable `name` written in a type is: the signature's variable of
+/// that name. One written in the signature's bounds before its
+/// declarations end waits for them. Outside a signature's parse, a
+/// variable of its own, which the compile names
+/// ([`Type::scope_refs_named`]).
+pub fn written_name(name: ArcStr) -> TVar {
+    NAMES.with_borrow_mut(|n| {
+        let Some(sig) = n else { return TVar::empty_generic(name) };
+        if let Some(tv) = sig.names.get(&name) {
+            return tv.clone();
+        }
+        let tv = TVar::empty_generic(name.clone());
+        match &mut sig.waiting {
+            Some(waiting) => waiting.push((name, tv.clone())),
+            None => {
+                sig.names.insert(name, tv.clone());
+            }
+        }
+        tv
+    })
 }
 
 /// The cells `ft` holds into `known`: those its positions name, and,
@@ -945,9 +902,7 @@ impl FnType {
     /// cell ([`seed_conjuncts`]). The signature's variables and its
     /// conjuncts' are the quantifiers' already: a parse names each written
     /// name once ([`written_name`]), a compile copies by name
-    /// ([`Type::scope_refs_named`]). Inside another signature's parse
-    /// ([`ParseDepth`]) the cells it holds from outside itself
-    /// ([`collect_held`]) are recorded for the parse's walks.
+    /// ([`Type::scope_refs_named`]).
     pub fn declaring(mut self, constraints: &[(TVar, Type)]) -> Result<Arc<Self>> {
         let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         let mut names: LPooled<Vec<ArcStr>> = LPooled::take();
@@ -959,33 +914,7 @@ impl FnType {
         }
         self.quantifiers = Arc::from_iter(names.drain(..));
         let ft = Arc::new(self);
-        // CR claude for eric: [structure/medium] This arm, `Aliasing::Known`,
-        // `DECLARED` and the readers of it (`declared`, `closed`, `declared_free`,
-        // `aliases_into`, `meet_declared`) exist for a signature parsed inside another
-        // signature. One that declares quantifiers there is refused by the check in
-        // every position (`rewrite_trait_args_inner` reads every part and bound of a
-        // signature with `scheme` false), so this bookkeeping and most of the
-        // nest-parse tests below keep correct and linear a state the language forbids.
-        // For Eric: refuse a quantified signature at parse depth above 1 in the
-        // parser's `fnshared`, with the `QUANTIFIED_FN` text. A nested signature then
-        // declares nothing, `declaring` returns it as it stands, the outermost
-        // `Aliasing::Every` walk aliases every name, and the items named here go. Found
-        // by reading; the refusals were run (35 positions), the deletion was not built.
-        // (t-fntyp-05)
-        // 2026-11-21 claude: the alias walk is gone: a parse names each
-        // written name once per signature (`written_name`, `declared_name`),
-        // so `Aliasing`, `aliases_into` and `meet_declared` went with it.
-        // `DECLARED` and its readers (`declared`, `closed`, `declared_free`)
-        // stand, as the memo of the walks over a nested signature; the
-        // proposal stands as written.
         seed_conjuncts(&known, constraints.iter().map(|(tv, tc)| (tv, tc.clone())))?;
-        if PARSE_DEPTH.with(|d| d.get()) > 1 {
-            known.clear();
-            collect_held(&ft, &mut known);
-            let free = known.drain().filter(|(name, _)| !ft.quantifiers.contains(name));
-            let free = (ft.clone(), free.collect());
-            DECLARED.with_borrow_mut(|m| m.insert(Arc::as_ptr(&ft) as usize, free));
-        }
         Ok(ft)
     }
 
@@ -2080,8 +2009,11 @@ impl FnType {
 // test module.
 #[cfg(test)]
 mod tests {
-    use crate::expr::parser::parse_fn_type;
-    use poolshark::local::LPooled;
+    use crate::{
+        expr::parser::parse_fn_type,
+        typ::{FnArgKind, FnArgType, FnType, TVar, Type},
+    };
+    use triomphe::Arc;
 
     /// A walk that inlines a parameter's binding holding a cell named like
     /// the signature's quantifier keeps the quantifier the signature's:
@@ -2173,82 +2105,6 @@ mod tests {
         }
     }
 
-    /// Whether a bound of a cell that `ft` reaches, by position or through
-    /// bounds, reaches that cell.
-    fn holds_a_recursive_bound(ft: &super::FnType) -> bool {
-        use crate::typ::{TVar, Type, tvar::would_cycle_inner};
-        use ahash::AHashSet;
-        fn cells(t: &Type, seen: &mut AHashSet<usize>, out: &mut Vec<TVar>) {
-            match t {
-                Type::TVar(tv) if seen.insert(tv.cell_addr()) => {
-                    out.push(tv.clone());
-                    for c in tv.cell_constraints() {
-                        cells(&c, seen, out)
-                    }
-                }
-                Type::TVar(_) => (),
-                Type::Fn(ft) if seen.insert(triomphe::Arc::as_ptr(ft) as usize) => {
-                    ft.for_each_type(&mut |t| cells(t, seen, out))
-                }
-                Type::Fn(_) => (),
-                t => t.for_each_child(&mut |c| cells(c, seen, out)),
-            }
-        }
-        let mut reached = vec![];
-        ft.for_each_type(&mut |t| cells(t, &mut AHashSet::default(), &mut reached));
-        reached.iter().any(|tv| {
-            let cell = tv.cell();
-            tv.cell_constraints().iter().any(|c| would_cycle_inner(&cell, c))
-        })
-    }
-
-    /// A nest of quantified signatures is refused or parses to cells no
-    /// bound of which reaches its own cell, so every walk of it returns:
-    /// its print, and the parse of what encloses it. In these two no bound
-    /// names its own variable.
-    #[test]
-    fn a_nest_parses_to_cells_no_bound_of_which_reaches_its_cell() {
-        const PRINTED: &str = "fn<'c: fn<'c: i64>(x0: fn() -> 'a throws i64, q0: 'c) -> \
-            i64>() -> fn<'b: 'a>(x0: fn<'a: 'c>(q0: 'a) -> 'b) -> i64";
-        const PARSED: &str = "fn<'c: fn<'c: 'z>(q2: 'c) -> fn<'b: i64>(x1: 'z, q1: 'b) -> \
-            i64>() -> fn<'b: fn<'a: 'z>(q0: 'a) -> i64>(x1: fn<'z: fn() -> fn<'b: \
-            i64>(x2: 'c, q0: 'b) -> i64>(x0: 'b) -> i64 throws 'z) -> i64";
-        for src in [PRINTED, PARSED] {
-            if let Ok(ft) = parse_fn_type(src) {
-                assert!(!holds_a_recursive_bound(&ft), "{src}");
-                assert!(!ft.to_string().is_empty());
-            }
-        }
-    }
-
-    /// A nested signature's walk through bounds reads the bounds of its own
-    /// quantifiers alone: the bound of an enclosing variable it names, in a
-    /// position or through a bound, never brings in the enclosing `'z` under
-    /// the name of its own, at any call, whatever order a map holds them in.
-    #[test]
-    fn a_walk_through_bounds_finds_its_own_quantifier() {
-        use crate::typ::{TVar, Type};
-        use ahash::AHashMap;
-        use arcstr::ArcStr;
-        for src in [
-            "fn<'b: Array<'z>, 'z: Any>(x: fn<'d: 'z, 'z: i64>(y: 'd) -> 'b, w: 'z) -> 'b",
-            "fn<'f: Array<'z>, 'c: 'f, 'z: Any>(x: fn<'d: 'e, 'e: 'z, 'z: i64>(y: 'd, \
-             v: 'c) -> i64, w: 'z) -> 'c",
-        ] {
-            for _ in 0..16 {
-                let ft = parse_fn_type(src).unwrap();
-                let Type::Fn(nested) = &ft.args[0].typ else { panic!("{ft}") };
-                let mut found: AHashMap<ArcStr, TVar> = AHashMap::default();
-                nested.collect_tvars_through_bounds(&mut found);
-                let bound = found["z"].cell_constraints();
-                assert_eq!(
-                    bound.iter().map(|t| t.to_string()).collect::<Vec<_>>(),
-                    ["i64"]
-                );
-            }
-        }
-    }
-
     /// The refusal names the first variable declared whose bound reaches
     /// it, by the shortest path back its bounds' names lead to first:
     /// what a breadth-first walk from each variable in turn finds.
@@ -2334,73 +2190,202 @@ mod tests {
         assert!(met.iter().all(|n| *n > 400), "{met:?}");
     }
 
-    /// `n` signatures, each but `leaf` holding the next as `wrap` writes it.
-    fn nested(n: usize, leaf: &str, wrap: impl Fn(&str) -> String) -> String {
-        (1..n).fold(String::from(leaf), |s, _| wrap(&s))
+    /// The variable `name`, for a signature to declare.
+    fn var(name: &str) -> TVar {
+        TVar::empty_generic(name.into())
     }
 
-    fn nested_quantified(n: usize) -> String {
-        nested(n, "fn<'a: Any>(x: i64) -> 'a", |s| format!("fn<'a: Any>(x: {s}) -> 'a"))
+    fn of(tv: &TVar) -> Type {
+        Type::TVar(tv.clone())
+    }
+
+    fn array(t: Type) -> Type {
+        Type::Array(Arc::new(t))
+    }
+
+    fn written(src: &str) -> Type {
+        crate::expr::parser::parse_type(src).unwrap()
+    }
+
+    /// A signature as a definition's check builds one, inside another where
+    /// a generic definition holds another and a parse refuses one: `bounds`
+    /// declared over the positional parameters `args` and the result.
+    fn sig(bounds: &[(&TVar, Type)], args: &[(&str, Type)], rtype: Type) -> Type {
+        let args = args.iter().map(|(name, typ)| FnArgType {
+            kind: FnArgKind::Positional { name: Some((*name).into()) },
+            typ: typ.clone(),
+        });
+        let ft = FnType {
+            args: Arc::from_iter(args),
+            rtype,
+            throws: Type::Bottom,
+            ..FnType::default()
+        };
+        let bounds: Vec<(TVar, Type)> =
+            bounds.iter().map(|(tv, t)| ((*tv).clone(), t.clone())).collect();
+        Type::Fn(ft.declaring(&bounds).unwrap())
+    }
+
+    /// `n` signatures, each but `leaf` holding the next as `wrap` builds it.
+    fn nest(n: usize, leaf: Type, wrap: impl Fn(Type) -> Type) -> Type {
+        (1..n).fold(leaf, |t, _| wrap(t))
+    }
+
+    fn nested_quantified(n: usize) -> Type {
+        let level = |x: Type| {
+            let a = var("a");
+            sig(&[(&a, Type::Any)], &[("x", x)], of(&a))
+        };
+        nest(n, level(written("i64")), level)
     }
 
     /// Each signature the bound of the next one's variable.
-    fn nested_by_bound(n: usize) -> String {
-        nested(n, "fn<'a: Any>(x: 'a) -> 'a", |s| format!("fn<'a: {s}>(x: 'a) -> 'a"))
-    }
-
-    fn nested_unquantified(n: usize) -> String {
-        nested(n, "fn(x: i64) -> i64", |s| format!("fn(x: {s}) -> i64"))
+    fn nested_by_bound(n: usize) -> Type {
+        let level = |bound: Type| {
+            let a = var("a");
+            sig(&[(&a, bound)], &[("x", of(&a))], of(&a))
+        };
+        nest(n, level(Type::Any), level)
     }
 
     /// Every signature names the outermost's `'z` beside its own variable.
-    fn nested_naming_outer(n: usize) -> String {
-        let inner = nested(n, "fn<'a: Any>(x: 'z) -> 'a", |s| {
-            format!("fn<'a: Any>(x: {s}, y: 'z) -> 'a")
+    fn nested_naming_outer(n: usize) -> Type {
+        let z = var("z");
+        let a = var("a");
+        let leaf = sig(&[(&a, Type::Any)], &[("x", of(&z))], of(&a));
+        let inner = nest(n, leaf, |s| {
+            let a = var("a");
+            sig(&[(&a, Type::Any)], &[("x", s), ("y", of(&z))], of(&a))
         });
-        format!("fn<'z: Any>(x: {inner}) -> 'z")
+        sig(&[(&z, Type::Any)], &[("x", inner)], of(&z))
     }
 
     /// Each signature the bound of the next one's variable, every one
     /// naming the outermost's `'z`.
-    fn nested_by_bound_naming_outer(n: usize) -> String {
-        let inner = nested(n, "fn<'a: Any>(x: 'a, y: 'z) -> 'a", |s| {
-            format!("fn<'a: {s}>(x: 'a, y: 'z) -> 'a")
-        });
-        format!("fn<'z: Any>(x: {inner}) -> 'z")
-    }
-
-    /// No signature declares a variable; every one names `'a`.
-    fn nested_naming_a_variable(n: usize) -> String {
-        nested(n, "fn(x: 'a) -> 'a", |s| format!("fn(x: {s}) -> 'a"))
+    fn nested_by_bound_naming_outer(n: usize) -> Type {
+        let z = var("z");
+        let level = |bound: Type| {
+            let a = var("a");
+            sig(&[(&a, bound)], &[("x", of(&a)), ("y", of(&z))], of(&a))
+        };
+        let inner = nest(n, level(Type::Any), level);
+        sig(&[(&z, Type::Any)], &[("x", inner)], of(&z))
     }
 
     /// Each signature the bound of a bound of the next one's variable, the
     /// innermost alone naming the outermost's `'z`, by position.
-    fn nested_by_bound_of_bound_naming_outer(n: usize) -> String {
-        let inner = nested(n, "fn<'a: Any>(x: 'a, y: 'z) -> 'a", |s| {
-            format!("fn<'a: 'b, 'b: {s}>(x: 'a) -> 'a")
+    fn nested_by_bound_of_bound_naming_outer(n: usize) -> Type {
+        let z = var("z");
+        let a = var("a");
+        let leaf = sig(&[(&a, Type::Any)], &[("x", of(&a)), ("y", of(&z))], of(&a));
+        let inner = nest(n, leaf, |s| {
+            let (a, b) = (var("a"), var("b"));
+            sig(&[(&a, of(&b)), (&b, s)], &[("x", of(&a))], of(&a))
         });
-        format!("fn<'z: Any>(x: {inner}, w: 'z) -> 'z")
+        sig(&[(&z, Type::Any)], &[("x", inner), ("w", of(&z))], of(&z))
     }
 
     /// Each signature's variable held only through the bound of the next
     /// signature's, which the bound of the variable after it names.
-    fn nested_held_through_the_next_bound(n: usize) -> String {
-        let leaf = format!("fn<'b: Array<'z{n}>>(y: 'b) -> 'b");
-        let inner = (1..=n)
-            .rev()
-            .fold(leaf, |s, k| format!("fn<'z{k}: Array<'z{}>>(x: {s}) -> i64", k - 1));
-        format!("fn<'z0: Any>(m: {inner}) -> i64")
+    fn nested_held_through_the_next_bound(n: usize) -> Type {
+        let z: Vec<TVar> = (0..=n).map(|k| var(&format!("z{k}"))).collect();
+        let b = var("b");
+        let leaf = sig(&[(&b, array(of(&z[n])))], &[("y", of(&b))], of(&b));
+        let inner = (1..=n).rev().fold(leaf, |s, k| {
+            sig(&[(&z[k], array(of(&z[k - 1])))], &[("x", s)], written("i64"))
+        });
+        sig(&[(&z[0], Type::Any)], &[("m", inner)], written("i64"))
     }
 
     /// Each signature's variable held only through the bound of the next
     /// signature's, which stands in the bound of a variable of its own.
-    fn nested_held_beside_the_next_bound(n: usize) -> String {
-        let leaf = format!("fn<'b: Array<'z{n}>>(y: 'b) -> 'b");
+    fn nested_held_beside_the_next_bound(n: usize) -> Type {
+        let z: Vec<TVar> = (0..=n).map(|k| var(&format!("z{k}"))).collect();
+        let b = var("b");
+        let leaf = sig(&[(&b, array(of(&z[n])))], &[("y", of(&b))], of(&b));
         let inner = (1..=n).rev().fold(leaf, |s, k| {
-            format!("fn<'y{k}: {s}, 'z{k}: Array<'z{}>>(x: 'y{k}) -> i64", k - 1)
+            let y = var(&format!("y{k}"));
+            let bounds = [(&y, s), (&z[k], array(of(&z[k - 1])))];
+            sig(&bounds, &[("x", of(&y))], written("i64"))
         });
-        format!("fn<'z0: Any>(m: {inner}) -> i64")
+        sig(&[(&z[0], Type::Any)], &[("m", inner)], written("i64"))
+    }
+
+    /// `n` written signatures declaring no variable, every one naming `'a`.
+    fn nested_naming_a_variable(n: usize) -> String {
+        (1..n).fold(String::from("fn(x: 'a) -> 'a"), |s, _| format!("fn(x: {s}) -> 'a"))
+    }
+
+    // Each built nest prints as its signatures were declared, a nested
+    // signature's own variable apart from an enclosing one of its name.
+    #[test]
+    fn a_built_nest_prints_as_declared() {
+        let q = "fn<'a: Any>(x: fn<'a: Any>(x: i64) -> 'a) -> 'a";
+        let by_bound = "fn<'a: fn<'a: Any>(x: 'a) -> 'a>(x: 'a) -> 'a";
+        let naming = "fn<'z: Any>(x: fn<'a: Any>(x: fn<'a: Any>(x: 'z) -> 'a, y: 'z) -> 'a) \
+                      -> 'z";
+        let by_bound_naming = "fn<'z: Any>(x: fn<'a: fn<'a: Any>(x: 'a, y: 'z) -> 'a>(x: \
+                               'a, y: 'z) -> 'a) -> 'z";
+        let of_bound = "fn<'z: Any>(x: fn<'a: 'b, 'b: fn<'a: Any>(x: 'a, y: 'z) -> \
+                        'a>(x: 'a) -> 'a, w: 'z) -> 'z";
+        let through = "fn<'z0: Any>(m: fn<'z1: Array<'z0>>(x: fn<'b: Array<'z1>>(y: 'b) \
+                       -> 'b) -> i64) -> i64";
+        let beside = "fn<'z0: Any>(m: fn<'y1: fn<'b: Array<'z1>>(y: 'b) -> 'b, 'z1: \
+                      Array<'z0>>(x: 'y1) -> i64) -> i64";
+        for (built, want) in [
+            (nested_quantified(2), q),
+            (nested_by_bound(2), by_bound),
+            (nested_naming_outer(2), naming),
+            (nested_by_bound_naming_outer(2), by_bound_naming),
+            (nested_by_bound_of_bound_naming_outer(2), of_bound),
+            (nested_held_through_the_next_bound(1), through),
+            (nested_held_beside_the_next_bound(1), beside),
+        ] {
+            assert_eq!(built.to_string(), want);
+        }
+    }
+
+    /// A nested signature's walk through bounds reads the bounds of its own
+    /// quantifiers alone: the bound of an enclosing variable it names, in a
+    /// position or through a bound, never brings in the enclosing `'z` under
+    /// the name of its own, at any call, whatever order a map holds them in.
+    #[test]
+    fn a_walk_through_bounds_finds_its_own_quantifier() {
+        use ahash::AHashMap;
+        use arcstr::ArcStr;
+        // fn<'b: Array<'z>, 'z: Any>(x: fn<'d: 'z, 'z: i64>(y: 'd) -> 'b, w: 'z) -> 'b
+        let held_by_position = || {
+            let (b, outer, d, own) = (var("b"), var("z"), var("d"), var("z"));
+            let nested =
+                sig(&[(&d, of(&own)), (&own, written("i64"))], &[("y", of(&d))], of(&b));
+            let bounds = [(&b, array(of(&outer))), (&outer, Type::Any)];
+            sig(&bounds, &[("x", nested), ("w", of(&outer))], of(&b))
+        };
+        // fn<'f: Array<'z>, 'c: 'f, 'z: Any>(x: fn<'d: 'e, 'e: 'z, 'z: i64>(y: 'd,
+        // v: 'c) -> i64, w: 'z) -> 'c
+        let held_by_bound = || {
+            let (f, c, outer) = (var("f"), var("c"), var("z"));
+            let (d, e, own) = (var("d"), var("e"), var("z"));
+            let bounds = [(&d, of(&e)), (&e, of(&own)), (&own, written("i64"))];
+            let nested = sig(&bounds, &[("y", of(&d)), ("v", of(&c))], written("i64"));
+            let bounds = [(&f, array(of(&outer))), (&c, of(&f)), (&outer, Type::Any)];
+            sig(&bounds, &[("x", nested), ("w", of(&outer))], of(&c))
+        };
+        let builds: [fn() -> Type; 2] = [held_by_position, held_by_bound];
+        for build in builds {
+            for _ in 0..16 {
+                let t = build();
+                let Type::Fn(ft) = &t else { unreachable!() };
+                let Type::Fn(nested) = &ft.args[0].typ else { panic!("{t}") };
+                let mut found: AHashMap<ArcStr, TVar> = AHashMap::default();
+                nested.collect_tvars_through_bounds(&mut found);
+                let bound = found["z"].cell_constraints();
+                assert_eq!(
+                    bound.iter().map(|t| t.to_string()).collect::<Vec<_>>(),
+                    ["i64"]
+                );
+            }
+        }
     }
 
     fn walk_steps(f: impl FnOnce()) -> usize {
@@ -2409,62 +2394,17 @@ mod tests {
         super::TVAR_WALK_STEPS.with(|c| c.get())
     }
 
-    /// Parsing each shape 160 deep takes under six times the steps 40 deep
-    /// does.
-    fn assert_parse_in_linear_steps(shapes: &[(&str, fn(usize) -> String)]) {
-        for (name, shape) in shapes {
-            let parse = |n| {
-                let src = shape(n);
-                walk_steps(|| drop(parse_fn_type(&src).unwrap()))
-            };
-            let (a, b) = (parse(40), parse(160));
-            assert!(b < a * 6, "{name}: 40 deep: {a} steps, 160 deep: {b}");
-        }
-    }
-
-    // Parsing a nest of signatures that name nothing outside themselves
-    // walks each a bounded number of times, however they nest.
-    #[test]
-    fn nested_closed_signatures_parse_in_linear_steps() {
-        assert_parse_in_linear_steps(&[
-            ("argument", nested_quantified),
-            ("bound", nested_by_bound),
-            ("unquantified", nested_unquantified),
-        ])
-    }
-
-    // Parsing a nest of signatures each naming a variable no signature
-    // inside it declares walks each a bounded number of times: only the
-    // declaration of a name walks down to it.
-    #[test]
-    fn nested_open_signatures_parse_in_linear_steps() {
-        assert_parse_in_linear_steps(&[
-            ("naming outer", nested_naming_outer),
-            ("bound naming outer", nested_by_bound_naming_outer),
-            ("unquantified", nested_naming_a_variable),
-        ])
-    }
-
-    const HELD_THROUGH_BOUNDS: [(&str, fn(usize) -> String); 2] = [
+    const HELD_THROUGH_BOUNDS: [(&str, fn(usize) -> Type); 2] = [
         ("bound of a bound naming outer", nested_by_bound_of_bound_naming_outer),
         ("held through the next bound", nested_held_through_the_next_bound),
     ];
 
-    // Parsing a nest whose signatures hold variables only through the
-    // bounds of their own walks each a bounded number of times.
-    #[test]
-    fn nests_held_through_bounds_parse_in_linear_steps() {
-        assert_parse_in_linear_steps(&HELD_THROUGH_BOUNDS)
-    }
-
-    // Outside a parse, which records nothing, reading the variables of a
-    // nest held through bounds (its constraints, its cells, printing it,
-    // comparing it, aliasing it) walks each signature a bounded number of
-    // times.
+    // Reading the variables of a nest held through bounds (its constraints,
+    // its cells, printing it, comparing it, naming it) walks each signature
+    // a bounded number of times.
     #[test]
     fn nests_held_through_bounds_walk_in_linear_steps() {
-        use super::FnType;
-        use crate::{expr::print::PrettyDisplay, typ::Type};
+        use crate::expr::print::PrettyDisplay;
         let walks: [(&str, fn(&Type, &Type)); 6] = [
             ("constraint_view", |t, _| {
                 let Type::Fn(ft) = t else { unreachable!() };
@@ -2476,14 +2416,10 @@ mod tests {
             ("compare", |t, u| assert!(t == u && t.cmp(u).is_eq())),
             ("name", |t, _| drop(t.named_in(&mut ahash::AHashMap::default()))),
         ];
-        let parse = |src: &str| -> Type {
-            let ft: FnType = parse_fn_type(src).unwrap();
-            Type::Fn(triomphe::Arc::new(ft))
-        };
         for (name, shape) in HELD_THROUGH_BOUNDS {
             for (walk, f) in walks {
                 let steps = |n| {
-                    let (t, u) = (parse(&shape(n)), parse(&shape(n)));
+                    let (t, u) = (shape(n), shape(n));
                     walk_steps(|| f(&t, &u))
                 };
                 let (a, b) = (steps(8), steps(16));
@@ -2497,8 +2433,7 @@ mod tests {
     /// `(name, depth, cell)` of every variable `t` holds, by position and
     /// through each cell's conjuncts, a signature's one deeper than the
     /// signature holding it.
-    fn cells_by_depth(t: &crate::typ::Type) -> Vec<(String, usize, usize)> {
-        use crate::typ::Type;
+    fn cells_by_depth(t: &Type) -> Vec<(String, usize, usize)> {
         fn go(
             t: &Type,
             depth: usize,
@@ -2523,34 +2458,16 @@ mod tests {
         out
     }
 
-    // In a nest whose signatures name a variable declared outside them,
-    // every occurrence is the declaring signature's cell, and each
-    // signature's own variable is a cell of its own.
+    // A nest of signatures that declare nothing names each written variable
+    // one cell, at every depth.
     #[test]
-    fn an_open_nest_names_its_declarers_cells() {
-        use crate::typ::Type;
-        let shapes: [(&str, fn(usize) -> String, &str); 3] = [
-            ("naming outer", nested_naming_outer, "z"),
-            ("bound naming outer", nested_by_bound_naming_outer, "z"),
-            ("unquantified", nested_naming_a_variable, "a"),
-        ];
-        for (name, shape, outer) in shapes {
-            let t = Type::Fn(triomphe::Arc::new(parse_fn_type(&shape(6)).unwrap()));
-            let cells = cells_by_depth(&t);
-            let of = |n: &'static str| cells.iter().filter(move |(m, _, _)| m == n);
-            let mut outer_cells = of(outer).map(|(_, _, c)| *c).collect::<Vec<_>>();
-            outer_cells.sort();
-            outer_cells.dedup();
-            assert_eq!(outer_cells.len(), 1, "{name}: {t}");
-            if outer == "z" {
-                let mut own = of("a").map(|(_, d, c)| (*d, *c)).collect::<Vec<_>>();
-                own.sort();
-                own.dedup();
-                let distinct =
-                    own.iter().map(|(_, c)| *c).collect::<ahash::AHashSet<_>>();
-                assert!(own.len() == 6 && distinct.len() == 6, "{name}: {own:?}: {t}");
-            }
-        }
+    fn a_nest_names_each_variable_once() {
+        let t = Type::Fn(Arc::new(parse_fn_type(&nested_naming_a_variable(6)).unwrap()));
+        let mut cells =
+            cells_by_depth(&t).into_iter().map(|(_, _, c)| c).collect::<Vec<_>>();
+        cells.sort();
+        cells.dedup();
+        assert_eq!(cells.len(), 1, "{t}");
     }
 
     // Printing a nest whose variables are held through a signature in the
@@ -2559,10 +2476,9 @@ mod tests {
     // signature's scope.
     #[test]
     fn nests_held_beside_a_bound_print_in_linear_steps() {
-        use crate::{expr::print::PrettyDisplay, typ::Type};
+        use crate::expr::print::PrettyDisplay;
         let steps = |n| {
-            let ft = parse_fn_type(&nested_held_beside_the_next_bound(n)).unwrap();
-            let t = Type::Fn(triomphe::Arc::new(ft));
+            let t = nested_held_beside_the_next_bound(n);
             walk_steps(|| {
                 drop(t.to_string());
                 drop(t.to_string_pretty(80).to_string())
@@ -2572,221 +2488,103 @@ mod tests {
         assert!(b < a * 6, "40 deep: {a} steps, 160 deep: {b}");
     }
 
-    // Comparing a nest whose signatures each name a variable from outside
-    // themselves, and stand in the bound of a variable of the one around
-    // them, reads each signature's free cells a bounded number of times,
-    // under the guards of the walks around it too.
+    // Comparing two nests of quantified signatures reads each signature's
+    // variables a bounded number of times, the ones it names from outside
+    // included, under the guards of the walks around it too.
     #[test]
-    fn nests_held_in_a_bound_compare_in_linear_steps() {
-        use crate::typ::Type;
-        let shapes: [(&str, fn(usize) -> String); 2] = [
+    fn nested_quantified_types_compare_in_linear_steps() {
+        let shapes: [(&str, fn(usize) -> Type); 5] = [
+            ("argument", nested_quantified),
+            ("bound", nested_by_bound),
+            ("naming outer", nested_naming_outer),
             ("bound naming outer", nested_by_bound_naming_outer),
             ("held beside the next bound", nested_held_beside_the_next_bound),
         ];
         for (name, shape) in shapes {
-            let steps = |n| {
-                let parse =
-                    || Type::Fn(triomphe::Arc::new(parse_fn_type(&shape(n)).unwrap()));
-                let (t, u) = (parse(), parse());
-                walk_steps(|| assert!(t == u && t.cmp(&u).is_eq()))
-            };
-            let (a, b) = (steps(40), steps(160));
-            assert!(b < a * 6, "{name}: 40 deep: {a} steps, 160 deep: {b}");
-        }
-    }
-
-    /// The distinct cells `t` holds under `name`.
-    fn cells_named(t: &crate::typ::Type, name: &str) -> ahash::AHashSet<usize> {
-        cells_by_depth(t)
-            .into_iter()
-            .filter(|(n, _, _)| n == name)
-            .map(|(_, _, c)| c)
-            .collect()
-    }
-
-    // A variable a signature holds only through the bound of a bound, its
-    // own or one of a signature nested in it, is its declarer's cell, as
-    // every other occurrence of its name is, and the nest prints as
-    // written.
-    #[test]
-    fn a_bound_of_a_bound_names_the_declarers_cell() {
-        use crate::typ::Type;
-        let parse = |src: &str| Type::Fn(triomphe::Arc::new(parse_fn_type(src).unwrap()));
-        let held = nested_held_through_the_next_bound(5);
-        for src in [
-            "fn<'z: Number>(x: fn<'b: 'c, 'c: Array<'z>>(y: 'b) -> 'b, w: 'z) -> 'z",
-            "fn<'z: Number>(x: fn<'b: 'c, 'c: Array<'z>>(y: 'b) -> 'b) -> i64",
-            "fn(x: fn<'b: 'c, 'c: Array<'z>>(y: 'b, v: 'z) -> 'b) -> 'z",
-            "fn(x: fn<'b: 'c, 'c: fn(a: 'q) -> 'q>(y: 'b) -> 'b, k: 'q) -> 'q",
-            "fn(m: fn<'z: Array<'a>>(x: fn<'b: 'c, 'c: Array<'z>>(y: 'b) -> 'b) -> i64, \
-             k: 'a) -> 'a",
-            "fn<'a: Any>(m: fn<'z: Array<'a>>(x: fn<'b: Array<'z>>(y: 'b) -> 'b) -> i64) -> i64",
-            "fn<'a: Any>(m: fn<'z: Array<'a>>(x: fn<'b: 'c, 'c: Array<'z>>(y: 'b) -> 'b) -> \
-             i64) -> i64",
-            "fn(k: fn<'a: Any>(m: fn<'z: Array<'a>>(x: fn<'b: Array<'z>>(y: 'b) -> 'b) -> \
-             i64) -> i64) -> i64",
-            "fn(k: fn<'a: Any>(m: fn<'z: Array<'a>>(x: fn<'b: Array<'z>>(y: 'b) -> 'b) -> \
-             i64, w: 'a) -> 'a) -> i64",
-            "fn(@args: `V(List<'e>)) -> fn<'d: 'a, 'z: Number + Array<'d>>(x0: `V('z), \
-             qz: 'z) -> 'a",
-            held.as_str(),
-        ] {
-            let t = parse(src);
-            let mut names =
-                cells_by_depth(&t).into_iter().map(|(n, _, _)| n).collect::<Vec<_>>();
-            names.sort();
-            names.dedup();
-            for name in names {
-                let cells = cells_named(&t, &name);
-                assert_eq!(cells.len(), 1, "{src}: '{name} is {} cells", cells.len());
-            }
-            assert_eq!(t.to_string(), src);
-        }
-        let src = nested_by_bound_of_bound_naming_outer(5);
-        let t = parse(&src);
-        assert_eq!(cells_named(&t, "z").len(), 1, "{src}");
-        assert_eq!(t.to_string(), src);
-    }
-
-    // A bound that reaches its own variable through the bound of a bound of
-    // a signature nested in it is refused, as one through the nested
-    // signature's own bound is.
-    #[test]
-    fn a_bound_reaching_its_variable_through_a_bound_of_a_bound_is_refused() {
-        for src in [
-            "fn<'a: fn<'d: Array<'a>>(qd: 'd) -> 'd>(qa: 'a) -> i64",
-            "fn<'a: fn<'d: 'z, 'z: Array<'a>>(qd: 'd) -> 'd>(qa: 'a) -> i64",
-        ] {
-            let e = format!("{:#}", parse_fn_type(src).unwrap_err());
-            assert!(e.contains("a quantifier whose bound reaches it"), "{src}: {e}");
-        }
-    }
-
-    // The bound of a variable held only through a nested signature's bound
-    // names its declarer's scope, never a variable of the nested signature
-    // that shadows a name in it.
-    #[test]
-    fn a_bound_held_through_a_nested_signature_keeps_its_scope() {
-        use crate::typ::Type;
-        let src = "fn<'q: Any>(m: fn<'z: Array<'q>>(x: fn<'q: 'z>(a: 'q) -> 'q) -> i64, \
-                   w: 'q) -> 'q";
-        let ft = parse_fn_type(src).unwrap();
-        let Type::TVar(outer) = &ft.rtype else { panic!("{ft}") };
-        let Type::Fn(middle) = &ft.args[0].typ else { panic!("{ft}") };
-        let Type::Fn(inner) = &middle.args[0].typ else { panic!("{ft}") };
-        let Type::TVar(inner_q) = &inner.args[0].typ else { panic!("{ft}") };
-        let Type::TVar(z) = &inner_q.cell_constraints()[0] else { panic!("{ft}") };
-        let Type::Array(elt) = &z.cell_constraints()[0] else { panic!("{ft}") };
-        let Type::TVar(bound_q) = &**elt else { panic!("{ft}") };
-        assert_eq!(bound_q.cell_addr(), outer.cell_addr(), "{ft}");
-        assert_ne!(inner_q.cell_addr(), outer.cell_addr(), "{ft}");
-        assert_eq!(ft.to_string(), src);
-    }
-
-    // Comparing two nests of quantified signatures reads each signature's
-    // variables a bounded number of times, the ones it names from outside
-    // included.
-    #[test]
-    fn nested_quantified_types_compare_in_linear_steps() {
-        let shapes: [(&str, fn(usize) -> String); 3] = [
-            ("argument", nested_quantified),
-            ("bound", nested_by_bound),
-            ("naming outer", nested_naming_outer),
-        ];
-        for (name, shape) in shapes {
             let compare = |n| {
-                let (a, b) = (
-                    parse_fn_type(&shape(n)).unwrap(),
-                    parse_fn_type(&shape(n)).unwrap(),
-                );
-                walk_steps(|| assert!(a == b && a.cmp(&b).is_eq()))
+                let (t, u) = (shape(n), shape(n));
+                walk_steps(|| assert!(t == u && t.cmp(&u).is_eq()))
             };
             let (a, b) = (compare(40), compare(160));
             assert!(b < a * 6, "{name}: 40 deep: {a} steps, 160 deep: {b}");
         }
     }
 
-    /// The cell of the variable `name` that `t`, a signature, reaches.
-    fn cell_named(t: &crate::typ::Type, name: &str) -> usize {
-        let crate::typ::Type::Fn(ft) = t else { panic!("{t} is no signature") };
-        let mut cells = ahash::AHashMap::default();
-        ft.collect_tvars_through_bounds(&mut cells);
-        cells[name].cell_addr()
-    }
-
-    // A nested signature that names an enclosing signature's variable only
-    // in a bound, or the bound of a bound, is not closed: the variable is
-    // the enclosing signature's cell.
-    #[test]
-    fn a_bound_naming_an_outer_variable_is_the_outer_cell() {
-        for inner in [
-            "fn<'b: Array<'z>>(y: 'b) -> 'b",
-            "fn<'b: Any>(y: fn<'c: Array<'z>>(v: 'c) -> 'c) -> 'b",
-            "fn<'b: 'c, 'c: Array<'z>>(y: 'b) -> 'b",
-            "fn<'b: Any>(y: fn<'c: 'd, 'd: Array<'z>>(v: 'c) -> 'c) -> 'b",
-        ] {
-            let src = format!("fn<'z: Number>(x: {inner}, w: 'z) -> 'z");
-            let ft = parse_fn_type(&src).unwrap();
-            let crate::typ::Type::TVar(outer) = &ft.rtype else { panic!("{src}") };
-            assert_eq!(cell_named(&ft.args[0].typ, "z"), outer.cell_addr(), "{src}");
-        }
-    }
-
-    // A nested signature's own variable stays apart from an enclosing
-    // signature's of the same name.
-    #[test]
-    fn a_closed_signature_keeps_its_own_variable() {
-        let src = "fn<'a: Number>(x: fn<'a: Any>(y: 'a) -> 'a, w: 'a) -> 'a";
-        let ft = parse_fn_type(src).unwrap();
-        let crate::typ::Type::TVar(outer) = &ft.rtype else { panic!("{src}") };
-        assert_ne!(cell_named(&ft.args[0].typ, "a"), outer.cell_addr());
-        assert_eq!(ft.to_string(), src);
-    }
-
-    // A signature that names nothing outside itself is the same signature
-    // inside an enclosing one, whose declaration aliases none of its cells.
-    #[test]
-    fn a_closed_signature_nests_as_it_stands_alone() {
-        let closed = "fn<'a: Number, 'z: Array<'a>>(x0: fn<'a: Any>(x1: 'z, q0: 'a) -> 'a, \
-                      x1: 'z, q1: 'a) -> 'a";
-        assert_eq!(parse_fn_type(closed).unwrap().to_string(), closed);
-        let nested = format!("fn(x: {closed}) -> i64");
-        assert_eq!(parse_fn_type(&nested).unwrap().to_string(), nested);
-    }
-
     // A variable the bound of an enclosing signature's quantifier names is
     // the enclosing signature's, where a signature nested in it declares a
-    // quantifier of the same name: the nest prints as written.
+    // quantifier of the same name: the nest prints as declared.
     #[test]
     fn a_nested_quantifier_takes_no_enclosing_bounds_variable() {
-        let middle = |inner: &str| {
-            format!(
-                "fn<'a: Number, 'z: Array<'a>>(x0: {inner}, x1: 'z, q1: 'a, w: 'k) -> 'a"
-            )
+        let k = var("k");
+        let middle = |inner: &dyn Fn(&TVar) -> Type| {
+            let (a, z) = (var("a"), var("z"));
+            let args = [("x0", inner(&z)), ("x1", of(&z)), ("q1", of(&a)), ("w", of(&k))];
+            sig(&[(&a, written("Number")), (&z, array(of(&a)))], &args, of(&a))
         };
-        let rewritten = [
-            format!(
-                "fn(x: {}, k: 'k) -> i64",
-                middle("fn<'a: Any>(x1: 'z, q0: 'a) -> 'a")
+        let own_a = |x1: Type| {
+            let a = var("a");
+            sig(&[(&a, Type::Any)], &[("x1", x1), ("q0", of(&a))], of(&a))
+        };
+        let around = |m: Type| sig(&[], &[("x", m), ("k", of(&k))], written("i64"));
+        let mid = "fn<'a: Number, 'z: Array<'a>>(x0: ";
+        let tail = ", x1: 'z, q1: 'a, w: 'k) -> 'a";
+        let q = var("q");
+        let (b, d, inner_b) = (var("b"), var("d"), var("b"));
+        let last = sig(&[(&inner_b, written("Number"))], &[("qb", of(&inner_b))], of(&d));
+        let last = sig(&[(&d, array(of(&b)))], &[("x", of(&b)), ("qd", of(&d))], last);
+        let cases = [
+            (
+                around(middle(&|z| own_a(of(z)))),
+                format!(
+                    "fn(x: {mid}fn<'a: Any>(x1: 'z, q0: 'a) -> 'a{tail}, k: 'k) -> i64"
+                ),
             ),
-            format!(
-                "fn(x: {}, k: 'k) -> i64",
-                middle("fn<'a: Any>(x1: fn(y: 'z) -> i64, q0: 'a) -> 'a")
+            (
+                around(middle(&|z| own_a(sig(&[], &[("y", of(z))], written("i64"))))),
+                format!(
+                    "fn(x: {mid}fn<'a: Any>(x1: fn(y: 'z) -> i64, q0: 'a) -> 'a{tail}, k: \
+                     'k) -> i64"
+                ),
             ),
-            format!(
-                "fn<'q: Any>(x: {}, k: 'k) -> 'q",
-                middle("fn<'a: Any>(x1: fn<'b: Any>(y: 'z, qb: 'b) -> 'b, q0: 'a) -> 'a")
+            (
+                sig(
+                    &[(&q, Type::Any)],
+                    &[
+                        (
+                            "x",
+                            middle(&|z| {
+                                let b = var("b");
+                                let bounds = [(&b, Type::Any)];
+                                own_a(sig(
+                                    &bounds,
+                                    &[("y", of(z)), ("qb", of(&b))],
+                                    of(&b),
+                                ))
+                            }),
+                        ),
+                        ("k", of(&k)),
+                    ],
+                    of(&q),
+                ),
+                format!(
+                    "fn<'q: Any>(x: {mid}fn<'a: Any>(x1: fn<'b: Any>(y: 'z, qb: 'b) -> 'b, \
+                     q0: 'a) -> 'a{tail}, k: 'k) -> 'q"
+                ),
             ),
-            "fn<'b: Any>(qb: 'b) -> fn<'d: Array<'b>>(x: 'b, qd: 'd) -> \
-             fn<'b: Number>(qb: 'b) -> 'd"
-                .into(),
-        ]
-        .into_iter()
-        .filter_map(|src| {
-            let printed = parse_fn_type(&src).unwrap().to_string();
-            (printed != src).then_some(printed)
-        })
-        .collect::<Vec<_>>();
+            (
+                sig(&[(&b, Type::Any)], &[("qb", of(&b))], last),
+                "fn<'b: Any>(qb: 'b) -> fn<'d: Array<'b>>(x: 'b, qd: 'd) -> fn<'b: \
+                 Number>(qb: 'b) -> 'd"
+                    .into(),
+            ),
+        ];
+        let rewritten = cases
+            .into_iter()
+            .filter_map(|(t, want)| {
+                let printed = t.to_string();
+                (printed != want).then_some((printed, want))
+            })
+            .collect::<Vec<_>>();
         assert!(rewritten.is_empty(), "{rewritten:#?}");
     }
 
@@ -2794,8 +2592,10 @@ mod tests {
     // after a cell write: a conjunct added to its quantifier's cell is seen.
     #[test]
     fn a_cell_write_drops_the_free_cells_read_before_it() {
-        use crate::typ::{TVar, Type};
-        let ft = parse_fn_type("fn(x: fn<'b: Any>(y: 'b, q: 'z) -> 'b) -> 'z").unwrap();
+        let (z, b) = (var("z"), var("b"));
+        let nested = sig(&[(&b, Type::Any)], &[("y", of(&b)), ("q", of(&z))], of(&b));
+        let t = sig(&[], &[("x", nested)], of(&z));
+        let Type::Fn(ft) = &t else { unreachable!() };
         let Type::Fn(nested) = &ft.args[0].typ else { panic!("{ft}") };
         let _scope = super::PartsDepth::enter();
         let mut before = ahash::AHashMap::default();
@@ -2807,6 +2607,49 @@ mod tests {
         let mut after = ahash::AHashMap::default();
         ft.args[0].typ.collect_tvars(&mut after);
         assert!(after.contains_key("w"));
+    }
+
+    // The held walk reads a signature's positions in its own name scope: an
+    // unquantified signature in a position never passes the bound of an
+    // enclosing cell it names, so the enclosing `'d` that bound names is
+    // never taken for the nested signature's own `'d`.
+    #[test]
+    fn a_held_walk_reads_its_positions_in_its_own_name_scope() {
+        use super::collect_held;
+        // fn<'w: Array<'d>, 'd: Array<'u>, 'u: Any, 'v: Any>(x: fn<'d: Array<'v>>(y:
+        // fn(q: 'w) -> i64, z: 'd) -> 'd, a: 'w, b: 'v) -> 'd
+        let (w, d, u, v, own_d) = (var("w"), var("d"), var("u"), var("v"), var("d"));
+        let y = sig(&[], &[("q", of(&w))], written("i64"));
+        let nested =
+            sig(&[(&own_d, array(of(&v)))], &[("y", y), ("z", of(&own_d))], of(&own_d));
+        let bounds =
+            [(&w, array(of(&d))), (&d, array(of(&u))), (&u, Type::Any), (&v, Type::Any)];
+        let t = sig(&bounds, &[("x", nested), ("a", of(&w)), ("b", of(&v))], of(&d));
+        let Type::Fn(ft) = &t else { unreachable!() };
+        let Type::Fn(nested) = &ft.args[0].typ else { panic!("{ft}") };
+        let mut held = ahash::AHashMap::default();
+        collect_held(nested, &mut held);
+        let mut names: Vec<_> = held.keys().map(|n| n.as_str()).collect();
+        names.sort_unstable();
+        assert_eq!(names, ["d", "v", "w"]);
+    }
+
+    // Printing a nest of quantified function types walks each node a
+    // bounded number of times: the steps grow linearly with the depth.
+    #[test]
+    fn nested_quantified_types_print_in_linear_steps() {
+        use crate::expr::print::PrettyDisplay;
+        let steps = |n| {
+            let t = nested_quantified(n);
+            walk_steps(|| {
+                let flat = t.to_string();
+                let pretty = t.to_string_pretty(80).to_string();
+                assert!(flat.matches("fn<").count() == n);
+                assert!(pretty.matches("fn<").count() == n);
+            })
+        };
+        let (a, b) = (steps(40), steps(160));
+        assert!(b < a * 6, "40 deep: {a} steps, 160 deep: {b}");
     }
 
     // A refused entry leaves the walk that holds the key holding it: every
@@ -2840,48 +2683,6 @@ mod tests {
         let mut cut = ahash::AHashMap::default();
         collect_held(&copy, &mut cut);
         assert!(cut.contains_key("c") && !cut.contains_key("q"), "{cut:?}");
-    }
-
-    // The held walk reads a signature's positions in its own name scope: an
-    // unquantified signature in a position never passes the bound of an
-    // enclosing cell it names, so the enclosing `'d` that bound names is
-    // never taken for the nested signature's own `'d`.
-    #[test]
-    fn a_held_walk_reads_its_positions_in_its_own_name_scope() {
-        use super::collect_held;
-        use crate::typ::Type;
-        let ft = parse_fn_type(
-            "fn<'w: Array<'d>, 'd: Array<'u>, 'u: Any, 'v: Any>(x: fn<'d: Array<'v>>(y: \
-             fn(q: 'w) -> i64, z: 'd) -> 'd, a: 'w, b: 'v) -> 'd",
-        )
-        .unwrap();
-        let Type::Fn(nested) = &ft.args[0].typ else { panic!("{ft}") };
-        let mut held = ahash::AHashMap::default();
-        collect_held(nested, &mut held);
-        let mut names: Vec<_> = held.keys().map(|n| n.as_str()).collect();
-        names.sort_unstable();
-        assert_eq!(names, ["d", "v", "w"]);
-    }
-
-    /// The tvar-walk steps printing an `n`-deep nest of quantified function
-    /// types takes, flat and pretty.
-    fn print_steps(n: usize) -> usize {
-        use crate::{expr::print::PrettyDisplay, typ::Type};
-        let ft = triomphe::Arc::new(parse_fn_type(&nested_quantified(n)).unwrap());
-        let t = Type::Fn(ft);
-        super::TVAR_WALK_STEPS.with(|c| c.set(0));
-        let flat = t.to_string();
-        let pretty = t.to_string_pretty(80).to_string();
-        assert!(flat.matches("fn<").count() == n && pretty.matches("fn<").count() == n);
-        super::TVAR_WALK_STEPS.with(|c| c.get())
-    }
-
-    // Printing a nest of quantified function types walks each node a
-    // bounded number of times: the steps grow linearly with the depth.
-    #[test]
-    fn nested_quantified_types_print_in_linear_steps() {
-        let (a, b) = (print_steps(40), print_steps(160));
-        assert!(b < a * 6, "40 deep: {a} steps, 160 deep: {b}");
     }
 
     /// The pretty pipeline keeps the user-written `'a` on both

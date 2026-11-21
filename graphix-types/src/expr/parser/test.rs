@@ -2781,7 +2781,6 @@ fn a_fn_type_holds_each_quantifier_it_declares() {
         "let f: fn<'a: Number>(x: i64) -> i64 = |x| x",
         "type F = fn<'a: Number, 'b: Int>(x: 'b) -> 'b",
         "type F = fn<'a: Array<'b>, 'b: Int>(x: 'b) -> 'b",
-        "let f = |g: fn<'a: Int>(x: i64, h: fn<'a: Int>(y: 'a) -> 'a) -> i64| 1",
     ] {
         let msg = format!("{:#}", parse_one(src).unwrap_err());
         assert!(msg.contains(WHY), "{src}: {msg}");
@@ -2799,7 +2798,6 @@ fn a_fn_type_holds_each_quantifier_it_declares() {
         "type F = fn<'a: Number>(x: i64) -> i64 throws 'a",
         "type F = fn<'a: Array<'b>, 'b: Array<'c>, 'c: Int>(x: 'a) -> i64",
         "type F = fn<'a: Number>(g: fn(x: 'a) -> i64) -> i64",
-        "type F = fn<'a: Int>(g: fn<'b: Array<'a>>(x: 'b) -> i64) -> i64",
     ] {
         parse_one(src).unwrap_or_else(|e| panic!("{src}: {e:#}"));
     }
@@ -2807,7 +2805,7 @@ fn a_fn_type_holds_each_quantifier_it_declares() {
 
 /// A bound that reaches its own variable is refused where it is written:
 /// directly, under a constructor or through another variable's bound. A
-/// bound naming another variable, or a nested fn type's own, is not.
+/// bound naming another variable is not.
 #[test]
 fn a_bound_reaching_its_own_variable_is_refused() {
     const NAMES: &str = "'a's bound names 'a: a bound may not reach its own variable";
@@ -2817,7 +2815,6 @@ fn a_bound_reaching_its_own_variable_is_refused() {
         ("type F = fn<'a: Array<'a>>(x: 'a) -> 'a", NAMES),
         ("type F = fn<'a: [i64, Array<'a>]>(x: 'a) -> 'a", NAMES),
         ("type F = fn<'a: Number + fn(x: 'a) -> i64>(x: 'a) -> i64", NAMES),
-        ("type F = fn(x: i64) -> fn<'a: 'a>(a: _) -> _ throws 'a", NAMES),
         ("type F = fn<'a: 'b, 'b: 'a>(x: 'a, y: 'b) -> 'a", THROUGH),
         ("type F = fn<'a: Array<'b>, 'b: [i64, ('a, 'b)]>(x: 'a) -> i64", THROUGH),
         ("let f: fn<'a: (i64, 'a)>(x: 'a) -> i64 = g", NAMES),
@@ -2827,15 +2824,7 @@ fn a_bound_reaching_its_own_variable_is_refused() {
         assert!(msg.contains("`type T = [i64, Array<T>]`, `'a: T`"), "{src}: {msg}");
     }
     for src in [
-        "trait A { val a: fn(self) -> fn<'a: 'a>(a: _) -> _ throws 'a }",
-        "val f: fn(a: `A(fn<'a: Array<'a>>(a: _) -> _ throws 'a)) -> _",
-    ] {
-        let msg = format!("{:#}", parse_sig(Origin::unspecified(src)).unwrap_err());
-        assert!(msg.contains(NAMES), "{src}: {msg}");
-    }
-    for src in [
         "type F = fn<'a: Array<'b>, 'b: Array<'c>, 'c: Int>(x: 'a) -> i64",
-        "type F = fn<'a: fn<'a: Int>(x: 'a) -> 'a>(x: 'a) -> i64",
         "type F = fn<'a: [Any, 'a]>(x: 'a) -> 'a",
     ] {
         parse_one(src).unwrap_or_else(|e| panic!("{src}: {e:#}"));
@@ -2872,13 +2861,36 @@ fn a_bound_naming_two_variables_keeps_both() {
     assert_ne!(both, one);
 }
 
-/// A nested signature prints the bound of its own variable, though a bound
-/// of an enclosing variable it names names the enclosing one alike.
+/// A function type declaring variables of its own inside another is
+/// refused where it is written, in any position: a parameter, the result,
+/// the throws, a bound, a variant's payload; one declaring none is not.
 #[test]
-fn a_nested_signature_prints_its_own_variables_bound() {
-    let src = "type F = fn<'b: Array<'z>, 'z: Any>(x: fn<'d: 'z, 'z: i64>(y: 'd) -> 'b, \
-               w: 'z) -> 'b";
-    assert_eq!(parse_one(src).unwrap().to_string(), src);
+fn a_quantified_signature_inside_another_is_refused() {
+    const WHY: &str = "a function type with type variables of its own";
+    for src in [
+        "let f = |g: fn<'a: Int>(x: i64, h: fn<'a: Int>(y: 'a) -> 'a) -> i64| 1",
+        "type F = fn<'a: Int>(g: fn<'b: Array<'a>>(x: 'b) -> i64) -> i64",
+        "type F = fn(x: i64) -> fn<'a: 'a>(a: _) -> _ throws 'a",
+        "type F = fn(x: i64) -> i64 throws fn<'a: Any>(a: 'a) -> 'a",
+        "type F = fn<'a: fn<'a: Int>(x: 'a) -> 'a>(x: 'a) -> i64",
+        "type F = Array<fn(g: fn<'b: Any>(x: 'b) -> 'b) -> i64>",
+    ] {
+        let msg = format!("{:#}", parse_one(src).unwrap_err());
+        assert!(msg.contains(WHY), "{src}: {msg}");
+    }
+    for src in [
+        "trait A { val a: fn(self) -> fn<'a: 'a>(a: _) -> _ throws 'a }",
+        "val f: fn(a: `A(fn<'a: Array<'a>>(a: _) -> _ throws 'a)) -> _",
+    ] {
+        let msg = format!("{:#}", parse_sig(Origin::unspecified(src)).unwrap_err());
+        assert!(msg.contains(WHY), "{src}: {msg}");
+    }
+    for src in [
+        "type F = fn<'a: Int>(g: fn(x: 'a, h: fn(y: 'a) -> 'a) -> 'a) -> 'a",
+        "type F = Array<fn<'b: Any>(x: 'b) -> 'b>",
+    ] {
+        parse_one(src).unwrap_or_else(|e| panic!("{src}: {e:#}"));
+    }
 }
 
 /// A refusal reads as its reason: the token after the refused fn type is
