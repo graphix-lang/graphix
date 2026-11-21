@@ -420,14 +420,14 @@ fn judge_hidden_defaults<R: Rt>(
     value: &FnType,
     narrowing: Narrowing,
 ) -> Result<()> {
-    let defs = distinct_defs(ctx, value);
+    let def = value.lambda_ids.own().and_then(|id| ctx.lambda_defs.get(&id).cloned());
     let mut bound =
         |env: &Env,
          _: &ArcStr,
          label: &Type,
          default: &Type,
          _: Option<CompactString>| { label.check_contains(env, default) };
-    for def in defs.iter() {
+    for def in def.iter() {
         let Some(f) = def.downcast_ref::<LambdaDef<R>>() else { continue };
         for (a, spec) in f.typ.args.iter().zip(f.argspec.iter()) {
             let (Some(name), Some(expr)) = (a.label(), spec.kind.default()) else {
@@ -468,22 +468,7 @@ fn judge_hidden_defaults<R: Rt>(
             ctx.leave_default(f.id, name);
             let raised = probe.raised(ctx);
             probe.close(ctx);
-            // CR claude for claude: [bug/medium] The note on this refusal comes from
-            // `met_default_note` over `written_defs`, which lists each compile of one
-            // lambda as a definition of its own: the definition's compile and every
-            // judgment's re-compile. The loop above judges `distinct_defs`. So a single
-            // defaulted function is told 'the functions met here share one #d: annotate
-            // the binding that holds them ...': `let f = |#w: fn(?#d: string, x: i64)
-            // -> string = |#d = 1, x: i64| cast<string>(d)$, x: i64| w(x); f(7)`, whose
-            // label is already written. one_met_default_names_no_annotation pins that
-            // one defaulted function gets no such note. Count distinct literals for the
-            // note (pass `distinct_defs`, or fold by `same_literal` in `met_defaults`).
-            // Then make functions.rs' closed-label fixtures, which show the wrong note
-            // today, assert that it is absent. probe:
-            // design/review-2026-11-16/repro/tests-functions-b-one-default-told-share-one.gx
-            // (tests-functions-b-01)
-            let node = node
-                .map_err(|e| met_default_note::<R>(e, &written_defs(ctx, value), name))?;
+            let node = node?;
             ctx.discard(node);
             if raised != Type::Bottom {
                 formal
@@ -501,90 +486,6 @@ fn judge_hidden_defaults<R: Rt>(
         }
     }
     Ok(())
-}
-
-/// [`written_defs`] with the compiles of one lambda over one environment
-/// as the first of them: every compile of a default links its lambda onto
-/// the label that holds it, each judgment of the default compiles it
-/// again, and all of them write the same defaults.
-fn distinct_defs<R: Rt>(ctx: &CompileCtx<R>, ft: &FnType) -> SmallVec<[Value; 2]> {
-    fn def<R: Rt>(v: &Value) -> Option<&LambdaDef<R>> {
-        v.downcast_ref::<LambdaDef<R>>()
-    }
-    let mut defs: SmallVec<[Value; 2]> = SmallVec::new();
-    for id in ft.lambda_ids.ids().iter() {
-        let Some(v) = ctx.lambda_defs.get(id) else { continue };
-        let Some(f) = def::<R>(v) else { continue };
-        let rec = ctx.rec_defs.contains(id);
-        let same = defs.iter_mut().find(|d| {
-            def::<R>(d)
-                .is_some_and(|g| g.same_literal(f) && ctx.rec_defs.contains(&g.id) == rec)
-        });
-        match same {
-            Some(d) if def::<R>(d).is_some_and(|g| f.id < g.id) => *d = v.clone(),
-            Some(_) => (),
-            None => defs.push(v.clone()),
-        }
-    }
-    defs.sort_by(|a, b| match (def::<R>(a), def::<R>(b)) {
-        (Some(a), Some(b)) => a.written_order(b),
-        (a, b) => b.is_some().cmp(&a.is_some()),
-    });
-    defs
-}
-
-/// The definitions a function of type `ft` may be, in the order the
-/// program writes them ([`LambdaDef::written_order`]); an id no definition
-/// is registered for comes last.
-fn written_defs<R: Rt>(ctx: &CompileCtx<R>, ft: &FnType) -> SmallVec<[Option<Value>; 2]> {
-    let mut defs: SmallVec<[Option<Value>; 2]> =
-        ft.lambda_ids.ids().iter().map(|id| ctx.lambda_defs.get(id).cloned()).collect();
-    sort_written::<R>(&mut defs);
-    defs
-}
-
-fn sort_written<R: Rt>(defs: &mut [Option<Value>]) {
-    fn def<R: Rt>(v: &Option<Value>) -> Option<&LambdaDef<R>> {
-        v.as_ref().and_then(|v| v.downcast_ref::<LambdaDef<R>>())
-    }
-    defs.sort_by(|a, b| match (def::<R>(a), def::<R>(b)) {
-        (Some(a), Some(b)) => a.written_order(b),
-        (a, b) => b.is_some().cmp(&a.is_some()),
-    });
-}
-
-/// A refused default of one of several functions met into one type,
-/// two or more of `defs` with a default for `name`, names the annotation
-/// that holds them all.
-fn met_default_note<R: Rt>(
-    e: anyhow::Error,
-    defs: &[Option<Value>],
-    name: &ArcStr,
-) -> anyhow::Error {
-    match met_defaults::<R>(defs, name) {
-        Some(note) => Told::over(e, &note),
-        None => e,
-    }
-}
-
-/// The annotation [`met_default_note`] names, where two or more of `defs`
-/// have a default for `name`.
-fn met_defaults<R: Rt>(defs: &[Option<Value>], name: &ArcStr) -> Option<CompactString> {
-    let defaulted =
-        defs.iter()
-            .filter_map(|d| d.as_ref().and_then(|v| v.downcast_ref::<LambdaDef<R>>()))
-            .filter(|f| {
-                f.typ.args.iter().zip(f.argspec.iter()).any(|(a, spec)| {
-                    a.label() == Some(name) && spec.kind.default().is_some()
-                })
-            })
-            .count();
-    (defaulted >= 2).then(|| {
-        format_compact!(
-            "the functions met here share one #{name}: annotate the binding that \
-             holds them with a function type whose #{name} holds every default"
-        )
-    })
 }
 
 /// Whose cells a hidden default's judgment may narrow.
@@ -669,8 +570,7 @@ pub(crate) fn check_hidden_defaults<R: Rt>(
 /// Whether a reader of `formal` finds every definition `value` may be:
 /// what holding `value` linked onto a function the declaration keeps.
 fn names_definitions(formal: &FnType, value: &FnType) -> bool {
-    let named = formal.lambda_ids.ids();
-    value.lambda_ids.ids().iter().all(|id| named.contains(id))
+    value.lambda_ids.own().is_none_or(|id| formal.lambda_ids.own() == Some(id))
 }
 
 /// Whether a function may stand somewhere in `t`, through bindings; a
@@ -702,7 +602,7 @@ fn holds_defaulted<R: Rt>(
     ensure_sufficient(|| match t {
         _ if t.shared_identity().is_some_and(|n| !seen.insert(n)) => false,
         Type::Fn(ft) => {
-            let defaulted = ft.lambda_ids.ids().iter().any(|id| {
+            let defaulted = ft.lambda_ids.own().iter().any(|id| {
                 ctx.lambda_defs
                     .get(id)
                     .and_then(|v| v.downcast_ref::<LambdaDef<R>>())
@@ -1337,7 +1237,7 @@ pub(crate) fn carried_out(
     value: &Type,
 ) -> Option<(ArcStr, TVar)> {
     let own: SmallVec<[LambdaId; 2]> = match value.deref_cloned() {
-        Some(Type::Fn(ref aft)) => aft.lambda_ids.ids().iter().copied().collect(),
+        Some(Type::Fn(ref aft)) => aft.lambda_ids.own().into_iter().collect(),
         _ => SmallVec::new(),
     };
     let is_foreign = |tv: &TVar| match tv.level() {

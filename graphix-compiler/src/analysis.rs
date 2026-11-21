@@ -851,7 +851,7 @@ pub(crate) fn def_body_facts<R: Rt>(
     let recursive = |cs: &CallSite<R>| {
         cs.fnode().typ().with_deref(|t| match t {
             Some(Type::Fn(ft)) => {
-                ft.lambda_ids.ids().iter().any(|id| ctx.rec_defs.contains(id))
+                ft.lambda_ids.own().is_some_and(|id| ctx.rec_defs.contains(&id))
             }
             _ => false,
         })

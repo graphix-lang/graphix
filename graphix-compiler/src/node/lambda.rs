@@ -1100,7 +1100,7 @@ impl<R: Rt> LambdaDef<R> {
     /// `rtype`, the type of what the body returns, names.
     fn hold_returned(&self, ctx: &CompileCtx<R>, rtype: &Type) {
         rtype.each_held_fn(&mut |ft| {
-            for id in ft.lambda_ids.ids().iter() {
+            for id in ft.lambda_ids.own().iter() {
                 let Some(inner) = ctx
                     .lambda_defs
                     .get(id)
@@ -1295,23 +1295,6 @@ pub struct ParamCalls {
     pub captured: SmallVec<[BindId; 2]>,
 }
 
-/// The order the program writes two places in: by their loads (a
-/// session's inputs in the order given), then their origins, then where
-/// each stands in its own.
-pub(crate) fn place_order(
-    a: (&Arc<Origin>, SourcePosition),
-    b: (&Arc<Origin>, SourcePosition),
-) -> Ordering {
-    let ori = if Arc::ptr_eq(a.0, b.0) {
-        Ordering::Equal
-    } else {
-        a.0.load
-            .cmp(&b.0.load)
-            .then_with(|| a.0.partial_cmp(b.0).unwrap_or(Ordering::Equal))
-    };
-    ori.then(a.1.cmp(&b.1))
-}
-
 impl<R: Rt> LambdaDef<R> {
     /// The dispatchers of the traits the definition's signature names as
     /// a bound.
@@ -1370,44 +1353,6 @@ impl<R: Rt> LambdaDef<R> {
             DefOrigin::Source { body: DefBody::BuiltIn(name), .. } => Some(name),
             _ => None,
         }
-    }
-
-    /// The order the program writes `self` and `other` in: a source
-    /// definition by its load (a session's inputs in the order given), then
-    /// its origin, then where its lambda is written, before one Rust built
-    /// at run time; the id decides only between two of one place.
-    pub(crate) fn written_order(&self, other: &Self) -> Ordering {
-        let place = match (&self.origin, &other.origin) {
-            (DefOrigin::Source { spec: a, .. }, DefOrigin::Source { spec: b, .. }) => {
-                place_order((&a.ori, a.pos), (&b.ori, b.pos))
-            }
-            (DefOrigin::Source { .. }, DefOrigin::Runtime) => Ordering::Less,
-            (DefOrigin::Runtime, DefOrigin::Source { .. }) => Ordering::Greater,
-            (DefOrigin::Runtime, DefOrigin::Runtime) => Ordering::Equal,
-        };
-        place.then(self.id.cmp(&other.id))
-    }
-
-    /// Whether `other` is another compile of this definition's lambda
-    /// where every name and every variable the definitions around it
-    /// declare means what it means here: the two write the same defaults
-    /// over the same bindings. False says nothing.
-    pub(crate) fn same_literal(&self, other: &Self) -> bool {
-        let declared = match (&self.origin, &other.origin) {
-            (
-                DefOrigin::Source { enclosing: a, .. },
-                DefOrigin::Source { enclosing: b, .. },
-            ) => {
-                let (a, b) = (&a.declared, &b.declared);
-                a.len() == b.len()
-                    && a.iter().zip(b.iter()).all(|(a, b)| a.cell_addr() == b.cell_addr())
-            }
-            (DefOrigin::Runtime, _) | (_, DefOrigin::Runtime) => false,
-        };
-        declared
-            && self.source == other.source
-            && self.scope.lexical == other.scope.lexical
-            && self.env.same_snapshot(&other.env)
     }
 
     /// `f` compiling an expression the signature holds, a labeled

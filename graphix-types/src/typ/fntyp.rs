@@ -20,7 +20,6 @@ use bytes::{Buf, BufMut};
 use compact_str::format_compact;
 use netidx_core::pack::{Pack, PackError, encode_varint};
 use netidx_derive::Pack;
-use nohash::IntSet;
 use parking_lot::RwLock;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
@@ -31,7 +30,7 @@ use std::{
     fmt::{self, Debug, Write},
     hash::{Hash, Hasher},
     ops::ControlFlow,
-    sync::{Arc as SArc, Weak},
+    sync::Arc as SArc,
     thread::LocalKey,
 };
 use triomphe::Arc;
@@ -155,49 +154,11 @@ impl FnArgType {
     }
 }
 
-#[derive(Debug, Clone)]
-struct Link(Weak<RwLock<LambdaIdsInner>>);
-
-impl Hash for Link {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        state.write_u64(crate::ids::mix(self.addr() as u64))
-    }
-}
-
-impl nohash::IsEnabled for Link {}
-
-impl PartialEq for Link {
-    fn eq(&self, other: &Self) -> bool {
-        Weak::ptr_eq(&self.0, &other.0)
-    }
-}
-
-impl Eq for Link {}
-
-impl Link {
-    fn upgrade(&self) -> Option<LambdaIds> {
-        Weak::upgrade(&self.0).map(LambdaIds)
-    }
-
-    fn addr(&self) -> usize {
-        Weak::as_ptr(&self.0) as usize
-    }
-}
-
-#[derive(Debug, Default)]
-struct LambdaIdsInner {
-    own: Option<LambdaId>,
-    links: IntSet<Link>,
-}
-
-#[derive(Debug, Clone)]
-pub struct LambdaIds(SArc<RwLock<LambdaIdsInner>>);
-
-impl Default for LambdaIds {
-    fn default() -> Self {
-        Self(SArc::new(RwLock::new(LambdaIdsInner::default())))
-    }
-}
+/// The definition a function type is the signature of, where it is one:
+/// shared by the type's clones, so a definition naming its signature after
+/// building it names it for every holder.
+#[derive(Debug, Clone, Default)]
+pub struct LambdaIds(SArc<RwLock<Option<LambdaId>>>);
 
 impl LambdaIds {
     pub(crate) fn addr(&self) -> usize {
@@ -205,84 +166,18 @@ impl LambdaIds {
     }
 
     pub fn set_id(&self, id: LambdaId) {
-        self.0.write().own = Some(id)
+        *self.0.write() = Some(id)
     }
 
-    /// The node of a fresh instantiation: carries this node's `own` id
-    /// and a one-way snapshot of its links, so what later unifies with
-    /// the instance lands on the copy and never reaches the def's node.
+    /// The node of a fresh copy of the signature: it names the same
+    /// definition, and naming it again reaches only the copy.
     pub(crate) fn instantiate(&self) -> LambdaIds {
-        let inner = self.0.read();
-        Self(SArc::new(RwLock::new(LambdaIdsInner {
-            own: inner.own,
-            links: inner.links.clone(),
-        })))
-    }
-
-    /// Every live linked id; dead links are pruned as the walk meets
-    /// them. Locks one node at a time. O(live linked nodes).
-    pub fn ids(&self) -> LPooled<IntSet<LambdaId>> {
-        let mut visited: LPooled<AddrSet> = LPooled::take();
-        let mut ids: LPooled<IntSet<LambdaId>> = LPooled::take();
-        let mut work: LPooled<Vec<LambdaIds>> = LPooled::take();
-        visited.insert(SArc::as_ptr(&self.0) as usize);
-        work.push(self.clone());
-        while let Some(node) = work.pop() {
-            let mut inner = node.0.write();
-            if let Some(id) = inner.own {
-                ids.insert(id);
-            }
-            inner.links.retain(|link| match link.upgrade() {
-                Some(next) => {
-                    if visited.insert(link.addr()) {
-                        work.push(next);
-                    }
-                    true
-                }
-                None => false,
-            });
-        }
-        ids
+        Self(SArc::new(RwLock::new(*self.0.read())))
     }
 
     #[doc(hidden)]
     pub fn own(&self) -> Option<LambdaId> {
-        self.0.read().own
-    }
-
-    // CR claude for claude: [bug/medium] `link` adds a `Weak` to both sides, and
-    // nothing prunes a node's set except an `ids()` walk. A std `Weak` keeps the dead
-    // node's allocation, so a long-lived signature that later compiles keep linking
-    // grows by one dead node and one set entry each time. A dynamic module whose sig
-    // declares a function val leaks about 100 bytes per reload this way, in both
-    // engines: check_val's `sig_matches` links the sig's FnType to each load's lambda,
-    // and massif shows `LambdaIds::default` under `Lambda::compile` plus this set as
-    // the heap that grows. Prune dead links here (`strong_count() == 0`) whenever the
-    // set has doubled since the last prune; that keeps `link` amortized O(1). The
-    // leaks.rs reload pins assert `held()` only and cannot see this. probe:
-    // design/review-2026-11-16/repro/x-leaks-reload-exported-fn.gx (x-leaks-03)
-    pub fn link(&self, other: &LambdaIds) {
-        self.0.write().links.insert(other.as_link());
-        other.0.write().links.insert(self.as_link());
-    }
-
-    /// A node that reaches every id `nodes` reach, which none of them
-    /// reaches back. It links what each node links as well as the node,
-    /// so it outlives a node that is itself a join.
-    pub fn joining(nodes: &[&LambdaIds]) -> LambdaIds {
-        let joined = LambdaIds::default();
-        {
-            let mut inner = joined.0.write();
-            for n in nodes {
-                inner.links.insert(n.as_link());
-                inner.links.extend(n.0.read().links.iter().cloned());
-            }
-        }
-        joined
-    }
-
-    fn as_link(&self) -> Link {
-        Link(SArc::downgrade(&self.0))
+        *self.0.read()
     }
 }
 
@@ -2700,25 +2595,6 @@ mod tests {
             !s.contains("'_"),
             "auto tvars should not leak into pretty output, got: {s}"
         );
-    }
-
-    /// A join of a join reaches the definitions the inner join reached
-    /// after the inner join is gone.
-    #[test]
-    fn a_join_outlives_the_join_it_joins() {
-        use super::LambdaIds;
-        use crate::LambdaId;
-        let defs: [LambdaIds; 3] = std::array::from_fn(|_| {
-            let node = LambdaIds::default();
-            node.set_id(LambdaId::new());
-            node
-        });
-        let inner = LambdaIds::joining(&[&defs[0], &defs[1]]);
-        let outer = LambdaIds::joining(&[&inner, &defs[2]]);
-        drop(inner);
-        let ids = outer.ids();
-        assert!(defs.iter().all(|d| d.own().is_some_and(|id| ids.contains(&id))));
-        assert!(defs.iter().all(|d| d.ids().len() == 1));
     }
 
     /// An implicit throws slot (an unbound auto TVar) is not printed.
