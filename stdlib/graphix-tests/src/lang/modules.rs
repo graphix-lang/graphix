@@ -1152,6 +1152,26 @@ run!(
     FuseExpect::None
 );
 
+// A module's check that feeds a binding the code around it left open into
+// a variable of its own decides nothing of it: the parent decides it after.
+run!(
+    module_feeding_an_open_outer_binding_leaves_it_open,
+    prints(r#""s""#),
+    "/test.gx" => r#"
+        let x = never();
+        mod m;
+        x <- "s";
+        let result = x
+    "#,
+    "/test/m.gxi" => "val g: fn(a: i64) -> i64;",
+    "/test/m.gx" => r#"
+        let g2 = 'x: Array<['a, null]> |y: 'x, d: 'a| -> 'a d;
+        let r = g2([1], super::x);
+        let g = |a: i64| a
+    "#;
+    FuseExpect::Jit
+);
+
 // A module with no interface writing a name its parent destructured from a
 // holder decides that holder value's copy, never the definition the
 // parent's other reads instantiate.

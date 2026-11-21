@@ -12,8 +12,8 @@ use crate::{
         node_addr,
         setops::{strictly_identical, union_identical},
         tvar::{
-            ArenaRef, CellFact, Cycle, Declared, Fresh, HeldQuantifiers, RigidGate,
-            Toward, current_arena, cycle_toward, settled_cause_note,
+            ArenaRef, Cycle, Declared, Fresh, HeldQuantifiers, RigidGate, Toward,
+            current_arena, cycle_toward, settled_cause_note,
         },
     },
 };
@@ -100,46 +100,6 @@ fn flatten_members(
 /// A rigid cell never unifies, so it makes no cycle.
 fn open_cell_reaches(a: &Type, b: &Type) -> bool {
     matches!(a, Type::TVar(tv) if !tv.is_bound() && !tv.is_rigid() && tv.would_cycle(b))
-}
-
-/// Does `t` reach a cell that is open, unconstrained and
-/// `cycle_refused`? Pure read through bindings and constraints.
-fn type_has_refused_open_cell(t: &Type) -> bool {
-    fn walk(t: &Type, visited: &mut AddrSet) -> bool {
-        ensure_sufficient(|| {
-            if let Some(node) = node_addr(t)
-                && !visited.insert(node)
-            {
-                return false;
-            }
-            match t {
-                Type::TVar(tv) => {
-                    if !visited.insert(tv.cell_addr()) {
-                        return false;
-                    }
-                    let (bound, cons, refused) = {
-                        let cell = tv.cell();
-                        let cell = cell.read();
-                        (
-                            cell.binding.clone(),
-                            cell.constraints.clone(),
-                            cell.facts.contains(CellFact::CycleRefused),
-                        )
-                    };
-                    if bound.is_none() && cons.is_empty() && refused {
-                        return true;
-                    }
-                    bound.iter().chain(cons.iter()).any(|c| walk(c, visited))
-                }
-                t => {
-                    let mut found = false;
-                    t.for_each_child(&mut |c| found |= walk(c, visited));
-                    found
-                }
-            }
-        })
-    }
-    walk(t, &mut LPooled::take())
 }
 
 /// True iff every conjunct of the cell's constraints contains `t`; one
@@ -1188,13 +1148,7 @@ impl Type {
     }
 
     fn contains_mismatch(&self, env: &Env, t: &Self) -> anyhow::Error {
-        // A refused open cell on either side is the infinite type,
-        // surfacing at a consumer; report it as the settle path does.
-        if type_has_refused_open_cell(self)
-            || type_has_refused_open_cell(t)
-            || open_cell_reaches(self, t)
-            || open_cell_reaches(t, self)
-        {
+        if open_cell_reaches(self, t) || open_cell_reaches(t, self) {
             return anyhow::Error::new(InfiniteType);
         }
         if let Some(e) = self.discernible_refusal(env, t) {
@@ -1973,9 +1927,7 @@ mod tests {
     }
 
     fn parsed(s: &str) -> Type {
-        let t = crate::expr::parser::parse_type(s).unwrap();
-        t.alias_tvars(&mut LPooled::take());
-        t
+        crate::expr::parser::parse_type(s).unwrap().named_in(&mut LPooled::take())
     }
 
     /// A type that shares its parts: 2^60 nodes as a tree.

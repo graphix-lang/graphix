@@ -67,7 +67,7 @@ pub mod tvar;
 
 pub use fntyp::{
     CopySites, FnArgKind, FnArgType, FnType, ParseDepth, ReadCopies,
-    check_bounds_acyclic, seed_conjuncts,
+    check_bounds_acyclic, declared_name, quantifiers_end, seed_conjuncts, written_name,
 };
 pub use tval::{Naked, NakedPrefix, PlainScalar, TVal};
 pub use tvar::TVar;
@@ -4110,7 +4110,7 @@ impl Type {
         copies: &mut AHashMap<usize, TVar>,
     ) -> Type {
         let mut copies = Copies::Cells(copies);
-        self.scope_refs_int(scope, &mut copies).unwrap_or_else(|| self.clone())
+        self.scope_refs_int(Some(scope), &mut copies).unwrap_or_else(|| self.clone())
     }
 
     /// [`Self::scope_refs`] where same-named variables are one variable:
@@ -4122,19 +4122,33 @@ impl Type {
         names: &mut AHashMap<ArcStr, TVar>,
     ) -> Type {
         let mut copies = Copies::Names(names, LPooled::take());
-        self.scope_refs_int(scope, &mut copies).unwrap_or_else(|| self.clone())
+        self.scope_refs_int(Some(scope), &mut copies).unwrap_or_else(|| self.clone())
     }
 
-    /// `None` when no `Ref` or `TVar` is beneath.
+    /// [`Self::scope_refs_named`] where the type's names stay as they
+    /// were scoped.
+    pub fn named_in(&self, names: &mut AHashMap<ArcStr, TVar>) -> Type {
+        let mut copies = Copies::Names(names, LPooled::take());
+        self.scope_refs_int(None, &mut copies).unwrap_or_else(|| self.clone())
+    }
+
+    /// `None` when no `Ref` or `TVar` is beneath; a `Ref` takes `scope`
+    /// where there is one.
     pub(super) fn scope_refs_int(
         &self,
-        scope: &ModPath,
+        scope: Option<&ModPath>,
         copies: &mut Copies,
     ) -> Option<Type> {
+        #[cfg(test)]
+        fntyp::TVAR_WALK_STEPS.with(|c| c.set(c.get() + 1));
         ensure_sufficient(|| self.scope_refs_int_inner(scope, copies))
     }
 
-    fn scope_refs_int_inner(&self, scope: &ModPath, copies: &mut Copies) -> Option<Type> {
+    fn scope_refs_int_inner(
+        &self,
+        scope: Option<&ModPath>,
+        copies: &mut Copies,
+    ) -> Option<Type> {
         match self {
             Type::TVar(tv) => {
                 if let Some(copy) = copies.get(tv) {
@@ -4179,7 +4193,8 @@ impl Type {
                 let params = Arc::from_iter(tr.params.iter().map(|t| {
                     t.scope_refs_int(scope, copies).unwrap_or_else(|| t.clone())
                 }));
-                Some(Type::Ref(Arc::new(tr.with_scope(scope.clone(), params))))
+                let scope = scope.unwrap_or(&tr.scope).clone();
+                Some(Type::Ref(Arc::new(tr.with_scope(scope, params))))
             }
             Type::Fn(ft) => Some(Type::Fn(Arc::new(ft.scope_refs_in(scope, copies)))),
             t => t.cow_children(&mut |c| c.scope_refs_int(scope, copies)),

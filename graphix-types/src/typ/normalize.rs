@@ -982,8 +982,7 @@ pub(super) mod tests {
         let parsed = crate::expr::parser::parse_type(
             "(fn(x: 'c) -> i64, fn(x: 'd) -> i64, fn(x: 'c) -> i64)",
         );
-        let t = parsed.unwrap();
-        t.alias_tvars(&mut AHashMap::default());
+        let t = parsed.unwrap().named_in(&mut AHashMap::default());
         let Type::Tuple(fs) = &t else { unreachable!() };
         let members = |t: &Type| match t {
             Type::Set(ms) => ms.len(),
@@ -1003,7 +1002,6 @@ pub(super) mod tests {
         let sig = "fn(y: 'c, z: 'd) -> [fn(q: 'c) -> i64, fn(q: 'd) -> i64]";
         for generic in [false, true] {
             let t = crate::expr::parser::parse_type(sig).unwrap();
-            t.alias_tvars(&mut AHashMap::default());
             let Type::Fn(ft) = &t else { unreachable!() };
             if generic {
                 ft.generalize(0)

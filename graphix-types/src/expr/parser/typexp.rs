@@ -16,7 +16,7 @@ use crate::{
     },
     typ::{
         Bound, FnArgKind, FnArgType, FnType, ParseDepth, TVar, Type, TypeRef,
-        check_bounds_acyclic,
+        check_bounds_acyclic, declared_name, quantifiers_end, written_name,
     },
 };
 use arcstr::{ArcStr, literal};
@@ -108,7 +108,7 @@ fn bound(i: &mut Input) -> R<LPooled<Vec<Type>>> {
 /// `'a: A + B`: a type variable and its bound.
 pub(super) fn tvar_bound(i: &mut Input) -> R<(TVar, LPooled<Vec<Type>>)> {
     i.spaces();
-    let tv = tvar(i)?;
+    let tv = declared_tvar(i)?;
     i.sptoken(':')?;
     Ok((tv, bound(i)?))
 }
@@ -116,7 +116,7 @@ pub(super) fn tvar_bound(i: &mut Input) -> R<(TVar, LPooled<Vec<Type>>)> {
 /// `'a`, or `'a: A + B`.
 pub(super) fn tvar_opt_bound(i: &mut Input) -> R<(TVar, Option<LPooled<Vec<Type>>>)> {
     i.spaces();
-    let tv = tvar(i)?;
+    let tv = declared_tvar(i)?;
     let b = i.optional(|i| {
         i.attempt(|i| i.sptoken(':'))?;
         bound(i)
@@ -211,6 +211,7 @@ fn fnshared(i: &mut Input) -> R<Arc<FnType>> {
     keyword(i, "fn")?;
     let _nest = ParseDepth::enter();
     let constraints = fnconstraints(i)?;
+    quantifiers_end();
     let mut args = fnargs(i)?;
     i.spstring("->")?;
     let rtype = typ(i)?;
@@ -266,9 +267,16 @@ fn fnshared(i: &mut Input) -> R<Arc<FnType>> {
     Ok(ft)
 }
 
+/// A type variable written in a type ([`written_name`]).
 pub(super) fn tvar(i: &mut Input) -> R<TVar> {
     i.token('\'')?;
-    fname(i).map(TVar::empty_generic)
+    fname(i).map(written_name)
+}
+
+/// A type variable a signature declares ([`declared_name`]).
+fn declared_tvar(i: &mut Input) -> R<TVar> {
+    i.token('\'')?;
+    fname(i).map(declared_name)
 }
 
 fn varianttyp(i: &mut Input) -> R<Type> {

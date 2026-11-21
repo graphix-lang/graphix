@@ -3101,7 +3101,7 @@ pub(crate) mod tests {
     #[test]
     fn dispatch_members_expand_a_name_per_open_cell() {
         let (env, t) = typed(&[("F<'t>", "['t, null]")], "(F<'a>, F<'b>, F<'a>)");
-        t.alias_tvars(&mut AHashMap::default());
+        let t = t.named_in(&mut AHashMap::default());
         let Type::Tuple(members) = &t else { unreachable!() };
         let t = Type::Set(members.clone());
         let members = Type::dispatch_members(&env, &t).unwrap();

@@ -354,6 +354,8 @@ thread_local! {
     static CUTS: Cell<u64> = const { Cell::new(0) };
     /// How deep signature parses nest on this thread.
     static PARSE_DEPTH: Cell<usize> = const { Cell::new(0) };
+    /// The variables of the signatures being parsed, innermost last.
+    static NAMES: RefCell<Vec<SigNames>> = const { RefCell::new(Vec::new()) };
     /// For the outermost signature's parse: each signature declared inside
     /// it, with the cells it holds from outside itself as its declaration
     /// left them, which the parse's walks read rather than walk it again.
@@ -432,12 +434,101 @@ pub struct ParseDepth;
 impl ParseDepth {
     pub fn enter() -> Self {
         PARSE_DEPTH.with(|d| d.set(d.get() + 1));
+        NAMES.with_borrow_mut(|n| n.push(SigNames::default()));
         ParseDepth
     }
 }
 
+/// One signature's variables while it parses: its own quantifiers, and in
+/// the outermost every other name its parse writes.
+struct SigNames {
+    own: AHashMap<ArcStr, TVar>,
+    /// While its quantifiers parse, the variables their bounds write by a
+    /// name the signature has not declared yet: which variable each is
+    /// waits for the declarations' end ([`quantifiers_end`]).
+    waiting: Option<Vec<(ArcStr, TVar)>>,
+}
+
+impl Default for SigNames {
+    fn default() -> Self {
+        Self { own: AHashMap::default(), waiting: Some(Vec::new()) }
+    }
+}
+
+/// The variable a signature's quantifier `name` is: the innermost
+/// signature's own, whatever an enclosing one names alike. Outside a
+/// signature's parse, a variable of its own.
+pub fn declared_name(name: ArcStr) -> TVar {
+    NAMES.with_borrow_mut(|n| match n.last_mut() {
+        Some(sig) => sig
+            .own
+            .entry(name.clone())
+            .or_insert_with(|| TVar::empty_generic(name))
+            .clone(),
+        None => TVar::empty_generic(name),
+    })
+}
+
+/// The variable `name` written in a type is: the quantifier of the
+/// innermost signature being parsed that declares it, else the outermost
+/// signature's variable of that name. One written in a signature's bounds
+/// before the signature's declarations end waits for them. Outside a
+/// signature's parse, a variable of its own, which the compile names
+/// ([`Type::scope_refs_named`]).
+pub fn written_name(name: ArcStr) -> TVar {
+    NAMES.with_borrow_mut(|n| {
+        let len = n.len();
+        name_in(n, len, name.clone(), || TVar::empty_generic(name))
+    })
+}
+
+/// The variable `name` is among the signatures `n[..upto]`: `found`'s
+/// handle where it waits there or is the first of its name.
+fn name_in(
+    n: &mut [SigNames],
+    upto: usize,
+    name: ArcStr,
+    found: impl FnOnce() -> TVar,
+) -> TVar {
+    for sig in n[..upto].iter_mut().rev() {
+        if let Some(tv) = sig.own.get(&name) {
+            return tv.clone();
+        }
+        if let Some(waiting) = &mut sig.waiting {
+            let tv = found();
+            waiting.push((name, tv.clone()));
+            return tv;
+        }
+    }
+    match n.first_mut() {
+        Some(outermost) => outermost.own.entry(name).or_insert_with(found).clone(),
+        None => found(),
+    }
+}
+
+/// The innermost signature's declarations are parsed: each variable its
+/// bounds wrote by a name it had not declared yet is the variable that
+/// name is now, its quantifier or an enclosing signature's.
+pub fn quantifiers_end() {
+    NAMES.with_borrow_mut(|n| {
+        let Some(i) = n.len().checked_sub(1) else { return };
+        for (name, tv) in n[i].waiting.take().unwrap_or_default() {
+            let named = match n[i].own.get(&name) {
+                Some(q) => q.clone(),
+                None => name_in(n, i, name, || tv.clone()),
+            };
+            if !named.same_cell(&tv) {
+                tv.point_at(&named)
+            }
+        }
+    })
+}
+
 impl Drop for ParseDepth {
     fn drop(&mut self) {
+        NAMES.with_borrow_mut(|n| {
+            n.pop();
+        });
         let outermost = PARSE_DEPTH.with(|d| {
             d.set(d.get() - 1);
             d.get() == 0
@@ -449,16 +540,6 @@ impl Drop for ParseDepth {
             }
         }
     }
-}
-
-/// Which names an alias walk aliases: every name it meets, or only those
-/// its map holds as it starts. A declaration inside another signature's
-/// parse aliases its own quantifiers alone; the enclosing declarations
-/// alias the rest, the outermost every name left.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum Aliasing {
-    Every,
-    Known,
 }
 
 /// `f` of the cells `ft` holds from outside itself, where it is a
@@ -489,33 +570,6 @@ pub(super) fn declared_free(
         }
     })
     .is_some()
-}
-
-/// Whether an alias walk over `known` aliasing `how` enters `ft`: a
-/// signature the parse in progress declared only where it names, from
-/// outside itself, a name the walk aliases.
-pub(super) fn aliases_into(
-    ft: &Arc<FnType>,
-    known: &AHashMap<ArcStr, TVar>,
-    how: Aliasing,
-) -> bool {
-    declared(ft, |free| match how {
-        Aliasing::Every => !free.is_empty(),
-        Aliasing::Known => free.iter().any(|(name, _)| known.contains_key(name)),
-    })
-    .unwrap_or(true)
-}
-
-/// Where `ft` is a signature the parse in progress declared, which an
-/// alias walk does not enter, the walk's scope `passed` meets the cells it
-/// holds from outside itself: one of the scope's own may hold a bound the
-/// scope passes.
-pub(super) fn meet_declared(ft: &Arc<FnType>, passed: &tvar::ConjunctsPassed) {
-    declared(ft, |free| {
-        for (_, tv) in free {
-            passed.meet(tv)
-        }
-    });
 }
 
 /// The cells `ft` holds into `known`: those its positions name, and,
@@ -828,32 +882,14 @@ fn on_cycles(start: &[usize], edges: &[(usize, usize)]) -> LPooled<Vec<bool>> {
     cyclic
 }
 
-/// Seed each conjunct on its quantifier's cell in `known`, aliasing every
-/// conjunct's own variables onto the quantifiers before any cell holds a
-/// conjunct, so no alias's occurs check walks a chain of bounds. A
-/// conjunct that reaches the cell it would bound is refused, as an alias
-/// that closes a cycle is: no cell holds itself through its bounds.
+/// Seed each conjunct on its quantifier's cell in `known`, whose variables
+/// the conjuncts' are already. A conjunct that reaches the cell it would
+/// bound is refused: no cell holds itself through its bounds.
 pub fn seed_conjuncts<'a>(
-    known: &mut AHashMap<ArcStr, TVar>,
+    known: &AHashMap<ArcStr, TVar>,
     constraints: impl IntoIterator<Item = (&'a TVar, Type)>,
 ) -> Result<()> {
-    seed_conjuncts_aliasing(known, &[], constraints, Aliasing::Every)
-}
-
-/// [`seed_conjuncts`] in the scope of the signature quantifying `own`, the
-/// conjuncts' variables aliased `how`.
-fn seed_conjuncts_aliasing<'a>(
-    known: &mut AHashMap<ArcStr, TVar>,
-    own: &[ArcStr],
-    constraints: impl IntoIterator<Item = (&'a TVar, Type)>,
-    how: Aliasing,
-) -> Result<()> {
-    let constraints: LPooled<Vec<(&TVar, Type)>> = constraints.into_iter().collect();
-    let passed = tvar::ConjunctsPassed::within(own);
-    for (_, tc) in constraints.iter() {
-        tc.alias_tvars_in(known, &passed, how);
-    }
-    for (tv, tc) in constraints.iter() {
+    for (tv, tc) in constraints {
         let q = &known[&tv.name];
         let tc = tc.normalize();
         if tvar::would_cycle_inner(&q.cell(), &tc) {
@@ -909,13 +945,13 @@ fn var_names(t: &Type) -> LPooled<Vec<ArcStr>> {
 
 impl FnType {
     /// `self` declaring `constraints`: its quantifiers are their names
-    /// in source order (a `+`-bound variable is one quantifier), and every
-    /// same-named tvar of the signature and of a conjunct is the
-    /// quantifier's, whose cell holds the conjuncts; refused where a
-    /// conjunct reaches its own cell ([`seed_conjuncts`]). Inside another
-    /// signature's parse ([`ParseDepth`]) only its own quantifiers are
-    /// aliased, every other name by the enclosing declarations
-    /// ([`Aliasing`]), and the cells it holds from outside itself
+    /// in source order (a `+`-bound variable is one quantifier), whose
+    /// cells hold the conjuncts; refused where a conjunct reaches its own
+    /// cell ([`seed_conjuncts`]). The signature's variables and its
+    /// conjuncts' are the quantifiers' already: a parse names each written
+    /// name once ([`written_name`]), a compile copies by name
+    /// ([`Type::scope_refs_named`]). Inside another signature's parse
+    /// ([`ParseDepth`]) the cells it holds from outside itself
     /// ([`collect_held`]) are recorded for the parse's walks.
     pub fn declaring(mut self, constraints: &[(TVar, Type)]) -> Result<Arc<Self>> {
         let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
@@ -941,16 +977,14 @@ impl FnType {
         // `Aliasing::Every` walk aliases every name, and the items named here go. Found
         // by reading; the refusals were run (35 positions), the deletion was not built.
         // (t-fntyp-05)
-        let nested = PARSE_DEPTH.with(|d| d.get()) > 1;
-        let how = if nested { Aliasing::Known } else { Aliasing::Every };
-        ft.alias_tvars_in(
-            &mut known,
-            &tvar::ConjunctsPassed::within(&ft.quantifiers),
-            how,
-        );
-        let constraints = constraints.iter().map(|(tv, tc)| (tv, tc.clone()));
-        seed_conjuncts_aliasing(&mut known, &ft.quantifiers, constraints, how)?;
-        if nested {
+        // 2026-11-21 claude: the alias walk is gone: a parse names each
+        // written name once per signature (`written_name`, `declared_name`),
+        // so `Aliasing`, `aliases_into` and `meet_declared` went with it.
+        // `DECLARED` and its readers (`declared`, `closed`, `declared_free`)
+        // stand, as the memo of the walks over a nested signature; the
+        // proposal stands as written.
+        seed_conjuncts(&known, constraints.iter().map(|(tv, tc)| (tv, tc.clone())))?;
+        if PARSE_DEPTH.with(|d| d.get()) > 1 {
             known.clear();
             collect_held(&ft, &mut known);
             let free = known.drain().filter(|(name, _)| !ft.quantifiers.contains(name));
@@ -1489,52 +1523,6 @@ impl FnType {
         .is_break()
     }
 
-    pub fn alias_tvars(&self, known: &mut AHashMap<ArcStr, TVar>) {
-        self.alias_scope(
-            known,
-            &tvar::ConjunctsPassed::within(&self.quantifiers),
-            Aliasing::Every,
-        )
-    }
-
-    pub(super) fn alias_tvars_in(
-        &self,
-        known: &mut AHashMap<ArcStr, TVar>,
-        passed: &tvar::ConjunctsPassed,
-        how: Aliasing,
-    ) {
-        self.for_each_part_passing(&mut (), |_, tv| passed.first(tv), &mut |_, t, _| {
-            t.alias_tvars_in(known, passed, how)
-        })
-    }
-
-    /// The alias walk over the signature quantifying `passed`'s scope: its
-    /// parts, then the conjuncts of each of its own cells the walk met
-    /// that no position names (one held through a bound, or through a
-    /// signature nested in it), until it meets no more.
-    pub(super) fn alias_scope(
-        &self,
-        known: &mut AHashMap<ArcStr, TVar>,
-        passed: &tvar::ConjunctsPassed,
-        how: Aliasing,
-    ) {
-        self.alias_tvars_in(known, passed, how);
-        let Some(_guard) =
-            Walking::enter_guard(&CONSTRAINING, self as *const FnType as usize)
-        else {
-            return;
-        };
-        while let Some(tv) = passed.next_met() {
-            if let Some(_cell) = Walking::enter_guard(&CONJUNCTS, tv.cell_addr())
-                && passed.first(&tv)
-            {
-                for tc in tv.cell_constraints() {
-                    tc.alias_tvars_in(known, passed, how)
-                }
-            }
-        }
-    }
-
     /// Each of the signature's own quantifiers, as the signature names it.
     pub fn each_quantifier(&self, mut f: impl FnMut(&ArcStr, &TVar)) {
         if self.quantifiers.is_empty() {
@@ -1600,23 +1588,10 @@ impl FnType {
     }
 
     /// A call's copy of the signature under the open gates `open`
-    /// (`Fresh::Instantiate`), each fresh cell the copy holds more than
-    /// once frozen, so it keeps its cell when it unifies with an unfrozen
-    /// one.
+    /// (`Fresh::Instantiate`).
     pub fn instantiate(&self, open: &IntSet<LambdaId>) -> Self {
         let mut known: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-        let fresh = self.reset_tvars_int(&mut known, Fresh::Instantiate(open));
-        let copies: LPooled<AHashSet<usize>> =
-            known.values().map(|tv| tv.cell_addr()).collect();
-        let mut occurrences = super::tvar::Occurrences::default();
-        fresh.for_each_part(&mut |t, _| t.tvar_occurrences(&mut occurrences));
-        for tv in occurrences.vars.iter() {
-            let addr = tv.cell_addr();
-            if occurrences.many(addr) && copies.contains(&addr) {
-                tv.freeze()
-            }
-        }
-        fresh
+        self.reset_tvars_int(&mut known, Fresh::Instantiate(open))
     }
 
     /// Mark generic every cell the signature reaches at `depth` or
@@ -2421,7 +2396,7 @@ impl FnType {
 
     pub fn scope_refs(&self, scope: &ModPath) -> Self {
         let mut copies: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-        self.scope_refs_in(scope, &mut super::Copies::Cells(&mut copies))
+        self.scope_refs_in(Some(scope), &mut super::Copies::Cells(&mut copies))
     }
 
     /// [`Type::scope_refs_named`] of this signature's parts: its own
@@ -2433,7 +2408,7 @@ impl FnType {
     ) -> Self {
         let mut copies = super::Copies::Names(names, LPooled::take());
         let mut fresh = self
-            .cow_walk(|t| t.scope_refs_int(scope, &mut copies))
+            .cow_walk(|t| t.scope_refs_int(Some(scope), &mut copies))
             .unwrap_or_else(|| self.clone());
         fresh.lambda_ids = self.lambda_ids.instantiate();
         fresh
@@ -2444,7 +2419,7 @@ impl FnType {
     /// compile's definitions.
     pub(super) fn scope_refs_in(
         &self,
-        scope: &ModPath,
+        scope: Option<&ModPath>,
         copies: &mut super::Copies,
     ) -> Self {
         let mut fresh = copies.within(&self.quantifiers, |copies| {
@@ -2837,8 +2812,9 @@ mod tests {
                 .collect();
             let mut known: AHashMap<_, _> =
                 declared.iter().map(|(q, _)| (q.name.clone(), q.clone())).collect();
-            let bounds = declared.iter().map(|(q, b)| (q, b.clone()));
-            seed_conjuncts(&mut known, bounds).map(|()| known)
+            let bounds: Vec<_> =
+                declared.iter().map(|(q, b)| (q, b.named_in(&mut known))).collect();
+            seed_conjuncts(&known, bounds).map(|()| known)
         };
         for (bounds, q) in [
             (&[("a", "Array<'a>")][..], "a"),
@@ -3157,7 +3133,7 @@ mod tests {
             ("print", |t, _| drop(t.to_string())),
             ("pretty", |t, _| drop(t.to_string_pretty(80).to_string())),
             ("compare", |t, u| assert!(t == u && t.cmp(u).is_eq())),
-            ("alias", |t, _| t.alias_tvars(&mut ahash::AHashMap::default())),
+            ("name", |t, _| drop(t.named_in(&mut ahash::AHashMap::default()))),
         ];
         let parse = |src: &str| -> Type {
             let ft: FnType = parse_fn_type(src).unwrap();
@@ -3572,7 +3548,6 @@ mod tests {
     #[test]
     fn polymorphic_sig_preserves_tvar_names() {
         let ft = parse_fn_type("fn(a: Array<'a>, @args: 'a) -> Array<'a>").unwrap();
-        ft.alias_tvars(&mut LPooled::take());
         let folded = ft.name_auto_variables(&[]);
         let resolved = folded.resolve_tvars();
         let s = format!("{}", crate::typ::Type::Fn(triomphe::Arc::new(resolved)));
@@ -3609,7 +3584,6 @@ mod tests {
     #[test]
     fn unbound_auto_throws_is_hidden() {
         let ft = parse_fn_type("fn(a: Array<'a>) -> i64").unwrap();
-        ft.alias_tvars(&mut LPooled::take());
         let folded = ft.name_auto_variables(&[]);
         let resolved = folded.resolve_tvars();
         let s = format!("{}", crate::typ::Type::Fn(triomphe::Arc::new(resolved)));
@@ -3621,7 +3595,6 @@ mod tests {
     #[test]
     fn explicit_throws_always_shown() {
         let ft = parse_fn_type("fn(x: 'a) -> 'a throws `Boom").unwrap();
-        ft.alias_tvars(&mut LPooled::take());
         let s = format!("{}", crate::typ::Type::Fn(triomphe::Arc::new(ft)));
         assert!(s.contains("throws"), "explicit throws should be shown, got: {s}");
         assert!(s.contains("`Boom"), "throws variant should be printed, got: {s}");
@@ -4386,16 +4359,14 @@ impl ReadWalk<'_> {
                 Type::Fn(ft) => {
                     let how = self.how();
                     let fresh = ft.reset_tvars_int(&mut self.copies.known, how);
-                    fresh.alias_tvars(&mut LPooled::take());
-                    Some(Type::Fn(Arc::new(fresh)))
+                    Some(Type::Fn(Arc::new(fresh)).named_in(&mut LPooled::take()))
                 }
                 Type::Ref(_) if t.copied_outside_functions(self.open) => {
                     let how = self.how();
                     let fresh = t
                         .reset_tvars_int(&mut self.copies.known, how)
                         .unwrap_or_else(|| t.clone());
-                    fresh.alias_tvars(&mut LPooled::take());
-                    Some(fresh)
+                    Some(fresh.named_in(&mut LPooled::take()))
                 }
                 t => t.cow_children(&mut |c| self.go(c)),
             };

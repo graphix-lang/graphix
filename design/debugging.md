@@ -35,7 +35,7 @@ or read it with env_mode as GRAPHIX_PRUNE is read. Found by reading; not run.
 | `GRAPHIX_PROFILE=1` | nested compiler phase accounting per root (`bench/profile.py` reads it; `design/jit_startup.md`) |
 | `GRAPHIX_PROFILE_INSTANCES=1` | with `GRAPHIX_PROFILE`, per-instance construction/check costs (`bench/instances.py`) |
 | `GRAPHIX_DBG_TVAL=1` | typed-printer render steps |
-| `GRAPHIX_DBG_CYCLE_BT=1` | a backtrace at every occurs-check refusal and every `AmbiguousMember` or `UndecidedTaker` refusal |
+| `GRAPHIX_DBG_CYCLE_BT=1` | a backtrace at every `AmbiguousMember` refusal |
 | `GRAPHIX_FUSE_SERIAL=1` | fusion visits every part in order on one context instead of fusing disjoint subtrees in tasks (A/B: the decisions must agree) |
 | `GRAPHIX_ABORT_ON_NO_MATCH=1` | an abort at a select no arm matched, a coverage hole (both engines report it once; the fuzzer's children set it, so a hole is a crash finding) |
 | `GRAPHIX_PAR_AUDIT=1` | a panic at a join whose right branch read what its left sibling published |

@@ -1,6 +1,5 @@
 use crate::{
     AddrMap, AddrSet, LambdaId,
-    dbgenv::graphix_dbg_bind,
     env::{Bind, Env},
     expr::{ModPath, Origin, TypeDefBody},
     image,
@@ -9,7 +8,6 @@ use crate::{
         Bound, FnType, Mutability, NodeKey, NodePairs, PRINT_FLAGS, PrintFlag, RefKey,
         TVarsSeen, Type,
         contains::{cell_admits, find_open_cell},
-        fntyp::Aliasing,
         node_addr,
         setops::{union_identical, written_identical},
     },
@@ -28,7 +26,7 @@ use smallvec::SmallVec;
 use std::{
     cell::{Cell, RefCell},
     cmp::Ordering,
-    collections::{VecDeque, hash_map::Entry},
+    collections::hash_map::Entry,
     fmt::{self, Debug},
     hash::Hash,
     mem::{self, ManuallyDrop},
@@ -952,87 +950,6 @@ fn count_write() -> u64 {
 #[derive(Debug, Default)]
 pub struct CellLock(RwLock<TCell>);
 
-/// The cells whose conjuncts an alias walk has passed under one scope of
-/// quantifier names: passing them again aliases nothing. A scope passes
-/// the cells of the quantifiers it declares alone: a cell declared
-/// outside it has its conjuncts aliased in its declarer's scope, never
-/// under names the scope declares. Each cell is held, so its address
-/// stays its own while the walk lasts.
-pub(super) struct ConjunctsPassed {
-    cells: RefCell<LPooled<AHashMap<usize, CellRef>>>,
-    own: LPooled<AHashSet<ArcStr>>,
-    /// The scope's own cells the walk met, in the order met, whose
-    /// conjuncts it passes at the scope's end ([`FnType::alias_scope`]).
-    met: RefCell<LPooled<VecDeque<TVar>>>,
-    /// In a nested signature's scope, the cells declared outside it that
-    /// the walk met, by cell, for the enclosing scope to meet.
-    outside: Option<RefCell<LPooled<AHashMap<usize, TVar>>>>,
-}
-
-impl ConjunctsPassed {
-    /// The scope of the signature quantifying `own`.
-    pub(super) fn within(own: &[ArcStr]) -> Self {
-        Self::scope(own, None)
-    }
-
-    /// The scope of a signature quantifying `own` nested in the walk's.
-    pub(super) fn nested(own: &[ArcStr]) -> Self {
-        Self::scope(own, Some(RefCell::new(LPooled::take())))
-    }
-
-    fn scope(
-        own: &[ArcStr],
-        outside: Option<RefCell<LPooled<AHashMap<usize, TVar>>>>,
-    ) -> Self {
-        let mut names: LPooled<AHashSet<ArcStr>> = LPooled::take();
-        names.extend(own.iter().cloned());
-        Self {
-            cells: RefCell::new(LPooled::take()),
-            own: names,
-            met: RefCell::new(LPooled::take()),
-            outside,
-        }
-    }
-
-    /// Whether `tv`'s cell is this scope's to pass, for the first time.
-    pub(super) fn first(&self, tv: &TVar) -> bool {
-        if !self.own.contains(&tv.name) {
-            return false;
-        }
-        let cell = tv.cell();
-        let addr = cell.data_ptr().addr();
-        self.cells.borrow_mut().insert(addr, cell).is_none()
-    }
-
-    /// The walk met `tv`'s cell: one of the scope's own it has not passed
-    /// waits for the scope's end, and in a nested scope one declared
-    /// outside it waits for the enclosing scope.
-    pub(super) fn meet(&self, tv: &TVar) {
-        if self.own.contains(&tv.name) {
-            if !self.cells.borrow().contains_key(&tv.cell_addr()) {
-                self.met.borrow_mut().push_back(tv.clone())
-            }
-        } else if let Some(outside) = &self.outside {
-            outside.borrow_mut().entry(tv.cell_addr()).or_insert_with(|| tv.clone());
-        }
-    }
-
-    /// The next of the scope's own cells the walk met.
-    pub(super) fn next_met(&self) -> Option<TVar> {
-        self.met.borrow_mut().pop_front()
-    }
-
-    /// The enclosing scope `to` meets the cells declared outside this one
-    /// that its walk met.
-    pub(super) fn meet_outside_in(&self, to: &Self) {
-        if let Some(outside) = &self.outside {
-            for (_, tv) in outside.borrow_mut().drain() {
-                to.meet(&tv)
-            }
-        }
-    }
-}
-
 impl CellLock {
     pub(crate) fn new(cell: TCell) -> Self {
         Self(RwLock::new(cell))
@@ -1664,30 +1581,6 @@ impl Naming {
             (NamedBy::Own, _) => into.clone(),
         }
     }
-
-    /// What two merged cells are, `a` and `b` being the handles the merge
-    /// met them through: a name a written variable gave a call's copy
-    /// stays the cell's, as does a written handle's where the other cell
-    /// is a call's copy.
-    fn merged(a: (&Naming, &TVar), b: (&Naming, &TVar)) -> Naming {
-        match (a.0.by(), b.0.by()) {
-            (NamedBy::Taken(_), _) => a.0.clone(),
-            (_, NamedBy::Taken(_)) => b.0.clone(),
-            (NamedBy::Own, NamedBy::Own) => Self::OWN,
-            (NamedBy::CallCopy, NamedBy::CallCopy) => Self::call_copy(),
-            (NamedBy::CallCopy, NamedBy::Own) => Self::of_copy_and(b.1),
-            (NamedBy::Own, NamedBy::CallCopy) => Self::of_copy_and(a.1),
-        }
-    }
-
-    /// A call's copy merged with the cell `t` is a handle of, whose own
-    /// name is a written variable's unless the checker made it up.
-    fn of_copy_and(t: &TVar) -> Naming {
-        match t.generated() {
-            true => Self::call_copy(),
-            false => Self::taken(t.name.clone()),
-        }
-    }
 }
 
 /// The shared binding cell: aliased `TVar`s hold one `Arc` of this.
@@ -1791,11 +1684,6 @@ impl Occurrences {
         }
         root
     }
-
-    /// Whether `cell` occurs more than once.
-    pub(crate) fn many(&self, cell: usize) -> bool {
-        self.many.get(&cell).is_some_and(|many| *many)
-    }
 }
 
 /// A judgment of a ground cell's binding the cell keeps
@@ -1832,10 +1720,6 @@ pub(crate) struct Kept {
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CellFact {
-    /// An occurs check refused to bind or link the cell (the only
-    /// solution was an infinite type). A flagged cell still open at the
-    /// terminal settle must error rather than default to ⊥.
-    CycleRefused,
     /// A ⊥ was produced into the cell while it was unbound. Every other
     /// production binds a cell or bounds it from below, so one still open
     /// once its writers are checked, with no lower bound but ⊥, had only ⊥
@@ -2092,14 +1976,11 @@ impl fmt::Display for BoundAt<'_> {
     }
 }
 
-/// A var's link to its binding cell; aliased vars share one cell.
+/// A var's link to its binding cell, which other vars may share.
 #[derive(Debug)]
 pub struct TVarLink {
     pub(crate) id: TVarId,
-    pub(crate) frozen: bool,
     pub(crate) cell: CellLink,
-    /// The compile task that created the var ([`written`]).
-    task: TaskId,
     /// The [`cell_writes`] count of the thread that last wrote the link.
     written: u64,
 }
@@ -2309,7 +2190,7 @@ impl Default for TVar {
     fn default() -> Self {
         let id = TVarId::new();
         let name = ArcStr::from(format_compact!("_{}", id.0).as_str());
-        Self::from_parts(name, id, false, CellRef::new(CellLock::default()))
+        Self::from_parts(name, id, CellRef::new(CellLock::default()))
     }
 }
 
@@ -2412,17 +2293,6 @@ pub(crate) fn handed_bounds(cons: &[Type], t: &Type, hand: &mut dyn FnMut(&TVar,
     }
 }
 
-/// How a merge treats the var being merged away.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Merge {
-    /// Name aliasing: once per var (`frozen` gates it), and the var
-    /// takes the survivor's id.
-    Name,
-    /// Unification of two cells: a rigid cell survives whichever side
-    /// it is on.
-    Cells,
-}
-
 impl TVar {
     pub fn scope_refs(&self, scope: &ModPath) -> Self {
         match &Type::TVar(self.clone()).scope_refs(scope) {
@@ -2432,7 +2302,7 @@ impl TVar {
     }
 
     pub fn empty_named(name: ArcStr) -> Self {
-        Self::from_parts(name, TVarId::new(), false, CellRef::new(CellLock::default()))
+        Self::from_parts(name, TVarId::new(), CellRef::new(CellLock::default()))
     }
 
     /// A fresh variable no definition owns yet, as written in source.
@@ -2528,40 +2398,38 @@ impl TVar {
         Self::from_parts(
             name,
             TVarId::new(),
-            false,
             CellRef::new(CellLock::new(TCell::bound(typ))),
         )
     }
 
     /// A wrapper over an existing cell, as an image restores it.
-    pub(crate) fn from_parts(
-        name: ArcStr,
-        id: TVarId,
-        frozen: bool,
-        cell: CellRef,
-    ) -> Self {
+    pub(crate) fn from_parts(name: ArcStr, id: TVarId, cell: CellRef) -> Self {
         Self(ManuallyDrop::new(Arc::new(TVarInner {
             name,
-            link: RwLock::new(TVarLink {
-                id,
-                frozen,
-                cell: cell.link(),
-                task: TASK.get(),
-                written: 0,
-            }),
+            link: RwLock::new(TVarLink { id, cell: cell.link(), written: 0 }),
         })))
     }
 
     /// The same cell under another name.
     pub fn renamed(&self, name: ArcStr) -> Self {
-        let (_, frozen, cell) = self.parts();
-        Self::from_parts(name, TVarId::new(), frozen, cell)
+        let (_, cell) = self.parts();
+        Self::from_parts(name, TVarId::new(), cell)
     }
 
-    /// The wrapper's id and frozen flag, and its cell.
-    pub(crate) fn parts(&self) -> (TVarId, bool, CellRef) {
+    /// Point this handle at `other`'s cell: a variable a parse wrote by a
+    /// name before it knew which variable the name is, whose own cell
+    /// holds nothing yet ([`super::fntyp::quantifiers_end`]).
+    pub(crate) fn point_at(&self, other: &TVar) {
+        let (id, cell) = other.parts();
+        let mut l = self.write();
+        l.cell = cell.link();
+        l.id = id;
+    }
+
+    /// The wrapper's id and its cell.
+    pub(crate) fn parts(&self) -> (TVarId, CellRef) {
         let link = self.read();
-        (link.id, link.frozen, link.cell.upgrade())
+        (link.id, link.cell.upgrade())
     }
 
     /// Identity of the wrapper: equal for clones of one `TVar`.
@@ -2885,6 +2753,22 @@ impl TVar {
     /// binding's are.
     pub(crate) fn add_lower(&self, t: Type) {
         let cell = self.cell();
+        // CR claude for claude: [risk/medium] `new_conjuncts` runs its identity walk
+        // here under the read guards of both cells (the temporaries of `o_cell.read()`
+        // and `s_cell.read()` live to the end of the statement), though the comment
+        // above says the dedup is computed lock-free because the walk can re-enter
+        // these cells. `add_lower`'s `held` and `TVar`'s `PartialEq` and `Ord` walk
+        // under a cell's read guard the same way. A second read of a
+        // `parking_lot::RwLock` on one thread blocks behind a queued writer, and
+        // another compile task queues one on a shared cell at any time (`mark_ground`,
+        // `CycleWalk::number`, every `claim`), so a parallel module check can deadlock.
+        // Clone the bounds and bindings out before walking them, as `mine` and `theirs`
+        // are. `TCell::add_constraint`'s doc forbids running it under a cell guard,
+        // while its `&mut TCell` exists only under one. Found by reading; not run.
+        // (t-tvar-a-04)
+        // 2026-11-21 claude: moved here from `TVar::merge_one`, deleted with name
+        // merging; the walk it named there is gone, and `held` below and `TVar`'s
+        // `PartialEq` and `Ord` still walk under a cell's read guard.
         let held = |m: &Type| {
             cell.read().lower.iter().any(|e| union_identical(e, m) || union_member(e, m))
         };
@@ -2912,300 +2796,6 @@ impl TVar {
         let mut link = self.link.write();
         link.written = writes;
         link
-    }
-
-    /// Make self an alias for other; self's constraints merge into the
-    /// shared cell. A var of an earlier compile task keeps its name: the
-    /// other takes it, or, named already, the two merge as cells.
-    pub fn alias(&self, other: &Self) {
-        self.merge_into(other, Merge::Name)
-    }
-
-    /// Whether self's cell merged into other's would be reachable from
-    /// its own contents.
-    // CR claude for claude: [bug/high] The walk covers the merged cell's conjuncts and
-    // never its lower bounds, which `merge_one` moves into the survivor all the same. A
-    // cell standing above `Array<w>` merged into `w` (a `Singleton` bound's
-    // `UnionParts::merge_open`, which has no check before this one) leaves `w` above an
-    // array of itself, and the definition's check allocates until it is killed; with
-    // the select's arms the other way round the merge runs the other way and is
-    // refused. Walk the lower bounds too: refuse one that reaches the survivor under a
-    // constructor (`cycle_toward`), drop one that is the survivor. probe:
-    // design/review-2026-11-16/repro/t-tvar-a-merge-lower-bound-cycle-oom.gx
-    // (t-tvar-a-03)
-    fn closes_cycle(&self, other: &Self) -> bool {
-        let (s_cell, o_cell) = (self.cell(), other.cell());
-        let scons = s_cell.read().constraints.clone();
-        would_cycle_inner(&s_cell, &Type::TVar(other.clone()))
-            || scons.iter().any(|c| would_cycle_inner(&o_cell, c))
-    }
-
-    /// Merge self's cell into other's for a unification-driven merge:
-    /// bypasses the `frozen` gate [`Self::alias`] honors (frozen means
-    /// name-aliasing already happened) but keeps its occurs checks.
-    /// A rigid cell is the survivor whichever side it is on: its gate
-    /// counts on that cell, and a var re-pointed away from it would
-    /// read as free for the rest of the def's check and take a binding.
-    /// Otherwise the older compile task's cell survives, and two cells of
-    /// earlier tasks stay apart ([`written`]).
-    pub(super) fn alias_cells(&self, other: &Self) {
-        self.merge_into(other, Merge::Cells)
-    }
-
-    fn merge_into(&self, other: &Self, how: Merge) {
-        let mut absorbed: SmallVec<[(TVar, TVar); 2]> = SmallVec::new();
-        self.merge_one(other, how, &mut absorbed);
-        while let Some((o, into)) = absorbed.pop() {
-            o.merge_one(&into, Merge::Cells, &mut absorbed);
-            if !o.same_cell(&into) {
-                let cell = into.cell();
-                let mut c = cell.write();
-                if decided(&c) {
-                    c.lower.push(Type::TVar(o))
-                }
-            }
-        }
-    }
-
-    /// One merge of [`Self::merge_into`]; each open cell it would move below
-    /// a rigid survivor goes on top of `absorbed`, the first on top, with
-    /// that survivor, to merge into it next.
-    fn merge_one(
-        &self,
-        other: &Self,
-        how: Merge,
-        absorbed: &mut SmallVec<[(TVar, TVar); 2]>,
-    ) {
-        if how == Merge::Cells
-            && !other.is_rigid()
-            && (self.is_rigid() || self.cell().read().task < other.cell().read().task)
-        {
-            return other.merge_one(self, how, absorbed);
-        }
-        let (s_cell, o_cell) = (self.cell(), other.cell());
-        let earlier = (earlier_task(&s_cell.read()), earlier_task(&o_cell.read()));
-        match earlier {
-            // two cells earlier tasks made stay apart; the unification this
-            // check needed of them is a decision it may not make
-            (true, true) => {
-                if !CellRef::ptr_eq(&s_cell, &o_cell) {
-                    written_of(
-                        s_cell.read().task,
-                        "cell",
-                        Some(s_cell.data_ptr().addr()),
-                    );
-                }
-                return;
-            }
-            (true, false) if how == Merge::Name => {
-                let frozen = other.read().frozen;
-                return match frozen {
-                    false => other.merge_one(self, Merge::Name, absorbed),
-                    true => self.merge_one(other, Merge::Cells, absorbed),
-                };
-            }
-            _ => (),
-        }
-        let same = CellRef::ptr_eq(&s_cell, &o_cell);
-        if how == Merge::Name && self.read().frozen {
-            return;
-        }
-        if !same {
-            // Occurs check: a merged cell reachable from its own contents
-            // is an infinite type every later walk loops on. Skipping the
-            // merge only keeps inference looser.
-            let (s_addr, o_addr) = (s_cell.data_ptr().addr(), o_cell.data_ptr().addr());
-            if self.closes_cycle(other) {
-                if graphix_dbg_bind() {
-                    eprintln!(
-                        "ALIAS-REFUSE {}({s_addr:x}) -> {}({o_addr:x}): the merge closes a cycle",
-                        self.name, other.name
-                    );
-                }
-                self.mark_cycle_refused();
-                other.mark_cycle_refused();
-                return;
-            }
-            // A bound cell's binding would be lost for this var.
-            if s_cell.read().binding.is_some() {
-                if graphix_dbg_bind() {
-                    eprintln!("ALIAS-REFUSE {}({s_addr:x}): bound", self.name);
-                }
-                return;
-            }
-        }
-        // Dedup computed lock-free: the identity walk can re-enter these cells.
-        let (mut to_add, facts) = if same {
-            (LPooled::take(), BitFlags::empty())
-        } else {
-            let mine = s_cell.read().constraints.clone();
-            let theirs = o_cell.read().constraints.clone();
-            let conjuncts = new_conjuncts(&theirs, mine);
-            let s = s_cell.read();
-            (conjuncts, s.facts)
-        };
-        // CR claude for claude: [risk/medium] `new_conjuncts` runs its identity walk
-        // here under the read guards of both cells (the temporaries of `o_cell.read()`
-        // and `s_cell.read()` live to the end of the statement), though the comment
-        // above says the dedup is computed lock-free because the walk can re-enter
-        // these cells. `add_lower`'s `held` and `TVar`'s `PartialEq` and `Ord` walk
-        // under a cell's read guard the same way. A second read of a
-        // `parking_lot::RwLock` on one thread blocks behind a queued writer, and
-        // another compile task queues one on a shared cell at any time (`mark_ground`,
-        // `CycleWalk::number`, every `claim`), so a parallel module check can deadlock.
-        // Clone the bounds and bindings out before walking them, as `mine` and `theirs`
-        // are. `TCell::add_constraint`'s doc forbids running it under a cell guard,
-        // while its `&mut TCell` exists only under one. Found by reading; not run.
-        // (t-tvar-a-04)
-        let mut below = match same {
-            true => LPooled::take(),
-            false => new_conjuncts(&o_cell.read().lower, s_cell.read().lower.clone()),
-        };
-        // a rigid cell holds only itself: an open cell below it is it
-        let mut absorb: SmallVec<[TVar; 2]> = SmallVec::new();
-        if o_cell.read().rigid_gates > 0 {
-            below.retain(|l| match l {
-                Type::TVar(v) => match v.open_cell() {
-                    Some(o)
-                        if !o.is_rigid()
-                            && !CellRef::ptr_eq(&o.cell(), &s_cell)
-                            && !CellRef::ptr_eq(&o.cell(), &o_cell) =>
-                    {
-                        absorb.push(o);
-                        false
-                    }
-                    _ => true,
-                },
-                _ => true,
-            });
-        }
-        let oid = other.read().id;
-        if !same {
-            let s_task = s_cell.read().task;
-            let o_task = o_cell.read().task;
-            let var_task = self.read().task;
-            let into = || Some(Type::TVar(other.clone()));
-            let from = || Some(Type::TVar(self.clone()));
-            // CR claude for claude: [bug/high] A merge of this task's cell into a cell
-            // an earlier task made asks `decided_of` of the survivor only when
-            // conjuncts move (`to_add`); the lower bounds in `below` are pushed into it
-            // unrecorded. So a module's check decides its parent's open binding without
-            // being refused (`let x = never()` in the parent, `g2([1], super::x)` over
-            // `'x: Array<['a, null]> |y: 'x, d: 'a|` in the module: x is i64
-            // afterwards), and a sibling whose own `add_lower` of that bound finds it
-            // held returns before `decided_as`: the check of two sibling modules is
-            // accepted or refused by the schedule (14 of 20 runs accepted). Ask
-            // `decided_of(o_task, ..)` when `below` is not empty too, and pin the
-            // single module's refusal. probe:
-            // design/review-2026-11-16/repro/t-tvar-a-sibling-modules-lower-bound-race.sh
-            // (t-tvar-a-01)
-            if !decided_of(s_task, "cell", Some(s_cell.data_ptr().addr()), into)
-                || (!to_add.is_empty()
-                    && !decided_of(o_task, "cell", Some(o_cell.data_ptr().addr()), from))
-                || !decided_of(var_task, "var", None, || None)
-            {
-                return;
-            }
-        }
-        let mut s = self.write();
-        if same && how == Merge::Name && (!s.frozen || s.id != oid) {
-            written_of(s.task, "var", None);
-        }
-        if how == Merge::Name {
-            s.frozen = true;
-            s.id = oid;
-        }
-        if same {
-            return;
-        }
-        if graphix_dbg_bind() && how == Merge::Cells {
-            eprintln!(
-                "CELL-MERGE '{}({:x}) <=> '{}({:x})",
-                self.name,
-                s_cell.data_ptr().addr(),
-                other.name,
-                o_cell.data_ptr().addr()
-            );
-        }
-        let (level, s_naming) = {
-            let s = s_cell.read();
-            (s.level, s.naming.clone())
-        };
-        let o_naming = o_cell.read().naming.clone();
-        let naming = Naming::merged((&s_naming, self), (&o_naming, other));
-        let moved: LPooled<Vec<Type>> =
-            to_add.iter().chain(below.iter()).cloned().collect();
-        {
-            let mut oc = o_cell.write();
-            if oc.binding.is_some() && !(to_add.is_empty() && below.is_empty()) {
-                bound_cell_changes();
-            }
-            oc.constraints.extend(to_add.drain(..));
-            oc.lower.extend(below.drain(..));
-            if !earlier_task(&oc) {
-                oc.facts |= facts;
-                oc.naming = naming;
-            } else if !oc.facts.contains(facts) {
-                written_of(oc.task, "cell", Some(cell_addr(&oc)));
-            }
-        }
-        // Forward-link the abandoned cell: other TVars may share it and
-        // must follow the merge. The occurs check above guarantees the
-        // link closes no cycle.
-        {
-            let mut sc = s_cell.write();
-            sc.set_binding(Some(Type::TVar(other.clone())));
-        }
-        s.cell = o_cell.link();
-        drop(s);
-        if !level.is_generic() {
-            other.claim(level)
-        }
-        let at = other.level();
-        for t in moved.iter() {
-            lower(t, at)
-        }
-        absorbed.extend(absorb.into_iter().rev().map(|o| (o, other.clone())));
-    }
-
-    /// [`Self::alias`] by an enclosing scope's same-named var: one a nested
-    /// fn type named alike already (its own quantifiers never reach here)
-    /// is the enclosing scope's, and takes its name again.
-    fn alias_enclosing(&self, other: &Self) {
-        let (id, cell) = {
-            let o = other.read();
-            (o.id, o.cell.upgrade())
-        };
-        let renamed = {
-            let mut l = self.write();
-            let renamed =
-                l.frozen && l.id != id && decided_of(l.task, "var", None, || None);
-            if renamed {
-                l.frozen = false;
-            }
-            renamed
-        };
-        // a sibling of the nested group merged first: this var's cell
-        // already forwards to the enclosing one
-        if renamed
-            && let Some(end) = self.open_cell()
-            && CellRef::ptr_eq(&end.cell(), &cell)
-        {
-            let mut l = self.write();
-            l.cell = cell.link();
-            l.id = id;
-            l.frozen = true;
-            return;
-        }
-        self.alias(other)
-    }
-
-    pub fn freeze(&self) {
-        let mut l = self.write();
-        if !l.frozen && !decided_of(l.task, "var", None, || None) {
-            return;
-        }
-        l.frozen = true;
     }
 
     /// Whether the cell holds the `Concrete` conjunct.
@@ -3314,27 +2904,6 @@ impl TVar {
     #[doc(hidden)]
     pub fn bottom_fed(&self) -> bool {
         self.cell().read().facts.contains(CellFact::BottomFed)
-    }
-
-    /// Record an occurs-check refusal; see [`CellFact::CycleRefused`].
-    pub(super) fn mark_cycle_refused(&self) {
-        if graphix_dbg_bind() {
-            eprintln!("CYCLE-REFUSED '{}({:x})", self.name, self.cell_addr());
-        }
-        if crate::dbgenv::graphix_dbg_cycle_bt() {
-            eprintln!(
-                "CYCLE-REFUSED '{}({:x})\n{}",
-                self.name,
-                self.cell_addr(),
-                std::backtrace::Backtrace::force_capture()
-            );
-        }
-        let cell = self.cell();
-        let mut c = cell.write();
-        if !c.facts.contains(CellFact::CycleRefused) && !decided(&c) {
-            return;
-        }
-        c.facts |= CellFact::CycleRefused;
     }
 
     pub(super) fn would_cycle(&self, t: &Type) -> bool {
@@ -4344,7 +3913,6 @@ impl Type {
         if self.union_parts(None, &mut parts).is_err() {
             return;
         }
-        parts.merge_open();
         if let Some(narrow) = parts.narrowing() {
             for tv in parts.open.iter() {
                 hand(tv, narrow.clone())
@@ -4551,58 +4119,6 @@ impl Type {
                 }
                 t.for_each_child(&mut |c| c.tvar_occurrences(out))
             }
-        })
-    }
-
-    /// Alias type variables with the same name to each other.
-    pub fn alias_tvars(&self, known: &mut AHashMap<ArcStr, TVar>) {
-        self.alias_tvars_in(known, &ConjunctsPassed::within(&[]), Aliasing::Every)
-    }
-
-    pub(super) fn alias_tvars_in(
-        &self,
-        known: &mut AHashMap<ArcStr, TVar>,
-        passed: &ConjunctsPassed,
-        how: Aliasing,
-    ) {
-        #[cfg(test)]
-        super::fntyp::TVAR_WALK_STEPS.with(|c| c.set(c.get() + 1));
-        ensure_sufficient(|| match self {
-            Type::TVar(tv) => {
-                match known.entry(tv.name.clone()) {
-                    Entry::Occupied(e) => {
-                        let v = e.get();
-                        v.freeze();
-                        tv.alias_enclosing(v);
-                    }
-                    Entry::Vacant(e) => {
-                        if how == Aliasing::Every {
-                            e.insert(tv.clone());
-                        }
-                    }
-                }
-                passed.meet(tv)
-            }
-            Type::Fn(ft) if !super::fntyp::aliases_into(ft, known, how) => {
-                super::fntyp::meet_declared(ft, passed)
-            }
-            // a nested fn type's own quantifiers are its own, whatever an
-            // enclosing signature names alike
-            Type::Fn(ft) if !ft.quantifiers.is_empty() => {
-                let outer: SmallVec<[(ArcStr, Option<TVar>); 4]> =
-                    ft.quantifiers.iter().map(|q| (q.clone(), known.remove(q))).collect();
-                let inner = ConjunctsPassed::nested(&ft.quantifiers);
-                ft.alias_scope(known, &inner, how);
-                for (q, tv) in outer {
-                    known.remove(&q);
-                    if let Some(tv) = tv {
-                        known.insert(q, tv);
-                    }
-                }
-                inner.meet_outside_in(passed)
-            }
-            Type::Fn(ft) => ft.alias_tvars_in(known, passed, how),
-            t => t.for_each_child(&mut |c| c.alias_tvars_in(known, passed, how)),
         })
     }
 
@@ -6213,30 +5729,6 @@ mod tests {
         assert_eq!(a.cmp(&c), Ordering::Greater);
     }
 
-    /// Two chains of bounds merged link by link, first link first or last
-    /// link first, walk each link a few times in all: a merge's occurs
-    /// checks pass by the links numbered below it.
-    #[test]
-    fn merging_two_chains_of_bounds_walks_each_link_once() {
-        let n = 2000;
-        for last_first in [false, true] {
-            let (a, b) = (chain_of_bounds("a", n), chain_of_bounds("b", n));
-            let mut order: Vec<usize> = (0..n).collect();
-            if last_first {
-                order.reverse()
-            }
-            CYCLE_CELLS.set(0);
-            for i in order {
-                assert!(!would_cycle_inner(&a[i].cell(), &Type::TVar(b[i].clone())));
-                assert!(!would_cycle_inner(&b[i].cell(), &Type::TVar(a[i].clone())));
-                a[i].alias_cells(&b[i]);
-                assert!(a[i].same_cell(&b[i]));
-            }
-            let walked = CYCLE_CELLS.get();
-            assert!(walked <= 40 * n, "{walked} cells walked, last first: {last_first}");
-        }
-    }
-
     /// Two threads that read one chain of open cells, as two compile tasks
     /// read an earlier task's, each number what they walked: every link
     /// still answers for the links it reaches.
@@ -6316,7 +5808,6 @@ mod tests {
                                 2 if !a.is_bound() && !reaches(b, a) => {
                                     a.bind(array_of(b))
                                 }
-                                3 => a.alias_cells(&own[rand(o)]),
                                 4 => a.unbind(),
                                 _ => (),
                             }
@@ -6347,47 +5838,6 @@ mod tests {
             }
             t => t.for_each_child(&mut |c| reached_afresh(c, seen)),
         })
-    }
-
-    /// A chain of open cells, each the lower bound of the next, merged
-    /// below a rigid cell: every one becomes that cell, one merge after
-    /// another, never a recursion as deep as the chain.
-    #[test]
-    fn a_chain_below_a_rigid_cell_merges_into_it_flat() {
-        let n = 4000;
-        std::thread::Builder::new()
-            .stack_size(256 * 1024)
-            .spawn(move || {
-                let rigid = TVar::empty_named(literal!("c"));
-                let _gate = rigid.open_rigid();
-                let cells: Vec<TVar> =
-                    (0..n).map(|i| TVar::empty_named(arcstr::format!("_{i}"))).collect();
-                for w in cells.windows(2) {
-                    w[1].add_lower(Type::TVar(w[0].clone()))
-                }
-                cells[n - 1].alias_cells(&rigid);
-                assert!(cells.iter().all(|c| c.same_cell(&rigid)));
-            })
-            .expect("spawn")
-            .join()
-            .expect("the merges")
-    }
-
-    // Open cells below a merged cell go into the rigid survivor in their
-    // order there: `x ⊇ o1, o2` with `o1 ⊇ Array<o2>` merges o1 first, so o2,
-    // which the survivor then reaches through o1's bound, is refused by the
-    // occurs check and stays a lower bound.
-    #[test]
-    fn cells_below_a_rigid_cell_merge_into_it_in_order() {
-        let rigid = TVar::empty_named(literal!("c"));
-        let _gate = rigid.open_rigid();
-        let [x, o1, o2] = ["x", "o1", "o2"].map(|n| TVar::empty_named(n.into()));
-        o1.add_lower(Type::Array(Arc::new(Type::TVar(o2.clone()))));
-        x.add_lower(Type::TVar(o1.clone()));
-        x.add_lower(Type::TVar(o2.clone()));
-        x.alias_cells(&rigid);
-        assert!(x.same_cell(&rigid) && o1.same_cell(&rigid));
-        assert!(!o2.same_cell(&rigid));
     }
 
     /// A copy of a chain of cells bound each to the next walks each link
@@ -6494,14 +5944,6 @@ mod tests {
         assert!(steps <= 4 * n + 128, "{steps} steps over a DAG of depth {n}");
     }
 
-    #[test]
-    fn alias_to_itself_is_a_no_op() {
-        let tv = TVar::empty_named(literal!("a"));
-        tv.alias(&tv);
-        tv.alias_cells(&tv);
-        assert!(!tv.is_bound());
-    }
-
     /// A job a worker runs while its module task waits in a join (stolen
     /// work, possibly another compile's) runs under its spawner's context:
     /// its cells are its spawner's and its decisions are not the waiting
@@ -6568,7 +6010,7 @@ mod tests {
     fn a_copy_keeps_its_cells_facts() {
         let tv = TVar::empty_named(literal!("a"));
         tv.bind(Type::Bottom);
-        let all = CellFact::BottomRequired | CellFact::BottomFed | CellFact::CycleRefused;
+        let all = CellFact::BottomRequired | CellFact::BottomFed;
         tv.cell().write().facts = all;
         let copy = Type::TVar(tv.clone()).reset_tvars();
         let Type::TVar(copy) = &copy else { panic!() };
@@ -6604,9 +6046,8 @@ mod tests {
             (TVar::empty_named(literal!("_1")), TVar::empty_named(literal!("_2")));
         a.bind(Type::Array(Arc::new(i64.clone())));
         b.bind(Type::Array(Arc::new(i64.clone())));
-        let (c, d) =
-            (TVar::empty_named(literal!("_3")), TVar::empty_named(literal!("_4")));
-        d.alias(&c);
+        let c = TVar::empty_named(literal!("_3"));
+        let d = c.renamed(literal!("_4"));
         let shown = |members: Vec<Type>| {
             crate::format_with_flags(PrintFlag::DerefTVars, || {
                 Type::Set(Arc::from_iter(members)).to_string()
@@ -6846,26 +6287,6 @@ impl UnionParts {
             true => Some(Apart::BesideKnown),
             false => {
                 rigid.any(|b| b.cell_addr() != a.cell_addr()).then_some(Apart::TwoRigid)
-            }
-        }
-    }
-
-    /// Members that differ in open cells alone are one member: merge
-    /// those cells. Beside no known member, the open members must be one
-    /// type: merge them into one cell.
-    fn merge_open(&self) {
-        for (a, b) in self.same.iter() {
-            if a.cell_addr() != b.cell_addr() {
-                a.alias_cells(b)
-            }
-        }
-        if self.known == 0
-            && let Some((first, rest)) = self.open.split_first()
-        {
-            for tv in rest {
-                if tv.cell_addr() != first.cell_addr() {
-                    tv.alias_cells(first)
-                }
             }
         }
     }

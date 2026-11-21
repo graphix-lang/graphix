@@ -1464,10 +1464,9 @@ pub(crate) fn tvar_encode(tv: &TVar, buf: &mut impl BufMut) -> Result<(), PackEr
         |e| &mut e.tvars,
         buf,
         |buf| {
-            let (id, frozen, cell) = tv.parts();
+            let (id, cell) = tv.parts();
             tv.name.encode(buf)?;
             id.encode(buf)?;
-            frozen.encode(buf)?;
             cell_encode(&cell, buf)
         },
     )
@@ -1544,11 +1543,10 @@ pub(crate) fn tvar_decode(buf: &mut impl Buf) -> Result<TVar, PackError> {
         |sub| {
             let name = Pack::decode(sub)?;
             let id = TVarId::decode(sub)?;
-            let frozen = bool::decode(sub)?;
             // Entered over a placeholder before its cell: the cell's
             // bound type or a constraint can reach this wrapper.
             let placeholder = CellRef::new(CellLock::default());
-            let tv = TVar::from_parts(name, id, frozen, placeholder);
+            let tv = TVar::from_parts(name, id, placeholder);
             enter(Obj::TVar(tv.clone()))?;
             let cell = cell_decode(sub)?;
             tv.write().cell = cell.link();
@@ -2011,8 +2009,7 @@ mod tests {
     #[test]
     fn tvars_keep_wrapper_and_cell_sharing() {
         let a = TVar::empty_named(literal!("a"));
-        let b = TVar::empty_named(literal!("b"));
-        a.alias(&b);
+        let b = a.renamed(literal!("b"));
         assert!(a.same_cell(&b));
         let c = TVar::named(literal!("c"), Type::TVar(a.clone()));
         let typ = Type::Tuple(Arc::from_iter([
@@ -2023,7 +2020,6 @@ mod tests {
         ]));
         let mut enc = ImageEncoder::new();
         let packed = pack_all(&[typ.clone()], &mut enc);
-        // an alias takes the other's id, so a and b share one
         let id = |tv: &TVar| tv.parts().0.inner();
         assert_eq!(enc.counts().tvar.minted.extent, id(&a).max(id(&c)) + 1);
         let mut dec = packed.decoder(&enc);
@@ -2041,7 +2037,7 @@ mod tests {
                 "one wrapper, two occurrences"
             );
             assert_ne!(a2.wrapper_addr(), b2.wrapper_addr());
-            assert!(a2.same_cell(&b2), "aliases share a cell");
+            assert!(a2.same_cell(&b2), "the wrappers share a cell");
             assert!(!a2.same_cell(&c2));
             // c is bound to a's wrapper, the same one the tuple holds
             let binding = c2.binding();
@@ -2053,12 +2049,10 @@ mod tests {
             a2.add_cell_constraint(Type::Primitive(netidx_value::Typ::I64.into()));
             assert_eq!(b2.cell_constraints().len(), 1);
             assert_eq!(b.cell_constraints().len(), 0, "the originals are untouched");
-            // ids and the frozen flag survive, relocated
-            assert_eq!(a2.parts().0, b2.parts().0);
+            // ids survive, relocated
+            assert_ne!(a2.parts().0, b2.parts().0);
             assert_ne!(a2.parts().0, c2.parts().0);
             assert_ne!(a2.parts().0, a.parts().0);
-            assert!(a2.parts().1, "the alias source is frozen");
-            assert!(!b2.parts().1);
         });
     }
 
@@ -2351,7 +2345,7 @@ mod decode_tests {
         use crate::typ::tvar::{CellFact, Naming};
         let tv = TVar::empty_named(literal!("a"));
         tv.bind(Type::Bottom);
-        let all = CellFact::BottomRequired | CellFact::BottomFed | CellFact::CycleRefused;
+        let all = CellFact::BottomRequired | CellFact::BottomFed;
         tv.cell().write().facts = all;
         tv.cell().write().naming = Naming::call_copy();
         let t = Type::TVar(tv);

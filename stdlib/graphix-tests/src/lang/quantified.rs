@@ -2007,3 +2007,17 @@ run!(
     refused("i64 does not contain f64");
     FuseExpect::None
 );
+
+// A `Singleton` bound over a select of two parameters, one of which another
+// call holds below an array of the other, has a finite type: both one type.
+run!(
+    singleton_over_a_select_beside_a_call_holding_a_parameter_in_an_array,
+    r#"{
+  let g = 'a: Singleton |u: 'a| u;
+  let g2 = 'x: Array<['a, null]> |y: 'x, d: 'a| -> 'a d;
+  let h = |c, q, w| { let r = g2([[w]], q); g(select c { true => w, false => q }) };
+  (h(true, 1, 2), h(false, 1, 2))
+}"#,
+    prints("[i64:2, i64:1]");
+    FuseExpect::Jit
+);

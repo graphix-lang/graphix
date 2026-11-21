@@ -974,7 +974,7 @@ pub(crate) fn impl_head(
         .iter()
         .map(|(tv, tc)| (tv, tc.scope_refs_named(scope, &mut known)))
         .collect();
-    seed_conjuncts(&mut known, constraints.iter().map(|(tv, tc)| (*tv, tc.clone())))?;
+    seed_conjuncts(&known, constraints.iter().map(|(tv, tc)| (*tv, tc.clone())))?;
     let holes = target.holes();
     if trait_def.hole {
         if holes != 1 || !matches!(target.decompose(), Some((_, Type::Hole))) {
