@@ -2606,6 +2606,21 @@ run!(
     FuseExpect::Jit
 );
 
+// Lambdas selected inside an Error payload are called through it, as
+// inside a tuple.
+run!(
+    a_call_through_lambdas_selected_in_an_error_payload,
+    r#"{
+  let pick = |b| {
+    let u = select b { true => error(|x| x), false => error(|x: i64| x + 1) };
+    select u { error as e => (e.0)(1) }
+  };
+  (pick(true), pick(false))
+}"#,
+    prints("[i64:1, i64:2]");
+    FuseExpect::None
+);
+
 run!(
     let_rec_self_call_mismatch_names_nothing,
     r#"{

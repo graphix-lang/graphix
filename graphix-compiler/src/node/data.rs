@@ -499,7 +499,7 @@ impl<R: Rt> Update<R> for StructRef<R> {
         if self.sorted_field_idx.is_none() {
             let source = self.source.typ().resolve_tvars();
             let (idx, _) =
-                wrap!(self, struct_field_type(ctx, &source, &self.field_name))?;
+                wrap!(self, struct_field_types(ctx, &source, &self.field_name))?;
             self.sorted_field_idx = idx
         }
         Ok(())
@@ -887,19 +887,9 @@ impl<R: Rt> Update<R> for Construct<R> {
     }
 }
 
-/// The field's common sorted position, when its members agree, and its type.
-pub(crate) fn struct_field_type<R: Rt>(
-    ctx: &CompileCtx<R>,
-    source: &Type,
-    name: &ArcStr,
-) -> Result<(Option<usize>, Type)> {
-    let (i, ts) = struct_field_types(ctx, source, name)?;
-    let ts: LPooled<Vec<&Type>> = ts.iter().collect();
-    Ok((i, Type::union_of_alternatives(&ctx.env, &ts)?))
-}
-
-/// [`struct_field_type`] per member of a union source (one type for any
-/// other): what a write through the field must fit, each of them.
+/// The field's sorted position, when every member of a union source agrees
+/// on it, and its type in each member (one type for any other source):
+/// what a write through the field must fit, each of them.
 pub(crate) fn struct_field_types<R: Rt>(
     ctx: &CompileCtx<R>,
     source: &Type,

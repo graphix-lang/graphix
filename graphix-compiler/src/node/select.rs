@@ -1496,7 +1496,7 @@ impl<R: Rt> Select<R> {
         );
         let rtypes: LPooled<Vec<&Type>> =
             self.arms.iter().map(|(_, n)| n.typ()).collect();
-        self.typ = Type::union_of_alternatives(&ctx.env, &rtypes)?;
+        self.typ = Type::union(&ctx.env, &rtypes)?;
         Ok(())
     }
 }

@@ -334,8 +334,7 @@ pub(super) struct Leaf {
 }
 
 /// `leaves` gathered over several members or alternatives, each name
-/// once, at the union of its types, their functions met
-/// ([`Type::union_of_alternatives`]).
+/// once, at the union of its types.
 fn merge_leaves(
     env: &Env,
     all: SmallVec<[Leaf; 4]>,
@@ -351,10 +350,7 @@ fn merge_leaves(
     for (id, fresh, ts) in by_id {
         let typ = match &ts[..] {
             [t] => t.clone(),
-            ts => Type::union_of_alternatives(
-                env,
-                &ts.iter().collect::<SmallVec<[&Type; 2]>>(),
-            )?,
+            ts => Type::union(env, &ts.iter().collect::<SmallVec<[&Type; 2]>>())?,
         };
         out.push(Leaf { id, typ, fresh })
     }

@@ -301,49 +301,6 @@ fn reaches_no_open_cell(
     })
 }
 
-/// Whether a cell or a var's link `t` reaches, through the bindings,
-/// constraints and lower bounds [`would_cycle_inner`] walks, was written
-/// after the thread's [`cell_writes`] stood at `since`: what `t` reads is
-/// as it was then if not. A cell another thread wrote counts as written
-/// or not by that thread's own count, so no cell this thread reads may be
-/// written by another.
-pub(super) fn written_since(t: &Type, since: u64) -> bool {
-    fn walk(t: &Type, since: u64, seen: &mut AddrSet) -> ControlFlow<()> {
-        ensure_sufficient(|| {
-            if let Some(node) = node_addr(t)
-                && !seen.insert(node)
-            {
-                return ControlFlow::Continue(());
-            }
-            match t {
-                Type::TVar(tv) => {
-                    if tv.read().written > since {
-                        return ControlFlow::Break(());
-                    }
-                    let cell = tv.cell();
-                    if !seen.insert(cell.data_ptr().addr()) {
-                        return ControlFlow::Continue(());
-                    }
-                    let (binding, cons, below) = {
-                        let c = cell.read();
-                        if c.written > since {
-                            return ControlFlow::Break(());
-                        }
-                        (c.binding.clone(), c.constraints.clone(), c.lower.clone())
-                    };
-                    binding
-                        .iter()
-                        .chain(cons.iter())
-                        .chain(below.iter())
-                        .try_for_each(|c| walk(c, since, seen))
-                }
-                t => t.try_for_each_child(&mut |c| walk(c, since, seen)),
-            }
-        })
-    }
-    walk(t, since, &mut LPooled::take()).is_break()
-}
-
 /// Mark each of `cells`, if bound, as reaching no open cell at `epoch`,
 /// unless the epoch moved since the walk that proved them read it.
 fn mark_ground(cells: &mut Vec<CellRef>, epoch: u64) {

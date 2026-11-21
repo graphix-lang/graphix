@@ -6,11 +6,11 @@ use crate::{
     format_with_flags,
     stack::ensure_sufficient,
     typ::{
-        AbstractId, Bound, Brief, CoreTrait, FnType, Indiscernible, NodePairs, Open,
-        TVar, TraitId, Type,
+        AbstractId, Bound, Brief, CoreTrait, FnType, Indiscernible, Open, TVar, TraitId,
+        Type,
         cast::shares_form,
         node_addr,
-        setops::{renames, strictly_identical, strictly_same_unordered, union_identical},
+        setops::{strictly_identical, union_identical},
         tvar::{
             ArenaRef, CellFact, Cycle, Declared, Fresh, HeldQuantifiers, RigidGate,
             Toward, current_arena, cycle_toward, settled_cause_note,
@@ -235,199 +235,6 @@ fn each_cell_through_bounds(
     true
 }
 
-/// `f` over copies of `ts` that share one cell map, each rigid cell's
-/// copy held rigid: what `f` decides, it decides in the copies alone.
-pub(super) fn on_copies<const N: usize, R>(
-    ts: [&Type; N],
-    f: impl FnOnce([Type; N]) -> R,
-) -> R {
-    let mut known: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-    let copies = ts
-        .map(|t| t.reset_tvars_int(&mut known, Fresh::Copy).unwrap_or_else(|| t.clone()));
-    let mut gates: LPooled<Vec<RigidGate>> = LPooled::take();
-    for t in ts {
-        find_open_cell(t, true, &mut |tv| {
-            if tv.is_rigid()
-                && let Some(c) = known.get(&tv.cell_addr())
-            {
-                gates.push(c.open_rigid());
-            }
-            false
-        });
-    }
-    f(copies)
-}
-
-/// How two distinct open cells unify.
-#[derive(Debug, Clone, Copy)]
-enum OpenPair {
-    /// Two declared vars of the def under check (rigid cells exist only
-    /// inside its gate): the body must not require them equal.
-    Distinct,
-    /// Both names are settled (`frozen`): merge the cells, since
-    /// `frozen` gates name-aliasing, not unification.
-    Merge,
-    /// `t0` keeps its name: `t1` aliases it.
-    AliasRight,
-    /// `t0` aliases `t1`.
-    AliasLeft,
-}
-
-impl OpenPair {
-    fn of(t0: &TVar, t1: &TVar) -> Self {
-        if t0.is_rigid() && t1.is_rigid() {
-            return OpenPair::Distinct;
-        }
-        // a rigid cell survives only a merge
-        if t0.is_rigid() || t1.is_rigid() {
-            return OpenPair::Merge;
-        }
-        match (t0.read().frozen, t1.read().frozen) {
-            (true, true) => OpenPair::Merge,
-            (true, false) => OpenPair::AliasRight,
-            (false, _) => OpenPair::AliasLeft,
-        }
-    }
-
-    /// Perform the unification; `false` for [`OpenPair::Distinct`].
-    fn apply(self, t0: &TVar, t1: &TVar) -> bool {
-        let dbg = |what: &str, a: &TVar, b: &TVar| {
-            if graphix_dbg_bind() {
-                eprintln!(
-                    "{what} '{}({:x}) -> '{}({:x})",
-                    a.name,
-                    a.cell_addr(),
-                    b.name,
-                    b.cell_addr()
-                );
-            }
-        };
-        match self {
-            OpenPair::Distinct => return false,
-            OpenPair::Merge => t0.alias_cells(t1),
-            OpenPair::AliasRight => {
-                dbg("RALIAS", t1, t0);
-                t1.alias(t0)
-            }
-            OpenPair::AliasLeft => {
-                dbg("LALIAS", t0, t1);
-                t0.alias(t1)
-            }
-        }
-        true
-    }
-}
-
-/// Weld the tvar cells of two loosely-equal types by position (the
-/// loose part is `Fn` equality, which does not tell distinct open cells
-/// apart): two open cells that compared equal must share fate, or the
-/// discarded side's later binding never reaches the survivor. Two
-/// function types paired are one, their cells welded or shared already,
-/// so each names the other's definitions. `false` when two distinct
-/// rigid cells meet; only `commit` links.
-struct Link {
-    commit: bool,
-    found: NodePairs,
-}
-
-impl Link {
-    fn equal(&mut self, t0: &Type, t1: &Type) -> bool {
-        if t0.node_key().is_some_and(|k| t1.node_key() == Some(k)) {
-            return true;
-        }
-        let pair = self.found.key(t0, t1);
-        if pair.is_some_and(|pair| self.found.contains(pair)) {
-            return true;
-        }
-        let equal = ensure_sufficient(|| self.equal_inner(t0, t1));
-        if let Some(pair) = pair.filter(|_| equal) {
-            self.found.insert(pair, t0, t1)
-        }
-        equal
-    }
-
-    fn all(&mut self, a: &[Type], b: &[Type]) -> bool {
-        a.iter().zip(b.iter()).all(|(x, y)| self.equal(x, y))
-    }
-
-    fn equal_inner(&mut self, t0: &Type, t1: &Type) -> bool {
-        match (t0, t1) {
-            (Type::TVar(a), Type::TVar(b)) => {
-                if a.same_cell(b) {
-                    return true;
-                }
-                match (a.binding(), b.binding()) {
-                    (None, None) => match OpenPair::of(a, b) {
-                        OpenPair::Distinct => false,
-                        act => !self.commit || act.apply(a, b),
-                    },
-                    (Some(x), Some(y)) => self.equal(&x, &y),
-                    // a var a merge left forwarding is the cell it forwards to
-                    (Some(x), None) => self.equal(&x, t1),
-                    (None, Some(y)) => self.equal(t0, &y),
-                }
-            }
-            (Type::Fn(f0), Type::Fn(f1)) => {
-                let equal = f0
-                    .args
-                    .iter()
-                    .zip(f1.args.iter())
-                    .all(|(a, b)| self.equal(&a.typ, &b.typ))
-                    && match (&f0.vargs, &f1.vargs) {
-                        (Some(a), Some(b)) => self.equal(a, b),
-                        _ => true,
-                    }
-                    && self.equal(&f0.rtype, &f1.rtype)
-                    && self.equal(&f0.throws, &f1.throws);
-                if equal && self.commit {
-                    f0.lambda_ids.link(&f1.lambda_ids)
-                }
-                equal
-            }
-            (Type::Ref(r0), Type::Ref(r1)) => self.all(&r0.params, &r1.params),
-            (Type::Set(a), Type::Set(b)) => {
-                (a.len() > 1
-                    && !a.iter().zip(b.iter()).all(|(x, y)| strictly_identical(x, y))
-                    && strictly_same_unordered(a, b))
-                    || self.all(a, b)
-            }
-            (Type::Tuple(a), Type::Tuple(b))
-            | (Type::Variant(_, a, _), Type::Variant(_, b, _))
-            | (Type::Abstract { params: a, .. }, Type::Abstract { params: b, .. }) => {
-                self.all(a, b)
-            }
-            (Type::Struct(a), Type::Struct(b)) => {
-                a.iter().zip(b.iter()).all(|((_, x, _), (_, y, _))| self.equal(x, y))
-            }
-            (Type::Array(a), Type::Array(b))
-            | (Type::List(a), Type::List(b))
-            | (Type::Error(a), Type::Error(b)) => self.equal(a, b),
-            (Type::ByRef(m0, a), Type::ByRef(m1, b)) => m0 == m1 && self.equal(a, b),
-            (Type::Map(m0), Type::Map(m1)) => {
-                self.equal(&m0.key, &m1.key) && self.equal(&m0.value, &m1.value)
-            }
-            (Type::App(c0, a0), Type::App(c1, a1)) => {
-                self.equal(c0, c1) && self.equal(a0, a1)
-            }
-            // a bound variable compares through its binding, as union_identical
-            // does, so the cells under it weld
-            (Type::TVar(a), t) => match a.binding() {
-                Some(x) => self.equal(&x, t),
-                None => true,
-            },
-            (t, Type::TVar(b)) => match b.binding() {
-                Some(y) => self.equal(t, &y),
-                None => true,
-            },
-            _ => true,
-        }
-    }
-}
-
-fn link_equal(t0: &Type, t1: &Type, commit: bool) -> bool {
-    Link { commit, found: NodePairs::default() }.equal(t0, t1)
-}
-
 /// How many positional arguments a function type takes, when it takes a
 /// fixed number.
 fn positional_arity(t: &Type) -> Option<usize> {
@@ -522,15 +329,6 @@ fn kept_bare(env: &Env, expected: &Type, actual: &Type) -> bool {
     expected.iter().any(keep)
         && expected.iter().all(|m| keep(m) || null(m))
         && members(actual).iter().any(|m| !keep(m) && !null(m))
-}
-
-/// Two function types that differ by a renaming of their open cells alone
-/// ([`renames`]) and whose cells can be welded; under `commit` they are
-/// welded and the function types linked as one.
-pub(super) fn renaming_linked(env: &Env, t0: &Type, t1: &Type, commit: bool) -> bool {
-    renames(env, t0, t1)
-        && link_equal(t0, t1, false)
-        && (!commit || link_equal(t0, t1, true))
 }
 
 /// A non-containment report that formats lazily: callers probe these
@@ -1910,7 +1708,7 @@ impl Type {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::typ::{RefHist, RefPair, tvar::CellRef};
+    use crate::typ::{NodePairs, RefHist, RefPair, tvar::CellRef};
     use arcstr::literal;
     use enumflags2::BitFlags;
 
