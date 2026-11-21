@@ -4722,11 +4722,15 @@ impl Type {
     fn holds_cell(&self, addr: usize) -> bool {
         fn go(t: &Type, addr: usize, seen: &mut AHashSet<usize>) -> bool {
             ensure_sufficient(|| match t {
+                // an open cell reaches what flows into it
                 Type::TVar(tv) => {
                     let cell = tv.cell_addr();
                     cell == addr
                         || (seen.insert(cell)
-                            && tv.binding().is_some_and(|b| go(&b, addr, seen)))
+                            && match tv.binding() {
+                                Some(b) => go(&b, addr, seen),
+                                None => tv.cell_lower().iter().any(|l| go(l, addr, seen)),
+                            })
                 }
                 t if node_addr(t).is_some_and(|n| !seen.insert(n)) => false,
                 t => t

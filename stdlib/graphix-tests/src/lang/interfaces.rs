@@ -3584,7 +3584,7 @@ run!(
     calls_at_two_types_through_an_outer_instance_refused,
     told_in_order(&[
         "the check decides a type the code around the module left open: annotate `fs`",
-        "type variable usage mismatch: expected i64, got f64",
+        "i64 does not contain f64",
     ]),
     "/test.gx" => "let fs = array::map([1], |r| |x| x + x); mod m; let result = m::go",
     "/test/m.gxi" => "val go: (i64, f64)",
@@ -3596,7 +3596,7 @@ run!(
     an_error_after_an_outer_decision_refused,
     told_in_order(&[
         "the check decides a type the code around the module left open: annotate `fs`",
-        "cannot compute string + i64",
+        "cannot compute with +",
     ]),
     "/test.gx" => "let fs = array::map([1], |r| |x| x + x); mod m; let result = m::go",
     "/test/m.gxi" => "val go: i64",

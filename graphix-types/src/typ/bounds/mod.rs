@@ -878,6 +878,9 @@ fn record(v: &TVar, t: &Type, lower: bool) -> Option<SmallVec<[Type; 1]>> {
     let mut c = cell.write();
     Some(match lower {
         true => {
+            // what flows into a cell an earlier task made widens a type the
+            // code around this one decides
+            super::tvar::written(&c);
             c.lower.push(t.clone());
             c.constraints.clone()
         }
@@ -1408,7 +1411,11 @@ impl Solving {
                                 n.cell().write().lower = lower
                             }
                             false => {
-                                cell.write().lower.push(Type::TVar(n.clone()));
+                                {
+                                    let mut c = cell.write();
+                                    super::tvar::written(&c);
+                                    c.lower.push(Type::TVar(n.clone()))
+                                }
                                 self.note(v, Added::Lower);
                                 self.sent(v, &n);
                                 let upper: SmallVec<[Type; 1]> = upper

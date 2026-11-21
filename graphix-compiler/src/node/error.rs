@@ -222,7 +222,20 @@ pub(crate) fn join_raised(env: &Env, handler: &ErrorHandler, etyp: &Type) -> Res
     let Some(Type::TVar(tv)) = env.by_id.get(&catch).map(|b| &b.typ) else {
         bail!("BUG: catch {catch:?} has no inferred bind")
     };
-    Type::TVar(tv.clone()).check_contains(env, etyp)
+    // a catch its binding's written type seals takes what fits that type,
+    // and its binding learns nothing from a raise
+    let written = handler
+        .sealed()
+        .then(|| {
+            tv.cell_constraints()
+                .into_iter()
+                .find(|u| !matches!(u, Type::TVar(_) | Type::Bound(_)))
+        })
+        .flatten();
+    match written {
+        Some(written) => written.check_contains(env, etyp),
+        None => Type::TVar(tv.clone()).check_contains(env, etyp),
+    }
 }
 
 impl<R: Rt> Catch<R> {
