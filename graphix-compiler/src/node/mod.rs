@@ -25,7 +25,7 @@ use crate::{
     typ::{
         AmbiguousMember, Brief, CastInput, Mutability, NodeKey, TVal, TVar, Type,
         TypeMismatch, TypeRef,
-        bounds::{self, Solving},
+        bounds::{self, Keeps, Solving},
         tvar::{
             Arena, ArenaRef, AtLevel, BoundAt, InArena, InTask, Level, TaskContext,
             TaskId, current_level, current_task, new_task,
@@ -2107,15 +2107,16 @@ fn check_in_tasks<R: Rt>(
     check: impl Fn(&mut Node<R>, &mut CompileCtx<R>) -> Result<()> + Sync,
 ) -> Result<()> {
     let cx = TaskContext::current();
-    let mut results: LPooled<Vec<Result<()>>> = LPooled::take();
+    let by_bounds = bounds::checking();
+    let mut results: LPooled<Vec<(Result<()>, Option<bounds::Tasked>)>> = LPooled::take();
     let check_task = |(n, task, id): &mut (&mut Node<R>, CompileCtx<R>, TaskId)| {
         let _cx = cx.clone().with_task(*id).enter();
-        let r = task.run_task(|task| check(n, task));
-        statement_result(r, n, module)
+        let (r, solved) = bounds::in_task(by_bounds, Keeps::All, || {
+            task.run_task(|task| check(n, task))
+        });
+        (statement_result(r, n, module), solved)
     };
-    // the solver of a check by bounds is this thread's: its tasks run here,
-    // one after another
-    match ctx.control.eval_pool().filter(|_| !bounds::active()) {
+    match ctx.control.eval_pool() {
         // CR claude for claude: [structure/low] Three functions fork a `CompileCtx` per
         // part, run the parts on the evaluation pool and join them in order: this one,
         // `fusion::fuse_each` and `branch::compile_each`. Only `compile_each` enters
@@ -2128,10 +2129,13 @@ fn check_in_tasks<R: Rt>(
         Some(pool) => pool.map(&mut work, &mut results, check_task),
         None => results.extend(work.iter_mut().map(check_task)),
     }
-    for (_, task, _) in work.drain(..) {
+    for ((_, task, _), (_, solved)) in work.drain(..).zip(results.iter_mut()) {
         ctx.join(task);
+        if let Some(solved) = solved.take() {
+            bounds::absorb(solved)
+        }
     }
-    results.drain(..).find(|r| r.is_err()).unwrap_or(Ok(()))
+    results.drain(..).map(|(r, _)| r).find(|r| r.is_err()).unwrap_or(Ok(()))
 }
 
 /// Run a typecheck `pass` over `nodes` in [`evaluation_order`]. A module

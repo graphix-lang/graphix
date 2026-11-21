@@ -134,12 +134,19 @@ recorded for the module's task, `tvar::OwnWrites`) refuses the module, and is
 not made (`tvar::decided`): every sibling that would make it is refused
 in turn, none sees another's, and the first in order is the error, so an
 unannotated `let x = never()` whose first use is in a child module must
-be annotated. A module's check that fails after trying one is told that
-first, its own error under it: the decision not made may be what it
-missed, as two calls at two types through a function the parent left one
-instance fail its `val`'s match (pin
+be annotated (pin
 `lang::interfaces::calls_at_two_types_through_an_outer_instance_refused`).
-Over the gate the only foreign writes in module tasks are
+A module's check that fails after trying one is told that first, its own
+error under it: the decision not made may be what it missed (pin
+`lang::interfaces::an_error_after_an_outer_decision_refused`). Under a
+check by bounds each module's check has a solver of its own
+(`bounds::in_task`), which keeps what it would write into a cell the code
+around the module made and that decides nothing of it (a bound above it, a
+flow, a use waiting for its values, `bounds::Kept`); the check around makes
+those writes when it takes the module's solver in, at the join of the run
+(`bounds::absorb`). A value flowing into such a cell decides it: that is the
+foreign write. So every cell a module's check reaches during a run is its
+own or stands as it stood before the run. Over the gate the only foreign writes in module tasks are
 the interface's own type variables, frozen at compile. A raise joins its
 handler's cell, so a module inside a function raising to the function's
 own throws (the gate's catch, a binding a lowering names and the refusal

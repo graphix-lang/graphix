@@ -3620,14 +3620,11 @@ fn told_in_order(phrases: &'static [&'static str]) -> impl Fn(Result<&Value>) ->
 }
 
 // Calls at two types through a function the code around the module left
-// one instance try to decide its type there: the refusal names the binding
-// holding it before the val's mismatch that followed.
+// one instance would decide its type there: the refusal names the binding
+// that holds it.
 run!(
     calls_at_two_types_through_an_outer_instance_refused,
-    told_in_order(&[
-        "the check decides a type the code around the module left open: annotate `fs`",
-        "i64 does not contain f64",
-    ]),
+    refused("the check decides a type the code around the module left open: annotate `fs`"),
     "/test.gx" => "let fs = array::map([1], |r| |x| x + x); mod m; let result = m::go",
     "/test/m.gxi" => "val go: (i64, f64)",
     "/test/m.gx" => "let g = super::fs[0]$; let go = (g(1), g(1.5))"

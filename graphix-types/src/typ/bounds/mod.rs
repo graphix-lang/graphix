@@ -16,7 +16,7 @@ use crate::{
         node_addr,
         setops::strictly_identical,
         toml_root_refusal,
-        tvar::{AtLevel, Level, ShortName},
+        tvar::{AtLevel, Level, ShortName, TaskId},
         variance,
     },
 };
@@ -217,6 +217,56 @@ pub fn with<T>(f: impl FnOnce(&mut Solving) -> T) -> Option<T> {
     let r = f(&mut solving);
     ACTIVE.set(Some(solving));
     Some(r)
+}
+
+/// The solver of a module's check under a check by bounds ([`in_task`]),
+/// for that check to [`absorb`].
+pub struct Tasked {
+    solving: Solving,
+    bound_by_old: Option<usize>,
+}
+
+/// Whether a check by bounds is running on this thread with its solver.
+pub fn checking() -> bool {
+    ACTIVE.with_borrow(Option::is_some)
+}
+
+/// Run `f`, a module's check, with a solver of its own that `keeps` what
+/// [`Keeps`] says, where `by_bounds` says a check by bounds runs around it;
+/// what this thread runs is set aside meanwhile.
+pub fn in_task<T>(
+    by_bounds: bool,
+    keeps: Keeps,
+    f: impl FnOnce() -> T,
+) -> (T, Option<Tasked>) {
+    struct Aside(Option<Solving>, Option<usize>, bool);
+    impl Drop for Aside {
+        fn drop(&mut self) {
+            ACTIVE.set(self.0.take());
+            BOUND_BY_OLD.set(self.1.take());
+            BUILDING.set(self.2)
+        }
+    }
+    if !by_bounds {
+        return (f(), None);
+    }
+    let aside = Aside(ACTIVE.take(), BOUND_BY_OLD.take(), BUILDING.replace(false));
+    begin();
+    with(|s| s.keeps = keeps);
+    let r = f();
+    let solving = ACTIVE.take().unwrap_or_default();
+    let tasked = Tasked { solving, bound_by_old: BOUND_BY_OLD.take() };
+    drop(aside);
+    (r, Some(tasked))
+}
+
+/// The check this thread runs takes in the solver of a module's check
+/// ([`in_task`]).
+pub fn absorb(task: Tasked) {
+    if let (Some(n), Some(m)) = (BOUND_BY_OLD.get(), task.bound_by_old) {
+        BOUND_BY_OLD.set(Some(n + m))
+    }
+    with(|s| s.absorb(task.solving));
 }
 
 /// What the solver keeps of an open cell beside its bounds.
@@ -586,6 +636,69 @@ pub struct Solving {
     /// this instance of it judges: the type, the predicates and the name
     /// of the variable they bound.
     asked: Vec<Arc<(Type, SmallVec<[Type; 1]>, ArcStr)>>,
+    /// Which of its writes this solver keeps for the check around it.
+    keeps: Keeps,
+    /// The writes it kept ([`Kept`]), in order.
+    kept: Vec<(TVar, Kept)>,
+}
+
+/// Which of its writes a solver keeps ([`Kept`]) for the check around it
+/// to make. A module's check keeps those into cells the code around it
+/// made, so each module of a run reads that code as it stood before the
+/// run, whatever the others do.
+#[derive(Clone, Copy, Default)]
+pub enum Keeps {
+    /// None: no check runs around this one.
+    #[default]
+    Nothing,
+    /// Those into a cell a task before this one made: the solver is that
+    /// module's check's.
+    Before(TaskId),
+    /// All of them: the solver holds what a module of a run leaves, for the
+    /// join of the run.
+    All,
+}
+
+/// A write into a cell that says nothing of what the cell holds: a bound
+/// above it, a flow, a use waiting for its values. A module's check keeps
+/// one into a cell the code around it made for the check around it to make
+/// at the join of the run ([`absorb`]).
+enum Kept {
+    Upper(Type),
+    Feeder(TVar),
+    Sink(TVar),
+    From(TVar),
+    Use(Use, bool),
+    /// The use at this index has met a value.
+    Met(usize),
+    Made,
+    Demanded,
+}
+
+impl Kept {
+    /// What a failed attempt takes back of it.
+    fn added(&self) -> Option<Added> {
+        match self {
+            Kept::Upper(_) => Some(Added::Upper),
+            Kept::Feeder(_) => Some(Added::Feeder),
+            Kept::Sink(_) => Some(Added::Sink),
+            Kept::From(_) => Some(Added::From),
+            Kept::Use(..) | Kept::Met(_) | Kept::Made | Kept::Demanded => None,
+        }
+    }
+
+    fn make(self, c: &mut super::tvar::TCell) {
+        match self {
+            Kept::Upper(t) => c.above.push_upper(t),
+            Kept::Feeder(w) => c.solving.get_or_insert_default().feeders.push(w),
+            Kept::Sink(n) => c.solving.get_or_insert_default().sinks.push(n),
+            Kept::From(u) => c.solving.get_or_insert_default().from.push(u),
+            Kept::Use(u, met) => c.solving.get_or_insert_default().uses.push((u, met)),
+            Kept::Met(i) => c.solving.get_or_insert_default().uses[i].1 = true,
+            Kept::Made => c.solving.get_or_insert_default().made = true,
+            Kept::Demanded => c.solving.get_or_insert_default().demanded = true,
+        }
+    }
 }
 
 /// A kind of use a check may still owe when a definition closes.
@@ -839,43 +952,140 @@ fn mismatch<T>(wanted: &Type, got: &Type) -> Result<T> {
     Err(super::contains::TypeMismatch::plain(wanted, got))
 }
 
-/// Add `t` to the lower bounds of the cell of `v`, or to the upper ones,
-/// unless it is there; the bounds on the cell's other side where it was
-/// added. The bound may hold the cell, so nothing is compared under the
-/// cell's lock.
-fn record(v: &TVar, t: &Type, lower: bool) -> Option<SmallVec<[Type; 1]>> {
+/// `f` over what the solver keeps of the cell of `v`.
+fn known<R>(v: &TVar, f: impl FnOnce(&Known) -> R) -> R {
     let cell = v.cell();
-    let had = {
-        let c = cell.read();
-        if lower { c.lower.clone() } else { c.above.all().into() }
-    };
-    if had.iter().any(|b| strictly_identical(b, t)) {
-        return None;
+    let c = cell.read();
+    match &c.solving {
+        Some(k) => f(k),
+        None => f(&Known::default()),
     }
-    let mut c = cell.write();
-    Some(match lower {
-        true => {
-            // what flows into a cell an earlier task made widens a type the
-            // code around this one decides
-            super::tvar::written(&c);
-            c.lower.push(t.clone());
-            c.above.all().into()
-        }
-        false => {
-            c.above.push_upper(t.clone());
-            c.lower.clone()
-        }
-    })
 }
 
-/// `f` over what the solver keeps of the cell of `v`.
-fn known<R>(v: &TVar, f: impl FnOnce(&mut Known) -> R) -> R {
-    let cell = v.cell();
-    let mut c = cell.write();
-    f(c.solving.get_or_insert_default())
+/// `f` over what the solver keeps of the cell of `v`, a cell of the
+/// definition being checked.
+fn known_mut(v: &TVar, f: impl FnOnce(&mut Known)) {
+    f(v.cell().write().solving.get_or_insert_default())
 }
 
 impl Solving {
+    /// Add `t` to the lower bounds of the cell of `v`, or to the upper
+    /// ones, unless it is there; the bounds on the cell's other side where
+    /// it was added. The bound may hold the cell, so nothing is compared
+    /// under the cell's lock.
+    fn record(&mut self, v: &TVar, t: &Type, lower: bool) -> Option<SmallVec<[Type; 1]>> {
+        let cell = v.cell();
+        let had = {
+            let c = cell.read();
+            if lower { c.lower.clone() } else { c.above.all().into() }
+        };
+        if had.iter().any(|b| strictly_identical(b, t)) {
+            return None;
+        }
+        match lower {
+            true => {
+                let mut c = cell.write();
+                // what flows into a cell an earlier task made widens a type
+                // the code around this one decides: refused, and not made
+                if !super::tvar::decided(&c) {
+                    return None;
+                }
+                c.lower.push(t.clone());
+                Some(c.above.all().into())
+            }
+            false => {
+                let lower = cell.read().lower.clone();
+                self.write(v, Kept::Upper(t.clone()));
+                Some(lower)
+            }
+        }
+    }
+
+    /// Whether this solver keeps its writes into the cell `c` ([`Keeps`]).
+    fn keeps(&self, c: &super::tvar::TCell) -> bool {
+        match self.keeps {
+            Keeps::Nothing => false,
+            Keeps::Before(task) => c.task < task,
+            Keeps::All => true,
+        }
+    }
+
+    /// Make the write `k` into the cell of `v`, or keep it ([`Keeps`]).
+    fn write(&mut self, v: &TVar, k: Kept) {
+        let cell = v.cell();
+        let mut c = cell.write();
+        if self.keeps(&c) {
+            drop(c);
+            return self.kept.push((v.clone(), k));
+        }
+        let added = k.added();
+        k.make(&mut c);
+        drop(c);
+        if let Some(what) = added {
+            self.note(v, what)
+        }
+    }
+
+    /// Take in the solver of a module's check ([`in_task`]): what it left
+    /// for the end of the check, and the writes it kept, made now unless
+    /// this one keeps them too.
+    fn absorb(&mut self, task: Solving) {
+        let Solving {
+            unfolding: _,
+            unfolded: _,
+            added: _,
+            attempts: _,
+            held,
+            cells,
+            fixing: _,
+            singles,
+            selects,
+            strips,
+            chains,
+            copied_parts: _,
+            resolving: _,
+            placing: _,
+            copied: _,
+            scheming: _,
+            walks: _,
+            captures: _,
+            twins,
+            twinned: _,
+            sealed: _,
+            shared: _,
+            method: _,
+            sunk: _,
+            deriving: _,
+            leaves: _,
+            signature: _,
+            judged,
+            compared,
+            cycles,
+            asked,
+            keeps: _,
+            kept,
+        } = task;
+        self.held.extend(held);
+        self.cells.extend(cells);
+        self.singles.extend(singles);
+        self.selects.extend(selects);
+        self.strips.extend(strips);
+        self.chains.extend(chains);
+        self.twins.extend(twins);
+        self.judged.extend(judged);
+        self.compared.extend(compared);
+        self.cycles.extend(cycles);
+        self.asked.extend(asked);
+        for (v, k) in kept {
+            match k {
+                Kept::Upper(t) => drop(self.record(&v, &t, false)),
+                Kept::From(u) => self.sent(&v, &u),
+                k => self.write(&v, k),
+            }
+            self.track(&v)
+        }
+    }
+
     /// `a` fits where `b` is wanted. An open cell on either side takes the
     /// other as a bound, and the bound meets every bound the cell has on
     /// its other side.
@@ -907,10 +1117,12 @@ impl Solving {
         let (mark, held) = (self.added.len(), self.held.len());
         let chains = self.chains.len();
         let (unfolded, twinned) = (self.unfolded.len(), self.twinned.len());
+        let kept = self.kept.len();
         self.attempts += 1;
         let fits = f(self).is_ok();
         self.attempts -= 1;
         if !(fits && keep) {
+            self.kept.truncate(kept);
             self.held.truncate(held);
             self.chains.truncate(chains);
             self.unfolded.truncate(unfolded);
@@ -968,15 +1180,8 @@ impl Solving {
         if to.same_cell(from) || to.is_bound() {
             return;
         }
-        let new = known(to, |k| match k.from.iter().any(|u| u.same_cell(from)) {
-            true => false,
-            false => {
-                k.from.push(from.clone());
-                true
-            }
-        });
-        if new {
-            self.note(to, Added::From)
+        if !known(to, |k| k.from.iter().any(|u| u.same_cell(from))) {
+            self.write(to, Kept::From(from.clone()))
         }
     }
 
@@ -1295,8 +1500,7 @@ impl Solving {
         let at = va.or(vb).unwrap().level();
         match (va, vb) {
             (Some(v), _) if depth(b) <= at.depth() => {
-                let Some(lower) = record(v, b, false) else { return Ok(()) };
-                self.note(v, Added::Upper);
+                let Some(lower) = self.record(v, b, false) else { return Ok(()) };
                 self.track(v);
                 if let Type::TVar(w) = b
                     && !w.is_bound()
@@ -1306,8 +1510,7 @@ impl Solving {
                 }
                 if let Some(w) = vb {
                     if w.level().depth() == at.depth() {
-                        known(w, |k| k.feeders.push(v.clone()));
-                        self.note(w, Added::Feeder)
+                        self.write(w, Kept::Feeder(v.clone()))
                     }
                 } else {
                     self.demanded(env, v, b)?
@@ -1335,7 +1538,7 @@ impl Solving {
     /// `a` is a new lower bound of the open cell `w`: it must fit whatever
     /// is demanded of `w`.
     fn arrive(&mut self, env: &Env, w: &TVar, a: &Type) -> Result<()> {
-        let Some(upper) = record(w, a, true) else { return Ok(()) };
+        let Some(upper) = self.record(w, a, true) else { return Ok(()) };
         self.note(w, Added::Lower);
         self.track(w);
         if let Type::TVar(u) = a
@@ -1354,7 +1557,7 @@ impl Solving {
             for i in 0..uses(w).len() {
                 let u = uses(w)[i].0.clone();
                 if self.apply(env, &u, a)? {
-                    known(w, |k| k.uses[i].1 = true)
+                    self.write(w, Kept::Met(i))
                 }
             }
         }
@@ -1408,8 +1611,7 @@ impl Solving {
                         });
                         let n = twin(v);
                         keep(self, &n);
-                        known(v, |k| k.sinks.push(n.clone()));
-                        self.note(v, Added::Sink);
+                        self.write(v, Kept::Sink(n.clone()));
                         Type::TVar(n)
                     }
                     (false, _) => {
@@ -1419,8 +1621,7 @@ impl Solving {
                         let cell = v.cell();
                         match pos {
                             true => {
-                                cell.write().above.push_upper(Type::TVar(n.clone()));
-                                self.note(v, Added::Upper);
+                                self.write(v, Kept::Upper(Type::TVar(n.clone())));
                                 self.sent(&n, v);
                                 let lower: SmallVec<[Type; 1]> = lower
                                     .iter()
@@ -1429,12 +1630,17 @@ impl Solving {
                                 n.cell().write().lower = lower
                             }
                             false => {
-                                {
+                                let made = {
                                     let mut c = cell.write();
-                                    super::tvar::written(&c);
-                                    c.lower.push(Type::TVar(n.clone()))
+                                    let made = super::tvar::decided(&c);
+                                    if made {
+                                        c.lower.push(Type::TVar(n.clone()))
+                                    }
+                                    made
+                                };
+                                if made {
+                                    self.note(v, Added::Lower)
                                 }
-                                self.note(v, Added::Lower);
                                 self.sent(v, &n);
                                 let upper: SmallVec<[Type; 1]> = upper
                                     .iter()
@@ -1696,11 +1902,18 @@ impl Solving {
         })
     }
 
+    /// What the result of `ft` is read to make is made by its calls.
+    fn made_by_calls(&mut self, ft: &FnType) {
+        for v in cells_in(&ft.rtype).iter().filter(|v| reads_type(v)) {
+            self.write(v, Kept::Made)
+        }
+    }
+
     /// `f` may be called wherever `g` may be.
     fn fn_below(&mut self, env: &Env, f: &FnType, g: &FnType) -> Result<()> {
         // a function that goes where a function type is held is called
         // through it: what its result's type is read to make is made
-        made_by_calls(f);
+        self.made_by_calls(f);
         let signature = std::mem::take(&mut self.signature);
         let own = std::mem::take(&mut self.method);
         let shared = self.shared;
@@ -1793,7 +2006,13 @@ impl Solving {
 
     /// Have `v` among the cells this check fixes.
     pub fn track(&mut self, v: &TVar) {
-        if !known(v, |k| std::mem::replace(&mut k.listed, true)) {
+        let listed = {
+            let cell = v.cell();
+            let mut c = cell.write();
+            self.keeps(&c)
+                || std::mem::replace(&mut c.solving.get_or_insert_default().listed, true)
+        };
+        if !listed {
             self.cells.push(v.clone())
         }
     }
@@ -2794,11 +3013,6 @@ fn feeders(v: &TVar) -> SmallVec<[TVar; 1]> {
 
 /// What the result's type of a function its calls are made through is
 /// read to make (a parse, a typed read) is made by those calls.
-fn made_by_calls(ft: &FnType) {
-    for v in cells_in(&ft.rtype).iter().filter(|v| reads_type(v)) {
-        known(v, |k| k.made = true)
-    }
-}
 
 /// An open cell at `depth` or shallower that `v` is produced into by a use
 /// of: a field, an element or a payload read of a value still undecided.
@@ -3131,7 +3345,7 @@ impl Solving {
                 v.claim(w.level());
                 continue;
             }
-            known(v, |k| k.quantified = true);
+            known_mut(v, |k| k.quantified = true);
             v.generalize()
         }
     }
@@ -3140,7 +3354,7 @@ impl Solving {
     /// definition has closed, so it is no constant any more.
     pub fn own(&mut self, v: &TVar) {
         if !v.is_bound() {
-            known(v, |k| k.quantified = true);
+            known_mut(v, |k| k.quantified = true);
             v.generalize()
         }
     }
@@ -3356,7 +3570,7 @@ impl Solving {
             // `left` reads cells, `v` among them, so not under its lock
             let ls = known(v, |k| k.left.clone());
             if let Some(l) = left(&ls) {
-                known(v, |k| k.left.push(l))
+                known_mut(v, |k| k.left.push(l))
             }
         }
     }
@@ -3722,7 +3936,7 @@ impl Solving {
                         u,
                         Use::Select(_) | Use::Routed(..) | Use::Method { .. }
                     );
-                known(&n, |k| k.uses.push((u, met)))
+                known_mut(&n, |k| k.uses.push((u, met)))
             }
             if !self.scheming {
                 self.track(&n);
@@ -3755,9 +3969,9 @@ impl Solving {
                         Left::Waiting(of, self.copy(&w, above, at, copies))
                     }
                 };
-                known(&n, |k| k.left.push(l))
+                known_mut(&n, |k| k.left.push(l))
             }
-            known(&n, |k| k.quantified = true);
+            known_mut(&n, |k| k.quantified = true);
             n.generalize()
         }
         t
@@ -4523,7 +4737,7 @@ impl Solving {
                         demands.push(u)
                     }
                 }
-                known(v, |k| k.demanded = true);
+                self.write(v, Kept::Demanded);
                 // a bound that names the cell itself decides nothing alone
                 let t = self.meet(env, &demands)?;
                 let t = within(env, t, &v.cell_above())?;
@@ -4715,7 +4929,7 @@ impl Solving {
         for p in produced.iter() {
             self.sent(p, &v)
         }
-        known(&v, |k| k.uses.push((u, met)));
+        self.write(&v, Kept::Use(u, met));
         self.track(&v);
         // where nothing has flowed in, a shape demanded of the cell
         // serves, since nothing wider can
@@ -4746,7 +4960,7 @@ impl Solving {
                     | (Use::Write { .. }, Type::ByRef(..))
             );
             if shaped && self.apply(env, &u, &b)? {
-                known(v, |k| k.uses[i].1 = true)
+                self.write(v, Kept::Met(i))
             }
         }
         Ok(())
@@ -4967,9 +5181,7 @@ impl Solving {
                 false => bail!("missing required argument #{name}"),
             }
         }
-        for v in cells_in(&ft.rtype).iter().filter(|v| reads_type(v)) {
-            known(v, |k| k.made = true)
-        }
+        self.made_by_calls(ft);
         self.constrain(env, &ft.rtype, out)
     }
 

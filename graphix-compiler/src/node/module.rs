@@ -23,7 +23,8 @@ use crate::{
     shared_map::SharedMap,
     stack::ensure_sufficient,
     typ::{
-        Brief, FnArgKind, FnArgType, FnType, TVar, Type, UnresolvableRef, bounds,
+        Brief, FnArgKind, FnArgType, FnType, TVar, Type, UnresolvableRef,
+        bounds::{self, Keeps},
         tvar::{ForeignWrite, InTask, Level, OwnWrites, TaskId, new_task, settled_note},
     },
     wrap,
@@ -2251,10 +2252,14 @@ impl<R: Rt> Update<R> for Module<R> {
                 wrap!(source, t.check_contains(&ctx.env, source.typ()))?;
             }
             Body::Static => {
-                let _task = InTask::enter(self.task);
+                let task = InTask::enter(self.task);
                 let _module = profile::module(&self.scope.lexical);
                 let writes = OwnWrites::enter(self.task);
-                let res = match (self.check_body(ctx), writes.foreign()) {
+                let (checked, solved) =
+                    bounds::in_task(bounds::checking(), Keeps::Before(self.task), || {
+                        self.check_body(ctx)
+                    });
+                let res = match (checked, writes.foreign()) {
                     (res, None) => res,
                     (res, Some(w)) => {
                         let shown = res.as_ref().err().and_then(shown_in);
@@ -2270,6 +2275,10 @@ impl<R: Rt> Update<R> for Module<R> {
                         }
                     }
                 };
+                drop((writes, task));
+                if let Some(solved) = solved {
+                    bounds::absorb(solved)
+                }
                 res.with_context(|| {
                     format_compact!("compiling module {}", self.scope.lexical)
                 })?;
