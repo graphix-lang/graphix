@@ -449,60 +449,44 @@ pub(super) fn renames(env: &Env, t0: &Type, t1: &Type) -> bool {
     .same(t0, t1)
 }
 
-/// The pairs of live cells union collapses have met: each pair is one
-/// cell once [`apply_welds`] runs.
+/// What a union's collapse of its members carries: the alternatives of the
+/// join it is for, and the first ambiguity it met.
 #[derive(Default)]
-pub(super) struct Welds {
-    pairs: SmallVec<[(TVar, TVar); 2]>,
-    /// The alternatives of the join the pairs are for.
+pub(super) struct Collapsing {
+    /// The alternatives of the join the collapse is for.
     pub(super) alts: Alternatives,
     /// The first pairing of unions by position a collapse met that another
     /// pairing would have made as cheaply.
     pub(super) ambiguity: Option<Box<Ambiguity>>,
 }
 
-impl Welds {
+impl Collapsing {
     pub(super) fn new() -> Self {
         Self::default()
     }
 
     pub(super) fn joining(alts: SmallVec<[Type; 4]>) -> Self {
-        Self { pairs: SmallVec::new(), alts: Alternatives::new(alts), ambiguity: None }
+        Self { alts: Alternatives::new(alts), ambiguity: None }
     }
 
-    /// What a collapse that may yet fail starts from ([`Self::rewind`]).
-    pub(super) fn mark(&self) -> (usize, bool) {
-        (self.pairs.len(), self.ambiguity.is_some())
+    /// What a collapse that may yet fail starts from ([`Self::rewind`]):
+    /// whether an ambiguity was met before it.
+    pub(super) fn mark(&self) -> bool {
+        self.ambiguity.is_some()
     }
 
-    /// Forget the pairs and the ambiguity a failed collapse met.
-    pub(super) fn rewind(&mut self, (pairs, ambiguous): (usize, bool)) {
-        self.pairs.truncate(pairs);
+    /// Forget the ambiguity a failed collapse met.
+    pub(super) fn rewind(&mut self, ambiguous: bool) {
         if !ambiguous {
             self.ambiguity = None
         }
     }
 
-    /// Take the pairs and the ambiguity `other` met.
-    pub(super) fn absorb(&mut self, other: &mut Welds) {
-        self.pairs.extend(other.pairs.drain(..));
+    /// Take the ambiguity `other` met.
+    pub(super) fn absorb(&mut self, other: &mut Collapsing) {
         if self.ambiguity.is_none() {
             self.ambiguity = other.ambiguity.take()
         }
-    }
-}
-
-impl std::ops::Deref for Welds {
-    type Target = SmallVec<[(TVar, TVar); 2]>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.pairs
-    }
-}
-
-impl std::ops::DerefMut for Welds {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.pairs
     }
 }
 
@@ -554,17 +538,18 @@ impl Alternatives {
 }
 
 /// [`union_identical`], for a collapse that keeps `t0` in place of `t1`:
-/// the live cells it pairs go on `welds`, so the dropped member's cells
-/// learn what the kept one learns. Two members of one alternative of the
-/// join `welds` is for collapse only where they are identical as they stand.
-pub(super) fn union_collapses(t0: &Type, t1: &Type, welds: &mut Welds) -> bool {
-    let mark = welds.mark();
-    let mut same = Identity::new(Some(welds), &mut NodePairs::default()).same(t0, t1);
-    if same && welds.alts.apart(t0, t1) && !strictly_identical(t0, t1) {
+/// two live cells are identical only where they are one, and two members
+/// of one alternative of the join `collapsing` is for collapse only where
+/// they are identical as they stand.
+pub(super) fn union_collapses(t0: &Type, t1: &Type, collapsing: &mut Collapsing) -> bool {
+    let mark = collapsing.mark();
+    let mut same =
+        Identity::new(Some(collapsing), &mut NodePairs::default()).same(t0, t1);
+    if same && collapsing.alts.apart(t0, t1) && !strictly_identical(t0, t1) {
         same = false;
     }
     if !same {
-        welds.rewind(mark)
+        collapsing.rewind(mark)
     }
     same
 }
@@ -580,13 +565,6 @@ pub(super) fn written_identical(t0: &Type, t1: &Type) -> bool {
         ..Identity::new(None, &mut NodePairs::default())
     }
     .same(t0, t1)
-}
-
-/// Weld each pair `welds` holds.
-pub(super) fn apply_welds(welds: &mut Welds) {
-    for (a, b) in welds.drain(..) {
-        super::contains::weld(&a, &b)
-    }
 }
 
 /// The verdicts of node pairs whose walk read no cell: no variable, and
@@ -651,13 +629,11 @@ struct Identity<'a> {
     /// Two open cells of one name are identical, whatever holds them
     /// (`pairs` holds those met, never `None`).
     by_name: bool,
-    /// Two open cells nothing bounds are identical outside a function
-    /// type too, and go on `live` ([`lower_collapses`]).
-    unbounded: bool,
     /// A scheme's cell pairs with a live one too ([`renames`]).
     across: bool,
-    /// Where the live cells paired go.
-    live: Option<&'a mut Welds>,
+    /// The union collapse this walk is for, where an ambiguity goes; two
+    /// live cells are identical there only where they are one.
+    collapsing: Option<&'a mut Collapsing>,
     /// Names are compared by what they mean here, else by their cells.
     env: Option<&'a Env>,
     /// Inside a function type: the cells paired so far, by address.
@@ -683,15 +659,14 @@ struct Identity<'a> {
 }
 
 impl<'a> Identity<'a> {
-    fn new(live: Option<&'a mut Welds>, found: &'a mut NodePairs) -> Self {
+    fn new(collapsing: Option<&'a mut Collapsing>, found: &'a mut NodePairs) -> Self {
         Self {
             strict: false,
             sets: None,
             in_order: false,
             by_name: false,
-            unbounded: false,
             across: false,
-            live,
+            collapsing,
             env: None,
             pairs: None,
             found,
@@ -760,15 +735,11 @@ impl<'a> Identity<'a> {
     /// walk's [`Ambiguity`]: which members are the same is for the program
     /// to say.
     fn same_unions(&mut self, a: &[Type], b: &[Type]) -> bool {
-        let live = self.live.as_ref().map(|l| l.len());
         let pairs = self.pairs.as_ref().map(|p| p.len());
         let renamed = mem::replace(&mut self.renamed, false);
         let same = self.all(a, b);
         if same && self.renamed {
             if strictly_same_unordered(a, b) {
-                if let (Some(live), Some(l)) = (&mut self.live, live) {
-                    live.truncate(l)
-                }
                 if let (Some(pairs), Some(n)) = (&mut self.pairs, pairs) {
                     pairs.truncate(n)
                 }
@@ -776,7 +747,7 @@ impl<'a> Identity<'a> {
                 return true;
             }
             if self.ambiguity.is_none()
-                && self.live.as_ref().is_none_or(|l| l.ambiguity.is_none())
+                && self.collapsing.as_ref().is_none_or(|l| l.ambiguity.is_none())
                 && let Some((i, j)) = self.another_pairing(a, b, pairs.unwrap_or(0))
             {
                 let found = Box::new(Ambiguity {
@@ -784,8 +755,8 @@ impl<'a> Identity<'a> {
                     typ: b[j].clone(),
                     members: [a[i].clone(), a[j].clone()],
                 });
-                match &mut self.live {
-                    Some(live) => live.ambiguity = Some(found),
+                match &mut self.collapsing {
+                    Some(collapsing) => collapsing.ambiguity = Some(found),
                     None => self.ambiguity = Some(found),
                 }
             }
@@ -812,15 +783,14 @@ impl<'a> Identity<'a> {
         for x in a {
             for y in b {
                 let mut found = NodePairs::default();
-                let mut scratch = Welds::new();
+                let mut scratch = Collapsing::new();
                 let mut probe = Identity {
                     strict: self.strict,
                     sets: self.sets.as_deref_mut(),
                     in_order: self.in_order,
                     by_name: self.by_name,
-                    unbounded: self.unbounded,
                     across: self.across,
-                    live: self.live.as_ref().map(|_| &mut scratch),
+                    collapsing: self.collapsing.as_ref().map(|_| &mut scratch),
                     env: self.env,
                     pairs: self.pairs.as_ref().map(|p| SmallVec::from_slice(&p[..base])),
                     ..Identity::new(None, &mut found)
@@ -889,22 +859,7 @@ impl<'a> Identity<'a> {
             return true;
         }
         let (x, y) = (a.cell_addr(), b.cell_addr());
-        let Some(pairs) = &mut self.pairs else {
-            return match &mut self.live {
-                Some(live)
-                    if self.unbounded
-                        && a.unbounded()
-                        && b.unbounded()
-                        && !(a.earlier_task() && b.earlier_task()) =>
-                {
-                    live.push((a.clone(), b.clone()));
-                    self.renamed = true;
-                    self.paired += 1;
-                    true
-                }
-                _ => false,
-            };
-        };
+        let Some(pairs) = &mut self.pairs else { return false };
         if self.by_name {
             if a.name != b.name {
                 return false;
@@ -922,15 +877,12 @@ impl<'a> Identity<'a> {
         match pairs.iter().find(|(p, q)| *p == x || *q == y) {
             Some(&(p, q)) => p == x && q == y,
             None => {
-                pairs.push((x, y));
-                if let Some(live) = &mut self.live
-                    && !a.level().is_generic()
-                {
-                    if a.is_rigid() && b.is_rigid() {
-                        return false;
-                    }
-                    live.push((a.clone(), b.clone()))
+                // two live cells are one only where they are; making them
+                // one would decide what neither has decided
+                if self.collapsing.is_some() && !a.level().is_generic() {
+                    return false;
                 }
+                pairs.push((x, y));
                 self.renamed = true;
                 self.paired += 1;
                 let (ca, cb) = (a.cell_constraints(), b.cell_constraints());
@@ -1425,7 +1377,7 @@ impl Type {
         env: &Env,
         hist: &mut RefHist<AHashMap<RefPair, Type>>,
         merge: Merge,
-        welds: &mut Welds,
+        collapsing: &mut Collapsing,
         t0: &TypeRef,
         t1: &TypeRef,
         t: &Self,
@@ -1444,7 +1396,7 @@ impl Type {
         // `members_of_one_alternative_collapse_only_as_they_stand` in
         // design/review-2026-11-16/repro/t-setops-identity-and-alternatives.rs
         // (t-setops-09)
-        let mut kept = Welds::new();
+        let mut kept = Collapsing::new();
         let mut differ = t0
             .params
             .iter()
@@ -1453,7 +1405,7 @@ impl Type {
             .filter(|(_, (a, b))| !union_collapses(a, b, &mut kept));
         let (i, (p0, p1)) = match (differ.next(), differ.next()) {
             (None, _) => {
-                welds.absorb(&mut kept);
+                collapsing.absorb(&mut kept);
                 return Ok(self.clone());
             }
             (Some(d), None) => d,
@@ -1469,7 +1421,7 @@ impl Type {
         let merged =
             Type::Ref(Arc::new(t0.with_params(Arc::from_iter(params.drain(..)))));
         if merged.decided_holds(env, self)? && merged.decided_holds(env, t)? {
-            welds.absorb(&mut kept);
+            collapsing.absorb(&mut kept);
             Ok(merged)
         } else {
             Ok(pair(self, t))
@@ -1481,10 +1433,10 @@ impl Type {
         env: &Env,
         hist: &mut RefHist<AHashMap<RefPair, Type>>,
         merge: Merge,
-        welds: &mut Welds,
+        collapsing: &mut Collapsing,
         t: &Self,
     ) -> Result<Self> {
-        ensure_sufficient(|| self.union_inner(env, hist, merge, welds, t))
+        ensure_sufficient(|| self.union_inner(env, hist, merge, collapsing, t))
     }
 
     fn union_inner(
@@ -1492,7 +1444,7 @@ impl Type {
         env: &Env,
         hist: &mut RefHist<AHashMap<RefPair, Type>>,
         merge: Merge,
-        welds: &mut Welds,
+        collapsing: &mut Collapsing,
         t: &Self,
     ) -> Result<Self> {
         match (self, t) {
@@ -1504,7 +1456,7 @@ impl Type {
                 if t0.same_definition(t1, env) && t0.params.len() == t1.params.len() =>
             {
                 t0.hold_bounds_with(t1, env, true)?;
-                self.union_ref_params(env, hist, merge, welds, t0, t1, t)
+                self.union_ref_params(env, hist, merge, collapsing, t0, t1, t)
             }
             (tr @ Type::Ref(_), t) | (t, tr @ Type::Ref(_)) => {
                 let key = if matches!(self, Type::Ref(_)) {
@@ -1518,15 +1470,15 @@ impl Type {
                 let e = tr.lookup_ref(env)?;
                 hist.insert(key, tr.clone());
                 let r = if matches!(self, Type::Ref(_)) {
-                    e.union_int(env, hist, merge, welds, t)
+                    e.union_int(env, hist, merge, collapsing, t)
                 } else {
-                    t.union_int(env, hist, merge, welds, &e)
+                    t.union_int(env, hist, merge, collapsing, &e)
                 };
                 hist.remove(&key);
                 r
             }
             (t0 @ Type::Abstract { .. }, t1 @ Type::Abstract { .. })
-                if union_collapses(t0, t1, welds) =>
+                if union_collapses(t0, t1, collapsing) =>
             {
                 Ok(self.clone())
             }
@@ -1570,7 +1522,7 @@ impl Type {
                 Ok(Type::Primitive(*p))
             }
             (Type::Error(e0), Type::Error(e1)) => {
-                Ok(Type::Error(Arc::new(e0.union_int(env, hist, merge, welds, e1)?)))
+                Ok(Type::Error(Arc::new(e0.union_int(env, hist, merge, collapsing, e1)?)))
             }
             (Type::Set(s0), Type::Set(s1)) => Ok(Type::Set(Arc::from_iter(
                 s0.iter().cloned().chain(s1.iter().cloned()),
@@ -1585,14 +1537,14 @@ impl Type {
                 let differing = || {
                     t0.iter()
                         .zip(t1.iter())
-                        .filter(|(a, b)| !union_collapses(a, b, &mut Welds::new()))
+                        .filter(|(a, b)| !union_collapses(a, b, &mut Collapsing::new()))
                         .count()
                 };
                 if tg0 == tg1 && t0.len() == t1.len() && differing() <= 1 {
                     let mut typs = t0
                         .iter()
                         .zip(t1.iter())
-                        .map(|(t0, t1)| t0.union_int(env, hist, merge, welds, t1))
+                        .map(|(t0, t1)| t0.union_int(env, hist, merge, collapsing, t1))
                         .collect::<Result<LPooled<Vec<_>>>>()?;
                     Ok(Type::Variant(tg0.clone(), Arc::from_iter(typs.drain(..)), *at))
                 } else {
@@ -1600,25 +1552,25 @@ impl Type {
                 }
             }
             (t0 @ Type::TVar(_), t1 @ Type::TVar(_))
-                if union_collapses(t0, t1, welds) =>
+                if union_collapses(t0, t1, collapsing) =>
             {
                 Ok(t0.clone())
             }
             // A bound cell unions as its binding; an unbound cell
             // stays its own member.
             (Type::TVar(tv), t1) => match tv.binding() {
-                Some(b) => b.union_int(env, hist, merge, welds, t1),
+                Some(b) => b.union_int(env, hist, merge, collapsing, t1),
                 None => Ok(pair(self, t1)),
             },
             (t0, Type::TVar(tv)) => match tv.binding() {
-                Some(b) => t0.union_int(env, hist, merge, welds, &b),
+                Some(b) => t0.union_int(env, hist, merge, collapsing, &b),
                 None => Ok(pair(t0, t)),
             },
             // Everything left of one variant is kept once if identical,
             // else as two members.
             (t0, t1)
                 if std::mem::discriminant(t0) == std::mem::discriminant(t1)
-                    && union_collapses(t0, t1, welds) =>
+                    && union_collapses(t0, t1, collapsing) =>
             {
                 Ok(t0.clone())
             }
@@ -1678,16 +1630,15 @@ impl Type {
             return Ok(Type::Primitive(BitFlags::empty()));
         };
         let mut hist = RefHist::new();
-        let mut welds = Welds::joining(alternatives(ts, tags));
+        let mut collapsing = Collapsing::joining(alternatives(ts, tags));
         let mut acc = first.clone();
         for t in iter {
-            acc = acc.union_int(env, &mut hist, merge, &mut welds, t)?;
+            acc = acc.union_int(env, &mut hist, merge, &mut collapsing, t)?;
         }
-        let acc = acc.normalize_welding(&mut welds);
-        if let Some(a) = welds.ambiguity.take() {
+        let acc = acc.normalize_collapsing(&mut collapsing);
+        if let Some(a) = collapsing.ambiguity.take() {
             return Err(a.refusal());
         }
-        apply_welds(&mut welds);
         Ok(acc)
     }
 
@@ -3984,26 +3935,6 @@ pub(crate) mod tests {
             seen.len()
         });
         assert_eq!(sizes, [99, 99]);
-    }
-
-    // A weld moves one function's cell into the other's; a var that shared
-    // the moved cell reads on through the forward link the weld left.
-    #[test]
-    fn identical_reads_a_welded_cell_through_its_forward_link() {
-        let f = |arg: &str, ret: &str| {
-            let t = parse_type(&format!("fn(x: '{arg}) -> '{ret}")).unwrap();
-            let mut cells = AHashMap::default();
-            t.collect_tvars(&mut cells);
-            cells[ret].alias(&cells[arg]);
-            (t, cells[arg].clone(), cells[ret].clone())
-        };
-        let ((f0, a, r), (f1, b, _)) = (f("a", "r"), f("b", "s"));
-        assert!(union_identical(&f0, &f1));
-        crate::typ::contains::weld(&a, &b);
-        assert!(a.same_cell(&b));
-        assert!(!r.same_cell(&b) && r.stands_for() == b.stands_for());
-        assert!(union_identical(&f0, &f1));
-        assert!(union_identical(&f1, &f0));
     }
 
     /// Walks asking whether a union is one of several, each holding the
