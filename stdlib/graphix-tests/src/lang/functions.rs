@@ -1777,7 +1777,7 @@ async fn labeled_only_callback_is_compile_error() {
             panic!("a labeled-only callback must not satisfy fn(x: 'a) -> 'b, got {v:?}")
         }
     };
-    assert!(msg.contains("does not contain fn(?#foo: i64)"), "{msg}");
+    assert!(msg.contains("a function of 0 arguments where one of 1 is wanted"), "{msg}");
 }
 
 // A HOF callback calling a lambda whose return cell is still open (a
@@ -3357,8 +3357,8 @@ const WIDEST_ARGUMENT_ANY_ORDER: &str = r#"
 run!(widest_argument_any_order, WIDEST_ARGUMENT_ANY_ORDER, prints("[[i64:1, i64:1], [i64:1, i64:2], [i64:3, i64:1]]"); FuseExpect::Jit);
 
 // A default omitted through a fn type that names the label is judged by
-// that type: the call runs the instance with the fn type's parameter, so
-// a callee's wider parameter does not hold it there.
+// that type: a callee whose defaulted parameter is wider than the fn type's
+// does not fit it, where a required label of that width does.
 const DEFAULT_THROUGH_A_NARROWER_FN_TYPE: &str = r#"
 {
     let g = |#n: [i64, string] = "hello", x: i64| -> i64 x + 1;
@@ -3368,7 +3368,7 @@ const DEFAULT_THROUGH_A_NARROWER_FN_TYPE: &str = r#"
 "#;
 
 run!(default_through_a_narrower_fn_type, DEFAULT_THROUGH_A_NARROWER_FN_TYPE,
-    refused("type mismatch i64 does not contain [i64, string]"); FuseExpect::None);
+    refused("type mismatch fn(?#n: i64, x: i64) -> i64 does not contain fn(?#n: [i64, string], x: i64) -> i64"); FuseExpect::None);
 
 // The same with the callee's parameter open: its default does not decide
 // it past a fn type that names the label.

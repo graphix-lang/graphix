@@ -318,7 +318,7 @@ fn mistyped_function_value_reports_bind_context() {
     assert_eq!(stderr.matches(context).count(), 4, "{stderr}");
     let refusals = stderr.lines().filter(|line| {
         line.starts_with("ELAB-AUDIT ")
-            && line.contains("an instance at fn(x: f64) -> f64")
+            && line.contains("an instance at fn(f64) -> f64")
             && line.contains("of a definition typed fn(x: i64) -> i64")
     });
     assert_eq!(refusals.count(), 4, "{stderr}");
@@ -327,7 +327,9 @@ fn mistyped_function_value_reports_bind_context() {
 /// A builtin's `'a: Concrete` that only a handler the call does not pass
 /// holds is never read: the call is accepted with the handler omitted or
 /// null, and refused where a value of `'a` can arrive and nothing settles
-/// it (a handler whose argument is left open) or the result holds it.
+/// it (a handler whose argument is left open) or the result holds it. A
+/// Graphix definition whose body never makes a value of its `'b: Concrete`
+/// is accepted as the builtin is.
 async fn unread_quantifier_settles(mode: Mode) -> Result<()> {
     let code = |ret: &str, call: &str| {
         format_compact!(
@@ -341,16 +343,12 @@ async fn unread_quantifier_settles(mode: Mode) -> Result<()> {
     assert_eq!(run(&code("i64", "f(3)"), mode).await?, [Value::I64(3)]);
     assert_eq!(run(&code("i64", "f(#h: null, 3)"), mode).await?, [Value::I64(3)]);
     assert_eq!(run(&code("i64", "((f))(3)"), mode).await?, [Value::I64(3)]);
-    for (ret, call) in [
-        ("i64", "f(#h: |v| 0, 3)"),
-        ("['a, i64]", "f(3)"),
-        (
-            "i64",
-            "{ let g = 'b: Concrete |#h: [fn(v: 'b) -> i64, null] = null, x: i64| x; g(3) }",
-        ),
-    ] {
+    let g =
+        "{ let g = 'b: Concrete |#h: [fn(v: 'b) -> i64, null] = null, x: i64| x; g(3) }";
+    assert_eq!(run(&code("i64", g), mode).await?, [Value::I64(3)]);
+    for (ret, call) in [("i64", "f(#h: |v| 0, 3)"), ("['a, i64]", "f(3)")] {
         match run(&code(ret, call), mode).await {
-            Err(e) if format_compact!("{e:#}").contains("must be fully known") => (),
+            Err(e) if format_compact!("{e:#}").contains("must be known here") => (),
             r => panic!("{ret} {call}: {r:?}"),
         }
     }
@@ -376,10 +374,10 @@ async fn unread_quantifier_settles_through_a_block(mode: Mode) -> Result<()> {
     Ok(())
 }
 
-/// A name something writes may hold another function, so a call through it,
-/// or through a name of it, settles nothing of the builtin's: the unread
-/// quantifier is refused at the call, naming what to pass.
-async fn unread_quantifier_is_refused_through_a_written_alias(mode: Mode) -> Result<()> {
+/// A name something writes that holds only the builtin settles as the
+/// builtin does: a call through it, or through a name of it, takes the
+/// unread quantifier, and an open handler passed through it is refused.
+async fn unread_quantifier_settles_through_a_written_alias(mode: Mode) -> Result<()> {
     let code = |body: &str| {
         format_compact!(
             r#"{{
@@ -394,12 +392,6 @@ async fn unread_quantifier_is_refused_through_a_written_alias(mode: Mode) -> Res
         "let t = f; t <- f; let g = t; g(3)",
         "let t = f; let g = t; t <- f; g(3)",
         "{ let t = f; t <- f; t }(3)",
-    ] {
-        let e = run(&code(body), mode).await.unwrap_err();
-        let message = format_compact!("{e:#}");
-        assert!(message.contains("typed handler or a typed null"), "{body}: {message}");
-    }
-    for body in [
         "let t = f; let g = t; g(3)",
         "let t = f; t <- f; let h: [fn(v: i64) -> i64, null] = null; t(#h: h, 3)",
         "let t = f; t <- f; let g = t; let h: [fn(v: i64) -> i64, null] = null; g(#h: h, 3)",
@@ -407,10 +399,17 @@ async fn unread_quantifier_is_refused_through_a_written_alias(mode: Mode) -> Res
         let out = run(&code(body), mode).await?;
         assert_eq!(out.first(), Some(&Value::I64(3)), "{body}: {out:?}");
     }
+    let body = "let t = f; t <- f; t(#h: |v| 0, 3)";
+    let e = run(&code(body), mode).await.unwrap_err();
+    let message = format_compact!("{e:#}");
+    assert!(message.contains("must be known here"), "{body}: {message}");
     Ok(())
 }
 
-async fn unread_forwarded_quantifier_message(mode: Mode) -> Result<()> {
+/// A call through a Graphix function that forwards an optional handler to
+/// the builtin settles as the builtin does: with no function passed no
+/// value of the quantifier is made.
+async fn forwarded_unread_quantifier_settles(mode: Mode) -> Result<()> {
     let code = |call: &str| {
         format_compact!(
             r#"{{
@@ -421,17 +420,13 @@ async fn unread_forwarded_quantifier_message(mode: Mode) -> Result<()> {
     }}"#
         )
     };
-    for call in ["g(3)", "g(#h: null, 3)"] {
-        let e = run(&code(call), mode).await.unwrap_err();
-        let message = format_compact!("{e:#}");
-        assert!(message.contains("typed handler or a typed null"), "{message}");
-        assert!(!message.contains("operation reads it"), "{message}");
-    }
     for call in [
+        "g(3)",
+        "g(#h: null, 3)",
         "g(#h: |v: i64| v, 3)",
         "{ let h: [fn(v: i64) -> i64, null] = null; g(#h: h, 3) }",
     ] {
-        assert_eq!(run(&code(call), mode).await?, [Value::I64(3)]);
+        assert_eq!(run(&code(call), mode).await?, [Value::I64(3)], "{call}");
     }
     Ok(())
 }
@@ -558,7 +553,7 @@ modes!(
     mistyped_function_value_is_refused,
     unread_quantifier_settles,
     unread_quantifier_settles_through_a_block,
-    unread_quantifier_is_refused_through_a_written_alias,
-    unread_forwarded_quantifier_message,
+    unread_quantifier_settles_through_a_written_alias,
+    forwarded_unread_quantifier_settles,
     read_quantifier_keeps_type_directed_message
 );

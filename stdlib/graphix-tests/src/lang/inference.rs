@@ -1,6 +1,7 @@
 // What the checker infers on its own and where it needs an annotation;
-// each refusal is paired with the annotation that lifts it (the rules
-// in ide/skills/graphix-lang/SKILL.md, Annotations and Gotchas).
+// a refusal is paired with the annotation that lifts it where one does
+// (the rules in ide/skills/graphix-lang/SKILL.md, Annotations and
+// Gotchas).
 
 use anyhow::Result;
 use graphix_package_core::testing::eval_modes;
@@ -20,7 +21,8 @@ const NEVER_ARM_ANNOTATED: &str = r#"{
   select r { error as _ => 0, _ => 1 }
 }"#;
 
-// A type test over an untyped parameter binds it.
+// A type test over an untyped parameter tests each call's value: the
+// parameter takes null and i64, so an annotation changes nothing.
 const TYPE_TEST_BINDS_PARAM: &str = r#"{
   let f = |x| select x { null as _ => 0, v => v };
   f(null) + f(2)
@@ -30,8 +32,8 @@ const TYPE_TEST_PARAM_ANNOTATED: &str = r#"{
   f(null) + f(2)
 }"#;
 
-// A fold's accumulator is the type of its init; the callback cannot
-// widen it, the init can.
+// A fold's accumulator is the union of its init and the callback's
+// results, so a null init needs no annotation.
 const FOLD_NULL_INIT: &str = r#"{
   let m = array::fold([1, 2, 3], null, |acc, x| select acc { null as _ => x, found => found });
   select m { null as _ => 0, n => n }
@@ -46,8 +48,8 @@ const FOLD_INIT_ANNOTATED: &str = r#"{
   select m { null as _ => 0, n => n }
 }"#;
 
-// The first use of a let over ⊥ fixes its type; a wider writer after it
-// is told what to declare.
+// A let over ⊥ takes every value written to it; declaring the union
+// says the same.
 const WRITER_WIDER_THAN_FIRST: &str = r#"{
   let n: [i64, null] = null;
   let x = never();
@@ -138,6 +140,9 @@ async fn rigid_type_variables_survive_a_cell_merge() -> Result<()> {
     // <- "s"` checks). probe:
     // design/review-2026-11-16/repro/tests-types-d-rigid-alias-loose-pin.gx
     // (tests-types-d-05)
+    // 2026-11-21 claude: annotations_the_checker_asks_for no longer holds
+    // FOLD_CALLBACK_ANNOTATED to a refusal: the program is accepted and pinned at its
+    // value 1.
     assert!(msg.contains("does not contain"), "{msg}");
     Ok(())
 }
@@ -153,7 +158,7 @@ const RAISE_OVER_AN_OPEN_OPERAND: &str = r#"{
     f(1)
 }"#;
 
-/// A writer wider than a `let` typed by its initializer: no "inferred".
+/// A writer wider than a `let`'s initializer widens the let: it holds both.
 const WRITER_WIDER_THAN_INITIALIZER: &str = r#"{
     let y = 1;
     let x = y + 1;
@@ -168,14 +173,15 @@ const WRITER_WIDER_THAN_TVAR: &str = r#"{
     f(1)
 }"#;
 
-/// A name a destructuring let binds is declared by the pattern's type.
+/// A name a destructuring let binds takes every write: arithmetic over the
+/// widened name is refused.
 const WRITER_WIDER_THAN_A_PATTERN_NAME: &str = r#"{
     let (a, b) = (1, 2);
     a <- "s";
     a + b
 }"#;
 
-/// What that advice says to write checks.
+/// A pattern type that holds the write checks.
 const WRITER_PATTERN_DECLARED: &str = r#"{
     let (a, b): ([i64, string], i64) = (1, 2);
     a <- "s";
@@ -185,27 +191,17 @@ const WRITER_PATTERN_DECLARED: &str = r#"{
 #[tokio::test(flavor = "current_thread")]
 async fn annotations_the_checker_asks_for() -> Result<()> {
     for (src, refusal) in [
-        (NEVER_ARM_UNANNOTATED, "unreachable arm"),
-        (TYPE_TEST_BINDS_PARAM, "unreachable arm"),
-        (FOLD_NULL_INIT, "unreachable arm"),
-        (FOLD_CALLBACK_ANNOTATED, "does not contain"),
-        (
-            WRITER_WIDER_THAN_FIRST,
-            "x is i64, inferred from an earlier use, and cannot hold [i64, null]; \
-             declare x: [i64, null] where it is bound (line 3, column 7)",
-        ),
-        (
-            WRITER_WIDER_THAN_INITIALIZER,
-            "x is i64 and cannot hold string; declare x: [i64, string] where it is bound",
-        ),
+        (NEVER_ARM_UNANNOTATED, "will never match: nothing reaches it"),
         (WRITER_WIDER_THAN_TVAR, "x is 'a: unbound within Number and cannot hold string"),
+        (WRITER_WIDER_THAN_A_PATTERN_NAME, "both operands must be one numeric type"),
         (
-            WRITER_WIDER_THAN_A_PATTERN_NAME,
-            "a is i64 and cannot hold string; annotate the let's pattern type with a's \
-             position as [i64, string]",
+            STRIP_OVER_AN_OPEN_OPERAND,
+            "the type of the operand of ? or $ is not known here",
         ),
-        (STRIP_OVER_AN_OPEN_OPERAND, "the operand of $ has type"),
-        (RAISE_OVER_AN_OPEN_OPERAND, "the operand of ? has type"),
+        (
+            RAISE_OVER_AN_OPEN_OPERAND,
+            "the type of the operand of ? or $ is not known here",
+        ),
     ] {
         let msg = match eval_modes(src, crate::TEST_REGISTER).await? {
             Err(msg) => msg,
@@ -215,8 +211,13 @@ async fn annotations_the_checker_asks_for() -> Result<()> {
     }
     for (src, expected) in [
         (NEVER_ARM_ANNOTATED, 0),
+        (TYPE_TEST_BINDS_PARAM, 2),
         (TYPE_TEST_PARAM_ANNOTATED, 2),
+        (FOLD_NULL_INIT, 1),
+        (FOLD_CALLBACK_ANNOTATED, 1),
         (FOLD_INIT_ANNOTATED, 1),
+        (WRITER_WIDER_THAN_FIRST, 1),
+        (WRITER_WIDER_THAN_INITIALIZER, 2),
         (MIXED_ARMS_INFERRED, 3),
         (MIXED_ARMS_DECLARED, 3),
         (EMPTY_ARRAY_ARM, 0),

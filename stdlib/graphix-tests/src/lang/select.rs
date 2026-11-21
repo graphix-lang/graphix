@@ -12706,22 +12706,17 @@ run!(
     FuseExpect::Jit
 );
 
-// A variable already bounded is not told to bound it, and one bounded by
-// another variable is told to replace that bound.
-#[tokio::test]
-async fn test_beside_a_variable_bounded_by_any_advice() -> anyhow::Result<()> {
-    let src = r#"{
+// A test beside a variable bounded by `Any` takes what reaches it: the
+// tag's arm takes `Z, and every other value goes to the catch-all.
+run!(
+    test_beside_a_variable_bounded_by_any_takes_what_reaches_it,
+    r#"{
         let g = 'b: Any |x: ['b, `Z]| -> ['b, null] select x { `Z => null, v => v };
-        g(1)
-    }"#;
-    let e = graphix_package_core::testing::refusal(src, crate::TEST_REGISTER).await?;
-    assert!(
-        e.contains("`Z tests inside a value of 'b, a type variable of the definition, which types none of its parts: write the type it tests, `T as `Z`"),
-        "{e}"
-    );
-    assert!(!e.contains("or bound 'b"), "{e}");
-    Ok(())
-}
+        (g(1), g(`Z), g("s"))
+    }"#,
+    prints(r#"[i64:1, null, "s"]"#);
+    FuseExpect::Jit
+);
 
 run!(
     test_beside_a_variable_bounded_by_any_written,
@@ -14049,12 +14044,12 @@ run!(
 async fn slice_bind_refusal_is_the_same_every_run() -> Result<()> {
     let src = r#"{
         let f = |x| select x {
-            [v13.., ([v2.., v1], _), ([v4.., v3], _), (_, [v7.., v5, v6]), (v8, v9), (v10, [v11, v12])] => array::concat(v7, v7),
+            [v13.., ([v2.., v1], _), ([v4.., v3], _), (_, [v7.., v5, v6]), (v8, v9), (v10, [v11, v12])] => array::concat(v7, v1),
             [v1, v2] => [v1, v2],
             [v1] => v1,
             v1 => [v1]
         };
-        0
+        f([([1], ["s"])])
     }"#;
     let mut first: Option<String> = None;
     for _ in 0..24 {
@@ -14066,10 +14061,7 @@ async fn slice_bind_refusal_is_the_same_every_run() -> Result<()> {
         }
     }
     let first = first.unwrap_or_default();
-    assert!(
-        first.contains("Array<['_0: unbound, '_1: unbound]> does not contain Any"),
-        "{first}"
-    );
+    assert!(first.contains("Array<'a: unbound> does not contain i64"), "{first}");
     Ok(())
 }
 

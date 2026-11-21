@@ -530,6 +530,14 @@ run!(
 // run!(name, src, refused(phrase); FuseExpect::None), and the accepted ones with
 // is(..). Found by reading; the check's messages for all 39 sources contain their
 // phrases today. (tests-types-a-04)
+// 2026-11-21 claude: Renamed: comparison_operands_are_one_type is
+// comparison_operands_one_holding_the_other, ordering_refuses_two_numeric_types is
+// ordering_takes_two_numeric_types, ordering_refuses_an_open_member_beside_a_number is
+// ordering_takes_an_open_member_beside_a_number, singleton_open_members_merge is
+// singleton_open_members_are_one_type_at_each_call.
+// concrete_targets_are_known_where_they_settle, function_bounds_admit_only_functions
+// and recursive_fn_tail_rejected_at_every_depth still hold the loop shape the CR
+// describes; discernible_refuses_one_runtime_form too.
 #[tokio::test(flavor = "current_thread")]
 async fn concrete_targets_are_known_where_they_settle() -> Result<()> {
     for src in [
@@ -543,7 +551,9 @@ async fn concrete_targets_are_known_where_they_settle() -> Result<()> {
             Ok(v) => panic!("must be refused: {src} => {v:?}"),
         };
         assert!(
-            msg.contains("must be fully known here"),
+            msg.contains(
+                "must be known here, an operation reads it to know what to make"
+            ),
             "wrong refusal for {src}: {msg}"
         );
     }
@@ -585,7 +595,7 @@ async fn function_bounds_admit_only_functions() -> Result<()> {
             Ok(v) => panic!("must be refused: {src} => {v:?}"),
         };
         assert!(
-            msg.contains("Function does not contain")
+            msg.contains("must be Function here")
                 || msg.contains("must be a function here"),
             "wrong refusal for {src}: {msg}"
         );
@@ -1749,10 +1759,7 @@ async fn recursive_fn_tail_rejected_at_every_depth() -> Result<()> {
         let src = program(tail);
         match eval_modes(&src, crate::TEST_REGISTER).await? {
             Err(msg) => {
-                assert!(
-                    msg.contains("L<'a: unbound> does not contain `Cons(i64"),
-                    "{tail}: {msg}"
-                )
+                assert!(msg.contains("L<'a> does not contain `Cons(i64"), "{tail}: {msg}")
             }
             Ok(v) => panic!("a Fn in a recursive tail must be refused: {tail} => {v:?}"),
         }
@@ -2963,12 +2970,22 @@ const TYPE_TEST_RUST_BACKED_PARAMS: &str = r#"{
     0
 }"#;
 
-/// An abstract pattern over a union predicate would be refutable by a
-/// tag test nothing performs.
+/// An abstract pattern under a union test takes only its own member: the
+/// rest must be covered.
 const ABSTRACT_PATTERN_OVER_A_UNION: &str = r#"{
     type Box = Abstract<i64>;
     let v: [Box, i64] = 1;
     select v { [Box, i64] as Box(x) => x }
+}"#;
+const ABSTRACT_PATTERN_OVER_A_UNION_COVERED: &str = r#"{
+    type Box = Abstract<i64>;
+    let v: [Box, i64] = 1;
+    select v { [Box, i64] as Box(x) => x, _ => 0 }
+}"#;
+const ABSTRACT_PATTERN_BESIDE_ITS_MEMBER: &str = r#"{
+    type Box = Abstract<i64>;
+    let v: [Box, i64] = 1;
+    select v { [Box, i64] as Box(x) => x, i64 as n => n + 6 }
 }"#;
 
 /// `never<T>()` holds T's applications to their parameter bounds.
@@ -3121,7 +3138,7 @@ mod unsound_acceptances {
         DEFAULTED_LABEL => "does not contain",
         PRODUCT_UNION => "does not contain",
         PRODUCT_UNION_VARIANT => "does not contain",
-        REF_UNION_PARAMS => "this callee is one of F<i64> and F<string>",
+        REF_UNION_PARAMS => "i64 does not contain string",
         DECLARED_CONSTRAINS_OUTER => "'a escapes the definition",
         RIGID_BELOW_UNANNOTATED => "does not contain i64",
         NEVER_OF_AN_UNBOUNDED_APPLICATION => "Number does not contain string",
@@ -3131,9 +3148,9 @@ mod unsound_acceptances {
         REF_TEST_OVER_ANY_NESTED => "can't tell what the reference",
         CAST_TO_AN_ABSTRACT_OF_A_FUNCTION => "can't cast a value to a function",
         CONJUNCT_RIGID => "does not contain i64",
-        CONJUNCT_RIGID_TRAIT => "does not contain [i64, 'a",
+        CONJUNCT_RIGID_TRAIT => "[i64, 'a] does not implement Sz",
         NO_ERROR_OPEN_MEMBER => "does not contain Error<",
-        ABSTRACT_PATTERN_OVER_A_UNION => "patterns can't match",
+        ABSTRACT_PATTERN_OVER_A_UNION => "missing match cases: nothing matches i64",
         // CR claude for claude: [test-gap/low] This phrase is also what the same
         // program gives without rigidity. With 'a decided as string in the body, `m(1,
         // |x| x * 2)` is refused at the call with "string does not contain i64", so the
@@ -3143,7 +3160,7 @@ mod unsound_acceptances {
         // design/review-2026-11-16/repro/tests-types-a-rigid-param-call-vacuous.sh
         // (tests-types-a-03)
         RIGID_PARAM_CALL => "does not contain",
-        TRAIT_BESIDE_UNSATISFIABLE => "unsatisfiable constraints",
+        TRAIT_BESIDE_UNSATISFIABLE => "no value is both: nothing can be passed for it",
     }
 
     cases! { evaluates:
@@ -3160,6 +3177,8 @@ mod unsound_acceptances {
         ERROR_UNION_DISTRIBUTES => 1,
         NO_ERROR_OPEN_MEMBER_TOLD => 1,
         SHARED_REF_TEST_OVER_MUT => 1,
+        ABSTRACT_PATTERN_OVER_A_UNION_COVERED => 0,
+        ABSTRACT_PATTERN_BESIDE_ITS_MEMBER => 7,
     }
 }
 
@@ -3219,21 +3238,23 @@ run!(
     refused("type mismatch Number does not contain string")
 );
 
-// Comparison is `fn('a, 'a) -> bool` over exactly one type: neither
-// operand's type may merely contain the other's.
+// A comparison takes operands one of whose types holds the other's: `x ==
+// 3` over `[i64, null]` compares as a member of the union, and two types
+// neither holds are refused.
 #[tokio::test(flavor = "current_thread")]
-async fn comparison_operands_are_one_type() -> Result<()> {
-    for src in [
-        "{ let x: [i64, null] = 3; x == 3 }",
-        "{ let v: [`Green, `Red] = `Red; v == `Red }",
-        "{ let r: [string, Error<`E>] = \"a\"; r != \"a\" }",
+async fn comparison_operands_one_holding_the_other() -> Result<()> {
+    for (src, expected) in [
+        ("{ let x: [i64, null] = 3; x == 3 }", true),
+        ("{ let v: [`Green, `Red] = `Red; v == `Red }", true),
+        ("{ let r: [string, Error<`E>] = \"a\"; r != \"a\" }", false),
     ] {
-        match eval_modes(src, crate::TEST_REGISTER).await? {
-            Err(msg) => {
-                assert!(msg.contains("cannot compare"), "{src}: {msg}")
-            }
-            Ok(v) => panic!("must be refused: {src} => {v:?}"),
-        }
+        let v =
+            eval_modes(src, crate::TEST_REGISTER).await?.map_err(anyhow::Error::msg)?;
+        assert_eq!(v, Value::Bool(expected), "{src}");
+    }
+    match eval_modes("1 == \"b\"", crate::TEST_REGISTER).await? {
+        Err(msg) => assert!(msg.contains("neither type holds the other"), "{msg}"),
+        Ok(v) => panic!("must be refused: {v:?}"),
     }
     Ok(())
 }
@@ -3432,49 +3453,75 @@ run!(
     )
 );
 
-// The orderings and `Ordered` refuse a type holding two numeric types, as
-// arithmetic's `Singleton` does: they have no order between them.
+// The orderings, sorts, `min`/`max` and map keys take a type holding two
+// numeric types: numbers order by value across kinds. Functions and
+// references have no order.
 #[tokio::test(flavor = "current_thread")]
-async fn ordering_refuses_two_numeric_types() -> Result<()> {
-    for src in [
-        "{ let a: [i64, f64] = 3; let b: [i64, f64] = 2.5; a < b }",
-        "{ let xs: Array<[i64, f64]> = [i64:3, f64:2.5]; array::sort(xs) }",
-        "{ let a: [i64, f64] = 3; let b: [i64, f64] = 2.5; min(a, b) }",
-        "{ type N = [i64, u8]; let n: N = 3; n <= n }",
-        "{ let f = |a: Number, b: Number| a >= b; f(2.5, 1.5) }",
-        "{ let t: Array<(string, [i64, f64])> = [(\"a\", 1)]; array::sort(t) }",
-        "{ let m: Map<[i64, f64], string> = {}; m }",
-        "{ let a: [Array<i64>, Array<f64>] = [1]; let b: [Array<i64>, Array<f64>] = [0.5]; a < b }",
-        "{ let a: [Map<i64, string>, Map<f64, string>] = {1 => \"a\"}; array::sort([a]) }",
-        "{ let a: [{x: i64, y: string}, {x: f64, y: bool}] = {x: 1, y: \"a\"}; {a => 1} }",
+async fn ordering_takes_two_numeric_types() -> Result<()> {
+    for (src, expected) in [
+        ("{ let a: [i64, f64] = 3; let b: [i64, f64] = 2.5; a < b }", "false"),
+        (
+            "{ let xs: Array<[i64, f64]> = [i64:3, f64:2.5]; array::sort(xs) }",
+            "[f64:2.5, i64:3]",
+        ),
+        ("{ let a: [i64, f64] = 3; let b: [i64, f64] = 2.5; min(a, b) }", "f64:2.5"),
+        ("{ type N = [i64, u8]; let n: N = 3; n <= n }", "true"),
+        ("{ let f = |a: Number, b: Number| a >= b; f(2.5, 1.5) }", "true"),
+        (
+            "{ let t: Array<(string, [i64, f64])> = [(\"a\", 1)]; array::sort(t) }",
+            "[[\"a\", i64:1]]",
+        ),
+        ("{ let m: Map<[i64, f64], string> = {}; m }", "{}"),
+        (
+            "{ let a: [Array<i64>, Array<f64>] = [1]; let b: [Array<i64>, Array<f64>] = [0.5]; a < b }",
+            "false",
+        ),
+        (
+            "{ let a: [Map<i64, string>, Map<f64, string>] = {1 => \"a\"}; array::sort([a]) }",
+            "[{i64:1 => \"a\"}]",
+        ),
+        (
+            "{ let a: [{x: i64, y: string}, {x: f64, y: bool}] = {x: 1, y: \"a\"}; {a => 1} }",
+            "{[[\"x\", i64:1], [\"y\", \"a\"]] => i64:1}",
+        ),
+    ] {
+        let v =
+            eval_modes(src, crate::TEST_REGISTER).await?.map_err(anyhow::Error::msg)?;
+        assert_eq!(v.to_string(), expected, "{src}");
+    }
+    for (src, says) in [
+        ("{ let f = |x: i64| x; array::sort([f, f]) }", "functions have no order"),
+        ("{ let r = &1; {r => 1} }", "references have no order"),
     ] {
         match eval_modes(src, crate::TEST_REGISTER).await? {
-            Err(msg) => {
-                assert!(msg.contains("more than one numeric type"), "{src}: {msg}")
-            }
+            Err(msg) => assert!(msg.contains(says), "{src}: {msg}"),
             Ok(v) => panic!("must be refused: {src} => {v:?}"),
         }
     }
     Ok(())
 }
 
-// An open member beside a numeric one may yet be another numeric type, so
-// a definition that orders or keys by them is refused, as an open member
-// beside a type of a shared form is.
+// An open member beside a numeric one orders whatever number a call gives
+// it; a function there is refused at the call.
 #[tokio::test(flavor = "current_thread")]
-async fn ordering_refuses_an_open_member_beside_a_number() -> Result<()> {
-    for src in [
-        "{ let g = |y| array::sort([3, y, 1]); g(2.5) }",
-        "{ let h = |y| [3, y] < [1, y]; h(2.5) }",
-        "{ let k = |y| map::insert({}, [1, y], \"v\"); k(2.5) }",
-        "{ let g = 'y: Int |y: 'y| array::sort([3, y]); g(i32:2) }",
+async fn ordering_takes_an_open_member_beside_a_number() -> Result<()> {
+    for (src, expected) in [
+        ("{ let g = |y| array::sort([3, y, 1]); g(2.5) }", "[i64:1, f64:2.5, i64:3]"),
+        ("{ let h = |y| [3, y] < [1, y]; h(2.5) }", "false"),
+        (
+            "{ let k = |y| map::insert({}, [1, y], \"v\"); k(2.5) }",
+            "{[i64:1, f64:2.5] => \"v\"}",
+        ),
+        ("{ let g = 'y: Int |y: 'y| array::sort([3, y]); g(i32:2) }", "[i32:2, i64:3]"),
     ] {
-        match eval_modes(src, crate::TEST_REGISTER).await? {
-            Err(msg) => {
-                assert!(msg.contains("may be another numeric type"), "{src}: {msg}")
-            }
-            Ok(v) => panic!("must be refused: {src} => {v:?}"),
-        }
+        let v =
+            eval_modes(src, crate::TEST_REGISTER).await?.map_err(anyhow::Error::msg)?;
+        assert_eq!(v.to_string(), expected, "{src}");
+    }
+    let src = "{ let g = |y| array::sort([3, y, 1]); g(|x: i64| x) }";
+    match eval_modes(src, crate::TEST_REGISTER).await? {
+        Err(msg) => assert!(msg.contains("must be Ordered"), "{msg}"),
+        Ok(v) => panic!("must be refused: {v:?}"),
     }
     Ok(())
 }
@@ -3598,7 +3645,8 @@ run!(bottom_fed_operands, BOTTOM_FED_OPERANDS, |v: Result<&Value>| {
 // compare or hash (`uniq`, `min`, `max`, `array::sort`, `array::dedup`,
 // `list::sort`, the `map::` functions that take or make keys) carry it,
 // and a generic definition's variable takes it from its body, so each call
-// checks it; a member a call leaves open is judged once it binds.
+// checks it; a member a call leaves open is judged once it binds, and one
+// that binds to the other member's type is one type.
 #[tokio::test(flavor = "current_thread")]
 async fn discernible_refuses_one_runtime_form() -> Result<()> {
     const FNS: &str = "[fn(x: i64) -> i64, fn(s: string) -> string]";
@@ -3628,10 +3676,10 @@ async fn discernible_refuses_one_runtime_form() -> Result<()> {
         (
             r#"{
               let g = |c, a| { let v = select c { true => a, false => |s: string| s }; v == v };
-              g(true, |s: string| s)
+              g(true, |x: i64| x)
             }"#
             .to_string(),
-            "annotate it",
+            "same runtime form",
         ),
     ] {
         match eval_modes(&src, crate::TEST_REGISTER).await? {
@@ -3641,6 +3689,12 @@ async fn discernible_refuses_one_runtime_form() -> Result<()> {
             Ok(v) => panic!("must be refused: {src} => {v:?}"),
         }
     }
+    let one = r#"{
+      let g = |c, a| { let v = select c { true => a, false => |s: string| s }; v == v };
+      g(true, |s: string| s)
+    }"#;
+    let v = eval_modes(one, crate::TEST_REGISTER).await?.map_err(anyhow::Error::msg)?;
+    assert_eq!(v, Value::Bool(true));
     Ok(())
 }
 
@@ -3706,11 +3760,11 @@ run!(
     FuseExpect::Jit
 );
 
-// Under `Singleton` the open members of a union must be one type: they
-// merge into one cell, and two declared variables, which can't merge,
-// are refused.
+// Under `Singleton` the members of a union must be one type at each call:
+// two open members given two numeric types are refused, and two declared
+// variables are judged where a call decides them.
 #[tokio::test(flavor = "current_thread")]
-async fn singleton_open_members_merge() -> Result<()> {
+async fn singleton_open_members_are_one_type_at_each_call() -> Result<()> {
     for (src, says) in [
         (
             r#"{
@@ -3721,7 +3775,7 @@ async fn singleton_open_members_merge() -> Result<()> {
               };
               g(true, 1, 2.5)
             }"#,
-            "does not contain",
+            "both operands must be one numeric type",
         ),
         (
             r#"{
@@ -3733,7 +3787,7 @@ async fn singleton_open_members_merge() -> Result<()> {
               q <- 2.0;
               r
             }"#,
-            "cannot hold f64",
+            "both operands must be one numeric type",
         ),
         (
             r#"{
@@ -3741,9 +3795,9 @@ async fn singleton_open_members_merge() -> Result<()> {
                 let s = select c { true => a, false => b };
                 s + s
               };
-              0
+              f(true, 1, 2.5)
             }"#,
-            "must be one type",
+            "cannot compute with [i64, f64]",
         ),
     ] {
         match eval_modes(src, crate::TEST_REGISTER).await? {
@@ -3755,6 +3809,18 @@ async fn singleton_open_members_merge() -> Result<()> {
     }
     Ok(())
 }
+
+run!(
+    singleton_declared_members_one_type_at_the_call,
+    r#"{
+  let f = 'a: Number, 'b: Number |c, a: 'a, b: 'b| {
+    let s = select c { true => a, false => b };
+    s + s
+  };
+  (f(true, 1, 2), f(false, 1.5, 2.5))
+}"#,
+    prints("[i64:2, f64:5.]")
+);
 
 const SINGLETON_MERGED_MEMBERS_RUN: &str = r#"{
   let g = |c, a, b| {
@@ -6957,7 +7023,7 @@ async fn settle_keeps_a_payload_bound_beside_bottom() -> Result<()> {
         let Err(e) = ctx.rt.compile(ArcStr::from(read)).await else {
             anyhow::bail!("{read} was accepted")
         };
-        assert!(format!("{e:#}").ends_with("i64 does not contain 'q: string"), "{e:#}");
+        assert!(format!("{e:#}").ends_with("i64 does not contain string"), "{e:#}");
     }
     let probe =
         ctx.rt.compile(ArcStr::from("{ let s: string = r.0; \"[s][q.0]\" }")).await?;
@@ -12257,10 +12323,7 @@ async fn written_after_generalized_is_held_to_it() -> Result<()> {
     let narrow = ctx.rt.compile(ArcStr::from("f <- |x: i64| x + 1")).await.unwrap_err();
     let narrow = format!("{narrow:#}");
     assert!(narrow.contains("what is written to it must be as general"), "{narrow}");
-    // the type it is held to names its one variable once: fn(x: 'a) -> 'a
-    let held = narrow.split("f is fn(x: ").nth(1).expect("the held type is printed");
-    let (arg, rest) = held.split_once(") -> ").expect("a function type");
-    assert!(rest.starts_with(arg), "{narrow}");
+    assert!(cells_print_short(&narrow), "{narrow}");
     let _w = ctx.rt.compile(ArcStr::from("f <- |x| x")).await?;
     let r = ctx.rt.compile(ArcStr::from("let r = &mut f")).await.unwrap_err();
     assert!(format!("{r:#}").contains("f is generic, and a writable reference to it"));
@@ -15496,11 +15559,10 @@ const MEMBER_ORDERS: [[&str; 3]; 6] = [
     ["c", "b", "a"],
 ];
 
-const TWO_MEETS: &str = "and the check picks neither by order: write the part of its type that tells them apart";
-
-// A lambda that two functions of its union could decide, which are not one
-// type, is refused wherever the three stand in the union, and runs once its
-// parameter is written.
+// A field read over three structs holds each lambda as its own member,
+// wherever the three stand in the union: the arm that names the first
+// struct's field calls its lambda, and a call through the whole read meets
+// every member.
 // CR claude for claude: [test-gap/low] [test-gap/low] This test runs each order through
 // testing::refusal, and so do field_read_refuses_a_capture_two_members_could_decide,
 // literal_refuses_a_capture_two_functions_could_decide_in_every_order and
@@ -15512,21 +15574,46 @@ const TWO_MEETS: &str = "and the check picks neither by order: write the part of
 // testing::eval_modes in these loops: it holds the check to the build in Interp, and
 // the assertions stay the same. The check agrees in every order today (all 108
 // generated programs run with --check). (tests-types-d-09)
+// 2026-11-21 claude: Renamed and moved to testing::eval_modes:
+// field_read_refuses_a_lambda_two_members_could_decide is
+// field_read_of_a_lambda_beside_two_functions_in_every_order,
+// field_read_refuses_a_capture_two_members_could_decide is
+// field_read_leaves_a_capture_to_its_call_in_every_order,
+// literal_refuses_a_capture_two_functions_could_decide_in_every_order is
+// literal_holds_a_capture_beside_two_functions_in_every_order,
+// field_read_names_the_two_functions_that_are_not_one_type is
+// field_read_holds_two_open_lambdas_beside_two_functions_in_every_order. Each loop now
+// holds the check to the build in Interp;
+// literal_of_schemes_beside_two_functions_in_every_order still uses testing::eval, so
+// the CR stands for it.
 #[tokio::test(flavor = "current_thread")]
-async fn field_read_refuses_a_lambda_two_members_could_decide() -> Result<()> {
-    use graphix_package_core::testing::refusal;
+async fn field_read_of_a_lambda_beside_two_functions_in_every_order() -> Result<()> {
     for order in MEMBER_ORDERS {
-        let e =
-            refusal(&field_read_beside_two("|x| x", order), crate::TEST_REGISTER).await?;
-        assert!(
-            e.contains("could be fn(y: i64) -> i64 or fn(z: ")
-                || e.contains(" or fn(y: i64) -> i64, two functions"),
-            "{order:?}: {e}"
-        );
-        assert!(e.contains(TWO_MEETS), "{order:?}: {e}");
+        let v = eval_modes(&field_read_beside_two("|x| x", order), crate::TEST_REGISTER)
+            .await?
+            .map_err(anyhow::Error::msg)?;
+        assert_eq!(v, Value::String("s".into()), "{order:?}");
     }
     Ok(())
 }
+
+run!(
+    field_read_call_through_three_members_refused,
+    r#"{
+  let k = |b| {
+    let t = select b {
+      0 => {f: |x| x, a: 1},
+      1 => {f: |y| y + 1, b: 1},
+      _ => {f: |z| "[z]!", c: 1}
+    };
+    let u = t.f;
+    u("s")
+  };
+  k(0)
+}"#,
+    refused("i64 does not contain string");
+    FuseExpect::None
+);
 
 run!(
     field_read_of_a_lambda_beside_two_functions,
@@ -15618,8 +15705,8 @@ run!(
     FuseExpect::None
 );
 
-// A lambda of a generic holder that reads a binding of its definition is
-// refused alike: the meet would decide the binding.
+// A lambda of a generic holder that reads a binding of its definition leaves
+// the binding to its call: nothing the other members hold decides it.
 fn element_read_beside_two([a, b, c]: [&str; 3]) -> String {
     format!(
         r#"{{
@@ -15638,14 +15725,34 @@ fn element_read_beside_two([a, b, c]: [&str; 3]) -> String {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn field_read_refuses_a_capture_two_members_could_decide() -> Result<()> {
-    use graphix_package_core::testing::refusal;
+async fn field_read_leaves_a_capture_to_its_call_in_every_order() -> Result<()> {
     for order in MEMBER_ORDERS {
-        let e = refusal(&element_read_beside_two(order), crate::TEST_REGISTER).await?;
-        assert!(e.contains(TWO_MEETS), "{order:?}: {e}");
+        let v = eval_modes(&element_read_beside_two(order), crate::TEST_REGISTER)
+            .await?
+            .map_err(anyhow::Error::msg)?;
+        assert_eq!(v, Value::I64(1), "{order:?}");
     }
     Ok(())
 }
+
+run!(
+    field_read_call_reads_the_union_of_the_members_results,
+    r#"{
+  let k = |v| {
+    let t = [
+      {f: |x| (x, v), a: 1},
+      {f: |y: i64| (y, 1), b: 1},
+      {f: |z: i64| (z, "s"), c: 1}
+    ];
+    let u = t[0]$.f;
+    let (p, q) = u(1);
+    q + 1
+  };
+  k(1)
+}"#,
+    refused("i64 does not contain string");
+    FuseExpect::None
+);
 
 // The lambdas of a `let`'s literal are schemes where its elements meet, and
 // each takes the first function it meets in the order written, the one an
@@ -15686,30 +15793,42 @@ async fn literal_of_schemes_beside_two_functions_in_every_order() -> Result<()> 
     Ok(())
 }
 
-// A scheme a lambda with a cell of its definition joins holds that cell: a
-// literal whose lambda reads `v` is refused in every order of its elements,
-// where the functions it stands beside would decide `v` by their order.
+// A literal whose lambda reads `v` leaves `v` to the call of its definition,
+// in every order of its elements: the functions it stands beside decide
+// nothing.
 #[tokio::test(flavor = "current_thread")]
-async fn literal_refuses_a_capture_two_functions_could_decide_in_every_order()
--> Result<()> {
-    use graphix_package_core::testing::refusal;
+async fn literal_holds_a_capture_beside_two_functions_in_every_order() -> Result<()> {
     let fns = ["|x| x", "|w| { let e = w == v; w }", "|y: i64| y + 1", "|z: string| z"];
     for order in orders_of_four() {
         let [a, b, c, d] = order.map(|i| fns[i]);
         let code =
             format!("{{ let k = |v| {{ let t = [{a}, {b}, {c}, {d}]; v }}; k(1) }}");
-        let e = refusal(&code, crate::TEST_REGISTER).await?;
-        assert!(e.contains(TWO_MEETS), "{order:?}: {e}");
+        let v =
+            eval_modes(&code, crate::TEST_REGISTER).await?.map_err(anyhow::Error::msg)?;
+        assert_eq!(v, Value::I64(1), "{order:?}");
     }
     Ok(())
 }
 
-// Two open lambdas beside two functions that are not one type: the refusal
-// names those two, whichever lambda finds them and wherever the four stand
-// in the union.
+run!(
+    literal_call_through_an_element_meets_every_function,
+    r#"{
+  let k = |v| {
+    let t = [|x| x, |w| { let e = w == v; w }, |y: i64| y + 1, |z: string| z];
+    t[0]$(1)
+  };
+  k(1)
+}"#,
+    refused("string does not contain i64");
+    FuseExpect::None
+);
+
+// A field read holds two open lambdas beside two functions that are not one
+// type as four members, wherever the four stand in the union; a call through
+// it meets every member.
 #[tokio::test(flavor = "current_thread")]
-async fn field_read_names_the_two_functions_that_are_not_one_type() -> Result<()> {
-    use graphix_package_core::testing::refusal;
+async fn field_read_holds_two_open_lambdas_beside_two_functions_in_every_order()
+-> Result<()> {
     for order in orders_of_four() {
         let [a, b, c, d] = order.map(|i| ["a", "b", "c", "d"][i]);
         let code = format!(
@@ -15727,18 +15846,31 @@ async fn field_read_names_the_two_functions_that_are_not_one_type() -> Result<()
   k(0)
 }}"#
         );
-        let e = refusal(&code, crate::TEST_REGISTER).await?;
-        assert!(
-            e.contains("fn(y: i64) -> i64 or fn(z: string) -> string, two functions")
-                || e.contains(
-                    "fn(z: string) -> string or fn(y: i64) -> i64, two functions"
-                ),
-            "{order:?}: {e}"
-        );
-        assert!(e.contains(TWO_MEETS), "{order:?}: {e}");
+        let v =
+            eval_modes(&code, crate::TEST_REGISTER).await?.map_err(anyhow::Error::msg)?;
+        assert_eq!(v, Value::I64(0), "{order:?}");
     }
     Ok(())
 }
+
+run!(
+    field_read_call_through_four_members_refused,
+    r#"{
+  let k = |b| {
+    let t = select b {
+      0 => {f: |x| x, a: 1},
+      1 => {f: |w| w, b: 1},
+      2 => {f: |y: i64| y + 1, c: 1},
+      _ => {f: |z: string| "[z]!", d: 1}
+    };
+    let u = t.f;
+    u(1)
+  };
+  k(0)
+}"#,
+    refused("string does not contain i64");
+    FuseExpect::None
+);
 
 run!(
     literal_of_two_schemes_beside_two_functions,

@@ -732,7 +732,7 @@ async fn a_restored_catch_stays_sealed() -> Result<()> {
     let program = r#"{ let caught = "none"; catch(e) caught <- select e.0.error { `A => "a" }; let a = select caught { "none" => error(`A)?, _ => 0 }; let status = mod foo dynamic { sig { use core; val y: i64 }; source r"let x = error(`B)?; let y = 1" }; status }"#;
     let ((_, cold), (_, warm)) = cold_and_warm(program).await?;
     let refused = cold.last().expect("the module refused its body");
-    assert!(format!("{refused}").contains("this error reaches a catch"), "{refused}");
+    assert!(format!("{refused}").contains("`A does not contain `B"), "{refused}");
     assert_eq!(cold, warm);
     Ok(())
 }

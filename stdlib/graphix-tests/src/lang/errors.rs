@@ -580,14 +580,7 @@ async fn catch_connect_union_mismatch_is_an_error() -> Result<()> {
         Ok((v, _)) => anyhow::bail!("expected a type mismatch, got {v}"),
         Err(e) => format!("{e:#}"),
     };
-    assert!(
-        e.contains(
-            "err1 is Error<ErrChain<`ArithError(string)>> and cannot hold \
-             Error<ErrChain<`B>>; declare err1: [Error<ErrChain<`ArithError(string)>>, \
-             Error<ErrChain<`B>>] where it is bound"
-        ),
-        "{e}"
-    );
+    assert!(e.contains("type mismatch `ArithError(string) does not contain `B"), "{e}");
     Ok(())
 }
 
@@ -631,7 +624,10 @@ async fn catch_ascription_too_narrow_is_an_error() -> Result<()> {
         a[10]?
     }"#;
     let e = graphix_package_core::testing::refusal(src, crate::TEST_REGISTER).await?;
-    assert!(e.contains("does not contain Error<ErrChain<`ArrayIndexError"), "{e}");
+    assert!(
+        e.contains("`ArithError(string) does not contain `ArrayIndexError(string)"),
+        "{e}"
+    );
     Ok(())
 }
 

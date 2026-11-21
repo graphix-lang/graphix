@@ -2798,7 +2798,7 @@ async fn implementations_are_declared_ones() {
         ),
         (
             "{ type Counter = Abstract<i64>; trait Twice { val twice: fn(self, x: 'a) -> 'a }; impl Twice for Counter { let twice = |c, x| x + x }; Twice::twice(Counter(1), 2) }",
-            "which the signature does not declare",
+            "Number does not contain 'a: unbound",
         ),
         // the orphan rule: a non-abstract type is the trait's package's
         (
@@ -3022,12 +3022,12 @@ async fn trait_method_value_frames_quote_the_program() {
         (
             "{ trait T { val m: fn(self, x: i64) -> i64 }; \
              impl T for i64 { let m = |s, x| s + x }; array::map([1, 2], T::m) }",
-            "does not contain fn(self: '#self: i64, x: i64) -> i64",
+            "a function of 2 arguments where one of 1 is wanted",
         ),
         (
             "{ trait T { val m: fn<'b: Number>(self, x: 'b) -> 'b }; \
              impl T for i64 { let m = |s, x| x }; let g: string = T::m; g }",
-            "string does not contain fn<'b: Number>(self: '#self",
+            "string does not contain fn(self: '#self: unbound within T, x: 'b: unbound within Number)",
         ),
     ] {
         let e = refusal(src, crate::TEST_REGISTER).await.unwrap();
@@ -6228,8 +6228,8 @@ run!(
 );
 
 run!(
-    method_own_default_holding_a_defaulted_fn_conflicting_refused,
-    refused("'z: string does not contain i64"),
+    method_own_default_holding_a_defaulted_fn_beside_an_argument_of_another_type,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "1"),
     "/test.gx" => r#"
         trait T { val m: fn(?#w: fn(?#d: 'z, x: i64) -> string, self, y: 'z, x: i64) -> string };
         impl T for i64 {
