@@ -4853,7 +4853,21 @@ impl Solving {
                     // nothing else, it is that variable: each instance
                     // gives it its type
                     false if matches!(t, Type::Bottom) && variables.len() == 1 => {
-                        Type::TVar(variables.swap_remove(0))
+                        let w = variables.swap_remove(0);
+                        // an operation that reads the cell's type to know
+                        // what to make reads the declared variable's
+                        if w.is_rigid() {
+                            let reads = |c: &&Type| {
+                                matches!(
+                                    c,
+                                    Type::Bound(Bound::Concrete | Bound::Function)
+                                )
+                            };
+                            for p in v.cell_above().iter().filter(reads) {
+                                self.constrain(env, &Type::TVar(w.clone()), p)?
+                            }
+                        }
+                        Type::TVar(w)
                     }
                     false => t,
                 }

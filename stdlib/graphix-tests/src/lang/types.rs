@@ -3224,25 +3224,52 @@ mod unsound_acceptances {
     }
 }
 
-// A minted cell is named short in the "must be fully known" refusal, as
-// in every other diagnostic.
+// A declared variable a type-directed read's result is takes the read's
+// `Concrete`: a call that leaves it undecided is refused, as the read's
+// own would be, wherever the value goes or if it goes nowhere. One
+// declared without the bound is refused, naming it.
 #[tokio::test(flavor = "current_thread")]
-async fn not_concrete_names_a_minted_cell_short() -> Result<()> {
-    let src = r#"{
+async fn a_declared_result_a_typed_read_makes_must_be_decided() -> Result<()> {
+    for src in [
+        r#"{
   let rd = |s: string| -> 'a json::read(s)$;
   let g = |s| { let v = rd(s); [v] };
   g("1")
-}"#;
+}"#,
+        r#"{ let rd = |s: string| -> 'a json::read(s)$; rd("1"); 0 }"#,
+    ] {
+        let msg = match eval_modes(src, crate::TEST_REGISTER).await? {
+            Err(msg) => msg,
+            Ok(v) => panic!("must be refused: {src} => {v:?}"),
+        };
+        assert!(msg.contains("the type 'a must be known here"), "{src}: {msg}");
+    }
+    let src = "{ let rd = 'a: Any |s: string| -> 'a json::read(s)$; 0 }";
     let msg = match eval_modes(src, crate::TEST_REGISTER).await? {
         Err(msg) => msg,
-        Ok(v) => panic!("must be refused: {v:?}"),
+        Ok(v) => panic!("must be refused: {src} => {v:?}"),
     };
-    assert!(
-        msg.contains("the type '_")
-            && msg.contains("must be fully known")
-            && cells_print_short(&msg),
-        "{msg}"
-    );
+    assert!(msg.contains("add Concrete to the bound of 'a"), "{msg}");
+    for (src, expected) in [
+        (
+            r#"{
+  let rd = |s: string| -> 'a json::read(s)$;
+  let g = |s| { let v = rd(s); [v] };
+  let w: Array<i64> = g("1");
+  w[0]$
+}"#,
+            1,
+        ),
+        (r#"{ let rd = |s: string| -> 'a str::parse(s)$; str::len(rd("12345")) }"#, 5),
+        (
+            r#"{ let rd = 'a: Concrete |s: string| -> 'a str::parse(s)$; let n: i64 = rd("7"); n }"#,
+            7,
+        ),
+    ] {
+        let v =
+            eval_modes(src, crate::TEST_REGISTER).await?.map_err(anyhow::Error::msg)?;
+        assert_eq!(v, Value::I64(expected), "{src}");
+    }
     Ok(())
 }
 

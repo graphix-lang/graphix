@@ -408,26 +408,44 @@ async fn unread_quantifier_settles_through_a_written_alias(mode: Mode) -> Result
 
 /// A call through a Graphix function that forwards an optional handler to
 /// the builtin settles as the builtin does: with no function passed no
-/// value of the quantifier is made.
+/// value of the quantifier is made, and a handler whose argument is left
+/// open is refused. The forwarding variable is the builtin's quantifier,
+/// `Concrete` with it: a variable written bare takes the bound, one
+/// declared without it is refused, naming it.
 async fn forwarded_unread_quantifier_settles(mode: Mode) -> Result<()> {
-    let code = |call: &str| {
+    let code = |declared: &str, call: &str| {
         format_compact!(
             r#"{{
         let f = 'a: Concrete |#h: [fn(v: 'a) -> i64, null] = null, x: i64|
             -> i64 'test_last;
-        let g = |#h: [fn(v: 'b) -> i64, null] = null, x: i64| f(#h: h, x);
+        let g = {declared}|#h: [fn(v: 'b) -> i64, null] = null, x: i64| f(#h: h, x);
         {call}
     }}"#
         )
     };
-    for call in [
-        "g(3)",
-        "g(#h: null, 3)",
-        "g(#h: |v: i64| v, 3)",
-        "{ let h: [fn(v: i64) -> i64, null] = null; g(#h: h, 3) }",
-    ] {
-        assert_eq!(run(&code(call), mode).await?, [Value::I64(3)], "{call}");
+    for declared in ["", "'b: Concrete "] {
+        for call in [
+            "g(3)",
+            "g(#h: null, 3)",
+            "g(#h: |v: i64| v, 3)",
+            "{ let h: [fn(v: i64) -> i64, null] = null; g(#h: h, 3) }",
+        ] {
+            let out = run(&code(declared, call), mode).await?;
+            assert_eq!(out, [Value::I64(3)], "{declared}{call}");
+        }
+        let e = run(&code(declared, "g(#h: |v| 0, 3)"), mode).await.unwrap_err();
+        let message = format_compact!("{e:#}");
+        assert!(message.contains("the type 'b must be known here"), "{message}");
     }
+    let e = run(&code("'b: Any ", "g(3)"), mode).await.unwrap_err();
+    let message = format_compact!("{e:#}");
+    assert!(
+        message.contains(
+            "the body needs 'b within Concrete, which the signature does not declare: \
+             add Concrete to the bound of 'b"
+        ),
+        "{message}"
+    );
     Ok(())
 }
 
