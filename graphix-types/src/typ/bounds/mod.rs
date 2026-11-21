@@ -5132,11 +5132,12 @@ impl Solving {
                 let Some(im) = env.find_impl(method.trait_id, t)? else {
                     return Ok(false);
                 };
-                let typ = match im
-                    .methods
-                    .get(name.as_str())
-                    .and_then(|id| env.by_id.get(id))
-                {
+                // an implementation that writes no body of the method runs
+                // the trait's default one
+                let body = im.methods.get(name.as_str()).copied().or_else(|| {
+                    env.trait_def(method.trait_id)?.methods.get(method.index)?.default
+                });
+                let typ = match body.and_then(|id| env.by_id.get(&id)) {
                     Some(b) => b.typ.clone(),
                     None => return Ok(false),
                 };
