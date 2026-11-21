@@ -537,7 +537,7 @@ every member against its own copy of the signature as the arguments left
 it, since the lowered call is one call per member and the members' variables
 are separate instances. Pins
 `lang::traits::{method_own_default_conflicting_with_an_argument_refused,
-trait_body_default_conflicting_with_an_argument_refused,
+trait_body_default_beside_an_argument_of_another_type_takes_both,
 method_own_default_holding_a_defaulted_fn_conflicting_refused,
 method_own_default_of_a_union_self_member_conflicting_with_an_argument_refused,
 method_own_default_of_a_union_self_fitting_its_arguments,

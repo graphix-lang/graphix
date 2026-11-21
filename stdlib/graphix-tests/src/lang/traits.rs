@@ -6217,9 +6217,11 @@ run!(
     "#
 );
 
+// The trait's own default body is the one an impl that writes no `m`
+// runs: its default widens 'z beside the argument as an impl's does.
 run!(
-    trait_body_default_conflicting_with_an_argument_refused,
-    refused("'z: string does not contain i64"),
+    trait_body_default_beside_an_argument_of_another_type_takes_both,
+    prints("\"1 q\""),
     "/test.gx" => r#"
         trait T { val m: fn(?#w: 'z, self, y: 'z, x: i64) -> string = |#w: 'z = 1, s, y: 'z, x: i64| "[w] [y]" };
         impl T for i64 { };
