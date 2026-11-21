@@ -163,7 +163,7 @@ fn impl_for(
             .collect();
         for tv in im.params.iter() {
             let Some(Type::TVar(fresh)) = open.get(&tv.name) else { continue };
-            for c in tv.cell_constraints() {
+            for c in tv.cell_above() {
                 fresh.add_cell_constraint(c.replace_tvars(&open));
             }
         }

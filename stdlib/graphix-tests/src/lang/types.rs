@@ -8193,7 +8193,7 @@ fn distinct_type_nodes(t: &graphix_compiler::typ::Type) -> usize {
             Type::TVar(tv) => match tv.binding() {
                 Some(b) => go(&b, seen),
                 None => {
-                    for b in tv.cell_lower().iter().chain(tv.cell_constraints().iter()) {
+                    for b in tv.cell_lower().iter().chain(tv.cell_above().iter()) {
                         go(b, seen)
                     }
                 }

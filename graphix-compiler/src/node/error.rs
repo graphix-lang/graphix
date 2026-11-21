@@ -227,7 +227,7 @@ pub(crate) fn join_raised(env: &Env, handler: &ErrorHandler, etyp: &Type) -> Res
     let written = handler
         .sealed()
         .then(|| {
-            tv.cell_constraints()
+            tv.cell_above()
                 .into_iter()
                 .find(|u| !matches!(u, Type::TVar(_) | Type::Bound(_)))
         })

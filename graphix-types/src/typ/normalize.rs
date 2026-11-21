@@ -574,12 +574,12 @@ impl Type {
                         if cx.quantifiers.contains(&addr)
                             || (cx.bounded && tv.generated())
                         {
-                            for c in tv.cell_constraints() {
+                            for c in tv.cell_above() {
                                 let c = c.resolve_tvars_seen_int(cx).unwrap_or(c);
                                 fresh.add_cell_constraint(c);
                             }
                         } else if cx.predicates {
-                            for c in tv.cell_constraints() {
+                            for c in tv.cell_above() {
                                 if c.is_predicate() {
                                     fresh.add_cell_constraint(c);
                                 }

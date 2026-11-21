@@ -167,7 +167,7 @@ fn names_self(t: &Type, taken: Option<bool>) -> bool {
     let any = |ts: &[Type]| ts.iter().any(|t| names_self(t, taken));
     match t {
         Type::TVar(tv) if &*tv.name == "self" => taken != Some(false),
-        Type::TVar(tv) => tv.cell_constraints().iter().any(|c| names_self(c, None)),
+        Type::TVar(tv) => tv.cell_above().iter().any(|c| names_self(c, None)),
         Type::Fn(ft) => {
             let under = taken.map(|t| !t);
             ft.args.iter().any(|a| names_self(&a.typ, under))
@@ -598,7 +598,7 @@ impl Checker {
         let v = self.s.fresh(level, Kind::Single);
         let t = if rigid { Ty::Rigid(v) } else { Ty::Var(v) };
         self.tvs.last_mut().unwrap().tvs.insert(tv.name.clone(), t.clone());
-        for c in tv.cell_constraints() {
+        for c in tv.cell_above() {
             self.bound(v, &c, module)?
         }
         Ok(t)

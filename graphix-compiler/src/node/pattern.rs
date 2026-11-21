@@ -611,7 +611,7 @@ impl Var {
         match tv.declared_name() {
             None => Self::Unnamed,
             Some(n) if &*n == "self" => Self::Receiver,
-            Some(n) if n.starts_with('#') => match &tv.cell_constraints()[..] {
+            Some(n) if n.starts_with('#') => match &tv.cell_above()[..] {
                 [c] => Self::Trait(format_compact!("{c}")),
                 _ => Self::Unnamed,
             },
@@ -678,7 +678,7 @@ impl Var {
     fn bounding(&self, tv: &TVar, verb: &str) -> Option<CompactString> {
         match self {
             Self::Written(v) => {
-                let cs = tv.cell_constraints();
+                let cs = tv.cell_above();
                 let how = match &cs[..] {
                     [] => format_compact!("bound {v} by the type it {verb}"),
                     [c] => format_compact!(
@@ -702,7 +702,7 @@ impl Var {
     /// variable has no bound a program wrote yet.
     fn or_bound(&self, tv: &TVar) -> CompactString {
         match self {
-            Self::Written(v) if tv.cell_constraints().is_empty() => {
+            Self::Written(v) if tv.cell_above().is_empty() => {
                 format_compact!(", or bound {v}")
             }
             Self::Trait(_) => format_compact!(
@@ -725,7 +725,7 @@ fn unbounded(env: &Env, c: &TVar) -> bool {
     c.is_rigid()
         && c.written_open().is_some()
         && c.typed_bounds(env).is_empty()
-        && c.cell_constraints().is_empty()
+        && c.cell_above().is_empty()
 }
 
 /// A variable a bound of `tv` holds that is [`unbounded`] and `wanted`.

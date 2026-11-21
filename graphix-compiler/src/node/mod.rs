@@ -364,7 +364,7 @@ macro_rules! deref_typ {
 #[doc(hidden)]
 pub fn one_bound(t: &Type) -> Option<Type> {
     let Type::TVar(tv) = t else { return None };
-    let mut c = tv.cell_constraints();
+    let mut c = tv.cell_above();
     match c.len() {
         1 => c.pop(),
         _ => None,

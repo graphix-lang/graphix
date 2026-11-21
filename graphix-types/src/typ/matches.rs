@@ -544,7 +544,7 @@ impl Type {
     ) -> Result<bool> {
         let Type::TVar(cv) = c else { return Ok(true) };
         let mut bounded = false;
-        for b in cv.cell_constraints().iter() {
+        for b in cv.cell_above().iter() {
             let Type::Ref(tr) = b else { continue };
             let Some(tid) = env.trait_of_ref(tr) else { continue };
             let Some(heads) = env.impls_of(tid) else { continue };

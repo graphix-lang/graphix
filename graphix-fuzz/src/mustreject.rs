@@ -257,7 +257,7 @@ fn open_cells(t: &Type, bounds: bool, out: &mut AHashMap<usize, TVar>) {
         Type::TVar(tv) => match tv.open_cell() {
             Some(c) => {
                 if out.insert(c.cell_addr(), c.clone()).is_none() && bounds {
-                    for b in c.cell_constraints() {
+                    for b in c.cell_above() {
                         open_cells(&b, bounds, out)
                     }
                 }
@@ -1367,7 +1367,7 @@ fn shared_var(
         // a primitive bound (`'a: Number`), or `Singleton`, which no union
         // meets, refuses the parse's result whole, before the rule
         let primitive_bound = |t: &Type| match t {
-            Type::TVar(tv) => tv.cell_constraints().iter().any(|c| {
+            Type::TVar(tv) => tv.cell_above().iter().any(|c| {
                 primitive_class(c) || matches!(c, Type::Bound(Bound::Singleton))
             }),
             _ => false,
@@ -1428,10 +1428,9 @@ fn function_bound(
     out: &mut Vec<RejectProbe>,
 ) {
     let bounded = |t: &Type| match t {
-        Type::TVar(tv) => tv
-            .cell_constraints()
-            .iter()
-            .any(|c| matches!(c, Type::Bound(Bound::Function))),
+        Type::TVar(tv) => {
+            tv.cell_above().iter().any(|c| matches!(c, Type::Bound(Bound::Function)))
+        }
         _ => false,
     };
     let sizes = mutate::sizes(root);

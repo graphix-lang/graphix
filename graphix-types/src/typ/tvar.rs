@@ -276,7 +276,11 @@ fn reaches_no_open_cell(
                     match &c.binding {
                         None => return false,
                         Some(_) if c.ground == epoch => return true,
-                        Some(b) => (b.clone(), c.constraints.clone(), c.lower.clone()),
+                        Some(b) => (
+                            b.clone(),
+                            SmallVec::<[Type; 1]>::from(c.above.all()),
+                            c.lower.clone(),
+                        ),
                     }
                 };
                 walked.push(cell);
@@ -511,7 +515,7 @@ impl Toward {
         };
         let mut edges: SmallVec<[Type; 4]> = cell.binding.iter().cloned().collect();
         if up {
-            edges.extend(cell.constraints.iter().cloned());
+            edges.extend(cell.above.all().iter().cloned());
         }
         if down {
             edges.extend(cell.lower.iter().cloned());
@@ -1480,6 +1484,74 @@ pub(crate) enum Fresh {
     Generic,
 }
 
+/// What a cell's binding must fit: first what the program declared of
+/// it (a signature's bound and predicates, what a body needs of a variable
+/// its definition writes without declaring), then the upper bounds the
+/// check learned it flows to.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Above {
+    all: SmallVec<[Type; 1]>,
+    declared: u16,
+}
+
+impl Above {
+    /// What the program wrote of the cell.
+    pub(crate) fn declared(&self) -> &[Type] {
+        &self.all[..self.declared as usize]
+    }
+
+    /// What the check learned the cell flows to.
+    pub(crate) fn upper(&self) -> &[Type] {
+        &self.all[self.declared as usize..]
+    }
+
+    /// Everything the cell's binding must fit, declared first.
+    pub(crate) fn all(&self) -> &[Type] {
+        &self.all
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.all.is_empty()
+    }
+
+    /// Add `c` to what the cell declares unless an identical member is
+    /// present. The identity walk can reach this very cell, so this must
+    /// not run under a held tvar/cell guard.
+    pub(crate) fn add_declared(&mut self, c: Type) {
+        if !self.declared().iter().any(|e| union_identical(e, &c)) {
+            self.push_declared(c)
+        }
+    }
+
+    pub(crate) fn push_declared(&mut self, c: Type) {
+        self.all.insert(self.declared as usize, c);
+        self.declared += 1
+    }
+
+    pub(crate) fn push_upper(&mut self, c: Type) {
+        self.all.push(c)
+    }
+
+    /// Take back the latest upper bound, an attempt's.
+    pub(crate) fn pop_upper(&mut self) {
+        if self.all.len() > self.declared as usize {
+            self.all.pop();
+        }
+    }
+
+    /// `declared`, then `upper`, in place of what the cell had.
+    pub(crate) fn set(
+        &mut self,
+        declared: impl IntoIterator<Item = Type>,
+        upper: impl IntoIterator<Item = Type>,
+    ) {
+        self.all.clear();
+        self.all.extend(declared);
+        self.declared = self.all.len() as u16;
+        self.all.extend(upper)
+    }
+}
+
 /// The shared binding cell: aliased `TVar`s hold one `Arc` of this.
 /// `constraints` is a conjunction — everything the cell is ever bound
 /// to must be contained by every member (empty = unconstrained); each
@@ -1488,7 +1560,8 @@ pub(crate) enum Fresh {
 pub struct TCell {
     /// Written through [`Self::set_binding`] while a walk may watch.
     pub(crate) binding: Option<Type>,
-    pub(crate) constraints: SmallVec<[Type; 1]>,
+    /// Everything the cell's binding must fit ([`Above`]).
+    pub(crate) above: Above,
     /// What the cell is bounded by from below: everything it is ever
     /// bound to must contain every member, and a cell still open when it
     /// settles binds to their union ([`TVar::add_lower`]).
@@ -1582,7 +1655,7 @@ impl Default for TCell {
     fn default() -> Self {
         TCell {
             binding: None,
-            constraints: SmallVec::new(),
+            above: Above::default(),
             lower: SmallVec::new(),
             facts: BitFlags::empty(),
             rigid_gates: 0,
@@ -1644,15 +1717,6 @@ impl TCell {
 
     fn place(&self) -> Option<Place> {
         self.place.as_deref().cloned()
-    }
-
-    /// Add `c` to the conjunction unless an identical member is present.
-    /// The identity walk can reach this very cell, so this must not run
-    /// under a held tvar/cell guard.
-    pub(crate) fn add_constraint(&mut self, c: Type) {
-        if !self.constraints.iter().any(|e| union_identical(e, &c)) {
-            self.constraints.push(c)
-        }
     }
 }
 
@@ -1926,7 +1990,7 @@ impl fmt::Display for TVar {
             if self.name.starts_with('#') {
                 // A trait in argument position (`fn(s: Read)`) is a
                 // quantifier whose one conjunct is the trait.
-                let cons = self.cell_constraints();
+                let cons = self.cell_above();
                 if let [c] = &cons[..] {
                     return write!(f, "{c}");
                 }
@@ -1948,7 +2012,11 @@ impl fmt::Display for TVar {
                 let (typ, cons, below) = {
                     let cell = self.cell();
                     let cell = cell.read();
-                    (cell.binding.clone(), cell.constraints.clone(), cell.lower.clone())
+                    (
+                        cell.binding.clone(),
+                        SmallVec::<[Type; 1]>::from(cell.above.all()),
+                        cell.lower.clone(),
+                    )
                 };
                 // a generated cell's binding, or else what it settles to,
                 // is all a reader needs of it
@@ -2144,7 +2212,11 @@ impl TVar {
             (c.level.depth() > level.depth()).then(|| {
                 written(&c);
                 c.level = level;
-                (c.binding.clone(), c.constraints.clone(), c.lower.clone())
+                (
+                    c.binding.clone(),
+                    SmallVec::<[Type; 1]>::from(c.above.all()),
+                    c.lower.clone(),
+                )
             })
         };
         if let Some((binding, cons, below)) = lowered {
@@ -2400,7 +2472,7 @@ impl TVar {
     // probe expects 'cannot infer a finite type here'.
     pub fn add_cell_constraint(&self, c: Type) {
         let cell = self.cell();
-        let existing = cell.read().constraints.clone();
+        let existing: SmallVec<[Type; 1]> = cell.read().above.declared().into();
         let new = new_conjuncts(&existing, [c]);
         let level = cell.read().level;
         for c in new.iter() {
@@ -2416,7 +2488,7 @@ impl TVar {
         if c.binding.is_some() {
             bound_cell_changes();
         }
-        c.constraints.extend(new.iter().cloned())
+        new.iter().for_each(|t| c.above.push_declared(t.clone()))
     }
 
     /// The refusal of the bounds `needs` a body needs of the variable of its
@@ -2438,7 +2510,7 @@ impl TVar {
             let name = self.declared_name().unwrap_or_else(|| self.name.clone());
             let mut bound = CompactString::default();
             let mut within = CompactString::default();
-            for own in self.cell_constraints().iter() {
+            for own in self.cell_above().iter() {
                 let said = matches!(own, Type::Any)
                     || needs.iter().any(|c| c.implies(env, own).unwrap_or(false));
                 if !said {
@@ -2476,15 +2548,25 @@ impl TVar {
         }
     }
 
-    /// The cell's constraint conjunction (cloned out).
-    pub fn cell_constraints(&self) -> SmallVec<[Type; 1]> {
-        self.read().cell.get().read().constraints.clone()
+    /// What the program wrote of the cell ([`TCell::declared`]).
+    pub fn cell_declared(&self) -> SmallVec<[Type; 1]> {
+        self.read().cell.get().read().above.declared().into()
+    }
+
+    /// What the check learned the cell flows to ([`TCell::upper`]).
+    pub fn cell_upper(&self) -> SmallVec<[Type; 1]> {
+        self.read().cell.get().read().above.upper().into()
+    }
+
+    /// Everything the cell's binding must fit ([`TCell::above`]).
+    pub fn cell_above(&self) -> SmallVec<[Type; 1]> {
+        self.read().cell.get().read().above.all().into()
     }
 
     /// Whether one of the cell's conjuncts implies the bound `c`
     /// ([`Type::implies`]).
     pub(crate) fn conjunct_implies(&self, env: &Env, c: &Type) -> Result<bool> {
-        for own in self.cell_constraints().iter() {
+        for own in self.cell_above().iter() {
             if own.implies(env, c)? {
                 return Ok(true);
             }
@@ -2559,7 +2641,8 @@ impl TVar {
     pub fn requires_concrete(&self) -> bool {
         self.cell()
             .read()
-            .constraints
+            .above
+            .all()
             .iter()
             .any(|c| matches!(c, Type::Bound(Bound::Concrete)))
     }
@@ -2574,7 +2657,8 @@ impl TVar {
     pub(crate) fn requires_data(&self) -> bool {
         self.cell()
             .read()
-            .constraints
+            .above
+            .all()
             .iter()
             .any(|c| matches!(c, Type::Bound(Bound::Data)))
     }
@@ -2764,7 +2848,7 @@ impl TVar {
         walk: impl Fn(&Type, &mut AHashMap<usize, TVar>, &mut M) -> Option<Type>,
     ) {
         fresh.insert(self.cell_addr(), f.clone());
-        for c in self.cell_constraints() {
+        for c in self.cell_above() {
             let c = walk(&c, fresh, memo).unwrap_or(c);
             f.add_cell_constraint(c);
         }
@@ -3729,7 +3813,7 @@ impl Type {
                 Some(b) => b.drop_bounds(),
                 None => {
                     let cell = tv.cell();
-                    cell.write().constraints.clear();
+                    cell.write().above.set([], []);
                 }
             },
             Type::Fn(ft) => ft.for_each_part(&mut |t, _| t.drop_bounds()),
@@ -3859,7 +3943,7 @@ impl Type {
             Type::TVar(tv) => {
                 out.insert(tv.name.clone());
                 if seen.insert(tv.cell_addr()) {
-                    for t in tv.cell_constraints().iter().chain(tv.cell_lower().iter()) {
+                    for t in tv.cell_above().iter().chain(tv.cell_lower().iter()) {
                         t.names_held(out, seen)
                     }
                     if let Some(b) = tv.binding() {
@@ -3890,7 +3974,7 @@ impl Type {
                     return ControlFlow::Break(());
                 }
                 if seen.insert(tv.cell_addr()) {
-                    for t in tv.cell_constraints().iter().chain(tv.cell_lower().iter()) {
+                    for t in tv.cell_above().iter().chain(tv.cell_lower().iter()) {
                         t.holds_other_cell(q, addr, seen)?
                     }
                     if let Some(b) = tv.binding() {
@@ -5749,7 +5833,7 @@ thread_local! {
     static WRITING: RefCell<SmallVec<[usize; 8]>> = RefCell::new(SmallVec::new());
 }
 
-/// What the syntax codec writes of `tv`'s cell, its bound and constraints;
+/// What the syntax codec writes of `tv`'s cell, its bound and what it declares;
 /// `None` for a cell met inside its own contents, which has no syntax: the
 /// parser refuses a bound that reaches its own variable.
 fn cell_contents<R>(tv: &TVar, f: impl FnOnce(Option<&Type>, &[Type]) -> R) -> Option<R> {
@@ -5767,7 +5851,7 @@ fn cell_contents<R>(tv: &TVar, f: impl FnOnce(Option<&Type>, &[Type]) -> R) -> O
     WRITING.with_borrow_mut(|w| w.push(key));
     let _writing = Writing;
     let cell = cell.read();
-    Some(f(cell.binding.as_ref(), &cell.constraints))
+    Some(f(cell.binding.as_ref(), cell.above.declared()))
 }
 
 /// Under an image session the wrapper and its cell are shared objects
@@ -5826,7 +5910,7 @@ impl Pack for TVar {
             let cell = tv.cell();
             let mut cell = cell.write();
             for c in constraints {
-                cell.add_constraint(c);
+                cell.above.add_declared(c);
             }
         }
         Ok(tv)
@@ -5904,7 +5988,7 @@ impl UnionParts {
                 continue;
             }
             let mut numbers = netidx_value::Typ::number();
-            for c in tv.cell_constraints().iter() {
+            for c in tv.cell_above().iter() {
                 if !(c.is_predicate() || c.is_trait_ref(env)) {
                     let mut own = UnionParts::new(Measure::Numbers);
                     c.union_parts(Some((env, false)), &mut own)?;

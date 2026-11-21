@@ -106,7 +106,7 @@ fn open_cell_reaches(a: &Type, b: &Type) -> bool {
 /// that holds the cell itself ([`holds_cell`]) contains whatever the cell
 /// takes. A pure probe.
 fn conjuncts_admit(tv: &TVar, env: &Env, t: &Type) -> Result<bool> {
-    for c in tv.cell_constraints().iter() {
+    for c in tv.cell_above().iter() {
         if !holds_cell(env, c, tv.cell_addr()) && !c.decided_holds(env, t)? {
             return Ok(false);
         }
@@ -188,7 +188,7 @@ fn each_cell_through_bounds(
             true => tv.cell_lower(),
             false => SmallVec::new(),
         };
-        for c in tv.cell_constraints().iter().chain(lowers.iter()) {
+        for c in tv.cell_above().iter().chain(lowers.iter()) {
             reach(c, &mut todo)
         }
     }
@@ -388,7 +388,7 @@ fn unmet_bound_note(env: &Env, types: &[&Type]) -> Option<CompactString> {
     let mut found: SmallVec<[&TVar; 2]> = cells
         .values()
         .filter(|tv| {
-            tv.generated() && tv.binding().is_none() && !tv.cell_constraints().is_empty()
+            tv.generated() && tv.binding().is_none() && !tv.cell_above().is_empty()
         })
         .collect();
     found.sort_by_key(|tv| tv.cell_addr());
@@ -399,7 +399,7 @@ fn unmet_bound_note(env: &Env, types: &[&Type]) -> Option<CompactString> {
             .find(|l| !conjuncts_admit(tv, env, l).unwrap_or(true))?;
         let within = format_with_flags(PrintFlag::ReplacePrims, || {
             let mut s = CompactString::default();
-            for (i, c) in tv.cell_constraints().iter().enumerate() {
+            for (i, c) in tv.cell_above().iter().enumerate() {
                 s.push_str(if i == 0 { "" } else { " & " });
                 s.push_str(&format_compact!("{c}"));
             }
@@ -430,17 +430,17 @@ fn undeclared_bound_note(env: &Env, s: &Type, t: &Type) -> Option<CompactString>
         if !declared.is_rigid() || open.is_rigid() {
             return None;
         }
-        open.cell_constraints()
+        open.cell_above()
             .iter()
             .find_map(|c| {
-                declared.cell_constraints().iter().find_map(|own| {
+                declared.cell_above().iter().find_map(|own| {
                     let mut found = None;
                     go(env, own, c, seen, &mut found);
                     found
                 })
             })
             .or_else(|| {
-                let cons = open.cell_constraints();
+                let cons = open.cell_above();
                 let needs: SmallVec<[&Type; 2]> = cons
                     .iter()
                     .filter(|c| {
@@ -864,7 +864,7 @@ pub(super) fn find_open_cell(
 /// the stronger of the two it holds.
 fn discernible_cell(t: &Type) -> Option<(TVar, Type)> {
     let bound = |tv: &TVar| {
-        let cons = tv.cell_constraints();
+        let cons = tv.cell_above();
         [Type::Bound(Bound::Ordered), Type::Bound(Bound::Discernible)]
             .into_iter()
             .find(|b| cons.contains(b))
@@ -1175,9 +1175,7 @@ impl Type {
             return None;
         }
         let mut asking: LPooled<Vec<(TraitId, Self)>> = LPooled::take();
-        tv.cell_constraints()
-            .iter()
-            .find_map(|c| Self::bound_refusal(env, c, t, &mut asking))
+        tv.cell_above().iter().find_map(|c| Self::bound_refusal(env, c, t, &mut asking))
     }
 
     /// Why `t` fails the trait bound `c`, when `c` is a trait reference.
@@ -1304,7 +1302,7 @@ impl Type {
             for p in im.params.iter() {
                 let taken = known.get(&p.cell_addr()).and_then(TVar::binding);
                 let Some(taken) = taken else { continue };
-                for c in p.cell_constraints().iter() {
+                for c in p.cell_above().iter() {
                     if let Some(why) = Self::bound_refusal(env, c, &taken, asking) {
                         return Some(why);
                     }
@@ -1516,7 +1514,7 @@ impl Type {
             Self::Any => Ok(false),
             Self::TVar(tv) => match tv.binding() {
                 Some(b) => Self::trait_holds(tid, env, &b),
-                None if tv.is_rigid() => Ok(tv.cell_constraints().iter().any(
+                None if tv.is_rigid() => Ok(tv.cell_above().iter().any(
                     |c| matches!(c, Self::Ref(r) if env.trait_of_ref(r) == Some(tid)),
                 )),
                 None => Ok(true),
@@ -2133,7 +2131,7 @@ mod tests {
             let (t0, t1) = if holder { (&tz, &te) } else { (&te, &tz) };
             assert_eq!(t0.decided_holds(&env, t1).unwrap(), holds, "{t0} ⊇ {t1}");
             assert!(!e.is_bound());
-            assert_eq!(e.cell_constraints().len(), 1);
+            assert_eq!(e.cell_above().len(), 1);
         }
     }
 

@@ -1480,11 +1480,11 @@ fn cell_encode(cell: &CellRef, buf: &mut impl BufMut) -> Result<(), PackError> {
         |e| &mut e.cells,
         buf,
         |buf| {
-            let (typ, constraints, below, facts, level) = {
+            let (typ, declared, upper, below, facts, level) = {
                 let c = cell.read();
                 let TCell {
                     binding,
-                    constraints,
+                    above,
                     lower,
                     facts,
                     rigid_gates,
@@ -1502,14 +1502,22 @@ fn cell_encode(cell: &CellRef, buf: &mut impl BufMut) -> Result<(), PackError> {
                         "a tvar cell with {} open rigid gate(s) cannot be imaged: typ={:?} constraints={:?}",
                         rigid_gates,
                         binding,
-                        constraints
+                        above
                     );
                     return Err(PackError::InvalidFormat);
                 }
-                (binding.clone(), constraints.to_vec(), lower.to_vec(), *facts, *level)
+                (
+                    binding.clone(),
+                    above.declared().to_vec(),
+                    above.upper().to_vec(),
+                    lower.to_vec(),
+                    *facts,
+                    *level,
+                )
             };
             typ.encode(buf)?;
-            slice_encode(&constraints, buf)?;
+            slice_encode(&declared, buf)?;
+            slice_encode(&upper, buf)?;
             slice_encode(&below, buf)?;
             facts.bits().encode(buf)?;
             level.encode(buf)?;
@@ -1558,7 +1566,8 @@ fn cell_decode(buf: &mut impl Buf) -> Result<CellRef, PackError> {
             let cell = CellRef::new(CellLock::default());
             enter(Obj::Cell(cell.clone()))?;
             let typ = Pack::decode(sub)?;
-            let constraints: Vec<_> = Pack::decode(sub)?;
+            let declared: Vec<Type> = Pack::decode(sub)?;
+            let upper: Vec<Type> = Pack::decode(sub)?;
             let below: Vec<_> = Pack::decode(sub)?;
             let facts = BitFlags::from_bits(u8::decode(sub)?)
                 .map_err(|_| PackError::InvalidFormat)?;
@@ -1566,7 +1575,7 @@ fn cell_decode(buf: &mut impl Buf) -> Result<CellRef, PackError> {
             let mut c = cell.write();
             c.level = level;
             c.binding = typ;
-            c.constraints = constraints.into_iter().collect();
+            c.above.set(declared, upper);
             c.lower = below.into_iter().collect();
             c.facts = facts;
             drop(c);
@@ -1967,7 +1976,7 @@ mod tests {
             let Type::TVar(outer) = &Type::decode(&mut packed.body()).unwrap() else {
                 panic!("a tvar")
             };
-            let cons = outer.cell_constraints();
+            let cons = outer.cell_above();
             let Some(Type::Array(elt)) = cons.first() else { panic!("{cons:?}") };
             let Type::TVar(inner) = &**elt else { panic!("{elt:?}") };
             assert_eq!(inner.wrapper_addr(), outer.wrapper_addr());
@@ -2036,8 +2045,8 @@ mod tests {
             assert_eq!(inner.wrapper_addr(), a2.wrapper_addr());
             // a constraint added through one alias shows through the other
             a2.add_cell_constraint(Type::Primitive(netidx_value::Typ::I64.into()));
-            assert_eq!(b2.cell_constraints().len(), 1);
-            assert_eq!(b.cell_constraints().len(), 0, "the originals are untouched");
+            assert_eq!(b2.cell_above().len(), 1);
+            assert_eq!(b.cell_above().len(), 0, "the originals are untouched");
             // ids survive, relocated
             assert_ne!(a2.parts().0, b2.parts().0);
             assert_ne!(a2.parts().0, c2.parts().0);
@@ -2319,7 +2328,7 @@ mod decode_tests {
         let Type::Tuple(vs) = &ms[1] else { panic!("{t:?}") };
         for v in vs.iter() {
             let Type::TVar(tv) = v else { panic!("{v:?}") };
-            let cs = tv.cell_constraints();
+            let cs = tv.cell_above();
             assert_eq!(cs.len(), 1, "{t:?}");
             // one ordinal, one value: the read's result is the stored type
             let Type::Set(cms) = &cs[0] else { panic!("{:?}", cs[0]) };

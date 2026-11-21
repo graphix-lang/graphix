@@ -916,7 +916,7 @@ impl<'a> Identity<'a> {
             }
             if !pairs.contains(&(x, y)) {
                 pairs.push((x, y));
-                let (ca, cb) = (a.cell_constraints(), b.cell_constraints());
+                let (ca, cb) = (a.cell_above(), b.cell_above());
                 return self.all(&ca, &cb);
             }
             return true;
@@ -935,7 +935,7 @@ impl<'a> Identity<'a> {
                 pairs.push((x, y));
                 self.renamed = true;
                 self.paired += 1;
-                let (ca, cb) = (a.cell_constraints(), b.cell_constraints());
+                let (ca, cb) = (a.cell_above(), b.cell_above());
                 if !self.across {
                     return self.all(&ca, &cb);
                 }

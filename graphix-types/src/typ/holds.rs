@@ -276,8 +276,8 @@ impl<'e> Holds<'e> {
                 // at least (its lower bounds), and what it may be at most
                 // where it says (one of its own bounds)
                 _ => {
-                    let (lower, upper) = (y.cell_lower(), y.cell_constraints());
-                    for c in x.cell_constraints().iter() {
+                    let (lower, upper) = (y.cell_lower(), y.cell_above());
+                    for c in x.cell_above().iter() {
                         for l in lower.iter() {
                             if !self.go(c, l)? {
                                 return Ok(false);
@@ -312,7 +312,7 @@ impl<'e> Holds<'e> {
                     _ => Ok(false),
                 },
                 Cell::Open => {
-                    for c in x.cell_constraints().iter() {
+                    for c in x.cell_above().iter() {
                         if !self.go(c, b)? {
                             return Ok(false);
                         }
@@ -507,7 +507,7 @@ impl<'e> Holds<'e> {
             && let Type::TVar(v) = &t
             && v.is_rigid()
             && let [bound] = &v
-                .cell_constraints()
+                .cell_above()
                 .into_iter()
                 .filter(|c| !matches!(c, Type::Bound(_)))
                 .collect::<SmallVec<[Type; 2]>>()[..]
@@ -540,7 +540,7 @@ impl<'e> Holds<'e> {
 
     /// A declared variable is held by what holds one of its bounds.
     fn by_bounds(&mut self, a: &Type, y: &TVar) -> Result<bool> {
-        for c in y.cell_constraints().iter() {
+        for c in y.cell_above().iter() {
             if matches!(c, Type::Bound(_)) {
                 continue;
             }

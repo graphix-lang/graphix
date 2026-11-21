@@ -931,7 +931,7 @@ impl Reach {
                 match tv.binding() {
                     Some(b) => self.go(&b, cut, f),
                     None => {
-                        let (lower, cons) = (tv.cell_lower(), tv.cell_constraints());
+                        let (lower, cons) = (tv.cell_lower(), tv.cell_above());
                         lower.iter().chain(cons.iter()).any(|t| self.go(t, cut, f))
                     }
                 }
@@ -1097,7 +1097,7 @@ impl<'a> Free<'a> {
                             child(self, r)
                         }
                         None => {
-                            let (lower, cons) = (tv.cell_lower(), tv.cell_constraints());
+                            let (lower, cons) = (tv.cell_lower(), tv.cell_above());
                             for t in lower.iter().chain(cons.iter()) {
                                 let r = self.go(t, met);
                                 child(self, r)

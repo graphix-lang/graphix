@@ -440,7 +440,7 @@ fn collect_held(ft: &FnType, known: &mut AHashMap<ArcStr, TVar>) {
             let Some(_holding) = Walking::enter_key(&HOLDING, tv.cell_addr()) else {
                 continue;
             };
-            for tc in tv.cell_constraints() {
+            for tc in tv.cell_above() {
                 match tc.normalize_int(&mut seen.norm) {
                     Some(n) => n.collect_tvars_seen(&mut found, seen),
                     None => tc.collect_tvars_seen(&mut found, seen),
@@ -763,7 +763,7 @@ fn close_through_bounds(
             if !seen.passes(&tv) {
                 continue;
             }
-            for tc in tv.cell_constraints() {
+            for tc in tv.cell_above() {
                 tc.collect_tvars_seen(&mut found, seen);
             }
             for (name, tv) in found.drain() {
@@ -841,7 +841,7 @@ impl FnType {
     pub fn bound_mentions_self(&self) -> bool {
         let mut held: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         self.collect_tvars_through_bounds(&mut held);
-        held.values().any(|tv| tv.cell_constraints().iter().any(Type::mentions_self))
+        held.values().any(|tv| tv.cell_above().iter().any(Type::mentions_self))
     }
 
     /// `(tvar, conjunct)` for every conjunct of every declared quantifier,
@@ -875,7 +875,7 @@ impl FnType {
         let mut cx = NormCx::take();
         for q in self.quantifiers.iter() {
             let Some(tv) = reached.remove(q) else { continue };
-            for tc in tv.cell_constraints() {
+            for tc in tv.cell_above() {
                 let n = tc.normalize_int(&mut cx).unwrap_or_else(|| tc.clone());
                 view.push((tv.clone(), n));
             }
@@ -1166,7 +1166,7 @@ impl FnType {
                 if let Some(_cell) = Walking::enter_guard(&CONJUNCTS, tv.cell_addr())
                     && pass(cx, &tv)
                 {
-                    for tc in tv.cell_constraints() {
+                    for tc in tv.cell_above() {
                         f(cx, &tc, true);
                     }
                 }
@@ -1362,7 +1362,7 @@ impl FnType {
                 if !seen.passes(&tv) {
                     continue;
                 }
-                for tc in tv.cell_constraints() {
+                for tc in tv.cell_above() {
                     match tc.normalize_int(&mut seen.norm) {
                         Some(n) => n.collect_tvars_seen(&mut found, seen),
                         None => tc.collect_tvars_seen(&mut found, seen),
@@ -1952,7 +1952,7 @@ mod tests {
         for (walk, copy) in walks(&ft) {
             let q = quantifier(&copy, &copy.quantifiers[0]);
             assert_eq!(q.cell_addr(), cell(&copy.args[1].typ), "{walk}: {copy}");
-            assert!(!q.cell_constraints().is_empty(), "{walk}: {copy}");
+            assert!(!q.cell_above().is_empty(), "{walk}: {copy}");
         }
         let ft =
             parse_fn_type("fn<'a: Any, 'b: ['a, null]>(y: 'p, x: 'b) -> 'b").unwrap();
@@ -1995,7 +1995,7 @@ mod tests {
         }
         let known = seed(&[("a", "Array<'b>"), ("b", "Number"), ("c", "'a")]).unwrap();
         for q in ["a", "b", "c"] {
-            assert_eq!(known[q].cell_constraints().len(), 1, "'{q}");
+            assert_eq!(known[q].cell_above().len(), 1, "'{q}");
         }
     }
 
@@ -2273,7 +2273,7 @@ mod tests {
                 let Type::Fn(nested) = &ft.args[0].typ else { panic!("{t}") };
                 let mut found: AHashMap<ArcStr, TVar> = AHashMap::default();
                 nested.collect_tvars_through_bounds(&mut found);
-                let bound = found["z"].cell_constraints();
+                let bound = found["z"].cell_above();
                 assert_eq!(
                     bound.iter().map(|t| t.to_string()).collect::<Vec<_>>(),
                     ["i64"]
@@ -2338,7 +2338,7 @@ mod tests {
                 Type::TVar(tv) => {
                     out.push((tv.name.to_string(), depth, tv.cell_addr()));
                     if seen.insert(tv.cell_addr()) {
-                        for c in tv.cell_constraints() {
+                        for c in tv.cell_above() {
                             go(&c, depth, seen, out)
                         }
                     }
@@ -2568,7 +2568,7 @@ mod tests {
         use crate::typ::Type;
         let ft = parse_fn_type("fn<'b: 'c, 'c: Array<'q>>(y: 'b) -> 'b").unwrap();
         let Type::TVar(b) = &ft.args[0].typ else { panic!("{ft}") };
-        let Type::TVar(c) = &b.cell_constraints()[0] else { panic!("{ft}") };
+        let Type::TVar(c) = &b.cell_above()[0] else { panic!("{ft}") };
         let mut held = ahash::AHashMap::default();
         collect_held(&ft, &mut held);
         assert!(held.contains_key("c") && held.contains_key("q"), "{held:?}");

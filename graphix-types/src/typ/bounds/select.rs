@@ -721,7 +721,7 @@ impl Solving {
     /// What a declared variable is known to be: its bounds, anything with
     /// none.
     fn bound_of(&self, env: &Env, v: &TVar) -> Type {
-        v.cell_constraints()
+        v.cell_above()
             .iter()
             .filter(|u| {
                 open(&shallow(u)).is_none()
@@ -832,7 +832,7 @@ impl Solving {
                 // a variable that holds no error has none in common with
                 // anything
                 let errors = Type::Primitive(Typ::Error.into());
-                match v.cell_constraints().contains(&Type::Bound(Bound::NoError)) {
+                match v.cell_above().contains(&Type::Bound(Bound::NoError)) {
                     true => self.less(env, false, &r, &errors),
                     false => r,
                 }
@@ -1066,7 +1066,7 @@ impl Solving {
             let mut r = self.route(env, pat, &left);
             // a variable that holds no error gives a pattern none
             let no_error = matches!(&var, Type::TVar(v)
-                if v.cell_constraints().contains(&Type::Bound(Bound::NoError)));
+                if v.cell_above().contains(&Type::Bound(Bound::NoError)));
             if no_error {
                 let errors = Type::Primitive(Typ::Error.into());
                 r.part = self.less(env, false, &r.part, &errors);
@@ -1088,7 +1088,7 @@ impl Solving {
             && c.is_rigid()
             && !matches!(pat, Pat::Any(_))
         {
-            let bounds = c.cell_constraints();
+            let bounds = c.cell_above();
             let traits = bounds.iter().filter_map(|b| match b {
                 Type::Ref(tr) => env.trait_of_ref(tr),
                 _ => None,

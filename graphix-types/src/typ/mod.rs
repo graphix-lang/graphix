@@ -2817,7 +2817,7 @@ impl Type {
                     if let Some(b) = tv.binding() {
                         b.named_defs(cells, out)
                     }
-                    for c in tv.cell_constraints() {
+                    for c in tv.cell_above() {
                         c.named_defs(cells, out)
                     }
                 }
@@ -2856,7 +2856,7 @@ impl Type {
                     if let Some(b) = tv.binding() {
                         b.named_traits(cells, out)
                     }
-                    for c in tv.cell_constraints() {
+                    for c in tv.cell_above() {
                         c.named_traits(cells, out)
                     }
                 }
@@ -3331,7 +3331,7 @@ impl Type {
                     tr.params.iter().for_each(|p| go(p, seen, f))
                 }
                 Type::TVar(tv) if seen.insert(tv.cell_addr()) => {
-                    tv.cell_constraints().iter().for_each(|c| go(c, seen, f))
+                    tv.cell_above().iter().for_each(|c| go(c, seen, f))
                 }
                 Type::TVar(_) => (),
                 Type::Fn(ft) => ft.for_each_type(&mut |t| go(t, seen, f)),
@@ -3410,7 +3410,10 @@ impl Type {
                         }
                         let (binding, cons) = {
                             let cell = cell.read();
-                            (cell.binding.clone(), cell.constraints.clone())
+                            (
+                                cell.binding.clone(),
+                                SmallVec::<[Type; 1]>::from(cell.above.all()),
+                            )
                         };
                         for t in binding.iter().chain(cons.iter()) {
                             all &= go(t, env, seen, bodies);
@@ -4153,7 +4156,8 @@ impl Type {
                         && met.insert(tv.cell_addr())
                         && !copy.same_cell(tv)
                     {
-                        let cons = tv.cell().read().constraints.clone();
+                        let cons: SmallVec<[Type; 1]> =
+                            tv.cell().read().above.declared().into();
                         for c in cons.iter() {
                             let c = c
                                 .scope_refs_int(scope, copies)
@@ -4166,7 +4170,10 @@ impl Type {
                 let (bound, cons) = {
                     let cell = tv.cell();
                     let cell = cell.read();
-                    (cell.binding.clone(), cell.constraints.clone())
+                    (
+                        cell.binding.clone(),
+                        SmallVec::<[Type; 1]>::from(cell.above.declared()),
+                    )
                 };
                 let fresh = tv.fresh_copy();
                 copies.insert(tv, fresh.clone());
@@ -4252,7 +4259,7 @@ fn ctor_quantifiers(ft: &FnType, env: &Env) -> LPooled<Vec<(ArcStr, Type)>> {
     ft.collect_tvars(&mut named);
     for q in ft.quantifiers.iter() {
         let Some(tv) = named.get(q) else { continue };
-        let cons = tv.cell_constraints();
+        let cons = tv.cell_above();
         if !tv.is_bound()
             && !cons.is_empty()
             && cons.iter().all(|c| Type::is_ctor_trait_bound(env, c))

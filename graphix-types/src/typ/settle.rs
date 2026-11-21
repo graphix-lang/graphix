@@ -85,12 +85,11 @@ impl TVar {
         let (cons, below) = {
             let cell = self.cell();
             let cell = cell.read();
-            if cell.binding.is_some()
-                || (cell.constraints.is_empty() && cell.lower.is_empty())
+            if cell.binding.is_some() || (cell.above.is_empty() && cell.lower.is_empty())
             {
                 return Ok(Err(false));
             }
-            (cell.constraints.clone(), cell.lower.clone())
+            (SmallVec::<[Type; 1]>::from(cell.above.all()), cell.lower.clone())
         };
         let cell = self.cell();
         if !below.is_empty() {
@@ -196,7 +195,7 @@ pub fn settle_input(
     }
     let owned: LPooled<Vec<TVar>> = quantifiers.values().cloned().collect();
     for tv in owned.iter() {
-        for c in tv.cell_constraints().iter() {
+        for c in tv.cell_above().iter() {
             reached_cells(c, &mut quantifiers)
         }
     }
@@ -247,7 +246,11 @@ fn reach_new(
                 let (bound, cons, below) = {
                     let cell = tv.cell();
                     let cell = cell.read();
-                    (cell.binding.clone(), cell.constraints.clone(), cell.lower.clone())
+                    (
+                        cell.binding.clone(),
+                        SmallVec::<[Type; 1]>::from(cell.above.all()),
+                        cell.lower.clone(),
+                    )
                 };
                 for t in bound.iter().chain(cons.iter()).chain(below.iter()) {
                     reach_new(t, owner, seen, nodes, out)
@@ -377,7 +380,11 @@ fn reached(t: &Type, out: &mut AHashMap<usize, TVar>, nodes: &mut AddrSet) {
                 let (bound, cons, below) = {
                     let cell = tv.cell();
                     let cell = cell.read();
-                    (cell.binding.clone(), cell.constraints.clone(), cell.lower.clone())
+                    (
+                        cell.binding.clone(),
+                        SmallVec::<[Type; 1]>::from(cell.above.all()),
+                        cell.lower.clone(),
+                    )
                 };
                 for t in bound.iter().chain(cons.iter()).chain(below.iter()) {
                     reached(t, out, nodes)

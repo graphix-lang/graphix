@@ -2496,8 +2496,7 @@ fn open_collision(
     let pair = || Some(Indiscernible::Pair(a.clone(), b.clone()));
     let mut beside = |cell: &super::TVar, t: &Type| {
         // a `NoError` cell is never an error, so it shares no error's form
-        if cell.cell_constraints().contains(&Type::Bound(Bound::NoError))
-            && error_only(env, t)
+        if cell.cell_above().contains(&Type::Bound(Bound::NoError)) && error_only(env, t)
         {
             return None;
         }
@@ -2543,7 +2542,7 @@ impl TVar {
     /// of it: its constraints less the marker bounds (`Concrete`, a
     /// trait) a runtime test can't see.
     pub fn typed_bounds(&self, env: &Env) -> SmallVec<[Type; 1]> {
-        let mut bounds = self.cell_constraints();
+        let mut bounds = self.cell_above();
         bounds.retain(|b| rep_head(env, b).is_some());
         bounds
     }

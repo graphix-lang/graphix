@@ -2033,7 +2033,7 @@ fn build_region<R: Rt>(
             });
             let cons = match &fv.typ {
                 crate::typ::Type::TVar(tv) => {
-                    let cs = tv.cell_constraints();
+                    let cs = tv.cell_above();
                     format_compact!("{cs:?}")
                 }
                 _ => format_compact!("-"),

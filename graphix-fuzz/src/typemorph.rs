@@ -579,7 +579,7 @@ fn written(t: &Type, names: &mut Vec<(TVar, Type)>) -> Option<Type> {
         Type::TVar(tv) => match tv.open_cell() {
             None => written(&tv.binding()?, names),
             Some(c) => {
-                if !c.cell_constraints().is_empty() || !c.cell_lower().is_empty() {
+                if !c.cell_above().is_empty() || !c.cell_lower().is_empty() {
                     return None;
                 }
                 if let Some((_, n)) = names.iter().find(|(o, _)| o.same_cell(&c)) {
