@@ -3369,7 +3369,7 @@ run!(array_defaults_of_two_types, r#"{
         |#d = "q", x: i64| cast<string>(d)$
     ];
     fs[0]$(7)
-}"#, refused("i64 does not contain string"); FuseExpect::None);
+}"#, prints("\"1\""); FuseExpect::None);
 
 // The array's one member is a type of its own: a direct call of a named
 // member still judges only that member's default.
@@ -3398,7 +3398,7 @@ run!(array_defaults_of_three_odd_last, r#"{
         |#d = "q", x: i64| cast<string>(d)$
     ];
     fs[0]$(7)
-}"#, refused("the functions met here share one #d"); FuseExpect::None);
+}"#, prints("\"1\""); FuseExpect::None);
 
 run!(array_defaults_of_three_named, r#"{
     let f1 = |#d = 1, x: i64| cast<string>(d)$;
@@ -3474,15 +3474,25 @@ run!(met_defaults_of_two_types_reach_the_result_at_a_call_refused, r#"{
     r
 }"#, refused("string does not contain i64"); FuseExpect::None);
 
-// A function the array is passed to may call through it: the refusal names
-// the annotation, whose twin passes.
-run!(array_defaults_passed_on_name_the_annotation, r#"{
+// A function the array is passed to may call through it, and each default
+// is judged where that call leaves the label out.
+run!(array_defaults_passed_on_need_no_annotation, r#"{
     let fs = [
         |#d = 1, x: i64| cast<string>(d)$,
         |#d = "q", x: i64| cast<string>(d)$
     ];
     array::len(fs)
-}"#, refused("annotate the binding that holds them with a function type whose #d holds every default"); FuseExpect::None);
+}"#, prints("i64:2"); FuseExpect::None);
+
+run!(array_defaults_passed_on_reach_the_callers_result_refused, r#"{
+    let fs = [
+        |#d = 1, x: i64| d,
+        |#d = "q", x: i64| d
+    ];
+    let call = |a: Array<fn(x: i64) -> 'r>| -> 'r a[0]$(7);
+    let r: string = call(fs);
+    r
+}"#, refused("string does not contain i64"); FuseExpect::None);
 
 run!(array_defaults_passed_on_annotated, r#"{
     let fs: Array<fn(?#d: [i64, string], x: i64) -> string> = [
@@ -3500,7 +3510,16 @@ run!(nested_array_defaults_of_two_types, r#"{
         [|#d = "q", x: i64| cast<string>(d)$]
     ];
     fs[0]$[0]$(7)
-}"#, refused("the functions met here share one #d"); FuseExpect::None);
+}"#, prints("\"1\""); FuseExpect::None);
+
+run!(nested_array_defaults_of_two_types_reach_the_result_refused, r#"{
+    let fs = [
+        [|#d = 1, x: i64| d],
+        [|#d = "q", x: i64| d]
+    ];
+    let r: string = fs[0]$[0]$(7);
+    r
+}"#, refused("string does not contain i64"); FuseExpect::None);
 
 run!(tuple_part_defaults_of_two_types, r#"{
     let fs = [
@@ -3537,13 +3556,23 @@ run!(select_of_mixed_references_annotated, r#"{
     (*r)(7)
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "1"); FuseExpect::None);
 
-run!(nested_array_defaults_passed_on_name_the_annotation, r#"{
+run!(nested_array_defaults_passed_on_need_no_annotation, r#"{
     let fs = [
         [|#d = 1, x: i64| cast<string>(d)$],
         [|#d = "q", x: i64| cast<string>(d)$]
     ];
     array::len(fs)
-}"#, refused("annotate the binding that holds them with a function type whose #d holds every default"); FuseExpect::None);
+}"#, prints("i64:2"); FuseExpect::None);
+
+run!(nested_array_defaults_passed_on_reach_the_callers_result_refused, r#"{
+    let fs = [
+        [|#d = 1, x: i64| d],
+        [|#d = "q", x: i64| d]
+    ];
+    let call = |a: Array<Array<fn(x: i64) -> 'r>>| -> 'r a[0]$[0]$(7);
+    let r: string = call(fs);
+    r
+}"#, refused("string does not contain i64"); FuseExpect::None);
 
 run!(nested_array_defaults_annotated, r#"{
     let fs: Array<Array<fn(?#d: [i64, string], x: i64) -> string>> = [
@@ -6828,8 +6857,8 @@ run!(generic_function_called_through_data_at_one_type_that_cannot_compare, r#"
 }
 "#, refused("cannot compare i64 with string"); FuseExpect::None);
 
-// refuses ("a run-time bind at fs[0]$(7) did not type: type mismatch
-// string does not contain i64"). Add it with the hole's fix.
+// A call through an element that leaves the label out passes every
+// element's default, so the result holds each default's type.
 run!(array_defaults_of_two_types_reach_the_result_refused, r#"{
     let fs = [
         |#d = 1, x: i64| d,

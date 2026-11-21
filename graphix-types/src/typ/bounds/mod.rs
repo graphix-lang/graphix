@@ -1377,6 +1377,15 @@ impl Solving {
                     (false, _) => {
                         let n = twin(v);
                         keep(self, &n);
+                        // a call through the twin that leaves a label out
+                        // passes the default the cell's parameter has
+                        for (label, default, param) in defaults_of(v) {
+                            let default = self.extrude(&default, true, at);
+                            let param = map_cells(&param, &mut |w| {
+                                w.same_cell(v).then(|| Type::TVar(n.clone()))
+                            });
+                            defaulted(&n, label, default, param)
+                        }
                         let (lower, upper) = (v.cell_lower(), v.cell_constraints());
                         let cell = v.cell();
                         match pos {
@@ -1992,6 +2001,13 @@ fn finite_all<'a>(roots: impl IntoIterator<Item = &'a TVar>) -> Result<()> {
 /// that leaves the label out passes it ([`Known::defaults`]).
 pub fn defaulted(v: &TVar, label: ArcStr, default: Type, param: Type) {
     known(v, |k| k.defaults.push((label, default, param)))
+}
+
+/// The defaults recorded of the cell `v` ([`Known::defaults`]).
+fn defaults_of(v: &TVar) -> SmallVec<[(ArcStr, Type, Type); 0]> {
+    let cell = v.cell();
+    let c = cell.read();
+    c.solving.as_ref().map(|k| k.defaults.clone()).unwrap_or_default()
 }
 
 /// The default a function gives the label `name`, whose parameter is
