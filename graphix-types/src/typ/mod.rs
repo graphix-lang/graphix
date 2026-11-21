@@ -50,6 +50,7 @@ mod normalize;
 pub use normalize::{NormKey, norm_key};
 mod print;
 pub use print::{Brief, Noted};
+mod readoff;
 pub(crate) mod regular;
 mod textdata;
 pub use textdata::{TextRefusal, toml_root_refusal};

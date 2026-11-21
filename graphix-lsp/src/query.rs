@@ -66,8 +66,9 @@ fn truncated(path: &ModPath, n: usize) -> ModPath {
 }
 
 /// A binding's type for display: a hover's, an outline's, a completion's
-/// (the server's and the REPL's). `name_auto_variables` names each
-/// function type's open auto variables once the type is resolved. A header
+/// (the server's and the REPL's). The type is read off the bounds of the
+/// cells it holds ([`Type::read_off`]), and `name_auto_variables` names each
+/// function type's open auto variables once it is resolved. A header
 /// lists only the quantifiers a call still picks, as a checker message's does.
 pub fn display_type(typ: &Type) -> CompactString {
     display_holding(typ, &[])
@@ -84,7 +85,8 @@ pub(crate) fn held_at(ide: &Ide, file: &Path, cursor: Position) -> LPooled<Vec<T
 
 /// A type shown where `held` ([`held_at`]) are held ([`display_type`]).
 pub(crate) fn display_holding(typ: &Type, held: &[TVar]) -> CompactString {
-    let (resolved, held) = HeldQuantifiers::resolving(typ, held);
+    let read = typ.read_off(held);
+    let (resolved, held) = HeldQuantifiers::resolving(&read, held);
     let resolved = resolved.name_auto_variables(held.cells());
     format_with_flags(PrintFlag::ReplacePrims | PrintFlag::StandingHeaders, || {
         held.printing(|| format_compact!("{resolved}"))

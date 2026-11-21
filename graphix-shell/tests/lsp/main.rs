@@ -80,9 +80,9 @@ fn a_typedef_hover_shows_its_parameters() {
     hover_is(&mut c, "let p: |Pair", decl);
 }
 
-/// A header lists its quantifiers only while a call still picks them, as a
-/// checker message's does: one instance of a generic function prints its
-/// variables where they occur, two instances' numbered apart.
+/// A header lists its quantifiers only while a call still picks them: one
+/// instance of a generic function is decided at its input's end (at its
+/// bound where nothing calls it) and prints with no header.
 #[test]
 fn one_instance_hovers_with_no_header() {
     const SRC: &str = "\
@@ -98,11 +98,15 @@ let hs = array::map([1], |r| h);
     c.open("main.gx");
     assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
     hover_is(&mut c, "let |h", "h: fn<'a: Number>(x: 'a) -> 'a");
-    hover_is(&mut c, "let |fs", "fs: Array<fn(x: 'a) -> 'a>");
+    hover_is(&mut c, "let |fs", "fs: Array<fn(x: Number) -> Number>");
     hover_is(&mut c, "let |mk", "mk: fn(z: i64) -> fn<'a: Number>(x: 'a) -> 'a");
-    hover_is(&mut c, "let |k", "k: fn(x: 'a) -> 'a");
-    hover_is(&mut c, "let |pair", "pair: (fn(x: 'a) -> 'a, fn(x: 'a1) -> 'a1)");
-    hover_is(&mut c, "let |hs", "hs: Array<fn(x: 'a) -> 'a>");
+    hover_is(&mut c, "let |k", "k: fn(x: Number) -> Number");
+    hover_is(
+        &mut c,
+        "let |pair",
+        "pair: (fn(x: Number) -> Number, fn(x: Number) -> Number)",
+    );
+    hover_is(&mut c, "let |hs", "hs: Array<fn(x: Number) -> Number>");
 }
 
 /// A type shown in a definition's text holds the definition's own
@@ -243,7 +247,7 @@ let m = |x| select x { [a, t..] => array::concat(t, t), [] => [] };
     let hovers = [
         ("one", "fn(x: 'a) -> Array<'a>"),
         ("pair", "fn(x: 'a) -> (Array<'a>, 'a)"),
-        ("m", "fn(x: Array<'a>) -> [Array<'a>, Array<'b>]"),
+        ("m", "fn(x: Array<Any>) -> Array<_>"),
     ];
     for (name, typ) in hovers {
         let got = c.hover("main.gx", &format!("let |{name} "));
@@ -954,11 +958,7 @@ let d = seq let (u, v) = (clk ~ n, clk ~ 2) { let s = u + v; s };
         }
     };
     declared("with(|err)", "err: Error<ErrChain<`E>>", &["\"[|err]"]);
-    declared(
-        "seq let |t =",
-        "t: [datetime, Error<`TimerError(string)>]",
-        &["let w = |t"],
-    );
+    declared("seq let |t =", "t: Result<datetime, `TimerError(string)>", &["let w = |t"]);
     declared("seq let (|u,", "u: i64", &["let s = |u + v"]);
     let offered = c.completions("a.gx", "let m = \"[e|rr]");
     assert!(offered.iter().all(|n| !n.starts_with('#')), "{offered:?}");
@@ -1714,7 +1714,7 @@ println(\"[r]\")
     c.open("main.gx");
     assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
     let got = c.hover("main.gx", "let |w = e").unwrap_or_default();
-    assert!(got.contains("w: Error<[Error<[Error<"), "{}", &got[..got.len().min(200)]);
+    assert!(got.contains("w: [Error<[Error<[Error<"), "{}", &got[..got.len().min(200)]);
     assert!(
         got.len() <= Brief::MOST + Brief::BYTES && got.contains('…'),
         "{}",

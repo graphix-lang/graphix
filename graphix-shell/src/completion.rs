@@ -148,7 +148,8 @@ mod tests {
     }
 
     /// A completion describes a binding, or a label, as a hover does: a
-    /// variable a call decided as its type, one instance with no header.
+    /// variable a call decided as its type, one instance decided at its
+    /// bound with no header.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_completion_describes_a_binding_as_a_hover_does() -> anyhow::Result<()> {
         use super::BComplete;
@@ -183,7 +184,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("no completion of {name} after {line}"))
         };
         assert_eq!(described("decided", "decided"), "fn(q: i64) -> i64 ");
-        assert_eq!(described("one", "one"), "fn(x: 'a) -> 'a ");
+        assert_eq!(described("one", "one"), "fn(x: Number) -> Number ");
         assert_eq!(described("labeled", "labeled"), "fn(#w: i64, v: i64) -> i64 ");
         assert_eq!(described("labeled(#", "w"), "i64");
         Ok(())
