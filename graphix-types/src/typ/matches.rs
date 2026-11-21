@@ -2,8 +2,7 @@ use crate::{
     env::Env,
     stack::ensure_sufficient,
     typ::{
-        AndAc, Kept, Lazy, NodeKey, NodePairs, RefHist, RefPair,
-        Type,
+        AndAc, Kept, Lazy, NodeKey, NodePairs, RefHist, RefPair, Type,
         setops::{Pairs, Unfoldings, def_pair, memo_on},
     },
 };
@@ -624,7 +623,6 @@ impl Type {
                 Err(_) => false,
             })
     }
-
 }
 
 #[cfg(test)]

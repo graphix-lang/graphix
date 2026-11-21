@@ -7,8 +7,7 @@ use crate::{
     },
     image,
     typ::{
-        Mutability, TVar, TVarsSeen, Type,
-        key_text,
+        Mutability, TVar, TVarsSeen, Type, key_text,
         matches::MatchHist,
         normalize::NormCx,
         tvar::{self, Fresh, Level},
