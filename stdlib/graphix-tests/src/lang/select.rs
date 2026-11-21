@@ -14086,3 +14086,20 @@ run!(
 }"#,
     refused("expected a reference not Any")
 );
+
+// A pattern looks into what a typedef's name stands for, so a select over
+// a binding annotated by the name routes to its arms before anything
+// decides the name's variable, as it does over the union written out; a
+// member of another tag holds nothing the arm looks at.
+run!(
+    select_over_a_typedef_name_routes_before_its_variable_is_decided,
+    r#"{
+    type L<'a> = [`N, `C(fn(x: 'a) -> 'a, L<'a>)];
+    type M<'a> = [`N, `C(fn(x: 'a) -> 'a)];
+    let l: L<'q> = `C(|x| x, `N);
+    let m: M<'p> = `C(|x| x);
+    (select l { `C(f, _) => f(1), `N => 0 }, select m { `C(f) => f("s"), `N => "n" })
+}"#,
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::None
+);

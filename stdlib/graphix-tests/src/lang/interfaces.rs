@@ -3930,12 +3930,15 @@ run!(
     "/test/m.gx" => "let f = |x| x"
 ; FuseExpect::None);
 
+// The val ties both fields to one 'a, where the implementation's lambdas
+// have one each; what is written through the val lands on the
+// implementation, so its let is written at the val's type.
 run!(
     write_through_a_typedef_of_two_functions_val_as_general,
     prints("[i64:1, \"s\"]"),
     "/test.gx" => "mod m; m::c <- {f: |x| x, g: |x| x}; let result = (m::c.f(1), m::c.g(\"s\"))",
     "/test/m.gxi" => "type S<'a> = {f: fn(x: 'a) -> 'a, g: fn(x: 'a) -> 'a}; val c: S<'a>",
-    "/test/m.gx" => "let c = {f: |x| x, g: |x| x}"
+    "/test/m.gx" => "let c: S<'a> = {f: |x| x, g: |x| x}"
 ; FuseExpect::None);
 
 run!(
@@ -3943,7 +3946,7 @@ run!(
     prints("[i64:1, \"s\"]"),
     "/test.gx" => "mod m; m::c <- {f: |x| x, g: |x| x}; let result = (m::c.f(1), m::c.g(\"s\"))",
     "/test/m.gxi" => "type F<'a> = fn(x: 'a) -> 'a; type S<'a> = {f: F<'a>, g: F<'a>}; val c: S<'a>",
-    "/test/m.gx" => "let c = {f: |x| x, g: |x| x}"
+    "/test/m.gx" => "let c: S<'a> = {f: |x| x, g: |x| x}"
 ; FuseExpect::None);
 
 run!(
@@ -3959,7 +3962,7 @@ run!(
     prints("[i64:1, \"s\"]"),
     "/test.gx" => "mod m; m::c <- {f: |x| x, g: |x| x}; let result = (m::c.f(1), m::c.g(\"s\"))",
     "/test/m.gxi" => "type F<'a> = fn(x: 'a) -> 'a; type P<'a, 'b> = {f: F<'a>, g: F<'b>}; type S<'a> = P<'a, 'a>; val c: S<'a>",
-    "/test/m.gx" => "let c = {f: |x| x, g: |x| x}"
+    "/test/m.gx" => "let c: S<'a> = {f: |x| x, g: |x| x}"
 ; FuseExpect::None);
 
 // A typedef whose body names its parameter twice, applied to a typedef of
@@ -3969,7 +3972,7 @@ run!(
     prints("[i64:1, \"s\", i64:2, \"t\"]"),
     "/test.gx" => "mod m; m::c <- {f: |x| x, g: |x| x}; m::d <- (|x| x, |x| x); let result = (m::c.f(1), m::c.g(\"s\"), m::d.0(2), m::d.1(\"t\"))",
     "/test/m.gxi" => "type F<'a> = fn(x: 'a) -> 'a; type P<'t> = {f: 't, g: 't}; type Q<'t> = ('t, 't); val c: P<F<'a>>; val d: Q<F<'a>>",
-    "/test/m.gx" => "let c = {f: |x| x, g: |x| x}; let d = (|x| x, |x| x)"
+    "/test/m.gx" => "let c: P<F<'a>> = {f: |x| x, g: |x| x}; let d: Q<F<'a>> = (|x| x, |x| x)"
 ; FuseExpect::None);
 
 // Each application of a nest of typedefs doubling at every level is

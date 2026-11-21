@@ -4325,7 +4325,7 @@ impl Solving {
         // fixed: they take what it routes to them
         if force {
             let mine = |s: &Self, id: usize, t: &Type| {
-                s.looked(id, &deep(t)).iter().all(|v| fixes(v, min))
+                s.looked(env, id, &deep(t)).iter().all(|v| fixes(v, min))
             };
             self.select_waiting(env, &mine)?;
         }

@@ -571,22 +571,29 @@ fn undecided(t: &Type, out: &mut SmallVec<[TVar; 4]>) {
 
 /// The cells of `t`, undecided, that `pat` looks into: a name or a
 /// wildcard takes whatever is there, decided or not.
-fn looked(pat: &Pat, t: &Type, out: &mut SmallVec<[TVar; 4]>) {
-    match (pat, t) {
+fn looked(env: &Env, pat: &Pat, t: &Type, out: &mut SmallVec<[TVar; 4]>) {
+    ensure_sufficient(|| match (pat, t) {
         (Pat::Any(_), _) => (),
-        (Pat::Whole(_, p), _) => looked(p, t, out),
-        (Pat::Or(ps), _) => ps.iter().for_each(|p| looked(p, t, out)),
-        (_, Type::Set(ms)) => ms.iter().for_each(|m| looked(pat, m, out)),
+        (Pat::Whole(_, p), _) => looked(env, p, t, out),
+        (Pat::Or(ps), _) => ps.iter().for_each(|p| looked(env, p, t, out)),
+        (_, Type::Set(ms)) => ms.iter().for_each(|m| looked(env, pat, m, out)),
+        // a pattern looks into what a typedef's name stands for
+        (_, Type::Ref(_)) => match t.lookup_ref(env) {
+            Ok(body) => looked(env, pat, &body, out),
+            Err(_) => undecided(t, out),
+        },
         (Pat::Tuple(_, ps), Type::Tuple(ts)) if ps.len() == ts.len() => {
-            ps.iter().zip(ts.iter()).for_each(|(p, t)| looked(p, t, out))
+            ps.iter().zip(ts.iter()).for_each(|(p, t)| looked(env, p, t, out))
         }
         (Pat::Variant(_, tag, ps), Type::Variant(u, ts, _))
             if tag == u && ps.len() == ts.len() =>
         {
-            ps.iter().zip(ts.iter()).for_each(|(p, t)| looked(p, t, out))
+            ps.iter().zip(ts.iter()).for_each(|(p, t)| looked(env, p, t, out))
         }
+        // a member of another tag is not this arm's, whatever it holds
+        (Pat::Variant(_, tag, _), Type::Variant(u, _, _)) if tag != u => (),
         _ => undecided(t, out),
-    }
+    })
 }
 
 impl Solving {
@@ -1418,7 +1425,7 @@ impl Solving {
     /// Pass one type that reaches a select's scrutinee down its arms.
     pub(super) fn select_route(&mut self, env: &Env, id: usize, t: &Type) -> Result<()> {
         let whole = deep(t);
-        if !self.looked(id, &whole).is_empty() {
+        if !self.looked(env, id, &whole).is_empty() {
             self.selects[id].waiting.push(t.clone());
             return Ok(());
         }
@@ -1530,9 +1537,13 @@ impl Solving {
     }
 
     /// The undecided cells of `t` the arms of the select `id` look into.
-    pub(super) fn looked(&self, id: usize, t: &Type) -> SmallVec<[TVar; 4]> {
+    pub(super) fn looked(&self, env: &Env, id: usize, t: &Type) -> SmallVec<[TVar; 4]> {
         let mut out = SmallVec::new();
-        self.selects[id].template.arms.iter().for_each(|a| looked(&a.pat, t, &mut out));
+        self.selects[id]
+            .template
+            .arms
+            .iter()
+            .for_each(|a| looked(env, &a.pat, t, &mut out));
         out
     }
 
@@ -1553,7 +1564,7 @@ impl Solving {
                 // open for the name's uses to reach. Fixing may show a cell
                 // nothing here fixes (a declared variable): it waits on
                 let stuck = loop {
-                    let cells = self.looked(id, &deep(&t));
+                    let cells = self.looked(env, id, &deep(&t));
                     if cells.is_empty() {
                         break false;
                     }
