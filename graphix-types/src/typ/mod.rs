@@ -1598,10 +1598,7 @@ impl TypeRef {
                         tv.add_body_bound(env, bound)?
                     }
                 }
-                None if commit => {
-                    bound.check_contains(env, arg)?;
-                    tvar::require_bounds(std::slice::from_ref(&bound), arg)
-                }
+                None if commit => bound.check_contains(env, arg)?,
                 None => {
                     if !bound.decided_holds(env, arg)? {
                         return Ok(false);

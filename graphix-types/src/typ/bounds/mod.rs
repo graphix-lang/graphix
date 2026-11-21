@@ -1108,6 +1108,25 @@ impl Solving {
                     ),
                 };
             }
+            // CR claude for claude: [bug/medium] A bind hands a cell's predicate conjuncts to the
+            // open cells of its binding through this, with no test of `TVar::declared_here`, so a
+            // body tightens a declared variable quietly whenever the variable sits under a
+            // constructor of a call's argument. `'a: Any |x: 'a| uniq((x, 1))`, `uniq({a: x})`,
+            // `json::write_str(`A(x))` and `'a: Any |x: Array<'a>| uniq(x)` all check; the
+            // signature becomes `fn<'a: Any + Discernible>` and a call is then refused with "'a
+            // must be Discernible". `uniq(x)` and `array::sort(x)` in the same definitions are
+            // refused with "the body needs 'a within ..", as design/tvar_constraints.md (A body
+            // adds no bound to a declared variable) says every such body is. The bind sites in
+            // contains.rs have the `Env`: hand the bounds there through `require_body_bounds` while
+            // `TVar::checking_a_body()`. Pin a tuple, a struct, a variant and an `Array<'a>`
+            // parameter, and let must-reject family 2 wrap the variable's use in a constructor.
+            // probe: design/review-2026-11-16/repro/t-tvar-b-quiet-bound-under-constructor.sh
+            // (t-tvar-b-02)
+            // 2026-11-21 claude: moved here from `require_bounds`, deleted: no bind hands
+            // a predicate any more. The probe reads as before (1 refused, 2-7 check, 8
+            // refused at the call): in a definition's own check this arm leaves a
+            // predicate on a type that holds a declared variable under a constructor to
+            // the instance, where the sealed arm above reaches the variables.
             // a predicate on a cell is judged when the cell is decided
             (_, Type::Bound(_)) => return Ok(()),
             (Type::TVar(v), Type::TVar(w)) if v.same_cell(w) => return Ok(()),

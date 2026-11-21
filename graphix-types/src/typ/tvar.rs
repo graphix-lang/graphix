@@ -2186,58 +2186,12 @@ impl Hash for TVar {
     }
 }
 
-/// Hand a cell's bounds to the open cells of its binding `t`.
-// CR claude for claude: [bug/medium] A bind hands a cell's predicate conjuncts to the
-// open cells of its binding through this, with no test of `TVar::declared_here`, so a
-// body tightens a declared variable quietly whenever the variable sits under a
-// constructor of a call's argument. `'a: Any |x: 'a| uniq((x, 1))`, `uniq({a: x})`,
-// `json::write_str(`A(x))` and `'a: Any |x: Array<'a>| uniq(x)` all check; the
-// signature becomes `fn<'a: Any + Discernible>` and a call is then refused with "'a
-// must be Discernible". `uniq(x)` and `array::sort(x)` in the same definitions are
-// refused with "the body needs 'a within ..", as design/tvar_constraints.md (A body
-// adds no bound to a declared variable) says every such body is. The bind sites in
-// contains.rs have the `Env`: hand the bounds there through `require_body_bounds` while
-// `TVar::checking_a_body()`. Pin a tuple, a struct, a variant and an `Array<'a>`
-// parameter, and let must-reject family 2 wrap the variable's use in a constructor.
-// probe: design/review-2026-11-16/repro/t-tvar-b-quiet-bound-under-constructor.sh
-// (t-tvar-b-02)
-pub fn require_bounds(cons: &[Type], t: &Type) {
-    handed_bounds(cons, t, &mut |tv, b| tv.add_cell_constraint(b))
-}
-
 impl Type {
     /// The conjunct a body adds to a variable its definition declares
     /// without the signature saying it: the operands of its operators are
     /// one type.
     pub(super) fn is_quiet_bound(&self) -> bool {
         matches!(self, Type::Bound(Bound::Singleton))
-    }
-}
-
-/// Each conjunct the bounds `cons` hand an open cell of `t`, a type
-/// bound where they hold: what [`require_bounds`] adds, and what an
-/// interface's typedef parameter declares of the variables its argument
-/// holds.
-pub(crate) fn handed_bounds(cons: &[Type], t: &Type, hand: &mut dyn FnMut(&TVar, Type)) {
-    for c in cons {
-        match c {
-            Type::Bound(Bound::Concrete)
-            | Type::Bound(Bound::Data)
-            | Type::Bound(Bound::JsonData)
-            | Type::Bound(Bound::TomlData) => {
-                let skips = |t: &Type| matches!(t, Type::Fn(_));
-                t.require_everywhere(c, &skips, hand, &mut LPooled::take())
-            }
-            Type::Bound(Bound::Singleton) => t.require_singleton(hand),
-            Type::Bound(Bound::OneNumber) => t.require_one_number(hand),
-            Type::Bound(Bound::NoError) => t.require_no_error(hand),
-            // what a comparison of the type reaches
-            Type::Bound(Bound::Discernible) | Type::Bound(Bound::Ordered) => {
-                let skips = |t: &Type| matches!(t, Type::Fn(_) | Type::ByRef(..));
-                t.require_everywhere(c, &skips, hand, &mut LPooled::take())
-            }
-            _ => (),
-        }
     }
 }
 
@@ -2537,7 +2491,6 @@ impl TVar {
     /// [`Self::write_binding`], lowering through `seen` ([`lower_in`]).
     fn write_binding_in(&self, t: Type, reaching: bool, seen: &mut Lowered) {
         super::bounds::old_binding(self, &t);
-        require_bounds(&self.cell_constraints(), &t);
         lower_in(&t, self.level(), seen);
         let cell = self.cell();
         let mut c = cell.write();
@@ -2562,6 +2515,11 @@ impl TVar {
     // is `Cycle::Constructor`: as the infinite type from `add_body_bound`, and by
     // `mark_cycle_refused` where a bind hands it. probe:
     // design/review-2026-11-16/repro/t-tvar-a-self-conjunct-oom.sh (t-tvar-a-02)
+    // 2026-11-21 claude: require_bounds and require_singleton are deleted (no bind
+    // hands a predicate). Re-probed: no run grows; singleton_call is refused
+    // ('[Array<..>, Array<Array<..>>] is more than one type, where Singleton asks for
+    // one'), typedef_call is accepted (exit 0); both definitions still check where the
+    // probe expects 'cannot infer a finite type here'.
     pub fn add_cell_constraint(&self, c: Type) {
         let cell = self.cell();
         let existing = cell.read().constraints.clone();
@@ -2573,22 +2531,14 @@ impl TVar {
         if new.is_empty() {
             return;
         }
-        let below = {
-            let mut c = cell.write();
-            if !decided(&c) {
-                return;
-            }
-            if c.binding.is_some() {
-                bound_cell_changes();
-            }
-            c.constraints.extend(new.iter().cloned());
-            c.lower.clone()
-        };
-        // what bounds the cell from below holds its predicates, whichever
-        // came first ([`Self::add_lower`])
-        for t in below.iter() {
-            require_bounds(&new, t)
+        let mut c = cell.write();
+        if !decided(&c) {
+            return;
         }
+        if c.binding.is_some() {
+            bound_cell_changes();
+        }
+        c.constraints.extend(new.iter().cloned())
     }
 
     /// The refusal of the bounds `needs` a body needs of the variable of its
@@ -2704,7 +2654,6 @@ impl TVar {
         if held(&t) || matches!(&t, Type::Set(ms) if ms.iter().all(held)) {
             return;
         }
-        require_bounds(&self.cell_constraints(), &t);
         lower(&t, cell.read().level);
         let mut c = cell.write();
         if decided_as(&c, &t) {
@@ -3769,16 +3718,6 @@ impl Type {
         })
     }
 
-    /// The open members of a `NoError` cell's binding are each `NoError`.
-    fn require_no_error(&self, hand: &mut dyn FnMut(&TVar, Type)) {
-        let mut parts = UnionParts::new(Measure::Members);
-        if self.union_parts(None, &mut parts).is_ok() {
-            for tv in parts.open.iter() {
-                hand(tv, Type::Bound(Bound::NoError))
-            }
-        }
-    }
-
     /// The members of `self` read as a union into `parts`; a type
     /// reference counts as one member without `env`.
     fn union_parts(
@@ -3801,35 +3740,6 @@ impl Type {
             }
             t => Ok(parts.member(t)),
         })
-    }
-
-    /// Narrow the open members of a `Singleton` cell's binding: beside one
-    /// known member each must be within it; with none, each is a
-    /// `Singleton` itself (two open members may still differ).
-    fn require_singleton(&self, hand: &mut dyn FnMut(&TVar, Type)) {
-        let mut parts = UnionParts::new(Measure::Members);
-        if self.union_parts(None, &mut parts).is_err() {
-            return;
-        }
-        if let Some(narrow) = parts.narrowing() {
-            for tv in parts.open.iter() {
-                hand(tv, narrow.clone())
-            }
-        }
-    }
-
-    /// The open members of a `OneNumber` cell's binding are each
-    /// `OneNumber` where no member is numeric yet; beside a numeric
-    /// member, one may still bind another numeric type (no upper bound
-    /// says "not numeric, or this number").
-    fn require_one_number(&self, hand: &mut dyn FnMut(&TVar, Type)) {
-        let mut parts = UnionParts::new(Measure::Numbers);
-        if self.union_parts(None, &mut parts).is_err() || parts.known > 0 {
-            return;
-        }
-        for tv in parts.open.iter() {
-            hand(tv, Type::Bound(Bound::OneNumber))
-        }
     }
 
     /// Bind each open cell of `self` to the part of `row` at its
@@ -3949,29 +3859,6 @@ impl Type {
     /// holds. The type a run-time read may cast to.
     pub fn is_concrete(&self, env: &Env) -> bool {
         !self.has_unbound() && self.concrete_holds(env)
-    }
-
-    /// Hand `bound` to every open cell the type reaches, never under a
-    /// part `skips` names; each cell and shared node once.
-    fn require_everywhere(
-        &self,
-        bound: &Type,
-        skips: &dyn Fn(&Type) -> bool,
-        hand: &mut dyn FnMut(&TVar, Type),
-        seen: &mut AHashSet<usize>,
-    ) {
-        ensure_sufficient(|| match self {
-            t if skips(t) => (),
-            Type::TVar(tv) if !seen.insert(tv.cell_addr()) || tv.ground_now() => (),
-            Type::TVar(tv) => match tv.binding() {
-                Some(b) => b.require_everywhere(bound, skips, hand, seen),
-                None => hand(tv, bound.clone()),
-            },
-            t if node_addr(t).is_some_and(|n| !seen.insert(n)) => (),
-            t => {
-                t.for_each_child(&mut |c| c.require_everywhere(bound, skips, hand, seen))
-            }
-        })
     }
 
     /// Drop the conjuncts of every open cell the type reaches: for a
@@ -6194,16 +6081,6 @@ impl UnionParts {
         }
         self.open = open;
         Ok(())
-    }
-
-    /// What each open member is narrowed to for the union to be one
-    /// type: `None` when it has several known members already.
-    fn narrowing(&self) -> Option<Type> {
-        match (&self.first, self.known) {
-            (Some(k), 1) => Some(k.clone()),
-            (_, 0) => Some(Type::Bound(Bound::Singleton)),
-            _ => None,
-        }
     }
 
     /// Whether `t` is a member counted already: identical to one, or
