@@ -19,7 +19,7 @@ use graphix_compiler::{
         lambda::LambdaDef,
         place::{self, VarUpdate},
     },
-    typ::{FnType, Type},
+    typ::{FnType, Type, tvar::current_level},
 };
 use log::{debug, error, info, warn};
 use netidx_value::{ValArray, Value};
@@ -1453,7 +1453,7 @@ impl<X: GXExt> GX<X> {
         // naming the parameter to annotate. probe:
         // design/review-2026-11-16/repro/rt-handle-contracts.rs
         // (review_a_generic_callable) (rt-07)
-        let callee = lb.typ.instantiate(&nohash::IntSet::default());
+        let callee = lb.typ.instantiate(current_level());
         let ftype = FnType {
             args: callee.args.iter().filter(|a| !a.has_default()).cloned().collect(),
             ..callee.clone()

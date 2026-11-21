@@ -2199,6 +2199,53 @@ pub fn instance(
     instance_above(env, def, at, leaves, Level::GENERIC.depth() - 1)
 }
 
+/// A use of `t` at the level `at`: a copy of each cell no definition owns
+/// (a scheme's variable, a written type's own), every other cell shared.
+/// The one rule of what a use copies. What the copy owes is judged by the
+/// running check, or, made outside one, by the check of the use.
+pub fn instantiate(t: &Type, at: Level) -> Type {
+    instantiate_through(t, at, &mut LPooled::take())
+}
+
+/// [`instantiate`] through `copies`, the cells copied already: a cell it
+/// maps is its copy, any other cell no definition owns is copied into it
+/// once, and every other cell is shared, a bound one as its binding.
+pub fn instantiate_through(
+    t: &Type,
+    at: Level,
+    copies: &mut AHashMap<usize, TVar>,
+) -> Type {
+    let t = match copies.is_empty() {
+        true => t.clone(),
+        false => t.rename_with(copies),
+    };
+    if !holds_unowned(&t) {
+        return t;
+    }
+    let above = Level::GENERIC.depth() - 1;
+    if let Some(t) = with(|s| s.instantiate_into(&t, above, at, copies)) {
+        return t;
+    }
+    Solving::default().instantiate_into(&t, above, at, copies)
+}
+
+/// Whether `t` holds an open cell no definition owns, which a use copies
+/// ([`instantiate`]).
+pub(crate) fn holds_unowned(t: &Type) -> bool {
+    let mut cells = SmallVec::new();
+    cells_of(t, true, &mut cells);
+    cells.iter().any(|v: &TVar| v.level().is_generic())
+}
+
+/// The open cells of `t` a definition owns and does not hold rigid: what
+/// its check left undecided.
+pub fn undecided_owned(t: &Type) -> SmallVec<[TVar; 4]> {
+    let mut cells = SmallVec::new();
+    cells_of(t, false, &mut cells);
+    cells.retain(|v: &mut TVar| !v.level().is_generic() && v.level().depth() > 0);
+    cells
+}
+
 /// [`instance`] of a definition no check made generic: each open cell a
 /// definition owns is the instance's copy, and one the top level holds is
 /// the program's one type.

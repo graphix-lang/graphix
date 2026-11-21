@@ -1,5 +1,5 @@
 use crate::{
-    AddrMap, AddrSet, LambdaId, PRINT_FLAGS, PrintFlag, SourcePosition,
+    AddrMap, AddrSet, LambdaId, PRINT_FLAGS, PrintFlag,
     env::Env,
     expr::{
         ModPath,
@@ -7,7 +7,7 @@ use crate::{
     },
     image,
     typ::{
-        Mutability, TVar, TVarsSeen, Type, key_text,
+        Mutability, TVar, TVarsSeen, Type, bounds, key_text,
         matches::MatchHist,
         normalize::NormCx,
         tvar::{self, Fresh, Level},
@@ -1291,16 +1291,6 @@ impl FnType {
         self.reset_tvars_int(known, Fresh::Copy)
     }
 
-    /// [`Type::instantiate_with`] over the signature.
-    #[doc(hidden)]
-    pub fn instantiate_with(
-        &self,
-        known: &mut AHashMap<usize, TVar>,
-        open: &IntSet<LambdaId>,
-    ) -> Self {
-        self.instantiate_how(known, Fresh::Instantiate(open))
-    }
-
     /// [`Type::rename_with`] over the signature.
     #[doc(hidden)]
     pub fn rename_with(&self, known: &AHashMap<usize, TVar>) -> Self {
@@ -1323,7 +1313,7 @@ impl FnType {
     pub(super) fn instantiate_how(
         &self,
         known: &mut AHashMap<usize, TVar>,
-        how: Fresh<'_>,
+        how: Fresh,
     ) -> Self {
         let fresh = self
             .cow_walk(|t| t.instantiate_int(known, how))
@@ -1341,7 +1331,7 @@ impl FnType {
     pub(super) fn reset_tvars_int(
         &self,
         known: &mut AHashMap<usize, TVar>,
-        how: Fresh<'_>,
+        how: Fresh,
     ) -> Self {
         let mut fresh = self
             .cow_walk(|t| t.reset_tvars_int(known, how))
@@ -1511,11 +1501,17 @@ impl FnType {
         })
     }
 
-    /// A call's copy of the signature under the open gates `open`
-    /// (`Fresh::Instantiate`).
-    pub fn instantiate(&self, open: &IntSet<LambdaId>) -> Self {
-        let mut known: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-        self.reset_tvars_int(&mut known, Fresh::Instantiate(open))
+    /// A use of the signature at `at` ([`bounds::instantiate`]).
+    pub fn instantiate(&self, at: Level) -> Self {
+        let mut unowned = false;
+        self.for_each_type(&mut |t| unowned = unowned || bounds::holds_unowned(t));
+        if !unowned {
+            return self.clone();
+        }
+        match &bounds::instantiate(&Type::Fn(Arc::new(self.clone())), at) {
+            Type::Fn(ft) => (**ft).clone(),
+            t => unreachable!("a use of a signature is {t}"),
+        }
     }
 
     /// Mark generic every cell the signature reaches at `depth` or
@@ -2007,6 +2003,9 @@ impl FnType {
 // 2026-11-21 claude: Meetings, Places, place_in_order, held_at and sig_bounds are
 // deleted (bounds consolidation); ReadCopies and copied_in_two_places still follow the
 // test module.
+// 2026-11-21 claude: ReadCopies, the read walk and copied_in_two_places are deleted
+// (scheme_read went with the old instantiation); the Pack impls still follow the test
+// module.
 #[cfg(test)]
 mod tests {
     use crate::{
@@ -2741,35 +2740,6 @@ mod tests {
         assert!(s.contains("throws"), "explicit throws should be shown, got: {s}");
         assert!(s.contains("`Boom"), "throws variant should be printed, got: {s}");
     }
-
-    /// A read's copy, of a typedef application (copied, or rebuilt around
-    /// a function type it holds) as of a function type, is one copy to
-    /// every read through the same copies, and its own to a later read,
-    /// alone or held in a node the later read meets first.
-    #[test]
-    fn a_read_copy_is_its_own_to_a_later_read() {
-        use crate::{
-            expr::parser::parse_type,
-            typ::{
-                FnType, ReadCopies, Type, node_addr,
-                tvar::{AtLevel, Level},
-            },
-        };
-        use nohash::IntSet;
-        let _generic = AtLevel::enter(Level::GENERIC);
-        let open = IntSet::default();
-        let keep = |_: &FnType| false;
-        for src in ["F<'a>", "F<'a, i64>", "F<fn(x: 'a) -> 'a>", "fn(x: 'a) -> 'a"] {
-            let t = parse_type(src).unwrap();
-            let mut copies = ReadCopies::default();
-            let copy = copies.read(&t, &open, &keep).expect(src);
-            let again = copies.read(&t, &open, &keep).expect(src);
-            assert_eq!(node_addr(&copy), node_addr(&again), "{src}: {copy}, {again}");
-            assert!(copies.read(&copy, &open, &keep).is_none(), "{src}: {copy}");
-            let held = Type::Array(triomphe::Arc::new(copy.clone()));
-            assert!(copies.read(&held, &open, &keep).is_none(), "{src}: {held}");
-        }
-    }
 }
 
 impl FnType {
@@ -2853,270 +2823,4 @@ impl Pack for FnType {
             Self::shape_decode(buf, None)
         }
     }
-}
-
-impl Type {
-    /// A read's copy of the signatures this type holds of definitions whose
-    /// gates are closed (a lambda held in a struct, tuple or array): each such
-    /// function type copied as a read of a generalized binding copies its
-    /// scheme ([`FnType::scheme`]), through one cell map, all but those `keep`
-    /// shares, and each typedef application whose arguments hold such a cell
-    /// ([`Type::copied_outside_functions`]) alike. `None` when it holds none.
-    #[doc(hidden)]
-    pub fn scheme_read(
-        &self,
-        open: &IntSet<LambdaId>,
-        keep: &dyn Fn(&FnType) -> bool,
-    ) -> Option<Type> {
-        ReadCopies::default().read(self, open, keep)
-    }
-}
-
-/// The copies reads take ([`Type::scheme_read`]) through one cell map:
-/// reads through one `ReadCopies` take one copy of what they share, and a
-/// type a read made is its own copy to a later read.
-#[derive(Debug, Default)]
-#[doc(hidden)]
-pub struct ReadCopies {
-    known: LPooled<AHashMap<usize, TVar>>,
-    /// By node, a var by its cell, beside the node, which this keeps
-    /// alive: its copy, `None` where the node is its own.
-    memo: LPooled<AHashMap<usize, (Type, Option<Type>)>>,
-}
-
-impl ReadCopies {
-    /// `t` as a read through these copies takes it ([`Type::scheme_read`]).
-    #[doc(hidden)]
-    pub fn read(
-        &mut self,
-        t: &Type,
-        open: &IntSet<LambdaId>,
-        keep: &dyn Fn(&FnType) -> bool,
-    ) -> Option<Type> {
-        ReadWalk { open, keep, copies: self, generic: true }.go(t)
-    }
-}
-
-struct ReadWalk<'a> {
-    open: &'a IntSet<LambdaId>,
-    keep: &'a dyn Fn(&FnType) -> bool,
-    copies: &'a mut ReadCopies,
-    /// Copies are generic, a scheme's; else one instance's.
-    generic: bool,
-}
-
-impl<'a> ReadWalk<'a> {
-    fn how(&self) -> Fresh<'a> {
-        match self.generic {
-            true => Fresh::Scheme(self.open),
-            false => Fresh::Instantiate(self.open),
-        }
-    }
-}
-
-impl ReadWalk<'_> {
-    fn go(&mut self, t: &Type) -> Option<Type> {
-        crate::stack::ensure_sufficient(|| {
-            let addr = match t {
-                Type::TVar(tv) => Some(tv.cell_addr()),
-                t => super::node_addr(t),
-            };
-            if let Some(a) = addr
-                && let Some((_, r)) = self.copies.memo.get(&a)
-            {
-                return r.clone();
-            }
-            let r = match t {
-                Type::TVar(tv) => {
-                    let b = tv.binding()?;
-                    self.copies.memo.insert(tv.cell_addr(), (t.clone(), None));
-                    self.go(&b).map(|r| tv.forwarded_as(r))
-                }
-                Type::Fn(ft)
-                    if (self.keep)(ft) || !copied_beneath(t, self.open, true) =>
-                {
-                    None
-                }
-                Type::Fn(ft) => {
-                    let how = self.how();
-                    let fresh = ft.reset_tvars_int(&mut self.copies.known, how);
-                    Some(Type::Fn(Arc::new(fresh)).named_in(&mut LPooled::take()))
-                }
-                Type::Ref(_) if t.copied_outside_functions(self.open) => {
-                    let how = self.how();
-                    let fresh = t
-                        .reset_tvars_int(&mut self.copies.known, how)
-                        .unwrap_or_else(|| t.clone());
-                    Some(fresh.named_in(&mut LPooled::take()))
-                }
-                t => t.cow_children(&mut |c| self.go(c)),
-            };
-            if let Some(a) = addr {
-                self.copies.memo.insert(a, (t.clone(), r.clone()));
-            }
-            if let Some(c) = &r
-                && let Some(a) = super::node_addr(c)
-            {
-                self.copies.memo.insert(a, (c.clone(), None));
-            }
-            r
-        })
-    }
-}
-
-impl Type {
-    /// Whether this type holds, outside every function type, an open cell
-    /// a scheme's copy under the open gates `open` copies: a typedef's
-    /// arguments, which stand for what its body holds.
-    #[doc(hidden)]
-    pub fn copied_outside_functions(&self, open: &IntSet<LambdaId>) -> bool {
-        copied_beneath(self, open, false)
-    }
-}
-
-/// What [`Type::copied_in_two_places`] learned of typedef applications
-/// over one copy: the places (0, 1, or 2 for two or more) an application's
-/// expansion holds, by its declaration and which of its arguments hold a
-/// copied cell, anywhere and outside function types.
-#[doc(hidden)]
-pub type CopySites =
-    AHashMap<(ModPath, SourcePosition, SmallVec<[(bool, bool); 4]>), usize>;
-
-impl Type {
-    /// Whether this type holds two places a copy takes apart: function
-    /// types and typedef applications ([`Type::copied_outside_functions`])
-    /// that hold a cell the open gates `open` copy, none inside another.
-    /// An application counts the places its expansion holds, one where
-    /// the expansion meets its own typedef.
-    #[doc(hidden)]
-    pub fn copied_in_two_places(
-        &self,
-        env: &Env,
-        open: &IntSet<LambdaId>,
-        memo: &mut CopySites,
-    ) -> bool {
-        struct Walk<'a> {
-            env: &'a Env,
-            open: &'a IntSet<LambdaId>,
-            memo: &'a mut CopySites,
-            sites: usize,
-            empty: LPooled<AHashSet<usize>>,
-            path: LPooled<AHashSet<usize>>,
-            expanding: LPooled<Vec<(ModPath, SourcePosition)>>,
-        }
-        impl Walk<'_> {
-            fn go(&mut self, t: &Type) -> bool {
-                crate::stack::ensure_sufficient(|| {
-                    // an application's sites depend on the definitions being
-                    // expanded, so it is counted wherever it is met
-                    let addr = match t {
-                        Type::TVar(tv) => Some(tv.cell_addr()),
-                        Type::Ref(_) => None,
-                        t => super::node_addr(t),
-                    };
-                    if let Some(a) = addr
-                        && (self.empty.contains(&a) || !self.path.insert(a))
-                    {
-                        return false;
-                    }
-                    let before = self.sites;
-                    let done = match t {
-                        Type::TVar(tv) => tv.binding().is_some_and(|b| self.go(&b)),
-                        Type::Fn(_) => {
-                            self.sites += copied_beneath(t, self.open, true) as usize;
-                            self.sites > 1
-                        }
-                        Type::Ref(tr) if t.copied_outside_functions(self.open) => {
-                            self.sites += self.application(t, tr);
-                            self.sites > 1
-                        }
-                        Type::Ref(_) => false,
-                        t => t
-                            .try_for_each_child(&mut |c| match self.go(c) {
-                                true => ControlFlow::Break(()),
-                                false => ControlFlow::Continue(()),
-                            })
-                            .is_break(),
-                    };
-                    if let Some(a) = addr {
-                        self.path.remove(&a);
-                        if self.sites == before {
-                            self.empty.insert(a);
-                        }
-                    }
-                    done
-                })
-            }
-
-            fn application(&mut self, t: &Type, tr: &super::TypeRef) -> usize {
-                let Some(def) = tr.resolve_peek(self.env) else { return 1 };
-                let decl = (def.canonical_scope.clone(), def.pos);
-                if self.expanding.contains(&decl) {
-                    return 1;
-                }
-                let args = tr
-                    .params
-                    .iter()
-                    .map(|p| {
-                        (
-                            copied_beneath(p, self.open, true),
-                            copied_beneath(p, self.open, false),
-                        )
-                    })
-                    .collect();
-                let key = (decl.0.clone(), decl.1, args);
-                if let Some(n) = self.memo.get(&key) {
-                    return *n;
-                }
-                let Some((_, body)) = t.lookup_ref_probe(self.env) else { return 1 };
-                let outer = std::mem::replace(&mut self.sites, 0);
-                self.expanding.push(decl);
-                self.go(&body);
-                self.expanding.pop();
-                let n = std::mem::replace(&mut self.sites, outer).min(2);
-                self.memo.insert(key, n);
-                n
-            }
-        }
-        let mut w = Walk {
-            env,
-            open,
-            memo,
-            sites: 0,
-            empty: LPooled::take(),
-            path: LPooled::take(),
-            expanding: LPooled::take(),
-        };
-        w.go(self)
-    }
-}
-
-/// Whether `t` reaches an open cell a scheme's copy under the open gates
-/// `open` copies; inside a function type only where `functions`.
-fn copied_beneath(t: &Type, open: &IntSet<LambdaId>, functions: bool) -> bool {
-    fn go(
-        t: &Type,
-        open: &IntSet<LambdaId>,
-        functions: bool,
-        seen: &mut AHashSet<usize>,
-    ) -> bool {
-        crate::stack::ensure_sufficient(|| match t {
-            Type::TVar(tv) => {
-                seen.insert(tv.cell_addr())
-                    && match tv.binding() {
-                        Some(b) => go(&b, open, functions, seen),
-                        None => tv.level().copied_by(open),
-                    }
-            }
-            Type::Fn(_) if !functions => false,
-            t if super::node_addr(t).is_some_and(|n| !seen.insert(n)) => false,
-            t => t
-                .try_for_each_child(&mut |c| match go(c, open, functions, seen) {
-                    true => ControlFlow::Break(()),
-                    false => ControlFlow::Continue(()),
-                })
-                .is_break(),
-        })
-    }
-    go(t, open, functions, &mut LPooled::take())
 }

@@ -373,7 +373,7 @@ pub(super) fn written_named(holders: &mut Holders, t: &Type) -> Option<Type> {
         true => None,
         false => holders
             .name_cell(tv)
-            .or_else(|| tv.written_own())
+            .or_else(|| tv.written_open())
             .or_else(|| Holders::waits(tv).then(|| holders.number(tv))),
     })
 }

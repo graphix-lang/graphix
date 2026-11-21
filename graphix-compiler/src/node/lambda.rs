@@ -50,7 +50,6 @@ use netidx_core::{
     path::Path,
 };
 use netidx_value::Value;
-use nohash::IntSet;
 use parking_lot::Mutex;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
@@ -612,7 +611,6 @@ impl DefTables {
 pub struct InstanceTypes {
     tables: Tables,
     known: Known,
-    open: IntSet<LambdaId>,
 }
 
 /// The copy the instance at `instance` holds of each open cell of its
@@ -668,11 +666,7 @@ impl InstanceTypes {
                         instance_cells(ctx, &def.typ, site, std::slice::from_ref(name))
                     })
                     .unwrap_or_default();
-                Ok(Self {
-                    tables: tables.clone(),
-                    known: SArc::new(Mutex::new(known)),
-                    open: ctx.rec_defs.clone(),
-                })
+                Ok(Self { tables: tables.clone(), known: SArc::new(Mutex::new(known)) })
             }
             _ => bail!(
                 "the default of #{name}, which its definition's check recorded no types of"
@@ -688,9 +682,8 @@ impl InstanceTypes {
         def: &FnType,
         instance: &FnType,
     ) -> Option<Self> {
-        let open = ctx.rec_defs.clone();
         let known = instance_cells(ctx, def, instance, &[])?;
-        Some(Self { tables, known: SArc::new(Mutex::new(known)), open })
+        Some(Self { tables, known: SArc::new(Mutex::new(known)) })
     }
 
     /// The types of an instance a call builds through a read of a generic
@@ -698,8 +691,7 @@ impl InstanceTypes {
     /// fixed: no second solve need find them again. `None` where the
     /// read's scheme is not the definition's own (a val's declaration is
     /// another).
-    fn copied<R: Rt>(
-        ctx: &CompileCtx<R>,
+    fn copied(
         table: &SArc<DefTables>,
         def: &Arc<FnType>,
         copies: &AHashMap<usize, TVar>,
@@ -716,7 +708,6 @@ impl InstanceTypes {
         Some(Self {
             tables: tables.clone(),
             known: SArc::new(Mutex::new(copies.clone())),
-            open: ctx.rec_defs.clone(),
         })
     }
 
@@ -732,7 +723,7 @@ impl InstanceTypes {
         if bounds::scheme(&t) {
             return bounds::specialize(&t, &mut self.known.lock());
         }
-        t.instantiate_with(&mut self.known.lock(), &self.open)
+        bounds::instantiate_through(&t, current_level(), &mut self.known.lock())
     }
 
     /// The type of the node at `id` as its definition's check left it,
@@ -872,7 +863,11 @@ impl InstanceTypes {
             Some(outer) => ft.rename_with(&outer.lock()),
             None => ft.clone(),
         };
-        Some(ft.instantiate_with(&mut self.known.lock(), &self.open))
+        let t = Type::Fn(Arc::new(ft));
+        match &bounds::instantiate_through(&t, current_level(), &mut self.known.lock()) {
+            Type::Fn(ft) => Some((**ft).clone()),
+            t => unreachable!("a signature's instance is {t}"),
+        }
     }
 
     /// The tables of the lambda literal at `id` of this instance's body.
@@ -2550,7 +2545,7 @@ fn instantiate<R: Rt>(
     let typing = match mode {
         BindMode::Definition => Typing::Definition,
         BindMode::Static { copies: Some(copies), .. }
-            if let Some(types) = InstanceTypes::copied(ctx, table, def_typ, copies) =>
+            if let Some(types) = InstanceTypes::copied(table, def_typ, copies) =>
         {
             let substituted = Typing::Substituted(table.clone(), def_typ.clone());
             Typing::Prepared(Box::new((substituted, types)))
@@ -2600,7 +2595,7 @@ pub(crate) fn fit_callee<R: Rt>(
             _ => bail!("BUG: a function type's instance is no function type"),
         };
     }
-    let copy = def_typ.instantiate(&ctx.rec_defs);
+    let copy = def_typ.instantiate(current_level());
     site.check_contains(&ctx.env, &copy)?;
     Ok(copy)
 }
@@ -3604,7 +3599,6 @@ mod settle_tests {
         InstanceTypes {
             tables: Tables { table: SArc::new(table), outer: None },
             known: Known::default(),
-            open: IntSet::default(),
         }
     }
 

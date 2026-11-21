@@ -52,10 +52,10 @@ use crate::{
     expr::{ExprId, ModPath},
     fusion::emit::{BodyCx, CompiledExpr},
     node::{
-        callsite::{CallSite, may_hold_fn},
+        callsite::CallSite,
         lambda::{GXLambda, LambdaDef},
     },
-    typ::{CopySites, FnType, TVar, Type, tvar::Judgment},
+    typ::{FnType, TVar, Type},
 };
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, bail};
@@ -2023,6 +2023,10 @@ impl<R: Rt> CompileCtx<R> {
     // the batch. Pin the &mut chain beside the `&` one. probe:
     // design/review-2026-11-16/repro/x-rerun-2-mut-ref-chain-quadratic.sh
     // (x-rerun-2-03)
+    // 2026-11-21 claude: CompileCtx::monomorphic is deleted: a write's type is now
+    // bounds::instantiate, one walk of the type's open cells and a copy only where it
+    // holds a cell no definition owns. The other two walks named here stand; the
+    // chain is not re-measured.
     pub(crate) fn mark_connect_target(&mut self, id: BindId) -> Result<()> {
         let ids = self.static_callees.variable(id);
         if let Some(call) = ids.iter().find_map(|id| self.static_callees.held(*id)) {
@@ -2143,127 +2147,6 @@ impl<R: Rt> CompileCtx<R> {
     /// generic.
     pub(crate) fn generalized_earlier(&self, id: BindId) -> bool {
         self.env.by_id.get(&id).is_some_and(|b| holds_generic(&b.typ))
-    }
-
-    /// A value's type as a written binding holds it: each function's
-    /// generalized signature it holds, as one instance of it.
-    pub(crate) fn monomorphic(&self, t: &Type) -> Type {
-        const MONOMORPHIC_EXPANSIONS: usize = 64;
-        /// A shared node rebuilds once and stays shared: every occurrence
-        /// of it holds the one instance of each function beneath it, except
-        /// inside a typedef application copied as its expansion, which
-        /// copies each place its body names apart.
-        struct Memo<'a> {
-            open: &'a nohash::IntSet<LambdaId>,
-            /// each entry keeps its node alive, so no other node takes its
-            /// address; and whether its rebuild instantiated beneath it
-            done: LPooled<AHashMap<usize, (Type, Option<Type>, bool)>>,
-            /// the node just rebuilt instantiated a function beneath it
-            copied: bool,
-            env: &'a Env,
-            /// the typedefs being expanded, and the lowest of them a
-            /// nested application met: an expansion holding its own
-            /// application is copied whole instead
-            expanding: LPooled<Vec<(ModPath, SourcePosition)>>,
-            cycle: usize,
-            sites: LPooled<CopySites>,
-            /// how many more applications may be copied as their expansions;
-            /// past it one is copied as one, which holds a val narrower
-            expansions: usize,
-        }
-        /// A ground cell's binding holding no function or typedef: no
-        /// instance differs from its resolution, which the cell keeps.
-        fn plain_ground(tv: &TVar) -> Option<Type> {
-            let held = |b: &Type| (may_hold_fn(b, &mut LPooled::take()), true);
-            match tv.ground_holds(Judgment::MayHoldFn, held) {
-                Some(false) => tv.ground_resolution(),
-                Some(true) | None => None,
-            }
-        }
-        fn instance(t: &Type, m: &mut Memo) -> Option<Type> {
-            crate::stack::ensure_sufficient(|| {
-                let key = t.shared_identity();
-                if let Some(k) = key
-                    && let Some((_, r, copied)) = m.done.get(&k)
-                    && !(*copied && !m.expanding.is_empty())
-                {
-                    m.copied |= *copied;
-                    return r.clone();
-                }
-                let outer = mem::replace(&mut m.copied, false);
-                let r = match t {
-                    Type::TVar(tv) => plain_ground(tv)
-                        .or_else(|| tv.binding().map(|b| instance(&b, m).unwrap_or(b))),
-                    Type::Fn(ft) => {
-                        m.copied = true;
-                        Some(Type::Fn(Arc::new(ft.instantiate(m.open))))
-                    }
-                    // a typedef's arguments stand for what its body holds:
-                    // instantiated as one, or, where the body holds two
-                    // places a copy takes apart, as its expansion would be
-                    Type::Ref(_) if t.copied_outside_functions(m.open) => {
-                        let apart =
-                            t.lookup_ref_declared(m.env).and_then(|(key, body)| match m
-                                .expanding
-                                .iter()
-                                .position(|k| *k == key)
-                            {
-                                Some(i) => {
-                                    m.cycle = m.cycle.min(i);
-                                    None
-                                }
-                                None => (m.expansions > 0
-                                    && body.copied_in_two_places(
-                                        m.env,
-                                        m.open,
-                                        &mut m.sites,
-                                    ))
-                                .then_some((key, body)),
-                            });
-                        m.copied = true;
-                        let as_one =
-                            |open| t.instantiate_with(&mut LPooled::take(), open);
-                        match apart {
-                            None => Some(as_one(m.open)),
-                            Some((key, body)) => {
-                                let depth = m.expanding.len();
-                                m.expansions -= 1;
-                                m.expanding.push(key);
-                                let r = instance(&body, m);
-                                m.expanding.pop();
-                                let cyclic = m.cycle <= depth;
-                                if m.cycle == depth {
-                                    m.cycle = usize::MAX;
-                                }
-                                match cyclic {
-                                    true => Some(as_one(m.open)),
-                                    false => Some(r.unwrap_or(body)),
-                                }
-                            }
-                        }
-                    }
-                    t => t.cow_children(&mut |c| instance(c, m)),
-                };
-                if let Some(k) = key
-                    && !(m.copied && !m.expanding.is_empty())
-                {
-                    m.done.insert(k, (t.clone(), r.clone(), m.copied));
-                }
-                m.copied |= outer;
-                r
-            })
-        }
-        let mut m = Memo {
-            open: &self.rec_defs,
-            done: LPooled::take(),
-            copied: false,
-            env: &self.env,
-            expanding: LPooled::take(),
-            cycle: usize::MAX,
-            sites: LPooled::take(),
-            expansions: MONOMORPHIC_EXPANSIONS,
-        };
-        instance(t, &mut m).unwrap_or_else(|| t.clone())
     }
 
     pub fn register_builtin<T: BuiltIn<R>>(&mut self) -> Result<()> {

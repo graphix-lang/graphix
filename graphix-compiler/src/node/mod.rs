@@ -28,7 +28,7 @@ use crate::{
         bounds::{self, Solving},
         tvar::{
             Arena, ArenaRef, AtLevel, BoundAt, InArena, InTask, Level, TaskContext,
-            TaskId, current_task, new_task,
+            TaskId, current_level, current_task, new_task,
         },
     },
 };
@@ -4314,7 +4314,7 @@ impl<R: Rt> Connect<R> {
         if !check {
             return Ok(());
         }
-        let written = &ctx.monomorphic(self.node.typ());
+        let written = &bounds::instantiate(self.node.typ(), current_level());
         let bind = match ctx.env.by_id.get(&self.id) {
             None => bail!("BUG missing bind {:?}", self.id),
             Some(bind) => bind,
@@ -4323,7 +4323,7 @@ impl<R: Rt> Connect<R> {
         // as its every instance: a copy of its type, the variables rigid
         let generic = ctx.env.poly_binds.contains(&self.id);
         let held = match generic {
-            true => ctx.monomorphic(&bind.typ),
+            true => bounds::instantiate(&bind.typ, current_level()),
             false => bind.typ.clone(),
         };
         let mut rigid: LPooled<AHashMap<usize, TVar>> = LPooled::take();
@@ -4338,11 +4338,10 @@ impl<R: Rt> Connect<R> {
                         PrintFlag::DerefTVars | PrintFlag::ReplacePrims,
                         || {
                             let (name, hint) = generic_target(&ctx.env, bind);
-                            let scheme = bind.typ.scheme_read(&ctx.rec_defs, &|_| false);
                             anyhow!(
                                 "{name} is {}, a generic binding, so what is written to \
                                  it must be as general, and {written} is not{hint}",
-                                scheme.as_ref().unwrap_or(&bind.typ)
+                                bind.typ
                             )
                         },
                     ),
@@ -4432,7 +4431,7 @@ impl<R: Rt> ConnectDeref<R> {
         if !check {
             return Ok(());
         }
-        let rhs = &ctx.monomorphic(self.rhs.typ());
+        let rhs = &bounds::instantiate(self.rhs.typ(), current_level());
         let btyp = match ctx.env.by_id.get(&self.src_id) {
             None => bail!("BUG missing bind {:?}", self.src_id),
             Some(bind) => bind.typ.clone(),

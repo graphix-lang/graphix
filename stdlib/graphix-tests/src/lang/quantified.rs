@@ -508,8 +508,11 @@ macro_rules! written_after_the_check {
         run!(
             $name,
             refused_renumbered(
-                "a declared type variable meets a value from outside the definition \
-                 that declares it ('_0)"
+                "test::m::j is fn(x: '_0: unbound within '_1: unbound) -> '_1: unbound, \
+                 a generic binding, so what is written to it must be as general, and \
+                 '_2: unbound within fn(x: '_0_1: unbound within '_1_1: unbound) -> \
+                 '_1_1: unbound is not: it holds a type variable of the code around the \
+                 write; to write it at one type, write that type on its let"
             ),
             "/test.gx" => $test,
             "/test/m.gx" => "let s = {g: |x| x}; let j = s.g"

@@ -1148,7 +1148,7 @@ impl<R: Rt> Impl<R> {
                 bail!("impl method {:?} is not a function", bind)
             };
             let prefix = format_compact!("#proto{}_{k}", self.spec.id.inner());
-            let instance = ftype.instantiate(&ctx.rec_defs);
+            let instance = ftype.instantiate(current_level());
             let types = instance.args.iter().map(|a| a.typ.clone());
             let call =
                 SynthCall::build(ctx, &scope, &prefix, *bind, &ftype, types, top_id)?;

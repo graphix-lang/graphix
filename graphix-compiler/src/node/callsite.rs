@@ -312,7 +312,7 @@ fn checked_default<R: Rt>(
     };
     let copy = match judge {
         Judge::Check(_) if node.typ().has_unbound() => {
-            Some(node.typ().instantiate_with(&mut LPooled::take(), &ctx.rec_defs))
+            Some(bounds::instantiate(node.typ(), current_level()))
         }
         Judge::Check(_) | Judge::Bind => None,
     };
@@ -978,7 +978,7 @@ fn callee_instance<R: Rt>(
     site: Option<&FnType>,
     gates: &mut LPooled<Vec<RigidGate>>,
 ) -> FnType {
-    let inst = f.typ.instantiate(&ctx.rec_defs);
+    let inst = f.typ.instantiate(current_level());
     if let Some(site) = site {
         // each argument the site passes fits the callee's parameter for it;
         // a site's own quantifiers stand for any type, so they are held
@@ -2107,7 +2107,7 @@ impl<R: Rt> CallSite<R> {
                     .with_context(|| context(&self.spec))?
                     .unwrap_or(view)
             }
-            None => f.typ.instantiate(&ctx.rec_defs),
+            None => f.typ.instantiate(current_level()),
         };
         let mode = BindMode::Dynamic(&view, self.kept.as_deref());
         let mut apply = (f.init)(scope, ctx, &mut self.arg_refs, mode, self.top_id)
@@ -4015,6 +4015,10 @@ impl<R: Rt> CallSite<R> {
     // and a call the build makes by the same in a check of its own. Re-probe under the
     // new check before closing. Eric ruled 11-17 (D47 follow-up 5, the rule review)
     // that the argument-order rules are cut, so this is likely moot.
+    // 2026-11-21 claude: FnType::instantiate now copies exactly the cells no definition
+    // owns (bounds::instantiate, Eric's one-rule ruling of 11-21) and shares every
+    // other, the same sharing this CR describes, by rule. Re-probe under the bounds
+    // check before closing.
 
     // CR claude for claude: [readability/low] Two common refusals reach here with no
     // note: `let h = mk(0); (h(1), h("s"))`, where h is one instance, and `f("s")`
