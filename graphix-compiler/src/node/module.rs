@@ -596,22 +596,6 @@ fn check_val(env: &Env, name: &str, declared: &Type, typ: &Type) -> Result<()> {
     // probe now says `val f is declared fn(x: C) -> C but implemented fn(x: C) -> C:
     // type mismatch fn(x: C) -> C does not contain fn(x: C) -> C`: the two `C` still
     // print alike.
-    // CR claude for eric: [bug/low] A val that declares `throws `E` over an
-    // implementation that throws nothing gets two verdicts. Over `let f = |x: i64|
-    // x` it passes, because the lambda's implicit throws slot is an open cell that
-    // pairs with anything, and the consumer is warned of an error nothing raises;
-    // over `let f: fn(x: i64) -> i64 = |x| x` it is refused, `the signature throws
-    // `E, the implementation throws nothing`, the one case where `nothing` sees
-    // `Bottom`. For Eric: is a val's throws exact, as its other parts are? If so,
-    // read an implicit slot still open as nothing in the val's check (a trait
-    // method's impls stay free to throw less); if not, accept the annotated form.
-    // Neither direction is pinned. probe:
-    // design/review-2026-11-16/repro/t-fntyp-val-throws-over-nothing.sh
-    // (t-fntyp-07)
-    // 2026-11-21 claude: moved here from `FnType::sig_matches_int`, deleted. The
-    // val is checked by `bounds::fits` now, and the two forms get one verdict:
-    // both pass, each warned `error `E raised from function call foo::f will not
-    // be caught`. Whether a val's throws is exact stands.
     let refused = |e: anyhow::Error| {
         let settled = match settled_note(env, &[typ]) {
             Some(n) => format_compact!(": {n}"),

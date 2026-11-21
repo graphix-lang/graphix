@@ -1465,16 +1465,58 @@ run!(
     "/test/m.gx" => "let f = |x0: [A<'a0>, B<'a1>, C<'a2>, D<'a3>, E<'a4>, f64], x1: [A<'b0>, B<'b1>, C<'b2>, D<'b3>, E<'b4>, i64], x2: [A<'c0>, B<'c1>, C<'c2>, D<'c3>, E<'c4>, i64], x3: [A<'d0>, B<'d1>, C<'d2>, D<'d3>, E<'d4>, i64]| -> i64 0"
 ; FuseExpect::None);
 
+// A val holds its implementation where the implementation fits it: a value
+// or result narrower than declared, a parameter wider, fewer throws. Every
+// module sees the declared type.
+run!(
+    a_val_wider_than_its_value_holds,
+    prints("i64:4"),
+    "/test.gx" => "mod m; let result = m::x$ + 1",
+    "/test/m.gxi" => "val x: [i64, null];",
+    "/test/m.gx" => "let x = 3"
+; FuseExpect::Jit);
+
+run!(
+    a_val_returning_wider_than_its_implementation_holds,
+    prints("i64:42"),
+    "/test.gx" => "mod m; let result = select m::f(41) { null => 0, i64 as n => n }",
+    "/test/m.gxi" => "val f: fn(x: i64) -> [i64, null];",
+    "/test/m.gx" => "let f = |x: i64| x + 1"
+; FuseExpect::Jit);
+
+run!(
+    a_val_taking_narrower_than_its_implementation_holds,
+    prints("i64:42"),
+    "/test.gx" => "mod m; let result = m::g(21)",
+    "/test/m.gxi" => "val g: fn(x: i64) -> i64;",
+    "/test/m.gx" => "let g = |x: [i64, null]| select x { null => 0, i64 as n => n * 2 }"
+; FuseExpect::Jit);
+
+run!(
+    a_native_call_through_vals_wider_than_their_implementations,
+    prints("i64:4"),
+    "/test.gx" => "mod m; let result = #[native] (m::g(m::f(1)$) + 0)",
+    "/test/m.gxi" => "val f: fn(x: i64) -> [i64, null];\nval g: fn(x: i64) -> i64;",
+    "/test/m.gx" => "let f = |x: i64| x + 1;\nlet g = |x: [i64, null]| select x { null => 0, i64 as n => n * 2 }"
+; FuseExpect::Jit);
+
+run!(
+    a_val_throwing_more_than_its_lambda_holds,
+    prints("i64:1"),
+    "/test.gx" => "mod m; let result = m::f(1)",
+    "/test/m.gxi" => "val f: fn(x: i64) -> i64 throws `E;",
+    "/test/m.gx" => "let f = |x: i64| x"
+; FuseExpect::Jit);
+
+run!(
+    a_val_throwing_more_than_its_annotated_binding_holds,
+    prints("i64:1"),
+    "/test.gx" => "mod m; let result = m::f(1)",
+    "/test/m.gxi" => "val f: fn(x: i64) -> i64 throws `E;",
+    "/test/m.gx" => "let f: fn(x: i64) -> i64 = |x| x"
+; FuseExpect::Jit);
+
 // A mismatch names the implemented type, not its cells.
-// CR claude for claude: [test-gap/medium] Nothing pins that a val declares exactly its
-// implementation's type. `val x: [i64, null]` over `let x = 3` is refused by
-// `Type::sig_matches` and checks once the let is annotated, but every refusal in this
-// file is a mismatch (f64 against i64, W<string> against W<i64>), never a declaration
-// wider than its implementation. A change that let sig_matches accept a wider
-// declaration would pass the whole suite while the skill still states the rule. Add the
-// refusal ("val x is declared [i64, null] but implemented i64") and its annotated twin,
-// and a function-result variant (`-> [i64, null]` over `|x| x + 1`). Found by reading;
-// the rule holds today (checked with --check). (tests-interfaces-image-04)
 run!(
     implemented_type_prints_resolved,
     refused("but implemented fn(x: f64) -> f64"),

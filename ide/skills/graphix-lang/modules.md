@@ -232,11 +232,11 @@ Callback parameters retain caller-dependent effects, as in ordinary definitions.
 
 ## A `val`
 
-A `val` in a `.gxi` declares exactly the type its implementation has:
-`val x: [i64, null]` over `let x = 3` is refused (`declared [i64, null]
-but implemented i64`). When a use needs the wider type, annotate the
-binding (`let x: [i64, null] = 3`); every module then sees the declared
-type, so the others take the null off with `a::x$`.
+A `val` in a `.gxi` holds an implementation that fits it: `val x: [i64,
+null]` over `let x = 3` holds, as do a function val returning more than
+its implementation (`-> [i64, null]` over `|x: i64| x + 1`), taking less
+(`x: i64` over `|x: [i64, null]| ..`) or throwing more. Every module sees
+the declared type, so the others take the null off with `a::x$`.
 A function val declares every bound its implementation needs, of a
 variable named only inside another's bound too: ``val f: fn<'a: [i64,
 string], 'b: ['a, `X]>(x: 'b) -> 'b`` over ``let f = 'a: [i64, f64], 'b:
