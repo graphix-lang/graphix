@@ -4008,7 +4008,7 @@ run!(
 
 run!(
     write_through_an_array_of_functions_val_refused,
-    refused_renumbered("val v is written, and what is written lands on its implementation, of type Array<fn(x: '_0: unbound within '_1: unbound) -> '_1: unbound>, which the val's Array<fn(x: 'a: unbound) -> 'a: unbound> does not fit: annotate the implementation's let with the val's type"),
+    refused_renumbered("test::m::v is Array<fn(x: 'a: unbound) -> 'a: unbound>, a generic binding, so what is written to it must be as general, and '_0: unbound within Array<fn(x: 'a1: unbound) -> 'a1: unbound> is not: it holds a type variable of the code around the write; to write it at one type, write that type on its let (on its val, where an interface declares it)"),
     "/test.gx" => r#"
         mod m;
         let wr = |x| { m::v <- x; x };

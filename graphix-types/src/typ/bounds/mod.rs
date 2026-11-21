@@ -1417,6 +1417,14 @@ impl Solving {
             {
                 self.unfolded(env, &a, &b)
             }
+            // a variable held rigid with lower bounds (a generic binding's
+            // copy) is at least each of them in every instance: what fits
+            // under one fits under it
+            (_, Type::TVar(w))
+                if w.cell_lower().iter().any(|l| self.attempt(env, &a, l)) =>
+            {
+                Ok(())
+            }
             // a declared variable is whatever its bounds say, and one
             // suffices
             (Type::TVar(v), _) => {
