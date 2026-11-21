@@ -950,8 +950,8 @@ fn alike(a: &Type, b: &Type) -> bool {
     }
 }
 
-fn mismatch<T>(wanted: &Type, got: &Type) -> Result<T> {
-    Err(super::contains::TypeMismatch::plain(wanted, got))
+fn mismatch<T>(env: &Env, wanted: &Type, got: &Type) -> Result<T> {
+    Err(super::contains::TypeMismatch::noting(env, wanted, got))
 }
 
 /// `f` over what the solver keeps of the cell of `v`.
@@ -1328,7 +1328,7 @@ impl Solving {
             _ if !a.has_unbound() && !b.has_unbound() && !at_bottom(&a) => {
                 return match b.contains(env, &a)? {
                     true => Ok(()),
-                    false => mismatch(&b, &a),
+                    false => mismatch(env, &b, &a),
                 };
             }
             _ => (),
@@ -1411,7 +1411,7 @@ impl Solving {
                         Ok(self.takes(v, &b))
                     }
                     (false, Type::Set(ms)) => self.below_union(env, &a, ms, &b),
-                    (false, _) => mismatch(&b, &a),
+                    (false, _) => mismatch(env, &b, &a),
                 }
             }
             (_, Type::Set(ms)) => self.below_union(env, &a, ms, &b),
@@ -1443,7 +1443,7 @@ impl Solving {
                         None => self.equal(env, &arg, y),
                     }
                 }
-                None => mismatch(&b, &a),
+                None => mismatch(env, &b, &a),
             },
             (Type::App(c, x), _) => match Type::app_split(&b, env)? {
                 Some((ctor, arg)) => {
@@ -1453,7 +1453,7 @@ impl Solving {
                         None => self.equal(env, x, &arg),
                     }
                 }
-                None => mismatch(&b, &a),
+                None => mismatch(env, &b, &a),
             },
             (Type::Map(m), Type::Map(n)) => {
                 self.constrain(env, &m.key, &n.key)?;
@@ -1484,7 +1484,7 @@ impl Solving {
             // array, whatever they are of
             (Type::Error(_), Type::Primitive(p)) if p.contains(Typ::Error) => Ok(()),
             (Type::Array(_), Type::Primitive(p)) if p.contains(Typ::Array) => Ok(()),
-            _ => mismatch(&b, &a),
+            _ => mismatch(env, &b, &a),
         }
     }
 
@@ -1732,7 +1732,7 @@ impl Solving {
             cells.iter().copied().filter(|m| self.probe(env, a, m)).collect();
         match &admit[..] {
             [m] => self.constrain(env, a, m),
-            [] => mismatch(b, a),
+            [] => mismatch(env, b, a),
             _ => Ok(self.held.push((a.clone(), b.clone(), false))),
         }
     }
@@ -1792,7 +1792,7 @@ impl Solving {
             return match (rest.is_empty(), &cells[..]) {
                 (true, _) => Ok(()),
                 (false, [m]) => self.constrain(env, &Type::Primitive(rest), m),
-                (false, []) => mismatch(b, a),
+                (false, []) => mismatch(env, b, a),
                 (false, _) if self.resolving => {
                     self.among(env, &Type::Primitive(rest), b, &cells)
                 }
@@ -1803,7 +1803,7 @@ impl Solving {
             members.iter().filter(|m| open(m).is_none() && alike(m, a)).collect();
         match (&takers[..], &cells[..]) {
             ([m], []) | ([], [m]) => self.constrain(env, a, m),
-            ([], []) => mismatch(b, a),
+            ([], []) => mismatch(env, b, a),
             // the choice is made once `a` is decided: a decided member
             // takes it or is out, and what is left takes it if it is one
             _ if self.resolving && (self.placing || !a.has_free()) => {

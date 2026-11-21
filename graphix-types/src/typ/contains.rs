@@ -798,13 +798,27 @@ impl TypeMismatch {
     }
 
     pub(crate) fn plain(expected: &Type, actual: &Type) -> anyhow::Error {
+        Self::refusing(expected, actual, None)
+    }
+
+    /// [`Self::plain`], noting the binding an earlier input settled where
+    /// a ⊥ its end settled is why `expected` refuses `actual`.
+    pub(crate) fn noting(env: &Env, expected: &Type, actual: &Type) -> anyhow::Error {
+        Self::refusing(expected, actual, settled_cause_note(env, expected, actual, false))
+    }
+
+    fn refusing(
+        expected: &Type,
+        actual: &Type,
+        settled: Option<CompactString>,
+    ) -> anyhow::Error {
         anyhow::Error::new(TypeMismatch {
             expected: expected.clone(),
             actual: actual.clone(),
             apart: None,
             kept_bare: false,
             infinite: false,
-            settled: None,
+            settled,
             unmet: None,
             undeclared: None,
             held: HeldQuantifiers::of([expected, actual]),
