@@ -398,7 +398,7 @@ fn try_register_builtin_call_from_callsite<R: Rt>(
                 written_types.push(arg_typ);
                 marshal_args.push(MarshalArg::Call(*call_idx));
             }
-            FnArgKind::Labeled { name, has_default } => {
+            FnArgKind::Labeled { name, default } => {
                 // A fast fn sees the buffer as the whole argument list,
                 // so an unwritten label marshals the compiled default.
                 let (source, arg_typ) = match call_labeled.remove(name.as_str()) {
@@ -409,7 +409,7 @@ fn try_register_builtin_call_from_callsite<R: Rt>(
                             .unwrap_or_else(|| fa.typ.clone()),
                     ),
                     None => {
-                        if !*has_default {
+                        if default.is_none() {
                             return None;
                         }
                         let Some(n) = cs.arg_named(name) else { return None };

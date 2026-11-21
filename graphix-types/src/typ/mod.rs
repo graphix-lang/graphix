@@ -64,8 +64,8 @@ pub use tval::member_of;
 pub mod tvar;
 
 pub use fntyp::{
-    FnArgKind, FnArgType, FnType, ParseDepth, check_bounds_acyclic, declared_name,
-    seed_conjuncts, written_name,
+    DefaultType, FnArgKind, FnArgType, FnType, ParseDepth, check_bounds_acyclic,
+    declared_name, seed_conjuncts, written_name,
 };
 pub use tval::{Naked, NakedPrefix, PlainScalar, TVal};
 pub use tvar::TVar;
@@ -248,9 +248,15 @@ impl Type {
                             out.push(1);
                             text_words(n, out)
                         }
-                        FnArgKind::Labeled { name, has_default } => {
-                            out.extend([2, *has_default as usize]);
-                            text_words(name, out)
+                        FnArgKind::Labeled { name, default } => {
+                            let own = default.as_ref().and_then(|d| d.own());
+                            let kind =
+                                default.is_some() as usize + own.is_some() as usize;
+                            out.extend([2, kind]);
+                            text_words(name, out);
+                            if let Some(d) = own {
+                                d.key_words(out, walk)
+                            }
                         }
                     }
                     a.typ.key_words(out, walk)

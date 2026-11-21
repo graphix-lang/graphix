@@ -680,9 +680,11 @@ fn typexp() -> impl Strategy<Value = Type> {
                     let args =
                         args.into_iter().map(|(label, pos_name, optional, typ)| {
                             let kind = match label {
-                                Some(n) => {
-                                    FnArgKind::Labeled { name: n, has_default: optional }
-                                }
+                                Some(n) => FnArgKind::Labeled {
+                                    name: n,
+                                    default: optional
+                                        .then_some(crate::typ::DefaultType::Param),
+                                },
                                 None => FnArgKind::Positional { name: Some(pos_name) },
                             };
                             FnArgType { kind, typ }

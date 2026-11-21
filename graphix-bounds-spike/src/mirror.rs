@@ -17,7 +17,8 @@ use graphix_types::{
     env::{ImplDef, TraitMethodSig},
     expr::{ModPath, TraitMethod, TypeDefBody, WrittenAt, parser::parse_type},
     typ::{
-        Bound, FnArgKind, FnArgType, FnType, MapType, Mutability, TVar, Type,
+        Bound, DefaultType, FnArgKind, FnArgType, FnType, MapType, Mutability, TVar,
+        Type,
         bounds::{self, Solving, Use, union_of},
         tvar::{AtLevel, Level, RigidGate},
     },
@@ -145,14 +146,16 @@ impl Mirror {
     }
 
     fn fn_typ(&mut self, s: &Solver, ft: &FnTy) -> FnType {
-        let args = ft.args.iter().map(|a| FnArgType {
-            kind: match &a.label {
+        let args = ft.args.iter().map(|a| {
+            let typ = self.typ(s, &a.ty);
+            let kind = match &a.label {
                 None => FnArgKind::Positional { name: None },
-                Some(name) => {
-                    FnArgKind::Labeled { name: name.clone(), has_default: a.optional }
-                }
-            },
-            typ: self.typ(s, &a.ty),
+                Some(name) => FnArgKind::Labeled {
+                    name: name.clone(),
+                    default: a.optional.then_some(DefaultType::Param),
+                },
+            };
+            FnArgType { kind, typ }
         });
         let args: Vec<FnArgType> = args.collect();
         FnType {
@@ -503,9 +506,12 @@ impl Mirror {
             Watch::Field { field, out } => {
                 Use::Field { field: field.clone(), out: self.typ(s, out), write: false }
             }
-            Watch::Index { i, out } => {
-                Use::Index { i: *i, out: self.typ(s, out), write: false, from: ModPath::root() }
-            }
+            Watch::Index { i, out } => Use::Index {
+                i: *i,
+                out: self.typ(s, out),
+                write: false,
+                from: ModPath::root(),
+            },
             Watch::Call { args, out } => Use::Call {
                 args: args.iter().map(|(l, t, _)| (l.clone(), self.typ(s, t))).collect(),
                 out: self.typ(s, out),

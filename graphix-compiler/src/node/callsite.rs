@@ -830,10 +830,10 @@ fn walk_step() {
 /// positional count, is refused.
 fn fill_omitted<R: Rt>(args: &mut ArgMap<R>, ftype: &FnType) -> Result<()> {
     for arg in ftype.args.iter() {
-        if let FnArgKind::Labeled { name, has_default } = &arg.kind {
+        if let FnArgKind::Labeled { name, default } = &arg.kind {
             match args.entry(ArgKey::Named(name.clone())) {
                 ArgEntry::Occupied(_) => (),
-                ArgEntry::Vacant(e) if *has_default => {
+                ArgEntry::Vacant(e) if default.is_some() => {
                     let nop = Nop::new(arg.typ.clone());
                     e.insert(Arg::new(
                         BindId::new(),
@@ -3700,7 +3700,7 @@ impl<R: Rt> CallSite<R> {
         let receiver = before.iter().filter(|a| a.is_positional()).count();
         let of = args.iter().filter(|(l, _)| l.is_none()).nth(receiver)?.1.clone();
         let left = ft.args.iter().filter_map(|a| match &a.kind {
-            FnArgKind::Labeled { name, has_default: true }
+            FnArgKind::Labeled { name, default: Some(_) }
                 if !args.iter().any(|(l, _)| l.as_ref() == Some(name)) =>
             {
                 Some((name.clone(), a.typ.clone()))
@@ -3997,7 +3997,7 @@ impl<R: Rt> CallSite<R> {
             args: TArc::from_iter(args.iter().map(|(label, typ)| FnArgType {
                 kind: match label {
                     Some(name) => {
-                        FnArgKind::Labeled { name: name.clone(), has_default: false }
+                        FnArgKind::Labeled { name: name.clone(), default: None }
                     }
                     None => FnArgKind::Positional { name: None },
                 },

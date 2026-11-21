@@ -785,8 +785,8 @@ impl Checker {
         for a in ft.args.iter() {
             let (label, optional) = match &a.kind {
                 FnArgKind::Positional { .. } => (None, false),
-                FnArgKind::Labeled { name, has_default } => {
-                    (Some(name.clone()), *has_default)
+                FnArgKind::Labeled { name, default } => {
+                    (Some(name.clone()), default.is_some())
                 }
             };
             args.push(FnArg { label, optional, ty: self.conv(&a.typ, module)? })

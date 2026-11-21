@@ -1719,8 +1719,8 @@ impl Solving {
         };
         let labeled = |ft: &FnType| -> SmallVec<[(ArcStr, bool, Type); 4]> {
             let args = ft.args.iter().filter_map(|a| match &a.kind {
-                FnArgKind::Labeled { name, has_default } => {
-                    Some((name.clone(), *has_default, a.typ.clone()))
+                FnArgKind::Labeled { name, default } => {
+                    Some((name.clone(), default.is_some(), a.typ.clone()))
                 }
                 FnArgKind::Positional { .. } => None,
             });
@@ -5025,8 +5025,8 @@ impl Solving {
         out: &Type,
     ) -> Result<()> {
         let labeled = |a: &FnArgType| match &a.kind {
-            FnArgKind::Labeled { name, has_default } => {
-                Some((name.clone(), *has_default))
+            FnArgKind::Labeled { name, default } => {
+                Some((name.clone(), default.is_some()))
             }
             FnArgKind::Positional { .. } => None,
         };

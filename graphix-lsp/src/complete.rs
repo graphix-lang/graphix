@@ -47,8 +47,8 @@ fn call_snippet(name: &str, fnt: &FnType) -> String {
     for arg in fnt.args.iter() {
         let sep = if n == 0 { "" } else { ", " };
         match &arg.kind {
-            FnArgKind::Labeled { has_default: true, .. } => continue,
-            FnArgKind::Labeled { name, has_default: false } => {
+            FnArgKind::Labeled { default: Some(_), .. } => continue,
+            FnArgKind::Labeled { name, default: None } => {
                 let _ = write!(body, "{sep}#{name}: ${{{}:{name}}}", n + 1);
             }
             FnArgKind::Positional { name: Some(name) } => {

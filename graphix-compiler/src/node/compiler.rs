@@ -718,7 +718,7 @@ pub(super) fn eta_dispatcher<R: Rt>(
     // the default of an optional label is each impl's, which no value of
     // the method can give
     if let Some(label) = ft.args.iter().find_map(|a| match &a.kind {
-        crate::typ::FnArgKind::Labeled { name, has_default: true } => Some(name),
+        crate::typ::FnArgKind::Labeled { name, default: Some(_) } => Some(name),
         _ => None,
     }) {
         bailat!(

@@ -2173,17 +2173,46 @@
           "type": "SEQ",
           "members": [
             {
+              "type": "SYMBOL",
+              "name": "fn_type_label"
+            },
+            {
+              "type": "SYMBOL",
+              "name": "_type"
+            },
+            {
               "type": "CHOICE",
               "members": [
                 {
-                  "type": "SYMBOL",
-                  "name": "fn_type_label"
+                  "type": "SEQ",
+                  "members": [
+                    {
+                      "type": "STRING",
+                      "value": "="
+                    },
+                    {
+                      "type": "FIELD",
+                      "name": "default",
+                      "content": {
+                        "type": "SYMBOL",
+                        "name": "_type"
+                      }
+                    }
+                  ]
                 },
                 {
-                  "type": "SYMBOL",
-                  "name": "fn_type_arg_name"
+                  "type": "BLANK"
                 }
               ]
+            }
+          ]
+        },
+        {
+          "type": "SEQ",
+          "members": [
+            {
+              "type": "SYMBOL",
+              "name": "fn_type_arg_name"
             },
             {
               "type": "SYMBOL",

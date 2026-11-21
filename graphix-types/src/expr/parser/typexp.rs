@@ -15,8 +15,8 @@ use crate::{
         TypeNote, TypeNotes, WrittenAt, WrittenPath, get_origin, noted_items,
     },
     typ::{
-        Bound, FnArgKind, FnArgType, FnType, ParseDepth, QUANTIFIED_FN, TVar, Type,
-        TypeRef, check_bounds_acyclic, declared_name, written_name,
+        Bound, DefaultType, FnArgKind, FnArgType, FnType, ParseDepth, QUANTIFIED_FN,
+        TVar, Type, TypeRef, check_bounds_acyclic, declared_name, written_name,
     },
 };
 use arcstr::{ArcStr, literal};
@@ -148,16 +148,33 @@ fn fnconstraints(i: &mut Input, nest: &ParseDepth) -> R<LPooled<Vec<(TVar, Type)
     })
 }
 
+/// The refusal of a default's type on a label a call may not leave out.
+const DEFAULT_TYPE: &str = "only a label a call may leave out (`?#d: T = D`) writes the \
+     type of its default";
+
 fn fnlabeled(i: &mut Input) -> R<FnArgType> {
     let optional =
         choice!(i, |i| i.string("?#").map(|_| true), |i| i.string("#").map(|_| false))?;
     let name = fname(i)?;
     i.sptoken(':')?;
     let typ = typ(i)?;
-    Ok(FnArgType {
-        kind: FnArgKind::Labeled { name: name.into(), has_default: optional },
-        typ,
-    })
+    // `?#d: T = D`: what a call that leaves the label out passes is a D
+    let written = i.optional(|i| {
+        i.attempt(|i| i.sptoken('='))?;
+        let at = i.pos();
+        match optional {
+            true => crate::expr::parser::typexp::typ(i),
+            false => {
+                i.g.note_reason(at, None, || CompactString::const_new(DEFAULT_TYPE));
+                Err(i.because(DEFAULT_TYPE))
+            }
+        }
+    })?;
+    let default = optional.then(|| match written {
+        Some(d) if d != typ => DefaultType::Of(d),
+        Some(_) | None => DefaultType::Param,
+    });
+    Ok(FnArgType { kind: FnArgKind::Labeled { name: name.into(), default }, typ })
 }
 
 fn fnpositional(i: &mut Input) -> R<FnArgType> {

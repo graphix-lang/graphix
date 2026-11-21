@@ -37,12 +37,43 @@ use triomphe::Arc;
 
 /// Positional or labeled function argument. A positional name is
 /// documentation only (not part of type identity); a label is the
-/// call-site key, and `has_default` is part of the type's shape.
+/// call-site key. A labeled argument a call may leave out has a
+/// `default`: the type of the value a call that leaves it out passes in
+/// its place, as if the caller had written it. It is part of the type.
 #[derive(Debug, Clone, Pack)]
 #[pack(unwrapped)]
 pub enum FnArgKind {
     Positional { name: Option<ArcStr> },
-    Labeled { name: ArcStr, has_default: bool },
+    Labeled { name: ArcStr, default: Option<DefaultType> },
+}
+
+/// The type of what a call that leaves a label out passes.
+#[derive(Debug, Clone, Pack, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[pack(unwrapped)]
+pub enum DefaultType {
+    /// The parameter's own: a written `?#d: T`.
+    Param,
+    /// A type of its own: a definition's default's, or a written
+    /// `?#d: T = D`'s.
+    Of(Type),
+}
+
+impl DefaultType {
+    /// The type a call that leaves the label out passes to `param`.
+    pub fn of<'a>(&'a self, param: &'a Type) -> &'a Type {
+        match self {
+            DefaultType::Param => param,
+            DefaultType::Of(t) => t,
+        }
+    }
+
+    /// The type of its own, where it has one.
+    pub fn own(&self) -> Option<&Type> {
+        match self {
+            DefaultType::Param => None,
+            DefaultType::Of(t) => Some(t),
+        }
+    }
 }
 
 impl FnArgKind {
@@ -69,7 +100,20 @@ impl FnArgKind {
     }
 
     pub fn has_default(&self) -> bool {
-        matches!(self, FnArgKind::Labeled { has_default: true, .. })
+        self.default().is_some()
+    }
+
+    /// What a call that leaves the label out passes.
+    pub fn default(&self) -> Option<&DefaultType> {
+        match self {
+            FnArgKind::Labeled { default, .. } => default.as_ref(),
+            FnArgKind::Positional { .. } => None,
+        }
+    }
+
+    /// The default's type where it is one of its own ([`DefaultType::Of`]).
+    pub fn own_default(&self) -> Option<&Type> {
+        self.default().and_then(DefaultType::own)
     }
 }
 
@@ -78,8 +122,8 @@ impl PartialEq for FnArgKind {
         match (self, other) {
             (FnArgKind::Positional { .. }, FnArgKind::Positional { .. }) => true,
             (
-                FnArgKind::Labeled { name: n0, has_default: d0 },
-                FnArgKind::Labeled { name: n1, has_default: d1 },
+                FnArgKind::Labeled { name: n0, default: d0 },
+                FnArgKind::Labeled { name: n1, default: d1 },
             ) => n0 == n1 && d0 == d1,
             _ => false,
         }
@@ -105,8 +149,8 @@ impl Ord for FnArgKind {
                 Ordering::Greater
             }
             (
-                FnArgKind::Labeled { name: n0, has_default: d0 },
-                FnArgKind::Labeled { name: n1, has_default: d1 },
+                FnArgKind::Labeled { name: n0, default: d0 },
+                FnArgKind::Labeled { name: n1, default: d1 },
             ) => n0.cmp(n1).then_with(|| d0.cmp(d1)),
         }
     }
@@ -116,10 +160,10 @@ impl Hash for FnArgKind {
     fn hash<H: Hasher>(&self, state: &mut H) {
         match self {
             FnArgKind::Positional { .. } => 0u8.hash(state),
-            FnArgKind::Labeled { name, has_default } => {
+            FnArgKind::Labeled { name, default } => {
                 1u8.hash(state);
                 name.hash(state);
-                has_default.hash(state);
+                default.hash(state);
             }
         }
     }
@@ -938,10 +982,17 @@ impl FnType {
                         }
                     }
                 }
-                FnArgKind::Labeled { name, has_default } => {
+                FnArgKind::Labeled { name, default } => {
                     out.put_u8(1);
                     key_text(name, out);
-                    out.put_u8(*has_default as u8);
+                    match default {
+                        None => out.put_u8(0),
+                        Some(DefaultType::Param) => out.put_u8(1),
+                        Some(DefaultType::Of(d)) => {
+                            out.put_u8(2);
+                            d.content_key(out)
+                        }
+                    }
                 }
             }
             a.typ.content_key(out);
@@ -1057,7 +1108,22 @@ impl FnType {
         let Self { args, vargs, rtype, throws, explicit_throws, quantifiers, lambda_ids } =
             self;
         let new_args = Type::cow_slice(args, |a| {
-            f(&a.typ).map(|typ| FnArgType { kind: a.kind.clone(), typ })
+            let typ = f(&a.typ);
+            let kind = match &a.kind {
+                FnArgKind::Labeled { name, default: Some(DefaultType::Of(d)) } => f(d)
+                    .map(|d| FnArgKind::Labeled {
+                        name: name.clone(),
+                        default: Some(DefaultType::Of(d)),
+                    }),
+                FnArgKind::Labeled { .. } | FnArgKind::Positional { .. } => None,
+            };
+            match (typ, kind) {
+                (None, None) => None,
+                (typ, kind) => Some(FnArgType {
+                    kind: kind.unwrap_or_else(|| a.kind.clone()),
+                    typ: typ.unwrap_or_else(|| a.typ.clone()),
+                }),
+            }
         });
         let new_vargs = vargs.as_ref().and_then(&mut f);
         let new_rtype = f(rtype);
@@ -1102,6 +1168,9 @@ impl FnType {
         } = self;
         for arg in args.iter() {
             f(&arg.typ)?;
+            if let Some(d) = arg.kind.own_default() {
+                f(d)?;
+            }
         }
         if let Some(t) = vargs {
             f(t)?;
@@ -1148,7 +1217,10 @@ impl FnType {
             lambda_ids: _,
         } = self;
         for arg in args.iter() {
-            f(cx, &arg.typ, false)
+            f(cx, &arg.typ, false);
+            if let Some(d) = arg.kind.own_default() {
+                f(cx, d, false)
+            }
         }
         if let Some(vargs) = vargs {
             f(cx, vargs, false)
@@ -1677,14 +1749,20 @@ fn printed_quantifiers(ft: &FnType) -> LPooled<Vec<(TVar, Type)>> {
     v
 }
 
+/// The default's type an argument prints after its own: where it is not
+/// the argument's type, which a written `?#d: T` means.
+fn written_default(a: &FnArgType) -> Option<&Type> {
+    a.kind.own_default().filter(|d| **d != a.typ)
+}
+
 /// How an argument's name is written before its type.
 struct ArgPrefix<'a>(&'a FnArgKind);
 
 impl fmt::Display for ArgPrefix<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.0 {
-            FnArgKind::Labeled { name, has_default: true } => write!(f, "?#{name}: "),
-            FnArgKind::Labeled { name, has_default: false } => write!(f, "#{name}: "),
+            FnArgKind::Labeled { name, default: Some(_) } => write!(f, "?#{name}: "),
+            FnArgKind::Labeled { name, default: None } => write!(f, "#{name}: "),
             FnArgKind::Positional { name: Some(n) } => write!(f, "{n}: "),
             // CR claude for claude: [readability/low] A positional parameter with no
             // name (a pattern or `_` parameter) prints as its type alone, `fn((i64,
@@ -1793,6 +1871,9 @@ impl FnType {
                 write!(f, "{}", a.typ)?;
             } else {
                 write!(f, "{}{}", ArgPrefix(&a.kind), a.typ)?;
+                if let Some(d) = written_default(a) {
+                    write!(f, " = {d}")?;
+                }
             }
             if i < self.args.len() - 1 || self.vargs.is_some() {
                 write!(f, ", ")?;
@@ -1858,6 +1939,11 @@ impl FnType {
                 } else {
                     write!(buf, "{}", ArgPrefix(&a.kind))?;
                     a.typ.fmt_pretty(buf)?;
+                    if let Some(d) = written_default(a) {
+                        buf.kill_newline();
+                        write!(buf, " = ")?;
+                        d.fmt_pretty(buf)?;
+                    }
                 }
                 if i < self.args.len() - 1 || self.vargs.is_some() {
                     buf.kill_newline();

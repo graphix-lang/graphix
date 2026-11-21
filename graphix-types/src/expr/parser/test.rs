@@ -5,7 +5,7 @@ use crate::{
         ModuleKind, SelectExpr, SigKind, StructExpr, StructurePattern, TypeDefBody,
         UseItem, WrittenAt, print::PrettyDisplay,
     },
-    typ::{FnArgKind, FnArgType, Mutability, TVar, Type, TypeRef},
+    typ::{DefaultType, FnArgKind, FnArgType, Mutability, TVar, Type, TypeRef},
 };
 use arcstr::literal;
 use netidx_value::Typ;
@@ -1521,15 +1521,21 @@ fn labeled_argument_lambda() {
         typ: Some(Type::Fn(Arc::new(FnType {
             args: Arc::from_iter([
                 FnArgType {
-                    kind: FnArgKind::Labeled { name: "foo".into(), has_default: true },
+                    kind: FnArgKind::Labeled {
+                        name: "foo".into(),
+                        default: Some(DefaultType::Param),
+                    },
                     typ: tref("Number"),
                 },
                 FnArgType {
-                    kind: FnArgKind::Labeled { name: "bar".into(), has_default: true },
+                    kind: FnArgKind::Labeled {
+                        name: "bar".into(),
+                        default: Some(DefaultType::Param),
+                    },
                     typ: Type::Primitive(Typ::String.into()),
                 },
                 FnArgType {
-                    kind: FnArgKind::Labeled { name: "a".into(), has_default: false },
+                    kind: FnArgKind::Labeled { name: "a".into(), default: None },
                     typ: Type::Any,
                 },
                 FnArgType {
@@ -2891,6 +2897,24 @@ fn a_quantified_signature_inside_another_is_refused() {
     ] {
         parse_one(src).unwrap_or_else(|e| panic!("{src}: {e:#}"));
     }
+}
+
+/// A label a call may leave out writes the type of its default after its
+/// own; one equal to the label's type is not printed, and a label a call
+/// must pass writes none.
+#[test]
+fn a_default_type_is_written_on_an_optional_label() {
+    for src in [
+        "type F = fn(?#d: 'a = i64, x: i64) -> 'a",
+        "type F = fn(?#d: [i64, string] = i64, x: i64) -> [i64, string]",
+    ] {
+        assert_eq!(parse_one(src).unwrap().to_string(), src);
+    }
+    let same = parse_one("type F = fn(?#d: i64 = i64, x: i64) -> i64").unwrap();
+    assert_eq!(same.to_string(), "type F = fn(?#d: i64, x: i64) -> i64");
+    let src = "type F = fn(#d: i64 = i64, x: i64) -> i64";
+    let msg = format!("{:#}", parse_one(src).unwrap_err());
+    assert!(msg.contains("only a label a call may leave out"), "{msg}");
 }
 
 /// A refusal reads as its reason: the token after the refused fn type is

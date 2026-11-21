@@ -33,8 +33,8 @@ use crate::{
     reference::{Captures, Lives},
     stack::ensure_sufficient,
     typ::{
-        FnArgKind, FnArgType, FnType, ResolvedRef, TVar, TraitId, Type, TypeMismatch,
-        bounds, check_bounds_acyclic,
+        DefaultType, FnArgKind, FnArgType, FnType, ResolvedRef, TVar, TraitId, Type,
+        TypeMismatch, bounds, check_bounds_acyclic,
         tvar::{AtLevel, Declaring, InTask, Level, RigidGate, TaskId, current_level},
     },
     wrap,
@@ -2746,6 +2746,10 @@ impl Lambda {
         }
         let typ = {
             let args = Arc::from_iter(argspec.iter().map(|a| {
+                let typ = match a.constraint.as_ref() {
+                    Some(t) => t.clone(),
+                    None => Type::empty_tvar(),
+                };
                 let kind = match (&a.kind, a.pattern.single_bind()) {
                     (ArgKind::Positional, name) => {
                         FnArgKind::Positional { name: name.cloned() }
@@ -2753,12 +2757,8 @@ impl Lambda {
                     (_, None) => FnArgKind::Positional { name: None },
                     (kind, Some(name)) => FnArgKind::Labeled {
                         name: name.clone(),
-                        has_default: kind.default().is_some(),
+                        default: kind.default().map(|_| DefaultType::Param),
                     },
-                };
-                let typ = match a.constraint.as_ref() {
-                    Some(t) => t.clone(),
-                    None => Type::empty_tvar(),
                 };
                 FnArgType { kind, typ }
             }));
