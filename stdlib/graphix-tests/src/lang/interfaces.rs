@@ -4186,3 +4186,38 @@ run!(
     "/test/m.gxi" => "val c: {f: fn(x: 'a) -> 'a, n: i64}",
     "/test/m.gx" => "let c = {f: |x| x, n: 0}"
 ; FuseExpect::None);
+
+// A val whose signature and implementation hold unions of open variables
+// over shared parameters is judged at once: each of the implementation's
+// variables may stand for a union of the signature's.
+run!(
+    a_val_over_three_unions_of_shared_variables_checks_at_once,
+    prints("i64:0"),
+    "/test.gx" => "mod m; let result = m::f(1, [1], [1], [1])",
+    "/test/m.gxi" => r#"type U<'a, 'b, 'c, 'd, 'e, 'f> = [Array<'a>, Array<'b>, Array<'c>, Array<'d>, Array<'e>, Array<'f>];
+type V<'a, 'b, 'c, 'd, 'e, 'f> = [Array<'a>, Array<'b>, Array<'c>, Array<'d>, Array<'e>, Array<'f>];
+val f: fn(w: 'g, x: U<'a, 'b, 'c, 'd, 'e, 'f>, y: U<'a, 'b, 'c, 'd, 'e, 'f>, z: U<'a, 'b, 'c, 'd, 'e, 'f>) -> i64;"#,
+    "/test/m.gx" => r#"let f = |w: 'p1, x: V<'p1, 'p2, 'p3, 'p4, 'p5, 'p6>, y: V<'p2, 'q2, 'q3, 'q4, 'q5, 'q6>, z: V<'p3, 'r2, 'r3, 'r4, 'r5, 'r6>| 0"#;
+    FuseExpect::Jit
+);
+
+// A val's bound that crosses nine names is the implementation's bound
+// written out.
+run!(
+    a_val_bound_through_nine_names_holds_the_implementation,
+    prints("i64:1"),
+    "/test.gx" => "mod m; let result = 1",
+    "/test/m.gxi" => r#"type T0<'a> = {v: 'a};
+type T1<'a> = {v: T0<'a>};
+type T2<'a> = {v: T1<'a>};
+type T3<'a> = {v: T2<'a>};
+type T4<'a> = {v: T3<'a>};
+type T5<'a> = {v: T4<'a>};
+type T6<'a> = {v: T5<'a>};
+type T7<'a> = {v: T6<'a>};
+type T8<'a> = {v: T7<'a>};
+type T9<'a> = {v: T8<'a>};
+val f: fn<'b: T9<'a>>(x: 'b) -> 'b;"#,
+    "/test/m.gx" => r#"let f = 'q: {v: {v: {v: {v: {v: {v: {v: {v: {v: {v: ['p, null]}}}}}}}}}} |x: 'q| -> 'q x"#;
+    FuseExpect::None
+);

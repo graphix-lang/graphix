@@ -137,17 +137,6 @@ impl TVar {
         }
         Ok(Err(candidates))
     }
-
-    /// What [`Self::settle_bounds_first`] binds the cell to, its
-    /// [own witness]; `None` where it leaves the cell open.
-    ///
-    /// [own witness]: Self::own_witness
-    pub(super) fn bounds_witness(&self, env: &Env) -> Option<Type> {
-        match self.own_witness(env) {
-            Ok(Ok(Witness::Lower(w) | Witness::Conjunct(w))) => Some(w),
-            _ => None,
-        }
-    }
 }
 
 impl Type {

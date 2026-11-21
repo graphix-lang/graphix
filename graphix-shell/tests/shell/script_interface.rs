@@ -90,7 +90,7 @@ async fn contradicting_definitions_are_refused() -> Result<()> {
              impl<'a: Show> Show for Array<'a> { let show = |xs| \"arr\" };\nShow::show([1])\n",
             "trait Show { val show: fn(self) -> string };\n\
              impl<'a> Show for Array<'a>;\n",
-            "the implementation requires 'a: Show, which the signature does not declare",
+            "does not implement the declared impl Show for Array<'a>: 'a does not implement Show",
         ),
     ];
     for (gx, gxi, refusal) in cases {

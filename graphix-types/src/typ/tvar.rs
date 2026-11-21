@@ -1634,58 +1634,6 @@ pub struct TCell {
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(size_of::<TCell>() <= 216);
 
-/// What [`Type::tvar_occurrences`] found: each variable met, once, and
-/// which cells occur more than once, a shared node's cells once per sight.
-#[derive(Default)]
-pub(crate) struct Occurrences {
-    pub(crate) vars: Vec<TVar>,
-    /// Each cell met, and whether it occurs more than once.
-    many: AHashMap<usize, bool>,
-    /// The cells in the order first met.
-    trail: Vec<usize>,
-    /// Per place in `trail`, a place at or after it that no
-    /// `met_again` has marked: an unmarked place names itself.
-    unmarked: Vec<usize>,
-    /// Per shared node walked, the span of `trail` its walk first met.
-    nodes: AHashMap<usize, (usize, usize)>,
-}
-
-impl Occurrences {
-    fn met(&mut self, cell: usize) {
-        match self.many.entry(cell) {
-            Entry::Occupied(mut e) => *e.get_mut() = true,
-            Entry::Vacant(e) => {
-                e.insert(false);
-                self.unmarked.push(self.trail.len());
-                self.trail.push(cell);
-            }
-        }
-    }
-
-    /// A node met again: every cell its walk first met occurs again, each
-    /// place of `trail` marked once whatever the spans that hold it.
-    fn met_again(&mut self, (start, end): (usize, usize)) {
-        let mut i = self.first_unmarked(start);
-        while i < end {
-            self.many.insert(self.trail[i], true);
-            self.unmarked[i] = i + 1;
-            i = self.first_unmarked(i + 1);
-        }
-    }
-
-    fn first_unmarked(&mut self, i: usize) -> usize {
-        let mut root = i;
-        while root < self.unmarked.len() && self.unmarked[root] != root {
-            root = self.unmarked[root];
-        }
-        let mut j = i;
-        while j < root {
-            j = mem::replace(&mut self.unmarked[j], root);
-        }
-        root
-    }
-}
-
 /// A judgment of a ground cell's binding the cell keeps
 /// ([`TVar::ground_verdict`], [`TVar::ground_holds`]).
 #[doc(hidden)]
@@ -2323,25 +2271,6 @@ impl TVar {
         let f = Self::empty_named(self.name.clone());
         f.set_level(self.level());
         f
-    }
-
-    /// Give `copy`, an empty cell a probe alone reads, this cell's
-    /// conjuncts and lower bounds, each through `image`, and its facts. No
-    /// cell they reach is claimed at the copy's level.
-    pub(super) fn copy_bounds_into(&self, copy: &Self, image: impl Fn(&Type) -> Type) {
-        let (constraints, lower, facts, naming) = {
-            let cell = self.cell();
-            let c = cell.read();
-            (c.constraints.clone(), c.lower.clone(), c.facts, c.naming.clone())
-        };
-        let constraints: SmallVec<[Type; 1]> = constraints.iter().map(&image).collect();
-        let lower: SmallVec<[Type; 1]> = lower.iter().map(&image).collect();
-        let cell = copy.cell();
-        let mut c = cell.write();
-        c.constraints.extend(constraints);
-        c.lower.extend(lower);
-        c.facts |= facts;
-        c.naming = naming.copied_into(&c.naming);
     }
 
     /// Mark a generic cell a written type's own ([`Level::Written`]).
@@ -3840,37 +3769,6 @@ impl Type {
         })
     }
 
-    /// The rigid open member of `self` read as a union whose declaring
-    /// the member predicate `c` (`OneNumber`, `NoError`) makes `c` hold of
-    /// the union against a fixed signature: `None` where another member
-    /// fails `c` whatever the variables declare.
-    pub(crate) fn rigid_member_to_declare(
-        &self,
-        env: &Env,
-        c: &Type,
-    ) -> Result<Option<TVar>> {
-        let one_number = matches!(c, Type::Bound(Bound::OneNumber));
-        let mut parts = UnionParts::new(match one_number {
-            true => Measure::Numbers,
-            false => Measure::Members,
-        });
-        self.union_parts(Some((env, false)), &mut parts)?;
-        let mut rigid = parts.open.iter().filter(|tv| tv.is_rigid());
-        let Some(first) = rigid.next() else { return Ok(None) };
-        let enough = match one_number {
-            true => parts.known == 0 && rigid.all(|tv| tv.same_cell(first)),
-            false => !self.may_be_error(env, false, false)?,
-        };
-        if enough {
-            for tv in parts.open.iter().filter(|tv| tv.is_rigid()) {
-                if !tv.conjunct_implies(env, c)? {
-                    return Ok(Some(tv.clone()));
-                }
-            }
-        }
-        Ok(None)
-    }
-
     /// The open members of a `NoError` cell's binding are each `NoError`.
     fn require_no_error(&self, hand: &mut dyn FnMut(&TVar, Type)) {
         let mut parts = UnionParts::new(Measure::Members);
@@ -4090,35 +3988,6 @@ impl Type {
             },
             Type::Fn(ft) => ft.for_each_part(&mut |t, _| t.drop_bounds()),
             t => t.for_each_child(&mut |c| c.drop_bounds()),
-        })
-    }
-
-    /// Every type variable the structure holds, bindings not entered,
-    /// with how often each cell occurs; a shared node is walked once.
-    pub(crate) fn tvar_occurrences(&self, out: &mut Occurrences) {
-        ensure_sufficient(|| match self {
-            Type::TVar(tv) => {
-                out.vars.push(tv.clone());
-                out.met(tv.cell_addr());
-            }
-            t => {
-                if let Some(n) = super::node_addr(t) {
-                    if let Some(span) = out.nodes.get(&n).copied() {
-                        out.met_again(span);
-                        return;
-                    }
-                    let start = out.trail.len();
-                    match t {
-                        Type::Fn(ft) => {
-                            ft.for_each_part(&mut |t, _| t.tvar_occurrences(out))
-                        }
-                        t => t.for_each_child(&mut |c| c.tvar_occurrences(out)),
-                    }
-                    out.nodes.insert(n, (start, out.trail.len()));
-                    return;
-                }
-                t.for_each_child(&mut |c| c.tvar_occurrences(out))
-            }
         })
     }
 

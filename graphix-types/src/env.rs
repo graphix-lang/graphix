@@ -3930,9 +3930,7 @@ impl Env {
             ))
         };
         let (was, now) = (shape(&old.params, &old.rep), shape(params, rep));
-        old.params.len() == params.len()
-            && was.sig_matches(self, &now).is_ok()
-            && now.sig_matches(self, &was).is_ok()
+        old.params.len() == params.len() && was.same_up_to_renaming(self, &now)
     }
 
     /// Resolve the names the abstract typedef `name` at `scope` writes in

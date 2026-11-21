@@ -446,6 +446,22 @@ pub(super) fn renames(env: &Env, t0: &Type, t1: &Type) -> bool {
     .same(t0, t1)
 }
 
+impl Type {
+    /// Whether `self` and `other` are one type but for the names of their
+    /// variables: each open cell of one pairs with one of the other
+    /// throughout, under the same bounds, and a name means what its
+    /// definition expands to.
+    pub fn same_up_to_renaming(&self, env: &Env, other: &Type) -> bool {
+        Identity {
+            env: Some(env),
+            pairs: Some(SmallVec::new()),
+            expanding: Some(SmallVec::new()),
+            ..Identity::new(None, &mut NodePairs::default())
+        }
+        .same(self, other)
+    }
+}
+
 /// What a union's collapse of its members carries: the alternatives of the
 /// join it is for, and the first ambiguity it met.
 #[derive(Default)]
@@ -653,6 +669,11 @@ struct Identity<'a> {
     settled: Option<&'a mut Settled>,
     /// The pair being walked has read a cell so far.
     read_cell: bool,
+    /// Where two names mean different definitions, the pairs of
+    /// definitions whose expansions are being compared
+    /// ([`Type::same_up_to_renaming`]); `None` for a walk that tells names
+    /// apart by their definitions.
+    expanding: Option<SmallVec<[(usize, usize); 4]>>,
 }
 
 impl<'a> Identity<'a> {
@@ -673,7 +694,38 @@ impl<'a> Identity<'a> {
             ambiguity: None,
             settled: None,
             read_cell: false,
+            expanding: None,
         }
+    }
+
+    /// Whether `t0` and `t1`, a name at least one of them, mean one type:
+    /// each name expanded through the definition it holds, a pair of
+    /// definitions met again inside its own expansion taken as one.
+    fn expansions(&mut self, t0: &Type, t1: &Type) -> bool {
+        let Some(env) = self.env else { return false };
+        let def = |t: &Type| match t {
+            Type::Ref(r) => {
+                r.resolve_peek(env).map(|d| std::sync::Arc::as_ptr(&d) as usize)
+            }
+            _ => Some(0),
+        };
+        let expand = |t: &Type| match t {
+            Type::Ref(_) => t.lookup_ref(env).ok(),
+            t => Some(t.clone()),
+        };
+        let (Some(d0), Some(d1)) = (def(t0), def(t1)) else { return false };
+        if self.expanding.as_ref().is_some_and(|met| met.contains(&(d0, d1))) {
+            return true;
+        }
+        let (Some(e0), Some(e1)) = (expand(t0), expand(t1)) else { return false };
+        if let Some(met) = &mut self.expanding {
+            met.push((d0, d1))
+        }
+        let same = self.same(&e0, &e1);
+        if let Some(met) = &mut self.expanding {
+            met.pop();
+        }
+        same
     }
 
     fn same(&mut self, t0: &Type, t1: &Type) -> bool {
@@ -790,6 +842,7 @@ impl<'a> Identity<'a> {
                     collapsing: self.collapsing.as_ref().map(|_| &mut scratch),
                     env: self.env,
                     pairs: self.pairs.as_ref().map(|p| SmallVec::from_slice(&p[..base])),
+                    expanding: self.expanding.clone(),
                     ..Identity::new(None, &mut found)
                 };
                 costs.push(probe.same(x, y).then_some(probe.paired));
@@ -961,7 +1014,13 @@ impl<'a> Identity<'a> {
                         r0.same_filled_definition(r1)
                     }),
                 };
-                same && self.all(&r0.params, &r1.params)
+                match same {
+                    true => self.all(&r0.params, &r1.params),
+                    false => self.expanding.is_some() && self.expansions(t0, t1),
+                }
+            }
+            (Type::Ref(_), _) | (_, Type::Ref(_)) if self.expanding.is_some() => {
+                self.expansions(t0, t1)
             }
             (Type::Set(s0), Type::Set(s1)) => self.same_unions(s0, s1),
             (Type::Error(a), Type::Error(b))

@@ -1032,6 +1032,36 @@ impl Solving {
                 if self.bare(v) {
                     return Ok(self.takes(v, &b));
                 }
+                // CR claude for claude: [bug/low] Each undeclared conjunct bails on
+                // its own, so the refusal names one bound at a time. `val double:
+                // fn(x: 'a) -> 'a` over `|x| x + x` says "requires 'a: Number";
+                // declaring that is refused for "'a: Singleton", and only the
+                // second edit checks. The first refusal names an annotation that
+                // does not make the program pass. Collect every conjunct of the
+                // cell that no signature bound implies and name them together (`'a:
+                // Number + Singleton`). probe:
+                // design/review-2026-11-16/repro/tests-interfaces-image-one-bound-at-a-time.sh
+                // (tests-interfaces-image-05)
+                // 2026-11-21 claude: moved here from `FnType::sig_bounds`, deleted. The
+                // relation refuses at the first predicate the signature does not
+                // declare: the probe's step 1 and step 2 now both name 'a: Singleton.
+                // CR claude for claude: [bug/medium] This loop stops at the
+                // first conjunct of the implementation's cell that no signature
+                // bound implies, so the refusal names one missing bound at a
+                // time. An arithmetic method needs 'a: Number + Singleton.
+                // Under `val twice: fn(self, x: 'a) -> 'a` over `|c, x| x + x`
+                // the refusal says "requires 'a: Number", and declaring exactly
+                // that is refused "requires 'a: Singleton". A .gxi val behaves
+                // the same. Collect every conjunct `declared` refuses for the
+                // cell and name them together ("requires 'a: Number +
+                // Singleton").
+                // lang::traits::method_value_read_with_a_bound_the_declaration_lacks_is_refused
+                // pins the partial text and must change with it. probe:
+                // design/review-2026-11-16/repro/tests-traits-a-impl-requires-one-bound-at-a-time.sh
+                // (tests-traits-a-03)
+                // 2026-11-21 claude: moved here from `FnType::sig_bounds`, deleted;
+                // the probe's (1) is now `type mismatch Number does not contain 'a:
+                // unbound`, (2) names 'a: Singleton, (3) passes.
                 let name = v.declared_name().unwrap_or_else(|| v.name.clone());
                 let name = ShortName(&name);
                 match self.sealed {

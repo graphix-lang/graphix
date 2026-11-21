@@ -24,7 +24,7 @@ use crate::{
     stack::ensure_sufficient,
     typ::{
         Brief, FnArgKind, FnArgType, FnType, TVar, Type, UnresolvableRef, bounds,
-        tvar::{ForeignWrite, InTask, OwnWrites, TaskId, new_task, settled_note},
+        tvar::{ForeignWrite, InTask, Level, OwnWrites, TaskId, new_task, settled_note},
     },
     wrap,
 };
@@ -583,6 +583,35 @@ fn impl_sig(target: &Type, params: &[TVar]) -> FnType {
 // for what no annotation can say. probe:
 // design/review-2026-11-16/repro/a-packages-val-is-not-an-annotation.sh (a-packages-04)
 fn check_val(env: &Env, name: &str, declared: &Type, typ: &Type) -> Result<()> {
+    // CR claude for claude: [readability/low] Two references of one name
+    // over two definitions print alike in this note: `val f is declared
+    // fn(x: C) -> C but implemented fn(x: C) -> C: in return type:
+    // signature has C, implementation has C`, for a body that declares its
+    // own `C` beside the one its sig imports. Type::contains_mismatch tells
+    // such a pair apart (`the two C are different definitions, at .. and
+    // ..`): say the same here when the two sides print alike. probe:
+    // design/review-2026-11-16/repro/x-typecheck-generics-sig-mismatch-same-name.gx
+    // (x-typecheck-generics-06)
+    // 2026-11-21 claude: moved here from `Type::sig_matches_inner`, deleted. The
+    // probe now says `val f is declared fn(x: C) -> C but implemented fn(x: C) -> C:
+    // type mismatch fn(x: C) -> C does not contain fn(x: C) -> C`: the two `C` still
+    // print alike.
+    // CR claude for eric: [bug/low] A val that declares `throws `E` over an
+    // implementation that throws nothing gets two verdicts. Over `let f = |x: i64|
+    // x` it passes, because the lambda's implicit throws slot is an open cell that
+    // pairs with anything, and the consumer is warned of an error nothing raises;
+    // over `let f: fn(x: i64) -> i64 = |x| x` it is refused, `the signature throws
+    // `E, the implementation throws nothing`, the one case where `nothing` sees
+    // `Bottom`. For Eric: is a val's throws exact, as its other parts are? If so,
+    // read an implicit slot still open as nothing in the val's check (a trait
+    // method's impls stay free to throw less); if not, accept the annotated form.
+    // Neither direction is pinned. probe:
+    // design/review-2026-11-16/repro/t-fntyp-val-throws-over-nothing.sh
+    // (t-fntyp-07)
+    // 2026-11-21 claude: moved here from `FnType::sig_matches_int`, deleted. The
+    // val is checked by `bounds::fits` now, and the two forms get one verdict:
+    // both pass, each warned `error `E raised from function call foo::f will not
+    // be caught`. Whether a val's throws is exact stands.
     let refused = |e: anyhow::Error| {
         let settled = match settled_note(env, &[typ]) {
             Some(n) => format_compact!(": {n}"),
@@ -679,13 +708,22 @@ fn check_impl_head(
     declared: &FnType,
     implemented: &ImplDef,
 ) -> Result<()> {
-    declared.sig_matches(env, &head_sig(implemented)).map(drop).map_err(|e| {
-        anyhow!(
-            "impl {trait_name} for {} does not implement the declared impl \
-             {trait_name} for {target}: {e:#}",
-            implemented.target
-        )
-    })
+    let (declared, implemented_sig) =
+        (Type::Fn(Arc::new(declared.clone())), Type::Fn(Arc::new(head_sig(implemented))));
+    if declared.same_up_to_renaming(env, &implemented_sig) {
+        return Ok(());
+    }
+    // the relation's refusal where it has one: a bound the implementation
+    // needs that the declaration does not give
+    let why = match bounds::fits(env, &implemented_sig, &declared, Level::TOP, false) {
+        Err(e) => format_compact!("{e:#}"),
+        Ok(()) => format_compact!("{implemented_sig} is not {declared}"),
+    };
+    bail!(
+        "impl {trait_name} for {} does not implement the declared impl \
+         {trait_name} for {target}: {why}",
+        implemented.target
+    )
 }
 
 /// A type or trait the interface `si` declares is the implementation's
