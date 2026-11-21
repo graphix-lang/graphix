@@ -569,24 +569,6 @@ pub(super) fn union_collapses(t0: &Type, t1: &Type, welds: &mut Welds) -> bool {
     same
 }
 
-/// [`union_collapses`] for two lower bounds of one cell: outside a function
-/// type too it pairs two open cells nothing bounds ([`TVar::unbounded`]),
-/// so bounds that differ only in such cells are one bound once the pairs
-/// weld. Two cells earlier compile tasks left open are decided open, and
-/// stay two.
-pub(super) fn lower_collapses(t0: &Type, t1: &Type, welds: &mut Welds) -> bool {
-    let mark = welds.mark();
-    let same = Identity {
-        unbounded: true,
-        ..Identity::new(Some(welds), &mut NodePairs::default())
-    }
-    .same(t0, t1);
-    if !same {
-        welds.rewind(mark)
-    }
-    same
-}
-
 /// [`union_identical`] of two members of a union as the source writes it,
 /// where no two occurrences of a variable share a cell yet and its name
 /// says which one it is: two open cells are identical when they have one

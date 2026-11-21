@@ -4233,9 +4233,8 @@ impl FnType {
     /// place first, after the cells its bounds hold
     /// ([`Type::place_cells`]); where it would still have to choose, a
     /// cell only bounds hold, which has no place, is first what its bounds
-    /// settle it to over the copy's own cells
-    /// ([`TVar::settle_bounds_first`]), as a call's check leaves one it
-    /// did not decide. Where a bound still
+    /// settle it to ([`super::bounds::settle_left`]), as a call's check
+    /// leaves one it did not decide. Where a bound still
     /// decides a cell only a union's members hold narrower than the union
     /// stands, the formals decide it before the bound's holder is placed
     /// ([`Self::contain_free_formals`]).
@@ -4262,7 +4261,7 @@ impl FnType {
             let unplaced = known.values().filter(|tv| !placed.contains(&tv.cell_addr()));
             let unplaced = sorted_tvars(unplaced.map(|tv| (tv.name.clone(), tv.clone())));
             for (_, tv) in unplaced.iter() {
-                tv.settle_bounds_first(env, &mut placed)
+                let _ = super::bounds::settle_left(env, tv);
             }
         };
         let own = held(&|own, _| own.place_open_cells(env, instance))

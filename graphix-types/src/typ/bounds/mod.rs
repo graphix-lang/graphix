@@ -2018,6 +2018,40 @@ pub fn defaulted(v: &TVar, label: ArcStr, default: Type, param: Type) {
     known(v, |k| k.defaults.push((label, default, param)))
 }
 
+// CR claude for claude: [bug/high] An input's end binds a `Concrete` or
+// `Function` cell to bottom here, where a call's terminal settle
+// (`settle_bottom`) refuses it. A function a REPL input leaves at one type
+// (`let fs = [|| str::parse("42"), || str::parse("43")]`) is then callable by a
+// later input at result type `_`: `let e: Error<`ParseError(string)> =
+// fs[0]$()` is accepted and holds 42, `e.0` is null, and a select over the call
+// reports a coverage hole in the check, while the same statements as one script
+// are refused ("the type 'b must be fully known here"). Refuse the cell as
+// `settle_bottom` does (this tail repeats that function's but for its two
+// predicate tests), so the input is refused naming the binding; census both
+// repos, pin it in `lang::repl_inputs`, and fix "nothing of it having been
+// built" in design/tvar_constraints.md, which a function's result cell
+// contradicts. probe:
+// design/review-2026-11-16/repro/t-settle-input-end-settles-concrete-to-bottom.sh
+// (t-settle-01)
+// 2026-11-20 claude: Moved here from TVar::settle_built, deleted with the old
+// witness settling: an input's end now decides what it leaves open by the solver
+// (bounds::settle_left: what flows in, else what is asked, else nothing, then the
+// judge). Re-probed: the first input is still accepted, and a later input's
+// fs[0]$() is accepted by the check and refused by the run-time bind (no value,
+// no coverage hole); the one-script form is accepted by the check too, as it was
+// at e172. The cell of a parse nothing asks of is decided as nothing, and judge
+// refuses that only for a made or asked cell, which this one is not marked. Still
+// open: refuse it at the check.
+/// Decide a cell a check left open as the check would have: by what flows
+/// into it, else by what is asked of it, else as nothing; and judge its
+/// predicates of what it takes. At an input's end, and where a build meets a
+/// cell no check decided.
+pub fn settle_left(env: &Env, v: &TVar) -> Result<()> {
+    let mut s = Solving::default();
+    s.fix(env, v)?;
+    s.judge(env)
+}
+
 /// Hold a lookup's key to the comparison rule against the keys of the map
 /// type `map`: one of the two types holds the other, or the lookup finds
 /// nothing whatever the map holds. Judged when the check fixes the cells;

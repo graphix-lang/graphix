@@ -50,7 +50,6 @@ or read it with env_mode as GRAPHIX_PRUNE is read. Found by reading; not run.
 | `GXDBG_CS=1` / `GXDBG_DYNC=1` | every CallSite dispatch and result tag / every fastcall trampoline dispatch |
 | `GXDBG_CALLRET=1` | (debug builds) from inside kernels: each entry's init word (tag 4), return disc (2), scrutinee accumulator (3), tail fold and cross-kernel call result |
 | `GRAPHIX_DBG_SELECT=1` | each select update: its selection, the scrutinee and the event's size |
-| `GRAPHIX_DBG_BIND_BT=<id>` | a backtrace at every write to the cell with that `TVarId` |
 | `GXDBG_FREEZE_RET=1` | a region whose return type does not freeze for the kernel ABI |
 | `GXDBG_KERNEL_SLEEP=1` | each fused kernel put to sleep |
 | `GXDBG_KPOLL=1` | each kernel's feeder poll: init, tags and presence |

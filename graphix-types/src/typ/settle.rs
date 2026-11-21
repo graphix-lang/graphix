@@ -1,45 +1,19 @@
-//! The settle phase: open cells that inference left constrained bind to
-//! their conjunction's witness, and a call site's terminal settle binds
-//! what nothing produced or bounded to ⊥.
+//! What an input's end settles: the open cells of what it made that a later
+//! input can reach, decided as the check decides a cell and marked settled.
 
 use crate::{
-    AddrSet, PrintFlag,
-    dbgenv::{graphix_dbg_bind, graphix_dbg_bind_bt_id},
+    AddrSet,
     env::Env,
-    format_with_flags,
     typ::{
         Bound, FnType, TVar, Type,
-        contains::InfiniteType,
-        setops::{Welds, apply_welds, lower_collapses, strictly_identical},
-        tvar::{CellFact, Fresh, Level, would_cycle_open},
+        setops::strictly_identical,
+        tvar::{Fresh, Level, would_cycle_open},
     },
 };
 use ahash::{AHashMap, AHashSet};
-use anyhow::{Result, bail};
+use anyhow::Result;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
-use std::{
-    error::Error,
-    fmt::{self, Write},
-};
-
-#[derive(Debug)]
-pub(crate) struct ConcreteRequired(pub TVar);
-
-impl fmt::Display for ConcreteRequired {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "the type '{} must be fully known here, a type-directed operation reads it: \
-             annotate it",
-            super::tvar::ShortName(&self.0.name)
-        )
-    }
-}
-
-impl Error for ConcreteRequired {}
-
-impl ConcreteRequired {}
 
 /// `below` less each decided bound holding ⊥ in a part that another decided
 /// bound contains: it adds no value to a witness (`Array<_>` beside
@@ -164,142 +138,6 @@ impl TVar {
         Ok(Err(candidates))
     }
 
-    /// Make one cell of the open cells that alone tell two of this cell's
-    /// lower bounds apart ([`lower_collapses`]): a settle's [witness] then
-    /// holds those bounds once, where their union would be two members
-    /// nothing decides between.
-    ///
-    /// [witness]: Self::witness
-    pub(super) fn weld_lower(&self) {
-        if self.is_bound() {
-            return;
-        }
-        let below = self.cell_lower();
-        let undecided: LPooled<Vec<&Type>> =
-            below.iter().filter(|l| l.has_unbound()).collect();
-        let mut welds = Welds::new();
-        for (i, l) in undecided.iter().enumerate().skip(1) {
-            if undecided[..i].iter().any(|k| lower_collapses(k, l, &mut welds)) {
-                apply_welds(&mut welds)
-            }
-        }
-    }
-
-    /// Bind the cell: a ⊥-fed cell below no type to ⊥, any other to its
-    /// witness ([`Self::settle_witness`]).
-    fn settle_in(&self, env: &Env) -> Result<()> {
-        if self.cell().read().facts.contains(CellFact::BottomFed) && !self.above_a_type()
-        {
-            return self.settle_bottom();
-        }
-        self.settle_witness(env)
-    }
-
-    /// Whether a lower bound of the cell is more than ⊥.
-    fn above_a_type(&self) -> bool {
-        let below = self.cell_lower();
-        below.iter().any(|l| !l.with_deref(|l| matches!(l, Some(Type::Bottom))))
-    }
-
-    /// Bind a constrained-unbound cell to its conjunction's [witness].
-    /// Bound and unconstrained cells are untouched. No witness is a type
-    /// error, unless no conjunct could be one: then the cell stays open
-    /// for its writers to refine. The only settle before a cell's writers
-    /// are checked, where a ⊥-fed cell may still take a writer's type.
-    ///
-    /// [witness]: Self::witness
-    pub fn settle_witness(&self, env: &Env) -> Result<()> {
-        if self.earlier_task() {
-            return Ok(());
-        }
-        self.weld_lower();
-        let settled = match self.own_witness(env)? {
-            Ok(w) => self.settle_at(env, w)?,
-            Err(unsatisfiable) => !unsatisfiable,
-        };
-        if settled {
-            return Ok(());
-        }
-        let cons = self.cell_constraints();
-        format_with_flags(PrintFlag::DerefTVars | PrintFlag::ReplacePrims, || {
-            let mut cs: LPooled<String> = LPooled::take();
-            for (i, c) in cons.iter().enumerate() {
-                if i > 0 {
-                    cs.push_str(" & ");
-                }
-                write!(cs, "{c}")?;
-            }
-            let name = super::tvar::ShortName(&self.name);
-            // CR claude for claude: [bug/low] Where a generated cell's lower bound
-            // fails a marker bound, this is the whole refusal: `Box(&x) < Box(&x)` over
-            // `type Box<'a> = Abstract<'a>` says "unsatisfiable constraints on '_8192:
-            // Ordered", a variable the program never wrote and no cause, where the same
-            // order over a tuple names the reference. Name the lower bound the conjunct
-            // refuses and why, as a bound cell's refusal does (`Type::not_discernible`
-            // for `Ordered` and `Discernible`, `unmet_bound_note`'s wording for a typed
-            // bound). The conjuncts are joined here and in `unmet_bound_note` without
-            // the `written_identical` filter `TVar`'s Display applies, so a doubled
-            // bound still prints twice in both (that part by reading). probe:
-            // design/review-2026-11-16/repro/t-cast-ordered-abstract-param-message.gx
-            // (t-cast-09)
-            // CR claude for claude: [bug/medium] This prints the cell's conjuncts
-            // alone. Where the cell fails because its conjuncts refuse its lower bounds
-            // together, the text names a conjunction that is satisfiable and a
-            // generated variable, and omits what conflicts: `type B<'p> = Abstract<'p>;
-            // let b = B(1); let r = b.0 + b.0; b <- B(1.5)` answers "unsatisfiable
-            // constraints on '_8191: Number & Singleton" at `B(1)`, with no word of the
-            // i64 and the f64 built into the payload, the operator or the write. When
-            // `cell_lower()` is not empty, print the bounds the conjuncts refuse and
-            // the binding to declare, as a refused write does. probe:
-            // design/review-2026-11-16/repro/t-tvar-b-unsatisfiable-names-no-lower-bound.gx
-            // (t-tvar-b-03)
-            bail!("unsatisfiable constraints on '{name}: {}", &*cs)
-        })
-    }
-
-    /// Bind the cell to its witness `w`. At the union of its lower bounds,
-    /// only where each conjunct holds it and holds no open cell: a
-    /// conjunct's open cell must stand above what this one takes, which the
-    /// solver records as a lower bound arrives and a settle does not. False,
-    /// the cell left open, otherwise.
-    fn settle_at(&self, env: &Env, w: Witness) -> Result<bool> {
-        if let Witness::Lower(w) = &w
-            && (self.cell_constraints().iter().any(|c| c.has_unbound())
-                || !super::contains::cell_admits(self, env, w)?)
-        {
-            return Ok(false);
-        }
-        self.bind_witness(w.shared());
-        Ok(true)
-    }
-
-    /// Bind the cell to its [own witness], after the open cells its
-    /// conjuncts hold that `seen` does not, so its witness is decided
-    /// where theirs are, and a cell `seen` holds is in it as itself; a cell
-    /// with no witness stays open.
-    ///
-    /// [own witness]: Self::own_witness
-    pub(super) fn settle_bounds_first(&self, env: &Env, seen: &mut AddrSet) {
-        if self.is_bound() || !seen.insert(self.cell_addr()) {
-            return;
-        }
-        crate::stack::ensure_sufficient(|| {
-            for c in self.cell_constraints().iter() {
-                super::contains::find_open_cell(c, false, &mut |o| {
-                    o.settle_bounds_first(env, seen);
-                    false
-                });
-            }
-        });
-        if self.earlier_task() {
-            return;
-        }
-        self.weld_lower();
-        if let Some(w) = self.bounds_witness(env) {
-            self.bind_witness(w)
-        }
-    }
-
     /// What [`Self::settle_bounds_first`] binds the cell to, its
     /// [own witness]; `None` where it leaves the cell open.
     ///
@@ -309,108 +147,6 @@ impl TVar {
             Ok(Ok(Witness::Lower(w) | Witness::Conjunct(w))) => Some(w),
             _ => None,
         }
-    }
-
-    fn bind_witness(&self, w: Type) {
-        if graphix_dbg_bind() {
-            eprintln!("SETTLE '{}({:x}) := {w:?}", self.name, self.cell_addr());
-        }
-        self.bind(w)
-    }
-
-    /// [`Self::settle`], but a cell still unbound binds to ⊥: nothing was
-    /// produced into it, and what bounds it (a trait a dispatch on it
-    /// needs, a predicate) has no witness, so a dispatch on it is a
-    /// standing bottom. A cell a type-directed operation reads or calls is
-    /// refused instead. Only the terminal walk uses this (an earlier call
-    /// would foreclose writers not yet typechecked).
-    pub fn settle_or_bottom(&self, env: &Env) -> Result<()> {
-        if !self.cell_constraints().is_empty() || !self.cell_lower().is_empty() {
-            self.settle_in(env)?;
-        }
-        self.settle_bottom()
-    }
-
-    /// Bind an open cell whose values are all built: to what bounds it
-    /// from below, else to its conjunction's witness, else to ⊥, since
-    /// nothing of it was built ([`settle_input`]).
-    fn settle_built(&self, env: &Env) -> Result<()> {
-        let fed = self.cell().read().facts.contains(CellFact::BottomFed)
-            && !self.above_a_type();
-        if !fed {
-            self.weld_lower();
-            if let Ok(w) = self.witness(env)? {
-                self.bind(w);
-                return Ok(());
-            }
-        }
-        if self.cell().read().facts.contains(CellFact::CycleRefused) {
-            bail!(InfiniteType)
-        }
-        if graphix_dbg_bind() {
-            eprintln!("SETTLE-BUILT '{}({:x})", self.name, self.cell_addr());
-        }
-        // CR claude for claude: [bug/high] An input's end binds a `Concrete` or
-        // `Function` cell to bottom here, where a call's terminal settle
-        // (`settle_bottom`) refuses it. A function a REPL input leaves at one type
-        // (`let fs = [|| str::parse("42"), || str::parse("43")]`) is then callable by a
-        // later input at result type `_`: `let e: Error<`ParseError(string)> =
-        // fs[0]$()` is accepted and holds 42, `e.0` is null, and a select over the call
-        // reports a coverage hole in the check, while the same statements as one script
-        // are refused ("the type 'b must be fully known here"). Refuse the cell as
-        // `settle_bottom` does (this tail repeats that function's but for its two
-        // predicate tests), so the input is refused naming the binding; census both
-        // repos, pin it in `lang::repl_inputs`, and fix "nothing of it having been
-        // built" in design/tvar_constraints.md, which a function's result cell
-        // contradicts. probe:
-        // design/review-2026-11-16/repro/t-settle-input-end-settles-concrete-to-bottom.sh
-        // (t-settle-01)
-        self.bind(Type::Bottom);
-        Ok(())
-    }
-
-    fn not_concrete(&self) -> anyhow::Error {
-        ConcreteRequired(self.clone()).into()
-    }
-
-    fn not_function(&self) -> anyhow::Error {
-        anyhow::anyhow!(
-            "the type '{} must be a function here, an operation reads its signature: \
-             annotate it",
-            super::tvar::ShortName(&self.name)
-        )
-    }
-
-    /// Bind an unbound cell to ⊥; a bound one is untouched.
-    fn settle_bottom(&self) -> Result<()> {
-        let cell = self.cell();
-        let mut cell = cell.write();
-        if cell.binding.is_some() || super::tvar::earlier_task(&cell) {
-            return Ok(());
-        }
-        if cell.constraints.iter().any(|c| matches!(c, Type::Bound(Bound::Concrete))) {
-            drop(cell);
-            return Err(self.not_concrete());
-        }
-        if cell.constraints.iter().any(|c| matches!(c, Type::Bound(Bound::Function))) {
-            drop(cell);
-            return Err(self.not_function());
-        }
-        // The only solution was infinite; ⊥ would be a lie.
-        if cell.facts.contains(CellFact::CycleRefused) {
-            if graphix_dbg_bind() {
-                eprintln!("SETTLE-INFINITE '{}({:x})", self.name, self.cell_addr());
-            }
-            bail!(InfiniteType)
-        }
-        if graphix_dbg_bind() {
-            eprintln!("SETTLE-BOTTOM '{}({:x})", self.name, self.cell_addr());
-        }
-        if graphix_dbg_bind_bt_id().is_some() {
-            eprintln!("{}", std::backtrace::Backtrace::force_capture());
-        }
-        cell.set_binding(Some(Type::Bottom));
-        Ok(())
     }
 }
 
@@ -431,13 +167,6 @@ impl Type {
         }
         (!open.is_empty()).then_some(open)
     }
-}
-
-impl FnType {}
-
-#[cfg(test)]
-thread_local! {
-    static FEEDS_ASKED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 impl FnType {
@@ -500,7 +229,7 @@ pub fn settle_input(
     // (t-settle-03)
     for (i, tv) in reached.iter().filter(|(_, tv)| top(tv)) {
         if !tv.is_bound() && !tv.is_rigid() {
-            tv.settle_built(env).map_err(|e| (*i, e))?
+            super::bounds::settle_left(env, tv).map_err(|e| (*i, e))?
         }
     }
     reached.iter().filter(|(_, tv)| top(tv)).for_each(|(_, tv)| tv.mark_settled());
@@ -741,111 +470,5 @@ impl Type {
             })
         }
         go(self, env, &mut LPooled::take()).unwrap_or_else(|| self.clone())
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-    use crate::typ::tvar::AtLevel;
-    use arcstr::ArcStr;
-
-    fn open(name: &'static str) -> TVar {
-        TVar::empty_named(ArcStr::from(name))
-    }
-
-    fn array_of(tv: &TVar) -> Type {
-        Type::Array(triomphe::Arc::new(Type::TVar(tv.clone())))
-    }
-
-    /// Two lower bounds apart only by open cells nothing bounds settle to
-    /// one of them, those cells one cell; reading the witness welds
-    /// nothing.
-    #[test]
-    fn a_settle_welds_lower_bounds_apart_by_unbounded_cells() {
-        let _level = AtLevel::enter(Level::TOP);
-        let (env, _) = Env::typed_at_root(&[], "i64").unwrap();
-        let (p, a, b) = (open("p"), open("a"), open("b"));
-        p.add_lower(array_of(&a));
-        p.add_lower(array_of(&b));
-        let w = p.witness(&env).unwrap().unwrap();
-        assert!(matches!(&w, Type::Set(ms) if ms.len() == 2), "{w}");
-        assert!(!a.same_cell(&b));
-        p.settle_witness(&env).unwrap();
-        assert!(a.same_cell(&b));
-        let bound = p.binding().unwrap();
-        assert!(strictly_identical(&bound, &array_of(&a)), "{bound}");
-    }
-
-    /// A cell with a bound of its own, a cell held rigid and a decided
-    /// type each keep their lower bound a member of its own.
-    #[test]
-    fn a_settle_keeps_lower_bounds_apart_by_more_than_unbounded_cells() {
-        let _level = AtLevel::enter(Level::TOP);
-        let (env, i64_t) = Env::typed_at_root(&[], "i64").unwrap();
-        let (_, number) = Env::typed_at_root(&[], "Number").unwrap();
-        let bounded = open("b");
-        bounded.add_cell_constraint(number);
-        let rigid = open("r");
-        let _gate = rigid.open_rigid();
-        let others = [Type::TVar(bounded), Type::TVar(rigid), i64_t];
-        for other in others {
-            let (p, a) = (open("p"), open("a"));
-            p.add_lower(array_of(&a));
-            p.add_lower(Type::Array(triomphe::Arc::new(other.clone())));
-            p.settle_witness(&env).unwrap();
-            let bound = p.binding().unwrap();
-            assert!(matches!(&bound, Type::Set(ms) if ms.len() == 2), "{bound}");
-            assert!(!a.is_bound(), "{other}");
-        }
-    }
-
-    /// A settle of a bound cell compares none of its lower bounds, and one
-    /// of an open cell only those that hold an open cell.
-    #[test]
-    fn a_settle_compares_only_undecided_lower_bounds_of_an_open_cell() {
-        use crate::typ::setops::IDENTITY_STEPS;
-        let steps = |f: &dyn Fn()| {
-            IDENTITY_STEPS.with(|s| s.set(0));
-            f();
-            IDENTITY_STEPS.with(|s| s.get())
-        };
-        let _level = AtLevel::enter(Level::TOP);
-        let (env, i64_t) = Env::typed_at_root(&[], "i64").unwrap();
-        let (_, string_t) = Env::typed_at_root(&[], "string").unwrap();
-        let array = |t: &Type| Type::Array(triomphe::Arc::new(t.clone()));
-        let (p, a) = (open("p"), open("a"));
-        p.add_lower(array_of(&a));
-        p.add_lower(array(&i64_t));
-        p.add_lower(array(&string_t));
-        assert_eq!(steps(&|| p.weld_lower()), 0);
-        p.add_lower(array(&array_of(&open("b"))));
-        assert!(steps(&|| p.weld_lower()) > 0);
-        p.settle_witness(&env).unwrap();
-        assert!(p.is_bound());
-        assert_eq!(steps(&|| p.settle_witness(&env).unwrap()), 0);
-        assert_eq!(steps(&|| p.weld_lower()), 0);
-    }
-
-    /// A settle at a cell's lower bounds whose bound holds an open cell
-    /// leaves the cell open and the open cell as it was: that cell would
-    /// have to stand above what this one took.
-    #[test]
-    fn a_settle_at_lower_bounds_under_an_open_conjunct_leaves_the_cell_open() {
-        let _level = AtLevel::enter(Level::TOP);
-        let (env, t) =
-            Env::typed_at_root(&[], "fn<'p: ['a, null]>(x: 'p, y: 'a) -> i64").unwrap();
-        let (_, i64_t) = Env::typed_at_root(&[], "i64").unwrap();
-        let Type::Fn(ft) = &t else { panic!("{t} is no function type") };
-        ft.alias_tvars(&mut LPooled::take());
-        let mut cells: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-        ft.collect_tvars(&mut cells);
-        let (p, a) = (cells.get("p").unwrap().clone(), cells.get("a").unwrap().clone());
-        p.set_level(Level::TOP);
-        a.set_level(Level::TOP);
-        p.add_lower(i64_t.clone());
-        assert!(p.settle_witness(&env).is_err(), "{p:?}");
-        assert!(!p.is_bound(), "{p:?}");
-        assert!(a.cell_lower().is_empty(), "{a:?}");
     }
 }

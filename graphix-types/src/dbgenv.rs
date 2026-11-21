@@ -24,11 +24,3 @@ dbg_flag!(graphix_profile, "GRAPHIX_PROFILE");
 dbg_flag!(graphix_profile_instances, "GRAPHIX_PROFILE_INSTANCES");
 dbg_flag!(graphix_task_audit, "GRAPHIX_TASK_AUDIT");
 dbg_flag!(gxdbg_typeref, "GXDBG_TYPEREF");
-
-/// The value of GRAPHIX_DBG_BIND_BT: a target TVarId for per-cell
-/// write backtraces.
-pub(crate) fn graphix_dbg_bind_bt_id() -> Option<&'static str> {
-    static V: std::sync::LazyLock<Option<String>> =
-        std::sync::LazyLock::new(|| std::env::var("GRAPHIX_DBG_BIND_BT").ok());
-    V.as_deref()
-}

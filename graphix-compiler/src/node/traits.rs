@@ -1445,7 +1445,7 @@ impl<R: Rt> CallSite<R> {
                 let mut tvs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
                 a.typ.collect_tvars(&mut tvs);
                 for (_, tv) in tvs.drain() {
-                    wrap!(self, tv.settle_or_bottom(&ctx.env))?;
+                    wrap!(self, bounds::settle_left(&ctx.env, &tv))?;
                 }
                 a.typ.resolve_tvars().normalize()
             }
