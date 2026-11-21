@@ -8607,7 +8607,7 @@ run!(
     p(e, (["s"], 3))
 }"#,
     |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "s");
-    FuseExpect::None
+    FuseExpect::Jit
 );
 
 // A slice's rest nothing types takes the type of a name beside it, so

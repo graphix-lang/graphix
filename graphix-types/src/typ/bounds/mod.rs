@@ -3592,6 +3592,20 @@ impl Solving {
     /// Fix every cell an input left open.
     pub fn finish(&mut self, env: &Env) -> Result<()> {
         self.fix_scope(env, 0, true, 0)?;
+        // a cell only what the check decided holds (an empty literal's
+        // element) is one it left open too
+        loop {
+            let mut held = SmallVec::new();
+            for b in self.cells.iter().filter_map(|v| v.binding()) {
+                cells_of(&b, false, &mut held)
+            }
+            held.retain(|v: &mut TVar| fixes(v, 0) && v.level() == Level::TOP);
+            if held.is_empty() {
+                break;
+            }
+            held.iter().for_each(|v| self.track(v));
+            self.fix_scope(env, 0, true, 0)?
+        }
         self.judge(env)?;
         self.dead_arms(env)
     }

@@ -2589,7 +2589,7 @@ run!(
     callback_variable_unrelated_undecided_widens,
     r#"{ let f = |x: 'a, y: 'a, k: fn(v: 'a) -> i64| -> 'a y; f(1, [], |v| 0) }"#,
     prints("[]");
-    FuseExpect::None
+    FuseExpect::Jit
 );
 
 run!(
@@ -2826,7 +2826,7 @@ run!(
     undecided_argument_of_another_shape_widens,
     r#"{ let f = |x: 'a, y: 'a| -> 'a y; f(1, []) }"#,
     prints("[]");
-    FuseExpect::None
+    FuseExpect::Jit
 );
 
 run!(
