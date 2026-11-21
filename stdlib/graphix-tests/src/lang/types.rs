@@ -1955,9 +1955,11 @@ run!(
 );
 
 // An arithmetic operand that is a union with an open member narrows the
-// member to the bound, never binds it to the bound: the member stays one
-// type a later use picks, here ⊥ (only ⊥ was produced into `x`). A
-// callback bound by `let` checks as the same one inline does.
+// member to the bound, never binds it to the bound: the member is one type,
+// and decided after the operand it flows into, it fits what the operand
+// was decided as (here i64), so the instance of `f` the build makes is the
+// one the check typed. A callback bound by `let` checks as the same one
+// inline does.
 const OPERAND_BOUND_NARROWS_AN_OPEN_MEMBER: &str = r#"
 {
   let x = never();

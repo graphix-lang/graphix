@@ -4581,7 +4581,8 @@ impl Solving {
         {
             return Ok(());
         }
-        let r = self.fixed(env, v);
+        let mut open_below: SmallVec<[TVar; 2]> = SmallVec::new();
+        let r = self.fixed(env, v, &mut open_below);
         self.fixing.remove(&v.cell_addr());
         let r = r?;
         // a cell nothing flows into takes the type its uses demand, and
@@ -4598,7 +4599,15 @@ impl Solving {
             self.constrain(env, &r, &Type::TVar(v.clone()))?
         }
         debug(|| format!("fix '{} := {r}", ShortName(&v.name)));
-        v.cell().write().set_binding(Some(r));
+        v.cell().write().set_binding(Some(r.clone()));
+        // a cell still open that flows into this one is decided later, by
+        // its own scope: whatever decides it must fit what this one now is.
+        // At ⊥ nothing decided this one, which asks nothing of the other
+        if !matches!(r, Type::Bottom) {
+            for u in open_below.iter().filter(|u| !u.is_bound() && !quantified(u)) {
+                self.constrain(env, &Type::TVar(u.clone()), &r)?
+            }
+        }
         super::tvar::prove_ground_by_parts(v);
         // a flow from a cell that was being fixed around this one was
         // left out: what that cell is now fits here, or no finite type
@@ -4818,7 +4827,12 @@ impl Solving {
         self.compared.push((a, b, ordered))
     }
 
-    fn fixed(&mut self, env: &Env, v: &TVar) -> Result<Type> {
+    fn fixed(
+        &mut self,
+        env: &Env,
+        v: &TVar,
+        open_below: &mut SmallVec<[TVar; 2]>,
+    ) -> Result<Type> {
         // a cell nothing has decided may stay open inside a bound: a
         // holder that shares it can still decide it
         let mut flows: SmallVec<[Type; 4]> = SmallVec::new();
@@ -4843,6 +4857,8 @@ impl Solving {
                             }
                         }
                         self.cycles.push((u.clone(), v.clone()))
+                    } else if let Some(u) = open(&shallow(&l)) {
+                        open_below.push(u.clone())
                     }
                 }
             }
