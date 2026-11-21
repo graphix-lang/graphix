@@ -209,25 +209,20 @@ let same = 'a: Number |y, x: 'a| { let z: 'a = y; x };
     }
 }
 
-/// A hover is one message: a name a header listed stays the header's once
-/// its signature ends, so a later instance's variable numbers apart past it.
+/// A hover is one message: a variable a definition holds prints unheaded
+/// under its declared name through the whole message, so a header listing
+/// the same name later in it numbers apart (`'a1`).
 #[test]
-fn a_hover_numbers_an_instance_past_a_header_name() {
+fn a_hover_numbers_a_header_past_a_held_name() {
     const SRC: &str = "\
 let h = 'a: Number |x: 'a| -> 'a x;
-let mk = |z: i64| 'a: Number |x: 'a| -> 'a x;
-let k = mk(0);
-let trio = (k, h, mk(1));
+let rec rf = 'a: Number |x: 'a| -> 'a { let t = (rf, h); x };
 0
 ";
     let mut c = Client::start(&[("main.gx", SRC)]);
     c.open("main.gx");
     assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
-    hover_is(
-        &mut c,
-        "let |trio",
-        "trio: (fn(x: 'a) -> 'a, fn<'a1: Number>(x: 'a1) -> 'a1, fn(x: 'a2) -> 'a2)",
-    );
+    hover_is(&mut c, "let |t ", "t: (fn(x: 'a) -> 'a, fn<'a1: Number>(x: 'a1) -> 'a1)");
 }
 
 /// A parameter's cell a callee's instance merged into hovers under one
