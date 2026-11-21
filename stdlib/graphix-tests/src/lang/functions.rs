@@ -2707,6 +2707,15 @@ run!(
     FuseExpect::None
 );
 
+// An operator's operands are one type: a decided operand asks it of a
+// parse beside it.
+run!(
+    a_parse_beside_a_decided_operand_takes_its_type,
+    r#"str::parse("41")$ + 1"#,
+    prints("i64:42");
+    FuseExpect::None
+);
+
 run!(
     omitted_undecided_default_before_a_wider_one_refused,
     r#"{
