@@ -493,7 +493,7 @@ const LAMBDAMATCH1: &str = r#"
 }
 "#;
 
-run!(lambdamatch1, LAMBDAMATCH1, prints("i64:84"); FuseExpect::None);
+run!(lambdamatch1, LAMBDAMATCH1, prints("i64:84"); FuseExpect::Jit);
 
 const LAMBDAMATCH2: &str = r#"
 {
@@ -2896,7 +2896,7 @@ run!(
   f(a, d, s) }}"
     ),
     prints("i64:1");
-    FuseExpect::None
+    FuseExpect::Jit
 );
 
 run!(
@@ -2907,7 +2907,7 @@ run!(
   f(d, a, s) }}"
     ),
     prints("i64:1");
-    FuseExpect::None
+    FuseExpect::Jit
 );
 
 run!(
@@ -5057,7 +5057,7 @@ run!(default_hidden_by_a_generic_formal_result, r#"
     let h = |g: fn(x: 'q) -> Array<'q>, v: 'q| g(v);
     h(f, "s")
 }
-"#, prints("[i64:1, \"s\"]"); FuseExpect::None);
+"#, prints("[i64:1, \"s\"]"); FuseExpect::Jit);
 
 // holds i64 beside the string.
 run!(default_hidden_by_a_generic_formal_result_reaches_the_result_refused, r#"
@@ -5380,7 +5380,7 @@ const DEFAULT_OF_A_BOUNDED_PARAMETER: &str = r#"
 "#;
 
 run!(default_of_a_bounded_parameter, DEFAULT_OF_A_BOUNDED_PARAMETER,
-    prints("i64:6"); FuseExpect::None);
+    prints("i64:6"); FuseExpect::Jit);
 
 run!(default_of_a_closed_bounded_parameter, r#"{
     let scale = |k: i64| {

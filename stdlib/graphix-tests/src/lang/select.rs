@@ -2049,7 +2049,7 @@ run!(
     f(W(v))
 }"#,
     prints("i64:1");
-    FuseExpect::None
+    FuseExpect::Jit
 );
 
 // A comparison still needs one operand's type to hold the other's (D47
@@ -5742,7 +5742,7 @@ run!(open_member_beside_a_rust_abstract_in_a_dispatch_refused, r#"{
 run!(open_member_beside_an_error_tests_every_error, r#"{
   let f = |r: ['a, Error<`E>]| select r { error as e => 0, v => 1 };
   f(1)
-}"#, prints("i64:1"); FuseExpect::None);
+}"#, prints("i64:1"); FuseExpect::Jit);
 
 // A cell's bound holds every value of it, so a select over a bounded
 // parameter covers it with written tests of the bound.
@@ -6771,7 +6771,7 @@ run!(arm_bind_over_members_decides_their_lambdas, r#"{
         select t { (r, n, m) => (r.f(v), r.f("s")) }
     };
     k(2)
-}"#, prints("[i64:2, \"s\"]"); FuseExpect::None);
+}"#, prints("[i64:2, \"s\"]"); FuseExpect::Jit);
 
 // The lambdas' parameter widens to what reaches it, so one that does
 // arithmetic is refused where a string reaches it.
@@ -6790,7 +6790,7 @@ run!(arm_bind_over_members_decides_their_lambdas_for_a_later_read, r#"{
         (z, t.0.f("s"))
     };
     k(2)
-}"#, prints("[i64:2, \"s\"]"); FuseExpect::None);
+}"#, prints("[i64:2, \"s\"]"); FuseExpect::Jit);
 
 run!(arm_bind_over_members_decides_their_open_parts, r#"{
     let e1 = [];
@@ -6909,7 +6909,7 @@ run!(partial_struct_cells_decided_apart_are_two_members, r#"{
     x <- 1;
     y <- "w";
     r
-}"#, prints("\"[1]\""); FuseExpect::None);
+}"#, prints("\"[1]\""); FuseExpect::Jit);
 
 run!(partial_struct_cells_decided_apart_in_either_order, r#"{
     let b = true;
@@ -6920,7 +6920,7 @@ run!(partial_struct_cells_decided_apart_in_either_order, r#"{
     y <- "w";
     x <- 1;
     r
-}"#, prints(r#""[\"s\"]""#); FuseExpect::None);
+}"#, prints(r#""[\"s\"]""#); FuseExpect::Jit);
 
 run!(partial_struct_cells_decided_apart_in_a_lambda, r#"{
     let f = |b: bool| {
@@ -6933,7 +6933,7 @@ run!(partial_struct_cells_decided_apart_in_a_lambda, r#"{
         r
     };
     f(true)
-}"#, prints("\"[1]\""); FuseExpect::None);
+}"#, prints("\"[1]\""); FuseExpect::Jit);
 
 run!(partial_struct_cells_decided_apart_after_a_lambda, r#"{
     let x = never();
@@ -6946,7 +6946,7 @@ run!(partial_struct_cells_decided_apart_after_a_lambda, r#"{
     x <- 1;
     y <- "w";
     r
-}"#, prints("\"[1]\""); FuseExpect::None);
+}"#, prints("\"[1]\""); FuseExpect::Jit);
 
 run!(partial_struct_cells_decided_apart_in_an_arm, r#"{
     let b = true;
@@ -6962,7 +6962,7 @@ run!(partial_struct_cells_decided_apart_in_an_arm, r#"{
     x <- 1;
     y <- "w";
     r
-}"#, prints(r#""[1]""#); FuseExpect::None);
+}"#, prints(r#""[1]""#); FuseExpect::Jit);
 
 run!(partial_struct_cells_decided_apart_under_a_tuple, r#"{
     let b = true;
@@ -6973,7 +6973,7 @@ run!(partial_struct_cells_decided_apart_under_a_tuple, r#"{
     x <- 1;
     y <- "w";
     r
-}"#, prints(r#""[1]""#); FuseExpect::None);
+}"#, prints(r#""[1]""#); FuseExpect::Jit);
 
 run!(partial_struct_cells_decided_apart_nested, r#"{
     let b = true;
@@ -6984,7 +6984,7 @@ run!(partial_struct_cells_decided_apart_nested, r#"{
     x <- 1;
     y <- "w";
     r
-}"#, prints(r#""[1] 1""#); FuseExpect::None);
+}"#, prints(r#""[1] 1""#); FuseExpect::Jit);
 
 // A definition's parameters are bound by its calls, two of them maybe
 // apart, as `f(true, 1, "s")` would.
@@ -6994,7 +6994,7 @@ run!(partial_struct_parameter_cells_are_two_members, r#"{
         select v { {a, ..} => "[a]" }
     };
     f(true, 1, 2)
-}"#, prints(r#""[1]""#); FuseExpect::None);
+}"#, prints(r#""[1]""#); FuseExpect::Jit);
 
 // A member's cell no binding names (a read through a reference to an
 // unnamed expression, an empty array's element, a call's result) is
@@ -7116,7 +7116,7 @@ run!(partial_struct_call_copies_a_written_variable_took_read_through_a_built_aga
         select b { true => {a: [1], c: c1}, false => {a: ["s"], c: c2} };
     let w = select b { true => {a: [1], c: c1}, false => {a: ["s"], c: c2} };
     select w { {a, ..} => array::len(a) }
-}"#, prints("i64:1"); FuseExpect::None);
+}"#, prints("i64:1"); FuseExpect::Jit);
 
 run!(partial_struct_call_copies_a_later_annotation_took_read_through_the_built_value, r#"{
     let b = true;
@@ -7124,7 +7124,7 @@ run!(partial_struct_call_copies_a_later_annotation_took_read_through_the_built_v
     let w = select b { true => {a: [1], c: f(never())}, false => {a: ["s"], c: f(never())} };
     let v: [{a: Array<i64>, c: Array<'q>}, {a: Array<string>, c: Array<'r>}] = w;
     select w { {a, ..} => array::len(a) }
-}"#, prints("i64:1"); FuseExpect::None);
+}"#, prints("i64:1"); FuseExpect::Jit);
 
 // Copies no written variable took stay numbered when the cells merge with
 // ones the checker made up.
@@ -7163,7 +7163,7 @@ run!(partial_struct_empty_cells_a_definition_returns_are_two_members, r#"{
         select s { {loading, ..} => select loading { true => "loading", false => "ready" } }
     };
     view(false, [1])
-}"#, prints(r#""loading""#); FuseExpect::None);
+}"#, prints(r#""loading""#); FuseExpect::Jit);
 
 run!(partial_struct_empty_cells_a_definition_returns_named_fields, r#"{
     let view = |done: bool, data: Array<i64>| {
@@ -7204,7 +7204,7 @@ run!(partial_struct_empty_cells_a_definition_hands_out_writable_are_two_members,
     *p <- [1];
     *q <- ["w"];
     r
-}"#, prints(r#""[1]""#); FuseExpect::None);
+}"#, prints(r#""[1]""#); FuseExpect::Jit);
 
 run!(partial_struct_empty_cells_a_definition_hands_to_a_caller_function_are_two_members, r#"{
     let f = |b: bool| {
@@ -7215,7 +7215,7 @@ run!(partial_struct_empty_cells_a_definition_hands_to_a_caller_function_are_two_
     };
     let (r, p, q) = f(true);
     "[r] [p([1])] [q(["w"])]"
-}"#, prints(r#""[1] 0 0""#); FuseExpect::None);
+}"#, prints(r#""[1] 0 0""#); FuseExpect::Jit);
 
 // The first member's completion is the arm's run-time test: an empty
 // array's element there, which a caller may name, tests the other
@@ -7228,7 +7228,7 @@ run!(partial_struct_empty_test_cell_a_definition_returns_beside_a_parameter_is_t
     let (r, v) = f(false, "w");
     let w: [{a: Array<i64>, c: Array<i64>}, {a: Array<string>, c: Array<string>}] = v;
     r
-}"#, prints(r#""[\"s\"]""#); FuseExpect::None);
+}"#, prints(r#""[\"s\"]""#); FuseExpect::Jit);
 
 // Function types decided apart are two members, as they are when the
 // writes come before the select.
@@ -7241,7 +7241,7 @@ run!(partial_struct_function_cells_decided_apart_are_two_members, r#"{
     f <- |x: i64| x;
     g <- |x: string| x;
     r
-}"#, prints(r#""[1]""#); FuseExpect::None);
+}"#, prints(r#""[1]""#); FuseExpect::Jit);
 
 run!(partial_struct_empty_beside_a_decided_cell_is_two_members, r#"{
     let y = never();
@@ -7250,7 +7250,7 @@ run!(partial_struct_empty_beside_a_decided_cell_is_two_members, r#"{
     let r = select v { {a, ..} => "[a]" };
     y <- "w";
     r
-}"#, prints(r#""[1]""#); FuseExpect::None);
+}"#, prints(r#""[1]""#); FuseExpect::Jit);
 
 run!(partial_struct_empty_beside_a_decided_cell_named_fields, r#"{
     let y = never();
@@ -7276,7 +7276,7 @@ run!(partial_struct_after_a_type_test_taking_a_decided_member, r#"{
     x <- 1;
     y <- "w";
     "[r] [s]"
-}"#, prints("\"[1] second w\""); FuseExpect::None);
+}"#, prints("\"[1] second w\""); FuseExpect::Jit);
 
 // A member's undecided cell that is the referent of a reference to an
 // expression no binding names goes by the binding holding the reference.
@@ -7336,7 +7336,7 @@ run!(partial_struct_cells_decided_alike_are_two_members, r#"{
     y <- 2;
     x <- 1;
     r
-}"#, prints("\"[1]\""); FuseExpect::None);
+}"#, prints("\"[1]\""); FuseExpect::Jit);
 
 run!(partial_struct_cells_annotated_alike_are_one_member, r#"{
     let x: i64 = never();
@@ -7368,7 +7368,7 @@ run!(partial_struct_cells_nothing_decides_are_two_members, r#"{
     let t = true;
     let v = select t { true => {a: [1], c: []}, false => {a: ["s"], c: []} };
     select v { {a, ..} => "[a]" }
-}"#, prints(r#""[1]""#); FuseExpect::None);
+}"#, prints(r#""[1]""#); FuseExpect::Jit);
 
 run!(partial_struct_cells_nothing_decides_named_fields, r#"{
     let t = true;
@@ -7416,13 +7416,13 @@ run!(partial_struct_slice_elements_decided_apart_are_two_members, r#"{
     x <- 1;
     y <- "w";
     r
-}"#, prints(r#""[1]""#); FuseExpect::None);
+}"#, prints(r#""[1]""#); FuseExpect::Jit);
 
 run!(partial_struct_slice_elements_decided_apart_before_are_two_members, r#"{
     let b = true;
     let v = select b { true => [{a: [1], c: 1}], false => [{a: [2], c: "w"}] };
     select v { [{a, ..}, ..] => "[a]", _ => "other" }
-}"#, prints(r#""[1]""#); FuseExpect::None);
+}"#, prints(r#""[1]""#); FuseExpect::Jit);
 
 // A string beside a cell bound to string is one member at completion.
 run!(partial_struct_beside_a_bound_cell_is_one_member, r#"{
@@ -7521,7 +7521,7 @@ run!(repeated_payload_arm_runs, "{ let f = |v: [`A(i64), `B]| select v { `A(0) =
 
 // a name or `_` before a literal at one position takes the literal's values
 run!(literal_after_wildcard_in_tuple_unreachable, "{ let f = |x: (i64, i64)| -> i64 select x { (_, 1) => 0, (3, 1) => 1, _ => 2 }; f((3, 1)) }",
-    prints("i64:0"); FuseExpect::None);
+    prints("i64:0"); FuseExpect::Jit);
 
 run!(literal_after_wildcard_in_tuple_twin, "{ let f = |x: (i64, i64)| -> i64 select x { (_, 1) => 0, (3, 2) => 1, _ => 2 }; (f((3, 1)), f((3, 2)), f((4, 2))) }",
     |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 1, 2]); FuseExpect::Jit);
@@ -7530,10 +7530,10 @@ run!(literal_after_bind_in_tuple_unreachable, "{ let f = |x: (i64, bool)| -> i64
     refused("pattern (3, true) will never match: nothing reaches it (1:55; the value is (i64, bool))"); FuseExpect::None);
 
 run!(literal_after_wildcard_in_slice_unreachable, "{ let f = |x: Array<i64>| -> i64 select x { [_, 1] => 0, [3, 1] => 1, _ => 2 }; f([3, 1]) }",
-    prints("i64:0"); FuseExpect::None);
+    prints("i64:0"); FuseExpect::Jit);
 
 run!(literal_after_wildcard_in_payload_unreachable, "{ let f = |x: [`A(i64, i64), `B]| -> i64 select x { `A(_, 1) => 0, `A(3, 1) => 1, _ => 2 }; f(`A(3, 1)) }",
-    prints("i64:0"); FuseExpect::None);
+    prints("i64:0"); FuseExpect::Jit);
 
 run!(literal_after_wildcard_in_struct_unreachable, "{ let f = |x: {b: string, c: bool}| -> i64 select x { {b: _, c: true} => 0, {b: \"s\", c: true} => 1, _ => 2 }; f({b: \"s\", c: true}) }",
     refused(r#"pattern { b: "s", c: true } will never match: nothing reaches it (1:64; the value is { b: string, c: bool })"#); FuseExpect::None);
@@ -7542,7 +7542,7 @@ run!(literal_after_wildcard_in_written_struct_unreachable, "{ type E = [{b: stri
     refused("pattern E will never match: nothing reaches it (1:88; the value is [{ b: string, c: bool }, { d: i64 }])"); FuseExpect::None);
 
 run!(literal_after_wildcard_in_or_alternative_unreachable, "{ let f = |x: (i64, i64)| -> i64 select x { (_, 1) => 0, (3, 1) | (4, 1) => 1, _ => 2 }; f((3, 1)) }",
-    prints("i64:0"); FuseExpect::None);
+    prints("i64:0"); FuseExpect::Jit);
 
 run!(literal_after_guarded_wildcard_runs, "{ let f = |x: (i64, i64)| -> i64 select x { (n, 1) if n > 0 => 0, (3, 1) => 1, _ => 2 }; (f((3, 1)), f((-3, 1)), f((3, 2))) }",
     |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [0, 2, 2]); FuseExpect::Jit);

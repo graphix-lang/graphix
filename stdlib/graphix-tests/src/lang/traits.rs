@@ -6329,7 +6329,7 @@ run!(
         impl T for i64 { let m = 'p: [i64, string], 'q: (Number, 'p), 'r: (Number, 'p) |s, x: 'q, y: 'r, z| -> i64 0 };
         let result = T::m(1, (1, "s"), (1, 1), |x: i64| x)
     "#
-; FuseExpect::None);
+; FuseExpect::Jit);
 
 run!(
     method_variables_each_in_one_bound_beside_a_trait_variable_in_an_argument_hold,

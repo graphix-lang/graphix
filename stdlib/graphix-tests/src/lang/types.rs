@@ -133,7 +133,7 @@ const TYPED_ARRAYS1: &str = r#"
 }
 "#;
 
-run!(typed_arrays1, TYPED_ARRAYS1, prints("[[i64:1, i64:2, i64:3], [u32:1, u32:2, u32:3]]"); FuseExpect::None);
+run!(typed_arrays1, TYPED_ARRAYS1, prints("[[i64:1, i64:2, i64:3], [u32:1, u32:2, u32:3]]"); FuseExpect::Jit);
 
 const RECTYPES0: &str = r#"
 {
@@ -2041,7 +2041,7 @@ run!(
     annotation_names_one_variable_in_a_tuple,
     "{ let w: ('a, 'a) = (1, \"s\"); 0 }",
     prints("i64:0");
-    FuseExpect::None
+    FuseExpect::Jit
 );
 
 // longer shows that the two 'a are one variable; with ('a, 'b) the same read checks,
@@ -6235,14 +6235,14 @@ run!(
     select_type_test_over_two_payload_bounds,
     select_over_two_payload_bounds("B([[x]])", "B([x])", TYPE_TEST_OVER_THE_ELEMENT),
     prints("[[[[i64:1]], [i64:1]], [i64:1, i64:101]]");
-    FuseExpect::None
+    FuseExpect::Jit
 );
 
 run!(
     select_type_test_over_two_payload_bounds_by_a_definition,
     select_over_two_payload_bounds("mk([[x]])", "mk([x])", TYPE_TEST_OVER_THE_ELEMENT),
     prints("[[[[i64:1]], [i64:1]], [i64:1, i64:101]]");
-    FuseExpect::None
+    FuseExpect::Jit
 );
 
 run!(
@@ -6277,7 +6277,7 @@ run!(
     select_arms_at_two_depths_over_two_payloads,
     arms_at_two_depths(r#"B([["a"]])"#, r#"B(["b"])"#),
     prints(r#"[["A", "a"], ["B", "b"]]"#);
-    FuseExpect::None
+    FuseExpect::Jit
 );
 
 run!(
@@ -6317,7 +6317,7 @@ run!(
     v
 }"#,
     prints(r#"["A", i64:1]"#);
-    FuseExpect::None
+    FuseExpect::Jit
 );
 
 // What was built holds the referent of a reference to an expression no
@@ -6335,7 +6335,7 @@ run!(
     v
 }"#,
     prints(r#"["A", i64:1]"#);
-    FuseExpect::None
+    FuseExpect::Jit
 );
 
 run!(
@@ -6452,7 +6452,7 @@ run!(
     select_before_a_deeper_write,
     select_before_a_deeper_write("", ""),
     prints("[i64:1, [i64:1]]");
-    FuseExpect::None
+    FuseExpect::Jit
 );
 
 // Declared so, `[x]` could go to either array of the payload while `x` is
@@ -6484,7 +6484,7 @@ run!(
     f(1)
 }"#,
     prints("i64:1");
-    FuseExpect::None
+    FuseExpect::Jit
 );
 
 // What is written reads the payload the select decided: no finite type
@@ -6645,7 +6645,7 @@ run!(
     src
 }"#,
     prints("[[i64:0]]");
-    FuseExpect::None
+    FuseExpect::Jit
 );
 
 // Two payloads of one abstract type: the declaration that holds both
@@ -6722,7 +6722,7 @@ run!(
     v
 }"#,
     prints("[i64:1]");
-    FuseExpect::None
+    FuseExpect::Jit
 );
 
 // CR claude for claude: [bug/medium] Following this fixture's hint (declare y: [i64,
@@ -6752,7 +6752,7 @@ run!(
     v
 }"#,
     prints("i64:1");
-    FuseExpect::None
+    FuseExpect::Jit
 );
 
 // A NoError payload's bound reaches a binding that holds an error beside it.
@@ -7592,7 +7592,7 @@ run!(
     lower_bounds_beside_an_array_of_themselves,
     LOWER_BOUNDS_BESIDE_AN_ARRAY_OF_THEMSELVES,
     prints("[[i64:2], [i64:100]]");
-    FuseExpect::None
+    FuseExpect::Jit
 );
 
 run!(
@@ -16173,7 +16173,7 @@ run!(
   f(1, "s")
 }"#,
     prints(r#""s""#);
-    FuseExpect::None
+    FuseExpect::Jit
 );
 run!(
     wrapper_passing_a_union_over_its_variable_to_a_trait_methods_bound,
@@ -16465,7 +16465,7 @@ run!(
   f(["t"], "s")
 }"#,
     prints(r#"["t"]"#);
-    FuseExpect::None
+    FuseExpect::Jit
 );
 run!(
     written_element_into_a_named_union_of_a_bound_over_two_open_variables,
@@ -17492,7 +17492,7 @@ run!(
   g(1.5)
 }"#,
     prints("f64:1.5");
-    FuseExpect::None
+    FuseExpect::Jit
 );
 
 run!(

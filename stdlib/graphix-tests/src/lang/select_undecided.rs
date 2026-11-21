@@ -2508,7 +2508,7 @@ run!(slice_with_a_rest_beside_an_annotated_member, r#"{
 run!(destructure_under_a_slice_element_is_no_undecided_test, r#"{
     let f = |x| select (x, 0) { ([(a, b), ..], _) => a, _ => 0 };
     f([(1, 2)])
-}"#, prints("i64:1"); FuseExpect::None);
+}"#, prints("i64:1"); FuseExpect::Jit);
 
 run!(destructure_under_an_annotated_slice_element, r#"{
     let f = |x: Array<(i64, i64)>| select (x, 0) { ([(a, b), ..], _) => a, _ => 0 };
@@ -2545,7 +2545,7 @@ run!(undecided_abstract_payload_over_an_annotated_argument, r#"{
     type W<'a> = Abstract<'a>;
     let f = |x: [`J, `M]| select (W(x), 0) { (W(`J), _) => 1, _ => 2 };
     f(`M)
-}"#, prints("i64:2"); FuseExpect::None);
+}"#, prints("i64:2"); FuseExpect::Jit);
 
 run!(
     undecided_abstract_payload_annotated_where_built,
@@ -2560,7 +2560,7 @@ run!(
 run!(undecided_part_of_a_destructured_binding, r#"{
     let f = |x| select (x, 0) { ((a, b), _) => select (a, 0) { (`J, _) => 1, _ => 0 }, _ => 0 };
     f((`J, 1))
-}"#, prints("i64:1"); FuseExpect::None);
+}"#, prints("i64:1"); FuseExpect::Jit);
 
 run!(undecided_part_of_a_destructured_binding_annotated, r#"{
     let f = |x: ([`J, `M], i64)| select (x, 0) { ((a, b), _) => select (a, 0) { (`J, _) => 1, _ => 0 } };
@@ -2570,7 +2570,7 @@ run!(undecided_part_of_a_destructured_binding_annotated, r#"{
 run!(undecided_part_reached_through_a_pattern_alias, r#"{
     let f = |x| select (x, 0) { (c@ (a, b), _) => select c { (1, d) => d, _ => 0 } };
     f((5, 1))
-}"#, prints("i64:0"); FuseExpect::None);
+}"#, prints("i64:0"); FuseExpect::Jit);
 
 run!(undecided_part_through_an_intermediate_binding, r#"{
     let f = |x, c| {
@@ -2578,7 +2578,7 @@ run!(undecided_part_through_an_intermediate_binding, r#"{
         select (y, 0) { ((a, b), 0) => a + b, ((a, b), _) => a - b, _ => 0 }
     };
     f([(5, 1)], true)
-}"#, prints("i64:6"); FuseExpect::None);
+}"#, prints("i64:6"); FuseExpect::Jit);
 
 run!(slice_element_binds_a_member_written_later_refused, r#"{
     let v = never();

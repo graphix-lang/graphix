@@ -970,7 +970,7 @@ run!(
     "{ let s = {g: |x| x}; let put = |v| { s <- v; 0 }; \
        seqq 1 { put({g: |x| x}); (s.g(1), s.g(\"s\")) } }",
     prints("[i64:1, \"s\"]");
-    FuseExpect::None
+    FuseExpect::Jit
 );
 
 run!(
