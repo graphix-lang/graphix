@@ -1427,11 +1427,17 @@ impl<R: Rt> Select<R> {
             }
             _ => Arc::from_iter([]),
         };
+        let sites: Arc<[Expr]> = match &self.spec.kind {
+            ExprKind::Select(se) => {
+                Arc::from_iter(se.arms.iter().map(|(p, body)| pattern_site(p, body)))
+            }
+            _ => Arc::from_iter([]),
+        };
         wrap!(
             self,
             solving(|s| {
                 let id = s.select(arms, at.as_str().into());
-                s.name_arms(id, written);
+                s.name_arms(id, written, sites);
                 s.watch(&ctx.env, &scrut, Use::Select(id))
             })
         )

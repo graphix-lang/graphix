@@ -5177,6 +5177,19 @@ impl Solving {
         args: &[Arg],
         out: &Type,
     ) -> Result<()> {
+        self.call_at(env, ft, args, out, &mut |_, e| e)
+    }
+
+    /// [`Self::call`], a refusal of the argument at index `i` of `args`
+    /// told through `at(i, ..)`.
+    pub fn call_at(
+        &mut self,
+        env: &Env,
+        ft: &FnType,
+        args: &[Arg],
+        out: &Type,
+        at: &mut dyn FnMut(usize, anyhow::Error) -> anyhow::Error,
+    ) -> Result<()> {
         let labeled = |a: &FnArgType| match &a.kind {
             FnArgKind::Labeled { name, default } => {
                 Some((name.clone(), default.is_some()))
@@ -5184,20 +5197,23 @@ impl Solving {
             FnArgKind::Positional { .. } => None,
         };
         let mut formals = ft.args.iter().filter(|a| labeled(a).is_none());
-        for (_, arg) in args.iter().filter(|(l, _)| l.is_none()) {
+        for (i, (_, arg)) in args.iter().enumerate().filter(|(_, (l, _))| l.is_none()) {
             match (formals.next(), &ft.vargs) {
-                (Some(f), _) => self.constrain(env, arg, &f.typ)?,
-                (None, Some(v)) => self.constrain(env, arg, v)?,
+                (Some(f), _) => self.constrain(env, arg, &f.typ).map_err(|e| at(i, e))?,
+                (None, Some(v)) => self.constrain(env, arg, v).map_err(|e| at(i, e))?,
                 (None, None) => bail!("too many arguments"),
             }
         }
         if formals.next().is_some() {
             bail!("missing argument")
         }
-        for (label, arg) in args.iter().filter_map(|(l, t)| l.as_ref().map(|l| (l, t))) {
+        let given = args.iter().enumerate();
+        for (i, label, arg) in
+            given.filter_map(|(i, (l, t))| l.as_ref().map(|l| (i, l, t)))
+        {
             let named = |f: &&FnArgType| labeled(f).is_some_and(|(n, _)| &n == label);
             match ft.args.iter().find(named) {
-                Some(f) => self.constrain(env, arg, &f.typ)?,
+                Some(f) => self.constrain(env, arg, &f.typ).map_err(|e| at(i, e))?,
                 None => bail!("no argument #{label}"),
             }
         }

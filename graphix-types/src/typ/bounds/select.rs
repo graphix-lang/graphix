@@ -7,7 +7,7 @@
 use super::{Solving, alike, deep, open, rep, shallow, union_of};
 use crate::{
     env::Env,
-    expr::WrittenAt,
+    expr::{At, Expr, WrittenAt},
     stack::ensure_sufficient,
     typ::{
         AbstractId, Bound, Mutability, TVar, Type, cast::Indiscernible, node_addr,
@@ -15,7 +15,7 @@ use crate::{
     },
 };
 use ahash::AHashMap;
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 use arcstr::{ArcStr, literal};
 use compact_str::format_compact;
 use netidx_value::Typ;
@@ -496,6 +496,16 @@ impl Template {
     }
 }
 
+impl Select {
+    /// `e`, a refusal about the arm `arm`, placed at its pattern.
+    fn at_arm(&self, arm: Option<usize>, e: anyhow::Error) -> anyhow::Error {
+        match arm.and_then(|i| self.sites.as_ref()?.get(i)) {
+            Some(site) => e.at(site),
+            None => e,
+        }
+    }
+}
+
 pub(super) struct Select {
     pub(super) template: Arc<Template>,
     hit: Vec<bool>,
@@ -511,6 +521,8 @@ pub(super) struct Select {
     scrutinees: Vec<Type>,
     /// How each arm is written, for a refusal to name it.
     written: Option<Arc<[ArcStr]>>,
+    /// Where each arm's pattern is written, for a refusal to be placed.
+    sites: Option<Arc<[Expr]>>,
 }
 
 /// What one pattern makes of one type: the part it admits, what it
@@ -643,13 +655,15 @@ impl Solving {
             seen: vec![],
             scrutinees: vec![],
             written: None,
+            sites: None,
         });
         self.selects.len() - 1
     }
 
     /// Name the arms of the select `id` as they are written.
-    pub fn name_arms(&mut self, id: usize, written: Arc<[ArcStr]>) {
-        self.selects[id].written = Some(written)
+    pub fn name_arms(&mut self, id: usize, written: Arc<[ArcStr]>, sites: Arc<[Expr]>) {
+        self.selects[id].written = Some(written);
+        self.selects[id].sites = Some(sites)
     }
 
     /// A copy of the select `of` for an instance of the generic
@@ -1424,6 +1438,20 @@ impl Solving {
 
     /// Pass one type that reaches a select's scrutinee down its arms.
     pub(super) fn select_route(&mut self, env: &Env, id: usize, t: &Type) -> Result<()> {
+        let mut arm = None;
+        let r = self.select_route_at(env, id, t, &mut arm);
+        r.map_err(|e| self.selects[id].at_arm(arm, e))
+    }
+
+    /// [`Self::select_route`], with `arm` the arm being routed when it
+    /// refuses.
+    fn select_route_at(
+        &mut self,
+        env: &Env,
+        id: usize,
+        t: &Type,
+        arm_at: &mut Option<usize>,
+    ) -> Result<()> {
         let whole = deep(t);
         if !self.looked(env, id, &whole).is_empty() {
             self.selects[id].waiting.push(t.clone());
@@ -1436,6 +1464,7 @@ impl Solving {
         let reached = unsplit(&reach);
         let (mut binds, mut hits) = (vec![], vec![]);
         for (i, arm) in self.selects[id].template.clone().arms.iter().enumerate() {
+            *arm_at = Some(i);
             // a run-time test can't tell apart two types with one run-time
             // form: every reference has one
             if let Some(test) = arm.pat.written_test() {
@@ -1484,12 +1513,13 @@ impl Solving {
             }
             if !nothing(&r.part) {
                 hits.push(i);
-                binds.extend(r.binds)
+                binds.extend(r.binds.into_iter().map(|(v, t)| (v, t, i)))
             }
             if !arm.guarded {
                 reach = r.rest
             }
         }
+        *arm_at = None;
         if !nothing(&reach) {
             bail!(
                 "missing match cases: nothing matches {} ({})",
@@ -1500,15 +1530,17 @@ impl Solving {
         self.selects[id].routed = true;
         self.selects[id].seen.push(reached);
         hits.into_iter().for_each(|i| self.selects[id].hit[i] = true);
-        // a name takes every part routed to it, as one type
-        let mut names: Vec<(TVar, Vec<Type>)> = vec![];
-        for (v, t) in binds {
-            match names.iter_mut().find(|(n, _)| n.same_cell(&v)) {
-                Some((_, ts)) => ts.push(t),
-                None => names.push((v, vec![t])),
+        // a name takes every part routed to it, as one type; a refusal of it
+        // is the first arm's that binds it
+        let mut names: Vec<(TVar, Vec<Type>, usize)> = vec![];
+        for (v, t, i) in binds {
+            match names.iter_mut().find(|(n, ..)| n.same_cell(&v)) {
+                Some((_, ts, _)) => ts.push(t),
+                None => names.push((v, vec![t], i)),
             }
         }
-        for (v, ts) in names {
+        for (v, ts, i) in names {
+            *arm_at = Some(i);
             let t = self.absorbed(env, &unsplit(&union_of(ts)));
             self.constrain(env, &t, &Type::TVar(v))?
         }
@@ -1603,11 +1635,14 @@ impl Solving {
                         Some(w) => format_compact!("{w}"),
                         None => format_compact!("{}", j + 1),
                     };
-                    bail!(
-                        "pattern {arm} will never match: nothing reaches it ({}; an earlier \
-                         arm takes every value it would)",
-                        s.template.at
-                    )
+                    return Err(s.at_arm(
+                        Some(j),
+                        anyhow!(
+                            "pattern {arm} will never match: nothing reaches it ({}; an \
+                             earlier arm takes every value it would)",
+                            s.template.at
+                        ),
+                    ));
                 }
             }
         }
@@ -1638,19 +1673,20 @@ impl Solving {
                     Some(w) => format_compact!("{w}"),
                     None => format_compact!("{}", i + 1),
                 };
-                if let Some(name) = s.template.arms[i].pat.blind(env, false) {
-                    bail!(
+                let e = match s.template.arms[i].pat.blind(env, false) {
+                    Some(name) => anyhow!(
                         "pattern {arm} takes nothing: {name}(..) names part of a payload \
                          something could be written into or called, which it may only \
                          where the value is known to be one instance of {name}; write \
                          the instance in a type test, `{name}<T> as {name}(..)` ({at}; \
                          the value is {seen})"
-                    )
-                }
-                bail!(
-                    "pattern {arm} will never match: nothing reaches it ({at}; the value \
-                     is {seen})"
-                )
+                    ),
+                    None => anyhow!(
+                        "pattern {arm} will never match: nothing reaches it ({at}; the \
+                         value is {seen})"
+                    ),
+                };
+                return Err(s.at_arm(Some(i), e));
             }
         }
         Ok(())

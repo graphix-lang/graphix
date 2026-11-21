@@ -4042,7 +4042,23 @@ impl<R: Rt> CallSite<R> {
                     fill_omitted(&mut self.args, ft)?;
                     self.ftype = Some(ft.clone())
                 }
-                wrap!(self, solving(|s| s.call(&ctx.env, ft, &args, &self.rtype)))?;
+                // a refused argument is placed at what the call passed
+                let given: SmallVec<[&Expr; 4]> = self
+                    .args
+                    .iter()
+                    .filter_map(|(_, a)| match (a.stage, a.node.as_ref()) {
+                        (ArgStage::Given, Some(n)) => Some(n.spec()),
+                        _ => None,
+                    })
+                    .collect();
+                let mut at = |i: usize, e: anyhow::Error| match given.get(i) {
+                    Some(spec) => e.at(spec),
+                    None => e,
+                };
+                wrap!(
+                    self,
+                    solving(|s| s.call_at(&ctx.env, ft, &args, &self.rtype, &mut at))
+                )?;
                 if let Some((of, defaults)) = self.method_defaults(ctx, ft, &args) {
                     wrap!(self, solving(|s| s.watch(&ctx.env, &of, defaults)))?
                 }
