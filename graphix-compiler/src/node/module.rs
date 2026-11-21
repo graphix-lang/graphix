@@ -377,17 +377,15 @@ fn bind_sig_item(
             compile_use_items(env, pending, si.pos, si_ori, scope, false, false, names)?;
         }
         SigKind::Bind(BindSig { name, typ }) => {
-            let typ = typ.scope_refs(&scope.lexical).rewrite_declared_args(env)?;
+            let typ = typ
+                .scope_refs_named(&scope.lexical, &mut LPooled::take())
+                .rewrite_declared_args(env)?;
             // a declared signature has no gate to close over its cells:
             // every one is a quantifier, a constructor trait's element
             // included, copied at each use, and its own are its scheme's,
             // which each use picks
-            match &typ {
-                Type::Fn(ft) => {
-                    ft.alias_tvars(&mut LPooled::take());
-                    ft.generalize(0)
-                }
-                typ => typ.alias_tvars(&mut LPooled::take()),
+            if let Type::Fn(ft) = &typ {
+                ft.generalize(0)
             }
             if env.ide.is_lsp() {
                 typ.record_ide_refs(env, &scope.lexical);

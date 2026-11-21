@@ -2789,10 +2789,9 @@ impl<R: Rt> PatternNode<R> {
     ) -> Result<Self> {
         let (explicit, type_predicate) = match &spec.type_predicate {
             Some(t) => {
-                let t = t.scope_refs(&scope.lexical);
+                let t = super::lambda::body_annotation(ctx, t, &scope.lexical);
                 crate::warn_later_block_names(ctx, flags, &t)?;
                 t.refuse_quantified_fns(&ctx.env)?;
-                super::lambda::body_annotation(ctx, &t)?;
                 (true, t.lookup_ref(&ctx.env)?)
             }
             None => {

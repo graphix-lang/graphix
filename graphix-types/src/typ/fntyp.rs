@@ -2421,20 +2421,36 @@ impl FnType {
 
     pub fn scope_refs(&self, scope: &ModPath) -> Self {
         let mut copies: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-        self.scope_refs_with(scope, &mut copies)
+        self.scope_refs_in(scope, &mut super::Copies::Cells(&mut copies))
+    }
+
+    /// [`Type::scope_refs_named`] of this signature's parts: its own
+    /// quantifiers are names of `names` too, as its other variables are.
+    pub fn scope_refs_named(
+        &self,
+        scope: &ModPath,
+        names: &mut AHashMap<ArcStr, TVar>,
+    ) -> Self {
+        let mut copies = super::Copies::Names(names, LPooled::take());
+        let mut fresh = self
+            .cow_walk(|t| t.scope_refs_int(scope, &mut copies))
+            .unwrap_or_else(|| self.clone());
+        fresh.lambda_ids = self.lambda_ids.instantiate();
+        fresh
     }
 
     /// A signature of its own: each scoping of a written type is one
     /// compile's, and what unifies with it must not name another
     /// compile's definitions.
-    pub(super) fn scope_refs_with(
+    pub(super) fn scope_refs_in(
         &self,
         scope: &ModPath,
-        copies: &mut AHashMap<usize, TVar>,
+        copies: &mut super::Copies,
     ) -> Self {
-        let mut fresh = self
-            .cow_walk(|t| t.scope_refs_int(scope, copies))
-            .unwrap_or_else(|| self.clone());
+        let mut fresh = copies.within(&self.quantifiers, |copies| {
+            self.cow_walk(|t| t.scope_refs_int(scope, copies))
+                .unwrap_or_else(|| self.clone())
+        });
         fresh.lambda_ids = self.lambda_ids.instantiate();
         fresh
     }

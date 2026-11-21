@@ -669,6 +669,57 @@ fn shape_hash_node(
     })
 }
 
+/// How [`Type::scope_refs`] copies the variables of a written type: each
+/// cell once, so what was one variable stays one, or each name once, so
+/// same-named variables are one.
+pub(super) enum Copies<'a> {
+    Cells(&'a mut AHashMap<usize, TVar>),
+    /// The variable of each name, and the cells of the written type met
+    /// so far.
+    Names(&'a mut AHashMap<ArcStr, TVar>, LPooled<AHashSet<usize>>),
+}
+
+impl Copies<'_> {
+    fn get(&self, tv: &TVar) -> Option<TVar> {
+        match self {
+            Copies::Cells(m) => m.get(&tv.cell_addr()).cloned(),
+            Copies::Names(m, _) => m.get(&tv.name).cloned(),
+        }
+    }
+
+    fn insert(&mut self, tv: &TVar, copy: TVar) {
+        match self {
+            Copies::Cells(m) => {
+                m.insert(tv.cell_addr(), copy);
+            }
+            Copies::Names(m, _) => {
+                m.insert(tv.name.clone(), copy);
+            }
+        }
+    }
+
+    /// `f` with the names `quantifiers` declares its own: none of them is
+    /// a variable from outside while it runs.
+    pub(super) fn within<T>(
+        &mut self,
+        quantifiers: &[ArcStr],
+        f: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let Copies::Names(m, _) = self else { return f(self) };
+        let outer: SmallVec<[(ArcStr, Option<TVar>); 4]> =
+            quantifiers.iter().map(|q| (q.clone(), m.remove(q))).collect();
+        let r = f(self);
+        let Copies::Names(m, _) = self else { unreachable!() };
+        for (q, tv) in outer {
+            m.remove(&q);
+            if let Some(tv) = tv {
+                m.insert(q, tv);
+            }
+        }
+        r
+    }
+}
+
 #[cfg(test)]
 thread_local! {
     /// The nodes [`shape_hash`] has hashed on this thread.
@@ -4058,30 +4109,50 @@ impl Type {
         scope: &ModPath,
         copies: &mut AHashMap<usize, TVar>,
     ) -> Type {
-        self.scope_refs_int(scope, copies).unwrap_or_else(|| self.clone())
+        let mut copies = Copies::Cells(copies);
+        self.scope_refs_int(scope, &mut copies).unwrap_or_else(|| self.clone())
     }
 
-    /// `None` when no `Ref` or `TVar` is beneath. `copies` maps each
-    /// cell re-minted so far to its copy: every occurrence of one cell
-    /// is one copy, so what was one variable stays one.
-    fn scope_refs_int(
+    /// [`Self::scope_refs`] where same-named variables are one variable:
+    /// a name `names` holds is that variable, and any other is copied once
+    /// and goes into `names`. A nested fn type's own quantifiers are its own.
+    pub fn scope_refs_named(
         &self,
         scope: &ModPath,
-        copies: &mut AHashMap<usize, TVar>,
+        names: &mut AHashMap<ArcStr, TVar>,
+    ) -> Type {
+        let mut copies = Copies::Names(names, LPooled::take());
+        self.scope_refs_int(scope, &mut copies).unwrap_or_else(|| self.clone())
+    }
+
+    /// `None` when no `Ref` or `TVar` is beneath.
+    pub(super) fn scope_refs_int(
+        &self,
+        scope: &ModPath,
+        copies: &mut Copies,
     ) -> Option<Type> {
         ensure_sufficient(|| self.scope_refs_int_inner(scope, copies))
     }
 
-    fn scope_refs_int_inner(
-        &self,
-        scope: &ModPath,
-        copies: &mut AHashMap<usize, TVar>,
-    ) -> Option<Type> {
+    fn scope_refs_int_inner(&self, scope: &ModPath, copies: &mut Copies) -> Option<Type> {
         match self {
             Type::TVar(tv) => {
-                let addr = tv.cell_addr();
-                if let Some(copy) = copies.get(&addr) {
-                    return Some(Type::TVar(copy.clone()));
+                if let Some(copy) = copies.get(tv) {
+                    // a bound written at any occurrence of a name is the
+                    // variable's
+                    if let Copies::Names(_, met) = copies
+                        && met.insert(tv.cell_addr())
+                        && !copy.same_cell(tv)
+                    {
+                        let cons = tv.cell().read().constraints.clone();
+                        for c in cons.iter() {
+                            let c = c
+                                .scope_refs_int(scope, copies)
+                                .unwrap_or_else(|| c.clone());
+                            copy.add_cell_constraint(c)
+                        }
+                    }
+                    return Some(Type::TVar(copy));
                 }
                 let (bound, cons) = {
                     let cell = tv.cell();
@@ -4089,7 +4160,10 @@ impl Type {
                     (cell.binding.clone(), cell.constraints.clone())
                 };
                 let fresh = tv.fresh_copy();
-                copies.insert(addr, fresh.clone());
+                copies.insert(tv, fresh.clone());
+                if let Copies::Names(_, met) = copies {
+                    met.insert(tv.cell_addr());
+                }
                 if let Some(typ) = bound {
                     fresh.bind(typ.scope_refs_int(scope, copies).unwrap_or(typ))
                 }
@@ -4107,7 +4181,7 @@ impl Type {
                 }));
                 Some(Type::Ref(Arc::new(tr.with_scope(scope.clone(), params))))
             }
-            Type::Fn(ft) => Some(Type::Fn(Arc::new(ft.scope_refs_with(scope, copies)))),
+            Type::Fn(ft) => Some(Type::Fn(Arc::new(ft.scope_refs_in(scope, copies)))),
             t => t.cow_children(&mut |c| c.scope_refs_int(scope, copies)),
         }
     }

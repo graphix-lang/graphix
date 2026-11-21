@@ -960,19 +960,23 @@ pub struct BodyShared {
     pub(crate) bound: crate::fusion::BoundKernels,
 }
 
-/// A type written in a body: its same-named variables are one variable,
-/// and one a definition around the body declares (a nested fn type's own
-/// quantifiers are its own) is the innermost such definition's; any other
-/// is the written type's own (`Level::Written`).
-pub(crate) fn body_annotation<R: Rt>(ctx: &CompileCtx<R>, t: &Type) -> Result<()> {
-    let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-    enclosing_tvars(ctx, &mut known);
-    let enclosing: LPooled<AHashSet<ArcStr>> = known.keys().cloned().collect();
-    t.alias_tvars(&mut known);
-    for (_, tv) in known.iter().filter(|(name, _)| !enclosing.contains(*name)) {
+/// A type written in a body, scoped to `scope`: its same-named variables
+/// are one variable, and one a definition around the body declares (a
+/// nested fn type's own quantifiers are its own) is the innermost such
+/// definition's; any other is the written type's own (`Level::Written`).
+pub(crate) fn body_annotation<R: Rt>(
+    ctx: &CompileCtx<R>,
+    t: &Type,
+    scope: &ModPath,
+) -> Type {
+    let mut names: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+    enclosing_tvars(ctx, &mut names);
+    let enclosing: LPooled<AHashSet<ArcStr>> = names.keys().cloned().collect();
+    let t = t.scope_refs_named(scope, &mut names);
+    for (_, tv) in names.iter().filter(|(name, _)| !enclosing.contains(*name)) {
         tv.own_written()
     }
-    Ok(())
+    t
 }
 
 /// The variables the definitions around the body being compiled declare,
@@ -2662,13 +2666,6 @@ impl Lambda {
                 TVar::empty_named(format_compact!("{}#elem", tv.name).as_str().into());
             ctors.push((tv.name.clone(), Type::TVar(elem)));
         }
-        // a written type, as the definition's signature holds it
-        let written = |env: &Env, t: &Type| -> Result<Type> {
-            let mut copies: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-            Ok(t.scope_refs_with(&scope.lexical, &mut copies)
-                .rewrite_trait_args(env)?
-                .apply_ctor_quantifiers(&ctors))
-        };
         let signature = l.args.iter().filter_map(|a| a.constraint.as_ref());
         let signature = signature
             .chain(l.rtype.iter())
@@ -2680,6 +2677,42 @@ impl Lambda {
         if l.vargs.is_some() && matches!(l.body, LambdaBody::Expr(_)) {
             bail!("a variadic argument (`@args`) is for builtins only")
         }
+        // the signature's variables by name: one the definitions around
+        // this one declare, and this one does not, is theirs
+        let mut names: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+        enclosing_tvars(ctx, &mut names);
+        names.retain(|name, _| {
+            !l.constraints.iter().any(|(tv, _)| tv.name == *name)
+                && !ctors
+                    .iter()
+                    .any(|(_, e)| matches!(e, Type::TVar(e) if e.name == *name))
+        });
+        // one variable per quantifier: a `'a: A + B` bound is a pair per
+        // conjunct over one var
+        let mut constraints: LPooled<Vec<_>> = l
+            .constraints
+            .iter()
+            .map(|(tv, tc)| {
+                let tv = match &Type::TVar(tv.clone())
+                    .scope_refs_named(&scope.lexical, &mut names)
+                {
+                    Type::TVar(tv) => tv.clone(),
+                    _ => bail!("BUG: a quantifier copied to no variable"),
+                };
+                let tc = tc.scope_refs_named(&scope.lexical, &mut names);
+                tc.check_bound(&ctx.env)?;
+                Ok((tv, tc))
+            })
+            .collect::<Result<_>>()?;
+        check_bounds_acyclic(&constraints)?;
+        // a written type, as the definition's signature holds it
+        let mut written = |env: &Env, t: &Type| -> Result<Type> {
+            Ok(t.scope_refs_named(&scope.lexical, &mut names)
+                .rewrite_trait_args(env)?
+                .apply_ctor_quantifiers(&ctors))
+        };
+        let rtype = l.rtype.as_ref().map(|t| written(&ctx.env, t)).transpose()?;
+        let throws = l.throws.as_ref().map(|t| written(&ctx.env, t)).transpose()?;
         // a trait as a parameter's type is a fresh bounded quantifier
         // (`|s: Read|` ≡ `'s: Read |s: 's|`), joined to the declared ones
         // so the def gate holds it rigid
@@ -2708,8 +2741,6 @@ impl Lambda {
             Some(None) => Some(None),
             Some(Some(t)) => Some(Some(param(&ctx.env, arcstr::literal!("#args"), t)?)),
         };
-        let rtype = l.rtype.as_ref().map(|t| written(&ctx.env, t)).transpose()?;
-        let throws = l.throws.as_ref().map(|t| written(&ctx.env, t)).transpose()?;
         let mut argspec: LPooled<Vec<Arg>> = LPooled::take();
         for (i, a) in l.args.iter().enumerate() {
             let constraint = match &a.constraint {
@@ -2731,23 +2762,6 @@ impl Lambda {
             });
         }
         let argspec = Arc::from_iter(argspec.drain(..));
-        // One scoped var per quantifier: a `'a: A + B` bound is a pair
-        // per conjunct over one var.
-        let mut scoped: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-        let mut constraints: LPooled<Vec<_>> = l
-            .constraints
-            .iter()
-            .map(|(tv, tc)| {
-                let tv = scoped
-                    .entry(tv.name.clone())
-                    .or_insert_with(|| tv.scope_refs(&scope.lexical))
-                    .clone();
-                let tc = tc.scope_refs(&scope.lexical);
-                tc.check_bound(&ctx.env)?;
-                Ok((tv, tc))
-            })
-            .collect::<Result<_>>()?;
-        check_bounds_acyclic(&constraints)?;
         constraints.extend(trait_quantifiers.drain(..));
         let body = DefBody::of(&l.body);
         let builtin = match &l.body {
@@ -2843,20 +2857,6 @@ impl Lambda {
                 explicit_throws,
                 ..FnType::default()
             };
-            let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-            enclosing_tvars(ctx, &mut known);
-            known.retain(|name, _| {
-                !constraints.iter().any(|(tv, _)| tv.name == *name)
-                    && !ctors
-                        .iter()
-                        .any(|(_, e)| matches!(e, Type::TVar(e) if e.name == *name))
-            });
-            // a variable the definitions around this one declare, and this
-            // one does not, is theirs
-            ft.alias_tvars(&mut known);
-            for (_, tc) in constraints.iter() {
-                tc.alias_tvars(&mut known);
-            }
             let ft = ft.declaring(&constraints)?;
             ft.check_quantifiers_held()?;
             ft

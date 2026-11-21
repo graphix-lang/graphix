@@ -60,13 +60,12 @@ pub(crate) fn method_sig(
     tref: &Type,
     scope: &ModPath,
 ) -> Result<FnType> {
-    let ft =
-        match &Type::Fn(Arc::new(parsed.scope_refs(scope))).rewrite_declared_args(env)? {
-            Type::Fn(ft) => (**ft).clone(),
-            _ => unreachable!("a rewritten function type is a function type"),
-        };
     let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-    ft.alias_tvars(&mut known);
+    let parsed = Type::Fn(Arc::new(parsed.scope_refs_named(scope, &mut known)));
+    let ft = match &parsed.rewrite_declared_args(env)? {
+        Type::Fn(ft) => (**ft).clone(),
+        _ => unreachable!("a rewritten function type is a function type"),
+    };
     if let Some(tv) = known.get("self") {
         tv.add_cell_constraint(tref.clone());
     }
@@ -931,7 +930,6 @@ pub(crate) fn impl_head(
     head: &ImplHead,
     declared: bool,
 ) -> Result<(Type, Arc<[TVar]>)> {
-    let target = head.target.scope_refs(scope);
     let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
     let params: Arc<[TVar]> = Arc::from_iter(head.params.iter().map(|tv| {
         let tv = TVar::empty_generic(tv.name.clone());
@@ -939,14 +937,15 @@ pub(crate) fn impl_head(
         tv
     }));
     let mut in_target: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-    target.collect_tvars(&mut in_target);
+    head.target.collect_tvars(&mut in_target);
+    let target = head.target.scope_refs_named(scope, &mut known);
     for tv in params.iter() {
         if !in_target.contains_key(&tv.name) {
             bail!("impl type variable {tv} does not occur in the target {target}")
         }
     }
     for (name, _) in in_target.iter() {
-        if !known.contains_key(name) {
+        if !params.iter().any(|tv| tv.name == *name) {
             bail!("undeclared type variable '{name} in impl target {target}")
         }
     }
@@ -970,11 +969,12 @@ pub(crate) fn impl_head(
         }
     }
     check_bounds_acyclic(&head.constraints)?;
-    target.alias_tvars(&mut known);
-    seed_conjuncts(
-        &mut known,
-        head.constraints.iter().map(|(tv, tc)| (tv, tc.scope_refs(scope))),
-    )?;
+    let constraints: LPooled<Vec<(&TVar, Type)>> = head
+        .constraints
+        .iter()
+        .map(|(tv, tc)| (tv, tc.scope_refs_named(scope, &mut known)))
+        .collect();
+    seed_conjuncts(&mut known, constraints.iter().map(|(tv, tc)| (*tv, tc.clone())))?;
     let holes = target.holes();
     if trait_def.hole {
         if holes != 1 || !matches!(target.decompose(), Some((_, Type::Hole))) {

@@ -3684,11 +3684,9 @@ impl<R: Rt> Never<R> {
             .collect::<Result<Box<[_]>>>()?;
         let typ = match typ {
             Some(t) => {
-                let t = t.scope_refs(&scope.lexical);
+                let t = lambda::body_annotation(ctx, t, &scope.lexical);
                 crate::warn_later_block_names(ctx, flags, &t)?;
-                let t = t.rewrite_trait_args(&ctx.env)?;
-                lambda::body_annotation(ctx, &t)?;
-                t
+                t.rewrite_trait_args(&ctx.env)?
             }
             None => Type::Bottom,
         };

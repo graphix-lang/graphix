@@ -3737,9 +3737,15 @@ impl Env {
         if self.lexical.traits.get(scope).and_then(|m| m.get(name)).is_some() {
             bail!("{name} is already defined as a trait {}", in_scope(scope))
         }
+        // a parameter's name, wherever the definition writes it, is the
+        // parameter
+        let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+        for (tv, _) in params.iter() {
+            known.entry(tv.name.clone()).or_insert_with(|| tv.clone());
+        }
         let (typ, rep) = match body {
             TypeDefBody::Alias(typ) => {
-                (typ.scope_refs(scope).rewrite_trait_args(self)?, None)
+                (typ.scope_refs_named(scope, &mut known).rewrite_trait_args(self)?, None)
             }
             TypeDefBody::Abstract(rep) => {
                 let formals =
@@ -3753,31 +3759,25 @@ impl Env {
                 let typ = Type::Abstract { id, params: formals };
                 let rep = match rep {
                     None => None,
-                    Some(r) => Some(r.scope_refs(scope).rewrite_trait_args(self)?),
+                    Some(r) => Some(
+                        r.scope_refs_named(scope, &mut known).rewrite_trait_args(self)?,
+                    ),
                 };
                 (typ, rep)
             }
         };
-        let params = scope_params(&params, scope);
+        let params: Arc<[(TVar, Option<Type>)]> =
+            Arc::from_iter(params.iter().map(|(tv, tc)| {
+                (tv.clone(), tc.as_ref().map(|t| t.scope_refs_named(scope, &mut known)))
+            }));
         for b in params.iter().filter_map(|(_, b)| b.as_ref()) {
             b.check_bound(self)?;
         }
-        let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         let mut declared: LPooled<AHashSet<ArcStr>> = LPooled::take();
         let mut used: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         typ.collect_tvars(&mut used);
         for t in rep.iter().chain(params.iter().filter_map(|(_, tc)| tc.as_ref())) {
             t.collect_tvars(&mut used);
-        }
-        for (tv, tc) in params.iter() {
-            Type::TVar(tv.clone()).alias_tvars(&mut known);
-            if let Some(tc) = tc {
-                tc.alias_tvars(&mut known);
-            }
-        }
-        typ.alias_tvars(&mut known);
-        if let Some(rep) = &rep {
-            rep.alias_tvars(&mut known);
         }
         for (tv, _) in params.iter() {
             if !declared.insert(tv.name.clone()) {
