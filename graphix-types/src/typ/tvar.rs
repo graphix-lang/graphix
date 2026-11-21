@@ -187,7 +187,9 @@ impl CellRef {
     pub(crate) fn link(&self) -> CellLink {
         match self {
             CellRef::Own(c) => CellLink::Own(c.clone()),
-            CellRef::Epoch(c) => CellLink::Epoch(sync::Arc::downgrade(c)),
+            CellRef::Epoch(c) => {
+                CellLink::Epoch(sync::Arc::downgrade(c), c.data_ptr().addr())
+            }
         }
     }
 }
@@ -197,7 +199,8 @@ impl CellRef {
 #[derive(Debug)]
 pub(crate) enum CellLink {
     Own(sync::Arc<CellLock>),
-    Epoch(sync::Weak<CellLock>),
+    /// The cell, and its address ([`TVar::cell_addr`]).
+    Epoch(sync::Weak<CellLock>, usize),
 }
 
 /// A link's cell for as long as this lives: borrowed where the link keeps
@@ -233,7 +236,7 @@ impl CellLink {
     pub(crate) fn get(&self) -> CellGuard<'_> {
         match self {
             CellLink::Own(c) => CellGuard::Borrowed(c),
-            CellLink::Epoch(w) => CellGuard::Held(
+            CellLink::Epoch(w, _) => CellGuard::Held(
                 w.upgrade().expect("a cell is read after its epoch's arena was dropped"),
             ),
         }
@@ -242,6 +245,13 @@ impl CellLink {
     /// The cell, kept for as long as the result is.
     pub(crate) fn upgrade(&self) -> CellRef {
         self.get().to_ref()
+    }
+
+    fn addr(&self) -> usize {
+        match self {
+            CellLink::Own(c) => c.data_ptr().addr(),
+            CellLink::Epoch(_, addr) => *addr,
+        }
     }
 }
 
@@ -2284,6 +2294,16 @@ impl TVar {
         self.read().cell.get().read().binding.is_some()
     }
 
+    /// `f` of the cell, read once (never recurse under the guard).
+    pub(crate) fn peek<R>(&self, f: impl FnOnce(&TCell) -> R) -> R {
+        f(&self.read().cell.get().read())
+    }
+
+    /// Whether the cell is neither bound nor rigid.
+    pub(crate) fn is_open(&self) -> bool {
+        self.peek(|c| c.binding.is_none() && c.rigid_gates == 0)
+    }
+
     fn ground_judgment(&self, j: Judgment) -> Ground {
         let epoch = ground_epoch();
         let link = self.read();
@@ -2779,7 +2799,7 @@ impl TVar {
     /// Identity of the shared binding cell, for set membership tests.
     #[doc(hidden)]
     pub fn cell_addr(&self) -> usize {
-        self.read().cell.get().data_ptr().addr()
+        self.read().cell.addr()
     }
 
     /// `self`'s cell under `like`'s name when a program wrote that name: a

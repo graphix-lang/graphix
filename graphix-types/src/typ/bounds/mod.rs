@@ -898,7 +898,7 @@ fn stands_for(env: &Env, t: &Type) -> Result<Type> {
 /// declared variable inside its own definition.
 fn open(t: &Type) -> Option<&TVar> {
     match t {
-        Type::TVar(tv) if !tv.is_bound() && !tv.is_rigid() => Some(tv),
+        Type::TVar(tv) if tv.is_open() => Some(tv),
         _ => None,
     }
 }
@@ -2859,12 +2859,14 @@ fn cells_of(t: &Type, rigid: bool, out: &mut SmallVec<[TVar; 4]>) {
         seen: &mut AHashSet<usize>,
     ) {
         ensure_sufficient(|| match t {
-            Type::TVar(tv) => match tv.binding() {
-                Some(b) => go(&b, rigid, out, seen),
-                None if (rigid || !tv.is_rigid()) && seen.insert(tv.cell_addr()) => {
+            Type::TVar(tv) => match tv.peek(|c| (c.binding.clone(), c.rigid_gates > 0)) {
+                (Some(b), _) => go(&b, rigid, out, seen),
+                (None, declared)
+                    if (rigid || !declared) && seen.insert(tv.cell_addr()) =>
+                {
                     out.push(tv.clone())
                 }
-                None => (),
+                (None, _) => (),
             },
             t if node_addr(t).is_some_and(|n| !seen.insert(n)) => (),
             t => {
@@ -2988,17 +2990,19 @@ fn made_by_type(v: &TVar) -> bool {
 }
 
 fn quantified(v: &TVar) -> bool {
-    v.cell().read().solving.as_ref().is_some_and(|k| k.quantified)
+    v.peek(|c| c.solving.as_ref().is_some_and(|k| k.quantified))
 }
 
 /// Whether `v` is a cell of the definition closing over `depth` that its
 /// check left neither decided nor the scheme's.
 fn open_own(v: &TVar, depth: u32) -> bool {
-    v.level().depth() > depth
-        && !v.is_bound()
-        && !v.is_rigid()
-        && !quantified(v)
-        && !v.level().is_generic()
+    v.peek(|c| {
+        c.level.depth() > depth
+            && c.binding.is_none()
+            && c.rigid_gates == 0
+            && !c.solving.as_ref().is_some_and(|k| k.quantified)
+            && !c.level.is_generic()
+    })
 }
 
 fn demanded(v: &TVar) -> bool {
@@ -3006,9 +3010,7 @@ fn demanded(v: &TVar) -> bool {
 }
 
 fn feeders(v: &TVar) -> SmallVec<[TVar; 1]> {
-    let cell = v.cell();
-    let c = cell.read();
-    c.solving.as_ref().map(|k| k.feeders.clone()).unwrap_or_default()
+    v.peek(|c| c.solving.as_ref().map(|k| k.feeders.clone()).unwrap_or_default())
 }
 
 /// What the result's type of a function its calls are made through is
@@ -3054,7 +3056,12 @@ fn singleton(v: &TVar) -> bool {
 /// Whether a definition closing at `min` may fix `v`: an open cell of
 /// its own, no scheme's variable.
 fn fixes(v: &TVar, min: u32) -> bool {
-    !v.is_bound() && !v.is_rigid() && !quantified(v) && v.level().depth() >= min
+    v.peek(|c| {
+        c.binding.is_none()
+            && c.rigid_gates == 0
+            && !c.solving.as_ref().is_some_and(|k| k.quantified)
+            && c.level.depth() >= min
+    })
 }
 
 /// The open cells of `t` where it takes a value (a function's argument, a
@@ -3256,10 +3263,17 @@ impl Solving {
     /// What the cell `v` reaches in one step: the open cells of its
     /// bounds, the cells that feed it, and those its uses produce.
     fn next(&self, v: &TVar, out: &mut SmallVec<[TVar; 4]>) {
-        let (lower, upper) = (v.cell_lower(), v.cell_above());
+        let (lower, upper, feeders, uses) = v.peek(|c| {
+            let lower = c.lower.clone();
+            let upper: SmallVec<[Type; 1]> = c.above.all().into();
+            match &c.solving {
+                Some(k) => (lower, upper, k.feeders.clone(), k.uses.clone()),
+                None => (lower, upper, SmallVec::new(), SmallVec::new()),
+            }
+        });
         lower.iter().chain(upper.iter()).for_each(|b| cells_of(b, false, out));
-        out.extend(feeders(v).into_iter().filter(|u| !u.is_bound() && !u.is_rigid()));
-        for (u, _) in uses(v).iter() {
+        out.extend(feeders.into_iter().filter(|u| u.is_open()));
+        for (u, _) in uses.iter() {
             u.each(&mut |t| cells_of(t, false, out));
             if let Use::Routed(_, of) = u {
                 let mut binds = SmallVec::new();
@@ -3278,7 +3292,7 @@ impl Solving {
         let mut under: LPooled<AHashMap<usize, SmallVec<[usize; 2]>>> = LPooled::take();
         let mut work: LPooled<Vec<TVar>> = LPooled::take();
         for v in from {
-            if !v.is_bound() && !v.is_rigid() && held.met.insert(v.cell_addr()) {
+            if v.is_open() && held.met.insert(v.cell_addr()) {
                 work.push(v)
             }
         }
@@ -4884,9 +4898,7 @@ impl Solving {
 }
 
 fn uses(v: &TVar) -> SmallVec<[(Use, bool); 1]> {
-    let cell = v.cell();
-    let c = cell.read();
-    c.solving.as_ref().map(|k| k.uses.clone()).unwrap_or_default()
+    v.peek(|c| c.solving.as_ref().map(|k| k.uses.clone()).unwrap_or_default())
 }
 
 /// Every type known to flow into `v`: its own lower bounds and those of
