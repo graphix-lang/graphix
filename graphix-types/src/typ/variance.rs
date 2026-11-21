@@ -20,7 +20,7 @@ use crate::{
     env::Env,
     stack::ensure_sufficient,
     typ::{
-        Mutability, ResolvedRef, Type, TypeRef,
+        DefaultType, Mutability, ResolvedRef, Type, TypeRef,
         expansive::{Named, definition, holds_formal},
     },
 };
@@ -462,8 +462,14 @@ pub(crate) fn covariant_in(env: &Env, t: &Type, formals: &[ArcStr]) -> bool {
                 },
                 Type::Ref(tr) => self.apply(tr, at),
                 Type::Fn(f) => {
-                    f.args.iter().all(|a| self.walk(&a.typ, at.argument()))
-                        && f.vargs.as_ref().is_none_or(|t| self.walk(t, at.argument()))
+                    f.args.iter().all(|a| {
+                        self.walk(&a.typ, at.argument())
+                            && match a.kind.default() {
+                                Some(DefaultType::Of(d)) => self.walk(d, at),
+                                Some(DefaultType::Param) => self.walk(&a.typ, at),
+                                Some(DefaultType::Each) | None => true,
+                            }
+                    }) && f.vargs.as_ref().is_none_or(|t| self.walk(t, at.argument()))
                         && self.walk(&f.rtype, at)
                         && self.walk(&f.throws, at)
                 }

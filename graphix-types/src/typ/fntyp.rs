@@ -56,13 +56,16 @@ pub enum DefaultType {
     /// A type of its own: a definition's default's, or a written
     /// `?#d: T = D`'s.
     Of(Type),
+    /// A trait method's own label: a call that leaves it out passes the
+    /// default of the implementation its receiver picks, whatever its type.
+    Each,
 }
 
 impl DefaultType {
     /// The type a call that leaves the label out passes to `param`.
     pub fn of<'a>(&'a self, param: &'a Type) -> &'a Type {
         match self {
-            DefaultType::Param => param,
+            DefaultType::Param | DefaultType::Each => param,
             DefaultType::Of(t) => t,
         }
     }
@@ -70,7 +73,7 @@ impl DefaultType {
     /// The type of its own, where it has one.
     pub fn own(&self) -> Option<&Type> {
         match self {
-            DefaultType::Param => None,
+            DefaultType::Param | DefaultType::Each => None,
             DefaultType::Of(t) => Some(t),
         }
     }
@@ -108,6 +111,19 @@ impl FnArgKind {
         match self {
             FnArgKind::Labeled { default, .. } => default.as_ref(),
             FnArgKind::Positional { .. } => None,
+        }
+    }
+
+    /// Whether `other` is the same parameter: positional, or the same
+    /// label, which a call may leave out of both or of neither.
+    pub fn same_shape(&self, other: &Self) -> bool {
+        match (self, other) {
+            (FnArgKind::Positional { .. }, FnArgKind::Positional { .. }) => true,
+            (
+                FnArgKind::Labeled { name: a, default: da },
+                FnArgKind::Labeled { name: b, default: db },
+            ) => a == b && da.is_some() == db.is_some(),
+            _ => false,
         }
     }
 
@@ -988,6 +1004,7 @@ impl FnType {
                     match default {
                         None => out.put_u8(0),
                         Some(DefaultType::Param) => out.put_u8(1),
+                        Some(DefaultType::Each) => out.put_u8(3),
                         Some(DefaultType::Of(d)) => {
                             out.put_u8(2);
                             d.content_key(out)
@@ -1752,7 +1769,7 @@ fn printed_quantifiers(ft: &FnType) -> LPooled<Vec<(TVar, Type)>> {
 /// The default's type an argument prints after its own: where it is not
 /// the argument's type, which a written `?#d: T` means.
 fn written_default(a: &FnArgType) -> Option<&Type> {
-    a.kind.own_default().filter(|d| **d != a.typ)
+    a.kind.own_default().filter(|d| d.resolve_tvars() != a.typ.resolve_tvars())
 }
 
 /// How an argument's name is written before its type.

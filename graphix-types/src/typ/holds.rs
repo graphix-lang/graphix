@@ -14,7 +14,7 @@
 //! hold each other but where both are themselves alone: then only through
 //! their bounds.
 
-use super::{Bound, FnType, Mutability, TVar, Type, node_addr};
+use super::{Bound, DefaultType, FnType, Mutability, TVar, Type, node_addr};
 use crate::{env::Env, stack::ensure_sufficient};
 use ahash::AHashMap;
 use anyhow::Result;
@@ -649,7 +649,12 @@ impl<'e> Holds<'e> {
                     parts.push(self.ident(x));
                 }
                 Type::Fn(f) => {
-                    f.args.iter().for_each(|a| parts.push(self.ident(&a.typ)));
+                    for a in f.args.iter() {
+                        parts.push(self.ident(&a.typ));
+                        if let Some(d) = a.kind.own_default() {
+                            parts.push(self.ident(d))
+                        }
+                    }
                     if let Some(v) = &f.vargs {
                         parts.push(self.ident(v));
                     }
@@ -745,8 +750,8 @@ impl<'e> Holds<'e> {
 
     /// A function of type `f1` serves where `f0` is wanted: every call of
     /// `f0`'s shape is one `f1` takes, a label `f0` lets a caller leave out
-    /// one `f1` defaults; parameters the other way, result and throws this
-    /// way; each side's declared bounds hold.
+    /// one `f1` defaults; parameters the other way, defaults, result and
+    /// throws this way; each side's declared bounds hold.
     // CR claude for claude: [bug/low] A function type with quantifiers of its own on the
     // held side is not instantiated: `[fn(x: string) -> i64, fn(x: string) -> string] ⊇
     // fn<'c: Any>(x: 'c) -> 'c` is false (the identity serves as `string -> string`). The
@@ -772,6 +777,14 @@ impl<'e> Holds<'e> {
         }
         for (s, t) in pairs.iter() {
             if !self.go(&t.typ, &s.typ)? {
+                return Ok(false);
+            }
+            // a call that leaves the label out passes `f1`'s default where
+            // `f0` is typed with its own
+            if let (Some(ds), Some(dt)) = (s.kind.default(), t.kind.default())
+                && !matches!(ds, DefaultType::Each)
+                && !self.go(ds.of(&s.typ), dt.of(&t.typ))?
+            {
                 return Ok(false);
             }
         }

@@ -25,7 +25,7 @@ use crate::{
     },
     prune::ReadStamp,
     typ::{
-        CoreTrait, Mutability, TVar, Type,
+        CoreTrait, DefaultType, FnArgKind, FnArgType, FnType, Mutability, TVar, Type,
         bounds::{self, Use},
         tvar::{AtLevel, Level, current_level},
     },
@@ -965,6 +965,10 @@ impl<R: Rt> Bind<R> {
                         .at(&self.spec)?
                 }
             }
+        }
+        if let Some(t) = defaults_taken(&self.typ, self.node.typ()) {
+            self.pattern.ids(&mut |id| ctx.env.retype(id, t.clone()));
+            self.typ = t
         }
         self.settle_builtin_alias(ctx);
         if let Some(fv) = self.lambda_def_value().or_else(|| self.aliased_lambda(ctx)) {
@@ -2948,4 +2952,38 @@ impl<R: Rt> Deref<R> {
         let read = Type::ByRef(Mutability::Shared, Arc::new(self.typ.clone()));
         wrap!(self, read.check_contains(&ctx.env, self.child.typ()))
     }
+}
+
+/// `annotation` with each label it leaves to each implementation
+/// ([`DefaultType::Each`]) defaulting as `value`, the function the binding
+/// holds, does: the binding keeps its own defaults' types. `None` where the
+/// annotation leaves none.
+fn defaults_taken(annotation: &Type, value: &Type) -> Option<Type> {
+    let Type::Fn(a) = annotation else { return None };
+    if !a.args.iter().any(|x| matches!(x.kind.default(), Some(DefaultType::Each))) {
+        return None;
+    }
+    let value = value.with_deref(|t| match t {
+        Some(Type::Fn(v)) => Some(v.clone()),
+        _ => None,
+    })?;
+    let args = a.args.iter().map(|x| match &x.kind {
+        FnArgKind::Labeled { name, default: Some(DefaultType::Each) } => {
+            let own = value
+                .args
+                .iter()
+                .find(|v| v.label() == Some(name))
+                .and_then(|v| v.kind.own_default())
+                .cloned();
+            FnArgType {
+                kind: FnArgKind::Labeled {
+                    name: name.clone(),
+                    default: Some(own.map_or(DefaultType::Each, DefaultType::Of)),
+                },
+                typ: x.typ.clone(),
+            }
+        }
+        _ => x.clone(),
+    });
+    Some(Type::Fn(Arc::new(FnType { args: Arc::from_iter(args), ..(**a).clone() })))
 }

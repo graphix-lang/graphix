@@ -3784,8 +3784,13 @@ impl Type {
                     && f.vargs.is_some() == g.vargs.is_some() =>
             {
                 let args = f.args.iter().zip(g.args.iter());
-                let ok =
-                    args.fold(true, |ok, (a, b)| a.typ.take_row_at(&b.typ, seen) & ok);
+                let ok = args.fold(true, |ok, (a, b)| {
+                    let default = match (a.kind.own_default(), b.kind.own_default()) {
+                        (Some(x), Some(y)) => x.take_row_at(y, seen),
+                        _ => true,
+                    };
+                    a.typ.take_row_at(&b.typ, seen) & default & ok
+                });
                 let vargs = match (&f.vargs, &g.vargs) {
                     (Some(a), Some(b)) => a.take_row_at(b, seen),
                     _ => true,

@@ -2476,7 +2476,7 @@ pub(crate) fn make_init<R: Rt>(
 /// Do `a` and `b` list the same parameters, kind for kind?
 pub(crate) fn same_parameters(a: &FnType, b: &FnType) -> bool {
     a.args.len() == b.args.len()
-        && a.args.iter().zip(b.args.iter()).all(|(a, b)| a.kind == b.kind)
+        && a.args.iter().zip(b.args.iter()).all(|(a, b)| a.kind.same_shape(&b.kind))
 }
 
 /// Build an instance at the signature `mode` names ([`instance_type`]).
@@ -2755,9 +2755,16 @@ impl Lambda {
                         FnArgKind::Positional { name: name.cloned() }
                     }
                     (_, None) => FnArgKind::Positional { name: None },
+                    // a default's type is its own where the parameter's
+                    // is written with a variable or left to inference, which
+                    // a call picks: a call that leaves the label out picks
+                    // it by the default
                     (kind, Some(name)) => FnArgKind::Labeled {
                         name: name.clone(),
-                        default: kind.default().map(|_| DefaultType::Param),
+                        default: kind.default().map(|_| match typ.tvar_free() {
+                            true => DefaultType::Param,
+                            false => DefaultType::Of(Type::empty_tvar()),
+                        }),
                     },
                 };
                 FnArgType { kind, typ }
@@ -3210,21 +3217,18 @@ fn judge_default<R: Rt>(
 ) -> Result<()> {
     node.typecheck0(ctx).and_then(|()| {
         let typ = node.typ().clone();
+        // the default's own type is what a call that leaves the label out
+        // passes: the default's type itself
+        if let Some(default) = at.kind.own_default() {
+            bounds::take(default, &typ);
+        }
         // a parameter whose type a call decides takes the default at each
         // call that leaves the label out, and at no other; over a declared
         // variable, some instance of it has to
-        let some_instance = |ctx: &mut CompileCtx<R>| match at.typ.has_rigid() {
-            true => at.typ.reset_tvars().check_contains(&ctx.env, &typ),
-            false => Ok(()),
-        };
-        match (at.label(), bounds::cells_in(&at.typ).first()) {
-            (Some(label), Some(v)) => {
-                some_instance(ctx)?;
-                bounds::defaulted(v, label.clone(), typ.clone(), at.typ.clone());
-                Ok(())
-            }
-            (_, Some(_)) => some_instance(ctx),
-            (_, None) => at.typ.check_contains(&ctx.env, &typ),
+        match (at.typ.has_rigid(), bounds::cells_in(&at.typ).is_empty()) {
+            (true, _) => at.typ.reset_tvars().check_contains(&ctx.env, &typ),
+            (false, false) => Ok(()),
+            (false, true) => at.typ.check_contains(&ctx.env, &typ),
         }
     })
 }

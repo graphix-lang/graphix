@@ -5938,7 +5938,7 @@ run!(
 // read, a default body, a returned function, a part of the return.
 run!(
     block_method_return_default_refused,
-    refused("no default decides its type: write the default's type in the trait's declaration"),
+    refused("write the default's type in the declared type"),
     "/test.gx" => r#"
         trait T { val mk: fn(self) -> {cb: fn(?#d: 'z, x: i64) -> string, n: i64} };
         impl T for i64 { let mk = { let k = 1; |s| {cb: |#d = k, x: i64| cast<string>(d)$, n: 1} } };
@@ -6017,7 +6017,7 @@ run!(
 
 run!(
     method_return_default_in_an_array_of_options_refused,
-    refused("no default decides its type: write the default's type in the trait's declaration"),
+    refused("write the default's type in the declared type"),
     "/test.gx" => r#"
         trait T { val mk: fn(self) -> Array<[fn(?#d: 'z, x: i64) -> string, null]> };
         impl T for i64 { let mk = |s| [|#d = 1, x: i64| cast<string>(d)$] };
@@ -6082,7 +6082,7 @@ run!(
 
 run!(
     method_return_default_undecided_array_under_a_declared_variable_refused,
-    refused("a call through the trait's ?#d: Array<'z> leaves #d out, and each implementation passes its own, so no default decides its type: write the default's type in the trait's declaration"),
+    refused("write the default's type in the declared type"),
     "/test.gx" => r#"
         let k = [];
         trait T { val mk: fn(self) -> {cb: fn(?#d: Array<'z>, x: i64) -> i64, n: i64} };
@@ -6695,7 +6695,7 @@ run!(
 // default the declaration keeps optional fits the label as it is written.
 run!(
     an_impls_default_narrowing_a_trait_variable_refused,
-    refused("write the default's type in the trait's declaration"),
+    refused("write the default's type in the declared type"),
     "/test.gx" => r#"
         let k: Array<string> = ["b"];
         trait T { val mk: fn(self) -> {cb: fn(?#d: Array<'z>, x: i64) -> i64, n: i64} };
@@ -6721,7 +6721,7 @@ run!(
 
 run!(
     a_trait_defaults_default_narrowing_a_trait_variable_refused,
-    refused("write the default's type in the trait's declaration"),
+    refused("write the default's type in the declared type"),
     "/test.gx" => r#"
         let k: Array<string> = ["b"];
         trait T {

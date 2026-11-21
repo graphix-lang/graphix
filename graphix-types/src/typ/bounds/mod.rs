@@ -10,7 +10,8 @@ use crate::{
     expr::{ModPath, Told},
     stack::ensure_sufficient,
     typ::{
-        AbstractId, Bound, FnArgKind, FnArgType, FnType, Mutability, Open, TVar, Type,
+        AbstractId, Bound, DefaultType, FnArgKind, FnArgType, FnType, Mutability, Open,
+        TVar, Type,
         cast::numbers_ordered,
         node_addr,
         setops::strictly_identical,
@@ -152,8 +153,7 @@ pub fn end(env: &Env) -> Result<()> {
 /// Give up what a check learned of the cell `v`, which it decided: the
 /// cell is its binding from here on, which its lower and learned upper
 /// bounds and what the solver kept of it only led to. What it declares
-/// stays with it, and so do the defaults of a parameter it types: a later
-/// input's call that leaves one out passes it.
+/// stays with it.
 fn release(v: &TVar) {
     let cell = v.cell();
     let held = {
@@ -162,14 +162,7 @@ fn release(v: &TVar) {
         let learned: SmallVec<[Type; 1]> = c.above.upper().into();
         let declared: SmallVec<[Type; 1]> = c.above.declared().into();
         c.above.set(declared, []);
-        let solving = c.solving.take();
-        if let Some(k) = &solving
-            && !k.defaults.is_empty()
-        {
-            c.solving =
-                Some(Box::new(Known { defaults: k.defaults.clone(), ..Known::default() }))
-        }
-        (solving, lower, learned)
+        (c.solving.take(), lower, learned)
     };
     drop(held)
 }
@@ -257,11 +250,6 @@ pub struct Known {
     /// For a scheme's variable: what its definition left to each
     /// instance, which a use of the scheme takes a copy of with the cell.
     pub(crate) left: SmallVec<[Left; 0]>,
-    /// For a cell a labeled parameter's type holds: the label, the type
-    /// of the default its definition gives it, and the parameter's type.
-    /// A call that omits the label passes the default, and no other
-    /// call's parameter takes it.
-    pub(crate) defaults: SmallVec<[(ArcStr, Type, Type); 0]>,
 }
 
 impl Known {
@@ -278,7 +266,6 @@ impl Known {
             listed,
             uses,
             left,
-            defaults,
         } = self;
         feeders.is_empty()
             && sinks.is_empty()
@@ -288,7 +275,6 @@ impl Known {
             && !listed
             && uses.is_empty()
             && left.is_empty()
-            && defaults.is_empty()
     }
 }
 
@@ -764,8 +750,14 @@ fn read_only(t: &Type, formal: &TVar, reads: bool) -> bool {
         }
         Type::Struct(fs) => fs.iter().all(|(_, x, _)| read_only(x, formal, reads)),
         Type::Fn(f) => {
-            f.args.iter().all(|a| read_only(&a.typ, formal, false))
-                && f.vargs.as_ref().is_none_or(|v| read_only(v, formal, false))
+            f.args.iter().all(|a| {
+                read_only(&a.typ, formal, false)
+                    && match a.kind.default() {
+                        Some(DefaultType::Of(d)) => read_only(d, formal, reads),
+                        Some(DefaultType::Param) => read_only(&a.typ, formal, reads),
+                        Some(DefaultType::Each) | None => true,
+                    }
+            }) && f.vargs.as_ref().is_none_or(|v| read_only(v, formal, false))
                 && read_only(&f.rtype, formal, reads)
                 && read_only(&f.throws, formal, reads)
         }
@@ -1423,15 +1415,6 @@ impl Solving {
                     (false, _) => {
                         let n = twin(v);
                         keep(self, &n);
-                        // a call through the twin that leaves a label out
-                        // passes the default the cell's parameter has
-                        for (label, default, param) in defaults_of(v) {
-                            let default = self.extrude(&default, true, at);
-                            let param = map_cells(&param, &mut |w| {
-                                w.same_cell(v).then(|| Type::TVar(n.clone()))
-                            });
-                            defaulted(&n, label, default, param)
-                        }
                         let (lower, upper) = (v.cell_lower(), v.cell_above());
                         let cell = v.cell();
                         match pos {
@@ -1472,8 +1455,19 @@ impl Solving {
                 }
             }
             Type::Fn(ft) => {
+                // a default's type is passed out of the function, as its
+                // result is
                 let args = ft.args.iter().map(|a| FnArgType {
-                    kind: a.kind.clone(),
+                    kind: match &a.kind {
+                        FnArgKind::Labeled {
+                            name,
+                            default: Some(DefaultType::Of(d)),
+                        } => FnArgKind::Labeled {
+                            name: name.clone(),
+                            default: Some(DefaultType::Of(self.extrude(d, pos, at))),
+                        },
+                        kind => kind.clone(),
+                    },
                     typ: self.extrude(&a.typ, !pos, at),
                 });
                 let args = Arc::from_iter(args);
@@ -1717,14 +1711,11 @@ impl Solving {
                 .map(|a| a.typ.clone())
                 .collect()
         };
-        let labeled = |ft: &FnType| -> SmallVec<[(ArcStr, bool, Type); 4]> {
-            let args = ft.args.iter().filter_map(|a| match &a.kind {
-                FnArgKind::Labeled { name, default } => {
-                    Some((name.clone(), default.is_some(), a.typ.clone()))
-                }
-                FnArgKind::Positional { .. } => None,
-            });
-            args.collect()
+        let labeled = |ft: &FnType| -> SmallVec<[(ArcStr, FnArgType); 4]> {
+            ft.args
+                .iter()
+                .filter_map(|a| a.label().map(|n| (n.clone(), a.clone())))
+                .collect()
         };
         let (fp, gp) = (positional(f), positional(g));
         for (i, ga) in gp.iter().enumerate() {
@@ -1749,46 +1740,42 @@ impl Solving {
             self.constrain(env, gv, fv)?
         }
         let (fl, gl) = (labeled(f), labeled(g));
-        // a label of `f` that `g` hides or leaves optional is left out by
-        // a call through `g`. Where `g` declares variables for it, each
-        // call picks them, and the call that leaves the label out is held
-        // to the default: `g` carries it as `f` does.
-        for (name, optional, fa) in fl.iter().filter(|(_, optional, _)| *optional) {
-            let _ = optional;
-            match gl.iter().find(|(n, ..)| n == name) {
-                Some((_, false, _)) => (),
-                Some((_, true, ga))
-                    if !self.shared
-                        && let Some(v) = declared_in(ga).first() =>
-                {
-                    carry(name, fa, v, ga)
-                }
+        // a label `f` lets a call leave out: a call through `g` that leaves
+        // it out passes `f`'s default, as if the call had written it
+        for (name, fa) in fl.iter().filter(|(_, a)| a.kind.has_default()) {
+            match gl.iter().find(|(n, _)| n == name) {
+                // every call through `g` passes it
+                Some((_, ga)) if !ga.kind.has_default() => (),
                 // an instance's signature is its own: it holds the default
                 // where its call leaves a label it lists out, and no call
                 // goes through it
-                Some((_, true, _)) if signature => {
+                Some(_) if signature => {
                     if self.leaves.contains(name) {
                         self.omitted(env, name, fa)?
                     }
                 }
-                Some((_, true, ga)) => {
-                    self.omitted(env, name, fa)?;
-                    self.passed_default(env, name, fa, ga)?
+                // a trait method's own label: a call that leaves it out
+                // passes the default of the implementation its receiver
+                // picks ([`Use::Defaults`])
+                Some((_, ga)) if matches!(ga.kind.default(), Some(DefaultType::Each)) => {
+                    ()
                 }
+                Some((_, ga)) => self.passed_default(env, name, fa, ga)?,
                 None => self.omitted(env, name, fa)?,
             }
         }
-        for (name, optional, ga) in gl.iter() {
-            match fl.iter().find(|(n, ..)| n == name) {
-                Some((_, false, _)) if *optional => {
+        for (name, ga) in gl.iter() {
+            match fl.iter().find(|(n, _)| n == name) {
+                Some((_, fa)) if ga.kind.has_default() && !fa.kind.has_default() => {
                     bail!("type mismatch: #{name} is required")
                 }
-                Some((_, _, fa)) => self.constrain(env, ga, fa)?,
+                Some((_, fa)) => self.constrain(env, &ga.typ, &fa.typ)?,
                 None => bail!("type mismatch: no argument #{name}"),
             }
         }
-        if let Some((name, ..)) =
-            fl.iter().find(|(n, opt, _)| !opt && !gl.iter().any(|(m, ..)| m == n))
+        if let Some((name, _)) = fl
+            .iter()
+            .find(|(n, a)| !a.kind.has_default() && !gl.iter().any(|(m, _)| m == n))
         {
             bail!("type mismatch: #{name} is required")
         }
@@ -2046,13 +2033,6 @@ fn finite_all<'a>(roots: impl IntoIterator<Item = &'a TVar>) -> Result<()> {
     }
 }
 
-/// Record that the labeled parameter `label`, of the type `param`, which
-/// holds the cell `v`, has a default of the type `default`: each call
-/// that leaves the label out passes it ([`Known::defaults`]).
-pub fn defaulted(v: &TVar, label: ArcStr, default: Type, param: Type) {
-    known(v, |k| k.defaults.push((label, default, param)))
-}
-
 // CR claude for claude: [bug/high] An input's end binds a `Concrete` or
 // `Function` cell to bottom here, where a call's terminal settle
 // (`settle_bottom`) refuses it. A function a REPL input leaves at one type
@@ -2098,60 +2078,11 @@ pub fn lookup_key_compared(env: &Env, map: &Type, key: &Type) -> Result<()> {
     Ok(())
 }
 
-/// The defaults recorded of the cell `v` ([`Known::defaults`]).
-fn defaults_of(v: &TVar) -> SmallVec<[(ArcStr, Type, Type); 0]> {
-    let cell = v.cell();
-    let c = cell.read();
-    c.solving.as_ref().map(|k| k.defaults.clone()).unwrap_or_default()
-}
-
-/// The default a function gives the label `name`, whose parameter is
-/// `from`, is the default of a function type that keeps the label
-/// optional over its own variable `v`, in the parameter `to`.
-fn carry(name: &ArcStr, from: &Type, v: &TVar, to: &Type) {
-    for c in cells_in(from).iter() {
-        for (label, default, _) in known(c, |k| k.defaults.clone()) {
-            let carried = known(v, |k| k.defaults.iter().any(|(l, ..)| l == name));
-            if &label == name && !carried {
-                defaulted(v, label, deep(&default), to.clone())
-            }
-        }
-    }
-}
-
-/// The cells `t` holds, decided ones too: a default stays with the
-/// parameter's cell however it has been decided since.
-fn defaulted_cells(t: &Type) -> SmallVec<[TVar; 4]> {
-    fn go(t: &Type, out: &mut SmallVec<[TVar; 4]>) {
-        ensure_sufficient(|| match t {
-            Type::TVar(tv) => {
-                if !out.iter().any(|v| v.same_cell(tv)) {
-                    out.push(tv.clone());
-                    if let Some(b) = tv.binding() {
-                        go(&b, out)
-                    }
-                }
-            }
-            t => t.for_each_child(&mut |c| go(c, out)),
-        })
-    }
-    let mut out = SmallVec::new();
-    go(t, &mut out);
-    out
-}
-
 /// The cells `t` holds that nothing has decided, declared variables
 /// among them.
 pub fn cells_in(t: &Type) -> SmallVec<[TVar; 4]> {
     let mut cells = SmallVec::new();
     cells_of(t, true, &mut cells);
-    cells
-}
-
-/// The declared variables `t` holds.
-fn declared_in(t: &Type) -> SmallVec<[TVar; 4]> {
-    let mut cells = cells_in(t);
-    cells.retain(|v: &mut TVar| v.is_rigid());
     cells
 }
 
@@ -2336,20 +2267,6 @@ pub fn fits(
         let fit = s.constrain(env, &one, &held);
         (s.sealed, s.shared, s.method) = (sealed, outside, false);
         fit?;
-        // a default the declaration keeps optional over its own variables
-        // is passed by its clients' calls: the declaration carries it
-        let own = cells_in(declared);
-        let at: AHashMap<ArcStr, Type> =
-            own.iter().map(|v| (v.name.clone(), Type::TVar(v.clone()))).collect();
-        for c in constants.iter().filter(|_| !shared) {
-            let Some(v) = own.iter().find(|v| v.name == c.name) else { continue };
-            for (label, default, param) in known(c, |k| k.defaults.clone()) {
-                let carried = known(v, |k| k.defaults.iter().any(|(l, ..)| *l == label));
-                if !carried {
-                    defaulted(v, label, deep(&default), param.replace_tvars(&at))
-                }
-            }
-        }
         // the instance is decided here, where the declaration's
         // variables are still constants
         s.generalize(env, Type::BOTTOM, outer.depth(), mark)
@@ -2424,8 +2341,18 @@ pub fn take(own: &Type, row: &Type) -> bool {
             None => !own.has_unbound(),
         },
         (Type::Fn(f), Type::Fn(g)) => {
+            let default = |a: &FnArgType, b: &FnArgType| match (
+                a.kind.own_default(),
+                b.kind.own_default(),
+            ) {
+                (Some(x), Some(y)) => take(x, y),
+                _ => true,
+            };
             f.args.len() == g.args.len()
-                && f.args.iter().zip(g.args.iter()).all(|(a, b)| take(&a.typ, &b.typ))
+                && f.args
+                    .iter()
+                    .zip(g.args.iter())
+                    .all(|(a, b)| take(&a.typ, &b.typ) && default(a, b))
                 && match (&f.vargs, &g.vargs) {
                     (Some(a), Some(b)) => take(a, b),
                     (None, None) => true,
@@ -2927,8 +2854,15 @@ fn negative_cells(t: &Type, positive: bool, out: &mut SmallVec<[TVar; 8]>) {
             None => (),
         },
         Type::Fn(f) => {
+            // a default's type is passed out of the function, as its result
+            // is: a parameter whose own type is its default's goes both ways
             for a in f.args.iter() {
-                negative_cells(&a.typ, !positive, out)
+                negative_cells(&a.typ, !positive, out);
+                match a.kind.default() {
+                    Some(DefaultType::Of(d)) => negative_cells(d, positive, out),
+                    Some(DefaultType::Param) => negative_cells(&a.typ, positive, out),
+                    Some(DefaultType::Each) | None => (),
+                }
             }
             if let Some(v) = &f.vargs {
                 negative_cells(v, !positive, out)
@@ -3308,13 +3242,6 @@ impl Solving {
         mark: usize,
     ) -> Result<()> {
         self.quantify(t, depth);
-        // a default is made anew by each call that leaves its label out:
-        // what its type leaves open is each instance's
-        for v in cells_in(t).iter() {
-            for (_, default, _) in known(v, |k| k.defaults.clone()).iter() {
-                self.quantify(default, depth)
-            }
-        }
         let mut kept = Cells::new();
         self.reach(t, &mut kept);
         let own: SmallVec<[TVar; 8]> = kept
@@ -3538,8 +3465,7 @@ impl Solving {
         for v in reached.iter() {
             v.cell_lower().iter().for_each(|l| inside(l, &mut named));
             v.cell_above().iter().for_each(|u| inside(u, &mut named));
-            let (used, left, defaults) =
-                known(v, |k| (k.uses.clone(), k.left.clone(), k.defaults.clone()));
+            let (used, left) = known(v, |k| (k.uses.clone(), k.left.clone()));
             for (u, _) in used.iter() {
                 u.each(&mut |t| cells_of(t, true, &mut named));
                 if let Use::Routed(_, of) = u {
@@ -3551,10 +3477,6 @@ impl Solving {
             }
             for l in left.iter() {
                 l.cells(&mut named)
-            }
-            for (_, default, param) in defaults.iter() {
-                cells_of(default, true, &mut named);
-                cells_of(param, true, &mut named)
             }
         }
         let barred: AHashSet<usize> =
@@ -3568,7 +3490,7 @@ impl Solving {
                 || !v.name.starts_with('_')
                 || barred.contains(&v.cell_addr())
                 || !uses(v).is_empty()
-                || known(v, |k| k.made || k.demanded || !k.defaults.is_empty())
+                || known(v, |k| k.made || k.demanded)
         };
         let mut set: AHashMap<usize, TVar> = reached
             .iter()
@@ -3701,7 +3623,7 @@ impl Solving {
         for (v, n) in made {
             let (lower, declared, mut upper) =
                 (v.cell_lower(), v.cell_declared(), v.cell_upper());
-            let (fed, sinks, used, defaults, from, by_calls) = {
+            let (fed, sinks, used, from, by_calls) = {
                 let cell = v.cell();
                 let c = cell.read();
                 match c.solving.as_ref() {
@@ -3709,20 +3631,12 @@ impl Solving {
                         k.feeders.clone(),
                         k.sinks.clone(),
                         k.uses.clone(),
-                        k.defaults.clone(),
                         k.from.clone(),
                         k.made,
                     ),
                     None => Default::default(),
                 }
             };
-            let defaults: SmallVec<[(ArcStr, Type, Type); 0]> = defaults
-                .iter()
-                .map(|(label, default, param)| {
-                    let default = self.copy(default, above, at, copies);
-                    (label.clone(), default, self.copy(param, above, at, copies))
-                })
-                .collect();
             upper.extend(sinks.into_iter().map(Type::TVar));
             let all = |s: &mut Self, ts: &[Type], copies: &mut AHashMap<usize, TVar>| {
                 ts.iter().map(|t| s.copy(t, above, at, copies)).collect()
@@ -3760,7 +3674,6 @@ impl Solving {
                 let k = c.solving.get_or_insert_default();
                 k.feeders = feeds;
                 k.from = sent_from;
-                k.defaults = defaults;
                 // a call the definition makes makes it in every instance
                 k.made = by_calls
             }
@@ -4993,9 +4906,7 @@ impl Solving {
                 let Type::Fn(ft) = &typ else { return Ok(false) };
                 for (label, slot) in labels.iter() {
                     if let Some(p) = ft.args.iter().find(|a| a.label() == Some(label)) {
-                        // the implementation's default rides on the
-                        // variable its check held the label to
-                        self.omitted(env, label, &p.typ)?;
+                        self.omitted(env, label, p)?;
                         self.constrain(env, &p.typ, slot).map_err(|e| {
                             e.context(format!(
                                 "the default of #{label} is passed where the call leaves \
@@ -5052,7 +4963,7 @@ impl Solving {
             let Some((name, optional)) = labeled(a) else { continue };
             match args.iter().any(|(l, _)| l.as_ref() == Some(&name)) {
                 true => (),
-                false if optional => self.omitted(env, &name, &a.typ)?,
+                false if optional => self.omitted(env, &name, a)?,
                 false => bail!("missing required argument #{name}"),
             }
         }
@@ -5062,21 +4973,21 @@ impl Solving {
         self.constrain(env, &ft.rtype, out)
     }
 
-    /// A function whose parameter for the label `name` is `formal` is
-    /// called without it: the default its definition gives the label goes
-    /// to the parameter ([`defaulted`]).
-    /// A function whose label `name`, of the parameter `formal`, has a
-    /// default goes where a function type keeps the label optional at
-    /// `wanted`: a call through that type that leaves the label out is
-    /// compiled as passing a `wanted`, and passes the default. A parameter
-    /// of a written type has a default of that type.
+    /// `fa`, an argument of a function that lets a call leave its label
+    /// `name` out, goes where a function type's `ga` lets a call leave it
+    /// out too: a call through the type that leaves it out is typed with the
+    /// type's default and passes the function's, which must be one.
     fn passed_default(
         &mut self,
         env: &Env,
         name: &ArcStr,
-        formal: &Type,
-        wanted: &Type,
+        fa: &FnArgType,
+        ga: &FnArgType,
     ) -> Result<()> {
+        let (Some(given), Some(wanted)) = (fa.kind.default(), ga.kind.default()) else {
+            return Ok(());
+        };
+        let wanted = wanted.of(&ga.typ);
         let shared = self.shared;
         let told = |e: anyhow::Error| match shared {
             true => Told::over(
@@ -5088,42 +4999,41 @@ impl Solving {
                      write the default's type in the trait's declaration"
                 ),
             ),
-            false => e.context(format!(
-                "the default of #{name} is passed where a call through a function \
-                 type with ?#{name}: {wanted} leaves #{name} out"
-            )),
+            false => Told::over(
+                e,
+                &format!(
+                    "the default of #{name} is passed where a call through a function \
+                     type with ?#{name}: {wanted} leaves #{name} out: write the \
+                     default's type in the declared type (`?#{name}: {wanted} = {given}`)",
+                    given = written_type(given.of(&fa.typ))
+                ),
+            ),
         };
-        let cells = cells_in(formal);
-        if cells.is_empty() {
-            return self.constrain(env, formal, wanted).map_err(told);
-        }
-        for v in cells.iter() {
-            for (label, default, _) in known(v, |k| k.defaults.clone()).iter() {
-                if label == name {
-                    self.constrain(env, default, wanted).map_err(told)?
-                }
-            }
-        }
-        Ok(())
+        let given = given.of(&fa.typ).clone();
+        let wanted = wanted.clone();
+        self.constrain(env, &given, &wanted).map_err(told)
     }
 
-    fn omitted(&mut self, env: &Env, name: &ArcStr, formal: &Type) -> Result<()> {
-        for v in defaulted_cells(formal).iter() {
-            let given = known(v, |k| k.defaults.clone());
-            for (label, default, param) in given.iter() {
-                if label == name {
-                    self.constrain(env, default, param).map_err(|e| {
-                        let e =
-                            super::contains::TypeMismatch::noting_settled(env, formal, e);
-                        e.context(format!(
-                            "the default of #{name} is passed here, where the call \
-                             leaves #{name} out"
-                        ))
-                    })?
-                }
-            }
-        }
-        Ok(())
+    /// A call leaves out the label `name` of the argument `a`: its default
+    /// goes to the parameter, as if the call had written it.
+    fn omitted(&mut self, env: &Env, name: &ArcStr, a: &FnArgType) -> Result<()> {
+        let Some(default) = a.kind.own_default() else { return Ok(()) };
+        self.constrain(env, default, &a.typ).map_err(|e| {
+            let e = super::contains::TypeMismatch::noting_settled(env, &a.typ, e);
+            e.context(format!(
+                "the default of #{name} is passed here, where the call leaves #{name} out"
+            ))
+        })
+    }
+}
+
+/// `t` as an annotation would write it: a cell nothing has decided as
+/// what has flowed into it so far.
+fn written_type(t: &Type) -> Type {
+    let t = deep(t);
+    match &t {
+        Type::TVar(v) if !v.cell_lower().is_empty() => union_of(v.cell_lower()),
+        _ => t,
     }
 }
 

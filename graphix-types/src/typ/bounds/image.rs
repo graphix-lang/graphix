@@ -396,7 +396,6 @@ impl Known {
             listed: _,
             uses,
             left,
-            defaults,
         } = self;
         put_all(feeders, buf)?;
         put_all(sinks, buf)?;
@@ -410,14 +409,7 @@ impl Known {
             met.encode(buf)?
         }
         put_len(left.len(), buf);
-        left.iter().try_for_each(|l| l.image_encode(buf))?;
-        put_len(defaults.len(), buf);
-        for (label, default, param) in defaults.iter() {
-            label.encode(buf)?;
-            default.encode(buf)?;
-            param.encode(buf)?
-        }
-        Ok(())
+        left.iter().try_for_each(|l| l.image_encode(buf))
     }
 
     pub(crate) fn image_decode(buf: &mut impl Buf) -> Result<Self, PackError> {
@@ -430,9 +422,6 @@ impl Known {
         let left = (0..get_len(buf)?)
             .map(|_| Left::image_decode(buf))
             .collect::<Result<_, PackError>>()?;
-        let defaults = (0..get_len(buf)?)
-            .map(|_| Ok((ArcStr::decode(buf)?, Type::decode(buf)?, Type::decode(buf)?)))
-            .collect::<Result<_, PackError>>()?;
         Ok(Known {
             feeders,
             sinks,
@@ -443,7 +432,6 @@ impl Known {
             listed: false,
             uses,
             left,
-            defaults,
         })
     }
 }

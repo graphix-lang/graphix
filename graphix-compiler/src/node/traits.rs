@@ -33,8 +33,8 @@ use crate::{
     },
     stack::ensure_sufficient,
     typ::{
-        AmbiguousMember, CoreTrait, FnArgKind, FnType, TVar, TraitId, Type, TypeRef,
-        bounds, check_bounds_acyclic, seed_conjuncts,
+        AmbiguousMember, CoreTrait, DefaultType, FnArgKind, FnArgType, FnType, TVar,
+        TraitId, Type, TypeRef, bounds, check_bounds_acyclic, seed_conjuncts,
         tvar::{RigidGate, current_level},
     },
     wrap,
@@ -73,7 +73,23 @@ pub(crate) fn method_sig(
     if !quantifiers.iter().any(|q| &**q == "self") {
         quantifiers.push(literal!("self"));
     }
-    Ok(FnType { quantifiers: Arc::from_iter(quantifiers.drain(..)), ..ft })
+    // a label the method lets a call leave out takes the default of the
+    // implementation the call's receiver picks
+    let args = ft.args.iter().map(|a| match &a.kind {
+        FnArgKind::Labeled { name, default: Some(_) } => FnArgType {
+            kind: FnArgKind::Labeled {
+                name: name.clone(),
+                default: Some(DefaultType::Each),
+            },
+            typ: a.typ.clone(),
+        },
+        _ => a.clone(),
+    });
+    Ok(FnType {
+        args: Arc::from_iter(args),
+        quantifiers: Arc::from_iter(quantifiers.drain(..)),
+        ..ft
+    })
 }
 
 // CR claude for claude: [bug/medium] When the method returns what the shared

@@ -1048,11 +1048,16 @@ impl<'a> Identity<'a> {
                 let r = f0.args.len() == f1.args.len()
                     && f0.quantifiers.len() == f1.quantifiers.len()
                     && (!self.by_name || f0.quantifiers == f1.quantifiers)
-                    && f0
-                        .args
-                        .iter()
-                        .zip(f1.args.iter())
-                        .all(|(a, b)| a.kind == b.kind && self.same(&a.typ, &b.typ))
+                    && f0.args.iter().zip(f1.args.iter()).all(|(a, b)| {
+                        a.kind.same_shape(&b.kind)
+                            && self.same(&a.typ, &b.typ)
+                            && match (a.kind.default(), b.kind.default()) {
+                                (Some(da), Some(db)) => {
+                                    self.same(da.of(&a.typ), db.of(&b.typ))
+                                }
+                                _ => true,
+                            }
+                    })
                     && match (&f0.vargs, &f1.vargs) {
                         (None, None) => true,
                         (Some(a), Some(b)) => self.same(a, b),

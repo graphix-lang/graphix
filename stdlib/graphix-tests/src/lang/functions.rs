@@ -4046,7 +4046,7 @@ run!(default_written_through_a_parameters_reference, r#"
     set(&mut g, 1);
     g(7)
 }
-"#, refused("type mismatch string does not contain i64"); FuseExpect::None);
+"#, refused("write the default's type in the declared type (`?#d: 'a = i64`)"); FuseExpect::None);
 
 run!(default_written_through_a_parameters_reference_written, r#"
 {
@@ -4274,7 +4274,7 @@ run!(default_behind_a_returned_functions_typedef_return, r#"
     let mk = |j: i64| -> fn(k: i64) -> W<'z> |k: i64| {cb: |#d = 1, x: i64| cast<string>(d)$, n: 1};
     mk(0)(0).cb(7)
 }
-"#, prints("\"1\""); FuseExpect::None);
+"#, refused("write the default's type in the declared type"); FuseExpect::None);
 
 run!(default_behind_a_returned_functions_typedef_return_written, r#"
 {
@@ -4760,7 +4760,7 @@ run!(default_holding_a_defaulted_fn_of_a_returned_fn_called_two_ways, r#"
     let a = mk(4);
     "[a(7)] [a(#w: |#d = "s", x: i64| cast<string>(d)$, 8)]"
 }
-"#, refused("i64 does not contain string"); FuseExpect::None);
+"#, is(Value::from("4 s")); FuseExpect::None);
 
 run!(default_holding_a_defaulted_fn_in_an_abstracts_field, r#"
 {

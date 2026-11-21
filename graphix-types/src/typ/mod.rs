@@ -250,8 +250,12 @@ impl Type {
                         }
                         FnArgKind::Labeled { name, default } => {
                             let own = default.as_ref().and_then(|d| d.own());
-                            let kind =
-                                default.is_some() as usize + own.is_some() as usize;
+                            let kind = match default {
+                                None => 0,
+                                Some(DefaultType::Param) => 1,
+                                Some(DefaultType::Of(_)) => 2,
+                                Some(DefaultType::Each) => 3,
+                            };
                             out.extend([2, kind]);
                             text_words(name, out);
                             if let Some(d) = own {
@@ -4053,7 +4057,17 @@ impl Type {
                         }
                         t => part(t)?,
                     };
-                    args.push(FnArgType { kind: a.kind.clone(), typ });
+                    let kind = match &a.kind {
+                        FnArgKind::Labeled {
+                            name,
+                            default: Some(DefaultType::Of(d)),
+                        } => FnArgKind::Labeled {
+                            name: name.clone(),
+                            default: Some(DefaultType::Of(part(d)?)),
+                        },
+                        kind => kind.clone(),
+                    };
+                    args.push(FnArgType { kind, typ });
                 }
                 let vargs = ft.vargs.as_ref().map(|t| part(t)).transpose()?;
                 let rtype = part(&ft.rtype)?;
