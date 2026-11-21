@@ -2731,6 +2731,8 @@ run!(
     FuseExpect::None
 );
 
+// A default passes its value into the parameter, and nothing comes back: a
+// parse whose result only a default reads is decided by nothing.
 run!(
     omitted_undecided_default_before_a_wider_one_refused,
     r#"{
@@ -2739,7 +2741,7 @@ run!(
   let f = |#a: 'a = u, #b: 'a = n, y: 'a| -> 'a y;
   (f(1), u)
 }"#,
-    refused("an undecided argument before this one met 'a");
+    refused("must be known here, an operation reads it to know what to make: annotate where its result goes");
     FuseExpect::None
 );
 
@@ -3901,7 +3903,7 @@ run!(default_behind_a_typedef_variant_return_type, r#"
     let mk = |j: i64| -> V<'z> select j { 0 => `Cb(|#d = 1, x: i64| cast<string>(d)$), _ => `No };
     select mk(0) { `No => "n", `Cb(f) => f(7) }
 }
-"#, prints("\"1\""); FuseExpect::None);
+"#, refused("write the default's type in the declared type"); FuseExpect::None);
 
 run!(default_behind_a_recursive_typedef_return_type, r#"
 {

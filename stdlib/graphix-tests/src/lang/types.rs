@@ -8654,8 +8654,12 @@ run!(
 // if that is the intent. probe:
 // design/review-2026-11-16/repro/tests-types-b-undecided-taker-hints.sh
 // (tests-types-b-04)
-const TWO_DECIDED_TAKERS: &str = "and nothing has decided which";
-
+// 2026-11-21 claude: The const TWO_DECIDED_TAKERS this sat on is gone: its last two
+// users pinned refusals the check no longer makes. An empty literal's element and a
+// callback parameter nothing flows into are bottom, which every member takes, so
+// empty_array_into_a_typedef_union_of_two_decided_arrays and
+// callback_parameter_union_of_two_decided_arrays_alone (renamed, no _refused) run. The
+// hints this CR asks to pin are still printed where a value flows in.
 run!(
     undecided_element_into_a_union_of_two_decided_arrays_is_decided_by_a_later_write,
     r#"{
@@ -8702,17 +8706,16 @@ run!(
     prints(r#"["s"]"#);
     FuseExpect::Jit
 );
+// Nothing flows into an empty literal's element, so it is bottom, which
+// every member of the union takes: there is no choice to make.
 run!(
-    empty_array_into_a_declared_union_of_two_arrays_refused,
+    empty_array_into_a_declared_union_of_two_arrays,
     r#"{
   let x: [Array<i64>, Array<string>] = [];
   x
 }"#,
-    refused(
-        "and nothing has decided which: annotate the value (bind it to a `let` with its \
-         type written)"
-    );
-    FuseExpect::None
+    prints("[]");
+    FuseExpect::Jit
 );
 run!(
     typed_empty_array_into_a_declared_union_of_two_arrays,
@@ -8756,13 +8759,13 @@ run!(
     FuseExpect::None
 );
 run!(
-    callback_parameter_union_of_two_decided_arrays_alone_refused,
+    callback_parameter_union_of_two_decided_arrays_alone,
     r#"{
   type P<'p, 'q> = [Array<'p>, Array<'q>];
   let f = |k: fn(q: P<'a, 'b>) -> i64| -> ('a, 'b) never();
   f(|q: [Array<i64>, Array<bool>]| 0)
 }"#,
-    refused(TWO_DECIDED_TAKERS);
+    settles();
     FuseExpect::None
 );
 // The pre-unification of a callback passes over the choice, so a later
@@ -9977,18 +9980,14 @@ run!(
     prints("i64:0")
 );
 run!(
-    empty_array_into_a_typedef_union_of_two_arrays_after_its_deciders_refused,
+    empty_array_into_a_typedef_union_of_two_arrays_after_its_deciders,
     r#"{
   type P<'p, 'q> = [Array<'p>, Array<'q>];
   let l = |y: 'a, z: 'b, x: P<'a, 'b>| -> i64 0;
   l(1, "s", [])
 }"#,
-    refused(
-        "could go to Array<'a: i64> or Array<'b: string> of the union [Array<'a: i64>, \
-         Array<'b: string>], and nothing has decided which: this argument is undecided at \
-         this call; annotate it"
-    );
-    FuseExpect::None
+    prints("i64:0");
+    FuseExpect::Jit
 );
 run!(
     typed_empty_array_into_a_typedef_union_of_two_arrays_after_its_deciders,
@@ -10099,14 +10098,14 @@ run!(
     FuseExpect::Jit
 );
 run!(
-    empty_array_into_a_typedef_union_of_two_decided_arrays_refused,
+    empty_array_into_a_typedef_union_of_two_decided_arrays,
     r#"{
   type P<'p, 'q> = [Array<'p>, Array<'q>];
   let f = |x: P<i64, string>| -> i64 0;
   f([])
 }"#,
-    refused(TWO_DECIDED_TAKERS);
-    FuseExpect::None
+    prints("i64:0");
+    FuseExpect::Jit
 );
 run!(
     typed_empty_array_into_a_typedef_union_of_two_decided_arrays,
