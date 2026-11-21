@@ -3356,7 +3356,7 @@ impl Type {
     /// that gives its names meaning. Names not visible are skipped
     /// (they fill at their first in-context lookup) and make the
     /// result false. Recurses through filled snapshot bodies and
-    /// through cells' bindings and conjuncts.
+    /// through cells' bindings and bounds.
     pub fn seed_refs(&self, env: &Env) -> bool {
         self.seed_refs_seen(env, &mut LPooled::take())
     }
@@ -3375,8 +3375,34 @@ impl Type {
         self.seed_walk(env, seen, false)
     }
 
+    /// [`Self::seed_names_seen`] for the names whose arguments hold no
+    /// type variable alone: such a name means the same wherever it is
+    /// read, so filling it here changes nothing a later reader sees.
+    #[doc(hidden)]
+    pub fn seed_closed_names_seen(&self, env: &Env, seen: &mut AddrSet) {
+        self.seed_walk_where(env, seen, false, &|tr| {
+            tr.params.iter().all(|p| p.tvar_free())
+        });
+    }
+
     fn seed_walk(&self, env: &Env, seen: &mut AddrSet, bodies: bool) -> bool {
-        fn go(t: &Type, env: &Env, seen: &mut AddrSet, bodies: bool) -> bool {
+        self.seed_walk_where(env, seen, bodies, &|_| true)
+    }
+
+    fn seed_walk_where(
+        &self,
+        env: &Env,
+        seen: &mut AddrSet,
+        bodies: bool,
+        fills: &dyn Fn(&TypeRef) -> bool,
+    ) -> bool {
+        fn go(
+            t: &Type,
+            env: &Env,
+            seen: &mut AddrSet,
+            bodies: bool,
+            fills: &dyn Fn(&TypeRef) -> bool,
+        ) -> bool {
             ensure_sufficient(|| {
                 // CR claude for claude: [risk/low] A node or resolution cell already in
                 // `seen` answers true here, so the result is right only for the first
@@ -3398,7 +3424,9 @@ impl Type {
                 let mut all = true;
                 match t {
                     // Keyed on the cell: with_params clones share it.
-                    Type::Ref(tr) if seen.insert(Arc::as_ptr(&tr.resolved).addr()) => {
+                    Type::Ref(tr)
+                        if fills(tr) && seen.insert(Arc::as_ptr(&tr.resolved).addr()) =>
+                    {
                         match tr.resolve_in(env) {
                             None if tr.resolve_trait_in(env).is_some() => (),
                             None => all = false,
@@ -3406,10 +3434,10 @@ impl Type {
                             Some(r) => {
                                 for (_, c) in r.params.iter() {
                                     if let Some(c) = c {
-                                        all &= go(c, env, seen, bodies);
+                                        all &= go(c, env, seen, bodies, fills);
                                     }
                                 }
-                                all &= go(&r.typ, env, seen, bodies);
+                                all &= go(&r.typ, env, seen, bodies, fills);
                             }
                         }
                     }
@@ -3418,24 +3446,25 @@ impl Type {
                         if !seen.insert(cell.data_ptr().addr()) {
                             return true;
                         }
-                        let (binding, cons) = {
+                        let (binding, cons, lower) = {
                             let cell = cell.read();
                             (
                                 cell.binding.clone(),
                                 SmallVec::<[Type; 1]>::from(cell.above.all()),
+                                cell.lower.clone(),
                             )
                         };
-                        for t in binding.iter().chain(cons.iter()) {
-                            all &= go(t, env, seen, bodies);
+                        for t in binding.iter().chain(cons.iter()).chain(lower.iter()) {
+                            all &= go(t, env, seen, bodies, fills);
                         }
                     }
                     _ => (),
                 }
-                t.for_each_child(&mut |c| all &= go(c, env, seen, bodies));
+                t.for_each_child(&mut |c| all &= go(c, env, seen, bodies, fills));
                 all
             })
         }
-        go(self, env, seen, bodies)
+        go(self, env, seen, bodies, fills)
     }
 
     /// Whether this type reaches the definition `def` (a

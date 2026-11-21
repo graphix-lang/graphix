@@ -4260,3 +4260,25 @@ val f: fn<'b: T9<'a>>(x: 'b) -> 'b;"#,
     "/test/m.gx" => r#"let f = 'q: {v: {v: {v: {v: {v: {v: {v: {v: {v: {v: ['p, null]}}}}}}}}}} |x: 'q| -> 'q x"#;
     FuseExpect::None
 );
+
+// An implementation's types are checked against the interface where the
+// body's own type names resolve: a val whose implementation writes a type
+// the body declares matches, in a static module and in a dynamic one.
+run!(
+    val_implemented_over_a_type_the_body_declares,
+    is(Value::I64(1)),
+    "/test.gx" => "mod m; let result = m::f(1)",
+    "/test/m.gxi" => "val f: fn(x: i64) -> i64;",
+    "/test/m.gx" => "type V = i64;\nlet f = |x: V| x";
+    FuseExpect::Jit
+);
+
+run!(
+    dynamic_val_implemented_over_a_type_the_body_declares,
+    r#"{
+    let st = mod foo dynamic { sig { val f: fn(x: i64) -> i64 }; source "type V = i64; let f = |x: V| x" };
+    select st { error as e => "[e]", null as _ => "ok [foo::f(1)]" }
+}"#,
+    prints(r#""ok 1""#);
+    FuseExpect::Jit
+);

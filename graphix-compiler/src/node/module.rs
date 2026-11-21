@@ -1777,11 +1777,18 @@ impl<R: Rt> Module<R> {
             env, nodes, catches, body, top_id, proxy, scope, sig, sig_binds, ..
         } = self;
         join_implemented_vals(ctx, sig_binds, nodes);
-        ctx.with_restored_mut(env, |ctx| {
-            super::typecheck0_statements(ctx, nodes, catches, false)
+        ctx.with_restored_mut(env, |ctx| -> Result<()> {
+            super::typecheck0_statements(ctx, nodes, catches, false)?;
+            // the interface is checked outside the body's env, where a
+            // type the body declares has no name: fill each closed one
+            let mut seen = LPooled::take();
+            nodes
+                .iter()
+                .for_each(|n| n.typ().seed_closed_names_seen(&ctx.env, &mut seen));
+            Ok(())
         })?;
         match body {
-            // CR claude for claude: [bug/medium] A val implemented by a lambda whose
+            // XCR claude for claude: [bug/medium] A val implemented by a lambda whose
             // parameter is annotated with a type the module's body declares (`type V =
             // i64; let f = |x: V| x` under `val f: fn(x: i64) -> i64`) is refused,
             // `undefined type V in foo`: a static module at the check, a dynamic one at
@@ -1796,6 +1803,22 @@ impl<R: Rt> Module<R> {
             // both module kinds. probe:
             // design/review-2026-11-16/repro/t-fntyp-private-alias-param.sh
             // (t-fntyp-01)
+            // 2026-11-21 claude: Its probe passes in both module kinds; pinned by
+            // lang::interfaces::{val_implemented_over_a_type_the_body_declares,
+            // dynamic_val_implemented_over_a_type_the_body_declares}. A val whose
+            // implementation's type holds a typedef the body declares inside a cell's
+            // bound (B<P<i64>> through [c, t]) still missed: check_body now fills every
+            // name its statements' types reach while the body's env is in force, and
+            // Type::seed_refs walks lower bounds too (pin
+            // lang::block_types::abstract_parameter_a_module_annotation_decides_compares,
+            // which fails without it).
+            // 2026-11-21 claude: Correction to the note above: check_body fills only the
+            // names whose arguments hold no type variable (Type::seed_closed_names_seen).
+            // Filling an open one, T24<'a> under a let's annotation, in the body's env
+            // first changed how the val's match read 'a
+            // (write_through_a_deep_nest_of_typedef_applications_ends then refused with
+            // other words). A body-private name with a variable argument, inside a val's
+            // implementation, is still this CR's case.
             Body::Static => check_sig(ctx, *top_id, proxy, scope, sig, sig_binds, nodes),
             Body::Dynamic { sig_env, .. } => ctx.with_restored_mut(sig_env, |ctx| {
                 check_sig(ctx, *top_id, proxy, scope, sig, sig_binds, nodes)
