@@ -3073,6 +3073,27 @@ fn singleton(v: &TVar) -> bool {
     v.cell_above().iter().any(|c| matches!(c, Type::Bound(Bound::Singleton)))
 }
 
+/// Whether `t` is one type: a single primitive, or one constructor (an
+/// array, a tuple, a function); a union or an open cell is not.
+fn one_type(env: &Env, t: &Type) -> Result<bool> {
+    Ok(match &stands_for(env, t)? {
+        Type::Primitive(p) => p.exactly_one().is_some() || p.is_empty(),
+        Type::Set(_) | Type::TVar(_) | Type::Any => false,
+        _ => true,
+    })
+}
+
+/// Refuse `t`, which is more than one type, where `Singleton` asks for one.
+fn not_one(env: &Env, t: &Type) -> Result<()> {
+    let shown = deep(t);
+    match Type::Primitive(Typ::number()).contains(env, t)? {
+        true => {
+            bail!("cannot compute with {shown}: both operands must be one numeric type")
+        }
+        false => bail!("{shown} is more than one type, where `Singleton` asks for one"),
+    }
+}
+
 /// Whether a definition closing at `min` may fix `v`: an open cell of
 /// its own, no scheme's variable.
 fn fixes(v: &TVar, min: u32) -> bool {
@@ -3504,7 +3525,23 @@ impl Solving {
             .collect();
         finite_all(own.iter())?;
         for v in own.iter() {
-            self.meetable(env, v)?
+            self.meetable(env, v)?;
+            // what the definition alone gives a variable that must be one
+            // type is part of it at every instance
+            if singleton(v) {
+                let given: SmallVec<[Type; 2]> = v
+                    .cell_lower()
+                    .iter()
+                    .map(deep)
+                    .filter(|l| !l.has_unbound())
+                    .collect();
+                if !given.is_empty() {
+                    let t = join(env, &given)?;
+                    if !one_type(env, &t)? {
+                        not_one(env, &t)?
+                    }
+                }
+            }
         }
         self.fix_scope(env, depth + 1, false, mark)?;
         self.outlived(env, &declared, depth, mark)?;
@@ -4888,13 +4925,7 @@ impl Solving {
                 }
             }
         };
-        // one type: a single primitive, or one constructor (an array, a
-        // tuple, a function); a union or an open cell is not
-        let one = match &stands_for(env, &t)? {
-            Type::Primitive(p) => p.exactly_one().is_some() || p.is_empty(),
-            Type::Set(_) | Type::TVar(_) | Type::Any => false,
-            _ => true,
-        };
+        let one = one_type(env, &t)?;
         if single && !matches!(t, Type::Bottom) && !one {
             // a declared variable is one type, which each call must give
             // it
@@ -4903,14 +4934,7 @@ impl Solving {
                     let cell = r.cell();
                     cell.write().above.add_declared(Type::Bound(Bound::Singleton))
                 }
-                _ if Type::Primitive(Typ::number()).contains(env, &t)? => bail!(
-                    "cannot compute with {}: both operands must be one numeric type",
-                    deep(&t)
-                ),
-                _ => bail!(
-                    "{} is more than one type, where `Singleton` asks for one",
-                    deep(&t)
-                ),
+                _ => not_one(env, &t)?,
             }
         }
         Ok(t)

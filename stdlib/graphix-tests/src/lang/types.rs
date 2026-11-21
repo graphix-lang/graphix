@@ -3622,7 +3622,8 @@ run!(one_number_bound, ONE_NUMBER, |v: Result<&Value>| match v {
 
 // Arithmetic is `fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a` over
 // exactly one type: a type holding two numeric types is refused even
-// against itself.
+// against itself, in a generic definition where it is written, called or
+// not.
 #[tokio::test(flavor = "current_thread")]
 async fn arithmetic_operands_are_one_type() -> Result<()> {
     for src in [
@@ -3630,15 +3631,23 @@ async fn arithmetic_operands_are_one_type() -> Result<()> {
         "{ let x: [i64, f64] = 3; x * x }",
         "{ let x: [i64, null] = 3; x - 1 }",
         "{ let f = |a: Number, b: Number| a + b; f(1, 2) }",
+        "{ let f = |a: Number, b: Number| a + b; 0 }",
+        "{ let f = |a: Number, b| a * b; 0 }",
         "{ let t: (Number, Number) = (1, 2.5); t.0 % t.1 }",
     ] {
         match eval_modes(src, crate::TEST_REGISTER).await? {
             Err(msg) => {
-                assert!(msg.contains("cannot compute"), "{src}: {msg}")
+                assert!(msg.contains("cannot compute"), "{src}: {msg}");
+                let number = "cannot compute with Number: both operands must be one \
+                              numeric type";
+                assert!(!src.contains("|a: Number") || msg.contains(number), "{msg}")
             }
             Ok(v) => panic!("must be refused: {src} => {v:?}"),
         }
     }
+    let src = "{ let f = 'a: Number |a: 'a, b: 'a| a + b; f(1, 2) }";
+    let v = eval_modes(src, crate::TEST_REGISTER).await?.map_err(anyhow::Error::msg)?;
+    assert_eq!(v, Value::I64(3), "{src}");
     Ok(())
 }
 
