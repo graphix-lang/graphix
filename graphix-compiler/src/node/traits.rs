@@ -33,8 +33,8 @@ use crate::{
     },
     stack::ensure_sufficient,
     typ::{
-        AmbiguousMember, CoreTrait, FnArgKind, FnType, TVar, TakerUnion, TraitId, Type,
-        TypeRef, UndecidedTaker, bounds, check_bounds_acyclic, seed_conjuncts,
+        AmbiguousMember, CoreTrait, FnArgKind, FnType, TVar, TraitId, Type, TypeRef,
+        bounds, check_bounds_acyclic, seed_conjuncts,
         tvar::{RigidGate, current_level},
     },
     wrap,
@@ -391,13 +391,7 @@ fn taker_refusal(e: &anyhow::Error) -> Option<anyhow::Error> {
     const REMEDY: &str = "a method's own variables are not the declaration's, even \
                           one named like it: leave the method's type unwritten, so \
                           its lambda takes the declared one, or write the member the value is";
-    match (e.downcast_ref::<UndecidedTaker>(), e.downcast_ref::<AmbiguousMember>()) {
-        (Some(u), _) if u.at() == TakerUnion::Holder => {
-            Some(anyhow!("{}: {REMEDY}", u.fact()))
-        }
-        (_, Some(a)) => Some(anyhow!("{}: {REMEDY}", a.fact())),
-        _ => None,
-    }
+    e.downcast_ref::<AmbiguousMember>().map(|a| anyhow!("{}: {REMEDY}", a.fact()))
 }
 
 /// Rigid gates on every open cell `declared` reach: a declaration's

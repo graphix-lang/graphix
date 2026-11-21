@@ -41,9 +41,7 @@ pub use cast::{
 };
 mod contains;
 pub(crate) use contains::find_impl;
-pub use contains::{
-    AmbiguousMember, InfiniteType, TakerUnion, TypeMismatch, UndecidedTaker,
-};
+pub use contains::{AmbiguousMember, InfiniteType, TypeMismatch};
 pub(crate) mod expansive;
 pub mod fntyp;
 pub mod holds;
