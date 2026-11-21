@@ -153,7 +153,8 @@ pub fn end(env: &Env) -> Result<()> {
 /// cell is its binding from here on. Its lower bounds, the upper bounds
 /// that hold cells and what the solver kept of it would only hold the
 /// cells it was related to, which hold it in turn. Its declared
-/// predicates stay with it.
+/// predicates stay with it, and so do the defaults of a parameter it
+/// types: a later input's call that leaves one out passes it.
 fn release(v: &TVar) {
     let cell = v.cell();
     let upper = cell.read().constraints.clone();
@@ -163,7 +164,14 @@ fn release(v: &TVar) {
         let mut c = cell.write();
         let lower = std::mem::take(&mut c.lower);
         c.constraints = declared;
-        (c.solving.take(), lower, learned)
+        let solving = c.solving.take();
+        if let Some(k) = &solving
+            && !k.defaults.is_empty()
+        {
+            c.solving =
+                Some(Box::new(Known { defaults: k.defaults.clone(), ..Known::default() }))
+        }
+        (solving, lower, learned)
     };
     drop(held)
 }
@@ -2033,6 +2041,27 @@ fn carry(name: &ArcStr, from: &Type, v: &TVar, to: &Type) {
             }
         }
     }
+}
+
+/// The cells `t` holds, decided ones too: a default stays with the
+/// parameter's cell however it has been decided since.
+fn defaulted_cells(t: &Type) -> SmallVec<[TVar; 4]> {
+    fn go(t: &Type, out: &mut SmallVec<[TVar; 4]>) {
+        ensure_sufficient(|| match t {
+            Type::TVar(tv) => {
+                if !out.iter().any(|v| v.same_cell(tv)) {
+                    out.push(tv.clone());
+                    if let Some(b) = tv.binding() {
+                        go(&b, out)
+                    }
+                }
+            }
+            t => t.for_each_child(&mut |c| go(c, out)),
+        })
+    }
+    let mut out = SmallVec::new();
+    go(t, &mut out);
+    out
 }
 
 /// The cells `t` holds that nothing has decided, declared variables
@@ -4929,13 +4958,13 @@ impl Solving {
     }
 
     fn omitted(&mut self, env: &Env, name: &ArcStr, formal: &Type) -> Result<()> {
-        let mut cells = SmallVec::new();
-        cells_of(formal, true, &mut cells);
-        for v in cells.iter() {
+        for v in defaulted_cells(formal).iter() {
             let given = known(v, |k| k.defaults.clone());
             for (label, default, param) in given.iter() {
                 if label == name {
                     self.constrain(env, default, param).map_err(|e| {
+                        let e =
+                            super::contains::TypeMismatch::noting_settled(env, formal, e);
                         e.context(format!(
                             "the default of #{name} is passed here, where the call \
                              leaves #{name} out"

@@ -1104,6 +1104,24 @@ impl TypeMismatch {
 
     /// `expected` refusing `actual` with no note: a check by bounds refuses
     /// so, and wording a refusal decides nothing of either side.
+    /// `e` with the note naming the binding an earlier input settled at ⊥
+    /// in `cause`, where `e` is a mismatch that carries none yet.
+    pub(crate) fn noting_settled(
+        env: &Env,
+        cause: &Type,
+        e: anyhow::Error,
+    ) -> anyhow::Error {
+        match e.downcast::<TypeMismatch>() {
+            Ok(mut m) => {
+                if m.settled.is_none() {
+                    m.settled = super::tvar::settled_note(env, &[cause])
+                }
+                anyhow::Error::new(m)
+            }
+            Err(e) => e,
+        }
+    }
+
     pub(crate) fn plain(expected: &Type, actual: &Type) -> anyhow::Error {
         anyhow::Error::new(TypeMismatch {
             expected: expected.clone(),
