@@ -1300,12 +1300,17 @@ macro_rules! fast_builtin {
             Some(::graphix_compiler::FastCall::Plain($fc)),
             $crate::CachedArgs<$crate::OrderChecked<$ev, $start, { $end }>>);
     };
+    ($(#[$meta:meta])* $vis:vis $alias:ident, $ev:ident, $name:literal, $fc:path; ordered($start:literal..$end:expr); check($check:path)) => {
+        $crate::fast_builtin!(@impl $(#[$meta])* $vis $alias, $ev, $name, $fc,
+            Some(::graphix_compiler::FastCall::Plain($fc)),
+            $crate::CachedArgs<$crate::OrderChecked<$ev, $start, { $end }>>, $check);
+    };
     ($(#[$meta:meta])* $vis:vis $alias:ident, $ev:ident, $name:literal, $fc:path) => {
         $crate::fast_builtin!(@impl $(#[$meta])* $vis $alias, $ev, $name, $fc,
             Some(::graphix_compiler::FastCall::Plain($fc)),
             $crate::CachedArgs<$ev>);
     };
-    (@impl $(#[$meta:meta])* $vis:vis $alias:ident, $ev:ident, $name:literal, $fc:path, $fast:expr, $wrapped:ty) => {
+    (@impl $(#[$meta:meta])* $vis:vis $alias:ident, $ev:ident, $name:literal, $fc:path, $fast:expr, $wrapped:ty $(, $check:path)?) => {
         $(#[$meta])*
         #[derive(Debug, Default)]
         $vis struct $ev;
@@ -1325,6 +1330,15 @@ macro_rules! fast_builtin {
             ) -> Option<::netidx_value::Value> {
                 $crate::fast_eval(ctx, $fc, from)
             }
+
+            $(
+                fn check(
+                    env: &::graphix_compiler::env::Env,
+                    args: &[::graphix_compiler::typ::Type],
+                ) -> ::anyhow::Result<()> {
+                    $check(env, args)
+                }
+            )?
         }
 
         $vis type $alias = $wrapped;
@@ -1414,6 +1428,10 @@ impl<R: Rt, T: EvalCached<R>, const START: usize, const END: usize> EvalCached<R
             return None;
         }
         self.inner.eval(ctx, from)
+    }
+
+    fn check(env: &Env, args: &[Type]) -> Result<()> {
+        T::check(env, args)
     }
 }
 
@@ -1855,6 +1873,11 @@ pub trait EvalCached<R: Rt>:
 
     fn eval(&mut self, ctx: &mut ExecCtx<'_, R>, from: &CachedVals) -> Option<Value>;
 
+    /// See `graphix_compiler::BuiltIn::check`.
+    fn check(_env: &Env, _args: &[Type]) -> Result<()> {
+        Ok(())
+    }
+
     /// The call's value over arguments that did not fire, without the
     /// effect an `Effect::Io` builtin's `eval` performs.
     fn quiet(&mut self, ctx: &mut ExecCtx<'_, R>, from: &CachedVals) -> Option<Value> {
@@ -1927,6 +1950,10 @@ impl<R: Rt, T: EvalCached<R>> BuiltIn<R> for CachedArgs<T> {
         let cached = CachedVals::image_decode(buf)?;
         let t = T::image_decode(ctx, buf)?;
         Ok(Box::new(Self::with(woke_pending, cached, t)))
+    }
+
+    fn check(env: &Env, args: &[Type]) -> Result<()> {
+        T::check(env, args)
     }
 }
 

@@ -4,7 +4,7 @@ use anyhow::Result;
 use arcstr::ArcStr;
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, is, refused},
+    testing::{FuseExpect, is, prints, refused},
 };
 use netidx::publisher::Value;
 
@@ -145,6 +145,50 @@ const MAP_REF_WRONG_TYPE: &str = r#"
 // A lookup is held to the comparison rule: a key no key of the map can
 // equal is refused, as `1 == "a"` is.
 run!(map_ref_of_a_key_of_another_type_is_refused, MAP_REF_WRONG_TYPE, refused("cannot compare i64 with string"); FuseExpect::None);
+
+// A lookup is held to one rule whatever calls it: the key's type and the
+// map's key type must compare, at `m{k}` and at map::get, get_or and
+// remove alike, and through a generic function at each call.
+run!(
+    map_get_of_a_key_of_another_type_is_refused,
+    r#"{ let m = {"a" => 1}; map::get(m, 1) }"#,
+    refused("cannot compare string with i64");
+    FuseExpect::None
+);
+run!(
+    map_get_or_of_a_key_of_another_type_is_refused,
+    r#"{ let m = {"a" => 1}; map::get_or(m, 1, 0) }"#,
+    refused("cannot compare string with i64");
+    FuseExpect::None
+);
+run!(
+    map_remove_of_a_key_of_another_type_is_refused,
+    r#"{ let m = {"a" => 1}; map::remove(m, 1) }"#,
+    refused("cannot compare string with i64");
+    FuseExpect::None
+);
+run!(
+    map_get_through_a_generic_function_is_judged_at_the_call,
+    r#"{ let g = |m, k| map::get(m, k); g({"a" => 1}, 1) }"#,
+    refused("cannot compare string with i64");
+    FuseExpect::None
+);
+run!(
+    map_get_through_a_generic_function_finds_its_key,
+    r#"{ let g = |m, k| map::get(m, k); g({"a" => 1}, "a") }"#,
+    prints("i64:1")
+);
+run!(
+    map_ref_through_a_generic_function_is_judged_at_the_call,
+    r#"{ let g = |m, k| m{k}; g({"a" => 1}, 1) }"#,
+    refused("cannot compare string with i64");
+    FuseExpect::None
+);
+run!(
+    map_ref_through_a_generic_function_finds_its_key,
+    r#"{ let g = |m, k| m{k}; g({"a" => 1}, "a")$ }"#,
+    prints("i64:1")
+);
 
 const MAP_NESTED: &str = r#"
 {

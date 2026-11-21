@@ -2003,6 +2003,17 @@ pub fn defaulted(v: &TVar, label: ArcStr, default: Type, param: Type) {
     known(v, |k| k.defaults.push((label, default, param)))
 }
 
+/// Hold a lookup's key to the comparison rule against the keys of the map
+/// type `map`: one of the two types holds the other, or the lookup finds
+/// nothing whatever the map holds. Judged when the check fixes the cells;
+/// outside a check (an instance's bind) there is nothing to record.
+pub fn lookup_key_compared(env: &Env, map: &Type, key: &Type) -> Result<()> {
+    let keys = Type::empty_tvar();
+    Type::map(keys.clone(), Type::empty_tvar()).check_contains(env, map)?;
+    with(|s| s.compare(keys, key.clone(), false));
+    Ok(())
+}
+
 /// The defaults recorded of the cell `v` ([`Known::defaults`]).
 fn defaults_of(v: &TVar) -> SmallVec<[(ArcStr, Type, Type); 0]> {
     let cell = v.cell();

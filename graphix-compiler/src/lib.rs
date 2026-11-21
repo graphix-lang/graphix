@@ -985,6 +985,10 @@ impl IoSite {
 
 pub type BuiltInPerformFn<R> = fn(&mut ExecCtx<'_, R>, &IoSite, &[Value]);
 
+/// A builtin's check of a call's argument types beyond its signature
+/// ([`BuiltIn::check`]).
+pub type BuiltInCheckFn = fn(&env::Env, &[Type]) -> Result<()>;
+
 /// A Graphix builtin implemented in Rust.
 pub trait BuiltIn<R: Rt> {
     /// The builtin's name, `package::unique_name` for a package builtin.
@@ -1022,6 +1026,13 @@ pub trait BuiltIn<R: Rt> {
     /// application would have.
     fn perform(_ctx: &mut ExecCtx<'_, R>, _site: &IoSite, _args: &[Value]) {
         unreachable!("{} is not an Effect::Io builtin", Self::NAME)
+    }
+
+    /// What the check holds a call's arguments to beyond the signature,
+    /// given their types in the order written: run where the check meets
+    /// a call that names the builtin. Most ask nothing more.
+    fn check(_env: &env::Env, _args: &[Type]) -> Result<()> {
+        Ok(())
     }
 }
 
@@ -1499,6 +1510,7 @@ struct BuiltinEntry<R: Rt> {
     init: BuiltInInitFn<R>,
     decode: BuiltInDecodeFn<R>,
     perform: BuiltInPerformFn<R>,
+    check: BuiltInCheckFn,
     effect: Effect,
     ordered: bool,
     order_arg: Option<usize>,
@@ -2266,6 +2278,7 @@ impl<R: Rt> CompileCtx<R> {
                     init: T::init,
                     decode: T::image_decode,
                     perform: T::perform,
+                    check: T::check,
                     effect: T::EFFECT,
                     ordered: T::ORDERED,
                     order_arg: T::ORDER_ARG,
@@ -2274,6 +2287,12 @@ impl<R: Rt> CompileCtx<R> {
             Entry::Occupied(_) => bail!("builtin {} is already registered", T::NAME),
         }
         Ok(())
+    }
+
+    /// The check a registered builtin holds a call's argument types to
+    /// ([`BuiltIn::check`]).
+    pub(crate) fn builtin_check(&self, name: &str) -> Option<BuiltInCheckFn> {
+        self.registry.builtins.get(name).map(|b| b.check)
     }
 
     /// The image decoder of a registered builtin.

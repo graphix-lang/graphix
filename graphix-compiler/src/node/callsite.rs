@@ -4077,6 +4077,13 @@ impl<R: Rt> CallSite<R> {
             };
             args.push((label, n.typ().clone()))
         }
+        // a builtin may ask more of its arguments than its signature says
+        if let Some(check) = static_builtin(ctx, self).and_then(|n| ctx.builtin_check(n))
+        {
+            let types: SmallVec<[Type; 4]> =
+                args.iter().map(|(_, t)| t.clone()).collect();
+            check(&ctx.env, &types).map_err(|e| e.at(&*self.spec))?
+        }
         let callee = self.fnode.typ().clone();
         let handler = self.scope.dynamic.handler();
         // what the site uses its callee as: a function of the arguments

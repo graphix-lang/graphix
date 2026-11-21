@@ -8,9 +8,7 @@ use super::{
 use crate::{
     CFlag, CompileCtx, ExecCtx, Node, NodeView, Rt, Scope, TagValue, Update,
     cost::ForkSite,
-    defetyp,
-    env::Env,
-    err, errf,
+    defetyp, err, errf,
     expr::{Expr, ExprId},
     fusion::{
         self,
@@ -251,7 +249,10 @@ impl<R: Rt> MapRef<R> {
         }
         let mt = Type::map(Type::empty_tvar(), self.vtyp.clone());
         wrap!(self, mt.check_contains(&ctx.env, self.source.typ()))?;
-        wrap!(self.key, compare_lookup_key(&ctx.env, self.source.typ(), self.key.typ()))
+        wrap!(
+            self.key,
+            bounds::lookup_key_compared(&ctx.env, self.source.typ(), self.key.typ())
+        )
     }
 
     pub(crate) fn image_decode(
@@ -355,15 +356,4 @@ impl<R: Rt> Update<R> for MapRef<R> {
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         emit_map_ref_node(cx, &self.source, &self.key)
     }
-}
-
-/// Hold a lookup's key to the comparison rule against the keys of the map
-/// type `map`: one of the two types holds the other, or the lookup finds
-/// nothing whatever the map holds. Judged when the check fixes the cells;
-/// outside a check (an instance's bind) there is nothing to record.
-fn compare_lookup_key(env: &Env, map: &Type, key: &Type) -> Result<()> {
-    let keys = Type::empty_tvar();
-    Type::map(keys.clone(), Type::empty_tvar()).check_contains(env, map)?;
-    bounds::with(|s| s.compare(keys, key.clone(), false));
-    Ok(())
 }

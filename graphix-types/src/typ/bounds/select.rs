@@ -865,6 +865,15 @@ impl Solving {
             (Type::List(x), Type::List(y)) => {
                 Type::List(Arc::new(self.both(env, test, x, y)))
             }
+            (Type::Map(_), p) | (p, Type::Map(_)) if has(p, Typ::Map) => match &a {
+                Type::Map(_) => a,
+                _ => b,
+            },
+            // an empty map is a value of any two map types
+            (Type::Map(x), Type::Map(y)) => Type::map(
+                self.both(env, test, &x.key, &y.key),
+                self.both(env, test, &x.value, &y.value),
+            ),
             (Type::Error(x), Type::Error(y)) => match self.both(env, test, x, y) {
                 t if nothing(&t) => Type::Bottom,
                 t => Type::Error(Arc::new(t)),
