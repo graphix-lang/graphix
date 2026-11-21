@@ -1856,14 +1856,18 @@ impl Type {
                             g.id == *id
                                 && (flags.contains(IsAFlags::MatchAbstract)
                                     || g.params.len() == params.len()
-                                    // parameters are invariant: each one equal
-                                    && params.iter().zip(g.params.iter()).all(|(p, gp)| {
-                                    let holds = |a: &Type, b: &Type| {
-                                        a.decided_holds(env, b)
-                                            .unwrap_or(false)
-                                    };
-                                    holds(p, gp) && holds(gp, p)
-                                }))
+                                    // parameters are invariant: each one equal,
+                                    // but a ⊥ the representation only reads is
+                                    // below every type, as the check reads it
+                                    && params.iter().zip(g.params.iter()).enumerate().all(
+                                        |(i, (p, gp))| {
+                                            let holds = |a: &Type, b: &Type| {
+                                                a.decided_holds(env, b).unwrap_or(false)
+                                            };
+                                            super::bounds::bottom_below(env, id, i, gp)
+                                                || (holds(p, gp) && holds(gp, p))
+                                        },
+                                    ))
                         }
                         None => {
                             a.id().as_u64_pair().1 == id.inner()

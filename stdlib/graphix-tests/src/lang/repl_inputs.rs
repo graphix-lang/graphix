@@ -202,23 +202,18 @@ async fn builtin_alias_written_by_an_earlier_input() -> Result<()> {
     .await
 }
 
-/// A constructed abstract value's parameter its input left open is ⊥:
-/// a later type test of another parameter covers nothing of it.
+/// A constructed abstract value's parameter its input left open is ⊥,
+/// which the representation only reads: the value is every instance's, in
+/// a later type test and a later call alike, but a binding of it takes no
+/// wider instance.
 #[tokio::test(flavor = "current_thread")]
 async fn abstract_parameter_settles_at_its_input() -> Result<()> {
     session(&[
         Accept("type B<'x> = Abstract<i64>"),
         Accept("let t = B(1)"),
-        Refuse(
-            "select t { B<i64> as _ => 1 }",
-            "missing match cases: no arm covers B<_>: it holds the type of `t` (line 1, \
-             column 5 in `let t = B(1)`)",
-        ),
+        Produce("select t { B<i64> as _ => 1 }", Value::I64(1)),
         Accept("let f = |x: B<i64>| 1"),
-        Refuse(
-            "f(t)",
-            "type mismatch B<i64> does not contain B<_>: it holds the type of `t`",
-        ),
+        Produce("f(t)", Value::I64(1)),
         Accept("let v = B(1)"),
         Refuse(
             "v <- never<B<i64>>()",
