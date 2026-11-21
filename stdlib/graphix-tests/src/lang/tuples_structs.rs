@@ -665,9 +665,9 @@ run!(
     a
 }"#,
     refused(
-        "the pattern { a, .. } matches more than one member, { a: i64, b: string } and { \
-         a: i64, c: f64 }; the members do not share their fields: bind the value whole \
-         and take it apart in a select, `T as { a, .. }`"
+        "this pattern leaves fields out, and { a: i64, b: string } and { a: i64, c: f64 } \
+         reach it, whose fields differ, so it has no one layout to read: bind the value \
+         whole and take it apart in a select"
     );
     FuseExpect::None
 );

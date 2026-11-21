@@ -6840,8 +6840,10 @@ run!(
     FuseExpect::None
 );
 
+// The operand of `$` must be known where it is written: a member an
+// unannotated parameter gives it is one only each call decides.
 run!(
-    strip_over_open_member_beside_error_is_decided,
+    strip_over_open_member_beside_error_is_refused,
     r#"{
     let f = |a: Error<`E>, b| {
         let u = select false { true => a, false => b };
@@ -6850,8 +6852,8 @@ run!(
     let r = f(error(`E), 3);
     "[r] end"
 }"#,
-    prints("\"3 end\"");
-    FuseExpect::Jit
+    refused("the type of the operand of ? or $ is not known here: annotate it");
+    FuseExpect::None
 );
 
 // `?` joins the errors its operand's decided members hold into its handler
@@ -13002,7 +13004,7 @@ run!(union_bound_reference_member_reaches_open_cell, r#"{
     let f = 'a: [&[i64, null], &mut string] |v: 'a| v;
     let g = |z| f(&z);
     *g("hello")
-}"#, refused("[i64, null] does not contain string"); FuseExpect::None);
+}"#, refused("[&[i64, null], &mut string] does not contain &string"); FuseExpect::None);
 
 run!(
     union_bound_reference_member_accepts,
@@ -13021,7 +13023,7 @@ run!(union_bound_read_only_member_decides_writable_reference, r#"{
     let f = 'a: [&i64, null] |v: 'a| v;
     let g = |z| f(&mut z);
     *g("hello")
-}"#, refused_renumbered("type mismatch [null, &i64] does not contain &mut '_0"); FuseExpect::None);
+}"#, refused("i64 does not contain string"); FuseExpect::None);
 
 run!(
     union_bound_read_only_member_takes_writable_reference,

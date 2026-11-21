@@ -935,7 +935,9 @@ fn alike(a: &Type, b: &Type) -> bool {
         | (Type::Error(_), Type::Error(_))
         | (Type::Map(_), Type::Map(_))
         | (Type::Fn(_), Type::Fn(_)) => true,
-        (Type::ByRef(m, _), Type::ByRef(n, _)) => m == n,
+        // every reference has one run-time form; which may stand for which
+        // is the relation's to say
+        (Type::ByRef(..), Type::ByRef(..)) => true,
         (Type::Tuple(xs), Type::Tuple(ys)) => xs.len() == ys.len(),
         (Type::Variant(t, xs, _), Type::Variant(u, ys, _)) => {
             t == u && xs.len() == ys.len()
