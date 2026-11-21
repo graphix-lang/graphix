@@ -543,32 +543,30 @@ node graph IS the IR — there is no parallel typed IR
 The long form is `design/tvar_constraints.md`; the rules below are the ones
 a change elsewhere most often breaks.
 
+- **The check is one solver** (`typ/bounds/`): a cell gathers what flows
+  into it (lower bounds) and what it flows to (upper bounds), and a verdict
+  does not depend on the order they arrive, so no rule may refuse or accept
+  by the order arguments, positions or members are met in. A use of a
+  definition copies exactly the cells no definition owns and shares every
+  other (`bounds::instantiate`).
 - **`let rec` is monomorphic-recursive, and a binding something writes**
   (a `<-` target, a `&mut`'s referent) **is not generalized** (the value
-  restriction, `CompileCtx::monomorphic`). A function stays generic only
-  where a binding names it (`bind::names_generic`): a lambda or a read of a
-  generalized binding no binding names is one instance.
+  restriction): a write to a generic binding must be as general as its
+  scheme. A `let` is generic only where its value defines (`bind::defines`:
+  a lambda, a read of a generic name or of a part of one, data holding
+  those); any other value is one instance.
 - **A def's declared tvars are rigid in its body check**: none binds to a
   concrete type or ⊥, no two unify, none escapes into a cell outside the
   definition. A call instantiates them freely.
 - A quantified function type stands only as a declared signature's top
-  (`typ::QUANTIFIED_FN`).
-- A type that two undecided members of a union could take goes to neither
-  (`contains.rs::AmbiguousMember`), and neither does an undecided type
-  that two decided members would decide differently (`UndecidedTaker`):
-  the relation's site names what to annotate. Only a select's own pattern
-  walks keep the first member (`Type::contains_ordered`), and a written
-  test two undecided members of the scrutinee could take is refused
-  (`select.rs::written_takers`).
-- **A call's arguments are met in the order of the parameters, then the
-  defaults it omits; nothing waits for a later argument**, and no rule may
-  be added to make a verdict independent of that order: soundness is the
-  bar. A variable only data positions hold widens to a decided argument
-  wider than the ones before it; an undecided argument takes the formal as
-  it stands, and the variables it met widen no more
-  (`callsite.rs::Widening`).
-- A merge takes the lower of its two cells' levels (`TVar::merge_one`), so a
-  relation against a scheme instantiates it first.
+  (`typ::QUANTIFIED_FN`); the parser refuses one written inside another.
+- A value that could go to more than one member of a union, with nothing
+  to decide which, is refused, naming what to annotate. Two unions are one
+  type member for member; a member of one that could pair with two of the
+  other is refused (`contains.rs::AmbiguousMember`).
+- A `val` holds an implementation that fits it (`bounds::fits`): the
+  implementation may return or hold less than declared, take more, and
+  throw less; every user sees the declared type.
 - **Sound by construction:** a hole in the type system is closed by a local
   rule that refuses and names the annotation that makes the program pass
   (pin both), never by a late check chasing shapes; where the right type is
