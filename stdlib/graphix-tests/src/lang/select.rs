@@ -3137,7 +3137,7 @@ async fn free_union_arm_is_not_inferred_from_sibling() {
                 "parse's result must not be inferred from a sibling arm: {code} -> {v:?}"
             ),
         };
-        assert!(msg.contains("must be fully known here"), "{code}: {msg}");
+        assert!(msg.contains("must be known here"), "{code}: {msg}");
     }
 }
 

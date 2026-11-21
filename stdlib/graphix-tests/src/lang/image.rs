@@ -649,18 +649,14 @@ async fn a_restored_interface_keeps_its_positions() -> Result<()> {
 async fn a_restored_block_type_is_found() -> Result<()> {
     let program = r##"{
     type L = [`X(i64)];
-    let out = never();
-    let g = |z: i64| {
-        type L = [`Nil, `Cons(i64, L)];
-        let f = |#d = { let b: [`Y, `Z(L)] = never(); out <- b; 0 }, x: i64| d + x;
-        f(z)
-    };
+    let mk = |#k = { type L = [`Nil, `Cons(i64, L)]; |v: [`Y, `Z(L)]| v }, z: i64| (z, k);
+    let (n, k) = mk(1);
     let h = |#d = { type K = [`Nil, `Cons(i64, K)]; let l: K = `Cons(1, `Nil); l }, x: i64| (d, x);
     let s = {k: h};
     let t: {k: fn(x: i64) -> 'r} = s;
     let r = json::read(r#"["Z",["Cons",1,"Nil"]]"#);
-    out <- r$;
-    (g(1), r, t.k(2))
+    k(r$);
+    (n, r, t.k(2))
 }"##;
     let ((_, cold), (_, warm)) = cold_and_warm(program).await?;
     let last = cold.last().expect("the program produced its tuple");

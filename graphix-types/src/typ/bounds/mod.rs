@@ -2638,6 +2638,12 @@ fn use_outs(u: &Use) -> SmallVec<[TVar; 4]> {
     outs
 }
 
+/// Whether a type-directed operation makes the values of the cell `v`
+/// from its type (`Concrete`).
+fn made_by_type(v: &TVar) -> bool {
+    v.cell_constraints().iter().any(|c| matches!(c, Type::Bound(Bound::Concrete)))
+}
+
 fn quantified(v: &TVar) -> bool {
     v.cell().read().solving.as_ref().is_some_and(|k| k.quantified)
 }
@@ -4402,6 +4408,13 @@ impl Solving {
                 // a bound that names the cell itself decides nothing alone
                 let t = self.meet(env, &demands)?;
                 let t = within(env, t, &v.cell_constraints())?;
+                // a value a type-directed operation makes takes its type
+                // from what is asked of it, never from a sibling's: one
+                // nothing asks of is decided by nothing
+                let t = match made_by_type(v) && !self.asked_of_above(env, v) {
+                    true => Type::Bottom,
+                    false => t,
+                };
                 match open_cells(&t).iter().any(|u| u.same_cell(v)) {
                     true => Type::Bottom,
                     // demanded as one variable of a definition and as
@@ -4467,6 +4480,33 @@ impl Solving {
                 Some(deep(&l))
             }
         })
+    }
+
+    /// Whether a type is asked of the cell `v`, read up through the cells
+    /// it flows into and never from what else flows into those.
+    fn asked_of_above(&self, env: &Env, v: &TVar) -> bool {
+        let mut seen: SmallVec<[usize; 8]> = SmallVec::from_iter([v.cell_addr()]);
+        let mut work: SmallVec<[TVar; 8]> = SmallVec::from_iter([v.clone()]);
+        while let Some(w) = work.pop() {
+            for u in w.cell_constraints() {
+                // a cell is read by what is demanded of it, whatever has
+                // decided it since
+                match &u {
+                    // each instance gives a definition's variable its type
+                    Type::TVar(c) if c.is_rigid() || quantified(&c) => return true,
+                    Type::TVar(c) => {
+                        if !seen.contains(&c.cell_addr()) {
+                            seen.push(c.cell_addr());
+                            work.push(c.clone())
+                        }
+                    }
+                    Type::Bound(_) => (),
+                    u if u.is_trait_ref(env) => (),
+                    _ => return true,
+                }
+            }
+        }
+        false
     }
 
     /// The one of `ts` every other holds; nothing demanded is bottom.

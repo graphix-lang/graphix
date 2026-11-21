@@ -224,6 +224,25 @@ run!(
     json_reads_a_defaults_block_type,
     r##"{
     type L = [`X(i64)];
+    let g = |#k = { type L = [`Nil, `Cons(i64, L)]; |v: [`Y, `Z(L)]| v }, z: i64| k;
+    let k = g(1);
+    let r1 = json::read(r#"["Z",["Cons",1,"Nil"]]"#);
+    let r2 = json::read(r#"["Z",["X",1]]"#);
+    k(r1$);
+    k(r2$);
+    (r1, r2)
+}"##,
+    prints(
+        r#"[["Z", ["Cons", i64:1, "Nil"]], error:["InvalidCast", "can't cast [\"X\", 1] to [`Cons(i64, L), `Nil]: no member admits it"]]"#
+    )
+);
+
+// A read takes its type from what is asked of it, never from what another
+// writer of the variable it is written to gives that variable.
+run!(
+    json_read_typed_by_another_writer_of_its_variable_is_refused,
+    r##"{
+    type L = [`X(i64)];
     let out = never();
     let g = |z: i64| {
         type L = [`Nil, `Cons(i64, L)];
@@ -231,14 +250,11 @@ run!(
         f(z)
     };
     let r1 = json::read(r#"["Z",["Cons",1,"Nil"]]"#);
-    let r2 = json::read(r#"["Z",["X",1]]"#);
     out <- r1$;
-    out <- r2$;
-    (g(1), r1, r2)
+    (g(1), r1)
 }"##,
-    prints(
-        r#"[i64:1, ["Z", ["Cons", i64:1, "Nil"]], error:["InvalidCast", "can't cast [\"X\", 1] to [`Cons(i64, L), `Nil]: no member admits it"]]"#
-    )
+    refused("must be known here, an operation reads it to know what to make");
+    FuseExpect::None
 );
 
 // A default naming a type, its block's or a top-level one, takes its

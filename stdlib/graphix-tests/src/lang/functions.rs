@@ -2693,18 +2693,18 @@ run!(
     FuseExpect::Jit
 );
 
-// An omitted default holding an undecided cell takes the variable as the
-// arguments and the defaults before it left it, and the variable widens
-// no more: a wider default declared after it is refused.
+// A parse nothing asks a type of takes none from another default of the
+// same variable.
 run!(
-    omitted_undecided_default_takes_what_stands,
+    omitted_default_of_a_parse_nothing_asks_of_is_refused,
     r#"{
   let u = str::parse("abc")$;
   let n: [i64, string] = 2;
   let f = |#b: 'a = n, #a: 'a = u, y: 'a| -> 'a y;
   (f(1), u)
 }"#,
-    prints(r#"[i64:1, "abc"]"#)
+    refused("must be known here, an operation reads it to know what to make");
+    FuseExpect::None
 );
 
 run!(
