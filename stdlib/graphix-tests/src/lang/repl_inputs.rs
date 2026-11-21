@@ -381,6 +381,18 @@ async fn annotated_earlier_value_takes_a_later_use() -> Result<()> {
     .await
 }
 
+/// The comparison of a write with a generic binding leaves nothing for the
+/// input's end to decide: a `Concrete` variable no value reaches stands.
+#[tokio::test(flavor = "current_thread")]
+async fn write_as_general_of_a_concrete_variable() -> Result<()> {
+    session(&[
+        Accept("let p = 'a: Concrete |#h: [fn(v: 'a) -> i64, null] = null, x: i64| x"),
+        Accept("p <- 'a: Concrete |#h: [fn(v: 'a) -> i64, null] = null, x: i64| x + 1"),
+        Produce("p(3)", Value::I64(4)),
+    ])
+    .await
+}
+
 /// A write as general as an earlier binding's function holds it rigid for
 /// the comparison and decides nothing of it; one narrower is refused.
 #[tokio::test(flavor = "current_thread")]

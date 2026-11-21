@@ -1298,6 +1298,33 @@ pub(super) fn reads_generic<R: Rt>(env: &Env, node: &Node<R>) -> bool {
     }
 }
 
+/// The scheme [`reads_generic`]'s read names: the generalized binding's
+/// type, or its field or element; `None` where a part is not decided.
+pub(super) fn read_scheme<R: Rt>(env: &Env, node: &Node<R>) -> Option<Type> {
+    let decided = |t: Type| -> Option<Type> {
+        match t.deref_cloned()? {
+            r @ Type::Ref(_) => r.lookup_ref(env).ok(),
+            t => Some(t),
+        }
+    };
+    match value_of(node).view() {
+        NodeView::Ref(r) if env.poly_binds.contains(&r.id) => {
+            env.by_id.get(&r.id).map(|b| b.typ.clone())
+        }
+        NodeView::StructRef(s) => match &decided(read_scheme(env, &s.source)?)? {
+            Type::Struct(fs) => {
+                fs.iter().find(|(n, ..)| *n == s.field_name).map(|(_, t, _)| t.clone())
+            }
+            _ => None,
+        },
+        NodeView::TupleRef(t) => match &decided(read_scheme(env, &t.source)?)? {
+            Type::Tuple(ts) => ts.get(t.field).cloned(),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// What `node` evaluates to past grouping parentheses and a block's final
 /// expression.
 fn value_of<R: Rt>(node: &Node<R>) -> &Node<R> {

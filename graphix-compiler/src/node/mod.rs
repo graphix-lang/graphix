@@ -4318,7 +4318,6 @@ impl<R: Rt> Connect<R> {
         if !check {
             return Ok(());
         }
-        let written = &bounds::instantiate(self.node.typ(), current_level());
         let bind = match ctx.env.by_id.get(&self.id) {
             None => bail!("BUG missing bind {:?}", self.id),
             Some(bind) => bind,
@@ -4326,8 +4325,24 @@ impl<R: Rt> Connect<R> {
         // a binding generalized before the write holds what is written
         // as its every instance: a copy of its type, the variables rigid
         let generic = ctx.env.poly_binds.contains(&self.id);
+        // a read of a generic name writes the scheme it names: a copy of
+        // the scheme is held to the binding, as a lambda's is, never the
+        // read's own instance
+        let scheme = generic.then(|| bind::read_scheme(&ctx.env, &self.node)).flatten();
+        let mut copies: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+        let written = &bounds::instantiate_through(
+            scheme.as_ref().unwrap_or(self.node.typ()),
+            current_level(),
+            &mut copies,
+        );
         let held = match generic {
-            true => bounds::instantiate(&bind.typ, current_level()),
+            true => {
+                let mut own: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+                let held =
+                    bounds::instantiate_through(&bind.typ, current_level(), &mut own);
+                copies.extend(own.drain());
+                held
+            }
             false => bind.typ.clone(),
         };
         let mut rigid: LPooled<AHashMap<usize, TVar>> = LPooled::take();
@@ -4415,7 +4430,13 @@ impl<R: Rt> Connect<R> {
                     false => callsite::Narrowing::Written,
                 }
             )
-        )
+        )?;
+        // the two copies of a generic comparison are its own, and nothing
+        // outside reaches them once it holds: no value is of their types
+        if generic {
+            solving(|s| copies.values().for_each(|v| s.own(v)))
+        }
+        Ok(())
     }
 }
 
