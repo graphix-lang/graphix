@@ -5099,7 +5099,10 @@ impl Solving {
     /// of `v`. One that has its shape reads what flows in, which is no
     /// wider than any demand.
     fn demanded(&mut self, env: &Env, v: &TVar, b: &Type) -> Result<()> {
-        let b = shallow(b);
+        let b = match shallow(b) {
+            r @ Type::Ref(_) if !r.is_trait_ref(env) => r.lookup_ref(env)?,
+            b => b,
+        };
         for i in 0..uses(v).len() {
             let (u, met) = uses(v)[i].clone();
             if met {
@@ -5109,6 +5112,7 @@ impl Solving {
                 (&u, &b),
                 (Use::Field { .. } | Use::With { .. }, Type::Struct(_))
                     | (Use::Index { .. }, Type::Tuple(_))
+                    | (Use::Index { i: 0, .. }, Type::Error(_))
                     | (Use::Call { .. }, Type::Fn(_))
                     | (Use::Write { .. }, Type::ByRef(..))
             );

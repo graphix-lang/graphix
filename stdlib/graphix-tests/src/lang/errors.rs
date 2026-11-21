@@ -487,6 +487,32 @@ async fn catch_repl_reader_entered_after_the_raise() -> Result<()> {
     .await
 }
 
+// A handler reads its annotated binder by the written type, a raise or
+// none: nothing raised leaves the binder bottom, and its reads stand.
+run!(
+    catch_annotated_binder_read_with_nothing_raised,
+    "{ let out = \"\"; catch(e: Error<ErrChain<`Boom>>) out <- \"[e.0.error]\"; 1 }",
+    is(Value::I64(1));
+    FuseExpect::None
+);
+
+/// The written type read through a typedef's name, by an input checked
+/// before anything is raised.
+#[tokio::test(flavor = "current_thread")]
+async fn catch_repl_reader_through_a_typedef() -> Result<()> {
+    repl_inputs_produce(
+        &[
+            "type E = Error<ErrChain<`Boom>>",
+            "let out = \"\"",
+            "catch(e: E) out <- e ~ \"[e.0.error]\"",
+            "error(`Boom)?",
+        ],
+        "select out { \"\" => never(\"\"), s => s }",
+        "`Boom",
+    )
+    .await
+}
+
 // A handler installed inside a recursive body belongs to its
 // activation.
 const CATCH_PER_ACTIVATION: &str = r#"
