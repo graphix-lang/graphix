@@ -818,6 +818,15 @@ impl Solving {
         match (&a, &b) {
             _ if strictly_identical(&a, &b) => a,
             (Type::Any, t) | (t, Type::Any) => t.clone(),
+            // what passes a test holding a declared variable's whole bound
+            // is the variable
+            (Type::TVar(v), t)
+                if test
+                    && v.is_rigid()
+                    && nothing(&self.less(env, true, &self.bound_of(env, v), t)) =>
+            {
+                a.clone()
+            }
             (Type::TVar(v), t) | (t, Type::TVar(v)) => {
                 let r = self.both(env, test, &self.bound_of(env, v), t);
                 // a variable that holds no error has none in common with
