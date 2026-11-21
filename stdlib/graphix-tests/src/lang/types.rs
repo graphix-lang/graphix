@@ -2994,8 +2994,9 @@ const NEVER_OF_AN_UNBOUNDED_APPLICATION: &str = r#"{
     never<Num<string>>()
 }"#;
 
-// A definition's declared variable a callee's bound ties to an outer
-// cell's constraint escapes it as a binding would.
+// A cell of a definition that an undecided binding outside it flows into
+// is decided outside, where the definition's declared variables stand for
+// nothing: one flowing in beside it is refused, naming the binding.
 const DECLARED_CONSTRAINS_OUTER: &str = r#"{
     let y = never();
     let g = 'b: 'c, 'c: Any |p: 'b, q: 'c| q;
@@ -3003,6 +3004,21 @@ const DECLARED_CONSTRAINS_OUTER: &str = r#"{
     let t = f("s");
     y <- 5;
     (f(1), t, y + 1)
+}"#;
+const DECLARED_BESIDE_AN_OUTER_ELEMENT: &str = r#"{
+    let y = never();
+    let f = 'a: Any |x: 'a| -> 'a { let r = [y, x]; x };
+    let t = f("s");
+    y <- 5;
+    (t, y + 1)
+}"#;
+const DECLARED_CONSTRAINS_A_DECLARED_OUTER: &str = r#"{
+    let y: i64 = never();
+    let g = 'b: 'c, 'c: Any |p: 'b, q: 'c| q;
+    let f = 'a: Any |x: 'a| -> 'a { let r = g(y, x); x };
+    let t = f("s");
+    y <- 5;
+    f(1) + str::len(t) + y
 }"#;
 
 const RIGID_BELOW_UNANNOTATED: &str = r#"{
@@ -3139,7 +3155,10 @@ mod unsound_acceptances {
         PRODUCT_UNION => "does not contain",
         PRODUCT_UNION_VARIANT => "does not contain",
         REF_UNION_PARAMS => "i64 does not contain string",
-        DECLARED_CONSTRAINS_OUTER => "'a escapes the definition",
+        DECLARED_CONSTRAINS_OUTER => "the declared type variable 'a meets a value from \
+            outside the definition that declares it, whose type the code around decides: \
+            declare `y`'s type where it is bound",
+        DECLARED_BESIDE_AN_OUTER_ELEMENT => "declare `y`'s type where it is bound",
         RIGID_BELOW_UNANNOTATED => "does not contain i64",
         NEVER_OF_AN_UNBOUNDED_APPLICATION => "Number does not contain string",
         TYPE_TEST_HOLDING_A_FN => "can't match on a type holding a function",
@@ -3165,6 +3184,7 @@ mod unsound_acceptances {
 
     cases! { evaluates:
         CONTRACTIVE => 1,
+        DECLARED_CONSTRAINS_A_DECLARED_OUTER => 7,
         PARAM_COVARIANT => 1,
         REF_THROUGH_CELL_OK => 2,
         RIGID_IN_SET_OK => 1,

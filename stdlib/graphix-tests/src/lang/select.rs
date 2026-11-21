@@ -5630,8 +5630,8 @@ run!(
 run!(
     product_test_a_declared_variable_part_tells_nothing,
     r#"{
-        let a = 1;
-        let b = "s";
+        let a: i64 = 1;
+        let b: string = "s";
         let k = |v: i64, z: 'a| {
             let t = select v > 0 { true => (&a, 1), false => (&b, z) };
             select t { (&i64, i64) as (r, n) => *r + n, _ => 0 }

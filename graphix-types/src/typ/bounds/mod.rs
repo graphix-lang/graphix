@@ -3489,6 +3489,11 @@ impl Solving {
         depth: u32,
         mark: usize,
     ) -> Result<()> {
+        let mut declared: SmallVec<[TVar; 4]> = SmallVec::new();
+        cells_of(t, true, &mut declared);
+        declared.retain(|v| {
+            v.is_rigid() && v.level().depth() > depth && !v.level().is_generic()
+        });
         self.quantify(t, depth);
         let mut kept = Cells::new();
         self.reach(t, &mut kept);
@@ -3502,6 +3507,7 @@ impl Solving {
             self.meetable(env, v)?
         }
         self.fix_scope(env, depth + 1, false, mark)?;
+        self.outlived(env, &declared, depth, mark)?;
         for v in self.cells[mark..].iter() {
             let pending = open_own(v, depth)
                 && v.cell_above().iter().any(|c| matches!(c, Type::Bound(_)));
@@ -3578,6 +3584,48 @@ impl Solving {
                 }
                 self.leave(&w, &waits)
             }
+        }
+        Ok(())
+    }
+
+    /// A cell of the definition closing at `depth` that an open cell outside
+    /// it flows into is decided outside, where the variables the definition
+    /// `declared` stand for nothing: none of them may flow into it too.
+    fn outlived(
+        &self,
+        env: &Env,
+        declared: &[TVar],
+        depth: u32,
+        mark: usize,
+    ) -> Result<()> {
+        let variable = |u: &TVar| declared.iter().any(|w| w.same_cell(u));
+        for v in self.cells[mark..].iter().filter(|v| fixes(v, depth + 1)) {
+            let mut lower = SmallVec::new();
+            v.cell_lower().iter().for_each(|l| cells_of(l, true, &mut lower));
+            let Some(var) = lower.iter().find(|u| variable(u)) else { continue };
+            let outside: SmallVec<[usize; 2]> = lower
+                .iter()
+                .filter(|u| u.is_open() && u.level().depth() <= depth)
+                .map(|u| u.cell_addr())
+                .collect();
+            if outside.is_empty() {
+                continue;
+            }
+            let name = var.declared_name().unwrap_or_else(|| var.name.clone());
+            let annotate = match super::tvar::binding_holding(env, &outside) {
+                Some(b) => format_compact!(
+                    "declare `{}`'s type where it is bound ({})",
+                    b.name,
+                    super::tvar::BoundAt(b, None)
+                ),
+                None => format_compact!("declare the type of the value it meets"),
+            };
+            bail!(
+                "the declared type variable '{} meets a value from outside the \
+                 definition that declares it, whose type the code around decides: \
+                 {annotate}",
+                ShortName(&name)
+            )
         }
         Ok(())
     }

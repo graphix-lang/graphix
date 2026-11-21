@@ -1799,14 +1799,7 @@ pub fn settled_note(env: &Env, types: &[&Type]) -> Option<CompactString> {
     if settled.is_empty() {
         return None;
     }
-    let b = (&env.lexical.binds)
-        .into_iter()
-        .flat_map(|(_, names)| names.into_iter().map(|(_, id)| *id))
-        .filter_map(|id| env.by_id.get(&id))
-        .filter(|b| {
-            !crate::is_lowered(&b.name) && settled.iter().any(|c| b.typ.holds_cell(*c))
-        })
-        .min_by_key(|b| b.id)?;
+    let b = binding_holding(env, &settled)?;
     Some(format_compact!(
         "it holds the type of `{}` ({}), settled when its input ended; declare {}'s \
          type where it is bound",
@@ -1814,6 +1807,19 @@ pub fn settled_note(env: &Env, types: &[&Type]) -> Option<CompactString> {
         BoundAt(b, None),
         b.name
     ))
+}
+
+/// The binding a program can name, made first, whose type reaches one of
+/// the cells at `cells`.
+pub fn binding_holding<'a>(env: &'a Env, cells: &[usize]) -> Option<&'a Arc<Bind>> {
+    (&env.lexical.binds)
+        .into_iter()
+        .flat_map(|(_, names)| names.into_iter().map(|(_, id)| *id))
+        .filter_map(|id| env.by_id.get(&id))
+        .filter(|b| {
+            !crate::is_lowered(&b.name) && cells.iter().any(|c| b.typ.holds_cell(*c))
+        })
+        .min_by_key(|b| b.id)
 }
 
 /// [`settled_note`] for a refusal of `container` to hold `contained`,
