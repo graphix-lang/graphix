@@ -1607,7 +1607,12 @@ impl TypeRef {
                         tv.add_body_bound(env, bound)?
                     }
                 }
-                None if commit => bound.check_contains(env, arg)?,
+                None if commit => {
+                    for tv in bound.open_members(env, arg) {
+                        tv.add_body_bound(env, bound.clone())?
+                    }
+                    bound.check_contains(env, arg)?
+                }
                 None => {
                     if !bound.decided_holds(env, arg)? {
                         return Ok(false);
@@ -1874,6 +1879,14 @@ pub enum Bound {
     JsonData,
     /// `JsonData` for TOML.
     TomlData,
+}
+
+impl Bound {
+    /// Whether the predicate holds of a union exactly where it holds of
+    /// each member.
+    fn of_each_member(self) -> bool {
+        matches!(self, Bound::NoError | Bound::Data)
+    }
 }
 
 /// Type depth is not bounded by source nesting (`let x1 = [x0]; let x2
@@ -3836,6 +3849,17 @@ impl Type {
             }
             _ => false,
         })
+    }
+
+    /// The open members of the union `t` a predicate of each member
+    /// reaches as it reaches an open cell, where this is such a predicate.
+    fn open_members(&self, env: &Env, t: &Type) -> SmallVec<[TVar; 2]> {
+        match (self, t.deref_cloned()) {
+            (Type::Bound(p), Some(Type::Set(ref ms))) if p.of_each_member() => {
+                ms.iter().filter_map(|m| m.open_cell(env)).collect()
+            }
+            _ => SmallVec::new(),
+        }
     }
 
     /// The open cell this type is: an unbound variable, or one bound to

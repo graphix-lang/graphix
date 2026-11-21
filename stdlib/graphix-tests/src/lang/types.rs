@@ -3098,6 +3098,23 @@ const NO_ERROR_OPEN_MEMBER: &str = r#"{
   let r: Result<[i64, 'x], `E> = error(`Q);
   0
 }"#;
+const NO_ERROR_OPEN_MEMBER_HOLDS: &str = r#"{
+  let r: Result<[i64, 'x], `E> = error(`E);
+  0
+}"#;
+const NO_ERROR_OPEN_MEMBER_OF_AN_ELEMENT: &str = r#"{
+  type R<'a: NoError> = Array<'a>;
+  let r: R<[i64, 'x]> = [error(`Q)];
+  0
+}"#;
+const NO_ERROR_OPEN_MEMBER_DECLARED: &str = r#"{
+  let f = 'x: Any |a: 'x| -> i64 { let r: Result<[i64, 'x], `E> = a; 0 };
+  f(1)
+}"#;
+const NO_ERROR_OPEN_MEMBER_DECLARED_NO_ERROR: &str = r#"{
+  let f = 'x: NoError |a: 'x| -> i64 { let r: Result<[i64, 'x], `E> = a; 0 };
+  f(1)
+}"#;
 const NO_ERROR_OPEN_MEMBER_TOLD: &str = r#"{
   let f = |a: 'x| -> i64 { let r: Result<[i64, 'x], `E> = a; select r { error as e => 0, v => 1 } };
   f(1)
@@ -3168,7 +3185,10 @@ mod unsound_acceptances {
         CAST_TO_AN_ABSTRACT_OF_A_FUNCTION => "can't cast a value to a function",
         CONJUNCT_RIGID => "does not contain i64",
         CONJUNCT_RIGID_TRAIT => "[i64, 'a] does not implement Sz",
-        NO_ERROR_OPEN_MEMBER => "does not contain Error<",
+        NO_ERROR_OPEN_MEMBER => "Error<`Q> must be NoError here",
+        NO_ERROR_OPEN_MEMBER_OF_AN_ELEMENT => "Error<`Q> must be NoError here",
+        NO_ERROR_OPEN_MEMBER_DECLARED => "the body needs 'x within NoError, which the \
+            signature does not declare: write 'x: NoError",
         ABSTRACT_PATTERN_OVER_A_UNION => "missing match cases: nothing matches i64",
         // CR claude for claude: [test-gap/low] This phrase is also what the same
         // program gives without rigidity. With 'a decided as string in the body, `m(1,
@@ -3196,6 +3216,8 @@ mod unsound_acceptances {
         TRAIT_BESIDE_WITNESS => 0,
         ERROR_UNION_DISTRIBUTES => 1,
         NO_ERROR_OPEN_MEMBER_TOLD => 1,
+        NO_ERROR_OPEN_MEMBER_HOLDS => 0,
+        NO_ERROR_OPEN_MEMBER_DECLARED_NO_ERROR => 0,
         SHARED_REF_TEST_OVER_MUT => 1,
         ABSTRACT_PATTERN_OVER_A_UNION_COVERED => 0,
         ABSTRACT_PATTERN_BESIDE_ITS_MEMBER => 7,
