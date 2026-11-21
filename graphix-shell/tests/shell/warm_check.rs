@@ -21,7 +21,8 @@ fn check_twice(src: &str) -> [Ran; 2] {
 }
 
 fn refusal(r: &Ran) -> Option<String> {
-    r.stderr.lines().find(|l| l.contains("cannot compute")).map(str::to_owned)
+    let at = r.stderr.find("cannot compute")?;
+    Some(r.stderr[at..].to_owned())
 }
 
 /// An interface `val`'s omitted default narrows the call's cells warm as

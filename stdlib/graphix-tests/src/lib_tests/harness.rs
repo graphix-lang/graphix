@@ -6,7 +6,7 @@ use anyhow::Result;
 use graphix_package_core::testing::{
     Collect, Fixture, FuseExpect, Mode, RunFixture, collect, compile_result, eval,
     eval_modes, fixture_runtime, next_update, predicate, result_source, result_text,
-    run_fixture, run_tempdir_fixture,
+    run_fixture, run_tempdir_fixture, settles,
 };
 use netidx::subscriber::Value;
 
@@ -22,12 +22,25 @@ fn run_fixture_fails_when_the_runtime_settles_without_a_value() {
     let f = RunFixture {
         name: module_path!(),
         files: vec![("/test.gx", result_text(NO_VALUE))],
-        pred: predicate(|_| true),
+        pred: predicate(|v| v.is_ok()),
         expect: FuseExpect::None,
         shape: None,
         register: crate::TEST_REGISTER,
     };
     settled_without_a_value(run_fixture(f, Mode::Interp, false))
+}
+
+#[test]
+fn run_fixture_passes_when_its_predicate_expects_the_settle() {
+    let f = RunFixture {
+        name: module_path!(),
+        files: vec![("/test.gx", result_text(NO_VALUE))],
+        pred: predicate(settles()),
+        expect: FuseExpect::None,
+        shape: None,
+        register: crate::TEST_REGISTER,
+    };
+    run_fixture(f, Mode::Interp, false).expect("a settle the predicate expects passes")
 }
 
 #[tokio::test(flavor = "current_thread")]

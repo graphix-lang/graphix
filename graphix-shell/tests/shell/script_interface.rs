@@ -28,6 +28,19 @@ async fn verdicts(gx: &str, gxi: &str) -> Result<[Option<String>; 2]> {
     Ok([check, run].map(|r| r.err().map(|e| format!("{e:#}"))))
 }
 
+async fn checked(gx: &str, gxi: &str) -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("prog.gx");
+    fs::write(&file, gx)?;
+    fs::write(dir.path().join("prog.gxi"), gxi)?;
+    ShellBuilder::<NoExt>::default()
+        .cache(CacheMode::Off)
+        .mode(Mode::Check(Load::File(file)))
+        .build()?
+        .check()
+        .await
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn val_declared_otherwise_is_refused() -> Result<()> {
     let [check, run] = verdicts(
@@ -104,25 +117,22 @@ async fn contradicting_definitions_are_refused() -> Result<()> {
 }
 
 // A declared bound holds for every type the signature's variables take:
-// one the implementation needs of a variable the caller picks, or of one
-// the signature fixes, is not declared.
+// one the implementation needs of a variable the caller picks is not
+// declared, and one it needs of nothing the signature leaves to the caller
+// is not asked of it.
 #[tokio::test(flavor = "multi_thread")]
 async fn bounds_hold_for_every_instance_of_the_signature() -> Result<()> {
     let cases = [
         (
             "let f = 'a: Array<i64> |x: 'a| -> i64 x[0]$ + 1;\nf([1])\n",
             "val f: fn<'a: Array<'b>>(x: 'a) -> i64;\n",
-            "the implementation requires 'a: Array<i64>, which the signature does not declare",
+            "val f is declared fn<'a: Array<'b>>(x: 'a) -> i64 but implemented",
         ),
         (
-            "let f = 'a: Array<'q> |x: 'a, y: 'q| -> i64 1;\nf([1], 1)\n",
+            "let f = 'q: Number + Singleton, 'a: Array<'q> |x: 'a, y: 'q| -> i64 \
+             { let s = x[0]$ + y; 1 };\nf([1], 1)\n",
             "val f: fn<'a: Array<'b>>(x: 'a, y: i64) -> i64;\n",
-            "the implementation requires 'a: Array<'q>, which the signature does not declare",
-        ),
-        (
-            "let f = 'a: Array<'q> |x: 'a, y: 'q| -> i64 1;\nf([1], 1)\n",
-            "val f: fn<'a: Array<'b>>(x: 'a, y: 'c) -> i64;\n",
-            "the implementation requires 'a: Array<'q>, which the signature does not declare",
+            "val f is declared fn<'a: Array<'b>>(x: 'a, y: i64) -> i64 but implemented",
         ),
     ];
     for (gx, gxi, refusal) in cases {
@@ -132,22 +142,18 @@ async fn bounds_hold_for_every_instance_of_the_signature() -> Result<()> {
             assert!(e.contains(refusal), "{e}");
         }
     }
-    let dir = tempfile::tempdir()?;
-    let file = dir.path().join("prog.gx");
-    fs::write(
-        &file,
+    for gxi in [
+        "val f: fn<'a: Array<'b>>(x: 'a, y: i64) -> i64;\n",
+        "val f: fn<'a: Array<'b>>(x: 'a, y: 'c) -> i64;\n",
+    ] {
+        let gx = "let f = 'a: Array<'q> |x: 'a, y: 'q| -> i64 1;\nf([1], 1)\n";
+        checked(gx, gxi).await?;
+    }
+    checked(
         "let f = 'a: Array<'q> |x: 'a, y: 'q| -> i64 1;\nf([\"s\"], \"t\")\n",
-    )?;
-    fs::write(
-        dir.path().join("prog.gxi"),
         "val f: fn<'a: Array<'b>>(x: 'a, y: 'b) -> i64;\n",
-    )?;
-    ShellBuilder::<NoExt>::default()
-        .cache(CacheMode::Off)
-        .mode(Mode::Check(Load::File(file)))
-        .build()?
-        .check()
-        .await
+    )
+    .await
 }
 
 // A script's interface names only what it imports or declares itself,
