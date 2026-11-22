@@ -2599,8 +2599,7 @@ pub fn written_fits(env: &Env, written: &Type, held: &Type, outer: Level) -> Res
 /// instance's cells, the copies added to `known`.
 pub fn specialize(t: &Type, known: &mut AHashMap<usize, TVar>) -> Type {
     let mut solving = Solving { scheming: true, ..Solving::default() };
-    let t = solving.copy(t, Level::GENERIC.depth() - 1, Level::GENERIC, known);
-    deep(&t)
+    solving.copy(t, Level::GENERIC.depth() - 1, Level::GENERIC, known)
 }
 
 /// Give each open cell of `own`, a type an instance compiled, the part of
