@@ -376,7 +376,7 @@ g(1, 2)
     let mut c = Client::start(&[("main.gx", SRC)]);
     c.open("main.gx");
     assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
-    hover_is(&mut c, "let |g", "g: fn<'b: Number>(self: T, x: 'b) -> 'b");
+    hover_is(&mut c, "let |g", "g: fn<'b: Number>(self, x: 'b) -> 'b");
 }
 
 const GENERIC_IMPLS: &str = "\
