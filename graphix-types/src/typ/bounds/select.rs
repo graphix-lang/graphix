@@ -1213,9 +1213,8 @@ impl Solving {
             (Pat::Abs(_, id, p), Type::Any) => match env.abstract_reps.get(id) {
                 Some(made) => {
                     // which instance it is is not known, so it is read at
-                    // `Any` parameters
-                    let params: Arc<[Type]> =
-                        Arc::from_iter(made.params.iter().map(|_| Type::Any));
+                    // the widest one's parameters
+                    let params: Arc<[Type]> = Arc::from_iter(made.widest());
                     match blind(env, id, p, self.captures.get() > 0).is_some() {
                         true => none(),
                         false => {

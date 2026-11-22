@@ -2352,7 +2352,7 @@ run!(
     let f = |x: Any| select x { W((a, b)) => a + b, _ => 0 };
     f(W((1.5, 2.5)))
 }"#,
-    refused("type mismatch Number does not contain Any");
+    refused("cannot compute with Number: both operands must be one numeric type");
     FuseExpect::None
 );
 
