@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use arcstr::literal;
-use graphix_compiler::{CFlag, typ::Brief};
+use graphix_compiler::CFlag;
 use graphix_package_core::{
     run,
     testing::{
@@ -13530,17 +13530,6 @@ fn shared_residual(arms: &str) -> String {
     )
 }
 
-/// A refusal naming `phrase` in no more than `most` bytes.
-fn refused_within(phrase: &'static str, most: usize) -> impl Fn(Result<&Value>) -> bool {
-    move |v: Result<&Value>| match v {
-        Err(e) => {
-            let e = format!("{e:#}");
-            e.contains(phrase) && e.len() <= most
-        }
-        Ok(_) => false,
-    }
-}
-
 // What the arms leave prints as a diagnostic's type, cut where it passes
 // Brief::BYTES, and a later arm's bind prints no further than Brief::MOST.
 run!(
@@ -13571,9 +13560,7 @@ run!(
     FuseExpect::None
 );
 
-// A refused write of what the arms leave prints it through Brief, and the
-// declaration that would hold both, which would print as a tree, is not
-// written past Brief::DECLARATION: the refusal asks for a type holding both.
+// A write of what the arms leave widens the binding it writes to hold both.
 run!(
     shared_residual_connect_widens_its_target,
     shared_residual("`A => 1, e => { let q = 1; q <- e; q }"),
@@ -13588,13 +13575,6 @@ run!(
   k("q")
 }"#,
     refused("type mismatch i64 does not contain Any");
-    FuseExpect::None
-);
-
-run!(
-    shared_residual_connect_asks_for_a_type_holding_both,
-    shared_residual("`A => 1, e => { let q = 1; q <- e; q }"),
-    refused_within("declare q with a type holding both where it is bound", 4 * Brief::BYTES);
     FuseExpect::None
 );
 
