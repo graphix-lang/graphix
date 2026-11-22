@@ -8,7 +8,7 @@ use crate::SourcePosition;
 use crate::image::ImageBuf;
 use crate::{
     BindId, CFlag, CompileCtx, ExecCtx, Notify, PrintFlag, Rt, Scope, Tag, TagValue,
-    env::{ChangesLater, Env},
+    env::{ChangesLater, Env, scope_kind},
     expr::{
         AbstractOf, Apart, ExprId, ManyMembers, Name, Origin, Pattern, StructurePattern,
         WrittenAt, union_members, union_members_with,
@@ -1675,11 +1675,7 @@ impl StructPatternNode {
         let mut t = written.clone();
         while let Type::Ref(tr) = &t {
             if super::later_typedef(ctx, tr) {
-                bail!(
-                    "{} names the type a later statement of this block declares: \
-                     declare it before this pattern",
-                    tr.name
-                )
+                return Err(declared_later(tr));
             }
             t = t.lookup_ref_peek(&ctx.env)?
         }
@@ -1808,11 +1804,7 @@ impl StructPatternNode {
                 if binds {
                     break;
                 }
-                bail!(
-                    "{} names the type a later statement of this block declares: \
-                     declare it before this pattern",
-                    tr.name
-                )
+                return Err(declared_later(tr));
             }
             type_predicate = match type_predicate.lookup_ref_peek(&ctx.env) {
                 Ok(t) => t,
@@ -3296,4 +3288,15 @@ impl StructPatternNode {
             _ => return Err(PackError::UnknownTag),
         })
     }
+}
+
+/// The refusal of a pattern over `tr`, a name a later statement of the
+/// list it is written in declares.
+fn declared_later(tr: &crate::typ::TypeRef) -> anyhow::Error {
+    anyhow!(
+        "{} names the type a later statement of this {} declares: declare it before \
+         this pattern",
+        tr.name,
+        scope_kind(&tr.scope)
+    )
 }

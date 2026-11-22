@@ -905,7 +905,7 @@ fn in_scope(scope: &ModPath) -> CompactString {
 }
 
 /// What the statement list at `scope` is, for a message.
-fn scope_kind(scope: &str) -> &'static str {
+pub fn scope_kind(scope: &str) -> &'static str {
     if is_block_scope(scope) { "block" } else { "module" }
 }
 
