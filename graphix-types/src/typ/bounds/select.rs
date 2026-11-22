@@ -1688,7 +1688,22 @@ impl Solving {
                     Some(w) => format_compact!("{w}"),
                     None => format_compact!("{}", i + 1),
                 };
+                // an arm above whose test is not this one's but takes its
+                // values, the two of one runtime form
+                let taken = s.template.arms[i].pat.written_test().and_then(|t| {
+                    s.template.arms[..i].iter().filter(|a| !a.guarded).find_map(|a| {
+                        let u = a.pat.written_test()?;
+                        match u.contains(env, t) {
+                            Ok(false) => u.rep_collision(env, t),
+                            _ => None,
+                        }
+                    })
+                });
                 let e = match s.template.arms[i].pat.blind(env, false) {
+                    _ if let Some(c) = taken => {
+                        let untold = c.untold("the test of an arm above");
+                        anyhow!("pattern {arm} will never match: {untold} ({at})")
+                    }
                     Some(name) => anyhow!(
                         "pattern {arm} takes nothing: {name}(..) names part of a payload \
                          something could be written into or called, which it may only \
