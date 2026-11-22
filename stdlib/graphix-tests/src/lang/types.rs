@@ -10843,8 +10843,8 @@ run!(
     FuseExpect::None
 );
 
-// A cell is placed after every cell its bounds hold, however long the
-// chain of bounds between them.
+// A chain of bounds over variables no argument gives a value checks and
+// runs: each variable is ⊥ at the instance, so nothing of it is computed.
 run!(
     instance_cells_of_a_chain_of_bounds_are_placed_deepest_first,
     r#"{
@@ -10856,7 +10856,7 @@ run!(
   f(never())
 }"#,
     is(Value::I64(7));
-    FuseExpect::Jit
+    FuseExpect::None
 );
 
 // A cell only the members of unions hold takes what stands at its

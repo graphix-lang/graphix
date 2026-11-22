@@ -4102,7 +4102,7 @@ run!(
     "#,
     "/test/m.gxi" => "val c: {f: fn(x: 'a) -> 'a}",
     "/test/m.gx" => "let c = {f: |x| x}"
-);
+; FuseExpect::None);
 
 run!(
     written_alias_of_a_struct_of_functions_val_at_one_type,
