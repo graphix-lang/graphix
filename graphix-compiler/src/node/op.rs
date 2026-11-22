@@ -766,7 +766,27 @@ pub(crate) fn arith_rule(
         Told::over(e, &told)
     };
     let t = same_by_bounds(env, lt, rt, Bound::Singleton).map_err(told)?;
-    Type::Primitive(Typ::number()).check_contains(env, &t).map_err(told)?;
+    // the operands are one type here: one that holds no number is named
+    Type::Primitive(Typ::number()).check_contains(env, &t).map_err(|e| {
+        let one = match bounds::standing(&t) {
+            Type::Set(_) | Type::TVar(_) | Type::Bottom | Type::Any => return told(e),
+            Type::Primitive(p) if p.len() != 1 => return told(e),
+            one => one,
+        };
+        let join = match &one {
+            Type::Primitive(p) if *p == Typ::String => {
+                " (to join strings, interpolate: \"[a][b]\")"
+            }
+            _ => "",
+        };
+        let told = crate::format_with_flags(crate::PrintFlag::DerefTVars, || {
+            format_compact!(
+                "cannot compute {one} {} {one}: arithmetic takes numbers{join}",
+                op.token()
+            )
+        });
+        Told::over(e, &told)
+    })?;
     match checked {
         true => out.check_contains(env, &bounds::union_of([t, ARITH_ERR.clone()])),
         false => out.check_contains(env, &t),

@@ -3362,6 +3362,16 @@ fn standing_head(v: &TVar, seen: &mut AHashSet<usize>) -> Type {
     })
 }
 
+/// What `t` stands as where a refusal says it: an open cell is the values
+/// it holds so far ([`standing_head`]).
+pub fn standing(t: &Type) -> Type {
+    let t = shallow(t);
+    match open(&t) {
+        Some(v) => standing_head(v, &mut LPooled::take()),
+        None => t,
+    }
+}
+
 /// `e`, refusing the value `a` that waited on the union `b`, told of the
 /// cells of `fixed` that are members of `b` and would have taken `a` open:
 /// what reached them first decided them.
