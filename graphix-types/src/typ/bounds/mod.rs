@@ -2926,34 +2926,91 @@ fn map_cells_in(
 /// The unbound cells of `t`, each once, bound cells looked through;
 /// declared variables inside their definition too where `rigid`.
 fn cells_of(t: &Type, rigid: bool, out: &mut SmallVec<[TVar; 4]>) {
-    fn go(
-        t: &Type,
-        rigid: bool,
-        out: &mut SmallVec<[TVar; 4]>,
-        seen: &mut AHashSet<usize>,
-    ) {
+    OpenWalk { rigid, seen: LPooled::take(), path: SmallVec::new(), met_again: None }
+        .go(t, out)
+}
+
+/// A walk for [`cells_of`]. What a bound cell's binding reaches is found
+/// once and kept on the cell ([`TVar::open_below`]).
+struct OpenWalk {
+    rigid: bool,
+    seen: LPooled<AHashSet<usize>>,
+    /// The bound cells whose reach is being found, outermost first.
+    path: SmallVec<[usize; 8]>,
+    /// The outermost of `path` met again inside its own binding: what was
+    /// found below it is not all it reaches.
+    met_again: Option<usize>,
+}
+
+impl OpenWalk {
+    fn go(&mut self, t: &Type, out: &mut SmallVec<[TVar; 4]>) {
         ensure_sufficient(|| match t {
             // a ground cell reaches no open cell
             Type::TVar(tv) if tv.ground_now() => (),
-            Type::TVar(tv) => match tv.peek(|c| (c.binding.clone(), c.rigid_gates > 0)) {
-                (Some(b), _) => go(&b, rigid, out, seen),
-                (None, declared)
-                    if (rigid || !declared) && seen.insert(tv.cell_addr()) =>
+            Type::TVar(tv) => match tv.peek(|c| (c.binding.is_some(), c.rigid_gates > 0))
+            {
+                (true, _) => {
+                    if self.seen.insert(tv.cell_addr()) {
+                        for v in self.below(tv) {
+                            let declared = v.peek(|c| c.rigid_gates > 0);
+                            if (self.rigid || !declared)
+                                && self.seen.insert(v.cell_addr())
+                            {
+                                out.push(v)
+                            }
+                        }
+                    }
+                }
+                (false, declared)
+                    if (self.rigid || !declared) && self.seen.insert(tv.cell_addr()) =>
                 {
                     out.push(tv.clone())
                 }
-                (None, _) => (),
+                (false, _) => (),
             },
-            t if node_addr(t).is_some_and(|n| !seen.insert(n)) => (),
+            t if node_addr(t).is_some_and(|n| !self.seen.insert(n)) => (),
             t => {
                 let _ = t.try_for_each_child::<()>(&mut |c| {
-                    go(c, rigid, out, seen);
+                    self.go(c, out);
                     ControlFlow::Continue(())
                 });
             }
         })
     }
-    go(t, rigid, out, &mut LPooled::take())
+
+    /// Every open cell the bound cell `v` reaches, declared ones too.
+    fn below(&mut self, v: &TVar) -> SmallVec<[TVar; 4]> {
+        if let Some(cells) = v.open_below() {
+            return cells;
+        }
+        let at = v.cell_addr();
+        if let Some(i) = self.path.iter().position(|a| *a == at) {
+            self.met_again = Some(self.met_again.map_or(i, |j| j.min(i)));
+            return SmallVec::new();
+        }
+        let Some(binding) = v.binding() else { return SmallVec::new() };
+        let epoch = super::tvar::ground_epoch();
+        let depth = self.path.len();
+        let mut inner = OpenWalk {
+            rigid: true,
+            seen: LPooled::take(),
+            path: std::mem::take(&mut self.path),
+            met_again: None,
+        };
+        inner.path.push(at);
+        inner.seen.insert(at);
+        let mut cells = SmallVec::new();
+        inner.go(&binding, &mut cells);
+        inner.path.pop();
+        self.path = std::mem::take(&mut inner.path);
+        match inner.met_again {
+            Some(i) if i < depth => {
+                self.met_again = Some(self.met_again.map_or(i, |j| j.min(i)))
+            }
+            _ => v.keep_open_below(epoch, &cells),
+        }
+        cells
+    }
 }
 
 /// What [`Solving::held_back`] found: the cells it met, and those among

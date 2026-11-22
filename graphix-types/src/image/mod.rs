@@ -1492,7 +1492,7 @@ fn cell_encode(cell: &CellRef, buf: &mut impl BufMut) -> Result<(), PackError> {
                     task: _,
                     ground: _,
                     kept: _,
-                    resolved: _,
+                    of_binding: _,
                     place: _,
                     written: _,
                     solving: _,

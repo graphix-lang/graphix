@@ -61,7 +61,7 @@ thread_local! {
 /// cells and leaves it.
 static GROUND_EPOCH: AtomicU64 = AtomicU64::new(1);
 
-fn ground_epoch() -> u64 {
+pub(crate) fn ground_epoch() -> u64 {
     GROUND_EPOCH.load(atomic::Ordering::SeqCst)
 }
 
@@ -338,7 +338,7 @@ fn mark_one_ground(cell: &CellRef, epoch: u64) {
     if c.binding.is_some() && c.ground < epoch {
         c.ground = epoch;
         c.kept = Kept::default();
-        c.resolved = None;
+        c.of_binding = None;
     }
 }
 
@@ -1657,9 +1657,8 @@ pub struct TCell {
     /// The judgments of the ground binding the cell keeps while the proof
     /// at `ground` stands.
     pub(crate) kept: Kept,
-    /// The ground binding resolved ([`TVar::ground_resolved`]), kept while
-    /// the proof at `ground` stands and the binding is not written.
-    pub(crate) resolved: Option<Box<Type>>,
+    /// What is kept of the binding until it is written ([`OfBinding`]).
+    pub(crate) of_binding: Option<Box<OfBinding>>,
     /// The cell's number by what it reaches, until its next write: boxed,
     /// so a cell no walk numbers pays one word for it.
     pub(crate) place: Option<Box<Place>>,
@@ -1668,6 +1667,26 @@ pub struct TCell {
     /// What the bounds solver keeps of the cell beside its bounds
     /// ([`super::bounds::Known`]), once it has something to keep.
     pub(crate) solving: Option<Box<super::bounds::Known>>,
+}
+
+/// What a bound cell keeps of its binding until the binding is written.
+#[derive(Debug)]
+pub(crate) enum OfBinding {
+    /// Its resolved form ([`TVar::ground_resolved`]), while the proof at
+    /// [`TCell::ground`] stands.
+    Resolved(Type),
+    /// The open cells it reaches, for a cell not proved ground.
+    OpenBelow(OpenBelow),
+}
+
+/// The open cells a bound cell's binding reaches, each once in the order
+/// a walk meets them, found at a [`GROUND_EPOCH`]: they hold while that
+/// epoch stands and each is still open, as only a change to a bound cell
+/// or the binding of an open one changes what a binding reaches.
+#[derive(Debug)]
+pub(crate) struct OpenBelow {
+    epoch: u64,
+    cells: SmallVec<[TVar; 4]>,
 }
 
 // Every node-walked activation holds a cell.
@@ -1736,7 +1755,7 @@ impl Default for TCell {
             task: TASK.get(),
             ground: 0,
             kept: Kept::default(),
-            resolved: None,
+            of_binding: None,
             place: None,
             written: 0,
             solving: None,
@@ -1785,7 +1804,7 @@ impl TCell {
     /// Bind the cell, or clear its binding with `None`.
     pub(crate) fn set_binding(&mut self, binding: Option<Type>) {
         self.binding = binding;
-        self.resolved = None
+        self.of_binding = None
     }
 
     fn place(&self) -> Option<Place> {
@@ -2368,6 +2387,31 @@ impl TVar {
         f(&self.read().cell.get().read())
     }
 
+    /// The open cells this bound cell's binding reaches, as kept
+    /// ([`OpenBelow`]), where that still holds.
+    pub(crate) fn open_below(&self) -> Option<SmallVec<[TVar; 4]>> {
+        let cells = self.peek(|c| match c.of_binding.as_deref() {
+            Some(OfBinding::OpenBelow(o))
+                if o.epoch == ground_epoch() && c.binding.is_some() =>
+            {
+                Some(o.cells.clone())
+            }
+            _ => None,
+        })?;
+        cells.iter().all(|v| !v.is_bound()).then_some(cells)
+    }
+
+    /// Keep `cells`, found by a walk begun at `epoch`, as the open cells
+    /// this bound cell's binding reaches.
+    pub(crate) fn keep_open_below(&self, epoch: u64, cells: &[TVar]) {
+        let cell = self.cell();
+        let mut c = cell.write();
+        if c.binding.is_some() && c.ground != epoch {
+            let below = OpenBelow { epoch, cells: cells.into() };
+            c.of_binding = Some(Box::new(OfBinding::OpenBelow(below)))
+        }
+    }
+
     /// Whether the cell is neither bound nor rigid.
     pub(crate) fn is_open(&self) -> bool {
         self.peek(|c| c.binding.is_none() && c.rigid_gates == 0)
@@ -2449,9 +2493,11 @@ impl TVar {
             let link = self.read();
             let held = link.cell.get();
             let c = held.read();
-            match (&c.binding, &c.resolved) {
-                (Some(_), Some(r)) if c.ground == epoch => return Some((**r).clone()),
-                (Some(b), None) if c.ground == epoch => (held.to_ref(), b.clone()),
+            match (&c.binding, c.of_binding.as_deref()) {
+                (Some(_), Some(OfBinding::Resolved(r))) if c.ground == epoch => {
+                    return Some(r.clone());
+                }
+                (Some(b), _) if c.ground == epoch => (held.to_ref(), b.clone()),
                 _ => return None,
             }
         };
@@ -2460,7 +2506,7 @@ impl TVar {
             let mut c = cell.0.write();
             let written = c.binding.as_ref().map(Type::shared_identity);
             if c.ground == epoch && written == Some(binding.shared_identity()) {
-                c.resolved = Some(Box::new(r.clone()))
+                c.of_binding = Some(Box::new(OfBinding::Resolved(r.clone())))
             }
         }
         Some(r)
