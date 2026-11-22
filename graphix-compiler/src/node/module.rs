@@ -2285,16 +2285,20 @@ impl<R: Rt> Update<R> for Module<R> {
                 let res = match (checked, writes.foreign()) {
                     (res, None) => res,
                     (res, Some(w)) => {
+                        // a body that checks is refused where it wrote
+                        let wrote = w.statement().and_then(|i| self.nodes.get(i));
                         let shown = res.as_ref().err().and_then(shown_in);
+                        let shown = shown.or(wrote.map(|n| &n.spec().ori));
                         let shown = shown.unwrap_or(&self.spec.ori);
                         let m = format_compact!(
                             "the check decides a type the code around the module \
                              left open: {}",
                             decided_binds(ctx, &self.scope.lexical, shown, &w)
                         );
-                        match res {
-                            Ok(()) => Err(anyhow!("{m}")),
-                            Err(e) => Err(Told::over(e, &m)),
+                        match (res, wrote) {
+                            (Ok(()), Some(n)) => Err(anyhow!("{m}")).at(n.spec()),
+                            (Ok(()), None) => Err(anyhow!("{m}")),
+                            (Err(e), _) => Err(Told::over(e, &m)),
                         }
                     }
                 };

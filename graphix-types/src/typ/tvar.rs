@@ -1199,6 +1199,8 @@ struct Record {
     task: TaskId,
     /// The task is a top-level input's ([`OwnWrites::enter_input`]).
     input: bool,
+    /// The statement of the task's body being checked ([`AtStatement`]).
+    statement: Option<usize>,
     /// The cells it wrote outside itself, in the order it first wrote
     /// them, or the one write that was no cell's.
     foreign: SmallVec<[ForeignWrite; 4]>,
@@ -1217,6 +1219,7 @@ impl OwnWrites {
         Self(OWN_WRITES.replace(Some(Record {
             task,
             input: false,
+            statement: None,
             foreign: SmallVec::new(),
         })))
     }
@@ -1228,6 +1231,7 @@ impl OwnWrites {
         Self(OWN_WRITES.replace(Some(Record {
             task,
             input: true,
+            statement: None,
             foreign: SmallVec::new(),
         })))
     }
@@ -1264,9 +1268,50 @@ pub struct ForeignWrite {
     cell: Option<usize>,
     /// What the write would have made the cell, where the write said.
     would: Option<Type>,
+    statement: Option<usize>,
+}
+
+/// While this lives, the running task's writes outside itself are those
+/// of the statement `at` of its body. A statement inside that one (a
+/// block's) leaves it standing.
+#[must_use]
+#[doc(hidden)]
+pub struct AtStatement(bool);
+
+impl AtStatement {
+    #[doc(hidden)]
+    pub fn enter(at: usize) -> Self {
+        Self(OWN_WRITES.with_borrow_mut(|r| {
+            match r.as_mut().filter(|r| r.task == TASK.get() && r.statement.is_none()) {
+                Some(r) => {
+                    r.statement = Some(at);
+                    true
+                }
+                None => false,
+            }
+        }))
+    }
+}
+
+impl Drop for AtStatement {
+    fn drop(&mut self) {
+        if self.0 {
+            OWN_WRITES.with_borrow_mut(|r| {
+                if let Some(r) = r.as_mut() {
+                    r.statement = None
+                }
+            })
+        }
+    }
 }
 
 impl ForeignWrite {
+    /// The statement of the task's body whose check made the write.
+    #[doc(hidden)]
+    pub fn statement(&self) -> Option<usize> {
+        self.statement
+    }
+
     /// Whether `t` reaches the cell written.
     #[doc(hidden)]
     pub fn held_by(&self, t: &Type) -> bool {
@@ -1314,7 +1359,8 @@ fn foreign_write(
                 if r.foreign.len() < MAX_FOREIGN
                     && (cell.is_some() || r.foreign.is_empty())
                 {
-                    r.foreign.push(ForeignWrite { cell, would: would() })
+                    let statement = r.statement;
+                    r.foreign.push(ForeignWrite { cell, would: would(), statement })
                 }
             }
         }

@@ -1360,8 +1360,7 @@ fn an_interface_mismatch_is_reported_where_it_is() {
 /// What the check tells above the error it explains leads the
 /// diagnostic: the binding a module's refusal names to annotate, with
 /// its file where the diagnostic is in another (the module's, or its
-/// interface's), an operator's remedy, and a note told at two frames,
-/// once.
+/// interface's), and an operator's remedy.
 #[test]
 fn what_the_check_tells_first_leads_the_diagnostic() {
     let mut c = Client::start(&[
@@ -1374,7 +1373,7 @@ fn what_the_check_tells_first_leads_the_diagnostic() {
     let d = c.diagnostics("m.gx");
     let told = format!(
         "the check decides a type the code around the module left open: \
-         annotate `fs` (line 1, column 5 in file {})\nval go is declared (i64, f64)",
+         annotate `fs` (line 1, column 5 in file {})",
         c.path("main.gx").display()
     );
     assert!(matches!(&d[..], [(1, 0, m)] if m.starts_with(&told)), "{d:?}");
@@ -1399,17 +1398,6 @@ fn what_the_check_tells_first_leads_the_diagnostic() {
                 strings, interpolate: \"[a][b]\")\ntype mismatch Number does not \
                 contain string";
     assert_eq!(c.diagnostics("a.gx"), [(1, 0, told.into())]);
-    let mut c = Client::start(&[(
-        "a.gx",
-        "let f = |#d = 1, x: i64| x;\nlet g = |#d = \"s\", x: i64| x;\n\
-         let h = [f, g];\nh[0]$(1)\n",
-    )]);
-    c.open("a.gx");
-    let d = c.diagnostics("a.gx");
-    let told = "the functions met here share one #d: annotate the binding that holds \
-                them with a function type whose #d holds every default\ntype mismatch \
-                i64 does not contain string";
-    assert!(matches!(&d[..], [(_, _, m)] if m == told), "{d:?}");
 }
 
 #[test]

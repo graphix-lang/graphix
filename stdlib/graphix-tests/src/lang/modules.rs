@@ -696,7 +696,7 @@ let result = [a, b]
 // siblings check concurrently and see each other through interfaces.
 run!(
     module_check_decides_no_outer_type,
-    refused("left open: annotate `x` (line 2, column 5)"),
+    refused("left open: annotate `x` (line 2, column 5 in module /test)"),
     "/test.gx" => r#"
 let x = never();
 mod m;
@@ -715,7 +715,7 @@ let y = super::x + 1
 run!(
     module_check_refusal_is_the_first_in_order,
     |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("::a")
-        && format!("{e:#}").ends_with("left open: annotate `x` (line 2, column 5)")),
+        && format!("{e:#}").ends_with("left open: annotate `x` (line 2, column 5 in module /test)")),
     "/test.gx" => r#"
 let x = never();
 mod a;
@@ -741,7 +741,7 @@ let y = super::x + 2
 run!(
     module_check_refusal_names_no_sibling_local,
     |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("::n")
-        && format!("{e:#}").ends_with("left open: annotate `x` (line 2, column 5)")),
+        && format!("{e:#}").ends_with("left open: annotate `x` (line 2, column 5 in module /test)")),
     "/test.gx" => r#"
 let x = never();
 mod m;

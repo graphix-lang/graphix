@@ -27,8 +27,8 @@ use crate::{
         TypeMismatch, TypeRef,
         bounds::{self, Keeps, Solving},
         tvar::{
-            Arena, ArenaRef, AtLevel, BoundAt, InArena, InTask, Level, TaskContext,
-            TaskId, current_level, current_task, new_task,
+            Arena, ArenaRef, AtLevel, AtStatement, BoundAt, InArena, InTask, Level,
+            TaskContext, TaskId, current_level, current_task, new_task,
         },
     },
 };
@@ -2209,7 +2209,10 @@ pub(crate) fn typecheck0_statements<R: Rt>(
                 let own = m.scope.lexical.clone();
                 ctx.env.hidden_impls = Arc::new(hide_siblings(&prev, &siblings, &own));
             }
-            let r = n.typecheck0(ctx);
+            let r = {
+                let _at = AtStatement::enter(order[at]);
+                n.typecheck0(ctx)
+            };
             ctx.env.hidden_impls = prev;
             statement_result(r, n, module)?;
             at += 1;
