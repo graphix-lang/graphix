@@ -5227,11 +5227,13 @@ fn uses(v: &TVar) -> SmallVec<[(Use, bool); 1]> {
 }
 
 /// Every type known to flow into `v`: its own lower bounds and those of
-/// the cells among them.
+/// the cells among them. A cell decided by what is demanded of it gives
+/// none.
 fn flowing(v: &TVar, seen: &mut SmallVec<[usize; 8]>) -> SmallVec<[Type; 4]> {
     seen.push(v.cell_addr());
     let mut out = SmallVec::new();
-    for l in v.cell_lower().iter().map(shallow) {
+    let says = |l: &&Type| !matches!(l, Type::TVar(u) if demanded(u));
+    for l in v.cell_lower().iter().filter(says).map(shallow) {
         match open(&l) {
             Some(u) if !seen.contains(&u.cell_addr()) => out.extend(flowing(u, seen)),
             Some(_) => (),

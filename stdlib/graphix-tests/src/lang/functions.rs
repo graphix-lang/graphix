@@ -5649,7 +5649,7 @@ run!(
         let tm = |x| 0;
         tm(f)
     }"#,
-    refused("cannot compute with Number: both operands must be one numeric type");
+    is(Value::I64(0));
     FuseExpect::Jit
 );
 
