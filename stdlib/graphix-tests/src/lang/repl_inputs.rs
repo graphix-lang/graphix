@@ -624,8 +624,8 @@ async fn refusals_over_a_settled_value_name_the_binding() -> Result<()> {
         Accept("let app = |f: fn(x: i64) -> i64| f(1)"),
         Refuse(
             "app(z)",
-            "type mismatch fn(x: i64) -> i64 does not contain fn(y: _) -> _: it holds the \
-             type of `fs`",
+            "type mismatch fn(x: i64) -> i64 does not contain fn(x: _) -> _: it holds the \
+             type of `z`",
         ),
     ])
     .await

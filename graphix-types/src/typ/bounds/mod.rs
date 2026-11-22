@@ -818,6 +818,18 @@ fn join(env: &Env, ts: &[Type]) -> Result<Type> {
     Ok(union_of(kept.into_iter().map(|(t, _)| t.clone())))
 }
 
+/// A refusal of a value to a cell an earlier input's end settled to ⊥
+/// names the binding a later input can declare
+/// ([`super::contains::TypeMismatch::noting_settled`]).
+fn settled_told(env: &Env, b: &Type, e: anyhow::Error) -> anyhow::Error {
+    match b {
+        Type::TVar(tv) if tv.settled_bottom() => {
+            super::contains::TypeMismatch::noting_settled(env, b, e)
+        }
+        _ => e,
+    }
+}
+
 /// Whether `a` and `b` are one cell or one node.
 fn one_node(a: &Type, b: &Type) -> bool {
     match (a, b) {
@@ -1240,6 +1252,7 @@ impl Solving {
 
     fn relate(&mut self, env: &Env, a: &Type, b: &Type) -> Result<()> {
         ensure_sufficient(|| self.relate_in(env, a, b))
+            .map_err(|e| settled_told(env, b, e))
     }
 
     fn relate_in(&mut self, env: &Env, a: &Type, b: &Type) -> Result<()> {
