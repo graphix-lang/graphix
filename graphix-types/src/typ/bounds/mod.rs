@@ -4756,6 +4756,12 @@ impl Solving {
     // operation reads it to know what to make: annotate where its result goes'.
     // It names a bare variable still; the fix proposed (name the call's result
     // or the parameter) applies to that message.
+    // 2026-11-21 claude: The judge now tells a cell a call's result is made of
+    // ("annotate where its result goes") from one only asked of, as a handler's
+    // parameter ("a type-directed operation reads it: annotate it"); pin
+    // lang::test_builtins::read_quantifier_keeps_type_directed_message. It
+    // still names the bare variable; naming the parameter or the result's
+    // binding is open.
 
     // CR claude for claude: [bug/medium] The rule that a TOML document
     // is a table is enforced here for one root shape only: a map
@@ -4809,12 +4815,20 @@ impl Solving {
             let asked = |v: &TVar| {
                 v.cell_above().iter().any(|c| !matches!(c, Type::Bound(_) | Type::Bottom))
             };
-            if matches!(t, Type::Bottom) && (known(&v, |k| k.made) || asked(&v)) {
+            let made = known(&v, |k| k.made);
+            if matches!(t, Type::Bottom) && (made || asked(&v)) {
                 for p in v.cell_above().iter() {
                     match p {
-                        Type::Bound(Bound::Concrete) => bail!(
+                        // a call's result is made of it: annotate where it
+                        // goes; else it is asked of, as a handler's parameter
+                        Type::Bound(Bound::Concrete) if made => bail!(
                             "the type '{} must be known here, an operation reads it to \
                              know what to make: annotate where its result goes",
+                            ShortName(&v.name)
+                        ),
+                        Type::Bound(Bound::Concrete) => bail!(
+                            "the type '{} must be known here, a type-directed operation \
+                             reads it: annotate it",
                             ShortName(&v.name)
                         ),
                         Type::Bound(Bound::Function) => bail!(

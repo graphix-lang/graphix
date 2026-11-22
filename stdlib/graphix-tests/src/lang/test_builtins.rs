@@ -450,7 +450,10 @@ async fn forwarded_unread_quantifier_settles(mode: Mode) -> Result<()> {
 }
 
 async fn read_quantifier_keeps_type_directed_message(mode: Mode) -> Result<()> {
-    for (ret, call) in [("'a", "f(3)"), ("i64", "f(#h: |v| 3, 3)")] {
+    let result =
+        "an operation reads it to know what to make: annotate where its result goes";
+    let asked = "a type-directed operation reads it: annotate it";
+    for (ret, call, says) in [("'a", "f(3)", result), ("i64", "f(#h: |v| 3, 3)", asked)] {
         let code = format_compact!(
             r#"{{
             let f = 'a: Concrete |#h: [fn(v: 'a) -> i64, null] = null, x: i64|
@@ -460,10 +463,7 @@ async fn read_quantifier_keeps_type_directed_message(mode: Mode) -> Result<()> {
         );
         let e = run(&code, mode).await.unwrap_err();
         let message = format_compact!("{e:#}");
-        assert!(
-            message.contains("a type-directed operation reads it: annotate it"),
-            "{message}"
-        );
+        assert!(message.contains(says), "{message}");
         assert!(!message.contains("typed handler"), "{message}");
     }
     Ok(())
