@@ -10065,6 +10065,21 @@ run!(native_guard_over_a_bottom_union_of_composites, r#"{
     matches!(v, Ok(v) if v.to_string() == "[i64:1, i64:1, i64:1]")
 }; FuseExpect::Jit);
 
+// One pattern over members of one form (tuples of an arity, structs of the
+// same fields, arrays) takes each of them, its binds of either's type.
+run!(native_arm_over_members_of_one_form_binds_either, r#"{
+  let t = |t: [(i64, i64), (string, string)]|
+    #[native] select t { (0, _) => "zero", (x, y) => "[x]-[y]" };
+  let a = |a: [Array<i64>, Array<string>]|
+    #[native] select a { [x, ..] => "[x]", _ => "none" };
+  let s = |s: [{x: i64, y: i64}, {x: string, y: string}]|
+    #[native] select s { {x, y} => "[x]+[y]" };
+  [t((1, 2)), t(("a", "b")), a([1, 2]), a(["p", "q"]), s({x: 1, y: 2}), s({x: "u", y: "v"})]
+}"#, |v: Result<&Value>| {
+    matches!(v, Ok(v) if v.to_string()
+        == r#"["1-2", "a-b", "1", "p", "1+2", "u+v"]"#)
+}; FuseExpect::Jit);
+
 // An exhaustive struct pattern matches only a struct of exactly its
 // fields: `{x, y}` names every field of the first member alone, so the
 // second member reaches past it.

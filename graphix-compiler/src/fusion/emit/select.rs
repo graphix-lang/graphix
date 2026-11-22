@@ -15,7 +15,7 @@ use crate::{
         select::Select,
     },
     stack,
-    typ::Type,
+    typ::{Type, bounds::union_of},
 };
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
@@ -929,9 +929,10 @@ fn is_composite(t: &Type) -> bool {
     )
 }
 
-/// The one composite member of the union `typ` that the structure `sp`,
-/// and the predicate `pred` where there is one, may pass, frozen; `None`
-/// where there is none or more than one.
+/// The composite member of the union `typ` that the structure `sp`, and
+/// the predicate `pred` where there is one, may pass, frozen; several
+/// that are arrays of one form read as that form ([`one_form`]). `None`
+/// where there is none, or they share no form.
 fn composite_member(
     cx: &BodyCx,
     sp: &StructPatternNode,
@@ -941,13 +942,66 @@ fn composite_member(
     let env = cx.ctx.type_env;
     let mut members: SmallVec<[Type; 8]> = SmallVec::new();
     union_members(env, typ, &mut members).ok()?;
-    let mut found = members.iter().filter(|m| {
-        sp.may_admit(env, m) && pred.is_none_or(|p| p.could_pass(env, m).unwrap_or(true))
-    });
-    let member = found.next()?;
-    match found.next() {
-        Some(_) => None,
-        None => freeze_node_typ(cx.ctx, member).filter(is_composite),
+    let passing = members
+        .iter()
+        .filter(|m| {
+            sp.may_admit(env, m)
+                && pred.is_none_or(|p| p.could_pass(env, m).unwrap_or(true))
+        })
+        .map(|m| freeze_node_typ(cx.ctx, m).filter(is_composite))
+        .collect::<Option<SmallVec<[Type; 2]>>>()?;
+    one_form(&passing)
+}
+
+/// The type the values of every one of the composites `members` read as:
+/// tuples of one arity, structs of the same fields or arrays, each part
+/// of any of its members' types.
+fn one_form(members: &[Type]) -> Option<Type> {
+    let (first, rest) = members.split_first()?;
+    if rest.is_empty() {
+        return Some(first.clone());
+    }
+    let part = |of: &dyn Fn(&Type) -> Option<Type>| {
+        members.iter().map(of).collect::<Option<SmallVec<[Type; 2]>>>().map(union_of)
+    };
+    match first {
+        Type::Array(_) => {
+            let elt = part(&|m| match m {
+                Type::Array(e) => Some((**e).clone()),
+                _ => None,
+            })?;
+            Some(Type::Array(Arc::new(elt)))
+        }
+        Type::Tuple(ts) => {
+            let at = |i: usize| {
+                part(&|m| match m {
+                    Type::Tuple(us) if us.len() == ts.len() => Some(us[i].clone()),
+                    _ => None,
+                })
+            };
+            let parts = (0..ts.len()).map(at).collect::<Option<SmallVec<[Type; 8]>>>()?;
+            Some(Type::Tuple(Arc::from_iter(parts)))
+        }
+        Type::Struct(fs) => {
+            let at = |i: usize| {
+                part(&|m| match m {
+                    Type::Struct(gs)
+                        if gs.len() == fs.len()
+                            && gs.iter().zip(fs.iter()).all(|(g, f)| g.0 == f.0) =>
+                    {
+                        Some(gs[i].1.clone())
+                    }
+                    _ => None,
+                })
+            };
+            let fields = fs
+                .iter()
+                .enumerate()
+                .map(|(i, (n, _, w))| Some((n.clone(), at(i)?, w.clone())))
+                .collect::<Option<SmallVec<[_; 8]>>>()?;
+            Some(Type::Struct(Arc::from_iter(fields)))
+        }
+        _ => None,
     }
 }
 
