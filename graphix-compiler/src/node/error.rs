@@ -1793,14 +1793,19 @@ impl<R: Rt> Qop<R> {
         }
         let payload = match self.raises() {
             false => None,
-            true => {
-                let payload = Type::empty_tvar();
-                if let Some(h) = &handler {
-                    let chain = Type::Error(Arc::new(Type::err_chain(payload.clone())));
-                    h.check_contains(env, &chain).map_err(|e| self.unfit(env, h, e))?
+            true => match handler.as_ref().and_then(|h| bounds::raised_payload(env, h)) {
+                Some(payload) => Some(payload),
+                None => {
+                    let payload = Type::empty_tvar();
+                    if let Some(h) = &handler {
+                        let chain =
+                            Type::Error(Arc::new(Type::err_chain(payload.clone())));
+                        h.check_contains(env, &chain)
+                            .map_err(|e| self.unfit(env, h, e))?
+                    }
+                    Some(payload)
                 }
-                Some(payload)
-            }
+            },
         };
         match self.n.typ().with_deref(|t| t.cloned()) {
             Some(t) if bounds::strippable(env, &t)? => {

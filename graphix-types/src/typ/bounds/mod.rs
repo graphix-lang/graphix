@@ -3078,6 +3078,22 @@ fn chain_payload(env: &Env, t: &Type) -> Option<Type> {
     }
 }
 
+/// The payload cell of the chain an earlier raise gave the handler's open
+/// cell `handler`: every raise to one handler extends one chain, whose
+/// payload is the union of theirs.
+pub fn raised_payload(env: &Env, handler: &Type) -> Option<Type> {
+    let Type::TVar(h) = handler else { return None };
+    if h.is_bound() {
+        return None;
+    }
+    h.cell_lower().iter().find_map(|l| match &shallow(l) {
+        Type::Error(chain) => {
+            chain_payload(env, &shallow(chain)).filter(|p| open(&shallow(p)).is_some())
+        }
+        _ => None,
+    })
+}
+
 /// Whether `t` is a struct of a chain's four fields whose cause, ori or
 /// pos is a variable: whether it is a chain is each instance's to say.
 fn chain_shaped_over_variables(t: &Type) -> bool {
@@ -4406,8 +4422,12 @@ impl Solving {
             for i in (0..self.strips.len()).rev() {
                 let (operand, out, raised) = self.strips[i].clone();
                 let ins = open_cells(&operand);
+                // the strip fixes its operand, and with it every cell the
+                // operand holds: a chain's payload another raise still pays
+                let mut read = Cells::new();
+                ins.iter().for_each(|v| self.reach(&Type::TVar(v.clone()), &mut read));
                 if ins.iter().all(|v| self.fixable(&held, v, min))
-                    && free((Pending::Strip, i), &ins)
+                    && free((Pending::Strip, i), &read.met)
                 {
                     self.strips.swap_remove(i);
                     // the operand's own shape says what goes: what its
