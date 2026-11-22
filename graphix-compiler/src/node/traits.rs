@@ -948,16 +948,16 @@ pub(crate) fn impl_head(
     }));
     let mut in_target: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
     head.target.collect_tvars(&mut in_target);
+    // read before scoping the target adds its names
+    let undeclared = in_target.keys().find(|name| !known.contains_key(*name)).cloned();
     let target = head.target.scope_refs_named(scope, &mut known);
     for tv in params.iter() {
         if !in_target.contains_key(&tv.name) {
             bail!("impl type variable {tv} does not occur in the target {target}")
         }
     }
-    for (name, _) in in_target.iter() {
-        if !params.iter().any(|tv| tv.name == *name) {
-            bail!("undeclared type variable '{name} in impl target {target}")
-        }
+    if let Some(name) = undeclared {
+        bail!("undeclared type variable '{name} in impl target {target}")
     }
     // CR claude for claude: [bug/low] An impl head's bounds are not checked as bounds:
     // nothing in `impl_head` calls `Type::check_bound`, which a lambda's declared
