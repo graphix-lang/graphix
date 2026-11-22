@@ -8904,7 +8904,7 @@ run!(
   f(1, true, |q: [Array<i64>, Array<bool>]| select q { [] => 0, [_, ..] => 1 })
 }"#,
     prints("i64:1");
-    FuseExpect::None
+    FuseExpect::Jit
 );
 run!(
     callback_parameter_union_of_two_decided_arrays_alone,
