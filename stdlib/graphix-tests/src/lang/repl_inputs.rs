@@ -185,13 +185,13 @@ async fn annotated_binding_takes_a_function_write() -> Result<()> {
 }
 
 /// A call through a builtin binding a later input wrote is made at run
-/// time, so its unread quantifier is refused as a function value's is.
+/// time, where its unread quantifier settles to ⊥ as at a direct call.
 #[tokio::test(flavor = "current_thread")]
 async fn builtin_alias_written_by_an_earlier_input() -> Result<()> {
     session(&[
         Accept("let t = sys::net::publish"),
         Accept("t <- sys::net::publish"),
-        Refuse("t(never(), 10)", "typed handler or a typed null"),
+        Accept("t(never(), 10)"),
     ])
     .await?;
     session(&[

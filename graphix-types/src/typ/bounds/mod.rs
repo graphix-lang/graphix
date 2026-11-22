@@ -840,17 +840,29 @@ pub(super) fn bottom_below(env: &Env, id: &AbstractId, i: usize, x: &Type) -> bo
 /// Whether `t` holds an abstract type or a named type at a ⊥ parameter,
 /// which the solver's own relation meets (D50), not the old one.
 fn at_bottom(t: &Type) -> bool {
-    let bottom = |ps: &[Type]| ps.iter().any(|p| matches!(deep(p), Type::Bottom));
-    ensure_sufficient(|| match t {
-        Type::Abstract { params, .. } if bottom(params) => true,
-        Type::Ref(r) if bottom(&r.params) => true,
-        Type::TVar(v) => v.binding().is_some_and(|b| at_bottom(&b)),
-        t => {
-            let mut found = false;
-            t.for_each_child(&mut |c| found = found || at_bottom(c));
-            found
+    // a part met again was found not to be at ⊥: the walk ends at the
+    // first that is
+    fn go(t: &Type, seen: &mut AHashSet<usize>) -> bool {
+        if let Some(n) = node_addr(t)
+            && !seen.insert(n)
+        {
+            return false;
         }
-    })
+        let bottom = |ps: &[Type]| ps.iter().any(|p| matches!(shallow(p), Type::Bottom));
+        ensure_sufficient(|| match t {
+            Type::Abstract { params, .. } if bottom(params) => true,
+            Type::Ref(r) if bottom(&r.params) => true,
+            Type::TVar(v) => {
+                seen.insert(v.cell_addr()) && v.binding().is_some_and(|b| go(&b, seen))
+            }
+            t => {
+                let mut found = false;
+                t.for_each_child(&mut |c| found = found || go(c, seen));
+                found
+            }
+        })
+    }
+    go(t, &mut LPooled::take())
 }
 
 /// Whether `formal` stands in `t` only where a value is read: never under
@@ -2730,11 +2742,20 @@ fn flat(env: &Env, t: Type) -> Result<Type> {
             _ => None,
         })
     }
-    fn members(env: &Env, t: &Type, out: &mut SmallVec<[Type; 4]>) -> Result<()> {
+    fn members(
+        env: &Env,
+        t: &Type,
+        out: &mut SmallVec<[Type; 4]>,
+        seen: &mut AHashSet<Type>,
+    ) -> Result<()> {
         ensure_sufficient(|| match &shallow(t) {
-            Type::Set(ms) => ms.iter().try_for_each(|m| members(env, m, out)),
+            Type::Set(ms) => ms.iter().try_for_each(|m| members(env, m, out, seen)),
+            named @ Type::Ref(_) if seen.contains(named) => Ok(()),
             m => match names_union(env, m)? {
-                Some(body) => members(env, &body, out),
+                Some(body) => {
+                    seen.insert(m.clone());
+                    members(env, &body, out, seen)
+                }
                 None => Ok(out.push(m.clone())),
             },
         })
@@ -2748,7 +2769,7 @@ fn flat(env: &Env, t: Type) -> Result<Type> {
         return Ok(t);
     }
     let mut out: SmallVec<[Type; 4]> = SmallVec::new();
-    members(env, &t, &mut out)?;
+    members(env, &t, &mut out, &mut LPooled::take())?;
     Ok(union_of(out))
 }
 
@@ -4694,7 +4715,9 @@ impl Solving {
     /// fixed to.
     fn judge(&mut self, env: &Env) -> Result<()> {
         for v in std::mem::take(&mut self.judged) {
-            let Some(t) = v.binding().map(|t| deep(&t)) else { continue };
+            // a ground cell under the binding keeps the verdict it was
+            // judged once
+            let Some(t) = v.binding().map(|t| shallow(&t)) else { continue };
             // an operation that reads a type to know what to make (a parse,
             // a typed read) needs one where its value is made, or where
             // something was asked of the type: nothing decided this. A cell
@@ -4719,7 +4742,11 @@ impl Solving {
                     }
                 }
             }
-            self.hold(env, &v.name, &v.cell_above(), &t)?
+            let above = v.cell_above();
+            if self.hold(env, &v.name, &above, &t).is_err() {
+                // a refusal names the type copied out of its cells
+                self.hold(env, &v.name, &above, &deep(&t))?
+            }
         }
         for asked in std::mem::take(&mut self.asked) {
             let (t, predicates, name) = &*asked;

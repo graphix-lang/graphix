@@ -714,13 +714,28 @@ impl Solving {
     /// No value has the type: a product with such a part, at any depth. A
     /// named type is taken to have values.
     fn empty(&self, t: &Type) -> bool {
-        match &shallow(t) {
-            t if nothing(t) => true,
-            Type::Tuple(ts) | Type::Variant(_, ts, _) => ts.iter().any(|t| self.empty(t)),
-            Type::Struct(fs) => fs.iter().any(|(_, t, _)| self.empty(t)),
-            Type::Set(ms) => ms.iter().all(|t| self.empty(t)),
-            _ => false,
+        // each part shared under `t` judged once
+        fn go(t: &Type, judged: &mut AHashMap<usize, bool>) -> bool {
+            let t = shallow(t);
+            let node = node_addr(&t);
+            if let Some(e) = node.and_then(|n| judged.get(&n)) {
+                return *e;
+            }
+            let e = ensure_sufficient(|| match &t {
+                t if nothing(t) => true,
+                Type::Tuple(ts) | Type::Variant(_, ts, _) => {
+                    ts.iter().any(|t| go(t, judged))
+                }
+                Type::Struct(fs) => fs.iter().any(|(_, t, _)| go(t, judged)),
+                Type::Set(ms) => ms.iter().all(|t| go(t, judged)),
+                _ => false,
+            });
+            if let Some(n) = node {
+                judged.insert(n, e);
+            }
+            e
         }
+        go(t, &mut LPooled::take())
     }
 
     /// `t` with a typedef at its top unfolded; a type with no value is

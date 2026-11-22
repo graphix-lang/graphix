@@ -1862,7 +1862,7 @@ fn a_dag_of_parametrized_named_unions_checks_in_polynomial_time() {
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
     let refusal =
-        format!("type mismatch L{DEPTH}<'b: unbound> does not contain 'a: unbound");
+        format!("type mismatch L{DEPTH}<'b> does not contain 'a");
     assert!(!out.status.success() && stderr.contains(&refusal), "{stderr}");
 }
 
@@ -2023,7 +2023,7 @@ fn type_tests_over_two_families_of_recursive_unions_check_in_time() {
         let x: T0 = never();\n\
         select x { T3 as u0 => 0, `A2 => 1, _ => 999 }\n";
     for (program, refusal) in [
-        (through_arrays, "missing match cases: no arm covers"),
+        (through_arrays, "missing match cases: nothing matches"),
         (one_family, "pattern `A2 will never match"),
     ] {
         let out = exits_within(
