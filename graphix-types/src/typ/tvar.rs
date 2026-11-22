@@ -101,12 +101,22 @@ impl Arena {
     /// so, hence the passes.
     pub fn sweep(&self) {
         let mut cells = self.cells.lock();
+        // each pass in the other order: a chain of links that run one way
+        // is freed in the pass that walks the same way
+        let mut newest_first = true;
         loop {
             let n = cells.len();
+            if newest_first {
+                cells.reverse()
+            }
             cells.retain_mut(|c| sync::Arc::get_mut(c).is_none());
+            if newest_first {
+                cells.reverse()
+            }
             if cells.len() == n {
                 break;
             }
+            newest_first = !newest_first
         }
     }
 }

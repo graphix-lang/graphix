@@ -533,15 +533,42 @@ impl Use {
     }
 }
 
+/// A pair [`Solving::unfolded`] relates, with the definition each side
+/// names: two sides naming two definitions are two types, told apart
+/// without a walk.
+struct Unfold {
+    a: Type,
+    b: Type,
+    defs: (Option<usize>, Option<usize>),
+}
+
+impl Unfold {
+    fn new(env: &Env, a: &Type, b: &Type) -> Self {
+        let def = |t: &Type| match &shallow(t) {
+            Type::Ref(r) => r.resolve_peek(env).map(|d| d.def_key()),
+            _ => None,
+        };
+        Unfold { a: a.clone(), b: b.clone(), defs: (def(a), def(b)) }
+    }
+
+    fn is(&self, other: &Unfold) -> bool {
+        let apart = |x: Option<usize>, y: Option<usize>| matches!((x, y), (Some(x), Some(y)) if x != y);
+        !apart(self.defs.0, other.defs.0)
+            && !apart(self.defs.1, other.defs.1)
+            && strictly_identical(&self.a, &other.a)
+            && strictly_identical(&self.b, &other.b)
+    }
+}
+
 /// The relation's own state for one check.
 #[derive(Default)]
 pub struct Solving {
     /// The pairs holding a typedef's name that are being related: a pair
     /// met again inside itself holds.
-    unfolding: Vec<(Type, Type)>,
+    unfolding: Vec<Unfold>,
     /// The pairs related to their end inside the outermost of those: one
     /// met again has added every bound it adds.
-    unfolded: Vec<(Type, Type)>,
+    unfolded: Vec<Unfold>,
     /// What each cell has had added since the outermost attempt began, in
     /// order, each the last of its list when added: a failed attempt takes
     /// its own back.
@@ -1904,9 +1931,8 @@ impl Solving {
                 return Ok(());
             }
         }
-        let met =
-            |(x, y): &(Type, Type)| strictly_identical(x, a) && strictly_identical(y, b);
-        if self.unfolding.iter().any(met) || self.unfolded.iter().any(met) {
+        let pair = Unfold::new(env, a, b);
+        if self.unfolding.iter().chain(self.unfolded.iter()).any(|u| u.is(&pair)) {
             return Ok(());
         }
         let expand = |t: &Type| match t {
@@ -1914,12 +1940,12 @@ impl Solving {
             t => Ok(t.clone()),
         };
         let (x, y) = (expand(a)?, expand(b)?);
-        self.unfolding.push((a.clone(), b.clone()));
+        self.unfolding.push(pair);
         let r = self.constrain(env, &x, &y);
-        self.unfolding.pop();
+        let pair = self.unfolding.pop();
         match self.unfolding.is_empty() {
             true => self.unfolded.clear(),
-            false if r.is_ok() => self.unfolded.push((a.clone(), b.clone())),
+            false if r.is_ok() => self.unfolded.extend(pair),
             false => (),
         }
         // CR claude for claude: [readability/low] This rename puts the outer pair in
@@ -2500,17 +2526,19 @@ pub fn fits(
         bounded_by_names(env, declared)?;
         // the declaration's variables, those only its bounds name among
         // them
-        let mut constants: SmallVec<[TVar; 4]> = SmallVec::new();
-        cells_of(&held, true, &mut constants);
+        let mut constants = Cells::new();
+        let mut named: SmallVec<[TVar; 4]> = SmallVec::new();
+        cells_of(&held, true, &mut named);
+        for v in named.iter() {
+            constants.insert(v);
+        }
         let mut next = 0;
-        while let Some(v) = constants.get(next).cloned() {
+        while let Some(v) = constants.met.get(next).cloned() {
             for bound in v.cell_above().iter() {
-                let mut named = SmallVec::new();
+                named.clear();
                 cells_of(bound, true, &mut named);
-                for u in named {
-                    if !constants.iter().any(|k| k.same_cell(&u)) {
-                        constants.push(u)
-                    }
+                for u in named.iter() {
+                    constants.insert(u);
                 }
             }
             next += 1
