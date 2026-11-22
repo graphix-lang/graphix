@@ -14,7 +14,7 @@ use crate::{
         TVar, Type,
         cast::numbers_ordered,
         node_addr,
-        setops::strictly_identical,
+        setops::{strictly_identical, union_identical},
         toml_root_refusal,
         tvar::{AtLevel, Level, ShortName, TaskId},
         variance,
@@ -768,23 +768,35 @@ pub fn union_of(ts: impl IntoIterator<Item = Type>) -> Type {
 /// The union of the decided types `ts`, less each one another holds: a
 /// name and what it stands for are one type.
 fn join(env: &Env, ts: &[Type]) -> Result<Type> {
-    let mut kept: SmallVec<[&Type; 4]> = SmallVec::new();
+    // each member, and whether it reaches a free cell
+    let mut kept: SmallVec<[(&Type, bool); 4]> = SmallVec::new();
     for t in ts.iter() {
+        let free = t.has_free();
         let mut held = false;
-        for k in kept.iter().filter(|k| !k.has_free() && !t.has_free()) {
-            held |= k.contains(env, t)?
+        if !free {
+            for (k, _) in kept.iter().filter(|(_, kf)| !kf) {
+                held |= k.contains(env, t)?
+            }
         }
         if !held {
             let mut holds: SmallVec<[bool; 4]> = SmallVec::new();
-            for k in kept.iter() {
-                holds.push(!k.has_free() && !t.has_free() && t.contains(env, k)?)
+            for (k, kf) in kept.iter() {
+                holds.push(!kf && !free && t.contains(env, k)?)
             }
             let mut holds = holds.into_iter();
             kept.retain(|_| !holds.next().unwrap_or(false));
-            kept.push(t)
+            kept.push((t, free))
         }
     }
-    Ok(union_of(kept.into_iter().cloned()))
+    Ok(union_of(kept.into_iter().map(|(t, _)| t.clone())))
+}
+
+/// Whether `a` and `b` are one cell or one node.
+fn one_node(a: &Type, b: &Type) -> bool {
+    match (a, b) {
+        (Type::TVar(x), Type::TVar(y)) => x.same_cell(y),
+        _ => node_addr(a).is_some_and(|n| node_addr(b) == Some(n)),
+    }
 }
 
 /// `t` past the cells that are bound: an open cell, or a type that is no
@@ -1200,6 +1212,10 @@ impl Solving {
         let (a, b) = (applied(shallow(a)), applied(shallow(b)));
         let (a, b) = (flat(env, a)?, flat(env, b)?);
         debug(|| format!("relate {a} <= {b}"));
+        // one type fits itself, whatever it holds
+        if one_node(&a, &b) {
+            return Ok(());
+        }
         match (&a, &b) {
             (Type::Bottom, _) | (_, Type::Any) => return Ok(()),
             // a declared variable holds a predicate its signature says it
@@ -2861,6 +2877,8 @@ fn cells_of(t: &Type, rigid: bool, out: &mut SmallVec<[TVar; 4]>) {
         seen: &mut AHashSet<usize>,
     ) {
         ensure_sufficient(|| match t {
+            // a ground cell reaches no open cell
+            Type::TVar(tv) if tv.ground_now() => (),
             Type::TVar(tv) => match tv.peek(|c| (c.binding.clone(), c.rigid_gates > 0)) {
                 (Some(b), _) => go(&b, rigid, out, seen),
                 (None, declared)
@@ -4496,6 +4514,7 @@ impl Solving {
         }
         debug(|| format!("fix '{} := {r}", ShortName(&v.name)));
         v.cell().write().set_binding(Some(r));
+        super::tvar::prove_ground_by_parts(v);
         // a flow from a cell that was being fixed around this one was
         // left out: what that cell is now fits here, or no finite type
         // holds both
@@ -4754,7 +4773,9 @@ impl Solving {
                     for w in open_cells(&u) {
                         self.fix(env, &w)?
                     }
-                    let u = deep(&u);
+                    // the demand's head; the cells under it are fixed, and
+                    // stand for their types without being copied out
+                    let u = shallow(&u);
                     if let Type::TVar(w) = &u
                         && (w.is_rigid() || quantified(w))
                         && !variables.iter().any(|x| x.same_cell(w))
@@ -4790,7 +4811,20 @@ impl Solving {
                 }
             }
             [one] => one.clone(),
-            many => join(env, many)?,
+            many => {
+                let mut members: SmallVec<[Type; 4]> = SmallVec::new();
+                // members alike as a union's collapse judges are one
+                for t in many.iter().map(shallow) {
+                    if !members.iter().any(|m| one_node(m, &t) || union_identical(m, &t))
+                    {
+                        members.push(t)
+                    }
+                }
+                match &mut members[..] {
+                    [one] => std::mem::take(one),
+                    members => join(env, members)?,
+                }
+            }
         };
         // one type: a single primitive, or one constructor (an array, a
         // tuple, a function); a union or an open cell is not
@@ -4808,9 +4842,13 @@ impl Solving {
                     cell.write().above.add_declared(Type::Bound(Bound::Singleton))
                 }
                 _ if Type::Primitive(Typ::number()).contains(env, &t)? => bail!(
-                    "cannot compute with {t}: both operands must be one numeric type"
+                    "cannot compute with {}: both operands must be one numeric type",
+                    deep(&t)
                 ),
-                _ => bail!("{t} is more than one type, where `Singleton` asks for one"),
+                _ => bail!(
+                    "{} is more than one type, where `Singleton` asks for one",
+                    deep(&t)
+                ),
             }
         }
         Ok(t)
@@ -4840,7 +4878,8 @@ impl Solving {
                         self.fix(env, &u)?
                     }
                 }
-                Some(deep(&l))
+                // the cells fixed stand for their types where they are
+                Some(l)
             }
         })
     }

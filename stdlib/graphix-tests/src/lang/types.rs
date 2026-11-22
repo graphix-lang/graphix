@@ -3708,7 +3708,7 @@ run!(result_success_bound_reaches_a_generic_call, r#"{
     let succeed = |x: 'a| -> Result<'a, `E> x;
     let e: [i64, Error<`F>] = 1;
     succeed(e)
-}"#, refused("NoError does not contain [i64, Error<`F>]"); FuseExpect::None);
+}"#, refused("NoError does not contain 'a: [i64, Error<`F>]"); FuseExpect::None);
 
 run!(
     result_success_without_errors,
@@ -17402,7 +17402,7 @@ run!(
   let f = 'a: Result<'b, `E> |x: 'b, y: Array<'a>| x;
   f(error(`Q), [])
 }"#,
-    refused("unsatisfiable constraints: Result<Error<`Q>, `E>");
+    refused("NoError does not contain 'b: Error<'a: `Q>");
     FuseExpect::None
 );
 run!(

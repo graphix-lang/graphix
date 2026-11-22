@@ -319,12 +319,16 @@ fn mark_ground(cells: &mut Vec<CellRef>, epoch: u64) {
         return;
     }
     for cell in cells.drain(..) {
-        let mut c = cell.0.write();
-        if c.binding.is_some() && c.ground < epoch {
-            c.ground = epoch;
-            c.kept = Kept::default();
-            c.resolved = None;
-        }
+        mark_one_ground(&cell, epoch)
+    }
+}
+
+fn mark_one_ground(cell: &CellRef, epoch: u64) {
+    let mut c = cell.0.write();
+    if c.binding.is_some() && c.ground < epoch {
+        c.ground = epoch;
+        c.kept = Kept::default();
+        c.resolved = None;
     }
 }
 
@@ -468,6 +472,55 @@ pub(super) fn would_cycle_inner(cell: &CellLock, t: &Type) -> bool {
         walk.number()
     }
     found
+}
+
+/// Whether every cell `t` holds, read through its structure but not into
+/// a cell, is bound and proved ground at `epoch`; a node in `seen` was
+/// read already.
+fn parts_ground(t: &Type, epoch: u64, seen: &mut AddrSet) -> bool {
+    if let Some(node) = node_addr(t)
+        && !seen.insert(node)
+    {
+        return true;
+    }
+    ensure_sufficient(|| match t {
+        Type::TVar(tv) => {
+            let c = tv.cell();
+            let c = c.read();
+            c.binding.is_some() && c.ground == epoch
+        }
+        Type::Ref(r) => r.params.iter().all(|p| parts_ground(p, epoch, seen)),
+        t => t
+            .try_for_each_child(&mut |c| match parts_ground(c, epoch, seen) {
+                true => ControlFlow::Continue(()),
+                false => ControlFlow::Break(()),
+            })
+            .is_continue(),
+    })
+}
+
+/// Prove the bound cell `v` ground where every cell its binding,
+/// constraints and lower bounds hold is: a chain of cells bound from
+/// the bottom up is proved one link at a time, never walked again.
+pub(crate) fn prove_ground_by_parts(v: &TVar) {
+    let epoch = ground_epoch();
+    let cell = v.cell();
+    let (binding, cons, below) = {
+        let c = cell.read();
+        match &c.binding {
+            None => return,
+            Some(_) if c.ground == epoch => return,
+            Some(b) => {
+                (b.clone(), SmallVec::<[Type; 1]>::from(c.above.all()), c.lower.clone())
+            }
+        }
+    };
+    let mut seen = LPooled::take();
+    let ground = parts_ground(&binding, epoch, &mut seen)
+        && cons.iter().chain(below.iter()).all(|t| parts_ground(t, epoch, &mut seen));
+    if ground && ground_epoch() == epoch {
+        mark_one_ground(&cell, epoch)
+    }
 }
 
 /// [`would_cycle_inner`] toward the open cell `cell`: false at once
@@ -2400,7 +2453,7 @@ impl TVar {
     /// Whether the cell is bound and proved, at the current
     /// [`GROUND_EPOCH`], to reach no open cell. Reads the proof, walks
     /// nothing.
-    pub(super) fn ground_now(&self) -> bool {
+    pub(crate) fn ground_now(&self) -> bool {
         let link = self.read();
         let cell = link.cell.get();
         let c = cell.read();
