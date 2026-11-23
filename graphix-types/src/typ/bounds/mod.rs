@@ -23,7 +23,7 @@ use crate::{
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, bail};
 use arcstr::ArcStr;
-use compact_str::format_compact;
+use compact_str::{CompactString, format_compact};
 use netidx_value::Typ;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
@@ -1284,26 +1284,6 @@ impl Solving {
         fits
     }
 
-    /// Whether `v` is a variable its definition's text writes in a
-    /// position but does not declare: it is one type at each call, as a
-    /// declared one is, and its bound is what its body needs of it. A
-    /// question (an attempt) asks what holds of it and adds nothing.
-    fn bare(&self, v: &TVar) -> bool {
-        self.attempts == 0
-            && v.is_rigid()
-            && !self.sealed
-            && v.declared_name().is_some()
-            && !v.declared_here()
-    }
-
-    /// The bare variable `v` declares the conjunct `c`: its body needs it.
-    fn takes(&mut self, v: &TVar, c: &Type) {
-        let had = v.cell_declared();
-        if !had.iter().any(|b| strictly_identical(b, c)) {
-            v.cell().write().above.push_declared(c.clone())
-        }
-    }
-
     fn note(&mut self, v: &TVar, what: Added) {
         if self.attempts > 0 {
             self.added.push((v.clone(), what))
@@ -1341,20 +1321,13 @@ impl Solving {
         }
         match (&a, &b) {
             (Type::Bottom, _) | (_, Type::Any) => return Ok(()),
-            // a declared variable holds a predicate its signature says it
-            // does; one that is one type at each call is all its own
-            // definition may leave unsaid, and an interface's may leave
-            // none
-            (Type::TVar(v), Type::Bound(p))
-                if v.is_rigid() && (self.sealed || *p != Bound::Singleton) =>
-            {
+            // a declared variable holds the predicates its signature says
+            // it does, and no other
+            (Type::TVar(v), Type::Bound(_)) if v.is_rigid() => {
                 for own in v.cell_above().iter() {
                     if numbers_ordered(|| own.implies(env, &b))? {
                         return Ok(());
                     }
-                }
-                if self.bare(v) {
-                    return Ok(self.takes(v, &b));
                 }
                 // CR claude for claude: [bug/low] Each undeclared conjunct bails on
                 // its own, so the refusal names one bound at a time. `val double:
@@ -1451,6 +1424,16 @@ impl Solving {
             // refused at the call): in a definition's own check this arm leaves a
             // predicate on a type that holds a declared variable under a constructor to
             // the instance, where the sealed arm above reaches the variables.
+            // 2026-11-23 claude: Eric ruled 11-23 (D53 item 5): a declared variable's bound is
+            // exactly what is written. Closed here for a type that holds the variable under a
+            // constructor at the relation (Solving::of_declared, hold_declared): probes 2, 3 and 5
+            // are refused at the definition, naming the bound (pins
+            // lang::types::a_predicate_over_data_holding_a_declared_variable_is_refused). Still
+            // left to the call: a constructor whose part is an inferred cell that takes the
+            // variable later (`uniq([x])`, `[x] == [y]`, `array::sort([[x]])`), since the cell is
+            // fixed after the definition closes, and probe 4 (`json::write_str(`A(x))`), which the
+            // JSON judgment makes at each call.
+
             // a predicate on a cell is judged when the cell is decided
             // `Function` is of a value's shape: a function type meets it
             // or not whatever its cells become, and a decided value that
@@ -1459,6 +1442,9 @@ impl Solving {
                 if matches!(a, Type::Fn(_)) || !a.has_free() =>
             {
                 return self.hold(env, &UNNAMED, std::slice::from_ref(&b), &a);
+            }
+            (_, Type::Bound(_)) if self.of_declared(&a) => {
+                return self.hold_declared(env, &a, &b);
             }
             (_, Type::Bound(_)) => return Ok(()),
             (Type::TVar(v), Type::TVar(w)) if v.same_cell(w) => return Ok(()),
@@ -1575,9 +1561,6 @@ impl Solving {
                 self.through.pop();
                 match (fits, &b) {
                     (true, _) => Ok(()),
-                    (false, Type::Primitive(p)) if p.len() > 1 && self.bare(v) => {
-                        Ok(self.takes(v, &b))
-                    }
                     (false, Type::Set(ms)) => self.below_union(env, &a, ms, &b),
                     (false, _) => mismatch(env, &b, &a),
                 }
@@ -1686,6 +1669,10 @@ impl Solving {
                 } else {
                     self.demanded(env, v, b)?
                 }
+                self.one_at_every_call(v, &[])?;
+                if let Some(w) = vb {
+                    self.one_at_every_call(w, &lower)?
+                }
                 lower.iter().try_for_each(|l| self.relate(env, l, b))
             }
             (Some(_), Some(w)) => self.arrive(env, w, a),
@@ -1757,6 +1744,20 @@ impl Solving {
                 }
             }
         }
+        self.one_at_every_call(w, &[])?;
+        if let Type::TVar(v) = a
+            && v.is_rigid()
+            && v.declared_here()
+            && !self.sealed
+            && self.attempts == 0
+        {
+            let written = |u: &&Type| matches!(u, Type::Bound(_)) || !u.has_unbound();
+            let needs: SmallVec<[&Type; 2]> =
+                upper.iter().filter(written).filter(|u| !self.probe(env, a, u)).collect();
+            if needs.len() > 1 {
+                bail!("{}", v.undeclared_bound(env, &needs))
+            }
+        }
         upper.iter().try_for_each(|u| {
             self.relate(env, a, u).inspect_err(|_| {
                 debug(|| {
@@ -1764,6 +1765,48 @@ impl Solving {
                 })
             })
         })
+    }
+
+    /// The cell `w`, asked to be one type, holds no variable of a
+    /// definition being checked beside another type, `arriving` counted
+    /// with what it holds: a call picks the variable, so the two are one
+    /// type at some calls only.
+    fn one_at_every_call(&self, w: &TVar, arriving: &[Type]) -> Result<()> {
+        if self.attempts > 0 || !singleton(w) {
+            return Ok(());
+        }
+        let mut lower = w.cell_lower();
+        lower.extend(arriving.iter().cloned());
+        let declared = |t: &Type| match &shallow(t) {
+            Type::TVar(v) if v.is_rigid() && v.declared_here() => Some(v.clone()),
+            _ => None,
+        };
+        let Some(v) = lower.iter().find_map(declared) else { return Ok(()) };
+        let beside = |t: &Type| match &shallow(t) {
+            Type::Bottom => false,
+            Type::TVar(u) => !u.same_cell(&v) && !u.is_open(),
+            _ => true,
+        };
+        match lower.iter().any(beside) {
+            false => Ok(()),
+            true => {
+                let name = v.declared_name().unwrap_or_else(|| v.name.clone());
+                let mut members: SmallVec<[CompactString; 2]> = SmallVec::new();
+                for t in lower.iter().filter(|t| !matches!(shallow(t), Type::Bottom)) {
+                    let t = format_compact!("{}", deep(t));
+                    if !members.contains(&t) {
+                        members.push(t)
+                    }
+                }
+                members.sort();
+                bail!(
+                    "[{}] must be one type, but the declared variable '{} may differ from \
+                     its other members",
+                    members.join(", "),
+                    ShortName(&name)
+                )
+            }
+        }
     }
 
     /// A copy of `t` no deeper than `at`: each deeper cell gets a twin at
@@ -2119,7 +2162,10 @@ impl Solving {
         // wording eventually, too small for now. (bounds-wording-01)
         // a refusal names the types as they were written
         r.map_err(|e| match e.to_string().starts_with("type mismatch") {
-            true => anyhow::anyhow!("type mismatch {b} does not contain {a}"),
+            true => super::contains::TypeMismatch::beyond_bound(env, b, a)
+                .unwrap_or_else(|| {
+                    anyhow::anyhow!("type mismatch {b} does not contain {a}")
+                }),
             false => e,
         })
     }
@@ -5146,6 +5192,45 @@ impl Solving {
         Ok(())
     }
 
+    /// Whether `t` is a type a definition being checked makes of its
+    /// declared variables: it holds them under a constructor, and nothing
+    /// undecided.
+    fn of_declared(&self, t: &Type) -> bool {
+        !self.sealed
+            && self.attempts == 0
+            && !matches!(t, Type::TVar(_))
+            && t.has_rigid()
+            && !t.has_free()
+            && t.first_open(&|v| v.is_rigid() && !v.declared_here()).is_none()
+    }
+
+    /// The predicate `b` holds of `t` ([`Self::of_declared`]) as the
+    /// bounds of the variables in it say: a body asks no more of them than
+    /// its signature declares.
+    fn hold_declared(&self, env: &Env, t: &Type, b: &Type) -> Result<()> {
+        if let Type::Bound(Bound::Ordered | Bound::Discernible) = b {
+            let mut reached = SmallVec::new();
+            compared(env, t, &mut reached, &mut SmallVec::new());
+            for v in reached.iter() {
+                if !numbers_ordered(|| v.conjunct_implies(env, b))? {
+                    let name = v.declared_name().unwrap_or_else(|| v.name.clone());
+                    let name = ShortName(&name);
+                    bail!(
+                        "the body needs '{name} within {b}, which the signature does \
+                         not declare: add {b} to the bound of '{name}"
+                    )
+                }
+            }
+        }
+        match numbers_ordered(|| super::holds::holds_sealed(env, b, t))? {
+            true => Ok(()),
+            false => bail!(
+                "the body needs {t} to be {b}, which the bounds of the signature's \
+                 variables do not say"
+            ),
+        }
+    }
+
     /// Each predicate among `bounds` holds of the decided type `t`, which
     /// the variable `name` stands for. Nothing is of every kind, and a
     /// variable is of the kinds its own bound says, which the relation
@@ -5368,12 +5453,10 @@ impl Solving {
         };
         let one = one_type(env, &t)?;
         if single && !matches!(t, Type::Bottom) && !one {
-            // a declared variable is one type, which each call must give
-            // it
+            // a declared variable is one type where its signature says so
             match &t {
                 Type::TVar(r) if r.is_rigid() => {
-                    let cell = r.cell();
-                    cell.write().above.add_declared(Type::Bound(Bound::Singleton))
+                    self.constrain(env, &t, &Type::Bound(Bound::Singleton))?
                 }
                 _ => not_one(env, &t)?,
             }

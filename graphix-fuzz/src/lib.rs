@@ -6519,10 +6519,16 @@ mod tests {
             ("{ let v = str::len(\"a\"); let w = v + 1; w }", "retype#"),
             // the hop: the widened `a` reaches `+` through `w`'s let
             ("{ let a = 1; let w = a; let z = w + 2; z }", "widen-hop#"),
-            ("{ let f = 'a: Number |x: 'a| -> 'a x + x; f(1) }", "rigid-var#"),
+            (
+                "{ let f = 'a: Number + Singleton |x: 'a| -> 'a x + x; f(1) }",
+                "rigid-var#",
+            ),
             // a body asks no more of a declared variable than its bound says
             ("{ let f = 'a: Any |x: 'a| -> i64 1; f(1) }", "rigid-var#"),
-            ("{ let g = 'a: Number |x: 'a, y: 'a| -> 'a x + y; g(1, 2) }", "shared-var#"),
+            (
+                "{ let g = 'a: Number + Singleton |x: 'a, y: 'a| -> 'a x + y; g(1, 2) }",
+                "shared-var#",
+            ),
             // a bounded variable one parameter holds is within its bound too
             ("{ let g = 'a: Number |x: 'a| -> 'a x; g(1) }", "shared-var#"),
             // an alias's value uses share the wrapped binding's cells
@@ -6595,23 +6601,28 @@ mod tests {
                 rep.rejects
             );
         }
-        // family 2 asks more of an `Any`-bounded variable than its bound says,
-        // in the third of its sites: refused, naming the bound to write
-        let prog = "{ let f = 'a: Any |x: 'a| -> i64 1; let g = 'a: Any |x: 'a| -> i64 2; \
-                    let h = 'a: Any |x: 'a| -> i64 3; (f(1), g(1), h(1)) }";
-        let rep = typemorph_subject(prog, per, TM_CAP).await.unwrap();
-        let rigid: Vec<_> =
-            rep.rejects.iter().filter(|p| p.id.starts_with("rigid-var#")).collect();
-        assert!(
-            rigid.len() == 3 && rigid.iter().all(|p| p.verdict.is_none()),
-            "{prog}: {:?}",
-            rep.rejects
-        );
+        // family 2 asks more of a variable bounded `Any`, or written bare, than
+        // that says, in the third of its sites: refused, naming the bound to
+        // write
+        for header in ["'a: Any ", ""] {
+            let prog = format!(
+                "{{ let f = {header}|x: 'a| -> i64 1; let g = {header}|x: 'a| -> i64 2; \
+                 let h = {header}|x: 'a| -> i64 3; (f(1), g(1), h(1)) }}"
+            );
+            let rep = typemorph_subject(&prog, per, TM_CAP).await.unwrap();
+            let rigid: Vec<_> =
+                rep.rejects.iter().filter(|p| p.id.starts_with("rigid-var#")).collect();
+            assert!(
+                rigid.len() == 3 && rigid.iter().all(|p| p.verdict.is_none()),
+                "{prog}: {:?}",
+                rep.rejects
+            );
+        }
         // family 1 leaves a declared variable beside an unannotated parameter
         // or return, whose escape a written binding refuses first
         for declared in [
             "{ let f = 'a: Number |a: 'a, b| -> bool a == b; [f(3, 4), f(2.5, 1.5)] }",
-            "{ let f = 'a: Number |a: 'a, b: 'a| a + b; [f(3, 4), f(2.5, 1.5)] }",
+            "{ let f = 'a: Number + Singleton |a: 'a, b: 'a| a + b; [f(3, 4), f(2.5, 1.5)] }",
         ] {
             let rep = typemorph_subject(declared, per, TM_CAP).await.unwrap();
             assert!(

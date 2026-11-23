@@ -181,7 +181,7 @@ async fn settled_parameter_is_told_by_its_binding_alone() -> Result<()> {
     let ctx = init(tx, crate::TEST_REGISTER).await?;
     let mut held = vec![];
     for input in [
-        "let fs = array::map([1, 2], |r| 'a: Number |x: 'a| -> 'a x + x)",
+        "let fs = array::map([1, 2], |r| 'a: Number + Singleton |x: 'a| -> 'a x + x)",
         "let g = fs[0]$",
     ] {
         held.push(ctx.rt.compile(ArcStr::from(input)).await?)
@@ -346,7 +346,7 @@ const SETF: &str =
 #[tokio::test(flavor = "current_thread")]
 async fn earlier_value_is_decided_by_no_later_use() -> Result<()> {
     session(&[
-        Accept("let s = {g: 'a: Number |x: 'a| -> 'a x + x}"),
+        Accept("let s = {g: 'a: Number + Singleton |x: 'a| -> 'a x + x}"),
         Accept("let j = s.g"),
         Produce("j(1)", Value::I64(2)),
         Produce("j(1.5)", Value::F64(3.0)),
@@ -363,7 +363,7 @@ async fn earlier_value_is_decided_by_no_later_use() -> Result<()> {
              would let a write narrow it",
         ),
         Produce("j(2.5)", Value::F64(5.0)),
-        Accept("let g = 'q: Number |x, y: 'q| -> 'q x + y"),
+        Accept("let g = 'q: Number + Singleton |x, y: 'q| -> 'q x + y"),
         Accept("let fs = [g, g]"),
         Accept("let z: fn(x: i64, y: i64) -> i64 = fs[0]$"),
         Produce("z(1, 2)", Value::I64(3)),
@@ -449,7 +449,7 @@ async fn annotated_origin_takes_the_declared_use() -> Result<()> {
 #[tokio::test(flavor = "current_thread")]
 async fn annotated_earlier_value_takes_a_later_use() -> Result<()> {
     session(&[
-        Accept("let s = {g: 'a: Number |x: 'a| -> 'a x + x}"),
+        Accept("let s = {g: 'a: Number + Singleton |x: 'a| -> 'a x + x}"),
         Accept("let j: fn(x: i64) -> i64 = s.g"),
         Accept("let app = |f: fn(x: i64) -> i64| f(1)"),
         Produce("app(j)", Value::I64(2)),
@@ -460,7 +460,7 @@ async fn annotated_earlier_value_takes_a_later_use() -> Result<()> {
         Accept(SETF),
         Accept("setf(&mut j)"),
         Produce("j(1)", Value::I64(101)),
-        Accept("let g = 'q: Number |x, y: 'q| -> 'q x + y"),
+        Accept("let g = 'q: Number + Singleton |x, y: 'q| -> 'q x + y"),
         Accept("let fs: Array<fn(x: i64, y: i64) -> i64> = [g, g]"),
         Accept("let z: fn(x: i64, y: i64) -> i64 = fs[0]$"),
         Produce("z(1, 2)", Value::I64(3)),
@@ -485,7 +485,7 @@ async fn write_as_general_of_a_concrete_variable() -> Result<()> {
 #[tokio::test(flavor = "current_thread")]
 async fn write_as_general_decides_nothing() -> Result<()> {
     session(&[
-        Accept("let s = {g: 'a: Number |x: 'a| -> 'a x + x}"),
+        Accept("let s = {g: 'a: Number + Singleton |x: 'a| -> 'a x + x}"),
         Accept("let j = s.g"),
         Accept("j <- s.g"),
         Produce("j(1.5)", Value::F64(3.0)),

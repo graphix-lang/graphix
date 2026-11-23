@@ -73,7 +73,11 @@ impl Family {
     pub fn refuses_with(self, head: &str) -> bool {
         let says: &[&str] = match self {
             Family::MonoReuse => &["does not contain", "and no value is both"],
-            Family::RigidVar => &["unbound", "which the signature does not declare"],
+            Family::RigidVar => &[
+                "unbound",
+                "which the signature does not declare",
+                "but the declared variable",
+            ],
             Family::SharedVar | Family::AbstractParam => &["does not contain"],
             Family::LabelUnknown => &["unknown labeled argument"],
             Family::LabelMissing => &["missing required argument"],
@@ -1022,11 +1026,12 @@ fn rigid_probe(l: &LambdaExpr, mode: RigidProbe) -> Option<(Expr, Option<Type>)>
         let StructurePattern::Bind(x) = &a.pattern else { return None };
         match a.constraint.as_ref()? {
             Type::TVar(tv) if mode == RigidProbe::Needs => {
-                let declared_any = l
+                let any = l
                     .constraints
                     .iter()
-                    .any(|(c, b)| c.name == tv.name && matches!(b, Type::Any));
-                declared_any.then(|| {
+                    .find(|(c, _)| c.name == tv.name)
+                    .is_none_or(|(_, b)| matches!(b, Type::Any));
+                any.then(|| {
                     (
                         ExprKind::BinOp {
                             op: BinOp::Add,
@@ -1074,9 +1079,9 @@ enum RigidProbe {
 
 /// Family 2. A lambda with a parameter over a declared variable `'a`
 /// gets a first statement fixing `'a` to `i64` or to `_`, or asking more
-/// of an `Any`-bounded one than its bound says ([`rigid_probe`], in
-/// turn): a def's declared variables are rigid in its body, so `'a` can
-/// become neither, and its body adds no bound to it. Right site: the
+/// of one bounded `Any` or written bare than that says ([`rigid_probe`],
+/// in turn): a def's declared variables are rigid in its body, so `'a`
+/// can become neither, and its body adds no bound to it. Right site: the
 /// definition.
 fn rigid_var(root: &Expr, cap: usize, out: &mut Vec<RejectProbe>) {
     with_first_statement(root, cap, Family::RigidVar, out, |l, taken| {

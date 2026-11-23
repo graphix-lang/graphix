@@ -112,8 +112,8 @@ ok let f = |x: 'a, y: 'a| -> 'a y; let r: [i64, string] = f(1, "s"); r
 no "i64 does not contain string" let f = |x: 'a, y: 'a| -> 'a y; let r: i64 = f(1, "s"); r
 no "Number does not contain string" let f = 'a: Number |x: 'a, y: 'a| -> 'a y; f(1, "s")
 ok let f = 'a: Number |x: 'a, y: 'a| -> 'a y; f(1, 1.5)
-no "cannot compute with [i64, f64]" let f = 'a: Number |x: 'a, y: 'a| -> 'a x + y; f(1, 1.5)
-ok let f = 'a: Number |x: 'a, y: 'a| -> 'a x + y; f(1.0, cast<f64>(1)$)
+no "cannot compute with [i64, f64]" let f = 'a: Number + Singleton |x: 'a, y: 'a| -> 'a x + y; f(1, 1.5)
+ok let f = 'a: Number + Singleton |x: 'a, y: 'a| -> 'a x + y; f(1.0, cast<f64>(1)$)
 ok let f = |x: 'a, y: 'a, k: fn(v: 'a) -> i64| -> 'a y; f(1, "s", |v| 0)
 no "i64 does not contain string" let f = |x: 'a, y: 'a, k: fn(v: 'a) -> i64| -> 'a y; f(1, "s", |v: i64| 0)
 ok let f = |x: 'a, y: 'a, k: fn(v: 'a) -> i64| -> 'a y; f(1, "s", |v: [i64, string]| 0)
@@ -230,51 +230,63 @@ ok let f = |s| select s { (1, b) => 0, (2, (x, y)) => x, (3, (x, y, z)) => x, (_
 
 ## Bounds
 
-A declared variable is rigid in its body: the body asks no more of it
-than its bound says. A comparison, an ordering, a sort or a map key over
-a variable bounded by less than `Discernible` or `Ordered` is refused,
-naming the bound to add ("add Discernible to the bound of 'a"). A call
-or arithmetic that needs `Number` is refused "Number does not contain
-'c": write `'c: Number`. Nothing is added to the signature quietly. A
-bound that implies what the body needs is enough (`'c: Int` for
-`Number`, `Number` for an ordering), and arithmetic over a `Number`
-variable needs no `Singleton` written. A variable written bare (`|y:
-'c|`, no header) takes the bound its body needs, a class or a union
-(`Number`, `[i64, null]`), and a comparison in such a body, or in an
-untyped one, is judged at each call. No variable is one written type: a
-body that passes `y: 'c` where an `i64` is taken is refused, "i64 does
-not contain 'c": write `y: i64`, or leave `y` untyped.
+A variable you write is one type each call picks, and its bound is
+exactly what you write for it: `Any` where you write none, a bare `|y:
+'c|` included. The body asks no more of it than that, and nothing is
+added to the signature quietly, `Singleton` included. A comparison, an
+ordering, a sort or a map key over a variable bounded by less than
+`Discernible` or `Ordered` is refused, naming the bound to add ("add
+Discernible to the bound of 'a"), inside a tuple, a struct or an
+`Array<'a>` too. Arithmetic needs `Number + Singleton` and says so
+("write 'a: Number + Singleton"). A call that takes a `Number`, or an
+`i64`, is refused "Number does not contain 'c", naming the bound that
+passes ("write 'c: Number"). A bound that implies what the body needs is
+enough (`'c: Int` for `Number`, `Number` for an ordering). A declared
+variable beside another type is never one type, whatever it declares:
+`x + 1` over `x: 'a` is refused, as a call picks `'a`. To have the check
+infer a bound, leave the parameter untyped: `|x, y| x + y` is generic
+over one numeric type, and a comparison in such a body is judged at each
+call.
 
 ```graphix,cases
 no "Number does not contain 'c" let f = 'a: Number |x: 'a| -> 'a x; 'c: Any |y: 'c| -> 'c f(y)
 no "Number does not contain 'c" let f = 'a: Number |x: 'a| -> 'a x; 'c: [i64, string] |y: 'c| -> 'c f(y)
 ok let f = 'a: Number |x: 'a| -> 'a x; 'c: Number |y: 'c| -> 'c f(y)
 ok let f = 'a: Number |x: 'a| -> 'a x; 'c: Int |y: 'c| -> 'c f(y)
-ok let f = 'a: Number |x: 'a| -> 'a x; |y: 'c| -> 'c f(y)
-ok let g = |x: [i64, null]| x; let f = |y: 'c| g(y); f(1)
-no "i64 does not contain 'c" let g = |x: i64| x; let f = |y: 'c| g(y); f(1)
+no "write 'c: Number" let f = 'a: Number |x: 'a| -> 'a x; |y: 'c| -> 'c f(y)
+no "write 'c: [i64, null]" let g = |x: [i64, null]| x; let f = |y: 'c| g(y); f(1)
+no "write 'c: i64" let g = |x: i64| x; let f = |y: 'c| g(y); f(1)
+ok let g = |x: i64| x; let f = 'c: i64 |y: 'c| g(y); f(1)
 ok let g = |x: i64| x; let f = |y| g(y); f(1)
-no "Number does not contain 'a" 'a: Any |x: 'a, y: 'a| -> 'a x + y
-ok 'a: Number |x: 'a, y: 'a| -> 'a x + y
+no "write 'a: Number + Singleton" 'a: Any |x: 'a, y: 'a| -> 'a x + y
+no "write 'a: Number + Singleton" 'a: Number |x: 'a, y: 'a| -> 'a x + y
+no "write 'a: Number + Singleton" |x: 'a, y: 'a| -> 'a x + y
+ok 'a: Number + Singleton |x: 'a, y: 'a| -> 'a x + y
+ok let f = |x, y| x + y; (f(1, 2), f(1.5, 2.5))
+no "must be one type, but the declared variable 'a may differ" 'a: Number + Singleton |x: 'a| -> 'a x + 1
 ok 'a: Number |x: 'a, y: 'a| x < y
 no "add Ordered to the bound of 'a" 'a: Any |x: 'a, y: 'a| x < y
 no "add Discernible to the bound of 'a" 'a: Any |x: 'a, y: 'a| x == y
 no "add Ordered to the bound of 'a" 'a: Any |x: 'a| array::sort([x])
-ok let f = |x: 'c, y: 'c| x == y; f(1, 2)
-no "'c must be Ordered" let f = |x: 'c, y: 'c| x < y; let g = |q: i64| q; f(g, g)
+no "add Discernible to the bound of 'c" let f = |x: 'c, y: 'c| x == y; f(1, 2)
+ok let f = 'c: Discernible |x: 'c, y: 'c| x == y; f(1, 2)
+no "add Ordered to the bound of 'c" let f = |x: 'c, y: 'c| x < y; let g = |q: i64| q; f(g, g)
+no "add Discernible to the bound of 'a" 'a: Any |x: 'a, y: 'a| (x, 1) == (y, 1)
+no "add Discernible to the bound of 'a" 'a: Any |x: Array<'a>| uniq(x)
 ok let f = |x, y| x == y; (f(1, 2), f("a", "b"))
 no "cannot compare i64 with string" let f = |x, y| x == y; f(1, "s")
 no "must be Ordered here" let f = |x, y| x < y; let g = |q: i64| q; f(g, g)
 ```
 
-A wrapper's bare variable passed for a callee's bounded one takes the
-callee's bound, and a call of the wrapper is held to it; a declared one
-declares the bound itself.
+A wrapper that passes its variable for a callee's bounded one declares
+the callee's bound, or one that implies it, and a call of the wrapper is
+held to it.
 
 ```graphix,cases
 ok let g = 'b: Array<['c, null]> |x: 'b, s: 'c| -> 'b x; let f = |v: 'a, w: Array<'a>| g(w, v); (f(1, [2]), f("a", ["b"]))
-ok let g = 'b: [i64, null] |x: 'b| -> 'b x; let f = |w: 'a| g(w); f(1)
-no "[i64, null] does not contain string" let g = 'b: [i64, null] |x: 'b| -> 'b x; let f = |w: 'a| g(w); f("s")
+no "write 'a: [i64, null]" let g = 'b: [i64, null] |x: 'b| -> 'b x; let f = |w: 'a| g(w); f(1)
+ok let g = 'b: [i64, null] |x: 'b| -> 'b x; let f = 'a: [i64, null] |w: 'a| g(w); f(1)
+no "[i64, null] does not contain string" let g = 'b: [i64, null] |x: 'b| -> 'b x; let f = 'a: [i64, null] |w: 'a| g(w); f("s")
 no "[i64, null] does not contain 'a" let g = 'b: Array<[i64, null]> |x: 'b| -> 'b x; let f = 'a: Any |w: Array<'a>| g(w); f([2])
 ok let g = 'b: Array<[i64, null]> |x: 'b| -> 'b x; let f = 'a: [i64, null] |w: Array<'a>| g(w); f([2])
 ok let g = 'b: (['c, null], ['c, i64]) |s: 'c, x: 'b| -> 'b x; let f = |u, w: (['a, null], ['a, null])| g(u, w); f(1, (2, 2))

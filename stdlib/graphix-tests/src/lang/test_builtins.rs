@@ -410,8 +410,8 @@ async fn unread_quantifier_settles_through_a_written_alias(mode: Mode) -> Result
 /// the builtin settles as the builtin does: with no function passed no
 /// value of the quantifier is made, and a handler whose argument is left
 /// open is refused. The forwarding variable is the builtin's quantifier,
-/// `Concrete` with it: a variable written bare takes the bound, one
-/// declared without it is refused, naming it.
+/// `Concrete` with it: one written bare or declared without the bound is
+/// refused, naming it.
 async fn forwarded_unread_quantifier_settles(mode: Mode) -> Result<()> {
     let code = |declared: &str, call: &str| {
         format_compact!(
@@ -423,29 +423,30 @@ async fn forwarded_unread_quantifier_settles(mode: Mode) -> Result<()> {
     }}"#
         )
     };
-    for declared in ["", "'b: Concrete "] {
-        for call in [
-            "g(3)",
-            "g(#h: null, 3)",
-            "g(#h: |v: i64| v, 3)",
-            "{ let h: [fn(v: i64) -> i64, null] = null; g(#h: h, 3) }",
-        ] {
-            let out = run(&code(declared, call), mode).await?;
-            assert_eq!(out, [Value::I64(3)], "{declared}{call}");
-        }
-        let e = run(&code(declared, "g(#h: |v| 0, 3)"), mode).await.unwrap_err();
-        let message = format_compact!("{e:#}");
-        assert!(message.contains("the type 'b must be known here"), "{message}");
+    let declared = "'b: Concrete ";
+    for call in [
+        "g(3)",
+        "g(#h: null, 3)",
+        "g(#h: |v: i64| v, 3)",
+        "{ let h: [fn(v: i64) -> i64, null] = null; g(#h: h, 3) }",
+    ] {
+        let out = run(&code(declared, call), mode).await?;
+        assert_eq!(out, [Value::I64(3)], "{call}");
     }
-    let e = run(&code("'b: Any ", "g(3)"), mode).await.unwrap_err();
+    let e = run(&code(declared, "g(#h: |v| 0, 3)"), mode).await.unwrap_err();
     let message = format_compact!("{e:#}");
-    assert!(
-        message.contains(
-            "the body needs 'b within Concrete, which the signature does not declare: \
-             add Concrete to the bound of 'b"
-        ),
-        "{message}"
-    );
+    assert!(message.contains("the type 'b must be known here"), "{message}");
+    for undeclared in ["", "'b: Any "] {
+        let e = run(&code(undeclared, "g(3)"), mode).await.unwrap_err();
+        let message = format_compact!("{e:#}");
+        assert!(
+            message.contains(
+                "the body needs 'b within Concrete, which the signature does not \
+                 declare: add Concrete to the bound of 'b"
+            ),
+            "{undeclared}: {message}"
+        );
+    }
     Ok(())
 }
 

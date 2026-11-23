@@ -265,10 +265,10 @@ the null off with `a::x$`. A trait's declaration holds a method by the
 same fit: the cases here are methods, which one line holds.
 
 The val declares every bound its implementation needs. What the body
-asks of a declared variable is named with its remedy: `x + y` under `'a:
-Number` is "the implementation requires 'a: Singleton, which the
-signature does not declare", and `x == y` under a bare `'a` wants
-`Discernible`. A variable the implementation writes is its own and takes
+asks of a declared variable is named with its remedy: a method's `x + y`
+under `'a: Number` is "the body needs 'a within Singleton, which the
+signature does not declare: write 'a: Number + Singleton", and `x == y`
+under a bare `'a` wants `Discernible`. A variable the implementation writes is its own and takes
 what the val passes it, so its bound must hold the declared variable's,
 in whatever shape the two stand (``'q: ['p, `X, `Y]`` under ``'b: ['a,
 `X]``): `'p: [i64, f64]` under `'a: [i64, string]` is refused, as a
@@ -280,9 +280,10 @@ val's reach (`'q: (Number, 'p), 'r: (Number, 'p)` under `'b: (i64, 'a),
 
 ```graphix,cases
 ok trait T { val m: fn(self, x: i64) -> [i64, null] throws `E }; impl T for i64 { let m = |s, x: [i64, null]| -> i64 0 }; T::m(1, 1)
-no "the implementation requires 'a: Singleton, which the signature does not declare" trait T { val m: fn<'a: Number>(self, x: 'a, y: 'a) -> 'a }; impl T for i64 { let m = |s, x, y| x + y }; T::m(1, 1, 2)
+no "the body needs 'a within Singleton, which the signature does not declare: write 'a: Number + Singleton" trait T { val m: fn<'a: Number>(self, x: 'a, y: 'a) -> 'a }; impl T for i64 { let m = |s, x, y| x + y }; T::m(1, 1, 2)
 ok trait T { val m: fn<'a: Number + Singleton>(self, x: 'a, y: 'a) -> 'a }; impl T for i64 { let m = |s, x, y| x + y }; T::m(1, 1, 2)
-no "the implementation requires 'a: Discernible, which the signature does not declare" trait T { val m: fn(self, x: 'a, y: 'a) -> bool }; impl T for i64 { let m = |s, x, y| x == y }; T::m(1, 1, 2)
+no "the body needs 'a within Discernible, which the signature does not declare: add Discernible to the bound of 'a" trait T { val m: fn(self, x: 'a, y: 'a) -> bool }; impl T for i64 { let m = |s, x, y| x == y }; T::m(1, 1, 2)
+ok trait T { val m: fn<'a: Discernible>(self, x: 'a, y: 'a) -> bool }; impl T for i64 { let m = |s, x, y| x == y }; T::m(1, 1, 2)
 no "[i64, f64] does not contain 'a: unbound within [i64, string]" trait T { val m: fn<'a: [i64, string]>(self, x: 'a) -> 'a }; impl T for i64 { let m = 'p: [i64, f64] |s, x: 'p| -> 'p x }; T::m(1, 1)
 ok trait T { val m: fn<'a: [i64, string]>(self, x: 'a) -> 'a }; impl T for i64 { let m = 'p: [i64, string, f64] |s, x: 'p| -> 'p x }; T::m(1, 1)
 no "[i64, f64] does not contain 'b" trait T { val m: fn<'a: [i64, string], 'b: ['a, `X]>(self, x: 'b) -> 'b }; impl T for i64 { let m = 'p: [i64, f64], 'q: ['p, `X, `Y] |s, x: 'q| -> 'q x }; T::m(1, "s")

@@ -2798,7 +2798,7 @@ async fn implementations_are_declared_ones() {
         ),
         (
             "{ type Counter = Abstract<i64>; trait Twice { val twice: fn(self, x: 'a) -> 'a }; impl Twice for Counter { let twice = |c, x| x + x }; Twice::twice(Counter(1), 2) }",
-            "Number does not contain 'a: unbound",
+            "the body needs 'a within Number + Singleton, which the signature does not declare: write 'a: Number + Singleton",
         ),
         // the orphan rule: a non-abstract type is the trait's package's
         (

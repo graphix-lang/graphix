@@ -8514,7 +8514,9 @@ run!(
     let v: Any = (3, 1);
     f((v, 1), 2)
 }"#,
-    refused("type mismatch 't: unbound within Number & Singleton does not contain Any")
+    refused(
+        "['t, Any] must be one type, but the declared variable 't may differ from its other members"
+    )
 );
 
 // One with no bound stands: the test is each call's type for it.
@@ -13666,7 +13668,7 @@ run!(
   let k = 'a: Any |z: [(i64, 'a), (string, 'a)]| select z { (i64, _) as (n, w) => n + w, _ => 0 };
   k((1, 2))
 }"#,
-    refused("type mismatch Number does not contain 'a");
+    refused("['a, i64] must be one type, but the declared variable 'a may differ from its other members");
     FuseExpect::None
 );
 

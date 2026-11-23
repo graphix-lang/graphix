@@ -281,7 +281,7 @@ pub(super) fn gen_labeled_hof(
 }
 
 /// A polymorphic lambda binding in the explicit constraint form
-/// (`let g = 'a: Number |x: 'a, y: 'a| -> 'a x + y`) plus, with
+/// (`let g = 'a: Number + Singleton |x: 'a, y: 'a| -> 'a x + y`) plus, with
 /// `p_mono_pair`, two immediate call-site bindings at distinct numeric
 /// types. The body is params-only `+ - *` so the result type follows the
 /// args.
@@ -302,8 +302,10 @@ pub(super) fn gen_poly_lambda(
         stats.lambda_rebind = true;
     }
     let sig: Vec<_> = names.iter().map(|n| format!("{n}: 'a")).collect();
-    let mut stmts =
-        vec![format!("let {name} = 'a: Number |{}| -> 'a {body}", sig.join(", "))];
+    let mut stmts = vec![format!(
+        "let {name} = 'a: Number + Singleton |{}| -> 'a {body}",
+        sig.join(", ")
+    )];
     ctx.push_entry(name.clone(), super::Entry::Poly { arity });
     if chance(rng, cfg.p_mono_pair) {
         stats.mono_pair = true;

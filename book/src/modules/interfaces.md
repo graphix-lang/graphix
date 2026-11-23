@@ -571,7 +571,7 @@ val double: fn<'a: Number + Singleton>(w: NumericWrapper<'a>) -> 'a;
 // implementation - same constraint required
 type NumericWrapper<'a: Number> = Abstract<'a>;
 let wrap = |x: 'a| -> NumericWrapper<'a> NumericWrapper(x);
-let double = |w: NumericWrapper<'a>| -> 'a w.0 + w.0
+let double = 'a: Number + Singleton |w: NumericWrapper<'a>| -> 'a w.0 + w.0
 ```
 
 ### Abstract Types in Compound Types

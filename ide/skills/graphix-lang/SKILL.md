@@ -347,9 +347,11 @@ Arithmetic is `fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a`: a type
 holding two numeric types (`[i64, f64]`, `Number`) is refused even
 against itself, and a generic function called with one is refused at
 the call (`x$ + 1`, not `x + 1`, on a nullable; `|a: Number, b: Number|
-a + b` is refused, write `'a: Number |a: 'a, b: 'a|`). A `.gxi` declares
-a generic arithmetic function's `'a: Number + Singleton`: an interface
-must declare every bound its implementation needs. `'a: [Number, null] +
+a + b` is refused, write `'a: Number + Singleton |a: 'a, b: 'a|`). A type
+variable you write has exactly the bound you write for it, `Any` if none:
+a signature declares every bound its body needs, in a lambda as in a
+`.gxi`, and the refusal names what to write. Leave a parameter untyped
+and the check infers it (`|a, b| a + b`). `'a: [Number, null] +
 OneNumber` is a nullable number of one numeric type. Unary `-x`, `!x`, `&x`, `*x`. Postfix `x?` (raise to the
 nearest catch), `x$` (or never). Both take the errors off `x`, or, when
 `x` has none, the null; they chain (`x?$`) and sit anywhere in a postfix
@@ -376,7 +378,10 @@ ok let a: [i64, f64] = i64:3; let b: [i64, f64] = f64:3.0; a < b
 ok 1 < 2.5
 no "must be Ordered here" let f = |x: i64| x; f < f
 no "cannot compute with Number" |a: Number, b: Number| a + b
-ok let f = 'a: Number |a: 'a, b: 'a| a + b; f(1, 2)
+ok let f = 'a: Number + Singleton |a: 'a, b: 'a| a + b; f(1, 2)
+no "write 'a: Number + Singleton" let f = 'a: Number |a: 'a, b: 'a| a + b; f(1, 2)
+no "write 'a: Number + Singleton" let f = |a: 'a, b: 'a| a + b; f(1, 2)
+ok let f = |a, b| a + b; (f(1, 2), f(1.5, 2.5))
 no "cannot compute" let x: [i64, null] = 3; x + 1
 ok let x: [i64, null] = 3; x$ + 1
 no "cannot compute" let a = [1, 2]; a[1] + 1
@@ -396,7 +401,7 @@ ok 'a: NoError |x: ['a, Error<`A>]| x?
 ```graphix,fragment
 let f = |x| x + 1;
 let h = |x: i64, y: i64| -> i64 x + y;
-let add = 'a: Number |x: 'a, y: 'a| -> 'a x + y;
+let add = 'a: Number + Singleton |x: 'a, y: 'a| -> 'a x + y;
 let greet = |#greeting = "hello", name| "[greeting], [name]!";   // labeled args
 greet(#greeting: "hi", "world");   // labeled always by name, before positionals
 let f = |@args: i64| args         // variadic (builtins only)

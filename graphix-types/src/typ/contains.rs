@@ -493,6 +493,17 @@ fn unmet_bound_note(env: &Env, types: &[&Type]) -> Option<CompactString> {
     })
 }
 
+/// The note a refusal ends with where `t`, a variable of a definition being
+/// checked, is used as the type `s`, which its bound does not give.
+fn used_beyond_its_bound(env: &Env, s: &Type, t: &Type) -> Option<CompactString> {
+    match t {
+        Type::TVar(tv) if tv.is_rigid() && tv.declared_here() && !s.has_unbound() => {
+            Some(tv.undeclared_bound(env, &[s]))
+        }
+        _ => None,
+    }
+}
+
 /// The note a refusal ends with where a variable of a definition being
 /// checked meets an open cell whose bound the variable's own does not imply:
 /// the body needs more of it than its signature declares.
@@ -556,6 +567,10 @@ fn undeclared_bound_note(env: &Env, s: &Type, t: &Type) -> Option<CompactString>
                     Some(b) => go(env, s, &b, seen, found),
                     None => false,
                 },
+                (s, t) if let Some(note) = used_beyond_its_bound(env, s, t) => {
+                    *found = Some(note);
+                    true
+                }
                 (Type::Ref(r0), Type::Ref(r1))
                     if r0.name == r1.name && r0.params.len() == r1.params.len() =>
                 {
@@ -880,19 +895,36 @@ impl TypeMismatch {
     }
 
     pub(crate) fn plain(expected: &Type, actual: &Type) -> anyhow::Error {
-        Self::refusing(expected, actual, None)
+        Self::refusing(expected, actual, None, None)
     }
 
     /// [`Self::plain`], noting the binding an earlier input settled where
     /// a ⊥ its end settled is why `expected` refuses `actual`.
     pub(crate) fn noting(env: &Env, expected: &Type, actual: &Type) -> anyhow::Error {
-        Self::refusing(expected, actual, settled_cause_note(env, expected, actual, false))
+        Self::refusing(
+            expected,
+            actual,
+            settled_cause_note(env, expected, actual, false),
+            used_beyond_its_bound(env, expected, actual),
+        )
+    }
+
+    /// `expected` refusing `actual`, a variable of a definition being
+    /// checked used beyond its bound, naming the bound to write.
+    pub(crate) fn beyond_bound(
+        env: &Env,
+        expected: &Type,
+        actual: &Type,
+    ) -> Option<anyhow::Error> {
+        let note = used_beyond_its_bound(env, expected, actual)?;
+        Some(Self::refusing(expected, actual, None, Some(note)))
     }
 
     fn refusing(
         expected: &Type,
         actual: &Type,
         settled: Option<CompactString>,
+        undeclared: Option<CompactString>,
     ) -> anyhow::Error {
         anyhow::Error::new(TypeMismatch {
             expected: expected.clone(),
@@ -902,7 +934,7 @@ impl TypeMismatch {
             infinite: false,
             settled,
             unmet: None,
-            undeclared: None,
+            undeclared,
             held: HeldQuantifiers::of([expected, actual]),
             _arena: current_arena(),
         })

@@ -26,4 +26,4 @@
 // tvar); audit Neg (negatable) for the same hole. After the fix this
 // pin becomes CompileErr in both modes (AGREE).
 // minimized:
-{let f = 'a: Number|x: 'a, y: 'a| -> 'a x + "hello"; f(i64:0, i64:2)}
+{let f = 'a: Number + Singleton|x: 'a, y: 'a| -> 'a x + "hello"; f(i64:0, i64:2)}

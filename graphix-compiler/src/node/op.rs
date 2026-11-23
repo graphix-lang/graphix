@@ -765,6 +765,20 @@ pub(crate) fn arith_rule(
         );
         Told::over(e, &told)
     };
+    // a declared variable computed with itself, or with a type nothing has
+    // decided, is told every bound it lacks
+    let needs = [Type::Primitive(Typ::number()), Type::Bound(Bound::Singleton)];
+    let cell = |t: &Type| match t {
+        Type::TVar(tv) => tv.open_cell(),
+        _ => None,
+    };
+    if let (Some(l), Some(r)) = (cell(lt), cell(rt)) {
+        for tv in [l, r] {
+            if let Some(lacks) = tv.undeclared_needs(env, &needs)? {
+                return Err(told(anyhow::anyhow!("{lacks}")));
+            }
+        }
+    }
     let t = same_by_bounds(env, lt, rt, Bound::Singleton).map_err(told)?;
     // the operands are one type here: one that holds no number is named
     Type::Primitive(Typ::number()).check_contains(env, &t).map_err(|e| {

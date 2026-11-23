@@ -467,13 +467,13 @@ run!(
 // A function a callback returns is one instance, which its uses decide:
 // no binding names it, so it is generic nowhere.
 run!(collection_returns_a_generic_function, r#"{
-    let fs = array::map([1, 2], |r| 'a: Number |#start: 'a = 0, x: 'a| -> 'a start + x);
+    let fs = array::map([1, 2], |r| 'a: Number + Singleton |#start: 'a = 0, x: 'a| -> 'a start + x);
     let g = fs[0]$;
     g(#start: 3, 4)
 }"#, is(Value::I64(7)); FuseExpect::None);
 
 run!(collection_returned_function_is_one_instance, r#"{
-    let fs = array::map([1, 2], |r| 'a: Number |#start: 'a = 0, x: 'a| -> 'a start + x);
+    let fs = array::map([1, 2], |r| 'a: Number + Singleton |#start: 'a = 0, x: 'a| -> 'a start + x);
     let g = fs[0]$;
     (g(#start: 3, 4), g(#start: 1.5, 2.0))
 }"#, refused("cannot compute with [i64, f64]: both operands must be one numeric type"); FuseExpect::None);

@@ -2921,14 +2921,8 @@ impl<R: Rt> DefGate<R> {
             Type::TVar(tv.clone()).seed_names_seen(&ctx.env, &mut seen);
         }
         let rigid = named.values().map(|tv| tv.open_rigid()).collect();
-        let mut written: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-        def.typ.for_each_type(&mut |t| t.collect_tvars(&mut written));
-        let bound_only = named.iter().filter(|(name, _)| !written.contains_key(*name));
         let quantified = def.typ.quantifiers.iter().filter_map(|q| named.get(q));
-        let declaring = Declaring::enter(
-            named.values().cloned(),
-            quantified.clone().chain(bound_only.map(|(_, tv)| tv)).cloned(),
-        );
+        let declaring = Declaring::enter(named.values().cloned());
         let declared = quantified.cloned().collect();
         ctx.rec_defs.insert(def.id);
         ctx.def_gate_depth += 1;

@@ -1,7 +1,7 @@
 // The JIT link refused a kernel call (sep28f): a capture of a let bound
 // to a scalar initializer at its nullable declared type passed the bool
 // register where the callee takes the value word.
-{ let v0: [bool, null] = (!(-100 == -1)); let v1 = |#v4: z64 = z64:42, #v5: v32, #v1: i64, v2: i64| -> bool { ((u32:0 >= u32:100000) || select v0 { null as _ => true, bool as n => n }); str::contains(#part: "hello", "a") }; v1(#v5: v32:1000, #v1: 0, #v4: z64:-1, (42 * -100)); let v9 = 'a: Number |v6: 'a, v8: 'a| -> 'a ((v6 - v6) - v6); true }
+{ let v0: [bool, null] = (!(-100 == -1)); let v1 = |#v4: z64 = z64:42, #v5: v32, #v1: i64, v2: i64| -> bool { ((u32:0 >= u32:100000) || select v0 { null as _ => true, bool as n => n }); str::contains(#part: "hello", "a") }; v1(#v5: v32:1000, #v1: 0, #v4: z64:-1, (42 * -100)); let v9 = 'a: Number + Singleton |v6: 'a, v8: 'a| -> 'a ((v6 - v6) - v6); true }
 // file-v1: m0.gxi
 /// generated
 val f0: fn(a0: &bool, a1: string) -> i64;

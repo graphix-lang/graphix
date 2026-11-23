@@ -25,7 +25,7 @@
 // region — with `let f` inside the block, the function-valued let
 // blocks the whole-region attempt, recursion splits the two call sites
 // into separate single-mono regions, and everything agrees.
-let f = 'a: Number |x: 'a| -> 'a x + x;
+let f = 'a: Number + Singleton |x: 'a| -> 'a x + x;
 {
   let a = f(i64:3);
   let b = f(2.5);

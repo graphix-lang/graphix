@@ -12,4 +12,4 @@
 // read it. Distilled from the 8 remaining soak-jul2026 generate
 // divergences (004/012/013/016/020/024/027/040/046/067 class).
 // minimized:
-{let f = 'a: Number |v0: 'a, v1: 'a| -> 'a v0 * v0; f(u8:1, f(u8:1 / u8:0, u8:2))}
+{let f = 'a: Number + Singleton |v0: 'a, v1: 'a| -> 'a v0 * v0; f(u8:1, f(u8:1 / u8:0, u8:2))}

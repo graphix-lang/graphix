@@ -66,7 +66,7 @@ run!(default_ill_typed_at_definition, DEFAULT_ILL_TYPED_AT_DEFINITION, |v: Resul
 
 const DEFAULT_IN_CONSTRAINT_SET: &str = r#"
 {
-  let f = 'a: [Int, Float] |#start: 'a = 0.0, x: 'a| -> 'a start + x;
+  let f = 'a: [Int, Float] + Singleton |#start: 'a = 0.0, x: 'a| -> 'a start + x;
   select (f(1.5), f(#start: 1, 1)) {
     (f64:1.5, i64:2) => 1,
     _ => 0
@@ -81,7 +81,7 @@ run!(default_in_constraint_set, DEFAULT_IN_CONSTRAINT_SET, is(Value::I64(1)); Fu
 
 const DEFAULT_OUTSIDE_CONSTRAINT_SET: &str = r#"
 {
-  let f = 'a: Int |#start: 'a = 0.0, x: 'a| -> 'a start + x;
+  let f = 'a: Int + Singleton |#start: 'a = 0.0, x: 'a| -> 'a start + x;
   f(1)
 }
 "#;
@@ -613,7 +613,7 @@ run!(shadowed_name_cross_kernel, SHADOWED_NAME_CROSS_KERNEL, is(Value::I64(5)); 
 // keys two kernels.
 const TWO_MONOMORPHIZATIONS_ONE_REGION: &str = r#"
 {
-  let f = 'a: Number |x: 'a| -> 'a x + x;
+  let f = 'a: Number + Singleton |x: 'a| -> 'a x + x;
   {
     let a = f(3);
     let b = f(2.5);
@@ -3830,7 +3830,7 @@ run!(default_hidden_by_a_connect, r#"
 // (tests-functions-b-05)
 run!(default_hidden_by_a_with_update, r#"
 {
-    let f = 'a: Number |#d: 'a = 5, x: 'a| x + d;
+    let f = 'a: Number + Singleton |#d: 'a = 5, x: 'a| x + d;
     let s = {h: |x: f64| x};
     let s2 = {s with h: f};
     (s2.h)(1.5)
@@ -3839,7 +3839,7 @@ run!(default_hidden_by_a_with_update, r#"
 
 run!(default_hidden_by_a_reference_write, r#"
 {
-    let f = 'a: Number |#d: 'a = 5, x: 'a| x + d;
+    let f = 'a: Number + Singleton |#d: 'a = 5, x: 'a| x + d;
     let g = |x: f64| x;
     let r = &mut g;
     *r <- f;
@@ -3850,7 +3850,7 @@ run!(default_hidden_by_a_reference_write, r#"
 
 run!(default_hidden_by_an_optional_callback, r#"
 {
-    let f = 'a: Number |#d: 'a = 5, x: 'a| x + d;
+    let f = 'a: Number + Singleton |#d: 'a = 5, x: 'a| x + d;
     let g = |h: [fn(x: f64) -> f64, null]| h$(1.5);
     g(f)
 }
@@ -3858,7 +3858,7 @@ run!(default_hidden_by_an_optional_callback, r#"
 
 run!(default_hidden_by_a_return_type, r#"
 {
-    let f = 'a: Number |#d: 'a = 5, x: 'a| x + d;
+    let f = 'a: Number + Singleton |#d: 'a = 5, x: 'a| x + d;
     let mk = |u: i64| -> fn(x: f64) -> f64 f;
     let h = mk(0);
     h(1.5)
@@ -5447,7 +5447,7 @@ modes!(rebind_reads_quiet_args);
 const NESTED_TVAR_DEFAULT: &str = r#"
 {
   let f = |#x: Array<'a> = [1], y: 'a| -> 'a y;
-  let g = 'a: Number |#x: Array<'a> = [1], y: 'a| -> 'a array::fold(x, y, |a, b| a + b);
+  let g = 'a: Number + Singleton |#x: Array<'a> = [1], y: 'a| -> 'a array::fold(x, y, |a, b| a + b);
   "[f(2)] [f(#x: ["s"], "t")] [g(3)] [g(#x: [1.5], 2.0)]"
 }
 "#;
@@ -5555,30 +5555,19 @@ run!(lambda_sampled_on_a_trigger, r#"{
   let t = 1;
   let f = |x: i64| x * 10;
   f <- t ~ |x: i64| x + 1;
-  let g = t ~ 'a: Number |x: 'a| -> 'a x + x;
+  let g = t ~ 'a: Number + Singleton |x: 'a| -> 'a x + x;
   select f(5) { 6 => g(4), _ => never() }
 }"#, is(Value::I64(8)); FuseExpect::None);
 
 // A declared variable beside a concrete member cannot be made one type:
 // the body is refused, not the variable narrowed to the member.
 run!(
-    rigid_member_beside_a_known_one_is_judged_at_the_call,
-    prints("i64:1"),
+    rigid_member_beside_a_known_one_is_refused,
+    refused("['r, i64] must be one type, but the declared variable 'r may differ from its other members"),
     "/test.gx" => r#"
         let g = 'a: Singleton |x: 'a| -> 'a x;
         let f = 'r: Number |x: 'r, b: bool| g(select b { true => x, false => 1 });
         let result = f(3, false)
-    "#
-; FuseExpect::Jit);
-
-// another numeric type the member beside the declared variable makes two.
-run!(
-    rigid_member_beside_a_known_one_at_another_number_refused,
-    refused("cannot compute with [i64, f64]"),
-    "/test.gx" => r#"
-        let g = 'a: Singleton |x: 'a| -> 'a x;
-        let f = 'r: Number |x: 'r, b: bool| g(select b { true => x, false => 1 });
-        let result = f(3.5, false)
     "#
 ; FuseExpect::None);
 
@@ -5622,7 +5611,7 @@ run!(
 run!(
     generic_function_elements_stay_generic,
     r#"{
-        let fs = array::map([1, 2], |x| 'a: Number |x: 'a, y: 'a| -> 'a x + y);
+        let fs = array::map([1, 2], |x| 'a: Number + Singleton |x: 'a, y: 'a| -> 'a x + y);
         array::map(fs, |f| (f(1, 2), f(f32:1.5, f32:2.0)))
     }"#,
     refused("cannot compute with [i64, f32]: both operands must be one numeric type");
@@ -5636,7 +5625,7 @@ run!(
     generic_function_element_with_an_unannotated_parameter,
     r#"{
         let tm = |x| 0;
-        array::map(['a: Number |x, y: 'a| -> 'a x + y, 2], tm)
+        array::map(['a: Number + Singleton |x, y: 'a| -> 'a x + y, 2], tm)
     }"#,
     prints("[i64:0, i64:0]");
     FuseExpect::None
@@ -5645,7 +5634,7 @@ run!(
 run!(
     generic_function_value_with_an_unannotated_parameter,
     r#"{
-        let f = 'a: Number |x, y: 'a| -> 'a x + y;
+        let f = 'a: Number + Singleton |x, y: 'a| -> 'a x + y;
         let tm = |x| 0;
         tm(f)
     }"#,
@@ -5662,7 +5651,7 @@ async fn generic_function_elements_elaborate_in_any_task_order() -> Result<()> {
     use graphix_package_core::testing::init;
     const RUNS: usize = 60;
     let code = arcstr::literal!(
-        "{ let m = array::map([1, 2], |x| 'a: Number |x: 'a, y: 'a| -> 'a x + y); \
+        "{ let m = array::map([1, 2], |x| 'a: Number + Singleton |x: 'a, y: 'a| -> 'a x + y); \
          array::len(m) }"
     );
     let (tx, _rx) = tokio::sync::mpsc::channel(1000);
@@ -5703,7 +5692,7 @@ async fn generic_function_elements_elaborate_in_any_task_order() -> Result<()> {
 // this comment, and pin calls at two types. probe:
 // design/review-2026-11-16/repro/tests-functions-b-array-of-two-fns-not-generic.sh
 // (tests-functions-b-02)
-const GENERIC_ADD: &str = "let g = 'q: Number |x, y: 'q| -> 'q x + y;";
+const GENERIC_ADD: &str = "let g = 'q: Number + Singleton |x, y: 'q| -> 'q x + y;";
 
 run!(
     generic_function_copies_in_an_array,
@@ -5739,7 +5728,7 @@ run!(
     generic_function_literals_in_an_array,
     refused("cannot compute with [u8, f64]: both operands must be one numeric type"),
     "/test.gx" => r#"
-        let fs = ['q: Number |x, y: 'q| -> 'q x + y, 'q: Number |x, y: 'q| -> 'q x * y];
+        let fs = ['q: Number + Singleton |x, y: 'q| -> 'q x + y, 'q: Number + Singleton |x, y: 'q| -> 'q x * y];
         let result = array::map(fs, |f| (f(u8:1, u8:2), f(1.5, 2.5)))
     "#
 ; FuseExpect::None);

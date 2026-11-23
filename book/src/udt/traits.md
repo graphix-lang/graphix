@@ -527,7 +527,7 @@ the container — return the same kind of collection with a new element
 — name the constructor and apply it:
 
 ```graphix,fragment
-let sqr = 'c: Collection, 'a: Number |c: 'c<'a>| -> 'c<'a> map(c, |n| n * n);
+let sqr = 'c: Collection, 'a: Number + Singleton |c: 'c<'a>| -> 'c<'a> map(c, |n| n * n);
 // Array<i64> [1, 4, 9]
 sqr([1, 2, 3]);
 // Map<string, i64>
@@ -538,7 +538,8 @@ sqr({"a" => 2, "b" => 3})
 element, so `-> 'c<'a>` returns the *same* container: an `Array` in
 yields an `Array` out, a `Map` a `Map` — checked, not widened to "some
 collection." The bound stays on `'c`, the constructor; the `<'a>` only
-marks where it is applied. `'a: Number` constrains the element. (There
+marks where it is applied. `'a: Number + Singleton` constrains the element
+to one numeric type, which `n * n` needs. (There
 is no `'c<'a>: Collection` quantifier form: the bound belongs on the
 constructor `'c`, not on the application.)
 

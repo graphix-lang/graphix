@@ -8,15 +8,15 @@ and the return type will be the same as the argument type. We can say
 that using type variables and constraints in our annotations.
 
 ```graphix
-〉let f = 'a: Number |x: 'a, y: 'a| -> 'a x + y
+〉let f = 'a: Number + Singleton |x: 'a, y: 'a| -> 'a x + y
 〉f
 -: fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a
-Abstract('a: Number |x: 'a, y: 'a| -> 'a x + y)
+Abstract('a: Number + Singleton |x: 'a, y: 'a| -> 'a x + y)
 ```
 
 In type annotations of lambda expressions,
 - The constraints come before the first `|`, separated by commas if there are
-  multiple constrained type variables. e.g. `'a: Number`
+  multiple constrained type variables. e.g. `'a: Number + Singleton`
 - Each argument may optionally have a `: Type` after it, and this will set it's
   type, e.g. `x: 'a`
 - After the second `|` you can optionally include an `-> Type` which will set
@@ -27,9 +27,16 @@ In type annotations of lambda expressions,
 When a function type is printed, the `fn<>` header lists the bounds on
 its type variables, `'a: Number + Singleton` here, and each variable
 stands by its name where it occurs. There is one variable, `'a`, for
-both argument types and the return type. The body's `+` added
-`Singleton` to the declared `Number`: arithmetic needs one numeric type,
-not a union of several like `[i64, f64]`.
+both argument types and the return type. Its bound says two things:
+`Number`, and `Singleton`, since arithmetic needs one numeric type, not
+a union of several like `[i64, f64]`. A variable's bound is exactly what
+you write for it, so both are written; with `'a: Number` alone the body
+is refused, and the message names what to write,
+
+```graphix
+〉let f2 = 'a: Number |x: 'a, y: 'a| -> 'a x + y
+error: ... the body needs 'a within Singleton, which the signature does not declare: write 'a: Number + Singleton
+```
 
 Two bounds say how many types a variable may stand for. `Singleton`
 says one type, not a union of several. `OneNumber` says at most one
@@ -79,8 +86,8 @@ against that promise, so a body that only works when the two are the
 same type is refused at the definition rather than at some later call,
 
 ```graphix
-〉let g = 'a: Number, 'b: Number |x: 'a, y: 'b| -> 'a x + y
-error: ... cannot compute with +: arithmetic is fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a — both operands must be one numeric type
+〉let g = 'a: Number + Singleton, 'b: Number + Singleton |x: 'a, y: 'b| -> 'a x + y
+error: ... ['a, 'b] must be one type, but the declared variable 'a may differ from its other members
 ```
 
 `+` takes two values of one type, so `x + y` needs `'a` and `'b` to be
@@ -106,15 +113,17 @@ error: ... 'a is declared but the signature does not hold it: write it on a para
 A written function type follows the same rule: `fn<'a: Number>(x: i64)
 -> i64` is refused too.
 
-A body may not ask more of a declared variable than its bound says: a
-call, an operator or a builtin that needs `Number`, `Ordered` or
-`Discernible` of a variable bounded by less is refused. `'c: Any |y: 'c|
--> 'c f(y)` over an `f` that needs `Number` is refused until the
-signature says `'c: Number`, and `'a: Any |x: 'a, y: 'a| x == y` until it
+A variable's bound is exactly what you write for it, `Any` where you
+write none, and a body may not ask more of the variable than that: a
+call, an operator or a builtin that needs `Number`, `Singleton`,
+`Ordered` or `Discernible` of a variable bounded by less is refused.
+`|y: 'c| -> 'c f(y)` over an `f` that needs `Number` is refused until
+the signature says `'c: Number`, and `|x: 'a, y: 'a| x == y` until it
 says `'a: Discernible`, which the message names. Nothing is added to the
-signature quietly. Arithmetic over a `Number`
-variable needs no `Singleton` written, and a variable only written bare
-(`|y: 'c| ..`) is inferred, taking the bound its body needs.
+signature quietly: whoever reads `'a` with no bound may pass anything
+for it. Where you want the check to work the bound out, leave the
+parameter untyped: `|x, y| x + y` is generic over one numeric type with
+nothing written.
 
 In the body a declared variable is one of the types its bound allows,
 whichever a call picks, and a `select` over a value of it tests those
@@ -189,7 +198,7 @@ passes: after `g(3)` a second call `g(1.5)` would make it an `[i64,
 f64]`, which `x + x` refuses:
 
 ```graphix
-let fs = array::map([1, 2], |r| 'a: Number |x: 'a| -> 'a x + x);
+let fs = array::map([1, 2], |r| 'a: Number + Singleton |x: 'a| -> 'a x + x);
 let g = fs[0]$;
 g(3)
 ```

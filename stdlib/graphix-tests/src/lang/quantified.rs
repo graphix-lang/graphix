@@ -1419,7 +1419,7 @@ run!(
 
 run!(
     a_body_needing_more_of_a_variable_than_its_bound_is_refused_at_an_operator,
-    refused("type mismatch Number does not contain 'a"),
+    refused("the body needs 'a within Number + Singleton, which the signature does not declare: write 'a: Number + Singleton"),
     "/test.gx" => r#"
         let f = 'a: Any |x: 'a, y: 'a| -> 'a x + y;
         let result = f(1, 2)
@@ -1463,10 +1463,19 @@ run!(
 );
 
 run!(
-    arithmetic_over_a_number_variable_needs_no_singleton_written,
-    is(Value::I64(3)),
+    arithmetic_over_a_number_variable_needs_singleton_written,
+    refused("the body needs 'a within Singleton, which the signature does not declare: write 'a: Number + Singleton"),
     "/test.gx" => r#"
         let f = 'a: Number |x: 'a, y: 'a| -> 'a x + y;
+        let result = f(1, 2)
+    "#
+);
+
+run!(
+    arithmetic_over_a_variable_declared_one_number,
+    is(Value::I64(3)),
+    "/test.gx" => r#"
+        let f = 'a: Number + Singleton |x: 'a, y: 'a| -> 'a x + y;
         let result = f(1, 2)
     "#
 );
@@ -1481,8 +1490,8 @@ run!(
 );
 
 run!(
-    a_variable_nothing_declares_takes_the_bound_its_body_needs,
-    is(Value::I64(1)),
+    a_variable_written_bare_takes_no_bound_from_its_body,
+    refused("the body needs 'c within Number, which the signature does not declare: write 'c: Number"),
     "/test.gx" => r#"
         let f = 'a: Number |x: 'a| -> 'a x;
         let g = |y: 'c| -> 'c f(y);
@@ -1852,8 +1861,8 @@ run!(
 
 run!(
     an_operand_in_a_declared_variable_prints_its_name,
-    "{ let m = 'b: Number |f: fn(x: i64) -> 'b| -> 'b f(1) + 1; m(|x| x) }",
-    refused("type mismatch i64 does not contain 'b");
+    "{ let m = 'b: Number + Singleton |f: fn(x: i64) -> 'b| -> 'b f(1) + 1; m(|x| x) }",
+    refused("['b, i64] must be one type, but the declared variable 'b may differ from its other members");
     FuseExpect::None
 );
 

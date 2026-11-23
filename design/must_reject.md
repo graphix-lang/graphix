@@ -136,13 +136,16 @@ only through the constraint (`'a: Number` against `1` is still refused,
 but keep the first cut to unconstrained variables). Built: a first
 statement adding a literal to a parameter `x: 'a` or, in turn,
 binding it under a `_` annotation, or adding it to itself (`x + x`) where
-its header bounds it by `Any`, or calling a
+its header bounds it by `Any` or writes it bare, or calling a
 parameter `f: fn(x: 'a) -> ..` with one (`'a` not `f`'s own
 quantifier: each call picks that anew), right site the definition. The
-third's rule is that a body adds no bound to a declared variable
-(`tvar_constraints.md`, "A body adds no bound to a declared variable"):
-it refuses "the body needs 'a within Number, which the signature does not
-declare" (`Family::refuses_with`). Open: equating two declared variables;
+first refuses "['a, i64] must be one type, but the declared variable 'a
+may differ from its other members": a call picks `'a`, so it is `i64` at
+some calls only. The third's rule is that a declared variable's bound is
+exactly what is written for it, `Any` where nothing is
+(`tvar_constraints.md`, "A declared variable"): it refuses "the body
+needs 'a within Number + Singleton, which the signature does not declare"
+(`Family::refuses_with`). Open: equating two declared variables;
 writing a parameter `x: 'a` to an outer `let y = never()` (`y <- x`).
 
 **3. Call conflicts.** Site: a call argument. (a) The callee's resolved

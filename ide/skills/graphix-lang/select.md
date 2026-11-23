@@ -202,7 +202,7 @@ ok 'a: [{a: i64, b: string}, i64] |x: 'a| -> i64 select x { {a, ..} => a, i64 as
 no "pattern _ will never match" 'a: [{a: i64, b: string}, i64] |x: 'a| select x { {a, ..} => a, i64 as n => n, _ => 0 }
 no "missing match cases: nothing matches 'a" 'a: [{a: i64, b: string}, i64] |x: 'a| select x { {a, ..} => a }
 ok |x: ['a, null]| -> 'a select x { null => never(), v => v }
-no "i64 does not contain 'a" 'a: [{a: i64, b: string}, i64] |x: 'a| select x { {a, ..} => a + 1, n => n + 1 }
+no "['a, i64] must be one type, but the declared variable 'a may differ" 'a: [{a: i64, b: string}, i64] |x: 'a| select x { {a, ..} => a + 1, n => n + 1 }
 ok 'a: [{a: i64, b: string}, i64] |x: 'a| select x { {a, ..} => a + 1, i64 as n => n + 1 }
 no "Number does not contain Any" |x: 'a| select x { (a, b) => a + b, _ => 1 }
 no "missing match cases: nothing matches 'a" |x: 'a| select x { (a, b) => 0 }

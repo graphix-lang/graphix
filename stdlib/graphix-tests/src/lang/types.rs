@@ -65,7 +65,7 @@ run!(lambda_constraint, LAMBDA_CONSTRAINT, refused("type mismatch Number does no
 
 const EXPLICIT_TYPE_VARS0: &str = r#"
 {
-  let f = 'a: Number |x: 'a, y: 'a| -> 'a x + y;
+  let f = 'a: Number + Singleton |x: 'a, y: 'a| -> 'a x + y;
   f("foo", "bar")
 }
 "#;
@@ -74,7 +74,7 @@ run!(explicit_type_vars0, EXPLICIT_TYPE_VARS0, refused("does not contain string"
 
 const EXPLICIT_TYPE_VARS1: &str = r#"
 {
-  let f = 'a: Number |x: 'a, y: 'a| -> 'a x + y;
+  let f = 'a: Number + Singleton |x: 'a, y: 'a| -> 'a x + y;
   f(u32:1, i64:2)
 }
 "#;
@@ -83,7 +83,7 @@ run!(explicit_type_vars1, EXPLICIT_TYPE_VARS1, refused("cannot compute with [u32
 
 const EXPLICIT_TYPE_VARS2: &str = r#"
 {
-  let f = 'a: Number |x: 'a, y: 'a| -> 'a x + y;
+  let f = 'a: Number + Singleton |x: 'a, y: 'a| -> 'a x + y;
   select f(1, 1) {
     i64 as t => t
   }
@@ -94,7 +94,7 @@ run!(explicit_type_vars2, EXPLICIT_TYPE_VARS2, is(Value::I64(2)); FuseExpect::Ji
 
 const EXPLICIT_TYPE_VARS3: &str = r#"
 {
-  let f = 'a: Number, 'b: Number |x: 'a, y: 'b| -> 'a x + y;
+  let f = 'a: Number + Singleton, 'b: Number + Singleton |x: 'a, y: 'b| -> 'a x + y;
   select f(u32:1, u64:1) {
     [u32, u64] as t => t
   }
@@ -2139,7 +2139,7 @@ run!(
 );
 run!(
     a_declared_variable_in_a_callbacks_result_computes_at_each_calls_type,
-    "{ let m = 'b: Number |s: i64, f: fn(x: i64) -> 'b| -> 'b { let h = f(s); h + h }; \
+    "{ let m = 'b: Number + Singleton |s: i64, f: fn(x: i64) -> 'b| -> 'b { let h = f(s); h + h }; \
      let a: f64 = m(3, |x| 1.5); (a, m(3, |x| x)) }",
     prints("[f64:3., i64:6]")
 );
@@ -3123,7 +3123,7 @@ const NO_ERROR_OPEN_MEMBER_DECLARED_NO_ERROR: &str = r#"{
   f(1)
 }"#;
 const NO_ERROR_OPEN_MEMBER_TOLD: &str = r#"{
-  let f = |a: 'x| -> i64 { let r: Result<[i64, 'x], `E> = a; select r { error as e => 0, v => 1 } };
+  let f = 'x: NoError |a: 'x| -> i64 { let r: Result<[i64, 'x], `E> = a; select r { error as e => 0, v => 1 } };
   f(1)
 }"#;
 
@@ -3232,19 +3232,19 @@ mod unsound_acceptances {
     }
 }
 
-// A declared variable a type-directed read's result is takes the read's
+// A declared variable a type-directed read's result is declares the read's
 // `Concrete`: a call that leaves it undecided is refused, as the read's
-// own would be, wherever the value goes or if it goes nowhere. One
-// declared without the bound is refused, naming it.
+// own would be, wherever the value goes or if it goes nowhere. One written
+// bare or declared without the bound is refused, naming it.
 #[tokio::test(flavor = "current_thread")]
 async fn a_declared_result_a_typed_read_makes_must_be_decided() -> Result<()> {
     for src in [
         r#"{
-  let rd = |s: string| -> 'a json::read(s)$;
+  let rd = 'a: Concrete |s: string| -> 'a json::read(s)$;
   let g = |s| { let v = rd(s); [v] };
   g("1")
 }"#,
-        r#"{ let rd = |s: string| -> 'a json::read(s)$; rd("1"); 0 }"#,
+        r#"{ let rd = 'a: Concrete |s: string| -> 'a json::read(s)$; rd("1"); 0 }"#,
     ] {
         let msg = match eval_modes(src, crate::TEST_REGISTER).await? {
             Err(msg) => msg,
@@ -3252,23 +3252,30 @@ async fn a_declared_result_a_typed_read_makes_must_be_decided() -> Result<()> {
         };
         assert!(msg.contains("the type 'a must be known here"), "{src}: {msg}");
     }
-    let src = "{ let rd = 'a: Any |s: string| -> 'a json::read(s)$; 0 }";
-    let msg = match eval_modes(src, crate::TEST_REGISTER).await? {
-        Err(msg) => msg,
-        Ok(v) => panic!("must be refused: {src} => {v:?}"),
-    };
-    assert!(msg.contains("add Concrete to the bound of 'a"), "{msg}");
+    for src in [
+        "{ let rd = 'a: Any |s: string| -> 'a json::read(s)$; 0 }",
+        "{ let rd = |s: string| -> 'a json::read(s)$; 0 }",
+    ] {
+        let msg = match eval_modes(src, crate::TEST_REGISTER).await? {
+            Err(msg) => msg,
+            Ok(v) => panic!("must be refused: {src} => {v:?}"),
+        };
+        assert!(msg.contains("add Concrete to the bound of 'a"), "{src}: {msg}");
+    }
     for (src, expected) in [
         (
             r#"{
-  let rd = |s: string| -> 'a json::read(s)$;
+  let rd = 'a: Concrete |s: string| -> 'a json::read(s)$;
   let g = |s| { let v = rd(s); [v] };
   let w: Array<i64> = g("1");
   w[0]$
 }"#,
             1,
         ),
-        (r#"{ let rd = |s: string| -> 'a str::parse(s)$; str::len(rd("12345")) }"#, 5),
+        (
+            r#"{ let rd = 'a: Concrete |s: string| -> 'a str::parse(s)$; str::len(rd("12345")) }"#,
+            5,
+        ),
         (
             r#"{ let rd = 'a: Concrete |s: string| -> 'a str::parse(s)$; let n: i64 = rd("7"); n }"#,
             7,
@@ -3296,7 +3303,7 @@ run!(
     refused("but implemented fn<'a: Number + Singleton>(x: 'a: unbound within Number & Singleton, y: 'a: unbound within Number & Singleton) -> 'a: unbound within Number & Singleton:"),
     "/test.gx" => "mod m; let result = 0",
     "/test/m.gxi" => "val f: fn(x: string) -> bool;",
-    "/test/m.gx" => "let f = 'a: Number |x: 'a, y: 'a| -> 'a x + y"
+    "/test/m.gx" => "let f = 'a: Number + Singleton |x: 'a, y: 'a| -> 'a x + y"
 );
 
 run!(
@@ -3311,7 +3318,7 @@ run!(
 // its variable prints where it occurs.
 run!(
     one_read_of_a_generic_function_prints_no_header,
-    "{ let f = 'a: Number |x: 'a, y: 'a| -> 'a x + y; let g: fn(x: string) -> bool = f; 0 }",
+    "{ let f = 'a: Number + Singleton |x: 'a, y: 'a| -> 'a x + y; let g: fn(x: string) -> bool = f; 0 }",
     refused("type mismatch Number does not contain string")
 );
 
@@ -3631,7 +3638,7 @@ run!(one_number_bound, ONE_NUMBER, |v: Result<&Value>| match v {
 // Arithmetic is `fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a` over
 // exactly one type: a type holding two numeric types is refused even
 // against itself, in a generic definition where it is written, called or
-// not.
+// not, and a declared variable computes only where it declares both.
 #[tokio::test(flavor = "current_thread")]
 async fn arithmetic_operands_are_one_type() -> Result<()> {
     for src in [
@@ -3642,6 +3649,7 @@ async fn arithmetic_operands_are_one_type() -> Result<()> {
         "{ let f = |a: Number, b: Number| a + b; 0 }",
         "{ let f = |a: Number, b| a * b; 0 }",
         "{ let t: (Number, Number) = (1, 2.5); t.0 % t.1 }",
+        "{ let f = 'a: Number |a: 'a, b: 'a| a + b; 0 }",
     ] {
         match eval_modes(src, crate::TEST_REGISTER).await? {
             Err(msg) => {
@@ -3653,9 +3661,103 @@ async fn arithmetic_operands_are_one_type() -> Result<()> {
             Ok(v) => panic!("must be refused: {src} => {v:?}"),
         }
     }
-    let src = "{ let f = 'a: Number |a: 'a, b: 'a| a + b; f(1, 2) }";
+    let src = "{ let f = 'a: Number + Singleton |a: 'a, b: 'a| a + b; f(1, 2) }";
     let v = eval_modes(src, crate::TEST_REGISTER).await?.map_err(anyhow::Error::msg)?;
     assert_eq!(v, Value::I64(3), "{src}");
+    Ok(())
+}
+
+// A declared variable's bound is what its signature writes, `Any` where it
+// writes none: a body that needs more of it is refused where it is
+// written, naming what to write, and checks once that is written.
+#[tokio::test(flavor = "current_thread")]
+async fn a_declared_variable_is_exactly_its_written_bound() -> Result<()> {
+    for (src, says) in [
+        (
+            "{ let f = |y: 'a| y + y; f(1) }",
+            "the body needs 'a within Number + Singleton, which the signature does not \
+             declare: write 'a: Number + Singleton",
+        ),
+        ("{ let f = |x: 'a, y: 'a| x < y; f(1, 2) }", "add Ordered to the bound of 'a"),
+        (
+            "{ let f = |x: 'a, y: 'a| x == y; f(1, 2) }",
+            "add Discernible to the bound of 'a",
+        ),
+        (
+            "{ let g = |x: i64| x; let f = |y: 'c| g(y); f(1) }",
+            "the body needs 'c within i64, which the signature does not declare: write \
+             'c: i64",
+        ),
+        (
+            "{ let g = |x: [i64, null]| x; let f = |y: 'c| g(y); f(1) }",
+            "the body needs 'c within [i64, null], which the signature does not declare: \
+             write 'c: [i64, null]",
+        ),
+        (
+            "{ let g = 'a: Number |x: 'a| -> 'a x; let f = |y: 'c| -> 'c g(y); f(1) }",
+            "the body needs 'c within Number, which the signature does not declare: \
+             write 'c: Number",
+        ),
+        (
+            "{ let f = |x: 'a| -> i64 x; f(1) }",
+            "the body needs 'a within i64, which the signature does not declare: write \
+             'a: i64",
+        ),
+    ] {
+        match eval_modes(src, crate::TEST_REGISTER).await? {
+            Err(msg) => assert!(msg.contains(says), "{src}: {msg}"),
+            Ok(v) => panic!("must be refused: {src} => {v:?}"),
+        }
+    }
+    for (src, expected) in [
+        ("{ let f = 'a: Number + Singleton |y: 'a| y + y; f(1) }", Value::I64(2)),
+        ("{ let f = 'a: Ordered |x: 'a, y: 'a| x < y; f(1, 2) }", Value::Bool(true)),
+        (
+            "{ let f = 'a: Discernible |x: 'a, y: 'a| x == y; f(1, 2) }",
+            Value::Bool(false),
+        ),
+        ("{ let g = |x: i64| x; let f = 'c: i64 |y: 'c| g(y); f(1) }", Value::I64(1)),
+        ("{ let g = |x: i64| x; let f = |y| g(y); f(1) }", Value::I64(1)),
+        (
+            "{ let g = 'a: Number |x: 'a| -> 'a x; let f = 'c: Int |y: 'c| -> 'c g(y); f(1) }",
+            Value::I64(1),
+        ),
+        ("{ let f = |x, y| x + y; f(1, 2) }", Value::I64(3)),
+    ] {
+        let v =
+            eval_modes(src, crate::TEST_REGISTER).await?.map_err(anyhow::Error::msg)?;
+        assert_eq!(v, expected, "{src}");
+    }
+    Ok(())
+}
+
+// A body asks no more of a declared variable inside data than its bound
+// says: a predicate over a tuple, a struct or an array that holds it is
+// refused where it is written, naming the bound.
+#[tokio::test(flavor = "current_thread")]
+async fn a_predicate_over_data_holding_a_declared_variable_is_refused() -> Result<()> {
+    for src in [
+        "{ let f = 'a: Any |x: 'a| uniq((x, 1)); f(1) }",
+        "{ let f = 'a: Any |x: 'a| uniq({a: x}); f(1) }",
+        "{ let f = 'a: Any |x: Array<'a>| uniq(x); f([1]) }",
+        "{ let f = |x: 'a, y: 'a| (x, 1) == (y, 1); f(1, 2) }",
+        "{ let g = |o: Option<'a>| o == o; g(2) }",
+    ] {
+        match eval_modes(src, crate::TEST_REGISTER).await? {
+            Err(msg) => assert!(
+                msg.contains("add Discernible to the bound of 'a"),
+                "{src}: {msg}"
+            ),
+            Ok(v) => panic!("must be refused: {src} => {v:?}"),
+        }
+    }
+    for src in [
+        "{ let f = 'a: Discernible |x: 'a| uniq((x, 1)); f(1) }",
+        "{ let f = 'a: Discernible |x: Array<'a>| uniq(x); f([1]) }",
+        "{ let f = 'a: Discernible |x: 'a, y: 'a| (x, 1) == (y, 1); f(1, 2) }",
+    ] {
+        eval_modes(src, crate::TEST_REGISTER).await?.map_err(anyhow::Error::msg)?;
+    }
     Ok(())
 }
 
@@ -3664,7 +3766,7 @@ async fn arithmetic_operands_are_one_type() -> Result<()> {
 const ARITH_OVER_RAISING_ARM: &str = r#"{
   let go = 2;
   let r = select go { 1 => error(`Oops)?, _ => go };
-  let f = 'a: Number |a: 'a, b: 'a| -> 'a a * b;
+  let f = 'a: Number + Singleton |a: 'a, b: 'a| -> 'a a * b;
   [r * 100, f(3, 4), -r]
 }"#;
 
@@ -3808,7 +3910,7 @@ run!(
 
 const DISCERNIBLE_ACCEPTS: &str = r#"{
   let f = |x, y| x == y;
-  let g = |o: Option<'a>| o == o;
+  let g = 'a: Discernible |o: Option<'a>| o == o;
   let h = |c, a: i64| { let v = select c { true => a, false => 0 }; v == v };
   let k = 'a: Discernible |x: 'a| x;
   [f(1, 1), g(null), g(2), h(true, 3), k("x") == "x", array::sort([3, 1]) == [1, 3]]
@@ -3847,8 +3949,8 @@ run!(
 );
 
 // Under `Singleton` the members of a union must be one type at each call:
-// two open members given two numeric types are refused, and two declared
-// variables are judged where a call decides them.
+// two open members given two numeric types are refused there, and two
+// declared variables where they are written, as a call picks each.
 #[tokio::test(flavor = "current_thread")]
 async fn singleton_open_members_are_one_type_at_each_call() -> Result<()> {
     for (src, says) in [
@@ -3883,7 +3985,8 @@ async fn singleton_open_members_are_one_type_at_each_call() -> Result<()> {
               };
               f(true, 1, 2.5)
             }"#,
-            "cannot compute with [i64, f64]",
+            "['a, 'b] must be one type, but the declared variable 'a may differ from its \
+             other members",
         ),
     ] {
         match eval_modes(src, crate::TEST_REGISTER).await? {
@@ -3897,15 +4000,16 @@ async fn singleton_open_members_are_one_type_at_each_call() -> Result<()> {
 }
 
 run!(
-    singleton_declared_members_one_type_at_the_call,
+    singleton_over_two_declared_variables_is_refused_where_written,
     r#"{
-  let f = 'a: Number, 'b: Number |c, a: 'a, b: 'b| {
+  let f = 'a: Number + Singleton, 'b: Number + Singleton |c, a: 'a, b: 'b| {
     let s = select c { true => a, false => b };
     s + s
   };
   (f(true, 1, 2), f(false, 1.5, 2.5))
 }"#,
-    prints("[i64:2, f64:5.]")
+    refused("['a, 'b] must be one type, but the declared variable 'a may differ from its other members");
+    FuseExpect::None
 );
 
 const SINGLETON_MERGED_MEMBERS_RUN: &str = r#"{
@@ -7878,7 +7982,7 @@ run!(
 
 run!(
     a_written_definition_with_its_signature_written,
-    "{ let t = 'a: Number |x: 'a, y: 'a| -> 'a x + y; let r = &mut t; t(1, 2) }",
+    "{ let t = 'a: Number + Singleton |x: 'a, y: 'a| -> 'a x + y; let r = &mut t; t(1, 2) }",
     |v: Result<&Value>| matches!(v, Ok(Value::I64(3)));
     FuseExpect::None
 );
@@ -11858,9 +11962,9 @@ run!(
     select_of_bounded_twins_of_a_signature_union,
     r#"{
   type P<'p, 'q> = [Array<'p>, Array<'q>];
-  let f = 'a: Number |y: 'a, x: P<'a, 'b>| (x, y + y);
+  let f = 'a: Number + Singleton |y: 'a, x: P<'a, 'b>| (x, y + y);
   let c = false;
-  let g = select c { true => f, false => 'a: Number |y: 'a, x: P<'a, 'b>| (x, y + y + y) };
+  let g = select c { true => f, false => 'a: Number + Singleton |y: 'a, x: P<'a, 'b>| (x, y + y + y) };
   g(1, ["s"]).1
 }"#,
     prints("i64:3");
@@ -11870,16 +11974,16 @@ run!(
     select_of_bounded_twins_of_a_signature_union_holds_the_bound,
     r#"{
   type P<'p, 'q> = [Array<'p>, Array<'q>];
-  let f = 'a: Number |y: 'a, x: P<'a, 'b>| (x, y + y);
+  let f = 'a: Number + Singleton |y: 'a, x: P<'a, 'b>| (x, y + y);
   let c = false;
-  let g = select c { true => f, false => 'a: Number |y: 'a, x: P<'a, 'b>| (x, y + y + y) };
+  let g = select c { true => f, false => 'a: Number + Singleton |y: 'a, x: P<'a, 'b>| (x, y + y + y) };
   g("t", ["s"]).1
 }"#,
     refused("type mismatch Number does not contain string");
     FuseExpect::None
 );
 run!(
-    select_of_twins_of_a_signature_union_one_body_bounds_a_variable,
+    select_of_twins_of_a_signature_union_one_body_computing_with_a_bare_variable_refused,
     r#"{
   type P<'p, 'q> = [Array<'p>, Array<'q>];
   let f = |y: 'a, x: P<'a, 'b>| (x, y + y);
@@ -11887,26 +11991,14 @@ run!(
   let g = select c { true => f, false => |y: 'a, x: P<'a, 'b>| (x, y) };
   (g(1, ["s"]).1, f(2.5, [1]).1)
 }"#,
-    prints("[i64:1, f64:5.]");
-    FuseExpect::Jit
-);
-run!(
-    select_of_twins_of_a_signature_union_one_body_bounds_a_variable_holds_the_bound,
-    r#"{
-  type P<'p, 'q> = [Array<'p>, Array<'q>];
-  let f = |y: 'a, x: P<'a, 'b>| (x, y + y);
-  let c = false;
-  let g = select c { true => f, false => |y: 'a, x: P<'a, 'b>| (x, y) };
-  g("t", ["s"]).1
-}"#,
-    refused("type mismatch Number does not contain string");
+    refused("the body needs 'a within Number + Singleton, which the signature does not declare: write 'a: Number + Singleton");
     FuseExpect::None
 );
 run!(
     select_of_twins_of_a_signature_union_declared_with_two_bounds,
     r#"{
   type P<'p, 'q> = [Array<'p>, Array<'q>];
-  let f = 'a: Number |y: 'a, x: P<'a, 'b>| (x, y + y);
+  let f = 'a: Number + Singleton |y: 'a, x: P<'a, 'b>| (x, y + y);
   let c = false;
   let g = select c { true => f, false => 'a: Ordered |y: 'a, x: P<'a, 'b>| (x, y) };
   g(1, ["s"]).1
@@ -11918,7 +12010,7 @@ run!(
     select_of_twins_of_a_signature_union_declared_with_apart_bounds_is_refused_at_the_call,
     r#"{
   type P<'p, 'q> = [Array<'p>, Array<'q>];
-  let f = 'a: Int |y: 'a, x: P<'a, 'b>| (x, y + y);
+  let f = 'a: Int + Singleton |y: 'a, x: P<'a, 'b>| (x, y + y);
   let c = false;
   let g = select c { true => f, false => 'a: Float |y: 'a, x: P<'a, 'b>| (x, y) };
   g(1, ["s"]).1
@@ -13679,7 +13771,7 @@ run!(union_bound_under_a_constructor_names_the_binding, r#"{
 run!(
     primitive_union_holds_bounded_cell,
     r#"{
-    let f = 'a: Number |x: 'a| -> 'a x + x;
+    let f = 'a: Number + Singleton |x: 'a| -> 'a x + x;
     let y = never();
     let r: [i64, null] = f(y);
     let z = never();
@@ -13692,7 +13784,7 @@ run!(
 );
 
 run!(primitive_union_no_bit_holds_bound, r#"{
-    let f = 'a: Number |x: 'a| -> 'a x + x;
+    let f = 'a: Number + Singleton |x: 'a| -> 'a x + x;
     let y = never();
     let r: [string, null] = f(y);
     y <- 3;
@@ -13941,18 +14033,13 @@ run!(instance_expands_caller_recursive_typedef, r#"{
 
 // A declared variable beside a known member is named as the one that may
 // differ.
-run!(singleton_over_a_declared_variable_beside_a_member_is_judged_per_call, r#"{
-  let f = 'a: Number |x: 'a, b: bool| { let v = select b { true => x, false => 1 }; v * v };
-  f(1, true)
-}"#, prints("i64:1"); FuseExpect::Jit);
-
 run!(
-    singleton_over_a_declared_variable_beside_a_member_refuses_another_number_at_the_call,
+    singleton_over_a_declared_variable_beside_a_member_is_refused_where_written,
     r#"{
-  let f = 'a: Number |x: 'a, b: bool| { let v = select b { true => x, false => 1 }; v * v };
-  f(1.5, true)
+  let f = 'a: Number + Singleton |x: 'a, b: bool| { let v = select b { true => x, false => 1 }; v * v };
+  f(1, true)
 }"#,
-    refused("cannot compute with [i64, f64]: both operands must be one numeric type");
+    refused("['a, i64] must be one type, but the declared variable 'a may differ from its other members");
     FuseExpect::None
 );
 
@@ -16617,13 +16704,14 @@ run!(
     FuseExpect::None
 );
 run!(
-    bare_variable_under_two_unions_of_a_callees_bound_takes_the_bound,
+    bare_variable_under_two_unions_of_a_callees_bound_takes_no_bound,
     r#"{
   let g = 'b: (['c, null], ['c, i64]), 'c: [string, null, i64] |s: 'c, x: 'b| -> 'b x;
   let f = |u, w: (['a, null], ['a, null])| g(u, w);
   f(1, (2, 2))
 }"#,
-    prints("[i64:2, i64:2]")
+    refused("the body needs 'a within [i64, null, string], which the signature does not declare: write 'a: [i64, null, string]");
+    FuseExpect::None
 );
 run!(
     declared_variable_under_two_unions_of_a_callees_bound_declared_within_its_bound,

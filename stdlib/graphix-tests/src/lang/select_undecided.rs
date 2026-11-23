@@ -2761,7 +2761,7 @@ run!(slice_element_binds_a_declared_variable_written_later_refused, r#"{
         z
     };
     f("s")
-}"#, refused("type mismatch i64 does not contain 'a"); FuseExpect::None);
+}"#, refused("['a, i64] must be one type, but the declared variable 'a may differ from its other members"); FuseExpect::None);
 
 // An element that only takes apart a type written later is typed by its
 // body, and judged the same way.
