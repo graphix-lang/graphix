@@ -2687,8 +2687,10 @@ run!(
     "/test/inner.gx" => "use super::other::T; let v: T = 1"
 );
 
-// An interface's types go ahead of its modules: a type there names its
-// submodule's type by path, never through a `use`.
+// An interface's type names its submodule's type by path, or through a
+// `use` where the interface declares the module above the type: the
+// order is the interface's own, though its types compile ahead of its
+// modules.
 run!(
     interface_type_names_its_submodules_type_by_path,
     is(Value::I64(1)),
@@ -2702,11 +2704,35 @@ run!(
 );
 
 run!(
-    interface_type_through_a_use_of_its_submodule_refused,
-    refused("StyleSheet names what a `use` of this module imports from module `/test/m/style`, which a later statement declares: declare the module before the name's first use, or in a type definition write the name by its path"),
-    "/test.gx" => "mod m; let result = 0",
+    interface_type_through_a_use_of_its_submodule,
+    is(Value::I64(1)),
+    "/test.gx" => "mod m; let t: m::Theme = `Custom({c: 1}); \
+        let result = select t { `Custom(s) => s.c, `Light => 0 }",
     "/test/m.gxi" => "type Color = i64; mod style; use self::style::StyleSheet; \
         type Theme = [`Light, `Custom(StyleSheet)]",
+    "/test/m.gx" => "",
+    "/test/m/style.gxi" => "use super::Color; type StyleSheet = {c: Color}",
+    "/test/m/style.gx" => ""
+);
+
+run!(
+    interface_type_through_a_glob_of_its_submodule,
+    is(Value::I64(1)),
+    "/test.gx" => "mod m; let t: m::Theme = `Custom({c: 1}); \
+        let result = select t { `Custom(s) => s.c, `Light => 0 }",
+    "/test/m.gxi" => "type Color = i64; mod style; use self::style::*; \
+        type Theme = [`Light, `Custom(StyleSheet)]",
+    "/test/m.gx" => "",
+    "/test/m/style.gxi" => "use super::Color; type StyleSheet = {c: Color}",
+    "/test/m/style.gx" => ""
+);
+
+run!(
+    interface_type_above_the_submodule_it_imports_from_refused,
+    refused("StyleSheet names what a `use` of this module imports from module `/test/m/style`, which a later statement declares: declare the module before the name's first use, or in a type definition write the name by its path"),
+    "/test.gx" => "mod m; let result = 0",
+    "/test/m.gxi" => "type Color = i64; use self::style::StyleSheet; \
+        type Theme = [`Light, `Custom(StyleSheet)]; mod style",
     "/test/m.gx" => "",
     "/test/m/style.gxi" => "use super::Color; type StyleSheet = {c: Color}",
     "/test/m/style.gx" => ""

@@ -879,7 +879,17 @@ enum Unseen {
 pub struct Unsettled {
     pub uses: SmallVec<[(usize, CompactString); 8]>,
     pub globs: SmallVec<[(usize, Option<Glob>); 2]>,
-    pub modules: SmallVec<[(usize, CompactString); 8]>,
+    pub modules: SmallVec<[LaterModule; 8]>,
+}
+
+/// A module a list declares: its statement's index there, and where the
+/// statement is written.
+#[derive(Debug)]
+pub struct LaterModule {
+    pub stmt: usize,
+    pub name: CompactString,
+    pub pos: SourcePosition,
+    pub ori: Arc<Origin>,
 }
 
 impl Unsettled {
@@ -895,11 +905,33 @@ pub type OpenList = (Arc<Unsettled>, usize);
 /// The refusal of a name read through a level whose list may still
 /// change it ([`Env::unsettled`]).
 #[derive(Debug)]
-pub struct ChangesLater(CompactString);
+pub struct ChangesLater {
+    told: CompactString,
+    /// Where the module the name waits for is declared, where that is
+    /// what the list has still to compile.
+    module: Option<(Arc<Origin>, SourcePosition)>,
+}
+
+impl ChangesLater {
+    fn by_use(told: CompactString) -> Self {
+        Self { told, module: None }
+    }
+
+    fn by_module(told: CompactString, m: &LaterModule) -> Self {
+        Self { told, module: Some((m.ori.clone(), m.pos)) }
+    }
+
+    /// Whether the module the name waits for is declared above `pos` in
+    /// the text of `ori`. A list compiles an interface's types ahead of
+    /// its modules, so one compiles after a name written below it.
+    pub fn written_above(&self, ori: &Origin, pos: SourcePosition) -> bool {
+        self.module.as_ref().is_some_and(|(o, p)| **o == *ori && *p < pos)
+    }
+}
 
 impl fmt::Display for ChangesLater {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
+        f.write_str(&self.told)
     }
 }
 
@@ -2101,7 +2133,7 @@ impl Env {
         if let Some((l, from)) = later
             && l.uses.iter().any(|(i, k)| *i >= from && k.as_str() == n)
         {
-            return Err(anyhow!(ChangesLater(format_compact!(
+            return Err(anyhow!(ChangesLater::by_use(format_compact!(
                 "{n} names what a later `use` of this {kind} imports: write the \
                  `use` before the name's first use",
                 kind = kind()
@@ -2129,16 +2161,17 @@ impl Env {
                 }
                 if settle
                     && !e.keyword_anchored
-                    && let Some(m) = self.unsettled_module(&e.scope)
+                    && let Some((m, declared)) = self.unsettled_module(&e.scope)
                 {
-                    return Err(anyhow!(ChangesLater(format_compact!(
+                    let told = format_compact!(
                         "{n} names what a `use` of this {kind} imports from module \
                          {}, which a later statement declares: declare the module \
                          before the name's first use, or in a type definition write \
                          the name by its path",
                         written_level(m),
                         kind = kind()
-                    ))));
+                    );
+                    return Err(anyhow!(ChangesLater::by_module(told, declared)));
                 }
                 // A kind-miss on an import falls through to globs
                 // (`use gui::text::{self, *}`).
@@ -2177,21 +2210,22 @@ impl Env {
         if let Some((l, from)) = later
             && l.globs.iter().any(|(i, _)| *i >= from)
         {
-            return Err(anyhow!(ChangesLater(format_compact!(
+            return Err(anyhow!(ChangesLater::by_use(format_compact!(
                 "{n} may name what a later glob `use` of this {kind} imports: write \
                  the `use` before the name's first use",
                 kind = kind()
             ))));
         }
-        if let Some(m) = later_module {
-            return Err(anyhow!(ChangesLater(format_compact!(
+        if let Some((m, declared)) = later_module {
+            let told = format_compact!(
                 "{n} may name what a glob `use` of this {kind} imports from module \
                  {}, which a later statement declares: declare the module before \
                  the name's first use, or in a type definition write the name by \
                  its path",
                 written_level(m),
                 kind = kind()
-            ))));
+            );
+            return Err(anyhow!(ChangesLater::by_module(told, declared)));
         }
         Ok(None)
     }
@@ -2201,12 +2235,12 @@ impl Env {
     pub fn list_declares_module(&self, level: &str, name: &str) -> bool {
         self.unsettled
             .get(level)
-            .is_some_and(|(l, _)| l.modules.iter().any(|(_, k)| k.as_str() == name))
+            .is_some_and(|(l, _)| l.modules.iter().any(|m| m.name.as_str() == name))
     }
 
     /// The module at or around `m` that a list being compiled declares
     /// in a statement it has not reached: nothing it holds is known yet.
-    fn unsettled_module<'a>(&self, m: &'a str) -> Option<&'a str> {
+    fn unsettled_module<'a>(&self, m: &'a str) -> Option<(&'a str, &LaterModule)> {
         if self.unsettled.is_empty() && self.lexical.open.is_empty() {
             return None;
         }
@@ -2214,10 +2248,11 @@ impl Env {
         while at != "/" {
             let parent = Path::dirname(at).unwrap_or("/");
             let name = Path::basename(at)?;
-            if let Some((l, from)) = self.to_come(parent)
-                && l.modules.iter().any(|(i, k)| i >= from && k.as_str() == name)
-            {
-                return Some(at);
+            let declared = self.to_come(parent).and_then(|(l, from)| {
+                l.modules.iter().find(|m| m.stmt >= *from && m.name.as_str() == name)
+            });
+            if let Some(declared) = declared {
+                return Some((at, declared));
             }
             at = parent;
         }

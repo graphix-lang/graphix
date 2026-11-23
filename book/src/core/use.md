@@ -146,9 +146,7 @@ interface follows the rule over its own items.
 The module a `use` imports from is declared above the name as well:
 `use self::sub::T` may stand above `mod sub;`, but `T` is written below
 both. A type definition may instead name a module declared further down
-by its path, `type Op = {t: sub::T}`. An interface's types are declared
-ahead of its modules, so a type there always names a submodule's type by
-path.
+by its path, `type Op = {t: sub::T}`.
 
 ## Shadowing and collisions
 

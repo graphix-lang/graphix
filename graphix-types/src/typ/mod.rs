@@ -1736,11 +1736,15 @@ impl TypeRef {
     /// `use` that imports it, or a module a `use` above it imports it
     /// from. A `use` and its module are written above the names they bring.
     pub fn imported_below(&self, env: &Env) -> Option<anyhow::Error> {
+        let below = |later: &crate::env::ChangesLater| match (&self.ori, self.pos) {
+            (Some(ori), Some(pos)) => !later.written_above(ori, pos),
+            (None, _) | (_, None) => true,
+        };
         match self.resolved() {
             Some(_) => None,
-            None => {
-                self.resolve_error(env).filter(|e| e.is::<crate::env::ChangesLater>())
-            }
+            None => self.resolve_error(env).filter(|e| {
+                e.downcast_ref::<crate::env::ChangesLater>().is_some_and(below)
+            }),
         }
     }
 

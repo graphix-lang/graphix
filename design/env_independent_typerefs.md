@@ -255,9 +255,13 @@ nothing.
   An interface's items are a list too: `bind_sig` opens one over them, so
   a `val` or a type above the interface's own `use` is refused in
   interface order. Its types are spliced ahead of the body and of its
-  modules (`add_interface_modules`), so a type there that names a
-  submodule's type through a `use` is refused wherever the `mod` stands,
-  and names it by path.
+  modules (`add_interface_modules`), so the body's list compiles a type
+  before a module the interface declares above it. The order that counts
+  is the written one: a `ChangesLater` for a module still to compile says
+  where the module is declared, and a name written below that in the same
+  text is not below it (`ChangesLater::written_above`, asked by
+  `TypeRef::imported_below`). The type's body then waits for the module,
+  as a path into one does.
   A name is imported once at a level: `Env::import` refuses a second `use`
   of it, the same item again included, and `later_use` leaves the repeat
   out of what is still to come, so the refusal is the second `use`'s and
@@ -274,7 +278,7 @@ nothing.
   `nested_lambda_body_annotation_above_the_use_refused`,
   `typedef_in_a_body_above_*`, `repeated_import_refused`;
   `lang::interfaces::interface_*_above_the_interfaces_use_refused`,
-  `interface_type_*_submodule*`,
+  `interface_type_*_submodule*` (the module above the type and below it),
   `implementation_repeating_its_interfaces_import_refused`.
 - **One source typedef, one definition.** A block compiled again (an
   instance, a default at a call, a runtime bind) declares its typedef

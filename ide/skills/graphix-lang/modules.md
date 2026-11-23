@@ -30,10 +30,9 @@ refused, in a type definition, an annotation, a parameter, a cast, a
 type test and a function's body, and above a glob that holds for every
 type name the list neither declares nor imports, a trait's glob (`use
 Collection::*`) included. The module a `use` imports from is declared
-above the name too; a type definition may name a module declared below
-it by path (`type T = {s: sub::S}`), and an interface's must, since its
-types go ahead of its modules. A name is imported once: a second `use`
-of it is refused, and a `.gx` reads what its `.gxi` imports.
+above the name too; a type definition may instead name a module declared
+below it by path (`type T = {s: sub::S}`). A name is imported once: a
+second `use` of it is refused, and a `.gx` reads what its `.gxi` imports.
 
 ```graphix,cases
 no "Mode names what a later `use` of this module imports" let m = cast<Mode>(`Read); use sys::fs::Mode; m

@@ -1362,7 +1362,12 @@ pub(crate) fn compile_block_children<'a, R: Rt>(
                 )
             }
             _ => module::declared_modules(e, &mut |name| {
-                later.modules.push((i, name.name.as_str().into()))
+                later.modules.push(env::LaterModule {
+                    stmt: i,
+                    name: name.name.as_str().into(),
+                    pos: e.pos,
+                    ori: e.ori.clone(),
+                })
             }),
         }
     }
