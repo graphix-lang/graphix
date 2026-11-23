@@ -702,6 +702,9 @@ pub struct Solving {
     /// a cell outside: its callers, reading the signature alone, would not
     /// carry theirs.
     sunk: Option<TVar>,
+    /// The declared variables whose bounds are being tried for a type the
+    /// variable is to fit: one met again among its own bounds adds none.
+    through: SmallVec<[usize; 4]>,
     /// An instance's signature is met with its definition's ([`instance`]):
     /// a typedef application in it is the definition's with each argument
     /// what the instance made of it.
@@ -1185,6 +1188,7 @@ impl Solving {
             shared: _,
             method: _,
             sunk: _,
+            through: _,
             deriving: _,
             leaves: _,
             signature: _,
@@ -1561,8 +1565,15 @@ impl Solving {
             // a declared variable is whatever its bounds say, and one
             // suffices
             (Type::TVar(v), _) => {
+                let addr = v.cell_addr();
+                if self.through.contains(&addr) {
+                    return mismatch(env, &b, &a);
+                }
+                self.through.push(addr);
                 let bounds = v.cell_above();
-                match (bounds.iter().any(|u| self.attempt(env, u, &b)), &b) {
+                let fits = bounds.iter().any(|u| self.attempt(env, u, &b));
+                self.through.pop();
+                match (fits, &b) {
                     (true, _) => Ok(()),
                     (false, Type::Primitive(p)) if p.len() > 1 && self.bare(v) => {
                         Ok(self.takes(v, &b))
