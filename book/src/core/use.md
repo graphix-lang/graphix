@@ -134,19 +134,12 @@ names are visible whatever their order; a value is not, because a
 module's body runs where its `mod` statement stands, so a sub-module
 that imports a parent's value must be declared below that value.
 
-A `use` goes above the type names it brings. A type name written above
-the `use` that imports it is refused, whether in a type definition, an
-annotation, a parameter, a cast, a type test or a function's body, and
-the error names the `use` to move up: `type Op = {mode: Mode}` above
-`use sys::fs::Mode` does not compile. So a name never means one type
-above a `use` and another below it. Above a glob the same holds for
-every type name the scope neither declares nor imports itself. An
-interface follows the rule over its own items.
-
-The module a `use` imports from is declared above the name as well:
-`use self::sub::T` may stand above `mod sub;`, but `T` is written below
-both. A type definition may instead name a module declared further down
-by its path, `type Op = {t: sub::T}`.
+An import is in force throughout its statement list, above the `use`
+as well as below it, as in Rust: `type Op = {mode: Mode}`, an annotation
+or a cast written above `use sys::fs::Mode` names the imported `Mode`,
+never an outer type of that name. One order remains for now: a name
+imported from a module declared further down is not read by a cast, a
+type test or a destructuring `let` until the `mod`.
 
 ## Shadowing and collisions
 
@@ -174,10 +167,9 @@ $ graphix test.gx
 
 The error cases:
 
-- a declaration and an import of the same name in the same scope:
-  error at the `use` if the declaration comes first; if the
-  declaration comes after, it shadows the import (rebinding a name
-  with `let` is idiomatic Graphix and imports are no different)
+- a type and an import of the same name in the same scope: error,
+  whichever is written first. A `let` is different: it rebinds from
+  where it stands, an imported name as any other
 - two explicit imports of the same name: error. Rename one, or, where
   both import the same item, remove the second. A module's
   implementation reads what its interface imports, and may not import it

@@ -3,8 +3,8 @@ use crate::{
     Saved, Scope, StaticCallees, Tag, TagValue, Update, View,
     compiler::compile,
     env::{
-        Env, Glob, ImplDef, ImportEntry, Lexical, LoadedBody, Map, TraitDef, Unsettled,
-        UseAnchor, scope_params,
+        Env, Glob, ImplDef, ImportEntry, Lexical, LoadedBody, Map, TraitDef, UseAnchor,
+        scope_params,
     },
     errf,
     expr::{
@@ -75,50 +75,6 @@ fn use_glob(env: &Env, scope: &ModPath, item: &UseItem) -> Result<Option<Glob>> 
     }))
 }
 
-/// What the `use` at statement `stmt` of the list at `scope` has still to
-/// bring, into `later`: nothing where the item is installed already (a
-/// `.gxi`'s `use` spliced into the body, a block compiled again), names a
-/// package, which the prelude provides, or imports a name the level
-/// imports above it, which [`Env::import`] refuses unless `replace`.
-pub(crate) fn later_use(
-    env: &Env,
-    scope: &ModPath,
-    stmt: usize,
-    pos: crate::SourcePosition,
-    ori: &Origin,
-    items: &[UseItem],
-    replace: bool,
-    later: &mut Unsettled,
-) {
-    let sn = env.names.get(scope);
-    for item in items {
-        match item.bound_name() {
-            Some(key) => {
-                let imported = sn.and_then(|sn| sn.imports.get(key));
-                let here = imported.is_some_and(|e| e.pos == pos && *e.ori == *ori);
-                let package = item.rename.is_none()
-                    && Path::levels(&*item.path.0) == 1
-                    && env.package_roots.contains(key);
-                let again = !replace
-                    && (imported.is_some()
-                        || later.uses.iter().any(|(_, k)| k.as_str() == key));
-                if !here && !package && !again {
-                    later.uses.push((stmt, key.into()))
-                }
-            }
-            None => {
-                let glob = use_glob(env, scope, item).ok().flatten();
-                let here = glob
-                    .as_ref()
-                    .is_some_and(|g| sn.is_some_and(|sn| sn.globs.contains(g)));
-                if !here {
-                    later.globs.push((stmt, glob))
-                }
-            }
-        }
-    }
-}
-
 /// Each module `e` declares at the level of the list it is a statement of:
 /// the statement itself when it is a `mod`, and a dynamic module written
 /// where a value is (`let st = mod foo dynamic { .. }`, a call's argument,
@@ -145,12 +101,76 @@ pub(crate) fn declared_modules<'a>(e: &'a Expr, f: &mut impl FnMut(&'a Name)) {
     }
 }
 
-/// Whether statement `e` of a list is a `use` or declares a module there:
-/// what [`Unsettled`] records of it is no longer to come once it begins.
-pub(crate) fn brings_names(e: &Expr) -> bool {
+/// Whether statement `e` of a list declares a module there: what
+/// [`Unsettled`] records of it is no longer to come once it begins.
+pub(crate) fn declares_module(e: &Expr) -> bool {
     let mut declares = false;
     declared_modules(e, &mut |_| declares = true);
-    declares || matches!(e.kind, ExprKind::Use { .. })
+    declares
+}
+
+/// Install every `use` the statement list `exprs` writes at `scope`,
+/// before any of its statements compiles: a list's imports are in force
+/// throughout it. One whose path goes through a module another of the
+/// list imports is installed once that one is, whatever their order. One
+/// that cannot be installed yet (its path names a trait the list declares)
+/// is left to its statement, which installs it or says why not; a `use`
+/// installed here is a no-op there. An import whose target does not
+/// exist yet is pending, as one a statement installs is.
+// CR claude for claude: [bug/low] A `use` whose path starts at a module alias
+// that a `use` written below it imports is resolved against an outer module of
+// that name where one exists, since the first pass finds it: in `mod a; mod b;
+// { use b::X; use a::b; .. }` with a module `a::b`, `X` is `/b`'s and not
+// `a::b`'s. Rust reads `b` as the block's import throughout. Resolve the
+// list's module-kind imports first, or refuse a path whose first segment a
+// later `use` of the list imports. Found by reading; not run.
+// (rust-scoping-use-prefix-01)
+pub(crate) fn install_uses<R: Rt>(
+    ctx: &mut CompileCtx<R>,
+    flags: BitFlags<CFlag>,
+    scope: &Scope,
+    exprs: &[&Expr],
+) {
+    let replace = flags.contains(CFlag::ReplaceImports);
+    let uses = exprs.iter().copied().filter(|e| matches!(e.kind, ExprKind::Use { .. }));
+    let mut waiting: smallvec::SmallVec<[&Expr; 8]> = uses.collect();
+    loop {
+        let before = waiting.len();
+        waiting.retain(|e| {
+            let ExprKind::Use { reexport, names } = &e.kind else { return false };
+            let (pos, ori) = (e.pos, &e.ori);
+            compile_use_items(
+                &mut ctx.env,
+                &mut ctx.pending_imports,
+                pos,
+                ori,
+                scope,
+                replace,
+                *reexport,
+                names,
+            )
+            .is_err()
+        });
+        if waiting.is_empty() || waiting.len() == before {
+            return;
+        }
+    }
+}
+
+/// A list has compiled: of the imports pending since `mark`, drop each
+/// whose target exists now. The view at a list's end sees what the list
+/// declares, a module of its own included, which the check at the end of
+/// the top-level statement does not.
+pub(crate) fn settle_list_imports<R: Rt>(ctx: &mut CompileCtx<R>, mark: usize) {
+    let mut i = mark;
+    while i < ctx.pending_imports.len() {
+        let p = &ctx.pending_imports[i];
+        let entry = ctx.env.names.get(&p.scope).and_then(|sn| sn.imports.get(&p.key));
+        match entry.is_none_or(|e| ctx.env.import_target_exists(e)) {
+            true => drop(ctx.pending_imports.remove(i)),
+            false => i += 1,
+        }
+    }
 }
 
 /// Resolve one item of a `use` against the namespace table
@@ -338,34 +358,11 @@ fn bind_sig(
             env.lexical.modules.insert_cow(scope.append(name).lexical);
         }
     }
-    // an interface's items are a list as a block's statements are: a name
-    // is written below the `use` that imports it
-    let list = &scope.lexical;
-    env.open_block(
-        list,
-        sig.items.iter().filter_map(|si| match &si.kind {
-            SigKind::TypeDef(td) => Some(td.name.name.as_str()),
-            _ => None,
-        }),
-    );
-    let mut later = Unsettled::default();
-    for (i, si) in sig.items.iter().enumerate() {
-        if let SigKind::Use { names, .. } = &si.kind {
-            later_use(env, list, i, si.pos, &si.ori, names, false, &mut later)
-        }
-    }
-    let reopened = env.open_list(list, later);
     let mut decls = SigDecls::default();
-    let bound = sig.items.iter().enumerate().try_for_each(|(i, si)| {
-        if matches!(si.kind, SigKind::Use { .. }) {
-            env.settle_statement(list, i)
-        }
+    for (i, si) in sig.items.iter().enumerate() {
         bind_sig_item(env, pending, &mut decls, scope, i, si, &si.ori)
-            .placed(&si.ori, si.pos)
-    });
-    env.close_list(list, reopened);
-    env.close_block(list);
-    bound?;
+            .placed(&si.ori, si.pos)?;
+    }
     if let Some(body) = &env.lexical.body {
         body.declare(decls.dispatch_bindings())
     }
@@ -409,7 +406,6 @@ fn bind_sig_item(
             let typ = typ
                 .scope_refs_named(&scope.lexical, &mut LPooled::take())
                 .rewrite_declared_args(env)?;
-            crate::refuse_imported_below(env, &typ)?;
             // a declared signature has no gate to close over its cells:
             // every one is a quantifier, a constructor trait's element
             // included, copied at each use, and its own are its scheme's,
@@ -453,7 +449,6 @@ fn bind_sig_item(
                 si.pos,
                 si_ori.clone(),
             )?;
-            crate::refuse_typedef_imported_below(env, &scope.lexical, &td.name.name)?;
         }
         // CR claude for claude: [bug/medium] A dynamic module in a function body whose
         // sig declares a trait passes the check, and then no source can load. The load

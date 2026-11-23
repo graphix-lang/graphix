@@ -1663,12 +1663,12 @@ run!(
     FuseExpect::None
 );
 
-// An import colliding with a declaration of its scope is refused.
+// A list's imports are in force throughout it and a `let` rebinds from
+// where it stands, an imported name as any other.
 run!(
-    an_import_colliding_with_a_declaration_is_refused,
+    a_let_shadows_an_import_of_its_list,
     "{ let len = 1; use array::len; len }",
-    refused("`len` is already defined in this scope; use `as` to rename");
-    FuseExpect::None
+    is(Value::I64(1))
 );
 
 // A `pub use` is refused.

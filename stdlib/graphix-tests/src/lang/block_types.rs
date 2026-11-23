@@ -423,21 +423,21 @@ run!(
     module_type_named_above_its_declaration_over_an_import,
     is(Value::I64(4)),
     "/test.gx" => "type M = string; mod m; let result = m::y",
-    "/test/m.gx" => "use super::M; let x: M = 1; type M = i64; let f = |a: M| a + x; let y = f(3)"
+    "/test/m.gx" => "use super::*; let x: M = 1; type M = i64; let f = |a: M| a + x; let y = f(3)"
 );
 
 run!(
     module_type_in_a_signature_above_its_declaration_refused,
     refused("M names the type a later statement of this module declares: declare it before its first use"),
     "/test.gx" => "type M = string; mod m; let result = m::y",
-    "/test/m.gx" => "use super::M; let f = |a: M| a; type M = i64; let y = f(1)"
+    "/test/m.gx" => "use super::*; let f = |a: M| a; type M = i64; let y = f(1)"
 ; FuseExpect::None);
 
 run!(
     module_type_in_a_body_above_its_declaration_refused,
     refused("M names the type a later statement of this module declares: declare it before its first use"),
     "/test.gx" => "type M = string; mod m; let result = m::y",
-    "/test/m.gx" => "use super::M; let f = |x| { let a: M = x; a }; type M = i64; let y = f(1)"
+    "/test/m.gx" => "use super::*; let f = |x| { let a: M = x; a }; type M = i64; let y = f(1)"
 ; FuseExpect::None);
 
 run!(
@@ -464,11 +464,11 @@ async fn a_later_block_type_beside_another_warns(mode: Mode) -> Result<()> {
         (netidx::path::Path::from("/n.gx"), VfsEntry::from(literal!("type L = string"))),
         (
             netidx::path::Path::from("/w.gx"),
-            VfsEntry::from(literal!("use super::n::L;\nlet b: L = 3;\ntype L = i64")),
+            VfsEntry::from(literal!("use super::n::*;\nlet b: L = 3;\ntype L = i64")),
         ),
         (
             netidx::path::Path::from("/q.gx"),
-            VfsEntry::from(literal!("use super::n::L;\ntype L = i64;\nlet b: L = 3")),
+            VfsEntry::from(literal!("use super::n::*;\ntype L = i64;\nlet b: L = 3")),
         ),
     ];
     let resolver = VfsResolver::new(ahash::AHashMap::from_iter(files));
@@ -513,7 +513,7 @@ async fn a_later_block_type_beside_another_warns(mode: Mode) -> Result<()> {
             format!("{outer}, not the `L` declared at line: 1, column: 6"),
         ),
         (
-            "let g = |z: i64| {\n    use n::L;\n    let f = |x: i64| { let b: L = 3; (b, x) };\n    \
+            "let g = |z: i64| {\n    use n::*;\n    let f = |x: i64| { let b: L = 3; (b, x) };\n    \
              type L = i64;\n    f(z)\n}",
             format!(
                 "{outer}, at line: 4, column: 10, not the `L` declared at line: 1, column: 6 in "

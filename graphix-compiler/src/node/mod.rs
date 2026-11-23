@@ -859,8 +859,6 @@ impl TypeDef {
             .at(&spec)?;
         let name = name.name.clone();
         let definition = ctx.env.typedef_definition(&scope.lexical, &name);
-        crate::refuse_typedef_imported_below(&ctx.env, &scope.lexical, &name)
-            .at(&spec)?;
         if parametric {
             // A cycle a definition completes runs through it: without
             // parameters through its body, which deftype walked; with them also
@@ -1352,24 +1350,13 @@ pub(crate) fn compile_block_children<'a, R: Rt>(
             _ => None,
         }),
     );
+    let pending = ctx.pending_imports.len();
+    module::install_uses(ctx, flags, scope, &exprs);
     let mut later = env::Unsettled::default();
     for (i, e) in exprs.iter().enumerate() {
-        match &e.kind {
-            ExprKind::Use { names, .. } => {
-                let replace = flags.contains(CFlag::ReplaceImports);
-                module::later_use(
-                    &ctx.env, list, i, e.pos, &e.ori, names, replace, &mut later,
-                )
-            }
-            _ => module::declared_modules(e, &mut |name| {
-                later.modules.push(env::LaterModule {
-                    stmt: i,
-                    name: name.name.as_str().into(),
-                    pos: e.pos,
-                    ori: e.ori.clone(),
-                })
-            }),
-        }
+        module::declared_modules(e, &mut |name| {
+            later.modules.push((i, name.name.as_str().into()))
+        })
     }
     let brings = !later.is_empty();
     let reopened = ctx.env.open_list(list, later);
@@ -1385,7 +1372,7 @@ pub(crate) fn compile_block_children<'a, R: Rt>(
             catches.push(i);
         }
         let at = StmtAt::Block { value: !module && i + 1 == n, last: i + 1 == n };
-        if brings && module::brings_names(e) {
+        if brings && module::declares_module(e) {
             ctx.env.settle_statement(list, i)
         }
         let boundary = prune::Prune::boundary(ctx);
@@ -1401,6 +1388,9 @@ pub(crate) fn compile_block_children<'a, R: Rt>(
     }
     if declares_types {
         ctx.block_typedefs.pop();
+    }
+    if compiled.is_ok() {
+        module::settle_list_imports(ctx, pending)
     }
     ctx.env.close_block(list);
     ctx.env.close_list(list, reopened);

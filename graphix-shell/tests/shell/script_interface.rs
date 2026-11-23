@@ -161,17 +161,16 @@ async fn bounds_hold_for_every_instance_of_the_signature() -> Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn interface_names_resolve_in_the_interface() -> Result<()> {
     let cases = [
-        ("type Foo = i64;\nlet v: Foo = 1;\nv\n", "val v: Foo;\n", "undefined type"),
+        ("type Foo = i64;\nlet v: Foo = 1;\nv\n", "val v: Foo;\n"),
         (
             "use str::Escape;\nlet v: [Escape, null] = null;\nv\n",
             "type W = [Escape, null];\nval v: W;\n",
-            "Escape names what a later `use` of this module imports",
         ),
     ];
-    for (gx, gxi, refusal) in cases {
+    for (gx, gxi) in cases {
         for e in verdicts(gx, gxi).await? {
             let e = e.expect("a name only the script gives was accepted");
-            assert!(e.contains(refusal), "{e}");
+            assert!(e.contains("undefined type"), "{e}");
         }
     }
     Ok(())

@@ -208,78 +208,47 @@ nothing.
   `script_interface::a_scripts_own_type_is_not_its_interfaces`,
   `interface_names_resolve_in_the_interface`,
   `lang::block_types::a_deleted_modules_type_frees_its_name`).
-- **A name is not read before what may change it.** A typedef's shape
-  (its self-references, whether it is expansive, the aliases its body
-  stores as their expansions) is decided from a look at its body's names
-  that fills no cell, and the check's end fills them as they stand then.
-  So what a look reads must be what the fill will read, and a statement
-  the list has still to compile may change it: a `use` of the name, a
-  glob, and a module declared below that a `use` above imports from (the
-  import falls through until its target is declared). Before a list's
-  statements compile, `compile_block_children` records what its `use`s
-  and modules have still to bring (`Env::open_list`, `Unsettled`: the
-  names its explicit `use`s import, its globs, the modules it declares,
-  each by its statement's index; a `use` installed already, a `.gxi`'s
-  spliced into the body or a block compiled again, brings nothing new),
-  and each `use` and module is taken off as it begins to compile
-  (`Env::settle_statement`). `Env::resolve_type_name`, alone among the
-  lookups, asks each level on its way (`lookup_in`, `settle`), for the
-  module segments of a path too, and refuses with `ChangesLater`: a name a
-  later `use` of the level imports; a name the level neither declares nor
-  imports nor finds in a glob while a glob is still to come, or while a
-  glob there imports from a module not compiled yet; a name whose import
-  there finds nothing while its module is not compiled yet. A definition's
-  snapshot keeps the lists open when it was made (`Lexical::open`, set by
-  `Env::lexical`), so its check, which runs once the list has compiled,
-  refuses a name imported from a module declared below the definition as
-  the list's own compile does, and never reads the outer or prelude type of
-  the name for good. **No reader waits for such a name**: a type name is
-  written below the `use` that brings it and below the module the `use`
-  imports from, so a name never means one thing above a `use` and another
-  below it. Every written type is asked as its statement compiles
-  (`refuse_imported_below`: a typedef's body, representation and bounds at
-  `TypeDef::compile`, an annotation, a parameter, a cast, a type test and
-  a declared bound at `warn_later_block_names`), and a `ChangesLater` is
-  the statement's refusal, naming the `use` or the module to move up. The
-  record is lexical: a definition's body compiles after its list has gone
-  on, and reads each list it is written in as it stood at the definition
-  (`Env::to_come` asks the snapshot before the list being compiled, and a
-  nested definition's snapshot keeps the outer one's entry), so a
-  function's body above a `use` is refused as its parameters are. A glob
-  the list has still to reach carries its source (`Unsettled::globs`), and
-  a lookup from above it skips that source where a later compile has
-  installed it. What still waits is a name no statement can change: a path
-  into a module declared below, in a typedef's body alone (its shape stays
-  open until the definition that completes it), and a type the list
-  declares below.
-  An interface's items are a list too: `bind_sig` opens one over them, so
-  a `val` or a type above the interface's own `use` is refused in
-  interface order. Its types are spliced ahead of the body and of its
-  modules (`add_interface_modules`), so the body's list compiles a type
-  before a module the interface declares above it. The order that counts
-  is the written one: a `ChangesLater` for a module still to compile says
-  where the module is declared, and a name written below that in the same
-  text is not below it (`ChangesLater::written_above`, asked by
-  `TypeRef::imported_below`). The type's body then waits for the module,
-  as a path into one does.
-  A name is imported once at a level: `Env::import` refuses a second `use`
-  of it, the same item again included, and `later_use` leaves the repeat
-  out of what is still to come, so the refusal is the second `use`'s and
-  the names between read the first. Pins: `lang::types::typedef_*_the_use_*`,
-  `typedef_between_a_use_and_the_module_*`, `typedef_*_a_glob*`,
-  `typedef_names_a_module_declared_below_by_path`,
-  `block_typedef_*_the_blocks_use*`,
-  `nested_block_typedef_above_an_outer_use_refused`,
-  `typedef_through_an_imported_module*`, `let_annotation_*_the_use*`,
-  `type_test_*_the_use*`, `cast_above_the_use_refused`,
-  `destructuring_let_*`, `trait_parameter_*`,
-  `signature_trait_parameter_*`, `declared_trait_bound_*_glob*`,
-  `lambda_parameter_*`, `lambda_body_annotation_*`,
-  `nested_lambda_body_annotation_above_the_use_refused`,
-  `typedef_in_a_body_above_*`, `repeated_import_refused`;
-  `lang::interfaces::interface_*_above_the_interfaces_use_refused`,
-  `interface_type_*_submodule*` (the module above the type and below it),
-  `implementation_repeating_its_interfaces_import_refused`.
+- **A list's declarations are in force throughout it** (Rust's rule,
+  Eric 2026-11-24): a `use`, a `type`, a `mod` and a `trait` name what
+  they declare above their statement as below it, a name is declared once
+  in a list, and an inner scope may shadow an outer one. `let` stays
+  ordered. As built so far:
+  - **Imports.** `compile_block_children` installs every `use` of its list
+    before any statement compiles (`module::install_uses`; one whose path
+    goes through another's import is installed once that one is, and one
+    that cannot be installed yet, a path through a trait the list
+    declares, is left to its statement). The statement itself then finds
+    its items installed (`resolve_use_item`, `compiled_here`). So every
+    reader, a cast and a type test included, reads the import wherever the
+    `use` stands. An import pending because its target did not exist yet
+    is dropped at the end of the list once it does
+    (`module::settle_list_imports`), where a module the list declares for
+    itself is in view; what is still pending is the top-level check's.
+  - **Once per list.** `Env::import` refuses a second import of a name,
+    the same item again included, and a name the list declares as a type
+    (`Lexical::block_names`). An implementation reads what its interface
+    imports. A `let` rebinds from where it stands, an imported name too.
+  - **Still ordered, to go:** a name a `use` imports from a module declared
+    below. `Unsettled` records the modules a list has still to compile
+    (`Env::open_list`, `settle_statement`), and `Env::resolve_type_name`
+    refuses with `ChangesLater` a name whose import finds nothing while its
+    module is one of them; a definition's snapshot keeps the record
+    (`Lexical::open`). A typedef's body, an annotation and a signature wait
+    for the module instead (a typedef's shape stays open until the
+    definition that completes it); a statement that needs the type as it
+    compiles (a type test, a cast, a `let` that takes it apart, an abstract
+    constructor) is refused. A statement that needs a type its own list
+    declares below is refused the same way (`Unseen::Later`).
+  Pins: `lang::types::typedef_above_the_use_*`, `typedef_above_a_glob*`,
+  `type_test_above_the_use`, `cast_above_the_use`,
+  `destructuring_let_above_*`, `trait_parameter_above_*`,
+  `signature_trait_parameter_above_a_glob`,
+  `lambda_parameter_above_the_module_*`, `repeated_import_refused`,
+  `a_type_and_an_import_of_one_name_in_a_list_refused`;
+  `lang::modules::a_let_shadows_an_import_of_its_list`;
+  `lang::interfaces::implementation_*_its_interfaces_import*`; the
+  module-below refusals `*_between_a_use_and_its_module_refused`,
+  `type_test_above_the_module_its_use_imports_from_refused`.
 - **One source typedef, one definition.** A block compiled again (an
   instance, a default at a call, a runtime bind) declares its typedef
   with the live definition the registry holds, and its `TypeDef` node owns

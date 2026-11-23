@@ -2631,44 +2631,15 @@ run!(
 
 run!(
     interface_typedef_body_through_implementation_use_is_refused,
-    refused("T names what a later `use` of this module imports: write the `use` before the name's first use"),
+    refused("undefined type T"),
     "/test.gx" => "mod other; mod inner; let result = inner::v",
     "/test/other.gx" => "type T = i64",
     "/test/inner.gxi" => "type U = T; val v: U",
     "/test/inner.gx" => "use super::other::T; let v: U = 1"
 );
 
-// An interface's items are a list as a block's statements are: a name is
-// written below the `use` that imports it, and a type the interface
-// declares below is that type above a glob too.
-run!(
-    interface_typedef_above_the_interfaces_use_refused,
-    refused("T names what a later `use` of this module imports: write the `use` before the name's first use"),
-    "/test.gx" => "mod other; mod inner; let result = inner::v",
-    "/test/other.gx" => "type T = i64",
-    "/test/inner.gxi" => "type U = T; use super::other::T; val v: U",
-    "/test/inner.gx" => "let v: U = 1"
-);
-
-run!(
-    interface_val_above_the_interfaces_use_refused,
-    refused("T names what a later `use` of this module imports: write the `use` before the name's first use"),
-    "/test.gx" => "mod other; mod inner; let result = inner::v",
-    "/test/other.gx" => "type T = i64",
-    "/test/inner.gxi" => "val v: T; use super::other::T",
-    "/test/inner.gx" => "let v: T = 1"
-);
-
-run!(
-    interface_typedef_above_its_own_later_type_and_a_glob,
-    is(Value::I64(1)),
-    "/test.gx" => "mod inner; let result = inner::v",
-    "/test/inner.gxi" => "type U = [T, null]; use str::*; type T = i64; val v: U",
-    "/test/inner.gx" => "let v: U = 1"
-; FuseExpect::None);
-
 // The implementation reads what its interface imports, and may not import
-// it again.
+// it again: a name is imported once.
 run!(
     implementation_reads_its_interfaces_import,
     is(Value::I64(1)),
@@ -2685,57 +2656,6 @@ run!(
     "/test/other.gx" => "type T = i64",
     "/test/inner.gxi" => "use super::other::T; val v: T",
     "/test/inner.gx" => "use super::other::T; let v: T = 1"
-);
-
-// An interface's type names its submodule's type by path, or through a
-// `use` where the interface declares the module above the type: the
-// order is the interface's own, though its types compile ahead of its
-// modules.
-run!(
-    interface_type_names_its_submodules_type_by_path,
-    is(Value::I64(1)),
-    "/test.gx" => "mod m; let t: m::Theme = `Custom({c: 1}); \
-        let result = select t { `Custom(s) => s.c, `Light => 0 }",
-    "/test/m.gxi" => "type Color = i64; mod style; \
-        type Theme = [`Light, `Custom(style::StyleSheet)]",
-    "/test/m.gx" => "",
-    "/test/m/style.gxi" => "use super::Color; type StyleSheet = {c: Color}",
-    "/test/m/style.gx" => ""
-);
-
-run!(
-    interface_type_through_a_use_of_its_submodule,
-    is(Value::I64(1)),
-    "/test.gx" => "mod m; let t: m::Theme = `Custom({c: 1}); \
-        let result = select t { `Custom(s) => s.c, `Light => 0 }",
-    "/test/m.gxi" => "type Color = i64; mod style; use self::style::StyleSheet; \
-        type Theme = [`Light, `Custom(StyleSheet)]",
-    "/test/m.gx" => "",
-    "/test/m/style.gxi" => "use super::Color; type StyleSheet = {c: Color}",
-    "/test/m/style.gx" => ""
-);
-
-run!(
-    interface_type_through_a_glob_of_its_submodule,
-    is(Value::I64(1)),
-    "/test.gx" => "mod m; let t: m::Theme = `Custom({c: 1}); \
-        let result = select t { `Custom(s) => s.c, `Light => 0 }",
-    "/test/m.gxi" => "type Color = i64; mod style; use self::style::*; \
-        type Theme = [`Light, `Custom(StyleSheet)]",
-    "/test/m.gx" => "",
-    "/test/m/style.gxi" => "use super::Color; type StyleSheet = {c: Color}",
-    "/test/m/style.gx" => ""
-);
-
-run!(
-    interface_type_above_the_submodule_it_imports_from_refused,
-    refused("StyleSheet names what a `use` of this module imports from module `/test/m/style`, which a later statement declares: declare the module before the name's first use, or in a type definition write the name by its path"),
-    "/test.gx" => "mod m; let result = 0",
-    "/test/m.gxi" => "type Color = i64; use self::style::StyleSheet; \
-        type Theme = [`Light, `Custom(StyleSheet)]; mod style",
-    "/test/m.gx" => "",
-    "/test/m/style.gxi" => "use super::Color; type StyleSheet = {c: Color}",
-    "/test/m/style.gx" => ""
 );
 
 run!(
