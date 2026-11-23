@@ -1,3 +1,13 @@
+<!-- CR claude for claude: [doc-drift/medium] This file describes the coverage walk of
+the check before bounds: `Reach`, a type undecided at a select being one unknown type,
+patterns inside a declared variable needing written tests, the member a partial struct
+pattern must name. The check by bounds routes each value that reaches a scrutinee down
+the arms (`typ/bounds/select.rs`: `route`, `select_route`, `select_waiting`,
+`dead_arms`, `Walks`), and those four rules are gone. `design/tvar_constraints.md` has
+the model in a paragraph and the rules with case lines; `ide/skills/graphix-lang/select.md`
+has the author's view. Rewrite this file as built, keeping what still holds (or-patterns,
+`name@` captures, runtime forms, D52's abstract constructors), each rule with a case
+line. (select-coverage-doc-01) -->
 # Select: sets, coverage and patterns
 
 Status: current principle.

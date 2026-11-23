@@ -52,7 +52,7 @@ hold it) and, where it absorbed an older document, `Supersedes:`.
 
 | doc | rule |
 |---|---|
-| `tvar_constraints.md` | cell constraints are the only constraint store |
+| `tvar_constraints.md` | the type check by bounds: the model, and the rules each with a case line |
 | `env_independent_typerefs.md` | `TypeRef` resolution cells; name-compressed instance signatures |
 | `type_operation_scaling.md` | memoized DAG walks for every core type operation |
 | `type_copy_discipline.md` | principle: justify every deep type copy |
