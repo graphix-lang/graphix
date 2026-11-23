@@ -479,10 +479,15 @@ impl Template {
 }
 
 impl Select {
-    /// `e`, a refusal about the arm `arm`, placed at its pattern.
+    /// `e`, a refusal about the arm `arm`, placed at its pattern, and an
+    /// instance's at the use that made the instance.
     fn at_arm(&self, arm: Option<usize>, e: anyhow::Error) -> anyhow::Error {
-        match arm.and_then(|i| self.sites.as_ref()?.get(i)) {
+        let e = match arm.and_then(|i| self.sites.as_ref()?.get(i)) {
             Some(site) => e.at(site),
+            None => e,
+        };
+        match &self.made {
+            Some((ori, pos)) => e.placed(ori, *pos),
             None => e,
         }
     }
@@ -495,6 +500,8 @@ pub(super) struct Select {
     /// A copy made for an instance of a generic definition: an arm
     /// nothing reaches there is no dead arm.
     pub(super) instance: bool,
+    /// Where the use that made the instance is written.
+    made: Option<super::Made>,
     pub(super) waiting: Vec<Type>,
     /// What was passed down the arms.
     seen: Vec<Type>,
@@ -633,6 +640,7 @@ impl Solving {
             hit,
             routed: false,
             instance: false,
+            made: None,
             waiting: vec![],
             seen: vec![],
             scrutinees: vec![],
@@ -665,6 +673,7 @@ impl Solving {
             .collect();
         let new = self.select(arms, of.at.clone());
         self.selects[new].instance = true;
+        self.selects[new].made = self.site();
         new
     }
 

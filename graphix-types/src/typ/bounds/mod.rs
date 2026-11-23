@@ -2225,10 +2225,16 @@ impl Solving {
         };
         if !listed {
             self.cells.push(v.clone());
-            self.made_at.push(match self.places {
-                true => SITE.with_borrow(|site| site.clone()),
-                false => None,
-            })
+            self.made_at.push(self.site())
+        }
+    }
+
+    /// The expression being checked, where this check places what it
+    /// finds later.
+    fn site(&self) -> Option<Made> {
+        match self.places {
+            true => SITE.with_borrow(|site| site.clone()),
+            false => None,
         }
     }
 
@@ -3522,8 +3528,10 @@ fn standing_head(v: &TVar, seen: &mut AHashSet<usize>) -> Type {
 /// told why where that is no type: the function was read out of an
 /// abstract value whose instance is not known.
 fn takes_nothing(formal: &Type, e: anyhow::Error) -> anyhow::Error {
+    // a cell an input's end settled says so itself
+    let settled = matches!(formal, Type::TVar(tv) if tv.settled_bottom());
     match shallow(formal) {
-        Type::Bottom => Told::over(
+        Type::Bottom if !settled => Told::over(
             e,
             "this function's parameter is of no type, so no argument fits it: a \
              function read out of an abstract value whose instance is not known is \

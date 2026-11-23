@@ -155,6 +155,30 @@ async fn catch_entered_alone_takes_a_later_raise_by_its_annotation() -> Result<(
     .await
 }
 
+/// A function an earlier input left with a parameter of no type refuses a
+/// later call by naming the binding to declare, and says nothing of
+/// abstract values, whose functions are of no type for another reason.
+#[tokio::test(flavor = "current_thread")]
+async fn settled_parameter_is_told_by_its_binding_alone() -> Result<()> {
+    use graphix_package_core::testing::init;
+    let (tx, _rx) = tokio::sync::mpsc::channel(1000);
+    let ctx = init(tx, crate::TEST_REGISTER).await?;
+    let mut held = vec![];
+    for input in [
+        "let fs = array::map([1, 2], |r| 'a: Number |x: 'a| -> 'a x + x)",
+        "let g = fs[0]$",
+    ] {
+        held.push(ctx.rt.compile(ArcStr::from(input)).await?)
+    }
+    let e = match ctx.rt.compile(ArcStr::from("g(3)")).await {
+        Ok(_) => bail!("the call was accepted"),
+        Err(e) => format!("{e:#}"),
+    };
+    assert!(e.contains("it holds the type of `fs`"), "{e}");
+    assert!(!e.contains("abstract value"), "{e}");
+    Ok(())
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn loop_over_an_earlier_bottom_union_of_arrays() -> Result<()> {
     session(&[

@@ -569,6 +569,23 @@ fn an_error_is_reported_where_it_arose() {
     );
 }
 
+/// What refuses one instance of a generic function, found when the
+/// instance's select is judged, is reported at the use that made the
+/// instance.
+#[test]
+fn an_instance_s_refusal_is_reported_at_its_use() {
+    let mut c = Client::start(&[(
+        "a.gx",
+        "let f = |x| select (x, 0) { (`J, _) => 1, (`M, _) => 2 };\nlet a = f(`M);\nf(`K)\n",
+    )]);
+    c.open("a.gx");
+    let p = c.at("a.gx", "|f(`K)");
+    let d = c.diagnostics("a.gx");
+    assert_eq!(d.len(), 1, "{d:?}");
+    assert_eq!((d[0].0, d[0].1), (p.line, p.character), "{d:?}");
+    assert!(d[0].2.contains("missing match cases: nothing matches (`K, i64)"), "{d:?}");
+}
+
 #[test]
 fn a_diagnostic_underlines_the_expression() {
     let mut c = Client::start(&[(
