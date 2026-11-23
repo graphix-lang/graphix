@@ -1958,18 +1958,18 @@ fn layers_of_typedefs_over_a_recursive_one_check_in_polynomial_time() {
     )
 }
 
-/// A type test for one recursive union over a value of another, each
-/// returning to itself through `Error` or `Array`, checks in the time of
-/// a program without it: the difference the arm leaves is built of the
-/// unions' names, and the walks over it (the runtime-form check, the
-/// narrowing) meet each pair of them once.
+/// A type test for one recursive union over a value of another that
+/// shares a leaf with it, each returning to itself through `Error` or
+/// `Array`, checks in the time of a program without it: the difference
+/// the arm leaves is built of the unions' names, and the walks over it
+/// (the runtime-form check, the narrowing) meet each pair of them once.
 #[test]
 #[cfg(target_os = "linux")]
 fn a_type_test_over_two_recursive_unions_checks_in_time() {
     for through in ["Error", "Array"] {
         let program = format!(
             "type T0 = [{through}<[T0, `A1]>, {through}<T0>, `A0];\n\
-            type U0 = [{through}<[U0, U1]>, {through}<U1>, `B0];\n\
+            type U0 = [{through}<[U0, U1]>, {through}<U1>, `A0];\n\
             type U1 = [{through}<U1>, `B1];\n\
             let x: T0 = `A0;\n\
             select x {{ U0 as u0 => 0, _ => 999 }}\n"

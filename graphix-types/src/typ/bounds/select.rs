@@ -390,15 +390,27 @@ enum Walk {
     Less(bool),
 }
 
+impl Walk {
+    /// Which of the two walks it is, whatever it walks for.
+    fn kind(self) -> usize {
+        match self {
+            Walk::Less(_) => 0,
+            Walk::Both(_) => 1,
+        }
+    }
+}
+
 /// The walks over pairs of typedef names in progress. Names recur, so a
-/// pair met again inside itself is read without walking it: for the
-/// values in both, as all of the first, or of the test; for those left,
-/// as none, which holds where every pair so read ends with none left.
-/// Where one does not, the outermost pair is walked again reading each as
-/// all of the first. What a pair inside the outermost gives, where it
-/// rests on such a reading, is kept as a name and never as its unfolding,
-/// which grows with every pair it passes through. Each reading errs only
-/// toward more values.
+/// pair met again inside itself is read without walking it, as giving no
+/// value: a value is finite, so what a pair gives is the least set its
+/// own unfolding makes of it, which is none where every pair so read ends
+/// with none. Where one does not, the outermost pair is walked again
+/// reading each pair of that walk ([`Walk::kind`]) as every value it could
+/// give: all of the first type, or of the test for the values in both.
+/// What a pair inside the outermost gives, where it rests on such a
+/// reading, is kept as a name and never as its unfolding, which grows
+/// with every pair it passes through. That reading errs only toward more
+/// values.
 #[derive(Default)]
 pub(super) struct Walks {
     /// Each pair in progress, and whether it was met again.
@@ -408,10 +420,10 @@ pub(super) struct Walks {
     done: Vec<(Walk, Type, Type, Type, bool)>,
     /// How many times a pair was read without a walk.
     rested: usize,
-    /// A pair read as leaving nothing left something.
-    wrong: bool,
-    /// A pair met again leaves all of its first type.
-    whole: bool,
+    /// A pair read as giving nothing gave something, by [`Walk::kind`].
+    wrong: [bool; 2],
+    /// A pair met again gives every value it could, by [`Walk::kind`].
+    whole: [bool; 2],
 }
 /// Whether `t` is a residual's marker around the type it is a part of.
 fn marked(t: &Type) -> bool {
@@ -768,13 +780,13 @@ impl Solving {
         };
         let before = {
             let mut walks = self.walks.borrow_mut();
-            let whole = walks.whole;
+            let whole = walks.whole[walk.kind()];
             if let Some(p) = walks.open.iter_mut().find(|p| same(p.0, &p.1, &p.2)) {
                 p.3 = true;
                 walks.rested += 1;
-                return match walk {
-                    Walk::Less(_) if !whole => Type::Bottom,
-                    _ => all(),
+                return match whole {
+                    false => Type::Bottom,
+                    true => all(),
                 };
             }
             if let Some(d) = walks.done.iter().find(|d| same(d.0, &d.1, &d.2)) {
@@ -785,33 +797,34 @@ impl Solving {
             walks.open.push((walk, a.clone(), b.clone(), false));
             walks.rested
         };
-        let left = f();
-        let mut walks = self.walks.borrow_mut();
-        let met = walks.open.pop().is_some_and(|p| p.3);
-        let rests = walks.rested != before;
-        walks.wrong |=
-            met && !walks.whole && matches!(walk, Walk::Less(_)) && !nothing(&left);
-        if !walks.open.is_empty() {
-            let left = match rests && !nothing(&left) {
-                true => all(),
-                false => left,
-            };
-            walks.done.push((walk, a.clone(), b.clone(), left.clone(), rests));
-            return left;
+        let mut left = f();
+        loop {
+            let mut walks = self.walks.borrow_mut();
+            let met = walks.open.pop().is_some_and(|p| p.3);
+            let rests = walks.rested != before;
+            let kind = walk.kind();
+            walks.wrong[kind] |= met && !walks.whole[kind] && !nothing(&left);
+            if !walks.open.is_empty() {
+                let left = match rests && !nothing(&left) {
+                    true => all(),
+                    false => left,
+                };
+                walks.done.push((walk, a.clone(), b.clone(), left.clone(), rests));
+                return left;
+            }
+            walks.done.clear();
+            let wrong = std::mem::take(&mut walks.wrong);
+            if wrong == [false; 2] {
+                walks.whole = [false; 2];
+                return left;
+            }
+            for (whole, wrong) in walks.whole.iter_mut().zip(wrong) {
+                *whole |= wrong
+            }
+            walks.open.push((walk, a.clone(), b.clone(), false));
+            drop(walks);
+            left = f()
         }
-        walks.done.clear();
-        if !std::mem::take(&mut walks.wrong) {
-            return left;
-        }
-        walks.whole = true;
-        walks.open.push((walk, a.clone(), b.clone(), false));
-        drop(walks);
-        let left = f();
-        let mut walks = self.walks.borrow_mut();
-        walks.open.pop();
-        walks.done.clear();
-        walks.whole = false;
-        left
     }
 
     fn both_in(&self, env: &Env, test: bool, a: &Type, b: &Type) -> Type {

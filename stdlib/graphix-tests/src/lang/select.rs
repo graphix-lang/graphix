@@ -9671,12 +9671,49 @@ run!(
     "#
 ; FuseExpect::None);
 
+// Two recursive typedefs whose nodes hold two parts and whose leaves
+// differ share no value: a value is finite, so it ends in one's leaves or
+// the other's. A test of each takes its own values whole, and the two
+// cover their union.
+run!(
+    tests_of_recursive_typedefs_sharing_no_value_cover_their_union,
+    r#"{
+  type Ti = [`L(i64), `N(Ti, Ti)];
+  type Ts = [`L(string), `N(Ts, Ts)];
+  let p: Ts = `N(`L("a"), `L("b"));
+  let x: [Ti, Ts] = p;
+  let by_member = select x {
+    `L(i64) as _ => "li",
+    `L(string) as _ => "ls",
+    `N(Ti, Ti) as _ => "ni",
+    `N(Ts, Ts) as _ => "ns"
+  };
+  let by_name = select x { Ti as _ => "i", Ts as _ => "s" };
+  "[by_member] [by_name]"
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "ns s")
+);
+
+run!(
+    arm_behind_tests_of_recursive_typedefs_sharing_no_value_is_dead,
+    r#"{
+  type Ti = [`L(i64), `N(Ti, Ti)];
+  type Ts = [`L(string), `N(Ts, Ts)];
+  let p: Ts = `N(`L("a"), `L("b"));
+  let x: [Ti, Ts] = p;
+  select x { Ti as _ => "i", Ts as _ => "s", _ => "?" }
+}"#,
+    refused("pattern _ will never match: nothing reaches it");
+    FuseExpect::None
+);
+
 // What `K(T0) takes of `K(U0) is the same for every select that asks,
-// whatever was asked before it: a capture narrower than the annotation
-// is refused at the first of two identical selects.
+// whatever was asked before it: the two families end in different leaves
+// and share no value, so the arm is dead at the first of two identical
+// selects.
 run!(
     a_capture_type_is_the_same_at_every_select,
-    refused("type mismatch `K([([([([(T0, T2), `K(T1)], T1), `K(T2)], T0), `K([([(T0, T2), `K(T1)], T1), `K(T2)])], T0), `K(T0)]) does not contain `K([(T1, T0), `K(T0)])"),
+    refused("pattern `K(T0) will never match: nothing reaches it (11:24; the value is `K(U0))"),
     "/test.gx" => r#"
         type T0 = [(T1, T0), `K(T0), `TNil];
         type T1 = [(T2, T0), `K(T2), `TNil];
