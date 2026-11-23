@@ -479,13 +479,17 @@ impl Template {
 }
 
 impl Select {
-    /// `e`, a refusal about the arm `arm`, placed at its pattern, and an
-    /// instance's at the use that made the instance.
+    /// `e`, a refusal about the arm `arm`, placed at its pattern.
     fn at_arm(&self, arm: Option<usize>, e: anyhow::Error) -> anyhow::Error {
-        let e = match arm.and_then(|i| self.sites.as_ref()?.get(i)) {
+        match arm.and_then(|i| self.sites.as_ref()?.get(i)) {
             Some(site) => e.at(site),
             None => e,
-        };
+        }
+    }
+
+    /// `e`, a refusal found outside the check of the expression the select
+    /// was made at, placed there.
+    fn placed(&self, e: anyhow::Error) -> anyhow::Error {
         match &self.made {
             Some((ori, pos)) => e.placed(ori, *pos),
             None => e,
@@ -500,7 +504,8 @@ pub(super) struct Select {
     /// A copy made for an instance of a generic definition: an arm
     /// nothing reaches there is no dead arm.
     pub(super) instance: bool,
-    /// Where the use that made the instance is written.
+    /// Where the select is written; for an instance's copy, where the use
+    /// that made the instance is.
     made: Option<super::Made>,
     pub(super) waiting: Vec<Type>,
     /// What was passed down the arms.
@@ -635,12 +640,13 @@ impl Solving {
     /// scrutinee.
     pub fn select(&mut self, arms: Vec<Arm>, at: ArcStr) -> usize {
         let hit = vec![false; arms.len()];
+        let made = self.site();
         self.selects.push(Select {
             template: Arc::new(Template { arms, at }),
             hit,
             routed: false,
             instance: false,
-            made: None,
+            made,
             waiting: vec![],
             seen: vec![],
             scrutinees: vec![],
@@ -1450,7 +1456,17 @@ impl Solving {
     pub(super) fn select_route(&mut self, env: &Env, id: usize, t: &Type) -> Result<()> {
         let mut arm = None;
         let r = self.select_route_at(env, id, t, &mut arm);
-        r.map_err(|e| self.selects[id].at_arm(arm, e))
+        r.map_err(|e| {
+            let select = &self.selects[id];
+            let e = select.at_arm(arm, e);
+            // the check of the expression it was made at places what it
+            // finds; a value that reaches the select later is refused
+            // with no expression at hand
+            match select.made == self.site() {
+                true => e,
+                false => select.placed(e),
+            }
+        })
     }
 
     /// [`Self::select_route`], with `arm` the arm being routed when it
