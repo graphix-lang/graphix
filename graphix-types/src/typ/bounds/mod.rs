@@ -3413,47 +3413,64 @@ fn fixes(v: &TVar, min: u32) -> bool {
 /// writable reference, a parameter of an abstract or named type, which are
 /// read both ways), `positive` where `t` itself gives one.
 fn negative_cells(t: &Type, positive: bool, out: &mut SmallVec<[TVar; 8]>) {
-    ensure_sufficient(|| match t {
-        Type::TVar(v) => match v.binding() {
-            Some(b) => negative_cells(&b, positive, out),
-            None if !positive => out.push(v.clone()),
-            None => (),
-        },
-        Type::Fn(f) => {
-            // a default's type is passed out of the function, as its result
-            // is: a parameter whose own type is its default's goes both ways
-            for a in f.args.iter() {
-                negative_cells(&a.typ, !positive, out);
-                match a.kind.default() {
-                    Some(DefaultType::Of(d)) => negative_cells(d, positive, out),
-                    Some(DefaultType::Param) => negative_cells(&a.typ, positive, out),
-                    Some(DefaultType::Each) | None => (),
+    // a part many places share is walked once each way: a type is a
+    // graph, and its paths are exponentially many
+    fn go(
+        t: &Type,
+        positive: bool,
+        out: &mut SmallVec<[TVar; 8]>,
+        seen: &mut AHashSet<(usize, bool)>,
+    ) {
+        let node = match t {
+            Type::TVar(v) => Some(v.cell_addr()),
+            t => node_addr(t),
+        };
+        if node.is_some_and(|n| !seen.insert((n, positive))) {
+            return;
+        }
+        ensure_sufficient(|| match t {
+            Type::TVar(v) => match v.binding() {
+                Some(b) => go(&b, positive, out, seen),
+                None if !positive => out.push(v.clone()),
+                None => (),
+            },
+            Type::Fn(f) => {
+                // a default's type is passed out of the function, as its result
+                // is: a parameter whose own type is its default's goes both ways
+                for a in f.args.iter() {
+                    go(&a.typ, !positive, out, seen);
+                    match a.kind.default() {
+                        Some(DefaultType::Of(d)) => go(d, positive, out, seen),
+                        Some(DefaultType::Param) => go(&a.typ, positive, out, seen),
+                        Some(DefaultType::Each) | None => (),
+                    }
                 }
+                if let Some(v) = &f.vargs {
+                    go(v, !positive, out, seen)
+                }
+                go(&f.rtype, positive, out, seen);
+                go(&f.throws, positive, out, seen)
             }
-            if let Some(v) = &f.vargs {
-                negative_cells(v, !positive, out)
+            Type::ByRef(Mutability::Mut, x) => {
+                go(x, false, out, seen);
+                go(x, true, out, seen)
             }
-            negative_cells(&f.rtype, positive, out);
-            negative_cells(&f.throws, positive, out)
-        }
-        Type::ByRef(Mutability::Mut, x) => {
-            negative_cells(x, false, out);
-            negative_cells(x, true, out)
-        }
-        Type::Abstract { params, .. } => params.iter().for_each(|p| {
-            negative_cells(p, false, out);
-            negative_cells(p, true, out)
-        }),
-        Type::Ref(r) => r.params.iter().for_each(|p| {
-            negative_cells(p, false, out);
-            negative_cells(p, true, out)
-        }),
-        Type::App(c, x) => [c, x].into_iter().for_each(|p| {
-            negative_cells(p, false, out);
-            negative_cells(p, true, out)
-        }),
-        t => t.for_each_child(&mut |c| negative_cells(c, positive, out)),
-    })
+            Type::Abstract { params, .. } => params.iter().for_each(|p| {
+                go(p, false, out, seen);
+                go(p, true, out, seen)
+            }),
+            Type::Ref(r) => r.params.iter().for_each(|p| {
+                go(p, false, out, seen);
+                go(p, true, out, seen)
+            }),
+            Type::App(c, x) => [c, x].into_iter().for_each(|p| {
+                go(p, false, out, seen);
+                go(p, true, out, seen)
+            }),
+            t => t.for_each_child(&mut |c| go(c, positive, out, seen)),
+        })
+    }
+    go(t, positive, out, &mut LPooled::take())
 }
 
 /// For [`Solving::copy_frozen`]: the value of the scheme's variable `v`,

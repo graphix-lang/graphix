@@ -247,26 +247,46 @@ fn tag(name: &ArcStr, parts: impl IntoIterator<Item = Type>) -> Type {
 }
 
 /// `t` with each part `f` answers for replaced, a part's own parts after
-/// it; a union is rebuilt as one. A node `t` shares is mapped once: `t`
-/// holds every node it reaches for the whole walk, so no address is reused.
+/// it; a union is rebuilt as one. A part that comes out as it went in is
+/// the part itself, so what `t` shares with other types stays shared, and
+/// a node `t` shares is mapped once: `t` holds every node it reaches for
+/// the whole walk, so no address is reused.
 fn map_parts(t: &Type, f: &mut impl FnMut(&Type) -> Option<Type>) -> Type {
     fn go(
         t: &Type,
         f: &mut impl FnMut(&Type) -> Option<Type>,
-        done: &mut AHashMap<usize, Type>,
-    ) -> Type {
+        done: &mut AHashMap<usize, Option<Type>>,
+    ) -> Option<Type> {
         ensure_sufficient(|| {
             let key = node_addr(t);
             if let Some(mapped) = key.and_then(|k| done.get(&k)) {
                 return mapped.clone();
             }
             let mapped = match f(t) {
-                Some(t) => t,
+                Some(t) => Some(t),
                 None => match t {
-                    Type::Set(ms) => union_of(ms.iter().map(|m| go(m, f, done))),
-                    t => t
-                        .cow_children(&mut |c| Some(go(c, f, done)))
-                        .unwrap_or_else(|| t.clone()),
+                    Type::Set(ms) => {
+                        let parts: SmallVec<[Type; 4]> = ms
+                            .iter()
+                            .map(|m| go(m, f, done).unwrap_or_else(|| m.clone()))
+                            .collect();
+                        // members that came to be one type are one member
+                        let same = |a: &Type, b: &Type| match (node_addr(a), node_addr(b))
+                        {
+                            (Some(x), Some(y)) => x == y,
+                            _ => strictly_identical(a, b),
+                        };
+                        let whole = union_of(parts);
+                        let unchanged = match &whole {
+                            Type::Set(rs) => {
+                                rs.len() == ms.len()
+                                    && rs.iter().zip(ms.iter()).all(|(r, m)| same(r, m))
+                            }
+                            _ => false,
+                        };
+                        (!unchanged).then_some(whole)
+                    }
+                    t => t.cow_children(&mut |c| go(c, f, done)),
                 },
             };
             if let Some(k) = key {
@@ -275,7 +295,7 @@ fn map_parts(t: &Type, f: &mut impl FnMut(&Type) -> Option<Type>) -> Type {
             mapped
         })
     }
-    go(t, f, &mut LPooled::take())
+    go(t, f, &mut LPooled::take()).unwrap_or_else(|| t.clone())
 }
 
 pub fn split(t: &Type) -> Type {

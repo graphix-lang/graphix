@@ -8369,43 +8369,68 @@ fn distinct_type_nodes(t: &graphix_compiler::typ::Type) -> usize {
 /// lambda's body or a struct update), holds one copy of its last link's
 /// type: the chain's type, its cells' bounds included, grows by a few nodes
 /// a link, where a copy at each read would double it.
-#[tokio::test(flavor = "current_thread")]
-async fn holder_chain_stays_a_dag() -> Result<()> {
+const HOLDER_PAIRS: &str = "let id = |v| v;\nlet y = (|z| z, 2);\nlet x = (|x| x, 1);\n";
+const HOLDER_RECORD: &str = "let x = {n: 0, f: |x| x};\n";
+
+/// The links of a holder chain: what each is called, what stands before
+/// the chain, and the link, which reads the last link as `x`.
+const HOLDER_LINKS: [(&str, &str, &str); 11] = [
+    ("arrays", HOLDER_PAIRS, "([x], [x, y])"),
+    ("lists", HOLDER_PAIRS, "{a: [<x>], b: [<x, y>]}"),
+    ("maps", HOLDER_PAIRS, "`M({\"k\" => x}, {\"j\" => x})"),
+    ("calls", HOLDER_PAIRS, "{a: x, b: id(x)}"),
+    ("call pairs", HOLDER_PAIRS, "(id(x), id(x), |w| w)"),
+    ("blocks", HOLDER_PAIRS, "{a: x, b: {let t = x; t}}"),
+    ("selects", HOLDER_PAIRS, "{a: x, b: select 1 { _ => x }}"),
+    ("select binds", HOLDER_PAIRS, "{a: x, b: select x { v => v }}"),
+    ("lambdas", HOLDER_PAIRS, "{a: x, g: || x}"),
+    ("updates", HOLDER_RECORD, "{n: 1, a: x, b: {x with n: 2}}"),
+    ("update pairs", HOLDER_RECORD, "{n: 1, a: {x with n: 1}, b: {x with n: 2}}"),
+];
+
+/// How many type nodes the last `x` of a chain of `links` holds.
+async fn holder_chain_nodes(prelude: &str, link: &str, links: usize) -> Result<usize> {
     use arcstr::ArcStr;
     use graphix_compiler::{Scope, expr::ModPath};
     use graphix_package_core::testing::init;
+    let (tx, _rx) = tokio::sync::mpsc::channel(1000);
+    let ctx = init(tx, crate::TEST_REGISTER).await?;
+    let mut code = String::from(prelude);
+    for _ in 0..links {
+        code.push_str("let x = ");
+        code.push_str(link);
+        code.push_str(";\n");
+    }
+    let _c = ctx.rt.compile(ArcStr::from(code)).await?;
+    let env = ctx.rt.get_env().await?;
+    let (_, x) = env
+        .lookup_bind(&Scope::root().lexical, &ModPath::from_iter(["x"]))?
+        .ok_or_else(|| anyhow::anyhow!("x not in scope"))?;
+    let nodes = distinct_type_nodes(&x.typ);
+    ctx.shutdown().await;
+    Ok(nodes)
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn holder_chain_stays_a_dag() -> Result<()> {
     const LINKS: usize = 10;
-    const PAIRS: &str = "let id = |v| v;\nlet y = (|z| z, 2);\nlet x = (|x| x, 1);\n";
-    const RECORD: &str = "let x = {n: 0, f: |x| x};\n";
-    for (shape, prelude, link) in [
-        ("arrays", PAIRS, "([x], [x, y])"),
-        ("lists", PAIRS, "{a: [<x>], b: [<x, y>]}"),
-        ("maps", PAIRS, "`M({\"k\" => x}, {\"j\" => x})"),
-        ("calls", PAIRS, "{a: x, b: id(x)}"),
-        ("call pairs", PAIRS, "(id(x), id(x), |w| w)"),
-        ("blocks", PAIRS, "{a: x, b: {let t = x; t}}"),
-        ("selects", PAIRS, "{a: x, b: select 1 { _ => x }}"),
-        ("select binds", PAIRS, "{a: x, b: select x { v => v }}"),
-        ("lambdas", PAIRS, "{a: x, g: || x}"),
-        ("updates", RECORD, "{n: 1, a: x, b: {x with n: 2}}"),
-        ("update pairs", RECORD, "{n: 1, a: {x with n: 1}, b: {x with n: 2}}"),
-    ] {
-        let (tx, _rx) = tokio::sync::mpsc::channel(1000);
-        let ctx = init(tx, crate::TEST_REGISTER).await?;
-        let mut code = String::from(prelude);
-        for _ in 0..LINKS {
-            code.push_str("let x = ");
-            code.push_str(link);
-            code.push_str(";\n");
-        }
-        let _c = ctx.rt.compile(ArcStr::from(code)).await?;
-        let env = ctx.rt.get_env().await?;
-        let (_, x) = env
-            .lookup_bind(&Scope::root().lexical, &ModPath::from_iter(["x"]))?
-            .ok_or_else(|| anyhow::anyhow!("x not in scope"))?;
-        let nodes = distinct_type_nodes(&x.typ);
+    for (shape, prelude, link) in HOLDER_LINKS {
+        let nodes = holder_chain_nodes(prelude, link, LINKS).await?;
         assert!(nodes <= 16 * (LINKS + 1), "{shape}: {nodes} nodes");
-        ctx.shutdown().await;
+    }
+    Ok(())
+}
+
+/// A chain of forty links checks, whatever the link: a walk that takes
+/// each path through the types the links share (copying the scheme of a
+/// holder of lambdas, routing a select's scrutinee to its bind) takes two
+/// to the fortieth of them and never ends.
+#[tokio::test(flavor = "current_thread")]
+async fn holder_chain_of_forty_links_checks() -> Result<()> {
+    const LINKS: usize = 40;
+    for (shape, prelude, link) in HOLDER_LINKS {
+        let nodes = holder_chain_nodes(prelude, link, LINKS).await?;
+        assert!(nodes <= LINKS * LINKS * LINKS, "{shape}: {nodes} nodes");
     }
     Ok(())
 }
