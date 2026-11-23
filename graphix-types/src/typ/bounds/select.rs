@@ -10,7 +10,7 @@ use crate::{
     expr::{At, Expr, WrittenAt},
     stack::ensure_sufficient,
     typ::{
-        AbstractId, Bound, Mutability, TVar, Type, cast::Indiscernible, node_addr,
+        AbstractId, Bound, TVar, Type, cast::Indiscernible, node_addr,
         setops::strictly_identical,
     },
 };
@@ -21,7 +21,6 @@ use compact_str::format_compact;
 use netidx_value::Typ;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
-use std::ops::ControlFlow;
 use triomphe::Arc;
 
 #[derive(Clone, Debug)]
@@ -211,7 +210,7 @@ impl Pat {
         match self {
             Pat::Any(_) | Pat::Lit(..) => None,
             Pat::Abs(_, id, p) => {
-                blind(env, id, p, captured).or_else(|| p.blind(env, captured))
+                blind(env, id, captured).or_else(|| p.blind(env, captured))
             }
             Pat::Test(_, p) | Pat::Whole(_, p) => p.blind(env, captured),
             Pat::Tuple(_, ps) | Pat::Variant(_, _, ps) | Pat::Or(ps) => {
@@ -223,19 +222,13 @@ impl Pat {
     }
 }
 
-/// The name of the abstract type `id` where its constructor around `p`
-/// may take nothing out of a value whose instance is not known: a name
-/// takes a part of it (inside `p`, or the whole where `captured`), and
-/// read at `Any` parameters the payload holds something a value could be
-/// written into or called.
-fn blind(env: &Env, id: &AbstractId, p: &Pat, captured: bool) -> Option<ArcStr> {
+/// The name of the abstract type `id` where a name takes the whole of a
+/// value of it whose instance is not known (`captured`), and no one type
+/// holds every instance: its payload holds a parameter otherwise than to
+/// read it.
+fn blind(env: &Env, id: &AbstractId, captured: bool) -> Option<ArcStr> {
     let made = env.abstract_reps.get(id)?;
-    let params: SmallVec<[Type; 4]> = made.params.iter().map(|_| Type::Any).collect();
-    let mut names = SmallVec::new();
-    p.cells(&mut names);
-    let taken =
-        rep(env, id, &params).is_some_and(|r| holds_taker(env, &r, &mut SmallVec::new()));
-    (taken && (captured || !names.is_empty())).then(|| made.name.clone())
+    (captured && !made.widest_holds_each(env)).then(|| made.name.clone())
 }
 
 #[derive(Clone, Debug)]
@@ -443,34 +436,6 @@ fn has(t: &Type, bit: Typ) -> bool {
 
 fn nothing(t: &Type) -> bool {
     matches!(t, Type::Bottom) || matches!(t, Type::Primitive(p) if p.is_empty())
-}
-
-/// Whether a value of `t` holds something a value could be written into
-/// or called: a writable reference or a function, behind any name.
-fn holds_taker(env: &Env, t: &Type, seen: &mut SmallVec<[Type; 4]>) -> bool {
-    let named = |t: &Type, what: Option<Type>, seen: &mut SmallVec<[Type; 4]>| match seen
-        .iter()
-        .any(|s| strictly_identical(s, t))
-    {
-        true => false,
-        false => {
-            seen.push(t.clone());
-            what.is_none_or(|t| holds_taker(env, &t, seen))
-        }
-    };
-    ensure_sufficient(|| match t {
-        Type::ByRef(Mutability::Mut, _) | Type::Fn(_) => true,
-        Type::Ref(_) => named(t, t.lookup_ref(env).ok(), seen),
-        Type::Abstract { id, params } if env.abstract_reps.get(id).is_some() => {
-            named(t, rep(env, id, params), seen)
-        }
-        t => t
-            .try_for_each_child(&mut |c| match holds_taker(env, c, seen) {
-                true => ControlFlow::Break(()),
-                false => ControlFlow::Continue(()),
-            })
-            .is_break(),
-    })
 }
 
 /// A select as written: its arms, and where it is. A use of a scheme's
@@ -1215,18 +1180,22 @@ impl Solving {
                 };
                 Routed { part: self.both(env, true, &t, lit), rest, binds: vec![] }
             }
-            (Pat::Abs(_, id, p), Type::Any) => match env.abstract_reps.get(id) {
+            // which instance it is is not known: the payload is read as
+            // every instance's fits, and no name takes the whole of a type
+            // no one instance holds
+            (Pat::Abs(all, id, p), Type::Any) => match env.abstract_reps.get(id) {
+                Some(_) if blind(env, id, self.captures.get() > 0).is_some() => none(),
                 Some(made) => {
-                    // which instance it is is not known, so it is read at
-                    // the widest one's parameters
                     let params: Arc<[Type]> = Arc::from_iter(made.widest());
-                    match blind(env, id, p, self.captures.get() > 0).is_some() {
+                    let whole = Type::Abstract { id: *id, params };
+                    let r = self.route(env, p, &split(&made.at_any_instance(env)));
+                    match nothing(&r.part) {
                         true => none(),
-                        false => {
-                            let whole = Type::Abstract { id: *id, params };
-                            let r = self.route(env, pat, &whole);
-                            Routed { rest: Type::Any, ..r }
-                        }
+                        false => Routed {
+                            part: whole.clone(),
+                            rest: Type::Any,
+                            binds: named(all, &whole, r.binds),
+                        },
                     }
                 }
                 None => none(),
@@ -1737,11 +1706,12 @@ impl Solving {
                         anyhow!("pattern {arm} will never match: {untold} ({at})")
                     }
                     Some(name) => anyhow!(
-                        "pattern {arm} takes nothing: {name}(..) names part of a payload \
-                         something could be written into or called, which it may only \
-                         where the value is known to be one instance of {name}; write \
-                         the instance in a type test, `{name}<T> as {name}(..)` ({at}; \
-                         the value is {seen})"
+                        "pattern {arm} takes nothing: a name over the whole of a {name} \
+                         needs its instance, as no one type holds every {name} (its \
+                         payload holds a parameter under a writable reference, a \
+                         function's argument or an abstract type); write the instance \
+                         in a type test, `{name}<T> as ..`, or name the payload's \
+                         parts alone ({at}; the value is {seen})"
                     ),
                     None => anyhow!(
                         "pattern {arm} will never match: nothing reaches it ({at}; the \

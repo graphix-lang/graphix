@@ -249,6 +249,14 @@ impl AbstractRep {
         variance::covariant_in(env, &self.rep, &formals)
     }
 
+    /// The representation as every instance's fits it, which a value
+    /// whose instance is not known is read at
+    /// ([`variance::held_at_every`]): the widest instance's where
+    /// [`Self::widest_holds_each`].
+    pub fn at_any_instance(&self, env: &Env) -> Type {
+        variance::held_at_every(env, &self.rep, &self.formals(&self.widest()))
+    }
+
     fn formals(&self, params: &[Type]) -> LPooled<AHashMap<ArcStr, Type>> {
         self.params
             .iter()

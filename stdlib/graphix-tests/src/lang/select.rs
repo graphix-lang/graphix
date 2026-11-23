@@ -2274,7 +2274,7 @@ run!(
     let f = |x: Any| select x { W(g) => g(1) + 1, _ => 0 };
     f(W(|x: i64| "s"))
 }"#,
-    refused("pattern W(g) takes nothing: W(..) names part of a payload something could be written into or called, which it may only where the value is known to be one instance of W; write the instance in a type test, `W<T> as W(..)` (3:29; the value is Any)");
+        refused("type mismatch i64 does not contain Any");
     FuseExpect::None
 );
 
@@ -2405,10 +2405,23 @@ run!(
     prints(r#"[[i64:-1, i64:2, i64:0], i64:2, i64:2]"#)
 );
 
-// The widest instance holds every instance's payload only where the
-// representation holds each parameter covariantly: under a writable
-// reference, a function's argument or an abstract type's parameter, a
-// name taken out over `Any` is refused, and the written instance passes.
+// A value whose instance is not known is read at a type every instance's
+// payload fits: a writable reference over a parameter is read-only there,
+// a function over one takes no argument, a part inside another abstract
+// type is `Any`, and a name over the whole is refused; the written
+// instance passes.
+run!(
+    abstract_payload_under_a_writable_reference_over_any_reads,
+    r#"{
+    type W<'a> = Abstract<&mut 'a>;
+    let (i, j) = (1, "s");
+    let f = |x: Any| select x { W<i64> as W(r) => { *r <- 5; "wrote" }, W(r) => "[*r]", _ => "o" };
+    (f(W(&mut i)), f(W(&mut j)), f(3))
+}"#,
+    prints(r#"["wrote", "s", "o"]"#);
+    FuseExpect::Jit
+);
+
 run!(
     abstract_payload_under_a_writable_reference_over_any_refused,
     r#"{
@@ -2418,7 +2431,7 @@ run!(
     f(W(&mut i));
     i + 1
 }"#,
-    refused("pattern W(r) takes nothing: W(..) names part of a payload something could be written into or called, which it may only where the value is known to be one instance of W; write the instance in a type test, `W<T> as W(..)` (4:29; the value is Any)");
+        refused("can't write through a read-only reference (&Any)");
     FuseExpect::None
 );
 
@@ -2430,7 +2443,7 @@ run!(
     let f = |x: Any| select x { W(g) => g("s"), _ => 0 };
     f(W(|x: i64| x + 1))
 }"#,
-    refused("pattern W(g) takes nothing: W(..) names part of a payload something could be written into or called, which it may only where the value is known to be one instance of W; write the instance in a type test, `W<T> as W(..)` (4:29; the value is Any)");
+        refused("this function's parameter is of no type, so no argument fits it");
     FuseExpect::None
 );
 
@@ -2443,7 +2456,7 @@ run!(
     f([W(&mut i)]);
     i + 1
 }"#,
-    refused("pattern [W(r), ..] takes nothing: W(..) names part of a payload something could be written into or called, which it may only where the value is known to be one instance of W; write the instance in a type test, `W<T> as W(..)` (4:36; the value is Array<Any>)");
+        refused("can't write through a read-only reference (&Any)");
     FuseExpect::None
 );
 
@@ -2456,7 +2469,7 @@ run!(
     f((W(&mut i), 1));
     i + 1
 }"#,
-    refused("pattern t@ (W(_), _) takes nothing: W(..) names part of a payload something could be written into or called");
+        refused("pattern t@ (W(_), _) takes nothing: a name over the whole of a W needs its instance");
     FuseExpect::None
 );
 
@@ -10503,11 +10516,11 @@ run!(abstract_constructor_over_any_advises_the_tag, r#"{
   f(1)
 }"#, prints("i64:0"); FuseExpect::None);
 
-run!(parameterized_abstract_constructor_over_any_advises_the_instance, r#"{
+run!(parameterized_abstract_constructor_over_any_takes_every_instance, r#"{
   type W<'a> = Abstract<&mut 'a>;
   let f = |x: Any| select x { Any as W(r) => 1, _ => 0 };
   f(1)
-}"#, refused("pattern Any takes nothing: W(..) names part of a payload something could be written into or called, which it may only where the value is known to be one instance of W; write the instance in a type test, `W<T> as W(..)` (3:27; the value is Any)"); FuseExpect::None);
+}"#, prints("i64:0"); FuseExpect::None);
 
 run!(parameterized_abstract_tag_test_names_the_instance, r#"{
   type W<'a> = Abstract<&mut 'a>;

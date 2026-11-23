@@ -190,9 +190,12 @@ select, and runtime forms. Each rule refuses and names the fix.
   parameter with a declared bound is its bound there. Where the
   representation holds a parameter under a `&mut`, a function's argument
   or another abstract type (`Abstract<&mut 'a>`), `W<Any>` does not hold
-  a `W<i64>`, so a name taken out of `W(..)` over `Any` is refused: write
-  the instance, `W<i64> as W(r)`. `W(_)` naming nothing still tests the
-  tag.
+  a `W<i64>`: `W(r)` over `Any` still takes every instance, and `r` is
+  what every instance's payload fits, a read-only `&Any` (a function
+  there takes no argument, a part inside another abstract type is
+  `Any`). To write or call, test the instances first, `W<i64> as W(r)`,
+  with `W(r)` after them for the rest. A whole capture there (`w@
+  W(_)`) is refused: name the scrutinee.
 - A partial struct pattern over members whose left-out fields differ
   only in types not decided at the select takes them for two members and
   is refused: `{a, ..}` over `{a: [1], c: x}` and `{a: ["s"], c: y}`,
@@ -415,7 +418,9 @@ no "cannot compute Any + i64" type W<'a> = Abstract<Map<string, 'a>>; |x: W<Any>
 no "cannot compute Any + i64" type W<'a> = Abstract<'a>; |x: Any| select x { w@ W(_) => w.0 + 1, _ => 0 }
 ok type W<'a> = Abstract<'a>; |x: Any| select x { w@ W(_) => select w.0 { i64 as i => i + 1, _ => 0 }, _ => 0 }
 ok type W<'a: Number> = Abstract<'a>; |x: Any| select x { W(p) => "[p]", _ => "o" }
-no "no instance of W holds every other's payload" type W<'a> = Abstract<&mut 'a>; |x: Any| select x { W(r) => *r <- "s", _ => never() }
-ok type W<'a> = Abstract<&mut 'a>; |x: Any| select x { W<i64> as W(r) => *r <- 5, _ => never() }
+no "can't write through a read-only reference (&Any)" type W<'a> = Abstract<&mut 'a>; |x: Any| select x { W(r) => *r <- "s", _ => never() }
+ok type W<'a> = Abstract<&mut 'a>; |x: Any| select x { W<i64> as W(r) => { *r <- 5; "wrote" }, W(r) => "[*r]", _ => "o" }
+no "this function's parameter is of no type" type W<'a> = Abstract<fn(x: 'a) -> 'a>; |x: Any| select x { W(g) => g(1), _ => 0 }
+no "a name over the whole of a W needs its instance" type W<'a> = Abstract<&mut 'a>; |x: Any| select x { w@ W(_) => 1, _ => 0 }
 ok type W<'a> = Abstract<&mut 'a>; |x: Any| select x { W(_) => 1, _ => 0 }
 ```

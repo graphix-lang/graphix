@@ -2022,7 +2022,9 @@ impl Solving {
         let (fp, gp) = (positional(f), positional(g));
         for (i, ga) in gp.iter().enumerate() {
             match (fp.get(i), &f.vargs) {
-                (Some(fa), _) => self.constrain(env, ga, fa)?,
+                (Some(fa), _) => {
+                    self.constrain(env, ga, fa).map_err(|e| takes_nothing(fa, e))?
+                }
                 (None, Some(v)) => self.constrain(env, ga, v)?,
                 (None, None) => bail!(
                     "type mismatch: a function of {} arguments where one of {} is wanted",
@@ -3372,6 +3374,21 @@ fn standing_head(v: &TVar, seen: &mut AHashSet<usize>) -> Type {
         }
         union_of(members)
     })
+}
+
+/// `e`, a refusal of a value passed to a parameter of the type `formal`,
+/// told why where that is no type: the function was read out of an
+/// abstract value whose instance is not known.
+fn takes_nothing(formal: &Type, e: anyhow::Error) -> anyhow::Error {
+    match shallow(formal) {
+        Type::Bottom => Told::over(
+            e,
+            "this function's parameter is of no type, so no argument fits it: a \
+             function read out of an abstract value whose instance is not known is \
+             callable only where a type test names the instance, `W<T> as W(f)`",
+        ),
+        _ => e,
+    }
 }
 
 /// What `t` stands as where a refusal says it: an open cell is the values
@@ -5461,7 +5478,9 @@ impl Solving {
             }
             (Type::ByRef(Mutability::Shared, _), Use::Write { .. }) => {
                 bail!(
-                    "can't write through a read-only reference ({a}): take it with `&mut`"
+                    "can't write through a read-only reference ({a}): take it with \
+                     `&mut`; one read out of an abstract value is writable only where \
+                     a type test names the instance, `W<T> as W(r)`"
                 )
             }
             (_, Use::Write { .. }) => bail!("expected a reference not {a}"),
@@ -5537,7 +5556,9 @@ impl Solving {
         let mut formals = ft.args.iter().filter(|a| labeled(a).is_none());
         for (i, (_, arg)) in args.iter().enumerate().filter(|(_, (l, _))| l.is_none()) {
             match (formals.next(), &ft.vargs) {
-                (Some(f), _) => self.constrain(env, arg, &f.typ).map_err(|e| at(i, e))?,
+                (Some(f), _) => self
+                    .constrain(env, arg, &f.typ)
+                    .map_err(|e| at(i, takes_nothing(&f.typ, e)))?,
                 (None, Some(v)) => self.constrain(env, arg, v).map_err(|e| at(i, e))?,
                 (None, None) => bail!("too many arguments"),
             }

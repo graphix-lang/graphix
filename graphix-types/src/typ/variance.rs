@@ -20,7 +20,7 @@ use crate::{
     env::Env,
     stack::ensure_sufficient,
     typ::{
-        DefaultType, Mutability, ResolvedRef, Type, TypeRef,
+        DefaultType, FnArgType, FnType, Mutability, ResolvedRef, Type, TypeRef,
         expansive::{Named, definition, holds_formal},
     },
 };
@@ -526,10 +526,120 @@ pub(crate) fn covariant_in(env: &Env, t: &Type, formals: &[ArcStr]) -> bool {
     co.walk(t, Meets::COVARIANT)
 }
 
+/// `t` as one type that holds it whatever the variables `at` names stand
+/// for, each within its type there: a variable `t` reads is that type, one
+/// a value is given to (a function's argument) is ⊥, a writable reference
+/// over one is read-only, and a part no one type holds at every instance
+/// (an abstract type's parameter, a definition met again) is `Any`.
+pub(crate) fn held_at_every(env: &Env, t: &Type, at: &AHashMap<ArcStr, Type>) -> Type {
+    struct View<'a> {
+        env: &'a Env,
+        at: &'a AHashMap<ArcStr, Type>,
+        active: LPooled<Vec<usize>>,
+        steps: usize,
+    }
+    fn all(above: bool) -> Type {
+        match above {
+            true => Type::Any,
+            false => Type::Bottom,
+        }
+    }
+    impl View<'_> {
+        fn holds(&self, t: &Type) -> bool {
+            self.at.keys().any(|f| holds_formal(t, f))
+        }
+
+        /// A type that holds `t` at every instance where `above`, else
+        /// one that `t` holds at every instance.
+        fn of(&mut self, t: &Type, above: bool) -> Type {
+            if !self.holds(t) {
+                return t.clone();
+            }
+            self.steps += 1;
+            if self.steps > BUDGET {
+                return all(above);
+            }
+            ensure_sufficient(|| match t {
+                Type::TVar(tv) => match (tv.binding(), self.at.get(&tv.name)) {
+                    (Some(b), _) => self.of(&b, above),
+                    (None, Some(w)) if above => w.clone(),
+                    (None, Some(_)) => Type::Bottom,
+                    (None, None) => t.clone(),
+                },
+                Type::Fn(f) => self.function(f, above),
+                Type::ByRef(Mutability::Mut, _) if !above => Type::Bottom,
+                Type::ByRef(_, x) => {
+                    Type::ByRef(Mutability::Shared, Arc::new(self.of(x, above)))
+                }
+                Type::Ref(tr) => self.named(tr, above),
+                Type::Abstract { .. } | Type::App(..) => all(above),
+                t => {
+                    let part = t.cow_children(&mut |c| Some(self.of(c, above)));
+                    part.unwrap_or_else(|| t.clone())
+                }
+            })
+        }
+
+        fn function(&mut self, f: &FnType, above: bool) -> Type {
+            // a default's type goes out of the function as its parameter's
+            // comes in: one over a variable is held both ways
+            let both_ways = |a: &FnArgType| match a.kind.default() {
+                Some(DefaultType::Of(d)) => self.holds(d) || self.holds(&a.typ),
+                Some(DefaultType::Param) => self.holds(&a.typ),
+                Some(DefaultType::Each) | None => false,
+            };
+            if !f.quantifiers.is_empty() || f.args.iter().any(both_ways) {
+                return all(above);
+            }
+            let args = f.args.iter().map(|a| FnArgType {
+                kind: a.kind.clone(),
+                typ: self.of(&a.typ, !above),
+            });
+            let args = Arc::from_iter(args.collect::<SmallVec<[FnArgType; 4]>>());
+            Type::Fn(Arc::new(FnType {
+                args,
+                vargs: f.vargs.as_ref().map(|t| self.of(t, !above)),
+                rtype: self.of(&f.rtype, above),
+                throws: self.of(&f.throws, above),
+                explicit_throws: f.explicit_throws,
+                quantifiers: f.quantifiers.clone(),
+                lambda_ids: f.lambda_ids.clone(),
+            }))
+        }
+
+        fn named(&mut self, tr: &TypeRef, above: bool) -> Type {
+            let Named::Def(c) = definition(tr, self.env) else { return all(above) };
+            let Some(inner) = meets(self.env, &c) else { return all(above) };
+            if inner.len() != tr.params.len() {
+                return all(above);
+            }
+            // a definition that only reads a parameter keeps its name
+            let read = |m: &Meets| *m == Meets::UNUSED || *m == Meets::COVARIANT;
+            if tr.params.iter().zip(inner.iter()).all(|(a, m)| read(m) || !self.holds(a))
+            {
+                let params = tr.params.iter().map(|a| self.of(a, above));
+                let params = Arc::from_iter(params.collect::<SmallVec<[Type; 4]>>());
+                return Type::Ref(Arc::new(tr.with_params(params)));
+            }
+            let Some(known) = c.bindings(&tr.params) else { return all(above) };
+            if self.active.contains(&c.def_key()) {
+                return all(above);
+            }
+            let body = c.typ().replace_tvars(&known);
+            self.active.push(c.def_key());
+            let t = self.of(&body, above);
+            self.active.pop();
+            t
+        }
+    }
+    View { env, at, active: LPooled::take(), steps: 0 }.of(t, true)
+}
+
 #[cfg(test)]
 mod test {
-    use super::{Meets, covariant_in, meets};
+    use super::{Meets, covariant_in, held_at_every, meets};
     use crate::{env::Env, typ::Type};
+    use arcstr::ArcStr;
 
     fn of(defs: &[(&str, &str)], name: &str) -> Vec<Meets> {
         let (env, t) = Env::typed_at_root(defs, name).expect("defined");
@@ -560,6 +670,37 @@ mod test {
             Meets(Meets::HELD_SWAPPED | Meets::HOLDS_SWAPPED)
         );
         assert_eq!(one("Map<'a, Array<'a>>"), CO);
+    }
+
+    // What every instance's payload fits: a parameter read at its type, a
+    // writable reference over one read-only, a function's parameter over
+    // one ⊥, a part inside an abstract type `Any`; a definition that
+    // only reads its parameter keeps its name.
+    #[test]
+    fn a_type_held_at_every_instance() {
+        let defs = [
+            ("G<'t>", "fn(x: i64) -> 't"),
+            ("F<'t>", "fn(x: 't) -> i64"),
+            ("B<'t>", "Abstract<'t>"),
+            ("R<'t>", "[`N, `C(&mut 't, R<'t>)]"),
+        ];
+        let view = |body: &str| {
+            let (env, t) = Env::typed_at_root(&defs, body).expect("defined");
+            let at = [(ArcStr::from("a"), Type::Any)].into_iter().collect();
+            held_at_every(&env, &t, &at).to_string()
+        };
+        assert_eq!(view("(i64, 'a)"), "(i64, Any)");
+        assert_eq!(view("&mut 'a"), "&Any");
+        assert_eq!(view("&mut i64"), "&mut i64");
+        assert_eq!(view("(G<'a>, &'a)"), "(G<Any>, &Any)");
+        assert_eq!(view("F<'a>"), "fn(x: _) -> i64");
+        assert_eq!(
+            view("fn(k: fn(x: 'a) -> i64) -> Array<'a>"),
+            "fn(k: fn(x: Any) -> i64) -> Array<Any>"
+        );
+        assert_eq!(view("fn(r: &mut 'a) -> i64"), "fn(r: _) -> i64");
+        assert_eq!(view("{b: B<'a>, n: i64}"), "{ b: Any, n: i64 }");
+        assert_eq!(view("R<'a>"), "[`C(&Any, Any), `N]");
     }
 
     #[test]

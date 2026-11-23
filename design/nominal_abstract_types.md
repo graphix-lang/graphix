@@ -93,12 +93,22 @@ let bump = |c: Counter| { let Counter(x) = c; Counter(x + u64:1) };   // destruc
    parameter under a writable reference, a function's argument or an
    abstract type's parameter there (`Abstract<&mut 'a>`) would let the
    arm write a string through a `&mut i64` or call an `fn(x: i64)` with
-   one. So where a value that is `Any` reaches such a pattern and a name
-   takes it or a part of it out (a payload bind, its capture, a capture
-   of a pattern around it), the arm is refused for the written instance,
-   `W<i64> as W(r)` (`StructPatternNode::narrow_payloads`); a written
-   test of an abstract compares its parameters at run time. A pattern
-   that names nothing (`W(_)`) tests the tag and passes. An abstract
+   one. So where a value that is `Any` reaches such a pattern, its
+   payload is read at a type every instance's fits
+   (`AbstractRep::at_any_instance`, `variance::held_at_every`): a
+   parameter the representation reads is its bound or `Any`, a writable
+   reference over one is read-only (`&mut 'a` reads as `&Any`), a
+   function's parameter over one is ⊥, so no argument fits it, and a
+   part inside another abstract type is `Any`. The arm takes every
+   instance by its tag, and may read what it names, never write or call
+   through it; the written instance, `W<i64> as W(r)`, gives the payload
+   as that instance holds it, and a written test of an abstract compares
+   its parameters at run time. The type is one every instance fits, and
+   no "one unknown type": an arm's bindings stand across cycles, where a
+   reference one instance gave would meet a value of another's. A name
+   over the whole there (`w@ W(_)`, a capture of a pattern around it) is
+   refused, no one type holding every instance. A pattern that names
+   nothing (`W(_)`) tests the tag and passes. An abstract
    pattern under a payload (`Box(Inner((a, b)))`) compiles at parameters
    of its own too, and is narrowed against the instances that payload
    holds. Pins: `lang::select::abstract_payload_*`, `abstract_capture_*`.

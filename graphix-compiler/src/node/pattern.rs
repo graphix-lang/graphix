@@ -1140,30 +1140,19 @@ impl StructPatternNode {
     }
 
     /// An abstract pattern's representation at `m`, one member of the
-    /// type at its position ([`Self::member_params`]); `None` for a
-    /// member it cannot match.
+    /// type at its position: `m`'s own where `m` is an instance of its
+    /// type, and what every instance's fits where `m` is `Any`
+    /// ([`AbstractRep::at_any_instance`]); `None` for a member it cannot
+    /// match.
     fn member_rep(&self, env: &Env, m: &Type) -> Option<Type> {
         let Self::Abstract { id, rep, .. } = self else { return None };
-        let params = self.member_params(env, m)?;
-        Some(
-            env.abstract_reps
-                .get(id)
-                .map_or_else(|| rep.clone(), |r| r.instantiate_with(&params)),
-        )
-    }
-
-    /// The parameters an abstract pattern's type stands at in `m`, one
-    /// member of the type at its position: `m`'s own when `m` is an
-    /// instance of its type, the widest instance's when `m` is `Any`
-    /// ([`AbstractRep::widest`]); `None` for a member it cannot match.
-    fn member_params(&self, env: &Env, m: &Type) -> Option<SmallVec<[Type; 4]>> {
-        let Self::Abstract { id, .. } = self else { return None };
+        let made = env.abstract_reps.get(id);
         match &expand(env, m)? {
             Type::Abstract { id: t, params } if t == id => {
-                Some(params.iter().cloned().collect())
+                Some(made.map_or_else(|| rep.clone(), |r| r.instantiate_with(params)))
             }
             Type::Any => {
-                Some(env.abstract_reps.get(id).map_or_else(SmallVec::new, |r| r.widest()))
+                Some(made.map_or_else(|| rep.clone(), |r| r.at_any_instance(env)))
             }
             _ => None,
         }
