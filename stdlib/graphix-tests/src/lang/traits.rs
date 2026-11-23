@@ -6404,15 +6404,25 @@ run!(
     "#
 );
 
-// The call is held to the declaration as it stands: the array decides
-// the variable, and the later argument must fit it.
+// The array goes to the one member that can take it, and the later
+// argument widens the variable: the result holds both, and is no `i64`.
 run!(
-    method_variable_beside_a_written_member_holds_its_call,
-    refused("type mismatch [Array<string>, Array<i64>] does not contain Array<f64>"),
+    method_variable_beside_a_written_member_widens_to_its_call,
+    is(Value::I64(2)),
     "/test.gx" => r#"
         trait T { val m: fn(self, x: [Array<'a>, Array<string>], y: 'a) -> 'a };
         impl T for i64 { let m = |s, x, y| y };
         let result = T::m(1, [1.5], 2)
+    "#
+);
+
+run!(
+    method_variable_beside_a_written_member_holds_every_argument,
+    refused("type mismatch i64 does not contain f64"),
+    "/test.gx" => r#"
+        trait T { val m: fn(self, x: [Array<'a>, Array<string>], y: 'a) -> 'a };
+        impl T for i64 { let m = |s, x, y| y };
+        let result: i64 = T::m(1, [1.5], 2)
     "#
 );
 

@@ -1907,7 +1907,19 @@ impl Solving {
                     _ => Ok(self.held.push((a.clone(), b.clone(), false))),
                 }
             }
-            _ => Ok(self.held.push((a.clone(), b.clone(), false))),
+            // a member that cannot take `a` as its cells are bounded never
+            // will: a bound only narrows. A question asks it of no member,
+            // or one inside another would walk every path through a
+            // recursive definition
+            _ if self.attempts > 0 => Ok(self.held.push((a.clone(), b.clone(), false))),
+            _ => {
+                let able: SmallVec<[&Type; 2]> =
+                    takers.iter().copied().filter(|m| self.probe(env, a, m)).collect();
+                match (&able[..], &cells[..]) {
+                    ([m], []) | ([], [m]) => self.constrain(env, a, m),
+                    _ => Ok(self.held.push((a.clone(), b.clone(), false))),
+                }
+            }
         }
     }
 

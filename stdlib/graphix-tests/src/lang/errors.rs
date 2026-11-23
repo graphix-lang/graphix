@@ -1744,7 +1744,7 @@ fn two_raised_cells_beside_named_tags(n: usize, arms: &str) -> String {
 run!(
     one_name_behind_a_wrapper_past_the_pair_budget_raises_both_cells_missing_arm_refused,
     two_raised_cells_beside_named_tags(1100, "`L(`A) => 1"),
-    refused("type mismatch `L(`A) does not contain `R('b: unbound within Any)");
+    refused("missing match cases: nothing matches `R(`B)");
     FuseExpect::None
 );
 

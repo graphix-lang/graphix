@@ -2893,7 +2893,12 @@ const SET_MEMBER_PROBE: &str = r#"{
 }"#;
 const SET_MEMBER_PROBE_BINDS: &str = r#"{
   let f = |x: [`A('a, i64), `A(Array<i64>, string)], d: 'a| -> 'a d;
-  f(`A(1, 2), "s")
+  let r: i64 = f(`A(1, 2), "s");
+  r
+}"#;
+const SET_MEMBER_PROBE_WIDENS: &str = r#"{
+  let f = |x: [`A('a, i64), `A(Array<i64>, string)], d: 'a| -> 'a d;
+  select f(`A(1, 2), "s") { i64 as n => n, string as s => 7 }
 }"#;
 const DEFAULTED_LABEL: &str = r#"{
   let f = |#x: i64| x + 1;
@@ -3211,6 +3216,7 @@ mod unsound_acceptances {
         REF_THROUGH_CELL_OK => 2,
         RIGID_IN_SET_OK => 1,
         SET_MEMBER_PROBE => 42,
+        SET_MEMBER_PROBE_WIDENS => 7,
         DEFAULTED_LABEL_OK => 2,
         PRODUCT_UNION_ONE_DIFFERS => 1,
         REF_UNION_SAME_PARAMS => 2,
@@ -11024,7 +11030,7 @@ run!(
   let g = s.fld(1, "s", |q: i64| q + 1);
   g("s")
 }"#,
-    refused("type mismatch [fn(q: [i64, string]) -> i64, fn(q: string) -> i64] does not contain fn(q: i64) -> i64");
+    refused("does not contain F2<'a, 'b>");
     FuseExpect::None
 );
 
@@ -13147,7 +13153,7 @@ run!(union_bound_reference_member_reaches_open_cell, r#"{
     let f = 'a: [&[i64, null], &mut string] |v: 'a| v;
     let g = |z| f(&z);
     *g("hello")
-}"#, refused("[&[i64, null], &mut string] does not contain &string"); FuseExpect::None);
+}"#, refused("type mismatch [i64, null] does not contain string"); FuseExpect::None);
 
 run!(
     union_bound_reference_member_accepts,
@@ -13311,20 +13317,13 @@ run!(
 
 // Of two members that take the value's constructor the one a probe
 // admits it into has the parts, and so does one that holds the other.
-// CR claude for claude: [test-gap/low] `cannot hold f64` holds whether the admitting
-// member decides z as i64 or z takes both members' first parts, [i64, string]: z <- 2.5
-// is refused either way, and the twin's z <- 3 runs either way. A change that let z
-// take string, after which `("s", 1)` reaches f though no member of its bound holds it,
-// passes both tests. Write `z <- "s"` and pin `z is i64, inferred from an earlier use,
-// and cannot hold string`. probe:
-// design/review-2026-11-16/repro/tests-types-c-weak-union-pins.sh (tests-types-c-08)
 run!(union_bound_one_admitting_member_decides_the_cell, r#"{
     let f = 'a: [(i64, i64), (string, string)] |v: 'a| v;
     let z = never();
     let r = f((z, 1));
-    z <- 2.5;
+    z <- "s";
     r
-}"#, refused("type mismatch [(i64, i64), (string, string)] does not contain (f64, i64)"); FuseExpect::None);
+}"#, refused("type mismatch i64 does not contain string"); FuseExpect::None);
 
 run!(
     union_bound_one_admitting_member_accepts,
@@ -13564,15 +13563,24 @@ run!(
     |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "x")
 );
 
-// A value with no structure yet waits within the bound: what decides the
-// variable member afterwards decides what the value may hold.
+// A value with no structure yet waits within the bound. Once it is
+// decided, a member that can never take it is out, and the variable member
+// takes it: it widens, unless its own bound holds it to less.
 run!(union_bound_an_open_variable_member_holds_a_bare_undecided_value, r#"{
+    let f = 'a: [Array<i64>, 'b], 'b: Array<string> |v: 'a, w: 'b| v;
+    let z = never();
+    let r = f(z, ["s"]);
+    z <- [1.5];
+    r
+}"#, refused("type mismatch string does not contain f64"); FuseExpect::None);
+
+run!(union_bound_an_open_variable_member_widens_to_a_bare_undecided_value, r#"{
     let f = 'a: [Array<i64>, 'b] |v: 'a, w: 'b| v;
     let z = never();
     let r = f(z, ["s"]);
     z <- [1.5];
     r
-}"#, refused("type mismatch [Array<string>, Array<i64>] does not contain Array<f64>"); FuseExpect::None);
+}"#, prints("[f64:1.5]"); FuseExpect::Jit);
 
 run!(
     union_bound_an_open_variable_member_bare_undecided_value_accepts,
