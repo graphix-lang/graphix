@@ -6532,6 +6532,29 @@ run!(
     "#
 ; FuseExpect::None);
 
+// The same lambda under a let annotated with the declaration, or inside a
+// block: the let is its annotation, and the value it holds is what must
+// be the declared signature.
+run!(
+    method_annotated_as_declared_over_a_narrower_lambda_refused,
+    refused("the implementation requires ['a, `X] to be NoError, which the signature's bounds do not say"),
+    "/test.gx" => r#"
+        trait T { val m: fn(self, x: ['a, `X]) -> i64 };
+        impl T for i64 { let m: fn(self, x: ['a, `X]) -> i64 = 'q: NoError |s, x: 'q| -> i64 0 };
+        let result = T::m(1, error(`E))
+    "#
+; FuseExpect::None);
+
+run!(
+    method_block_holding_a_narrower_lambda_refused,
+    refused("the implementation requires ['a, `X] to be NoError, which the signature's bounds do not say"),
+    "/test.gx" => r#"
+        trait T { val m: fn(self, x: ['a, `X]) -> i64 };
+        impl T for i64 { let m = { let k = 1; 'q: NoError |s, x: 'q| -> i64 0 } };
+        let result = T::m(1, error(`E))
+    "#
+; FuseExpect::None);
+
 run!(
     method_lambda_bounding_a_declared_member_by_one_number_refused,
     refused("the implementation requires [null, 'a] to be OneNumber, which the signature's bounds do not say"),

@@ -9,7 +9,7 @@
 
 use super::{
     Block,
-    bind::lower_over_operands,
+    bind::{Bind, lower_over_operands},
     callsite::{ArgKey, CallSite},
     coretraits::method_ftype,
     genn::SynthCall,
@@ -1246,6 +1246,22 @@ impl<R: Rt> Impl<R> {
         }
     }
 
+    /// The scheme of the value the annotated `let` of method `id` holds,
+    /// where the value is a definition.
+    fn annotated_value(&self, id: BindId) -> Option<Type> {
+        let mut value = None;
+        self.body.for_each_child(&mut |n| {
+            if let Some(b) = n.downcast_ref::<Bind<R>>()
+                && b.pattern.single_bind_id() == Some(id)
+                && matches!(&b.spec.kind, ExprKind::Bind(e) if e.typ.is_some())
+                && bounds::scheme(b.node.typ())
+            {
+                value = Some(b.node.typ().clone())
+            }
+        });
+        value
+    }
+
     /// Whether method `name` took the declared signature as its
     /// annotation ([`signature_of`]).
     fn method_took_declared(&self, name: &str) -> bool {
@@ -1357,7 +1373,7 @@ impl<R: Rt> Update<R> for Impl<R> {
             let Some(id) = self.def.methods.get(d.name.as_str()) else { continue };
             let Some(bind) = ctx.env.by_id.get(id) else { continue };
             let declared = Type::Fn(Arc::new(method_sig_at(&d.typ, &self.def.target)));
-            fits_declared(ctx, &bind.typ.clone(), &declared).map_err(|e| {
+            let told = |e: anyhow::Error| {
                 let told = format_compact!(
                     "method {} of impl {} for {} does not implement the declared {}",
                     d.name,
@@ -1366,7 +1382,14 @@ impl<R: Rt> Update<R> for Impl<R> {
                     declared.resolve_tvars()
                 );
                 Told::over(e, &told)
-            })?
+            };
+            fits_declared(ctx, &bind.typ.clone(), &declared).map_err(told)?;
+            // an annotated let is its annotation, which may be the
+            // declaration itself: the value it holds is what must be the
+            // declared signature, where that is a definition of its own
+            if let Some(value) = self.annotated_value(*id) {
+                fits_declared(ctx, &value, &declared).map_err(told)?
+            }
         }
         Ok(())
     }
