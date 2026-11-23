@@ -305,28 +305,31 @@ run!(queuefn_immediate, QUEUEFN_IMMEDIATE, |v: Result<&Value>| {
 
 // The wrapper's call passes every formal and no more: a function with a
 // defaulted label or a variadic argument is refused by the check.
-// CR claude for claude: [bug/medium] The refusal this pins is the bare contains
-// mismatch for the Function bound: "'a: unbound within Function does not contain
-// fn(?#scale: i64, x: i64) -> i64". It reads as a function refused for not being a
-// Function, and names neither the defaulted label/variadic nor the fix
-// design/queue_fn.md gives (wrap it in a lambda that calls it). `queuefn(#trigger:
-// never(), 3)` gets the same text, so the phrase pins no rule of its own. Give
-// Bound::Function a refusal that says why, as Type::not_discernible does for Ordered
-// and Discernible, pin that text here and in queuefn_refuses_variadic, and pin the
-// wrapped lambda passing. probe:
-// design/review-2026-11-16/repro/tests-lib-a-queuefn-function-bound-message.sh
-// (tests-lib-a-02)
 run!(
     queuefn_refuses_defaulted_label,
     "queuefn(#trigger: never(), |#scale: i64 = 10, x: i64| -> i64 x * scale)(5)",
-    refused("fn(?#scale: i64, x: i64) -> i64 must be Function here");
+    refused("fn(?#scale: i64, x: i64) -> i64 must be Function here: it has a defaulted label, and a function passed here is called with every argument and no other; wrap it in a lambda that calls it");
     FuseExpect::None
 );
 
 run!(
     queuefn_refuses_variadic,
     "queuefn(#trigger: never(), max)(1, 5)",
-    refused("fn(a: i64, @args: i64) -> i64 must be Function here");
+    refused("fn<'a: Ordered>(a: 'a, @args: 'a) -> 'a must be Function here: it has a variadic argument");
+    FuseExpect::None
+);
+
+run!(
+    queuefn_takes_a_lambda_that_calls_a_variadic,
+    "queuefn(#trigger: never(), |a: i64, b: i64| -> i64 max(a, b))(1, 5)",
+    is(Value::I64(5));
+    FuseExpect::None
+);
+
+run!(
+    queuefn_refuses_a_value_that_is_no_function,
+    "queuefn(#trigger: never(), 3)(1)",
+    refused("i64 must be Function here: it is no function");
     FuseExpect::None
 );
 

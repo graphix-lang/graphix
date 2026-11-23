@@ -609,6 +609,9 @@ impl Drop for Site {
     }
 }
 
+/// The name of no variable, for a predicate judged of a type alone.
+static UNNAMED: ArcStr = arcstr::literal!("_");
+
 /// The relation's own state for one check.
 #[derive(Default)]
 pub struct Solving {
@@ -1438,6 +1441,14 @@ impl Solving {
             // predicate on a type that holds a declared variable under a constructor to
             // the instance, where the sealed arm above reaches the variables.
             // a predicate on a cell is judged when the cell is decided
+            // `Function` is of a value's shape: a function type meets it
+            // or not whatever its cells become, and a decided value that
+            // is none never does. Refused where it arrives
+            (_, Type::Bound(Bound::Function))
+                if matches!(a, Type::Fn(_)) || !a.has_free() =>
+            {
+                return self.hold(env, &UNNAMED, std::slice::from_ref(&b), &a);
+            }
             (_, Type::Bound(_)) => return Ok(()),
             (Type::TVar(v), Type::TVar(w)) if v.same_cell(w) => return Ok(()),
             (Type::TVar(v), Type::Set(ms))
@@ -5131,6 +5142,20 @@ impl Solving {
                              annotate it"
                         )
                     }
+                }
+                Type::Bound(Bound::Function) if !p.contains(env, t)? => {
+                    let why = match t {
+                        Type::Fn(ft) if ft.vargs.is_some() => {
+                            "it has a variadic argument"
+                        }
+                        Type::Fn(_) => "it has a defaulted label",
+                        _ => bail!("{t} must be {p} here: it is no function"),
+                    };
+                    bail!(
+                        "{t} must be {p} here: {why}, and a function passed here is \
+                         called with every argument and no other; wrap it in a lambda \
+                         that calls it"
+                    )
                 }
                 Type::Bound(_) if !p.contains(env, t)? => bail!("{t} must be {p} here"),
                 _ => (),
