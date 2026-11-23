@@ -13,7 +13,7 @@ first complete external snapshot and run in arrival order.
 is how a nullable reference is consumed; `(*r).f` is refused.
 
 ```graphix,cases
-no "expected a reference not null" let v = {f: 1}; let r: [&{f: i64}, null] = &v; (*r).f
+no "does not contain null" let v = {f: 1}; let r: [&{f: i64}, null] = &v; (*r).f
 ```
 
 `seq go; abort(cancel) { .. }` ends the run in progress when `cancel`
