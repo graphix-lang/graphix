@@ -1516,7 +1516,7 @@ impl Solving {
             )
         }
         self.selects[id].routed = true;
-        self.selects[id].seen.push(reached);
+        self.selects[id].seen.push(reached.clone());
         hits.into_iter().for_each(|i| self.selects[id].hit[i] = true);
         // a name takes every part routed to it, as one type; a refusal of it
         // is the first arm's that binds it
@@ -1527,10 +1527,26 @@ impl Solving {
                 None => names.push((v, vec![t], i)),
             }
         }
+        // a written test takes every value of its runtime form, a member it
+        // does not hold included, which its bind then cannot hold
+        let template = self.selects[id].template.clone();
+        let by_form = |i: usize| {
+            let test = template.arms[i].pat.written_test()?;
+            let members = match &reached {
+                Type::Set(ms) => &ms[..],
+                t => std::slice::from_ref(t),
+            };
+            let taken = members.iter().find_map(|m| match test.contains(env, m) {
+                Ok(false) => test.rep_collision(env, m),
+                _ => None,
+            })?;
+            Some(anyhow!("{} ({})", taken.untold("this pattern"), template.at))
+        };
         for (v, ts, i) in names {
             *arm_at = Some(i);
             let t = self.absorbed(env, &unsplit(&union_of(ts)));
-            self.constrain(env, &t, &Type::TVar(v))?
+            self.constrain(env, &t, &Type::TVar(v))
+                .map_err(|e| by_form(i).unwrap_or(e))?
         }
         Ok(())
     }

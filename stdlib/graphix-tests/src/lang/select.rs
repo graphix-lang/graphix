@@ -4954,7 +4954,7 @@ const SAME_FORM_REFERENCES: &str = r#"
 }
 "#;
 
-run!(same_form_references_refused, SAME_FORM_REFERENCES, refused("type mismatch &string does not contain &[i64, string]"); FuseExpect::None);
+run!(same_form_references_refused, SAME_FORM_REFERENCES, refused("this pattern can't tell &string from &[i64, string]: both have the same runtime form"); FuseExpect::None);
 
 // A name tests nothing, so an arm binds a part whose members share a
 // runtime form: the bind holds every member the arm's tests admit.
@@ -5618,7 +5618,7 @@ run!(
         };
         k(-2)
     }"#,
-    refused("type mismatch i64 does not contain string");
+    refused("this pattern can't tell &i64 from &string: both have the same runtime form");
     FuseExpect::None
 );
 
@@ -5635,7 +5635,7 @@ run!(
         };
         k(-2)
     }"#,
-    refused("type mismatch i64 does not contain string");
+    refused("this pattern can't tell &i64 from &string: both have the same runtime form");
     FuseExpect::None
 );
 
@@ -5651,7 +5651,7 @@ run!(
         };
         k(-2, 7)
     }"#,
-    refused("type mismatch Number does not contain string");
+    refused("this pattern can't tell &i64 from &string: both have the same runtime form");
     FuseExpect::None
 );
 
@@ -5676,7 +5676,7 @@ run!(
         };
         k(2)
     }"#,
-    refused("type mismatch Number does not contain [i64, string]");
+    refused("this pattern can't tell &i64 from &string: both have the same runtime form");
     FuseExpect::None
 );
 
@@ -9547,7 +9547,7 @@ run!(select_refuses_mixed_mutability, r#"{
         select u { &mut i64 as m => { *m <- 5; "wrote" }, &i64 as s => "shared" }
     };
     f(&x)
-}"#, refused("can't write through a read-only reference (&i64): take it with `&mut`"); FuseExpect::None);
+}"#, refused("this pattern can't tell &mut i64 from &i64: both have the same runtime form"); FuseExpect::None);
 
 // A recursive pair met again inside its own difference subtracts nothing:
 // Error<T> less Error<U> keeps Error<Array<T>>, which no later arm covers.
