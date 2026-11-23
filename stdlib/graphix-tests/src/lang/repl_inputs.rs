@@ -333,23 +333,42 @@ async fn earlier_value_is_decided_by_no_later_use() -> Result<()> {
 }
 
 /// An array of generic names is read at any type. A binding something
-/// writes holds one instance of the generic function it reads: the refusal
-/// of a later decision about it names the type to declare, and only the
-/// binding the cell came from.
+/// writes holds one instance of the generic function it reads, which its
+/// input's end leaves at the function's bound: a later input reads it at
+/// no narrower type, and the binding's annotation gives it one.
+// CR claude for claude: [readability/medium] The refusal here is the bare mismatch
+// `fn(x: i64) -> i64 does not contain fn(x: 'q: Number) -> 'q: Number`. It says
+// neither that `'q` was left at its bound when the input that made it ended nor
+// what to declare; before the check by bounds it ended "annotate `a` (line 1,
+// column 20 in `let (k, w) = ..`) as `Array<fn(x: i64) -> i64>`". The note
+// `tvar::settled_note` gives is for a cell settled at bottom alone
+// (`TVar::settled_bottom`). Mark a cell an input's end fixes with nothing flowing
+// in (bounds `fix_cell`), and have `settled_cause` take such a cell on the value's
+// side where the other side does not hold its bound, so the note names `a` here.
+// (repl-settled-at-bound-01)
 #[tokio::test(flavor = "current_thread")]
-async fn refusal_names_the_declaration_of_the_origin() -> Result<()> {
+async fn written_instance_is_left_at_its_bound() -> Result<()> {
     session(&[
         Accept("let g = 'q: Number |x: 'q| -> 'q x"),
         Accept("let j = [g, g]"),
         Accept("let r = &j"),
         Accept("let (k, w) = { let a = [g, g]; (a, |f| { a <- f; null }) }"),
         Produce("array::map([1.5], j[0]$)", Value::Array([Value::F64(1.5)].into())),
-        RefuseEnding(
+        Refuse(
             "let z: fn(x: i64) -> i64 = k[0]$",
-            "annotate `a` (line 1, column 20 in `let (k, w) = { let a = [g, g]; (a, |f| {..`) \
-             as `Array<fn(x: i64) -> i64>`",
+            "type mismatch fn(x: i64) -> i64 does not contain fn(x: 'q: Number) -> 'q: Number",
         ),
         Produce("array::len(j)", Value::I64(2)),
+    ])
+    .await?;
+    session(&[
+        Accept("let g = 'q: Number |x: 'q| -> 'q x"),
+        Accept(
+            "let (k, w) = { let a: Array<fn(x: i64) -> i64> = [g, g]; \
+             (a, |f| { a <- f; null }) }",
+        ),
+        Accept("let z: fn(x: i64) -> i64 = k[0]$"),
+        Produce("z(3)", Value::I64(3)),
     ])
     .await
 }

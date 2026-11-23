@@ -1326,6 +1326,7 @@ impl Solving {
             Type::App(c, x) => Type::app_filled(c, x).unwrap_or(t),
             _ => t,
         };
+        let given = b;
         let (a, b) = (applied(shallow(a)), applied(shallow(b)));
         let (a, b) = (flat(env, a)?, flat(env, b)?);
         debug(|| format!("relate {a} <= {b}"));
@@ -1475,7 +1476,13 @@ impl Solving {
             _ => (),
         }
         if open(&a).is_some() || open(&b).is_some() {
-            return self.cells(env, &a, &b);
+            // a cell an earlier input settled bounds `a` as that cell, so
+            // the refusal of what later meets the bound names its binding
+            let b = match (&b, given) {
+                (Type::Bottom, Type::TVar(tv)) if tv.settled_bottom() => given,
+                _ => &b,
+            };
+            return self.cells(env, &a, b);
         }
         let waits = |t: &Type| {
             chain_payload(env, t).is_some_and(|p| undecided_chain_payload(&shallow(&p)))
@@ -4353,7 +4360,12 @@ impl Solving {
             let all = |s: &mut Self, ts: &[Type], copies: &mut AHashMap<usize, TVar>| {
                 ts.iter().map(|t| s.copy(t, above, at, copies)).collect()
             };
-            let (lower, declared, upper): (
+            // a bound that is a cell an input's end settled stays that
+            // cell, which a refusal that meets it names the binding of
+            let settled = |t: &Type| matches!(t, Type::TVar(u) if u.settled_bottom());
+            let (told, upper): (SmallVec<[Type; 1]>, SmallVec<[Type; 1]>) =
+                upper.into_iter().partition(settled);
+            let (lower, declared, mut upper): (
                 SmallVec<[Type; 1]>,
                 SmallVec<[Type; 1]>,
                 SmallVec<[Type; 1]>,
@@ -4362,6 +4374,7 @@ impl Solving {
                 all(self, &declared, copies),
                 all(self, &upper, copies),
             );
+            upper.extend(told);
             let mut feeds: SmallVec<[TVar; 1]> = SmallVec::new();
             for u in fed.iter() {
                 if let Type::TVar(u) =

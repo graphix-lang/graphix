@@ -8005,10 +8005,10 @@ run!(
 );
 
 /// A REPL input writing a payload that holds the binding's own element:
-/// the binding stands above `Array<'e>`, an open cell, so no finite type
-/// holds both.
+/// the element was settled when the binding's input ended, so the write is
+/// refused as any other value is, naming the binding to declare.
 #[tokio::test(flavor = "current_thread")]
-async fn repl_payload_cycle_hints_a_recursive_type() -> anyhow::Result<()> {
+async fn repl_payload_cycle_meets_the_settled_element() -> anyhow::Result<()> {
     use arcstr::ArcStr;
     use graphix_package_core::testing::init;
     use tokio::sync::mpsc;
@@ -8027,7 +8027,11 @@ async fn repl_payload_cycle_hints_a_recursive_type() -> anyhow::Result<()> {
         Err(e) => {
             let e = format!("{e:#}");
             assert!(
-                e.contains("no finite type holds both: declare a named recursive"),
+                e.contains(
+                    "type mismatch _ does not contain Array<_>: it holds the type of \
+                     `b` (line 1, column 5 in `let b = B([])`), settled when its input \
+                     ended; declare b's type where it is bound"
+                ),
                 "{e}"
             );
             Ok(())
