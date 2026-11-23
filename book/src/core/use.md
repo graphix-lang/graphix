@@ -134,16 +134,21 @@ names are visible whatever their order; a value is not, because a
 module's body runs where its `mod` statement stands, so a sub-module
 that imports a parent's value must be declared below that value.
 
-A type name an import brings means that import throughout its statement
-list, above the `use` as well: `type Op = {mode: Mode}` written above
-`use sys::fs::Mode` names the imported `Mode`, never an outer type of
-that name. A statement above the `use` that needs the type while it
-compiles (a cast, a type test, a `let` that takes the type apart, an
-abstract constructor, a trait written as a parameter's type) is refused,
-and the error names the `use` to move up. The same holds for a name
-imported from a module declared further down, and, above a glob, for
-every type name the scope neither declares nor imports itself. Writing
-`use` first, then `mod`, avoids all of it.
+A `use` goes above the type names it brings. A type name written above
+the `use` that imports it is refused, whether in a type definition, an
+annotation, a parameter, a cast, a type test or a function's body, and
+the error names the `use` to move up: `type Op = {mode: Mode}` above
+`use sys::fs::Mode` does not compile. So a name never means one type
+above a `use` and another below it. Above a glob the same holds for
+every type name the scope neither declares nor imports itself. An
+interface follows the rule over its own items.
+
+The module a `use` imports from is declared above the name as well:
+`use self::sub::T` may stand above `mod sub;`, but `T` is written below
+both. A type definition may instead name a module declared further down
+by its path, `type Op = {t: sub::T}`. An interface's types are declared
+ahead of its modules, so a type there always names a submodule's type by
+path.
 
 ## Shadowing and collisions
 
@@ -175,7 +180,10 @@ The error cases:
   error at the `use` if the declaration comes first; if the
   declaration comes after, it shadows the import (rebinding a name
   with `let` is idiomatic Graphix and imports are no different)
-- two explicit imports of the same name: error — rename one
+- two explicit imports of the same name: error. Rename one, or, where
+  both import the same item, remove the second. A module's
+  implementation reads what its interface imports, and may not import it
+  again
 - two globs that both provide a name: allowed at import, error at the
   first *use* of the ambiguous name, naming both sources, unless both
   reach the same item

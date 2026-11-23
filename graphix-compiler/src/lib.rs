@@ -3599,10 +3599,11 @@ pub(crate) fn defer_written_names<R: Rt>(
     Ok(())
 }
 
-/// Warn at each name the written type `t` holds that means a type its
-/// block declares below it while another of the name is in view there
-/// ([`env::Env::later_block_type_note`]): in a definition's check, never
-/// again in an instance's body.
+/// Refuse a name the written type `t` holds that a `use` its block writes
+/// below it would import ([`typ::TypeRef::imported_below`]), and warn at
+/// each that means a type its block declares below it while another of
+/// the name is in view there ([`env::Env::later_block_type_note`]): in a
+/// definition's check, never again in an instance's body.
 pub(crate) fn warn_later_block_names<R: Rt>(
     ctx: &CompileCtx<R>,
     flags: BitFlags<CFlag>,
@@ -3611,8 +3612,46 @@ pub(crate) fn warn_later_block_names<R: Rt>(
     if ctx.body.as_ref().is_some_and(|b| !b.checking) {
         return Ok(());
     }
+    refuse_imported_below(&ctx.env, t)?;
     let mut res = Ok(());
     t.for_each_written_name(&mut |tr| warn_later_block_name(ctx, flags, tr, &mut res));
+    res
+}
+
+/// [`refuse_imported_below`] over what the definition of the type `name`
+/// at `scope` writes: its body, its representation and its parameters'
+/// bounds.
+pub(crate) fn refuse_typedef_imported_below(
+    env: &Env,
+    scope: &ModPath,
+    name: &str,
+) -> Result<()> {
+    let Some(def) = env.lexical.typedefs.get(scope).and_then(|m| m.get(name)) else {
+        return Ok(());
+    };
+    let bounds = def.params().iter().filter_map(|(_, c)| c.as_ref());
+    std::iter::once(def.typ())
+        .chain(def.rep.as_ref())
+        .chain(bounds)
+        .try_for_each(|t| refuse_imported_below(env, t))
+}
+
+/// Refuse a name the written type `t` holds that a statement its block
+/// writes below it would change ([`typ::TypeRef::imported_below`]).
+pub(crate) fn refuse_imported_below(env: &Env, t: &Type) -> Result<()> {
+    let mut res = Ok(());
+    t.for_each_written_name(&mut |tr| {
+        if res.is_ok()
+            && let Some(e) = tr.imported_below(env)
+        {
+            res = Err(match (tr.pos, &tr.ori) {
+                (Some(pos), Some(ori)) => {
+                    e.context(expr::ParserContext { ori: ori.clone(), pos })
+                }
+                _ => e,
+            })
+        }
+    });
     res
 }
 

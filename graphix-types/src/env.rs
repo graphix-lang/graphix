@@ -872,12 +872,13 @@ enum Unseen {
 
 /// What the statements a list has still to compile may change of the
 /// names read through its level, each by its statement's index: a name
-/// an explicit `use` imports, a glob, and a module the list declares,
-/// whose names a `use` above it may import.
+/// an explicit `use` imports, a glob (its source where its module is
+/// declared already), and a module the list declares, whose names a `use`
+/// above it may import.
 #[derive(Debug, Default)]
 pub struct Unsettled {
     pub uses: SmallVec<[(usize, CompactString); 8]>,
-    pub globs: SmallVec<[usize; 2]>,
+    pub globs: SmallVec<[(usize, Option<Glob>); 2]>,
     pub modules: SmallVec<[(usize, CompactString); 8]>,
 }
 
@@ -1648,14 +1649,25 @@ impl Env {
         self.ide.join(ide, &self.recorded);
     }
 
-    /// A snapshot of the lexical environment, which a definition keeps.
+    /// A snapshot of the lexical environment, which a definition keeps:
+    /// each list it is written in, as it stood there ([`Self::to_come`]).
     #[doc(hidden)]
     pub fn lexical(&self) -> Lexical {
         let mut lexical = self.lexical.clone();
         for (level, list) in self.unsettled.iter() {
-            lexical.open.insert_cow(level.clone(), list.clone());
+            if lexical.open.get(level).is_none() {
+                lexical.open.insert_cow(level.clone(), list.clone());
+            }
         }
         lexical
+    }
+
+    /// The statements of the list at `level` still to come where the code
+    /// being compiled is written: a definition's body compiles after the
+    /// list it is written in has gone on, and reads it as it stood at the
+    /// definition.
+    fn to_come(&self, level: &str) -> Option<&OpenList> {
+        self.lexical.open.get(level).or_else(|| self.unsettled.get(level))
     }
 
     /// Exchange the lexical environment with `other`; the global
@@ -2075,11 +2087,17 @@ impl Env {
         if !inside {
             return Ok(None);
         }
-        let later = match settle && !self.unsettled.is_empty() {
-            true => self.unsettled.get(level).map(|(l, from)| (&**l, *from)),
+        let later = match settle {
+            true => self.to_come(level).map(|(l, from)| (&**l, *from)),
             false => None,
         };
         let kind = || scope_kind(level);
+        let kept = self
+            .lexical
+            .body
+            .as_ref()
+            .and_then(|b| b.names_at(level))
+            .or_else(|| self.displaced_at(level));
         if let Some((l, from)) = later
             && l.uses.iter().any(|(i, k)| *i >= from && k.as_str() == n)
         {
@@ -2089,12 +2107,6 @@ impl Env {
                 kind = kind()
             ))));
         }
-        let kept = self
-            .lexical
-            .body
-            .as_ref()
-            .and_then(|b| b.names_at(level))
-            .or_else(|| self.displaced_at(level));
         let mut later_module = None;
         if let Some(sn) = kept.as_ref().or_else(|| self.names.get(level)) {
             debug_assert!(
@@ -2122,7 +2134,8 @@ impl Env {
                     return Err(anyhow!(ChangesLater(format_compact!(
                         "{n} names what a `use` of this {kind} imports from module \
                          {}, which a later statement declares: declare the module \
-                         before the name's first use",
+                         before the name's first use, or in a type definition write \
+                         the name by its path",
                         written_level(m),
                         kind = kind()
                     ))));
@@ -2131,7 +2144,12 @@ impl Env {
                 // (`use gui::text::{self, *}`).
             }
             let mut found: Option<(&str, T)> = None;
-            for g in sn.globs.iter() {
+            let to_come = |g: &Glob| {
+                later.is_some_and(|(l, from)| {
+                    l.globs.iter().any(|(i, k)| *i >= from && k.as_ref() == Some(g))
+                })
+            };
+            for g in sn.globs.iter().filter(|g| !to_come(g)) {
                 if settle
                     && let Glob::Module(m) = g
                     && let Some(m) = self.unsettled_module(m)
@@ -2157,7 +2175,7 @@ impl Env {
             }
         }
         if let Some((l, from)) = later
-            && l.globs.iter().any(|i| *i >= from)
+            && l.globs.iter().any(|(i, _)| *i >= from)
         {
             return Err(anyhow!(ChangesLater(format_compact!(
                 "{n} may name what a later glob `use` of this {kind} imports: write \
@@ -2169,7 +2187,8 @@ impl Env {
             return Err(anyhow!(ChangesLater(format_compact!(
                 "{n} may name what a glob `use` of this {kind} imports from module \
                  {}, which a later statement declares: declare the module before \
-                 the name's first use",
+                 the name's first use, or in a type definition write the name by \
+                 its path",
                 written_level(m),
                 kind = kind()
             ))));
@@ -2195,8 +2214,7 @@ impl Env {
         while at != "/" {
             let parent = Path::dirname(at).unwrap_or("/");
             let name = Path::basename(at)?;
-            if let Some((l, from)) =
-                self.unsettled.get(parent).or_else(|| self.lexical.open.get(parent))
+            if let Some((l, from)) = self.to_come(parent)
                 && l.modules.iter().any(|(i, k)| i >= from && k.as_str() == name)
             {
                 return Some(at);
@@ -3326,9 +3344,9 @@ impl Env {
         res
     }
 
-    /// Install one explicit import at `scope`. Errors on a duplicate
-    /// import or a same-scope declaration of the name unless `replace`;
-    /// identical re-imports are idempotent.
+    /// Install one explicit import at `scope`. Errors on a second import
+    /// of the name, the same thing again included, or a same-scope
+    /// declaration of it, unless `replace`.
     pub fn import(
         &mut self,
         scope: &ModPath,
@@ -3353,14 +3371,16 @@ impl Env {
         // (x-repl-02)
         if !replace {
             if let Some(e) = self.names.get(scope).and_then(|sn| sn.imports.get(key)) {
-                if e.scope == entry.scope && e.name == entry.name {
-                    return Ok(());
+                match e.scope == entry.scope && e.name == entry.name {
+                    true => bail!(
+                        "`{key}` is already imported here: remove the repeated import"
+                    ),
+                    false => bail!(
+                        "`{key}` is already imported here (from `{}`); \
+                         rename one (`use ... as ...`)",
+                        e.scope
+                    ),
                 }
-                bail!(
-                    "`{key}` is already imported here (from `{}`); \
-                     rename one (`use ... as ...`)",
-                    e.scope
-                )
             }
             let declared = self.declares(scope, key);
             if declared {

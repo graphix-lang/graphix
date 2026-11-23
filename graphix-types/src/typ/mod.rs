@@ -1731,6 +1731,19 @@ impl TypeRef {
             .flatten()
     }
 
+    /// The refusal of this name where a statement its block writes below
+    /// it would change what it means ([`crate::env::ChangesLater`]): a
+    /// `use` that imports it, or a module a `use` above it imports it
+    /// from. A `use` and its module are written above the names they bring.
+    pub fn imported_below(&self, env: &Env) -> Option<anyhow::Error> {
+        match self.resolved() {
+            Some(_) => None,
+            None => {
+                self.resolve_error(env).filter(|e| e.is::<crate::env::ChangesLater>())
+            }
+        }
+    }
+
     /// Why the name does not resolve, when that is a mistake in the path
     /// (an ambiguous glob, `super` past the root, a missing module) and
     /// not an absent name: the error a report names in place of

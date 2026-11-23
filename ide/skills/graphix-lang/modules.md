@@ -24,23 +24,25 @@ explicit imports of one name are an error where a glob silently lost to
 the explicit one. `use Collection::*` (a trait's methods) is the one
 glob the book teaches.
 
-A `use` is in force throughout its statement list, for a type name
-written above it too: `type Op = {mode: Mode}` or `let m: Mode = ..`
-above `use sys::fs::Mode` means the imported `Mode`, never an outer or
-prelude type of the name. A statement above the `use` that needs the type
-as it compiles (a cast, a type test, a `let` that takes the type apart,
-an abstract constructor, a trait as a parameter's type) is refused, and
-above a glob that holds for every type name the list neither declares
-nor imports, a trait's glob (`use Collection::*`) included. The same
-goes for a name a `use` imports from a module declared further down:
-until the `mod`, the name is not read, and a function above the `mod`
-is refused where its body or signature names it. Write `use` first, then `mod`.
+Write a `use` above every type name it brings, in a statement list
+and in a `.gxi` alike: a name written above the `use` that imports it is
+refused, in a type definition, an annotation, a parameter, a cast, a
+type test and a function's body, and above a glob that holds for every
+type name the list neither declares nor imports, a trait's glob (`use
+Collection::*`) included. The module a `use` imports from is declared
+above the name too; a type definition may name a module declared below
+it by path (`type T = {s: sub::S}`), and an interface's must, since its
+types go ahead of its modules. A name is imported once: a second `use`
+of it is refused, and a `.gx` reads what its `.gxi` imports.
 
 ```graphix,cases
 no "Mode names what a later `use` of this module imports" let m = cast<Mode>(`Read); use sys::fs::Mode; m
 ok use sys::fs::Mode; let m = cast<Mode>(`Read); m
-ok type Op = {mode: Mode}; use sys::fs::Mode; let o: Op = {mode: `Read}; o.mode
-ok let m: Mode = `Read; use sys::fs::Mode; m
+no "Mode names what a later `use` of this module imports" type Op = {mode: Mode}; use sys::fs::Mode; let o: Op = {mode: `Read}; o.mode
+ok use sys::fs::Mode; type Op = {mode: Mode}; let o: Op = {mode: `Read}; o.mode
+no "Mode names what a later `use` of this module imports" let m: Mode = `Read; use sys::fs::Mode; m
+no "Mode names what a later `use` of this module imports" let f = |x: i64| { let m: Mode = `Read; m }; use sys::fs::Mode; f(1)
+no "`Mode` is already imported here: remove the repeated import" use sys::fs::Mode; use sys::fs::Mode; 0
 no "Mode may name what a later glob `use` of this module imports" let m = cast<Mode>(`Read); use sys::fs::*; m
 no "Show may name what a later glob `use` of this block imports" trait Show { val show: fn(self) -> i64 }; let r = { let f = |x: Show| Show::show(x); use array::*; 0 }; r
 ok trait Show { val show: fn(self) -> i64 }; let r = { use array::*; let f = |x: Show| Show::show(x); 0 }; r

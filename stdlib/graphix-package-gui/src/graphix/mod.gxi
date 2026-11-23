@@ -63,7 +63,6 @@ type Color;
 
 /// Create a color with components in [0, 1]
 val color: fn(?#r: f64, ?#g: f64, ?#b: f64, ?#a: f64) -> [Color, Error<`InvalidColor(string)>];
-use self::style::{Palette, StyleSheet};
 
 // ANCHOR: font
 type FontFamily = [`SansSerif, `Serif, `Monospace, `Name(string)];
@@ -111,8 +110,8 @@ type Theme = [
   `Nightfly,
   `Oxocarbon,
   `Ferra,
-  `Custom(StyleSheet),
-  `CustomPalette(Palette)
+  `Custom(style::StyleSheet),
+  `CustomPalette(style::Palette)
 ];
 
 // ANCHOR_END: theme

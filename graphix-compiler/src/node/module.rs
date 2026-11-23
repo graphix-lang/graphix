@@ -77,37 +77,42 @@ fn use_glob(env: &Env, scope: &ModPath, item: &UseItem) -> Result<Option<Glob>> 
 
 /// What the `use` at statement `stmt` of the list at `scope` has still to
 /// bring, into `later`: nothing where the item is installed already (a
-/// `.gxi`'s `use` spliced into the body, a block compiled again) or names
-/// a package, which the prelude provides.
+/// `.gxi`'s `use` spliced into the body, a block compiled again), names a
+/// package, which the prelude provides, or imports a name the level
+/// imports above it, which [`Env::import`] refuses unless `replace`.
 pub(crate) fn later_use(
     env: &Env,
     scope: &ModPath,
     stmt: usize,
-    spec: &Expr,
+    pos: crate::SourcePosition,
+    ori: &Origin,
     items: &[UseItem],
+    replace: bool,
     later: &mut Unsettled,
 ) {
     let sn = env.names.get(scope);
     for item in items {
         match item.bound_name() {
             Some(key) => {
-                let here = sn
-                    .and_then(|sn| sn.imports.get(key))
-                    .is_some_and(|e| e.pos == spec.pos && *e.ori == *spec.ori);
+                let imported = sn.and_then(|sn| sn.imports.get(key));
+                let here = imported.is_some_and(|e| e.pos == pos && *e.ori == *ori);
                 let package = item.rename.is_none()
                     && Path::levels(&*item.path.0) == 1
                     && env.package_roots.contains(key);
-                if !here && !package {
+                let again = !replace
+                    && (imported.is_some()
+                        || later.uses.iter().any(|(_, k)| k.as_str() == key));
+                if !here && !package && !again {
                     later.uses.push((stmt, key.into()))
                 }
             }
             None => {
-                let here = match use_glob(env, scope, item) {
-                    Ok(Some(g)) => sn.is_some_and(|sn| sn.globs.contains(&g)),
-                    Ok(None) | Err(_) => false,
-                };
+                let glob = use_glob(env, scope, item).ok().flatten();
+                let here = glob
+                    .as_ref()
+                    .is_some_and(|g| sn.is_some_and(|sn| sn.globs.contains(g)));
                 if !here {
-                    later.globs.push(stmt)
+                    later.globs.push((stmt, glob))
                 }
             }
         }
@@ -333,11 +338,34 @@ fn bind_sig(
             env.lexical.modules.insert_cow(scope.append(name).lexical);
         }
     }
-    let mut decls = SigDecls::default();
+    // an interface's items are a list as a block's statements are: a name
+    // is written below the `use` that imports it
+    let list = &scope.lexical;
+    env.open_block(
+        list,
+        sig.items.iter().filter_map(|si| match &si.kind {
+            SigKind::TypeDef(td) => Some(td.name.name.as_str()),
+            _ => None,
+        }),
+    );
+    let mut later = Unsettled::default();
     for (i, si) in sig.items.iter().enumerate() {
-        bind_sig_item(env, pending, &mut decls, scope, i, si, &si.ori)
-            .placed(&si.ori, si.pos)?;
+        if let SigKind::Use { names, .. } = &si.kind {
+            later_use(env, list, i, si.pos, &si.ori, names, false, &mut later)
+        }
     }
+    let reopened = env.open_list(list, later);
+    let mut decls = SigDecls::default();
+    let bound = sig.items.iter().enumerate().try_for_each(|(i, si)| {
+        if matches!(si.kind, SigKind::Use { .. }) {
+            env.settle_statement(list, i)
+        }
+        bind_sig_item(env, pending, &mut decls, scope, i, si, &si.ori)
+            .placed(&si.ori, si.pos)
+    });
+    env.close_list(list, reopened);
+    env.close_block(list);
+    bound?;
     if let Some(body) = &env.lexical.body {
         body.declare(decls.dispatch_bindings())
     }
@@ -381,6 +409,7 @@ fn bind_sig_item(
             let typ = typ
                 .scope_refs_named(&scope.lexical, &mut LPooled::take())
                 .rewrite_declared_args(env)?;
+            crate::refuse_imported_below(env, &typ)?;
             // a declared signature has no gate to close over its cells:
             // every one is a quantifier, a constructor trait's element
             // included, copied at each use, and its own are its scheme's,
@@ -424,6 +453,7 @@ fn bind_sig_item(
                 si.pos,
                 si_ori.clone(),
             )?;
+            crate::refuse_typedef_imported_below(env, &scope.lexical, &td.name.name)?;
         }
         // CR claude for claude: [bug/medium] A dynamic module in a function body whose
         // sig declares a trait passes the check, and then no source can load. The load

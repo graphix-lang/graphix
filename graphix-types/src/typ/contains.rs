@@ -894,12 +894,8 @@ impl TypeMismatch {
         }
     }
 
-    pub(crate) fn plain(expected: &Type, actual: &Type) -> anyhow::Error {
-        Self::refusing(expected, actual, None, None)
-    }
-
-    /// [`Self::plain`], noting the binding an earlier input settled where
-    /// a ⊥ its end settled is why `expected` refuses `actual`.
+    /// `expected` refusing `actual`, noting the binding an earlier input
+    /// settled where a ⊥ its end settled is why.
     pub(crate) fn noting(env: &Env, expected: &Type, actual: &Type) -> anyhow::Error {
         Self::refusing(
             expected,

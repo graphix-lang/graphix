@@ -233,31 +233,49 @@ nothing.
   `Env::lexical`), so its check, which runs once the list has compiled,
   refuses a name imported from a module declared below the definition as
   the list's own compile does, and never reads the outer or prelude type of
-  the name for good. A reader that
-  defers an unresolved name waits as it does for a type declared below: a
-  typedef's shape stays open until the `use` (`Completed::Use`) or the
-  definition that completes a cycle through it, and a `let` annotation, a
-  `never<T>` and a signature read the import at the check, so the import
-  is in force throughout its list. A pattern over the annotation binds at
-  the name unexpanded (as at `later_typedef`); a
-  statement that needs the type as it compiles (a type test, a cast, a
-  `let` that takes it apart, an abstract constructor) is refused, naming
-  the `use` or the module to move up. A trait written as a parameter's
-  type is taken for a bound as its function or signature compiles, so a
-  name that means a trait as the scopes stand and that such a statement
-  may change is refused there the same way (`Env::settled_trait_of_ref`);
-  a bound a quantifier declares (`'a: Show`) is read at the check. The
-  record is not lexical: a definition checked under its snapshot after
-  its list has compiled reads what the list brought. Pins: `lang::types::typedef_above_the_use_*`,
-  `typedef_between_a_use_and_the_module_*`, `typedef_above_a_glob*`,
-  `typedef_between_a_glob_and_its_module*`, `block_typedef_above_the_blocks_use*`,
+  the name for good. **No reader waits for such a name**: a type name is
+  written below the `use` that brings it and below the module the `use`
+  imports from, so a name never means one thing above a `use` and another
+  below it. Every written type is asked as its statement compiles
+  (`refuse_imported_below`: a typedef's body, representation and bounds at
+  `TypeDef::compile`, an annotation, a parameter, a cast, a type test and
+  a declared bound at `warn_later_block_names`), and a `ChangesLater` is
+  the statement's refusal, naming the `use` or the module to move up. The
+  record is lexical: a definition's body compiles after its list has gone
+  on, and reads each list it is written in as it stood at the definition
+  (`Env::to_come` asks the snapshot before the list being compiled, and a
+  nested definition's snapshot keeps the outer one's entry), so a
+  function's body above a `use` is refused as its parameters are. A glob
+  the list has still to reach carries its source (`Unsettled::globs`), and
+  a lookup from above it skips that source where a later compile has
+  installed it. What still waits is a name no statement can change: a path
+  into a module declared below, in a typedef's body alone (its shape stays
+  open until the definition that completes it), and a type the list
+  declares below.
+  An interface's items are a list too: `bind_sig` opens one over them, so
+  a `val` or a type above the interface's own `use` is refused in
+  interface order. Its types are spliced ahead of the body and of its
+  modules (`add_interface_modules`), so a type there that names a
+  submodule's type through a `use` is refused wherever the `mod` stands,
+  and names it by path.
+  A name is imported once at a level: `Env::import` refuses a second `use`
+  of it, the same item again included, and `later_use` leaves the repeat
+  out of what is still to come, so the refusal is the second `use`'s and
+  the names between read the first. Pins: `lang::types::typedef_*_the_use_*`,
+  `typedef_between_a_use_and_the_module_*`, `typedef_*_a_glob*`,
+  `typedef_names_a_module_declared_below_by_path`,
+  `block_typedef_*_the_blocks_use*`,
   `nested_block_typedef_above_an_outer_use_refused`,
-  `typedef_through_an_imported_module_declared_below*`,
-  `let_annotation_above_the_use_reads_the_import`, `type_test_*_the_use*`,
-  `cast_above_the_use_refused`, `destructuring_let_*`,
-  `trait_parameter_*`, `signature_trait_parameter_*`,
-  `declared_trait_bound_above_a_glob`,
-  `lambda_parameter_above_the_use_reads_the_import`.
+  `typedef_through_an_imported_module*`, `let_annotation_*_the_use*`,
+  `type_test_*_the_use*`, `cast_above_the_use_refused`,
+  `destructuring_let_*`, `trait_parameter_*`,
+  `signature_trait_parameter_*`, `declared_trait_bound_*_glob*`,
+  `lambda_parameter_*`, `lambda_body_annotation_*`,
+  `nested_lambda_body_annotation_above_the_use_refused`,
+  `typedef_in_a_body_above_*`, `repeated_import_refused`;
+  `lang::interfaces::interface_*_above_the_interfaces_use_refused`,
+  `interface_type_*_submodule*`,
+  `implementation_repeating_its_interfaces_import_refused`.
 - **One source typedef, one definition.** A block compiled again (an
   instance, a default at a call, a runtime bind) declares its typedef
   with the live definition the registry holds, and its `TypeDef` node owns

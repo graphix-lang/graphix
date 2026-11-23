@@ -555,7 +555,13 @@ fn gen_slots(
             let m = modules::gen_module(ctx, rng, cfg, stats, nmodules);
             nmodules += 1;
             files.as_deref_mut().unwrap().extend(m.files);
-            stmts.extend(m.stmts);
+            // a glob goes above every type name its block writes
+            for s in m.stmts {
+                match s.starts_with("use ") && s.ends_with("::*") {
+                    true => stmts.insert(0, s),
+                    false => stmts.push(s),
+                }
+            }
         } else if files.is_some() && chance(rng, cfg.p_dynmod) {
             let n = ndynmods;
             ndynmods += 1;

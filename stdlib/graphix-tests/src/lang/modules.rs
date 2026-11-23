@@ -4238,7 +4238,7 @@ run!(
     "/test/a.gxi" => r#"trait Show { val show: fn(self) -> string = |s| "dflt" };"#,
     "/test/a.gx" => "",
     "/test/b.gxi" => "use super::a::Show; type T; val mk: fn(x: i64) -> T; impl Show for T;",
-    "/test/b.gx" => "use super::a::Show; type T = Abstract<i64>; let mk = |x| T(x); impl Show for T"
+    "/test/b.gx" => "type T = Abstract<i64>; let mk = |x| T(x); impl Show for T"
 ; FuseExpect::Jit);
 
 // An exported val is one variable: the module's own write and an outside

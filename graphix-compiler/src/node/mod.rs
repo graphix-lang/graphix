@@ -859,6 +859,8 @@ impl TypeDef {
             .at(&spec)?;
         let name = name.name.clone();
         let definition = ctx.env.typedef_definition(&scope.lexical, &name);
+        crate::refuse_typedef_imported_below(&ctx.env, &scope.lexical, &name)
+            .at(&spec)?;
         if parametric {
             // A cycle a definition completes runs through it: without
             // parameters through its body, which deftype walked; with them also
@@ -1354,7 +1356,10 @@ pub(crate) fn compile_block_children<'a, R: Rt>(
     for (i, e) in exprs.iter().enumerate() {
         match &e.kind {
             ExprKind::Use { names, .. } => {
-                module::later_use(&ctx.env, list, i, e, names, &mut later)
+                let replace = flags.contains(CFlag::ReplaceImports);
+                module::later_use(
+                    &ctx.env, list, i, e.pos, &e.ori, names, replace, &mut later,
+                )
             }
             _ => module::declared_modules(e, &mut |name| {
                 later.modules.push((i, name.name.as_str().into()))
