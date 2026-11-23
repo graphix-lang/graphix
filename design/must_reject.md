@@ -59,6 +59,10 @@ has no one type, but an instance takes its definition's check (DefTable). Decide
 the map records the definition check's body sites, or say here that the type-guided
 sites are top-level only. probe:
 design/review-2026-11-16/repro/fuzz-mutate-no-sites-in-bodies.sh (fuzz-mutate-03) -->
+<!-- 2026-11-22 claude: The families that take a site from the map are fewer now: 14
+(undecided-part) is deleted, and 3 and 8 read the callee's declared type from its
+binding (TypeMap::declared), the map holding only the call's instance. The question
+stands for the rest. -->
 The base is checked once with a type map: every expression's type,
 resolved (`resolve_tvars`, so later unification cannot move it) and
 keyed by its span in the body; nodes sharing a span answer with the
@@ -117,8 +121,10 @@ forwards the wrapped binding, so the value uses of `g` are uses of `f`
 
 **2. Rigid variables.** Site: a lambda with declared variables (`'a`,
 `'b`) whose parameters `x: 'a`, `y: 'b` are in scope in the body.
-Mutation: add a statement that equates two of them (`x == y`) or binds
-one to a concrete type (`x == 1`) or to ⊥ (`let b: _ = x`). Rule: a
+Mutation: add a statement that asks one to be a concrete type (`x + 1`:
+arithmetic takes one numeric type) or binds it to ⊥ (`let b: _ = x`). A
+comparison asks neither: one operand's type holding the other's is each
+call's to judge, so `x == 1` checks in the definition. Rule: a
 def's declared variables are rigid in its body check: none binds to a
 concrete type or to ⊥, no two unify and none escapes into a cell outside
 the definition (a write to an outer binding, through a reference, a
@@ -128,7 +134,7 @@ signature names undeclared is lowered with the outer cell instead, and the
 definition is monomorphic in it). Skip: a variable with a constraint the concrete type satisfies
 only through the constraint (`'a: Number` against `1` is still refused,
 but keep the first cut to unconstrained variables). Built: a first
-statement comparing a parameter `x: 'a` with a literal or, in turn,
+statement adding a literal to a parameter `x: 'a` or, in turn,
 binding it under a `_` annotation, or adding it to itself (`x + x`) where
 its header bounds it by `Any`, or calling a
 parameter `f: fn(x: 'a) -> ..` with one (`'a` not `f`'s own
@@ -141,32 +147,19 @@ writing a parameter `x: 'a` to an outer `let y = never()` (`y <- x`).
 
 **3. Call conflicts.** Site: a call argument. (a) The callee's resolved
 parameter type is concrete: substitute a literal of a disjoint type.
-(b) The parameter is a variable shared with another argument whose
-type is concrete: substitute a literal whose type neither contains nor
-is contained by that argument's. Rule: containment for (a); for (b) a
-call's arguments are met in the order of the parameters, and one
-neither wider nor narrower than what the ones before it gave the
-variable is refused where it stands; a variable a callback or reference
-holds keeps the first argument's type, so both paths refuse
-(`callsite.rs::Widening`). Skip: labeled defaults, variadic positions, a
-parameter typed `Any`, a first argument whose type its uses decide (a
-`let` over `never()`, or a value holding one, `[n]`: it takes whatever
-the mutated argument gives the variable, so it meets nothing). Built:
-(b), two or more positionals of one variable, the second mutated and
-every other one there a concrete primitive, the literal disjoint from
-them all, right site the call; (a) is family 4's argument case.
-
-`open-arg`, at (b)'s sites where the variable stands in no function,
-abstract type, application or writable reference: the SECOND argument
-there becomes `str::parse("1")`, whose type the call leaves undecided.
-Rule: an argument holding an undecided cell takes its formal as the
-arguments before it left it, and is refused, "annotate it", where that
-does not hold it (`callsite::undecided_note`): a primitive holds no
-parse error (the first argument made so would decide the variable and
-run; a variable the others give a type admitting `error` is
-skipped, and so is a variable with a primitive bound, `'a: Number`, or
-`Singleton`, which no union meets: either refuses the parse's result before
-the rule). Built, right site the call.
+(b) The callee declares the parameter over a variable its header bounds
+by a class of primitives (`'a: Number`): substitute a literal the bound
+does not hold. Rule: containment for (a); for (b) a variable is within
+its declared bound at every call. Arguments of one variable widen it (a
+call's `'a` is the union of what its arguments give it), so an argument
+of another type is refused only by the bound: an unbounded variable takes
+it. Skip: labeled defaults, variadic positions, a parameter typed `Any`,
+another argument of the variable whose type its uses decide (a `let`
+over `never()`, or a value holding one, `[n]`). Built: (b), the callee's
+declared type read from its binding (the map holds the call's instance,
+whose variables are decided), the second of two parameters of one
+variable where there are two, else the first bounded one, right site
+the call; (a) is family 4's argument case.
 
 **4. Widening into a rigid consumer.** Site: a use of a value `v: T`
 whose parent is one of:
@@ -183,18 +176,19 @@ whose parent is one of:
   a lambda literal with every parameter annotated, since any other name
   the body binds (a destructuring `let`, a `use`, an alias) may be such
   a lambda;
-- the value of a writer to a binding typed by its initializer or an
-  annotation.
+- the value of a writer to a binding an annotation types (one its
+  initializer types widens to hold the write).
 
 Mutation: replace the use with `select (i64:1 == i64:1) { true => v,
 false => u }`, `u` a literal of a disjoint type (typing never evaluates
 the scrutinee). Rule: the consumer's. Skip: any of the parent forms above
 that can absorb `U`. Built: the value directly under an arithmetic
-operator, a comparison opposite a literal, a field read, or an argument
-whose parameter is a concrete primitive; right site the consumer. A
-comparison holds two operands of one type, so any other opposite side
-can take `U` too: one that derives from `v` (`v < v`, a capture of it)
-or an open cell the comparison binds. One hop is built (see Hops). A
+operator, a field read, or an argument whose parameter is declared a
+concrete primitive (the callee's declared type, read from its binding:
+one over a variable widens with its argument); right site the consumer.
+A comparison is no consumer: one operand's type holding the other's
+suffices, and the widened operand holds the literal's. One hop is built
+(see Hops). A
 widened value that makes a union of structs whose members' fields differ
 is refused at a writable reference to such a field (`&mut s.c`: a
 writable field step needs one field type), and one that reaches a select
@@ -223,11 +217,13 @@ reached only through `Any`.
 
 **6. Retyping at a distance.** Site: an unannotated `let v = e` with a
 non-⊥ initializer and a use pinned by a literal (`v + 1`, `v == "s"`).
-Mutations: the initializer replaced with a value of a disjoint type, or
-a writer `v <- u` added. Rule: an unannotated `let` takes its
-initializer's type, and a later writer must fit it
-(`node/mod.rs::write_mismatch`); the pinned use then conflicts, or a select
-over what it reached misses the new type's case. A `let`
+Mutations: the initializer replaced with a value of a disjoint type, or,
+where the pinned use is arithmetic, a writer `v <- u` added. Rule: an
+unannotated `let` holds its initializer and every write to it, as one
+union; the pinned use then conflicts (arithmetic takes one numeric type,
+a comparison a type that holds the literal's or is held by it), or a
+select over what it reached misses the new type's case. A writer before
+a comparison is no mutant: the wider `v` holds the literal's type. A `let`
 over ⊥ is skipped: its type is a cell the first use decides, so an
 inserted writer decides it (`ExprTypeSite::cell` marks it). So is a
 `let` over a call whose callee's declared type returns a cell that no
@@ -280,8 +276,9 @@ twice, the disjoint labeled argument, the explicit disjoint default.
 cell with the `Function` conjunct (`queuefn`'s `f`). Mutation: the
 argument replaced with a literal. Rule: `'a: Function` admits only a
 function type with no variadic argument and no defaulted label
-(`Type::function_holds`). Built (`function-bound`), right
-site the call.
+(`Type::function_holds`), judged of the argument's shape where it
+arrives ("must be Function here"). Built (`function-bound`), the callee's
+declared type read from its binding, right site the call.
 
 **9. Writable references.** Site: `let r = &mut x` over a binding.
 (a) A later `*r <- ..` and no rebinding of `r` between: the `&mut`
@@ -289,9 +286,10 @@ becomes `&`. Rule: a write needs every reference it may go through to be
 `&mut` (`ConnectDeref::typecheck0_with`), as does a call passing `r`
 to a `&mut` parameter (`&mut T` does not contain `&T`, `contains.rs`).
 Right site: the write, or a statement between that uses `r`. (b) The
-map shows `x` a concrete primitive: the let is annotated `&mut Any`.
-Rule: `&mut T ⊇ &mut U` only when `T = U` (`contains.rs`). Right site:
-the let. Built (`ref-write`, `ref-widen`); the generator's `&mut`
+map shows `x` a concrete primitive and a later statement computes with
+`x`: the let is annotated `&mut Any`. Rule: `&mut T ⊇ &mut U` only when
+`T = U`, so the annotation makes `x` an `Any`, which arithmetic refuses.
+Right site: the let, or a later statement that reads `x`. Built (`ref-write`, `ref-widen`); the generator's `&mut`
 writes are the sites (`generate/funcs.rs`). (c) `&mut e` of a value (not
 a binding) in a definition's body, annotated at a type that does not hold
 `e`'s (`let r: &mut string = &mut [x]`). Rule: the value bounds the
@@ -334,71 +332,6 @@ the written type alone, so no inference can repair around a mutant: the
 shallow kind the principle above leaves to its pins (`lang::quantified`).
 The rule's deep half, that a function no binding names is one instance,
 is family 1's, whose call sites it made.
-
-**13. Patterns inside a rigid variable.** Site: a lambda with a
-parameter `x: 'a`, as family 2's. Mutation: a first statement `let tm__0
-= select x { null => 0, _ => 1 }`. Rule: a pattern that tests or binds
-inside a value of a type variable its definition holds rigid needs a
-written test; a name or `_` over the whole value keeps the variable
-(`StructurePattern::meets_rigid`, checked in `Select::typecheck0_with`
-and a destructuring `let`), and an arm that can match no value of a
-bounded variable is told as unreachable. Built (`rigid-pattern`) over a
-variable the lambda writes no bound for, or a class of primitives
-(`Number`); a trait bound (`'c: Collection`) refuses `null` by the
-dead-arm rule instead. Right site the definition. Not generated: coverage beside a bounded variable (a head
-arm at `['a, null]` leaves the variable's values to a name or `_`,
-`Head::Open`, or to written tests that cut it by its bound, `PartPool`;
-containment splits `'a` by its bound,
-`Type::covers_by_parts`): the generated declared variables are
-unbounded, where a head test beside one meets it and this family's rule
-refuses first; pins `lang::select::pool_variable_*`,
-`distribution_variable_*`, `containment_variable_*`,
-`lang::select_undecided::written_test*`. Nor a written test
-whose part over the variable holds `_` or an undeclared variable
-(`StructurePattern::meets_rigid_written`, the same message): the
-mutation writes no test; pins `lang::select::written_test_holding_*`.
-Nor a variable the scrutinee or a `let`'s value holds only through an
-open cell's lower bounds (`*r` over `&mut [x, 0]`): the mutation selects
-the parameter itself; pins
-`lang::select_undecided::*_declared_variable_*`,
-`*_variable_below_a_reference*`.
-
-**14. Undecided parts at a select.** Site: a select over a concrete
-scrutinee `s` whose arms bind no name and have no guard or type test,
-one of them testing (not `_` or a name). Mutation: `{ let tm__z =
-never(); select (select true { true => s, false => tm__z }) { arms, _ =>
-last } }`, the last arm's body repeated under a `_` (a union scrutinee
-beside a wildcard is one the arms' settle does not decide); and, where
-an arm chooses a value (a literal, a tag, a length; not only a pattern
-that takes the value apart), the decide shape, `{ let tm__z = never();
-select (tm__z, 0) { (arm, _) .., _ => last } }`, where that arm would
-decide `tm__z`; where every arm only takes the value apart, the beside
-shape, `{ let tm__z = never(); select (select true { true => s, false =>
-tm__z }, 0) { (arm, _) .., _ => last } }`, where an arm's destructure
-chooses between `tm__z` and `s`. Rule: an open cell the scrutinee held before the arms,
-itself or through an open cell's lower bounds,
-still open at the select's end or decided by an arm's pattern, that an
-arm tests is refused (`Select::check_undecided`,
-`StructurePattern::meets_undecided`, `meets_decided`); a pattern that
-only takes apart every value of the shape it decides is no test of it
-(`StructurePattern::only_destructures`), except beside a member of that
-shape. Built (`undecided-part`), right
-site the select; over a scrutinee with no value (`never()`, a connect, a block
-ending in a `let`), or a read of a cell (a name bound over one), only the decide
-shape, since a union of ⊥ and
-`tm__z` is `tm__z` whole, which the arms decide together; over a scrutinee
-with a member `Any`, only the decide shape too, since that member admits
-`tm__z`'s values and the union is the scrutinee's type whole. Not generated: an arm that only destructures the open
-part alone, which decides its shape as an annotation would (pins
-`lang::select_undecided::destructuring_*`); a name over the open part, typed beside
-the members' others (`TVar::narrow_per_member`), whose refusal comes at
-a later write (pins `lang::select_undecided::name_over_an_undecided_*`);
-a written test's own open variable (pins
-`lang::select_undecided::written_*_open_variable*_refused`) and a written
-test of the undecided part (`written_tests_undecided`, pins
-`lang::select_undecided::written_union_test_of_an_undecided_*`); and members
-told apart only by undecided cells under a partial struct pattern
-(`ManyMembers`; pins `lang::select::partial_struct_*_two_members`).
 
 **Choice points.** Not generated. A type two undecided members of a
 union could take goes to neither (`AmbiguousMember`,

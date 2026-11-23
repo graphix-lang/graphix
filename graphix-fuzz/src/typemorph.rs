@@ -643,23 +643,6 @@ pub(crate) fn unparen(mut e: &Expr) -> &Expr {
     e
 }
 
-/// Whether `e` has no value and no written type: `never()`, a connect, a `let`
-/// or the empty slot a trailing `;` leaves, through parens, a block's tail, and
-/// a select whose every arm is.
-pub(crate) fn bottom_value(e: &Expr) -> bool {
-    match &unparen(e).kind {
-        ExprKind::Never { typ: None, .. }
-        | ExprKind::Connect { .. }
-        | ExprKind::Bind(_)
-        | ExprKind::NoOp => true,
-        ExprKind::Block { exprs } => exprs.last().is_some_and(bottom_value),
-        ExprKind::Select(se) => {
-            !se.arms.is_empty() && se.arms.iter().all(|(_, b)| bottom_value(b))
-        }
-        _ => false,
-    }
-}
-
 /// Whether a `let` over `e` is a cell its first reader decides: `e` is ⊥
 /// (through parens, a block's tail, a select whose every arm is) or an
 /// empty collection, whose element is open.
