@@ -108,7 +108,10 @@ are not seen through (CR holder-block-select-01). Right site: the
 definition, or the statement of any use up to the second of the two:
 every use shares the written binding's cells, so the checker refuses at
 whichever conflicts first, a use the map gives no primitive first
-parameter included. An unannotated `let g = f`
+parameter included. Where the uses conflict only once their cells are
+fixed, at the check's end, the refusal is "a value here is used as T and
+as U, and no value is both", placed where the cell was first bounded
+(`bounds::Site`), the use. An unannotated `let g = f`
 forwards the wrapped binding, so the value uses of `g` are uses of `f`
 (family 7's sites follow the same aliases).
 

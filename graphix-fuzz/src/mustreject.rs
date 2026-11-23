@@ -79,7 +79,7 @@ impl Family {
     /// the mutation added) would hide the rule's regression.
     pub fn refuses_with(self, head: &str) -> bool {
         let says: &[&str] = match self {
-            Family::MonoReuse => &["does not contain"],
+            Family::MonoReuse => &["does not contain", "and no value is both"],
             Family::RigidVar => &["unbound", "which the signature does not declare"],
             Family::RigidPattern => &["tests inside a value of", "matches no value of"],
             Family::SharedVar | Family::AbstractParam => &["does not contain"],

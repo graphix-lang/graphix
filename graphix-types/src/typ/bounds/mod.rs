@@ -5,9 +5,9 @@
 //! consistent with each other.
 
 use crate::{
-    LambdaId,
+    LambdaId, SourcePosition,
     env::{Env, TraitMethodRef},
-    expr::{ModPath, Told},
+    expr::{At, Expr, ModPath, Origin, Told},
     stack::ensure_sufficient,
     typ::{
         AbstractId, Bound, DefaultType, FnArgKind, FnArgType, FnType, Mutability, Open,
@@ -41,6 +41,8 @@ thread_local! {
     /// How many cells the old relation has bound since [`begin`]: under a
     /// check by bounds each is a node not yet asking the solver.
     static BOUND_BY_OLD: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+    /// Where the expression being checked is written ([`Site`]).
+    static SITE: RefCell<Option<Made>> = const { RefCell::new(None) };
     /// Whether [`BOUND_BY_OLD`] counts for a build ([`Build`]) or a check.
     static BUILDING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
@@ -80,7 +82,7 @@ pub(crate) fn made(t: &Type) -> bool {
 /// asks of two types ([`Type::check_contains`], [`Type::contains`]) is
 /// asked of the solver.
 pub fn begin() {
-    ACTIVE.set(Some(Solving::default()));
+    ACTIVE.set(Some(Solving { places: true, ..Solving::default() }));
     if !BUILDING.get() {
         BOUND_BY_OLD.set(Some(0))
     }
@@ -560,6 +562,53 @@ impl Unfold {
     }
 }
 
+/// Where a cell was first bounded: the file and place of the expression
+/// then being checked.
+type Made = (Arc<Origin>, SourcePosition);
+
+/// While this lives, the cells a check first bounds are made at the
+/// expression `spec`: a refusal found when one is fixed, where no use is
+/// at hand, is placed there.
+#[must_use]
+pub struct Site(Was);
+
+enum Was {
+    At(SourcePosition),
+    In(Option<Made>),
+}
+
+impl Site {
+    pub fn enter(spec: &Expr) -> Self {
+        SITE.with_borrow_mut(|site| match site {
+            // one file's expressions share its origin
+            Some((ori, pos)) if Arc::ptr_eq(ori, &spec.ori) => {
+                Site(Was::At(std::mem::replace(pos, spec.pos)))
+            }
+            site => Site(Was::In(site.replace((spec.ori.clone(), spec.pos)))),
+        })
+    }
+
+    /// While this lives, the cells a check first bounds are made at no
+    /// expression: those of a question asked of two types, whose asker
+    /// places the answer.
+    fn nowhere() -> Self {
+        Site(Was::In(SITE.take()))
+    }
+}
+
+impl Drop for Site {
+    fn drop(&mut self) {
+        SITE.with_borrow_mut(|site| match std::mem::replace(&mut self.0, Was::In(None)) {
+            Was::At(pos) => {
+                if let Some(at) = site {
+                    at.1 = pos
+                }
+            }
+            Was::In(was) => *site = was,
+        })
+    }
+}
+
 /// The relation's own state for one check.
 #[derive(Default)]
 pub struct Solving {
@@ -583,6 +632,11 @@ pub struct Solving {
     /// Every cell this check has bounded, in the order first met: a
     /// definition's own are those met since it began.
     cells: Vec<TVar>,
+    /// Where each of `cells` was first bounded ([`Site`]), in a check's
+    /// own solver (`places`): one that asks a question of two types
+    /// stands at no expression.
+    made_at: Vec<Option<Made>>,
+    places: bool,
     /// The cells being fixed, by address.
     fixing: AHashSet<usize>,
     /// Cells inside a generic definition that take more than one value
@@ -1102,6 +1156,8 @@ impl Solving {
             attempts: _,
             held,
             cells,
+            made_at,
+            places: _,
             fixing: _,
             singles,
             selects,
@@ -1132,6 +1188,7 @@ impl Solving {
         } = task;
         self.held.extend(held);
         self.cells.extend(cells);
+        self.made_at.extend(made_at);
         self.singles.extend(singles);
         self.selects.extend(selects);
         self.strips.extend(strips);
@@ -1578,6 +1635,7 @@ impl Solving {
         let at = va.or(vb).unwrap().level();
         match (va, vb) {
             (Some(v), _) if depth(b) <= at.depth() => {
+                self.meets_demands(env, v, b)?;
                 let Some(lower) = self.record(v, b, false) else { return Ok(()) };
                 self.track(v);
                 if let Type::TVar(w) = b
@@ -1611,6 +1669,30 @@ impl Solving {
             }
             (None, None) => unreachable!(),
         }
+    }
+
+    /// The decided type `b`, newly demanded of the cell `v`, shares a
+    /// value with each decided type demanded of it before. Fixing `v`
+    /// would refuse two that share none ([`Self::meet`]) where no use is
+    /// at hand to name: the second use is refused here. A cell something
+    /// flows into refuses the flow, and a question decides nothing.
+    fn meets_demands(&mut self, env: &Env, v: &TVar, b: &Type) -> Result<()> {
+        if !self.places || self.attempts > 0 || !v.cell_lower().is_empty() {
+            return Ok(());
+        }
+        let says = |t: &Type| {
+            !matches!(t, Type::TVar(_) | Type::Bound(_) | Type::Bottom | Type::Any)
+                && !t.is_trait_ref(env)
+                && !t.has_free()
+        };
+        let b = deep(b);
+        let mut demands: SmallVec<[Type; 4]> =
+            v.cell_above().iter().map(deep).filter(|u| says(u)).collect();
+        if demands.is_empty() || !says(&b) {
+            return Ok(());
+        }
+        demands.push(b);
+        self.meet(env, &demands).map(|_| ())
     }
 
     /// `a` is a new lower bound of the open cell `w`: it must fit whatever
@@ -2104,7 +2186,21 @@ impl Solving {
                 || std::mem::replace(&mut c.solving.get_or_insert_default().listed, true)
         };
         if !listed {
-            self.cells.push(v.clone())
+            self.cells.push(v.clone());
+            self.made_at.push(match self.places {
+                true => SITE.with_borrow(|site| site.clone()),
+                false => None,
+            })
+        }
+    }
+
+    /// `e`, a refusal found fixing or judging the cell `v`, placed where
+    /// `v` was first bounded unless it says where it arose.
+    fn placed_at(&self, v: &TVar, e: anyhow::Error) -> anyhow::Error {
+        let made = self.cells.iter().position(|c| c.same_cell(v));
+        match made.and_then(|i| self.made_at[i].as_ref()) {
+            Some((ori, pos)) => e.placed(ori, *pos),
+            None => e,
         }
     }
 
@@ -2540,6 +2636,7 @@ pub fn fits(
     outer: Level,
     shared: bool,
 ) -> Result<()> {
+    let _asked = Site::nowhere();
     let fits = |s: &mut Solving| {
         let mark = s.mark();
         s.quantify(made, outer.depth());
@@ -2595,6 +2692,7 @@ pub fn fits(
 /// variables stands for. A variable of `held` is a cell nothing flows
 /// into, a constant here; its other cells are what flows into them.
 pub fn written_fits(env: &Env, written: &Type, held: &Type, outer: Level) -> Result<()> {
+    let _asked = Site::nowhere();
     let fits = |s: &mut Solving| {
         let mark = s.mark();
         let level = Level::Def { depth: outer.depth() + 1, owner: LambdaId::new() };
@@ -3391,6 +3489,21 @@ fn takes_nothing(formal: &Type, e: anyhow::Error) -> anyhow::Error {
     }
 }
 
+/// The refusal of a value used as each of `ts`, which share no value.
+fn used_as(ts: &[Type]) -> String {
+    let mut said: SmallVec<[String; 2]> = SmallVec::new();
+    for t in ts.iter().map(|t| t.to_string()) {
+        if !said.contains(&t) {
+            said.push(t)
+        }
+    }
+    let all = match said.len() {
+        2 => "both",
+        _ => "all of them",
+    };
+    format!("a value here is used as {}, and no value is {all}", said.join(" and as "))
+}
+
 /// What `t` stands as where a refusal says it: an open cell is the values
 /// it holds so far ([`standing_head`]).
 pub fn standing(t: &Type) -> Type {
@@ -3625,15 +3738,7 @@ impl Solving {
             // or two abstract types may share values no walk can list
             common = self.both(env, true, &common, &select::split(u));
             if matches!(common, Type::Bottom) {
-                bail!(
-                    "a value here is used as {} and as {u}, and no value is both: \
-                     nothing can be passed for it",
-                    asked[..i]
-                        .iter()
-                        .map(|t| t.to_string())
-                        .collect::<SmallVec<[String; 2]>>()
-                        .join(" and as ")
-                )
+                bail!("{}: nothing can be passed for it", used_as(&asked[..=i]))
             }
         }
         Ok(())
@@ -4755,7 +4860,7 @@ impl Solving {
     /// Give `v` one type: the union of what flows into it, or, where
     /// nothing does, the narrowest of what its uses demand.
     fn fix(&mut self, env: &Env, v: &TVar) -> Result<()> {
-        ensure_sufficient(|| self.fix_cell(env, v))
+        ensure_sufficient(|| self.fix_cell(env, v)).map_err(|e| self.placed_at(v, e))
     }
 
     fn fix_cell(&mut self, env: &Env, v: &TVar) -> Result<()> {
@@ -4873,50 +4978,57 @@ impl Solving {
     // drain off); predicates on a fixed cell are the solver's judge, where this
     // moved. Re-probe under the new check before closing.
 
+    /// Each predicate the fixed cell `v` carries holds of what it was
+    /// fixed to.
+    fn judge_cell(&mut self, env: &Env, v: &TVar) -> Result<()> {
+        // a ground cell under the binding keeps the verdict it was
+        // judged once
+        let Some(t) = v.binding().map(|t| shallow(&t)) else { return Ok(()) };
+        // an operation that reads a type to know what to make (a parse,
+        // a typed read) needs one where its value is made, or where
+        // something was asked of the type: nothing decided this. A cell
+        // wanted as nothing (an instance at ⊥) is asked nothing
+        let asked = |v: &TVar| {
+            v.cell_above().iter().any(|c| !matches!(c, Type::Bound(_) | Type::Bottom))
+        };
+        let made = known(v, |k| k.made);
+        if matches!(t, Type::Bottom) && (made || asked(v)) {
+            for p in v.cell_above().iter() {
+                match p {
+                    // a call's result is made of it: annotate where it
+                    // goes; else it is asked of, as a handler's parameter
+                    Type::Bound(Bound::Concrete) if made => bail!(
+                        "the type '{} must be known here, an operation reads it to \
+                         know what to make: annotate where its result goes",
+                        ShortName(&v.name)
+                    ),
+                    Type::Bound(Bound::Concrete) => bail!(
+                        "the type '{} must be known here, a type-directed operation \
+                         reads it: annotate it",
+                        ShortName(&v.name)
+                    ),
+                    Type::Bound(Bound::Function) => bail!(
+                        "the type '{} must be a function here, an operation reads \
+                         its signature: annotate it",
+                        ShortName(&v.name)
+                    ),
+                    _ => (),
+                }
+            }
+        }
+        let above = v.cell_above();
+        if self.hold(env, &v.name, &above, &t).is_err() {
+            // a refusal names the type copied out of its cells
+            self.hold(env, &v.name, &above, &deep(&t))?
+        }
+        Ok(())
+    }
+
     /// Each predicate a fixed cell carries holds of what the cell was
     /// fixed to.
     fn judge(&mut self, env: &Env) -> Result<()> {
         for v in std::mem::take(&mut self.judged) {
-            // a ground cell under the binding keeps the verdict it was
-            // judged once
-            let Some(t) = v.binding().map(|t| shallow(&t)) else { continue };
-            // an operation that reads a type to know what to make (a parse,
-            // a typed read) needs one where its value is made, or where
-            // something was asked of the type: nothing decided this. A cell
-            // wanted as nothing (an instance at ⊥) is asked nothing
-            let asked = |v: &TVar| {
-                v.cell_above().iter().any(|c| !matches!(c, Type::Bound(_) | Type::Bottom))
-            };
-            let made = known(&v, |k| k.made);
-            if matches!(t, Type::Bottom) && (made || asked(&v)) {
-                for p in v.cell_above().iter() {
-                    match p {
-                        // a call's result is made of it: annotate where it
-                        // goes; else it is asked of, as a handler's parameter
-                        Type::Bound(Bound::Concrete) if made => bail!(
-                            "the type '{} must be known here, an operation reads it to \
-                             know what to make: annotate where its result goes",
-                            ShortName(&v.name)
-                        ),
-                        Type::Bound(Bound::Concrete) => bail!(
-                            "the type '{} must be known here, a type-directed operation \
-                             reads it: annotate it",
-                            ShortName(&v.name)
-                        ),
-                        Type::Bound(Bound::Function) => bail!(
-                            "the type '{} must be a function here, an operation reads \
-                             its signature: annotate it",
-                            ShortName(&v.name)
-                        ),
-                        _ => (),
-                    }
-                }
-            }
-            let above = v.cell_above();
-            if self.hold(env, &v.name, &above, &t).is_err() {
-                // a refusal names the type copied out of its cells
-                self.hold(env, &v.name, &above, &deep(&t))?
-            }
+            self.judge_cell(env, &v).map_err(|e| self.placed_at(&v, e))?
         }
         for asked in std::mem::take(&mut self.asked) {
             let (t, predicates, name) = &*asked;
@@ -5253,9 +5365,20 @@ impl Solving {
         });
         match common {
             Some(Some(p)) if !p.is_empty() => Ok(Type::Primitive(p)),
+            // two of them that share no value say it
             _ => {
-                let all: Vec<String> = ts.iter().map(|t| t.to_string()).collect();
-                bail!("unsatisfiable constraints: {}", all.join(" & "))
+                let apart = |a: &Type, b: &Type| {
+                    let (a, b) = (select::split(&deep(a)), select::split(&deep(b)));
+                    matches!(self.both(env, true, &a, &b), Type::Bottom)
+                };
+                let pair = ts.iter().enumerate().find_map(|(i, a)| {
+                    let b = ts[i + 1..].iter().find(|b| apart(a, b))?;
+                    Some([a.clone(), b.clone()])
+                });
+                match pair {
+                    Some(pair) => bail!(used_as(&pair)),
+                    None => bail!(used_as(ts)),
+                }
             }
         }
     }

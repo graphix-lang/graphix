@@ -485,6 +485,7 @@ impl<R: Rt> Node<R> {
     }
 
     pub fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
+        let _site = typ::bounds::Site::enter(self.0.spec());
         stack::ensure_sufficient(|| self.0.typecheck0(ctx))
     }
 

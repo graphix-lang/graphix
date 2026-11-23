@@ -13353,7 +13353,7 @@ run!(union_bound_members_decided_alike_bound_an_empty_array, r#"{
     let f = 'a: P<'b, 'c> |y: 'b, z: 'c, x: 'a| x;
     let r = f(1, 2, []);
     array::len(array::push(r, "s"))
-}"#, refused("unsatisfiable constraints: string & i64"); FuseExpect::None);
+}"#, refused("a value here is used as string and as i64, and no value is both"); FuseExpect::None);
 
 // A read-only reference bound holds a writable reference's referent
 // within its own, a writable one makes it its own exactly, and a map
@@ -16736,7 +16736,7 @@ run!(
   let r = f(v, v, 1);
   r
 }"#,
-    refused("unsatisfiable constraints: string & i64");
+    refused("a value here is used as string and as i64, and no value is both");
     FuseExpect::None
 );
 

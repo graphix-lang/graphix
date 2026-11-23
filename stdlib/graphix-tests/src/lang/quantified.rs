@@ -1012,7 +1012,7 @@ run!(
     a_seqq_step_in_a_holder_decides_the_holders_copy,
     "{ let k = |p: {g: fn(x: i64) -> i64}| 0; let s = {g: |x| x}; \
        let t = {a: s, b: seqq 1 { k(s) }}; (t.a.g(\"x\"), t.b) }",
-    refused("unsatisfiable constraints: i64 & string");
+    refused("a value here is used as i64 and as string, and no value is both");
     FuseExpect::None
 );
 

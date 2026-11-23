@@ -4054,7 +4054,7 @@ async fn must_reject(
     per_check: Duration,
     cap: usize,
 ) -> (Vec<Probed<Option<String>>>, Option<(String, String)>) {
-    use graphix_compiler::expr::ErrorSite;
+    use graphix_compiler::expr::{ErrorSite, ParserContext};
     let mut out = Vec::new();
     let TmCheck::Done(Ok(checked)) = tm_check(ctx, &compose(body), true, per_check).await
     else {
@@ -4067,10 +4067,15 @@ async fn must_reject(
             TmCheck::Hung => return (out, Some((p.id(), p.body))),
             TmCheck::Done(Ok(_)) => Some(format!("LEAK: accepted at {}", p.reached)),
             TmCheck::Done(Err(e)) => {
-                let site = e.downcast_ref::<ErrorSite>().map(|s| s.expr());
-                let right = site.is_some_and(|x| {
-                    mustreject::in_module(&x.ori, "test")
-                        && p.right_site(mustreject::to_body(x.pos))
+                // an expression's, or a place alone where the refusal was
+                // found with no use at hand
+                let site = match e.downcast_ref::<ErrorSite>().map(|s| s.expr()) {
+                    Some(x) => Some((&x.ori, x.pos)),
+                    None => e.downcast_ref::<ParserContext>().map(|p| (&p.ori, p.pos)),
+                };
+                let right = site.is_some_and(|(ori, pos)| {
+                    mustreject::in_module(ori, "test")
+                        && p.right_site(mustreject::to_body(pos))
                 });
                 let head = tm_error_head(&format!("{e:?}"));
                 match right {
