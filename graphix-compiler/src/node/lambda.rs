@@ -3438,23 +3438,15 @@ impl<R: Rt> Update<R> for Lambda {
             elab_audit::fallback(&self.spec);
             return self.check_alone(ctx);
         };
-        // a definition a check by bounds made generic is that scheme, as
-        // the instance holds it
-        if bounds::scheme(&row) {
-            if !bounds::take(&self.typ, &row) {
-                bailat!(self.spec, "BUG: a lambda's signature took no row")
-            }
-            def.join_facts(tables.table.facts);
-            def.table.set(tables);
-            return Ok(());
-        }
-        // one the check decided whole is placed the same way
         if !bounds::take(&self.typ, &row) {
             bailat!(self.spec, "BUG: a lambda's signature took no row")
         }
-        match self.named {
-            true => def.typ.generalize(def.level.depth()),
-            false => def.typ.claim(current_level()),
+        // a definition a check by bounds made generic is that scheme, as
+        // the instance holds it
+        match (bounds::scheme(&row), self.named) {
+            (true, _) => (),
+            (false, true) => def.typ.generalize(def.level.depth()),
+            (false, false) => def.typ.claim(current_level()),
         }
         let mut own = tables.table.calls_own;
         let mut captured = SmallVec::new();
