@@ -6,7 +6,7 @@
 
 use crate::{
     LambdaId, SourcePosition,
-    env::{Env, TraitMethodRef},
+    env::{Bind, Env, TraitMethodRef},
     expr::{At, Expr, ModPath, Origin, Told},
     stack::ensure_sufficient,
     typ::{
@@ -27,7 +27,12 @@ use compact_str::format_compact;
 use netidx_value::Typ;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
-use std::{cell::RefCell, fmt::Write, ops::ControlFlow, sync::LazyLock};
+use std::{
+    cell::RefCell,
+    fmt::{self, Write},
+    ops::ControlFlow,
+    sync::LazyLock,
+};
 use triomphe::Arc;
 
 mod image;
@@ -1665,17 +1670,17 @@ impl Solving {
                 lower.iter().try_for_each(|l| self.relate(env, l, b))
             }
             (Some(_), Some(w)) => self.arrive(env, w, a),
-            (Some(_), None) => {
+            (Some(v), None) => {
                 let b = self.extrude(b, false, at);
                 self.escapes(&b, at)?;
-                self.sinks_sealed()?;
+                self.sinks_sealed(v)?;
                 self.constrain(env, a, &b)
             }
             (None, Some(w)) if depth(a) <= at.depth() => self.arrive(env, w, a),
-            (None, Some(_)) => {
+            (None, Some(w)) => {
                 let a = self.extrude(a, true, at);
                 self.escapes(&a, at)?;
-                self.sinks_sealed()?;
+                self.sinks_sealed(w)?;
                 self.constrain(env, &a, b)
             }
             (None, None) => unreachable!(),
@@ -1865,20 +1870,14 @@ impl Solving {
     }
 
     /// A variable of a signature others read whose values the definition
-    /// writes outside it: a caller reads the signature alone, and would
-    /// not carry its own values there.
-    fn sinks_sealed(&mut self) -> Result<()> {
+    /// sends to `into`, a cell outside it: a caller reads the signature
+    /// alone, and would not carry its own values there.
+    fn sinks_sealed(&mut self, into: &TVar) -> Result<()> {
         match self.sunk.take() {
             None => Ok(()),
             Some(v) => {
                 let name = v.declared_name().unwrap_or_else(|| v.name.clone());
-                let name = ShortName(&name);
-                bail!(
-                    "where the signature declares '{name}, a type each use picks, the \
-                     implementation writes it to a binding outside its let, which has one \
-                     type all uses share: give that binding a type that holds every \
-                     '{name}, or declare the signature at one type"
-                )
+                Err(anyhow::Error::new(Sunk { name, into: into.clone() }))
             }
         }
     }
@@ -2696,6 +2695,75 @@ pub fn fits(
         None => fits(&mut Solving::default()),
     }
 }
+
+/// The refusal of a signature's variable whose values its implementation
+/// sends to a cell outside it, which has one type all uses share.
+#[derive(Debug)]
+pub struct Sunk {
+    name: ArcStr,
+    into: TVar,
+}
+
+impl Sunk {
+    /// The binding beside `own` that holds the cell, the last one made
+    /// (one built of another is made after it), and whether it holds the
+    /// cell outside every function type.
+    fn holder<'a>(&self, env: &'a Env, own: &Bind) -> Option<(&'a Bind, bool)> {
+        let reaches = |t: &Type| {
+            let mut reached: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+            t.reached_cells(&mut reached);
+            reached.contains_key(&self.into.cell_addr())
+        };
+        let held = env.by_id.iter().map(|(_, b)| &**b);
+        let held =
+            held.filter(|b| b.id != own.id && b.scope == own.scope && reaches(&b.typ));
+        let held = held.max_by_key(|b| b.id)?;
+        let mut data: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+        held.typ.variables_outside_functions(env, &mut data);
+        let in_data = data.values().any(|v| reaches(&Type::TVar(v.clone())));
+        Some((held, in_data))
+    }
+
+    /// The refusal as `own`, the binding that implements the val, is
+    /// told it.
+    pub fn told(&self, env: &Env, own: &Bind) -> String {
+        let name = ShortName(&self.name);
+        let shared = format_compact!(
+            "where the signature declares '{name}, a type each use picks, the \
+             implementation gives it one type all uses share"
+        );
+        match self.holder(env, own) {
+            None => format!("{self}"),
+            Some((b, true)) => format!(
+                "{shared}, that of {b}, a binding outside its let: declare the val at \
+                 one type, or give {b} a type that holds every '{name}",
+                b = b.name
+            ),
+            Some((b, false)) => format!(
+                "{shared}, that of {b}, a binding outside its let holding a function \
+                 that is one instance, as a call's result is: declare the val at one \
+                 type, or write a lambda over variables of its own in that function's \
+                 place",
+                b = b.name
+            ),
+        }
+    }
+}
+
+impl fmt::Display for Sunk {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = ShortName(&self.name);
+        write!(
+            f,
+            "where the signature declares '{name}, a type each use picks, the \
+             implementation writes it to a binding outside its let, which has one type \
+             all uses share: give that binding a type that holds every '{name}, or \
+             declare the signature at one type"
+        )
+    }
+}
+
+impl std::error::Error for Sunk {}
 
 /// Whether a value of the type `written`, as general as it is declared,
 /// may stand where readers take the scheme `held` at its instances: one
