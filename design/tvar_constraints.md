@@ -49,9 +49,18 @@ what the definition left to each instance (`Left`: a comparison, a `Singleton`, 
 still waiting, a held choice). A bound is kept by the deeper of its two sides; a type
 too deep for a cell is copied out to the cell's level first (`extrude`).
 
-**Declared variables.** A variable a definition declares in its header (`'a: B |..|`)
-is rigid while the body is checked: the body may relate it only to itself, to its bound
-and to what holds it. A variable written bare takes the bound the body needs.
+**A declared variable.** A variable a definition writes, in its header (`'a: B |..|`)
+or bare in a position (`|x: 'a|`), is one type each call picks, and its bound is exactly
+what is written for it, `Any` where nothing is. It is rigid while the body is checked:
+the body may relate it only to itself, to its bound and to what holds it, and asks no
+predicate of it the bound does not imply, `Singleton` included (`Solving::relate_in`,
+`TVar::add_body_bound`). A refusal names what to write: "the body needs 'a within
+Number + Singleton, which the signature does not declare: write 'a: Number +
+Singleton" (`TVar::undeclared_bound`, `undeclared_needs`). Where one type is asked, a
+declared variable beside another type is refused in the definition, since a call picks
+the variable (`Solving::one_at_every_call`). A predicate over data that holds declared
+variables is judged by their bounds (`Solving::hold_declared`). Inference is for what
+is left unwritten: an untyped parameter's bound is what its body needs.
 
 **Unions.** A value two members of a union could take is held until something decides
 (`below_union`, `held`); a member that can never take it is out at once. At the check's
@@ -109,7 +118,8 @@ no "must be known here" let f = |x: 'a, y: 'a| -> 'a y; f(str::parse("1"), 1)
 | a call's arguments of one variable widen it; a bound refuses | `Solving::call_at` |
 | arithmetic takes one numeric type, judged at each instance | `node/op.rs` (`arith_rule`), `Left::Single` |
 | a comparison takes operands where one's type holds the other's; any two numbers order | `node/op.rs`, `Left::Compared` |
-| a declared variable is rigid in its body; a bare one takes the bound its body needs | `node/lambda.rs` (`DefGate`) |
+| a variable a definition writes is rigid in its body, and its bound is exactly what is written (`Any` if nothing) | `node/lambda.rs` (`DefGate`), `Solving::relate_in` |
+| one type is asked of a declared variable only where it declares `Singleton`, and never beside another type | `Solving::one_at_every_call` |
 | an instance's variable that nothing meets is bottom | `Known::copied` |
 | `Function` is judged by shape where the value arrives | `Solving::relate_in` |
 
@@ -120,6 +130,12 @@ no "cannot compute with [i64, f64]" let mk = |z| |x| x + x; let h = mk(0); (h(1)
 ok let f = |x: 'a, y: 'a| -> 'a x; f(1, "s")
 no "Number does not contain string" let f = 'a: Number |x: 'a| -> 'a x; f("s")
 no "cannot compute with [i64, f64]" let f = |x, y| x + y; f(1, 2.5)
+no "write 'a: Number + Singleton" let f = |x: 'a, y: 'a| x + y; f(1, 2)
+no "write 'a: Number + Singleton" let f = 'a: Number |x: 'a, y: 'a| x + y; f(1, 2)
+ok let f = 'a: Number + Singleton |x: 'a, y: 'a| x + y; f(1, 2)
+no "write 'c: i64" let g = |x: i64| x; let f = |y: 'c| g(y); f(1)
+no "must be one type, but the declared variable 'a may differ" let f = 'a: Number + Singleton |x: 'a| x + 1; f(1)
+no "add Discernible to the bound of 'a" let f = 'a: Any |x: 'a, y: 'a| (x, 1) == (y, 1); f(1, 2)
 ok let x: [i64, null] = 3; x == 3
 no "cannot compare i64 with string" 1 == "b"
 ok 1 < 2.5

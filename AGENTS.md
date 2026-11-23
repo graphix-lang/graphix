@@ -557,7 +557,10 @@ a change elsewhere most often breaks.
   those); any other value is one instance.
 - **A def's declared tvars are rigid in its body check**: none binds to a
   concrete type or ⊥, no two unify, none escapes into a cell outside the
-  definition. A call instantiates them freely.
+  definition. A call instantiates them freely. **A written variable's bound
+  is exactly what is written for it**, `Any` if nothing, bare (`|x: 'a|`) or
+  in a header: a body adds none, `Singleton` included, and the refusal names
+  what to write. Only an untyped parameter's bound is inferred.
 - A quantified function type stands only as a declared signature's top
   (`typ::QUANTIFIED_FN`); the parser refuses one written inside another.
 - A value that could go to more than one member of a union, with nothing
@@ -604,7 +607,8 @@ are in the docs named here.
   tell apart two types that share a runtime form (`Type::rep_collision`).
 - **Operators** (`expr/binop.rs`, `design/tvar_constraints.md`): arithmetic
   takes ONE numeric type (`'a: Number + Singleton`), judged at each
-  instance; a comparison takes operands where one's type holds the other's,
+  instance of an inferred function and declared by a written variable; a
+  comparison takes operands where one's type holds the other's,
   any two numbers order, and `Ordered` refuses only functions and
   references. Unchecked `+ - *` wrap, integer div0
   bottoms, checked forms (`+?`) yield a catchable error, floats follow IEEE.
