@@ -1861,8 +1861,7 @@ fn a_dag_of_parametrized_named_unions_checks_in_polynomial_time() {
         3 * BILLION,
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
-    let refusal =
-        format!("type mismatch L{DEPTH}<'b> does not contain 'a");
+    let refusal = format!("type mismatch L{DEPTH}<'b> does not contain 'a");
     assert!(!out.status.success() && stderr.contains(&refusal), "{stderr}");
 }
 
@@ -2001,11 +2000,13 @@ fn type_tests_over_two_families_of_recursive_unions_check_in_time() {
             U1 as u0 => 0,\n\
             Error<U2> as u1 => 1,\n\
             U3 as u2 => 2,\n\
-            U1 as u3 => 3,\n\
-            Error<U2> as u4 => 4,\n\
+            U2 as u3 => 3,\n\
+            U0 as u4 => 4,\n\
             _ => 999\n\
         }\n";
     checks_within(four_a_side, 3 * BILLION);
+    // a test an arm above made is dead, whatever the arms between took
+    let a_test_again = four_a_side.replace("U2 as u3", "U1 as u3");
     let through_arrays = "\
         type T0 = [Array<T1>, Error<T1>, Error<T0>, `A0];\n\
         type T1 = [Array<T1>, (T1, T0), Error<T1>, `A1];\n\
@@ -2025,6 +2026,7 @@ fn type_tests_over_two_families_of_recursive_unions_check_in_time() {
     for (program, refusal) in [
         (through_arrays, "missing match cases: nothing matches"),
         (one_family, "pattern `A2 will never match"),
+        (&*a_test_again, "pattern U1 will never match"),
     ] {
         let out = exits_within(
             &["--check", "--no-cache"],
