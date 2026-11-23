@@ -151,11 +151,12 @@ Error: in file test.gx
 
 Caused by:
     0: at: line: 4, column: 1 in file test.gx, in: select x { Array<i64> as a => array::f..
-    1: missing match cases: no arm covers null
+    1: missing match cases: nothing matches null (4:8)
 ```
 
 The compiler subtracts what each arm matches from the argument's type, and
-names what is left when the arms run out: here `null`, which no arm covers.
+names what is left when the arms run out: here `null`, which no arm matches
+(`4:8` is where the select's argument is, line and column).
 This goes both ways, a match case that could never match is also an error.
 
 ```graphix,refused
@@ -178,16 +179,14 @@ $ graphix test.gx
 Error: in file test.gx
 
 Caused by:
-    0: at: line: 4, column: 1 in file test.gx, in: select x { Array<i64> as a => array::f..
-    1: at: line: 7, column: 3 in file test.gx
-    2: pattern f64 will never match null, unused match cases
+    0: at: line: 7, column: 3 in file test.gx
+    1: pattern f64 will never match: nothing reaches it (4:8; the value is [i64, null, Array<i64>])
 ```
 
-The diagnostic message gives you an insight into the compiler's thinking. What
-it is saying is that, by the time it's gotten to looking at the `f64` pattern,
-the only type left in the argument that hasn't already been matched is `null`,
-and since `f64` doesn't unify with `null` it is sure this pattern can never
-match.
+The message names the arm, at line 7, and what the select's argument can
+be: an `i64`, a `null` or an `Array<i64>`. The arms above the `f64` one take
+the arrays and the `i64`s, the `null` that is left is no `f64`, so nothing
+reaches the arm and it can never match.
 
 Guarded patterns can always not match because of the guard, so they do not
 subtract from the argument type set. You are required to match without a guard
@@ -214,7 +213,7 @@ Error: in file test.gx
 
 Caused by:
     0: at: line: 4, column: 1 in file test.gx, in: select x { Array<i64> as a => array::f..
-    1: missing match cases: no arm covers i64
+    1: missing match cases: nothing matches i64 (4:8)
 ```
 
 This is the same error you would get if you omitted the `i64` match case

@@ -5,7 +5,7 @@ which can be created with the `error` function. e.g.
 
 ```graphix
 〉error(`Foo)
--: Error<'a: `Foo>
+-: Error<`Foo>
 error:`Foo
 ```
 

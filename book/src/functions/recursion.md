@@ -123,6 +123,6 @@ running this we see,
 
 ```graphix
 〉add_pairs([1, 2, 3, 4, 5])
--: Array<'a: i64>
+-: Array<i64>
 [3, 7, 5]
 ```
