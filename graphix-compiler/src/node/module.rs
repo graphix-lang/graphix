@@ -566,8 +566,10 @@ fn impl_sig(target: &Type, params: &[TVar]) -> FnType {
     }
 }
 
-/// Refuse `own`, the binding that implements a val, whose type `typ` is
-/// not the declared `declared`.
+/// Refuse an implementation of `val name` whose type `typ` is not the
+/// declared `declared` ([`hold_paired`]); `generalized` says its binding is
+/// generic in the cells its own definitions own, and `holder` what holds a
+/// cell of it ([`Holder::of`]).
 // CR claude for eric: [structure/medium] A val's declared type is compared with its
 // implementation's inferred type after the fact (`Type::sig_matches`, `hold_paired`,
 // `FnType::sig_bounds`) instead of being given to the implementing `let` as its
@@ -581,13 +583,7 @@ fn impl_sig(target: &Type, params: &[TVar]) -> FnType {
 // annotation, its variables rigid as a declared signature's are, and keep `sig_matches`
 // for what no annotation can say. probe:
 // design/review-2026-11-16/repro/a-packages-val-is-not-an-annotation.sh (a-packages-04)
-fn check_val(
-    env: &Env,
-    own: &crate::env::Bind,
-    declared: &Type,
-    typ: &Type,
-) -> Result<()> {
-    let name = &own.name;
+fn check_val(env: &Env, name: &str, declared: &Type, typ: &Type) -> Result<()> {
     // CR claude for claude: [readability/low] Two references of one name
     // over two definitions print alike in this note: `val f is declared
     // fn(x: C) -> C but implemented fn(x: C) -> C: in return type:
@@ -602,10 +598,6 @@ fn check_val(
     // type mismatch fn(x: C) -> C does not contain fn(x: C) -> C`: the two `C` still
     // print alike.
     let refused = |e: anyhow::Error| {
-        let e = match e.downcast_ref::<crate::typ::bounds::Sunk>() {
-            Some(sunk) => anyhow!("{}", sunk.told(env, own)),
-            None => e,
-        };
         let settled = match settled_note(env, &[typ]) {
             Some(n) => format_compact!(": {n}"),
             None => format_compact!(""),
@@ -1076,7 +1068,7 @@ fn check_sig_items<R: Rt>(
             };
             let typ = implementation_type(bind, inner);
             proxy_bind.typ.unbind_tvars();
-            check_val(&ctx.env, inner, &proxy_bind.typ, typ)?;
+            check_val(&ctx.env, &inner.name, &proxy_bind.typ, typ)?;
             if ctx.connect_targets.contains(&proxy_id) {
                 ctx.check_val_written(&inner.name, &proxy_bind.typ, typ)?
             }
@@ -1215,7 +1207,7 @@ pub fn check_script_sig<R: Rt>(
                     ft.generalize(0)
                 }
                 check_interface_names(&view, scope, si, Some(&declared)).map_err(at)?;
-                check_val(&ctx.env, bind, &declared, &bind.typ)
+                check_val(&ctx.env, name.name.as_str(), &declared, &bind.typ)
                     .context(ParserContext { ori: bind.ori.clone(), pos: bind.pos })?;
                 // the language server sees the val as a module's: a binding
                 // of its own, with its doc, linked to the script's
