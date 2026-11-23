@@ -96,6 +96,83 @@ fn flatten_members(
     })
 }
 
+/// The most members [`unfold`] takes one composite apart into.
+const UNFOLDED: usize = 64;
+
+/// The members a tuple, variant or struct over a union at a position
+/// stands for, one per type of that position: a union folds members that
+/// differ at one position into one composite over the union there
+/// (`` [`L(i64), `L(string)] `` is `` `L([i64, string]) ``). Empty where
+/// `t` has no such position, or more than [`UNFOLDED`] members.
+fn unfold(t: &Type) -> SmallVec<[Type; 8]> {
+    fn position(t: &Type, out: &mut SmallVec<[Type; 8]>) {
+        match t {
+            Type::TVar(tv) => match tv.binding() {
+                Some(b) => position(&b, out),
+                None => out.push(t.clone()),
+            },
+            Type::Set(ms) => ms.iter().for_each(|m| position(m, out)),
+            Type::Primitive(p) if p.len() > 1 => {
+                out.extend(p.iter().map(|b| Type::Primitive(b.into())))
+            }
+            Type::Tuple(_) | Type::Variant(..) | Type::Struct(_) => {
+                match &unfold(t)[..] {
+                    [] => out.push(t.clone()),
+                    ms => out.extend(ms.iter().cloned()),
+                }
+            }
+            t => out.push(t.clone()),
+        }
+    }
+    let parts: SmallVec<[&Type; 4]> = match t {
+        Type::Tuple(ts) | Type::Variant(_, ts, _) => ts.iter().collect(),
+        Type::Struct(fs) => fs.iter().map(|(_, t, _)| t).collect(),
+        _ => return SmallVec::new(),
+    };
+    let rebuilt = |parts: &[Type]| match t {
+        Type::Tuple(_) => Type::Tuple(Arc::from_iter(parts.iter().cloned())),
+        Type::Variant(tag, _, at) => {
+            Type::Variant(tag.clone(), Arc::from_iter(parts.iter().cloned()), *at)
+        }
+        Type::Struct(fs) => Type::Struct(Arc::from_iter(
+            fs.iter()
+                .zip(parts.iter())
+                .map(|((n, _, at), t)| (n.clone(), t.clone(), *at)),
+        )),
+        t => t.clone(),
+    };
+    ensure_sufficient(|| {
+        let mut all: SmallVec<[SmallVec<[Type; 4]>; 8]> =
+            SmallVec::from_iter([parts.iter().map(|p| (*p).clone()).collect()]);
+        let mut apart = false;
+        for (i, p) in parts.iter().enumerate() {
+            let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+            position(p, &mut members);
+            if members.len() < 2 {
+                continue;
+            }
+            if all.len() * members.len() > UNFOLDED {
+                return SmallVec::new();
+            }
+            apart = true;
+            all = all
+                .iter()
+                .flat_map(|ps| {
+                    members.iter().map(move |m| {
+                        let mut ps = ps.clone();
+                        ps[i] = m.clone();
+                        ps
+                    })
+                })
+                .collect();
+        }
+        match apart {
+            true => all.iter().map(|ps| rebuilt(ps)).collect(),
+            false => SmallVec::new(),
+        }
+    })
+}
+
 /// Is `a` an open cell that `b` reaches (`'r ⊇ fn(..) -> 'r`)?
 /// A rigid cell never unifies, so it makes no cycle.
 fn open_cell_reaches(a: &Type, b: &Type) -> bool {
@@ -1207,7 +1284,7 @@ impl Type {
         let Self::Ref(r) = c else { return None };
         let tid = env.trait_of_ref(r)?;
         let def = env.trait_def(tid)?;
-        let members = Self::dispatch_members(env, t).ok()?;
+        let members = Self::dispatch_members_of(env, tid, t).ok()?;
         let seen = env.impls_of(tid).unwrap_or_default();
         let name = &def.name;
         for m in members.iter() {
@@ -1343,6 +1420,33 @@ impl Type {
         Ok(members)
     }
 
+    /// [`Self::dispatch_members`] for a dispatch of the trait `tid`: a
+    /// member no impl holds whole that stands for several ([`unfold`]) is
+    /// taken apart into them, since each may have an impl of its own.
+    pub fn dispatch_members_of(
+        env: &Env,
+        tid: TraitId,
+        t: &Self,
+    ) -> Result<SmallVec<[Type; 8]>> {
+        let mut members: SmallVec<[Type; 8]> = SmallVec::new();
+        for m in Self::dispatch_members(env, t)? {
+            let apart = match Self::trait_holds(tid, env, &m)? {
+                true => SmallVec::new(),
+                false => unfold(&m),
+            };
+            let each = match apart.is_empty() {
+                true => SmallVec::from_iter([m]),
+                false => apart,
+            };
+            for m in each {
+                if !members.iter().any(|o| strictly_identical(o, &m)) {
+                    members.push(m)
+                }
+            }
+        }
+        Ok(members)
+    }
+
     /// The arms of a dispatch over `t`, a type with no open cell and no
     /// two members that cross ([`Self::dispatch_crossing`]): its
     /// [`Self::dispatch_members`], one per type, none after a member
@@ -1350,10 +1454,28 @@ impl Type {
     /// that each hold the other the first met stays, and a member
     /// another holds stands before the first that does.
     pub fn dispatch_arms(env: &Env, t: &Self) -> Result<SmallVec<[Type; 8]>> {
+        Self::arms_of(env, t, Self::dispatch_members(env, t)?)
+    }
+
+    /// [`Self::dispatch_arms`] for a dispatch of the trait `tid`, over its
+    /// [`Self::dispatch_members_of`].
+    pub fn dispatch_arms_of(
+        env: &Env,
+        tid: TraitId,
+        t: &Self,
+    ) -> Result<SmallVec<[Type; 8]>> {
+        Self::arms_of(env, t, Self::dispatch_members_of(env, tid, t)?)
+    }
+
+    fn arms_of(
+        env: &Env,
+        t: &Self,
+        members: SmallVec<[Type; 8]>,
+    ) -> Result<SmallVec<[Type; 8]>> {
         let holds = |a: &Type, b: &Type| a.decided_holds(env, b);
         let mut arms: SmallVec<[Type; 8]> = SmallVec::new();
         let mut shared = false;
-        for m in Self::dispatch_members(env, t)? {
+        for m in members {
             let mut holder = None;
             for (i, o) in arms.iter().enumerate() {
                 if !o.shares_constructor(&m) {
@@ -1503,11 +1625,23 @@ impl Type {
         {
             return Ok(false);
         }
+        // CR claude for claude: [bug/low] A composite over a union at a position that
+        // is the whole receiver is not dispatched by member: `let x: [`L(i64),
+        // `L(string)] = ..; Show::show(x)` with an impl for each of `L(i64) and
+        // `L(string) is refused "Show does not contain `L([i64, string])", since the
+        // written union folds to one variant and `union` below is false for it. The
+        // same members reached through two typedefs dispatch
+        // (lang::traits::trait_union_dispatch_recursive_typedefs_sharing_no_value),
+        // where `dispatch_members_of` takes the folded member apart. Take this path
+        // too where no impl holds `t` whole and `unfold(t)` is not empty, and lower
+        // the call the same way (`Impl` call lowering in node/traits.rs gates on the
+        // same test). Main refuses the program too. (traits-folded-receiver-01)
+
         // nor when its dispatch, which tests each member, can't tell two
         // apart or gives a value of two to the one the union puts first; each
         // member is asked once, however many names reach it
         if union && env.trait_def(tid).is_some_and(|d| !d.hole) {
-            let members = Self::dispatch_members(env, t)?;
+            let members = Self::dispatch_members_of(env, tid, t)?;
             if Self::dispatch_collision(env, &members).is_some()
                 || Self::dispatch_crossing(env, &members)?.is_some()
             {
