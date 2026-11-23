@@ -6496,6 +6496,29 @@ run!(
     ; FuseExpect::None
 );
 
+// A recursive method's name is its lambda's own signature while the
+// lambda is checked, the declaration's variables its own: it calls itself
+// at them, and a body that gives one a type is refused.
+run!(
+    method_rec_calls_itself_over_the_declared_variable,
+    prints(r#"[i64:3, "a"]"#),
+    "/test.gx" => r#"
+        trait T { val m: fn(self, x: 'a) -> 'a };
+        impl T for i64 { let rec m = |s, x| select s { 0 => x, n => m(n - 1, x) } };
+        let result = (T::m(2, 3), T::m(1, "a"))
+    "#
+);
+
+run!(
+    method_rec_giving_the_declared_variable_a_type_is_refused,
+    refused("type mismatch 'a: unbound does not contain i64"),
+    "/test.gx" => r#"
+        trait T { val m: fn(self, x: 'a) -> 'a };
+        impl T for i64 { let rec m = |s, x| select s { 0 => 1, n => m(n - 1, x) } };
+        let result = T::m(2, "a")
+    "#
+);
+
 run!(
     method_rec_variable_beside_a_written_member_ahead_of_its_decider,
     prints("[i64:0, i64:0]"),
