@@ -267,14 +267,18 @@ impl<R: Rt> Catch<R> {
         self.own_handler.machine().map_or(0, |m| m.abort_stamp())
     }
 
-    /// The errors raised under the catch flow into its binding, which
-    /// holds at most what is written of it. A block holds this before the
-    /// region the catch covers, which is checked ahead of the catch, so its
-    /// raises meet what is written; the catch's own check holds it where
-    /// no block did (an input that is one catch).
+    /// The errors raised under the catch flow into its binding, which is
+    /// the type written of it, whatever is raised. A block holds this
+    /// before the region the catch covers, which is checked ahead of the
+    /// catch, so its raises meet what is written; the catch's own check
+    /// holds it where no block did (an input that is one catch).
     pub(crate) fn hold_written(&self, ctx: &CompileCtx<R>) -> Result<()> {
         match self.written() {
-            Some(written) => written.check_contains(&ctx.env, &self.binder(ctx)?),
+            Some(written) => {
+                let binder = self.binder(ctx)?;
+                written.check_contains(&ctx.env, &binder)?;
+                binder.check_contains(&ctx.env, written)
+            }
             None => Ok(()),
         }
     }

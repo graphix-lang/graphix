@@ -610,6 +610,21 @@ async fn catch_connect_union_mismatch_is_an_error() -> Result<()> {
     Ok(())
 }
 
+// `catch(e: T)` ascribes `T` to `e`, whatever is raised under it: a handler
+// selects over every member written.
+run!(
+    annotated_catch_binder_is_the_type_written,
+    r#"{
+  let a = [1, 2, 3];
+  let out = "";
+  catch(e: Error<ErrChain<[`ArrayIndexError(string), `Other]>>)
+    out <- select e.0.error { `Other => "other", `ArrayIndexError(s) => s };
+  a[15]?;
+  out
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s.is_empty())
+);
+
 // `catch(e: T)` ascribes `T` to `e`; a `?`-rethrowing handler typechecks
 // even when the covered region throws nothing.
 const CATCH_ASCRIPTION_RETHROW_NO_THROW: &str = r#"

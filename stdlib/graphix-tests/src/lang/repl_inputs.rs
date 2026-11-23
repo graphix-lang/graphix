@@ -127,6 +127,34 @@ async fn annotated_empty_literal_takes_a_later_write() -> Result<()> {
 
 /// A later input's loop over an earlier input's bottom, whose type is a
 /// union of arrays, runs fused and stays bottom.
+/// A catch entered alone has seen no error when its input ends: one that
+/// reads its binder is refused a later input's raise, naming the
+/// annotation, and an annotated one takes it, its binder the type written.
+#[tokio::test(flavor = "current_thread")]
+async fn catch_entered_alone_takes_a_later_raise_by_its_annotation() -> Result<()> {
+    session(&[
+        Accept("let a = [1, 2, 3]"),
+        Accept("catch(e) println(e)"),
+        Refuse(
+            "a[15]?",
+            "annotate the catch with the errors it takes, \
+             `catch(e: Error<ErrChain<`ArrayIndexError(string)>>)`",
+        ),
+    ])
+    .await?;
+    session(&[
+        Accept("let a = [1, 2, 3]"),
+        Accept("let seen = \"\""),
+        Accept(
+            "catch(e: Error<ErrChain<`ArrayIndexError(string)>>) \
+             seen <- select e.0.error { `ArrayIndexError(s) => s }",
+        ),
+        Accept("a[15]?"),
+        ProduceText("seen", "out of bounds"),
+    ])
+    .await
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn loop_over_an_earlier_bottom_union_of_arrays() -> Result<()> {
     session(&[
