@@ -325,17 +325,17 @@ over a type holding two numeric types, `[i64, f64]` or `Number`, even
 would not say what it is. A call of `f` with two `[i64, f64]` values is
 refused the same way, where it is called.
 
-Comparison is `fn('a, 'a) -> bool` over exactly one type: `|x, y| x < y`
-takes two arguments of one type, and neither operand's type may merely
-contain the other's. `x == 3` over `x: [i64, null]` and `` v == `Red ``
-over `` v: [`Green, `Red] `` are refused; select on the value instead
-(`` select v { `Red => true, _ => false } ``, `opt::is_some`). Any one
-type compares, unions included: two `[`Green, `Red]` values, two
-`[string, i64]` values, and two `[i64, f64]` values, of which values of
-different types are never equal (`i64:3 == f64:3.0` is false). The
-orderings (`<`, `<=`, `>`, `>=`) refuse a type holding two numeric
-types, as arithmetic does: an `i64` and an `f64` have no order between
-them, so cast them to one.
+A comparison takes two operands where one's type holds the other's.
+`x == 3` over `x: [i64, null]` and `` v == `Red `` over `` v: [`Green,
+`Red] `` check, and so do two values of one union type, of which values
+of different types are never equal (over two `[i64, f64]` values,
+`i64:3 == f64:3.0` is false). An equality between two types that hold
+neither, `1 == "b"` or an `i64` against an `f64`, is refused: the two
+could never be equal. The orderings (`<`, `<=`, `>`, `>=`) take the same
+operands, and any two numbers besides (`1 < 2.5`): every two values have
+an order, numbers by their value whatever their types. A function with a
+comparison in its body is judged at each call, so `|x, y| x == y` called
+with an `i64` and a `string` is refused where it is called.
 
 Because unchecked arithmetic operators like `+` wrap on overflow, and
 `/` and `%` return bottom on a zero divisor, rather than throwing, there

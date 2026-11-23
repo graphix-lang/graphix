@@ -156,9 +156,8 @@ Suppose we remove the pattern for ArrayIndexError, we would get,
 Error: in file test.gx
 
 Caused by:
-    0: at: line: 2, column: 1 in file test.gx, in: catch(e) select e.0.error { `ArithErro..
-    1: at: line: 2, column: 10 in file test.gx, in: select e.0.error { `ArithError(s) => p..
-    2: missing match cases: no arm covers `ArrayIndexError(string)
+    0: at line: 2, column: 10 in file test.gx
+    1: missing match cases: nothing matches `ArrayIndexError(string) (2:17)
 ```
 
 You'll recognize that this is just the normal select exhaustiveness checking at

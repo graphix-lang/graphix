@@ -65,12 +65,13 @@ different types to the same call,
 error: in expr f(1, 1.2)
 
 Caused by:
-    0: at: line: 1, column: 6, in: 1.2
-    1: type mismatch 'a: i64 does not contain f64
+    0: at line: 1, column: 1
+    1: cannot compute with [i64, f64]: both operands must be one numeric type
 ```
 
-Here the compiler is saying that `'a` is already initialized as `i64` and `i64`
-doesn't unify with `f64`.
+Here the compiler is saying that this call makes `'a` an `[i64, f64]`, what
+the two arguments are between them, and the `+` in `f` takes one numeric
+type.
 
 Declaring two variables promises the opposite: that the function works
 for any `'a` and any `'b`, chosen independently. The body is checked
@@ -79,7 +80,7 @@ same type is refused at the definition rather than at some later call,
 
 ```graphix
 〉let g = 'a: Number, 'b: Number |x: 'a, y: 'b| -> 'a x + y
-error: ... cannot compute 'a: unbound within Number + 'b: unbound within Number: arithmetic is fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a — both operands must be one numeric type (cast one side explicitly)
+error: ... cannot compute with +: arithmetic is fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a — both operands must be one numeric type
 ```
 
 `+` takes two values of one type, so `x + y` needs `'a` and `'b` to be
@@ -107,11 +108,11 @@ A written function type follows the same rule: `fn<'a: Number>(x: i64)
 
 A body may not ask more of a declared variable than its bound says: a
 call, an operator or a builtin that needs `Number`, `Ordered` or
-`Discernible` of a variable bounded by less is refused, and the message
-names the bound to write. `'c: Any |y: 'c| -> 'c f(y)` over an `f` that
-needs `Number` is refused until the signature says `'c: Number`, and
-`'a: Number |x: 'a, y: 'a| x < y` until it says `'a: Number + Ordered`.
-Nothing is added to the signature quietly. Arithmetic over a `Number`
+`Discernible` of a variable bounded by less is refused. `'c: Any |y: 'c|
+-> 'c f(y)` over an `f` that needs `Number` is refused until the
+signature says `'c: Number`, and `'a: Any |x: 'a, y: 'a| x == y` until it
+says `'a: Discernible`, which the message names. Nothing is added to the
+signature quietly. Arithmetic over a `Number`
 variable needs no `Singleton` written, and a variable only written bare
 (`|y: 'c| ..`) is inferred, taking the bound its body needs.
 
@@ -235,17 +236,17 @@ string]` the two can't be told apart by a test. Comparing such values,
 or hashing them, would mix the two up, so `==` and the other
 comparisons, map keys, `uniq`, `min`, `max`, `array::sort` and the
 other functions that compare or hash need `Discernible`. A function
-whose body compares takes the bound on its type variable, as arithmetic
-adds `Singleton`, and a call refuses a type that isn't `Discernible`,
+whose body compares is judged at each call, which refuses a type that
+isn't `Discernible`,
 
 ```graphix
 〉let eq = |x, y| x == y
 〉let inc = |x: i64| x + 1
 〉let v: [fn(x: i64) -> i64, fn(s: string) -> string] = inc
 〉eq(v, v)
-error: ... 'a must be Discernible, but [fn(x: i64) -> i64, fn(s: string) -> string]
-holds fn(x: i64) -> i64 and fn(s: string) -> string, which have the same runtime
-form; wrap them in distinct variants
+error: ... [fn(x: i64) -> i64, fn(s: string) -> string] must be Discernible here,
+but it holds fn(x: i64) -> i64 and fn(s: string) -> string, which have the same
+runtime form; wrap them in distinct variants
 ```
 
 Wrapping the members in variants of their own, `` [`I(fn(x: i64) ->
@@ -253,11 +254,11 @@ i64), `S(fn(s: string) -> string)] ``, tells them apart.
 
 What orders or hashes values (`<` and the other orderings, map keys,
 `min`, `max`, the sorts, `array::dedup`) needs `Ordered`, which is
-`Discernible`, no references, no functions and no type holding two numeric
-types: a reference has no order, and `==`, `!=` and `uniq` compare one by
-what it points to (see [References](../udt/references.md)), a function has
-no order either, and values of two numeric types have no order between
-them.
+`Discernible`, no references and no functions: a reference has no order,
+and `==`, `!=` and `uniq` compare one by what it points to (see
+[References](../udt/references.md)), and a function has no order either.
+Every other two values have one, numbers by their value whatever their
+types.
 
 ## Higher Order Functions
 
@@ -302,12 +303,11 @@ let f = |x, y| x + y
 The shell prints its type as
 
 ```
-fn(x: '_1: unbound within Number & Singleton, y: '_1: unbound within Number & Singleton) -> '_1: unbound within Number & Singleton
+fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a
 ```
 
-The compiler named the variable it inferred (`'_1`; the number differs
-from run to run), and the header lists only declared variables, so the
-bounds show where it occurs.
+The compiler named the variable it inferred, and the header gives its
+bound.
 
 One inferred variable stands for both arguments and the return type. The
 body's `+` gave it the arithmetic bound: `Number + Singleton`, one numeric
@@ -320,8 +320,9 @@ let b = f(1.5, 2.5);
 (a, b)
 ```
 
-but not two at once: `f(1.0, 1)` is refused (`type mismatch f64 does not
-contain i64`), and a cast is the fix, `f(1.0, cast<f64>(1)$)`.
+but not two at once: `f(1.0, 1)` is refused (`cannot compute with [i64,
+f64]: both operands must be one numeric type`), and a cast is the fix,
+`f(1.0, cast<f64>(1)$)`.
 
 Because unchecked `+` wraps on overflow rather than throwing, there is
 no `throws` clause in the type. If you want arithmetic errors

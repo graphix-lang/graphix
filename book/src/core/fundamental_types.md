@@ -523,9 +523,8 @@ Maps can be constructed using the `{key => value}` syntax:
 ```
 
 Values can be any Graphix type. Keys are kept in order, so a key type must be
-`Ordered` (see [Polymorphism](../functions/polymorphism.md)): no reference, no
-function and no type holding two numeric types, so `{&x => 1}`, and `{k => "a"}`
-with `k: [i64, f64]`, are refused. Any other type will do, for example here is
+`Ordered` (see [Polymorphism](../functions/polymorphism.md)): no reference and
+no function, so `{&x => 1}` is refused. Any other type will do, for example here is
 a map where the key is a `Map<string, i64>`.
 
 ```graphix,ignore
