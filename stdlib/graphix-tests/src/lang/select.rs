@@ -5563,7 +5563,7 @@ run!(
         };
         k(0)
     }"#,
-    refused("pattern _ will never match: nothing reaches it (7:20; the value is (&mut i64, i64) | (&mut string, i64) | (&mut f64, i64))");
+    refused("pattern _ will never match: the test of an arm above can't tell &mut i64 from &mut f64: both have the same runtime form; wrap them in distinct variants (7:20)");
     FuseExpect::None
 );
 

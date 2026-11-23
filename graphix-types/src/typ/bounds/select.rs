@@ -595,8 +595,25 @@ fn undecided(t: &Type, out: &mut SmallVec<[TVar; 4]>) {
     }
 }
 
+/// Whether a tag `t` holds, of a variant or of one inside a tuple or a
+/// payload, is not the one `pat` tests there: the pattern takes nothing of
+/// `t`, whatever its undecided parts turn out to be.
+fn of_another_tag(pat: &Pat, t: &Type) -> bool {
+    let parts = |ps: &[Pat], ts: &[Type]| {
+        ps.len() == ts.len()
+            && ps.iter().zip(ts.iter()).any(|(p, t)| of_another_tag(p, t))
+    };
+    match (pat, t) {
+        (Pat::Whole(_, p), _) => of_another_tag(p, t),
+        (Pat::Variant(_, tag, ps), Type::Variant(u, ts, _)) => tag != u || parts(ps, ts),
+        (Pat::Tuple(_, ps), Type::Tuple(ts)) => parts(ps, ts),
+        _ => false,
+    }
+}
+
 /// The cells of `t`, undecided, that `pat` looks into: a name or a
-/// wildcard takes whatever is there, decided or not.
+/// wildcard takes whatever is there, decided or not, and a member of
+/// another tag is not the pattern's, whatever it holds.
 fn looked(env: &Env, pat: &Pat, t: &Type, out: &mut SmallVec<[TVar; 4]>) {
     ensure_sufficient(|| match (pat, t) {
         (Pat::Any(_), _) => (),
@@ -608,6 +625,7 @@ fn looked(env: &Env, pat: &Pat, t: &Type, out: &mut SmallVec<[TVar; 4]>) {
             Ok(body) => looked(env, pat, &body, out),
             Err(_) => undecided(t, out),
         },
+        _ if of_another_tag(pat, t) => (),
         (Pat::Tuple(_, ps), Type::Tuple(ts)) if ps.len() == ts.len() => {
             ps.iter().zip(ts.iter()).for_each(|(p, t)| looked(env, p, t, out))
         }
@@ -616,8 +634,6 @@ fn looked(env: &Env, pat: &Pat, t: &Type, out: &mut SmallVec<[TVar; 4]>) {
         {
             ps.iter().zip(ts.iter()).for_each(|(p, t)| looked(env, p, t, out))
         }
-        // a member of another tag is not this arm's, whatever it holds
-        (Pat::Variant(_, tag, _), Type::Variant(u, _, _)) if tag != u => (),
         _ => undecided(t, out),
     })
 }
@@ -1764,8 +1780,9 @@ impl Solving {
                 let (at, seen) = (&s.template.at, seen.join(" | "));
                 let arm = named(s, i);
                 // an arm above whose test is not this one's but takes its
-                // values, the two of one runtime form
-                let taken = arms[i].pat.written_test().and_then(|t| {
+                // values, the two of one runtime form; an arm with no test
+                // is left none of a member such a test took
+                let above = |t: &Type| {
                     arms[..i].iter().filter(|a| !a.guarded).find_map(|a| {
                         let u = a.pat.written_test()?;
                         match u.contains(env, t) {
@@ -1773,7 +1790,17 @@ impl Solving {
                             _ => None,
                         }
                     })
-                });
+                };
+                let members = || {
+                    s.seen.iter().flat_map(|t| match t {
+                        Type::Set(ms) => &ms[..],
+                        t => std::slice::from_ref(t),
+                    })
+                };
+                let taken = match arms[i].pat.written_test() {
+                    Some(t) => above(t),
+                    None => members().filter(|m| !m.has_free()).find_map(above),
+                };
                 let e = match arms[i].pat.blind(env, false) {
                     _ if let Some(c) = taken => {
                         let untold = c.untold("the test of an arm above");

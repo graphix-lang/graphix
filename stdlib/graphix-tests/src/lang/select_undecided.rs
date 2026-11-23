@@ -9,7 +9,7 @@ use anyhow::Result;
 // value. Found by reading; not run. (tests-lang-rest-a-08)
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, as_i64s, prints, refused, settles},
+    testing::{FuseExpect, as_i64s, prints, refused, refused_renumbered, settles},
 };
 use netidx::publisher::Value;
 
@@ -3201,6 +3201,46 @@ run!(test_beside_a_never_member_a_guard_drops, r#"{
     let u = select k { i64 as n => {a: n}, _ => {a: z} };
     select u { {a: 7} if (select k { null as _ => u, _ => u }).a == 7 => 1, v => 0 }
 }"#, prints("i64:0"); FuseExpect::Jit);
+
+// A pattern looks into a member only where its tags could match: the
+// literal of a `L arm does not wait on what a `K member holds, so the
+// member reaches its own arm while its part is undecided.
+run!(an_arm_of_another_tag_does_not_wait_on_a_members_undecided_part,
+    r#"|x, b: bool| select (select b { true => (`K, x), false => (`L, 0) }) {
+    (`K, _) => 1,
+    (`L, 0) => 2,
+    _ => 3
+}"#, |v: Result<&Value>| v.is_ok(); FuseExpect::None);
+
+run!(an_arm_of_no_members_tag_beside_an_undecided_part_refused,
+    r#"|x, b: bool| select (select b { true => (`K, x), false => (`L, 0) }) {
+    (`K, _) => 1,
+    (`L, 0) => 2,
+    (`M, _) => 4,
+    _ => 3
+}"#, refused_renumbered("pattern (`M, _) will never match: nothing reaches it (1:34; the value is (`K, '_0) | (`L, i64))"); FuseExpect::None);
+
+// A written test takes every value of its runtime form, so one over a
+// reference takes a reference to anything: the refusal names the two it
+// can't tell apart, whether the member it took leaves a case missing, a
+// catch-all dead, or a bind it cannot hold.
+const TWO_REFERENTS: &str = r#"let a = 1; let b = "s"; let v = 0;
+let t = select v { 0 => (&a, 1), _ => (&b, 2) };"#;
+
+run!(a_reference_test_with_no_catch_all_names_what_it_cant_tell,
+    &format!("{{ {TWO_REFERENTS} select t {{ (&i64, i64) as (r, n) => n }} }}"),
+    refused("the test (&i64, i64) can't tell &i64 from &string: both have the same runtime form; wrap them in distinct variants");
+    FuseExpect::None);
+
+run!(a_catch_all_below_a_reference_test_names_what_it_cant_tell,
+    &format!("{{ {TWO_REFERENTS} select t {{ (&i64, i64) as (r, n) => n, _ => 0 }} }}"),
+    refused("pattern _ will never match: the test of an arm above can't tell &i64 from &string: both have the same runtime form; wrap them in distinct variants");
+    FuseExpect::None);
+
+run!(a_bind_of_a_reference_test_names_what_it_cant_tell,
+    &format!("{{ {TWO_REFERENTS} select t {{ (&i64, i64) as (r, n) => *r + n, _ => 0 }} }}"),
+    refused("this pattern can't tell &i64 from &string: both have the same runtime form; wrap them in distinct variants");
+    FuseExpect::None);
 
 // An arm dead for the decision is refused for the decision, the member
 // dropped or not.

@@ -1407,14 +1407,37 @@ impl<R: Rt> Select<R> {
         {
             let most = unsplit(&bounds::union_of(ts));
             // a value that has reached the scrutinee already and no arm
-            // admits is a missing case
+            // admits is a missing case, unless a written test takes it by
+            // its runtime form
+            let stands = bounds::standing_whole(&scrut);
+            let by_form = || {
+                let members = match &stands {
+                    Type::Set(ms) => &ms[..],
+                    t => std::slice::from_ref(t),
+                };
+                let decided = |m: &&Type| bounds::cells_in(m).is_empty();
+                let tests = self.arms.iter().filter(|(p, _)| p.explicit_type_predicate);
+                tests.map(|(p, _)| &p.type_predicate).find_map(|written| {
+                    let test = bounds::written_test(written);
+                    let taken =
+                        members.iter().filter(decided).find_map(|m| {
+                            match test.contains(&ctx.env, m) {
+                                Ok(false) => test.rep_collision(&ctx.env, m),
+                                _ => None,
+                            }
+                        })?;
+                    Some(taken.untold(&format_compact!("the test {written}")))
+                })
+            };
             let missing = |e: anyhow::Error| match e.downcast_ref::<TypeMismatch>() {
                 Some(m) => {
                     anyhow!("missing match cases: nothing matches {} ({at})", m.actual())
                 }
                 None => e,
             };
-            let bound = most.check_contains(&ctx.env, &scrut).map_err(missing);
+            let bound = most
+                .check_contains(&ctx.env, &scrut)
+                .map_err(|e| by_form().unwrap_or_else(|| missing(e)));
             wrap!(self.arg.node, bound)?
         }
         // an arm is named by the type it tests for, an abstract one by its

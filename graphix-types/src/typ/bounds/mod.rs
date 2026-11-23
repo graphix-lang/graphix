@@ -3643,6 +3643,30 @@ pub fn standing(t: &Type) -> Type {
     }
 }
 
+/// [`standing`] through the parts of `t` too: every open cell is the
+/// values it holds so far, one met again inside its own bounds left open.
+pub fn standing_whole(t: &Type) -> Type {
+    fn whole(t: &Type, within: &mut AHashSet<usize>) -> Type {
+        ensure_sufficient(|| {
+            let t = shallow(t);
+            let parts = |t: Type, within: &mut AHashSet<usize>| {
+                t.cow_children(&mut |c| Some(whole(c, within))).unwrap_or(t)
+            };
+            match open(&t) {
+                Some(v) if within.contains(&v.cell_addr()) => t,
+                Some(v) => {
+                    within.insert(v.cell_addr());
+                    let t = parts(standing_head(&v, &mut LPooled::take()), within);
+                    within.remove(&v.cell_addr());
+                    t
+                }
+                None => parts(t, within),
+            }
+        })
+    }
+    whole(t, &mut LPooled::take())
+}
+
 /// `e`, refusing the value `a` that waited on the union `b`, told of the
 /// cells of `fixed` that are members of `b` and would have taken `a` open:
 /// what reached them first decided them.
