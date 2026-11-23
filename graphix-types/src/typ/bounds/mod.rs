@@ -294,6 +294,10 @@ pub struct Known {
     /// A call made gives a value of this type: an operation that reads
     /// the type to know what to make will read it.
     pub(crate) made: bool,
+    /// An instance's copy of a scheme's variable. Where nothing flows into
+    /// it and no value meets all that is demanded of it, it is no type:
+    /// no use of the instance gives it a value.
+    pub(crate) copied: bool,
     /// The check that bounded it has it in its list.
     pub(crate) listed: bool,
     /// The uses waiting on what flows into the cell, and whether each has
@@ -315,6 +319,7 @@ impl Known {
             quantified,
             demanded,
             made,
+            copied,
             listed,
             uses,
             left,
@@ -324,6 +329,7 @@ impl Known {
             && !quantified
             && !demanded
             && !made
+            && !copied
             && !listed
             && uses.is_empty()
             && left.is_empty()
@@ -1693,9 +1699,10 @@ impl Solving {
     /// value with each decided type demanded of it before. Fixing `v`
     /// would refuse two that share none ([`Self::meet`]) where no use is
     /// at hand to name: the second use is refused here. A cell something
-    /// flows into refuses the flow, and a question decides nothing.
+    /// flows into refuses the flow, a question decides nothing, and an
+    /// instance's copy is no type there ([`Known::copied`]).
     fn meets_demands(&mut self, env: &Env, v: &TVar, b: &Type) -> Result<()> {
-        if !self.places || self.attempts > 0 || !v.cell_lower().is_empty() {
+        if !self.places || self.attempts > 0 || !v.cell_lower().is_empty() || copied(v) {
             return Ok(());
         }
         let says = |t: &Type| {
@@ -3285,6 +3292,12 @@ fn quantified(v: &TVar) -> bool {
     v.peek(|c| c.solving.as_ref().is_some_and(|k| k.quantified))
 }
 
+/// Whether `v` is an instance's copy of a scheme's variable
+/// ([`Known::copied`]).
+fn copied(v: &TVar) -> bool {
+    v.peek(|c| c.solving.as_ref().is_some_and(|k| k.copied))
+}
+
 /// Whether `v` is a cell of the definition closing over `depth` that its
 /// check left neither decided nor the scheme's.
 fn open_own(v: &TVar, depth: u32) -> bool {
@@ -4329,6 +4342,7 @@ impl Solving {
                 c.lower = lower;
                 c.above.set(declared, upper);
                 let k = c.solving.get_or_insert_default();
+                k.copied = true;
                 k.feeders = feeds;
                 k.from = sent_from;
                 // a call the definition makes makes it in every instance
@@ -5248,7 +5262,10 @@ impl Solving {
                 }
                 self.write(v, Kept::Demanded);
                 // a bound that names the cell itself decides nothing alone
-                let t = self.meet(env, &demands)?;
+                let t = match self.meet(env, &demands) {
+                    Err(_) if copied(v) => Type::Bottom,
+                    t => t?,
+                };
                 let t = within(env, t, &v.cell_above())?;
                 // a value a type-directed operation makes takes its type
                 // from what is asked of it, never from a sibling's: one

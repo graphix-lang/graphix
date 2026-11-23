@@ -393,6 +393,7 @@ impl Known {
             quantified,
             demanded,
             made,
+            copied,
             listed: _,
             uses,
             left,
@@ -403,6 +404,7 @@ impl Known {
         quantified.encode(buf)?;
         demanded.encode(buf)?;
         made.encode(buf)?;
+        copied.encode(buf)?;
         put_len(uses.len(), buf);
         for (u, met) in uses.iter() {
             u.image_encode(buf)?;
@@ -414,8 +416,12 @@ impl Known {
 
     pub(crate) fn image_decode(buf: &mut impl Buf) -> Result<Self, PackError> {
         let (feeders, sinks, from) = (get_all(buf)?, get_all(buf)?, get_all(buf)?);
-        let (quantified, demanded, made) =
-            (bool::decode(buf)?, bool::decode(buf)?, bool::decode(buf)?);
+        let (quantified, demanded, made, copied) = (
+            bool::decode(buf)?,
+            bool::decode(buf)?,
+            bool::decode(buf)?,
+            bool::decode(buf)?,
+        );
         let uses = (0..get_len(buf)?)
             .map(|_| Ok((Use::image_decode(buf)?, bool::decode(buf)?)))
             .collect::<Result<_, PackError>>()?;
@@ -429,6 +435,7 @@ impl Known {
             quantified,
             demanded,
             made,
+            copied,
             listed: false,
             uses,
             left,

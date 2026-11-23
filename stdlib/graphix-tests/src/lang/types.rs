@@ -14616,6 +14616,29 @@ run!(
     FuseExpect::None
 );
 
+// A function's variable that only its callbacks' parameters hold is, in a
+// call that passes it nothing, demanded as each callback takes it: where
+// no value is both it is no type, and the call checks, since the function
+// can give neither callback a value. Where the call passes one, it meets
+// each demand.
+run!(
+    variable_only_callbacks_take_is_no_type_where_they_share_no_value,
+    r#"{
+  let f = |g: fn(x: 'a) -> i64, h: fn(x: 'a) -> i64| 0;
+  f(|x: i64| 0, |x: null| 0)
+}"#,
+    is(Value::I64(0))
+);
+run!(
+    variable_callbacks_take_apart_meets_the_value_a_call_passes,
+    r#"{
+  let f = |g: fn(x: 'a) -> i64, h: fn(x: 'a) -> i64, v: 'a| g(v) + h(v);
+  f(|x: i64| 0, |x: null| 0, 1)
+}"#,
+    refused("type mismatch null does not contain i64");
+    FuseExpect::None
+);
+
 // Two members of one head are a choice at every application of a
 // recursive definition: the member that takes a type as it stands is
 // walked with every cell held, and that walk keeps the verdicts it
