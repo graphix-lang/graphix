@@ -1,7 +1,9 @@
 # Generics: type variables and what stays generic
 
-What the check enforces of a function's signature and of a function held as a
-value. Every rule here refuses and names the fix.
+What the check enforces of a function's signature, of a call's arguments
+and of a function held as a value.
+
+## Declared variables
 
 A declared type variable must appear in the signature: on a parameter,
 the return type, the throws, or in the bound of another declared
@@ -12,11 +14,11 @@ is refused (no call could choose `'a`), and so is a written
 directly or through another's bound (`'a: [i64, Array<'a>]`, `'a: 'b,
 'b: 'a`): bound it by a recursive type, `type T = [i64, Array<T>]` and
 `'a: T`. It may name another declared variable, inside a union too
-(`'x: Array<['a, null]>`). Each call picks a declared variable anew, so a value of it
-may not reach a binding outside the function: `'a: Concrete |x: 'a| -> 'a
-{ y <- x; x }` is refused. Give `y` a type that holds every `'a` (the
-bound, or `Any`), or declare no `'a`: `|x: 'a| -> 'a { y <- x; x }` is
-then one type, the first call's.
+(`'x: Array<['a, null]>`). Each call picks a declared variable anew. A
+value of it written to a binding outside the function (`y <- x`) flows
+into that binding as any value does: an unannotated `y` is the union of
+what the calls pass, and an annotated one must hold every `'a` (the
+bound's type, or `Any`).
 
 ```graphix,cases
 no "declared but the signature does not hold" 'a: Number |x: i64| -> i64 { let v: 'a = 1; x }
@@ -26,10 +28,10 @@ no "bound names" 'a: [i64, Array<'a>] |x: 'a| x
 no "bound reaches" 'a: 'b, 'b: 'a |x: 'a, y: 'b| x
 ok let f = 'x: Array<['a, null]> |y: 'x| y; f([1])
 ok let g = 'b: ['c, null] |s: 'c, x: 'b| -> 'b x; let f = |v: 'a, w: ['a, null]| g(v, w); f(1, 2)
-no "escapes the definition" let y = never(); let f = 'a: Concrete |x: 'a| -> 'a { y <- x; x }; f(1)
-ok let y = never(); let f = |x: 'a| -> 'a { y <- x; x }; f(1)
-no "write its return type, `-> 'a`" let t = 'a: Number |x: 'a| x; let r = &mut t; t(1)
-ok let t = 'a: Number |x: 'a| -> 'a x; let r = &mut t; t(1)
+ok let y = never(); let f = 'a: Number |x: 'a| -> 'a { y <- x; x }; (f(1), f(1.5))
+no "i64 does not contain f64" let y = never(); let f = 'a: Number |x: 'a| -> 'a { y <- x; x }; let r = (f(1), f(1.5)); let z: i64 = y; z
+no "y is i64 and cannot hold 'a" let y: i64 = never(); let f = 'a: Number |x: 'a| -> 'a { y <- x; x }; f(1)
+ok let y: Number = never(); let f = 'a: Number |x: 'a| -> 'a { y <- x; x }; f(1)
 ```
 
 A function written inside another names the outer one's variables, in its
@@ -43,28 +45,32 @@ bound of one of those, however many bounds deep.
 ```graphix,cases
 ok let g = 'a0: Array<'a1>, 'a1: Array<'a2> |x: 'a0| { let f = |y: 'a2| y; f(x[0]$[0]$) }; g([["s"]])
 no "does not contain i64" let g = 'a0: Array<'a1>, 'a1: Array<'a2> |x: 'a0| { let f = |y: 'a2| y; f(1) }; g([["s"]])
-no "does not contain Array<string>" let f = 'z: Number |w: 'z| -> 'z { let g = 'b: Array<'z> |y: 'b| -> 'b y; let r = g(["s"]); w }; f(1)
+no "does not contain string" let f = 'z: Number |w: 'z| -> 'z { let g = 'b: Array<'z> |y: 'b| -> 'b y; let r = g(["s"]); w }; f(1)
 ok let f = 'z: Number |w: 'z| { let g = 'b: Array<'z> |y: 'b| -> 'b y; g([w]) }; f(1)
 ok let f = 'a: Number, 'z: Array<'a> |w: 'z| { let g = 'a: Any |x: 'z, y: 'a| -> 'a y; g(w, "s") }; f([1])
 no "a call picks 'a" let f = 'a: Number, 'z: Array<'a> |w: 'z| { let g = 'a: Any |x: 'z, y: 'a| -> 'a x[0]$; g(w, "s") }; f([1])
 ```
 
-A return type that writes a declared variable takes a value of that
-variable, and a value of its bound is not one, since a call may pick a
-narrower type: `'a: Number |x: 'a| -> 'a 1` is refused. So is `'a: {n:
-i64} |s: 'a| -> 'a {s with n: s.n + 1}`: an update's type is a struct,
-as a literal's is. Drop the return type, or write the body's (`-> {n:
-i64}`). Another declared variable is not that variable either: `|x: 'a,
-y: 'b| -> 'a y`. A trait method's return is its trait's, so there the
-body must change and the refusal names no return type.
+## Return types
+
+A return type that writes a type variable, declared or bare, takes a
+value of that variable, and a value of its bound is not one, since a
+call may pick a narrower type: `'a: Number |x: 'a| -> 'a 1` is refused.
+So is `'a: {n: i64} |s: 'a| -> 'a {s with n: s.n + 1}`: an update's type
+is a struct, as a literal's is. Drop the return type, or write the
+body's (`-> {n: i64}`). Another variable is not that variable either:
+`|x: 'a, y: 'b| -> 'a y`. A trait method's return is its trait's, so
+there the body must change and the refusal names no return type.
 
 ```graphix,cases
 no "drop `-> 'a`, or write the body's type, `-> i64`" 'a: Number |x: 'a| -> 'a 1
 no "drop `-> 'a`, or write the body's type, `-> { n: i64 }`" 'a: {n: i64} |s: 'a| -> 'a {s with n: s.n + 1}
 ok 'a: {n: i64} |s: 'a| {s with n: s.n + 1}
 ok 'a: {n: i64} |s: 'a| -> {n: i64} {s with n: s.n + 1}
+no "drop `-> 'a`, or write the body's type, `-> i64`" |x: 'a| -> 'a 1
 no "drop `-> 'a`, or write the body's type, `-> 'b`" |x: 'a, y: 'b| -> 'a y
 ok |x: 'a, y: 'b| -> 'b y
+no "does not contain i64" trait T { val m: fn<'b: Number>(self, x: 'b) -> 'b }; impl T for i64 { let m = |s, x| 1 }; T::m(1, 2)
 ```
 
 A callback whose result writes the variable returns a value of it, each
@@ -78,23 +84,81 @@ no "drop `-> 'b`, or write the body's type, `-> [i64, null]`" 'b: [i64, null] |s
 ```
 
 An unannotated parameter the declared result takes is of that variable,
-from one arm or from several, and a call must give it the type it gives
-the variable.
+from one arm or from several, and what a call passes there widens the
+variable as an argument of `x: 'e` does.
 
 ```graphix,cases
 ok let f = |x: 'e, c: bool, a, b| -> 'e select c { true => a, false => b }; f(1, true, 2, 3)
-no "i64 does not contain string" let f = |x: 'e, c: bool, a, b| -> 'e select c { true => a, false => b }; f(1, true, 2, "s")
+ok let f = |x: 'e, c: bool, a, b| -> 'e select c { true => a, false => b }; f(1, true, 2, "s")
+no "i64 does not contain string" let f = |x: 'e, c: bool, a, b| -> 'e select c { true => a, false => b }; let r: i64 = f(1, true, 2, "s"); r
 no "drop `-> 'e`, or write the body's type" |x: 'e, c: bool, a| -> 'e select c { true => a, false => 1 }
 ```
 
+## What a call decides
+
+A call's arguments of one variable widen it: `f(1, "s")` over `|x: 'a,
+y: 'a| -> 'a y` makes `'a` an `[i64, string]`, in any order, and the
+result is that union. Two things refuse. A bound: `'a: Number` takes no
+string. And a body that takes one type: arithmetic over the `[i64, f64]`
+a call made is refused at the call, "cannot compute with [i64, f64]"
+(cast one argument). A callback's parameter of the variable is the
+widened type: an untyped lambda is given it, a written one must hold it
+(`|v: [i64, string]|`). A variable only callbacks take, with no value
+passed for it, is bottom, so callbacks over different types both fit.
+
+```graphix,cases
+ok let f = |x: 'a, y: 'a| -> 'a y; let n: [i64, null] = null; (f(1, n), f(n, 1))
+ok let f = |x: 'a, y: 'a| -> 'a y; let r: [i64, string] = f(1, "s"); r
+no "i64 does not contain string" let f = |x: 'a, y: 'a| -> 'a y; let r: i64 = f(1, "s"); r
+no "Number does not contain string" let f = 'a: Number |x: 'a, y: 'a| -> 'a y; f(1, "s")
+ok let f = 'a: Number |x: 'a, y: 'a| -> 'a y; f(1, 1.5)
+no "cannot compute with [i64, f64]" let f = 'a: Number |x: 'a, y: 'a| -> 'a x + y; f(1, 1.5)
+ok let f = 'a: Number |x: 'a, y: 'a| -> 'a x + y; f(1.0, cast<f64>(1)$)
+ok let f = |x: 'a, y: 'a, k: fn(v: 'a) -> i64| -> 'a y; f(1, "s", |v| 0)
+no "i64 does not contain string" let f = |x: 'a, y: 'a, k: fn(v: 'a) -> i64| -> 'a y; f(1, "s", |v: i64| 0)
+ok let f = |x: 'a, y: 'a, k: fn(v: 'a) -> i64| -> 'a y; f(1, "s", |v: [i64, string]| 0)
+ok let f = |g: fn(x: 'a) -> i64, h: fn(x: 'a) -> i64| 0; f(|x: i64| 0, |x: null| 0)
+```
+
+A value a type-directed operation makes (`str::parse`, `json::read`, a
+cast) takes its type from what is asked of it: a parameter's written
+type, an annotation, an operator, the annotation its call's result goes
+to. It takes nothing from a sibling argument, so passed for a bare
+variable it is refused, "the type 'b must be known here, an operation
+reads it to know what to make: annotate where its result goes": annotate
+the read, or the call's result.
+
+```graphix,cases
+ok opt::or_default(str::parse("5")$, 0)
+no "annotate where its result goes" let f = |x: 'a, y: 'a| -> 'a y; f(1, str::parse("1"))
+no "annotate where its result goes" let f = |x: 'a, y: 'a, k: fn(v: 'a) -> i64| -> 'a y; f(str::parse("5"), 1, |v| 0)
+ok let f = |x: 'a, y: 'a| -> 'a y; let p: [i64, Error<`ParseError(string)>] = str::parse("1"); f(p, 1)
+ok let f = |x: 'a, y: 'a| -> 'a y; let r: [i64, Error<`ParseError(string)>] = f(str::parse("1"), 1); r
+```
+
+## Unions in a signature
+
 A signature may write a union of its type variables (`|x: ['a, 'b], y:
-'a, z: 'b|`): each call decides them, and an argument there must fit a
-member as decided. In an impl, `self` is the impl's target, so `[self,
-'a]` in `impl T for i64` is `[i64, 'a]`.
+'a, z: 'b|`, `[Array<'a>, Array<'b>]`, two function types). A value
+there waits for what decides the members, the call's other arguments
+wherever they stand or what is asked of the result, and goes to the
+member that holds it. A decided member takes no other type, so a
+variable in such a union does not widen at it: `f(true, 1, "s")` is
+refused, "goes to no member". A value two members could still take when
+the check ends is refused, "could go to more than one member of the
+union .., and nothing has decided which": write one variable in both
+members. In an impl, `self` is the impl's target, so `[self, 'a]` in
+`impl T for i64` is `[i64, 'a]`.
 
 ```graphix,cases
 ok let f = |x: ['a, 'b], y: 'a, z: 'b| -> (Array<'a>, Array<'b>) ([y], [z]); f("t", 1, "s")
-no "[i64, string] does not contain bool" let f = |x: ['a, 'b], y: 'a, z: 'b| -> (Array<'a>, Array<'b>) ([y], [z]); f(true, 1, "s")
+no "a decided member takes no other type" let f = |x: ['a, 'b], y: 'a, z: 'b| -> (Array<'a>, Array<'b>) ([y], [z]); f(true, 1, "s")
+ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<'a, 'b>, y: 'a, z: 'b| x; f([1], 1, "s")
+ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |y: 'a, z: 'b, x: P<'a, 'b>| x; f(1, "s", [1])
+no "does not contain Array<bool>" type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<'a, 'b>, y: 'a, z: 'b| x; f([true], 1, "s")
+ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<'a, 'b>| -> (Array<'a>, Array<'b>) ([], []); let r: (Array<string>, Array<i64>) = f([1]); r
+no "nothing has decided which" type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64]; let mk = |z| {fld: |x: F2<'a, 'b>| x}; let s = mk(0); let r = s.fld(|q: string| 1); 0
+ok type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64]; let mk = |z| {fld: |x: F2<'a, 'a>| x}; let s = mk(0); let r = s.fld(|q: string| 1); 0
 ok |x: ['a, null]| 1
 ok trait T { val m: fn(self, x: [self, 'a]) -> i64 }; impl T for i64 { let m = |s, x| 0 }; T::m(1, 2)
 ok trait T { val m: fn(self, x: [i64, string]) -> i64 }; impl T for i64 { let m = |s, x: [self, 'c]| 0 }; T::m(1, "q")
@@ -111,184 +175,140 @@ no "pattern null will never match" let f = |x: ['a, null]| -> 'a x$; let v: [Arr
 ok let f = 'a: Number |x: [['a, null], Array<i64>]| x; let v: [i64, null, Array<i64>] = 1; f(v)
 ```
 
-Two members of one constructor holding two of its variables ask the
-same question: `[Array<'c>, Array<'d>]` (a `[1]` fits either), `[{v:
-'c}, {v: 'd}]`, `[('c, i64), (i64, 'd)]`, `[fn(x: 'c) -> i64, fn(x: 'd)
--> i64]`. Write one variable in both, or a written type in place of one.
-Members of two constructors stand, and a member written twice is one.
-
-The same holds for a union nothing wrote: a value that two undecided
-members of a union could take goes to neither, and the check names what
-to annotate. It shows up two ways. A `let` over `never()` that took a
-select of two undecided values (`u <- select c { true => x, false => y
-}`) and is then written a value: declare `u` (`let u: [i64, string] =
-never()`), or `x` and `y`. And a typedef that unions its parameters
-(`type E<'p, 'q> = ['p, 'q]`) applied to two variables in a signature: a
-call's arguments are met in the order of the parameters, so an argument
-either variable could take is refused unless the parameters before it
-decided them. Declare the deciding parameters first (`|y: 'a, x: E<'a,
-'b>|`), or write one variable (`E<'a, 'a>`).
-Members that are one type are one member and need nothing: an
-unannotated parameter a select takes apart with slice patterns (`[h,
-t..]`, two arms that bind elements, a recursive `len(t)`) is typed as one
-array an arm, all over one element type, and takes an array as `|x:
-Array<'e>|` does. Another part the arms bind (`([a, c, ..], b)`, `([d],
-b)`, `([], b)`; `(1, b)`, `(2, b)`, `(_, b)`) is one type in every arm,
-whichever arm a value takes: arms that use it as two (`b + 1` in one,
-`str::len(b)` in another) are refused. An arm that binds a part whole
-beside arms that take it apart (`(1, b)` beside `` (2, `A(x)) `` and
-`` (3, `B(y)) ``) types that part as the union of their shapes, and a
-call's argument whose shape there is decided is taken as `|s: (i64,
-[`A('x), `B('y)])|` takes it; one whose shape is still undecided
-(`f((2, u))` in a wrapper `|u|`) is not: annotate the wrapper's
-parameter. A `_` at the part makes it
-`Any`, and a name another arm binds inside it (`(1, _, z)` beside `(2,
-(c, _), z)`) is fixed at its arm's end, `Any` or what the arm decided
-(`select.md`), so a call's decided argument is taken there too, and a
-caller's use of the result decides nothing of the name. An impl's target may
-not union two of its head's variables either (`impl<'a, 'b> T for
-Array<['a, 'b]>`). An argument still undecided (`[]`) goes to no member
-either. Where the arguments before it decided the members it goes to the
-one member that can hold it; where two can, it is refused, "nothing has
-decided which", as at a union bound (below): annotate it. The parts of
-a single argument are related together, so within one argument the
-deciding parts may stand anywhere (`|x: (P<'a, 'b>, 'a, 'b)|` takes
-`([1], 1, "s")`). A variable standing in such a
-union does not widen: the first argument that meets it decides it, and
-an argument that needs it wider (`[n]` over `n: [i64, null]` after `1`)
-is refused, so give the earlier argument the wide type (`let one: [i64,
-null] = 1`). A callback is given to the member its result fits. A
-callback written at the call whose own parameter is a union of two such
-members (`|q: [Array<i64>, Array<string>], r: string|` at `fn(q:
-Array<'a>, r: 'a)`) takes the variable from its other parameters,
-wherever they stand; one read from a field or a select is met in order
-and refused.
+A variable bounded by a union (`'a: [Array<i64>, Array<string>]`, `'a:
+[Array<i64>, 'b]`), or a parameter or a `let` written as one, takes a
+value still undecided (`[z]` over a `let z = never()`, `[]`): the value
+waits, goes to the member that holds what it turns out to be, and is
+refused if none does. An untyped lambda at a union
+of function types is refused where no one member takes it as written
+(`|x| x` at `[fn(x: i64) -> i64, fn(x: string) -> string]`): write its
+parameter's type.
 
 ```graphix,cases
-no "declare u's type where it is bound" let h = |c, a, b| select c { true => a, false => b }; let x = never(); let y = never(); let u = never(); u <- h(true, x, y); u <- 1; u
-ok let h = |c, a, b| select c { true => a, false => b }; let x = never(); let y = never(); let u: [i64, string] = never(); u <- h(true, x, y); u <- 1; u
-ok let h = |c, a, b| select c { true => a, false => b }; h(true, 1, "s")
-ok let f = |c, a, b| { let u = select c { true => a, false => b }; u + 1 }; f(true, 1, 2)
-no "picks none by order" type E<'p, 'q> = ['p, 'q]; let f = |x: E<'a, 'b>| 0; f(1)
-ok type E<'p, 'q> = ['p, 'q]; let f = |x: E<'a, 'a>| 0; f(1)
-ok type E<'p, 'q> = ['p, 'q]; let f = |y: 'a, x: E<'a, 'b>| 0; f(1, 2)
-no "declare the parameters that decide them before this one" type E<'p, 'q> = ['p, 'q]; let f = |x: E<'a, 'b>, y: 'a| 0; f(1, 2)
+ok let f = 'a: [Array<i64>, Array<string>] |v: 'a| v; let z = never(); let r = f([z]); z <- 1; r
+no "does not contain Array<bool>" let f = 'a: [Array<i64>, Array<string>] |v: 'a| v; let z = never(); let r = f([z]); z <- true; r
+ok let f = 'a: [Array<i64>, Array<string>] |v: 'a| v; f([])
+ok let f = 'a: [Array<i64>, Array<string>] |v: 'a| v; let e: Array<string> = []; f(e)
+no "i64 does not contain f64" let f = 'a: [(i64, i64), (string, string)] |v: 'a| v; let z = never(); let r = f((z, 1)); z <- 2.5; r
+ok let f = 'a: [Array<i64>, 'b] |v: 'a, w: 'b| v; let z = never(); let r = f([z], ["s"]); z <- "s"; r
+ok let f = 'a: [Array<i64>, 'b] |w: 'b, v: 'a| v; f(["s"], ["x"])
+ok let f = |x: [Array<i64>, Array<string>]| x; let z = never(); let r = f([z]); z <- "t"; r
+ok let x: [Array<i64>, Array<string>] = []; x
+ok let f = |k: [fn(x: i64) -> i64, fn(x: string) -> i64]| 0; f(|x| 0)
+no "does not contain fn(x: _) -> _" let f = |k: [fn(x: i64) -> i64, fn(x: string) -> string]| k; f(|x| x)
+ok let f = |k: [fn(x: i64) -> i64, fn(x: string) -> string]| k; f(|x: string| x)
+```
+
+## Unannotated parameters a select takes apart
+
+An unannotated parameter a select takes apart is typed by its arms
+(`select.md`), and the function is generic over what they leave open.
+Slice patterns (`[h, t..]`, two arms that bind elements, a recursive
+`len(t)`) make it one array over one element type, taken as `|x:
+Array<'e>|` takes it. A part several arms bind (`([a, c, ..], b)`,
+`([d], b)`, `([], b)`; `(1, b)`, `(2, b)`, `(_, b)`) is one type in
+every arm, whichever arm a value takes: where arms use it as two (`b +
+1` in one, `str::len(b)` in another) no argument fits. An arm that binds
+a part whole beside arms that take it apart (`(1, b)` beside `` (2,
+`A(x)) `` and `` (3, `B(y)) ``) leaves that part the union of their
+shapes, which a wrapper's untyped parameter passes on.
+
+```graphix,cases
 ok let f = |x| select x { [h, t..] => h, [] => 0 }; (f([4, 5]), f(["a"]))
 ok let f = |x: Array<'e>| select x { [h, t..] => h, [] => 0 }; f([4, 5])
-ok let f = |x| select x { [a, b, ..] => a, [c] => c, [] => 0 }; f([4, 5])
 ok let rec len = |x| select x { [h, t..] => 1 + len(t), [] => 0 }; len([1, 2])
-ok let f = |x| select x { [h, t..] => array::push(t, h), [] => [] }; f([1, 2])
 ok let rec len = |x| select x { [<h, t..>] => 1 + len(t), [<>] => 0 }; len([<1, 2>])
 ok let k = |x| select x { [h, t..] => h, [] => 0 }; let f = |g: fn(x: Array<i64>) -> i64, y| g(y); f(k, [1, 2])
-ok let f = |p| select p { (x, [h, t..]) => h, (x, []) => x }; f((1, [2]))
 ok let f = |s| select s { ([a, c, ..], b) => (a, b), ([d], b) => (b, d), ([], b) => (b, b) }; f(([1, 2], "q"))
 ok let f = |s| select s { (1, b) => (b, 1), (2, b) => (b, 2), (3, b) => (b, 3), (_, b) => (b, 0) }; f((1, "q"))
 no "string does not contain i64" let f = |s| select s { (1, b) => 0, (2, b) => b + 1, (3, b) => str::len(b), _ => 0 }; f((2, 5))
+no "i64 does not contain string" let f = |s| select s { (1, b) => 0, (2, b) => b + 1, (3, b) => str::len(b), _ => 0 }; f((3, "x"))
 ok let f = |s| select s { (1, b) => 0, (2, `A(x)) => x, (3, `B(y)) => str::len(y), (_, b) => 0 }; (f((1, `A(5))), f((3, `B("x"))))
-ok let f = |x| select x { (1, _, z) => z, (2, (c, _), z) => c, (_, _, z) => z }; f((2, ("s", 4), 0))
-ok let f = |x| select x { (1, _, z) => z, (2, (c, _), z) => c + 1, (_, _, z) => z }; f((2, ("s", 4), 0))
-no "cannot compute Any + i64" let f = |x| select x { (1, _, z) => z, (2, (c, _), z) => c, (_, _, z) => z }; f((2, ("s", 4), 0)) + 1
-no "picks none by order" let f = |x| select x { (1, _, z) => z, (2, (c, _), z) => c, (_, _, z) => z }; let g = |u| f((2, u, 0)); g(("s", 4))
-ok let f = |x: (i64, (string, i64), i64)| select x { (1, _, z) => "[z]", (2, (c, _), z) => c, (_, _, z) => "[z]" }; f((2, ("s", 4), 0))
-ok let f = |s| select s { (1, b) => 0, (2, `A(x)) => x, (3, `B(y)) => str::len(y), (_, b) => 0 }; let g = |u: [`A(i64), `B(string)]| f((2, u)); g(`A(5))
 ok let f = |s| select s { (1, b) => 0, (2, `A(x)) => x, (3, `B(y)) => str::len(y), (_, b) => 0 }; let h = |a| f((2, `A(a))); h(5)
-no "picks none by order" let f = |s| select s { (1, b) => 0, (2, (x, y)) => x, (3, (x, y, z)) => x, (_, b) => 0 }; let g = |u| f((2, u)); g((5, 6))
-ok let f = |s| select s { (1, b) => 0, (2, (x, y)) => x, (3, (x, y, z)) => x, (_, b) => 0 }; let g = |u: (i64, i64)| f((2, u)); g((5, 6))
-ok let f = |s: (Array<'e>, 'b)| select s { ([a, c, ..], b) => (a, b), ([d], b) => (b, d), ([], b) => (b, b) }; f(([1, 2], "q"))
-no "picks none by order" type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<'a, 'b>| 0; f([1])
-no "picks none by order" trait T { val m: fn(self) -> i64 }; impl<'a, 'b> T for Array<['a, 'b]> { let m = |s| 0 }; T::m([1])
-no "trait Sh used as a type" type T = Array<Sh>; trait Sh { val m: fn(self) -> i64 }; 0
-no "trait Sh used as a type" trait Sh { val m: fn(self) -> i64 }; type T = Array<Sh>; 0
-ok type T<'a: Sh> = Array<'a>; trait Sh { val m: fn(self) -> i64 }; impl Sh for i64 { let m = |s| 1 }; let v: T<i64> = [1]; v
-no "picks none by order" type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<'a, 'b>| 0; f([])
-no "picks none by order" type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<'a, 'b>, y: 'a, z: 'b| x; f([1], 1, "s")
-ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |y: 'a, z: 'b, x: P<'a, 'b>| x; f(1, "s", [1])
-no "picks none by order" type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |y: 'a, z: 'b, x: P<'a, 'b>| x; f(never(), never(), [1])
-ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |y: 'a, z: 'b, x: P<'a, 'b>| x; let h = |v: 'a, w: 'b, u: P<'a, 'b>| f(v, w, u); h(1, "s", [1])
-ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: (P<'a, 'b>, 'a, 'b)| x; f(([1], 1, "s"))
-no "picks none by order" type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: (P<'a, 'b>, P<'b, 'a>)| x; f(([1], ["s"]))
-ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: ('a, 'b, P<'a, 'b>)| x; f((1, "s", [1]))
-ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: {p: P<'a, 'b>, a: 'a, b: 'b}| 0; f({p: [1], a: 1, b: "s"})
-ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: {y: 'a, z: 'b, a: P<'a, 'b>}| 0; f({y: 1, z: "s", a: [1]})
-ok type E<'p, 'q> = ['p, 'q]; let f = |y: 'a, x: Map<string, E<'a, 'b>>| 0; f("s", {"k" => 1.5})
-no "picks none by order" type E<'p, 'q> = ['p, 'q]; let f = |x: Map<string, E<'a, 'b>>, y: 'a| 0; f({"k" => 1.5}, "s")
-ok type E<'p, 'q> = ['p, 'q]; let id = |q| q; let f = |y: 'a, x: fn(q: i64) -> E<'a, 'b>| 0; f("s", id(|q: i64| 1.5))
-no "does not contain Array<[i64, null]>" type P<'p, 'q> = [Array<'p>, Array<'q>]; let n: [i64, null] = null; let f = |y: 'a, z: 'b, x: P<'a, 'b>| 0; f(1, "s", [n])
-ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let n: [i64, null] = null; let one: [i64, null] = 1; let f = |y: 'a, z: 'b, x: P<'a, 'b>| 0; f(one, "s", [n])
-no "picks none by order" type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<'a, 'b>, y: 'a, z: 'b| 0; f([], 1, "s")
-no "nothing has decided which: this argument is undecided at this call; annotate it" type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |y: 'a, z: 'b, x: P<'a, 'b>| 0; f(1, "s", [])
-ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |y: 'a, z: 'b, x: P<'a, 'b>| 0; let e: Array<string> = []; f(1, "s", e)
-no "nothing has decided which" type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<i64, string>| 0; f([])
-no "nothing has decided which" type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |y: 'a, z: 'b, x: P<'a, 'b>| 0; let g = |v, w, u| f(v, w, u); g(1, "s", [])
-no "nothing has decided which: `z` is undecided at this call; annotate `z`" let f = |x: [Array<i64>, Array<string>]| x; let z = never(); let r = f([z]); z <- "t"; r
-ok let f = |x: [Array<i64>, Array<string>]| x; let z: string = never(); let r = f([z]); z <- "t"; r
-no "nothing has decided which" let x: [Array<i64>, Array<string>] = []; x
-ok let e: Array<i64> = []; let x: [Array<i64>, Array<string>] = e; x
-no "declare the parameters that decide it before this one" type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |k: fn(q: P<'a, 'b>) -> i64, y: 'a, z: 'b| 0; f(|q: [Array<i64>, Array<bool>]| 0, 1, true)
-ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |y: 'a, z: 'b, k: fn(q: P<'a, 'b>) -> i64| 0; f(1, true, |q: [Array<i64>, Array<bool>]| 0)
-ok let h = |k: fn(q: Array<'a>, r: 'a) -> i64| 0; h(|q: [Array<i64>, Array<string>], r: string| 1)
-no "nothing has decided which" let h = |k: fn(q: Array<'a>, r: 'a) -> i64| 0; let s = {c: |q: [Array<i64>, Array<string>], r: string| 1}; h(s.c)
-no "nothing has decided which" let f = |k: [fn(x: i64) -> i64, fn(x: string) -> i64]| 0; f(|x| 0)
-ok let f = |k: [fn(x: i64) -> i64, fn(x: string) -> i64]| 0; f(|x: [i64, string]| 0)
-no "what it throws decides which, and nothing has decided that: what this argument throws is undecided at this call; write the lambda's throws" let g = |k: [fn(x: i64) -> i64 throws `A, fn(x: i64) -> i64 throws `B]| 4; g(|x: i64| 0)
-no "what it throws decides which, and nothing has decided that" let g = |k: [fn(x: i64) -> i64, fn(x: string) -> i64 throws `B]| 4; g(|x: [i64, string]| 0)
-ok let g = |k: [fn(x: i64) -> i64 throws `A, fn(x: i64) -> i64 throws `B]| 4; g(|x: i64| -> i64 throws `A 0)
-ok let g = |k: [fn(x: i64) -> i64 throws `A, fn(x: i64) -> i64 throws `B]| 4; let h: fn(x: i64) -> i64 = |x: i64| 0; g(h)
-ok let f = |x: ('a, i64), z: 'a| x.1; let g = |y| f(y, y.0); g((1, 2))
-no "picks none by order" type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = 'a: P<'b, 'c> |x: 'a| x; let g = |y| f(y); g([null])
-ok type E<'x, 'y> = [fn(v: 'x) -> i64, fn(v: 'y) -> string]; let f = 'a: E<'b, 'b>, 'b: Number |x: 'a, y: 'b| x; let h = f(|v| "s", 1); h(2)
-ok type A = [Array<i64>, Array<string>]; let f = |x: [A, null]| 0; f(["a"])
+ok let f = |s| select s { (1, b) => 0, (2, (x, y)) => x, (3, (x, y, z)) => x, (_, b) => 0 }; let g = |u| f((2, u)); g((5, 6))
 ```
+
+## Bounds
+
+A declared variable is rigid in its body: the body asks no more of it
+than its bound says. A comparison, an ordering, a sort or a map key over
+a variable bounded by less than `Discernible` or `Ordered` is refused,
+naming the bound to add ("add Discernible to the bound of 'a"). A call
+or arithmetic that needs `Number` is refused "Number does not contain
+'c": write `'c: Number`. Nothing is added to the signature quietly. A
+bound that implies what the body needs is enough (`'c: Int` for
+`Number`, `Number` for an ordering), and arithmetic over a `Number`
+variable needs no `Singleton` written. A variable written bare (`|y:
+'c|`, no header) takes the bound its body needs, a class or a union
+(`Number`, `[i64, null]`), and a comparison in such a body, or in an
+untyped one, is judged at each call. No variable is one written type: a
+body that passes `y: 'c` where an `i64` is taken is refused, "i64 does
+not contain 'c": write `y: i64`, or leave `y` untyped.
 
 ```graphix,cases
-no "held by its members" |x: [Array<'c>, Array<'d>], y: 'c| y
-no "held by its members" |x: [('c, i64), (i64, 'd)], y: 'c| y
-no "held by its members" |k: [fn(x: 'c) -> i64, fn(x: 'd) -> i64], y: 'c| y
-ok |k: [fn(x: 'c) -> i64, fn(x: 'c) -> i64], y: 'c| y
-ok |x: [('c, 'd), ('c, 'd)], y: 'c| y
-ok |x: [Array<'c>, Array<string>], y: 'c| y
-ok |x: [Array<'c>, Map<string, 'd>], y: 'c| y
+no "Number does not contain 'c" let f = 'a: Number |x: 'a| -> 'a x; 'c: Any |y: 'c| -> 'c f(y)
+no "Number does not contain 'c" let f = 'a: Number |x: 'a| -> 'a x; 'c: [i64, string] |y: 'c| -> 'c f(y)
+ok let f = 'a: Number |x: 'a| -> 'a x; 'c: Number |y: 'c| -> 'c f(y)
+ok let f = 'a: Number |x: 'a| -> 'a x; 'c: Int |y: 'c| -> 'c f(y)
+ok let f = 'a: Number |x: 'a| -> 'a x; |y: 'c| -> 'c f(y)
+ok let g = |x: [i64, null]| x; let f = |y: 'c| g(y); f(1)
+no "i64 does not contain 'c" let g = |x: i64| x; let f = |y: 'c| g(y); f(1)
+ok let g = |x: i64| x; let f = |y| g(y); f(1)
+no "Number does not contain 'a" 'a: Any |x: 'a, y: 'a| -> 'a x + y
+ok 'a: Number |x: 'a, y: 'a| -> 'a x + y
+ok 'a: Number |x: 'a, y: 'a| x < y
+no "add Ordered to the bound of 'a" 'a: Any |x: 'a, y: 'a| x < y
+no "add Discernible to the bound of 'a" 'a: Any |x: 'a, y: 'a| x == y
+no "add Ordered to the bound of 'a" 'a: Any |x: 'a| array::sort([x])
+ok let f = |x: 'c, y: 'c| x == y; f(1, 2)
+no "'c must be Ordered" let f = |x: 'c, y: 'c| x < y; let g = |q: i64| q; f(g, g)
+ok let f = |x, y| x == y; (f(1, 2), f("a", "b"))
+no "cannot compare i64 with string" let f = |x, y| x == y; f(1, "s")
+no "must be Ordered here" let f = |x, y| x < y; let g = |q: i64| q; f(g, g)
 ```
 
-Two constructions of one nominal type over payloads nothing has decided
-(`B([never()])` and `B([])` over `type B<'p> = Abstract<'p>`) that meet
-in one value are one payload type, not a union of two: what later
-decides one decides the other. Two undecided bindings that meet that way
-(`B([e])` written where `B([g])` stands) become one type at the first
-call that returns the payload, and a writer of one that the other's does
-not fit is refused: declare the binding it names, or a function's
-parameters (`|a: 'a, b: 'b|`).
+A wrapper's bare variable passed for a callee's bounded one takes the
+callee's bound, and a call of the wrapper is held to it; a declared one
+declares the bound itself.
 
 ```graphix,cases
-ok type B<'p> = Abstract<'p>; let f = |a| { a <- B([never()]); a.0 }; let r = f(B([])); r <- [1]; r
-no "declare g: [i64, string] where it is bound" type B<'p> = Abstract<'p>; let e = never(); let g = never(); let x = B([e]); x <- B([g]); let h = |u| u ~ x.0; let r = h(1); e <- 1; g <- "s"; r
-ok type B<'p> = Abstract<'p>; let e = never(); let g: [i64, string] = never(); let x = B([e]); x <- B([g]); let h = |u| u ~ x.0; let r = h(1); e <- 1; g <- "s"; r
-no "i64 does not contain string" type B<'p> = Abstract<'p>; let f = |a, b| { let x = B([a]); x <- B([b]); let h = |u| u ~ x.0; h(1) }; f(1, "s")
-ok type B<'p> = Abstract<'p>; let f = |a: 'a, b: 'b| { let x = B([a]); x <- B([b]); let h = |u| u ~ x.0; h(1) }; f(1, "s")
+ok let g = 'b: Array<['c, null]> |x: 'b, s: 'c| -> 'b x; let f = |v: 'a, w: Array<'a>| g(w, v); (f(1, [2]), f("a", ["b"]))
+ok let g = 'b: [i64, null] |x: 'b| -> 'b x; let f = |w: 'a| g(w); f(1)
+no "[i64, null] does not contain string" let g = 'b: [i64, null] |x: 'b| -> 'b x; let f = |w: 'a| g(w); f("s")
+no "[i64, null] does not contain 'a" let g = 'b: Array<[i64, null]> |x: 'b| -> 'b x; let f = 'a: Any |w: Array<'a>| g(w); f([2])
+ok let g = 'b: Array<[i64, null]> |x: 'b| -> 'b x; let f = 'a: [i64, null] |w: Array<'a>| g(w); f([2])
+ok let g = 'b: (['c, null], ['c, i64]) |s: 'c, x: 'b| -> 'b x; let f = |u, w: (['a, null], ['a, null])| g(u, w); f(1, (2, 2))
+ok let f = 'a1: ['a3, Array<'b>], 'a3: ['a4, Array<'a4>], 'a4: ['a5, Array<'b>], 'a5: Array<i64>, 'b: Number |x: ('a1, 'a3, 'a4, 'a5)| x; f(([1], [], [], [1]))
 ```
 
-A function that builds a nominal value over one parameter into another
-(`|a, z| a <- B([z])`) needs the payload its first argument decided to
-hold what it builds. A payload still open at the call (`f(B([1]), "s")`)
-takes both; one already declared takes no argument wider than it holds:
-declare it as wide as the widest argument.
+A bound holds through a chain of bounds. Under `'a0: ['a1, null], 'a1:
+['a2, null]` the argument that decides `'a0` is a value `'a1` must hold,
+and so one `'a2` must hold: `'a2` is the union of it and what `x2: 'a2`
+is passed. A bound on the inner variable refuses what reaches it through
+the chain.
 
 ```graphix,cases
-ok type B<'p> = Abstract<'p>; let f = |a, z| { a <- B([z]); a.0 }; f(B([1]), "s")
-no "another argument of this call decided as Array<i64>" type B<'p> = Abstract<'p>; let n: [i64, null] = null; let f = |a, z| { a <- B([z]); a.0 }; let x: B<Array<i64>> = B([1]); f(x, n)
-ok type B<'p> = Abstract<'p>; let n: [i64, null] = null; let f = |a, z| { a <- B([z]); a.0 }; let x: B<Array<[i64, null]>> = B([1]); f(x, n)
+ok let f = 'a0: ['a1, null], 'a1: ['a2, null] |x0: 'a0, x1: 'a1, x2: 'a2| x2; let v: ([i64, null], i64) = (1, 1); f(v, (1, 1), (null, 1))
+no "string does not contain ([i64, null], i64)" let f = 'a0: ['a1, null], 'a1: ['a2, null] |x0: 'a0, x1: 'a1, x2: 'a2| -> 'a2 x2; let v: ([i64, null], i64) = (1, 1); let r: string = f(v, (1, 1), "s"); r
+ok let f = 'a1: ['a2, duration] |x0: 'a1, x2: Array<'a2>| x2; let w0: [null, string] = null; f(w0, ["s"])
+no "i64 does not contain [null, string]" let f = 'a1: ['a2, duration] |x0: 'a1, x2: Array<'a2>| x2; let w0: [null, string] = null; let r: Array<i64> = f(w0, [1]); r
+ok let f = 'x: Array<['a, null]> |y: 'x| y; let g = |u| f([u, [u]]); g(1)
+no "Number does not contain string" let f = 'a: Array<'b>, 'b: Number |x: 'a| x; f(["s"])
 ```
 
-A declared variable is every type a call picks, so a body that puts a
-type above it, by passing a value of that type where the variable's bound
-needs it, is refused: annotate the parameter with a type holding it, or
-declare no variable.
+A variable a written callback takes is held to that callback: with `|q:
+string| 0` passed for `fn(q: 'c) -> i64`, in the parameter or in a bound
+(`'a: fn(q: 'c) -> i64`), a wider `c: 'c` is refused. Annotate the
+callback's parameter as wide as `c`, or leave it untyped.
 
 ```graphix,cases
-no "annotate the parameter with a type holding" let f = 'a0: ['a1, bool], 'a1: ['a2, duration] |x0: 'a0, x2: 'a2| x2; let w0: [null, string] = null; let g = |u: 'u| f(w0, u); 1
-ok let f = 'a0: ['a1, bool], 'a1: ['a2, duration] |x0: 'a0, x2: 'a2| x2; let w0: [null, string] = null; let g = |u: [null, string]| f(w0, u); 1
-ok let f = 'a0: ['a1, bool], 'a1: ['a2, duration] |x0: 'a0, x2: 'a2| x2; let w0: [null, string] = null; let g = |u| f(w0, u); 1
+no "string does not contain [i64, string]" let f = 'a: fn(q: 'c) -> i64 |v: 'a, c: 'c| c; let n: [i64, string] = 1; f(|q: string| 0, n)
+ok let f = 'a: fn(q: 'c) -> i64 |v: 'a, c: 'c| c; let n: [i64, string] = 1; f(|q: [i64, string]| 0, n)
+ok let f = |v: fn(q: 'c) -> i64, c: 'c| c; let n: [i64, string] = 1; f(|q| 0, n)
+ok let f = 'a: Array<'c> |v: 'a, c: 'c| c; let n: [i64, string] = 1; f(["s"], n)
 ```
+
+## Quantified function types
 
 A function type with variables of its own (`fn<'a: Number>(x: 'a) ->
 'a`, or a trait as a parameter's type inside a written function type,
@@ -300,6 +320,7 @@ is refused: declare the variable on the definition, `'a: Number |f:
 fn(x: 'a) -> 'a, x: 'a| f(x)`, write the parameter as a trait, `|c:
 Collection| ..`, or bind the generic function with `let` and call it by
 name.
+A trait is no type inside a typedef either: bound a parameter by it.
 
 ```graphix,cases
 no "type variables of its own" |f: fn<'a: Number>(x: 'a) -> 'a| 1
@@ -307,479 +328,271 @@ no "type variables of its own" let g: fn<'a: Number>(x: 'a) -> 'a = |x| x; g(1)
 no "type variables of its own" let f = |g: fn(c: Collection) -> i64| 1; 1
 ok let g = 'a: Number |f: fn(x: 'a) -> 'a, x: 'a| f(x); g(|x| x, 1)
 ok |c: Collection| 1
+no "trait Sh used as a type" type T = Array<Sh>; trait Sh { val m: fn(self) -> i64 }; 0
+no "trait Sh used as a type" trait Sh { val m: fn(self) -> i64 }; type T = Array<Sh>; 0
+ok type T<'a: Sh> = Array<'a>; trait Sh { val m: fn(self) -> i64 }; impl Sh for i64 { let m = |s| 1 }; let v: T<i64> = [1]; v
 ```
+
+## What stays generic
 
 A function stays generic only where a binding names it: a `let` of a
 lambda (or of a data literal holding lambdas, below), a `val`, a trait
 method, and a `let` of a generic name or of a field or tuple read of
 one (`let j = s.g`, `let j = t.0`), or of a block whose value is one of
-these (`let f = { let n = 1; |x| x }`). Anywhere else it is one
-instance, which its uses decide: `let fs = array::map([1], |r| |x| x);
-let g = fs[0]$` takes `g(1)` and then refuses `g("s")`, and so do a
-function a call returns (`let h = mk(0)` over `let mk = |z| |x| x`), a
-field of a call's result, `(id, 1).0`, a reference (`let r = &f`, then
-`(*r)(1)`) and a binding something writes (`let j = s.g; j <- ..`).
-Each call of `mk` is an instance of its own: `let a = mk(0); let b =
-mk(0)` takes `a(1)` and `b("s")`. Whatever holds such an instance beside
-a generic value is that instance too: with `let j = s.f; j <- ..`, a
-`{s with f: j}`, a `[s, {f: j}]` (an array, list or map of composites),
-a `[(s.f, 0), (j, 1)]` or a `select b { true => s, false => {f: j} }`
-takes `j`'s one type in every element and arm. A select arm's name over
-members that hold lambdas is those lambdas, not a copy: `select t { (r, n)
-=> r.f(v) }` over `({f: |x| x}, 1)` and `({f: |y| y}, "s")` calls either
-one, and `v`'s type is then the type both take. A `j` that starts as
-`never()` stays open in `{s with f: j}`, whose field is `j`'s own type, so a
-call through the update before the write is refused until `j`'s type is
-written on its `let` (`let j: fn(x: i64) -> i64 = never()`). A write the
-compiler meets only after
-the binding was made generic (a function body's `m::j <- ..` in the
-module's parent, a later REPL input) must be as general as the binding,
-and a `&mut` of it is refused: to write it at one type, write that type
-on its `let` (`let j: fn(x: i64) -> i64 = s.g`). Arms holding lambdas
-over two declared variables (`|p: 'a| p` beside `|q: 'b| q`) stay two
-members, and a call through them is refused, naming both: give both one
-variable, or one written type. The result of `|c, a, b| select c { true =>
-a, false => b }` over two functions of one signature is one function to
-call and runs the one chosen; over two signatures it is refused the same
-way. A read of a declared variable's value (a call,
-`.x`, `.0`) takes its declaration's bound: the variable is rigid in the body,
-so annotating a binding does not help; declare `'a: fn(x: i64) -> i64`,
-`'a: {x: i64}` or `'a: (i64, i64)`, or write the type in its place.
+these (`let f = { let n = 1; |x| x }`). Each read of it is an instance
+of its own. Anything else is one instance, whose variables are what all
+its uses pass between them: a function a call returns (`let h = mk(0)`
+over `let mk = |z| |x| x`), an element bound by a `let` (`let g =
+fs[0]$`), a field of a call's result, a reference (`let r = &f`, then
+`(*r)(1)`) and a binding something writes (`j <- ..`, `&mut j`). A
+second use at another type widens the variable: `(h(1), h("s"))` checks,
+and `h`'s parameter is an `[i64, string]`. Only a body that takes one
+type refuses it: arithmetic, "cannot compute with [i64, f64]: both
+operands must be one numeric type". Each call of `mk` is an instance of
+its own: `let a = mk(0); let b = mk(0)` takes `a(1)` and `b(1.5)`.
+Whatever holds such an instance beside a generic value is that instance
+too: with `let j = s.f; j <- ..`, a `{s with f: j}`, a `[s, {f: j}]` or
+a `select b { true => s, false => {f: j} }` is `j`'s one type in every
+element and arm, while `s` read by its name stays generic. A select
+arm's name over members that hold lambdas is those lambdas: `select t {
+(r, n) => r.f(v) }` over `({f: |x| x}, 1)` and `({f: |y| y}, "s")` calls
+either one. The result of `|c, a, b| select c { true => a, false => b }`
+over two functions is one function to call, and the argument must fit
+both.
 
 ```graphix,cases
-no "i64 does not contain string" let fs = array::map([1], |r| |x| x); let g = fs[0]$; (g(1), g("s"))
-ok let fs = array::map([1], |r| |x| x); let g = fs[0]$; g(1)
+ok let s = {g: |x| x + x}; let j = s.g; (j(1), j(1.5))
+ok let t = (|x| x + x, 0); let j = t.0; (j(1), j(1.5))
+ok let f = { let n = 1; |x| x + x }; (f(1), f(1.5))
+ok let fs = array::map([1], |r| |x| x); let g = fs[0]$; (g(1), g("s"))
+no "cannot compute with [i64, f64]" let fs = array::map([1], |r| |x| x + x); let g = fs[0]$; (g(1), g(1.5))
+no "cannot compute with [i64, f64]" let mk = |z| |x| x + x; let h = mk(0); (h(1), h(1.5))
+ok let mk = |z| |x| x + x; let a = mk(0); let b = mk(0); (a(1), b(1.5))
+no "cannot compute with [i64, f64]" let mk = |z| {f: |x| x + x}; let j = mk(0).f; (j(1), j(1.5))
+ok let f = |x| x; let r = &f; ((*r)(1), (*r)("s"))
+no "cannot compute with [i64, f64]" let f = |x| x + x; let r = &f; ((*r)(1), (*r)(1.5))
+no "cannot compute with [i64, f64]" let f = |x| x + x; let r = &mut f; (f(1), f(1.5))
+no "cannot compute with [i64, f64]" let s = {g: |x| x + x}; let j = s.g; j <- s.g; (j(1), j(1.5))
+no "i64 does not contain string" let f = |x| x; f <- |y: i64| y; f("s")
 ok let f = { let t = sys::net::publish; t }; f(never(), 10)
 ok let f = sys::net::publish; f(never(), 10)
-no "i64 does not contain string" let id = |x| x; let g = (id, 1).0; (g(1), g("s"))
-no "i64 does not contain string" let f = |x| x; let r = &f; ((*r)(1), (*r)("s"))
-no "i64 does not contain string" let s = {f: |x| x}; let j = s.f; let p = |b| select b { true => s, false => {f: j} }; j <- |x: i64| x; (p(true).f("s"), p(false).f(1))
+ok let s = {f: |x| x + x}; let j = s.f; j <- s.f; let t = {s with f: j}; (t.f(1), s.f(1.5), s.f(2))
+no "cannot compute with [i64, f64]" let s = {f: |x| x + x}; let j = s.f; j <- s.f; let t = {s with f: j}; (t.f(1), t.f(1.5))
+no "cannot compute with [i64, f64]" let s = {f: |x| x + x}; let j = s.f; j <- s.f; let a = [s, {f: j}]; (a[0]$.f(1), a[1]$.f(1.5))
+no "cannot compute with [i64, f64]" let s = {f: |x| x + x}; let j = s.f; j <- s.f; let p = |b| select b { true => s, false => {f: j} }; (p(true).f(1.5), p(false).f(1))
 ok let s = {f: |x| x}; let j = s.f; let p = |b| select b { true => s, false => {f: j} }; (p(true).f("s"), p(false).f(1))
-no "i64 does not contain string" let mk = |z| |x| x; let s = {f: |x| x, g: |y| y}; let t = {s with g: mk(0)}; (t.g(1), t.g("s"))
-ok let mk = |z| |x| x; let s = {f: |x| x, g: |y| y}; let t = {s with g: mk(0)}; (t.f(1), t.f("s"), t.g(2))
-no "needs its type known here" let s = {f: |x| x}; let j = never(); let t = {s with f: j}; let r = t.f("s"); j <- |x: i64| x + 1; r
-ok let s = {f: |x| x}; let j: fn(x: i64) -> i64 = never(); let t = {s with f: j}; let r = t.f(2); j <- |x: i64| x + 1; r
-no "needs the type of `'a` known here: the definition declares `'a`" let f = |a: 'a| a(1); f(|x| x + 1)
-no "needs the type of `'a` known here: the definition declares `'a`" let f = 'a: Number |a: 'a| a(1); f(1)
-ok let f = 'a: fn(x: i64) -> i64 |a: 'a| a(1); f(|x| x + 1)
 ok let k = |v| { let t = select v > 0 { true => ({f: |x| x}, 1), false => ({f: |y| y}, "s") }; select t { (r, n) => r.f(v) } }; (k(2), k(-2))
-no "i64 does not contain string" let k = |v| { let t = select v > 0 { true => ({f: |x| x}, 1), false => ({f: |y| y}, "s") }; select t { (r, n) => (r.f(v), r.f("s")) } }; k(2)
-no "one of fn(p: 'a: i64) -> 'a: i64 and fn(q: 'b: string) -> 'b: string; write one variable in both, or one written type in both" let f = |c: bool, x: 'a, y: 'b| select c { true => {g: |p: 'a| p}, false => {g: |q: 'b| q} }; f(false, 1, "s").g(2)
-ok let f = |c: bool, x: 'a, y: 'b| select c { true => {g: |p: 'a| p}, false => {g: |q: 'a| q} }; f(false, 1, "s").g(2)
 ok let pick = |c, a, b| select c { true => a, false => b }; let f = |x: i64| x; let g = |x: i64| x + 1; pick(false, f, g)(1)
-no "this callee is one of fn(x: i64) -> i64 and fn(x: string) -> string" let pick = |c, a, b| select c { true => a, false => b }; pick(false, |x: i64| x, |x: string| x)(1)
-ok let f = |c: bool, x: 'a, y: 'b| select c { true => {g: |p: i64| p}, false => {g: |q: i64| q} }; f(false, 1, "s").g(2)
+no "string does not contain i64" let pick = |c, a, b| select c { true => a, false => b }; pick(false, |x: i64| x, |x: string| x)(1)
+ok let pick = |c, a, b| select c { true => a, false => b }; pick(false, |x: i64| x, |x: [i64, string]| 0)(1)
 ```
 
-A message and the shell's `-:` line print a function type's `fn<'a: ..>`
-header only while its declared variables are generic, each call still
-picking them. One instance prints without it, each variable where it
-occurs with its state: the next use that decides `'a` decides it
-wherever that instance holds it. Two instances are two variables, and
-in one message the second prints numbered apart (`'a1`), under that
-name in every type the message prints; a name numbered apart is none
-that type, or one the message printed before it, declares. An inferred
-variable numbers apart too: a second instance's copy of `'_7` prints
-`'_7_1`.
+A read of a declared variable's value (a call, `.x`, `.0`) takes its
+declaration's bound: the variable is rigid in the body, so annotating a
+binding does not help. Declare `'a: fn(x: i64) -> i64`, `'a: {x: i64}`
+or `'a: (i64, i64)`, or write the type in its place.
 
 ```graphix,cases
-no "y is Array<fn(x: 'a: unbound within Number) -> 'a: unbound within Number>" let fs = array::map([1], |r| 'a: Number |x: 'a| -> 'a x); let y = never(); y <- fs; y <- 1
-no "y is fn(x: 'a: unbound within Number) -> 'a: unbound within Number and" let mk = |z| 'a: Number |x: 'a| -> 'a x; let h = mk(0); let y = never(); y <- h; y <- 1
-no "y is (fn(x: 'a: i64) -> 'a: i64, fn(x: 'a1: f64) -> 'a1: f64) and" let mk = |z: i64| 'a: Number |x: 'a| -> 'a x; let h = mk(0); let k = mk(1); let y = never(); y <- (h, k); let r = y.0(1); let s = y.1(1.5); y <- 1
-no "y is (fn(x: 'a: unbound within Number) -> 'a: unbound within Number, fn(x: 'a1: f64) -> 'a1: f64) and cannot hold fn(x: 'a1: f64) -> 'a1: f64" let mk = |z: i64| 'a: Number |x: 'a| -> 'a x; let h = mk(0); let k = mk(1); let r = k(1.5); let y = never(); y <- (h, k); y <- k
-no "(fn(x: 'a: unbound within Number) -> 'a: unbound within Number, fn(x: 'a2: unbound within Number) -> 'a2: unbound within Number, fn(x: 'a1: unbound within Number) -> 'a1: unbound within Number) and" let mk = |z: i64| 'a: Number |x: 'a| -> 'a x; let h = mk(0); let k = mk(1); let mk1 = |z: i64| 'a1: Number |x: 'a1| -> 'a1 x; let m = mk1(0); let y = never(); y <- (h, k, m); y <- 1
-no "_1: unbound) -> (string, '_" let mk = |v| |p| (v, p); let c = true; let s = select c { true => mk(1), false => mk("s") }; let n: i64 = s; n
+no "does not contain 'a" let f = |a: 'a| a(1); f(|x| x + 1)
+no "does not contain 'a" let f = 'a: Number |a: 'a| a(1); f(1)
+ok let f = 'a: fn(x: i64) -> i64 |a: 'a| a(1); f(|x| x + 1)
+no "Any has no field x" let f = 'a: Any |a: 'a| a.x; f({x: 1})
+ok let f = 'a: {x: i64} |a: 'a| a.x; f({x: 1})
+ok let f = 'a: (i64, i64) |a: 'a| a.0; f((1, 2))
+ok let f = 'a: {x: i64}, 'b: {x: i64} |c: bool, a: 'a, b: 'b| (select c { true => a, false => b }).x; f(true, {x: 1}, {x: 2})
+no "has no field x" 'a: {x: i64}, 'b: {y: i64} |c: bool, a: 'a, b: 'b| (select c { true => a, false => b }).x
 ```
 
+A message prints one instance's function type without the `fn<'a: ..>`
+header: a declared variable where it occurs with its state (`'a: unbound
+within Number` before a use), an inferred one as the type its uses gave
+it. Two instances are two variables, and in one message the second
+prints numbered apart (`'a1`). The shell's `-:` line prints the header
+for a generic binding alone; one instance nothing has called stands at
+its variable's bound (`fn(x: Number) -> Number`), `_` with none.
+
+```graphix,cases
+no "does not contain fn(x: 'a: unbound within Number) -> 'a: unbound within Number" let mk = |z| 'a: Number |x: 'a| -> 'a x; let h = mk(0); let n: i64 = h; n
+no "does not contain fn(x: string) -> string" let mk = |z| |x| x; let h = mk(0); let r = h("s"); let n: i64 = h; n
+no "does not contain fn(x: [i64, string]) -> [i64, string]" let mk = |z| |x| x; let h = mk(0); let r = (h(1), h("s")); let n: i64 = h; n
+no "-> 'a: unbound within Number, fn(x: 'a1: unbound within Number) -> 'a1: unbound within Number)" let mk = |z: i64| 'a: Number |x: 'a| -> 'a x; let h = mk(0); let k = mk(1); let n: i64 = (h, k); n
+```
+
+## Functions in data
+
 A `let` nothing writes that holds lambdas in a struct, tuple, array or
-other data literal is as polymorphic as a `let` of a lambda: `let s = {f: |x| x}`
-serves `s.f(1)` and `s.f("a")`, and an annotation of one use (`let t:
-{f: fn(x: i64) -> i64} = s`) decides nothing of the others. Two lambdas
-in one array or list are one function type (`[|x| x, |y| y]`), and a
-call through it, or a function it is passed to, judges each one's labeled
-defaults against that one label (`[|#d = 1, x| x, |#d = "q", x| x]` is
-refused there, even by `array::len`: annotate the binding, `let fs:
-Array<fn(?#d: [i64, string], x: i64) -> i64> = ..`; a direct call of a
-named member judges its own). The members of a union meet the same way:
-optional lambdas (`[fn(..), null]`) that one select or array joins are one
-function, and a lambda beside an optional callback (`select b { true =>
-cb, false => |x| x + 1 }`) is the callback's type. A name an or-pattern's
-alternatives share, and a field read over two struct shapes, are one
-function the same way where the signatures agree, and the open lambda is
-that function from there on (`|x| x` beside `|y| y + 1` takes `i64`),
-called or not; a call through the name judges each one's labeled
-defaults as a call through an array's element does, and where the
-signatures do not agree it is refused, naming both. An open lambda that
-meets two functions that are not one type (`|x| x` beside `|y| y + 1`
-and `|z| "[z]!"`) is refused where the three meet, a select's arms, an
-or-pattern's name or a field read: write its parameter's type. What a
-function throws counts: one that throws nothing beside two that throw
-two errors writes which (`|x: i64| -> i64 throws `B x + 1`). The
-lambdas a `let` holds directly in one literal are generic where they
-meet, so none is refused: each takes the first function it meets in the
-order written. A function beside itself, or beside the same lambda
-written again, is that function: a call through the select checks as a
-call of the binding does. A
+other data literal is as generic as a `let` of a lambda: `let s = {f:
+|x| x}` serves `s.f(1)` and `s.f("a")`, and an annotation of one use
+(`let t: {f: fn(x: i64) -> i64} = s`) decides nothing of the others. A
 `seq` step or a `seqq` request reads `s` as generically as a `let` of
-it: `seqq t { (s.f(1), s.f("s")) }` checks, unless the seq writes `s`.
-A `let` nothing writes or annotates reads `s` once in its value,
-wherever it reads it: in `let t = {a: s, b: k(s)}`, a `k` taking `{f:
-fn(x: i64) -> i64}` makes `t.a.f` take `i64` too, and so does `b: seqq
-1 { k(s) }`. A lambda read through a field or a tuple position has the
-type a read of its binding has: a union of function types its signature
-holds over two of its variables (`x: F2<'a, 'b>`) is that union in the
-call's result, and a call through the result is refused, naming the
-members. A value read through a field, a tuple position or a reference
-is read as its binding is too: a union of function types it holds stays
-that union, the read making its members one no more than the binding
-does, so parameters nothing has decided stay two and a variable no
-argument decided (`F2<'a, 'b>` with `'b` nowhere else) stays open: the
-call through the read is refused. Write one variable in both.
-Two such unions over four distinct variables met twice (two calls handed
-one `w`) pair their members either way and are refused, "picks none by
-order": declare the types of what holds them.
+it, unless the seq writes `s`. A `let` nothing writes or annotates reads
+`s` once in its value, wherever it reads it: in `let t = {a: s, b:
+k(s)}`, a `k` taking `{f: fn(x: i64) -> i64}` makes `t.a.f` take `i64`
+too, and so does `b: seqq 1 { k(s) }`.
 
 ```graphix,cases
 ok let s = {f: |x| x}; let t: {f: fn(x: i64) -> i64} = s; (t.f(1), s.f("a"))
-ok let f = 'a: {x: i64}, 'b: {x: i64} |c: bool, a: 'a, b: 'b| (select c { true => a, false => b }).x; f(true, {x: 1}, {x: 2})
-no "unknown field x" 'a: {x: i64}, 'b: {y: i64} |c: bool, a: 'a, b: 'b| (select c { true => a, false => b }).x
-no "i64 does not contain string" let fs = [|#d = 1, x: i64| x, |#d = "q", x: i64| x]; array::len(fs)
-no "the functions met here share one #d" let j = 0; let o1 = select j { 0 => |#d = 1, x: i64| x, _ => null }; let o2 = select j { 0 => |#d = "q", x: i64| x, _ => null }; let a = [o1, o2]; select a[1]$ { null as _ => 0, f => f(7) }
-ok let j = 0; let o1 = select j { 0 => |#d = 1, x: i64| x, _ => null }; let o2 = select j { 0 => |#d = "q", x: i64| x, _ => null }; let a: Array<[fn(?#d: [i64, string], x: i64) -> i64, null]> = [o1, o2]; select a[1]$ { null as _ => 0, f => f(7) }
-ok let g = |cb: [fn(x: i64) -> i64, null], b: bool| { let h = select b { true => cb, false => |x| x + 1 }; select h { null as _ => 0, f => f(2) } }; g(null, false)
-ok let b = true; let t = select b { true => `A(|x| x, 1), false => `B(|y| y + 1, "s") }; select t { `A(r, _) | `B(r, _) => r(2) }
-no "i64 does not contain string" let b = true; let t = select b { true => `A(|x| x, 1), false => `B(|y| y + 1, "s") }; select t { `A(r, _) | `B(r, _) => r("s") }
-no "a call takes one function type" let b = true; let t = select b { true => `A(|x: string| x, 1), false => `B(|y| y + 1, "s") }; select t { `A(r, _) | `B(r, _) => r(2) }
-no "the functions met here share one #d" let b = true; let t = select b { true => `A(|#d = 1, x: i64| x), false => `B(|#d = "q", x: i64| x) }; select t { `A(r) | `B(r) => r(7) }
-no "the check picks neither by order" let b = 0; let t = select b { 0 => {f: |x| x, a: 1}, 1 => {f: |y| y + 1, b: 1}, _ => {f: |z| "[z]!", c: 1} }; t.f
-ok let b = 0; let t = select b { 0 => {f: |x: string| x, a: 1}, 1 => {f: |y| y + 1, b: 1}, _ => {f: |z| "[z]!", c: 1} }; t.f
-no "the check picks neither by order" let b = 0; select b { 0 => |x| x, 1 => |y| y + 1, _ => |z| "[z]!" }
-no "the check picks neither by order" let b = 0; select b { 0 => |x: i64| x + 1, 1 => |c: i64| -> i64 error(`B)?, _ => |d: i64| -> i64 error(`A)? }
-ok let b = 0; select b { 0 => |x: i64| -> i64 throws `B x + 1, 1 => |c: i64| -> i64 error(`B)?, _ => |d: i64| -> i64 error(`A)? }
-ok let t = [|x| x, |w| w, |y: i64| y + 1, |z: string| "[z]!"]; array::len(t)
-ok let t = [|x: i64| x, |x: i64| x + 1, |c: i64| -> i64 error(`B)?, |d: i64| -> i64 error(`A)?]; array::len(t)
-ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |y: 'a, x: P<'a, 'b>| x; let b = true; let g = select b { true => f, false => f }; g(1, ["s"])
-ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |y: 'a, x: P<'a, 'b>| x; let b = true; let g = select b { true => f, false => |y: 'a, x: P<'a, 'b>| x }; g(1, ["s"])
-no "the check picks neither by order" let t = [[|x| x, |w| w], [|y: i64| y + 1], [|z: string| "[z]!"]]; array::len(t)
-no "the functions met here share one #d" let b = true; let t = `W(select b { true => `A(|#d = 1, x: i64| x), false => `B(|#d = "q", x: i64| x) }); select t { `W(`A(r) | `B(r)) => r(7) }
-ok let b = true; let t: [`A(fn(?#d: [i64, string], x: i64) -> i64), `B(fn(?#d: [i64, string], x: i64) -> i64)] = select b { true => `A(|#d = 1, x: i64| x), false => `B(|#d = "q", x: i64| x) }; select t { `A(r) | `B(r) => r(7) }
 ok let t = 1; let s = {f: |x| x}; seq t { (s.f(1), s.f("s")) }
 ok let t = 1; let s = {f: |x| x}; seqq t { (s.f(1), s.f("s")) }
 ok let s = {f: |x| x}; let h = {g: |k| seqq k { (s.f(1), s.f("s")) }}; h.g(1)
-no "i64 does not contain string" let k = |p: {f: fn(x: i64) -> i64}| 0; let s = {f: |x| x}; let t = {a: s, b: seqq 1 { k(s) }}; t.a.f("x")
-no "picks none by order" type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64]; let f = |y: 'a, z: 'b, x: F2<'a, 'b>| x; let h = |u, v, s, t, w| { f(u, v, w); f(s, t, w); (u, v, s, t) }; h(1, "s", "t", 2, |q: i64| q + 1)
-ok type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64]; let f = |y: 'a, z: 'b, x: F2<'a, 'b>| x; let h = |u: i64, v: string, s: string, t: i64, w: F2<i64, string>| { f(u, v, w); f(s, t, w); (u, v, s, t) }; h(1, "s", "t", 2, |q: i64| q + 1)
-ok type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64]; let s = {fld: |y: 'a, z: 'b, x: F2<'a, 'b>| (x, y, z)}; s.fld(1, "s", |q: i64| 0)
-no "a call takes one function type" type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64]; let s = {fld: |y: 'a, z: 'b, x: F2<'a, 'b>| x}; let g = s.fld(1, "s", |q: i64| q + 1); g("s")
-ok type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64]; let f = |y: 'a, z: 'b, x: F2<'a, 'b>| x; let h = |u, v, w| { let s = {fld: f(u, v, w)}; (s.fld, u, v) }; h(1, "s", |q: i64| q + 1)
-no "a call takes one function type" type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64]; let f = |y: 'a, z: 'b, x: F2<'a, 'b>| x; let h = |u, v, w| { let s = {fld: f(u, v, w)}; s.fld(u) }; h(1, 2, |q: i64| q + 1)
-no "a call takes one function type" type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64]; let f = |x0: 'a, x1: F2<'a, 'b>| (x0, x1); let r = f(1, |q: i64| q + 1); r.1(1)
-ok type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64]; let f = |x0: 'a, x1: F2<'a, 'a>| (x0, x1); let r = f(1, |q: i64| q + 1); r.1(1)
+no "cannot compute with [i64, f64]" let t = 1; let s = {f: |x| x + x}; seq t { s <- {f: |x| x + x}; (s.f(1), s.f(1.5)) }
+no "i64 does not contain string" let k = |p: {f: fn(x: i64) -> i64}| 0; let s = {f: |x| x}; let t = {a: s, b: k(s)}; t.a.f("x")
+no "is used as i64 and as string, and no value is both" let k = |p: {f: fn(x: i64) -> i64}| 0; let s = {f: |x| x}; let t = {a: s, b: seqq 1 { k(s) }}; t.a.f("x")
 ```
 
-A sample is no binding: under a binding made generic before the write,
-`m::c <- t ~ {f: |x| x}` holds one instance and is refused, where the direct
-`m::c <- {f: |x| x}` names its lambda. Write it on a trigger by giving the
-`let` or `val` one type.
-
-A labeled default returning an enclosing function's open type requires a
-closed defaulted parameter type. Annotate the factory's parameter
-(`|z: i64|`) or the defaulted one (`|#d: i64 = z, x|`); `|z| { let g =
-|#d = z, x| (d, x); g }` and `#d: Array<'q> = [z]` are refused. A
-variable the factory declares is closed: `|z: 'a| { let g = |#d: 'a = z,
-y: i64| d; g(1) }` checks, and `#d = z` there takes `'a`; a type written
-inside the default (`= |q: i64| -> 'a z`) names it too.
+Lambdas that meet in one value (an array's elements, a select's arms, a
+name an or-pattern's alternatives share, a field read over two struct
+shapes, an optional callback beside a lambda) are one function to call:
+the argument must fit every one's parameter, so `|x| x` beside `|y| y +
+1` takes `i64`. They meet uncalled whatever their types. Each keeps its
+own labeled default: a call that leaves `#d` out passes each its own,
+and one that passes `#d` must suit every body. A function beside itself,
+or beside the same lambda written again, is that function.
 
 ```graphix,cases
-no "enclosing open type" |z| { let g = |#d = z, x| (d, x); g }
-ok |z: i64| { let g = |#d = z, x| (d, x); g }
+ok let g = |cb: [fn(x: i64) -> i64, null], b: bool| { let h = select b { true => cb, false => |x| x + 1 }; select h { null as _ => 0, f => f(2) } }; g(null, false)
+ok let b = true; let t = select b { true => `A(|x| x, 1), false => `B(|y| y + 1, "s") }; select t { `A(r, _) | `B(r, _) => r(2) }
+no "i64 does not contain string" let b = true; let t = select b { true => `A(|x| x, 1), false => `B(|y| y + 1, "s") }; select t { `A(r, _) | `B(r, _) => r("s") }
+no "string does not contain i64" let b = true; let t = select b { true => `A(|x: string| x, 1), false => `B(|y| y + 1, "s") }; select t { `A(r, _) | `B(r, _) => r(2) }
+ok let b = 0; let t = select b { 0 => {f: |x| x, a: 1}, 1 => {f: |y| y + 1, b: 1}, _ => {f: |z| "[z]!", c: 1} }; t.f(1)
+no "i64 does not contain string" let b = 0; let t = select b { 0 => {f: |x| x, a: 1}, 1 => {f: |y| y + 1, b: 1}, _ => {f: |z| "[z]!", c: 1} }; t.f("s")
+ok let t = [|x| x, |w| w, |y: i64| y + 1, |z: string| "[z]!"]; array::len(t)
+no "string does not contain i64" let t = [|x| x, |w| w, |y: i64| y + 1, |z: string| "[z]!"]; t[0]$(1)
+ok let fs = [|#d = 1, x: i64| d + x, |#d = "q", x: i64| x]; fs[0]$(7)
+no "i64 does not contain string" let fs = [|#d = 1, x: i64| d + x, |#d = "q", x: i64| x]; fs[0]$(#d: "s", 7)
+ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |y: 'a, x: P<'a, 'b>| x; let b = true; let g = select b { true => f, false => f }; g(1, ["s"])
+ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |y: 'a, x: P<'a, 'b>| x; let b = true; let g = select b { true => f, false => |y: 'a, x: P<'a, 'b>| x }; g(1, ["s"])
+```
+
+## Writes to a generic binding
+
+A write the compiler meets only after the binding was made generic (a
+module's `val` written from outside it, a REPL `let` written by a later
+input) must be as general as the binding, and a `&mut` of it is refused:
+to write it at one type, write that type on its `let` or `val`. A sample
+is no binding: `m::c <- t ~ {f: |x| x}` holds one instance and is
+refused, where the direct `m::c <- {f: |x| x}` names its lambda.
+
+```graphix,cases
+no "a generic binding, so what is written to it must be as general" let st = mod m dynamic { sig { val j: fn(x: 'a) -> 'a }; source "let j = |x| x" }; m::j <- |x: i64| x; st
+ok let st = mod m dynamic { sig { val j: fn(x: 'a) -> 'a }; source "let j = |x| x" }; m::j <- |x| x; st
+no "a writable reference to it would let a write narrow it" let st = mod m dynamic { sig { val j: fn(x: 'a) -> 'a }; source "let j = |x| x" }; let r = &mut m::j; st
+ok let st = mod m dynamic { sig { val j: fn(x: i64) -> i64 }; source "let j = |x| x" }; m::j <- |x: i64| x + 1; st
+no "it holds a type variable of the code around the write" let st = mod m dynamic { sig { val c: {f: fn(x: 'a) -> 'a} }; source "let c = {f: |x| x}" }; let t = 1; m::c <- t ~ {f: |x| x}; st
+ok let st = mod m dynamic { sig { val c: {f: fn(x: 'a) -> 'a} }; source "let c = {f: |x| x}" }; m::c <- {f: |x| x}; st
+```
+
+## A generic function at a written function type
+
+A generic function held at a written function type (an annotated `let`,
+a callback parameter, a field, a write) is one instance there: its
+variable is the union of what the type's positions write for it, and a
+bound refuses a position outside it. A result of the variable is then
+declared as wide as its parameters (`fn(b: i64, k: string) -> [i64,
+string]` for `|b: 'y, k: 'y| -> 'y k`), and a callback of it as wide as
+the values.
+
+```graphix,cases
+ok let f = |b: 'y, k: 'y| 0; let g: fn(b: i64, k: Any) -> i64 = f; g(1, 2)
+ok let f = |k: 'y, b: 'y| 0; let app = |h: fn(k: Any, b: i64) -> i64| h(2, 1); app(f)
+no "i64 does not contain [i64, null]" let f = |b: 'y, k: 'y| -> 'y k; let g: fn(b: i64, k: [i64, null]) -> i64 = f; g(1, null)
+ok let f = |b: 'y, k: 'y| -> 'y k; let g: fn(b: i64, k: string) -> [i64, string] = f; g(1, "s")
+ok let f = |b: 'y, k: 'y| -> 'y k; let s: {g: fn(b: i64, k: string) -> [i64, string]} = {g: f}; s.g(1, "s")
+no "string does not contain i64" let f = |b: 'y, k: 'y| -> 'y k; let g: fn(b: i64, k: string) -> string = never(); g <- f; g(1, "s")
+no "i64 does not contain string" let f = |b: 'y, k: 'y, c: fn(v: 'y) -> i64| c(k); let g: fn(b: i64, k: string, c: fn(v: i64) -> i64) -> i64 = f; g(1, "s", |v| 7)
+ok let f = |b: 'y, k: 'y, c: fn(v: 'y) -> i64| c(k); let g: fn(b: Any, k: i64, c: fn(v: Any) -> i64) -> i64 = f; g(1, 2, |v| 7)
+ok type L<'a> = [`Nil, `Cons('a, L<'a>)]; let f = |k: 'y, l: L<'y>| -> 'y k; let g: fn(k: [i64, null], l: L<i64>) -> [i64, null] = f; g(null, `Nil)
+ok let g = 'b: [i64, null] |x: 'b| { let h: fn(s: i64, v: 'b) -> i64 = |s: 'a, v: ['a, null]| 0; h(1, x) }; g(null)
+no "Number does not contain string" let f = 'a: Number |x: 'a| -> 'a x; let g: fn(x: string) -> string = f; g("s")
+```
+
+## Labeled defaults
+
+A lambda's labeled default is its own: a call that leaves the label out
+passes it, and one that passes the label must suit the body. A default
+may read an enclosing function's parameter (`|z| { let g = |#d = z, x|
+(d, x); g }`).
+
+```graphix,cases
+ok let f = |#d = 1, x: i64| cast<string>(d)$; (f(7), f(#d: "s", 7))
+no "i64 does not contain string" let f = |#d = 1, x: i64| d + x; f(#d: "s", 7)
+ok let mk = |z| { let g = |#d = z, x| (d, x); g }; let h = mk(1); (h(2), h(#d: "s", 3))
 ok |z: 'a| { let g = |#d: 'a = z, y: i64| d; g(1) }
 ```
 
-A lambda with a labeled default that a declaration holds through a
-typedef whose body writes the function type (`type W<'z> = {cb: fn(?#d:
-'z, x: i64) -> string}`) must fit the declared type as written: a reader's
-`w.cb` is a function nothing is known of, so no call can judge the
-default. A return type `-> W<'z>` over `#d = 1` is refused: write `->
-W<i64>`, or give the default the variable's type (`|z: 'z| .. #d = z`). A
-`let w: W<'p> = ..` annotation takes `W<i64>` from the default. The
-typedef's body written out in the declaration leaves each call to judge
-its own default.
+A lambda with a default, returned at a declared type whose label is the
+function's own variable (`-> {cb: fn(?#d: 'z, x: i64) -> string}` over
+`#d = 1`, written out, through a typedef, one function type deeper or
+behind an abstract type's constructor), is refused: a call picks `'z`,
+and the default need not be of it. Write the label's type (`?#d: i64`,
+`W<i64>`, `C<i64>`), give the default the variable's type (`|z: 'z| ..
+#d = z`), or drop the return type. A `let w: W<'p> = ..` annotation
+takes the default as it is, and so does a call's own variable: a
+callback returning such a lambda fits `fn(j: i64) -> fn(?#d: 'z, x: i64)
+-> string`.
 
 ```graphix,cases
 no "write the default's type in the declared type" type W<'z> = {cb: fn(?#d: 'z, x: i64) -> string}; let mk = |j: i64| -> W<'z> {cb: |#d = 1, x: i64| cast<string>(d)$}; mk(0).cb(7)
 ok type W<'z> = {cb: fn(?#d: 'z, x: i64) -> string}; let mk = |j: i64| -> W<i64> {cb: |#d = 1, x: i64| cast<string>(d)$}; mk(0).cb(7)
 ok type W<'z> = {cb: fn(?#d: 'z, x: i64) -> string}; let mk = |z: 'z| -> W<'z> {cb: |#d = z, x: i64| cast<string>(d)$}; mk("s").cb(7)
-ok let mk = |j: i64| -> {cb: fn(?#d: 'z, x: i64) -> string} {cb: |#d = 1, x: i64| cast<string>(d)$}; mk(0).cb(#d: "s", 7)
-no "i64 does not contain string" type W<'z> = {cb: fn(?#d: 'z, x: i64) -> string}; let w: W<'p> = {cb: |#d = 1, x: i64| cast<string>(d)$}; w.cb(#d: "s", 7)
+no "write the default's type in the declared type" let mk = |j: i64| -> {cb: fn(?#d: 'z, x: i64) -> string} {cb: |#d = 1, x: i64| cast<string>(d)$}; mk(0).cb(7)
+ok let mk = |j: i64| {cb: |#d = 1, x: i64| cast<string>(d)$}; mk(0).cb(#d: "s", 7)
+ok type W<'z> = {cb: fn(?#d: 'z, x: i64) -> string}; let w: W<'p> = {cb: |#d = 1, x: i64| cast<string>(d)$}; w.cb(#d: "s", 7)
+no "write the default's type in the declared type" type W<'z> = {cb: fn(?#d: 'z, x: i64) -> string}; let mk = |j: i64| -> fn(k: i64) -> W<'z> |k: i64| {cb: |#d = 1, x: i64| cast<string>(d)$}; mk(0)(0).cb(7)
+no "C<'z> does not contain" type C<'z> = Abstract<fn(?#d: 'z, x: i64) -> string>; let mk = |j: i64| -> C<'z> C(|#d = 1, x: i64| cast<string>(d)$); mk(0).0(7)
+ok type C<'z> = Abstract<fn(?#d: 'z, x: i64) -> string>; let mk = |j: i64| -> C<i64> C(|#d = 1, x: i64| cast<string>(d)$); mk(0).0(7)
+ok type C<'z> = Abstract<fn(?#d: 'z, x: i64) -> string>; let c = C(|#d = 1, x: i64| cast<string>(d)$); c.0(7)
+ok let app = |f: fn(j: i64) -> fn(?#d: 'z, x: i64) -> string| f(0)(7); app(|j: i64| |#d = 1, x: i64| cast<string>(d)$)
 ```
 
-A binding something writes holds one function type for every reader, so
-a default written to it decides its label's variable: after `let v:
-fn(?#d: 'q, x: i64) -> string = never(); v <- |#d = "q", x: i64| ..`,
-`'q` is `string`, and a later write of a `#d = 1` or a call `v(#d: 1.5,
-7)` is refused. Write the label's type wide enough for every default
-(`?#d: [i64, string]`). The function the binding starts with counts, and
-so does one held beside a null: `let o = select j { 0 => |#d = 1, ..| ..,
-_ => null }; o <- |#d = "q", ..| ..` is refused at the write, whatever
-the calls pass. A write through a parameter's `&mut fn(?#d: 'a,
-..)` may not decide the function's own `'a`: write the label's type there
-(`?#d: i64`).
+A binding's written function type holds every default written to it:
+`let v: fn(?#d: string, x: i64) -> string` refuses a write of `#d = 1`.
+Write the label wide enough for every default (`?#d: [i64, string]`), or
+as a variable (`?#d: 'q`), which is the union of them. A write through a
+parameter's `&mut fn(?#d: 'a, ..)` may
+not decide the function's own `'a`: write the label's type (`?#d: i64`),
+or the default's beside it (`?#d: 'a = i64`).
 
 ```graphix,cases
 ok let v: fn(?#d: 'q, x: i64) -> string = never(); v <- |#d = "q", x: i64| cast<string>(d)$; v(7)
-no "string does not contain i64" let v: fn(?#d: 'q, x: i64) -> string = |#d = "a", x: i64| cast<string>(d)$; let t = 1; v <- t ~ |#d = 1, x: i64| cast<string>(d)$; v(7)
+ok let v: fn(?#d: 'q, x: i64) -> string = |#d = "a", x: i64| cast<string>(d)$; let t = 1; v <- t ~ |#d = 1, x: i64| cast<string>(d)$; v(7)
+no "write the default's type in the declared type" let v: fn(?#d: string, x: i64) -> string = |#d = "a", x: i64| cast<string>(d)$; let t = 1; v <- t ~ |#d = 1, x: i64| cast<string>(d)$; v(7)
 ok let v: fn(?#d: [i64, string], x: i64) -> string = |#d = "a", x: i64| cast<string>(d)$; let t = 1; v <- t ~ |#d = 1, x: i64| cast<string>(d)$; v(7)
-no "the functions met here share one #d" let j = 0; let o = select j { 0 => |#d = 1, x: i64| cast<string>(d)$, _ => null }; let t = 1; o <- t ~ |#d = "q", x: i64| cast<string>(d)$; select o { null as _ => "n", f => f(#d: "z", 7) }
 ok let j = 0; let o: [fn(?#d: [i64, string], x: i64) -> string, null] = select j { 0 => |#d = 1, x: i64| cast<string>(d)$, _ => null }; let t = 1; o <- t ~ |#d = "q", x: i64| cast<string>(d)$; select o { null as _ => "n", f => f(7) }
-no "write the default's type in the binding's type" |r: &mut fn(?#d: 'a, x: i64) -> string, t: Any| { *r <- t ~ |#d = 1, x: i64| cast<string>(d)$; null }
+no "write the default's type in the declared type" |r: &mut fn(?#d: 'a, x: i64) -> string, t: Any| { *r <- t ~ |#d = 1, x: i64| cast<string>(d)$; null }
 ok |r: &mut fn(?#d: i64, x: i64) -> string, t: Any| { *r <- t ~ |#d = 1, x: i64| cast<string>(d)$; null }
-```
-
-What a function returns is judged the same way where the function
-meets a fn type: a callback that returns a lambda with a default decides
-the variable the formal's return gives the label, and a default behind an
-abstract type's constructor is a lower bound of the type's parameter (the
-declaration that takes the value may widen it).
-
-```graphix,cases
-ok let app = |f: fn(j: i64) -> fn(?#d: 'z, x: i64) -> string| f(0)(7); app(|j: i64| |#d = 1, x: i64| cast<string>(d)$)
-no "string does not contain i64" let app = |f: fn(j: i64) -> fn(?#d: 'z, x: i64) -> string, v: 'z| f(0)(#d: v, 7); app(|j: i64| |#d = 1, x: i64| cast<string>(d)$, "s")
-no "write the default's type in the declared type" type W<'z> = {cb: fn(?#d: 'z, x: i64) -> string}; let mk = |j: i64| -> fn(k: i64) -> W<'z> |k: i64| {cb: |#d = 1, x: i64| cast<string>(d)$}; mk(0)(0).cb(7)
-ok type C<'z> = Abstract<fn(?#d: 'z, x: i64) -> string>; let c = C(|#d = 1, x: i64| cast<string>(d)$); c.0(7)
-no "i64 does not contain string" type C<'z> = Abstract<fn(?#d: 'z, x: i64) -> string>; let c = C(|#d = 1, x: i64| cast<string>(d)$); c.0(#d: "s", 7)
-ok type C<'z> = Abstract<fn(?#d: 'z, x: i64) -> string>; let c: C<[i64, string]> = C(|#d = 1, x: i64| cast<string>(d)$); c.0(#d: "s", 7)
-no "write the body's type, `-> C<i64>`" type C<'z> = Abstract<fn(?#d: 'z, x: i64) -> string>; let mk = |j: i64| -> C<'z> C(|#d = 1, x: i64| cast<string>(d)$); mk(0).0(7)
+ok |r: &mut fn(?#d: 'a = i64, x: i64) -> string, t: Any| { *r <- t ~ |#d = 1, x: i64| cast<string>(d)$; null }
 ```
 
 A labeled default that raises (`#d = e?`) raises at each call that omits
-it, so a function type that hides the label or makes it optional must
-declare it: a typedef or written return type over `|#d = error(`E)?, x:
-i64|` is refused until the type writes `throws Error<ErrChain<`E>>`. A
-call that names the definition needs nothing.
+it, so a written function type that hides the label or makes it optional
+must declare what it raises: a typedef or written return type over `|#d
+= error(`E)?, x: i64|` is refused until it writes `throws
+Error<ErrChain<`E>>`. With no return type written nothing is needed. A
+default that raises through the factory's variables (`k? + j?` over
+`Result<i64, 'e>` and `Result<i64, 'f>`) needs a written `throws` that
+holds every one, `Error<ErrChain<['e, 'f]>>`.
 
 ```graphix,cases
-no "write `throws Error<ErrChain<`E>>`" type W = fn(?#d: i64, x: i64) -> i64; let mk = |k: i64| -> W |#d = error(`E)?, x: i64| d + x; mk(0)(7)
-no "write `throws Error<ErrChain<`E>>`" let mk = |k: i64| -> fn(x: i64) -> i64 |#d = error(`E)?, x: i64| d + x; mk(0)(7)
+no "W does not contain" type W = fn(?#d: i64, x: i64) -> i64; let mk = |k: i64| -> W |#d = error(`E)?, x: i64| d + x; mk(0)(7)
+no "does not contain Error<ErrChain<`E>>" let mk = |k: i64| -> fn(x: i64) -> i64 |#d = error(`E)?, x: i64| d + x; mk(0)(7)
 ok type W = fn(?#d: i64, x: i64) -> i64 throws Error<ErrChain<`E>>; let mk = |k: i64| -> W |#d = error(`E)?, x: i64| d + x; { catch(e) 0; mk(0)(7) }
 ok let mk = |k: i64| |#d = error(`E)?, x: i64| d + x; { catch(e) 0; mk(0)(7) }
-```
-
-A default that raises through a variable its factory declares
-(`|k: Result<i64, 'e>| |#d = k?, x: i64| ..`) raises what each call that
-made the function picked for `'e`, which only the returned function's
-`throws` names: write it there, or close `'e`. A call inside the factory
-needs neither.
-
-```graphix,cases
-no "write `throws Error<ErrChain<'e>>` in the type of the function it returns" let mk = |k: Result<i64, 'e>| |#d = k?, x: i64| d + x; { catch(e) 0; mk(error(`E))(7) }
+ok let mk = |k: Result<i64, 'e>| |#d = k?, x: i64| d + x; { catch(e) 0; mk(error(`E))(7) }
 ok let mk = |k: Result<i64, 'e>| -> fn(?#d: i64, x: i64) -> i64 throws Error<ErrChain<'e>> |#d = k?, x: i64| d + x; { catch(e) 0; mk(error(`E))(7) }
-ok let mk = |k: Result<i64, `E>| |#d = k?, x: i64| d + x; { catch(e) 0; mk(error(`E))(7) }
-ok let mk = |k: Result<i64, 'e>| { let g = |#d = k?, x: i64| d + x; g(1) }; { catch(e) 0; mk(error(`E)) }
-no "close all but one of them where they are declared" let mk = |k: Result<i64, 'e>, j: Result<i64, 'f>| -> fn(?#d: i64, x: i64) -> i64 throws Error<ErrChain<'e>> |#d = k? + j?, x: i64| d + x; { catch(e) 0; mk(error(`E), 1)(7) }
-ok let mk = |k: Result<i64, 'e>, j: Result<i64, `F>| -> fn(?#d: i64, x: i64) -> i64 throws Error<ErrChain<['e, `F]>> |#d = k? + j?, x: i64| d + x; { catch(e) 0; mk(error(`E), 1)(7) }
+no "does not contain 'f" let mk = |k: Result<i64, 'e>, j: Result<i64, 'f>| -> fn(?#d: i64, x: i64) -> i64 throws Error<ErrChain<'e>> |#d = k? + j?, x: i64| d + x; { catch(e) 0; mk(error(`E), 1)(7) }
+ok let mk = |k: Result<i64, 'e>, j: Result<i64, 'f>| -> fn(?#d: i64, x: i64) -> i64 throws Error<ErrChain<['e, 'f]>> |#d = k? + j?, x: i64| d + x; { catch(e) 0; mk(error(`E), 1)(7) }
 ```
 
 A labeled default that holds a function is judged as that function
-written at the call is: its own defaults must fit the label's type as the
-call's arguments left it, whether or not the body passes the inner label.
-Pass the outer label where they do not.
+written at the call is: where the call leaves the outer label out, the
+inner function must fit the label's type as the call's arguments left
+it. Pass the outer label where it does not.
 
 ```graphix,cases
 ok let f = |#w: fn(?#d: 'z, x: i64) -> string = |#d = 1, x: i64| cast<string>(d)$, x: i64| w(x); f(7)
-no "string does not contain i64" let f = |#w: fn(?#d: 'z, x: i64) -> string = |#d = 1, x: i64| cast<string>(d)$, y: 'z, x: i64| w(#d: y, x); f("q", 7)
-ok let f = |#w: fn(?#d: 'z, x: i64) -> string = |#d = 1, x: i64| cast<string>(d)$, y: 'z, x: i64| w(#d: y, x); f(#w: |#d = "s", x: i64| cast<string>(d)$, "q", 7)
-```
-
-A call's arguments are met in the order of the parameters, then the
-labeled defaults it omits, and nothing waits for a later one. A generic
-function's variable that only data holds widens to a decided argument
-wider than the ones before it, so decided arguments settle it alike in
-any order; one neither wider nor narrower than what stands is refused
-(`f(1, "s")` over `|x: 'a, y: 'a|`), whatever follows: write the widest
-first, or annotate. An argument or omitted default whose type is still
-open (a `str::parse`, a `let` over `never()`, `[]`) takes the variable as
-the ones before it left it, and the variable widens no more:
-`opt::or_default(str::parse(s)$, 0)` reads an `i64`, `f(str::parse(s),
-1)` over `|x: 'a, y: 'a|` runs (the read is the Result that holds the
-`1`), and `f(1, str::parse(s))` is refused, "annotate it" (`'a` is
-`i64`, which holds no parse error): annotate the read, or pass it first. What stands
-must also fit what the open one's other uses ask of it, an operator that
-read it or the values written where it is read from: `|p, q| { let s = p
-+ q; array::push(["s"], p) }` is refused, since a string is no number.
-
-```graphix,cases
-ok let f = |x: 'a, y: 'a| -> 'a y; let n: [i64, null] = null; (f(1, n), f(n, 1))
-no "'a: i64 does not contain string" let f = |x: 'a, y: 'a| -> 'a y; f(1, "s")
-no "an undecided argument before this one met 'a" let f = |x: 'a, y: 'a, z: 'a| -> 'a z; let v = never(); let n: [i64, null] = null; f(v, 1, n)
-ok let f = |x: 'a, y: 'a, z: 'a| -> 'a z; let v = never(); let n: [i64, null] = null; f(n, v, 1)
-no "undecided at this" |p, q| { let s = p + q; array::push(["s"], p) }
-ok |p, q| { let s = p + q; array::push([1], p) }
-no "undecided at this" { type B<'p> = Abstract<'p>; let x = B(1); x <- B("a"); let v = x.0; array::push([10], v) }
-```
-
-A variable bounded by a union two members of which could hold the
-argument (`'a: [Array<i64>, Array<string>]`, a `[&T, &mut U]`, two
-function types), or a parameter or a `let` written as one, takes an
-argument whose type is decided. One still open
-(`[z]` over a `let z = never()`, an untyped parameter, `[]`, an untyped
-lambda) is refused where both members could hold it, "nothing has decided
-which", naming the binding to annotate: which member holds it would
-follow a later use. Where only one member can hold it that member decides
-it (`(z, 1)` at `[(i64, i64), (string, string)]` makes `z` an `i64`). A
-member written as a name, or as a variable another argument has decided,
-counts as what it stands for. A variable member nothing has decided yet
-takes a value only after the other members, and an array literal written
-in the call is met before its elements are: `[z]` and `["x"]` at `'a:
-[Array<i64>, 'b]` go to `Array<i64>` while `'b` is open, so `z` is an
-`i64` and `["x"]` a mismatch. Declare the parameter that decides `'b`
-first, or bind the array to a `let` whose element type is decided.
-
-```graphix,cases
-no "nothing has decided which: `z` is undecided at this call; annotate `z`" let f = 'a: [Array<i64>, Array<string>] |v: 'a| v; let z = never(); let r = f([z]); z <- 1; r
-ok let f = 'a: [Array<i64>, Array<string>] |v: 'a| v; let z: i64 = never(); let r = f([z]); z <- 1; r
-no "nothing has decided which: this argument is undecided at this call; annotate it" let f = 'a: [Array<i64>, Array<string>] |v: 'a| v; f([])
-ok let f = 'a: [Array<i64>, Array<string>] |v: 'a| v; let e: Array<string> = []; f(e)
-no "cannot hold f64" let f = 'a: [(i64, i64), (string, string)] |v: 'a| v; let z = never(); let r = f((z, 1)); z <- 2.5; r
-no "nothing has decided which: `z` is undecided at this call; annotate `z`" type A = Array<i64>; type B = Array<string>; let f = 'a: [A, B] |v: 'a| v; let z = never(); let r = f([z]); z <- 1; r
-no "nothing has decided which" let f = 'a: [Array<i64>, 'b] |w: 'b, v: 'a| v; let z = never(); let r = f(["s"], [z]); z <- 1; r
-ok let f = 'a: [Array<i64>, 'b] |w: 'b, v: 'a| v; let z = never(); let r = f("s", [z]); z <- 1; r
-no "z is i64, inferred from an earlier use, and cannot hold string" let f = 'a: [Array<i64>, 'b] |v: 'a, w: 'b| v; let z = never(); let r = f([z], ["s"]); z <- "s"; r
-ok let f = 'a: [Array<i64>, 'b] |v: 'a, w: 'b| v; let z: string = never(); let x = [z]; let r = f(x, ["s"]); z <- "s"; r
-no "Array<i64> does not contain Array<string>" let f = 'a: [Array<i64>, 'b] |v: 'a, w: 'b| v; f(["x"], ["s"])
-ok let f = 'a: [Array<i64>, 'b] |v: 'a, w: 'b| v; let x = ["x"]; f(x, ["s"])
-ok let f = 'a: [Array<i64>, 'b] |w: 'b, v: 'a| v; f(["s"], ["x"])
-```
-
-A bound holds through a chain of bounds. Under `'a0: ['a1, null], 'a1:
-['a2, null]` the argument that decides `'a0` is a value `'a1` must hold,
-and so one `'a2` must hold: a later `x2: 'a2` fits it or is refused. A
-variable that widens hands its bound's variables the wider type the same
-way.
-
-```graphix,cases
-ok let f = 'a0: ['a1, null], 'a1: ['a2, null] |x0: 'a0, x1: 'a1, x2: 'a2| x2; let v: ([i64, null], i64) = (1, 1); f(v, (1, 1), (null, 1))
-no "'a2: ([i64, null], i64) does not contain string" let f = 'a0: ['a1, null], 'a1: ['a2, null] |x0: 'a0, x1: 'a1, x2: 'a2| x2; let v: ([i64, null], i64) = (1, 1); f(v, (1, 1), "s")
-no "'a3: duration does not contain string" let f = 'a2: [('a3, bool), bool] |x1: Array<'a2>, x2: 'a2, x3: 'a3| x3; let n: [(duration, bool), bool] = (duration:1.s, true); f([true], n, "s")
-ok let f = 'a1: ['a2, duration] |x0: 'a1, x2: Array<'a2>| x2; let w0: [null, string] = null; f(w0, ["s"])
-no "Array<'a2: [null, string]> does not contain Array<i64>" let f = 'a1: ['a2, duration] |x0: 'a1, x2: Array<'a2>| x2; let w0: [null, string] = null; f(w0, [1])
-ok let f = 'x: Array<['a, null]> |y: 'x| y; let g = |u| f([u, [u]]); g(1)
-```
-
-A value in an argument that a bound's union meets is decided by the bound
-before the argument is checked: `u` in `f((u, u + 1))` at `'x: (['a, null],
-i64)` is `[null, 'a]` when `u + 1` is checked, and the refusal names `u`.
-Annotate the value (`|u: i64|`), or write the union in the parameter, where
-`u + 1` decides it.
-
-```graphix,cases
-no "was decided by the type of the parameter this argument is passed to" let f = 'x: (['a, null], i64) |y: 'x| y; let g = |u| f((u, u + 1)); g(1)
-ok let f = 'x: (['a, null], i64) |y: 'x| y; let g = |u: i64| f((u, u + 1)); g(1)
-ok let f = |y: (['a, null], i64)| y; let g = |u| f((u, u + 1)); g(1)
-```
-
-A variable only the bounds of the parameters hold widens to no argument:
-the first argument that reaches it through a bound decides it, and a later
-one wider is refused, "is held only by the bounds of the parameters". The
-same bound written in the parameters (`|x1: Array<'a3>, x2: Array<'a3>|`)
-widens it. Annotate the earlier argument with a type that holds both (bind
-it to a `let` with its type written), or put the wider one first. Two bounds
-deep the refusal names the middle bound.
-
-```graphix,cases
-no "'a3 is held only by the bounds of the parameters" let f = 'a1: Array<'a3>, 'a2: Array<'a3> |x1: 'a1, x2: 'a2| 7; let u: Array<i64> = [1]; let v: Array<[i64, null]> = [1]; f(u, v)
-ok let f = 'a1: Array<'a3>, 'a2: Array<'a3> |x1: 'a1, x2: 'a2| 7; let u: Array<[i64, null]> = [1]; let v: Array<[i64, null]> = [1]; f(u, v)
-ok let f = 'a1: Array<'a3>, 'a2: Array<'a3> |x1: 'a1, x2: 'a2| 7; let u: Array<i64> = [1]; let v: Array<[i64, null]> = [1]; f(v, u)
-ok let f = |x1: Array<'a3>, x2: Array<'a3>| 7; let u: Array<i64> = [1]; let v: Array<[i64, null]> = [1]; f(u, v)
-no "'m is held only by the bounds of the parameters" let f = 'm: Array<'c>, 'a1: 'm, 'a2: Array<'m> |x1: 'a1, x2: 'a2| 7; let u: Array<i64> = [1]; let v: Array<Array<[i64, null]>> = [[1]]; f(u, v)
-```
-
-A body asks no more of a declared variable than its bound says. A call, an
-operator or a builtin that needs `Number`, `Ordered`, `Discernible`,
-`Concrete`, `NoError` of a variable the signature bounds by less is refused,
-naming the bound to write, `'c: Number`, never quietly added to the
-signature. A variable bounded by something that implies what the body needs
-(`'c: Int` for `Number`) is accepted, and arithmetic over a `Number` variable
-needs no `Singleton` written. A variable written bare (`|y: 'c|`) is
-inferred and takes the bound its body needs.
-
-```graphix,cases
-no "write 'c: Number" let f = 'a: Number |x: 'a| -> 'a x; 'c: Any |y: 'c| -> 'c f(y)
-no "write 'c: [i64, string] + Number" let f = 'a: Number |x: 'a| -> 'a x; 'c: [i64, string] |y: 'c| -> 'c f(y)
-ok let f = 'a: Number |x: 'a| -> 'a x; 'c: Number |y: 'c| -> 'c f(y)
-ok let f = 'a: Number |x: 'a| -> 'a x; 'c: Int |y: 'c| -> 'c f(y)
-ok let f = 'a: Number |x: 'a| -> 'a x; |y: 'c| -> 'c f(y)
-no "write 'a: Number" 'a: Any |x: 'a, y: 'a| -> 'a x + y
-ok 'a: Number |x: 'a, y: 'a| -> 'a x + y
-no "write 'a: Number + Ordered" 'a: Number |x: 'a, y: 'a| x < y
-ok 'a: Number + Ordered |x: 'a, y: 'a| x < y
-no "write 'a: Discernible" 'a: Any |x: 'a, y: 'a| x == y
-```
-
-A wrapper's declared variable takes no bound from a callee's. Inside the
-value a callee's bound takes, the bound's own variable takes it, as where
-the bound's type is written in the parameter; where the bound has no
-variable there, the wrapper declares the bound itself.
-
-```graphix,cases
-ok let g = 'b: Array<['c, null]> |x: 'b, s: 'c| -> 'b x; let f = |v: 'a, w: Array<'a>| g(w, v); (f(1, [2]), f("a", ["b"]))
-no "does not contain null" let g = 'b: Array<['c, null]> |x: 'b, s: 'c| -> 'b x; let f = |w: Array<'a>| g(w, null); f([null])
-ok let g = 'b: (['c, null], ['c, i64]) |s: 'c, x: 'b| -> 'b x; let f = |u, w: (['a, null], ['a, null])| g(u, w); f(1, (2, 2))
-ok let f = 'a1: ['a3, Array<'b>], 'a3: ['a4, Array<'a4>], 'a4: ['a5, Array<'b>], 'a5: Array<i64>, 'b: Number |x: ('a1, 'a3, 'a4, 'a5)| x; f(([1], [], [], [1]))
-no "does not contain Array<'a: unbound>" let g = 'b: Array<[i64, null]> |x: 'b| -> 'b x; let f = |w: Array<'a>| g(w); f([2])
-ok let g = 'b: Array<[i64, null]> |x: 'b| -> 'b x; let f = 'a: [i64, null] |w: Array<'a>| g(w); f([2])
-```
-
-A variable a callback also holds does not widen: the first argument decides
-it, an open one included, so order decides between a value and a refusal.
-`f(str::parse(s), 1, |v| 0)` over `|x: 'a, y: 'a, k: fn(v: 'a) -> i64|`
-runs (`'a` is the parse's Result, which holds the `1`), and `f(1,
-str::parse(s), |v| 0)` is refused, "annotate that argument as wide as this
-one": annotating the parse widens nothing; annotate the argument that
-decided `'a` (here the `1`), or put the open one first.
-
-```graphix,cases
-ok let f = |x: 'a, y: 'a, k: fn(v: 'a) -> i64| -> 'a y; f(str::parse("5"), 1, |v| 0)
-no "annotate that argument as wide as this one" let f = |x: 'a, y: 'a, k: fn(v: 'a) -> i64| -> 'a y; f(1, str::parse("5"), |v| 0)
-ok let f = |x: 'a, y: 'a, k: fn(v: 'a) -> i64| -> 'a y; let one: [i64, Error<`ParseError(string)>] = 1; f(one, str::parse("5"), |v| 0)
-```
-
-A variable a bound holds under a function type, a writable reference or a
-nominal type does not widen either, though no parameter holds it so: the
-bound `'a: fn(q: 'c) -> i64` over `|v: 'a, c: 'c|` takes `'c` from the
-callback, and a wider `c` is refused as it is where the function type is
-written in the parameter. Annotate the callback's parameter as wide as `c`.
-
-```graphix,cases
-no "'c: string does not contain [i64, string]" let f = 'a: fn(q: 'c) -> i64 |v: 'a, c: 'c| c; let n: [i64, string] = 1; f(|q: string| 0, n)
-ok let f = 'a: fn(q: 'c) -> i64 |v: 'a, c: 'c| c; let n: [i64, string] = 1; f(|q: [i64, string]| 0, n)
-ok let f = 'a: Array<'c> |v: 'a, c: 'c| c; let n: [i64, string] = 1; f(["s"], n)
-```
-
-A generic function held at a written function type (an annotated `let`,
-a callback parameter, a field, a write) meets the type's positions in
-the order written, and its variable takes the first position's type:
-the later ones must fit it, and nothing widens. Write the function
-type's earlier position as wide as the later ones need, or wrap the
-function in a lambda with its parameters written (`|b: i64, k: Any| f(b,
-k)`), whose call widens. A trait
-default's label typed by a bound over `self` stands before `self`: write
-it as the declared variable (`|#k: 'b, s|`), or leave it unwritten.
-
-```graphix,cases
-no "does not contain fn(b: 'y: i64, k: 'y: i64)" let f = |b: 'y, k: 'y| 0; let g: fn(b: i64, k: Any) -> i64 = f; g(1, 2)
-ok let f = |b: 'y, k: 'y| 0; let g: fn(b: i64, k: Any) -> i64 = |b: i64, k: Any| f(b, k); g(1, 2)
-ok let f = |k: 'y, b: 'y| 0; let g: fn(k: Any, b: i64) -> i64 = f; g(2, 1)
-ok let f = |k: 'y, b: 'y| 0; let app = |h: fn(k: Any, b: i64) -> i64| h(2, 1); app(f)
-no "does not contain fn(b: 'y: i64, k: 'y: i64)" let f = |b: 'y, k: 'y| 0; let g: fn(b: i64, k: string) -> i64 = f; g(1, "s")
-no "-> i64 does not contain" let f = |b: 'y, k: 'y| -> 'y k; let g: fn(b: i64, k: [i64, null]) -> i64 = f; g(1, null)
-no "does not contain fn(b: 'y: i64" let f = |b: 'y, k: 'y, c: fn(v: 'y) -> i64| c(k); let g: fn(b: i64, k: Any, c: fn(v: Any) -> i64) -> i64 = f; g(1, 2, |v| 7)
-ok let f = |b: 'y, k: 'y, c: fn(v: 'y) -> i64| c(k); let g: fn(b: Any, k: i64, c: fn(v: Any) -> i64) -> i64 = f; g(1, 2, |v| 7)
-ok type L<'a> = [`Nil, `Cons('a, L<'a>)]; let f = |k: 'y, l: L<'y>| -> 'y k; let g: fn(k: [i64, null], l: L<i64>) -> [i64, null] = f; g(null, `Nil)
-no "does not contain fn(l: L<'y: i64>" type L<'a> = [`Nil, `Cons('a, L<'a>)]; let f = |l: L<'y>, k: 'y| -> 'y k; let g: fn(l: L<i64>, k: [i64, null]) -> [i64, null] = f; g(`Nil, null)
-ok type T<'a> = [`Leaf('a), `Node(T<i64>)]; let f = |k: 'y, t: T<'y>| -> 'y k; let g: fn(k: [i64, null], t: T<i64>) -> [i64, null] = f; g(null, `Leaf(1))
-ok let g = 'b: [i64, null] |x: 'b| { let h: fn(s: i64, v: 'b) -> i64 = |s: 'a, v: ['a, null]| 0; h(1, x) }; g(null)
-no "does not contain fn(v: [null, 'b" let g = 'b: [i64, null] |x: 'b| { let h: fn(v: 'b, s: i64) -> i64 = |v: ['a, null], s: 'a| 0; h(x, 1) }; g(null)
+no "the default of #w is passed here, where the call leaves #w out" let f = |#w: fn(?#d: 'z, x: i64) -> string = |#d = 1, x: i64| "[d + 1]", y: 'z, x: i64| w(#d: y, x); f("q", 7)
+ok let f = |#w: fn(?#d: 'z, x: i64) -> string = |#d = 1, x: i64| "[d + 1]", y: 'z, x: i64| w(#d: y, x); f(#w: |#d = "s", x: i64| cast<string>(d)$, "q", 7)
 ```
 
 ## Abstract comparisons
@@ -787,6 +600,14 @@ no "does not contain fn(v: [null, 'b" let g = 'b: [i64, null] |x: 'b| { let h: f
 An abstract's `Eq` implementation bypasses representation checks for equality
 only; `Ord` bypasses them for ordering only. Without the relevant implementation,
 its representation must satisfy `Discernible` or `Ordered`, respectively.
+
+```graphix,cases
+no "implement Ord for it" type T = Abstract<fn(x: i64) -> i64>; let a = T(|x| x); a < a
+ok type T = Abstract<fn(x: i64) -> i64>; impl Ord for T { let cmp = |a, b| `Equal }; let a = T(|x| x); a < a
+no "implement Ord for it" type T = Abstract<fn(x: i64) -> i64>; impl Eq for T { let eq = |a, b| true }; let a = T(|x| x); a < a
+no "implement Eq for it" type T = Abstract<[fn(x: i64) -> i64, fn(s: string) -> string]>; impl Ord for T { let cmp = |a, b| `Equal }; let a = T(|x: i64| x); a == a
+ok type T = Abstract<[fn(x: i64) -> i64, fn(s: string) -> string]>; impl Eq for T { let eq = |a, b| true }; let a = T(|x: i64| x); a == a
+```
 
 ## Recursive typedefs
 

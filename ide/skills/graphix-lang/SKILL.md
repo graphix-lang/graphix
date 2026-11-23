@@ -464,13 +464,11 @@ program's text gets the new value a cycle late. A binding something
 writes (a `<-` target, a `&mut`'s referent) is state: at a wake it keeps
 the value it holds, whatever its initializer would now compute.
 
-A labeled default returning an enclosing function's open type requires a
-closed defaulted parameter type. Annotate the factory's parameter
-(`|z: i64|`) or the defaulted one (`|#d: i64 = z, x|`); `|z| { let g =
-|#d = z, x| (d, x); g }` and `#d: Array<'q> = [z]` are refused. A
-variable the factory declares is closed: `|z: 'a| { let g = |#d: 'a = z,
-y: i64| d; g(1) }` checks, and `#d = z` there takes `'a`; a type written
-inside the default (`= |q: i64| -> 'a z`) names it too.
+A labeled default may read an enclosing function's parameter, annotated
+or not: `|z| { let g = |#d = z, x| (d, x); g }` checks, and the default
+is the type the factory was passed. A variable the factory declares
+names that type: `|z: 'a| { let g = |#d: 'a = z, y: i64| d; g(1) }`, and
+a type written inside the default (`= |q: i64| -> 'a z`) names it too.
 
 A function is more than a computation: each call is a live piece of
 graph that stays. It can hold state (`let x = ..; x <- ..`), run seqs
