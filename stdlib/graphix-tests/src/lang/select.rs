@@ -13613,7 +13613,7 @@ run!(
 run!(
     written_bottom_in_a_union_of_products_refused,
     r#"{
-  let k = |z: [(i64, 'a), (string, 'a)]| select z { (i64, _) as (n, w) => n + w, _ => 0 };
+  let k = 'a: Any |z: [(i64, 'a), (string, 'a)]| select z { (i64, _) as (n, w) => n + w, _ => 0 };
   k((1, 2))
 }"#,
     refused("type mismatch Number does not contain 'a");

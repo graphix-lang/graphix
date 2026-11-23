@@ -1858,9 +1858,7 @@ run!(arm_behind_the_pools_of_two_members_below_a_reference, r#"{
         let r = &mut (select c { true => (a, x), false => (`L, b, y) });
         select *r {
             (true, _) => 1,
-            (false, _) => 2,
             (`L, true, _) => 3,
-            (`L, false, _) => 4,
             (_, 0) => 5,
             (_, _, 0) => 6,
             _ => 7
@@ -1875,7 +1873,24 @@ run!(arm_behind_the_pools_of_two_members_below_a_reference, r#"{
         f("s", "t", true, true, false), f(0, 0, false, false, false),
         g("s", true, true), g("s", false, true), g("s", true, false), g(0, true, true)
     ]
-}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 2, 3, 4, 1, 2, 3, 1]); FuseExpect::Jit);
+}"#, |v: Result<&Value>| matches!(v, Ok(Value::Array(a)) if as_i64s(a) == [1, 7, 3, 6, 1, 2, 3, 1]); FuseExpect::Jit);
+
+// The arms that take a member's two pools take the member: an arm behind
+// them is dead, whatever the part nothing decided turns out to be.
+run!(arm_behind_both_pools_of_each_member_below_a_reference_is_dead, r#"{
+    let f = |x, y, a: bool, b: bool, c: bool| {
+        let r = &mut (select c { true => (a, x), false => (`L, b, y) });
+        select *r {
+            (true, _) => 1,
+            (false, _) => 2,
+            (`L, true, _) => 3,
+            (`L, false, _) => 4,
+            (_, 0) => 5,
+            _ => 7
+        }
+    };
+    f("s", "t", true, true, true)
+}"#, refused("pattern (_, 0) will never match: nothing reaches it"); FuseExpect::None);
 
 // The member is the one the bound holds, however it was built: a binding,
 // a call's result, the open cell inside a part of it.
@@ -3811,8 +3826,7 @@ run!(waiting_value_inside_a_definitions_cell_routed, r#"{
 }"#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s == "a [1]"); FuseExpect::Jit);
 
 // An arm an earlier arm takes whole by its structure is dead over a value
-// nothing has decided too; a literal behind a wildcard is a value-level
-// dead arm, which is allowed.
+// nothing has decided too, a literal behind a wildcard included.
 run!(
     tag_behind_a_wildcard_over_an_undecided_parameter_is_dead,
     "{ let f = |x| select x { _ => 3, `J => 1 }; f(`J) }",
@@ -3828,7 +3842,8 @@ run!(
 );
 
 run!(
-    literal_behind_a_wildcard_over_an_undecided_parameter_is_allowed,
+    literal_behind_a_wildcard_over_an_undecided_parameter_is_dead,
     "{ let f = |x| select x { _ => 3, 5 => 1 }; f(5) }",
-    prints("i64:3")
+    refused("pattern 5 will never match: nothing reaches it");
+    FuseExpect::None
 );

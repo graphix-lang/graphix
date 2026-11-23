@@ -83,19 +83,22 @@ impl Pat {
         })
     }
 
-    /// Whether the pattern tests a value of a type by a literal of it: a
-    /// dead arm that does is a value-level one.
-    fn tests_a_value(&self) -> bool {
-        ensure_sufficient(|| match self {
-            Pat::Lit(_, whole) => !whole,
-            Pat::Any(_) => false,
-            Pat::Test(_, p) | Pat::Abs(_, _, p) | Pat::Whole(_, p) => p.tests_a_value(),
-            Pat::Tuple(_, ps) | Pat::Variant(_, _, ps) | Pat::Or(ps) => {
-                ps.iter().any(Pat::tests_a_value)
-            }
-            Pat::Struct(_, fs, _) => fs.iter().any(|(_, p)| p.tests_a_value()),
-            Pat::Elems { elems, .. } => elems.iter().any(Pat::tests_a_value),
-        })
+    /// The test of a pattern that takes every value passing it: one
+    /// written over a name or `_`.
+    fn whole_test(&self) -> Option<&Type> {
+        match self {
+            Pat::Whole(_, p) => p.whole_test(),
+            Pat::Test(t, p) if p.takes_all() => Some(t),
+            _ => None,
+        }
+    }
+
+    fn takes_all(&self) -> bool {
+        match self {
+            Pat::Any(_) => true,
+            Pat::Whole(_, p) => p.takes_all(),
+            _ => false,
+        }
     }
 
     /// The pattern with each cell it binds through `f`.
@@ -185,16 +188,18 @@ impl Pat {
         }
     }
 
-    /// Whether a name takes the whole of what this pattern admits.
+    /// Whether a name takes the whole of what this pattern admits. The
+    /// cell of a [`Pat::Whole`] is the arm's own test, which no name reads.
     fn captures(&self) -> bool {
         match self {
-            Pat::Whole(..) => true,
             Pat::Tuple(all, _)
             | Pat::Variant(all, ..)
             | Pat::Struct(all, ..)
             | Pat::Elems { all, .. }
             | Pat::Abs(all, ..) => all.is_some(),
-            Pat::Any(_) | Pat::Lit(..) | Pat::Test(..) | Pat::Or(_) => false,
+            Pat::Any(_) | Pat::Lit(..) | Pat::Test(..) | Pat::Or(_) | Pat::Whole(..) => {
+                false
+            }
         }
     }
 
@@ -1631,66 +1636,94 @@ impl Solving {
         Ok(progress)
     }
 
-    /// An arm of a select that was judged and that nothing reaches.
+    /// An arm of a select that nothing reaches.
     pub(super) fn dead_arms(&self, env: &Env) -> Result<()> {
-        // a select the routing below does not judge (one of a generic
-        // definition, whose instances give it its values) has no value to
-        // route: an arm an earlier one takes whole by its structure is dead
-        // whatever the scrutinee turns out to be; a value-level one is not
-        // refused (a literal after a wildcard)
         let judged = |s: &Select| s.routed && !s.instance && s.waiting.is_empty();
+        let named = |s: &Select, i: usize| match s.written.as_ref().and_then(|w| w.get(i))
+        {
+            Some(w) => format_compact!("{w}"),
+            None => format_compact!("{}", i + 1),
+        };
+        // an arm an earlier one takes whole by its structure is dead
+        // whatever the scrutinee turns out to be
         for s in self.selects.iter().filter(|s| !judged(s)) {
             let arms = &s.template.arms;
             for (j, later) in arms.iter().enumerate() {
-                let covered =
-                    arms[..j].iter().any(|a| !a.guarded && a.pat.covers(&later.pat));
-                if covered && !later.pat.tests_a_value() {
-                    let arm = match s.written.as_ref().and_then(|w| w.get(j)) {
-                        Some(w) => format_compact!("{w}"),
-                        None => format_compact!("{}", j + 1),
-                    };
+                if arms[..j].iter().any(|a| !a.guarded && a.pat.covers(&later.pat)) {
                     return Err(s.at_arm(
                         Some(j),
                         anyhow!(
-                            "pattern {arm} will never match: nothing reaches it ({}; an \
+                            "pattern {} will never match: nothing reaches it ({}; an \
                              earlier arm takes every value it would)",
+                            named(s, j),
                             s.template.at
                         ),
                     ));
                 }
             }
         }
-        // a select still waiting is one of a generic definition, whose
-        // instances give it its values
-        for s in self.selects.iter().filter(|s| judged(s)) {
+        // an instance's arm nothing reaches is no dead arm: another
+        // instance may reach it
+        for s in self.selects.iter().filter(|s| !s.instance) {
+            let arms = &s.template.arms;
             let mut hit = s.hit.clone();
-            // an arm is dead where the arms before it took its whole type: a
-            // part of the scrutinee nothing decides here reaches the arms
-            // its type does
-            for t in s.scrutinees.iter().map(deep) {
-                if super::cells_in(&t).is_empty() {
+            // what the select was given, or stands to be: a part nothing
+            // decided reaches the arms anything within its bound does, so
+            // an arm nothing reaches here no instance reaches. A judged
+            // select routed what holds no cell already
+            let mut met = judged(s);
+            let mut stands: Vec<Type> = vec![];
+            for t in s.scrutinees.iter().chain(s.waiting.iter()).map(deep) {
+                if judged(s) && super::cells_in(&t).is_empty() {
                     continue;
                 }
                 let mut reach = self.expand(env, &split(&t));
-                for (i, arm) in s.template.arms.iter().enumerate() {
+                if nothing(&reach) {
+                    continue;
+                }
+                met = true;
+                stands.push(t);
+                for (i, arm) in arms.iter().enumerate() {
                     let r = self.route(env, &arm.pat, &reach);
-                    hit[i] |= !nothing(&r.part);
+                    // a pattern that looks into a part nothing decided may
+                    // take what an instance makes of it
+                    let mut open: SmallVec<[TVar; 4]> = SmallVec::new();
+                    if !judged(s) {
+                        looked(env, &arm.pat, &unsplit(&reach), &mut open)
+                    }
+                    hit[i] |= !nothing(&r.part) || !open.is_empty();
                     if !arm.guarded {
                         reach = r.rest
                     }
                 }
             }
-            if let Some(i) = hit.iter().position(|h| !h) {
-                let seen: Vec<String> = s.seen.iter().map(|t| t.to_string()).collect();
-                let (at, seen) = (&s.template.at, seen.join(" | "));
-                let arm = match s.written.as_ref().and_then(|w| w.get(i)) {
-                    Some(w) => format_compact!("{w}"),
-                    None => format_compact!("{}", i + 1),
+            if !met {
+                continue;
+            }
+            // a test an earlier arm's test holds whole passes no value
+            // that arm left
+            for i in 0..arms.len() {
+                let Some(t) = arms[i].pat.written_test() else { continue };
+                let held = |a: &Arm| {
+                    let u = a.pat.whole_test();
+                    !a.guarded && u.is_some_and(|u| u.contains(env, t).unwrap_or(false))
                 };
+                if arms[..i].iter().any(held) {
+                    hit[i] = false
+                }
+            }
+            if let Some(i) = hit.iter().position(|h| !h) {
+                let seen = match s.seen.is_empty() {
+                    true => &stands,
+                    false => &s.seen,
+                };
+                let seen: Vec<String> = seen.iter().map(|t| t.to_string()).collect();
+                let (at, seen) = (&s.template.at, seen.join(" | "));
+                let arm = named(s, i);
                 // an arm above whose test is not this one's but takes its
                 // values, the two of one runtime form
-                let taken = s.template.arms[i].pat.written_test().and_then(|t| {
-                    s.template.arms[..i].iter().filter(|a| !a.guarded).find_map(|a| {
+                let taken = arms[i].pat.written_test().and_then(|t| {
+                    arms[..i].iter().filter(|a| !a.guarded).find_map(|a| {
                         let u = a.pat.written_test()?;
                         match u.contains(env, t) {
                             Ok(false) => u.rep_collision(env, t),
@@ -1698,7 +1731,7 @@ impl Solving {
                         }
                     })
                 });
-                let e = match s.template.arms[i].pat.blind(env, false) {
+                let e = match arms[i].pat.blind(env, false) {
                     _ if let Some(c) = taken => {
                         let untold = c.untold("the test of an arm above");
                         anyhow!("pattern {arm} will never match: {untold} ({at})")
