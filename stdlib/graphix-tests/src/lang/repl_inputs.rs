@@ -155,6 +155,18 @@ async fn catch_entered_alone_takes_a_later_raise_by_its_annotation() -> Result<(
     .await
 }
 
+// CR claude for claude: [bug/high] A later input that writes a less general
+// function to an earlier input's generic binding whose body computes runs out of
+// memory instead of being refused. The inputs `let j = |x| x + x` then `j <- |x:
+// i64| x` kill the shell inside a 2 GB cap in about two seconds (exit 137); with
+// the body `|x| x` the same two inputs give the refusal "j is .., a generic
+// binding, so what is written to it must be as general". In one file the program
+// checks (a written binding is one instance), so it is the settled scheme of the
+// earlier input, with its `Number + Singleton` bound, that the write is related
+// to without end. A profile shows the time in Solving::relate_in under
+// trying/attempt. Find the pair that recurs, and pin both inputs here as a
+// Refuse step. Found 11-23 by the skill docs pass. (repl-generic-write-oom-01)
+
 /// A function an earlier input left with a parameter of no type refuses a
 /// later call by naming the binding to declare, and says nothing of
 /// abstract values, whose functions are of no type for another reason.
