@@ -3232,19 +3232,20 @@ mod unsound_acceptances {
     }
 }
 
-// A declared variable a type-directed read's result is declares the read's
-// `Concrete`: a call that leaves it undecided is refused, as the read's
-// own would be, wherever the value goes or if it goes nowhere. One written
-// bare or declared without the bound is refused, naming it.
+// A declared variable a type-directed read's result is declares what the
+// read needs, `Concrete` among it: a call that leaves it undecided is
+// refused, as the read's own would be, wherever the value goes or if it
+// goes nowhere. One written bare or declared with less is refused, naming
+// every bound to write.
 #[tokio::test(flavor = "current_thread")]
 async fn a_declared_result_a_typed_read_makes_must_be_decided() -> Result<()> {
     for src in [
         r#"{
-  let rd = 'a: Concrete |s: string| -> 'a json::read(s)$;
+  let rd = 'a: Concrete + JsonData + NoError |s: string| -> 'a json::read(s)$;
   let g = |s| { let v = rd(s); [v] };
   g("1")
 }"#,
-        r#"{ let rd = 'a: Concrete |s: string| -> 'a json::read(s)$; rd("1"); 0 }"#,
+        r#"{ let rd = 'a: Concrete + JsonData + NoError |s: string| -> 'a json::read(s)$; rd("1"); 0 }"#,
     ] {
         let msg = match eval_modes(src, crate::TEST_REGISTER).await? {
             Err(msg) => msg,
@@ -3260,12 +3261,12 @@ async fn a_declared_result_a_typed_read_makes_must_be_decided() -> Result<()> {
             Err(msg) => msg,
             Ok(v) => panic!("must be refused: {src} => {v:?}"),
         };
-        assert!(msg.contains("add Concrete to the bound of 'a"), "{src}: {msg}");
+        assert!(msg.contains("write 'a: Concrete + JsonData + NoError"), "{src}: {msg}");
     }
     for (src, expected) in [
         (
             r#"{
-  let rd = 'a: Concrete |s: string| -> 'a json::read(s)$;
+  let rd = 'a: Concrete + JsonData + NoError |s: string| -> 'a json::read(s)$;
   let g = |s| { let v = rd(s); [v] };
   let w: Array<i64> = g("1");
   w[0]$
@@ -3273,11 +3274,11 @@ async fn a_declared_result_a_typed_read_makes_must_be_decided() -> Result<()> {
             1,
         ),
         (
-            r#"{ let rd = 'a: Concrete |s: string| -> 'a str::parse(s)$; str::len(rd("12345")) }"#,
+            r#"{ let rd = 'a: Concrete + NoError |s: string| -> 'a str::parse(s)$; str::len(rd("12345")) }"#,
             5,
         ),
         (
-            r#"{ let rd = 'a: Concrete |s: string| -> 'a str::parse(s)$; let n: i64 = rd("7"); n }"#,
+            r#"{ let rd = 'a: Concrete + NoError |s: string| -> 'a str::parse(s)$; let n: i64 = rd("7"); n }"#,
             7,
         ),
     ] {

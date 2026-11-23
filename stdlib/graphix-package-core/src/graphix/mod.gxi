@@ -137,7 +137,7 @@ trait Collection {
 };
 
 impl Collection for Array<'_>;
-impl<'k> Collection for Map<'k, '_>;
+impl<'k: Ordered> Collection for Map<'k, '_>;
 impl Collection for List<'_>;
 
 type Pos = {

@@ -5417,17 +5417,29 @@ impl Solving {
                     // gives it its type
                     false if matches!(t, Type::Bottom) && variables.len() == 1 => {
                         let w = variables.swap_remove(0);
-                        // an operation that reads the cell's type to know
-                        // what to make reads the declared variable's
+                        // what is asked of the cell is asked of the
+                        // variable: a definition's own declares each
+                        // predicate, and any other is read by an operation
+                        // that makes a value of its type
                         if w.is_rigid() {
+                            let above = v.cell_above();
+                            let asked = |c: &&Type| matches!(c, Type::Bound(_));
                             let reads = |c: &&Type| {
                                 matches!(
                                     c,
                                     Type::Bound(Bound::Concrete | Bound::Function)
                                 )
                             };
-                            for p in v.cell_above().iter().filter(reads) {
-                                self.constrain(env, &Type::TVar(w.clone()), p)?
+                            let needs: SmallVec<[Type; 2]> =
+                                above.iter().filter(asked).cloned().collect();
+                            match w.undeclared_needs(env, &needs)? {
+                                Some(lacks) => bail!("{lacks}"),
+                                None if w.declared_here() => (),
+                                None => {
+                                    for p in above.iter().filter(reads) {
+                                        self.constrain(env, &Type::TVar(w.clone()), p)?
+                                    }
+                                }
                             }
                         }
                         Type::TVar(w)

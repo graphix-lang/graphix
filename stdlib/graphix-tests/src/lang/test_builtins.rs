@@ -442,7 +442,7 @@ async fn forwarded_unread_quantifier_settles(mode: Mode) -> Result<()> {
         assert!(
             message.contains(
                 "the body needs 'b within Concrete, which the signature does not \
-                 declare: add Concrete to the bound of 'b"
+                 declare: write 'b: Concrete"
             ),
             "{undeclared}: {message}"
         );
