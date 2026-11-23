@@ -1,7 +1,7 @@
-//! A val's refusal tells what holds the cell by the typedef's expansion: a
-//! parameter that stands only in a function type a call returned is one
-//! instance, told to put a lambda there; one under a reference is data, told
-//! to give the holder a type.
+//! A val whose variable is given one type all its uses share, through a
+//! binding of a typedef's type, is refused: one holding a function a call
+//! returned, where a lambda in its place checks, and one holding the cell
+//! under a reference, where a type that holds every value checks.
 
 use anyhow::Result;
 use graphix_compiler::expr::Load;
@@ -41,9 +41,9 @@ async fn typedef_holding_a_call_result_names_a_lambda() -> Result<()> {
     refused(
         "type H<'b> = {h: fn(x: 'b) -> 'b};\nlet mk = || |x| x;\n\
          let s0: H<'b> = {h: mk()};\nlet f = |x| s0.h(x)\n",
-        "that of s0, a binding outside its let holding a function that is one \
-         instance, as a call's result is: declare the val at one type, or write a \
-         lambda over variables of its own in that function's place",
+        "the implementation writes it to a binding outside its let, which has one type \
+         all uses share: give that binding a type that holds every 'a, or declare the \
+         signature at one type",
     )
     .await?;
     accepted(
@@ -64,8 +64,9 @@ async fn typedef_holding_the_cell_in_data_names_its_type() -> Result<()> {
     };
     refused(
         &m("'b"),
-        "that of s0, a binding outside its let: declare the val at one type, or give \
-         s0 a type that holds every 'a",
+        "the implementation writes it to a binding outside its let, which has one type \
+         all uses share: give that binding a type that holds every 'a, or declare the \
+         signature at one type",
     )
     .await?;
     accepted(&m("Any")).await

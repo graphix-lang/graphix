@@ -1881,6 +1881,19 @@ impl Solving {
     /// A variable of a signature others read whose values the definition
     /// writes outside it: a caller reads the signature alone, and would
     /// not carry its own values there.
+    // CR claude for claude: [readability/medium] This refusal names no binding:
+    // "the implementation writes it to a binding outside its let ..: give that
+    // binding a type that holds every 'a". Before the check by bounds it named the
+    // one (`that of s0, a binding outside its let`) and told three cases apart: one
+    // holding the cell in data (give it a type), one something writes, and one
+    // holding it only in a function a call returned (one instance: write a lambda
+    // there). 27 pins in lang::interfaces (val_names_.., val_struct_..) and two in
+    // graphix-shell's typedef_holder_remedy hold the bare text now. Naming the last
+    // binding whose type reaches the receiving cell was tried and named the wrong
+    // one in 9 of them: the holder is among the bindings the implementation's
+    // lambdas capture, nearest first (main's `Holder::of`, node/module.rs). Carry
+    // the receiving cell out of here (the `cells` arms that call this know it) and
+    // search the captures in `check_val`. (val-holder-unnamed-01)
     fn sinks_sealed(&mut self) -> Result<()> {
         match self.sunk.take() {
             None => Ok(()),

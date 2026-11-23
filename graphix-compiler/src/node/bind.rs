@@ -696,6 +696,20 @@ impl<R: Rt> Bind<R> {
             // skill and the book. probe:
             // design/review-2026-11-16/repro/x-recursion-bottom-ended-recursion.gx
             // (x-recursion-02)
+            // CR claude for claude: [bug/medium] A `let rec` annotated on the let AND
+            // on its lambda is refused: `let rec m: fn(s: i64, x: 'a) -> i64 = |s: i64,
+            // x: 'a| select s { 0 => 0, n => m(n - 1, x) }; m(1, 1)` says "type mismatch
+            // _ does not contain i64" at the outer call, and with different names on
+            // the two ("'a" and "'b") "a declared type variable meets a value from
+            // outside the definition that declares it". Main accepts the first. Either
+            // annotation alone checks. The name stands for the annotation while the
+            // lambda is checked, so the body's own call sends the lambda's variable
+            // into the annotation's cell, which the lambda's close then fixes at
+            // bottom: the lambda's type does not reach it. Have the name stand for the
+            // lambda's own signature while it is checked, as an unannotated `let rec`
+            // does, and fit the annotation after, as a plain annotated `let` does. An
+            // impl's recursive method avoids this by taking no annotation on its let
+            // (`Impl::compile`). (bind-rec-annotated-twice-01)
             if *rec {
                 // the name is its definition's own signature while the
                 // definition is checked: its body, built then, calls that
