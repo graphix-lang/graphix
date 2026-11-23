@@ -278,6 +278,21 @@ no "cannot compare i64 with string" let f = |x, y| x == y; f(1, "s")
 no "must be Ordered here" let f = |x, y| x < y; let g = |q: i64| q; f(g, g)
 ```
 
+A typedef a signature applies writes its parameter's bound for the
+variable it is applied to, alone or as a member of a union: under `type
+W<'a: Number> = Array<'a>`, `|x: W<'b>|` is `'b: Number` with nothing
+more written. It gives that bound and no other (arithmetic over `'b`
+still needs `Singleton` written), and an annotation in the body that
+applies one to a signature's variable asks more of it.
+
+```graphix,cases
+ok type W<'a: Number> = Array<'a>; let f = |x: W<'b>| array::len(x); f([1])
+no "does not contain" type W<'a: Number> = Array<'a>; let f = |x: W<'b>| array::len(x); f(["s"])
+ok type T<'a: Discernible> = Array<'a>; let f = |x: T<[i64, 'b]>, y: 'b| array::len(x); f([1], 2)
+no "write 'b: Number + Singleton" type W<'a: Number> = Array<'a>; let f = |x: W<'b>, y: 'b| y + y; f([1], 2)
+no "write 'b: Number" type W<'a: Number> = Array<'a>; let f = |x: 'b| { let v: W<'b> = [x]; 0 }; f(1)
+```
+
 A wrapper that passes its variable for a callee's bounded one declares
 the callee's bound, or one that implies it, and a call of the wrapper is
 held to it.

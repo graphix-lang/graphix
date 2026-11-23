@@ -3732,6 +3732,61 @@ async fn a_declared_variable_is_exactly_its_written_bound() -> Result<()> {
     Ok(())
 }
 
+// A typedef a signature applies writes its parameter's bound for the
+// variable it is applied to, alone or as a member of a union: the
+// variable has that bound, a call is held to it, and a body annotation
+// that applies one to a signature's variable asks more of it.
+#[tokio::test(flavor = "current_thread")]
+async fn a_typedef_a_signature_applies_writes_its_bound() -> Result<()> {
+    for (src, expected) in [
+        (
+            "{ type W<'a: Number> = Array<'a>; let f = |x: W<'b>| array::len(x); f([1]) }",
+            Value::I64(1),
+        ),
+        (
+            "{ type W<'a: Number> = Array<'a>; let f = 'b: Any |x: W<'b>| array::len(x); \
+             f([1]) }",
+            Value::I64(1),
+        ),
+        (
+            "{ type T<'a: Discernible> = Array<'a>; let f = |x: T<[i64, 'b]>, y: 'b| \
+             array::len(x); f([1], 2) }",
+            Value::I64(1),
+        ),
+        (
+            "{ type T<'a: Number> = Array<'a>; let f = |x: T<[i64, 'b]>| array::len(x); \
+             f([1, 2.5]) }",
+            Value::I64(2),
+        ),
+    ] {
+        let v =
+            eval_modes(src, crate::TEST_REGISTER).await?.map_err(anyhow::Error::msg)?;
+        assert_eq!(v, expected, "{src}");
+    }
+    for (src, says) in [
+        (
+            "{ type W<'a: Number> = Array<'a>; let f = |x: W<'b>| array::len(x); f([\"s\"]) }",
+            "does not contain",
+        ),
+        (
+            "{ type W<'a: Number> = Array<'a>; let f = |x: 'b| { let v: W<'b> = [x]; 0 }; \
+             f(1) }",
+            "the body needs 'b within Number, which the signature does not declare",
+        ),
+        (
+            "{ type W<'a: Number> = Array<'a>; let f = |x: W<'b>, y: 'b| y + y; f([1], 2) }",
+            "the body needs 'b within Singleton, which the signature does not declare: \
+             write 'b: Number + Singleton",
+        ),
+    ] {
+        match eval_modes(src, crate::TEST_REGISTER).await? {
+            Err(msg) => assert!(msg.contains(says), "{src}: {msg}"),
+            Ok(v) => panic!("must be refused: {src} => {v:?}"),
+        }
+    }
+    Ok(())
+}
+
 // A body asks no more of a declared variable inside data than its bound
 // says: a predicate over a tuple, a struct or an array that holds it is
 // refused where it is written, naming the bound.

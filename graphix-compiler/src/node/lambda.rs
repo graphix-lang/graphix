@@ -2920,6 +2920,9 @@ impl<R: Rt> DefGate<R> {
         for tv in named.values() {
             Type::TVar(tv.clone()).seed_names_seen(&ctx.env, &mut seen);
         }
+        def.typ.for_each_type(&mut |t| {
+            let _ = bounds::bounded_by_names(&ctx.env, t);
+        });
         let rigid = named.values().map(|tv| tv.open_rigid()).collect();
         let quantified = def.typ.quantifiers.iter().filter_map(|q| named.get(q));
         let declaring = Declaring::enter(named.values().cloned());

@@ -2706,8 +2706,9 @@ fn instance_above(
 }
 
 /// Hold each open cell `t` passes to a typedef's bounded parameter to the
-/// bound, as an expansion of the name does.
-fn bounded_by_names(env: &Env, t: &Type) -> Result<()> {
+/// bound, as an expansion of the name does: a signature that applies a
+/// typedef writes the parameter's bound for the variable it applies it to.
+pub fn bounded_by_names(env: &Env, t: &Type) -> Result<()> {
     ensure_sufficient(|| {
         if let Type::Ref(tr) = t
             && let Some(def) = tr.resolve_peek(env)

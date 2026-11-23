@@ -4531,11 +4531,26 @@ run!(
         let y = f(2)
     "#; FuseExpect::Jit);
 
-// A predicate bound on a typedef parameter reaches the variables of a
-// union argument on the interface's side as on the implementation's: each
-// declares it.
+// A typedef a signature applies writes its parameter's bound for the
+// variables it is applied to, a member of a union argument included, on
+// the interface's side as on the implementation's.
 run!(
     interface_typedef_bound_reaches_open_members,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(2))),
+    "/test.gx" => r#"
+        mod m;
+        let result = m::f([1, 2])
+    "#,
+    "/test/m.gxi" => r#"
+        type T<'a: Discernible> = Array<'a>;
+        val f: fn(x: T<[i64, 'b]>) -> i64
+    "#,
+    "/test/m.gx" => r#"
+        let f = |x: T<[i64, 'b]>| -> i64 array::len(x)
+    "#; FuseExpect::Jit);
+
+run!(
+    interface_typedef_bound_is_the_bound_written_out,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(2))),
     "/test.gx" => r#"
         mod m;
@@ -4546,38 +4561,8 @@ run!(
         val f: fn<'b: Discernible>(x: T<[i64, 'b]>) -> i64
     "#,
     "/test/m.gx" => r#"
-        let f = 'b: Discernible |x: T<[i64, 'b]>| -> i64 array::len(x)
-    "#; FuseExpect::Jit);
-
-run!(
-    interface_typedef_bound_undeclared_in_the_implementation_refused,
-    refused("the body needs 'b within Discernible, which the signature does not declare: add Discernible to the bound of 'b"),
-    "/test.gx" => r#"
-        mod m;
-        let result = m::f([1, 2])
-    "#,
-    "/test/m.gxi" => r#"
-        type T<'a: Discernible> = Array<'a>;
-        val f: fn<'b: Discernible>(x: T<[i64, 'b]>) -> i64
-    "#,
-    "/test/m.gx" => r#"
         let f = |x: T<[i64, 'b]>| -> i64 array::len(x)
-    "#; FuseExpect::None);
-
-run!(
-    interface_typedef_bound_undeclared_in_the_interface_refused,
-    refused("the implementation requires 'b: Discernible, which the signature does not declare"),
-    "/test.gx" => r#"
-        mod m;
-        let result = m::f([1, 2])
-    "#,
-    "/test/m.gxi" => r#"
-        type T<'a: Discernible> = Array<'a>;
-        val f: fn(x: T<[i64, 'b]>) -> i64
-    "#,
-    "/test/m.gx" => r#"
-        let f = 'b: Discernible |x: T<[i64, 'b]>| -> i64 array::len(x)
-    "#; FuseExpect::None);
+    "#; FuseExpect::Jit);
 
 // A dynamic module whose source goes bottom keeps its loaded body
 // running: a write to an interface val reaches the body that cycle.

@@ -1881,14 +1881,6 @@ pub enum Bound {
     TomlData,
 }
 
-impl Bound {
-    /// Whether the predicate holds of a union exactly where it holds of
-    /// each member.
-    fn of_each_member(self) -> bool {
-        matches!(self, Bound::NoError | Bound::Data)
-    }
-}
-
 /// Type depth is not bounded by source nesting (`let x1 = [x0]; let x2
 /// = [x1]; ..` builds a type as deep as the program is long), so every
 /// recursive walk, `Eq`, `Ord`, `Hash` and `Debug` included, runs under
@@ -3851,11 +3843,12 @@ impl Type {
         })
     }
 
-    /// The open members of the union `t` a predicate of each member
-    /// reaches as it reaches an open cell, where this is such a predicate.
+    /// The open members of the union `t` this reaches as it reaches an
+    /// open cell, where this is a predicate: a union meets one only where
+    /// each member does.
     fn open_members(&self, env: &Env, t: &Type) -> SmallVec<[TVar; 2]> {
         match (self, t.deref_cloned()) {
-            (Type::Bound(p), Some(Type::Set(ref ms))) if p.of_each_member() => {
+            (Type::Bound(_), Some(Type::Set(ref ms))) => {
                 ms.iter().filter_map(|m| m.open_cell(env)).collect()
             }
             _ => SmallVec::new(),

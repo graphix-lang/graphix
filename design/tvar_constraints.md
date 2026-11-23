@@ -59,8 +59,12 @@ Number + Singleton, which the signature does not declare: write 'a: Number +
 Singleton" (`TVar::undeclared_bound`, `undeclared_needs`). Where one type is asked, a
 declared variable beside another type is refused in the definition, since a call picks
 the variable (`Solving::one_at_every_call`). A predicate over data that holds declared
-variables is judged by their bounds (`Solving::hold_declared`). Inference is for what
-is left unwritten: an untyped parameter's bound is what its body needs.
+variables is judged by their bounds (`Solving::hold_declared`), and a cell demanded as
+one declared variable hands it every predicate asked of the cell (`Solving::fixed`). A
+typedef the signature applies writes its parameter's bound for the variable it is
+applied to, alone or as a member of a union (`bounds::bounded_by_names`, before the
+body is checked and in `bounds::fits`). Inference is for what is left unwritten: an
+untyped parameter's bound is what its body needs.
 
 **Unions.** A value two members of a union could take is held until something decides
 (`below_union`, `held`); a member that can never take it is out at once. At the check's
