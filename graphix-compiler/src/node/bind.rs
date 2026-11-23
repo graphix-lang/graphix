@@ -710,6 +710,8 @@ impl<R: Rt> Bind<R> {
             // does, and fit the annotation after, as a plain annotated `let` does. An
             // impl's recursive method avoids this by taking no annotation on its let
             // (`Impl::compile`). (bind-rec-annotated-twice-01)
+            // 2026-11-23 claude: Eric (11-23, D53 item 4): the refusal seems harmless,
+            // but strange. No ruling that it stay; still open.
             if *rec {
                 // the name is its definition's own signature while the
                 // definition is checked: its body, built then, calls that

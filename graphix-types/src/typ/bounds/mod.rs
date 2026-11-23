@@ -1905,6 +1905,8 @@ impl Solving {
     // lambdas capture, nearest first (main's `Holder::of`, node/module.rs). Carry
     // the receiving cell out of here (the `cells` arms that call this know it) and
     // search the captures in `check_val`. (val-holder-unnamed-01)
+    // 2026-11-23 claude: Eric ruled (11-23, D53 item 3): leave naming the binding
+    // for after the soak.
     fn sinks_sealed(&mut self) -> Result<()> {
         match self.sunk.take() {
             None => Ok(()),
