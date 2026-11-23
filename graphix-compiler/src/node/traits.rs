@@ -1069,11 +1069,14 @@ impl<R: Rt> Impl<R> {
                 bailat!(m, "method {name} is implemented twice");
             }
             let sig = method_sig_at(&decl.typ, &target);
-            // a recursive method's name is its lambda's own signature while
-            // the lambda is checked, which the declaration fills
-            let declared = match b.rec {
-                true => None,
-                false => signature_of(&b.value, &sig),
+            // a lambda takes the declaration on its parameters and its
+            // result, and its binding is its own scheme, which the impl's
+            // check holds to the declaration with the declaration's
+            // variables as constants; any other value takes it as its
+            // let's annotation
+            let declared = match &b.value.unparen().kind {
+                ExprKind::Lambda(_) => None,
+                _ => signature_of(&b.value, &sig),
             };
             let b = BindExpr {
                 rec: b.rec,

@@ -3136,7 +3136,7 @@ run!(trait_any_bound_does_not_imply_ordered, r#"{
     impl Cmp for W { let lt = 'a: Ordered |s: W, x: 'a, y: 'a| -> bool x < y };
     let a = 1;
     Cmp::lt(W(1), &a, &a)
-}"#, refused("the body needs 'a within Ordered, which the signature does not declare: add Ordered to the bound of 'a"); FuseExpect::None);
+}"#, refused("the implementation requires 'a: Ordered, which the signature does not declare"); FuseExpect::None);
 
 // A select over an open constructor application: a wildcard, a capture,
 // a null test beside it and a tuple pattern around it each match what
@@ -6519,6 +6519,30 @@ run!(
     "#
 );
 
+// A method's lambda that asks more of its own variable than the
+// declaration promises of what is passed there is refused: the impl is
+// held to the declaration with the declaration's variables as constants.
+run!(
+    method_lambda_bounding_a_declared_member_by_noerror_refused,
+    refused("the implementation requires ['a, `X] to be NoError, which the signature's bounds do not say"),
+    "/test.gx" => r#"
+        trait T { val m: fn(self, x: ['a, `X]) -> i64 };
+        impl T for i64 { let m = 'q: NoError |s, x: 'q| -> i64 0 };
+        let result = T::m(1, error(`E))
+    "#
+; FuseExpect::None);
+
+run!(
+    method_lambda_bounding_a_declared_member_by_one_number_refused,
+    refused("the implementation requires [null, 'a] to be OneNumber, which the signature's bounds do not say"),
+    "/test.gx" => r#"
+        trait T { val m: fn<'a: Number>(self, x: ['a, null]) -> i64 };
+        impl T for i64 { let m = 'q: [Number, null] + OneNumber |s, x: 'q| -> i64 0 };
+        let v: [i64, f64] = 1;
+        let result = T::m(1, v)
+    "#
+; FuseExpect::None);
+
 run!(
     method_rec_variable_beside_a_written_member_ahead_of_its_decider,
     prints("[i64:0, i64:0]"),
@@ -6844,7 +6868,7 @@ run!(
 
 run!(
     method_variable_in_two_bounds_calling_its_function_argument_at_another_type_refused,
-    refused("type mismatch fn(x: string) -> i64 does not contain 'g: unbound within fn(x: 'e: unbound within [i64, string]) -> i64"),
+    refused("does not contain 'g: unbound within fn(x: 'e: unbound within [i64, string]) -> i64"),
     "/test.gx" => r#"
         trait T { val m: fn<'a: [i64, string], 'c: [i64, string], 'b: (i64, 'a), 'd: (i64, 'c), 'e: [i64, string], 'g: fn(x: 'e) -> i64>(self, x: 'b, y: 'd, z: 'g) -> i64 };
         impl T for i64 { let m = 'p: [i64, string], 'q: (Number, 'p), 'r: (Number, 'p) |s, x: 'q, y: 'r, z| -> i64 z("s") };
