@@ -61,7 +61,7 @@ use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, bail};
 use arcstr::ArcStr;
 pub use enumflags2::BitFlags;
-use expr::{Attr, Expr, Told};
+use expr::{Attr, Expr, ExprKind, Told};
 use futures::channel::mpsc;
 use log::{info, warn};
 use netidx_value::{Abstract, ValArray, Value, abstract_type::AbstractWrapper};
@@ -3646,6 +3646,19 @@ pub(crate) fn check_pending_imports<R: Rt>(ctx: &mut ExecCtx<'_, R>) -> Result<(
         }
     }
     Ok(())
+}
+
+/// The type a driver shows for the value of the top-level expression `n`,
+/// compiled under `scope`: a bare name shows its binding's, a generic one
+/// with its header, where the read itself is an instance nothing decided.
+pub fn shown_type<R: Rt>(env: &Env, scope: &Scope, n: &Node<R>) -> Type {
+    match &n.spec().kind {
+        ExprKind::Ref { name } => match env.lookup_bind(&scope.lexical, name) {
+            Ok(Some((_, b))) => b.typ.clone(),
+            _ => n.typ().clone(),
+        },
+        _ => n.typ().clone(),
+    }
 }
 
 /// [`compile`] for drivers that compile top-level statements one at a

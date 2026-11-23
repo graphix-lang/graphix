@@ -109,6 +109,27 @@ let hs = array::map([1], |r| h);
     hover_is(&mut c, "let |hs", "hs: Array<fn(x: Number) -> Number>");
 }
 
+/// An inferred function that calls its argument shows the result the
+/// argument gives: a cell that only produces is read once the parameters'
+/// own types stand in the signature.
+#[test]
+fn a_result_an_argument_gives_hovers_as_its_variable() {
+    const SRC: &str = "\
+let apply = |x, f| f(x);
+let comp = |f, g| |x| g(f(x));
+apply(1, |x| x + 1)
+";
+    let mut c = Client::start(&[("main.gx", SRC)]);
+    c.open("main.gx");
+    assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
+    hover_is(&mut c, "let |apply", "apply: fn(x: 'a, f: fn('a) -> 'b) -> 'b");
+    hover_is(
+        &mut c,
+        "let |comp",
+        "comp: fn(f: fn('a) -> 'b, g: fn('b) -> 'c) -> fn(x: 'a) -> 'c",
+    );
+}
+
 /// A type shown in a definition's text holds the definition's own
 /// variables, which no call there picks: a `let rec`'s read of itself there
 /// hovers and completes as one instance, as a message made in the body

@@ -19,6 +19,7 @@ use graphix_compiler::{
         lambda::LambdaDef,
         place::{self, VarUpdate},
     },
+    shown_type,
     typ::{FnType, Type, tvar::current_level},
 };
 use log::{debug, error, info, warn};
@@ -1162,7 +1163,7 @@ impl<X: GXExt> GX<X> {
             .zip(nodes.drain(..))
             .map(|(e, n)| {
                 let output = is_output_kind(&e.kind);
-                let typ = n.typ().clone();
+                let typ = shown_type(&self.ctx.env, &self.scope, &n);
                 self.ctx.rt.updated.insert(e.id, true);
                 self.nodes.insert(e.id, n);
                 CompExp { id: e.id, output, typ, rt: rt.clone() }

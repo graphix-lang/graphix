@@ -541,10 +541,9 @@ impl Reading {
         }
     }
 
-    /// The type each cell that only produces is, by what flows into it.
-    fn read_producers(&mut self, top: Option<usize>, subst: &mut AHashMap<usize, Type>) {
-        let producers: LPooled<Vec<usize>> = self
-            .standing
+    /// The cells that only produce and are not read yet.
+    fn producers(&self, subst: &AHashMap<usize, Type>) -> LPooled<Vec<usize>> {
+        self.standing
             .iter()
             .filter(|(a, (_, s))| {
                 !s.consumes
@@ -553,22 +552,29 @@ impl Reading {
                     && !self.read.contains(*a)
             })
             .map(|(a, _)| *a)
-            .collect();
-        for a in producers.iter() {
+            .collect()
+    }
+
+    /// The type each cell that only produces is, by what flows into it.
+    fn read_producers(&mut self, subst: &mut AHashMap<usize, Type>) {
+        for a in self.producers(subst).iter() {
             if let Some(r) = self.flows_in(*a) {
                 subst.insert(*a, r);
                 self.read.insert(*a);
             }
         }
-        if subst.is_empty() {
-            for a in producers.iter() {
-                let r = match top == Some(*a) {
-                    true => self.fits(*a).unwrap_or(Type::Bottom),
-                    false => Type::Bottom,
-                };
-                subst.insert(*a, r);
-                self.read.insert(*a);
-            }
+    }
+
+    /// A cell that only produces and that nothing flows into is nothing,
+    /// once no consumer's reading can bring a variable that does.
+    fn empty_producers(&mut self, top: Option<usize>, subst: &mut AHashMap<usize, Type>) {
+        for a in self.producers(subst).iter() {
+            let r = match top == Some(*a) {
+                true => self.fits(*a).unwrap_or(Type::Bottom),
+                false => Type::Bottom,
+            };
+            subst.insert(*a, r);
+            self.read.insert(*a);
         }
     }
 
@@ -633,9 +639,12 @@ impl Type {
             reading.stands(&cur);
             let mut subst: AHashMap<usize, Type> = AHashMap::default();
             reading.merge_singletons(&mut subst);
-            reading.read_producers(top, &mut subst);
+            reading.read_producers(&mut subst);
             if subst.is_empty() {
                 reading.read_consumers(&mut subst);
+            }
+            if subst.is_empty() {
+                reading.empty_producers(top, &mut subst);
             }
             if subst.is_empty() {
                 break;
