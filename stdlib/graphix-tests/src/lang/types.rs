@@ -16635,7 +16635,7 @@ run!(
   v <- "s";
   select r[0]$ { i64 as i => i, null as _ => 0 }
 }"#,
-    refused("type mismatch [i64, null] does not contain string");
+    refused("missing match cases: nothing matches string");
     FuseExpect::None
 );
 run!(

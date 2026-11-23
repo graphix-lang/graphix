@@ -24,7 +24,7 @@ use crate::{
     },
     prune::BoundaryRef,
     typ::{
-        ShallowScrutinee, TVar, Type,
+        ShallowScrutinee, TVar, Type, TypeMismatch,
         bounds::{self, Arm, Use, unsplit},
     },
     wrap,
@@ -1394,6 +1394,8 @@ impl<R: Rt> Select<R> {
             wrap!(n, self.typ.check_contains(&ctx.env, n.typ()))?;
             arms.push(Arm { pat: arm, guarded: pat.guard.is_some() })
         }
+        let at = self.arg.node.spec().pos;
+        let at = format_compact!("{}:{}", at.line, at.column);
         // with no arm that admits everything, the arms' tests bound a
         // scrutinee nothing has decided from above
         let scrut = self.arg.node.typ().clone();
@@ -1404,10 +1406,17 @@ impl<R: Rt> Select<R> {
             && let Some(ts) = admitted
         {
             let most = unsplit(&bounds::union_of(ts));
-            wrap!(self.arg.node, most.check_contains(&ctx.env, &scrut))?
+            // a value that has reached the scrutinee already and no arm
+            // admits is a missing case
+            let missing = |e: anyhow::Error| match e.downcast_ref::<TypeMismatch>() {
+                Some(m) => {
+                    anyhow!("missing match cases: nothing matches {} ({at})", m.actual())
+                }
+                None => e,
+            };
+            let bound = most.check_contains(&ctx.env, &scrut).map_err(missing);
+            wrap!(self.arg.node, bound)?
         }
-        let at = self.arg.node.spec().pos;
-        let at = format_compact!("{}:{}", at.line, at.column);
         // an arm is named by the type it tests for, an abstract one by its
         // name, or by its pattern
         let written: Arc<[ArcStr]> = match &self.spec.kind {

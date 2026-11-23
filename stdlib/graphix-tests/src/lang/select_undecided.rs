@@ -3440,7 +3440,7 @@ run!(written_tests_short_of_a_decided_member_name_the_missing_case, r#"{
         select u { i64 as n => n, string as s => str::len(s) }
     };
     g(1, "ab", 0)
-}"#, refused("type mismatch [i64, string] does not contain null"); FuseExpect::None);
+}"#, refused("missing match cases: nothing matches null"); FuseExpect::None);
 
 run!(written_tests_covering_a_decided_member_and_two_undecided, r#"{
     let g = |x, y, k: i64| {

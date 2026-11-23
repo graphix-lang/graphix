@@ -10996,7 +10996,7 @@ run!(
         };
         (g({a: 1, b: "x"}), g(5))
     }"#,
-    refused("type mismatch { a: i64, b: string } does not contain 'a");
+    refused("missing match cases: nothing matches 'a");
     FuseExpect::None
 );
 
@@ -11008,7 +11008,7 @@ run!(
         };
         (g({a: 1, b: "x"}), g({c: 1.0}))
     }"#,
-    refused("type mismatch { a: i64, b: string } does not contain 'a");
+    refused("missing match cases: nothing matches 'a");
     FuseExpect::None
 );
 
@@ -11020,7 +11020,7 @@ run!(
         };
         (g({a: 1, b: "x"}), g(5))
     }"#,
-    refused("type mismatch { a: i64, b: string } does not contain 'a");
+    refused("missing match cases: nothing matches 'a");
     FuseExpect::None
 );
 
@@ -11032,7 +11032,7 @@ run!(
         };
         (g((1, "x")), g(5))
     }"#,
-    refused("type mismatch (i64, string) does not contain 'a");
+    refused("missing match cases: nothing matches 'a");
     FuseExpect::None
 );
 
@@ -11044,7 +11044,7 @@ run!(
         };
         (g({a: 1, b: "x"}), g({a: 5, c: 1.0}))
     }"#,
-    refused("type mismatch { a: i64, b: string } does not contain 'a");
+    refused("missing match cases: nothing matches 'a");
     FuseExpect::None
 );
 
@@ -13999,7 +13999,7 @@ run!(
 run!(
     pool_over_a_referent_the_arms_decide_needs_the_cover_arm,
     "{ let f = |b: bool, c: bool| { let r = &mut (select c { true => (b, \"s\"), false => (`L, `Z) }); select *r { (true, _) => 1, (false, _) => 2 } }; f(true, true) }",
-    refused("type mismatch (bool, Any) does not contain (`L, `Z)");
+    refused("missing match cases: nothing matches (`L, `Z)");
     FuseExpect::None
 );
 

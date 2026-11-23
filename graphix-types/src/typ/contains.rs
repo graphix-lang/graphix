@@ -777,6 +777,11 @@ impl TypeMismatch {
             && super::setops::strictly_identical(&self.actual, actual)
     }
 
+    /// The type refused.
+    pub fn actual(&self) -> &Type {
+        &self.actual
+    }
+
     /// `expected` refusing `actual` with no note: a check by bounds refuses
     /// so, and wording a refusal decides nothing of either side.
     /// `e` with the note naming the binding an earlier input settled at ⊥
