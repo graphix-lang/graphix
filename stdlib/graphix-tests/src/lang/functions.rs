@@ -378,6 +378,47 @@ const UNANNOTATED_RECURSION: &str = r#"
 
 run!(unannotated_recursion, UNANNOTATED_RECURSION, is(Value::I64(5050)); FuseExpect::Jit);
 
+// A recursive definition's name is its own signature while it is checked,
+// whatever its `let` writes; the written type takes one instance after,
+// and is the name's type for every use outside.
+run!(
+    let_rec_annotated_on_the_let_and_on_its_lambda,
+    r#"{
+  let rec m: fn(s: i64, x: 'a) -> i64 = |s: i64, x: 'a| select s { 0 => 0, n => m(n - 1, x) };
+  (m(1, 1), m(2, "s"))
+}"#,
+    prints("[i64:0, i64:0]")
+);
+
+run!(
+    let_rec_annotated_on_the_let_and_on_its_lambda_under_other_names,
+    r#"{
+  let rec m: fn(s: i64, x: 'a) -> i64 = |s: i64, x: 'b| select s { 0 => 0, n => m(n - 1, x) };
+  m(1, 1)
+}"#,
+    is(Value::I64(0))
+);
+
+run!(
+    let_rec_annotation_narrower_than_its_lambda_holds_outside,
+    r#"{
+  let rec m: fn(s: i64, x: string) -> i64 = |s: i64, x: 'a| select s { 0 => 0, n => m(n - 1, x) };
+  m(1, 1)
+}"#,
+    refused("type mismatch string does not contain i64");
+    FuseExpect::None
+);
+
+run!(
+    let_rec_annotation_its_lambda_does_not_fit_refused,
+    r#"{
+  let rec m: fn(s: i64) -> string = |s: i64| -> i64 select s { 0 => 0, n => m(n - 1) };
+  m(1)
+}"#,
+    refused("type mismatch fn(s: i64) -> string does not contain fn(s: i64) -> i64");
+    FuseExpect::None
+);
+
 // A three-level call chain with no annotations. outer(5) = 20.
 const UNANNOTATED_THREE_LEVEL: &str = r#"
 {

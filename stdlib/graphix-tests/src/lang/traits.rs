@@ -6592,7 +6592,7 @@ run!(
 
 run!(
     method_rec_annotation_the_value_does_not_fit_is_refused,
-    refused("type mismatch string does not contain i64"),
+    refused("type mismatch fn(self: i64, x: string) -> i64 does not contain fn(s: i64, x: i64) -> i64"),
     "/test.gx" => r#"
         trait T { val m: fn(self, x: i64) -> i64 };
         impl T for i64 {
