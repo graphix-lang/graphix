@@ -308,8 +308,10 @@ map shows `x` a concrete primitive and a later statement computes with
 not under a parameter or an arm of its name): the let is annotated
 `&mut Any`. Rule: `&mut T ⊇ &mut U` only when
 `T = U`, so the annotation makes `x` an `Any`, which arithmetic refuses.
-Right site: the let, or a later statement that reads `x` or uses `r`
-(what takes `r` meets a `&mut Any`). Built (`ref-write`, `ref-widen`); the generator's `&mut`
+Right site: the let, a statement that uses `r` (what takes `r` meets a
+`&mut Any`), or one from `x`'s own let on that reads `x` or a binding
+built from it: `x` is an `Any` from where it is bound, so arithmetic on
+what an earlier statement took from it is refused too. Built (`ref-write`, `ref-widen`); the generator's `&mut`
 writes are the sites (`generate/funcs.rs`). (c) `&mut e` of a value (not
 a binding) in a definition's body, annotated at a type that does not hold
 `e`'s (`let r: &mut string = &mut [x]`). Rule: the value bounds the
@@ -342,9 +344,10 @@ decides it. The map holds the type by id, so the module is
 the one whose `mkb`/`unb` the body reaches, or with several the one
 whose `mkb` the let calls; a value with a leaf its uses typed is
 skipped, since a let annotation decides a parameter left open. Right
-site: the let, or the let of a binding its value reads (one decided
-after this let meets the annotation where its own value arrives). Built
-(`abstract-param`).
+site: the let, or the let of a binding its value reads and every
+statement that reads that binding (one decided after this let meets the
+annotation where its own value arrives, or where a later use asks
+another type of it). Built (`abstract-param`).
 
 **12. Function types with variables of their own.** Not generated: a
 function type with type variables of its own anywhere but a declared

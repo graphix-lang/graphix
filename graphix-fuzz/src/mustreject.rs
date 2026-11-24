@@ -492,7 +492,8 @@ fn same_form(
 /// shows `x` a concrete primitive and a later statement computes with
 /// `x`, the let is annotated `&mut Any`: a writable reference is
 /// invariant, so `x` is `Any`, which arithmetic refuses. Right site: the
-/// let, or a later statement that reads `x` or uses `r`.
+/// let, a statement that uses `r`, or one from `x`'s own let on that reads
+/// `x` or a binding built from it: `x` is an `Any` from where it is bound.
 fn references(root: &Expr, types: &TypeMap, cap: usize, out: &mut Vec<RejectProbe>) {
     let ExprKind::Block { exprs: stmts } = &root.kind else { return };
     let (mut writes, mut widens) = (0usize, 0usize);
@@ -564,7 +565,8 @@ fn references(root: &Expr, types: &TypeMap, cap: usize, out: &mut Vec<RejectProb
             let any = Type::ByRef(Mutability::Mut, Arc::new(Type::Any));
             let cand = rebind(Some(any), b.value.clone());
             // the reference is a `&mut Any` to whatever takes it, too
-            let mut sites = affected_stmts(stmts, si, &referent);
+            let bound = earlier_let(stmts, si, x).map_or(si, |(j, _)| j);
+            let mut sites = affected_stmts(stmts, bound, &referent);
             sites.extend(affected_stmts(stmts, si, &r.name));
             sites.sort_unstable();
             sites.dedup();
@@ -584,8 +586,9 @@ fn references(root: &Expr, types: &TypeMap, cap: usize, out: &mut Vec<RejectProb
 /// it is the one whose `mkb`/`unb` the body reaches, or with several,
 /// the one whose `mkb` the let calls. A value with a leaf its uses typed
 /// is skipped: the annotation would decide it. Right site: the let, or
-/// the let of a binding its value reads (one decided after this let meets
-/// the annotation where its own value arrives).
+/// the let of a binding its value reads and every statement that reads
+/// that binding (one decided after this let meets the annotation where
+/// its own value arrives, or where a later use asks another type of it).
 fn abstract_param(
     root: &Expr,
     pre: &[Expr],
@@ -633,8 +636,14 @@ fn abstract_param(
         };
         let mut sites = vec![si];
         b.value.fold((), &mut |(), n| {
-            sites.extend(earlier_let(stmts, si, n).map(|(j, _)| j))
+            if let Some((j, read)) = earlier_let(stmts, si, n)
+                && let StructurePattern::Bind(name) = &read.pattern
+            {
+                sites.extend(affected_stmts(stmts, j, &name.name))
+            }
         });
+        sites.sort_unstable();
+        sites.dedup();
         let mut stmts = stmts.to_vec();
         stmts[si] =
             ExprKind::Bind(Arc::new(BindExpr { typ: Some(widened), ..(**b).clone() }))
