@@ -4615,7 +4615,12 @@ impl Solving {
         // at the input's end, choices that wait on each other are made in
         // whatever order is left
         let mut ordered = true;
-        while progress || (last && ordered) {
+        // with nothing pending there is no use to place
+        let pending = |s: &Self| {
+            !(s.held.is_empty() && s.strips.is_empty() && s.chains.is_empty())
+                || s.selects.iter().any(|x| !x.waiting.is_empty())
+        };
+        while (progress || (last && ordered)) && pending(self) {
             if !progress {
                 ordered = false
             }
