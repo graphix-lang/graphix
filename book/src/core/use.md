@@ -137,9 +137,10 @@ that imports a parent's value must be declared below that value.
 An import is in force throughout its statement list, above the `use`
 as well as below it, as in Rust: `type Op = {mode: Mode}`, an annotation
 or a cast written above `use sys::fs::Mode` names the imported `Mode`,
-never an outer type of that name. One order remains for now: a name
+never an outer type of that name. A module is the exception: a name
 imported from a module declared further down is not read by a cast, a
-type test or a destructuring `let` until the `mod`.
+type test or a destructuring `let` until the `mod`, so put `mod`
+statements at the top.
 
 ## Shadowing and collisions
 

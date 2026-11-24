@@ -212,7 +212,10 @@ nothing.
   Eric 2026-11-24): a `use`, a `type`, a `mod` and a `trait` name what
   they declare above their statement as below it, a name is declared once
   in a list, and an inner scope may shadow an outer one. `let` stays
-  ordered. As built so far:
+  ordered, and so does a module: its `mod` stands above what needs its
+  names at once (Eric 2026-11-24: reading a module's interface ahead of
+  its body is not worth the compiler change, a `mod` goes at the top of
+  its file). As built:
   - **Imports.** `compile_block_children` installs every `use` of its list
     before any statement compiles (`module::install_uses`; one whose path
     goes through another's import is installed once that one is, and one
@@ -238,7 +241,7 @@ nothing.
     of the list defines is left to its own statement, below the `mod`. A
     type's body still names a type the list declares below it
     (`Unseen::Later`, which waits).
-  - **Still ordered, to go:** a name a `use` imports from a module declared
+  - **Modules stay ordered:** a name a `use` imports from a module declared
     below. `Unsettled` records the modules a list has still to compile
     (`Env::open_list`, `settle_statement`), and `Env::resolve_type_name`
     refuses with `ChangesLater` a name whose import finds nothing while its
@@ -247,8 +250,9 @@ nothing.
     for the module instead (a typedef's shape stays open until the
     definition that completes it); a statement that needs the type as it
     compiles (a type test, a cast, a `let` that takes it apart, an abstract
-    constructor) is refused. A trait is declared above the statements that
-    name it, since its default bodies are values.
+    constructor) is refused, naming the `mod` to move up. A trait is
+    declared above the statements that name it, since its default bodies
+    are values.
   Pins: `lang::types::typedef_above_the_use_*`, `typedef_above_a_glob*`,
   `type_test_above_the_use`, `cast_above_the_use`,
   `destructuring_let_above_*`, `trait_parameter_above_*`,

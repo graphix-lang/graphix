@@ -31,9 +31,9 @@ type of the name. A name is declared once in a list: a second `use` of
 it, and a `use` of a name the list declares as a type, are refused; a
 `.gx` reads what its `.gxi` imports. A `let` still rebinds from where it
 stands, an imported name included, and an inner block may shadow what an
-outer one declares or imports. One order remains: a name a `use` imports
+outer one declares or imports. A `mod` is ordered: a name a `use` imports
 from a module declared further down is not read by a cast, a type test
-or a destructuring `let` until the `mod`.
+or a destructuring `let` until the `mod`. Put `mod` statements first.
 
 ```graphix,cases
 ok let m = cast<Mode>(`Read); use sys::fs::Mode; m
