@@ -70,6 +70,14 @@ fn bound_cell_changes() {
     GROUND_EPOCH.fetch_add(1, atomic::Ordering::SeqCst);
 }
 
+/// Advanced by every write of a binding: which cells are open, and what
+/// the others are bound to, holds while the epoch it was read in stands.
+static BIND_EPOCH: AtomicU64 = AtomicU64::new(1);
+
+pub(crate) fn bind_epoch() -> u64 {
+    BIND_EPOCH.load(atomic::Ordering::SeqCst)
+}
+
 // CR claude for claude: [structure/low] This file interleaves five mechanisms that
 // share only `TCell`'s fields: the ground proofs and the `ReachOrder`, `CycleWalk` and
 // `BarePath` walks, the task records (`OwnWrites`, `decided_of`), `Level`, the
@@ -1849,6 +1857,7 @@ impl TCell {
 
     /// Bind the cell, or clear its binding with `None`.
     pub(crate) fn set_binding(&mut self, binding: Option<Type>) {
+        BIND_EPOCH.fetch_add(1, atomic::Ordering::SeqCst);
         self.binding = binding;
         self.of_binding = None
     }

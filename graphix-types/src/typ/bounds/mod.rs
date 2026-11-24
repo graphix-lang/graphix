@@ -10,13 +10,13 @@ use crate::{
     expr::{At, Expr, ModPath, Origin, Told},
     stack::ensure_sufficient,
     typ::{
-        AbstractId, Bound, DefaultType, FnArgKind, FnArgType, FnType, Mutability, Open,
-        TVar, Type,
+        AbstractId, Bound, DefaultType, FnArgKind, FnArgType, FnType, Mutability,
+        NodeKey, Open, TVar, Type,
         cast::numbers_ordered,
-        node_addr,
+        cell_hash, node_addr, node_hash,
         setops::{strictly_identical, union_identical},
         toml_root_refusal,
-        tvar::{AtLevel, Level, ShortName, TaskId},
+        tvar::{AtLevel, Level, ShortName, TaskId, bind_epoch},
         variance,
     },
 };
@@ -548,23 +548,100 @@ struct Unfold {
     a: Type,
     b: Type,
     defs: (Option<usize>, Option<usize>),
+    /// The print of each side, of a pair met among more than a few.
+    prints: Option<(Print, Print)>,
 }
 
 impl Unfold {
-    fn new(env: &Env, a: &Type, b: &Type) -> Self {
+    fn new(env: &Env, a: &Type, b: &Type, prints: Option<(Print, Print)>) -> Self {
         let def = |t: &Type| match &shallow(t) {
             Type::Ref(r) => r.resolve_peek(env).map(|d| d.def_key()),
             _ => None,
         };
-        Unfold { a: a.clone(), b: b.clone(), defs: (def(a), def(b)) }
+        Unfold { a: a.clone(), b: b.clone(), defs: (def(a), def(b)), prints }
     }
 
     fn is(&self, other: &Unfold) -> bool {
         let apart = |x: Option<usize>, y: Option<usize>| matches!((x, y), (Some(x), Some(y)) if x != y);
+        let (mine, theirs) = (self.prints.unzip(), other.prints.unzip());
         !apart(self.defs.0, other.defs.0)
             && !apart(self.defs.1, other.defs.1)
-            && strictly_identical(&self.a, &other.a)
-            && strictly_identical(&self.b, &other.b)
+            && identical(mine.0, &self.a, theirs.0, &other.a)
+            && identical(mine.1, &self.b, theirs.1, &other.b)
+    }
+}
+
+/// A hash of a type's structure that two strictly identical types share
+/// ([`strictly_identical`]: a bound cell is its binding, an open cell its
+/// cell) while no binding changes ([`bind_epoch`]).
+#[derive(Clone, Copy)]
+struct Print {
+    hash: u64,
+    epoch: u64,
+}
+
+/// [`strictly_identical`] of `a` and `b`, whose prints are `pa` and `pb`:
+/// two types of two prints of the epoch that stands are two types, told
+/// apart without the walk that finds where they differ.
+fn identical(pa: Option<Print>, a: &Type, pb: Option<Print>, b: &Type) -> bool {
+    let apart = pa.zip(pb).is_some_and(|(x, y)| {
+        x.hash != y.hash && x.epoch == y.epoch && x.epoch == bind_epoch()
+    });
+    debug_assert!(!apart || !strictly_identical(a, b), "two prints of {a} and {b}");
+    !apart && strictly_identical(a, b)
+}
+
+/// The prints of the shared nodes the solver has compared in `epoch`, each
+/// node held so its address stays its own.
+#[derive(Default)]
+struct Prints {
+    kept: AHashMap<NodeKey, (u64, Type)>,
+    epoch: u64,
+}
+
+impl Prints {
+    /// How many types a search compares by a walk of each before it takes
+    /// their prints.
+    const FEW: usize = 8;
+
+    /// The print of `t`; `None` where a binding changed under it.
+    fn of(&mut self, t: &Type) -> Option<Print> {
+        let epoch = bind_epoch();
+        if std::mem::replace(&mut self.epoch, epoch) != epoch {
+            self.kept.clear()
+        }
+        let hash = self.read(t);
+        (bind_epoch() == epoch).then_some(Print { hash, epoch })
+    }
+
+    /// The hash of `t` as `self.epoch` has it.
+    fn read(&mut self, t: &Type) -> u64 {
+        if let Type::TVar(v) = t {
+            return match v.binding() {
+                Some(b) => ensure_sufficient(|| self.read(&b)),
+                None => cell_hash(v),
+            };
+        }
+        let key = t.node_key();
+        if let Some((hash, _)) = key.and_then(|k| self.kept.get(&k)) {
+            return *hash;
+        }
+        let hash = ensure_sufficient(|| {
+            node_hash(t, false, false, &mut |part, _| self.read(part))
+        });
+        if let Some(k) = key {
+            self.kept.insert(k, (hash, t.clone()));
+        }
+        hash
+    }
+
+    /// Whether `t` is strictly identical to one of `ts`.
+    fn among(&mut self, ts: &[Type], t: &Type) -> bool {
+        if ts.len() <= Self::FEW {
+            return ts.iter().any(|b| strictly_identical(b, t));
+        }
+        let print = self.of(t);
+        ts.iter().any(|b| identical(print, t, self.of(b), b))
     }
 }
 
@@ -621,6 +698,7 @@ static UNNAMED: ArcStr = arcstr::literal!("_");
 /// The relation's own state for one check.
 #[derive(Default)]
 pub struct Solving {
+    prints: Prints,
     /// The pairs holding a typedef's name that are being related: a pair
     /// met again inside itself holds.
     unfolding: Vec<Unfold>,
@@ -1110,7 +1188,7 @@ impl Solving {
             let c = cell.read();
             if lower { c.lower.clone() } else { c.above.all().into() }
         };
-        if had.iter().any(|b| strictly_identical(b, t)) {
+        if self.prints.among(&had, t) {
             return None;
         }
         match lower {
@@ -1162,6 +1240,7 @@ impl Solving {
     /// this one keeps them too.
     fn absorb(&mut self, task: Solving) {
         let Solving {
+            prints: _,
             unfolding: _,
             unfolded: _,
             added: _,
@@ -2132,7 +2211,10 @@ impl Solving {
                 return Ok(());
             }
         }
-        let pair = Unfold::new(env, a, b);
+        let prints = (self.unfolding.len() + self.unfolded.len() > Prints::FEW)
+            .then(|| self.prints.of(a).zip(self.prints.of(b)))
+            .flatten();
+        let pair = Unfold::new(env, a, b, prints);
         if self.unfolding.iter().chain(self.unfolded.iter()).any(|u| u.is(&pair)) {
             return Ok(());
         }

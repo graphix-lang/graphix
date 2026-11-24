@@ -629,53 +629,74 @@ fn shape_hash_node(
     #[cfg(test)]
     SHAPE_HASH_STEPS.with(|n| n.set(n.get() + 1));
     ensure_sufficient(|| {
-        let mut h = ahash::AHasher::default();
         let mut cell_free = true;
-        let mut part = |t: &Type, in_fn: bool, memo: &mut ShapeMemo| {
+        let mut part = |t: &Type, in_fn: bool| {
             let (h, free) = shape_hash_memo(t, in_fn, memo, fixed);
             cell_free &= free;
             h
         };
-        match t {
+        let h = match t {
             Type::TVar(tv) => match tv.binding() {
-                Some(b) => return (part(&b, in_fn, memo), false),
+                Some(b) => return (part(&b, in_fn), false),
                 None if in_fn => return (0, false),
-                None => {
-                    (0u8, tv.cell_addr()).hash(&mut h);
-                    return (h.finish(), false);
-                }
+                None => return (cell_hash(tv), false),
             },
-            Type::Set(ts) => {
-                let members =
-                    ts.iter().fold(0u64, |a, t| a.wrapping_add(part(t, in_fn, memo)));
-                (1u8, members).hash(&mut h)
-            }
-            Type::Fn(f) => {
-                (2u8, f.args.len(), f.vargs.is_some(), f.quantifiers.len()).hash(&mut h);
-                for a in f.args.iter() {
-                    part(&a.typ, true, memo).hash(&mut h)
-                }
-                if let Some(v) = &f.vargs {
-                    part(v, true, memo).hash(&mut h)
-                }
-                (part(&f.rtype, true, memo), part(&f.throws, true, memo)).hash(&mut h)
-            }
-            Type::Primitive(p) => (3u8, p.bits()).hash(&mut h),
-            Type::Ref(tr) => (4u8, &tr.scope, &tr.name).hash(&mut h),
-            Type::Variant(tag, _, _) => (5u8, tag).hash(&mut h),
-            Type::Struct(fs) => {
-                6u8.hash(&mut h);
-                fs.iter().for_each(|(n, _, _)| n.hash(&mut h))
-            }
-            Type::Abstract { id, .. } => (7u8, id).hash(&mut h),
-            Type::ByRef(m, _) => (8u8, m.tag()).hash(&mut h),
-            t => (9u8, mem::discriminant(t)).hash(&mut h),
-        }
-        if !matches!(t, Type::Set(_) | Type::Fn(_)) {
-            t.for_each_child(&mut |c| part(c, in_fn, memo).hash(&mut h));
-        }
-        (h.finish(), cell_free)
+            t => node_hash(t, in_fn, true, &mut part),
+        };
+        (h, cell_free)
     })
+}
+
+/// The hash of an open cell that a hash of structure reads by its cell.
+pub(super) fn cell_hash(tv: &TVar) -> u64 {
+    let mut h = ahash::AHasher::default();
+    (0u8, tv.cell_addr()).hash(&mut h);
+    h.finish()
+}
+
+/// The hash of the node `t`, no variable, from `part`'s hash of each of
+/// its parts (`part` is told whether the part is inside a function type):
+/// two nodes an identity of `setops` holds one, their parts hashed alike,
+/// hash alike. `named`: a named type hashes its written scope and name,
+/// which two names of one definition do not share.
+pub(super) fn node_hash(
+    t: &Type,
+    in_fn: bool,
+    named: bool,
+    part: &mut impl FnMut(&Type, bool) -> u64,
+) -> u64 {
+    let mut h = ahash::AHasher::default();
+    match t {
+        Type::Set(ts) => {
+            let members = ts.iter().fold(0u64, |a, t| a.wrapping_add(part(t, in_fn)));
+            (1u8, members).hash(&mut h)
+        }
+        Type::Fn(f) => {
+            (2u8, f.args.len(), f.vargs.is_some(), f.quantifiers.len()).hash(&mut h);
+            for a in f.args.iter() {
+                part(&a.typ, true).hash(&mut h)
+            }
+            if let Some(v) = &f.vargs {
+                part(v, true).hash(&mut h)
+            }
+            (part(&f.rtype, true), part(&f.throws, true)).hash(&mut h)
+        }
+        Type::Primitive(p) => (3u8, p.bits()).hash(&mut h),
+        Type::Ref(tr) if named => (4u8, &tr.scope, &tr.name).hash(&mut h),
+        Type::Ref(_) => 4u8.hash(&mut h),
+        Type::Variant(tag, _, _) => (5u8, tag).hash(&mut h),
+        Type::Struct(fs) => {
+            6u8.hash(&mut h);
+            fs.iter().for_each(|(n, _, _)| n.hash(&mut h))
+        }
+        Type::Abstract { id, .. } => (7u8, id).hash(&mut h),
+        Type::ByRef(m, _) => (8u8, m.tag()).hash(&mut h),
+        t => (9u8, mem::discriminant(t)).hash(&mut h),
+    }
+    if !matches!(t, Type::Set(_) | Type::Fn(_)) {
+        t.for_each_child(&mut |c| part(c, in_fn).hash(&mut h));
+    }
+    h.finish()
 }
 
 /// How [`Type::scope_refs`] copies the variables of a written type: each
