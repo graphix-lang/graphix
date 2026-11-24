@@ -6619,10 +6619,13 @@ mod tests {
             );
         }
         // family 1 leaves a declared variable beside an unannotated parameter
-        // or return, whose escape a written binding refuses first
+        // or return, whose escape a written binding refuses first, and one
+        // the first parameter shares, which its narrowed copy no longer is
         for declared in [
             "{ let f = 'a: Number |a: 'a, b| -> bool a == b; [f(3, 4), f(2.5, 1.5)] }",
             "{ let f = 'a: Number + Singleton |a: 'a, b: 'a| a + b; [f(3, 4), f(2.5, 1.5)] }",
+            "{ let f = 'a: Number + Singleton |a: 'a, b: 'a| -> 'a a - b; \
+             [f(3, 4), f(2.5, 1.5)] }",
         ] {
             let rep = typemorph_subject(declared, per, TM_CAP).await.unwrap();
             assert!(

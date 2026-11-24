@@ -90,7 +90,10 @@ first positional argument where the lambda's first parameter is left
 open. Not where any such use's is a decided type of many values: it may be
 the one the others fit. Not a lambda that declares a variable and leaves a parameter or its
 return unannotated: in a written binding that is a cell outside the
-definition, and meeting the variable is its escape, refused first.
+definition, and meeting the variable is its escape, refused first. Nor one
+whose first parameter's declared variable another parameter or the return
+holds: the copy narrowed to one type asks its body to take the two as one,
+which the definition refuses ("['a, T] must be one type").
 Mutation: route the lambda through a binding something writes, and write
 it the lambda with its first parameter annotated at the first use's type,
 `let f = { let tm__0 = |..| ..; let tm__1 = &mut tm__0; *tm__1 <- |x: T,
@@ -188,7 +191,12 @@ the scrutinee). Rule: the consumer's. Skip: any of the parent forms above
 that can absorb `U`. Built: the value directly under an arithmetic
 operator, a field read, or an argument whose parameter is declared a
 concrete primitive (the callee's declared type, read from its binding:
-one over a variable widens with its argument); right site the consumer.
+one over a variable widens with its argument); right site the consumer,
+and under an arithmetic operator whose other operand reads a binding
+something writes, every statement that names that binding: the operands are
+one type, so the literal's type reaches the binding's other readers, and a
+select over it refuses the value where the select stands
+(`mustreject.rs::written_readers`).
 A comparison is no consumer: one operand's type holding the other's
 suffices, and the widened operand holds the literal's. One hop is built
 (see Hops). A
@@ -292,7 +300,8 @@ Right site: the write, or a statement between that uses `r`. (b) The
 map shows `x` a concrete primitive and a later statement computes with
 `x`: the let is annotated `&mut Any`. Rule: `&mut T ⊇ &mut U` only when
 `T = U`, so the annotation makes `x` an `Any`, which arithmetic refuses.
-Right site: the let, or a later statement that reads `x`. Built (`ref-write`, `ref-widen`); the generator's `&mut`
+Right site: the let, or a later statement that reads `x` or uses `r`
+(what takes `r` meets a `&mut Any`). Built (`ref-write`, `ref-widen`); the generator's `&mut`
 writes are the sites (`generate/funcs.rs`). (c) `&mut e` of a value (not
 a binding) in a definition's body, annotated at a type that does not hold
 `e`'s (`let r: &mut string = &mut [x]`). Rule: the value bounds the
@@ -429,7 +438,8 @@ concrete top-level `let w = e` whose `w` a reached use puts under an
 arithmetic operator, a comparison opposite a literal, or a field read
 gets `e` widened;
 right site the `let` and every statement `w`'s new type meets (family
-6's closure). Open: longer chains, and hops for 5.
+6's closure), with the readers of a written binding those statements read
+(family 4's). Open: longer chains, and hops for 5.
 
 ## Verdicts
 

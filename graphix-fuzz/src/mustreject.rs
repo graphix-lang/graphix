@@ -79,10 +79,11 @@ impl Family {
                 "but the declared variable",
             ],
             Family::SharedVar | Family::AbstractParam => &["does not contain"],
-            Family::LabelUnknown => &["unknown labeled argument"],
+            // a call of a function value the check types says "no argument"
+            Family::LabelUnknown => &["unknown labeled argument", "no argument #"],
             Family::LabelMissing => &["missing required argument"],
             Family::LabelDefault => {
-                &["missing required argument", "does not contain fn("]
+                &["missing required argument", "does not contain fn(", "is required"]
             }
             Family::WidenConsumer | Family::WidenHop => &[
                 "does not contain",
@@ -90,6 +91,7 @@ impl Family {
                 "cannot hold",
                 "cannot compute",
                 "cannot compare",
+                "cannot order",
                 "expected struct not",
                 "has no field",
                 "the members' fields differ",
@@ -104,6 +106,7 @@ impl Family {
                 "cannot hold",
                 "cannot compute",
                 "cannot compare",
+                "cannot order",
                 "does not contain",
                 "will never match",
             ],
@@ -470,7 +473,7 @@ fn same_form(
 /// shows `x` a concrete primitive and a later statement computes with
 /// `x`, the let is annotated `&mut Any`: a writable reference is
 /// invariant, so `x` is `Any`, which arithmetic refuses. Right site: the
-/// let, or a later statement that reads `x`.
+/// let, or a later statement that reads `x` or uses `r`.
 fn references(root: &Expr, types: &TypeMap, cap: usize, out: &mut Vec<RejectProbe>) {
     let ExprKind::Block { exprs: stmts } = &root.kind else { return };
     let (mut writes, mut widens) = (0usize, 0usize);
@@ -536,7 +539,11 @@ fn references(root: &Expr, types: &TypeMap, cap: usize, out: &mut Vec<RejectProb
         if pinned && computes && !open_init(types, stmts, si, x) && widens < cap {
             let any = Type::ByRef(Mutability::Mut, Arc::new(Type::Any));
             let cand = rebind(Some(any), b.value.clone());
-            let sites = affected_stmts(stmts, si, &referent);
+            // the reference is a `&mut Any` to whatever takes it, too
+            let mut sites = affected_stmts(stmts, si, &referent);
+            sites.extend(affected_stmts(stmts, si, &r.name));
+            sites.sort_unstable();
+            sites.dedup();
             out.extend(finish(Family::RefWiden, si, &cand, |back, _| {
                 sites.iter().map(|k| nth_stmt(back, *k).and_then(span)).collect()
             }));
@@ -688,6 +695,13 @@ fn concrete(t: &Type) -> bool {
 /// part whose runtime form the map does not show.
 fn opaque(t: &Type) -> bool {
     holds(t, &|d| matches!(d, Type::Any | Type::Abstract { .. } | Type::Ref(_)))
+}
+
+/// Whether the written type `t` names the variable `name`.
+fn names(t: &Type, name: &str) -> bool {
+    let mut found = matches!(t, Type::TVar(tv) if &*tv.name == name);
+    t.for_each_child(&mut |c| found |= names(c, name));
+    found
 }
 
 /// Whether `t` or a part of it satisfies `p`; a function's parts are not
@@ -1415,6 +1429,10 @@ fn widen_consumer(
     out: &mut Vec<RejectProbe>,
 ) {
     let sizes = mutate::sizes(root);
+    let block: &[Expr] = match &root.kind {
+        ExprKind::Block { exprs } => exprs,
+        _ => &[],
+    };
     // A callee's parameter may be a cell shared with the environment
     // (`|y| z <- y` over `let z = never()`), which a call widens rather
     // than refuses. A call is a consumer only through a package's module
@@ -1458,12 +1476,16 @@ fn widen_consumer(
         let e = &pre[i];
         // the consumer's own type, where it is wider than the value's (a
         // parameter): the widening literal must lie outside it
+        let mut beside: Vec<usize> = Vec::new();
         let target: Option<(usize, &Expr, Option<Type>)> = match &e.kind {
             // a comparison is no consumer: the widened operand's type
             // holds the other's
-            ExprKind::BinOp { op, lhs, .. }
+            ExprKind::BinOp { op, lhs, rhs }
                 if arith_or_compare(*op) && !comparison(*op) =>
             {
+                // the operands are one type: the other's written binding
+                // meets the literal's too
+                beside = written_readers(block, rhs);
                 Some((i + 1, &**lhs, None))
             }
             ExprKind::StructRef { source, .. } => {
@@ -1501,8 +1523,9 @@ fn widen_consumer(
         let Some(u) = disjoint_literal(consumer.as_ref().unwrap_or(t)) else { continue };
         let cand = mutate::replace(root, at, &widen(value, u));
         // the consumer keeps its index: what changed comes after it
-        out.extend(finish(Family::WidenConsumer, i, &cand, |_, pre| {
-            vec![pre.get(i).and_then(span)]
+        out.extend(finish(Family::WidenConsumer, i, &cand, |back, pre| {
+            let beside = beside.iter().map(|k| nth_stmt(back, *k).and_then(span));
+            [pre.get(i).and_then(span)].into_iter().chain(beside).collect()
         }));
         taken += 1;
     }
@@ -1626,6 +1649,37 @@ fn affected_stmts(stmts: &[Expr], si: usize, v: &str) -> Vec<usize> {
     sites
 }
 
+/// The statements of `block` that name a binding something writes (a
+/// connect's target, a `&mut`'s referent) which `e` reads. Such a binding
+/// is one cell: a type that meets it in `e` reaches every statement that
+/// reads it, and the checker reports whichever refuses first.
+fn written_readers(block: &[Expr], e: &Expr) -> Vec<usize> {
+    let read = |n: &Expr| match &n.kind {
+        ExprKind::Ref { name } => Some(name.to_string()),
+        _ => None,
+    };
+    let mut written: Vec<String> = Vec::new();
+    for s in block {
+        s.fold((), &mut |(), n| match &n.kind {
+            ExprKind::Connect { name, .. } => written.push(name.to_string()),
+            ExprKind::ByRef(Mutability::Mut, x) => written.extend(read(x)),
+            _ => (),
+        })
+    }
+    let reads = e.fold(Vec::new(), &mut |mut names: Vec<String>, n| {
+        names.extend(read(n).filter(|x| written.contains(x)));
+        names
+    });
+    let names = |s: &Expr| {
+        s.fold(false, &mut |m, n| {
+            m || read(n).is_some_and(|x| reads.contains(&x))
+                || matches!(&n.kind, ExprKind::Connect { name, .. }
+                    if reads.contains(&name.to_string()))
+        })
+    };
+    (0..block.len()).filter(|k| names(&block[*k])).collect()
+}
+
 /// Family 4 through a `let` (the hop, its own id): an unannotated `let w = e` over a
 /// concrete type whose variable a reached use puts directly under an
 /// arithmetic operator or a field read gets `e` widened.
@@ -1679,7 +1733,12 @@ fn widen_through_let(
             continue;
         }
         let cand = mutate::replace(root, at + 1, &widen(&b.value, u));
-        let sites = affected_stmts(block, si, w);
+        let mut sites = affected_stmts(block, si, w);
+        let beside: Vec<usize> =
+            sites.iter().flat_map(|k| written_readers(block, &block[*k])).collect();
+        sites.extend(beside);
+        sites.sort_unstable();
+        sites.dedup();
         out.extend(finish(Family::WidenHop, at, &cand, |back, _| {
             sites.iter().map(|k| nth_stmt(back, *k).and_then(span)).collect()
         }));
@@ -1720,6 +1779,25 @@ fn mono_reuse(
         if !l.constraints.is_empty()
             && (l.rtype.is_none() || l.args.iter().any(|a| a.constraint.is_none()))
         {
+            continue;
+        }
+        // the first parameter narrowed to one type is its declared variable
+        // no more: a body that asks it to be one type with whatever else
+        // holds the variable is then refused, at the definition
+        let positional = |a: &&Arg| matches!(a.kind, ArgKind::Positional);
+        let first = l.args.iter().find(positional).and_then(|a| a.constraint.as_ref());
+        let shared = l.constraints.iter().any(|(tv, _)| {
+            let named = |t: &Type| names(t, &tv.name);
+            first.is_some_and(named)
+                && l.args
+                    .iter()
+                    .filter_map(|a| a.constraint.as_ref())
+                    .chain(&l.rtype)
+                    .filter(|t| named(t))
+                    .count()
+                    > 1
+        });
+        if shared {
             continue;
         }
         let (calls, values, _) = forwarded_uses(&stmts, si, f);
