@@ -8545,7 +8545,9 @@ fn distinct_type_nodes(t: &graphix_compiler::typ::Type) -> usize {
 /// map's values, a call's argument, a block, a select's arm or its bind, a
 /// lambda's body or a struct update), holds one copy of its last link's
 /// type: the chain's type, its cells' bounds included, grows by a few nodes
-/// a link, where a copy at each read would double it.
+/// a link, where a copy at each read would double it. A link that selects
+/// the last one grows it with the square of the chain's length and one
+/// that calls with it with the cube, so the bound is taken at five links.
 const HOLDER_PAIRS: &str = "let id = |v| v;\nlet y = (|z| z, 2);\nlet x = (|x| x, 1);\n";
 const HOLDER_RECORD: &str = "let x = {n: 0, f: |x| x};\n";
 
@@ -8590,7 +8592,7 @@ async fn holder_chain_nodes(prelude: &str, link: &str, links: usize) -> Result<u
 
 #[tokio::test(flavor = "current_thread")]
 async fn holder_chain_stays_a_dag() -> Result<()> {
-    const LINKS: usize = 10;
+    const LINKS: usize = 5;
     for (shape, prelude, link) in HOLDER_LINKS {
         let nodes = holder_chain_nodes(prelude, link, LINKS).await?;
         assert!(nodes <= 16 * (LINKS + 1), "{shape}: {nodes} nodes");

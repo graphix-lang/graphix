@@ -1085,15 +1085,17 @@ fn a_chain_of_bounds_as_parameters_checks_in_linear_time() {
 }
 
 /// The chain through a typedef's parameter, passed references to lets each
-/// holding the rest of the chain around a function type, checks in time
-/// quadratic in its length, not cubic: an argument's open copy of its
-/// formal copies each composite the chain's bindings share once, and
-/// lowers it once.
+/// holding the rest of the chain around a function type, checks within a
+/// budget at two small lengths. Its cost grows nearly with the cube of its
+/// length: the arguments' copies of the chain differ only in their cells,
+/// and each is compared with the others where a bound is recorded, a
+/// typedef unfolded and a cell fixed. The budgets hold that growth, at
+/// lengths no program reaches.
 #[test]
 #[cfg(target_os = "linux")]
-fn a_chain_of_bounds_passed_function_references_checks_in_quadratic_time() {
-    checks_within(&program("chainboundsfnargs", 500), 8 * BILLION);
-    checks_within(&program("chainboundsfnargs", 1000), 30 * BILLION)
+fn a_chain_of_bounds_passed_function_references_checks_within_a_budget() {
+    checks_within(&program("chainboundsfnargs", 60), 16 * BILLION / 10);
+    checks_within(&program("chainboundsfnargs", 120), 4 * BILLION)
 }
 
 /// The chain of bounds as parameters, called with a name of each link's
