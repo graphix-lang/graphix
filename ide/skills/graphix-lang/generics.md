@@ -145,10 +145,8 @@ wherever they stand or what is asked of the result, and goes to the
 member that holds it. A decided member takes no other type, so a
 variable in such a union does not widen at it: `f(true, 1, "s")` is
 refused, "goes to no member". A value two members could still take when
-the check ends is refused, "could go to more than one member of the
-union .., and nothing has decided which": write one variable in both
-members. In an impl, `self` is the impl's target, so `[self, 'a]` in
-`impl T for i64` is `[i64, 'a]`.
+the check ends goes to both. In an impl, `self` is the impl's target, so
+`[self, 'a]` in `impl T for i64` is `[i64, 'a]`.
 
 ```graphix,cases
 ok let f = |x: ['a, 'b], y: 'a, z: 'b| -> (Array<'a>, Array<'b>) ([y], [z]); f("t", 1, "s")
@@ -157,7 +155,7 @@ ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<'a, 'b>, y: 'a, z: 'b|
 ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |y: 'a, z: 'b, x: P<'a, 'b>| x; f(1, "s", [1])
 no "does not contain Array<bool>" type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<'a, 'b>, y: 'a, z: 'b| x; f([true], 1, "s")
 ok type P<'p, 'q> = [Array<'p>, Array<'q>]; let f = |x: P<'a, 'b>| -> (Array<'a>, Array<'b>) ([], []); let r: (Array<string>, Array<i64>) = f([1]); r
-no "nothing has decided which" type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64]; let mk = |z| {fld: |x: F2<'a, 'b>| x}; let s = mk(0); let r = s.fld(|q: string| 1); 0
+ok type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64]; let mk = |z| {fld: |x: F2<'a, 'b>| x}; let s = mk(0); let r = s.fld(|q: string| 1); 0
 ok type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64]; let mk = |z| {fld: |x: F2<'a, 'a>| x}; let s = mk(0); let r = s.fld(|q: string| 1); 0
 ok |x: ['a, null]| 1
 ok trait T { val m: fn(self, x: [self, 'a]) -> i64 }; impl T for i64 { let m = |s, x| 0 }; T::m(1, 2)

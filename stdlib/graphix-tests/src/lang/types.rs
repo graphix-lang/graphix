@@ -12095,7 +12095,9 @@ run!(
 // A function a call returned is one instance, its variables open cells
 // its calls decide: read through a field it keeps its signature's union
 // as well, so another argument decides the member, and an argument both
-// members could take is refused as at a call of the instance itself.
+// members could take goes to both, as at a call of the instance itself.
+// The literal that holds the function reads its type as that instance
+// (`Solving::stand_as`), never as the scheme beside a copy of itself.
 run!(
     field_read_of_an_instance_keeps_a_signature_union_of_functions_over_its_variables,
     r#"{
@@ -12109,7 +12111,7 @@ run!(
     FuseExpect::None
 );
 run!(
-    field_read_of_an_instance_leaves_a_signature_union_of_functions_to_its_call_refused,
+    field_read_of_an_instance_gives_an_argument_to_both_members_of_a_signature_union,
     r#"{
   type F2<'p, 'q> = [fn(q: 'p) -> i64, fn(q: 'q) -> i64];
   let mk = |z| {fld: |x: F2<'a, 'b>| x};
@@ -12117,7 +12119,7 @@ run!(
   let r = s.fld(|q: string| 1);
   0
 }"#,
-    refused("fn(q: 'b) -> i64 could go to more than one member of the union [fn(q: 'a) -> i64, fn(q: 'b) -> i64], and nothing has decided which");
+    is(Value::I64(0));
     FuseExpect::None
 );
 run!(

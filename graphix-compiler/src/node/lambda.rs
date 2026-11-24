@@ -2994,7 +2994,14 @@ impl<R: Rt> DefGate<R> {
                 if !named && closed.is_ok() {
                     let mut copies = AHashMap::default();
                     let one = solving(|s| {
-                        s.instantiate_into(&sig, self.depth - 1, self.outer, &mut copies)
+                        let one = s.instantiate_into(
+                            &sig,
+                            self.depth - 1,
+                            self.outer,
+                            &mut copies,
+                        );
+                        s.stand_as(&sig, &copies);
+                        one
                     });
                     stands = Some((one, copies))
                 }

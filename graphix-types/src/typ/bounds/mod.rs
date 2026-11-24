@@ -4167,6 +4167,21 @@ impl Solving {
         self.instantiate_into(t, above, at, &mut LPooled::take())
     }
 
+    /// The scheme `t` is used once, by the instance whose cells are
+    /// `copies` ([`Self::instantiate_into`]): each of its variables is that
+    /// instance's cell from here on. A type built around the definition
+    /// before its check (a literal holding a lambda) holds the scheme's
+    /// own variables, and reads them as the instance's.
+    pub fn stand_as(&mut self, t: &Type, copies: &AHashMap<usize, TVar>) {
+        for v in cells_in(t) {
+            if let Some(c) = copies.get(&v.cell_addr())
+                && !v.same_cell(c)
+            {
+                v.cell().write().set_binding(Some(Type::TVar(c.clone())))
+            }
+        }
+    }
+
     /// [`Self::instantiate`], with the instance's cells in `copies`, each
     /// under the address of the scheme's cell it is the copy of: what
     /// reads the definition's types at this instance maps them through it.
