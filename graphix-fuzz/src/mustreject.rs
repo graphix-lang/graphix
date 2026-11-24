@@ -78,7 +78,9 @@ impl Family {
                 "which the signature does not declare",
                 "but the declared variable",
             ],
-            Family::SharedVar | Family::AbstractParam => &["does not contain"],
+            // a variable a select tests takes what the select's arms do
+            Family::SharedVar => &["does not contain", "missing match cases"],
+            Family::AbstractParam => &["does not contain"],
             // a call of a function value the check types says "no argument"
             Family::LabelUnknown => &["unknown labeled argument", "no argument #"],
             Family::LabelMissing => &["missing required argument"],
@@ -290,6 +292,23 @@ pub fn in_module(ori: &Origin, module: &str) -> bool {
 /// module's second line.
 pub fn to_body(p: SourcePosition) -> SourcePosition {
     SourcePosition { line: p.line - 1, column: p.column }
+}
+
+/// Where each expression of the module `module` that the refusal `e`
+/// passed through starts, read off the frames as they print (an error's
+/// chain gives a frame's text, not the frame).
+pub fn passed(e: &anyhow::Error, module: &str) -> Vec<SourcePosition> {
+    let frame = |text: String| -> Option<SourcePosition> {
+        let (line, rest) = text.strip_prefix("at: line: ")?.split_once(", column: ")?;
+        let digits = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+        let (column, rest) = rest.split_at(digits);
+        let rest = rest.strip_prefix(" in module ")?;
+        let path = rest.split_once(',').map_or(rest, |(path, _)| path);
+        (netidx_core::path::Path::basename(path) == Some(module)).then_some(
+            SourcePosition { line: line.parse().ok()?, column: column.parse().ok()? },
+        )
+    };
+    e.chain().filter_map(|c| frame(c.to_string())).collect()
 }
 
 fn span(e: &Expr) -> Option<Span> {
@@ -529,12 +548,17 @@ fn references(root: &Expr, types: &TypeMap, cap: usize, out: &mut Vec<RejectProb
         let ExprKind::Ref { name: referent } = &x.kind else { continue };
         let referent = referent.to_string();
         let is_x = |e: &Expr| matches!(&e.kind, ExprKind::Ref { name } if name.to_string() == referent);
-        let computes = later.iter().any(|s| {
-            s.fold(false, &mut |m, n| {
-                m || matches!(&n.kind, ExprKind::BinOp { op, lhs, rhs }
+        // an arithmetic use the referent's own binding reaches
+        let mut computes = false;
+        for s in later {
+            typemorph::for_each_reached(s, &referent, true, &mut 0, &mut |_, n| {
+                computes |= matches!(&n.kind, ExprKind::BinOp { op, lhs, rhs }
                     if arith_or_compare(*op) && !comparison(*op) && (is_x(lhs) || is_x(rhs)))
-            })
-        });
+            });
+            if typemorph::binds_after(s, &referent) {
+                break;
+            }
+        }
         // a referent whose uses decide its type: the annotation would decide it
         if pinned && computes && !open_init(types, stmts, si, x) && widens < cap {
             let any = Type::ByRef(Mutability::Mut, Arc::new(Type::Any));
@@ -559,7 +583,9 @@ fn references(root: &Expr, types: &TypeMap, cap: usize, out: &mut Vec<RejectProb
 /// rep does with them. The map does not name the module:
 /// it is the one whose `mkb`/`unb` the body reaches, or with several,
 /// the one whose `mkb` the let calls. A value with a leaf its uses typed
-/// is skipped: the annotation would decide it. Right site: the let.
+/// is skipped: the annotation would decide it. Right site: the let, or
+/// the let of a binding its value reads (one decided after this let meets
+/// the annotation where its own value arrives).
 fn abstract_param(
     root: &Expr,
     pre: &[Expr],
@@ -605,13 +631,17 @@ fn abstract_param(
         let Ok(widened) = parser::parse_type(&format!("{module}::B<string>")) else {
             continue;
         };
+        let mut sites = vec![si];
+        b.value.fold((), &mut |(), n| {
+            sites.extend(earlier_let(stmts, si, n).map(|(j, _)| j))
+        });
         let mut stmts = stmts.to_vec();
         stmts[si] =
             ExprKind::Bind(Arc::new(BindExpr { typ: Some(widened), ..(**b).clone() }))
                 .to_expr(stmt.pos);
         let cand = ExprKind::Block { exprs: Arc::from_iter(stmts) }.to_expr_nopos();
         out.extend(finish(Family::AbstractParam, si, &cand, |back, _| {
-            vec![nth_stmt(back, si).and_then(span)]
+            sites.iter().map(|k| nth_stmt(back, *k).and_then(span)).collect()
         }));
         n += 1;
     }
@@ -1584,6 +1614,11 @@ fn retype(
                 .then_some((j, op))
         });
         let Some((j, op)) = pinned else { continue };
+        // a write widens `v` to hold the new initializer too, and a
+        // comparison takes the wider `v`
+        if comparison(op) && writes(&block[si + 1..], v) {
+            continue;
+        }
         // a writer right after the let
         if !comparison(op) {
             let write = ExprKind::Connect {
@@ -1612,8 +1647,25 @@ fn retype(
     }
 }
 
+/// Whether a statement of `stmts` writes `v`: a connect to it, or a `&mut`
+/// of it.
+fn writes(stmts: &[Expr], v: &str) -> bool {
+    let is_v =
+        |e: &Expr| matches!(&e.kind, ExprKind::Ref { name } if name.to_string() == v);
+    stmts.iter().any(|s| {
+        s.fold(false, &mut |m, n| {
+            m || match &n.kind {
+                ExprKind::Connect { name, deref: false, .. } => name.to_string() == v,
+                ExprKind::ByRef(Mutability::Mut, x) => is_v(x),
+                _ => false,
+            }
+        })
+    })
+}
+
 /// The statement `si` (a `let v = ..`) and every later one, up to a
-/// rebinding of `v`, that reads or writes `v`, a `let` built from it, or what
+/// statement that binds `v` itself (one that may, a module, hides nothing
+/// for sure), that reads or writes `v`, a `let` built from it, or what
 /// a connect relates to it (its target, and a cell it reads, which the connect
 /// decides): a change to `v`'s type meets all of them, and the checker reports
 /// whichever it reaches first.
@@ -1642,7 +1694,9 @@ fn affected_stmts(stmts: &[Expr], si: usize, v: &str) -> Vec<usize> {
                 _ => (),
             }
         }
-        if typemorph::binds_after(later, v) {
+        let mut rebinds = false;
+        typemorph::each_bound(later, &mut |b| rebinds |= b == Some(v));
+        if rebinds {
             break;
         }
     }
@@ -1905,6 +1959,13 @@ fn mono_reuse(
         // si, f)`, which follows the lets built from `f`. probe:
         // design/review-2026-11-16/repro/fuzz-mutate-mono-reuse-sites.sh
         // (fuzz-mutate-01)
+        // 2026-11-24 claude: Soak nov24b's twenty mono-reuse flips (MISPLACED 'a value
+        // here is used as v32 and as i64', one LEAK) were not these two ways: the let
+        // around the family's block generalized the written binding again (bind.rs
+        // look-ahead, fixed with pin
+        // lang::quantified::a_written_local_a_block_gives_is_one_instance). With that
+        // fixed all twenty replay clean under the sites as they stand; the two ways
+        // this CR names are not re-tested here.
         sites.extend(values.iter().map(|(_, j)| *j).filter(|j| *j <= jb));
         sites.sort_unstable();
         sites.dedup();

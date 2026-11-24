@@ -4073,10 +4073,14 @@ async fn must_reject(
                     Some(x) => Some((&x.ori, x.pos)),
                     None => e.downcast_ref::<ParserContext>().map(|p| (&p.ori, p.pos)),
                 };
+                // a refusal found while a right site is checked is the
+                // mutation's, wherever a cell it reaches places it
                 let right = site.is_some_and(|(ori, pos)| {
                     mustreject::in_module(ori, "test")
                         && p.right_site(mustreject::to_body(pos))
-                });
+                }) || mustreject::passed(&e, "test")
+                    .into_iter()
+                    .any(|pos| p.right_site(mustreject::to_body(pos)));
                 let head = tm_error_head(&format!("{e:?}"));
                 match right {
                     true if p.family.refuses_with(&head) => None,
@@ -6878,6 +6882,26 @@ mod tests {
                 "{ let g = |x: 'a, y: 'a, z: 'a| -> 'a x; let u: [i64, string] = 1; \
                  let r = g(1, 2, u); r }",
                 "shared-var#",
+            ),
+            // a variable a select tests is refused by the select
+            (
+                "{ let g = |c, a, b| { let s = select c { true => a, false => b }; \
+                 let t = select c { true => b, false => a }; s + t }; g(false, 1, 1) }",
+                "shared-var#",
+            ),
+            // the only arithmetic over the referent's name is a parameter's
+            (
+                "{ let x = 1; let r = &mut x; let f = |x: i64| -> i64 x + 1; *r <- 2; \
+                 println(\"[x]\"); f(3) }",
+                "ref-widen#",
+            ),
+            // a write widens the binding, and a comparison takes it wider
+            ("{ let step = 0; step <- step ~ 2; step == 3 }", "retype#"),
+            // a select over the operand's binding places the refusal the
+            // consumer's check finds
+            (
+                "{ let v = 3; let w = select v { n if n > 2 => n - n, _ => 0 }; (v - v) - w }",
+                "widen-consumer#",
             ),
         ] {
             let rep = typemorph_subject(prog, per, TM_CAP).await.unwrap();

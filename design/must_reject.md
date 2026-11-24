@@ -99,9 +99,10 @@ it the lambda with its first parameter annotated at the first use's type,
 `let f = { let tm__0 = |..| ..; let tm__1 = &mut tm__0; *tm__1 <- |x: T,
 ..| ..; tm__0 }`. Rule: a binding something writes is not generalized
 (the value restriction, `CompileCtx::monomorphic`), and `f`, a `let` of a
-block whose value names it, forwards that one instance
-(`bind::names_generic`; a single name something writes holds an instance
-of its own, `Bind::forwards`, pinned by
+block whose value names it, forwards that one instance (a block's own
+let that the block writes is no definition, `bind::binds_definition`,
+pinned by `lang::quantified::a_written_local_a_block_gives_is_one_instance`;
+a single name something writes holds an instance of its own, pinned by
 `lang::interfaces::written_alias_of_*`), so every use, a call's included,
 shares its cells. The instance's type is the union of what flows into it
 (R1 is dropped), so the two uses alone meet as the union and check; the
@@ -165,7 +166,9 @@ over `never()`, or a value holding one, `[n]`). Built: (b), the callee's
 declared type read from its binding (the map holds the call's instance,
 whose variables are decided), the second of two parameters of one
 variable where there are two, else the first bounded one, right site
-the call; (a) is family 4's argument case.
+the call; (a) is family 4's argument case. A variable a select of the
+body tests is within what the arms take: the refusal there is the
+select's ("missing match cases").
 
 **4. Widening into a rigid consumer.** Site: a use of a value `v: T`
 whose parent is one of:
@@ -234,7 +237,10 @@ unannotated `let` holds its initializer and every write to it, as one
 union; the pinned use then conflicts (arithmetic takes one numeric type,
 a comparison a type that holds the literal's or is held by it), or a
 select over what it reached misses the new type's case. A writer before
-a comparison is no mutant: the wider `v` holds the literal's type. A `let`
+a comparison is no mutant: the wider `v` holds the literal's type, and
+neither is a retyped initializer under a comparison where the program
+writes `v` (a connect, a `&mut`). The right sites end at a statement that
+binds `v` itself; one that only may (a module) hides nothing for sure. A `let`
 over ⊥ is skipped: its type is a cell the first use decides, so an
 inserted writer decides it (`ExprTypeSite::cell` marks it). So is a
 `let` over a call whose callee's declared type returns a cell that no
@@ -298,7 +304,9 @@ becomes `&`. Rule: a write needs every reference it may go through to be
 to a `&mut` parameter (`&mut T` does not contain `&T`, `contains.rs`).
 Right site: the write, or a statement between that uses `r`. (b) The
 map shows `x` a concrete primitive and a later statement computes with
-`x`: the let is annotated `&mut Any`. Rule: `&mut T ⊇ &mut U` only when
+`x`, in a use `x`'s own binding reaches (`typemorph::for_each_reached`:
+not under a parameter or an arm of its name): the let is annotated
+`&mut Any`. Rule: `&mut T ⊇ &mut U` only when
 `T = U`, so the annotation makes `x` an `Any`, which arithmetic refuses.
 Right site: the let, or a later statement that reads `x` or uses `r`
 (what takes `r` meets a `&mut Any`). Built (`ref-write`, `ref-widen`); the generator's `&mut`
@@ -334,7 +342,9 @@ decides it. The map holds the type by id, so the module is
 the one whose `mkb`/`unb` the body reaches, or with several the one
 whose `mkb` the let calls; a value with a leaf its uses typed is
 skipped, since a let annotation decides a parameter left open. Right
-site: the let. Built (`abstract-param`).
+site: the let, or the let of a binding its value reads (one decided
+after this let meets the annotation where its own value arrives). Built
+(`abstract-param`).
 
 **12. Function types with variables of their own.** Not generated: a
 function type with type variables of its own anywhere but a declared
@@ -448,7 +458,10 @@ warm runtime, `--check` semantics, a fresh process to confirm).
 
 - **Rejected at the right site, for the family's reason: pass.** The
   refusal's `ErrorSite` (the innermost expression an error is attached
-  to) lies inside the mutated node or the rigid consumer, and its head
+  to) lies inside the mutated node or the rigid consumer, or the refusal
+  passed through an expression there and a cell it reached placed it
+  elsewhere (a select over a binding the consumer reads: the frames an
+  error prints, `mustreject::passed`), and its head
   is one the family's rule produces (`Family::refuses_with`). The
   mutated node's span is found in the printed mutant by its preorder
   index, like every typemorph site.
