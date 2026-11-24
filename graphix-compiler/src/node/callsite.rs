@@ -3988,7 +3988,10 @@ impl<R: Rt> CallSite<R> {
                 args.iter().map(|(_, t)| t.clone()).collect();
             check(&ctx.env, &types).map_err(|e| e.at(&*self.spec))?
         }
-        let callee = self.fnode.typ().clone();
+        // a callee written in place (a lambda, a block that gives one) is
+        // its definition's scheme: the call is one use of it, as a call by
+        // name is, and takes what the definition left to its instances
+        let callee = bounds::instantiate(self.fnode.typ(), current_level());
         let handler = self.scope.dynamic.handler();
         // what the site uses its callee as: a function of the arguments
         // written. Where the callee's own type is not decided here it is

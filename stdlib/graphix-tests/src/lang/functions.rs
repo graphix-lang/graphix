@@ -409,6 +409,29 @@ run!(
     FuseExpect::None
 );
 
+// A call whose callee is written in place is one use of that
+// definition, as a call by name is: what the definition left to its
+// instances (a comparison over its parameter) is judged for the call.
+run!(
+    comparison_in_a_lambda_called_in_place_is_judged,
+    r#"(|n| n == 3)((1, 2))"#,
+    refused("cannot compare (i64, i64) with i64");
+    FuseExpect::None
+);
+
+run!(
+    comparison_in_a_lambda_called_in_place_inside_a_function_is_judged,
+    r#"{ let g = |a: i64, b: i64, c| (|n, _| n == 3)((a, b), c); g(10, 20, 5) }"#,
+    refused("cannot compare (i64, i64) with i64");
+    FuseExpect::None
+);
+
+run!(
+    lambda_called_in_place_compares_what_it_is_passed,
+    r#"((|n| n == 3)(3), (|n| n == 3)(4))"#,
+    prints("[true, false]")
+);
+
 run!(
     let_rec_annotation_its_lambda_does_not_fit_refused,
     r#"{
