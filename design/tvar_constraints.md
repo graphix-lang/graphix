@@ -126,6 +126,9 @@ no "must be known here" let f = |x: 'a, y: 'a| -> 'a y; f(str::parse("1"), 1)
 | one type is asked of a declared variable only where it declares `Singleton`, and never beside another type | `Solving::one_at_every_call` |
 | an instance's variable that nothing meets is bottom | `Known::copied` |
 | `Function` is judged by shape where the value arrives | `Solving::relate_in` |
+| a let a block writes is one value, which every instance of what the block defines shares | `node/bind.rs` (`binds_definition`, `outside_parts`) |
+| a function held as a function type is called as that type lists its arguments; a variadic one is called as one wherever its own type reaches the call | `Solving::fn_below`, `Use::Call` |
+| `?` and `$` take the errors off their operand, or with none the null, and it holds one of the two | `bounds::strip` |
 
 ```graphix,cases
 ok let f = |x| x; (f(1), f("s"))
@@ -146,6 +149,12 @@ ok 1 < 2.5
 no "add Discernible to the bound of 'a" let f = 'a: Any |x: 'a, y: 'a| x == y; f(1, 2)
 ok let f = |g: fn(x: 'a) -> i64, h: fn(x: 'a) -> i64| 0; f(|x: i64| 0, |x: null| 0)
 no "it has a defaulted label" queuefn(#trigger: never(), |#scale: i64 = 10, x: i64| -> i64 x * scale)(5)
+no "u64 does not contain string" let f = { let tm = |x| x; let r = &mut tm; *r <- |x: u64| x + u64:1; tm }; f("s")
+ok let f = { let acc = []; |x| { acc <- array::push(acc, x); acc } }; (f(1), f("s"))
+no "a variadic function where one of 1 arguments is wanted" let f: fn(x: i64) -> i64 = all; f(1)
+ok let s = {f: all}; s.f(2, 2)
+no "it has no error and no null" let x = 1; x$
+ok let x: Any = 1; x$
 ```
 
 ### Select

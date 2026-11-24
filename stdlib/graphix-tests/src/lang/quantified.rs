@@ -2033,3 +2033,22 @@ run!(
     prints("[i64:2, i64:1]");
     FuseExpect::Jit
 );
+
+// A let a block writes is one value every instance of what the block
+// defines shares: the block's own let over it is no definition.
+destructured_and_written! {
+    a_written_local_a_block_gives_is_one_instance =>
+        "{ let f = { let tm = |x| x; let r = &mut tm; *r <- |x: u64| x + u64:1; tm }; \
+           f(\"s\") }",
+        "u64 does not contain string",
+    a_written_local_a_block_s_function_calls_is_one_instance =>
+        "{ let f = { let tm = |x| x; let r = &mut tm; \
+           |y| { *r <- |x: u64| x + u64:1; tm(y) } }; f(\"s\") }",
+        "u64 does not contain string",
+}
+
+run!(
+    a_local_beside_a_written_one_is_generic,
+    r#"{ let f = { let h = |x| x; let c = 0; c <- 1; h }; (f(1), f("s")) }"#,
+    prints(r#"[i64:1, "s"]"#)
+);

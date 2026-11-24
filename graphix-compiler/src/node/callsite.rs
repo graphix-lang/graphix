@@ -4080,18 +4080,23 @@ impl<R: Rt> CallSite<R> {
                     }
                 }
             }
-            None if args.iter().all(|(label, _)| label.is_none()) => {
+            // a callee nothing has reached (a parameter) takes its type from
+            // the call, where a function type can say it
+            None if args.iter().all(|(label, _)| label.is_none())
+                && !bounds::reached(&callee) =>
+            {
                 let used = TArc::new(used(raised));
                 if self.ftype.is_none() {
                     self.ftype = Some(used.clone())
                 }
                 wrap!(self, Type::Fn(used).check_contains(&ctx.env, &callee))
             }
+            // every function that reaches the callee is called as written
             _ => {
                 if self.ftype.is_none() {
-                    self.ftype = Some(TArc::new(used(raised)))
+                    self.ftype = Some(TArc::new(used(raised.clone())))
                 }
-                let call = Use::Call { args, out: self.rtype.clone() };
+                let call = Use::Call { args, out: self.rtype.clone(), throws: raised };
                 wrap!(self, solving(|s| s.watch(&ctx.env, &callee, call)))
             }
         }

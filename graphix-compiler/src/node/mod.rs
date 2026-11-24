@@ -1489,6 +1489,13 @@ fn written_lets(
     mem::take(&mut w.written)
 }
 
+/// [`written_lets`] of a block whose statements are `exprs`, read before
+/// its compile.
+fn written_ahead(exprs: &[Expr]) -> LPooled<AHashSet<(ExprId, CompactString)>> {
+    let exprs: SmallVec<[&Expr; 32]> = exprs.iter().collect();
+    written_lets(&exprs, None, &mut ModuleWrites::default())
+}
+
 /// What each module statement walked writes outside it, by the
 /// statement's id: a function of the module's body alone, kept for the
 /// compile of the outermost block, so a module nested d blocks deep is

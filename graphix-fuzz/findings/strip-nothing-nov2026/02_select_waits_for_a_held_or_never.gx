@@ -1,0 +1,5 @@
+// A select over a value a `$` still owes its type: the select fixed the
+// map's value cell at bottom before the `$` gave it i64, and the program
+// was refused "_ does not contain i64" (soak nov24b, a block-wrap flip).
+// Expected trace (both engines): 7.
+{ let v = [{"a" => { let t = cast<i64>(u32:7); t }$}]; select v { [m] => m{"a"}$, _ => 0 } }

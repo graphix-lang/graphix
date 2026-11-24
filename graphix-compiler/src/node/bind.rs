@@ -31,7 +31,7 @@ use crate::{
     },
     wrap,
 };
-use ahash::AHashMap;
+use ahash::{AHashMap, AHashSet};
 use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
@@ -115,19 +115,39 @@ fn defines<R: Rt>(ctx: &CompileCtx<R>, scope: &Scope, e: &Expr) -> bool {
 /// others.
 type Local = (ArcStr, bool);
 
-/// The names `stmts`, a block's statements before its value, bind, after
-/// those `locals` holds.
+/// The lets a block writes ([`super::written_ahead`]).
+type Written = AHashSet<(ExprId, CompactString)>;
+
+/// Whether `stmt`, a statement of a block that writes the lets `written`,
+/// binds one name to a definition: a write makes its let one value, which
+/// every instance of what the block defines shares.
+fn binds_definition<R: Rt>(
+    ctx: &CompileCtx<R>,
+    scope: &Scope,
+    stmt: &Expr,
+    written: &Written,
+    locals: &mut SmallVec<[Local; 4]>,
+) -> bool {
+    let ExprKind::Bind(b) = &stmt.kind else { return false };
+    let unwritten = b
+        .pattern
+        .single_bind()
+        .is_some_and(|n| !written.contains(&(stmt.id, CompactString::from(n.as_str()))));
+    unwritten && b.typ.is_none() && defines_among(ctx, scope, &b.value, locals)
+}
+
+/// The names `stmts`, statements before the value of a block that writes
+/// the lets `written`, bind, after those `locals` holds.
 fn bind_locals<R: Rt>(
     ctx: &CompileCtx<R>,
     scope: &Scope,
     stmts: &[Expr],
+    written: &Written,
     locals: &mut SmallVec<[Local; 4]>,
 ) {
     for stmt in stmts {
         let ExprKind::Bind(b) = &stmt.kind else { continue };
-        let defined = b.pattern.single_bind().is_some()
-            && b.typ.is_none()
-            && defines_among(ctx, scope, &b.value, locals);
+        let defined = binds_definition(ctx, scope, stmt, written, locals);
         b.pattern.with_names(&mut |name| locals.push((name.clone(), defined)))
     }
 }
@@ -162,7 +182,7 @@ fn defines_among<R: Rt>(
         ExprKind::Block { exprs } => {
             let bound = locals.len();
             let Some((last, before)) = exprs.split_last() else { return false };
-            bind_locals(ctx, scope, before, locals);
+            bind_locals(ctx, scope, before, &super::written_ahead(exprs), locals);
             let defined = defines_among(ctx, scope, last, locals);
             locals.truncate(bound);
             defined
@@ -251,19 +271,12 @@ fn outside_among<R: Rt>(
         ExprKind::Block { exprs } => {
             let bound = locals.len();
             let Some((last, before)) = exprs.split_last() else { return };
+            let written = super::written_ahead(exprs);
             for stmt in before.iter() {
-                let defined = match &stmt.kind {
-                    ExprKind::Bind(b) => {
-                        b.pattern.single_bind().is_some()
-                            && b.typ.is_none()
-                            && defines_among(ctx, scope, &b.value, locals)
-                    }
-                    _ => false,
-                };
-                if !defined {
+                if !binds_definition(ctx, scope, stmt, &written, locals) {
                     out.push(stmt.id)
                 }
-                bind_locals(ctx, scope, std::slice::from_ref(stmt), locals)
+                bind_locals(ctx, scope, std::slice::from_ref(stmt), &written, locals)
             }
             outside_among(ctx, scope, last, locals, out);
             locals.truncate(bound)
@@ -337,11 +350,11 @@ fn literal_part_types<'a>(
 ) -> bool {
     use expr::StructurePattern as P;
     let e = e.unparen();
-    let t = t.with_deref(|t| t.cloned());
-    match (pat, &e.kind, &t) {
+    match (pat, &e.kind, &t.with_deref(|t| t.cloned())) {
         (P::Ignore, ..) => true,
-        (P::Bind(n), _, Some(t)) => {
-            out.push((&n.name, t.clone()));
+        // a part nothing has decided yet is its name's type as it stands
+        (P::Bind(n), _, decided) => {
+            out.push((&n.name, decided.clone().unwrap_or_else(|| t.clone())));
             true
         }
         (P::Tuple { binds, .. }, ExprKind::Tuple { args }, Some(Type::Tuple(ts))) => {

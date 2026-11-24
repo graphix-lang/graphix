@@ -3134,7 +3134,7 @@ run!(
 
 run!(
     val_names_a_written_lambda_it_calls,
-    refused_renumbered("val f is declared fn(x: 'a) -> 'a but implemented fn(x: '_0: unbound within '_0_1: unbound within '_1: unbound within '_2: unbound within '_3: unbound & '_4: unbound within '_5: unbound within '_3: unbound) -> '_3: unbound: where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
+    refused_renumbered("val f is declared fn(x: 'a) -> 'a but implemented fn(x: '_0: unbound within '_1: unbound within '_2: unbound & '_3: unbound within '_4: unbound) -> ['_2: unbound, '_4: unbound]: where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
     "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
     "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
     "/test/m.gx" => "let k = |x| x; k <- |x| x; let f = |x| k(x)"
@@ -3142,7 +3142,7 @@ run!(
 
 run!(
     val_names_a_written_lambda_it_hands_its_argument,
-    refused_renumbered("val f is declared fn(x: 'a) -> 'a but implemented fn(x: '_0: unbound within '_0_1: unbound within '_1: unbound within '_2: unbound within '_3: unbound & '_4: unbound within '_5: unbound within '_3: unbound & '_6: unbound) -> '_6: unbound: where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
+    refused_renumbered("val f is declared fn(x: 'a) -> 'a but implemented fn(x: '_0: unbound within '_1: unbound within '_2: unbound & '_3: unbound within '_4: unbound & '_5: unbound) -> '_5: unbound: where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
     "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
     "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
     "/test/m.gx" => "let k = |x| x; k <- |x| x; let f = |x| { k(x); x }"
@@ -3170,7 +3170,7 @@ run!(
 // calls in turn.
 run!(
     val_names_a_written_lambda_behind_a_generic_one,
-    refused_renumbered("val f is declared fn(x: 'a) -> 'a but implemented fn(x: '_0: unbound within '_1: unbound within '_1_1: unbound within '_2: unbound within '_3: unbound within '_4: unbound & '_5: unbound within '_6: unbound within '_4: unbound) -> '_4: unbound: where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
+    refused_renumbered("val f is declared fn(x: 'a) -> 'a but implemented fn(x: '_0: unbound within '_1: unbound within '_2: unbound within '_3: unbound & '_4: unbound within '_5: unbound) -> ['_3: unbound, '_5: unbound]: where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
     "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
     "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
     "/test/m.gx" => "let k = |x| x; k <- |x| x; let g = |x| k(x); let f = |x| g(x)"
@@ -3180,7 +3180,7 @@ run!(
 // annotation's to widen while every read of the binding shares its type.
 run!(
     val_names_a_written_lambda_not_what_it_captures,
-    refused_renumbered("val f is declared fn(x: 'a) -> 'a but implemented fn(x: '_0: unbound within '_0_1: unbound within '_1: unbound within '_2: unbound within '_3: unbound & '_4: unbound within '_5: unbound within '_3: unbound) -> '_3: unbound: where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
+    refused_renumbered("val f is declared fn(x: 'a) -> 'a but implemented fn(x: '_0: unbound within '_1: unbound within '_2: unbound & '_3: unbound within '_4: unbound) -> ['_2: unbound, '_4: unbound]: where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
     "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
     "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
     "/test/m.gx" => "let d: Any = never(); let k = |x| { d <- x; x }; k <- |x| x; let f = |x| k(x)"
@@ -3188,7 +3188,7 @@ run!(
 
 run!(
     val_names_a_written_lambda_over_an_open_capture,
-    refused_renumbered("val f is declared fn(x: 'a) -> 'a but implemented fn(x: '_0: unbound within '_0_1: unbound within '_1: unbound within '_2: unbound & '_3: unbound within '_4: unbound & '_5: unbound within '_6: unbound within '_4: unbound) -> '_4: unbound: where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
+    refused_renumbered("val f is declared fn(x: 'a) -> 'a but implemented fn(x: '_0: unbound within '_1: unbound within '_2: unbound & '_3: unbound & '_4: unbound within '_5: unbound) -> ['_3: unbound, '_5: unbound]: where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
     "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
     "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
     "/test/m.gx" => "let d = never(); let k = |x| { d <- x; x }; k <- |x| x; let f = |x| k(x)"
@@ -3217,7 +3217,7 @@ run!(
 // reader, named as written as a written lambda is.
 run!(
     val_names_a_lambda_a_reference_writes,
-    refused_renumbered("val f is declared fn(x: 'a) -> 'a but implemented fn(x: '_0: unbound within '_0_1: unbound within '_1: unbound within '_2: unbound within '_3: unbound & '_4: unbound within '_5: unbound within '_3: unbound) -> '_3: unbound: where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
+    refused_renumbered("val f is declared fn(x: 'a) -> 'a but implemented fn(x: '_0: unbound within '_1: unbound within '_2: unbound & '_3: unbound within '_4: unbound) -> ['_2: unbound, '_4: unbound]: where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
     "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
     "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
     "/test/m.gx" => "let k = |x| x; let r = &mut k; *r <- |x| x; let f = |x| k(x)"
@@ -3225,7 +3225,7 @@ run!(
 
 run!(
     val_names_a_written_read_of_a_function,
-    refused_renumbered("val f is declared fn(x: 'a) -> 'a but implemented fn(x: '_0: unbound within '_0_1: unbound within '_1: unbound within '_2: unbound within '_3: unbound & '_4: unbound within '_5: unbound within '_3: unbound) -> '_3: unbound: where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
+    refused_renumbered("val f is declared fn(x: 'a) -> 'a but implemented fn(x: '_0: unbound within '_1: unbound within '_2: unbound & '_3: unbound within '_4: unbound) -> ['_2: unbound, '_4: unbound]: where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
     "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
     "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
     "/test/m.gx" => "let s0 = {g: |x| x}; let j = s0.g; j <- |x| x; let f = |x| j(x)"
@@ -3242,7 +3242,7 @@ run!(
 
 run!(
     val_names_a_written_call_result,
-    refused_renumbered("val f is declared fn(x: 'a) -> 'a but implemented fn(x: '_0: unbound within '_0_1: unbound within '_1: unbound within '_2: unbound within '_3: unbound & '_4: unbound within '_5: unbound within '_3: unbound) -> '_3: unbound: where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
+    refused_renumbered("val f is declared fn(x: 'a) -> 'a but implemented fn(x: '_0: unbound within '_1: unbound within '_2: unbound & '_3: unbound within '_4: unbound) -> ['_2: unbound, '_4: unbound]: where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
     "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
     "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
     "/test/m.gx" => "let mk = || |x| x; let k = mk(); k <- |x| x; let f = |x| k(x)"
@@ -3375,7 +3375,7 @@ run!(
 
 run!(
     val_capturing_a_struct_holding_a_call_result_names_a_lambda,
-    refused_renumbered("val f is declared fn(x: 'a) -> 'a but implemented fn(x: '_0: unbound within '_0_1: unbound within '_1: unbound within '_2: unbound within '_3: unbound) -> '_3: unbound: where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
+    refused_renumbered("val f is declared fn(x: 'a) -> 'a but implemented fn(x: '_0: unbound within '_1: unbound within '_2: unbound) -> '_2: unbound: where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
     "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
     "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
     "/test/m.gx" => "let mk = || |x| x; let s0 = {g: |x| x, h: mk()}; let f = |x| s0.h(x)"
@@ -3391,7 +3391,7 @@ run!(
 
 run!(
     val_capturing_a_generic_read_of_a_call_result_names_a_lambda,
-    refused_renumbered("val f is declared fn(x: 'a) -> 'a but implemented fn(x: '_0: unbound within '_0_1: unbound within '_1: unbound within '_2: unbound within '_3: unbound) -> '_3: unbound: where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
+    refused_renumbered("val f is declared fn(x: 'a) -> 'a but implemented fn(x: '_0: unbound within '_1: unbound within '_2: unbound) -> '_2: unbound: where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
     "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
     "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
     "/test/m.gx" => "let mk = || |x| x; let s0 = {g: |x| x, h: mk()}; let j = s0.h; let f = |x| j(x)"
@@ -3407,7 +3407,7 @@ run!(
 
 run!(
     val_capturing_a_call_result_names_a_lambda,
-    refused_renumbered("val f is declared fn(x: 'a) -> 'a but implemented fn(x: '_0: unbound within '_0_1: unbound within '_1: unbound within '_2: unbound within '_3: unbound) -> '_3: unbound: where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
+    refused_renumbered("val f is declared fn(x: 'a) -> 'a but implemented fn(x: '_0: unbound within '_1: unbound within '_2: unbound) -> '_2: unbound: where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
     "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
     "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
     "/test/m.gx" => "let mk = || |x| x; let k = mk(); let f = |x| k(x)"
@@ -3425,7 +3425,7 @@ run!(
 // call's result.
 run!(
     val_names_the_struct_holding_the_call_result_past_one_calling_into_it,
-    refused_renumbered("val f is declared fn(x: 'a) -> 'a but implemented fn(x: '_0: unbound within '_1: unbound within '_1_1: unbound within '_2: unbound within '_3: unbound within '_4: unbound) -> '_4: unbound: where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
+    refused_renumbered("val f is declared fn(x: 'a) -> 'a but implemented fn(x: '_0: unbound within '_1: unbound within '_2: unbound within '_3: unbound) -> '_3: unbound: where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
     "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
     "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
     "/test/m.gx" => "let mk = || |x| x; let b1 = {h: mk()}; let b0 = {g: |x| b1.h(x)}; let f = |x| b0.g(x)"

@@ -226,6 +226,7 @@ reject	N: type mismatch iN does not contain fn(path: string) -> Result<bytes, `I
 trace	instance-held-at-nov2026/00_two_undecided_payloads.gx
 trace	instance-held-at-nov2026/01_bound_names_a_wider_variable.gx
 trace	instance-held-at-nov2026/02_select_of_two_undecided_payloads.gx
+trace	instance-written-name-nov2026/00_dynamic_module_reads_an_instance_s_type.gx
 trace	interface-ctor-trait-oct2026/00_two_collections.gx
 trace	interface-ctor-trait-oct2026/01_six_modules.gx
 trace	interp-format-jul2026/01_union_array_typed_prefix.gx
@@ -486,6 +487,9 @@ trace	standing-bottom-refire-sep2026/08_undetermined_guard.gx
 trace	standing-bottom-refire-sep2026/09_value_select_bottom.gx
 trace	strict-bottom-collections-aug2026/00_loop_op_poison.gx
 trace	strict-bottom-collections-aug2026/01_empty_fold_bottom_init.gx
+reject	N: cannot use the $ operator on Array<iN>, it has no error and no null	strip-nothing-nov2026/00_or_never_over_an_array.gx
+reject	N: cannot use the $ operator on A<[iN, string]>, it has no error and no null	strip-nothing-nov2026/01_or_never_over_a_named_array.gx
+trace	strip-nothing-nov2026/02_select_waits_for_a_held_or_never.gx
 trace	struct-with-taint-jul2026/01_tainted_base_unconsumed_arg.gx
 trace	table-typedef-scope-oct2026/00_body_typedef_alias.gx
 trace	tail-arg-bottom-jul2026/00_qop_arg_rides_cache.gx
@@ -556,6 +560,8 @@ trace	value-shape-seam-jul2026/02_fold_index_union_init.gx
 trace	value-shape-seam-jul2026/03_call_arg_union_param.gx
 trace	value-shape-seam-jul2026/04_hof_result_union_param.gx
 trace	value-shape-seam-jul2026/05_xkernel_result_union_param.gx
+reject	N: type mismatch: a variadic function where one of N arguments is wanted	variadic-as-fixed-fn-nov2026/00_passed_in_a_recursive_body.gx
+trace	variadic-as-fixed-fn-nov2026/01_called_through_data.gx
 trace	variant-arity-tag-only-aug2026/00_same_tag_different_arity.gx
 trace	variant-arity-tag-only-aug2026/01_arity_one_vs_two.gx
 trace	variant-arity-tag-only-aug2026/02_reactive_kernel_goes_silent.gx
@@ -594,4 +600,6 @@ trace	wake-stale-bottom-sep2026/02_let.gx
 trace	wake-stale-bottom-sep2026/03_call.gx
 trace	wake-stale-bottom-sep2026/04_map_source.gx
 trace	wake-stale-bottom-sep2026/05_fold_init.gx
+reject	N: type mismatch uN does not contain string	written-local-generic-nov2026/00_a_block_gives_its_written_local.gx
+trace	written-local-generic-nov2026/01_a_pattern_over_a_literal_with_a_block.gx
 trace	xkernel-gate-jul2026/01_two_monos_nested_select_gate.gx

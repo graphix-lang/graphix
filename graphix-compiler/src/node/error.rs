@@ -709,11 +709,7 @@ impl Strip {
         } else if holds(&null)? {
             Ok(Self::Null)
         } else {
-            format_with_flags(PrintFlag::DerefTVars, || {
-                bail!(
-                    "cannot use the {op} operator on {typ}, it has no error and no null"
-                )
-            })
+            Err(bounds::strips_nothing(op, &typ.resolve_tvars()))
         }
     }
 

@@ -1684,6 +1684,16 @@ impl TypeRef {
         }
     }
 
+    /// Fill an open cell with what `row` names, the same written name as
+    /// its definition's check resolved it.
+    pub(super) fn fill_as(&self, row: &Self) {
+        if self.name == row.name
+            && let Some(def) = row.resolved()
+        {
+            self.fill(&def)
+        }
+    }
+
     fn is_open(&self) -> bool {
         matches!(&*self.resolved.lock(), Resolution::Open)
     }

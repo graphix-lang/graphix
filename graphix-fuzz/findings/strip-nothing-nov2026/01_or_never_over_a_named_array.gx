@@ -1,0 +1,5 @@
+// expect: reject
+// The same through a type's name, the crash's other form: the fused code
+// read the freed array (an allocation of two exabytes in the oracle).
+// Expected: refused, "cannot use the $ operator on".
+{ type A<'a> = Array<'a>; let x: A<[i64, string]> = [1, 0]; x$ }

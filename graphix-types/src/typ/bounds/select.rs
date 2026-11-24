@@ -1654,11 +1654,14 @@ impl Solving {
         out
     }
 
-    /// Route what waited for a cell; true if anything was.
+    /// Route what waited for a cell; true if anything was. A select waits
+    /// while its scrutinee is not `ready`, or a cell an arm looks into is
+    /// `awaited`: another pending use still gives it its type.
     pub(super) fn select_waiting(
         &mut self,
         env: &Env,
         ready: &dyn Fn(&Self, usize, &Type) -> bool,
+        awaited: &dyn Fn(usize, &TVar) -> bool,
     ) -> Result<bool> {
         let mut progress = false;
         for id in 0..self.selects.len() {
@@ -1674,6 +1677,9 @@ impl Solving {
                     let cells = self.looked(env, id, &deep(&t));
                     if cells.is_empty() {
                         break false;
+                    }
+                    if cells.iter().any(|v| awaited(id, v)) {
+                        break true;
                     }
                     cells.iter().try_for_each(|v| self.fix(env, v))?;
                     if !cells.iter().any(|v| v.is_bound()) {

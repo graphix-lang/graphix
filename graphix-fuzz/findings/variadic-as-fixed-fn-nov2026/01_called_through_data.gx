@@ -1,0 +1,5 @@
+// A variadic builtin read out of data is called as one, through a field
+// and through an element: the bind fits it to the arguments the call
+// passes.
+// Expected trace (both engines): (2, 3).
+{ let s = {f: all}; let t = (all, 1); (s.f(2, 2), t.0(3, 3)) }

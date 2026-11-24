@@ -369,7 +369,9 @@ of its own. Anything else is one instance, whose variables are what all
 its uses pass between them: a function a call returns (`let h = mk(0)`
 over `let mk = |z| |x| x`), an element bound by a `let` (`let g =
 fs[0]$`), a field of a call's result, a reference (`let r = &f`, then
-`(*r)(1)`) and a binding something writes (`j <- ..`, `&mut j`). A
+`(*r)(1)`) and a binding something writes (`j <- ..`, `&mut j`), with
+whatever a block around it gives by its name (`let f = { let tm = |x| x;
+let r = &mut tm; ..; tm }`: every use of `f` shares the one `tm`). A
 second use at another type widens the variable: `(h(1), h("s"))` checks,
 and `h`'s parameter is an `[i64, string]`. Only a body that takes one
 type refuses it: arithmetic, "cannot compute with [i64, f64]: both

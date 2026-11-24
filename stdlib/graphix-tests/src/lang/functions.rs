@@ -6977,3 +6977,27 @@ run!(run_time_bind_at_a_bottom_variable_of_a_concrete_bound, r#"
     select t(3) { 3 => "k", _ => never() }
 }
 "#, |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if &**s == "k"); FuseExpect::None);
+
+// A variadic builtin is called as one where its own type is at hand, a
+// field or an element among them; held as a function type that lists its
+// arguments it is refused, at the check and in an instance alike.
+run!(
+    variadic_called_through_data,
+    r#"{ let s = {f: all}; let t = (all, 1); (s.f(2, 2), t.0(3, 3)) }"#,
+    prints("[i64:2, i64:3]");
+    FuseExpect::None
+);
+
+run!(
+    variadic_held_as_a_fixed_function_type_is_refused,
+    r#"{ let f: fn(x: i64) -> i64 = all; f(1) }"#,
+    refused("a variadic function where one of 1 arguments is wanted");
+    FuseExpect::None
+);
+
+run!(
+    variadic_passed_as_a_fixed_function_type_in_a_body_is_refused,
+    r#"{ let h = |f: fn(x: i64) -> i64| f(1); let k = |u: i64| h(all); k(1) }"#,
+    refused("a variadic function where one of 1 arguments is wanted");
+    FuseExpect::None
+);

@@ -228,10 +228,11 @@ impl Use {
                 buf.put_u8(2);
                 out.encode(buf)
             }
-            Use::Call { args, out } => {
+            Use::Call { args, out, throws } => {
                 buf.put_u8(3);
                 put_args(args, buf)?;
-                out.encode(buf)
+                out.encode(buf)?;
+                throws.encode(buf)
             }
             Use::With { fields, out } => {
                 buf.put_u8(4);
@@ -292,7 +293,11 @@ impl Use {
                 from: ModPath::decode(buf)?,
             },
             2 => Use::Element { out: Type::decode(buf)? },
-            3 => Use::Call { args: get_args(buf)?, out: Type::decode(buf)? },
+            3 => Use::Call {
+                args: get_args(buf)?,
+                out: Type::decode(buf)?,
+                throws: Type::decode(buf)?,
+            },
             4 => {
                 let fields = (0..get_len(buf)?)
                     .map(|_| Ok((ArcStr::decode(buf)?, Type::decode(buf)?)))

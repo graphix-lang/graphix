@@ -3319,7 +3319,8 @@ run!(
 // its variable prints where it occurs.
 run!(
     one_read_of_a_generic_function_prints_no_header,
-    "{ let f = 'a: Number + Singleton |x: 'a, y: 'a| -> 'a x + y; let g: fn(x: string) -> bool = f; 0 }",
+    "{ let f = 'a: Number + Singleton |x: 'a, y: 'a| -> 'a x + y; \
+       let g: fn(x: string, y: string) -> string = f; 0 }",
     refused("type mismatch Number does not contain string")
 );
 
@@ -11238,7 +11239,7 @@ run!(
   let g = s.fld(1, "s", |q: i64| q + 1);
   g("s")
 }"#,
-    refused("does not contain F2<'a, 'b>");
+    refused("type mismatch i64 does not contain string");
     FuseExpect::None
 );
 
@@ -12561,7 +12562,7 @@ run!(
 run!(
     a_blocks_value_reads_its_own_binding_not_a_generic_one_around_it,
     r#"{ let f = |x| x; let a = { let f = 0; f }; a(5) }"#,
-    refused_renumbered("fn(i64) -> '_0: unbound does not contain i64");
+    refused("i64 is not a function");
     FuseExpect::None
 );
 
@@ -16301,13 +16302,13 @@ run!(
 );
 
 run!(
-    a_call_through_a_function_or_null_names_the_union,
+    a_call_through_a_function_or_null_names_the_null,
     r#"{
   let b = true;
   let f = select b { true => |x: i64| x, false => null };
   f(1)
 }"#,
-    refused("type mismatch fn(i64) -> i64 does not contain null");
+    refused("null is not a function");
     FuseExpect::None
 );
 
@@ -16505,12 +16506,12 @@ run!(
 );
 
 run!(
-    a_call_through_a_select_of_declared_variables_names_the_declaration,
+    a_call_through_a_select_of_declared_variables_needs_their_type,
     r#"{
   let f = |c: bool, a: 'a, b: 'b| (select c { true => a, false => b })(1);
   f(true, |x| x, |x| x)
 }"#,
-    refused_renumbered("type mismatch fn(i64) -> '_0: unbound does not contain 'a: unbound");
+    refused("reading a fn needs its type known here: annotate the binding");
     FuseExpect::None
 );
 
@@ -16567,12 +16568,12 @@ run!(
 // A member the read refuses decides the refusal, whatever the open one
 // would take.
 run!(
-    a_call_through_a_number_or_an_open_cell_names_the_union,
+    a_call_through_a_number_or_an_open_cell_names_the_number,
     r#"{
   let h = |g, b: bool| { let f = select b { true => 1, false => g }; f(2) };
   h(|x| x, true)
 }"#,
-    refused_renumbered("type mismatch fn(i64) -> '_0: unbound does not contain i64");
+    refused("i64 is not a function");
     FuseExpect::None
 );
 

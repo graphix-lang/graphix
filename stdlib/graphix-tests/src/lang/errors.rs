@@ -1841,3 +1841,57 @@ run!(
     r#"{ let f = 'a: NoError |x: ['a, Error<`A>]| x?; f(1) }"#,
     prints("i64:1")
 );
+
+// `?` and `$` take an error or a null off their operand: one that holds
+// neither is refused, where its type is known at the operator and where
+// it is decided after.
+macro_rules! nothing_to_strip {
+    ($($name:ident => $test:expr, $says:expr,)*) => {$(
+        run!($name, $test, refused($says); FuseExpect::None);
+    )*};
+}
+
+nothing_to_strip! {
+    or_never_over_a_value_with_nothing_to_take =>
+        "{ let x = 1; x$ }",
+        "cannot use the $ operator on i64, it has no error and no null",
+    question_over_a_value_decided_after_it =>
+        "{ let x = [1, 2, 3]; let d = x?; 1 }",
+        "cannot use the ? operator on Array<i64>, it has no error and no null",
+    or_never_over_what_an_or_never_left =>
+        "{ let a = [1, 2]; a[0]$$ }",
+        "cannot use the $ operator on i64, it has no error and no null",
+    or_never_over_a_declared_variable_beside_a_value =>
+        "{ let f = |x: ['a, i64]| x$; f(1) }",
+        "it has no error and no null",
+}
+
+// `Any` holds errors, which are what `$` takes off it: a null stays.
+run!(
+    or_never_over_any_keeps_a_null,
+    r#"{ let y: Any = null; y$ }"#,
+    is(Value::Null);
+    FuseExpect::None
+);
+
+// A select over a value a `$` still owes its type waits for the `$`.
+run!(
+    select_over_what_a_held_or_never_gives,
+    r#"{ let v = [{"a" => { let t = cast<i64>(u32:7); t }$}]; select v { [m] => m{"a"}$, _ => 0 } }"#,
+    is(Value::I64(7))
+);
+
+// A call with a labeled argument of a function read out of data raises
+// what that function raises.
+run!(
+    labeled_call_through_a_field_raises_to_its_catch,
+    r#"{
+    let s = {f: |#a = 1, x: Result<i64, `E>| x? + a};
+    let seen = never();
+    catch(e) seen <- e.0.error;
+    s.f(#a: 2, error(`E));
+    seen
+}"#,
+    prints(r#""E""#);
+    FuseExpect::None
+);

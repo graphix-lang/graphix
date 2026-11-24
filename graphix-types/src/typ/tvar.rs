@@ -3955,6 +3955,7 @@ impl Type {
                 Type::Abstract { id: ib, params: b },
             ) if ia == ib => each(a, b, seen),
             (Type::Ref(a), Type::Ref(b)) if a.name == b.name => {
+                a.fill_as(b);
                 each(&a.params, &b.params, seen)
             }
             (Type::Fn(f), Type::Fn(g))

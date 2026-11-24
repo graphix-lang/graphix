@@ -418,8 +418,9 @@ pub enum Use {
     /// A read of an element by its position: an array's element, or a
     /// byte of `bytes`.
     Element { out: Type },
-    /// A call with `args`, whose result goes to `out`.
-    Call { args: SmallVec<[Arg; 4]>, out: Type },
+    /// A call with `args`, whose result goes to `out` and what it raises
+    /// to `throws`.
+    Call { args: SmallVec<[Arg; 4]>, out: Type, throws: Type },
     /// A struct update: `out` takes the struct with each of `fields` at
     /// its new type.
     With { fields: SmallVec<[(ArcStr, Type); 2]>, out: Type },
@@ -484,9 +485,10 @@ impl Use {
                 Use::Index { i: *i, out: f(out), write: *write, from: from.clone() }
             }
             Use::Element { out } => Use::Element { out: f(out) },
-            Use::Call { args, out } => Use::Call {
+            Use::Call { args, out, throws } => Use::Call {
                 args: args.iter().map(|(l, t)| (l.clone(), f(t))).collect(),
                 out: f(out),
+                throws: f(throws),
             },
             Use::With { fields, out } => Use::With {
                 fields: fields.iter().map(|(n, t)| (n.clone(), f(t))).collect(),
@@ -522,17 +524,13 @@ impl Use {
             | Use::Index { out, .. }
             | Use::Element { out }
             | Use::Write { value: out } => f(out),
-            Use::Call { args, out } => {
-                f(out);
-                args.iter().for_each(|(_, t)| f(t))
-            }
             Use::With { fields, out } => {
                 f(out);
                 fields.iter().for_each(|(_, t)| f(t))
             }
             Use::Select(_) | Use::Routed(..) => (),
             Use::Defaults { labels, .. } => labels.iter().for_each(|(_, t)| f(t)),
-            Use::Method { args, out, throws, .. } => {
+            Use::Call { args, out, throws } | Use::Method { args, out, throws, .. } => {
                 f(out);
                 f(throws);
                 args.iter().for_each(|(_, t)| f(t))
@@ -2298,28 +2296,40 @@ impl Solving {
                 .collect()
         };
         let (fp, gp) = (positional(f), positional(g));
-        for (i, ga) in gp.iter().enumerate() {
-            match (fp.get(i), &f.vargs) {
-                (Some(fa), _) => {
-                    self.constrain(env, ga, fa).map_err(|e| takes_nothing(fa, e))?
-                }
-                (None, Some(v)) => self.constrain(env, ga, v)?,
-                (None, None) => bail!(
-                    "type mismatch: a function of {} arguments where one of {} is wanted",
-                    fp.len(),
-                    gp.len()
-                ),
+        // a site's view of its callee lists the arguments its call passes,
+        // and a variadic callee takes the rest of them; a function held
+        // as another type is called as that type says
+        let rest = match (&f.vargs, &g.vargs) {
+            (Some(fv), None) if signature => Some(fv),
+            (Some(fv), Some(gv)) => {
+                self.constrain(env, gv, fv)?;
+                None
             }
-        }
-        if fp.len() > gp.len() {
+            (None, None) => None,
+            (Some(_), None) => bail!(
+                "type mismatch: a variadic function where one of {} arguments is wanted",
+                gp.len()
+            ),
+            (None, Some(_)) => bail!(
+                "type mismatch: a function of {} arguments where a variadic one is wanted",
+                fp.len()
+            ),
+        };
+        if fp.len() > gp.len() || (fp.len() < gp.len() && rest.is_none()) {
             bail!(
                 "type mismatch: a function of {} arguments where one of {} is wanted",
                 fp.len(),
                 gp.len()
             )
         }
-        if let (Some(fv), Some(gv)) = (&f.vargs, &g.vargs) {
-            self.constrain(env, gv, fv)?
+        for (i, ga) in gp.iter().enumerate() {
+            match (fp.get(i), rest) {
+                (Some(fa), _) => {
+                    self.constrain(env, ga, fa).map_err(|e| takes_nothing(fa, e))?
+                }
+                (None, Some(fv)) => self.constrain(env, ga, fv)?,
+                (None, None) => (),
+            }
         }
         let (fl, gl) = (labeled(f), labeled(g));
         // a label `f` lets a call leave out: a call through `g` that leaves
@@ -2412,9 +2422,16 @@ impl Solving {
     }
 }
 
+/// The refusal of `op`, a `?` or a `$`, over an operand of the decided
+/// type `t`, which holds nothing either takes off.
+pub fn strips_nothing(op: char, t: &Type) -> anyhow::Error {
+    anyhow!("cannot use the {op} operator on {t}, it has no error and no null")
+}
+
 /// What `?` and `$` leave of the decided type `t`: `t` less its errors,
-/// or, where it holds none, less null. With it, the payloads of the errors
-/// taken off, which a `?` raises (`raises`) and so must know.
+/// or, where it holds none, less null, and one of the two it must hold.
+/// With it, the payloads of the errors taken off, which a `?` raises
+/// (`raises`) and so must know.
 pub fn strip(env: &Env, t: &Type, raises: bool) -> Result<(Type, SmallVec<[Type; 2]>)> {
     let mut members: SmallVec<[Type; 4]> = SmallVec::new();
     members_of(env, t, &mut members)?;
@@ -2425,6 +2442,13 @@ pub fn strip(env: &Env, t: &Type, raises: bool) -> Result<(Type, SmallVec<[Type;
         )
     }
     let null = !holds_errors(&members);
+    let nullable = |m: &Type| {
+        matches!(m, Type::Bottom)
+            || matches!(m, Type::Primitive(p) if p.contains(Typ::Null))
+    };
+    if null && !members.is_empty() && !members.iter().any(nullable) {
+        return Err(strips_nothing(if raises { '?' } else { '$' }, t));
+    }
     let (left, mut payloads) = strip_members(members);
     // a `?` that takes a null off raises a `NullError` of the operand's
     // text
@@ -2938,10 +2962,20 @@ pub fn specialize(t: &Type, known: &mut AHashMap<usize, TVar>) -> Type {
     solving.copy(t, Level::GENERIC.depth() - 1, Level::GENERIC, known)
 }
 
+// CR claude for claude: [structure/low] `take` and `Type::take_row` (typ/tvar.rs) are
+// one walk written twice: both give an instance's own type the parts of its
+// definition's row, cell by cell, and both now fill a written name from the row's
+// (`TypeRef::fill_as`). They differ in what they do where the shapes part (`take_row`
+// lets the instance's own knowledge stand and reads an open row cell through its one
+// lower bound, `take` answers false) and in `take_row`'s memo over shared nodes. A
+// fix to one misses the other: the unresolved-name bug of soak nov24b was in both.
+// Keep one, with the lenient reading a flag if both are needed. Found by reading; not
+// run. (take-row-twice-01)
 /// Give each open cell of `own`, a type an instance compiled, the part of
 /// `row` at its place, where `row` is that type as the definition's check
-/// left it and the instance reads it ([`specialize`]). False where an
-/// open cell of `own` finds no part.
+/// left it and the instance reads it ([`specialize`]), and each name
+/// written in `own` what the definition's check resolved it to. False
+/// where an open cell of `own` finds no part.
 pub fn take(own: &Type, row: &Type) -> bool {
     let all = |xs: &[Type], ys: &[Type]| {
         xs.len() == ys.len() && xs.iter().zip(ys.iter()).all(|(x, y)| take(x, y))
@@ -2992,7 +3026,10 @@ pub fn take(own: &Type, row: &Type) -> bool {
         | (Type::Abstract { params: xs, .. }, Type::Abstract { params: ys, .. }) => {
             all(xs, ys)
         }
-        (Type::Ref(a), Type::Ref(b)) => all(&a.params, &b.params),
+        (Type::Ref(a), Type::Ref(b)) => {
+            a.fill_as(b);
+            all(&a.params, &b.params)
+        }
         (Type::App(c, x), Type::App(d, y)) => take(c, d) && take(x, y),
         (Type::Struct(xs), Type::Struct(ys)) => {
             xs.len() == ys.len()
@@ -3163,7 +3200,7 @@ pub fn strips_errors(env: &Env, t: &Type) -> Result<bool> {
 
 fn holds_errors(members: &[Type]) -> bool {
     members.iter().any(|m| {
-        matches!(m, Type::Error(_))
+        matches!(m, Type::Error(_) | Type::Any)
             || matches!(m, Type::Primitive(p) if p.contains(Typ::Error))
     })
 }
@@ -4868,7 +4905,10 @@ impl Solving {
                 ins.iter().all(|v| s.fixable(&held, v, min))
                     && free((Pending::Select, id), &ins)
             };
-            progress |= self.select_waiting(env, &ready)?;
+            let awaited = |id: usize, v: &TVar| {
+                !free((Pending::Select, id), std::slice::from_ref(v))
+            };
+            progress |= self.select_waiting(env, &ready, &awaited)?;
             for i in (0..self.strips.len()).rev() {
                 let (operand, out, raised, made) = self.strips[i].clone();
                 let ins = open_cells(&operand);
@@ -5023,7 +5063,7 @@ impl Solving {
             let mine = |s: &Self, id: usize, t: &Type| {
                 s.looked(env, id, &deep(t)).iter().all(|v| fixes(v, min))
             };
-            self.select_waiting(env, &mine)?;
+            self.select_waiting(env, &mine, &|_, _| false)?;
         }
         let mut fixed = false;
         for v in flowing.into_iter().chain(empty) {
@@ -5791,6 +5831,11 @@ fn flowing(v: &TVar, seen: &mut SmallVec<[usize; 8]>) -> SmallVec<[Type; 4]> {
     out
 }
 
+/// Whether a type is known to flow into `t`, a cell nothing has decided.
+pub fn reached(t: &Type) -> bool {
+    open(&shallow(t)).is_some_and(|v| !flowing(v, &mut SmallVec::new()).is_empty())
+}
+
 impl Solving {
     /// Register a use of whatever `t` turns out to be.
     pub fn watch(&mut self, env: &Env, t: &Type, u: Use) -> Result<()> {
@@ -5979,8 +6024,9 @@ impl Solving {
                 self.constrain(env, &Type::Primitive(Typ::U8.into()), out).map(|()| true)
             }
             (_, Use::Element { .. }) => bail!("{a} is no array and no bytes"),
-            (Type::Fn(ft), Use::Call { args, out }) => {
-                self.call(env, ft, args, out).map(|()| true)
+            (Type::Fn(ft), Use::Call { args, out, throws }) => {
+                self.call(env, ft, args, out)?;
+                self.constrain(env, &ft.throws, throws).map(|()| true)
             }
             (Type::ByRef(Mutability::Mut, t), Use::Write { value }) => {
                 self.constrain(env, value, t).map(|()| true)
@@ -6503,7 +6549,12 @@ mod tests {
         // a call, of a cell that turns out to be a function
         let ((_, tf), (r, tr)) = (var("f"), var("r"));
         let args = [(None, parsed(&env, "i64"))];
-        let call = super::Use::Call { args: args.into_iter().collect(), out: tr };
+        let (_, raised) = var("raised");
+        let call = super::Use::Call {
+            args: args.into_iter().collect(),
+            out: tr,
+            throws: raised,
+        };
         assert!(s.watch(&env, &tf, call).is_ok());
         assert!(s.constrain(&env, &parsed(&env, "fn(x: i64) -> string"), &tf).is_ok());
         assert_eq!(shown(&r.cell_lower()), ["string"]);

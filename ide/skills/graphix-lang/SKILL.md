@@ -354,7 +354,8 @@ a signature declares every bound its body needs, in a lambda as in a
 and the check infers it (`|a, b| a + b`). `'a: [Number, null] +
 OneNumber` is a nullable number of one numeric type. Unary `-x`, `!x`, `&x`, `*x`. Postfix `x?` (raise to the
 nearest catch), `x$` (or never). Both take the errors off `x`, or, when
-`x` has none, the null; they chain (`x?$`) and sit anywhere in a postfix
+`x` has none, the null (an `x` with neither is refused; an `Any` holds
+errors); they chain (`x?$`) and sit anywhere in a postfix
 chain (`(k ~ sel)$.name`). Their operand's type must be known: over an
 untyped parameter every call is refused, so annotate it, a nullable
 (`|t, scope: [Scope, null]| .. (t ~ scope)$`) and a Result
@@ -384,6 +385,7 @@ no "write 'a: Number + Singleton" let f = |a: 'a, b: 'a| a + b; f(1, 2)
 ok let f = |a, b| a + b; (f(1, 2), f(1.5, 2.5))
 no "cannot compute" let x: [i64, null] = 3; x + 1
 ok let x: [i64, null] = 3; x$ + 1
+no "it has no error and no null" let x = 1; x$
 no "cannot compute" let a = [1, 2]; a[1] + 1
 ok let a = [1, 2]; a[1]$ + 1
 no "Number does not contain datetime" let d = datetime:"2020-01-01T00:00:00Z"; d - d
@@ -414,7 +416,10 @@ a function a call returns, an element, a reference, a binding something
 writes. Its variables are what all its uses pass between them, so a second
 use at another type widens them, and is refused only where the body takes
 one type (arithmetic). A signature's variables and bounds have rules the
-check enforces and names: `generics.md`.
+check enforces and names: `generics.md`. A variadic builtin is called as
+one wherever its own type is at hand (its name, a field or an element
+holding it); it does not stand where a function type lists its arguments
+(`fn(x: i64) -> i64`).
 
 ```graphix,cases
 ok let f = { let n = 1; |x| x }; (f(1), f("s"))
@@ -423,6 +428,9 @@ ok let s = {g: |x| x}; let j = s.g; (j(1), j("s"))
 ok let mk = |z| |x| x; let h = mk(0); (h(1), h("s"))
 no "cannot compute with [i64, f64]" let mk = |z| |x| x + x; let h = mk(0); (h(1), h(1.5))
 ok let mk = |z| |x| x + x; let a = mk(0); let b = mk(0); (a(1), b(1.5))
+no "u64 does not contain string" let f = { let tm = |x| x; let r = &mut tm; *r <- |x: u64| x + u64:1; tm }; f("s")
+ok let s = {f: all}; s.f(2, 2)
+no "a variadic function where one of 1 arguments is wanted" let f: fn(x: i64) -> i64 = all; f(1)
 ```
 
 Calls resolve statically where the compiler can trace the function. A

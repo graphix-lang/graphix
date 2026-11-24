@@ -1,0 +1,5 @@
+// A pattern over a literal one of whose parts is a block: the part had
+// no decided type to give its name ("BUG: a pattern over a literal lost
+// its parts", soak nov24b).
+// Expected trace (both engines): ("abc", 1, 1).
+{ let (g, k) = (|x| x, { let t = 0; t }); (g("abc"), g(1), k + 1) }

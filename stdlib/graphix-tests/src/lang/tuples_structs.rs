@@ -1104,3 +1104,11 @@ let f = |s: [{a: i64, z: i64}, {z: i64}]| {s with z: 10};
 "#,
     prints("[i64:10, i64:10]"); FuseExpect::None
 );
+
+// A pattern over a literal names each part, one a block gives among them.
+run!(
+    tuple_pattern_over_a_literal_with_a_block_part,
+    r#"{ let (g, k) = (|x| x, { let t = 0; t }); (g("abc"), g(1), k + 1) }"#,
+    prints(r#"["abc", i64:1, i64:1]"#);
+    FuseExpect::None
+);

@@ -515,6 +515,7 @@ impl Mirror {
             Watch::Call { args, out } => Use::Call {
                 args: args.iter().map(|(l, t, _)| (l.clone(), self.typ(s, t))).collect(),
                 out: self.typ(s, out),
+                throws: Type::empty_tvar(),
             },
             Watch::With { fields, out } => Use::With {
                 fields: fields.iter().map(|(n, t)| (n.clone(), self.typ(s, t))).collect(),

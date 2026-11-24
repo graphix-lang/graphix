@@ -590,3 +590,23 @@ async fn a_deleted_modules_type_frees_its_name(mode: Mode) -> Result<()> {
 }
 
 modes!(a_deleted_modules_type_frees_its_name);
+
+// A type name written in a body is what its definition's check resolved
+// it to in every instance of the body: a dynamic module that imports a
+// function of the instance reads the name where it is not in scope.
+run!(
+    a_name_written_in_an_instance_reaches_a_dynamic_module,
+    r#"{
+    type W = {x: i64};
+    let show = |u: i64| {
+        let unw = |w: W| -> i64 w.x;
+        let status = mod d dynamic {
+            sig { use super::unw; val s: fn(u: i64) -> i64 };
+            source "let s = |u: i64| -> i64 super::unw({x: u})"
+        };
+        select status { error as e => "[e]", null as _ => "loaded" }
+    };
+    show(1)
+}"#,
+    prints(r#""loaded""#)
+);

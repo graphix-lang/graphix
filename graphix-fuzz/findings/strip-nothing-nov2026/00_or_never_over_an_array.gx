@@ -1,0 +1,7 @@
+// expect: reject
+// `$` over a value with no error and no null. The check by bounds had
+// lost the refusal, and the fused strip handed the borrowed array out as
+// a value its consumer owns: the block dropped it twice (soak nov24b,
+// three crashes, "corrupted double-linked list").
+// Expected: refused, "cannot use the $ operator on Array<i64>".
+{ let x = [1, 2, 3]; let d = x$; 1 }
