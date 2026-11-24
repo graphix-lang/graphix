@@ -63,16 +63,10 @@ async fn a_pattern_over_a_typedef_declared_above_is_accepted_in_a_root_module()
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_pattern_over_a_typedef_declared_below_is_refused_in_a_root_module()
--> Result<()> {
+async fn a_pattern_over_a_typedef_declared_below_checks_in_a_root_module() -> Result<()> {
     let m = "let (a, b): P = (1, 2);\ntype P = (i64, i64);\na\n";
-    let e = check(&[("main.gx", "mod m;\nm::a\n"), ("m.gx", m)])
-        .await?
-        .expect("a pattern over a type declared below was accepted");
-    assert!(
-        e.contains("P names the type a later statement of this module declares"),
-        "{e}"
-    );
+    let e = check(&[("main.gx", "mod m;\nm::a\n"), ("m.gx", m)]).await?;
+    assert!(e.is_none(), "{e:?}");
     Ok(())
 }
 

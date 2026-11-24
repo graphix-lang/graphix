@@ -427,18 +427,18 @@ run!(
 );
 
 run!(
-    module_type_in_a_signature_above_its_declaration_refused,
-    refused("M names the type a later statement of this module declares: declare it before its first use"),
+    module_type_in_a_signature_above_its_declaration,
+    is(Value::I64(1)),
     "/test.gx" => "type M = string; mod m; let result = m::y",
     "/test/m.gx" => "use super::*; let f = |a: M| a; type M = i64; let y = f(1)"
-; FuseExpect::None);
+);
 
 run!(
-    module_type_in_a_body_above_its_declaration_refused,
-    refused("M names the type a later statement of this module declares: declare it before its first use"),
+    module_type_in_a_body_above_its_declaration,
+    is(Value::I64(1)),
     "/test.gx" => "type M = string; mod m; let result = m::y",
     "/test/m.gx" => "use super::*; let f = |x| { let a: M = x; a }; type M = i64; let y = f(1)"
-; FuseExpect::None);
+);
 
 run!(
     script_type_over_the_prelude_above_its_declaration,
@@ -448,10 +448,10 @@ run!(
 );
 
 run!(
-    script_type_in_a_signature_above_its_declaration_refused,
-    refused("Result names the type a later statement of this module declares: declare it before its first use"),
+    script_type_in_a_signature_above_its_declaration,
+    is(Value::I64(1)),
     "/test.gx" => "let f = |r: Result<i64, string>| r; type Result<'a, 'b> = ['a, 'b]; let result = f(1)"
-; FuseExpect::None);
+);
 
 // A name above its block's or its module's declaration of it, with
 // another of the name in view there (an outer type, an import), is the
@@ -484,8 +484,8 @@ async fn a_later_block_type_beside_another_warns(mode: Mode) -> Result<()> {
         Ok(_) => anyhow::bail!("no warning for mod w"),
         Err(e) => {
             let e = format!("{e:#}");
-            let note = "`L` here names the type this module declares below it, not the \
-                        `L` declared at line: 1, column: 6 in ";
+            let note = "`L` here names the type this module declares below it, at line: \
+                        3, column: 6, not the `L` declared at line: 1, column: 6 in ";
             assert!(e.contains(note), "mod w: {e}")
         }
     }
@@ -510,7 +510,9 @@ async fn a_later_block_type_beside_another_warns(mode: Mode) -> Result<()> {
         (
             "type L = string;\nlet g = |z: i64| {\n    let h = |v: L| v;\n    \
              type L = i64;\n    h(z)\n}",
-            format!("{outer}, not the `L` declared at line: 1, column: 6"),
+            format!(
+                "{outer}, at line: 4, column: 10, not the `L` declared at line: 1, column: 6"
+            ),
         ),
         (
             "let g = |z: i64| {\n    use n::*;\n    let f = |x: i64| { let b: L = 3; (b, x) };\n    \

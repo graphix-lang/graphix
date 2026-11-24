@@ -1351,7 +1351,7 @@ pub(crate) fn compile_block_children<'a, R: Rt>(
         }),
     );
     let pending = ctx.pending_imports.len();
-    module::install_uses(ctx, flags, scope, &exprs);
+    let installed = module::install_uses(ctx, flags, scope, &exprs);
     let mut later = env::Unsettled::default();
     for (i, e) in exprs.iter().enumerate() {
         module::declared_modules(e, &mut |name| {
@@ -1367,21 +1367,64 @@ pub(crate) fn compile_block_children<'a, R: Rt>(
         let top = block_top(ctx, &scope);
         ctx.written.enter(&exprs, top);
     }
-    let compiled = exprs.iter().copied().enumerate().try_for_each(|(i, e)| {
-        if matches!(e.kind, ExprKind::Catch(_)) {
-            catches.push(i);
-        }
+    let mut statement = |ctx: &mut CompileCtx<R>, scope: &Scope, i: usize, e: &Expr| {
         let at = StmtAt::Block { value: !module && i + 1 == n, last: i + 1 == n };
-        if brings && module::declares_module(e) {
-            ctx.env.settle_statement(list, i)
-        }
         let boundary = prune::Prune::boundary(ctx);
         let (node, next) = ctx.in_boundary(Some(&boundary), |ctx| {
-            compile_statement(ctx, flags, e, &scope, top_id, at)
+            compile_statement(ctx, flags, e, scope, top_id, at)
         })?;
-        scope = next;
-        children.push(prune::Prune::wrap(boundary, node));
-        Ok::<_, anyhow::Error>(())
+        Ok::<_, anyhow::Error>((prune::Prune::wrap(boundary, node), next))
+    };
+    // a list's types are in force throughout it: each is declared before
+    // any other statement compiles, and stands where it is written. One
+    // that applies an alias the list defines below it waits for the alias;
+    // one whose alias a module of the list defines is left to its statement
+    let declares = |(i, e): &(usize, &Expr)| {
+        matches!(e.kind, ExprKind::TypeDef(_)) && (module || i + 1 < n)
+    };
+    let mut types: SmallVec<[(usize, Node<R>); 4]> = SmallVec::new();
+    let mut waiting: SmallVec<[(usize, &Expr); 4]> =
+        exprs.iter().copied().enumerate().filter(declares).collect();
+    let declared = installed.and_then(|()| {
+        loop {
+            let before = waiting.len();
+            let mut k = 0;
+            while k < waiting.len() {
+                let (i, e) = waiting[k];
+                match statement(ctx, &scope, i, e) {
+                    Ok((node, _)) => {
+                        types.push((i, node));
+                        waiting.remove(k);
+                    }
+                    Err(e) if e.downcast_ref::<env::AppliedLate>().is_some() => k += 1,
+                    Err(e) => return Err(e),
+                }
+            }
+            if waiting.is_empty() || waiting.len() == before {
+                return Ok(());
+            }
+        }
+    });
+    types.sort_unstable_by_key(|(i, _)| *i);
+    let mut types = types.into_iter().peekable();
+    let compiled = declared.and_then(|()| {
+        exprs.iter().copied().enumerate().try_for_each(|(i, e)| {
+            if matches!(e.kind, ExprKind::Catch(_)) {
+                catches.push(i);
+            }
+            if brings && module::declares_module(e) {
+                ctx.env.settle_statement(list, i)
+            }
+            match types.next_if(|(at, _)| *at == i) {
+                Some((_, node)) => children.push(node),
+                None => {
+                    let (node, next) = statement(ctx, &scope, i, e)?;
+                    scope = next;
+                    children.push(node)
+                }
+            }
+            Ok::<_, anyhow::Error>(())
+        })
     });
     if own_writers {
         ctx.written.exit();

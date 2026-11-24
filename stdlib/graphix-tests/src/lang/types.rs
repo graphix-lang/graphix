@@ -4944,9 +4944,9 @@ run!(
     FuseExpect::None
 );
 
-/// An alias is looked through where it is applied: one defined below the
-/// recursive type is named, and defined above it the type checks
-/// (`alias_over_a_recursive_parameter`).
+/// An alias is looked through where it is applied, defined below the
+/// recursive type as above it (`alias_over_a_recursive_parameter`): a
+/// list's types are in force throughout it.
 const ALIAS_BELOW_ITS_RECURSIVE_APPLICATION: &str = r#"
 {
     type T<'a> = [`N, `C('a, T<Opt<'a>>)];
@@ -4957,10 +4957,9 @@ const ALIAS_BELOW_ITS_RECURSIVE_APPLICATION: &str = r#"
 "#;
 
 run!(
-    alias_below_its_recursive_application_refused,
+    alias_below_its_recursive_application,
     ALIAS_BELOW_ITS_RECURSIVE_APPLICATION,
-    refused("passes its parameter 'a back to itself through Opt, which is not defined above the type that applies it: define Opt first");
-    FuseExpect::None
+    is(Value::I64(0))
 );
 
 // A name a module declares is its type in a typedef above the declaration
@@ -4983,14 +4982,14 @@ run!(
 
 run!(
     typedef_names_its_parents_later_type,
-    refused("recursive type M grows its parameter 'a as it recurses"),
+    refused("recursive type N grows its parameter 'a as it recurses"),
     "/test.gx" => "mod m; type M<'a> = m::N<Array<'a>>; let result = 0",
     "/test/m.gx" => "use super::M; type N<'a> = [`Nil, `Cons('a, M<'a>)]"
 ; FuseExpect::None);
 
 run!(
-    alias_shadowing_an_import_below_its_application_refused,
-    refused("passes its parameter 'a back to itself through Opt, which is not defined above the type that applies it: define Opt first"),
+    alias_shadowing_an_import_below_its_application_refuses_the_imports_member,
+    refused("does not contain"),
     "/test.gx" => "type Opt<'a> = ['a, null]; mod m; let result = m::x",
     "/test/m.gx" => "use super::*; type T<'a> = [`N, `C(Opt<'a>, T<Opt<'a>>)]; \
         type Opt<'a> = ['a, string]; let x: T<i64> = `C(\"s\", `C(null, `N))"
@@ -5095,7 +5094,7 @@ run!(
 
 run!(
     typedef_reading_a_globs_name_above_the_use_that_takes_it_over_refused,
-    refused(GROWS_N),
+    refused("recursive type Opt grows its parameter 'a as it recurses"),
     "/test.gx" => "mod a; mod b; use a::*; type N<'a> = [`Nil, `Cons('a, Opt<'a>)]; \
         use b::Opt; let result = 0",
     "/test/a.gx" => "type Opt<'a> = ['a, null]",
@@ -14365,14 +14364,13 @@ run!(
 );
 
 run!(
-    a_destructure_names_no_type_a_later_statement_declares,
+    a_destructure_names_the_type_its_block_declares_below,
     r#"{
     type P = (string, string);
     let r = { let (a, b): P = (1, 2); type P = (i64, i64); a };
     r
 }"#,
-    refused("P names the type a later statement of this block declares");
-    FuseExpect::None
+    is(Value::I64(1))
 );
 
 run!(

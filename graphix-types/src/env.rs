@@ -889,6 +889,33 @@ impl Unsettled {
 /// not begun to compile.
 pub type OpenList = (Arc<Unsettled>, usize);
 
+/// The refusal of a second declaration of a name in a list: an import of
+/// a name the list imports or declares already ([`Env::import`]).
+#[derive(Debug)]
+pub struct Redeclared(CompactString);
+
+impl fmt::Display for Redeclared {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Redeclared {}
+
+/// The refusal of a recursive type that passes its parameter back to
+/// itself through an alias not defined yet: the list that declares both
+/// defines the alias first.
+#[derive(Debug)]
+pub struct AppliedLate(String);
+
+impl fmt::Display for AppliedLate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for AppliedLate {}
+
 /// The refusal of a name read through a level whose list may still
 /// change it ([`Env::unsettled`]).
 #[derive(Debug)]
@@ -3330,16 +3357,17 @@ impl Env {
         // (x-repl-02)
         if !replace {
             if let Some(e) = self.names.get(scope).and_then(|sn| sn.imports.get(key)) {
-                match e.scope == entry.scope && e.name == entry.name {
-                    true => bail!(
+                let told = match e.scope == entry.scope && e.name == entry.name {
+                    true => format_compact!(
                         "`{key}` is already imported here: remove the repeated import"
                     ),
-                    false => bail!(
+                    false => format_compact!(
                         "`{key}` is already imported here (from `{}`); \
                          rename one (`use ... as ...`)",
                         e.scope
                     ),
-                }
+                };
+                return Err(anyhow!(Redeclared(told)));
             }
             let declared = self.declares(scope, key)
                 || self
@@ -3348,7 +3376,9 @@ impl Env {
                     .get(scope)
                     .is_some_and(|m| m.get(key).is_some());
             if declared {
-                bail!("`{key}` is already defined in this scope; use `as` to rename")
+                return Err(anyhow!(Redeclared(format_compact!(
+                    "`{key}` is already defined in this scope; use `as` to rename"
+                ))));
             }
         }
         self.names_mut(scope).imports.insert_cow(key.into(), entry);
@@ -3887,7 +3917,11 @@ impl Env {
         match crate::typ::expansive::expansive(self, def) {
             Expansive::Grows(param) => bail!("{}", expansive(name, &param)),
             Expansive::Through(param, alias, why) => {
-                bail!("{}", expansive_through(name, &param, &alias, why))
+                let told = expansive_through(name, &param, &alias, why);
+                match why {
+                    Blind::Late => Err(anyhow!(AppliedLate(told))),
+                    Blind::Bounded => bail!("{told}"),
+                }
             }
             Expansive::Unknown => Ok(guarded.or(Unguarded::Unknown)),
             Expansive::Regular => Ok(guarded),

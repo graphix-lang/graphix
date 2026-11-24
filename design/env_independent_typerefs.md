@@ -228,6 +228,16 @@ nothing.
     the same item again included, and a name the list declares as a type
     (`Lexical::block_names`). An implementation reads what its interface
     imports. A `let` rebinds from where it stands, an imported name too.
+  - **Types.** `compile_block_children` compiles its list's `type`
+    statements before any other, each standing where it is written, so a
+    cast, a type test, a parameter, a destructuring `let` and an abstract
+    constructor above a declaration read it, as an annotation did, and so
+    does a module the list declares above it. A recursive type that passes
+    its parameter through an alias the list defines below it is declared
+    once the alias is (`AppliedLate`, retried); one whose alias a module
+    of the list defines is left to its own statement, below the `mod`. A
+    type's body still names a type the list declares below it
+    (`Unseen::Later`, which waits).
   - **Still ordered, to go:** a name a `use` imports from a module declared
     below. `Unsettled` records the modules a list has still to compile
     (`Env::open_list`, `settle_statement`), and `Env::resolve_type_name`
@@ -237,8 +247,8 @@ nothing.
     for the module instead (a typedef's shape stays open until the
     definition that completes it); a statement that needs the type as it
     compiles (a type test, a cast, a `let` that takes it apart, an abstract
-    constructor) is refused. A statement that needs a type its own list
-    declares below is refused the same way (`Unseen::Later`).
+    constructor) is refused. A trait is declared above the statements that
+    name it, since its default bodies are values.
   Pins: `lang::types::typedef_above_the_use_*`, `typedef_above_a_glob*`,
   `type_test_above_the_use`, `cast_above_the_use`,
   `destructuring_let_above_*`, `trait_parameter_above_*`,
@@ -248,7 +258,11 @@ nothing.
   `lang::modules::a_let_shadows_an_import_of_its_list`;
   `lang::interfaces::implementation_*_its_interfaces_import*`; the
   module-below refusals `*_between_a_use_and_its_module_refused`,
-  `type_test_above_the_module_its_use_imports_from_refused`.
+  `type_test_above_the_module_its_use_imports_from_refused`; for types,
+  `lang::block_types::{module,script}_type_in_a_*_above_its_declaration`,
+  `lang::types::a_destructure_names_the_type_its_block_declares_below`,
+  `alias_below_its_recursive_application`,
+  `lang::interfaces::dynamic_sig_import_of_a_type_declared_below`.
 - **One source typedef, one definition.** A block compiled again (an
   instance, a default at a call, a runtime bind) declares its typedef
   with the live definition the registry holds, and its `TypeDef` node owns

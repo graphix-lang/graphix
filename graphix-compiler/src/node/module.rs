@@ -3,8 +3,8 @@ use crate::{
     Saved, Scope, StaticCallees, Tag, TagValue, Update, View,
     compiler::compile,
     env::{
-        Env, Glob, ImplDef, ImportEntry, Lexical, LoadedBody, Map, TraitDef, UseAnchor,
-        scope_params,
+        Env, Glob, ImplDef, ImportEntry, Lexical, LoadedBody, Map, Redeclared, TraitDef,
+        UseAnchor, scope_params,
     },
     errf,
     expr::{
@@ -116,7 +116,8 @@ pub(crate) fn declares_module(e: &Expr) -> bool {
 /// that cannot be installed yet (its path names a trait the list declares)
 /// is left to its statement, which installs it or says why not; a `use`
 /// installed here is a no-op there. An import whose target does not
-/// exist yet is pending, as one a statement installs is.
+/// exist yet is pending, as one a statement installs is. A name the list
+/// declares twice is refused here ([`Redeclared`]).
 // CR claude for claude: [bug/low] A `use` whose path starts at a module alias
 // that a `use` written below it imports is resolved against an outer module of
 // that name where one exists, since the first pass finds it: in `mod a; mod b;
@@ -130,29 +131,36 @@ pub(crate) fn install_uses<R: Rt>(
     flags: BitFlags<CFlag>,
     scope: &Scope,
     exprs: &[&Expr],
-) {
+) -> Result<()> {
     let replace = flags.contains(CFlag::ReplaceImports);
     let uses = exprs.iter().copied().filter(|e| matches!(e.kind, ExprKind::Use { .. }));
     let mut waiting: smallvec::SmallVec<[&Expr; 8]> = uses.collect();
     loop {
         let before = waiting.len();
-        waiting.retain(|e| {
-            let ExprKind::Use { reexport, names } = &e.kind else { return false };
-            let (pos, ori) = (e.pos, &e.ori);
-            compile_use_items(
+        let mut i = 0;
+        while i < waiting.len() {
+            let e = waiting[i];
+            let ExprKind::Use { reexport, names } = &e.kind else { unreachable!() };
+            let installed = compile_use_items(
                 &mut ctx.env,
                 &mut ctx.pending_imports,
-                pos,
-                ori,
+                e.pos,
+                &e.ori,
                 scope,
                 replace,
                 *reexport,
                 names,
-            )
-            .is_err()
-        });
+            );
+            match installed {
+                Ok(()) => drop(waiting.remove(i)),
+                Err(err) if err.downcast_ref::<Redeclared>().is_some() => {
+                    return Err(err).at(e);
+                }
+                Err(_) => i += 1,
+            }
+        }
         if waiting.is_empty() || waiting.len() == before {
-            return;
+            return Ok(());
         }
     }
 }

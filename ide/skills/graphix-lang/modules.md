@@ -57,15 +57,14 @@ An interface names by a bare name only what it imports or declares
 itself, never what its implementation imports or the code around the
 module declares. A dynamic module's `sig` is one, checked with the
 program that declares it: a type of the program it names is imported
-there, `use super::Foo;`, or written by its path, `super::Foo`, and
-declared above the module.
+there, `use super::Foo;`, or written by its path, `super::Foo`.
 
 ```graphix,cases
 no "undefined type Foo in foo" type Foo = {a: i64}; let st = mod foo dynamic { sig { val f: fn(x: Foo) -> i64 }; source "let f = |x| 1" }; st
 ok type Foo = {a: i64}; let st = mod foo dynamic { sig { use super::Foo; val f: fn(x: Foo) -> i64 }; source "let f = |x: Foo| x.a" }; st
-no "the sig imports `Foo`, which nothing above this module declares" let st = mod foo dynamic { sig { use super::Foo; val f: fn(x: Foo) -> i64 }; source "let f = |x| 1" }; type Foo = {a: i64}; st
+ok let st = mod foo dynamic { sig { use super::Foo; val f: fn(x: Foo) -> i64 }; source "let f = |x| 1" }; type Foo = {a: i64}; st
 ok type Foo = {a: i64}; let st = mod foo dynamic { sig { val f: fn(x: super::Foo) -> i64 }; source "let f = |x| 1" }; st
-no "super::Foo names the type a later statement of this module declares" let st = mod foo dynamic { sig { val f: fn(x: super::Foo) -> i64 }; source "let f = |x| 1" }; type Foo = {a: i64}; st
+ok let st = mod foo dynamic { sig { val f: fn(x: super::Foo) -> i64 }; source "let f = |x| 1" }; type Foo = {a: i64}; st
 ```
 
 A dynamic module's body sees only what its `sig` imports: no package,

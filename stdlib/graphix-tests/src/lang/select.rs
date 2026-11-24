@@ -12425,7 +12425,7 @@ run!(
 // refused above the declaration.
 run!(
     abstract_pattern_renamed_by_a_later_typedef_refused,
-    refused("W names the type a later statement of this block declares"),
+    refused("W is not an abstract type, so it has no constructor"),
     "/test.gx" => r#"
         type W<'a> = Abstract<'a>;
         let g = 'b: [`A(i64), `B(i64)] |x: W<'b>| {
@@ -12441,7 +12441,7 @@ run!(
 
 run!(
     abstract_pattern_renamed_by_a_later_typedef_written,
-    refused("W names the type a later statement of this block declares"),
+    refused("W expects 0 type parameters"),
     "/test.gx" => r#"
         type W<'a> = Abstract<'a>;
         let g = 'b: [`A(i64), `B(i64)] |x: W<'b>| {

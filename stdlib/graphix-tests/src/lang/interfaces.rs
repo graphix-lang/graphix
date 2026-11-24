@@ -2903,8 +2903,8 @@ run!(
 // A sig's import of a type its list declares below the module names
 // nothing where the module stands.
 run!(
-    dynamic_sig_import_of_a_type_declared_below_refused,
-    refused("the sig imports `Foo`, which nothing above this module declares"),
+    dynamic_sig_import_of_a_type_declared_below,
+    is(Value::I64(3)),
     "/test.gx" => r#"
         let st = mod foo dynamic {
             sig { use super::Foo; val f: fn(x: Foo) -> i64; val k: i64 };
@@ -2913,7 +2913,7 @@ run!(
         type Foo = {a: i64};
         let result = select st { error as e => 0, null as _ => foo::k }
     "#
-; FuseExpect::None);
+);
 
 // A loaded body's dynamic module is held to its names by the load that
 // declares it: the outer load is refused.
