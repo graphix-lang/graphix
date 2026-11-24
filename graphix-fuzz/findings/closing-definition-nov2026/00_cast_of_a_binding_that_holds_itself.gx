@@ -1,0 +1,6 @@
+// expect: reject
+// A binding written a collection that holds it, cast before the block
+// ends: the cast's walk of what flows into the binding followed the
+// cycle until memory ran out (soak nov24c, a crash).
+// Expected: refused, "infinite type".
+{ let ep = 100; ep <- -100; let x = 0; x <- { let f = 'a: Number + Singleton |x| -> 'a x + x; { let a = f(3); let b = f(2.5); [1, x, 3, 4, 5, 100, 7, 8] } }; println("hello"); cast<[u8, f32]>(x) }

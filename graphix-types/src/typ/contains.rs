@@ -916,6 +916,15 @@ impl TypeMismatch {
         Some(Self::refusing(expected, actual, None, Some(note)))
     }
 
+    // CR claude for claude: [bug/low] A union one of whose members is a cell bound
+    // to another member's type prints that type twice. `{ let v = [1]; let f = |x:
+    // i64| v[0]$; let t: null = f; 1 }` is refused "null does not contain fn(x: i64)
+    // -> [i64, i64]", and `|y: i64| (v1 +? y)` over `let v1 = 0` prints "[[i64, i64],
+    // Error<`ArithError(string)>]"; main prints `i64` and `[i64, Error<..>]`. The
+    // verdicts are right. The types are kept as the solver holds them and printed
+    // through their cells; make the union again once the cells are looked through
+    // (`Type::flatten_set` over the members read with `PrintFlag::DerefTVars`), here
+    // or in the printer. Found triaging soak nov24c. (mismatch-doubled-member-01)
     fn refusing(
         expected: &Type,
         actual: &Type,

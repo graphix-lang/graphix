@@ -1,0 +1,7 @@
+// A `$` in a function over a binding outside it that is decided after
+// the function closes: the result was the function's own type variable,
+// so each call got one nothing constrained, the `$` over the call left
+// nothing, and the fused build gave no value where the node walk gave 0
+// (soak nov24c, an interp against jit divergence).
+// Expected trace (both engines): 0.
+{ let v0: Error<Any> = never(); let v1 = 0; let v3: u8 = Collection::fold([u8:0, u8:255], u8:100, |v2, v3| v2); let v2 = |v4: i64| select v4 { 0 => (v1 +? v4)$, _ => error(true) }; let v5 = v2(0)$; -(select ((2 + -9223372036854775808) *? (1 - -1)) { i64 as n => n, _ => select (v5 %? 7) { error as _ => v5, i64 as n => n } }) }

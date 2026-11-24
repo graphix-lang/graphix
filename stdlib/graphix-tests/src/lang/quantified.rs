@@ -2052,3 +2052,58 @@ run!(
     r#"{ let f = { let h = |x| x; let c = 0; c <- 1; h }; (f(1), f("s")) }"#,
     prints(r#"[i64:1, "s"]"#)
 );
+
+// What a function reads out of a binding outside it is that binding's
+// at every call: a write after a call reaches the call's result, and a
+// `?` or `$` held until the binding is decided gives every call its type.
+macro_rules! read_from_outside {
+    ($($name:ident => $test:expr, $says:expr,)*) => {$(
+        run!($name, $test, refused($says); FuseExpect::None);
+    )*};
+}
+
+read_from_outside! {
+    a_field_a_function_reads_outside_meets_a_later_write =>
+        "{ let v = {a: 0}; let f = |x: i64| v.a; let t: i64 = f(1); v <- {a: \"s\"}; t }",
+        "i64 does not contain string",
+    a_field_read_bound_in_the_body_meets_a_later_write =>
+        "{ let v = {a: 0}; let f = |x: i64| { let y = v.a; y }; let t: i64 = f(1); \
+           v <- {a: \"s\"}; t }",
+        "i64 does not contain string",
+    an_element_a_function_reads_outside_meets_a_later_write =>
+        "{ let v = (0, 1); let f = |x: i64| v.0; let t: i64 = f(1); v <- (\"s\", 1); t }",
+        "i64 does not contain string",
+    a_call_of_a_function_outside_meets_a_later_write =>
+        "{ let v = |a: i64| a; let f = |x: i64| v(x); let t: i64 = f(1); \
+           v <- |a: i64| \"s\"; t }",
+        "i64 does not contain string",
+    a_pattern_s_name_over_a_binding_outside_meets_a_later_write =>
+        "{ let v = [1]; let f = |x: i64| select v { [a, ..] => a, _ => x }; \
+           let t: i64 = f(1); v <- [\"s\"]; t }",
+        "i64 does not contain string",
+    a_read_outside_through_a_second_function_meets_a_later_write =>
+        "{ let v = {a: 0}; let f = |x| (x, v.a); let g = |y| f(y); \
+           let t: (i64, i64) = g(1); v <- {a: \"s\"}; t }",
+        "i64 does not contain string",
+    a_held_or_never_over_a_binding_outside_types_each_call =>
+        "{ let v = 0; let f = |x: i64| (v +? x)$; let t: null = f(1); t }",
+        "null does not contain i64",
+    a_held_or_never_bound_in_the_body_types_each_call =>
+        "{ let v = 0; let f = |x: i64| { let y = (v +? x)$; y }; let t: null = f(1); t }",
+        "null does not contain i64",
+    an_or_never_of_a_call_waits_for_the_one_its_function_holds =>
+        "{ let v = 0; let f = |x: i64| select x { 0 => (v +? x)$, _ => error(true) }; \
+           let t: null = f(0)$; t }",
+        "null does not contain i64",
+    an_error_read_from_a_held_raise_types_each_call =>
+        "{ let v = 0; let f = |x: i64| { let r = never(); catch(e) r <- e.0.error; \
+           (v +? x)?; r }; let t: null = f(1); t }",
+        "null does not contain `ArithError(string)",
+}
+
+run!(
+    a_held_or_never_over_a_binding_outside_gives_its_value,
+    "{ let v = 0; let f = |x: i64| select x { 0 => (v +? x)$, _ => error(true) }; \
+       let r = f(0)$; r + 7 }",
+    is(Value::I64(7))
+);

@@ -1,0 +1,6 @@
+// expect: reject
+// A field a function reads out of a binding outside it: a write after
+// the function's first call did not reach that call's result (found
+// beside the soak nov24c divergence).
+// Expected: refused, "i64 does not contain string".
+{ let v = {a: 0}; let f = |x: i64| { let y = v.a; y }; let t: i64 = f(1); v <- {a: "s"}; t }

@@ -1367,7 +1367,7 @@ pub(crate) fn compile_block_children<'a, R: Rt>(
         let top = block_top(ctx, &scope);
         ctx.written.enter(&exprs, top);
     }
-    let mut statement = |ctx: &mut CompileCtx<R>, scope: &Scope, i: usize, e: &Expr| {
+    let statement = |ctx: &mut CompileCtx<R>, scope: &Scope, i: usize, e: &Expr| {
         let at = StmtAt::Block { value: !module && i + 1 == n, last: i + 1 == n };
         let boundary = prune::Prune::boundary(ctx);
         let (node, next) = ctx.in_boundary(Some(&boundary), |ctx| {

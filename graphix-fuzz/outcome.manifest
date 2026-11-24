@@ -59,11 +59,13 @@ trace	cast-wire-jul2026/00_let_bound_cast.gx
 trace	cast-wire-jul2026/01_narrow_cast_qop.gx
 trace	cast-wire-jul2026/02_narrow_cast_saturation.gx
 trace	catch-callsite-coverage-aug2026/00_shared_kernel_ignores_coverage.gx
-reject	type mismatch `ArithError(string) does not contain `ArrayIndexError(string)	catch-stmt-aug2026/00_constraint_too_narrow.gx
+reject	N: type mismatch `ArithError(string) does not contain `ArrayIndexError(string)	catch-stmt-aug2026/00_constraint_too_narrow.gx
 trace	catch-stmt-aug2026/01_shadowing_rethrow.gx
 trace	catch-stmt-aug2026/02_toplevel_file_catch.gx
 trace	clone-scope-resolution-jul2026/01_nested_callback_filter_wrong_module.gx
 trace	clone-wake-root-jul2026/01_cloned_callback_connect_loop.gx
+reject	N: infinite type: a variable holds itself in Array<'_N>	closing-definition-nov2026/00_cast_of_a_binding_that_holds_itself.gx
+reject	N: fn(n: '_N: unbound, acc: '_N: unbound) -> '_N: unbound must be Ordered here, but it is a function: functions have no order, and only == and != compare them, by identity	closing-definition-nov2026/01_order_of_a_function_in_an_uncalled_definition.gx
 trace	collection-merge-loses-fired-aug2026/00_init_two_slots_bottom_capture.gx
 trace	composite-qop-jun2026/01_composite_success_qop_segv.gx
 trace	composite-qop-jun2026/02_borrowed_inner_qop.gx
@@ -140,8 +142,8 @@ trace	empty-literal-firing-jul2026/01_empty_array_fires_every_invocation.gx
 trace	empty-scaffold-depth-charge-aug2026/01_empty_inner_fold_at_limit.gx
 trace	empty-scaffold-depth-charge-aug2026/02_empty_literal_source_fold.gx
 trace	env-cell-generalized-sep2026/00_extracted_callback_shares_outer.gx
-reject	type mismatch `ArithError(string) does not contain `B	errchain-distribution-loop-sep2026/00_connect_mismatch.gx
-reject	type mismatch [`ArithError(string), `ArrayIndexError(string)] does not contain [`ArrayIndexError(string), `B]	errchain-distribution-loop-sep2026/01_handler_rethrow.gx
+reject	N: type mismatch `ArithError(string) does not contain `B	errchain-distribution-loop-sep2026/00_connect_mismatch.gx
+reject	N: type mismatch [`ArithError(string), `ArrayIndexError(string)] does not contain [`ArrayIndexError(string), `B]	errchain-distribution-loop-sep2026/01_handler_rethrow.gx
 trace	eta-method-value-nov2026/00_method_value.gx
 trace	eta-method-value-nov2026/01_label_named_like_method.gx
 trace	evict-stub-order-jul2026/00_evicted_callee_symbol.gx
@@ -306,6 +308,11 @@ trace	omitted-default-union-nov2026/02_default_over_a_union_of_distinct_cells.gx
 trace	operand-bound-member-oct2026/00_extracted_callback.gx
 trace	organic-firing-aug2026/00_const_terminal.gx
 trace	organic-firing-aug2026/01_multilevel_face.gx
+trace	outside-read-in-definition-nov2026/00_or_never_over_an_outside_binding.gx
+reject	N: type mismatch null does not contain iN	outside-read-in-definition-nov2026/01_or_never_types_each_call.gx
+reject	N: type mismatch iN does not contain string	outside-read-in-definition-nov2026/02_field_read_meets_a_later_write.gx
+reject	N: type mismatch iN does not contain string	outside-read-in-definition-nov2026/03_pattern_name_meets_a_later_write.gx
+reject	N: type mismatch null does not contain `ArithError(string)	outside-read-in-definition-nov2026/04_error_read_from_a_held_raise.gx
 trace	param-call-expr-sep2026/00_param_called_through_parens.gx
 reject	N: the type 'b must be known here, an operation reads it to know what to make: annotate where its result goes	parse-bottom-member-jul2026/00_unannotated_parse_in_callback.gx
 reject	N: the type 'b must be known here, an operation reads it to know what to make: annotate where its result goes	parse-bottom-member-jul2026/01_nested_bottom_member.gx

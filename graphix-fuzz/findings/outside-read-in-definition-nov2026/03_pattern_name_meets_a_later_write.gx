@@ -1,0 +1,5 @@
+// expect: reject
+// A name a select's pattern binds over a binding outside the function
+// was the function's own type variable, and no write reached a call.
+// Expected: refused, "i64 does not contain string".
+{ let v = [1]; let f = |x: i64| select v { [a, ..] => a, _ => x }; v <- ["s"]; let t: i64 = f(1); t }

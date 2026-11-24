@@ -129,6 +129,8 @@ no "must be known here" let f = |x: 'a, y: 'a| -> 'a y; f(str::parse("1"), 1)
 | a let a block writes is one value, which every instance of what the block defines shares | `node/bind.rs` (`binds_definition`, `outside_parts`) |
 | a function held as a function type is called as that type lists its arguments; a variadic one is called as one wherever its own type reaches the call | `Solving::fn_below`, `Use::Call` |
 | `?` and `$` take the errors off their operand, or with none the null, and it holds one of the two | `bounds::strip` |
+| what a function reads out of a binding outside it (a field, an element, a call's result, a pattern's name, what a held `?` or `$` leaves) is that binding's at every instance, and takes what is written to the binding after an instance is made | `Solving::quantify` (`produced_from_outside`, `given_late`), `copy_in` |
+| an order asked of a function is refused where the definition asking it closes, called or not | `Solving::generalize` (`hold_shape`) |
 
 ```graphix,cases
 ok let f = |x| x; (f(1), f("s"))
@@ -155,6 +157,10 @@ no "a variadic function where one of 1 arguments is wanted" let f: fn(x: i64) ->
 ok let s = {f: all}; s.f(2, 2)
 no "it has no error and no null" let x = 1; x$
 ok let x: Any = 1; x$
+no "i64 does not contain string" let v = {a: 0}; let f = |x: i64| v.a; let t: i64 = f(1); v <- {a: "s"}; t
+no "null does not contain i64" let v = 0; let f = |x: i64| (v +? x)$; let t: null = f(1); t
+ok let v = {a: 0}; let f = |x| (x, v.a); (f(1), f("s"))
+no "functions have no order" let ge = |p| p >= |n| n; 1
 ```
 
 ### Select

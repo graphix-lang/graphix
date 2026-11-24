@@ -432,9 +432,10 @@ run!(
     prints("[true, false]")
 );
 
-/// A comparison, an ordering, a `?` or a `$` is judged once its operands
-/// are decided, with no expression at hand: its refusal is placed at the
-/// expression, or at the use of the generic definition that makes it.
+/// A comparison, an ordering, a `?`, a `$` or the read of a chain's error
+/// is judged once its operands are decided, with no expression at hand:
+/// its refusal is placed at the expression, or at the use of the generic
+/// definition that makes it.
 #[tokio::test(flavor = "current_thread")]
 async fn a_refusal_judged_once_its_types_are_decided_is_placed() -> Result<()> {
     use graphix_compiler::expr::ParserContext;
@@ -444,6 +445,10 @@ async fn a_refusal_judged_once_its_types_are_decided_is_placed() -> Result<()> {
         (r#"{ let m = "tm"; select 0 { 0 if m == 0 => 9, _ => 2 } }"#, "m == 0"),
         (r#"{ let f = |x| x == 3; f("s") }"#, r#"f("s")"#),
         (r#"{ let v: string = (-1 /? 2)$; 0 }"#, "(-1 /? 2)$"),
+        (
+            r#"{ let r = never(); catch(e) r <- e.0.error; (1 +? 1)?; let t: null = r; t }"#,
+            "e.0.error",
+        ),
     ] {
         let e = match eval(src, crate::TEST_REGISTER).await {
             Err(e) => e,

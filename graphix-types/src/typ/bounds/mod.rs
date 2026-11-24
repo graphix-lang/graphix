@@ -755,8 +755,9 @@ pub struct Solving {
     strips: Vec<(Type, Type, Option<Type>, Option<Made>)>,
     /// What meets core's `ErrChain` over a payload not decided yet: a raise
     /// extends a payload that is a chain, never nests it, so the chain is
-    /// not known until the payload is.
-    chains: Vec<Chained>,
+    /// not known until the payload is. With each, the expression checked
+    /// when it was held.
+    chains: Vec<(Chained, Option<Made>)>,
     /// The copy each part of the scheme an instantiation is copying has
     /// made, by address: a part its type and a cell's bound share is
     /// copied once.
@@ -1575,7 +1576,8 @@ impl Solving {
             chain_payload(env, t).is_some_and(|p| undecided_chain_payload(&shallow(&p)))
         };
         if waits(&a) || waits(&b) {
-            return Ok(self.chains.push(Chained::Relation(a.clone(), b.clone())));
+            let made = self.site();
+            return Ok(self.chains.push((Chained::Relation(a.clone(), b.clone()), made)));
         }
         match (&a, &b) {
             // what no decided member of `b` takes goes to its open member
@@ -3497,10 +3499,14 @@ fn may_be_chain(env: &Env, v: &TVar) -> Result<bool> {
     Ok(true)
 }
 
-/// The open cells what the use `u` gives goes to.
+/// The open cells what the use `u` gives goes to: those of its types,
+/// and the names a routed select's patterns bind.
 fn use_outs(u: &Use) -> SmallVec<[TVar; 4]> {
     let mut outs = SmallVec::new();
     u.each(&mut |t| cells_of(t, false, &mut outs));
+    if let Use::Routed(_, of) = u {
+        of.cells(&mut outs)
+    }
     outs.retain(|v: &mut TVar| !v.is_bound());
     outs
 }
@@ -3569,11 +3575,7 @@ fn produced_from_outside(v: &TVar, depth: u32) -> Option<TVar> {
     sources.into_iter().find(|w| {
         !w.is_bound()
             && w.level().depth() <= depth
-            && uses(w).iter().any(|(u, _)| {
-                let mut produced: SmallVec<[TVar; 4]> = SmallVec::new();
-                u.each(&mut |t| cells_of(t, false, &mut produced));
-                produced.iter().any(|p| p.same_cell(v))
-            })
+            && uses(w).iter().any(|(u, _)| use_outs(u).iter().any(|p| p.same_cell(v)))
     })
 }
 
@@ -3923,14 +3925,7 @@ impl Solving {
         });
         lower.iter().chain(upper.iter()).for_each(|b| cells_of(b, false, out));
         out.extend(feeders.into_iter().filter(|u| u.is_open()));
-        for (u, _) in uses.iter() {
-            u.each(&mut |t| cells_of(t, false, out));
-            if let Use::Routed(_, of) = u {
-                let mut binds = SmallVec::new();
-                of.cells(&mut binds);
-                out.extend(binds.into_iter().filter(|b| !b.is_bound()))
-            }
-        }
+        uses.iter().for_each(|(u, _)| out.extend(use_outs(u)))
     }
 
     /// Of the cells reachable from `from`, those a definition closing at
@@ -4001,17 +3996,65 @@ impl Solving {
     pub fn quantify(&mut self, t: &Type, depth: u32) {
         let mut kept = Cells::new();
         self.reach(t, &mut kept);
+        let late = self.given_late(depth);
         for v in kept.iter().filter(|v| v.level().depth() > depth) {
             // a cell a use of an open cell outside produces into takes
             // that cell's values as they come, after any copy is made:
             // it is the outer cell's, which every instance shares
-            if let Some(w) = produced_from_outside(v, depth) {
+            let given = || late.iter().find(|(p, _)| p.same_cell(v)).map(|(_, w)| w);
+            if let Some(w) = produced_from_outside(v, depth).or_else(|| given().cloned())
+            {
                 v.claim(w.level());
                 continue;
             }
             known_mut(v, |k| k.quantified = true);
             v.generalize()
         }
+    }
+
+    /// The cells a `?`, a `$` or a chain's read still held gives a type
+    /// after the definition closing over `depth` has closed, each with a
+    /// cell at `depth` or shallower that decides it: what the use reads
+    /// reaches that cell, or a cell another such use gives.
+    fn given_late(&self, depth: u32) -> SmallVec<[(TVar, TVar); 4]> {
+        let mut late: SmallVec<[(TVar, TVar); 4]> = SmallVec::new();
+        type Ends = (SmallVec<[TVar; 4]>, SmallVec<[TVar; 4]>);
+        let mut held: SmallVec<[Ends; 4]> = SmallVec::new();
+        for (operand, out, raised, _) in self.strips.iter() {
+            let mut outs = open_cells(out);
+            raised.iter().for_each(|r| outs.extend(open_cells(r)));
+            held.push((open_cells(operand), outs))
+        }
+        for (c, _) in self.chains.iter() {
+            let ins = match c {
+                Chained::Read(_, chain) => open_cells(chain),
+                Chained::Relation(a, b) => {
+                    let mut ins = open_cells(a);
+                    ins.extend(open_cells(b));
+                    ins
+                }
+            };
+            held.push((ins, c.outs()))
+        }
+        let mut found = true;
+        while found && !held.is_empty() {
+            found = false;
+            held.retain(|(ins, outs)| {
+                let mut read = Cells::new();
+                ins.iter().for_each(|v| self.reach(&Type::TVar(v.clone()), &mut read));
+                let outer = read.iter().find(|w| w.level().depth() <= depth).cloned();
+                let given = || late.iter().find(|(p, _)| read.has(p)).map(|(_, w)| w);
+                match outer.or_else(|| given().cloned()) {
+                    None => true,
+                    Some(w) => {
+                        late.extend(outs.iter().map(|p| (p.clone(), w.clone())));
+                        found = true;
+                        false
+                    }
+                }
+            });
+        }
+        late
     }
 
     /// The declared variable `v` is its scheme's from here on: its
@@ -4127,6 +4170,9 @@ impl Solving {
         finite_all(own.iter())?;
         for v in own.iter() {
             self.meetable(env, v)?;
+            for l in v.cell_lower().iter() {
+                self.hold_shape(env, v, l)?
+            }
             // what the definition alone gives a variable that must be one
             // type is part of it at every instance
             if singleton(v) {
@@ -4175,6 +4221,7 @@ impl Solving {
                 .into_iter()
                 .filter(|c| matches!(c, Type::Bound(_)))
                 .collect();
+            self.hold_shape(env, &v, &t)?;
             let asked = Arc::new((t, predicates, v.name.clone()));
             self.leave(&asked.0, |ls| {
                 let same =
@@ -4224,6 +4271,19 @@ impl Solving {
             }
         }
         Ok(())
+    }
+
+    /// The order and the comparison asked of the cell `v` hold of `t`, a
+    /// type of the closing definition's that `v` holds, read with its open
+    /// parts as no type yet: what no instance's types change is judged
+    /// here, since a function has no order at any of them.
+    fn hold_shape(&self, env: &Env, v: &TVar, t: &Type) -> Result<()> {
+        let shape: SmallVec<[Type; 1]> = v
+            .cell_above()
+            .into_iter()
+            .filter(|p| matches!(p, Type::Bound(Bound::Ordered | Bound::Discernible)))
+            .collect();
+        self.hold(env, &v.name, &shape, &deep(t)).map_err(|e| self.placed_at(v, e))
     }
 
     /// A cell of the definition closing at `depth` that an open cell outside
@@ -4622,10 +4682,16 @@ impl Solving {
             upper.extend(told);
             let mut feeds: SmallVec<[TVar; 1]> = SmallVec::new();
             for u in fed.iter() {
-                if let Type::TVar(u) =
+                if let Type::TVar(w) =
                     &self.copy(&Type::TVar(u.clone()), above, at, copies)
                 {
-                    feeds.push(u.clone())
+                    // a feeder outside the scheme is no copy: it passes
+                    // what flows into it on to this copy as it does to
+                    // the original
+                    if w.same_cell(u) {
+                        self.write(w, Kept::Upper(Type::TVar(n.clone())))
+                    }
+                    feeds.push(w.clone())
                 }
             }
             // a source is the copy this instance has made of it, or else the
@@ -4779,7 +4845,7 @@ impl Solving {
                     pending.chain(self.strips.iter().map(|(operand, ..)| operand));
                 let mut pending: SmallVec<[TVar; 4]> =
                     pending.flat_map(open_cells).collect();
-                self.chains.iter().for_each(|c| pending.extend(c.ins(env)));
+                self.chains.iter().for_each(|(c, _)| pending.extend(c.ins(env)));
                 self.held_back(own.chain(pending), min)
             };
             // a pending use (a held choice, a select still waiting) waits
@@ -4809,7 +4875,7 @@ impl Solving {
                     raised.iter().for_each(|p| outs.extend(open_cells(p)));
                     produced.push(((Pending::Strip, i), closure(self, outs)))
                 }
-                for (i, c) in self.chains.iter().enumerate() {
+                for (i, (c, _)) in self.chains.iter().enumerate() {
                     produced.push(((Pending::Chain, i), closure(self, c.outs())))
                 }
             }
@@ -4934,7 +5000,8 @@ impl Solving {
                         "the type of the operand of ? or $ is not known here: annotate it"
                     );
                     return Err(placed(&made, unknown));
-                } else if self.reaches_scheme(&operand)
+                } else if free((Pending::Strip, i), &read.met)
+                    && self.reaches_scheme(&operand)
                     && let Some(shape) = shaped(env, &operand)?
                 {
                     // the operand of a closed definition reaching its
@@ -4948,32 +5015,34 @@ impl Solving {
                 }
             }
             for i in (0..self.chains.len()).rev() {
-                let chained = self.chains[i].clone();
+                let (chained, made) = self.chains[i].clone();
                 let ins = chained.ins(env);
                 if ins.iter().all(|v| self.fixable(&held, v, min))
                     && free((Pending::Chain, i), &ins)
                 {
                     self.chains.swap_remove(i);
                     ins.iter().try_for_each(|v| self.fix(env, v))?;
-                    match &chained {
-                        Chained::Read(u, chain) => drop(self.apply(env, u, chain)?),
+                    let met = match &chained {
+                        Chained::Read(u, chain) => self.apply(env, u, chain).map(drop),
                         Chained::Relation(a, b) => {
                             match (chain_payload(env, a), chain_payload(env, b)) {
                                 (Some(p), Some(q)) => {
                                     let (p, q) =
                                         (chain_error(env, p)?, chain_error(env, q)?);
-                                    self.relate(env, &p, &q)?
+                                    self.relate(env, &p, &q)
                                 }
-                                _ => self.relate(env, a, b)?,
+                                _ => self.relate(env, a, b),
                             }
                         }
-                    }
+                    };
+                    met.map_err(|e| placed(&made, e))?;
                     progress = true
                 } else if ins.iter().any(quantified) {
-                    bail!(
+                    let unknown = anyhow!(
                         "the error of this chain is not known here: what was raised may \
                          be a chain itself, which the raise extends; annotate it"
-                    )
+                    );
+                    return Err(placed(&made, unknown));
                 }
             }
         }
@@ -4993,12 +5062,7 @@ impl Solving {
             for v in self.cells[mark..].iter().filter(|v| !v.is_bound() && !quantified(v))
             {
                 for (u, _) in uses(v).iter().filter(|(_, met)| !met) {
-                    let mut outs = SmallVec::new();
-                    u.each(&mut |t| cells_of(t, false, &mut outs));
-                    if let Use::Routed(_, of) = u {
-                        of.cells(&mut outs)
-                    }
-                    for o in outs.iter().filter(|o| !o.is_bound()) {
+                    for o in use_outs(u).iter() {
                         self.reach(&Type::TVar(o.clone()), &mut waiting)
                     }
                 }
@@ -5025,7 +5089,7 @@ impl Solving {
                     self.reach(&Type::TVar(v), &mut waiting)
                 }
             }
-            for c in self.chains.iter() {
+            for (c, _) in self.chains.iter() {
                 for v in c.outs() {
                     self.reach(&Type::TVar(v), &mut waiting)
                 }
@@ -5120,7 +5184,8 @@ impl Solving {
                 )
             }
             t if undecided_chain_payload(t) => {
-                self.chains.push(Chained::Read(u.clone(), chain.clone()));
+                let made = self.site();
+                self.chains.push((Chained::Read(u.clone(), chain.clone()), made));
                 Ok(true)
             }
             _ => self.apply(env, u, &chain.lookup_ref(env)?),
@@ -5852,13 +5917,8 @@ impl Solving {
         for l in flowing(v, &mut SmallVec::new()) {
             met |= self.apply(env, &u, &l)?
         }
-        let mut produced: SmallVec<[TVar; 4]> = SmallVec::new();
-        u.each(&mut |t| cells_of(t, false, &mut produced));
-        if let Use::Routed(_, of) = &u {
-            of.cells(&mut produced)
-        }
         let v = v.clone();
-        for p in produced.iter() {
+        for p in use_outs(&u).iter() {
             self.sent(p, &v)
         }
         self.write(&v, Kept::Use(u, met));

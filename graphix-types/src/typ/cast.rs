@@ -444,6 +444,9 @@ struct Verdicts<T> {
     /// Whether the walk looked a type reference up, whose expansion the
     /// env decides.
     looked_up: bool,
+    /// The open cells the walk is beneath, by address: one that flows
+    /// into itself holds there nothing it does not hold outside.
+    beneath: SmallVec<[usize; 4]>,
 }
 
 impl<T> Verdicts<T> {
@@ -456,6 +459,7 @@ impl<T> Verdicts<T> {
             walked: LPooled::take(),
             judgment: None,
             looked_up: false,
+            beneath: SmallVec::new(),
         }
     }
 
@@ -870,9 +874,19 @@ impl Type {
                     found
                 }
                 // an open cell will hold what bounds it from below
-                Type::TVar(_) => match self.deref_cloned() {
+                Type::TVar(tv) => match self.deref_cloned() {
                     Some(t) => t.holds(env, seen, leaf),
-                    None => self.open_lower().iter().any(|l| l.holds(env, seen, leaf)),
+                    None => tv.open_cell().is_some_and(|c| {
+                        let addr = c.cell_addr();
+                        if seen.beneath.contains(&addr) {
+                            return false;
+                        }
+                        seen.beneath.push(addr);
+                        let found =
+                            c.cell_lower().iter().any(|l| l.holds(env, seen, leaf));
+                        seen.beneath.pop();
+                        found
+                    }),
                 },
                 // an open constructor is unknown like an open cell: its
                 // argument decides

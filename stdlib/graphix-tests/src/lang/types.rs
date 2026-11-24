@@ -1355,6 +1355,15 @@ run!(
     FuseExpect::Jit
 );
 
+// A binding written a collection that holds it is refused where
+// something reads its type before the block ends, a cast here.
+run!(
+    cast_of_a_binding_that_holds_itself_is_refused,
+    "{ let x = 0; x <- [1, x]; cast<[u8, f32]>(x) }",
+    refused("infinite type: a variable holds itself in Array<");
+    FuseExpect::None
+);
+
 // A genuine infinite type through the cell is still refused.
 const REC_BLOCK_INFINITE_REJECTS: &str = r#"
 {
@@ -3578,6 +3587,9 @@ async fn ordering_takes_two_numeric_types() -> Result<()> {
     for (src, says) in [
         ("{ let f = |x: i64| x; array::sort([f, f]) }", "functions have no order"),
         ("{ let r = &1; {r => 1} }", "references have no order"),
+        ("{ let ge = |p| p >= |n| n; 1 }", "functions have no order"),
+        ("{ let f = |n| n; let ge = |p| p >= f; 1 }", "functions have no order"),
+        ("{ let ge = |p| { let g = |n| p; g >= g }; 1 }", "functions have no order"),
     ] {
         match eval_modes(src, crate::TEST_REGISTER).await? {
             Err(msg) => assert!(msg.contains(says), "{src}: {msg}"),

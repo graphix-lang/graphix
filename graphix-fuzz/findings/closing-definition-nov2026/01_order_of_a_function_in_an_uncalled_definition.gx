@@ -1,0 +1,6 @@
+// expect: reject
+// A function ordered against a parameter in a definition nothing calls:
+// the test was left to the instances, and there were none (soak nov24c,
+// a let-inline flip).
+// Expected: refused, "functions have no order".
+{ let x = -100; let eq = |p, q| p >= |n, acc| select n { 0 => acc, _ => { let x = error(1); x } }; let c = 5; c }

@@ -64,6 +64,8 @@
 3	catch-stmt-aug2026/02_toplevel_file_catch.gx
 3	clone-scope-resolution-jul2026/01_nested_callback_filter_wrong_module.gx
 1	clone-wake-root-jul2026/01_cloned_callback_connect_loop.gx
+0	closing-definition-nov2026/00_cast_of_a_binding_that_holds_itself.gx
+0	closing-definition-nov2026/01_order_of_a_function_in_an_uncalled_definition.gx
 3	collection-merge-loses-fired-aug2026/00_init_two_slots_bottom_capture.gx
 1	composite-qop-jun2026/01_composite_success_qop_segv.gx
 1	composite-qop-jun2026/02_borrowed_inner_qop.gx
@@ -306,6 +308,11 @@
 1	operand-bound-member-oct2026/00_extracted_callback.gx
 1	organic-firing-aug2026/00_const_terminal.gx
 1	organic-firing-aug2026/01_multilevel_face.gx
+1	outside-read-in-definition-nov2026/00_or_never_over_an_outside_binding.gx
+0	outside-read-in-definition-nov2026/01_or_never_types_each_call.gx
+0	outside-read-in-definition-nov2026/02_field_read_meets_a_later_write.gx
+0	outside-read-in-definition-nov2026/03_pattern_name_meets_a_later_write.gx
+0	outside-read-in-definition-nov2026/04_error_read_from_a_held_raise.gx
 1	param-call-expr-sep2026/00_param_called_through_parens.gx
 0	parse-bottom-member-jul2026/00_unannotated_parse_in_callback.gx
 0	parse-bottom-member-jul2026/01_nested_bottom_member.gx
