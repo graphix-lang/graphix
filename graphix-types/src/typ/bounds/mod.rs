@@ -21,7 +21,7 @@ use crate::{
     },
 };
 use ahash::{AHashMap, AHashSet};
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use compact_str::{CompactString, format_compact};
 use netidx_value::Typ;
@@ -649,6 +649,26 @@ impl Prints {
 /// then being checked.
 type Made = (Arc<Origin>, SourcePosition);
 
+/// `e`, a refusal found with no expression at hand, placed at `made`
+/// unless it says where it arose.
+fn placed(made: &Option<Made>, e: anyhow::Error) -> anyhow::Error {
+    match made {
+        Some((ori, pos)) => e.placed(ori, *pos),
+        None => e,
+    }
+}
+
+/// A comparison waiting for its operands' types to be decided
+/// ([`Solving::compare`]): whether it is an ordering, and the expression
+/// checked when it was asked, the comparison or the use of the generic
+/// definition that makes it.
+struct Comparison {
+    a: Type,
+    b: Type,
+    ordered: bool,
+    made: Option<Made>,
+}
+
 /// While this lives, the cells a check first bounds are made at the
 /// expression `spec`: a refusal found when one is fixed, where no use is
 /// at hand, is placed there.
@@ -733,8 +753,8 @@ pub struct Solving {
     selects: Vec<select::Select>,
     /// The operand and the result of each `?` or `$` whose operand is not
     /// decided yet; the third is where the payloads of the errors a `?`
-    /// raises go.
-    strips: Vec<(Type, Type, Option<Type>)>,
+    /// raises go, the last the expression checked when it was held.
+    strips: Vec<(Type, Type, Option<Type>, Option<Made>)>,
     /// What meets core's `ErrChain` over a payload not decided yet: a raise
     /// extends a payload that is a chain, never nests it, so the chain is
     /// not known until the payload is.
@@ -796,9 +816,8 @@ pub struct Solving {
     /// The cells fixed that carry a predicate, which is judged of what
     /// the cell holds once every cell is fixed ([`Self::judge`]).
     judged: Vec<TVar>,
-    /// The operands of each comparison, and whether it is an ordering,
-    /// judged with them ([`Self::compare`]).
-    compared: Vec<(Type, Type, bool)>,
+    /// The comparisons judged with the fixed cells ([`Self::compare`]).
+    compared: Vec<Comparison>,
     /// A flow left out of a cell's fixing because its source was being
     /// fixed around it: the source and the cell, checked once both are
     /// fixed ([`Self::fix`]).
@@ -2245,9 +2264,7 @@ impl Solving {
         // a refusal names the types as they were written
         r.map_err(|e| match e.to_string().starts_with("type mismatch") {
             true => super::contains::TypeMismatch::beyond_bound(env, b, a)
-                .unwrap_or_else(|| {
-                    anyhow::anyhow!("type mismatch {b} does not contain {a}")
-                }),
+                .unwrap_or_else(|| anyhow!("type mismatch {b} does not contain {a}")),
             false => e,
         })
     }
@@ -2382,9 +2399,8 @@ impl Solving {
     /// `e`, a refusal found fixing or judging the cell `v`, placed where
     /// `v` was first bounded unless it says where it arose.
     fn placed_at(&self, v: &TVar, e: anyhow::Error) -> anyhow::Error {
-        let made = self.cells.iter().position(|c| c.same_cell(v));
-        match made.and_then(|i| self.made_at[i].as_ref()) {
-            Some((ori, pos)) => e.placed(ori, *pos),
+        match self.cells.iter().position(|c| c.same_cell(v)) {
+            Some(i) => placed(&self.made_at[i], e),
             None => e,
         }
     }
@@ -2503,7 +2519,7 @@ fn reads_type(v: &TVar) -> bool {
 }
 
 fn infinite() -> anyhow::Error {
-    anyhow::anyhow!(
+    anyhow!(
         "infinite type: a value here would hold a value of its own type (a function \
          passed or returning itself, a collection holding itself); declare a named \
          recursive type and annotate the binding"
@@ -2658,6 +2674,15 @@ pub fn settle_left(env: &Env, v: &TVar) -> Result<()> {
     s.judge(env)
 }
 
+// CR claude for claude: [bug/low] A lookup in a generic definition over a map the
+// definition captures is not judged for its instances' keys. `{ let m = {"a" => 1};
+// let f = |k| m{k}$ + 1; f(2) }` checks and builds, and the lookup finds nothing at
+// run time. `{ let m = {"a" => 1}; m{2}$ + 1 }`, and the same with the map a
+// parameter (`|m, k| m{k}$ + 1` called with the map and 2), are refused "cannot
+// compare string with i64"; main refuses all three. The comparison recorded here is
+// between the lookup's key and a fresh cell the map's key type flows into: what the
+// instance's copy of that cell holds when `Solving::judge` reads it is the place to
+// look. Found probing by hand; not traced. (lookup-key-generic-capture-01)
 /// Hold a lookup's key to the comparison rule against the keys of the map
 /// type `map`: one of the two types holds the other, or the lookup finds
 /// nothing whatever the map holds. Judged when the check fixes the cells;
@@ -4124,10 +4149,10 @@ impl Solving {
         // each instance's to judge
         let (left, mine): (Vec<_>, Vec<_>) = std::mem::take(&mut self.compared)
             .into_iter()
-            .partition(|(a, b, _)| scheme(a) || scheme(b));
+            .partition(|c| scheme(&c.a) || scheme(&c.b));
         self.compared = mine;
-        for pair in left {
-            let pair = Arc::new(pair);
+        for Comparison { a, b, ordered, made: _ } in left {
+            let pair = Arc::new((a, b, ordered));
             for t in [&pair.0, &pair.1] {
                 self.leave(t, |ls| {
                     let same = |l: &Left| matches!(l, Left::Compared(p) if Arc::ptr_eq(p, &pair));
@@ -4316,7 +4341,8 @@ impl Solving {
                     Left::Compared(pair) => {
                         let a = self.copy(&pair.0, above, at, copies);
                         let b = self.copy(&pair.1, above, at, copies);
-                        self.compared.push((a, b, pair.2))
+                        let (ordered, made) = (pair.2, self.site());
+                        self.compared.push(Comparison { a, b, ordered, made })
                     }
                     Left::Asked(asked) => {
                         let t = self.copy(&asked.0, above, at, copies);
@@ -4741,7 +4767,7 @@ impl Solving {
                         produced.push(((Pending::Select, id), closure(self, binds)))
                     }
                 }
-                for (i, (_, out, raised)) in self.strips.iter().enumerate() {
+                for (i, (_, out, raised, _)) in self.strips.iter().enumerate() {
                     let mut outs = open_cells(out);
                     raised.iter().for_each(|p| outs.extend(open_cells(p)));
                     produced.push(((Pending::Strip, i), closure(self, outs)))
@@ -4844,7 +4870,7 @@ impl Solving {
             };
             progress |= self.select_waiting(env, &ready)?;
             for i in (0..self.strips.len()).rev() {
-                let (operand, out, raised) = self.strips[i].clone();
+                let (operand, out, raised, made) = self.strips[i].clone();
                 let ins = open_cells(&operand);
                 // the strip fixes its operand, and with it every cell the
                 // operand holds: a chain's payload another raise still pays
@@ -4860,16 +4886,14 @@ impl Solving {
                     if !strippable(env, &deep(&operand))? {
                         self.fix_in(env, &operand)?
                     }
-                    let (left, payloads) = strip(env, &deep(&operand), raised.is_some())?;
-                    self.constrain(env, &left, &out)?;
-                    for to in raised.iter() {
-                        payloads.iter().try_for_each(|p| self.constrain(env, p, to))?
-                    }
+                    self.stripped(env, &deep(&operand), &out, &raised)
+                        .map_err(|e| placed(&made, e))?;
                     progress = true
                 } else if ins.iter().any(quantified) {
-                    bail!(
+                    let unknown = anyhow!(
                         "the type of the operand of ? or $ is not known here: annotate it"
-                    )
+                    );
+                    return Err(placed(&made, unknown));
                 } else if self.reaches_scheme(&operand)
                     && let Some(shape) = shaped(env, &operand)?
                 {
@@ -4878,11 +4902,8 @@ impl Solving {
                     // shape, its parts stay what they are, and what is
                     // raised meets them as they do
                     self.strips.swap_remove(i);
-                    let (left, payloads) = strip(env, &shape, raised.is_some())?;
-                    self.constrain(env, &left, &out)?;
-                    for to in raised.iter() {
-                        payloads.iter().try_for_each(|p| self.constrain(env, p, to))?
-                    }
+                    self.stripped(env, &shape, &out, &raised)
+                        .map_err(|e| placed(&made, e))?;
                     progress = true
                 }
             }
@@ -4957,7 +4978,7 @@ impl Solving {
                     }
                 }
             }
-            for (_, out, raised) in self.strips.iter() {
+            for (_, out, raised, _) in self.strips.iter() {
                 for v in
                     open_cells(out).into_iter().chain(raised.iter().flat_map(open_cells))
                 {
@@ -5070,7 +5091,24 @@ impl Solving {
     /// what it leaves of the operand once that is, and `raised` the
     /// payloads of the errors a `?` takes off.
     pub fn hold_strip(&mut self, operand: Type, out: Type, raised: Option<Type>) {
-        self.strips.push((operand, out, raised))
+        self.strips.push((operand, out, raised, self.site()))
+    }
+
+    /// What a `?` or `$` leaves of the decided operand `shape` goes to
+    /// `out`, and the payloads of the errors a `?` takes off to `raised`.
+    fn stripped(
+        &mut self,
+        env: &Env,
+        shape: &Type,
+        out: &Type,
+        raised: &Option<Type>,
+    ) -> Result<()> {
+        let (left, payloads) = strip(env, shape, raised.is_some())?;
+        self.constrain(env, &left, out)?;
+        for to in raised.iter() {
+            payloads.iter().try_for_each(|p| self.constrain(env, p, to))?
+        }
+        Ok(())
     }
 
     /// Whether the bounds added since `mark` gave one of `parts`, a cell
@@ -5315,23 +5353,24 @@ impl Solving {
             self.hold(env, name, predicates, &deep(t))?
         }
         let number = Type::Primitive(Typ::number());
-        for (a, b, ordered) in std::mem::take(&mut self.compared) {
+        for Comparison { a, b, ordered, made } in std::mem::take(&mut self.compared) {
             let (a, b) = (deep(&a), deep(&b));
             // numbers of two types have an order, and are never equal
             if ordered && number.contains(env, &a)? && number.contains(env, &b)? {
                 continue;
             }
             if !a.contains(env, &b)? && !b.contains(env, &a)? {
-                match ordered {
-                    true => bail!(
+                let refusal = match ordered {
+                    true => anyhow!(
                         "cannot order {a} against {b}: neither type holds the \
                          other, so the answer never depends on the values"
                     ),
-                    false => bail!(
+                    false => anyhow!(
                         "cannot compare {a} with {b}: neither type holds the \
                          other, so the two are never equal"
                     ),
-                }
+                };
+                return Err(placed(&made, refusal));
             }
         }
         Ok(())
@@ -5476,7 +5515,8 @@ impl Solving {
     /// for an ordering, both are numbers; judged once both are decided, by
     /// each instance where a generic definition's variables decide them.
     pub fn compare(&mut self, a: Type, b: Type, ordered: bool) {
-        self.compared.push((a, b, ordered))
+        let made = self.site();
+        self.compared.push(Comparison { a, b, ordered, made })
     }
 
     fn fixed(

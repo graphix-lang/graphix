@@ -517,6 +517,27 @@ run!(
     FuseExpect::None
 );
 
+// A value nothing decides holds no value: a read or an update of its
+// fields checks, builds with no layout to read, and never runs.
+run!(
+    struct_field_read_of_a_value_nothing_decides,
+    r#"{ let v = never(); v.x; v.a.b == v.c; "[v.x]"; 0 }"#,
+    is(Value::I64(0))
+);
+
+run!(
+    struct_update_of_a_value_nothing_decides,
+    r#"{ let v = never(); {v with x: 1}; 0 }"#,
+    is(Value::I64(0))
+);
+
+run!(
+    catch_binder_field_read_where_nothing_raises,
+    r#"{ catch(e) e.0.error; 0 }"#,
+    is(Value::I64(0));
+    FuseExpect::None
+);
+
 // A partial struct pattern over two members told apart only by types not
 // decided where it is completed is refused in its holder's words, the
 // cells named by their bindings: a let completing it at the check, as it

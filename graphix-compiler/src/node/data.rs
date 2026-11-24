@@ -346,8 +346,7 @@ impl<R: Rt> Update<R> for StructWith<R> {
         // field's place is known only now
         let source = self.source.typ().resolve_tvars();
         for rep in self.replace.iter_mut().filter(|r| r.index.is_none()) {
-            let found = struct_field_types(ctx, &source, &rep.name);
-            rep.index = wrap!(rep.n, found)?.0
+            rep.index = wrap!(rep.n, field_place(ctx, &source, &rep.name))?
         }
         Ok(())
     }
@@ -498,9 +497,8 @@ impl<R: Rt> Update<R> for StructRef<R> {
         // field's place is known only now
         if self.sorted_field_idx.is_none() {
             let source = self.source.typ().resolve_tvars();
-            let (idx, _) =
-                wrap!(self, struct_field_types(ctx, &source, &self.field_name))?;
-            self.sorted_field_idx = idx
+            self.sorted_field_idx =
+                wrap!(self, field_place(ctx, &source, &self.field_name))?
         }
         Ok(())
     }
@@ -919,6 +917,20 @@ pub(crate) fn struct_field_types<R: Rt>(
     deref_typ!("struct", ctx, source,
         Some(Type::Struct(flds)) => field(flds).map(|(i, t)| (Some(i), LPooled::from_iter([t])))
     )
+}
+
+/// The sorted place of the field `name` in the struct the check decided
+/// `source` to be ([`struct_field_types`]). `None` too where the check
+/// decided nothing of it: no value reaches what reads it.
+fn field_place<R: Rt>(
+    ctx: &CompileCtx<R>,
+    source: &Type,
+    name: &ArcStr,
+) -> Result<Option<usize>> {
+    match source {
+        Type::Bottom => Ok(None),
+        source => Ok(struct_field_types(ctx, source, name)?.0),
+    }
 }
 
 /// The members of `t`, a union once expanded, each expanded (an open cell

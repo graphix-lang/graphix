@@ -221,7 +221,7 @@ trace	init-over-limit-aug2026/00_over_limit_count_keeps_slots.gx
 trace	init-over-limit-aug2026/01_over_limit_clobbers_prev_len.gx
 trace	init-over-limit-aug2026/02_fold_over_oversize_init_fires_init.gx
 trace	inloop-bottom-cache-jul2026/00_filter_div0_slot.gx
-reject	cannot order null against iN: neither type holds the other, so the answer never depends on the values	instance-copy-skew-jul2026/01_null_elem_filter.gx
+reject	N: cannot order null against iN: neither type holds the other, so the answer never depends on the values	instance-copy-skew-jul2026/01_null_elem_filter.gx
 reject	N: type mismatch iN does not contain fn(path: string) -> Result<bytes, `IOError(string)>	instance-copy-skew-jul2026/02_lambda_elem_ptr_leak.gx
 trace	instance-held-at-nov2026/00_two_undecided_payloads.gx
 trace	instance-held-at-nov2026/01_bound_names_a_wider_variable.gx
@@ -525,7 +525,7 @@ trace	tval-union-blind-print-jul2026/02_nested_blind_member.gx
 trace	tval-union-blind-print-jul2026/03_never_arm_orphan_member.gx
 trace	tvar-alias-sever-jul2026/00_fn_elem_find.gx
 trace	tvar-alias-sever-jul2026/01_string_elem_map.gx
-reject	cannot compare (iN, iN) with iN: neither type holds the other, so the two are never equal	tvar-alias-sever-jul2026/02_acceptance_hole_rejects.gx
+reject	N: cannot compare (iN, iN) with iN: neither type holds the other, so the two are never equal	tvar-alias-sever-jul2026/02_acceptance_hole_rejects.gx
 trace	tvar-lock-jul2026/01_constraint_eq_self_deadlock.gx
 trace	twochannel-jul2026/late_init_priming.gx
 trace	twochannel-jul2026/p10_const_callee_body.gx
@@ -546,6 +546,8 @@ trace	typecheck-liveness-jul2026/01_builtin_as_value_filter_map.gx
 reject	N: type mismatch List<'a: unbound> does not contain `Cons(bool, bool)	typedef-cell-mode-parity-aug2026/00_stdlib_alias_partial_bind.gx
 reject	N: type mismatch List<'a: unbound within Ordered> does not contain `Cons(bool, string)	typedef-cell-mode-parity-aug2026/01_labeled_args_sort.gx
 reject	N: type mismatch List<'a: unbound> does not contain `Cons(bool, bool)	typedef-cell-mode-parity-aug2026/02_fold_seeded_acc.gx
+trace	undecided-struct-read-nov2026/00_catch_binder_field_read.gx
+trace	undecided-struct-read-nov2026/01_let_nothing_decides.gx
 trace	union-struct-field-jul2026/01_dyncall_union_field_leak.gx
 reject	N: a let binding is not an expression — it may only appear as a statement in a block or module body, not where a value is expected	value-position-let-sep2026/00_tuple_let_shadows.gx
 trace	value-shape-seam-jul2026/00_fold_slice_init.gx

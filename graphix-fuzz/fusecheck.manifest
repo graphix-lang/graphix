@@ -546,6 +546,8 @@
 0	typedef-cell-mode-parity-aug2026/00_stdlib_alias_partial_bind.gx
 0	typedef-cell-mode-parity-aug2026/01_labeled_args_sort.gx
 0	typedef-cell-mode-parity-aug2026/02_fold_seeded_acc.gx
+0	undecided-struct-read-nov2026/00_catch_binder_field_read.gx
+1	undecided-struct-read-nov2026/01_let_nothing_decides.gx
 1	union-struct-field-jul2026/01_dyncall_union_field_leak.gx
 0	value-position-let-sep2026/00_tuple_let_shadows.gx
 1	value-shape-seam-jul2026/00_fold_slice_init.gx

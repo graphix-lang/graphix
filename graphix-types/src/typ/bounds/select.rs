@@ -4,7 +4,7 @@
 //! arm leaves must be nothing. A pattern tests only what is written in it,
 //! and a test admits what the run time cannot tell from it.
 
-use super::{Solving, alike, deep, open, rep, shallow, union_of};
+use super::{Solving, alike, deep, open, placed, rep, shallow, union_of};
 use crate::{
     env::Env,
     expr::{At, Expr, WrittenAt},
@@ -510,10 +510,7 @@ impl Select {
     /// `e`, a refusal found outside the check of the expression the select
     /// was made at, placed there.
     fn placed(&self, e: anyhow::Error) -> anyhow::Error {
-        match &self.made {
-            Some((ori, pos)) => e.placed(ori, *pos),
-            None => e,
-        }
+        placed(&self.made, e)
     }
 }
 

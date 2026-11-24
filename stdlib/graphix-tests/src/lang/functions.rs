@@ -432,6 +432,32 @@ run!(
     prints("[true, false]")
 );
 
+/// A comparison, an ordering, a `?` or a `$` is judged once its operands
+/// are decided, with no expression at hand: its refusal is placed at the
+/// expression, or at the use of the generic definition that makes it.
+#[tokio::test(flavor = "current_thread")]
+async fn a_refusal_judged_once_its_types_are_decided_is_placed() -> Result<()> {
+    use graphix_compiler::expr::ParserContext;
+    for (src, site) in [
+        (r#"{ let m = "tm"; m == 0 }"#, "m == 0"),
+        (r#"{ let m = "tm"; m < 3 }"#, "m < 3"),
+        (r#"{ let m = "tm"; select 0 { 0 if m == 0 => 9, _ => 2 } }"#, "m == 0"),
+        (r#"{ let f = |x| x == 3; f("s") }"#, r#"f("s")"#),
+        (r#"{ let v: string = (-1 /? 2)$; 0 }"#, "(-1 /? 2)$"),
+    ] {
+        let e = match eval(src, crate::TEST_REGISTER).await {
+            Err(e) => e,
+            Ok((v, _)) => panic!("must be refused: {src} => {v:?}"),
+        };
+        let at = e.downcast_ref::<ParserContext>().and_then(|p| {
+            let line = p.ori.text.lines().nth(p.pos.line as usize - 1)?;
+            line.get(p.pos.column as usize - 1..)
+        });
+        assert!(at.is_some_and(|at| at.starts_with(site)), "{src}: {e:#}");
+    }
+    Ok(())
+}
+
 run!(
     let_rec_annotation_its_lambda_does_not_fit_refused,
     r#"{

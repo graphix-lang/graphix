@@ -1655,6 +1655,13 @@ impl<R: Rt> Catch<R> {
         // probe:
         // design/review-2026-11-16/repro/x-engine-seq-errors-catch-no-raise-diagnostic.gx
         // (x-engine-seq-errors-06)
+        // 2026-11-24 claude: On bounds-spike a handler that reads its binder's parts
+        // where no raise reaches now checks and builds: the binder is a value nothing
+        // decides, and the build no longer looks up a field's place in a type the check
+        // left at bottom (data.rs::field_place; pins
+        // lang::tuples_structs::catch_binder_field_read_where_nothing_raises and the fuzz
+        // corpus's undecided-struct-read-nov2026). So the refusal this CR quotes is gone,
+        // and what stands is its second half: nothing says the catch hears nothing.
         wrap!(self.handler, child(&mut self.handler, ctx))?;
         // a handler that reads the error was checked at the bind's type; a
         // handler that ignores it (the REPL's tail catch) takes any raise
