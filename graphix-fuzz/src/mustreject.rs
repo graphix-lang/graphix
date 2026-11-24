@@ -585,10 +585,11 @@ fn references(root: &Expr, types: &TypeMap, cap: usize, out: &mut Vec<RejectProb
 /// rep does with them. The map does not name the module:
 /// it is the one whose `mkb`/`unb` the body reaches, or with several,
 /// the one whose `mkb` the let calls. A value with a leaf its uses typed
-/// is skipped: the annotation would decide it. Right site: the let, or
-/// the let of a binding its value reads and every statement that reads
-/// that binding (one decided after this let meets the annotation where
-/// its own value arrives, or where a later use asks another type of it).
+/// is skipped: the annotation would decide it. Right site: the let and
+/// every statement that reads its name, or the let of a binding its value
+/// reads and every statement that reads that binding (one decided after
+/// this let meets the annotation where its own value arrives, or where a
+/// later use asks another type of it or of the annotated name).
 fn abstract_param(
     root: &Expr,
     pre: &[Expr],
@@ -634,7 +635,8 @@ fn abstract_param(
         let Ok(widened) = parser::parse_type(&format!("{module}::B<string>")) else {
             continue;
         };
-        let mut sites = vec![si];
+        let StructurePattern::Bind(own) = &b.pattern else { continue };
+        let mut sites = affected_stmts(stmts, si, &own.name);
         b.value.fold((), &mut |(), n| {
             if let Some((j, read)) = earlier_let(stmts, si, n)
                 && let StructurePattern::Bind(name) = &read.pattern
@@ -1328,7 +1330,9 @@ fn function_bound(
 /// required label and no other). And a labeled lambda passed as a value
 /// where the expected function type omits a defaulted label or keeps it
 /// optional loses the default: the value then requires what the expected
-/// type lets a caller omit (`fntyp.rs::align`). Right site: the call, or
+/// type lets a caller omit (`fntyp.rs::align`). A callee bound in the
+/// body with a parameter no annotation types expects nothing of it: the
+/// parameter takes the argument's own type. Right site: the call, or
 /// for the default, the definition and every statement using the lambda.
 fn labels(
     root: &Expr,
@@ -1401,9 +1405,31 @@ fn labels_default(
             continue;
         };
         let (_, refs, names) = forwarded_uses(&stmts, si, f);
+        // a callee the body binds, one of whose parameters nothing types
+        let untyped = |callee: &Expr| {
+            let ExprKind::Ref { name } = &typemorph::unparen(callee).kind else {
+                return false;
+            };
+            let name = name.to_string();
+            let params = |s: &Expr| match &s.kind {
+                ExprKind::Bind(d) => match (&d.pattern, &d.value.kind) {
+                    (StructurePattern::Bind(n), ExprKind::Lambda(l))
+                        if *n.name == name =>
+                    {
+                        Some(l.args.iter().any(|a| a.constraint.is_none()))
+                    }
+                    _ => None,
+                },
+                _ => None,
+            };
+            stmts.iter().rev().find_map(|(_, _, s)| params(s)).unwrap_or(false)
+        };
         // a value use of `f` as an argument, and the parameter it meets
         let expected = pre.iter().enumerate().find_map(|(i, n)| {
             let ExprKind::Apply(ap) = &n.kind else { return None };
+            if untyped(&ap.function) {
+                return None;
+            }
             let ft = callee_type(types, ap)?;
             paired(&ft, ap, i, sizes).into_iter().find_map(|(ix, _, param)| {
                 refs.iter()

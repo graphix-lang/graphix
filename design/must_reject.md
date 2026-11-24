@@ -286,7 +286,10 @@ polymorphic labeled parameter whose other uses are not concrete. Built,
 as three families so their ids stay distinct: `label-unknown` (a label
 the callee lacks) and `label-missing` (a required label dropped), right site the call; `label-default` (a labeled lambda passed as a value
 loses a default the expected type lets a caller omit), right site the
-definition and every statement using the lambda. Open: a label passed
+definition and every statement using the lambda; no mutant where the
+callee is bound in the body with a parameter no annotation types, since
+that parameter takes the argument's own type and expects nothing of it.
+Open: a label passed
 twice, the disjoint labeled argument, the explicit disjoint default.
 
 **8. Function bounds.** Site: a call argument whose parameter type is a
@@ -344,10 +347,11 @@ decides it. The map holds the type by id, so the module is
 the one whose `mkb`/`unb` the body reaches, or with several the one
 whose `mkb` the let calls; a value with a leaf its uses typed is
 skipped, since a let annotation decides a parameter left open. Right
-site: the let, or the let of a binding its value reads and every
-statement that reads that binding (one decided after this let meets the
-annotation where its own value arrives, or where a later use asks
-another type of it). Built (`abstract-param`).
+site: the let and every statement that reads its name, or the let of a
+binding its value reads and every statement that reads that binding (one
+decided after this let meets the annotation where its own value arrives,
+or where a later use asks another type of it or of the annotated name).
+Built (`abstract-param`).
 
 **12. Function types with variables of their own.** Not generated: a
 function type with type variables of its own anywhere but a declared
