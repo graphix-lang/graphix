@@ -2107,3 +2107,22 @@ run!(
        let r = f(0)$; r + 7 }",
     is(Value::I64(7))
 );
+
+// A statement of a block that gives a function runs once, at the level
+// around the block: a function written inside it is of that level too,
+// its untyped parameter included.
+run!(
+    a_function_written_in_a_statement_a_block_shares,
+    r#"{ let h = { let m = array::map([0, 1], |x| |y| (x, y)); |n| (n, array::len(m)) };
+        (h(1), h("s")) }"#,
+    prints(r#"[[i64:1, i64:2], ["s", i64:2]]"#);
+    FuseExpect::None
+);
+
+run!(
+    a_function_written_in_a_statement_a_block_shares_inside_a_function,
+    r#"{ let f = |a| { let h = { array::map([a], |x| |y| true); |n| n }; h(a) };
+        (f(1), f("s")) }"#,
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::None
+);

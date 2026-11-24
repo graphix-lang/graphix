@@ -610,3 +610,39 @@ run!(
 }"#,
     prints(r#""loaded""#)
 );
+
+// A value of a named type whose parameter is bounded by a trait of its
+// block goes to a function of another scope: the function's instance reads
+// the name where neither the trait nor its impl is in scope, and the bound
+// was held where the name was written.
+run!(
+    a_type_bounded_by_a_block_s_trait_reaches_a_function_outside,
+    r#"{
+    let f = |k| k;
+    let r = f({
+        type T<'a: Sh> = Array<'a>;
+        trait Sh { val sh: fn(self) -> i64 };
+        impl Sh for i64 { let sh = |c| c };
+        let v: T<i64> = [1, 2];
+        v
+    });
+    array::len(r)
+}"#,
+    is(Value::I64(2))
+);
+
+run!(
+    a_type_bounded_by_a_block_s_trait_holds_its_bound_where_it_is_written,
+    r#"{
+    let f = |k| 0;
+    f({
+        trait Sh { val sh: fn(self) -> i64 };
+        type T<'a: Sh> = Array<'a>;
+        impl Sh for i64 { let sh = |c| c };
+        let v: T<string> = ["a"];
+        v
+    })
+}"#,
+    refused("Sh does not contain string");
+    FuseExpect::None
+);

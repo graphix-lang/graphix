@@ -228,6 +228,9 @@
 1	instance-held-at-nov2026/00_two_undecided_payloads.gx
 1	instance-held-at-nov2026/01_bound_names_a_wider_variable.gx
 1	instance-held-at-nov2026/02_select_of_two_undecided_payloads.gx
+0	instance-in-another-scope-nov2026/00_function_in_a_shared_statement.gx
+0	instance-in-another-scope-nov2026/01_generic_builtin_held_in_a_result.gx
+2	instance-in-another-scope-nov2026/02_trait_bound_of_a_block_s_type.gx
 2	instance-written-name-nov2026/00_dynamic_module_reads_an_instance_s_type.gx
 1	interface-ctor-trait-oct2026/00_two_collections.gx
 26	interface-ctor-trait-oct2026/01_six_modules.gx

@@ -1,0 +1,7 @@
+// A value of a named type whose parameter is bounded by a trait of its
+// block, passed to a function of another scope: the function's instance
+// held the type to its bound again where the trait is not in scope, and
+// the build said "undefined type Sh" (soak nov24d, the check accepted
+// what the build refused).
+// Expected trace (both engines): 0.
+{ let x = never(); let f = |k| 0; let a = f({ type T<'a: Sh> = Array<'a>; trait Sh { val sh: fn(self) -> i64 }; impl Sh for i64 { let sh = |c| c }; let v: T<i64> = [1, 2]; v }); 0 }

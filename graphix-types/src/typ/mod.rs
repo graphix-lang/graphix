@@ -1613,12 +1613,15 @@ impl TypeRef {
     /// Hold the arguments to `def`'s parameter bounds, as an expansion
     /// does: an open argument cell takes its bound when `commit`, any
     /// other argument must meet it, refused by error when `commit`, else
-    /// `false`.
+    /// `false`. A bound that names what `env` does not see (a trait of the
+    /// block that wrote this reference, read where a value of the type
+    /// went) was held where the reference was written.
     fn hold_bounds_of(&self, env: &Env, def: &ResolvedRef, commit: bool) -> Result<bool> {
         if def.params.iter().all(|(_, b)| b.is_none()) {
             return Ok(true);
         }
         let Some(known) = def.bindings(&self.params) else { return Ok(true) };
+        let unseen = |e: &anyhow::Error| e.downcast_ref::<UnresolvableRef>().is_some();
         for ((_, bound), arg) in def.params.iter().zip(self.params.iter()) {
             let Some(bound) = bound else { continue };
             let bound = bound.replace_tvars(&known);
@@ -1632,13 +1635,17 @@ impl TypeRef {
                     for tv in bound.open_members(env, arg) {
                         tv.add_body_bound(env, bound.clone())?
                     }
-                    bound.check_contains(env, arg)?
-                }
-                None => {
-                    if !bound.decided_holds(env, arg)? {
-                        return Ok(false);
+                    match bound.check_contains(env, arg) {
+                        Err(e) if unseen(&e) => (),
+                        held => held?,
                     }
                 }
+                None => match bound.decided_holds(env, arg) {
+                    Ok(true) => (),
+                    Ok(false) => return Ok(false),
+                    Err(e) if unseen(&e) => (),
+                    Err(e) => return Err(e),
+                },
             }
         }
         Ok(true)

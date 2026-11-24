@@ -1,0 +1,8 @@
+// A block that gives a function, with a statement before it that every
+// use of the function shares: the statement is compiled at the level
+// around the block and checked at the block's own, so a function written
+// inside it got its parameter's cell at a level nothing decided, and the
+// slot built for the callback met the cell open (soak nov24d, a crash:
+// "a slot would share what its callback's check left undecided").
+// Expected trace (both engines): (1, 3).
+{ let g = |x: 'b| x; let h = { let m = array::map([0, g, 0], |x| [|x| true, 1]); |n: i64| (n, array::len(m)) }; h(1) }

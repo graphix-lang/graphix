@@ -7006,3 +7006,20 @@ run!(
     refused("a variadic function where one of 1 arguments is wanted");
     FuseExpect::None
 );
+
+// A function that holds a generic builtin in its result, called through a
+// collection or by another function: the instance built for the call is
+// held to nothing its definition's check did not ask.
+run!(
+    a_function_holding_a_generic_builtin_is_called_through_a_collection,
+    r#"{ let t = |x| [queuefn, x]; array::len(array::flat_map([1], t)) }"#,
+    is(Value::I64(2));
+    FuseExpect::None
+);
+
+run!(
+    a_function_holding_a_generic_builtin_is_called_by_another,
+    r#"{ let t = |x| [queuefn, x]; let u = |f| f(1); array::len(u(t)) }"#,
+    is(Value::I64(2));
+    FuseExpect::None
+);

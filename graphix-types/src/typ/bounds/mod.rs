@@ -2269,8 +2269,13 @@ impl Solving {
         })
     }
 
-    /// What the result of `ft` is read to make is made by its calls.
+    /// What the result of `ft` is read to make is made by its calls. An
+    /// instance's types are fitted to what the check decided, where its
+    /// copies carry what the check's calls made.
     fn made_by_calls(&mut self, ft: &FnType) {
+        if self.deriving {
+            return;
+        }
         for v in cells_in(&ft.rtype).iter().filter(|v| reads_type(v)) {
             self.write(v, Kept::Made)
         }

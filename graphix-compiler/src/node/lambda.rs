@@ -2347,6 +2347,11 @@ pub struct Lambda {
     /// it): its gate generalizes its signature. Anywhere else its
     /// signature is one instance, its enclosing level's.
     pub(crate) named: bool,
+    /// The level around it where it was compiled. One no binding names
+    /// is checked there, whatever level its check is run from: a part of
+    /// a definition that is computed once is compiled at the level around
+    /// the definition and checked with it.
+    around: Level,
     /// A lambda literal is a constant: present from birth (see Constant).
     resident: TagValue,
 }
@@ -2567,6 +2572,7 @@ impl Lambda {
             bail!("arguments must have unique names");
         }
         let id = LambdaId::new();
+        let around = current_level();
         let level = Level::definition(id);
         let _level = AtLevel::enter(level);
         // a quantifier bounded by constructor traits alone stands for a
@@ -2827,7 +2833,7 @@ impl Lambda {
             enclosing,
         ));
         ctx.lambda_defs.insert(id, def.clone());
-        Ok(Self::with(spec, def, Type::Fn(typ)))
+        Ok(Self::with(spec, def, Type::Fn(typ), around))
     }
 }
 
@@ -2840,15 +2846,16 @@ impl Lambda {
         let id = LambdaId::decode(buf)?;
         let typ = Type::decode(buf)?;
         let def = ctx.lambda_defs.get(&id).ok_or(PackError::InvalidFormat)?.clone();
-        Ok(Self::with(spec, def, typ))
+        Ok(Self::with(spec, def, typ, Level::TOP))
     }
 
-    fn with<R: Rt>(spec: Arc<Expr>, def: Value, typ: Type) -> Node<R> {
+    fn with<R: Rt>(spec: Arc<Expr>, def: Value, typ: Type, around: Level) -> Node<R> {
         Node::new(Self {
             spec,
             def: def.clone(),
             typ,
             named: false,
+            around,
             resident: TagValue::stale(def),
         })
     }
@@ -2898,8 +2905,12 @@ enum Closing {
 }
 
 impl<R: Rt> DefGate<R> {
-    fn open(ctx: &mut CompileCtx<R>, def: &LambdaDef<R>, binding_names: bool) -> Self {
-        let outer = current_level();
+    fn open(
+        ctx: &mut CompileCtx<R>,
+        def: &LambdaDef<R>,
+        binding_names: bool,
+        around: Level,
+    ) -> Self {
         let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         def.typ.collect_tvars_through_bounds(&mut named);
         named.retain(|name, _| !name.starts_with('_'));
@@ -2909,8 +2920,8 @@ impl<R: Rt> DefGate<R> {
         };
         let at = match closing {
             Closing::Inline => {
-                def.typ.claim(outer);
-                AtLevel::enter(outer)
+                def.typ.claim(around);
+                AtLevel::enter(around)
             }
             Closing::Scheme { .. } => AtLevel::enter(def.level),
         };
@@ -2932,7 +2943,7 @@ impl<R: Rt> DefGate<R> {
         Self {
             def: def.id,
             depth: def.level.depth(),
-            outer,
+            outer: around,
             _at: at,
             sig: def.typ.clone(),
             faux,
@@ -3307,7 +3318,7 @@ impl<R: Rt> Update<R> for Lambda {
         // its declared type. The defaults are checked first: a call in the
         // body that leaves a label out takes the default its parameter
         // records.
-        let mut gate = DefGate::open(ctx, def, self.named);
+        let mut gate = DefGate::open(ctx, def, self.named, self.around);
         let mut table = None;
         let mut captures: LPooled<AHashSet<(ModPath, CompactString)>> = LPooled::take();
         let mut defaults: LPooled<Vec<Node<R>>> = LPooled::take();

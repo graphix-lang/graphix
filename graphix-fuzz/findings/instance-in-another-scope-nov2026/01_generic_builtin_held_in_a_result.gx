@@ -1,0 +1,7 @@
+// A function whose result holds a generic builtin, called through a
+// collection: the instance built for the call marked the builtin's
+// variable as made by a call, which the check had not, and refused it
+// ("the type 'a must be a function here"; soak nov24d, the check accepted
+// what the build refused).
+// Expected trace (both engines): 2.
+{ let t = |x| [queuefn, x]; array::len(array::flat_map([1], t)) }
