@@ -1,11 +1,11 @@
 contained	abort-seam-jul2026/01_depth_trip_settled_taint.gx
-reject	N: cannot compare [iN, null, fn(x: 'a: unbound, l: List<'a: unbound>) -> List<'a: unbound>] with iN: comparison is fn('a, 'a) -> bool — both operands must be one type	abstract-opaque-overtag-jul2026/00_het_list_fn_fold.gx
-reject	N: cannot compare [iN, fN, List<'a: (iN, iN)>] with iN: comparison is fn('a, 'a) -> bool — both operands must be one type	abstract-opaque-overtag-jul2026/01_het_list_nested_list.gx
+reject	N: type mismatch Number does not contain Option<'a>	abstract-opaque-overtag-jul2026/00_het_list_fn_fold.gx
+reject	N: type mismatch Number does not contain Option<'a>	abstract-opaque-overtag-jul2026/01_het_list_nested_list.gx
 trace	abstract-ord-mixed-types-sep2026/00_map_key_union.gx
 reject	N: undefined type S at line: N, column: N in module /test	annotation-names-sep2026/00_undefined_name_in_a_callback_let.gx
 trace	any-return-narrowing-aug2026/01_any_arm_scalar_marshal.gx
 reject	N: a let binding is not an expression — it may only appear as a statement in a block or module body, not where a value is expected	arg-order-scope-chain-aug2026/00_let_in_labeled_arg.gx
-reject	N: cannot compute 'a: unbound within Number + string: arithmetic is fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a — both operands must be one numeric type (cast one side explicitly)	arith-tc-unsound-jul2026/01_tvar_plus_string_accepted.gx
+reject	N: ['a, string] must be one type, but the declared variable 'a may differ from its other members	arith-tc-unsound-jul2026/01_tvar_plus_string_accepted.gx
 trace	arith-widened-cell-aug2026/00_filter_err_let.gx
 trace	arith-widened-cell-aug2026/01_filter_err_let_i32.gx
 trace	arm-entry-raise-sep2026/00_fold_init_constant_raise.gx
@@ -24,8 +24,8 @@ trace	audit-jul2026/01_shadowed_name_cross_kernel.gx
 trace	audit-jul2026/02_two_monomorphizations_one_region.gx
 trace	audit-jul2026/03_fold_callback_shared_adt_double_count.gx
 reject	N: recursive type B refers back to itself through unions and aliases alone, so it names no value; a recursive type must recurse through a structural body (variant, tuple, struct, array, ...)	bare-alias-cycle-aug2026/00_alias_cycle_absorbs_all.gx
-reject	N: type mismatch Number does not contain Array<string>	bottom-connect-target-aug2026/00_typedef_let.gx
-reject	N: cannot compute Array<string> - iN: arithmetic is fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a — both operands must be one numeric type (cast one side explicitly)	bottom-connect-target-aug2026/01_connect_let.gx
+reject	N: type mismatch Number does not contain Array<'a: unbound within string above string>	bottom-connect-target-aug2026/00_typedef_let.gx
+reject	N: type mismatch iN does not contain Array<'a: unbound within string above string>	bottom-connect-target-aug2026/01_connect_let.gx
 trace	bottom-out-aug2026/00_class5_witness.gx
 trace	bottom-out-aug2026/01_probe_native_depth1.gx
 trace	bottom-out-aug2026/02_probe_tail_depth1.gx
@@ -35,11 +35,11 @@ trace	bottom-scrutinee-jun2026/01_bottom_scrutinee_falls_through.gx
 trace	bottom-scrutinee-jun2026/02_inline_bottom_scrutinee.gx
 trace	bottom-typed-arm-elided-sep2026/00_bottom_typed_call_arm.gx
 trace	bottom-typed-arm-elided-sep2026/01_recursive_bottom_arm_runaway.gx
-reject	N: src is Array<Array<iN>> and cannot hold Array<[iN, Array<Array<iN>>]>; no finite type holds both: declare a named recursive type for src where it is bound (line N, column N)	bound-cell-cycle-accepts-aug2026/00_connect_self_nesting.gx
+reject	N: type mismatch Array<'a: unbound within iN above iN> does not contain iN	bound-cell-cycle-accepts-aug2026/00_connect_self_nesting.gx
 trace	builtin-taint-gate-jul2026/00_once_tainted_not_counted.gx
 trace	byref-wake-view-sep2026/00_fused_arm.gx
 trace	byref-wake-view-sep2026/01_impure_arm.gx
-reject	N: too many positional arguments, expected N, received N	call-arity-jul2026/00_excess_pos_skips_nested_check.gx
+reject	N: missing required argument: expected N positional, received N	call-arity-jul2026/00_excess_pos_skips_nested_check.gx
 reject	N: too many positional arguments, expected N, received N	call-arity-jul2026/01_excess_pos_silently_dropped.gx
 trace	callable-route-aug2026/01_connectderef_twin.gx
 trace	callable-route-aug2026/02_dispatch_route_matrix.gx
@@ -54,12 +54,12 @@ trace	callsite-arg-bottom-persists-aug2026/00_string_arg_resurrection.gx
 trace	callsite-arg-bottom-persists-aug2026/01_minimal_no_select.gx
 trace	callsite-arg-bottom-persists-aug2026/02_let_bound_control.gx
 trace	capture-name-alias-jul2026/01_captured_x_reads_fold_element.gx
-reject	N: the type 'a must be fully known here, a type-directed operation reads it: annotate it	cast-bottom-composite-aug2026/01_array_bottom_settle.gx
+reject	N: the type Array<_> must be fully known here, an operation reads it to know what to make, and nothing decides a part of it: annotate it	cast-bottom-composite-aug2026/01_array_bottom_settle.gx
 trace	cast-wire-jul2026/00_let_bound_cast.gx
 trace	cast-wire-jul2026/01_narrow_cast_qop.gx
 trace	cast-wire-jul2026/02_narrow_cast_saturation.gx
 trace	catch-callsite-coverage-aug2026/00_shared_kernel_ignores_coverage.gx
-reject	N: this error reaches a catch whose handler was checked to take Error<ErrChain<`ArithError(string)>>: type mismatch Error<ErrChain<`ArithError(string)>> does not contain Error<ErrChain<`ArrayIndexError(string)>>	catch-stmt-aug2026/00_constraint_too_narrow.gx
+reject	type mismatch `ArithError(string) does not contain `ArrayIndexError(string)	catch-stmt-aug2026/00_constraint_too_narrow.gx
 trace	catch-stmt-aug2026/01_shadowing_rethrow.gx
 trace	catch-stmt-aug2026/02_toplevel_file_catch.gx
 trace	clone-scope-resolution-jul2026/01_nested_callback_filter_wrong_module.gx
@@ -67,7 +67,7 @@ trace	clone-wake-root-jul2026/01_cloned_callback_connect_loop.gx
 trace	collection-merge-loses-fired-aug2026/00_init_two_slots_bottom_capture.gx
 trace	composite-qop-jun2026/01_composite_success_qop_segv.gx
 trace	composite-qop-jun2026/02_borrowed_inner_qop.gx
-reject	N: type mismatch fn(len: iN, x: 'a: [iN, Array<'_N: unbound>]) -> bool throws 'e: unbound does not contain 'b: unbound within Concrete & NoError	concrete-refusal-order-sep2026/00_open_parse_target.gx
+reject	N: fn(len: iN, x: [iN, Array<_>]) -> bool throws _ is not data: data holds no function and no reference	concrete-refusal-order-sep2026/00_open_parse_target.gx
 trace	connect-instance-identity-aug2026/01_write_only_let_in_slot_callback.gx
 contained	connect-instance-identity-aug2026/02_connect_in_rec_arg.gx
 trace	connect-instance-identity-aug2026/03_self_connect_in_rec_arm.gx
@@ -76,15 +76,15 @@ trace	const-body-firing-jul2026/p4_no_taint.gx
 trace	const-body-firing-jul2026/p6_two_folds.gx
 trace	const-body-firing-jul2026/p7_counter_src.gx
 trace	const-body-firing-jul2026/p8_one_fold_stmt.gx
-reject	N: type mismatch Array<'a: unbound> does not contain iN	constrain-order-diag-aug2026/00_tvar_bound_render_flap.gx
+reject	N: type mismatch Array<'a: unbound within '_N: unbound> does not contain iN	constrain-order-diag-aug2026/00_tvar_bound_render_flap.gx
 trace	crash-triage-jul2026/01_buffer_encode_pad_overflow.gx
 trace	crash-triage-jul2026/02_array_init_capacity_overflow.gx
 trace	crash-triage-jul2026/03_placeholder_leaf_read.gx
 trace	crash-triage-jul2026/04_seq_runaway_range.gx
-reject	N: type mismatch T does not contain { bar: iN, f: fn(#x: iN, #y: iN) -> [iN, Array<iN>], foo: string }	declared-rtype-open-callee-aug2026/00_campaign_witness.gx
+reject	N: type mismatch T does not contain { bar: iN, f: fn(#x: iN, #y: iN) -> '_N, foo: string }	declared-rtype-open-callee-aug2026/00_campaign_witness.gx
 reject	N: type mismatch iN does not contain Array<iN>	declared-rtype-open-callee-aug2026/01_uncalled_def.gx
-reject	N: type mismatch T does not contain { f: fn(#x: iN) -> Array<iN> }	declared-rtype-open-callee-aug2026/02_through_struct_field.gx
-reject	N: type mismatch fn(#x: iN) -> iN does not contain fn(#x: iN) -> Array<iN>	declared-rtype-open-callee-aug2026/03_through_alias.gx
+reject	N: type mismatch T does not contain { f: fn(#x: iN) -> '_N }	declared-rtype-open-callee-aug2026/02_through_struct_field.gx
+reject	N: type mismatch iN does not contain Array<iN>	declared-rtype-open-callee-aug2026/03_through_alias.gx
 reject	N: type mismatch iN does not contain Array<iN>	declared-rtype-open-callee-aug2026/04_called_by_name_always_caught.gx
 trace	declared-rtype-open-callee-aug2026/05_expectation_drives_callee.gx
 trace	declared-rtype-open-callee-aug2026/06_obligation_is_per_instance.gx
@@ -106,7 +106,7 @@ trace	deref-reads-the-referent-aug2026/02_write_then_read.gx
 trace	deref-reads-the-referent-aug2026/03_deref_in_callee.gx
 trace	deref-reads-the-referent-aug2026/04_retarget.gx
 trace	deref-reads-the-referent-aug2026/05_expression_ref_paces_like_connect.gx
-reject	N: type mismatch iN does not contain fn(i: '_N: unbound) -> '_N: unbound	dynamic-bind-default-sep2026/00_ill_typed_default_via_fn_var.gx
+reject	N: type mismatch iN does not contain fn(i: '_N: unbound within '_N: unbound) -> '_N: unbound	dynamic-bind-default-sep2026/00_ill_typed_default_via_fn_var.gx
 trace	dyncall-apply-unwired-aug2026/00_dbg_spec_lost.gx
 trace	dyncall-apply-unwired-aug2026/01_dbg_type_lost_naked_render.gx
 trace	dyncall-apply-unwired-aug2026/02_log_scope_lost.gx
@@ -140,8 +140,8 @@ trace	empty-literal-firing-jul2026/01_empty_array_fires_every_invocation.gx
 trace	empty-scaffold-depth-charge-aug2026/01_empty_inner_fold_at_limit.gx
 trace	empty-scaffold-depth-charge-aug2026/02_empty_literal_source_fold.gx
 trace	env-cell-generalized-sep2026/00_extracted_callback_shares_outer.gx
-reject	N: errN is Error<ErrChain<`ArithError(string)>> and cannot hold Error<ErrChain<`B>>; declare errN: [Error<ErrChain<`ArithError(string)>>, Error<ErrChain<`B>>] where it is bound (line N, column N)	errchain-distribution-loop-sep2026/00_connect_mismatch.gx
-reject	N: errN is Error<ErrChain<[`ArithError(string), `ArrayIndexError(string)]>> and cannot hold Error<ErrChain<[`ArrayIndexError(string), `B]>>; declare errN: [Error<ErrChain<[`ArithError(string), `ArrayIndexError(string)]>>, Error<ErrChain<[`ArrayIndexError(string), `B]>>] where it is bound (line N, column N)	errchain-distribution-loop-sep2026/01_handler_rethrow.gx
+reject	type mismatch `ArithError(string) does not contain `B	errchain-distribution-loop-sep2026/00_connect_mismatch.gx
+reject	type mismatch [`ArithError(string), `ArrayIndexError(string)] does not contain [`ArrayIndexError(string), `B]	errchain-distribution-loop-sep2026/01_handler_rethrow.gx
 trace	eta-method-value-nov2026/00_method_value.gx
 trace	eta-method-value-nov2026/01_label_named_like_method.gx
 trace	evict-stub-order-jul2026/00_evicted_callee_symbol.gx
@@ -186,8 +186,8 @@ trace	frame-taint-exit-jul2026/02_original.gx
 trace	framed-arg-stale-formal-aug2026/00_fold_go_retrigger.gx
 trace	framed-formal-seed-aug2026/01_fold_in_rec_arm_one_step.gx
 trace	framed-formal-seed-aug2026/02_found_form_min_element.gx
-reject	N: type mismatch 'a: unbound within Function does not contain iN	function-bound-oct2026/00_queuefn_non_function.gx
-reject	N: type mismatch 'a: unbound within Function does not contain fn(?#d: iN, x: iN) -> iN	function-bound-oct2026/01_queuefn_defaulted_label.gx
+reject	N: iN must be Function here: it is no function	function-bound-oct2026/00_queuefn_non_function.gx
+reject	N: fn(?#d: iN, x: iN) -> iN must be Function here: it has a defaulted label, and a function passed here is called with every argument and no other; wrap it in a lambda that calls it	function-bound-oct2026/01_queuefn_defaulted_label.gx
 trace	function-scheme-arg-oct2026/00_seq_trigger_builtin.gx
 trace	fusion-flips-display-backend-aug2026/00_tui_backend_selection.gx
 reject	N: type mismatch string does not contain iN	fusion-mutates-tvars-aug2026/00_check_diagnostic_type_differs.gx
@@ -210,19 +210,19 @@ trace	hof-pass-through-deps-aug2026/03_qop_stale_chain_m2.gx
 trace	hof-pass-through-deps-aug2026/04_dynmod_reload_find.gx
 excluded	hold-async-clock-aug2026/00_hold_stderr_clock.gx
 trace	hold-relatch-jul2026/01_hold_relatch_per_clock.gx
-reject	N: cannot compute iN * fN: arithmetic is fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a — both operands must be one numeric type (cast one side explicitly)	homogeneous-arith-jul2026/01_mixed_acc_map_instance.gx
-reject	N: cannot compute 'a: unbound within Number + fN: arithmetic is fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a — both operands must be one numeric type (cast one side explicitly)	homogeneous-arith-jul2026/02_dual_mono_def_rejects.gx
+reject	N: type mismatch fN does not contain iN	homogeneous-arith-jul2026/01_mixed_acc_map_instance.gx
+reject	N: ['a, fN] must be one type, but the declared variable 'a may differ from its other members	homogeneous-arith-jul2026/02_dual_mono_def_rejects.gx
 trace	hook-site-merge-delete-nov2026/00_rejected_site_deleted_at_the_merge.gx
 trace	image-builtin-replay-sep2026/00_intrinsic_value_to_builtin.gx
 trace	image-builtin-replay-sep2026/01_list_intrinsic_to_group.gx
-reject	N: cannot infer a finite type here: unification requires a type that contains itself (e.g. a function that returns itself); declare a named recursive type and annotate the binding	infinite-type-jul2026/00_self_returning_rec.gx
-reject	N: cannot infer a finite type here: unification requires a type that contains itself (e.g. a function that returns itself); declare a named recursive type and annotate the binding	infinite-type-jul2026/01_self_returning_base_arm.gx
+reject	N: infinite type: a value here would hold a value of its own type (a function passed or returning itself, a collection holding itself); declare a named recursive type and annotate the binding	infinite-type-jul2026/00_self_returning_rec.gx
+reject	N: infinite type: a value here would hold a value of its own type (a function passed or returning itself, a collection holding itself); declare a named recursive type and annotate the binding	infinite-type-jul2026/01_self_returning_base_arm.gx
 trace	init-over-limit-aug2026/00_over_limit_count_keeps_slots.gx
 trace	init-over-limit-aug2026/01_over_limit_clobbers_prev_len.gx
 trace	init-over-limit-aug2026/02_fold_over_oversize_init_fires_init.gx
 trace	inloop-bottom-cache-jul2026/00_filter_div0_slot.gx
-reject	N: cannot compare null with iN: comparison is fn('a, 'a) -> bool — both operands must be one type	instance-copy-skew-jul2026/01_null_elem_filter.gx
-reject	N: cannot compute iN + fn(path: string) -> Result<bytes, `IOError(string)>: arithmetic is fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a — both operands must be one numeric type (cast one side explicitly)	instance-copy-skew-jul2026/02_lambda_elem_ptr_leak.gx
+reject	cannot order null against iN: neither type holds the other, so the answer never depends on the values	instance-copy-skew-jul2026/01_null_elem_filter.gx
+reject	N: type mismatch iN does not contain fn(path: string) -> Result<bytes, `IOError(string)>	instance-copy-skew-jul2026/02_lambda_elem_ptr_leak.gx
 trace	instance-held-at-nov2026/00_two_undecided_payloads.gx
 trace	instance-held-at-nov2026/01_bound_names_a_wider_variable.gx
 trace	instance-held-at-nov2026/02_select_of_two_undecided_payloads.gx
@@ -260,7 +260,7 @@ trace	modstmt-fused-no-publish-aug2026/00_trailing_expr_module_exports_die.gx
 trace	modstmt-fused-no-publish-aug2026/01_control_trailing_let_publishes.gx
 trace	module-state-callee-reactivity-aug2026/00_becoming_selected_stale_callee.gx
 trace	module-state-callee-reactivity-aug2026/01_steady_state_callee_quiet.gx
-reject	N: cannot infer a finite type here: unification requires a type that contains itself (e.g. a function that returns itself); declare a named recursive type and annotate the binding	mu-type-opaque-launder-jul2026/01_rec_fn_as_list.gx
+reject	N: infinite type: a value here would hold a value of its own type (a function passed or returning itself, a collection holding itself); declare a named recursive type and annotate the binding	mu-type-opaque-launder-jul2026/01_rec_fn_as_list.gx
 trace	narrow-index-operand-verifier-aug2026/00_u8_slice_bound_verifier_error.gx
 trace	narrow-int-abi-jul2026/01_float_cmp_false_in_struct.gx
 trace	narrow-int-abi-jul2026/02_int_cmp_false_in_tuple.gx
@@ -287,16 +287,17 @@ trace	nov06e-nov2026/01_a_returned_generic_function_over_a_result.gx
 trace	nov06f-nov2026/01_lowered_name_in_a_printed_function.gx
 trace	nov06h-nov2026/01_a_pattern_over_a_union_of_one_type.gx
 trace	nov06i-nov2026/01_a_return_over_a_union_of_one_type.gx
-reject	N: (N, vN) | (vN, N) tests a value whose type is not decided at this select, which a later use could decide apart from what the arms test: annotate the scrutinee's type where it is built	nov12a-crash-nov2026/00_union_holder_stands_for_a_bind.gx
-reject	N: (iN, iN) as (vN, vN) tests a value of 'z, a type not decided at this select, which a later use could decide apart from what the arms test: annotate it, writing for 'z the type of `z` (line N, column N)	nov12a-crash-nov2026/01_written_test_over_the_union.gx
+trace	nov12a-crash-nov2026/00_union_holder_stands_for_a_bind.gx
+trace	nov12a-crash-nov2026/01_written_test_over_the_union.gx
 trace	nov12a-image-handles-nov2026/00_map_keyed_by_handles.gx
 trace	oct30b-oct2026/01_builtin_binding_in_forked_slots.gx
 trace	oct30b-oct2026/02_recursive_abstract_in_a_function_body.gx
-trace	oct30b-oct2026/03_default_hidden_by_a_fn_type_types_the_instance.gx
+reject	N: the type 'b must be known here, an operation reads it to know what to make: annotate where its result goes	oct30b-oct2026/03_default_hidden_by_a_fn_type_types_the_instance.gx
 trace	oct30b-oct2026/04_a_body_lambdas_quantifier_decided_by_its_use.gx
 trace	oct30b-oct2026/05_restored_body_abstract_naming_typedefs.gx
 trace	oct30b-oct2026/06_abstract_naming_a_shadowing_typedef_in_a_body.gx
-reject	N: cannot compute fN + iN: arithmetic is fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a — both operands must be one numeric type (cast one side explicitly)	omitted-default-check-sep2026/01_default_types_the_site.gx
+trace	oct30b-oct2026/07_default_hidden_by_a_fn_type_annotated_read.gx
+reject	N: type mismatch iN does not contain fN	omitted-default-check-sep2026/01_default_types_the_site.gx
 trace	omitted-default-check-sep2026/02_default_and_argument_agree.gx
 trace	omitted-default-union-nov2026/00_default_over_a_union_of_equal_cells.gx
 trace	omitted-default-union-nov2026/01_default_over_a_union_through_a_wrapper.gx
@@ -305,12 +306,12 @@ trace	operand-bound-member-oct2026/00_extracted_callback.gx
 trace	organic-firing-aug2026/00_const_terminal.gx
 trace	organic-firing-aug2026/01_multilevel_face.gx
 trace	param-call-expr-sep2026/00_param_called_through_parens.gx
-reject	N: the type 'b must be fully known here, a type-directed operation reads it: annotate it	parse-bottom-member-jul2026/00_unannotated_parse_in_callback.gx
-reject	N: the type 'b must be fully known here, a type-directed operation reads it: annotate it	parse-bottom-member-jul2026/01_nested_bottom_member.gx
+reject	N: the type 'b must be known here, an operation reads it to know what to make: annotate where its result goes	parse-bottom-member-jul2026/00_unannotated_parse_in_callback.gx
+reject	N: the type 'b must be known here, an operation reads it to know what to make: annotate where its result goes	parse-bottom-member-jul2026/01_nested_bottom_member.gx
 trace	prevlen-word-jul2026/00_callee_loop_source_refresh.gx
 trace	prevlen-word-jul2026/01_nested_ragged_resize.gx
 trace	prevlen-word-jul2026/02_callee_in_loop_prevlen.gx
-reject	N: cannot compute iN + fN: arithmetic is fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a — both operands must be one numeric type (cast one side explicitly)	qop-bare-error-jul2026/01_bare_error_dollar_garbage.gx
+reject	N: cannot compute with [iN, fN]: both operands must be one numeric type	qop-bare-error-jul2026/01_bare_error_dollar_garbage.gx
 trace	qop-deliver-dyncall-arity-aug2026/00_handler_ful_qop_defuses.gx
 excluded	qop-nested-union-jul2026/01_string_union_elem_index_qop.gx
 excluded	qop-scalar-error-leak-aug2026/00_handler_less_qop_leaks.gx
@@ -327,10 +328,10 @@ trace	quiet-frame-init-view-aug2026/07_fused_select_in_interp_frame.gx
 trace	quiet-frame-init-view-aug2026/08_dyncall_in_loop_site_in_frame.gx
 trace	rebind-recompile-jul2026/01_trycatch_recompile_name_capture.gx
 trace	rec-prev-looped-arming-aug2026/00_quiet_poll_disarms_framed_rerun.gx
-reject	N: type mismatch iN does not contain [iN, Error<'a: iN>]	rec-rtype-unchecked-jul2026/01_rec_rtype_error_arm.gx
-reject	N: cannot compare [iN, fn(a: Array<'a: unbound>) -> 'a: unbound] with iN: comparison is fn('a, 'a) -> bool — both operands must be one type	rec-rtype-writeback-aug2026/00_fn_value_reads_as_i64.gx
-reject	N: type mismatch iN does not contain Result<string, `EncodingError(string)>	rec-selfcall-argtype-jul2026/01_string_selfcall_arg.gx
-reject	N: type mismatch { bar: iN } does not contain iN	rec-union-abi-jul2026/01_rec_union_acc_scalar_sig.gx
+reject	N: type mismatch iN does not contain Error<'a: unbound above iN>	rec-rtype-unchecked-jul2026/01_rec_rtype_error_arm.gx
+reject	N: [iN, fn(a: Array<_>) -> _] must be Ordered here, but it holds the function fn(a: Array<_>) -> _: functions have no order, and only == and != compare them, by identity	rec-rtype-writeback-aug2026/00_fn_value_reads_as_i64.gx
+reject	N: type mismatch Number does not contain Result<string, `EncodingError(string)>	rec-selfcall-argtype-jul2026/01_string_selfcall_arg.gx
+trace	rec-union-abi-jul2026/01_rec_union_acc_scalar_sig.gx
 trace	recursion-fires-like-chain-aug2026/00_same_args_quiet.gx
 trace	recursion-fires-like-chain-aug2026/01_capture_fires_through_chain.gx
 trace	recursion-fires-like-chain-aug2026/02_nontail_const_base.gx
@@ -354,23 +355,23 @@ trace	review-fusion-oct2026/01_lazy_guard_fires.gx
 trace	review-fusion-oct2026/02_slot_birth_reads_standing.gx
 trace	review-fusion-oct2026/03_fed_arg_raise_order.gx
 trace	review-oct2026/01_defaulted_label_handler.gx
-reject	N: (null, n) tests inside a value of 'b, a type variable of the definition, which types none of its parts: write the type it tests, `T as (null, n)`	rigid-bottom-read-nov2026/00_null_arm_under_a_predicate_bound.gx
+trace	rigid-bottom-read-nov2026/00_null_arm_under_a_predicate_bound.gx
 trace	rigid-bottom-read-nov2026/01_null_arm_under_a_written_test.gx
-reject	N: type mismatch 'a: iN does not contain [iN, 'r: unbound]	rigid-commit-sep2026/00_rigid_in_a_number_union.gx
-reject	N: type mismatch fn(x: 'a: string) -> 'a: string does not contain fn(s: string) -> bytes	rigid-commit-sep2026/01_annotation_variable_split.gx
-reject	N: cannot compute 'a: unbound within Number + 'b: unbound within Number: arithmetic is fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a — both operands must be one numeric type (cast one side explicitly)	rigid-gate-alias-sep2026/00_two_rigid_vars_merge.gx
-reject	N: type mismatch 'a: unbound does not contain 'b: unbound	rigid-gate-alias-sep2026/01_merge_without_forward_link.gx
+reject	N: type mismatch Number does not contain 'r: unbound: the body needs 'r within Number, which the signature does not declare: write 'r: Number	rigid-commit-sep2026/00_rigid_in_a_number_union.gx
+reject	N: type mismatch string does not contain bytes	rigid-commit-sep2026/01_annotation_variable_split.gx
+reject	N: ['a, 'b] must be one type, but the declared variable 'a may differ from its other members	rigid-gate-alias-sep2026/00_two_rigid_vars_merge.gx
+reject	N: type mismatch 'b: unbound does not contain 'a: unbound: a call picks 'b, and the body's value need not be of the type it picks; drop `-> Array<'b>`, or write the body's type	rigid-gate-alias-sep2026/01_merge_without_forward_link.gx
 reject	N: type mismatch 'a: unbound does not contain string	rigid-param-call-sep2026/00_param_called_with_a_string.gx
-reject	N: st is { last: iN, n: iN } and cannot hold { b: fN, y: iN }; declare st: [{ b: fN, y: iN }, { last: iN, n: iN }] where it is bound (line N, column N)	sample-select-orphan-jul2026/00_connect_shape_confusion.gx
+reject	N: { b: fN, y: '_N } has no field n	sample-select-orphan-jul2026/00_connect_shape_confusion.gx
 trace	scalar-read-widen-sep2026/00_nullable_f64_let.gx
 trace	scalar-read-widen-sep2026/01_nullable_bool_capture.gx
 trace	scc-caller-relabel-aug2026/00_tail_recursive_flap.gx
 trace	script-package-root-sep2026/00_package_from_sibling.gx
 trace	select-bottom-out-hold-aug2026/00_hold_recovers_bottom_scrutinee.gx
 trace	select-bottom-out-hold-aug2026/01_bare_bottom_scrutinee_bottoms.gx
-reject	N: type mismatch iN does not contain [iN, fN]	select-guard-prenarrow-bind-aug2026/00_guard_lambda_call.gx
+trace	select-guard-prenarrow-bind-aug2026/00_guard_lambda_call.gx
 trace	select-guard-prenarrow-bind-aug2026/01_legal_program_miscompiled.gx
-reject	N: cannot compare [iN, fN, fn(addr: string) -> Result<TcpStream, `TCPError(string)>] with iN: comparison is fn('a, 'a) -> bool — both operands must be one type	select-guard-prenarrow-bind-aug2026/02_guard_leaks_fn_value.gx
+reject	N: type mismatch iN does not contain fn(addr: string) -> Result<TcpStream, `TCPError(string)>	select-guard-prenarrow-bind-aug2026/02_guard_leaks_fn_value.gx
 trace	select-guard-shortcircuit-aug2026/00_guard_never_evaluated_no_history.gx
 trace	select-guard-shortcircuit-aug2026/01_guard_cache_ride_wrong_arm.gx
 trace	select-guard-shortcircuit-aug2026/02_guard_effect_skipped.gx
@@ -402,8 +403,8 @@ trace	select-strict-rule-aug2026/01_starved_fold_arm.gx
 trace	select-strict-rule-aug2026/02_live_fold_two_cycle.gx
 trace	select-strict-rule-aug2026/03_filter_select_qop.gx
 trace	select-wake-rematch-sep2026/00_arm_local_counter.gx
-reject	N: refutable patterns are not allowed in let	seq-refusal-names-oct2026/00_refusal_in_a_seq_step.gx
-reject	N: cannot compute iN + fn(?#dest: [Log, `Stderr, `Stdout], v: 'a: unbound) -> 'a: unbound: arithmetic is fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a — both operands must be one numeric type (cast one side explicitly)	set-eq-drops-cell-link-aug2026/00_list_fold_map_fn.gx
+reject	N: missing match cases: nothing matches Array<iN> (N:N)	seq-refusal-names-oct2026/00_refusal_in_a_seq_step.gx
+reject	N: type mismatch Number does not contain fn(?#dest: [Log, `Stderr, `Stdout], v: 'a: unbound) -> 'a: unbound	set-eq-drops-cell-link-aug2026/00_list_fold_map_fn.gx
 trace	settle-order-jul2026/01_firstclass_hof_occurs_flap.gx
 trace	skipped-fn-arg-effect-aug2026/00_connect_in_discarded_fn_arg.gx
 trace	sleep-preserves-caches-jul2026/01_reselect_interior_bottom.gx
@@ -424,7 +425,7 @@ trace	slot-shrink-truncate-aug2026/02_shrink_callee_site_blocks.gx
 reject	N: a type definition is not an expression — it may only appear as a statement in a block or module body, not where a value is expected	soak-jul2026/01_clone_rebind_typedef_panic.gx
 trace	soak-jul2026/02_slice_taint_placeholder_error.gx
 trace	soak-jul2026/03_dead_dollar_stmt_kernel_abort.gx
-reject	N: cannot compute duration / iN: arithmetic is fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a — both operands must be one numeric type (cast one side explicitly)	soak-jul2026/04_duration_div0_error_value.gx
+reject	N: type mismatch duration does not contain iN	soak-jul2026/04_duration_div0_error_value.gx
 trace	soak-jul2026/05_list_init_max_wedge.gx
 reject	N: a let binding is not an expression — it may only appear as a statement in a block or module body, not where a value is expected	soak-jul2026/06_tainted_qop_unbox_ub.gx
 trace	soak-jul2026/07_stmt_call_pending_abort.gx
@@ -433,7 +434,7 @@ trace	soak-jul2026/09_interior_bottom_injected.gx
 trace	soak-jul2026/10_interior_bottom_nested_qop.gx
 trace	soak-jul2026/11_fold_slot_taint_recovery.gx
 trace	soak-jul2026/12_fold_body_div0_recovery.gx
-reject	N: type mismatch Array<Decode> does not contain Array<[`Bytes(&uN, &bytes), `Varint(&uN)]>	soak-jul2026/13_marshal_shape_mismatch_survives.gx
+reject	N: type mismatch Decode does not contain `Varint(&uN)	soak-jul2026/13_marshal_shape_mismatch_survives.gx
 trace	soak-jul2026/14_phantom_error_delivery.gx
 trace	soak-jul2026/15_phantom_error_delivery_min.gx
 trace	soak-jul2026/16_sample_clone_wake_root.gx
@@ -445,7 +446,7 @@ trace	soak-jul2026/21_tainted_literal_index_chain.gx
 trace	soak-jul2026/22_byref_init_echo.gx
 trace	soak-jul2026/23_flatmap_map_ignored_elem.gx
 trace	soak-jul2026/24_flatmap_find_ignored_elem.gx
-reject	N: cannot compute datetime - duration: arithmetic is fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a — both operands must be one numeric type (cast one side explicitly)	soak-jul2026/25_datetime_sub_overflow.gx
+reject	N: type mismatch datetime does not contain duration	soak-jul2026/25_datetime_sub_overflow.gx
 trace	soak-jul2026/26_select_arm_local_union_uaf.gx
 trace	soak-jul2026/27_select_arm_local_union_uaf_b.gx
 trace	soak-jul2026/28_rec_in_split_callback_tco.gx
@@ -457,10 +458,10 @@ trace	soak-jul2026/33_arm_wake_replay_ref_write.gx
 trace	soak-jul2026/34_arm_wake_replay_ref_write_b.gx
 trace	soak-jul2026/35_per_slot_lift_aliasing.gx
 trace	soak-jul2026/36_slot_prime_cached_replay.gx
-reject	N: type mismatch iN does not contain [iN, { b: fN, y: iN }]	soak-jul2026/37_nested_select_rtype_orphan.gx
+reject	N: type mismatch iN does not contain { b: fN, y: iN }	soak-jul2026/37_nested_select_rtype_orphan.gx
 trace	soak-jul2026/38_queuefn_clone_ftyp_lost.gx
-reject	N: cannot compute iN + [iN, null]: arithmetic is fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a — both operands must be one numeric type (cast one side explicitly)	soak-jul2026/39_nullable_callback_return.gx
-reject	N: cannot compute [iN, fN] * iN: arithmetic is fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a — both operands must be one numeric type (cast one side explicitly)	soak-jul2026/40_heterogeneous_callback_return.gx
+reject	N: type mismatch Number does not contain Option<'a>	soak-jul2026/39_nullable_callback_return.gx
+reject	N: type mismatch iN does not contain fN	soak-jul2026/40_heterogeneous_callback_return.gx
 reject	N: type mismatch Number does not contain duration	source-e-jun2026/01_let_a_duration_1_s_duration_2_s_a.gx
 trace	source-e-jun2026/02_let_e_error_0_is_err_e.gx
 trace	source-e-jun2026/03_let_a_0_array_map_a_x_1_x.gx
@@ -517,14 +518,14 @@ trace	transient-rebind-init-jul2026/00_capture_wake_const_body.gx
 trace	transient-rebind-init-jul2026/01_dynmod_rec_soup.gx
 contained	trip-poison-extent-aug2026/01_ride_too_narrow_residue_trip.gx
 contained	trip-poison-extent-aug2026/02_ride_too_wide_toplevel.gx
-reject	N: cannot compute iN + { b: fN, y: iN }: arithmetic is fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a — both operands must be one numeric type (cast one side explicitly)	trycatch-rtype-orphan-aug2026/01_struct_add_admission.gx
+reject	N: type mismatch iN does not contain { b: fN, y: iN }	trycatch-rtype-orphan-aug2026/01_struct_add_admission.gx
 trace	tval-union-blind-print-jul2026/00_group_tuple_render.gx
 trace	tval-union-blind-print-jul2026/01_never_union_tuple_render.gx
 trace	tval-union-blind-print-jul2026/02_nested_blind_member.gx
 trace	tval-union-blind-print-jul2026/03_never_arm_orphan_member.gx
 trace	tvar-alias-sever-jul2026/00_fn_elem_find.gx
 trace	tvar-alias-sever-jul2026/01_string_elem_map.gx
-reject	N: type mismatch iN does not contain (iN, iN)	tvar-alias-sever-jul2026/02_acceptance_hole_rejects.gx
+reject	cannot compare (iN, iN) with iN: neither type holds the other, so the two are never equal	tvar-alias-sever-jul2026/02_acceptance_hole_rejects.gx
 trace	tvar-lock-jul2026/01_constraint_eq_self_deadlock.gx
 trace	twochannel-jul2026/late_init_priming.gx
 trace	twochannel-jul2026/p10_const_callee_body.gx
@@ -560,7 +561,7 @@ trace	variant-arity-tag-only-aug2026/03_no_annotation_needed.gx
 trace	variant-rec-depth-jul2026/01_variant_nontail_depth_guard.gx
 trace	varint-literal-sep2026/00_literal_over_a_varint.gx
 trace	varint-literal-sep2026/01_varint_or_pattern.gx
-reject	N: type mismatch 'a: iN does not contain [iN, string]: `v` is undecided at this call; annotate `v` (line N, column N in module /test)	waiting-arg-lower-bound-nov2026/00_let_of_an_open_payload.gx
+excluded	waiting-arg-lower-bound-nov2026/00_let_of_an_open_payload.gx
 trace	wake-bind-init-view-aug2026/01_builtin_over_pattern_interp.gx
 trace	wake-catchup-sep2026/00_wake_recompute_table.gx
 trace	wake-catchup-sep2026/01_shared_input_spent.gx
@@ -569,7 +570,7 @@ trace	wake-catchup-sep2026/03_conflation.gx
 trace	wake-catchup-sep2026/04_sample_catchup_tick.gx
 trace	wake-catchup-sep2026/05_noarm_window.gx
 trace	wake-catchup-sep2026/06_nested_composition.gx
-reject	N: type mismatch fn(x: 'a: string) -> 'b: iN does not contain fn(s: string) -> iN throws Error<ErrChain<`ParseError(string)>>	wake-catchup-sep2026/07_fold_hof_qop_missed_emission.gx
+reject	N: type mismatch _ does not contain Error<ErrChain<'_N: unbound>>	wake-catchup-sep2026/07_fold_hof_qop_missed_emission.gx
 trace	wake-connect-target-sep2026/00_seq.gx
 trace	wake-connect-target-sep2026/01_never_let.gx
 trace	wake-connect-target-sep2026/02_arm_value.gx

@@ -3361,6 +3361,24 @@ fn use_outs(u: &Use) -> SmallVec<[TVar; 4]> {
     outs
 }
 
+// CR claude for claude: [bug/low] What decides the type a parse makes depends, in
+// two places, on which cell holds what. (1) `'a: Number + Singleton + Concrete +
+// NoError |x: 'a, y: string| x + str::parse(y)$`, and the same with `x` untyped,
+// are refused at the definition with "cannot compute with Number: both operands
+// must be one numeric type": the target takes the operator's declared bound as its
+// type. The refusal that fits is "the type 'b must be known here, an operation
+// reads it to know what to make: annotate where its result goes" (`let n: 'a =
+// str::parse(y)$; x + n` checks). (2) `'a: Concrete + NoError + Discernible |x: 'a,
+// y: string| x == str::parse(y)$` checks, the target taking 'a through the cell
+// both operands flow into (`Solving::fix_cell`'s `open_below`), while
+// `str::parse(s)$ == 4` and `|#x: i64 = 4096, y: string| x == str::parse(y)$` are
+// refused "must be known here": a comparison decides neither operand's type (Eric
+// 11-23, D55 in ~/ptmp/cr-discuss.md), so (2) is the odd one out. A build of the
+// other reading, where a comparison and an operator's other operand decide the
+// target in each instance, is ~/ptmp/bounds-study/made-target-instances-1123.patch;
+// it hung graphix-tests' lib and the hang was not diagnosed.
+// (made-target-decided-by-structure-01)
+
 /// Whether a type-directed operation makes the values of the cell `v`
 /// from its type (`Concrete`).
 fn made_by_type(v: &TVar) -> bool {

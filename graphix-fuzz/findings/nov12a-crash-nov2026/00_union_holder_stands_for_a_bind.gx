@@ -1,4 +1,3 @@
-// expect: reject
 // nov12a aieka crash_000000 (typemorph): the inner select's type is the
 // union of an open cell (the abstract's parameter, above the lower bound
 // i64) and the bind `n`, a cell bound to i64. The first arm's pattern
@@ -8,6 +7,7 @@
 // member of that union, so reading the union as it was never ended: the
 // check grew its stack without bound (a typemorph child dies of SIGABRT
 // at its address-space cap, a plain check never returns). The record is
-// now kept under the holder's own cell, and the pattern is refused: it
-// "tests a value whose type is not decided at this select".
+// now kept under the holder's own cell. The check by bounds waits for the
+// open cell and then routes the value down the arms, so the program
+// checks: the pin holds the check to ending and the engines to one answer.
 { type B<'a> = Abstract<'a>; let mkb = |x| B(x); let unb = |b: B<'a>| b.0; let v0 = select (select (i64:43 %? i64:3) { error as _ => unb(mkb(i64:-1)), i64 as n => n }, i64:0) { (i64:42, v1) | (v1, i64:7) => {i64:1 => i64:0}, (v2, v1) => {i64:0 => v2} }; println("[v0]") }

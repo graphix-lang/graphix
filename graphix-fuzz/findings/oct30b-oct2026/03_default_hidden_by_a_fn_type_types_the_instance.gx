@@ -1,3 +1,9 @@
+// expect: reject
+// The check by bounds refuses this: a comparison decides neither
+// operand's type, so nothing says what `str::parse` makes ("the type 'b
+// must be known here"). 07_default_hidden_by_a_fn_type_annotated_read.gx
+// is the program with the read annotated, which runs. What follows is
+// the finding as it stood.
 // A function whose labeled default a fn type hides, called through that
 // type: the instance ran with the label's type open where only the
 // default decides it, so the type-directed read in its body refused what

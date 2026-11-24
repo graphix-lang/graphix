@@ -961,6 +961,12 @@ fn rigid_as_bounds(env: &Env, t: &Type) -> Option<Type> {
 // check; a let's pattern is a one-arm select (destructure). The probe now reads
 // 'type mismatch (Any, Any) does not contain (i64, i64, i64)': still not the
 // pattern as written.
+// 2026-11-23 claude: A refutable let pattern is refused as its one-arm select
+// is: `let [h, ..] = [1, 2]` says "missing match cases: nothing matches
+// Array<i64> (1:1)" where main said "refutable patterns are not allowed in
+// let". The text names no let and no pattern (the fuzz pin
+// seq-refusal-names-oct2026/00 records it). destructure knows it is a let: say
+// so there, with the pattern as written.
 
 /// Bind a pattern's names to the parts of a value of type `t`: a select of
 /// one arm, so the pattern must take every value.
