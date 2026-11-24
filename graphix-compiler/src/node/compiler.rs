@@ -29,7 +29,7 @@ use crate::{
         op::{CheckedAdd, CheckedDiv, CheckedMod, CheckedMul, CheckedSub},
     },
     stack::ensure_sufficient,
-    typ::{TVar, Type},
+    typ::{TVar, Type, tvar::AtLevel},
 };
 use ahash::{AHashMap, AHashSet};
 use anyhow::{Context, Result};
@@ -51,6 +51,9 @@ pub(crate) fn compile<R: Rt>(
     scope: &Scope,
     top_id: ExprId,
 ) -> Result<Node<R>> {
+    // a part of a definition's value that is no definition itself is
+    // one value, of the level around the definition
+    let _outside = super::bind::outside(&spec).map(AtLevel::enter);
     ensure_sufficient(|| compile_inner(ctx, flags, spec, scope, top_id, false))
 }
 
@@ -63,6 +66,7 @@ pub(crate) fn compile_statement_expr<R: Rt>(
     scope: &Scope,
     top_id: ExprId,
 ) -> Result<Node<R>> {
+    let _outside = super::bind::outside(&spec).map(AtLevel::enter);
     ensure_sufficient(|| compile_inner(ctx, flags, spec, scope, top_id, true))
 }
 
@@ -714,7 +718,7 @@ pub(super) fn eta_dispatcher<R: Rt>(
     // the default of an optional label is each impl's, which no value of
     // the method can give
     if let Some(label) = ft.args.iter().find_map(|a| match &a.kind {
-        crate::typ::FnArgKind::Labeled { name, has_default: true } => Some(name),
+        crate::typ::FnArgKind::Labeled { name, default: Some(_) } => Some(name),
         _ => None,
     }) {
         bailat!(

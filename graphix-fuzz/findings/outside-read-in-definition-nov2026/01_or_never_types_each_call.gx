@@ -1,0 +1,5 @@
+// expect: reject
+// The result of a `$` held for a binding outside the function is that
+// binding's at every call: it took any annotation (soak nov24c).
+// Expected: refused, "null does not contain i64".
+{ let v = 0; let f = |x: i64| (v +? x)$; let t: null = f(1); t }

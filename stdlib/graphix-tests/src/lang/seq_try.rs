@@ -277,7 +277,7 @@ async fn refusals() -> Result<()> {
         ("seq { let x: string = try { 1 } with(e) { 2 }; x }", "string does not contain"),
         (
             "{ let bad = |v| -> [i64, Error<`Oops>] error(`Oops); seq { try { bad(1)? } with(e: Error<`Wrong>) { 0 } } }",
-            "Error<`Wrong> does not contain",
+            "`Wrong does not contain ErrChain<",
         ),
     ] {
         refused_everywhere(src, needle).await?;

@@ -307,7 +307,7 @@ let f = |x, y| x + y
 Its type will be something like:
 
 ```graphix,ignore
-val f: fn<'_2067: Number + Singleton>(x: '_2067, y: '_2067) -> '_2067
+val f: fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a
 ```
 
 The compiler has inferred two properties here,
@@ -325,17 +325,17 @@ over a type holding two numeric types, `[i64, f64]` or `Number`, even
 would not say what it is. A call of `f` with two `[i64, f64]` values is
 refused the same way, where it is called.
 
-Comparison is `fn('a, 'a) -> bool` over exactly one type: `|x, y| x < y`
-takes two arguments of one type, and neither operand's type may merely
-contain the other's. `x == 3` over `x: [i64, null]` and `` v == `Red ``
-over `` v: [`Green, `Red] `` are refused; select on the value instead
-(`` select v { `Red => true, _ => false } ``, `opt::is_some`). Any one
-type compares, unions included: two `[`Green, `Red]` values, two
-`[string, i64]` values, and two `[i64, f64]` values, of which values of
-different types are never equal (`i64:3 == f64:3.0` is false). The
-orderings (`<`, `<=`, `>`, `>=`) refuse a type holding two numeric
-types, as arithmetic does: an `i64` and an `f64` have no order between
-them, so cast them to one.
+A comparison takes two operands where one's type holds the other's.
+`x == 3` over `x: [i64, null]` and `` v == `Red `` over `` v: [`Green,
+`Red] `` check, and so do two values of one union type, of which values
+of different types are never equal (over two `[i64, f64]` values,
+`i64:3 == f64:3.0` is false). An equality between two types that hold
+neither, `1 == "b"` or an `i64` against an `f64`, is refused: the two
+could never be equal. The orderings (`<`, `<=`, `>`, `>=`) take the same
+operands, and any two numbers besides (`1 < 2.5`): every two values have
+an order, numbers by their value whatever their types. A function with a
+comparison in its body is judged at each call, so `|x, y| x == y` called
+with an `i64` and a `string` is refused where it is called.
 
 Because unchecked arithmetic operators like `+` wrap on overflow, and
 `/` and `%` return bottom on a zero divisor, rather than throwing, there
@@ -344,22 +344,16 @@ logged by the interpreter; JIT compiled code, the default, returns
 bottom without logging. Run with `--no-fusion` to see the diagnostics
 when debugging.)
 
-In the shell this type signature is made a bit more complex by the
-shell also telling you what type variables are currently bound to, or
-`unbound` if they aren't bound, and the bounds each must stay within.
-The `fn<>` header lists only the variables a definition declares, so
-an inferred variable's bounds show where it occurs. In the shell this
-pops out as,
+The shell prints the same signature, naming the inferred variable:
 
 ```graphix
 〉f
--: fn(x: '_2067: unbound within Number & Singleton, y: '_2067: unbound within Number & Singleton) -> '_2067: unbound within Number & Singleton
+-: fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a
 ```
 
-`'_2067: unbound within Number & Singleton` is read as: `'_2067` is
-not currently bound to a type, and it must be one type of `Number`.
-This is all useful information, even though it's intimidating at first it's
-worth putting in the work to learn to decipher it.
+The `fn<>` header says what `'a` may be, one type of `Number`, and the
+variable stands by its name wherever it occurs: both arguments and the
+result are that one type.
 
 ## Putting It All Together
 

@@ -1,0 +1,7 @@
+// A dynamic module importing a function and a value of an instance whose
+// types name a type of the function's body. The instance kept its own
+// copies of the written names, unresolved unless fusion's seed pass
+// filled them: the load failed "undefined type W" in the node walk and
+// succeeded fused (soak nov24b, interp against jit).
+// Expected trace (both engines): "loaded".
+{ let show = |u: i64| { type W<'t> = Abstract<'t>; let unw = |w: W<'a>| -> 'a w.0; let p = [W(1)]; let status = mod d dynamic { sig { use super::{p, unw}; val s: fn(u: i64) -> i64 }; source "let s = |u: i64| -> i64 super::unw(super::p\[0\]$)" }; select status { error as e => "[e]", null as _ => "loaded" } }; show(1) }

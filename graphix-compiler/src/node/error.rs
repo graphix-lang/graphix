@@ -2,6 +2,7 @@ use super::{VarRead, read_var, wake::FreshFrame};
 use crate::{
     BindId, CFlag, CompileCtx, ErrorHandler, ExecCtx, HandlerKind, Node, NodeView,
     Notify, PrintFlag, Refs, Rt, Scope, SourcePosition, Tag, TagValue, Update, View,
+    bailat,
     compiler::compile,
     defetyp,
     env::{Bind, Env},
@@ -18,7 +19,7 @@ use crate::{
     },
     prune::BoundaryRef,
     rep,
-    typ::Type,
+    typ::{Type, bounds},
     wrap,
 };
 use anyhow::{Result, anyhow, bail};
@@ -200,14 +201,9 @@ impl RaiseProbe {
         (Self(id), scope.with_catch((id, ExprId::new()), HandlerKind::Catch))
     }
 
-    /// What was raised: ⊥ when nothing joined; an open callback's
-    /// `throws 'e` stays the cell.
+    /// What was raised: the cell the raises joined into.
     pub(crate) fn raised<R: Rt>(&self, ctx: &CompileCtx<R>) -> Type {
-        match ctx.env.by_id.get(&self.0).map(|b| &b.typ) {
-            Some(Type::TVar(tv)) => tv.binding().unwrap_or(Type::Bottom),
-            Some(t) => t.clone(),
-            None => Type::Bottom,
-        }
+        ctx.env.by_id.get(&self.0).map_or(Type::Bottom, |b| b.typ.clone())
     }
 
     pub(crate) fn close<R: Rt>(&self, ctx: &mut CompileCtx<R>) {
@@ -215,8 +211,8 @@ impl RaiseProbe {
     }
 }
 
-/// Join `etyp`, an error type raised to `handler`'s catch, into the type
-/// its bind infers. A sealed catch takes only what its bind holds.
+/// `etyp`, an error type raised to `handler`'s catch, flows into the
+/// type its bind infers.
 pub(crate) fn join_raised(env: &Env, handler: &ErrorHandler, etyp: &Type) -> Result<()> {
     // a raise of nothing joins nothing
     if etyp.with_deref(|t| matches!(t, Some(Type::Bottom))) {
@@ -226,58 +222,19 @@ pub(crate) fn join_raised(env: &Env, handler: &ErrorHandler, etyp: &Type) -> Res
     let Some(Type::TVar(tv)) = env.by_id.get(&catch).map(|b| &b.typ) else {
         bail!("BUG: catch {catch:?} has no inferred bind")
     };
-    let joined = match tv.binding() {
-        None => etyp.clone(),
-        Some(t)
-            if !etyp.has_unbound()
-                && t.contains_with_flags(BitFlags::empty(), env, etyp)? =>
-        {
-            return Ok(());
-        }
-        Some(t)
-            if handler.sealed()
-                && !etyp.has_unbound()
-                && t.with_deref(|t| matches!(t, None | Some(Type::Bottom))) =>
-        {
-            format_with_flags(PrintFlag::DerefTVars, || {
-                bail!(
-                    "this error reaches a catch that saw no error when it was checked: \
-                     annotate the catch with the errors it takes, `catch(e: {etyp})`"
-                )
-            })?
-        }
-        Some(t) if handler.sealed() => {
-            return t.check_contains(env, etyp).map_err(|e| {
-                anyhow!(
-                    "this error reaches a catch whose handler was checked to take {t}: {e}"
-                )
-            });
-        }
-        Some(t) => Type::union(env, &[&t, etyp])?,
-    };
-    tv.bind(joined);
-    Ok(())
-}
-
-/// Join an open raised type (a callback's `throws 'e`) into `catch`: two
-/// open cells are one (a gate's `'e` and a call's instantiation of it),
-/// anything else joins as a union member.
-pub(crate) fn join_open_raised(
-    env: &Env,
-    handler: &ErrorHandler,
-    etyp: &Type,
-) -> Result<()> {
-    let (catch, _) = handler.id();
-    let Some(Type::TVar(tv)) = env.by_id.get(&catch).map(|b| &b.typ) else {
-        bail!("BUG: catch {catch:?} has no inferred bind")
-    };
-    match tv.binding() {
-        Some(t @ Type::TVar(_))
-            if t.deref_cloned().is_none() && t.contains(env, etyp)? =>
-        {
-            Ok(())
-        }
-        _ => join_raised(env, handler, etyp),
+    // a catch its binding's written type seals takes what fits that type,
+    // and its binding learns nothing from a raise
+    let written = handler
+        .sealed()
+        .then(|| {
+            tv.cell_above()
+                .into_iter()
+                .find(|u| !matches!(u, Type::TVar(_) | Type::Bound(_)))
+        })
+        .flatten();
+    match written {
+        Some(written) => written.check_contains(env, etyp),
+        None => Type::TVar(tv.clone()).check_contains(env, etyp),
     }
 }
 
@@ -308,6 +265,38 @@ impl<R: Rt> Catch<R> {
     /// The covering seq machine's abort stamp, 0 outside one.
     fn run_stamp(&self) -> u64 {
         self.own_handler.machine().map_or(0, |m| m.abort_stamp())
+    }
+
+    /// The errors raised under the catch flow into its binding, which is
+    /// the type written of it, whatever is raised. A block holds this
+    /// before the region the catch covers, which is checked ahead of the
+    /// catch, so its raises meet what is written; the catch's own check
+    /// holds it where no block did (an input that is one catch).
+    pub(crate) fn hold_written(&self, ctx: &CompileCtx<R>) -> Result<()> {
+        match self.written() {
+            Some(written) => {
+                let binder = self.binder(ctx)?;
+                written.check_contains(&ctx.env, &binder)?;
+                binder.check_contains(&ctx.env, written)
+            }
+            None => Ok(()),
+        }
+    }
+
+    /// The type the catch's binding is written with.
+    fn written(&self) -> Option<&Type> {
+        match &self.spec.kind {
+            ExprKind::Catch(c) => c.constraint.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// The type of the catch's binding.
+    fn binder(&self, ctx: &CompileCtx<R>) -> Result<Type> {
+        match ctx.env.by_id.get(&self.bind_id) {
+            Some(b) => Ok(b.typ.clone()),
+            None => bail!("BUG: catch bind vanished"),
+        }
     }
 
     pub(crate) fn image_decode(
@@ -352,16 +341,7 @@ impl<R: Rt> Catch<R> {
             t.refuse_quantified_fns(&ctx.env).at(&spec)?;
         }
         let catch_scope = scope.append_place("ca", &spec, None);
-        // an ascribed catch takes its type now, so a raise it covers writes
-        // nothing, from whatever task checks the raise
         let typ = Type::empty_tvar();
-        match &typ {
-            Type::TVar(tv) => {
-                tv.freeze();
-                tv.bind(c.constraint.clone().unwrap_or(Type::Bottom))
-            }
-            _ => unreachable!(),
-        }
         let bind_id = ctx
             .env
             .bind_variable(
@@ -570,12 +550,14 @@ impl<R: Rt> Update<R> for Catch<R> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
+        wrap!(self, self.hold_written(ctx))?;
         self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx), true)
     }
 
     /// The error bind and the capture take the types their definition's
     /// check left them ([`Catch::aux_types`]); whether `T` covers the
-    /// region's throws was judged there.
+    /// region's throws was judged there. With no row the binder holds what
+    /// is written of it, or nothing.
     fn typecheck0_instance(
         &mut self,
         ctx: &mut CompileCtx<R>,
@@ -583,11 +565,16 @@ impl<R: Rt> Update<R> for Catch<R> {
     ) -> Result<()> {
         self.unused_warning = None;
         match types.aux(self.spec.id) {
-            None => self.typecheck0_with(
-                ctx,
-                &mut |n, ctx| n.typecheck0_instance(ctx, types),
-                false,
-            ),
+            None => {
+                if let Type::TVar(tv) = &self.binder(ctx)? {
+                    tv.bind(self.written().cloned().unwrap_or(Type::Bottom))
+                }
+                self.typecheck0_with(
+                    ctx,
+                    &mut |n, ctx| n.typecheck0_instance(ctx, types),
+                    false,
+                )
+            }
             Some(rows) => {
                 for (id, row) in self.bind_ids().zip(rows.iter()) {
                     if let Some(Type::TVar(tv)) = ctx.env.by_id.get(&id).map(|b| &b.typ) {
@@ -666,8 +653,7 @@ impl Strip {
                 Some(open) => {
                     let mut held = false;
                     for m in members.iter().filter(|m| !open_member(m)) {
-                        held |=
-                            m.contains_with_flags(BitFlags::empty(), &ctx.env, &err)?
+                        held |= m.decided_holds(&ctx.env, &err)?
                     }
                     (!held).then_some(open)
                 }
@@ -707,7 +693,7 @@ impl Strip {
             })?
         }
         let null = Type::Primitive(Typ::Null.into());
-        let holds = |t: &Type| typ.contains_with_flags(BitFlags::empty(), &ctx.env, t);
+        let holds = |t: &Type| typ.decided_holds(&ctx.env, t);
         // an open member holds both: the strip is the one that takes a
         // member out, the error form when neither does (`Any`)
         let takes = |strip: Self| -> Result<bool> {
@@ -717,28 +703,33 @@ impl Strip {
             Ok(Self::Null)
         } else if holds(&err)? {
             if op == '?' {
-                Self::open_member_raising_nothing(&ctx.env, typ)?;
+                Self::open_member_raising_nothing(&ctx.env, typ, false)?;
             }
             Ok(Self::Error)
         } else if holds(&null)? {
             Ok(Self::Null)
         } else {
-            format_with_flags(PrintFlag::DerefTVars, || {
-                bail!(
-                    "cannot use the {op} operator on {typ}, it has no error and no null"
-                )
-            })
+            Err(bounds::strips_nothing(op, &typ.resolve_tvars()))
         }
     }
 
     /// `?` raises the errors its operand's decided members hold, and the
     /// handler it joins them into is fixed there: an open member without
     /// `NoError` may later hold an error that is raised and joined into
-    /// nothing, so it is refused, naming the bound to declare.
-    fn open_member_raising_nothing(env: &Env, typ: &Type) -> Result<()> {
+    /// nothing, so it is refused, naming the bound to declare. With
+    /// `declared_only`, only a declared variable is: the check by bounds
+    /// decides an open cell after the operand's check.
+    fn open_member_raising_nothing(
+        env: &Env,
+        typ: &Type,
+        declared_only: bool,
+    ) -> Result<()> {
         for m in Type::dispatch_members(env, typ)? {
             let Type::TVar(tv) = &m else { continue };
-            if tv.binding().is_some() || !tv.may_hold_error(env)? {
+            if tv.binding().is_some()
+                || (declared_only && !tv.is_rigid())
+                || !tv.may_hold_error(env)?
+            {
                 continue;
             }
             let name = format_compact!("{tv}");
@@ -758,9 +749,14 @@ impl Strip {
         Ok(())
     }
 
-    /// The strip a definition's check recorded as its removed type.
-    fn of_removed(t: &Type) -> Option<Self> {
-        [Self::Error, Self::Null].into_iter().find(|s| s.removed() == *t)
+    /// What a check by bounds says goes from an operand of the type `t`,
+    /// where `t` is decided enough to say.
+    fn by_bounds(env: &Env, t: &Type) -> Result<Option<Self>> {
+        Ok(match (bounds::strippable(env, t)?, bounds::strips_errors(env, t)?) {
+            (false, _) => None,
+            (true, true) => Some(Self::Error),
+            (true, false) => Some(Self::Null),
+        })
     }
 
     pub(crate) fn removed(self) -> Type {
@@ -944,23 +940,6 @@ pub(crate) fn deliver_error<R: Rt>(
     }
 }
 
-/// The error type a `?` delivers for `etyp`: what it raises wrapped in
-/// an `ErrChain`, once. A raise of chains extends them rather than
-/// nesting them (`wrap_error`), so a chain arriving from a callee's
-/// throws keeps its type.
-fn fix_echain_typ<R: Rt>(ctx: &CompileCtx<R>, etyp: &Type) -> Result<Type> {
-    let Some(payload) = raised_payload(&ctx.env, etyp)? else {
-        return format_with_flags(PrintFlag::DerefTVars, || {
-            bail!("expected error not {etyp}")
-        });
-    };
-    let chain = match payload.chain_error_type(&ctx.env)? {
-        Some(error) => Type::err_chain(error),
-        None => Type::err_chain(payload),
-    };
-    Ok(Type::Error(Arc::new(chain)))
-}
-
 /// What the errors of `t` carry, the union of their payloads, or `None`
 /// when `t` holds no error.
 fn raised_payload(env: &Env, t: &Type) -> Result<Option<Type>> {
@@ -1069,6 +1048,8 @@ pub struct Qop<R: Rt> {
     pub(crate) mode: QopMode,
     /// What a raise carries ([`Self::raised_typ`]).
     raised: Type,
+    /// An instance whose strip its definition decided.
+    of_definition: bool,
     resident: TagValue,
 }
 
@@ -1088,6 +1069,7 @@ impl<R: Rt> Qop<R> {
             strip,
             mode,
             raised,
+            of_definition: false,
             resident: TagValue::phantom(),
         })
     }
@@ -1153,6 +1135,16 @@ impl<R: Rt> Qop<R> {
         }
     }
 
+    /// Take off what a check by bounds says goes from an operand of the
+    /// type `t`, where `t` is decided enough to say.
+    fn strip_of(&mut self, env: &Env, t: &Type) -> Result<()> {
+        if let Some(strip) = Strip::by_bounds(env, t)? {
+            self.strip = strip;
+            self.raised = Self::raised_typ(self.strip, &self.n)
+        }
+        Ok(())
+    }
+
     /// The type of what a raise here carries.
     fn raised_typ(strip: Strip, n: &Node<R>) -> Type {
         match strip {
@@ -1177,6 +1169,17 @@ impl<R: Rt> Update<R> for Qop<R> {
 
     fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
         f(&mut self.n)
+    }
+
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
+        wrap!(self.n, self.n.typecheck1(ctx))?;
+        // an operand the check decided after this node was checked says
+        // what goes only now
+        if !self.of_definition && !matches!(self.spec.kind, ExprKind::Rethrow(_)) {
+            let t = self.n.typ().resolve_tvars();
+            wrap!(self, self.strip_of(&ctx.env, &t))?
+        }
+        Ok(())
     }
 
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
@@ -1227,22 +1230,75 @@ impl<R: Rt> Update<R> for Qop<R> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
-        self.typecheck0_with(ctx, &mut |n, ctx| n.typecheck0(ctx), true, None)
+        wrap!(self.n, self.n.typecheck0(ctx))?;
+        // warned once, at the definition's check: an instance compiles
+        // under its call site's handlers, which raise_throws judges
+        if let QopMode::Raise { handler: None, flags, .. } = &self.mode {
+            // CR claude for claude: [bug/medium] A seq whose run raises with no catch
+            // above it is warned here as "error raised by ? will not be caught" at the
+            // `seq` keyword, where there is no `?`: the machine's handler is a
+            // compiler-made Rethrow whose spec is the seq's. At run time the same
+            // Rethrow's handler-less branch in Qop::update logs "unhandled error <seq
+            // site> {cause: null, error: `A(1), ori: {..}, pos: {column: i32:3, line:
+            // i32:16}}". That is the whole chain with typed integers and the real raise
+            // site buried in it, where a handler-less `?` logs only its payload at its
+            // own site. Fix: for ExprKind::Rethrow, word the warning for the seq. When
+            // the payload is a chain, log its `error` (chain_error) at the site of the
+            // link that raised it. probe:
+            // design/review-2026-11-16/repro/c-error-op-seq-rethrow-diagnostic.gx
+            // (c-error-op-03)
+            match self.spec.kind {
+                // a seq's rethrow raises only what its run raised, which
+                // is known once the check ends
+                ExprKind::Rethrow(_) => ctx.pending_names.push(crate::Pending::Raise {
+                    raised: self.n.typ().clone(),
+                    at: (*self.spec).clone(),
+                    callee: None,
+                    flags: *flags,
+                }),
+                _ => Self::check_unhandled(
+                    &ctx.env,
+                    *flags,
+                    &self.spec,
+                    "error raised by ?",
+                )?,
+            }
+        }
+        wrap!(self, self.check_by_bounds(ctx))
     }
 
+    /// The strip is the definition's, over the operand as the definition
+    /// sees it: an instance that gives a variable an error takes off what
+    /// every instance does. The raise joined into the handler's bind is
+    /// state: an instance computes it too.
     fn typecheck0_instance(
         &mut self,
         ctx: &mut CompileCtx<R>,
         types: &mut super::lambda::InstanceTypes,
     ) -> Result<()> {
         let row = types.settle(ctx, &self.spec, &self.typ)?;
-        let decided = types.aux(self.spec.id).and_then(|r| Strip::of_removed(&r[0]));
-        self.typecheck0_with(
-            ctx,
-            &mut |n, ctx| n.typecheck0_instance(ctx, types),
-            !row,
-            decided,
-        )
+        let seen = types.definitions(self.n.spec().id).map(Type::resolve_tvars);
+        let decided = match &seen {
+            Some(t) => Strip::by_bounds(&ctx.env, t)?,
+            None => None,
+        };
+        self.of_definition = decided.is_some();
+        wrap!(self.n, self.n.typecheck0_instance(ctx, types))?;
+        if matches!(self.spec.kind, ExprKind::Rethrow(_))
+            && self.n.typ().with_deref(|t| matches!(t, Some(Type::Bottom)))
+        {
+            return Ok(());
+        }
+        let op = if self.raises() { '?' } else { '$' };
+        let (strip, left) = wrap!(self, strip_typ(ctx, op, self.n.typ(), decided))?;
+        self.strip = strip;
+        self.raised = Self::raised_typ(strip, &self.n);
+        // where the definition's check left this node no row, its type is
+        // what the strip leaves of the operand
+        if !row && !bounds::take(&self.typ, &left) {
+            bailat!(self.spec, "BUG: a strip's result took no row")
+        }
+        Ok(())
     }
 
     fn view(&self) -> NodeView<'_, R> {
@@ -1595,6 +1651,13 @@ impl<R: Rt> Catch<R> {
         // probe:
         // design/review-2026-11-16/repro/x-engine-seq-errors-catch-no-raise-diagnostic.gx
         // (x-engine-seq-errors-06)
+        // 2026-11-24 claude: On bounds-spike a handler that reads its binder's parts
+        // where no raise reaches now checks and builds: the binder is a value nothing
+        // decides, and the build no longer looks up a field's place in a type the check
+        // left at bottom (data.rs::field_place; pins
+        // lang::tuples_structs::catch_binder_field_read_where_nothing_raises and the fuzz
+        // corpus's undecided-struct-read-nov2026). So the refusal this CR quotes is gone,
+        // and what stands is its second half: nothing says the catch hears nothing.
         wrap!(self.handler, child(&mut self.handler, ctx))?;
         // a handler that reads the error was checked at the bind's type; a
         // handler that ignores it (the REPL's tail catch) takes any raise
@@ -1637,122 +1700,143 @@ impl<R: Rt> Catch<R> {
         // the capture cell's type is the union of every covering
         // handler's throws
         if let Some(cap) = abort.capture() {
-            let etyp = ctx
-                .env
-                .by_id
-                .get(&self.bind_id)
-                .map(|b| b.typ.clone())
-                .ok_or_else(|| anyhow!("BUG: catch bind vanished"))?;
+            let etyp = self.binder(ctx)?;
             let bind = ctx
                 .env
                 .by_id
                 .get(&cap)
                 .ok_or_else(|| anyhow!("BUG: seq capture cell vanished"))?;
-            let Type::TVar(tv) = &bind.typ else {
+            if !matches!(&bind.typ, Type::TVar(_)) {
                 bail!("BUG: seq capture cell is not a cell")
-            };
-            // union the cell's content, not the cell
-            let etyp = match &etyp {
-                Type::TVar(b) => b.binding().unwrap_or(Type::Bottom),
-                t => t.clone(),
-            };
-            let joined = match tv.binding() {
-                None => etyp.clone(),
-                Some(t) => Type::union(&ctx.env, &[&t, &etyp])?,
-            };
-            tv.bind(joined);
+            }
+            return bind.typ.check_contains(&ctx.env, &etyp);
         }
         Ok(())
     }
 }
 
 impl<R: Rt> Qop<R> {
-    /// The raise joined into the handler's bind is state: an instance
-    /// computes it too, over the strip its definition `decided`.
-    fn typecheck0_with(
-        &mut self,
-        ctx: &mut CompileCtx<R>,
-        child: &mut super::Child<'_, R>,
-        check: bool,
-        decided: Option<Strip>,
-    ) -> Result<()> {
-        wrap!(self.n, child(&mut self.n, ctx))?;
-        let rethrow = matches!(self.spec.kind, ExprKind::Rethrow(_));
-        if rethrow {
-            if self.n.typ().with_deref(|t| matches!(t, Some(Type::Bottom))) {
-                return match check {
-                    true => self.typ.check_contains(&ctx.env, &Type::Bottom),
-                    false => Ok(()),
-                };
+    /// The refusal of a raise that a sealed catch, whose handler was
+    /// checked before it, cannot take: one naming the annotation where the
+    /// catch saw no error.
+    fn unfit(&self, env: &Env, handler: &Type, e: anyhow::Error) -> anyhow::Error {
+        if !self.handler().is_some_and(|h| h.sealed()) {
+            return e;
+        }
+        let raised = || {
+            let t = self.n.typ().with_deref(|t| t.cloned())?;
+            if matches!(self.spec.kind, ExprKind::Rethrow(_)) {
+                return Some(t);
             }
-        }
-        // warned once, at the definition's check: an instance compiles
-        // under its call site's handlers, which raise_throws judges
-        if check && let QopMode::Raise { handler: None, flags, .. } = &self.mode {
-            // CR claude for claude: [bug/medium] A seq whose run raises with no catch
-            // above it is warned here as "error raised by ? will not be caught" at the
-            // `seq` keyword, where there is no `?`: the machine's handler is a
-            // compiler-made Rethrow whose spec is the seq's. At run time the same
-            // Rethrow's handler-less branch in Qop::update logs "unhandled error <seq
-            // site> {cause: null, error: `A(1), ori: {..}, pos: {column: i32:3, line:
-            // i32:16}}". That is the whole chain with typed integers and the real raise
-            // site buried in it, where a handler-less `?` logs only its payload at its
-            // own site. Fix: for ExprKind::Rethrow, word the warning for the seq. When
-            // the payload is a chain, log its `error` (chain_error) at the site of the
-            // link that raised it. probe:
-            // design/review-2026-11-16/repro/c-error-op-seq-rethrow-diagnostic.gx
-            // (c-error-op-03)
-            Self::check_unhandled(&ctx.env, *flags, &self.spec, "error raised by ?")?;
-        }
-        let op = if self.raises() { '?' } else { '$' };
-        // CR claude for claude: [bug/medium] When the operand is only an error,
-        // strip_typ returns Type::Bottom, but this site only checks that the Qop's
-        // fresh cell (Qop::compile's empty_tvar) contains it, so the cell stays open.
-        // never() is typed Type::Bottom and a select absorbs it; this open cell is not
-        // absorbed. As a result, `select x { 2 => error(`E(x))?, _ => x }` keeps an
-        // undecided member: a later `select v { 0 => 1, n => n }` is refused asking to
-        // annotate v (accepted with never()), and at the top level the select cannot
-        // fuse ('a region of type '_N: unbound has no kernel return').
-        // lang::errors::arm_input_raise_delivers pins that as FuseExpect::None, and its
-        // #[native] twin fuses only through `let v: i64`. Bind the cell to Type::Bottom
-        // when the strip leaves nothing, as strip_typ's doc promises, then flip that
-        // fixture to FuseExpect::Jit. probe:
-        // design/review-2026-11-16/repro/tests-lang-rest-d-raise-arm-leaves-select-open.gx
-        // (tests-lang-rest-d-02)
-        let (strip, rtyp) = wrap!(self, strip_typ(ctx, op, self.n.typ(), decided))?;
-        self.strip = strip;
-        self.raised = Self::raised_typ(strip, &self.n);
-        if check {
-            // CR claude for claude: [perf/medium] When the operand is always what the
-            // op strips (`error(`E(x))?`, `error(..)$`), `rtyp` is ⊥ and self.typ is
-            // left an unbound cell. Fusion cannot classify that cell: a select arm
-            // holding the raise refuses its region ("a region of type '_N: unbound has
-            // no kernel return"), and a `never(error(..)?)` arm's discarded argument
-            // refuses emission ("doesn't classify — can't drop it"). strict_fusion.md
-            // says both fuse (emit_qop_always_bad). `#[native] select x { 2 =>
-            // error(`E(x))$, _ => x }` at the top level is refused, while with `let w:
-            // i64 =` it fuses and both engines agree. Settle the cell to ⊥ where the
-            // strip leaves nothing, or freeze such a cell as ⊥ in fusion. Then
-            // lang::fusion's never_arm_args_raise and arm_raise_standing_input fuse.
-            // probe: design/review-2026-11-16/repro/tests-fusion-arm-raise-defuses.sh
-            // (tests-fusion-02)
-            wrap!(self, self.typ.check_contains(&ctx.env, &rtyp))?;
-        }
-        if let Some(handler) = self.handler() {
-            let etyp = match self.strip {
-                Strip::Error => Strip::Error.taken(&ctx.env, self.n.typ())?,
-                Strip::Null => NULL_ERR.clone(),
+            let (_, payloads) = bounds::strip(env, &t, true).ok()?;
+            let chain = Type::err_chain(bounds::union_of(payloads));
+            Some(Type::Error(Arc::new(chain)))
+        };
+        let nothing = handler.with_deref(|t| matches!(t, Some(Type::Bottom)));
+        format_with_flags(PrintFlag::DerefTVars, || match raised() {
+            Some(etyp) if nothing => anyhow!(
+                "this error reaches a catch that saw no error when it was checked: \
+                 annotate the catch with the errors it takes, `catch(e: {etyp})`"
+            ),
+            _ => anyhow!(
+                "this error reaches a catch whose handler was checked to take {handler}: {e}"
+            ),
+        })
+    }
+
+    // CR claude for claude: [bug/medium] When the operand is only an error,
+    // strip_typ returns Type::Bottom, but this site only checks that the Qop's
+    // fresh cell (Qop::compile's empty_tvar) contains it, so the cell stays open.
+    // never() is typed Type::Bottom and a select absorbs it; this open cell is not
+    // absorbed. As a result, `select x { 2 => error(`E(x))?, _ => x }` keeps an
+    // undecided member: a later `select v { 0 => 1, n => n }` is refused asking to
+    // annotate v (accepted with never()), and at the top level the select cannot
+    // fuse ('a region of type '_N: unbound has no kernel return').
+    // lang::errors::arm_input_raise_delivers pins that as FuseExpect::None, and its
+    // #[native] twin fuses only through `let v: i64`. Bind the cell to Type::Bottom
+    // when the strip leaves nothing, as strip_typ's doc promises, then flip that
+    // fixture to FuseExpect::Jit. probe:
+    // design/review-2026-11-16/repro/tests-lang-rest-d-raise-arm-leaves-select-open.gx
+    // (tests-lang-rest-d-02)
+    // 2026-11-19 claude: On bounds-spike Qop's old path (typecheck0_with, the strip's
+    // check_contains) is deleted with the old check: a definition's Qop is checked by
+    // check_by_bounds, an instance's takes its row. Moved here unchanged. The probe
+    // now checks (--check exit 0). Not cleared: flip
+    // lang::errors::arm_input_raise_delivers as the text says and pin the probe first.
+
+    // CR claude for claude: [perf/medium] When the operand is always what the
+    // op strips (`error(`E(x))?`, `error(..)$`), `rtyp` is ⊥ and self.typ is
+    // left an unbound cell. Fusion cannot classify that cell: a select arm
+    // holding the raise refuses its region ("a region of type '_N: unbound has
+    // no kernel return"), and a `never(error(..)?)` arm's discarded argument
+    // refuses emission ("doesn't classify — can't drop it"). strict_fusion.md
+    // says both fuse (emit_qop_always_bad). `#[native] select x { 2 =>
+    // error(`E(x))$, _ => x }` at the top level is refused, while with `let w:
+    // i64 =` it fuses and both engines agree. Settle the cell to ⊥ where the
+    // strip leaves nothing, or freeze such a cell as ⊥ in fusion. Then
+    // lang::fusion's never_arm_args_raise and arm_raise_standing_input fuse.
+    // probe: design/review-2026-11-16/repro/tests-fusion-arm-raise-defuses.sh
+    // (tests-fusion-02)
+    // 2026-11-19 claude: Moved here unchanged with Qop's old path (deleted on
+    // bounds-spike). The probe now: d and b fuse and print 1, 3; c as before; a
+    // (`never(error(`E(x))$)`) is still refused 'a region of type _ has no
+    // kernel return'.
+
+    /// The check by bounds: the operand less its errors, or its null,
+    /// where its type is decided enough to say which; else the strip
+    /// waits for it. What a `?` raises reaches the handler as a chain over
+    /// the payloads of the errors taken off.
+    fn check_by_bounds(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
+        let env = &ctx.env;
+        let handler =
+            self.handler().and_then(|h| env.by_id.get(&h.id().0)).map(|b| b.typ.clone());
+        if matches!(self.spec.kind, ExprKind::Rethrow(_)) {
+            return match handler {
+                Some(h) => h
+                    .check_contains(env, self.n.typ())
+                    .map_err(|e| self.unfit(env, &h, e)),
+                None => Ok(()),
             };
-            // an instance's operand may be narrower than its definition's
-            // (a callback's formal at a slot's element type): it raises nothing
-            if etyp.is_uninhabited() {
-                return Ok(());
-            }
-            let etyp =
-                if rethrow { etyp } else { wrap!(self, fix_echain_typ(ctx, &etyp))? };
-            join_raised(&ctx.env, handler, &etyp)?;
         }
-        Ok(())
+        let payload = match self.raises() {
+            false => None,
+            true => match handler.as_ref().and_then(|h| bounds::raised_payload(env, h)) {
+                Some(payload) => Some(payload),
+                None => {
+                    let payload = Type::empty_tvar();
+                    if let Some(h) = &handler {
+                        let chain =
+                            Type::Error(Arc::new(Type::err_chain(payload.clone())));
+                        h.check_contains(env, &chain)
+                            .map_err(|e| self.unfit(env, h, e))?
+                    }
+                    Some(payload)
+                }
+            },
+        };
+        match self.n.typ().with_deref(|t| t.cloned()) {
+            Some(t) if bounds::strippable(env, &t)? => {
+                self.strip_of(env, &t)?;
+                if payload.is_some() && matches!(self.strip, Strip::Error) {
+                    Strip::open_member_raising_nothing(env, &t, true)?
+                }
+                let (left, payloads) = bounds::strip(env, &t, payload.is_some())?;
+                for (p, to) in
+                    payloads.iter().flat_map(|p| payload.iter().map(move |to| (p, to)))
+                {
+                    to.check_contains(env, p).map_err(|e| match &handler {
+                        Some(h) => self.unfit(env, h, e),
+                        None => e,
+                    })?
+                }
+                self.typ.check_contains(env, &left)
+            }
+            _ => {
+                let (operand, out) = (self.n.typ().clone(), self.typ.clone());
+                super::solving(|s| s.hold_strip(operand, out, payload));
+                Ok(())
+            }
+        }
     }
 }
 
@@ -1891,11 +1975,8 @@ impl ErrorRelay {
         scope: &Scope,
         top_id: ExprId,
     ) -> (Self, Scope) {
+        // the check gives the cell what the function raises as it flows in
         let typ = Type::empty_tvar();
-        if let Type::TVar(tv) = &typ {
-            tv.freeze();
-            tv.bind(Type::Bottom);
-        }
         let lexical = scope.append_block("ca", top_id.inner()).lexical;
         let bind_id = ctx
             .env

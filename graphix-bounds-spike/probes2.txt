@@ -1,0 +1,44 @@
+let x: [i64, string] = 1; select x { i64 as n => n + 1, string as s => str::len(s) }
+let x: [i64, string] = 1; select x { i64 as n => n + 1 }
+let x: [i64, string] = 1; select x { i64 as n => n, string as s => 0, null as _ => 1 }
+let x: [i64, null] = 1; select x { null as _ => 0, n => n + 1 }
+let f = |x| select x { i64 as n => n + 1, string as s => str::len(s) }; (f(1), f("a"))
+let f = |x| select x { i64 as n => n + 1, string as s => str::len(s) }; f(true)
+let f = |x: [i64, string]| select x { i64 as n => "[n]", s => s }; f(1)
+let b = true; select b { true => 1, false => "a" }
+let b = true; select b { true => 1 }
+let v: [`A(i64), `B] = `B; select v { `A(n) => n, `B => 0 }
+let v: [`A(i64), `B] = `B; select v { `A(n) => n }
+let v = `A(1); select v { `A(n) => n + 1 }
+let t = (1, "a"); select t { (n, s) => "[n][s]" }
+let t: ([i64, null], [i64, null]) = (1, null); select t { (null as _, _) => 0, (_, null as _) => 1, (a, b) => a + b }
+let t: ([i64, null], [i64, null]) = (1, null); select t { (null as _, _) => 0, (a, b) => a + b }
+let s = {x: 1, y: "a"}; select s { {x, y} => x }
+let xs: Array<[i64, string]> = [1]; select xs { Array<i64> as a => array::len(a), _ => 0 }
+let n: [i64, null] = 3; n$ + 1
+let m: Result<i64, `E> = 3; m$ + 1
+let f = |x: [i64, null]| x$ + 1; f(null)
+let f = |r| r?; 0
+let n: i64 = str::parse("1")$; n + 1
+opt::or_default(str::parse("1")$, 0)
+let f = |x: 'a, y: 'a| -> 'a y; f(str::parse("1"), 1)
+let x = 1; select x { 0 => "zero", n if n > 5 => "big", _ => "small" }
+let x: Any = 1; select x { i64 as n => n, _ => 0 }
+let r = select true { true => never(), false => error(`E) }; select r { error as e => 0, v => 1 }
+let rec sum = |t| select t { `Leaf(n) => n, `Node(kids) => array::fold(array::map(kids, sum), 0, |a, x| a + x) }; sum(`Node([`Leaf(1), `Node([`Leaf(2)])]))
+let n: [i64, null] = 3; select n == null { true => 0, false => 1 }
+let f = |o| select o { null as _ => 0, n => n + 1 }; let a: [i64, null] = 1; f(a)
+let y = 1; let f = |x: 'a| -> 'a y; f("s")
+let y = never(); let f = |x: 'a| -> 'a { y <- x; x }; f(1); y
+type B<'p> = Abstract<'p>; let f = |a, b| { let x = B([a]); x <- B([b]); x.0 }; f(1, "s")
+let s = {g: |x| x}; let j = s.g; j <- |x: i64| x + 1; j("s")
+type W<'a> = Abstract<&mut 'a>; |x: Any| select x { W(r) => *r <- "s", _ => never() }
+let k = |v| { let t = (|x| x, 1); let (r, n) = t; r(v) }; k(2)
+use Collection::*; let f = |c| len(c); (f([1]), f([<"a">]))
+trait T { val m: fn(self) -> i64 }; impl T for i64 { let m = |s| s }; let f = |x: T| T::m(x); (f(1), f("s"))
+let a = 1; let b = "s"; let v = true; let t = select v { true => (&a, 1), false => (&b, 2) }; select t { (&i64, i64) as (r, n) => *r + n, _ => 0 }
+let a = 1; let b = "s"; let v = true; let t = select v { true => (&a, 1), false => (&b, 2) }; select t { (&i64, i64) as (r, n) => n, _ => 0 }
+let a = 1; let b = "s"; let v = true; let t = select v { true => (&a, 1), false => (&b, 2) }; select t { (&i64, i64) as (r, n) => *r }
+let a = 1; let b = "s"; let v = true; let e: Array<string> = []; let t = select v { true => ([1], &a), false => (e, &b) }; select t { (Array<i64>, &i64) as (x, r) => *r, _ => 0 }
+let a = 1; let b = "s"; let c = 2.5; let v = 0; let t = select v { 0 => (&mut a, 1), 1 => (&mut b, 2), _ => (&mut c, 3) }; select t { ([&mut i64, &mut string], i64) as (r, n) => n, _ => 0 }
+let b = true; let t = select b { true => (|x: i64| x, 1), false => (|y: string| y, 2) }; select t { (fn(x: i64) -> i64, i64) as (r, n) => r(n) }

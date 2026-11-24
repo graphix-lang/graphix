@@ -23,7 +23,6 @@ use crate::{
 };
 use arcstr::ArcStr;
 use compact_str::{CompactString, format_compact};
-use enumflags2::BitFlags;
 use netidx_value::Value;
 use nohash::IntSet;
 use poolshark::local::LPooled;
@@ -399,7 +398,7 @@ fn try_register_builtin_call_from_callsite<R: Rt>(
                 written_types.push(arg_typ);
                 marshal_args.push(MarshalArg::Call(*call_idx));
             }
-            FnArgKind::Labeled { name, has_default } => {
+            FnArgKind::Labeled { name, default } => {
                 // A fast fn sees the buffer as the whole argument list,
                 // so an unwritten label marshals the compiled default.
                 let (source, arg_typ) = match call_labeled.remove(name.as_str()) {
@@ -410,7 +409,7 @@ fn try_register_builtin_call_from_callsite<R: Rt>(
                             .unwrap_or_else(|| fa.typ.clone()),
                     ),
                     None => {
-                        if !*has_default {
+                        if default.is_none() {
                             return None;
                         }
                         let Some(n) = cs.arg_named(name) else { return None };
@@ -1355,11 +1354,17 @@ fn formal_slots<R: Rt>(
         tail_invariant: Vec::new(),
     };
     for (i, fa) in g.typ().args.iter().enumerate() {
+        let id = g.args().get(i).and_then(|p| p.single_bind_id());
         let name = match &fa.kind {
             FnArgKind::Positional { name: Some(n) } => n.clone(),
             FnArgKind::Labeled { name, .. } => name.clone(),
+            // a declared signature leaves its receiver unnamed: the
+            // formal's binding names it
             FnArgKind::Positional { name: None } => {
-                return Err("a formal has no name".into());
+                match id.and_then(|id| ec.env.by_id.get(&id)) {
+                    Some(b) => ArcStr::from(b.name.as_str()),
+                    None => return Err("a formal has no name".into()),
+                }
             }
         };
         let arg_typ = expand_refs(&fa.typ, &ec.env);
@@ -1378,7 +1383,6 @@ fn formal_slots<R: Rt>(
         let no_slot = || format_compact!("formal `{name}` has no kernel encoding");
         let kt = freeze_in_env(&fa.typ, &ec.env).ok_or_else(no_slot)?;
         let kind = param_kind(&kt).ok_or_else(no_slot)?;
-        let id = g.args().get(i).and_then(|p| p.single_bind_id());
         // A destructured formal refuses: a name-only slot would let a
         // same-named body leaf resolve to the whole composite.
         if id.is_none() {
@@ -1669,10 +1673,7 @@ fn self_calls_abi_consistent<R: Rt>(
                 return;
             };
             // A probe: fusion must not bind a cell the typechecker sees.
-            if !formal_kt
-                .contains_with_flags(BitFlags::empty(), &ec.env, &arg_kt)
-                .unwrap_or(false)
-            {
+            if !formal_kt.decided_holds(&ec.env, &arg_kt).unwrap_or(false) {
                 ok = false;
                 return;
             }

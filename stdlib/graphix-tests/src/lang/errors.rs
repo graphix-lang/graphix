@@ -3,7 +3,7 @@
 use anyhow::Result;
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, Mode, is, prints, refused},
+    testing::{FuseExpect, Mode, is, prints, refused, refused_renumbered, settles},
 };
 use netidx::publisher::Value;
 
@@ -398,7 +398,7 @@ const UNCAUGHT_IN_LAMBDA_THROWS: &str = r#"
 run!(
     uncaught_in_lambda_throws,
     UNCAUGHT_IN_LAMBDA_THROWS,
-    graphix_package_core::testing::refused("throws Error<ErrChain<`ArrayIndexError(string)>>");
+    refused("type mismatch _ does not contain Error<ErrChain<`ArrayIndexError(string)>>");
     FuseExpect::None
 );
 
@@ -479,6 +479,32 @@ async fn catch_repl_reader_entered_after_the_raise() -> Result<()> {
                seen <- e ~ true; \
                out <- select seen { true => seen ~ \"[e.0.error]\", false => never() } \
              }",
+            "error(`Boom)?",
+        ],
+        "select out { \"\" => never(\"\"), s => s }",
+        "`Boom",
+    )
+    .await
+}
+
+// A handler reads its annotated binder by the written type, a raise or
+// none: nothing raised leaves the binder bottom, and its reads stand.
+run!(
+    catch_annotated_binder_read_with_nothing_raised,
+    "{ let out = \"\"; catch(e: Error<ErrChain<`Boom>>) out <- \"[e.0.error]\"; 1 }",
+    is(Value::I64(1));
+    FuseExpect::None
+);
+
+/// The written type read through a typedef's name, by an input checked
+/// before anything is raised.
+#[tokio::test(flavor = "current_thread")]
+async fn catch_repl_reader_through_a_typedef() -> Result<()> {
+    repl_inputs_produce(
+        &[
+            "type E = Error<ErrChain<`Boom>>",
+            "let out = \"\"",
+            "catch(e: E) out <- e ~ \"[e.0.error]\"",
             "error(`Boom)?",
         ],
         "select out { \"\" => never(\"\"), s => s }",
@@ -580,16 +606,24 @@ async fn catch_connect_union_mismatch_is_an_error() -> Result<()> {
         Ok((v, _)) => anyhow::bail!("expected a type mismatch, got {v}"),
         Err(e) => format!("{e:#}"),
     };
-    assert!(
-        e.contains(
-            "err1 is Error<ErrChain<`ArithError(string)>> and cannot hold \
-             Error<ErrChain<`B>>; declare err1: [Error<ErrChain<`ArithError(string)>>, \
-             Error<ErrChain<`B>>] where it is bound"
-        ),
-        "{e}"
-    );
+    assert!(e.contains("type mismatch `ArithError(string) does not contain `B"), "{e}");
     Ok(())
 }
+
+// `catch(e: T)` ascribes `T` to `e`, whatever is raised under it: a handler
+// selects over every member written.
+run!(
+    annotated_catch_binder_is_the_type_written,
+    r#"{
+  let a = [1, 2, 3];
+  let out = "";
+  catch(e: Error<ErrChain<[`ArrayIndexError(string), `Other]>>)
+    out <- select e.0.error { `Other => "other", `ArrayIndexError(s) => s };
+  a[15]?;
+  out
+}"#,
+    |v: Result<&Value>| matches!(v, Ok(Value::String(s)) if s.is_empty())
+);
 
 // `catch(e: T)` ascribes `T` to `e`; a `?`-rethrowing handler typechecks
 // even when the covered region throws nothing.
@@ -631,7 +665,10 @@ async fn catch_ascription_too_narrow_is_an_error() -> Result<()> {
         a[10]?
     }"#;
     let e = graphix_package_core::testing::refusal(src, crate::TEST_REGISTER).await?;
-    assert!(e.contains("does not contain Error<ErrChain<`ArrayIndexError"), "{e}");
+    assert!(
+        e.contains("`ArithError(string) does not contain `ArrayIndexError(string)"),
+        "{e}"
+    );
     Ok(())
 }
 
@@ -647,7 +684,7 @@ const ARM_INPUT_RAISE_DELIVERS: &str = r#"
 }
 "#;
 
-run!(arm_input_raise_delivers, ARM_INPUT_RAISE_DELIVERS, is(Value::I64(1)); FuseExpect::None);
+run!(arm_input_raise_delivers, ARM_INPUT_RAISE_DELIVERS, is(Value::I64(1)); FuseExpect::Jit);
 
 const ARM_INPUT_RAISE_NATIVE: &str = r#"
 {
@@ -907,7 +944,7 @@ const CALLBACK_THROWS_REACH_THE_CALLERS_CATCH: &str = r#"
 run!(
     callback_throws_reach_the_callers_catch,
     CALLBACK_THROWS_REACH_THE_CALLERS_CATCH,
-    graphix_package_core::testing::refused("c is i64 and cannot hold Error<ErrChain<`Boom>>");
+    refused("type mismatch i64 does not contain Error<ErrChain<`Boom>>");
     FuseExpect::None
 );
 
@@ -927,7 +964,7 @@ const CALLBACK_THROWS_REACH_AN_INNER_CATCH: &str = r#"
 run!(
     callback_throws_reach_an_inner_catch,
     CALLBACK_THROWS_REACH_AN_INNER_CATCH,
-    graphix_package_core::testing::refused("caught is bool and cannot hold 'e");
+    refused("type mismatch bool does not contain 'e");
     FuseExpect::None
 );
 
@@ -972,6 +1009,85 @@ run!(generic_reraise_keeps_the_chain, GENERIC_RERAISE_KEEPS_THE_CHAIN, |v: Resul
     let s = format!("{}", v.unwrap());
     s.starts_with(r#"error:[["cause", [["cause", null], ["error", "Zero"]"#)
 });
+
+// A generic re-raise extends the chain it is given: its error is the first
+// raise's, typed so where the payload is decided.
+run!(
+    generic_reraise_reads_the_first_error,
+    r#"{
+    let must = |r: Result<i64, 'e>| -> i64 r?;
+    let inner = |x: i64| -> i64 select x { 0 => error(`Zero)?, x => x };
+    let relay = |x: i64| -> [i64, Error<ErrChain<`Zero>>] {
+        let r: [i64, Error<ErrChain<`Zero>>] = never();
+        catch(e) r <- e;
+        r <- inner(x);
+        r
+    };
+    let out = never();
+    catch(e) out <- select e.0.error { `Zero => "zero" };
+    must(relay(0));
+    out
+}"#,
+    prints(r#""zero""#)
+);
+run!(
+    generic_reraise_error_is_not_a_chain,
+    r#"{
+    let must = |r: Result<i64, 'e>| -> i64 r?;
+    let inner = |x: i64| -> i64 select x { 0 => error(`Zero)?, x => x };
+    let relay = |x: i64| -> [i64, Error<ErrChain<`Zero>>] {
+        let r: [i64, Error<ErrChain<`Zero>>] = never();
+        catch(e) r <- e;
+        r <- inner(x);
+        r
+    };
+    let out: ErrChain<`Zero> = never();
+    catch(e) out <- e.0.error;
+    must(relay(0));
+    out
+}"#,
+    refused("type mismatch ErrChain<`Zero> does not contain `Zero");
+    FuseExpect::None
+);
+
+// Inside its definition, the error of a chain raised over a declared
+// variable is not known: a call that makes the variable a chain gets that
+// chain extended. A bound no chain meets says it.
+run!(
+    chain_error_over_a_declared_variable_is_refused,
+    r#"{
+    let f = |x: 'a| -> 'a { let r: 'a = never(); catch(e) r <- e ~ e.0.error; error(x)?; r };
+    f(1)
+}"#,
+    refused("the error of a chain raised over 'a is not known here");
+    FuseExpect::None
+);
+run!(
+    chain_error_over_a_variable_no_chain_meets,
+    r#"{
+    let f = 'a: Number |x: 'a| -> 'a { let r: 'a = never(); catch(e) r <- e ~ e.0.error; error(x)?; r };
+    f(1)
+}"#,
+    prints("i64:1");
+    FuseExpect::None
+);
+
+// A struct of a chain's fields over variables is a chain at some calls and
+// not at others, so what raising it makes is not known in its definition.
+run!(
+    raise_of_a_chain_shaped_struct_over_variables_is_refused,
+    r#"{
+    let relay = |x: {cause: 'c, error: 'a, ori: 'o, pos: 'p}| -> ['c, null] {
+        let r: ['c, null] = null;
+        catch(e) r <- e ~ e.0.error.cause;
+        error(x)?;
+        r
+    };
+    relay({cause: 5, error: {cause: 1, error: 2, ori: 3, pos: 4}, ori: true, pos: null})
+}"#,
+    refused("whether this raises an error chain is not known here");
+    FuseExpect::None
+);
 
 // A chain written in a block joins the chain a fresh `?` raises: two
 // references to ErrChain are one definition whatever scope wrote them.
@@ -1058,14 +1174,13 @@ run!(
     "#
 ; FuseExpect::Jit);
 
-// A raise is typed with core's ErrChain whatever a program names
-// ErrChain: `r.ori` is core's origin struct.
-run!(err_chain_is_cores_under_a_shadowing_type, r#"{
+// The name of core's error chain is core's alone.
+run!(a_shadowing_type_named_errchain_is_refused, r#"{
   type ErrChain<'a> = {cause: i64, error: 'a, ori: i64, pos: string};
   let r = never();
   { catch(e) r <- e.0; error(`A(1))? };
   r.ori + 1
-}"#, refused("cannot compute { parent: [null, Ori], source: Source, text: string } + i64"); FuseExpect::None);
+}"#, refused("ErrChain is the name of core's error chain: no other type may take it"); FuseExpect::None);
 
 // `?` raises its operand's error part, which an Any operand does not say.
 run!(
@@ -1181,9 +1296,7 @@ run!(
         };
         run(error(`A))
     }"#,
-    refused(
-        "this error reaches a catch whose handler was checked to take Error<ErrChain<`A>>"
-    )
+    refused("type mismatch `A does not contain 'e")
 );
 
 run!(
@@ -1404,7 +1517,7 @@ run!(
     b <- Box("s");
     0
 }"#,
-    refused("b is Box<i64> and cannot hold Box<string>; declare b: Box<[i64, string]>")
+    refused_renumbered("type mismatch Box<i64> does not contain Box<'_0>")
 );
 
 run!(
@@ -1445,7 +1558,7 @@ run!(
     };
     go(1, 1)
 }"#,
-    refused("missing match cases: no arm covers `E");
+    refused("missing match cases: nothing matches `E");
     FuseExpect::None
 );
 
@@ -1592,14 +1705,14 @@ fn two_cells_beside_named_tags(n: usize, strip: &str, ann: &str) -> String {
 run!(
     one_name_behind_a_wrapper_past_the_pair_budget_keeps_both_cells_with_dollar_refused,
     two_cells_beside_named_tags(1100, "p$", "[Tags, Array<i64>]"),
-    refused("'b: string");
+    refused("type mismatch [N0, N1, N10, N100, N1000, N1001, N1002, N1003, N1004, N1005, N1006, N1007, N1008, N1009, N101, N1010, N1011, N1012, N1013, N1014, N1015, N1016, N1017, N1018, N1019, N102, N1020, N1021, N1022, N1023, N1024, N1025, N1026, N1027, N1028, N1029, N103, N1030, N1031, N1032, N1033, N1034, N1035, N1036, N1037, N1038, N1039, N104, N1040, N1041, N1042, N1043, N1044, N1045, N1046, N1047, N1048, N1049, N105, N1050, N1051, N1052, N1053, N1054, N1055, N1056, N1057, N1058, N1059, N106, N1060, N1061, N1062, N1063, N1064, N… does not contain List<'b: unbound within Any above string>");
     FuseExpect::None
 );
 
 run!(
     one_name_behind_a_wrapper_past_the_pair_budget_keeps_both_cells_with_q_refused,
     two_cells_beside_named_tags(1100, "p?", "[Tags, Array<i64>]"),
-    refused("'b: string");
+    refused("type mismatch [N0, N1, N10, N100, N1000, N1001, N1002, N1003, N1004, N1005, N1006, N1007, N1008, N1009, N101, N1010, N1011, N1012, N1013, N1014, N1015, N1016, N1017, N1018, N1019, N102, N1020, N1021, N1022, N1023, N1024, N1025, N1026, N1027, N1028, N1029, N103, N1030, N1031, N1032, N1033, N1034, N1035, N1036, N1037, N1038, N1039, N104, N1040, N1041, N1042, N1043, N1044, N1045, N1046, N1047, N1048, N1049, N105, N1050, N1051, N1052, N1053, N1054, N1055, N1056, N1057, N1058, N1059, N106, N1060, N1061, N1062, N1063, N1064, N… does not contain List<'b: unbound within Any above string>");
     FuseExpect::None
 );
 
@@ -1646,7 +1759,7 @@ fn two_raised_cells_beside_named_tags(n: usize, arms: &str) -> String {
 run!(
     one_name_behind_a_wrapper_past_the_pair_budget_raises_both_cells_missing_arm_refused,
     two_raised_cells_beside_named_tags(1100, "`L(`A) => 1"),
-    refused("missing match cases: no arm covers `R(");
+    refused("missing match cases: nothing matches `R(`B)");
     FuseExpect::None
 );
 
@@ -1677,4 +1790,108 @@ run!(
     named_dag_past_the_pair_budget(24),
     is(Value::I64(1));
     FuseExpect::Jit
+);
+
+// A `$` whose operand has had only `null` flow in so far, the field read
+// that brings the struct still waiting, strips nothing before it arrives.
+run!(
+    a_strip_waits_for_what_its_operand_has_yet_to_take,
+    r#"{
+  let selected = |xs, i| select xs[i] { error as _ => null, x => x };
+  type Row = { install: { local_ca: [{ cfg: [i64, null] }, null] } };
+  let f = |rows: Array<Row>, sel: i64, run: [`A, `B]| {
+    let current = opt::map(selected(rows, sel), |r| r.install);
+    let lca = select current { null as _ => null, d => d.local_ca };
+    let req = never();
+    req <- select run { x@ `A => { cfg: (x ~ lca)$.cfg$, k: 1 }, _ => never() };
+    req
+  };
+  f([{ install: { local_ca: { cfg: 3 } } }], 0, `A)
+}"#,
+    prints(r#"[["cfg", i64:3], ["k", i64:1]]"#)
+);
+
+// `$` takes the error off a name that stands for another name of a union
+// holding one: what it lets through is the value alone.
+run!(
+    strip_through_a_typedef_naming_a_typedef_types_the_value,
+    r#"{ type R = Result<string, `E>; let o: R = "ok"; let s = o$; str::len(s) }"#,
+    prints("i64:2")
+);
+
+run!(
+    strip_through_a_typedef_naming_a_typedef_passes_no_error,
+    r#"{ type R = Result<string, `E>; let r: R = error(`E); r$ }"#,
+    settles();
+    FuseExpect::Jit
+);
+
+// `?` over a declared variable beside an error raises whatever error the
+// variable holds, past the handler it was checked against: the variable
+// must hold none.
+run!(
+    question_over_a_declared_variable_beside_an_error_needs_no_error,
+    r#"{ let f = |x: ['a, Error<`A>]| x?; let r = { catch(e) e ~ 0; f(error(`B)) }; r }"#,
+    refused("declare 'a: NoError");
+    FuseExpect::None
+);
+
+run!(
+    question_over_a_no_error_variable_beside_an_error_takes_the_value,
+    r#"{ let f = 'a: NoError |x: ['a, Error<`A>]| x?; f(1) }"#,
+    prints("i64:1")
+);
+
+// `?` and `$` take an error or a null off their operand: one that holds
+// neither is refused, where its type is known at the operator and where
+// it is decided after.
+macro_rules! nothing_to_strip {
+    ($($name:ident => $test:expr, $says:expr,)*) => {$(
+        run!($name, $test, refused($says); FuseExpect::None);
+    )*};
+}
+
+nothing_to_strip! {
+    or_never_over_a_value_with_nothing_to_take =>
+        "{ let x = 1; x$ }",
+        "cannot use the $ operator on i64, it has no error and no null",
+    question_over_a_value_decided_after_it =>
+        "{ let x = [1, 2, 3]; let d = x?; 1 }",
+        "cannot use the ? operator on Array<i64>, it has no error and no null",
+    or_never_over_what_an_or_never_left =>
+        "{ let a = [1, 2]; a[0]$$ }",
+        "cannot use the $ operator on i64, it has no error and no null",
+    or_never_over_a_declared_variable_beside_a_value =>
+        "{ let f = |x: ['a, i64]| x$; f(1) }",
+        "it has no error and no null",
+}
+
+// `Any` holds errors, which are what `$` takes off it: a null stays.
+run!(
+    or_never_over_any_keeps_a_null,
+    r#"{ let y: Any = null; y$ }"#,
+    is(Value::Null);
+    FuseExpect::None
+);
+
+// A select over a value a `$` still owes its type waits for the `$`.
+run!(
+    select_over_what_a_held_or_never_gives,
+    r#"{ let v = [{"a" => { let t = cast<i64>(u32:7); t }$}]; select v { [m] => m{"a"}$, _ => 0 } }"#,
+    is(Value::I64(7))
+);
+
+// A call with a labeled argument of a function read out of data raises
+// what that function raises.
+run!(
+    labeled_call_through_a_field_raises_to_its_catch,
+    r#"{
+    let s = {f: |#a = 1, x: Result<i64, `E>| x? + a};
+    let seen = never();
+    catch(e) seen <- e.0.error;
+    s.f(#a: 2, error(`E));
+    seen
+}"#,
+    prints(r#""E""#);
+    FuseExpect::None
 );

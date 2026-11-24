@@ -93,36 +93,40 @@ pub(crate) fn emit_block_node<R: Rt>(
             emit_block_stmt(cx, child)?;
         }
     }
-    let tail_cv = tail.emit_clif(cx)?;
-    // The tail may alias a block-scoped local about to drop; clone
-    // borrowed results out. An unclassifiable tail is an error, never a
-    // passthrough (the passthrough is a use-after-free).
-    let src = node_composite_source(tail);
-    let frozen = kernel_abi::freeze_for_abi_normalized(tail.typ());
-    let result = match frozen.as_ref().and_then(|t| kernel_abi::abi_kind(t)) {
+    // the tail may alias a block-scoped local about to drop
+    let result = emit_owned_node(cx, tail)?;
+    emit_scope_drops(cx, mark)?;
+    cx.env.truncate(mark);
+    Ok(result)
+}
+
+/// Compile `node` to a result its consumer owns: one that borrows (a
+/// binding read) is cloned out. A type that doesn't classify is an error,
+/// never a passthrough (the passthrough is a use-after-free).
+fn emit_owned_node<R: Rt>(cx: &mut BodyCx, node: &Node<R>) -> Result<CompiledExpr> {
+    let cv = node.emit_clif(cx)?;
+    let src = node_composite_source(node);
+    let frozen = kernel_abi::freeze_for_abi_normalized(node.typ());
+    match frozen.as_ref().and_then(|t| kernel_abi::abi_kind(t)) {
         Some(AbiKind::Array | AbiKind::Tuple | AbiKind::Struct) => {
-            let v = ensure_owned_composite_src(cx, src, tail_cv.payload)?;
-            CompiledExpr::new(tail_cv.disc, v)
+            let v = ensure_owned_composite_src(cx, src, cv.payload)?;
+            Ok(CompiledExpr::new(cv.disc, v))
         }
         Some(AbiKind::Variant | AbiKind::Nullable | AbiKind::Value) => {
-            let (disc, payload) =
-                ensure_owned_value_src(cx, src, tail_cv.disc, tail_cv.payload)?;
-            CompiledExpr::new(disc, payload)
+            let (disc, payload) = ensure_owned_value_src(cx, src, cv.disc, cv.payload)?;
+            Ok(CompiledExpr::new(disc, payload))
         }
         // Scalars need no clone; a String read is already an owned
         // clone (the Ref/Const arms bump the refcount).
         Some(AbiKind::Scalar(_) | AbiKind::String | AbiKind::Unit | AbiKind::Null) => {
-            tail_cv
+            Ok(cv)
         }
         None => bail!(
-            "emit_clif: block tail type {} doesn't classify — can't make the \
-             result outlive the scope drops",
-            tail.typ()
+            "emit_clif: a result of type {} doesn't classify — can't make it \
+             outlive what it borrows",
+            node.typ()
         ),
-    };
-    emit_scope_drops(cx, mark)?;
-    cx.env.truncate(mark);
-    Ok(result)
+    }
 }
 
 /// Emit one non-tail block child: a `let` binds, declarations are
@@ -611,8 +615,9 @@ pub(crate) fn emit_qop_node<R: Rt>(
     if kernel_abi::nullable_inner(&inner_typ).is_none() {
         // `nullable_inner` only detects a two member union.
         if !type_may_be(&inner_typ, marker) {
-            // Nothing to strip — passthrough; the sink never fires.
-            return inner.emit_clif(cx);
+            // Nothing to strip: the sink never fires, and the result is
+            // owned as every other strip's is.
+            return emit_owned_node(cx, inner);
         }
         if !type_always(&inner_typ, marker) {
             return Err(anyhow!(

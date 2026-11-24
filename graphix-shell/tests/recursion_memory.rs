@@ -3,9 +3,11 @@
 //! `stdlib/graphix-tests/tests/activation_heap.rs` does not count, which
 //! holds their live heap bytes exactly, to caps a few percent over the cost.
 //!
-//! RSS is not exact: a run's peak moves by up to 2 MB with its threads'
-//! timing (the allocator's arenas, the compile's thread-local pools), so a
-//! slope over 15,000 items spreads over about 500 bytes between runs. The
+//! RSS is not exact: a run's peak moves by up to 2 MB with its timing (the
+//! allocator's arenas, the compile's thread-local pools), so a slope over
+//! 15,000 items spreads over about 500 bytes between runs. The child runs
+//! one evaluation thread: the compile's tasks would otherwise spread over
+//! as many allocator arenas as the pool's threads they happened to reach. The
 //! slopes measure 8.8 to 9.4 KB an activation and 3.2 KB a slot. The
 //! activation's ceiling sits 5% over the larger and the slot's 0.9 KB over
 //! its slope: the spread does not reach them, and only growth past it (1 KB
@@ -31,6 +33,7 @@ fn peak_rss_kb(program: &str) -> i64 {
         .arg("--no-fusion")
         .arg("--no-netidx")
         .env("GRAPHIX_PAR", "off")
+        .env("GRAPHIX_EVAL_THREADS", "1")
         .arg(file.path())
         .stdin(Stdio::null())
         .stdout(Stdio::null())

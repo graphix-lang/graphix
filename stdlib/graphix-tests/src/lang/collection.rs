@@ -167,7 +167,7 @@ run!(
 // A union receiver is not a constructor.
 run!(
     collection_union_receiver_rejected,
-    refused("does not contain [null, Array<i64>]"),
+    refused("null has no implementation of Collection::map"),
     "/test.gx" => r#"
         use Collection::*;
         let x: [Array<i64>, null] = [1, 2];
@@ -467,16 +467,16 @@ run!(
 // A function a callback returns is one instance, which its uses decide:
 // no binding names it, so it is generic nowhere.
 run!(collection_returns_a_generic_function, r#"{
-    let fs = array::map([1, 2], |r| 'a: Number |#start: 'a = 0, x: 'a| -> 'a start + x);
+    let fs = array::map([1, 2], |r| 'a: Number + Singleton |#start: 'a = 0, x: 'a| -> 'a start + x);
     let g = fs[0]$;
     g(#start: 3, 4)
 }"#, is(Value::I64(7)); FuseExpect::None);
 
 run!(collection_returned_function_is_one_instance, r#"{
-    let fs = array::map([1, 2], |r| 'a: Number |#start: 'a = 0, x: 'a| -> 'a start + x);
+    let fs = array::map([1, 2], |r| 'a: Number + Singleton |#start: 'a = 0, x: 'a| -> 'a start + x);
     let g = fs[0]$;
     (g(#start: 3, 4), g(#start: 1.5, 2.0))
-}"#, refused("does not contain f64"); FuseExpect::None);
+}"#, refused("cannot compute with [i64, f64]: both operands must be one numeric type"); FuseExpect::None);
 
 // A resize is not a fire of its own: a collection whose source resized
 // while its arm slept recomputes at the wake (its length reads 1) and fires
@@ -791,7 +791,7 @@ run!(
 // is itself a `Keep`.
 run!(
     filter_map_generic_bare_value_refused,
-    refused("a [`Keep(T), null] keeps v as `Keep(v)"),
+    refused("type mismatch [null, `Keep('b: _)] does not contain 'x: unbound"),
     "/test.gx" => r#"
         let f = |a: Array<'x>| -> Array<'x> array::filter_map(a, |x| x);
         let result = f([`Keep(1), `Keep(2)])
@@ -801,7 +801,7 @@ run!(
 
 run!(
     filter_map_bare_value_refused,
-    refused("a [`Keep(T), null] keeps v as `Keep(v)"),
+    refused("type mismatch [null, `Keep('b: unbound)] does not contain i64"),
     "/test.gx" => r#"
         let result = array::filter_map([1, 2, 3], |x| select x > 1 { true => x, false => null })
     "#;
@@ -812,7 +812,7 @@ run!(
 // one included.
 run!(
     keep_hint_at_any_keep_type,
-    refused("does not contain i64: a [`Keep(T), null] keeps v as `Keep(v)"),
+    refused("type mismatch [null, `Keep(i64)] does not contain i64"),
     "/test.gx" => r#"
         let result: [`Keep(i64), null] = 3
     "#;
@@ -821,7 +821,7 @@ run!(
 
 run!(
     keep_hint_at_typedef_keep_type,
-    refused("does not contain i64: a [`Keep(T), null] keeps v as `Keep(v)"),
+    refused("type mismatch Opt<i64> does not contain i64"),
     "/test.gx" => r#"
         type Opt<'a> = [`Keep('a), null];
         let cb = |x: i64| -> Opt<i64> x;

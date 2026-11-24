@@ -21,8 +21,8 @@ costs more: when in doubt, read it.
 | before you | read |
 |---|---|
 | write a `seq` or `seqq`, or debug one that stalls | `seq.md` |
-| write a generic function, or hold lambdas in data; or the check refuses a type variable, a bound, a quantifier, a union of variables or a "generic binding" | `generics.md` |
-| select over a declared type variable or a value still undecided; or the check says "tests inside a value of", "not decided at this select" or "same runtime form" | `select.md` |
+| write a generic function, or hold lambdas in data; or the check refuses a type variable, a bound, a quantifier or a "generic binding" | `generics.md` |
+| select over a declared type variable, an unannotated parameter or a value still undecided; or the check says "missing match cases", "will never match", "cannot name a declared type variable" or "same runtime form" | `select.md` |
 | write a `.gxi`, a module or a trait | `modules.md` |
 | read or write JSON, TOML or pack, cast, parse, or print a number | `data.md` |
 | write a TUI or GUI | `ui.md` |
@@ -333,28 +333,34 @@ where its pattern does not admit the value, and native tail depths may
 share one report. Use `--no-fusion` to inspect
 the node-walk's diagnostics.
 `&&`/`||` are strict
-(`false && ⊥ = ⊥`). Both operands of an operator are ONE type (cast one
-side). Comparison is exact: `x == 3` over `x: [i64, null]` and `` v ==
-`Red `` over `` [`Green, `Red] `` are refused — `opt::is_some`,
-`opt::contains(x, 3)`, `` select v { `Red => true, _ => false } ``,
-`r$ == "a"` on a Result. Two values of one union type compare by `==`,
-mixed numerics included (`[i64, f64]`: `i64:3 == f64:3.0` is false), but
-the orderings (`<` `<=` `>` `>=`), sorts, `min`/`max` and map keys refuse
-a type holding two numeric types (`[i64, f64]`, `Number`): cast to one.
+(`false && ⊥ = ⊥`). A comparison takes two operands where one's type
+holds the other's: `x == 3` over `x: [i64, null]` and `` v == `Red ``
+over `` [`Green, `Red] `` check, and so do two values of one union type,
+of which values of different types are never equal (`[i64, f64]`:
+`i64:3 == f64:3.0` is false). Two types that hold neither are refused
+(`1 == "b"`, an `i64` against an `f64`: cast one side). The orderings
+(`<` `<=` `>` `>=`) take the same operands and any two numbers besides
+(`1 < 2.5`): every two values have an order, numbers by value whatever
+their types. Sorts, `min`/`max` and map keys refuse only functions and
+references. A generic function that compares is judged at each call.
 Arithmetic is `fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a`: a type
 holding two numeric types (`[i64, f64]`, `Number`) is refused even
 against itself, and a generic function called with one is refused at
 the call (`x$ + 1`, not `x + 1`, on a nullable; `|a: Number, b: Number|
-a + b` is refused, write `'a: Number |a: 'a, b: 'a|`). A `.gxi` declares
-a generic arithmetic function's `'a: Number + Singleton`: an interface
-must declare every bound its implementation needs. `'a: [Number, null] +
+a + b` is refused, write `'a: Number + Singleton |a: 'a, b: 'a|`). A type
+variable you write has exactly the bound you write for it, `Any` if none:
+a signature declares every bound its body needs, in a lambda as in a
+`.gxi`, and the refusal names what to write. Leave a parameter untyped
+and the check infers it (`|a, b| a + b`). `'a: [Number, null] +
 OneNumber` is a nullable number of one numeric type. Unary `-x`, `!x`, `&x`, `*x`. Postfix `x?` (raise to the
 nearest catch), `x$` (or never). Both take the errors off `x`, or, when
-`x` has none, the null; they chain (`x?$`) and sit anywhere in a postfix
-chain (`(k ~ sel)$.name`). Their operand's type must be known where they
-are written: an untyped parameter is refused, so annotate it, a nullable
+`x` has none, the null (an `x` with neither is refused; an `Any` holds
+errors); they chain (`x?$`) and sit anywhere in a postfix
+chain (`(k ~ sel)$.name`). Their operand's type must be known: over an
+untyped parameter every call is refused, so annotate it, a nullable
 (`|t, scope: [Scope, null]| .. (t ~ scope)$`) and a Result
-(`|r: Result<T, `E>| r?`) alike.
+(`|r: Result<T, `E>| r?`) alike. A binding the program decides
+elsewhere, before or after, is known.
 `datetime - datetime` is refused: use `sys::time::diff(later, earlier)
 -> duration`, `add`/`sub` for datetime ± duration. A duration prints in
 its largest whole-ish unit (`duration:1800.s` prints `30.m`).
@@ -364,26 +370,32 @@ Access: `s.f`, `t.0`, `mod::name`. `a[i]`, `a[-1]`, `a[1..3]` and
 like), so `a[1] + 1` is refused: unwrap, `a[i]$` or `a[i]?`.
 
 ```graphix,cases
-no "cannot compare" let x: [i64, null] = 3; x == 3
-no "cannot compare" let v: [`Green, `Red] = `Red; v == `Red
+ok let x: [i64, null] = 3; x == 3
+ok let v: [`Green, `Red] = `Red; v == `Red
+no "cannot compare i64 with string" 1 == "b"
+no "cannot compare i64 with f64" i64:3 == f64:3.0
 ok let a: [i64, f64] = i64:3; let b: [i64, f64] = f64:3.0; a == b
-no "can't order values" let a: [i64, f64] = i64:3; let b: [i64, f64] = f64:3.0; a < b
-no "more than one numeric type" |a: Number, b: Number| a + b
-ok let f = 'a: Number |a: 'a, b: 'a| a + b; f(1, 2)
+ok let a: [i64, f64] = i64:3; let b: [i64, f64] = f64:3.0; a < b
+ok 1 < 2.5
+no "must be Ordered here" let f = |x: i64| x; f < f
+no "cannot compute with Number" |a: Number, b: Number| a + b
+ok let f = 'a: Number + Singleton |a: 'a, b: 'a| a + b; f(1, 2)
+no "write 'a: Number + Singleton" let f = 'a: Number |a: 'a, b: 'a| a + b; f(1, 2)
+no "write 'a: Number + Singleton" let f = |a: 'a, b: 'a| a + b; f(1, 2)
+ok let f = |a, b| a + b; (f(1, 2), f(1.5, 2.5))
 no "cannot compute" let x: [i64, null] = 3; x + 1
 ok let x: [i64, null] = 3; x$ + 1
+no "it has no error and no null" let x = 1; x$
 no "cannot compute" let a = [1, 2]; a[1] + 1
 ok let a = [1, 2]; a[1]$ + 1
 no "Number does not contain datetime" let d = datetime:"2020-01-01T00:00:00Z"; d - d
 ok let d = datetime:"2020-01-01T00:00:00Z"; sys::time::diff(d, d)
-no "not known here" |r| r?
+no "not known here" let f = |r| r?; f(1)
 ok |r: Result<i64, `E>| r?
-no "not known here" let x = never(); let y = never(); let u = select true { true => x, false => y }; u$
-no "not known here" |a: [i64, null], b| { let u = select false { true => a, false => b }; u? }
+ok let x = never(); let y = never(); let u = select true { true => x, false => y }; u$
 ok let x: null = never(); let y: i64 = never(); let u = select true { true => x, false => y }; u$
 no "declare 'a: NoError" |x: ['a, Error<`A>]| x?
 ok 'a: NoError |x: ['a, Error<`A>]| x?
-no "annotate it with a type that holds no error" |a: Error<`A>, b| { let u = select false { true => a, false => b }; u? }
 ```
 
 ## Functions
@@ -391,7 +403,7 @@ no "annotate it with a type that holds no error" |a: Error<`A>, b| { let u = sel
 ```graphix,fragment
 let f = |x| x + 1;
 let h = |x: i64, y: i64| -> i64 x + y;
-let add = 'a: Number |x: 'a, y: 'a| -> 'a x + y;
+let add = 'a: Number + Singleton |x: 'a, y: 'a| -> 'a x + y;
 let greet = |#greeting = "hello", name| "[greeting], [name]!";   // labeled args
 greet(#greeting: "hi", "world");   // labeled always by name, before positionals
 let f = |@args: i64| args         // variadic (builtins only)
@@ -399,18 +411,26 @@ let f = |@args: i64| args         // variadic (builtins only)
 
 A function stays generic only where a binding names it: a `let` of a
 lambda or of a data literal holding lambdas, a `val`, a trait method, a `let`
-of a generic name or of a field read of one. Anything else is one instance,
-which its uses decide: a function a call returns, an element, a reference, a
-binding something writes. A signature's variables, bounds and unions have
-rules the check enforces and names: `generics.md`.
+of a generic name or of a field read of one. Anything else is one instance:
+a function a call returns, an element, a reference, a binding something
+writes. Its variables are what all its uses pass between them, so a second
+use at another type widens them, and is refused only where the body takes
+one type (arithmetic). A signature's variables and bounds have rules the
+check enforces and names: `generics.md`. A variadic builtin is called as
+one wherever its own type is at hand (its name, a field or an element
+holding it); it does not stand where a function type lists its arguments
+(`fn(x: i64) -> i64`).
 
 ```graphix,cases
 ok let f = { let n = 1; |x| x }; (f(1), f("s"))
 ok let s = {f: |x| x}; (s.f(1), s.f("a"))
 ok let s = {g: |x| x}; let j = s.g; (j(1), j("s"))
-no "i64 does not contain string" let mk = |z| |x| x; let h = mk(0); (h(1), h("s"))
-ok let mk = |z| |x| x; let a = mk(0); let b = mk(0); (a(1), b("s"))
-no "i64 does not contain string" let s = {g: |x| x}; let j = s.g; let r = &mut j; (j(1), j("s"))
+ok let mk = |z| |x| x; let h = mk(0); (h(1), h("s"))
+no "cannot compute with [i64, f64]" let mk = |z| |x| x + x; let h = mk(0); (h(1), h(1.5))
+ok let mk = |z| |x| x + x; let a = mk(0); let b = mk(0); (a(1), b(1.5))
+no "u64 does not contain string" let f = { let tm = |x| x; let r = &mut tm; *r <- |x: u64| x + u64:1; tm }; f("s")
+ok let s = {f: all}; s.f(2, 2)
+no "a variadic function where one of 1 arguments is wanted" let f: fn(x: i64) -> i64 = all; f(1)
 ```
 
 Calls resolve statically where the compiler can trace the function. A
@@ -457,13 +477,11 @@ program's text gets the new value a cycle late. A binding something
 writes (a `<-` target, a `&mut`'s referent) is state: at a wake it keeps
 the value it holds, whatever its initializer would now compute.
 
-A labeled default returning an enclosing function's open type requires a
-closed defaulted parameter type. Annotate the factory's parameter
-(`|z: i64|`) or the defaulted one (`|#d: i64 = z, x|`); `|z| { let g =
-|#d = z, x| (d, x); g }` and `#d: Array<'q> = [z]` are refused. A
-variable the factory declares is closed: `|z: 'a| { let g = |#d: 'a = z,
-y: i64| d; g(1) }` checks, and `#d = z` there takes `'a`; a type written
-inside the default (`= |q: i64| -> 'a z`) names it too.
+A labeled default may read an enclosing function's parameter, annotated
+or not: `|z| { let g = |#d = z, x| (d, x); g }` checks, and the default
+is the type the factory was passed. A variable the factory declares
+names that type: `|z: 'a| { let g = |#d: 'a = z, y: i64| d; g(1) }`, and
+a type written inside the default (`= |q: i64| -> 'a z`) names it too.
 
 A function is more than a computation: each call is a live piece of
 graph that stays. It can hold state (`let x = ..; x <- ..`), run seqs
@@ -498,44 +516,47 @@ no "missing required argument" let add = |a: i64, b: i64| a + b; add(1)
 
 ## Annotations
 
-Do not write a type annotation unless the checker asks for one. It
-asks for two things. A parameter whose fields you read and whose type
-no call fixes: a top-level function, a handler handed to a widget
-(`|e: Event|`). A callback passed to `array::map`/`find`/`fold` over a
-typed array needs none. And a `let` whose initial value is narrower
-than its writers: `let notice: [string, null] = null`, `let go: [i64,
-string] = never()` with writers of both (the check names the union to
-declare), or `let go: Any = never()` for a trigger whose value nobody
-reads. A fold's accumulator is the type of its init, so
-`array::fold(xs, null, |acc, x| ..)` makes `acc` null: annotate the init
-(`let init: [i64, null] = null`), never the callback. A `let` over a
-call, a select or a seq needs nothing. A lambda's return type is needed
-only where it must be wider than its body's: a `.gxi`'s `val f: fn(x:
-i64) -> [i64, null]` must match its implementation exactly, so `let f =
-|x| x + 1` is refused and `|x| -> [i64, null] x + 1` checks. An
+Do not write a type annotation unless the checker asks for one. An
+unannotated binding is the union of what the program writes to it: `let
+notice = null` with a writer of a string is a `[null, string]`, and
+`array::fold(xs, null, |acc, x| ..)` makes `acc` what the init and the
+callback's results are between them. An annotated binding is exactly
+its type, and a wider write is refused, naming the union to declare. The
+check asks for an annotation in three places. A parameter whose type no
+call fixes and whose value a type-directed operation or a `?`/`$`
+reads: a handler handed to a widget (`|e: Event|`). A value such an
+operation makes (`str::parse`, `json::read`, a cast) where nothing asks
+a type of it: annotate where its result goes. And a `select` with an
+arm for a member nothing in the program writes, which is a dead arm:
+declare the binding at the union its arms cover (`let go: [i64, null] =
+never()`), or `let go: Any = never()` for a trigger whose value nobody
+reads. A `let` over a call, a select or a seq needs nothing. A lambda's
+return type is needed only where a caller must see a wider one than its
+body's; a `.gxi`'s `val` may itself declare the wider type (`val f:
+fn(x: i64) -> [i64, null]` over `let f = |x| x + 1` checks). An
 inferred return crosses modules, and a caller reads a field of a generic
 function's result (`h(1).v` over `|x: 'a| {v: x}`) with no `-> T`. To
 find the set: strip, `--check`, restore what it names.
 
 ```graphix,cases
-no "type mismatch fn(acc" array::fold([1], null, |acc, x| x)
-ok let init: [i64, null] = null; array::fold([1], init, |acc, x| x)
+ok let notice = null; notice <- "s"; notice
+no "declare n: [null, string]" let n: null = null; n <- "s"; n
+ok array::fold([1], null, |acc, x| x)
 ok let h = |x: 'a| {v: x}; h(1).v
+no "will never match" let x = never(); let y = select x { null as _ => 0, i64 as i => i }; x <- 1; y
+ok let x: [i64, null] = never(); let y = select x { null as _ => 0, i64 as i => i }; x <- 1; y
 ```
 
-A call's arguments are met in the order of the parameters, and nothing
-waits for a later one. A generic function's variable that only data holds
-widens to a decided argument wider than the ones before it, so two decided
-arguments settle it alike in either order. An argument still undecided (a
-`str::parse`, a `let` over `never()`, `[]`) takes the variable as the
-arguments before it left it: first, it decides it with what follows; after
-a decided one it must fit that, or is refused, "annotate it": annotate the
+A value a type-directed operation makes takes its type from what is
+asked of it: the parameter it is passed to, an annotation, an operator.
+It takes nothing from the values beside it, so passed for a bare
+variable it is refused, "annotate where its result goes": annotate the
 read. `generics.md` has the rest.
 
 ```graphix,cases
 ok let s = "1"; opt::or_default(str::parse(s)$, 0)
-ok let f = |x: 'a, y: 'a| -> 'a y; f(str::parse("1"), 1)
-no "undecided at this" let f = |x: 'a, y: 'a| -> 'a y; f(1, str::parse("1"))
+no "must be known here" let f = |x: 'a, y: 'a| -> 'a y; f(str::parse("1"), 1)
+ok let f = |x: 'a, y: 'a| -> 'a y; let p: [i64, Error<`ParseError(string)>] = str::parse("1"); f(p, 1)
 ```
 
 ## Select
@@ -581,13 +602,15 @@ across a bottom cycle).
   narrows a bind the same way, under a written test and in an
   or-alternative too: `P as (0, h)` over `[(i64, i64), (f64, string)]`
   gives `h: i64`, and an arm over the string part is dead.
-- A pattern that tests inside a declared type variable needs a written
-  type test (`{a: i64, b: string} as {a, ..}`), and one over a type not yet
-  decided at the select is refused until the binding it names is annotated;
-  no arm may tell apart two types that share a runtime form (two references,
-  two function types). The check names the fix; the rules are in `select.md`.
-- References, functions and a type holding two numeric types cannot
-  be ordered, sorted or used as map keys; `_` in a type is bottom, not "infer" (`Error<_>` is `Error<⊥>`).
+- A select over a value not decided where it stands is judged against
+  what the value turns out to be, and over an unannotated parameter its
+  arms say what a call may pass (`|x| select x { `J => 1, `M => 2 }`
+  makes `x` a `` [`J, `M] ``). A written test cannot name a declared
+  type variable, and no arm may tell apart two types that share a
+  runtime form (two references, two function types). The check names the
+  fix; the rules are in `select.md`.
+- References and functions cannot be ordered, sorted or used as map
+  keys; `_` in a type is bottom, not "infer" (`Error<_>` is `Error<⊥>`).
 
 ```graphix,fragment
 select x {
@@ -602,7 +625,7 @@ select x {
                                          // nested `select cond { true => .., false => .. }`
   error as e => recover(e),  v => v,     // splits a Result; v is the bare success type
   (0, y) => y,
-  {x: 0, y} => y,  {x, ..} => x,  // partial struct; several union members: `S as {x, ..}`
+  {x: 0, y} => y,  {x, ..} => x,  // partial struct: every member with the field; one: `S as {x, ..}`
   [] => 0,  [a, b] => a + b,  [h, rest..] => h,  // length ladders count as coverage
   [<>] => 0,  [<h, t..>] => h,   // list patterns; suffix form refused
   v@ `Some(inner) => use_both(v, inner),
@@ -615,10 +638,10 @@ ok let x: [i64, string] = 1; select x { Number as n => n + 1, s => 0 }
 no "a `,` separates" let x = (1.0, 2.0); select x { (f64 as n, f64 as a) => 1 }
 ok let v: [`A(i64), `B(i64), `C] = `C; select v { `A(m) | `B(m) => m, _ => 0 }
 ok |x: [`A(Array<i64>), `B(Array<string>)]| select x { `A([h, ..]) | `B([h, ..]) => "[h]", _ => "" }
-no "cannot compute [i64, string] + i64" |x: [`A(Array<i64>), `B(Array<string>)]| select x { `A([h, ..]) | `B([h, ..]) => h + 1, _ => 0 }
-no "unreachable arm" let b = true; let r = select b { true => never(), false => error(`E) }; select r { error as e => 1, v => 2 }
+no "i64 does not contain [i64, string]" |x: [`A(Array<i64>), `B(Array<string>)]| select x { `A([h, ..]) | `B([h, ..]) => h + 1, _ => 0 }
+no "pattern v will never match" let b = true; let r = select b { true => never(), false => error(`E) }; select r { error as e => 1, v => 2 }
 ok let b = true; let r: [i64, Error<`E>] = select b { true => never(), false => error(`E) }; select r { error as e => 1, v => 2 }
-no "unreachable arm" |x| select x { null as _ => 0, v => v }
+ok |x| select x { null as _ => 0, v => v }
 ok |x: Array<i64>| select (x, 0) { ([], _) => 0, ([a, ..], _) => a }
 ok let f = |x| select x { `A([h, ..]) => h, `A([]) => 0 }; f(`A([1, 2]))
 no "missing match cases" |x: [`A([Array<i64>, null])]| select x { `A([h, ..]) => 1, `A([]) => 0 }
@@ -629,15 +652,15 @@ ok |x: (bool, Array<i64>)| select x { (true, [a, ..]) => 0, (false, _) => 1, (tr
 no "missing match cases" |x: (bool, Array<i64>)| select x { (true, [a, b, ..]) => 0, (false, _) => 1, (true, []) => 2 }
 no "missing match cases" |x: (bool, Array<[(i64, i64), i64]>)| select x { (true, [(a, b), ..]) => 0, (false, _) => 1, (true, []) => 2 }
 ok |x: [`A(Array<i64>), `A(null)]| select x { `A([h, ..]) => 1, `A([]) => 0, `A(null) => 2 }
-no "covers none of its lengths" |x: Array<[(i64, i64), i64]>| select x { [(a, b), ..] => a, [] => 0 }
+no "missing match cases" |x: Array<[(i64, i64), i64]>| select x { [(a, b), ..] => a, [] => 0 }
 ok |x: Array<[(i64, i64), (string, string)]>| select x { [(a, _), ..] => 1, [] => 0 }
-no "every array length" |x: Array<i64>| select (x, 0) { ([a, ..], _) => a, ([a, b, ..], _) => a + b, _ => 0 }
-no "unreachable arm" |x: [`A([i64, string])]| select x { `A(i64) as `A(n) => n, `A(string) as `A(s) => 0, _ => 3 }
-no "unreachable arm" |x: ([i64, null], i64)| select x { (null, _) => 0, (i64, i64) as (n, _) => n, _ => 3 }
+no "will never match" |x: Array<i64>| select (x, 0) { ([a, ..], _) => a, ([a, b, ..], _) => a + b, _ => 0 }
+no "pattern _ will never match" |x: [`A([i64, string])]| select x { `A(i64) as `A(n) => n, `A(string) as `A(s) => 0, _ => 3 }
+no "pattern _ will never match" |x: ([i64, null], i64)| select x { (null, _) => 0, (i64, i64) as (n, _) => n, _ => 3 }
 ok |x: Array<[(`A, i64), (`B, string)]>| select x { [(`A, h), ..] => h + 1, _ => 0 }
-no "unreachable arm" |x: Array<(i64, string)>| select x { [(0, 1), ..] => 1, _ => 0 }
-no "unreachable arm" |x: Array<u8>| select x { [1, ..] => 1, _ => 0 }
-no "cannot compute" |x: Array<[(`A, i64), (`A, string)]>| select x { [(`A, h), ..] => h + 1, _ => 0 }
+no "will never match" |x: Array<(i64, string)>| select x { [(0, 1), ..] => 1, _ => 0 }
+no "will never match" |x: Array<u8>| select x { [1, ..] => 1, _ => 0 }
+no "i64 does not contain [i64, string]" |x: Array<[(`A, i64), (`A, string)]>| select x { [(`A, h), ..] => h + 1, _ => 0 }
 ok |x: [(`A, i64), (`B, string), null]| select x { [(`A, i64), (`B, string)] as (`A, h) => h + 1, _ => 0 }
 ok |x: [(i64, i64), (f64, string)]| select x { (0, h) => h + 1, _ => 0 }
 ok |x: [(i64, i64), (f64, string), null]| select x { [(i64, i64), (f64, string)] as (0, h) => h + 1, _ => 0 }
@@ -764,7 +787,7 @@ Annotate the let to keep the wider field (`let t: S = {s with b: null}`).
 
 ```graphix,cases
 ok let s = {a: 1, b: "x"}; let t = {s with b: 2}; t.b + 1
-no "unreachable arm" let s: {b: [i64, null]} = {b: 3}; let t = {s with b: null}; select t.b { null as _ => 0, i64 as i => i }
+no "pattern i64 will never match" let s: {b: [i64, null]} = {b: 3}; let t = {s with b: null}; select t.b { null as _ => 0, i64 as i => i }
 ok let s: {b: [i64, null]} = {b: 3}; let t: {b: [i64, null]} = {s with b: null}; select t.b { null as _ => 0, i64 as i => i }
 ```
 
@@ -907,17 +930,14 @@ design/review-2026-11-16/repro/lang-skill-reserved-word-null.sh (lang-skill-07) 
   problem: `select b { true => x, false => 1 }` is `['a, i64]`, and `[]`
   against `[1]` is `Array<i64>`.
 - Labeled arguments are never positional, even without a default.
-- A `type` a block declares is that type throughout the block, above its
-  declaration too, never an outer type of the name: in `type L = i64; {
-  let f = |x: i64| { let b: L = 3; b }; type L = string; f(1) }` the `L` in
-  `f` is the string, and so is an abstract `W(v)` or pattern `W(p)` there.
-  A statement above the declaration that needs the type at once (`let a =
-  W(1)`, a cast) is refused. Declare a block's types first. A module's
-  body and a script follow the same rule, over a name a `use` or the
-  prelude brings too: a `let` annotation above the declaration takes the
-  module's type, and a function above it that names the type is refused.
-  A `use` is in force throughout its list the same way: write it first
-  (`modules.md`).
+- A `type` and a `use` are in force throughout their block, module or
+  script, above their statement as below it, as in Rust; only `let` is
+  ordered. So a block's `type` is never an outer type of the name above
+  its declaration: in `type L = i64; { let f = |x: i64| { let b: L = 3; b
+  }; type L = string; f(1) }` the `L` in `f` is the string (the check
+  warns), and so is an abstract `W(v)` or pattern `W(p)` there. A name is
+  declared once in a list: two `use`s of it, or a `use` and a `type`, are
+  refused (`modules.md`).
 - Each REPL statement, a script and a dynamic module's load is checked
   alone, and what it leaves undecided is `_` from its end: after `let e
   = []`, a later `e <- [1]` is refused (write `let e: Array<i64> = []`),
@@ -930,8 +950,8 @@ design/review-2026-11-16/repro/lang-skill-reserved-word-null.sh (lang-skill-07) 
 
 ```graphix,cases
 ok {type: 1}
-no "declare it before its first use" { let a = W(1); type W = Abstract<i64>; a }
-no "M names the type a later statement of this module declares" let f = |a: M| a; type M = i64; f(1)
+ok { let a = W(1); type W = Abstract<i64>; a.0 }
+ok let f = |a: M| a; type M = i64; f(1)
 ok type M = i64; let f = |a: M| a; f(1)
 ok let x: M = 1; type M = i64; x
 ok let e = []; e <- [1]; e

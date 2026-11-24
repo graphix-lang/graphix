@@ -29,8 +29,8 @@ fn a_rolled_back_eq_impl_leaves_no_equality() {
 #[test]
 fn a_rolled_back_ord_impl_leaves_no_order() {
     refused_after_rollback(
-        "type B = Abstract<[i64, f64]>\n\
-         let u = [B(1)]\n\
+        "type B = Abstract<fn(x: i64) -> i64>\n\
+         let u = [B(|x| x)]\n\
          impl Ord for B { let cmp = |a, b| `Equal }; let r = u < u; let bad: i64 = \"s\"\n\
          u < u\n\
          sys::exit(3)\n",

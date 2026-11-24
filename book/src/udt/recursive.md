@@ -61,26 +61,10 @@ let m: M<i64> = n;
 m
 ```
 
-The alias must be defined above the recursive type that applies it, and it
-cannot put a bound on its parameter; the refusal names the alias in both cases.
+The alias may be defined above the recursive type that applies it or below
+it. It cannot put a bound on its parameter; the refusal names the alias.
 An alias with a constructor around its parameter (`type R<'a> = Array<'a>`)
 grows the type as the constructor itself would.
-
-```graphix,refused
-type N<'a> = [`Nil, `Cons('a, N<Opt<'a>>)];
-type Opt<'a> = ['a, null];
-let n: N<i64> = `Nil;
-n
-```
-
-```
-$ graphix test.gx
-Error: in file test.gx
-
-Caused by:
-    0: at: line: 1, column: 1 in file test.gx, in: type N<'a> = [`Cons('a, N<Opt<'a>>), `..
-    1: recursive type N passes its parameter 'a back to itself through Opt, which is not defined above the type that applies it: define Opt first
-```
 
 Anyway, lets define some functions to work on our new list type,
 

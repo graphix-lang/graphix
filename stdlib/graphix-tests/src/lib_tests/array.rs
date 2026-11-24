@@ -652,7 +652,7 @@ const ARRAY_GROUP2: &str = r#"
 
 // A callback of the wrong arity is told so.
 run!(array_group2, ARRAY_GROUP2,
-    refused("a function taking 1 argument where 2 arguments are passed"); FuseExpect::None);
+    refused("type mismatch: a function of 1 arguments where one of 2 is wanted"); FuseExpect::None);
 
 // A predicate that answers bottom holds group until it answers: the
 // elements that arrive meanwhile are judged once th has a value.

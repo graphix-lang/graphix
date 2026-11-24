@@ -1,6 +1,7 @@
 //! The check refuses arithmetic over a type holding two numeric types
-//! where a generic definition is called (`'a: Number + Singleton`), so
-//! `--check` and the language server refuse what the build refuses.
+//! where a generic definition is called (both operands must be one
+//! numeric type), so `--check` and the language server refuse what the
+//! build refuses.
 
 use anyhow::Result;
 use graphix_compiler::expr::Load;
@@ -27,7 +28,7 @@ async fn check_refuses_generic_arithmetic_over_a_mixed_union() -> Result<()> {
             Ok(()) => panic!("--check accepted {src}"),
             Err(e) => format!("{e:#}"),
         };
-        assert!(e.contains("Singleton"), "{src}: {e}");
+        assert!(e.contains("both operands must be one numeric type"), "{src}: {e}");
     }
     Ok(())
 }

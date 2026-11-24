@@ -124,8 +124,8 @@ run!(
     array::map(array::init(6, |i| i), |n| (e(1, n), e("z", n)))
 }
 "#,
-    prints(
-        "[[i64:10, i64:20], [i64:40, i64:30], [i64:10, i64:20], [i64:30, i64:40], [i64:20, i64:10], [i64:30, i64:40]]"
+    refused(
+        "a test cannot name a declared type variable ('b): write `_` there, and the name takes the value's own type"
     )
 );
 

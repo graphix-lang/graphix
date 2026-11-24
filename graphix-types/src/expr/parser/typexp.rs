@@ -15,8 +15,8 @@ use crate::{
         TypeNote, TypeNotes, WrittenAt, WrittenPath, get_origin, noted_items,
     },
     typ::{
-        Bound, FnArgKind, FnArgType, FnType, ParseDepth, TVar, Type, TypeRef,
-        check_bounds_acyclic,
+        Bound, DefaultType, FnArgKind, FnArgType, FnType, ParseDepth, QUANTIFIED_FN,
+        TVar, Type, TypeRef, check_bounds_acyclic, declared_name, written_name,
     },
 };
 use arcstr::{ArcStr, literal};
@@ -108,7 +108,7 @@ fn bound(i: &mut Input) -> R<LPooled<Vec<Type>>> {
 /// `'a: A + B`: a type variable and its bound.
 pub(super) fn tvar_bound(i: &mut Input) -> R<(TVar, LPooled<Vec<Type>>)> {
     i.spaces();
-    let tv = tvar(i)?;
+    let tv = declared_tvar(i)?;
     i.sptoken(':')?;
     Ok((tv, bound(i)?))
 }
@@ -116,7 +116,7 @@ pub(super) fn tvar_bound(i: &mut Input) -> R<(TVar, LPooled<Vec<Type>>)> {
 /// `'a`, or `'a: A + B`.
 pub(super) fn tvar_opt_bound(i: &mut Input) -> R<(TVar, Option<LPooled<Vec<Type>>>)> {
     i.spaces();
-    let tv = tvar(i)?;
+    let tv = declared_tvar(i)?;
     let b = i.optional(|i| {
         i.attempt(|i| i.sptoken(':'))?;
         bound(i)
@@ -135,13 +135,22 @@ pub(super) fn angle_list<O>(
     Ok(items)
 }
 
-fn fnconstraints(i: &mut Input) -> R<LPooled<Vec<(TVar, Type)>>> {
+fn fnconstraints(i: &mut Input, nest: &ParseDepth) -> R<LPooled<Vec<(TVar, Type)>>> {
     i.spaces();
+    if nest.nested() && i.peek() == Some('<') {
+        let at = i.pos();
+        i.g.note_reason(at, None, || CompactString::const_new(QUANTIFIED_FN));
+        return Err(i.because(QUANTIFIED_FN));
+    }
     Ok(match i.optional(|i| angle_list(i, &tvar_bound))? {
         Some(mut cs) => flatten_bounds(cs.drain(..)),
         None => LPooled::take(),
     })
 }
+
+/// The refusal of a default's type on a label a call may not leave out.
+const DEFAULT_TYPE: &str = "only a label a call may leave out (`?#d: T = D`) writes the \
+     type of its default";
 
 fn fnlabeled(i: &mut Input) -> R<FnArgType> {
     let optional =
@@ -149,10 +158,23 @@ fn fnlabeled(i: &mut Input) -> R<FnArgType> {
     let name = fname(i)?;
     i.sptoken(':')?;
     let typ = typ(i)?;
-    Ok(FnArgType {
-        kind: FnArgKind::Labeled { name: name.into(), has_default: optional },
-        typ,
-    })
+    // `?#d: T = D`: what a call that leaves the label out passes is a D
+    let written = i.optional(|i| {
+        i.attempt(|i| i.sptoken('='))?;
+        let at = i.pos();
+        match optional {
+            true => crate::expr::parser::typexp::typ(i),
+            false => {
+                i.g.note_reason(at, None, || CompactString::const_new(DEFAULT_TYPE));
+                Err(i.because(DEFAULT_TYPE))
+            }
+        }
+    })?;
+    let default = optional.then(|| match written {
+        Some(d) if d != typ => DefaultType::Of(d),
+        Some(_) | None => DefaultType::Param,
+    });
+    Ok(FnArgType { kind: FnArgKind::Labeled { name: name.into(), default }, typ })
 }
 
 fn fnpositional(i: &mut Input) -> R<FnArgType> {
@@ -209,8 +231,9 @@ pub(super) fn fntype(i: &mut Input) -> R<FnType> {
 
 fn fnshared(i: &mut Input) -> R<Arc<FnType>> {
     keyword(i, "fn")?;
-    let _nest = ParseDepth::enter();
-    let constraints = fnconstraints(i)?;
+    let nest = ParseDepth::enter();
+    let constraints = fnconstraints(i, &nest)?;
+    nest.quantifiers_end();
     let mut args = fnargs(i)?;
     i.spstring("->")?;
     let rtype = typ(i)?;
@@ -266,9 +289,16 @@ fn fnshared(i: &mut Input) -> R<Arc<FnType>> {
     Ok(ft)
 }
 
+/// A type variable written in a type ([`written_name`]).
 pub(super) fn tvar(i: &mut Input) -> R<TVar> {
     i.token('\'')?;
-    fname(i).map(TVar::empty_generic)
+    fname(i).map(written_name)
+}
+
+/// A type variable a signature declares ([`declared_name`]).
+fn declared_tvar(i: &mut Input) -> R<TVar> {
+    i.token('\'')?;
+    fname(i).map(declared_name)
 }
 
 fn varianttyp(i: &mut Input) -> R<Type> {

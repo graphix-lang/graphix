@@ -649,18 +649,14 @@ async fn a_restored_interface_keeps_its_positions() -> Result<()> {
 async fn a_restored_block_type_is_found() -> Result<()> {
     let program = r##"{
     type L = [`X(i64)];
-    let out = never();
-    let g = |z: i64| {
-        type L = [`Nil, `Cons(i64, L)];
-        let f = |#d = { let b: [`Y, `Z(L)] = never(); out <- b; 0 }, x: i64| d + x;
-        f(z)
-    };
+    let mk = |#k = { type L = [`Nil, `Cons(i64, L)]; |v: [`Y, `Z(L)]| v }, z: i64| (z, k);
+    let (n, k) = mk(1);
     let h = |#d = { type K = [`Nil, `Cons(i64, K)]; let l: K = `Cons(1, `Nil); l }, x: i64| (d, x);
     let s = {k: h};
     let t: {k: fn(x: i64) -> 'r} = s;
     let r = json::read(r#"["Z",["Cons",1,"Nil"]]"#);
-    out <- r$;
-    (g(1), r, t.k(2))
+    k(r$);
+    (n, r, t.k(2))
 }"##;
     let ((_, cold), (_, warm)) = cold_and_warm(program).await?;
     let last = cold.last().expect("the program produced its tuple");
@@ -736,7 +732,7 @@ async fn a_restored_catch_stays_sealed() -> Result<()> {
     let program = r#"{ let caught = "none"; catch(e) caught <- select e.0.error { `A => "a" }; let a = select caught { "none" => error(`A)?, _ => 0 }; let status = mod foo dynamic { sig { use core; val y: i64 }; source r"let x = error(`B)?; let y = 1" }; status }"#;
     let ((_, cold), (_, warm)) = cold_and_warm(program).await?;
     let refused = cold.last().expect("the module refused its body");
-    assert!(format!("{refused}").contains("this error reaches a catch"), "{refused}");
+    assert!(format!("{refused}").contains("`A does not contain `B"), "{refused}");
     assert_eq!(cold, warm);
     Ok(())
 }

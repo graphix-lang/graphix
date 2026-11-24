@@ -8,15 +8,15 @@ and the return type will be the same as the argument type. We can say
 that using type variables and constraints in our annotations.
 
 ```graphix
-〉let f = 'a: Number |x: 'a, y: 'a| -> 'a x + y
+〉let f = 'a: Number + Singleton |x: 'a, y: 'a| -> 'a x + y
 〉f
--: fn<'a: Number + Singleton>(x: 'a: unbound within Number & Singleton, y: 'a: unbound within Number & Singleton) -> 'a: unbound within Number & Singleton
-Abstract('a: Number |x: 'a, y: 'a| -> 'a x + y)
+-: fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a
+Abstract('a: Number + Singleton |x: 'a, y: 'a| -> 'a x + y)
 ```
 
 In type annotations of lambda expressions,
 - The constraints come before the first `|`, separated by commas if there are
-  multiple constrained type variables. e.g. `'a: Number`
+  multiple constrained type variables. e.g. `'a: Number + Singleton`
 - Each argument may optionally have a `: Type` after it, and this will set it's
   type, e.g. `x: 'a`
 - After the second `|` you can optionally include an `-> Type` which will set
@@ -25,25 +25,18 @@ In type annotations of lambda expressions,
   Type`, which will set the type that is thrown by the function
 
 When a function type is printed, the `fn<>` header lists the bounds on
-the type variables the definition declares, `'a: Number + Singleton`. The shell also prints each type variable where it occurs
-with its current state: `'a: unbound` when nothing has bound it yet, the
-type it is bound to when something has, and the bounds it must stay
-within, joined by `&`,
+its type variables, `'a: Number + Singleton` here, and each variable
+stands by its name where it occurs. There is one variable, `'a`, for
+both argument types and the return type. Its bound says two things:
+`Number`, and `Singleton`, since arithmetic needs one numeric type, not
+a union of several like `[i64, f64]`. A variable's bound is exactly what
+you write for it, so both are written; with `'a: Number` alone the body
+is refused, and the message names what to write,
 
+```graphix
+〉let f2 = 'a: Number |x: 'a, y: 'a| -> 'a x + y
+error: ... the body needs 'a within Singleton, which the signature does not declare: write 'a: Number + Singleton
 ```
-'a: unbound within Number & Singleton
-```
-
-We can remove the current states and it becomes easier to read,
-
-```
-fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a
-```
-
-We just have one variable now, `'a` representing both argument types
-and the return type. The body's `+` added `Singleton` to the declared
-`Number`: arithmetic needs one numeric type, not a union of several
-like `[i64, f64]`.
 
 Two bounds say how many types a variable may stand for. `Singleton`
 says one type, not a union of several. `OneNumber` says at most one
@@ -79,12 +72,13 @@ different types to the same call,
 error: in expr f(1, 1.2)
 
 Caused by:
-    0: at: line: 1, column: 6, in: 1.2
-    1: type mismatch 'a: i64 does not contain f64
+    0: at line: 1, column: 1
+    1: cannot compute with [i64, f64]: both operands must be one numeric type
 ```
 
-Here the compiler is saying that `'a` is already initialized as `i64` and `i64`
-doesn't unify with `f64`.
+Here the compiler is saying that this call makes `'a` an `[i64, f64]`, what
+the two arguments are between them, and the `+` in `f` takes one numeric
+type.
 
 Declaring two variables promises the opposite: that the function works
 for any `'a` and any `'b`, chosen independently. The body is checked
@@ -92,8 +86,8 @@ against that promise, so a body that only works when the two are the
 same type is refused at the definition rather than at some later call,
 
 ```graphix
-〉let g = 'a: Number, 'b: Number |x: 'a, y: 'b| -> 'a x + y
-error: ... cannot compute 'a: unbound within Number + 'b: unbound within Number: arithmetic is fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a — both operands must be one numeric type (cast one side explicitly)
+〉let g = 'a: Number + Singleton, 'b: Number + Singleton |x: 'a, y: 'b| -> 'a x + y
+error: ... ['a, 'b] must be one type, but the declared variable 'a may differ from its other members
 ```
 
 `+` takes two values of one type, so `x + y` needs `'a` and `'b` to be
@@ -119,40 +113,42 @@ error: ... 'a is declared but the signature does not hold it: write it on a para
 A written function type follows the same rule: `fn<'a: Number>(x: i64)
 -> i64` is refused too.
 
-A body may not ask more of a declared variable than its bound says: a
-call, an operator or a builtin that needs `Number`, `Ordered` or
-`Discernible` of a variable bounded by less is refused, and the message
-names the bound to write. `'c: Any |y: 'c| -> 'c f(y)` over an `f` that
-needs `Number` is refused until the signature says `'c: Number`, and
-`'a: Number |x: 'a, y: 'a| x < y` until it says `'a: Number + Ordered`.
-Nothing is added to the signature quietly. Arithmetic over a `Number`
-variable needs no `Singleton` written, and a variable only written bare
-(`|y: 'c| ..`) is inferred, taking the bound its body needs.
+A variable's bound is exactly what you write for it, `Any` where you
+write none, and a body may not ask more of the variable than that: a
+call, an operator or a builtin that needs `Number`, `Singleton`,
+`Ordered` or `Discernible` of a variable bounded by less is refused.
+`|y: 'c| -> 'c f(y)` over an `f` that needs `Number` is refused until
+the signature says `'c: Number`, and `|x: 'a, y: 'a| x == y` until it
+says `'a: Discernible`, which the message names. Nothing is added to the
+signature quietly: whoever reads `'a` with no bound may pass anything
+for it. Where you want the check to work the bound out, leave the
+parameter untyped: `|x, y| x + y` is generic over one numeric type with
+nothing written.
 
-In the body a declared variable is whatever type a call picks, so a
-`select` may not look inside a value of it on its own: a pattern that
-tests or binds inside one needs a written type test (see
-[Select](../core/select.md)), which types what it binds. A name or `_`
-over the whole value keeps the variable,
+In the body a declared variable is one of the types its bound allows,
+whichever a call picks, and a `select` over a value of it tests those
+(see [Select](../core/select.md)): a pattern takes the members of the
+bound it names, and a name it binds is typed by the part that reaches
+it. A name or `_` over the whole value keeps the variable,
 
 ```graphix
 〉let g = 'b: [`A(i64), `B(i64)] |x: 'b| select x { `A(z) => z + 1, _ => 0 }
-error: ... `A(z) tests inside a value of 'b, a type variable of the definition, which types none of its parts: write the type it tests, ``A(i64) as `A(z)`
-〉let g = 'b: [`A(i64), `B(i64)] |x: 'b| select x { `A(i64) as `A(z) => z + 1, _ => 0 }
 〉g(`A(3))
 -: i64
 4
 〉let same = 'b: [`A(i64), `B(i64)] |x: 'b| -> 'b select x { v => v }
 ```
 
-A destructuring `let` or parameter over such a value takes an annotation
-the same way (`let {x, y}: {x: i64, y: i64} = p`, `|{x, y}: {x: i64, y:
-i64}|`). Beside other members, the variable's values are covered only by
-a name or `_` at its position, or by written tests that split its bound:
+A destructuring `let` over such a value reads its parts from the bound
+the same way (`let {x, y} = p` over a `p: 'b` with `'b: {x: i64, y:
+i64}`); a destructuring parameter is annotated with the type it binds
+(`|{x, y}: {x: i64, y: i64}|`). Beside other members, the variable's
+values are covered only by a name or `_` at its position, or by tests
+that split its bound:
 
 ```graphix
 〉let h = 'b: [i64, string] |x: (bool, ['b, null])| select x { (true, _) => 1, (false, null) => 2 }
-error: ... missing match cases: no arm covers (bool, [null, 'b: unbound within [i64, string]])
+error: ... missing match cases: nothing matches (bool, 'b)
 〉let h = 'b: [i64, string] |x: (bool, ['b, null])| select x { (true, _) => 1, (false, null) => 2, (false, v) => 3 }
 ```
 
@@ -196,44 +192,46 @@ of a field of one (`let j = s.g`), or of a block ending in one of these,
 a `val`, a trait method. Anywhere else, an element of a collection a call
 returns, a callback's result, a field of a call's result, an argument, a
 reference (`&f`), it is one instance,
-which its uses decide. Here `g` is one instance of the lambda the
-callback returns, decided to `i64` by its first call, so a second call
-`g(1.5)` would be refused:
+which its uses decide between them. Here `g` is one instance of the
+lambda the callback returns, and its one variable is what every call
+passes: after `g(3)` a second call `g(1.5)` would make it an `[i64,
+f64]`, which `x + x` refuses:
 
 ```graphix
-let fs = array::map([1, 2], |r| 'a: Number |x: 'a| -> 'a x + x);
+let fs = array::map([1, 2], |r| 'a: Number + Singleton |x: 'a| -> 'a x + x);
 let g = fs[0]$;
 g(3)
 ```
 
-The shell and the compiler's messages show which one you have. The
-`fn<>` header lists a declared variable only while the function is
-generic, each call still picking it. One instance prints without the
-header, its variable where it occurs, as an inferred one does. Two
-instances are two variables, so where one message shows both the second
-prints numbered apart, `'a1`, in every type the message prints:
+The shell shows which one you have. The `fn<>` header lists a variable
+only while the function is generic, each call still picking it. One
+instance prints without the header, at the type its uses gave its
+variable; one nothing has called stands at the variable's bound:
 
 ```graphix
 〉let mk = |z: i64| 'a: Number |x: 'a| -> 'a x
 〉let h = mk(0)
 〉h
--: fn(x: 'a: unbound within Number) -> 'a: unbound within Number
+-: fn(x: Number) -> Number
 Abstract('a: Number |x: 'a| -> 'a x)
 〉let k = mk(1)
 〉(h, k)
--: (fn(x: 'a: unbound within Number) -> 'a: unbound within Number, fn(x: 'a1: unbound within Number) -> 'a1: unbound within Number)
+-: (fn(x: Number) -> Number, fn(x: Number) -> Number)
 (Abstract('a: Number |x: 'a| -> 'a x), Abstract('a: Number |x: 'a| -> 'a x))
 ```
 
-An inferred variable numbers apart the same way: where a message shows
-two instances' copies of one, the second prints with `_` and a number
-after the first's name. Each read of a generic binding is an instance
-of its own:
+Each read of a generic binding is an instance of its own. A bare name
+shows its binding's type, header and all; read into a tuple, each `id`
+here is an instance nothing has called, whose variable has no bound and
+no type yet, shown as `_`:
 
 ```graphix
 〉let id = |x| x
+〉id
+-: fn(x: 'a) -> 'a
+Abstract(|x| x)
 〉(id, id)
--: (fn(x: '_7: unbound) -> '_7: unbound, fn(x: '_7_1: unbound) -> '_7_1: unbound)
+-: (fn(x: _) -> _, fn(x: _) -> _)
 (Abstract(|x| x), Abstract(|x| x))
 ```
 
@@ -247,17 +245,17 @@ string]` the two can't be told apart by a test. Comparing such values,
 or hashing them, would mix the two up, so `==` and the other
 comparisons, map keys, `uniq`, `min`, `max`, `array::sort` and the
 other functions that compare or hash need `Discernible`. A function
-whose body compares takes the bound on its type variable, as arithmetic
-adds `Singleton`, and a call refuses a type that isn't `Discernible`,
+whose body compares is judged at each call, which refuses a type that
+isn't `Discernible`,
 
 ```graphix
 〉let eq = |x, y| x == y
 〉let inc = |x: i64| x + 1
 〉let v: [fn(x: i64) -> i64, fn(s: string) -> string] = inc
 〉eq(v, v)
-error: ... 'a must be Discernible, but [fn(x: i64) -> i64, fn(s: string) -> string]
-holds fn(x: i64) -> i64 and fn(s: string) -> string, which have the same runtime
-form; wrap them in distinct variants
+error: ... [fn(x: i64) -> i64, fn(s: string) -> string] must be Discernible here,
+but it holds fn(x: i64) -> i64 and fn(s: string) -> string, which have the same
+runtime form; wrap them in distinct variants
 ```
 
 Wrapping the members in variants of their own, `` [`I(fn(x: i64) ->
@@ -265,11 +263,11 @@ i64), `S(fn(s: string) -> string)] ``, tells them apart.
 
 What orders or hashes values (`<` and the other orderings, map keys,
 `min`, `max`, the sorts, `array::dedup`) needs `Ordered`, which is
-`Discernible`, no references, no functions and no type holding two numeric
-types: a reference has no order, and `==`, `!=` and `uniq` compare one by
-what it points to (see [References](../udt/references.md)), a function has
-no order either, and values of two numeric types have no order between
-them.
+`Discernible`, no references and no functions: a reference has no order,
+and `==`, `!=` and `uniq` compare one by what it points to (see
+[References](../udt/references.md)), and a function has no order either.
+Every other two values have one, numbers by their value whatever their
+types.
 
 ## Higher Order Functions
 
@@ -280,7 +278,7 @@ without issue, but sometimes annotations are required.
 ```graphix
 〉 let apply = |x: 'a, f: fn(x: 'a) -> 'b throws 'e| -> 'b throws 'e f(x)
 〉 apply
--: fn(x: 'a: unbound, f: fn(x: 'a: unbound) -> 'b: unbound throws 'e: unbound) -> 'b: unbound throws 'e: unbound
+-: fn(x: 'a, f: fn(x: 'a) -> 'b throws 'c) -> 'b throws 'c
 Abstract(|x: 'a, f: fn(x: 'a) -> 'b throws 'e| -> 'b throws 'e f(x))
 ```
 
@@ -314,12 +312,11 @@ let f = |x, y| x + y
 The shell prints its type as
 
 ```
-fn(x: '_1: unbound within Number & Singleton, y: '_1: unbound within Number & Singleton) -> '_1: unbound within Number & Singleton
+fn<'a: Number + Singleton>(x: 'a, y: 'a) -> 'a
 ```
 
-The compiler named the variable it inferred (`'_1`; the number differs
-from run to run), and the header lists only declared variables, so the
-bounds show where it occurs.
+The compiler named the variable it inferred, and the header gives its
+bound.
 
 One inferred variable stands for both arguments and the return type. The
 body's `+` gave it the arithmetic bound: `Number + Singleton`, one numeric
@@ -332,8 +329,9 @@ let b = f(1.5, 2.5);
 (a, b)
 ```
 
-but not two at once: `f(1.0, 1)` is refused (`type mismatch f64 does not
-contain i64`), and a cast is the fix, `f(1.0, cast<f64>(1)$)`.
+but not two at once: `f(1.0, 1)` is refused (`cannot compute with [i64,
+f64]: both operands must be one numeric type`), and a cast is the fix,
+`f(1.0, cast<f64>(1)$)`.
 
 Because unchecked `+` wraps on overflow rather than throwing, there is
 no `throws` clause in the type. If you want arithmetic errors

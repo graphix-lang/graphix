@@ -1,30 +1,25 @@
 use crate::{
-    AddrMap, AddrSet, LambdaId, PRINT_FLAGS, PrintFlag, SourcePosition,
+    AddrMap, AddrSet, LambdaId, PRINT_FLAGS, PrintFlag,
     env::Env,
     expr::{
         ModPath,
         print::{PrettyBuf, PrettyDisplay},
     },
-    format_with_flags, image,
+    image,
     typ::{
-        Bound, Mutability, TVar, TVarsSeen, Type,
-        contains::{ContainsFlags, ContainsHist, UndecidedTaker, any_part_pair},
-        key_text,
-        matches::{MatchHist, SigMatch, SigPairs},
+        Mutability, TVar, TVarsSeen, Type, bounds, key_text,
+        matches::MatchHist,
         normalize::NormCx,
-        setops::strictly_identical,
-        tvar::{self, Fresh, Level, RigidGate},
+        tvar::{self, Fresh, Level},
     },
 };
 use ahash::{AHashMap, AHashSet};
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use bytes::{Buf, BufMut};
-use compact_str::{CompactString, format_compact};
-use enumflags2::BitFlags;
+use compact_str::format_compact;
 use netidx_core::pack::{Pack, PackError, encode_varint};
 use netidx_derive::Pack;
-use nohash::IntSet;
 use parking_lot::RwLock;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
@@ -34,21 +29,54 @@ use std::{
     collections::{VecDeque, hash_map::Entry},
     fmt::{self, Debug, Write},
     hash::{Hash, Hasher},
-    mem::discriminant,
     ops::ControlFlow,
-    sync::{Arc as SArc, Weak},
+    sync::Arc as SArc,
     thread::LocalKey,
 };
 use triomphe::Arc;
 
 /// Positional or labeled function argument. A positional name is
 /// documentation only (not part of type identity); a label is the
-/// call-site key, and `has_default` is part of the type's shape.
+/// call-site key. A labeled argument a call may leave out has a
+/// `default`: the type of the value a call that leaves it out passes in
+/// its place, as if the caller had written it. It is part of the type.
 #[derive(Debug, Clone, Pack)]
 #[pack(unwrapped)]
 pub enum FnArgKind {
     Positional { name: Option<ArcStr> },
-    Labeled { name: ArcStr, has_default: bool },
+    Labeled { name: ArcStr, default: Option<DefaultType> },
+}
+
+/// The type of what a call that leaves a label out passes.
+#[derive(Debug, Clone, Pack, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[pack(unwrapped)]
+pub enum DefaultType {
+    /// The parameter's own: a written `?#d: T`.
+    Param,
+    /// A type of its own: a definition's default's, or a written
+    /// `?#d: T = D`'s.
+    Of(Type),
+    /// A trait method's own label: a call that leaves it out passes the
+    /// default of the implementation its receiver picks, whatever its type.
+    Each,
+}
+
+impl DefaultType {
+    /// The type a call that leaves the label out passes to `param`.
+    pub fn of<'a>(&'a self, param: &'a Type) -> &'a Type {
+        match self {
+            DefaultType::Param | DefaultType::Each => param,
+            DefaultType::Of(t) => t,
+        }
+    }
+
+    /// The type of its own, where it has one.
+    pub fn own(&self) -> Option<&Type> {
+        match self {
+            DefaultType::Param | DefaultType::Each => None,
+            DefaultType::Of(t) => Some(t),
+        }
+    }
 }
 
 impl FnArgKind {
@@ -75,7 +103,33 @@ impl FnArgKind {
     }
 
     pub fn has_default(&self) -> bool {
-        matches!(self, FnArgKind::Labeled { has_default: true, .. })
+        self.default().is_some()
+    }
+
+    /// What a call that leaves the label out passes.
+    pub fn default(&self) -> Option<&DefaultType> {
+        match self {
+            FnArgKind::Labeled { default, .. } => default.as_ref(),
+            FnArgKind::Positional { .. } => None,
+        }
+    }
+
+    /// Whether `other` is the same parameter: positional, or the same
+    /// label, which a call may leave out of both or of neither.
+    pub fn same_shape(&self, other: &Self) -> bool {
+        match (self, other) {
+            (FnArgKind::Positional { .. }, FnArgKind::Positional { .. }) => true,
+            (
+                FnArgKind::Labeled { name: a, default: da },
+                FnArgKind::Labeled { name: b, default: db },
+            ) => a == b && da.is_some() == db.is_some(),
+            _ => false,
+        }
+    }
+
+    /// The default's type where it is one of its own ([`DefaultType::Of`]).
+    pub fn own_default(&self) -> Option<&Type> {
+        self.default().and_then(DefaultType::own)
     }
 }
 
@@ -84,8 +138,8 @@ impl PartialEq for FnArgKind {
         match (self, other) {
             (FnArgKind::Positional { .. }, FnArgKind::Positional { .. }) => true,
             (
-                FnArgKind::Labeled { name: n0, has_default: d0 },
-                FnArgKind::Labeled { name: n1, has_default: d1 },
+                FnArgKind::Labeled { name: n0, default: d0 },
+                FnArgKind::Labeled { name: n1, default: d1 },
             ) => n0 == n1 && d0 == d1,
             _ => false,
         }
@@ -111,8 +165,8 @@ impl Ord for FnArgKind {
                 Ordering::Greater
             }
             (
-                FnArgKind::Labeled { name: n0, has_default: d0 },
-                FnArgKind::Labeled { name: n1, has_default: d1 },
+                FnArgKind::Labeled { name: n0, default: d0 },
+                FnArgKind::Labeled { name: n1, default: d1 },
             ) => n0.cmp(n1).then_with(|| d0.cmp(d1)),
         }
     }
@@ -122,10 +176,10 @@ impl Hash for FnArgKind {
     fn hash<H: Hasher>(&self, state: &mut H) {
         match self {
             FnArgKind::Positional { .. } => 0u8.hash(state),
-            FnArgKind::Labeled { name, has_default } => {
+            FnArgKind::Labeled { name, default } => {
                 1u8.hash(state);
                 name.hash(state);
-                has_default.hash(state);
+                default.hash(state);
             }
         }
     }
@@ -160,49 +214,11 @@ impl FnArgType {
     }
 }
 
-#[derive(Debug, Clone)]
-struct Link(Weak<RwLock<LambdaIdsInner>>);
-
-impl Hash for Link {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        state.write_u64(crate::ids::mix(self.addr() as u64))
-    }
-}
-
-impl nohash::IsEnabled for Link {}
-
-impl PartialEq for Link {
-    fn eq(&self, other: &Self) -> bool {
-        Weak::ptr_eq(&self.0, &other.0)
-    }
-}
-
-impl Eq for Link {}
-
-impl Link {
-    fn upgrade(&self) -> Option<LambdaIds> {
-        Weak::upgrade(&self.0).map(LambdaIds)
-    }
-
-    fn addr(&self) -> usize {
-        Weak::as_ptr(&self.0) as usize
-    }
-}
-
-#[derive(Debug, Default)]
-struct LambdaIdsInner {
-    own: Option<LambdaId>,
-    links: IntSet<Link>,
-}
-
-#[derive(Debug, Clone)]
-pub struct LambdaIds(SArc<RwLock<LambdaIdsInner>>);
-
-impl Default for LambdaIds {
-    fn default() -> Self {
-        Self(SArc::new(RwLock::new(LambdaIdsInner::default())))
-    }
-}
+/// The definition a function type is the signature of, where it is one:
+/// shared by the type's clones, so a definition naming its signature after
+/// building it names it for every holder.
+#[derive(Debug, Clone, Default)]
+pub struct LambdaIds(SArc<RwLock<Option<LambdaId>>>);
 
 impl LambdaIds {
     pub(crate) fn addr(&self) -> usize {
@@ -210,84 +226,18 @@ impl LambdaIds {
     }
 
     pub fn set_id(&self, id: LambdaId) {
-        self.0.write().own = Some(id)
+        *self.0.write() = Some(id)
     }
 
-    /// The node of a fresh instantiation: carries this node's `own` id
-    /// and a one-way snapshot of its links, so what later unifies with
-    /// the instance lands on the copy and never reaches the def's node.
+    /// The node of a fresh copy of the signature: it names the same
+    /// definition, and naming it again reaches only the copy.
     pub(crate) fn instantiate(&self) -> LambdaIds {
-        let inner = self.0.read();
-        Self(SArc::new(RwLock::new(LambdaIdsInner {
-            own: inner.own,
-            links: inner.links.clone(),
-        })))
-    }
-
-    /// Every live linked id; dead links are pruned as the walk meets
-    /// them. Locks one node at a time. O(live linked nodes).
-    pub fn ids(&self) -> LPooled<IntSet<LambdaId>> {
-        let mut visited: LPooled<AddrSet> = LPooled::take();
-        let mut ids: LPooled<IntSet<LambdaId>> = LPooled::take();
-        let mut work: LPooled<Vec<LambdaIds>> = LPooled::take();
-        visited.insert(SArc::as_ptr(&self.0) as usize);
-        work.push(self.clone());
-        while let Some(node) = work.pop() {
-            let mut inner = node.0.write();
-            if let Some(id) = inner.own {
-                ids.insert(id);
-            }
-            inner.links.retain(|link| match link.upgrade() {
-                Some(next) => {
-                    if visited.insert(link.addr()) {
-                        work.push(next);
-                    }
-                    true
-                }
-                None => false,
-            });
-        }
-        ids
+        Self(SArc::new(RwLock::new(*self.0.read())))
     }
 
     #[doc(hidden)]
     pub fn own(&self) -> Option<LambdaId> {
-        self.0.read().own
-    }
-
-    // CR claude for claude: [bug/medium] `link` adds a `Weak` to both sides, and
-    // nothing prunes a node's set except an `ids()` walk. A std `Weak` keeps the dead
-    // node's allocation, so a long-lived signature that later compiles keep linking
-    // grows by one dead node and one set entry each time. A dynamic module whose sig
-    // declares a function val leaks about 100 bytes per reload this way, in both
-    // engines: check_val's `sig_matches` links the sig's FnType to each load's lambda,
-    // and massif shows `LambdaIds::default` under `Lambda::compile` plus this set as
-    // the heap that grows. Prune dead links here (`strong_count() == 0`) whenever the
-    // set has doubled since the last prune; that keeps `link` amortized O(1). The
-    // leaks.rs reload pins assert `held()` only and cannot see this. probe:
-    // design/review-2026-11-16/repro/x-leaks-reload-exported-fn.gx (x-leaks-03)
-    pub fn link(&self, other: &LambdaIds) {
-        self.0.write().links.insert(other.as_link());
-        other.0.write().links.insert(self.as_link());
-    }
-
-    /// A node that reaches every id `nodes` reach, which none of them
-    /// reaches back. It links what each node links as well as the node,
-    /// so it outlives a node that is itself a join.
-    pub fn joining(nodes: &[&LambdaIds]) -> LambdaIds {
-        let joined = LambdaIds::default();
-        {
-            let mut inner = joined.0.write();
-            for n in nodes {
-                inner.links.insert(n.as_link());
-                inner.links.extend(n.0.read().links.iter().cloned());
-            }
-        }
-        joined
-    }
-
-    fn as_link(&self) -> Link {
-        Link(SArc::downgrade(&self.0))
+        *self.0.read()
     }
 }
 
@@ -354,11 +304,8 @@ thread_local! {
     static CUTS: Cell<u64> = const { Cell::new(0) };
     /// How deep signature parses nest on this thread.
     static PARSE_DEPTH: Cell<usize> = const { Cell::new(0) };
-    /// For the outermost signature's parse: each signature declared inside
-    /// it, with the cells it holds from outside itself as its declaration
-    /// left them, which the parse's walks read rather than walk it again.
-    static DECLARED: RefCell<AddrMap<(Arc<FnType>, Vec<(ArcStr, TVar)>)>> =
-        RefCell::new(AddrMap::default());
+    /// The variables of the outermost signature being parsed.
+    static NAMES: RefCell<Option<SigNames>> = const { RefCell::new(None) };
 }
 
 #[derive(Default)]
@@ -425,14 +372,44 @@ impl Drop for PartsDepth {
 }
 
 /// One signature's parse, which the signatures it holds are parsed
-/// inside; the outermost forgets the declared signatures and the
-/// positions memo on its way out, unwind too.
+/// inside; the outermost forgets its variables and the positions memo on
+/// its way out, unwind too.
 pub struct ParseDepth;
 
 impl ParseDepth {
     pub fn enter() -> Self {
-        PARSE_DEPTH.with(|d| d.set(d.get() + 1));
+        let depth = PARSE_DEPTH.with(|d| {
+            d.set(d.get() + 1);
+            d.get()
+        });
+        if depth == 1 {
+            NAMES.with_borrow_mut(|n| *n = Some(SigNames::default()));
+        }
         ParseDepth
+    }
+
+    /// Whether this signature is parsed inside another, whose variables
+    /// are all it writes.
+    pub fn nested(&self) -> bool {
+        PARSE_DEPTH.with(|d| d.get()) > 1
+    }
+
+    /// The outermost signature's declarations are parsed: each variable
+    /// its bounds wrote by a name it had not declared yet is the variable
+    /// that name is now.
+    pub fn quantifiers_end(&self) {
+        if self.nested() {
+            return;
+        }
+        NAMES.with_borrow_mut(|n| {
+            let Some(sig) = n else { return };
+            for (name, tv) in sig.waiting.take().unwrap_or_default() {
+                let named = sig.names.entry(name).or_insert_with(|| tv.clone()).clone();
+                if !named.same_cell(&tv) {
+                    tv.point_at(&named)
+                }
+            }
+        })
     }
 }
 
@@ -443,7 +420,7 @@ impl Drop for ParseDepth {
             d.get() == 0
         });
         if outermost {
-            DECLARED.with_borrow_mut(|m| m.clear());
+            NAMES.with_borrow_mut(|n| *n = None);
             if PARTS_DEPTH.with(|d| d.get()) == 0 {
                 POSITIONS.with_borrow_mut(|m| m.clear());
             }
@@ -451,71 +428,55 @@ impl Drop for ParseDepth {
     }
 }
 
-/// Which names an alias walk aliases: every name it meets, or only those
-/// its map holds as it starts. A declaration inside another signature's
-/// parse aliases its own quantifiers alone; the enclosing declarations
-/// alias the rest, the outermost every name left.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum Aliasing {
-    Every,
-    Known,
+/// The outermost signature's variables while it parses, by name: its
+/// quantifiers and every other name its parse writes.
+struct SigNames {
+    names: AHashMap<ArcStr, TVar>,
+    /// While its quantifiers parse, the variables their bounds write by a
+    /// name the signature has not declared yet: which variable each is
+    /// waits for the declarations' end ([`ParseDepth::quantifiers_end`]).
+    waiting: Option<Vec<(ArcStr, TVar)>>,
 }
 
-/// `f` of the cells `ft` holds from outside itself, where it is a
-/// signature declared inside the parse in progress; `None` for any other.
-fn declared<R>(ft: &Arc<FnType>, f: impl FnOnce(&[(ArcStr, TVar)]) -> R) -> Option<R> {
-    if PARSE_DEPTH.with(|d| d.get()) == 0 {
-        return None;
+impl Default for SigNames {
+    fn default() -> Self {
+        Self { names: AHashMap::default(), waiting: Some(Vec::new()) }
     }
-    DECLARED.with_borrow(|m| m.get(&(Arc::as_ptr(ft) as usize)).map(|(_, free)| f(free)))
 }
 
-/// Whether `ft` is a signature the parse in progress declared naming no
-/// variable from outside itself: a walk for an enclosing signature's
-/// variables finds none in it.
-pub(super) fn closed(ft: &Arc<FnType>) -> bool {
-    declared(ft, <[_]>::is_empty).unwrap_or(false)
-}
-
-/// Where `ft` is a signature the parse in progress declared, the cells it
-/// holds from outside itself into `known`, and true.
-pub(super) fn declared_free(
-    ft: &Arc<FnType>,
-    known: &mut AHashMap<ArcStr, TVar>,
-) -> bool {
-    declared(ft, |free| {
-        for (name, tv) in free {
-            known.entry(name.clone()).or_insert_with(|| tv.clone());
-        }
+/// The variable the signature's quantifier `name` is. Outside a
+/// signature's parse, a variable of its own.
+pub fn declared_name(name: ArcStr) -> TVar {
+    NAMES.with_borrow_mut(|n| match n {
+        Some(sig) => sig
+            .names
+            .entry(name.clone())
+            .or_insert_with(|| TVar::empty_generic(name))
+            .clone(),
+        None => TVar::empty_generic(name),
     })
-    .is_some()
 }
 
-/// Whether an alias walk over `known` aliasing `how` enters `ft`: a
-/// signature the parse in progress declared only where it names, from
-/// outside itself, a name the walk aliases.
-pub(super) fn aliases_into(
-    ft: &Arc<FnType>,
-    known: &AHashMap<ArcStr, TVar>,
-    how: Aliasing,
-) -> bool {
-    declared(ft, |free| match how {
-        Aliasing::Every => !free.is_empty(),
-        Aliasing::Known => free.iter().any(|(name, _)| known.contains_key(name)),
-    })
-    .unwrap_or(true)
-}
-
-/// Where `ft` is a signature the parse in progress declared, which an
-/// alias walk does not enter, the walk's scope `passed` meets the cells it
-/// holds from outside itself: one of the scope's own may hold a bound the
-/// scope passes.
-pub(super) fn meet_declared(ft: &Arc<FnType>, passed: &tvar::ConjunctsPassed) {
-    declared(ft, |free| {
-        for (_, tv) in free {
-            passed.meet(tv)
+/// The variable `name` written in a type is: the signature's variable of
+/// that name. One written in the signature's bounds before its
+/// declarations end waits for them. Outside a signature's parse, a
+/// variable of its own, which the compile names
+/// ([`Type::scope_refs_named`]).
+pub fn written_name(name: ArcStr) -> TVar {
+    NAMES.with_borrow_mut(|n| {
+        let Some(sig) = n else { return TVar::empty_generic(name) };
+        if let Some(tv) = sig.names.get(&name) {
+            return tv.clone();
         }
-    });
+        let tv = TVar::empty_generic(name.clone());
+        match &mut sig.waiting {
+            Some(waiting) => waiting.push((name, tv.clone())),
+            None => {
+                sig.names.insert(name, tv.clone());
+            }
+        }
+        tv
+    })
 }
 
 /// The cells `ft` holds into `known`: those its positions name, and,
@@ -539,7 +500,7 @@ fn collect_held(ft: &FnType, known: &mut AHashMap<ArcStr, TVar>) {
             let Some(_holding) = Walking::enter_key(&HOLDING, tv.cell_addr()) else {
                 continue;
             };
-            for tc in tv.cell_constraints() {
+            for tc in tv.cell_above() {
                 match tc.normalize_int(&mut seen.norm) {
                     Some(n) => n.collect_tvars_seen(&mut found, seen),
                     None => tc.collect_tvars_seen(&mut found, seen),
@@ -828,32 +789,14 @@ fn on_cycles(start: &[usize], edges: &[(usize, usize)]) -> LPooled<Vec<bool>> {
     cyclic
 }
 
-/// Seed each conjunct on its quantifier's cell in `known`, aliasing every
-/// conjunct's own variables onto the quantifiers before any cell holds a
-/// conjunct, so no alias's occurs check walks a chain of bounds. A
-/// conjunct that reaches the cell it would bound is refused, as an alias
-/// that closes a cycle is: no cell holds itself through its bounds.
+/// Seed each conjunct on its quantifier's cell in `known`, whose variables
+/// the conjuncts' are already. A conjunct that reaches the cell it would
+/// bound is refused: no cell holds itself through its bounds.
 pub fn seed_conjuncts<'a>(
-    known: &mut AHashMap<ArcStr, TVar>,
+    known: &AHashMap<ArcStr, TVar>,
     constraints: impl IntoIterator<Item = (&'a TVar, Type)>,
 ) -> Result<()> {
-    seed_conjuncts_aliasing(known, &[], constraints, Aliasing::Every)
-}
-
-/// [`seed_conjuncts`] in the scope of the signature quantifying `own`, the
-/// conjuncts' variables aliased `how`.
-fn seed_conjuncts_aliasing<'a>(
-    known: &mut AHashMap<ArcStr, TVar>,
-    own: &[ArcStr],
-    constraints: impl IntoIterator<Item = (&'a TVar, Type)>,
-    how: Aliasing,
-) -> Result<()> {
-    let constraints: LPooled<Vec<(&TVar, Type)>> = constraints.into_iter().collect();
-    let passed = tvar::ConjunctsPassed::within(own);
-    for (_, tc) in constraints.iter() {
-        tc.alias_tvars_in(known, &passed, how);
-    }
-    for (tv, tc) in constraints.iter() {
+    for (tv, tc) in constraints {
         let q = &known[&tv.name];
         let tc = tc.normalize();
         if tvar::would_cycle_inner(&q.cell(), &tc) {
@@ -880,7 +823,7 @@ fn close_through_bounds(
             if !seen.passes(&tv) {
                 continue;
             }
-            for tc in tv.cell_constraints() {
+            for tc in tv.cell_above() {
                 tc.collect_tvars_seen(&mut found, seen);
             }
             for (name, tv) in found.drain() {
@@ -909,14 +852,12 @@ fn var_names(t: &Type) -> LPooled<Vec<ArcStr>> {
 
 impl FnType {
     /// `self` declaring `constraints`: its quantifiers are their names
-    /// in source order (a `+`-bound variable is one quantifier), and every
-    /// same-named tvar of the signature and of a conjunct is the
-    /// quantifier's, whose cell holds the conjuncts; refused where a
-    /// conjunct reaches its own cell ([`seed_conjuncts`]). Inside another
-    /// signature's parse ([`ParseDepth`]) only its own quantifiers are
-    /// aliased, every other name by the enclosing declarations
-    /// ([`Aliasing`]), and the cells it holds from outside itself
-    /// ([`collect_held`]) are recorded for the parse's walks.
+    /// in source order (a `+`-bound variable is one quantifier), whose
+    /// cells hold the conjuncts; refused where a conjunct reaches its own
+    /// cell ([`seed_conjuncts`]). The signature's variables and its
+    /// conjuncts' are the quantifiers' already: a parse names each written
+    /// name once ([`written_name`]), a compile copies by name
+    /// ([`Type::scope_refs_named`]).
     pub fn declaring(mut self, constraints: &[(TVar, Type)]) -> Result<Arc<Self>> {
         let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         let mut names: LPooled<Vec<ArcStr>> = LPooled::take();
@@ -928,35 +869,7 @@ impl FnType {
         }
         self.quantifiers = Arc::from_iter(names.drain(..));
         let ft = Arc::new(self);
-        // CR claude for eric: [structure/medium] This arm, `Aliasing::Known`,
-        // `DECLARED` and the readers of it (`declared`, `closed`, `declared_free`,
-        // `aliases_into`, `meet_declared`) exist for a signature parsed inside another
-        // signature. One that declares quantifiers there is refused by the check in
-        // every position (`rewrite_trait_args_inner` reads every part and bound of a
-        // signature with `scheme` false), so this bookkeeping and most of the
-        // nest-parse tests below keep correct and linear a state the language forbids.
-        // For Eric: refuse a quantified signature at parse depth above 1 in the
-        // parser's `fnshared`, with the `QUANTIFIED_FN` text. A nested signature then
-        // declares nothing, `declaring` returns it as it stands, the outermost
-        // `Aliasing::Every` walk aliases every name, and the items named here go. Found
-        // by reading; the refusals were run (35 positions), the deletion was not built.
-        // (t-fntyp-05)
-        let nested = PARSE_DEPTH.with(|d| d.get()) > 1;
-        let how = if nested { Aliasing::Known } else { Aliasing::Every };
-        ft.alias_tvars_in(
-            &mut known,
-            &tvar::ConjunctsPassed::within(&ft.quantifiers),
-            how,
-        );
-        let constraints = constraints.iter().map(|(tv, tc)| (tv, tc.clone()));
-        seed_conjuncts_aliasing(&mut known, &ft.quantifiers, constraints, how)?;
-        if nested {
-            known.clear();
-            collect_held(&ft, &mut known);
-            let free = known.drain().filter(|(name, _)| !ft.quantifiers.contains(name));
-            let free = (ft.clone(), free.collect());
-            DECLARED.with_borrow_mut(|m| m.insert(Arc::as_ptr(&ft) as usize, free));
-        }
+        seed_conjuncts(&known, constraints.iter().map(|(tv, tc)| (tv, tc.clone())))?;
         Ok(ft)
     }
 
@@ -988,7 +901,7 @@ impl FnType {
     pub fn bound_mentions_self(&self) -> bool {
         let mut held: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         self.collect_tvars_through_bounds(&mut held);
-        held.values().any(|tv| tv.cell_constraints().iter().any(Type::mentions_self))
+        held.values().any(|tv| tv.cell_above().iter().any(Type::mentions_self))
     }
 
     /// `(tvar, conjunct)` for every conjunct of every declared quantifier,
@@ -1022,7 +935,7 @@ impl FnType {
         let mut cx = NormCx::take();
         for q in self.quantifiers.iter() {
             let Some(tv) = reached.remove(q) else { continue };
-            for tc in tv.cell_constraints() {
+            for tc in tv.cell_above() {
                 let n = tc.normalize_int(&mut cx).unwrap_or_else(|| tc.clone());
                 view.push((tv.clone(), n));
             }
@@ -1085,10 +998,18 @@ impl FnType {
                         }
                     }
                 }
-                FnArgKind::Labeled { name, has_default } => {
+                FnArgKind::Labeled { name, default } => {
                     out.put_u8(1);
                     key_text(name, out);
-                    out.put_u8(*has_default as u8);
+                    match default {
+                        None => out.put_u8(0),
+                        Some(DefaultType::Param) => out.put_u8(1),
+                        Some(DefaultType::Each) => out.put_u8(3),
+                        Some(DefaultType::Of(d)) => {
+                            out.put_u8(2);
+                            d.content_key(out)
+                        }
+                    }
                 }
             }
             a.typ.content_key(out);
@@ -1204,7 +1125,22 @@ impl FnType {
         let Self { args, vargs, rtype, throws, explicit_throws, quantifiers, lambda_ids } =
             self;
         let new_args = Type::cow_slice(args, |a| {
-            f(&a.typ).map(|typ| FnArgType { kind: a.kind.clone(), typ })
+            let typ = f(&a.typ);
+            let kind = match &a.kind {
+                FnArgKind::Labeled { name, default: Some(DefaultType::Of(d)) } => f(d)
+                    .map(|d| FnArgKind::Labeled {
+                        name: name.clone(),
+                        default: Some(DefaultType::Of(d)),
+                    }),
+                FnArgKind::Labeled { .. } | FnArgKind::Positional { .. } => None,
+            };
+            match (typ, kind) {
+                (None, None) => None,
+                (typ, kind) => Some(FnArgType {
+                    kind: kind.unwrap_or_else(|| a.kind.clone()),
+                    typ: typ.unwrap_or_else(|| a.typ.clone()),
+                }),
+            }
         });
         let new_vargs = vargs.as_ref().and_then(&mut f);
         let new_rtype = f(rtype);
@@ -1249,6 +1185,9 @@ impl FnType {
         } = self;
         for arg in args.iter() {
             f(&arg.typ)?;
+            if let Some(d) = arg.kind.own_default() {
+                f(d)?;
+            }
         }
         if let Some(t) = vargs {
             f(t)?;
@@ -1295,7 +1234,10 @@ impl FnType {
             lambda_ids: _,
         } = self;
         for arg in args.iter() {
-            f(cx, &arg.typ, false)
+            f(cx, &arg.typ, false);
+            if let Some(d) = arg.kind.own_default() {
+                f(cx, d, false)
+            }
         }
         if let Some(vargs) = vargs {
             f(cx, vargs, false)
@@ -1313,22 +1255,13 @@ impl FnType {
                 if let Some(_cell) = Walking::enter_guard(&CONJUNCTS, tv.cell_addr())
                     && pass(cx, &tv)
                 {
-                    for tc in tv.cell_constraints() {
+                    for tc in tv.cell_above() {
                         f(cx, &tc, true);
                     }
                 }
             }
         }
         f(cx, throws, false);
-    }
-
-    pub fn unbind_tvars(&self) {
-        self.for_each_type(&mut |t| t.unbind_tvars())
-    }
-
-    /// [`Type::unbind_vacuous_tvars`] over the signature.
-    pub fn unbind_vacuous_tvars(&self) {
-        self.for_each_type(&mut |t| t.unbind_vacuous_tvars())
     }
 
     pub fn reset_tvars(&self) -> Self {
@@ -1340,16 +1273,6 @@ impl FnType {
     #[doc(hidden)]
     pub fn reset_tvars_with(&self, known: &mut AHashMap<usize, TVar>) -> Self {
         self.reset_tvars_int(known, Fresh::Copy)
-    }
-
-    /// [`Type::instantiate_with`] over the signature.
-    #[doc(hidden)]
-    pub fn instantiate_with(
-        &self,
-        known: &mut AHashMap<usize, TVar>,
-        open: &IntSet<LambdaId>,
-    ) -> Self {
-        self.instantiate_how(known, Fresh::Instantiate(open))
     }
 
     /// [`Type::rename_with`] over the signature.
@@ -1374,7 +1297,7 @@ impl FnType {
     pub(super) fn instantiate_how(
         &self,
         known: &mut AHashMap<usize, TVar>,
-        how: Fresh<'_>,
+        how: Fresh,
     ) -> Self {
         let fresh = self
             .cow_walk(|t| t.instantiate_int(known, how))
@@ -1392,7 +1315,7 @@ impl FnType {
     pub(super) fn reset_tvars_int(
         &self,
         known: &mut AHashMap<usize, TVar>,
-        how: Fresh<'_>,
+        how: Fresh,
     ) -> Self {
         let mut fresh = self
             .cow_walk(|t| t.reset_tvars_int(known, how))
@@ -1498,81 +1421,6 @@ impl FnType {
         .is_break()
     }
 
-    pub fn alias_tvars(&self, known: &mut AHashMap<ArcStr, TVar>) {
-        self.alias_scope(
-            known,
-            &tvar::ConjunctsPassed::within(&self.quantifiers),
-            Aliasing::Every,
-        )
-    }
-
-    pub(super) fn alias_tvars_in(
-        &self,
-        known: &mut AHashMap<ArcStr, TVar>,
-        passed: &tvar::ConjunctsPassed,
-        how: Aliasing,
-    ) {
-        self.for_each_part_passing(&mut (), |_, tv| passed.first(tv), &mut |_, t, _| {
-            t.alias_tvars_in(known, passed, how)
-        })
-    }
-
-    /// The alias walk over the signature quantifying `passed`'s scope: its
-    /// parts, then the conjuncts of each of its own cells the walk met
-    /// that no position names (one held through a bound, or through a
-    /// signature nested in it), until it meets no more.
-    pub(super) fn alias_scope(
-        &self,
-        known: &mut AHashMap<ArcStr, TVar>,
-        passed: &tvar::ConjunctsPassed,
-        how: Aliasing,
-    ) {
-        self.alias_tvars_in(known, passed, how);
-        let Some(_guard) =
-            Walking::enter_guard(&CONSTRAINING, self as *const FnType as usize)
-        else {
-            return;
-        };
-        while let Some(tv) = passed.next_met() {
-            if let Some(_cell) = Walking::enter_guard(&CONJUNCTS, tv.cell_addr())
-                && passed.first(&tv)
-            {
-                for tc in tv.cell_constraints() {
-                    tc.alias_tvars_in(known, passed, how)
-                }
-            }
-        }
-    }
-
-    /// A reference's copy of the scheme (`Fresh::Scheme`) under the open
-    /// gates `open`.
-    #[doc(hidden)]
-    pub fn scheme(&self, open: &IntSet<LambdaId>) -> Self {
-        self.reset_tvars_int(&mut LPooled::take(), Fresh::Scheme(open))
-    }
-
-    /// One instance of the scheme under the open gates `open`: what a
-    /// call copies is a fresh cell at the current level, which every use of
-    /// the copy shares (`Fresh::Instantiate`).
-    #[doc(hidden)]
-    pub fn one_instance(&self, open: &IntSet<LambdaId>) -> Self {
-        self.reset_tvars_int(&mut LPooled::take(), Fresh::Instantiate(open))
-    }
-
-    /// A quantifier an earlier compile task left open: the check decided
-    /// it open, so a later task compares the type as any instance of
-    /// itself and never writes the cell (`tvar::earlier_task`), except an
-    /// input's own check, to which an earlier input's is one type
-    /// (`tvar::in_input`).
-    fn has_earlier_quantifier(&self) -> bool {
-        if super::tvar::in_input() {
-            return false;
-        }
-        let mut any = false;
-        self.open_quantifiers(|_, open| any |= open.earlier_task());
-        any
-    }
-
     /// Each of the signature's own quantifiers, as the signature names it.
     pub fn each_quantifier(&self, mut f: impl FnMut(&ArcStr, &TVar)) {
         if self.quantifiers.is_empty() {
@@ -1603,7 +1451,7 @@ impl FnType {
                 if !seen.passes(&tv) {
                     continue;
                 }
-                for tc in tv.cell_constraints() {
+                for tc in tv.cell_above() {
                     match tc.normalize_int(&mut seen.norm) {
                         Some(n) => n.collect_tvars_seen(&mut found, seen),
                         None => tc.collect_tvars_seen(&mut found, seen),
@@ -1637,78 +1485,17 @@ impl FnType {
         })
     }
 
-    /// Map each of the signature's own open quantifiers to a fresh cell
-    /// in `known`, its conjuncts copied through `walk`: every call picks
-    /// them anew, whatever gate owns them.
-    fn fresh_quantifiers(
-        &self,
-        known: &mut AHashMap<usize, TVar>,
-        walk: impl Fn(&Type, &mut AHashMap<usize, TVar>) -> Type,
-    ) {
-        let mut opens: LPooled<Vec<TVar>> = LPooled::take();
-        self.open_quantifiers(|_, open| opens.push(open));
-        for tv in opens.iter() {
-            known
-                .entry(tv.cell_addr())
-                .or_insert_with(|| TVar::empty_named(tv.name.clone()));
-        }
-        for tv in opens.iter() {
-            let f = known[&tv.cell_addr()].clone();
-            for c in tv.cell_constraints() {
-                f.add_cell_constraint(walk(&c, known));
-            }
-        }
-    }
-
-    /// The open quantifiers of every function type the signature holds, by
-    /// cell: a generic function's a scheme holds.
-    pub fn inner_quantifiers(&self, out: &mut AHashMap<usize, TVar>) {
-        let mut seen: LPooled<AHashSet<usize>> = LPooled::take();
-        self.for_each_part(&mut |t, _| {
-            t.quantifiers_seen(true, &mut seen, &mut |_, tv| {
-                if let Some(open) = tv.open_cell() {
-                    out.insert(open.cell_addr(), open);
-                }
-            })
-        });
-    }
-
-    /// A copy whose own open quantifiers are fresh cells; every other cell
-    /// is shared.
-    fn fresh_own_quantifiers(&self) -> Self {
-        let mut known: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-        let image = |known: &AHashMap<usize, TVar>, a| {
-            known.get(&a).map(|f| Type::TVar(f.clone()))
-        };
-        let walk = |c: &Type, known: &mut AHashMap<usize, TVar>| {
-            c.swap_cells(&|a| image(known, a))
-        };
-        self.fresh_quantifiers(&mut known, walk);
-        if known.is_empty() {
+    /// A use of the signature at `at` ([`bounds::instantiate`]).
+    pub fn instantiate(&self, at: Level) -> Self {
+        let mut unowned = false;
+        self.for_each_type(&mut |t| unowned = unowned || bounds::holds_unowned(t));
+        if !unowned {
             return self.clone();
         }
-        self.cow_walk(|t| Some(t.swap_cells(&|a| image(&known, a))))
-            .unwrap_or_else(|| self.clone())
-    }
-
-    /// A call's copy of the signature under the open gates `open`
-    /// (`Fresh::Instantiate`), each fresh cell the copy holds more than
-    /// once frozen, so it keeps its cell when it unifies with an unfrozen
-    /// one.
-    pub fn instantiate(&self, open: &IntSet<LambdaId>) -> Self {
-        let mut known: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-        let fresh = self.reset_tvars_int(&mut known, Fresh::Instantiate(open));
-        let copies: LPooled<AHashSet<usize>> =
-            known.values().map(|tv| tv.cell_addr()).collect();
-        let mut occurrences = super::tvar::Occurrences::default();
-        fresh.for_each_part(&mut |t, _| t.tvar_occurrences(&mut occurrences));
-        for tv in occurrences.vars.iter() {
-            let addr = tv.cell_addr();
-            if occurrences.many(addr) && copies.contains(&addr) {
-                tv.freeze()
-            }
+        match &bounds::instantiate(&Type::Fn(Arc::new(self.clone())), at) {
+            Type::Fn(ft) => (**ft).clone(),
+            t => unreachable!("a use of a signature is {t}"),
         }
-        fresh
     }
 
     /// Mark generic every cell the signature reaches at `depth` or
@@ -1844,128 +1631,7 @@ impl FnType {
     }
 
     pub fn contains(&self, env: &Env, t: &Self) -> Result<bool> {
-        self.contains_int(ContainsFlags::Commit.into(), env, &mut ContainsHist::new(), t)
-    }
-
-    /// Arguments are contravariant: each of `t`'s parameters must admit
-    /// what `self`'s callers pass, and a label `self` lets a caller omit
-    /// must be one `t` defaults.
-    pub(super) fn contains_int(
-        &self,
-        flags: BitFlags<ContainsFlags>,
-        env: &Env,
-        hist: &mut ContainsHist,
-        t: &Self,
-    ) -> Result<bool> {
-        // A quantifier self has not picked stands for every type its bound
-        // admits, since each call through the value picks it anew: t must
-        // fit it held rigid, wherever the type stands; one an earlier task
-        // left open is held rigid in a copy.
-        let copy;
-        let this = match self.has_earlier_quantifier() {
-            true => {
-                copy = self.fresh_own_quantifiers();
-                &copy
-            }
-            false => self,
-        };
-        let gates = this.open_quantifier_gates();
-        let outer = (!gates.is_empty()).then(|| hist.gate());
-        let r = this.contains_gated(flags, env, hist, t);
-        if let Some(outer) = outer {
-            hist.ungate(outer)
-        }
-        drop(gates);
-        r
-    }
-
-    /// [`Self::contains_int`] with self's open quantifiers held rigid.
-    fn contains_gated(
-        &self,
-        flags: BitFlags<ContainsFlags>,
-        env: &Env,
-        hist: &mut ContainsHist,
-        t: &Self,
-    ) -> Result<bool> {
-        // a type whose quantifier an earlier task left open is any instance
-        // of itself: its quantifiers are fresh for this comparison, so
-        // self's bind them
-        let fresh;
-        let t = match t.has_earlier_quantifier() {
-            true => {
-                fresh = t.fresh_own_quantifiers();
-                &fresh
-            }
-            false => t,
-        };
-        let (pairs, ok) = self.align(t);
-        if !ok || pairs.iter().any(|(s, t)| s.has_default() && !t.has_default()) {
-            return Ok(false);
-        }
-        let vargs = match (&t.vargs, &self.vargs) {
-            (Some(tv), Some(sv)) => Some((tv, sv)),
-            (None, None) => None,
-            (_, _) => return Ok(false),
-        };
-        let args = flags ^ ContainsFlags::Contra;
-        // each position as (container, contained, flags), in order, the
-        // bounds between the result and the throws
-        let mut positions: SmallVec<[Option<(&Type, &Type, _)>; 8]> =
-            pairs.iter().map(|(s, t)| Some((&t.typ, &s.typ, args))).collect();
-        positions.extend(vargs.map(|(tv, sv)| Some((tv, sv, args))));
-        positions.push(Some((&self.rtype, &t.rtype, flags)));
-        positions.push(None);
-        positions.push(Some((&self.throws, &t.throws, flags)));
-        for p in positions.iter() {
-            let holds = match p {
-                Some((c, t, flags)) => c.contains_int(*flags, env, hist, t)?,
-                None => {
-                    self.bounds_hold(flags, env, hist)?
-                        && t.bounds_hold(flags, env, hist)?
-                }
-            };
-            if !holds {
-                return Ok(false);
-            }
-        }
-        Ok(true)
-    }
-
-    /// Rigid gates on a scheme's quantifiers no call has picked: what each
-    /// meets must hold for every type its bound admits.
-    fn open_quantifier_gates(&self) -> LPooled<Vec<super::tvar::RigidGate>> {
-        let mut gates: LPooled<Vec<super::tvar::RigidGate>> = LPooled::take();
-        self.open_quantifiers(|tv, open| {
-            if open.level().is_generic() {
-                gates.push(tv.open_rigid())
-            }
-        });
-        gates
-    }
-
-    /// Every declared bound holds for its bound variable. An open one
-    /// (its cell open at the end of any forward link) stays open: it
-    /// stands for one type the bound admits, and its cell enforces the
-    /// bound at every binding.
-    fn bounds_hold(
-        &self,
-        flags: BitFlags<ContainsFlags>,
-        env: &Env,
-        hist: &mut ContainsHist,
-    ) -> Result<bool> {
-        for (tv, tc) in self.constraint_view().iter() {
-            if tv.open_cell().is_none()
-                && !tc.contains_int(
-                    flags | ContainsFlags::Conjunct,
-                    env,
-                    hist,
-                    &Type::TVar(tv.clone()),
-                )?
-            {
-                return Ok(false);
-            }
-        }
-        Ok(true)
+        super::holds::holds_fn(env, self, t)
     }
 
     pub fn check_contains(&self, env: &Env, other: &Self) -> Result<()> {
@@ -1975,701 +1641,38 @@ impl FnType {
         Ok(())
     }
 
-    /// The parameter positions of [`Self::contains`] alone: pushes a
-    /// declared signature's parameter types into an argument function
-    /// before its body is typechecked. Return and throws are what the
-    /// body determines and are left open, and so is a declared type two
-    /// decided members of the argument's union could take
-    /// ([`UndecidedTaker`]): the argument's own check meets it.
-    pub fn pre_unify_params(&self, env: &Env, t: &Self) -> Result<()> {
-        let mut hist = ContainsHist::new();
-        self.align(t).0.into_iter().try_for_each(|(s, t)| {
-            let flags = ContainsFlags::Commit.into();
-            match t.typ.contains_int(flags, env, &mut hist, &s.typ) {
-                Err(e) if e.is::<UndecidedTaker>() => Ok(()),
-                r => r.map(drop),
-            }
-        })
-    }
-
-    pub fn sig_matches(&self, env: &Env, impl_fn: &Self) -> Result<SigMatch> {
-        let (mut pairs, mut hist) = (SigPairs::default(), super::RefHist::new());
-        self.sig_matches_int(env, impl_fn, &mut pairs, &mut hist)?;
-        pairs.finished(env, &mut hist)
-    }
-
-    pub(super) fn sig_matches_int(
-        &self,
-        env: &Env,
-        impl_fn: &Self,
-        tvar_map: &mut SigPairs,
-        hist: &mut super::RefHist<AHashSet<super::RefPair>>,
-    ) -> Result<()> {
-        let Self {
-            args: sig_args,
-            vargs: sig_vargs,
-            rtype: sig_rtype,
-            throws: sig_throws,
-            explicit_throws: _,
-            quantifiers: _,
-            lambda_ids: _,
-        } = self;
-        let Self {
-            args: impl_args,
-            vargs: impl_vargs,
-            rtype: impl_rtype,
-            throws: impl_throws,
-            explicit_throws: _,
-            quantifiers: _,
-            lambda_ids: _,
-        } = impl_fn;
-        if sig_args.len() != impl_args.len() {
-            bail!(
-                "argument count mismatch: signature has {}, implementation has {}",
-                sig_args.len(),
-                impl_args.len()
-            );
-        }
-        // labeled arguments pair by label, whatever order each side writes
-        let (pairs, aligned) = self.align(impl_fn);
-        if !aligned {
-            bail!("the signature's and the implementation's labeled arguments differ")
-        }
-        let args = (|| -> Result<()> {
-            let first_positional = self.first_positional();
-            for (i, (sig_arg, impl_arg)) in pairs.into_iter().enumerate() {
-                use FnArgKind::Labeled;
-                if let (
-                    Labeled { name, has_default: d0 },
-                    Labeled { has_default: d1, .. },
-                ) = (&sig_arg.kind, &impl_arg.kind)
-                    && d0 != d1
-                {
-                    let (s, i) = if *d0 { ("a", "no") } else { ("no", "a") };
-                    bail!(
-                        "argument #{name}: the signature gives it {s} default, the \
-                         implementation {i} default"
-                    )
-                }
-                sig_arg
-                    .typ
-                    .sig_matches_int(env, &impl_arg.typ, tvar_map, hist)
-                    .with_context(|| match sig_arg.kind.label() {
-                        Some(l) => format!("in argument #{l}"),
-                        None => format!("in argument {}", i - first_positional),
-                    })?;
-            }
-            match (sig_vargs, impl_vargs) {
-                (None, None) => (),
-                (Some(sig_va), Some(impl_va)) => {
-                    sig_va
-                        .sig_matches_int(env, impl_va, tvar_map, hist)
-                        .context("in variadic argument")?;
-                }
-                (None, Some(_)) => {
-                    bail!("signature has no variadic args but implementation does")
-                }
-                (Some(_), None) => {
-                    bail!("signature has variadic args but implementation does not")
-                }
-            }
-            Ok(())
-        })();
-        args?;
-        sig_rtype
-            .sig_matches_int(env, impl_rtype, tvar_map, hist)
-            .context("in return type")?;
-        let nothing = |t: &Type| matches!(t.deref_cloned(), Some(Type::Bottom));
-        // CR claude for eric: [bug/low] A val that declares `throws `E` over an
-        // implementation that throws nothing gets two verdicts. Over `let f = |x: i64|
-        // x` it passes, because the lambda's implicit throws slot is an open cell that
-        // pairs with anything, and the consumer is warned of an error nothing raises;
-        // over `let f: fn(x: i64) -> i64 = |x| x` it is refused, `the signature throws
-        // `E, the implementation throws nothing`, the one case where `nothing` sees
-        // `Bottom`. For Eric: is a val's throws exact, as its other parts are? If so,
-        // read an implicit slot still open as nothing in the val's check (a trait
-        // method's impls stay free to throw less); if not, accept the annotated form.
-        // Neither direction is pinned. probe:
-        // design/review-2026-11-16/repro/t-fntyp-val-throws-over-nothing.sh
-        // (t-fntyp-07)
-        sig_throws
-            .sig_matches_int(env, impl_throws, tvar_map, hist)
-            .map_err(|e| {
-                format_with_flags(PrintFlag::DerefTVars, || {
-                    match (nothing(sig_throws), nothing(impl_throws)) {
-                        (true, false) => anyhow::anyhow!(
-                            "the signature throws nothing, the implementation throws \
-                             {impl_throws}"
-                        ),
-                        (false, true) => anyhow::anyhow!(
-                            "the signature throws {sig_throws}, the implementation \
-                             throws nothing"
-                        ),
-                        _ => e,
-                    }
-                })
-            })
-            .context("in throws clause")?;
-        tvar_map.fns.push((self.clone(), impl_fn.clone()));
-        Ok(())
-    }
-
-    /// The bounds of a signature against its implementation's, once the
-    /// whole signature has paired its variables ([`SigPairs::finish`]).
-    // CR claude for claude: [structure/low] This function is 500 lines and three jobs:
-    // pairing the signature's bounds with the implementation's, placing each
-    // implementation cell that only bounds name (the `stands`/`settled` fixpoint and
-    // `beside`), and judging every implementation conjunct in the signature's terms.
-    // Some twenty closures share a dozen maps, and the `Cell` flags `as_signature` and
-    // `settling` change what `image_of` and `meet` mean partway down, so no step can be
-    // reviewed alone. Its one caller is `SigPairs::finish`. Move it beside `SigPairs`
-    // and split it at those seams into three functions, the placing step returning one
-    // struct of `impl_cells`, `copies`, `image`, `stands`, `settled` and `beside` for
-    // the judging step, with `settling` an argument. Found by reading; not run.
-    // (t-fntyp-06)
-    pub(super) fn sig_bounds(
-        &self,
-        env: &Env,
-        impl_fn: &Self,
-        tvar_map: &mut SigPairs,
-        hist: &mut super::RefHist<AHashSet<super::RefPair>>,
-    ) -> Result<()> {
-        let at_positions = tvar_map.paired_len();
-        // every cell the walk may have mapped: an unannotated parameter's
-        // is bound, and the cells its binding holds carry the conjuncts
-        let impl_cells = {
-            let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-            impl_fn
-                .for_each_part(&mut |t, _| super::settle::position_cells(t, &mut cells));
-            // every cell, a variable named only inside the bound of a bound
-            // too, to any depth
-            let mut todo: LPooled<Vec<TVar>> = cells.values().cloned().collect();
-            let mut found: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-            while let Some(tv) = todo.pop() {
-                for tc in tv.cell_constraints() {
-                    super::settle::position_cells(&tc, &mut found);
-                }
-                for (addr, tv) in found.drain() {
-                    if !cells.contains_key(&addr) {
-                        cells.insert(addr, tv.clone());
-                        todo.push(tv);
-                    }
-                }
-            }
-            sorted_tvars(cells.drain().map(|(_, tv)| (tv.name.clone(), tv)))
-        };
-        // An implementation may be more general than its signature: a bound
-        // the signature declares need not be the implementation's. One the
-        // implementation does carry pairs the variables inside it with the
-        // signature's, as positions do.
-        // each signature cell's paired impl cells, by their place in
-        // `impl_cells`, as the pairing grows
-        let place: LPooled<AHashMap<usize, usize>> = impl_cells
-            .iter()
-            .enumerate()
-            .map(|(i, (_, tv))| (tv.cell_addr(), i))
-            .collect();
-        let mut paired_to: LPooled<AHashMap<usize, SmallVec<[usize; 1]>>> =
-            LPooled::take();
-        let mut indexed = 0;
-        // the impl cells the signature's variable is paired with
-        let mut matched = |tvar_map: &SigPairs, sig_tv: &TVar| {
-            for (addr, t) in tvar_map.paired_since(indexed) {
-                if let Type::TVar(s) = t
-                    && let Some(i) = place.get(&addr)
-                {
-                    paired_to.entry(s.cell_addr()).or_default().push(*i);
-                }
-            }
-            indexed = tvar_map.paired_len();
-            match paired_to.get_mut(&sig_tv.cell_addr()) {
-                None => LPooled::<Vec<&TVar>>::take(),
-                Some(places) => {
-                    places.sort_unstable();
-                    places.iter().map(|i| &impl_cells[*i].1).collect()
-                }
-            }
-        };
-        let view = self.constraint_view();
-        let bounds = || view.iter().enumerate().filter(|(_, (_, tc))| *tc != Type::Any);
-        // each (bound, impl cell) pairing tried: a pairing only grows, so
-        // one that failed fails again
-        let mut tried: LPooled<AHashSet<(usize, usize)>> = LPooled::take();
-        // each impl conjunct, by its cell and place, a bound has paired
-        // with, and each (bound, impl conjunct) tried after the first
-        let mut met: LPooled<AHashSet<(usize, usize)>> = LPooled::take();
-        let mut tried_rest: LPooled<AHashSet<(usize, usize, usize)>> = LPooled::take();
-        // passes until one pairs nothing: a variable met only in a bound
-        // later in the view, or in a union the settle pairs, has its own
-        // bound paired by the next
-        loop {
-            let start = tvar_map.paired_len();
-            for (k, (sig_tv, sig_tc)) in bounds() {
-                for impl_tv in matched(tvar_map, sig_tv).iter() {
-                    let addr = impl_tv.cell_addr();
-                    if !tried.insert((k, addr)) {
-                        continue;
-                    }
-                    for (j, c) in impl_tv.cell_constraints().iter().enumerate() {
-                        if tvar_map
-                            .trial(|m| sig_tc.sig_matches_int(env, c, m, hist))
-                            .is_ok()
-                        {
-                            met.insert((addr, j));
-                            break;
-                        }
-                    }
-                }
-            }
-            tvar_map.settle_bound(env, hist);
-            // a cell may carry several conjuncts of one shape (`'q:
-            // Array<'p> + Array<'r>`, a method's own beside its trait's):
-            // each that no bound paired with pairs with a bound that takes
-            // it whole, its unions too
-            for (k, (sig_tv, sig_tc)) in bounds() {
-                for impl_tv in matched(tvar_map, sig_tv).iter() {
-                    let addr = impl_tv.cell_addr();
-                    for (j, c) in impl_tv.cell_constraints().iter().enumerate() {
-                        if met.contains(&(addr, j)) || !tried_rest.insert((k, addr, j)) {
-                            continue;
-                        }
-                        let whole = tvar_map.trial(|m| {
-                            sig_tc.sig_matches_int(env, c, m, hist)?;
-                            m.settle(env, hist)
-                        });
-                        if whole.is_ok() {
-                            met.insert((addr, j));
-                        }
-                    }
-                }
-            }
-            if tvar_map.paired_len() == start {
-                break;
-            }
-        }
-        let mut param_bounds = LPooled::take();
-        self.for_each_part(&mut |t, _| param_bounds_of(env, t, &mut param_bounds));
-        // A call through the signature is checked by the signature alone:
-        // every conjunct of every impl cell, in the signature's terms, must
-        // admit the signature's concrete choice, or follow from the
-        // conjuncts of the signature variable it stands for. The
-        // signature's variables are every caller's to pick: they fit only
-        // through their own conjuncts.
-        let mut sig_rigid: LPooled<Vec<RigidGate>> = LPooled::take();
-        let mut held = LPooled::take();
-        self.for_each_part(&mut |t, _| {
-            super::contains::hold_rigid_through_bounds(t, &mut held, &mut sig_rigid)
-        });
-        // each implementation cell in the signature's terms: a paired one
-        // is the signature's type at its place, another open one a copy
-        // whose own conjuncts are in those terms
-        let mut image: LPooled<AHashMap<usize, Type>> =
-            tvar_map.paired_since(0).map(|(addr, t)| (addr, t.clone())).collect();
-        // a cell a bound paired has no place of its own either: the
-        // signature variable is its caller's pick of the bound's holder
-        let by_bound: LPooled<AHashMap<usize, Type>> = tvar_map
-            .paired_since(at_positions)
-            .map(|(addr, t)| (addr, t.clone()))
-            .collect();
-        let copies: LPooled<Vec<(&TVar, TVar)>> = impl_cells
-            .iter()
-            .filter(|(_, tv)| {
-                let addr = tv.cell_addr();
-                !tv.is_bound()
-                    && !tv.is_rigid()
-                    && (!image.contains_key(&addr) || by_bound.contains_key(&addr))
-            })
-            .map(|(_, tv)| (tv, tv.fresh_copy()))
-            .collect();
-        for (tv, copy) in copies.iter() {
-            image.insert(tv.cell_addr(), Type::TVar(copy.clone()));
-        }
-        {
-            let placed = |t: &Type| t.swap_cells(&|addr| image.get(&addr).cloned());
-            for (tv, copy) in copies.iter() {
-                tv.copy_bounds_into(copy, placed);
-            }
-        }
-        // A cell only bounds name is one type at an instance: what stands
-        // where the bound naming it is held, or, named at two places, what
-        // its own bounds settle it to ([`TVar::bounds_witness`]). Each
-        // cell's part of the signature and whether an instance holds
-        // exactly that there, and the cells that are their witness.
-        let holds = |own: &Type, at: &Type| {
-            let sealed = ContainsFlags::RigidCheck | ContainsFlags::Sealed;
-            own.contains_with_flags(sealed, env, at).unwrap_or(false)
-        };
-        let slot: LPooled<AHashMap<usize, usize>> = copies
-            .iter()
-            .enumerate()
-            .flat_map(|(i, (tv, copy))| [(tv.cell_addr(), i), (copy.cell_addr(), i)])
-            .collect();
-        let paired = |i: usize| {
-            by_bound.get(&copies[i].0.cell_addr()).map(|at| (at.clone(), false))
-        };
-        // a caller's pick of something other than `holders` decides the
-        // signature's `sig_tv`: a position reaches it through no bound of
-        // theirs
-        let pinned = |sig_tv: &TVar, holders: &[usize]| {
-            let open = |t: &Type, todo: &mut Vec<TVar>| {
-                super::contains::find_open_cell(t, true, &mut |tv| {
-                    todo.push(tv.clone());
-                    false
-                });
-            };
-            let mut todo: LPooled<Vec<TVar>> = LPooled::take();
-            let mut seen: LPooled<AddrSet> = LPooled::take();
-            self.for_each_type(&mut |t| open(t, &mut todo));
-            while let Some(tv) = todo.pop() {
-                if tv.same_cell(sig_tv) {
-                    return true;
-                }
-                if seen.insert(tv.cell_addr()) && !holders.contains(&tv.cell_addr()) {
-                    tv.cell_constraints().iter().for_each(|c| open(c, &mut todo))
-                }
-            }
-            false
-        };
-        let mut stands: LPooled<Vec<Option<(Type, bool)>>> =
-            (0..copies.len()).map(paired).collect();
-        let mut settled: LPooled<Vec<bool>> = copies.iter().map(|_| false).collect();
-        // a cell stands where the cells whose bounds name it do, so each
-        // round places the cells one bound further in
-        for _ in 0..2 * copies.len() {
-            let placed = |t: &Type| t.swap_cells(&|addr| image.get(&addr).cloned());
-            let mut places: LPooled<Vec<SmallVec<[(Type, bool); 2]>>> =
-                copies.iter().map(|_| SmallVec::new()).collect();
-            // the bound being walked paired its cells: it is the
-            // signature's own, and no place of theirs but the pairing,
-            // which stands under each variable holding such a bound
-            let as_signature = Cell::new(false);
-            let mut holders: LPooled<Vec<SmallVec<[usize; 2]>>> =
-                copies.iter().map(|_| SmallVec::new()).collect();
-            let mut meet = |tv: &TVar, at: &Type, exact: bool| {
-                if let Some(i) = slot.get(&tv.cell_addr())
-                    && !(as_signature.get() && paired(*i).is_some())
-                    && !matches!(at, Type::TVar(at) if at.same_cell(tv))
-                {
-                    places[*i].push((at.clone(), exact))
-                }
-            };
-            for (_, tv) in impl_cells.iter() {
-                let addr = tv.cell_addr();
-                let (at, exact) = match (slot.get(&addr), tvar_map.sig_type(addr)) {
-                    (Some(i), _) if let Some((at, exact)) = &stands[*i] => (at, *exact),
-                    (None, Some(at)) => (at, true),
-                    _ => continue,
-                };
-                for (j, impl_tc) in tv.cell_constraints().iter().enumerate() {
-                    as_signature.set(met.contains(&(addr, j)));
-                    if as_signature.get()
-                        && let Type::TVar(holder) = at
-                    {
-                        super::contains::find_open_cell(impl_tc, true, &mut |tv| {
-                            if let Some(i) = slot.get(&tv.cell_addr())
-                                && paired(*i).is_some()
-                                && !holders[*i].contains(&holder.cell_addr())
-                            {
-                                holders[*i].push(holder.cell_addr())
-                            }
-                            false
-                        });
-                    }
-                    let own = placed(impl_tc);
-                    let mut meetings = Meetings {
-                        env,
-                        holds: &holds,
-                        met: &mut meet,
-                        exact,
-                        expansions: 8,
-                    };
-                    match at {
-                        Type::TVar(sig_tv) => {
-                            let mut sig_tcs = sig_tv.cell_constraints();
-                            if let Some(bounds) = param_bounds.get(&sig_tv.cell_addr()) {
-                                sig_tcs.extend(bounds.iter().cloned());
-                            }
-                            for s in sig_tcs.iter() {
-                                if s.implies(env, &own)? {
-                                    meetings.exact = false;
-                                    meetings.go(&own, s);
-                                    break;
-                                }
-                            }
-                        }
-                        at if holds(&own, at) => meetings.go(&own, at),
-                        _ => (),
-                    }
-                }
-            }
-            let mut now: LPooled<Vec<Option<(Type, bool)>>> = LPooled::take();
-            let mut witnessed: LPooled<Vec<(usize, Type)>> = LPooled::take();
-            for (i, (tv, _)) in copies.iter().enumerate() {
-                if settled[i] {
-                    now.push(stands[i].clone());
-                    continue;
-                }
-                // one place: the bound that paired it, under holders whose
-                // picks alone decide the variable it is paired with or
-                // under one; one place a walk found; or the same type held
-                // exactly at each
-                let one = |at: &Type| {
-                    places[i].iter().all(|(m, exact)| *exact && strictly_identical(at, m))
-                };
-                let alone = |pair: &Type| match pair {
-                    _ if holders[i].len() < 2 => true,
-                    Type::TVar(sig_tv) => !pinned(sig_tv, &holders[i]),
-                    _ => false,
-                };
-                let pair = by_bound.get(&tv.cell_addr());
-                now.push(match (pair, &places[i][..]) {
-                    (None, []) => None,
-                    (Some(pair), []) if alone(pair) => Some((pair.clone(), false)),
-                    (None, [(at, exact)]) => Some((at.clone(), *exact)),
-                    (None, [(at, _), ..]) if one(at) => Some((at.clone(), true)),
-                    (Some(first), rest) | (None, [(first, _), rest @ ..]) => {
-                        match tv.bounds_witness(env) {
-                            Some(w) => {
-                                let w = placed(&w);
-                                witnessed.push((i, w.clone()));
-                                Some((w, true))
-                            }
-                            None => {
-                                let mut other = rest.iter().map(|(m, _)| m).rev();
-                                let other = other.find(|m| !strictly_identical(first, m));
-                                bail!(
-                                    "the implementation's {tv} is one type wherever a \
-                                     bound names it: the signature holds it at more than \
-                                     one place ({first}, {}), and no bound of its own says \
-                                     which type it is; name it at a parameter, as the \
-                                     signature does, or give it a bound that is one type",
-                                    other.unwrap_or(first)
-                                )
-                            }
-                        }
-                    }
-                });
-            }
-            let same = |a: &Option<(Type, bool)>, b: &Option<(Type, bool)>| match (a, b) {
-                (Some((a, x)), Some((b, y))) => x == y && strictly_identical(a, b),
-                (a, b) => a.is_none() && b.is_none(),
-            };
-            let done = now.iter().zip(stands.iter()).all(|(a, b)| same(a, b));
-            stands = now;
-            for (i, w) in witnessed.drain(..) {
-                settled[i] = true;
-                image.insert(copies[i].0.cell_addr(), w);
-            }
-            if done {
-                break;
-            }
-        }
-        // a cell that stands nowhere stays its copy, which each bound
-        // naming it judges apart
-        for ((tv, copy), at) in copies.iter().zip(stands.iter()) {
-            if let Some((at, _)) = at {
-                image.insert(tv.cell_addr(), at.clone());
-                image.insert(copy.cell_addr(), at.clone());
-            }
-        }
-        for _ in 0..copies.len() {
-            let stood = copies.iter().zip(stands.iter()).filter(|(_, at)| at.is_some());
-            for ((tv, copy), _) in stood {
-                let at =
-                    image[&tv.cell_addr()].swap_cells(&|addr| image.get(&addr).cloned());
-                image.insert(tv.cell_addr(), at.clone());
-                image.insert(copy.cell_addr(), at);
-            }
-        }
-        // An instance that takes one cell as its witness takes every cell
-        // only bounds name that has one as its own ([`FnType::held_at`]
-        // settles them together): beside a cell named at two places, each
-        // other such cell as its witness.
-        let twice = copies.iter().zip(settled.iter()).find(|(_, s)| **s);
-        let mut beside: LPooled<AHashMap<usize, Type>> = LPooled::take();
-        if twice.is_some() {
-            let once = copies.iter().zip(settled.iter()).filter(|(_, s)| !**s);
-            for ((tv, copy), _) in once {
-                if let Some(w) = tv.bounds_witness(env) {
-                    beside.insert(tv.cell_addr(), w.clone());
-                    beside.insert(copy.cell_addr(), w);
-                }
-            }
-            for _ in 0..copies.len() {
-                let read = |addr| beside.get(&addr).or_else(|| image.get(&addr)).cloned();
-                let now: LPooled<Vec<(usize, Type)>> =
-                    beside.iter().map(|(addr, w)| (*addr, w.swap_cells(&read))).collect();
-                beside.extend(now.iter().cloned());
-            }
-        }
-        let settling = Cell::new(false);
-        let image_of = |addr: usize| {
-            let settled = if settling.get() { beside.get(&addr) } else { None };
-            settled.or_else(|| image.get(&addr))
-        };
-        let in_sig = |t: &Type| t.swap_cells(&|addr| image_of(addr).cloned());
-        let stood = |tv: &TVar| {
-            let addr = tv.cell_addr();
-            let settled = settling.get() && beside.contains_key(&addr);
-            match slot.get(&addr) {
-                Some(i) if stands[*i].is_none() && !settled => None,
-                _ => image_of(addr),
-            }
-        };
-        // the cell of `t` an instance settles: one judged as its witness
-        // beside a cell named at two places, or that cell
-        let one_type = |t: &Type| {
-            let find = |pick: &dyn Fn(&TVar) -> bool| {
-                super::contains::find_open_cell(t, true, &mut |tv| pick(tv))
-            };
-            let named_twice =
-                |tv: &TVar| slot.get(&tv.cell_addr()).is_some_and(|i| settled[*i]);
-            let once = |tv: &TVar| settling.get() && beside.contains_key(&tv.cell_addr());
-            match (find(&once).zip(twice), find(&named_twice)) {
-                (Some((tv, ((twice, _), _))), _) => format_compact!(
-                    ": an instance that takes {twice} as its own bound takes {tv} as \
-                     its own too, {}; name one of them at a parameter, or give {tv} \
-                     no bound that is one type",
-                    stood(&tv).unwrap_or(&Type::Bottom)
-                ),
-                (None, Some(tv)) => format_compact!(
-                    ": {tv} is one type wherever a bound names it, {}",
-                    stood(&tv).unwrap_or(&Type::Bottom)
-                ),
-                (None, None) => CompactString::default(),
-            }
-        };
-        // the signature declares `impl_tc` of `sig_tv`: one of its bounds,
-        // or a bound of the typedef parameter it fills, implies it
-        let declared = |sig_tv: &TVar, impl_tc: &Type| -> Result<()> {
-            if *impl_tc == Type::Any {
-                return Ok(());
-            }
-            let mut sig_tcs = sig_tv.cell_constraints();
-            if let Some(bounds) = param_bounds.get(&sig_tv.cell_addr()) {
-                sig_tcs.extend(bounds.iter().cloned());
-            }
-            let in_sig = in_sig(impl_tc);
-            for s in sig_tcs.iter() {
-                if s.implies(env, &in_sig)? {
-                    return Ok(());
-                }
-            }
-            bail!(
-                "the implementation requires {sig_tv}: {impl_tc}, which the signature \
-                 does not declare{}",
-                one_type(impl_tc)
-            )
-        };
-        let routes = [false, true];
-        let routes = routes.iter().take(if beside.is_empty() { 1 } else { 2 });
-        let judged = routes.flat_map(|r| impl_cells.iter().map(move |(_, tv)| (*r, tv)));
-        for (settle, tv) in judged {
-            settling.set(settle);
-            match stood(tv) {
-                None => (),
-                Some(Type::TVar(sig_tv)) => {
-                    // CR claude for claude: [bug/low] Each undeclared conjunct bails on
-                    // its own, so the refusal names one bound at a time. `val double:
-                    // fn(x: 'a) -> 'a` over `|x| x + x` says "requires 'a: Number";
-                    // declaring that is refused for "'a: Singleton", and only the
-                    // second edit checks. The first refusal names an annotation that
-                    // does not make the program pass. Collect every conjunct of the
-                    // cell that no signature bound implies and name them together (`'a:
-                    // Number + Singleton`). probe:
-                    // design/review-2026-11-16/repro/tests-interfaces-image-one-bound-at-a-time.sh
-                    // (tests-interfaces-image-05)
-                    for impl_tc in tv.cell_constraints() {
-                        // CR claude for claude: [bug/medium] This loop stops at the
-                        // first conjunct of the implementation's cell that no signature
-                        // bound implies, so the refusal names one missing bound at a
-                        // time. An arithmetic method needs 'a: Number + Singleton.
-                        // Under `val twice: fn(self, x: 'a) -> 'a` over `|c, x| x + x`
-                        // the refusal says "requires 'a: Number", and declaring exactly
-                        // that is refused "requires 'a: Singleton". A .gxi val behaves
-                        // the same. Collect every conjunct `declared` refuses for the
-                        // cell and name them together ("requires 'a: Number +
-                        // Singleton").
-                        // lang::traits::method_value_read_with_a_bound_the_declaration_lacks_is_refused
-                        // pins the partial text and must change with it. probe:
-                        // design/review-2026-11-16/repro/tests-traits-a-impl-requires-one-bound-at-a-time.sh
-                        // (tests-traits-a-03)
-                        declared(sig_tv, &impl_tc)?
-                    }
-                }
-                Some(sig_type) => {
-                    // a predicate that holds of a type only if it holds of
-                    // every part asks it of each signature variable inside
-                    for impl_tc in tv.cell_constraints() {
-                        if matches!(
-                            impl_tc,
-                            Type::Bound(Bound::Discernible)
-                                | Type::Bound(Bound::Ordered)
-                                | Type::Bound(Bound::JsonData)
-                                | Type::Bound(Bound::TomlData)
-                                | Type::Bound(Bound::Concrete)
-                                | Type::Bound(Bound::Data)
-                        ) {
-                            let mut occurrences = super::tvar::Occurrences::default();
-                            sig_type.tvar_occurrences(&mut occurrences);
-                            let vars = occurrences.vars.iter();
-                            for v in vars.filter(|v| v.open_cell().is_some()) {
-                                declared(v, &impl_tc)?
-                            }
-                        }
-                    }
-                    for impl_tc in tv.cell_constraints() {
-                        let ok = in_sig(&impl_tc)
-                            .contains_with_flags(
-                                ContainsFlags::RigidCheck | ContainsFlags::Sealed,
-                                env,
-                                sig_type,
-                            )
-                            .unwrap_or(false);
-                        if !ok {
-                            let undeclared = match &impl_tc {
-                                Type::Bound(Bound::OneNumber | Bound::NoError) => {
-                                    sig_type.rigid_member_to_declare(env, &impl_tc)?
-                                }
-                                _ => None,
-                            };
-                            let declare = match undeclared {
-                                None => CompactString::default(),
-                                Some(v) => format_compact!(
-                                    ": {v} is any type its bounds admit; declare {v}: \
-                                     {impl_tc}"
-                                ),
-                            };
-                            bail!(
-                                "signature has concrete type {sig_type}, which the \
-                                 implementation constraint {impl_tc} does not \
-                                 admit{}{declare}",
-                                one_type(&impl_tc)
-                            )
-                        }
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
     pub fn scope_refs(&self, scope: &ModPath) -> Self {
         let mut copies: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-        self.scope_refs_with(scope, &mut copies)
+        self.scope_refs_in(Some(scope), &mut super::Copies::Cells(&mut copies))
+    }
+
+    /// [`Type::scope_refs_named`] of this signature's parts: its own
+    /// quantifiers are names of `names` too, as its other variables are.
+    pub fn scope_refs_named(
+        &self,
+        scope: &ModPath,
+        names: &mut AHashMap<ArcStr, TVar>,
+    ) -> Self {
+        let mut copies = super::Copies::Names(names, LPooled::take());
+        let mut fresh = self
+            .cow_walk(|t| t.scope_refs_int(Some(scope), &mut copies))
+            .unwrap_or_else(|| self.clone());
+        fresh.lambda_ids = self.lambda_ids.instantiate();
+        fresh
     }
 
     /// A signature of its own: each scoping of a written type is one
     /// compile's, and what unifies with it must not name another
     /// compile's definitions.
-    pub(super) fn scope_refs_with(
+    pub(super) fn scope_refs_in(
         &self,
-        scope: &ModPath,
-        copies: &mut AHashMap<usize, TVar>,
+        scope: Option<&ModPath>,
+        copies: &mut super::Copies,
     ) -> Self {
-        let mut fresh = self
-            .cow_walk(|t| t.scope_refs_int(scope, copies))
-            .unwrap_or_else(|| self.clone());
+        let mut fresh = copies.within(&self.quantifiers, |copies| {
+            self.cow_walk(|t| t.scope_refs_int(scope, copies))
+                .unwrap_or_else(|| self.clone())
+        });
         fresh.lambda_ids = self.lambda_ids.instantiate();
         fresh
     }
@@ -2763,14 +1766,20 @@ fn printed_quantifiers(ft: &FnType) -> LPooled<Vec<(TVar, Type)>> {
     v
 }
 
+/// The default's type an argument prints after its own: where it is not
+/// the argument's type, which a written `?#d: T` means.
+fn written_default(a: &FnArgType) -> Option<&Type> {
+    a.kind.own_default().filter(|d| d.resolve_tvars() != a.typ.resolve_tvars())
+}
+
 /// How an argument's name is written before its type.
 struct ArgPrefix<'a>(&'a FnArgKind);
 
 impl fmt::Display for ArgPrefix<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.0 {
-            FnArgKind::Labeled { name, has_default: true } => write!(f, "?#{name}: "),
-            FnArgKind::Labeled { name, has_default: false } => write!(f, "#{name}: "),
+            FnArgKind::Labeled { name, default: Some(_) } => write!(f, "?#{name}: "),
+            FnArgKind::Labeled { name, default: None } => write!(f, "#{name}: "),
             FnArgKind::Positional { name: Some(n) } => write!(f, "{n}: "),
             // CR claude for claude: [readability/low] A positional parameter with no
             // name (a pattern or `_` parameter) prints as its type alone, `fn((i64,
@@ -2879,6 +1888,9 @@ impl FnType {
                 write!(f, "{}", a.typ)?;
             } else {
                 write!(f, "{}{}", ArgPrefix(&a.kind), a.typ)?;
+                if let Some(d) = written_default(a) {
+                    write!(f, " = {d}")?;
+                }
             }
             if i < self.args.len() - 1 || self.vargs.is_some() {
                 write!(f, ", ")?;
@@ -2944,6 +1956,11 @@ impl FnType {
                 } else {
                     write!(buf, "{}", ArgPrefix(&a.kind))?;
                     a.typ.fmt_pretty(buf)?;
+                    if let Some(d) = written_default(a) {
+                        buf.kill_newline();
+                        write!(buf, " = ")?;
+                        d.fmt_pretty(buf)?;
+                    }
                 }
                 if i < self.args.len() - 1 || self.vargs.is_some() {
                     buf.kill_newline();
@@ -2981,10 +1998,19 @@ impl FnType {
 // misses the walks the build's instance check runs. Move the tests to the end of the
 // file, the placement walks to a file of their own and the read copies, which walk
 // `Type` and not `FnType`, to another. Found by reading; not run. (t-fntyp-08)
+// 2026-11-21 claude: Meetings, Places, place_in_order, held_at and sig_bounds are
+// deleted (bounds consolidation); ReadCopies and copied_in_two_places still follow the
+// test module.
+// 2026-11-21 claude: ReadCopies, the read walk and copied_in_two_places are deleted
+// (scheme_read went with the old instantiation); the Pack impls still follow the test
+// module.
 #[cfg(test)]
 mod tests {
-    use crate::expr::parser::parse_fn_type;
-    use poolshark::local::LPooled;
+    use crate::{
+        expr::parser::parse_fn_type,
+        typ::{FnArgKind, FnArgType, FnType, TVar, Type},
+    };
+    use triomphe::Arc;
 
     /// A walk that inlines a parameter's binding holding a cell named like
     /// the signature's quantifier keeps the quantifier the signature's:
@@ -3029,7 +2055,7 @@ mod tests {
         for (walk, copy) in walks(&ft) {
             let q = quantifier(&copy, &copy.quantifiers[0]);
             assert_eq!(q.cell_addr(), cell(&copy.args[1].typ), "{walk}: {copy}");
-            assert!(!q.cell_constraints().is_empty(), "{walk}: {copy}");
+            assert!(!q.cell_above().is_empty(), "{walk}: {copy}");
         }
         let ft =
             parse_fn_type("fn<'a: Any, 'b: ['a, null]>(y: 'p, x: 'b) -> 'b").unwrap();
@@ -3056,8 +2082,9 @@ mod tests {
                 .collect();
             let mut known: AHashMap<_, _> =
                 declared.iter().map(|(q, _)| (q.name.clone(), q.clone())).collect();
-            let bounds = declared.iter().map(|(q, b)| (q, b.clone()));
-            seed_conjuncts(&mut known, bounds).map(|()| known)
+            let bounds: Vec<_> =
+                declared.iter().map(|(q, b)| (q, b.named_in(&mut known))).collect();
+            seed_conjuncts(&known, bounds).map(|()| known)
         };
         for (bounds, q) in [
             (&[("a", "Array<'a>")][..], "a"),
@@ -3071,245 +2098,8 @@ mod tests {
         }
         let known = seed(&[("a", "Array<'b>"), ("b", "Number"), ("c", "'a")]).unwrap();
         for q in ["a", "b", "c"] {
-            assert_eq!(known[q].cell_constraints().len(), 1, "'{q}");
+            assert_eq!(known[q].cell_above().len(), 1, "'{q}");
         }
-    }
-
-    /// Whether a bound of a cell that `ft` reaches, by position or through
-    /// bounds, reaches that cell.
-    fn holds_a_recursive_bound(ft: &super::FnType) -> bool {
-        use crate::typ::{TVar, Type, tvar::would_cycle_inner};
-        use ahash::AHashSet;
-        fn cells(t: &Type, seen: &mut AHashSet<usize>, out: &mut Vec<TVar>) {
-            match t {
-                Type::TVar(tv) if seen.insert(tv.cell_addr()) => {
-                    out.push(tv.clone());
-                    for c in tv.cell_constraints() {
-                        cells(&c, seen, out)
-                    }
-                }
-                Type::TVar(_) => (),
-                Type::Fn(ft) if seen.insert(triomphe::Arc::as_ptr(ft) as usize) => {
-                    ft.for_each_type(&mut |t| cells(t, seen, out))
-                }
-                Type::Fn(_) => (),
-                t => t.for_each_child(&mut |c| cells(c, seen, out)),
-            }
-        }
-        let mut reached = vec![];
-        ft.for_each_type(&mut |t| cells(t, &mut AHashSet::default(), &mut reached));
-        reached.iter().any(|tv| {
-            let cell = tv.cell();
-            tv.cell_constraints().iter().any(|c| would_cycle_inner(&cell, c))
-        })
-    }
-
-    /// A nest of quantified signatures is refused or parses to cells no
-    /// bound of which reaches its own cell, so every walk of it returns:
-    /// its print, and the parse of what encloses it. In these two no bound
-    /// names its own variable.
-    #[test]
-    fn a_nest_parses_to_cells_no_bound_of_which_reaches_its_cell() {
-        const PRINTED: &str = "fn<'c: fn<'c: i64>(x0: fn() -> 'a throws i64, q0: 'c) -> \
-            i64>() -> fn<'b: 'a>(x0: fn<'a: 'c>(q0: 'a) -> 'b) -> i64";
-        const PARSED: &str = "fn<'c: fn<'c: 'z>(q2: 'c) -> fn<'b: i64>(x1: 'z, q1: 'b) -> \
-            i64>() -> fn<'b: fn<'a: 'z>(q0: 'a) -> i64>(x1: fn<'z: fn() -> fn<'b: \
-            i64>(x2: 'c, q0: 'b) -> i64>(x0: 'b) -> i64 throws 'z) -> i64";
-        for src in [PRINTED, PARSED] {
-            if let Ok(ft) = parse_fn_type(src) {
-                assert!(!holds_a_recursive_bound(&ft), "{src}");
-                assert!(!ft.to_string().is_empty());
-            }
-        }
-    }
-
-    /// A nested signature's walk through bounds reads the bounds of its own
-    /// quantifiers alone: the bound of an enclosing variable it names, in a
-    /// position or through a bound, never brings in the enclosing `'z` under
-    /// the name of its own, at any call, whatever order a map holds them in.
-    #[test]
-    fn a_walk_through_bounds_finds_its_own_quantifier() {
-        use crate::typ::{TVar, Type};
-        use ahash::AHashMap;
-        use arcstr::ArcStr;
-        for src in [
-            "fn<'b: Array<'z>, 'z: Any>(x: fn<'d: 'z, 'z: i64>(y: 'd) -> 'b, w: 'z) -> 'b",
-            "fn<'f: Array<'z>, 'c: 'f, 'z: Any>(x: fn<'d: 'e, 'e: 'z, 'z: i64>(y: 'd, \
-             v: 'c) -> i64, w: 'z) -> 'c",
-        ] {
-            for _ in 0..16 {
-                let ft = parse_fn_type(src).unwrap();
-                let Type::Fn(nested) = &ft.args[0].typ else { panic!("{ft}") };
-                let mut found: AHashMap<ArcStr, TVar> = AHashMap::default();
-                nested.collect_tvars_through_bounds(&mut found);
-                let bound = found["z"].cell_constraints();
-                assert_eq!(
-                    bound.iter().map(|t| t.to_string()).collect::<Vec<_>>(),
-                    ["i64"]
-                );
-            }
-        }
-    }
-
-    /// A cell a union's member holds takes what stands at that member's
-    /// place where the two unions stand member for member, and its own
-    /// place first where it has one, whichever the signature holds first.
-    #[test]
-    fn a_cell_takes_a_members_place_after_its_own() {
-        use crate::{
-            env::Env,
-            typ::{PrintFlag, format_with_flags},
-        };
-        let env = Env::default();
-        let placed = |own: &str, at: &str| {
-            let own = parse_fn_type(own).unwrap();
-            own.place_cells(&env, &parse_fn_type(at).unwrap());
-            format_with_flags(PrintFlag::DerefTVars, || {
-                own.args.iter().map(|a| a.typ.to_string()).collect::<Vec<_>>().join("; ")
-            })
-        };
-        assert_eq!(
-            placed(
-                "fn(x: [Array<'a>, null], y: [{v: 'b}, null]) -> i64",
-                "fn(x: [Array<string>, null], y: [{v: _}, null]) -> i64"
-            ),
-            "[null, Array<'a: string>]; [null, { v: 'b: _ }]"
-        );
-        assert_eq!(
-            placed(
-                "fn(x: [Array<'a>, null], y: 'a) -> i64",
-                "fn(x: [Array<string>, null], y: [i64, string]) -> i64"
-            ),
-            "[null, Array<'a: [i64, string]>]; 'a: [i64, string]"
-        );
-        assert_eq!(
-            placed(
-                "fn(x: [Array<'a>, null]) -> i64",
-                "fn(x: [Array<string>, i64]) -> i64"
-            ),
-            "[null, Array<'a: unbound>]"
-        );
-        assert_eq!(
-            placed(
-                "fn(x: [Array<'a>, null]) -> i64",
-                "fn(x: [Array<string>, null, i64]) -> i64"
-            ),
-            "[null, Array<'a: unbound>]"
-        );
-        assert_eq!(
-            placed("fn(x: [Array<'a>, Array<'b>]) -> i64", "fn(x: Array<i64>) -> i64"),
-            "Array<'a: i64>"
-        );
-        assert_eq!(
-            placed(
-                "fn(x: [Array<'a>, Array<'b>, null]) -> i64",
-                "fn(x: [Array<string>, null]) -> i64"
-            ),
-            "[null, Array<'a: string>]"
-        );
-        assert_eq!(
-            placed("fn(x: ['a, 'b]) -> i64", "fn(x: string) -> i64"),
-            "'a: string"
-        );
-        assert_eq!(
-            placed(
-                "fn(x: [Array<'a>, Array<'b>]) -> i64",
-                "fn(x: [Array<i64>, Array<string>]) -> i64"
-            ),
-            "[Array<'a: i64>, Array<'b: string>]"
-        );
-    }
-
-    /// A cell a lower bound of another holds takes its own place before the
-    /// holder takes its: at a union two of whose members hold the bound,
-    /// the cell's own place says which, in either order of the positions.
-    #[test]
-    fn a_cell_a_lower_bound_holds_is_placed_before_its_holder() {
-        use crate::{
-            env::Env,
-            typ::{PrintFlag, TVar, Type, format_with_flags},
-        };
-        use ahash::AHashMap;
-        use arcstr::ArcStr;
-        let env = Env::default();
-        for (own, at) in [
-            (
-                "fn(a: 'p, z: 'z) -> i64",
-                "fn(a: [Array<i64>, Array<string>], z: string) -> i64",
-            ),
-            (
-                "fn(z: 'z, a: 'p) -> i64",
-                "fn(z: string, a: [Array<i64>, Array<string>]) -> i64",
-            ),
-        ] {
-            let bounded = || {
-                let own = parse_fn_type(own).unwrap();
-                let mut cells: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-                own.collect_tvars(&mut cells);
-                let z = Type::TVar(cells["z"].clone());
-                cells["p"].add_lower(Type::Array(triomphe::Arc::new(z)));
-                (own, cells["z"].clone())
-            };
-            let at = parse_fn_type(at).unwrap();
-            let (placed, z) = bounded();
-            placed.place_cells(&env, &at);
-            let z = format_with_flags(PrintFlag::DerefTVars, || z.to_string());
-            assert_eq!(z, "'z: string", "{own}");
-            let (held, _) = bounded();
-            assert!(held.held_at(&env, &at).is_ok(), "{own}");
-        }
-    }
-
-    /// A definition's open cell is the instance's open cell at its place,
-    /// where a decided member of the union beside it could take it too.
-    #[test]
-    fn an_open_cell_is_held_at_the_instances_open_cell() {
-        use crate::typ::{
-            PrintFlag, Type,
-            cast::tests::{parsed, typed},
-            format_with_flags,
-        };
-        let (env, _) = typed(&[("P<'p, 'q>", "[Array<'p>, Array<'q>]")], "null");
-        let sig = |t: &str| match &parsed(&env, t) {
-            Type::Fn(ft) => ft.clone(),
-            t => panic!("{t} is a function type"),
-        };
-        let def = sig("fn(k: fn(q: P<'b, 'a>) -> i64, y: 'a) -> fn(q: P<'b, 'a>) -> i64");
-        let instance =
-            sig("fn(k: fn(q: P<'u, f64>) -> i64, y: f64) -> fn(q: P<'u, f64>) -> i64");
-        let (own, _) = def.held_at(&env, &instance).unwrap();
-        let held = format_with_flags(PrintFlag::DerefTVars, || own.rtype.to_string());
-        assert_eq!(held, "fn(q: P<'b: unbound, 'a: f64>) -> i64");
-    }
-
-    /// Placing walks each pair of shared nodes once: a tuple of two of the
-    /// one below it, sixty deep, is sixty pairs.
-    #[test]
-    fn placing_walks_a_pair_of_shared_nodes_once() {
-        use crate::{
-            env::Env,
-            typ::{TVar, Type},
-        };
-        use arcstr::literal;
-        use triomphe::Arc;
-        let chain = |leaf: &TVar| {
-            (0..60).fold(Type::TVar(leaf.clone()), |t, _| {
-                Type::Tuple(Arc::from_iter([t.clone(), t]))
-            })
-        };
-        let (own, at) =
-            (TVar::empty_named(literal!("a")), TVar::empty_named(literal!("u")));
-        let env = Env::default();
-        chain(&own).place_open_cells(&env, &chain(&at));
-        at.bind(Type::Bottom);
-        assert!(
-            matches!(own.binding(), Some(t) if t.with_deref(|t| matches!(t, Some(Type::Bottom))))
-        );
-        let (own, at) =
-            (TVar::empty_named(literal!("a")), TVar::empty_named(literal!("u")));
-        at.bind(Type::Bottom);
-        chain(&own).place_cells(&env, &chain(&at));
-        assert!(matches!(own.binding(), Some(Type::Bottom)));
     }
 
     /// The refusal names the first variable declared whose bound reaches
@@ -3397,73 +2187,202 @@ mod tests {
         assert!(met.iter().all(|n| *n > 400), "{met:?}");
     }
 
-    /// `n` signatures, each but `leaf` holding the next as `wrap` writes it.
-    fn nested(n: usize, leaf: &str, wrap: impl Fn(&str) -> String) -> String {
-        (1..n).fold(String::from(leaf), |s, _| wrap(&s))
+    /// The variable `name`, for a signature to declare.
+    fn var(name: &str) -> TVar {
+        TVar::empty_generic(name.into())
     }
 
-    fn nested_quantified(n: usize) -> String {
-        nested(n, "fn<'a: Any>(x: i64) -> 'a", |s| format!("fn<'a: Any>(x: {s}) -> 'a"))
+    fn of(tv: &TVar) -> Type {
+        Type::TVar(tv.clone())
+    }
+
+    fn array(t: Type) -> Type {
+        Type::Array(Arc::new(t))
+    }
+
+    fn written(src: &str) -> Type {
+        crate::expr::parser::parse_type(src).unwrap()
+    }
+
+    /// A signature as a definition's check builds one, inside another where
+    /// a generic definition holds another and a parse refuses one: `bounds`
+    /// declared over the positional parameters `args` and the result.
+    fn sig(bounds: &[(&TVar, Type)], args: &[(&str, Type)], rtype: Type) -> Type {
+        let args = args.iter().map(|(name, typ)| FnArgType {
+            kind: FnArgKind::Positional { name: Some((*name).into()) },
+            typ: typ.clone(),
+        });
+        let ft = FnType {
+            args: Arc::from_iter(args),
+            rtype,
+            throws: Type::Bottom,
+            ..FnType::default()
+        };
+        let bounds: Vec<(TVar, Type)> =
+            bounds.iter().map(|(tv, t)| ((*tv).clone(), t.clone())).collect();
+        Type::Fn(ft.declaring(&bounds).unwrap())
+    }
+
+    /// `n` signatures, each but `leaf` holding the next as `wrap` builds it.
+    fn nest(n: usize, leaf: Type, wrap: impl Fn(Type) -> Type) -> Type {
+        (1..n).fold(leaf, |t, _| wrap(t))
+    }
+
+    fn nested_quantified(n: usize) -> Type {
+        let level = |x: Type| {
+            let a = var("a");
+            sig(&[(&a, Type::Any)], &[("x", x)], of(&a))
+        };
+        nest(n, level(written("i64")), level)
     }
 
     /// Each signature the bound of the next one's variable.
-    fn nested_by_bound(n: usize) -> String {
-        nested(n, "fn<'a: Any>(x: 'a) -> 'a", |s| format!("fn<'a: {s}>(x: 'a) -> 'a"))
-    }
-
-    fn nested_unquantified(n: usize) -> String {
-        nested(n, "fn(x: i64) -> i64", |s| format!("fn(x: {s}) -> i64"))
+    fn nested_by_bound(n: usize) -> Type {
+        let level = |bound: Type| {
+            let a = var("a");
+            sig(&[(&a, bound)], &[("x", of(&a))], of(&a))
+        };
+        nest(n, level(Type::Any), level)
     }
 
     /// Every signature names the outermost's `'z` beside its own variable.
-    fn nested_naming_outer(n: usize) -> String {
-        let inner = nested(n, "fn<'a: Any>(x: 'z) -> 'a", |s| {
-            format!("fn<'a: Any>(x: {s}, y: 'z) -> 'a")
+    fn nested_naming_outer(n: usize) -> Type {
+        let z = var("z");
+        let a = var("a");
+        let leaf = sig(&[(&a, Type::Any)], &[("x", of(&z))], of(&a));
+        let inner = nest(n, leaf, |s| {
+            let a = var("a");
+            sig(&[(&a, Type::Any)], &[("x", s), ("y", of(&z))], of(&a))
         });
-        format!("fn<'z: Any>(x: {inner}) -> 'z")
+        sig(&[(&z, Type::Any)], &[("x", inner)], of(&z))
     }
 
     /// Each signature the bound of the next one's variable, every one
     /// naming the outermost's `'z`.
-    fn nested_by_bound_naming_outer(n: usize) -> String {
-        let inner = nested(n, "fn<'a: Any>(x: 'a, y: 'z) -> 'a", |s| {
-            format!("fn<'a: {s}>(x: 'a, y: 'z) -> 'a")
-        });
-        format!("fn<'z: Any>(x: {inner}) -> 'z")
-    }
-
-    /// No signature declares a variable; every one names `'a`.
-    fn nested_naming_a_variable(n: usize) -> String {
-        nested(n, "fn(x: 'a) -> 'a", |s| format!("fn(x: {s}) -> 'a"))
+    fn nested_by_bound_naming_outer(n: usize) -> Type {
+        let z = var("z");
+        let level = |bound: Type| {
+            let a = var("a");
+            sig(&[(&a, bound)], &[("x", of(&a)), ("y", of(&z))], of(&a))
+        };
+        let inner = nest(n, level(Type::Any), level);
+        sig(&[(&z, Type::Any)], &[("x", inner)], of(&z))
     }
 
     /// Each signature the bound of a bound of the next one's variable, the
     /// innermost alone naming the outermost's `'z`, by position.
-    fn nested_by_bound_of_bound_naming_outer(n: usize) -> String {
-        let inner = nested(n, "fn<'a: Any>(x: 'a, y: 'z) -> 'a", |s| {
-            format!("fn<'a: 'b, 'b: {s}>(x: 'a) -> 'a")
+    fn nested_by_bound_of_bound_naming_outer(n: usize) -> Type {
+        let z = var("z");
+        let a = var("a");
+        let leaf = sig(&[(&a, Type::Any)], &[("x", of(&a)), ("y", of(&z))], of(&a));
+        let inner = nest(n, leaf, |s| {
+            let (a, b) = (var("a"), var("b"));
+            sig(&[(&a, of(&b)), (&b, s)], &[("x", of(&a))], of(&a))
         });
-        format!("fn<'z: Any>(x: {inner}, w: 'z) -> 'z")
+        sig(&[(&z, Type::Any)], &[("x", inner), ("w", of(&z))], of(&z))
     }
 
     /// Each signature's variable held only through the bound of the next
     /// signature's, which the bound of the variable after it names.
-    fn nested_held_through_the_next_bound(n: usize) -> String {
-        let leaf = format!("fn<'b: Array<'z{n}>>(y: 'b) -> 'b");
-        let inner = (1..=n)
-            .rev()
-            .fold(leaf, |s, k| format!("fn<'z{k}: Array<'z{}>>(x: {s}) -> i64", k - 1));
-        format!("fn<'z0: Any>(m: {inner}) -> i64")
+    fn nested_held_through_the_next_bound(n: usize) -> Type {
+        let z: Vec<TVar> = (0..=n).map(|k| var(&format!("z{k}"))).collect();
+        let b = var("b");
+        let leaf = sig(&[(&b, array(of(&z[n])))], &[("y", of(&b))], of(&b));
+        let inner = (1..=n).rev().fold(leaf, |s, k| {
+            sig(&[(&z[k], array(of(&z[k - 1])))], &[("x", s)], written("i64"))
+        });
+        sig(&[(&z[0], Type::Any)], &[("m", inner)], written("i64"))
     }
 
     /// Each signature's variable held only through the bound of the next
     /// signature's, which stands in the bound of a variable of its own.
-    fn nested_held_beside_the_next_bound(n: usize) -> String {
-        let leaf = format!("fn<'b: Array<'z{n}>>(y: 'b) -> 'b");
+    fn nested_held_beside_the_next_bound(n: usize) -> Type {
+        let z: Vec<TVar> = (0..=n).map(|k| var(&format!("z{k}"))).collect();
+        let b = var("b");
+        let leaf = sig(&[(&b, array(of(&z[n])))], &[("y", of(&b))], of(&b));
         let inner = (1..=n).rev().fold(leaf, |s, k| {
-            format!("fn<'y{k}: {s}, 'z{k}: Array<'z{}>>(x: 'y{k}) -> i64", k - 1)
+            let y = var(&format!("y{k}"));
+            let bounds = [(&y, s), (&z[k], array(of(&z[k - 1])))];
+            sig(&bounds, &[("x", of(&y))], written("i64"))
         });
-        format!("fn<'z0: Any>(m: {inner}) -> i64")
+        sig(&[(&z[0], Type::Any)], &[("m", inner)], written("i64"))
+    }
+
+    /// `n` written signatures declaring no variable, every one naming `'a`.
+    fn nested_naming_a_variable(n: usize) -> String {
+        (1..n).fold(String::from("fn(x: 'a) -> 'a"), |s, _| format!("fn(x: {s}) -> 'a"))
+    }
+
+    // Each built nest prints as its signatures were declared, a nested
+    // signature's own variable apart from an enclosing one of its name.
+    #[test]
+    fn a_built_nest_prints_as_declared() {
+        let q = "fn<'a: Any>(x: fn<'a: Any>(x: i64) -> 'a) -> 'a";
+        let by_bound = "fn<'a: fn<'a: Any>(x: 'a) -> 'a>(x: 'a) -> 'a";
+        let naming = "fn<'z: Any>(x: fn<'a: Any>(x: fn<'a: Any>(x: 'z) -> 'a, y: 'z) -> 'a) \
+                      -> 'z";
+        let by_bound_naming = "fn<'z: Any>(x: fn<'a: fn<'a: Any>(x: 'a, y: 'z) -> 'a>(x: \
+                               'a, y: 'z) -> 'a) -> 'z";
+        let of_bound = "fn<'z: Any>(x: fn<'a: 'b, 'b: fn<'a: Any>(x: 'a, y: 'z) -> \
+                        'a>(x: 'a) -> 'a, w: 'z) -> 'z";
+        let through = "fn<'z0: Any>(m: fn<'z1: Array<'z0>>(x: fn<'b: Array<'z1>>(y: 'b) \
+                       -> 'b) -> i64) -> i64";
+        let beside = "fn<'z0: Any>(m: fn<'y1: fn<'b: Array<'z1>>(y: 'b) -> 'b, 'z1: \
+                      Array<'z0>>(x: 'y1) -> i64) -> i64";
+        for (built, want) in [
+            (nested_quantified(2), q),
+            (nested_by_bound(2), by_bound),
+            (nested_naming_outer(2), naming),
+            (nested_by_bound_naming_outer(2), by_bound_naming),
+            (nested_by_bound_of_bound_naming_outer(2), of_bound),
+            (nested_held_through_the_next_bound(1), through),
+            (nested_held_beside_the_next_bound(1), beside),
+        ] {
+            assert_eq!(built.to_string(), want);
+        }
+    }
+
+    /// A nested signature's walk through bounds reads the bounds of its own
+    /// quantifiers alone: the bound of an enclosing variable it names, in a
+    /// position or through a bound, never brings in the enclosing `'z` under
+    /// the name of its own, at any call, whatever order a map holds them in.
+    #[test]
+    fn a_walk_through_bounds_finds_its_own_quantifier() {
+        use ahash::AHashMap;
+        use arcstr::ArcStr;
+        // fn<'b: Array<'z>, 'z: Any>(x: fn<'d: 'z, 'z: i64>(y: 'd) -> 'b, w: 'z) -> 'b
+        let held_by_position = || {
+            let (b, outer, d, own) = (var("b"), var("z"), var("d"), var("z"));
+            let nested =
+                sig(&[(&d, of(&own)), (&own, written("i64"))], &[("y", of(&d))], of(&b));
+            let bounds = [(&b, array(of(&outer))), (&outer, Type::Any)];
+            sig(&bounds, &[("x", nested), ("w", of(&outer))], of(&b))
+        };
+        // fn<'f: Array<'z>, 'c: 'f, 'z: Any>(x: fn<'d: 'e, 'e: 'z, 'z: i64>(y: 'd,
+        // v: 'c) -> i64, w: 'z) -> 'c
+        let held_by_bound = || {
+            let (f, c, outer) = (var("f"), var("c"), var("z"));
+            let (d, e, own) = (var("d"), var("e"), var("z"));
+            let bounds = [(&d, of(&e)), (&e, of(&own)), (&own, written("i64"))];
+            let nested = sig(&bounds, &[("y", of(&d)), ("v", of(&c))], written("i64"));
+            let bounds = [(&f, array(of(&outer))), (&c, of(&f)), (&outer, Type::Any)];
+            sig(&bounds, &[("x", nested), ("w", of(&outer))], of(&c))
+        };
+        let builds: [fn() -> Type; 2] = [held_by_position, held_by_bound];
+        for build in builds {
+            for _ in 0..16 {
+                let t = build();
+                let Type::Fn(ft) = &t else { unreachable!() };
+                let Type::Fn(nested) = &ft.args[0].typ else { panic!("{t}") };
+                let mut found: AHashMap<ArcStr, TVar> = AHashMap::default();
+                nested.collect_tvars_through_bounds(&mut found);
+                let bound = found["z"].cell_above();
+                assert_eq!(
+                    bound.iter().map(|t| t.to_string()).collect::<Vec<_>>(),
+                    ["i64"]
+                );
+            }
+        }
     }
 
     fn walk_steps(f: impl FnOnce()) -> usize {
@@ -3472,62 +2391,17 @@ mod tests {
         super::TVAR_WALK_STEPS.with(|c| c.get())
     }
 
-    /// Parsing each shape 160 deep takes under six times the steps 40 deep
-    /// does.
-    fn assert_parse_in_linear_steps(shapes: &[(&str, fn(usize) -> String)]) {
-        for (name, shape) in shapes {
-            let parse = |n| {
-                let src = shape(n);
-                walk_steps(|| drop(parse_fn_type(&src).unwrap()))
-            };
-            let (a, b) = (parse(40), parse(160));
-            assert!(b < a * 6, "{name}: 40 deep: {a} steps, 160 deep: {b}");
-        }
-    }
-
-    // Parsing a nest of signatures that name nothing outside themselves
-    // walks each a bounded number of times, however they nest.
-    #[test]
-    fn nested_closed_signatures_parse_in_linear_steps() {
-        assert_parse_in_linear_steps(&[
-            ("argument", nested_quantified),
-            ("bound", nested_by_bound),
-            ("unquantified", nested_unquantified),
-        ])
-    }
-
-    // Parsing a nest of signatures each naming a variable no signature
-    // inside it declares walks each a bounded number of times: only the
-    // declaration of a name walks down to it.
-    #[test]
-    fn nested_open_signatures_parse_in_linear_steps() {
-        assert_parse_in_linear_steps(&[
-            ("naming outer", nested_naming_outer),
-            ("bound naming outer", nested_by_bound_naming_outer),
-            ("unquantified", nested_naming_a_variable),
-        ])
-    }
-
-    const HELD_THROUGH_BOUNDS: [(&str, fn(usize) -> String); 2] = [
+    const HELD_THROUGH_BOUNDS: [(&str, fn(usize) -> Type); 2] = [
         ("bound of a bound naming outer", nested_by_bound_of_bound_naming_outer),
         ("held through the next bound", nested_held_through_the_next_bound),
     ];
 
-    // Parsing a nest whose signatures hold variables only through the
-    // bounds of their own walks each a bounded number of times.
-    #[test]
-    fn nests_held_through_bounds_parse_in_linear_steps() {
-        assert_parse_in_linear_steps(&HELD_THROUGH_BOUNDS)
-    }
-
-    // Outside a parse, which records nothing, reading the variables of a
-    // nest held through bounds (its constraints, its cells, printing it,
-    // comparing it, aliasing it) walks each signature a bounded number of
-    // times.
+    // Reading the variables of a nest held through bounds (its constraints,
+    // its cells, printing it, comparing it, naming it) walks each signature
+    // a bounded number of times.
     #[test]
     fn nests_held_through_bounds_walk_in_linear_steps() {
-        use super::FnType;
-        use crate::{expr::print::PrettyDisplay, typ::Type};
+        use crate::expr::print::PrettyDisplay;
         let walks: [(&str, fn(&Type, &Type)); 6] = [
             ("constraint_view", |t, _| {
                 let Type::Fn(ft) = t else { unreachable!() };
@@ -3537,16 +2411,12 @@ mod tests {
             ("print", |t, _| drop(t.to_string())),
             ("pretty", |t, _| drop(t.to_string_pretty(80).to_string())),
             ("compare", |t, u| assert!(t == u && t.cmp(u).is_eq())),
-            ("alias", |t, _| t.alias_tvars(&mut ahash::AHashMap::default())),
+            ("name", |t, _| drop(t.named_in(&mut ahash::AHashMap::default()))),
         ];
-        let parse = |src: &str| -> Type {
-            let ft: FnType = parse_fn_type(src).unwrap();
-            Type::Fn(triomphe::Arc::new(ft))
-        };
         for (name, shape) in HELD_THROUGH_BOUNDS {
             for (walk, f) in walks {
                 let steps = |n| {
-                    let (t, u) = (parse(&shape(n)), parse(&shape(n)));
+                    let (t, u) = (shape(n), shape(n));
                     walk_steps(|| f(&t, &u))
                 };
                 let (a, b) = (steps(8), steps(16));
@@ -3560,8 +2430,7 @@ mod tests {
     /// `(name, depth, cell)` of every variable `t` holds, by position and
     /// through each cell's conjuncts, a signature's one deeper than the
     /// signature holding it.
-    fn cells_by_depth(t: &crate::typ::Type) -> Vec<(String, usize, usize)> {
-        use crate::typ::Type;
+    fn cells_by_depth(t: &Type) -> Vec<(String, usize, usize)> {
         fn go(
             t: &Type,
             depth: usize,
@@ -3572,7 +2441,7 @@ mod tests {
                 Type::TVar(tv) => {
                     out.push((tv.name.to_string(), depth, tv.cell_addr()));
                     if seen.insert(tv.cell_addr()) {
-                        for c in tv.cell_constraints() {
+                        for c in tv.cell_above() {
                             go(&c, depth, seen, out)
                         }
                     }
@@ -3586,34 +2455,16 @@ mod tests {
         out
     }
 
-    // In a nest whose signatures name a variable declared outside them,
-    // every occurrence is the declaring signature's cell, and each
-    // signature's own variable is a cell of its own.
+    // A nest of signatures that declare nothing names each written variable
+    // one cell, at every depth.
     #[test]
-    fn an_open_nest_names_its_declarers_cells() {
-        use crate::typ::Type;
-        let shapes: [(&str, fn(usize) -> String, &str); 3] = [
-            ("naming outer", nested_naming_outer, "z"),
-            ("bound naming outer", nested_by_bound_naming_outer, "z"),
-            ("unquantified", nested_naming_a_variable, "a"),
-        ];
-        for (name, shape, outer) in shapes {
-            let t = Type::Fn(triomphe::Arc::new(parse_fn_type(&shape(6)).unwrap()));
-            let cells = cells_by_depth(&t);
-            let of = |n: &'static str| cells.iter().filter(move |(m, _, _)| m == n);
-            let mut outer_cells = of(outer).map(|(_, _, c)| *c).collect::<Vec<_>>();
-            outer_cells.sort();
-            outer_cells.dedup();
-            assert_eq!(outer_cells.len(), 1, "{name}: {t}");
-            if outer == "z" {
-                let mut own = of("a").map(|(_, d, c)| (*d, *c)).collect::<Vec<_>>();
-                own.sort();
-                own.dedup();
-                let distinct =
-                    own.iter().map(|(_, c)| *c).collect::<ahash::AHashSet<_>>();
-                assert!(own.len() == 6 && distinct.len() == 6, "{name}: {own:?}: {t}");
-            }
-        }
+    fn a_nest_names_each_variable_once() {
+        let t = Type::Fn(Arc::new(parse_fn_type(&nested_naming_a_variable(6)).unwrap()));
+        let mut cells =
+            cells_by_depth(&t).into_iter().map(|(_, _, c)| c).collect::<Vec<_>>();
+        cells.sort();
+        cells.dedup();
+        assert_eq!(cells.len(), 1, "{t}");
     }
 
     // Printing a nest whose variables are held through a signature in the
@@ -3622,10 +2473,9 @@ mod tests {
     // signature's scope.
     #[test]
     fn nests_held_beside_a_bound_print_in_linear_steps() {
-        use crate::{expr::print::PrettyDisplay, typ::Type};
+        use crate::expr::print::PrettyDisplay;
         let steps = |n| {
-            let ft = parse_fn_type(&nested_held_beside_the_next_bound(n)).unwrap();
-            let t = Type::Fn(triomphe::Arc::new(ft));
+            let t = nested_held_beside_the_next_bound(n);
             walk_steps(|| {
                 drop(t.to_string());
                 drop(t.to_string_pretty(80).to_string())
@@ -3635,221 +2485,103 @@ mod tests {
         assert!(b < a * 6, "40 deep: {a} steps, 160 deep: {b}");
     }
 
-    // Comparing a nest whose signatures each name a variable from outside
-    // themselves, and stand in the bound of a variable of the one around
-    // them, reads each signature's free cells a bounded number of times,
-    // under the guards of the walks around it too.
+    // Comparing two nests of quantified signatures reads each signature's
+    // variables a bounded number of times, the ones it names from outside
+    // included, under the guards of the walks around it too.
     #[test]
-    fn nests_held_in_a_bound_compare_in_linear_steps() {
-        use crate::typ::Type;
-        let shapes: [(&str, fn(usize) -> String); 2] = [
+    fn nested_quantified_types_compare_in_linear_steps() {
+        let shapes: [(&str, fn(usize) -> Type); 5] = [
+            ("argument", nested_quantified),
+            ("bound", nested_by_bound),
+            ("naming outer", nested_naming_outer),
             ("bound naming outer", nested_by_bound_naming_outer),
             ("held beside the next bound", nested_held_beside_the_next_bound),
         ];
         for (name, shape) in shapes {
-            let steps = |n| {
-                let parse =
-                    || Type::Fn(triomphe::Arc::new(parse_fn_type(&shape(n)).unwrap()));
-                let (t, u) = (parse(), parse());
-                walk_steps(|| assert!(t == u && t.cmp(&u).is_eq()))
-            };
-            let (a, b) = (steps(40), steps(160));
-            assert!(b < a * 6, "{name}: 40 deep: {a} steps, 160 deep: {b}");
-        }
-    }
-
-    /// The distinct cells `t` holds under `name`.
-    fn cells_named(t: &crate::typ::Type, name: &str) -> ahash::AHashSet<usize> {
-        cells_by_depth(t)
-            .into_iter()
-            .filter(|(n, _, _)| n == name)
-            .map(|(_, _, c)| c)
-            .collect()
-    }
-
-    // A variable a signature holds only through the bound of a bound, its
-    // own or one of a signature nested in it, is its declarer's cell, as
-    // every other occurrence of its name is, and the nest prints as
-    // written.
-    #[test]
-    fn a_bound_of_a_bound_names_the_declarers_cell() {
-        use crate::typ::Type;
-        let parse = |src: &str| Type::Fn(triomphe::Arc::new(parse_fn_type(src).unwrap()));
-        let held = nested_held_through_the_next_bound(5);
-        for src in [
-            "fn<'z: Number>(x: fn<'b: 'c, 'c: Array<'z>>(y: 'b) -> 'b, w: 'z) -> 'z",
-            "fn<'z: Number>(x: fn<'b: 'c, 'c: Array<'z>>(y: 'b) -> 'b) -> i64",
-            "fn(x: fn<'b: 'c, 'c: Array<'z>>(y: 'b, v: 'z) -> 'b) -> 'z",
-            "fn(x: fn<'b: 'c, 'c: fn(a: 'q) -> 'q>(y: 'b) -> 'b, k: 'q) -> 'q",
-            "fn(m: fn<'z: Array<'a>>(x: fn<'b: 'c, 'c: Array<'z>>(y: 'b) -> 'b) -> i64, \
-             k: 'a) -> 'a",
-            "fn<'a: Any>(m: fn<'z: Array<'a>>(x: fn<'b: Array<'z>>(y: 'b) -> 'b) -> i64) -> i64",
-            "fn<'a: Any>(m: fn<'z: Array<'a>>(x: fn<'b: 'c, 'c: Array<'z>>(y: 'b) -> 'b) -> \
-             i64) -> i64",
-            "fn(k: fn<'a: Any>(m: fn<'z: Array<'a>>(x: fn<'b: Array<'z>>(y: 'b) -> 'b) -> \
-             i64) -> i64) -> i64",
-            "fn(k: fn<'a: Any>(m: fn<'z: Array<'a>>(x: fn<'b: Array<'z>>(y: 'b) -> 'b) -> \
-             i64, w: 'a) -> 'a) -> i64",
-            "fn(@args: `V(List<'e>)) -> fn<'d: 'a, 'z: Number + Array<'d>>(x0: `V('z), \
-             qz: 'z) -> 'a",
-            held.as_str(),
-        ] {
-            let t = parse(src);
-            let mut names =
-                cells_by_depth(&t).into_iter().map(|(n, _, _)| n).collect::<Vec<_>>();
-            names.sort();
-            names.dedup();
-            for name in names {
-                let cells = cells_named(&t, &name);
-                assert_eq!(cells.len(), 1, "{src}: '{name} is {} cells", cells.len());
-            }
-            assert_eq!(t.to_string(), src);
-        }
-        let src = nested_by_bound_of_bound_naming_outer(5);
-        let t = parse(&src);
-        assert_eq!(cells_named(&t, "z").len(), 1, "{src}");
-        assert_eq!(t.to_string(), src);
-    }
-
-    // A bound that reaches its own variable through the bound of a bound of
-    // a signature nested in it is refused, as one through the nested
-    // signature's own bound is.
-    #[test]
-    fn a_bound_reaching_its_variable_through_a_bound_of_a_bound_is_refused() {
-        for src in [
-            "fn<'a: fn<'d: Array<'a>>(qd: 'd) -> 'd>(qa: 'a) -> i64",
-            "fn<'a: fn<'d: 'z, 'z: Array<'a>>(qd: 'd) -> 'd>(qa: 'a) -> i64",
-        ] {
-            let e = format!("{:#}", parse_fn_type(src).unwrap_err());
-            assert!(e.contains("a quantifier whose bound reaches it"), "{src}: {e}");
-        }
-    }
-
-    // The bound of a variable held only through a nested signature's bound
-    // names its declarer's scope, never a variable of the nested signature
-    // that shadows a name in it.
-    #[test]
-    fn a_bound_held_through_a_nested_signature_keeps_its_scope() {
-        use crate::typ::Type;
-        let src = "fn<'q: Any>(m: fn<'z: Array<'q>>(x: fn<'q: 'z>(a: 'q) -> 'q) -> i64, \
-                   w: 'q) -> 'q";
-        let ft = parse_fn_type(src).unwrap();
-        let Type::TVar(outer) = &ft.rtype else { panic!("{ft}") };
-        let Type::Fn(middle) = &ft.args[0].typ else { panic!("{ft}") };
-        let Type::Fn(inner) = &middle.args[0].typ else { panic!("{ft}") };
-        let Type::TVar(inner_q) = &inner.args[0].typ else { panic!("{ft}") };
-        let Type::TVar(z) = &inner_q.cell_constraints()[0] else { panic!("{ft}") };
-        let Type::Array(elt) = &z.cell_constraints()[0] else { panic!("{ft}") };
-        let Type::TVar(bound_q) = &**elt else { panic!("{ft}") };
-        assert_eq!(bound_q.cell_addr(), outer.cell_addr(), "{ft}");
-        assert_ne!(inner_q.cell_addr(), outer.cell_addr(), "{ft}");
-        assert_eq!(ft.to_string(), src);
-    }
-
-    // Comparing two nests of quantified signatures reads each signature's
-    // variables a bounded number of times, the ones it names from outside
-    // included.
-    #[test]
-    fn nested_quantified_types_compare_in_linear_steps() {
-        let shapes: [(&str, fn(usize) -> String); 3] = [
-            ("argument", nested_quantified),
-            ("bound", nested_by_bound),
-            ("naming outer", nested_naming_outer),
-        ];
-        for (name, shape) in shapes {
             let compare = |n| {
-                let (a, b) = (
-                    parse_fn_type(&shape(n)).unwrap(),
-                    parse_fn_type(&shape(n)).unwrap(),
-                );
-                walk_steps(|| assert!(a == b && a.cmp(&b).is_eq()))
+                let (t, u) = (shape(n), shape(n));
+                walk_steps(|| assert!(t == u && t.cmp(&u).is_eq()))
             };
             let (a, b) = (compare(40), compare(160));
             assert!(b < a * 6, "{name}: 40 deep: {a} steps, 160 deep: {b}");
         }
     }
 
-    /// The cell of the variable `name` that `t`, a signature, reaches.
-    fn cell_named(t: &crate::typ::Type, name: &str) -> usize {
-        let crate::typ::Type::Fn(ft) = t else { panic!("{t} is no signature") };
-        let mut cells = ahash::AHashMap::default();
-        ft.collect_tvars_through_bounds(&mut cells);
-        cells[name].cell_addr()
-    }
-
-    // A nested signature that names an enclosing signature's variable only
-    // in a bound, or the bound of a bound, is not closed: the variable is
-    // the enclosing signature's cell.
-    #[test]
-    fn a_bound_naming_an_outer_variable_is_the_outer_cell() {
-        for inner in [
-            "fn<'b: Array<'z>>(y: 'b) -> 'b",
-            "fn<'b: Any>(y: fn<'c: Array<'z>>(v: 'c) -> 'c) -> 'b",
-            "fn<'b: 'c, 'c: Array<'z>>(y: 'b) -> 'b",
-            "fn<'b: Any>(y: fn<'c: 'd, 'd: Array<'z>>(v: 'c) -> 'c) -> 'b",
-        ] {
-            let src = format!("fn<'z: Number>(x: {inner}, w: 'z) -> 'z");
-            let ft = parse_fn_type(&src).unwrap();
-            let crate::typ::Type::TVar(outer) = &ft.rtype else { panic!("{src}") };
-            assert_eq!(cell_named(&ft.args[0].typ, "z"), outer.cell_addr(), "{src}");
-        }
-    }
-
-    // A nested signature's own variable stays apart from an enclosing
-    // signature's of the same name.
-    #[test]
-    fn a_closed_signature_keeps_its_own_variable() {
-        let src = "fn<'a: Number>(x: fn<'a: Any>(y: 'a) -> 'a, w: 'a) -> 'a";
-        let ft = parse_fn_type(src).unwrap();
-        let crate::typ::Type::TVar(outer) = &ft.rtype else { panic!("{src}") };
-        assert_ne!(cell_named(&ft.args[0].typ, "a"), outer.cell_addr());
-        assert_eq!(ft.to_string(), src);
-    }
-
-    // A signature that names nothing outside itself is the same signature
-    // inside an enclosing one, whose declaration aliases none of its cells.
-    #[test]
-    fn a_closed_signature_nests_as_it_stands_alone() {
-        let closed = "fn<'a: Number, 'z: Array<'a>>(x0: fn<'a: Any>(x1: 'z, q0: 'a) -> 'a, \
-                      x1: 'z, q1: 'a) -> 'a";
-        assert_eq!(parse_fn_type(closed).unwrap().to_string(), closed);
-        let nested = format!("fn(x: {closed}) -> i64");
-        assert_eq!(parse_fn_type(&nested).unwrap().to_string(), nested);
-    }
-
     // A variable the bound of an enclosing signature's quantifier names is
     // the enclosing signature's, where a signature nested in it declares a
-    // quantifier of the same name: the nest prints as written.
+    // quantifier of the same name: the nest prints as declared.
     #[test]
     fn a_nested_quantifier_takes_no_enclosing_bounds_variable() {
-        let middle = |inner: &str| {
-            format!(
-                "fn<'a: Number, 'z: Array<'a>>(x0: {inner}, x1: 'z, q1: 'a, w: 'k) -> 'a"
-            )
+        let k = var("k");
+        let middle = |inner: &dyn Fn(&TVar) -> Type| {
+            let (a, z) = (var("a"), var("z"));
+            let args = [("x0", inner(&z)), ("x1", of(&z)), ("q1", of(&a)), ("w", of(&k))];
+            sig(&[(&a, written("Number")), (&z, array(of(&a)))], &args, of(&a))
         };
-        let rewritten = [
-            format!(
-                "fn(x: {}, k: 'k) -> i64",
-                middle("fn<'a: Any>(x1: 'z, q0: 'a) -> 'a")
+        let own_a = |x1: Type| {
+            let a = var("a");
+            sig(&[(&a, Type::Any)], &[("x1", x1), ("q0", of(&a))], of(&a))
+        };
+        let around = |m: Type| sig(&[], &[("x", m), ("k", of(&k))], written("i64"));
+        let mid = "fn<'a: Number, 'z: Array<'a>>(x0: ";
+        let tail = ", x1: 'z, q1: 'a, w: 'k) -> 'a";
+        let q = var("q");
+        let (b, d, inner_b) = (var("b"), var("d"), var("b"));
+        let last = sig(&[(&inner_b, written("Number"))], &[("qb", of(&inner_b))], of(&d));
+        let last = sig(&[(&d, array(of(&b)))], &[("x", of(&b)), ("qd", of(&d))], last);
+        let cases = [
+            (
+                around(middle(&|z| own_a(of(z)))),
+                format!(
+                    "fn(x: {mid}fn<'a: Any>(x1: 'z, q0: 'a) -> 'a{tail}, k: 'k) -> i64"
+                ),
             ),
-            format!(
-                "fn(x: {}, k: 'k) -> i64",
-                middle("fn<'a: Any>(x1: fn(y: 'z) -> i64, q0: 'a) -> 'a")
+            (
+                around(middle(&|z| own_a(sig(&[], &[("y", of(z))], written("i64"))))),
+                format!(
+                    "fn(x: {mid}fn<'a: Any>(x1: fn(y: 'z) -> i64, q0: 'a) -> 'a{tail}, k: \
+                     'k) -> i64"
+                ),
             ),
-            format!(
-                "fn<'q: Any>(x: {}, k: 'k) -> 'q",
-                middle("fn<'a: Any>(x1: fn<'b: Any>(y: 'z, qb: 'b) -> 'b, q0: 'a) -> 'a")
+            (
+                sig(
+                    &[(&q, Type::Any)],
+                    &[
+                        (
+                            "x",
+                            middle(&|z| {
+                                let b = var("b");
+                                let bounds = [(&b, Type::Any)];
+                                own_a(sig(
+                                    &bounds,
+                                    &[("y", of(z)), ("qb", of(&b))],
+                                    of(&b),
+                                ))
+                            }),
+                        ),
+                        ("k", of(&k)),
+                    ],
+                    of(&q),
+                ),
+                format!(
+                    "fn<'q: Any>(x: {mid}fn<'a: Any>(x1: fn<'b: Any>(y: 'z, qb: 'b) -> 'b, \
+                     q0: 'a) -> 'a{tail}, k: 'k) -> 'q"
+                ),
             ),
-            "fn<'b: Any>(qb: 'b) -> fn<'d: Array<'b>>(x: 'b, qd: 'd) -> \
-             fn<'b: Number>(qb: 'b) -> 'd"
-                .into(),
-        ]
-        .into_iter()
-        .filter_map(|src| {
-            let printed = parse_fn_type(&src).unwrap().to_string();
-            (printed != src).then_some(printed)
-        })
-        .collect::<Vec<_>>();
+            (
+                sig(&[(&b, Type::Any)], &[("qb", of(&b))], last),
+                "fn<'b: Any>(qb: 'b) -> fn<'d: Array<'b>>(x: 'b, qd: 'd) -> fn<'b: \
+                 Number>(qb: 'b) -> 'd"
+                    .into(),
+            ),
+        ];
+        let rewritten = cases
+            .into_iter()
+            .filter_map(|(t, want)| {
+                let printed = t.to_string();
+                (printed != want).then_some((printed, want))
+            })
+            .collect::<Vec<_>>();
         assert!(rewritten.is_empty(), "{rewritten:#?}");
     }
 
@@ -3857,8 +2589,10 @@ mod tests {
     // after a cell write: a conjunct added to its quantifier's cell is seen.
     #[test]
     fn a_cell_write_drops_the_free_cells_read_before_it() {
-        use crate::typ::{TVar, Type};
-        let ft = parse_fn_type("fn(x: fn<'b: Any>(y: 'b, q: 'z) -> 'b) -> 'z").unwrap();
+        let (z, b) = (var("z"), var("b"));
+        let nested = sig(&[(&b, Type::Any)], &[("y", of(&b)), ("q", of(&z))], of(&b));
+        let t = sig(&[], &[("x", nested)], of(&z));
+        let Type::Fn(ft) = &t else { unreachable!() };
         let Type::Fn(nested) = &ft.args[0].typ else { panic!("{ft}") };
         let _scope = super::PartsDepth::enter();
         let mut before = ahash::AHashMap::default();
@@ -3870,6 +2604,49 @@ mod tests {
         let mut after = ahash::AHashMap::default();
         ft.args[0].typ.collect_tvars(&mut after);
         assert!(after.contains_key("w"));
+    }
+
+    // The held walk reads a signature's positions in its own name scope: an
+    // unquantified signature in a position never passes the bound of an
+    // enclosing cell it names, so the enclosing `'d` that bound names is
+    // never taken for the nested signature's own `'d`.
+    #[test]
+    fn a_held_walk_reads_its_positions_in_its_own_name_scope() {
+        use super::collect_held;
+        // fn<'w: Array<'d>, 'd: Array<'u>, 'u: Any, 'v: Any>(x: fn<'d: Array<'v>>(y:
+        // fn(q: 'w) -> i64, z: 'd) -> 'd, a: 'w, b: 'v) -> 'd
+        let (w, d, u, v, own_d) = (var("w"), var("d"), var("u"), var("v"), var("d"));
+        let y = sig(&[], &[("q", of(&w))], written("i64"));
+        let nested =
+            sig(&[(&own_d, array(of(&v)))], &[("y", y), ("z", of(&own_d))], of(&own_d));
+        let bounds =
+            [(&w, array(of(&d))), (&d, array(of(&u))), (&u, Type::Any), (&v, Type::Any)];
+        let t = sig(&bounds, &[("x", nested), ("a", of(&w)), ("b", of(&v))], of(&d));
+        let Type::Fn(ft) = &t else { unreachable!() };
+        let Type::Fn(nested) = &ft.args[0].typ else { panic!("{ft}") };
+        let mut held = ahash::AHashMap::default();
+        collect_held(nested, &mut held);
+        let mut names: Vec<_> = held.keys().map(|n| n.as_str()).collect();
+        names.sort_unstable();
+        assert_eq!(names, ["d", "v", "w"]);
+    }
+
+    // Printing a nest of quantified function types walks each node a
+    // bounded number of times: the steps grow linearly with the depth.
+    #[test]
+    fn nested_quantified_types_print_in_linear_steps() {
+        use crate::expr::print::PrettyDisplay;
+        let steps = |n| {
+            let t = nested_quantified(n);
+            walk_steps(|| {
+                let flat = t.to_string();
+                let pretty = t.to_string_pretty(80).to_string();
+                assert!(flat.matches("fn<").count() == n);
+                assert!(pretty.matches("fn<").count() == n);
+            })
+        };
+        let (a, b) = (steps(40), steps(160));
+        assert!(b < a * 6, "40 deep: {a} steps, 160 deep: {b}");
     }
 
     // A refused entry leaves the walk that holds the key holding it: every
@@ -3894,7 +2671,7 @@ mod tests {
         use crate::typ::Type;
         let ft = parse_fn_type("fn<'b: 'c, 'c: Array<'q>>(y: 'b) -> 'b").unwrap();
         let Type::TVar(b) = &ft.args[0].typ else { panic!("{ft}") };
-        let Type::TVar(c) = &b.cell_constraints()[0] else { panic!("{ft}") };
+        let Type::TVar(c) = &b.cell_above()[0] else { panic!("{ft}") };
         let mut held = ahash::AHashMap::default();
         collect_held(&ft, &mut held);
         assert!(held.contains_key("c") && held.contains_key("q"), "{held:?}");
@@ -3905,54 +2682,11 @@ mod tests {
         assert!(cut.contains_key("c") && !cut.contains_key("q"), "{cut:?}");
     }
 
-    // The held walk reads a signature's positions in its own name scope: an
-    // unquantified signature in a position never passes the bound of an
-    // enclosing cell it names, so the enclosing `'d` that bound names is
-    // never taken for the nested signature's own `'d`.
-    #[test]
-    fn a_held_walk_reads_its_positions_in_its_own_name_scope() {
-        use super::collect_held;
-        use crate::typ::Type;
-        let ft = parse_fn_type(
-            "fn<'w: Array<'d>, 'd: Array<'u>, 'u: Any, 'v: Any>(x: fn<'d: Array<'v>>(y: \
-             fn(q: 'w) -> i64, z: 'd) -> 'd, a: 'w, b: 'v) -> 'd",
-        )
-        .unwrap();
-        let Type::Fn(nested) = &ft.args[0].typ else { panic!("{ft}") };
-        let mut held = ahash::AHashMap::default();
-        collect_held(nested, &mut held);
-        let mut names: Vec<_> = held.keys().map(|n| n.as_str()).collect();
-        names.sort_unstable();
-        assert_eq!(names, ["d", "v", "w"]);
-    }
-
-    /// The tvar-walk steps printing an `n`-deep nest of quantified function
-    /// types takes, flat and pretty.
-    fn print_steps(n: usize) -> usize {
-        use crate::{expr::print::PrettyDisplay, typ::Type};
-        let ft = triomphe::Arc::new(parse_fn_type(&nested_quantified(n)).unwrap());
-        let t = Type::Fn(ft);
-        super::TVAR_WALK_STEPS.with(|c| c.set(0));
-        let flat = t.to_string();
-        let pretty = t.to_string_pretty(80).to_string();
-        assert!(flat.matches("fn<").count() == n && pretty.matches("fn<").count() == n);
-        super::TVAR_WALK_STEPS.with(|c| c.get())
-    }
-
-    // Printing a nest of quantified function types walks each node a
-    // bounded number of times: the steps grow linearly with the depth.
-    #[test]
-    fn nested_quantified_types_print_in_linear_steps() {
-        let (a, b) = (print_steps(40), print_steps(160));
-        assert!(b < a * 6, "40 deep: {a} steps, 160 deep: {b}");
-    }
-
     /// The pretty pipeline keeps the user-written `'a` on both
     /// occurrences of a polymorphic sig.
     #[test]
     fn polymorphic_sig_preserves_tvar_names() {
         let ft = parse_fn_type("fn(a: Array<'a>, @args: 'a) -> Array<'a>").unwrap();
-        ft.alias_tvars(&mut LPooled::take());
         let folded = ft.name_auto_variables(&[]);
         let resolved = folded.resolve_tvars();
         let s = format!("{}", crate::typ::Type::Fn(triomphe::Arc::new(resolved)));
@@ -3966,30 +2700,10 @@ mod tests {
         );
     }
 
-    /// A join of a join reaches the definitions the inner join reached
-    /// after the inner join is gone.
-    #[test]
-    fn a_join_outlives_the_join_it_joins() {
-        use super::LambdaIds;
-        use crate::LambdaId;
-        let defs: [LambdaIds; 3] = std::array::from_fn(|_| {
-            let node = LambdaIds::default();
-            node.set_id(LambdaId::new());
-            node
-        });
-        let inner = LambdaIds::joining(&[&defs[0], &defs[1]]);
-        let outer = LambdaIds::joining(&[&inner, &defs[2]]);
-        drop(inner);
-        let ids = outer.ids();
-        assert!(defs.iter().all(|d| d.own().is_some_and(|id| ids.contains(&id))));
-        assert!(defs.iter().all(|d| d.ids().len() == 1));
-    }
-
     /// An implicit throws slot (an unbound auto TVar) is not printed.
     #[test]
     fn unbound_auto_throws_is_hidden() {
         let ft = parse_fn_type("fn(a: Array<'a>) -> i64").unwrap();
-        ft.alias_tvars(&mut LPooled::take());
         let folded = ft.name_auto_variables(&[]);
         let resolved = folded.resolve_tvars();
         let s = format!("{}", crate::typ::Type::Fn(triomphe::Arc::new(resolved)));
@@ -4001,39 +2715,9 @@ mod tests {
     #[test]
     fn explicit_throws_always_shown() {
         let ft = parse_fn_type("fn(x: 'a) -> 'a throws `Boom").unwrap();
-        ft.alias_tvars(&mut LPooled::take());
         let s = format!("{}", crate::typ::Type::Fn(triomphe::Arc::new(ft)));
         assert!(s.contains("throws"), "explicit throws should be shown, got: {s}");
         assert!(s.contains("`Boom"), "throws variant should be printed, got: {s}");
-    }
-
-    /// A read's copy, of a typedef application (copied, or rebuilt around
-    /// a function type it holds) as of a function type, is one copy to
-    /// every read through the same copies, and its own to a later read,
-    /// alone or held in a node the later read meets first.
-    #[test]
-    fn a_read_copy_is_its_own_to_a_later_read() {
-        use crate::{
-            expr::parser::parse_type,
-            typ::{
-                FnType, ReadCopies, Type, node_addr,
-                tvar::{AtLevel, Level},
-            },
-        };
-        use nohash::IntSet;
-        let _generic = AtLevel::enter(Level::GENERIC);
-        let open = IntSet::default();
-        let keep = |_: &FnType| false;
-        for src in ["F<'a>", "F<'a, i64>", "F<fn(x: 'a) -> 'a>", "fn(x: 'a) -> 'a"] {
-            let t = parse_type(src).unwrap();
-            let mut copies = ReadCopies::default();
-            let copy = copies.read(&t, &open, &keep).expect(src);
-            let again = copies.read(&t, &open, &keep).expect(src);
-            assert_eq!(node_addr(&copy), node_addr(&again), "{src}: {copy}, {again}");
-            assert!(copies.read(&copy, &open, &keep).is_none(), "{src}: {copy}");
-            let held = Type::Array(triomphe::Arc::new(copy.clone()));
-            assert!(copies.read(&held, &open, &keep).is_none(), "{src}: {held}");
-        }
     }
 }
 
@@ -4118,894 +2802,4 @@ impl Pack for FnType {
             Self::shape_decode(buf, None)
         }
     }
-}
-
-/// The bounds the type references in `t` give the open variables passed
-/// as their parameters, by cell: a call checks them where it expands the
-/// reference, as it checks a variable's own conjuncts.
-fn param_bounds_of(env: &Env, t: &Type, out: &mut AddrMap<SmallVec<[Type; 1]>>) {
-    crate::stack::ensure_sufficient(|| match t {
-        Type::Ref(tr) => {
-            if let Some(resolved) = tr.resolve_in(env)
-                && let Some(known) = resolved.bindings(&tr.params)
-            {
-                for ((_, bound), arg) in resolved.params().iter().zip(tr.params.iter()) {
-                    match (bound, arg) {
-                        (Some(bound), Type::TVar(tv)) if !tv.is_bound() => out
-                            .entry(tv.cell_addr())
-                            .or_default()
-                            .push(bound.replace_tvars(&known)),
-                        (Some(bound), arg) => tvar::handed_bounds(
-                            std::slice::from_ref(bound),
-                            arg,
-                            &mut |tv, b| out.entry(tv.cell_addr()).or_default().push(b),
-                        ),
-                        (None, _) => (),
-                    }
-                }
-            }
-            for p in tr.params.iter() {
-                param_bounds_of(env, p, out)
-            }
-        }
-        Type::Fn(ft) => ft.for_each_part(&mut |t, _| param_bounds_of(env, t, out)),
-        t => t.for_each_child(&mut |c| param_bounds_of(env, c, out)),
-    })
-}
-
-/// The walk of an implementation's bound `own`, read in its signature's
-/// terms, beside the part of the signature `at` it holds: each open cell
-/// of `own` with what stands at its place.
-struct Meetings<'a> {
-    env: &'a Env,
-    /// whether a type holds another, the signature's variables rigid
-    holds: &'a dyn Fn(&Type, &Type) -> bool,
-    /// a cell, what stands at its place, and `exact`
-    met: &'a mut dyn FnMut(&TVar, &Type, bool),
-    /// an instance holds exactly `at` here: no caller picks a narrower
-    /// type, and no other member of a union takes part of it
-    exact: bool,
-    /// how many more names the walk expands
-    expansions: usize,
-}
-
-impl Meetings<'_> {
-    fn go(&mut self, own: &Type, at: &Type) {
-        crate::stack::ensure_sufficient(|| self.go_inner(own, at))
-    }
-
-    /// Each open cell of `own` not in `placed` stands somewhere in `at`,
-    /// at two places for all the walk knows.
-    fn unplaced(&mut self, own: &Type, at: &Type, placed: &AddrSet) {
-        super::contains::find_open_cell(own, true, &mut |tv| {
-            if !placed.contains(&tv.cell_addr()) {
-                (self.met)(tv, at, false);
-                (self.met)(tv, at, false)
-            }
-            false
-        });
-    }
-
-    fn inexact(&mut self, own: &Type, at: &Type) {
-        let exact = std::mem::replace(&mut self.exact, false);
-        self.go(own, at);
-        self.exact = exact
-    }
-
-    fn go_inner(&mut self, own: &Type, at: &Type) {
-        if let Type::TVar(tv) = at
-            && let Some(b) = tv.binding()
-        {
-            return self.go(own, &b);
-        }
-        let flexible =
-            |m: &Type| matches!(m, Type::TVar(tv) if !tv.is_bound() && !tv.is_rigid());
-        match (own, at) {
-            (Type::TVar(tv), _) => match tv.binding() {
-                Some(b) => self.go(&b, at),
-                None => (self.met)(tv, at, self.exact),
-            },
-            // a member that holds a part takes it, a bare cell what no
-            // member does, as one type; a union of primitives is a part
-            // for each
-            (Type::Set(ms), _) => {
-                let mut ats: SmallVec<[Type; 4]> = SmallVec::new();
-                let mut part = |a: &Type| match a {
-                    Type::Primitive(p) if p.len() > 1 => {
-                        ats.extend(p.iter().map(|b| Type::Primitive(b.into())))
-                    }
-                    a => ats.push(a.clone()),
-                };
-                match at {
-                    Type::Set(ms) => ms.iter().for_each(&mut part),
-                    at => part(at),
-                }
-                let mut rest: SmallVec<[&Type; 4]> = SmallVec::new();
-                for a in ats.iter() {
-                    // the one member that can hold all of `at` holds it
-                    let whole = ats.len() == 1
-                        && ms.iter().filter(|m| (self.holds)(m, a)).nth(1).is_none();
-                    match ms.iter().find(|m| !flexible(m) && (self.holds)(m, a)) {
-                        Some(m) if whole => self.go(m, a),
-                        Some(m) => self.inexact(m, a),
-                        None => rest.push(a),
-                    }
-                }
-                for m in ms.iter().filter(|m| flexible(m)) {
-                    let mut prims = BitFlags::empty();
-                    let mut held: SmallVec<[Type; 4]> = SmallVec::new();
-                    for a in rest.iter().filter(|a| (self.holds)(m, a)) {
-                        match a {
-                            Type::Primitive(p) => prims |= *p,
-                            a => held.push((*a).clone()),
-                        }
-                    }
-                    if !prims.is_empty() {
-                        held.push(Type::Primitive(prims))
-                    }
-                    match held.len() {
-                        0 => (),
-                        1 => self.inexact(m, &held[0]),
-                        _ => self.inexact(m, &Type::Set(Arc::from_iter(held))),
-                    }
-                }
-            }
-            // a signature variable is held through one of its bounds
-            (_, Type::TVar(tv)) => {
-                let bounds = tv.cell_constraints();
-                if let Some(c) = bounds.iter().find(|c| (self.holds)(own, c)) {
-                    self.inexact(own, c)
-                }
-            }
-            (_, Type::Set(ats)) => ats.iter().for_each(|a| self.go(own, a)),
-            // an argument's sides swap: a cell there stands where the two
-            // are built alike
-            (Type::Fn(f0), Type::Fn(f1)) => {
-                self.go(&f0.rtype, &f1.rtype);
-                self.go(&f0.throws, &f1.throws);
-                let args =
-                    f0.align(f1).0.into_iter().map(|(own, at)| (&own.typ, &at.typ));
-                for (own, at) in args.chain(f0.vargs.as_ref().zip(f1.vargs.as_ref())) {
-                    let mut placed: LPooled<AddrSet> = LPooled::take();
-                    Places::every(self.env, &mut |_, tv, at| {
-                        placed.insert(tv.cell_addr());
-                        (self.met)(tv, at, self.exact)
-                    })
-                    .types(own, at);
-                    self.unplaced(own, at, &placed)
-                }
-            }
-            (Type::Ref(r0), Type::Ref(r1))
-                if r0.same_definition(r1, self.env)
-                    && r0.params.len() == r1.params.len() =>
-            {
-                for (own, at) in r0.params.iter().zip(r1.params.iter()) {
-                    self.go(own, at)
-                }
-            }
-            (Type::Ref(_), _) | (_, Type::Ref(_)) => {
-                let named = |t: &Type| match t {
-                    Type::Ref(_) => t.lookup_ref_probe(self.env).map(|(_, t)| t),
-                    _ => Some(t.clone()),
-                };
-                match (named(own), named(at)) {
-                    // CR claude for claude: [bug/medium] The walk gives up after eight
-                    // typedef expansions (`expansions`) and then reports every open
-                    // cell beneath as standing at two places, so a valid implementation
-                    // whose bound crosses nine names is refused with a message naming
-                    // one place twice. Under `val f: fn<'b: T8<'a>>(x: 'b) -> 'b` over
-                    // a chain `type T1<'a> = {v: T0<'a>}` .., `let f = 'q: {v: .. ['p,
-                    // null]} |x: 'q| -> 'q x` passes with seven links and with eight is
-                    // told `'p` is held `at more than one place (T0<'a>, T0<'a>)`.
-                    // Bound the walk by the typedef pairs in progress, as
-                    // `sig_matches_inner` does with its `RefHist`, so only a typedef
-                    // met again under itself stops it; pin the nine-name chain. probe:
-                    // design/review-2026-11-16/repro/t-fntyp-bound-expansion-budget.sh
-                    // (t-fntyp-03)
-                    (Some(own), Some(at)) if self.expansions > 0 => {
-                        self.expansions -= 1;
-                        self.go(&own, &at)
-                    }
-                    _ => self.unplaced(own, at, &AddrSet::default()),
-                }
-            }
-            (own, at) => {
-                any_part_pair(own, at, &mut |own, at| {
-                    self.go(own, at);
-                    false
-                });
-            }
-        }
-    }
-}
-
-/// Whether two members of a union are open cells, and not one cell.
-fn two_open_cells(ms: &[Type]) -> bool {
-    let mut open = ms.iter().filter_map(|m| match m {
-        Type::TVar(tv) => tv.open_cell(),
-        _ => None,
-    });
-    open.next().is_some_and(|first| open.any(|tv| !tv.same_cell(&first)))
-}
-
-/// Whether `t` holds a union two of whose members are two open cells,
-/// which a containment of it decides only through their other positions.
-fn holds_open_union(t: &Type) -> bool {
-    fn go(t: &Type, seen: &mut AHashSet<usize>) -> bool {
-        crate::stack::ensure_sufficient(|| match t {
-            Type::TVar(tv) => match tv.binding() {
-                Some(b) => seen.insert(tv.cell_addr()) && go(&b, seen),
-                None => false,
-            },
-            Type::Set(ms) if two_open_cells(ms) => true,
-            t if super::node_addr(t).is_some_and(|n| !seen.insert(n)) => false,
-            t => {
-                let mut found = false;
-                t.for_each_child(&mut |c| found = found || go(c, seen));
-                found
-            }
-        })
-    }
-    go(t, &mut LPooled::take())
-}
-
-/// Whether a bound of the open cell `tv` holds an open cell: binding `tv`
-/// decides another cell.
-fn decides_others(tv: &TVar) -> bool {
-    let open =
-        |c: &Type| super::contains::find_open_cell(c, true, &mut |_| true).is_some();
-    tv.cell_constraints().iter().any(open)
-}
-
-/// Bind the open cell `tv` to `at`, what stands at its place, ⊥ included.
-fn place_cell(env: &Env, tv: &TVar, at: &Type) {
-    if tv.is_bound() {
-        return;
-    }
-    match at.with_deref(|a| matches!(a, Some(Type::Bottom))) {
-        true => tv.bind(Type::Bottom),
-        false => {
-            let _ = Type::TVar(tv.clone()).contains(env, at);
-        }
-    }
-}
-
-/// Where a signature holds a cell: at a position of its own, or among the
-/// members of a union.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Place {
-    Own,
-    Member,
-}
-
-/// Bind each open cell `places` gives to what stands at its place, each
-/// after the open cells its bounds hold, above and below, at any depth: a
-/// cell a bound holds takes its own place, not what the bound's holder is
-/// placed at.
-/// A cell takes a member's place only where no place of its own binds it.
-fn place_in_order(env: &Env, places: impl FnOnce(&mut dyn FnMut(Place, &TVar, &Type))) {
-    struct Order<'a> {
-        env: &'a Env,
-        at: LPooled<AddrMap<SmallVec<[Type; 1]>>>,
-        among: LPooled<AddrMap<SmallVec<[Type; 1]>>>,
-        seen: LPooled<AddrSet>,
-    }
-    impl Order<'_> {
-        fn place(&mut self, tv: &TVar) {
-            if tv.is_bound() || !self.seen.insert(tv.cell_addr()) {
-                return;
-            }
-            crate::stack::ensure_sufficient(|| {
-                for c in tv.cell_constraints().iter().chain(tv.cell_lower().iter()) {
-                    super::contains::find_open_cell(c, true, &mut |held| {
-                        self.place(held);
-                        false
-                    });
-                }
-            });
-            let (own, member) =
-                (self.at.remove(&tv.cell_addr()), self.among.remove(&tv.cell_addr()));
-            for at in own.iter().chain(member.iter()).flatten() {
-                place_cell(self.env, tv, at)
-            }
-        }
-    }
-    let mut order =
-        Order { env, at: LPooled::take(), among: LPooled::take(), seen: LPooled::take() };
-    let mut cells: LPooled<Vec<TVar>> = LPooled::take();
-    places(&mut |place, tv, at| {
-        let addr = tv.cell_addr();
-        if !order.at.contains_key(&addr) && !order.among.contains_key(&addr) {
-            cells.push(tv.clone())
-        }
-        let ats = match place {
-            Place::Own => &mut order.at,
-            Place::Member => &mut order.among,
-        };
-        ats.entry(addr).or_default().push(at.clone())
-    });
-    for tv in cells.iter() {
-        order.place(tv)
-    }
-}
-
-/// Make the open cell `tv` the open cell `at`, where that is what stands
-/// at a place of its own.
-fn place_at_open(env: &Env, place: Place, tv: &TVar, at: &Type) {
-    if place == Place::Own && at.with_deref(|at| at.is_none()) {
-        place_cell(env, tv, at)
-    }
-}
-
-/// Whether the union `at` holds a member for each member of `own`, in
-/// `own`'s order, as a copy of `own` does: an open cell's is whatever
-/// stands there, any other member's is built by the same constructor.
-fn members_stand_alike(own: &[Type], at: &[Type]) -> bool {
-    let alike = |own: &Type, at: &Type| {
-        own.with_deref(|own| match own {
-            None => true,
-            Some(own) => at.with_deref(|at| at.is_some_and(|at| same_build(own, at))),
-        })
-    };
-    own.len() == at.len() && own.iter().zip(at.iter()).all(|(own, at)| alike(own, at))
-}
-
-fn same_build(own: &Type, at: &Type) -> bool {
-    match (own, at) {
-        (Type::Primitive(p0), Type::Primitive(p1)) => p0 == p1,
-        (Type::Variant(n0, a0, _), Type::Variant(n1, a1, _)) => {
-            n0 == n1 && a0.len() == a1.len()
-        }
-        (Type::Tuple(a0), Type::Tuple(a1)) => a0.len() == a1.len(),
-        (own, at) => discriminant(own) == discriminant(at),
-    }
-}
-
-/// The members of `own` that a single member of `at` stands for where
-/// `at` holds fewer than `own`: two or more members of `own` built alike
-/// and one member of `at` built so, which is what a union of two cells
-/// becomes where the call decided both alike; or, where `own` is open
-/// cells alone, the one member of `at`. Each such pair.
-fn collapsed_members<'a>(
-    own: &'a [Type],
-    at: &'a [Type],
-) -> SmallVec<[(&'a Type, &'a Type); 4]> {
-    let built = |t: &Type, with: &Type| {
-        t.with_deref(|t| {
-            t.is_some_and(|t| with.with_deref(|w| w.is_some_and(|w| same_build(t, w))))
-        })
-    };
-    let mut pairs = SmallVec::new();
-    if let [a] = at
-        && own.len() >= 2
-        && own.iter().all(|o| o.with_deref(|o| o.is_none()))
-    {
-        pairs.extend(own.iter().map(|o| (o, a)));
-        return pairs;
-    }
-    for a in at.iter() {
-        let mut alike = at.iter().filter(|b| built(a, b));
-        let (Some(_), None) = (alike.next(), alike.next()) else { continue };
-        let held: SmallVec<[&Type; 4]> = own.iter().filter(|o| built(o, a)).collect();
-        if held.len() >= 2 {
-            pairs.extend(held.into_iter().map(|o| (o, a)))
-        }
-    }
-    pairs
-}
-
-/// The walk of two types built alike that gives each open cell of the
-/// first what stands at its place in the second, a pair of shared nodes
-/// once among a union's members and once outside every union, or
-/// (`every`) each time it stands.
-struct Places<'a> {
-    env: &'a Env,
-    member: bool,
-    every: bool,
-    seen: [LPooled<AHashSet<(usize, usize)>>; 2],
-    f: &'a mut dyn FnMut(Place, &TVar, &Type),
-}
-
-impl<'a> Places<'a> {
-    fn new(env: &'a Env, f: &'a mut dyn FnMut(Place, &TVar, &Type)) -> Self {
-        let seen = [LPooled::take(), LPooled::take()];
-        Places { env, member: false, every: false, seen, f }
-    }
-
-    /// A walk that counts a cell's places: a cell under a shared node is
-    /// given once for each place the node stands at.
-    fn every(env: &'a Env, f: &'a mut dyn FnMut(Place, &TVar, &Type)) -> Self {
-        Places { every: true, ..Self::new(env, f) }
-    }
-
-    fn types(&mut self, own: &Type, at: &Type) {
-        if !self.every
-            && let (Some(a), Some(b)) = (super::node_addr(own), super::node_addr(at))
-            && !self.seen[usize::from(self.member)].insert((a, b))
-        {
-            return;
-        }
-        crate::stack::ensure_sufficient(|| match (own, at) {
-            (Type::TVar(tv), _) => match tv.binding() {
-                Some(b) => self.types(&b, at),
-                None => {
-                    let place = if self.member { Place::Member } else { Place::Own };
-                    (self.f)(place, tv, at)
-                }
-            },
-            (_, Type::TVar(tv)) => {
-                if let Some(b) = tv.binding() {
-                    self.types(own, &b)
-                }
-            }
-            (Type::Set(own), Type::Set(at)) if members_stand_alike(own, at) => {
-                let outer = std::mem::replace(&mut self.member, true);
-                for (own, at) in own.iter().zip(at.iter()) {
-                    self.types(own, at)
-                }
-                self.member = outer
-            }
-            (Type::Fn(f0), Type::Fn(f1)) => self.signatures(f0, f1),
-            (Type::Ref(r0), Type::Ref(r1)) => {
-                if r0.same_definition(r1, self.env) && r0.params.len() == r1.params.len()
-                {
-                    for (own, at) in r0.params.iter().zip(r1.params.iter()) {
-                        self.types(own, at)
-                    }
-                }
-            }
-            (own, Type::Ref(_)) => {
-                if let Some((_, at)) = at.lookup_ref_probe(self.env) {
-                    self.types(own, &at)
-                }
-            }
-            (Type::Ref(_), at) => {
-                if let Some((_, own)) = own.lookup_ref_probe(self.env) {
-                    self.types(&own, at)
-                }
-            }
-            (Type::Set(own), Type::Set(at)) => self.collapsed(own, at),
-            (Type::Set(own), at) => self.collapsed(own, std::slice::from_ref(at)),
-            (_, Type::Set(_)) => (),
-            (own, at) => {
-                any_part_pair(own, at, &mut |own, at| {
-                    self.types(own, at);
-                    false
-                });
-            }
-        })
-    }
-
-    fn collapsed(&mut self, own: &[Type], at: &[Type]) {
-        let outer = std::mem::replace(&mut self.member, true);
-        for (own, at) in collapsed_members(own, at) {
-            self.types(own, at)
-        }
-        self.member = outer
-    }
-
-    /// [`Self::types`] over two signatures, position by position.
-    fn signatures(&mut self, own: &FnType, at: &FnType) {
-        for (own, at) in own.align(at).0 {
-            self.types(&own.typ, &at.typ)
-        }
-        if let (Some(own), Some(at)) = (&own.vargs, &at.vargs) {
-            self.types(own, at)
-        }
-        self.types(&own.rtype, &at.rtype);
-        self.types(&own.throws, &at.throws)
-    }
-}
-
-impl Type {
-    /// Bind each open cell of `self` to what stands at its place in `at`,
-    /// ⊥ included, wherever the two types are built alike
-    /// ([`place_in_order`]). A union's members have places where `at`'s
-    /// union stands member for member beside it
-    /// ([`members_stand_alike`]), or where `at` holds one member for
-    /// several of the union's ([`collapsed_members`]); a cell the members
-    /// of any other union alone hold is left open.
-    pub fn place_cells(&self, env: &Env, at: &Self) {
-        place_in_order(env, |f| Places::new(env, f).types(self, at))
-    }
-
-    /// Make each open cell of `self` the open cell that stands at a place
-    /// of its own in `at`, wherever the two types are built alike: two
-    /// copies of one type hold one cell where both leave it open,
-    /// whichever member of a union beside it could take it.
-    pub fn place_open_cells(&self, env: &Env, at: &Self) {
-        Places::new(env, &mut |place, tv, at| place_at_open(env, place, tv, at))
-            .types(self, at)
-    }
-}
-
-impl FnType {
-    /// [`Type::place_cells`] over two signatures.
-    pub fn place_cells(&self, env: &Env, at: &Self) {
-        place_in_order(env, |f| Places::new(env, f).signatures(self, at))
-    }
-
-    /// Place, each at a place of its own, the cells whose bounds hold no
-    /// open cell ([`decides_others`]), which decide no other.
-    fn place_free_cells(&self, env: &Env, at: &Self) {
-        Places::new(env, &mut |place, tv, at| {
-            if place == Place::Own && !decides_others(tv) {
-                place_cell(env, tv, at)
-            }
-        })
-        .signatures(self, at)
-    }
-
-    /// [`Type::place_open_cells`] over two signatures.
-    fn place_open_cells(&self, env: &Env, at: &Self) {
-        Places::new(env, &mut |place, tv, at| place_at_open(env, place, tv, at))
-            .signatures(self, at)
-    }
-
-    /// Contain, at its place in `at`, each formal that holds no open cell
-    /// whose bounds hold another ([`decides_others`]): that decides a cell
-    /// only a union's members hold, which has no place.
-    fn contain_free_formals(&self, env: &Env, at: &Self) {
-        let free = |t: &Type| {
-            super::contains::find_open_cell(t, true, &mut decides_others).is_none()
-        };
-        let formals = self.align(at).0.into_iter().map(|(own, at)| (&own.typ, &at.typ));
-        for (own, at) in formals.chain(self.vargs.as_ref().zip(at.vargs.as_ref())) {
-            if free(own) {
-                let _ = own.contains(env, at);
-            }
-        }
-    }
-
-    /// `self`, a definition's signature, as an instance at `instance`
-    /// holds it, and the copy of each open cell by its address: every cell
-    /// the instance's own and bound to the instance's type. A cell the
-    /// instance leaves open at the cell's own place is that cell first
-    /// ([`Type::place_open_cells`]): no member of a union beside it
-    /// decides what the call's check left open. Where the
-    /// containment would have to choose a union's member before the
-    /// positions that decide it, each cell takes what stands at its own
-    /// place first, after the cells its bounds hold
-    /// ([`Type::place_cells`]); where it would still have to choose, a
-    /// cell only bounds hold, which has no place, is first what its bounds
-    /// settle it to over the copy's own cells
-    /// ([`TVar::settle_bounds_first`]), as a call's check leaves one it
-    /// did not decide. Where a bound still
-    /// decides a cell only a union's members hold narrower than the union
-    /// stands, the formals decide it before the bound's holder is placed
-    /// ([`Self::contain_free_formals`]).
-    pub fn held_at(
-        &self,
-        env: &Env,
-        instance: &Self,
-    ) -> Result<(Self, AHashMap<usize, TVar>)> {
-        let mut known = AHashMap::default();
-        let mut held = |prepare: &dyn Fn(&Self, &AHashMap<usize, TVar>)| {
-            known.clear();
-            let own = self.instantiate_owned(&mut known);
-            prepare(&own, &known);
-            instance.check_contains(env, &own).map(|()| own)
-        };
-        let settle_unplaced = |own: &Self, known: &AHashMap<usize, TVar>| {
-            let mut placed: LPooled<AddrSet> = LPooled::take();
-            own.for_each_type(&mut |t| {
-                super::contains::find_open_cell(t, true, &mut |tv| {
-                    placed.insert(tv.cell_addr());
-                    false
-                });
-            });
-            let unplaced = known.values().filter(|tv| !placed.contains(&tv.cell_addr()));
-            let unplaced = sorted_tvars(unplaced.map(|tv| (tv.name.clone(), tv.clone())));
-            for (_, tv) in unplaced.iter() {
-                tv.settle_bounds_first(env, &mut placed)
-            }
-        };
-        let own = held(&|own, _| own.place_open_cells(env, instance))
-            .or_else(|_| held(&|_, _| ()))
-            .or_else(|_| held(&|own, _| own.place_cells(env, instance)))
-            .or_else(|_| {
-                held(&|own, known| {
-                    settle_unplaced(own, known);
-                    own.place_cells(env, instance)
-                })
-            })
-            .or_else(|_| {
-                held(&|own, known| {
-                    settle_unplaced(own, known);
-                    own.place_free_cells(env, instance);
-                    own.contain_free_formals(env, instance);
-                    own.place_cells(env, instance)
-                })
-            })?;
-        Ok((own, known))
-    }
-}
-
-impl Type {
-    /// Whether this type holds a union two of whose members are two open
-    /// cells: a type going into it decides neither, so an equality
-    /// relates it as the contained side first.
-    pub fn holds_open_union(&self) -> bool {
-        holds_open_union(self)
-    }
-}
-
-impl Type {
-    /// A read's copy of the signatures this type holds of definitions whose
-    /// gates are closed (a lambda held in a struct, tuple or array): each such
-    /// function type copied as a read of a generalized binding copies its
-    /// scheme ([`FnType::scheme`]), through one cell map, all but those `keep`
-    /// shares, and each typedef application whose arguments hold such a cell
-    /// ([`Type::copied_outside_functions`]) alike. `None` when it holds none.
-    #[doc(hidden)]
-    pub fn scheme_read(
-        &self,
-        open: &IntSet<LambdaId>,
-        keep: &dyn Fn(&FnType) -> bool,
-    ) -> Option<Type> {
-        ReadCopies::default().read(self, open, keep)
-    }
-
-    /// [`Self::scheme_read`] taking one instance of each signature
-    /// ([`FnType::one_instance`]): a read no binding names.
-    #[doc(hidden)]
-    pub fn instance_read(
-        &self,
-        open: &IntSet<LambdaId>,
-        keep: &dyn Fn(&FnType) -> bool,
-    ) -> Option<Type> {
-        let mut copies = ReadCopies::default();
-        ReadWalk { open, keep, copies: &mut copies, generic: false }.go(self)
-    }
-}
-
-/// The copies reads take ([`Type::scheme_read`]) through one cell map:
-/// reads through one `ReadCopies` take one copy of what they share, and a
-/// type a read made is its own copy to a later read.
-#[derive(Debug, Default)]
-#[doc(hidden)]
-pub struct ReadCopies {
-    known: LPooled<AHashMap<usize, TVar>>,
-    /// By node, a var by its cell, beside the node, which this keeps
-    /// alive: its copy, `None` where the node is its own.
-    memo: LPooled<AHashMap<usize, (Type, Option<Type>)>>,
-}
-
-impl ReadCopies {
-    /// `t` as a read through these copies takes it ([`Type::scheme_read`]).
-    #[doc(hidden)]
-    pub fn read(
-        &mut self,
-        t: &Type,
-        open: &IntSet<LambdaId>,
-        keep: &dyn Fn(&FnType) -> bool,
-    ) -> Option<Type> {
-        ReadWalk { open, keep, copies: self, generic: true }.go(t)
-    }
-}
-
-struct ReadWalk<'a> {
-    open: &'a IntSet<LambdaId>,
-    keep: &'a dyn Fn(&FnType) -> bool,
-    copies: &'a mut ReadCopies,
-    /// Copies are generic, a scheme's; else one instance's.
-    generic: bool,
-}
-
-impl<'a> ReadWalk<'a> {
-    fn how(&self) -> Fresh<'a> {
-        match self.generic {
-            true => Fresh::Scheme(self.open),
-            false => Fresh::Instantiate(self.open),
-        }
-    }
-}
-
-impl ReadWalk<'_> {
-    fn go(&mut self, t: &Type) -> Option<Type> {
-        crate::stack::ensure_sufficient(|| {
-            let addr = match t {
-                Type::TVar(tv) => Some(tv.cell_addr()),
-                t => super::node_addr(t),
-            };
-            if let Some(a) = addr
-                && let Some((_, r)) = self.copies.memo.get(&a)
-            {
-                return r.clone();
-            }
-            let r = match t {
-                Type::TVar(tv) => {
-                    let b = tv.binding()?;
-                    self.copies.memo.insert(tv.cell_addr(), (t.clone(), None));
-                    self.go(&b).map(|r| tv.forwarded_as(r))
-                }
-                Type::Fn(ft)
-                    if (self.keep)(ft) || !copied_beneath(t, self.open, true) =>
-                {
-                    None
-                }
-                Type::Fn(ft) => {
-                    let how = self.how();
-                    let fresh = ft.reset_tvars_int(&mut self.copies.known, how);
-                    fresh.alias_tvars(&mut LPooled::take());
-                    Some(Type::Fn(Arc::new(fresh)))
-                }
-                Type::Ref(_) if t.copied_outside_functions(self.open) => {
-                    let how = self.how();
-                    let fresh = t
-                        .reset_tvars_int(&mut self.copies.known, how)
-                        .unwrap_or_else(|| t.clone());
-                    fresh.alias_tvars(&mut LPooled::take());
-                    Some(fresh)
-                }
-                t => t.cow_children(&mut |c| self.go(c)),
-            };
-            if let Some(a) = addr {
-                self.copies.memo.insert(a, (t.clone(), r.clone()));
-            }
-            if let Some(c) = &r
-                && let Some(a) = super::node_addr(c)
-            {
-                self.copies.memo.insert(a, (c.clone(), None));
-            }
-            r
-        })
-    }
-}
-
-impl Type {
-    /// Whether this type holds, outside every function type, an open cell
-    /// a scheme's copy under the open gates `open` copies: a typedef's
-    /// arguments, which stand for what its body holds.
-    #[doc(hidden)]
-    pub fn copied_outside_functions(&self, open: &IntSet<LambdaId>) -> bool {
-        copied_beneath(self, open, false)
-    }
-}
-
-/// What [`Type::copied_in_two_places`] learned of typedef applications
-/// over one copy: the places (0, 1, or 2 for two or more) an application's
-/// expansion holds, by its declaration and which of its arguments hold a
-/// copied cell, anywhere and outside function types.
-#[doc(hidden)]
-pub type CopySites =
-    AHashMap<(ModPath, SourcePosition, SmallVec<[(bool, bool); 4]>), usize>;
-
-impl Type {
-    /// Whether this type holds two places a copy takes apart: function
-    /// types and typedef applications ([`Type::copied_outside_functions`])
-    /// that hold a cell the open gates `open` copy, none inside another.
-    /// An application counts the places its expansion holds, one where
-    /// the expansion meets its own typedef.
-    #[doc(hidden)]
-    pub fn copied_in_two_places(
-        &self,
-        env: &Env,
-        open: &IntSet<LambdaId>,
-        memo: &mut CopySites,
-    ) -> bool {
-        struct Walk<'a> {
-            env: &'a Env,
-            open: &'a IntSet<LambdaId>,
-            memo: &'a mut CopySites,
-            sites: usize,
-            empty: LPooled<AHashSet<usize>>,
-            path: LPooled<AHashSet<usize>>,
-            expanding: LPooled<Vec<(ModPath, SourcePosition)>>,
-        }
-        impl Walk<'_> {
-            fn go(&mut self, t: &Type) -> bool {
-                crate::stack::ensure_sufficient(|| {
-                    // an application's sites depend on the definitions being
-                    // expanded, so it is counted wherever it is met
-                    let addr = match t {
-                        Type::TVar(tv) => Some(tv.cell_addr()),
-                        Type::Ref(_) => None,
-                        t => super::node_addr(t),
-                    };
-                    if let Some(a) = addr
-                        && (self.empty.contains(&a) || !self.path.insert(a))
-                    {
-                        return false;
-                    }
-                    let before = self.sites;
-                    let done = match t {
-                        Type::TVar(tv) => tv.binding().is_some_and(|b| self.go(&b)),
-                        Type::Fn(_) => {
-                            self.sites += copied_beneath(t, self.open, true) as usize;
-                            self.sites > 1
-                        }
-                        Type::Ref(tr) if t.copied_outside_functions(self.open) => {
-                            self.sites += self.application(t, tr);
-                            self.sites > 1
-                        }
-                        Type::Ref(_) => false,
-                        t => t
-                            .try_for_each_child(&mut |c| match self.go(c) {
-                                true => ControlFlow::Break(()),
-                                false => ControlFlow::Continue(()),
-                            })
-                            .is_break(),
-                    };
-                    if let Some(a) = addr {
-                        self.path.remove(&a);
-                        if self.sites == before {
-                            self.empty.insert(a);
-                        }
-                    }
-                    done
-                })
-            }
-
-            fn application(&mut self, t: &Type, tr: &super::TypeRef) -> usize {
-                let Some(def) = tr.resolve_peek(self.env) else { return 1 };
-                let decl = (def.canonical_scope.clone(), def.pos);
-                if self.expanding.contains(&decl) {
-                    return 1;
-                }
-                let args = tr
-                    .params
-                    .iter()
-                    .map(|p| {
-                        (
-                            copied_beneath(p, self.open, true),
-                            copied_beneath(p, self.open, false),
-                        )
-                    })
-                    .collect();
-                let key = (decl.0.clone(), decl.1, args);
-                if let Some(n) = self.memo.get(&key) {
-                    return *n;
-                }
-                let Some((_, body)) = t.lookup_ref_probe(self.env) else { return 1 };
-                let outer = std::mem::replace(&mut self.sites, 0);
-                self.expanding.push(decl);
-                self.go(&body);
-                self.expanding.pop();
-                let n = std::mem::replace(&mut self.sites, outer).min(2);
-                self.memo.insert(key, n);
-                n
-            }
-        }
-        let mut w = Walk {
-            env,
-            open,
-            memo,
-            sites: 0,
-            empty: LPooled::take(),
-            path: LPooled::take(),
-            expanding: LPooled::take(),
-        };
-        w.go(self)
-    }
-}
-
-/// Whether `t` reaches an open cell a scheme's copy under the open gates
-/// `open` copies; inside a function type only where `functions`.
-fn copied_beneath(t: &Type, open: &IntSet<LambdaId>, functions: bool) -> bool {
-    fn go(
-        t: &Type,
-        open: &IntSet<LambdaId>,
-        functions: bool,
-        seen: &mut AHashSet<usize>,
-    ) -> bool {
-        crate::stack::ensure_sufficient(|| match t {
-            Type::TVar(tv) => {
-                seen.insert(tv.cell_addr())
-                    && match tv.binding() {
-                        Some(b) => go(&b, open, functions, seen),
-                        None => tv.level().copied_by(open),
-                    }
-            }
-            Type::Fn(_) if !functions => false,
-            t if super::node_addr(t).is_some_and(|n| !seen.insert(n)) => false,
-            t => t
-                .try_for_each_child(&mut |c| match go(c, open, functions, seen) {
-                    true => ControlFlow::Break(()),
-                    false => ControlFlow::Continue(()),
-                })
-                .is_break(),
-        })
-    }
-    go(t, open, functions, &mut LPooled::take())
 }

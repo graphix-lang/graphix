@@ -1,0 +1,44 @@
+ok	i64
+no	missing match cases: nothing matches string (:1:34)
+no	pattern 3 will never match: nothing reaches it (:1:34; the value is [i64, string])
+ok	i64
+ok	(i64, i64)
+no	missing match cases: nothing matches bool (:1:20)
+ok	string
+ok	[i64, string]
+no	missing match cases: nothing matches bool (:1:22)
+ok	i64
+no	missing match cases: nothing matches `B (:1:35)
+ok	i64
+ok	string
+no	Parse error at line: 1, column: 65 Expected `)`      let t: ([i64, null], [i64, null]) = (1, null); select t { (null as _, _) => 0, (_, null as _) => 1, …                                                                     ^   note: at line: 1, column: 65: a `,` separates this item from the one before; at line: 1, column: 65
+no	Parse error at line: 1, column: 65 Expected `)`      let t: ([i64, null], [i64, null]) = (1, null); select t { (null as _, _) => 0, (a, b) => a + b }                                                                     ^   note: at line: 1, column: 65: a `,` separates this item from the one before; at line: 1, column: 65
+ok	i64
+ok	i64
+ok	i64
+ok	i64
+ok	i64
+no	the type of the operand of ? or $ is not known here: annotate it
+ok	i64
+ok	i64
+ok	[i64, Error<`ParseError(string)>]
+ok	string
+ok	i64
+no	pattern 2 will never match: nothing reaches it (:1:69; the value is Error<`E>)
+no	type mismatch [`Leaf(i64), `Node(Array<`Leaf(i64)>)] does not contain `Node(Array<[`Leaf(i64), `Node(Array<`Leaf(i64)>)]>); one value comes from elsewhere, the other from line 1, column 119: declare the type that holds both
+no	cannot compare: the value comes from line 1, column 32, and is used at line 1, column 32
+ok	i64
+no	a declared type variable meets a value from outside the definition that declares it ('r3)
+ok	i64
+no	type mismatch B<Array<i64>> does not contain B<Array<string>>; one value comes from elsewhere, the other from elsewhere: declare the type that holds both
+no	type mismatch i64 does not contain string; the value comes from line 1, column 34, and is used at line 1, column 55
+no	pattern 1 will never match: nothing reaches it (:1:49; the value is Any)
+ok	i64
+ok	(i64, i64)
+no	string does not implement T; the value comes from line 1, column 104, and is used at a signature
+no	type mismatch [u8, i8, u16, i16, u32, v32, i32, z32, u64, v64, i64, z64, f32, f64, decimal] does not contain string; the value comes from a signature, and is used at line 1, column 131
+no	pattern 2 will never match: nothing reaches it (:1:102; the value is (&i64, i64) | (&string, i64))
+no	type mismatch i64 does not contain string; the value comes from line 1, column 12, and is used at line 1, column 95
+ok	[i64, string]
+no	pattern 2 will never match: nothing reaches it (:1:131; the value is (&mut i64, i64) | (&mut string, i64) | (&mut f64, i64))
+no	type mismatch string does not contain i64; the value comes from line 1, column 15, and is used at line 1, column 90

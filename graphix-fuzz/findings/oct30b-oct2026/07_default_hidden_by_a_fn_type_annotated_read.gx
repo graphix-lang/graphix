@@ -1,0 +1,4 @@
+// 03 with its type-directed read annotated: the labeled default a fn type
+// hides types the instance's `x`, which the body compares with what it
+// reads.
+{ let g = |#x = 4096, y: string| { let n: i64 = str::parse(y)$; x == n }; let apply = |h: fn(y: string) -> bool| h("4096"); apply(g) }

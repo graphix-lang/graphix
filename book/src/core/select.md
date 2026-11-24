@@ -151,11 +151,12 @@ Error: in file test.gx
 
 Caused by:
     0: at: line: 4, column: 1 in file test.gx, in: select x { Array<i64> as a => array::f..
-    1: missing match cases: no arm covers null
+    1: missing match cases: nothing matches null (4:8)
 ```
 
 The compiler subtracts what each arm matches from the argument's type, and
-names what is left when the arms run out: here `null`, which no arm covers.
+names what is left when the arms run out: here `null`, which no arm matches
+(`4:8` is where the select's argument is, line and column).
 This goes both ways, a match case that could never match is also an error.
 
 ```graphix,refused
@@ -178,16 +179,14 @@ $ graphix test.gx
 Error: in file test.gx
 
 Caused by:
-    0: at: line: 4, column: 1 in file test.gx, in: select x { Array<i64> as a => array::f..
-    1: at: line: 7, column: 3 in file test.gx
-    2: pattern f64 will never match null, unused match cases
+    0: at: line: 7, column: 3 in file test.gx
+    1: pattern f64 will never match: nothing reaches it (4:8; the value is [i64, null, Array<i64>])
 ```
 
-The diagnostic message gives you an insight into the compiler's thinking. What
-it is saying is that, by the time it's gotten to looking at the `f64` pattern,
-the only type left in the argument that hasn't already been matched is `null`,
-and since `f64` doesn't unify with `null` it is sure this pattern can never
-match.
+The message names the arm, at line 7, and what the select's argument can
+be: an `i64`, a `null` or an `Array<i64>`. The arms above the `f64` one take
+the arrays and the `i64`s, the `null` that is left is no `f64`, so nothing
+reaches the arm and it can never match.
 
 Guarded patterns can always not match because of the guard, so they do not
 subtract from the argument type set. You are required to match without a guard
@@ -214,7 +213,7 @@ Error: in file test.gx
 
 Caused by:
     0: at: line: 4, column: 1 in file test.gx, in: select x { Array<i64> as a => array::f..
-    1: missing match cases: no arm covers i64
+    1: missing match cases: nothing matches i64 (4:8)
 ```
 
 This is the same error you would get if you omitted the `i64` match case
@@ -458,27 +457,27 @@ $ graphix test.gx
 
 This works at any nesting depth — a partial pattern inside a variant
 payload (`` `Event({id, ..}) ``) completes against that payload's type.
-The one case that still needs help is when SEVERAL struct members
-that reach the arm carry all the named fields (a member an earlier arm
-already matched does not count): the pattern is ambiguous, and the
-compiler asks you to annotate the member you mean:
+Where several struct members that reach the arm carry all the named
+fields, the pattern takes each of them, and a name is the type of its
+field in every one: over `[{x: i64, y: i64}, {x: string, z: i64}]`,
+`{x, ..}` binds `x` as `[i64, string]`. To take one member alone, test
+for it first:
 
 ```graphix,ignore
 S as {x, ..} if (x < 10) || (x > 50) => `VWall
 ```
 
 Any type in scope (or an inline structural type,
-`{x: i64, y: i64} as {x, ..}`) works as the annotation.
+`{x: i64, y: i64} as {x, ..}`) works as the test.
 
-A type the program has not decided yet where a select is checked, such
-as a `never()` binding written after it or a function's unannotated
-parameter, is one unknown type there, equal only to itself, whatever
-the program decides later. An arm that tests a value of such a type is
-refused, since a later decision could make the test match what the
-arms assumed it would not, and the refusal names the binding to
-annotate:
+A type the program has not decided yet where a select stands, such as a
+`never()` binding written after it or a function's unannotated
+parameter, is decided by what flows into it, wherever in the program
+that is. The select waits for it, and its arms are judged against what
+the value turns out to be. Here `v` is one of two structs, the second
+written after the select, and the partial pattern takes `a` from each:
 
-```graphix,refused
+```graphix
 let b = true;
 let z = never();
 let v = select b { true => {a: [1], c: 1}, false => z };
@@ -488,102 +487,25 @@ z <- {a: ["s"], c: "w"};
 r
 ```
 
-```
-$ graphix test.gx
-Error: in file test.gx
+A name an arm binds is the type of every part that reaches it, so `a`
+is an `[Array<i64>, Array<string>]` here, and the arm's body must take
+both.
 
-Caused by:
-    0: at: line: 4, column: 1 in file test.gx, in: let r = select v { { a, .. } => "[a]" ..
-    1: at: line: 4, column: 9 in file test.gx, in: select v { { a, .. } => "[a]" }
-    2: at: line: 4, column: 20 in file test.gx
-    3: { a, .. } tests a value of 'z, a type not decided at this select, which a later use could decide apart from what the arms test: annotate it, writing for 'z the type of `z` (line 2, column 5)
-```
+A function's unannotated parameter is decided by its calls, and a select
+over it says what a call may pass. With no arm that takes everything,
+the parameter is what the arms take between them:
 
-An arm whose pattern would decide such a type itself is refused the
-same way. Here the first arm would make `x` a `` `J `` alone, and the
-second arm could then never match:
-
-```graphix,refused
+```graphix
 let f = |x| select (x, 0) { (`J, _) => 1, (`M, _) => 2 };
 f(`M)
 ```
 
-```
-$ graphix test.gx
-Error: in file test.gx
-
-Caused by:
-    0: at: line: 1, column: 1 in file test.gx, in: let f = |x| select (x, 0) { (`J, _) =>..
-    1: at: line: 1, column: 9 in file test.gx, in: |x| select (x, 0) { (`J, _) => 1, (`M,..
-    2: at: line: 1, column: 13 in file test.gx, in: select (x, 0) { (`J, _) => 1, (`M, _) ..
-    3: at: line: 1, column: 29 in file test.gx
-    4: (`J, _) tests a value of 'x, a type not decided at this select, which a later use could decide apart from what the arms test: annotate it, writing for 'x the type of `x` (line 1, column 10)
-```
-
-Annotated, `|x: [`J, `M]|`, both arms check. A pattern that only takes
-such a part apart decides its shape, as an annotation would: `|x| select
-(x, 0) { ((a, b), _) => a + b }` makes `x` a pair. That is a tuple, a
-struct naming every field, a slice or list with a rest (`[a, ..]`,
-`[<h, t..>]`) or an abstract payload, holding only names, `_` and such
-patterns. A literal, a tag, `null`, `[]`, a slice of a fixed length, an
-or-pattern or a written test chooses among the part's values, and is
-refused as above; so is a literal beside a member that holds its type,
-`(null, _)` over a `y` that is `x` or `null`, and a destructure beside a
-member of its shape, `((a, b), _)` over a `y` that is `x` or a pair,
-which chooses between them. A rest
-leaves the lengths it does not take to a later name or `_`: after `([a,
-..], _)`, a `([], _)` arm chooses a length and is refused. A scrutinee that is wholly
-such a type is the arms' to decide together: `|x| select x { `J => 1, `M
-=> 2 }` makes `x` a `` [`J, `M] ``. A partial struct pattern decides
-nothing there, since it names only some of the fields: `|x| select x {
-{a, ..} => a }` is refused until `x` is annotated.
-
-A part that only a name or `_` meets passes, and a name there holds that
-type beside the other members' parts: over `` [(`A, z), (`B, "s")] ``,
-`(_, x) => str::len(x)` makes `z` a string, so a later `z <- 5` is
-refused where it is written. A type test tests what it reads as a
-pattern does: `` (`J, [i64, string]) as (`J, s) `` over `` (`J, z) `` is
-refused until `z` is annotated, since `z` might become neither.
-
-A type test over a scrutinee that is one of two such types is refused
-too. With `u` an `x` or a `y`, both written later, `select u { i64 as n
-=> n, _ => 0 }` could make either one an `i64`, and the check does not
-pick one by the order they stand in: annotate `x` or `y`. The other is
-then the test's to decide, or stays open where the annotation holds the
-test. Tests that cover the scrutinee between them, `i64 as n => ..,
-string as s => ..`, decide both: each is an `[i64, string]`.
-
-Arms that bind the same part of such a scrutinee bind one type there.
-No literal or guard beside a bind narrows it, so in `` |s| select s {
-`A(1, a) => a + 1, `A(2, a) => str::len(a), _ => 0 } `` both `a` are the
-payload's one type, and the select is refused for using it as an `i64`
-and as a `string`. Annotate `s` with the union the payload may be, and
-test the bind inside the arm.
-
-A slice with a rest over a binding the arms decide leaves the type of
-the other elements to later writes, and at run time it takes a value of
-whatever they bring, at every position. After `let v = never(); let z =
-select v { [`J(n), ..] => n + 1, _ => 3 }`, `n` is an `i64`, and
-``v <- [`J(1), `K]`` checks. ``v <- [`J("s"), `K]`` brings a member the
-pattern takes that `n` was not typed over, so the pattern is refused
-("takes a value of `` `J(string) `` too") until `v` is annotated:
-``let v: Array<[`J(i64), `J(string), `K]> = never()`` makes `n` an
-`[i64, string]`.
-
-For the same reason, two members whose left-out fields differ only in
-types not decided yet are two members, and a partial pattern over both
-is refused:
+Here `x` is a `` [`J, `M] ``, and a call that passes anything else is
+refused:
 
 ```graphix,refused
-let b = true;
-let x = never();
-let y = never();
-let v = select b { true => {a: [1], c: x}, false => {a: ["s"], c: y} };
-let r = select v { {a, ..} => "[a]" };
-// x and y are decided here, after the select
-x <- 1;
-y <- 2;
-r
+let f = |x| select (x, 0) { (`J, _) => 1, (`M, _) => 2 };
+f(`K)
 ```
 
 ```
@@ -591,17 +513,30 @@ $ graphix test.gx
 Error: in file test.gx
 
 Caused by:
-    0: at: line: 5, column: 1 in file test.gx, in: let r = select v { { a, .. } => "[a]" ..
-    1: at: line: 5, column: 9 in file test.gx, in: select v { { a, .. } => "[a]" }
-    2: at: line: 5, column: 20 in file test.gx
-    3: the pattern { a, .. } matches two members, { a: Array<i64>, c: 'x } and { a: Array<string>, c: 'y }, told apart by types not decided at this select; annotate those types, or the member you mean, e.g. `T as { a, .. }`, or name every field, writing for 'x the type of `x` (line 2, column 5) and for 'y the type of `y` (line 3, column 5)
+    0: at line: 2, column: 1 in file test.gx
+    1: missing match cases: nothing matches (`K, i64) (1:20)
 ```
 
-Annotating `x` and `y` (`let x: i64 = never()`) decides them, and naming
-every field, `{a, c: _}`, matches both members as they are. An undecided
-type no binding names (the element of a `[]` written in the struct) is
-shown as `'_1`, `'_2`: annotate the binding the struct is built into, or
-bind the value and annotate that.
+The refusal stands at the call, and `1:20` is the select's argument, line
+and column. With a last arm that
+takes everything, `_ => 3`, the parameter takes any value. A pattern
+that takes a value apart asks that shape of it: `|x| select (x, 0) {
+((a, b), _) => a + b }` makes `x` a pair of numbers, and `|x| select x {
+{a, ..} => a }` takes any struct with a field `a`.
+
+Arms that bind the same part of a value bind one type there. No literal
+or guard beside a bind narrows it, so in `` |s| select s { `A(1, a) => a
++ 1, `A(2, a) => str::len(a), _ => 0 } `` both `a` are the payload's one
+type, and a call is refused for passing an `i64` where the second arm
+uses a `string`. Annotate `s` with the union the payload may be, and
+test the bind inside the arm.
+
+A write made after the select is held to how the arms use what they
+bind. After `let v = never(); let z = select v { [`J(n), ..] => n + 1, _
+=> 3 }`, ``v <- [`J(1), `K]`` checks, and ``v <- [`J("s"), `K]`` is
+refused, since `n + 1` takes no string. The same holds through a
+tuple or a struct: over `` [(`A, z), (`B, "s")] ``, `(_, x) =>
+str::len(x)` reads `z` as a string, so a later `z <- 5` is refused.
 
 ### Variant Patterns
 
@@ -648,9 +583,8 @@ $ graphix test.gx
 Error: in file test.gx
 
 Caused by:
-    0: at: line: 4, column: 1 in file test.gx, in: select v { `Bare => "it's bare, no arg..
-    1: at: line: 8, column: 3 in file test.gx
-    2: unreachable arm: the earlier arms already cover the whole scrutinee, unused match cases
+    0: at: line: 8, column: 3 in file test.gx
+    1: pattern `Wrong will never match: nothing reaches it (4:8; the value is [`Arg(i64), `Bare, `MoreArg(string, i64)])
 ```
 
 ### Literals, Ignore

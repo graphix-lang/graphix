@@ -2463,6 +2463,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "graphix-bounds-spike"
+version = "0.0.0"
+dependencies = [
+ "ahash",
+ "anyhow",
+ "arcstr",
+ "enumflags2",
+ "graphix-types",
+ "netidx-core",
+ "netidx-value",
+ "triomphe",
+]
+
+[[package]]
 name = "graphix-compiler"
 version = "0.9.0"
 dependencies = [

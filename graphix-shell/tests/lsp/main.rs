@@ -80,9 +80,9 @@ fn a_typedef_hover_shows_its_parameters() {
     hover_is(&mut c, "let p: |Pair", decl);
 }
 
-/// A header lists its quantifiers only while a call still picks them, as a
-/// checker message's does: one instance of a generic function prints its
-/// variables where they occur, two instances' numbered apart.
+/// A header lists its quantifiers only while a call still picks them: one
+/// instance of a generic function is decided at its input's end (at its
+/// bound where nothing calls it) and prints with no header.
 #[test]
 fn one_instance_hovers_with_no_header() {
     const SRC: &str = "\
@@ -98,11 +98,36 @@ let hs = array::map([1], |r| h);
     c.open("main.gx");
     assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
     hover_is(&mut c, "let |h", "h: fn<'a: Number>(x: 'a) -> 'a");
-    hover_is(&mut c, "let |fs", "fs: Array<fn(x: 'a) -> 'a>");
+    hover_is(&mut c, "let |fs", "fs: Array<fn(x: Number) -> Number>");
     hover_is(&mut c, "let |mk", "mk: fn(z: i64) -> fn<'a: Number>(x: 'a) -> 'a");
-    hover_is(&mut c, "let |k", "k: fn(x: 'a) -> 'a");
-    hover_is(&mut c, "let |pair", "pair: (fn(x: 'a) -> 'a, fn(x: 'a1) -> 'a1)");
-    hover_is(&mut c, "let |hs", "hs: Array<fn(x: 'a) -> 'a>");
+    hover_is(&mut c, "let |k", "k: fn(x: Number) -> Number");
+    hover_is(
+        &mut c,
+        "let |pair",
+        "pair: (fn(x: Number) -> Number, fn(x: Number) -> Number)",
+    );
+    hover_is(&mut c, "let |hs", "hs: Array<fn(x: Number) -> Number>");
+}
+
+/// An inferred function that calls its argument shows the result the
+/// argument gives: a cell that only produces is read once the parameters'
+/// own types stand in the signature.
+#[test]
+fn a_result_an_argument_gives_hovers_as_its_variable() {
+    const SRC: &str = "\
+let apply = |x, f| f(x);
+let comp = |f, g| |x| g(f(x));
+apply(1, |x| x + 1)
+";
+    let mut c = Client::start(&[("main.gx", SRC)]);
+    c.open("main.gx");
+    assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
+    hover_is(&mut c, "let |apply", "apply: fn(x: 'a, f: fn('a) -> 'b) -> 'b");
+    hover_is(
+        &mut c,
+        "let |comp",
+        "comp: fn(f: fn('a) -> 'b, g: fn('b) -> 'c) -> fn(x: 'a) -> 'c",
+    );
 }
 
 /// A type shown in a definition's text holds the definition's own
@@ -205,25 +230,20 @@ let same = 'a: Number |y, x: 'a| { let z: 'a = y; x };
     }
 }
 
-/// A hover is one message: a name a header listed stays the header's once
-/// its signature ends, so a later instance's variable numbers apart past it.
+/// A hover is one message: a variable a definition holds prints unheaded
+/// under its declared name through the whole message, so a header listing
+/// the same name later in it numbers apart (`'a1`).
 #[test]
-fn a_hover_numbers_an_instance_past_a_header_name() {
+fn a_hover_numbers_a_header_past_a_held_name() {
     const SRC: &str = "\
 let h = 'a: Number |x: 'a| -> 'a x;
-let mk = |z: i64| 'a: Number |x: 'a| -> 'a x;
-let k = mk(0);
-let trio = (k, h, mk(1));
+let rec rf = 'a: Number |x: 'a| -> 'a { let t = (rf, h); x };
 0
 ";
     let mut c = Client::start(&[("main.gx", SRC)]);
     c.open("main.gx");
     assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
-    hover_is(
-        &mut c,
-        "let |trio",
-        "trio: (fn(x: 'a) -> 'a, fn<'a1: Number>(x: 'a1) -> 'a1, fn(x: 'a2) -> 'a2)",
-    );
+    hover_is(&mut c, "let |t ", "t: (fn(x: 'a) -> 'a, fn<'a1: Number>(x: 'a1) -> 'a1)");
 }
 
 /// A parameter's cell a callee's instance merged into hovers under one
@@ -243,7 +263,7 @@ let m = |x| select x { [a, t..] => array::concat(t, t), [] => [] };
     let hovers = [
         ("one", "fn(x: 'a) -> Array<'a>"),
         ("pair", "fn(x: 'a) -> (Array<'a>, 'a)"),
-        ("m", "fn(x: Array<'a>) -> [Array<'a>, Array<'b>]"),
+        ("m", "fn(x: Array<Any>) -> Array<_>"),
     ];
     for (name, typ) in hovers {
         let got = c.hover("main.gx", &format!("let |{name} "));
@@ -377,7 +397,7 @@ g(1, 2)
     let mut c = Client::start(&[("main.gx", SRC)]);
     c.open("main.gx");
     assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
-    hover_is(&mut c, "let |g", "g: fn<'b: Number>(self: T, x: 'b) -> 'b");
+    hover_is(&mut c, "let |g", "g: fn<'b: Number>(self, x: 'b) -> 'b");
 }
 
 const GENERIC_IMPLS: &str = "\
@@ -549,6 +569,23 @@ fn an_error_is_reported_where_it_arose() {
     );
 }
 
+/// What refuses one instance of a generic function, found when the
+/// instance's select is judged, is reported at the use that made the
+/// instance.
+#[test]
+fn an_instance_s_refusal_is_reported_at_its_use() {
+    let mut c = Client::start(&[(
+        "a.gx",
+        "let f = |x| select (x, 0) { (`J, _) => 1, (`M, _) => 2 };\nlet a = f(`M);\nf(`K)\n",
+    )]);
+    c.open("a.gx");
+    let p = c.at("a.gx", "|f(`K)");
+    let d = c.diagnostics("a.gx");
+    assert_eq!(d.len(), 1, "{d:?}");
+    assert_eq!((d[0].0, d[0].1), (p.line, p.character), "{d:?}");
+    assert!(d[0].2.contains("missing match cases: nothing matches (`K, i64)"), "{d:?}");
+}
+
 #[test]
 fn a_diagnostic_underlines_the_expression() {
     let mut c = Client::start(&[(
@@ -655,6 +692,25 @@ fn an_uncaught_error_is_a_warning() {
         [("cast<i64>(\"1\")?".into(), "error raised by ? will not be caught".into())]
     );
     c.edit("a.gx", "let n = cast<i64>(\"1\")$;\nn + 1\n");
+    assert_eq!(c.warnings("a.gx"), vec![]);
+}
+
+/// A call no catch covers is a warning where its function raises, and not
+/// where it raises nothing.
+#[test]
+fn an_uncaught_raise_from_a_call_is_a_warning() {
+    let mut c = Client::start(&[("a.gx", "let f = |x: i64| error(`E(x))?;\nf(1)\n")]);
+    c.open("a.gx");
+    assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
+    assert_eq!(
+        c.warnings("a.gx"),
+        [(
+            "f(1)".into(),
+            "error Error<ErrChain<`E(i64)>> raised from function call f will not be caught"
+                .into()
+        )]
+    );
+    c.edit("a.gx", "let f = |x: i64| x + 1;\nf(1)\n");
     assert_eq!(c.warnings("a.gx"), vec![]);
 }
 
@@ -935,11 +991,7 @@ let d = seq let (u, v) = (clk ~ n, clk ~ 2) { let s = u + v; s };
         }
     };
     declared("with(|err)", "err: Error<ErrChain<`E>>", &["\"[|err]"]);
-    declared(
-        "seq let |t =",
-        "t: [datetime, Error<`TimerError(string)>]",
-        &["let w = |t"],
-    );
+    declared("seq let |t =", "t: Result<datetime, `TimerError(string)>", &["let w = |t"]);
     declared("seq let (|u,", "u: i64", &["let s = |u + v"]);
     let offered = c.completions("a.gx", "let m = \"[e|rr]");
     assert!(offered.iter().all(|n| !n.starts_with('#')), "{offered:?}");
@@ -1346,8 +1398,7 @@ fn an_interface_mismatch_is_reported_where_it_is() {
 /// What the check tells above the error it explains leads the
 /// diagnostic: the binding a module's refusal names to annotate, with
 /// its file where the diagnostic is in another (the module's, or its
-/// interface's), an operator's remedy, and a note told at two frames,
-/// once.
+/// interface's), and an operator's remedy.
 #[test]
 fn what_the_check_tells_first_leads_the_diagnostic() {
     let mut c = Client::start(&[
@@ -1360,7 +1411,7 @@ fn what_the_check_tells_first_leads_the_diagnostic() {
     let d = c.diagnostics("m.gx");
     let told = format!(
         "the check decides a type the code around the module left open: \
-         annotate `fs` (line 1, column 5 in file {})\nval go is declared (i64, f64)",
+         annotate `fs` (line 1, column 5 in file {})",
         c.path("main.gx").display()
     );
     assert!(matches!(&d[..], [(1, 0, m)] if m.starts_with(&told)), "{d:?}");
@@ -1385,17 +1436,6 @@ fn what_the_check_tells_first_leads_the_diagnostic() {
                 strings, interpolate: \"[a][b]\")\ntype mismatch Number does not \
                 contain string";
     assert_eq!(c.diagnostics("a.gx"), [(1, 0, told.into())]);
-    let mut c = Client::start(&[(
-        "a.gx",
-        "let f = |#d = 1, x: i64| x;\nlet g = |#d = \"s\", x: i64| x;\n\
-         let h = [f, g];\nh[0]$(1)\n",
-    )]);
-    c.open("a.gx");
-    let d = c.diagnostics("a.gx");
-    let told = "the functions met here share one #d: annotate the binding that holds \
-                them with a function type whose #d holds every default\ntype mismatch \
-                i64 does not contain string";
-    assert!(matches!(&d[..], [(_, _, m)] if m == told), "{d:?}");
 }
 
 #[test]
@@ -1695,7 +1735,7 @@ println(\"[r]\")
     c.open("main.gx");
     assert_eq!(c.files_with_diagnostics(), Vec::<String>::new());
     let got = c.hover("main.gx", "let |w = e").unwrap_or_default();
-    assert!(got.contains("w: Error<[Error<[Error<"), "{}", &got[..got.len().min(200)]);
+    assert!(got.contains("w: [Error<[Error<[Error<"), "{}", &got[..got.len().min(200)]);
     assert!(
         got.len() <= Brief::MOST + Brief::BYTES && got.contains('…'),
         "{}",

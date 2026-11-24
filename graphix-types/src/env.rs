@@ -13,6 +13,7 @@ use crate::{
         AbstractId, CoreTrait, FnType, ResolvedRef, TVar, TraitId, Type, TypeRef,
         Unguarded,
         expansive::{Blind, Expansive, through_aliases},
+        tvar::ArenaRef,
         variance,
     },
 };
@@ -246,6 +247,14 @@ impl AbstractRep {
         let formals: SmallVec<[ArcStr; 4]> =
             self.params.iter().map(|(tv, _)| tv.name.clone()).collect();
         variance::covariant_in(env, &self.rep, &formals)
+    }
+
+    /// The representation as every instance's fits it, which a value
+    /// whose instance is not known is read at
+    /// ([`variance::held_at_every`]): the widest instance's where
+    /// [`Self::widest_holds_each`].
+    pub fn at_any_instance(&self, env: &Env) -> Type {
+        variance::held_at_every(env, &self.rep, &self.formals(&self.widest()))
     }
 
     fn formals(&self, params: &[Type]) -> LPooled<AHashMap<ArcStr, Type>> {
@@ -862,25 +871,50 @@ enum Unseen {
 }
 
 /// What the statements a list has still to compile may change of the
-/// names read through its level, each by its statement's index: a name
-/// an explicit `use` imports, a glob, and a module the list declares,
-/// whose names a `use` above it may import.
+/// names read through its level: the modules the list declares, each by
+/// its statement's index, whose names a `use` of the list imports. The
+/// list's imports themselves are installed before its statements compile.
 #[derive(Debug, Default)]
 pub struct Unsettled {
-    pub uses: SmallVec<[(usize, CompactString); 8]>,
-    pub globs: SmallVec<[usize; 2]>,
     pub modules: SmallVec<[(usize, CompactString); 8]>,
 }
 
 impl Unsettled {
     pub fn is_empty(&self) -> bool {
-        self.uses.is_empty() && self.globs.is_empty() && self.modules.is_empty()
+        self.modules.is_empty()
     }
 }
 
 /// A list's [`Unsettled`] and the index of the first statement that has
 /// not begun to compile.
 pub type OpenList = (Arc<Unsettled>, usize);
+
+/// The refusal of a second declaration of a name in a list: an import of
+/// a name the list imports or declares already ([`Env::import`]).
+#[derive(Debug)]
+pub struct Redeclared(CompactString);
+
+impl fmt::Display for Redeclared {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Redeclared {}
+
+/// The refusal of a recursive type that passes its parameter back to
+/// itself through an alias not defined yet: the list that declares both
+/// defines the alias first.
+#[derive(Debug)]
+pub struct AppliedLate(String);
+
+impl fmt::Display for AppliedLate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for AppliedLate {}
 
 /// The refusal of a name read through a level whose list may still
 /// change it ([`Env::unsettled`]).
@@ -904,7 +938,7 @@ fn in_scope(scope: &ModPath) -> CompactString {
 }
 
 /// What the statement list at `scope` is, for a message.
-fn scope_kind(scope: &str) -> &'static str {
+pub fn scope_kind(scope: &str) -> &'static str {
     if is_block_scope(scope) { "block" } else { "module" }
 }
 
@@ -1106,6 +1140,9 @@ pub struct LoadedBody {
     /// Never held across a call into the env: a name looked up under it
     /// reads it again.
     state: RwLock<LoadedState>,
+    /// The arena of a source load's compile: what the load made holds
+    /// this view of it, and so the cells it made.
+    _arena: Option<ArenaRef>,
 }
 
 /// A load's own types: every abstract type declared at its module's scope
@@ -1168,6 +1205,7 @@ impl LoadedBody {
             scope,
             own: None,
             state: RwLock::default(),
+            _arena: None,
         })
     }
 
@@ -1177,6 +1215,7 @@ impl LoadedBody {
         outer: Option<Arc<LoadedBody>>,
         scope: ModPath,
         own: OwnTypes,
+        arena: ArenaRef,
     ) -> Arc<Self> {
         Arc::new(Self {
             outer,
@@ -1184,6 +1223,7 @@ impl LoadedBody {
             scope,
             own: Some(own),
             state: RwLock::default(),
+            _arena: Some(arena),
         })
     }
 
@@ -1258,6 +1298,7 @@ impl LoadedBody {
             scope: own.scope.clone(),
             own: None,
             state: RwLock::default(),
+            _arena: None,
         })
     }
 
@@ -1486,8 +1527,27 @@ fn name_kept<'a>(named: impl Iterator<Item = (&'a ModPath, BindId)>, view: &mut 
     }
 }
 
+/// The arenas of the compile epochs whose types an env holds: an env
+/// keeps them ([`Arena`](crate::typ::tvar::Arena)).
+#[derive(Clone, Debug, Default)]
+pub struct Arenas(Arc<Vec<ArenaRef>>);
+
+impl Arenas {
+    pub fn hold(&mut self, a: &ArenaRef) {
+        if !self.0.iter().any(|b| ArenaRef::ptr_eq(a, b)) {
+            Arc::make_mut(&mut self.0).push(a.clone())
+        }
+    }
+
+    pub fn join(&mut self, other: &Arenas) {
+        other.0.iter().for_each(|a| self.hold(a))
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Env {
+    /// The arenas of the epochs whose types this env holds.
+    pub arenas: Arenas,
     pub by_id: TrackedMap<BindId, Arc<Bind>>,
     pub byref_chain: TrackedMap<BindId, BindId>,
     pub lexical: Lexical,
@@ -1554,6 +1614,7 @@ impl Env {
     #[doc(hidden)]
     pub fn fork(&self) -> Self {
         Self {
+            arenas: self.arenas.clone(),
             by_id: self.by_id.fork(),
             byref_chain: self.byref_chain.fork(),
             names: self.names.fork(),
@@ -1577,7 +1638,9 @@ impl Env {
     /// Write back what the task `fork` wrote to the global registries.
     #[doc(hidden)]
     pub fn join(&mut self, fork: Self) {
+        self.arenas.join(&fork.arenas);
         let Self {
+            arenas: _,
             by_id,
             byref_chain,
             lexical: _,
@@ -2037,20 +2100,7 @@ impl Env {
         if !inside {
             return Ok(None);
         }
-        let later = match settle && !self.unsettled.is_empty() {
-            true => self.unsettled.get(level).map(|(l, from)| (&**l, *from)),
-            false => None,
-        };
         let kind = || scope_kind(level);
-        if let Some((l, from)) = later
-            && l.uses.iter().any(|(i, k)| *i >= from && k.as_str() == n)
-        {
-            return Err(anyhow!(ChangesLater(format_compact!(
-                "{n} names what a later `use` of this {kind} imports: write the \
-                 `use` before the name's first use",
-                kind = kind()
-            ))));
-        }
         let kept = self
             .lexical
             .body
@@ -2117,15 +2167,6 @@ impl Env {
             if let Some((_, t)) = found {
                 return Ok(Some(t));
             }
-        }
-        if let Some((l, from)) = later
-            && l.globs.iter().any(|i| *i >= from)
-        {
-            return Err(anyhow!(ChangesLater(format_compact!(
-                "{n} may name what a later glob `use` of this {kind} imports: write \
-                 the `use` before the name's first use",
-                kind = kind()
-            ))));
         }
         if let Some(m) = later_module {
             return Err(anyhow!(ChangesLater(format_compact!(
@@ -3288,9 +3329,10 @@ impl Env {
         res
     }
 
-    /// Install one explicit import at `scope`. Errors on a duplicate
-    /// import or a same-scope declaration of the name unless `replace`;
-    /// identical re-imports are idempotent.
+    /// Install one explicit import at `scope`. A name is declared once
+    /// in a list: a second import of it, the same thing again included,
+    /// a type the list declares, and a declaration the scope holds
+    /// already are refused, unless `replace`.
     pub fn import(
         &mut self,
         scope: &ModPath,
@@ -3315,18 +3357,28 @@ impl Env {
         // (x-repl-02)
         if !replace {
             if let Some(e) = self.names.get(scope).and_then(|sn| sn.imports.get(key)) {
-                if e.scope == entry.scope && e.name == entry.name {
-                    return Ok(());
-                }
-                bail!(
-                    "`{key}` is already imported here (from `{}`); \
-                     rename one (`use ... as ...`)",
-                    e.scope
-                )
+                let told = match e.scope == entry.scope && e.name == entry.name {
+                    true => format_compact!(
+                        "`{key}` is already imported here: remove the repeated import"
+                    ),
+                    false => format_compact!(
+                        "`{key}` is already imported here (from `{}`); \
+                         rename one (`use ... as ...`)",
+                        e.scope
+                    ),
+                };
+                return Err(anyhow!(Redeclared(told)));
             }
-            let declared = self.declares(scope, key);
+            let declared = self.declares(scope, key)
+                || self
+                    .lexical
+                    .block_names
+                    .get(scope)
+                    .is_some_and(|m| m.get(key).is_some());
             if declared {
-                bail!("`{key}` is already defined in this scope; use `as` to rename")
+                return Err(anyhow!(Redeclared(format_compact!(
+                    "`{key}` is already defined in this scope; use `as` to rename"
+                ))));
             }
         }
         self.names_mut(scope).imports.insert_cow(key.into(), entry);
@@ -3698,15 +3750,24 @@ impl Env {
         defer: bool,
     ) -> Result<(Unguarded, Option<Arc<AbstractRep>>)> {
         let TypeDefSite { public, doc, pos, decl, ori } = site;
+        if name == "ErrChain" && *scope != ModPath::from(["core"]) {
+            bail!("ErrChain is the name of core's error chain: no other type may take it")
+        }
         if self.lexical.typedefs.get(scope).and_then(|m| m.get(name)).is_some() {
             bail!("{name} is already defined {}", in_scope(scope))
         }
         if self.lexical.traits.get(scope).and_then(|m| m.get(name)).is_some() {
             bail!("{name} is already defined as a trait {}", in_scope(scope))
         }
+        // a parameter's name, wherever the definition writes it, is the
+        // parameter
+        let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+        for (tv, _) in params.iter() {
+            known.entry(tv.name.clone()).or_insert_with(|| tv.clone());
+        }
         let (typ, rep) = match body {
             TypeDefBody::Alias(typ) => {
-                (typ.scope_refs(scope).rewrite_trait_args(self)?, None)
+                (typ.scope_refs_named(scope, &mut known).rewrite_trait_args(self)?, None)
             }
             TypeDefBody::Abstract(rep) => {
                 let formals =
@@ -3720,31 +3781,25 @@ impl Env {
                 let typ = Type::Abstract { id, params: formals };
                 let rep = match rep {
                     None => None,
-                    Some(r) => Some(r.scope_refs(scope).rewrite_trait_args(self)?),
+                    Some(r) => Some(
+                        r.scope_refs_named(scope, &mut known).rewrite_trait_args(self)?,
+                    ),
                 };
                 (typ, rep)
             }
         };
-        let params = scope_params(&params, scope);
+        let params: Arc<[(TVar, Option<Type>)]> =
+            Arc::from_iter(params.iter().map(|(tv, tc)| {
+                (tv.clone(), tc.as_ref().map(|t| t.scope_refs_named(scope, &mut known)))
+            }));
         for b in params.iter().filter_map(|(_, b)| b.as_ref()) {
             b.check_bound(self)?;
         }
-        let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         let mut declared: LPooled<AHashSet<ArcStr>> = LPooled::take();
         let mut used: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         typ.collect_tvars(&mut used);
         for t in rep.iter().chain(params.iter().filter_map(|(_, tc)| tc.as_ref())) {
             t.collect_tvars(&mut used);
-        }
-        for (tv, tc) in params.iter() {
-            Type::TVar(tv.clone()).alias_tvars(&mut known);
-            if let Some(tc) = tc {
-                tc.alias_tvars(&mut known);
-            }
-        }
-        typ.alias_tvars(&mut known);
-        if let Some(rep) = &rep {
-            rep.alias_tvars(&mut known);
         }
         for (tv, _) in params.iter() {
             if !declared.insert(tv.name.clone()) {
@@ -3862,7 +3917,11 @@ impl Env {
         match crate::typ::expansive::expansive(self, def) {
             Expansive::Grows(param) => bail!("{}", expansive(name, &param)),
             Expansive::Through(param, alias, why) => {
-                bail!("{}", expansive_through(name, &param, &alias, why))
+                let told = expansive_through(name, &param, &alias, why);
+                match why {
+                    Blind::Late => Err(anyhow!(AppliedLate(told))),
+                    Blind::Bounded => bail!("{told}"),
+                }
             }
             Expansive::Unknown => Ok(guarded.or(Unguarded::Unknown)),
             Expansive::Regular => Ok(guarded),
@@ -3897,9 +3956,7 @@ impl Env {
             ))
         };
         let (was, now) = (shape(&old.params, &old.rep), shape(params, rep));
-        old.params.len() == params.len()
-            && was.sig_matches(self, &now).is_ok()
-            && now.sig_matches(self, &was).is_ok()
+        old.params.len() == params.len() && was.same_up_to_renaming(self, &now)
     }
 
     /// Resolve the names the abstract typedef `name` at `scope` writes in
@@ -3946,7 +4003,7 @@ impl Env {
         };
         let Some(rep) = &td.rep else { return Ok(()) };
         let mut unresolved = Vec::new();
-        let _ = rep.unresolved_names(self, &mut unresolved, None);
+        let _ = rep.unresolved_names(self, &mut unresolved);
         if unresolved.is_empty() && !self.rep_unchanged(old, td.def.params(), rep) {
             bail!("{}", rep_changed(name, &old.rep))
         }
@@ -4241,6 +4298,8 @@ impl Env {
         // every registry by name: one a new field adds is cleared here, or
         // named exempt
         let Env {
+            // what keeps the cells of the types, not a registry
+            arenas: _,
             by_id,
             byref_chain,
             // the lexical maps, which unbind_lexical_under cleared

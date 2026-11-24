@@ -1,0 +1,5 @@
+// The same over a let nothing writes: a field read, a read of a field of a
+// field, a struct update and an interpolated read of a value nothing
+// decides all check, and all build.
+// Expected trace (both engines): 0.
+{ let v = never(); v.x; v.a.b == v.c; { v with y: 1 }; "[v.x]"; 0 }

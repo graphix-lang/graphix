@@ -5,7 +5,7 @@
 use anyhow::Result;
 use graphix_package_core::{
     run,
-    testing::{FuseExpect, is, prints, refused},
+    testing::{FuseExpect, is, prints, refused, refused_renumbered, settles},
 };
 use netidx::publisher::Value;
 
@@ -365,7 +365,7 @@ run!(
 // throwing nothing.
 run!(
     throws_mismatch_names_nothing,
-    refused("in throws clause: the signature throws nothing, the implementation throws Error<ErrChain<`Zero>>"),
+    refused("val f is declared fn(x: i64) -> i64 but implemented fn(x: i64) -> i64: type mismatch _ does not contain Error<ErrChain<`Zero>>"),
     "/test.gx" => r#"
         mod inner;
         let result = inner::f(1)
@@ -380,7 +380,7 @@ run!(
 
 run!(
     throws_mismatch_names_the_written_types,
-    refused("in throws clause: signature has ErrChain<`A>, implementation has ErrChain<`Zero>"),
+    refused("val f is declared fn(x: i64) -> i64 throws Error<ErrChain<`A>> but implemented fn(x: i64) -> i64: type mismatch `A does not contain `Zero"),
     "/test.gx" => r#"
         mod inner;
         let result = inner::f(1)
@@ -396,7 +396,7 @@ run!(
 // Error: the function returns the wrong type.
 run!(
     abstract_type_sig_mismatch,
-    refused("signature has T, implementation has i64"),
+    refused("val make is declared fn(x: i64) -> T but implemented fn(x: i64) -> i64"),
     "/test.gx" => r#"
         mod inner;
         let result = 0
@@ -454,7 +454,7 @@ run!(
 // Error: string does not satisfy `Box<'a: Number>`.
 run!(
     abstract_type_constraint_auto_enforced_error,
-    refused("'a: unbound within Number does not contain string"),
+    refused("type mismatch Number does not contain string"),
     "/test.gx" => r#"
         mod inner;
         let box = inner::wrap("hello");
@@ -506,7 +506,7 @@ run!(
 
 run!(
     interface_omits_number,
-    |v: Result<&Value>| v.is_err_and(|e| format!("{e:#}").contains("'a: Number")),
+    refused_renumbered("val double is declared fn(x: 'a) -> 'a but implemented fn(x: '_0: unbound within '_1: unbound within Singleton & '_0: … & [u8, i8, u16, i16, u32, v32, i32, z32, u64, v64, i64, z64, f32, f64, decimal] & '_2: unbound within '_3: unbound) -> '_3: unbound: the implementation requires 'a: Singleton, which the signature does not declare"),
     "/test.gx" => r#"
         mod inner;
         let result = inner::double(2)
@@ -576,7 +576,7 @@ run!(
 // signature's abstract type.
 run!(
     abstract_type_wrong_arg,
-    refused("signature has T, implementation has i64"),
+    refused("val get is declared fn(t: T) -> i64 but implemented fn(t: i64) -> i64"),
     "/test.gx" => r#"
         mod inner;
         let result = 0
@@ -1146,7 +1146,7 @@ run!(
 // implementation that unifies them is less general than its interface.
 run!(
     nested_signature_variables_stay_distinct,
-    refused("type variable usage mismatch"),
+    refused("val f is declared fn(x: Array<'a>, y: Array<'b>) -> Array<'a> but implemented fn(x: 'c: unbound, y: 'c: unbound) -> 'c: unbound: type mismatch 'a: unbound does not contain 'b: unbound"),
     "/test.gx" => r#"
         mod inner;
         let result = inner::f([1, 2], ["a", "b"])
@@ -1196,7 +1196,7 @@ run!(
 // stands between them.
 run!(
     undeclared_impl_hidden_apart,
-    refused("the impl in module /test/a is not in its interface"),
+    refused("type mismatch Show does not contain i64"),
     "/test.gx" => r#"
         mod t;
         mod a;
@@ -1322,7 +1322,7 @@ run!(
 // decides.
 run!(
     open_union_call_refused,
-    refused("which nothing has decided, and the check picks none by order"),
+    settles(),
     "/test.gx" => "mod m; let result = m::f([1], never())",
     "/test/m.gxi" => "type A<'x> = Array<'x>;\ntype B<'x> = Array<'x>;\nval f: fn(x: [A<'a>, B<'b>], y: 'a) -> 'a;",
     "/test/m.gx" => "let f = |x: [A<'b>, B<'a>], y: 'a| -> 'a y"
@@ -1341,16 +1341,16 @@ run!(
 // instance choose between two undecided members is refused as the val is
 // checked; one whose variables stand at the declaration's places is not.
 run!(
-    val_implementation_that_would_choose_a_member_refused,
-    refused("which nothing has decided, and the check picks none by order"),
+    val_implementation_at_a_union_of_two_variables_holds,
+    prints("i64:0"),
     "/test.gx" => "mod m; let result = m::f(1)",
     "/test/m.gxi" => "type E<'p, 'q> = ['p, 'q];\nval f: fn(x: 'a) -> i64;",
     "/test/m.gx" => "let f = |x: E<'a, 'b>| -> i64 0"
-; FuseExpect::None);
+; FuseExpect::Jit);
 
 run!(
-    val_in_data_implementation_that_would_choose_a_member_refused,
-    refused("which nothing has decided, and the check picks none by order"),
+    val_in_data_implementation_at_a_union_of_two_variables_holds,
+    prints("i64:0"),
     "/test.gx" => "mod m; let result = m::s.g([1])",
     "/test/m.gxi" => "type E<'p, 'q> = ['p, 'q];\nval s: {g: fn(x: Array<'a>) -> i64};",
     "/test/m.gx" => "let s = {g: |x: Array<E<'a, 'b>>| -> i64 0}"
@@ -1367,46 +1367,10 @@ run!(
 // No pairing of the union fits the rest of the signature: refused.
 run!(
     open_union_without_a_pairing_is_refused,
-    refused("type variable usage mismatch"),
+    refused("val f is declared fn(x: [A<'a>, B<'b>], y: 'a, z: 'a) -> 'a but implemented fn(x: [A<'b: unbound>, B<'a: unbound>], y: 'a: unbound, z: 'b: unbound) -> 'a: unbound: type mismatch [A<'a: unbound>, B<'a: unbound>] does not contain Array<'b: unbound>"),
     "/test.gx" => "mod m; let result = m::f([1], 2, 3)",
     "/test/m.gxi" => "type A<'x> = Array<'x>;\ntype B<'x> = Array<'x>;\nval f: fn(x: [A<'a>, B<'b>], y: 'a, z: 'a) -> 'a;",
     "/test/m.gx" => "let f = |x: [A<'b>, B<'a>], y: 'a, z: 'b| -> 'a y"
-; FuseExpect::None);
-
-// Two members of one constructor holding two variables: the val is
-// refused, whatever its implementation writes.
-run!(
-    val_nested_variable_union_refused,
-    refused("val f: [Array<'a>, Array<'b>] is a union of the type variables 'a and 'b, held by"),
-    "/test.gx" => r#"mod inner; let result = inner::f([1], |n: i64| n, 1, "s")"#,
-    "/test/inner.gxi" => "val f: fn(x: [Array<'a>, Array<'b>], g: fn(n: i64) -> i64, y: 'a, z: 'b) -> i64",
-    "/test/inner.gx" => "let f = |x: [Array<i64>, Array<string>], g: fn(n: i64) -> i64, y: i64, z: string| -> i64 0"
-; FuseExpect::None);
-
-run!(
-    val_nested_variable_union_of_function_types_refused,
-    refused("is a union of the type variables 'a and 'b, held by its members fn(n: 'a) -> i64 and fn(n: 'b) -> i64"),
-    "/test.gx" => r#"mod inner; let result = inner::f(|n: i64| n, 1, "s")"#,
-    "/test/inner.gxi" => "val f: fn(k: [fn(n: 'a) -> i64, fn(n: 'b) -> i64], y: 'a, z: 'b) -> i64",
-    "/test/inner.gx" => "let f = |k: [fn(n: i64) -> i64, fn(n: string) -> i64], y: i64, z: string| -> i64 0"
-; FuseExpect::None);
-
-run!(
-    implementation_nested_variable_union_refused,
-    refused("is a union of the type variables 'c and 'd, held by"),
-    "/test.gx" => r#"mod inner; let result = inner::f([1], |n: i64| n, 1, "s")"#,
-    "/test/inner.gxi" => "val f: fn(x: [Array<i64>, Array<string>], g: fn(n: i64) -> i64, y: i64, z: string) -> i64",
-    "/test/inner.gx" => "let f = |x: [Array<'c>, Array<'d>], g: fn(n: i64) -> i64, y: 'd, z: 'c| -> i64 0"
-; FuseExpect::None);
-
-// A val may not write a union of two of its variables: no value's type
-// says which of them it takes.
-run!(
-    val_variable_union_refused,
-    refused("val f: ['a, 'b] is a union of the type variables 'a and 'b"),
-    "/test.gx" => "mod m; let result = m::f(1, 2)",
-    "/test/m.gxi" => "val f: fn(x: ['a, 'b], y: 'a) -> 'a;",
-    "/test/m.gx" => "let f = |x: [i64, string], y: i64| -> i64 y"
 ; FuseExpect::None);
 
 run!(
@@ -1456,7 +1420,7 @@ run!(
 // ... but not when the cells map to two variables.
 run!(
     union_of_open_cells_does_not_implement_one_of_two,
-    refused("type variable usage mismatch"),
+    refused_renumbered("val pick is declared fn(b: bool, x: 'a, y: 'b) -> 'a but implemented fn(b: '_0: unbound within bool, x: '_1: unbound within '_2: unbound within '_3: unbound, y: '_4: unbound within '_2: unbound within '_3: unbound) -> '_3: unbound: type mismatch 'a: unbound does not contain 'b: unbound"),
     "/test.gx" => "mod m; let result = m::pick(true, 1, 2)",
     "/test/m.gxi" => "val pick: fn(b: bool, x: 'a, y: 'b) -> 'a;",
     "/test/m.gx" => "let pick = |b, x, y| select b { true => x, false => y }"
@@ -1473,7 +1437,7 @@ run!(
 
 run!(
     union_of_open_cells_does_not_implement_one_of_two_types,
-    refused("type variable usage mismatch: expected string, got i64"),
+    refused_renumbered("val pick is declared fn(b: bool, x: i64, y: string) -> i64 but implemented fn(b: bool, x: '_0: unbound within '_1: unbound within '_2: unbound, y: '_3: unbound within '_1: unbound within '_2: unbound) -> '_2: unbound: type mismatch i64 does not contain string"),
     "/test.gx" => "mod m; let result = m::pick(false, 1, \"s\")",
     "/test/m.gxi" => "val pick: fn(b: bool, x: i64, y: string) -> i64;",
     "/test/m.gx" => "let pick = |b: bool, x, y| select b { true => x, false => y }"
@@ -1495,22 +1459,64 @@ run!(
 // one constructor from the written-form rule).
 run!(
     unpairable_union_refused_without_retrying_the_others,
-    refused("signature has string, implementation has f64"),
+    refused("val f is declared fn(x0: [string, A<'a0>, B<'a1>, C<'a2>, D<'a3>, E<'a4>], x1: [i64, A<'b0>, B<'b1>, C<'b2>, D<'b3>, E<'b4>], x2: [i64, A<'c0>, B<'c1>, C<'c2>, D<'c3>, E<'c4>], x3: [i64, A<'d0>, B<'d1>, C<'d2>, D<'d3>, E<'d4>]) -> i64 but implemented fn(x0: [f64, A<'a0: unbound>, B<'a1: unbound>, C<'a2: unbound>, D<'a3: unbound>, E<'a4: unbound>], x1: [i64, A<'b0: unbound>, B<'b1: unbound>, C<'b2: unbound>, D<'b3: unbound>, E<'b4: unbound>], x2: [i64, A<'c0: unbound>, B<'c1: unbound>, C<'c2: unbound>, D<'c3: unbound>, E<'c4: unbound>], x3: [i64, A<'d0: unbound>, B<'d1: unbound>, C<'d2: unbound>, D<'d3: unbound>, E<'d4: unbound>]) -> i64: type mismatch [f64, A<'a0: unbound>, B<'a1: unbound>, C<'a2: unbound>, D<'a3: unbound>, E<'a4: unbound>] does not contain string"),
     "/test.gx" => "mod m; let result = 0",
     "/test/m.gxi" => "type A<'x> = Array<'x>;\ntype B<'x> = Array<'x>;\ntype C<'x> = Array<'x>;\ntype D<'x> = Array<'x>;\ntype E<'x> = Array<'x>;\nval f: fn(x0: [A<'a0>, B<'a1>, C<'a2>, D<'a3>, E<'a4>, string], x1: [A<'b0>, B<'b1>, C<'b2>, D<'b3>, E<'b4>, i64], x2: [A<'c0>, B<'c1>, C<'c2>, D<'c3>, E<'c4>, i64], x3: [A<'d0>, B<'d1>, C<'d2>, D<'d3>, E<'d4>, i64]) -> i64;",
     "/test/m.gx" => "let f = |x0: [A<'a0>, B<'a1>, C<'a2>, D<'a3>, E<'a4>, f64], x1: [A<'b0>, B<'b1>, C<'b2>, D<'b3>, E<'b4>, i64], x2: [A<'c0>, B<'c1>, C<'c2>, D<'c3>, E<'c4>, i64], x3: [A<'d0>, B<'d1>, C<'d2>, D<'d3>, E<'d4>, i64]| -> i64 0"
 ; FuseExpect::None);
 
+// A val holds its implementation where the implementation fits it: a value
+// or result narrower than declared, a parameter wider, fewer throws. Every
+// module sees the declared type.
+run!(
+    a_val_wider_than_its_value_holds,
+    prints("i64:4"),
+    "/test.gx" => "mod m; let result = m::x$ + 1",
+    "/test/m.gxi" => "val x: [i64, null];",
+    "/test/m.gx" => "let x = 3"
+; FuseExpect::Jit);
+
+run!(
+    a_val_returning_wider_than_its_implementation_holds,
+    prints("i64:42"),
+    "/test.gx" => "mod m; let result = select m::f(41) { null => 0, i64 as n => n }",
+    "/test/m.gxi" => "val f: fn(x: i64) -> [i64, null];",
+    "/test/m.gx" => "let f = |x: i64| x + 1"
+; FuseExpect::Jit);
+
+run!(
+    a_val_taking_narrower_than_its_implementation_holds,
+    prints("i64:42"),
+    "/test.gx" => "mod m; let result = m::g(21)",
+    "/test/m.gxi" => "val g: fn(x: i64) -> i64;",
+    "/test/m.gx" => "let g = |x: [i64, null]| select x { null => 0, i64 as n => n * 2 }"
+; FuseExpect::Jit);
+
+run!(
+    a_native_call_through_vals_wider_than_their_implementations,
+    prints("i64:4"),
+    "/test.gx" => "mod m; let result = #[native] (m::g(m::f(1)$) + 0)",
+    "/test/m.gxi" => "val f: fn(x: i64) -> [i64, null];\nval g: fn(x: i64) -> i64;",
+    "/test/m.gx" => "let f = |x: i64| x + 1;\nlet g = |x: [i64, null]| select x { null => 0, i64 as n => n * 2 }"
+; FuseExpect::Jit);
+
+run!(
+    a_val_throwing_more_than_its_lambda_holds,
+    prints("i64:1"),
+    "/test.gx" => "mod m; let result = m::f(1)",
+    "/test/m.gxi" => "val f: fn(x: i64) -> i64 throws `E;",
+    "/test/m.gx" => "let f = |x: i64| x"
+; FuseExpect::Jit);
+
+run!(
+    a_val_throwing_more_than_its_annotated_binding_holds,
+    prints("i64:1"),
+    "/test.gx" => "mod m; let result = m::f(1)",
+    "/test/m.gxi" => "val f: fn(x: i64) -> i64 throws `E;",
+    "/test/m.gx" => "let f: fn(x: i64) -> i64 = |x| x"
+; FuseExpect::Jit);
+
 // A mismatch names the implemented type, not its cells.
-// CR claude for claude: [test-gap/medium] Nothing pins that a val declares exactly its
-// implementation's type. `val x: [i64, null]` over `let x = 3` is refused by
-// `Type::sig_matches` and checks once the let is annotated, but every refusal in this
-// file is a mismatch (f64 against i64, W<string> against W<i64>), never a declaration
-// wider than its implementation. A change that let sig_matches accept a wider
-// declaration would pass the whole suite while the skill still states the rule. Add the
-// refusal ("val x is declared [i64, null] but implemented i64") and its annotated twin,
-// and a function-result variant (`-> [i64, null]` over `|x| x + 1`). Found by reading;
-// the rule holds today (checked with --check). (tests-interfaces-image-04)
 run!(
     implemented_type_prints_resolved,
     refused("but implemented fn(x: f64) -> f64"),
@@ -1524,7 +1530,7 @@ run!(
 // under the name the refusal's `implemented` gives it.
 run!(
     a_signature_and_its_implementation_print_a_name_both_write_alike,
-    refused("val f is declared fn(x: Array<'a>) -> 'a but implemented fn(x: Map<'a: unbound, i64>) -> 'a: unbound: in argument 0: type mismatch: signature has Array<'a: unbound>, implementation has Map<'a: unbound, i64>"),
+    refused("val f is declared fn(x: Array<'a>) -> 'a but implemented fn(x: Map<'a: unbound, i64>) -> 'a: unbound: type mismatch Map<'a: unbound, i64> does not contain Array<'a1: unbound>"),
     "/test.gx" => "mod m; let result = 0",
     "/test/m.gxi" => "val f: fn(x: Array<'a>) -> 'a;",
     "/test/m.gx" => "let f = |x: Map<'a, i64>| -> 'a never()"
@@ -1532,7 +1538,7 @@ run!(
 
 run!(
     a_signature_through_a_type_reference_prints_a_name_both_write_alike,
-    refused("val f is declared fn(x: T<'a>) -> 'a but implemented fn(x: { w: 'a: unbound }) -> 'a: unbound: in argument 0: signature has T<'a: unbound>, implementation has { w: 'a: unbound }: struct field name mismatch: v vs w"),
+    refused("val f is declared fn(x: T<'a>) -> 'a but implemented fn(x: { w: 'a: unbound }) -> 'a: unbound: type mismatch { w: 'a } does not contain T<'a>"),
     "/test.gx" => "mod m; let result = 0",
     "/test/m.gxi" => "type T<'a> = { v: 'a };\nval f: fn(x: T<'a>) -> 'a;",
     "/test/m.gx" => "let f = |x: { w: 'a }| -> 'a never()"
@@ -1540,11 +1546,20 @@ run!(
 
 // An argument whose kinds differ is named in Graphix syntax.
 run!(
-    arg_default_mismatch_is_named,
-    refused("argument #a: the signature gives it no default, the implementation a default"),
+    an_implementation_default_for_a_required_label_holds,
+    prints("i64:1"),
     "/test.gx" => "mod m; let result = m::f(#a: 1)",
     "/test/m.gxi" => "val f: fn(#a: i64) -> i64;",
     "/test/m.gx" => "let f = |#a = 0| -> i64 a"
+; FuseExpect::Jit);
+
+// nothing to pass.
+run!(
+    arg_default_the_signature_gives_the_implementation_requires_refused,
+    refused("val f is declared fn(?#a: i64) -> i64 but implemented fn(#a: i64) -> i64"),
+    "/test.gx" => "mod m; let result = m::f()",
+    "/test/m.gxi" => "val f: fn(?#a: i64) -> i64;",
+    "/test/m.gx" => "let f = |#a: i64| -> i64 a"
 ; FuseExpect::None);
 
 // A variable named only inside another's bound is matched with the
@@ -1552,7 +1567,7 @@ run!(
 // the call.
 run!(
     a_bound_inside_a_bound_must_be_declared,
-    refused("the implementation requires 'b: Int"),
+    refused("val f is declared fn<'a: Array<'b>>(x: 'a) -> 'a but implemented fn<'a: Array<'b: unbound within Int>, 'b: Int>(x: 'a: unbound within Array<'b: unbound within Int>) -> 'a: unbound within Array<'b: unbound within Int>: type mismatch Array<'b: unbound within Int> does not contain 'a: unbound within Array<'b1: unbound>"),
     "/test.gx" => "mod m; let result = m::f([1])",
     "/test/m.gxi" => "val f: fn<'a: Array<'b>>(x: 'a) -> 'a;",
     "/test/m.gx" => "let f = 'a: Array<'b>, 'b: Int |x: 'a| -> 'a x"
@@ -1568,7 +1583,7 @@ run!(
 
 run!(
     a_declared_bound_inside_a_bound_refuses_at_the_call,
-    refused("unbound within Int"),
+    refused("type mismatch Int does not contain f64"),
     "/test.gx" => "mod m; let result = m::f([1.5])",
     "/test/m.gxi" => "val f: fn<'a: Array<'b>, 'b: Int>(x: 'a) -> 'a;",
     "/test/m.gx" => "let f = 'a: Array<'b>, 'b: Int |x: 'a| -> 'a x"
@@ -1589,7 +1604,7 @@ run!(
 // at a position is.
 run!(
     a_bound_inside_a_union_bound_must_be_declared,
-    refused("the implementation requires 'a: [i64, f64], which the signature does not declare"),
+    refused("val f is declared fn<'a: [i64, string], 'b: ['a, `X]>(x: 'b) -> 'b but implemented fn<'a: [i64, f64], 'b: ['a: unbound within [i64, f64], `X]>(x: 'b: unbound within ['a: unbound within [i64, f64], `X]) -> 'b: unbound within ['a: unbound within [i64, f64], `X]: type mismatch [i64, f64] does not contain 'b"),
     "/test.gx" => "mod m; let result = m::f(\"s\")",
     "/test/m.gxi" => "val f: fn<'a: [i64, string], 'b: ['a, `X]>(x: 'b) -> 'b;",
     "/test/m.gx" => "let f = 'a: [i64, f64], 'b: ['a, `X] |x: 'b| -> 'b x"
@@ -1597,7 +1612,7 @@ run!(
 
 run!(
     a_chain_of_union_bounds_must_be_declared,
-    refused("the implementation requires 'a: [i64, f64], which the signature does not declare"),
+    refused("val f is declared fn<'a: [i64, string], 'b: ['c, `X], 'c: [null, 'a]>(x: 'b) -> 'b but implemented fn<'p: [i64, f64], 'q: ['r: unbound within [null, 'p: unbound within [i64, f64]], `X], 'r: [null, 'p: unbound within [i64, f64]]>(x: 'q: unbound within ['r: unbound within [null, 'p: unbound within [i64, f64]], `X]) -> 'q: unbound within ['r: unbound within [null, 'p: unbound within [i64, f64]], `X]: type mismatch [i64, f64] does not contain 'b"),
     "/test.gx" => "mod m; let result = m::f(\"s\")",
     "/test/m.gxi" => "val f: fn<'a: [i64, string], 'c: ['a, null], 'b: ['c, `X]>(x: 'b) -> 'b;",
     "/test/m.gx" => "let f = 'p: [i64, f64], 'r: ['p, null], 'q: ['r, `X] |x: 'q| -> 'q x"
@@ -1605,7 +1620,7 @@ run!(
 
 run!(
     a_bound_met_through_a_later_bound_must_be_declared,
-    refused("the implementation requires 'z: [i64, f64], which the signature does not declare"),
+    refused("val f is declared fn<'a: Array<'z>, 'b: Array<'a>, 'z: [i64, string]>(x: 'b) -> 'b but implemented fn<'p: Array<'r: unbound within [i64, f64]>, 'q: Array<'p: unbound within Array<'r: unbound within [i64, f64]>>, 'r: [i64, f64]>(x: 'q: unbound within Array<'p: unbound within Array<'r: unbound within [i64, f64]>>) -> 'q: unbound within Array<'p: unbound within Array<'r: unbound within [i64, f64]>>: type mismatch Array<'p: unbound within Array<'r: unbound within [i64, f64]>> does not contain 'b: unbound within Array<'a: unbound within Array<'z: unbound within [i64, string]>>"),
     "/test.gx" => "mod m; let result = m::f([[\"s\"]])",
     "/test/m.gxi" => "val f: fn<'a: Array<'z>, 'b: Array<'a>, 'z: [i64, string]>(x: 'b) -> 'b;",
     "/test/m.gx" => "let f = 'p: Array<'r>, 'q: Array<'p>, 'r: [i64, f64] |x: 'q| -> 'q x"
@@ -1655,7 +1670,7 @@ run!(
 
 run!(
     a_chain_of_bounds_with_the_names_moved_round_must_be_declared,
-    refused("the implementation requires 'z: [i64, f64], which the signature does not declare"),
+    refused("val f is declared fn<'a: Array<'z>, 'b: Array<'a>, 'z: [i64, string]>(x: 'b) -> 'b but implemented fn<'a: Array<'q: unbound within Array<'r: unbound within [i64, f64]>>, 'q: Array<'r: unbound within [i64, f64]>, 'r: [i64, f64]>(x: 'a: unbound within Array<'q: unbound within Array<'r: unbound within [i64, f64]>>) -> 'a: unbound within Array<'q: unbound within Array<'r: unbound within [i64, f64]>>: type mismatch Array<'q: unbound within Array<'r: unbound within [i64, f64]>> does not contain 'b: unbound within Array<'a: unbound within Array<'z: unbound within [i64, string]>>"),
     "/test.gx" => "mod m; let result = m::f([[\"s\"]])",
     "/test/m.gxi" => "val f: fn<'a: Array<'z>, 'b: Array<'a>, 'z: [i64, string]>(x: 'b) -> 'b;",
     "/test/m.gx" => "let f = 'a: Array<'q>, 'q: Array<'r>, 'r: [i64, f64] |x: 'a| -> 'a x"
@@ -1663,7 +1678,7 @@ run!(
 
 run!(
     a_union_bound_with_the_names_moved_round_must_be_declared,
-    refused("the implementation requires 'a: [i64, f64], which the signature does not declare"),
+    refused("val f is declared fn<'a: [i64, string], 'b: ['a, `X]>(x: 'b) -> 'b but implemented fn<'a: ['b: unbound within [i64, f64], `X], 'b: [i64, f64]>(x: 'a: unbound within ['b: unbound within [i64, f64], `X]) -> 'a: unbound within ['b: unbound within [i64, f64], `X]: type mismatch [i64, f64] does not contain 'b"),
     "/test.gx" => "mod m; let result = m::f(\"s\")",
     "/test/m.gxi" => "val f: fn<'a: [i64, string], 'b: ['a, `X]>(x: 'b) -> 'b;",
     "/test/m.gx" => "let f = 'b: [i64, f64], 'a: ['b, `X] |x: 'a| -> 'a x"
@@ -1675,7 +1690,7 @@ run!(
 // them.
 run!(
     an_unpaired_variable_in_a_wider_union_bound_must_be_declared,
-    refused("the implementation requires 'b: ['p, `X, `Y], which the signature does not declare"),
+    refused("val f is declared fn<'a: [i64, string], 'b: ['a, `X]>(x: 'b) -> 'b but implemented fn<'p: [i64, f64], 'q: ['p: unbound within [i64, f64], `X, `Y]>(x: 'q: unbound within ['p: unbound within [i64, f64], `X, `Y]) -> 'q: unbound within ['p: unbound within [i64, f64], `X, `Y]: type mismatch [i64, f64] does not contain 'b"),
     "/test.gx" => "mod m; let result = m::f(\"s\")",
     "/test/m.gxi" => "val f: fn<'a: [i64, string], 'b: ['a, `X]>(x: 'b) -> 'b;",
     "/test/m.gx" => "let f = 'p: [i64, f64], 'q: ['p, `X, `Y] |x: 'q| -> 'q x"
@@ -1691,7 +1706,7 @@ run!(
 
 run!(
     an_unpaired_variable_under_a_constructor_must_be_declared,
-    refused("the implementation requires 'b: [null, Array<'p>], which the signature does not declare"),
+    refused("val f is declared fn<'a: [i64, string], 'b: Array<'a>>(x: 'b) -> 'b but implemented fn<'p: [i64, f64], 'q: [null, Array<'p: unbound within [i64, f64]>]>(x: 'q: unbound within [null, Array<'p: unbound within [i64, f64]>]) -> 'q: unbound within [null, Array<'p: unbound within [i64, f64]>]: type mismatch [null, Array<'p: unbound within [i64, f64]>] does not contain 'b: unbound within Array<'a: unbound within [i64, string]>"),
     "/test.gx" => "mod m; let result = m::f([\"s\"])",
     "/test/m.gxi" => "val f: fn<'a: [i64, string], 'b: Array<'a>>(x: 'b) -> 'b;",
     "/test/m.gx" => "let f = 'p: [i64, f64], 'q: [Array<'p>, null] |x: 'q| -> 'q x"
@@ -1707,7 +1722,7 @@ run!(
 
 run!(
     an_unpaired_variable_in_a_tuple_must_be_declared,
-    refused("the implementation requires 'b: [null, (i64, 'p)], which the signature does not declare"),
+    refused("val f is declared fn<'a: [i64, string], 'b: (i64, 'a)>(x: 'b) -> 'b but implemented fn<'p: [i64, f64], 'q: [null, (i64, 'p: unbound within [i64, f64])]>(x: 'q: unbound within [null, (i64, 'p: unbound within [i64, f64])]) -> 'q: unbound within [null, (i64, 'p: unbound within [i64, f64])]: type mismatch [null, (i64, 'p: unbound within [i64, f64])] does not contain 'b: unbound within (i64, 'a: unbound within [i64, string])"),
     "/test.gx" => "mod m; let result = m::f((1, \"s\"))",
     "/test/m.gxi" => "val f: fn<'a: [i64, string], 'b: (i64, 'a)>(x: 'b) -> 'b;",
     "/test/m.gx" => "let f = 'p: [i64, f64], 'q: [(i64, 'p), null] |x: 'q| -> 'q x"
@@ -1715,7 +1730,7 @@ run!(
 
 run!(
     an_unpaired_variable_against_a_position_must_be_admitted,
-    refused("signature has concrete type Array<'a>, which the implementation constraint [null, Array<'p>] does not admit"),
+    refused("val f is declared fn<'a: [i64, string]>(x: Array<'a>) -> Array<'a> but implemented fn<'p: [i64, f64], 'q: [null, Array<'p: unbound within [i64, f64]>]>(x: 'q: unbound within [null, Array<'p: unbound within [i64, f64]>]) -> 'q: unbound within [null, Array<'p: unbound within [i64, f64]>]: type mismatch [i64, f64] does not contain 'a"),
     "/test.gx" => "mod m; let result = m::f([\"s\"])",
     "/test/m.gxi" => "val f: fn<'a: [i64, string]>(x: Array<'a>) -> Array<'a>;",
     "/test/m.gx" => "let f = 'p: [i64, f64], 'q: [Array<'p>, null] |x: 'q| -> 'q x"
@@ -1758,7 +1773,7 @@ run!(
 
 run!(
     a_union_bound_wider_in_a_member_must_be_declared,
-    refused("the implementation requires 'b: ['p, `A(Number)], which the signature does not declare"),
+    refused("val f is declared fn<'a: [i64, string], 'b: ['a, `A(i64)]>(x: 'b) -> 'b but implemented fn<'p: [i64, f64], 'q: ['p: unbound within [i64, f64], `A(Number)]>(x: 'q: unbound within ['p: unbound within [i64, f64], `A(Number)]) -> 'q: unbound within ['p: unbound within [i64, f64], `A(Number)]: type mismatch [i64, f64] does not contain 'b"),
     "/test.gx" => "mod m; let result = m::f(\"s\")",
     "/test/m.gxi" => "val f: fn<'a: [i64, string], 'b: [`A(i64), 'a]>(x: 'b) -> 'b;",
     "/test/m.gx" => "let f = 'p: [i64, f64], 'q: [`A(Number), 'p] |x: 'q| -> 'q x"
@@ -1766,7 +1781,7 @@ run!(
 
 run!(
     a_union_bound_narrower_in_a_member_must_be_declared,
-    refused("the implementation requires 'b: ['p, `A(string)], which the signature does not declare"),
+    refused("val f is declared fn<'a: [i64, string], 'b: ['a, `A(i64)]>(x: 'b) -> 'b but implemented fn<'p: [i64, string], 'q: ['p: unbound within [i64, string], `A(string)]>(x: 'q: unbound within ['p: unbound within [i64, string], `A(string)]) -> 'q: unbound within ['p: unbound within [i64, string], `A(string)]: type mismatch `A(string) does not contain `A(i64)"),
     "/test.gx" => "mod m; let result = m::f(`A(1))",
     "/test/m.gxi" => "val f: fn<'a: [i64, string], 'b: [`A(i64), 'a]>(x: 'b) -> 'b;",
     "/test/m.gx" => "let f = 'p: [i64, string], 'q: [`A(string), 'p] |x: 'q| -> 'q x"
@@ -1774,7 +1789,7 @@ run!(
 
 run!(
     a_variable_in_two_union_bounds_that_cannot_pair_is_one_type,
-    refused("the implementation's 'p is one type wherever a bound names it: the signature holds it at more than one place ('a, 'c), and no bound of its own says which type it is"),
+    refused("val f is declared fn<'a: [i64, string] + Singleton, 'b: ['a, `A(i64)], 'c: [i64, string] + Singleton, 'd: ['c, `A(i64)]>(x: 'b, y: 'd) -> i64 but implemented fn<'p: [i64, string] + Singleton, 'q: ['p: unbound within [i64, string] & Singleton, `A(Number)], 'r: ['p: unbound within [i64, string] & Singleton, `A(Number)]>(x: 'q: unbound within ['p: unbound within [i64, string] & Singleton, `A(Number)], y: 'r: unbound within ['p: unbound within [i64, string] & Singleton, `A(Number)]) -> i64: ['a, 'c] is more than one type, where `Singleton` asks for one"),
     "/test.gx" => "mod m; let result = m::f(\"s\", 1)",
     "/test/m.gxi" => "val f: fn<'a: [i64, string] + Singleton, 'c: [i64, string] + Singleton, 'b: [`A(i64), 'a], 'd: [`A(i64), 'c]>(x: 'b, y: 'd) -> i64;",
     "/test/m.gx" => "let f = 'p: [i64, string] + Singleton, 'q: [`A(Number), 'p], 'r: [`A(Number), 'p] |x: 'q, y: 'r| -> i64 0"
@@ -1782,7 +1797,7 @@ run!(
 
 run!(
     a_variable_twice_in_a_union_bound_that_cannot_pair_is_one_type,
-    refused("the implementation's 'p is one type wherever a bound names it: the signature holds it at more than one place ('a, 'c), and no bound of its own says which type it is"),
+    refused("val f is declared fn<'a: [i64, string] + Singleton, 'b: [('a, 'c), `A(i64)], 'c: [i64, string] + Singleton>(x: 'b) -> i64 but implemented fn<'p: [i64, string] + Singleton, 'q: [('p: unbound within [i64, string] & Singleton, 'p: unbound within [i64, string] & Singleton), `A(Number)]>(x: 'q: unbound within [('p: unbound within [i64, string] & Singleton, 'p: unbound within [i64, string] & Singleton), `A(Number)]) -> i64: ['a, 'c] is more than one type, where `Singleton` asks for one"),
     "/test.gx" => "mod m; let result = m::f((\"s\", 1))",
     "/test/m.gxi" => "val f: fn<'a: [i64, string] + Singleton, 'c: [i64, string] + Singleton, 'b: [`A(i64), ('a, 'c)]>(x: 'b) -> i64;",
     "/test/m.gx" => "let f = 'p: [i64, string] + Singleton, 'q: [`A(Number), ('p, 'p)] |x: 'q| -> i64 0"
@@ -1790,7 +1805,7 @@ run!(
 
 run!(
     a_predicate_variable_in_a_union_bound_that_cannot_pair_must_be_declared,
-    refused("the implementation requires 'b: ['p, `A(string)], which the signature does not declare"),
+    refused("val f is declared fn<'a: Number, 'b: ['a, `A(i64)]>(x: 'b) -> i64 but implemented fn<'p: OneNumber, 'q: ['p: unbound within OneNumber, `A(string)]>(x: 'q: unbound within ['p: unbound within OneNumber, `A(string)]) -> i64: the implementation requires 'b: OneNumber, which the signature does not declare"),
     "/test.gx" => "mod m; let result = { let v: [i64, f64] = 1; m::f(v) }",
     "/test/m.gxi" => "val f: fn<'a: Number, 'b: [`A(i64), 'a]>(x: 'b) -> i64;",
     "/test/m.gx" => "let f = 'p: OneNumber, 'q: [`A(string), 'p] |x: 'q| -> i64 0"
@@ -1800,7 +1815,7 @@ run!(
 // at a position, whatever the implementation names its own.
 run!(
     a_variable_inside_a_positions_bound_must_be_admitted,
-    refused("signature has concrete type Array<'b>, which the implementation constraint Array<'q> does not admit"),
+    refused("val f is declared fn<'b: Array<'z>, 'z: Number>(x: Array<'b>) -> i64 but implemented fn<'c: Array<'q: unbound within Number>, 'q: Number>(x: 'c: unbound within Array<'q: unbound within Number>) -> i64: type mismatch Number does not contain 'b"),
     "/test.gx" => "mod m; let result = m::f([[1]])",
     "/test/m.gxi" => "val f: fn<'b: Array<'z>, 'z: Number>(x: Array<'b>) -> i64;",
     "/test/m.gx" => "let f = 'c: Array<'q>, 'q: Number |x: 'c| -> i64 0"
@@ -1808,7 +1823,7 @@ run!(
 
 run!(
     a_variable_inside_a_positions_bound_of_a_bound_must_be_admitted,
-    refused("signature has concrete type Array<'b>, which the implementation constraint Array<'q> does not admit"),
+    refused("val f is declared fn<'b: Array<'z>, 'z: Number>(x: Array<'b>) -> i64 but implemented fn<'c: Array<'q: unbound within Array<'r: unbound within i64>>, 'q: Array<'r: unbound within i64>, 'r: i64>(x: 'c: unbound within Array<'q: unbound within Array<'r: unbound within i64>>) -> i64: type mismatch Array<'r: unbound within i64> does not contain 'b: unbound within Array<'z: unbound within Number>"),
     "/test.gx" => "mod m; let result = m::f([[1.0]])",
     "/test/m.gxi" => "val f: fn<'b: Array<'z>, 'z: Number>(x: Array<'b>) -> i64;",
     "/test/m.gx" => "let f = 'c: Array<'q>, 'q: Array<'r>, 'r: i64 |x: 'c| -> i64 0"
@@ -1816,7 +1831,7 @@ run!(
 
 run!(
     a_variable_inside_a_positions_bound_of_a_bound_named_as_the_signature_must_be_admitted,
-    refused("signature has concrete type Array<'b>, which the implementation constraint Array<'q> does not admit"),
+    refused("val f is declared fn<'b: Array<'z>, 'z: Number>(x: Array<'b>) -> i64 but implemented fn<'b: Array<'q: unbound within Array<'r: unbound within i64>>, 'q: Array<'r: unbound within i64>, 'r: i64>(x: 'b: unbound within Array<'q: unbound within Array<'r: unbound within i64>>) -> i64: type mismatch Array<'r: unbound within i64> does not contain 'b: unbound within Array<'z: unbound within Number>"),
     "/test.gx" => "mod m; let result = m::f([[1.0]])",
     "/test/m.gxi" => "val f: fn<'b: Array<'z>, 'z: Number>(x: Array<'b>) -> i64;",
     "/test/m.gx" => "let f = 'b: Array<'q>, 'q: Array<'r>, 'r: i64 |x: 'b| -> i64 0"
@@ -1832,7 +1847,7 @@ run!(
 
 run!(
     a_variable_three_bounds_inside_a_position_must_be_admitted,
-    refused("signature has concrete type Array<'b>, which the implementation constraint Array<'q> does not admit"),
+    refused("val f is declared fn<'b: Array<'z>, 'y: Number, 'z: Array<'y>>(x: Array<'b>) -> i64 but implemented fn<'c: Array<'q: unbound within Array<'r: unbound within Array<'s: unbound within i64>>>, 'q: Array<'r: unbound within Array<'s: unbound within i64>>, 'r: Array<'s: unbound within i64>, 's: i64>(x: 'c: unbound within Array<'q: unbound within Array<'r: unbound within Array<'s: unbound within i64>>>) -> i64: type mismatch Array<'r: unbound within Array<'s: unbound within i64>> does not contain 'b: unbound within Array<'z: unbound within Array<'y: unbound within Number>>"),
     "/test.gx" => "mod m; let result = m::f([[[1.0]]])",
     "/test/m.gxi" => "val f: fn<'b: Array<'z>, 'z: Array<'y>, 'y: Number>(x: Array<'b>) -> i64;",
     "/test/m.gx" => "let f = 'c: Array<'q>, 'q: Array<'r>, 'r: Array<'s>, 's: i64 |x: 'c| -> i64 0"
@@ -1848,7 +1863,7 @@ run!(
 
 run!(
     a_variable_inside_a_bounds_variables_bound_must_be_declared,
-    refused("the implementation requires 'b: ['p, `X, `Y], which the signature does not declare"),
+    refused("val f is declared fn<'a: Array<'z>, 'b: ['a, `X], 'z: [i64, string]>(x: 'b) -> 'b but implemented fn<'p: Array<'r: unbound within [i64, f64]>, 'q: ['p: unbound within Array<'r: unbound within [i64, f64]>, `X, `Y], 'r: [i64, f64]>(x: 'q: unbound within ['p: unbound within Array<'r: unbound within [i64, f64]>, `X, `Y]) -> 'q: unbound within ['p: unbound within Array<'r: unbound within [i64, f64]>, `X, `Y]: type mismatch Array<'r: unbound within [i64, f64]> does not contain 'b: unbound within ['a: unbound within Array<'z: unbound within [i64, string]>, `X]"),
     "/test.gx" => "mod m; let result = m::f([\"s\"])",
     "/test/m.gxi" => "val f: fn<'a: Array<'z>, 'z: [i64, string], 'b: ['a, `X]>(x: 'b) -> 'b;",
     "/test/m.gx" => "let f = 'p: Array<'r>, 'r: [i64, f64], 'q: ['p, `X, `Y] |x: 'q| -> 'q x"
@@ -1865,19 +1880,37 @@ run!(
 // An implementation variable paired at one position is that signature
 // type wherever the implementation's bounds name it.
 run!(
-    a_paired_variable_in_a_bound_is_its_signature_type,
-    refused("signature has concrete type Array<'z>, which the implementation constraint Array<'r> does not admit"),
+    a_paired_variable_in_a_bound_holds_both_signature_variables,
+    prints("i64:0"),
     "/test.gx" => "mod m; let result = m::f([1], 1.5)",
     "/test/m.gxi" => "val f: fn<'z: Number, 'w: Number>(x: Array<'z>, y: 'w) -> i64;",
     "/test/m.gx" => "let f = 'c: Array<'r>, 'r: Number |x: 'c, y: 'r| -> i64 0"
+; FuseExpect::Jit);
+
+// the implementation's one variable that pairs them would hold both.
+run!(
+    a_paired_variable_in_a_bound_under_singleton_refused,
+    refused("cannot compute with ['z, 'w]: both operands must be one numeric type"),
+    "/test.gx" => "mod m; let result = m::f([1], 1.5)",
+    "/test/m.gxi" => "val f: fn<'z: Number + Singleton, 'w: Number + Singleton>(x: Array<'z>, y: 'w) -> i64;",
+    "/test/m.gx" => "let f = 'c: Array<'r>, 'r: Number + Singleton |x: 'c, y: 'r| -> i64 0"
 ; FuseExpect::None);
 
 run!(
-    a_paired_variable_in_an_unpaired_variables_bound_is_its_signature_type,
-    refused("signature has concrete type Array<'b>, which the implementation constraint Array<'q> does not admit"),
+    a_paired_variable_in_an_unpaired_variables_bound_holds_both_signature_variables,
+    prints("i64:0"),
     "/test.gx" => "mod m; let result = m::f([[1]], 1.5)",
     "/test/m.gxi" => "val f: fn<'b: Array<'z>, 'z: Number, 'w: Number>(x: Array<'b>, y: 'w) -> i64;",
     "/test/m.gx" => "let f = 'c: Array<'q>, 'q: Array<'r>, 'r: Number |x: 'c, y: 'r| -> i64 0"
+; FuseExpect::Jit);
+
+// a_paired_variable_in_an_unpaired_variables_bound_holds_both_signature_variables
+run!(
+    a_paired_variable_in_an_unpaired_variables_bound_under_singleton_refused,
+    refused("cannot compute with ['z, 'w]: both operands must be one numeric type"),
+    "/test.gx" => "mod m; let result = m::f([[1]], 1.5)",
+    "/test/m.gxi" => "val f: fn<'b: Array<'z>, 'z: Number + Singleton, 'w: Number + Singleton>(x: Array<'b>, y: 'w) -> i64;",
+    "/test/m.gx" => "let f = 'c: Array<'q>, 'q: Array<'r>, 'r: Number + Singleton |x: 'c, y: 'r| -> i64 0"
 ; FuseExpect::None);
 
 // A predicate on an unpaired implementation variable holds of the
@@ -1885,7 +1918,7 @@ run!(
 // bounds implies it.
 run!(
     an_unpaired_variable_with_a_singleton_bound_must_be_declared,
-    refused("the implementation requires 'b: ['p, `X, `Y], which the signature does not declare"),
+    refused("val f is declared fn<'a: [i64, string], 'b: ['a, `X]>(x: 'b) -> 'b but implemented fn<'p: Singleton, 'q: ['p: unbound within Singleton, `X, `Y]>(x: 'q: unbound within ['p: unbound within Singleton, `X, `Y]) -> 'q: unbound within ['p: unbound within Singleton, `X, `Y]: the implementation requires 'b: Singleton, which the signature does not declare"),
     "/test.gx" => "mod m; let result = m::f(\"s\")",
     "/test/m.gxi" => "val f: fn<'a: [i64, string], 'b: ['a, `X]>(x: 'b) -> 'b;",
     "/test/m.gx" => "let f = 'p: Singleton, 'q: ['p, `X, `Y] |x: 'q| -> 'q x"
@@ -1901,7 +1934,7 @@ run!(
 
 run!(
     an_unpaired_variable_with_a_no_error_bound_must_be_declared,
-    refused("the implementation requires 'b: ['p, `X, `Y], which the signature does not declare"),
+    refused("val f is declared fn<'a: [i64, Error<`E>], 'b: ['a, `X]>(x: 'b) -> 'b but implemented fn<'p: NoError, 'q: ['p: unbound within NoError, `X, `Y]>(x: 'q: unbound within ['p: unbound within NoError, `X, `Y]) -> 'q: unbound within ['p: unbound within NoError, `X, `Y]: the implementation requires 'b: NoError, which the signature does not declare"),
     "/test.gx" => "mod m; let result = m::f(1)",
     "/test/m.gxi" => "val f: fn<'a: [i64, Error<`E>], 'b: ['a, `X]>(x: 'b) -> 'b;",
     "/test/m.gx" => "let f = 'p: NoError, 'q: ['p, `X, `Y] |x: 'q| -> 'q x"
@@ -1917,7 +1950,7 @@ run!(
 
 run!(
     an_unpaired_variable_with_a_one_number_bound_must_be_declared,
-    refused("the implementation requires 'b: ['p, `X, `Y], which the signature does not declare"),
+    refused("val f is declared fn<'a: Number, 'b: ['a, `X]>(x: 'b) -> 'b but implemented fn<'p: OneNumber, 'q: ['p: unbound within OneNumber, `X, `Y]>(x: 'q: unbound within ['p: unbound within OneNumber, `X, `Y]) -> 'q: unbound within ['p: unbound within OneNumber, `X, `Y]: the implementation requires 'b: OneNumber, which the signature does not declare"),
     "/test.gx" => "mod m; let result = m::f(1)",
     "/test/m.gxi" => "val f: fn<'a: Number, 'b: ['a, `X]>(x: 'b) -> 'b;",
     "/test/m.gx" => "let f = 'p: OneNumber, 'q: ['p, `X, `Y] |x: 'q| -> 'q x"
@@ -1933,7 +1966,7 @@ run!(
 
 run!(
     an_unpaired_variable_with_a_singleton_bound_against_a_position_must_be_admitted,
-    refused("signature has concrete type Array<'a>, which the implementation constraint [null, Array<'p>] does not admit"),
+    refused("val f is declared fn<'a: [i64, string]>(x: Array<'a>) -> i64 but implemented fn<'p: Singleton, 'q: [null, Array<'p: unbound within Singleton>]>(x: 'q: unbound within [null, Array<'p: unbound within Singleton>]) -> i64: the implementation requires 'a: Singleton, which the signature does not declare"),
     "/test.gx" => "mod m; let result = m::f([\"s\"])",
     "/test/m.gxi" => "val f: fn<'a: [i64, string]>(x: Array<'a>) -> i64;",
     "/test/m.gx" => "let f = 'p: Singleton, 'q: [Array<'p>, null] |x: 'q| -> i64 0"
@@ -1953,7 +1986,7 @@ run!(
 // union is whatever its bounds admit.
 run!(
     a_one_number_bound_over_a_union_holding_a_variable_must_be_declared,
-    refused("signature has concrete type ['a, `X], which the implementation constraint OneNumber does not admit: 'a is any type its bounds admit; declare 'a: OneNumber"),
+    refused("val f is declared fn<'a: Number>(x: ['a, `X]) -> i64 but implemented fn<'q: OneNumber>(x: 'q: unbound within OneNumber) -> i64: the implementation requires ['a, `X] to be OneNumber, which the signature's bounds do not say"),
     "/test.gx" => "mod m; let result = { let v: [i64, f64, `X] = i64:1; m::f(v) }",
     "/test/m.gxi" => "val f: fn<'a: Number>(x: ['a, `X]) -> i64;",
     "/test/m.gx" => "let f = 'q: OneNumber |x: 'q| -> i64 0"
@@ -1969,7 +2002,7 @@ run!(
 
 run!(
     a_no_error_bound_over_a_union_holding_a_variable_must_be_declared,
-    refused("signature has concrete type ['a, `X], which the implementation constraint NoError does not admit: 'a is any type its bounds admit; declare 'a: NoError"),
+    refused("val f is declared fn<'a: [i64, Error<`E>]>(x: ['a, `X]) -> i64 but implemented fn<'q: NoError>(x: 'q: unbound within NoError) -> i64: the implementation requires ['a, `X] to be NoError, which the signature's bounds do not say"),
     "/test.gx" => "mod m; let result = { let v: [i64, Error<`E>, `X] = error(`E); m::f(v) }",
     "/test/m.gxi" => "val f: fn<'a: [i64, Error<`E>]>(x: ['a, `X]) -> i64;",
     "/test/m.gx" => "let f = 'q: NoError |x: 'q| -> i64 0"
@@ -1985,7 +2018,7 @@ run!(
 
 run!(
     a_no_error_bound_over_a_union_holding_an_unbounded_variable_must_be_declared,
-    refused("signature has concrete type [null, 'a], which the implementation constraint NoError does not admit: 'a is any type its bounds admit; declare 'a: NoError"),
+    refused("val f is declared fn(x: [null, 'a]) -> i64 but implemented fn<'q: NoError>(x: 'q: unbound within NoError) -> i64: the implementation requires [null, 'a] to be NoError, which the signature's bounds do not say"),
     "/test.gx" => "mod m; let result = { let v: [Error<`E>, null] = error(`E); m::f(v) }",
     "/test/m.gxi" => "val f: fn(x: ['a, null]) -> i64;",
     "/test/m.gx" => "let f = 'q: NoError |x: 'q| -> i64 0"
@@ -2003,7 +2036,7 @@ run!(
 // beside it makes two, unless its bounds leave it no other.
 run!(
     a_one_number_variable_beside_a_number_may_be_another,
-    refused("signature has concrete type [i64, 'a], which the implementation constraint OneNumber does not admit"),
+    refused("val f is declared fn<'a: Number + OneNumber>(x: [i64, 'a]) -> i64 but implemented fn<'q: OneNumber>(x: 'q: unbound within OneNumber) -> i64: the implementation requires [i64, 'a] to be OneNumber, which the signature's bounds do not say"),
     "/test.gx" => "mod m; let result = { let v: [f64, i64] = i64:1; m::f(v) }",
     "/test/m.gxi" => "val f: fn<'a: Number + OneNumber>(x: ['a, i64]) -> i64;",
     "/test/m.gx" => "let f = 'q: OneNumber |x: 'q| -> i64 0"
@@ -2029,7 +2062,7 @@ run!(
 // under a bound of the implementation's.
 run!(
     a_one_number_bound_over_a_union_in_a_field_must_be_declared,
-    refused("signature has concrete type [null, 'a], which the implementation constraint OneNumber does not admit: 'a is any type its bounds admit; declare 'a: OneNumber"),
+    refused("val f is declared fn<'a: Number>(x: { a: [null, 'a] }) -> i64 but implemented fn<'p: OneNumber>(x: { a: 'p: unbound within OneNumber }) -> i64: the implementation requires [null, 'a] to be OneNumber, which the signature's bounds do not say"),
     "/test.gx" => "mod m; let result = { let v: {a: [i64, f64, null]} = {a: i64:1}; m::f(v) }",
     "/test/m.gxi" => "val f: fn<'a: Number>(x: {a: ['a, null]}) -> i64;",
     "/test/m.gx" => "let f = 'p: OneNumber |x: {a: 'p}| -> i64 0"
@@ -2045,7 +2078,7 @@ run!(
 
 run!(
     a_one_number_bound_over_a_typedefs_union_must_be_declared,
-    refused("signature has concrete type [null, 'a], which the implementation constraint OneNumber does not admit: 'a is any type its bounds admit; declare 'a: OneNumber"),
+    refused("val f is declared fn<'a: Number>(x: Opt<'a>) -> i64 but implemented fn<'q: OneNumber>(x: 'q: unbound within OneNumber) -> i64: the implementation requires Opt<'a> to be OneNumber, which the signature's bounds do not say"),
     "/test.gx" => "mod m; let result = { let v: [i64, f64, null] = i64:1; m::f(v) }",
     "/test/m.gxi" => "type Opt<'x> = ['x, null]; val f: fn<'a: Number>(x: Opt<'a>) -> i64;",
     "/test/m.gx" => "let f = 'q: OneNumber |x: 'q| -> i64 0"
@@ -2061,7 +2094,7 @@ run!(
 
 run!(
     a_one_number_bound_under_a_bound_over_a_union_must_be_declared,
-    refused("signature has concrete type Array<['a, `X]>, which the implementation constraint Array<'p> does not admit"),
+    refused("val f is declared fn<'a: Number>(x: Array<['a, `X]>) -> i64 but implemented fn<'p: OneNumber, 'q: Array<'p: unbound within OneNumber>>(x: 'q: unbound within Array<'p: unbound within OneNumber>) -> i64: the implementation requires ['a, `X] to be OneNumber, which the signature's bounds do not say"),
     "/test.gx" => "mod m; let result = { let v: Array<[i64, f64, `X]> = [i64:1]; m::f(v) }",
     "/test/m.gxi" => "val f: fn<'a: Number>(x: Array<['a, `X]>) -> i64;",
     "/test/m.gx" => "let f = 'p: OneNumber, 'q: Array<'p> |x: 'q| -> i64 0"
@@ -2079,7 +2112,7 @@ run!(
 // signature's bound is judged over that union the same way.
 run!(
     an_unpaired_one_number_variable_over_a_variable_and_a_number_may_be_two,
-    refused("the implementation requires 'b: ['p, `Y], which the signature does not declare"),
+    refused("val f is declared fn<'a: Number + OneNumber, 'b: [i64, 'a, `Y]>(x: 'b) -> i64 but implemented fn<'p: OneNumber, 'q: ['p: unbound within OneNumber, `Y]>(x: 'q: unbound within ['p: unbound within OneNumber, `Y]) -> i64: the implementation requires 'b: OneNumber, which the signature does not declare"),
     "/test.gx" => "mod m; let result = { let v: [f64, i64] = i64:1; m::f(v) }",
     "/test/m.gxi" => "val f: fn<'a: Number + OneNumber, 'b: ['a, i64, `Y]>(x: 'b) -> i64;",
     "/test/m.gx" => "let f = 'p: OneNumber, 'q: ['p, `Y] |x: 'q| -> i64 0"
@@ -2105,7 +2138,7 @@ run!(
 // union as alone: the signature declares it.
 run!(
     a_no_error_bound_over_a_union_holding_a_variable_bounded_by_an_open_type_must_be_declared,
-    refused("signature has concrete type [null, 'a], which the implementation constraint NoError does not admit: 'a is any type its bounds admit; declare 'a: NoError"),
+    refused("val f is declared fn<'a: Array<'c>>(x: [null, 'a]) -> i64 but implemented fn<'q: NoError>(x: 'q: unbound within NoError) -> i64: the implementation requires [null, 'a] to be NoError, which the signature's bounds do not say"),
     "/test.gx" => "mod m; let result = { let v: [Array<i64>, null] = [1]; m::f(v) }",
     "/test/m.gxi" => "val f: fn<'a: Array<'c>>(x: ['a, null]) -> i64;",
     "/test/m.gx" => "let f = 'q: NoError |x: 'q| -> i64 0"
@@ -2157,7 +2190,7 @@ run!(
 
 run!(
     a_variable_bounded_by_a_union_holding_a_variable_may_be_any_number,
-    refused("signature has concrete type [i64, 'a], which the implementation constraint OneNumber does not admit"),
+    refused("val f is declared fn<'a: [i64, 'c]>(x: [i64, 'a]) -> i64 but implemented fn<'q: OneNumber>(x: 'q: unbound within OneNumber) -> i64: the implementation requires [i64, 'a] to be OneNumber, which the signature's bounds do not say"),
     "/test.gx" => "mod m; let result = { let v: [f64, i64] = i64:1; m::f(v) }",
     "/test/m.gxi" => "val f: fn<'a: [i64, 'c]>(x: ['a, i64]) -> i64;",
     "/test/m.gx" => "let f = 'q: OneNumber |x: 'q| -> i64 0"
@@ -2165,24 +2198,15 @@ run!(
 
 run!(
     a_variable_bounded_by_a_union_holding_any_may_be_any_number,
-    refused("signature has concrete type [i64, 'a], which the implementation constraint OneNumber does not admit"),
+    refused("val f is declared fn<'a: [string, A]>(x: [i64, 'a]) -> i64 but implemented fn<'q: OneNumber>(x: 'q: unbound within OneNumber) -> i64: the implementation requires [i64, 'a] to be OneNumber, which the signature's bounds do not say"),
     "/test.gx" => "mod m; let result = { let v: [f64, i64] = i64:1; m::f(v) }",
     "/test/m.gxi" => "type A = Any; val f: fn<'a: [A, string]>(x: ['a, i64]) -> i64;",
     "/test/m.gx" => "let f = 'q: OneNumber |x: 'q| -> i64 0"
 ; FuseExpect::None);
 
-// The refusal names a bound to declare only where declaring it is
-// enough: beside a number, or an error, no bound of the variable's is.
-fn refused_naming_no_bound(v: Result<&Value>) -> bool {
-    v.is_err_and(|e| {
-        let e = format!("{e:#}");
-        e.contains("does not admit") && !e.contains("is any type its bounds admit")
-    })
-}
-
 run!(
     a_one_number_bound_over_a_variable_beside_a_number_names_no_bound,
-    refused_naming_no_bound,
+    refused("val f is declared fn<'a: Number>(x: [i64, 'a]) -> i64 but implemented fn<'q: OneNumber>(x: 'q: unbound within OneNumber) -> i64: the implementation requires [i64, 'a] to be OneNumber, which the signature's bounds do not say"),
     "/test.gx" => "mod m; let result = { let v: [f64, i64] = i64:1; m::f(v) }",
     "/test/m.gxi" => "val f: fn<'a: Number>(x: ['a, i64]) -> i64;",
     "/test/m.gx" => "let f = 'q: OneNumber |x: 'q| -> i64 0"
@@ -2190,7 +2214,7 @@ run!(
 
 run!(
     a_no_error_bound_over_a_variable_beside_an_error_names_no_bound,
-    refused_naming_no_bound,
+    refused("val f is declared fn(x: ['a, Error<`E>]) -> i64 but implemented fn<'q: NoError>(x: 'q: unbound within NoError) -> i64: the implementation requires ['a, Error<`E>] to be NoError, which the signature's bounds do not say"),
     "/test.gx" => "mod m; let result = { let v: [i64, Error<`E>] = i64:1; m::f(v) }",
     "/test/m.gxi" => "val f: fn(x: ['a, Error<`E>]) -> i64;",
     "/test/m.gx" => "let f = 'q: NoError |x: 'q| -> i64 0"
@@ -2204,7 +2228,7 @@ run!(
 // same type exactly at both.
 run!(
     an_unpaired_variable_in_two_bounds_is_one_type,
-    refused("the implementation's 'p is one type wherever a bound names it: the signature holds it at more than one place ('a, 'c), and no bound of its own says which type it is"),
+    refused("val f is declared fn<'a: [i64, string] + Singleton, 'b: (i64, 'a), 'c: [i64, string] + Singleton, 'd: (i64, 'c)>(x: 'b, y: 'd) -> i64 but implemented fn<'p: [i64, string] + Singleton, 'q: (Number, 'p: unbound within [i64, string] & Singleton), 'r: (Number, 'p: unbound within [i64, string] & Singleton)>(x: 'q: unbound within (Number, 'p: unbound within [i64, string] & Singleton), y: 'r: unbound within (Number, 'p: unbound within [i64, string] & Singleton)) -> i64: ['a, 'c] is more than one type, where `Singleton` asks for one"),
     "/test.gx" => "mod m; let result = m::f((1, \"s\"), (1, 1))",
     "/test/m.gxi" => "val f: fn<'a: [i64, string] + Singleton, 'c: [i64, string] + Singleton, 'b: (i64, 'a), 'd: (i64, 'c)>(x: 'b, y: 'd) -> i64;",
     "/test/m.gx" => "let f = 'p: [i64, string] + Singleton, 'q: (Number, 'p), 'r: (Number, 'p) |x: 'q, y: 'r| -> i64 0"
@@ -2220,7 +2244,7 @@ run!(
 
 run!(
     an_unpaired_variable_in_two_union_bounds_is_one_type,
-    refused("the implementation's 'p is one type wherever a bound names it: the signature holds it at more than one place ('a, 'c), and no bound of its own says which type it is"),
+    refused("val f is declared fn<'a: [i64, string] + Singleton, 'b: ['a, `X], 'c: [i64, string] + Singleton, 'd: ['c, `X]>(x: 'b, y: 'd) -> i64 but implemented fn<'p: [i64, string] + Singleton, 'q: ['p: unbound within [i64, string] & Singleton, `X, `Y], 'r: ['p: unbound within [i64, string] & Singleton, `X, `Y]>(x: 'q: unbound within ['p: unbound within [i64, string] & Singleton, `X, `Y], y: 'r: unbound within ['p: unbound within [i64, string] & Singleton, `X, `Y]) -> i64: ['a, 'c] is more than one type, where `Singleton` asks for one"),
     "/test.gx" => "mod m; let result = m::f(\"s\", 1)",
     "/test/m.gxi" => "val f: fn<'a: [i64, string] + Singleton, 'c: [i64, string] + Singleton, 'b: ['a, `X], 'd: ['c, `X]>(x: 'b, y: 'd) -> i64;",
     "/test/m.gx" => "let f = 'p: [i64, string] + Singleton, 'q: ['p, `X, `Y], 'r: ['p, `X, `Y] |x: 'q, y: 'r| -> i64 0"
@@ -2236,7 +2260,7 @@ run!(
 
 run!(
     an_unpaired_variable_twice_in_one_bound_is_one_type,
-    refused("the implementation's 'p is one type wherever a bound names it: the signature holds it at more than one place ('a, 'c), and no bound of its own says which type it is"),
+    refused("val f is declared fn<'a: [i64, string] + Singleton, 'b: ('a, 'c), 'c: [i64, string] + Singleton>(x: 'b) -> i64 but implemented fn<'p: [i64, string] + Singleton, 'q: [null, ('p: unbound within [i64, string] & Singleton, 'p: unbound within [i64, string] & Singleton)]>(x: 'q: unbound within [null, ('p: unbound within [i64, string] & Singleton, 'p: unbound within [i64, string] & Singleton)]) -> i64: ['a, 'c] is more than one type, where `Singleton` asks for one"),
     "/test.gx" => "mod m; let result = m::f((\"s\", 1))",
     "/test/m.gxi" => "val f: fn<'a: [i64, string] + Singleton, 'c: [i64, string] + Singleton, 'b: ('a, 'c)>(x: 'b) -> i64;",
     "/test/m.gx" => "let f = 'p: [i64, string] + Singleton, 'q: [('p, 'p), null] |x: 'q| -> i64 0"
@@ -2252,7 +2276,7 @@ run!(
 
 run!(
     an_unpaired_variable_twice_against_a_position_is_one_type,
-    refused("the implementation's 'p is one type wherever a bound names it: the signature holds it at more than one place (i64, string), and no bound of its own says which type it is"),
+    refused("val f is declared fn(x: (i64, string)) -> i64 but implemented fn<'p: [i64, string] + Singleton, 'q: [null, ('p: unbound within [i64, string] & Singleton, 'p: unbound within [i64, string] & Singleton)]>(x: 'q: unbound within [null, ('p: unbound within [i64, string] & Singleton, 'p: unbound within [i64, string] & Singleton)]) -> i64: [i64, string] is more than one type, where `Singleton` asks for one"),
     "/test.gx" => "mod m; let result = m::f((1, \"s\"))",
     "/test/m.gxi" => "val f: fn(x: (i64, string)) -> i64;",
     "/test/m.gx" => "let f = 'p: [i64, string] + Singleton, 'q: [('p, 'p), null] |x: 'q| -> i64 0"
@@ -2267,12 +2291,12 @@ run!(
 );
 
 run!(
-    an_unpaired_variable_with_a_predicate_alone_in_two_bounds_is_one_type,
-    refused("the implementation's 'p is one type wherever a bound names it: the signature holds it at more than one place ('a, 'c), and no bound of its own says which type it is"),
+    an_unpaired_variable_with_a_predicate_alone_in_two_bounds_holds,
+    prints("i64:0"),
     "/test.gx" => "mod m; let result = m::f((1, \"s\"), (1, 1))",
     "/test/m.gxi" => "val f: fn<'a: [i64, string], 'c: [i64, string], 'b: (i64, 'a), 'd: (i64, 'c)>(x: 'b, y: 'd) -> i64;",
     "/test/m.gx" => "let f = 'p: NoError, 'q: (Number, 'p), 'r: (Number, 'p) |x: 'q, y: 'r| -> i64 0"
-; FuseExpect::None);
+; FuseExpect::Jit);
 
 run!(
     an_unpaired_variable_with_a_predicate_and_a_type_in_two_bounds_is_the_type,
@@ -2283,12 +2307,12 @@ run!(
 );
 
 run!(
-    an_unpaired_variable_with_no_bound_in_two_bounds_is_one_type,
-    refused("the implementation's 'p is one type wherever a bound names it: the signature holds it at more than one place ('a, 'c), and no bound of its own says which type it is"),
+    an_unpaired_variable_with_no_bound_in_two_bounds_holds,
+    prints("i64:0"),
     "/test.gx" => "mod m; let result = m::f((1, \"s\"), (1, 1))",
     "/test/m.gxi" => "val f: fn<'a: [i64, string], 'c: [i64, string], 'b: (i64, 'a), 'd: (i64, 'c)>(x: 'b, y: 'd) -> i64;",
     "/test/m.gx" => "let f = 'q: (Number, 'p), 'r: (Number, 'p) |x: 'q, y: 'r| -> i64 0"
-; FuseExpect::None);
+; FuseExpect::Jit);
 
 run!(
     an_unpaired_variable_bounded_any_in_two_bounds_is_any,
@@ -2301,12 +2325,12 @@ run!(
 // Two callers' picks of one signature variable's holders may differ: only a
 // position holds the variable's type exactly.
 run!(
-    an_unpaired_variable_at_one_variable_in_two_bounds_is_one_type,
-    refused("the implementation's 'p is one type wherever a bound names it: the signature holds it at more than one place ('a, 'a), and no bound of its own says which type it is"),
+    an_unpaired_variable_at_one_variable_in_two_bounds_holds,
+    prints("i64:0"),
     "/test.gx" => "mod m; let u: [i64, string] = \"s\"; let result = m::f(u, (1, 1), (1, \"s\"))",
     "/test/m.gxi" => "val f: fn<'a: [i64, string], 'b: (i64, 'a), 'd: (i64, 'a)>(z: 'a, x: 'b, y: 'd) -> i64;",
     "/test/m.gx" => "let f = 'p: NoError, 'q: (Number, 'p), 'r: (Number, 'p) |z, x: 'q, y: 'r| -> i64 0"
-; FuseExpect::None);
+; FuseExpect::Jit);
 
 run!(
     an_unpaired_variable_at_one_variable_at_two_positions_holds,
@@ -2321,12 +2345,12 @@ run!(
 // is a parameter makes the refusal necessary and one without it does not
 // need it: the check does not model which place a call decides first.
 run!(
-    an_unpaired_variable_at_one_variable_in_two_bounds_without_a_parameter_is_refused,
-    refused("the implementation's 'p is one type wherever a bound names it: the signature holds it at more than one place ('a, 'a), and no bound of its own says which type it is; name it at a parameter, as the signature does, or give it a bound that is one type"),
+    an_unpaired_variable_at_one_variable_in_two_bounds_without_a_parameter_holds,
+    prints("i64:0"),
     "/test.gx" => "mod m; let result = m::f((1, \"s\"), (1, \"s\"))",
     "/test/m.gxi" => "val f: fn<'a: [i64, string], 'b: (i64, 'a), 'd: (i64, 'a)>(x: 'b, y: 'd) -> i64;",
     "/test/m.gx" => "let f = 'p: NoError, 'q: (Number, 'p), 'r: (Number, 'p) |x: 'q, y: 'r| -> i64 0"
-; FuseExpect::None);
+; FuseExpect::Jit);
 
 run!(
     an_unpaired_variable_at_one_variable_in_two_bounds_without_a_parameter_is_its_own_bound,
@@ -2337,24 +2361,24 @@ run!(
 );
 
 run!(
-    an_unpaired_variable_at_one_variable_in_two_arrays_is_refused,
-    refused("the implementation's 'p is one type wherever a bound names it: the signature holds it at more than one place ('a, 'a), and no bound of its own says which type it is"),
+    an_unpaired_variable_at_one_variable_in_two_arrays_holds,
+    prints("i64:0"),
     "/test.gx" => "mod m; let result = m::f([1], [1])",
     "/test/m.gxi" => "val f: fn<'a: [i64, string] + Singleton, 'd: Array<'a>>(x: Array<'a>, y: 'd) -> i64;",
     "/test/m.gx" => "let f = 'p: NoError, 'q: Array<'p>, 'r: Array<'p> |x: 'q, y: 'r| -> i64 0"
-; FuseExpect::None);
+; FuseExpect::Jit);
 
 run!(
-    an_unpaired_variable_at_one_variable_in_a_bound_and_a_callback_is_refused,
-    refused("the implementation's 'p is one type wherever a bound names it: the signature holds it at more than one place ('a, 'a), and no bound of its own says which type it is"),
+    an_unpaired_variable_at_one_variable_in_a_bound_and_a_callback_holds,
+    prints("i64:3"),
     "/test.gx" => "mod m; let result = m::f((1, 2), |x: i64, y: Number| x + 1)",
     "/test/m.gxi" => "val f: fn<'a: Any, 'b: (i64, 'a), 'd: fn(x: 'a, y: Number) -> i64>(x: 'b, y: 'd) -> i64;",
     "/test/m.gx" => "let f = 'q: (Number, 'p), 'r: fn(x: 'p, y: i64) -> i64 |x: 'q, y: 'r| -> i64 y(x.1, 0)"
-; FuseExpect::None);
+; FuseExpect::Jit);
 
 run!(
     an_unpaired_variable_in_a_bound_and_an_argument_is_one_type,
-    refused("the implementation's 'p is one type wherever a bound names it: the signature holds it at more than one place ('a, 'c), and no bound of its own says which type it is"),
+    refused("val f is declared fn<'a: Any, 'b: (i64, 'a), 'c: Any, 'd: fn(x: 'c, y: Number) -> i64>(x: 'b, y: 'd) -> i64 but implemented fn<'q: (Number, 'p: unbound), 'r: fn(x: 'p: unbound, y: i64) -> i64>(x: 'q: unbound within (Number, 'p: unbound), y: 'r: unbound within fn(x: 'p: unbound, y: i64) -> i64) -> i64: type mismatch fn(x: 'p: unbound above 'a: unbound within Any, y: i64) -> i64 does not contain 'd: unbound within fn(x: 'c: unbound within Any, y: Number) -> i64"),
     "/test.gx" => "mod m; let result = m::f((1, \"s\"), |x: i64, y: Number| x + 1)",
     "/test/m.gxi" => "val f: fn<'a: Any, 'c: Any, 'b: (i64, 'a), 'd: fn(x: 'c, y: Number) -> i64>(x: 'b, y: 'd) -> i64;",
     "/test/m.gx" => "let f = 'q: (Number, 'p), 'r: fn(x: 'p, y: i64) -> i64 |x: 'q, y: 'r| -> i64 y(x.1, 0)"
@@ -2378,7 +2402,7 @@ run!(
 
 run!(
     an_unpaired_variable_two_bounds_in_is_one_type,
-    refused("the implementation's 'r is one type wherever a bound names it: the signature holds it at more than one place ('a, 'c), and no bound of its own says which type it is"),
+    refused("val f is declared fn<'a: [i64, string] + Singleton, 'b: (i64, Array<'a>), 'c: [i64, string] + Singleton, 'd: (i64, Array<'c>)>(x: 'b, y: 'd) -> i64 but implemented fn<'q: (Number, 's: unbound within Array<'r: unbound within [i64, string] & Singleton>), 'r: [i64, string] + Singleton, 's: Array<'r: unbound within [i64, string] & Singleton>, 't: Array<'r: unbound within [i64, string] & Singleton>, 'u: (Number, 't: unbound within Array<'r: unbound within [i64, string] & Singleton>)>(x: 'q: unbound within (Number, 's: unbound within Array<'r: unbound within [i64, string] & Singleton>), y: 'u: unbound within (Number, 't: unbound within Array<'r: unbound within [i64, string]…: ['a, 'c] is more than one type, where `Singleton` asks for one"),
     "/test.gx" => "mod m; let result = m::f((1, [\"s\"]), (1, [1]))",
     "/test/m.gxi" => "val f: fn<'a: [i64, string] + Singleton, 'c: [i64, string] + Singleton, 'b: (i64, Array<'a>), 'd: (i64, Array<'c>)>(x: 'b, y: 'd) -> i64;",
     "/test/m.gx" => "let f = 'r: [i64, string] + Singleton, 's: Array<'r>, 't: Array<'r>, 'q: (Number, 's), 'u: (Number, 't) |x: 'q, y: 'u| -> i64 0"
@@ -2394,7 +2418,7 @@ run!(
 
 run!(
     an_unpaired_variable_inside_a_named_bound_is_one_type,
-    refused("the implementation's 'p is one type wherever a bound names it: the signature holds it at more than one place ('a, 'c), and no bound of its own says which type it is"),
+    refused("val f is declared fn<'a: [i64, string] + Singleton, 'b: (i64, 'a), 'c: [i64, string] + Singleton, 'd: (i64, 'c)>(x: 'b, y: 'd) -> i64 but implemented fn<'p: [i64, string] + Singleton, 'q: T<'p: unbound within [i64, string] & Singleton>, 'r: T<'p: unbound within [i64, string] & Singleton>>(x: 'q: unbound within T<'p: unbound within [i64, string] & Singleton>, y: 'r: unbound within T<'p: unbound within [i64, string] & Singleton>) -> i64: ['a, 'c] is more than one type, where `Singleton` asks for one"),
     "/test.gx" => "mod m; let result = m::f((1, \"s\"), (1, 1))",
     "/test/m.gxi" => "type T<'x> = (Number, 'x); val f: fn<'a: [i64, string] + Singleton, 'c: [i64, string] + Singleton, 'b: (i64, 'a), 'd: (i64, 'c)>(x: 'b, y: 'd) -> i64;",
     "/test/m.gx" => "let f = 'p: [i64, string] + Singleton, 'q: T<'p>, 'r: T<'p> |x: 'q, y: 'r| -> i64 0"
@@ -2412,7 +2436,7 @@ run!(
 // at, or the implementation is refused.
 run!(
     an_unpaired_variables_own_bound_must_hold_each_place,
-    refused("the implementation requires 'd: fn(x: 'p, y: i64) -> i64, which the signature does not declare: 'p is one type wherever a bound names it, [i64, string]"),
+    refused("val f is declared fn<'a: [i64, string], 'b: (i64, 'a), 'c: [i64, string], 'd: fn(x: 'c, y: Number) -> i64>(x: 'b, y: 'd) -> i64 but implemented fn<'p: [i64, string], 'q: (Number, 'p: unbound within [i64, string]), 'r: fn(x: 'p: unbound within [i64, string], y: i64) -> i64>(x: 'q: unbound within (Number, 'p: unbound within [i64, string]), y: 'r: unbound within fn(x: 'p: unbound within [i64, string], y: i64) -> i64) -> i64: type mismatch fn(x: 'p: unbound within [i64, string] above 'a: unbound within [i64, string], y: i64) -> i64 does not contain 'd: unbound within fn(x: 'c: unbound within [i64, string], y: Number) -> i64"),
     "/test.gx" => "mod m; let result = m::f((1, \"s\"), |x: i64, y: Number| x + 1)",
     "/test/m.gxi" => "val f: fn<'a: [i64, string], 'c: [i64, string], 'b: (i64, 'a), 'd: fn(x: 'c, y: Number) -> i64>(x: 'b, y: 'd) -> i64;",
     "/test/m.gx" => "let f = 'p: [i64, string], 'q: (Number, 'p), 'r: fn(x: 'p, y: i64) -> i64 |x: 'q, y: 'r| -> i64 0"
@@ -2431,12 +2455,12 @@ run!(
 );
 
 run!(
-    a_variable_paired_by_a_bound_and_named_in_another_is_one_type,
-    refused("the implementation's 'p is one type wherever a bound names it: the signature holds it at more than one place ('a, 'a), and no bound of its own says which type it is; name it at a parameter, as the signature does, or give it a bound that is one type"),
+    a_variable_paired_by_a_bound_and_named_in_another_with_a_predicate_alone_holds,
+    prints("i64:0"),
     "/test.gx" => "mod m; let u: [i64, string] = \"s\"; let result = m::f(u, (\"s\", 1), [[1]])",
     "/test/m.gxi" => "val f: fn<'a: [i64, string], 'b: ('a, i64)>(z: 'a, x: 'b, y: Array<Array<'a>>) -> i64;",
     "/test/m.gx" => "let f = 'p: OneNumber, 'q: ('p, i64), 'r: [Array<[Array<'p>, null]>, null] |z, x: 'q, y: 'r| -> i64 0"
-; FuseExpect::None);
+; FuseExpect::Jit);
 
 run!(
     a_variable_paired_by_a_bound_and_named_in_another_is_its_own_bound,
@@ -2447,12 +2471,12 @@ run!(
 );
 
 run!(
-    a_variable_paired_by_a_bound_and_named_in_a_functions_result_is_one_type,
-    refused("the implementation's 'p is one type wherever a bound names it: the signature holds it at more than one place ('a, 'a), and no bound of its own says which type it is; name it at a parameter, as the signature does, or give it a bound that is one type"),
+    a_variable_paired_by_a_bound_and_named_in_a_functions_result_with_a_predicate_alone_holds,
+    prints("i64:0"),
     "/test.gx" => "mod m; let u: [i64, string] = \"s\"; let result = m::f(u, (\"s\", 1), |x: i64| 1)",
     "/test/m.gxi" => "val f: fn<'a: [i64, string], 'b: ('a, i64), 'd: fn(x: i64) -> 'a>(z: 'a, x: 'b, y: 'd) -> i64;",
     "/test/m.gx" => "let f = 'p: OneNumber, 'q: ('p, i64), 'r: fn(x: i64) -> ['p, null] |z, x: 'q, y: 'r| -> i64 0"
-; FuseExpect::None);
+; FuseExpect::Jit);
 
 run!(
     a_variable_paired_by_a_bound_and_named_in_a_functions_result_is_its_own_bound,
@@ -2465,11 +2489,20 @@ run!(
 // A variable its bound does not admit where an argument names it stands
 // nowhere, and the argument's bound is refused as it is of any other.
 run!(
-    an_unpaired_variable_in_an_argument_must_be_admitted,
-    refused("signature has concrete type fn(x: 'a, y: Number) -> i64, which the implementation constraint fn(x: 'p, y: i64) -> i64 does not admit"),
+    an_unpaired_variable_in_an_argument_may_be_narrower,
+    prints("i64:0"),
     "/test.gx" => "mod m; let result = m::f(|x: i64, y: Number| 0)",
     "/test/m.gxi" => "val f: fn<'a: [i64, string]>(x: fn(x: 'a, y: Number) -> i64) -> i64;",
     "/test/m.gx" => "let f = 'p: [i64, string] + Singleton, 'q: fn(x: 'p, y: i64) -> i64 |x: 'q| -> i64 0"
+; FuseExpect::Jit);
+
+// which Singleton does not.
+run!(
+    an_unpaired_variable_in_an_arguments_result_must_be_admitted,
+    refused("the implementation requires 'a: Singleton, which the signature does not declare"),
+    "/test.gx" => "mod m; let result = m::f(|x: i64, y: Number| 0)",
+    "/test/m.gxi" => "val f: fn<'a: [i64, string]>(x: fn(x: i64, y: Number) -> 'a) -> i64;",
+    "/test/m.gx" => "let f = 'p: [i64, string] + Singleton, 'q: fn(x: i64, y: i64) -> 'p |x: 'q| -> i64 0"
 ; FuseExpect::None);
 
 // What a bare variable takes of a union's members is one type.
@@ -2494,28 +2527,28 @@ run!(
 // too, so beside one named at two places each is judged as its bound as
 // well as at its place: a function's argument does not hold the wider type.
 run!(
-    an_unpaired_variable_in_an_argument_beside_one_at_two_places_is_its_own_bound,
-    refused("the implementation requires 'g: fn(x: 'k, y: i64) -> i64, which the signature does not declare: an instance that takes 'p as its own bound takes 'k as its own too, [i64, string]; name one of them at a parameter, or give 'k no bound that is one type"),
+    an_unpaired_variable_in_an_argument_beside_one_at_two_places_holds,
+    prints("i64:0"),
     "/test.gx" => "mod m; let result = m::f((1, \"s\"), (1, 1), |x: i64, y: Number| x)",
     "/test/m.gxi" => "val f: fn<'a: [i64, string], 'c: [i64, string], 'b: (i64, 'a), 'd: (i64, 'c), 'e: [i64, string], 'g: fn(x: 'e, y: Number) -> i64>(x: 'b, y: 'd, z: 'g) -> i64;",
     "/test/m.gx" => "let f = 'p: [i64, string], 'q: (Number, 'p), 'r: (Number, 'p), 'k: [i64, string], 's: fn(x: 'k, y: i64) -> i64 |x: 'q, y: 'r, z: 's| -> i64 0"
-; FuseExpect::None);
+; FuseExpect::Jit);
 
 run!(
-    a_variable_a_bound_paired_in_an_argument_beside_one_at_two_places_is_its_own_bound,
-    refused("the implementation requires 'g: fn(x: 'k, y: i64) -> i64, which the signature does not declare: an instance that takes 'p as its own bound takes 'k as its own too, [i64, string]"),
+    a_variable_a_bound_paired_in_an_argument_beside_one_at_two_places_holds,
+    prints("i64:0"),
     "/test.gx" => "mod m; let result = m::f((1, \"s\"), (1, 1), |x: i64, y: i64| x)",
     "/test/m.gxi" => "val f: fn<'a: [i64, string], 'c: [i64, string], 'b: (i64, 'a), 'd: (i64, 'c), 'e: [i64, string], 'g: fn(x: 'e, y: i64) -> i64>(x: 'b, y: 'd, z: 'g) -> i64;",
     "/test/m.gx" => "let f = 'p: [i64, string], 'q: (Number, 'p), 'r: (Number, 'p), 'k: [i64, string], 's: fn(x: 'k, y: i64) -> i64 |x: 'q, y: 'r, z: 's| -> i64 0"
-; FuseExpect::None);
+; FuseExpect::Jit);
 
 run!(
-    an_unpaired_variable_in_a_positions_argument_beside_one_at_two_places_is_its_own_bound,
-    refused("signature has concrete type fn(x: 'e, y: Number) -> i64, which the implementation constraint fn(x: 'k, y: i64) -> i64 does not admit: an instance that takes 'p as its own bound takes 'k as its own too, [i64, string]"),
+    an_unpaired_variable_in_a_positions_argument_beside_one_at_two_places_holds,
+    prints("i64:0"),
     "/test.gx" => "mod m; let result = m::f((1, \"s\"), (1, 1), |x: i64, y: Number| x)",
     "/test/m.gxi" => "val f: fn<'a: [i64, string], 'c: [i64, string], 'b: (i64, 'a), 'd: (i64, 'c), 'e: [i64, string]>(x: 'b, y: 'd, z: fn(x: 'e, y: Number) -> i64) -> i64;",
     "/test/m.gx" => "let f = 'p: [i64, string], 'q: (Number, 'p), 'r: (Number, 'p), 'k: [i64, string], 's: fn(x: 'k, y: i64) -> i64 |x: 'q, y: 'r, z: 's| -> i64 0"
-; FuseExpect::None);
+; FuseExpect::Jit);
 
 run!(
     an_unpaired_variable_with_a_predicate_alone_in_an_argument_beside_one_at_two_places_holds,
@@ -2553,7 +2586,7 @@ run!(
 // the signature's bound, so every variable inside them is judged.
 run!(
     each_conjunct_of_a_bound_must_be_declared,
-    refused("the implementation requires 'a: [i64, f64], which the signature does not declare"),
+    refused("val f is declared fn<'a: [i64, string], 'b: Array<'a>>(x: 'b) -> 'b but implemented fn<'p: [i64, string], 'q: Array<'p: unbound within [i64, string]> + Array<'r: unbound within [i64, f64]>, 'r: [i64, f64]>(x: 'q: unbound within Array<'p: unbound within [i64, string]> & Array<'r: unbound within [i64, f64]>) -> 'q: unbound within Array<'p: unbound within [i64, string]> & Array<'r: unbound within [i64, f64]>: type mismatch Array<'r: unbound within [i64, f64]> does not contain 'b: unbound within Array<'a: unbound within [i64, string]>"),
     "/test.gx" => "mod m; let result = m::f([\"s\"])",
     "/test/m.gxi" => "val f: fn<'a: [i64, string], 'b: Array<'a>>(x: 'b) -> 'b;",
     "/test/m.gx" => "let f = 'p: [i64, string], 'r: [i64, f64], 'q: Array<'p> + Array<'r> |x: 'q| -> 'q x"
@@ -2605,6 +2638,26 @@ run!(
     "/test/inner.gx" => "use super::other::T; let v: U = 1"
 );
 
+// The implementation reads what its interface imports, and may not import
+// it again: a name is imported once.
+run!(
+    implementation_reads_its_interfaces_import,
+    is(Value::I64(1)),
+    "/test.gx" => "mod other; mod inner; let result = inner::v",
+    "/test/other.gx" => "type T = i64",
+    "/test/inner.gxi" => "use super::other::T; val v: T",
+    "/test/inner.gx" => "let v: T = 1"
+; FuseExpect::None);
+
+run!(
+    implementation_repeating_its_interfaces_import_refused,
+    refused("`T` is already imported here: remove the repeated import"),
+    "/test.gx" => "mod other; mod inner; let result = inner::v",
+    "/test/other.gx" => "type T = i64",
+    "/test/inner.gxi" => "use super::other::T; val v: T",
+    "/test/inner.gx" => "use super::other::T; let v: T = 1"
+);
+
 run!(
     interface_name_of_an_implementation_type_is_refused,
     refused("undefined type T"),
@@ -2625,7 +2678,7 @@ run!(
 // A mismatch in a labeled argument names the argument by its label.
 run!(
     interface_labeled_argument_mismatch_names_the_label,
-    refused("in argument #b"),
+    refused("val f is declared fn(#b: i64, x: i64) -> i64 but implemented fn(#b: string, x: i64) -> i64"),
     "/test.gx" => "mod inner; let result = inner::f(#b: 1, 2)",
     "/test/inner.gxi" => "val f: fn(#b: i64, x: i64) -> i64",
     "/test/inner.gx" => "let f = |#b: string, x: i64| -> i64 x"
@@ -2645,7 +2698,7 @@ run!(
 // implementation bound only through its own.
 run!(
     interface_unbounded_variable_under_a_bounded_implementation_refused,
-    refused("signature has concrete type [null, 'b], which the implementation constraint [null, Number] does not admit"),
+    refused("val f is declared fn(x: [null, 'b]) -> string but implemented fn<'a: [null, Number]>(x: 'a: unbound within [null, Number]) -> string: type mismatch [Number, null] does not contain 'b"),
     "/test.gx" => "mod inner; let result = inner::f(\"hello\")",
     "/test/inner.gxi" => "val f: fn(x: ['b, null]) -> string",
     "/test/inner.gx" => "let f = 'a: [Number, null] |x: 'a| -> string \"[x]\""
@@ -2850,8 +2903,8 @@ run!(
 // A sig's import of a type its list declares below the module names
 // nothing where the module stands.
 run!(
-    dynamic_sig_import_of_a_type_declared_below_refused,
-    refused("the sig imports `Foo`, which nothing above this module declares"),
+    dynamic_sig_import_of_a_type_declared_below,
+    is(Value::I64(3)),
     "/test.gx" => r#"
         let st = mod foo dynamic {
             sig { use super::Foo; val f: fn(x: Foo) -> i64; val k: i64 };
@@ -2860,7 +2913,7 @@ run!(
         type Foo = {a: i64};
         let result = select st { error as e => 0, null as _ => foo::k }
     "#
-; FuseExpect::None);
+);
 
 // A loaded body's dynamic module is held to its names by the load that
 // declares it: the outer load is refused.
@@ -2940,7 +2993,7 @@ run!(
 // does.
 run!(
     generic_val_over_a_written_let_refused,
-    refused("where the val declares 'a, a type each use picks, the implementation has one type all uses share"),
+    refused_renumbered("val f is declared fn(x: 'a) -> 'a but implemented [fn(x: '_0: unbound within '_1: unbound) -> '_1: unbound, fn(x: '_2: unbound within '_3: unbound) -> '_3: unbound]: a declared type variable meets a value from outside the definition that declares it (fn(x: 'a) -> 'a)"),
     "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
     "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
     "/test/m.gx" => "let f = |x| x; f <- |x| x"
@@ -2956,7 +3009,7 @@ run!(
 
 run!(
     generic_val_whose_argument_a_written_let_holds_refused,
-    refused("where the val declares 'a, a type each use picks, the implementation has one type all uses share"),
+    refused_renumbered("val set is declared fn(g: fn(x: 'a) -> 'a) -> null but implemented fn(g: '_0: unbound within fn(x: '_1: unbound within '_2: unbound) -> '_2: unbound) -> null: a declared type variable meets a value from outside the definition that declares it (fn(x: 'a) -> 'a)"),
     "/test.gx" => "mod m; let result = m::set(|x: i64| -> i64 x + 100)",
     "/test/m.gxi" => "val set: fn(g: fn(x: 'a) -> 'a) -> null",
     "/test/m.gx" => "let f = |x| x; let set = |g| { f <- g; null }"
@@ -2964,7 +3017,7 @@ run!(
 
 run!(
     rank2_val_over_an_outer_binding_refused,
-    refused("where the val declares 'a, a type each use picks, the implementation has one type all uses share"),
+    refused_renumbered("val h is declared fn<'a: Any>(x: 'a) -> 'a but implemented fn(x: '_0: unbound within '_1: unbound & '_2: unbound) -> '_2: unbound: where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
     "/test.gx" => "mod m; let result = (m::h(1), m::h(\"s\"))",
     "/test/m.gxi" => "val h: fn<'a: Any>(x: 'a) -> 'a",
     "/test/m.gx" => "let y = never(); let h = |x| { y <- x; x }"
@@ -2972,7 +3025,7 @@ run!(
 
 run!(
     struct_of_functions_val_over_an_outer_binding_refused,
-    refused("where the val declares 'a, a type each use picks, the implementation has one type all uses share"),
+    refused_renumbered("val s is declared { f: fn(x: 'a) -> 'a, g: fn(t: Any) -> 'a } but implemented { f: fn(x: '_0: unbound within '_1: unbound & '_2: unbound) -> '_2: unbound, g: fn(t: '_3: unbound) -> '_1: unbound }: where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
     "/test.gx" => r#"
         mod m;
         let a = m::s.f(1);
@@ -2986,7 +3039,7 @@ run!(
 
 run!(
     aliased_function_val_over_an_outer_binding_refused,
-    refused("where the val declares 'a, a type each use picks, the implementation has one type all uses share"),
+    refused_renumbered("val f is declared F<'a> but implemented fn(x: '_0: unbound within '_1: unbound & '_2: unbound) -> '_2: unbound: where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
     "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
     "/test/m.gxi" => "type F<'a> = fn(x: 'a) -> 'a; val f: F<'a>",
     "/test/m.gx" => "let y = never(); let f = |x| { y <- x; x }"
@@ -2998,7 +3051,7 @@ run!(
 // annotation on the let.
 run!(
     val_over_an_outer_binding_names_its_type,
-    refused("that of y, a binding outside its let: declare the val at one type, or give y a type that holds every 'a"),
+    refused_renumbered("val f is declared fn(x: 'a) -> 'a but implemented fn(x: '_0: unbound within '_1: unbound & '_2: unbound) -> '_2: unbound: where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
     "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
     "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
     "/test/m.gx" => "let y = never(); let f = |x| { y <- x; x }"
@@ -3008,7 +3061,7 @@ run!(
 // refusal names the binding written, not the holder or nothing.
 run!(
     val_struct_holding_a_writing_helper_names_what_it_writes,
-    refused("that of y, a binding outside its let: declare the val at one type, or give y a type that holds every 'a"),
+    refused_renumbered("val c is declared { f: fn(x: 'a) -> 'a, g: fn(x: 'a) -> 'a } but implemented { f: fn(x: '_0: unbound within '_1: unbound) -> '_1: unbound, g: fn(x: '_2: unbound within '_3: unbound) -> '_3: unbound }: where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
     "/test.gx" => "mod m; let result = (m::c.g(1), m::c.g(\"s\"))",
     "/test/m.gxi" => "val c: {f: fn(x: 'a) -> 'a, g: fn(x: 'a) -> 'a}",
     "/test/m.gx" => "let y = never(); let store = |x| { y <- x; y }; let c = {f: |x| x, g: store}"
@@ -3019,7 +3072,7 @@ run!(
 // another is written after it, and the first's annotation lifts the refusal.
 run!(
     val_struct_names_the_holder_written_first,
-    refused("that of q, a binding outside its let: declare the val at one type, or give q a type that holds every 'b"),
+    refused_renumbered("val c is declared { a: fn(x: 'a) -> i64, b: fn(x: 'b) -> 'b } but implemented { a: fn(x: '_0: unbound) -> i64, b: fn(x: '_1: unbound within '_2: unbound within '_2_1: unbound & '_3: unbound) -> '_3: unbound }: where the signature declares 'b, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'b, or declare the signature at one type"),
     "/test.gx" => "mod m; let result = (m::c.b(1), m::c.b(\"s\"))",
     "/test/m.gxi" => "val c: {a: fn(x: 'a) -> i64, b: fn(x: 'b) -> 'b}",
     "/test/m.gx" => "let p = never(); let q = [p]; let r = [q]; let c = {a: |x| array::len(r), b: |x| { q <- [x]; x }}"
@@ -3036,7 +3089,7 @@ run!(
 
 run!(
     val_names_the_holder_written_first_of_one_lambda_s_captures,
-    refused("that of q, a binding outside its let: declare the val at one type, or give q a type that holds every 'a"),
+    refused_renumbered("val f is declared fn(x: 'a) -> 'a but implemented fn(x: '_0: unbound within '_1: unbound within '_1_1: unbound & '_2: unbound) -> '_2: unbound: where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
     "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
     "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
     "/test/m.gx" => "let p = never(); let q = [p]; let r = [q]; let f = |x| { let n = array::len(r); q <- [x]; x }"
@@ -3056,7 +3109,7 @@ run!(
 // with both annotated it runs.
 run!(
     val_names_the_lambda_holder_written_first,
-    refused("that of st, a binding outside its let that something writes, which holds one type for every reader: declare the val at one type, or give st a type that holds every 'a"),
+    refused_renumbered("val f is declared fn(x: 'a) -> 'a but implemented fn(x: '_0: unbound within '_1: unbound within '_2: unbound & '_3: unbound within '_4: unbound & '_5: unbound within '_6: unbound & '_7: unbound within '_8: unbound & '_9: unbound) -> '_9: unbound: where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
     "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
     "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
     "/test/m.gx" => "let st = {f: |x| x}; st <- {f: |x| x}; let st2 = {f: |x| x}; st2 <- {f: |x| x}; let f = |x| { st2.f(x); st.f(x); x }"
@@ -3064,7 +3117,7 @@ run!(
 
 run!(
     val_names_the_second_lambda_holder_once_the_first_is_annotated,
-    refused("that of st2, a binding outside its let that something writes, which holds one type for every reader: declare the val at one type, or give st2 a type that holds every 'a"),
+    refused_renumbered("val f is declared fn(x: 'a) -> 'a but implemented fn(x: '_0: unbound within '_1: unbound within '_2: unbound & '_3: unbound within '_4: unbound & '_5: unbound) -> '_5: unbound: where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
     "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
     "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
     "/test/m.gx" => "let st: {f: fn(x: Any) -> Any} = {f: |x| x}; st <- {f: |x| x}; let st2 = {f: |x| x}; st2 <- {f: |x| x}; let f = |x| { st2.f(x); st.f(x); x }"
@@ -3079,19 +3132,9 @@ run!(
     ; FuseExpect::None
 );
 
-// A lambda binding something writes is one type for every reader: the
-// implementation that calls it is told that binding, by name.
-// CR claude for claude: [structure/low] 46 fixtures repeat the root `mod m; let result
-// = (m::f(1), m::f("s"))` and 45 the interface `val f: fn(x: 'a) -> 'a` verbatim, and
-// only the implementation varies. Add two consts beside this one (`F_AT_TWO_TYPES`,
-// `GENERIC_F`) and pass them where each fixture writes the strings. That removes about
-// ninety copies and makes the varying part stand out. Found by reading; not run.
-// (tests-interfaces-image-09)
-const WRITTEN_K: &str = "that of k, a binding outside its let that something writes, which holds one type for every reader: declare the val at one type, or give k a type that holds every 'a";
-
 run!(
     val_names_a_written_lambda_it_calls,
-    refused(WRITTEN_K),
+    refused_renumbered("val f is declared fn(x: 'a) -> 'a but implemented fn(x: '_0: unbound within '_1: unbound within '_2: unbound & '_3: unbound within '_4: unbound) -> ['_2: unbound, '_4: unbound]: where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
     "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
     "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
     "/test/m.gx" => "let k = |x| x; k <- |x| x; let f = |x| k(x)"
@@ -3099,7 +3142,7 @@ run!(
 
 run!(
     val_names_a_written_lambda_it_hands_its_argument,
-    refused(WRITTEN_K),
+    refused_renumbered("val f is declared fn(x: 'a) -> 'a but implemented fn(x: '_0: unbound within '_1: unbound within '_2: unbound & '_3: unbound within '_4: unbound & '_5: unbound) -> '_5: unbound: where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
     "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
     "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
     "/test/m.gx" => "let k = |x| x; k <- |x| x; let f = |x| { k(x); x }"
@@ -3127,7 +3170,7 @@ run!(
 // calls in turn.
 run!(
     val_names_a_written_lambda_behind_a_generic_one,
-    refused(WRITTEN_K),
+    refused_renumbered("val f is declared fn(x: 'a) -> 'a but implemented fn(x: '_0: unbound within '_1: unbound within '_2: unbound within '_3: unbound & '_4: unbound within '_5: unbound) -> ['_3: unbound, '_5: unbound]: where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
     "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
     "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
     "/test/m.gx" => "let k = |x| x; k <- |x| x; let g = |x| k(x); let f = |x| g(x)"
@@ -3137,7 +3180,7 @@ run!(
 // annotation's to widen while every read of the binding shares its type.
 run!(
     val_names_a_written_lambda_not_what_it_captures,
-    refused(WRITTEN_K),
+    refused_renumbered("val f is declared fn(x: 'a) -> 'a but implemented fn(x: '_0: unbound within '_1: unbound within '_2: unbound & '_3: unbound within '_4: unbound) -> ['_2: unbound, '_4: unbound]: where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
     "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
     "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
     "/test/m.gx" => "let d: Any = never(); let k = |x| { d <- x; x }; k <- |x| x; let f = |x| k(x)"
@@ -3145,7 +3188,7 @@ run!(
 
 run!(
     val_names_a_written_lambda_over_an_open_capture,
-    refused(WRITTEN_K),
+    refused_renumbered("val f is declared fn(x: 'a) -> 'a but implemented fn(x: '_0: unbound within '_1: unbound within '_2: unbound & '_3: unbound & '_4: unbound within '_5: unbound) -> ['_3: unbound, '_5: unbound]: where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
     "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
     "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
     "/test/m.gx" => "let d = never(); let k = |x| { d <- x; x }; k <- |x| x; let f = |x| k(x)"
@@ -3153,7 +3196,7 @@ run!(
 
 run!(
     val_names_a_written_struct_of_lambdas_not_what_they_capture,
-    refused("that of st, a binding outside its let that something writes, which holds one type for every reader: declare the val at one type, or give st a type that holds every 'a"),
+    refused_renumbered("val f is declared fn(x: 'a) -> 'a but implemented fn(x: '_0: unbound within '_1: unbound within '_2: unbound & '_3: unbound & '_4: unbound within '_5: unbound) -> ['_3: unbound, '_5: unbound]: where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
     "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
     "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
     "/test/m.gx" => "let d = never(); let st = {h: |x| { d <- x; x }}; st <- {h: |x| x}; let f = |x| st.h(x)"
@@ -3163,7 +3206,7 @@ run!(
 // type is the way out.
 run!(
     val_written_implementation_names_the_written_lambda_it_calls,
-    refused("that of k, a binding outside its let that something writes: declare the val at one type"),
+    refused("a declared type variable meets a value from outside the definition that declares it (fn(x: 'a) -> 'a)"),
     "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
     "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
     "/test/m.gx" => "let k = |x| x; k <- |x| x; let f = |x| k(x); f <- |x| k(x)"
@@ -3174,7 +3217,7 @@ run!(
 // reader, named as written as a written lambda is.
 run!(
     val_names_a_lambda_a_reference_writes,
-    refused(WRITTEN_K),
+    refused_renumbered("val f is declared fn(x: 'a) -> 'a but implemented fn(x: '_0: unbound within '_1: unbound within '_2: unbound & '_3: unbound within '_4: unbound) -> ['_2: unbound, '_4: unbound]: where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
     "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
     "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
     "/test/m.gx" => "let k = |x| x; let r = &mut k; *r <- |x| x; let f = |x| k(x)"
@@ -3182,7 +3225,7 @@ run!(
 
 run!(
     val_names_a_written_read_of_a_function,
-    refused("that of j, a binding outside its let that something writes, which holds one type for every reader: declare the val at one type, or give j a type that holds every 'a"),
+    refused_renumbered("val f is declared fn(x: 'a) -> 'a but implemented fn(x: '_0: unbound within '_1: unbound within '_2: unbound & '_3: unbound within '_4: unbound) -> ['_2: unbound, '_4: unbound]: where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
     "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
     "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
     "/test/m.gx" => "let s0 = {g: |x| x}; let j = s0.g; j <- |x| x; let f = |x| j(x)"
@@ -3199,7 +3242,7 @@ run!(
 
 run!(
     val_names_a_written_call_result,
-    refused(WRITTEN_K),
+    refused_renumbered("val f is declared fn(x: 'a) -> 'a but implemented fn(x: '_0: unbound within '_1: unbound within '_2: unbound & '_3: unbound within '_4: unbound) -> ['_2: unbound, '_4: unbound]: where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
     "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
     "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
     "/test/m.gx" => "let mk = || |x| x; let k = mk(); k <- |x| x; let f = |x| k(x)"
@@ -3210,7 +3253,7 @@ run!(
 // the refusal.
 run!(
     val_struct_names_the_capture_whose_type_is_the_cell,
-    refused("that of p, a binding outside its let: declare the val at one type, or give p a type that holds every 'a"),
+    refused_renumbered("val c is declared { a: fn(x: 'a) -> 'a, b: fn(x: 'b) -> i64 } but implemented { a: fn(x: '_0: unbound within '_1: unbound within '_2: unbound within 'a: unbound & '_3: unbound) -> '_3: unbound, b: fn(x: '_4: unbound) -> i64 }: where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
     "/test.gx" => "mod m; let result = (m::c.a(1), m::c.a(\"s\"))",
     "/test/m.gxi" => "val c: {a: fn(x: 'a) -> 'a, b: fn(x: 'b) -> i64}",
     "/test/m.gx" => "let p = never(); let q = [p]; let c = {b: |x| array::len(q), a: |x| { p <- x; x }}"
@@ -3229,7 +3272,7 @@ run!(
 // holds the cell in data.
 run!(
     val_names_the_capture_whose_type_is_the_cell_past_a_nearer_holder,
-    refused("that of p, a binding outside its let: declare the val at one type, or give p a type that holds every 'a"),
+    refused_renumbered("val f is declared fn(x: 'a) -> 'a but implemented fn(x: '_0: unbound within '_1: unbound within '_2: unbound within '_3: unbound within 'a: unbound & '_4: unbound within '_5: unbound within '_6: unbound) -> '_6: unbound: where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
     "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
     "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
     "/test/m.gx" => "let p = never(); let q = [p]; let g = |y| { p <- y; y }; let f = |x| { let n = array::len(q); g(x) }"
@@ -3246,7 +3289,7 @@ run!(
 
 run!(
     val_struct_made_by_a_call_is_told_to_be_a_literal,
-    refused("declare the val at one type, or make the implementation a literal of lambdas over variables of their own"),
+    refused_renumbered("val c is declared { f: fn(x: 'a) -> 'a } but implemented { f: fn(x: '_0: unbound within '_1: unbound within '_2: unbound) -> '_2: unbound }: a declared type variable meets a value from outside the definition that declares it ({ f: fn(x: 'a) -> 'a })"),
     "/test.gx" => "mod m; let result = (m::c.f(1), m::c.f(\"s\"))",
     "/test/m.gxi" => "val c: {f: fn(x: 'a) -> 'a}",
     "/test/m.gx" => "let mk = |z| {f: |x| select true { true => x, false => z }}; let c = mk(never())"
@@ -3257,7 +3300,7 @@ run!(
 // binding's annotation widens, so the refusal names a lambda in its place.
 run!(
     val_struct_update_holding_a_call_result_refused,
-    refused("where the val declares 'a, a type each use picks, the implementation has one type all uses share: declare the val at one type, or make the implementation a literal of lambdas over variables of their own"),
+    refused_renumbered("val s is declared { g: fn(x: 'a) -> 'a, h: fn(x: 'a) -> 'a } but implemented { g: fn(x: '_0: unbound within '_1: unbound) -> '_1: unbound, h: fn(x: '_2: unbound within '_3: unbound & '_4: unbound) -> '_4: unbound }: a declared type variable meets a value from outside the definition that declares it (fn(x: 'a) -> 'a)"),
     "/test.gx" => "mod m; let result = (m::s.h(1), m::s.h(\"s\"))",
     "/test/m.gxi" => "val s: {g: fn(x: 'a) -> 'a, h: fn(x: 'a) -> 'a}",
     "/test/m.gx" => "let mk = || { let v = never(); |x| { v <- x; x } }; let base = {g: |x| x, h: |x| x}; let s = {base with h: mk()}"
@@ -3265,7 +3308,7 @@ run!(
 
 run!(
     val_struct_update_holding_a_read_of_a_call_result_names_a_lambda,
-    refused("the implementation has one type all uses share: declare the val at one type, or make the implementation a literal of lambdas over variables of their own"),
+    refused_renumbered("val s is declared { g: fn(x: 'a) -> 'a, h: fn(x: 'a) -> 'a } but implemented { g: fn(x: '_0: unbound within '_1: unbound) -> '_1: unbound, h: fn(x: '_2: unbound within '_3: unbound) -> '_3: unbound }: a declared type variable meets a value from outside the definition that declares it (fn(x: 'a) -> 'a)"),
     "/test.gx" => "mod m; let result = (m::s.h(1), m::s.h(\"s\"))",
     "/test/m.gxi" => "val s: {g: fn(x: 'a) -> 'a, h: fn(x: 'a) -> 'a}",
     "/test/m.gx" => "let mk = || |x| x; let g0 = mk(); let base = {g: |x| x, h: |x| x}; let s = {base with h: g0}"
@@ -3284,7 +3327,7 @@ run!(
 // lambda to write in its place.
 run!(
     val_generic_read_names_the_binding_its_lambda_writes,
-    refused("that of y, a binding outside its let: declare the val at one type, or give y a type that holds every 'a"),
+    refused_renumbered("val f is declared fn(x: 'a) -> 'a but implemented fn(x: '_0: unbound within '_1: unbound & '_2: unbound) -> '_2: unbound: where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
     "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
     "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
     "/test/m.gx" => "let y = never(); let s0 = {g: |x| { y <- x; x }}; let f = s0.g"
@@ -3300,7 +3343,7 @@ run!(
 
 run!(
     val_names_what_a_captured_generic_read_writes,
-    refused("that of y, a binding outside its let: declare the val at one type, or give y a type that holds every 'a"),
+    refused_renumbered("val f is declared fn(x: 'a) -> 'a but implemented fn(x: '_0: unbound within '_1: unbound within '_2: unbound & '_3: unbound within '_4: unbound within '_5: unbound) -> '_5: unbound: where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
     "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
     "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
     "/test/m.gx" => "let y = never(); let s0 = {g: |x| { y <- x; x }}; let j = s0.g; let f = |x| j(x)"
@@ -3316,7 +3359,7 @@ run!(
 
 run!(
     val_generic_read_of_a_call_result_names_a_lambda,
-    refused("the implementation has one type all uses share: declare the val at one type, or make the implementation a lambda over variables of its own"),
+    refused_renumbered("val f is declared fn(x: 'a) -> 'a but implemented fn(x: '_0: unbound within '_1: unbound) -> '_1: unbound: a declared type variable meets a value from outside the definition that declares it (fn(x: 'a) -> 'a)"),
     "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
     "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
     "/test/m.gx" => "let mk = || |x| x; let s0 = {g: |x| x, h: mk()}; let f = s0.h"
@@ -3330,19 +3373,9 @@ run!(
     "/test/m.gx" => "let s0 = {g: |x| x, h: |x| x}; let f = s0.h"
 ; FuseExpect::None);
 
-// A capture that holds the cell only in a function that is one instance (a
-// call's result), whose lambdas capture nothing that holds it, is told so:
-// its annotation would lift nothing where the function returns the cell,
-// and a lambda in that function's place does.
-macro_rules! one_instance {
-    ($b:literal) => {
-        concat!("that of ", $b, ", a binding outside its let holding a function that is one instance, as a call's result is: declare the val at one type, or write a lambda over variables of its own in that function's place")
-    };
-}
-
 run!(
     val_capturing_a_struct_holding_a_call_result_names_a_lambda,
-    refused(one_instance!("s0")),
+    refused_renumbered("val f is declared fn(x: 'a) -> 'a but implemented fn(x: '_0: unbound within '_1: unbound within '_2: unbound) -> '_2: unbound: where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
     "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
     "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
     "/test/m.gx" => "let mk = || |x| x; let s0 = {g: |x| x, h: mk()}; let f = |x| s0.h(x)"
@@ -3358,7 +3391,7 @@ run!(
 
 run!(
     val_capturing_a_generic_read_of_a_call_result_names_a_lambda,
-    refused(one_instance!("j")),
+    refused_renumbered("val f is declared fn(x: 'a) -> 'a but implemented fn(x: '_0: unbound within '_1: unbound within '_2: unbound) -> '_2: unbound: where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
     "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
     "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
     "/test/m.gx" => "let mk = || |x| x; let s0 = {g: |x| x, h: mk()}; let j = s0.h; let f = |x| j(x)"
@@ -3374,7 +3407,7 @@ run!(
 
 run!(
     val_capturing_a_call_result_names_a_lambda,
-    refused(one_instance!("k")),
+    refused_renumbered("val f is declared fn(x: 'a) -> 'a but implemented fn(x: '_0: unbound within '_1: unbound within '_2: unbound) -> '_2: unbound: where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
     "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
     "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
     "/test/m.gx" => "let mk = || |x| x; let k = mk(); let f = |x| k(x)"
@@ -3392,7 +3425,7 @@ run!(
 // call's result.
 run!(
     val_names_the_struct_holding_the_call_result_past_one_calling_into_it,
-    refused(one_instance!("b1")),
+    refused_renumbered("val f is declared fn(x: 'a) -> 'a but implemented fn(x: '_0: unbound within '_1: unbound within '_2: unbound within '_3: unbound) -> '_3: unbound: where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
     "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
     "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
     "/test/m.gx" => "let mk = || |x| x; let b1 = {h: mk()}; let b0 = {g: |x| b1.h(x)}; let f = |x| b0.g(x)"
@@ -3408,7 +3441,7 @@ run!(
 
 run!(
     written_val_capturing_a_struct_holding_a_call_result_names_one_type,
-    refused("that of s0, a binding outside its let holding a function that is one instance, as a call's result is: declare the val at one type"),
+    refused_renumbered("val f is declared fn(x: 'a) -> 'a but implemented [fn(x: '_0: unbound within '_1: unbound within '_2: unbound within '_3: unbound within '_4: unbound & '_5: unbound within '_6: unbound) -> '_4: unbound, fn(x: '_7: unbound within '_1: unbound within '_2: unbound within '_3: unbound within '_4: unbound & '_5: unbound within '_6: unbound) -> '_6: unbound]: a declared type variable meets a value from outside the definition that declares it (fn(x: 'a) -> 'a)"),
     "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
     "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
     "/test/m.gx" => "let mk = || |x| x; let s0 = {g: |x| x, h: mk()}; let f = |x| s0.h(x); f <- |x| s0.h(x)"
@@ -3418,7 +3451,7 @@ run!(
 // holder in data, and its annotation lifts the refusal.
 run!(
     val_struct_holding_the_cell_beside_lambdas_names_its_type,
-    refused("that of s0, a binding outside its let: declare the val at one type, or give s0 a type that holds every 'a"),
+    refused_renumbered("val f is declared fn(x: 'a) -> 'a but implemented fn(x: '_0: unbound within '_1: unbound & '_2: unbound) -> '_2: unbound: where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
     "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
     "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
     "/test/m.gx" => "let y = never(); let s0 = {g: |x| x, r: &mut y}; let f = |x| { let r = s0.r; *r <- x; x }"
@@ -3450,10 +3483,7 @@ run!(
 
 run!(
     written_val_over_an_outer_binding_names_one_type,
-    |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").ends_with(
-        "the implementation has one type all uses share, that of y, a binding \
-         outside its let: declare the val at one type"
-    )),
+    refused_renumbered("val f is declared fn(x: 'a) -> 'a but implemented [fn(x: '_0: unbound within '_1: unbound & '_2: unbound) -> '_2: unbound, fn(x: '_3: unbound within '_1: unbound & '_4: unbound) -> '_4: unbound]: a declared type variable meets a value from outside the definition that declares it (fn(x: 'a) -> 'a)"),
     "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
     "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
     "/test/m.gx" => "let y = never(); let f = |x| { y <- x; x }; f <- |x| { y <- x; x }"
@@ -3464,7 +3494,7 @@ run!(
 // the value would not fit.
 run!(
     val_over_a_call_result_names_a_lambda,
-    refused("the implementation has one type all uses share: declare the val at one type, or make the implementation a lambda over variables of its own"),
+    refused_renumbered("val f is declared fn(x: 'a) -> 'a but implemented fn(x: '_0: unbound within '_1: unbound) -> '_1: unbound: a declared type variable meets a value from outside the definition that declares it (fn(x: 'a) -> 'a)"),
     "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
     "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
     "/test/m.gx" => "let mk = |u: i64| |x| x; let f = mk(0)"
@@ -3474,7 +3504,7 @@ run!(
 // same let outside a module is.
 run!(
     val_over_a_select_of_lambdas_names_a_lambda,
-    refused("the implementation has one type all uses share: declare the val at one type, or make the implementation a lambda over variables of its own"),
+    refused_renumbered("val f is declared fn(x: 'a) -> 'a but implemented [fn(x: '_0: unbound within '_1: unbound) -> '_1: unbound, fn(x: '_2: unbound within '_3: unbound) -> '_3: unbound]: a declared type variable meets a value from outside the definition that declares it (fn(x: 'a) -> 'a)"),
     "/test.gx" => "mod m; let result = (m::f(1), m::f(\"s\"))",
     "/test/m.gxi" => "val f: fn(x: 'a) -> 'a",
     "/test/m.gx" => "let f = select true { true => |x| x, false => |x| x }"
@@ -3492,7 +3522,7 @@ run!(
 // is told to be one.
 run!(
     data_val_over_no_literal_names_a_literal_of_lambdas,
-    refused("the implementation has one type all uses share: declare the val at one type, or make the implementation a literal of lambdas over variables of their own"),
+    refused_renumbered("val v is declared Array<fn(x: 'a) -> 'a> but implemented '_0: unbound: a declared type variable meets a value from outside the definition that declares it (Array<fn(x: 'a) -> 'a>)"),
     "/test.gx" => "mod m; let result = m::v",
     "/test/m.gxi" => "val v: Array<fn(x: 'a) -> 'a>",
     "/test/m.gx" => "let v = never()"
@@ -3500,7 +3530,7 @@ run!(
 
 run!(
     rank2_val_over_a_written_let_names_the_annotation,
-    refused("annotate the implementation's let with a quantified type (fn<'a: ..>)"),
+    refused_renumbered("val h is declared fn<'a: Any>(x: 'a) -> 'a but implemented [fn(x: '_0: unbound within '_1: unbound) -> '_1: unbound, fn(x: '_2: unbound within '_3: unbound) -> '_3: unbound]: a declared type variable meets a value from outside the definition that declares it (fn(x: 'a) -> 'a)"),
     "/test.gx" => "mod m; let result = (m::h(1), m::h(\"s\"))",
     "/test/m.gxi" => "val h: fn<'a: Any>(x: 'a) -> 'a",
     "/test/m.gx" => "let h = |x| x; h <- |x| x"
@@ -3509,7 +3539,7 @@ run!(
 // The refusal names the variable first by name, whichever the walk met.
 run!(
     val_over_an_open_let_names_its_first_variable,
-    refused("whose 'a each use picks"),
+    refused_renumbered("val f is declared fn(x: 'a, y: 'b) -> ('a, 'b) but implemented '_0: unbound: a declared type variable meets a value from outside the definition that declares it (fn(x: 'a, y: 'b) -> ('a, 'b))"),
     "/test.gx" => "mod m; let result = m::f(1, 2)",
     "/test/m.gxi" => "val f: fn(x: 'a, y: 'b) -> ('a, 'b)",
     "/test/m.gx" => "let f = never()"
@@ -3579,7 +3609,7 @@ run!(
 // did not create.
 run!(
     val_over_an_outer_open_cell_refused,
-    refused("the check decides a type the code around the module left open: annotate `z`"),
+    refused("type mismatch i64 does not contain string"),
     "/test.gx" => "let z = never(); mod m; z <- \"s\"; let result = m::e",
     "/test/m.gxi" => "val e: i64",
     "/test/m.gx" => "let e = super::z"
@@ -3610,14 +3640,11 @@ fn told_in_order(phrases: &'static [&'static str]) -> impl Fn(Result<&Value>) ->
 }
 
 // Calls at two types through a function the code around the module left
-// one instance try to decide its type there: the refusal names the binding
-// holding it before the val's mismatch that followed.
+// one instance would decide its type there: the refusal names the binding
+// that holds it.
 run!(
     calls_at_two_types_through_an_outer_instance_refused,
-    told_in_order(&[
-        "the check decides a type the code around the module left open: annotate `fs`",
-        "type variable usage mismatch: expected i64, got f64",
-    ]),
+    refused("the check decides a type the code around the module left open: annotate `fs`"),
     "/test.gx" => "let fs = array::map([1], |r| |x| x + x); mod m; let result = m::go",
     "/test/m.gxi" => "val go: (i64, f64)",
     "/test/m.gx" => "let g = super::fs[0]$; let go = (g(1), g(1.5))"
@@ -3628,7 +3655,7 @@ run!(
     an_error_after_an_outer_decision_refused,
     told_in_order(&[
         "the check decides a type the code around the module left open: annotate `fs`",
-        "cannot compute string + i64",
+        "cannot compute with +",
     ]),
     "/test.gx" => "let fs = array::map([1], |r| |x| x + x); mod m; let result = m::go",
     "/test/m.gxi" => "val go: i64",
@@ -3646,8 +3673,8 @@ run!(
 // A function type in a val quantifies its own variables: one standing
 // whole where the implementation has a cell no use copies is decided there.
 run!(
-    rank2_val_over_an_open_let,
-    prints("[i64:1, \"s\"]"),
+    rank2_val_over_an_open_let_refused,
+    refused("a declared type variable meets a value from outside the definition that declares it (fn(x: 'a) -> 'a)"),
     "/test.gx" => "mod m; m::e <- |x| x; let result = (m::e(1), m::e(\"s\"))",
     "/test/m.gxi" => "val e: fn<'a: Any>(x: 'a) -> 'a",
     "/test/m.gx" => "let e = never()"
@@ -3923,12 +3950,15 @@ run!(
     "/test/m.gx" => "let f = |x| x"
 ; FuseExpect::None);
 
+// The val ties both fields to one 'a, where the implementation's lambdas
+// have one each; what is written through the val lands on the
+// implementation, so its let is written at the val's type.
 run!(
     write_through_a_typedef_of_two_functions_val_as_general,
     prints("[i64:1, \"s\"]"),
     "/test.gx" => "mod m; m::c <- {f: |x| x, g: |x| x}; let result = (m::c.f(1), m::c.g(\"s\"))",
     "/test/m.gxi" => "type S<'a> = {f: fn(x: 'a) -> 'a, g: fn(x: 'a) -> 'a}; val c: S<'a>",
-    "/test/m.gx" => "let c = {f: |x| x, g: |x| x}"
+    "/test/m.gx" => "let c: S<'a> = {f: |x| x, g: |x| x}"
 ; FuseExpect::None);
 
 run!(
@@ -3936,12 +3966,12 @@ run!(
     prints("[i64:1, \"s\"]"),
     "/test.gx" => "mod m; m::c <- {f: |x| x, g: |x| x}; let result = (m::c.f(1), m::c.g(\"s\"))",
     "/test/m.gxi" => "type F<'a> = fn(x: 'a) -> 'a; type S<'a> = {f: F<'a>, g: F<'a>}; val c: S<'a>",
-    "/test/m.gx" => "let c = {f: |x| x, g: |x| x}"
+    "/test/m.gx" => "let c: S<'a> = {f: |x| x, g: |x| x}"
 ; FuseExpect::None);
 
 run!(
-    write_through_a_recursive_typedef_of_two_functions_val_as_general,
-    prints("[i64:1, \"s\"]"),
+    write_through_a_recursive_typedef_of_two_functions_val_over_a_bare_variant_refused,
+    refused("where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share"),
     "/test.gx" => "mod m; m::c <- `Cons(|x| x, |x| x, `Nil); let result = (select m::c { `Cons(f, _, _) => f(1), `Nil => never() }, select m::c { `Cons(_, g, _) => g(\"s\"), `Nil => never() })",
     "/test/m.gxi" => "type L<'a> = [`Cons(fn(x: 'a) -> 'a, fn(x: 'a) -> 'a, L<'a>), `Nil]; val c: L<'a>",
     "/test/m.gx" => "let c: L<'a> = `Nil"
@@ -3952,7 +3982,7 @@ run!(
     prints("[i64:1, \"s\"]"),
     "/test.gx" => "mod m; m::c <- {f: |x| x, g: |x| x}; let result = (m::c.f(1), m::c.g(\"s\"))",
     "/test/m.gxi" => "type F<'a> = fn(x: 'a) -> 'a; type P<'a, 'b> = {f: F<'a>, g: F<'b>}; type S<'a> = P<'a, 'a>; val c: S<'a>",
-    "/test/m.gx" => "let c = {f: |x| x, g: |x| x}"
+    "/test/m.gx" => "let c: S<'a> = {f: |x| x, g: |x| x}"
 ; FuseExpect::None);
 
 // A typedef whose body names its parameter twice, applied to a typedef of
@@ -3962,14 +3992,14 @@ run!(
     prints("[i64:1, \"s\", i64:2, \"t\"]"),
     "/test.gx" => "mod m; m::c <- {f: |x| x, g: |x| x}; m::d <- (|x| x, |x| x); let result = (m::c.f(1), m::c.g(\"s\"), m::d.0(2), m::d.1(\"t\"))",
     "/test/m.gxi" => "type F<'a> = fn(x: 'a) -> 'a; type P<'t> = {f: 't, g: 't}; type Q<'t> = ('t, 't); val c: P<F<'a>>; val d: Q<F<'a>>",
-    "/test/m.gx" => "let c = {f: |x| x, g: |x| x}; let d = (|x| x, |x| x)"
+    "/test/m.gx" => "let c: P<F<'a>> = {f: |x| x, g: |x| x}; let d: Q<F<'a>> = (|x| x, |x| x)"
 ; FuseExpect::None);
 
 // Each application of a nest of typedefs doubling at every level is
 // copied as its expansion only so many times; the rest as one.
 run!(
     write_through_a_deep_nest_of_typedef_applications_ends,
-    prints("i64:1"),
+    refused("a declared type variable meets a value from outside the definition that declares it ('a)"),
     "/test.gx" => "mod m; m::c <- m::c; let result = 1",
     "/test/m.gxi" => "type T0<'a> = fn(x: 'a) -> 'a; type T1<'a> = {f: T0<'a>, g: T0<'a>}; type T2<'a> = {f: T1<'a>, g: T1<'a>}; type T3<'a> = {f: T2<'a>, g: T2<'a>}; type T4<'a> = {f: T3<'a>, g: T3<'a>}; type T5<'a> = {f: T4<'a>, g: T4<'a>}; type T6<'a> = {f: T5<'a>, g: T5<'a>}; type T7<'a> = {f: T6<'a>, g: T6<'a>}; type T8<'a> = {f: T7<'a>, g: T7<'a>}; type T9<'a> = {f: T8<'a>, g: T8<'a>}; type T10<'a> = {f: T9<'a>, g: T9<'a>}; type T11<'a> = {f: T10<'a>, g: T10<'a>}; type T12<'a> = {f: T11<'a>, g: T11<'a>}; type T13<'a> = {f: T12<'a>, g: T12<'a>}; type T14<'a> = {f: T13<'a>, g: T13<'a>}; type T15<'a> = {f: T14<'a>, g: T14<'a>}; type T16<'a> = {f: T15<'a>, g: T15<'a>}; type T17<'a> = {f: T16<'a>, g: T16<'a>}; type T18<'a> = {f: T17<'a>, g: T17<'a>}; type T19<'a> = {f: T18<'a>, g: T18<'a>}; type T20<'a> = {f: T19<'a>, g: T19<'a>}; type T21<'a> = {f: T20<'a>, g: T20<'a>}; type T22<'a> = {f: T21<'a>, g: T21<'a>}; type T23<'a> = {f: T22<'a>, g: T22<'a>}; type T24<'a> = {f: T23<'a>, g: T23<'a>}; val c: T24<'a>",
     "/test/m.gx" => "let c: T24<'a> = never()"
@@ -3977,7 +4007,7 @@ run!(
 
 run!(
     write_through_a_struct_of_functions_val_refused,
-    refused("test::m::c is { f: fn(x: 'a: unbound) -> 'a: unbound }, a generic binding, so what is written to it must be as general, and { f: fn(x: 'a1: unbound) -> 'a1: unbound } is not"),
+    refused_renumbered("test::m::c is { f: fn(x: 'a: unbound) -> 'a: unbound }, a generic binding, so what is written to it must be as general, and '_0: unbound within { f: fn(x: 'a1: unbound) -> 'a1: unbound } is not: it holds a type variable of the code around the write; to write it at one type, write that type on its let (on its val, where an interface declares it)"),
     "/test.gx" => r#"
         mod m;
         let wr = |x| { m::c <- x; x };
@@ -3998,7 +4028,7 @@ run!(
 
 run!(
     write_through_an_array_of_functions_val_refused,
-    refused("v is Array<fn(x: 'a: unbound) -> 'a: unbound>, a generic binding, so what is written to it must be as general"),
+    refused_renumbered("test::m::v is Array<fn(x: 'a: unbound) -> 'a: unbound>, a generic binding, so what is written to it must be as general, and '_0: unbound within Array<fn(x: 'a1: unbound) -> 'a1: unbound> is not: it holds a type variable of the code around the write; to write it at one type, write that type on its let (on its val, where an interface declares it)"),
     "/test.gx" => r#"
         mod m;
         let wr = |x| { m::v <- x; x };
@@ -4026,7 +4056,7 @@ run!(
 // schemes: a write is held to each, whatever their names.
 run!(
     write_through_a_val_of_alike_named_functions_refused,
-    refused("it holds a type variable of the code around the write"),
+    refused_renumbered("val c is written, and what is written lands on its implementation, of type { f: fn(x: '_0: unbound within '_1: unbound) -> '_1: unbound, g: fn(x: '_2: unbound within '_3: unbound) -> '_3: unbound }, which the val's { f: fn(x: 'a: unbound) -> 'a: unbound, g: fn(x: 'a: unbound) -> 'a: unbound } does not fit: annotate the implementation's let with the val's type"),
     "/test.gx" => r#"
         mod m;
         let y = never();
@@ -4040,7 +4070,7 @@ run!(
 
 run!(
     write_through_a_val_of_alike_named_typedefs_refused,
-    refused("it holds a type variable of the code around the write"),
+    refused_renumbered("val c is written, and what is written lands on its implementation, of type { f: fn(x: '_0: unbound within '_1: unbound) -> '_1: unbound, g: fn(x: '_2: unbound within '_3: unbound) -> '_3: unbound }, which the val's { f: F<'a: unbound>, g: F<'a: unbound> } does not fit: annotate the implementation's let with the val's type"),
     "/test.gx" => r#"
         mod m;
         let y = never();
@@ -4054,7 +4084,7 @@ run!(
 
 run!(
     narrow_write_through_a_val_of_alike_named_functions_refused,
-    refused("g: fn(x: 'a: unbound) -> 'a: unbound }, a generic binding, so what is written to it must be as general"),
+    refused_renumbered("val c is written, and what is written lands on its implementation, of type { f: fn(x: '_0: unbound within '_1: unbound) -> '_1: unbound, g: fn(x: '_2: unbound within '_3: unbound) -> '_3: unbound }, which the val's { f: fn(x: 'a: unbound) -> 'a: unbound, g: fn(x: 'a: unbound) -> 'a: unbound } does not fit: annotate the implementation's let with the val's type"),
     "/test.gx" => r#"
         mod m;
         m::c <- {f: |x| x, g: |x: i64| -> i64 x + 100};
@@ -4082,7 +4112,7 @@ run!(
 
 run!(
     written_alias_of_a_struct_of_functions_val_holds_its_writes,
-    refused("type mismatch"),
+    prints(r#"["s", i64:1]"#),
     "/test.gx" => r#"
         mod m;
         let y = never();
@@ -4092,7 +4122,7 @@ run!(
     "#,
     "/test/m.gxi" => "val c: {f: fn(x: 'a) -> 'a}",
     "/test/m.gx" => "let c = {f: |x| x}"
-);
+; FuseExpect::None);
 
 run!(
     written_alias_of_a_struct_of_functions_val_at_one_type,
@@ -4137,7 +4167,7 @@ run!(
 
 run!(
     write_through_a_typedef_val_after_an_annotated_read_refused,
-    refused("f is F<'a: unbound>, a generic binding, so what is written to it must be as general"),
+    refused("type mismatch F<'a> does not contain fn(x: i64) -> i64"),
     "/test.gx" => r#"
         mod m;
         let s: string = m::f("s");
@@ -4151,7 +4181,7 @@ run!(
 
 run!(
     write_through_a_typedef_val_after_a_call_takes_it_refused,
-    refused("f is F<'a: unbound>, a generic binding, so what is written to it must be as general"),
+    refused("type mismatch F<'a> does not contain fn(x: i64) -> i64"),
     "/test.gx" => r#"
         mod m;
         let s: string = m::f("s");
@@ -4202,4 +4232,76 @@ run!(
     "#,
     "/test/m.gxi" => "val c: {f: fn(x: 'a) -> 'a, n: i64}",
     "/test/m.gx" => "let c = {f: |x| x, n: 0}"
+);
+
+// A part of a generic val that holds none of its variables narrows
+// nothing: a writable reference to it checks.
+run!(
+    mut_ref_to_a_monomorphic_field_of_a_generic_val,
+    is(Value::I64(5)),
+    "/test.gx" => r#"
+        mod m;
+        let r = &mut m::c.n;
+        *r <- 5;
+        let result = select m::c.n { 0 => never(), n => n }
+    "#,
+    "/test/m.gxi" => "val c: {f: fn(x: 'a) -> 'a, n: i64}",
+    "/test/m.gx" => "let c = {f: |x| x, n: 0}"
+; FuseExpect::None);
+
+// A val whose signature and implementation hold unions of open variables
+// over shared parameters is judged at once: each of the implementation's
+// variables may stand for a union of the signature's.
+run!(
+    a_val_over_three_unions_of_shared_variables_checks_at_once,
+    prints("i64:0"),
+    "/test.gx" => "mod m; let result = m::f(1, [1], [1], [1])",
+    "/test/m.gxi" => r#"type U<'a, 'b, 'c, 'd, 'e, 'f> = [Array<'a>, Array<'b>, Array<'c>, Array<'d>, Array<'e>, Array<'f>];
+type V<'a, 'b, 'c, 'd, 'e, 'f> = [Array<'a>, Array<'b>, Array<'c>, Array<'d>, Array<'e>, Array<'f>];
+val f: fn(w: 'g, x: U<'a, 'b, 'c, 'd, 'e, 'f>, y: U<'a, 'b, 'c, 'd, 'e, 'f>, z: U<'a, 'b, 'c, 'd, 'e, 'f>) -> i64;"#,
+    "/test/m.gx" => r#"let f = |w: 'p1, x: V<'p1, 'p2, 'p3, 'p4, 'p5, 'p6>, y: V<'p2, 'q2, 'q3, 'q4, 'q5, 'q6>, z: V<'p3, 'r2, 'r3, 'r4, 'r5, 'r6>| 0"#;
+    FuseExpect::Jit
+);
+
+// A val's bound that crosses nine names is the implementation's bound
+// written out.
+run!(
+    a_val_bound_through_nine_names_holds_the_implementation,
+    prints("i64:1"),
+    "/test.gx" => "mod m; let result = 1",
+    "/test/m.gxi" => r#"type T0<'a> = {v: 'a};
+type T1<'a> = {v: T0<'a>};
+type T2<'a> = {v: T1<'a>};
+type T3<'a> = {v: T2<'a>};
+type T4<'a> = {v: T3<'a>};
+type T5<'a> = {v: T4<'a>};
+type T6<'a> = {v: T5<'a>};
+type T7<'a> = {v: T6<'a>};
+type T8<'a> = {v: T7<'a>};
+type T9<'a> = {v: T8<'a>};
+val f: fn<'b: T9<'a>>(x: 'b) -> 'b;"#,
+    "/test/m.gx" => r#"let f = 'q: {v: {v: {v: {v: {v: {v: {v: {v: {v: {v: ['p, null]}}}}}}}}}} |x: 'q| -> 'q x"#;
+    FuseExpect::None
+);
+
+// An implementation's types are checked against the interface where the
+// body's own type names resolve: a val whose implementation writes a type
+// the body declares matches, in a static module and in a dynamic one.
+run!(
+    val_implemented_over_a_type_the_body_declares,
+    is(Value::I64(1)),
+    "/test.gx" => "mod m; let result = m::f(1)",
+    "/test/m.gxi" => "val f: fn(x: i64) -> i64;",
+    "/test/m.gx" => "type V = i64;\nlet f = |x: V| x";
+    FuseExpect::Jit
+);
+
+run!(
+    dynamic_val_implemented_over_a_type_the_body_declares,
+    r#"{
+    let st = mod foo dynamic { sig { val f: fn(x: i64) -> i64 }; source "type V = i64; let f = |x: V| x" };
+    select st { error as e => "[e]", null as _ => "ok [foo::f(1)]" }
+}"#,
+    prints(r#""ok 1""#);
+    FuseExpect::Jit
 );

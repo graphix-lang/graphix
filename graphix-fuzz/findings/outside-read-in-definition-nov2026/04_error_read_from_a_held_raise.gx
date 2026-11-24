@@ -1,0 +1,6 @@
+// expect: reject
+// The error a catch in a function reads out of a raise held for a
+// binding outside it took any annotation at a call. The refusal is
+// placed at the read.
+// Expected: refused, "null does not contain `ArithError(string)".
+{ let v = 0; let f = |x: i64| { let r = never(); catch(e) r <- e.0.error; (v +? x)?; r }; let t: null = f(1); t }

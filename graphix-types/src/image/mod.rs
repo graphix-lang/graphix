@@ -23,7 +23,7 @@ use crate::{
     typ::{
         FnType, MapType, ResolvedRef, TVar, Type,
         fntyp::LambdaIds,
-        tvar::{CellLock, TCell, TVarId},
+        tvar::{Arena, ArenaRef, CellLock, CellRef, InArena, TCell, TVarId},
     },
 };
 use ahash::AHashMap;
@@ -219,7 +219,7 @@ pub struct ImageEncoder {
     resolveds: Table<usize, Resolved>,
     origins: Table<usize, Arc<Origin>>,
     tvars: Table<usize, TVar>,
-    cells: Table<usize, Arc<CellLock>>,
+    cells: Table<usize, CellRef>,
     /// Expressions by the address of the session's clone
     /// ([`expr_key`]).
     pub(crate) exprs: Table<usize>,
@@ -294,7 +294,7 @@ pub enum Obj {
     Resolved(Resolved),
     Origin(Arc<Origin>),
     TVar(TVar),
-    Cell(Arc<CellLock>),
+    Cell(CellRef),
     Expr(Box<Expr>),
     Type(Type),
     FnType(Box<FnType>),
@@ -344,7 +344,7 @@ object!(RefCell, RefCell);
 object!(Resolved, Resolved);
 object!(Arc<Origin>, Origin);
 object!(TVar, TVar);
-object!(Arc<CellLock>, Cell);
+object!(CellRef, Cell);
 object!(box Expr, Expr);
 object!(Type, Type);
 object!(box FnType, FnType);
@@ -423,6 +423,9 @@ pub struct ImageDecoder {
     /// The handle the session holds this decoder by, for a definition
     /// that decodes part of the image later.
     shared: Weak<Mutex<ImageDecoder>>,
+    /// The epoch the image's cells are made in: every decode enters it,
+    /// and what it restores (the env, the definitions) keeps it.
+    arena: ArenaRef,
 }
 
 /// A session's decoder as the context and its restored definitions
@@ -480,6 +483,7 @@ impl ImageDecoder {
             relocations,
             ext: None,
             shared: Weak::new(),
+            arena: Arena::new(),
         })
     }
 
@@ -570,6 +574,7 @@ impl Drop for EncodeImage<'_> {
 pub struct DecodeImage<'a> {
     prev: Option<NonNull<ImageDecoder>>,
     prev_ids: Relocations,
+    _in_arena: crate::typ::tvar::InArena,
     _decoder: PhantomData<&'a mut ImageDecoder>,
 }
 
@@ -582,9 +587,10 @@ impl<'a> DecodeImage<'a> {
 
     fn new(decoder: &'a mut ImageDecoder) -> Self {
         let relocations = decoder.relocations;
+        let _in_arena = InArena::enter(decoder.arena.clone());
         let prev = DECODER.replace(Some(NonNull::from(decoder)));
         let prev_ids = relocations.install();
-        DecodeImage { prev, prev_ids, _decoder: PhantomData }
+        DecodeImage { prev, prev_ids, _in_arena, _decoder: PhantomData }
     }
 }
 
@@ -1458,64 +1464,73 @@ pub(crate) fn tvar_encode(tv: &TVar, buf: &mut impl BufMut) -> Result<(), PackEr
         |e| &mut e.tvars,
         buf,
         |buf| {
-            let (id, frozen, cell) = tv.parts();
+            let (id, cell) = tv.parts();
             tv.name.encode(buf)?;
             id.encode(buf)?;
-            frozen.encode(buf)?;
             cell_encode(&cell, buf)
         },
     )
 }
 
-fn cell_encode(cell: &Arc<CellLock>, buf: &mut impl BufMut) -> Result<(), PackError> {
-    let key = Arc::as_ptr(cell) as usize;
+fn cell_encode(cell: &CellRef, buf: &mut impl BufMut) -> Result<(), PackError> {
+    let key = cell.data_ptr().addr();
     object_encode(
         &key,
         |k| (*k, cell.clone()),
         |e| &mut e.cells,
         buf,
         |buf| {
-            let (typ, constraints, below, facts, naming, level) = {
+            let (typ, declared, upper, below, facts, level) = {
                 let c = cell.read();
                 let TCell {
                     binding,
-                    constraints,
+                    above,
                     lower,
                     facts,
-                    naming,
                     rigid_gates,
                     level,
                     task: _,
                     ground: _,
                     kept: _,
-                    resolved: _,
+                    of_binding: _,
                     place: _,
                     written: _,
+                    solving: _,
                 } = &*c;
                 if *rigid_gates != 0 {
                     log::warn!(
                         "a tvar cell with {} open rigid gate(s) cannot be imaged: typ={:?} constraints={:?}",
                         rigid_gates,
                         binding,
-                        constraints
+                        above
                     );
                     return Err(PackError::InvalidFormat);
                 }
                 (
                     binding.clone(),
-                    constraints.to_vec(),
+                    above.declared().to_vec(),
+                    above.upper().to_vec(),
                     lower.to_vec(),
                     *facts,
-                    naming.clone(),
                     *level,
                 )
             };
             typ.encode(buf)?;
-            slice_encode(&constraints, buf)?;
+            slice_encode(&declared, buf)?;
+            slice_encode(&upper, buf)?;
             slice_encode(&below, buf)?;
             facts.bits().encode(buf)?;
-            naming.encode(buf)?;
-            level.encode(buf)
+            level.encode(buf)?;
+            // what a check by bounds keeps of the cell for a scheme's
+            // instances
+            let c = cell.read();
+            match c.solving.as_ref() {
+                None => false.encode(buf),
+                Some(k) => {
+                    true.encode(buf)?;
+                    k.image_encode(buf)
+                }
+            }
         },
     )
 }
@@ -1527,14 +1542,13 @@ pub(crate) fn tvar_decode(buf: &mut impl Buf) -> Result<TVar, PackError> {
         |sub| {
             let name = Pack::decode(sub)?;
             let id = TVarId::decode(sub)?;
-            let frozen = bool::decode(sub)?;
             // Entered over a placeholder before its cell: the cell's
             // bound type or a constraint can reach this wrapper.
-            let placeholder = Arc::new(CellLock::default());
-            let tv = TVar::from_parts(name, id, frozen, placeholder);
+            let placeholder = CellRef::new(CellLock::default());
+            let tv = TVar::from_parts(name, id, placeholder);
             enter(Obj::TVar(tv.clone()))?;
             let cell = cell_decode(sub)?;
-            tv.write().cell = cell;
+            tv.write().cell = cell.link();
             Ok(tv)
         },
         |b| tvar_decode(b),
@@ -1542,30 +1556,33 @@ pub(crate) fn tvar_decode(buf: &mut impl Buf) -> Result<TVar, PackError> {
     )
 }
 
-fn cell_decode(buf: &mut impl Buf) -> Result<Arc<CellLock>, PackError> {
+fn cell_decode(buf: &mut impl Buf) -> Result<CellRef, PackError> {
     shared_decode(
         buf,
-        built::<Arc<CellLock>>,
+        built::<CellRef>,
         |sub| {
             // Entered before its contents: a bound type can reach the
             // cell again.
-            let cell = Arc::new(CellLock::default());
+            let cell = CellRef::new(CellLock::default());
             enter(Obj::Cell(cell.clone()))?;
             let typ = Pack::decode(sub)?;
-            let constraints: Vec<_> = Pack::decode(sub)?;
+            let declared: Vec<Type> = Pack::decode(sub)?;
+            let upper: Vec<Type> = Pack::decode(sub)?;
             let below: Vec<_> = Pack::decode(sub)?;
             let facts = BitFlags::from_bits(u8::decode(sub)?)
                 .map_err(|_| PackError::InvalidFormat)?;
-            let naming = Pack::decode(sub)?;
             let level = Pack::decode(sub)?;
             let mut c = cell.write();
             c.level = level;
             c.binding = typ;
-            c.constraints = constraints.into_iter().collect();
+            c.above.set(declared, upper);
             c.lower = below.into_iter().collect();
             c.facts = facts;
-            c.naming = naming;
             drop(c);
+            if bool::decode(sub)? {
+                let known = crate::typ::bounds::Known::image_decode(sub)?;
+                cell.write().solving = Some(Box::new(known))
+            }
             Ok(cell)
         },
         |b| cell_decode(b),
@@ -1959,7 +1976,7 @@ mod tests {
             let Type::TVar(outer) = &Type::decode(&mut packed.body()).unwrap() else {
                 panic!("a tvar")
             };
-            let cons = outer.cell_constraints();
+            let cons = outer.cell_above();
             let Some(Type::Array(elt)) = cons.first() else { panic!("{cons:?}") };
             let Type::TVar(inner) = &**elt else { panic!("{elt:?}") };
             assert_eq!(inner.wrapper_addr(), outer.wrapper_addr());
@@ -1990,8 +2007,7 @@ mod tests {
     #[test]
     fn tvars_keep_wrapper_and_cell_sharing() {
         let a = TVar::empty_named(literal!("a"));
-        let b = TVar::empty_named(literal!("b"));
-        a.alias(&b);
+        let b = a.renamed(literal!("b"));
         assert!(a.same_cell(&b));
         let c = TVar::named(literal!("c"), Type::TVar(a.clone()));
         let typ = Type::Tuple(Arc::from_iter([
@@ -2002,7 +2018,6 @@ mod tests {
         ]));
         let mut enc = ImageEncoder::new();
         let packed = pack_all(&[typ.clone()], &mut enc);
-        // an alias takes the other's id, so a and b share one
         let id = |tv: &TVar| tv.parts().0.inner();
         assert_eq!(enc.counts().tvar.minted.extent, id(&a).max(id(&c)) + 1);
         let mut dec = packed.decoder(&enc);
@@ -2020,7 +2035,7 @@ mod tests {
                 "one wrapper, two occurrences"
             );
             assert_ne!(a2.wrapper_addr(), b2.wrapper_addr());
-            assert!(a2.same_cell(&b2), "aliases share a cell");
+            assert!(a2.same_cell(&b2), "the wrappers share a cell");
             assert!(!a2.same_cell(&c2));
             // c is bound to a's wrapper, the same one the tuple holds
             let binding = c2.binding();
@@ -2030,14 +2045,12 @@ mod tests {
             assert_eq!(inner.wrapper_addr(), a2.wrapper_addr());
             // a constraint added through one alias shows through the other
             a2.add_cell_constraint(Type::Primitive(netidx_value::Typ::I64.into()));
-            assert_eq!(b2.cell_constraints().len(), 1);
-            assert_eq!(b.cell_constraints().len(), 0, "the originals are untouched");
-            // ids and the frozen flag survive, relocated
-            assert_eq!(a2.parts().0, b2.parts().0);
+            assert_eq!(b2.cell_above().len(), 1);
+            assert_eq!(b.cell_above().len(), 0, "the originals are untouched");
+            // ids survive, relocated
+            assert_ne!(a2.parts().0, b2.parts().0);
             assert_ne!(a2.parts().0, c2.parts().0);
             assert_ne!(a2.parts().0, a.parts().0);
-            assert!(a2.parts().1, "the alias source is frozen");
-            assert!(!b2.parts().1);
         });
     }
 
@@ -2315,7 +2328,7 @@ mod decode_tests {
         let Type::Tuple(vs) = &ms[1] else { panic!("{t:?}") };
         for v in vs.iter() {
             let Type::TVar(tv) = v else { panic!("{v:?}") };
-            let cs = tv.cell_constraints();
+            let cs = tv.cell_above();
             assert_eq!(cs.len(), 1, "{t:?}");
             // one ordinal, one value: the read's result is the stored type
             let Type::Set(cms) = &cs[0] else { panic!("{:?}", cs[0]) };
@@ -2323,16 +2336,14 @@ mod decode_tests {
         }
     }
 
-    /// A cell's facts travel whole: a ⊥ a `_` required stays required; and
-    /// so does its mark of a call's copy.
+    /// A cell's facts travel whole: a ⊥ a `_` required stays required.
     #[test]
     fn a_cell_keeps_its_facts() {
-        use crate::typ::tvar::{CellFact, Naming};
+        use crate::typ::tvar::CellFact;
         let tv = TVar::empty_named(literal!("a"));
         tv.bind(Type::Bottom);
-        let all = CellFact::BottomRequired | CellFact::BottomFed | CellFact::CycleRefused;
+        let all = CellFact::BottomRequired | CellFact::BottomFed;
         tv.cell().write().facts = all;
-        tv.cell().write().naming = Naming::call_copy();
         let t = Type::TVar(tv);
         let mut enc = ImageEncoder::new();
         let len = EncodeImage::with(&mut enc, || t.encoded_len());
@@ -2347,30 +2358,6 @@ mod decode_tests {
         let back = read(&mut dec, &image, len).unwrap();
         let Type::TVar(back) = &back else { panic!() };
         assert_eq!(back.cell().read().facts, all);
-        assert_eq!(back.cell().read().naming, Naming::call_copy());
-    }
-
-    /// A cell a written variable took keeps that variable's name.
-    #[test]
-    fn a_cell_keeps_the_variable_that_took_it() {
-        use crate::typ::tvar::{NamedBy, Naming};
-        let tv = TVar::empty_named(literal!("a"));
-        tv.cell().write().naming = Naming::taken(literal!("q"));
-        let t = Type::TVar(tv);
-        let mut enc = ImageEncoder::new();
-        let len = EncodeImage::with(&mut enc, || t.encoded_len());
-        let mut buf = EncodeImage::with(&mut enc, || {
-            let mut buf = ImageBuf::with_capacity(0);
-            t.encode(&mut buf).unwrap();
-            buf
-        });
-        let offsets = enc.finish(&mut buf);
-        let image = buf.freeze();
-        let mut dec = ImageDecoder::new(enc.counts(), image.clone(), offsets).unwrap();
-        let back = read(&mut dec, &image, len).unwrap();
-        let Type::TVar(back) = &back else { panic!() };
-        let naming = back.cell().read().naming.clone();
-        assert!(matches!(naming.by(), NamedBy::Taken(n) if &**n == "q"));
     }
 
     /// A read that failed fails again on the same decoder: it left none

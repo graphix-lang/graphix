@@ -98,7 +98,7 @@ const LIST_PAT_DEAD_WILDCARD: &str = r#"
 }
 "#;
 
-run!(list_pat_dead_wildcard, LIST_PAT_DEAD_WILDCARD, refused("unreachable arm");
+run!(list_pat_dead_wildcard, LIST_PAT_DEAD_WILDCARD, refused("pattern _ will never match: nothing reaches it (4:10; the value is List<i64>)");
     FuseExpect::None);
 
 // The suffix form is refused for lists: the front is an O(n) walk.

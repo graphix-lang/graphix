@@ -98,7 +98,7 @@ pub fn shows_as<X: GXExt>(
         ModPath::from_iter(path.iter().copied()),
         triomphe::Arc::from_iter([]),
     ))));
-    display.contains_with_flags(enumflags2::BitFlags::empty(), env, &typ).unwrap_or(false)
+    display.decided_holds(env, &typ).unwrap_or(false)
 }
 
 /// Trait implemented by custom Graphix displays, e.g. TUIs, GUIs, etc.

@@ -64,6 +64,8 @@
 3	catch-stmt-aug2026/02_toplevel_file_catch.gx
 3	clone-scope-resolution-jul2026/01_nested_callback_filter_wrong_module.gx
 1	clone-wake-root-jul2026/01_cloned_callback_connect_loop.gx
+0	closing-definition-nov2026/00_cast_of_a_binding_that_holds_itself.gx
+0	closing-definition-nov2026/01_order_of_a_function_in_an_uncalled_definition.gx
 3	collection-merge-loses-fired-aug2026/00_init_two_slots_bottom_capture.gx
 1	composite-qop-jun2026/01_composite_success_qop_segv.gx
 1	composite-qop-jun2026/02_borrowed_inner_qop.gx
@@ -226,6 +228,7 @@
 1	instance-held-at-nov2026/00_two_undecided_payloads.gx
 1	instance-held-at-nov2026/01_bound_names_a_wider_variable.gx
 1	instance-held-at-nov2026/02_select_of_two_undecided_payloads.gx
+2	instance-written-name-nov2026/00_dynamic_module_reads_an_instance_s_type.gx
 1	interface-ctor-trait-oct2026/00_two_collections.gx
 26	interface-ctor-trait-oct2026/01_six_modules.gx
 2	interp-format-jul2026/01_union_array_typed_prefix.gx
@@ -287,8 +290,8 @@
 2	nov06f-nov2026/01_lowered_name_in_a_printed_function.gx
 2	nov06h-nov2026/01_a_pattern_over_a_union_of_one_type.gx
 0	nov06i-nov2026/01_a_return_over_a_union_of_one_type.gx
-0	nov12a-crash-nov2026/00_union_holder_stands_for_a_bind.gx
-0	nov12a-crash-nov2026/01_written_test_over_the_union.gx
+1	nov12a-crash-nov2026/00_union_holder_stands_for_a_bind.gx
+3	nov12a-crash-nov2026/01_written_test_over_the_union.gx
 1	nov12a-image-handles-nov2026/00_map_keyed_by_handles.gx
 0	oct30b-oct2026/01_builtin_binding_in_forked_slots.gx
 1	oct30b-oct2026/02_recursive_abstract_in_a_function_body.gx
@@ -296,6 +299,7 @@
 2	oct30b-oct2026/04_a_body_lambdas_quantifier_decided_by_its_use.gx
 1	oct30b-oct2026/05_restored_body_abstract_naming_typedefs.gx
 2	oct30b-oct2026/06_abstract_naming_a_shadowing_typedef_in_a_body.gx
+1	oct30b-oct2026/07_default_hidden_by_a_fn_type_annotated_read.gx
 0	omitted-default-check-sep2026/01_default_types_the_site.gx
 1	omitted-default-check-sep2026/02_default_and_argument_agree.gx
 1	omitted-default-union-nov2026/00_default_over_a_union_of_equal_cells.gx
@@ -304,6 +308,11 @@
 1	operand-bound-member-oct2026/00_extracted_callback.gx
 1	organic-firing-aug2026/00_const_terminal.gx
 1	organic-firing-aug2026/01_multilevel_face.gx
+1	outside-read-in-definition-nov2026/00_or_never_over_an_outside_binding.gx
+0	outside-read-in-definition-nov2026/01_or_never_types_each_call.gx
+0	outside-read-in-definition-nov2026/02_field_read_meets_a_later_write.gx
+0	outside-read-in-definition-nov2026/03_pattern_name_meets_a_later_write.gx
+0	outside-read-in-definition-nov2026/04_error_read_from_a_held_raise.gx
 1	param-call-expr-sep2026/00_param_called_through_parens.gx
 0	parse-bottom-member-jul2026/00_unannotated_parse_in_callback.gx
 0	parse-bottom-member-jul2026/01_nested_bottom_member.gx
@@ -330,7 +339,7 @@
 0	rec-rtype-unchecked-jul2026/01_rec_rtype_error_arm.gx
 0	rec-rtype-writeback-aug2026/00_fn_value_reads_as_i64.gx
 0	rec-selfcall-argtype-jul2026/01_string_selfcall_arg.gx
-0	rec-union-abi-jul2026/01_rec_union_acc_scalar_sig.gx
+1	rec-union-abi-jul2026/01_rec_union_acc_scalar_sig.gx
 1	recursion-fires-like-chain-aug2026/00_same_args_quiet.gx
 1	recursion-fires-like-chain-aug2026/01_capture_fires_through_chain.gx
 1	recursion-fires-like-chain-aug2026/02_nontail_const_base.gx
@@ -354,7 +363,7 @@
 8	review-fusion-oct2026/02_slot_birth_reads_standing.gx
 1	review-fusion-oct2026/03_fed_arg_raise_order.gx
 1	review-oct2026/01_defaulted_label_handler.gx
-0	rigid-bottom-read-nov2026/00_null_arm_under_a_predicate_bound.gx
+4	rigid-bottom-read-nov2026/00_null_arm_under_a_predicate_bound.gx
 4	rigid-bottom-read-nov2026/01_null_arm_under_a_written_test.gx
 0	rigid-commit-sep2026/00_rigid_in_a_number_union.gx
 0	rigid-commit-sep2026/01_annotation_variable_split.gx
@@ -368,7 +377,7 @@
 1	script-package-root-sep2026/00_package_from_sibling.gx
 1	select-bottom-out-hold-aug2026/00_hold_recovers_bottom_scrutinee.gx
 2	select-bottom-out-hold-aug2026/01_bare_bottom_scrutinee_bottoms.gx
-0	select-guard-prenarrow-bind-aug2026/00_guard_lambda_call.gx
+1	select-guard-prenarrow-bind-aug2026/00_guard_lambda_call.gx
 5	select-guard-prenarrow-bind-aug2026/01_legal_program_miscompiled.gx
 0	select-guard-prenarrow-bind-aug2026/02_guard_leaks_fn_value.gx
 1	select-guard-shortcircuit-aug2026/00_guard_never_evaluated_no_history.gx
@@ -485,6 +494,9 @@
 1	standing-bottom-refire-sep2026/09_value_select_bottom.gx
 4	strict-bottom-collections-aug2026/00_loop_op_poison.gx
 5	strict-bottom-collections-aug2026/01_empty_fold_bottom_init.gx
+0	strip-nothing-nov2026/00_or_never_over_an_array.gx
+0	strip-nothing-nov2026/01_or_never_over_a_named_array.gx
+1	strip-nothing-nov2026/02_select_waits_for_a_held_or_never.gx
 1	struct-with-taint-jul2026/01_tainted_base_unconsumed_arg.gx
 1	table-typedef-scope-oct2026/00_body_typedef_alias.gx
 0	tail-arg-bottom-jul2026/00_qop_arg_rides_cache.gx
@@ -545,6 +557,8 @@
 0	typedef-cell-mode-parity-aug2026/00_stdlib_alias_partial_bind.gx
 0	typedef-cell-mode-parity-aug2026/01_labeled_args_sort.gx
 0	typedef-cell-mode-parity-aug2026/02_fold_seeded_acc.gx
+0	undecided-struct-read-nov2026/00_catch_binder_field_read.gx
+1	undecided-struct-read-nov2026/01_let_nothing_decides.gx
 1	union-struct-field-jul2026/01_dyncall_union_field_leak.gx
 0	value-position-let-sep2026/00_tuple_let_shadows.gx
 1	value-shape-seam-jul2026/00_fold_slice_init.gx
@@ -553,6 +567,8 @@
 1	value-shape-seam-jul2026/03_call_arg_union_param.gx
 1	value-shape-seam-jul2026/04_hof_result_union_param.gx
 1	value-shape-seam-jul2026/05_xkernel_result_union_param.gx
+0	variadic-as-fixed-fn-nov2026/00_passed_in_a_recursive_body.gx
+0	variadic-as-fixed-fn-nov2026/01_called_through_data.gx
 1	variant-arity-tag-only-aug2026/00_same_tag_different_arity.gx
 1	variant-arity-tag-only-aug2026/01_arity_one_vs_two.gx
 1	variant-arity-tag-only-aug2026/02_reactive_kernel_goes_silent.gx
@@ -560,7 +576,7 @@
 1	variant-rec-depth-jul2026/01_variant_nontail_depth_guard.gx
 1	varint-literal-sep2026/00_literal_over_a_varint.gx
 1	varint-literal-sep2026/01_varint_or_pattern.gx
-0	waiting-arg-lower-bound-nov2026/00_let_of_an_open_payload.gx
+3	waiting-arg-lower-bound-nov2026/00_let_of_an_open_payload.gx
 2	wake-bind-init-view-aug2026/01_builtin_over_pattern_interp.gx
 1	wake-catchup-sep2026/00_wake_recompute_table.gx
 1	wake-catchup-sep2026/01_shared_input_spent.gx
@@ -591,4 +607,6 @@
 1	wake-stale-bottom-sep2026/03_call.gx
 1	wake-stale-bottom-sep2026/04_map_source.gx
 1	wake-stale-bottom-sep2026/05_fold_init.gx
+0	written-local-generic-nov2026/00_a_block_gives_its_written_local.gx
+0	written-local-generic-nov2026/01_a_pattern_over_a_literal_with_a_block.gx
 1	xkernel-gate-jul2026/01_two_monos_nested_select_gate.gx

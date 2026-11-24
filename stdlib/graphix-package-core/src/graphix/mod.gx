@@ -55,7 +55,7 @@ impl Collection for Array<'_> {
     let len = |a| 'core_array_len
 };
 
-impl<'k> Collection for Map<'k, '_> {
+impl<'k: Ordered> Collection for Map<'k, '_> {
     let fold = |m, init, f| fold_pairs(m, init, |acc, (_, v)| f(acc, v));
     let filter_map = |m, f| filter_map_pairs(m, |(k, v)| select f(v) {
         null as _ => null,

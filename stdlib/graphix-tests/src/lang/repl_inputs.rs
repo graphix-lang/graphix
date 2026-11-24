@@ -127,6 +127,74 @@ async fn annotated_empty_literal_takes_a_later_write() -> Result<()> {
 
 /// A later input's loop over an earlier input's bottom, whose type is a
 /// union of arrays, runs fused and stays bottom.
+/// A catch entered alone has seen no error when its input ends: one that
+/// reads its binder is refused a later input's raise, naming the
+/// annotation, and an annotated one takes it, its binder the type written.
+#[tokio::test(flavor = "current_thread")]
+async fn catch_entered_alone_takes_a_later_raise_by_its_annotation() -> Result<()> {
+    session(&[
+        Accept("let a = [1, 2, 3]"),
+        Accept("catch(e) println(e)"),
+        Refuse(
+            "a[15]?",
+            "annotate the catch with the errors it takes, \
+             `catch(e: Error<ErrChain<`ArrayIndexError(string)>>)`",
+        ),
+    ])
+    .await?;
+    session(&[
+        Accept("let a = [1, 2, 3]"),
+        Accept("let seen = \"\""),
+        Accept(
+            "catch(e: Error<ErrChain<`ArrayIndexError(string)>>) \
+             seen <- select e.0.error { `ArrayIndexError(s) => s }",
+        ),
+        Accept("a[15]?"),
+        ProduceText("seen", "out of bounds"),
+    ])
+    .await
+}
+
+/// A later input's write of a less general function to an earlier input's
+/// generic binding is refused, where the binding's body computes too: its
+/// variables bound each other, and trying a variable's bounds ends where
+/// it meets the variable again.
+#[tokio::test(flavor = "current_thread")]
+async fn generic_binding_that_computes_refuses_a_narrower_write() -> Result<()> {
+    session(&[
+        Accept("let j = |x| x + x"),
+        Refuse(
+            "j <- |x: i64| x",
+            "a generic binding, so what is written to it must be as general",
+        ),
+    ])
+    .await
+}
+
+/// A function an earlier input left with a parameter of no type refuses a
+/// later call by naming the binding to declare, and says nothing of
+/// abstract values, whose functions are of no type for another reason.
+#[tokio::test(flavor = "current_thread")]
+async fn settled_parameter_is_told_by_its_binding_alone() -> Result<()> {
+    use graphix_package_core::testing::init;
+    let (tx, _rx) = tokio::sync::mpsc::channel(1000);
+    let ctx = init(tx, crate::TEST_REGISTER).await?;
+    let mut held = vec![];
+    for input in [
+        "let fs = array::map([1, 2], |r| 'a: Number + Singleton |x: 'a| -> 'a x + x)",
+        "let g = fs[0]$",
+    ] {
+        held.push(ctx.rt.compile(ArcStr::from(input)).await?)
+    }
+    let e = match ctx.rt.compile(ArcStr::from("g(3)")).await {
+        Ok(_) => bail!("the call was accepted"),
+        Err(e) => format!("{e:#}"),
+    };
+    assert!(e.contains("it holds the type of `fs`"), "{e}");
+    assert!(!e.contains("abstract value"), "{e}");
+    Ok(())
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn loop_over_an_earlier_bottom_union_of_arrays() -> Result<()> {
     session(&[
@@ -185,13 +253,13 @@ async fn annotated_binding_takes_a_function_write() -> Result<()> {
 }
 
 /// A call through a builtin binding a later input wrote is made at run
-/// time, so its unread quantifier is refused as a function value's is.
+/// time, where its unread quantifier settles to ⊥ as at a direct call.
 #[tokio::test(flavor = "current_thread")]
 async fn builtin_alias_written_by_an_earlier_input() -> Result<()> {
     session(&[
         Accept("let t = sys::net::publish"),
         Accept("t <- sys::net::publish"),
-        Refuse("t(never(), 10)", "typed handler or a typed null"),
+        Accept("t(never(), 10)"),
     ])
     .await?;
     session(&[
@@ -202,23 +270,18 @@ async fn builtin_alias_written_by_an_earlier_input() -> Result<()> {
     .await
 }
 
-/// A constructed abstract value's parameter its input left open is ⊥:
-/// a later type test of another parameter covers nothing of it.
+/// A constructed abstract value's parameter its input left open is ⊥,
+/// which the representation only reads: the value is every instance's, in
+/// a later type test and a later call alike, but a binding of it takes no
+/// wider instance.
 #[tokio::test(flavor = "current_thread")]
 async fn abstract_parameter_settles_at_its_input() -> Result<()> {
     session(&[
         Accept("type B<'x> = Abstract<i64>"),
         Accept("let t = B(1)"),
-        Refuse(
-            "select t { B<i64> as _ => 1 }",
-            "missing match cases: no arm covers B<_>: it holds the type of `t` (line 1, \
-             column 5 in `let t = B(1)`)",
-        ),
+        Produce("select t { B<i64> as _ => 1 }", Value::I64(1)),
         Accept("let f = |x: B<i64>| 1"),
-        Refuse(
-            "f(t)",
-            "type mismatch B<i64> does not contain B<_>: it holds the type of `t`",
-        ),
+        Produce("f(t)", Value::I64(1)),
         Accept("let v = B(1)"),
         Refuse(
             "v <- never<B<i64>>()",
@@ -263,7 +326,7 @@ async fn refused_input_leaves_an_annotated_binding() -> Result<()> {
         Accept("let y: Array<i64> = []"),
         Refuse(
             "let p = 'b: Any |x: 'b| -> 'b { y <- [x]; x }",
-            "y is Array<i64> and cannot hold",
+            "type mismatch i64 does not contain 'b",
         ),
         Accept("y <- [1]"),
         Produce("y", Value::Array([Value::I64(1)].into())),
@@ -278,11 +341,12 @@ const SETF: &str =
 /// its own: each later use copies it and decides nothing of it, and a
 /// writable reference to it, which would let a write narrow it, is refused.
 /// What an earlier input left open is one type to a later input, whose
-/// decision about it is refused, naming the binding.
+/// decision about it is refused: a select's one instance of `j`. An array of
+/// generic names is generic: each later use of an element copies it.
 #[tokio::test(flavor = "current_thread")]
 async fn earlier_value_is_decided_by_no_later_use() -> Result<()> {
     session(&[
-        Accept("let s = {g: 'a: Number |x: 'a| -> 'a x + x}"),
+        Accept("let s = {g: 'a: Number + Singleton |x: 'a| -> 'a x + x}"),
         Accept("let j = s.g"),
         Produce("j(1)", Value::I64(2)),
         Produce("j(1.5)", Value::F64(3.0)),
@@ -291,7 +355,7 @@ async fn earlier_value_is_decided_by_no_later_use() -> Result<()> {
         Accept("let arr = [j, |x: i64| -> i64 x]"),
         Produce("arr[1]$(4)", Value::I64(4)),
         Accept("let kj = select true { true => j, false => |x: i64| -> i64 x }"),
-        Produce("kj(3)", Value::I64(6)),
+        Refuse("kj(3)", "type mismatch _ does not contain i64"),
         Accept(SETF),
         Refuse(
             "setf(&mut j)",
@@ -299,52 +363,60 @@ async fn earlier_value_is_decided_by_no_later_use() -> Result<()> {
              would let a write narrow it",
         ),
         Produce("j(2.5)", Value::F64(5.0)),
-        Accept("let g = 'q: Number |x, y: 'q| -> 'q x + y"),
+        Accept("let g = 'q: Number + Singleton |x, y: 'q| -> 'q x + y"),
         Accept("let fs = [g, g]"),
-        Refuse(
-            "let z: fn(x: i64, y: i64) -> i64 = fs[0]$",
-            "this input would decide a type of an earlier input: annotate `fs` (line 1, \
-             column 5 in `let fs = [g, g]`)",
-        ),
-        Refuse(
-            "fs[1]$(1.5, 2.5)",
-            "this input would decide a type of an earlier input: annotate `fs` (line 1, \
-             column 5 in `let fs = [g, g]`)",
-        ),
+        Accept("let z: fn(x: i64, y: i64) -> i64 = fs[0]$"),
+        Produce("z(1, 2)", Value::I64(3)),
+        Produce("fs[1]$(1.5, 2.5)", Value::F64(4.0)),
     ])
     .await
 }
 
-/// The refusal names the type to declare, and only the binding the cell
-/// came from: a binding derived from it (a reference, a copy) would decide
-/// the cell again under its own annotation.
+/// An array of generic names is read at any type. A binding something
+/// writes holds one instance of the generic function it reads, which its
+/// input's end leaves at the function's bound: a later input reads it at
+/// no narrower type, and the binding's annotation gives it one.
+// CR claude for claude: [readability/medium] The refusal here is the bare mismatch
+// `fn(x: i64) -> i64 does not contain fn(x: 'q: Number) -> 'q: Number`. It says
+// neither that `'q` was left at its bound when the input that made it ended nor
+// what to declare; before the check by bounds it ended "annotate `a` (line 1,
+// column 20 in `let (k, w) = ..`) as `Array<fn(x: i64) -> i64>`". The note
+// `tvar::settled_note` gives is for a cell settled at bottom alone
+// (`TVar::settled_bottom`). Mark a cell an input's end fixes with nothing flowing
+// in (bounds `fix_cell`), and have `settled_cause` take such a cell on the value's
+// side where the other side does not hold its bound, so the note names `a` here.
+// (repl-settled-at-bound-01)
 #[tokio::test(flavor = "current_thread")]
-async fn refusal_names_the_declaration_of_the_origin() -> Result<()> {
+async fn written_instance_is_left_at_its_bound() -> Result<()> {
     session(&[
         Accept("let g = 'q: Number |x: 'q| -> 'q x"),
         Accept("let j = [g, g]"),
         Accept("let r = &j"),
         Accept("let (k, w) = { let a = [g, g]; (a, |f| { a <- f; null }) }"),
-        RefuseEnding(
-            "array::map([1.5], j[0]$)",
-            "annotate `j` (line 1, column 5 in `let j = [g, g]`) as \
-             `Array<fn(x: f64) -> f64>`",
-        ),
-        RefuseEnding(
+        Produce("array::map([1.5], j[0]$)", Value::Array([Value::F64(1.5)].into())),
+        Refuse(
             "let z: fn(x: i64) -> i64 = k[0]$",
-            "annotate `a` (line 1, column 20 in `let (k, w) = { let a = [g, g]; (a, |f| {..`) \
-             as `Array<fn(x: i64) -> i64>`",
+            "type mismatch fn(x: i64) -> i64 does not contain fn(x: 'q: Number) -> 'q: Number",
         ),
         Produce("array::len(j)", Value::I64(2)),
+    ])
+    .await?;
+    session(&[
+        Accept("let g = 'q: Number |x: 'q| -> 'q x"),
+        Accept(
+            "let (k, w) = { let a: Array<fn(x: i64) -> i64> = [g, g]; \
+             (a, |f| { a <- f; null }) }",
+        ),
+        Accept("let z: fn(x: i64) -> i64 = k[0]$"),
+        Produce("z(3)", Value::I64(3)),
     ])
     .await
 }
 
-/// Every cell of one binding the input would decide is told in the one
-/// type to declare, and each binding counts once against the names a
-/// refusal gives.
+/// Each array of generic names a later input reads is copied at the types
+/// that input gives its element, and an annotated array takes the same reads.
 #[tokio::test(flavor = "current_thread")]
-async fn refusal_declares_every_cell_of_a_binding() -> Result<()> {
+async fn arrays_of_generic_names_are_generic_to_later_inputs() -> Result<()> {
     session(&[
         Accept("let h = 'p: Number, 'q: Number |a: 'p, b: 'q| -> ('p, 'q) (a, b)"),
         Accept("let g = 'q: Number |x: 'q| -> 'q x"),
@@ -354,12 +426,8 @@ async fn refusal_declares_every_cell_of_a_binding() -> Result<()> {
             "let both = |f: fn(a: i64, b: f64) -> (i64, f64), h: fn(x: i64) -> i64| \
              (f(1, 2.0), h(2))",
         ),
-        RefuseEnding(
-            "both(j[0]$, k[0]$)",
-            "annotate `j` (line 1, column 5 in `let j = [h, h]`) as `Array<fn(a: i64, b: \
-             f64) -> (i64, f64)>`, `k` (line 1, column 5 in `let k = [g, g]`) as \
-             `Array<fn(x: i64) -> i64>`",
-        ),
+        Produce("both(j[0]$, k[0]$).0.1", Value::F64(2.0)),
+        Produce("both(j[0]$, k[0]$).1", Value::I64(2)),
         Accept("let j2: Array<fn(a: i64, b: f64) -> (i64, f64)> = [h, h]"),
         Accept("let k2: Array<fn(x: i64) -> i64> = [g, g]"),
         Produce("both(j2[0]$, k2[0]$).1", Value::I64(2)),
@@ -381,7 +449,7 @@ async fn annotated_origin_takes_the_declared_use() -> Result<()> {
 #[tokio::test(flavor = "current_thread")]
 async fn annotated_earlier_value_takes_a_later_use() -> Result<()> {
     session(&[
-        Accept("let s = {g: 'a: Number |x: 'a| -> 'a x + x}"),
+        Accept("let s = {g: 'a: Number + Singleton |x: 'a| -> 'a x + x}"),
         Accept("let j: fn(x: i64) -> i64 = s.g"),
         Accept("let app = |f: fn(x: i64) -> i64| f(1)"),
         Produce("app(j)", Value::I64(2)),
@@ -392,10 +460,22 @@ async fn annotated_earlier_value_takes_a_later_use() -> Result<()> {
         Accept(SETF),
         Accept("setf(&mut j)"),
         Produce("j(1)", Value::I64(101)),
-        Accept("let g = 'q: Number |x, y: 'q| -> 'q x + y"),
+        Accept("let g = 'q: Number + Singleton |x, y: 'q| -> 'q x + y"),
         Accept("let fs: Array<fn(x: i64, y: i64) -> i64> = [g, g]"),
         Accept("let z: fn(x: i64, y: i64) -> i64 = fs[0]$"),
         Produce("z(1, 2)", Value::I64(3)),
+    ])
+    .await
+}
+
+/// The comparison of a write with a generic binding leaves nothing for the
+/// input's end to decide: a `Concrete` variable no value reaches stands.
+#[tokio::test(flavor = "current_thread")]
+async fn write_as_general_of_a_concrete_variable() -> Result<()> {
+    session(&[
+        Accept("let p = 'a: Concrete |#h: [fn(v: 'a) -> i64, null] = null, x: i64| x"),
+        Accept("p <- 'a: Concrete |#h: [fn(v: 'a) -> i64, null] = null, x: i64| x + 1"),
+        Produce("p(3)", Value::I64(4)),
     ])
     .await
 }
@@ -405,7 +485,7 @@ async fn annotated_earlier_value_takes_a_later_use() -> Result<()> {
 #[tokio::test(flavor = "current_thread")]
 async fn write_as_general_decides_nothing() -> Result<()> {
     session(&[
-        Accept("let s = {g: 'a: Number |x: 'a| -> 'a x + x}"),
+        Accept("let s = {g: 'a: Number + Singleton |x: 'a| -> 'a x + x}"),
         Accept("let j = s.g"),
         Accept("j <- s.g"),
         Produce("j(1.5)", Value::F64(3.0)),
@@ -516,21 +596,21 @@ async fn annotated_module_binding_takes_a_later_use() -> Result<()> {
     .await
 }
 
-/// A callback's cell an earlier input left in a generic function's type is
-/// decided by no later input: it settled when its input ended.
+/// A callback's cell an earlier input left in a generic function's type
+/// settled at ⊥ when its input ended: a later input reads it at any type and
+/// decides it at none, so the callback takes no call.
 #[tokio::test(flavor = "current_thread")]
-async fn later_input_decides_no_leaked_callback_cell() -> Result<()> {
+async fn leaked_callback_cell_reads_at_any_type_and_takes_no_call() -> Result<()> {
     session(&[
         Accept("type W<'t> = Abstract<'t>"),
         Accept(
             "let h = { let y0 = []; let g0 = |x| { y0 <- array::map([x], |e| W(e)); \
              x }; |u| (u, y0, g0) }",
         ),
-        Refuse(
-            "let w: (i64, Array<W<string>>, i64) = (0, h(0).1, 1)",
-            "it holds the type of `y0` (line 1, column 15 in `let h = { let y0 = []; \
-             let g0 = |x| { y0..`), settled when its input ended",
-        ),
+        Accept("let w: (i64, Array<W<string>>, i64) = (0, h(0).1, 1)"),
+        Accept("let w2: (i64, Array<W<i64>>, i64) = (0, h(0).1, 1)"),
+        Refuse("h(0).2(5)", "type mismatch _ does not contain i64"),
+        Refuse("h(0).2(\"a\")", "type mismatch _ does not contain string"),
     ])
     .await
 }
@@ -551,22 +631,16 @@ async fn annotated_callback_result_takes_a_later_use() -> Result<()> {
     .await
 }
 
-/// A payload an earlier input settled holds what a function builds into
-/// it: an argument the settled payload does not hold is refused by the
-/// check, naming the binding to declare.
+/// A function that writes its own parameter beside an argument whose
+/// payload an earlier input settled takes both: nothing reaches the
+/// argument's binding.
 #[tokio::test(flavor = "current_thread")]
-async fn settled_payload_takes_nothing_a_function_builds_into_it() -> Result<()> {
+async fn parameter_write_beside_a_settled_payload_takes_both() -> Result<()> {
     session(&[
         Accept("type B<'p> = Abstract<'p>"),
         Accept("let f = |a, z| { a <- B([z]); a.0 }"),
         Accept("let x = B([])"),
-        Refuse(
-            "f(x, 1)",
-            "type mismatch _ does not contain i64: it holds the type of `x` (line 1, \
-             column 5 in `let x = B([])`), settled when its input ended; declare x's \
-             type where it is bound: the function builds a value of type Array<i64> \
-             into a type another argument of this call decided as Array<_>",
-        ),
+        Produce("f(x, 1)", Value::Array([Value::I64(1)].into())),
     ])
     .await
 }
@@ -611,18 +685,14 @@ async fn annotated_settled_binding_takes_a_write() -> Result<()> {
     .await
 }
 
-/// A refusal over a settled ⊥ in the value it checks, not the type it
-/// checks against, names the binding too: a comparison, a writable
-/// reference, a cell no name binds.
+/// A settled ⊥ compares with any type. A refusal over a settled ⊥ in the
+/// value it checks, not the type it checks against, names the binding too: a
+/// writable reference, a cell no name binds.
 #[tokio::test(flavor = "current_thread")]
 async fn refusals_over_a_settled_value_name_the_binding() -> Result<()> {
     session(&[
         Accept("let a = []"),
-        Refuse(
-            "a == [1]",
-            "both operands must be one type: it holds the type of `a` (line 1, column 5 \
-             in `let a = []`), settled when its input ended",
-        ),
+        Produce("a == [1]", Value::Bool(false)),
         Accept("let e = []"),
         Accept("let f = |x: &mut Array<i64>| { *x <- [1]; null }"),
         Refuse(
@@ -641,8 +711,8 @@ async fn refusals_over_a_settled_value_name_the_binding() -> Result<()> {
         Accept("let app = |f: fn(x: i64) -> i64| f(1)"),
         Refuse(
             "app(z)",
-            "type mismatch fn(x: i64) -> i64 does not contain fn(y: _) -> _: it holds the \
-             type of `fs`",
+            "type mismatch fn(x: i64) -> i64 does not contain fn(x: _) -> _: it holds the \
+             type of `z`",
         ),
     ])
     .await
@@ -772,11 +842,10 @@ async fn forwarded_cell_stands_among_members_as_the_written_twins() -> Result<()
     Ok(())
 }
 
-/// With the arms the other way the settled ⊥ stands first in both forms,
-/// and a later read is refused for both alike, naming the binding to
-/// annotate.
+/// With the arms the other way a later input reads both forms alike: no
+/// member of the result's union stands first.
 #[tokio::test(flavor = "current_thread")]
-async fn settled_member_first_is_refused_as_the_written_twins() -> Result<()> {
+async fn settled_member_first_reads_as_the_written_twins() -> Result<()> {
     for f in [
         "let f = |x| select x { [] => [], [a, ..] => [a] }",
         "let f = |x: Array<'e>| select x { [] => [], [a, ..] => [a] }",
@@ -784,8 +853,6 @@ async fn settled_member_first_is_refused_as_the_written_twins() -> Result<()> {
         session(&[
             Accept(f),
             Accept("let r = f([1])"),
-            Refuse("array::len(r)", "declare r's type where it is bound"),
-            Accept("let r: Array<i64> = f([1])"),
             Produce("array::len(r)", Value::I64(1)),
         ])
         .await?;
@@ -793,13 +860,11 @@ async fn settled_member_first_is_refused_as_the_written_twins() -> Result<()> {
     Ok(())
 }
 
-/// A parameter its arms narrowed, read whole beside an arm's `[]`, stands
-/// first among the result's members in either order of the arms, so a
-/// later input's read takes its elements. Its written twin's `Array<'e>`
-/// stands in the arms' order: the read is refused where `[]` stands
-/// first, naming the binding to annotate.
+/// A parameter its arms narrowed, read whole beside an arm's `[]`, reads
+/// the same in either order of the arms, annotated or not: a later input's
+/// read takes its elements.
 #[tokio::test(flavor = "current_thread")]
-async fn narrowed_parameter_read_whole_stands_first_among_members() -> Result<()> {
+async fn narrowed_parameter_read_whole_reads_in_either_order_of_the_arms() -> Result<()> {
     for (f, r) in [
         (
             "let f = |k: i64, p| { let n = select p { [h, ..] => 1, [] => 0 }; select k { 0 => [], _ => p } }",
@@ -817,56 +882,49 @@ async fn narrowed_parameter_read_whole_stands_first_among_members() -> Result<()
             "let f = |k: i64, p: Array<'e>| { let n = select p { [h, ..] => 1, [] => 0 }; select k { 0 => p, _ => [] } }",
             "let r = f(0, [2])",
         ),
+        (
+            "let f = |k: i64, p: Array<'e>| { let n = select p { [h, ..] => 1, [] => 0 }; select k { 0 => [], _ => p } }",
+            "let r = f(1, [2])",
+        ),
     ] {
         session(&[Accept(f), Accept(r), Produce("array::len(r)", Value::I64(1))]).await?;
     }
-    session(&[
-        Accept(
-            "let f = |k: i64, p: Array<'e>| { let n = select p { [h, ..] => 1, [] => 0 }; select k { 0 => [], _ => p } }",
-        ),
-        Accept("let r = f(1, [2])"),
-        Refuse("array::len(r)", "declare r's type where it is bound"),
-        Accept("let r: Array<i64> = f(1, [2])"),
-        Produce("array::len(r)", Value::I64(1)),
-    ])
-    .await
+    Ok(())
 }
 
-/// A member whose cell an input's end settled to ⊥ sorts as ⊥, before one
-/// bound to a type, where a later input builds a union of its own (the
-/// first parts of a union of tuples), as it stands where a call's result
-/// holds it first: the read is refused for both alike, naming the binding
-/// to annotate.
+/// A member whose cell an input's end settled to ⊥ reads as the type of
+/// the member beside it where a later input builds a union of its own (the
+/// first parts of a union of tuples), as it does where a call's result
+/// holds it.
 #[tokio::test(flavor = "current_thread")]
-async fn settled_member_read_out_of_a_tuple_stands_as_the_one_met_whole() -> Result<()> {
+async fn settled_member_read_out_of_a_tuple_reads_as_the_one_met_whole() -> Result<()> {
     session(&[
         Accept(
             "let g = |k: i64, p0: Array<'a>, p1: Array<'b>| select k { 0 => p0, _ => p1 }",
         ),
         Accept("let s = g(1, [], [\"s\"])"),
-        Refuse("array::len(s)", "declare s's type where it is bound"),
+        Produce("array::len(s)", Value::I64(1)),
         Accept(
             "let f = |k: i64, p0: Array<'a>, p1: Array<'b>, p2: Array<'c>| select k { 0 => (p0, [p1]), _ => (p1, p2) }",
         ),
         Accept("let r = f(1, [], [\"s\", \"s\"], [\"t\"])"),
         Accept("let m = r.0"),
-        Refuse("array::len(m)", "declare r's type where it is bound"),
+        Produce("array::len(m)", Value::I64(2)),
         Accept("let m: Array<string> = r.0"),
         Produce("array::len(m)", Value::I64(2)),
     ])
     .await
 }
 
-/// Lambdas of two inputs that meet in a third have their defaults judged
-/// in the order the inputs were given, not the order of their texts: `1`
-/// first, so `"q"` is refused.
+/// Lambdas of two inputs that meet in a third keep their own defaults: a
+/// call that omits the label passes the default of the function it calls.
 #[tokio::test(flavor = "current_thread")]
-async fn met_defaults_judged_in_input_order() -> Result<()> {
+async fn functions_of_two_inputs_met_keep_their_own_defaults() -> Result<()> {
     session(&[
         Accept("let z = |#d = 1, x: i64| x"),
         Accept("let a = |#d = \"q\", x: i64| x"),
-        Refuse("array::len([a, z])", "i64 does not contain string"),
-        Refuse("select true { true => a, false => z }(7)", "i64 does not contain string"),
+        Produce("array::len([a, z])", Value::I64(2)),
+        Produce("select true { true => a, false => z }(7)", Value::I64(7)),
     ])
     .await
 }
@@ -1009,12 +1067,7 @@ const LOAD_WRITE_HELD: &str = r#"{
 run!(
     load_write_is_held_to_the_program_binding,
     LOAD_WRITE_HELD,
-    |v: anyhow::Result<&Value>| matches!(
-        v,
-        Ok(Value::String(s))
-            if s.contains("val h is declared fn(x: 'a) -> 'a but implemented fn(x: _) -> _")
-                && s.contains("it holds the type of `y`")
-    );
+    |v: anyhow::Result<&Value>| matches!(v, Ok(Value::String(s)) if s.contains("val h is declared fn(x: 'a) -> 'a but implemented") && s.contains("type mismatch _ does not contain 'a"));
     FuseExpect::Jit
 );
 
@@ -1075,10 +1128,9 @@ async fn load_decides_no_earlier_open_cell() -> Result<()> {
     .await
 }
 
-/// A load that would decide several earlier cells names each, with the
-/// type it would have given it.
+/// A load reads each earlier array of generic names at its own types.
 #[tokio::test(flavor = "current_thread")]
-async fn load_names_every_cell_it_would_decide() -> Result<()> {
+async fn load_reads_arrays_of_generic_names_at_its_own_types() -> Result<()> {
     session(&[
         Accept("let g = 'q: Number |x: 'q| -> 'q x"),
         Accept("let j = [g, g]"),
@@ -1089,11 +1141,8 @@ async fn load_names_every_cell_it_would_decide() -> Result<()> {
                 source "let z: fn(x: i64) -> i64 = super::j\[0\]$; let kk: fn(x: f64) -> f64 = super::k\[0\]$"
             }"#,
         ),
-        ProduceText(
-            STATUS,
-            "annotate `j` (line 1, column 5 in `let j = [g, g]`) as `Array<fn(x: i64) -> \
-             i64>`, `k` (line 1, column 5 in `let k = [g, g]`) as `Array<fn(x: f64) -> f64>`",
-        ),
+        ProduceText(STATUS, "loaded"),
+        Produce("d::z(3)", Value::I64(3)),
     ])
     .await
 }

@@ -1,5 +1,8 @@
 use anyhow::Result;
-use graphix_package_core::{run, testing::FuseExpect};
+use graphix_package_core::{
+    run,
+    testing::{FuseExpect, refused},
+};
 use netidx::subscriber::Value;
 
 #[cfg(unix)]
@@ -412,7 +415,7 @@ run!(
   let c = sys::process::spawn(sys::process::options("/bin/true"))$;
   Read::read(c.stdin$, u64:10)
 }"#,
-    graphix_package_core::testing::refused("ChildStdin does not implement Read");
+    refused("type mismatch Read does not contain ChildStdin");
     FuseExpect::None
 );
 

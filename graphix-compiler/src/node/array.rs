@@ -18,89 +18,25 @@ use crate::{
             opt_node_encode, put_tag,
         },
     },
-    typ::{TVar, Type},
+    typ::{
+        Type,
+        bounds::{self, Use},
+    },
     wrap,
 };
-use ahash::AHashSet;
-use anyhow::Result;
+use anyhow::{Result, bail};
 use arcstr::ArcStr;
 use enumflags2::BitFlags;
 use netidx_core::pack::{Pack, PackError};
 use netidx_value::{PBytes, Typ, ValArray, Value};
-use poolshark::local::LPooled;
-use std::{fmt::Debug, iter, marker::PhantomData, mem, ops::Range};
+use std::{fmt::Debug, iter, marker::PhantomData, ops::Range};
 use triomphe::Arc;
 
 defetyp!(ERR, ERR_TAG, "ArrayIndexError", "Error<`{}(string)>");
 
-/// What makes two of a literal's element types the very same type: a
-/// primitive by value, a cell by its binding cell, a composite by the
-/// parts it shares, anything else by address.
-#[derive(PartialEq, Eq, Hash)]
-struct SameType(mem::Discriminant<Type>, u64, u64);
-
-impl SameType {
-    // CR claude for claude: [perf/low] A tuple, struct, array or map is keyed here by
-    // its Arc address. The element types of separately written literals (`[{name: "a",
-    // v: 1}, {name: "b", v: 2}, ..]`) therefore never dedupe, and every one reaches
-    // Type::union_of_alternatives. A literal of 5000/10000/20000 struct rows checks in
-    // 162/369/1128 ms, against 89/97/114 ms for the same count of integers. The
-    // x-perf-compile-08 fix made only primitives linear. Fix: key a composite by its
-    // discriminant and a hash of its parts' SameType keys. Drop the third u64, which is
-    // 0 in every arm. Map literals stay superlinear too (80000 entries 2.3 s, whether
-    // the keys or the values are uniform), so Map::typecheck0_with's path has a
-    // per-entry cost of its own to find. probe:
-    // design/review-2026-11-16/repro/x-rerun-1-literal-composite-union-quadratic.sh
-    // (x-rerun-1-02)
-    fn of(t: &Type) -> Self {
-        fn at<T: ?Sized>(p: *const T) -> u64 {
-            p.cast::<u8>().addr() as u64
-        }
-        let (a, b) = match t {
-            Type::Primitive(p) => (p.bits(), 0),
-            Type::TVar(tv) => (tv.cell_addr() as u64, 0),
-            Type::Array(e) | Type::List(e) => (at(Arc::as_ptr(e)), 0),
-            Type::Map(m) => (at(Arc::as_ptr(m)), 0),
-            Type::Tuple(ts) => (at(Arc::as_ptr(ts)), 0),
-            Type::Struct(fs) => (at(Arc::as_ptr(fs)), 0),
-            t => (at(t), 0),
-        };
-        Self(mem::discriminant(t), a, b)
-    }
-}
-
-/// The union of a literal's element types `ts`, `⊥` first: an element of
-/// the very type of an earlier one adds nothing, and one type left is its
-/// own union. A call through an element accepts each alike: functions
-/// meet.
-pub(super) fn element_union(env: &Env, ts: &[&Type]) -> Result<Type> {
-    let mut seen: LPooled<AHashSet<SameType>> = LPooled::take();
-    let mut distinct: LPooled<Vec<&Type>> = LPooled::take();
-    distinct.extend(ts.iter().copied().filter(|t| seen.insert(SameType::of(t))));
-    match &distinct[..] {
-        [_, one] => Ok((*one).clone()),
-        ts => Type::union_of_alternatives(env, ts),
-    }
-}
-
-/// Bind the cell `slot` holds, a literal's own element cell, to `t`
-/// without an occurs walk of `t`'s whole depth, when `t` cannot reach the
-/// cell: nothing else holds `slot`, or `t` reaches no open cell
-/// ([`TVar::bind_unshared`]). False, binding nothing, otherwise.
-pub(super) fn bind_element(slot: &Arc<Type>, t: &Type) -> bool {
-    bind_part(slot, Arc::count(slot) > 1, t)
-}
-
-/// [`bind_element`] of a cell in a node that holds more than one part:
-/// `shared` when anything but its owner holds the node.
-pub(super) fn bind_part(slot: &Type, shared: bool, t: &Type) -> bool {
-    !matches!(t, Type::Bottom) && TVar::bind_unshared(slot, shared, t)
-}
-
-/// An array index or slice bound: any integer. An open cell is narrowed
-/// to the integers, as an arithmetic operand is to the numbers.
+/// An array index or slice bound: any integer.
 pub(super) fn check_index<R: Rt>(env: &Env, i: &Node<R>) -> Result<()> {
-    wrap!(i, super::op::constrain_operand(env, &Type::Primitive(Typ::integer()), i.typ()))
+    wrap!(i, Type::Primitive(Typ::integer()).check_contains(env, i.typ()))
 }
 
 #[derive(Debug)]
@@ -189,14 +125,6 @@ pub(crate) fn index_i64(v: &Value) -> Option<i64> {
 /// counts from the start, negative from the end. Unchecked against `len`.
 fn offset(len: usize, i: i64) -> Option<usize> {
     usize::try_from(if i < 0 { len as i64 + i } else { i }).ok()
-}
-
-/// An indexed or sliced source is bytes only when its type says so; a
-/// source not known yet (an open cell) is assumed to be an array.
-fn known_bytes(env: &Env, source: &Type) -> Result<bool> {
-    let bytes = Type::Primitive(Typ::Bytes.into());
-    Ok(!source.with_deref(|t| t.is_none())
-        && bytes.contains_with_flags(BitFlags::empty(), env, source)?)
 }
 
 /// The position index `i` names in a sequence of `len` elements.
@@ -292,9 +220,7 @@ impl<R: Rt> Update<R> for ArrayRef<R> {
         self.resident.set(TagValue::tagged(v, tag))
     }
 
-    // The element cell binds from the source as in the check; the
-    // index needs no judging.
-    super::typed_by_row!(source);
+    super::typed_by_row!();
 
     fn typ(&self) -> &Type {
         &self.typ
@@ -426,9 +352,7 @@ impl<R: Rt> Update<R> for ArraySlice<R> {
         self.resident.set(TagValue::tagged(v, tag))
     }
 
-    // The element cell binds from the source as in the check; the
-    // index needs no judging.
-    super::typed_by_row!(source);
+    super::typed_by_row!();
 
     fn sleep(&mut self, ctx: &mut ExecCtx<'_, R>) {
         self.slept.set();
@@ -665,31 +589,40 @@ impl<R: Rt> ArrayRef<R> {
     ) -> Result<()> {
         wrap!(self.source, child(&mut self.source, ctx))?;
         wrap!(self.i, child(&mut self.i, ctx))?;
+        // an instance's type is its row
+        if !check {
+            return Ok(());
+        }
         let source_typ = self.source.typ();
-        if known_bytes(&ctx.env, source_typ)? {
-            let byte = Type::Primitive(Typ::U8.into());
-            wrap!(self, self.etyp.check_contains(&ctx.env, &byte))?;
-        } else {
-            let at = Type::Array(Arc::new(self.etyp.clone()));
-            // CR claude for eric: [bug/low] An index over a source typed as a union of
-            // two array types is refused here with "Array<i64> does not contain
-            // [Array<i64>, Array<string>]": the element variable takes the first member
-            // and the second fails, so the message states a requirement nobody wrote
-            // and names nothing to annotate. ArraySlice refuses the same source, and
-            // array::len and array::map refuse it with the same shape of message. A
-            // tuple union's `.0` reads the union of its members and a slice pattern
-            // over this same value checks, so the value can be taken apart but not
-            // indexed or measured. Either relate each array member separately and union
-            // the element types into etyp, or refuse in words that say to select on the
-            // value or give it one array type. probe:
-            // design/review-2026-11-16/repro/x-engine-collections-index-union-of-arrays.gx
-            // (x-engine-collections-03)
-            wrap!(self, at.check_contains(&ctx.env, source_typ))?;
-        }
-        match check {
-            true => check_index(&ctx.env, &self.i),
-            false => Ok(()),
-        }
+        // XCR claude for eric: [bug/low] An index over a source typed as a union of
+        // two array types is refused here with "Array<i64> does not contain
+        // [Array<i64>, Array<string>]": the element variable takes the first member
+        // and the second fails, so the message states a requirement nobody wrote
+        // and names nothing to annotate. ArraySlice refuses the same source, and
+        // array::len and array::map refuse it with the same shape of message. A
+        // tuple union's `.0` reads the union of its members and a slice pattern
+        // over this same value checks, so the value can be taken apart but not
+        // indexed or measured. Either relate each array member separately and union
+        // the element types into etyp, or refuse in words that say to select on the
+        // value or give it one array type. probe:
+        // design/review-2026-11-16/repro/x-engine-collections-index-union-of-arrays.gx
+        // (x-engine-collections-03)
+        // 2026-11-19 claude: On bounds-spike the old relation here (the element
+        // variable taking the first member) is deleted with the old check; the
+        // solver's Use::Element reads the element each member holds, the first option
+        // above. The probe's four forms (xs[0], xs[0..1], array::len(xs),
+        // array::map(xs, |x| 1)) check and build (--expand exit 0). Pin:
+        // lang::arrays::index_union_of_arrays (an index and a len over [Array<string>,
+        // Array<i64>], prints [i64:2, i64:2]).
+
+        // whatever the source turns out to be gives the element: an array's,
+        // or a byte
+        let bytes = Type::Primitive(Typ::Bytes.into());
+        let indexed = bounds::union_of([Type::Array(Arc::new(self.etyp.clone())), bytes]);
+        wrap!(self, indexed.check_contains(&ctx.env, source_typ))?;
+        let read = Use::Element { out: self.etyp.clone() };
+        wrap!(self, super::solving(|s| s.watch(&ctx.env, source_typ, read)))?;
+        check_index(&ctx.env, &self.i)
     }
 }
 
@@ -701,22 +634,32 @@ impl<R: Rt> ArraySlice<R> {
         check: bool,
     ) -> Result<()> {
         wrap!(self.source, child(&mut self.source, ctx))?;
+        for i in [self.start.as_mut(), self.end.as_mut()].into_iter().flatten() {
+            wrap!(i, child(i, ctx))?;
+        }
+        // an instance's type is its row
+        if !check {
+            return Ok(());
+        }
         let source_typ = self.source.typ();
-        if check && !known_bytes(&ctx.env, source_typ)? {
-            let at = Type::Array(Arc::new(Type::empty_tvar()));
-            wrap!(self, at.check_contains(&ctx.env, source_typ))?;
+        if check {
+            let sliced = bounds::union_of([
+                Type::Array(Arc::new(Type::empty_tvar())),
+                Type::Primitive(Typ::Bytes.into()),
+            ]);
+            wrap!(self, sliced.check_contains(&ctx.env, source_typ))?
         }
         // `typ` copied the source's type at compile; a source whose type
         // is decided in its typecheck0 (a select) is related here
         let Type::Set(members) = &self.typ else { unreachable!() };
         wrap!(self, members[0].check_contains(&ctx.env, source_typ))?;
-        for i in [self.start.as_mut(), self.end.as_mut()].into_iter().flatten() {
-            wrap!(i, child(i, ctx))?;
-            if check {
-                check_index(&ctx.env, i)?;
-            }
+        match check {
+            true => [self.start.as_ref(), self.end.as_ref()]
+                .into_iter()
+                .flatten()
+                .try_for_each(|i| check_index(&ctx.env, i)),
+            false => Ok(()),
         }
-        Ok(())
     }
 }
 
@@ -733,44 +676,30 @@ impl<R: Rt, K: SeqKind> SeqLit<R, K> {
         if !check {
             return Ok(());
         }
-        let bottom = Type::Bottom;
-        let mut ts: LPooled<Vec<&Type>> = LPooled::take();
-        ts.push(&bottom);
-        ts.extend(self.n.iter().map(|n| n.typ()));
-        let union = wrap!(self, element_union(&ctx.env, &ts))?;
-        if let Type::Array(e) | Type::List(e) = &self.typ
-            && bind_element(e, &union)
-        {
-            return Ok(());
-        }
-        let rtype = match &union {
-            Type::Bottom => K::typ(Type::empty_tvar()),
-            t => K::typ(t.clone()),
+        // CR claude for claude: [perf/low] A tuple, struct, array or map is keyed here by
+        // its Arc address. The element types of separately written literals (`[{name: "a",
+        // v: 1}, {name: "b", v: 2}, ..]`) therefore never dedupe, and every one reaches
+        // Type::union_of_alternatives. A literal of 5000/10000/20000 struct rows checks in
+        // 162/369/1128 ms, against 89/97/114 ms for the same count of integers. The
+        // x-perf-compile-08 fix made only primitives linear. Fix: key a composite by its
+        // discriminant and a hash of its parts' SameType keys. Drop the third u64, which is
+        // 0 in every arm. Map literals stay superlinear too (80000 entries 2.3 s, whether
+        // the keys or the values are uniform), so Map::typecheck0_with's path has a
+        // per-entry cost of its own to find. probe:
+        // design/review-2026-11-16/repro/x-rerun-1-literal-composite-union-quadratic.sh
+        // (x-rerun-1-02)
+        // 2026-11-18 claude: On bounds-spike the literal's old union path (element_union,
+        // SameType) is deleted with the old check: the elements flow into one solver cell.
+        // The cost this measured is not re-measured under the solver: run the probe again,
+        // literals and map literals both.
+
+        // the elements flow into one cell, which may join them
+        let (Type::Array(e) | Type::List(e)) = &self.typ else {
+            bail!("BUG: a literal that is no array and no list")
         };
-        self.typ.check_contains(&ctx.env, &rtype).map_err(|e| match &self.typ {
-            Type::Array(slot) | Type::List(slot) => TVar::refusal_over(slot, &union, e),
-            _ => e,
-        })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::time::{Duration, Instant};
-
-    // each literal element carries a type of its own; equal primitives
-    // are one member however many elements there are
-    #[test]
-    fn a_literals_element_union_is_linear() {
-        let env = Env::default();
-        let ts: Vec<Type> =
-            (0..400_000).map(|_| Type::Primitive(Typ::I64.into())).collect();
-        let refs: Vec<&Type> = iter::once(Type::BOTTOM).chain(ts.iter()).collect();
-        let start = Instant::now();
-        let union = element_union(&env, &refs).unwrap();
-        let took = start.elapsed();
-        assert!(matches!(union, Type::Primitive(p) if p == Typ::I64), "{union}");
-        assert!(took < Duration::from_secs(2), "{took:?}");
+        for n in self.n.iter() {
+            wrap!(n, e.check_contains(&ctx.env, n.typ()))?
+        }
+        Ok(())
     }
 }

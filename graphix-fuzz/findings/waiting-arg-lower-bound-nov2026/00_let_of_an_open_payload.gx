@@ -1,4 +1,6 @@
-// expect: reject
+// Under the check by bounds the call's variable is the union of what its
+// arguments give, so `seen` is an Array<[i64, string]> and the program
+// checks. What follows is the finding as it stood.
 // nov11b katana typeflip_000000 (let-inline): `x`'s payload stands open
 // above the lower bounds i64 and string, and `v` reads it. `v` waits for
 // the call's other arguments, which settle 'a to i64; the wait then bound

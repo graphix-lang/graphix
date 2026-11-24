@@ -1,0 +1,6 @@
+// expect: reject
+// A variadic builtin where a function type lists its arguments: the
+// check let it stand and the instance's build refused it (soak nov24b, a
+// check-against-build divergence).
+// Expected: refused, "a variadic function where one of 1 arguments is wanted".
+{ let rec loop = |f: fn(x: i64) -> i64, g: fn(x: i64) -> i64, n: i64, acc: i64| -> i64 loop(f, all, n, acc + f(n)); let p = |x: i64| -> i64 x; loop(p, |x| x, 3, 0) }

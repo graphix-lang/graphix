@@ -418,6 +418,24 @@ async fn fixture_test(f: &RunFixture, mode: Mode, check: bool) -> Result<()> {
     Ok(())
 }
 
+/// What a fixture's predicate is handed when the runtime settles before
+/// the fixture's value comes.
+#[derive(Debug)]
+pub struct Settled;
+
+impl std::fmt::Display for Settled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "the runtime settled without an update")
+    }
+}
+
+impl std::error::Error for Settled {}
+
+/// A [`run!`] predicate for a program whose value never comes.
+pub fn settles() -> impl Fn(Result<&Value>) -> bool {
+    |v: Result<&Value>| matches!(v, Err(e) if e.is::<Settled>())
+}
+
 async fn fixture_mode(
     f: &RunFixture,
     mode: Mode,
@@ -425,7 +443,6 @@ async fn fixture_mode(
     check_shape: bool,
     check: bool,
 ) -> Result<FuseObserved> {
-    let pred = &f.pred;
     let (ctx, mut rx) = fixture_runtime(
         f.files.iter().map(|(path, code)| (*path, VfsEntry::from(code.clone()))),
         f.register,
@@ -452,9 +469,9 @@ async fn fixture_mode(
                 bail!("the runtime died compiling the fixture ({dead:#}): {e:#}")
             }
             if let Some(c) = check_refusal {
-                assert!(pred(dbg!(Err(c))), "the check's refusal")
+                assert!((f.pred)(dbg!(Err(c))), "the check's refusal")
             }
-            assert!(pred(dbg!(Err(e))))
+            assert!((f.pred)(dbg!(Err(e))))
         }
         Ok(res) => {
             let eid = res.exprs[0].id;
@@ -463,10 +480,15 @@ async fn fixture_mode(
                     ctx.rt.match_shape(eid, spec).await?;
                 }
             }
-            let v = next_update_raw(&ctx.rt, &mut rx, eid).await?;
-            let v = observed(&ctx, &res.exprs[0].typ, v).await?;
-            eprintln!("{v}");
-            assert!(pred(Ok(&v)));
+            match next_update_or_settle(&ctx.rt, &mut rx, eid).await? {
+                Some(v) => {
+                    let v = observed(&ctx, &res.exprs[0].typ, v).await?;
+                    eprintln!("{v}");
+                    assert!((f.pred)(Ok(&v)));
+                }
+                None if (f.pred)(Err(Settled.into())) => (),
+                None => bail!("the runtime settled without an update of {eid:?}"),
+            }
         }
     }
     let invocations = ctx.rt.control().invocations();
@@ -602,6 +624,18 @@ pub async fn next_update_raw(
     rx: &mut Events,
     id: ExprId,
 ) -> Result<Value> {
+    match next_update_or_settle(rt, rx, id).await? {
+        Some(v) => Ok(v),
+        None => bail!("the runtime settled without an update of {id:?}"),
+    }
+}
+
+/// [`next_update_raw`], `None` where the runtime settles first.
+async fn next_update_or_settle(
+    rt: &GXHandle<NoExt>,
+    rx: &mut Events,
+    id: ExprId,
+) -> Result<Option<Value>> {
     let settled = rt.wait_settled();
     tokio::pin!(settled);
     tokio::select! {
@@ -609,7 +643,7 @@ pub async fn next_update_raw(
             loop {
                 let mut batch = rx.recv().await.context("the runtime died")?;
                 if let Some(v) = update_of(&mut batch, id) {
-                    break Ok(v);
+                    break Ok(Some(v));
                 }
             }
         } => v,
@@ -618,10 +652,10 @@ pub async fn next_update_raw(
             // every update is in the stream before the settle answers
             while let Ok(mut batch) = rx.try_recv() {
                 if let Some(v) = update_of(&mut batch, id) {
-                    return Ok(v);
+                    return Ok(Some(v));
                 }
             }
-            bail!("the runtime settled without an update of {id:?}")
+            Ok(None)
         }
         () = tokio::time::sleep(HANG_GUARD) => {
             bail!("no update of {id:?} in {HANG_GUARD:?}")

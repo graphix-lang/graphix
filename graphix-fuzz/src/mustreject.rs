@@ -2,7 +2,7 @@
 //! checker accepts and its checked types, apply ONE mutation a rule says
 //! the checker must refuse, and require the refusal where the mutation
 //! or its rigid consumer is. Families 1 (monomorphic reuse), 2 (rigid
-//! variables), 3 (a shared variable at a call), 4 (widening into a rigid
+//! variables), 3 (a bounded variable at a call), 4 (widening into a rigid
 //! consumer), 5 (variant widening), 6 (retyping a let), 7 (labels), 8
 //! (a function bound), 9 (writable references), 10 (one runtime form)
 //! and 11 (an abstract type's parameter).
@@ -11,12 +11,11 @@ use crate::{mutate, typemorph};
 use ahash::{AHashMap, AHashSet};
 use arcstr::ArcStr;
 use compact_str::CompactString;
-use enumflags2::BitFlags;
 use graphix_compiler::{
     SourcePosition,
     env::Env,
     expr::{
-        ApplyExpr, ArgKind, BinOp, BindExpr, Expr, ExprKind, LambdaBody, LambdaExpr,
+        ApplyExpr, Arg, ArgKind, BinOp, BindExpr, Expr, ExprKind, LambdaBody, LambdaExpr,
         ModPath, Name, Origin, Pattern, SelectExpr, Source, StructurePattern, WrittenAt,
         parser,
     },
@@ -32,9 +31,7 @@ use triomphe::Arc;
 pub enum Family {
     MonoReuse,
     RigidVar,
-    RigidPattern,
     SharedVar,
-    OpenArg,
     WidenConsumer,
     WidenHop,
     VariantWiden,
@@ -47,17 +44,13 @@ pub enum Family {
     RefWiden,
     SameForm,
     AbstractParam,
-    UndecidedPart,
-    VariableUnion,
 }
 
 impl Family {
-    pub const ALL: [Family; 19] = [
+    pub const ALL: [Family; 15] = [
         Family::MonoReuse,
         Family::RigidVar,
-        Family::RigidPattern,
         Family::SharedVar,
-        Family::OpenArg,
         Family::LabelUnknown,
         Family::LabelMissing,
         Family::LabelDefault,
@@ -70,8 +63,6 @@ impl Family {
         Family::RefWiden,
         Family::SameForm,
         Family::AbstractParam,
-        Family::UndecidedPart,
-        Family::VariableUnion,
     ];
 }
 
@@ -81,15 +72,20 @@ impl Family {
     /// the mutation added) would hide the rule's regression.
     pub fn refuses_with(self, head: &str) -> bool {
         let says: &[&str] = match self {
-            Family::MonoReuse => &["does not contain"],
-            Family::RigidVar => &["unbound", "which the signature does not declare"],
-            Family::RigidPattern => &["tests inside a value of", "matches no value of"],
-            Family::SharedVar | Family::AbstractParam => &["does not contain"],
-            Family::OpenArg => &["is undecided at this call"],
-            Family::LabelUnknown => &["unknown labeled argument"],
+            Family::MonoReuse => &["does not contain", "and no value is both"],
+            Family::RigidVar => &[
+                "unbound",
+                "which the signature does not declare",
+                "but the declared variable",
+            ],
+            // a variable a select tests takes what the select's arms do
+            Family::SharedVar => &["does not contain", "missing match cases"],
+            Family::AbstractParam => &["does not contain"],
+            // a call of a function value the check types says "no argument"
+            Family::LabelUnknown => &["unknown labeled argument", "no argument #"],
             Family::LabelMissing => &["missing required argument"],
             Family::LabelDefault => {
-                &["missing required argument", "does not contain fn("]
+                &["missing required argument", "does not contain fn(", "is required"]
             }
             Family::WidenConsumer | Family::WidenHop => &[
                 "does not contain",
@@ -97,7 +93,9 @@ impl Family {
                 "cannot hold",
                 "cannot compute",
                 "cannot compare",
+                "cannot order",
                 "expected struct not",
+                "has no field",
                 "the members' fields differ",
                 "not decided at this select",
                 "not decided at this let",
@@ -110,15 +108,14 @@ impl Family {
                 "cannot hold",
                 "cannot compute",
                 "cannot compare",
+                "cannot order",
                 "does not contain",
                 "will never match",
             ],
-            Family::FunctionBound => &["within Function does not contain"],
+            Family::FunctionBound => &["must be Function here"],
             Family::RefWrite => &["read-only reference", "does not contain &"],
-            Family::RefWiden => &["does not contain &mut"],
+            Family::RefWiden => &["does not contain"],
             Family::SameForm => &["the same runtime form"],
-            Family::UndecidedPart => &["a type not decided at this select"],
-            Family::VariableUnion => &["is a union of the type variables"],
         };
         says.iter().any(|s| head.contains(s))
     }
@@ -129,9 +126,7 @@ impl std::fmt::Display for Family {
         f.write_str(match self {
             Family::MonoReuse => "mono-reuse",
             Family::RigidVar => "rigid-var",
-            Family::RigidPattern => "rigid-pattern",
             Family::SharedVar => "shared-var",
-            Family::OpenArg => "open-arg",
             Family::LabelUnknown => "label-unknown",
             Family::LabelMissing => "label-missing",
             Family::LabelDefault => "label-default",
@@ -144,8 +139,6 @@ impl std::fmt::Display for Family {
             Family::RefWiden => "ref-widen",
             Family::SameForm => "same-form",
             Family::AbstractParam => "abstract-param",
-            Family::UndecidedPart => "undecided-part",
-            Family::VariableUnion => "variable-union",
         })
     }
 }
@@ -195,6 +188,9 @@ struct Entry {
     /// A reference here names a function whose declared type leaves part
     /// of its result to its uses ([`open_return`]).
     open_return: bool,
+    /// The declared type of the binding a reference here names: a
+    /// generic function's signature, where `types` holds the instance.
+    declared: Option<Type>,
 }
 
 impl TypeMap {
@@ -208,10 +204,11 @@ impl TypeMap {
             let e = map.entry((a.line, a.column, b.line, b.column)).or_default();
             e.types.push(s.typ.clone());
             e.cell |= s.cell;
-            e.open_return |= s
-                .bind
-                .and_then(|id| env.by_id.get(&id))
-                .is_some_and(|b| open_return(&b.typ));
+            let bound = s.bind.and_then(|id| env.by_id.get(&id));
+            e.open_return |= bound.is_some_and(|b| open_return(&b.typ));
+            if e.declared.is_none() {
+                e.declared = bound.map(|b| b.typ.clone())
+            }
         }
         TypeMap(map)
     }
@@ -231,6 +228,15 @@ impl TypeMap {
 
     fn open_return(&self, f: &Expr) -> bool {
         self.entry(typemorph::unparen(f)).is_some_and(|x| x.open_return)
+    }
+
+    /// The declared function type of the binding the callee `f` names.
+    fn declared(&self, f: &Expr) -> Option<Arc<FnType>> {
+        let t = self.entry(typemorph::unparen(f))?.declared.as_ref()?;
+        t.with_deref(|d| match d {
+            Some(Type::Fn(ft)) => Some(ft.clone()),
+            _ => None,
+        })
     }
 }
 
@@ -261,7 +267,7 @@ fn open_cells(t: &Type, bounds: bool, out: &mut AHashMap<usize, TVar>) {
         Type::TVar(tv) => match tv.open_cell() {
             Some(c) => {
                 if out.insert(c.cell_addr(), c.clone()).is_none() && bounds {
-                    for b in c.cell_constraints() {
+                    for b in c.cell_above() {
                         open_cells(&b, bounds, out)
                     }
                 }
@@ -286,6 +292,23 @@ pub fn in_module(ori: &Origin, module: &str) -> bool {
 /// module's second line.
 pub fn to_body(p: SourcePosition) -> SourcePosition {
     SourcePosition { line: p.line - 1, column: p.column }
+}
+
+/// Where each expression of the module `module` that the refusal `e`
+/// passed through starts, read off the frames as they print (an error's
+/// chain gives a frame's text, not the frame).
+pub fn passed(e: &anyhow::Error, module: &str) -> Vec<SourcePosition> {
+    let frame = |text: String| -> Option<SourcePosition> {
+        let (line, rest) = text.strip_prefix("at: line: ")?.split_once(", column: ")?;
+        let digits = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+        let (column, rest) = rest.split_at(digits);
+        let rest = rest.strip_prefix(" in module ")?;
+        let path = rest.split_once(',').map_or(rest, |(path, _)| path);
+        (netidx_core::path::Path::basename(path) == Some(module)).then_some(
+            SourcePosition { line: line.parse().ok()?, column: column.parse().ok()? },
+        )
+    };
+    e.chain().filter_map(|c| frame(c.to_string())).collect()
 }
 
 fn span(e: &Expr) -> Option<Span> {
@@ -372,10 +395,7 @@ pub fn probes(
     let mut out = Vec::new();
     mono_reuse(&root, &pre, types, cap, &mut out);
     rigid_var(&root, cap, &mut out);
-    rigid_pattern(&root, cap, &mut out);
-    variable_union(&root, cap, &mut out);
-    shared_var(&root, &pre, types, cap, Family::SharedVar, &mut out);
-    shared_var(&root, &pre, types, cap, Family::OpenArg, &mut out);
+    shared_var(&root, &pre, types, cap, &mut out);
     labels(&root, &pre, types, cap, &mut out);
     widen_consumer(&root, &pre, types, modules, cap, &mut out);
     widen_through_let(&root, &pre, types, cap, &mut out);
@@ -385,7 +405,6 @@ pub fn probes(
     references(&root, types, cap, &mut out);
     same_form(&root, &pre, types, cap, &mut out);
     abstract_param(&root, &pre, types, cap, &mut out);
-    undecided_part(&root, &pre, types, cap, &mut out);
     // at most `cap` of each family's, each id its own
     let mut kept: Vec<RejectProbe> = Vec::with_capacity(out.len());
     for mut p in out {
@@ -466,145 +485,15 @@ fn same_form(
     }
 }
 
-/// Family 14. A select over a concrete scrutinee `s` whose arms bind no
-/// name, an arm testing it, becomes `{ let tm__z = never(); select (select
-/// true { true => s, false => tm__z }) { arms, _ => last } }`, `last` the
-/// last arm's body: `tm__z`'s type is not decided where the arms test it,
-/// so a later use could decide it apart from what they assume. The `_`
-/// arm keeps the arms from deciding it (a union scrutinee beside a
-/// wildcard settles nothing). And, where an arm chooses a value (a
-/// literal, a tag, a length), not only taking one apart, it becomes `{ let
-/// tm__z = never(); select (tm__z, 0) { (arm, _) .., _ => last } }`, where
-/// that arm would decide `tm__z`: refused as testing it; where every arm
-/// only takes `s` apart, `{ let tm__z = never(); select (select true {
-/// true => s, false => tm__z }, 0) { (arm, _) .., _ => last } }`, where an
-/// arm's destructure chooses between `tm__z` and `s`. Right site: the
-/// replaced select.
-fn undecided_part(
-    root: &Expr,
-    pre: &[Expr],
-    types: &TypeMap,
-    cap: usize,
-    out: &mut Vec<RejectProbe>,
-) {
-    const Z: &str = "tm__z";
-    let mut taken = 0usize;
-    for i in spread(pre.len()) {
-        if taken >= cap {
-            break;
-        }
-        let e = &pre[i];
-        let ExprKind::Select(se) = &e.kind else { continue };
-        let Some(t) = types.of(&se.arg).first() else { continue };
-        if !concrete(t) || typemorph::leaks_binds(&se.arg) {
-            continue;
-        }
-        // a scrutinee with no value adds nothing to a union beside `tm__z`,
-        // which is then the whole scrutinee, one the arms decide together; a
-        // read of a cell, a name bound over such a scrutinee, is one cell with
-        // `tm__z`; a member `Any` admits `tm__z`'s values, so the union is the
-        // scrutinee's type whole
-        let bottom =
-            types.cell(&se.arg) || typemorph::bottom_value(&se.arg) || admits_all(t);
-        let binds = |p: &Pattern| {
-            let mut any = false;
-            p.structure_predicate.with_names(&mut |_| any = true);
-            any || p.guard.is_some() || p.type_predicate.is_some()
-        };
-        let tests = |p: &Pattern| {
-            !matches!(
-                p.structure_predicate,
-                StructurePattern::Ignore | StructurePattern::Bind(_)
-            )
-        };
-        if se.arms.iter().any(|(p, _)| binds(p)) || !se.arms.iter().any(|(p, _)| tests(p))
-        {
-            continue;
-        }
-        let lit = |b: bool| Pattern {
-            type_predicate: None,
-            structure_predicate: StructurePattern::literal(netidx_value::Value::Bool(b)),
-            guard: None,
-            pos: WrittenAt::NOWHERE,
-            end: WrittenAt::NOWHERE,
-        };
-        let z = ExprKind::Ref { name: ModPath::from([Z]) }.to_expr_nopos();
-        let union = ExprKind::Select(SelectExpr {
-            arg: Arc::new(
-                ExprKind::Constant(netidx_value::Value::Bool(true)).to_expr_nopos(),
-            ),
-            arms: Arc::from_iter([
-                (lit(true), (*se.arg).clone()),
-                (lit(false), z.clone()),
-            ]),
-        })
-        .to_expr_nopos();
-        let mut arms = se.arms.to_vec();
-        if let Some((p, last)) = arms.last()
-            && !matches!(p.structure_predicate, StructurePattern::Ignore)
-        {
-            let ignore =
-                Pattern { structure_predicate: StructurePattern::Ignore, ..lit(true) };
-            arms.push((ignore, last.clone()))
-        }
-        // the decide shape: `tm__z` inside a tuple, which the first arm
-        // testing it would decide alone
-        let nested = Arc::from_iter(arms.iter().map(|(p, body)| {
-            let binds = [p.structure_predicate.clone(), StructurePattern::Ignore];
-            let tuple =
-                StructurePattern::Tuple { all: None, binds: Arc::from_iter(binds) };
-            (Pattern { structure_predicate: tuple, ..p.clone() }, body.clone())
-        }));
-        let zero = ExprKind::Constant(netidx_value::Value::I64(0)).to_expr_nopos();
-        let pair = ExprKind::Tuple { args: Arc::from_iter([z.clone(), zero.clone()]) }
-            .to_expr_nopos();
-        // an arm that only takes `tm__z` apart decides its shape as an
-        // annotation would: the decide shape needs one that chooses a value,
-        // else `tm__z` beside `s`, whose shape the arm takes
-        let decides =
-            !se.arms.iter().all(|(p, _)| p.structure_predicate.only_destructures());
-        let beside = match decides {
-            true => pair,
-            false => ExprKind::Tuple { args: Arc::from_iter([union.clone(), zero]) }
-                .to_expr_nopos(),
-        };
-        let scrutinees = [
-            (!bottom).then(|| (union, Arc::from_iter(arms))),
-            (decides || !bottom).then(|| (beside, nested)),
-        ];
-        for (arg, arms) in scrutinees.into_iter().flatten() {
-            let sel =
-                ExprKind::Select(SelectExpr { arg: Arc::new(arg), arms }).to_expr_nopos();
-            let never =
-                ExprKind::Never { typ: None, args: Arc::from_iter([]) }.to_expr_nopos();
-            let block = ExprKind::Block {
-                exprs: Arc::from_iter([
-                    ExprKind::Bind(Arc::new(BindExpr {
-                        rec: false,
-                        pattern: StructurePattern::Bind(Name::from(Z)),
-                        typ: None,
-                        value: never,
-                    }))
-                    .to_expr_nopos(),
-                    sel,
-                ]),
-            }
-            .to_expr(e.pos);
-            let cand = mutate::replace(root, i, &block);
-            out.extend(finish(Family::UndecidedPart, i, &cand, |_, pre| {
-                vec![pre.get(i).and_then(span)]
-            }));
-        }
-        taken += 1;
-    }
-}
-
 /// Family 9. A statement `let r = &mut x` over a binding `x`. (a) When a
 /// later statement writes `*r <- ..`, the `&mut` becomes `&`: a write
 /// needs a writable reference. Right site: the write, or a statement
 /// before it that uses `r` (a call taking `&mut`). (b) When the map
-/// shows `x` a concrete primitive, the let is annotated `&mut Any`: a
-/// writable reference is invariant. Right site: the let.
+/// shows `x` a concrete primitive and a later statement computes with
+/// `x`, the let is annotated `&mut Any`: a writable reference is
+/// invariant, so `x` is `Any`, which arithmetic refuses. Right site: the
+/// let, a statement that uses `r`, or one from `x`'s own let on that reads
+/// `x` or a binding built from it: `x` is an `Any` from where it is bound.
 fn references(root: &Expr, types: &TypeMap, cap: usize, out: &mut Vec<RejectProbe>) {
     let ExprKind::Block { exprs: stmts } = &root.kind else { return };
     let (mut writes, mut widens) = (0usize, 0usize);
@@ -657,12 +546,32 @@ fn references(root: &Expr, types: &TypeMap, cap: usize, out: &mut Vec<RejectProb
         }
         let pinned =
             types.of(x).first().is_some_and(|t| concrete(t) && primitive(t).is_some());
+        let ExprKind::Ref { name: referent } = &x.kind else { continue };
+        let referent = referent.to_string();
+        let is_x = |e: &Expr| matches!(&e.kind, ExprKind::Ref { name } if name.to_string() == referent);
+        // an arithmetic use the referent's own binding reaches
+        let mut computes = false;
+        for s in later {
+            typemorph::for_each_reached(s, &referent, true, &mut 0, &mut |_, n| {
+                computes |= matches!(&n.kind, ExprKind::BinOp { op, lhs, rhs }
+                    if arith_or_compare(*op) && !comparison(*op) && (is_x(lhs) || is_x(rhs)))
+            });
+            if typemorph::binds_after(s, &referent) {
+                break;
+            }
+        }
         // a referent whose uses decide its type: the annotation would decide it
-        if pinned && !open_init(types, stmts, si, x) && widens < cap {
+        if pinned && computes && !open_init(types, stmts, si, x) && widens < cap {
             let any = Type::ByRef(Mutability::Mut, Arc::new(Type::Any));
             let cand = rebind(Some(any), b.value.clone());
+            // the reference is a `&mut Any` to whatever takes it, too
+            let bound = earlier_let(stmts, si, x).map_or(si, |(j, _)| j);
+            let mut sites = affected_stmts(stmts, bound, &referent);
+            sites.extend(affected_stmts(stmts, si, &r.name));
+            sites.sort_unstable();
+            sites.dedup();
             out.extend(finish(Family::RefWiden, si, &cand, |back, _| {
-                vec![nth_stmt(back, si).and_then(span)]
+                sites.iter().map(|k| nth_stmt(back, *k).and_then(span)).collect()
             }));
             widens += 1;
         }
@@ -676,7 +585,10 @@ fn references(root: &Expr, types: &TypeMap, cap: usize, out: &mut Vec<RejectProb
 /// rep does with them. The map does not name the module:
 /// it is the one whose `mkb`/`unb` the body reaches, or with several,
 /// the one whose `mkb` the let calls. A value with a leaf its uses typed
-/// is skipped: the annotation would decide it. Right site: the let.
+/// is skipped: the annotation would decide it. Right site: the let, or
+/// the let of a binding its value reads and every statement that reads
+/// that binding (one decided after this let meets the annotation where
+/// its own value arrives, or where a later use asks another type of it).
 fn abstract_param(
     root: &Expr,
     pre: &[Expr],
@@ -722,13 +634,23 @@ fn abstract_param(
         let Ok(widened) = parser::parse_type(&format!("{module}::B<string>")) else {
             continue;
         };
+        let mut sites = vec![si];
+        b.value.fold((), &mut |(), n| {
+            if let Some((j, read)) = earlier_let(stmts, si, n)
+                && let StructurePattern::Bind(name) = &read.pattern
+            {
+                sites.extend(affected_stmts(stmts, j, &name.name))
+            }
+        });
+        sites.sort_unstable();
+        sites.dedup();
         let mut stmts = stmts.to_vec();
         stmts[si] =
             ExprKind::Bind(Arc::new(BindExpr { typ: Some(widened), ..(**b).clone() }))
                 .to_expr(stmt.pos);
         let cand = ExprKind::Block { exprs: Arc::from_iter(stmts) }.to_expr_nopos();
         out.extend(finish(Family::AbstractParam, si, &cand, |back, _| {
-            vec![nth_stmt(back, si).and_then(span)]
+            sites.iter().map(|k| nth_stmt(back, *k).and_then(span)).collect()
         }));
         n += 1;
     }
@@ -785,6 +707,12 @@ fn disjoint_literal(t: &Type) -> Option<Expr> {
 // deleted function, not primitive_class: delete them. The module doc's family list also
 // stops at 11, while this file builds 13 (rigid-pattern), 14 (undecided-part) and 15
 // (variable-union). Found by reading; not run. (fuzz-mutate-07)
+// 2026-11-19 claude: Family 15 (variable-union) is deleted with its rule (Eric ruled
+// 11-19: drop the variable-union rule); the list now stops at 14.
+// 2026-11-22 claude: Families 13 (rigid-pattern) and 14 (undecided-part) are deleted
+// with their rules (patterns inside a declared variable were cut 11-17; a part nothing
+// decides is bottom at a check's end): the module doc's list, ending at 11, is now the
+// whole list. The stale first two doc lines above primitive_class still stand.
 fn primitive_class(t: &Type) -> bool {
     const CLASSES: [&str; 6] = ["Number", "Real", "Float", "Int", "Uint", "Sint"];
     match t {
@@ -802,19 +730,17 @@ fn concrete(t: &Type) -> bool {
     t.resolve_tvars().tvar_free()
 }
 
-/// Whether `t` is `Any` or a union with a member that is.
-fn admits_all(t: &Type) -> bool {
-    t.with_deref(|d| match d {
-        Some(Type::Any) => true,
-        Some(Type::Set(ts)) => ts.iter().any(admits_all),
-        _ => false,
-    })
-}
-
 /// Whether `t` holds `Any`, an abstract type or a type name anywhere: a
 /// part whose runtime form the map does not show.
 fn opaque(t: &Type) -> bool {
     holds(t, &|d| matches!(d, Type::Any | Type::Abstract { .. } | Type::Ref(_)))
+}
+
+/// Whether the written type `t` names the variable `name`.
+fn names(t: &Type, name: &str) -> bool {
+    let mut found = matches!(t, Type::TVar(tv) if &*tv.name == name);
+    t.for_each_child(&mut |c| found |= names(c, name));
+    found
 }
 
 /// Whether `t` or a part of it satisfies `p`; a function's parts are not
@@ -884,6 +810,9 @@ fn open_init(types: &TypeMap, block: &[Expr], si: usize, value: &Expr) -> bool {
         // that binding is not the top-level let. probe:
         // design/review-2026-11-16/repro/fuzz-mutate-open-init-shadowed-name.sh
         // (fuzz-mutate-02)
+        // 2026-11-22 claude: The undecided-part rule this names is gone (a part nothing
+        // decides is bottom at a check's end), so the WRONG REFUSAL half no longer
+        // arises; the MISPLACED half (earlier_let judging the wrong binding) stands.
         ExprKind::Ref { .. } => match earlier_let(block, si, value) {
             Some((j, d)) => d.typ.is_none() && open_init(types, block, j, &d.value),
             None => types.cell(value),
@@ -1000,10 +929,6 @@ fn catches_any(p: &StructurePattern) -> bool {
         StructurePattern::Or(alts) => alts.iter().any(catches_any),
         _ => false,
     }
-}
-
-fn literal(e: &Expr) -> bool {
-    matches!(e.kind, ExprKind::Constant(_))
 }
 
 /// A comparison holds two operands of one type, so it refuses a widened
@@ -1140,7 +1065,7 @@ fn call(function: Arc<Expr>, args: Vec<(Option<ArcStr>, Expr)>) -> Expr {
 }
 
 /// A first statement that fixes one of a lambda's declared variables,
-/// as its value and annotation: `x == 1` for a parameter `x: 'a`, or
+/// as its value and annotation: `x + 1` for a parameter `x: 'a`, or
 /// under `RigidProbe::Bottom` `x` annotated `_`, or under
 /// `RigidProbe::Needs` `x + x` where the header bounds `'a` by `Any`, a
 /// predicate that does not say `Number`; `f(1)` for a parameter `f:
@@ -1154,11 +1079,12 @@ fn rigid_probe(l: &LambdaExpr, mode: RigidProbe) -> Option<(Expr, Option<Type>)>
         let StructurePattern::Bind(x) = &a.pattern else { return None };
         match a.constraint.as_ref()? {
             Type::TVar(tv) if mode == RigidProbe::Needs => {
-                let declared_any = l
+                let any = l
                     .constraints
                     .iter()
-                    .any(|(c, b)| c.name == tv.name && matches!(b, Type::Any));
-                declared_any.then(|| {
+                    .find(|(c, _)| c.name == tv.name)
+                    .is_none_or(|(_, b)| matches!(b, Type::Any));
+                any.then(|| {
                     (
                         ExprKind::BinOp {
                             op: BinOp::Add,
@@ -1174,8 +1100,12 @@ fn rigid_probe(l: &LambdaExpr, mode: RigidProbe) -> Option<(Expr, Option<Type>)>
                 Some(((*name_ref(x)).clone(), Some(Type::Bottom)))
             }
             Type::TVar(_) => Some((
-                ExprKind::BinOp { op: BinOp::Eq, lhs: name_ref(x), rhs: Arc::new(one()) }
-                    .to_expr_nopos(),
+                ExprKind::BinOp {
+                    op: BinOp::Add,
+                    lhs: name_ref(x),
+                    rhs: Arc::new(one()),
+                }
+                .to_expr_nopos(),
                 None,
             )),
             Type::Fn(ft)
@@ -1192,117 +1122,31 @@ fn rigid_probe(l: &LambdaExpr, mode: RigidProbe) -> Option<(Expr, Option<Type>)>
     })
 }
 
-/// A first statement that tests a parameter `x: 'a` with a pattern
-/// inside `'a`: `select x { null => 0, _ => 1 }`.
-fn rigid_pattern_probe(l: &LambdaExpr) -> Option<(Expr, Option<Type>)> {
-    let int = |i| ExprKind::Constant(netidx_value::Value::I64(i)).to_expr_nopos();
-    l.args.iter().filter(|a| !a.kind.is_labeled()).find_map(|a| {
-        let StructurePattern::Bind(x) = &a.pattern else { return None };
-        let Type::TVar(tv) = a.constraint.as_ref()? else { return None };
-        // a bound other than a class of primitives (a trait) refuses `null`
-        // by another rule
-        if l.constraints.iter().any(|(c, b)| c.name == tv.name && !primitive_class(b)) {
-            return None;
-        }
-        let null = StructurePattern::literal(netidx_value::Value::Null);
-        let sel = ExprKind::Select(SelectExpr {
-            arg: Arc::new(
-                ExprKind::Ref { name: ModPath::from([x.name.as_str()]) }.to_expr_nopos(),
-            ),
-            arms: Arc::from_iter([
-                (plain_arm(null), int(0)),
-                (plain_arm(StructurePattern::Ignore), int(1)),
-            ]),
-        });
-        Some((sel.to_expr_nopos(), None))
-    })
-}
-
 /// What [`rigid_probe`] does to a declared variable.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RigidProbe {
-    Equal,
+    Added,
     Bottom,
     Needs,
 }
 
 /// Family 2. A lambda with a parameter over a declared variable `'a`
 /// gets a first statement fixing `'a` to `i64` or to `_`, or asking more
-/// of an `Any`-bounded one than its bound says ([`rigid_probe`], in
-/// turn): a def's declared variables are rigid in its body, so `'a` can
-/// become neither, and its body adds no bound to it. Right site: the
+/// of one bounded `Any` or written bare than that says ([`rigid_probe`],
+/// in turn): a def's declared variables are rigid in its body, so `'a`
+/// can become neither, and its body adds no bound to it. Right site: the
 /// definition.
 fn rigid_var(root: &Expr, cap: usize, out: &mut Vec<RejectProbe>) {
     with_first_statement(root, cap, Family::RigidVar, out, |l, taken| {
         rigid_probe(
             l,
             match taken % 3 {
-                0 => RigidProbe::Equal,
+                0 => RigidProbe::Added,
                 1 => RigidProbe::Bottom,
                 _ => RigidProbe::Needs,
             },
         )
     })
-}
-
-/// Family 13. A lambda with a parameter `x: 'a` gets a first statement
-/// testing `x` with a literal pattern ([`rigid_pattern_probe`]): a
-/// pattern that tests or binds inside a value of a variable its
-/// definition holds rigid needs a written test. Right site: the
-/// definition.
-fn rigid_pattern(root: &Expr, cap: usize, out: &mut Vec<RejectProbe>) {
-    with_first_statement(root, cap, Family::RigidPattern, out, |l, _| {
-        rigid_pattern_probe(l)
-    })
-}
-
-/// Family 15. A top-level `let` of a lambda whose first positional
-/// parameter is a name, written with no type or with one variable `'v`,
-/// gets that parameter written `['tm__a, 'tm__b]` (`['v, 'tm__b]`), or,
-/// in turn, `[Array<'tm__a>, Array<'tm__b>]` (`[Array<'v>, Array<'tm__b>]`)
-/// or `[fn(v: 'tm__a) -> null, fn(v: 'tm__b) -> null]`: a written function
-/// type may hold no union of two of its own variables, nor two members of
-/// one constructor holding two (`Type::variable_union`). Right site: the
-/// definition.
-fn variable_union(root: &Expr, cap: usize, out: &mut Vec<RejectProbe>) {
-    let sizes = mutate::sizes(root);
-    let stmts = mutate::top_statements(root, &sizes);
-    let mut taken = 0usize;
-    for k in spread(stmts.len()) {
-        let (si, at, stmt) = stmts[k];
-        if taken >= cap {
-            break;
-        }
-        let ExprKind::Bind(b) = &stmt.kind else { continue };
-        let ExprKind::Lambda(l) = &b.value.kind else { continue };
-        let Some(i) = l.args.iter().position(|a| !a.kind.is_labeled()) else { continue };
-        if !matches!(l.args[i].pattern, StructurePattern::Bind(_)) {
-            continue;
-        }
-        let first = match &l.args[i].constraint {
-            None => "tm__a",
-            Some(Type::TVar(tv)) => tv.name.as_str(),
-            Some(_) => continue,
-        };
-        let union = match taken % 3 {
-            0 => format!("['{first}, 'tm__b]"),
-            1 => format!("[Array<'{first}>, Array<'tm__b>]"),
-            _ => format!("[fn(v: '{first}) -> null, fn(v: 'tm__b) -> null]"),
-        };
-        let Ok(union) = parser::parse_type(&union) else { continue };
-        let mut args: Vec<_> = l.args.iter().cloned().collect();
-        args[i].constraint = Some(union);
-        let lambda = ExprKind::Lambda(Arc::new(LambdaExpr {
-            args: Arc::from_iter(args),
-            ..(**l).clone()
-        }))
-        .to_expr_nopos();
-        let cand = mutate::replace(root, at + 1, &lambda);
-        out.extend(finish(Family::VariableUnion, at, &cand, |back, _| {
-            vec![nth_stmt(back, si).and_then(span)]
-        }));
-        taken += 1;
-    }
 }
 
 /// Each top-level `let` of a lambda `probe` gives a first statement for
@@ -1353,29 +1197,19 @@ fn with_first_statement(
     }
 }
 
-/// Family 3. A call whose callee takes two or more positionals of one
-/// variable, every argument there but the second a concrete primitive,
-/// gets a second argument of a type none of theirs relates to: an
-/// argument neither wider nor narrower than what the ones before it gave
-/// the variable is refused where it stands, and a variable a callback
-/// holds keeps the first (`callsite.rs::Widening`). A call where one of
-/// them has a type its uses decide (`open_init`) is skipped. Right site:
-/// the call.
-///
-/// `open-arg`, at the same sites where the variable stands in no function,
-/// abstract type, application or writable reference: the SECOND argument
-/// there becomes `str::parse("1")`, whose type the call leaves undecided:
-/// it takes the variable as the argument before it left it, a primitive,
-/// which cannot hold the parse's error, so it is refused, asking for an
-/// annotation (`callsite.rs::undecided_note`). The first argument made so
-/// would decide the variable and run. A variable with a primitive or
-/// `Singleton` bound is skipped: the bound refuses the result first.
+/// Family 3. A call whose callee declares a positional parameter over a
+/// variable its header bounds by a class of primitives (`'a: Number`),
+/// the argument there a concrete primitive, gets that argument replaced
+/// by a literal the bound does not hold: a variable is within its bound
+/// at every call, however its arguments widen it. Where two parameters
+/// are of one such variable the second is replaced, the first then giving
+/// the variable a type. A call where another argument of the variable has
+/// a type its uses decide (`open_init`) is skipped. Right site: the call.
 fn shared_var(
     root: &Expr,
     pre: &[Expr],
     types: &TypeMap,
     cap: usize,
-    family: Family,
     out: &mut Vec<RejectProbe>,
 ) {
     let sizes = mutate::sizes(root);
@@ -1394,76 +1228,54 @@ fn shared_var(
         if ap.args.iter().any(|(l, _)| l.is_some()) {
             continue;
         }
-        let Some(ft) = callee_type(types, ap) else { continue };
+        let Some(ft) = types.declared(&ap.function) else { continue };
         let params: Vec<&Type> =
             ft.args.iter().filter(|a| a.is_positional()).map(|a| &a.typ).collect();
         if params.len() != ap.args.len() {
             continue;
         }
         let same = |a: &Type, b: &Type| matches!((a, b), (Type::TVar(x), Type::TVar(y)) if x.same_cell(y));
-        let pair = (0..params.len()).find_map(|a| {
-            ((a + 1)..params.len()).find(|b| same(params[a], params[*b])).map(|b| (a, b))
-        });
-        let Some((a, b)) = pair else { continue };
-        let fixed = |t: &Type| {
-            holds(t, &|d| {
-                matches!(
-                    d,
-                    Type::Fn(_)
-                        | Type::Abstract { .. }
-                        | Type::App(..)
-                        | Type::ByRef(Mutability::Mut, _)
-                )
-            })
-        };
-        // a primitive bound (`'a: Number`), or `Singleton`, which no union
-        // meets, refuses the parse's result whole, before the rule
-        let primitive_bound = |t: &Type| match t {
-            Type::TVar(tv) => tv.cell_constraints().iter().any(|c| {
-                primitive_class(c) || matches!(c, Type::Bound(Bound::Singleton))
-            }),
-            _ => false,
-        };
-        let replaced = match family {
-            Family::OpenArg
-                if ft.args.iter().any(|p| fixed(&p.typ))
-                    || fixed(&ft.rtype)
-                    || primitive_bound(params[a]) =>
-            {
-                continue;
+        let bound = |t: &Type| match t {
+            Type::TVar(tv) if !tv.is_bound() => {
+                tv.cell_above().iter().find(|c| primitive_class(c)).cloned()
             }
-            _ => b,
+            _ => None,
+        };
+        let bounded = |k: &usize| bound(params[*k]).is_some();
+        let second = (0..params.len()).find_map(|a| {
+            ((a + 1)..params.len()).find(|b| same(params[a], params[*b]) && bounded(b))
+        });
+        let Some(replaced) = second.or_else(|| (0..params.len()).find(bounded)) else {
+            continue;
         };
         let si = stmts
             .iter()
             .find(|(_, at, _)| (*at..*at + sizes[*at]).contains(&i))
             .map_or(0, |(si, ..)| *si);
-        // every other argument of the variable must be decided; one whose
-        // type this call decided meets nothing
-        let held = (0..params.len())
-            .filter(|c| *c != replaced && same(params[a], params[*c]))
-            .map(|c| {
+        // every other argument of the variable must be decided
+        let decided = (0..params.len())
+            .filter(|c| *c != replaced && same(params[replaced], params[*c]))
+            .all(|c| {
                 let arg = &ap.args[c].1;
-                if open_init(types, block, si, arg) {
-                    return None;
-                }
-                types.of(arg).first().filter(|t| concrete(t)).and_then(|t| primitive(t))
-            })
-            .try_fold(BitFlags::empty(), |acc, p| Some(acc | p?));
-        let Some(held) = held else { continue };
-        if family == Family::OpenArg && held.contains(Typ::Error) {
+                !open_init(types, block, si, arg)
+                    && types.of(arg).first().is_some_and(|t| concrete(t))
+            });
+        if !decided {
             continue;
         }
-        let u = match family {
-            Family::OpenArg => parser::parse_one(r#"str::parse("1")"#).expect("a call"),
-            _ => match disjoint_literal(&Type::Primitive(held)) {
+        let u = match bound(params[replaced]) {
+            Some(b @ Type::Primitive(_)) => match disjoint_literal(&b) {
                 Some(u) => u,
                 None => continue,
             },
+            _ => ExprKind::Constant(netidx_value::Value::String(ArcStr::from("tm")))
+                .to_expr_nopos(),
         };
         let at = arg_indices(i, &sizes, ap.args.len())[replaced];
         let cand = mutate::replace(root, at, &u);
-        out.extend(finish(family, i, &cand, |_, pre| vec![pre.get(i).and_then(span)]));
+        out.extend(finish(Family::SharedVar, i, &cand, |_, pre| {
+            vec![pre.get(i).and_then(span)]
+        }));
         taken += 1;
     }
 }
@@ -1480,10 +1292,9 @@ fn function_bound(
     out: &mut Vec<RejectProbe>,
 ) {
     let bounded = |t: &Type| match t {
-        Type::TVar(tv) => tv
-            .cell_constraints()
-            .iter()
-            .any(|c| matches!(c, Type::Bound(Bound::Function))),
+        Type::TVar(tv) => {
+            tv.cell_above().iter().any(|c| matches!(c, Type::Bound(Bound::Function)))
+        }
         _ => false,
     };
     let sizes = mutate::sizes(root);
@@ -1494,7 +1305,8 @@ fn function_bound(
         }
         let e = &pre[i];
         let ExprKind::Apply(ap) = &e.kind else { continue };
-        let Some(ft) = callee_type(types, ap) else { continue };
+        let ft = types.declared(&ap.function).or_else(|| callee_type(types, ap));
+        let Some(ft) = ft else { continue };
         let found = paired(&ft, ap, i, &sizes).into_iter().find(|(_, arg, param)| {
             !typemorph::leaks_binds(arg) && param.is_some_and(|p| bounded(&p.typ))
         });
@@ -1656,6 +1468,10 @@ fn widen_consumer(
     out: &mut Vec<RejectProbe>,
 ) {
     let sizes = mutate::sizes(root);
+    let block: &[Expr] = match &root.kind {
+        ExprKind::Block { exprs } => exprs,
+        _ => &[],
+    };
     // A callee's parameter may be a cell shared with the environment
     // (`|y| z <- y` over `let z = never()`), which a call widens rather
     // than refuses. A call is a consumer only through a package's module
@@ -1699,14 +1515,17 @@ fn widen_consumer(
         let e = &pre[i];
         // the consumer's own type, where it is wider than the value's (a
         // parameter): the widening literal must lie outside it
+        let mut beside: Vec<usize> = Vec::new();
         let target: Option<(usize, &Expr, Option<Type>)> = match &e.kind {
-            ExprKind::BinOp { op, lhs, rhs } if arith_or_compare(*op) => {
-                match comparison(*op) {
-                    false => Some((i + 1, &**lhs, None)),
-                    true if literal(rhs) => Some((i + 1, &**lhs, None)),
-                    true if literal(lhs) => Some((i + 1 + sizes[i + 1], &**rhs, None)),
-                    true => None,
-                }
+            // a comparison is no consumer: the widened operand's type
+            // holds the other's
+            ExprKind::BinOp { op, lhs, rhs }
+                if arith_or_compare(*op) && !comparison(*op) =>
+            {
+                // the operands are one type: the other's written binding
+                // meets the literal's too
+                beside = written_readers(block, rhs);
+                Some((i + 1, &**lhs, None))
             }
             ExprKind::StructRef { source, .. } => {
                 let is_struct = types.of(source).first().is_some_and(|t| {
@@ -1719,8 +1538,10 @@ fn widen_consumer(
             ExprKind::Apply(ap) if types.cell(&ap.function) => None,
             ExprKind::Apply(ap) if !consumer_callee(&ap.function) => None,
             ExprKind::Apply(ap) => {
-                // the first argument whose parameter is a concrete primitive
-                let Some(ft) = callee_type(types, ap) else { continue };
+                // the first argument whose parameter is declared a concrete
+                // primitive: one over a variable widens with its argument
+                let ft = types.declared(&ap.function).or_else(|| callee_type(types, ap));
+                let Some(ft) = ft else { continue };
                 paired(&ft, ap, i, &sizes).into_iter().find_map(|(at, arg, param)| {
                     let p = param?;
                     (concrete(&p.typ)
@@ -1741,17 +1562,20 @@ fn widen_consumer(
         let Some(u) = disjoint_literal(consumer.as_ref().unwrap_or(t)) else { continue };
         let cand = mutate::replace(root, at, &widen(value, u));
         // the consumer keeps its index: what changed comes after it
-        out.extend(finish(Family::WidenConsumer, i, &cand, |_, pre| {
-            vec![pre.get(i).and_then(span)]
+        out.extend(finish(Family::WidenConsumer, i, &cand, |back, pre| {
+            let beside = beside.iter().map(|k| nth_stmt(back, *k).and_then(span));
+            [pre.get(i).and_then(span)].into_iter().chain(beside).collect()
         }));
         taken += 1;
     }
 }
 
-/// Family 6. An unannotated `let v = e` over a primitive gets a writer
-/// of a type `e`'s does not relate to (a later writer must fit the type
-/// the initializer gave), or, where a later use pins `v` by a literal
-/// (`v + 1`), an initializer of such a type (the use then conflicts).
+/// Family 6. An unannotated `let v = e` over a primitive, where a later
+/// use pins `v` by a literal (`v + 1`, `v == 1`), gets an initializer of
+/// a type `e`'s does not relate to: the use then conflicts. Where the
+/// use is arithmetic it gets a writer of such a type too: the write
+/// widens `v` to hold both, and arithmetic takes one numeric type (a
+/// comparison takes the wider `v`).
 fn retype(
     root: &Expr,
     pre: &[Expr],
@@ -1784,25 +1608,6 @@ fn retype(
             continue;
         }
         let Some(u) = disjoint_literal(t) else { continue };
-        // a writer right after the let
-        let write = ExprKind::Connect {
-            name: ModPath::from([v.name.as_str()]),
-            at: WrittenAt::NOWHERE,
-            value: Arc::new(u.clone()),
-            deref: false,
-        }
-        .to_expr_nopos();
-        let mut with_writer: Vec<Expr> = block.to_vec();
-        with_writer.insert(si + 1, write);
-        // an initializer only its uses decided takes the writer's type, and a
-        // use refuses it
-        let sites = affected_stmts(&with_writer, si, v);
-        let cand = ExprKind::Block { exprs: Arc::from_iter(with_writer) }.to_expr_nopos();
-        out.extend(finish(Family::Retype, at, &cand, |back, _| {
-            sites.iter().map(|k| nth_stmt(back, *k).and_then(span)).collect()
-        }));
-        taken += 1;
-        // the initializer retyped, where a reached use is pinned by a literal
         let (_, refs) = reached_uses(&stmts, si, v);
         let pinned = pre.iter().enumerate().find_map(|(j, n)| {
             let ExprKind::BinOp { op, lhs, rhs } = &n.kind else { return None };
@@ -1814,20 +1619,62 @@ fn retype(
                 (false, true) if lit(lhs) => j + 1 + sizes[j + 1],
                 _ => return None,
             };
-            (arith_or_compare(op) && refs.iter().any(|(r, _)| *r == use_at)).then_some(j)
+            (arith_or_compare(op) && refs.iter().any(|(r, _)| *r == use_at))
+                .then_some((j, op))
         });
-        if let Some(j) = pinned {
-            let cand = mutate::replace(root, at + 1, &u);
-            let sites = affected_stmts(block, si, v);
-            out.extend(finish(Family::Retype, j, &cand, |back, _| {
+        let Some((j, op)) = pinned else { continue };
+        // a write widens `v` to hold the new initializer too, and a
+        // comparison takes the wider `v`
+        if comparison(op) && writes(&block[si + 1..], v) {
+            continue;
+        }
+        // a writer right after the let
+        if !comparison(op) {
+            let write = ExprKind::Connect {
+                name: ModPath::from([v.name.as_str()]),
+                at: WrittenAt::NOWHERE,
+                value: Arc::new(u.clone()),
+                deref: false,
+            }
+            .to_expr_nopos();
+            let mut with_writer: Vec<Expr> = block.to_vec();
+            with_writer.insert(si + 1, write);
+            let sites = affected_stmts(&with_writer, si, v);
+            let cand =
+                ExprKind::Block { exprs: Arc::from_iter(with_writer) }.to_expr_nopos();
+            out.extend(finish(Family::Retype, at, &cand, |back, _| {
                 sites.iter().map(|k| nth_stmt(back, *k).and_then(span)).collect()
             }));
         }
+        taken += 1;
+        // the initializer retyped
+        let cand = mutate::replace(root, at + 1, &u);
+        let sites = affected_stmts(block, si, v);
+        out.extend(finish(Family::Retype, j, &cand, |back, _| {
+            sites.iter().map(|k| nth_stmt(back, *k).and_then(span)).collect()
+        }));
     }
 }
 
+/// Whether a statement of `stmts` writes `v`: a connect to it, or a `&mut`
+/// of it.
+fn writes(stmts: &[Expr], v: &str) -> bool {
+    let is_v =
+        |e: &Expr| matches!(&e.kind, ExprKind::Ref { name } if name.to_string() == v);
+    stmts.iter().any(|s| {
+        s.fold(false, &mut |m, n| {
+            m || match &n.kind {
+                ExprKind::Connect { name, deref: false, .. } => name.to_string() == v,
+                ExprKind::ByRef(Mutability::Mut, x) => is_v(x),
+                _ => false,
+            }
+        })
+    })
+}
+
 /// The statement `si` (a `let v = ..`) and every later one, up to a
-/// rebinding of `v`, that reads or writes `v`, a `let` built from it, or what
+/// statement that binds `v` itself (one that may, a module, hides nothing
+/// for sure), that reads or writes `v`, a `let` built from it, or what
 /// a connect relates to it (its target, and a cell it reads, which the connect
 /// decides): a change to `v`'s type meets all of them, and the checker reports
 /// whichever it reaches first.
@@ -1856,17 +1703,49 @@ fn affected_stmts(stmts: &[Expr], si: usize, v: &str) -> Vec<usize> {
                 _ => (),
             }
         }
-        if typemorph::binds_after(later, v) {
+        let mut rebinds = false;
+        typemorph::each_bound(later, &mut |b| rebinds |= b == Some(v));
+        if rebinds {
             break;
         }
     }
     sites
 }
 
+/// The statements of `block` that name a binding something writes (a
+/// connect's target, a `&mut`'s referent) which `e` reads. Such a binding
+/// is one cell: a type that meets it in `e` reaches every statement that
+/// reads it, and the checker reports whichever refuses first.
+fn written_readers(block: &[Expr], e: &Expr) -> Vec<usize> {
+    let read = |n: &Expr| match &n.kind {
+        ExprKind::Ref { name } => Some(name.to_string()),
+        _ => None,
+    };
+    let mut written: Vec<String> = Vec::new();
+    for s in block {
+        s.fold((), &mut |(), n| match &n.kind {
+            ExprKind::Connect { name, .. } => written.push(name.to_string()),
+            ExprKind::ByRef(Mutability::Mut, x) => written.extend(read(x)),
+            _ => (),
+        })
+    }
+    let reads = e.fold(Vec::new(), &mut |mut names: Vec<String>, n| {
+        names.extend(read(n).filter(|x| written.contains(x)));
+        names
+    });
+    let names = |s: &Expr| {
+        s.fold(false, &mut |m, n| {
+            m || read(n).is_some_and(|x| reads.contains(&x))
+                || matches!(&n.kind, ExprKind::Connect { name, .. }
+                    if reads.contains(&name.to_string()))
+        })
+    };
+    (0..block.len()).filter(|k| names(&block[*k])).collect()
+}
+
 /// Family 4 through a `let` (the hop, its own id): an unannotated `let w = e` over a
 /// concrete type whose variable a reached use puts directly under an
-/// arithmetic operator, a comparison opposite a literal, or a field read
-/// gets `e` widened.
+/// arithmetic operator or a field read gets `e` widened.
 /// An unannotated `let` takes its initializer's type, so `w` carries the
 /// union to the consumer. Right site: the let and every statement `w`'s
 /// new type meets.
@@ -1904,13 +1783,8 @@ fn widen_through_let(
         let refs: Vec<usize> = refs.into_iter().map(|(r, _)| r).collect();
         let struct_t = t.with_deref(|d| matches!(d, Some(Type::Struct(_))));
         let consumed = pre.iter().enumerate().any(|(j, n)| match &n.kind {
-            ExprKind::BinOp { op, lhs, rhs } if arith_or_compare(*op) => {
-                let (l, r) =
-                    (refs.contains(&(j + 1)), refs.contains(&(j + 1 + sizes[j + 1])));
-                match comparison(*op) {
-                    true => (l && literal(rhs)) || (r && literal(lhs)),
-                    false => l || r,
-                }
+            ExprKind::BinOp { op, .. } if arith_or_compare(*op) && !comparison(*op) => {
+                refs.contains(&(j + 1)) || refs.contains(&(j + 1 + sizes[j + 1]))
             }
             ExprKind::StructRef { .. } => struct_t && refs.contains(&(j + 1)),
             _ => false,
@@ -1922,7 +1796,12 @@ fn widen_through_let(
             continue;
         }
         let cand = mutate::replace(root, at + 1, &widen(&b.value, u));
-        let sites = affected_stmts(block, si, w);
+        let mut sites = affected_stmts(block, si, w);
+        let beside: Vec<usize> =
+            sites.iter().flat_map(|k| written_readers(block, &block[*k])).collect();
+        sites.extend(beside);
+        sites.sort_unstable();
+        sites.dedup();
         out.extend(finish(Family::WidenHop, at, &cand, |back, _| {
             sites.iter().map(|k| nth_stmt(back, *k).and_then(span)).collect()
         }));
@@ -1965,6 +1844,25 @@ fn mono_reuse(
         {
             continue;
         }
+        // the first parameter narrowed to one type is its declared variable
+        // no more: a body that asks it to be one type with whatever else
+        // holds the variable is then refused, at the definition
+        let positional = |a: &&Arg| matches!(a.kind, ArgKind::Positional);
+        let first = l.args.iter().find(positional).and_then(|a| a.constraint.as_ref());
+        let shared = l.constraints.iter().any(|(tv, _)| {
+            let named = |t: &Type| names(t, &tv.name);
+            first.is_some_and(named)
+                && l.args
+                    .iter()
+                    .filter_map(|a| a.constraint.as_ref())
+                    .chain(&l.rtype)
+                    .filter(|t| named(t))
+                    .count()
+                    > 1
+        });
+        if shared {
+            continue;
+        }
         let (calls, values, _) = forwarded_uses(&stmts, si, f);
         // a call's argument types its parameter only where the definition
         // left the parameter open
@@ -1996,7 +1894,10 @@ fn mono_reuse(
                         _ => return None,
                     },
                 };
-                Some((first, *j))
+                // a read nothing passes a value through (a plain alias's)
+                // decides nothing of the parameter
+                let unused = first.with_deref(|d| matches!(d, Some(Type::Bottom)));
+                (!unused).then_some((first, *j))
             })
             .collect();
         // a decided type of many values may be the one the others fit
@@ -2005,7 +1906,7 @@ fn mono_reuse(
         }
         let firsts: Vec<(Typ, usize)> =
             uses.iter().filter_map(|(t, j)| Some((primitive(t)?, *j))).collect();
-        let Some((_, (_, jb))) = firsts.iter().enumerate().find_map(|(n, a)| {
+        let Some(((ta, _), (_, jb))) = firsts.iter().enumerate().find_map(|(n, a)| {
             firsts[n + 1..].iter().find(|b| b.0 != a.0).map(|b| (a, b))
         }) else {
             continue;
@@ -2022,10 +1923,30 @@ fn mono_reuse(
         let held = ExprKind::Ref { name: ModPath::from(["tm__0"]) }.to_expr_nopos();
         let writer =
             ExprKind::ByRef(Mutability::Mut, Arc::new(held.clone())).to_expr_nopos();
+        // the one instance is a cell every value of it flows into: a value
+        // taking only the first use's type, written there, is what the
+        // other use's argument cannot pass
+        let mut narrow = l.as_ref().clone();
+        let mut args: Vec<Arg> = narrow.args.iter().cloned().collect();
+        let Some(first) = args.iter_mut().find(|a| matches!(a.kind, ArgKind::Positional))
+        else {
+            continue;
+        };
+        first.constraint = Some(Type::Primitive((*ta).into()));
+        narrow.args = Arc::from(args);
+        let narrowed = ExprKind::Lambda(Arc::new(narrow)).to_expr_nopos();
+        let write = ExprKind::Connect {
+            name: ModPath::from(["tm__1"]),
+            at: Default::default(),
+            value: Arc::new(narrowed),
+            deref: true,
+        }
+        .to_expr_nopos();
         let wrapped = ExprKind::Block {
             exprs: Arc::from_iter([
                 bind("tm__0", b.value.clone()),
                 bind("tm__1", writer),
+                write,
                 held,
             ]),
         }
@@ -2047,6 +1968,13 @@ fn mono_reuse(
         // si, f)`, which follows the lets built from `f`. probe:
         // design/review-2026-11-16/repro/fuzz-mutate-mono-reuse-sites.sh
         // (fuzz-mutate-01)
+        // 2026-11-24 claude: Soak nov24b's twenty mono-reuse flips (MISPLACED 'a value
+        // here is used as v32 and as i64', one LEAK) were not these two ways: the let
+        // around the family's block generalized the written binding again (bind.rs
+        // look-ahead, fixed with pin
+        // lang::quantified::a_written_local_a_block_gives_is_one_instance). With that
+        // fixed all twenty replay clean under the sites as they stand; the two ways
+        // this CR names are not re-tested here.
         sites.extend(values.iter().map(|(_, j)| *j).filter(|j| *j <= jb));
         sites.sort_unstable();
         sites.dedup();

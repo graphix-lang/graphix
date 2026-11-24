@@ -20,6 +20,7 @@ use arcstr::ArcStr;
 use compact_str::{CompactString, format_compact};
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
+use std::fmt::Write;
 use triomphe::Arc;
 
 /// Why JSON or TOML may not read back what they write of a type
@@ -34,6 +35,104 @@ pub enum TextRefusal {
     SharedTag { union: Type, tag: ArcStr, a: Type, b: Type },
     /// `Transparent` over a type that is not abstract.
     Transparent(Type),
+}
+
+impl TextRefusal {
+    /// What is refused of the type `t`, and why, in the words a refusal of
+    /// `format` data ("JSON", "TOML") gives.
+    pub fn told(&self, name: &str, t: &Type) -> (CompactString, CompactString) {
+        let r = |t: &Type| t.resolve_tvars();
+        let what = || format_compact!("{}", r(t));
+        match self {
+            Self::Untagged { union, member, .. }
+                if let Type::TVar(cell) = member
+                    && cell.binding().is_none() =>
+            {
+                match cell.name.starts_with('_') {
+                    true => (
+                        format_compact!(
+                            "a type not known yet beside {}",
+                            known_members(&r(union))
+                        ),
+                        format_compact!(
+                            "beside another member a member needs a tag \
+                             (a variant's, or an abstract type's name): \
+                             annotate the value's type"
+                        ),
+                    ),
+                    false => (
+                        what(),
+                        format_compact!(
+                            "'{} may be any type, and beside another \
+                             member in {} it would need a tag (a \
+                             variant's, or an abstract type's name)",
+                            cell.name,
+                            r(union)
+                        ),
+                    ),
+                }
+            }
+            Self::Untagged { union, member, read_by: None } => (
+                what(),
+                format_compact!(
+                    "{} in {} has no tag (a variant's, or an abstract \
+                     type's name), so what another member writes as \
+                     {name} data may read back as it",
+                    r(member),
+                    r(union)
+                ),
+            ),
+            Self::Untagged { union, member, read_by: Some(a) } => (
+                what(),
+                format_compact!(
+                    "{} in {} has no tag: in the data {a}'s from_value \
+                     reads, abstract values are written bare, so what \
+                     another member writes there may read back as it",
+                    r(member),
+                    r(union)
+                ),
+            ),
+            Self::SharedTag { union, tag, a, b } => (
+                what(),
+                format_compact!(
+                    "{} and {} in {} share the tag {tag}, so what one \
+                     writes as {name} data may read back as the other",
+                    r(a),
+                    r(b),
+                    r(union)
+                ),
+            ),
+            Self::Transparent(t) => (
+                what(),
+                format_compact!(
+                    "{} holds a type that is not abstract, which {name} \
+                     writes bare already",
+                    r(t)
+                ),
+            ),
+        }
+    }
+}
+
+/// The members of the union `union` a refusal names: those but the open
+/// cells a program did not name, or "another" where there are none.
+fn known_members(union: &Type) -> CompactString {
+    let mut out = CompactString::default();
+    let members = match union {
+        Type::Set(ms) => &ms[..],
+        t => std::slice::from_ref(t),
+    };
+    for m in members {
+        if !matches!(m, Type::TVar(tv) if tv.binding().is_none() && tv.name.starts_with('_'))
+        {
+            let sep = if out.is_empty() { "" } else { ", " };
+            let _ = write!(out, "{sep}{m}");
+        }
+    }
+    if out.is_empty() {
+        out.push_str("another")
+    }
+    out
 }
 
 /// A named type a walk expands: a typedef by its definition, or an

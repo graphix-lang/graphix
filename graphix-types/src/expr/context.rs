@@ -3,6 +3,7 @@
 use crate::{
     SourcePosition,
     expr::{Expr, Origin, Source, parser, print::Bare},
+    typ::tvar::{ArenaRef, current_arena},
 };
 use arcstr::ArcStr;
 use poolshark::local::LPooled;
@@ -11,15 +12,27 @@ use triomphe::Arc;
 
 /// An expression an error passed through on its way out. Built only by
 /// [`At::at`], which also records the [`ErrorSite`].
-pub struct ErrorContext(Expr, usize);
+pub struct ErrorContext {
+    expr: Expr,
+    frames: usize,
+    _arena: Option<ArenaRef>,
+}
 
 impl ErrorContext {
+    /// A frame for `spec`, which keeps the arena of the epoch it was made
+    /// in: an expression a compile rebuilt (a method's annotation written
+    /// back) holds that epoch's cells, and a refusal outlives a failed input.
+    fn new(spec: &Expr, frames: usize) -> Self {
+        ErrorContext { expr: spec.clone(), frames, _arena: current_arena() }
+    }
+
     pub fn expr(&self) -> &Expr {
-        &self.0
+        &self.expr
     }
 
     fn source_text(&self) -> Option<&str> {
-        let text = self.0.ori.text.strip_prefix('\u{feff}').unwrap_or(&self.0.ori.text);
+        let text =
+            self.expr.ori.text.strip_prefix('\u{feff}').unwrap_or(&self.expr.ori.text);
         let offset = |pos: SourcePosition| {
             let line = parser::lines(text).nth(usize::try_from(pos.line - 1).ok()?)?;
             let column = usize::try_from(pos.column - 1).ok()?;
@@ -27,8 +40,8 @@ impl ErrorContext {
                 line.char_indices().map(|(i, _)| i).chain([line.len()]).nth(column)?;
             Some(line.as_ptr() as usize - text.as_ptr() as usize + byte)
         };
-        let start = offset(self.0.pos)?;
-        let end = offset(self.0.end.get()?)?;
+        let start = offset(self.expr.pos)?;
+        let end = offset(self.expr.end.get()?)?;
         (start < end).then(|| text.get(start..end)).flatten()
     }
 }
@@ -87,20 +100,20 @@ impl fmt::Display for ErrorContext {
             }
         }
         let mut head = Head(LPooled::take(), false);
-        let complete = if self.0.mentions_lowered() {
+        let complete = if self.expr.mentions_lowered() {
             self.source_text()
                 .and_then(|source| parser::parse_one(source).ok())
                 .is_none_or(|written| write!(head, "{}", Bare(&written)).is_ok())
         } else {
-            write!(head, "{}", Bare(&self.0)).is_ok()
+            write!(head, "{}", Bare(&self.expr)).is_ok()
         };
         let Head(snippet, truncated) = head;
         if !complete && !truncated {
             return Err(fmt::Error);
         }
         let suffix = if truncated { ".." } else { "" };
-        write!(f, "at: {}", self.0.pos)?;
-        match &self.0.ori.source {
+        write!(f, "at: {}", self.expr.pos)?;
+        match &self.expr.ori.source {
             Source::Program | Source::Unspecified => (),
             source => write!(f, " in {source}")?,
         }
@@ -167,24 +180,26 @@ impl At for anyhow::Error {
             return self;
         }
         let frames = match self.downcast_ref::<ErrorContext>() {
-            Some(ErrorContext(e, n)) if e.id == spec.id || *n >= MAX_FRAMES => {
+            Some(ErrorContext { expr, frames, .. })
+                if expr.id == spec.id || *frames >= MAX_FRAMES =>
+            {
                 return self;
             }
-            Some(ErrorContext(_, n)) => n + 1,
+            Some(ErrorContext { frames, .. }) => frames + 1,
             None => match self.downcast_ref::<ErrorSite>() {
                 Some(site) if site.expr().id == spec.id => return self,
                 Some(_) => 1,
                 None if self.downcast_ref::<ParserContext>().is_some() => 1,
-                None => return self.context(ErrorSite(ErrorContext(spec.clone(), 0))),
+                None => return self.context(ErrorSite(ErrorContext::new(spec, 0))),
             },
         };
-        self.context(ErrorContext(spec.clone(), frames))
+        self.context(ErrorContext::new(spec, frames))
     }
 
     fn sited(self, spec: &Expr) -> Self {
         match has_site(&self) {
             true => self,
-            false => self.context(ErrorSite(ErrorContext(spec.clone(), 0))),
+            false => self.context(ErrorSite(ErrorContext::new(spec, 0))),
         }
     }
 

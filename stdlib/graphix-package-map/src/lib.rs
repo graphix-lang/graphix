@@ -2,10 +2,24 @@
     html_logo_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg",
     html_favicon_url = "https://graphix-lang.github.io/graphix/graphix-icon.svg"
 )]
-use graphix_compiler::rep;
+use graphix_compiler::{
+    env::Env,
+    rep,
+    typ::{Type, bounds},
+};
 use netidx::subscriber::Value;
 use netidx_value::ValArray;
 use std::fmt::Debug;
+
+/// A lookup's key is held to the comparison rule against the map's keys,
+/// as `m{k}` holds it: a key of a type the map's keys never are finds
+/// nothing.
+fn key_compared(env: &Env, args: &[Type]) -> anyhow::Result<()> {
+    match args {
+        [map, key, ..] => bounds::lookup_key_compared(env, map, key),
+        _ => Ok(()),
+    }
+}
 
 fn fc_get(args: &[Value]) -> Option<Value> {
     match (&args[0], &args[1]) {
@@ -14,7 +28,7 @@ fn fc_get(args: &[Value]) -> Option<Value> {
     }
 }
 
-graphix_package_core::fast_builtin!(Get, GetEv, "map_get", fc_get; ordered(1..2));
+graphix_package_core::fast_builtin!(Get, GetEv, "map_get", fc_get; ordered(1..2); check(key_compared));
 
 fn fc_get_or(args: &[Value]) -> Option<Value> {
     match (&args[0], &args[1], &args[2]) {
@@ -25,7 +39,7 @@ fn fc_get_or(args: &[Value]) -> Option<Value> {
     }
 }
 
-graphix_package_core::fast_builtin!(GetOr, GetOrEv, "map_get_or", fc_get_or; ordered(1..2));
+graphix_package_core::fast_builtin!(GetOr, GetOrEv, "map_get_or", fc_get_or; ordered(1..2); check(key_compared));
 
 fn fc_insert(args: &[Value]) -> Option<Value> {
     match (&args[0], &args[1], &args[2]) {
@@ -45,7 +59,7 @@ fn fc_remove(args: &[Value]) -> Option<Value> {
     }
 }
 
-graphix_package_core::fast_builtin!(Remove, RemoveEv, "map_remove", fc_remove; ordered(1..2));
+graphix_package_core::fast_builtin!(Remove, RemoveEv, "map_remove", fc_remove; ordered(1..2); check(key_compared));
 
 /// A map's `(key, value)` pairs in key order. The cursor copies the pairs
 /// when the map arrives and walks them by position: finding the next key

@@ -221,38 +221,15 @@ const CAPTURE: &str = "#seqqcap";
 /// instance of `v`, which no step reads.
 const SEED: &str = "#seqqseed";
 
-/// Whether the lowering's binding `name` passes on what it reads whole,
-/// and nothing writes it: a step's entry snapshot ([`ENTRY_SNAPSHOT`]), a
-/// step's value ([`STEP_VALUE`]), a statement item's ([`STATEMENT_VALUE`])
-/// or a `seqq` request's capture ([`CAPTURE`]). A read of a generalized
-/// binding through one carries the binding's scheme.
-pub fn passes_on(name: &str) -> bool {
-    numbered(name, ENTRY_SNAPSHOT, &[2])
-        || numbered(name, STEP_VALUE, &[1, 2])
-        || is_statement_value(name)
-        || written_part(name, CAPTURE, 2).is_some()
-}
-
 /// Whether `name` is the value a `seqq` queues for a variable ([`SEED`]).
 pub fn is_request_seed(name: &str) -> bool {
     numbered(name, SEED, &[2])
-}
-
-/// Whether `name` is a `{ .. }` statement's item value ([`STATEMENT_VALUE`]).
-pub fn is_statement_value(name: &str) -> bool {
-    numbered(name, STATEMENT_VALUE, &[2])
 }
 
 /// Whether `name` is the tuple a step's entry snapshot samples
 /// ([`ENTRY_INPUT`]).
 pub fn is_entry_input(name: &str) -> bool {
     numbered(name, ENTRY_INPUT, &[2])
-}
-
-/// Whether `name` is a machine's program counter ([`PC`]), whose fire
-/// enters a step.
-pub fn is_pc(name: &str) -> bool {
-    numbered(name, PC, &[1])
 }
 
 /// `name` is `prefix` and then one of `parts` numbers joined by `_`.
@@ -2637,7 +2614,7 @@ mod test {
             let mut found = false;
             lowered.fold((), &mut |(), e| {
                 if let ExprKind::Bind(b) = &e.kind
-                    && b.pattern.single_bind().is_some_and(|n| is_pc(n))
+                    && b.pattern.single_bind().is_some_and(|n| numbered(n, PC, &[1]))
                 {
                     assert_eq!(b.typ, Some(Type::Primitive(Typ::I64.into())));
                     found = true;
@@ -2728,7 +2705,6 @@ mod test {
         assert_eq!(w(&written_cell("#seqe12", "e")).as_deref(), Some("e"));
         let cap = written_cell("#seqqcap12_0", "/m/t");
         assert_eq!(w(&written_cell("#seqs12_0_3", &cap)).as_deref(), Some("m::t"));
-        assert!(passes_on(&cap));
         for lowered in [
             "#seqtv12",
             "#seqt_y",

@@ -1,49 +1,22 @@
 use crate::{
-    AddrSet, PrintFlag,
+    AddrSet,
     env::Env,
-    format_with_flags,
     stack::ensure_sufficient,
     typ::{
-        Bound, Brief, ContainsFlags, FnType, Kept, Lazy, NodeKey, NodePairs, RefHist,
-        RefPair, TVar, Type, TypeRef,
-        contains::{
-            AmbiguousMember, ContainsHist, find_open_cell, on_copies, renaming_linked,
-        },
-        fntyp::LambdaIds,
+        Bound, Kept, Lazy, NodeKey, NodePairs, RefHist, RefPair, TVar, Type, TypeRef,
+        contains::AmbiguousMember,
         node_addr,
-        tvar::{Fresh, StandingEnds, cell_writes, written_since},
+        tvar::{StandingEnds, cell_writes},
     },
 };
 use ahash::{AHashMap, AHashSet};
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use enumflags2::BitFlags;
 use netidx_value::Typ;
 use poolshark::local::LPooled;
 use smallvec::{SmallVec, smallvec};
 use std::{iter, mem, ops::ControlFlow, slice};
 use triomphe::Arc;
-
-struct MatchingTypes {
-    memo: RefHist<AHashMap<RefPair, Kept<Type>>>,
-    refs: LPooled<AHashSet<(Option<usize>, Option<usize>)>>,
-    /// One containment walk for every probe the narrowing asks: a pair of
-    /// shared parts is probed once, whichever pair of the narrowing meets it.
-    contains: ContainsHist,
-    /// Type a part holding a rigid cell by the written test's part
-    /// ([`Type::matching_parts`]).
-    inside: bool,
-}
-
-impl MatchingTypes {
-    fn new(inside: bool) -> Self {
-        MatchingTypes {
-            memo: RefHist::new(),
-            refs: LPooled::take(),
-            contains: ContainsHist::new(),
-            inside,
-        }
-    }
-}
 
 /// diff's walk state: each pair in progress with what it subtracts when
 /// met again inside its own difference (nothing), and the difference of
@@ -378,18 +351,6 @@ impl Type {
     pub fn walks_as_one_of(&self, members: &[Type], ends: &mut StandingEnds) -> bool {
         members.iter().any(|m| walks_alike(m, self, ends))
     }
-
-    /// Drop from `members` each walked as a member before it.
-    pub fn drop_repeated(members: &mut SmallVec<[Type; 8]>) {
-        let mut ends = StandingEnds::default();
-        let mut i = 1;
-        while i < members.len() {
-            match members[i].walks_as_one_of(&members[..i], &mut ends) {
-                true => drop(members.remove(i)),
-                false => i += 1,
-            }
-        }
-    }
 }
 
 fn diff_already_normal(before: &Type, after: &Type) -> bool {
@@ -460,19 +421,6 @@ pub(crate) fn strictly_identical(t0: &Type, t1: &Type) -> bool {
         .same(t0, t1)
 }
 
-/// [`strictly_identical`] with a union read as the set of its members,
-/// through its bindings and nested unions: neither their order nor a
-/// member that stands twice tells two types apart, so `Array<['a, 'a]>`
-/// is `Array<'a>`. Two open cells are still two.
-pub(super) fn one_type(t0: &Type, t1: &Type) -> bool {
-    Identity {
-        strict: true,
-        sets: Some(&mut StandingEnds::default()),
-        ..Identity::new(None, &mut NodePairs::default())
-    }
-    .same(t0, t1)
-}
-
 /// [`one_type`] with a union's members but its open cells read in order:
 /// a narrowing walks two such types alike, where a union of two members
 /// one type with each other walks apart from one of them.
@@ -498,60 +446,60 @@ pub(super) fn renames(env: &Env, t0: &Type, t1: &Type) -> bool {
     .same(t0, t1)
 }
 
-/// The pairs of live cells union collapses have met: each pair is one
-/// cell once [`apply_welds`] runs.
+impl Type {
+    /// Whether `self` and `other` are one type but for the names of their
+    /// variables: each open cell of one pairs with one of the other
+    /// throughout, under the same bounds, and a name means what its
+    /// definition expands to.
+    pub fn same_up_to_renaming(&self, env: &Env, other: &Type) -> bool {
+        Identity {
+            env: Some(env),
+            pairs: Some(SmallVec::new()),
+            expanding: Some(SmallVec::new()),
+            ..Identity::new(None, &mut NodePairs::default())
+        }
+        .same(self, other)
+    }
+}
+
+/// What a union's collapse of its members carries: the alternatives of the
+/// join it is for, and the first ambiguity it met.
 #[derive(Default)]
-pub(super) struct Welds {
-    pairs: SmallVec<[(TVar, TVar); 2]>,
-    /// The alternatives of the join the pairs are for.
+pub(super) struct Collapsing {
+    /// The alternatives of the join the collapse is for.
     pub(super) alts: Alternatives,
     /// The first pairing of unions by position a collapse met that another
     /// pairing would have made as cheaply.
     pub(super) ambiguity: Option<Box<Ambiguity>>,
 }
 
-impl Welds {
+impl Collapsing {
     pub(super) fn new() -> Self {
         Self::default()
     }
 
     pub(super) fn joining(alts: SmallVec<[Type; 4]>) -> Self {
-        Self { pairs: SmallVec::new(), alts: Alternatives::new(alts), ambiguity: None }
+        Self { alts: Alternatives::new(alts), ambiguity: None }
     }
 
-    /// What a collapse that may yet fail starts from ([`Self::rewind`]).
-    pub(super) fn mark(&self) -> (usize, bool) {
-        (self.pairs.len(), self.ambiguity.is_some())
+    /// What a collapse that may yet fail starts from ([`Self::rewind`]):
+    /// whether an ambiguity was met before it.
+    pub(super) fn mark(&self) -> bool {
+        self.ambiguity.is_some()
     }
 
-    /// Forget the pairs and the ambiguity a failed collapse met.
-    pub(super) fn rewind(&mut self, (pairs, ambiguous): (usize, bool)) {
-        self.pairs.truncate(pairs);
+    /// Forget the ambiguity a failed collapse met.
+    pub(super) fn rewind(&mut self, ambiguous: bool) {
         if !ambiguous {
             self.ambiguity = None
         }
     }
 
-    /// Take the pairs and the ambiguity `other` met.
-    pub(super) fn absorb(&mut self, other: &mut Welds) {
-        self.pairs.extend(other.pairs.drain(..));
+    /// Take the ambiguity `other` met.
+    pub(super) fn absorb(&mut self, other: &mut Collapsing) {
         if self.ambiguity.is_none() {
             self.ambiguity = other.ambiguity.take()
         }
-    }
-}
-
-impl std::ops::Deref for Welds {
-    type Target = SmallVec<[(TVar, TVar); 2]>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.pairs
-    }
-}
-
-impl std::ops::DerefMut for Welds {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.pairs
     }
 }
 
@@ -603,35 +551,18 @@ impl Alternatives {
 }
 
 /// [`union_identical`], for a collapse that keeps `t0` in place of `t1`:
-/// the live cells it pairs go on `welds`, so the dropped member's cells
-/// learn what the kept one learns. Two members of one alternative of the
-/// join `welds` is for collapse only where they are identical as they stand.
-pub(super) fn union_collapses(t0: &Type, t1: &Type, welds: &mut Welds) -> bool {
-    let mark = welds.mark();
-    let mut same = Identity::new(Some(welds), &mut NodePairs::default()).same(t0, t1);
-    if same && welds.alts.apart(t0, t1) && !strictly_identical(t0, t1) {
+/// two live cells are identical only where they are one, and two members
+/// of one alternative of the join `collapsing` is for collapse only where
+/// they are identical as they stand.
+pub(super) fn union_collapses(t0: &Type, t1: &Type, collapsing: &mut Collapsing) -> bool {
+    let mark = collapsing.mark();
+    let mut same =
+        Identity::new(Some(collapsing), &mut NodePairs::default()).same(t0, t1);
+    if same && collapsing.alts.apart(t0, t1) && !strictly_identical(t0, t1) {
         same = false;
     }
     if !same {
-        welds.rewind(mark)
-    }
-    same
-}
-
-/// [`union_collapses`] for two lower bounds of one cell: outside a function
-/// type too it pairs two open cells nothing bounds ([`TVar::unbounded`]),
-/// so bounds that differ only in such cells are one bound once the pairs
-/// weld. Two cells earlier compile tasks left open are decided open, and
-/// stay two.
-pub(super) fn lower_collapses(t0: &Type, t1: &Type, welds: &mut Welds) -> bool {
-    let mark = welds.mark();
-    let same = Identity {
-        unbounded: true,
-        ..Identity::new(Some(welds), &mut NodePairs::default())
-    }
-    .same(t0, t1);
-    if !same {
-        welds.rewind(mark)
+        collapsing.rewind(mark)
     }
     same
 }
@@ -647,78 +578,6 @@ pub(super) fn written_identical(t0: &Type, t1: &Type) -> bool {
         ..Identity::new(None, &mut NodePairs::default())
     }
     .same(t0, t1)
-}
-
-/// Weld each pair `welds` holds.
-pub(super) fn apply_welds(welds: &mut Welds) {
-    for (a, b) in welds.drain(..) {
-        super::contains::weld(&a, &b)
-    }
-}
-
-/// What [`union_identical`] finds of two types.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Identical {
-    Apart,
-    /// Identical, each cell met only beside itself.
-    Same,
-    /// Identical by pairing two distinct open cells inside a function
-    /// type.
-    Renamed,
-}
-
-/// [`union_identical`] over the questions of one walk: the verdict of a
-/// node pair whose walk read no cell stands for good, and the node pairs
-/// found identical, with no two distinct cells paired, stand while this
-/// thread writes no cell, so a chain asked about at every link is walked
-/// once. A question keys its node pairs past `NodePairs::EAGER` steps,
-/// and its pairs of applications from its first: an application is
-/// what a DAG through typedefs shares, which the questions meet at
-/// every link.
-#[derive(Default)]
-pub(super) struct IdenticalMemo {
-    writes: u64,
-    found: NodePairs,
-    settled: Settled,
-    /// What the last [`Self::identical`] found ambiguous, until taken.
-    ambiguity: Option<Box<Ambiguity>>,
-}
-
-impl IdenticalMemo {
-    /// The ambiguity [`Self::identical`] found since the last call.
-    pub(super) fn take_ambiguity(&mut self) -> Option<Box<Ambiguity>> {
-        self.ambiguity.take()
-    }
-
-    pub(super) fn identical(&mut self, t0: &Type, t1: &Type) -> Identical {
-        let writes = cell_writes();
-        if self.writes != writes || !memo_on() {
-            self.found.clear();
-            self.writes = writes;
-        }
-        if !memo_on() {
-            self.settled.clear()
-        }
-        self.found.restart();
-        let mut id = Identity {
-            settled: Some(&mut self.settled),
-            ..Identity::new(None, &mut self.found)
-        };
-        let same = id.same(t0, t1);
-        let renamed = id.renamed;
-        let ambiguity = id.ambiguity.take();
-        if same && self.ambiguity.is_none() {
-            self.ambiguity = ambiguity
-        }
-        if renamed {
-            self.found.clear()
-        }
-        match (same, renamed) {
-            (false, _) => Identical::Apart,
-            (true, false) => Identical::Same,
-            (true, true) => Identical::Renamed,
-        }
-    }
 }
 
 /// The verdicts of node pairs whose walk read no cell: no variable, and
@@ -738,12 +597,6 @@ impl Settled {
             .get_or_insert_with(LPooled::take)
             .insert(key, (t0.clone(), t1.clone(), same));
     }
-
-    fn clear(&mut self) {
-        if let Some(m) = &mut self.0 {
-            m.clear()
-        }
-    }
 }
 
 /// A union whose members a walk paired with another union's by position,
@@ -756,9 +609,8 @@ pub(super) struct Ambiguity {
 }
 
 impl Ambiguity {
-    pub(super) fn refusal(&self, flags: BitFlags<ContainsFlags>) -> anyhow::Error {
+    pub(super) fn refusal(&self) -> anyhow::Error {
         AmbiguousMember::new(
-            flags,
             &self.union,
             &self.typ,
             &[&self.members[0], &self.members[1]],
@@ -790,13 +642,11 @@ struct Identity<'a> {
     /// Two open cells of one name are identical, whatever holds them
     /// (`pairs` holds those met, never `None`).
     by_name: bool,
-    /// Two open cells nothing bounds are identical outside a function
-    /// type too, and go on `live` ([`lower_collapses`]).
-    unbounded: bool,
     /// A scheme's cell pairs with a live one too ([`renames`]).
     across: bool,
-    /// Where the live cells paired go.
-    live: Option<&'a mut Welds>,
+    /// The union collapse this walk is for, where an ambiguity goes; two
+    /// live cells are identical there only where they are one.
+    collapsing: Option<&'a mut Collapsing>,
     /// Names are compared by what they mean here, else by their cells.
     env: Option<&'a Env>,
     /// Inside a function type: the cells paired so far, by address.
@@ -819,18 +669,22 @@ struct Identity<'a> {
     settled: Option<&'a mut Settled>,
     /// The pair being walked has read a cell so far.
     read_cell: bool,
+    /// Where two names mean different definitions, the pairs of
+    /// definitions whose expansions are being compared
+    /// ([`Type::same_up_to_renaming`]); `None` for a walk that tells names
+    /// apart by their definitions.
+    expanding: Option<SmallVec<[(usize, usize); 4]>>,
 }
 
 impl<'a> Identity<'a> {
-    fn new(live: Option<&'a mut Welds>, found: &'a mut NodePairs) -> Self {
+    fn new(collapsing: Option<&'a mut Collapsing>, found: &'a mut NodePairs) -> Self {
         Self {
             strict: false,
             sets: None,
             in_order: false,
             by_name: false,
-            unbounded: false,
             across: false,
-            live,
+            collapsing,
             env: None,
             pairs: None,
             found,
@@ -840,7 +694,38 @@ impl<'a> Identity<'a> {
             ambiguity: None,
             settled: None,
             read_cell: false,
+            expanding: None,
         }
+    }
+
+    /// Whether `t0` and `t1`, a name at least one of them, mean one type:
+    /// each name expanded through the definition it holds, a pair of
+    /// definitions met again inside its own expansion taken as one.
+    fn expansions(&mut self, t0: &Type, t1: &Type) -> bool {
+        let Some(env) = self.env else { return false };
+        let def = |t: &Type| match t {
+            Type::Ref(r) => {
+                r.resolve_peek(env).map(|d| std::sync::Arc::as_ptr(&d) as usize)
+            }
+            _ => Some(0),
+        };
+        let expand = |t: &Type| match t {
+            Type::Ref(_) => t.lookup_ref(env).ok(),
+            t => Some(t.clone()),
+        };
+        let (Some(d0), Some(d1)) = (def(t0), def(t1)) else { return false };
+        if self.expanding.as_ref().is_some_and(|met| met.contains(&(d0, d1))) {
+            return true;
+        }
+        let (Some(e0), Some(e1)) = (expand(t0), expand(t1)) else { return false };
+        if let Some(met) = &mut self.expanding {
+            met.push((d0, d1))
+        }
+        let same = self.same(&e0, &e1);
+        if let Some(met) = &mut self.expanding {
+            met.pop();
+        }
+        same
     }
 
     fn same(&mut self, t0: &Type, t1: &Type) -> bool {
@@ -899,15 +784,11 @@ impl<'a> Identity<'a> {
     /// walk's [`Ambiguity`]: which members are the same is for the program
     /// to say.
     fn same_unions(&mut self, a: &[Type], b: &[Type]) -> bool {
-        let live = self.live.as_ref().map(|l| l.len());
         let pairs = self.pairs.as_ref().map(|p| p.len());
         let renamed = mem::replace(&mut self.renamed, false);
         let same = self.all(a, b);
         if same && self.renamed {
             if strictly_same_unordered(a, b) {
-                if let (Some(live), Some(l)) = (&mut self.live, live) {
-                    live.truncate(l)
-                }
                 if let (Some(pairs), Some(n)) = (&mut self.pairs, pairs) {
                     pairs.truncate(n)
                 }
@@ -915,7 +796,7 @@ impl<'a> Identity<'a> {
                 return true;
             }
             if self.ambiguity.is_none()
-                && self.live.as_ref().is_none_or(|l| l.ambiguity.is_none())
+                && self.collapsing.as_ref().is_none_or(|l| l.ambiguity.is_none())
                 && let Some((i, j)) = self.another_pairing(a, b, pairs.unwrap_or(0))
             {
                 let found = Box::new(Ambiguity {
@@ -923,8 +804,8 @@ impl<'a> Identity<'a> {
                     typ: b[j].clone(),
                     members: [a[i].clone(), a[j].clone()],
                 });
-                match &mut self.live {
-                    Some(live) => live.ambiguity = Some(found),
+                match &mut self.collapsing {
+                    Some(collapsing) => collapsing.ambiguity = Some(found),
                     None => self.ambiguity = Some(found),
                 }
             }
@@ -951,17 +832,17 @@ impl<'a> Identity<'a> {
         for x in a {
             for y in b {
                 let mut found = NodePairs::default();
-                let mut scratch = Welds::new();
+                let mut scratch = Collapsing::new();
                 let mut probe = Identity {
                     strict: self.strict,
                     sets: self.sets.as_deref_mut(),
                     in_order: self.in_order,
                     by_name: self.by_name,
-                    unbounded: self.unbounded,
                     across: self.across,
-                    live: self.live.as_ref().map(|_| &mut scratch),
+                    collapsing: self.collapsing.as_ref().map(|_| &mut scratch),
                     env: self.env,
                     pairs: self.pairs.as_ref().map(|p| SmallVec::from_slice(&p[..base])),
+                    expanding: self.expanding.clone(),
                     ..Identity::new(None, &mut found)
                 };
                 costs.push(probe.same(x, y).then_some(probe.paired));
@@ -1028,29 +909,14 @@ impl<'a> Identity<'a> {
             return true;
         }
         let (x, y) = (a.cell_addr(), b.cell_addr());
-        let Some(pairs) = &mut self.pairs else {
-            return match &mut self.live {
-                Some(live)
-                    if self.unbounded
-                        && a.unbounded()
-                        && b.unbounded()
-                        && !(a.earlier_task() && b.earlier_task()) =>
-                {
-                    live.push((a.clone(), b.clone()));
-                    self.renamed = true;
-                    self.paired += 1;
-                    true
-                }
-                _ => false,
-            };
-        };
+        let Some(pairs) = &mut self.pairs else { return false };
         if self.by_name {
             if a.name != b.name {
                 return false;
             }
             if !pairs.contains(&(x, y)) {
                 pairs.push((x, y));
-                let (ca, cb) = (a.cell_constraints(), b.cell_constraints());
+                let (ca, cb) = (a.cell_above(), b.cell_above());
                 return self.all(&ca, &cb);
             }
             return true;
@@ -1061,18 +927,15 @@ impl<'a> Identity<'a> {
         match pairs.iter().find(|(p, q)| *p == x || *q == y) {
             Some(&(p, q)) => p == x && q == y,
             None => {
-                pairs.push((x, y));
-                if let Some(live) = &mut self.live
-                    && !a.level().is_generic()
-                {
-                    if a.is_rigid() && b.is_rigid() {
-                        return false;
-                    }
-                    live.push((a.clone(), b.clone()))
+                // two live cells are one only where they are; making them
+                // one would decide what neither has decided
+                if self.collapsing.is_some() && !a.level().is_generic() {
+                    return false;
                 }
+                pairs.push((x, y));
                 self.renamed = true;
                 self.paired += 1;
-                let (ca, cb) = (a.cell_constraints(), b.cell_constraints());
+                let (ca, cb) = (a.cell_above(), b.cell_above());
                 if !self.across {
                     return self.all(&ca, &cb);
                 }
@@ -1151,7 +1014,13 @@ impl<'a> Identity<'a> {
                         r0.same_filled_definition(r1)
                     }),
                 };
-                same && self.all(&r0.params, &r1.params)
+                match same {
+                    true => self.all(&r0.params, &r1.params),
+                    false => self.expanding.is_some() && self.expansions(t0, t1),
+                }
+            }
+            (Type::Ref(_), _) | (_, Type::Ref(_)) if self.expanding.is_some() => {
+                self.expansions(t0, t1)
             }
             (Type::Set(s0), Type::Set(s1)) => self.same_unions(s0, s1),
             (Type::Error(a), Type::Error(b))
@@ -1179,11 +1048,16 @@ impl<'a> Identity<'a> {
                 let r = f0.args.len() == f1.args.len()
                     && f0.quantifiers.len() == f1.quantifiers.len()
                     && (!self.by_name || f0.quantifiers == f1.quantifiers)
-                    && f0
-                        .args
-                        .iter()
-                        .zip(f1.args.iter())
-                        .all(|(a, b)| a.kind == b.kind && self.same(&a.typ, &b.typ))
+                    && f0.args.iter().zip(f1.args.iter()).all(|(a, b)| {
+                        a.kind.same_shape(&b.kind)
+                            && self.same(&a.typ, &b.typ)
+                            && match (a.kind.default(), b.kind.default()) {
+                                (Some(da), Some(db)) => {
+                                    self.same(da.of(&a.typ), db.of(&b.typ))
+                                }
+                                _ => true,
+                            }
+                    })
                     && match (&f0.vargs, &f1.vargs) {
                         (None, None) => true,
                         (Some(a), Some(b)) => self.same(a, b),
@@ -1207,42 +1081,6 @@ fn same_ref(env: &Env, r0: &TypeRef, r1: &TypeRef) -> bool {
     r0.same_definition(r1, env)
         && r0.params.len() == r1.params.len()
         && r0.params.iter().zip(r1.params.iter()).all(|(a, b)| union_identical(a, b))
-}
-
-/// How many parts a union of alternatives meets within a member: an
-/// array's, a list's or a reference's element, a map's key and value, a
-/// tuple's, a struct's or a variant's positions, in [`Type::cow_children`]
-/// order.
-fn part_count(t: &Type) -> usize {
-    match t {
-        // CR claude for claude: [bug/low] An Error's payload is no part here (nor in
-        // `part`), though `union_inner` joins two Errors payload by payload: function
-        // alternatives inside one do not meet. `select b { true => error(|x| x), false
-        // => error(|x: i64| x + 1) }` leaves `Error<[fn(x: i64) -> i64, fn(x: 'a) ->
-        // 'a]>`, and a call through its payload is refused ("a call takes one function
-        // type"), where the same lambdas in a tuple, an array, a map or a variant meet
-        // and the call checks. Count `Type::Error(_)` as one part and return its
-        // payload from `part`. probe:
-        // design/review-2026-11-16/repro/t-setops-error-payload-fns-not-met.gx
-        // (t-setops-05)
-        Type::Array(_) | Type::List(_) | Type::ByRef(..) => 1,
-        Type::Map(_) => 2,
-        Type::Tuple(ts) | Type::Variant(_, ts, _) => ts.len(),
-        Type::Struct(fs) => fs.len(),
-        _ => 0,
-    }
-}
-
-/// Part `p` of `t`, `p < part_count(t)`.
-fn part(t: &Type, p: usize) -> &Type {
-    match t {
-        Type::Array(e) | Type::List(e) | Type::ByRef(_, e) => e,
-        Type::Map(m) if p == 0 => &m.key,
-        Type::Map(m) => &m.value,
-        Type::Tuple(ts) | Type::Variant(_, ts, _) => &ts[p],
-        Type::Struct(fs) => &fs[p].1,
-        _ => unreachable!("a type with no parts"),
-    }
 }
 
 /// The members of the union `t` stands for through its bindings.
@@ -1284,136 +1122,6 @@ impl Leaves {
                 None => self.rest.push(m.clone()),
             }
         }
-    }
-}
-
-/// The members of `t` ([`members_of`]), nested unions flattened, or `t`
-/// where it is no union. `shape` takes the tree in preorder: a union's
-/// member count, `None` for a member.
-fn union_members(
-    t: &Type,
-    out: &mut LPooled<Vec<Type>>,
-    shape: &mut LPooled<Vec<Option<usize>>>,
-) {
-    ensure_sufficient(|| match members_of(t) {
-        Some(ms) => {
-            shape.push(Some(ms.len()));
-            ms.iter().for_each(|m| union_members(m, out, shape))
-        }
-        None => {
-            shape.push(None);
-            out.push(t.clone())
-        }
-    })
-}
-
-/// The type [`union_members`] took apart into `shape`, each member taken
-/// from `met`, in order.
-fn rebuilt(
-    shape: &mut impl Iterator<Item = Option<usize>>,
-    met: &mut impl Iterator<Item = Type>,
-) -> Type {
-    ensure_sufficient(|| match shape.next().expect("a shape for each alternative") {
-        Some(n) => Type::Set(Arc::from_iter((0..n).map(|_| rebuilt(shape, met)))),
-        None => met.next().expect("a met member for each member"),
-    })
-}
-
-/// The meets of one [`Type::meet_alternatives`] walk past
-/// [`NodePairs::EAGER`] steps, by the nodes the alternatives hold (a bound
-/// cell as the node it holds), each with the [`cell_writes`] it was made
-/// at: alternatives over shared nodes meet once while no cell they or
-/// their met types reach is written ([`Meet::stands`]), and the members
-/// rebuilt of them share what they met.
-struct Meets {
-    steps: u32,
-    found: Lazy<AHashMap<MeetKey, Meet>>,
-}
-
-/// The nodes alternatives hold and the alternative each member is of.
-type MeetKey = (SmallVec<[NodeKey; 4]>, SmallVec<[u32; 4]>);
-
-/// A meet [`Meets`] keeps: each alternative's met type, `None` where the
-/// meet left it as it stands, kept with the nodes its key reads.
-struct Meet {
-    met: Option<SmallVec<[Option<Type>; 4]>>,
-    writes: u64,
-    nodes: SmallVec<[Type; 4]>,
-}
-
-impl Meet {
-    /// Whether the meet is as the cells stand: this thread wrote none
-    /// since, or none the alternatives or the met types reach.
-    fn stands(&self) -> bool {
-        self.writes == cell_writes()
-            || !self
-                .nodes
-                .iter()
-                .chain(self.met.iter().flatten().flatten())
-                .any(|t| written_since(t, self.writes))
-    }
-}
-
-impl Meets {
-    fn new() -> Self {
-        Meets { steps: 0, found: Lazy::new() }
-    }
-
-    /// The key of the alternatives `ts` and the nodes it reads, once the
-    /// walk has grown past [`NodePairs::EAGER`]; `None` where one holds
-    /// no node.
-    fn key(
-        &mut self,
-        ts: &[&Type],
-        tags: &[u32],
-    ) -> Option<(MeetKey, SmallVec<[Type; 4]>)> {
-        if self.steps < NodePairs::EAGER {
-            self.steps += 1;
-            return None;
-        }
-        if !memo_on() {
-            return None;
-        }
-        let mut key = SmallVec::new();
-        let mut nodes = SmallVec::new();
-        for t in ts {
-            let (k, n) =
-                t.with_deref(|t| t.and_then(|t| Some((t.node_key()?, t.clone()))))?;
-            key.push(k);
-            nodes.push(n);
-        }
-        Some(((key, tags.iter().copied().collect()), nodes))
-    }
-
-    /// The meet of `ts` found under `key` while it stands
-    /// ([`Meet::stands`]): an alternative it left as it stands is the one in `ts`.
-    fn get(&self, key: &MeetKey, ts: &[&Type]) -> Option<Option<LPooled<Vec<Type>>>> {
-        let m = self.found.get()?.get(key).filter(|m| m.stands())?;
-        Some(m.met.as_ref().map(|met| {
-            ts.iter()
-                .zip(met.iter())
-                .map(|(t, m)| m.as_ref().unwrap_or(*t).clone())
-                .collect()
-        }))
-    }
-
-    fn insert(
-        &mut self,
-        key: MeetKey,
-        nodes: SmallVec<[Type; 4]>,
-        ts: &[&Type],
-        met: Option<&LPooled<Vec<Type>>>,
-    ) {
-        let met = met.map(|met| {
-            ts.iter()
-                .zip(met.iter())
-                .map(|(t, m)| {
-                    (m.shared_identity() != t.shared_identity()).then(|| m.clone())
-                })
-                .collect()
-        });
-        let m = Meet { met, writes: cell_writes(), nodes };
-        self.found.get_mut().insert(key, m);
     }
 }
 
@@ -1478,73 +1186,6 @@ fn pair(a: &Type, b: &Type) -> Type {
     Type::Set(Arc::from_iter([a.clone(), b.clone()]))
 }
 
-/// Whether `f` holds an open cell a definition or the top level owns,
-/// and one of a scheme, which no definition owns.
-fn open_cells(f: &Type) -> (bool, bool) {
-    let (mut live, mut generic) = (false, false);
-    find_open_cell(f, true, &mut |tv| {
-        if tv.level().is_generic() {
-            generic = true
-        } else {
-            live = true
-        }
-        live && generic
-    });
-    (live, generic)
-}
-
-/// Make the function types `a` and `b` one in `hist`'s walk: a renaming's
-/// cells weld pair by pair ([`renaming_linked`]), which decides no member
-/// of a union the signature holds over its own variables, and any other
-/// two hold each other.
-fn fns_join(env: &Env, hist: &mut ContainsHist, a: &Type, b: &Type) -> Result<bool> {
-    if renaming_linked(env, a, b, true) {
-        return Ok(true);
-    }
-    let commit = ContainsFlags::Commit.into();
-    Ok(a.contains_int(commit, env, hist, b)? && b.contains_int(commit, env, hist, a)?)
-}
-
-/// Whether the function types `a` and `b` meet: one is a renaming of the
-/// other, or each holds the other, by a probe and then by a commit on
-/// copies, since a probe judges each part apart.
-fn fns_meet(env: &Env, a: &Type, b: &Type) -> Result<bool> {
-    if renaming_linked(env, a, b, false) {
-        return Ok(true);
-    }
-    let probe = BitFlags::empty();
-    Ok(a.contains_with_flags(probe, env, b)?
-        && b.contains_with_flags(probe, env, a)?
-        && on_copies(None, [a, b], |[a, b], trial| fns_join(env, trial, &a, &b))?)
-}
-
-/// Whether `a` meets `b` and `c` meets `d` at once, on copies that share
-/// their cells ([`fns_meet`]).
-fn fns_meet_both(env: &Env, [a, b]: [&Type; 2], [c, d]: [&Type; 2]) -> Result<bool> {
-    on_copies(None, [a, b, c, d], |[a, b, c, d], trial| {
-        Ok(fns_join(env, trial, &a, &b)? && fns_join(env, trial, &c, &d)?)
-    })
-}
-
-/// The refusal of a function `f` among alternatives that meets `a` and
-/// meets `b`, and is not one type with both at once.
-fn two_meets(f: &Type, a: &Type, b: &Type) -> anyhow::Error {
-    let mut known = LPooled::take();
-    let [f, a, b] = [f, a, b]
-        .map(|t| t.reset_tvars_int(&mut known, Fresh::Copy).unwrap_or_else(|| t.clone()));
-    format_with_flags(PrintFlag::DerefTVars | PrintFlag::ReplacePrims, || {
-        anyhow!(
-            "the function {} could be {} or {}, two functions it stands beside, but \
-             not both, and the check picks neither by order: write the part of its \
-             type that tells them apart (`|x: T| -> R throws E ..`), so it is one of \
-             them or neither",
-            Brief(&f),
-            Brief(&a),
-            Brief(&b)
-        )
-    })
-}
-
 /// How a union treats two applications of one definition that differ
 /// in a parameter the body does not hold linearly.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1565,7 +1206,7 @@ impl Type {
         env: &Env,
         hist: &mut RefHist<AHashMap<RefPair, Type>>,
         merge: Merge,
-        welds: &mut Welds,
+        collapsing: &mut Collapsing,
         t0: &TypeRef,
         t1: &TypeRef,
         t: &Self,
@@ -1584,7 +1225,7 @@ impl Type {
         // `members_of_one_alternative_collapse_only_as_they_stand` in
         // design/review-2026-11-16/repro/t-setops-identity-and-alternatives.rs
         // (t-setops-09)
-        let mut kept = Welds::new();
+        let mut kept = Collapsing::new();
         let mut differ = t0
             .params
             .iter()
@@ -1593,7 +1234,7 @@ impl Type {
             .filter(|(_, (a, b))| !union_collapses(a, b, &mut kept));
         let (i, (p0, p1)) = match (differ.next(), differ.next()) {
             (None, _) => {
-                welds.absorb(&mut kept);
+                collapsing.absorb(&mut kept);
                 return Ok(self.clone());
             }
             (Some(d), None) => d,
@@ -1608,11 +1249,8 @@ impl Type {
         params[i] = p0.union_int(env, hist, merge, &mut kept, p1)?;
         let merged =
             Type::Ref(Arc::new(t0.with_params(Arc::from_iter(params.drain(..)))));
-        let probe = BitFlags::empty();
-        if merged.contains_with_flags(probe, env, self)?
-            && merged.contains_with_flags(probe, env, t)?
-        {
-            welds.absorb(&mut kept);
+        if merged.decided_holds(env, self)? && merged.decided_holds(env, t)? {
+            collapsing.absorb(&mut kept);
             Ok(merged)
         } else {
             Ok(pair(self, t))
@@ -1624,10 +1262,10 @@ impl Type {
         env: &Env,
         hist: &mut RefHist<AHashMap<RefPair, Type>>,
         merge: Merge,
-        welds: &mut Welds,
+        collapsing: &mut Collapsing,
         t: &Self,
     ) -> Result<Self> {
-        ensure_sufficient(|| self.union_inner(env, hist, merge, welds, t))
+        ensure_sufficient(|| self.union_inner(env, hist, merge, collapsing, t))
     }
 
     fn union_inner(
@@ -1635,7 +1273,7 @@ impl Type {
         env: &Env,
         hist: &mut RefHist<AHashMap<RefPair, Type>>,
         merge: Merge,
-        welds: &mut Welds,
+        collapsing: &mut Collapsing,
         t: &Self,
     ) -> Result<Self> {
         match (self, t) {
@@ -1647,7 +1285,7 @@ impl Type {
                 if t0.same_definition(t1, env) && t0.params.len() == t1.params.len() =>
             {
                 t0.hold_bounds_with(t1, env, true)?;
-                self.union_ref_params(env, hist, merge, welds, t0, t1, t)
+                self.union_ref_params(env, hist, merge, collapsing, t0, t1, t)
             }
             (tr @ Type::Ref(_), t) | (t, tr @ Type::Ref(_)) => {
                 let key = if matches!(self, Type::Ref(_)) {
@@ -1661,15 +1299,15 @@ impl Type {
                 let e = tr.lookup_ref(env)?;
                 hist.insert(key, tr.clone());
                 let r = if matches!(self, Type::Ref(_)) {
-                    e.union_int(env, hist, merge, welds, t)
+                    e.union_int(env, hist, merge, collapsing, t)
                 } else {
-                    t.union_int(env, hist, merge, welds, &e)
+                    t.union_int(env, hist, merge, collapsing, &e)
                 };
                 hist.remove(&key);
                 r
             }
             (t0 @ Type::Abstract { .. }, t1 @ Type::Abstract { .. })
-                if union_collapses(t0, t1, welds) =>
+                if union_collapses(t0, t1, collapsing) =>
             {
                 Ok(self.clone())
             }
@@ -1713,7 +1351,7 @@ impl Type {
                 Ok(Type::Primitive(*p))
             }
             (Type::Error(e0), Type::Error(e1)) => {
-                Ok(Type::Error(Arc::new(e0.union_int(env, hist, merge, welds, e1)?)))
+                Ok(Type::Error(Arc::new(e0.union_int(env, hist, merge, collapsing, e1)?)))
             }
             (Type::Set(s0), Type::Set(s1)) => Ok(Type::Set(Arc::from_iter(
                 s0.iter().cloned().chain(s1.iter().cloned()),
@@ -1728,14 +1366,14 @@ impl Type {
                 let differing = || {
                     t0.iter()
                         .zip(t1.iter())
-                        .filter(|(a, b)| !union_collapses(a, b, &mut Welds::new()))
+                        .filter(|(a, b)| !union_collapses(a, b, &mut Collapsing::new()))
                         .count()
                 };
                 if tg0 == tg1 && t0.len() == t1.len() && differing() <= 1 {
                     let mut typs = t0
                         .iter()
                         .zip(t1.iter())
-                        .map(|(t0, t1)| t0.union_int(env, hist, merge, welds, t1))
+                        .map(|(t0, t1)| t0.union_int(env, hist, merge, collapsing, t1))
                         .collect::<Result<LPooled<Vec<_>>>>()?;
                     Ok(Type::Variant(tg0.clone(), Arc::from_iter(typs.drain(..)), *at))
                 } else {
@@ -1743,25 +1381,25 @@ impl Type {
                 }
             }
             (t0 @ Type::TVar(_), t1 @ Type::TVar(_))
-                if union_collapses(t0, t1, welds) =>
+                if union_collapses(t0, t1, collapsing) =>
             {
                 Ok(t0.clone())
             }
             // A bound cell unions as its binding; an unbound cell
             // stays its own member.
             (Type::TVar(tv), t1) => match tv.binding() {
-                Some(b) => b.union_int(env, hist, merge, welds, t1),
+                Some(b) => b.union_int(env, hist, merge, collapsing, t1),
                 None => Ok(pair(self, t1)),
             },
             (t0, Type::TVar(tv)) => match tv.binding() {
-                Some(b) => t0.union_int(env, hist, merge, welds, &b),
+                Some(b) => t0.union_int(env, hist, merge, collapsing, &b),
                 None => Ok(pair(t0, t)),
             },
             // Everything left of one variant is kept once if identical,
             // else as two members.
             (t0, t1)
                 if std::mem::discriminant(t0) == std::mem::discriminant(t1)
-                    && union_collapses(t0, t1, welds) =>
+                    && union_collapses(t0, t1, collapsing) =>
             {
                 Ok(t0.clone())
             }
@@ -1777,19 +1415,6 @@ impl Type {
         Self::union_with(env, Merge::Supertype, ts)
     }
 
-    /// The union of `ts`, admitting nothing none of them admits: what
-    /// a set of patterns covers.
-    pub fn union_exact(env: &Env, ts: &[&Type]) -> Result<Self> {
-        Self::union_with(env, Merge::Exact, ts)
-    }
-
-    /// [`Self::union_exact`] of `ts`, the members of one union: two of them
-    /// that differ by a renaming of their cells are two.
-    pub fn union_exact_of_members(env: &Env, ts: &[&Type]) -> Result<Self> {
-        let tags: LPooled<Vec<u32>> = ts.iter().map(|_| 0).collect();
-        Self::union_tagged(env, Merge::Exact, ts, &tags)
-    }
-
     /// [`Self::union_exact`] of the parts `ts` the alternatives of a
     /// pattern take from the members that reach them, `tags[i]` the
     /// alternative `ts[i]` is of: the parts of one alternative are members
@@ -1797,33 +1422,6 @@ impl Type {
     /// cells are two.
     pub fn union_exact_of_parts(env: &Env, ts: &[&Type], tags: &[u32]) -> Result<Self> {
         Self::union_tagged(env, Merge::Exact, ts, tags)
-    }
-
-    /// The union of a select's alternatives, which a call through the
-    /// select must accept alike: function members meet first, and so do
-    /// those in the members' parts ([`Self::meet_alternatives`]).
-    pub fn union_of_alternatives(env: &Env, ts: &[&Type]) -> Result<Self> {
-        Self::union_meeting(env, Merge::Supertype, ts)
-    }
-
-    /// The union of the parts `ts` one name of a pattern takes from the
-    /// members and alternatives that bind it, admitting nothing none of
-    /// them admits: a call through the name must accept each alike, so
-    /// they meet as a select's alternatives do
-    /// ([`Self::union_of_alternatives`]).
-    pub fn union_exact_of_alternatives(env: &Env, ts: &[&Type]) -> Result<Self> {
-        Self::union_meeting(env, Merge::Exact, ts)
-    }
-
-    fn union_meeting(env: &Env, merge: Merge, ts: &[&Type]) -> Result<Self> {
-        let tags: LPooled<Vec<u32>> = (0..ts.len() as u32).collect();
-        match Self::meet_alternatives(env, &mut Meets::new(), ts, &tags)? {
-            None => Self::union_with(env, merge, ts),
-            Some(met) => {
-                let met: LPooled<Vec<&Type>> = met.iter().collect();
-                Self::union_with(env, merge, &met)
-            }
-        }
     }
 
     fn union_with(env: &Env, merge: Merge, ts: &[&Type]) -> Result<Self> {
@@ -1843,357 +1441,16 @@ impl Type {
             return Ok(Type::Primitive(BitFlags::empty()));
         };
         let mut hist = RefHist::new();
-        let mut welds = Welds::joining(alternatives(ts, tags));
+        let mut collapsing = Collapsing::joining(alternatives(ts, tags));
         let mut acc = first.clone();
         for t in iter {
-            acc = acc.union_int(env, &mut hist, merge, &mut welds, t)?;
+            acc = acc.union_int(env, &mut hist, merge, &mut collapsing, t)?;
         }
-        let acc = acc.normalize_welding(&mut welds);
-        if let Some(a) = welds.ambiguity.take() {
-            return Err(a.refusal(BitFlags::empty()));
+        let acc = acc.normalize_collapsing(&mut collapsing);
+        if let Some(a) = collapsing.ambiguity.take() {
+            return Err(a.refusal());
         }
-        apply_welds(&mut welds);
         Ok(acc)
-    }
-
-    /// [`Self::meet_members`] over the members of `ts`, an alternative
-    /// that is a union standing for its members ([`union_members`]), each
-    /// union rebuilt of its met members: a call through the union may be
-    /// any member's; alternatives over nodes `meets` has met take that
-    /// meet ([`Meets`]). One alternative ([`sole`]) meets nothing. `None`
-    /// when no member changes.
-    fn meet_alternatives(
-        env: &Env,
-        meets: &mut Meets,
-        ts: &[&Type],
-        tags: &[u32],
-    ) -> Result<Option<LPooled<Vec<Type>>>> {
-        if sole(ts).is_some() {
-            return Ok(None);
-        }
-        #[cfg(test)]
-        MEET_STEPS.with(|n| n.set(n.get() + 1));
-        let Some((key, nodes)) = meets.key(ts, tags) else {
-            return Self::meet_unions(env, meets, ts, tags);
-        };
-        if let Some(met) = meets.get(&key, ts) {
-            return Ok(met);
-        }
-        let met = Self::meet_unions(env, meets, ts, tags)?;
-        meets.insert(key, nodes, ts, met.as_ref());
-        Ok(met)
-    }
-
-    fn meet_unions(
-        env: &Env,
-        meets: &mut Meets,
-        ts: &[&Type],
-        tags: &[u32],
-    ) -> Result<Option<LPooled<Vec<Type>>>> {
-        ensure_sufficient(|| {
-            if !ts.iter().any(|t| members_of(t).is_some()) {
-                return Self::meet_members(env, meets, ts, tags);
-            }
-            let mut flat: LPooled<Vec<Type>> = LPooled::take();
-            let mut shape: LPooled<Vec<Option<usize>>> = LPooled::take();
-            let mut flat_tags: LPooled<Vec<u32>> = LPooled::take();
-            for (t, tag) in ts.iter().zip(tags) {
-                union_members(t, &mut flat, &mut shape);
-                flat_tags.resize(flat.len(), *tag);
-            }
-            let flat: LPooled<Vec<&Type>> = flat.iter().collect();
-            let Some(mut met) = Self::meet_members(env, meets, &flat, &flat_tags)? else {
-                return Ok(None);
-            };
-            let (mut shape, mut met) = (shape.drain(..), met.drain(..));
-            Ok(Some(ts.iter().map(|_| rebuilt(&mut shape, &mut met)).collect()))
-        })
-    }
-
-    /// [`Self::meet_open_fns`] over `ts`, then over the parts of each set
-    /// of members one value may be ([`Type::shares_constructor`]), whose
-    /// parts ([`part`]) pair by position. `None` when no member changes.
-    fn meet_members(
-        env: &Env,
-        meets: &mut Meets,
-        ts: &[&Type],
-        tags: &[u32],
-    ) -> Result<Option<LPooled<Vec<Type>>>> {
-        let fns = Self::meet_open_fns(env, ts, tags)?;
-        let parts = match &fns {
-            Some(met) => {
-                let met: LPooled<Vec<&Type>> = met.iter().collect();
-                Self::meet_parts(env, meets, &met, tags)?
-            }
-            None => Self::meet_parts(env, meets, ts, tags)?,
-        };
-        Ok(parts.or(fns))
-    }
-
-    /// The members of `ts` of one shape meet part by part
-    /// ([`Self::meet_alternatives`]). `None` when no member changes.
-    fn meet_parts(
-        env: &Env,
-        meets: &mut Meets,
-        ts: &[&Type],
-        tags: &[u32],
-    ) -> Result<Option<LPooled<Vec<Type>>>> {
-        let members: SmallVec<[Option<Type>; 4]> = ts
-            .iter()
-            .map(|t| t.with_deref(|t| t.filter(|t| part_count(t) > 0).cloned()))
-            .collect();
-        let mut grouped: SmallVec<[bool; 4]> = smallvec![false; members.len()];
-        let mut out: Option<LPooled<Vec<Type>>> = None;
-        for (i, head) in members.iter().enumerate() {
-            let Some(head) = head else { continue };
-            if grouped[i] {
-                continue;
-            }
-            let group: SmallVec<[usize; 4]> = (i..members.len())
-                .filter(|j| {
-                    members[*j].as_ref().is_some_and(|m| head.shares_constructor(m))
-                })
-                .collect();
-            for j in group.iter() {
-                grouped[*j] = true;
-            }
-            let group_tags: SmallVec<[u32; 4]> = group.iter().map(|j| tags[*j]).collect();
-            if group_tags.iter().all(|t| *t == group_tags[0]) {
-                continue;
-            }
-            let mut rebuilt: SmallVec<[Type; 4]> =
-                group.iter().filter_map(|j| members[*j].clone()).collect();
-            let mut changed = false;
-            for p in 0..part_count(head) {
-                let met = {
-                    let at: SmallVec<[&Type; 4]> =
-                        rebuilt.iter().map(|m| part(m, p)).collect();
-                    Self::meet_alternatives(env, meets, &at, &group_tags)?
-                };
-                let Some(mut met) = met else { continue };
-                for (m, t) in rebuilt.iter_mut().zip(met.drain(..)) {
-                    let mut k = 0;
-                    let mut t = Some(t);
-                    *m = m
-                        .cow_children(&mut |_| {
-                            k += 1;
-                            if k - 1 == p { t.take() } else { None }
-                        })
-                        .unwrap_or_else(|| m.clone());
-                }
-                changed = true;
-            }
-            if changed {
-                let out =
-                    out.get_or_insert_with(|| ts.iter().map(|t| (*t).clone()).collect());
-                for (j, m) in group.iter().zip(rebuilt.drain(..)) {
-                    out[*j] = m;
-                }
-            }
-        }
-        Ok(out)
-    }
-
-    /// Function members that meet both ways, one with open cells, are one
-    /// member: calling either takes the same arguments, and the union's
-    /// call needs one signature. A member with a scheme's cells is an
-    /// instance of the first member it meets; any other is one type with
-    /// every member it meets, since the meet binds its own cells as the
-    /// call would bind them. A member whose own cells two members it
-    /// cannot both be could decide is refused ([`two_meets`]), the member
-    /// that looks for its meets and the one it finds alike: which decided
-    /// them would follow the members' order. A scheme's instance that
-    /// joins a scheme leaves it that instance's cells, which are no
-    /// definition's, so it is a scheme's member still; one a member with
-    /// cells of its own joins holds those from there on. `None` when no
-    /// member changes.
-    fn meet_open_fns(
-        env: &Env,
-        ts: &[&Type],
-        tags: &[u32],
-    ) -> Result<Option<LPooled<Vec<Type>>>> {
-        let fns: SmallVec<[(usize, Arc<FnType>); 4]> = ts
-            .iter()
-            .enumerate()
-            .filter_map(|(i, t)| {
-                t.with_deref(|t| match t {
-                    Some(Type::Fn(f)) => Some((i, f.clone())),
-                    _ => None,
-                })
-            })
-            .collect();
-        if fns.len() < 2 {
-            return Ok(None);
-        }
-        let member = |j: usize| Type::Fn(fns[j].1.clone());
-        let instance = |j: usize| {
-            Type::Fn(Arc::new(
-                fns[j].1.reset_tvars_int(&mut LPooled::take(), Fresh::Generic),
-            ))
-        };
-        // `group[k]` names the member each of `fns` met into, and `base`
-        // holds that group's last met type
-        let mut group: SmallVec<[usize; 4]> = (0..fns.len()).collect();
-        let mut base: SmallVec<[Option<Arc<FnType>>; 4]> = smallvec![None; fns.len()];
-        let mut met: SmallVec<[bool; 4]> = smallvec![false; fns.len()];
-        let mut scheme: SmallVec<[bool; 4]> =
-            (0..fns.len()).map(|j| open_cells(&member(j)) == (false, true)).collect();
-        let tag = |j: usize| tags[fns[j].0];
-        let repeated = (1..fns.len()).any(|j| (0..j).any(|i| tag(i) == tag(j)));
-        let clash = |group: &[usize], ga: usize, gb: usize| {
-            repeated
-                && (0..fns.len()).any(|x| {
-                    group[x] == ga
-                        && (0..fns.len()).any(|y| group[y] == gb && tag(x) == tag(y))
-                })
-        };
-        for k in 0..fns.len() {
-            let own = member(k);
-            if own.tvar_free() {
-                continue;
-            }
-            let (live, generic) = match scheme[k] {
-                true => (false, true),
-                false => open_cells(&own),
-            };
-            let inst = instance(k);
-            let mut meets: SmallVec<[usize; 4]> = smallvec![];
-            for j in 0..fns.len() {
-                if j == k
-                    || met[j]
-                    || group[j] == group[k]
-                    || clash(&group, group[k], group[j])
-                {
-                    continue;
-                }
-                if fns_meet(env, &inst, &member(j))? {
-                    meets.push(j);
-                    if generic && !live {
-                        break;
-                    }
-                }
-            }
-            if repeated {
-                let kept: SmallVec<[usize; 4]> = meets
-                    .iter()
-                    .copied()
-                    .filter(|j| meets.iter().all(|i| i == j || tag(*i) != tag(*j)))
-                    .collect();
-                let mut unambiguous = SmallVec::<[usize; 4]>::new();
-                for j in kept {
-                    let mut twin = false;
-                    for x in 0..fns.len() {
-                        if x != k
-                            && x != j
-                            && tag(x) == tag(k)
-                            && !member(x).tvar_free()
-                            && fns_meet(env, &instance(x), &member(j))?
-                        {
-                            twin = true;
-                            break;
-                        }
-                    }
-                    if !twin {
-                        unambiguous.push(j)
-                    }
-                }
-                meets = unambiguous;
-            }
-            let Some(first) = meets.first().map(|j| member(*j)) else { continue };
-            let before = (!generic && meets.len() > 1).then(|| {
-                let mut known = LPooled::take();
-                let mut copy = |t: &Type| {
-                    t.reset_tvars_int(&mut known, Fresh::Copy)
-                        .unwrap_or_else(|| t.clone())
-                };
-                let was = copy(&inst);
-                let stood: SmallVec<[Type; 4]> =
-                    meets.iter().map(|j| copy(&member(*j))).collect();
-                (was, stood)
-            });
-            if generic {
-                let again = instance(k);
-                for j in &meets[1..] {
-                    let g = member(*j);
-                    if !fns_meet_both(env, [&inst, &first], [&again, &g])? {
-                        return Err(two_meets(&inst, &first, &g));
-                    }
-                }
-                meets.truncate(1);
-            }
-            for (n, j) in meets.iter().copied().enumerate() {
-                let g = member(j);
-                if let Some((was, stood)) = &before
-                    && n > 0
-                    && !fns_meet(env, &inst, &g)?
-                {
-                    let mut other = &stood[0];
-                    for earlier in &stood[..n] {
-                        if !fns_meet_both(env, [was, earlier], [was, &stood[n]])? {
-                            other = earlier;
-                            break;
-                        }
-                    }
-                    return Err(two_meets(was, other, &stood[n]));
-                }
-                if !scheme[j] && open_cells(&g).0 {
-                    let again = instance(j);
-                    for m in 0..fns.len() {
-                        if m == k
-                            || met[m]
-                            || meets.contains(&m)
-                            || group[m] == group[k]
-                            || group[m] == group[j]
-                            || tag(m) == tag(k)
-                            || tag(m) == tag(j)
-                        {
-                            continue;
-                        }
-                        let h = member(m);
-                        if fns_meet(env, &again, &h)?
-                            && !fns_meet_both(env, [&inst, &g], [&again, &h])?
-                        {
-                            return Err(two_meets(&g, &inst, &h));
-                        }
-                    }
-                }
-                if renaming_linked(env, &inst, &g, true)
-                    || (inst.contains(env, &g)? && g.contains(env, &inst)?)
-                {
-                    let (from, to) = (group[k], group[j]);
-                    for m in group.iter_mut().filter(|m| **m == from) {
-                        *m = to;
-                    }
-                    base[from] = None;
-                    base[to] = Some(fns[j].1.clone());
-                    met[k] = true;
-                    scheme[j] &= scheme[k];
-                }
-            }
-        }
-        if !met.iter().any(|m| *m) {
-            return Ok(None);
-        }
-        // one member stands for each group, and a call through it may be any
-        // of its definitions; the definitions' own types are untouched
-        let mut out: LPooled<Vec<Type>> = ts.iter().map(|t| (*t).clone()).collect();
-        for (to, g) in base.iter().enumerate() {
-            let Some(g) = g else { continue };
-            let ids: SmallVec<[&LambdaIds; 4]> = fns
-                .iter()
-                .zip(group.iter())
-                .filter(|(_, m)| **m == to)
-                .map(|((_, f), _)| &f.lambda_ids)
-                .collect();
-            let one = Type::Fn(Arc::new(FnType {
-                lambda_ids: LambdaIds::joining(&ids),
-                ..(**g).clone()
-            }));
-            for ((i, _), _) in fns.iter().zip(group.iter()).filter(|(_, m)| **m == to) {
-                out[*i] = one.clone();
-            }
-        }
-        Ok(Some(out))
     }
 
     fn diff_int(&self, env: &Env, hist: &mut DiffHist, t: &Self) -> Result<Self> {
@@ -2589,163 +1846,6 @@ impl Type {
         }
     }
 
-    pub fn matching_type(&self, env: &Env, reaching: &Self) -> Result<Self> {
-        self.matching_type_int(env, &mut MatchingTypes::new(false), reaching)
-    }
-
-    /// [`Self::matching_type`], where a part of `reaching` holding a rigid
-    /// cell, whose values no pattern takes apart, is this test's part: the
-    /// types of the binds inside it.
-    pub fn matching_parts(&self, env: &Env, reaching: &Self) -> Result<Self> {
-        self.matching_type_int(env, &mut MatchingTypes::new(true), reaching)
-    }
-
-    fn matching_type_int(
-        &self,
-        env: &Env,
-        walk: &mut MatchingTypes,
-        reaching: &Self,
-    ) -> Result<Self> {
-        ensure_sufficient(|| {
-            // CR claude for claude: [bug/high] This memo answers a pair by its
-            // `RefHist::ref_id`s, which key two function types alike wherever
-            // `union_identical_in` pairs their cells (`fn(x: 'a) -> 'a` and `fn(x: 'b)
-            // -> 'b`), so the second function part of a tuple is answered with the
-            // first's type. Over `(f, g, n)` with `f: fn(x: 'a) -> 'a, g: fn(x: 'b) ->
-            // 'b`, the test `(Any, Any, i64) as (_, q, _)` types `q` as `f`'s type: the
-            // check accepts `q(x)` with `x: 'a` and the run refuses the bind; with live
-            // cells the narrowing welds the two functions, and a later `b("s")` is
-            // refused. `DiffHist::done` leaves such a minuend out (`keyed_loosely`): do
-            // the same here for a side holding an open cell in a function type
-            // (`cell_beneath`), put the memo under `memo_on()` and add function parts
-            // to the `memos_agree` pools. probe:
-            // design/review-2026-11-16/repro/t-setops-matching-memo-fn-renaming.gx,
-            // t-setops-matching-memo-welds-fns.gx, and
-            // `matching_type_types_each_function_part_as_its_own` in
-            // t-setops-identity-and-alternatives.rs (t-setops-01)
-            let key = (walk.memo.ref_id(self, env), walk.memo.ref_id(reaching, env));
-            if let Some(m) = walk.memo.get(&key) {
-                return Ok(m.answer.clone());
-            }
-            let typ = self.matching_type_inner(env, walk, reaching)?;
-            walk.memo.insert(key, Kept::new(typ.clone(), self, reaching));
-            Ok(typ)
-        })
-    }
-
-    fn matching_type_inner(
-        &self,
-        env: &Env,
-        walk: &mut MatchingTypes,
-        reaching: &Self,
-    ) -> Result<Self> {
-        if strictly_identical(self, reaching) {
-            return Ok(self.clone());
-        }
-        match (self, reaching) {
-            (Self::TVar(tv), t) => match tv.binding() {
-                Some(p) => p.matching_type_int(env, walk, t),
-                None => Ok(t.clone()),
-            },
-            (p, Self::TVar(tv)) if own_over_rigid(p, tv) => Ok(reaching.clone()),
-            (p, Self::TVar(tv)) => match tv.binding() {
-                Some(t) => p.matching_type_int(env, walk, &t),
-                None if tv.cell_constraints().contains(&Self::Bound(Bound::NoError)) => {
-                    p.diff(env, &Self::Primitive(Typ::Error.into()))
-                }
-                None => Ok(p.clone()),
-            },
-            (p @ Self::Array(_), Self::App(c, a)) if Self::app_filled(c, a).is_none() => {
-                p.matching_type_int(env, walk, &Self::Array(a.clone()))
-            }
-            (p @ Self::List(_), Self::App(c, a)) if Self::app_filled(c, a).is_none() => {
-                p.matching_type_int(env, walk, &Self::List(a.clone()))
-            }
-            (p @ Self::Ref(_), t) | (p, t @ Self::Ref(_)) => {
-                let definition = |t: &Type| match t {
-                    Self::Ref(tr) => tr.resolve_in(env).map(|r| r.def_key()),
-                    _ => None,
-                };
-                let key = (definition(p), definition(t));
-                // a part holding the test's own variable passes every value
-                // there: what reaches it types it
-                if !walk.refs.insert(key) {
-                    return Ok(if p.has_free() { t.clone() } else { p.clone() });
-                }
-                let r =
-                    p.lookup_ref(env)?.matching_type_int(env, walk, &t.lookup_ref(env)?);
-                walk.refs.remove(&key);
-                r
-            }
-
-            (Self::Any, t) | (t, Self::Any) => Ok(t.clone()),
-            (Self::Primitive(p), Self::Primitive(t)) => Ok(Self::Primitive(*p & *t)),
-            (Self::Set(ps), t) | (t, Self::Set(ps)) => {
-                let mut matched: LPooled<Vec<Type>> = LPooled::take();
-                for p in ps.iter() {
-                    let m = if matches!(self, Self::Set(_)) {
-                        p.matching_type_int(env, walk, t)?
-                    } else {
-                        t.matching_type_int(env, walk, p)?
-                    };
-                    if !m.is_uninhabited() {
-                        matched.push(m);
-                    }
-                }
-                Ok(Self::flatten_set(matched.drain(..)))
-            }
-            (p, t) => {
-                let same_shape = matches!(
-                    p,
-                    Self::Array(_)
-                        | Self::List(_)
-                        | Self::Error(_)
-                        | Self::Map(_)
-                        | Self::Tuple(_)
-                        | Self::Variant(..)
-                        | Self::Struct(_)
-                ) && p.shares_constructor(t);
-                let rigid_inside = walk.inside && same_shape && t.has_rigid();
-                let probe = BitFlags::empty();
-                if !rigid_inside
-                    && !p.has_unbound()
-                    && p.contains_int(probe, env, &mut walk.contains, t)?
-                {
-                    return Ok(t.clone());
-                }
-                if !t.has_unbound()
-                    && t.contains_int(probe, env, &mut walk.contains, p)?
-                {
-                    return Ok(p.clone());
-                }
-                if !p.could_match(env, t)? {
-                    return Ok(Self::Bottom);
-                }
-                if !same_shape {
-                    return Ok(p.clone());
-                }
-                let mut parts: LPooled<Vec<Type>> = LPooled::take();
-                t.for_each_child(&mut |c| parts.push(c.clone()));
-                let mut parts = parts.drain(..);
-                let mut error = None;
-                let narrowed = p.cow_children(&mut |c| {
-                    let t = parts.next().expect("matching shape");
-                    match c.matching_type_int(env, walk, &t) {
-                        Ok(n) => (!strictly_identical(c, &n)).then_some(n),
-                        Err(e) => {
-                            error = Some(e);
-                            None
-                        }
-                    }
-                });
-                match error {
-                    Some(e) => Err(e),
-                    None => Ok(narrowed.unwrap_or_else(|| p.clone())),
-                }
-            }
-        }
-    }
-
     /// The values of `self` that are not values of `t`, or more where the
     /// walk's pair budget stopped it subtracting.
     pub fn diff(&self, env: &Env, t: &Self) -> Result<Self> {
@@ -2864,14 +1964,6 @@ impl Type {
         let r = if diff_already_normal(self, &r) { r } else { r.normalize() };
         Ok((r, hist.widened))
     }
-}
-
-/// Whether `p`, a written test's part, holds a variable of the test's own
-/// over `tv`, an open cell held rigid: a run-time test passes every value
-/// at that variable, so `p` does not type the cell's values that pass it,
-/// and the cell does.
-fn own_over_rigid(p: &Type, tv: &TVar) -> bool {
-    tv.open_cell().is_some_and(|c| c.is_rigid()) && p.has_free()
 }
 
 /// `Any`, read through bound type variables.
@@ -3077,7 +2169,6 @@ impl Held<'_> {
 thread_local! {
     pub(super) static DIFF_PAIRS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static DIFF_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    static MEET_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     pub(super) static IDENTITY_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static NO_MEMO: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static HELD_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -3098,21 +2189,18 @@ pub(crate) mod tests {
     use crate::{
         PrintFlag,
         env::Env,
-        expr::{ModPath, TypeDefBody, parser::parse_type},
+        expr::{ModPath, parser::parse_type},
         format_with_flags,
         typ::{
-            Bound, NodeKey, NodePairs, TVar, Type,
+            TVar, Type,
             cast::tests::{parsed, typed, union_dag},
             matches::MATCH_PAIRS,
             node_addr,
-            setops::{
-                Alternatives, ERRORS_OVER_CUT, Identical, IdenticalMemo, WALK_PAIRS,
-                one_type, union_identical,
-            },
+            setops::{Alternatives, ERRORS_OVER_CUT, WALK_PAIRS, union_identical},
             tvar::{CHAIN_STEPS, Level, StandingEnds},
         },
     };
-    use ahash::{AHashMap, AHashSet};
+    use ahash::AHashMap;
     use arcstr::literal;
     use netidx_value::Typ;
     use triomphe::Arc;
@@ -3160,54 +2248,6 @@ pub(crate) mod tests {
         assert_eq!(super::HELD_READS.with(|n| n.get()), 2);
     }
 
-    // Each instantiation of W expands to an abstract type built anew, so
-    // the walk meets Box<i64> and Box<string> at fresh addresses.
-    #[test]
-    fn matching_type_tells_fresh_instantiations_apart() {
-        let (env, _) =
-            typed(&[("Box<'a>", "Abstract<'a>"), ("W<'a>", "[Box<'a>, `X]")], "null");
-        let test = parsed(&env, "[W<i64>, W<string>]");
-        let reaching = parsed(&env, "[Box<i64>, Box<string>, `X]");
-        for _ in 0..16 {
-            let m = test.matching_type(&env, &reaching).unwrap().normalize();
-            assert_eq!(m.to_string(), "[`X, Box<i64>, Box<string>]");
-        }
-    }
-
-    // A test's part holding a variable of the test's own, over a cell held
-    // rigid, types none of the cell's values: a run-time test passes every
-    // value at the variable, so what passes the part is the cell's. A
-    // closed part types what passes it.
-    #[test]
-    fn matching_type_keeps_a_rigid_cell_under_a_part_holding_the_tests_own_variable() {
-        let (env, _) = typed(&[("Opt<'b>", "['b, null]")], "null");
-        let tests = [
-            "Array<['b, null]>",
-            "Array<Opt<'b>>",
-            "Array<Opt<Opt<'b>>>",
-            "Array<['b, i64]>",
-            "Array<'b>",
-        ];
-        for test in tests {
-            let test = parsed(&env, test);
-            let reaching = parsed(&env, "[Array<'a>, i64]");
-            let mut cells = AHashMap::default();
-            reaching.collect_tvars(&mut cells);
-            let _gate = cells["a"].open_rigid();
-            let m = test.matching_type(&env, &reaching).unwrap().normalize();
-            assert_eq!(m.to_string(), "Array<'a>", "{test}");
-            let m = test.matching_parts(&env, &reaching).unwrap().normalize();
-            assert_eq!(m.to_string(), "Array<'a>", "{test}");
-        }
-        let closed = parsed(&env, "Array<[i64, null]>");
-        let reaching = parsed(&env, "Array<'a>");
-        let mut cells = AHashMap::default();
-        reaching.collect_tvars(&mut cells);
-        let _gate = cells["a"].open_rigid();
-        let m = closed.matching_parts(&env, &reaching).unwrap().normalize();
-        assert_eq!(m.to_string(), "Array<[i64, null]>");
-    }
-
     // A reference whose cell is open names the definition its name has
     // in the env, as a filled one does: the union of the two is the one
     // reference, whichever cells a walk filled before.
@@ -3252,37 +2292,6 @@ pub(crate) mod tests {
             let Type::Ref(tr) = t else { panic!("{t} is a reference") };
             assert!(tr.is_open(), "{t} was filled")
         }
-    }
-
-    // Two applications of one definition taken as one by their arguments
-    // hold those arguments to the parameters' bounds, as their expansions
-    // do.
-    #[test]
-    fn one_definition_by_its_arguments_holds_their_bounds() {
-        let (mut env, _) = typed(&[], "null");
-        let r = (TVar::empty_named(literal!("r")), Some(Type::Bound(Bound::NoError)));
-        let body = TypeDefBody::Alias(parse_type("['r, `X]").unwrap());
-        let site = (Default::default(), Default::default(), Arc::new(Default::default()));
-        let root = ModPath::root();
-        env.deftype(
-            &root,
-            "R",
-            Arc::from_iter([r]),
-            &body,
-            true,
-            None,
-            site.0,
-            site.1,
-            site.2,
-        )
-        .unwrap();
-        env.seed_typedef_refs();
-        let t = parsed(&env, "R<'c>");
-        let mut cells = AHashMap::default();
-        t.collect_tvars(&mut cells);
-        t.check_contains(&env, &t.clone()).unwrap();
-        let bounds = cells["c"].cell_constraints();
-        assert!(bounds.contains(&Type::Bound(Bound::NoError)), "{bounds:?}");
     }
 
     // diff reads a bound cell as its binding wherever it compares parts:
@@ -3765,80 +2774,6 @@ pub(crate) mod tests {
         }
     }
 
-    /// `Ti = (Ti+1, Ti+1)` down to `Tn = [Error<T0>, leaf]`, and its
-    /// twin `Si` with another leaf.
-    fn tuple_dag(n: usize) -> Vec<(String, String)> {
-        let mut defs = vec![];
-        for (p, leaf) in [("T", "`Z"), ("S", "`Y")] {
-            for i in 0..n {
-                defs.push((format!("{p}{i}"), format!("({p}{}, {p}{})", i + 1, i + 1)));
-            }
-            defs.push((format!("{p}{n}"), format!("[Error<{p}0>, {leaf}]")));
-        }
-        defs
-    }
-
-    // Narrowing S0 to what a test of T0 takes of it, over a tuple DAG
-    // whose only way back is through Error, asks each pair of shared
-    // nodes once whether a union stands under a constructor.
-    #[test]
-    fn narrowing_over_a_tuple_dag_takes_each_pair_once() {
-        use crate::typ::tvar::SPLIT_STEPS;
-        let defs = tuple_dag(12);
-        let defs: Vec<(&str, &str)> = defs.iter().map(|(n, b)| (&**n, &**b)).collect();
-        let (env, t) = typed(&defs, "T0");
-        let s = parsed(&env, "S0");
-        let m = t.matching_type(&env, &s).unwrap();
-        SPLIT_STEPS.with(|n| n.set(0));
-        assert!(!s.narrow_pattern(&env, &m).unwrap());
-        assert_eq!(SPLIT_STEPS.with(|n| n.get()), 174);
-    }
-
-    /// `T<i> = [Array<T<i+1>>, Array<T<i+2>>, `A<i>]`, indices mod `n`.
-    fn array_family(n: usize) -> Vec<(String, String)> {
-        (0..n)
-            .map(|i| {
-                let body =
-                    format!("[Array<T{}>, Array<T{}>, `A{i}]", (i + 1) % n, (i + 2) % n);
-                (format!("T{i}"), body)
-            })
-            .collect()
-    }
-
-    // Narrowing T0 to what a test of T1 takes of it, a predicate built of
-    // parts shared along many paths, narrows each pair of shared nodes once.
-    #[test]
-    fn narrowing_over_shared_array_parts_takes_each_pair_once() {
-        use crate::typ::tvar::NARROW_STEPS;
-        let defs = array_family(5);
-        let defs: Vec<(&str, &str)> = defs.iter().map(|(n, b)| (&**n, &**b)).collect();
-        let (env, t) = typed(&defs, "T1");
-        let s = parsed(&env, "T0");
-        let m = t.matching_type(&env, &s).unwrap();
-        NARROW_STEPS.with(|n| n.set(0));
-        assert!(s.narrow_pattern(&env, &m).unwrap());
-        assert_eq!(NARROW_STEPS.with(|n| n.get()), 310);
-    }
-
-    // Narrowing T0 to what a test of U0 takes of it, each a union that
-    // returns to itself through an array, meets the pair it started from
-    // inside itself and ends there.
-    #[test]
-    fn narrowing_over_two_recursive_unions_ends() {
-        use crate::typ::tvar::NARROW_STEPS;
-        let defs = [
-            ("T0", "[Array<[T0, `A1]>, Array<T0>, `A0]"),
-            ("U0", "[Array<[U0, U1]>, Array<U1>, `B0]"),
-            ("U1", "[Array<U1>, `B1]"),
-        ];
-        let (env, t) = typed(&defs, "U0");
-        let s = parsed(&env, "T0");
-        let m = t.matching_type(&env, &s).unwrap();
-        NARROW_STEPS.with(|n| n.set(0));
-        assert!(s.narrow_pattern(&env, &m).unwrap());
-        assert_eq!(NARROW_STEPS.with(|n| n.get()), 79);
-    }
-
     /// Error cycles `C<l>_j = [Error<C<l>_j+1 mod l>, tag]` of the lengths
     /// `ls`, position 0 tagged `` `Mm `` where `shared`, `S` the union of
     /// their heads, and `M0 = [Error<M0>, `Mm]`.
@@ -4230,7 +3165,7 @@ pub(crate) mod tests {
     #[test]
     fn dispatch_members_expand_a_name_per_open_cell() {
         let (env, t) = typed(&[("F<'t>", "['t, null]")], "(F<'a>, F<'b>, F<'a>)");
-        t.alias_tvars(&mut AHashMap::default());
+        let t = t.named_in(&mut AHashMap::default());
         let Type::Tuple(members) = &t else { unreachable!() };
         let t = Type::Set(members.clone());
         let members = Type::dispatch_members(&env, &t).unwrap();
@@ -4341,457 +3276,6 @@ pub(crate) mod tests {
             less("V", &["Error<Array<Array<Error<Error<Error<`B>>>>>>"]),
         ];
         memos_agree(&env, &pool);
-    }
-
-    /// A chain of `n` links ending in i64, each link `[null, Array<next>]`,
-    /// the links from the top; `cells` reaches each next link through a
-    /// cell bound to it.
-    fn identity_chain(n: usize, cells: bool) -> Vec<Type> {
-        let mut links = vec![Type::Primitive(Typ::I64.into())];
-        for i in 0..n {
-            let next = links.last().unwrap().clone();
-            let next = match cells {
-                false => next,
-                true => {
-                    let c = TVar::empty_named(arcstr::format!("c{i}"));
-                    c.bind(next);
-                    Type::TVar(c)
-                }
-            };
-            links.push(Type::Set(Arc::from_iter([
-                Type::Primitive(Typ::Null.into()),
-                Type::Array(Arc::new(next)),
-            ])));
-        }
-        links.reverse();
-        links
-    }
-
-    /// The steps [`IdenticalMemo`] takes to find each link of a chain of
-    /// `n` identical to its twin's, top first, as an elaboration asks of
-    /// a signature copy's cells.
-    fn identical_chain_steps(n: usize, memo: bool) -> usize {
-        let (l, r) = (identity_chain(n, true), identity_chain(n, false));
-        super::NO_MEMO.with(|m| m.set(!memo));
-        super::IDENTITY_STEPS.with(|s| s.set(0));
-        let mut m = IdenticalMemo::default();
-        for (a, b) in l.iter().zip(r.iter()) {
-            assert_eq!(m.identical(a, b), Identical::Same);
-        }
-        super::NO_MEMO.with(|m| m.set(false));
-        super::IDENTITY_STEPS.with(|s| s.get())
-    }
-
-    // Each question walks the rest of the chain; the memo keeps the pairs
-    // an earlier one found, so the chain is walked once.
-    #[test]
-    fn identical_links_of_a_chain_walk_it_once() {
-        let steps = [100, 200, 400].map(|n| identical_chain_steps(n, true));
-        assert_eq!(steps, [6357, 13257, 27057]);
-        let without = [100, 200, 400].map(|n| identical_chain_steps(n, false));
-        assert_eq!(without, [20301, 80601, 321201]);
-    }
-
-    /// `(i64, .., i64, f)`, enough leaves first that the walk keys `f`.
-    pub(crate) fn past_eager(f: &Type) -> Type {
-        let leaves = (0..NodePairs::EAGER).map(|_| Type::Primitive(Typ::I64.into()));
-        Type::Tuple(Arc::from_iter(leaves.chain([f.clone()])))
-    }
-
-    // Two function types identical only by pairing their own cells: a
-    // later question meeting them again finds them renamed too, so the
-    // caller links their cells.
-    #[test]
-    fn identical_memo_keeps_no_pair_found_by_renaming() {
-        let f = |v: &str| parse_type(&format!("fn(x: '{v}) -> '{v}")).unwrap();
-        let (f0, f1) = (f("a"), f("b"));
-        let mut m = IdenticalMemo::default();
-        for _ in 0..2 {
-            assert_eq!(
-                m.identical(&past_eager(&f0), &past_eager(&f1)),
-                Identical::Renamed
-            );
-        }
-    }
-
-    /// `(fn(q: 'a) -> 'a, leaf)` under `n` links, each a pair of one node.
-    fn fn_pair_dag(n: usize, leaf: Type) -> Type {
-        let f = parse_type("fn(q: 'a) -> 'a").unwrap();
-        f.alias_tvars(&mut AHashMap::default());
-        let x0 = Type::Tuple(Arc::from_iter([f, leaf]));
-        (0..n).fold(x0, |x, _| Type::Tuple(Arc::from_iter([x.clone(), x])))
-    }
-
-    /// The meets the union of alternatives takes over two pair DAGs of
-    /// `n` links ([`fn_pair_dag`], over `i64` and over `Any`), and its
-    /// two members.
-    fn pair_dag_meet(n: usize, memo: bool) -> (usize, [Type; 2]) {
-        let x = fn_pair_dag(n, Type::Primitive(Typ::I64.into()));
-        let y = fn_pair_dag(n, Type::Any);
-        super::NO_MEMO.with(|m| m.set(!memo));
-        super::MEET_STEPS.with(|s| s.set(0));
-        let u = Type::union_of_alternatives(&Env::default(), &[&x, &y]).unwrap();
-        super::NO_MEMO.with(|m| m.set(false));
-        let Type::Set(ms) = &u else { panic!("two members: {u}") };
-        let [m0, m1] = &ms[..] else { panic!("two members: {u}") };
-        (super::MEET_STEPS.with(|s| s.get()), [m0.clone(), m1.clone()])
-    }
-
-    /// `(x, (fn(q: 'a) -> 'a, leaf), x)` under `n` links, each function its
-    /// own: its meet writes cells between the visits of the shared parts.
-    fn fn_between_dag(n: usize, leaf: Type) -> Type {
-        let part = || {
-            let f = parse_type("fn(q: 'a) -> 'a").unwrap();
-            f.alias_tvars(&mut AHashMap::default());
-            Type::Tuple(Arc::from_iter([f, leaf.clone()]))
-        };
-        (0..n).fold(part(), |x, _| Type::Tuple(Arc::from_iter([x.clone(), part(), x])))
-    }
-
-    /// The meets the union of alternatives takes over two DAGs of `n`
-    /// links ([`fn_between_dag`], over `i64` and over `Any`), and its two
-    /// members.
-    fn between_dag_meet(n: usize, memo: bool) -> (usize, [Type; 2]) {
-        let x = fn_between_dag(n, Type::Primitive(Typ::I64.into()));
-        let y = fn_between_dag(n, Type::Any);
-        super::NO_MEMO.with(|m| m.set(!memo));
-        super::MEET_STEPS.with(|s| s.set(0));
-        let u = Type::union_of_alternatives(&Env::default(), &[&x, &y]).unwrap();
-        super::NO_MEMO.with(|m| m.set(false));
-        let Type::Set(ms) = &u else { panic!("two members: {u}") };
-        let [m0, m1] = &ms[..] else { panic!("two members: {u}") };
-        (super::MEET_STEPS.with(|s| s.get()), [m0.clone(), m1.clone()])
-    }
-
-    // The meet of a pair of nodes stands through a write to a cell its
-    // alternatives do not reach, so a function part between two shared
-    // parts does not make each path meet again.
-    #[test]
-    fn the_meet_of_two_dags_with_functions_between_takes_each_pair_once() {
-        for (n, steps) in [(10, 130), (20, 200), (40, 339)] {
-            assert_eq!(between_dag_meet(n, true).0, steps, "{n} links");
-        }
-        let without = [4, 6, 8].map(|n| between_dag_meet(n, false).0);
-        assert_eq!(without, [108, 444, 1788]);
-        let print = |m: &Type| format_with_flags(PrintFlag::DerefTVars, || m.to_string());
-        let ([w0, w1], [o0, o1]) =
-            (between_dag_meet(6, true).1, between_dag_meet(6, false).1);
-        assert_eq!((print(&w0), print(&w1)), (print(&o0), print(&o1)));
-    }
-
-    // A kept meet stands through a write to a cell its alternatives and
-    // met types do not reach, and no longer once one of them is written.
-    #[test]
-    fn a_kept_meet_stands_until_a_cell_it_reaches_is_written() {
-        let (a, b) = (TVar::empty_named(literal!("a")), TVar::empty_named(literal!("b")));
-        let node =
-            |c: &TVar| Type::Tuple(Arc::from_iter([Type::TVar(c.clone()), Type::Any]));
-        let (x, y) = (node(&a), node(&b));
-        let ts = [&x, &y];
-        let mut meets = super::Meets::new();
-        meets.steps = NodePairs::EAGER;
-        let (key, nodes) = meets.key(&ts, &[0, 1]).unwrap();
-        meets.insert(key.clone(), nodes, &ts, None);
-        assert!(meets.get(&key, &ts).is_some());
-        TVar::empty_named(literal!("w")).bind(Type::Primitive(Typ::I64.into()));
-        assert!(meets.get(&key, &ts).is_some());
-        b.bind(Type::Primitive(Typ::I64.into()));
-        assert!(meets.get(&key, &ts).is_none());
-    }
-
-    /// The nodes `t` holds, each once.
-    fn nodes(t: &Type, seen: &mut AHashSet<NodeKey>) {
-        if t.node_key().is_some_and(|k| seen.insert(k))
-            && let Type::Tuple(ps) = t
-        {
-            ps.iter().for_each(|p| nodes(p, seen))
-        }
-    }
-
-    /// The paths of `m0` and `m1` that end in one function node, the
-    /// meet of their alternatives' functions.
-    fn met_paths(m0: &Type, m1: &Type) -> usize {
-        match (m0, m1) {
-            (Type::Tuple(p0), Type::Tuple(p1)) => {
-                p0.iter().zip(p1.iter()).map(|(a, b)| met_paths(a, b)).sum()
-            }
-            (Type::Fn(_), Type::Fn(_)) => (m0.node_key() == m1.node_key()) as usize,
-            _ => 0,
-        }
-    }
-
-    // A select over two pair DAGs that each share their parts meets each
-    // pair of nodes once, with the answer the walk of every path gives,
-    // and each met member is a DAG as its alternative is.
-    #[test]
-    fn the_meet_of_two_pair_dags_takes_each_pair_once() {
-        for (n, steps) in [(10, 93), (20, 121), (40, 183)] {
-            assert_eq!(pair_dag_meet(n, true).0, steps, "{n} links");
-        }
-        let without = [4, 6, 8].map(|n| pair_dag_meet(n, false).0);
-        assert_eq!(without, [63, 255, 1023]);
-        let print = |m: &Type| format_with_flags(PrintFlag::DerefTVars, || m.to_string());
-        let ([w0, w1], [o0, o1]) = (pair_dag_meet(7, true).1, pair_dag_meet(7, false).1);
-        assert_eq!((print(&w0), print(&w1)), (print(&o0), print(&o1)));
-        assert_eq!((met_paths(&w0, &w1), met_paths(&o0, &o1)), (128, 128));
-        let [m0, m1] = pair_dag_meet(40, true).1;
-        let sizes = [m0, m1].map(|m| {
-            let mut seen = AHashSet::default();
-            nodes(&m, &mut seen);
-            seen.len()
-        });
-        assert_eq!(sizes, [99, 99]);
-    }
-
-    // A weld moves one function's cell into the other's; a var that shared
-    // the moved cell reads on through the forward link the weld left.
-    #[test]
-    fn identical_reads_a_welded_cell_through_its_forward_link() {
-        let f = |arg: &str, ret: &str| {
-            let t = parse_type(&format!("fn(x: '{arg}) -> '{ret}")).unwrap();
-            let mut cells = AHashMap::default();
-            t.collect_tvars(&mut cells);
-            cells[ret].alias(&cells[arg]);
-            (t, cells[arg].clone(), cells[ret].clone())
-        };
-        let ((f0, a, r), (f1, b, _)) = (f("a", "r"), f("b", "s"));
-        assert!(union_identical(&f0, &f1));
-        crate::typ::contains::weld(&a, &b);
-        assert!(a.same_cell(&b));
-        assert!(!r.same_cell(&b) && r.stands_for() == b.stands_for());
-        assert!(union_identical(&f0, &f1));
-        assert!(union_identical(&f1, &f0));
-    }
-
-    // A pair found identical is not kept past a write to a cell it read.
-    #[test]
-    fn identical_memo_forgets_at_a_cell_write() {
-        let (a, b) = (TVar::empty_named(literal!("a")), TVar::empty_named(literal!("b")));
-        a.bind(Type::Primitive(Typ::I64.into()));
-        b.bind(Type::Primitive(Typ::I64.into()));
-        let (x, y) = (
-            Type::Array(Arc::new(Type::TVar(a))),
-            Type::Array(Arc::new(Type::TVar(b.clone()))),
-        );
-        let mut m = IdenticalMemo::default();
-        assert_eq!(m.identical(&past_eager(&x), &past_eager(&y)), Identical::Same);
-        b.bind(Type::Primitive(Typ::String.into()));
-        assert_eq!(m.identical(&past_eager(&x), &past_eager(&y)), Identical::Apart);
-    }
-
-    // A walk that takes a kept agreement over cells reads those cells: its
-    // verdict is not kept past a write either.
-    #[test]
-    fn identical_memo_keeps_nothing_built_on_an_agreement_over_cells() {
-        let (a, b) = (TVar::empty_named(literal!("a")), TVar::empty_named(literal!("b")));
-        a.bind(Type::Primitive(Typ::I64.into()));
-        b.bind(Type::Primitive(Typ::I64.into()));
-        let (x, y) = (
-            Type::Array(Arc::new(Type::TVar(a))),
-            Type::Array(Arc::new(Type::TVar(b.clone()))),
-        );
-        let list = |t: &Type| past_eager(&Type::List(Arc::new(t.clone())));
-        let (xs, ys) = (list(&x), list(&y));
-        let mut m = IdenticalMemo::default();
-        assert_eq!(m.identical(&past_eager(&x), &past_eager(&y)), Identical::Same);
-        assert_eq!(m.identical(&xs, &ys), Identical::Same);
-        b.bind(Type::Primitive(Typ::String.into()));
-        assert_eq!(m.identical(&xs, &ys), Identical::Apart);
-    }
-
-    /// An env defining `P<'x, 'y>` as `[Array<'x>, Array<'y>, null]`.
-    fn links_env() -> Env {
-        typed(&[("P<'x, 'y>", "[Array<'x>, Array<'y>, null]")], "null").0
-    }
-
-    /// `n` links over i64, the links from the top, each but the last two
-    /// `P` applied to the two below it: a DAG that holds no cell, as an
-    /// instance's signature over a chain of bounds through `P` is.
-    fn application_links(env: &Env, n: usize) -> Vec<Type> {
-        let mut links = vec![parsed(env, "i64"), parsed(env, "[Array<i64>, null]")];
-        while links.len() < n {
-            let [y, x] = links.last_chunk().unwrap().clone();
-            let params = AHashMap::from_iter([(literal!("x"), x), (literal!("y"), y)]);
-            links.push(parsed(env, "P<'x, 'y>").replace_tvars(&params));
-        }
-        links.reverse();
-        links
-    }
-
-    /// The steps [`IdenticalMemo`] takes to ask every link of one of two
-    /// twin DAGs of `n` links whether it is each link of the other, a cell
-    /// written before each question, as a walk placing a union's members
-    /// asks of them.
-    fn identical_links_steps(n: usize, memo: bool) -> usize {
-        let env = links_env();
-        let (l, r) = (application_links(&env, n), application_links(&env, n));
-        super::NO_MEMO.with(|m| m.set(!memo));
-        super::IDENTITY_STEPS.with(|s| s.set(0));
-        let mut m = IdenticalMemo::default();
-        for (i, a) in l.iter().enumerate() {
-            for (j, b) in r.iter().enumerate() {
-                let writes = super::cell_writes();
-                TVar::empty_named(literal!("w")).bind(Type::Primitive(Typ::I64.into()));
-                assert!(super::cell_writes() > writes);
-                let found = if i == j { Identical::Same } else { Identical::Apart };
-                assert_eq!(m.identical(a, b), found);
-            }
-        }
-        super::NO_MEMO.with(|m| m.set(false));
-        super::IDENTITY_STEPS.with(|s| s.get())
-    }
-
-    // A verdict over two nodes that hold no cell stands through cell
-    // writes, apart or identical, so each pair is walked once.
-    #[test]
-    fn identical_memo_walks_each_pair_of_cell_free_links_once() {
-        let steps = [16, 32, 64].map(|n| identical_links_steps(n, true));
-        assert_eq!(steps, [475, 1963, 8011]);
-        let without = [16, 32, 64].map(|n| identical_links_steps(n, false));
-        assert_eq!(without, [1460, 11124, 87796]);
-    }
-
-    // A difference found at a name whose resolution cell is open is not
-    // kept: filled, the cell names the other side's definition.
-    #[test]
-    fn identical_memo_keeps_no_difference_read_at_an_open_name() {
-        let env = links_env();
-        let filled = parsed(&env, "P<i64, i64>");
-        let open = parse_type("P<i64, i64>").unwrap().scope_refs(&ModPath::root());
-        let mut m = IdenticalMemo::default();
-        assert_eq!(
-            m.identical(&past_eager(&filled), &past_eager(&open)),
-            Identical::Apart
-        );
-        open.seed_refs(&env);
-        assert_eq!(
-            m.identical(&past_eager(&filled), &past_eager(&open)),
-            Identical::Same
-        );
-    }
-
-    /// The steps [`one_type`] takes to find each of `ms` one type with
-    /// the first, as the pick asks of a union's members.
-    fn one_type_steps(ms: &[Type]) -> usize {
-        super::IDENTITY_STEPS.with(|s| s.set(0));
-        for m in ms {
-            assert!(one_type(&ms[0], m) && one_type(m, &ms[0]), "{} is {m}", ms[0]);
-        }
-        super::IDENTITY_STEPS.with(|s| s.get())
-    }
-
-    /// `n` arrays of eight nested unions of the one cell `a`, no two
-    /// nested alike.
-    fn arrays_of_one_cell(n: usize, a: &Type) -> Vec<Type> {
-        let set = |ts: Vec<Type>| Type::Set(Arc::from_iter(ts));
-        let nested = |i: usize| match i % 3 {
-            0 => a.clone(),
-            1 => set(vec![a.clone(), a.clone()]),
-            _ => set(vec![set(vec![a.clone()]), a.clone()]),
-        };
-        (0..n)
-            .map(|k| Type::Array(Arc::new(set((0..8).map(|i| nested(i + k)).collect()))))
-            .collect()
-    }
-
-    // Members that are one type are found one in a walk of their size,
-    // however many the union holds.
-    #[test]
-    fn one_type_walks_members_of_one_cell_in_their_size() {
-        let a = Type::TVar(TVar::empty_named(literal!("a")));
-        let steps = [100, 200, 400].map(|n| one_type_steps(&arrays_of_one_cell(n, &a)));
-        assert_eq!(steps, [8582, 17252, 34582]);
-    }
-
-    /// The steps [`one_type`] takes, both ways, over two arrays of a union
-    /// of `n` open cells: the second's in the reverse order (one type), or
-    /// each lacking a cell the other holds (two).
-    fn one_type_cell_steps(n: usize) -> [usize; 2] {
-        let cells: Vec<Type> = (0..=n)
-            .map(|i| Type::TVar(TVar::empty_named(arcstr::format!("c{i}"))))
-            .collect();
-        let array =
-            |ts: &[Type]| Type::Array(Arc::new(Type::Set(ts.iter().cloned().collect())));
-        let reversed: Vec<Type> = cells[..n].iter().rev().cloned().collect();
-        [
-            (array(&cells[..n]), array(&reversed), true),
-            (array(&cells[1..]), array(&cells[..n]), false),
-        ]
-        .map(|(m0, m1, one)| {
-            super::IDENTITY_STEPS.with(|s| s.set(0));
-            assert_eq!(one_type(&m0, &m1) && one_type(&m1, &m0), one, "{m0}, {m1}");
-            super::IDENTITY_STEPS.with(|s| s.get())
-        })
-    }
-
-    // Two unions of open cells are compared in a walk of their width,
-    // whatever order each holds its cells in and wherever they differ.
-    #[test]
-    fn one_type_walks_unions_of_cells_in_their_width() {
-        let steps = [100, 200, 400].map(one_type_cell_steps);
-        assert_eq!(steps, [[404, 202], [804, 402], [1604, 802]]);
-    }
-
-    // Cells bound to one cell are that cell, in a function type too, and a
-    // cell bound to a type is that type; two open cells are two wherever
-    // they stand, and so are two types that differ under a union.
-    #[test]
-    fn one_type_holds_every_cell_by_identity() {
-        let set = |ts: &[&Type]| Type::Set(ts.iter().map(|t| (*t).clone()).collect());
-        let array = |t: &Type| Type::Array(Arc::new(t.clone()));
-        let var = |n: &'static str| TVar::empty_named(arcstr::ArcStr::from(n));
-        let (a, b, x, y, z) = (var("a"), var("b"), var("x"), var("y"), var("z"));
-        x.bind(Type::TVar(a.clone()));
-        y.bind(Type::TVar(a.clone()));
-        z.bind(Type::Primitive(Typ::I64.into()));
-        let [a, b, x, y, z] = [a, b, x, y, z].map(Type::TVar);
-        let f = |arg: &Type, ret: &Type| {
-            let t = parse_type("fn(v: i64) -> i64").unwrap();
-            let Type::Fn(f) = &t else { unreachable!() };
-            let mut f = (**f).clone();
-            let mut args = f.args.to_vec();
-            args[0].typ = arg.clone();
-            f.args = Arc::from(args);
-            f.rtype = ret.clone();
-            Type::Fn(Arc::new(f))
-        };
-        let (i64s, strs) =
-            (Type::Primitive(Typ::I64.into()), Type::Primitive(Typ::String.into()));
-        for (m0, m1) in [
-            (x.clone(), y.clone()),
-            (array(&set(&[&x, &y])), array(&a)),
-            (f(&set(&[&a, &x]), &a), f(&a, &set(&[&y, &y]))),
-            (set(&[&array(&x), &array(&set(&[&a, &a]))]), array(&y)),
-            (
-                Type::Tuple(Arc::from_iter([set(&[&a, &b]), a.clone()])),
-                Type::Tuple(Arc::from_iter([set(&[&b, &x, &b]), y.clone()])),
-            ),
-            (set(&[&x, &i64s, &set(&[&b, &a])]), set(&[&i64s, &b, &y, &i64s])),
-            (set(&[&z, &a]), set(&[&i64s, &x])),
-            (set(&[&a, &array(&x)]), set(&[&array(&y), &y])),
-            (set(&[&x, &set(&[&y, &a])]), a.clone()),
-        ] {
-            assert!(one_type(&m0, &m1) && one_type(&m1, &m0), "{m0} is {m1}");
-        }
-        for (m0, m1) in [
-            (x.clone(), b.clone()),
-            (f(&a, &a), f(&b, &b)),
-            (f(&a, &b), f(&b, &a)),
-            (f(&set(&[&a, &b]), &a), f(&a, &a)),
-            (array(&set(&[&x, &i64s])), array(&a)),
-            (set(&[&array(&a), &array(&b)]), array(&a)),
-            (
-                Type::Tuple(Arc::from_iter([set(&[&a, &b]), a.clone()])),
-                Type::Tuple(Arc::from_iter([set(&[&b, &x, &b]), b.clone()])),
-            ),
-            (set(&[&a, &i64s]), set(&[&a, &strs])),
-            (set(&[&a, &array(&a)]), set(&[&a, &array(&b)])),
-            (set(&[&z, &a]), set(&[&z, &b])),
-            (set(&[&a, &b]), a.clone()),
-            (set(&[&a, &i64s]), set(&[&a])),
-        ] {
-            assert!(!one_type(&m0, &m1) && !one_type(&m1, &m0), "{m0} is not {m1}");
-        }
     }
 
     /// Walks asking whether a union is one of several, each holding the

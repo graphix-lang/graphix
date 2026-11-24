@@ -317,11 +317,11 @@ const DYNAMIC_MODULE1: &str = r#"
 }
 "#;
 
-run!(dynamic_module1, DYNAMIC_MODULE1, load_refused("signature has i64, implementation has f64"); FuseExpect::Jit);
+run!(dynamic_module1, DYNAMIC_MODULE1, load_refused("val add is declared fn(x: i64) -> i64 but implemented fn(x: f64) -> f64"); FuseExpect::Jit);
 
 const DYNAMIC_MODULE2: &str = r#"
 {
-    let source = "let add = 'a: Number |x: 'a| -> 'a x + x";
+    let source = "let add = 'a: Number + Singleton |x: 'a| -> 'a x + x";
     sys::net::publish("/local/foo", source)?;
     let status = mod foo dynamic {
         sig { use core;
@@ -696,7 +696,7 @@ let result = [a, b]
 // siblings check concurrently and see each other through interfaces.
 run!(
     module_check_decides_no_outer_type,
-    refused("left open: annotate `x` (line 2, column 5)"),
+    refused("left open: annotate `x` (line 2, column 5 in module /test)"),
     "/test.gx" => r#"
 let x = never();
 mod m;
@@ -715,7 +715,7 @@ let y = super::x + 1
 run!(
     module_check_refusal_is_the_first_in_order,
     |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("::a")
-        && format!("{e:#}").ends_with("left open: annotate `x` (line 2, column 5)")),
+        && format!("{e:#}").ends_with("left open: annotate `x` (line 2, column 5 in module /test)")),
     "/test.gx" => r#"
 let x = never();
 mod a;
@@ -741,7 +741,7 @@ let y = super::x + 2
 run!(
     module_check_refusal_names_no_sibling_local,
     |v: Result<&Value>| matches!(v, Err(e) if format!("{e:#}").contains("::n")
-        && format!("{e:#}").ends_with("left open: annotate `x` (line 2, column 5)")),
+        && format!("{e:#}").ends_with("left open: annotate `x` (line 2, column 5 in module /test)")),
     "/test.gx" => r#"
 let x = never();
 mod m;
@@ -1152,6 +1152,26 @@ run!(
     FuseExpect::None
 );
 
+// A module's check that feeds a binding the code around it left open into
+// a variable of its own decides nothing of it: the parent decides it after.
+run!(
+    module_feeding_an_open_outer_binding_leaves_it_open,
+    prints(r#""s""#),
+    "/test.gx" => r#"
+        let x = never();
+        mod m;
+        x <- "s";
+        let result = x
+    "#,
+    "/test/m.gxi" => "val g: fn(a: i64) -> i64;",
+    "/test/m.gx" => r#"
+        let g2 = 'x: Array<['a, null]> |y: 'x, d: 'a| -> 'a d;
+        let r = g2([1], super::x);
+        let g = |a: i64| a
+    "#;
+    FuseExpect::Jit
+);
+
 // A module with no interface writing a name its parent destructured from a
 // holder decides that holder value's copy, never the definition the
 // parent's other reads instantiate.
@@ -1466,7 +1486,7 @@ run!(
 
 run!(
     interface_omits_inferred_bounds,
-    graphix_package_core::testing::refused("the implementation requires 'a: Number"),
+    refused("the implementation requires 'a: Singleton, which the signature does not declare"),
     "/test.gx" => r#"
         mod m;
         let result = m::f([1])
@@ -1501,8 +1521,8 @@ const LOADED_BUILTIN_IN_A_LAMBDA: &str = r#"
 run!(loaded_builtin_in_a_lambda, LOADED_BUILTIN_IN_A_LAMBDA,
     load_refused("defining builtins is not allowed"); FuseExpect::Jit);
 
-// A loaded body's top-level cells are monomorphic: a function writing one
-// is not generalized over it.
+// A loaded body checks as a program's top level does: a function writing a
+// top-level cell stays generic, and the cell takes what every call writes.
 const LOADED_BODY_IS_TOP_LEVEL: &str = r#"
 {
     let status = mod foo dynamic {
@@ -1514,12 +1534,12 @@ const LOADED_BODY_IS_TOP_LEVEL: &str = r#"
             let w = f(1)
         """
     };
-    select status { error as e => e, null as _ => never() }
+    select status { error as e => e, null as _ => foo::w }
 }
 "#;
 
 run!(loaded_body_is_top_level, LOADED_BODY_IS_TOP_LEVEL,
-    load_refused("type mismatch"); FuseExpect::Jit);
+    is(Value::I64(1)); FuseExpect::Jit);
 
 // A loaded body settles what its check deferred before it elaborates.
 const LOADED_BODY_SETTLES: &str = r#"
@@ -1643,12 +1663,12 @@ run!(
     FuseExpect::None
 );
 
-// An import colliding with a declaration of its scope is refused.
+// A list's imports are in force throughout it and a `let` rebinds from
+// where it stands, an imported name as any other.
 run!(
-    an_import_colliding_with_a_declaration_is_refused,
+    a_let_shadows_an_import_of_its_list,
     "{ let len = 1; use array::len; len }",
-    refused("`len` is already defined in this scope; use `as` to rename");
-    FuseExpect::None
+    is(Value::I64(1))
 );
 
 // A `pub use` is refused.
@@ -4201,8 +4221,7 @@ run!(
     };
     r
 }"##,
-    |v: Result<&Value>| matches!(v, Ok(v @ Value::Error(_))
-        if format!("{v}").contains("handler was checked to take Error<ErrChain<i64>>"));
+    load_refused("type mismatch i64 does not contain string");
     FuseExpect::None
 );
 
@@ -4219,7 +4238,7 @@ run!(
     "/test/a.gxi" => r#"trait Show { val show: fn(self) -> string = |s| "dflt" };"#,
     "/test/a.gx" => "",
     "/test/b.gxi" => "use super::a::Show; type T; val mk: fn(x: i64) -> T; impl Show for T;",
-    "/test/b.gx" => "use super::a::Show; type T = Abstract<i64>; let mk = |x| T(x); impl Show for T"
+    "/test/b.gx" => "type T = Abstract<i64>; let mk = |x| T(x); impl Show for T"
 ; FuseExpect::Jit);
 
 // An exported val is one variable: the module's own write and an outside
@@ -4259,9 +4278,7 @@ run!(
     };
     r
 }"##,
-    |v: Result<&Value>| matches!(v, Ok(v @ Value::Error(_))
-        if format!("{v}").contains("saw no error when it was checked")
-            && format!("{v}").contains("`catch(e: Error<ErrChain<string>>)`"));
+    load_refused("this error reaches a catch whose handler was checked to take _");
     FuseExpect::None
 );
 
@@ -4514,8 +4531,9 @@ run!(
         let y = f(2)
     "#; FuseExpect::Jit);
 
-// A predicate bound on a typedef parameter reaches the open members of a
-// union argument on the interface's side as on the implementation's.
+// A typedef a signature applies writes its parameter's bound for the
+// variables it is applied to, a member of a union argument included, on
+// the interface's side as on the implementation's.
 run!(
     interface_typedef_bound_reaches_open_members,
     |v: Result<&Value>| matches!(v, Ok(Value::I64(2))),
@@ -4526,6 +4544,21 @@ run!(
     "/test/m.gxi" => r#"
         type T<'a: Discernible> = Array<'a>;
         val f: fn(x: T<[i64, 'b]>) -> i64
+    "#,
+    "/test/m.gx" => r#"
+        let f = |x: T<[i64, 'b]>| -> i64 array::len(x)
+    "#; FuseExpect::Jit);
+
+run!(
+    interface_typedef_bound_is_the_bound_written_out,
+    |v: Result<&Value>| matches!(v, Ok(Value::I64(2))),
+    "/test.gx" => r#"
+        mod m;
+        let result = m::f([1, 2])
+    "#,
+    "/test/m.gxi" => r#"
+        type T<'a: Discernible> = Array<'a>;
+        val f: fn<'b: Discernible>(x: T<[i64, 'b]>) -> i64
     "#,
     "/test/m.gx" => r#"
         let f = |x: T<[i64, 'b]>| -> i64 array::len(x)

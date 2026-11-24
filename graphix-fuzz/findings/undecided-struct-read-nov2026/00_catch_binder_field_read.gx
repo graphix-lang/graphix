@@ -1,0 +1,8 @@
+// A handler that reads its binder's fields where no `?` raises: the binder
+// is a value nothing decides, so the check accepts the read, and the build
+// must too. The build looked up the field's place in a struct the check
+// never decided and refused "expected struct not _" (soak nov24a, a
+// check-against-build divergence). The read has no layout to take and
+// never runs.
+// Expected trace (both engines): 0.
+{ catch(e) e.0.error; 0 }

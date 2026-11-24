@@ -163,7 +163,7 @@ fn impl_for(
             .collect();
         for tv in im.params.iter() {
             let Some(Type::TVar(fresh)) = open.get(&tv.name) else { continue };
-            for c in tv.cell_constraints() {
+            for c in tv.cell_above() {
                 fresh.add_cell_constraint(c.replace_tvars(&open));
             }
         }
@@ -216,6 +216,9 @@ pub(crate) fn method_ftype(env: &Env, bind: BindId) -> Option<Arc<FnType>> {
 struct HookSite<R: Rt> {
     call: SynthCall<R>,
     first: bool,
+    /// The arena of the bind that built `call`: last, so the call goes
+    /// before its cells do.
+    _arena: crate::typ::tvar::ArenaRef,
 }
 
 /// The hook of one implementation and a pool of sites bound at one
@@ -319,11 +322,12 @@ fn build_site<R: Rt>(
     let types = m.arg_types(&h.typ).into_iter();
     // built mid-cycle, as a run-time bind is: a task of its own, its
     // settles drained when it returns
-    let call = super::with_runtime_settles(ctx, |ctx| {
+    let call = super::as_runtime_bind(ctx, |ctx| {
         SynthCall::build(ctx, &Scope::root(), &prefix, h.bind, &h.ftype, types, top_id)
     });
     ctx.apply_deferred();
-    Ok(HookSite { call: call?, first: true })
+    let (call, _arena) = call?;
+    Ok(HookSite { call, first: true, _arena })
 }
 
 /// What a dispatch found.

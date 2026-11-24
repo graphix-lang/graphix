@@ -11,18 +11,17 @@ use crate::{
     },
     node::{
         op::CmpOp,
-        pattern::{PatternNode, SliceKind, StructPatternNode, StructWidth, set_members},
+        pattern::{PatternNode, SliceKind, StructPatternNode, StructWidth},
         select::Select,
     },
     stack,
-    typ::Type,
+    typ::{Type, bounds::union_of},
 };
 use anyhow::{Result, anyhow, bail};
 use arcstr::ArcStr;
 use cranelift_codegen::ir::{
     Block, BlockArg, InstBuilder, Value as ClifValue, condcodes::IntCC, types,
 };
-use enumflags2::BitFlags;
 use netidx_value::{Typ, Value};
 use smallvec::SmallVec;
 use triomphe::Arc;
@@ -657,6 +656,12 @@ fn emit_composite_pattern_cond_inner(
                 StructWidth::AtLeast(n) => {
                     (leaves, IntCC::SignedGreaterThanOrEqual, crate::rep::STRUCT_BASE + n)
                 }
+                StructWidth::Named(_) => {
+                    return Err(anyhow!(
+                        "emit_clif: a struct pattern over struct types that put its \
+                         fields at different places reads them by name"
+                    ));
+                }
             }
         }
         _ => return Err(anyhow!("emit_clif: not a composite structural pattern")),
@@ -924,9 +929,10 @@ fn is_composite(t: &Type) -> bool {
     )
 }
 
-/// The one composite member of the union `typ` that the structure `sp`,
-/// and the predicate `pred` where there is one, may pass, frozen; `None`
-/// where there is none or more than one.
+/// The composite member of the union `typ` that the structure `sp`, and
+/// the predicate `pred` where there is one, may pass, frozen; several
+/// that are arrays of one form read as that form ([`one_form`]). `None`
+/// where there is none, or they share no form.
 fn composite_member(
     cx: &BodyCx,
     sp: &StructPatternNode,
@@ -936,13 +942,66 @@ fn composite_member(
     let env = cx.ctx.type_env;
     let mut members: SmallVec<[Type; 8]> = SmallVec::new();
     union_members(env, typ, &mut members).ok()?;
-    let mut found = members.iter().filter(|m| {
-        sp.may_admit(env, m) && pred.is_none_or(|p| p.could_pass(env, m).unwrap_or(true))
-    });
-    let member = found.next()?;
-    match found.next() {
-        Some(_) => None,
-        None => freeze_node_typ(cx.ctx, member).filter(is_composite),
+    let passing = members
+        .iter()
+        .filter(|m| {
+            sp.may_admit(env, m)
+                && pred.is_none_or(|p| p.could_pass(env, m).unwrap_or(true))
+        })
+        .map(|m| freeze_node_typ(cx.ctx, m).filter(is_composite))
+        .collect::<Option<SmallVec<[Type; 2]>>>()?;
+    one_form(&passing)
+}
+
+/// The type the values of every one of the composites `members` read as:
+/// tuples of one arity, structs of the same fields or arrays, each part
+/// of any of its members' types.
+fn one_form(members: &[Type]) -> Option<Type> {
+    let (first, rest) = members.split_first()?;
+    if rest.is_empty() {
+        return Some(first.clone());
+    }
+    let part = |of: &dyn Fn(&Type) -> Option<Type>| {
+        members.iter().map(of).collect::<Option<SmallVec<[Type; 2]>>>().map(union_of)
+    };
+    match first {
+        Type::Array(_) => {
+            let elt = part(&|m| match m {
+                Type::Array(e) => Some((**e).clone()),
+                _ => None,
+            })?;
+            Some(Type::Array(Arc::new(elt)))
+        }
+        Type::Tuple(ts) => {
+            let at = |i: usize| {
+                part(&|m| match m {
+                    Type::Tuple(us) if us.len() == ts.len() => Some(us[i].clone()),
+                    _ => None,
+                })
+            };
+            let parts = (0..ts.len()).map(at).collect::<Option<SmallVec<[Type; 8]>>>()?;
+            Some(Type::Tuple(Arc::from_iter(parts)))
+        }
+        Type::Struct(fs) => {
+            let at = |i: usize| {
+                part(&|m| match m {
+                    Type::Struct(gs)
+                        if gs.len() == fs.len()
+                            && gs.iter().zip(fs.iter()).all(|(g, f)| g.0 == f.0) =>
+                    {
+                        Some(gs[i].1.clone())
+                    }
+                    _ => None,
+                })
+            };
+            let fields = fs
+                .iter()
+                .enumerate()
+                .map(|(i, (n, _, w))| Some((n.clone(), at(i)?, w.clone())))
+                .collect::<Option<SmallVec<[_; 8]>>>()?;
+            Some(Type::Struct(Arc::from_iter(fields)))
+        }
+        _ => None,
     }
 }
 
@@ -1489,7 +1548,7 @@ fn emit_inferred_guard_cond(
         }
         None => (pred, true),
     };
-    if pred.contains_with_flags(BitFlags::empty(), env, scrut_typ).unwrap_or(false) {
+    if pred.decided_holds(env, scrut_typ).unwrap_or(false) {
         return Ok((None, whole));
     }
     let cond = match &pred {
@@ -1597,8 +1656,7 @@ fn emit_narrowed_test<R: Rt>(
 ) -> Result<Option<ClifValue>> {
     let env = cx.ctx.type_env;
     let pred = resolve_node_typ(cx.ctx, &pat.type_predicate);
-    let holds =
-        |t: &Type| pred.contains_with_flags(BitFlags::empty(), env, t).unwrap_or(false);
+    let holds = |t: &Type| pred.decided_holds(env, t).unwrap_or(false);
     let by_structure = || {
         pat.structure_predicate.matched_part(env, scrut_typ).is_some_and(|t| holds(&t))
     };
@@ -1774,7 +1832,7 @@ fn type_test_is_trivial<R: Rt>(
     let env = cx.ctx.type_env;
     !scrut_typ.holds_abstract(env)
         && resolve_node_typ(cx.ctx, &pat.type_predicate)
-            .contains_with_flags(BitFlags::empty(), env, scrut_typ)
+            .decided_holds(env, scrut_typ)
             .unwrap_or(false)
 }
 
@@ -2622,7 +2680,8 @@ enum AltSource {
 }
 
 /// The [`OrArm`] of the or-pattern arm `pat`, whose alternatives are
-/// `alts`; its written test, if any, is emitted here.
+/// `alts`: each tests against the members of the arm's predicate its
+/// structure may admit. Its written test, if any, is emitted here.
 fn or_arm<R: Rt>(
     cx: &mut BodyCx,
     pat: &PatternNode<R>,
@@ -2631,9 +2690,6 @@ fn or_arm<R: Rt>(
     scrut_typ: &Type,
 ) -> Result<OrArm> {
     let pred = &pat.type_predicate;
-    if !pat.explicit_type_predicate {
-        return Ok(OrArm { alt_types: set_members(pred, alts.len()), test: None });
-    }
     let env = cx.ctx.type_env;
     let mut members: SmallVec<[Type; 8]> = SmallVec::new();
     union_members(env, pred, &mut members)?;
@@ -2649,7 +2705,10 @@ fn or_arm<R: Rt>(
             }
         })
         .collect();
-    let test = emit_type_test(cx, pat, scrut, scrut_typ)?;
+    let test = match pat.explicit_type_predicate {
+        true => emit_type_test(cx, pat, scrut, scrut_typ)?,
+        false => None,
+    };
     Ok(OrArm { alt_types: Some(alt_types), test })
 }
 

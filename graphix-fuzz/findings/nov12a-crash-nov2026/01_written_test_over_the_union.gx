@@ -1,7 +1,6 @@
-// expect: reject
 // The same union under a written type test, which reads the scrutinee as
 // it stood before the arms through another walk
 // (select.rs::written_tests_decided): `z` is the open cell, `n` the bind.
-// Refused: "(i64, i64) as (v2, v3) tests a value of 'z, a type not
-// decided at this select".
+// The check by bounds decides `z` by the write below it (`z <- i64:2`),
+// so the test is of an (i64, i64) and the program checks.
 { let z = never(); let k: [i64, null] = i64:1; let v0 = select k { null as _ => z, i64 as n => n }; let v1 = select (v0, i64:0) { (i64, i64) as (v2, v3) => v2 }; z <- i64:2; println("[v1]") }

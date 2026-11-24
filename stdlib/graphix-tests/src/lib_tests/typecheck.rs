@@ -8,16 +8,16 @@ use netidx::subscriber::Value;
 // Deserialization builtins require a concrete result type at compile time.
 
 // json::read without a concrete return type is a compile error.
-run!(json_no_type, r#"json::read("42")"#, refused("the type 'b must be fully known here"); FuseExpect::None);
+run!(json_no_type, r#"json::read("42")"#, refused("the type 'b must be known here, an operation reads it to know what to make: annotate where its result goes"); FuseExpect::None);
 
 // toml::read without a concrete return type is a compile error.
-run!(toml_no_type, r#"toml::read("x = 42")"#, refused("the type 'b must be fully known here"); FuseExpect::None);
+run!(toml_no_type, r#"toml::read("x = 42")"#, refused("the type 'b must be known here, an operation reads it to know what to make: annotate where its result goes"); FuseExpect::None);
 
 // pack::read without a concrete return type is a compile error.
-run!(pack_no_type, r#"pack::read(pack::write_bytes(42)$)"#, refused("the type 'b must be fully known here"); FuseExpect::None);
+run!(pack_no_type, r#"pack::read(pack::write_bytes(42)$)"#, refused("the type 'b must be known here, an operation reads it to know what to make: annotate where its result goes"); FuseExpect::None);
 
 // str::parse without a concrete return type is a compile error.
-run!(str_parse_no_type, r#"str::parse("42")"#, refused("the type 'b must be fully known here"); FuseExpect::None);
+run!(str_parse_no_type, r#"str::parse("42")"#, refused("the type 'b must be known here, an operation reads it to know what to make: annotate where its result goes"); FuseExpect::None);
 
 // json::read with a concrete type.
 run!(json_typed_i64, r#"{let v: i64 = json::read("42")?; v}"#, |v: Result<&Value>| {
@@ -114,7 +114,7 @@ run!(
     let results = array::map(data, json::read);
     results[0]
 }"#,
-    refused("the type 'b must be fully known here"); FuseExpect::None);
+    refused("the type 'b must be known here, an operation reads it to know what to make: annotate where its result goes"); FuseExpect::None);
 
 // array::fold: json::read in the fold closure receives its concrete type.
 run!(
@@ -206,7 +206,7 @@ run!(
     sys::net::publish("/local/untyped_sub", 42);
     sys::net::subscribe("/local/untyped_sub")
 }"#,
-    refused("the type 'a must be fully known here");
+    refused("the type 'a must be known here, an operation reads it to know what to make: annotate where its result goes");
     FuseExpect::None
 );
 
@@ -220,7 +220,7 @@ run!(
     f();
     1
 }"#,
-    refused("the type 'b must be fully known here"); FuseExpect::None);
+    refused("the type 'b must be known here, an operation reads it to know what to make: annotate where its result goes"); FuseExpect::None);
 
 run!(
     parse_under_an_abstract_parameter_typed,

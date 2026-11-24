@@ -2,7 +2,7 @@ use anyhow::Result;
 use arcstr::{ArcStr, literal};
 use graphix_package_core::{
     ExitRequest, PrintSink, ProgramArgs, run,
-    testing::{self, FuseExpect, HANG_GUARD, Mode, is},
+    testing::{self, FuseExpect, HANG_GUARD, Mode, is, refused},
 };
 use graphix_rt::GXEvent;
 use netidx::publisher::Value;
@@ -91,7 +91,7 @@ const STDIN_WRITE_ERR: &str = r#"
 run!(
     stdin_write_err,
     STDIN_WRITE_ERR,
-    graphix_package_core::testing::refused("Stdin does not implement Write");
+    refused("type mismatch Write does not contain Stdin");
     FuseExpect::None
 );
 

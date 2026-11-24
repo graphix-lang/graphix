@@ -44,8 +44,7 @@ fn an_instance_leaves_open_what_its_call_left_open() {
 }
 
 /// A site's return that holds a union lower bound member by member takes
-/// an instance's equal union as the same bound: the unify-back narrows
-/// nothing.
+/// an instance's equal union as the same bound: the build narrows nothing.
 #[test]
 fn an_instance_returning_the_sites_union_narrows_nothing() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -71,5 +70,24 @@ fn an_instance_returning_the_sites_union_narrows_nothing() {
         "{}",
         ran.stdout
     );
+    assert!(!ran.stderr.contains("ELAB-AUDIT"), "{}", ran.stderr);
+}
+
+/// A declared variable an instance's body reads the bound of stays as its
+/// call's check left it: the instance's result narrows nothing.
+#[test]
+fn a_read_of_a_declared_variables_bound_narrows_nothing() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let program = "let w = |u| {\n\
+                     let v = |q| 'a: {n: i64} |s: 'a| s.n;\n\
+                     v(u)\n\
+                   };\n\
+                   let f = w(0);\n\
+                   sys::exit(sys::time::after_idle(duration:100.ms, 0));\n\
+                   f({n: 5})\n";
+    let ran =
+        graphix(dir.path(), program, &["--no-cache"], &[("GRAPHIX_ELAB_AUDIT", "1")]);
+    assert!(ran.status.success(), "{}", ran.stderr);
+    assert_eq!(ran.stdout.lines().last(), Some("5"), "{}", ran.stdout);
     assert!(!ran.stderr.contains("ELAB-AUDIT"), "{}", ran.stderr);
 }

@@ -344,7 +344,8 @@ async fn a_callee_reads_its_world_fresh_each_run(mode: Mode) -> Result<()> {
 // run it serves, and a run never completes on the reply that answered the
 // run before it, through a function value or a sample. `RPC` is the call
 // builtin `name`, `RET` its result type, and `ANSWER` takes the answer
-// from that.
+// from that. A select of lambdas is one instance, so the lambdas it holds
+// write the result type that no call of theirs decides.
 async fn steps_rpc_answer_their_own_runs(
     mode: Mode,
     name: &str,
@@ -370,12 +371,12 @@ async fn steps_rpc_answer_their_own_runs(
             let load1 = |u| RPC(p, null);
             let nested = |u| u ~ load();
             let pick = select runs {
-                100 => |q| RPC(q, null),
-                _ => |q| RPC(q, null)
+                100 => |q| -> RET RPC(q, null),
+                _ => |q| -> RET RPC(q, null)
             };
             let bound = select t {
-                100 => || RPC(p, null),
-                _ => || RPC(p, null)
+                100 => || -> RET RPC(p, null),
+                _ => || -> RET RPC(p, null)
             };
             let apply = |f: fn(q: string) -> RET| f(p);
             let r = seq t {

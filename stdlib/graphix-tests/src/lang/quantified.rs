@@ -201,7 +201,7 @@ run!(
 run!(
     a_callbacks_result_is_one_instance,
     "{ let fs = array::map([1], |r| |x| x); let g = fs[0]$; (g(1), g(\"s\")) }",
-    refused("does not contain string");
+    prints("[i64:1, \"s\"]");
     FuseExpect::None
 );
 
@@ -215,7 +215,7 @@ run!(
 run!(
     a_generic_binding_read_into_a_callbacks_result_is_one_instance,
     "{ let id = |x| x; let fs = array::map([1], |r| id); let g = fs[0]$; (g(1), g(\"s\")) }",
-    refused("does not contain string");
+    prints("[i64:1, \"s\"]");
     FuseExpect::None
 );
 
@@ -226,7 +226,7 @@ run!(
     "{ type W<'t> = Abstract<'t>; let y = never(); \
      let g = |x| { y <- array::map([x], |e| W(e)); x }; \
      let b = g(\"s\"); select y { [w, ..] => w.0 + 1, _ => 0 } }",
-    refused("cannot compute string + i64");
+    refused("type mismatch i64 does not contain string");
     FuseExpect::None
 );
 
@@ -235,7 +235,7 @@ run!(
     "{ type W<'t> = Abstract<'t>; let y = never(); let mkw = |e| W(e); \
      let g = |x| { y <- array::map([x], mkw); x }; \
      let b = g(\"s\"); select y { [w, ..] => w.0 + 1, _ => 0 } }",
-    refused("cannot compute string + i64");
+    refused("type mismatch i64 does not contain string");
     FuseExpect::None
 );
 
@@ -249,24 +249,24 @@ run!(
 );
 
 run!(
-    a_function_writing_a_callbacks_result_out_is_one_instance,
+    a_function_writing_a_callbacks_result_out_stays_generic,
     "{ type W<'t> = Abstract<'t>; let y = never(); \
      let g = |x| { y <- array::map([x], |e| W(e)); x }; (g(1), g(\"s\")) }",
-    refused("does not contain string");
-    FuseExpect::None
+    prints("[i64:1, \"s\"]");
+    FuseExpect::Jit
 );
 
 run!(
     a_functions_result_is_one_instance,
     "{ let mk = |z| 'a: Number |x: 'a| x; let h = mk(0); (h(1), h(1.5)) }",
-    refused("does not contain f64");
+    prints("[i64:1, f64:1.5]");
     FuseExpect::None
 );
 
 run!(
     a_field_of_a_calls_result_is_one_instance,
     "{ let mk = |z| {f: |x| x}; let h = mk(0).f; (h(1), h(\"s\")) }",
-    refused("does not contain string");
+    prints("[i64:1, \"s\"]");
     FuseExpect::None
 );
 
@@ -278,9 +278,9 @@ run!(
 );
 
 run!(
-    a_projection_of_a_tuple_literal_is_one_instance,
+    a_projection_of_a_tuple_literal_is_generic,
     "{ let id = |x| x; let k = (id, 1).0; (k(1), k(\"s\")) }",
-    refused("does not contain string");
+    prints("[i64:1, \"s\"]");
     FuseExpect::None
 );
 
@@ -338,7 +338,7 @@ run!(
 run!(
     a_reference_to_a_generic_function_is_one_instance,
     "{ let f = |x| x; let r = &f; ((*r)(1), (*r)(\"s\")) }",
-    refused("does not contain string");
+    prints("[i64:1, \"s\"]");
     FuseExpect::None
 );
 
@@ -352,7 +352,7 @@ run!(
 run!(
     a_written_field_alias_is_one_instance,
     "{ let s = {g: |x| x}; let j = s.g; j <- |x| x; (j(1), j(\"s\")) }",
-    refused("does not contain string");
+    prints("[i64:1, \"s\"]");
     FuseExpect::None
 );
 
@@ -459,24 +459,31 @@ destructured_and_written! {
     a_struct_name_taken_from_a_holder_and_written_is_one_instance =>
         "{ let s = {f: |x| x, n: 1}; let {f, n} = s; let a = f(\"a\"); \
            f <- |x: i64| x + 1; a }",
-        "f is fn(x: string) -> string and cannot hold fn(x: i64) -> i64",
+        "i64 does not contain string",
     a_name_taken_from_a_holder_s_field_and_written_is_one_instance =>
         "{ let s = {a: {f: |x| x, n: 1}}; let {f, n} = s.a; let a = f(\"a\"); \
            f <- |x: i64| x + 1; a }",
-        "f is fn(x: string) -> string and cannot hold fn(x: i64) -> i64",
+        "i64 does not contain string",
     a_name_taken_from_a_holder_s_element_and_written_is_one_instance =>
         "{ let s = ((|x| x, 1), 2); let (f, n) = s.0; let a = f(\"a\"); \
            f <- |x: i64| x + 1; a }",
-        "f is fn(x: string) -> string and cannot hold fn(x: i64) -> i64",
+        "i64 does not contain string",
     a_capture_of_a_holder_written_is_one_instance =>
         "{ let s = {f: |x| x, n: 1}; let u@ {f, n} = s; let a = u.f(\"a\"); \
            u <- {f: |x: i64| x + 1, n: 2}; a }",
-        "u is { f: fn(x: string) -> string, n: i64 } and cannot hold",
+        "i64 does not contain string",
     a_seq_step_s_name_taken_from_a_literal_and_written_is_one_instance =>
         "seq { let (g, k) = (|x| x, |y| y); let h = |z| g(z); let a = h(\"s\"); \
            let rg = &mut g; *rg <- |x: i64| x + 100; let b = 1; let c = 2; (a, h(\"t\")) }",
-        "does not contain fn(x: i64) -> i64",
+        "i64 does not contain string",
 }
+
+run!(
+    a_literal_s_name_beside_a_written_one_is_generic,
+    r#"{ let (f, n) = (|x| x, 1); n <- 2; (f(1), f("s")) }"#,
+    prints(r#"[i64:1, "s"]"#);
+    FuseExpect::None
+);
 
 run!(
     a_name_taken_from_a_holder_beside_a_written_one_is_generic,
@@ -500,9 +507,13 @@ macro_rules! written_after_the_check {
     ($($name:ident => $test:expr,)*) => {$(
         run!(
             $name,
-            refused("it holds a type variable of the code around the write; to write \
-                     it at one type, write that type on its let (on its val, where an \
-                     interface declares it)"),
+            refused_renumbered(
+                "test::m::j is fn(x: '_0: unbound within '_1: unbound) -> '_1: unbound, \
+                 a generic binding, so what is written to it must be as general, and \
+                 '_2: unbound within fn(x: '_0_1: unbound within '_1_1: unbound) -> \
+                 '_1_1: unbound is not: it holds a type variable of the code around the \
+                 write; to write it at one type, write that type on its let"
+            ),
             "/test.gx" => $test,
             "/test/m.gx" => "let s = {g: |x| x}; let j = s.g"
         );
@@ -823,10 +834,10 @@ run!(
 // probe: design/review-2026-11-16/repro/tests-lang-rest-c-seq-holder-call-part.sh
 // (tests-lang-rest-c-01)
 run!(
-    a_holder_with_a_call_part_in_a_seq_step_is_one_instance,
+    a_holder_with_a_call_part_in_a_seq_step_is_generic,
     "seq { let s = {g: |x| x, n: str::len(\"ab\")}; (s.g(1), s.g(\"s\"), s.n) }",
-    refused("does not contain string");
-    FuseExpect::None
+    prints("[i64:1, \"s\", i64:2]");
+    FuseExpect::Jit
 );
 
 run!(
@@ -958,8 +969,8 @@ run!(
     a_holder_a_seqq_step_writes_is_one_instance,
     "{ let s = {g: |x| x}; let put = |v| { s <- v; 0 }; \
        seqq 1 { put({g: |x| x}); (s.g(1), s.g(\"s\")) } }",
-    refused("does not contain string");
-    FuseExpect::None
+    prints("[i64:1, \"s\"]");
+    FuseExpect::Jit
 );
 
 run!(
@@ -1001,7 +1012,7 @@ run!(
     a_seqq_step_in_a_holder_decides_the_holders_copy,
     "{ let k = |p: {g: fn(x: i64) -> i64}| 0; let s = {g: |x| x}; \
        let t = {a: s, b: seqq 1 { k(s) }}; (t.a.g(\"x\"), t.b) }",
-    refused("i64 does not contain string");
+    refused("a value here is used as i64 and as string, and no value is both");
     FuseExpect::None
 );
 
@@ -1090,9 +1101,9 @@ run!(
 // Two reads of one holder's field in an array meet as two names' reads do:
 // an element of data is one instance.
 run!(
-    two_reads_of_a_holder_field_in_an_array_are_one_instance,
+    two_reads_of_a_holder_field_in_an_array_are_generic,
     "{ let s = {g: |x| x}; let a = [s.g, s.g]; (a[0]$(1), a[1]$(\"s\")) }",
-    refused("does not contain string");
+    prints("[i64:1, \"s\"]");
     FuseExpect::None
 );
 
@@ -1106,10 +1117,10 @@ run!(
 // A value a program writes in a seq step is judged as the same `let`
 // outside a seq: only the lowering's own forms pass a scheme on.
 run!(
-    a_program_s_tuple_read_in_a_seq_step_is_one_instance,
+    a_program_s_tuple_read_in_a_seq_step_is_generic,
     "{ let s = {g: |x| x}; seq { let j = (1, s.g).1; (j(1), j(\"s\")) } }",
-    refused("does not contain string");
-    FuseExpect::None
+    prints("[i64:1, \"s\"]");
+    FuseExpect::Jit
 );
 
 run!(
@@ -1120,10 +1131,10 @@ run!(
 );
 
 run!(
-    a_program_s_sample_in_a_seq_step_is_one_instance,
+    a_program_s_sample_in_a_seq_step_is_generic,
     "{ let s = {g: |x| x}; let k = 1; seq { let h = k ~! s.g; (h(1), h(\"s\")) } }",
-    refused("does not contain string");
-    FuseExpect::None
+    prints("[i64:1, \"s\"]");
+    FuseExpect::Jit
 );
 
 run!(
@@ -1134,10 +1145,10 @@ run!(
 );
 
 run!(
-    a_program_s_any_in_a_seq_step_is_one_instance,
+    a_program_s_any_in_a_seq_step_is_generic,
     "{ let s = {g: |x| x}; seq { let h = any(s.g, s.g); (h(1), h(\"s\")) } }",
-    refused("does not contain string");
-    FuseExpect::None
+    prints("[i64:1, \"s\"]");
+    FuseExpect::Jit
 );
 
 run!(
@@ -1152,16 +1163,7 @@ run!(
 run!(
     a_destructured_holder_in_a_seq_step_is_refused_at_its_let,
     "seq { let (g, m, z) = (|x| x, 1); g(m) }",
-    |v: anyhow::Result<&Value>| matches!(v, Err(e) if {
-        let e = format!("{e:#}");
-        let identity = e
-            .split_once("match error (fn(x: ")
-            .and_then(|(_, r)| r.split_once(": unbound) -> "))
-            .is_some_and(|(x, r)| r.starts_with(x));
-        e.contains("in: let result = seq { let (g, m, z) = ")
-            && e.contains("column: 20 in module /test: match error")
-            && identity
-    });
+    refused_renumbered("type mismatch (Any, Any, Any) does not contain (fn(x: '_0: unbound within '_1: unbound) -> '_1: unbound, i64)");
     FuseExpect::None
 );
 
@@ -1224,14 +1226,9 @@ run!(
     FuseExpect::Jit
 );
 
-// A method's annotation writes no scheme of its own: the trait's
-// declaration is the scheme, which the method is held to.
-const OUTSIDE_V: &str =
-    "that of v, a binding outside its let: give v a type that holds every 'a";
-
 run!(
     a_quantified_trait_default_writing_an_outer_binding_is_refused,
-    refused(OUTSIDE_V),
+    refused("where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
     "/test.gx" => r#"
         let v = never();
         trait T { val m: fn<'a: Any>(self, x: 'a) -> 'a = |s, x| { v <- x; x } };
@@ -1265,7 +1262,7 @@ run!(
 
 run!(
     an_impl_methods_quantified_annotation_over_an_outer_writer_is_refused,
-    refused(OUTSIDE_V),
+    refused("where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
     "/test.gx" => r#"
         trait T { val m: fn(self, x: 'a) -> 'a };
         let v = never();
@@ -1277,7 +1274,7 @@ run!(
 
 run!(
     an_impl_method_over_a_select_of_lambdas_is_refused,
-    refused("its value is neither a lambda nor, with no annotation, a generic binding's read, so no call copies its types; make the method a lambda over variables of its own"),
+    refused("where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
     "/test.gx" => r#"
         trait Id { val id: fn(self, x: 'a) -> 'a };
         impl Id for i64 { let id = select true { true => |s, x| x, false => |s, x| x } };
@@ -1297,7 +1294,7 @@ run!(
 
 run!(
     an_impl_methods_quantified_annotation_over_a_makers_result_is_refused,
-    refused("its value is neither a lambda nor, with no annotation, a generic binding's read, so no call copies its types"),
+    refused("where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
     "/test.gx" => r#"
         trait T { val m: fn(self, x: 'a) -> 'a };
         let mk = |z| { let v = never(); |s: i64, x| { v <- x; v } };
@@ -1318,7 +1315,7 @@ run!(
 
 run!(
     an_unannotated_impl_method_under_a_quantified_val_writing_an_outer_binding_is_refused,
-    refused(OUTSIDE_V),
+    refused("where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
     "/test.gx" => r#"
         let v = never();
         trait T { val m: fn<'a: Any>(self, x: 'a) -> 'a };
@@ -1341,7 +1338,7 @@ run!(
 
 run!(
     a_makers_result_as_an_impl_method_under_a_quantified_val_is_refused,
-    refused("its value is neither a lambda nor, with no annotation, a generic binding's read, so no call copies its types"),
+    refused("where the signature declares 'a, a type each use picks, the implementation writes it to a binding outside its let, which has one type all uses share: give that binding a type that holds every 'a, or declare the signature at one type"),
     "/test.gx" => r#"
         let mk = |z| |s: i64, x| { z <- x; z };
         trait T { val m: fn<'a: Any>(self, x: 'a) -> 'a };
@@ -1352,7 +1349,7 @@ run!(
 
 run!(
     a_declared_bound_a_call_meets_prints_once,
-    refused("does not contain fn<'c: Number>(y: 'c: unbound within Number) -> 'c: unbound within Number"),
+    refused("type mismatch string does not contain fn(y: 'c: unbound within Number) -> 'c: unbound within Number"),
     "/test.gx" => r#"
         let f = 'a: Number |x: 'a| -> 'a x;
         let result: string = 'c: Number |y: 'c| -> 'c f(y)
@@ -1361,7 +1358,7 @@ run!(
 
 run!(
     a_trait_bound_a_call_meets_prints_once,
-    refused("does not contain fn<'q: T>(s: 'q: unbound within T) -> i64"),
+    refused("type mismatch string does not contain fn(s: 'q: _) -> i64"),
     "/test.gx" => r#"
         trait T { val m: fn(self) -> i64 };
         impl T for i64 { let m = |s| s };
@@ -1372,7 +1369,7 @@ run!(
 
 run!(
     a_bound_holding_a_variable_a_method_meets_prints_once,
-    refused("x: 'a: unbound within Array<'b1: unbound within Number>) -> 'a: unbound within Array<'b1: unbound within Number>"),
+    refused("type mismatch string does not contain fn(self: '#self: unbound within T, x: 'a: unbound within Array<'b: unbound within Number>) -> 'a: unbound within Array<'b: unbound within Number>"),
     "/test.gx" => r#"
         trait T { val m: fn<'a: Array<'b>, 'b: Number>(self, x: 'a) -> 'a };
         impl T for i64 { let m = |s, x| x };
@@ -1382,7 +1379,7 @@ run!(
 
 run!(
     a_body_needing_more_of_a_variable_than_its_bound_is_refused_at_a_call,
-    refused("the body needs 'c within Number, which the signature does not declare: write 'c: Number"),
+    refused("type mismatch Number does not contain 'c"),
     "/test.gx" => r#"
         let f = 'a: Number |x: 'a| -> 'a x;
         let g = 'c: Any |y: 'c| -> 'c f(y);
@@ -1392,7 +1389,7 @@ run!(
 
 run!(
     a_body_needing_more_of_a_variable_than_its_bound_names_the_bound_to_write,
-    refused("write 'c: [i64, string] + Number"),
+    refused("type mismatch Number does not contain 'c"),
     "/test.gx" => r#"
         let f = 'a: Number |x: 'a| -> 'a x;
         let g = 'c: [i64, string] |y: 'c| -> 'c f(y);
@@ -1422,7 +1419,7 @@ run!(
 
 run!(
     a_body_needing_more_of_a_variable_than_its_bound_is_refused_at_an_operator,
-    refused("the body needs 'a within Number, which the signature does not declare: write 'a: Number"),
+    refused("the body needs 'a within Number + Singleton, which the signature does not declare: write 'a: Number + Singleton"),
     "/test.gx" => r#"
         let f = 'a: Any |x: 'a, y: 'a| -> 'a x + y;
         let result = f(1, 2)
@@ -1430,8 +1427,8 @@ run!(
 );
 
 run!(
-    a_body_needing_more_of_a_variable_than_its_bound_is_refused_at_an_ordering,
-    refused("the body needs 'a within Ordered, which the signature does not declare: write 'a: Number + Ordered"),
+    an_ordering_over_a_number_variable_needs_no_ordered_written,
+    prints("true"),
     "/test.gx" => r#"
         let f = 'a: Number |x: 'a, y: 'a| x < y;
         let result = f(1, 2)
@@ -1439,8 +1436,17 @@ run!(
 );
 
 run!(
+    a_body_needing_more_of_a_variable_than_its_bound_is_refused_at_an_ordering,
+    refused("the body needs 'a within Ordered, which the signature does not declare: add Ordered to the bound of 'a"),
+    "/test.gx" => r#"
+        let f = 'a: Any |x: 'a, y: 'a| x < y;
+        let result = f(1, 2)
+    "#
+);
+
+run!(
     a_body_needing_more_of_a_variable_than_its_bound_is_refused_at_an_equality,
-    refused("the body needs 'a within Discernible, which the signature does not declare: write 'a: Discernible"),
+    refused("the body needs 'a within Discernible, which the signature does not declare: add Discernible to the bound of 'a"),
     "/test.gx" => r#"
         let f = 'a: Any |x: 'a, y: 'a| x == y;
         let result = f(1, 2)
@@ -1457,10 +1463,19 @@ run!(
 );
 
 run!(
-    arithmetic_over_a_number_variable_needs_no_singleton_written,
-    is(Value::I64(3)),
+    arithmetic_over_a_number_variable_needs_singleton_written,
+    refused("the body needs 'a within Singleton, which the signature does not declare: write 'a: Number + Singleton"),
     "/test.gx" => r#"
         let f = 'a: Number |x: 'a, y: 'a| -> 'a x + y;
+        let result = f(1, 2)
+    "#
+);
+
+run!(
+    arithmetic_over_a_variable_declared_one_number,
+    is(Value::I64(3)),
+    "/test.gx" => r#"
+        let f = 'a: Number + Singleton |x: 'a, y: 'a| -> 'a x + y;
         let result = f(1, 2)
     "#
 );
@@ -1475,8 +1490,8 @@ run!(
 );
 
 run!(
-    a_variable_nothing_declares_takes_the_bound_its_body_needs,
-    is(Value::I64(1)),
+    a_variable_written_bare_takes_no_bound_from_its_body,
+    refused("the body needs 'c within Number, which the signature does not declare: write 'c: Number"),
     "/test.gx" => r#"
         let f = 'a: Number |x: 'a| -> 'a x;
         let g = |y: 'c| -> 'c f(y);
@@ -1486,7 +1501,7 @@ run!(
 
 run!(
     a_printed_quantifier_is_not_read_for_a_cell_of_its_name,
-    refused("but implemented fn<'a1: Number>(y: Array<'a: unbound>, x: 'a1: unbound within Number) -> 'a1: unbound within Number:"),
+    refused_renumbered("val g is declared fn(y: Array<i64>, x: string) -> string but implemented fn<'a1: Number>(y: '_0: unbound within Array<'a: unbound>, x: 'a1: unbound within Number) -> 'a1: unbound within Number: type mismatch Number does not contain string"),
     "/test.gx" => "mod m; let result = 0",
     "/test/m.gxi" => "val g: fn(y: Array<i64>, x: string) -> string;",
     "/test/m.gx" => "let g = 'a: Number |y, x: 'a| -> 'a { let z = array::len(y); x }"
@@ -1494,7 +1509,7 @@ run!(
 
 run!(
     a_printed_quantifier_is_renamed_inside_a_binding_too,
-    refused("but implemented fn<'a1: Number>(y: Array<'a: unbound>, x: 'a1: unbound within Number) -> Array<'a1: unbound within Number>:"),
+    refused_renumbered("val g is declared fn(y: Array<i64>, x: string) -> string but implemented fn<'a1: Number>(y: '_0: unbound within Array<'a: unbound>, x: 'a1: unbound within Number) -> Array<'a1: unbound within Number>: type mismatch Number does not contain string"),
     "/test.gx" => "mod m; let result = 0",
     "/test/m.gxi" => "val g: fn(y: Array<i64>, x: string) -> string;",
     "/test/m.gx" => "let g = 'a: Number |y, x: 'a| { let z = array::len(y); [x] }"
@@ -1522,14 +1537,14 @@ run!(
 run!(
     one_read_names_its_variable_apart_from_a_cell_of_its_name,
     "{ let g = 'a: Number |y, x: 'a| -> 'a { let z = array::len(y); x }; let h: fn(y: Array<i64>, x: string) -> string = g; h }",
-    refused("does not contain fn(y: Array<'a: i64>, x: 'a1: unbound within Number) -> 'a1: unbound within Number");
+    refused("type mismatch Number does not contain string");
     FuseExpect::None
 );
 
 run!(
     one_read_names_an_inner_variable_apart_from_an_outer_of_its_name,
     "{ let g = 'a: Number |x: 'a| 'a: Number |y: 'a| [x, y]; let h: fn(x: string) -> string = g; h }",
-    refused("does not contain fn(x: 'a: unbound within Number) -> fn(y: 'a1: unbound within Number) -> Array<['a: unbound within Number, 'a1: unbound within Number]>");
+    refused("type mismatch Number does not contain string");
     FuseExpect::None
 );
 
@@ -1539,48 +1554,76 @@ run!(
 run!(
     two_instances_in_one_printed_type_name_their_variables_apart,
     "{ let mk = |z: i64| 'a: Number |x: 'a| -> 'a x; let h = mk(0); let k = mk(1); let y = never(); y <- (h, k); let r = y.0(1); let s = y.1(1.5); y <- 1; y }",
-    refused("y is (fn(x: 'a: i64) -> 'a: i64, fn(x: 'a1: f64) -> 'a1: f64) and cannot hold i64");
+    refused("i64 has no element 0");
+    FuseExpect::None
+);
+
+run!(
+    two_instances_one_decided_and_an_i64_written_to_one_binding_widen_it,
+    "{ let mk = |z: i64| 'a: Number |x: 'a| -> 'a x; let h = mk(0); let k = mk(1); let r = h(1); let y = never(); y <- (h, k); y <- 1; y }",
+    prints("[abstract:, abstract:]");
     FuseExpect::None
 );
 
 run!(
     two_instances_in_one_printed_type_stay_apart_while_one_is_open,
-    "{ let mk = |z: i64| 'a: Number |x: 'a| -> 'a x; let h = mk(0); let k = mk(1); let r = h(1); let y = never(); y <- (h, k); y <- 1; y }",
-    refused("y is (fn(x: 'a: i64) -> 'a: i64, fn(x: 'a1: unbound within Number) -> 'a1: unbound within Number) and cannot hold i64");
+    "{ let mk = |z: i64| 'a: Number |x: 'a| -> 'a x; let h = mk(0); let k = mk(1); let r = h(1); let y: i64 = never(); y <- (h, k); y }",
+    refused("y is i64 and cannot hold (fn(x: 'a: unbound within Number & i64 above i64) -> 'a: unbound within Number & i64 above i64, fn(x: 'a1: unbound within Number) -> 'a1: unbound within Number)");
     FuseExpect::None
 );
 
 // One message prints a cell under one name in each type it shows.
 run!(
-    one_message_names_a_cell_alike_in_each_type_it_prints,
+    two_instances_and_one_of_them_written_to_one_binding_widen_it,
     "{ let mk = |z: i64| 'a: Number |x: 'a| -> 'a x; let h = mk(0); let k = mk(1); let r = k(1.5); let y = never(); y <- (h, k); y <- k; y }",
-    refused("y is (fn(x: 'a: unbound within Number) -> 'a: unbound within Number, fn(x: 'a1: f64) -> 'a1: f64) and cannot hold fn(x: 'a1: f64) -> 'a1: f64");
+    prints("[abstract:, abstract:]");
+    FuseExpect::None
+);
+
+run!(
+    one_message_names_a_cell_alike_in_each_type_it_prints,
+    "{ let mk = |z: i64| 'a: Number |x: 'a| -> 'a x; let h = mk(0); let k = mk(1); let r = k(1.5); let y: i64 = never(); y <- (h, k); y }",
+    refused("y is i64 and cannot hold (fn(x: 'a: unbound within Number) -> 'a: unbound within Number, fn(x: 'a1: unbound within Number & f64 above f64) -> 'a1: unbound within Number & f64 above f64); declare y: [i64, (fn(x: 'a) -> 'a, fn(x: f64) -> f64)]");
     FuseExpect::None
 );
 
 // Both sides of a type mismatch are one message: two definitions' cells of
 // one declared name print apart.
 run!(
-    a_type_mismatch_prints_two_definitions_cells_apart,
+    an_instance_passed_at_another_type_takes_both,
     "{ let f = 'a: Number |x: 'a, g: fn(y: 'a) -> 'a| -> 'a g(x); let mk = |z: i64| 'a: Number |x: 'a| -> 'a x; let h = mk(0); let r = h(1); f(1.5, h) }",
-    refused("type mismatch fn(y: 'a: f64) -> 'a: f64 does not contain fn(x: 'a1: i64) -> 'a1: i64");
+    prints("f64:1.5");
     FuseExpect::None
 );
 
 // A name numbered apart is none the printed type declares: `m`'s `'a1`
 // stays its own.
 run!(
-    a_name_numbered_apart_takes_no_name_the_type_declares,
+    three_instances_and_an_i64_written_to_one_binding_widen_it,
     "{ let mk = |z: i64| 'a: Number |x: 'a| -> 'a x; let h = mk(0); let k = mk(1); let mk1 = |z: i64| 'a1: Number |x: 'a1| -> 'a1 x; let m = mk1(0); let y = never(); y <- (h, k, m); y <- 1; y }",
-    refused("y is (fn(x: 'a: unbound within Number) -> 'a: unbound within Number, fn(x: 'a2: unbound within Number) -> 'a2: unbound within Number, fn(x: 'a1: unbound within Number) -> 'a1: unbound within Number) and cannot hold i64");
+    prints("[abstract:, abstract:, abstract:]");
+    FuseExpect::None
+);
+
+run!(
+    a_name_numbered_apart_takes_no_name_the_type_declares,
+    "{ let mk = |z: i64| 'a: Number |x: 'a| -> 'a x; let h = mk(0); let k = mk(1); let mk1 = |z: i64| 'a1: Number |x: 'a1| -> 'a1 x; let m = mk1(0); let y: i64 = never(); y <- (h, k, m); y }",
+    refused("y is i64 and cannot hold (fn(x: 'a: unbound within Number) -> 'a: unbound within Number, fn(x: 'a2: unbound within Number) -> 'a2: unbound within Number, fn(x: 'a1: unbound within Number) -> 'a1: unbound within Number)");
     FuseExpect::None
 );
 
 // One instance held twice is one cell, under one name.
 run!(
-    one_instance_twice_in_one_printed_type_keeps_one_name,
+    one_instance_twice_and_an_i64_written_to_one_binding_widen_it,
     "{ let mk = |z: i64| 'a: Number |x: 'a| -> 'a x; let h = mk(0); let y = never(); y <- (h, h); y <- 1; y }",
-    refused("y is (fn(x: 'a: unbound within Number) -> 'a: unbound within Number, fn(x: 'a: unbound within Number) -> 'a: unbound within Number) and cannot hold i64");
+    prints("[abstract:, abstract:]");
+    FuseExpect::None
+);
+
+run!(
+    one_instance_twice_in_one_printed_type_keeps_one_name,
+    "{ let mk = |z: i64| 'a: Number |x: 'a| -> 'a x; let h = mk(0); let y: i64 = never(); y <- (h, h); y }",
+    refused("y is i64 and cannot hold (fn(x: 'a: unbound within Number) -> 'a: unbound within Number, fn(x: 'a: unbound within Number) -> 'a: unbound within Number)");
     FuseExpect::None
 );
 
@@ -1589,7 +1632,7 @@ run!(
 run!(
     a_union_over_two_declared_variables_prints_both_members,
     r#"{ let f = |c: bool, x: 'a, y: 'b| { let s = select c { true => |p: 'a| p, false => |q: 'b| q }; let n: i64 = s; n }; f(false, 1, "s") }"#,
-    refused("i64 does not contain [fn(p: 'a: unbound) -> 'a: unbound, fn(q: 'b: unbound) -> 'b: unbound]");
+    refused("type mismatch i64 does not contain fn(p: 'a: unbound) -> 'a: unbound");
     FuseExpect::None
 );
 
@@ -1599,21 +1642,21 @@ run!(
 run!(
     two_instances_of_an_inferred_generic_print_apart_in_a_union,
     r#"{ let f = |c: bool, x: 'a, y: 'b| { let mk = |v| |p| (v, p); let s = select c { true => mk(x), false => mk(y) }; let n: i64 = s; n }; f(false, 1, "s") }"#,
-    refused_renumbered("i64 does not contain [fn(p: '_0: unbound) -> ('a: unbound, '_0: unbound), fn(p: '_0_1: unbound) -> ('b: unbound, '_0_1: unbound)]");
+    refused("type mismatch i64 does not contain fn(p: _) -> ('a: unbound, _)");
     FuseExpect::None
 );
 
 run!(
     two_instances_of_an_inferred_generic_print_apart_in_a_callee,
     r#"{ let f = |c: bool, x: 'a, y: 'b| { let mk = |v| |p| (v, p); let s = select c { true => mk(x), false => mk(y) }; let r: i64 = s(1); r }; f(false, 1, "s") }"#,
-    refused_renumbered("this callee is one of fn(p: '_0: unbound) -> ('a: unbound, '_0: unbound) and fn(p: '_0_1: unbound) -> ('b: unbound, '_0_1: unbound);");
+    refused("type mismatch i64 does not contain ('a: unbound, i64)");
     FuseExpect::None
 );
 
 run!(
     two_instances_of_an_inferred_generic_name_their_cells_apart,
     r#"{ let mk = |v| |p| (v, p); let c = true; let s = select c { true => mk(1), false => mk("s") }; let n: i64 = s; n }"#,
-    refused_renumbered("i64 does not contain [fn(p: '_0: unbound) -> (i64, '_0: unbound), fn(p: '_0_1: unbound) -> (string, '_0_1: unbound)]");
+    refused_renumbered("type mismatch i64 does not contain fn(p: '_0: unbound) -> (i64, '_0: unbound)");
     FuseExpect::None
 );
 
@@ -1623,14 +1666,14 @@ run!(
 run!(
     a_parameter_cell_merged_with_a_callee_prints_under_one_name,
     r#"{ let m = |x| select x { [a, t..] => array::concat(t, t), [] => [] }; let n: i64 = m; n }"#,
-    refused_renumbered("i64 does not contain fn(x: Array<'_0: unbound>) -> [Array<'_0: unbound>, Array<'_1: unbound>]");
+    refused_renumbered("type mismatch i64 does not contain fn(x: '_0: unbound within Array<Any>) -> [Array<'a: unbound>, Array<'_1: unbound>]");
     FuseExpect::None
 );
 
 run!(
     a_slice_ladder_cell_merged_with_a_callee_prints_under_one_name,
     r#"{ let f = |x| select x { [a, b, c, d, t..] => array::concat(t, t), [a, b, c] => b, [a, b, t..] => array::len(t), [a, t..] => a, [] => 4 }; let n: string = f; n }"#,
-    refused_renumbered("string does not contain fn(x: Array<'_0: unbound>) -> [i64, '_0: unbound, Array<'_0: unbound>]");
+    refused_renumbered("type mismatch string does not contain fn(x: '_0: unbound within Array<Any>) -> [Array<'a: unbound>, i64]");
     FuseExpect::None
 );
 
@@ -1640,14 +1683,14 @@ run!(
 run!(
     a_decided_cell_merged_with_a_callee_prints_bare_throughout,
     r#"{ let m = |x| select x { [a, t..] => array::concat(t, t), [] => [] }; let n: fn(x: Array<string>) -> i64 = m; n }"#,
-    refused_renumbered("fn(x: Array<string>) -> i64 does not contain fn(x: Array<string>) -> [Array<string>, Array<'_0: unbound>]");
+    refused("type mismatch i64 does not contain Array<'a: unbound above string>");
     FuseExpect::None
 );
 
 run!(
     a_decided_cell_merged_with_a_callee_prints_named_throughout,
     r#"{ let pair = |x| { let r = array::concat([x], [x]); (r, x) }; let n: i64 = pair("s"); n }"#,
-    refused("i64 does not contain (Array<'a: string>, 'a: string)");
+    refused("type mismatch i64 does not contain (Array<'a: unbound above string>, string)");
     FuseExpect::None
 );
 
@@ -1686,47 +1729,80 @@ run!(
 // later cell numbered apart takes another.
 run!(
     a_later_cell_takes_no_name_a_header_listed,
-    refused("but implemented (fn(x: 'a: unbound within Number) -> 'a: unbound within Number, fn<'a1: Number>(x: 'a1: unbound within Number) -> 'a1: unbound within Number, fn(x: 'a2: unbound within Number) -> 'a2: unbound within Number):"),
+    refused("val p is declared i64 but implemented (fn(x: 'a: unbound within Number) -> 'a: unbound within Number, fn<'a1: Number>(x: 'a1: unbound within Number) -> 'a1: unbound within Number, fn(x: 'a2: unbound within Number) -> 'a3: unbound above 'a2: unbound within Number): type mismatch i64 does not contain (fn(x: 'a: unbound within Number) -> 'a: unbound within Number, fn(x: 'a1: unbound within Number) -> 'a1: unbound within Number, fn(x: 'a2: unbound within Number) -> 'a3: unbound above 'a2: unbound within Number)"),
     "/test.gx" => "mod m; let result = 0",
     "/test/m.gxi" => "val p: i64;",
     "/test/m.gx" => "let mk = |z: i64| 'a: Number |x: 'a| -> 'a x; let h = mk(0); let p = (h, 'a: Number |x: 'a| -> 'a x, mk(1))"
 );
 
-const NO_HEADER: &str =
-    "fn(x: 'a: unbound within Number) -> 'a: unbound within Number and cannot hold i64";
+run!(
+    a_callbacks_lambda_and_an_i64_written_to_one_binding_widen_it,
+    "{ let fs = array::map([1], |r| 'a: Number |x: 'a| -> 'a x); let y = never(); y <- fs; y <- 1; 0 }",
+    prints("i64:0");
+    FuseExpect::None
+);
 
 run!(
     a_callbacks_lambda_prints_no_header,
-    "{ let fs = array::map([1], |r| 'a: Number |x: 'a| -> 'a x); let y = never(); y <- fs; y <- 1; 0 }",
-    refused("y is Array<fn(x: 'a: unbound within Number) -> 'a: unbound within Number> and cannot hold i64");
+    "{ let fs = array::map([1], |r| 'a: Number |x: 'a| -> 'a x); let y: i64 = never(); y <- fs; 0 }",
+    refused("i64 does not contain Array<'b: unbound above fn(x: 'a: unbound within Number) -> 'a: unbound within Number>");
+    FuseExpect::None
+);
+
+run!(
+    a_generic_name_a_callback_returns_and_an_i64_written_to_one_binding_widen_it,
+    "{ let h = 'a: Number |x: 'a| -> 'a x; let fs = array::map([1], |r| h); let y = never(); y <- fs; y <- 1; 0 }",
+    prints("i64:0");
     FuseExpect::None
 );
 
 run!(
     a_generic_name_a_callback_returns_prints_no_header,
-    "{ let h = 'a: Number |x: 'a| -> 'a x; let fs = array::map([1], |r| h); let y = never(); y <- fs; y <- 1; 0 }",
-    refused("y is Array<fn(x: 'a: unbound within Number) -> 'a: unbound within Number> and cannot hold i64");
+    "{ let h = 'a: Number |x: 'a| -> 'a x; let fs = array::map([1], |r| h); let y: i64 = never(); y <- fs; 0 }",
+    refused("i64 does not contain Array<'b: unbound above fn(x: 'a: unbound within Number) -> 'a: unbound within Number>");
+    FuseExpect::None
+);
+
+run!(
+    a_function_a_call_returns_and_an_i64_written_to_one_binding_widen_it,
+    "{ let mk = |z| 'a: Number |x: 'a| -> 'a x; let h = mk(0); let y = never(); y <- h; y <- 1; 0 }",
+    prints("i64:0");
     FuseExpect::None
 );
 
 run!(
     a_function_a_call_returns_prints_no_header,
-    "{ let mk = |z| 'a: Number |x: 'a| -> 'a x; let h = mk(0); let y = never(); y <- h; y <- 1; 0 }",
-    refused(NO_HEADER);
+    "{ let mk = |z| 'a: Number |x: 'a| -> 'a x; let h = mk(0); let y: i64 = never(); y <- h; 0 }",
+    refused("i64 does not contain fn(x: 'a: unbound within Number) -> 'a: unbound within Number");
+    FuseExpect::None
+);
+
+run!(
+    a_generic_name_and_an_i64_written_to_one_binding_widen_it,
+    "{ let f = 'a: Number |x: 'a| -> 'a x; let y = never(); y <- f; y <- 1; 0 }",
+    prints("i64:0");
     FuseExpect::None
 );
 
 run!(
     a_generic_name_written_to_a_binding_prints_no_header,
-    "{ let f = 'a: Number |x: 'a| -> 'a x; let y = never(); y <- f; y <- 1; 0 }",
-    refused(NO_HEADER);
+    "{ let f = 'a: Number |x: 'a| -> 'a x; let y: i64 = never(); y <- f; 0 }",
+    refused("y is i64 and cannot hold fn(x: 'a: unbound within Number) -> 'a: unbound within Number");
     FuseExpect::None
 );
 
 run!(
-    a_picked_variable_prints_no_header,
+    a_picked_variable_and_an_i64_written_to_one_binding_widen_it,
     "{ let fs = array::map([1], |r| 'a: Number |x: 'a| -> 'a x); let z = fs[0]$(1); let y = never(); y <- fs; y <- 1; 0 }",
-    refused("y is Array<fn(x: 'a: i64) -> 'a: i64> and cannot hold i64");
+    prints("i64:0");
+    FuseExpect::None
+);
+
+// `'a: unbound within Number & i64 above i64`, where it printed `'a: i64`)
+run!(
+    a_picked_variable_prints_no_header,
+    "{ let fs = array::map([1], |r| 'a: Number |x: 'a| -> 'a x); let z = fs[0]$(1); let y: i64 = never(); y <- fs; 0 }",
+    refused("fn(x: 'a: unbound within Number & i64 above i64) -> 'a: unbound within Number & i64 above i64");
     FuseExpect::None
 );
 
@@ -1761,7 +1837,7 @@ run!(
 run!(
     a_let_recs_read_of_itself_in_a_struct_prints_no_header,
     "{ let rec f = 'a: Number |x: 'a| -> 'a { let s: {g: string} = {g: f}; x }; 0 }",
-    refused("type mismatch { g: string } does not contain { g: fn(x: 'a: unbound within Number) -> 'a: unbound within Number }");
+    refused("type mismatch string does not contain fn(x: 'a: unbound within Number) -> 'a: unbound within Number");
     FuseExpect::None
 );
 
@@ -1785,8 +1861,8 @@ run!(
 
 run!(
     an_operand_in_a_declared_variable_prints_its_name,
-    "{ let m = 'b: Number |f: fn(x: i64) -> 'b| -> 'b f(1) + 1; m(|x| x) }",
-    refused("cannot compute 'b: unbound within Number + i64");
+    "{ let m = 'b: Number + Singleton |f: fn(x: i64) -> 'b| -> 'b f(1) + 1; m(|x| x) }",
+    refused("['b, i64] must be one type, but the declared variable 'b may differ from its other members");
     FuseExpect::None
 );
 
@@ -1825,8 +1901,8 @@ run!(
 run!(
     a_call_result_in_a_lets_two_variables_prints_its_name,
     "{ let m = 'c: Number |g: fn() -> 'c| -> i64 { let r: ['x, 'y] = g(); 0 }; m(|| 1) }",
-    refused("'c: unbound within Number could go to 'x: unbound or 'y: unbound of the union");
-    FuseExpect::None
+    prints("i64:0");
+    FuseExpect::Jit
 );
 
 run!(
@@ -1834,4 +1910,200 @@ run!(
     "{ let m = 'c: Number |g: fn() -> 'c| -> 'c { let r: ['c, null] = g(); r$ }; m(|| 1) }",
     is(Value::I64(1));
     FuseExpect::Jit
+);
+
+run!(
+    a_callbacks_result_returns_the_union_of_its_calls,
+    "{ let fs = array::map([1], |r| |x| x); let g = fs[0]$; (g(1) + 1, g(\"s\")) }",
+    refused("i64 does not contain string");
+    FuseExpect::None
+);
+
+run!(
+    a_generic_binding_read_into_a_callbacks_result_returns_the_union_of_its_calls,
+    "{ let id = |x| x; let fs = array::map([1], |r| id); let g = fs[0]$; (g(1) + 1, g(\"s\")) }",
+    refused("i64 does not contain string");
+    FuseExpect::None
+);
+
+run!(
+    a_function_writing_a_callbacks_result_out_is_checked_where_it_lands,
+    "{ type W<'t> = Abstract<'t>; let y = never(); \
+     let g = |x| { y <- array::map([x], |e| W(e)); x }; \
+     let k: Array<W<i64>> = y; (g(1), g(\"s\")) }",
+    refused("i64 does not contain string");
+    FuseExpect::None
+);
+
+run!(
+    a_functions_result_returns_the_union_of_its_calls,
+    "{ let mk = |z| 'a: Number |x: 'a| x; let h = mk(0); (h(1) + 1, h(1.5)) }",
+    refused("i64 does not contain f64");
+    FuseExpect::None
+);
+
+run!(
+    a_field_of_a_calls_result_returns_the_union_of_its_calls,
+    "{ let mk = |z| {f: |x| x}; let h = mk(0).f; (h(1) + 1, h(\"s\")) }",
+    refused("i64 does not contain string");
+    FuseExpect::None
+);
+
+run!(
+    a_projection_of_a_calls_result_in_a_tuple_literal_is_one_instance,
+    "{ let mk = |z| |x| x; let k = (mk(0), 1).0; (k(1) + 1, k(\"s\")) }",
+    refused("i64 does not contain string");
+    FuseExpect::None
+);
+
+run!(
+    a_reference_to_a_generic_function_returns_the_union_of_its_calls,
+    "{ let f = |x| x; let r = &f; ((*r)(1) + 1, (*r)(\"s\")) }",
+    refused("i64 does not contain string");
+    FuseExpect::None
+);
+
+run!(
+    a_written_field_alias_returns_the_union_of_its_calls,
+    "{ let s = {g: |x| x}; let j = s.g; j <- |x| x; (j(1) + 1, j(\"s\")) }",
+    refused("i64 does not contain string");
+    FuseExpect::None
+);
+
+run!(
+    a_holder_of_a_calls_result_in_a_seq_step_is_one_instance,
+    "seq { let mk = |z| |x| x; let s = {g: mk(0), n: str::len(\"ab\")}; (s.g(1) + 1, s.g(\"s\"), s.n) }",
+    refused("i64 does not contain string");
+    FuseExpect::None
+);
+
+run!(
+    a_holder_a_seqq_step_writes_returns_the_union_of_its_calls,
+    "{ let s = {g: |x| x}; let put = |v| { s <- v; 0 }; \
+       seqq 1 { put({g: |x| x}); (s.g(1) + 1, s.g(\"s\")) } }",
+    refused("i64 does not contain string");
+    FuseExpect::None
+);
+
+run!(
+    two_reads_beside_a_calls_result_in_an_array_are_one_instance,
+    "{ let mk = |z| |x| x; let s = {g: |x| x}; let a = [s.g, mk(0)]; (a[0]$(1) + 1, a[1]$(\"s\")) }",
+    refused("i64 does not contain string");
+    FuseExpect::None
+);
+
+run!(
+    a_program_s_tuple_read_of_a_calls_result_in_a_seq_step_is_one_instance,
+    "{ let mk = |z| |x| x; seq { let j = (1, mk(0)).1; (j(1) + 1, j(\"s\")) } }",
+    refused("i64 does not contain string");
+    FuseExpect::None
+);
+
+run!(
+    a_program_s_sample_of_a_calls_result_in_a_seq_step_is_one_instance,
+    "{ let mk = |z| |x| x; let k = 1; seq { let h = k ~! mk(0); (h(1) + 1, h(\"s\")) } }",
+    refused("i64 does not contain string");
+    FuseExpect::None
+);
+
+run!(
+    a_program_s_any_beside_a_one_type_function_in_a_seq_step_is_one_instance,
+    "{ let s = {g: |x| x}; let f = |x: i64| x + 1; seq { let h = any(s.g, f); (h(1), h(\"s\")) } }",
+    refused("i64 does not contain string");
+    FuseExpect::None
+);
+
+run!(
+    an_instance_arithmetic_decides_takes_no_other_type,
+    "{ let f = 'a: Number |x: 'a, g: fn(y: 'a) -> 'a| -> 'a g(x); let mk = |z: i64| 'a: Number |x: 'a| -> 'a x; let h = mk(0); let r = h(1) + 1; f(1.5, h) }",
+    refused("i64 does not contain f64");
+    FuseExpect::None
+);
+
+// A `Singleton` bound over a select of two parameters, one of which another
+// call holds below an array of the other, has a finite type: both one type.
+run!(
+    singleton_over_a_select_beside_a_call_holding_a_parameter_in_an_array,
+    r#"{
+  let g = 'a: Singleton |u: 'a| u;
+  let g2 = 'x: Array<['a, null]> |y: 'x, d: 'a| -> 'a d;
+  let h = |c, q, w| { let r = g2([[w]], q); g(select c { true => w, false => q }) };
+  (h(true, 1, 2), h(false, 1, 2))
+}"#,
+    prints("[i64:2, i64:1]");
+    FuseExpect::Jit
+);
+
+// A let a block writes is one value every instance of what the block
+// defines shares: the block's own let over it is no definition.
+destructured_and_written! {
+    a_written_local_a_block_gives_is_one_instance =>
+        "{ let f = { let tm = |x| x; let r = &mut tm; *r <- |x: u64| x + u64:1; tm }; \
+           f(\"s\") }",
+        "u64 does not contain string",
+    a_written_local_a_block_s_function_calls_is_one_instance =>
+        "{ let f = { let tm = |x| x; let r = &mut tm; \
+           |y| { *r <- |x: u64| x + u64:1; tm(y) } }; f(\"s\") }",
+        "u64 does not contain string",
+}
+
+run!(
+    a_local_beside_a_written_one_is_generic,
+    r#"{ let f = { let h = |x| x; let c = 0; c <- 1; h }; (f(1), f("s")) }"#,
+    prints(r#"[i64:1, "s"]"#)
+);
+
+// What a function reads out of a binding outside it is that binding's
+// at every call: a write after a call reaches the call's result, and a
+// `?` or `$` held until the binding is decided gives every call its type.
+macro_rules! read_from_outside {
+    ($($name:ident => $test:expr, $says:expr,)*) => {$(
+        run!($name, $test, refused($says); FuseExpect::None);
+    )*};
+}
+
+read_from_outside! {
+    a_field_a_function_reads_outside_meets_a_later_write =>
+        "{ let v = {a: 0}; let f = |x: i64| v.a; let t: i64 = f(1); v <- {a: \"s\"}; t }",
+        "i64 does not contain string",
+    a_field_read_bound_in_the_body_meets_a_later_write =>
+        "{ let v = {a: 0}; let f = |x: i64| { let y = v.a; y }; let t: i64 = f(1); \
+           v <- {a: \"s\"}; t }",
+        "i64 does not contain string",
+    an_element_a_function_reads_outside_meets_a_later_write =>
+        "{ let v = (0, 1); let f = |x: i64| v.0; let t: i64 = f(1); v <- (\"s\", 1); t }",
+        "i64 does not contain string",
+    a_call_of_a_function_outside_meets_a_later_write =>
+        "{ let v = |a: i64| a; let f = |x: i64| v(x); let t: i64 = f(1); \
+           v <- |a: i64| \"s\"; t }",
+        "i64 does not contain string",
+    a_pattern_s_name_over_a_binding_outside_meets_a_later_write =>
+        "{ let v = [1]; let f = |x: i64| select v { [a, ..] => a, _ => x }; \
+           let t: i64 = f(1); v <- [\"s\"]; t }",
+        "i64 does not contain string",
+    a_read_outside_through_a_second_function_meets_a_later_write =>
+        "{ let v = {a: 0}; let f = |x| (x, v.a); let g = |y| f(y); \
+           let t: (i64, i64) = g(1); v <- {a: \"s\"}; t }",
+        "i64 does not contain string",
+    a_held_or_never_over_a_binding_outside_types_each_call =>
+        "{ let v = 0; let f = |x: i64| (v +? x)$; let t: null = f(1); t }",
+        "null does not contain i64",
+    a_held_or_never_bound_in_the_body_types_each_call =>
+        "{ let v = 0; let f = |x: i64| { let y = (v +? x)$; y }; let t: null = f(1); t }",
+        "null does not contain i64",
+    an_or_never_of_a_call_waits_for_the_one_its_function_holds =>
+        "{ let v = 0; let f = |x: i64| select x { 0 => (v +? x)$, _ => error(true) }; \
+           let t: null = f(0)$; t }",
+        "null does not contain i64",
+    an_error_read_from_a_held_raise_types_each_call =>
+        "{ let v = 0; let f = |x: i64| { let r = never(); catch(e) r <- e.0.error; \
+           (v +? x)?; r }; let t: null = f(1); t }",
+        "null does not contain `ArithError(string)",
+}
+
+run!(
+    a_held_or_never_over_a_binding_outside_gives_its_value,
+    "{ let v = 0; let f = |x: i64| select x { 0 => (v +? x)$, _ => error(true) }; \
+       let r = f(0)$; r + 7 }",
+    is(Value::I64(7))
 );

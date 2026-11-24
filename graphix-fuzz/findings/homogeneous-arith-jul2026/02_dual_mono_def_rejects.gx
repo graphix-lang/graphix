@@ -7,4 +7,4 @@
 // probe was built around is never reached. Both modes compile-reject
 // identically — pins the def-time rejection alongside the
 // promo_obligation_* fixtures in lang/types.rs.
-{let f = 'a: Number|x: 'a| -> 'a x + f64:0.; {let a = f(i64:3); let b = f(f64:2.5); cast<f64>(a)$ + b}}
+{let f = 'a: Number + Singleton|x: 'a| -> 'a x + f64:0.; {let a = f(i64:3); let b = f(f64:2.5); cast<f64>(a)$ + b}}

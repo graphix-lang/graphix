@@ -7,9 +7,9 @@ use anyhow::{Context, Result, anyhow};
 use compact_str::{CompactString, format_compact};
 use futures::{StreamExt, stream};
 use graphix_compiler::{
-    CFlag, ExecState, Node, PrintFlag, Saved, Scope, compile_stmt,
+    CFlag, ExecState, Node, Saved, Scope, compile_stmt,
     expr::{Expr, Load, Origin, parser},
-    format_with_flags,
+    shown_type,
 };
 use graphix_package::register_packages;
 use graphix_package_core::testing::renumbered;
@@ -291,12 +291,9 @@ impl Repl {
             &self.scope,
             e,
         )?;
-        self.scope = scope;
-        let typ = n.typ().with_deref(|t| t.cloned()).unwrap_or_else(|| n.typ().clone());
         let shown =
-            format_with_flags(PrintFlag::DerefTVars | PrintFlag::ReplacePrims, || {
-                format_compact!("{typ}")
-            });
+            graphix_lsp::display_type(&shown_type(&self.ctx.env, &self.scope, &n));
+        self.scope = scope;
         self.nodes.push(n);
         Ok(shown)
     }

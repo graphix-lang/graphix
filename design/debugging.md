@@ -35,7 +35,7 @@ or read it with env_mode as GRAPHIX_PRUNE is read. Found by reading; not run.
 | `GRAPHIX_PROFILE=1` | nested compiler phase accounting per root (`bench/profile.py` reads it; `design/jit_startup.md`) |
 | `GRAPHIX_PROFILE_INSTANCES=1` | with `GRAPHIX_PROFILE`, per-instance construction/check costs (`bench/instances.py`) |
 | `GRAPHIX_DBG_TVAL=1` | typed-printer render steps |
-| `GRAPHIX_DBG_CYCLE_BT=1` | a backtrace at every occurs-check refusal and every `AmbiguousMember` or `UndecidedTaker` refusal |
+| `GRAPHIX_DBG_CYCLE_BT=1` | a backtrace at every `AmbiguousMember` refusal |
 | `GRAPHIX_FUSE_SERIAL=1` | fusion visits every part in order on one context instead of fusing disjoint subtrees in tasks (A/B: the decisions must agree) |
 | `GRAPHIX_ABORT_ON_NO_MATCH=1` | an abort at a select no arm matched, a coverage hole (both engines report it once; the fuzzer's children set it, so a hole is a crash finding) |
 | `GRAPHIX_PAR_AUDIT=1` | a panic at a join whose right branch read what its left sibling published |
@@ -50,7 +50,6 @@ or read it with env_mode as GRAPHIX_PRUNE is read. Found by reading; not run.
 | `GXDBG_CS=1` / `GXDBG_DYNC=1` | every CallSite dispatch and result tag / every fastcall trampoline dispatch |
 | `GXDBG_CALLRET=1` | (debug builds) from inside kernels: each entry's init word (tag 4), return disc (2), scrutinee accumulator (3), tail fold and cross-kernel call result |
 | `GRAPHIX_DBG_SELECT=1` | each select update: its selection, the scrutinee and the event's size |
-| `GRAPHIX_DBG_BIND_BT=<id>` | a backtrace at every write to the cell with that `TVarId` |
 | `GXDBG_FREEZE_RET=1` | a region whose return type does not freeze for the kernel ABI |
 | `GXDBG_KERNEL_SLEEP=1` | each fused kernel put to sleep |
 | `GXDBG_KPOLL=1` | each kernel's feeder poll: init, tags and presence |

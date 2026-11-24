@@ -224,6 +224,25 @@ run!(
     json_reads_a_defaults_block_type,
     r##"{
     type L = [`X(i64)];
+    let g = |#k = { type L = [`Nil, `Cons(i64, L)]; |v: [`Y, `Z(L)]| v }, z: i64| k;
+    let k = g(1);
+    let r1 = json::read(r#"["Z",["Cons",1,"Nil"]]"#);
+    let r2 = json::read(r#"["Z",["X",1]]"#);
+    k(r1$);
+    k(r2$);
+    (r1, r2)
+}"##,
+    prints(
+        r#"[["Z", ["Cons", i64:1, "Nil"]], error:["InvalidCast", "can't cast [\"X\", 1] to [`Cons(i64, L), `Nil]: no member admits it"]]"#
+    )
+);
+
+// A read takes its type from what is asked of it, never from what another
+// writer of the variable it is written to gives that variable.
+run!(
+    json_read_typed_by_another_writer_of_its_variable_is_refused,
+    r##"{
+    type L = [`X(i64)];
     let out = never();
     let g = |z: i64| {
         type L = [`Nil, `Cons(i64, L)];
@@ -231,14 +250,11 @@ run!(
         f(z)
     };
     let r1 = json::read(r#"["Z",["Cons",1,"Nil"]]"#);
-    let r2 = json::read(r#"["Z",["X",1]]"#);
     out <- r1$;
-    out <- r2$;
-    (g(1), r1, r2)
+    (g(1), r1)
 }"##,
-    prints(
-        r#"[i64:1, ["Z", ["Cons", i64:1, "Nil"]], error:["InvalidCast", "can't cast [\"X\", 1] to [`Cons(i64, L), `Nil]: no member admits it"]]"#
-    )
+    refused("must be known here, an operation reads it to know what to make");
+    FuseExpect::None
 );
 
 // A default naming a type, its block's or a top-level one, takes its
@@ -279,11 +295,12 @@ run!(
     prints("[true, true, i64:1]")
 );
 
-// A parameter an annotation or a write decides, written inline, names the
-// typedef its scope means there: equal types compare equal, and a block's
-// own `R` is another type.
+// A parameter an annotation decides, written inline, names the typedef its
+// scope means there: equal types compare equal, and a block's own `R` is
+// another type. A write decides nothing of what a construction carries:
+// `v`'s `B(1)` carries ⊥, unlike `a`'s, whose binding is annotated.
 run!(
-    abstract_parameters_an_annotation_or_a_write_decides_compare,
+    abstract_parameters_an_annotation_decides_compare,
     r#"{
     type B<'x> = Abstract<i64>;
     type R<'a> = [`Nil, `Cons('a, R<'a>)];
@@ -292,33 +309,33 @@ run!(
     let q = { let w: B<[`Nil, `Cons(i64, R<i64>)]> = t; 1 };
     let v = B(1);
     v <- never<B<[`Nil, `Cons(i64, R<i64>)]>>();
+    let a: B<[`Nil, `Cons(i64, R<i64>)]> = B(1);
+    a <- never<B<[`Nil, `Cons(i64, R<i64>)]>>();
     let o = {
         type R<'a> = [`X('a)];
         let b = B(1);
         let w: B<[`Nil, `Cons(i64, R<i64>)]> = b;
         b
     };
-    let xs: Array<Any> = [c, t, v, o];
+    let xs: Array<Any> = [c, t, v, a, o];
     let m: Map<Any, i64> = {};
     let n = array::fold(xs, m, |acc, x| map::insert(acc, x, 1));
-    (array::map(xs, |x| x == xs[0]$), xs[1]$ == xs[3]$, map::len(n), q)
+    (array::map(xs, |x| x == xs[0]$), xs[1]$ == xs[4]$, map::len(n), q)
 }"#,
-    prints("[[true, true, true, false], false, i64:2, i64:1]")
+    prints("[[true, true, false, true, false], false, i64:3, i64:1]")
 );
 
 // A type test does not decide an abstract type's open parameter: what the
 // arm tests is undecided at the select (D5).
 run!(
-    abstract_parameter_a_type_test_would_decide_is_refused,
+    abstract_parameter_a_type_test_takes_an_undecided_construction,
     r#"{
     type B<'x> = Abstract<i64>;
     type R<'a> = [`Nil, `Cons('a, R<'a>)];
     let t = B(1);
     select t { B<[`Nil, `Cons(i64, R<i64>)]> as _ => 1 }
 }"#,
-    refused(
-        "tests a value whose type is a part of 't, a type not decided at this select"
-    )
+    prints("i64:1")
 );
 
 // The same in a module's body, whose private typedef only its own env
@@ -406,22 +423,22 @@ run!(
     module_type_named_above_its_declaration_over_an_import,
     is(Value::I64(4)),
     "/test.gx" => "type M = string; mod m; let result = m::y",
-    "/test/m.gx" => "use super::M; let x: M = 1; type M = i64; let f = |a: M| a + x; let y = f(3)"
+    "/test/m.gx" => "use super::*; let x: M = 1; type M = i64; let f = |a: M| a + x; let y = f(3)"
 );
 
 run!(
-    module_type_in_a_signature_above_its_declaration_refused,
-    refused("M names the type a later statement of this module declares: declare it before its first use"),
+    module_type_in_a_signature_above_its_declaration,
+    is(Value::I64(1)),
     "/test.gx" => "type M = string; mod m; let result = m::y",
-    "/test/m.gx" => "use super::M; let f = |a: M| a; type M = i64; let y = f(1)"
-; FuseExpect::None);
+    "/test/m.gx" => "use super::*; let f = |a: M| a; type M = i64; let y = f(1)"
+);
 
 run!(
-    module_type_in_a_body_above_its_declaration_refused,
-    refused("M names the type a later statement of this module declares: declare it before its first use"),
+    module_type_in_a_body_above_its_declaration,
+    is(Value::I64(1)),
     "/test.gx" => "type M = string; mod m; let result = m::y",
-    "/test/m.gx" => "use super::M; let f = |x| { let a: M = x; a }; type M = i64; let y = f(1)"
-; FuseExpect::None);
+    "/test/m.gx" => "use super::*; let f = |x| { let a: M = x; a }; type M = i64; let y = f(1)"
+);
 
 run!(
     script_type_over_the_prelude_above_its_declaration,
@@ -431,10 +448,10 @@ run!(
 );
 
 run!(
-    script_type_in_a_signature_above_its_declaration_refused,
-    refused("Result names the type a later statement of this module declares: declare it before its first use"),
+    script_type_in_a_signature_above_its_declaration,
+    is(Value::I64(1)),
     "/test.gx" => "let f = |r: Result<i64, string>| r; type Result<'a, 'b> = ['a, 'b]; let result = f(1)"
-; FuseExpect::None);
+);
 
 // A name above its block's or its module's declaration of it, with
 // another of the name in view there (an outer type, an import), is the
@@ -447,11 +464,11 @@ async fn a_later_block_type_beside_another_warns(mode: Mode) -> Result<()> {
         (netidx::path::Path::from("/n.gx"), VfsEntry::from(literal!("type L = string"))),
         (
             netidx::path::Path::from("/w.gx"),
-            VfsEntry::from(literal!("use super::n::L;\nlet b: L = 3;\ntype L = i64")),
+            VfsEntry::from(literal!("use super::n::*;\nlet b: L = 3;\ntype L = i64")),
         ),
         (
             netidx::path::Path::from("/q.gx"),
-            VfsEntry::from(literal!("use super::n::L;\ntype L = i64;\nlet b: L = 3")),
+            VfsEntry::from(literal!("use super::n::*;\ntype L = i64;\nlet b: L = 3")),
         ),
     ];
     let resolver = VfsResolver::new(ahash::AHashMap::from_iter(files));
@@ -467,8 +484,8 @@ async fn a_later_block_type_beside_another_warns(mode: Mode) -> Result<()> {
         Ok(_) => anyhow::bail!("no warning for mod w"),
         Err(e) => {
             let e = format!("{e:#}");
-            let note = "`L` here names the type this module declares below it, not the \
-                        `L` declared at line: 1, column: 6 in ";
+            let note = "`L` here names the type this module declares below it, at line: \
+                        3, column: 6, not the `L` declared at line: 1, column: 6 in ";
             assert!(e.contains(note), "mod w: {e}")
         }
     }
@@ -493,10 +510,12 @@ async fn a_later_block_type_beside_another_warns(mode: Mode) -> Result<()> {
         (
             "type L = string;\nlet g = |z: i64| {\n    let h = |v: L| v;\n    \
              type L = i64;\n    h(z)\n}",
-            format!("{outer}, not the `L` declared at line: 1, column: 6"),
+            format!(
+                "{outer}, at line: 4, column: 10, not the `L` declared at line: 1, column: 6"
+            ),
         ),
         (
-            "let g = |z: i64| {\n    use n::L;\n    let f = |x: i64| { let b: L = 3; (b, x) };\n    \
+            "let g = |z: i64| {\n    use n::*;\n    let f = |x: i64| { let b: L = 3; (b, x) };\n    \
              type L = i64;\n    f(z)\n}",
             format!(
                 "{outer}, at line: 4, column: 10, not the `L` declared at line: 1, column: 6 in "
@@ -571,3 +590,23 @@ async fn a_deleted_modules_type_frees_its_name(mode: Mode) -> Result<()> {
 }
 
 modes!(a_deleted_modules_type_frees_its_name);
+
+// A type name written in a body is what its definition's check resolved
+// it to in every instance of the body: a dynamic module that imports a
+// function of the instance reads the name where it is not in scope.
+run!(
+    a_name_written_in_an_instance_reaches_a_dynamic_module,
+    r#"{
+    type W = {x: i64};
+    let show = |u: i64| {
+        let unw = |w: W| -> i64 w.x;
+        let status = mod d dynamic {
+            sig { use super::unw; val s: fn(u: i64) -> i64 };
+            source "let s = |u: i64| -> i64 super::unw({x: u})"
+        };
+        select status { error as e => "[e]", null as _ => "loaded" }
+    };
+    show(1)
+}"#,
+    prints(r#""loaded""#)
+);

@@ -1,6 +1,6 @@
 use crate::{
     AddrMap, AddrSet, PRINT_FLAGS, PrintFlag, SourcePosition,
-    dbgenv::{graphix_dbg_bind, gxdbg_typeref},
+    dbgenv::gxdbg_typeref,
     env::Env,
     expr::{ModPath, Origin, Source, WrittenAt},
     format_with_flags,
@@ -34,22 +34,23 @@ use std::{
 };
 use triomphe::Arc;
 
+pub mod bounds;
 mod cast;
-pub use cast::{Carriers, CastInput, Indiscernible, IsAFlags, Open, ShallowScrutinee};
-mod contains;
-pub use contains::ContainsFlags;
-pub(crate) use contains::find_impl;
-pub use contains::{
-    AmbiguousMember, InfiniteType, TakerUnion, TypeMismatch, UndecidedTaker,
+pub use cast::{
+    CastInput, Indiscernible, IsAFlags, Open, ShallowScrutinee, numbers_ordered,
 };
+mod contains;
+pub(crate) use contains::find_impl;
+pub use contains::{AmbiguousMember, InfiniteType, TypeMismatch};
 pub(crate) mod expansive;
 pub mod fntyp;
+pub mod holds;
 mod matches;
-pub use matches::SigMatch;
 mod normalize;
 pub use normalize::{NormKey, norm_key};
 mod print;
 pub use print::{Brief, Noted};
+mod readoff;
 pub(crate) mod regular;
 mod textdata;
 pub use textdata::{TextRefusal, toml_root_refusal};
@@ -64,8 +65,8 @@ pub use tval::member_of;
 pub mod tvar;
 
 pub use fntyp::{
-    CopySites, FnArgKind, FnArgType, FnType, ParseDepth, ReadCopies,
-    check_bounds_acyclic, seed_conjuncts,
+    DefaultType, FnArgKind, FnArgType, FnType, ParseDepth, check_bounds_acyclic,
+    declared_name, seed_conjuncts, written_name,
 };
 pub use tval::{Naked, NakedPrefix, PlainScalar, TVal};
 pub use tvar::TVar;
@@ -121,13 +122,6 @@ impl Type {
     /// an abstract type's id).
     pub fn node_key(&self) -> Option<NodeKey> {
         Some((self.shared_identity()?, self.name_word()))
-    }
-
-    /// What a walk that meets one application of a typedef many times
-    /// keys each of its parameters by ([`ParamKey`]); the application must
-    /// be held while the key is, so the identities stay its parameters'.
-    pub fn param_key(&self) -> ParamKey {
-        self.param_key_with(&mut |_| None)
     }
 
     /// [`Self::param_key`], each named type applied to parameters under
@@ -255,9 +249,19 @@ impl Type {
                             out.push(1);
                             text_words(n, out)
                         }
-                        FnArgKind::Labeled { name, has_default } => {
-                            out.extend([2, *has_default as usize]);
-                            text_words(name, out)
+                        FnArgKind::Labeled { name, default } => {
+                            let own = default.as_ref().and_then(|d| d.own());
+                            let kind = match default {
+                                None => 0,
+                                Some(DefaultType::Param) => 1,
+                                Some(DefaultType::Of(_)) => 2,
+                                Some(DefaultType::Each) => 3,
+                            };
+                            out.extend([2, kind]);
+                            text_words(name, out);
+                            if let Some(d) = own {
+                                d.key_words(out, walk)
+                            }
                         }
                     }
                     a.typ.key_words(out, walk)
@@ -328,37 +332,6 @@ impl TypeRef {
     pub(super) fn app_key_with(&self, def: usize, app: AppWords<'_>) -> AppKey {
         (def, self.params.iter().map(|p| p.param_key_with(app)).collect())
     }
-
-    /// The cells [`Self::app_key_with`] keys by address, into `out`: held,
-    /// each address stays its cell's. An application under this one that
-    /// the key holds by its id (`by_id`) is passed by: its own key's cells
-    /// are held already.
-    pub(crate) fn key_cells(
-        &self,
-        by_id: &dyn Fn(&Type) -> bool,
-        out: &mut Vec<Arc<tvar::CellLock>>,
-    ) {
-        struct Walk<'a> {
-            by_id: &'a dyn Fn(&Type) -> bool,
-            out: &'a mut Vec<Arc<tvar::CellLock>>,
-            seen: LPooled<AddrSet>,
-        }
-        fn walk(t: &Type, w: &mut Walk) {
-            ensure_sufficient(|| match t {
-                Type::TVar(tv) => {
-                    if w.seen.insert(tv.cell_addr()) {
-                        w.out.push(tv.cell())
-                    }
-                }
-                Type::Fn(f) if !f.quantifiers.is_empty() => (),
-                Type::Ref(r) if !r.params.is_empty() && (w.by_id)(t) => (),
-                t if node_addr(t).is_some_and(|a| !w.seen.insert(a)) => (),
-                t => t.for_each_child(&mut |c| walk(c, w)),
-            })
-        }
-        let mut w = Walk { by_id, out, seen: LPooled::take() };
-        self.params.iter().for_each(|p| walk(p, &mut w))
-    }
 }
 
 /// The typedef applications a walk has expanded, by [`AppKey`], each held
@@ -427,10 +400,12 @@ impl NodePairs {
             f.clear()
         }
     }
+}
 
-    /// Start a walk over the pairs found by earlier ones.
-    pub(super) fn restart(&mut self) {
-        self.seen = 0
+impl Type {
+    /// Whether `self` and `other` are one shared node ([`node_addr`]).
+    pub fn same_node(&self, other: &Type) -> bool {
+        node_addr(self).is_some_and(|a| node_addr(other) == Some(a))
     }
 }
 
@@ -514,7 +489,7 @@ impl<A> Kept<A> {
 /// the key stands: a var's cell, which a merge takes from the var; any
 /// other node itself.
 enum Held {
-    Cell { _cell: Arc<tvar::CellLock> },
+    Cell { _cell: tvar::CellRef },
     Node { _node: Type },
 }
 
@@ -524,22 +499,6 @@ impl Held {
             Type::TVar(tv) => Held::Cell { _cell: tv.cell() },
             t => Held::Node { _node: t.clone() },
         }
-    }
-}
-
-/// [`norm_key`] extended with `Ref`, keyed by its node, an abstract type
-/// by its parameters' node and its id, and the leaves whose content fits
-/// the key: a primitive by its bits, `Any` and `⊥`.
-fn probe_key(t: &Type) -> Option<NormKey> {
-    let d = mem::discriminant(t);
-    match t {
-        Type::Ref(r) => Some((d, Arc::as_ptr(r).addr(), 0)),
-        Type::Abstract { id, params } => {
-            Some((d, (**params).as_ptr().addr(), id.0 as usize))
-        }
-        Type::Primitive(p) => Some((d, p.bits() as usize, 0)),
-        Type::Any | Type::Bottom => Some((d, 0, 0)),
-        t => norm_key(t),
     }
 }
 
@@ -670,53 +629,125 @@ fn shape_hash_node(
     #[cfg(test)]
     SHAPE_HASH_STEPS.with(|n| n.set(n.get() + 1));
     ensure_sufficient(|| {
-        let mut h = ahash::AHasher::default();
         let mut cell_free = true;
-        let mut part = |t: &Type, in_fn: bool, memo: &mut ShapeMemo| {
+        let mut part = |t: &Type, in_fn: bool| {
             let (h, free) = shape_hash_memo(t, in_fn, memo, fixed);
             cell_free &= free;
             h
         };
-        match t {
+        let h = match t {
             Type::TVar(tv) => match tv.binding() {
-                Some(b) => return (part(&b, in_fn, memo), false),
+                Some(b) => return (part(&b, in_fn), false),
                 None if in_fn => return (0, false),
-                None => {
-                    (0u8, tv.cell_addr()).hash(&mut h);
-                    return (h.finish(), false);
-                }
+                None => return (cell_hash(tv), false),
             },
-            Type::Set(ts) => {
-                let members =
-                    ts.iter().fold(0u64, |a, t| a.wrapping_add(part(t, in_fn, memo)));
-                (1u8, members).hash(&mut h)
-            }
-            Type::Fn(f) => {
-                (2u8, f.args.len(), f.vargs.is_some(), f.quantifiers.len()).hash(&mut h);
-                for a in f.args.iter() {
-                    part(&a.typ, true, memo).hash(&mut h)
-                }
-                if let Some(v) = &f.vargs {
-                    part(v, true, memo).hash(&mut h)
-                }
-                (part(&f.rtype, true, memo), part(&f.throws, true, memo)).hash(&mut h)
-            }
-            Type::Primitive(p) => (3u8, p.bits()).hash(&mut h),
-            Type::Ref(tr) => (4u8, &tr.scope, &tr.name).hash(&mut h),
-            Type::Variant(tag, _, _) => (5u8, tag).hash(&mut h),
-            Type::Struct(fs) => {
-                6u8.hash(&mut h);
-                fs.iter().for_each(|(n, _, _)| n.hash(&mut h))
-            }
-            Type::Abstract { id, .. } => (7u8, id).hash(&mut h),
-            Type::ByRef(m, _) => (8u8, m.tag()).hash(&mut h),
-            t => (9u8, mem::discriminant(t)).hash(&mut h),
-        }
-        if !matches!(t, Type::Set(_) | Type::Fn(_)) {
-            t.for_each_child(&mut |c| part(c, in_fn, memo).hash(&mut h));
-        }
-        (h.finish(), cell_free)
+            t => node_hash(t, in_fn, true, &mut part),
+        };
+        (h, cell_free)
     })
+}
+
+/// The hash of an open cell that a hash of structure reads by its cell.
+pub(super) fn cell_hash(tv: &TVar) -> u64 {
+    let mut h = ahash::AHasher::default();
+    (0u8, tv.cell_addr()).hash(&mut h);
+    h.finish()
+}
+
+/// The hash of the node `t`, no variable, from `part`'s hash of each of
+/// its parts (`part` is told whether the part is inside a function type):
+/// two nodes an identity of `setops` holds one, their parts hashed alike,
+/// hash alike. `named`: a named type hashes its written scope and name,
+/// which two names of one definition do not share.
+pub(super) fn node_hash(
+    t: &Type,
+    in_fn: bool,
+    named: bool,
+    part: &mut impl FnMut(&Type, bool) -> u64,
+) -> u64 {
+    let mut h = ahash::AHasher::default();
+    match t {
+        Type::Set(ts) => {
+            let members = ts.iter().fold(0u64, |a, t| a.wrapping_add(part(t, in_fn)));
+            (1u8, members).hash(&mut h)
+        }
+        Type::Fn(f) => {
+            (2u8, f.args.len(), f.vargs.is_some(), f.quantifiers.len()).hash(&mut h);
+            for a in f.args.iter() {
+                part(&a.typ, true).hash(&mut h)
+            }
+            if let Some(v) = &f.vargs {
+                part(v, true).hash(&mut h)
+            }
+            (part(&f.rtype, true), part(&f.throws, true)).hash(&mut h)
+        }
+        Type::Primitive(p) => (3u8, p.bits()).hash(&mut h),
+        Type::Ref(tr) if named => (4u8, &tr.scope, &tr.name).hash(&mut h),
+        Type::Ref(_) => 4u8.hash(&mut h),
+        Type::Variant(tag, _, _) => (5u8, tag).hash(&mut h),
+        Type::Struct(fs) => {
+            6u8.hash(&mut h);
+            fs.iter().for_each(|(n, _, _)| n.hash(&mut h))
+        }
+        Type::Abstract { id, .. } => (7u8, id).hash(&mut h),
+        Type::ByRef(m, _) => (8u8, m.tag()).hash(&mut h),
+        t => (9u8, mem::discriminant(t)).hash(&mut h),
+    }
+    if !matches!(t, Type::Set(_) | Type::Fn(_)) {
+        t.for_each_child(&mut |c| part(c, in_fn).hash(&mut h));
+    }
+    h.finish()
+}
+
+/// How [`Type::scope_refs`] copies the variables of a written type: each
+/// cell once, so what was one variable stays one, or each name once, so
+/// same-named variables are one.
+pub(super) enum Copies<'a> {
+    Cells(&'a mut AHashMap<usize, TVar>),
+    /// The variable of each name, and the cells of the written type met
+    /// so far.
+    Names(&'a mut AHashMap<ArcStr, TVar>, LPooled<AHashSet<usize>>),
+}
+
+impl Copies<'_> {
+    fn get(&self, tv: &TVar) -> Option<TVar> {
+        match self {
+            Copies::Cells(m) => m.get(&tv.cell_addr()).cloned(),
+            Copies::Names(m, _) => m.get(&tv.name).cloned(),
+        }
+    }
+
+    fn insert(&mut self, tv: &TVar, copy: TVar) {
+        match self {
+            Copies::Cells(m) => {
+                m.insert(tv.cell_addr(), copy);
+            }
+            Copies::Names(m, _) => {
+                m.insert(tv.name.clone(), copy);
+            }
+        }
+    }
+
+    /// `f` with the names `quantifiers` declares its own: none of them is
+    /// a variable from outside while it runs.
+    pub(super) fn within<T>(
+        &mut self,
+        quantifiers: &[ArcStr],
+        f: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let Copies::Names(m, _) = self else { return f(self) };
+        let outer: SmallVec<[(ArcStr, Option<TVar>); 4]> =
+            quantifiers.iter().map(|q| (q.clone(), m.remove(q))).collect();
+        let r = f(self);
+        let Copies::Names(m, _) = self else { unreachable!() };
+        for (q, tv) in outer {
+            m.remove(&q);
+            if let Some(tv) = tv {
+                m.insert(q, tv);
+            }
+        }
+        r
+    }
 }
 
 #[cfg(test)]
@@ -1538,13 +1569,6 @@ impl TypeRef {
         self.resolved().map(|r| r.def_key())
     }
 
-    /// The key of the definition [`Type::lookup_ref_probe`] expands this
-    /// by, found without expanding it; fills nothing.
-    #[doc(hidden)]
-    pub fn probe_def_key(&self, env: &Env) -> Option<usize> {
-        self.resolve_peek(env).map(|r| r.def_key())
-    }
-
     /// Whether two references name one definition: an open cell names
     /// what its name means in `env`, so the answer does not depend on
     /// which cells a walk filled; two that name nothing, by the written
@@ -1605,11 +1629,13 @@ impl TypeRef {
                     }
                 }
                 None if commit => {
-                    bound.check_contains(env, arg)?;
-                    tvar::require_bounds(std::slice::from_ref(&bound), arg)
+                    for tv in bound.open_members(env, arg) {
+                        tv.add_body_bound(env, bound.clone())?
+                    }
+                    bound.check_contains(env, arg)?
                 }
                 None => {
-                    if !bound.contains_with_flags(BitFlags::empty(), env, arg)? {
+                    if !bound.decided_holds(env, arg)? {
                         return Ok(false);
                     }
                 }
@@ -1655,6 +1681,16 @@ impl TypeRef {
         let mut cell = self.resolved.lock();
         if let Resolution::Open = &*cell {
             *cell = Resolution::Def(sync::Arc::downgrade(def))
+        }
+    }
+
+    /// Fill an open cell with what `row` names, the same written name as
+    /// its definition's check resolved it.
+    pub(super) fn fill_as(&self, row: &Self) {
+        if self.name == row.name
+            && let Some(def) = row.resolved()
+        {
+            self.fill(&def)
         }
     }
 
@@ -2828,7 +2864,7 @@ impl Type {
                     if let Some(b) = tv.binding() {
                         b.named_defs(cells, out)
                     }
-                    for c in tv.cell_constraints() {
+                    for c in tv.cell_above() {
                         c.named_defs(cells, out)
                     }
                 }
@@ -2867,7 +2903,7 @@ impl Type {
                     if let Some(b) = tv.binding() {
                         b.named_traits(cells, out)
                     }
-                    for c in tv.cell_constraints() {
+                    for c in tv.cell_above() {
                         c.named_traits(cells, out)
                     }
                 }
@@ -3036,7 +3072,8 @@ impl Type {
     }
 
     /// Each function type this type holds outside any other function type,
-    /// bindings followed: the function values a holder of this type may carry.
+    /// bindings followed, and what flows into a cell still open: the
+    /// function values a holder of this type may carry.
     pub fn each_held_fn(&self, f: &mut impl FnMut(&FnType)) {
         self.held_fns_seen(&mut LPooled::take(), f)
     }
@@ -3044,10 +3081,13 @@ impl Type {
     fn held_fns_seen(&self, seen: &mut AHashSet<usize>, f: &mut impl FnMut(&FnType)) {
         ensure_sufficient(|| match self {
             Type::TVar(tv) => {
-                if seen.insert(tv.cell_addr())
-                    && let Some(b) = tv.binding()
-                {
-                    b.held_fns_seen(seen, f)
+                if seen.insert(tv.cell_addr()) {
+                    match tv.binding() {
+                        Some(b) => b.held_fns_seen(seen, f),
+                        None => {
+                            tv.cell_lower().iter().for_each(|t| t.held_fns_seen(seen, f))
+                        }
+                    }
                 }
             }
             t if node_addr(t).is_some_and(|n| !seen.insert(n)) => (),
@@ -3136,19 +3176,6 @@ impl Type {
         })
     }
 
-    /// The reference behind a type variable: a cell bound (through
-    /// other cells) to a reference or to a filled constructor
-    /// application.
-    pub(crate) fn ref_behind(&self) -> Option<Type> {
-        match self {
-            Type::TVar(_) => self.with_deref(|t| match t {
-                Some(t @ Type::Ref(_)) => Some(t.clone()),
-                _ => None,
-            }),
-            _ => None,
-        }
-    }
-
     /// The other side of a constructor application, dereferenced and
     /// [`Self::decompose`]d: a reference by name, a bare alias through
     /// its expansion.
@@ -3162,57 +3189,6 @@ impl Type {
             Type::Ref(tr) if tr.params.is_empty() => Ok(t.lookup_ref(env)?.decompose()),
             _ => Ok(None),
         }
-    }
-
-    /// [`Self::app_split`] for a receiver that lost its name (a cell
-    /// holding a typedef's expansion): each registered head of the
-    /// constructor variable's trait bounds is tried, and the one that
-    /// contains the receiver and determines the element is the
-    /// constructor. Only a `commit` binds the receiver's open cells; a
-    /// probe decides on a copy.
-    pub(crate) fn app_split_for(
-        ctor: &Type,
-        t: &Type,
-        env: &Env,
-        commit: bool,
-    ) -> Result<Option<(Type, Type)>> {
-        if let Some(parts) = Self::app_split(t, env)? {
-            return Ok(Some(parts));
-        }
-        let Some(t) = t.deref_cloned() else { return Ok(None) };
-        let Type::TVar(cv) = ctor else { return Ok(None) };
-        // A head is kept when it contains the receiver and determines the
-        // element; a proper subtype (`[`Nil]` under `List<'_>`) leaves the
-        // element open and is not this constructor. Each head is tried on
-        // a private copy of the receiver, so a rejected one binds nothing.
-        let fits = |head: &Type, t: &Type| -> Result<Option<(Type, Type)>> {
-            let head = head.reset_tvars();
-            let elem = Type::empty_tvar();
-            let Some(filled) = head.fill_hole(&elem) else { return Ok(None) };
-            Ok((filled.contains(env, t)? && elem.with_deref(|e| e.is_some()))
-                .then(|| (head.resolve_tvars(), elem.resolve_tvars())))
-        };
-        for c in cv.cell_constraints().iter() {
-            let Type::Ref(tr) = c else { continue };
-            let Some(tid) = env.trait_of_ref(tr) else { continue };
-            let Some(heads) = env.impls_of(tid) else { continue };
-            for im in heads.iter() {
-                if !matches!(im.target, Type::Ref(_)) {
-                    continue;
-                }
-                let Some(copy) = fits(&im.target, &t.reset_tvars())? else { continue };
-                if !commit {
-                    return Ok(Some(copy));
-                }
-                if let Some(r) = fits(&im.target, &t)? {
-                    if graphix_dbg_bind() {
-                        eprintln!("APP-SPLIT recovered ctor={:?} elem={:?}", r.0, r.1);
-                    }
-                    return Ok(Some(r));
-                }
-            }
-        }
-        Ok(None)
     }
 
     /// How a trait signature spells its receiver: `applied` if `self`
@@ -3238,171 +3214,6 @@ impl Type {
                 let mut n = 0;
                 t.for_each_child(&mut |c| n += c.holes());
                 n
-            }
-        })
-    }
-
-    /// Pre-unify a declared parameter type with an argument's type
-    /// before the argument typechecks, so an unannotated callback's
-    /// parameters take the declared types. A function-typed argument
-    /// unifies its parameter positions only; anything else whole. A
-    /// union's member that two could take is left to the argument's own
-    /// check, which meets the argument decided.
-    #[doc(hidden)]
-    pub fn pre_unify_arg(env: &Env, declared: &Type, actual: &Type) -> Result<()> {
-        let mut hist = contains::ContainsHist::early();
-        Self::pre_unify_seen(
-            env,
-            &mut hist,
-            declared,
-            actual,
-            &mut LPooled::take(),
-            false,
-        )
-    }
-
-    /// [`Self::pre_unify_arg`] with a formal's open copy for the declared
-    /// type. A part of the argument that holds a declared variable and no
-    /// undecided cell takes nothing from the copy and is passed over: the
-    /// variable would be one cell with the copy's, within the copy's
-    /// bounds, over cells no instance has.
-    #[doc(hidden)]
-    pub fn pre_unify_copy(env: &Env, open: &Type, actual: &Type) -> Result<()> {
-        let mut hist = contains::ContainsHist::early();
-        Self::pre_unify_seen(env, &mut hist, open, actual, &mut LPooled::take(), true)
-    }
-
-    /// [`Self::pre_unify_arg`], or [`Self::pre_unify_copy`] where `copy`,
-    /// each pair of shared nodes (`seen`) pre-unified once. `seen` holds
-    /// each pair it keys, so an address stays its node's for the whole
-    /// walk, and the parts unify under one walk state: what one part's
-    /// probes found, the next part reads.
-    fn pre_unify_seen(
-        env: &Env,
-        hist: &mut contains::ContainsHist,
-        declared: &Type,
-        actual: &Type,
-        seen: &mut AHashMap<(usize, usize), (Type, Type)>,
-        copy: bool,
-    ) -> Result<()> {
-        ensure_sufficient(|| {
-            if copy && !actual.has_free() && actual.has_rigid() {
-                return Ok(());
-            }
-            let d = match declared.deref_cloned() {
-                Some(t @ Type::Ref(_)) => Some(t.lookup_ref(env)?),
-                d => d,
-            };
-            let a = actual.deref_cloned();
-            if let (Some(d), Some(a)) = (&d, &a)
-                && let (Some(dn), Some(an)) = (node_addr(d), node_addr(a))
-            {
-                match seen.entry((dn, an)) {
-                    Entry::Occupied(_) => return Ok(()),
-                    Entry::Vacant(e) => e.insert((d.clone(), a.clone())),
-                };
-            }
-            let each =
-                |ds: &[Type],
-                 as_: &[Type],
-                 hist: &mut contains::ContainsHist,
-                 seen: &mut AHashMap<(usize, usize), (Type, Type)>| {
-                    ds.iter().zip(as_.iter()).try_for_each(|(d, a)| {
-                        Self::pre_unify_seen(env, hist, d, a, seen, copy)
-                    })
-                };
-            let whole = |hist: &mut contains::ContainsHist| {
-                let flags = contains::ContainsFlags::Commit.into();
-                match declared.contains_int(flags, env, hist, actual) {
-                    Err(e) if e.is::<AmbiguousMember>() => Ok(()),
-                    r => r.map(|_| ()),
-                }
-            };
-            if let (None, Type::TVar(tv), Some(Type::Fn(_))) = (&d, declared, &a)
-                && let Some(cell) = tv.open_cell()
-                && cell.bound_takers_ambiguous(env, actual)?
-            {
-                return Ok(());
-            }
-            match (&d, &a) {
-                (Some(Type::Fn(d)), Some(Type::Fn(a))) => d.pre_unify_params(env, a),
-                // a part pre-unifies as the whole would
-                (Some(Type::ByRef(_, d)), Some(Type::ByRef(_, a)))
-                | (Some(Type::Array(d)), Some(Type::Array(a)))
-                | (Some(Type::List(d)), Some(Type::List(a))) => {
-                    Self::pre_unify_seen(env, hist, d, a, seen, copy)
-                }
-                (Some(Type::Tuple(ds)), Some(Type::Tuple(as_)))
-                    if ds.len() == as_.len() =>
-                {
-                    each(ds, as_, hist, seen)
-                }
-                (Some(Type::Variant(t0, ds, _)), Some(Type::Variant(t1, as_, _)))
-                    if t0 == t1 && ds.len() == as_.len() =>
-                {
-                    each(ds, as_, hist, seen)
-                }
-                (Some(Type::Struct(ds)), Some(Type::Struct(as_)))
-                    if ds.len() == as_.len()
-                        && ds
-                            .iter()
-                            .zip(as_.iter())
-                            .all(|((n0, ..), (n1, ..))| n0 == n1) =>
-                {
-                    ds.iter().zip(as_.iter()).try_for_each(|((_, d, _), (_, a, _))| {
-                        Self::pre_unify_seen(env, hist, d, a, seen, copy)
-                    })
-                }
-                // a union two of whose members admit the argument leaves
-                // the choice to the argument's own check
-                (Some(Type::Set(ms)), _) => {
-                    let mut admit: Option<&Type> = None;
-                    for m in ms.iter() {
-                        if m.contains_with_flags(BitFlags::empty(), env, actual)? {
-                            if admit.is_some() {
-                                return Ok(());
-                            }
-                            admit = Some(m);
-                        }
-                    }
-                    // the one admitting constructor holds the argument
-                    // whole: its parts pre-unify as the member's would
-                    let structural = |t: &Type| {
-                        t.with_deref(|t| {
-                            matches!(
-                                t,
-                                Some(
-                                    Type::Tuple(_)
-                                        | Type::Struct(_)
-                                        | Type::Variant(..)
-                                        | Type::Array(_)
-                                        | Type::List(_)
-                                        | Type::ByRef(..)
-                                )
-                            )
-                        })
-                    };
-                    match admit {
-                        Some(m) if structural(m) && structural(actual) => {
-                            Self::pre_unify_seen(env, hist, m, actual, seen, copy)
-                        }
-                        _ => whole(hist),
-                    }
-                }
-                (Some(Type::Primitive(ps)), _) if ps.len() > 1 => {
-                    let mut admitting = 0;
-                    for p in ps.iter() {
-                        if Type::Primitive(p.into()).contains_with_flags(
-                            BitFlags::empty(),
-                            env,
-                            actual,
-                        )? {
-                            admitting += 1;
-                        }
-                    }
-                    if admitting > 1 { Ok(()) } else { whole(hist) }
-                }
-                _ => whole(hist),
             }
         })
     }
@@ -3523,37 +3334,23 @@ impl Type {
     /// now ([`TypeRef::names_something`]), into `out`: a name's
     /// parameters and a variable's bounds included, a variable's binding
     /// (inferred, not written) not. A name that does resolve is refused
-    /// where it is applied wrongly ([`TypeRef::check_application`]). Each
-    /// union it writes in a function type goes to `union`
-    /// ([`Self::for_each_written`]). True when some name means a trait.
+    /// where it is applied wrongly ([`TypeRef::check_application`]). True
+    /// when some name means a trait.
     #[doc(hidden)]
-    pub fn unresolved_names(
-        &self,
-        env: &Env,
-        out: &mut Vec<TypeRef>,
-        mut union: Option<&mut dyn FnMut(&Type) -> Result<()>>,
-    ) -> Result<bool> {
-        let judged = union.is_some();
+    pub fn unresolved_names(&self, env: &Env, out: &mut Vec<TypeRef>) -> Result<bool> {
         let mut res = Ok(());
         let mut trait_named = false;
-        let mut each = |w: Written<'_>| {
+        self.for_each_written_name(&mut |tr| {
             if res.is_ok() {
-                res = match w {
-                    Written::Name(tr) => match tr.means(env) {
-                        Some(m) => {
-                            trait_named |= m == NameMeans::Trait;
-                            tr.check_application(env)
-                        }
-                        None => Ok(out.push(tr.clone())),
-                    },
-                    Written::Union(u) => union.as_mut().map_or(Ok(()), |f| f(u)),
+                res = match tr.means(env) {
+                    Some(m) => {
+                        trait_named |= m == NameMeans::Trait;
+                        tr.check_application(env)
+                    }
+                    None => Ok(out.push(tr.clone())),
                 }
             }
-        };
-        match judged {
-            true => self.written_walk::<true>(false, &mut each),
-            false => self.written_walk::<false>(false, &mut each),
-        }
+        });
         res.map(|()| trait_named)
     }
 
@@ -3569,59 +3366,26 @@ impl Type {
         res
     }
 
-    /// Each name this written type holds, its variables' bounds' included.
+    /// Each name this written type holds, under any constructor, a
+    /// typedef's arguments and its variables' bounds included, no typedef
+    /// looked through.
     #[doc(hidden)]
     pub fn for_each_written_name(&self, f: &mut impl FnMut(&TypeRef)) {
-        self.written_walk::<false>(false, &mut |w| {
-            if let Written::Name(tr) = w {
-                f(tr)
-            }
-        })
-    }
-
-    /// Each name this written type holds and each union it writes in a
-    /// function type (its parameters, result, throws and its variables'
-    /// bounds; the whole of it where `in_fn`), under any constructor, a
-    /// typedef's arguments included, no typedef looked through.
-    #[doc(hidden)]
-    pub fn for_each_written(&self, in_fn: bool, f: &mut impl FnMut(Written<'_>)) {
-        self.written_walk::<true>(in_fn, f)
-    }
-
-    fn written_walk<const UNIONS: bool>(
-        &self,
-        in_fn: bool,
-        f: &mut impl FnMut(Written<'_>),
-    ) {
-        fn go<const UNIONS: bool>(
-            t: &Type,
-            in_fn: bool,
-            seen: &mut AddrSet,
-            f: &mut impl FnMut(Written<'_>),
-        ) {
+        fn go(t: &Type, seen: &mut AddrSet, f: &mut impl FnMut(&TypeRef)) {
             ensure_sufficient(|| match t {
                 Type::Ref(tr) => {
-                    f(Written::Name(tr));
-                    tr.params.iter().for_each(|p| go::<UNIONS>(p, in_fn, seen, f))
+                    f(tr);
+                    tr.params.iter().for_each(|p| go(p, seen, f))
                 }
-                Type::TVar(tv) if seen.insert(tv.cell_addr()) => tv
-                    .cell_constraints()
-                    .iter()
-                    .for_each(|c| go::<UNIONS>(c, true, seen, f)),
+                Type::TVar(tv) if seen.insert(tv.cell_addr()) => {
+                    tv.cell_above().iter().for_each(|c| go(c, seen, f))
+                }
                 Type::TVar(_) => (),
-                Type::Fn(ft) => ft.for_each_type(&mut |t| go::<UNIONS>(t, true, seen, f)),
-                t => {
-                    if UNIONS
-                        && in_fn
-                        && let Type::Set(_) = t
-                    {
-                        f(Written::Union(t))
-                    }
-                    t.for_each_child(&mut |c| go::<UNIONS>(c, in_fn, seen, f))
-                }
+                Type::Fn(ft) => ft.for_each_type(&mut |t| go(t, seen, f)),
+                t => t.for_each_child(&mut |c| go(c, seen, f)),
             })
         }
-        go::<UNIONS>(self, in_fn, &mut LPooled::take(), f)
+        go(self, &mut LPooled::take(), f)
     }
 
     /// Fill the resolution cell of every `Type::Ref` reachable from
@@ -3629,7 +3393,7 @@ impl Type {
     /// that gives its names meaning. Names not visible are skipped
     /// (they fill at their first in-context lookup) and make the
     /// result false. Recurses through filled snapshot bodies and
-    /// through cells' bindings and conjuncts.
+    /// through cells' bindings and bounds.
     pub fn seed_refs(&self, env: &Env) -> bool {
         self.seed_refs_seen(env, &mut LPooled::take())
     }
@@ -3648,8 +3412,34 @@ impl Type {
         self.seed_walk(env, seen, false)
     }
 
+    /// [`Self::seed_names_seen`] for the names whose arguments hold no
+    /// type variable alone: such a name means the same wherever it is
+    /// read, so filling it here changes nothing a later reader sees.
+    #[doc(hidden)]
+    pub fn seed_closed_names_seen(&self, env: &Env, seen: &mut AddrSet) {
+        self.seed_walk_where(env, seen, false, &|tr| {
+            tr.params.iter().all(|p| p.tvar_free())
+        });
+    }
+
     fn seed_walk(&self, env: &Env, seen: &mut AddrSet, bodies: bool) -> bool {
-        fn go(t: &Type, env: &Env, seen: &mut AddrSet, bodies: bool) -> bool {
+        self.seed_walk_where(env, seen, bodies, &|_| true)
+    }
+
+    fn seed_walk_where(
+        &self,
+        env: &Env,
+        seen: &mut AddrSet,
+        bodies: bool,
+        fills: &dyn Fn(&TypeRef) -> bool,
+    ) -> bool {
+        fn go(
+            t: &Type,
+            env: &Env,
+            seen: &mut AddrSet,
+            bodies: bool,
+            fills: &dyn Fn(&TypeRef) -> bool,
+        ) -> bool {
             ensure_sufficient(|| {
                 // CR claude for claude: [risk/low] A node or resolution cell already in
                 // `seen` answers true here, so the result is right only for the first
@@ -3671,7 +3461,9 @@ impl Type {
                 let mut all = true;
                 match t {
                     // Keyed on the cell: with_params clones share it.
-                    Type::Ref(tr) if seen.insert(Arc::as_ptr(&tr.resolved).addr()) => {
+                    Type::Ref(tr)
+                        if fills(tr) && seen.insert(Arc::as_ptr(&tr.resolved).addr()) =>
+                    {
                         match tr.resolve_in(env) {
                             None if tr.resolve_trait_in(env).is_some() => (),
                             None => all = false,
@@ -3679,10 +3471,10 @@ impl Type {
                             Some(r) => {
                                 for (_, c) in r.params.iter() {
                                     if let Some(c) = c {
-                                        all &= go(c, env, seen, bodies);
+                                        all &= go(c, env, seen, bodies, fills);
                                     }
                                 }
-                                all &= go(&r.typ, env, seen, bodies);
+                                all &= go(&r.typ, env, seen, bodies, fills);
                             }
                         }
                     }
@@ -3691,21 +3483,25 @@ impl Type {
                         if !seen.insert(cell.data_ptr().addr()) {
                             return true;
                         }
-                        let (binding, cons) = {
+                        let (binding, cons, lower) = {
                             let cell = cell.read();
-                            (cell.binding.clone(), cell.constraints.clone())
+                            (
+                                cell.binding.clone(),
+                                SmallVec::<[Type; 1]>::from(cell.above.all()),
+                                cell.lower.clone(),
+                            )
                         };
-                        for t in binding.iter().chain(cons.iter()) {
-                            all &= go(t, env, seen, bodies);
+                        for t in binding.iter().chain(cons.iter()).chain(lower.iter()) {
+                            all &= go(t, env, seen, bodies, fills);
                         }
                     }
                     _ => (),
                 }
-                t.for_each_child(&mut |c| all &= go(c, env, seen, bodies));
+                t.for_each_child(&mut |c| all &= go(c, env, seen, bodies, fills));
                 all
             })
         }
-        go(self, env, seen, bodies)
+        go(self, env, seen, bodies, fills)
     }
 
     /// Whether this type reaches the definition `def` (a
@@ -3926,7 +3722,7 @@ impl Type {
                 JUDGING.with_borrow_mut(|j| j.pop());
             }
         }
-        // CR claude for eric: [bug/high] Whether a raised payload is an error chain is
+        // XCR claude for claude: [bug/high] Whether a raised payload is an error chain is
         // decided here while its variables are open, and the answer changes once an
         // instance decides them. A bare variable is no chain, so in `|x: 'a| { catch(e)
         // r <- e ~ e.0.error; error(x)?; r }` the binder is `ErrChain<'a>` and
@@ -3944,6 +3740,23 @@ impl Type {
         // design/review-2026-11-16/repro/t-typ-mod-generic-chain-payload.gx and
         // design/review-2026-11-16/repro/t-typ-mod-generic-chain-lookalike.gx
         // (t-typ-mod-01)
+        // 2026-11-20 claude: Eric ruled (2026-11-20, Q-K): flatten error chains as the
+        // run time does: a chain over a chain is that chain, a read of the error of a
+        // chain over a still-generic payload inside its definition is refused naming an
+        // annotation, the printer prints a chain of a chain as the chain, and no user
+        // type may be named ErrChain.
+        // 2026-11-20 claude: Fixed on bounds-spike: a .error read or a relation meeting
+        // core's ErrChain over a payload not decided yet waits in the fixing loop until
+        // the payload is (Solving::chains, Chained); a .error read over ErrChain<'a>, 'a
+        // a declared variable whose bounds admit a chain, is refused
+        // (Solving::chain_read); a raise of a struct of a chain's four fields whose
+        // cause, ori or pos is a variable is refused (bounds::strip,
+        // chain_shaped_over_variables). Both probes are refused. Pins:
+        // lang::errors::chain_error_over_a_declared_variable_is_refused,
+        // chain_error_over_a_variable_no_chain_meets,
+        // raise_of_a_chain_shaped_struct_over_variables_is_refused,
+        // generic_reraise_keeps_the_chain, generic_reraise_reads_the_first_error,
+        // generic_reraise_error_is_not_a_chain.
         if let Type::TVar(tv) = self {
             return match tv.binding() {
                 Some(t) => t.chain_error_type(env),
@@ -3978,11 +3791,7 @@ impl Type {
                     return Ok(None);
                 }
                 let error = fields[1].1.clone();
-                let fits = Type::err_chain(error.clone()).contains_with_flags(
-                    BitFlags::empty(),
-                    env,
-                    self,
-                )?;
+                let fits = Type::err_chain(error.clone()).decided_holds(env, self)?;
                 Ok(fits.then_some(error))
             }
             Type::Set(ts) if !ts.is_empty() => {
@@ -4063,6 +3872,18 @@ impl Type {
             }
             _ => false,
         })
+    }
+
+    /// The open members of the union `t` this reaches as it reaches an
+    /// open cell, where this is a predicate: a union meets one only where
+    /// each member does.
+    fn open_members(&self, env: &Env, t: &Type) -> SmallVec<[TVar; 2]> {
+        match (self, t.deref_cloned()) {
+            (Type::Bound(_), Some(Type::Set(ref ms))) => {
+                ms.iter().filter_map(|m| m.open_cell(env)).collect()
+            }
+            _ => SmallVec::new(),
+        }
     }
 
     /// The open cell this type is: an unbound variable, or one bound to
@@ -4314,7 +4135,17 @@ impl Type {
                         }
                         t => part(t)?,
                     };
-                    args.push(FnArgType { kind: a.kind.clone(), typ });
+                    let kind = match &a.kind {
+                        FnArgKind::Labeled {
+                            name,
+                            default: Some(DefaultType::Of(d)),
+                        } => FnArgKind::Labeled {
+                            name: name.clone(),
+                            default: Some(DefaultType::Of(part(d)?)),
+                        },
+                        kind => kind.clone(),
+                    };
+                    args.push(FnArgType { kind, typ });
                 }
                 let vargs = ft.vargs.as_ref().map(|t| part(t)).transpose()?;
                 let rtype = part(&ft.rtype)?;
@@ -4374,38 +4205,79 @@ impl Type {
         scope: &ModPath,
         copies: &mut AHashMap<usize, TVar>,
     ) -> Type {
-        self.scope_refs_int(scope, copies).unwrap_or_else(|| self.clone())
+        let mut copies = Copies::Cells(copies);
+        self.scope_refs_int(Some(scope), &mut copies).unwrap_or_else(|| self.clone())
     }
 
-    /// `None` when no `Ref` or `TVar` is beneath. `copies` maps each
-    /// cell re-minted so far to its copy: every occurrence of one cell
-    /// is one copy, so what was one variable stays one.
-    fn scope_refs_int(
+    /// [`Self::scope_refs`] where same-named variables are one variable:
+    /// a name `names` holds is that variable, and any other is copied once
+    /// and goes into `names`. A nested fn type's own quantifiers are its own.
+    pub fn scope_refs_named(
         &self,
         scope: &ModPath,
-        copies: &mut AHashMap<usize, TVar>,
+        names: &mut AHashMap<ArcStr, TVar>,
+    ) -> Type {
+        let mut copies = Copies::Names(names, LPooled::take());
+        self.scope_refs_int(Some(scope), &mut copies).unwrap_or_else(|| self.clone())
+    }
+
+    /// [`Self::scope_refs_named`] where the type's names stay as they
+    /// were scoped.
+    pub fn named_in(&self, names: &mut AHashMap<ArcStr, TVar>) -> Type {
+        let mut copies = Copies::Names(names, LPooled::take());
+        self.scope_refs_int(None, &mut copies).unwrap_or_else(|| self.clone())
+    }
+
+    /// `None` when no `Ref` or `TVar` is beneath; a `Ref` takes `scope`
+    /// where there is one.
+    pub(super) fn scope_refs_int(
+        &self,
+        scope: Option<&ModPath>,
+        copies: &mut Copies,
     ) -> Option<Type> {
+        #[cfg(test)]
+        fntyp::TVAR_WALK_STEPS.with(|c| c.set(c.get() + 1));
         ensure_sufficient(|| self.scope_refs_int_inner(scope, copies))
     }
 
     fn scope_refs_int_inner(
         &self,
-        scope: &ModPath,
-        copies: &mut AHashMap<usize, TVar>,
+        scope: Option<&ModPath>,
+        copies: &mut Copies,
     ) -> Option<Type> {
         match self {
             Type::TVar(tv) => {
-                let addr = tv.cell_addr();
-                if let Some(copy) = copies.get(&addr) {
-                    return Some(Type::TVar(copy.clone()));
+                if let Some(copy) = copies.get(tv) {
+                    // a bound written at any occurrence of a name is the
+                    // variable's
+                    if let Copies::Names(_, met) = copies
+                        && met.insert(tv.cell_addr())
+                        && !copy.same_cell(tv)
+                    {
+                        let cons: SmallVec<[Type; 1]> =
+                            tv.cell().read().above.declared().into();
+                        for c in cons.iter() {
+                            let c = c
+                                .scope_refs_int(scope, copies)
+                                .unwrap_or_else(|| c.clone());
+                            copy.add_cell_constraint(c)
+                        }
+                    }
+                    return Some(Type::TVar(copy));
                 }
                 let (bound, cons) = {
                     let cell = tv.cell();
                     let cell = cell.read();
-                    (cell.binding.clone(), cell.constraints.clone())
+                    (
+                        cell.binding.clone(),
+                        SmallVec::<[Type; 1]>::from(cell.above.declared()),
+                    )
                 };
                 let fresh = tv.fresh_copy();
-                copies.insert(addr, fresh.clone());
+                copies.insert(tv, fresh.clone());
+                if let Copies::Names(_, met) = copies {
+                    met.insert(tv.cell_addr());
+                }
                 if let Some(typ) = bound {
                     fresh.bind(typ.scope_refs_int(scope, copies).unwrap_or(typ))
                 }
@@ -4421,165 +4293,12 @@ impl Type {
                 let params = Arc::from_iter(tr.params.iter().map(|t| {
                     t.scope_refs_int(scope, copies).unwrap_or_else(|| t.clone())
                 }));
-                Some(Type::Ref(Arc::new(tr.with_scope(scope.clone(), params))))
+                let scope = scope.unwrap_or(&tr.scope).clone();
+                Some(Type::Ref(Arc::new(tr.with_scope(scope, params))))
             }
-            Type::Fn(ft) => Some(Type::Fn(Arc::new(ft.scope_refs_with(scope, copies)))),
+            Type::Fn(ft) => Some(Type::Fn(Arc::new(ft.scope_refs_in(scope, copies)))),
             t => t.cow_children(&mut |c| c.scope_refs_int(scope, copies)),
         }
-    }
-
-    /// An inferred predicate as it decides a scrutinee no type has decided,
-    /// where a `_` stands at a position of a tuple, struct or variant at
-    /// which another arm's predicate in `others` holds a name (an open
-    /// cell): the `Any` there, and every `Any` inside a tuple, struct or
-    /// variant standing there, is a cell of its own, as an unused name's
-    /// is, so the part is what the names' uses make it. `None` where no
-    /// `_` stands so. The elements of an array or list share one type, where
-    /// a `_` stays `Any`.
-    pub fn wildcards_beside_binds(&self, others: &[&Type]) -> Option<Type> {
-        fn members<'a>(ts: &[&'a Type], out: &mut SmallVec<[&'a Type; 8]>) {
-            for t in ts {
-                match t {
-                    Type::Set(ms) => out.extend(ms.iter()),
-                    t => out.push(t),
-                }
-            }
-        }
-        fn cells(t: &Type) -> Option<Type> {
-            ensure_sufficient(|| match t {
-                Type::Any => Some(Type::empty_tvar()),
-                Type::Set(ms) => each(ms.len(), &mut |i| cells(&ms[i])).map(|parts| {
-                    Type::Set(Arc::from_iter(
-                        ms.iter().zip(parts).map(|(m, p)| p.unwrap_or_else(|| m.clone())),
-                    ))
-                }),
-                Type::Tuple(ts) => each(ts.len(), &mut |i| cells(&ts[i])).map(|parts| {
-                    Type::Tuple(Arc::from_iter(
-                        ts.iter().zip(parts).map(|(m, p)| p.unwrap_or_else(|| m.clone())),
-                    ))
-                }),
-                Type::Variant(tag, ts, at) => {
-                    each(ts.len(), &mut |i| cells(&ts[i])).map(|parts| {
-                        Type::Variant(
-                            tag.clone(),
-                            Arc::from_iter(
-                                ts.iter()
-                                    .zip(parts)
-                                    .map(|(m, p)| p.unwrap_or_else(|| m.clone())),
-                            ),
-                            *at,
-                        )
-                    })
-                }
-                Type::Struct(fs) => {
-                    each(fs.len(), &mut |i| cells(&fs[i].1)).map(|parts| {
-                        Type::Struct(Arc::from_iter(fs.iter().zip(parts).map(
-                            |((n, t, at), p)| {
-                                (n.clone(), p.unwrap_or_else(|| t.clone()), *at)
-                            },
-                        )))
-                    })
-                }
-                _ => None,
-            })
-        }
-        fn part(t: &Type, beside: &[&Type]) -> Option<Type> {
-            match beside
-                .iter()
-                .any(|o| matches!(o, Type::TVar(tv) if tv.open_cell().is_some()))
-            {
-                true => cells(t),
-                false => match t {
-                    Type::Any => None,
-                    t => t.wildcards_beside_binds(beside),
-                },
-            }
-        }
-        fn each(
-            n: usize,
-            of: &mut dyn FnMut(usize) -> Option<Type>,
-        ) -> Option<SmallVec<[Option<Type>; 8]>> {
-            let parts: SmallVec<[Option<Type>; 8]> = (0..n).map(&mut *of).collect();
-            parts.iter().any(Option::is_some).then_some(parts)
-        }
-        ensure_sufficient(|| {
-            let mut ms: SmallVec<[&Type; 8]> = SmallVec::new();
-            members(others, &mut ms);
-            match self {
-                Type::Set(alts) => {
-                    let parts = each(alts.len(), &mut |i| {
-                        alts[i].wildcards_beside_binds(others)
-                    })?;
-                    Some(Type::Set(Arc::from_iter(
-                        alts.iter()
-                            .zip(parts)
-                            .map(|(a, p)| p.unwrap_or_else(|| a.clone())),
-                    )))
-                }
-                Type::Tuple(ts) => {
-                    let parts = each(ts.len(), &mut |k| {
-                        let beside: SmallVec<[&Type; 8]> = ms
-                            .iter()
-                            .filter_map(|o| match o {
-                                Type::Tuple(os) if os.len() == ts.len() => Some(&os[k]),
-                                _ => None,
-                            })
-                            .collect();
-                        part(&ts[k], &beside)
-                    })?;
-                    Some(Type::Tuple(Arc::from_iter(
-                        ts.iter().zip(parts).map(|(t, p)| p.unwrap_or_else(|| t.clone())),
-                    )))
-                }
-                Type::Variant(tag, ts, at) => {
-                    let parts = each(ts.len(), &mut |k| {
-                        let beside: SmallVec<[&Type; 8]> = ms
-                            .iter()
-                            .filter_map(|o| match o {
-                                Type::Variant(otag, os, _)
-                                    if otag == tag && os.len() == ts.len() =>
-                                {
-                                    Some(&os[k])
-                                }
-                                _ => None,
-                            })
-                            .collect();
-                        part(&ts[k], &beside)
-                    })?;
-                    Some(Type::Variant(
-                        tag.clone(),
-                        Arc::from_iter(
-                            ts.iter()
-                                .zip(parts)
-                                .map(|(t, p)| p.unwrap_or_else(|| t.clone())),
-                        ),
-                        *at,
-                    ))
-                }
-                Type::Struct(fs) => {
-                    let parts = each(fs.len(), &mut |k| {
-                        let name = &fs[k].0;
-                        let beside: SmallVec<[&Type; 8]> = ms
-                            .iter()
-                            .filter_map(|o| match o {
-                                Type::Struct(os) => os
-                                    .iter()
-                                    .find(|(n, _, _)| n == name)
-                                    .map(|(_, t, _)| t),
-                                _ => None,
-                            })
-                            .collect();
-                        part(&fs[k].1, &beside)
-                    })?;
-                    Some(Type::Struct(Arc::from_iter(fs.iter().zip(parts).map(
-                        |((n, t, at), p)| {
-                            (n.clone(), p.unwrap_or_else(|| t.clone()), *at)
-                        },
-                    ))))
-                }
-                _ => None,
-            }
-        })
     }
 
     /// A unification view of this type with every `Any` leaf replaced
@@ -4638,7 +4357,7 @@ fn ctor_quantifiers(ft: &FnType, env: &Env) -> LPooled<Vec<(ArcStr, Type)>> {
     ft.collect_tvars(&mut named);
     for q in ft.quantifiers.iter() {
         let Some(tv) = named.get(q) else { continue };
-        let cons = tv.cell_constraints();
+        let cons = tv.cell_above();
         if !tv.is_bound()
             && !cons.is_empty()
             && cons.iter().all(|c| Type::is_ctor_trait_bound(env, c))
@@ -4655,13 +4374,4 @@ fn ctor_quantifiers(ft: &FnType, env: &Env) -> LPooled<Vec<(ArcStr, Type)>> {
 pub enum NameMeans {
     Type,
     Trait,
-}
-
-/// What a written type holds, as [`Type::for_each_written`] meets it.
-#[doc(hidden)]
-pub enum Written<'a> {
-    /// A name.
-    Name(&'a TypeRef),
-    /// A union written in a function type.
-    Union(&'a Type),
 }

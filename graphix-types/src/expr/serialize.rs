@@ -411,7 +411,7 @@ mod test {
         tv.add_cell_constraint(Type::Array(Arc::new(Type::TVar(tv.clone()))));
         let t = Type::TVar(tv.clone());
         assert!(matches!(t.encode(&mut BytesMut::new()), Err(PackError::InvalidFormat)));
-        tv.cell().write().constraints.clear();
+        tv.cell().write().above.set([], []);
     }
 
     /// A blob from another build of the AST types is refused, whatever

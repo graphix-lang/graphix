@@ -1,9 +1,9 @@
 use crate::{
-    BindId, CFlag, CompileCtx, ExecCtx, LambdaId, Node, Notify, PendingImport, PrintFlag,
-    Refs, Rt, Saved, Scope, StaticCallees, Tag, TagValue, Update, View,
+    BindId, CFlag, CompileCtx, ExecCtx, Node, Notify, PendingImport, PrintFlag, Refs, Rt,
+    Saved, Scope, StaticCallees, Tag, TagValue, Update, View,
     compiler::compile,
     env::{
-        Env, Glob, ImplDef, ImportEntry, Lexical, LoadedBody, Map, TraitDef, Unsettled,
+        Env, Glob, ImplDef, ImportEntry, Lexical, LoadedBody, Map, Redeclared, TraitDef,
         UseAnchor, scope_params,
     },
     errf,
@@ -18,20 +18,14 @@ use crate::{
         self, ImageBuf,
         nodes::{NodeTag, decode_node, decode_nodes, encode_nodes, put_tag},
     },
-    node::{
-        self, Nop, Runs,
-        bind::Bind,
-        lambda::{LambdaDef, place_order},
-        traits,
-    },
+    node::{self, Nop, Runs, bind::Bind, traits},
     profile::{self, Phase},
     shared_map::SharedMap,
     stack::ensure_sufficient,
     typ::{
-        AmbiguousMember, Brief, FnArgKind, FnArgType, FnType, SigMatch, TVar, Type,
-        UnresolvableRef, Written,
-        settle::{DataPositions, VariableUnion},
-        tvar::{ForeignWrite, InTask, OwnWrites, TaskId, new_task, settled_note},
+        Brief, FnArgKind, FnArgType, FnType, TVar, Type, UnresolvableRef,
+        bounds::{self, Keeps},
+        tvar::{ForeignWrite, InTask, Level, OwnWrites, TaskId, new_task, settled_note},
     },
     wrap,
 };
@@ -45,9 +39,7 @@ use netidx_core::{
     path::Path,
 };
 use netidx_value::{Typ, Value};
-use nohash::IntSet;
 use poolshark::local::LPooled;
-use smallvec::SmallVec;
 use std::{
     fmt::Write,
     mem,
@@ -83,45 +75,6 @@ fn use_glob(env: &Env, scope: &ModPath, item: &UseItem) -> Result<Option<Glob>> 
     }))
 }
 
-/// What the `use` at statement `stmt` of the list at `scope` has still to
-/// bring, into `later`: nothing where the item is installed already (a
-/// `.gxi`'s `use` spliced into the body, a block compiled again) or names
-/// a package, which the prelude provides.
-pub(crate) fn later_use(
-    env: &Env,
-    scope: &ModPath,
-    stmt: usize,
-    spec: &Expr,
-    items: &[UseItem],
-    later: &mut Unsettled,
-) {
-    let sn = env.names.get(scope);
-    for item in items {
-        match item.bound_name() {
-            Some(key) => {
-                let here = sn
-                    .and_then(|sn| sn.imports.get(key))
-                    .is_some_and(|e| e.pos == spec.pos && *e.ori == *spec.ori);
-                let package = item.rename.is_none()
-                    && Path::levels(&*item.path.0) == 1
-                    && env.package_roots.contains(key);
-                if !here && !package {
-                    later.uses.push((stmt, key.into()))
-                }
-            }
-            None => {
-                let here = match use_glob(env, scope, item) {
-                    Ok(Some(g)) => sn.is_some_and(|sn| sn.globs.contains(&g)),
-                    Ok(None) | Err(_) => false,
-                };
-                if !here {
-                    later.globs.push(stmt)
-                }
-            }
-        }
-    }
-}
-
 /// Each module `e` declares at the level of the list it is a statement of:
 /// the statement itself when it is a `mod`, and a dynamic module written
 /// where a value is (`let st = mod foo dynamic { .. }`, a call's argument,
@@ -148,12 +101,84 @@ pub(crate) fn declared_modules<'a>(e: &'a Expr, f: &mut impl FnMut(&'a Name)) {
     }
 }
 
-/// Whether statement `e` of a list is a `use` or declares a module there:
-/// what [`Unsettled`] records of it is no longer to come once it begins.
-pub(crate) fn brings_names(e: &Expr) -> bool {
+/// Whether statement `e` of a list declares a module there: what
+/// [`Unsettled`] records of it is no longer to come once it begins.
+pub(crate) fn declares_module(e: &Expr) -> bool {
     let mut declares = false;
     declared_modules(e, &mut |_| declares = true);
-    declares || matches!(e.kind, ExprKind::Use { .. })
+    declares
+}
+
+/// Install every `use` the statement list `exprs` writes at `scope`,
+/// before any of its statements compiles: a list's imports are in force
+/// throughout it. One whose path goes through a module another of the
+/// list imports is installed once that one is, whatever their order. One
+/// that cannot be installed yet (its path names a trait the list declares)
+/// is left to its statement, which installs it or says why not; a `use`
+/// installed here is a no-op there. An import whose target does not
+/// exist yet is pending, as one a statement installs is. A name the list
+/// declares twice is refused here ([`Redeclared`]).
+// CR claude for claude: [bug/low] A `use` whose path starts at a module alias
+// that a `use` written below it imports is resolved against an outer module of
+// that name where one exists, since the first pass finds it: in `mod a; mod b;
+// { use b::X; use a::b; .. }` with a module `a::b`, `X` is `/b`'s and not
+// `a::b`'s. Rust reads `b` as the block's import throughout. Resolve the
+// list's module-kind imports first, or refuse a path whose first segment a
+// later `use` of the list imports. Found by reading; not run.
+// (rust-scoping-use-prefix-01)
+pub(crate) fn install_uses<R: Rt>(
+    ctx: &mut CompileCtx<R>,
+    flags: BitFlags<CFlag>,
+    scope: &Scope,
+    exprs: &[&Expr],
+) -> Result<()> {
+    let replace = flags.contains(CFlag::ReplaceImports);
+    let uses = exprs.iter().copied().filter(|e| matches!(e.kind, ExprKind::Use { .. }));
+    let mut waiting: smallvec::SmallVec<[&Expr; 8]> = uses.collect();
+    loop {
+        let before = waiting.len();
+        let mut i = 0;
+        while i < waiting.len() {
+            let e = waiting[i];
+            let ExprKind::Use { reexport, names } = &e.kind else { unreachable!() };
+            let installed = compile_use_items(
+                &mut ctx.env,
+                &mut ctx.pending_imports,
+                e.pos,
+                &e.ori,
+                scope,
+                replace,
+                *reexport,
+                names,
+            );
+            match installed {
+                Ok(()) => drop(waiting.remove(i)),
+                Err(err) if err.downcast_ref::<Redeclared>().is_some() => {
+                    return Err(err).at(e);
+                }
+                Err(_) => i += 1,
+            }
+        }
+        if waiting.is_empty() || waiting.len() == before {
+            return Ok(());
+        }
+    }
+}
+
+/// A list has compiled: of the imports pending since `mark`, drop each
+/// whose target exists now. The view at a list's end sees what the list
+/// declares, a module of its own included, which the check at the end of
+/// the top-level statement does not.
+pub(crate) fn settle_list_imports<R: Rt>(ctx: &mut CompileCtx<R>, mark: usize) {
+    let mut i = mark;
+    while i < ctx.pending_imports.len() {
+        let p = &ctx.pending_imports[i];
+        let entry = ctx.env.names.get(&p.scope).and_then(|sn| sn.imports.get(&p.key));
+        match entry.is_none_or(|e| ctx.env.import_target_exists(e)) {
+            true => drop(ctx.pending_imports.remove(i)),
+            false => i += 1,
+        }
+    }
 }
 
 /// Resolve one item of a `use` against the namespace table
@@ -386,17 +411,15 @@ fn bind_sig_item(
             compile_use_items(env, pending, si.pos, si_ori, scope, false, false, names)?;
         }
         SigKind::Bind(BindSig { name, typ }) => {
-            let typ = typ.scope_refs(&scope.lexical).rewrite_declared_args(env)?;
+            let typ = typ
+                .scope_refs_named(&scope.lexical, &mut LPooled::take())
+                .rewrite_declared_args(env)?;
             // a declared signature has no gate to close over its cells:
             // every one is a quantifier, a constructor trait's element
             // included, copied at each use, and its own are its scheme's,
             // which each use picks
-            match &typ {
-                Type::Fn(ft) => {
-                    ft.alias_tvars(&mut LPooled::take());
-                    ft.generalize(0)
-                }
-                typ => typ.alias_tvars(&mut LPooled::take()),
+            if let Type::Fn(ft) = &typ {
+                ft.generalize(0)
             }
             if env.ide.is_lsp() {
                 typ.record_ide_refs(env, &scope.lexical);
@@ -576,38 +599,6 @@ fn impl_sig(target: &Type, params: &[TVar]) -> FnType {
     }
 }
 
-/// A use through `declared`, a val's or a method's declaration, builds its
-/// instance by holding the implementation's own type at what the use
-/// picked: where that would choose between two undecided members of a
-/// union the implementation holds, whatever the use picks, the build would
-/// refuse what the use's check, which reads `declared` alone, accepts.
-/// Judged over copies as the build holds an instance
-/// ([`FnType::held_at`]), the declaration's variables held rigid.
-pub(crate) fn instance_picks_no_member(
-    env: &Env,
-    declared: &Type,
-    implemented: &Type,
-) -> Result<()> {
-    if !implemented.may_choose_member(env) {
-        return Ok(());
-    }
-    let held = declared.reset_tvars();
-    let mut tvs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-    held.collect_tvars(&mut tvs);
-    let _gates: LPooled<Vec<_>> = tvs.values().map(|tv| tv.open_rigid()).collect();
-    let fits = |placed: bool| {
-        let own = implemented.reset_tvars();
-        if placed {
-            own.place_cells(env, &held)
-        }
-        held.check_contains(env, &own)
-    };
-    match fits(false).or_else(|_| fits(true)) {
-        Err(e) if e.downcast_ref::<AmbiguousMember>().is_some() => Err(e),
-        _ => Ok(()),
-    }
-}
-
 /// Refuse an implementation of `val name` whose type `typ` is not the
 /// declared `declared` ([`hold_paired`]); `generalized` says its binding is
 /// generic in the cells its own definitions own, and `holder` what holds a
@@ -625,15 +616,20 @@ pub(crate) fn instance_picks_no_member(
 // annotation, its variables rigid as a declared signature's are, and keep `sig_matches`
 // for what no annotation can say. probe:
 // design/review-2026-11-16/repro/a-packages-val-is-not-an-annotation.sh (a-packages-04)
-fn check_val(
-    env: &Env,
-    open: &IntSet<LambdaId>,
-    name: &str,
-    declared: &Type,
-    typ: &Type,
-    generalized: bool,
-    holder: impl Fn(&TVar) -> Holder,
-) -> Result<()> {
+fn check_val(env: &Env, name: &str, declared: &Type, typ: &Type) -> Result<()> {
+    // CR claude for claude: [readability/low] Two references of one name
+    // over two definitions print alike in this note: `val f is declared
+    // fn(x: C) -> C but implemented fn(x: C) -> C: in return type:
+    // signature has C, implementation has C`, for a body that declares its
+    // own `C` beside the one its sig imports. Type::contains_mismatch tells
+    // such a pair apart (`the two C are different definitions, at .. and
+    // ..`): say the same here when the two sides print alike. probe:
+    // design/review-2026-11-16/repro/x-typecheck-generics-sig-mismatch-same-name.gx
+    // (x-typecheck-generics-06)
+    // 2026-11-21 claude: moved here from `Type::sig_matches_inner`, deleted. The
+    // probe now says `val f is declared fn(x: C) -> C but implemented fn(x: C) -> C:
+    // type mismatch fn(x: C) -> C does not contain fn(x: C) -> C`: the two `C` still
+    // print alike.
     let refused = |e: anyhow::Error| {
         let settled = match settled_note(env, &[typ]) {
             Some(n) => format_compact!(": {n}"),
@@ -644,7 +640,7 @@ fn check_val(
         });
         anyhow!("val {name} is declared {declared} but implemented {typ}: {e:#}{settled}")
     };
-    // CR claude for claude: [bug/critical] This comparison runs outside the module's
+    // XCR claude for claude: [bug/critical] This comparison runs outside the module's
     // own env (Module::check_body calls check_sig after it leaves with_restored_mut),
     // so a lambda parameter whose whole annotation is a type name is compared with the
     // declared type by name: a body-private type named like one the interface sees (the
@@ -659,300 +655,34 @@ fn check_val(
     // writes, as check_redefinition does for a type the interface declares. probe:
     // design/review-2026-11-16/repro/x-typecheck-generics-sig-shadowed-param-type.sh
     // (x-typecheck-generics-01)
-    let pairs = declared.sig_matches(env, typ).map_err(refused)?;
-    instance_picks_no_member(env, declared, typ).map_err(refused)?;
-    let shared = |tv: &TVar| !tv.level().copied_by(open);
-    let is_function = declared.with_deref(|t| matches!(t, Some(Type::Fn(_))));
-    hold_paired(env, "val", &pairs, shared, |tv, v| match (generalized, holder(tv)) {
-        (true, Holder::Captured(b)) => format_compact!(
-            ", that of {b}, a binding outside its let: declare the val at one type, or \
-             give {b} a type that holds every {v}"
-        ),
-        (false, Holder::Captured(b)) => format_compact!(
-            ", that of {b}, a binding outside its let: declare the val at one type"
-        ),
-        (true, Holder::Written(b)) => format_compact!(
-            ", that of {b}, a binding outside its let that something writes, which \
-             holds one type for every reader: declare the val at one type, or give {b} \
-             a type that holds every {v}"
-        ),
-        (false, Holder::Written(b)) => format_compact!(
-            ", that of {b}, a binding outside its let that something writes: declare \
-             the val at one type"
-        ),
-        (true, Holder::Instance(b)) => format_compact!(
-            ", that of {b}, a binding outside its let holding a function that is one \
-             instance, as a call's result is: declare the val at one type, or write a \
-             lambda over variables of its own in that function's place"
-        ),
-        (false, Holder::Instance(b)) => format_compact!(
-            ", that of {b}, a binding outside its let holding a function that is one \
-             instance, as a call's result is: declare the val at one type"
-        ),
-        (true, Holder::Lambda) => format_compact!(
-            ", that of a binding outside its let: declare the val at one type, or give \
-             that binding a type that holds every {v}"
-        ),
-        // CR claude for claude: [bug/medium] Only a lambda implementation that is not
-        // generalized reaches this arm, which means a written let (`let h = |x| x; h <-
-        // |x| x`), and its second remedy cannot be followed. A let annotated `fn<'a:
-        // Any>(..)` is refused as a quantified function type outside a definition's
-        // signature. `'a: Any |x: 'a| ..` on the lambda gets this same advice again,
-        // because a written binding is never generalized. Only "declare the val at one
-        // type" makes the module check. Drop the second remedy here, the text
-        // `rank2_val_over_a_written_let_names_the_annotation` pins for it, and the
-        // "quantified annotation on the let" way out in design/module_system.md. probe:
-        // design/review-2026-11-16/repro/tests-interfaces-image-quantified-let-remedy.sh
-        // (tests-interfaces-image-01)
-        (false, Holder::Lambda) => format_compact!(
-            ": declare the val at one type, or annotate the implementation's let with \
-             a quantified type (fn<{v}: ..>)"
-        ),
-        (_, Holder::NoLambda) if is_function => format_compact!(
-            ": declare the val at one type, or make the implementation a lambda over \
-             variables of its own"
-        ),
-        (_, Holder::NoLambda) => format_compact!(
-            ": declare the val at one type, or make the implementation a literal of \
-             lambdas over variables of their own"
-        ),
-    })
-    .map_err(refused)
-}
+    // 2026-11-18 claude: On bounds-spike the old comparison this sat on (sig_matches,
+    // hold_paired) is deleted with the old check; the val is held to its declaration by
+    // bounds::fits. The probe now gives: case 1 (body's Number over the prelude's)
+    // refused, case 2 (dynamic body's own C) refused at the load, case 3 (private alias
+    // D = i64) accepted. No fixture pins the three cases yet: pin them before this is
+    // cleared.
 
-/// What holds a cell of an implementation's binding outside its value.
-pub(crate) enum Holder {
-    /// A binding the lambdas the implementation holds capture, by name.
-    Captured(CompactString),
-    /// A binding the lambdas the implementation holds capture that holds
-    /// a function and that something writes, by name: no read copies its
-    /// type.
-    Written(CompactString),
-    /// A binding the lambdas the implementation holds capture that holds
-    /// the cell only in functions that are one instance (a call's result),
-    /// by name: no lambda they hold captures what holds it.
-    Instance(CompactString),
-    /// The implementation is a lambda, and no binding it captures holds
-    /// the cell.
-    Lambda,
-    /// The implementation is no lambda, and no binding the lambdas it
-    /// holds capture holds the cell.
-    NoLambda,
-}
+    // XCR claude for claude: [bug/medium] Only a lambda implementation that is not
+    // generalized reaches this arm, which means a written let (`let h = |x| x; h <-
+    // |x| x`), and its second remedy cannot be followed. A let annotated `fn<'a:
+    // Any>(..)` is refused as a quantified function type outside a definition's
+    // signature. `'a: Any |x: 'a| ..` on the lambda gets this same advice again,
+    // because a written binding is never generalized. Only "declare the val at one
+    // type" makes the module check. Drop the second remedy here, the text
+    // `rank2_val_over_a_written_let_names_the_annotation` pins for it, and the
+    // "quantified annotation on the let" way out in design/module_system.md. probe:
+    // design/review-2026-11-16/repro/tests-interfaces-image-quantified-let-remedy.sh
+    // (tests-interfaces-image-01)
+    // 2026-11-18 claude: On bounds-spike the arm and its remedy text are deleted
+    // with the old check; rank2_val_over_a_written_let_names_the_annotation passes
+    // by its bounds.manifest line, the check's own message. Left: the fixture's
+    // written text and the 'quantified annotation on the let' way out in
+    // design/module_system.md, for the manifest fold (step 4 of the plan).
 
-impl Holder {
-    /// What holds `tv` for the implementation's binding `id`: a binding the
-    /// lambdas it holds capture, or the lambdas those capture, whose type
-    /// reaches the cell, the binding an annotation can widen. One whose own
-    /// type is the cell comes first, then one that holds it in data, then
-    /// one that holds a function and that something writes, then one that
-    /// holds it only in functions no lambda of which captures what holds
-    /// it (one instance, a call's result, which a lambda in its place makes
-    /// generic where no annotation does), then one that holds it in
-    /// lambdas it holds as data (a struct of them), which are followed to
-    /// what they capture; of two alike the nearer, then the one the program
-    /// writes first: a binding built from another is written after it. A
-    /// written binding's lambdas are not followed: every read of it shares
-    /// its type, whatever they capture.
-    pub(crate) fn of<R: Rt>(ctx: &CompileCtx<R>, id: BindId, tv: &TVar) -> Self {
-        use crate::env::Bind as Held;
-        #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-        enum Holds {
-            Itself,
-            InData,
-            Written,
-            InInstance,
-            InLambdas,
-        }
-        let mut level: SmallVec<[&LambdaDef<R>; 4]> = SmallVec::new();
-        held_lambdas(ctx, id, &mut level);
-        if level.is_empty() {
-            return Self::NoLambda;
-        }
-        let written_before = |b: &Held, f: &Held| {
-            place_order((&b.ori, b.pos), (&f.ori, f.pos)).then(b.id.cmp(&f.id)).is_lt()
-        };
-        let reaches = |t: &Type| {
-            let mut reached: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-            t.reached_cells(&mut reached);
-            reached.contains_key(&tv.cell_addr())
-        };
-        let in_data = |t: &Type| {
-            let mut data = false;
-            DataPositions::new(&ctx.env).walk(t, Default::default(), &mut |c, at| {
-                data |= !at.function && c.same_cell(tv)
-            });
-            data
-        };
-        let leads_on = |def: &LambdaDef<R>| {
-            let mut leads = false;
-            def.captured_ids(&mut |id| {
-                leads |= ctx.env.by_id.get(&id).is_some_and(|b| reaches(&b.typ))
-            });
-            leads
-        };
-        let mut seen: LPooled<AHashSet<BindId>> = LPooled::take();
-        let mut followed: LPooled<AHashSet<LambdaId>> = LPooled::take();
-        let mut best: Option<((Holds, usize), &Held)> = None;
-        let mut next: SmallVec<[&LambdaDef<R>; 4]> = SmallVec::new();
-        let mut depth = 0;
-        while !level.is_empty() {
-            for def in level.drain(..).filter(|d| followed.insert(d.id)) {
-                def.captured_ids(&mut |id| {
-                    let Some(b) = ctx.env.by_id.get(&id) else { return };
-                    if !seen.insert(id) || !reaches(&b.typ) {
-                        return;
-                    }
-                    let mut holds_fn = false;
-                    b.typ.each_held_fn(&mut |_| holds_fn = true);
-                    let how = if holds_fn && ctx.connect_targets.contains(&id) {
-                        Holds::Written
-                    } else {
-                        let before = next.len();
-                        held_lambdas(ctx, id, &mut next);
-                        if next.len() > before && held_lambda(ctx, id).is_some() {
-                            return;
-                        }
-                        match &b.typ {
-                            Type::TVar(t) if t.stands_for() == tv.stands_for() => {
-                                Holds::Itself
-                            }
-                            t if in_data(t) => Holds::InData,
-                            _ if next[before..].iter().any(|d| leads_on(d)) => {
-                                Holds::InLambdas
-                            }
-                            _ => Holds::InInstance,
-                        }
-                    };
-                    let rank = (how, depth);
-                    if best.is_none_or(|(r, f)| {
-                        rank < r || (rank == r && written_before(b, f))
-                    }) {
-                        best = Some((rank, b))
-                    }
-                });
-            }
-            if let Some(((Holds::Itself, _), b)) = best {
-                return Self::Captured(b.name.clone());
-            }
-            mem::swap(&mut level, &mut next);
-            depth += 1;
-        }
-        match (best, held_lambda(ctx, id)) {
-            (Some(((Holds::Written, _), b)), _) => Self::Written(b.name.clone()),
-            (Some(((Holds::InInstance, _), b)), _) => Self::Instance(b.name.clone()),
-            (Some((_, b)), _) => Self::Captured(b.name.clone()),
-            (None, Some(_)) => Self::Lambda,
-            (None, None) => Self::NoLambda,
-        }
-    }
-}
-
-/// Hold an implementation to the declaration (a `val`, or a trait
-/// method's, `what`) that `pairs` matched it with. A cell of the
-/// implementation that is `shared`, one type all its uses share, may not
-/// stand where the declaration has a variable each use picks (`remedy`
-/// names the way out, given the cell and the variable); else the
-/// declaration decides it, as an annotation on the implementation's `let`
-/// would.
-pub(crate) fn hold_paired(
-    env: &Env,
-    what: &str,
-    pairs: &SigMatch,
-    shared: impl Fn(&TVar) -> bool,
-    remedy: impl Fn(&TVar, &TVar) -> CompactString,
-) -> Result<()> {
-    for (tv, sig) in pairs.paired() {
-        if tv.is_bound() || !shared(tv) {
-            continue;
-        }
-        if let Some(v) = free_variable(sig) {
-            let at = match sig {
-                Type::TVar(s) if s.same_cell(&v) => format_compact!("{v}, a type"),
-                sig => format_compact!("{sig}, whose {v}"),
-            };
-            bail!(
-                "where the {what} declares {at} each use picks, the implementation has \
-                 one type all uses share{}",
-                remedy(tv, &v)
-            )
-        }
-        let cell = Type::TVar(tv.clone());
-        sig.check_contains(env, &cell).and_then(|()| cell.check_contains(env, sig))?
-    }
-    Ok(())
-}
-
-/// The open cell of `t`, first by name, that no function type in `t`
-/// quantifies.
-fn free_variable(t: &Type) -> Option<TVar> {
-    let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-    t.reached_cells(&mut cells);
-    let mut quantified: LPooled<AHashSet<usize>> = LPooled::take();
-    t.each_quantifier(&mut |_, tv| {
-        quantified.insert(tv.cell_addr());
-    });
-    cells
-        .values()
-        .filter(|tv| !tv.is_bound() && !quantified.contains(&tv.cell_addr()))
-        .min_by(|a, b| a.name.cmp(&b.name))
-        .cloned()
-}
-
-/// The lambdas the binding `id` holds: its own when it is a lambda, else,
-/// where its value is data or a generic binding's read of a function, those
-/// its type's function types carry, in the order the program writes them.
-/// Any other function (a call's result) is one instance whatever the
-/// lambdas behind it capture.
-fn held_lambdas<'a, R: Rt>(
-    ctx: &'a CompileCtx<R>,
-    id: BindId,
-    out: &mut SmallVec<[&'a LambdaDef<R>; 4]>,
-) {
-    if let Some(def) = held_lambda(ctx, id) {
-        return out.push(def);
-    }
-    let Some(b) = ctx.env.by_id.get(&id) else { return };
-    if b.typ.with_deref(|t| matches!(t, Some(Type::Fn(_)))) && !generalized_impl(ctx, id)
-    {
-        return;
-    }
-    let start = out.len();
-    b.typ.each_held_fn(&mut |ft| {
-        for lid in ft.lambda_ids.ids().iter() {
-            let def =
-                ctx.lambda_defs.get(lid).and_then(|v| v.downcast_ref::<LambdaDef<R>>());
-            out.extend(def);
-        }
-    });
-    out[start..].sort_by(|a, b| a.written_order(b))
-}
-
-/// The lambda the binding `id` holds, if it holds one.
-fn held_lambda<R: Rt>(ctx: &CompileCtx<R>, id: BindId) -> Option<&LambdaDef<R>> {
-    ctx.bind_to_lambda.get(&id).and_then(|v| v.downcast_ref::<LambdaDef<R>>())
-}
-
-/// Every cell the types of the bindings captured by the lambda the binding
-/// `id` holds reach; `None` where it holds no lambda.
-pub(crate) fn captured_cells<R: Rt>(
-    ctx: &CompileCtx<R>,
-    id: BindId,
-) -> Option<LPooled<AHashMap<usize, TVar>>> {
-    let def = held_lambda(ctx, id)?;
-    let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-    def.captured_ids(&mut |id| {
-        if let Some(b) = ctx.env.by_id.get(&id) {
-            b.typ.reached_cells(&mut cells)
-        }
-    });
-    Some(cells)
-}
-
-/// Whether the implementation's binding `id` is generic in the cells its
-/// own definitions own: a generalized binding nothing writes.
-pub(crate) fn generalized_impl<R: Rt>(ctx: &CompileCtx<R>, id: BindId) -> bool {
-    ctx.env.poly_binds.contains(&id) && !ctx.connect_targets.contains(&id)
+    // a binding the check typed is its declaration where one instance of
+    // it fits the declaration, its variables constants
+    let outer = crate::typ::tvar::current_level();
+    crate::typ::bounds::fits(env, typ, declared, outer, false).map_err(refused)
 }
 
 /// Refuse `val name: typ` where its type variable stands outside every
@@ -996,13 +726,22 @@ fn check_impl_head(
     declared: &FnType,
     implemented: &ImplDef,
 ) -> Result<()> {
-    declared.sig_matches(env, &head_sig(implemented)).map(drop).map_err(|e| {
-        anyhow!(
-            "impl {trait_name} for {} does not implement the declared impl \
-             {trait_name} for {target}: {e:#}",
-            implemented.target
-        )
-    })
+    let (declared, implemented_sig) =
+        (Type::Fn(Arc::new(declared.clone())), Type::Fn(Arc::new(head_sig(implemented))));
+    if declared.same_up_to_renaming(env, &implemented_sig) {
+        return Ok(());
+    }
+    // the relation's refusal where it has one: a bound the implementation
+    // needs that the declaration does not give
+    let why = match bounds::fits(env, &implemented_sig, &declared, Level::TOP, false) {
+        Err(e) => format_compact!("{e:#}"),
+        Ok(()) => format_compact!("{implemented_sig} is not {declared}"),
+    };
+    bail!(
+        "impl {trait_name} for {} does not implement the declared impl \
+         {trait_name} for {target}: {why}",
+        implemented.target
+    )
 }
 
 /// A type or trait the interface `si` declares is the implementation's
@@ -1138,8 +877,7 @@ fn interface_env(env: &Env, scope: &ModPath, sig: &Sig) -> Result<Env> {
 /// Refuse a name the interface item `si` writes that the interface
 /// neither imports nor declares: each resolves in `view`
 /// ([`interface_env`]) alone, which fills its cell. `val` is a `val`
-/// item's declared type, which may not write a union of two of its
-/// variables in a function type ([`VariableUnion`]).
+/// item's declared type.
 fn check_interface_names(
     view: &Env,
     scope: &ModPath,
@@ -1174,21 +912,7 @@ fn interface_names(
     val: Option<&Type>,
 ) -> Result<()> {
     match &si.kind {
-        SigKind::Bind(BindSig { name, .. }) => val.map_or(Ok(()), |t| {
-            let mut res = Ok(());
-            t.for_each_written(false, &mut |w| {
-                if res.is_ok() {
-                    res = match w {
-                        Written::Name(tr) => tr.resolve_only_in(view),
-                        Written::Union(u) => match VariableUnion::of(u, &|_| true) {
-                            None => Ok(()),
-                            Some(e) => Err(anyhow!("val {}: {e}", name.name)),
-                        },
-                    }
-                }
-            });
-            res
-        }),
+        SigKind::Bind(_) => val.map_or(Ok(()), |t| t.resolve_names_only_in(view)),
         SigKind::TypeDef(td) => {
             let Some(def) =
                 view.lexical.typedefs.get(scope).and_then(|m| m.get(td.name.as_str()))
@@ -1377,15 +1101,7 @@ fn check_sig_items<R: Rt>(
             };
             let typ = implementation_type(bind, inner);
             proxy_bind.typ.unbind_tvars();
-            check_val(
-                &ctx.env,
-                &ctx.rec_defs,
-                &inner.name,
-                &proxy_bind.typ,
-                typ,
-                generalized_impl(ctx, id),
-                |tv| Holder::of(ctx, id, tv),
-            )?;
+            check_val(&ctx.env, &inner.name, &proxy_bind.typ, typ)?;
             if ctx.connect_targets.contains(&proxy_id) {
                 ctx.check_val_written(&inner.name, &proxy_bind.typ, typ)?
             }
@@ -1524,16 +1240,8 @@ pub fn check_script_sig<R: Rt>(
                     ft.generalize(0)
                 }
                 check_interface_names(&view, scope, si, Some(&declared)).map_err(at)?;
-                check_val(
-                    &ctx.env,
-                    &ctx.rec_defs,
-                    name.name.as_str(),
-                    &declared,
-                    &bind.typ,
-                    generalized_impl(ctx, bind.id),
-                    |tv| Holder::of(ctx, bind.id, tv),
-                )
-                .context(ParserContext { ori: bind.ori.clone(), pos: bind.pos })?;
+                check_val(&ctx.env, name.name.as_str(), &declared, &bind.typ)
+                    .context(ParserContext { ori: bind.ori.clone(), pos: bind.pos })?;
                 // the language server sees the val as a module's: a binding
                 // of its own, with its doc, linked to the script's
                 if ctx.env.ide.is_lsp() {
@@ -1978,8 +1686,14 @@ impl<R: Rt> Module<R> {
             self.spec.pos,
             interface,
         );
-        let load =
-            LoadedBody::of_source(env.body.clone(), self.scope.lexical.clone(), own);
+        // the load is a compile epoch of its own: its view keeps the arena
+        let arena = crate::typ::tvar::Arena::new();
+        let load = LoadedBody::of_source(
+            env.body.clone(),
+            self.scope.lexical.clone(),
+            own,
+            arena.clone(),
+        );
         self.env.body = Some(load.clone());
         let sig_env = match &self.body {
             Body::Static => None,
@@ -1988,11 +1702,8 @@ impl<R: Rt> Module<R> {
         let pending = mem::take(&mut ctx.pending_imports);
         let names = mem::take(&mut ctx.pending_names);
         let census = ctx.attr_census.lock().len();
-        // the body is an input of its own, after the program that loads
-        // it, with a check that settles what it deferred before it
-        // elaborates
-        let input = crate::Input::enter();
-        ctx.pending_settles.push(crate::SettleFrame::default());
+        // the body is an input of its own, after the program that loads it
+        let input = crate::Input::enter_in(arena);
         let res = self
             .compile_inner(ctx, &exprs)
             .and_then(|()| {
@@ -2003,7 +1714,6 @@ impl<R: Rt> Module<R> {
             })
             .map_err(|e| input.refused(ctx, e))
             .and_then(|()| input.end(ctx, &self.env, None));
-        ctx.pending_settles.pop().expect("load settle frame");
         // CR claude for eric: [bug/medium] A loaded body's statements are never fused
         // and the load drops what it added to the attribute census here unchecked, so
         // `#[native]` on a statement of a loaded source asserts nothing: `let v =
@@ -2056,6 +1766,8 @@ impl<R: Rt> Module<R> {
             Body::Dynamic { .. } => self.flags | CFlag::NoBuiltins,
         };
         let dynamic = matches!(self.body, Body::Dynamic { .. });
+        // a loaded body is checked as an input is, from its compile on
+        let check = dynamic.then(bounds::Check::begin);
         let scope = self.scope.in_view(&self.env);
         let compiled = ctx.with_restored_mut(&mut self.env, |ctx| {
             if dynamic {
@@ -2078,14 +1790,13 @@ impl<R: Rt> Module<R> {
         (self.nodes, self.catches) = compiled?;
         self.lets = node::Lets::wire(&mut self.nodes);
         self.runs = Runs::default();
-        if let Body::Dynamic { .. } = &self.body {
+        if let Some(check) = check {
             self.check_body(ctx)
-                .and_then(|()| crate::drain_pending_settles(ctx))
+                .and_then(|()| check.end(&ctx.env))
                 .and_then(|()| crate::check_pending_names(ctx))
                 .map_err(|e| crate::resite_pending_name(ctx, e))?;
             self.proxy_lambda_defs(ctx);
             self.typecheck1_nodes(ctx)?;
-            crate::drain_pending_settles(ctx)?;
         }
         export_sig(&mut ctx.env, &self.env, &self.scope, &self.sig);
         Ok(())
@@ -2099,11 +1810,18 @@ impl<R: Rt> Module<R> {
             env, nodes, catches, body, top_id, proxy, scope, sig, sig_binds, ..
         } = self;
         join_implemented_vals(ctx, sig_binds, nodes);
-        ctx.with_restored_mut(env, |ctx| {
-            super::typecheck0_statements(ctx, nodes, catches, false)
+        ctx.with_restored_mut(env, |ctx| -> Result<()> {
+            super::typecheck0_statements(ctx, nodes, catches, false)?;
+            // the interface is checked outside the body's env, where a
+            // type the body declares has no name: fill each closed one
+            let mut seen = LPooled::take();
+            nodes
+                .iter()
+                .for_each(|n| n.typ().seed_closed_names_seen(&ctx.env, &mut seen));
+            Ok(())
         })?;
         match body {
-            // CR claude for claude: [bug/medium] A val implemented by a lambda whose
+            // XCR claude for claude: [bug/medium] A val implemented by a lambda whose
             // parameter is annotated with a type the module's body declares (`type V =
             // i64; let f = |x: V| x` under `val f: fn(x: i64) -> i64`) is refused,
             // `undefined type V in foo`: a static module at the check, a dynamic one at
@@ -2118,6 +1836,22 @@ impl<R: Rt> Module<R> {
             // both module kinds. probe:
             // design/review-2026-11-16/repro/t-fntyp-private-alias-param.sh
             // (t-fntyp-01)
+            // 2026-11-21 claude: Its probe passes in both module kinds; pinned by
+            // lang::interfaces::{val_implemented_over_a_type_the_body_declares,
+            // dynamic_val_implemented_over_a_type_the_body_declares}. A val whose
+            // implementation's type holds a typedef the body declares inside a cell's
+            // bound (B<P<i64>> through [c, t]) still missed: check_body now fills every
+            // name its statements' types reach while the body's env is in force, and
+            // Type::seed_refs walks lower bounds too (pin
+            // lang::block_types::abstract_parameter_a_module_annotation_decides_compares,
+            // which fails without it).
+            // 2026-11-21 claude: Correction to the note above: check_body fills only the
+            // names whose arguments hold no type variable (Type::seed_closed_names_seen).
+            // Filling an open one, T24<'a> under a let's annotation, in the body's env
+            // first changed how the val's match read 'a
+            // (write_through_a_deep_nest_of_typedef_applications_ends then refused with
+            // other words). A body-private name with a variable argument, inside a val's
+            // implementation, is still this CR's case.
             Body::Static => check_sig(ctx, *top_id, proxy, scope, sig, sig_binds, nodes),
             Body::Dynamic { sig_env, .. } => ctx.with_restored_mut(sig_env, |ctx| {
                 check_sig(ctx, *top_id, proxy, scope, sig, sig_binds, nodes)
@@ -2329,8 +2063,10 @@ impl<R: Rt> Update<R> for Module<R> {
         ctx: &mut CompileCtx<R>,
         types: &mut crate::node::lambda::InstanceTypes,
     ) -> Result<()> {
-        if let Body::Dynamic { .. } = self.body {
-            return self.typecheck0(ctx);
+        // the check judged a dynamic module's signature and source: an
+        // instance types the source from its rows
+        if let Body::Dynamic { source, .. } = &mut self.body {
+            return wrap!(source, source.typecheck0_instance(ctx, types));
         }
         let _task = InTask::enter(self.task);
         let Self { env, nodes, catches, top_id, proxy, scope, sig, sig_binds, .. } = self;
@@ -2572,25 +2308,37 @@ impl<R: Rt> Update<R> for Module<R> {
                 wrap!(source, t.check_contains(&ctx.env, source.typ()))?;
             }
             Body::Static => {
-                let _task = InTask::enter(self.task);
+                let task = InTask::enter(self.task);
                 let _module = profile::module(&self.scope.lexical);
                 let writes = OwnWrites::enter(self.task);
-                let res = match (self.check_body(ctx), writes.foreign()) {
+                let (checked, solved) =
+                    bounds::in_task(bounds::checking(), Keeps::Before(self.task), || {
+                        self.check_body(ctx)
+                    });
+                let res = match (checked, writes.foreign()) {
                     (res, None) => res,
                     (res, Some(w)) => {
+                        // a body that checks is refused where it wrote
+                        let wrote = w.statement().and_then(|i| self.nodes.get(i));
                         let shown = res.as_ref().err().and_then(shown_in);
+                        let shown = shown.or(wrote.map(|n| &n.spec().ori));
                         let shown = shown.unwrap_or(&self.spec.ori);
                         let m = format_compact!(
                             "the check decides a type the code around the module \
                              left open: {}",
                             decided_binds(ctx, &self.scope.lexical, shown, &w)
                         );
-                        match res {
-                            Ok(()) => Err(anyhow!("{m}")),
-                            Err(e) => Err(Told::over(e, &m)),
+                        match (res, wrote) {
+                            (Ok(()), Some(n)) => Err(anyhow!("{m}")).at(n.spec()),
+                            (Ok(()), None) => Err(anyhow!("{m}")),
+                            (Err(e), _) => Err(Told::over(e, &m)),
                         }
                     }
                 };
+                drop((writes, task));
+                if let Some(solved) = solved {
+                    bounds::absorb(solved)
+                }
                 res.with_context(|| {
                     format_compact!("compiling module {}", self.scope.lexical)
                 })?;

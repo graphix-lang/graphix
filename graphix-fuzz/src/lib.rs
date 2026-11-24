@@ -4054,7 +4054,7 @@ async fn must_reject(
     per_check: Duration,
     cap: usize,
 ) -> (Vec<Probed<Option<String>>>, Option<(String, String)>) {
-    use graphix_compiler::expr::ErrorSite;
+    use graphix_compiler::expr::{ErrorSite, ParserContext};
     let mut out = Vec::new();
     let TmCheck::Done(Ok(checked)) = tm_check(ctx, &compose(body), true, per_check).await
     else {
@@ -4067,11 +4067,20 @@ async fn must_reject(
             TmCheck::Hung => return (out, Some((p.id(), p.body))),
             TmCheck::Done(Ok(_)) => Some(format!("LEAK: accepted at {}", p.reached)),
             TmCheck::Done(Err(e)) => {
-                let site = e.downcast_ref::<ErrorSite>().map(|s| s.expr());
-                let right = site.is_some_and(|x| {
-                    mustreject::in_module(&x.ori, "test")
-                        && p.right_site(mustreject::to_body(x.pos))
-                });
+                // an expression's, or a place alone where the refusal was
+                // found with no use at hand
+                let site = match e.downcast_ref::<ErrorSite>().map(|s| s.expr()) {
+                    Some(x) => Some((&x.ori, x.pos)),
+                    None => e.downcast_ref::<ParserContext>().map(|p| (&p.ori, p.pos)),
+                };
+                // a refusal found while a right site is checked is the
+                // mutation's, wherever a cell it reaches places it
+                let right = site.is_some_and(|(ori, pos)| {
+                    mustreject::in_module(ori, "test")
+                        && p.right_site(mustreject::to_body(pos))
+                }) || mustreject::passed(&e, "test")
+                    .into_iter()
+                    .any(|pos| p.right_site(mustreject::to_body(pos)));
                 let head = tm_error_head(&format!("{e:?}"));
                 match right {
                     true if p.family.refuses_with(&head) => None,
@@ -6507,22 +6516,25 @@ mod tests {
             // a call's return is no cell its uses decide
             ("{ let f = |x: i64| -> i64 x; let v = f(1); let w = v + 1; w }", "retype#"),
             // nor is an operator's, a negation's or a `$`'s over concrete operands
-            ("{ let v = 2 + 1; v }", "retype#"),
-            ("{ let v = -(2 + 1); v }", "retype#"),
-            ("{ let v = cast<i64>(2.5)$; v }", "retype#"),
+            ("{ let v = 2 + 1; v + 1 }", "retype#"),
+            ("{ let v = -(2 + 1); v + 1 }", "retype#"),
+            ("{ let v = cast<i64>(2.5)$; v + 1 }", "retype#"),
             // a callee whose declared return every argument decides
             ("{ let v = str::len(\"a\"); let w = v + 1; w }", "retype#"),
             // the hop: the widened `a` reaches `+` through `w`'s let
             ("{ let a = 1; let w = a; let z = w + 2; z }", "widen-hop#"),
-            ("{ let f = 'a: Number |x: 'a| -> 'a x + x; f(1) }", "rigid-var#"),
+            (
+                "{ let f = 'a: Number + Singleton |x: 'a| -> 'a x + x; f(1) }",
+                "rigid-var#",
+            ),
             // a body asks no more of a declared variable than its bound says
             ("{ let f = 'a: Any |x: 'a| -> i64 1; f(1) }", "rigid-var#"),
-            ("{ let f = 'a: Number |x: 'a| -> 'a x + x; f(1) }", "rigid-pattern#"),
-            ("{ let g = 'a: Number |x: 'a, y: 'a| -> 'a x + y; g(1, 2) }", "shared-var#"),
             (
-                "{ let g = |x: 'a, y: 'a, z: 'a| -> 'a x; let r = g(1, 2, 3); r }",
+                "{ let g = 'a: Number + Singleton |x: 'a, y: 'a| -> 'a x + y; g(1, 2) }",
                 "shared-var#",
             ),
+            // a bounded variable one parameter holds is within its bound too
+            ("{ let g = 'a: Number |x: 'a| -> 'a x; g(1) }", "shared-var#"),
             // an alias's value uses share the wrapped binding's cells
             (
                 "{ let f = |x| x; let g = f; let a = array::map([1], f); \
@@ -6567,11 +6579,6 @@ mod tests {
                 "ref-write#",
             ),
             ("{ let x = 1; let r = &mut x; let y = 2; *r <- 5; x + y }", "ref-widen#"),
-            ("{ let v = 3; select v { 1 => \"a\", _ => \"b\" } }", "undecided-part#"),
-            (
-                "{ let v: [`A, `B] = `B; select v { `A => 1, `B => 2 } }",
-                "undecided-part#",
-            ),
             (
                 "{ let s: [string, null] = \"a\"; select s { null as _ => 0, string as v => 1 } }",
                 "same-form#",
@@ -6587,12 +6594,6 @@ mod tests {
                  type B<'a> = Abstract<'a>;\nlet mkb = |x| B(x);\nlet unb = |b: B<'a>| b.0\n",
                 "abstract-param#",
             ),
-            // an argument the call leaves undecided takes the others' join
-            ("{ let g = |x: 'a, y: 'a| -> 'a y; let r = g(1, 2); r }", "open-arg#"),
-            ("{ let g = |x: 'a, y: 'a, z: 'a| -> 'a z; g(1, 2, 3) }", "open-arg#"),
-            // a written function type holds no union of two of its variables
-            ("{ let g = |x: 'a, y: 'a| -> 'a y; g(1, 2) }", "variable-union#"),
-            ("{ let g = |x| x; g(1) }", "variable-union#"),
         ] {
             let rep = typemorph_subject(prog, per, TM_CAP).await.unwrap();
             assert!(rep.base == TmVerdict::Accept, "{prog}");
@@ -6604,65 +6605,31 @@ mod tests {
                 rep.rejects
             );
         }
-        // family 15's three shapes are each refused: two variables, two
-        // arrays of them, two function types a renaming would make one
-        let prog = "{ let g = |x| x; let h = |x| x; let k = |x| x; (g(1), h(1), k(1)) }";
-        let rep = typemorph_subject(prog, per, TM_CAP).await.unwrap();
-        let unions: Vec<_> =
-            rep.rejects.iter().filter(|p| p.id.starts_with("variable-union#")).collect();
-        assert!(
-            unions.len() == 3 && unions.iter().all(|p| p.verdict.is_none()),
-            "{prog}: {:?}",
-            rep.rejects
-        );
-        // family 2 asks more of an `Any`-bounded variable than its bound says,
-        // in the third of its sites: refused, naming the bound to write
-        let prog = "{ let f = 'a: Any |x: 'a| -> i64 1; let g = 'a: Any |x: 'a| -> i64 2; \
-                    let h = 'a: Any |x: 'a| -> i64 3; (f(1), g(1), h(1)) }";
-        let rep = typemorph_subject(prog, per, TM_CAP).await.unwrap();
-        let rigid: Vec<_> =
-            rep.rejects.iter().filter(|p| p.id.starts_with("rigid-var#")).collect();
-        assert!(
-            rigid.len() == 3 && rigid.iter().all(|p| p.verdict.is_none()),
-            "{prog}: {:?}",
-            rep.rejects
-        );
-        // family 14 refuses its open cell beside the scrutinee's members and
-        // inside a tuple, where the first arm testing it would decide it, or
-        // beside a member whose shape an arm only takes apart
-        for prog in [
-            "{ let v = 3; select v { 1 => \"a\", _ => \"b\" } }",
-            "{ let v: [`A, `B] = `B; select v { `A => 1, `B => 2 } }",
-            "{ let v = (1, 2); select v { (_, _) => 1 } }",
-            "{ type W = Abstract<i64>; let v = W(1); select v { W(_) => 1 } }",
-        ] {
-            let rep = typemorph_subject(prog, per, TM_CAP).await.unwrap();
-            let up: Vec<_> = rep
-                .rejects
-                .iter()
-                .filter(|p| p.id.starts_with("undecided-part#"))
-                .collect();
-            assert!(up.len() >= 2 && up.iter().all(|p| p.verdict.is_none()), "{up:?}");
-        }
-        // a scrutinee with a member `Any` admits `tm__z`: only the decide shape
-        for prog in [
-            "{ let t: Any = 1; select t { 1 => 2, _ => 3 } }",
-            "{ let t: [Any, i64] = 1; select t { 1 => 2, _ => 3 } }",
-        ] {
-            let rep = typemorph_subject(prog, per, TM_CAP).await.unwrap();
-            let up: Vec<_> = rep
-                .rejects
-                .iter()
-                .filter(|p| p.id.starts_with("undecided-part#"))
-                .collect();
-            assert!(up.len() == 1 && up[0].verdict.is_none(), "{prog}: {up:?}");
-            assert!(up[0].mutant.contains("(tm__z, 0)"), "{prog}: {up:?}");
+        // family 2 asks more of a variable bounded `Any`, or written bare, than
+        // that says, in the third of its sites: refused, naming the bound to
+        // write
+        for header in ["'a: Any ", ""] {
+            let prog = format!(
+                "{{ let f = {header}|x: 'a| -> i64 1; let g = {header}|x: 'a| -> i64 2; \
+                 let h = {header}|x: 'a| -> i64 3; (f(1), g(1), h(1)) }}"
+            );
+            let rep = typemorph_subject(&prog, per, TM_CAP).await.unwrap();
+            let rigid: Vec<_> =
+                rep.rejects.iter().filter(|p| p.id.starts_with("rigid-var#")).collect();
+            assert!(
+                rigid.len() == 3 && rigid.iter().all(|p| p.verdict.is_none()),
+                "{prog}: {:?}",
+                rep.rejects
+            );
         }
         // family 1 leaves a declared variable beside an unannotated parameter
-        // or return, whose escape a written binding refuses first
+        // or return, whose escape a written binding refuses first, and one
+        // the first parameter shares, which its narrowed copy no longer is
         for declared in [
             "{ let f = 'a: Number |a: 'a, b| -> bool a == b; [f(3, 4), f(2.5, 1.5)] }",
-            "{ let f = 'a: Number |a: 'a, b: 'a| a + b; [f(3, 4), f(2.5, 1.5)] }",
+            "{ let f = 'a: Number + Singleton |a: 'a, b: 'a| a + b; [f(3, 4), f(2.5, 1.5)] }",
+            "{ let f = 'a: Number + Singleton |a: 'a, b: 'a| -> 'a a - b; \
+             [f(3, 4), f(2.5, 1.5)] }",
         ] {
             let rep = typemorph_subject(declared, per, TM_CAP).await.unwrap();
             assert!(
@@ -6694,23 +6661,6 @@ mod tests {
             "{:?}",
             rep.rejects
         );
-        // over a scrutinee that is ⊥ (`never()`, a connect) or a name bound
-        // over one, family 14 writes only the decide shape: a union of it and
-        // tm__z is tm__z whole
-        for prog in [
-            "{ let y = 0; select y <- 5 { 6 => 1, _ => 2 } }",
-            "{ select never() { 0 => 0, 1 => 1, _ => 2 } }",
-            "{ select never() { `A | `B => -1, x => select x { `C => 2 } } }",
-            "{ select { let d = 1; } { 1 | 2 => 1, _ => 0 } }",
-        ] {
-            let rep = typemorph_subject(prog, per, TM_CAP).await.unwrap();
-            let up: Vec<_> = rep
-                .rejects
-                .iter()
-                .filter(|p| p.id.starts_with("undecided-part#"))
-                .collect();
-            assert!(up.iter().all(|p| p.verdict.is_none()), "{prog}: {up:?}");
-        }
         // a writer's refusal meets what a let's uses decided, and a widening
         // what a connect decides: both are right sites
         for (prog, family) in [
@@ -6932,6 +6882,26 @@ mod tests {
                 "{ let g = |x: 'a, y: 'a, z: 'a| -> 'a x; let u: [i64, string] = 1; \
                  let r = g(1, 2, u); r }",
                 "shared-var#",
+            ),
+            // a variable a select tests is refused by the select
+            (
+                "{ let g = |c, a, b| { let s = select c { true => a, false => b }; \
+                 let t = select c { true => b, false => a }; s + t }; g(false, 1, 1) }",
+                "shared-var#",
+            ),
+            // the only arithmetic over the referent's name is a parameter's
+            (
+                "{ let x = 1; let r = &mut x; let f = |x: i64| -> i64 x + 1; *r <- 2; \
+                 println(\"[x]\"); f(3) }",
+                "ref-widen#",
+            ),
+            // a write widens the binding, and a comparison takes it wider
+            ("{ let step = 0; step <- step ~ 2; step == 3 }", "retype#"),
+            // a select over the operand's binding places the refusal the
+            // consumer's check finds
+            (
+                "{ let v = 3; let w = select v { n if n > 2 => n - n, _ => 0 }; (v - v) - w }",
+                "widen-consumer#",
             ),
         ] {
             let rep = typemorph_subject(prog, per, TM_CAP).await.unwrap();

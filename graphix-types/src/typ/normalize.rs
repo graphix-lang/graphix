@@ -5,7 +5,8 @@ use crate::{
     typ::{
         AbstractId, Mutability, NodeKey, TVar, Type,
         setops::{
-            Alternatives, Welds, strictly_identical, union_collapses, written_identical,
+            Alternatives, Collapsing, strictly_identical, union_collapses,
+            written_identical,
         },
     },
 };
@@ -25,9 +26,9 @@ use triomphe::Arc;
 /// Per-pass [`Type::normalize`] state.
 pub(super) struct NormCx {
     pub(super) visited: Visited,
-    /// The live cells the pass's collapses paired.
-    welds: Welds,
-    /// What a welding pass visited inside function types.
+    /// The ambiguity the pass's collapses met.
+    collapsing: Collapsing,
+    /// What a collapsing pass visited inside function types.
     signatures: Option<Visited>,
 }
 
@@ -53,15 +54,15 @@ pub type NormKey = (Discriminant<Type>, usize, usize);
 
 impl NormCx {
     pub(super) fn take() -> Self {
-        Self { visited: Visited::take(), welds: Welds::new(), signatures: None }
+        Self { visited: Visited::take(), collapsing: Collapsing::new(), signatures: None }
     }
 
     /// `f` over a function type's signature. A union standing there is
-    /// the function's own, which its calls decide: a welding pass keeps its
-    /// members as they stand, visiting what the signature reaches apart
-    /// from what it welds outside.
+    /// the function's own, which its calls decide: a collapsing pass keeps
+    /// its members as they stand, visiting what the signature reaches apart
+    /// from what it collapses outside.
     fn in_signature<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
-        if !matches!(self.visited.flat.members, Members::Welding) {
+        if !matches!(self.visited.flat.members, Members::Collapsing) {
             return f(self);
         }
         let mut inner = self.signatures.take().unwrap_or_else(Visited::take);
@@ -94,22 +95,22 @@ enum Members {
     /// As the source writes them, a variable by its name
     /// ([`written_identical`]).
     Written,
-    /// Function types pair their cells as a renaming
-    /// ([`union_collapses`]): the union that asked merges the live pairs.
-    Welding,
+    /// Function types pair their schemes' cells as a renaming
+    /// ([`union_collapses`]); a live cell is identical only to itself.
+    Collapsing,
 }
 
 impl FlatCx {
     /// Whether a union keeps `t0` in place of `t1`.
-    fn collapses(&mut self, t0: &Type, t1: &Type, welds: &mut Welds) -> bool {
+    fn collapses(&mut self, t0: &Type, t1: &Type, collapsing: &mut Collapsing) -> bool {
         match self.members {
             Members::AsTheyStand => strictly_identical(t0, t1),
             Members::Written => written_identical(t0, t1),
-            Members::Welding => {
-                let mark = welds.mark();
-                let same = union_collapses(t0, t1, welds);
+            Members::Collapsing => {
+                let mark = collapsing.mark();
+                let same = union_collapses(t0, t1, collapsing);
                 if same && self.alts.apart(t0, t1) && !strictly_identical(t0, t1) {
-                    welds.rewind(mark);
+                    collapsing.rewind(mark);
                     return false;
                 }
                 same
@@ -312,7 +313,7 @@ impl Kept {
         &mut self,
         t: &Type,
         cx: &mut FlatCx,
-        welds: &mut Welds,
+        collapsing: &mut Collapsing,
     ) -> Option<Type> {
         let key = MergeKey::of(t, &cx.members);
         let keyed: &[usize] = match &key {
@@ -339,11 +340,11 @@ impl Kept {
             if sig.clashes(&self.cells[j]) {
                 return None;
             }
-            let mut met = Welds::new();
+            let mut met = Collapsing::new();
             let kept = self.members[j].as_ref()?;
             t.merge(kept, cx, &mut met).map(|m| (j, m, met))
         })?;
-        welds.absorb(&mut met);
+        collapsing.absorb(&mut met);
         let kept = self.members[j].take().expect("live");
         match MergeKey::of(&kept, &cx.members) {
             Some(k) => self.keyed.get_mut(&k).expect("indexed").retain(|i| *i != j),
@@ -383,17 +384,17 @@ impl Type {
     }
 
     fn flatten_set_with(set: impl IntoIterator<Item = Self>, cx: &mut FlatCx) -> Self {
-        Self::flatten_set_tracked(set, cx, &mut Welds::new()).0
+        Self::flatten_set_tracked(set, cx, &mut Collapsing::new()).0
     }
 
     /// [`Self::flatten_set`] reporting whether it changed anything
     /// relative to a `Type::Set` of the input members in input order.
     /// Conservative: `true` may be reported for an identical result.
-    /// The live cells each collapse pairs go on `welds`.
+    /// The ambiguity a collapse meets goes on `collapsing`.
     fn flatten_set_tracked(
         set: impl IntoIterator<Item = Self>,
         cx: &mut FlatCx,
-        welds: &mut Welds,
+        collapsing: &mut Collapsing,
     ) -> (Self, bool) {
         let mut leaves: LPooled<Vec<Self>> = LPooled::take();
         let mut nested: LPooled<Vec<(Arc<[Self]>, usize)>> = LPooled::take();
@@ -445,7 +446,7 @@ impl Type {
             // `acc` is merge-saturated, so only the incoming element (or
             // its merge result) can enable a new merge.
             let mut incoming = t;
-            while let Some(m) = acc.merge_with(&incoming, cx, welds) {
+            while let Some(m) = acc.merge_with(&incoming, cx, collapsing) {
                 changed = true;
                 incoming = m;
             }
@@ -573,12 +574,12 @@ impl Type {
                         if cx.quantifiers.contains(&addr)
                             || (cx.bounded && tv.generated())
                         {
-                            for c in tv.cell_constraints() {
+                            for c in tv.cell_above() {
                                 let c = c.resolve_tvars_seen_int(cx).unwrap_or(c);
                                 fresh.add_cell_constraint(c);
                             }
                         } else if cx.predicates {
-                            for c in tv.cell_constraints() {
+                            for c in tv.cell_above() {
                                 if c.is_predicate() {
                                     fresh.add_cell_constraint(c);
                                 }
@@ -607,15 +608,15 @@ impl Type {
         self.normalize_int(&mut NormCx::take()).unwrap_or_else(|| self.clone())
     }
 
-    /// [`Self::normalize`] for a union: the live cells each collapse pairs
-    /// go on `welds`.
-    pub(super) fn normalize_welding(&self, welds: &mut Welds) -> Self {
+    /// [`Self::normalize`] for a union: the ambiguity a collapse meets goes
+    /// on `collapsing`.
+    pub(super) fn normalize_collapsing(&self, collapsing: &mut Collapsing) -> Self {
         let mut cx = NormCx::take();
-        cx.visited.flat.members = Members::Welding;
-        cx.visited.flat.alts = mem::take(&mut welds.alts);
+        cx.visited.flat.members = Members::Collapsing;
+        cx.visited.flat.alts = mem::take(&mut collapsing.alts);
         let r = self.normalize_int(&mut cx).unwrap_or_else(|| self.clone());
-        welds.absorb(&mut cx.welds);
-        welds.alts = mem::take(&mut cx.visited.flat.alts);
+        collapsing.absorb(&mut cx.collapsing);
+        collapsing.alts = mem::take(&mut cx.visited.flat.alts);
         r
     }
 
@@ -674,40 +675,41 @@ impl Type {
         let (flat, flat_changed) = Self::flatten_set_tracked(
             normal.drain(..),
             &mut cx.visited.flat,
-            &mut cx.welds,
+            &mut cx.collapsing,
         );
         (flat, members_changed || flat_changed)
     }
 
-    /// The normal form of the union of `members`, of one its own, in the
-    /// pass `cx`, whose memo takes the members' nodes and not the union
-    /// asked for.
-    pub(super) fn normal_union<'a>(
-        members: impl Iterator<Item = &'a Self> + Clone,
-        cx: &mut NormCx,
-    ) -> Self {
-        let mut first_two = members.clone();
-        match (first_two.next(), first_two.next()) {
-            (Some(m), None) => m.normalize_int(cx).unwrap_or_else(|| m.clone()),
-            _ => Self::normalize_members(members, cx).0,
-        }
+    /// The one member `self` and `t` merge into; the ambiguity a collapse
+    /// meets goes on `collapsing`, which a `None` leaves to be dropped.
+    fn merge(
+        &self,
+        t: &Self,
+        cx: &mut FlatCx,
+        collapsing: &mut Collapsing,
+    ) -> Option<Self> {
+        ensure_sufficient(|| self.merge_inner(t, cx, collapsing))
     }
 
-    /// The one member `self` and `t` merge into; the live cells a
-    /// collapse pairs go on `welds`, which a `None` leaves to be dropped.
-    fn merge(&self, t: &Self, cx: &mut FlatCx, welds: &mut Welds) -> Option<Self> {
-        ensure_sufficient(|| self.merge_inner(t, cx, welds))
-    }
-
-    fn merge_inner(&self, t: &Self, cx: &mut FlatCx, welds: &mut Welds) -> Option<Self> {
+    fn merge_inner(
+        &self,
+        t: &Self,
+        cx: &mut FlatCx,
+        collapsing: &mut Collapsing,
+    ) -> Option<Self> {
         // Equality modulo set-flattening at a nested position.
-        fn flat_eq(t0: &Type, t1: &Type, cx: &mut FlatCx, welds: &mut Welds) -> bool {
+        fn flat_eq(
+            t0: &Type,
+            t1: &Type,
+            cx: &mut FlatCx,
+            collapsing: &mut Collapsing,
+        ) -> bool {
             match (t0, t1) {
                 (Type::Set(_), _) | (_, Type::Set(_)) => {
                     let (f0, f1) = (cx.flat(t0), cx.flat(t1));
-                    cx.collapses(&f0, &f1, welds)
+                    cx.collapses(&f0, &f1, collapsing)
                 }
-                (t0, t1) => cx.collapses(t0, t1, welds),
+                (t0, t1) => cx.collapses(t0, t1, collapsing),
             }
         }
         // Products merge component-wise only when at most one component
@@ -717,18 +719,18 @@ impl Type {
             t1: impl IntoIterator<Item = &'a T>,
             typ: impl Fn(&T) -> &Type,
             cx: &mut FlatCx,
-            welds: &mut Welds,
+            collapsing: &mut Collapsing,
         ) -> Option<Option<(usize, Type)>> {
             let mut differing = None;
             for (i, (a, b)) in t0.into_iter().zip(t1).enumerate() {
                 let (a, b) = (typ(a), typ(b));
-                if flat_eq(a, b, cx, welds) {
+                if flat_eq(a, b, cx, collapsing) {
                     continue;
                 }
                 if differing.is_some() {
                     return None;
                 }
-                differing = Some((i, a.merge(b, cx, welds)?));
+                differing = Some((i, a.merge(b, cx, collapsing)?));
             }
             Some(differing)
         }
@@ -736,16 +738,16 @@ impl Type {
         if let Type::App(c, a) = self
             && let Some(filled) = Type::app_filled(c, a)
         {
-            return filled.merge(t, cx, welds);
+            return filled.merge(t, cx, collapsing);
         }
         if let Type::App(c, a) = t
             && let Some(filled) = Type::app_filled(c, a)
         {
-            return self.merge(&filled, cx, welds);
+            return self.merge(&filled, cx, collapsing);
         }
         match (self, t) {
             (Type::Ref(_), Type::Ref(_)) => {
-                if cx.collapses(self, t, welds) {
+                if cx.collapses(self, t, collapsing) {
                     Some(self.clone())
                 } else {
                     None
@@ -758,7 +760,7 @@ impl Type {
             | (_, Type::Hole)
             | (Type::Bound(_), _)
             | (_, Type::Bound(_)) => {
-                if cx.collapses(self, t, welds) {
+                if cx.collapses(self, t, collapsing) {
                     Some(self.clone())
                 } else {
                     None
@@ -773,24 +775,24 @@ impl Type {
                 Some(t.clone())
             }
             (Type::Abstract { .. }, Type::Abstract { .. }) => {
-                if cx.collapses(self, t, welds) { Some(self.clone()) } else { None }
+                if cx.collapses(self, t, collapsing) { Some(self.clone()) } else { None }
             }
             (Type::Fn(_), Type::Fn(_)) => {
-                if cx.collapses(self, t, welds) {
+                if cx.collapses(self, t, collapsing) {
                     Some(self.clone())
                 } else {
                     None
                 }
             }
             (Type::Array(t0), Type::Array(t1)) => {
-                if flat_eq(t0, t1, cx, welds) {
+                if flat_eq(t0, t1, cx, collapsing) {
                     Some(Type::Array(t0.clone()))
                 } else {
                     None
                 }
             }
             (Type::List(t0), Type::List(t1)) => {
-                if flat_eq(t0, t1, cx, welds) {
+                if flat_eq(t0, t1, cx, collapsing) {
                     Some(Type::List(t0.clone()))
                 } else {
                     None
@@ -805,8 +807,8 @@ impl Type {
                 }
             }
             (Type::Map(m0), Type::Map(m1)) => {
-                if flat_eq(&m0.key, &m1.key, cx, welds)
-                    && flat_eq(&m0.value, &m1.value, cx, welds)
+                if flat_eq(&m0.key, &m1.key, cx, collapsing)
+                    && flat_eq(&m0.value, &m1.value, cx, collapsing)
                 {
                     Some(Type::Map(m0.clone()))
                 } else {
@@ -814,7 +816,7 @@ impl Type {
                 }
             }
             (Type::Error(t0), Type::Error(t1)) => {
-                if flat_eq(t0, t1, cx, welds) {
+                if flat_eq(t0, t1, cx, collapsing) {
                     Some(Type::Error(t0.clone()))
                 } else {
                     None
@@ -824,10 +826,10 @@ impl Type {
                 Type::ByRef(Mutability::Shared, t0),
                 Type::ByRef(Mutability::Shared, t1),
             ) => t0
-                .merge(t1, cx, welds)
+                .merge(t1, cx, collapsing)
                 .map(|t| Type::ByRef(Mutability::Shared, Arc::new(t))),
             (Type::ByRef(m0, t0), Type::ByRef(m1, t1)) => {
-                if m0 == m1 && flat_eq(t0, t1, cx, welds) {
+                if m0 == m1 && flat_eq(t0, t1, cx, collapsing) {
                     Some(Type::ByRef(*m0, t0.clone()))
                 } else {
                     None
@@ -837,7 +839,7 @@ impl Type {
                 Self::flatten_set_tracked(
                     s0.iter().cloned().chain(s1.iter().cloned()),
                     cx,
-                    welds,
+                    collapsing,
                 )
                 .0,
             ),
@@ -845,12 +847,12 @@ impl Type {
                 Self::flatten_set_tracked(
                     s.iter().cloned().chain(iter::once(t.clone())),
                     cx,
-                    welds,
+                    collapsing,
                 )
                 .0,
             ),
             (Type::Tuple(t0), Type::Tuple(t1)) if t0.len() == t1.len() => {
-                match merge_one_differing(t0.iter(), t1.iter(), |t| t, cx, welds)? {
+                match merge_one_differing(t0.iter(), t1.iter(), |t| t, cx, collapsing)? {
                     None => Some(self.clone()),
                     Some((i, m)) => {
                         let mut m = Some(m);
@@ -863,7 +865,7 @@ impl Type {
             (Type::Variant(tag0, t0, at), Type::Variant(tag1, t1, _))
                 if tag0 == tag1 && t0.len() == t1.len() =>
             {
-                match merge_one_differing(t0.iter(), t1.iter(), |t| t, cx, welds)? {
+                match merge_one_differing(t0.iter(), t1.iter(), |t| t, cx, collapsing)? {
                     None => Some(self.clone()),
                     Some((i, m)) => {
                         let mut m = Some(m);
@@ -881,8 +883,13 @@ impl Type {
                         .zip(t1.iter())
                         .all(|((n0, _, _), (n1, _, _))| n0 == n1) =>
             {
-                match merge_one_differing(t0.iter(), t1.iter(), |(_, t, _)| t, cx, welds)?
-                {
+                match merge_one_differing(
+                    t0.iter(),
+                    t1.iter(),
+                    |(_, t, _)| t,
+                    cx,
+                    collapsing,
+                )? {
                     None => Some(self.clone()),
                     Some((i, m)) => {
                         let mut m = Some(m);
@@ -899,12 +906,12 @@ impl Type {
             }
             // Strict tvar identity: two distinct unbound cells never merge.
             (t0v @ Type::TVar(_), t1v @ Type::TVar(_))
-                if cx.collapses(t0v, t1v, welds) =>
+                if cx.collapses(t0v, t1v, collapsing) =>
             {
                 Some(t0v.clone())
             }
-            (Type::TVar(tv), t) => tv.binding().and_then(|b| b.merge(t, cx, welds)),
-            (t, Type::TVar(tv)) => tv.binding().and_then(|b| t.merge(&b, cx, welds)),
+            (Type::TVar(tv), t) => tv.binding().and_then(|b| b.merge(t, cx, collapsing)),
+            (t, Type::TVar(tv)) => tv.binding().and_then(|b| t.merge(&b, cx, collapsing)),
             (Type::ByRef(..), _)
             | (_, Type::ByRef(..))
             | (Type::Abstract { .. }, _)
@@ -975,8 +982,7 @@ pub(super) mod tests {
         let parsed = crate::expr::parser::parse_type(
             "(fn(x: 'c) -> i64, fn(x: 'd) -> i64, fn(x: 'c) -> i64)",
         );
-        let t = parsed.unwrap();
-        t.alias_tvars(&mut AHashMap::default());
+        let t = parsed.unwrap().named_in(&mut AHashMap::default());
         let Type::Tuple(fs) = &t else { unreachable!() };
         let members = |t: &Type| match t {
             Type::Set(ms) => ms.len(),
@@ -996,7 +1002,6 @@ pub(super) mod tests {
         let sig = "fn(y: 'c, z: 'd) -> [fn(q: 'c) -> i64, fn(q: 'd) -> i64]";
         for generic in [false, true] {
             let t = crate::expr::parser::parse_type(sig).unwrap();
-            t.alias_tvars(&mut AHashMap::default());
             let Type::Fn(ft) = &t else { unreachable!() };
             if generic {
                 ft.generalize(0)
@@ -1012,71 +1017,6 @@ pub(super) mod tests {
         }
     }
 
-    /// One alternative joins nothing, however many times its node stands
-    /// and whatever `⊥` stands beside it: a union it holds, at its top or
-    /// under a constructor, keeps the members a renaming of two live
-    /// cells would make one, and the cells stay two.
-    #[test]
-    fn a_union_of_one_alternative_keeps_its_union_of_renamings() {
-        let env = Env::default();
-        let written = "([fn(q: 'c) -> i64, fn(q: 'd) -> i64], 'c, 'd)";
-        let t = crate::expr::parser::parse_type(written).unwrap();
-        t.alias_tvars(&mut AHashMap::default());
-        let Type::Tuple(fs) = &t else { unreachable!() };
-        let (Type::TVar(c), Type::TVar(d)) = (&fs[1], &fs[2]) else { unreachable!() };
-        let unions: [fn(&Env, &[&Type]) -> anyhow::Result<Type>; 4] = [
-            Type::union,
-            Type::union_exact,
-            Type::union_of_alternatives,
-            Type::union_exact_of_alternatives,
-        ];
-        for union in unions {
-            for ts in [&[&fs[0]][..], &[&fs[0], &fs[0]], &[&Type::Bottom, &fs[0]]] {
-                let read = union(&env, ts).unwrap();
-                assert!(matches!(&read, Type::Set(ms) if ms.len() == 2), "{read}");
-            }
-            let read = union(&env, &[&t, &t]).unwrap();
-            let Type::Tuple(parts) = &read else { unreachable!() };
-            assert!(matches!(&parts[0], Type::Set(ms) if ms.len() == 2), "{read}");
-            assert!(c.stands_for() != d.stands_for(), "{read}");
-        }
-    }
-
-    /// A union one alternative of a join holds keeps its members as they
-    /// stand, beside another alternative and beside a second union of the
-    /// same shape, and members that are one type meet or collapse only
-    /// across alternatives.
-    #[test]
-    fn a_join_of_alternatives_keeps_the_union_one_of_them_holds() {
-        let env = Env::default();
-        let written = "([fn(q: 'c) -> i64, fn(q: 'd) -> i64], 'c, 'd)";
-        let t = crate::expr::parser::parse_type(written).unwrap();
-        t.alias_tvars(&mut AHashMap::default());
-        let Type::Tuple(fs) = &t else { unreachable!() };
-        let (Type::TVar(c), Type::TVar(d)) = (&fs[1], &fs[2]) else { unreachable!() };
-        let Type::Set(members) = &fs[0] else { unreachable!() };
-        let null = Type::Primitive(Typ::Null.into());
-        let unions: [fn(&Env, &[&Type]) -> anyhow::Result<Type>; 4] = [
-            Type::union,
-            Type::union_exact,
-            Type::union_of_alternatives,
-            Type::union_exact_of_alternatives,
-        ];
-        for union in unions {
-            let read = union(&env, &[&fs[0], &null]).unwrap();
-            assert!(matches!(&read, Type::Set(ms) if ms.len() == 3), "{read}");
-            assert!(c.stands_for() != d.stands_for(), "{read}");
-        }
-        let (p, q) = (&members[0], &members[1]);
-        let read = Type::union_exact_of_members(&env, &[p, q]).unwrap();
-        assert!(matches!(&read, Type::Set(ms) if ms.len() == 2), "{read}");
-        let read = Type::union_exact_of_parts(&env, &[p, q], &[0, 0]).unwrap();
-        assert!(matches!(&read, Type::Set(ms) if ms.len() == 2), "{read}");
-        assert!(c.stands_for() != d.stands_for(), "{read}");
-        let read = Type::union_exact_of_parts(&env, &[p, q], &[0, 1]).unwrap();
-        assert!(!matches!(&read, Type::Set(_)), "{read}");
-    }
-
     /// A node shared by both sides compares equal without walking it.
     #[test]
     fn ordering_does_not_walk_a_shared_node() {
@@ -1085,94 +1025,6 @@ pub(super) mod tests {
         let a = Type::Set(Arc::from_iter(members.iter().cloned()));
         let b = Type::Set(Arc::from_iter(members.iter().cloned()));
         assert_eq!(a.cmp(&b), Ordering::Equal);
-    }
-
-    /// Collecting a capture type's open cells walks each shared node once.
-    #[test]
-    fn narrowing_collects_cells_once_per_node() {
-        let (s, _) = error_ladder(64);
-        s.narrow_per_member(&Env::default(), &[]).unwrap();
-    }
-
-    /// A cell of an arm's predicate that is a member's own part is one
-    /// cell with the open parts of the other members; a cell of the arm's
-    /// own takes their union and leaves them apart.
-    #[test]
-    fn narrowing_a_members_own_cell_makes_the_open_parts_one() {
-        let env = Env::default();
-        let cell = |n: &str| TVar::empty_named(n.into());
-        let member = |tv: &TVar| {
-            let parts = [Type::Primitive(Typ::I64.into()), Type::TVar(tv.clone())];
-            Type::Tuple(Arc::from_iter(parts))
-        };
-        let (a, b, c) = (cell("a"), cell("b"), cell("c"));
-        let members = [member(&a), member(&b), member(&c)];
-        member(&a).narrow_per_member(&env, &members).unwrap();
-        assert!(a.open_cell().is_some());
-        assert!(a.stands_for() == b.stands_for() && a.stands_for() == c.stands_for());
-        let (u, v, p) = (cell("u"), cell("v"), cell("p"));
-        member(&p).narrow_per_member(&env, &[member(&u), member(&v)]).unwrap();
-        assert!(p.open_cell().is_none());
-        assert!(u.open_cell().is_some() && v.open_cell().is_some());
-        assert!(u.stands_for() != v.stands_for());
-    }
-
-    /// An arm's cell that is one of the cells of the union at its part of
-    /// a variant is one cell with the open ones and takes what a bound one
-    /// holds, and what a member of that union that is no cell holds.
-    #[test]
-    fn narrowing_a_cell_of_a_payload_union_makes_its_cells_one() {
-        let env = Env::default();
-        let cell = |n: &str| TVar::empty_named(n.into());
-        let prim = |t: Typ| Type::Primitive(t.into());
-        let payload = |t: Type| {
-            Type::Variant(
-                "A".into(),
-                Arc::from_iter([prim(Typ::I64), t]),
-                WrittenAt::NOWHERE,
-            )
-        };
-        let union = |ts: &[Type]| Type::Set(Arc::from_iter(ts.iter().cloned()));
-        let (a, b, c) = (cell("a"), cell("b"), cell("c"));
-        let tvs = [Type::TVar(a.clone()), Type::TVar(b.clone()), Type::TVar(c.clone())];
-        let scrut = payload(union(&tvs));
-        assert!(scrut.narrow_pattern(&env, &payload(tvs[0].clone())).unwrap());
-        assert!(a.open_cell().is_some());
-        assert!(a.stands_for() == b.stands_for() && a.stands_for() == c.stands_for());
-        let (p, q) = (cell("p"), cell("q"));
-        q.bind(prim(Typ::String));
-        let tvs = [Type::TVar(p.clone()), Type::TVar(q.clone())];
-        let scrut = payload(union(&tvs));
-        assert!(scrut.narrow_pattern(&env, &payload(tvs[0].clone())).unwrap());
-        assert_eq!(p.binding(), Some(prim(Typ::String)));
-        let u = cell("u");
-        let scrut = payload(union(&[Type::TVar(u.clone()), prim(Typ::Null)]));
-        assert!(scrut.narrow_pattern(&env, &payload(Type::TVar(u.clone()))).unwrap());
-        assert_eq!(Type::TVar(u).deref_cloned(), Some(prim(Typ::Null)));
-    }
-
-    /// A cell a member holds where the arm's predicate does is its own
-    /// part of that member, never a copy merged back into it: each arm's
-    /// narrowing leaves the cell the lower bounds it had.
-    #[test]
-    fn narrowing_a_members_own_cell_keeps_its_lower_bounds() {
-        let env = Env::default();
-        let x = TVar::empty_named("x".into());
-        let cells: [TVar; 3] = std::array::from_fn(|_| {
-            let c = TVar::empty_named("c".into());
-            c.add_lower(Type::TVar(x.clone()));
-            c
-        });
-        let members = cells.each_ref().map(|c| {
-            let parts = [Type::Primitive(Typ::I64.into()), Type::TVar(c.clone())];
-            Type::Tuple(Arc::from_iter(parts))
-        });
-        for m in members.iter() {
-            m.narrow_per_member(&env, &members).unwrap();
-        }
-        let one = cells[0].open_cell().unwrap();
-        assert!(cells.iter().all(|c| c.stands_for() == one.cell_addr()));
-        assert!(one.cell_lower().len() <= cells.len());
     }
 
     /// The forward links from `tv` to the cell it stands for.
@@ -1211,87 +1063,6 @@ pub(super) mod tests {
         }
         assert_eq!(links(&c), 0);
         assert_eq!(c.cell_lower().len(), 1);
-    }
-
-    /// Arms that take apart a slice inside a slice (`[[a0, .., t..], u..]`)
-    /// narrow against members that hold the inner cell beside an array of
-    /// it, where an arm's copy takes the cell: each copy copies the cell,
-    /// never the links to it, so the links grow by the pairs narrowed, not
-    /// by a factor at each.
-    #[test]
-    fn narrowing_nested_slice_arms_copies_no_chain_of_links() {
-        let env = Env::default();
-        let n = 4;
-        let (arms, cells): (Vec<Type>, Vec<Vec<TVar>>) = (1..=n)
-            .rev()
-            .map(|k| {
-                let mut cells: Vec<TVar> = (0..=k + 1)
-                    .map(|i| TVar::empty_named(arcstr::format!("c{k}_{i}")))
-                    .collect();
-                let rest = Type::TVar(cells.pop().unwrap());
-                let inner = Type::Set(cells.iter().cloned().map(Type::TVar).collect());
-                let elems =
-                    Type::Set(Arc::from_iter([Type::Array(Arc::new(inner)), rest]));
-                (Type::Array(Arc::new(elems)), cells)
-            })
-            .unzip();
-        let scrut = Type::TVar(TVar::empty_named("x".into()));
-        let union = Type::union_exact(&env, &arms.iter().collect::<Vec<_>>()).unwrap();
-        assert!(union.contains_ordered(&env, &scrut).unwrap());
-        for arm in arms.iter() {
-            assert!(scrut.narrow_pattern(&env, arm).unwrap());
-        }
-        let most = cells.iter().flatten().map(links).max().unwrap();
-        assert!(most <= 2 * n * n, "{most} links after {n} arms");
-    }
-
-    /// Slice arms over a scrutinee whose members are one type, as the first
-    /// arm leaves the members of an open scrutinee the arms typed: each arm
-    /// narrows against one of them, and its cell is the members' cell.
-    #[test]
-    fn narrowing_against_members_of_one_type_walks_one() {
-        use crate::typ::tvar::NARROW_STEPS;
-        let env = Env::default();
-        let n = 24;
-        let c = TVar::empty_named("c".into());
-        let members: Vec<Type> = (1..=n).rev().map(|k| slice_of(&c, k)).collect();
-        let scrut = Type::TVar(TVar::empty_named("x".into()));
-        let Type::TVar(x) = &scrut else { unreachable!() };
-        x.bind(Type::Set(Arc::from_iter(members)));
-        let mut cells: Vec<TVar> = vec![];
-        NARROW_STEPS.with(|s| s.set(0));
-        for k in (1..=n).rev() {
-            let at = cells.len();
-            cells.extend((0..=k).map(|i| TVar::empty_named(arcstr::format!("a{k}_{i}"))));
-            let elems = cells[at..].iter().cloned().map(Type::TVar);
-            let arm = Type::Array(Arc::new(Type::Set(elems.collect())));
-            assert!(scrut.narrow_pattern(&env, &arm).unwrap());
-        }
-        let steps = NARROW_STEPS.with(|s| s.get());
-        for a in cells.iter() {
-            assert!(a.open_cell().is_some_and(|a| a.same_cell(&c)), "{a}");
-        }
-        assert_eq!(steps, 348, "narrowings for {n} arms");
-    }
-
-    /// A member walked as a member before it is dropped: one type with it,
-    /// a union's members but its open cells in order. An array of a union of
-    /// two arrays one type with each other walks apart from an array of one
-    /// of them.
-    #[test]
-    fn members_walked_as_one_before_are_dropped() {
-        let (c, d) = (TVar::empty_named("c".into()), TVar::empty_named("d".into()));
-        let (cs, ds) = (|k| slice_of(&c, k), |k| slice_of(&d, k));
-        let mut members: SmallVec<[Type; 8]> =
-            SmallVec::from_iter([cs(2), ds(1), cs(1), cs(3), ds(2)]);
-        Type::drop_repeated(&mut members);
-        assert_eq!(&members[..], &[cs(2), ds(1)]);
-        let nested = |k| Type::Array(Arc::new(cs(k)));
-        let two = Type::Array(Arc::new(Type::Set(Arc::from_iter([cs(1), cs(2)]))));
-        let mut members: SmallVec<[Type; 8]> =
-            SmallVec::from_iter([nested(1), two.clone(), nested(2)]);
-        Type::drop_repeated(&mut members);
-        assert_eq!(&members[..], &[nested(1), two]);
     }
 
     /// A union of named or abstract members normalizes in linear time:
@@ -1357,62 +1128,5 @@ pub(super) mod tests {
         assert!(matches!(&apart, Type::Set(ms) if ms.len() == 2), "{apart:?}");
         let joined = Type::flatten_set([pair(&i, &c0), pair(&s, &c0)]);
         assert!(matches!(&joined, Type::Tuple(_)), "{joined:?}");
-    }
-
-    /// Cells `c_0 = i64`, `c_k = (c_k-1, c_k-1)`, proved ground: what
-    /// `c_depth` holds.
-    pub(in crate::typ) fn ground_pair_chain(depth: usize) -> Vec<TVar> {
-        let mut cells: Vec<TVar> = vec![TVar::empty_named(arcstr::literal!("c"))];
-        cells[0].bind(Type::Primitive(Typ::I64.into()));
-        for _ in 0..depth {
-            let last = Type::TVar(cells[cells.len() - 1].clone());
-            let c = TVar::empty_named(arcstr::literal!("c"));
-            c.bind(Type::Tuple(Arc::from_iter([last.clone(), last])));
-            cells.push(c);
-        }
-        assert!(Type::TVar(cells[depth].clone()).prove_ground());
-        cells
-    }
-
-    /// `measure` while `top`'s proof stands: a write to a bound cell, which
-    /// a test on another thread may make, moves the ground epoch and drops
-    /// what the cells keep, so `measure` runs again over a new proof until
-    /// no such write fell inside it.
-    pub(in crate::typ) fn while_ground<T>(
-        top: &TVar,
-        mut measure: impl FnMut() -> T,
-    ) -> T {
-        for _ in 0..100_000 {
-            assert!(Type::TVar(top.clone()).prove_ground());
-            let r = measure();
-            if top.ground_now() {
-                return r;
-            }
-        }
-        panic!("the ground epoch moved under every measure")
-    }
-
-    /// A ground cell keeps what it resolved to: a chain of them resolves
-    /// a link at a time once, then each link of it at once, over the
-    /// first resolution's parts.
-    #[test]
-    fn a_ground_chain_resolves_once() {
-        let depth = 64;
-        let cells = ground_pair_chain(depth);
-        let walked = |tv: &TVar| {
-            RESOLVED.with(|n| n.set(0));
-            let r = Type::TVar(tv.clone()).resolve_tvars();
-            (r, RESOLVED.with(|n| n.get()))
-        };
-        let ((first, n), (again, n_again), (below, n_below)) =
-            while_ground(&cells[depth], || {
-                (walked(&cells[depth]), walked(&cells[depth]), walked(&cells[depth - 1]))
-            });
-        assert!(n <= 3 * depth + 2, "the first resolution walked {n} nodes");
-        assert_eq!(n_again, 1, "a second resolution walked {n_again} nodes");
-        assert!(again.shares_content(&first));
-        assert_eq!(n_below, 1, "a link's resolution walked {n_below} nodes");
-        let Type::Tuple(parts) = &first else { panic!("not a pair") };
-        assert!(below.shares_content(&parts[0]));
     }
 }

@@ -152,16 +152,16 @@ The long form is `design/architecture.md`, and each subsystem's own doc.
 **Pipeline.** Parse (`graphix-types/src/expr/parser/`, recursive descent
 by hand) → `Expr` AST with positions → compile (`node/compiler.rs`) →
 `Node<R>` graph → typecheck (`typecheck0`/`typecheck1` on every node) →
-fuse (`fusion/`). The check is typecheck0 plus the settle of every call
-site it recorded, drained before typecheck1 elaborates, and `--check` and
-the language server run it alone. **Elaboration refusing what the check
+fuse (`fusion/`). The check is typecheck0, which relates types as bounds
+(`typ/bounds/`), and its end, which fixes every cell, before typecheck1
+elaborates; `--check` and the language server run it alone. **Elaboration refusing what the check
 accepted is a type-system bug** (`GRAPHIX_ELAB_AUDIT` reports it). An
 instance does not check again: its types are its definition's check's,
 substituted by its signature (`node::lambda::DefTable`,
 `design/parallel_compile.md`). A top-level input (a REPL input, a script,
-a dynamic module's load) is checked and run alone; what an earlier input
-left open is one type to a later input, whose decision about it is refused
-(`design/tvar_constraints.md`, Settling).
+a dynamic module's load) is checked and run alone, and every cell it made
+is fixed at its end: a later input that would widen one is refused, naming
+the binding to declare (`design/tvar_constraints.md`, Inputs).
 
 **Key types.** `Expr`/`ExprKind` (immutable AST; `Expr::for_each_child` /
 `map_children` are the ONE child enumeration, so a new `ExprKind` child is
@@ -335,33 +335,33 @@ node graph IS the IR — there is no parallel typed IR
 The long form is `design/tvar_constraints.md`; the rules below are the ones
 a change elsewhere most often breaks.
 
+- **The check is one solver** (`typ/bounds/`): a cell gathers what flows
+  into it (lower bounds) and what it flows to (upper bounds), and a verdict
+  does not depend on the order they arrive, so no rule may refuse or accept
+  by the order arguments, positions or members are met in. A use of a
+  definition copies exactly the cells no definition owns and shares every
+  other (`bounds::instantiate`).
 - **`let rec` is monomorphic-recursive, and a binding something writes**
   (a `<-` target, a `&mut`'s referent) **is not generalized** (the value
-  restriction, `CompileCtx::monomorphic`). A function stays generic only
-  where a binding names it (`bind::names_generic`): a lambda or a read of a
-  generalized binding no binding names is one instance.
+  restriction): a write to a generic binding must be as general as its
+  scheme. A `let` is generic only where its value defines (`bind::defines`:
+  a lambda, a read of a generic name or of a part of one, data holding
+  those); any other value is one instance.
 - **A def's declared tvars are rigid in its body check**: none binds to a
   concrete type or ⊥, no two unify, none escapes into a cell outside the
-  definition. A call instantiates them freely.
-- A written function type holds no union of two or more of its own bare
-  variables (`['a, 'b]`, `Type::variable_union`), and a quantified function
-  type stands only as a declared signature's top (`typ::QUANTIFIED_FN`).
-- A type that two undecided members of a union could take goes to neither
-  (`contains.rs::AmbiguousMember`), and neither does an undecided type
-  that two decided members would decide differently (`UndecidedTaker`):
-  the relation's site names what to annotate. Only a select's own pattern
-  walks keep the first member (`Type::contains_ordered`), and a written
-  test two undecided members of the scrutinee could take is refused
-  (`select.rs::written_takers`).
-- **A call's arguments are met in the order of the parameters, then the
-  defaults it omits; nothing waits for a later argument**, and no rule may
-  be added to make a verdict independent of that order: soundness is the
-  bar. A variable only data positions hold widens to a decided argument
-  wider than the ones before it; an undecided argument takes the formal as
-  it stands, and the variables it met widen no more
-  (`callsite.rs::Widening`).
-- A merge takes the lower of its two cells' levels (`TVar::merge_one`), so a
-  relation against a scheme instantiates it first.
+  definition. A call instantiates them freely. **A written variable's bound
+  is exactly what is written for it**, `Any` if nothing, bare (`|x: 'a|`) or
+  in a header: a body adds none, `Singleton` included, and the refusal names
+  what to write. Only an untyped parameter's bound is inferred.
+- A quantified function type stands only as a declared signature's top
+  (`typ::QUANTIFIED_FN`); the parser refuses one written inside another.
+- A value that could go to more than one member of a union, with nothing
+  to decide which, is refused, naming what to annotate. Two unions are one
+  type member for member; a member of one that could pair with two of the
+  other is refused (`contains.rs::AmbiguousMember`).
+- A `val` holds an implementation that fits it (`bounds::fits`): the
+  implementation may return or hold less than declared, take more, and
+  throw less; every user sees the declared type.
 - **Sound by construction:** a hole in the type system is closed by a local
   rule that refuses and names the annotation that makes the program pass
   (pin both), never by a late check chasing shapes; where the right type is
@@ -376,11 +376,11 @@ The reference is the `graphix-lang` skill (`ide/skills/graphix-lang/
 SKILL.md`, load it before writing Graphix) and the book; the rules as built
 are in the docs named here.
 
-- **Select**: exhaustive, no dead arms; one walk decides what reaches each
-  arm (`select.rs::Reach`, `design/select_coverage.md`, with patterns inside
-  a declared variable and `name@` captures). A type still undecided at a
-  select's end is one unknown type, equal only to itself: an arm testing it
-  is refused, naming the binding to annotate. Or-patterns:
+- **Select**: exhaustive, no dead arms; each value that reaches the
+  scrutinee is routed down the arms (`typ/bounds/select.rs`,
+  `design/tvar_constraints.md`). A select over a value not decided where it
+  stands is judged against what the value turns out to be, and over an
+  unannotated parameter its arms say what a call may pass. Or-patterns:
   `design/or_patterns.md`.
 - **Sampling**: `e ~ v` is `v` at each fire of `e`, banking one trigger;
   `e ~! v` is strict. A connect writes when its RHS fires; a constant RHS in
@@ -397,9 +397,12 @@ are in the docs named here.
   cell is an array whose element 0 is its kind's marker, an array is
   unmarked; only `rep.rs` and `list.rs` know the layout. No select arm may
   tell apart two types that share a runtime form (`Type::rep_collision`).
-- **Operators** (`expr/binop.rs`, `design/tvar_constraints.md`): operands of
-  EXACTLY one type; arithmetic takes `'a: Number + Singleton`, the orderings
-  `Ordered`, comparison `Discernible`. Unchecked `+ - *` wrap, integer div0
+- **Operators** (`expr/binop.rs`, `design/tvar_constraints.md`): arithmetic
+  takes ONE numeric type (`'a: Number + Singleton`), judged at each
+  instance of an inferred function and declared by a written variable; a
+  comparison takes operands where one's type holds the other's,
+  any two numbers order, and `Ordered` refuses only functions and
+  references. Unchecked `+ - *` wrap, integer div0
   bottoms, checked forms (`+?`) yield a catchable error, floats follow IEEE.
 - **Types and modules**: nominal abstract types
   (`design/nominal_abstract_types.md`), traits (`design/traits.md`), native

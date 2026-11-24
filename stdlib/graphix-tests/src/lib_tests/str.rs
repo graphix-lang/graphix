@@ -492,14 +492,14 @@ const STR_PARSE_REF_TARGET: &str = r#"{
   x
 }"#;
 
-run!(parse_refuses_a_reference_target, STR_PARSE_REF_TARGET, refused("Concrete"); FuseExpect::None);
+run!(parse_refuses_a_reference_target, STR_PARSE_REF_TARGET, refused("&mut i64 is not data: data holds no function and no reference"); FuseExpect::None);
 
 // The result's own error member covers the annotation's, so the target
 // takes only the reference, which `Concrete` refuses.
 run!(
     parse_refuses_a_reference_beside_its_error,
     r#"{ let r: [&i64, Error<`ParseError(string)>] = str::parse("u64:7"); r }"#,
-    refused("Concrete");
+    refused("&i64 is not data: data holds no function and no reference");
     FuseExpect::None
 );
 

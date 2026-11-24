@@ -208,56 +208,65 @@ nothing.
   `script_interface::a_scripts_own_type_is_not_its_interfaces`,
   `interface_names_resolve_in_the_interface`,
   `lang::block_types::a_deleted_modules_type_frees_its_name`).
-- **A name is not read before what may change it.** A typedef's shape
-  (its self-references, whether it is expansive, the aliases its body
-  stores as their expansions) is decided from a look at its body's names
-  that fills no cell, and the check's end fills them as they stand then.
-  So what a look reads must be what the fill will read, and a statement
-  the list has still to compile may change it: a `use` of the name, a
-  glob, and a module declared below that a `use` above imports from (the
-  import falls through until its target is declared). Before a list's
-  statements compile, `compile_block_children` records what its `use`s
-  and modules have still to bring (`Env::open_list`, `Unsettled`: the
-  names its explicit `use`s import, its globs, the modules it declares,
-  each by its statement's index; a `use` installed already, a `.gxi`'s
-  spliced into the body or a block compiled again, brings nothing new),
-  and each `use` and module is taken off as it begins to compile
-  (`Env::settle_statement`). `Env::resolve_type_name`, alone among the
-  lookups, asks each level on its way (`lookup_in`, `settle`), for the
-  module segments of a path too, and refuses with `ChangesLater`: a name a
-  later `use` of the level imports; a name the level neither declares nor
-  imports nor finds in a glob while a glob is still to come, or while a
-  glob there imports from a module not compiled yet; a name whose import
-  there finds nothing while its module is not compiled yet. A definition's
-  snapshot keeps the lists open when it was made (`Lexical::open`, set by
-  `Env::lexical`), so its check, which runs once the list has compiled,
-  refuses a name imported from a module declared below the definition as
-  the list's own compile does, and never reads the outer or prelude type of
-  the name for good. A reader that
-  defers an unresolved name waits as it does for a type declared below: a
-  typedef's shape stays open until the `use` (`Completed::Use`) or the
-  definition that completes a cycle through it, and a `let` annotation, a
-  `never<T>` and a signature read the import at the check, so the import
-  is in force throughout its list. A pattern over the annotation binds at
-  the name unexpanded (as at `later_typedef`); a
-  statement that needs the type as it compiles (a type test, a cast, a
-  `let` that takes it apart, an abstract constructor) is refused, naming
-  the `use` or the module to move up. A trait written as a parameter's
-  type is taken for a bound as its function or signature compiles, so a
-  name that means a trait as the scopes stand and that such a statement
-  may change is refused there the same way (`Env::settled_trait_of_ref`);
-  a bound a quantifier declares (`'a: Show`) is read at the check. The
-  record is not lexical: a definition checked under its snapshot after
-  its list has compiled reads what the list brought. Pins: `lang::types::typedef_above_the_use_*`,
-  `typedef_between_a_use_and_the_module_*`, `typedef_above_a_glob*`,
-  `typedef_between_a_glob_and_its_module*`, `block_typedef_above_the_blocks_use*`,
-  `nested_block_typedef_above_an_outer_use_refused`,
-  `typedef_through_an_imported_module_declared_below*`,
-  `let_annotation_above_the_use_reads_the_import`, `type_test_*_the_use*`,
-  `cast_above_the_use_refused`, `destructuring_let_*`,
-  `trait_parameter_*`, `signature_trait_parameter_*`,
-  `declared_trait_bound_above_a_glob`,
-  `lambda_parameter_above_the_use_reads_the_import`.
+- **A list's declarations are in force throughout it** (Rust's rule,
+  Eric 2026-11-24): a `use`, a `type`, a `mod` and a `trait` name what
+  they declare above their statement as below it, a name is declared once
+  in a list, and an inner scope may shadow an outer one. `let` stays
+  ordered, and so does a module: its `mod` stands above what needs its
+  names at once (Eric 2026-11-24: reading a module's interface ahead of
+  its body is not worth the compiler change, a `mod` goes at the top of
+  its file). As built:
+  - **Imports.** `compile_block_children` installs every `use` of its list
+    before any statement compiles (`module::install_uses`; one whose path
+    goes through another's import is installed once that one is, and one
+    that cannot be installed yet, a path through a trait the list
+    declares, is left to its statement). The statement itself then finds
+    its items installed (`resolve_use_item`, `compiled_here`). So every
+    reader, a cast and a type test included, reads the import wherever the
+    `use` stands. An import pending because its target did not exist yet
+    is dropped at the end of the list once it does
+    (`module::settle_list_imports`), where a module the list declares for
+    itself is in view; what is still pending is the top-level check's.
+  - **Once per list.** `Env::import` refuses a second import of a name,
+    the same item again included, and a name the list declares as a type
+    (`Lexical::block_names`). An implementation reads what its interface
+    imports. A `let` rebinds from where it stands, an imported name too.
+  - **Types.** `compile_block_children` compiles its list's `type`
+    statements before any other, each standing where it is written, so a
+    cast, a type test, a parameter, a destructuring `let` and an abstract
+    constructor above a declaration read it, as an annotation did, and so
+    does a module the list declares above it. A recursive type that passes
+    its parameter through an alias the list defines below it is declared
+    once the alias is (`AppliedLate`, retried); one whose alias a module
+    of the list defines is left to its own statement, below the `mod`. A
+    type's body still names a type the list declares below it
+    (`Unseen::Later`, which waits).
+  - **Modules stay ordered:** a name a `use` imports from a module declared
+    below. `Unsettled` records the modules a list has still to compile
+    (`Env::open_list`, `settle_statement`), and `Env::resolve_type_name`
+    refuses with `ChangesLater` a name whose import finds nothing while its
+    module is one of them; a definition's snapshot keeps the record
+    (`Lexical::open`). A typedef's body, an annotation and a signature wait
+    for the module instead (a typedef's shape stays open until the
+    definition that completes it); a statement that needs the type as it
+    compiles (a type test, a cast, a `let` that takes it apart, an abstract
+    constructor) is refused, naming the `mod` to move up. A trait is
+    declared above the statements that name it, since its default bodies
+    are values.
+  Pins: `lang::types::typedef_above_the_use_*`, `typedef_above_a_glob*`,
+  `type_test_above_the_use`, `cast_above_the_use`,
+  `destructuring_let_above_*`, `trait_parameter_above_*`,
+  `signature_trait_parameter_above_a_glob`,
+  `lambda_parameter_above_the_module_*`, `repeated_import_refused`,
+  `a_type_and_an_import_of_one_name_in_a_list_refused`;
+  `lang::modules::a_let_shadows_an_import_of_its_list`;
+  `lang::interfaces::implementation_*_its_interfaces_import*`; the
+  module-below refusals `*_between_a_use_and_its_module_refused`,
+  `type_test_above_the_module_its_use_imports_from_refused`; for types,
+  `lang::block_types::{module,script}_type_in_a_*_above_its_declaration`,
+  `lang::types::a_destructure_names_the_type_its_block_declares_below`,
+  `alias_below_its_recursive_application`,
+  `lang::interfaces::dynamic_sig_import_of_a_type_declared_below`.
 - **One source typedef, one definition.** A block compiled again (an
   instance, a default at a call, a runtime bind) declares its typedef
   with the live definition the registry holds, and its `TypeDef` node owns

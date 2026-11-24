@@ -2,7 +2,7 @@ use super::{
     WakeBit,
     callsite::{Narrowing, check_hidden_defaults},
     compiler::compile,
-    dense_gate, one_bound, read_bound,
+    dense_gate, one_bound, read_bound, solving,
 };
 use crate::cost::ForkSite;
 use crate::{
@@ -22,7 +22,7 @@ use crate::{
         nodes::{NodeTag, decode_node, decode_nodes, encode_nodes, put_tag},
     },
     rep,
-    typ::{AbstractId, Type},
+    typ::{AbstractId, Type, bounds::Use},
     wrap,
 };
 use anyhow::{Result, anyhow, bail};
@@ -322,38 +322,8 @@ impl<R: Rt> StructWith<R> {
                 Ok(Replace::with(None, name.clone(), n))
             })
             .collect::<Result<Box<[_]>>>()?;
-        let typ = updated_type(ctx, source.typ(), &replace)
-            .unwrap_or_else(|_| Type::empty_tvar());
-        Ok(Self::with(spec, typ, source, replace))
+        Ok(Self::with(spec, Type::empty_tvar(), source, replace))
     }
-}
-
-/// The type of `{source with ..replace}`: the source's, each replaced
-/// field holding its replacement's type, as a literal's field does.
-fn updated_type<R: Rt>(
-    ctx: &CompileCtx<R>,
-    source: &Type,
-    replace: &[Replace<R>],
-) -> Result<Type> {
-    let updated = |flds: &[(ArcStr, Type, WrittenAt)]| {
-        Type::Struct(Arc::from_iter(flds.iter().map(|(name, t, at)| {
-            let t = match replace.iter().rev().find(|r| &r.name == name) {
-                Some(r) => r.n.typ(),
-                None => t,
-            };
-            (name.clone(), t.clone(), *at)
-        })))
-    };
-    if let Some(members) = union_of(ctx, source, |t| match t {
-        Type::Struct(flds) => Some(updated(flds)),
-        _ => None,
-    })? {
-        let members: LPooled<Vec<&Type>> = members.iter().collect();
-        return Type::union(&ctx.env, &members);
-    }
-    deref_typ!("struct", ctx, source,
-        Some(Type::Struct(flds)) => Ok(updated(flds))
-    )
 }
 
 impl<R: Rt> Update<R> for StructWith<R> {
@@ -365,6 +335,20 @@ impl<R: Rt> Update<R> for StructWith<R> {
     fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
         f(&mut self.source);
         self.replace.iter_mut().for_each(|r| f(&mut r.n))
+    }
+
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
+        wrap!(self.source, self.source.typecheck1(ctx))?;
+        for rep in self.replace.iter_mut() {
+            wrap!(rep.n, rep.n.typecheck1(ctx))?
+        }
+        // the check decides the struct after the update is checked: each
+        // field's place is known only now
+        let source = self.source.typ().resolve_tvars();
+        for rep in self.replace.iter_mut().filter(|r| r.index.is_none()) {
+            rep.index = wrap!(rep.n, field_place(ctx, &source, &rep.name))?
+        }
+        Ok(())
     }
 
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
@@ -493,13 +477,8 @@ impl<R: Rt> StructRef<R> {
         field_name: &ArcStr,
     ) -> Result<Node<R>> {
         let source = compile(ctx, flags, source.clone(), scope, top_id)?;
-        let (typ, sorted_field_idx) =
-            match struct_field_type(ctx, source.typ(), field_name) {
-                Ok((i, t)) => (t, i),
-                Err(_) => (Type::empty_tvar(), None),
-            };
         let field_name = field_name.clone();
-        Ok(Self::with(spec, typ, source, sorted_field_idx, field_name))
+        Ok(Self::with(spec, Type::empty_tvar(), source, None, field_name))
     }
 }
 
@@ -510,6 +489,18 @@ impl<R: Rt> Update<R> for StructRef<R> {
 
     fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Node<R>)) {
         f(&mut self.source)
+    }
+
+    fn typecheck1(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
+        wrap!(self.source, self.source.typecheck1(ctx))?;
+        // the check decides the struct after the read is checked: the
+        // field's place is known only now
+        if self.sorted_field_idx.is_none() {
+            let source = self.source.typ().resolve_tvars();
+            self.sorted_field_idx =
+                wrap!(self, field_place(ctx, &source, &self.field_name))?
+        }
+        Ok(())
     }
 
     fn image_encode(&self, buf: &mut ImageBuf) -> Result<(), PackError> {
@@ -894,88 +885,9 @@ impl<R: Rt> Update<R> for Construct<R> {
     }
 }
 
-/// The type of `.field` over `source`: a tuple's field, an error's
-/// payload, or an abstract type's payload where its definition is
-/// visible from `scope`.
-pub(crate) fn tuple_field_type<R: Rt>(
-    ctx: &CompileCtx<R>,
-    scope: &ModPath,
-    source: &Type,
-    field: usize,
-) -> Result<Type> {
-    let ts = tuple_field_types(ctx, scope, source, field)?;
-    let ts: LPooled<Vec<&Type>> = ts.iter().collect();
-    Type::union_of_alternatives(&ctx.env, &ts)
-}
-
-/// [`tuple_field_type`] per member of a union source (one type for any
-/// other): what a write through the field must fit, each of them.
-pub(crate) fn tuple_field_types<R: Rt>(
-    ctx: &CompileCtx<R>,
-    scope: &ModPath,
-    source: &Type,
-    field: usize,
-) -> Result<LPooled<Vec<Type>>> {
-    if let Some(members) = union_of(ctx, source, |t| match t {
-        Type::Tuple(flds) => Some(flds.clone()),
-        _ => None,
-    })? {
-        return members
-            .iter()
-            .map(|flds| flds.get(field).cloned())
-            .collect::<Option<LPooled<Vec<Type>>>>()
-            .ok_or_else(|| anyhow!("in tuple, no such field {}", field));
-    }
-    // errors: the field is each one's payload
-    if let Some(mut members) = union_of(ctx, source, |t| match t {
-        Type::Error(t) => Some((**t).clone()),
-        _ => None,
-    })? {
-        if field != 0 {
-            bail!("no such field {}", field);
-        }
-        return Ok(LPooled::from_iter(members.drain(..)));
-    }
-    let one = |t: Type| -> LPooled<Vec<Type>> { LPooled::from_iter([t]) };
-    deref_typ!("tuple", ctx, source,
-        Some(Type::Tuple(flds)) => flds
-            .get(field)
-            .map(|t| one(t.clone()))
-            .ok_or_else(|| anyhow!("in tuple, no such field {}", field)),
-        Some(Type::Error(t)) => {
-            if field != 0 {
-                bail!("no such field {}", field);
-            }
-            Ok(one((**t).clone()))
-        },
-        Some(Type::Abstract { id, params }) => {
-            if field != 0 {
-                bail!("no such field {}: an abstract type has only its payload .0", field);
-            }
-            match ctx.env.abstract_rep(*id, scope) {
-                Some(r) => Ok(one(r.instantiate_with(params))),
-                None => bail!(
-                    "the definition of this abstract type is not visible here, so \
-                     its payload cannot be read"
-                ),
-            }
-        }
-    )
-}
-
-/// The field's common sorted position, when its members agree, and its type.
-pub(crate) fn struct_field_type<R: Rt>(
-    ctx: &CompileCtx<R>,
-    source: &Type,
-    name: &ArcStr,
-) -> Result<(Option<usize>, Type)> {
-    let (i, ts) = struct_field_types(ctx, source, name)?;
-    let ts: LPooled<Vec<&Type>> = ts.iter().collect();
-    Ok((i, Type::union_of_alternatives(&ctx.env, &ts)?))
-}
-
-/// [`struct_field_type`] per member of a union source (one type for any
-/// other): what a write through the field must fit, each of them.
+/// The field's sorted position, when every member of a union source agrees
+/// on it, and its type in each member (one type for any other source):
+/// what a write through the field must fit, each of them.
 pub(crate) fn struct_field_types<R: Rt>(
     ctx: &CompileCtx<R>,
     source: &Type,
@@ -1005,6 +917,20 @@ pub(crate) fn struct_field_types<R: Rt>(
     deref_typ!("struct", ctx, source,
         Some(Type::Struct(flds)) => field(flds).map(|(i, t)| (Some(i), LPooled::from_iter([t])))
     )
+}
+
+/// The sorted place of the field `name` in the struct the check decided
+/// `source` to be ([`struct_field_types`]). `None` too where the check
+/// decided nothing of it: no value reaches what reads it.
+fn field_place<R: Rt>(
+    ctx: &CompileCtx<R>,
+    source: &Type,
+    name: &ArcStr,
+) -> Result<Option<usize>> {
+    match source {
+        Type::Bottom => Ok(None),
+        source => Ok(struct_field_types(ctx, source, name)?.0),
+    }
 }
 
 /// The members of `t`, a union once expanded, each expanded (an open cell
@@ -1093,8 +1019,7 @@ impl<R: Rt> TupleRef<R> {
     ) -> Result<Node<R>> {
         let source = compile(ctx, flags, source.clone(), scope, top_id)?;
         let field = *field;
-        let typ = tuple_field_type(ctx, &scope.lexical, source.typ(), field)
-            .unwrap_or_else(|_| Type::empty_tvar());
+        let typ = Type::empty_tvar();
         let scope = scope.lexical.clone();
         Ok(Self::with(spec, typ, source, field, scope))
     }
@@ -1213,7 +1138,8 @@ impl<R: Rt> Struct<R> {
 }
 
 impl<R: Rt> StructWith<R> {
-    /// Each replacement's field index is state: an instance finds it too.
+    /// An instance's types are its rows, and typecheck1 finds each
+    /// field's place.
     fn typecheck0_with(
         &mut self,
         ctx: &mut CompileCtx<R>,
@@ -1221,20 +1147,15 @@ impl<R: Rt> StructWith<R> {
         check: bool,
     ) -> Result<()> {
         wrap!(self.source, child(&mut self.source, ctx))?;
-        let styp = self.source.typ().clone();
-        let mut fields = || -> Result<()> {
-            for rep in self.replace.iter_mut() {
-                rep.index = struct_field_types(ctx, &styp, &rep.name)?.0;
-                wrap!(rep.n, child(&mut rep.n, ctx))?;
-            }
-            Ok(())
-        };
-        wrap!(self, fields())?;
+        for rep in self.replace.iter_mut() {
+            wrap!(rep.n, child(&mut rep.n, ctx))?;
+        }
         if !check {
             return Ok(());
         }
-        let typ = wrap!(self, updated_type(ctx, &styp, &self.replace))?;
-        wrap!(self, self.typ.check_contains(&ctx.env, &typ))
+        let fields = self.replace.iter().map(|r| (r.name.clone(), r.n.typ().clone()));
+        let u = Use::With { fields: fields.collect(), out: self.typ.clone() };
+        wrap!(self, solving(|s| s.watch(&ctx.env, self.source.typ(), u)))
     }
 }
 
@@ -1247,9 +1168,13 @@ impl<R: Rt> StructRef<R> {
         check: bool,
     ) -> Result<()> {
         wrap!(self.source, child(&mut self.source, ctx))?;
-        let etyp = struct_field_type(ctx, self.source.typ(), &self.field_name);
-        let (idx, typ) = wrap!(self, etyp)?;
-        self.sorted_field_idx = idx;
+        // an instance's type is its row, and typecheck1 finds the field's
+        // place
+        if !check {
+            return Ok(());
+        }
+        // the language server shows the field at the read's type, which the
+        // check fills
         if let ExprKind::StructRef { field, .. } = &self.spec.kind
             && ctx.env.ide.is_lsp()
         {
@@ -1257,13 +1182,15 @@ impl<R: Rt> StructRef<R> {
                 pos: field.pos_or(self.spec.pos),
                 ori: self.spec.ori.clone(),
                 name: field.name.clone(),
-                typ: typ.clone(),
+                typ: self.typ.clone(),
             });
         }
-        match check {
-            true => wrap!(self, self.typ.check_contains(&ctx.env, &typ)),
-            false => Ok(()),
-        }
+        let u = Use::Field {
+            field: self.field_name.clone(),
+            out: self.typ.clone(),
+            write: false,
+        };
+        wrap!(self, solving(|s| s.watch(&ctx.env, self.source.typ(), u)))
     }
 }
 
@@ -1337,7 +1264,7 @@ impl<R: Rt> Construct<R> {
         if !check {
             return Ok(());
         }
-        let contain = |t: &Type| t.check_contains_lower(&ctx.env, &self.arg.typ());
+        let contain = |t: &Type| t.check_contains(&ctx.env, &self.arg.typ());
         wrap!(self.arg, contain(&self.rep))?;
         let defaults = check_hidden_defaults(
             ctx,
@@ -1349,16 +1276,6 @@ impl<R: Rt> Construct<R> {
             Narrowing::Constructed,
         );
         wrap!(self.arg, defaults)?;
-        if let Type::Abstract { params, .. } = &self.typ {
-            for p in params.iter() {
-                if let Type::TVar(tv) = p {
-                    super::defer_settle(ctx, || crate::PendingSettle::Operand {
-                        tv: tv.clone(),
-                        spec: self.spec.clone(),
-                    })
-                }
-            }
-        }
         Ok(())
     }
 }
@@ -1374,8 +1291,8 @@ impl<R: Rt> TupleRef<R> {
         if !check {
             return Ok(());
         }
-        let etyp = tuple_field_type(ctx, &self.scope, self.source.typ(), self.field);
-        let etyp = wrap!(self, etyp)?;
-        wrap!(self, self.typ.check_contains(&ctx.env, &etyp))
+        let (i, out, from) = (self.field, self.typ.clone(), self.scope.clone());
+        let u = Use::Index { i, out, write: false, from };
+        wrap!(self, solving(|s| s.watch(&ctx.env, self.source.typ(), u)))
     }
 }

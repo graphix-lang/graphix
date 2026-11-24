@@ -1,0 +1,7 @@
+// expect: reject
+// A written function binding a block gives by name is one instance: the
+// let around the block generalized it again, and a call at another type
+// reached the function written into it (soak nov24b, every mono-reuse
+// flip).
+// Expected: refused, "u64 does not contain string".
+{ let f = { let tm = |x| x; let r = &mut tm; *r <- |x: u64| x + u64:1; tm }; f("s") }

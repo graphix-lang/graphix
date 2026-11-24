@@ -1367,7 +1367,7 @@ run!(any_reference_cast_abstract_map_is_refused, r#"{
 run!(
     mut_of_value_in_definition_refused,
     "{ let f = |x: i64| { let r: &mut string = &mut [x]; str::len(*r) }; f(1) }",
-    refused("&mut string does not contain &mut Array<i64>");
+    refused("type mismatch string does not contain Array<i64>");
     FuseExpect::None
 );
 run!(
@@ -1377,15 +1377,15 @@ run!(
     FuseExpect::None
 );
 run!(
-    mut_of_value_written_in_definition_refused,
+    mut_of_value_written_in_definition_holds_both,
     r#"{ let f = |x: i64| { let r = &mut [x]; *r <- ["s"]; 0 }; f(1) }"#,
-    refused("Array<i64> does not contain Array<string>");
+    prints("i64:0");
     FuseExpect::None
 );
 run!(
     mut_of_value_infinite_in_definition_refused,
     "{ let rec f = |x| f(&mut [f]); 0 }",
-    refused("cannot infer a finite type here");
+    refused("infinite type: a value here would hold a value of its own type (a function passed or returning itself, a collection holding itself); declare a named recursive type and annotate the binding");
     FuseExpect::None
 );
 run!(
@@ -1402,3 +1402,30 @@ run!(mut_of_value_in_definitions, r#"{
   let q = h("a");
   (f(1), g(1), g("s"), *q, d(2))
 }"#, prints(r#"[i64:1, [i64:1], ["s"], ["a"], [[i64:1], i64:2]]"#); FuseExpect::None);
+
+// A writable index or key step is the part's own type: a write through it
+// is a write of the whole, refused by a declared root and widening an
+// inferred one, whose readers then see the wider type.
+run!(
+    writable_index_place_is_held_to_a_declared_element_type,
+    "{ let a: Array<i64> = [1, 2]; let r = &mut a[0]; *r <- \"s\"; a }",
+    refused("i64 does not contain string");
+    FuseExpect::None
+);
+run!(
+    writable_index_place_widens_an_inferred_array,
+    "{ let a = [1, 2]; let r = &mut a[0]; *r <- \"s\"; a[0]$ + 1 }",
+    refused("i64 does not contain string");
+    FuseExpect::None
+);
+run!(
+    writable_key_place_widens_an_inferred_maps_key,
+    r#"{
+  let m = {1 => "1", 2 => "2"};
+  let k = &mut m{"a"};
+  *k <- "z";
+  map::fold(m, 0, |acc, (k, v)| acc + k * 10)
+}"#,
+    refused("i64 does not contain string");
+    FuseExpect::None
+);

@@ -464,7 +464,10 @@ module.exports = grammar({
     ),
 
     fn_type_arg: $ => choice(
-      seq(choice($.fn_type_label, $.fn_type_arg_name), $._type),
+      // `?#d: T = D`: D, the type of what a call that leaves the label
+      // out passes
+      seq($.fn_type_label, $._type, optional(seq('=', field('default', $._type)))),
+      seq($.fn_type_arg_name, $._type),
       // a trait method's receiver: `fn(self, ..)` or `fn(self<'a>, ..)`
       seq($.self_param, optional(seq('<', $._type, '>'))),
     ),

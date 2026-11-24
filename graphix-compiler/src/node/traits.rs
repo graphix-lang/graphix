@@ -9,12 +9,11 @@
 
 use super::{
     Block,
-    bind::lower_over_operands,
-    callsite::{ArgKey, CallSite, check_method_return},
+    bind::{Bind, lower_over_operands},
+    callsite::{ArgKey, CallSite},
     coretraits::method_ftype,
     genn::SynthCall,
     lambda::LambdaDef,
-    module::{self, Holder},
 };
 use crate::{
     BindId, CFlag, CompileCtx, DefAssertionKind, ExecCtx, Node, NodeView, Rt, Scope,
@@ -34,9 +33,9 @@ use crate::{
     },
     stack::ensure_sufficient,
     typ::{
-        AmbiguousMember, CoreTrait, FnArgKind, FnType, TVar, TakerUnion, TraitId, Type,
-        TypeRef, UndecidedTaker, check_bounds_acyclic, seed_conjuncts,
-        settle::VariableUnion, tvar::RigidGate,
+        AmbiguousMember, CoreTrait, DefaultType, FnArgKind, FnArgType, FnType, TVar,
+        TraitId, Type, TypeRef, bounds, check_bounds_acyclic, seed_conjuncts,
+        tvar::{RigidGate, current_level},
     },
     wrap,
 };
@@ -49,7 +48,6 @@ use netidx_core::pack::{Pack, PackError, encode_varint};
 use netidx_value::Value;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
-use std::{cell::OnceCell, iter};
 use triomphe::Arc;
 
 /// The declared signature of a trait method, scoped to the declaring
@@ -62,13 +60,12 @@ pub(crate) fn method_sig(
     tref: &Type,
     scope: &ModPath,
 ) -> Result<FnType> {
-    let ft =
-        match &Type::Fn(Arc::new(parsed.scope_refs(scope))).rewrite_declared_args(env)? {
-            Type::Fn(ft) => (**ft).clone(),
-            _ => unreachable!("a rewritten function type is a function type"),
-        };
     let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-    ft.alias_tvars(&mut known);
+    let parsed = Type::Fn(Arc::new(parsed.scope_refs_named(scope, &mut known)));
+    let ft = match &parsed.rewrite_declared_args(env)? {
+        Type::Fn(ft) => (**ft).clone(),
+        _ => unreachable!("a rewritten function type is a function type"),
+    };
     if let Some(tv) = known.get("self") {
         tv.add_cell_constraint(tref.clone());
     }
@@ -76,122 +73,83 @@ pub(crate) fn method_sig(
     if !quantifiers.iter().any(|q| &**q == "self") {
         quantifiers.push(literal!("self"));
     }
-    Ok(FnType { quantifiers: Arc::from_iter(quantifiers.drain(..)), ..ft })
-}
-
-/// Whether `implemented`, a method's type as its body checked it, is
-/// the `declared` signature: its shape, its variables, and no bound the
-/// declaration does not carry ([`FnType::sig_matches`], as an interface
-/// `val` is checked); and a cell of the body no use copies is held as an
-/// interface `val`'s is ([`module::hold_paired`]). `id` is the body's
-/// binding. A body that is a lambda has its cells copied by each call but
-/// those a binding it captures holds; any other body's are judged by their
-/// level, as a `val`'s implementation's are. `reads` says whether the
-/// body took its value's type ([`reads_binding`]).
-fn implements<R: Rt>(
-    ctx: &CompileCtx<R>,
-    declared: &FnType,
-    implemented: &Type,
-    id: BindId,
-    reads: impl Fn() -> bool,
-) -> Result<()> {
-    let told = |e: anyhow::Error| match reads() {
-        true => Told::over(
-            e,
-            "its value reads a binding, so the method has exactly that binding's \
-             type; written as a lambda it takes the declared one",
-        ),
-        false => e,
-    };
-    let Some(ft) = implemented.with_deref(|t| match t {
-        Some(Type::Fn(ft)) => Some(ft.clone()),
-        _ => None,
-    }) else {
-        // CR claude for claude: [readability/low] When a method's value reads a binding
-        // still undecided at the impl (`let h = never(); impl T for i64 { let m = h };
-        // h <- ..`), `implemented` is an open cell. The leaf is then "'_8187 is not a
-        // function": a generated variable, and false, since h is a function. Annotating
-        // `h` makes it check, but nothing names `h`. For an unbound cell, refuse naming
-        // the read binding as undecided here and to annotate it, as
-        // callsite::undecided_binds words it. Pin that leaf in
-        // lang::traits::method_value_read_of_an_undecided_binding_is_refused, which
-        // today pins only the told note. probe:
-        // design/review-2026-11-16/repro/tests-traits-b-undecided-method-read.sh
-        // (tests-traits-b-04)
-        return Err(told(anyhow!("{implemented} is not a function")));
-    };
-    let pairs = declared.sig_matches(&ctx.env, &ft).map_err(told)?;
-    module::instance_picks_no_member(
-        &ctx.env,
-        &Type::Fn(Arc::new(declared.clone())),
-        implemented,
-    )?;
-    let captured: OnceCell<Option<LPooled<AHashMap<usize, TVar>>>> = OnceCell::new();
-    let captured = || captured.get_or_init(|| module::captured_cells(ctx, id));
-    let shared = |tv: &TVar| {
-        !tv.level().copied_by(&ctx.rec_defs)
-            && captured().as_ref().is_none_or(|c| c.contains_key(&tv.cell_addr()))
-    };
-    // CR claude for claude: [bug/medium] When the method returns what the shared
-    // binding holds, the hint "give {b} a type that holds every {v}" cannot work.
-    // Examples are `|s, x| k(s, x)` over a written `k`, and `st.k(x)` over `{k: |x| { y
-    // <- x; y }}`. With `y: Any` the check refuses again: "'a: unbound does not contain
-    // Any". lang::traits::method_over_a_written_lambda_names_it,
-    // method_over_a_struct_of_lambdas_names_what_they_write and
-    // method_over_a_struct_of_a_named_helper_names_what_it_writes pin this hint, and
-    // method_handing_a_written_lambda_its_argument_annotated had to change the method
-    // body too. Give the binding hint only where the method does not return the
-    // binding's value. Otherwise say the method returns one type for every call, so it
-    // should return what the call passed or the method should be declared at one type.
-    // Pin a passing program for each of these refusals. module::check_val's `give {b} a
-    // type` arms carry the same hint. probe:
-    // design/review-2026-11-16/repro/tests-traits-b-remedy-does-not-pass.sh
-    // (tests-traits-b-01)
-    module::hold_paired(&ctx.env, "method", &pairs, shared, |tv, v| {
-        match (Holder::of(ctx, id, tv), module::generalized_impl(ctx, id)) {
-            (Holder::Captured(b), _) => format_compact!(
-                ", that of {b}, a binding outside its let: give {b} a type that holds \
-                 every {v}"
-            ),
-            (Holder::Written(b), _) => format_compact!(
-                ", that of {b}, a binding outside its let that something writes, which \
-                 holds one type for every reader: give {b} a type that holds every {v}"
-            ),
-            (Holder::Instance(b), _) => format_compact!(
-                ", that of {b}, a binding outside its let holding a function that is \
-                 one instance, as a call's result is: write a lambda over variables of \
-                 its own in that function's place"
-            ),
-            (Holder::Lambda, _) => format_compact!(
-                ", that of a binding outside its let: give that binding a type that \
-                 holds every {v}"
-            ),
-            (Holder::NoLambda, true) => {
-                format_compact!(": make the method a lambda over variables of its own")
-            }
-            (Holder::NoLambda, false) => format_compact!(
-                ": its value is neither a lambda nor, with no annotation, a generic \
-                 binding's read, so no call copies its types; make the method a \
-                 lambda over variables of its own"
-            ),
-        }
+    // a label the method lets a call leave out takes the default of the
+    // implementation the call's receiver picks
+    let args = ft.args.iter().map(|a| match &a.kind {
+        FnArgKind::Labeled { name, default: Some(_) } => FnArgType {
+            kind: FnArgKind::Labeled {
+                name: name.clone(),
+                default: Some(DefaultType::Each),
+            },
+            typ: a.typ.clone(),
+        },
+        _ => a.clone(),
+    });
+    Ok(FnType {
+        args: Arc::from_iter(args),
+        quantifiers: Arc::from_iter(quantifiers.drain(..)),
+        ..ft
     })
 }
 
-/// [`check_method_return`] of a method [`implements`] held to `declared`.
-fn returns_declared<R: Rt>(
-    ctx: &mut CompileCtx<R>,
-    top_id: ExprId,
-    declared: &FnType,
-    implemented: &Type,
-) -> Result<()> {
-    match implemented.with_deref(|t| match t {
-        Some(Type::Fn(ft)) => Some(ft.clone()),
-        _ => None,
-    }) {
-        Some(ft) => check_method_return(ctx, top_id, declared, &ft),
-        None => Ok(()),
-    }
+// CR claude for claude: [bug/medium] When the method returns what the shared
+// binding holds, the hint "give {b} a type that holds every {v}" cannot work.
+// Examples are `|s, x| k(s, x)` over a written `k`, and `st.k(x)` over `{k: |x| { y
+// <- x; y }}`. With `y: Any` the check refuses again: "'a: unbound does not contain
+// Any". lang::traits::method_over_a_written_lambda_names_it,
+// method_over_a_struct_of_lambdas_names_what_they_write and
+// method_over_a_struct_of_a_named_helper_names_what_it_writes pin this hint, and
+// method_handing_a_written_lambda_its_argument_annotated had to change the method
+// body too. Give the binding hint only where the method does not return the
+// binding's value. Otherwise say the method returns one type for every call, so it
+// should return what the call passed or the method should be declared at one type.
+// Pin a passing program for each of these refusals. module::check_val's `give {b} a
+// type` arms carry the same hint. probe:
+// design/review-2026-11-16/repro/tests-traits-b-remedy-does-not-pass.sh
+// (tests-traits-b-01)
+// 2026-11-18 claude: On bounds-spike the old method check (implements, hold_paired
+// and its 'give {b} a type' hints) is deleted with the old check; a method is held
+// to its declaration by fits_declared, whose refusal does not give that hint. The
+// fixtures named here pass by their bounds.manifest lines. Re-probe the wording
+// under the new check before closing.
+
+// CR claude for claude: [readability/low] When a method's value reads a binding
+// still undecided at the impl (`let h = never(); impl T for i64 { let m = h };
+// h <- ..`), `implemented` is an open cell. The leaf is then "'_8187 is not a
+// function": a generated variable, and false, since h is a function. Annotating
+// `h` makes it check, but nothing names `h`. For an unbound cell, refuse naming
+// the read binding as undecided here and to annotate it, as
+// callsite::undecided_binds words it. Pin that leaf in
+// lang::traits::method_value_read_of_an_undecided_binding_is_refused, which
+// today pins only the told note. probe:
+// design/review-2026-11-16/repro/tests-traits-b-undecided-method-read.sh
+// (tests-traits-b-04)
+// 2026-11-18 claude: On bounds-spike the old method check (implements, where
+// this leaf was made) is deleted with the old check; a method is held to its
+// declaration by fits_declared. Re-probe what the refusal says now for an
+// undecided method read.
+
+// CR claude for claude: [structure/low] Which binding a trait call reaches is
+// worked out here for the check and again in `resolve_trait_call` and
+// `lower_trait_union` for the build: the same alias expansion, open-cell test
+// and union test over the self type.
+// `im.methods.get(name).copied().or(m.default)` is written four times, in these
+// three and in `coretraits::method_bind`. The check's verdict on an omitted
+// default holds only while the copies agree. Give `TraitMethodDef` one
+// `bind_in(&ImplDef) -> Option<BindId>`, and have both callers read one
+// function that classifies the resolved self type (bottom, open, core, union
+// members, one type). Found by reading; not run. (c-module-traits-06)
+// 2026-11-19 claude: On bounds-spike the old method check (decided_methods) is
+// deleted with the old check; a method is held to its declaration by
+// fits_declared. Re-probe under the new check before closing.
+
+/// Under a check by bounds, whether a method's body, whose binding holds
+/// the scheme `made`, is the `declared` signature for whatever each of the
+/// declaration's variables stands for: one instance of the body fits the
+/// declaration with its variables held as constants. The variables the
+/// body's check held as constants are the scheme's from here on.
+fn fits_declared<R: Rt>(ctx: &CompileCtx<R>, made: &Type, declared: &Type) -> Result<()> {
+    bounds::fits(&ctx.env, made, declared, current_level(), true)
 }
 
 /// A trait method as the trait declares it: its signature
@@ -296,70 +254,6 @@ pub(crate) fn impl_outside_functions(
         )
     }
     Ok(())
-}
-
-/// Refuse a union of two variables a method writes itself, in its `let`'s
-/// annotation `typ` or a lambda its `value` writes outside every lambda's
-/// body, a labeled default's included ([`Type::variable_union`]): those
-/// lambdas compile in the method's scope, which a lambda's own check
-/// leaves to this one. The method's own lambda (the value, through
-/// parentheses) holds what its trait's declaration fills in, judged at the
-/// trait, and there a variable `own` refuses is the trait's (a default's
-/// `self`) or the impl's (its head's); an impl's `self` is its target here
-/// ([`self_as_target`]). Every variable of any other lambda is its own,
-/// since no definition encloses a method's scope.
-fn written_method_unions(
-    typ: Option<&Type>,
-    value: &Expr,
-    own: &dyn Fn(&TVar) -> bool,
-) -> Result<()> {
-    if let Some(t) = typ {
-        t.variable_union(own)?
-    }
-    let method = value.unparen();
-    match &method.kind {
-        ExprKind::Lambda(l) => {
-            signature_unions(method, l, own)?;
-            l.args
-                .iter()
-                .filter_map(|a| a.kind.default())
-                .try_for_each(method_scope_lambdas)
-        }
-        _ => method_scope_lambdas(value),
-    }
-}
-
-fn signature_unions(e: &Expr, l: &LambdaExpr, own: &dyn Fn(&TVar) -> bool) -> Result<()> {
-    let written = l.args.iter().filter_map(|a| a.constraint.as_ref());
-    let written = written
-        .chain(l.constraints.iter().map(|(_, t)| t))
-        .chain(l.rtype.iter())
-        .chain(l.throws.iter());
-    for t in written {
-        t.signature_variable_union(own).map_err(anyhow::Error::from).at(e)?
-    }
-    Ok(())
-}
-
-fn method_scope_lambdas(e: &Expr) -> Result<()> {
-    ensure_sufficient(|| match &e.kind {
-        ExprKind::Lambda(l) => {
-            signature_unions(e, l, &|_| true)?;
-            l.args
-                .iter()
-                .filter_map(|a| a.kind.default())
-                .try_for_each(method_scope_lambdas)
-        }
-        _ => {
-            let mut res = Ok(());
-            e.for_each_child(&mut |c| {
-                if res.is_ok() {
-                    res = method_scope_lambdas(c)
-                }
-            });
-            res
-        }
-    })
 }
 
 /// Whether `t` mentions `self`, in a bound its function type's header
@@ -513,13 +407,7 @@ fn taker_refusal(e: &anyhow::Error) -> Option<anyhow::Error> {
     const REMEDY: &str = "a method's own variables are not the declaration's, even \
                           one named like it: leave the method's type unwritten, so \
                           its lambda takes the declared one, or write the member the value is";
-    match (e.downcast_ref::<UndecidedTaker>(), e.downcast_ref::<AmbiguousMember>()) {
-        (Some(u), _) if u.at() == TakerUnion::Holder => {
-            Some(anyhow!("{}: {REMEDY}", u.fact()))
-        }
-        (_, Some(a)) if a.in_holder() => Some(anyhow!("{}: {REMEDY}", a.fact())),
-        _ => None,
-    }
+    e.downcast_ref::<AmbiguousMember>().map(|a| anyhow!("{}: {REMEDY}", a.fact()))
 }
 
 /// Rigid gates on every open cell `declared` reach: a declaration's
@@ -659,7 +547,6 @@ impl<R: Rt> Trait<R> {
             // bound under a name no method call reaches (`#show`): a
             // bare `show` in a sibling default is the dispatcher
             if let Some(body) = &m.default {
-                written_method_unions(None, body, &|tv| &*tv.name != "self").at(body)?;
                 default_module_sigs(body)?;
                 let sig = d.typ.reset_tvars();
                 let private = format_compact!("#{}", m.name.name);
@@ -800,33 +687,22 @@ impl<R: Rt> Update<R> for Trait<R> {
         drop(declared);
         let Some(record) = ctx.env.trait_def(self.def.id) else { return Ok(()) };
         // every written name in a method's signature must name something by
-        // the check's end, and it writes no union of two of its variables
+        // the check's end
         for m in record.methods.iter() {
-            let mut union =
-                |u: &Type| match VariableUnion::of(u, &|tv| &*tv.name != "self") {
-                    None => Ok(()),
-                    Some(e) => Err(anyhow!("trait method {}: {e}", m.name)),
-                };
-            let t = Type::Fn(m.typ.clone());
-            crate::defer_unresolved_names(ctx, &t, &self.spec, Some(&mut union))?;
+            crate::defer_unresolved_names(ctx, &Type::Fn(m.typ.clone()), &self.spec)?;
         }
         for m in record.methods.iter() {
             let Some(id) = m.default else { continue };
             let Some(bind) = ctx.env.by_id.get(&id) else { continue };
-            let implemented = bind.typ.clone();
-            let declared = m.typ.reset_tvars();
-            let reads = || self.default_reads_binding(&m.name);
-            implements(ctx, &declared, &implemented, id, reads).map_err(|e| {
+            let declared = Type::Fn(m.typ.clone());
+            fits_declared(ctx, &bind.typ.clone(), &declared).map_err(|e| {
                 let told = format_compact!(
                     "the default {} of trait {} does not implement the declared {declared}",
                     m.name,
                     self.def.name
                 );
                 Told::over(e, &told)
-            })?;
-            returns_declared(ctx, self.spec.id, &declared, &implemented).with_context(
-                || format!("in the default {} of trait {}", m.name, self.def.name),
-            )?;
+            })?
         }
         Ok(())
     }
@@ -1064,7 +940,6 @@ pub(crate) fn impl_head(
     head: &ImplHead,
     declared: bool,
 ) -> Result<(Type, Arc<[TVar]>)> {
-    let target = head.target.scope_refs(scope);
     let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
     let params: Arc<[TVar]> = Arc::from_iter(head.params.iter().map(|tv| {
         let tv = TVar::empty_generic(tv.name.clone());
@@ -1072,16 +947,17 @@ pub(crate) fn impl_head(
         tv
     }));
     let mut in_target: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-    target.collect_tvars(&mut in_target);
+    head.target.collect_tvars(&mut in_target);
+    // read before scoping the target adds its names
+    let undeclared = in_target.keys().find(|name| !known.contains_key(*name)).cloned();
+    let target = head.target.scope_refs_named(scope, &mut known);
     for tv in params.iter() {
         if !in_target.contains_key(&tv.name) {
             bail!("impl type variable {tv} does not occur in the target {target}")
         }
     }
-    for (name, _) in in_target.iter() {
-        if !known.contains_key(name) {
-            bail!("undeclared type variable '{name} in impl target {target}")
-        }
+    if let Some(name) = undeclared {
+        bail!("undeclared type variable '{name} in impl target {target}")
     }
     // CR claude for claude: [bug/low] An impl head's bounds are not checked as bounds:
     // nothing in `impl_head` calls `Type::check_bound`, which a lambda's declared
@@ -1103,11 +979,12 @@ pub(crate) fn impl_head(
         }
     }
     check_bounds_acyclic(&head.constraints)?;
-    target.alias_tvars(&mut known);
-    seed_conjuncts(
-        &mut known,
-        head.constraints.iter().map(|(tv, tc)| (tv, tc.scope_refs(scope))),
-    )?;
+    let constraints: LPooled<Vec<(&TVar, Type)>> = head
+        .constraints
+        .iter()
+        .map(|(tv, tc)| (tv, tc.scope_refs_named(scope, &mut known)))
+        .collect();
+    seed_conjuncts(&known, constraints.iter().map(|(tv, tc)| (*tv, tc.clone())))?;
     let holes = target.holes();
     if trait_def.hole {
         if holes != 1 || !matches!(target.decompose(), Some((_, Type::Hole))) {
@@ -1191,13 +1068,20 @@ impl<R: Rt> Impl<R> {
             if !provided.insert(name.name.clone()) {
                 bailat!(m, "method {name} is implemented twice");
             }
-            let own = |tv: &TVar| !params.iter().any(|h| h.name == tv.name);
-            written_method_unions(b.typ.as_ref(), &b.value, &own).at(m)?;
             let sig = method_sig_at(&decl.typ, &target);
+            // a lambda takes the declaration on its parameters and its
+            // result, and its binding is its own scheme, which the impl's
+            // check holds to the declaration with the declaration's
+            // variables as constants; any other value takes it as its
+            // let's annotation
+            let declared = match &b.value.unparen().kind {
+                ExprKind::Lambda(_) => None,
+                _ => signature_of(&b.value, &sig),
+            };
             let b = BindExpr {
                 rec: b.rec,
                 pattern: b.pattern.clone(),
-                typ: b.typ.clone().or_else(|| signature_of(&b.value, &sig)),
+                typ: b.typ.clone().or(declared),
                 value: annotate_lambda(&b.value, &sig),
             };
             let dec = match &m.dec {
@@ -1289,7 +1173,7 @@ impl<R: Rt> Impl<R> {
                 bail!("impl method {:?} is not a function", bind)
             };
             let prefix = format_compact!("#proto{}_{k}", self.spec.id.inner());
-            let instance = ftype.instantiate(&ctx.rec_defs);
+            let instance = ftype.instantiate(current_level());
             let types = instance.args.iter().map(|a| a.typ.clone());
             let call =
                 SynthCall::build(ctx, &scope, &prefix, *bind, &ftype, types, top_id)?;
@@ -1362,10 +1246,20 @@ impl<R: Rt> Impl<R> {
         }
     }
 
-    /// Whether method `name` took its value's type: it writes no
-    /// annotation and [`signature_of`] gave it none.
-    fn method_reads_binding(&self, name: &str) -> bool {
-        self.unannotated_method(name, true)
+    /// The scheme of the value the annotated `let` of method `id` holds,
+    /// where the value is a definition.
+    fn annotated_value(&self, id: BindId) -> Option<Type> {
+        let mut value = None;
+        self.body.for_each_child(&mut |n| {
+            if let Some(b) = n.downcast_ref::<Bind<R>>()
+                && b.pattern.single_bind_id() == Some(id)
+                && matches!(&b.spec.kind, ExprKind::Bind(e) if e.typ.is_some())
+                && bounds::scheme(b.node.typ())
+            {
+                value = Some(b.node.typ().clone())
+            }
+        });
+        value
     }
 
     /// Whether method `name` took the declared signature as its
@@ -1465,15 +1359,6 @@ impl<R: Rt> Update<R> for Impl<R> {
         // decides them
         let _gates: LPooled<Vec<_>> =
             self.def.params.iter().map(|tv| tv.open_rigid()).collect();
-        // the target is every method's `self`
-        wrap!(
-            self,
-            self.def.target.signature_variable_union(&|_| true).map_err(|e| anyhow!(
-                "impl {} for {}: {e}",
-                self.trait_def.name,
-                self.def.target
-            ))
-        )?;
         // a method that took the declared signature ([`signature_of`])
         // decides none of its variables
         let declared = {
@@ -1484,14 +1369,11 @@ impl<R: Rt> Update<R> for Impl<R> {
         };
         wrap!(self.body, self.body.typecheck0(ctx).map_err(|e| self.method_written(e)))?;
         drop(declared);
-        // a user-annotated method must still fit the declared signature
         for d in self.trait_def.methods.iter() {
             let Some(id) = self.def.methods.get(d.name.as_str()) else { continue };
             let Some(bind) = ctx.env.by_id.get(id) else { continue };
-            let implemented = bind.typ.clone();
-            let declared = method_sig_at(&d.typ, &self.def.target);
-            let reads = || self.method_reads_binding(&d.name);
-            implements(ctx, &declared, &implemented, *id, reads).map_err(|e| {
+            let declared = Type::Fn(Arc::new(method_sig_at(&d.typ, &self.def.target)));
+            let told = |e: anyhow::Error| {
                 let told = format_compact!(
                     "method {} of impl {} for {} does not implement the declared {}",
                     d.name,
@@ -1500,33 +1382,14 @@ impl<R: Rt> Update<R> for Impl<R> {
                     declared.resolve_tvars()
                 );
                 Told::over(e, &told)
-            })?;
-            // a method that took the declared signature is that signature
-            if !self.method_took_declared(&d.name) {
-                let expected =
-                    Type::Fn(Arc::new(method_sig_at(&d.typ, &self.def.target)));
-                let _declared = hold_declared(iter::once(&expected));
-                expected.check_contains(&ctx.env, &implemented).map_err(|e| {
-                    let e = taker_refusal(&e).unwrap_or(e);
-                    let told = format_compact!(
-                        "method {} of impl {} for {} has type {}, the trait declares {}",
-                        d.name,
-                        self.trait_def.name,
-                        self.def.target,
-                        implemented.resolve_tvars(),
-                        expected.resolve_tvars()
-                    );
-                    Told::over(e, &told)
-                })?;
+            };
+            fits_declared(ctx, &bind.typ.clone(), &declared).map_err(told)?;
+            // an annotated let is its annotation, which may be the
+            // declaration itself: the value it holds is what must be the
+            // declared signature, where that is a definition of its own
+            if let Some(value) = self.annotated_value(*id) {
+                fits_declared(ctx, &value, &declared).map_err(told)?
             }
-            returns_declared(ctx, self.spec.id, &declared, &implemented).with_context(
-                || {
-                    format!(
-                        "in method {} of impl {} for {}",
-                        d.name, self.trait_def.name, self.def.target
-                    )
-                },
-            )?;
         }
         Ok(())
     }
@@ -1603,77 +1466,6 @@ impl<R: Rt> Update<R> for Impl<R> {
 }
 
 impl<R: Rt> CallSite<R> {
-    /// The bindings of the methods this trait call dispatches to, when its
-    /// self argument's type, as the check leaves it, decides the impls
-    /// alone: no cell open in it, no constructor trait, no core trait that
-    /// lowers to an operator. A union self dispatches per member, one
-    /// binding for each.
-    pub(super) fn decided_methods(
-        &self,
-        ctx: &CompileCtx<R>,
-        ftype: &FnType,
-    ) -> SmallVec<[BindId; 2]> {
-        // CR claude for claude: [structure/low] Which binding a trait call reaches is
-        // worked out here for the check and again in `resolve_trait_call` and
-        // `lower_trait_union` for the build: the same alias expansion, open-cell test
-        // and union test over the self type.
-        // `im.methods.get(name).copied().or(m.default)` is written four times, in these
-        // three and in `coretraits::method_bind`. The check's verdict on an omitted
-        // default holds only while the copies agree. Give `TraitMethodDef` one
-        // `bind_in(&ImplDef) -> Option<BindId>`, and have both callers read one
-        // function that classifies the resolved self type (bottom, open, core, union
-        // members, one type). Found by reading; not run. (c-module-traits-06)
-        let mut binds = SmallVec::new();
-        let NodeView::Ref(r) = self.fnode.view() else { return binds };
-        let Some(tm) = ctx.env.trait_methods.get(&r.id).copied() else { return binds };
-        let Some(def) = ctx.env.trait_def(tm.trait_id) else { return binds };
-        let m = &def.methods[tm.index];
-        let Some(self_t) = m.self_index.and_then(|i| ftype.args.get(i)) else {
-            return binds;
-        };
-        let mut self_t = self_t.typ.resolve_tvars().normalize();
-        let open = |t: &Type| {
-            let mut tvs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-            t.collect_tvars(&mut tvs);
-            tvs.values().any(|tv| Type::TVar(tv.clone()).has_unbound())
-        };
-        if def.hole || CoreTrait::of_id(def.id).is_some_and(|c| c.structural()) {
-            return binds;
-        }
-        while let Type::Ref(tr) = &self_t
-            && ctx.env.trait_of_ref(tr).is_none()
-        {
-            match self_t.lookup_ref(&ctx.env) {
-                Ok(t) => self_t = t,
-                Err(_) => return binds,
-            }
-        }
-        let union = match &self_t {
-            Type::Set(_) => true,
-            Type::Primitive(p) => p.len() > 1,
-            _ => false,
-        };
-        if matches!(self_t, Type::Bottom) || open(&self_t) {
-            return binds;
-        }
-        let members = match union {
-            true => match Type::dispatch_members(&ctx.env, &self_t) {
-                Ok(members) => members,
-                Err(_) => return binds,
-            },
-            false => SmallVec::from_elem(self_t, 1),
-        };
-        for mem in members.iter() {
-            if let Ok(Some(im)) = ctx.env.find_impl(def.id, mem)
-                && let Some(bind) = im.methods.get(m.name.as_str()).copied().or(m.default)
-                && !binds.contains(&bind)
-            {
-                binds.push(bind)
-            }
-        }
-        binds
-    }
-
     /// Resolve a trait method call to an implementation by the self
     /// argument's type. A self type nothing produced into settles to ⊥
     /// and the call is a standing bottom; a union self type lowers to a
@@ -1695,7 +1487,7 @@ impl<R: Rt> CallSite<R> {
                 let mut tvs: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
                 a.typ.collect_tvars(&mut tvs);
                 for (_, tv) in tvs.drain() {
-                    wrap!(self, tv.settle_or_bottom(&ctx.env))?;
+                    wrap!(self, bounds::settle_left(&ctx.env, &tv))?;
                 }
                 a.typ.resolve_tvars().normalize()
             }
@@ -1753,12 +1545,12 @@ impl<R: Rt> CallSite<R> {
             _ => false,
         };
         if union && !def.hole {
-            let members = Type::dispatch_members(&ctx.env, &self_t)?;
+            let members = Type::dispatch_members_of(&ctx.env, def.id, &self_t)?;
             if let Some((a, b)) = Type::dispatch_crossing(&ctx.env, &members)? {
                 let why = Type::crossing_refusal(&def.name, &self_t, a, b);
                 return Err(why.at(&self.spec));
             }
-            let members = Type::dispatch_arms(&ctx.env, &self_t)?;
+            let members = Type::dispatch_arms_of(&ctx.env, def.id, &self_t)?;
             return self.lower_trait_union(ctx, &def, tm.index, &members);
         }
         // A constructor trait selects by the receiver's outermost form.

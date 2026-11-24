@@ -680,9 +680,11 @@ fn typexp() -> impl Strategy<Value = Type> {
                     let args =
                         args.into_iter().map(|(label, pos_name, optional, typ)| {
                             let kind = match label {
-                                Some(n) => {
-                                    FnArgKind::Labeled { name: n, has_default: optional }
-                                }
+                                Some(n) => FnArgKind::Labeled {
+                                    name: n,
+                                    default: optional
+                                        .then_some(crate::typ::DefaultType::Param),
+                                },
                                 None => FnArgKind::Positional { name: Some(pos_name) },
                             };
                             FnArgType { kind, typ }
@@ -1023,8 +1025,10 @@ fn trait_method_sig() -> impl Strategy<Value = Arc<FnType>> {
             };
             // Same-named leaves of one signature share one cell, as in the
             // parser.
-            ft.alias_tvars(&mut ahash::AHashMap::default());
-            Arc::new(ft)
+            match &Type::Fn(Arc::new(ft)).named_in(&mut ahash::AHashMap::default()) {
+                Type::Fn(ft) => ft.clone(),
+                _ => unreachable!(),
+            }
         },
     )
 }
@@ -2052,9 +2056,8 @@ fn undecorated_expr() -> impl Strategy<Value = Expr> {
 /// canonical text. A written type's variable is its name, so each side's
 /// same-named cells are one first.
 fn check_type(t0: &Type, t1: &Type) -> bool {
-    t0.alias_tvars(&mut ahash::AHashMap::new());
-    t1.alias_tvars(&mut ahash::AHashMap::new());
-    let (t0, t1) = (t0.normalize(), t1.normalize());
+    let t0 = t0.named_in(&mut ahash::AHashMap::new()).normalize();
+    let t1 = t1.named_in(&mut ahash::AHashMap::new()).normalize();
     t0 == t1 && t0.to_string() == t1.to_string()
 }
 

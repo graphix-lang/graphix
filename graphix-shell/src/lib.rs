@@ -9,13 +9,12 @@ use bytes::Bytes;
 use derive_builder::Builder;
 use enumflags2::BitFlags;
 use graphix_compiler::{
-    CFlag, ExecState, FusionStats, PrintFlag, StopCause,
+    CFlag, ExecState, FusionStats, StopCause,
     env::Env,
     expr::{
         CouldNotResolve, ExprId, FilesResolver, Load, ModPath, ResolverFactory,
         ResolverRef,
     },
-    format_with_flags,
     typ::TVal,
 };
 use graphix_package::{Cdc, CustomResult, MainThreadHandle, Package, register_packages};
@@ -1094,13 +1093,7 @@ impl<X: GXExt> Shell<X> {
                                             exprs.extend(res.exprs);
                                             if exprs.last().map(|e| e.output).unwrap_or(false) {
                                                 let e = exprs.pop().unwrap();
-                                                let typ = e.typ
-                                                    .with_deref(|t| t.cloned())
-                                                    .unwrap_or_else(|| e.typ.clone());
-                                                format_with_flags(
-                                                    PrintFlag::DerefTVars | PrintFlag::ReplacePrims,
-                                                    || println!("-: {}", typ)
-                                                );
+                                                println!("-: {}", graphix_lsp::display_type(&e.typ));
                                                 output.clear().await;
                                                 let o = Output::from_expr(
                                                     &session.gx, &env, e, &run_on_main,

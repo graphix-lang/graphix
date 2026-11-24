@@ -134,16 +134,13 @@ names are visible whatever their order; a value is not, because a
 module's body runs where its `mod` statement stands, so a sub-module
 that imports a parent's value must be declared below that value.
 
-A type name an import brings means that import throughout its statement
-list, above the `use` as well: `type Op = {mode: Mode}` written above
-`use sys::fs::Mode` names the imported `Mode`, never an outer type of
-that name. A statement above the `use` that needs the type while it
-compiles (a cast, a type test, a `let` that takes the type apart, an
-abstract constructor, a trait written as a parameter's type) is refused,
-and the error names the `use` to move up. The same holds for a name
-imported from a module declared further down, and, above a glob, for
-every type name the scope neither declares nor imports itself. Writing
-`use` first, then `mod`, avoids all of it.
+An import is in force throughout its statement list, above the `use`
+as well as below it, as in Rust: `type Op = {mode: Mode}`, an annotation
+or a cast written above `use sys::fs::Mode` names the imported `Mode`,
+never an outer type of that name. A module is the exception: a name
+imported from a module declared further down is not read by a cast, a
+type test or a destructuring `let` until the `mod`, so put `mod`
+statements at the top.
 
 ## Shadowing and collisions
 
@@ -171,11 +168,13 @@ $ graphix test.gx
 
 The error cases:
 
-- a declaration and an import of the same name in the same scope:
-  error at the `use` if the declaration comes first; if the
-  declaration comes after, it shadows the import (rebinding a name
-  with `let` is idiomatic Graphix and imports are no different)
-- two explicit imports of the same name: error — rename one
+- a type and an import of the same name in the same scope: error,
+  whichever is written first. A `let` is different: it rebinds from
+  where it stands, an imported name as any other
+- two explicit imports of the same name: error. Rename one, or, where
+  both import the same item, remove the second. A module's
+  implementation reads what its interface imports, and may not import it
+  again
 - two globs that both provide a name: allowed at import, error at the
   first *use* of the ambiguous name, naming both sources, unless both
   reach the same item

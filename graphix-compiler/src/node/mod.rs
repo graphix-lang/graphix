@@ -1,7 +1,6 @@
 use crate::{
     BindId, CAST_ERR, CAST_ERR_TAG, CFlag, CompileCtx, Event, ExecCtx, Node, NodeView,
-    ParMode, PendingSettle, PrintFlag, Refs, Restore, Rt, Scope, Tag, TagValue, Update,
-    View,
+    ParMode, PrintFlag, Refs, Restore, Rt, Scope, Tag, TagValue, Update, View,
     branch::{fork_point, timed},
     cost::{ForkSite, Meter},
     defer_unresolved_names, env, errf,
@@ -26,8 +25,10 @@ use crate::{
     typ::{
         AmbiguousMember, Brief, CastInput, Mutability, NodeKey, TVal, TVar, Type,
         TypeMismatch, TypeRef,
+        bounds::{self, Keeps, Solving},
         tvar::{
-            AtLevel, BoundAt, InTask, Level, TaskContext, TaskId, current_task, new_task,
+            Arena, ArenaRef, AtLevel, AtStatement, BoundAt, InArena, InTask, Level,
+            TaskContext, TaskId, current_level, current_task, new_task,
         },
     },
 };
@@ -363,7 +364,7 @@ macro_rules! deref_typ {
 #[doc(hidden)]
 pub fn one_bound(t: &Type) -> Option<Type> {
     let Type::TVar(tv) = t else { return None };
-    let mut c = tv.cell_constraints();
+    let mut c = tv.cell_above();
     match c.len() {
         1 => c.pop(),
         _ => None,
@@ -1349,16 +1350,13 @@ pub(crate) fn compile_block_children<'a, R: Rt>(
             _ => None,
         }),
     );
+    let pending = ctx.pending_imports.len();
+    let installed = module::install_uses(ctx, flags, scope, &exprs);
     let mut later = env::Unsettled::default();
     for (i, e) in exprs.iter().enumerate() {
-        match &e.kind {
-            ExprKind::Use { names, .. } => {
-                module::later_use(&ctx.env, list, i, e, names, &mut later)
-            }
-            _ => module::declared_modules(e, &mut |name| {
-                later.modules.push((i, name.name.as_str().into()))
-            }),
-        }
+        module::declared_modules(e, &mut |name| {
+            later.modules.push((i, name.name.as_str().into()))
+        })
     }
     let brings = !later.is_empty();
     let reopened = ctx.env.open_list(list, later);
@@ -1369,27 +1367,73 @@ pub(crate) fn compile_block_children<'a, R: Rt>(
         let top = block_top(ctx, &scope);
         ctx.written.enter(&exprs, top);
     }
-    let compiled = exprs.iter().copied().enumerate().try_for_each(|(i, e)| {
-        if matches!(e.kind, ExprKind::Catch(_)) {
-            catches.push(i);
-        }
+    let statement = |ctx: &mut CompileCtx<R>, scope: &Scope, i: usize, e: &Expr| {
         let at = StmtAt::Block { value: !module && i + 1 == n, last: i + 1 == n };
-        if brings && module::brings_names(e) {
-            ctx.env.settle_statement(list, i)
-        }
         let boundary = prune::Prune::boundary(ctx);
         let (node, next) = ctx.in_boundary(Some(&boundary), |ctx| {
-            compile_statement(ctx, flags, e, &scope, top_id, at)
+            compile_statement(ctx, flags, e, scope, top_id, at)
         })?;
-        scope = next;
-        children.push(prune::Prune::wrap(boundary, node));
-        Ok::<_, anyhow::Error>(())
+        Ok::<_, anyhow::Error>((prune::Prune::wrap(boundary, node), next))
+    };
+    // a list's types are in force throughout it: each is declared before
+    // any other statement compiles, and stands where it is written. One
+    // that applies an alias the list defines below it waits for the alias;
+    // one whose alias a module of the list defines is left to its statement
+    let declares = |(i, e): &(usize, &Expr)| {
+        matches!(e.kind, ExprKind::TypeDef(_)) && (module || i + 1 < n)
+    };
+    let mut types: SmallVec<[(usize, Node<R>); 4]> = SmallVec::new();
+    let mut waiting: SmallVec<[(usize, &Expr); 4]> =
+        exprs.iter().copied().enumerate().filter(declares).collect();
+    let declared = installed.and_then(|()| {
+        loop {
+            let before = waiting.len();
+            let mut k = 0;
+            while k < waiting.len() {
+                let (i, e) = waiting[k];
+                match statement(ctx, &scope, i, e) {
+                    Ok((node, _)) => {
+                        types.push((i, node));
+                        waiting.remove(k);
+                    }
+                    Err(e) if e.downcast_ref::<env::AppliedLate>().is_some() => k += 1,
+                    Err(e) => return Err(e),
+                }
+            }
+            if waiting.is_empty() || waiting.len() == before {
+                return Ok(());
+            }
+        }
+    });
+    types.sort_unstable_by_key(|(i, _)| *i);
+    let mut types = types.into_iter().peekable();
+    let compiled = declared.and_then(|()| {
+        exprs.iter().copied().enumerate().try_for_each(|(i, e)| {
+            if matches!(e.kind, ExprKind::Catch(_)) {
+                catches.push(i);
+            }
+            if brings && module::declares_module(e) {
+                ctx.env.settle_statement(list, i)
+            }
+            match types.next_if(|(at, _)| *at == i) {
+                Some((_, node)) => children.push(node),
+                None => {
+                    let (node, next) = statement(ctx, &scope, i, e)?;
+                    scope = next;
+                    children.push(node)
+                }
+            }
+            Ok::<_, anyhow::Error>(())
+        })
     });
     if own_writers {
         ctx.written.exit();
     }
     if declares_types {
         ctx.block_typedefs.pop();
+    }
+    if compiled.is_ok() {
+        module::settle_list_imports(ctx, pending)
     }
     ctx.env.close_block(list);
     ctx.env.close_list(list, reopened);
@@ -1443,6 +1487,13 @@ fn written_lets(
     let mut w = Writes::new(Walk::Block { top }, known);
     w.statements(exprs.iter().copied());
     mem::take(&mut w.written)
+}
+
+/// [`written_lets`] of a block whose statements are `exprs`, read before
+/// its compile.
+fn written_ahead(exprs: &[Expr]) -> LPooled<AHashSet<(ExprId, CompactString)>> {
+    let exprs: SmallVec<[&Expr; 32]> = exprs.iter().collect();
+    written_lets(&exprs, None, &mut ModuleWrites::default())
 }
 
 /// What each module statement walked writes outside it, by the
@@ -1877,6 +1928,9 @@ impl<'a> Writes<'a> {
                 if let Some(a) = &sq.abort {
                     self.expr(a)
                 }
+                if let expr::SeqKind::Queued { flush: Some(f) } = &sq.kind {
+                    self.expr(f)
+                }
                 self.scoped(|w| {
                     match &sq.trigger {
                         Some(expr::SeqTrigger::Bind(b)) => {
@@ -1921,7 +1975,7 @@ pub(crate) fn defer_typedef_names<R: Rt>(
         def.params().iter().filter_map(|(_, c)| c.clone()).collect();
     for t in bodies.iter() {
         let before = ctx.pending_names.len();
-        if defer_unresolved_names(ctx, t, &td.spec, None)? {
+        if defer_unresolved_names(ctx, t, &td.spec)? {
             t.rewrite_trait_args(&ctx.env).at(&td.spec)?;
         }
         if ctx.pending_names.len() > before {
@@ -1929,7 +1983,7 @@ pub(crate) fn defer_typedef_names<R: Rt>(
         }
     }
     for t in bounds.iter() {
-        defer_unresolved_names(ctx, t, &td.spec, None)?;
+        defer_unresolved_names(ctx, t, &td.spec)?;
     }
     Ok(())
 }
@@ -2068,6 +2122,11 @@ pub(crate) fn evaluation_order(
 pub(crate) type Child<'a, R> =
     dyn FnMut(&mut Node<R>, &mut CompileCtx<R>) -> Result<()> + 'a;
 
+/// The solver of the check by bounds this thread is running.
+pub(crate) fn solving<T>(f: impl FnOnce(&mut Solving) -> T) -> T {
+    bounds::with(f).expect("a check by bounds is running")
+}
+
 /// A statement's check result: its errors carry the statement, and in a
 /// module's body the module's origin.
 fn statement_result<R: Rt>(r: Result<()>, n: &Node<R>, module: bool) -> Result<()> {
@@ -2098,11 +2157,14 @@ fn check_in_tasks<R: Rt>(
     check: impl Fn(&mut Node<R>, &mut CompileCtx<R>) -> Result<()> + Sync,
 ) -> Result<()> {
     let cx = TaskContext::current();
-    let mut results: LPooled<Vec<Result<()>>> = LPooled::take();
+    let by_bounds = bounds::checking();
+    let mut results: LPooled<Vec<(Result<()>, Option<bounds::Tasked>)>> = LPooled::take();
     let check_task = |(n, task, id): &mut (&mut Node<R>, CompileCtx<R>, TaskId)| {
-        let _cx = cx.with_task(*id).enter();
-        let r = task.run_task(|task| check(n, task));
-        statement_result(r, n, module)
+        let _cx = cx.clone().with_task(*id).enter();
+        let (r, solved) = bounds::in_task(by_bounds, Keeps::All, || {
+            task.run_task(|task| check(n, task))
+        });
+        (statement_result(r, n, module), solved)
     };
     match ctx.control.eval_pool() {
         // CR claude for claude: [structure/low] Three functions fork a `CompileCtx` per
@@ -2117,10 +2179,13 @@ fn check_in_tasks<R: Rt>(
         Some(pool) => pool.map(&mut work, &mut results, check_task),
         None => results.extend(work.iter_mut().map(check_task)),
     }
-    for (_, task, _) in work.drain(..) {
+    for ((_, task, _), (_, solved)) in work.drain(..).zip(results.iter_mut()) {
         ctx.join(task);
+        if let Some(solved) = solved.take() {
+            bounds::absorb(solved)
+        }
     }
-    results.drain(..).find(|r| r.is_err()).unwrap_or(Ok(()))
+    results.drain(..).map(|(r, _)| r).find(|r| r.is_err()).unwrap_or(Ok(()))
 }
 
 /// Run a typecheck `pass` over `nodes` in [`evaluation_order`]. A module
@@ -2154,6 +2219,11 @@ pub(crate) fn typecheck0_statements<R: Rt>(
     catches: &[usize],
     module: bool,
 ) -> Result<()> {
+    for n in catches.iter().map(|i| &nodes[*i]) {
+        if let NodeView::Catch(c) = n.view() {
+            statement_result(c.hold_written(ctx), n, module)?
+        }
+    }
     let order: LPooled<Vec<usize>> = evaluation_order(nodes.len(), catches).collect();
     let mut slots: LPooled<Vec<Option<&mut Node<R>>>> =
         nodes.iter_mut().map(Some).collect();
@@ -2189,7 +2259,10 @@ pub(crate) fn typecheck0_statements<R: Rt>(
                 let own = m.scope.lexical.clone();
                 ctx.env.hidden_impls = Arc::new(hide_siblings(&prev, &siblings, &own));
             }
-            let r = n.typecheck0(ctx);
+            let r = {
+                let _at = AtStatement::enter(order[at]);
+                n.typecheck0(ctx)
+            };
             ctx.env.hidden_impls = prev;
             statement_result(r, n, module)?;
             at += 1;
@@ -2249,79 +2322,37 @@ fn typecheck0_modules<'a, R: Rt>(
     Ok(())
 }
 
-/// Run a runtime bind `f` as a compile task of its own, in a settle
-/// frame of its own, and settle what it deferred when it returns: no
-/// statement boundary follows a bind at run time. Its cells are top
-/// level, as a static bind's are. A refused settle is a
-/// compiler bug, logged. Binds in parallel branches run concurrently:
-/// one that changes a cell the program's compile created is a race.
-pub(crate) fn with_runtime_settles<R: Rt, T>(
+/// Run a runtime bind `f` as a compile task of its own. Its cells are top
+/// level, as a static bind's are. Binds in parallel branches run
+/// concurrently: one that changes a cell the program's compile created is
+/// a race. It is a compile epoch of its own: the caller keeps the arena
+/// with what the bind built.
+pub(crate) fn as_runtime_bind<R: Rt, T>(
     ctx: &mut CompileCtx<R>,
     f: impl FnOnce(&mut CompileCtx<R>) -> Result<T>,
-) -> Result<T> {
-    ctx.pending_settles.push(crate::SettleFrame::default());
+) -> Result<(T, ArenaRef)> {
     let names = ctx.pending_names.len();
     let _task = InTask::enter(new_task());
     let _level = AtLevel::enter(Level::TOP);
+    let arena = Arena::new();
     let res = {
+        let _in_arena = InArena::enter(arena.clone());
         let _restore = Restore::replace(&RUNTIME_BIND, true);
         f(ctx)
     };
     // a runtime bind elaborates: what it defers is no check's
     ctx.pending_names.truncate(names);
-    let pending = ctx.pending_settles.pop().expect("runtime settle frame");
-    let _ = PendingSettle::drain(&pending, &ctx.env, |spec, e| {
-        let msg = format_compact!("a run-time bind's settle at {spec} refused: {e:#}");
-        error::report_failure!(&msg);
-        Ok(())
-    });
-    res
+    arena.sweep();
+    res.map(|t| (t, arena))
 }
 
-/// Defer `settle` to the check's settle of the current frame. A
-/// definition's body defers nothing: its cells are its signature's,
-/// settled by each call.
-pub(crate) fn defer_settle<R: Rt>(
-    ctx: &mut CompileCtx<R>,
-    settle: impl FnOnce() -> PendingSettle,
-) {
-    if ctx.def_gate_depth == 0 {
-        ctx.pending_settles.last_mut().expect("settle frame").push(settle())
-    }
+/// A statement's `typecheck1`.
+fn typecheck1_statement<R: Rt>(n: &mut Node<R>, ctx: &mut CompileCtx<R>) -> Result<()> {
+    n.typecheck1(ctx)
 }
 
-/// A map type written in `t`, which makes values of it out of others (a
-/// cast's target, a type test), takes keys of distinct runtime forms, as
-/// a literal's do: judged at the statement's settle. Every other map
-/// value comes from a producer judged already.
-pub(crate) fn defer_written_map_keys<R: Rt>(
-    ctx: &mut CompileCtx<R>,
-    t: &Type,
-    spec: &Arc<Expr>,
-) {
-    if t.holds_map(&ctx.env) {
-        let what = crate::Discerned::Keys;
-        let judgment =
-            PendingSettle::Discernible { typ: t.clone(), what, spec: spec.clone() };
-        defer_judgment(ctx, judgment)
-    }
-}
-
-/// Defer a judgment that only reads types to the check's settle of the
-/// current frame, a definition's body included: its open cells read as
-/// any type, and a later instance's types are its definition's.
-pub(crate) fn defer_judgment<R: Rt>(ctx: &mut CompileCtx<R>, judgment: PendingSettle) {
-    ctx.pending_settles.last_mut().expect("settle frame").push(judgment)
-}
-
-/// A statement's `typecheck1`, then the settles it deferred.
-fn typecheck1_settled<R: Rt>(n: &mut Node<R>, ctx: &mut CompileCtx<R>) -> Result<()> {
-    n.typecheck1(ctx)?;
-    crate::drain_pending_settles(ctx)
-}
-
-/// Elaborate a body's statements (`typecheck1`, then each one's
-/// settles) in [`evaluation_order`], each in a compile task forked from
+/// Elaborate a body's statements (`typecheck1`) in [`evaluation_order`],
+/// each in a compile task forked from
 /// the body's state before any runs: no statement's elaboration reads
 /// another's. The tasks join in order; the first error in order is the
 /// body's. A bind at run time elaborates them in order on its own
@@ -2335,7 +2366,7 @@ pub(crate) fn typecheck1_statements<R: Rt>(
 ) -> Result<()> {
     let order: LPooled<Vec<usize>> = evaluation_order(nodes.len(), catches).collect();
     if order.len() < 2 || RUNTIME_BIND.get() {
-        return typecheck_in_order(ctx, nodes, catches, module, typecheck1_settled);
+        return typecheck_in_order(ctx, nodes, catches, module, typecheck1_statement);
     }
     let mut slots: LPooled<Vec<Option<&mut Node<R>>>> =
         nodes.iter_mut().map(Some).collect();
@@ -2346,7 +2377,7 @@ pub(crate) fn typecheck1_statements<R: Rt>(
             (n, ctx.fork(), new_task())
         })
         .collect();
-    check_in_tasks(ctx, work, module, typecheck1_settled)
+    check_in_tasks(ctx, work, module, typecheck1_statement)
 }
 
 impl<R: Rt> Block<R> {
@@ -2905,44 +2936,6 @@ impl<'a> Holders<'a> {
         Type::TVar(TVar::empty_named(format_compact!("_{}", i + 1).as_str().into()))
     }
 
-    /// The binding to annotate where the cell `tv` stands for is a part of
-    /// a binding's type where the select `at` tests it, named: among the
-    /// bindings [`Self::nameable`] admits whose type holds the cell outside
-    /// a function type, the nearest one written above `at`, else the one
-    /// written first.
-    pub(crate) fn name_part(
-        &mut self,
-        env: &'a env::Env,
-        tv: &TVar,
-        at: &Expr,
-    ) -> Option<Type> {
-        fn holds(t: &Type, cell: usize, seen: &mut AHashSet<usize>) -> bool {
-            crate::stack::ensure_sufficient(|| match t {
-                Type::TVar(tv) if tv.stands_for() == cell => true,
-                t if t.shared_identity().is_some_and(|n| !seen.insert(n)) => false,
-                Type::TVar(tv) => tv.binding().is_some_and(|b| holds(&b, cell, seen)),
-                Type::Fn(_) => false,
-                t => {
-                    let mut found = false;
-                    t.for_each_child(&mut |c| found = found || holds(c, cell, seen));
-                    found
-                }
-            })
-        }
-        let cell = tv.stands_for();
-        let held = || {
-            env.by_id.iter().map(|(_, b)| &**b).filter(|b| {
-                Self::nameable(b) && holds(&b.typ, cell, &mut LPooled::take())
-            })
-        };
-        let pos = |b: &env::Bind| (b.pos.line, b.pos.column);
-        let b = held()
-            .filter(|b| *b.ori == *at.ori && pos(b) <= (at.pos.line, at.pos.column))
-            .max_by_key(|b| pos(b))
-            .or_else(|| held().min_by_key(|b| pos(b)))?;
-        Some(self.name(b, Role::Typ))
-    }
-
     /// [`Self::name_cell`] where a hint names the cell.
     pub(crate) fn name_open(&mut self, tv: &TVar) -> Option<Type> {
         match Self::waits(tv) {
@@ -3111,9 +3104,10 @@ fn write_mismatch(
     let infinite = held.meets_itself(&written);
     // what an earlier input left open was settled to ⊥ at its end: the
     // declaration writes the type there
-    let settled = bind.typ.fill_settled(&written).filter(|t| {
-        t.contains_with_flags(BitFlags::empty(), env, &written).unwrap_or(false)
-    });
+    let settled = bind
+        .typ
+        .fill_settled(&written)
+        .filter(|t| t.decided_holds(env, &written).unwrap_or(false));
     let inferred = match &bind.typ {
         _ if settled.is_some() => ", settled when its input ended,",
         Type::TVar(tv) if tv.bottom_fed() => ", inferred from an earlier use,",
@@ -3686,7 +3680,6 @@ impl<R: Rt> Update<R> for TypeCast<R> {
                 self.target
             )
         }
-        defer_written_map_keys(ctx, &self.target, &self.spec);
         Ok(())
     }
 
@@ -3748,11 +3741,9 @@ impl<R: Rt> Never<R> {
             .collect::<Result<Box<[_]>>>()?;
         let typ = match typ {
             Some(t) => {
-                let t = t.scope_refs(&scope.lexical);
+                let t = lambda::body_annotation(ctx, t, &scope.lexical);
                 crate::warn_later_block_names(ctx, flags, &t)?;
-                let t = t.rewrite_trait_args(&ctx.env)?;
-                lambda::body_annotation(ctx, &t, true)?;
-                t
+                t.rewrite_trait_args(&ctx.env)?
             }
             None => Type::Bottom,
         };
@@ -3808,7 +3799,7 @@ impl<R: Rt> Update<R> for Never<R> {
     }
 
     fn typecheck0(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
-        defer_unresolved_names(ctx, &self.typ, &self.spec, None)?;
+        defer_unresolved_names(ctx, &self.typ, &self.spec)?;
         // each application of a definition T names holds its parameter
         // bounds, as where a contains expands it
         fn applications(t: &Type, env: &env::Env, r: &mut Result<()>) {
@@ -4380,7 +4371,6 @@ impl<R: Rt> Connect<R> {
         if !check {
             return Ok(());
         }
-        let written = &ctx.monomorphic(self.node.typ());
         let bind = match ctx.env.by_id.get(&self.id) {
             None => bail!("BUG missing bind {:?}", self.id),
             Some(bind) => bind,
@@ -4388,8 +4378,24 @@ impl<R: Rt> Connect<R> {
         // a binding generalized before the write holds what is written
         // as its every instance: a copy of its type, the variables rigid
         let generic = ctx.env.poly_binds.contains(&self.id);
+        // a read of a generic name writes the scheme it names: a copy of
+        // the scheme is held to the binding, as a lambda's is, never the
+        // read's own instance
+        let scheme = generic.then(|| bind::read_scheme(&ctx.env, &self.node)).flatten();
+        let mut copies: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+        let written = &bounds::instantiate_through(
+            scheme.as_ref().unwrap_or(self.node.typ()),
+            current_level(),
+            &mut copies,
+        );
         let held = match generic {
-            true => ctx.monomorphic(&bind.typ),
+            true => {
+                let mut own: LPooled<AHashMap<usize, TVar>> = LPooled::take();
+                let held =
+                    bounds::instantiate_through(&bind.typ, current_level(), &mut own);
+                copies.extend(own.drain());
+                held
+            }
             false => bind.typ.clone(),
         };
         let mut rigid: LPooled<AHashMap<usize, TVar>> = LPooled::take();
@@ -4404,34 +4410,37 @@ impl<R: Rt> Connect<R> {
                         PrintFlag::DerefTVars | PrintFlag::ReplacePrims,
                         || {
                             let (name, hint) = generic_target(&ctx.env, bind);
-                            let scheme = bind.typ.scheme_read(&ctx.rec_defs, &|_| false);
                             anyhow!(
                                 "{name} is {}, a generic binding, so what is written to \
                                  it must be as general, and {written} is not{hint}",
-                                scheme.as_ref().unwrap_or(&bind.typ)
+                                bind.typ
                             )
                         },
                     ),
                     None => match e.downcast_ref::<AmbiguousMember>() {
-                        Some(a) if a.in_holder() && !crate::is_lowered(&bind.name) => {
-                            format_with_flags(
-                                PrintFlag::DerefTVars | PrintFlag::ReplacePrims,
-                                || {
-                                    anyhow!(
-                                        "{} is {held}: {}; declare {}'s type where it \
+                        Some(a) if !crate::is_lowered(&bind.name) => format_with_flags(
+                            PrintFlag::DerefTVars | PrintFlag::ReplacePrims,
+                            || {
+                                anyhow!(
+                                    "{} is {held}: {}; declare {}'s type where it \
                                          is bound ({})",
-                                        bind.name,
-                                        a.fact(),
-                                        bind.name,
-                                        BoundAt(bind, Some(&self.spec.ori))
-                                    )
-                                },
-                            )
-                        }
+                                    bind.name,
+                                    a.fact(),
+                                    bind.name,
+                                    BoundAt(bind, Some(&self.spec.ori))
+                                )
+                            },
+                        ),
                         _ => e,
                     },
-                    // a write a lowering built has no declaration to point at
-                    Some(_) if !crate::is_lowered(&bind.name) => {
+                    // a write a lowering built has no declaration to point
+                    // at, and a refusal of parts of the two is told as it is,
+                    // unless it is of what an earlier input settled
+                    Some(m)
+                        if !crate::is_lowered(&bind.name)
+                            && (m.refuses(t, written)
+                                || bind.typ.fill_settled(written).is_some()) =>
+                    {
                         let mut refs = Refs::without_callees();
                         self.node.refs(&mut refs);
                         let mut reads = false;
@@ -4474,7 +4483,13 @@ impl<R: Rt> Connect<R> {
                     false => callsite::Narrowing::Written,
                 }
             )
-        )
+        )?;
+        // the two copies of a generic comparison are its own, and nothing
+        // outside reaches them once it holds: no value is of their types
+        if generic {
+            solving(|s| copies.values().for_each(|v| s.own(v)))
+        }
+        Ok(())
     }
 }
 
@@ -4484,39 +4499,6 @@ impl<R: Rt> Connect<R> {
 fn held_cells(held: &Type, out: &mut AHashMap<usize, TVar>) {
     held.reached_cells(out);
     out.retain(|_, tv| !tv.is_bound());
-}
-
-fn reference_targets(
-    env: &env::Env,
-    typ: &Type,
-) -> Result<Option<LPooled<Vec<(Mutability, Type)>>>> {
-    fn collect(
-        env: &env::Env,
-        typ: &Type,
-        out: &mut Vec<(Mutability, Type)>,
-    ) -> Result<bool> {
-        crate::stack::ensure_sufficient(|| match typ.deref_cloned().as_ref() {
-            None => Ok(false),
-            Some(t @ Type::Ref(_)) => collect(env, &t.lookup_ref(env)?, out),
-            Some(Type::Set(ts)) => {
-                for t in ts.iter() {
-                    if !collect(env, t, out)? {
-                        bail!("expected a reference not {t}");
-                    }
-                }
-                Ok(true)
-            }
-            Some(Type::ByRef(m, t)) => {
-                out.push((*m, (**t).clone()));
-                Ok(true)
-            }
-            Some(t) => format_with_flags(PrintFlag::DerefTVars, || {
-                bail!("expected a reference not {t}")
-            }),
-        })
-    }
-    let mut targets = LPooled::take();
-    Ok(collect(env, typ, &mut targets)?.then_some(targets))
 }
 
 impl<R: Rt> ConnectDeref<R> {
@@ -4530,44 +4512,13 @@ impl<R: Rt> ConnectDeref<R> {
         if !check {
             return Ok(());
         }
-        let rhs = &ctx.monomorphic(self.rhs.typ());
+        let rhs = &bounds::instantiate(self.rhs.typ(), current_level());
         let btyp = match ctx.env.by_id.get(&self.src_id) {
             None => bail!("BUG missing bind {:?}", self.src_id),
             Some(bind) => bind.typ.clone(),
         };
-        let targets = reference_targets(&ctx.env, &btyp);
-        match wrap!(self, targets)? {
-            // an unbound reference is inferred writable at the written type
-            None => {
-                let typ = Type::ByRef(Mutability::Mut, Arc::new(rhs.clone()));
-                wrap!(self, btyp.check_contains(&ctx.env, &typ))
-            }
-            // a write must fit every reference the binding may hold
-            Some(mut targets) => {
-                for (m, t) in targets.drain(..) {
-                    if m == Mutability::Shared {
-                        bail!(
-                            "can't write through a read-only reference ({btyp}): take it with `&mut`"
-                        )
-                    }
-                    let contain = |t: &Type| t.check_contains(&ctx.env, rhs);
-                    wrap!(self, contain(&t))?;
-                    wrap!(
-                        self,
-                        callsite::check_hidden_defaults(
-                            ctx,
-                            BitFlags::empty(),
-                            &Scope::root(),
-                            self.spec.id,
-                            &t,
-                            rhs,
-                            callsite::Narrowing::Written
-                        )
-                    )?;
-                }
-                Ok(())
-            }
-        }
+        let write = bounds::Use::Write { value: rhs.clone() };
+        wrap!(self, solving(|s| s.watch(&ctx.env, &btyp, write)))
     }
 }
 
@@ -4595,20 +4546,6 @@ impl<R: Rt> Never<R> {
 }
 
 impl<R: Rt> Any<R> {
-    /// Whether this is a seq lowering's `any(#seqpc ~! v, v)`: `v` fired at
-    /// its step's entry, then tracked, both alternatives one read's value.
-    pub(crate) fn fired_at_entry(&self, env: &env::Env) -> bool {
-        let [at_entry, v] = &self.n[..] else { return false };
-        let NodeView::Sample(s) = at_entry.view() else { return false };
-        let read = |n: &Node<R>| match n.view() {
-            NodeView::Ref(r) => Some(r.id),
-            _ => None,
-        };
-        s.is_strict()
-            && bind::reads_lowered(env, &s.trigger, crate::expr::seq::is_pc)
-            && read(&s.arg.node).is_some_and(|id| read(v) == Some(id))
-    }
-
     fn typecheck0_with(
         &mut self,
         ctx: &mut CompileCtx<R>,
@@ -4621,35 +4558,16 @@ impl<R: Rt> Any<R> {
         if !check {
             return Ok(());
         }
-        let fn_of = |t: &Type| {
-            t.with_deref(|t| match t {
-                Some(Type::Fn(f)) => Some(f.clone()),
-                _ => None,
-            })
-        };
-        // a passed read's two reads share one copy of a generic function,
-        // which meeting would pin to one instance
-        let one_copy = self.fired_at_entry(&ctx.env)
-            && fn_of(self.n[0].typ())
-                .zip(fn_of(self.n[1].typ()))
-                .is_some_and(|(f, g)| Arc::ptr_eq(&f, &g));
-        let bottom = Type::Bottom;
-        let mut ts: LPooled<Vec<&Type>> = LPooled::take();
-        ts.push(&bottom);
-        ts.extend(self.n.iter().skip(one_copy as usize).map(|n| n.typ()));
-        let rtyp = wrap!(self, Type::union_of_alternatives(&ctx.env, &ts))?;
-        let rtyp = if rtyp == Type::Bottom { Type::empty_tvar() } else { rtyp };
-        self.typ.check_contains(&ctx.env, &rtyp)?;
+        // whichever fires is the value: each flows into a cell that
+        // may join them
+        for n in self.n.iter() {
+            wrap!(n, self.typ.check_contains(&ctx.env, n.typ()))?
+        }
         Ok(())
     }
 }
 
 impl<R: Rt> Sample<R> {
-    /// `~!`: a trigger finding the argument absent produces bottom.
-    pub(crate) fn is_strict(&self) -> bool {
-        matches!(self.banking, Banking::Strict)
-    }
-
     fn typecheck0_with(
         &mut self,
         ctx: &mut CompileCtx<R>,

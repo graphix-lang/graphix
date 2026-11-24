@@ -107,14 +107,20 @@ structure is returned SHARED, never copied.
   (`Subst`'s memo by node address), and lowers the cells under a copied
   binding once per composite and depth (`Forwards::lowered`, `lower_in`),
   not once per bound cell: the chain's bindings share their composites, so
-  a copy of a chain of bound cells was cubic in it. Arguments that are
-  references to lets decided but for a cell inside a function type (every
-  cell of the formal's chain bound by the first argument) check in
-  quadratic time: 22.4 / 154.8 G instructions at 500 / 1000 links to
-  5.3 / 19.3. Pin: `deep_nesting::
-  a_chain_of_bounds_passed_function_references_checks_in_quadratic_time`.
-  What remains quadratic there: `shape_hash_node` under a call's
-  `Widening::join`, `commit_conjuncts`, and `TerminalRun::take`.
+  a copy of a chain of bound cells was cubic in it.
+- Arguments that are references to lets decided but for a cell inside a
+  function type, passed for a chain of bounds, check in time that grows
+  nearly with the cube of the chain: the arguments' copies of the chain
+  differ only in their cells, and each is compared with the others where
+  a bound is recorded (`Solving::record`), a typedef unfolded
+  (`Solving::unfolded`) and a cell fixed (`Solving::fixed`). Past a few
+  of them, two are told apart by a hash of their structure
+  (`bounds::Prints`, over `typ::node_hash`), kept while no binding
+  changes (`tvar::bind_epoch`): 1.2 / 3.1 G instructions at 60 / 120
+  links in a dev build, the stdlib's check 0.8 G of each. No program
+  holds such a chain; the pin is a budget at those two lengths. Pin:
+  `deep_nesting::
+  a_chain_of_bounds_passed_function_references_checks_within_a_budget`.
 - The unions a `contains` walk builds to ask about (a distribution's pool
   of its candidates' parts, a placement's residue) are normalized in one
   pass kept for the call (`ContainsHist::normal_union`), so a node many

@@ -7,6 +7,7 @@ use super::{
     pattern::{Holder, StructPatternNode, rigid_refusal},
     produce_constant,
     select::ArmDiscriminants,
+    solving,
 };
 use crate::SourcePosition;
 use crate::{
@@ -32,9 +33,8 @@ use crate::{
     reference::{Captures, Lives},
     stack::ensure_sufficient,
     typ::{
-        FnArgKind, FnArgType, FnType, ResolvedRef, TVar, TraitId, Type, TypeMismatch,
-        check_bounds_acyclic,
-        settle::VariableUnion,
+        DefaultType, FnArgKind, FnArgType, FnType, ResolvedRef, TVar, TraitId, Type,
+        TypeMismatch, bounds, check_bounds_acyclic,
         tvar::{AtLevel, Declaring, InTask, Level, RigidGate, TaskId, current_level},
     },
     wrap,
@@ -50,12 +50,10 @@ use netidx_core::{
     path::Path,
 };
 use netidx_value::Value;
-use nohash::IntSet;
 use parking_lot::Mutex;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::{
-    cell::{OnceCell, RefCell},
     cmp::Ordering,
     fmt,
     hash::Hash,
@@ -63,39 +61,6 @@ use std::{
     sync::{Arc as SArc, OnceLock, Weak},
 };
 use triomphe::Arc;
-
-thread_local! {
-    static METHOD_CELLS: RefCell<LPooled<AHashMap<usize, TVar>>> =
-        RefCell::new(LPooled::take());
-}
-
-/// The cells a method's annotation minted from the declared signature
-/// ([`Type::scope_refs_with`]), by the cell each was minted from, `self`
-/// apart, while the method's value compiles: the signature the value's
-/// lambda takes from the declaration holds those cells and no copy of its
-/// own.
-#[must_use]
-pub(super) struct MethodCells(LPooled<AHashMap<usize, TVar>>);
-
-impl MethodCells {
-    pub(super) fn enter(mut cells: LPooled<AHashMap<usize, TVar>>) -> Self {
-        cells.retain(|_, tv| &*tv.name != "self");
-        Self(METHOD_CELLS.replace(cells))
-    }
-
-    fn current() -> LPooled<AHashMap<usize, TVar>> {
-        let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-        METHOD_CELLS
-            .with_borrow(|m| cells.extend(m.iter().map(|(a, tv)| (*a, tv.clone()))));
-        cells
-    }
-}
-
-impl Drop for MethodCells {
-    fn drop(&mut self) {
-        METHOD_CELLS.set(mem::take(&mut self.0))
-    }
-}
 
 /// What a definition's check settled, by the expression id of each node
 /// of its body: an instance takes its types from here instead of checking
@@ -110,6 +75,9 @@ pub struct DefTable {
     /// lists it: a select's arm predicates and pattern binds, a catch's
     /// error binds, what a `?` or `$` strips.
     aux: AHashMap<ExprId, Box<[Type]>>,
+    /// The types the check gave the names of the formals taken apart, in
+    /// the formals' order, each in [`StructPatternNode::ids`] order.
+    formals: Box<[Type]>,
     /// The table of each lambda literal of the body, by its id.
     lambdas: AHashMap<ExprId, SArc<DefTable>>,
     /// The typedefs the rows name, owned here: a block's is in the env
@@ -129,6 +97,12 @@ pub struct DefTable {
     /// open: a call's bind narrows them by its own view of the label. Only
     /// the definition's check reads it.
     defaults: AHashSet<ExprId>,
+    /// Under a check by bounds, the copy of a generic binding's scheme
+    /// each call site through a read of it took, by the address of the
+    /// scheme's cell each copies: an instance's call is an instance of
+    /// that copy as the instance has it. Not imaged: a restored
+    /// definition's calls find their instances' types again.
+    copies: AHashMap<ExprId, Box<[(usize, TVar)]>>,
 }
 
 #[derive(Debug, Clone, netidx_derive::Pack)]
@@ -178,11 +152,37 @@ pub struct Tables {
     outer: Option<Known>,
 }
 
+/// Which rows of a [`DefTable`] a walk takes.
+enum RowsOf<'a> {
+    /// Every row, the formals' included.
+    All,
+    /// The rows of these nodes.
+    Nodes(&'a AHashSet<ExprId>),
+}
+
+impl RowsOf<'_> {
+    fn has(&self, id: &ExprId) -> bool {
+        match self {
+            Self::All => true,
+            Self::Nodes(ids) => ids.contains(id),
+        }
+    }
+}
+
+/// Each name the formals taken apart bind, in [`DefTable::formals`] order:
+/// a formal that is one name is the signature's, and has no row.
+fn for_taken_apart(formals: &[StructPatternNode], f: &mut impl FnMut(BindId)) {
+    for p in formals.iter().filter(|p| p.single_bind_id().is_none()) {
+        p.ids(&mut |id| f(id))
+    }
+}
+
 impl DefTable {
     fn with(
         types: AHashMap<ExprId, Type>,
         ftypes: AHashMap<ExprId, FnType>,
         aux: AHashMap<ExprId, Box<[Type]>>,
+        formals: Box<[Type]>,
         lambdas: AHashMap<ExprId, SArc<DefTable>>,
         typedefs: Vec<SArc<ResolvedRef>>,
         facts: LambdaFacts,
@@ -195,6 +195,7 @@ impl DefTable {
             types,
             ftypes,
             aux,
+            formals,
             lambdas,
             typedefs,
             facts,
@@ -202,12 +203,14 @@ impl DefTable {
             calls_captured,
             captures,
             defaults: AHashSet::default(),
+            copies: AHashMap::default(),
         }
     }
 
     /// Every type the table's rows hold but the signatures'.
     fn rows(&self) -> impl Iterator<Item = &Type> {
-        self.types.values().chain(self.aux.values().flat_map(|ts| ts.iter()))
+        let aux = self.aux.values().flat_map(|ts| ts.iter());
+        self.types.values().chain(aux).chain(self.formals.iter())
     }
 
     /// Every type the table holds: its rows, then each function type's
@@ -221,87 +224,6 @@ impl DefTable {
         }
     }
 
-    /// The open cells the rows of the labeled defaults hold, by address:
-    /// a call's bind narrows them, so no site settle binds them.
-    fn default_cells(&self) -> AHashSet<usize> {
-        if self.defaults.is_empty() {
-            return AHashSet::default();
-        }
-        let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-        let default = |id: &ExprId| self.defaults.contains(id);
-        // CR claude for claude: [structure/low] `default_cells` and `settle_open` each
-        // write out the same three loops (the rows, the aux rows, each signature's
-        // parts that are not constraints, through `settle::position_cells`), differing
-        // only in which ids they keep; `for_each_row` is that walk already but for the
-        // constraint flag, and `own_typedefs` repeats the owning half of
-        // `seed_and_own`. A row kind added later has four walks to join. Hand
-        // `for_each_row`'s callback the constraint flag, as `for_each_type` does, and
-        // build both cell sets with it; have `seed_and_own` seed and then call
-        // `own_typedefs`. Found by reading; not run. (c-lambda-06)
-        let rows = self.types.iter().filter(|(id, _)| default(id)).map(|(_, t)| t);
-        let aux =
-            self.aux.iter().filter(|(id, _)| default(id)).flat_map(|(_, ts)| ts.iter());
-        for t in rows.chain(aux) {
-            crate::typ::settle::position_cells(t, &mut cells)
-        }
-        for (_, ft) in self.ftypes.iter().filter(|(id, _)| default(id)) {
-            ft.for_each_part(&mut |t, constraint| {
-                if !constraint {
-                    crate::typ::settle::position_cells(t, &mut cells)
-                }
-            })
-        }
-        cells.keys().copied().collect()
-    }
-
-    /// Bind to ⊥ every open cell of the table's that `owner`'s gate
-    /// created, but its signature (`exempt`) does not reach: nothing
-    /// bounded it, and an instance reads the table as the check left it.
-    pub(crate) fn settle_open(
-        &self,
-        env: &Env,
-        owner: LambdaId,
-        exempt: &AHashSet<usize>,
-    ) -> Result<()> {
-        let mut cells: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-        let body = |id: &ExprId| !self.defaults.contains(id);
-        let rows = self.types.iter().filter(|(id, _)| body(id)).map(|(_, t)| t);
-        let aux =
-            self.aux.iter().filter(|(id, _)| body(id)).flat_map(|(_, ts)| ts.iter());
-        for t in rows.chain(aux) {
-            crate::typ::settle::position_cells(t, &mut cells)
-        }
-        for (_, ft) in self.ftypes.iter().filter(|(id, _)| body(id)) {
-            ft.for_each_part(&mut |t, constraint| {
-                if !constraint {
-                    crate::typ::settle::position_cells(t, &mut cells)
-                }
-            })
-        }
-        let mut quantifiers: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-        self.for_each_type(&mut |t, _| {
-            t.each_quantifier(&mut |_, tv| {
-                if let Some(open) = tv.open_cell() {
-                    for c in open.cell_constraints().iter() {
-                        c.reached_cells(&mut quantifiers)
-                    }
-                    quantifiers.insert(open.cell_addr(), open);
-                }
-            })
-        });
-        for (addr, tv) in cells.iter() {
-            if !exempt.contains(addr)
-                && !quantifiers.contains_key(addr)
-                && !tv.is_bound()
-                && !tv.requires_concrete()
-                && tv.level().owner() == Some(owner)
-            {
-                tv.settle_or_bottom(env)?;
-            }
-        }
-        Ok(())
-    }
-
     /// The check of `body`, whose typedefs are in `env`: every type
     /// reference a row holds is resolved there now, so no instance looks
     /// a name up by a scope only this check had (an image relocates the
@@ -309,6 +231,7 @@ impl DefTable {
     /// binds are in `checked`, the check's environment.
     fn record<R: Rt>(
         body: &Node<R>,
+        formals: &[StructPatternNode],
         def_env: &Lexical,
         checked: &Env,
         facts: LambdaFacts,
@@ -320,19 +243,19 @@ impl DefTable {
         table.add_rows(body, checked, &mut |n| {
             capture_names(n, def_env, checked, captures)
         });
-        table.seed_and_own(def_env, checked, |_| true);
+        let mut taken: LPooled<Vec<Type>> = LPooled::take();
+        for_taken_apart(formals, &mut |id| {
+            taken.push(checked.by_id.get(&id).map_or(Type::Bottom, |b| b.typ.clone()))
+        });
+        table.formals = Box::from_iter(taken.drain(..));
+        table.seed_and_own(def_env, checked, RowsOf::All);
         table
     }
 
-    /// Fill every name the rows `of` an id hold, in the definition's
-    /// environment (a block's own types through the registry of block
-    /// types), and own what they name.
-    fn seed_and_own(
-        &mut self,
-        def_env: &Lexical,
-        checked: &Env,
-        of: impl Fn(&ExprId) -> bool,
-    ) {
+    /// Fill every name the rows `of` hold, in the definition's environment
+    /// (a block's own types through the registry of block types), and own
+    /// what they name.
+    fn seed_and_own(&mut self, def_env: &Lexical, checked: &Env, of: RowsOf) {
         let mut env = checked.clone();
         env.lexical = def_env.clone();
         let mut seen: LPooled<AddrSet> = LPooled::take();
@@ -348,16 +271,19 @@ impl DefTable {
         self.typedefs.extend(defs.drain().map(|(_, r)| r));
     }
 
-    /// Every type the rows `of` an id hold, signatures' parts included.
-    fn for_each_row(&self, of: &impl Fn(&ExprId) -> bool, f: &mut impl FnMut(&Type)) {
-        for (_, t) in self.types.iter().filter(|(id, _)| of(id)) {
+    /// Every type the rows `of` hold, signatures' parts included.
+    fn for_each_row(&self, of: &RowsOf, f: &mut impl FnMut(&Type)) {
+        for (_, t) in self.types.iter().filter(|(id, _)| of.has(id)) {
             f(t)
         }
-        for (_, ts) in self.aux.iter().filter(|(id, _)| of(id)) {
+        for (_, ts) in self.aux.iter().filter(|(id, _)| of.has(id)) {
             ts.iter().for_each(&mut *f)
         }
-        for (_, ft) in self.ftypes.iter().filter(|(id, _)| of(id)) {
+        for (_, ft) in self.ftypes.iter().filter(|(id, _)| of.has(id)) {
             ft.for_each_part(&mut |t, _| f(t))
+        }
+        if let RowsOf::All = of {
+            self.formals.iter().for_each(&mut *f)
         }
     }
 
@@ -377,7 +303,7 @@ impl DefTable {
             });
         }
         if !ids.is_empty() {
-            self.seed_and_own(def_env, checked, |id| ids.contains(id));
+            self.seed_and_own(def_env, checked, RowsOf::Nodes(&ids));
             self.defaults.extend(ids.drain());
         }
     }
@@ -402,6 +328,10 @@ impl DefTable {
                     if let Some(ft) = cs.ftype.as_ref() {
                         self.ftypes.insert(id, (**ft).clone());
                     }
+                    if let Some(copies) = cs.copies() {
+                        let pairs = copies.iter().map(|(a, v)| (*a, v.clone()));
+                        self.copies.insert(id, pairs.collect());
+                    }
                 }
                 NodeView::Lambda(l) => {
                     let def = l.def_value().downcast_ref::<LambdaDef<R>>();
@@ -414,6 +344,9 @@ impl DefTable {
                 }
                 NodeView::Catch(c) => {
                     self.aux.insert(id, c.aux_types(checked));
+                }
+                NodeView::Bind(b) if b.pattern.single_bind_id().is_none() => {
+                    self.aux.insert(id, b.aux_types(checked));
                 }
                 NodeView::Qop(q) => {
                     self.aux.insert(id, Box::new([q.strip.removed()]));
@@ -462,6 +395,7 @@ impl DefTable {
                         (*id, ts.iter().map(|t| t.rename_with(known)).collect())
                     })
                     .collect(),
+                self.formals.iter().map(|t| t.rename_with(known)).collect(),
                 self.lambdas
                     .iter()
                     .map(|(id, t)| (*id, SArc::new(t.renamed(known))))
@@ -472,6 +406,13 @@ impl DefTable {
                 self.calls_captured.clone(),
                 self.captures.clone(),
             );
+            let rename =
+                |v: &TVar| known.get(&v.cell_addr()).cloned().unwrap_or(v.clone());
+            table.copies = self
+                .copies
+                .iter()
+                .map(|(id, cs)| (*id, cs.iter().map(|(a, v)| (*a, rename(v))).collect()))
+                .collect();
             table.own_typedefs();
             table
         })
@@ -505,6 +446,10 @@ impl DefTable {
                     for t in ts.iter() {
                         t.encode(buf)?;
                     }
+                }
+                encode_varint(table.formals.len() as u64, buf);
+                for t in table.formals.iter() {
+                    t.encode(buf)?;
                 }
                 encode_varint(table.lambdas.len() as u64, buf);
                 for (id, l) in table.lambdas.iter() {
@@ -555,6 +500,9 @@ impl DefTable {
                     aux.insert(id, ts);
                 }
                 let n = image::count_decode(sub)?;
+                let formals =
+                    (0..n).map(|_| Type::decode(sub)).collect::<Result<_, _>>()?;
+                let n = image::count_decode(sub)?;
                 let mut lambdas = AHashMap::with_capacity(n);
                 for _ in 0..n {
                     lambdas.insert(ExprId::decode(sub)?, Self::image_decode(sub)?);
@@ -576,6 +524,7 @@ impl DefTable {
                     types,
                     ftypes,
                     aux,
+                    formals,
                     lambdas,
                     typedefs,
                     facts,
@@ -662,44 +611,40 @@ impl DefTables {
 pub struct InstanceTypes {
     tables: Tables,
     known: Known,
-    open: IntSet<LambdaId>,
 }
 
 /// The copy the instance at `instance` holds of each open cell of its
-/// definition's signature `def`, by the cell's address: each bound to the
-/// instance's type ([`FnType::held_at`]). `None` when the instance's
-/// signature does not hold the definition's.
-// CR claude for claude: [bug/medium] `held_at` refuses a site signature the check
-// itself made. A body returning `[Array<i64>, Array<'x>]` with `'x` open (the payloads
-// of `select true { true => B([1]), false => B([]) }` over `type B<'p> = Abstract<'p>`,
-// read by `select b { B(x) => x }`) is called at a site whose settle binds `'x` to
-// bottom and leaves `[Array<_>, Array<i64>]`, where the definition's open member could
-// go to either. The check accepts the call and the build refuses 'an instance at fn(q:
-// i64) -> [Array<_>, Array<i64>] of a definition typed ..'; the same statements at the
-// top level build. Normalize the settled return first (a member holding bottom that
-// another member contains goes, as `joined_lower` does for bounds), or place the
-// settled cell at its member. probe:
-// design/review-2026-11-16/repro/x-check-build-instance-signature-abstract-union.gx
-// (x-check-build-05)
+/// definition's signature `def`, by the cell's address, fixed by the
+/// instance's type: a scheme's cells, or where no check made `def` generic
+/// the cells a definition owns ([`bounds::instance_of_owned`]). `None`
+/// when the instance's signature does not hold the definition's.
 fn instance_cells<R: Rt>(
     ctx: &CompileCtx<R>,
     def: &FnType,
     instance: &FnType,
+    leaves: &[ArcStr],
 ) -> Option<AHashMap<usize, TVar>> {
-    // every open cell of the signature is the instance's own copy, a cell
-    // no closed gate owns included, so the check binds nothing another
-    // instance reads
-    def.held_at(&ctx.env, instance).ok().map(|(_, known)| known)
+    let def = Type::Fn(Arc::new(def.clone()));
+    let at = Type::Fn(Arc::new(instance.clone()));
+    let fit = match bounds::scheme(&def) {
+        true => bounds::instance(&ctx.env, &def, &at, leaves),
+        false => bounds::instance_of_owned(&ctx.env, &def, &at, leaves),
+    };
+    fit.inspect_err(|e| bounds::debug(|| format!("instance of {def} at {at}: {e:#}")))
+        .ok()
 }
 
 impl InstanceTypes {
     /// The types of `def`'s default of the label `name`, at `root`, as its
     /// check recorded them, each open cell its definition owns copied.
+    /// Where the check was by bounds they are the scheme's, and the
+    /// default's are those of the instance `site` calls.
     pub(crate) fn of_default<R: Rt>(
         ctx: &CompileCtx<R>,
         def: &LambdaDef<R>,
         name: &ArcStr,
         root: ExprId,
+        site: Option<&FnType>,
     ) -> Result<Self> {
         match def.table.get() {
             // CR claude for claude: [bug/medium] A labeled default whose root
@@ -715,11 +660,14 @@ impl InstanceTypes {
             // design/review-2026-11-16/repro/x-engine-seq-errors-lowered-default-check-build.gx
             // (x-check-build-default-seq-fallback.gx shows a seq inside a default
             // lowered again at the call). (x-engine-seq-errors-04)
-            Some(tables) if tables.table.types.contains_key(&root) => Ok(Self {
-                tables: tables.clone(),
-                known: Known::default(),
-                open: ctx.rec_defs.clone(),
-            }),
+            Some(tables) if tables.table.types.contains_key(&root) => {
+                let known = site
+                    .and_then(|site| {
+                        instance_cells(ctx, &def.typ, site, std::slice::from_ref(name))
+                    })
+                    .unwrap_or_default();
+                Ok(Self { tables: tables.clone(), known: SArc::new(Mutex::new(known)) })
+            }
             _ => bail!(
                 "the default of #{name}, which its definition's check recorded no types of"
             ),
@@ -734,9 +682,33 @@ impl InstanceTypes {
         def: &FnType,
         instance: &FnType,
     ) -> Option<Self> {
-        let open = ctx.rec_defs.clone();
-        let known = instance_cells(ctx, def, instance)?;
-        Some(Self { tables, known: SArc::new(Mutex::new(known)), open })
+        let known = instance_cells(ctx, def, instance, &[])?;
+        Some(Self { tables, known: SArc::new(Mutex::new(known)) })
+    }
+
+    /// The types of an instance a call builds through a read of a generic
+    /// binding, at the copy of the scheme the read took, which the check
+    /// fixed: no second solve need find them again. `None` where the
+    /// read's scheme is not the definition's own (a val's declaration is
+    /// another).
+    fn copied(
+        table: &SArc<DefTables>,
+        def: &Arc<FnType>,
+        copies: &AHashMap<usize, TVar>,
+    ) -> Option<Self> {
+        let tables = table.get()?;
+        let sig = Type::Fn(def.clone());
+        if !bounds::cells_in(&sig).iter().all(|c| copies.contains_key(&c.cell_addr())) {
+            return None;
+        }
+        // a copy the check left open is no instance's types
+        if copies.values().any(|v| !bounds::cells_in(&Type::TVar(v.clone())).is_empty()) {
+            return None;
+        }
+        Some(Self {
+            tables: tables.clone(),
+            known: SArc::new(Mutex::new(copies.clone())),
+        })
     }
 
     /// A row read from this definition's check, renamed through the
@@ -746,7 +718,18 @@ impl InstanceTypes {
             Some(outer) => t.rename_with(&outer.lock()),
             None => t.clone(),
         };
-        t.instantiate_with(&mut self.known.lock(), &self.open)
+        // a row a check by bounds made holds scheme cells: the instance's
+        // own, or those of a generic definition inside it
+        if bounds::scheme(&t) {
+            return bounds::specialize(&t, &mut self.known.lock());
+        }
+        bounds::instantiate_through(&t, current_level(), &mut self.known.lock())
+    }
+
+    /// The type of the node at `id` as its definition's check left it,
+    /// over the definition's own variables.
+    pub(crate) fn definitions(&self, id: ExprId) -> Option<&Type> {
+        self.tables.table.types.get(&id)
     }
 
     /// The type the definition's check settled for the node at `id`.
@@ -795,9 +778,60 @@ impl InstanceTypes {
 
     /// What the node at `id` derived beside its own type, in its order
     /// ([`DefTable::aux`]).
+    /// The copy of a generic binding's scheme the definition's call site
+    /// at `id` took, as this instance has it: each cell, the scheme's and
+    /// the copy's, through the enclosing instance's map, then this one's
+    /// (a scheme the body defines is the instance's own copy of it).
+    pub(crate) fn call_copies(&mut self, id: ExprId) -> Option<AHashMap<usize, TVar>> {
+        let pairs = self.tables.table.copies.get(&id)?.clone();
+        let outer = |addr: usize| match &self.tables.outer {
+            Some(outer) => outer.lock().get(&addr).cloned(),
+            None => None,
+        };
+        let renamed: SmallVec<[(usize, TVar); 8]> = pairs
+            .iter()
+            .map(|(a, d)| {
+                let a = outer(*a).map(|t| t.cell_addr()).unwrap_or(*a);
+                (a, outer(d.cell_addr()).unwrap_or_else(|| d.clone()))
+            })
+            .collect();
+        let mut out = AHashMap::default();
+        for (addr, d) in renamed {
+            let _ = self.instance_of(&Type::TVar(d.clone()));
+            let known = self.known.lock();
+            let key = known.get(&addr).map(|t| t.cell_addr()).unwrap_or(addr);
+            let v = known.get(&d.cell_addr()).cloned().unwrap_or(d);
+            // a copy this instance has not settled is no instance's types
+            if !bounds::cells_in(&Type::TVar(v.clone())).is_empty() {
+                return None;
+            }
+            out.insert(key, v);
+        }
+        Some(out)
+    }
+
     pub(crate) fn aux(&mut self, id: ExprId) -> Option<SmallVec<[Type; 8]>> {
         let ts = self.tables.table.aux.get(&id)?;
         Some(ts.iter().map(|t| self.instance_of(t)).collect())
+    }
+
+    /// Give each name the instance's formals taken apart bind its row
+    /// ([`DefTable::formals`]).
+    fn take_formals(&self, env: &Env, formals: &[StructPatternNode]) -> Result<()> {
+        let mut rows = self.tables.table.formals.iter();
+        let mut short = false;
+        for_taken_apart(formals, &mut |id| match rows.next() {
+            None => short = true,
+            Some(row) => {
+                if let Some(b) = env.by_id.get(&id) {
+                    b.typ.take_row(&self.instance_of(row));
+                }
+            }
+        });
+        if short || rows.next().is_some() {
+            bail!("BUG: an instance's formals and its definition's rows differ")
+        }
+        Ok(())
     }
 
     pub(crate) fn arm_discriminants(
@@ -829,7 +863,11 @@ impl InstanceTypes {
             Some(outer) => ft.rename_with(&outer.lock()),
             None => ft.clone(),
         };
-        Some(ft.instantiate_with(&mut self.known.lock(), &self.open))
+        let t = Type::Fn(Arc::new(ft));
+        match &bounds::instantiate_through(&t, current_level(), &mut self.known.lock()) {
+            Type::Fn(ft) => Some((**ft).clone()),
+            t => unreachable!("a signature's instance is {t}"),
+        }
     }
 
     /// The tables of the lambda literal at `id` of this instance's body.
@@ -898,35 +936,23 @@ pub struct BodyShared {
     pub(crate) bound: crate::fusion::BoundKernels,
 }
 
-/// A type written in a body: its same-named variables are one variable,
-/// and one a definition around the body declares (a nested fn type's own
-/// quantifiers are its own) is the innermost such definition's; any other
-/// is the written type's own (`Level::Written`). Where `judged`, a
-/// function type it writes holds no union of two of its own variables
-/// ([`Type::variable_union`]); an impl method's annotation is judged at its
-/// impl.
+/// A type written in a body, scoped to `scope`: its same-named variables
+/// are one variable, and one a definition around the body declares (a
+/// nested fn type's own quantifiers are its own) is the innermost such
+/// definition's; any other is the written type's own (`Level::Written`).
 pub(crate) fn body_annotation<R: Rt>(
     ctx: &CompileCtx<R>,
     t: &Type,
-    judged: bool,
-) -> Result<()> {
-    let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-    enclosing_tvars(ctx, &mut known);
-    let enclosing: LPooled<AHashSet<ArcStr>> = known.keys().cloned().collect();
-    t.alias_tvars(&mut known);
-    for (_, tv) in known.iter().filter(|(name, _)| !enclosing.contains(*name)) {
+    scope: &ModPath,
+) -> Type {
+    let mut names: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+    enclosing_tvars(ctx, &mut names);
+    let enclosing: LPooled<AHashSet<ArcStr>> = names.keys().cloned().collect();
+    let t = t.scope_refs_named(scope, &mut names);
+    for (_, tv) in names.iter().filter(|(name, _)| !enclosing.contains(*name)) {
         tv.own_written()
     }
-    if judged && written_own(&known, &enclosing) > 1 {
-        t.variable_union(&|tv| !enclosing.contains(&tv.name))?
-    }
-    Ok(())
-}
-
-/// How many of the variables `known` names a type wrote, not one of
-/// `enclosing`: a union of two of them needs two.
-fn written_own(known: &AHashMap<ArcStr, TVar>, enclosing: &AHashSet<ArcStr>) -> usize {
-    known.keys().filter(|n| !n.starts_with('_') && !enclosing.contains(*n)).count()
+    t
 }
 
 /// The variables the definitions around the body being compiled declare,
@@ -1028,6 +1054,9 @@ impl BodyShared {
 
 pub struct LambdaDef<R: Rt> {
     pub id: LambdaId,
+    /// The arena of the epoch that made the definition: a function value
+    /// can outlive what else holds it (exported, stored in a variable).
+    pub arena: Option<crate::typ::tvar::ArenaRef>,
     pub env: Lexical,
     pub scope: Scope,
     pub argspec: Arc<[Arg]>,
@@ -1071,7 +1100,7 @@ impl<R: Rt> LambdaDef<R> {
     /// `rtype`, the type of what the body returns, names.
     fn hold_returned(&self, ctx: &CompileCtx<R>, rtype: &Type) {
         rtype.each_held_fn(&mut |ft| {
-            for id in ft.lambda_ids.ids().iter() {
+            for id in ft.lambda_ids.own().iter() {
                 let Some(inner) = ctx
                     .lambda_defs
                     .get(id)
@@ -1197,6 +1226,7 @@ impl<R: Rt> LambdaDef<R> {
     ) -> Self {
         LambdaDef {
             id,
+            arena: crate::typ::tvar::current_arena(),
             env,
             scope,
             argspec,
@@ -1265,23 +1295,6 @@ pub struct ParamCalls {
     pub captured: SmallVec<[BindId; 2]>,
 }
 
-/// The order the program writes two places in: by their loads (a
-/// session's inputs in the order given), then their origins, then where
-/// each stands in its own.
-pub(crate) fn place_order(
-    a: (&Arc<Origin>, SourcePosition),
-    b: (&Arc<Origin>, SourcePosition),
-) -> Ordering {
-    let ori = if Arc::ptr_eq(a.0, b.0) {
-        Ordering::Equal
-    } else {
-        a.0.load
-            .cmp(&b.0.load)
-            .then_with(|| a.0.partial_cmp(b.0).unwrap_or(Ordering::Equal))
-    };
-    ori.then(a.1.cmp(&b.1))
-}
-
 impl<R: Rt> LambdaDef<R> {
     /// The dispatchers of the traits the definition's signature names as
     /// a bound.
@@ -1340,44 +1353,6 @@ impl<R: Rt> LambdaDef<R> {
             DefOrigin::Source { body: DefBody::BuiltIn(name), .. } => Some(name),
             _ => None,
         }
-    }
-
-    /// The order the program writes `self` and `other` in: a source
-    /// definition by its load (a session's inputs in the order given), then
-    /// its origin, then where its lambda is written, before one Rust built
-    /// at run time; the id decides only between two of one place.
-    pub(crate) fn written_order(&self, other: &Self) -> Ordering {
-        let place = match (&self.origin, &other.origin) {
-            (DefOrigin::Source { spec: a, .. }, DefOrigin::Source { spec: b, .. }) => {
-                place_order((&a.ori, a.pos), (&b.ori, b.pos))
-            }
-            (DefOrigin::Source { .. }, DefOrigin::Runtime) => Ordering::Less,
-            (DefOrigin::Runtime, DefOrigin::Source { .. }) => Ordering::Greater,
-            (DefOrigin::Runtime, DefOrigin::Runtime) => Ordering::Equal,
-        };
-        place.then(self.id.cmp(&other.id))
-    }
-
-    /// Whether `other` is another compile of this definition's lambda
-    /// where every name and every variable the definitions around it
-    /// declare means what it means here: the two write the same defaults
-    /// over the same bindings. False says nothing.
-    pub(crate) fn same_literal(&self, other: &Self) -> bool {
-        let declared = match (&self.origin, &other.origin) {
-            (
-                DefOrigin::Source { enclosing: a, .. },
-                DefOrigin::Source { enclosing: b, .. },
-            ) => {
-                let (a, b) = (&a.declared, &b.declared);
-                a.len() == b.len()
-                    && a.iter().zip(b.iter()).all(|(a, b)| a.cell_addr() == b.cell_addr())
-            }
-            (DefOrigin::Runtime, _) | (_, DefOrigin::Runtime) => false,
-        };
-        declared
-            && self.source == other.source
-            && self.scope.lexical == other.scope.lexical
-            && self.env.same_snapshot(&other.env)
     }
 
     /// `f` compiling an expression the signature holds, a labeled
@@ -1739,12 +1714,13 @@ impl<R: Rt> Apply<R> for GXLambda<R> {
             {
                 wrap!(arg, arg.typecheck0(ctx))?;
                 if types.is_none() {
-                    wrap!(arg, typ.check_contains_rigid(&ctx.env, &arg.typ()))?;
+                    wrap!(arg, typ.check_contains(&ctx.env, &arg.typ()))?;
                 }
             }
             let env = self.env.clone();
             ctx.with_restored(env, |ctx| match types {
                 Some(mut types) => {
+                    types.take_formals(&ctx.env, &self.args)?;
                     wrap!(self.body, self.body.typecheck0_instance(ctx, &mut types))
                 }
                 None => {
@@ -1763,18 +1739,17 @@ impl<R: Rt> Apply<R> for GXLambda<R> {
                     // refusal here too, and pin it. probe:
                     // design/review-2026-11-16/repro/x-recursion-rec-return-mismatch.gx
                     // (x-recursion-04)
-                    let contain =
-                        rtype.check_contains_rigid(&ctx.env, &body).map_err(|e| {
-                            let method = ctx
-                                .lambda_defs
-                                .get(&self.id)
-                                .and_then(|d| d.downcast_ref::<LambdaDef<R>>())
-                                .is_some_and(|d| method_value(&d.scope));
-                            match method {
-                                true => e,
-                                false => picked_return(&ctx.env, rtype, &body, e),
-                            }
-                        });
+                    let contain = rtype.check_contains(&ctx.env, &body).map_err(|e| {
+                        let method = ctx
+                            .lambda_defs
+                            .get(&self.id)
+                            .and_then(|d| d.downcast_ref::<LambdaDef<R>>())
+                            .is_some_and(|d| method_value(&d.scope));
+                        match method {
+                            true => e,
+                            false => picked_return(&ctx.env, rtype, &body, e),
+                        }
+                    });
                     wrap!(self.body, contain)?;
                     let top = self.body.spec().id;
                     wrap!(
@@ -1807,6 +1782,13 @@ impl<R: Rt> Apply<R> for GXLambda<R> {
         _resolved: &FnType,
     ) -> Result<()> {
         let _elaboration = profile::elaboration(self.instance_id);
+        // a formal taken apart was compiled by its own shape: it takes its
+        // places from the signature now that is decided
+        for (pat, at) in self.args.iter_mut().zip(self.typ.args.iter()) {
+            if pat.single_bind_id().is_none() {
+                pat.realign_decided(&ctx.env, &at.typ.resolve_tvars())?
+            }
+        }
         elab_audit::enter();
         let env = self.env.clone();
         let body = &mut self.body;
@@ -1937,13 +1919,24 @@ impl<R: Rt> GXLambda<R> {
     ) -> Result<Self> {
         let origin = body.ori.clone();
         let instance_id = LambdaInstanceId::new();
-        let types = {
-            let mut p = profile::phase(Phase::InstanceCheck);
-            profile::instance(&mut p, instance_id, id, &body);
-            elab_audit::enter();
-            let res = typing.instance_types(ctx, id, &typ);
-            elab_audit::leave(ctx.def_gate_depth, "instance-signature", &body, &res);
-            res?
+        // a construction may bring the instance's types made already
+        let (typing, prepared) = match typing {
+            Typing::Prepared(prepared) => {
+                let (typing, types) = *prepared;
+                (typing, Some(types))
+            }
+            typing => (typing, None),
+        };
+        let types = match prepared {
+            Some(types) => Some(types),
+            None => {
+                let mut p = profile::phase(Phase::InstanceCheck);
+                profile::instance(&mut p, instance_id, id, &body);
+                elab_audit::enter();
+                let res = typing.instance_types(ctx, id, &typ);
+                elab_audit::leave(ctx.def_gate_depth, "instance-signature", &body, &res);
+                res?
+            }
         };
         // what a type the body writes names: the instance's variables,
         // under the definition's names
@@ -1951,10 +1944,12 @@ impl<R: Rt> GXLambda<R> {
             (Some(types), Typing::Substituted(_, def)) => {
                 written_tvars(def, Some(&types.known.lock()))
             }
-            (None, Typing::Substituted(_, def)) => match instance_cells(ctx, def, &typ) {
-                Some(known) => written_tvars(def, Some(&known)),
-                None => LPooled::take(),
-            },
+            (None, Typing::Substituted(_, def)) => {
+                match instance_cells(ctx, def, &typ, &[]) {
+                    Some(known) => written_tvars(def, Some(&known)),
+                    None => LPooled::take(),
+                }
+            }
             (_, _) => written_tvars(&typ, None),
         };
         let own = typ.clone();
@@ -2086,6 +2081,55 @@ impl<R: Rt> GXLambda<R> {
                     return Err(e);
                 }
             }
+            // a parameter taken apart is a select of one arm over it in its
+            // definition's check; an instance's takes its names' types from
+            // that check ([`DefTable::formals`])
+            if a.pattern.single_bind().is_none()
+                && !matches!(a.pattern, expr::StructurePattern::Ignore)
+            {
+                let checked = matches!(typing, Typing::Definition);
+                if checked && a.constraint.is_some() {
+                    StructPatternNode::named_before(ctx, &atyp.typ)?
+                }
+                // XCR claude for claude: [bug/medium] `covers` answers false for any union,
+                // so a formal's tuple or struct pattern over a union of same-shape members
+                // is refused as refutable. `array::map([(1, `A), (2, `B(1))], |(i, v)| i)`
+                // is refused "refutable patterns are not allowed in lambda arguments (i,
+                // v)", and so is `|{a, b}|` over a union of structs. Yet `let (i, v) = p`
+                // over the same value checks, because the let judges each member (bind.rs
+                // `fits_every_member`, `retype_by_member`). Fix: judge the formal the way
+                // the let does, and pin this message, which no test names today. probe:
+                // design/review-2026-11-16/repro/x-kind-markers-formal-union-of-tuples.sh
+                // Also reported as (x-rerun-3-01). (x-kind-markers-03)
+                // 2026-11-19 claude: On bounds-spike an instance's formal taken apart
+                // compiles by its own shape and takes its names' types from its
+                // definition's check (DefTable::formals), realigned against the decided
+                // signature at typecheck1, as a let and a select arm do; this covers
+                // refusal stays only for a definition built outside a check. The probe's
+                // three programs check, build (--expand) and run ([1, 2]). Pins:
+                // lang::tuples_structs::formal_tuple_pattern_over_a_union_of_tuples and
+                // formal_struct_pattern_over_a_union_of_structs; with instances sent down
+                // this path again both fail with this message.
+                // 2026-11-19 claude: Every definition is now checked in a session (a
+                // literal an instance compiles with no row is checked alone,
+                // Lambda::check_alone), so a formal taken apart always takes this path and
+                // the covers refusal is deleted with the typed compile of such formals;
+                // moved here unchanged.
+                let pattern = StructPatternNode::compile_shape(
+                    ctx,
+                    &a.pattern,
+                    Holder::Formal,
+                    scope,
+                    a.pos.0,
+                    origin.clone(),
+                )?;
+                if checked {
+                    let parts = pattern.by_bounds(ctx)?;
+                    super::pattern::destructure(ctx, parts, &atyp.typ, a.pos.0)?;
+                }
+                argpats.push(pattern);
+                continue;
+            }
             let pattern = StructPatternNode::compile(
                 ctx,
                 &atyp.typ,
@@ -2095,22 +2139,6 @@ impl<R: Rt> GXLambda<R> {
                 a.pos.0,
                 origin.clone(),
             )?;
-            // CR claude for claude: [bug/medium] `covers` answers false for any union,
-            // so a formal's tuple or struct pattern over a union of same-shape members
-            // is refused as refutable. `array::map([(1, `A), (2, `B(1))], |(i, v)| i)`
-            // is refused "refutable patterns are not allowed in lambda arguments (i,
-            // v)", and so is `|{a, b}|` over a union of structs. Yet `let (i, v) = p`
-            // over the same value checks, because the let judges each member (bind.rs
-            // `fits_every_member`, `retype_by_member`). Fix: judge the formal the way
-            // the let does, and pin this message, which no test names today. probe:
-            // design/review-2026-11-16/repro/x-kind-markers-formal-union-of-tuples.sh
-            // Also reported as (x-rerun-3-01). (x-kind-markers-03)
-            if !pattern.covers(&ctx.env, &atyp.typ, false) {
-                bail!(
-                    "refutable patterns are not allowed in lambda arguments {}",
-                    a.pattern
-                )
-            }
             argpats.push(pattern);
         }
         let mut p = profile::phase(Phase::InstanceGraph);
@@ -2275,7 +2303,7 @@ impl<R: Rt> Apply<R> for BuiltInLambda<R> {
             } else {
                 self.typ.vargs.as_ref().unwrap()
             };
-            wrap!(args[i], atyp.check_contains_rigid(&ctx.env, &args[i].typ()))?
+            wrap!(args[i], atyp.check_contains(&ctx.env, &args[i].typ()))?
         }
         self.apply.typecheck0(ctx, args)
     }
@@ -2448,7 +2476,7 @@ pub(crate) fn make_init<R: Rt>(
 /// Do `a` and `b` list the same parameters, kind for kind?
 pub(crate) fn same_parameters(a: &FnType, b: &FnType) -> bool {
     a.args.len() == b.args.len()
-        && a.args.iter().zip(b.args.iter()).all(|(a, b)| a.kind == b.kind)
+        && a.args.iter().zip(b.args.iter()).all(|(a, b)| a.kind.same_shape(&b.kind))
 }
 
 /// Build an instance at the signature `mode` names ([`instance_type`]).
@@ -2461,6 +2489,12 @@ fn instantiate<R: Rt>(
 ) -> Result<Box<dyn Apply<R>>> {
     let typing = match mode {
         BindMode::Definition => Typing::Definition,
+        BindMode::Static { copies: Some(copies), .. }
+            if let Some(types) = InstanceTypes::copied(table, def_typ, copies) =>
+        {
+            let substituted = Typing::Substituted(table.clone(), def_typ.clone());
+            Typing::Prepared(Box::new((substituted, types)))
+        }
         BindMode::Static { .. } | BindMode::Dynamic(..) => {
             Typing::Substituted(table.clone(), def_typ.clone())
         }
@@ -2479,7 +2513,7 @@ fn instance_type<R: Rt>(
     def_typ: &Arc<FnType>,
 ) -> Result<Arc<FnType>> {
     Ok(match mode {
-        BindMode::Static { instance } => Arc::new(instance.clone()),
+        BindMode::Static { instance, .. } => Arc::new(instance.clone()),
         BindMode::Dynamic(r, _) if same_parameters(r, def_typ) => Arc::new(r.clone()),
         BindMode::Dynamic(r, _) => Arc::new(fit_callee(ctx, r, def_typ)?),
         BindMode::Definition => def_typ.clone(),
@@ -2494,7 +2528,19 @@ pub(crate) fn fit_callee<R: Rt>(
     site: &FnType,
     def_typ: &FnType,
 ) -> Result<FnType> {
-    let copy = def_typ.instantiate(&ctx.rec_defs);
+    // a definition the check made generic: the instance the site's view
+    // decides, with its types; one it decided whole is held to the view by
+    // the same relation
+    let scheme = Type::Fn(Arc::new(def_typ.clone()));
+    if bounds::scheme(&scheme) || !scheme.has_unbound() {
+        let view = Type::Fn(Arc::new(site.clone()));
+        let mut known = bounds::instance(&ctx.env, &scheme, &view, &[])?;
+        return match &bounds::specialize(&scheme, &mut known) {
+            Type::Fn(ft) => Ok((**ft).clone()),
+            _ => bail!("BUG: a function type's instance is no function type"),
+        };
+    }
+    let copy = def_typ.instantiate(current_level());
     site.check_contains(&ctx.env, &copy)?;
     Ok(copy)
 }
@@ -2541,55 +2587,53 @@ impl Lambda {
                 TVar::empty_named(format_compact!("{}#elem", tv.name).as_str().into());
             ctors.push((tv.name.clone(), Type::TVar(elem)));
         }
-        // a written type, as the definition's signature holds it
-        let minted = MethodCells::current();
-        let written = |env: &Env, t: &Type| -> Result<Type> {
-            let mut copies: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-            copies.extend(minted.iter().map(|(a, tv)| (*a, tv.clone())));
-            Ok(t.scope_refs_with(&scope.lexical, &mut copies)
-                .rewrite_trait_args(env)?
-                .apply_ctor_quantifiers(&ctors))
-        };
         let signature = l.args.iter().filter_map(|a| a.constraint.as_ref());
         let signature = signature
             .chain(l.rtype.iter())
             .chain(l.throws.iter())
             .chain(l.constraints.iter().map(|(_, tc)| tc));
-        let constrained: OnceCell<LPooled<AHashSet<ArcStr>>> = OnceCell::new();
-        let outer: OnceCell<LPooled<AHashMap<ArcStr, TVar>>> = OnceCell::new();
-        let own = |tv: &TVar| {
-            constrained
-                .get_or_init(|| {
-                    l.constraints.iter().map(|(c, _)| c.name.clone()).collect()
-                })
-                .contains(&tv.name)
-                || !outer
-                    .get_or_init(|| {
-                        let mut known = LPooled::take();
-                        enclosing_tvars(ctx, &mut known);
-                        known
-                    })
-                    .contains_key(&tv.name)
-        };
-        let mut union = None;
         for t in signature {
-            crate::warn_written(ctx, flags, &t.scope_refs(&scope.lexical), &mut |u| {
-                if union.is_none() {
-                    union = VariableUnion::of(u, &own)
-                }
-            })?;
-        }
-        // a lambda in a method's value is judged at its method
-        // (traits::written_method_unions), where the method's own lambda is
-        // told from what its trait fills in
-        if let Some(e) = union
-            && !method_value(scope)
-        {
-            return Err(e.into());
+            crate::warn_later_block_names(ctx, flags, &t.scope_refs(&scope.lexical))?
         }
         if l.vargs.is_some() && matches!(l.body, LambdaBody::Expr(_)) {
             bail!("a variadic argument (`@args`) is for builtins only")
         }
+        // the signature's variables by name: one the definitions around
+        // this one declare, and this one does not, is theirs
+        let mut names: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
+        enclosing_tvars(ctx, &mut names);
+        names.retain(|name, _| {
+            !l.constraints.iter().any(|(tv, _)| tv.name == *name)
+                && !ctors
+                    .iter()
+                    .any(|(_, e)| matches!(e, Type::TVar(e) if e.name == *name))
+        });
+        // one variable per quantifier: a `'a: A + B` bound is a pair per
+        // conjunct over one var
+        let mut constraints: LPooled<Vec<_>> = l
+            .constraints
+            .iter()
+            .map(|(tv, tc)| {
+                let tv = match &Type::TVar(tv.clone())
+                    .scope_refs_named(&scope.lexical, &mut names)
+                {
+                    Type::TVar(tv) => tv.clone(),
+                    _ => bail!("BUG: a quantifier copied to no variable"),
+                };
+                let tc = tc.scope_refs_named(&scope.lexical, &mut names);
+                tc.check_bound(&ctx.env)?;
+                Ok((tv, tc))
+            })
+            .collect::<Result<_>>()?;
+        check_bounds_acyclic(&constraints)?;
+        // a written type, as the definition's signature holds it
+        let mut written = |env: &Env, t: &Type| -> Result<Type> {
+            Ok(t.scope_refs_named(&scope.lexical, &mut names)
+                .rewrite_trait_args(env)?
+                .apply_ctor_quantifiers(&ctors))
+        };
+        let rtype = l.rtype.as_ref().map(|t| written(&ctx.env, t)).transpose()?;
+        let throws = l.throws.as_ref().map(|t| written(&ctx.env, t)).transpose()?;
         // a trait as a parameter's type is a fresh bounded quantifier
         // (`|s: Read|` ≡ `'s: Read |s: 's|`), joined to the declared ones
         // so the def gate holds it rigid
@@ -2618,8 +2662,6 @@ impl Lambda {
             Some(None) => Some(None),
             Some(Some(t)) => Some(Some(param(&ctx.env, arcstr::literal!("#args"), t)?)),
         };
-        let rtype = l.rtype.as_ref().map(|t| written(&ctx.env, t)).transpose()?;
-        let throws = l.throws.as_ref().map(|t| written(&ctx.env, t)).transpose()?;
         let mut argspec: LPooled<Vec<Arg>> = LPooled::take();
         for (i, a) in l.args.iter().enumerate() {
             let constraint = match &a.constraint {
@@ -2641,23 +2683,6 @@ impl Lambda {
             });
         }
         let argspec = Arc::from_iter(argspec.drain(..));
-        // One scoped var per quantifier: a `'a: A + B` bound is a pair
-        // per conjunct over one var.
-        let mut scoped: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-        let mut constraints: LPooled<Vec<_>> = l
-            .constraints
-            .iter()
-            .map(|(tv, tc)| {
-                let tv = scoped
-                    .entry(tv.name.clone())
-                    .or_insert_with(|| tv.scope_refs(&scope.lexical))
-                    .clone();
-                let tc = tc.scope_refs(&scope.lexical);
-                tc.check_bound(&ctx.env)?;
-                Ok((tv, tc))
-            })
-            .collect::<Result<_>>()?;
-        check_bounds_acyclic(&constraints)?;
         constraints.extend(trait_quantifiers.drain(..));
         let body = DefBody::of(&l.body);
         let builtin = match &l.body {
@@ -2721,19 +2746,26 @@ impl Lambda {
         }
         let typ = {
             let args = Arc::from_iter(argspec.iter().map(|a| {
+                let typ = match a.constraint.as_ref() {
+                    Some(t) => t.clone(),
+                    None => Type::empty_tvar(),
+                };
                 let kind = match (&a.kind, a.pattern.single_bind()) {
                     (ArgKind::Positional, name) => {
                         FnArgKind::Positional { name: name.cloned() }
                     }
                     (_, None) => FnArgKind::Positional { name: None },
+                    // a default's type is its own where the parameter's
+                    // is written with a variable or left to inference, which
+                    // a call picks: a call that leaves the label out picks
+                    // it by the default
                     (kind, Some(name)) => FnArgKind::Labeled {
                         name: name.clone(),
-                        has_default: kind.default().is_some(),
+                        default: kind.default().map(|_| match typ.tvar_free() {
+                            true => DefaultType::Param,
+                            false => DefaultType::Of(Type::empty_tvar()),
+                        }),
                     },
-                };
-                let typ = match a.constraint.as_ref() {
-                    Some(t) => t.clone(),
-                    None => Type::empty_tvar(),
                 };
                 FnArgType { kind, typ }
             }));
@@ -2753,20 +2785,6 @@ impl Lambda {
                 explicit_throws,
                 ..FnType::default()
             };
-            let mut known: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
-            enclosing_tvars(ctx, &mut known);
-            known.retain(|name, _| {
-                !constraints.iter().any(|(tv, _)| tv.name == *name)
-                    && !ctors
-                        .iter()
-                        .any(|(_, e)| matches!(e, Type::TVar(e) if e.name == *name))
-            });
-            // a variable the definitions around this one declare, and this
-            // one does not, is theirs
-            ft.alias_tvars(&mut known);
-            for (_, tc) in constraints.iter() {
-                tc.alias_tvars(&mut known);
-            }
             let ft = ft.declaring(&constraints)?;
             ft.check_quantifiers_held()?;
             ft
@@ -2834,6 +2852,14 @@ impl Lambda {
             resident: TagValue::stale(def),
         })
     }
+
+    /// A literal an instance compiles with no row of its definition's
+    /// check (a builtin, an id two nodes share) is checked as a program's
+    /// are, in a check of its own.
+    fn check_alone<R: Rt>(&mut self, ctx: &mut CompileCtx<R>) -> Result<()> {
+        let check = bounds::Check::begin();
+        Update::<R>::typecheck0(self, ctx).and_then(|()| check.end(&ctx.env))
+    }
 }
 
 /// A definition's gate: its body checks once, over a `Nop` per declared
@@ -2854,51 +2880,55 @@ struct DefGate<R: Rt> {
     scope: Scope,
     rigid: LPooled<Vec<RigidGate>>,
     _declaring: Declaring,
-    /// Each quantifier the definition declares, at the depth it had at the
-    /// gate's opening.
-    declared: LPooled<Vec<(TVar, u32)>>,
-    /// The parts of the signature left to inference (a parameter by its
-    /// name, the return as `None`) whose cell is outside the definition at
-    /// the gate's opening: a function something writes is one instance.
-    unwritten: LPooled<Vec<(Option<ArcStr>, TVar)>>,
+    /// Each quantifier the definition declares.
+    declared: LPooled<Vec<TVar>>,
+    closing: Closing,
+}
+
+/// How a definition's check by bounds closes.
+#[derive(Clone, Copy)]
+enum Closing {
+    /// A lambda no binding names that declares no variable: checked at
+    /// the level around it, as any expression there.
+    Inline,
+    /// A definition of its own: the cells the check met since `mark` are
+    /// fixed, all but its signature's, which are the scheme's. Where no
+    /// binding names it, it then stands as one instance of that scheme.
+    Scheme { mark: usize, named: bool },
 }
 
 impl<R: Rt> DefGate<R> {
-    fn open(ctx: &mut CompileCtx<R>, def: &LambdaDef<R>) -> Self {
+    fn open(ctx: &mut CompileCtx<R>, def: &LambdaDef<R>, binding_names: bool) -> Self {
         let outer = current_level();
-        let at = AtLevel::enter(def.level);
-        let args = def.typ.args.iter().map(|at| Nop::new(at.typ.clone())).collect();
-        let (faux, scope) = RaiseProbe::open(ctx, &def.scope);
         let mut named: LPooled<AHashMap<ArcStr, TVar>> = LPooled::take();
         def.typ.collect_tvars_through_bounds(&mut named);
         named.retain(|name, _| !name.starts_with('_'));
+        let closing = match binding_names || !named.is_empty() {
+            true => Closing::Scheme { mark: solving(|s| s.mark()), named: binding_names },
+            false => Closing::Inline,
+        };
+        let at = match closing {
+            Closing::Inline => {
+                def.typ.claim(outer);
+                AtLevel::enter(outer)
+            }
+            Closing::Scheme { .. } => AtLevel::enter(def.level),
+        };
+        let args = def.typ.args.iter().map(|at| Nop::new(at.typ.clone())).collect();
+        let (faux, scope) = RaiseProbe::open(ctx, &def.scope);
         let mut seen: LPooled<AddrSet> = LPooled::take();
         for tv in named.values() {
             Type::TVar(tv.clone()).seed_names_seen(&ctx.env, &mut seen);
         }
+        def.typ.for_each_type(&mut |t| {
+            let _ = bounds::bounded_by_names(&ctx.env, t);
+        });
         let rigid = named.values().map(|tv| tv.open_rigid()).collect();
         let quantified = def.typ.quantifiers.iter().filter_map(|q| named.get(q));
-        let declaring =
-            Declaring::enter(named.values().cloned(), quantified.clone().cloned());
-        let declared = quantified.map(|tv| (tv.clone(), tv.level().depth())).collect();
-        let outside = |t: &Type| match t {
-            Type::TVar(c)
-                if c.name.starts_with('_') && c.level().depth() < def.level.depth() =>
-            {
-                Some(c.clone())
-            }
-            _ => None,
-        };
-        let unwritten = def
-            .typ
-            .args
-            .iter()
-            .filter_map(|a| Some((Some(a.name()?.clone()), outside(&a.typ)?)))
-            .chain(outside(&def.typ.rtype).map(|c| (None, c)))
-            .collect();
+        let declaring = Declaring::enter(named.values().cloned());
+        let declared = quantified.cloned().collect();
         ctx.rec_defs.insert(def.id);
         ctx.def_gate_depth += 1;
-        ctx.pending_settles.push(crate::SettleFrame::default());
         Self {
             def: def.id,
             depth: def.level.depth(),
@@ -2911,27 +2941,36 @@ impl<R: Rt> DefGate<R> {
             rigid,
             _declaring: declaring,
             declared,
-            unwritten,
+            closing,
         }
     }
 
-    /// A quantifier the definition declares stays its own: the body binds
-    /// no cell outside the definition to a type holding it (which would
-    /// lower it to that cell's depth), since each call picks it anew. A
-    /// variable the signature only names is lowered with that cell, and
-    /// the definition is monomorphic in it.
-    fn check_declared_kept(&self) -> Result<()> {
-        for (tv, depth) in self.declared.iter() {
-            if tv.level().depth() < *depth {
-                if let Some(fix) = self.unwritten_holding(tv) {
-                    bail!(
-                        "'{0} escapes the definition through its own signature: \
-                         a function something writes is one instance, so what its \
-                         signature leaves unwritten is a cell outside it; {fix}, or \
-                         declare no '{0}",
-                        tv.name
-                    )
+    /// What the body raised.
+    fn thrown(&self, ctx: &CompileCtx<R>) -> Type {
+        self.faux.raised(ctx)
+    }
+
+    /// A definition of its own becomes its scheme; where no binding names
+    /// it, the one instance of that scheme the lambda stands as: its type,
+    /// and its cell for each of the scheme's, by that cell's address.
+    fn close(
+        mut self,
+        ctx: &mut CompileCtx<R>,
+        spec: &Expr,
+    ) -> Result<Option<(Type, AHashMap<usize, TVar>)>> {
+        ctx.def_gate_depth -= 1;
+        let mut stands = None;
+        let mut closed = Ok(());
+        match self.closing {
+            Closing::Inline => (),
+            Closing::Scheme { mark, named } => {
+                if named {
+                    ctx.env.with_ide(|ide| self.tell_held(ide, spec))
                 }
+                let sig = Type::Fn(self.sig.clone());
+                closed = solving(|s| s.generalize(&ctx.env, &sig, self.depth - 1, mark))
+                    .at(spec);
+                self.rigid.clear();
                 // CR claude for claude: [bug/low] The hint `give that a type holding
                 // them all (the bound of 'a, or Any)` points at a type the program
                 // cannot write when the bound is Concrete, NoError or Singleton. Those
@@ -2943,96 +2982,35 @@ impl<R: Rt> DefGate<R> {
                 // the annotated twin (`let y: Any = never()` checks). probe:
                 // design/review-2026-11-16/repro/tests-types-b-escape-hint-bound.gx
                 // (tests-types-b-03)
-                bail!(
-                    "'{0} escapes the definition: the body hands a value of type '{0} \
-                     to something outside it, which would have to hold every '{0} a \
-                     call picks; give that a type holding them all (the bound of '{0}, \
-                     or Any), or declare no '{0}",
-                    tv.name
-                )
-            }
-        }
-        Ok(())
-    }
-
-    /// The annotation that keeps `tv` the definition's, where a part of the
-    /// signature left unwritten holds it.
-    fn unwritten_holding(&self, tv: &TVar) -> Option<CompactString> {
-        let (part, cell) = self.unwritten.iter().find(|(_, cell)| {
-            let mut reached: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-            Type::TVar(cell.clone()).reached_cells(&mut reached);
-            reached.values().any(|c| c.same_cell(tv))
-        })?;
-        let written = Type::TVar(cell.clone()).written_form(&mut |c| {
-            self.declared
-                .iter()
-                .find(|(tv, _)| tv.same_cell(c))
-                .map(|(tv, _)| Type::TVar(tv.clone()))
-        });
-        Some(match (part, written) {
-            (None, Some(t)) => format_compact!("write its return type, `-> {t}`"),
-            (None, None) => format_compact!("write its return type"),
-            (Some(name), Some(t)) => format_compact!("write `{name}: {t}`"),
-            (Some(name), None) => format_compact!("write `{name}`'s type"),
-        })
-    }
-
-    /// What the body raised.
-    fn thrown(&self, ctx: &CompileCtx<R>) -> Type {
-        self.faux.raised(ctx)
-    }
-
-    /// The body's sites settle with the enclosing statement, all but the
-    /// cells this signature reaches: those stay open, generalized where a
-    /// binding names the definition, else its enclosing level's.
-    fn close(
-        mut self,
-        ctx: &mut CompileCtx<R>,
-        spec: &Expr,
-        table: Option<SArc<DefTable>>,
-        named: bool,
-    ) -> Result<()> {
-        let mut frame = ctx.pending_settles.pop().expect("gate settle frame");
-        ctx.def_gate_depth -= 1;
-        match named {
-            true => {
-                ctx.env.with_ide(|ide| self.tell_held(ide, spec));
-                self.sig.generalize(self.depth)
-            }
-            false => self.sig.claim(self.outer),
-        }
-        let defaults = table.as_deref().map(DefTable::default_cells).unwrap_or_default();
-        for s in frame.iter_mut() {
-            if let crate::PendingSettle::Site { sigs, exempt, .. } = s {
-                sigs.push(self.sig.clone());
-                exempt.extend(defaults.iter().copied());
-            }
-        }
-        let mut sig: LPooled<AHashMap<usize, TVar>> = LPooled::take();
-        self.sig.reached_cells(&mut sig);
-        let mut lowered = Ok(());
-        if !sig.is_empty() {
-            for s in frame.iter() {
-                if let crate::PendingSettle::Site { ftype, .. } = s
-                    && lowered.is_ok()
-                {
-                    lowered = ftype.lower_into_kept(&ctx.env, &sig)
+                // 2026-11-19 claude: On bounds-spike a declared variable's own values may
+                // flow out of its definition and each instance's type follows (STATE
+                // decision 37), so this refusal, its hint and check_declared_kept are
+                // deleted with the old check; moved here, where the declared variables are
+                // owned. The pin it names fails at the bounds-spike baseline and is likely
+                // obsolete with its fixture (step 4).
+                for tv in self.declared.iter() {
+                    solving(|s| s.own(tv))
+                }
+                if !named && closed.is_ok() {
+                    let mut copies = AHashMap::default();
+                    let one = solving(|s| {
+                        let one = s.instantiate_into(
+                            &sig,
+                            self.depth - 1,
+                            self.outer,
+                            &mut copies,
+                        );
+                        s.stand_as(&sig, &copies);
+                        one
+                    });
+                    stands = Some((one, copies))
                 }
             }
         }
-        if let Some(table) = table {
-            frame.push(crate::PendingSettle::Body {
-                table,
-                owner: self.def,
-                exempt: sig.keys().copied().collect(),
-                spec: Arc::new(spec.clone()),
-            });
-        }
-        ctx.pending_settles.last_mut().expect("root settle frame").append(frame);
         ctx.rec_defs.remove(&self.def);
         self.faux.close(ctx);
         self.rigid.clear();
-        lowered.at(spec)
+        closed.map(|()| stands)
     }
 
     /// Tell the editor the quantifiers the close is about to generalize,
@@ -3082,11 +3060,7 @@ fn picked_return(
         .map(|(_, tv)| tv)
         .filter(|tv| !tv.generated() && tv.is_rigid() && tv.binding().is_none())
         .collect();
-    if picked.is_empty()
-        || !rtype
-            .reset_tvars()
-            .contains_with_flags(BitFlags::empty(), env, body)
-            .unwrap_or(false)
+    if picked.is_empty() || !rtype.reset_tvars().decided_holds(env, body).unwrap_or(false)
     {
         return e;
     }
@@ -3114,27 +3088,6 @@ fn picked_return(
              it picks; {fix}"
         )
     })
-}
-
-/// Whether `t` holds an unbound cell `f` accepts.
-fn holds_unbound(t: &Type, f: &impl Fn(&TVar) -> bool) -> bool {
-    fn go(t: &Type, f: &impl Fn(&TVar) -> bool, seen: &mut AHashSet<usize>) -> bool {
-        crate::stack::ensure_sufficient(|| match t {
-            Type::TVar(tv) => {
-                seen.insert(tv.cell_addr())
-                    && match tv.binding() {
-                        Some(b) => go(&b, f, seen),
-                        None => f(tv),
-                    }
-            }
-            t => {
-                let mut found = false;
-                t.for_each_child(&mut |c| found = found || go(c, f, seen));
-                found
-            }
-        })
-    }
-    go(t, f, &mut LPooled::take())
 }
 
 fn capture_id(
@@ -3229,7 +3182,7 @@ fn check_defaults<R: Rt>(
                 compile(ctx, flags, expr.clone(), scope, ExprId::new())
             })?;
             super::bind::name_value(&mut node, true);
-            let res = judge_default(ctx, def, at, &mut node);
+            let res = judge_default(ctx, at, &mut node);
             Ok::<_, anyhow::Error>((node, res))
         })?;
         if let Err(e) = res {
@@ -3245,48 +3198,41 @@ fn check_defaults<R: Rt>(
     Ok(())
 }
 
+// CR claude for claude: [structure/low] `default_cells` and `settle_open` each
+// write out the same three loops (the rows, the aux rows, each signature's
+// parts that are not constraints, through `settle::position_cells`), differing
+// only in which ids they keep; `for_each_row` is that walk already but for the
+// constraint flag, and `own_typedefs` repeats the owning half of
+// `seed_and_own`. A row kind added later has four walks to join. Hand
+// `for_each_row`'s callback the constraint flag, as `for_each_type` does, and
+// build both cell sets with it; have `seed_and_own` seed and then call
+// `own_typedefs`. Found by reading; not run. (c-lambda-06)
+// 2026-11-19 claude: On bounds-spike the old settle machinery (default_cells,
+// settle_open, the Body settle) is deleted with the old check; a default is
+// judged by judge_default under the solver, where this moved. Re-probe under
+// the new check before closing.
+
 /// The default `node` of the parameter `at` checked against it, in the
 /// lexical environment the default compiled in.
 fn judge_default<R: Rt>(
     ctx: &mut CompileCtx<R>,
-    def: &LambdaDef<R>,
     at: &FnArgType,
     node: &mut Node<R>,
 ) -> Result<()> {
     node.typecheck0(ctx).and_then(|()| {
         let typ = node.typ().clone();
-        let depth = def.level.depth();
-        let enclosing =
-            |tv: &TVar| matches!(tv.level(), Level::Def { depth: d, .. } if d < depth);
-        if at.typ.has_unbound()
-            && holds_unbound(&typ, &|tv| !tv.is_rigid() && enclosing(tv))
-        {
-            bail!(
-                "default reads an enclosing open type: annotate the factory's \
-                     parameter or give the defaulted parameter a closed type"
-            );
+        // the default's own type is what a call that leaves the label out
+        // passes: the default's type itself
+        if let Some(default) = at.kind.own_default() {
+            bounds::take(default, &typ);
         }
-        let declared = holds_unbound(&typ, &|tv| tv.is_rigid() && enclosing(tv));
-        match &at.typ {
-            // no call instantiates an enclosing definition's variable the
-            // default sits under: the default fits for every instance of it,
-            // or not at all
-            _ if declared => at.typ.check_contains(&ctx.env, &typ),
-            // each conjunct narrows the default's open cells, which
-            // may be the environment's, rather than deciding them
-            Type::TVar(tv) if !tv.is_bound() => tv
-                .cell_constraints()
-                .iter()
-                .try_for_each(|c| super::op::constrain_operand(&ctx.env, c, &typ)),
-            // a variable inside the type is checked as any instance of
-            // it: each omitting call checks the default again
-            t => {
-                let held = match t.has_unbound() {
-                    true => t.reset_tvars(),
-                    false => t.clone(),
-                };
-                held.check_contains(&ctx.env, &typ)
-            }
+        // a parameter whose type a call decides takes the default at each
+        // call that leaves the label out, and at no other; over a declared
+        // variable, some instance of it has to
+        match (at.typ.has_rigid(), bounds::cells_in(&at.typ).is_empty()) {
+            (true, _) => at.typ.reset_tvars().check_contains(&ctx.env, &typ),
+            (false, false) => Ok(()),
+            (false, true) => at.typ.check_contains(&ctx.env, &typ),
         }
     })
 }
@@ -3358,21 +3304,24 @@ impl<R: Rt> Update<R> for Lambda {
         let spec: &Expr = &self.spec;
         crate::defer_written_names(ctx, &Type::Fn(def.typ.clone()), spec)?;
         // Every arg, defaulted labeled ones included, checks as a Nop of
-        // its declared type; the defaults themselves are checked after
-        // the body (`check_defaults`), and again per omitting call site
-        // (`CallSite::check_omitted_defaults`), where one may narrow that
-        // site's cells.
-        let mut gate = DefGate::open(ctx, def);
+        // its declared type. The defaults are checked first: a call in the
+        // body that leaves a label out takes the default its parameter
+        // records.
+        let mut gate = DefGate::open(ctx, def, self.named);
         let mut table = None;
         let mut captures: LPooled<AHashSet<(ModPath, CompactString)>> = LPooled::take();
-        let res = (def.init)(
-            &gate.scope,
-            ctx,
-            &mut gate.args,
-            BindMode::Definition,
-            ExprId::new(),
-        )
-        .at(spec);
+        let mut defaults: LPooled<Vec<Node<R>>> = LPooled::take();
+        let res = check_defaults(ctx, def, &gate.scope, &mut captures, &mut defaults);
+        let res = res.and_then(|()| {
+            (def.init)(
+                &gate.scope,
+                ctx,
+                &mut gate.args,
+                BindMode::Definition,
+                ExprId::new(),
+            )
+            .at(spec)
+        });
         let res = res.and_then(|mut f| {
             let ftyp = f.typ().clone();
             // fn-typed params knot like self-calls: a call to `f` unifies
@@ -3407,6 +3356,7 @@ impl<R: Rt> Update<R> for Lambda {
                     .collect();
                 table = Some(DefTable::record(
                     &g.body,
+                    g.args(),
                     &g.env,
                     &ctx.env,
                     facts,
@@ -3428,12 +3378,7 @@ impl<R: Rt> Update<R> for Lambda {
             });
             capture_impls(def, &ctx.env, &mut captures);
         }
-        let mut defaults: LPooled<Vec<Node<R>>> = LPooled::take();
-        let res = res
-            .and_then(|()| {
-                check_defaults(ctx, def, &gate.scope, &mut captures, &mut defaults)
-            })
-            .and_then(|()| gate.check_declared_kept().at(spec));
+        let mut checked = None;
         if res.is_ok()
             && (table.is_some() || !captures.is_empty() || !defaults.is_empty())
         {
@@ -3446,17 +3391,27 @@ impl<R: Rt> Update<R> for Lambda {
                 .drain()
                 .map(|(scope, name)| Captured::new(&def.scope.lexical, scope, name))
                 .collect();
-            def.table.set(Tables { table: SArc::new(table), outer: None });
+            checked = Some(SArc::new(table));
         }
         for n in defaults.drain(..) {
             ctx.discard(n)
         }
-        let closed =
-            gate.close(ctx, spec, def.table.get().map(|t| t.table.clone()), self.named);
-        // what the body bound is the signature: a call's types follow from
-        // it without elaborating the body
-        self.typ.unbind_vacuous_tvars();
-        res.and(closed)
+        let closed = gate.close(ctx, spec);
+        // a lambda that stands as one instance of its scheme reads its
+        // check's types as that instance has them
+        let one = closed.as_ref().ok().and_then(|stands| stands.as_ref());
+        if let Some(table) = checked {
+            let table = match one {
+                Some((_, copies)) => SArc::new(table.renamed(copies)),
+                None => table,
+            };
+            def.table.set(Tables { table, outer: None })
+        }
+        res.and(closed).map(|stands| {
+            if let Some((t, _)) = stands {
+                self.typ = t
+            }
+        })
     }
 
     /// A lambda an instance defines takes its signature from the
@@ -3477,7 +3432,7 @@ impl<R: Rt> Update<R> for Lambda {
             false => types.lambda(self.spec.id),
             true => None,
         };
-        let Some(tables) = tables else { return self.typecheck0(ctx) };
+        let Some(tables) = tables else { return self.check_alone(ctx) };
         let level = def.level;
         let row = {
             let _at = AtLevel::enter(level);
@@ -3485,19 +3440,17 @@ impl<R: Rt> Update<R> for Lambda {
         };
         let Some(row) = row else {
             elab_audit::fallback(&self.spec);
-            return self.typecheck0(ctx);
+            return self.check_alone(ctx);
         };
-        {
-            let _at = AtLevel::enter(level);
-            self.typ.place_cells(&ctx.env, &row);
-            if let (Type::Fn(own), Type::Fn(row)) = (&self.typ, &row) {
-                row.pre_unify_params(&ctx.env, own).at(&self.spec)?;
-            }
-            self.typ.check_contains(&ctx.env, &row).at(&self.spec)?;
+        if !bounds::take(&self.typ, &row) {
+            bailat!(self.spec, "BUG: a lambda's signature took no row")
         }
-        match self.named {
-            true => def.typ.generalize(def.level.depth()),
-            false => def.typ.claim(current_level()),
+        // a definition a check by bounds made generic is that scheme, as
+        // the instance holds it
+        match (bounds::scheme(&row), self.named) {
+            (true, _) => (),
+            (false, true) => def.typ.generalize(def.level.depth()),
+            (false, false) => def.typ.claim(current_level()),
         }
         let mut own = tables.table.calls_own;
         let mut captured = SmallVec::new();
@@ -3532,6 +3485,8 @@ impl<R: Rt> Update<R> for Lambda {
 // says the audit reports elaboration refusing what the check accepted. Report in
 // `check_and_fuse_inner` for any error of `typecheck1` or of the settle drained after
 // it. (x-check-build-08)
+// 2026-11-19 claude: The unify-back in setup_static_bind is deleted (a static bind
+// relates nothing back into its site); the audit's other sources stand.
 pub(crate) mod elab_audit {
     use crate::{dbgenv, expr::Expr};
     use anyhow::Result;
@@ -3589,7 +3544,6 @@ mod settle_tests {
         InstanceTypes {
             tables: Tables { table: SArc::new(table), outer: None },
             known: Known::default(),
-            open: IntSet::default(),
         }
     }
 

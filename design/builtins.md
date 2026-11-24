@@ -93,6 +93,6 @@ omits can carry a value of (no function, no open part), settles to ⊥
 whatever its bounds (`CallSite::settle_unread`): `publish`'s handler is
 `[fn(v: 'a) -> _, null] = null` under `'a: Concrete`. Only a name nothing
 writes is the builtin it aliases (`CompileCtx::builtin_binding`): a call
-through one a `<-` writes, or through a name of it, is made at run time
-and is refused as any function value's is, naming the handler to pass. A definition's call sites settle with
+through one a `<-` writes, or through a name of it, is made at run time,
+where its unread quantifier settles to ⊥ as at a direct call. A definition's call sites settle with
 the enclosing statement, the signature's cells exempt.

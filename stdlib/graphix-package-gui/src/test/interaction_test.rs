@@ -691,7 +691,6 @@ async fn button_press_rotates_sampled() -> Result<()> {
 async fn stack_children_follow_rotation() -> Result<()> {
     let code = format!(
         "{IMPORTS};\n\
-         use gui::stack::{{self, *}};\n\
          let slides = [text(&\"A\"), column(&[text(&\"B\")])];\n\
          let result = column(&[\
              button(#on_press: |e| seq e {{ slides <- array::rotate(slides) }}, &text(&\">\")), \

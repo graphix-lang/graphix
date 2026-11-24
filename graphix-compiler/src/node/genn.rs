@@ -8,7 +8,7 @@ use crate::{
     BindId, CompileCtx, ExecCtx, Node, Notify, Refs, Rt, Scope, TagValue,
     expr::{ApplyExpr, Expr, ExprId, ExprKind, ModPath, Origin},
     image::ImageBuf,
-    typ::{FnType, Type},
+    typ::{FnType, Type, bounds, tvar::current_level},
 };
 use anyhow::{Result, bail};
 use bytes::BufMut;
@@ -178,7 +178,11 @@ pub(crate) fn apply_slot<R: Rt>(
     top_id: ExprId,
     shared: &OnceLock<CallSpec>,
 ) -> Result<Node<R>> {
-    let ftype = typ.instantiate(&nohash::IntSet::default());
+    debug_assert!(
+        bounds::undecided_owned(&Type::Fn(Arc::new(typ.clone()))).is_empty(),
+        "a slot would share what its callback's check left undecided: {typ}"
+    );
+    let ftype = typ.instantiate(current_level());
     apply_inner(
         fnode,
         scope,
@@ -271,7 +275,10 @@ impl<R: Rt> SynthCall<R> {
             }
         };
         let mut call = Self { site, args };
-        match call.site.typecheck0(ctx).and_then(|()| call.site.typecheck1(ctx)) {
+        // a call the build or the runtime makes is checked as a program's is
+        let check = crate::typ::bounds::Check::begin();
+        let checked = call.site.typecheck0(ctx).and_then(|()| check.end(&ctx.env));
+        match checked.and_then(|()| call.site.typecheck1(ctx)) {
             Ok(()) => Ok(call),
             Err(e) => {
                 let Self { site, args } = call;
