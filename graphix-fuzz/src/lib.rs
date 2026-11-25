@@ -4082,6 +4082,26 @@ async fn must_reject(
                     .into_iter()
                     .any(|pos| p.right_site(mustreject::to_body(pos)));
                 let head = tm_error_head(&format!("{e:?}"));
+                // triage: where the refusal was placed
+                let head = match std::env::var_os("GRAPHIX_TM_SITES") {
+                    None => head,
+                    Some(_) => {
+                        let at = e.downcast_ref::<ErrorSite>().map(|s| {
+                            let x = s.expr();
+                            let text: String = x.to_string().chars().take(140).collect();
+                            format!("{} `{text}`", x.pos)
+                        });
+                        let passed: Vec<String> = mustreject::passed(&e, "test")
+                            .into_iter()
+                            .map(|pos| mustreject::to_body(pos).to_string())
+                            .collect();
+                        format!(
+                            "{head} @ {} passed {passed:?} reached {}",
+                            at.unwrap_or_default(),
+                            p.reached
+                        )
+                    }
+                };
                 match right {
                     true if p.family.refuses_with(&head) => None,
                     true => Some(format!("WRONG REFUSAL: {head}")),

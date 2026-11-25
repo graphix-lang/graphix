@@ -184,7 +184,9 @@ whose parent is one of:
   cell as well): a bare callee is rigid only as a builtin or a `let` of
   a lambda literal with every parameter annotated, since any other name
   the body binds (a destructuring `let`, a `use`, an alias) may be such
-  a lambda;
+  a lambda; and no call with an argument that is no value (`never()`),
+  which is never made: a `seq` gathers a call's arguments into one value
+  and selects over it, and no arm is checked that nothing reaches;
 - the value of a writer to a binding an annotation types (one its
   initializer types widens to hold the write).
 
@@ -239,8 +241,14 @@ a comparison a type that holds the literal's or is held by it), or a
 select over what it reached misses the new type's case. A writer before
 a comparison is no mutant: the wider `v` holds the literal's type, and
 neither is a retyped initializer under a comparison where the program
-writes `v` (a connect, a `&mut`). The right sites end at a statement that
-binds `v` itself; one that only may (a module) hides nothing for sure. A `let`
+writes `v` (a connect, a `&mut`). The right sites of `v` end at a
+statement that binds `v` itself to a value not built from it (one built
+from it carries the new type on under the name, and what an earlier `let`
+took from `v` stays affected past the rebinding); one that only may (a
+module) hides nothing for sure, and a lambda's parameter or an arm's name
+binds inside its own expression. A data-predicate refusal (`'a: JsonData
+refuses ..`) is the mutation's too, where the retyped value is written
+out. A `let`
 over ⊥ is skipped: its type is a cell the first use decides, so an
 inserted writer decides it (`ExprTypeSite::cell` marks it). So is a
 `let` over a call whose callee's declared type returns a cell that no
@@ -288,7 +296,8 @@ the callee lacks) and `label-missing` (a required label dropped), right site the
 loses a default the expected type lets a caller omit), right site the
 definition and every statement using the lambda; the expected type is
 one the callee declares (a parameter typed by a variable, as `error`'s,
-or by nothing takes the argument's own type and expects nothing of it).
+or by nothing takes the argument's own type and expects nothing of it,
+and so does a callee whose type its uses decide, `let g = never()`).
 Open: a label passed
 twice, the disjoint labeled argument, the explicit disjoint default.
 
@@ -314,7 +323,8 @@ not under a parameter or an arm of its name): the let is annotated
 Right site: the let, a statement that uses `r` (what takes `r` meets a
 `&mut Any`), or one from `x`'s own let on that reads `x` or a binding
 built from it: `x` is an `Any` from where it is bound, so arithmetic on
-what an earlier statement took from it is refused too. Built (`ref-write`, `ref-widen`); the generator's `&mut`
+what an earlier statement took from it is refused too, and a select over
+what it holds for the case `Any` adds ("missing match cases"). Built (`ref-write`, `ref-widen`); the generator's `&mut`
 writes are the sites (`generate/funcs.rs`). (c) `&mut e` of a value (not
 a binding) in a definition's body, annotated at a type that does not hold
 `e`'s (`let r: &mut string = &mut [x]`). Rule: the value bounds the
@@ -348,9 +358,11 @@ the one whose `mkb`/`unb` the body reaches, or with several the one
 whose `mkb` the let calls; a value with a leaf its uses typed is
 skipped, since a let annotation decides a parameter left open. Right
 site: the let and every statement that reads its name, or the let of a
-binding its value reads and every statement that reads that binding (one
-decided after this let meets the annotation where its own value arrives,
-or where a later use asks another type of it or of the annotated name).
+binding its value reads, or of one that binding's value reads, and every
+statement that reads that binding (one decided after this let, by a `?`
+or a select still waiting, meets the annotation where its own value
+arrives, or where a later use asks another type of it or of the annotated
+name).
 Built (`abstract-param`).
 
 **12. Function types with variables of their own.** Not generated: a

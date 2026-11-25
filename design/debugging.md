@@ -37,6 +37,7 @@ or read it with env_mode as GRAPHIX_PRUNE is read. Found by reading; not run.
 | `GRAPHIX_DBG_TVAL=1` | typed-printer render steps |
 | `GRAPHIX_DBG_CYCLE_BT=1` | a backtrace at every `AmbiguousMember` refusal |
 | `GRAPHIX_FUSE_SERIAL=1` | fusion visits every part in order on one context instead of fusing disjoint subtrees in tasks (A/B: the decisions must agree) |
+| `GRAPHIX_TM_SITES=1` | `graphix-fuzz typemorph <file>`: a must-reject flip's verdict also says where the refusal was placed (the expression, the positions it passed) and what the mutation reached; triage only, since the verdict text is a finding's class |
 | `GRAPHIX_ABORT_ON_NO_MATCH=1` | an abort at a select no arm matched, a coverage hole (both engines report it once; the fuzzer's children set it, so a hole is a crash finding) |
 | `GRAPHIX_PAR_AUDIT=1` | a panic at a join whose right branch read what its left sibling published |
 | `GRAPHIX_QUIET=audit` | a panic where a reader in an ordinary cycle reads a quiet value, which no wake stood again (`Tag::moved`), that differs from its last production: a value changed under a reader nothing told to recompute (`design/bind_driven_bodies.md`, the moved mark; a seq machine's own names are exempt). The fixtures of `lib_tests::bottom` that deliver a changed value stale by hand trip it |

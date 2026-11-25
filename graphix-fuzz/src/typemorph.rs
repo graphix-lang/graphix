@@ -90,10 +90,35 @@ impl TmProbe {
 const VAL: &str = "tm__0";
 const TYP: &str = "Tm__0";
 
+/// `body`'s lines but its whole-line comments: a finding's header quotes
+/// the mutant it reports, its synthetic names and attributes with it.
+fn code_lines(body: &str) -> impl Iterator<Item = &str> {
+    body.lines().filter(|l| !l.trim_start().starts_with("//"))
+}
+
+/// Whether `e` is data that holds a lambda as one of its parts: a `let` of
+/// it is a definition, checked on its own where it closes, and the lambda
+/// in place is one instance its uses decide.
+fn holds_lambda(e: &Expr) -> bool {
+    let part = |e: &Expr| {
+        matches!(unparen(e).kind, ExprKind::Lambda(_)) || holds_lambda(unparen(e))
+    };
+    match &unparen(e).kind {
+        ExprKind::Struct(s) => s.args.iter().any(|(_, e)| part(e)),
+        ExprKind::Tuple { args }
+        | ExprKind::Variant { args, .. }
+        | ExprKind::Array { args }
+        | ExprKind::List { args }
+        | ExprKind::Any { args } => args.iter().any(part),
+        ExprKind::Map { args } => args.iter().any(|(k, v)| part(k) || part(v)),
+        _ => false,
+    }
+}
+
 /// Whether `body` already holds a name the mutations write (`tm__0`,
 /// `Tm__1`): a mutant's would shadow it or meet it.
 pub(crate) fn holds_synthetic(body: &str) -> bool {
-    ["tm__", "Tm__"].iter().any(|n| body.contains(n))
+    code_lines(body).any(|l| ["tm__", "Tm__"].iter().any(|n| l.contains(n)))
 }
 
 /// Enumerate up to `cap` candidates PER TRANSFORM over `body`.
@@ -106,7 +131,7 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
     // attributes, one that relocates a node moves them, and the reparse
     // check sees neither (Expr equality ignores attributes), so an
     // attr-bearing body could flip on its attributes rather than typing.
-    if holds_synthetic(body) || body.contains("#[") {
+    if holds_synthetic(body) || code_lines(body).any(|l| l.contains("#[")) {
         return (out, 0);
     }
     let Some(root) = mutate::parse_body(body) else {
@@ -155,6 +180,7 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
                             | ExprKind::Block { .. }
                             | ExprKind::Never { .. }
                     )
+                    && !holds_lambda(&pre[i])
                     && !leaks_binds(&pre[i])
             })
             .collect();

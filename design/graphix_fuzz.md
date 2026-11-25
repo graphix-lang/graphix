@@ -607,7 +607,8 @@ it back, check again; accept→reject is a flip. Transforms are graded,
 and the grade is the triage default: parens-wrap and label-permute
 (rotate a call's labeled arguments, which bind by name) are SOUND (a
 flip is a compiler bug); block-wrap (`e` → `{ let tm__0 = e; tm__0 }`,
-not on lambda literals (let-extract's probe) or blocks, nor on
+not on lambda literals (let-extract's probe) or data that holds one, which
+a `let` makes a definition checked where it closes, or blocks, nor on
 `never()`: a `let` over ⊥ is an open cell its writers type, where the
 bare `never()` is ⊥, nor under `&`, where `e` may be a place's root),
 let-extract (`f(.., |x| body)` → `let tm__0 = |x| body; f(.., tm__0)` —

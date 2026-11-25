@@ -113,10 +113,11 @@ impl Family {
                 "cannot order",
                 "does not contain",
                 "will never match",
+                "refuses",
             ],
             Family::FunctionBound => &["must be Function here"],
             Family::RefWrite => &["read-only reference", "does not contain &"],
-            Family::RefWiden => &["does not contain"],
+            Family::RefWiden => &["does not contain", "missing match cases"],
             Family::SameForm => &["the same runtime form"],
         };
         says.iter().any(|s| head.contains(s))
@@ -639,13 +640,23 @@ fn abstract_param(
         };
         let StructurePattern::Bind(own) = &b.pattern else { continue };
         let mut sites = affected_stmts(stmts, si, &own.name);
-        b.value.fold((), &mut |(), n| {
-            if let Some((j, read)) = earlier_let(stmts, si, n)
-                && let StructurePattern::Bind(name) = &read.pattern
-            {
-                sites.extend(affected_stmts(stmts, j, &name.name))
+        // the bindings the value reads, and those theirs read: one a `?`
+        // or a select still decides takes the refusal at its own let
+        let mut read: Vec<(usize, &Expr)> = vec![(si, &b.value)];
+        let mut met: Vec<usize> = Vec::new();
+        while let Some((before, value)) = read.pop() {
+            let mut found: Vec<(usize, &BindExpr)> = Vec::new();
+            value.fold((), &mut |(), n| found.extend(earlier_let(stmts, before, n)));
+            for (j, from) in found {
+                if let StructurePattern::Bind(name) = &from.pattern
+                    && !met.contains(&j)
+                {
+                    met.push(j);
+                    sites.extend(affected_stmts(stmts, j, &name.name));
+                    read.push((j, &from.value))
+                }
             }
-        });
+        }
         sites.sort_unstable();
         sites.dedup();
         let mut stmts = stmts.to_vec();
@@ -1411,6 +1422,11 @@ fn labels_default(
         // a value use of `f` as an argument, and the parameter it meets
         let expected = pre.iter().enumerate().find_map(|(i, n)| {
             let ExprKind::Apply(ap) = &n.kind else { return None };
+            // a callee whose type its uses decided (`let g = never()`) has
+            // the parameter this very call gave it
+            if types.cell(&ap.function) {
+                return None;
+            }
             let ft = callee_type(types, ap)?;
             // the callee declares a function type there: a variable or an
             // untyped parameter takes the argument's own type, and expects
@@ -1553,6 +1569,17 @@ fn widen_consumer(
             // cell) has the parameter this very call gave it
             ExprKind::Apply(ap) if types.cell(&ap.function) => None,
             ExprKind::Apply(ap) if !consumer_callee(&ap.function) => None,
+            // a call with an argument that is no value is never made, and
+            // a seq, which gathers a call's arguments into one value and
+            // selects over it, checks nothing of the others
+            ExprKind::Apply(ap)
+                if ap.args.iter().any(|(_, a)| {
+                    matches!(typemorph::unparen(a).kind, ExprKind::Never { .. })
+                        || types.of(a).first().is_some_and(|t| matches!(t, Type::Bottom))
+                }) =>
+            {
+                None
+            }
             ExprKind::Apply(ap) => {
                 // the first argument whose parameter is declared a concrete
                 // primitive: one over a variable widens with its argument
@@ -1688,9 +1715,10 @@ fn writes(stmts: &[Expr], v: &str) -> bool {
     })
 }
 
-/// The statement `si` (a `let v = ..`) and every later one, up to a
-/// statement that binds `v` itself (one that may, a module, hides nothing
-/// for sure), that reads or writes `v`, a `let` built from it, or what
+/// The statement `si` (a `let v = ..`) and every later one that reads or
+/// writes `v` (until a statement binds the name to a value not built from
+/// it; one that may, a module, hides nothing for sure), a `let` built
+/// from it, or what
 /// a connect relates to it (its target, and a cell it reads, which the connect
 /// decides): a change to `v`'s type meets all of them, and the checker reports
 /// whichever it reaches first.
@@ -1702,6 +1730,19 @@ fn affected_stmts(stmts: &[Expr], si: usize, v: &str) -> Vec<usize> {
             m || matches!(&n.kind, ExprKind::Ref { name } | ExprKind::Connect { name, .. }
                 if affected.iter().any(|a| name.to_string() == **a))
         });
+        // a let or a use binds for the statements after it (a lambda's
+        // parameter and an arm's name bind inside their own expression):
+        // a name it binds to a value not built from these is another's
+        if !mentions && matches!(later.kind, ExprKind::Bind(_) | ExprKind::Use { .. }) {
+            typemorph::each_bound(later, &mut |b| {
+                if let Some(b) = b {
+                    affected.retain(|a| **a != *b)
+                }
+            });
+            if affected.is_empty() {
+                break;
+            }
+        }
         if mentions {
             sites.push(k);
             match &later.kind {
@@ -1718,15 +1759,6 @@ fn affected_stmts(stmts: &[Expr], si: usize, v: &str) -> Vec<usize> {
                 }
                 _ => (),
             }
-        }
-        // a let or a use binds for the statements after it; a lambda's
-        // parameter and an arm's name bind inside their own expression
-        let mut rebinds = false;
-        if matches!(later.kind, ExprKind::Bind(_) | ExprKind::Use { .. }) {
-            typemorph::each_bound(later, &mut |b| rebinds |= b == Some(v))
-        }
-        if rebinds {
-            break;
         }
     }
     sites
