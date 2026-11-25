@@ -1,0 +1,6 @@
+// A labeled default that is itself a seq: the check recorded its types
+// at the rewrite's root, and a call that omits the label asked for them at
+// the written expression ("the default of #k, which its definition's
+// check recorded no types of").
+// Expected trace (both engines): (5, "s").
+{ let f = |#k: i64 = seq 0 { 5 }, y| (k, y); f("s") }

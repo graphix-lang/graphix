@@ -1,0 +1,7 @@
+// A call that omits a labeled default whose value holds a seq compiled
+// the default under a share of its own: the seq was lowered again with new
+// ids, its nodes found no types of the definition's check, and one of them
+// asked for a solver where none ran (soak nov24e, a panic: "a check by
+// bounds is running").
+// Expected trace (both engines): "s".
+{ let f = |#x: Array<'a> = [{ let step = 0; let go = step; let out = seq go { let r = 0; r + 1 }; select step { 30 => out, _ => never() } }], y: 'a| -> 'a y; f("s") }

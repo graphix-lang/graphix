@@ -1,0 +1,6 @@
+// A function inside another calls a generic function over a value built
+// from the outer parameter: the call's cell was fixed at bottom in the
+// definition and each instance read `Array<_>` (soak nov24e, the check
+// accepted what the build refused).
+// Expected trace (both engines): (1, 1).
+{ let f = |x| { let x = [1, x, 3]; let f = |y: i64| array::len(x); let r = f(0); r - 2 }; (f(3), f("s")) }

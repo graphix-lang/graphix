@@ -7023,3 +7023,72 @@ run!(
     is(Value::I64(2));
     FuseExpect::None
 );
+
+// A labeled default the compile rewrites, or that holds something it
+// rewrites (a seq, a trait method named as a value): a call that omits
+// the label builds the default over the definition's own rewrite, so it
+// finds the types the definition's check recorded.
+run!(
+    an_omitted_default_holding_a_seq_builds,
+    r#"{ let f = |#k = { let out = seq 0 { let r = 0; r }; 1 }, y| (k, y); f("s") }"#,
+    prints(r#"[i64:1, "s"]"#)
+);
+
+run!(
+    an_omitted_default_that_is_a_seq_builds,
+    r#"{ let f = |#k: i64 = seq 0 { 5 }, y| (k, y); f("s") }"#,
+    prints(r#"[i64:5, "s"]"#)
+);
+
+run!(
+    an_omitted_default_that_is_a_trait_method_builds,
+    r#"{
+    trait Desc { val desc: fn(self) -> string };
+    impl Desc for i64 { let desc = |x| "i" };
+    let f = |#show: fn(x: i64) -> string = Desc::desc, y: i64| show(y);
+    f(1)
+}"#,
+    prints(r#""i""#)
+);
+
+run!(
+    an_omitted_default_holding_a_function_with_a_seq_builds,
+    r#"{ let f = |#k = |q| { let step = 0; let out = seq 0 { let r = 0; r }; step }, y: 'a, z| k;
+        let r = f(-1.0 / 0.0, "s"); r(1.5) }"#,
+    is(Value::I64(0));
+    FuseExpect::None
+);
+
+// A function inside another calls a generic function over a value built
+// from the outer parameter: the inner call's type is the outer scheme's,
+// so each instance of the outer function has its own.
+run!(
+    a_nested_function_s_call_over_the_outer_parameter_builds,
+    r#"{ let f = |x| { let z = [x]; let g = |y: i64| array::len(z); let r = g(0); r };
+        (f(3), f("s")) }"#,
+    prints("[i64:1, i64:1]")
+);
+
+// A callback over a collection nothing is in: its parameter is no type,
+// whatever its uses would ask of a value.
+run!(
+    an_indexing_callback_over_no_value_builds,
+    r#"{ let second = |xs| xs[1]$; let a: Array<string> = array::map(never(), second); 0 }"#,
+    is(Value::I64(0));
+    FuseExpect::None
+);
+
+run!(
+    a_selecting_callback_over_no_value_builds,
+    r#"{ let f = |x| select x { i64 as n => n, string as s => s };
+        let a = array::map(never(), f); 0 }"#,
+    is(Value::I64(0));
+    FuseExpect::None
+);
+
+run!(
+    a_folding_callback_over_no_value_builds,
+    r#"{ let second = |acc, xs| xs[1]$; let a = array::fold(never(), "x", second); 0 }"#,
+    is(Value::I64(0));
+    FuseExpect::None
+);

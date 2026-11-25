@@ -1,0 +1,6 @@
+// A callback over a collection nothing is in: its parameter was fixed at
+// what its element read asks for, `[bytes, Array<string>]`, and the build
+// gave the read that type (soak nov24e, the check accepted what the build
+// refused).
+// Expected trace (both engines): 0.
+{ let second = |acc, xs| xs[1]$; let a = array::fold(never(), "x", second); let f = |x| select x { i64 as n => n, string as s => s }; let b = array::map(never(), f); 0 }

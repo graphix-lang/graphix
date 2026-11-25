@@ -4165,6 +4165,7 @@ impl Solving {
             v.is_rigid() && v.level().depth() > depth && !v.level().is_generic()
         });
         self.quantify(t, depth);
+        self.quantify_fed(depth, mark);
         let mut kept = Cells::new();
         self.reach(t, &mut kept);
         let own: SmallVec<[TVar; 8]> = kept
@@ -4331,6 +4332,40 @@ impl Solving {
             )
         }
         Ok(())
+    }
+
+    /// A cell of the definition closing over `depth` that one of its
+    /// scheme's variables flows into is each instance's too: a cell of a
+    /// definition inside it, whose bound a deeper cell keeps, so the
+    /// variable does not reach it. It is the scheme's, and the variable
+    /// holds it from above, so a copy of the variable has a copy of it.
+    fn quantify_fed(&mut self, depth: u32, mark: usize) {
+        let mut found = true;
+        while found {
+            found = false;
+            for i in mark..self.cells.len() {
+                let v = self.cells[i].clone();
+                if !open_own(&v, depth) {
+                    continue;
+                }
+                let lower = v.cell_lower();
+                let feeding = |l: &Type| match &shallow(l) {
+                    Type::TVar(w) if quantified(w) => Some(w.clone()),
+                    _ => None,
+                };
+                let vars: SmallVec<[TVar; 2]> =
+                    lower.iter().filter_map(feeding).collect();
+                if vars.is_empty() {
+                    continue;
+                }
+                known_mut(&v, |k| k.quantified = true);
+                v.generalize();
+                for w in vars.iter() {
+                    self.write(w, Kept::Upper(Type::TVar(v.clone())))
+                }
+                found = true
+            }
+        }
     }
 
     /// Make the closing definition's cell `v` each instance's, with what
@@ -4811,10 +4846,10 @@ impl Solving {
     /// paid and the cells fixed in rounds, until a round fixes none.
     fn fix_scope(&mut self, env: &Env, min: u32, last: bool, mark: usize) -> Result<()> {
         while self.fix_round(env, min, last, mark, false)? {}
-        match last {
-            true => self.fix_round(env, min, last, mark, true).map(|_| ()),
-            false => Ok(()),
-        }
+        // a cell the last round fixes may give a use its value, and the
+        // use a cell its first bound: that cell is fixed by another round
+        while last && self.fix_round(env, min, last, mark, true)? {}
+        Ok(())
     }
 
     /// One round of [`Self::fix_scope`]; true if it fixed a cell. With
@@ -5419,6 +5454,23 @@ impl Solving {
         let asked = |v: &TVar| {
             v.cell_above().iter().any(|c| !matches!(c, Type::Bound(_) | Type::Bottom))
         };
+        // CR claude for claude: [bug/medium] A type-directed read nothing decides is
+        // accepted where it sits in generic data that another generic binding reads.
+        // `let result = { let a = [|x| x, json::read("1")]; [a, -1, str::len] };
+        // result` checks and builds; with `a` written in place of its name the same
+        // program is refused "the type 'b must be known here, an operation reads it
+        // to know what to make", and so is `{ let a = [json::read("1")]; [a, str::len]
+        // }` (no lambda in `a`, so `a` is one value). The read is a part of `a`
+        // computed once (bind.rs `outside_parts`), but its call's cells are made at
+        // `a`'s own level when it is checked, so `'b` is a variable of `a`'s scheme,
+        // then of `result`'s, and no copy of it is judged. Checking such a part at
+        // the level it is compiled at closes it (tried for soak nov24d's crash and
+        // taken back: it changed
+        // lang::quantified::a_seqq_step_in_a_holder_decides_the_holders_copy, whose
+        // step then decided nothing of the holder's copy); a call site that keeps the
+        // level it was compiled at, as `Lambda::around` does, may be enough. probe:
+        // fuzz/pending-triage/nov24e/aieka/typeflip_000002.gx (graphix-fuzz
+        // typemorph prints a let-inline flip). (read-undecided-in-generic-data-01)
         let made = known(v, |k| k.made);
         if matches!(t, Type::Bottom) && (made || asked(v)) {
             for p in v.cell_above().iter() {
@@ -5696,6 +5748,14 @@ impl Solving {
                 let t = match self.meet(env, &demands) {
                     Err(_) if copied(v) => Type::Bottom,
                     t => t?,
+                };
+                // an instance's variable no value reaches, a use of which
+                // read nothing (an element read, a select's arms): fixed at
+                // what the use demands, the instance would be built giving
+                // the use a value the check never passed down it
+                let t = match copied(v) && uses(v).iter().any(|(_, met)| !met) {
+                    true => Type::Bottom,
+                    false => t,
                 };
                 let t = within(env, t, &v.cell_above())?;
                 // a value a type-directed operation makes takes its type

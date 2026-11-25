@@ -132,6 +132,10 @@ no "must be known here" let f = |x: 'a, y: 'a| -> 'a y; f(str::parse("1"), 1)
 | `?` and `$` take the errors off their operand, or with none the null, and it holds one of the two | `bounds::strip` |
 | what a function reads out of a binding outside it (a field, an element, a call's result, a pattern's name, what a held `?` or `$` leaves) is that binding's at every instance, and takes what is written to the binding after an instance is made | `Solving::quantify` (`produced_from_outside`, `given_late`), `copy_in` |
 | an order asked of a function is refused where the definition asking it closes, called or not | `Solving::generalize` (`hold_shape`) |
+| a cell of a definition that a variable of its scheme flows into (a call's cell in a function inside it) is the scheme's too, so each instance has its own | `Solving::quantify_fed` |
+| an instance's variable that no value reaches, a use of which read nothing (an element read, a select's arms), is bottom, not what the use demands | `Solving::fixed` |
+| the last fixing round is repeated while it fixes something: a cell it fixes may give a waiting select its value, and the select a cell its first bound | `Solving::fix_scope` |
+| a labeled default is compiled under its definition's own share, at every call that omits it: what the compile rewrites in it (a seq, a trait method named as a value) is the rewrite the check typed | `LambdaDef::in_signature`, `InstanceTypes::of_default` |
 
 ```graphix,cases
 ok let f = |x| x; (f(1), f("s"))
@@ -164,6 +168,10 @@ ok let v = {a: 0}; let f = |x| (x, v.a); (f(1), f("s"))
 no "functions have no order" let ge = |p| p >= |n| n; 1
 ok let h = { array::map([0], |x| |y| true); |n| n }; (h(1), h("s"))
 ok let t = |x| [queuefn, x]; array::flat_map([1], t)
+ok let f = |x| { let z = [x]; let g = |y: i64| array::len(z); g(0) }; (f(3), f("s"))
+ok let second = |xs| xs[1]$; let a: Array<string> = array::map(never(), second); a
+ok let f = |#k: i64 = seq 0 { 5 }, y| (k, y); f("s")
+ok let v = {a: 1 + 1, b: 2}; let r = select v { {b: q, ..} => q }; let f = |x: i64| v.a; (r, f(0))
 ```
 
 ### Select

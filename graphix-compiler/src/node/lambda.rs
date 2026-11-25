@@ -646,20 +646,10 @@ impl InstanceTypes {
         root: ExprId,
         site: Option<&FnType>,
     ) -> Result<Self> {
+        // a default the compile rewrites (a seq, a trait method named as a
+        // value) has its rows at the rewrite's root
+        let root = def.shared.lock().lowerings.get(&root).map_or(root, |e| e.id);
         match def.table.get() {
-            // CR claude for claude: [bug/medium] A labeled default whose root
-            // expression is lowered (a trait method used as a value, `#d: fn(x: i64) ->
-            // i64 = Show::show`; a `seq` or `seqq`) passes the check, and every call
-            // that omits the label fails the build with "the default of #d, which its
-            // definition's check recorded no types of": compile replaces the root by
-            // its lowering, so the table has rows for the lowered ids and none for
-            // `root`. A default that only contains the lowered form builds. Fix: record
-            // the root's row under the written expression's id when a lowering stands
-            // in for it, keep a default's lowering with its definition as a body's is,
-            // and pin both forms. probe:
-            // design/review-2026-11-16/repro/x-engine-seq-errors-lowered-default-check-build.gx
-            // (x-check-build-default-seq-fallback.gx shows a seq inside a default
-            // lowered again at the call). (x-engine-seq-errors-04)
             Some(tables) if tables.table.types.contains_key(&root) => {
                 let known = site
                     .and_then(|site| {
@@ -1369,36 +1359,7 @@ impl<R: Rt> LambdaDef<R> {
             DefOrigin::Runtime => Around::nothing(),
         };
         let outer = ctx.body.replace(BodyCompile {
-            // CR claude for claude: [bug/medium] Every compile of a labeled default
-            // gets a new share, so `compiler::lowering` lowers a `seq` in the default
-            // again at each call that omits it, with new expression ids: the
-            // definition's table has no row for the lowered nodes and the bind checks
-            // them in full (`elab_audit::fallback`, one line a node). That check is not
-            // the definition's: `let s = {f: |x| x}; let t = 1; seq t { let a = s.f(1);
-            // s.f("s") }` as a default passes the check and is refused by the build
-            // ('i64 does not contain string'), and builds as a function's body. Keep
-            // one share per definition for its defaults, so the bind takes the check's
-            // lowering. The root-lowered default in
-            // design/review-2026-11-16/repro/x-engine-seq-errors-lowered-default-check-build.gx
-            // has the same cause. probe:
-            // design/review-2026-11-16/repro/x-check-build-default-seq-fallback.gx
-            // (x-check-build-03)
-            // CR claude for claude: [bug/high] Each compile of a labeled default gets a
-            // share of its own here, so `compiler::lowering` rewrites a default's seq
-            // or trait-method name afresh, with new expression ids, at every compile,
-            // where a body's compiles share one rewrite. `DefTable::record_defaults`
-            // keys rows by the check's ids and `InstanceTypes::of_default` asks for a
-            // row at the written default's id, which a lowered root never has: `|#show:
-            // fn(x: i64) -> string = Desc::desc, y: i64| show(y)` and `|#v: i64 = seq {
-            // .. }, y: i64| ..` pass the check and every bind that omits the label is
-            // refused ("the default of #show, which its definition's check recorded no
-            // types of"); at a run-time bind the call is bottom for good. A lowered
-            // part below the root has no rows either and is checked in full in each
-            // instance. Compile a definition's defaults under a share it keeps, and
-            // have `of_default` look for the row of the lowering's root. probe:
-            // design/review-2026-11-16/repro/c-lambda-default-lowered-root.gx
-            // (c-lambda-03)
-            share: BodyShare::default(),
+            share: self.shared.clone(),
             checking: false,
             types,
             around,

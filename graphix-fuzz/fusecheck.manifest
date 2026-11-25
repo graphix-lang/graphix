@@ -473,6 +473,12 @@
 2	soak-jul2026/38_queuefn_clone_ftyp_lost.gx
 0	soak-jul2026/39_nullable_callback_return.gx
 0	soak-jul2026/40_heterogeneous_callback_return.gx
+1	soak-nov24e-nov2026/00_select_routed_in_the_last_round.gx
+6	soak-nov24e-nov2026/01_omitted_default_holding_a_seq.gx
+2	soak-nov24e-nov2026/02_omitted_default_that_is_a_seq.gx
+1	soak-nov24e-nov2026/03_nested_function_calls_over_the_outer_parameter.gx
+0	soak-nov24e-nov2026/04_callback_over_no_value.gx
+0	soak-nov24e-nov2026/05_functions_a_callback_made_restored_from_an_image.gx
 0	source-e-jun2026/01_let_a_duration_1_s_duration_2_s_a.gx
 1	source-e-jun2026/02_let_e_error_0_is_err_e.gx
 1	source-e-jun2026/03_let_a_0_array_map_a_x_1_x.gx

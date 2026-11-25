@@ -14142,3 +14142,22 @@ run!(
     prints(r#"[i64:1, "s"]"#);
     FuseExpect::None
 );
+
+// A select that waits for its scrutinee's type to the input's end (a
+// field of it flows into a generic function's result) is routed in the
+// last fixing round, and the cells it first bounds then are fixed by a
+// round after it: its patterns take their places from a decided type.
+run!(
+    a_select_routed_in_the_last_round_lays_its_patterns_out,
+    r#"{ let v = {a: 1 + 1, b: 2}; let r = select v { {b: q, ..} => q };
+        let f = |x: i64| v.a; let u = f(0); (r, u) }"#,
+    prints("[i64:2, i64:2]")
+);
+
+run!(
+    a_guarded_arm_before_a_partial_pattern_routed_in_the_last_round,
+    r#"{ let v = {a: str::concat("", "x"), b: 2};
+        let r = select v { {a: p, b: q} if (!true) => 0, {b: q, ..} => q + 5 };
+        let f = |x: i64| select x { 0 => v.a, _ => error("") }; let u = f(0)$; (r, u) }"#,
+    prints(r#"[i64:7, "x"]"#)
+);

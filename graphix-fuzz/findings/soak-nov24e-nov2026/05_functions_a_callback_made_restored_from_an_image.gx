@@ -1,0 +1,5 @@
+// Functions made by a callback and held in an array, bound again by a
+// plain let: the image of the program restored without the value (soak
+// nov24e, the restored program differed from the cold one).
+// Expected trace (both engines): the two functions, printed.
+{ let x = array::iter([1, 2, 3, 4]); let f = |n| |i| |{ bar, baz: _, foo: _ }| bar + bar; let a = array::map([0, 1], |j| f(j)); let c = a; c }

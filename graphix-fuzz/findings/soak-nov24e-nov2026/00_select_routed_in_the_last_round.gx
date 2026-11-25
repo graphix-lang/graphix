@@ -1,0 +1,7 @@
+// A select over a struct one of whose fields flows into a generic
+// function's result is routed in the last fixing round, and the arm's
+// type, first bounded there, was left a cell: the pattern kept `b` at the
+// place its own shape gave it and no arm matched at run time ("a coverage
+// hole in the check"; soak nov24e, the fuzzer's abort on it, two boxes).
+// Expected trace (both engines): (7, "x").
+{ let v2 = { a: str::concat("", "x"), b: 2 }; let v3 = select v2 { { a: v1, b: v3 } if (!true) => 0, { b: v3, .. } => v3 + 5 }; let v1 = |v4: i64| select v4 { 0 => v2.a, _ => error("") }; let v5 = v1(0)$; (v3, v5) }
