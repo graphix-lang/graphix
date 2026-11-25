@@ -1,0 +1,9 @@
+// A select that looks into what a `$` leaves was paid before the `$`: the
+// cell was fixed at bottom and the `$` then refused "type mismatch _ does
+// not contain i64". The waiting uses here reach each other through `v1`'s
+// cell (the second `$`'s result flows into a select `v1` flows into too), so
+// the ordered phase paid none, and the phase after it kept no order at all.
+// Now a use waits for any other whose result flows into what it reads (soak
+// nov24f, a block-wrap flip: with `v5[0]$` in place there is one `$` less).
+// Expected trace (both engines): 1.
+{ let v1 = 1; let v4 = &mut v1; let v5 = [v4, v4]; let v7: [`B(bool), `C, `Nil] = select ((v1 %? select (v1 *? 1) { i64 as n => n, _ => 0 })$, 2) { (100, a) => `B(true), (a, b) => `Nil }; select v7 { `B(_) | `C => v1 + 10, `Nil => *({ let t = v5[0]; t }$) } }

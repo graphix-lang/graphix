@@ -1,0 +1,9 @@
+// A select in a function, over `v7 +? v14` where both are outer values a
+// `$` leaves. The sum's cell is the function's and takes its values from
+// the two outer cells; a search from a `$`'s result did not find it (the
+// deeper cell holds that link), so the select was paid first, its
+// scrutinee fixed at the error alone: "pattern i64 will never match:
+// nothing reaches it". As a callback of `list::fold` it checked (soak
+// nov24f, a let-extract flip).
+// Expected trace (both engines): 10.
+{ let v7 = (1 +? 2)$; let v14 = (3 +? 4)$; let t = |a| select (v7 +? v14) { error as _ => 0, i64 as n => n }; t(0) }

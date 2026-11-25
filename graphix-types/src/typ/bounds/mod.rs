@@ -899,6 +899,48 @@ enum Pending {
     Chain,
 }
 
+/// Which other pending uses one waits for before it is paid
+/// ([`Solving::fix_round`]).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Order {
+    /// Any whose result reaches what it reads, by any path, or flows
+    /// into it.
+    Reach,
+    /// Any whose result flows into what it reads.
+    Flow,
+    /// None.
+    Free,
+}
+
+/// Whether a value of a cell of `ins` may come from a cell a pending use
+/// other than `key` gives its value: `outs` holds those cells, each with
+/// the uses that give it one.
+fn fed_by(
+    outs: &AHashMap<usize, SmallVec<[(Pending, usize); 1]>>,
+    key: (Pending, usize),
+    ins: &[TVar],
+) -> bool {
+    if outs.is_empty() {
+        return false;
+    }
+    let mut seen: LPooled<AHashSet<usize>> = LPooled::take();
+    let mut work: SmallVec<[TVar; 8]> = ins.iter().cloned().collect();
+    while let Some(v) = work.pop() {
+        if !v.is_open() || !seen.insert(v.cell_addr()) {
+            continue;
+        }
+        if outs.get(&v.cell_addr()).is_some_and(|ks| ks.iter().any(|k| *k != key)) {
+            return true;
+        }
+        let mut below: SmallVec<[TVar; 4]> = SmallVec::new();
+        v.cell_lower().iter().for_each(|l| cells_of(l, false, &mut below));
+        work.extend(below);
+        work.extend(feeders(&v));
+        work.extend(known(&v, |k| k.from.clone()))
+    }
+    false
+}
+
 /// What waits for the payload of a chain to be decided ([`Solving::chains`]).
 #[derive(Clone)]
 enum Chained {
@@ -4943,16 +4985,19 @@ impl Solving {
     ) -> Result<bool> {
         let mut progress = true;
         // at the input's end, choices that wait on each other are made in
-        // whatever order is left
-        let mut ordered = true;
+        // a looser order, and then in whatever order is left
+        let mut order = Order::Reach;
         // with nothing pending there is no use to place
         let pending = |s: &Self| {
             !(s.held.is_empty() && s.strips.is_empty() && s.chains.is_empty())
                 || s.selects.iter().any(|x| !x.waiting.is_empty())
         };
-        while (progress || (last && ordered)) && pending(self) {
+        while (progress || (last && order != Order::Free)) && pending(self) {
             if !progress {
-                ordered = false
+                order = match order {
+                    Order::Reach => Order::Flow,
+                    Order::Flow | Order::Free => Order::Free,
+                }
             }
             progress = false;
             let held = {
@@ -4968,39 +5013,53 @@ impl Solving {
                 self.held_back(own.chain(pending), min)
             };
             // a pending use (a held choice, a select still waiting) waits
-            // for any other whose result reaches what it reads: its kind
-            // and index, and everything its result reaches
-            let mut produced: Vec<((Pending, usize), Cells)> = vec![];
-            if ordered {
-                let closure = |s: &Self, outs: SmallVec<[TVar; 4]>| {
-                    let mut all = Cells::new();
-                    outs.iter().for_each(|v| s.reach(&Type::TVar(v.clone()), &mut all));
-                    all
-                };
+            // for others by `order`: each one's kind and index, and the
+            // cells it gives a value
+            let mut results: Vec<((Pending, usize), SmallVec<[TVar; 4]>)> = vec![];
+            if order != Order::Free {
                 for (i, (_, b, _)) in self.held.iter().enumerate() {
-                    produced.push(((Pending::Held, i), closure(self, open_cells(b))))
+                    results.push(((Pending::Held, i), open_cells(b)))
                 }
                 // a select nothing has reached yet produces its names too
                 for id in 0..self.selects.len() {
                     let pending = !self.selects[id].waiting.is_empty()
                         || !(self.selects[id].routed || self.selects[id].instance);
                     if pending {
-                        let binds = self.select_cells(id);
-                        produced.push(((Pending::Select, id), closure(self, binds)))
+                        results.push(((Pending::Select, id), self.select_cells(id)))
                     }
                 }
                 for (i, (_, out, raised, _)) in self.strips.iter().enumerate() {
                     let mut outs = open_cells(out);
                     raised.iter().for_each(|p| outs.extend(open_cells(p)));
-                    produced.push(((Pending::Strip, i), closure(self, outs)))
+                    results.push(((Pending::Strip, i), outs))
                 }
                 for (i, (c, _)) in self.chains.iter().enumerate() {
-                    produced.push(((Pending::Chain, i), closure(self, c.outs())))
+                    results.push(((Pending::Chain, i), c.outs()))
                 }
             }
-            let free = |key: (Pending, usize), ins: &[TVar]| {
-                !produced.iter().any(|(k, c)| *k != key && ins.iter().any(|v| c.has(v)))
+            // everything each one's result reaches
+            let mut produced: Vec<((Pending, usize), Cells)> = vec![];
+            if order == Order::Reach {
+                for (key, outs) in results.iter() {
+                    let mut all = Cells::new();
+                    outs.iter()
+                        .for_each(|v| self.reach(&Type::TVar(v.clone()), &mut all));
+                    produced.push((*key, all))
+                }
+            }
+            let mut outs: LPooled<AHashMap<usize, SmallVec<[(Pending, usize); 1]>>> =
+                LPooled::take();
+            for (key, cells) in results.iter() {
+                for v in cells.iter() {
+                    outs.entry(v.cell_addr()).or_default().push(*key)
+                }
+            }
+            let apart = |key: (Pending, usize), cells: &[TVar]| {
+                !produced.iter().any(|(k, c)| *k != key && cells.iter().any(|v| c.has(v)))
             };
+            let unfed = |key: (Pending, usize), ins: &[TVar]| !fed_by(&outs, key, ins);
+            let free =
+                |key: (Pending, usize), ins: &[TVar]| apart(key, ins) && unfed(key, ins);
             for i in (0..self.held.len()).rev() {
                 // a group placed together leaves fewer behind
                 let Some((a, b, scheme)) = self.held.get(i).cloned() else { continue };
@@ -5101,9 +5160,10 @@ impl Solving {
                 // operand holds: a chain's payload another raise still pays
                 let mut read = Cells::new();
                 ins.iter().for_each(|v| self.reach(&Type::TVar(v.clone()), &mut read));
-                if ins.iter().all(|v| self.fixable(&held, v, min))
-                    && free((Pending::Strip, i), &read.met)
-                {
+                // what the operand reaches is its to fix
+                let free = apart((Pending::Strip, i), &read.met)
+                    && unfed((Pending::Strip, i), &ins);
+                if ins.iter().all(|v| self.fixable(&held, v, min)) && free {
                     self.strips.swap_remove(i);
                     // the operand's own shape says what goes: what its
                     // parts are is decided only where the shape does not
@@ -5125,7 +5185,7 @@ impl Solving {
                         "the type of the operand of ? or $ is not known here: annotate it"
                     );
                     return Err(placed(&made, unknown));
-                } else if free((Pending::Strip, i), &read.met)
+                } else if free
                     && self.reaches_scheme(&operand)
                     && let Some(shape) = shaped(env, &operand)?
                 {

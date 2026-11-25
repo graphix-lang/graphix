@@ -14872,7 +14872,7 @@ run!(
   let g: fn(k: D<Any, Any, i64>, z: i64) -> i64 = outer;
   g(`U(|x0, x1, x2| 0), 1)
 }"#,
-    refused("`Y(D<Any, null, Any>) could go to more than one member of the union");
+    refused("`Y(D<null, Any, i64>) could go to more than one member of the union");
     FuseExpect::None
 );
 
@@ -18762,4 +18762,35 @@ run!(
     a_typed_read_asked_through_a_block_beside_a_call_that_holds_it,
     r#"{ let s = json::read("1")$; let u = { let t = s; t } + 1; (u, once(s)) }"#,
     prints("[i64:2, i64:1]")
+);
+
+// What waits on a cell's type (a select's arms, a `?` or `$`) is paid
+// after any other waiting use whose result flows into what it reads. A
+// select over `v7 +? v14` inside a function reads two outer values, each
+// what a `$` leaves: the `$`s are paid first, wherever the function stands.
+run!(
+    a_select_in_a_named_function_waits_for_the_strips_its_operands_come_from,
+    "{ let v7 = (1 +? 2)$; let v14 = (3 +? 4)$; \
+       let t = |a| select (v7 +? v14) { error as _ => 0, i64 as n => n }; t(0) }",
+    is(Value::I64(10))
+);
+
+run!(
+    a_select_in_a_function_called_in_place_waits_for_the_strips_its_operands_come_from,
+    "{ let v7 = (1 +? 2)$; let v14 = (3 +? 4)$; \
+       (|a| select (v7 +? v14) { error as _ => 0, i64 as n => n })(0) }",
+    is(Value::I64(10))
+);
+
+// The same where the uses that wait reach one another by some path, so
+// none is paid first by reach alone: a select that looks into what a `$`
+// leaves is paid after that `$`.
+run!(
+    a_select_waits_for_the_strip_it_looks_into_among_uses_that_reach_each_other,
+    "{ let v1 = 1; let v4 = &mut v1; let v5 = [v4, v4]; \
+       let v7: [`B(bool), `C, `Nil] = \
+         select ((v1 %? select (v1 *? 1) { i64 as n => n, _ => 0 })$, 2) { \
+           (100, a) => `B(true), (a, b) => `Nil }; \
+       select v7 { `B(_) | `C => v1 + 10, `Nil => *({ let t = v5[0]; t }$) } }",
+    is(Value::I64(1))
 );

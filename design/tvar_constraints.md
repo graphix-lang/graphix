@@ -144,6 +144,7 @@ no "must be known here" let f = |x: 'a, y: 'a| -> 'a y; f(str::parse("1"), 1)
 | a variable that no value reaches, a use of which read nothing (an element read, a select's arms), is bottom, not what the use demands: an instance's, and any cell no operation makes values at | `Solving::fixed` |
 | a cell fixed by what is asked of it holds that type for the cells fixed after it, and a cell nothing flowed into and nothing is asked of holds what the cells below it became: a typed read asked its type through a block is that type in a call that only holds it | `Solving::settled`, `Solving::held_below` |
 | the last fixing round is repeated while it fixes something: a cell it fixes may give a waiting select its value, and the select a cell its first bound | `Solving::fix_scope` |
+| a waiting use (a held choice, a select, a `?` or `$`, a chain) is paid after any other whose result flows into what it reads; at the input's end, uses that reach each other by some path are paid in that order alone, and only uses that feed each other in whatever order is left | `Solving::fix_round`, `fed_by` |
 | a labeled default is compiled under its definition's own share, at every call that omits it: what the compile rewrites in it (a seq, a trait method named as a value) is the rewrite the check typed | `LambdaDef::in_signature`, `InstanceTypes::of_default` |
 
 ```graphix,cases
