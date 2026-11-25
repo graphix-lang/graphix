@@ -286,9 +286,9 @@ polymorphic labeled parameter whose other uses are not concrete. Built,
 as three families so their ids stay distinct: `label-unknown` (a label
 the callee lacks) and `label-missing` (a required label dropped), right site the call; `label-default` (a labeled lambda passed as a value
 loses a default the expected type lets a caller omit), right site the
-definition and every statement using the lambda; no mutant where the
-callee is bound in the body with a parameter no annotation types, since
-that parameter takes the argument's own type and expects nothing of it.
+definition and every statement using the lambda; the expected type is
+one the callee declares (a parameter typed by a variable, as `error`'s,
+or by nothing takes the argument's own type and expects nothing of it).
 Open: a label passed
 twice, the disjoint labeled argument, the explicit disjoint default.
 

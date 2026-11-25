@@ -95,6 +95,8 @@ impl Family {
                 "cannot compare",
                 "cannot order",
                 "expected struct not",
+                "is not a struct",
+                "must be one type",
                 "has no field",
                 "the members' fields differ",
                 "not decided at this select",
@@ -1330,10 +1332,11 @@ fn function_bound(
 /// required label and no other). And a labeled lambda passed as a value
 /// where the expected function type omits a defaulted label or keeps it
 /// optional loses the default: the value then requires what the expected
-/// type lets a caller omit (`fntyp.rs::align`). A callee bound in the
-/// body with a parameter no annotation types expects nothing of it: the
-/// parameter takes the argument's own type. Right site: the call, or
-/// for the default, the definition and every statement using the lambda.
+/// type lets a caller omit (`fntyp.rs::align`). The expected type is one
+/// the callee declares: a parameter typed by a variable, or by nothing,
+/// takes the argument's own type and expects nothing of it. Right site:
+/// the call, or for the default, the definition and every statement
+/// using the lambda.
 fn labels(
     root: &Expr,
     pre: &[Expr],
@@ -1405,36 +1408,23 @@ fn labels_default(
             continue;
         };
         let (_, refs, names) = forwarded_uses(&stmts, si, f);
-        // a callee the body binds, one of whose parameters nothing types
-        let untyped = |callee: &Expr| {
-            let ExprKind::Ref { name } = &typemorph::unparen(callee).kind else {
-                return false;
-            };
-            let name = name.to_string();
-            let params = |s: &Expr| match &s.kind {
-                ExprKind::Bind(d) => match (&d.pattern, &d.value.kind) {
-                    (StructurePattern::Bind(n), ExprKind::Lambda(l))
-                        if *n.name == name =>
-                    {
-                        Some(l.args.iter().any(|a| a.constraint.is_none()))
-                    }
-                    _ => None,
-                },
-                _ => None,
-            };
-            stmts.iter().rev().find_map(|(_, _, s)| params(s)).unwrap_or(false)
-        };
         // a value use of `f` as an argument, and the parameter it meets
         let expected = pre.iter().enumerate().find_map(|(i, n)| {
             let ExprKind::Apply(ap) = &n.kind else { return None };
-            if untyped(&ap.function) {
-                return None;
-            }
             let ft = callee_type(types, ap)?;
+            // the callee declares a function type there: a variable or an
+            // untyped parameter takes the argument's own type, and expects
+            // nothing of it
+            let declared = types.declared(&ap.function)?;
+            let written = |p: &FnArgType| {
+                let k = ft.args.iter().position(|a| std::ptr::eq(a, p))?;
+                let t = &declared.args.get(k)?.typ;
+                t.with_deref(|d| matches!(d, Some(Type::Fn(_)))).then_some(())
+            };
             paired(&ft, ap, i, sizes).into_iter().find_map(|(ix, _, param)| {
-                refs.iter()
-                    .any(|(r, _)| *r == ix)
-                    .then(|| param.map(|p| p.typ.clone()))?
+                refs.iter().any(|(r, _)| *r == ix).then(|| {
+                    param.filter(|p| written(p).is_some()).map(|p| p.typ.clone())
+                })?
             })
         });
         let Some(expected) = expected else { continue };
@@ -1729,8 +1719,12 @@ fn affected_stmts(stmts: &[Expr], si: usize, v: &str) -> Vec<usize> {
                 _ => (),
             }
         }
+        // a let or a use binds for the statements after it; a lambda's
+        // parameter and an arm's name bind inside their own expression
         let mut rebinds = false;
-        typemorph::each_bound(later, &mut |b| rebinds |= b == Some(v));
+        if matches!(later.kind, ExprKind::Bind(_) | ExprKind::Use { .. }) {
+            typemorph::each_bound(later, &mut |b| rebinds |= b == Some(v))
+        }
         if rebinds {
             break;
         }
