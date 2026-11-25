@@ -136,6 +136,7 @@ no "must be known here" let f = |x: 'a, y: 'a| -> 'a y; f(str::parse("1"), 1)
 | `?` and `$` take the errors off their operand, or with none the null, and it holds one of the two | `bounds::strip` |
 | what a `?` or a `$` leaves a variable of a closing scheme is the scheme's too: a function returning a typed read through one is as generic in it as one returning the read's result whole, and each call decides it | `Solving::fix_round` |
 | a let of a block that ends in a generic name, or of a sample of one, names that name's instance, closed as the let's own scheme: the cell the read was compiled as is the instance | `Solving::name_as` |
+| a variable's twin at a shallower level asks nothing of it: a `Concrete` variable is "asked" only by a type, or by a cell that is not its own twin | `Solving::type_asked` |
 | what a function reads out of a binding outside it (a field, an element, a call's result, a pattern's name, what a held `?` or `$` leaves) is that binding's at every instance, and takes what is written to the binding after an instance is made | `Solving::quantify` (`produced_from_outside`, `given_late`), `copy_in` |
 | an order asked of a function is refused where the definition asking it closes, called or not | `Solving::generalize` (`hold_shape`) |
 | a cell of a definition that a variable of its scheme flows into (a call's cell in a function inside it) is the scheme's too, so each instance has its own | `Solving::quantify_fed` |
@@ -204,6 +205,8 @@ ok let f = |x| x; let g = { 0; f }; let a = g(1); let b = g("s"); a + 1
 ok let f = |x| x; let c = 1; let g = c ~ f; let a = g(1); let b = g("s"); a + 1
 no "must be known here" let r = { let f = (1, |k: i64| str::parse("[k]")); 0; f }; r
 no "must be known here" let r = { 0; (1, |k: i64| str::parse("[k]")) }; r
+ok let f = 'a: Concrete |g: fn(v: 'a) -> i64| 0; let h = [list::nil, &[f]]; 0
+no "must be known here" let f = 'a: Concrete |g: fn(v: 'a) -> i64| 0; let h = (list::nil, &[f]); (*(h.1))[0]$(|v| 0)
 ```
 
 ### Select

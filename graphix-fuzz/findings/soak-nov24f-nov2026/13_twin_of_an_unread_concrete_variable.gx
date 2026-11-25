@@ -1,0 +1,10 @@
+// An instance of a function whose `'a: Concrete` nothing makes a value of,
+// held in a part of generic data that is computed once (`&[f]` beside the
+// generic `list::nil`). The part reads `f` at the level around the
+// definition, the copy of 'a is seen from there through a twin, and the
+// judge read the twin as something asked of the type: "the type 'a must be
+// known here, a type-directed operation reads it". With `1` in place of
+// `list::nil`, or the array in place of its name, it checked (soak nov24e,
+// a block-wrap flip).
+// Expected trace (both engines): 0.
+{ let f = 'a: Concrete |g: fn(v: 'a) -> i64| 0; let h = array::iter({ let t = [list::nil, 1, &[f]]; t }); 0 }

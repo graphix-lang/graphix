@@ -2252,3 +2252,39 @@ run!(
     refused("the type 'b must be known here, an operation reads it to know what to make");
     FuseExpect::None
 );
+
+// A part of a definition's value that is computed once reads a generic
+// name at the level around the definition, and its copy's variables are
+// seen from there through twins. A twin asks nothing of the variable it
+// is the twin of: an instance of a function whose `'a: Concrete` nothing
+// makes a value of stands in generic data as it does anywhere else, and a
+// handler passed through it with its argument left open is still refused.
+run!(
+    an_unread_concrete_variable_stands_in_a_part_computed_once,
+    "{ let f = 'a: Concrete |g: fn(v: 'a) -> i64| 0; let h = [list::nil, &[f]]; 0 }",
+    is(Value::I64(0))
+);
+
+run!(
+    an_unread_concrete_variable_stands_in_a_named_part_computed_once,
+    "{ let f = 'a: Concrete |g: fn(v: 'a) -> i64| 0; \
+       let h = array::iter({ let t = [list::nil, 1, &[f]]; t }); 0 }",
+    is(Value::I64(0));
+    FuseExpect::None
+);
+
+run!(
+    a_typed_handler_through_a_part_computed_once_decides_the_variable,
+    "{ let f = 'a: Concrete |g: fn(v: 'a) -> i64| 0; let h = (list::nil, &[f]); \
+       (*(h.1))[0]$(|v: i64| v) }",
+    is(Value::I64(0));
+    FuseExpect::None
+);
+
+run!(
+    an_open_handler_through_a_part_computed_once_is_refused,
+    "{ let f = 'a: Concrete |g: fn(v: 'a) -> i64| 0; let h = (list::nil, &[f]); \
+       (*(h.1))[0]$(|v| 0) }",
+    refused("must be known here, a type-directed operation reads it");
+    FuseExpect::None
+);

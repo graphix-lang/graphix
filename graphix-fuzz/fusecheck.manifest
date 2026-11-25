@@ -492,6 +492,7 @@
 1	soak-nov24f-nov2026/10_function_returning_a_typed_read.gx
 3	soak-nov24f-nov2026/11_block_ending_in_a_generic_name.gx
 0	soak-nov24f-nov2026/12_undecided_read_behind_a_block_ending_in_a_name.gx
+0	soak-nov24f-nov2026/13_twin_of_an_unread_concrete_variable.gx
 0	source-e-jun2026/01_let_a_duration_1_s_duration_2_s_a.gx
 1	source-e-jun2026/02_let_e_error_0_is_err_e.gx
 1	source-e-jun2026/03_let_a_0_array_map_a_x_1_x.gx

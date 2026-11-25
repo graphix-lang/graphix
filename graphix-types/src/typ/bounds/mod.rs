@@ -5541,6 +5541,29 @@ impl Solving {
     // drain off); predicates on a fixed cell are the solver's judge, where this
     // moved. Re-probe under the new check before closing.
 
+    /// Whether something is asked of the type of `v`: it flows into a
+    /// type, or into a cell that is not its own twin at a shallower level
+    /// ([`Self::extrude`]). A twin is `v` seen from there, asked what `v`
+    /// is asked, and a cell wanted as nothing (an instance at ⊥) is asked
+    /// nothing.
+    fn type_asked(&self, v: &TVar) -> bool {
+        let mut work: SmallVec<[TVar; 2]> = SmallVec::from_iter([v.clone()]);
+        while let Some(v) = work.pop() {
+            let twin = |u: &TVar| {
+                let key = (v.cell_addr(), true, u.level().depth());
+                self.twins.get(&key).is_some_and(|(_, _, n)| n.same_cell(u))
+            };
+            for c in v.cell_above().iter() {
+                match c {
+                    Type::Bound(_) | Type::Bottom => (),
+                    Type::TVar(u) if twin(u) => work.push(u.clone()),
+                    _ => return true,
+                }
+            }
+        }
+        false
+    }
+
     /// Each predicate the fixed cell `v` carries holds of what it was
     /// fixed to.
     fn judge_cell(&mut self, env: &Env, v: &TVar) -> Result<()> {
@@ -5549,13 +5572,9 @@ impl Solving {
         let Some(t) = v.binding().map(|t| shallow(&t)) else { return Ok(()) };
         // an operation that reads a type to know what to make (a parse,
         // a typed read) needs one where its value is made, or where
-        // something was asked of the type: nothing decided this. A cell
-        // wanted as nothing (an instance at ⊥) is asked nothing
-        let asked = |v: &TVar| {
-            v.cell_above().iter().any(|c| !matches!(c, Type::Bound(_) | Type::Bottom))
-        };
+        // something was asked of the type: nothing decided this
         let made = known(v, |k| k.made);
-        if matches!(t, Type::Bottom) && (made || asked(v)) {
+        if matches!(t, Type::Bottom) && (made || self.type_asked(v)) {
             for p in v.cell_above().iter() {
                 match p {
                     // a call's result is made of it: annotate where it

@@ -492,6 +492,7 @@ trace	soak-nov24f-nov2026/09_typed_read_asked_through_a_block.gx
 trace	soak-nov24f-nov2026/10_function_returning_a_typed_read.gx
 trace	soak-nov24f-nov2026/11_block_ending_in_a_generic_name.gx
 reject	N: the type 'b must be known here, an operation reads it to know what to make: annotate where its result goes	soak-nov24f-nov2026/12_undecided_read_behind_a_block_ending_in_a_name.gx
+trace	soak-nov24f-nov2026/13_twin_of_an_unread_concrete_variable.gx
 reject	N: type mismatch Number does not contain duration	source-e-jun2026/01_let_a_duration_1_s_duration_2_s_a.gx
 trace	source-e-jun2026/02_let_e_error_0_is_err_e.gx
 trace	source-e-jun2026/03_let_a_0_array_map_a_x_1_x.gx
