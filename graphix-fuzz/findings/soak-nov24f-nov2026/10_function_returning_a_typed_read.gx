@@ -1,0 +1,7 @@
+// A function that returns a typed read through `$`: the `$` resolved after
+// the definition's scheme was closed, so the read's variable was left out
+// of it and fixed at bottom, and the definition was refused "the type 'b
+// must be known here" whether or not a call said the type. The checker
+// before the merge accepted it (soak nov24f, let-extract flips).
+// Expected trace (both engines): (1, 2.0).
+{ let t = |k: i64| str::parse("[k]")$; let a: i64 = t(1); let b: f64 = t(2); (a, b) }

@@ -5098,6 +5098,12 @@ impl Solving {
                     }
                     self.stripped(env, &deep(&operand), &out, &raised)
                         .map_err(|e| placed(&made, e))?;
+                    // what it leaves a variable of the closing scheme is
+                    // the scheme's too, as it is where no `?` stands
+                    // between: each instance decides it
+                    if min > 0 && self.reaches_scheme(&out) {
+                        self.quantify(&out, min - 1)
+                    }
                     progress = true
                 } else if ins.iter().any(quantified) {
                     let unknown = anyhow!(
@@ -5473,6 +5479,14 @@ impl Solving {
     // lang::test_builtins::read_quantifier_keeps_type_directed_message. It
     // still names the bare variable; naming the parameter or the result's
     // binding is open.
+    // 2026-11-25 claude: After soak nov24f the definition `let f = |x: i64|
+    // str::parse("[x]")$` checks again, and `let v: i64 = f(1)` decides the
+    // read at the call (what a `?` or `$` leaves a variable of the closing
+    // scheme is the scheme's too: Solving::fix_round; pins
+    // lang::functions::a_function_returning_a_typed_read_*). Between the merge
+    // and that fix the definition itself was refused. A call nothing asks a
+    // type of, `f(1)`, is refused at the call with the message quoted above:
+    // naming the call's result or the binding to annotate is still open.
 
     // CR claude for claude: [bug/medium] The rule that a TOML document
     // is a table is enforced here for one root shape only: a map

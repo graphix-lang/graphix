@@ -489,6 +489,7 @@ trace	soak-nov24f-nov2026/06_map_keyed_by_a_name_for_any.gx
 trace	soak-nov24f-nov2026/07_binding_with_no_value_a_generic_function_returns.gx
 trace	soak-nov24f-nov2026/08_binding_with_no_value_read_through_a_block.gx
 trace	soak-nov24f-nov2026/09_typed_read_asked_through_a_block.gx
+trace	soak-nov24f-nov2026/10_function_returning_a_typed_read.gx
 reject	N: type mismatch Number does not contain duration	source-e-jun2026/01_let_a_duration_1_s_duration_2_s_a.gx
 trace	source-e-jun2026/02_let_e_error_0_is_err_e.gx
 trace	source-e-jun2026/03_let_a_0_array_map_a_x_1_x.gx

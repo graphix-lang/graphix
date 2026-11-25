@@ -134,6 +134,7 @@ no "must be known here" let f = |x: 'a, y: 'a| -> 'a y; f(str::parse("1"), 1)
 | a function no binding names is checked at the level it was compiled at: one written in a statement that a function-giving block runs once belongs to the level around the block | `node/lambda.rs` (`Lambda::around`, `DefGate::open`) |
 | a function held as a function type is called as that type lists its arguments; a variadic one is called as one wherever its own type reaches the call | `Solving::fn_below`, `Use::Call` |
 | `?` and `$` take the errors off their operand, or with none the null, and it holds one of the two | `bounds::strip` |
+| what a `?` or a `$` leaves a variable of a closing scheme is the scheme's too: a function returning a typed read through one is as generic in it as one returning the read's result whole, and each call decides it | `Solving::fix_round` |
 | what a function reads out of a binding outside it (a field, an element, a call's result, a pattern's name, what a held `?` or `$` leaves) is that binding's at every instance, and takes what is written to the binding after an instance is made | `Solving::quantify` (`produced_from_outside`, `given_late`), `copy_in` |
 | an order asked of a function is refused where the definition asking it closes, called or not | `Solving::generalize` (`hold_shape`) |
 | a cell of a definition that a variable of its scheme flows into (a call's cell in a function inside it) is the scheme's too, so each instance has its own | `Solving::quantify_fed` |
@@ -196,6 +197,8 @@ no "used as i64 and as string, and no value is both" let a = []; let b: Array<i6
 ok let x = never(); let f = |i| array::map([0, x], |j| x); let r = array::map([2], f); 1
 ok let s = json::read("1")$; let u = { let t = s; t } + 1; (u, once(s))
 ok let k = |p: {f: fn(x: i64) -> i64}| 0; let s = {f: |x| x}; let t = {a: s, b: seqq 1 { k(s) }}; t.a.f("x")
+ok let t = |k: i64| str::parse("[k]")$; let a: i64 = t(1); let b: f64 = t(2); (a, b)
+no "must be known here" let t = |k: i64| str::parse("[k]")$; t(0)
 ```
 
 ### Select

@@ -7109,3 +7109,54 @@ run!(
     is(Value::I64(0));
     FuseExpect::None
 );
+
+// A function that returns what a typed read makes, through a `$` or a
+// `?`, is as generic in it as one that returns the read's result whole:
+// the definition checks, each call decides the type by what is asked of
+// its result, and a call nothing asks a type of is refused there.
+run!(
+    a_function_returning_a_typed_read_through_or_never_is_decided_by_its_call,
+    r#"{ let t = |k: i64| str::parse("[k]")$; let m: i64 = t(0); m }"#,
+    is(Value::I64(0));
+    FuseExpect::None
+);
+
+run!(
+    a_function_returning_a_typed_read_is_decided_by_each_call,
+    r#"{ let t = |k: i64| str::parse("[k]")$; let a: i64 = t(1); let b: f64 = t(2); (a, b) }"#,
+    prints("[i64:1, f64:2.]")
+);
+
+run!(
+    a_function_returning_a_typed_read_checks_uncalled,
+    r#"{ let t = |k: i64| str::parse("[k]")$; 0 }"#,
+    is(Value::I64(0))
+);
+
+run!(
+    a_function_returning_a_typed_read_through_a_raise_is_decided_by_its_call,
+    r#"{ let t = |k: i64| str::parse("[k]")?; let a: i64 = t(7); a }"#,
+    is(Value::I64(7));
+    FuseExpect::None
+);
+
+run!(
+    a_named_callback_returning_a_typed_read_is_decided_by_the_collection,
+    r#"{ let t = |s| json::read(s)$; let a: Array<bool> = array::map(["true"], t); a }"#,
+    prints("[true]");
+    FuseExpect::None
+);
+
+run!(
+    a_function_a_call_returns_that_returns_a_typed_read_is_decided_by_its_call,
+    r#"{ let mk = |z| |k: i64| str::parse("[k]")$; let t = mk(0); let m: i64 = t(3); m }"#,
+    is(Value::I64(3));
+    FuseExpect::None
+);
+
+run!(
+    a_call_of_a_function_returning_a_typed_read_nothing_asks_is_refused,
+    r#"{ let t = |k: i64| str::parse("[k]")$; t(0) }"#,
+    refused("the type 'b must be known here, an operation reads it to know what to make");
+    FuseExpect::None
+);
