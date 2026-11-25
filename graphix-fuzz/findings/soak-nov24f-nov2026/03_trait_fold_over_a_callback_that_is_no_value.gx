@@ -1,0 +1,7 @@
+// A trait's collection method called with `never()` for its callback: the
+// call site's view of the callee held `_` for that parameter, and the
+// collection is built from the callback's type (soak nov24f, the check
+// accepted what the build refused: "collection callback must be a
+// function, got _"; three boxes).
+// Expected trace (both engines): 0.
+{ let csize = 'c: Collection |c: 'c| Collection::fold(c, 0, never()); let same = 'c: Collection |c| -> 'c c; let r = (csize(["a", "b"]), csize(same([<1, 2, 3>]))); 0 }

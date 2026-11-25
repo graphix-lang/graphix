@@ -13559,12 +13559,32 @@ run!(
     is(Value::I64(1))
 );
 
-run!(union_bound_members_decided_alike_bound_an_empty_array, r#"{
+// An empty array takes what is pushed onto it, as one with an element
+// does: the cell a push holds it in asks nothing of it. Two types
+// written for it still disagree.
+run!(
+    union_bound_members_decided_alike_leave_an_empty_array_to_a_push,
+    r#"{
     type P<'x, 'y> = [Array<'x>, Array<'y>, null];
     let f = 'a: P<'b, 'c> |y: 'b, z: 'c, x: 'a| x;
     let r = f(1, 2, []);
     array::len(array::push(r, "s"))
-}"#, refused("a value here is used as string and as i64, and no value is both"); FuseExpect::None);
+}"#,
+    is(Value::I64(1))
+);
+
+run!(
+    an_empty_array_annotated_once_takes_another_type_s_push,
+    r#"{ let a = []; let b: Array<i64> = a; array::len(array::push(a, "s")) }"#,
+    is(Value::I64(1))
+);
+
+run!(
+    an_empty_array_annotated_at_two_types_is_refused,
+    r#"{ let a = []; let b: Array<i64> = a; let c: Array<string> = a; 0 }"#,
+    refused("a value here is used as i64 and as string, and no value is both");
+    FuseExpect::None
+);
 
 // A read-only reference bound holds a writable reference's referent
 // within its own, a writable one makes it its own exactly, and a map
@@ -16964,7 +16984,7 @@ run!(
   let r = f(v, v, 1);
   r
 }"#,
-    refused("a value here is used as string and as i64, and no value is both");
+    refused("a value here is used as string and as Number, and no value is both");
     FuseExpect::None
 );
 
@@ -18656,4 +18676,90 @@ run!(
 }"#,
     prints("[i64:1]");
     FuseExpect::Jit
+);
+
+// A comparison whose operands hold one another at no instance is refused
+// where its definition closes, called or not: two constructors of
+// different kinds, whatever is under them, and operands made of declared
+// variables, which are what the signature says at every instance.
+run!(
+    a_reference_compared_with_a_function_is_refused_in_an_uncalled_definition,
+    "{ let pick = |a| &a == |x: i64| -> i64 1; 0 }",
+    refused("with fn(x: i64) -> i64: neither type holds the other, so the two are never equal");
+    FuseExpect::None
+);
+
+run!(
+    a_declared_variable_s_option_compared_with_a_number_is_refused,
+    "{ let f = 'a: Discernible |o: Option<'a>| o == 0; 0 }",
+    refused("cannot compare Option<'a> with i64: neither type holds the other");
+    FuseExpect::None
+);
+
+run!(
+    a_generic_impl_comparing_a_field_with_the_whole_is_refused,
+    r#"{ type Box<'a> = Abstract<('a, i64)>; impl<'a> Eq for Box<'a> { let eq = |a, b| a.0.1 == a };
+        Box(("x", 1)) == Box(("y", 2)) }"#,
+    refused("cannot compare i64 with Box<'a>: neither type holds the other");
+    FuseExpect::None
+);
+
+run!(
+    declared_variables_compared_with_themselves_check,
+    r#"{ let f = 'a: Discernible |o: ['a, null], v: 'a| select o { null => false, x => x == v };
+        let g = 'a: Number, 'b: Number |x: 'a, y: 'b| x < y;
+        (f(1, 1), f(null, "s"), g(1, 2.0)) }"#,
+    prints("[true, false, true]")
+);
+
+// A union with a member named for `Any` is `Any`, as one that writes it.
+run!(
+    a_map_keyed_by_a_name_for_any_beside_a_function_checks,
+    r#"{ type T0 = Any; let n: T0 = 1; let m = {n => 1, |k| k * 2 => 2}; map::len(m) }"#,
+    is(Value::I64(2))
+);
+
+// A cell nothing flows into takes the type of what holds it, and where
+// its holders were fixed apart and agree on no type it is none: only two
+// types written for it are refused, a function's requirement of its
+// argument among them. The verdict is the same whichever is fixed first.
+run!(
+    a_binding_with_no_value_in_two_arrays_and_a_block_checks,
+    "{ let x = never(); let a = ([x, [x, 1]], 2 - { let t = x; t }); 0 }",
+    is(Value::I64(0))
+);
+
+run!(
+    an_uncalled_function_no_let_names_selects_over_its_parameter,
+    "{ (|v| -> [i64, Error<`Oops>] select v { 1 => error(`Oops), _ => v }); 0 }",
+    is(Value::I64(0))
+);
+
+run!(
+    an_uncalled_function_no_let_names_passes_itself,
+    "{ (|g, x| g(g, [1, g])); 0 }",
+    is(Value::I64(0))
+);
+
+run!(
+    an_uncalled_function_s_parameter_at_two_disjoint_bounds_is_refused,
+    "{ let f = 'b: Number, 'c: string |x0: 'c, x1: 'b| 0; (|v| f(v, v)); 0 }",
+    refused("a value here is used as string and as Number, and no value is both");
+    FuseExpect::None
+);
+
+// A cell that holds only a cell fixed by what is asked of it holds that
+// type: the instance of `f` is built at the type its definition has.
+run!(
+    a_binding_with_no_value_a_generic_function_returns_builds,
+    "{ let x = never(); let f = |i| array::map([0, x], |j| x); let r = array::map([2], f); 1 }",
+    is(Value::I64(1))
+);
+
+// A typed read is asked its type through a block, while a call that only
+// holds it asks nothing and takes what it became.
+run!(
+    a_typed_read_asked_through_a_block_beside_a_call_that_holds_it,
+    r#"{ let s = json::read("1")$; let u = { let t = s; t } + 1; (u, once(s)) }"#,
+    prints("[i64:2, i64:1]")
 );

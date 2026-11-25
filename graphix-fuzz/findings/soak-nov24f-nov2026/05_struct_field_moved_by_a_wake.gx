@@ -1,0 +1,6 @@
+// schedule-v1: cap=128 events=1024; in1=i64:1; in1=i64:0
+// A struct literal over a value a wake recomputed quietly (a closure that
+// left the woken arm) kept the old field in the node-walk, where the JIT,
+// a tuple and the bare read take the new one (soak nov24f, three engine
+// divergences; review CRs x-sleep-wake-01 and c-data-map-01).
+{ let v0 = 0; v0 <- select (in1 % 2) { 1 => in1, _ => never() }; let v5 = |v6: i64| |v7: i64| v6; let v1 = select (in1 % 2) { 0 => v5(v0), _ => v5(v0 + 100) }; let v2 = once(v1); let v3 = v2(1); let v8 = { a: in1, n: v3 }; println("[v8]") }

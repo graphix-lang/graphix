@@ -42,12 +42,26 @@ use netidx_core::pack::{Pack, PackError, encode_varint};
 use netidx_value::Value;
 use poolshark::local::LPooled;
 use smallvec::SmallVec;
-use std::{any::Any, cell::RefCell, mem};
+use std::{
+    any::Any,
+    cell::{Cell, RefCell},
+    mem,
+};
 use triomphe::Arc;
 
-/// The parts recorded for a definition's compile ([`OUTSIDE`]), dropped
-/// with it.
+/// The parts recorded for a definition's compile or check ([`OUTSIDE`]),
+/// dropped with it.
 struct OutsideParts(usize);
+
+impl OutsideParts {
+    fn record(parts: impl IntoIterator<Item = (ExprId, Level)>) -> Self {
+        OUTSIDE.with_borrow_mut(|held| {
+            let before = held.len();
+            held.extend(parts);
+            Self(before)
+        })
+    }
+}
 
 impl Drop for OutsideParts {
     fn drop(&mut self) {
@@ -217,14 +231,46 @@ fn defines_among<R: Rt>(
 }
 
 thread_local! {
-    /// The parts of the definitions being compiled that are no definition
-    /// themselves, each with the level around its definition.
+    /// The parts of the definitions being compiled or checked that are no
+    /// definition themselves, each with the level it is computed at.
     static OUTSIDE: RefCell<Vec<(ExprId, Level)>> = const { RefCell::new(Vec::new()) };
+    /// The definition whose value is being compiled, and the level its
+    /// once-computed parts are of.
+    static DEFINING: Cell<Option<(Level, Level)>> = const { Cell::new(None) };
 }
 
-/// The level around the definition `e` is a part of, where `e` is no
-/// definition itself ([`outside_parts`]).
-pub(super) fn outside(e: &Expr) -> Option<Level> {
+/// [`DEFINING`] while a definition's value compiles.
+struct Defining(Option<(Level, Level)>);
+
+impl Defining {
+    fn enter(definition: Level, around: Level) -> Self {
+        Self(DEFINING.replace(Some((definition, around))))
+    }
+
+    /// The level a part computed once is of, for a definition compiled
+    /// now: the level around it, or, where it is itself a part of another
+    /// definition's value, the level that one's parts are of. A part of
+    /// either is computed once whatever instance reads it, so its cells
+    /// are no scheme's.
+    fn around() -> Level {
+        let here = current_level();
+        match DEFINING.get() {
+            Some((definition, around)) if definition == here => around,
+            _ => here,
+        }
+    }
+}
+
+impl Drop for Defining {
+    fn drop(&mut self) {
+        DEFINING.set(self.0)
+    }
+}
+
+/// The level `e` is computed at, where `e` is a part of a definition's
+/// value that is no definition itself ([`outside_parts`]): it is compiled
+/// and checked there.
+pub(crate) fn outside(e: &Expr) -> Option<Level> {
     OUTSIDE.with_borrow(|parts| {
         parts.iter().rev().find(|(id, _)| *id == e.id).map(|(_, level)| *level)
     })
@@ -424,6 +470,9 @@ pub struct Bind<R: Rt> {
     static_hold: Option<StaticHold>,
     /// What the name holds, where the check is by bounds.
     held: Held,
+    /// The parts of a definition's value computed once, each with the
+    /// level it is computed at ([`outside_parts`]).
+    outside: SmallVec<[(ExprId, Level); 4]>,
 }
 
 /// Rewrite a node into a block: each already-compiled operand becomes a
@@ -528,6 +577,7 @@ impl<R: Rt> Bind<R> {
             around: None,
             static_hold: None,
             held: Held::Value,
+            outside: SmallVec::new(),
         })
     }
 
@@ -619,6 +669,8 @@ impl<R: Rt> Bind<R> {
                 .at(&spec)
         };
         let mut held = Held::Value;
+        let mut outside: SmallVec<[(ExprId, Level); 4]> = SmallVec::new();
+        let mut defining = None;
         let parts_generic: Option<SmallVec<[ArcStr; 4]>>;
         let (node, pattern, typ) = {
             if *rec && pat.single_bind().is_none() {
@@ -668,16 +720,15 @@ impl<R: Rt> Bind<R> {
                 false => SmallVec::new(),
             };
             parts_generic = Some(generic_parts).filter(|_| parts_defined);
-            let outer = current_level();
-            let parts = OUTSIDE.with_borrow(|parts| parts.len());
-            if let Held::Definition(_) = held {
+            if let Held::Definition(level) = held {
+                let around = Defining::around();
                 let mut ids: SmallVec<[ExprId; 4]> = SmallVec::new();
                 outside_parts(ctx, scope, value, &mut ids);
-                OUTSIDE.with_borrow_mut(|parts| {
-                    parts.extend(ids.into_iter().map(|id| (id, outer)))
-                })
+                outside = ids.into_iter().map(|id| (id, around)).collect();
+                defining = Some(Defining::enter(level, around))
             }
-            let _parts = OutsideParts(parts);
+            let _defining = defining;
+            let _parts = OutsideParts::record(outside.iter().copied());
             let _at = match held {
                 Held::Definition(level) => Some(AtLevel::enter(level)),
                 Held::Value | Held::Scheme => None,
@@ -809,7 +860,8 @@ impl<R: Rt> Bind<R> {
         }
         let mut bind = Self::with(spec, typ, pattern, node);
         if let Some(b) = bind.downcast_mut::<Self>() {
-            b.held = held
+            b.held = held;
+            b.outside = outside
         }
         Ok(bind)
     }
@@ -835,6 +887,7 @@ impl<R: Rt> Bind<R> {
         };
         let own = b.typ.is_some() || written(ctx, &self.pattern);
         let outer = own.then(|| ctx.holder_reads.take()).flatten();
+        let _parts = OutsideParts::record(self.outside.iter().copied());
         let checked = self.check_value(ctx);
         if outer.is_some() {
             ctx.holder_reads = outer

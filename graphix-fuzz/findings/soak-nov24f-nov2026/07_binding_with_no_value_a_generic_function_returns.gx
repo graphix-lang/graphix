@@ -1,0 +1,8 @@
+// A `never()` binding in an array beside a number, returned by a callback
+// inside a generic function: the binding took `i64` from the array, the
+// function's result was recorded as holding at least that, and the
+// instance's own result, fixed apart, was `Array<_>` (soak nov24f, the
+// check accepted what the build refused: "an instance at fn(x: i64) ->
+// Array<_> .. of a definition typed .. Array<'b: unbound above i64>").
+// Expected trace (both engines): 1.
+{ let x = never(); x; let f = |i| array::map([0, x], |j| x); let r = array::map([2], f); 1 }

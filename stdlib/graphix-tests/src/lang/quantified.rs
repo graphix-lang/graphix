@@ -1006,14 +1006,29 @@ run!(
     FuseExpect::Jit
 );
 
-// What a step decides of the holder's copy holds for the holder's other
-// parts, as a `seq` step's and a plain part's decision does.
+// What a plain part decides of the holder's copy holds for the holder's
+// other parts. A `seq` or `seqq` step reads the name as a step does
+// anywhere, and decides nothing of them.
 run!(
-    a_seqq_step_in_a_holder_decides_the_holders_copy,
+    a_plain_part_of_a_holder_decides_the_holders_copy,
+    "{ let k = |p: {g: fn(x: i64) -> i64}| 0; let s = {g: |x| x}; \
+       let t = {a: s, b: k(s)}; (t.a.g(\"x\"), t.b) }",
+    refused("type mismatch i64 does not contain string");
+    FuseExpect::None
+);
+
+run!(
+    a_seqq_step_in_a_holder_decides_nothing_of_the_holders_copy,
     "{ let k = |p: {g: fn(x: i64) -> i64}| 0; let s = {g: |x| x}; \
        let t = {a: s, b: seqq 1 { k(s) }}; (t.a.g(\"x\"), t.b) }",
-    refused("a value here is used as i64 and as string, and no value is both");
-    FuseExpect::None
+    prints(r#"["x", i64:0]"#)
+);
+
+run!(
+    a_seq_step_in_a_holder_decides_nothing_of_the_holders_copy,
+    "{ let k = |p: {g: fn(x: f64) -> f64}| p.g(1.5); let s = {g: |x| x + x}; \
+       let t = {a: s, b: seq 1 { k(s) }}; (t.a.g(1), t.b) }",
+    prints("[i64:2, f64:3.]")
 );
 
 run!(
@@ -1729,7 +1744,7 @@ run!(
 // later cell numbered apart takes another.
 run!(
     a_later_cell_takes_no_name_a_header_listed,
-    refused("val p is declared i64 but implemented (fn(x: 'a: unbound within Number) -> 'a: unbound within Number, fn<'a1: Number>(x: 'a1: unbound within Number) -> 'a1: unbound within Number, fn(x: 'a2: unbound within Number) -> 'a3: unbound above 'a2: unbound within Number): type mismatch i64 does not contain (fn(x: 'a: unbound within Number) -> 'a: unbound within Number, fn(x: 'a1: unbound within Number) -> 'a1: unbound within Number, fn(x: 'a2: unbound within Number) -> 'a3: unbound above 'a2: unbound within Number)"),
+    refused("val p is declared i64 but implemented (fn(x: 'a: unbound within Number) -> 'a: unbound within Number, fn<'a1: Number>(x: 'a1: unbound within Number) -> 'a1: unbound within Number, fn(x: 'a2: unbound within Number) -> 'a2: unbound within Number): type mismatch i64 does not contain (fn(x: 'a: unbound within Number) -> 'a: unbound within Number, fn(x: 'a1: unbound within Number) -> 'a1: unbound within Number, fn(x: 'a2: unbound within Number) -> 'a2: unbound within Number)"),
     "/test.gx" => "mod m; let result = 0",
     "/test/m.gxi" => "val p: i64;",
     "/test/m.gx" => "let mk = |z: i64| 'a: Number |x: 'a| -> 'a x; let h = mk(0); let p = (h, 'a: Number |x: 'a| -> 'a x, mk(1))"
@@ -2125,4 +2140,61 @@ run!(
         (f(1), f("s")) }"#,
     prints(r#"[i64:1, "s"]"#);
     FuseExpect::None
+);
+
+// A part of a generic value that is computed once (a call among data that
+// holds a function) is one value of one type, whatever instance reads the
+// binding: its cells are of the level around the outermost definition it
+// is a part of, and no scheme's.
+run!(
+    a_call_in_generic_data_inside_a_generic_block_is_one_type,
+    r#"{ let g = { let f = (array::map(["a", "bb"], |s| s), |z| z); f };
+        (g.0, g.1(1), g.1("s")) }"#,
+    prints(r#"[["a", "bb"], i64:1, "s"]"#)
+);
+
+run!(
+    a_block_s_callback_in_generic_data_inside_a_generic_block_builds,
+    r#"{ let g = { let x = [{ let f = |x: i64| (x, 1); array::map([1, 2], f) }, |a| 9]; x };
+        g[0]$ }"#,
+    prints("[[i64:1, i64:1], [i64:2, i64:1]]")
+);
+
+// A read no type is asked of is refused the same in generic data as
+// anywhere: the data's other parts, and what reads the binding, ask
+// nothing of it.
+run!(
+    a_read_in_generic_data_nothing_decides_is_refused,
+    r#"{ let a = [|x| x, json::read("1")]; [a, -1, str::len] }"#,
+    refused("the type 'b must be known here, an operation reads it to know what to make");
+    FuseExpect::None
+);
+
+run!(
+    a_read_among_other_elements_of_generic_data_is_refused,
+    r#"{ let t = [false, |n, _| 0, sys::net::subscribe("/local/dcore")?]; t }"#,
+    refused("the type 'a must be known here, an operation reads it to know what to make");
+    FuseExpect::None
+);
+
+run!(
+    a_read_asked_through_an_instance_of_generic_data_is_decided,
+    r#"{ let t = (|n| n, json::read("7")$); let u: (fn(n: i64) -> i64, i64) = t; u.1 }"#,
+    is(Value::I64(7));
+    FuseExpect::None
+);
+
+// What a definition's own cell became is no type asked of a value outside
+// that flows into it: an array's other element decides nothing of a read.
+run!(
+    a_read_beside_another_element_inside_a_function_is_refused,
+    r#"{ let x = json::read("true")$; let f = |q| { let arr = [false, x]; 0 }; f(0) }"#,
+    refused("the type 'b must be known here, an operation reads it to know what to make");
+    FuseExpect::None
+);
+
+run!(
+    a_read_asked_inside_a_function_is_decided,
+    r#"{ let x = json::read("true")$; let f = |q| { let arr: Array<bool> = [false, x]; arr[1]$ }; f(0) }"#,
+    is(Value::Bool(true))
 );

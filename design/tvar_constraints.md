@@ -122,18 +122,24 @@ no "must be known here" let f = |x: 'a, y: 'a| -> 'a y; f(str::parse("1"), 1)
 | a call's arguments of one variable widen it; a bound refuses | `Solving::call_at` |
 | arithmetic takes one numeric type, judged at each instance | `node/op.rs` (`arith_rule`), `Left::Single` |
 | a comparison takes operands where one's type holds the other's; any two numbers order | `node/op.rs`, `Left::Compared` |
+| a comparison no instance can satisfy is refused where its definition closes, called or not: operands made of declared variables alone are what the signature says of them, and two constructors of different kinds (a reference and a function, a number and an abstract type) hold one another whatever is under them | `Solving::judge_declared`, `bounds::kinds_apart` |
 | a variable a definition writes is rigid in its body, and its bound is exactly what is written (`Any` if nothing) | `node/lambda.rs` (`DefGate`), `Solving::relate_in` |
 | one type is asked of a declared variable only where it declares `Singleton`, and never beside another type | `Solving::one_at_every_call` |
 | an instance's variable that nothing meets is bottom | `Known::copied` |
 | `Function` is judged by shape where the value arrives | `Solving::relate_in` |
 | a let a block writes is one value, which every instance of what the block defines shares | `node/bind.rs` (`binds_definition`, `outside_parts`) |
+| a part of a definition's value that is computed once (a call among data that holds a function, a statement of a function-giving block) is compiled and checked at the level around the outermost definition it is a part of: its cells are no scheme's, so a read nothing asks a type of is refused there as anywhere | `node/bind.rs` (`Defining::around`, `Bind::outside`), `Node::typecheck0` |
+| an open cell that flows into a cell fixed before it holds that cell, not its type: a type is asked of it only where one is asked of the cell it flows into, never by what else flowed there | `Solving::fix_cell`, `Solving::asked_of_above` |
+| an argument that is no value says nothing of its parameter: the instance keeps the definition's own type for it (a callback's, which a collection is built from) | `CallSite::instance_signature` |
 | a function no binding names is checked at the level it was compiled at: one written in a statement that a function-giving block runs once belongs to the level around the block | `node/lambda.rs` (`Lambda::around`, `DefGate::open`) |
 | a function held as a function type is called as that type lists its arguments; a variadic one is called as one wherever its own type reaches the call | `Solving::fn_below`, `Use::Call` |
 | `?` and `$` take the errors off their operand, or with none the null, and it holds one of the two | `bounds::strip` |
 | what a function reads out of a binding outside it (a field, an element, a call's result, a pattern's name, what a held `?` or `$` leaves) is that binding's at every instance, and takes what is written to the binding after an instance is made | `Solving::quantify` (`produced_from_outside`, `given_late`), `copy_in` |
 | an order asked of a function is refused where the definition asking it closes, called or not | `Solving::generalize` (`hold_shape`) |
 | a cell of a definition that a variable of its scheme flows into (a call's cell in a function inside it) is the scheme's too, so each instance has its own | `Solving::quantify_fed` |
-| an instance's variable that no value reaches, a use of which read nothing (an element read, a select's arms), is bottom, not what the use demands | `Solving::fixed` |
+| a cell nothing flows into takes the type of the cells it flows into and of what is written above it; where those cells, fixed apart, agree on no type it is no type, and only two types written for it are refused (a bound that is no cell, and what a function's instance requires of its argument) | `Solving::fixed`, `Solving::meets_demands` |
+| a variable that no value reaches, a use of which read nothing (an element read, a select's arms), is bottom, not what the use demands: an instance's, and any cell no operation makes values at | `Solving::fixed` |
+| a cell fixed by what is asked of it holds that type for the cells fixed after it, and a cell nothing flowed into and nothing is asked of holds what the cells below it became: a typed read asked its type through a block is that type in a call that only holds it | `Solving::settled`, `Solving::held_below` |
 | the last fixing round is repeated while it fixes something: a cell it fixes may give a waiting select its value, and the select a cell its first bound | `Solving::fix_scope` |
 | a labeled default is compiled under its definition's own share, at every call that omits it: what the compile rewrites in it (a seq, a trait method named as a value) is the rewrite the check typed | `LambdaDef::in_signature`, `InstanceTypes::of_default` |
 
@@ -172,6 +178,24 @@ ok let f = |x| { let z = [x]; let g = |y: i64| array::len(z); g(0) }; (f(3), f("
 ok let second = |xs| xs[1]$; let a: Array<string> = array::map(never(), second); a
 ok let f = |#k: i64 = seq 0 { 5 }, y| (k, y); f("s")
 ok let v = {a: 1 + 1, b: 2}; let r = select v { {b: q, ..} => q }; let f = |x: i64| v.a; (r, f(0))
+ok let g = { let f = (array::map(["a", "bb"], |s| s), |z| z); f }; (g.0, g.1(1), g.1("s"))
+no "must be known here" let a = [|x| x, json::read("1")]; [a, -1, str::len]
+no "must be known here" let x = json::read("true")$; let f = |q| { let arr = [false, x]; 0 }; f(0)
+ok let x = json::read("true")$; let f = |q| { let arr: Array<bool> = [false, x]; arr[1]$ }; f(0)
+no "neither type holds the other" let pick = |a| &a == |x: i64| -> i64 1; 0
+no "cannot compare Option<'a> with i64" let f = 'a: Discernible |o: Option<'a>| o == 0; 0
+ok let f = 'a: Discernible |o: ['a, null], v: 'a| select o { null => false, x => x == v }; f(1, 1)
+ok let c = ["a", "b"]; let r = Collection::fold(c, 0, never()); 0
+ok type T0 = Any; let n: T0 = 1; let m = {n => 1, |k| k * 2 => 2}; map::len(m)
+ok let x = never(); let a = ([x, [x, 1]], 2 - { let t = x; t }); 0
+no "used as i64 and as string, and no value is both" let x = never(); let y: i64 = x; let z: string = x; 0
+no "used as string and as Number, and no value is both" let f = 'b: Number, 'c: string |x0: 'c, x1: 'b| 0; let v = never(); f(v, v)
+ok (|v| -> [i64, Error<`Oops>] select v { 1 => error(`Oops), _ => v }); 0
+ok let a = []; let b: Array<i64> = a; array::len(array::push(a, "s"))
+no "used as i64 and as string, and no value is both" let a = []; let b: Array<i64> = a; let c: Array<string> = a; 0
+ok let x = never(); let f = |i| array::map([0, x], |j| x); let r = array::map([2], f); 1
+ok let s = json::read("1")$; let u = { let t = s; t } + 1; (u, once(s))
+ok let k = |p: {f: fn(x: i64) -> i64}| 0; let s = {f: |x| x}; let t = {a: s, b: seqq 1 { k(s) }}; t.a.f("x")
 ```
 
 ### Select

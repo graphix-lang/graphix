@@ -479,6 +479,16 @@ trace	soak-nov24e-nov2026/02_omitted_default_that_is_a_seq.gx
 trace	soak-nov24e-nov2026/03_nested_function_calls_over_the_outer_parameter.gx
 trace	soak-nov24e-nov2026/04_callback_over_no_value.gx
 trace	soak-nov24e-nov2026/05_functions_a_callback_made_restored_from_an_image.gx
+trace	soak-nov24f-nov2026/00_call_in_generic_data_inside_a_generic_block.gx
+trace	soak-nov24f-nov2026/01_block_callback_in_generic_data.gx
+reject	N: the type 'b must be known here, an operation reads it to know what to make: annotate where its result goes	soak-nov24f-nov2026/02_read_nothing_decides_in_generic_data.gx
+trace	soak-nov24f-nov2026/03_trait_fold_over_a_callback_that_is_no_value.gx
+reject	N: cannot compare iN with Box<'a>: neither type holds the other, so the two are never equal	soak-nov24f-nov2026/04_generic_impl_comparing_a_field_with_the_whole.gx
+trace	soak-nov24f-nov2026/05_struct_field_moved_by_a_wake.gx
+trace	soak-nov24f-nov2026/06_map_keyed_by_a_name_for_any.gx
+trace	soak-nov24f-nov2026/07_binding_with_no_value_a_generic_function_returns.gx
+trace	soak-nov24f-nov2026/08_binding_with_no_value_read_through_a_block.gx
+trace	soak-nov24f-nov2026/09_typed_read_asked_through_a_block.gx
 reject	N: type mismatch Number does not contain duration	source-e-jun2026/01_let_a_duration_1_s_duration_2_s_a.gx
 trace	source-e-jun2026/02_let_e_error_0_is_err_e.gx
 trace	source-e-jun2026/03_let_a_0_array_map_a_x_1_x.gx

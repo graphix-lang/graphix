@@ -455,7 +455,8 @@ other data literal is as generic as a `let` of a lambda: `let s = {f:
 it, unless the seq writes `s`. A `let` nothing writes or annotates reads
 `s` once in its value, wherever it reads it: in `let t = {a: s, b:
 k(s)}`, a `k` taking `{f: fn(x: i64) -> i64}` makes `t.a.f` take `i64`
-too, and so does `b: seqq 1 { k(s) }`.
+too. A step is no such read: `b: seqq 1 { k(s) }` decides nothing of
+`t.a.f`.
 
 ```graphix,cases
 ok let s = {f: |x| x}; let t: {f: fn(x: i64) -> i64} = s; (t.f(1), s.f("a"))
@@ -464,7 +465,7 @@ ok let t = 1; let s = {f: |x| x}; seqq t { (s.f(1), s.f("s")) }
 ok let s = {f: |x| x}; let h = {g: |k| seqq k { (s.f(1), s.f("s")) }}; h.g(1)
 no "cannot compute with [i64, f64]" let t = 1; let s = {f: |x| x + x}; seq t { s <- {f: |x| x + x}; (s.f(1), s.f(1.5)) }
 no "i64 does not contain string" let k = |p: {f: fn(x: i64) -> i64}| 0; let s = {f: |x| x}; let t = {a: s, b: k(s)}; t.a.f("x")
-no "is used as i64 and as string, and no value is both" let k = |p: {f: fn(x: i64) -> i64}| 0; let s = {f: |x| x}; let t = {a: s, b: seqq 1 { k(s) }}; t.a.f("x")
+ok let k = |p: {f: fn(x: i64) -> i64}| 0; let s = {f: |x| x}; let t = {a: s, b: seqq 1 { k(s) }}; t.a.f("x")
 ```
 
 Lambdas that meet in one value (an array's elements, a select's arms, a

@@ -1,0 +1,6 @@
+// expect: reject
+// A generic impl's method compares a number with the abstract type it is
+// a field of: the comparison was left to instances no check judges, and
+// the build refused it (soak nov24f, the check accepted what the build
+// refused: "cannot compare i64 with Box<_>").
+{ type Box<'a> = Abstract<('a, i64)>; impl<'a> Eq for Box<'a> { let eq = |a, b| a.0.1 == a }; array::map([1, 2, 3], |i| Box(("x", i)) == Box(("y", 2))) }

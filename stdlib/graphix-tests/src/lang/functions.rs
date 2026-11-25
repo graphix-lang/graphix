@@ -7092,3 +7092,20 @@ run!(
     is(Value::I64(0));
     FuseExpect::None
 );
+
+// An argument that is no value says nothing of its parameter: the
+// instance keeps the definition's own type for it, a trait method's
+// callback included, which a collection is built from.
+run!(
+    a_trait_s_fold_over_a_callback_that_is_no_value_builds,
+    r#"{ let c = ["a", "b"]; let r = Collection::fold(c, 0, never()); 0 }"#,
+    is(Value::I64(0))
+);
+
+run!(
+    a_generic_function_s_trait_call_over_a_callback_that_is_no_value_builds,
+    r#"{ let csize = 'c: Collection |c: 'c| Collection::fold(c, 0, never());
+        let r = (csize(["a", "b"]), csize([<1, 2, 3>])); 0 }"#,
+    is(Value::I64(0));
+    FuseExpect::None
+);

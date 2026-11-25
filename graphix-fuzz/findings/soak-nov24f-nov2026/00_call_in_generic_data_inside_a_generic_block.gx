@@ -1,0 +1,8 @@
+// A call among data that holds a function, in a block whose tail is that
+// data's name: the binding the fuzzer wraps a program in is generic, and
+// the call's cells were swept into its scheme, so the callback's instance
+// had no types of its own (soak nov24f, the check accepted what the build
+// refused: "an instance at fn(x: _) -> _ of a definition typed fn(s:
+// string) -> string"; six findings on one box).
+// Expected trace (both engines): the pair, its function printed.
+{ let f = (array::map(["a", "bb"], |s| s), |z| z); f }

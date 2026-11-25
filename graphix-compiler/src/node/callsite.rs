@@ -1951,7 +1951,11 @@ impl<R: Rt> CallSite<R> {
         view: &FnType,
         f: &LambdaDef<R>,
     ) -> Result<Option<FnType>> {
-        if same_parameters(view, &f.typ) {
+        // an argument that is no value says nothing of its parameter: the
+        // definition's own type for it stands, which a collection's
+        // callback is built from
+        let silent = view.args.iter().any(|a| matches!(a.typ, Type::Bottom));
+        if same_parameters(view, &f.typ) && !silent {
             return Ok(None);
         }
         let fitted = super::lambda::fit_callee(ctx, view, &f.typ)?;

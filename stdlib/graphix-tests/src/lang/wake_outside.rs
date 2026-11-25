@@ -159,6 +159,11 @@ async fn a_tuple_over_a_moved_formal_stands() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_struct_over_a_moved_formal_stands() -> Result<()> {
+    agrees(closure("", "{a: x, b: 0}.a"), &formal(|x| x)).await
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_let_over_a_moved_operator_stands() -> Result<()> {
     agrees(closure("", "let w = x + 0; w"), &formal(|x| x)).await
 }

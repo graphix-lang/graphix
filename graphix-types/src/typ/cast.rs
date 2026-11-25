@@ -3197,6 +3197,15 @@ fn rep_ambiguity(
                 {
                     Some(Indiscernible::Numbers(t.clone()))
                 }
+                // a union with a member that is `Any`, by whatever name, is
+                // `Any`
+                Type::Set(ts)
+                    if ts.iter().any(|m| {
+                        matches!(resolved_head(env, m).as_deref(), Some(Type::Any))
+                    }) =>
+                {
+                    None
+                }
                 Type::Set(ts) => {
                     let mut pairs_read = false;
                     if !keys_only {

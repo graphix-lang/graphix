@@ -1807,8 +1807,10 @@ impl Solving {
                 && !t.has_free()
         };
         let b = deep(b);
+        // the type of a cell it flows into is no type written for it
+        let written = |u: &&Type| !matches!(u, Type::TVar(_));
         let mut demands: SmallVec<[Type; 4]> =
-            v.cell_above().iter().map(deep).filter(|u| says(u)).collect();
+            v.cell_above().iter().filter(written).map(deep).filter(|u| says(u)).collect();
         if demands.is_empty() || !says(&b) {
             return Ok(());
         }
@@ -3573,6 +3575,59 @@ fn feeders(v: &TVar) -> SmallVec<[TVar; 1]> {
 /// What the result's type of a function its calls are made through is
 /// read to make (a parse, a typed read) is made by those calls.
 
+/// The refusal of a comparison neither of whose operands holds the other.
+fn incomparable(a: &Type, b: &Type, ordered: bool) -> anyhow::Error {
+    match ordered {
+        true => anyhow!(
+            "cannot order {a} against {b}: neither type holds the other, so the answer \
+             never depends on the values"
+        ),
+        false => anyhow!(
+            "cannot compare {a} with {b}: neither type holds the other, so the two are \
+             never equal"
+        ),
+    }
+}
+
+/// Whether `a` and `b` are constructors of different kinds, neither of
+/// which holds the other whatever is under them (a reference and a
+/// function, a number and an abstract type): a union, an open cell and a
+/// primitive that holds a constructor's values are no kind.
+fn kinds_apart(env: &Env, a: &Type, b: &Type) -> Result<bool> {
+    let kind = |t: &Type| {
+        let t = match t {
+            Type::Ref(_) if !t.is_trait_ref(env) => t.lookup_ref(env)?,
+            t => t.clone(),
+        };
+        Ok::<_, anyhow::Error>(match &t {
+            Type::Primitive(p)
+                if !p.is_empty()
+                    && !p.intersects(
+                        Typ::Array | Typ::Map | Typ::Error | Typ::Abstract,
+                    ) =>
+            {
+                Some(0)
+            }
+            Type::Array(_) => Some(1),
+            Type::List(_) => Some(2),
+            Type::Map(_) => Some(3),
+            Type::Tuple(_) => Some(4),
+            Type::Struct(_) => Some(5),
+            Type::Variant(..) => Some(6),
+            Type::Fn(_) => Some(7),
+            Type::ByRef(..) => Some(8),
+            Type::Error(_) => Some(9),
+            Type::Abstract { .. } => Some(10),
+            _ => None,
+        })
+    };
+    Ok(match (kind(a)?, kind(b)?) {
+        (Some(0), Some(0)) => false,
+        (Some(x), Some(y)) => x != y,
+        _ => false,
+    })
+}
+
 /// An open cell at `depth` or shallower that `v` is produced into by a use
 /// of: a field, an element or a payload read of a value still undecided.
 fn produced_from_outside(v: &TVar, depth: u32) -> Option<TVar> {
@@ -4012,6 +4067,7 @@ impl Solving {
                 v.claim(w.level());
                 continue;
             }
+            debug(|| format!("quantify '{}", ShortName(&v.name)));
             known_mut(v, |k| k.quantified = true);
             v.generalize()
         }
@@ -4164,6 +4220,7 @@ impl Solving {
         declared.retain(|v| {
             v.is_rigid() && v.level().depth() > depth && !v.level().is_generic()
         });
+        debug(|| format!("generalize {t} over depth {depth}"));
         self.quantify(t, depth);
         self.quantify_fed(depth, mark);
         let mut kept = Cells::new();
@@ -4235,13 +4292,20 @@ impl Solving {
                 (!ls.iter().any(same)).then(|| Left::Asked(asked.clone()))
             })
         }
+        self.judge_declared(env)?;
         // a comparison whose operands a variable of the scheme decides is
         // each instance's to judge
         let (left, mine): (Vec<_>, Vec<_>) = std::mem::take(&mut self.compared)
             .into_iter()
             .partition(|c| scheme(&c.a) || scheme(&c.b));
         self.compared = mine;
-        for Comparison { a, b, ordered, made: _ } in left {
+        for Comparison { a, b, ordered, made } in left {
+            // two constructors of different kinds hold one another at no
+            // instance, whatever the cells under them become
+            let (da, db) = (deep(&a), deep(&b));
+            if kinds_apart(env, &da, &db)? {
+                return Err(placed(&made, incomparable(&da, &db, ordered)));
+            }
             let pair = Arc::new((a, b, ordered));
             for t in [&pair.0, &pair.1] {
                 self.leave(t, |ls| {
@@ -5355,10 +5419,17 @@ impl Solving {
         v.cell().write().set_binding(Some(r.clone()));
         // a cell still open that flows into this one is decided later, by
         // its own scope: whatever decides it must fit what this one now is.
-        // At ⊥ nothing decided this one, which asks nothing of the other
+        // At ⊥ nothing decided this one, which asks nothing of the other.
+        // The other holds this cell, not its type: a type is asked of it
+        // only where one is asked of this one ([`Self::asked_of_above`])
         if !matches!(r, Type::Bottom) {
+            let held = Type::TVar(v.clone());
             for u in open_below.iter().filter(|u| !u.is_bound() && !quantified(u)) {
-                self.constrain(env, &Type::TVar(u.clone()), &r)?
+                let Some(lower) = self.record(u, &held, false) else { continue };
+                self.track(u);
+                self.demanded(env, u, &r)?;
+                self.one_at_every_call(u, &[])?;
+                lower.iter().try_for_each(|l| self.relate(env, l, &r))?
             }
         }
         super::tvar::prove_ground_by_parts(v);
@@ -5454,23 +5525,6 @@ impl Solving {
         let asked = |v: &TVar| {
             v.cell_above().iter().any(|c| !matches!(c, Type::Bound(_) | Type::Bottom))
         };
-        // CR claude for claude: [bug/medium] A type-directed read nothing decides is
-        // accepted where it sits in generic data that another generic binding reads.
-        // `let result = { let a = [|x| x, json::read("1")]; [a, -1, str::len] };
-        // result` checks and builds; with `a` written in place of its name the same
-        // program is refused "the type 'b must be known here, an operation reads it
-        // to know what to make", and so is `{ let a = [json::read("1")]; [a, str::len]
-        // }` (no lambda in `a`, so `a` is one value). The read is a part of `a`
-        // computed once (bind.rs `outside_parts`), but its call's cells are made at
-        // `a`'s own level when it is checked, so `'b` is a variable of `a`'s scheme,
-        // then of `result`'s, and no copy of it is judged. Checking such a part at
-        // the level it is compiled at closes it (tried for soak nov24d's crash and
-        // taken back: it changed
-        // lang::quantified::a_seqq_step_in_a_holder_decides_the_holders_copy, whose
-        // step then decided nothing of the holder's copy); a call site that keeps the
-        // level it was compiled at, as `Lambda::around` does, may be enough. probe:
-        // fuzz/pending-triage/nov24e/aieka/typeflip_000002.gx (graphix-fuzz
-        // typemorph prints a let-inline flip). (read-undecided-in-generic-data-01)
         let made = known(v, |k| k.made);
         if matches!(t, Type::Bottom) && (made || asked(v)) {
             for p in v.cell_above().iter() {
@@ -5522,17 +5576,27 @@ impl Solving {
                 continue;
             }
             if !a.contains(env, &b)? && !b.contains(env, &a)? {
-                let refusal = match ordered {
-                    true => anyhow!(
-                        "cannot order {a} against {b}: neither type holds the \
-                         other, so the answer never depends on the values"
-                    ),
-                    false => anyhow!(
-                        "cannot compare {a} with {b}: neither type holds the \
-                         other, so the two are never equal"
-                    ),
-                };
-                return Err(placed(&made, refusal));
+                return Err(placed(&made, incomparable(&a, &b, ordered)));
+            }
+        }
+        Ok(())
+    }
+
+    /// Judge the comparisons whose operands are made of a definition's
+    /// declared variables and nothing undecided, while its body is
+    /// checked: what its signature says of them holds at every instance.
+    fn judge_declared(&mut self, env: &Env) -> Result<()> {
+        let number = Type::Primitive(Typ::number());
+        for c in std::mem::take(&mut self.compared) {
+            let (a, b) = (deep(&c.a), deep(&c.b));
+            if !(a.has_rigid() || b.has_rigid()) || a.has_free() || b.has_free() {
+                self.compared.push(c);
+                continue;
+            }
+            let numbers =
+                c.ordered && self.probe(env, &a, &number) && self.probe(env, &b, &number);
+            if !numbers && !self.probe(env, &a, &b) && !self.probe(env, &b, &a) {
+                return Err(placed(&c.made, incomparable(&a, &b, c.ordered)));
             }
         }
         Ok(())
@@ -5721,10 +5785,30 @@ impl Solving {
         let t = match &flows[..] {
             [] if single => Type::Bottom,
             [] => {
+                let made = made_at(v);
+                let says = |env: &Env, u: &Type| {
+                    !matches!(u, Type::TVar(_) | Type::Bound(_)) && !u.is_trait_ref(env)
+                };
                 let mut demands: SmallVec<[Type; 4]> = SmallVec::new();
+                // the types written for it: a bound above it that is no
+                // cell, and what a function's instance requires of its
+                // argument, whatever the instance's variable then became
+                let mut written: SmallVec<[Type; 4]> = SmallVec::new();
                 // the variables of a definition it is demanded as
                 let mut variables: SmallVec<[TVar; 2]> = SmallVec::new();
                 for u in v.cell_above() {
+                    let held = match &u {
+                        Type::TVar(c) => {
+                            if copied(c) {
+                                let required = c.cell_above().into_iter().filter(|b| {
+                                    says(env, b) && !matches!(b, Type::Bottom | Type::Any)
+                                });
+                                written.extend(required)
+                            }
+                            true
+                        }
+                        _ => false,
+                    };
                     for w in open_cells(&u) {
                         self.fix(env, &w)?
                     }
@@ -5737,23 +5821,38 @@ impl Solving {
                     {
                         variables.push(w.clone())
                     }
-                    let says = !matches!(u, Type::TVar(_) | Type::Bound(_))
-                        && !u.is_trait_ref(env);
-                    if says {
+                    // a cell fixed at bottom asks nothing of a value an
+                    // operation makes: the value is not bottom, and the
+                    // cell holds it ([`Self::held_below`])
+                    if says(env, &u) && !(made && held && matches!(u, Type::Bottom)) {
+                        if !held {
+                            written.push(u.clone())
+                        }
                         demands.push(u)
                     }
                 }
                 self.write(v, Kept::Demanded);
-                // a bound that names the cell itself decides nothing alone
+                // a bound that names the cell itself decides nothing alone.
+                // The cells it flows into were fixed apart: where they agree
+                // on no type, what is written for it decides, and with
+                // nothing written a cell nothing flows into is no type
                 let t = match self.meet(env, &demands) {
+                    Ok(t) => t,
                     Err(_) if copied(v) => Type::Bottom,
-                    t => t?,
+                    Err(_) => {
+                        let t = self.meet(env, &written)?;
+                        match made {
+                            true => t,
+                            false => Type::Bottom,
+                        }
+                    }
                 };
-                // an instance's variable no value reaches, a use of which
-                // read nothing (an element read, a select's arms): fixed at
-                // what the use demands, the instance would be built giving
-                // the use a value the check never passed down it
-                let t = match copied(v) && uses(v).iter().any(|(_, met)| !met) {
+                // a variable no value reaches, a use of which read nothing
+                // (an element read, a select's arms): fixed at what the use
+                // demands, the use would be given a value the check never
+                // passed down it
+                let unread = (copied(v) || !made) && uses(v).iter().any(|(_, met)| !met);
+                let t = match unread {
                     true => Type::Bottom,
                     false => t,
                 };
@@ -5799,6 +5898,15 @@ impl Solving {
                         }
                         Type::TVar(w)
                     }
+                    // nothing is asked of it: it holds what the cells that
+                    // flow into it become
+                    false
+                        if matches!(t, Type::Bottom)
+                            && variables.is_empty()
+                            && !unread =>
+                    {
+                        self.held_below(env, v, made)?
+                    }
                     false => t,
                 }
             }
@@ -5831,11 +5939,52 @@ impl Solving {
         Ok(t)
     }
 
+    /// The type of the cell `v`, which nothing has flowed into and nothing
+    /// is asked of, from the open cells of its level that flow into it: each
+    /// is fixed by what is asked of that one, and `v` holds what they
+    /// became. Where the one such cell is being fixed around `v` and
+    /// `made`, an operation makes values at it: `v` is the same type as it.
+    fn held_below(&mut self, env: &Env, v: &TVar, made: bool) -> Result<Type> {
+        let mut below: SmallVec<[TVar; 2]> = SmallVec::new();
+        let fed = feeders(v).into_iter().map(Type::TVar);
+        for l in v.cell_lower().into_iter().chain(fed) {
+            if let Type::TVar(u) = &shallow(&l)
+                && !u.same_cell(v)
+                && !quantified(u)
+                && !u.is_rigid()
+                && u.level().depth() == v.level().depth()
+                && !below.iter().any(|b| b.same_cell(u))
+            {
+                below.push(u.clone())
+            }
+        }
+        let (around, apart): (SmallVec<[TVar; 2]>, SmallVec<[TVar; 2]>) =
+            below.into_iter().partition(|u| self.fixing.contains(&u.cell_addr()));
+        if let ([one], [], true) = (&around[..], &apart[..], made) {
+            return Ok(Type::TVar(one.clone()));
+        }
+        let mut held: SmallVec<[Type; 2]> = SmallVec::new();
+        for u in apart.iter() {
+            self.fix(env, u)?;
+            let t = shallow(&Type::TVar(u.clone()));
+            if !matches!(t, Type::Bottom | Type::TVar(_)) {
+                held.push(t)
+            }
+        }
+        Ok(match &mut held[..] {
+            [] => Type::Bottom,
+            [one] => std::mem::take(one),
+            many => join(env, many)?,
+        })
+    }
+
     /// What a lower bound `l` says once the cells in it are fixed: nothing
-    /// for a cell nothing flows into (it is fixed from above, later).
+    /// for a cell nothing flows into that is not fixed yet (it is fixed
+    /// from above, later); one fixed by what is asked of it holds that.
     fn settled(&mut self, env: &Env, l: &Type) -> Result<Option<Type>> {
         if let Type::TVar(u) = l
             && demanded(u)
+            && !u.is_bound()
         {
             return Ok(None);
         }

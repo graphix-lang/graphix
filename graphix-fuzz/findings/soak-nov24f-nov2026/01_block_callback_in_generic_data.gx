@@ -1,0 +1,6 @@
+// A block in generic data that binds a function and maps with it: the
+// block was compiled at the level around the data and checked one level
+// deeper, the level of the function it binds (soak nov24f, the check
+// accepted what the build refused: "an instance at fn(x: i64) -> _").
+// Expected trace (both engines): the array, its function printed.
+{ let x = [{ let f = |x: i64| (x, 1); array::map([1, 2], f) }, |a| 9]; x }

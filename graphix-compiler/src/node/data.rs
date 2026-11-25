@@ -182,17 +182,6 @@ impl<R: Rt> Update<R> for Struct<R> {
         dense_gate!(self.resident, tag, tag.is_bottom(), woke);
         // a field that did not fire holds what its pair in the resident
         // holds, unless a wake recomputed it
-        // CR claude for claude: [bug/high] A field whose production is Tag::MOVED takes
-        // the resident's old value here, because the reuse below tests only
-        // `triggers()`. A struct literal outside a woken body (over a value read
-        // through a reference or closure that left the arm) keeps the stale field: the
-        // node-walk gives `s.a == 2` where the JIT gives 4, and where the struct does
-        // not fuse both engines agree on the stale value, so the fuzzer cannot see it.
-        // If another field fires, the struct fires carrying the stale one. Reuse a
-        // field only when it neither fired nor moved, and pin a struct beside
-        // `wake_outside::a_tuple_over_a_moved_formal_stands`. probe:
-        // design/review-2026-11-16/repro/x-sleep-wake-struct-moved-field.gx and
-        // x-sleep-wake-struct-moved-field-agree.gx (x-sleep-wake-01)
         let held = match self.resident.is_bottom() || woke {
             true => None,
             false => self.resident.with_value(|v| {
@@ -204,20 +193,9 @@ impl<R: Rt> Update<R> for Struct<R> {
         let held = held.as_ref().and_then(rep::struct_fields);
         let iter =
             self.names.iter().zip(prods).enumerate().map(|(i, (name, tv))| match held {
-                // CR claude for claude: [bug/high] This reuses the resident's field for
-                // every child that did not trigger, including a child whose production
-                // is MOVED (a quiet value a wake recomputed: a closure or reference
-                // that left a woken arm, a select re-routed quietly, a moved collection
-                // element). The node-walk struct then keeps the old field value, while
-                // a tuple, the JIT and the bare read all take the new one. Take the
-                // held field only when the child neither triggers nor moved
-                // (`!(tv.tag().triggers() || tv.tag().moved())`), or drop `held` and
-                // build with `gathered!` as Tuple does. Add a struct case to
-                // wake_outside.rs, which pins `(x, 0).0` but has no struct. probe:
-                // design/review-2026-11-16/repro/c-data-map-struct-moved-field-held.gx
-                // (graphix-fuzz: interp gives 1 at clk 6, jit gives 3) Also reported as
-                // (x-engine-firing-01). (c-data-map-01)
-                Some(held) if !tv.tag().triggers() => held[i].clone(),
+                Some(held) if !(tv.tag().triggers() || tv.tag().moved()) => {
+                    held[i].clone()
+                }
                 _ => rep::make_field(name.clone(), tv.value_cloned()),
             });
         let v = rep::structure_of_fields(iter);

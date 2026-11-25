@@ -1,0 +1,7 @@
+// A `never()` binding in two arrays, read through a block as a number:
+// the arrays' element cells were fixed without it and each then asked its
+// own type of it, "a value here is used as i64 and as Array<i64>", where
+// the same program without the block checks (soak nov24f, block-wrap and
+// let-inline flips).
+// Expected trace (both engines): 0.
+{ let x = never(); let a = ([x, [x, 1]], 2 - { let t = x; t }); 0 }

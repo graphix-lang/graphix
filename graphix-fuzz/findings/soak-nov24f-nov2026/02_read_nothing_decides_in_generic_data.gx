@@ -1,0 +1,7 @@
+// expect: reject
+// A typed read in data that holds a function, read by another generic
+// binding: the read's variable was a variable of both schemes and no copy
+// of it was judged, so the program checked and built with the read's type
+// undecided, where the same data written in place is refused (soak nov24e
+// and nov24f, let-inline and block-wrap flips).
+{ let a = [|x| x, json::read("1")]; [a, -1, str::len] }

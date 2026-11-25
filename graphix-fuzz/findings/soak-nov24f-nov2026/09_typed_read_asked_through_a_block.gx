@@ -1,0 +1,6 @@
+// A typed read asked its type by arithmetic through a block, and passed to
+// a call that only holds it: the call's parameter was fixed at bottom
+// first and met with the `i64` asked, "the type 'b must be known here",
+// where the read used directly checks (soak nov24f, a block-wrap flip).
+// Expected trace (both engines): (2, 1).
+{ let s = json::read("1")$; let u = { let t = s; t } + 1; (u, once(s)) }

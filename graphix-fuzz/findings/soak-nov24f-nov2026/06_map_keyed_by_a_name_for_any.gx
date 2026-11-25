@@ -1,0 +1,5 @@
+// A map whose keys are a function and a value typed by a name for `Any`:
+// the union of the two kept the name, and was refused an order the same
+// program with `Any` written has (soak nov24f, an alias-swap flip).
+// Expected trace (both engines): 2.
+{ type T0 = Any; let n: T0 = 1; let m = {n => 1, |k| k * 2 => 2}; map::len(m) }
