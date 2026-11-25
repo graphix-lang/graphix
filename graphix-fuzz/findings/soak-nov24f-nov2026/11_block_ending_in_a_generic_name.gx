@@ -1,0 +1,8 @@
+// A let of a block that ends in a generic name kept the cell that read was
+// compiled as for its name's type, one level deep with the name's instance
+// as a lower bound, where the check closed the instance as the scheme. A use
+// copied nothing, so two uses at different types met in one cell: `a` was
+// [i64, string] and `a + 1` was refused "i64 does not contain string". A
+// block ending in the lambda itself was generic all along (soak nov24f).
+// Expected trace (both engines): (2, "s").
+{ let f = |x| x; let g = { 0; f }; let a = g(1); let b = g("s"); (a + 1, b) }

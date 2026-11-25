@@ -4508,6 +4508,21 @@ impl Solving {
         }
     }
 
+    /// The cell `held`, which a definition's name was given when its
+    /// value was compiled, is `value`, the value's type now it is checked:
+    /// a read of a generic name is compiled as a cell its instance flows
+    /// into, and the name of a block that ends in one, or of a sample of
+    /// one, is that instance.
+    pub fn name_as(&mut self, held: &Type, value: &Type) {
+        if let Type::TVar(v) = &shallow(held)
+            && !v.is_bound()
+            && !cells_in(value).iter().any(|u| u.same_cell(v))
+        {
+            debug(|| format!("name '{} as {value}", ShortName(&v.name)));
+            v.cell().write().set_binding(Some(value.clone()))
+        }
+    }
+
     /// [`Self::instantiate`], with the instance's cells in `copies`, each
     /// under the address of the scheme's cell it is the copy of: what
     /// reads the definition's types at this instance maps them through it.

@@ -975,6 +975,7 @@ impl<R: Rt> Bind<R> {
                 let value = node.typ().clone();
                 match b.typ.is_some() {
                     false => {
+                        solving(|s| s.name_as(&self.typ, &value));
                         wrap!(node, generalize(ctx, &value))?;
                         // a pattern over a literal: each name is its part
                         let mut parts: SmallVec<[(&ArcStr, Type); 4]> = SmallVec::new();

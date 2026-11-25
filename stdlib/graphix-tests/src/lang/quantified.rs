@@ -2198,3 +2198,57 @@ run!(
     r#"{ let x = json::read("true")$; let f = |q| { let arr: Array<bool> = [false, x]; arr[1]$ }; f(0) }"#,
     is(Value::Bool(true))
 );
+
+// A let of a block that ends in a generic name, or of a sample of one, is
+// that name's instance closed as the let's own scheme: each use takes a
+// copy, and a typed read in it that nothing decides is refused where the
+// name is read, as it is where the block ends in the data itself.
+run!(
+    a_block_ending_in_a_generic_name_names_its_scheme,
+    r#"{ let f = |x| x; let g = { 0; f }; let a = g(1); let b = g("s"); (a + 1, b) }"#,
+    prints(r#"[i64:2, "s"]"#)
+);
+
+run!(
+    a_block_binding_the_generic_name_it_ends_in_names_its_scheme,
+    r#"{ let g = { let f = |x| x; let h = f; h }; let a = g(1); let b = g("s"); (a + 1, b) }"#,
+    prints(r#"[i64:2, "s"]"#)
+);
+
+run!(
+    a_block_ending_in_generic_data_s_name_names_its_scheme,
+    r#"{ let s = {f: |x| x}; let t = { 0; s }; let a = t.f(1); let b = t.f("s"); (a + 1, b) }"#,
+    prints(r#"[i64:2, "s"]"#)
+);
+
+run!(
+    a_sample_of_a_generic_name_names_its_scheme,
+    r#"{ let f = |x| x; let c = 1; let g = c ~ f; let a = g(1); let b = g("s"); (a + 1, b) }"#,
+    prints(r#"[i64:2, "s"]"#)
+);
+
+run!(
+    a_name_of_a_block_ending_in_a_generic_name_is_forwarded_as_its_scheme,
+    r#"{ let f = |x| x; let g = { 0; f }; let h = g; let a = h(1); let b = h("s"); (a + 1, b) }"#,
+    prints(r#"[i64:2, "s"]"#)
+);
+
+run!(
+    a_typed_read_in_a_block_ending_in_a_generic_name_is_decided_by_each_use,
+    r#"{ let t = { let f = |k: i64| str::parse("[k]")$; 0; f }; let a: i64 = t(1); let b: f64 = t(2); (a, b) }"#,
+    prints("[i64:1, f64:2.]")
+);
+
+run!(
+    an_undecided_read_in_a_block_ending_in_a_generic_name_is_refused,
+    r#"{ let r = { let f = (1, |k: i64| str::parse("[k]")); 0; f }; r }"#,
+    refused("the type 'b must be known here, an operation reads it to know what to make");
+    FuseExpect::None
+);
+
+run!(
+    an_undecided_read_in_a_block_ending_in_generic_data_is_refused,
+    r#"{ let r = { 0; (1, |k: i64| str::parse("[k]")) }; r }"#,
+    refused("the type 'b must be known here, an operation reads it to know what to make");
+    FuseExpect::None
+);

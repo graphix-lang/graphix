@@ -1,0 +1,8 @@
+// expect: reject
+// The missed refusal of the same bug (soak nov24f, washu-chan, a let-inline
+// flip): a function nothing calls whose typed read nothing decides is refused
+// "the type 'b must be known here" where the block ends in the data itself,
+// and was accepted where the block names the data first and ends in the
+// name. The use's copy of the read's variable was a twin made on the way out
+// of the let's cell, which carries no bound of the variable it copies.
+{ let r = { let f = (1, |k: i64| str::parse("[k]")); 0; f }; r }
