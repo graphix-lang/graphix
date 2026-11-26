@@ -18844,3 +18844,25 @@ run!(
     "{ let x = never(); type T = [string, null]; let p: T = x; let r = [10, 20][-x]$; 3 }",
     refused("a value here is used as T and as")
 );
+
+// The build holds a type no value has as the check does: such an argument
+// passes to a builtin's parameter of any type, and the call is never made.
+run!(
+    an_argument_no_value_has_passes_to_a_builtin_parameter_of_any_type,
+    "{ let n = str::len((5, never())); let m = array::len(`Foo(never())); 3 }",
+    is(Value::I64(3));
+    FuseExpect::None
+);
+
+run!(
+    an_argument_no_value_has_passes_to_a_builtin_whose_result_is_stripped,
+    "{ let x: duration = sys::time::add_dur(duration:1.s, (5, never()))$; 3 }",
+    is(Value::I64(3));
+    FuseExpect::None
+);
+
+run!(
+    an_argument_of_another_type_that_has_a_value_is_refused,
+    "str::len((5, 6))",
+    refused("type mismatch string does not contain (i64, i64)")
+);

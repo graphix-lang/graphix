@@ -513,6 +513,11 @@ reject	N: impl Cast is in a labeled argument's default; an implementation is glo
 trace	soak-nov25b-nov2026/09_select_over_a_bound_variant_nothing_reaches.gx
 trace	soak-nov25b-nov2026/10_named_union_and_number_meet.gx
 trace	soak-nov25b-nov2026/11_comparison_over_a_bound_operand.gx
+trace	soak-nov26a-nov2026/01_argument_no_value_has_to_a_builtin.gx
+trace	soak-nov26a-nov2026/02_read_of_a_function_over_a_binding_nothing_reaches.gx
+trace	soak-nov26a-nov2026/03_strip_over_a_parameter_of_a_function_written_in_place.gx
+reject	N: the type of the operand of ? or $ is not known here: annotate it	soak-nov26a-nov2026/04_strip_over_a_parameter_of_a_function_a_let_names.gx
+trace	soak-nov26a-nov2026/05_seq_call_with_an_argument_that_is_no_value.gx
 reject	N: type mismatch Number does not contain duration	source-e-jun2026/01_let_a_duration_1_s_duration_2_s_a.gx
 trace	source-e-jun2026/02_let_e_error_0_is_err_e.gx
 trace	source-e-jun2026/03_let_a_0_array_map_a_x_1_x.gx

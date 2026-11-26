@@ -157,7 +157,11 @@ impl<'e> Holds<'e> {
             self.depth += 1;
             let depth = self.depth;
             let outer = std::mem::replace(&mut self.relied, NONE);
-            let r = self.step(&a, &b);
+            let r = match self.step(&a, &b) {
+                // a type no value has is held by any, as bottom is
+                Ok(false) if super::bounds::empty(b) => Ok(true),
+                r => r,
+            };
             // what this walk assumed is discharged by its answer
             let relied = match self.relied {
                 d if d >= depth => NONE,

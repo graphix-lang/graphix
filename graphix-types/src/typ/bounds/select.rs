@@ -470,6 +470,42 @@ fn nothing(t: &Type) -> bool {
     matches!(t, Type::Bottom) || matches!(t, Type::Primitive(p) if p.is_empty())
 }
 
+/// No value has the type: a product with such a part, at any depth. A
+/// named type is taken to have values.
+pub(crate) fn empty(t: &Type) -> bool {
+    type Judged = Option<LPooled<AHashMap<usize, bool>>>;
+    fn parts(t: &Type, judged: &mut Judged) -> bool {
+        match t {
+            Type::Tuple(ts) | Type::Variant(_, ts, _) => {
+                ts.iter().any(|t| part(t, judged))
+            }
+            Type::Struct(fs) => fs.iter().any(|(_, t, _)| part(t, judged)),
+            Type::Set(ms) => ms.iter().all(|t| part(t, judged)),
+            t => nothing(t),
+        }
+    }
+    // each product shared under another judged once
+    fn part(t: &Type, judged: &mut Judged) -> bool {
+        match t {
+            Type::TVar(tv) => tv.binding().is_some_and(|b| part(&b, judged)),
+            Type::Tuple(_) | Type::Variant(..) | Type::Struct(_) | Type::Set(_) => {
+                let Some(node) = node_addr(t) else { return parts(t, judged) };
+                if let Some(e) = judged.as_ref().and_then(|j| j.get(&node)) {
+                    return *e;
+                }
+                let e = ensure_sufficient(|| parts(t, judged));
+                judged.get_or_insert_with(LPooled::take).insert(node, e);
+                e
+            }
+            t => nothing(t),
+        }
+    }
+    match t {
+        Type::TVar(tv) => tv.binding().is_some_and(|b| empty(&b)),
+        t => parts(t, &mut None),
+    }
+}
+
 /// A select as written: its arms, and where it is. A use of a scheme's
 /// variable holds it, so each instance routes its own values down a copy.
 #[derive(Debug)]
@@ -741,33 +777,6 @@ impl Solving {
         out
     }
 
-    /// No value has the type: a product with such a part, at any depth. A
-    /// named type is taken to have values.
-    pub(super) fn empty(&self, t: &Type) -> bool {
-        // each part shared under `t` judged once
-        fn go(t: &Type, judged: &mut AHashMap<usize, bool>) -> bool {
-            let t = shallow(t);
-            let node = node_addr(&t);
-            if let Some(e) = node.and_then(|n| judged.get(&n)) {
-                return *e;
-            }
-            let e = ensure_sufficient(|| match &t {
-                t if nothing(t) => true,
-                Type::Tuple(ts) | Type::Variant(_, ts, _) => {
-                    ts.iter().any(|t| go(t, judged))
-                }
-                Type::Struct(fs) => fs.iter().any(|(_, t, _)| go(t, judged)),
-                Type::Set(ms) => ms.iter().all(|t| go(t, judged)),
-                _ => false,
-            });
-            if let Some(n) = node {
-                judged.insert(n, e);
-            }
-            e
-        }
-        go(t, &mut LPooled::take())
-    }
-
     /// `t` with a typedef at its top unfolded; a type with no value is
     /// nothing.
     fn expand(&self, env: &Env, t: &Type) -> Type {
@@ -779,7 +788,7 @@ impl Solving {
                 Ok(e) => ensure_sufficient(|| self.expand(env, &split(&e))),
                 Err(_) => t,
             },
-            t if self.empty(t) => Type::Bottom,
+            t if empty(t) => Type::Bottom,
             _ => t,
         }
     }

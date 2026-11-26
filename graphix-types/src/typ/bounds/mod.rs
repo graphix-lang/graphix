@@ -32,6 +32,7 @@ use triomphe::Arc;
 
 mod image;
 mod select;
+pub(crate) use select::empty;
 pub use select::{Arm, FALSE, Pat, TRUE, Template, unsplit};
 
 thread_local! {
@@ -1442,7 +1443,7 @@ impl Solving {
     fn relate(&mut self, env: &Env, a: &Type, b: &Type) -> Result<()> {
         match ensure_sufficient(|| self.relate_in(env, a, b)) {
             // a type no value has fits anywhere, as bottom does
-            Err(_) if self.empty(a) => Ok(()),
+            Err(_) if empty(a) => Ok(()),
             r => r.map_err(|e| settled_told(env, b, e)),
         }
     }
@@ -1873,7 +1874,17 @@ impl Solving {
             && !u.is_bound()
         {
             let u = u.clone();
-            self.sent(w, &u)
+            self.sent(w, &u);
+            // a shallower cell keeps the types `w` is held to and not `w`:
+            // that all `w` holds is one type is said of it too, but where
+            // an operation makes its values, of the type asked of it
+            if singleton(w) && u.is_open() && !singleton(&u) && !made_at(&u) {
+                debug(|| {
+                    let (u, w) = (ShortName(&u.name), ShortName(&w.name));
+                    format!("one type '{u} below '{w}")
+                });
+                self.record(&u, &Type::Bound(Bound::Singleton), false);
+            }
         }
         // a use of `w` meets the bound; where the bound is a cell, what
         // that cell holds
@@ -3535,9 +3546,9 @@ fn undecided_chain_payload(payload: &Type) -> bool {
 }
 
 /// Whether the declared variable `v` may stand for a chain: each of its
-/// bounds admits one.
+/// bounds admits one, of a payload yet to be told.
 fn may_be_chain(env: &Env, v: &TVar) -> Result<bool> {
-    let chain = Type::err_chain(Type::Bottom);
+    let chain = Type::err_chain(Type::TVar(TVar::default()));
     for c in v.cell_above().iter() {
         if !matches!(c, Type::Bound(_))
             && !c.is_trait_ref(env)

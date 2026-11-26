@@ -1295,10 +1295,21 @@ fn shared_var(
     }
 }
 
+/// Whether an argument of the call is no value: such a call is never
+/// made, and a seq, which gathers a call's arguments into one value and
+/// selects over it, checks nothing of the others.
+fn never_made(types: &TypeMap, ap: &ApplyExpr) -> bool {
+    ap.args.iter().any(|(_, a)| {
+        matches!(typemorph::unparen(a).kind, ExprKind::Never { .. })
+            || types.of(a).first().is_some_and(|t| matches!(t, Type::Bottom))
+    })
+}
+
 /// Family 8. A call argument whose parameter is `'a: Function` (a builtin
 /// that wraps a function) replaced by a literal, or by a function with a
 /// defaulted label: the bound admits only a function type a generated call
-/// passes every argument of (`Type::function_holds`). Right site: the call.
+/// passes every argument of (`Type::function_holds`). Right site: the call,
+/// one that is made ([`never_made`]).
 fn function_bound(
     root: &Expr,
     pre: &[Expr],
@@ -1320,6 +1331,9 @@ fn function_bound(
         }
         let e = &pre[i];
         let ExprKind::Apply(ap) = &e.kind else { continue };
+        if never_made(types, ap) {
+            continue;
+        }
         let ft = types.declared(&ap.function).or_else(|| callee_type(types, ap));
         let Some(ft) = ft else { continue };
         let found = paired(&ft, ap, i, &sizes).into_iter().find(|(_, arg, param)| {
@@ -1569,17 +1583,7 @@ fn widen_consumer(
             // cell) has the parameter this very call gave it
             ExprKind::Apply(ap) if types.cell(&ap.function) => None,
             ExprKind::Apply(ap) if !consumer_callee(&ap.function) => None,
-            // a call with an argument that is no value is never made, and
-            // a seq, which gathers a call's arguments into one value and
-            // selects over it, checks nothing of the others
-            ExprKind::Apply(ap)
-                if ap.args.iter().any(|(_, a)| {
-                    matches!(typemorph::unparen(a).kind, ExprKind::Never { .. })
-                        || types.of(a).first().is_some_and(|t| matches!(t, Type::Bottom))
-                }) =>
-            {
-                None
-            }
+            ExprKind::Apply(ap) if never_made(types, ap) => None,
             ExprKind::Apply(ap) => {
                 // the first argument whose parameter is declared a concrete
                 // primitive: one over a variable widens with its argument

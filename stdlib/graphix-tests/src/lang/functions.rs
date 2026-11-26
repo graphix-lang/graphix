@@ -7341,3 +7341,39 @@ run!(
     "{ let f = |x, y| cast<[i64, duration]>(\"3.0\")$ == { let t = [<0, x>]; t }; 1 }",
     is(Value::I64(1))
 );
+
+// A binding outside a function that the function computes with beside its
+// parameter is one type, as the operand it flows into is: with nothing
+// flowing into it it is none, so a read of the function nothing calls checks
+// as its definition does, and a call gives the binding its argument's type.
+run!(
+    a_read_nothing_calls_of_a_function_computing_with_a_binding_nothing_reaches_checks,
+    "{ let y = never(); let t = |x| x + y; let m = t; 42 }",
+    is(Value::I64(42))
+);
+
+run!(
+    a_block_ending_in_a_read_of_a_function_computing_with_a_binding_nothing_reaches_checks,
+    "{ let y = array::iter(never()); let t = |x| x + y; \
+       let m = { let z = 1; { let q = t; q } }; 42 }",
+    is(Value::I64(42));
+    FuseExpect::None
+);
+
+run!(
+    a_call_of_a_function_computing_with_a_binding_nothing_reaches_types_the_binding,
+    "{ let y = never(); let t = |x| x + y; let m = t; (m(1), y + 2.0) }",
+    refused("type mismatch f64 does not contain i64")
+);
+
+run!(
+    calls_at_two_types_of_a_function_computing_with_a_binding_nothing_reaches_are_refused,
+    "{ let y = never(); let t = |x| x + y; let m = t; (m(1), m(2.0)) }",
+    refused("cannot compute with [i64, f64]: both operands must be one numeric type")
+);
+
+run!(
+    a_binding_of_two_types_a_function_computes_with_is_refused_written_before_or_after,
+    "{ let y = never(); let t = |x| x + y; y <- 1; y <- 2.5; 0 }",
+    refused("cannot compute with [i64, f64]: both operands must be one numeric type")
+);

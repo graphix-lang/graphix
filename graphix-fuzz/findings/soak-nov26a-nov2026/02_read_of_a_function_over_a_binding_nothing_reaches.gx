@@ -1,0 +1,8 @@
+// A typeflip (soak nov26a, block-wrap): with `t` read through a block of
+// its own this was refused "cannot compute with Number: both operands must be
+// one numeric type". `y` is a binding nothing flows into, demanded as a
+// number by `t`'s arithmetic: fixed at every number, it flowed on into the
+// read's own copy of the operand as a value of each. Demanded as more than
+// one type, with no value to say which, it is none.
+// Expected trace (both engines): 0.0.
+{ let rec f = |n: i64, acc: i64| -> f64 select n { 0 => 0.0, _ => f(n - 1, array::iter([{ let y = array::iter(never()); let t = |x| x + y; let m = { let z = 1; { let tm__0 = t; tm__0 } }; 42 }, 1, 1])) }; f(3, 0) }

@@ -1,0 +1,7 @@
+// A must-reject leak that was the family's (soak nov26a, function-bound): a
+// seq gathers a call's arguments into one value and selects over it, and a
+// `never()` among them makes that no value, so nothing reaches the callee
+// and its `Function` bound is asked of nothing. The same call outside a seq
+// is refused "i64 must be Function here".
+// Expected trace (both engines): 0.
+{ let step = seq { 1; { let qf = queuefn(#trigger: never(), 1); qf(7) } }; 0 }

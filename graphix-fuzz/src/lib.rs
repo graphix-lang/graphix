@@ -1074,6 +1074,13 @@ impl Strength {
             // sentences of the doc should agree. probe:
             // design/review-2026-11-16/repro/fuzz-lib-a-excluded-kind-divergence.gx
             // (fuzz-lib-a-02)
+            // 2026-11-26 claude: Soak nov26a: outside the Exact tier Oracle::settle now
+            // reruns the tested run as well as the reference and drops the comparison
+            // when either disagrees with its own rerun (pin
+            // tests::a_tested_run_that_does_not_repeat_is_dropped_where_replies_race).
+            // For the rand::pick case above that makes a miss one in four where it was
+            // one in two; the rule this CR asks Eric for (whether a Trace beside a
+            // Timeout records at Strength::Kind) is still open.
             OracleTier::Excluded => Strength::Kind,
             OracleTier::FinalValues => Strength::Final,
             // the routes pace a program differently
@@ -2646,20 +2653,37 @@ impl<'a> Oracle<'a> {
         // as inconclusive: rerun at `slow_budget`, or report `Diverge(pair, a, b)`.
         // Carry the whole `Run` in `Pair::Rerun`. Found by reading; not run.
         // (fuzz-lib-a-05)
+        // 2026-11-26 claude: Soak nov26a added a rerun of the tested run outside the
+        // Exact tier, right below; it runs at the same budget and has the same
+        // weakness: a rerun that only times out reads as the run disagreeing with
+        // itself, and the comparison is dropped.
         let again = run_one(self.code, ra, budget).await;
         if !again.agrees_at(&a, s) {
             if self.tier == OracleTier::Exact {
                 return Settled::Diverge(Pair::Rerun(ra.mode), a, again);
             }
-            eprintln!(
-                "NONDETERMINISTIC — the reference disagreed with its rerun; not recorded"
-            );
-            eprintln!("    program: {}", self.code.replace('\n', "\\n"));
-            eprintln!("    first: {}", render(&a));
-            eprintln!("    rerun: {}", render(&again));
-            return Settled::Drop;
+            return self.varied("reference", &a, &again);
+        }
+        // a program with a source of nondeterminism may take its values
+        // from the order its replies land in: the tested run's answer is
+        // one only if it repeats
+        if self.tier != OracleTier::Exact {
+            let again = run_one(self.code, rb, budget).await;
+            if !again.agrees_at(&b, s) {
+                return self.varied("tested run", &b, &again);
+            }
         }
         Settled::Diverge(pair, a, b)
+    }
+
+    /// A run of a program with a source of nondeterminism disagreed with
+    /// its rerun: its comparison says nothing.
+    fn varied(&self, who: &str, first: &Outcome, rerun: &Outcome) -> Settled {
+        eprintln!("NONDETERMINISTIC — the {who} disagreed with its rerun; not recorded");
+        eprintln!("    program: {}", self.code.replace('\n', "\\n"));
+        eprintln!("    first: {}", render(first));
+        eprintln!("    rerun: {}", render(rerun));
+        Settled::Drop
     }
 
     /// How an agreement concluded: the engines' kind, unless the ladder
@@ -6343,6 +6367,40 @@ mod tests {
         assert_eq!(oracle.verdict(), Verdict::Unsure);
     }
 
+    /// Where a program's values may ride the order its replies land in, a
+    /// tested run that does not repeat its answer says nothing, and the
+    /// comparison is dropped. A pure program's is a finding either way.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_tested_run_that_does_not_repeat_is_dropped_where_replies_race() {
+        let pair = Pair::Engine;
+        let (ra, rb) = pair.runs().unwrap();
+        let budget = Duration::from_secs(60);
+        let other = Outcome::single(Value::I64(8));
+        for (code, tier) in [
+            (
+                "{ let r: i64 = json::read(json::write_str(7)$)$; r }",
+                OracleTier::FinalValues,
+            ),
+            ("7", OracleTier::Exact),
+        ] {
+            assert_eq!(oracle_tier(code), tier);
+            let first = run_one(code, ra, budget).await;
+            assert!(matches!(first, Outcome::Trace(_)), "{first:?}");
+            let mut oracle = Oracle::new(code, tier, budget, None);
+            oracle.runs.extend([(ra, first), (rb, other.clone())]);
+            let settled = oracle.settle(pair).await;
+            match tier {
+                OracleTier::Exact => {
+                    assert!(
+                        matches!(settled, Settled::Diverge(Pair::Engine, ..)),
+                        "{code}"
+                    )
+                }
+                _ => assert!(matches!(settled, Settled::Drop), "{code}"),
+            }
+        }
+    }
+
     #[test]
     fn render_prints_composites_in_graphix_syntax() {
         let pair =
@@ -6572,7 +6630,7 @@ mod tests {
             ("{ let f = |#a: i64, x: i64| -> i64 a + x; f(#a: 1, 3) }", "label-unknown#"),
             ("{ let f = |#a: i64, x: i64| -> i64 a + x; f(#a: 1, 3) }", "label-missing#"),
             (
-                "{ let qf = queuefn(#trigger: never(), |x: i64| -> i64 x); qf(7) }",
+                "{ let qf = queuefn(#trigger: 0, |x: i64| -> i64 x); qf(7) }",
                 "function-bound#",
             ),
             (
@@ -6715,7 +6773,7 @@ mod tests {
             );
         }
         // family 8 refuses a literal and a function with a defaulted label
-        let qf = "{ let qf = queuefn(#trigger: never(), |x: i64| -> i64 x); qf(7) }";
+        let qf = "{ let qf = queuefn(#trigger: 0, |x: i64| -> i64 x); qf(7) }";
         let rep = typemorph_subject(qf, per, TM_CAP).await.unwrap();
         let fb: Vec<_> =
             rep.rejects.iter().filter(|p| p.id.starts_with("function-bound#")).collect();
@@ -6885,6 +6943,13 @@ mod tests {
                 "{ let mk = |t| list::nil(t); let s = list::head(mk(null)); \
                  select s { error as e => 1, null as _ => 2 } }",
                 "retype#",
+            ),
+            // a seq gathers a call's arguments into one value, which a
+            // `never()` among them makes none: nothing reaches the callee
+            (
+                "{ let step = seq { 1; { let qf = queuefn(#trigger: never(), \
+                 |x: i64| -> i64 x); qf(7) } }; 0 }",
+                "function-bound#",
             ),
             // the annotation would decide the open referent
             ("{ let x = never(); let r = &mut x; *r <- 2; x }", "ref-widen#"),

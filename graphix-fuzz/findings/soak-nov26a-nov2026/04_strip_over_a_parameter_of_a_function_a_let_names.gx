@@ -1,0 +1,6 @@
+// expect: reject
+// 03's callback under a `let`: the `let` makes it generic, the inner
+// function's parameter is a variable of its scheme, and a `?` over one is
+// refused. "the type of the operand of ? or $ is not known here: annotate
+// it".
+{ let a = [(1, -9223372036854775808), (2, 0)]; let tm__0 = |(k, v)| [|x| x?, |#foo: i64, #bar: i64 = -9223372036854775808| foo - bar]; array::len(array::flat_map(a, tm__0)) }

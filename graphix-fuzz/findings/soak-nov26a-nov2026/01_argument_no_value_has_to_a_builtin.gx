@@ -1,0 +1,6 @@
+// The check accepted and the build refused "type mismatch duration does not
+// contain (i64, _)" (soak nov26a). A type no value has fits anywhere, as
+// bottom does; the check held that and the relation the build asks of
+// decided types did not. The call is never made.
+// Expected trace (both engines): none.
+{ let x: duration = sys::time::add_dur(duration:4294967295.s, (5, never()))$; x }

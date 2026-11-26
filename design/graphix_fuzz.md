@@ -236,6 +236,12 @@ loop inside one cycle, which the other side's answer refutes, so a
 divergence; a reference that disagrees with its
 own rerun is nondeterminism, a finding of its own at the `Exact` tier
 (`Pair::Rerun`: nothing in the program may vary) and a drop elsewhere;
+outside the `Exact` tier the tested run must repeat its answer too, or
+the comparison is dropped: a program there may take its values from the
+order its replies land in (a body that calls over a capture makes the
+call only if the capture fires while the body runs, so which of two
+replies lands first decides whether it is made), and the rare order
+shows on whichever side met it;
 anything left is a divergence. A drop says
 nothing of the other comparisons, so they still run, and the check ends
 `unsure` unless one of them diverged.
@@ -617,7 +623,9 @@ callback whose body selects over a value an unannotated parameter's type
 decides, or reads a field of or `with`-updates such a parameter, which
 by language rule only the call types, or writes such a parameter or flows
 one into a written composite type, which a `let` decides before the call
-would; a refused mutant that checks once the hoisted lambda's unannotated
+would, nor on one holding a function that does any of these to its own
+parameter: under the `let` that parameter is a variable of the scheme,
+where written in place it takes what its uses give it; a refused mutant that checks once the hoisted lambda's unannotated
 parameters carry the types the base's check gave them at the call is
 body-first inference, not filed (`accept-typed`): the `let` decides them
 from the body alone, narrower than the call's arguments (a select's

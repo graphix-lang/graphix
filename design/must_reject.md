@@ -307,7 +307,10 @@ argument replaced with a literal. Rule: `'a: Function` admits only a
 function type with no variadic argument and no defaulted label
 (`Type::function_holds`), judged of the argument's shape where it
 arrives ("must be Function here"). Built (`function-bound`), the callee's
-declared type read from its binding, right site the call.
+declared type read from its binding, right site the call. Not at a call
+with an argument that is no value: it is never made, and a seq, which
+gathers a call's arguments into one value and selects over it, asks
+nothing of the others.
 
 **9. Writable references.** Site: `let r = &mut x` over a binding.
 (a) A later `*r <- ..` and no rebinding of `r` between: the `&mut`

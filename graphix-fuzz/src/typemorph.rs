@@ -703,7 +703,9 @@ pub(crate) fn open_value(e: &Expr) -> bool {
 /// type, so a `let` of the lambda is refused by language rule, not by an
 /// ordering bug. A write to it (`x <- v`), or a written composite type its
 /// value flows into (a union leaves it the members nothing else takes), decides
-/// it where the `let` is, which the call would have decided first.
+/// it where the `let` is, which the call would have decided first. A lambda
+/// in the body is held to the same: under a `let` its parameters are the
+/// scheme's, where one written in place takes what its uses give it.
 fn reads_param_type(l: &LambdaExpr) -> bool {
     let mut untyped: HashSet<&str> = HashSet::new();
     for a in l.args.iter().filter(|a| a.constraint.is_none()) {
@@ -734,6 +736,7 @@ fn reads_param_type(l: &LambdaExpr) -> bool {
                 ExprKind::Deref(x)
                 | ExprKind::OrNever(x)
                 | ExprKind::Qop { arg: x, .. } => is_param(x),
+                ExprKind::Lambda(inner) => reads_param_type(inner),
                 _ => false,
             }
     })
@@ -1450,6 +1453,8 @@ mod test {
             "{ let k = i64:1; let c = &k; array::map([c], |r| *r + 1) }",
             "{ let k: [i64, null] = 1; array::map([k], |x| x$ + 1) }",
             "{ let k: [bool, null] = false; array::filter([k], |x| { catch(e) false; x? }) }",
+            "{ let k = i64:1; array::flat_map([k], |v| [|x| x?]) }",
+            "{ let k = i64:1; array::map([k], |v| |r| r.a) }",
         ] {
             let (probes, _) = probes(body, 8);
             assert!(

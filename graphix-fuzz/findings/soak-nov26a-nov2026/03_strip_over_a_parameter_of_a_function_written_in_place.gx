@@ -1,0 +1,6 @@
+// A typeflip that was the transform's (soak nov26a, let-extract): a
+// function written in place is one instance, and a `?` over its untyped
+// parameter takes what its uses give the parameter by the input's end,
+// here nothing. 04 is the same callback under a `let`.
+// Expected trace (both engines): 4.
+{ let a = [(1, -9223372036854775808), (2, 0)]; array::len(array::flat_map(a, |(k, v)| [|x| x?, |#foo: i64, #bar: i64 = -9223372036854775808| foo - bar])) }
