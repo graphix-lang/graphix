@@ -1,0 +1,10 @@
+// The check accepted and the build refused "an instance at fn(x: [f32, string,
+// `A]) -> [i64, string] throws _ of a definition typed fn(v: '_: unbound within
+// [f32, string, `A]) -> [i64, string]" (soak nov25b). The lambda called where
+// it is written writes `'a` bare in its signature. Only a header's variables
+// were made the scheme's when the lambda's check closed, so the call shared
+// the lambda's own cell for `'a`, which `ka`'s scheme never took: an instance
+// of `ka` had no type for it. Every variable a definition writes as its own is
+// its scheme's.
+// Expected trace (both engines): ("text, x", ["text, y", "text, z"]).
+{ let ka = |v| select v { f32 as f => 1, string as s => "text, [(|x: [i64, 'a]| -> [i64, 'a] x)(s)]", `A => "A" }; (ka("x"), array::map(cast<Array<[f32, string, `A]>>(["y", "z"])$, ka)) }

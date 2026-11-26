@@ -1284,8 +1284,10 @@ impl<R: Rt> Update<R> for Qop<R> {
         };
         self.of_definition = decided.is_some();
         wrap!(self.n, self.n.typecheck0_instance(ctx, types))?;
+        // a handler nothing raises to takes its type from what it is used
+        // as, which need hold no error: there is none to pass on
         if matches!(self.spec.kind, ExprKind::Rethrow(_))
-            && self.n.typ().with_deref(|t| matches!(t, Some(Type::Bottom)))
+            && !bounds::strips_errors(&ctx.env, self.n.typ())?
         {
             return Ok(());
         }

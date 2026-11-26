@@ -1,0 +1,10 @@
+// A block-wrap flip (soak nov25b, two boxes): with the `$`'s operand bound
+// first the program was refused "pattern string will never match: nothing
+// reaches it (the value is Error<string>)". The `$` then waits on a cell that
+// `v1`, a binding of the code around, decides, so it is paid after `v4` has
+// closed and been called. What it leaves reached `v4`'s result only through
+// the dereference, a bound the `$`'s own cell keeps, which no copy of `v4`'s
+// scheme replays: the call's result never took the string. A cell given late
+// through a shape or a use is the one type the code around decides.
+// Expected trace (both engines): "hello".
+{ let v0 = ["", "hello"]; let v1 = array::map(v0, |v2| &v2); let v4 = |v5: i64| select v5 { 0 => *({ let tm__0 = v1[-1]; tm__0 }$), _ => error("a") }; select v4(0) { error as _ => "e", string as n => n } }

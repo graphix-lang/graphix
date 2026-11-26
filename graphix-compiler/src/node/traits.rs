@@ -256,6 +256,53 @@ pub(crate) fn impl_outside_functions(
     Ok(())
 }
 
+/// The constructor a constructor trait selects its implementation by,
+/// and the receiver as one application of it. A union's constructor is
+/// the one each member applies, as the check held each member to the
+/// receiver's one constructor, over what the members hold between them.
+fn receiver_constructor(env: &Env, t: &Type) -> Result<Option<(Type, Type)>> {
+    let Type::Set(ms) = t else {
+        return Ok(Type::app_split(t, env)?.map(|(ctor, _)| (ctor, t.clone())));
+    };
+    let mut ctor = None;
+    let mut held: LPooled<Vec<Type>> = LPooled::take();
+    for m in ms.iter() {
+        match (Type::app_split(m, env)?, &ctor) {
+            (None, _) => return Ok(None),
+            (Some((c, x)), None) => {
+                ctor = Some(c);
+                held.push(x)
+            }
+            (Some((c, x)), Some(seen)) if *seen == c => held.push(x),
+            (Some(_), Some(_)) => return Ok(None),
+        }
+    }
+    Ok(ctor.and_then(|c| {
+        let whole = c.fill_hole(&bounds::union_of(held.drain(..)))?;
+        Some((c, whole))
+    }))
+}
+
+/// A labeled default compiles at every call that leaves its label out:
+/// an impl it declares would be registered by each.
+pub(crate) fn impl_outside_defaults(default: &Expr) -> Result<()> {
+    let found = default.fold(None, &mut |found: Option<Expr>, e| {
+        found.or_else(|| matches!(e.kind, ExprKind::Impl(_)).then(|| e.clone()))
+    });
+    match found {
+        Some(e) => {
+            let ExprKind::Impl(im) = &e.kind else { unreachable!() };
+            Err(anyhow!(
+                "impl {} is in a labeled argument's default; an implementation is \
+                 global, declare it outside every function",
+                im.head.trait_name
+            ))
+            .at(&e)
+        }
+        None => Ok(()),
+    }
+}
+
 /// Whether `t` mentions `self`, in a bound its function type's header
 /// declares too: a signature's `val` holds its quantifiers' bounds.
 fn mentions_self(t: &Type) -> bool {
@@ -1555,8 +1602,23 @@ impl<R: Rt> CallSite<R> {
         }
         // A constructor trait selects by the receiver's outermost form.
         if def.hole {
-            self_t = match Type::app_split(&self_t, &ctx.env)? {
-                Some((ctor, _)) => ctor,
+            self_t = match receiver_constructor(&ctx.env, &self_t)? {
+                Some((ctor, receiver)) => {
+                    // the implementation is called with the receiver as
+                    // the one application its signature writes
+                    if let Some(i) = m.self_index
+                        && receiver != self_t
+                    {
+                        let args = ftype.args.iter().enumerate().map(|(j, a)| {
+                            let typ =
+                                if j == i { receiver.clone() } else { a.typ.clone() };
+                            FnArgType { kind: a.kind.clone(), typ }
+                        });
+                        let args = Arc::from_iter(args);
+                        self.ftype = Some(Arc::new(FnType { args, ..(**ftype).clone() }))
+                    }
+                    ctor
+                }
                 None => bailat!(
                     self.spec,
                     "cannot resolve {}::{}: {} is not a type constructor (it has no \

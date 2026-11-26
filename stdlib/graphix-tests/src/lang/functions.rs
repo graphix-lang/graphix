@@ -7238,3 +7238,106 @@ run!(
          x(inner) }; r; 1 }",
     is(Value::I64(1))
 );
+
+// A variable a lambda writes bare in its signature is its scheme's as one
+// its header declares is: a call of the lambda where it is written copies
+// it, so each instance of the function around decides it.
+run!(
+    a_bare_variable_of_a_lambda_called_in_place_is_each_instances,
+    "{ let ka = |s| { let r = (|x: [i64, 'a]| -> [i64, 'a] x)(s); \"[r]\" }; \
+       (ka(\"abc\"), ka(1.5)) }",
+    prints(r#"["abc", "1.5"]"#)
+);
+
+run!(
+    a_bare_variable_of_a_lambda_called_in_place_under_a_select_is_each_instances,
+    "{ let ka = |v| select v { \
+         f32 as f => 1, \
+         string as s => \"text, [(|x: [i64, 'a]| -> [i64, 'a] x)(s)]\", \
+         `A => \"A\" }; \
+       (ka(\"x\"), array::map(cast<Array<[f32, string, `A]>>([\"y\", \"z\"])$, ka)) }",
+    prints(r#"["text, x", ["text, y", "text, z"]]"#)
+);
+
+// A `$` whose operand waits on a binding of the code around is paid after
+// its function closes. What it leaves then reaches the function's result
+// through a dereference, a field, an index or a call, none of which a copy
+// of the scheme replays: such a result is the one type the code around
+// decides, at every call.
+run!(
+    a_dereference_of_what_a_late_strip_leaves_is_the_calls_result,
+    "{ let v1 = [&\"a\"]; let v4 = |v5: i64| { let t = v1[-1]; *(t$) }; v4(1) }",
+    is(Value::String("a".into()));
+    FuseExpect::None
+);
+
+run!(
+    a_dereference_of_what_a_late_strip_leaves_holds_the_call_to_its_type,
+    "{ let v1 = [&\"a\"]; let v4 = |v5: i64| { let t = v1[-1]; *(t$) }; \
+       let s: i64 = v4(1); s }",
+    refused("type mismatch i64 does not contain string")
+);
+
+run!(
+    a_dereference_of_what_a_late_strip_leaves_is_placed_among_a_selects_patterns,
+    "{ let v1 = [&\"a\"]; \
+       let v4 = |v5: i64| { let t = v1[-1]; \
+         select v5 { 0 => *(t$), _ => error(\"a\") } }; \
+       select v4(0) { error as _ => \"e\", string as n => n } }",
+    is(Value::String("a".into()))
+);
+
+run!(
+    a_field_of_what_a_late_strip_leaves_holds_the_call_to_its_type,
+    "{ let v1 = [{x: \"a\"}]; let v4 = |v5: i64| { let t = v1[-1]; (t$).x }; \
+       let s: i64 = v4(1); s }",
+    refused("type mismatch i64 does not contain string")
+);
+
+run!(
+    a_strip_of_an_element_of_what_a_late_strip_leaves_holds_the_call_to_its_type,
+    "{ let v1 = [[&\"a\"]]; let v4 = |v5: i64| { let t = v1[-1]; *((t$)[0]$) }; \
+       let s: i64 = v4(1); s }",
+    refused("type mismatch i64 does not contain string")
+);
+
+run!(
+    a_strip_of_an_element_of_what_a_late_strip_leaves_is_the_calls_result,
+    "{ let v1 = [[&\"a\"]]; let v4 = |v5: i64| { let t = v1[-1]; *((t$)[0]$) }; v4(1) }",
+    is(Value::String("a".into()));
+    FuseExpect::None
+);
+
+run!(
+    a_call_of_what_a_late_strip_leaves_holds_its_argument_to_the_parameter,
+    "{ let fs = [|x: i64| x + 1]; let v4 = |a| { let t = fs[0]; (t$)(a) }; v4(\"s\") }",
+    refused("type mismatch i64 does not contain string")
+);
+
+run!(
+    a_call_of_what_a_late_strip_leaves_runs,
+    "{ let fs = [|x: i64| x + 1]; let v4 = |a| { let t = fs[0]; (t$)(a) }; v4(41) }",
+    is(Value::I64(42));
+    FuseExpect::None
+);
+
+// A comparison one of whose operands waits on a variable of the function is
+// each call's to judge, whether the operand is written in place or bound
+// first.
+run!(
+    a_comparison_over_a_bound_operand_that_waits_on_a_parameter_is_each_calls,
+    "{ let f = |x| [<1>] == { let t = [<x>]; t }; (f(1), f(2)) }",
+    prints("[true, false]")
+);
+
+run!(
+    a_comparison_over_a_bound_operand_that_waits_on_a_parameter_is_refused_at_the_call,
+    "{ let f = |x| [<1>] == { let t = [<x>]; t }; f(\"a\") }",
+    refused("cannot compare List<i64> with List<string>")
+);
+
+run!(
+    a_comparison_over_a_bound_operand_in_a_function_nothing_calls_checks,
+    "{ let f = |x, y| cast<[i64, duration]>(\"3.0\")$ == { let t = [<0, x>]; t }; 1 }",
+    is(Value::I64(1))
+);

@@ -1,0 +1,8 @@
+// A block-wrap flip (soak nov25b): with the list bound first the function,
+// which nothing calls, was refused "cannot compare [i64, duration] with
+// List<'_>". The comparison's operand then is a cell of the definition that
+// waits on `x`; it was not left to the instances as an operand that holds
+// `x` is, and was judged at the input's end over the scheme's own variable.
+// It is each call's to judge either way.
+// Expected trace (both engines): 1.
+{ let f = |x, y| cast<[i64, duration]>("3.0")$ == { let tm__0 = [<0, x>]; tm__0 }; 1 }

@@ -6932,3 +6932,31 @@ run!(
     "#
     ; FuseExpect::None
 );
+
+// A labeled default compiles at every call that leaves its label out, so
+// an impl in one would be registered by each: refused at the definition.
+run!(
+    an_impl_in_a_labeled_default_is_refused,
+    "{ let f = |#foo: i64 = { type Tag = Abstract<string>; impl Cast for Tag; 1 }, x| foo; \
+       (f(1), f(2)) }",
+    refused("impl Cast is in a labeled argument's default")
+);
+
+// A receiver that is a union of one constructor's applications is that
+// constructor applied to what its members hold: a constructor trait
+// selects the constructor's implementation, as the check held each member
+// to it.
+run!(
+    a_constructor_trait_call_over_a_union_of_one_constructor_resolves,
+    "{ let y: [Array<i64>, Array<Array<i64>>] = [[1], [2, 3]]; \
+       Collection::fold(y, 0, |acc, x| acc + 1) }",
+    is(Value::I64(2))
+);
+
+run!(
+    a_constructor_trait_call_over_a_union_of_one_constructor_in_a_function_resolves,
+    "{ let csize = 'c: Collection |c: 'c| Collection::fold( \
+         { let y: [Array<i64>, Array<Array<i64>>] = [1]; y }, 0, |acc, x| acc + 1); \
+       csize([\"a\", [1]]) }",
+    is(Value::I64(1))
+);

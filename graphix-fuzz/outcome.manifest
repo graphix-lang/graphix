@@ -502,6 +502,17 @@ trace	soak-nov25a-nov2026/04_parameter_passed_itself_through_a_binding.gx
 reject	N: type mismatch iN does not contain fN	soak-nov25a-nov2026/05_arithmetic_over_an_outer_parameter_two_definitions_deep.gx
 trace	soak-nov25a-nov2026/06_value_a_called_function_reads_among_patterns.gx
 trace	soak-nov25a-nov2026/07_rethrow_in_a_handler_nothing_raises_to.gx
+trace	soak-nov25b-nov2026/01_bare_variable_of_a_lambda_called_in_place.gx
+trace	soak-nov25b-nov2026/02_bare_variable_of_a_lambda_called_in_place_printed.gx
+trace	soak-nov25b-nov2026/03_dereference_of_what_a_late_strip_leaves.gx
+reject	N: type mismatch iN does not contain string	soak-nov25b-nov2026/04_dereference_of_what_a_late_strip_leaves_held_to_its_type.gx
+trace	soak-nov25b-nov2026/05_second_strip_over_an_error.gx
+trace	soak-nov25b-nov2026/06_seq_under_a_handler_nothing_raises_to.gx
+trace	soak-nov25b-nov2026/07_constructor_trait_over_a_union_of_arrays.gx
+reject	N: impl Cast is in a labeled argument's default; an implementation is global, declare it outside every function	soak-nov25b-nov2026/08_impl_in_a_labeled_default.gx
+trace	soak-nov25b-nov2026/09_select_over_a_bound_variant_nothing_reaches.gx
+trace	soak-nov25b-nov2026/10_named_union_and_number_meet.gx
+trace	soak-nov25b-nov2026/11_comparison_over_a_bound_operand.gx
 reject	N: type mismatch Number does not contain duration	source-e-jun2026/01_let_a_duration_1_s_duration_2_s_a.gx
 trace	source-e-jun2026/02_let_e_error_0_is_err_e.gx
 trace	source-e-jun2026/03_let_a_0_array_map_a_x_1_x.gx

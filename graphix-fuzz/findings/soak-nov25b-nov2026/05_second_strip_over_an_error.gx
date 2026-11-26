@@ -1,0 +1,8 @@
+// "the JIT could not link emitted code: compile: Verifier errors" (soak
+// nov25b). `error(`Boom)?` leaves nothing, and the `$` over it has nothing to
+// take: it passed the inner bottom through as it was, shapeless, where its
+// own type is the f64 its consumer reads, and the comparison compared an i64
+// with an f64. Over an operand no value reaches a strip gives a bottom of its
+// own type's shape.
+// Expected trace (both engines): none.
+{ let g = |c, a, b| math::clamp(5.0, 0.0, 10.0)$ == 0.0 && error(`Boom)?$ == 0.0 && math::clamp(42.0, 0.0, 10.0)$ == 10.0; g(true, 0, 0) }

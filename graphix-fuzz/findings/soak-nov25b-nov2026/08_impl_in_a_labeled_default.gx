@@ -1,0 +1,7 @@
+// expect: reject
+// The check accepted and the build refused "conflicting implementation: Cast
+// is already implemented for Tag" (soak nov25b). A labeled default compiles
+// at every call that leaves its label out, so an impl in one is registered
+// by each: refused at the definition, "impl Cast is in a labeled argument's
+// default".
+array::fold(array::map([0, 0, 0], |#foo: i64 = { type Tag = Abstract<string>; impl Cast for Tag; 1 }, x| foo), 0, |a, e| a)

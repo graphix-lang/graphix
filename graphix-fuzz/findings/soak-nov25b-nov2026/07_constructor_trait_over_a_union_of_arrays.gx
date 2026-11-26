@@ -1,0 +1,8 @@
+// The check accepted and the build refused "cannot resolve Collection::fold:
+// [Array<i64>, Array<Array<i64>>] is not a type constructor" (soak nov25b).
+// The check holds each member of the receiver to the one constructor, as it
+// holds a union of arrays below an array of their elements' union; the build
+// read the union as no application. It is the constructor applied to what
+// its members hold.
+// Expected trace (both engines): 1.
+{ let csize = 'c: Collection |c: 'c| Collection::fold({ let y: [Array<i64>, Array<Array<i64>>] = [1]; y }, 0, |acc, x| acc + 1); csize(["a", [1]]) }

@@ -743,7 +743,7 @@ impl Solving {
 
     /// No value has the type: a product with such a part, at any depth. A
     /// named type is taken to have values.
-    fn empty(&self, t: &Type) -> bool {
+    pub(super) fn empty(&self, t: &Type) -> bool {
         // each part shared under `t` judged once
         fn go(t: &Type, judged: &mut AHashMap<usize, bool>) -> bool {
             let t = shallow(t);

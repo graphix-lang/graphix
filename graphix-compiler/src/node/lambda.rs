@@ -2848,7 +2848,9 @@ struct DefGate<R: Rt> {
     scope: Scope,
     rigid: LPooled<Vec<RigidGate>>,
     _declaring: Declaring,
-    /// Each quantifier the definition declares.
+    /// Each variable the definition writes that is its own, in its header
+    /// or bare in its signature: one of a definition around it is that
+    /// definition's.
     declared: LPooled<Vec<TVar>>,
     closing: Closing,
 }
@@ -2896,9 +2898,9 @@ impl<R: Rt> DefGate<R> {
             let _ = bounds::bounded_by_names(&ctx.env, t);
         });
         let rigid = named.values().map(|tv| tv.open_rigid()).collect();
-        let quantified = def.typ.quantifiers.iter().filter_map(|q| named.get(q));
         let declaring = Declaring::enter(named.values().cloned());
-        let declared = quantified.cloned().collect();
+        let declared =
+            named.values().filter(|tv| tv.level() == def.level).cloned().collect();
         ctx.rec_defs.insert(def.id);
         ctx.def_gate_depth += 1;
         Self {
@@ -3149,6 +3151,7 @@ fn check_defaults<R: Rt>(
     };
     for (arg, at) in def.argspec.iter().zip(def.typ.args.iter()) {
         let Some(expr) = arg.kind.default() else { continue };
+        super::traits::impl_outside_defaults(expr)?;
         let (node, res) = ctx.with_restored(def.env.clone(), |ctx| {
             let mut node = def.in_signature(ctx, None, |ctx| {
                 compile(ctx, flags, expr.clone(), scope, ExprId::new())

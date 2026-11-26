@@ -1,0 +1,5 @@
+// expect: reject
+// The soundness side of 03: the call's result never took the string, so
+// `let s: i64 = v4(1)` checked, and `s + 1` ran over a string.
+// "type mismatch i64 does not contain string".
+{ let v1 = [&"a"]; let v4 = |v5: i64| { let t = v1[-1]; *(t$) }; let s: i64 = v4(1); s + 1 }

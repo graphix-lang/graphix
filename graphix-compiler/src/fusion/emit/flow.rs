@@ -584,13 +584,17 @@ fn emit_qop_always_bad<R: Rt>(
     let deliverable = cx.b.ins().band(is_err, fresh);
     let inner_owned = node_composite_source(inner) == CompositeSource::Owned;
     emit_qop_error_disposal(cx, sink, deliverable, clean, cv.payload, inner_owned)?;
-    // the placeholder has the shape its consumers read: the result type's,
-    // a bottom-fed cell that took its consumer's, shapeless only for ⊥
-    let kind = kernel_abi::freeze_for_abi_normalized(result_typ)
+    emit_bottom_placeholder_of_kind(cx, stripped_kind(result_typ), cv.disc)
+}
+
+/// The shape of the placeholder a strip that leaves nothing gives: the
+/// one its consumers read, its result type's, which a bottom-fed cell took
+/// from its consumer; shapeless only for ⊥.
+fn stripped_kind(result_typ: &Type) -> AbiKind {
+    kernel_abi::freeze_for_abi_normalized(result_typ)
         .and_then(|t| kernel_abi::abi_kind(&t))
         .filter(|k| !matches!(k, AbiKind::Unit | AbiKind::Null))
-        .unwrap_or(AbiKind::Value);
-    emit_bottom_placeholder_of_kind(cx, kind, cv.disc)
+        .unwrap_or(AbiKind::Value)
 }
 
 /// `?` / `$`: unwrap a `[T, Error<E>]` inner to `T`, or a `[T, null]`
@@ -615,6 +619,13 @@ pub(crate) fn emit_qop_node<R: Rt>(
     if kernel_abi::nullable_inner(&inner_typ).is_none() {
         // `nullable_inner` only detects a two member union.
         if !type_may_be(&inner_typ, marker) {
+            // an inner no value reaches is a shapeless bottom, and this
+            // node's consumers read its own type's shape
+            if inner_typ.is_uninhabited() {
+                let cv = inner.emit_clif(cx)?;
+                let kind = stripped_kind(result_typ);
+                return emit_bottom_placeholder_of_kind(cx, kind, cv.disc);
+            }
             // Nothing to strip: the sink never fires, and the result is
             // owned as every other strip's is.
             return emit_owned_node(cx, inner);

@@ -18813,3 +18813,34 @@ run!(
        let tm = |v2, v3| v0.c; array::fold([-1, 42, 2], 7, tm) }",
     is(Value::I64(43))
 );
+
+// No value has a type with a part nothing reaches, so it fits anywhere, as
+// bottom does: a select over one checks whether the value is written in
+// place or bound first.
+run!(
+    a_select_over_a_bound_variant_of_a_part_nothing_reaches_checks,
+    "{ let s = select { let t = `Done({ 1; 0; }); t } { error as e => 1, null as _ => 2 }; \
+       5 }",
+    is(Value::I64(5))
+);
+
+run!(
+    a_select_over_a_bound_variant_no_arm_takes_is_refused,
+    "select { let t = `Done(0); t } { error as e => 1, null as _ => 2 }",
+    refused("missing match cases: nothing matches `Done(i64)")
+);
+
+// What is demanded of a cell nothing flows into is read through a name: a
+// named union and a number set share the union's numbers.
+run!(
+    a_value_nothing_reaches_used_as_a_named_union_and_as_a_number_is_their_meet,
+    "{ let x = never(); type T = [i64, null]; let p: T = x; let r = [10, 20][-x]$; 3 }",
+    is(Value::I64(3));
+    FuseExpect::None
+);
+
+run!(
+    a_value_nothing_reaches_used_as_a_named_union_with_no_number_and_as_a_number_is_refused,
+    "{ let x = never(); type T = [string, null]; let p: T = x; let r = [10, 20][-x]$; 3 }",
+    refused("a value here is used as T and as")
+);

@@ -1440,8 +1440,11 @@ impl Solving {
     }
 
     fn relate(&mut self, env: &Env, a: &Type, b: &Type) -> Result<()> {
-        ensure_sufficient(|| self.relate_in(env, a, b))
-            .map_err(|e| settled_told(env, b, e))
+        match ensure_sufficient(|| self.relate_in(env, a, b)) {
+            // a type no value has fits anywhere, as bottom does
+            Err(_) if self.empty(a) => Ok(()),
+            r => r.map_err(|e| settled_told(env, b, e)),
+        }
     }
 
     fn relate_in(&mut self, env: &Env, a: &Type, b: &Type) -> Result<()> {
@@ -4123,7 +4126,7 @@ impl Solving {
     pub fn quantify(&mut self, t: &Type, depth: u32) {
         let mut kept = Cells::new();
         self.reach(t, &mut kept);
-        let late = self.given_late(depth);
+        let late = self.given_late(depth, &kept);
         for v in kept.iter().filter(|v| v.level().depth() > depth) {
             // a cell a use of an open cell outside produces into takes
             // that cell's values as they come, after any copy is made:
@@ -4143,8 +4146,12 @@ impl Solving {
     /// The cells a `?`, a `$` or a chain's read still held gives a type
     /// after the definition closing over `depth` has closed, each with a
     /// cell at `depth` or shallower that decides it: what the use reads
-    /// reaches that cell, or a cell another such use gives.
-    fn given_late(&self, depth: u32) -> SmallVec<[(TVar, TVar); 4]> {
+    /// reaches that cell, or a cell another such use gives. What such a
+    /// cell gives in turn is given as late, but for a variable of the
+    /// scheme (`kept`) it flows into whole: a type it is held under and a
+    /// use of it are kept by the cell, which is no variable of the scheme,
+    /// so no copy of the scheme replays them.
+    fn given_late(&self, depth: u32, kept: &Cells) -> SmallVec<[(TVar, TVar); 4]> {
         let mut late: SmallVec<[(TVar, TVar); 4]> = SmallVec::new();
         type Ends = (SmallVec<[TVar; 4]>, SmallVec<[TVar; 4]>);
         let mut held: SmallVec<[Ends; 4]> = SmallVec::new();
@@ -4164,9 +4171,28 @@ impl Solving {
             };
             held.push((ins, c.outs()))
         }
-        let mut found = true;
-        while found && !held.is_empty() {
-            found = false;
+        let mut spread = 0;
+        loop {
+            while spread < late.len() {
+                let (p, w) = late[spread].clone();
+                spread += 1;
+                let mut given: SmallVec<[TVar; 4]> = SmallVec::new();
+                for u in p.cell_above().iter() {
+                    match &shallow(u) {
+                        // a variable of the scheme it flows into takes it
+                        // at each copy, which keeps that edge
+                        Type::TVar(x) if kept.has(x) => (),
+                        u => cells_of(u, false, &mut given),
+                    }
+                }
+                uses(&p).iter().for_each(|(u, _)| given.extend(use_outs(u)));
+                for c in given {
+                    if !late.iter().any(|(q, _)| q.same_cell(&c)) {
+                        late.push((c, w.clone()))
+                    }
+                }
+            }
+            let before = late.len();
             held.retain(|(ins, outs)| {
                 let mut read = Cells::new();
                 ins.iter().for_each(|v| self.reach(&Type::TVar(v.clone()), &mut read));
@@ -4176,11 +4202,13 @@ impl Solving {
                     None => true,
                     Some(w) => {
                         late.extend(outs.iter().map(|p| (p.clone(), w.clone())));
-                        found = true;
                         false
                     }
                 }
             });
+            if late.len() == before {
+                break;
+            }
         }
         late
     }
@@ -4329,16 +4357,9 @@ impl Solving {
             if !pending {
                 continue;
             }
-            let variables = variables.get_or_insert_with(|| {
-                let mut all = Cells::new();
-                self.reach(t, &mut all);
-                all
-            });
-            let mut reached = Cells::new();
-            self.reach(&Type::TVar(v.clone()), &mut reached);
             // one that reaches no variable of this scheme waits on a cell
             // of the code around, which leaves it when it closes
-            if !reached.iter().any(|u| variables.has(u)) {
+            if !self.reaches_variable(v, &mut variables, t) {
                 continue;
             }
             self.singles.push(v.clone());
@@ -4374,12 +4395,27 @@ impl Solving {
         }
         self.judge_declared(env)?;
         // a comparison whose operands a variable of the scheme decides is
-        // each instance's to judge
-        let (left, mine): (Vec<_>, Vec<_>) = std::mem::take(&mut self.compared)
-            .into_iter()
-            .partition(|c| scheme(&c.a) || scheme(&c.b));
-        self.compared = mine;
-        for Comparison { a, b, ordered, made } in left {
+        // each instance's to judge: an operand that holds a cell each
+        // instance copies, or a cell of the definition that waits on one
+        let compared = std::mem::take(&mut self.compared);
+        let mut waits = |s: &Self, operand: &Type| -> SmallVec<[TVar; 4]> {
+            let mut cells = SmallVec::new();
+            cells_of(operand, true, &mut cells);
+            cells.retain(|c: &mut TVar| {
+                open_own(c, depth) && s.reaches_variable(c, &mut variables, t)
+            });
+            cells
+        };
+        let mut left: Vec<(Comparison, SmallVec<[TVar; 4]>)> = Vec::new();
+        for c in compared {
+            let mut waiting = waits(self, &c.a);
+            waiting.extend(waits(self, &c.b));
+            match holds_unowned(&c.a) || holds_unowned(&c.b) || !waiting.is_empty() {
+                true => left.push((c, waiting)),
+                false => self.compared.push(c),
+            }
+        }
+        for (Comparison { a, b, ordered, made }, waiting) in left {
             // two constructors of different kinds hold one another at no
             // instance, whatever the cells under them become
             let (da, db) = (deep(&a), deep(&b));
@@ -4387,11 +4423,19 @@ impl Solving {
                 return Err(placed(&made, incomparable(&da, &db, ordered)));
             }
             let pair = Arc::new((a, b, ordered));
+            let judges = |ls: &[Left]| {
+                let same =
+                    |l: &Left| matches!(l, Left::Compared(p) if Arc::ptr_eq(p, &pair));
+                (!ls.iter().any(same)).then(|| Left::Compared(pair.clone()))
+            };
+            // the variables a waiting cell reaches carry it to each copy
+            for c in waiting.iter() {
+                for u in self.instances_own(c, depth).iter() {
+                    self.leave(&Type::TVar(u.clone()), &judges)
+                }
+            }
             for t in [&pair.0, &pair.1] {
-                self.leave(t, |ls| {
-                    let same = |l: &Left| matches!(l, Left::Compared(p) if Arc::ptr_eq(p, &pair));
-                    (!ls.iter().any(same)).then(|| Left::Compared(pair.clone()))
-                })
+                self.leave(t, &judges)
             }
         }
         // a select still waiting waits for an instance's types
@@ -4421,6 +4465,24 @@ impl Solving {
             }
         }
         Ok(())
+    }
+
+    /// Whether the cell `v` reaches a variable of the scheme `t`
+    /// (`variables`, found at the first ask).
+    fn reaches_variable(
+        &self,
+        v: &TVar,
+        variables: &mut Option<Cells>,
+        t: &Type,
+    ) -> bool {
+        let variables = variables.get_or_insert_with(|| {
+            let mut all = Cells::new();
+            self.reach(t, &mut all);
+            all
+        });
+        let mut reached = Cells::new();
+        self.reach(&Type::TVar(v.clone()), &mut reached);
+        reached.iter().any(|u| variables.has(u))
     }
 
     /// The order and the comparison asked of the cell `v` hold of `t`, a
@@ -6198,8 +6260,11 @@ impl Solving {
                 return Ok(t.clone());
             }
         }
+        // a name is the union or the primitives it stands for
+        let stood: SmallVec<[Type; 4]> =
+            ts.iter().map(|t| stands_for(env, t)).collect::<Result<_>>()?;
         // the members of a union that every other bound holds meet them all
-        for t in ts {
+        for t in stood.iter() {
             let Type::Set(ms) = t else { continue };
             let kept: SmallVec<[Type; 4]> = ms
                 .iter()
@@ -6214,7 +6279,7 @@ impl Solving {
                 return Ok(u);
             }
         }
-        let common = ts.iter().try_fold(None, |acc: Option<_>, t| match (acc, t) {
+        let common = stood.iter().try_fold(None, |acc: Option<_>, t| match (acc, t) {
             (None, Type::Primitive(p)) => Some(Some(*p)),
             (Some(a), Type::Primitive(p)) => Some(Some(a & *p)),
             _ => None,

@@ -18,7 +18,8 @@ use compact_str::format_compact;
 use graphix_compiler::{
     expr::{
         ApplyExpr, Arg, ArgKind, BindExpr, Expr, ExprKind, LambdaBody, LambdaExpr,
-        ModPath, Name, SeqExpr, SeqTrigger, StructurePattern, TypeDefBody, TypeDefExpr,
+        ModPath, ModuleKind, Name, SeqExpr, SeqTrigger, StructurePattern, TypeDefBody,
+        TypeDefExpr,
     },
     typ::{TVar, Type, TypeRef},
 };
@@ -355,14 +356,21 @@ pub fn probes(body: &str, cap: usize) -> (Vec<TmProbe>, usize) {
                 continue;
             }
             // a name under `&` may be a place root; a seq body refuses a
-            // `catch`, a function body a trait or an impl
+            // `catch` and a dynamic module, a function body a trait or an
+            // impl
             let holds = |k: fn(&ExprKind) -> bool| {
                 b.value.fold(false, &mut |a, n| a || k(&n.kind))
             };
-            let holds_catch = holds(|k| matches!(k, ExprKind::Catch(_)));
+            let seq_refuses = holds(|k| match k {
+                ExprKind::Catch(_) => true,
+                ExprKind::Module { value, .. } => {
+                    matches!(**value, ModuleKind::Dynamic { .. })
+                }
+                _ => false,
+            });
             let declares = holds(|k| matches!(k, ExprKind::Trait(_) | ExprKind::Impl(_)));
             if under(|k| matches!(k, ExprKind::ByRef(..)))
-                || (holds_catch && under(|k| matches!(k, ExprKind::Seq(_))))
+                || (seq_refuses && under(|k| matches!(k, ExprKind::Seq(_))))
                 || (declares && under(|k| matches!(k, ExprKind::Lambda(_))))
             {
                 continue;
@@ -1240,12 +1248,18 @@ mod test {
     #[test]
     fn inline_keeps_places_seq_bodies_and_binders() {
         // (body, the let that must stay: its use is a place root, its
-        // value holds a catch and its use sits in a seq body, or a trait
-        // and its use sits in a lambda)
+        // value holds a catch or a dynamic module and its use sits in a
+        // seq body, or a trait and its use sits in a lambda)
         for (body, kept) in [
             ("{ let a = [10, 20]; let r = &a[1]; let t = *r; t }", "let a"),
             (
                 "{ let v = { catch(e) 1; (in0 %? in0)? }; let t = in0; seq t { v } }",
+                "let v",
+            ),
+            (
+                "{ let v = { let s = mod m dynamic { sig { val k: i64 }; \
+                 source \"let k = 1\" }; select s { error as e => never(e), \
+                 null as _ => m::k } }; let t = in0; seq t { v } }",
                 "let v",
             ),
             ("{ let x = { trait T { val v: fn(self) -> i64 }; 1 }; 2; |i| x }", "let x"),

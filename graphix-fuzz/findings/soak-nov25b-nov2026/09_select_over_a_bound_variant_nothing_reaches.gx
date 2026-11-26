@@ -1,0 +1,8 @@
+// A block-wrap flip (soak nov25b): with the scrutinee bound first the select
+// was refused "missing match cases: nothing matches `Done(_)". The block ends
+// in `;`, so nothing reaches the variant's payload and no value has the
+// variant's type. A select routes such a type down no arm, but the bound its
+// arms put on an undecided scrutinee refused it. A type no value has fits
+// anywhere, as bottom does.
+// Expected trace (both engines): 5.
+{ let s = select { let tm__0 = `Done({ let id = |v| v; let y = (|z| z, 2); 0; }); tm__0 } { error as e => 1, null as _ => 2 }; 5 }

@@ -502,6 +502,17 @@
 0	soak-nov25a-nov2026/05_arithmetic_over_an_outer_parameter_two_definitions_deep.gx
 1	soak-nov25a-nov2026/06_value_a_called_function_reads_among_patterns.gx
 0	soak-nov25a-nov2026/07_rethrow_in_a_handler_nothing_raises_to.gx
+1	soak-nov25b-nov2026/01_bare_variable_of_a_lambda_called_in_place.gx
+1	soak-nov25b-nov2026/02_bare_variable_of_a_lambda_called_in_place_printed.gx
+2	soak-nov25b-nov2026/03_dereference_of_what_a_late_strip_leaves.gx
+0	soak-nov25b-nov2026/04_dereference_of_what_a_late_strip_leaves_held_to_its_type.gx
+1	soak-nov25b-nov2026/05_second_strip_over_an_error.gx
+3	soak-nov25b-nov2026/06_seq_under_a_handler_nothing_raises_to.gx
+1	soak-nov25b-nov2026/07_constructor_trait_over_a_union_of_arrays.gx
+0	soak-nov25b-nov2026/08_impl_in_a_labeled_default.gx
+1	soak-nov25b-nov2026/09_select_over_a_bound_variant_nothing_reaches.gx
+0	soak-nov25b-nov2026/10_named_union_and_number_meet.gx
+1	soak-nov25b-nov2026/11_comparison_over_a_bound_operand.gx
 0	source-e-jun2026/01_let_a_duration_1_s_duration_2_s_a.gx
 1	source-e-jun2026/02_let_e_error_0_is_err_e.gx
 1	source-e-jun2026/03_let_a_0_array_map_a_x_1_x.gx

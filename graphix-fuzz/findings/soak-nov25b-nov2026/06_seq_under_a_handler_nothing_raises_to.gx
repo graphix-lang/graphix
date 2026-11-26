@@ -1,0 +1,8 @@
+// The check accepted and the build refused "cannot use the ? operator on i64,
+// it has no error and no null" (soak nov25b). Nothing raises to `relay`'s
+// handler, so its binder is what its use demands, the i64 of `r`; `inner`'s
+// instance there throws that, and so does its seq's own handler, whose
+// rethrow the instance then judged as a `?` over an i64. A handler that holds
+// no error has none to pass on.
+// Expected trace (both engines): 0, then 41.
+{ let inner = |x: i64| -> i64 { let f = |x| (x, x + 1); seq let (a, b) = f(20) { a + b } }; let relay = |x: i64| -> [i64, Error<ErrChain<`Zero>>] { let r = 0; catch(e) r <- e; r <- inner(x); r }; relay(0) }

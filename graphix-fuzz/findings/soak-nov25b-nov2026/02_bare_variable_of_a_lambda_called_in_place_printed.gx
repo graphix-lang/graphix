@@ -1,0 +1,5 @@
+// The same bug as 01, where it gave a wrong answer: the instance read the
+// lambda's result as `[i64, _]`, so the JIT printed the string's address as
+// an i64 ("139712871119472") where the node-walk printed "abc".
+// Expected trace (both engines): ("abc", "1.5").
+{ let ka = |s| { let r = (|x: [i64, 'a]| -> [i64, 'a] x)(s); "[r]" }; (ka("abc"), ka(1.5)) }

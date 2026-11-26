@@ -1,0 +1,7 @@
+// An alias-swap flip (soak nov25b): with `[i64, null]` named the program was
+// refused "a value here is used as Tm__0 and as [Real, Sint], and no value is
+// both". Nothing flows into `x`, so it is the meet of what is demanded of it,
+// which read a union and a set of primitives only where they were written in
+// place. A name is what it stands for.
+// Expected trace (both engines): 3.
+{ let x = never(); type Tm__0 = [i64, null]; let p: Tm__0 = x; let r = [10, 20][-x]$; 3 }

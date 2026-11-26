@@ -1917,3 +1917,23 @@ run!(
     prints(r#""E""#);
     FuseExpect::None
 );
+
+// A handler nothing raises to takes its type from what it is used as, which
+// need hold no error. A seq's own handler in a function called under one
+// rethrows nothing then, and the function builds.
+run!(
+    a_seq_in_a_function_called_under_a_handler_nothing_raises_to_builds,
+    "{ let inner = |x: i64| -> i64 seq let a = x { a + 1 }; \
+       let relay = |x: i64| { let r = 0; catch(e) r <- e; inner(x) }; relay(1) }",
+    is(Value::I64(2))
+);
+
+// A second `?` or `$` over an operand that is always an error has nothing
+// to take, and gives a bottom of its own type's shape, which its consumer
+// reads.
+run!(
+    a_second_strip_over_an_operand_that_is_always_an_error_is_a_bottom_of_its_type,
+    "{ let g = |c: bool| error(`Boom)$$ == 0.0; let n = g(true); \
+       let h = |c: bool| str::len(error(`Boom)$$); let m = h(true); 7 }",
+    is(Value::I64(7))
+);
