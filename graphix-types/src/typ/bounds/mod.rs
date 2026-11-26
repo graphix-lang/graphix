@@ -2493,17 +2493,16 @@ pub fn strip(env: &Env, t: &Type, raises: bool) -> Result<(Type, SmallVec<[Type;
         )
     }
     let null = !holds_errors(&members);
-    let nullable = |m: &Type| {
-        matches!(m, Type::Bottom)
-            || matches!(m, Type::Primitive(p) if p.contains(Typ::Null))
-    };
+    let has_null = |m: &Type| matches!(m, Type::Primitive(p) if p.contains(Typ::Null));
+    let nulls = members.iter().any(has_null);
+    let nullable = |m: &Type| matches!(m, Type::Bottom) || has_null(m);
     if null && !members.is_empty() && !members.iter().any(nullable) {
         return Err(strips_nothing(if raises { '?' } else { '$' }, t));
     }
     let (left, mut payloads) = strip_members(members);
     // a `?` that takes a null off raises a `NullError` of the operand's
-    // text
-    if raises && null {
+    // text; over an operand no value reaches there is none to take
+    if raises && null && nulls {
         let text = Type::Primitive(Typ::String.into());
         let raised = (ArcStr::from("NullError"), Arc::from_iter([text]));
         payloads.push(Type::Variant(raised.0, raised.1, Default::default()))
@@ -3606,8 +3605,34 @@ fn open_own(v: &TVar, depth: u32) -> bool {
     })
 }
 
+/// Whether the cell `v` is decided after the definition closing at `min`
+/// has closed: one shallower, or a scheme's variable, which each instance
+/// decides. At an input's end (`min` 0) every scheme has closed, and a
+/// variable of one decides nothing more.
+fn later(v: &TVar, min: u32) -> bool {
+    v.level().depth() < min || (min > 0 && quantified(v))
+}
+
 fn demanded(v: &TVar) -> bool {
     v.cell().read().solving.as_ref().is_some_and(|k| k.demanded)
+}
+
+/// Whether the cell `v` is below an open cell `t` holds: it flows into
+/// one, or is inside a type that does. Fixed at `t`, `v` would hold
+/// itself.
+fn takes(t: &Type, v: &TVar) -> bool {
+    let mut seen: LPooled<AHashSet<usize>> = LPooled::take();
+    let mut work = open_cells(t);
+    while let Some(u) = work.pop() {
+        if u.same_cell(v) {
+            return true;
+        }
+        if seen.insert(u.cell_addr()) {
+            u.cell_lower().iter().for_each(|l| cells_of(l, false, &mut work));
+            work.extend(feeders(&u).into_iter().filter(|w| w.is_open()))
+        }
+    }
+    false
 }
 
 fn feeders(v: &TVar) -> SmallVec<[TVar; 1]> {
@@ -4031,10 +4056,10 @@ impl Solving {
     }
 
     /// Of the cells reachable from `from`, those a definition closing at
-    /// `min` may not fix: each that reaches a cell shallower than `min` or
-    /// a scheme's variable.
+    /// `min` may not fix: each that reaches a cell decided later
+    /// ([`later`]).
     fn held_back(&self, from: impl IntoIterator<Item = TVar>, min: u32) -> HeldBack {
-        let stops = |v: &TVar| v.level().depth() < min || quantified(v);
+        let stops = |v: &TVar| later(v, min);
         let mut held = HeldBack { met: LPooled::take(), back: LPooled::take() };
         let mut under: LPooled<AHashMap<usize, SmallVec<[usize; 2]>>> = LPooled::take();
         let mut work: LPooled<Vec<TVar>> = LPooled::take();
@@ -4076,7 +4101,7 @@ impl Solving {
     }
 
     /// Whether `v` may be fixed by a definition closing at `min`: nothing
-    /// it reaches is shallower or a scheme's variable.
+    /// it reaches is decided later ([`later`]).
     fn fixable(&self, held: &HeldBack, v: &TVar, min: u32) -> bool {
         if v.level().depth() < min || quantified(v) {
             return false;
@@ -4086,7 +4111,7 @@ impl Solving {
             false => {
                 let mut all = Cells::new();
                 self.reach(&Type::TVar(v.clone()), &mut all);
-                all.iter().all(|u| u.level().depth() >= min && !quantified(u))
+                !all.iter().any(|u| later(u, min))
             }
         }
     }
@@ -4297,20 +4322,33 @@ impl Solving {
         }
         self.fix_scope(env, depth + 1, false, mark)?;
         self.outlived(env, &declared, depth, mark)?;
+        let mut variables: Option<Cells> = None;
         for v in self.cells[mark..].iter() {
             let pending = open_own(v, depth)
                 && v.cell_above().iter().any(|c| matches!(c, Type::Bound(_)));
-            if pending {
-                self.singles.push(v.clone());
-                // each instance whose variables it reaches checks a copy
-                let reached = self.instances_own(v, depth);
-                for u in reached.iter().filter(|u| !u.same_cell(v)) {
-                    self.leave(&Type::TVar(u.clone()), |ls| {
-                        let same =
-                            |l: &Left| matches!(l, Left::Single(w) if w.same_cell(v));
-                        (!ls.iter().any(same)).then(|| Left::Single(v.clone()))
-                    })
-                }
+            if !pending {
+                continue;
+            }
+            let variables = variables.get_or_insert_with(|| {
+                let mut all = Cells::new();
+                self.reach(t, &mut all);
+                all
+            });
+            let mut reached = Cells::new();
+            self.reach(&Type::TVar(v.clone()), &mut reached);
+            // one that reaches no variable of this scheme waits on a cell
+            // of the code around, which leaves it when it closes
+            if !reached.iter().any(|u| variables.has(u)) {
+                continue;
+            }
+            self.singles.push(v.clone());
+            // each instance whose variables it reaches checks a copy
+            let reached = self.instances_own(v, depth);
+            for u in reached.iter().filter(|u| !u.same_cell(v)) {
+                self.leave(&Type::TVar(u.clone()), |ls| {
+                    let same = |l: &Left| matches!(l, Left::Single(w) if w.same_cell(v));
+                    (!ls.iter().any(same)).then(|| Left::Single(v.clone()))
+                })
             }
         }
         // a predicate of a type a variable of the scheme is part of is
@@ -5171,14 +5209,8 @@ impl Solving {
                     if !strippable(env, &deep(&operand))? {
                         self.fix_in(env, &operand)?
                     }
-                    self.stripped(env, &deep(&operand), &out, &raised)
+                    self.stripped(env, &deep(&operand), &out, &raised, min)
                         .map_err(|e| placed(&made, e))?;
-                    // what it leaves a variable of the closing scheme is
-                    // the scheme's too, as it is where no `?` stands
-                    // between: each instance decides it
-                    if min > 0 && self.reaches_scheme(&out) {
-                        self.quantify(&out, min - 1)
-                    }
                     progress = true
                 } else if ins.iter().any(quantified) {
                     let unknown = anyhow!(
@@ -5194,7 +5226,7 @@ impl Solving {
                     // shape, its parts stay what they are, and what is
                     // raised meets them as they do
                     self.strips.swap_remove(i);
-                    self.stripped(env, &shape, &out, &raised)
+                    self.stripped(env, &shape, &out, &raised, min)
                         .map_err(|e| placed(&made, e))?;
                     progress = true
                 }
@@ -5386,17 +5418,28 @@ impl Solving {
 
     /// What a `?` or `$` leaves of the decided operand `shape` goes to
     /// `out`, and the payloads of the errors a `?` takes off to `raised`.
+    /// Where either is a variable of the scheme closing at `min`, what
+    /// reaches it now is the scheme's too, as it is where no `?` stands
+    /// between: each instance decides it.
     fn stripped(
         &mut self,
         env: &Env,
         shape: &Type,
         out: &Type,
         raised: &Option<Type>,
+        min: u32,
     ) -> Result<()> {
         let (left, payloads) = strip(env, shape, raised.is_some())?;
         self.constrain(env, &left, out)?;
         for to in raised.iter() {
             payloads.iter().try_for_each(|p| self.constrain(env, p, to))?
+        }
+        if min > 0 {
+            for to in [out].into_iter().chain(raised.iter()) {
+                if open_cells(to).iter().any(quantified) {
+                    self.quantify(to, min - 1)
+                }
+            }
         }
         Ok(())
     }
@@ -5972,7 +6015,7 @@ impl Solving {
                     true => Type::Bottom,
                     false => t,
                 };
-                match open_cells(&t).iter().any(|u| u.same_cell(v)) {
+                match takes(&t, v) {
                     true => Type::Bottom,
                     // demanded as one variable of a definition and as
                     // nothing else, it is that variable: each instance

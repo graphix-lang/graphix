@@ -1,0 +1,5 @@
+// The check itself never ended (soak nov25a): the same endless type, where a
+// named function is read as a value. Its parameter is called with a pair of
+// itself, held through a binding and a block.
+// Expected trace (both engines): 1.
+{ let r = |x| { let inp = x; let inner = select true { true => { let x = inp; let y = inp; (x, y) }, false => (0, 0) }; x(inner) }; r; 1 }

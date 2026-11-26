@@ -1,0 +1,10 @@
+// The check accepted and the build refused "reading a struct needs its type
+// known here" (soak nov25a, two boxes). The `$` waits on `r`'s cell, so it is
+// paid as `f` closes, after the scheme's variables are picked. What it leaves
+// was then made a variable of the scheme whenever it reached one by any path,
+// here through the field read to the result: a variable no instance's
+// signature names, so the instance had no type for `r$`. It is the scheme's
+// only where it goes to one of the scheme's variables; this one is decided,
+// and the definition's own.
+// Expected trace (both engines): 1.
+{ let rec f = |v| { type I<'a> = 'a; type B = I<{ x: i64 }>; type A = I<B>; let r = cast<A>({ x: 1 }); r$.x }; f(0) }

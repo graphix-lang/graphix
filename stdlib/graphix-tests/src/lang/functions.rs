@@ -7160,3 +7160,81 @@ run!(
     refused("the type 'b must be known here, an operation reads it to know what to make");
     FuseExpect::None
 );
+
+// What a `?` or a `$` leaves is the scheme's only where it goes to one of
+// the scheme's variables. A decided value a field is read from after the
+// `$` is the definition's own: every instance reads the one type.
+run!(
+    a_field_read_of_what_a_strip_leaves_in_a_function_is_the_definitions,
+    "{ let f = |v| { let r = cast<{ x: i64 }>({ x: 1 }); r$.x }; f(0) }",
+    is(Value::I64(1))
+);
+
+run!(
+    a_field_read_of_what_a_strip_leaves_under_local_type_names_is_the_definitions,
+    "{ let rec f = |v| { type I<'a> = 'a; type B = I<{ x: i64 }>; type A = I<B>; \
+       let r = cast<A>({ x: 1 }); r$.x }; f(0) }",
+    is(Value::I64(1))
+);
+
+// What a `?` raises goes to the scheme's variable its handler reads, and
+// is the scheme's too: a function called where it is written raises an
+// error made of its argument, and the instance's error is of that
+// argument's type.
+run!(
+    a_function_called_in_place_raises_an_error_of_its_argument,
+    "{ let got = never(); catch(e) got <- select e.0.error { `E(n) => n }; \
+       (|x| error(`E(x))?)(7); got }",
+    is(Value::I64(7))
+);
+
+run!(
+    a_function_called_in_place_raises_a_named_error_of_its_argument,
+    "{ let got = never(); catch(e) got <- select e.0.error { `E(n) => n }; \
+       (|x| { let e = error(`E(x)); e? })(7); got }",
+    is(Value::I64(7))
+);
+
+// A cell a function inside another leaves undecided because of the outer
+// one's parameter is the outer one's to leave to its instances: the
+// arithmetic of a recursive function two definitions deep is judged at
+// each call of the outermost.
+run!(
+    arithmetic_over_an_outer_parameter_two_definitions_deep_is_judged_at_the_call,
+    "{ let f = |a| { let g = |x| { \
+         let rec s = |n| select n { 0 => 0, _ => s(n - a) }; s(3) }; g(0) }; f(1.0) }",
+    refused("type mismatch i64 does not contain f64")
+);
+
+run!(
+    arithmetic_over_an_outer_parameter_through_a_returned_function_is_judged_at_the_call,
+    "{ let f = |a| { let g = |x| { \
+         let rec s = |n| select n { 0 => 0, _ => s(n - a) }; s(3) }; g }; (f(1.0))(0) }",
+    refused("type mismatch i64 does not contain f64")
+);
+
+run!(
+    arithmetic_over_an_outer_parameter_two_definitions_deep_runs_at_one_type,
+    "{ let f = |a| { let g = |x| { \
+         let rec s = |n| select n { 0 => 0, _ => s(n - a) }; s(3) }; g(0) }; f(1) }",
+    is(Value::I64(0))
+);
+
+// A parameter no value reaches takes the type its uses demand, but never
+// one that would hold the parameter itself: it is no type then, and the
+// function checks as one nothing calls.
+run!(
+    an_uncalled_functions_parameter_its_own_use_would_hold_is_no_type,
+    "{ |x| [x, cast<string>(x), `N(\"foobarbaz\"), |acc, (k, v)| map::insert(acc, k, x)]; \
+       100 }",
+    is(Value::I64(100))
+);
+
+run!(
+    a_read_functions_parameter_passed_itself_through_a_binding_is_no_type,
+    "{ let r = |x| { let inp = x; \
+         let inner = select true { true => { let x = inp; let y = inp; (x, y) }, \
+                                   false => (0, 0) }; \
+         x(inner) }; r; 1 }",
+    is(Value::I64(1))
+);

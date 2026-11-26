@@ -1883,6 +1883,28 @@ run!(
 
 // A call with a labeled argument of a function read out of data raises
 // what that function raises.
+// A `?` over an operand no value reaches takes nothing off and raises
+// nothing: a handler nothing raises to rethrows no `NullError`, whatever
+// stands between its binder and the `?`.
+run!(
+    a_rethrow_in_a_handler_nothing_raises_to_raises_nothing,
+    "{ let err0: Error<ErrChain<`A(string)>> = never(); \
+       catch(e) err0 <- e; catch(e) e?; 10 }",
+    is(Value::I64(10));
+    FuseExpect::None
+);
+
+run!(
+    a_rethrow_in_a_handler_nothing_raises_to_read_through_a_block_raises_nothing,
+    "{ let err0: Error<ErrChain<[`ArithError(string), `ArrayIndexError(string)]>> = never(); \
+       let err1: Error<ErrChain<[`ArithError(string), `ArrayIndexError(string)]>> = never(); \
+       catch(e) err0 <- e; \
+       catch(e) select ({ let t = e; t }).0.error { `ArithError(_) => err1 <- e, _ => e? }; \
+       10 }",
+    is(Value::I64(10));
+    FuseExpect::None
+);
+
 run!(
     labeled_call_through_a_field_raises_to_its_catch,
     r#"{

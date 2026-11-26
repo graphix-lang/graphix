@@ -495,6 +495,13 @@ reject	N: the type 'b must be known here, an operation reads it to know what to 
 trace	soak-nov24f-nov2026/13_twin_of_an_unread_concrete_variable.gx
 trace	soak-nov24f-nov2026/14_select_before_the_strip_it_looks_into.gx
 trace	soak-nov24f-nov2026/15_select_over_outer_values_awaiting_a_strip.gx
+trace	soak-nov25a-nov2026/01_field_read_after_a_strip_in_a_function.gx
+trace	soak-nov25a-nov2026/02_raise_of_an_argument_in_a_function_called_in_place.gx
+trace	soak-nov25a-nov2026/03_parameter_its_own_use_would_hold.gx
+trace	soak-nov25a-nov2026/04_parameter_passed_itself_through_a_binding.gx
+reject	N: type mismatch iN does not contain fN	soak-nov25a-nov2026/05_arithmetic_over_an_outer_parameter_two_definitions_deep.gx
+trace	soak-nov25a-nov2026/06_value_a_called_function_reads_among_patterns.gx
+trace	soak-nov25a-nov2026/07_rethrow_in_a_handler_nothing_raises_to.gx
 reject	N: type mismatch Number does not contain duration	source-e-jun2026/01_let_a_duration_1_s_duration_2_s_a.gx
 trace	source-e-jun2026/02_let_e_error_0_is_err_e.gx
 trace	source-e-jun2026/03_let_a_0_array_map_a_x_1_x.gx

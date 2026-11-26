@@ -1,0 +1,9 @@
+// A block-wrap flip (soak nov25a): with the binder read through `{ let t = e;
+// t }` the program was refused "type mismatch [`ArithError(string),
+// `ArrayIndexError(string)] does not contain `NullError(string)". Nothing
+// raises to the second handler, so `e` is what its uses demand; the block's
+// cell, a use of which read nothing, is no type, and `e` with it. A `?` over
+// an operand no value reaches then raised the `NullError` of a null it never
+// takes off, into the first handler. It raises nothing.
+// Expected trace (both engines): 10.
+{ let err0: Error<ErrChain<[`ArithError(string), `ArrayIndexError(string)]>> = never(); let err1: Error<ErrChain<[`ArithError(string), `ArrayIndexError(string)]>> = never(); catch(e) err0 <- e; catch(e) select ({ let t = e; t }).0.error { `ArithError(_) => err1 <- e, _ => e? }; 10 }

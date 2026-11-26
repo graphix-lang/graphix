@@ -1,0 +1,9 @@
+// A let-extract flip (soak nov25a): with the fold's callback named and passed
+// by name, the select was refused "{ c: '_, n: List<'_> } could go to more
+// than one member of the union". Calling a named function that reads `v0.c`
+// joins `c`'s cell to the function's own variable, and a cell that reached a
+// scheme's variable waited for it even at the input's end, where every scheme
+// has closed: the value among the patterns was never placed. At an input's
+// end a scheme's variable holds nothing back.
+// Expected trace (both engines): 43.
+{ let v0 = { c: cast<i64>(z64:1 + z64:42)$, n: [<-1.0 * 2.0>] }; let v1: f64 = select v0 { { c: 2, n: [<_>] } => 1.0, { c: _, n: v3 } => 2.5 }; let tm = |v2, v3| v0.c; array::fold([-1, 42, 2], 7, tm) }

@@ -133,17 +133,20 @@ no "must be known here" let f = |x: 'a, y: 'a| -> 'a y; f(str::parse("1"), 1)
 | an argument that is no value says nothing of its parameter: the instance keeps the definition's own type for it (a callback's, which a collection is built from) | `CallSite::instance_signature` |
 | a function no binding names is checked at the level it was compiled at: one written in a statement that a function-giving block runs once belongs to the level around the block | `node/lambda.rs` (`Lambda::around`, `DefGate::open`) |
 | a function held as a function type is called as that type lists its arguments; a variadic one is called as one wherever its own type reaches the call | `Solving::fn_below`, `Use::Call` |
-| `?` and `$` take the errors off their operand, or with none the null, and it holds one of the two | `bounds::strip` |
-| what a `?` or a `$` leaves a variable of a closing scheme is the scheme's too: a function returning a typed read through one is as generic in it as one returning the read's result whole, and each call decides it | `Solving::fix_round` |
+| `?` and `$` take the errors off their operand, or with none the null, and it holds one of the two; over an operand no value reaches there is nothing to take, and a `?` raises nothing | `bounds::strip` |
+| what a `?` or a `$` leaves a variable of a closing scheme, and what a `?` raises to one, is the scheme's too: a function returning a typed read through one is as generic in it as one returning the read's result whole, and each call decides it. What it leaves any other cell is the definition's own, whatever that cell reaches | `Solving::stripped` |
 | a let of a block that ends in a generic name, or of a sample of one, names that name's instance, closed as the let's own scheme: the cell the read was compiled as is the instance | `Solving::name_as` |
 | a variable's twin at a shallower level asks nothing of it: a `Concrete` variable is "asked" only by a type, or by a cell that is not its own twin | `Solving::type_asked` |
 | what a function reads out of a binding outside it (a field, an element, a call's result, a pattern's name, what a held `?` or `$` leaves) is that binding's at every instance, and takes what is written to the binding after an instance is made | `Solving::quantify` (`produced_from_outside`, `given_late`), `copy_in` |
 | an order asked of a function is refused where the definition asking it closes, called or not | `Solving::generalize` (`hold_shape`) |
 | a cell of a definition that a variable of its scheme flows into (a call's cell in a function inside it) is the scheme's too, so each instance has its own | `Solving::quantify_fed` |
+| a cell a definition leaves undecided that must be one type is left to its instances only where it reaches a variable of its scheme; one that waits on a cell of the code around (arithmetic over an outer function's parameter) is left by the definition around whose variable it reaches | `Solving::generalize` |
 | a cell nothing flows into takes the type of the cells it flows into and of what is written above it; where those cells, fixed apart, agree on no type it is no type, and only two types written for it are refused (a bound that is no cell, and what a function's instance requires of its argument) | `Solving::fixed`, `Solving::meets_demands` |
 | a variable that no value reaches, a use of which read nothing (an element read, a select's arms), is bottom, not what the use demands: an instance's, and any cell no operation makes values at | `Solving::fixed` |
+| a cell nothing flows into is no type where the type demanded of it holds a cell it flows into: fixed at that type it would hold itself | `Solving::fixed`, `bounds::takes` |
 | a cell fixed by what is asked of it holds that type for the cells fixed after it, and a cell nothing flowed into and nothing is asked of holds what the cells below it became: a typed read asked its type through a block is that type in a call that only holds it | `Solving::settled`, `Solving::held_below` |
 | the last fixing round is repeated while it fixes something: a cell it fixes may give a waiting select its value, and the select a cell its first bound | `Solving::fix_scope` |
+| at an input's end every scheme has closed: a cell that reaches a scheme's variable (a value a named function reads) waits for nothing, and is fixed in order with the rest, so a use waiting on it is paid | `bounds::later`, `Solving::fixable` |
 | a waiting use (a held choice, a select, a `?` or `$`, a chain) is paid after any other whose result flows into what it reads; at the input's end, uses that reach each other by some path are paid in that order alone, and only uses that feed each other in whatever order is left | `Solving::fix_round`, `fed_by` |
 | a labeled default is compiled under its definition's own share, at every call that omits it: what the compile rewrites in it (a seq, a trait method named as a value) is the rewrite the check typed | `LambdaDef::in_signature`, `InstanceTypes::of_default` |
 
@@ -208,6 +211,13 @@ no "must be known here" let r = { let f = (1, |k: i64| str::parse("[k]")); 0; f 
 no "must be known here" let r = { 0; (1, |k: i64| str::parse("[k]")) }; r
 ok let f = 'a: Concrete |g: fn(v: 'a) -> i64| 0; let h = [list::nil, &[f]]; 0
 no "must be known here" let f = 'a: Concrete |g: fn(v: 'a) -> i64| 0; let h = (list::nil, &[f]); (*(h.1))[0]$(|v| 0)
+ok let f = |v| { let r = cast<{ x: i64 }>({ x: 1 }); r$.x }; f(0)
+ok let got = never(); catch(e) got <- select e.0.error { `E(n) => n }; (|x| error(`E(x))?)(7); got
+no "i64 does not contain f64" let f = |a| { let g = |x| { let rec s = |n| select n { 0 => 0, _ => s(n - a) }; s(3) }; g(0) }; f(1.0)
+ok let f = |a| { let g = |x| { let rec s = |n| select n { 0 => 0, _ => s(n - a) }; s(3) }; g(0) }; f(1)
+ok |x| [x, cast<string>(x), |acc, (k, v)| map::insert(acc, k, x)]; 100
+ok let v0 = (cast<i64>(1)$, 1); let v1 = select v0 { (2, 1) => 1.0, (_, v3) => 2.5 }; let tm = |v2| v0.0; tm(0)
+ok let err0: Error<ErrChain<`A(string)>> = never(); catch(e) err0 <- e; catch(e) e?; 10
 ```
 
 ### Select

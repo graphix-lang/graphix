@@ -1,0 +1,9 @@
+// The check accepted and the build refused "an instance at fn(x: i64) -> _
+// throws Error<ErrChain<`E(_)>> of a definition typed fn(x: '_) -> '_" (soak
+// nov25a). The `?` is paid as the function closes; the error's payload, made
+// of the parameter, then flowed into the scheme's raised variable from a cell
+// that was no variable of the scheme, so the instance read the definition's
+// own `x` in it. What a `?` raises to a variable of the closing scheme is the
+// scheme's too.
+// Expected trace (both engines): 7.
+{ let got = never(); catch(e) got <- select e.0.error { `E(n) => n }; (|x| error(`E(x))?)(7); got }

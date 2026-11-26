@@ -18794,3 +18794,22 @@ run!(
        select v7 { `B(_) | `C => v1 + 10, `Nil => *({ let t = v5[0]; t }$) } }",
     is(Value::I64(1))
 );
+
+// At an input's end every scheme has closed, and a value a function reads
+// waits for none of its variables: a value among a select's patterns is
+// placed whether or not the function that reads a part of it is called.
+run!(
+    a_value_a_called_function_reads_is_placed_among_a_selects_patterns,
+    "{ let v0 = (cast<i64>(1)$, 1); \
+       let v1 = select v0 { (2, 1) => 1.0, (_, v3) => 2.5 }; \
+       let tm = |v2| v0.0; tm(0) }",
+    is(Value::I64(1))
+);
+
+run!(
+    a_struct_a_called_function_reads_is_placed_among_a_selects_patterns,
+    "{ let v0 = { c: cast<i64>(z64:1 + z64:42)$, n: [<-1.0 * 2.0>] }; \
+       let v1: f64 = select v0 { { c: 2, n: [<_>] } => 1.0, { c: _, n: v3 } => 2.5 }; \
+       let tm = |v2, v3| v0.c; array::fold([-1, 42, 2], 7, tm) }",
+    is(Value::I64(43))
+);

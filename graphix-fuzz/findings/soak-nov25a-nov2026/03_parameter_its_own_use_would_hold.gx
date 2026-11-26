@@ -1,0 +1,8 @@
+// The fused build ran out of memory, the node-walk gave 100 (soak nov25a).
+// `x` is a parameter no value reaches, so it takes the type its uses demand:
+// the array's element type, which holds the callback, whose `acc` is a map of
+// what `x` flows into. Fixed at that, `x` held itself, and the first walk of
+// the type never ended. A demand that holds a cell the parameter flows into
+// names the parameter itself, and decides nothing.
+// Expected trace (both engines): 100.
+{ |x| [x, cast<string>(x), `N("foobarbaz"), |acc, (k, v)| map::insert(acc, k, x)]; 100 }
