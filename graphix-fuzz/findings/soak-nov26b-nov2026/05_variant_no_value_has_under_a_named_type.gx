@@ -1,0 +1,6 @@
+// expect: reject
+// A block-wrap flip (soak nov26b): this checked, and with the inner variant
+// bound first it was refused "type mismatch Lst<string> does not contain
+// `Cons(i64, '_N)". A type with a part nothing reaches is judged by its
+// shape either way: 42 is no string.
+{ type Lst<'a> = [`Cons('a, Lst<'a>), `Nil]; let l: Lst<string> = `Cons(42, `Cons(3, never())); l }

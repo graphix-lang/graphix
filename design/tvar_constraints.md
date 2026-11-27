@@ -152,8 +152,12 @@ no "must be known here" let f = |x: 'a, y: 'a| -> 'a y; f(str::parse("1"), 1)
 | a cell nothing flows into is no type where the type demanded of it holds a cell it flows into: fixed at that type it would hold itself | `Solving::fixed`, `bounds::takes` |
 | the types demanded of a cell nothing flows into are met through their names: a named union and a set of primitives share what the union's members and the set share | `Solving::meet` |
 | a cell that flows into a deeper cell held to one type is held to one type too: a bound is kept by the deeper side, so the shallower cell keeps the types the deeper one is held to and not the cell. With nothing flowing into it it is no type, where fixed at those types it would flow on as a value of each; given two, it is refused whether they come before the deeper cell's definition or after | `Solving::arrive` |
-| a type no value has (a tuple, struct or variant with a part nothing reaches) fits anywhere, as bottom does: a select over one checks whether it is written in place or bound first, and the relation over decided types, which the build asks, holds one as the check does | `Solving::relate`, `bounds::empty`, `holds::Holds::go` |
-| a cell fixed by what is asked of it holds that type for the cells fixed after it, and a cell nothing flowed into and nothing is asked of holds what the cells below it became: a typed read asked its type through a block is that type in a call that only holds it | `Solving::settled`, `Solving::held_below` |
+| a type with a part nothing reaches (a tuple, struct or variant holding bottom) is judged by its shape in every relation, the part fitting any type as bottom does: the check and the build hold it alike, written in place or bound first. A select routes such a type down no arm, so what its arms' tests admit judges its shape where it is routed, as the bound they put on a scrutinee nothing has decided does | `Solving::select_shape`, `bounds::admitted` |
+| a cell fixed by what is asked of it holds that type for the cells fixed after it, and a cell nothing flowed into and nothing is asked of holds what the cells below it became, one fixed by what was asked of it before among them, so the order they are fixed in decides nothing: a typed read asked its type through a block is that type in a call that only holds it, and a callback's parameter is the type a builtin's variable took from what was asked of its result. Where the one open cell below is being fixed around it, it is what that cell becomes (the same cell where an operation makes values at it) | `Solving::settled`, `Solving::held_below`, `Solving::fix_cell` |
+| what a closing definition asks of its scheme's variable must be met by some value, and what is asked of a cell outside the definition is no part of it: that cell is asked more after the definition closes, so counting it would make the verdict the order of two statements. A call's argument is judged where it flows into that cell | `Solving::meetable` |
+| a scheme's variable no instance could change is copied as its value, the union of what flows into it and into each cell it holds as a bound: a cell that closed before a shallower one took its type holds that one as a bound and was given nothing since | `Solving::copy_frozen`, `bounds::frozen` |
+| a write through a reference takes its shape from a writable reference asked of the cell, never from a read-only one: a read of `*r` asks only that `r` be a reference, so a parameter read and written through is each call's reference | `Solving::demanded` |
+| a writable place through a dereference (`&mut (*r)[i]`, `&mut *r`) writes through `r`: what `*r` reads is written back whole, so the place's root is exactly `r`'s referent and `r` is writable | `node/bind.rs` (`ByRef::typecheck0_with`) |
 | the last fixing round is repeated while it fixes something: a cell it fixes may give a waiting select its value, and the select a cell its first bound | `Solving::fix_scope` |
 | at an input's end every scheme has closed: a cell that reaches a scheme's variable (a value a named function reads) waits for nothing, and is fixed in order with the rest, so a use waiting on it is paid | `bounds::later`, `Solving::fixable` |
 | a waiting use (a held choice, a select, a `?` or `$`, a chain) is paid after any other whose result flows into what it reads; at the input's end, uses that reach each other by some path are paid in that order alone, and only uses that feed each other in whatever order is left | `Solving::fix_round`, `fed_by` |
@@ -237,15 +241,32 @@ no "cannot compare List<i64> with List<string>" let f = |x| [<1>] == { let t = [
 ok let f = |x, y| cast<[i64, duration]>("3.0")$ == { let t = [<0, x>]; t }; 1
 ok let x = never(); type T = [i64, null]; let p: T = x; let r = [10, 20][-x]$; 3
 no "used as T and as" let x = never(); type T = [string, null]; let p: T = x; let r = [10, 20][-x]$; 3
-ok let s = select { let t = `Done({ 1; 0; }); t } { error as e => 1, null as _ => 2 }; 5
+no "nothing matches `Done(_)" let s = select { let t = `Done({ 1; 0; }); t } { error as e => 1, null as _ => 2 }; 5
+no "nothing matches `Done(_)" let s = select `Done({ 1; 0; }) { error as e => 1, null as _ => 2 }; 5
+ok let s = select { let t = `Done({ 1; 0; }); t } { `Done(x) => 1, null as _ => 2 }; 5
+ok let s = select `Done({ 1; 0; }) { `Done(x) => 1, null as _ => 2 }; 5
 no "nothing matches `Done(i64)" select { let t = `Done(0); t } { error as e => 1, null as _ => 2 }
-ok let n = str::len((5, never())); 3
+no "string does not contain (i64, _)" let n = str::len((5, never())); 3
+ok let x: (i64, string) = (5, never()); 3
+no "nothing matches { bar: i64, baz: _ }" let f = |{ bar, baz: _, foo: _ }| 0; f({ bar: 0, baz: never() })
+no "{ f: _, g: i64 } does not contain i64" let f = ({ f: never(), g: 1 }) + 1; 0
+no "i64 does not contain { f: _, g: i64 }" let s = { f: never(), g: 1 }; let f = s + 1; 0
 no "string does not contain (i64, i64)" str::len((5, 6))
 ok let y = never(); let t = |x| x + y; let m = t; 42
 ok let y = array::iter(never()); let t = |x| x + y; let m = { let z = 1; { let q = t; q } }; 42
 no "f64 does not contain i64" let y = never(); let t = |x| x + y; let m = t; (m(1), y + 2.0)
 no "cannot compute with [i64, f64]" let y = never(); let t = |x| x + y; let m = t; (m(1), m(2.0))
 no "cannot compute with [i64, f64]" let y = never(); let t = |x| x + y; y <- 1; y <- 2.5; 0
+ok let y = array::iter(never()); let t = |x| x + y; let m = array::map([1], y); 42
+ok let y = array::iter(never()); let m = array::map([1], y); let t = |x| x + y; 42
+no "does not contain i64" let y = array::iter(never()); let m = array::map([1], y); let t = |x| x + y; t(1)
+no "nothing can be passed for it" let t = |x| { let g = |z| z + x; x(1) }; 42
+ok let f = |acc, v| select { let t = v; t } % 2 { 0 => v, _ => acc }; let m = { let z = 1; { let q = f; q } }; 7
+ok let rec f = |x: i64| select x > 5 { true => (|v| f(v))(x - 1), false => x }; f(8)
+no "i64 does not contain string" let a: Array<i64> = [10, 20]; let r = &mut a; let s = &mut (*r)[0]; *s <- "kiwi"; a
+no "can't write through a read-only reference" let a: i64 = 1; let r = &a; let s = &mut *r; *s <- 2; a
+ok let a = 1; let f = |r| { *r <- 5; *r }; f(&mut a)
+no "can't write through a read-only reference" let a: Array<i64> = [1]; let f = |r| { let s = &mut (*r)[0]; *s <- 5 }; f(&a); a
 ok let inner = |x: i64| -> i64 seq let a = x { a + 1 }; let relay = |x: i64| { let r = 0; catch(e) r <- e; inner(x) }; relay(1)
 ok let y: [Array<i64>, Array<Array<i64>>] = [[1], [2, 3]]; Collection::fold(y, 0, |acc, x| acc + 1)
 no "is in a labeled argument's default" let f = |#foo: i64 = { type Tag = Abstract<string>; impl Cast for Tag; 1 }, x| foo; (f(1), f(2))

@@ -25,7 +25,7 @@ use crate::{
     prune::BoundaryRef,
     typ::{
         ShallowScrutinee, TVar, Type, TypeMismatch,
-        bounds::{self, Arm, Use, unsplit},
+        bounds::{self, Arm, Use},
     },
     wrap,
 };
@@ -1399,13 +1399,9 @@ impl<R: Rt> Select<R> {
         // with no arm that admits everything, the arms' tests bound a
         // scrutinee nothing has decided from above
         let scrut = self.arg.node.typ().clone();
-        let admitted: Option<SmallVec<[Type; 8]>> =
-            arms.iter().map(|a| a.pat.admits()).collect();
         if scrut.with_deref(|t| t.is_none())
-            && arms.iter().all(|a| !a.guarded)
-            && let Some(ts) = admitted
+            && let Some(most) = bounds::admitted(&arms)
         {
-            let most = unsplit(&bounds::union_of(ts));
             // a value that has reached the scrutinee already and no arm
             // admits is a missing case, unless a written test takes it by
             // its runtime form

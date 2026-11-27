@@ -1,0 +1,6 @@
+// expect: reject
+// The check accepted and the build refused "no such struct field foo in {
+// bar: i64, baz: _ }" (soak nov26b). A type with a part nothing reaches is
+// judged by its shape, by the check as by the build: the argument has no
+// field `foo`.
+{ let f = |{ bar, baz: _, foo: _ }| 0; f({ bar: 0, baz: never() }) }

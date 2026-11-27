@@ -32,8 +32,7 @@ use triomphe::Arc;
 
 mod image;
 mod select;
-pub(crate) use select::empty;
-pub use select::{Arm, FALSE, Pat, TRUE, Template, unsplit};
+pub use select::{Arm, FALSE, Pat, TRUE, Template, admitted, unsplit};
 
 thread_local! {
     /// The solver of the check this thread is running, where the check is
@@ -822,6 +821,10 @@ pub struct Solving {
     /// fixed around it: the source and the cell, checked once both are
     /// fixed ([`Self::fix`]).
     cycles: Vec<(TVar, TVar)>,
+    /// A cell being fixed and one that holds nothing else, left open
+    /// when it was met inside the first's fixing: it is what the first
+    /// becomes ([`Self::fix`]).
+    after: Vec<(TVar, TVar)>,
     /// What a definition asked of a type its variables decide, which
     /// this instance of it judges: the type, the predicates and the name
     /// of the variable they bound.
@@ -1335,6 +1338,7 @@ impl Solving {
             judged,
             compared,
             cycles,
+            after,
             asked,
             keeps: _,
             kept,
@@ -1350,6 +1354,7 @@ impl Solving {
         self.judged.extend(judged);
         self.compared.extend(compared);
         self.cycles.extend(cycles);
+        self.after.extend(after);
         self.asked.extend(asked);
         for (v, k) in kept {
             match k {
@@ -1441,11 +1446,8 @@ impl Solving {
     }
 
     fn relate(&mut self, env: &Env, a: &Type, b: &Type) -> Result<()> {
-        match ensure_sufficient(|| self.relate_in(env, a, b)) {
-            // a type no value has fits anywhere, as bottom does
-            Err(_) if empty(a) => Ok(()),
-            r => r.map_err(|e| settled_told(env, b, e)),
-        }
+        ensure_sufficient(|| self.relate_in(env, a, b))
+            .map_err(|e| settled_told(env, b, e))
     }
 
     fn relate_in(&mut self, env: &Env, a: &Type, b: &Type) -> Result<()> {
@@ -3546,9 +3548,9 @@ fn undecided_chain_payload(payload: &Type) -> bool {
 }
 
 /// Whether the declared variable `v` may stand for a chain: each of its
-/// bounds admits one, of a payload yet to be told.
+/// bounds admits one.
 fn may_be_chain(env: &Env, v: &TVar) -> Result<bool> {
-    let chain = Type::err_chain(Type::TVar(TVar::default()));
+    let chain = Type::err_chain(Type::Bottom);
     for c in v.cell_above().iter() {
         if !matches!(c, Type::Bound(_))
             && !c.is_trait_ref(env)
@@ -3860,22 +3862,30 @@ fn frozen(
         memo.insert(v.cell_addr(), None);
         let mut parts: SmallVec<[Type; 2]> = SmallVec::new();
         let mut settled = true;
-        for l in v.cell_lower().iter() {
-            // a cell of the set flowing straight in adds what it has, which
-            // is among these lower bounds already
-            if let Type::TVar(u) = &shallow(l)
-                && set.contains_key(&u.cell_addr())
-            {
-                continue;
-            }
-            let l = map_cells(l, &mut |c| match frozen(c, set, memo) {
-                Some(t) => Some(t),
-                None => {
-                    settled = false;
-                    None
+        // a cell of the set flowing straight in adds what flows into it:
+        // one the cell holds as a bound was given nothing it took later
+        let mut straight: SmallVec<[TVar; 4]> = SmallVec::from_iter([v.clone()]);
+        let mut seen: SmallVec<[usize; 8]> = SmallVec::from_iter([v.cell_addr()]);
+        while let Some(w) = straight.pop() {
+            for l in w.cell_lower().iter() {
+                if let Type::TVar(u) = &shallow(l)
+                    && set.contains_key(&u.cell_addr())
+                {
+                    if !seen.contains(&u.cell_addr()) {
+                        seen.push(u.cell_addr());
+                        straight.push(u.clone())
+                    }
+                    continue;
                 }
-            });
-            parts.push(deep(&l))
+                let l = map_cells(l, &mut |c| match frozen(c, set, memo) {
+                    Some(t) => Some(t),
+                    None => {
+                        settled = false;
+                        None
+                    }
+                });
+                parts.push(deep(&l))
+            }
         }
         let r = settled.then(|| match &parts[..] {
             [] => Type::Bottom,
@@ -4233,10 +4243,10 @@ impl Solving {
         }
     }
 
-    /// What is asked of the scheme's variable `v` can be met: some value
-    /// is of every type it is used as. One that cannot is a parameter no
-    /// call can pass.
-    fn meetable(&self, env: &Env, v: &TVar) -> Result<()> {
+    /// What the definition closing over `depth` asks of its scheme's
+    /// variable `v` can be met: some value is of every type it is used as.
+    /// One that cannot is a parameter no call can pass.
+    fn meetable(&self, env: &Env, v: &TVar, depth: u32) -> Result<()> {
         // what is asked of the cells it is wanted as is asked of it
         let mut asked: SmallVec<[Type; 4]> = SmallVec::new();
         let mut seen: SmallVec<[usize; 4]> = SmallVec::from_iter([v.cell_addr()]);
@@ -4244,6 +4254,9 @@ impl Solving {
         while let Some(w) = work.pop() {
             for u in w.cell_above().iter().map(deep) {
                 match &u {
+                    // a cell outside the definition is asked more after it
+                    // closes: each call's flow into it is judged there
+                    Type::TVar(c) if c.level().depth() <= depth => (),
                     Type::TVar(c) if !seen.contains(&c.cell_addr()) => {
                         seen.push(c.cell_addr());
                         work.push(c.clone())
@@ -4338,7 +4351,7 @@ impl Solving {
             .collect();
         finite_all(own.iter())?;
         for v in own.iter() {
-            self.meetable(env, v)?;
+            self.meetable(env, v, depth)?;
             for l in v.cell_lower().iter() {
                 self.hold_shape(env, v, l)?
             }
@@ -5598,7 +5611,9 @@ impl Solving {
         let mut open_below: SmallVec<[TVar; 2]> = SmallVec::new();
         let r = self.fixed(env, v, &mut open_below);
         self.fixing.remove(&v.cell_addr());
-        let r = r?;
+        // one that holds only a cell being fixed around it is what that
+        // cell becomes ([`Self::after`])
+        let Some(r) = r? else { return Ok(()) };
         // a cell nothing flows into takes the type its uses demand, and
         // where an operation makes values at it (a builtin's read, a
         // handler's argument) they are of that type: a select waiting on
@@ -5630,6 +5645,28 @@ impl Solving {
             }
         }
         super::tvar::prove_ground_by_parts(v);
+        let judged = |c: &Type| matches!(c, Type::Bound(_)) || c.is_trait_ref(env);
+        let mut followed: SmallVec<[TVar; 2]> = SmallVec::from_iter([v.clone()]);
+        while let Some(of) = followed.pop() {
+            let mut i = 0;
+            while i < self.after.len() {
+                if !self.after[i].0.same_cell(&of) {
+                    i += 1;
+                    continue;
+                }
+                let (_, w) = self.after.swap_remove(i);
+                if w.is_bound() {
+                    continue;
+                }
+                debug(|| format!("fix '{} := {r}", ShortName(&w.name)));
+                w.cell().write().set_binding(Some(r.clone()));
+                super::tvar::prove_ground_by_parts(&w);
+                if w.cell_above().iter().any(judged) {
+                    self.judged.push(w.clone())
+                }
+                followed.push(w)
+            }
+        }
         // a flow from a cell that was being fixed around this one was
         // left out: what that cell is now fits here, or no finite type
         // holds both
@@ -5639,7 +5676,6 @@ impl Solving {
                 self.constrain(env, &deep(&from), &deep(&to)).map_err(|_| infinite())?
             }
         }
-        let judged = |c: &Type| matches!(c, Type::Bound(_)) || c.is_trait_ref(env);
         if v.cell_above().iter().any(judged) {
             self.judged.push(v.clone())
         }
@@ -5974,7 +6010,7 @@ impl Solving {
         env: &Env,
         v: &TVar,
         open_below: &mut SmallVec<[TVar; 2]>,
-    ) -> Result<Type> {
+    ) -> Result<Option<Type>> {
         // a cell nothing has decided may stay open inside a bound: a
         // holder that shares it can still decide it
         let mut flows: SmallVec<[Type; 4]> = SmallVec::new();
@@ -6129,7 +6165,13 @@ impl Solving {
                             && variables.is_empty()
                             && !unread =>
                     {
-                        self.held_below(env, v, made)?
+                        match self.held_below(env, v, made)? {
+                            Held::Is(t) => t,
+                            Held::After(around) => {
+                                self.after.push((around, v.clone()));
+                                return Ok(None);
+                            }
+                        }
                     }
                     false => t,
                 }
@@ -6160,34 +6202,47 @@ impl Solving {
                 _ => not_one(env, &t)?,
             }
         }
-        Ok(t)
+        Ok(Some(t))
     }
 
     /// The type of the cell `v`, which nothing has flowed into and nothing
-    /// is asked of, from the open cells of its level that flow into it: each
-    /// is fixed by what is asked of that one, and `v` holds what they
-    /// became. Where the one such cell is being fixed around `v` and
-    /// `made`, an operation makes values at it: `v` is the same type as it.
-    fn held_below(&mut self, env: &Env, v: &TVar, made: bool) -> Result<Type> {
+    /// is asked of, from the cells that flow into it: each open one of its
+    /// level is fixed by what is asked of that one, and `v` holds what they
+    /// became, as it holds one fixed so before it. Where the one open cell
+    /// is being fixed around `v`, `v` is the same type as it if `made` (an
+    /// operation makes values at it), and what it becomes otherwise.
+    fn held_below(&mut self, env: &Env, v: &TVar, made: bool) -> Result<Held> {
         let mut below: SmallVec<[TVar; 2]> = SmallVec::new();
+        let mut held: SmallVec<[Type; 2]> = SmallVec::new();
         let fed = feeders(v).into_iter().map(Type::TVar);
         for l in v.cell_lower().into_iter().chain(fed) {
-            if let Type::TVar(u) = &shallow(&l)
-                && !u.same_cell(v)
-                && !quantified(u)
-                && !u.is_rigid()
-                && u.level().depth() == v.level().depth()
-                && !below.iter().any(|b| b.same_cell(u))
-            {
-                below.push(u.clone())
+            match (&l, &shallow(&l)) {
+                (_, Type::TVar(u)) => {
+                    if !u.same_cell(v)
+                        && !quantified(u)
+                        && !u.is_rigid()
+                        && u.level().depth() == v.level().depth()
+                        && !below.iter().any(|b| b.same_cell(u))
+                    {
+                        below.push(u.clone())
+                    }
+                }
+                (Type::TVar(u), t) if demanded(u) && !matches!(t, Type::Bottom) => {
+                    held.push(t.clone())
+                }
+                _ => (),
             }
         }
         let (around, apart): (SmallVec<[TVar; 2]>, SmallVec<[TVar; 2]>) =
             below.into_iter().partition(|u| self.fixing.contains(&u.cell_addr()));
-        if let ([one], [], true) = (&around[..], &apart[..], made) {
-            return Ok(Type::TVar(one.clone()));
+        if let ([one], []) = (&around[..], &apart[..])
+            && held.is_empty()
+        {
+            return Ok(match made {
+                true => Held::Is(Type::TVar(one.clone())),
+                false => Held::After(one.clone()),
+            });
         }
-        let mut held: SmallVec<[Type; 2]> = SmallVec::new();
         for u in apart.iter() {
             self.fix(env, u)?;
             let t = shallow(&Type::TVar(u.clone()));
@@ -6195,11 +6250,11 @@ impl Solving {
                 held.push(t)
             }
         }
-        Ok(match &mut held[..] {
+        Ok(Held::Is(match &mut held[..] {
             [] => Type::Bottom,
             [one] => std::mem::take(one),
             many => join(env, many)?,
-        })
+        }))
     }
 
     /// What a lower bound `l` says once the cells in it are fixed: nothing
@@ -6316,6 +6371,13 @@ impl Solving {
     }
 }
 
+/// What [`Solving::held_below`] finds a cell to be.
+enum Held {
+    Is(Type),
+    /// What this cell, being fixed around it, becomes.
+    After(TVar),
+}
+
 fn uses(v: &TVar) -> SmallVec<[(Use, bool); 1]> {
     v.peek(|c| c.solving.as_ref().map(|k| k.uses.clone()).unwrap_or_default())
 }
@@ -6394,7 +6456,7 @@ impl Solving {
                     | (Use::Index { .. }, Type::Tuple(_))
                     | (Use::Index { i: 0, .. }, Type::Error(_))
                     | (Use::Call { .. }, Type::Fn(_))
-                    | (Use::Write { .. }, Type::ByRef(..))
+                    | (Use::Write { .. }, Type::ByRef(Mutability::Mut, _))
             );
             if shaped && self.apply(env, &u, &b)? {
                 self.write(v, Kept::Met(i))

@@ -1,0 +1,6 @@
+// expect: reject
+// A let-inline flip (soak nov26b): this checked, and with the struct written
+// in place it was refused "type mismatch { f: _, g: i64 } does not contain
+// i64". A type with a part nothing reaches is judged by its shape either
+// way: a struct is no number.
+{ let s = { f: never(), g: 1 }; let f = s + 1; 0 }

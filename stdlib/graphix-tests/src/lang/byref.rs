@@ -1429,3 +1429,92 @@ run!(
     refused("i64 does not contain string");
     FuseExpect::None
 );
+
+// A writable place through a dereference writes through the reference: what
+// `*r` reads is written back whole, so the place is held to the referent's
+// type and the reference must be writable.
+run!(
+    writable_index_place_through_a_dereference_is_held_to_the_referent,
+    "{ let a: Array<i64> = [10, 20]; let r = &mut a; let s = &mut (*r)[0]; *s <- \"kiwi\"; \
+       a }",
+    refused("i64 does not contain string");
+    FuseExpect::None
+);
+run!(
+    writable_index_place_through_an_optional_reference_is_held_to_the_referent,
+    "{ let a: Array<i64> = [10, 20]; let r: [null, &mut Array<i64>] = &mut a; \
+       let s = &mut (*r$)[0]; *s <- \"kiwi\"; a }",
+    refused("i64 does not contain string");
+    FuseExpect::None
+);
+run!(
+    writable_reborrow_is_held_to_the_referent,
+    "{ let a: i64 = 1; let r = &mut a; let s = &mut *r; *s <- \"k\"; a }",
+    refused("i64 does not contain string");
+    FuseExpect::None
+);
+run!(
+    writable_key_place_through_a_dereference_is_held_to_the_referent,
+    r#"{ let m: Map<string, i64> = {"a" => 1}; let r = &mut m; let s = &mut (*r){"a"}; *s <- "k"; m }"#,
+    refused("i64 does not contain string");
+    FuseExpect::None
+);
+run!(
+    writable_place_through_a_declared_parameter_is_held_to_the_referent,
+    "{ let f = |r: &mut Array<i64>| { let s = &mut (*r)[0]; *s <- \"k\" }; 0 }",
+    refused("i64 does not contain string");
+    FuseExpect::None
+);
+run!(
+    writable_reborrow_of_a_read_only_reference_is_refused,
+    "{ let a: i64 = 1; let r = &a; let s = &mut *r; *s <- 2; a }",
+    refused("can't write through a read-only reference (&i64)");
+    FuseExpect::None
+);
+run!(
+    writable_field_place_through_a_read_only_reference_is_refused,
+    "{ let a: {x: i64} = {x: 1}; let r = &a; let s = &mut (*r).x; *s <- 2; a }",
+    refused("can't write through a read-only reference (&{ x: i64 })");
+    FuseExpect::None
+);
+run!(
+    writable_index_place_through_a_read_only_parameter_is_refused,
+    "{ let f = |r: &Array<i64>| { let s = &mut (*r)[0]; *s <- 1 }; 0 }",
+    refused("can't write through a read-only reference (&Array<i64>)");
+    FuseExpect::None
+);
+run!(
+    writable_index_place_through_an_optional_reference_writes_the_referent,
+    "{ let a: Array<i64> = [10, 20]; let r: [null, &mut Array<i64>] = &mut a; \
+       let s = &mut (*r$)[0]; *s <- 7; array::group(a, |i, _| i == 2) }",
+    prints("[[i64:10, i64:20], [i64:7, i64:20]]")
+);
+
+// A parameter with no annotation that is read and written through is each
+// call's reference: a writable one passes, and the write is held to its
+// referent; a read-only one is refused at the call.
+run!(
+    untyped_reference_parameter_read_and_written_takes_a_writable_reference,
+    "{ let a = 1; let f = |r| { *r <- 5; *r }; array::group(f(&mut a), |i, _| i == 2) }",
+    prints("[i64:1, i64:5]");
+    FuseExpect::None
+);
+run!(
+    untyped_reference_parameter_written_through_a_place_takes_a_writable_reference,
+    "{ let a = [1, 2]; let f = |r| { let s = &mut (*r)[0]; *s <- 5 }; f(&mut a); \
+       array::group(a, |i, _| i == 2) }",
+    prints("[[i64:1, i64:2], [i64:5, i64:2]]")
+);
+run!(
+    untyped_reference_parameter_written_through_a_place_is_held_to_the_referent,
+    "{ let a: Array<i64> = [1]; let f = |r| { let s = &mut (*r)[0]; *s <- \"k\" }; \
+       f(&mut a); a }",
+    refused("i64 does not contain string");
+    FuseExpect::None
+);
+run!(
+    untyped_reference_parameter_read_and_written_refuses_a_read_only_reference,
+    "{ let a: Array<i64> = [1]; let f = |r| { let s = &mut (*r)[0]; *s <- 5 }; f(&a); a }",
+    refused("can't write through a read-only reference (&Array<i64>)");
+    FuseExpect::None
+);

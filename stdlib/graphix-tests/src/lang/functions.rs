@@ -7377,3 +7377,74 @@ run!(
     "{ let y = never(); let t = |x| x + y; y <- 1; y <- 2.5; 0 }",
     refused("cannot compute with [i64, f64]: both operands must be one numeric type")
 );
+
+// What is asked of a binding outside a function is asked of it after the
+// function closes too, so it is no part of what the function's parameter is
+// held to: the definition checks whichever is written first, and a call's
+// argument is judged where it flows into the binding.
+run!(
+    a_parameter_computed_with_a_binding_used_as_a_function_checks_written_before_the_use,
+    "{ let y = array::iter(never()); let t = |x| x + y; let m = array::map([1], y); 42 }",
+    is(Value::I64(42));
+    FuseExpect::None
+);
+
+run!(
+    a_parameter_computed_with_a_binding_used_as_a_function_checks_written_after_the_use,
+    "{ let y = array::iter(never()); let m = array::map([1], y); let t = |x| x + y; 42 }",
+    is(Value::I64(42));
+    FuseExpect::None
+);
+
+run!(
+    a_call_of_a_function_computing_with_a_binding_used_as_a_function_is_refused_before_the_use,
+    "{ let y = array::iter(never()); let t = |x| x + y; let m = array::map([1], y); t(1) }",
+    refused("does not contain i64")
+);
+
+run!(
+    a_call_of_a_function_computing_with_a_binding_used_as_a_function_is_refused_after_the_use,
+    "{ let y = array::iter(never()); let m = array::map([1], y); let t = |x| x + y; t(1) }",
+    refused("does not contain i64")
+);
+
+run!(
+    a_parameter_used_as_a_number_and_as_a_function_inside_its_definition_is_refused,
+    "{ let t = |x| { let g = |z| z + x; x(1) }; 42 }",
+    refused("and no value is both: nothing can be passed for it")
+);
+
+// A recursive function's result reaches a lambda called where it is written
+// through the cell the lambda's own call left, which took the result's type
+// after the lambda closed: each instance of the function has it.
+run!(
+    a_recursive_function_called_through_a_lambda_written_in_place_builds,
+    "{ let rec f = |x: i64| select x > 5 { true => (|v| f(v))(x - 1), false => x }; f(8) }",
+    is(Value::I64(5))
+);
+
+run!(
+    a_recursive_function_called_through_a_lambda_in_a_guarded_arm_builds,
+    "{ let rec f = |x: i64| select x { x if never() => (|v| f(v))(x), x => x }; \
+       any(f(0), 7) }",
+    is(Value::I64(7));
+    FuseExpect::None
+);
+
+// A cell nothing flows into and nothing is asked of holds what the cells
+// that flow into it become, whichever is fixed first: a callback's parameter
+// is the type a builtin's variable took from what was asked of its result.
+run!(
+    a_seq_triggered_by_a_binding_nothing_reaches_builds_in_a_function,
+    "{ let n = never(); let probe = |t: i64| seq let k = n { t + k; k }; any(probe(24), 3) }",
+    is(Value::I64(3))
+);
+
+// A function's result that holds only what a select over a bound operand
+// leaves is the type that select's result takes, fixed around it.
+run!(
+    a_read_nothing_calls_of_a_function_selecting_over_a_bound_operand_checks,
+    "{ let f = |acc, v| select { let t = v; t } % 2 { 0 => v, _ => acc }; \
+       let m = { let z = 1; { let q = f; q } }; 7 }",
+    is(Value::I64(7))
+);

@@ -510,7 +510,7 @@
 3	soak-nov25b-nov2026/06_seq_under_a_handler_nothing_raises_to.gx
 1	soak-nov25b-nov2026/07_constructor_trait_over_a_union_of_arrays.gx
 0	soak-nov25b-nov2026/08_impl_in_a_labeled_default.gx
-1	soak-nov25b-nov2026/09_select_over_a_bound_variant_nothing_reaches.gx
+0	soak-nov25b-nov2026/09_select_over_a_bound_variant_nothing_reaches.gx
 0	soak-nov25b-nov2026/10_named_union_and_number_meet.gx
 1	soak-nov25b-nov2026/11_comparison_over_a_bound_operand.gx
 0	soak-nov26a-nov2026/01_argument_no_value_has_to_a_builtin.gx
@@ -518,6 +518,14 @@
 1	soak-nov26a-nov2026/03_strip_over_a_parameter_of_a_function_written_in_place.gx
 0	soak-nov26a-nov2026/04_strip_over_a_parameter_of_a_function_a_let_names.gx
 2	soak-nov26a-nov2026/05_seq_call_with_an_argument_that_is_no_value.gx
+0	soak-nov26b-nov2026/01_writable_place_through_a_dereference.gx
+4	soak-nov26b-nov2026/02_seq_triggered_by_a_binding_nothing_reaches.gx
+0	soak-nov26b-nov2026/03_struct_pattern_field_an_argument_lacks.gx
+0	soak-nov26b-nov2026/04_recursive_function_through_a_lambda_called_in_place.gx
+0	soak-nov26b-nov2026/05_variant_no_value_has_under_a_named_type.gx
+1	soak-nov26b-nov2026/06_select_over_a_bound_operand_in_a_function_read.gx
+0	soak-nov26b-nov2026/07_struct_no_value_has_as_an_operand.gx
+0	soak-nov26b-nov2026/08_binding_used_as_a_function_and_computed_with.gx
 0	source-e-jun2026/01_let_a_duration_1_s_duration_2_s_a.gx
 1	source-e-jun2026/02_let_e_error_0_is_err_e.gx
 1	source-e-jun2026/03_let_a_0_array_map_a_x_1_x.gx

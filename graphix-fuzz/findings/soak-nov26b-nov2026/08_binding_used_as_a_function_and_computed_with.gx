@@ -1,0 +1,8 @@
+// A stmt-permute flip (soak nov26b): with `m` written before `t` the
+// definition of `t` was refused "a value here is used as Number and as
+// fn(x: 'a) -> 'b throws 'e, and no value is both: nothing can be passed
+// for it". What is asked of `y`, a binding outside `t`, is asked after `t`
+// closes too, so it is no part of what `t`'s parameter is held to; a call's
+// argument is judged where it flows into `y`.
+// Expected trace (both engines): 42.
+{ let y = array::iter(never()); let m = array::map([1], y); let t = |x| x + y; 42 }

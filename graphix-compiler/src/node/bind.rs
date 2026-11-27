@@ -3034,7 +3034,16 @@ impl<R: Rt> ByRef<R> {
             }
             Referent::Channel(n) => n.typ().clone(),
             Referent::Place(p) => {
-                wrap!(self, p.elem_type(ctx, &self.spec, *mutability == Mutability::Mut))?
+                let writable = *mutability == Mutability::Mut;
+                // a writable place through `*r` writes through `r`: what
+                // `*r` reads is written back whole
+                if writable
+                    && let Some(d) = (&*p.root as &dyn Any).downcast_ref::<Deref<R>>()
+                {
+                    let write = Use::Write { value: d.typ.clone() };
+                    wrap!(self, solving(|s| s.watch(&ctx.env, d.child.typ(), write)))?;
+                }
+                wrap!(self, p.elem_type(ctx, &self.spec, writable))?
             }
         };
         let rtype = Type::ByRef(*mutability, Arc::new(t));

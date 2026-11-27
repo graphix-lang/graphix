@@ -1,0 +1,7 @@
+// The check accepted and the build refused "an instance at fn(v: i64) -> _
+// of a definition typed fn(v: '_N: unbound within i64) -> i64" (soak
+// nov26b). The lambda's own call of `f` closed before `f`'s result had a
+// type; the cell it left holds that result as a bound, and each instance of
+// `f` reads what the result took since.
+// Expected trace (both engines): none (a guard that is bottom decides no arm).
+{ let rec f = |x: i64| select x { x if never() => (|v| f(v))(x), x => x }; f(0) }

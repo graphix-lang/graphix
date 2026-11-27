@@ -107,7 +107,12 @@ and `v` to fit each one's referent (`ConnectDeref::typecheck0_with`).
 - A union merges two `&` into one over the union of their referents;
   two `&mut` merge only when equal.
 - `&mut x` and a `&mut` place over a binding are pinned to the binding's
-  type. A `&mut` place rooted at `*r` requires `r: &mut`. `&mut e` over
+  type. A `&mut` place rooted at `*r` (a bare `&mut *r` among them)
+  requires `r: &mut` and is pinned to `r`'s referent: what `*r` reads is
+  written back whole (`ByRef::typecheck0_with`; pins
+  `lang::byref::writable_index_place_through_a_dereference_is_held_to_the_referent`
+  and its neighbours). A parameter with no annotation that is read and
+  written through is each call's reference. `&mut e` over
   any other expression mints a fresh cell only the reference reaches:
   its type is a variable with the lower bound `⊇ typeof(e)`, decided
   by the uses (`&mut null` into `&mut [i64, null]`), in a definition's

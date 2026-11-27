@@ -1,0 +1,6 @@
+// A block-wrap flip (soak nov26b): with the scrutinee's operand bound first
+// a read of the function nothing calls was refused "infinite type". The
+// function's result holds only what the select's result does; fixed around
+// it, it is that cell's type, which takes its own from the operand.
+// Expected trace (both engines): 7.
+{ let f = |acc, v| select { let tm__0 = v; tm__0 } % 2 { 0 => v, _ => acc }; let m = { let z = 1; { let q = f; q } }; 7 }

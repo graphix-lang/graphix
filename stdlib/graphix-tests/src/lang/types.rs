@@ -18814,13 +18814,31 @@ run!(
     is(Value::I64(43))
 );
 
-// No value has a type with a part nothing reaches, so it fits anywhere, as
-// bottom does: a select over one checks whether the value is written in
-// place or bound first.
+// A type with a part nothing reaches is judged by its shape: a select routes
+// it down no arm, and the bound its arms put on a scrutinee holds it whether
+// the value is written in place or bound first.
 run!(
-    a_select_over_a_bound_variant_of_a_part_nothing_reaches_checks,
+    a_select_over_a_bound_variant_of_a_part_nothing_reaches_no_arm_takes_is_refused,
     "{ let s = select { let t = `Done({ 1; 0; }); t } { error as e => 1, null as _ => 2 }; \
        5 }",
+    refused("missing match cases: nothing matches `Done(_)")
+);
+
+run!(
+    a_select_over_a_variant_of_a_part_nothing_reaches_no_arm_takes_is_refused,
+    "{ let s = select `Done({ 1; 0; }) { error as e => 1, null as _ => 2 }; 5 }",
+    refused("missing match cases: nothing matches `Done(_)")
+);
+
+run!(
+    a_select_over_a_bound_variant_of_a_part_nothing_reaches_an_arm_takes_checks,
+    "{ let s = select { let t = `Done({ 1; 0; }); t } { `Done(x) => 1, null as _ => 2 }; 5 }",
+    is(Value::I64(5))
+);
+
+run!(
+    a_select_over_a_variant_of_a_part_nothing_reaches_an_arm_takes_checks,
+    "{ let s = select `Done({ 1; 0; }) { `Done(x) => 1, null as _ => 2 }; 5 }",
     is(Value::I64(5))
 );
 
@@ -18845,20 +18863,56 @@ run!(
     refused("a value here is used as T and as")
 );
 
-// The build holds a type no value has as the check does: such an argument
-// passes to a builtin's parameter of any type, and the call is never made.
+// A type with a part nothing reaches fits where its shape does, a part of
+// it fitting any type as bottom does: the check and the build hold it alike.
 run!(
-    an_argument_no_value_has_passes_to_a_builtin_parameter_of_any_type,
-    "{ let n = str::len((5, never())); let m = array::len(`Foo(never())); 3 }",
-    is(Value::I64(3));
-    FuseExpect::None
+    a_value_with_a_part_nothing_reaches_fits_a_type_of_its_shape,
+    "{ let x: (i64, string) = (5, never()); let l: Array<`Foo(f64)> = [`Foo(never())]; 3 }",
+    is(Value::I64(3))
 );
 
 run!(
-    an_argument_no_value_has_passes_to_a_builtin_whose_result_is_stripped,
+    an_argument_with_a_part_nothing_reaches_is_held_to_a_builtin_parameters_type,
+    "{ let n = str::len((5, never())); 3 }",
+    refused("type mismatch string does not contain (i64, _)")
+);
+
+run!(
+    an_argument_with_a_part_nothing_reaches_is_held_to_a_builtin_whose_result_is_stripped,
     "{ let x: duration = sys::time::add_dur(duration:1.s, (5, never()))$; 3 }",
-    is(Value::I64(3));
-    FuseExpect::None
+    refused("type mismatch duration does not contain (i64, _)")
+);
+
+run!(
+    an_argument_with_a_part_nothing_reaches_is_held_to_a_patterns_fields,
+    "{ let f = |{ bar, baz: _, foo: _ }| 0; f({ bar: 0, baz: never() }) }",
+    refused("missing match cases: nothing matches { bar: i64, baz: _ }")
+);
+
+run!(
+    a_struct_with_a_part_nothing_reaches_is_no_operand_written_in_place,
+    "{ let f = ({ f: never(), g: 1 }) + 1; 0 }",
+    refused("type mismatch { f: _, g: i64 } does not contain i64")
+);
+
+run!(
+    a_struct_with_a_part_nothing_reaches_is_no_operand_bound_first,
+    "{ let s = { f: never(), g: 1 }; let f = s + 1; 0 }",
+    refused("type mismatch i64 does not contain { f: _, g: i64 }")
+);
+
+run!(
+    a_variant_with_a_part_nothing_reaches_is_held_to_a_named_type_written_in_place,
+    "{ type Lst<'a> = [`Cons('a, Lst<'a>), `Nil]; \
+       let l: Lst<string> = `Cons(42, `Cons(3, never())); 0 }",
+    refused("type mismatch Lst<string> does not contain `Cons(i64, `Cons(i64, _))")
+);
+
+run!(
+    a_variant_with_a_part_nothing_reaches_is_held_to_a_named_type_bound_first,
+    "{ type Lst<'a> = [`Cons('a, Lst<'a>), `Nil]; \
+       let l: Lst<string> = `Cons(42, { let t = `Cons(3, never()); t }); 0 }",
+    refused("type mismatch Lst<string> does not contain `Cons(i64,")
 );
 
 run!(

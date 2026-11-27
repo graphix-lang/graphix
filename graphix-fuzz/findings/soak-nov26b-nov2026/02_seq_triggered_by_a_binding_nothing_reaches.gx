@@ -1,0 +1,7 @@
+// The check accepted and the build refused "type mismatch fn(v: 'a: i64) ->
+// bool throws 'e: _ does not contain fn(x: _) -> bool throws _" (soak
+// nov26b). Nothing reaches `n`, so the seq's trigger filter takes its type
+// from what is asked of its result, the `k` the arithmetic makes an i64; the
+// filter's callback parameter, fixed after it, holds what it became.
+// Expected trace (both engines): none.
+{ let c = 0; let n = never(); let f = 0; let probe = |t: i64| seq let k = n { select live(c) >= t + k * 80 { true => true, false => never() }; k }; probe(24) }

@@ -1,0 +1,7 @@
+// expect: reject
+// A string written into an `Array<i64>` (soak nov26b: the engines then
+// disagreed over arithmetic on the element). A writable place through a
+// dereference writes through the reference: what `*r` reads is written back
+// whole, so the place is held to the referent's type. "type mismatch i64
+// does not contain string".
+{ let a = [10, 20]; let r: [null, &mut Array<i64>] = &mut a; let s = &mut (*r$)[0]; *s <- "kiwi"; a }

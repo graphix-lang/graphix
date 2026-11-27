@@ -472,7 +472,7 @@ fn nothing(t: &Type) -> bool {
 
 /// No value has the type: a product with such a part, at any depth. A
 /// named type is taken to have values.
-pub(crate) fn empty(t: &Type) -> bool {
+fn empty(t: &Type) -> bool {
     type Judged = Option<LPooled<AHashMap<usize, bool>>>;
     fn parts(t: &Type, judged: &mut Judged) -> bool {
         match t {
@@ -504,6 +504,16 @@ pub(crate) fn empty(t: &Type) -> bool {
         Type::TVar(tv) => tv.binding().is_some_and(|b| empty(&b)),
         t => parts(t, &mut None),
     }
+}
+
+/// The widest type the tests of `arms` admit together, the bound they put
+/// on a scrutinee; none where an arm is guarded or admits everything.
+pub fn admitted(arms: &[Arm]) -> Option<Type> {
+    if arms.iter().any(|a| a.guarded) {
+        return None;
+    }
+    let ts: Option<SmallVec<[Type; 8]>> = arms.iter().map(|a| a.pat.admits()).collect();
+    Some(unsplit(&super::union_of(ts?)))
 }
 
 /// A select as written: its arms, and where it is. A use of a scheme's
@@ -1511,6 +1521,29 @@ impl Solving {
         })
     }
 
+    /// A member of `whole` no value has (a product with a part nothing
+    /// reaches) is routed down no arm, so what the arms' tests admit judges
+    /// its shape, as the bound they put on a scrutinee nothing has decided
+    /// does: the verdict is the same written in place or bound first.
+    fn select_shape(&mut self, env: &Env, id: usize, whole: &Type) -> Result<()> {
+        let members = match whole {
+            Type::Set(ms) => &ms[..],
+            t => std::slice::from_ref(t),
+        };
+        let mut most: Option<Option<Type>> = None;
+        for m in members.iter().filter(|m| !nothing(m) && empty(m)) {
+            let template = self.selects[id].template.clone();
+            let Some(most) = most.get_or_insert_with(|| admitted(&template.arms)) else {
+                return Ok(());
+            };
+            let most = most.clone();
+            if !self.probe(env, m, &most) {
+                bail!("missing match cases: nothing matches {m} ({})", template.at)
+            }
+        }
+        Ok(())
+    }
+
     /// [`Self::select_route`], with `arm` the arm being routed when it
     /// refuses.
     fn select_route_at(
@@ -1525,6 +1558,7 @@ impl Solving {
             self.selects[id].waiting.push(t.clone());
             return Ok(());
         }
+        self.select_shape(env, id, &whole)?;
         let mut reach = self.expand(env, &split(&whole));
         if nothing(&reach) {
             return Ok(());
@@ -1588,6 +1622,18 @@ impl Solving {
             }
         }
         *arm_at = None;
+        // CR claude for claude: [bug/low] A residue that holds an open cell is refused
+        // here before the cell is fixed, so a select is judged differently with a part
+        // bound first: `select (1, never()) { (1, b) => 1 }` checks (a type no value
+        // has is routed down no arm) and `let p = never(); select (1, p) { (1, b) =>
+        // 1 }` is refused "missing match cases: nothing matches (i64, '_N)". The arm
+        // only names the part `p` is, so `looked` does not wait for it, and `p` is
+        // fixed at bottom at the input's end. Either wait on the open cells of a
+        // residue no arm took and report it once they are fixed (`select_waiting`
+        // fixes only the cells arms look into, so the select must keep the residue's
+        // own), or route a part nothing reaches by its shape in both forms. Found
+        // while triaging soak nov26b, not by it. probe: `graphix --check` on the two
+        // programs. (select-residue-open-part-01)
         if !nothing(&reach) {
             bail!(
                 "missing match cases: nothing matches {} ({})",
