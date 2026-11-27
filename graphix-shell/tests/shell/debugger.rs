@@ -102,6 +102,18 @@ impl Running {
     }
 }
 
+/// Where a test's program offers its debugger: a socket in `dir`, which
+/// is the test's own; on Windows a pipe named for it.
+fn socket_in(dir: &Path) -> PathBuf {
+    match cfg!(windows) {
+        false => dir.join("d.sock"),
+        true => {
+            let name = dir.file_name().unwrap_or_default().to_string_lossy();
+            PathBuf::from(format!(r"\\.\pipe\graphix-test-{name}"))
+        }
+    }
+}
+
 #[track_caller]
 fn has(out: &str, lines: &[&str]) {
     for want in lines {
@@ -132,10 +144,11 @@ fn a_second_process_asks_a_running_program() {
     ] {
         let dir = tempfile::tempdir().expect("tempdir");
         for start in ["cold", "warm"] {
-            let socket = format!("--debug={}", dir.path().join("d.sock").display());
+            let socket = socket_in(dir.path());
+            let offer = format!("--debug={}", socket.display());
             let run =
-                Running::start(dir.path(), PROGRAM, &[&[socket.as_str()], args].concat());
-            assert_eq!(run.socket, dir.path().join("d.sock"));
+                Running::start(dir.path(), PROGRAM, &[&[offer.as_str()], args].concat());
+            assert_eq!(run.socket, socket);
             let out =
                 run.ask(&["print price", "print qty", "why total", "print main.gx:7"]);
             has(
@@ -169,9 +182,9 @@ fn a_second_process_asks_a_running_program() {
             );
             // the program may end before the answer is written
             let _ = run.debug(None, &["set go = true"]);
-            let socket = run.socket.clone();
             let status = run.ended();
             assert!(status.success(), "{label} {start}: {status:?}");
+            #[cfg(unix)]
             assert!(!socket.exists(), "{label} {start}: the socket outlived its program");
         }
     }

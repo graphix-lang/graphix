@@ -72,8 +72,8 @@ session prints a type (the shell passes the REPL's printer).
   line is Graphix and is evaluated; `eval` says so explicitly.
 
 On Windows the same interface is a named pipe,
-`\\.\pipe\graphix-debug-<pid>`. **That path was written without a Windows
-toolchain: it has never been compiled or run.**
+`\\.\pipe\graphix-debug-<pid>`. **That path compiles for
+`x86_64-pc-windows-gnu` and has never been run** (CR `debugger-01`).
 
 ## 3. The protocol
 

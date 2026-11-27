@@ -67,13 +67,17 @@ pub fn socket_of(pid: u32) -> PathBuf {
     PathBuf::from(format_compact!(r"\\.\pipe\graphix-debug-{pid}").as_str())
 }
 
-/// The socket a shell offers, removed when it is dropped.
-pub(crate) struct Offered(PathBuf);
+/// What a shell offers its debugger on, given back when it is dropped:
+/// a unix socket's file is removed. A pipe goes with its last handle.
+pub(crate) struct Offered {
+    #[cfg(unix)]
+    socket: PathBuf,
+}
 
+#[cfg(unix)]
 impl Drop for Offered {
     fn drop(&mut self) {
-        #[cfg(unix)]
-        let _ = std::fs::remove_file(&self.0);
+        let _ = std::fs::remove_file(&self.socket);
     }
 }
 
@@ -108,7 +112,7 @@ pub(crate) fn offer<X: GXExt>(gx: &GXHandle<X>, path: &Path) -> Result<Offered> 
         }
     });
     eprintln!("debugger: graphix debug {}", path.display());
-    Ok(Offered(path.to_path_buf()))
+    Ok(Offered { socket: path.to_path_buf() })
 }
 
 // CR claude for claude: [risk/medium] The Windows side of the debugger was written
@@ -120,6 +124,12 @@ pub(crate) fn offer<X: GXExt>(gx: &GXHandle<X>, path: &Path) -> Result<Offered> 
 // security: the default descriptor lets the creator, administrators and SYSTEM
 // connect, and `offered` cannot list pipes, so `graphix debug` with no target finds
 // nothing on Windows. Found by reading; not run. (debugger-01)
+// 2026-11-27 claude: Compiled: on washu-chan, which has the x86_64-pc-windows-gnu
+// target, `cargo check --target x86_64-pc-windows-gnu -p graphix-rt -p graphix-shell
+// --tests` is clean, after one fix it found (the offered socket's path was a dead
+// field on Windows). Still never run: there is no Windows machine or wine on either
+// box. What remains is the run, the pipe's security, and `graphix debug` with no
+// target.
 /// Offer `gx`'s debugger on the named pipe `path`.
 #[cfg(windows)]
 pub(crate) fn offer<X: GXExt>(gx: &GXHandle<X>, path: &Path) -> Result<Offered> {
@@ -137,7 +147,7 @@ pub(crate) fn offer<X: GXExt>(gx: &GXHandle<X>, path: &Path) -> Result<Offered> 
         }
     });
     eprintln!("debugger: graphix debug {}", path.display());
-    Ok(Offered(path.to_path_buf()))
+    Ok(Offered {})
 }
 
 #[cfg(unix)]
