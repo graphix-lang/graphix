@@ -34,6 +34,7 @@ use netidx_value::Value;
 use poolshark::local::LPooled;
 use proto::{Command, Outcome, Reply, Request, Response, When};
 use serde::{Deserialize, Serialize};
+use smallvec::SmallVec;
 use std::{
     cmp::Ordering,
     fmt::Write,
@@ -107,6 +108,7 @@ impl<X: GXExt> Debugger<X> {
             kept: Vec::new(),
             made: 0,
             tokens: 0,
+            waits: SmallVec::new(),
             env,
         };
         session.run(&mut lines).await
@@ -204,6 +206,10 @@ struct Session<X: GXExt, W> {
     made: u64,
     /// The cycles and holds waited for so far.
     tokens: u64,
+    /// The `wait` requests not yet answered, each with the token of the
+    /// hold it waits for. A wait does not block the session: the
+    /// requests after it are served, so a `pause` can end it.
+    waits: SmallVec<[(u64, u64); 1]>,
     /// The environment values print under: the last one a command read.
     env: Env,
 }
@@ -406,13 +412,22 @@ impl<X: GXExt, W: AsyncWrite + Unpin> Session<X, W> {
                     Some(line) if line.trim().is_empty() => (),
                     Some(line) => {
                         let response = match serde_json::from_str::<Request>(&line) {
-                            Ok(req) => Response {
-                                id: req.id,
-                                result: match self.command(req.cmd).await {
-                                    Ok(reply) => Outcome::Ok(reply),
-                                    Err(e) => {
-                                        Outcome::Err(format_compact!("{e:#}").as_str().into())
-                                    }
+                            Ok(req) => match self.command(req.id, req.cmd).await {
+                                // answered when what it waits for happens
+                                Ok(None) => continue,
+                                Ok(Some(reply)) => {
+                                    Response { id: req.id, result: Outcome::Ok(reply) }
+                                }
+                                // a runtime that is gone says nothing useful
+                                Err(_) if self.events.is_closed() => Response {
+                                    id: req.id,
+                                    result: Outcome::Err(literal!("the program has ended")),
+                                },
+                                Err(e) => Response {
+                                    id: req.id,
+                                    result: Outcome::Err(
+                                        format_compact!("{e:#}").as_str().into(),
+                                    ),
                                 },
                             },
                             Err(e) => Response {
@@ -443,7 +458,15 @@ impl<X: GXExt, W: AsyncWrite + Unpin> Session<X, W> {
                 },
                 Some(_) | None => return Ok(()),
             },
-            Fired::Cycled { .. } | Fired::Held { .. } => return Ok(()),
+            Fired::Cycled { .. } => return Ok(()),
+            Fired::Held { token, cycle } => {
+                let Some(i) = self.waits.iter().position(|(t, _)| *t == token) else {
+                    return Ok(());
+                };
+                let (_, id) = self.waits.swap_remove(i);
+                let result = Outcome::Ok(Reply::Paused { cycle });
+                return self.send(&Response { id, result }).await;
+            }
             Fired::Watch { watch, bind, cycle, value } => proto::Event::Fired {
                 watch,
                 binding: handle(bind.id),
@@ -744,10 +767,12 @@ impl<X: GXExt, W: AsyncWrite + Unpin> Session<X, W> {
         Ok(Reply::Watching { watch, bindings })
     }
 
-    async fn command(&mut self, cmd: Command) -> Result<Reply> {
+    /// Answer `cmd`, the request `id`: `None` where the answer is sent
+    /// later, when what it waits for happens.
+    async fn command(&mut self, id: u64, cmd: Command) -> Result<Option<Reply>> {
         let gx = self.attached.gx.clone();
         let session = self.attached.id;
-        match cmd {
+        let reply = match cmd {
             Command::Eval { text } => {
                 let mut res = self.compile(text).await?;
                 self.made += 1;
@@ -755,7 +780,7 @@ impl<X: GXExt, W: AsyncWrite + Unpin> Session<X, W> {
                 self.env = res.env.clone();
                 let Some(last) = res.exprs.pop() else {
                     self.shown = None;
-                    return Ok(Reply::Evaled { eval, typ: None });
+                    return Ok(Some(Reply::Evaled { eval, typ: None }));
                 };
                 self.kept.extend(res.exprs.drain(..));
                 let typ = last.output.then(|| (self.show)(&last.typ).as_str().into());
@@ -785,7 +810,7 @@ impl<X: GXExt, W: AsyncWrite + Unpin> Session<X, W> {
                             .collect();
                         return match blocks.is_empty() {
                             true => Err(e),
-                            false => Ok(Reply::Fused { blocks }),
+                            false => Ok(Some(Reply::Fused { blocks })),
                         };
                     }
                 };
@@ -852,16 +877,9 @@ impl<X: GXExt, W: AsyncWrite + Unpin> Session<X, W> {
             }
             Command::Wait => {
                 let token = self.token();
+                self.waits.push((token, id));
                 self.attached.op(Op::WhenHeld { session, token })?;
-                loop {
-                    match self.events.recv().await {
-                        None => bail!("the runtime ended"),
-                        Some(Fired::Held { token: t, cycle }) if t == token => {
-                            break Ok(Reply::Paused { cycle });
-                        }
-                        Some(fired) => self.fired(fired).await?,
-                    }
-                }
+                return Ok(None);
             }
             Command::Continue => {
                 self.attached.op(Op::Continue { session })?;
@@ -913,6 +931,7 @@ impl<X: GXExt, W: AsyncWrite + Unpin> Session<X, W> {
                 };
                 Ok(Reply::Info { info })
             }
-        }
+        };
+        reply.map(Some)
     }
 }

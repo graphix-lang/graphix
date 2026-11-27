@@ -41,20 +41,32 @@ graphix prog.gx             # run
 graphix --expand prog.gx    # check, and print every seq's lowered machine
 graphix --no-fusion prog.gx # node-walk only
 graphix fmt prog.gx         # format in place (--check, --stdout)
-graphix --debug prog.gx     # run, offering a debugger; then, from another shell:
-graphix debug -c 'why x'    # why x has no value; also print, list, watch, set, any Graphix
+graphix debug --run prog.gx -c 'why x'   # run it, ask why x has no value, stop it
 ```
 
 **When a program does nothing**, read its stderr first (a failed operator
-and an error a `$` dropped are named there), then ask it: run it with
-`--debug` and `graphix debug -c 'why NAME'` walks from a binding with no
-value back to the expression where the nothing starts. A target is a name,
-a place (`prog.gx:12`) or an id an answer showed (`#88`); `-c` may be
-repeated, and any line that is not a command is evaluated as Graphix in
-the running program (`-c 'x + 1'`, `-c 'set x = 5'`). To catch a moment:
-`-c 'break x == 3' -c wait -c 'why y'` holds the program at the cycle `x`
-becomes 3; `pause`, `step` and `cycles` walk it a cycle at a time, and
-`graphix --debug-wait prog.gx` holds it before its first cycle.
+and an error a `$` dropped are named there), then ask it. One command
+runs the program, asks, and stops it:
+
+```sh
+graphix debug --run prog.gx -c 'why NAME' -c 'print OTHER'
+graphix --no-fusion debug --run prog.gx -c 'why NAME'   # says what happened inside fused code
+graphix debug --run prog.gx --held -c 'break x == 3' -c continue -c wait -c 'why y'
+```
+
+`why` walks from a binding with no value back to where the nothing starts,
+and says what each construct on the way knows: the arm a select holds,
+the step a seq is at, the error a `$` dropped. A target is a name, a
+place (`prog.gx:12`) or an id an answer showed (`#88`). Other commands:
+`print`, `list`, `watch`, `set NAME = EXPR`, `cycles`, `pause`, `step`,
+`break`, `wait [SECONDS]`; any other line is evaluated as Graphix in the
+running program (`-c 'x + 1'`). The program's own output comes marked
+`[out]` and `[err]`; `--json` gives one JSON object a line; the exit
+status is 1 if a command was refused. A `wait` or a `step` that finds
+nothing gives up after `--timeout` seconds (30) rather than hang.
+`--held` starts the program before its first cycle, for `step`. To ask a
+program that is already running (a TUI in another terminal), start it
+with `graphix --debug prog.gx` and use `graphix debug -c '..'`.
 
 `#[native]` on an expression asserts it fuses whole into native code: a
 build refuses it where anything stays in the node-walk. Inside a function

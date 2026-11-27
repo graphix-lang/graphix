@@ -11,7 +11,7 @@ use graphix_rt::{
     CompRes, GXEvent, NoExt,
     debug::{
         Client, Debugger,
-        proto::{self, Binding, Command, Event, Reply, Why},
+        proto::{self, Binding, Command, Event, Outcome, Reply, Why},
     },
 };
 use netidx_value::Value;
@@ -547,6 +547,53 @@ let seen = select opt { null => 0, n => n + 1 }
     assert_eq!(inner, [dropped], "{stepping:?}");
 
     s.close().await?;
+    rt.shutdown().await;
+    Ok(())
+}
+
+/// A wait does not hold up the session: the requests after it are
+/// answered while it is pending, and a pause ends it. A step that finds
+/// no work is ended the same way, and leaves the program held.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_wait_and_a_step_can_be_ended() -> Result<()> {
+    const PROGRAM: &str = r#"
+let input: i64 = never();
+let acc = 0;
+acc <- input ~ acc + input;
+acc * 2
+"#;
+    let paused = |o: Outcome| matches!(o, Outcome::Ok(Reply::Paused { .. }));
+    let mut rt = run(PROGRAM, Mode::Interp).await?;
+    let out = rt.program.exprs.last().map(|e| e.id).expect("the program's value");
+    let named = ModPath::from_iter(["input"]);
+    let input = rt.program.env.lookup_bind(&ModPath::root(), &named)?;
+    let input = input.ok_or_else(|| anyhow!("the program binds input"))?.1.id;
+    assert_eq!(next_update(&rt.ctx.rt, &mut rt.events, out).await?, Value::I64(0));
+    let mut s = rt.attach().await?;
+
+    let wait = s.client.send(Command::Wait).await?;
+    assert_eq!(s.print("acc").await?.value.as_deref(), Some("0"));
+    assert!(paused(s.client.ask(Command::Pause).await?));
+    assert!(paused(s.client.answered(wait).await?));
+
+    assert!(matches!(
+        s.client.request(Command::Step { cycles: None }).await?,
+        Reply::Stepping
+    ));
+    let wait = s.client.send(Command::Wait).await?;
+    assert_eq!(s.print("acc").await?.value.as_deref(), Some("0"));
+    assert!(paused(s.client.ask(Command::Pause).await?));
+    assert!(paused(s.client.answered(wait).await?));
+    rt.ctx.rt.set(input, 1i64)?;
+    assert_eq!(
+        s.print("input").await?.value,
+        None,
+        "the step was ended: the program is held"
+    );
+    assert!(paused(s.client.ask(Command::Wait).await?));
+
+    s.close().await?;
+    assert_eq!(next_update(&rt.ctx.rt, &mut rt.events, out).await?, Value::I64(2));
     rt.shutdown().await;
     Ok(())
 }

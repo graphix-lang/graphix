@@ -23,6 +23,8 @@ pub struct Client<S> {
     sent: u64,
     /// The events that arrived while a request waited for its answer.
     events: VecDeque<Event>,
+    /// The answers that arrived while another was waited for.
+    answers: Vec<(u64, Outcome)>,
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
@@ -42,7 +44,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
             Ok(h) => bail!("the debugger speaks version {}", h.graphix_debug),
             Err(e) => bail!("this is no graphix debugger: {e}"),
         }
-        Ok(Self { lines, out, sent: 0, events: VecDeque::new() })
+        Ok(Self { lines, out, sent: 0, events: VecDeque::new(), answers: Vec::new() })
     }
 
     async fn line(&mut self) -> Result<Option<Line>> {
@@ -52,23 +54,38 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
         }
     }
 
-    /// Ask `cmd` and wait for its answer or its refusal; an error is the
-    /// connection's. Events that arrive meanwhile wait for
-    /// [`Self::queued`] and [`Self::event`].
-    pub async fn ask(&mut self, cmd: Command) -> Result<Outcome> {
+    /// Send `cmd` and return its number, to take its answer by later
+    /// ([`Self::answered`]): a `wait` is answered when the program is
+    /// held, and the requests sent after it are answered meanwhile.
+    pub async fn send(&mut self, cmd: Command) -> Result<u64> {
         self.sent += 1;
         let mut line = serde_json::to_vec(&Request { id: self.sent, cmd })?;
         line.push(b'\n');
         self.out.write_all(&line).await?;
         self.out.flush().await?;
+        Ok(self.sent)
+    }
+
+    /// The answer to the request `id`, or its refusal; an error is the
+    /// connection's. Events and other requests' answers that arrive
+    /// meanwhile are kept for [`Self::event`] and their own takers.
+    pub async fn answered(&mut self, id: u64) -> Result<Outcome> {
         loop {
+            if let Some(i) = self.answers.iter().position(|(of, _)| *of == id) {
+                break Ok(self.answers.swap_remove(i).1);
+            }
             match self.line().await? {
                 None => bail!("the debugger closed the connection"),
                 Some(Line::Event(e)) => self.events.push_back(e),
-                Some(Line::Response(r)) if r.id != self.sent => (),
-                Some(Line::Response(r)) => break Ok(r.result),
+                Some(Line::Response(r)) => self.answers.push((r.id, r.result)),
             }
         }
+    }
+
+    /// Ask `cmd` and wait for its answer or its refusal.
+    pub async fn ask(&mut self, cmd: Command) -> Result<Outcome> {
+        let id = self.send(cmd).await?;
+        self.answered(id).await
     }
 
     /// [`Self::ask`], a refusal an error too.
@@ -99,7 +116,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
             match self.line().await? {
                 None => break Ok(None),
                 Some(Line::Event(e)) => break Ok(Some(e)),
-                Some(Line::Response(_)) => (),
+                Some(Line::Response(r)) => self.answers.push((r.id, r.result)),
             }
         }
     }

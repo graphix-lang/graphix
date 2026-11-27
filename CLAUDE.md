@@ -88,8 +88,9 @@ cargo run --bin graphix -- file.gx       # run
 cargo run --bin graphix -- --check file.gx     # compile + typecheck only
 cargo run --bin graphix -- --expand file.gx    # check + print each seq's lowered machine
 cargo run --bin graphix -- fmt file.gx         # format in place (--check, --stdout; stdin when no file)
+cargo run --bin graphix -- debug --run file.gx -c 'why x'   # run it, ask, stop it (--json, --held)
 cargo run --bin graphix -- --debug file.gx     # run, offering the debugger on a socket
-cargo run --bin graphix -- debug -c 'why x'    # ask the running program (print, list, watch, set, eval)
+cargo run --bin graphix -- debug -c 'why x'    # ask a program already running
 ```
 
 Tests run in parallel by design (the compiler supports many instances

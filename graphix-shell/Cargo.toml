@@ -113,10 +113,12 @@ netidx-core = { workspace = true }
 parking_lot = { workspace = true }
 poolshark = { workspace = true }
 reedline = { workspace = true, features = ["external_printer"] }
+serde = { workspace = true }
+serde_derive = { workspace = true }
+serde_json = { workspace = true }
 tokio = { workspace = true }
 triomphe = { workspace = true }
 
 [dev-dependencies]
 lsp-server = { workspace = true }
 tempfile = { workspace = true }
-serde_json = { workspace = true }

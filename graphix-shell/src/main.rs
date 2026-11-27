@@ -143,6 +143,27 @@ enum Command {
         /// be given more than once
         #[arg(short = 'c', long = "command")]
         commands: Vec<String>,
+        /// run this program with its debugger offered, attach to it, and
+        /// stop it when the commands are done: one command in place of
+        /// two. Its output is passed on, each line marked [out] or [err].
+        /// --no-fusion, --no-cache, --no-netidx and --no-init given
+        /// before `debug` are its to run with
+        #[arg(long, value_name = "FILE", conflicts_with = "target")]
+        run: Option<PathBuf>,
+        /// with --run: hold the program before its first cycle
+        #[arg(long, requires = "run")]
+        held: bool,
+        /// print each answer and event as a line of JSON
+        #[arg(long)]
+        json: bool,
+        /// the seconds a step or a wait may take before it is given up
+        /// (0: no limit). Without it: 30 where commands are given by -c
+        /// or piped in, no limit at a terminal
+        #[arg(long, value_name = "SECONDS")]
+        timeout: Option<f64>,
+        /// with --run: the program's arguments, after `--`
+        #[arg(last = true)]
+        args: Vec<String>,
     },
     /// Format graphix source: each named file in place, or stdin to
     /// stdout when no file is named. Width and indent come from the
@@ -618,10 +639,23 @@ fn main() -> Result<()> {
             let _logger = start_logger(p.log_dir.as_deref(), "warn")?;
             return graphix_shell::lsp_backend::run();
         }
-        Some(Command::Debug { target, commands }) => {
+        Some(Command::Debug { target, commands, run, held, json, timeout, args }) => {
+            let given = [
+                (p.no_fusion, "--no-fusion"),
+                (p.no_cache, "--no-cache"),
+                (p.no_netidx, "--no-netidx"),
+                (p.no_init, "--no-init"),
+            ];
+            let flags = given.iter().filter(|(on, _)| *on).map(|(_, f)| f.to_string());
+            let flags = flags.collect();
+            let run =
+                run.map(|file| graphix_shell::debug::Run { file, args, held, flags });
             return graphix_shell::debug::run(graphix_shell::debug::Args {
                 target,
                 commands,
+                run,
+                json,
+                timeout,
             });
         }
         Some(Command::Fmt { files, check, stdout, interface, width, indent }) => {

@@ -286,3 +286,85 @@ sys::exit(select go { true => go ~ 0, false => never() })
         assert!(status.success(), "{label}: {status:?}");
     }
 }
+
+/// `graphix debug --run` is one command for what took two: it runs the
+/// program, asks, passes on what the program says, and stops it. With
+/// `--json` each answer is a line of JSON; a refusal fails the command.
+#[test]
+fn one_command_runs_a_program_and_asks() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("main.gx");
+    fs::write(&path, PROGRAM).expect("write the program");
+    let mut cmd = graphix(dir.path());
+    cmd.args(["--no-netidx", "--no-fusion", "debug", "--json", "--run"]).arg(&path);
+    cmd.args(["-c", "print price", "-c", "why total", "-c", "print nosuch"]);
+    let out = common::output(cmd);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(1), "{stdout}");
+    let lines = stdout
+        .lines()
+        .map(|l| serde_json::from_str::<serde_json::Value>(l).expect("a line of JSON"))
+        .collect::<Vec<_>>();
+    let answer = |cmd: &str| {
+        let of = lines.iter().find(|l| l["cmd"] == cmd);
+        of.unwrap_or_else(|| panic!("no answer to {cmd}:\n{stdout}"))
+    };
+    assert_eq!(answer("print price")["ok"]["bindings"]["bindings"][0]["value"], "10");
+    assert_eq!(answer("print nosuch")["err"], "no binding is named nosuch");
+    let why = &answer("why total")["ok"]["why"]["why"];
+    assert_eq!(why["reads"][1]["because"][0]["text"], "a[7]$", "{why}");
+    let said = lines.iter().filter(|l| l["program"] == "err");
+    assert!(
+        said.clone()
+            .any(|l| l["line"].as_str().is_some_and(|s| s.contains("ignored error"))),
+        "{stdout}"
+    );
+
+    let bad = dir.path().join("bad.gx");
+    fs::write(&bad, "let x = ;\n").expect("write the program");
+    let mut cmd = graphix(dir.path());
+    cmd.args(["--no-netidx", "debug", "--run"]).arg(&bad).args(["-c", "print x"]);
+    let out = common::output(cmd);
+    let (stdout, stderr) =
+        (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert_eq!(out.status.code(), Some(1), "{stdout}{stderr}");
+    assert!(stdout.contains("[err] Error: parsing"), "{stdout}{stderr}");
+    assert!(stderr.contains("the program ended by itself"), "{stdout}{stderr}");
+}
+
+/// Where nobody is there to end it, a wait gives up at its limit and a
+/// step that finds no work is ended: the command fails and says so.
+#[test]
+fn a_script_does_not_wait_for_ever() {
+    const PROGRAM: &str = r#"let input = 0;
+let go = false;
+sys::exit(select go { true => go ~ 0, false => never() })
+"#;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let socket = socket_in(dir.path());
+    let offer = format!("--debug={}", socket.display());
+    let run = Running::start(dir.path(), PROGRAM, &["--no-cache", offer.as_str()]);
+    let limited = |commands: &[&str]| {
+        let mut cmd = graphix(dir.path());
+        cmd.arg("debug").arg(&socket).args(["--timeout", "0.3"]);
+        for c in commands {
+            cmd.arg("-c").arg(c);
+        }
+        let out = common::output(cmd);
+        (out.status.code(), String::from_utf8_lossy(&out.stdout).into_owned())
+    };
+    let (code, out) = limited(&["wait", "print input"]);
+    assert_eq!(code, Some(1), "{out}");
+    has(&out, &["error: the program is still running after 0.3 s", "input: i64 = 0"]);
+    let (code, out) = limited(&["step", "wait"]);
+    assert_eq!(code, Some(1), "{out}");
+    has(
+        &out,
+        &[
+            "error: no cycle has done the program's work after 0.3 s: the step is ended \
+             and the program held",
+            "held before cycle",
+        ],
+    );
+    drop(run);
+}

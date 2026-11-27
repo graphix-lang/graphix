@@ -3307,6 +3307,8 @@ dependencies = [
  "parking_lot 0.12.5",
  "poolshark",
  "reedline",
+ "serde",
+ "serde_derive",
  "serde_json",
  "tempfile",
  "tokio",

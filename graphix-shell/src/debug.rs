@@ -16,13 +16,21 @@ use graphix_rt::{
 use log::warn;
 use poolshark::local::LPooled;
 use reedline::{DefaultPrompt, DefaultPromptSegment, ExternalPrinter, Reedline, Signal};
+use serde_derive::Serialize;
 use std::{
     fmt::Write as _,
+    future::Future,
     io::{self, BufRead, IsTerminal, Write},
     path::{Path, PathBuf},
-    sync::mpsc as smpsc,
+    process::Stdio,
+    sync::{Arc, mpsc as smpsc},
+    time::Duration,
 };
-use tokio::{select, sync::mpsc};
+use tokio::{
+    io::{AsyncBufReadExt, AsyncRead, BufReader},
+    select,
+    sync::mpsc,
+};
 
 const HELP: &str = "\
 A line that is none of these commands is Graphix, evaluated in the running
@@ -43,7 +51,8 @@ program as the REPL would: `x + 1`, `let y = x * 2`, `x <- 0`.
                       `break T == EXPR` at that value, `break T none` when it
                       goes to no value. unwatch N removes it
   cycles [N]          what each of the last N cycles (10) delivered
-  wait                wait until the program is held (by a break or a step)
+  wait [SECONDS]      wait until the program is held (by a break or a step),
+                      at most that long
   help, quit
 
 A TARGET is a name (x, m::x), a place (file.gx:12 or file.gx:12:5), or a
@@ -52,6 +61,9 @@ binding's id as an answer shows it (#88).
 
 /// The longest value a list or a why shows.
 const BRIEF: usize = 72;
+/// How long a `step` or a `wait` may take where commands are given or
+/// piped in and nobody is there to end it.
+const SCRIPT_LIMIT: Duration = Duration::from_secs(30);
 /// The most lines of a source a why shows.
 const SOURCE_LINES: usize = 4;
 
@@ -234,6 +246,8 @@ enum Line {
     Empty,
     Help,
     Quit,
+    /// `wait [SECONDS]`: until the program is held, or the limit.
+    Wait(Option<Duration>),
     Ask(Command),
 }
 
@@ -258,7 +272,13 @@ fn parse(line: &str) -> Result<Line> {
         "list" => Line::Ask(Command::List {
             scope: (!rest.is_empty()).then(|| CompactString::from(rest)),
         }),
-        "wait" if rest.is_empty() => Line::Ask(Command::Wait),
+        "wait" if rest.is_empty() => Line::Wait(None),
+        "wait" => match rest.parse::<f64>() {
+            Ok(secs) if secs.is_finite() && secs > 0. => {
+                Line::Wait(Some(Duration::from_secs_f64(secs)))
+            }
+            Ok(_) | Err(_) => bail!("usage: wait [SECONDS]"),
+        },
         "pause" if rest.is_empty() => Line::Ask(Command::Pause),
         "continue" if rest.is_empty() => Line::Ask(Command::Continue),
         "step" | "cycles" if !rest.is_empty() && rest.parse::<u64>().is_err() => {
@@ -569,53 +589,120 @@ fn show_event(out: &mut String, event: &Event) {
     }
 }
 
-/// Run one line a person typed and print what it answers, then the
-/// events that came before the answer; with `wait`, a `step` is waited
-/// out too. `Ok(None)` at `quit`; else whether the line was answered and
-/// not refused.
+/// How a client runs its commands.
+#[derive(Clone, Copy)]
+struct How {
+    /// Print each answer and event as a line of JSON.
+    json: bool,
+    /// How long a `step` or a `wait` may take; `None` for as long as it
+    /// does.
+    limit: Option<Duration>,
+    /// Commands are run one after another with nobody to end a wait: a
+    /// `step` is waited out before the next.
+    script: bool,
+}
+
+/// `f`, or `None` where it takes longer than `limit`.
+async fn within<T>(
+    limit: Option<Duration>,
+    f: impl Future<Output = Result<T>>,
+) -> Result<Option<T>> {
+    match limit {
+        None => f.await.map(Some),
+        Some(limit) => match tokio::time::timeout(limit, f).await {
+            Ok(r) => r.map(Some),
+            Err(_) => Ok(None),
+        },
+    }
+}
+
+/// The refusal of a wait that outlasted `limit`: `what` is so, and
+/// `then` what follows.
+fn outlasted(limit: Option<Duration>, what: &str, then: &str) -> Outcome {
+    let secs = limit.map_or(0., |d| d.as_secs_f64());
+    Outcome::Err(format_compact!("{what} after {secs} s{then}").as_str().into())
+}
+
+/// Wait until the program is held, at most `limit`: a refusal where it
+/// is still running then.
+async fn held(client: &mut Client<Stream>, limit: Option<Duration>) -> Result<Outcome> {
+    match within(limit, client.ask(Command::Wait)).await? {
+        Some(outcome) => Ok(outcome),
+        None => Ok(outlasted(limit, "the program is still running", "")),
+    }
+}
+
+/// Ask `cmd`. In a script a `step` is waited out, and one that finds no
+/// work within the limit is ended: the program is held, as after a step.
+async fn ask(client: &mut Client<Stream>, cmd: Command, how: How) -> Result<Outcome> {
+    let stepped = how.script && matches!(cmd, Command::Step { .. });
+    let outcome = client.ask(cmd).await?;
+    if !stepped || !matches!(outcome, Outcome::Ok(Reply::Stepping)) {
+        return Ok(outcome);
+    }
+    match within(how.limit, client.ask(Command::Wait)).await? {
+        Some(Outcome::Ok(_)) => Ok(outcome),
+        Some(refusal) => Ok(refusal),
+        None => {
+            client.ask(Command::Pause).await?;
+            let what = "no cycle has done the program's work";
+            Ok(outlasted(how.limit, what, ": the step is ended and the program held"))
+        }
+    }
+}
+
+/// One line of JSON for what `line` was answered.
+#[derive(Serialize)]
+struct Answered<'a> {
+    cmd: &'a str,
+    #[serde(flatten)]
+    outcome: &'a Outcome,
+}
+
+/// Run one line a person typed and print what it answers and the events
+/// that came before the answer. `Ok(None)` at `quit`; else whether the
+/// line was answered and not refused.
 async fn run_line(
     client: &mut Client<Stream>,
     line: &str,
-    wait: bool,
+    how: How,
 ) -> Result<Option<bool>> {
     let mut out: LPooled<String> = LPooled::take();
-    let mut stepping = false;
-    let ok = match parse(line) {
-        Err(e) => {
-            let _ = writeln!(out, "error: {e:#}");
-            false
-        }
-        Ok(Line::Empty) => true,
+    let (outcome, waited) = match parse(line) {
+        Err(e) => (Outcome::Err(format_compact!("{e:#}").as_str().into()), false),
+        Ok(Line::Empty) => return Ok(Some(true)),
         Ok(Line::Quit) => return Ok(None),
         Ok(Line::Help) => {
-            out.push_str(HELP);
-            true
+            print!("{HELP}");
+            return Ok(Some(true));
         }
-        Ok(Line::Ask(cmd)) => {
-            let waited = matches!(cmd, Command::Wait);
-            match client.ask(cmd).await? {
+        Ok(Line::Wait(limit)) => (held(client, limit.or(how.limit)).await?, true),
+        Ok(Line::Ask(cmd)) => (ask(client, cmd, how).await?, false),
+    };
+    let ok = matches!(outcome, Outcome::Ok(_));
+    match how.json {
+        true => {
+            // in the order they came: the events, then the answer
+            while let Some(e) = client.queued() {
+                let _ = writeln!(out, "{}", serde_json::to_string(&e)?);
+            }
+            let answered = Answered { cmd: line.trim(), outcome: &outcome };
+            let _ = writeln!(out, "{}", serde_json::to_string(&answered)?);
+        }
+        false => {
+            match &outcome {
                 // the hold a wait waited for was told before its answer
-                Outcome::Ok(Reply::Paused { .. }) if waited && client.has_queued() => {
-                    true
-                }
-                Outcome::Ok(reply) => {
-                    stepping = wait && matches!(reply, Reply::Stepping);
-                    show_reply(&mut out, &reply);
-                    true
-                }
+                Outcome::Ok(Reply::Paused { .. }) if waited && client.has_queued() => (),
+                Outcome::Ok(reply) => show_reply(&mut out, reply),
                 Outcome::Err(e) => {
                     let _ = writeln!(out, "error: {e}");
-                    false
                 }
             }
+            while let Some(e) = client.queued() {
+                show_event(&mut out, &e);
+                out.push('\n')
+            }
         }
-    };
-    if stepping && let Outcome::Err(e) = client.ask(Command::Wait).await? {
-        let _ = writeln!(out, "error: {e}");
-    }
-    while let Some(e) = client.queued() {
-        show_event(&mut out, &e);
-        out.push('\n')
     }
     let mut stdout = io::stdout().lock();
     stdout.write_all(out.as_bytes())?;
@@ -651,25 +738,39 @@ fn typed(
     rx
 }
 
-async fn at_terminal(client: &mut Client<Stream>) -> Result<()> {
-    let printer = ExternalPrinter::default();
+async fn at_terminal(
+    client: &mut Client<Stream>,
+    how: How,
+    printer: ExternalPrinter<String>,
+) -> Result<()> {
     let mut lines = typed(printer.clone());
     let ended = loop {
         select! {
             line = lines.recv() => match line {
                 None => break false,
-                Some((line, done)) => match run_line(client, &line, false).await? {
-                    None => break false,
-                    Some(_) => {
-                        let _ = done.send(());
+                Some((line, done)) => {
+                    // the interrupt key abandons a command that waits
+                    let ran = select! {
+                        ran = run_line(client, &line, how) => ran?,
+                        _ = tokio::signal::ctrl_c() => {
+                            println!("abandoned: the program goes on as it was");
+                            Some(false)
+                        }
+                    };
+                    match ran {
+                        None => break false,
+                        Some(_) => drop(done.send(())),
                     }
-                },
+                }
             },
             event = client.event() => match event? {
                 None => break true,
                 Some(e) => {
                     let mut out = String::new();
-                    show_event(&mut out, &e);
+                    match how.json {
+                        true => out.push_str(&serde_json::to_string(&e)?),
+                        false => show_event(&mut out, &e),
+                    }
                     let _ = printer.print(out);
                 }
             },
@@ -683,47 +784,198 @@ async fn at_terminal(client: &mut Client<Stream>) -> Result<()> {
     Ok(())
 }
 
+/// A program for the client to run itself.
+pub struct Run {
+    pub file: PathBuf,
+    /// The program's arguments.
+    pub args: Vec<String>,
+    /// Hold it before its first cycle.
+    pub held: bool,
+    /// The shell's own flags to run it with (`--no-fusion`).
+    pub flags: Vec<String>,
+}
+
 pub struct Args {
     /// The socket's path or the program's process id.
     pub target: Option<String>,
     /// Commands to run in place of reading them.
     pub commands: Vec<String>,
+    /// Run this program, attach to it, and stop it when done.
+    pub run: Option<Run>,
+    pub json: bool,
+    /// The seconds a `step` or a `wait` may take; 0 for no limit. Where
+    /// absent: 30 for commands given or piped in, none at a terminal.
+    pub timeout: Option<f64>,
 }
 
-/// `graphix debug`: attach to a program that offers its debugger. With
-/// commands, or with lines piped in, run each and exit, failing if any
-/// was refused; at a terminal, read lines until `quit`.
+/// A program the client started; the directory holds its socket.
+struct Started {
+    child: tokio::process::Child,
+    /// The tasks passing on its output, which end when it does.
+    passing: Vec<tokio::task::JoinHandle<()>>,
+    _dir: tempfile::TempDir,
+}
+
+impl Started {
+    /// Stop the program and pass on what is left of its output. Where
+    /// its runtime no longer answers (`!alive`) it is ending by itself:
+    /// it is given the time a shell takes to end, so what it says as it
+    /// goes is heard. Returns how it ended, where it did by itself.
+    async fn stop(mut self, alive: bool) -> Option<std::process::ExitStatus> {
+        let ended = match alive {
+            true => self.child.try_wait().ok().flatten(),
+            false => {
+                let ending =
+                    tokio::time::timeout(crate::TEARDOWN_BOUND, self.child.wait());
+                ending.await.ok().and_then(|status| status.ok())
+            }
+        };
+        let _ = self.child.start_kill();
+        let _ = self.child.wait().await;
+        for task in self.passing {
+            let _ = task.await;
+        }
+        ended
+    }
+}
+
+/// Pass on each line `from` yields: a program's output, marked as its
+/// own.
+fn pass_on(
+    from: impl AsyncRead + Unpin + Send + 'static,
+    mark: &'static str,
+    how: How,
+    say: Arc<dyn Fn(String) + Send + Sync>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(from).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            say(match how.json {
+                true => format!("{}", serde_json::json!({"program": mark, "line": line})),
+                false => format!("[{mark}] {line}"),
+            })
+        }
+    })
+}
+
+/// Run `run`'s program with its debugger offered on a socket of its own
+/// and wait until it offers it: the line that says so on its stderr.
+async fn start(
+    run: &Run,
+    how: How,
+    say: Arc<dyn Fn(String) + Send + Sync>,
+) -> Result<(Started, PathBuf)> {
+    let dir = tempfile::tempdir().context("making a directory for the socket")?;
+    let socket = match cfg!(windows) {
+        false => dir.path().join("debug.sock"),
+        true => socket_of(std::process::id()),
+    };
+    let mut cmd = tokio::process::Command::new(std::env::current_exe()?);
+    cmd.args(&run.flags).arg(format_compact!("--debug={}", socket.display()).as_str());
+    if run.held {
+        cmd.arg("--debug-wait");
+    }
+    cmd.arg(&run.file).args(&run.args);
+    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = cmd.kill_on_drop(true).spawn().context("running the program")?;
+    let (stdout, stderr) = (child.stdout.take(), child.stderr.take());
+    let out = pass_on(stdout.context("the program's stdout")?, "out", how, say.clone());
+    let mut said = BufReader::new(stderr.context("the program's stderr")?).lines();
+    loop {
+        match said.next_line().await? {
+            Some(line) if line.starts_with("debugger: graphix debug ") => break,
+            Some(line) => say(match how.json {
+                true => {
+                    format!("{}", serde_json::json!({"program": "err", "line": line}))
+                }
+                false => format!("[err] {line}"),
+            }),
+            None => {
+                let status = child.wait().await?;
+                bail!("the program ended before it offered a debugger ({status})")
+            }
+        }
+    }
+    let err = pass_on(said.into_inner().into_inner(), "err", how, say);
+    Ok((Started { child, passing: vec![out, err], _dir: dir }, socket))
+}
+
+/// `graphix debug`: attach to a program that offers its debugger, or run
+/// one and attach to it. With commands, or with lines piped in, run each
+/// and exit, failing if any was refused; at a terminal, read lines until
+/// `quit`.
 pub fn run(args: Args) -> Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
         .build()
         .context("building tokio runtime")?;
+    let script = !args.commands.is_empty() || !io::stdin().is_terminal();
+    let limit = match (args.timeout, script) {
+        (Some(secs), _) if secs > 0. && secs.is_finite() => {
+            Some(Duration::from_secs_f64(secs))
+        }
+        (Some(_), _) | (None, false) => None,
+        (None, true) => Some(SCRIPT_LIMIT),
+    };
+    let how = How { json: args.json, limit, script };
     let all_answered = rt.block_on(async move {
-        let path = socket(args.target.as_deref()).await?;
-        let stream = open(&path).await;
-        let stream =
-            stream.with_context(|| format!("connecting to {}", path.display()))?;
-        let mut client = Client::connect(stream).await?;
-        let mut ok = true;
-        if !args.commands.is_empty() {
-            for line in &args.commands {
-                match run_line(&mut client, line, true).await? {
-                    None => break,
-                    Some(answered) => ok &= answered,
+        let printer = ExternalPrinter::default();
+        let say: Arc<dyn Fn(String) + Send + Sync> = match script {
+            true => Arc::new(|line| println!("{line}")),
+            false => {
+                let printer = printer.clone();
+                Arc::new(move |line| drop(printer.print(line)))
+            }
+        };
+        let (started, path) = match &args.run {
+            None => (None, socket(args.target.as_deref()).await?),
+            Some(run) => {
+                let (started, path) = start(run, how, say).await?;
+                (Some(started), path)
+            }
+        };
+        let mut alive = false;
+        let asked = async {
+            let stream = open(&path).await;
+            let stream =
+                stream.with_context(|| format!("connecting to {}", path.display()))?;
+            let mut client = Client::connect(stream).await?;
+            let mut ok = true;
+            if !args.commands.is_empty() {
+                for line in &args.commands {
+                    match run_line(&mut client, line, how).await? {
+                        None => break,
+                        Some(answered) => ok &= answered,
+                    }
+                }
+            } else if !script {
+                at_terminal(&mut client, how, printer).await?
+            } else {
+                for line in io::stdin().lock().lines() {
+                    match run_line(&mut client, &line?, how).await? {
+                        None => break,
+                        Some(answered) => ok &= answered,
+                    }
                 }
             }
-        } else if io::stdin().is_terminal() {
-            at_terminal(&mut client).await?
-        } else {
-            for line in io::stdin().lock().lines() {
-                match run_line(&mut client, &line?, true).await? {
-                    None => break,
-                    Some(answered) => ok &= answered,
+            // a program whose runtime still answers is stopped at once
+            alive = started.is_some()
+                && matches!(client.ask(Command::Info).await, Ok(Outcome::Ok(_)));
+            anyhow::Ok(ok)
+        };
+        let asked = asked.await;
+        let Some(started) = started else { return asked };
+        match (started.stop(alive).await, asked) {
+            (None, asked) => asked,
+            (Some(status), asked) => {
+                match how.json {
+                    true => println!("{}", serde_json::json!({"program": "ended", "status": status.to_string()})),
+                    false => eprintln!("the program ended by itself: {status}"),
                 }
+                Ok(asked.unwrap_or(false))
             }
         }
-        anyhow::Ok(ok)
     })?;
     // the editor's thread may still be inside a read
     rt.shutdown_background();

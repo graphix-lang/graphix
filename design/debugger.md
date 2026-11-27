@@ -70,8 +70,27 @@ session prints a type (the shell passes the REPL's printer).
   attaches to the one program that offers a debugger and lists them when
   there are several. `-c` runs a command and exits (several may be
   given), as lines piped to stdin do; the exit status is 1 if any was
-  refused, and a `step` is waited out before the next command. At a terminal it reads lines with a line editor, and what a
-  watch or a shown value reports prints above the prompt.
+  refused, and a `step` is waited out before the next command. At a
+  terminal it reads lines with a line editor, and what a watch or a
+  shown value reports prints above the prompt.
+- `graphix debug --run FILE [-c CMD].. [-- ARGS]` is one command for an
+  agent or a script: it runs the program with its debugger offered on a
+  socket of its own (`--held`: before its first cycle), attaches, runs
+  the commands, and stops the program. What the program prints is passed
+  on, each line marked `[out]` or `[err]`. `--no-fusion`, `--no-cache`,
+  `--no-netidx` and `--no-init` given before `debug` are the program's.
+  A program that ends by itself is given the time a shell takes to end,
+  so its error is heard, and how it ended is said.
+- `--json` prints each answer as a line of JSON, `{"cmd": .., "ok": ..}`
+  or `{"cmd": .., "err": ..}`, with the events before it as the protocol
+  writes them and the program's lines as `{"program": "out", "line": ..}`.
+- **Nothing waits for ever where nobody is there to end it.** With
+  commands given or piped in, a `wait` gives up after `--timeout`
+  seconds (30 by default; `wait SECONDS` for one wait) and is a refusal;
+  a `step` that finds no work in that time is ended by a `pause`, so the
+  program is held as after a step, and is a refusal too. At a terminal
+  there is no limit, and the interrupt key abandons a command that
+  waits.
 - A line that starts with a command's name is that command. Any other
   line is Graphix and is evaluated; `eval` says so explicitly.
 
@@ -106,7 +125,10 @@ had landed.
 `wait` is answered by the runtime once the program is held, at once if it
 is, and the `Paused` event of the hold it waited for is sent before the
 answer. A client that watched events for the pause instead would miss one
-that came before it started to watch.
+that came before it started to watch. A wait does not hold up its
+session: the requests sent after it are answered while it is pending
+(`Client::send` and `Client::answered` take an answer out of order), so
+the same client ends a wait, or a step that finds no work, with a `pause`.
 
 DAP is not the native protocol: it is built around threads, stack frames
 and stepping by line, which fit a dataflow program badly. An adapter can
@@ -171,7 +193,7 @@ as a REPL input does, so the rules for a top-level input hold.
 | `step [N]` | let it run until `N` (1) more cycles have done its work, then hold it, saying what the last one delivered. A step with nothing to do waits until something arrives |
 | `break TARGET [== EXPR \| none]` | a watch that also holds the program after the cycle in which the binding is written, is written a value equal to `EXPR`'s (evaluated once), or goes to no value. `unwatch N` removes it |
 | `cycles [N]` | what each of the last `N` (10) cycles delivered to the bindings the author wrote, functions aside. The last 256 cycles that delivered something are kept while a session is attached |
-| `wait` | answer once the program is held: for a script after `continue` to a break |
+| `wait` | answer once the program is held: for a script after `continue` to a break. Requests after it are served while it is pending, and a `pause` ends it |
 
 `graphix --debug-wait` and `GXConfig::paused` start a program held. The
 last session to leave lets a held program run: held with nobody to
@@ -310,7 +332,9 @@ the transport's.
 - The shell (`graphix-shell/tests/shell/debugger.rs`): a second process
   asking a running program, cold and from the image, in both engines; the
   fused box; the default socket's place and permissions; a program
-  started held, stepped and run to a break.
+  started held, stepped and run to a break; `--run` with `--json`, and a
+  program that fails to compile; a wait and a step that give up at their
+  limit.
 - `why_says_what_the_nodes_know` there pins each kind of note.
 - Not built: a fuzzer lane holding a watched program's trace to the
   unwatched one's.

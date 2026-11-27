@@ -199,16 +199,37 @@ a fused block at line 10, column 14: i64 = 21
 
 Run the program with `--no-fusion` to see inside.
 
-## Scripts and other programs
+## Scripts and agents
 
-`-c` runs one command and exits, and may be given several times; lines
-piped to `graphix debug` are run the same way. The exit status is 1 if a
-command was refused. A `step` is waited out before the next command, and
-`wait` waits until a break holds the program:
+`graphix debug --run` does the whole thing in one command: it runs the
+program with its debugger on, asks, and stops it. What the program
+prints is passed on, marked `[out]` or `[err]`.
+
+```bash
+graphix debug --run ./myprogram.gx -c 'why total'
+graphix --no-fusion debug --run ./myprogram.gx -c 'why total'
+graphix debug --run ./myprogram.gx --held -c 'break total none' -c continue -c wait -c 'why total'
+```
+
+`-c` runs one command and may be given several times; lines piped to
+`graphix debug` are run the same way. The exit status is 1 if a command
+was refused. `--held` starts the program held, as `--debug-wait` does,
+and `--` passes the program its own arguments. `--json` prints each
+answer as a line of JSON.
+
+A script never waits for ever. A `step` is waited out before the next
+command, and `wait` waits until a break holds the program, but each
+gives up after `--timeout` seconds (30 unless you say otherwise; `wait 5`
+limits one wait) and counts as a refusal. A step that found nothing to
+do is ended, and leaves the program held.
+
+At a terminal nothing times out: press the interrupt key to abandon a
+command that is waiting, and `pause` to end a step.
+
+To attach to a program that is already running, leave out `--run`:
 
 ```bash
 graphix debug -c 'why total' -c 'print price'
-graphix debug -c 'break total none' -c 'wait' -c 'why total'
 ```
 
 `--debug=PATH` chooses the socket. By default it is in your runtime

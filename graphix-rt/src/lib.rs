@@ -747,7 +747,7 @@ impl<X: GXExt> GXHandle<X> {
                 }),
             })
             .map_err(|_| self.stopped("runtime is shut down"))?;
-        Ok(rx.await?)
+        rx.await.map_err(|_| self.stopped("runtime did not respond"))
     }
 
     /// Stop the runtime for good, busy or idle: in-flight loops abort
