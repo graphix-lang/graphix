@@ -1630,6 +1630,20 @@ impl PartialEq for Expr {
 }
 
 impl Expr {
+    /// Whether the expression reads a name a lowering made, at any depth.
+    pub fn reads_lowered(&self) -> bool {
+        match &self.kind {
+            ExprKind::Ref { name } => {
+                Path::basename(&name.0).is_some_and(crate::is_lowered)
+            }
+            _ => crate::stack::ensure_sufficient(|| {
+                let mut found = false;
+                self.for_each_child(&mut |c| found = found || c.reads_lowered());
+                found
+            }),
+        }
+    }
+
     /// Whether a lowering built this expression: it binds, declares or
     /// writes a lowered name ([`crate::is_lowered`]), it is of a kind only
     /// the compiler builds, or it is a block that opens with one of those.

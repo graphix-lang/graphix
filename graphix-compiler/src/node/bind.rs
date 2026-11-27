@@ -12,6 +12,7 @@ use crate::{
     compiler::compile,
     dbgenv,
     env::{self, Env},
+    explain::Explain,
     expr::{self, At, BinOp, Expr, ExprId, ExprKind, ModPath, PlaceAccess},
     fusion::{
         descend,
@@ -24,6 +25,7 @@ use crate::{
         nodes::{NodeTag, decode_node, put_tag},
     },
     prune::ReadStamp,
+    seek::BoundBy,
     typ::{
         CoreTrait, DefaultType, FnArgKind, FnArgType, FnType, Mutability, TVar, Type,
         bounds::{self, Use},
@@ -1246,7 +1248,10 @@ impl<R: Rt> Update<R> for Bind<R> {
             sought |= refs.seeks(id);
         });
         if sought {
-            refs.sought(self.spec.clone(), None, |r| self.node.refs(r))
+            let because = Explain::of(&self.node);
+            refs.sought(self.spec.clone(), BoundBy::Let, None, because, |r| {
+                self.node.refs(r)
+            })
         }
         if refs.seeks_inside(&self.spec) {
             self.pattern.ids(&mut |id| refs.defines(id))

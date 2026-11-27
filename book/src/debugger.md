@@ -33,9 +33,9 @@ debug> print total
 total: i64 has no value    #4253 myprogram.gx:5:5, none since cycle 0
 ```
 
-`why` is the question to ask of a binding with no value. It shows the
-`let` that binds it and what that reads, and follows each read that has no
-value back to where the nothing starts:
+`why` is the question to ask of a binding with no value. It shows what
+binds it and what that reads, and follows each read that has no value
+back to where the nothing starts:
 
 ```text
 debug> why total
@@ -45,14 +45,48 @@ total: i64 has no value    #4253 myprogram.gx:5:5, none since cycle 0
     price: i64 = 10    #4251 myprogram.gx:3:5, written in cycle 0
     qty: i64 has no value    #4252 myprogram.gx:4:5, none since cycle 0
       let qty = a[7]$
+      the nothing starts inside fused code: --no-fusion shows where: a[7]$
       it reads:
         a: Array<i64> = [1, 2, 3]    #4250 myprogram.gx:2:5, written in cycle 0
-      everything it reads has a value: the nothing starts in this expression
 ```
 
-Here `total` waits on `qty`, and `qty` is `a[7]$` over a three-element
-array: the index fails and the `$` drops the error, which the program
-also reported on its stderr.
+Here `total` waits on `qty`, and `qty` is `a[7]$`, which compiled to
+native code: the debugger can say the nothing starts there, and that
+everything it reads has a value. Run the program with `--no-fusion` and
+it says what happened inside:
+
+```text
+      let qty = a[7]$
+      `$` dropped the error `ArrayIndexError("array index out of bounds"): a[7]$
+```
+
+The index is out of range and the `$` drops the error (the program also
+said so on its stderr).
+
+Along the way `why` says what each construct knows about itself:
+
+```text
+debug> why shown
+shown: string has no value    #4276 myprogram.gx:10:5, none since cycle 0
+  let shown = select mode {
+      `Edit => editor(doc),
+      `List => "list"
+  }
+  the select holds arm 1 of 2: `Edit; its argument was last `Edit
+    in this call: editor(doc)
+  it reads:
+    mode: [`Edit, `List] = `Edit    #4272 myprogram.gx:7:5, written in cycle 0
+    doc: string has no value    #4273 myprogram.gx:8:5, never written
+      let doc: string = never()
+      `never()` never has a value
+```
+
+A select names the arm it holds, and only that arm is followed. A `seq`
+names the step it is at, or says it is waiting for its trigger. A sample
+(`e ~ v`) says whether it waits on `e` or on `v`. A call says whether it
+has been made and follows the function's body. For a binding inside a
+function, `why` names the call it belongs to, and for a parameter, the
+call that passes it.
 
 `watch` reports each time a binding is written, until you `unwatch` it:
 

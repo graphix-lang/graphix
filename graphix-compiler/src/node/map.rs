@@ -353,6 +353,10 @@ impl<R: Rt> Update<R> for MapRef<R> {
         NodeView::MapRef(self)
     }
 
+    fn standing(&self) -> Option<&TagValue> {
+        Some(&self.resident)
+    }
+
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         emit_map_ref_node(cx, &self.source, &self.key)
     }

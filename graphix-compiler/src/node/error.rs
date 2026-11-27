@@ -6,6 +6,7 @@ use crate::{
     compiler::compile,
     defetyp,
     env::{Bind, Env},
+    explain::{self, Because, Explain, Note},
     expr::{self, At, CatchRole, Expr, ExprId, ExprKind, ModPath, Origin},
     format_with_flags,
     fusion::{
@@ -1163,6 +1164,29 @@ impl<R: Rt> Qop<R> {
         match &self.mode {
             QopMode::Raise { handler: Some(h), top_id, .. } => Some((h, *top_id)),
             _ => None,
+        }
+    }
+}
+
+impl<R: Rt> Qop<R> {
+    /// Why the `$` or `?` has no value: its operand is an error, or a
+    /// null it strips, or has none itself.
+    pub(crate) fn explain<'a>(&'a self, cx: &mut Explain<'a, R>, out: &mut Vec<Because>) {
+        if explain::valued(&self.resident) {
+            return;
+        }
+        let operand = self.n.standing().filter(|tv| explain::valued(tv));
+        let stripped = operand.map(|tv| tv.value_cloned()).filter(|v| match self.strip {
+            Strip::Error => matches!(v, Value::Error(_)),
+            Strip::Null => matches!(v, Value::Null),
+        });
+        match stripped {
+            None => cx.explain(&self.n, out),
+            Some(value) => {
+                let raised = matches!(self.mode, QopMode::Raise { .. });
+                let note = Note::Dropped { value, raised };
+                out.push(Because::Of { spec: self.spec.clone(), note, parts: Vec::new() })
+            }
         }
     }
 }

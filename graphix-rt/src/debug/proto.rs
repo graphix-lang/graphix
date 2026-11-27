@@ -258,6 +258,29 @@ pub struct Source {
     pub column: i32,
 }
 
+/// What binds a binding.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BoundBy {
+    #[default]
+    Let,
+    /// A parameter: the source is the call that passes it.
+    Param,
+    /// A name in the pattern of a select's arm, counted from 1: the
+    /// source is the select.
+    Pattern { arm: usize },
+}
+
+/// What a part of an expression says of why it has no value: `text` is
+/// the part as written, absent where a lowering wrote it; `parts` what it
+/// waits on in turn.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Reason {
+    pub text: Option<ArcStr>,
+    pub says: ArcStr,
+    pub parts: Vec<Reason>,
+}
+
 /// A fused block: pure code compiled to native code, a box. What goes
 /// in is the bindings it reads, each of which a `set` can write; what
 /// comes out is its value.
@@ -269,14 +292,20 @@ pub struct Fused {
     pub inputs: Vec<Binding>,
 }
 
-/// Why a binding stands as it does: what gives it its value and each
-/// binding that reads. A read with no value is followed to its own
-/// source; one with a value is a leaf.
+/// Why a binding stands as it does: what binds it, what its nodes say
+/// of why it has no value, and each binding that bears on it. A read
+/// with no value is followed to its own source; one with a value is a
+/// leaf.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Why {
     pub binding: Binding,
-    /// `None` where no `let` binds it: a parameter, a pattern's name.
+    /// `None` where nothing in the program's node graph binds it.
     pub source: Option<Source>,
+    pub by: BoundBy,
+    /// The calls the binding is inside, outermost first: one for each
+    /// function instance around it.
+    pub calls: Vec<Source>,
+    pub because: Vec<Reason>,
     pub reads: Vec<Why>,
     /// The walk met this binding above: the program feeds it to itself.
     pub again: bool,

@@ -10,6 +10,7 @@ use arcstr::ArcStr;
 use graphix_compiler::{
     BindId, ExecState, Refs, Rt,
     env::{Bind, Env},
+    explain::{self, Because},
     expr::ExprId,
     is_lowered,
     seek::{BindSource, covering, in_file},
@@ -22,6 +23,7 @@ use poolshark::{global::GPooled, local::LPooled};
 use smallvec::SmallVec;
 use std::{
     collections::VecDeque,
+    mem,
     path::{Path, PathBuf},
 };
 use tokio::sync::{mpsc::UnboundedSender, oneshot};
@@ -359,6 +361,20 @@ impl Sessions {
     }
 }
 
+/// The bindings a source reads that bear on its value: those its nodes'
+/// account names, where the binding has no value and its nodes gave an
+/// account; else every one it reads.
+fn relevant(source: &BindSource, valued: bool) -> Vec<BindId> {
+    match valued || source.because.is_empty() {
+        true => source.reads.clone(),
+        false => {
+            let mut ids = Vec::new();
+            explain::reads(&source.because, &mut ids);
+            ids
+        }
+    }
+}
+
 fn is_fn(typ: &Type) -> bool {
     typ.with_deref(|t| matches!(t, Some(Type::Fn(_))))
 }
@@ -621,6 +637,36 @@ impl<X: GXExt> GX<X> {
         })
     }
 
+    /// `because` with each read of a name a lowering made replaced by the
+    /// account of that name's own value, so what a seq's step or an on
+    /// block's body says reaches the binding asked about.
+    fn inline_lowered(
+        &self,
+        because: Vec<Because>,
+        inlined: &mut LPooled<IntSet<BindId>>,
+    ) -> Vec<Because> {
+        let mut out = Vec::with_capacity(because.len());
+        for b in because {
+            match b {
+                Because::Of { spec, note, parts } => {
+                    let parts = self.inline_lowered(parts, inlined);
+                    out.push(Because::Of { spec, note, parts })
+                }
+                Because::Reads(id) => {
+                    let lowered =
+                        self.ctx.env.by_id.get(&id).is_some_and(|b| is_lowered(&b.name));
+                    match lowered.then(|| self.source_of(id)).flatten() {
+                        Some(s) if !s.because.is_empty() && inlined.insert(id) => {
+                            out.extend(self.inline_lowered(s.because, inlined))
+                        }
+                        Some(_) | None => out.push(Because::Reads(id)),
+                    }
+                }
+            }
+        }
+        out
+    }
+
     /// The bindings among `reads` an author wrote and would ask about: no
     /// function, and for a name a lowering made, what it reads in turn.
     fn written_reads(&self, reads: &[BindId]) -> LPooled<Vec<BindId>> {
@@ -633,7 +679,7 @@ impl<X: GXExt> GX<X> {
                 if lowered.insert(id)
                     && let Some(s) = self.source_of(id)
                 {
-                    todo.extend(s.reads.iter().rev().copied())
+                    todo.extend(relevant(&s, false).iter().rev().copied())
                 }
             } else if authored(&self.ctx.env, bind)
                 && !is_fn(&bind.typ)
@@ -667,8 +713,11 @@ impl<X: GXExt> GX<X> {
         let source =
             (depth == 0 || held.value.is_none()).then(|| self.source_of(id)).flatten();
         let mut reads = Vec::new();
-        if let Some(s) = &source {
-            let mut ids = self.written_reads(&s.reads);
+        let mut source = source;
+        if let Some(s) = source.as_mut() {
+            let mut inlined: LPooled<IntSet<BindId>> = LPooled::take();
+            s.because = self.inline_lowered(mem::take(&mut s.because), &mut inlined);
+            let mut ids = self.written_reads(&relevant(s, held.value.is_some()));
             reads.extend(ids.drain(..).filter_map(|r| self.why(r, depth + 1, above)));
         }
         above.remove(&id);

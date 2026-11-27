@@ -21,6 +21,16 @@ block's inputs and output. Pins: stdlib/graphix-tests/tests/shared/debugger.rs a
 graphix-shell/tests/shell/debugger.rs. What remains of this CR is phases 2 and 3 there:
 pause, step and break; reasons inside a select, a seq, a call and a sample; an
 instance's call path; completion in the client; live values in the editor. -->
+<!-- 2026-11-27 claude: Phase 2 of the debugger is built (design/debugger.md): pause,
+continue, step, break, cycles and wait, graphix --debug-wait, and why says what a
+binding's nodes know (graphix-compiler/src/explain.rs): the arm a select holds, the step
+a seq is at, a sample's trigger, the error a $ dropped, a call not made or not answered,
+a fresh block not started, the call a binding is inside, the call that passes a
+parameter, the select whose pattern names a binding. Pins:
+a_held_program_waits_and_steps and why_says_what_the_nodes_know in
+stdlib/graphix-tests/tests/shared/debugger.rs, a_program_started_held_is_stepped in
+graphix-shell/tests/shell/debugger.rs. What remains of this CR is phase 3: completion in
+the client, live values and why in the editor, a DAP adapter. -->
 # Debugging
 
 Status: current principle.

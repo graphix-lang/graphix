@@ -1,8 +1,8 @@
 # The debugger
 
-Status: **phase 1 and the control half of phase 2 are built** (ask and
-inject; hold, step and break). The reasons inside a node (§6) and phase
-3, the editor, are designed here and not built. Eric's rulings of 2026-11-27 decided the shape (D63
+Status: **phases 1 and 2 are built** (ask and inject; hold, step and
+break; what a binding's nodes say of why it has no value). Phase 3, the
+editor, is designed here and not built. Eric's rulings of 2026-11-27 decided the shape (D63
 and D64 in the CR discussion file). CR `a-language-08` tracks what is left.
 
 ## 1. Why
@@ -24,7 +24,7 @@ byte stream from a second terminal.
 
 | Layer | Where | What |
 |---|---|---|
-| Seek | `graphix-compiler/src/seek.rs` | what gives a binding its value, and the fused blocks that compute a place, both riding `Update::refs`, the one walk that reaches every node |
+| Seek | `graphix-compiler/src/seek.rs`, `explain.rs` | what binds a binding, the fused blocks that compute a place (both riding `Update::refs`, the one walk that reaches every node), and why an expression has no value |
 | Hooks | `graphix-rt/src/gx/debug.rs` | the sessions attached, their watches, and the questions only the runtime's thread can answer. Typed data, no I/O |
 | Service | `graphix-rt/src/debug/` | the wire protocol (`proto.rs`), the server over any byte stream (`mod.rs`), the client (`client.rs`) |
 | CLI | `graphix-shell/src/debug.rs` | `graphix --debug` offers a socket, the `graphix debug` subcommand attaches. No new binary |
@@ -126,8 +126,8 @@ A target is one of:
 A binding inside a function exists once for each call that built an
 instance. A name or a place answers with all of them; a command that
 takes one (`why`, `set`) refuses and lists them by id. `list` shows a
-function's binding once with its count of instances. The call path of an
-instance is not shown yet (phase 2).
+function's binding once with its count of instances, and `why` of one
+names the calls it is inside.
 
 Bindings the author did not write are left out: names a lowering made
 (`#..`) and the bindings of a package's own functions' instances.
@@ -177,9 +177,7 @@ as a REPL input does, so the rules for a top-level input hold.
 last session to leave lets a held program run: held with nobody to
 continue it, it would never run again.
 
-**Phase 2, not built: reasons inside a node** (§6): which arm a select
-holds, the step a seq is at, a call with no answer, a sample that never
-fired, the binder of a parameter, an instance's call path.
+**Phase 2, built: reasons inside a node** (§6).
 
 **Phase 3, not built: editors.** The language server already resolves the
 cursor to a binding. With a session attached, hover shows the live value
@@ -191,32 +189,77 @@ and `why` is a code action. Then a DAP adapter, completion in the CLI (a
 Spreadsheets answer the same question with "trace error": from a blank
 cell, walk what it reads back to where the blank starts.
 
-`why` finds the `let` that binds the target (`Refs::seeking`) and the
-bindings its value reads from outside itself. A read with no value is
-followed to its own `let`; a read with a value is a leaf. A binding that
-has no value while everything it reads has one is where the nothing
-starts, and its expression is printed. Functions are left out of the
-reads, and a name a lowering made is replaced by what it reads.
+`why` finds what binds the target (`Refs::seeking`), asks the nodes of
+its value why they have none (`explain.rs`), and follows each binding
+that account reads which has no value in turn. The answer for one
+binding is
+
+- **what binds it**: a `let`; a parameter, with the call that passes it;
+  a name in a select arm's pattern, with the select and the arm it holds
+  instead;
+- **the calls it is inside**, one for each function instance around it;
+- **what its nodes say** (below);
+- **the bindings that bear on it**, each with its value or, lacking one,
+  its own answer.
 
 ```text
-debug> why total
-total: i64 has no value    #4253 prog.gx:5:5, none since cycle 0
-  let total = price * qty
+debug> why r
+r: i64 has no value    #4271 prog.gx:3:5, never written
+  let r = seq tick {
+      let got = a[7]$;
+      got + 1
+  }
+  the seq is at step 1 of 2: let got = a[7]$
+    `$` dropped the error `ArrayIndexError("array index out of bounds")
+debug> why shown
+shown: string has no value    #4276 prog.gx:10:5, none since cycle 0
+  let shown = select mode {
+      `Edit => editor(doc),
+      `List => "list"
+  }
+  the select holds arm 1 of 2: `Edit; its argument was last `Edit
+    in this call: editor(doc)
   it reads:
-    price: i64 = 10    #4251 prog.gx:3:5, written in cycle 0
-    qty: i64 has no value    #4252 prog.gx:4:5, none since cycle 0
-      let qty = a[7]$
-      it reads:
-        a: Array<i64> = [1, 2, 3]    #4250 prog.gx:2:5, written in cycle 0
-      everything it reads has a value: the nothing starts in this expression
+    mode: [`Edit, `List] = `Edit    #4272 prog.gx:7:5, written in cycle 0
+    doc: string has no value    #4273 prog.gx:8:5, never written
+      let doc: string = never()
+      `never()` never has a value
 ```
 
-It stops at the binding. What inside `a[7]$` produced nothing (here, an
-index error the `$` dropped, which the program's stderr names) needs the
-node to describe itself: an `explain` method on `Update` that a select, a
-seq machine, a call site, a connect, a sample, a `$` and a fresh block
-implement. That is phase 2. A binding no `let` binds (a parameter, a
-pattern's name) is reported as such.
+### What a node says
+
+`Explain::of(node)` is one exhaustive match over `NodeView`, so a new
+node kind must say which way it goes:
+
+- **A value when its parts are** (arithmetic, comparison, indexing, data
+  literals, casts, `any`): the account is its parts' accounts. Nothing is
+  said of the node itself.
+- **A read** is a leaf naming the binding. The runtime looks it up: one
+  with a value is shown, one without is followed. A read of a name a
+  lowering made is replaced by the account of that name's own `let`, so
+  the plumbing of a seq or an `on` block does not show.
+- **A node that knows something** says it, in its own file, and says
+  nothing when its last production is a value (it is not why):
+
+  | Node | What it says |
+  |---|---|
+  | select | the arm it holds and the last value of its argument; then its argument's account and that arm's, never an arm it does not hold |
+  | seq machine | the step it is at, with that statement's text and account; or that it is not running, with what its trigger reads |
+  | sample | whether it waits on its trigger or on what it samples |
+  | `$`, `?` | the error its operand holds, or the null it strips: the operand's last production, read through `Update::standing` |
+  | call | the arguments' accounts; then that the call has not been made, that a builtin has given no value, or, for a function, its body's account with its parameters left to the call |
+  | fresh block | that it has not started |
+  | fused kernel | what it reads. It is a box: the service says the nothing starts inside it only when nothing it reads lacks a value |
+  | `never()` | that it never has a value |
+
+The bindings that bear on a binding with no value are the reads its
+account names, not every binding its expression mentions: a select's
+other arms and a seq's later steps are left out. A binding with a value
+has no account, and shows everything it reads.
+
+The service turns each note into a sentence (`Session::says`). A note
+over an expression a lowering wrote keeps its sentence and loses its
+text.
 
 ## 7. Inside the runtime
 
@@ -268,6 +311,7 @@ the transport's.
   asking a running program, cold and from the image, in both engines; the
   fused box; the default socket's place and permissions; a program
   started held, stepped and run to a break.
+- `why_says_what_the_nodes_know` there pins each kind of note.
 - Not built: a fuzzer lane holding a watched program's trace to the
   unwatched one's.
 

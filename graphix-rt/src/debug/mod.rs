@@ -17,15 +17,16 @@ use crate::{
     },
 };
 use anyhow::{Context, Result, anyhow, bail};
-use arcstr::ArcStr;
+use arcstr::{ArcStr, literal};
 use compact_str::{CompactString, format_compact};
 use graphix_compiler::{
     BindId, MINT_BASE, PrintFlag, SourcePosition,
     env::{Bind, Env},
-    expr::{Expr, ExprId, ModPath, Origin, Source},
+    explain::{Because, Note, Reached},
+    expr::{Expr, ExprId, ExprKind, ModPath, Origin, Source},
     format_with_flags,
-    seek::BindSource,
-    typ::{TVal, Type},
+    seek::{BindSource, BoundBy},
+    typ::{Naked, TVal, Type},
 };
 use log::warn;
 use netidx_core::atomic_id;
@@ -301,7 +302,8 @@ fn resolve(env: &Env, target: &str) -> Result<LPooled<Vec<Arc<Bind>>>> {
         match env.lookup_bind(&ModPath::root(), &name) {
             Ok(Some((_, b))) => found.extend(env.by_id.get(&b.id).cloned()),
             Ok(None) | Err(_) => {
-                let named = env.by_id.iter().map(|(_, b)| b).filter(|b| b.name == target);
+                let named = env.by_id.iter().map(|(_, b)| b);
+                let named = named.filter(|b| b.name == target && authored(env, b));
                 found.extend(named.cloned())
             }
         }
@@ -344,10 +346,33 @@ fn written(spec: &Expr) -> ArcStr {
         let (from, to) = (offset(text, spec.pos)?, offset(text, end)?);
         text.get(from..to).filter(|s| !s.trim().is_empty())
     });
+    // what a lowering rewrote keeps where it starts, not where it ends:
+    // its line says more than its lowered form
+    let line = || {
+        let rest = text.get(offset(text, spec.pos)?..)?.lines().next()?;
+        Some(rest.trim_end().trim_end_matches(';')).filter(|l| !l.is_empty())
+    };
     match span {
         Some(s) => ArcStr::from(s.trim_end()),
-        None => format_compact!("{spec}").as_str().into(),
+        None => match spec.reads_lowered().then(line).flatten() {
+            Some(l) => ArcStr::from(l),
+            None => format_compact!("{spec}").as_str().into(),
+        },
     }
+}
+
+/// Where an expression is written, and its text.
+fn place_of(spec: &Expr) -> proto::Source {
+    proto::Source { text: written(spec), line: spec.pos.line, column: spec.pos.column }
+}
+
+/// The statement step `step` of a seq runs, as written, where `binder`
+/// is a `let` of a seq of `steps` statements.
+fn seq_statement(binder: &Expr, step: usize, steps: usize) -> Option<ArcStr> {
+    let ExprKind::Bind(b) = &binder.kind else { return None };
+    let ExprKind::Seq(seq) = &b.value.kind else { return None };
+    let stmt = seq.body.get(step).filter(|_| seq.body.len() == steps)?;
+    Some(written(stmt))
 }
 
 fn source(s: &BindSource) -> proto::Source {
@@ -470,11 +495,133 @@ impl<X: GXExt, W: AsyncWrite + Unpin> Session<X, W> {
     }
 
     fn why(&self, w: &Why) -> proto::Why {
+        let s = w.source.as_ref();
+        let by = match s.map(|s| s.by) {
+            Some(BoundBy::Param) => proto::BoundBy::Param,
+            Some(BoundBy::Pattern { arm }) => proto::BoundBy::Pattern { arm: arm + 1 },
+            Some(BoundBy::Let | BoundBy::Fused) | None => proto::BoundBy::Let,
+        };
+        // fused code is where the nothing starts only if nothing it
+        // reads lacks a value
+        let waits = w.reads.iter().any(|r| r.held.value.is_none());
+        let because = |s: &BindSource| self.reasons(&s.because, &s.spec, waits);
         proto::Why {
             binding: self.binding(&w.held),
-            source: w.source.as_ref().map(source),
+            source: s.map(source),
+            by,
+            calls: s
+                .map(|s| s.path.iter().map(|c| place_of(c)).collect())
+                .unwrap_or_default(),
+            because: s.map(because).unwrap_or_default(),
             reads: w.reads.iter().map(|r| self.why(r)).collect(),
             again: w.again,
+        }
+    }
+
+    /// What the nodes of `binder`'s value say, for a person: each note a
+    /// sentence over the part it is about. `waits` where a binding it
+    /// reads has no value, when fused code has nothing to add.
+    fn reasons(
+        &self,
+        because: &[Because],
+        binder: &Expr,
+        waits: bool,
+    ) -> Vec<proto::Reason> {
+        let told = |b: &Because| match b {
+            Because::Reads(_) => None,
+            Because::Of { note: Note::Fused, .. } if waits => None,
+            Because::Of { spec, note, parts } => {
+                let (text, says) = self.says(spec, note, binder);
+                let parts = self.reasons(parts, binder, waits);
+                Some(proto::Reason { text, says, parts })
+            }
+        };
+        because.iter().filter_map(told).collect()
+    }
+
+    /// The part a note is about, as written, and what the note says.
+    fn says(&self, spec: &Expr, note: &Note, binder: &Expr) -> (Option<ArcStr>, ArcStr) {
+        let own = (!spec.reads_lowered() && !spec.is_lowered()).then(|| written(spec));
+        let s = |t: CompactString| ArcStr::from(t.as_str());
+        match note {
+            Note::Never => (None, literal!("`never()` never has a value")),
+            Note::Fused => (
+                own,
+                literal!("the nothing starts inside fused code: --no-fusion shows where"),
+            ),
+            Note::Sample { held: true } => (own, literal!("its trigger has not fired")),
+            Note::Sample { held: false } => {
+                (own, literal!("what it samples has no value"))
+            }
+            Note::Dropped { value: Value::Null, .. } => {
+                (own, literal!("its operand is null, which it strips"))
+            }
+            Note::Dropped { value, raised } => {
+                let error = match value {
+                    Value::Error(e) => format_compact!("{}", Naked(e)),
+                    v => format_compact!("{}", Naked(v)),
+                };
+                let did = if *raised { "`?` raised" } else { "`$` dropped" };
+                (own, s(format_compact!("{did} the error {error}")))
+            }
+            Note::Select { arg, arm, arms } => {
+                let arg = arg.as_ref().map(|(v, typ)| printed(&self.env, typ, v));
+                let pattern = match (&spec.kind, arm) {
+                    (ExprKind::Select(sel), Some(i)) => {
+                        sel.arms.get(*i).map(|(p, _)| match &p.type_predicate {
+                            Some(t) => {
+                                format_compact!(": {t} as {}", p.structure_predicate)
+                            }
+                            None => format_compact!(": {}", p.structure_predicate),
+                        })
+                    }
+                    _ => None,
+                };
+                let pattern = pattern.unwrap_or_default();
+                let says = match (arm, arg) {
+                    (Some(i), Some(arg)) => format_compact!(
+                        "the select holds arm {} of {arms}{pattern}; its argument was last \
+                         {arg}",
+                        i + 1
+                    ),
+                    (Some(i), None) => {
+                        format_compact!(
+                            "the select holds arm {} of {arms}{pattern}",
+                            i + 1
+                        )
+                    }
+                    (None, Some(arg)) => format_compact!(
+                        "the select holds no arm; its argument was last {arg}"
+                    ),
+                    (None, None) => {
+                        format_compact!("the select's argument has had no value")
+                    }
+                };
+                (None, s(says))
+            }
+            Note::Seq { step: None, .. } => {
+                (None, literal!("the seq is not running: it waits for its trigger"))
+            }
+            Note::Seq { step: Some(i), steps } => {
+                let says = format_compact!("the seq is at step {} of {steps}", i + 1);
+                (seq_statement(binder, *i, *steps), s(says))
+            }
+            Note::Call { called: Reached::Nothing, fresh: true, .. } => (
+                None,
+                literal!("the fresh block has not started: its event has not fired"),
+            ),
+            Note::Call { awaits: true, .. } => {
+                (own, literal!("it waits for the next event"))
+            }
+            Note::Call { called: Reached::Nothing, .. } => {
+                (own, literal!("the call has not been made"))
+            }
+            Note::Call { called: Reached::Function, .. } => {
+                (own, literal!("in this call"))
+            }
+            Note::Call { called: Reached::BuiltIn, .. } => {
+                (own, literal!("the call has given no value"))
+            }
         }
     }
 

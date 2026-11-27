@@ -244,6 +244,10 @@ impl<R: Rt> Update<R> for ArrayRef<R> {
         NodeView::ArrayRef(self)
     }
 
+    fn standing(&self) -> Option<&TagValue> {
+        Some(&self.resident)
+    }
+
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         emit_array_ref_node(cx, &self.source, &self.i)
     }
@@ -384,6 +388,10 @@ impl<R: Rt> Update<R> for ArraySlice<R> {
 
     fn view(&self) -> NodeView<'_, R> {
         NodeView::ArraySlice(self)
+    }
+
+    fn standing(&self) -> Option<&TagValue> {
+        Some(&self.resident)
     }
 
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {

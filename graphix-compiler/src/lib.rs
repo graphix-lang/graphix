@@ -24,6 +24,7 @@ pub mod cost;
 pub(crate) mod dbgenv;
 pub mod effects;
 pub use effects::Effect;
+pub mod explain;
 pub mod fusion;
 pub mod image;
 pub mod node;
@@ -896,6 +897,12 @@ pub trait Update<R: Rt>: Debug + Send + Sync + Any + 'static {
 
     /// The node's typed view for compile-time analysis.
     fn view(&self) -> NodeView<'_, R>;
+
+    /// The node's last production, where it is a kind whose production a
+    /// debugger reads to say what a `$` over it dropped.
+    fn standing(&self) -> Option<&TagValue> {
+        None
+    }
 
     /// Write this node into an image: its `NodeTag` and the data its
     /// `image_decode` rebuilds it from. State is never written; an

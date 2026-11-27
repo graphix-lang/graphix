@@ -130,7 +130,7 @@ fn has(out: &str, lines: &[&str]) {
 /// block that computes it, its inputs and its output.
 #[test]
 fn a_second_process_asks_a_running_program() {
-    for (label, args, inside) in [
+    for (label, args, inside, starts) in [
         (
             "jit",
             &[][..],
@@ -139,8 +139,14 @@ fn a_second_process_asks_a_running_program() {
                 "scale(price)",
                 "price: i64 = 10",
             ][..],
+            "the nothing starts inside fused code: --no-fusion shows where: a[7]$",
         ),
-        ("interp", &["--no-fusion"][..], &["doubled: i64 = 20"][..]),
+        (
+            "interp",
+            &["--no-fusion"][..],
+            &["doubled: i64 = 20"][..],
+            "`$` dropped the error `ArrayIndexError(\"array index out of bounds\"): a[7]$",
+        ),
     ] {
         let dir = tempfile::tempdir().expect("tempdir");
         for start in ["cold", "warm"] {
@@ -159,8 +165,7 @@ fn a_second_process_asks_a_running_program() {
                     "total: i64 has no value",
                     "let total = price * qty",
                     "let qty = a[7]$",
-                    "a: Array<i64> = [1, 2, 3]",
-                    "everything it reads has a value: the nothing starts in this expression",
+                    starts,
                 ],
             );
             has(&out, inside);

@@ -3,7 +3,7 @@
 //! place. Both ride [`crate::Update::refs`], the one walk that reaches
 //! every node, callee instances included.
 
-use crate::{BindId, Refs, stack, typ::Type};
+use crate::{BindId, Refs, explain::Because, stack, typ::Type};
 use anyhow::Result;
 use graphix_types::{
     SourcePosition,
@@ -14,20 +14,42 @@ use std::{mem, path::Path};
 use triomphe::Arc;
 
 /// What gives a binding its value, as a debugger reads it: the `let`
-/// that binds it, or a fused region, which is a box with inputs and an
-/// output, and the bindings that reads from outside itself.
+/// that binds it, the argument a call passes for it, the select whose
+/// arm's pattern names it, or a fused region, which is a box with inputs
+/// and an output.
 #[derive(Debug, Clone)]
 pub struct BindSource {
     pub spec: Arc<Expr>,
+    pub by: BoundBy,
+    /// Every binding `spec` reads from outside itself.
     pub reads: Vec<BindId>,
     /// For a fused region, its type and the value it last produced.
     pub fused: Option<(Type, Option<Value>)>,
+    /// Why its value has none, as far as its nodes tell: nothing where
+    /// it has one.
+    pub because: Vec<Because>,
+    /// The calls it is inside, outermost first: one for each function
+    /// instance around it.
+    pub path: Vec<Arc<Expr>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoundBy {
+    Let,
+    /// A parameter: `spec` is the call that passes it.
+    Param,
+    /// A name in the pattern of a select's arm `arm`: `spec` is the
+    /// select.
+    Pattern {
+        arm: usize,
+    },
+    Fused,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) enum Seek {
-    /// The `let` that binds one binding.
-    Bind { id: BindId, found: Option<BindSource> },
+    /// What binds one binding; `calls` is the calls the walk is inside.
+    Bind { id: BindId, found: Option<BindSource>, calls: Vec<Arc<Expr>> },
     /// The fused regions that compute a place: those whose expression is
     /// one of `covering`, and those that call a definition in `defs`,
     /// which the walk extends with each binding whose `let` is one of
@@ -69,11 +91,24 @@ pub fn in_file(ori: &Origin, file: &Path) -> bool {
 }
 
 impl Refs {
-    /// A walk of a whole tree that finds the `let` that binds `id`
-    /// ([`Refs::take_sources`]): none where no `let` in the tree does (a
-    /// parameter, a pattern's name, a binding of another tree).
+    /// A walk of a whole tree that finds what binds `id`
+    /// ([`Refs::take_sources`]): none where nothing in the tree does.
     pub fn seeking(id: BindId) -> Self {
-        Self { seek: Some(Box::new(Seek::Bind { id, found: None })), ..Self::default() }
+        let seek = Seek::Bind { id, found: None, calls: Vec::new() };
+        Self { seek: Some(Box::new(seek)), ..Self::default() }
+    }
+
+    /// The walk enters the body the call `spec` calls.
+    pub(crate) fn enter_call(&mut self, spec: &Arc<Expr>) {
+        if let Some(Seek::Bind { calls, .. }) = self.seek.as_deref_mut() {
+            calls.push(spec.clone())
+        }
+    }
+
+    pub(crate) fn leave_call(&mut self) {
+        if let Some(Seek::Bind { calls, .. }) = self.seek.as_deref_mut() {
+            calls.pop();
+        }
     }
 
     /// A walk of a whole tree that finds the fused regions that compute a
@@ -100,6 +135,12 @@ impl Refs {
             Some(Seek::Place { defs, .. }) => mem::take(defs),
             Some(Seek::Bind { .. }) | None => Vec::new(),
         }
+    }
+
+    /// Whether the walk seeks what binds some binding: the test a node
+    /// makes before it looks at what it binds.
+    pub(crate) fn seeks_binding(&self) -> bool {
+        matches!(self.seek.as_deref(), Some(Seek::Bind { .. }))
     }
 
     /// Whether the walk seeks the `let` that binds `id`.
@@ -135,12 +176,15 @@ impl Refs {
         covering.iter().any(same)
     }
 
-    /// Record `spec` as a source the walk seeks, reading what `walk`
-    /// collects.
+    /// Record `spec` as a source the walk seeks: what binds the binding
+    /// sought, reading what `walk` collects, with `because` its value has
+    /// none.
     pub(crate) fn sought(
         &mut self,
         spec: Arc<Expr>,
+        by: BoundBy,
         fused: Option<(Type, Option<Value>)>,
+        because: Vec<Because>,
         walk: impl FnOnce(&mut Refs),
     ) {
         let mut inner = Refs::default();
@@ -148,10 +192,15 @@ impl Refs {
         let mut reads = Vec::new();
         inner.with_external_refs(|id| reads.push(id));
         reads.sort_unstable();
-        let source = BindSource { spec, reads, fused };
         match self.seek.as_deref_mut() {
-            Some(Seek::Bind { found, .. }) => *found = Some(source),
-            Some(Seek::Place { found, .. }) => found.push(source),
+            Some(Seek::Bind { found, calls, .. }) => {
+                let path = calls.clone();
+                *found = Some(BindSource { spec, by, reads, fused, because, path })
+            }
+            Some(Seek::Place { found, .. }) => {
+                let path = Vec::new();
+                found.push(BindSource { spec, by, reads, fused, because, path })
+            }
             None => (),
         }
     }

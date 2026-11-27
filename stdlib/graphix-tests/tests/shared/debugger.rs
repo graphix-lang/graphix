@@ -447,3 +447,106 @@ acc * 2
     }
     Ok(())
 }
+
+/// `why` says what the nodes of a binding's value know: the error a `$`
+/// dropped, the arm a select holds, a sample whose trigger has not
+/// fired, a fresh block not started, the step a seq is at, the call a
+/// binding is inside and the call that passes a parameter, and the
+/// select whose pattern names a binding.
+#[tokio::test(flavor = "multi_thread")]
+async fn why_says_what_the_nodes_know() -> Result<()> {
+    const PROGRAM: &str = r#"
+let input: i64 = never();
+let a = [1, 2, 3];
+let idx = a[9]$;
+let mode: [`Edit, `List] = `Edit;
+let doc: string = never();
+let editor = |d: string| -> string "editing [d]";
+let shown = select mode { `Edit => editor(doc), `List => "list" };
+let sampled = input ~ a;
+let started = fresh input { a };
+let r = seq input { let got = a[7]$; got + 1 };
+let scale = |x: i64| -> i64 { let doubled = x * 2; doubled + input };
+let scaled = scale(3);
+let opt: [i64, null] = null;
+let seen = select opt { null => 0, n => n + 1 }
+"#;
+    fn says(why: &Why) -> Vec<&str> {
+        why.because.iter().map(|r| r.says.as_str()).collect()
+    }
+    fn waits(why: &Why) -> Vec<&str> {
+        let none = why.reads.iter().filter(|r| r.binding.value.is_none());
+        none.map(|r| r.binding.name.as_str()).collect()
+    }
+    let rt = run(PROGRAM, Mode::Interp).await?;
+    let mut s = rt.attach().await?;
+
+    let idx = s.why("idx").await?;
+    let dropped = "`$` dropped the error `ArrayIndexError(\"array index out of bounds\")";
+    assert_eq!(says(&idx), [dropped], "{idx:?}");
+    assert_eq!(idx.because[0].text.as_deref(), Some("a[9]$"));
+    assert!(idx.reads.is_empty(), "{idx:?}");
+
+    let shown = s.why("shown").await?;
+    let held = "the select holds arm 1 of 2: `Edit; its argument was last `Edit";
+    assert_eq!(says(&shown), [held], "{shown:?}");
+    let call = &shown.because[0].parts[0];
+    assert_eq!(
+        (call.says.as_str(), call.text.as_deref()),
+        ("in this call", Some("editor(doc)"))
+    );
+    assert_eq!(waits(&shown), ["doc"], "{shown:?}");
+    assert_eq!(says(read(&shown, "doc")?), ["`never()` never has a value"]);
+
+    let sampled = s.why("sampled").await?;
+    assert_eq!(says(&sampled), ["its trigger has not fired"], "{sampled:?}");
+    assert_eq!(waits(&sampled), ["input"]);
+
+    let started = s.why("started").await?;
+    let unborn = "the fresh block has not started: its event has not fired";
+    assert_eq!((says(&started), waits(&started)), (vec![unborn], vec!["input"]));
+
+    let idle = s.why("r").await?;
+    let waiting = "the seq is not running: it waits for its trigger";
+    assert_eq!((says(&idle), waits(&idle)), (vec![waiting], vec!["input"]), "{idle:?}");
+
+    let scaled = s.why("scaled").await?;
+    assert_eq!(says(&scaled), ["in this call"], "{scaled:?}");
+    assert_eq!(waits(&scaled), ["input"]);
+    let doubled = s.why("doubled").await?;
+    let calls = doubled.calls.iter().map(|c| c.text.as_str()).collect::<Vec<_>>();
+    assert_eq!(
+        (calls, &doubled.by),
+        (vec!["scale(3)"], &proto::BoundBy::Let),
+        "{doubled:?}"
+    );
+    let x = s.why("x").await?;
+    assert_eq!(x.by, proto::BoundBy::Param, "{x:?}");
+    assert_eq!(text(&x), Some("scale(3)"));
+
+    let n = s.why("n").await?;
+    assert_eq!(n.by, proto::BoundBy::Pattern { arm: 2 }, "{n:?}");
+    assert_eq!(
+        says(&n),
+        ["the select holds arm 1 of 2: null; its argument was last null"]
+    );
+
+    // two cycles of work after the trigger: its delivery, then the step
+    s.client.request(Command::Pause).await?;
+    let named = ModPath::from_iter(["input"]);
+    let input = rt.program.env.lookup_bind(&ModPath::root(), &named)?;
+    rt.ctx.rt.set(input.ok_or_else(|| anyhow!("the program binds input"))?.1.id, 1i64)?;
+    s.client.request(Command::Step { cycles: Some(2) }).await?;
+    assert!(matches!(s.client.request(Command::Wait).await?, Reply::Paused { .. }));
+    let stepping = s.why("r").await?;
+    assert_eq!(says(&stepping), ["the seq is at step 1 of 2"], "{stepping:?}");
+    let at = &stepping.because[0];
+    assert_eq!(at.text.as_deref(), Some("let got = a[7]$"));
+    let inner = at.parts.iter().map(|r| r.says.as_str()).collect::<Vec<_>>();
+    let dropped = "`$` dropped the error `ArrayIndexError(\"array index out of bounds\")";
+    assert_eq!(inner, [dropped], "{stepping:?}");
+
+    s.close().await?;
+    rt.shutdown().await;
+    Ok(())
+}

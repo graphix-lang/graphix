@@ -8,8 +8,8 @@ use graphix_rt::{
     debug::{
         Client, Debugger,
         proto::{
-            Binding, Command, Cycle, Event, Fused, Info, Outcome, Paused, Reply, Source,
-            When, Why,
+            Binding, BoundBy, Command, Cycle, Event, Fused, Info, Outcome, Paused,
+            Reason, Reply, Source, When, Why,
         },
     },
 };
@@ -376,6 +376,29 @@ fn show_fused(out: &mut String, f: &Fused) {
     }
 }
 
+/// The first line of a text a reason is about.
+fn first_line(text: &str) -> CompactString {
+    let line = text.lines().next().unwrap_or("").trim_end();
+    match text.lines().nth(1) {
+        Some(_) => format_compact!("{line} …"),
+        None => brief(line, Some(BRIEF)),
+    }
+}
+
+fn show_reasons(out: &mut String, reasons: &[Reason], pad: usize) {
+    for r in reasons {
+        match &r.text {
+            Some(text) => {
+                let _ = writeln!(out, "{:pad$}{}: {}", "", r.says, first_line(text));
+            }
+            None => {
+                let _ = writeln!(out, "{:pad$}{}", "", r.says);
+            }
+        }
+        show_reasons(out, &r.parts, pad + 2)
+    }
+}
+
 fn show_why(out: &mut String, w: &Why, depth: usize) {
     let pad = depth * 2;
     let _ = write!(out, "{:pad$}", "");
@@ -385,9 +408,33 @@ fn show_why(out: &mut String, w: &Why, depth: usize) {
         let _ = writeln!(out, "{:pad$}met above: the program feeds it to itself", "");
         return;
     }
+    for call in &w.calls {
+        let _ = writeln!(
+            out,
+            "{:pad$}inside the call at line {}: {}",
+            "",
+            call.line,
+            first_line(&call.text)
+        );
+    }
     match &w.source {
         Some(s) => {
+            match &w.by {
+                BoundBy::Let => (),
+                BoundBy::Param => {
+                    let _ =
+                        writeln!(out, "{:pad$}a parameter, which this call passes:", "");
+                }
+                BoundBy::Pattern { arm } => {
+                    let _ = writeln!(
+                        out,
+                        "{:pad$}a name in the pattern of arm {arm} of this select:",
+                        ""
+                    );
+                }
+            }
             show_source(out, s, pad);
+            show_reasons(out, &w.because, pad);
             if !w.reads.is_empty() {
                 let _ = writeln!(out, "{:pad$}it reads:", "");
                 for r in &w.reads {
@@ -395,7 +442,7 @@ fn show_why(out: &mut String, w: &Why, depth: usize) {
                 }
             }
             let waits = w.reads.iter().any(|r| r.binding.value.is_none());
-            if w.binding.value.is_none() && !waits {
+            if w.binding.value.is_none() && !waits && w.because.is_empty() {
                 let _ = writeln!(
                     out,
                     "{:pad$}everything it reads has a value: the nothing starts in this \
@@ -405,11 +452,7 @@ fn show_why(out: &mut String, w: &Why, depth: usize) {
             }
         }
         None if w.binding.value.is_none() => {
-            let _ = writeln!(
-                out,
-                "{:pad$}no `let` binds it: it is a parameter or a pattern's name",
-                ""
-            );
+            let _ = writeln!(out, "{:pad$}nothing in the program's nodes binds it", "");
         }
         None => (),
     }

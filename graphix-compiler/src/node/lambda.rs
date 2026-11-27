@@ -16,6 +16,7 @@ use crate::{
     bailat, dbgenv,
     effects::{LambdaFacts, NoLoop, RecursionKind},
     env::{Bind, Env, Lexical},
+    explain::{Because, Explain},
     expr::{self, Arg, ArgKind, At, Expr, ExprId, LambdaBody, ModPath, Origin},
     fusion::{
         self,
@@ -1456,6 +1457,27 @@ pub struct GXLambda<R: Rt> {
     /// The runtime this activation counts against, when a cycle bound it
     /// (`stack::activation_born`).
     charged: Option<usize>,
+}
+
+impl<R: Rt> GXLambda<R> {
+    /// The index of the parameter whose pattern binds an id `sought`
+    /// holds for.
+    pub(crate) fn param(&self, sought: impl Fn(BindId) -> bool) -> Option<usize> {
+        self.args.iter().position(|pat| {
+            let mut binds = false;
+            pat.ids(&mut |id| binds |= sought(id));
+            binds
+        })
+    }
+
+    /// Why the body has no value. Its parameters are the call's to
+    /// account for.
+    pub(crate) fn explain<'a>(&'a self, cx: &mut Explain<'a, R>, out: &mut Vec<Because>) {
+        for pat in self.args.iter() {
+            pat.ids(&mut |id| cx.param(id))
+        }
+        cx.explain(&self.body, out)
+    }
 }
 
 /// How an instance's check types its body.

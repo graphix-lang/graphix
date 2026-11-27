@@ -15,6 +15,7 @@ use crate::{
     LambdaId, LambdaInstanceId, Node, NodeView, Notify, Refs, ResolvingLambda, Rt, Scope,
     StaticHold, TagValue, Update, View, analysis, bailat, dbgenv,
     env::{Env, ImplDef, KeptView, Map},
+    explain::{self, Because, Explain, Note, Reached},
     expr::{ApplyExpr, At, Expr, ExprId, ExprKind, Told},
     fusion::{
         self,
@@ -34,6 +35,7 @@ use crate::{
     perfdbg,
     profile::{self, Phase},
     prune::BoundaryRef,
+    seek::BoundBy,
     stack::ensure_sufficient,
     typ::{
         FnArgKind, FnArgType, FnType, TVar, TraitId, Type,
@@ -3605,6 +3607,13 @@ impl<R: Rt> Update<R> for CallNode<R> {
         }
     }
 
+    fn standing(&self) -> Option<&TagValue> {
+        match self {
+            Self::Call(c) => Some(&c.resident),
+            Self::Lowered(n, _) => n.standing(),
+        }
+    }
+
     fn fuse(&mut self, ctx: &mut CompileCtx<R>) -> Result<Option<Node<R>>> {
         match self {
             Self::Call(c) => c.fuse(ctx),
@@ -3617,6 +3626,52 @@ impl<R: Rt> Update<R> for CallNode<R> {
             Self::Call(c) => c.emit_clif(cx),
             Self::Lowered(n, _) => n.emit_clif(cx),
         }
+    }
+}
+
+impl<R: Rt> CallSite<R> {
+    /// The argument this call passes for the parameter the walk seeks,
+    /// where its function's instance binds it.
+    fn passes(&self, refs: &Refs) -> Option<&Arg<R>> {
+        if !refs.seeks_binding() {
+            return None;
+        }
+        let ApplyView::Lambda(g) = self.callee.apply()?.view() else { return None };
+        let NodeView::Ref(passed) =
+            self.arg_refs.get(g.param(|id| refs.seeks(id))?)?.view()
+        else {
+            return None;
+        };
+        self.args.values().find(|a| a.id == passed.id)
+    }
+
+    /// Why the call has no value: an argument has none, it has not been
+    /// made, the function's body has none, or a builtin has not answered.
+    pub(crate) fn explain<'a>(&'a self, cx: &mut Explain<'a, R>, out: &mut Vec<Because>) {
+        if explain::valued(&self.resident) {
+            return;
+        }
+        let mut parts = Vec::new();
+        cx.explain(&self.fnode, &mut parts);
+        for a in self.args.values() {
+            cx.param(a.id);
+            if let Some(n) = &a.node {
+                cx.explain(n, &mut parts)
+            }
+        }
+        let called = match self.callee.apply().map(|f| f.view()) {
+            None => Reached::Nothing,
+            Some(ApplyView::BuiltIn(_) | ApplyView::Opaque) => Reached::BuiltIn,
+            Some(ApplyView::Lambda(g)) => {
+                if cx.enter_call() {
+                    g.explain(cx, &mut parts)
+                }
+                Reached::Function
+            }
+        };
+        let note = Note::Call { called, fresh: self.is_fresh(), awaits: self.is_await() };
+        let spec = TArc::new((*self.spec).clone());
+        out.push(Because::Of { spec, note, parts })
     }
 }
 
@@ -4294,13 +4349,26 @@ impl<R: Rt> CallSite<R> {
     }
 
     pub(crate) fn refs(&self, refs: &mut Refs) {
+        if let Some(arg) = self.passes(refs) {
+            let because = arg.node.as_ref().map(Explain::of).unwrap_or_default();
+            let spec = TArc::new((*self.spec).clone());
+            refs.sought(spec, BoundBy::Param, None, because, |r| {
+                if let Some(n) = &arg.node {
+                    n.refs(r)
+                }
+            })
+        }
         if !refs.skip_callees {
             if let Some(fun) = self.callee.apply() {
                 match (fun.view(), refs.callees.as_mut()) {
                     (ApplyView::Lambda(g), Some(callees)) => {
                         callees.push(g.instance_id())
                     }
-                    _ => fun.refs(refs),
+                    _ => {
+                        refs.enter_call(&self.spec);
+                        fun.refs(refs);
+                        refs.leave_call()
+                    }
                 }
             }
             if let Callee::Imaged { instance, refs: imaged, .. } = &self.callee {

@@ -6548,9 +6548,9 @@ price: i64 = 10    #4251 myprogram.gx:3:5, written in cycle 0
 debug&gt; print total
 total: i64 has no value    #4253 myprogram.gx:5:5, none since cycle 0
 </code></pre>
-<p><code>why</code> is the question to ask of a binding with no value. It shows the
-<code>let</code> that binds it and what that reads, and follows each read that has no
-value back to where the nothing starts:</p>
+<p><code>why</code> is the question to ask of a binding with no value. It shows what
+binds it and what that reads, and follows each read that has no value
+back to where the nothing starts:</p>
 <pre><code class="language-text">debug&gt; why total
 total: i64 has no value    #4253 myprogram.gx:5:5, none since cycle 0
   let total = price * qty
@@ -6558,13 +6558,40 @@ total: i64 has no value    #4253 myprogram.gx:5:5, none since cycle 0
     price: i64 = 10    #4251 myprogram.gx:3:5, written in cycle 0
     qty: i64 has no value    #4252 myprogram.gx:4:5, none since cycle 0
       let qty = a[7]$
+      the nothing starts inside fused code: --no-fusion shows where: a[7]$
       it reads:
         a: Array&lt;i64&gt; = [1, 2, 3]    #4250 myprogram.gx:2:5, written in cycle 0
-      everything it reads has a value: the nothing starts in this expression
 </code></pre>
-<p>Here <code>total</code> waits on <code>qty</code>, and <code>qty</code> is <code>a[7]$</code> over a three-element
-array: the index fails and the <code>$</code> drops the error, which the program
-also reported on its stderr.</p>
+<p>Here <code>total</code> waits on <code>qty</code>, and <code>qty</code> is <code>a[7]$</code>, which compiled to
+native code: the debugger can say the nothing starts there, and that
+everything it reads has a value. Run the program with <code>--no-fusion</code> and
+it says what happened inside:</p>
+<pre><code class="language-text">      let qty = a[7]$
+      `$` dropped the error `ArrayIndexError("array index out of bounds"): a[7]$
+</code></pre>
+<p>The index is out of range and the <code>$</code> drops the error (the program also
+said so on its stderr).</p>
+<p>Along the way <code>why</code> says what each construct knows about itself:</p>
+<pre><code class="language-text">debug&gt; why shown
+shown: string has no value    #4276 myprogram.gx:10:5, none since cycle 0
+  let shown = select mode {
+      `Edit =&gt; editor(doc),
+      `List =&gt; "list"
+  }
+  the select holds arm 1 of 2: `Edit; its argument was last `Edit
+    in this call: editor(doc)
+  it reads:
+    mode: [`Edit, `List] = `Edit    #4272 myprogram.gx:7:5, written in cycle 0
+    doc: string has no value    #4273 myprogram.gx:8:5, never written
+      let doc: string = never()
+      `never()` never has a value
+</code></pre>
+<p>A select names the arm it holds, and only that arm is followed. A <code>seq</code>
+names the step it is at, or says it is waiting for its trigger. A sample
+(<code>e ~ v</code>) says whether it waits on <code>e</code> or on <code>v</code>. A call says whether it
+has been made and follows the function's body. For a binding inside a
+function, <code>why</code> names the call it belongs to, and for a parameter, the
+call that passes it.</p>
 <p><code>watch</code> reports each time a binding is written, until you <code>unwatch</code> it:</p>
 <pre><code class="language-text">debug&gt; watch tick
 watch 1: tick: i64 = 41    #4249 myprogram.gx:1:5, written in cycle 96

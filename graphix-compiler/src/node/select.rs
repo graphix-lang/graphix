@@ -16,6 +16,7 @@ use crate::{
     BindId, CFlag, CompileCtx, ExecCtx, Node, NodeView, Refs, Rt, Scope, Tag, TagValue,
     Update, View,
     env::Env,
+    explain::{self, Because, Explain, Note},
     expr::{At, Expr, ExprId, ExprKind, Pattern},
     fusion::emit::{BodyCx, CompiledExpr, emit_select_node},
     image::{
@@ -23,6 +24,7 @@ use crate::{
         nodes::{NodeTag, decode_node, put_tag},
     },
     prune::BoundaryRef,
+    seek::BoundBy,
     typ::{
         ShallowScrutinee, TVar, Type, TypeMismatch,
         bounds::{self, Arm, Use},
@@ -752,6 +754,37 @@ fn bound_by<R: Rt>(pat: &PatternNode<R>, r: &mut Refs) {
     });
 }
 
+impl<R: Rt> Select<R> {
+    /// Which arm the select holds, over what its argument reads: why a
+    /// name another arm's pattern binds has no value.
+    fn holds(&self) -> Vec<Because> {
+        let parts = Explain::of(&self.arg.node);
+        let arg = self.arg.value.clone().map(|v| (v, self.arg.node.typ().clone()));
+        let note = Note::Select { arg, arm: self.selected, arms: self.arms.len() };
+        vec![Because::Of { spec: self.spec.clone(), note, parts }]
+    }
+
+    /// Why the select has no value: its argument has none, the arm it
+    /// holds has none, or no arm is decided.
+    pub(crate) fn explain<'a>(&'a self, cx: &mut Explain<'a, R>, out: &mut Vec<Because>) {
+        if explain::valued(&self.resident) {
+            return;
+        }
+        let mut parts = Vec::new();
+        cx.explain(&self.arg.node, &mut parts);
+        match self.selected {
+            Some(i) => cx.explain(&self.arms[i].1, &mut parts),
+            None => {
+                let guards = self.arms.iter().filter_map(|(p, _)| p.guard.as_ref());
+                guards.for_each(|g| cx.explain(&g.node, &mut parts))
+            }
+        }
+        let arg = self.arg.value.clone().map(|v| (v, self.arg.node.typ().clone()));
+        let note = Note::Select { arg, arm: self.selected, arms: self.arms.len() };
+        out.push(Because::Of { spec: self.spec.clone(), note, parts })
+    }
+}
+
 impl<R: Rt> Update<R> for Select<R> {
     fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
         f(&self.arg.node);
@@ -1153,7 +1186,17 @@ impl<R: Rt> Update<R> for Select<R> {
             flags: _,
         } = self;
         arg.node.refs(refs);
-        for arm in arms {
+        for (i, arm) in arms.iter().enumerate() {
+            let mut sought = false;
+            if refs.seeks_binding() {
+                arm.0.structure_predicate.ids(&mut |id| sought |= refs.seeks(id))
+            }
+            if sought {
+                let by = BoundBy::Pattern { arm: i };
+                refs.sought(self.spec.clone(), by, None, self.holds(), |r| {
+                    arg.node.refs(r)
+                })
+            }
             arm_refs(arm, refs);
             if let Some(n) = &arm.0.guard {
                 n.node.refs(refs);

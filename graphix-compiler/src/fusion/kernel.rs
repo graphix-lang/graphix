@@ -10,6 +10,7 @@ use crate::{
     BindId, CompileCtx, ExecCtx, Node, NodeView, Refs, Rt, StaticHold, Update,
     analysis::RegionFacts,
     cost::ForkSite,
+    explain::{self, Because, Explain, Note},
     expr::Expr,
     fusion::{
         emit::{KernelType, WrappedKernel, pack_value_to_u64, prim_to_value_disc},
@@ -25,6 +26,7 @@ use crate::{
         nodes::{NodeTag, decode_nodes, encode_nodes, put_tag},
     },
     node::WakeBit,
+    seek::BoundBy,
     tval::{Tag, value_words},
     typ::Type,
 };
@@ -277,6 +279,19 @@ impl<R: Rt> FusedKernel<R> {
     }
 }
 
+impl<R: Rt> FusedKernel<R> {
+    /// Why the block has no value: fused code is a box, so what it reads.
+    pub(crate) fn explain<'a>(&'a self, cx: &mut Explain<'a, R>, out: &mut Vec<Because>) {
+        if explain::valued(&self.resident) {
+            return;
+        }
+        let mut parts = Vec::new();
+        self.feeders.iter().for_each(|n| cx.explain(n, &mut parts));
+        let spec = Arc::new(self.spec.clone());
+        out.push(Because::Of { spec, note: Note::Fused, parts })
+    }
+}
+
 impl<R: Rt> Update<R> for FusedKernel<R> {
     /// An instance checks this node as its definition's check did.
     fn typecheck0_instance(
@@ -302,7 +317,8 @@ impl<R: Rt> Update<R> for FusedKernel<R> {
             let valued = !self.resident.tag().is_bottom() && !self.resident.is_sentinel();
             let produced = valued.then(|| self.resident.value_cloned());
             let fused = Some((self.typ().clone(), produced));
-            refs.sought(Arc::new(self.spec.clone()), fused, |r| {
+            let spec = Arc::new(self.spec.clone());
+            refs.sought(spec, BoundBy::Fused, fused, Vec::new(), |r| {
                 self.feeders.iter().for_each(|n| n.refs(r))
             })
         }

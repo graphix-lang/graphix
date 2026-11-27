@@ -13,6 +13,7 @@ use super::{
 use crate::{
     BindId, CFlag, CompileCtx, ExecCtx, Node, NodeView, Notify, Refs, Rt, Scope,
     TagValue, Update, View,
+    explain::{self, Because, Explain, Note},
     expr::{Expr, ExprId, SeqCaptureExpr, SeqMachineExpr},
     fusion::{
         self,
@@ -456,6 +457,45 @@ fn evaluate<R: Rt>(
         tracked.evaluated(ctx, k, changed, |r| step.refs(r));
         done
     })
+}
+
+impl<R: Rt> SeqMachine<R> {
+    /// Why the seq has no value: the step it is at has none, or it is
+    /// not running, when it waits on what the statements `around` it
+    /// read, its trigger among them.
+    pub(crate) fn explain<'a>(
+        &'a self,
+        cx: &mut Explain<'a, R>,
+        around: impl Iterator<Item = &'a Node<R>>,
+        out: &mut Vec<Because>,
+    ) {
+        for s in self.steps.iter() {
+            cx.lets(s.nodes.iter())
+        }
+        let mut parts = Vec::new();
+        match self.current.and_then(|i| self.steps.get(i)) {
+            Some(s) => {
+                if let Some(n) = s.nodes.get(s.value) {
+                    cx.explain(n, &mut parts)
+                }
+            }
+            None => {
+                let mut waits = Vec::new();
+                for n in around {
+                    if let NodeView::Bind(b) = n.view()
+                        && b.spec.is_lowered()
+                    {
+                        cx.explain(&b.node, &mut waits)
+                    }
+                }
+                let mut ids = Vec::new();
+                explain::reads(&waits, &mut ids);
+                parts.extend(ids.into_iter().map(Because::Reads))
+            }
+        }
+        let note = Note::Seq { step: self.current, steps: self.steps.len() };
+        out.push(Because::Of { spec: self.spec.clone(), note, parts })
+    }
 }
 
 impl<R: Rt> Update<R> for SeqMachine<R> {

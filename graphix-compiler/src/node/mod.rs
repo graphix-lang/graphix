@@ -4,6 +4,7 @@ use crate::{
     branch::{fork_point, timed},
     cost::{ForkSite, Meter},
     defer_unresolved_names, env, errf,
+    explain::{self, Because, Explain, Note},
     expr::{
         self, At, Expr, ExprId, ExprKind, ModPath, ModuleKind, Name, Origin, TypeDefBody,
     },
@@ -2400,6 +2401,23 @@ impl<R: Rt> Block<R> {
     }
 }
 
+impl<R: Rt> Block<R> {
+    /// Why the block has no value: its last statement's account, or,
+    /// where it is what a seq lowered to, its machine's.
+    pub(crate) fn explain<'a>(&'a self, cx: &mut Explain<'a, R>, out: &mut Vec<Because>) {
+        cx.lets(self.children.iter());
+        let machine = self.children.iter().find_map(|c| match c.view() {
+            NodeView::SeqMachine(m) => Some(m),
+            _ => None,
+        });
+        match (machine, self.children.last()) {
+            (Some(m), _) => m.explain(cx, self.children.iter(), out),
+            (None, Some(last)) => cx.explain(last, out),
+            (None, None) => (),
+        }
+    }
+}
+
 impl<R: Rt> Update<R> for Block<R> {
     fn for_each_child<'a>(&'a self, f: &mut dyn FnMut(&'a Node<R>)) {
         self.children.iter().for_each(f)
@@ -3702,6 +3720,10 @@ impl<R: Rt> Update<R> for TypeCast<R> {
         NodeView::TypeCast(self)
     }
 
+    fn standing(&self) -> Option<&TagValue> {
+        Some(&self.resident)
+    }
+
     fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
         if self.src_ref {
             bail!("a cast of a reference does not emit CLIF")
@@ -4142,6 +4164,29 @@ impl<R: Rt> Sample<R> {
         match &self.banking {
             Banking::Strict | Banking::One { .. } => None,
             Banking::Each(pay) => Some(pay.id),
+        }
+    }
+}
+
+impl<R: Rt> Sample<R> {
+    /// Why the sample has no value: its trigger has not fired, or what
+    /// it samples has none. One a lowering wrote says nothing of itself.
+    pub(crate) fn explain<'a>(&'a self, cx: &mut Explain<'a, R>, out: &mut Vec<Because>) {
+        if explain::valued(&self.resident) {
+            return;
+        }
+        let held = self.arg.value.is_some();
+        let mut parts = Vec::new();
+        cx.explain(&self.trigger, &mut parts);
+        if !held {
+            cx.explain(&self.arg.node, &mut parts)
+        }
+        match self.spec.reads_lowered() {
+            true => out.append(&mut parts),
+            false => {
+                let spec = self.spec.clone();
+                out.push(Because::Of { spec, note: Note::Sample { held }, parts })
+            }
         }
     }
 }
