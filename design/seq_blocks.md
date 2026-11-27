@@ -112,6 +112,13 @@ written inside the block reads live, `live(e)` reads live, `on` is a keyword. On
 consequence to document: a stateful call in the block sees only the values at the events
 (`on k { count(x) }` counts the events, where `k ~ count(x)` counts every `x`). Real
 code and the runs: D58 in ~/ptmp/cr-discuss.md, ~/ptmp/on-block. -->
+<!-- 2026-11-27 claude: Eric's wording for it (2026-11-27), to use in the book and the
+skill: "we're allowing everything to latch asynchronously and releasing the values on
+the clock pulse". It holds in the details: a binding is a latch and not a queue (a value
+that came and went between two pulses is not seen); an empty latch releases nothing; a
+write made on the pulse lands after it, so every read on the pulse sees the value from
+before it; state inside the block is in the clock's domain (a count there counts
+pulses); and what the block starts asynchronously completes off the clock. -->
 ## 3. Not the sync subset
 
 An earlier design (`sync { let mut ..; for v in a { .. } }`, removed
