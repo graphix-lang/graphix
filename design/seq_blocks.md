@@ -738,7 +738,9 @@ fire from before the run. And a step that holds an `await` is never
 entered in the cycle its predecessor completes (`Step::awaits`, in the
 same-cycle analysis): the fire that completed an `await` there is spent,
 and a second one entered beside it would read it live. Pins:
-`lang::seq_await`.
+`lang::seq_await`. The machine is the same in every engine, so the
+fuzzer checks this with a program that carries its own answers
+(`graphix-fuzz/src/generate/await_twin.rs`).
 
 #### The fire tracker (`node/wake.rs`)
 

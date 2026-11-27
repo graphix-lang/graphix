@@ -548,6 +548,20 @@ fire), and `on_twins_hold_and_settle` asserts the twin sees each in at
 least two thirds and half of its programs. Pins:
 `findings/on-block-nov2026/08` and `09`.
 
+An **await twin** (`await_twin::gen_await_twin`, a slice of the same
+lane) holds a seq's `await` to account (`design/seq_blocks.md`). What an
+await gives is decided in the seq machine and its fire tracker, which
+every engine runs the same. The generator draws a schedule (the cycles
+a stream fires in, the cycles the seq is triggered in, a body of awaits
+and waits), works out by a model of the rule what every await of every
+run takes, and the program settles on the tag where its runs differ
+from that: a fire from before the run taken, one fire taken by two
+awaits, a later fire taken where an unread one stood. `await_twin::
+Fault` makes the model wrong in the first two ways, and
+`await_twins_hold_and_settle` asserts the twin sees each (in 44% of
+schedules, the ones where it matters). The seq generator also draws an
+awaiting step (`StepKind::Await`). Pins: `findings/seq-await-nov2026/`.
+
 The reactive generator draws `on` blocks too (`reactive::on_block`, in
 a fifth of its programs): clocked to an injected input, as a statement,
 a handler called with the input, a bound value, an `on let`, or in an

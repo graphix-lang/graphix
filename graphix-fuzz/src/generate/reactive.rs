@@ -116,6 +116,7 @@ pub fn gen_reactive_program(rng: &mut Rng) -> String {
         15..25 => gen_callable_ceremony(rng),
         25..32 => super::twin::gen_queue_twin(rng),
         32..40 => super::on_twin::gen_on_twin(rng),
+        40..47 => super::await_twin::gen_await_twin(rng),
         _ => gen_reactive_stats(&GenCfg::default(), rng).0,
     }
 }

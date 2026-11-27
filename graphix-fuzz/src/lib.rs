@@ -6604,6 +6604,32 @@ mod tests {
         }
     }
 
+    /// An await twin holds, and settles on the tag where the model is
+    /// made wrong the way a bug in the machine would make the seq wrong:
+    /// a fire from before the run taken, one fire taken by two awaits.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn await_twins_hold_and_settle() {
+        use generate::await_twin::{Fault, gen_await_twin, gen_await_twin_faulty};
+        const N: usize = 24;
+        let t = Duration::from_secs(120);
+        let mut rng = mutate::Rng::new(53);
+        for _ in 0..N {
+            let prog = gen_await_twin(&mut rng);
+            let d = check(&prog, t).await;
+            assert!(d.is_none(), "{prog}: {d:?}");
+        }
+        for (fault, least) in [(Fault::Leftover, 6), (Fault::Shared, 6)] {
+            let mut rng = mutate::Rng::new(53);
+            let mut seen = 0;
+            for _ in 0..N {
+                let prog = gen_await_twin_faulty(&mut rng, fault);
+                let d = check(&prog, t).await;
+                seen += matches!(&d, Some(d) if d.pair == Pair::Twin) as usize;
+            }
+            assert!(seen >= least, "{fault:?} seen in only {seen} of {N} twins");
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn must_reject_families_are_refused_where_their_rules_say() {
         let per = Duration::from_secs(60);

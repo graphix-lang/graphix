@@ -9,6 +9,7 @@
 //! program draws its codec round trips (`GenCfg::p_codecs`) or its
 //! `<-` templates, never both.
 
+pub mod await_twin;
 mod exprs;
 mod funcs;
 mod modules;
