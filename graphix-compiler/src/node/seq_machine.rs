@@ -34,6 +34,7 @@ use poolshark::local::LPooled;
 use smallvec::SmallVec;
 use std::{
     fmt::Write,
+    mem,
     sync::atomic::{AtomicBool, Ordering::Relaxed},
 };
 use triomphe::Arc;
@@ -60,6 +61,16 @@ impl<R: Rt> Step<R> {
         for n in self.nodes.iter() {
             n.refs(refs)
         }
+    }
+
+    /// It holds an `await`. Such a step is entered the cycle after the
+    /// step before it completes, never in that cycle: the fire that
+    /// completed an `await` there is spent, and one entered beside it
+    /// would read it live.
+    pub(crate) fn awaits(&self) -> bool {
+        let mut inputs = IntSet::default();
+        self.nodes.iter().for_each(|n| awaited(n, &mut inputs));
+        !inputs.is_empty()
     }
 
     /// A step whose value is the `let` at `value`, after every handler.
@@ -103,11 +114,37 @@ pub struct SeqMachine<R: Rt> {
     pub(crate) steps: Box<[Step<R>]>,
     /// The awake step. A sleeping machine is reset.
     current: Option<usize>,
-    /// Built on the first update, when the steps are materialized: the
-    /// catch-up tracker, and the inputs the steps' own `let`s bind.
-    tracked: Option<(TrackedFires, IntSet<BindId>)>,
+    /// A run is under way: a step has been entered since `pc` last was
+    /// idle.
+    running: bool,
+    /// Built on the first update, when the steps are materialized.
+    tracked: Option<Tracking>,
     /// `--expand`: the analysis prints the plan it decides.
     pub(crate) expand: bool,
+}
+
+#[derive(Debug)]
+struct Tracking {
+    fires: TrackedFires,
+    /// The inputs the steps' own `let`s bind.
+    lets: IntSet<BindId>,
+    /// The inputs an `await` reads: a run is owed their fires from the
+    /// cycle it was started in on, and none from before.
+    awaited: IntSet<BindId>,
+}
+
+/// What the `await`s under `n` read.
+fn awaited<R: Rt>(n: &Node<R>, out: &mut IntSet<BindId>) {
+    crate::stack::ensure_sufficient(|| match n.view() {
+        NodeView::CallSite(c) if c.is_await() => {
+            let mut refs = Refs::default();
+            c.arg_nodes().for_each(|a| a.refs(&mut refs));
+            refs.with_refs(|id| {
+                out.insert(id);
+            })
+        }
+        _ => n.for_each_child(&mut |c| awaited(c, out)),
+    })
 }
 
 fn pc_id<R: Rt>(pc: &Node<R>) -> Result<BindId> {
@@ -133,6 +170,7 @@ impl<R: Rt> SeqMachine<R> {
             pc_id,
             steps,
             current: None,
+            running: false,
             tracked: None,
             expand,
         })
@@ -148,22 +186,34 @@ impl<R: Rt> SeqMachine<R> {
     // a 3200-step run and make a transition cost O(the step's own inputs). probe:
     // design/review-2026-11-16/repro/x-rerun-1-seq-steps-quadratic.sh (x-rerun-1-04)
     fn update_serial(&mut self, ctx: &mut ExecCtx<'_, R>) -> &TagValue {
-        let Self { spec: _, id: _, pc, pc_id, steps, current, tracked, expand: _ } = self;
-        let (tracked, lets) = tracked.get_or_insert_with(|| {
-            let tracked =
-                TrackedFires::new(&ctx.env, ctx.rt.cycle(), steps.len(), |i, r| {
-                    steps[i].refs(r)
-                });
-            let mut lets = IntSet::default();
-            for n in steps.iter().flat_map(|s| s.nodes.iter()) {
-                if let NodeView::Bind(b) = n.view() {
-                    b.pattern.ids(&mut |id| {
-                        lets.insert(id);
+        let Self {
+            spec: _,
+            id: _,
+            pc,
+            pc_id,
+            steps,
+            current,
+            running,
+            tracked,
+            expand: _,
+        } = self;
+        let Tracking { fires: tracked, lets, awaited: awaits } = tracked
+            .get_or_insert_with(|| {
+                let fires =
+                    TrackedFires::new(&ctx.env, ctx.rt.cycle(), steps.len(), |i, r| {
+                        steps[i].refs(r)
                     });
+                let (mut lets, mut awaits) = (IntSet::default(), IntSet::default());
+                for n in steps.iter().flat_map(|s| s.nodes.iter()) {
+                    if let NodeView::Bind(b) = n.view() {
+                        b.pattern.ids(&mut |id| {
+                            lets.insert(id);
+                        });
+                    }
+                    awaited(n, &mut awaits)
                 }
-            }
-            (tracked, lets)
-        });
+                Tracking { fires, lets, awaited: awaits }
+            });
         let at = pc.update(ctx);
         let at = at.is_fired().then(|| at.value_cloned());
         let target = match at {
@@ -174,6 +224,14 @@ impl<R: Rt> SeqMachine<R> {
             _ => None,
         };
         let mut entered = false;
+        match target {
+            Some(None) => *running = false,
+            // a run starts a cycle after the trigger that started it
+            Some(Some(_)) if !mem::replace(running, true) => {
+                tracked.forget_before(ctx, awaits, ctx.rt.cycle().saturating_sub(1))
+            }
+            _ => (),
+        }
         match target {
             Some(None) => {
                 if let Some(j) = current.take() {
@@ -225,7 +283,7 @@ impl<R: Rt> SeqMachine<R> {
             *current = Some(n);
             entered = true;
         }
-        tracked.observe_except(ctx, &evaluated, Some(lets));
+        tracked.observe_except(ctx, &evaluated, Some(&*lets));
         TagValue::phantom_ref()
     }
 
@@ -445,10 +503,11 @@ impl<R: Rt> Update<R> for SeqMachine<R> {
                 n.sleep(ctx)
             }
         }
-        if let Some((tracked, _)) = &mut self.tracked {
-            tracked.all_fell_asleep(super::wake::stopped(ctx));
+        if let Some(t) = &mut self.tracked {
+            t.fires.all_fell_asleep(super::wake::stopped(ctx));
         }
         self.current = None;
+        self.running = false;
     }
 
     fn refs(&self, refs: &mut Refs) {

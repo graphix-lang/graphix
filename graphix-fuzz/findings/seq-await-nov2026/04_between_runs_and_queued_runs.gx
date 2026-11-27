@@ -1,0 +1,3 @@
+// An event between two runs is neither's, and each queued run awaits from its own
+// start. Expected: [[[30, 4], [100, 11]], [[1, 30, 4], [2, 60, 8]]].
+{ let step = 0; step <- select step { n if n < 12 => n + 1, _ => never() }; let ev = never<i64>(); ev <- select step { 3 => 30, 6 => 60, 10 => 100, _ => never() }; let t = select step { 1 => null, 8 => null, _ => never() }; let v = seq t { let got = await(ev); (got, live(step)) }; let q = select step { 1 => 1, 2 => 2, _ => never() }; let w = seqq q { let got = await(ev); (q, got, live(step)) }; (array::group(v, |i, _| i == 2), array::group(w, |i, _| i == 2)) }

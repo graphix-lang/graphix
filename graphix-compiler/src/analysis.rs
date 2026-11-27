@@ -1205,10 +1205,12 @@ fn writes_nothing(e: &Expr) -> bool {
             | Seq(_)
             | Until(_)
             | Live(_)
+            | Await(_)
             | TryWith(_)
             | SeqGuard(_)
             | SeqAbort(_)
             | Fresh(_)
+            | SeqAwait(_)
             | SeqMachine(_)
             | SeqCapture(_) => false,
             NoOp
@@ -2747,7 +2749,8 @@ fn plan_machines<R: Rt>(graph: &StaticCallGraph<'_, R>, ctx: &CompileCtx<R>) {
                     out.union(&pending[k]);
                     out.union(&access[k].writes);
                     let same = out.meeting(&access[n].reads).is_none()
-                        && out.meeting(&access[n].writes).is_none();
+                        && out.meeting(&access[n].writes).is_none()
+                        && !m.steps[n].awaits();
                     if same {
                         pending[n].union(&out);
                     }

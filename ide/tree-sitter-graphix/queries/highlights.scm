@@ -38,6 +38,7 @@
   "cast"
   "never"
   "live"
+  "await"
   "any"
   "with"
   "throws"

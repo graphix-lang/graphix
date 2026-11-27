@@ -202,15 +202,15 @@ inside a block, or nested in a step's expression; a lambda literal's
 body and its defaults are exempt, because a function is its own dynamic
 scope and its own firing world ("as soon as you introduce a lambda
 you're basically back in graphix"). `seq`, `seqq`, `until`, `try`,
-`with` and `live` are reserved words; `live(e)` is refused outside a seq
-body, where it would mean nothing; the old integer-sequence builtin `seq(i, j)`
-is `range(i, j)`.
+`with`, `live` and `await` are reserved words; `live(e)` and `await(e)`
+are refused outside a seq body, where they would mean nothing; the old
+integer-sequence builtin `seq(i, j)` is `range(i, j)`.
 
 `if`, loops, `break`/`continue` and a `select` whose arms are step
 lists are not built; a `select` inside a seq is an ordinary expression
 step.
 
-<!-- CR claude for eric: [structure/medium] A seq has no step that waits for the next
+<!-- XCR claude for eric: [structure/medium] A seq has no step that waits for the next
 event of a stream, which is what request-then-reply over a socket needs. In the probe
 `let r2 = live(answers)` after a write completes at once on the previous reply, so three
 requests give the first reply, the first again, then the second; `once(live(answers))`
@@ -219,6 +219,14 @@ does the same, `live(skip(#n: 1, answers))` stalls, and only `live(once(answers)
 step, lowered to the form that works), or document `live(once(e))` in the seq chapter
 and the skill's seq.md with a `cases` pin. probe:
 design/review-2026-11-16/repro/a-language-seq-await-next-event.gx (a-language-05) -->
+<!-- 2026-11-27 claude: Built: `await(e)` is a seq step that completes on the first fire
+of `e` since its run was started that no earlier step of the run read (Eric's ruling of
+2026-11-27, D62: the name, and the horizon at the run's start if it was small to build,
+which it was). It lowers to `live(core::once(e))`, marked; the machine drops the awaited
+inputs' older pending fires when a run starts, and a step that awaits is never entered
+in its predecessor's cycle. The check warns of a step that is a bare `live(v)`. The
+probe with `await(answers)` gives ["= 3", "= 30", "ERR"]. A regression fails
+stdlib/graphix-tests/src/lang/seq_await.rs. -->
 ## 5. Semantics
 
 **Run.** A run starts when the trigger fires while no run is in
@@ -676,6 +684,61 @@ a_passed_step_is_asleep_before_its_machine_sleeps,
 a_fire_as_a_step_is_aborted_stays_owed,
 a_step_entered_in_the_cycle_of_a_fire_reads_it_live,
 let_fire_reaches_a_later_cycle}`.
+
+#### `await(e)`: the next event of a stream
+
+A step that reads a variable completes at once on the value it holds.
+That is right for state and wrong for a stream of events, where the
+value it holds is the event before: after a request is written, `let r =
+answers`, `live(answers)` and `once(live(answers))` all complete on the
+last reply, and three requests read the first reply, the first again and
+the second (`design/review-2026-11-16/repro/
+a-language-seq-await-next-event.gx`). The check warns of a step that is
+a bare `live(v)` (`expr::seq::idle_lives`): it waits for nothing.
+
+`await(e)` is the step that waits:
+
+```graphix,ignore
+seq c {
+    write(c, "ADD 1 2\n")$;
+    let r1 = await(answers);
+    write(c, "ADD 10 20\n")$;
+    let r2 = await(answers);
+    [r1, r2]
+}
+```
+
+**It completes on the first fire of `e` since its run was started that
+no earlier step of the run read.**
+
+- A fire while an earlier step of the run was under way is taken when
+  the `await` is entered: a reply that arrives before its `await` is not
+  lost.
+- A fire from before the run was started, or between two runs, is not
+  the run's, and the `await` waits past it. The cycle the run's trigger
+  fired in, or its request was dequeued in, counts as the run.
+- One fire completes one `await`: two in a row take two events, the
+  second no sooner than the cycle after the first.
+- It is a mailbox of one. Two fires between two reads leave the later
+  value; where every event matters, queue them (a `seqq` over the
+  stream).
+
+It is a step of its own, a statement or the whole value of a `let`,
+also in a `try` or `with` body. Anywhere else it is refused: nested in a
+call, the call's issue would hand it whatever stands.
+
+`expr::seq::lower_awaits` makes it `live(core::once(e))`, marked
+`ExprKind::SeqAwait`, so the step completes on what `once` gives and the
+tracker below delivers it the fire it is owed at its entry. Two things
+make the meaning above out of that. The machine drops, when a run
+starts, the pending fires of what its steps await that are older than
+the cycle before (`TrackedFires::forget_before`, `SeqMachine::running`):
+`live(once(e))` written by hand keeps the tracker's rule and takes a
+fire from before the run. And a step that holds an `await` is never
+entered in the cycle its predecessor completes (`Step::awaits`, in the
+same-cycle analysis): the fire that completed an `await` there is spent,
+and a second one entered beside it would read it live. Pins:
+`lang::seq_await`.
 
 #### The fire tracker (`node/wake.rs`)
 

@@ -824,4 +824,24 @@ impl TrackedFires {
             event.variables.put_back(id, prior)
         }
     }
+
+    /// Forget the fires of `inputs` made before the cycle `since`: a run
+    /// that starts owes what it awaits nothing from before it.
+    pub(crate) fn forget_before<R: Rt>(
+        &mut self,
+        ctx: &ExecCtx<'_, R>,
+        inputs: &IntSet<BindId>,
+        since: u64,
+    ) {
+        if self.pending.is_empty() || inputs.is_empty() {
+            return;
+        }
+        let stale = |id: &BindId| {
+            ctx.rt.store_get(id).is_none_or(|(_, written)| *written < since)
+        };
+        if inputs.iter().any(|id| self.pending.contains(id) && stale(id)) {
+            Arc::make_mut(&mut self.pending)
+                .retain(|id| !(inputs.contains(id) && stale(id)))
+        }
+    }
 }

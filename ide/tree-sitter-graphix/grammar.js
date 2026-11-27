@@ -952,6 +952,9 @@ module.exports = grammar({
     // The value that never arrives, typed where given
     live: $ => seq('live', '(', $._expression, ')'),
 
+    // `await(e)`: a seq step that waits for the next event of `e`.
+    await: $ => seq('await', '(', $._expression, ')'),
+
     never: $ => seq(
       'never',
       optional(seq('<', $._type, '>')),
@@ -1015,6 +1018,7 @@ module.exports = grammar({
       $.any,
       $.cast,
       $.live,
+      $.await,
       $.never,
       $.block,
       $.qop,
@@ -1316,7 +1320,8 @@ module.exports = grammar({
     _field_name: $ => choice(
       $.identifier,
       alias(choice(
-        'true', 'false', 'null', 'mod', 'let', 'select', 'seq', 'seqq', 'on', 'until',
+        'true', 'false', 'null', 'mod', 'let', 'select', 'seq', 'seqq', 'on', 'fresh',
+        'until', 'await',
         'trait', 'impl', 'pub', 'self', 'super', 'package',
         'type',
         'fn', 'cast', 'never', 'live', 'if', 'use', 'rec', 'catch', 'try', 'any',

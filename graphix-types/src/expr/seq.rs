@@ -267,10 +267,64 @@ pub fn desugar(spec: &Expr, env: &Env, scope: &ModPath) -> Result<Expr> {
     lowered
 }
 
+/// `e` as `kind`, a new expression where `e` stood.
+fn renewed(e: &Expr, kind: ExprKind) -> Expr {
+    Expr {
+        id: ExprId::new(),
+        ori: e.ori.clone(),
+        pos: e.pos,
+        kind,
+        dec: e.dec.clone(),
+        str_form: e.str_form,
+        end: e.end,
+    }
+}
+
+/// `stmts` with each `await(e)` that is a statement of its own, or a
+/// `let`'s whole value, as `live(core::once(e))` marked
+/// [`ExprKind::SeqAwait`]: the step completes on the first fire of `e`
+/// its machine owes it. One anywhere else is left for the compile to
+/// refuse.
+fn lower_awaits(stmts: &[Expr]) -> Arc<[Expr]> {
+    let awaited = |a: &Expr, e: &Expr| {
+        let once = apply_core(e.pos, "once", [(None, e.clone())]);
+        let marked = ExprKind::SeqAwait(Arc::new(once)).to_expr(e.pos);
+        renewed(a, ExprKind::Live(Arc::new(marked)))
+    };
+    // a statement, or the value of a `let`
+    let step = |s: &Expr| match &s.kind {
+        ExprKind::Await(e) => Some(awaited(s, e)),
+        ExprKind::TryWith(t) => {
+            let lowered = TryWithExpr {
+                body: lower_awaits(&t.body),
+                handler: lower_awaits(&t.handler),
+                ..(**t).clone()
+            };
+            Some(renewed(s, ExprKind::TryWith(Arc::new(lowered))))
+        }
+        _ => None,
+    };
+    Arc::from_iter(stmts.iter().map(|s| match &s.kind {
+        ExprKind::Bind(b) => match step(&b.value) {
+            Some(value) => {
+                let bind = BindExpr { value, ..(**b).clone() };
+                renewed(s, ExprKind::Bind(Arc::new(bind)))
+            }
+            None => s.clone(),
+        },
+        _ => step(s).unwrap_or_else(|| s.clone()),
+    }))
+}
+
 fn lower(spec: &Expr, env: &Env, scope: &ModPath) -> Result<Expr> {
     let _ori = OriginScope::enter(spec.ori.clone());
     let ExprKind::Seq(s) = &spec.kind else { bail!("BUG: seq lowering of a non-seq") };
     let SeqExpr { kind, trigger, abort, body } = &**s;
+    let awaits = match kind {
+        SeqKind::Plain | SeqKind::Queued { .. } => Some(lower_awaits(body)),
+        SeqKind::On | SeqKind::Fresh => None,
+    };
+    let body = awaits.as_ref().unwrap_or(body);
     let seq = Parts {
         spec,
         trigger: trigger.as_ref(),
@@ -2035,6 +2089,45 @@ pub fn fixed_untils(spec: &Expr) -> SmallVec<[Expr; 1]> {
         )
     {
         s.body.iter().for_each(|e| walk(e, &mut out));
+    }
+    out
+}
+
+/// The steps of the seq `spec`'s own body whose whole value is `live(v)`
+/// over a variable: such a step completes at once on the value `v`
+/// holds, as a plain read of it does, and waits for nothing. An `on` or
+/// `fresh` block has no steps, and a `seqq let` lowers to a `seqq` over
+/// its body, whose steps they are.
+pub fn idle_lives(spec: &Expr) -> SmallVec<[Expr; 1]> {
+    fn idle(e: &Expr) -> bool {
+        matches!(&e.kind, ExprKind::Live(v) if matches!(v.kind, ExprKind::Ref { .. }))
+    }
+    fn walk(stmts: &[Expr], out: &mut SmallVec<[Expr; 1]>) {
+        for s in stmts {
+            // the statement, or the value of a `let`
+            let step = match &s.kind {
+                ExprKind::Bind(b) => &b.value,
+                _ => s,
+            };
+            match &step.kind {
+                ExprKind::TryWith(t) => {
+                    walk(&t.body, out);
+                    walk(&t.handler, out)
+                }
+                _ if idle(step) => out.push(step.clone()),
+                _ => (),
+            }
+        }
+    }
+    let mut out = SmallVec::new();
+    if let ExprKind::Seq(s) = &spec.kind
+        && matches!(
+            (&s.kind, &s.trigger),
+            (SeqKind::Plain, _)
+                | (SeqKind::Queued { .. }, None | Some(SeqTrigger::Expr(_)))
+        )
+    {
+        walk(&s.body, &mut out)
     }
     out
 }

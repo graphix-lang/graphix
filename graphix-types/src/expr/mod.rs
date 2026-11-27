@@ -923,6 +923,8 @@ pub enum ExprKind {
     /// every other read is the step's entry snapshot. Legal only in a seq
     /// body.
     Live(Arc<Expr>),
+    /// `await(e)`: a seq step that waits for the next event of `e`.
+    Await(Arc<Expr>),
     /// `try { stmts } with(e) { stmts }` — legal only as a seq step.
     TryWith(Arc<TryWithExpr>),
     /// `arg?`. `written` is the operand as written when a seq lowering
@@ -941,6 +943,9 @@ pub enum ExprKind {
     /// Compiler-generated: a call whose instance is built again, and
     /// born, at each fire of its argument (a `fresh` block).
     Fresh(Arc<Expr>),
+    /// Compiler-generated: the `core::once(e)` an `await(e)` lowers to. Its
+    /// machine owes it no fire of `e` from before the run it is in.
+    SeqAwait(Arc<Expr>),
     SeqMachine(Arc<SeqMachineExpr>),
     SeqCapture(Arc<SeqCaptureExpr>),
     OrNever(Arc<Expr>),
@@ -991,6 +996,8 @@ impl ExprKind {
             | Neg(x)
             | Until(x)
             | Live(x)
+            | Await(x)
+            | SeqAwait(x)
             | Not { expr: x }
             | Construct { arg: x, .. }
             | TypeCast { expr: x, .. }
@@ -1643,6 +1650,7 @@ impl Expr {
             | ExprKind::SeqGuard(_)
             | ExprKind::SeqAbort(_)
             | ExprKind::Fresh(_)
+            | ExprKind::SeqAwait(_)
             | ExprKind::SeqCapture(_)
             | ExprKind::Rethrow(_) => true,
             ExprKind::Block { exprs } => exprs.first().is_some_and(Expr::is_lowered),
@@ -1918,6 +1926,8 @@ impl Expr {
             Neg(x) => Neg(a(f, x)),
             Until(x) => Until(a(f, x)),
             Live(x) => Live(a(f, x)),
+            Await(x) => Await(a(f, x)),
+            SeqAwait(x) => SeqAwait(a(f, x)),
             Not { expr } => Not { expr: a(f, expr) },
             Construct { name, arg } => Construct { name: name.clone(), arg: a(f, arg) },
             TypeCast { expr, typ } => TypeCast { expr: a(f, expr), typ: typ.clone() },
@@ -2134,6 +2144,8 @@ impl Expr {
             | Struct(_)
             | Until(_)
             | Live(_)
+            | Await(_)
+            | SeqAwait(_)
             | Qop { .. }
             | Rethrow(_)
             | SeqGuard(_)

@@ -1267,6 +1267,12 @@ macro_rules! any {
     };
 }
 
+macro_rules! await_expr {
+    ($inner:expr) => {
+        decorated($inner).prop_map(|e| ExprKind::Await(Arc::new(e)).to_expr_nopos())
+    };
+}
+
 macro_rules! until_stmt {
     ($inner:expr) => {
         (decorated($inner), any::<bool>()).prop_map(|(e, live)| {
@@ -1995,6 +2001,7 @@ fn undecorated_expr() -> impl Strategy<Value = Expr> {
             structref!(inner.clone()),
             tupleref!(inner.clone()),
             any!(inner.clone()),
+            await_expr!(inner.clone()),
             apply!(inner.clone()),
             typecast!(inner.clone()),
             never!(inner.clone()),
@@ -2620,7 +2627,8 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
                 && b0.iter().zip(b1.iter()).all(|(a, b)| check(a, b))
         }
         (ExprKind::Until(a), ExprKind::Until(b))
-        | (ExprKind::Live(a), ExprKind::Live(b)) => check(a, b),
+        | (ExprKind::Live(a), ExprKind::Live(b))
+        | (ExprKind::Await(a), ExprKind::Await(b)) => check(a, b),
         (ExprKind::TryWith(a), ExprKind::TryWith(b)) => {
             a.bind == b.bind
                 && check_type_opt(&a.constraint, &b.constraint)
@@ -3360,6 +3368,7 @@ fn compiler_kinds_children_agree() {
         (SeqGuard(arc("a")), 1),
         (SeqAbort(arc("a")), 1),
         (Fresh(arc("a")), 1),
+        (SeqAwait(arc("a")), 1),
         (
             SeqMachine(Arc::new(SeqMachineExpr {
                 id: ExprId::new(),

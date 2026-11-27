@@ -429,6 +429,11 @@
 2	select-strict-rule-aug2026/02_live_fold_two_cycle.gx
 2	select-strict-rule-aug2026/03_filter_select_qop.gx
 4	select-wake-rematch-sep2026/00_arm_local_counter.gx
+9	seq-await-nov2026/01_two_awaits_take_two_events.gx
+8	seq-await-nov2026/02_an_event_during_an_earlier_step_is_taken.gx
+11	seq-await-nov2026/03_an_event_before_the_run_is_waited_past.gx
+14	seq-await-nov2026/04_between_runs_and_queued_runs.gx
+10	seq-await-nov2026/05_a_statement_and_a_step_of_a_try.gx
 0	seq-refusal-names-oct2026/00_refusal_in_a_seq_step.gx
 0	set-eq-drops-cell-link-aug2026/00_list_fold_map_fn.gx
 1	settle-order-jul2026/01_firstclass_hof_occurs_flap.gx

@@ -111,6 +111,10 @@
           "named": true
         },
         {
+          "type": "await",
+          "named": true
+        },
+        {
           "type": "binary_expression",
           "named": true
         },
@@ -345,6 +349,10 @@
         },
         {
           "type": "array_slice",
+          "named": true
+        },
+        {
+          "type": "await",
           "named": true
         },
         {
@@ -630,6 +638,10 @@
           "named": true
         },
         {
+          "type": "await",
+          "named": true
+        },
+        {
           "type": "block",
           "named": true
         },
@@ -774,6 +786,10 @@
         },
         {
           "type": "array_slice",
+          "named": true
+        },
+        {
+          "type": "await",
           "named": true
         },
         {
@@ -996,6 +1012,10 @@
         },
         {
           "type": "array_slice",
+          "named": true
+        },
+        {
+          "type": "await",
           "named": true
         },
         {
@@ -1228,6 +1248,10 @@
           "named": true
         },
         {
+          "type": "await",
+          "named": true
+        },
+        {
           "type": "binary_expression",
           "named": true
         },
@@ -1424,6 +1448,10 @@
         },
         {
           "type": "array_slice",
+          "named": true
+        },
+        {
+          "type": "await",
           "named": true
         },
         {
@@ -1709,6 +1737,10 @@
             "named": true
           },
           {
+            "type": "await",
+            "named": true
+          },
+          {
             "type": "binary_expression",
             "named": true
           },
@@ -1887,6 +1919,209 @@
     }
   },
   {
+    "type": "await",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "abstract_construct",
+          "named": true
+        },
+        {
+          "type": "any",
+          "named": true
+        },
+        {
+          "type": "apply",
+          "named": true
+        },
+        {
+          "type": "array",
+          "named": true
+        },
+        {
+          "type": "array_ref",
+          "named": true
+        },
+        {
+          "type": "array_slice",
+          "named": true
+        },
+        {
+          "type": "await",
+          "named": true
+        },
+        {
+          "type": "binary_expression",
+          "named": true
+        },
+        {
+          "type": "block",
+          "named": true
+        },
+        {
+          "type": "builtin_ref",
+          "named": true
+        },
+        {
+          "type": "by_ref",
+          "named": true
+        },
+        {
+          "type": "cast",
+          "named": true
+        },
+        {
+          "type": "catch_stmt",
+          "named": true
+        },
+        {
+          "type": "connect",
+          "named": true
+        },
+        {
+          "type": "deref",
+          "named": true
+        },
+        {
+          "type": "fresh_block",
+          "named": true
+        },
+        {
+          "type": "impl_def",
+          "named": true
+        },
+        {
+          "type": "lambda",
+          "named": true
+        },
+        {
+          "type": "let_binding",
+          "named": true
+        },
+        {
+          "type": "list",
+          "named": true
+        },
+        {
+          "type": "literal",
+          "named": true
+        },
+        {
+          "type": "live",
+          "named": true
+        },
+        {
+          "type": "map",
+          "named": true
+        },
+        {
+          "type": "map_ref",
+          "named": true
+        },
+        {
+          "type": "module",
+          "named": true
+        },
+        {
+          "type": "never",
+          "named": true
+        },
+        {
+          "type": "on_block",
+          "named": true
+        },
+        {
+          "type": "or_never",
+          "named": true
+        },
+        {
+          "type": "parenthesized_expression",
+          "named": true
+        },
+        {
+          "type": "qop",
+          "named": true
+        },
+        {
+          "type": "raw_string",
+          "named": true
+        },
+        {
+          "type": "reference",
+          "named": true
+        },
+        {
+          "type": "select",
+          "named": true
+        },
+        {
+          "type": "seq_block",
+          "named": true
+        },
+        {
+          "type": "string",
+          "named": true
+        },
+        {
+          "type": "struct",
+          "named": true
+        },
+        {
+          "type": "struct_ref",
+          "named": true
+        },
+        {
+          "type": "struct_with",
+          "named": true
+        },
+        {
+          "type": "trait_def",
+          "named": true
+        },
+        {
+          "type": "triple_string",
+          "named": true
+        },
+        {
+          "type": "try_with",
+          "named": true
+        },
+        {
+          "type": "tuple",
+          "named": true
+        },
+        {
+          "type": "tuple_ref",
+          "named": true
+        },
+        {
+          "type": "type_ascription",
+          "named": true
+        },
+        {
+          "type": "type_def",
+          "named": true
+        },
+        {
+          "type": "unary_expression",
+          "named": true
+        },
+        {
+          "type": "use",
+          "named": true
+        },
+        {
+          "type": "variant",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "binary_expression",
     "named": true,
     "fields": {},
@@ -1916,6 +2151,10 @@
         },
         {
           "type": "array_slice",
+          "named": true
+        },
+        {
+          "type": "await",
           "named": true
         },
         {
@@ -2115,6 +2354,10 @@
         },
         {
           "type": "array_slice",
+          "named": true
+        },
+        {
+          "type": "await",
           "named": true
         },
         {
@@ -2334,6 +2577,10 @@
         },
         {
           "type": "array_slice",
+          "named": true
+        },
+        {
+          "type": "await",
           "named": true
         },
         {
@@ -2623,6 +2870,10 @@
           "named": true
         },
         {
+          "type": "await",
+          "named": true
+        },
+        {
           "type": "binary_expression",
           "named": true
         },
@@ -2893,6 +3144,10 @@
           },
           {
             "type": "array_slice",
+            "named": true
+          },
+          {
+            "type": "await",
             "named": true
           },
           {
@@ -3184,6 +3439,10 @@
             "named": true
           },
           {
+            "type": "await",
+            "named": true
+          },
+          {
             "type": "binary_expression",
             "named": true
           },
@@ -3438,6 +3697,10 @@
         },
         {
           "type": "array_slice",
+          "named": true
+        },
+        {
+          "type": "await",
           "named": true
         },
         {
@@ -4021,6 +4284,10 @@
             "named": true
           },
           {
+            "type": "await",
+            "named": true
+          },
+          {
             "type": "binary_expression",
             "named": true
           },
@@ -4297,6 +4564,10 @@
         },
         {
           "type": "array_slice",
+          "named": true
+        },
+        {
+          "type": "await",
           "named": true
         },
         {
@@ -4702,6 +4973,10 @@
           "named": true
         },
         {
+          "type": "await",
+          "named": true
+        },
+        {
           "type": "binary_expression",
           "named": true
         },
@@ -4936,6 +5211,10 @@
         },
         {
           "type": "array_type",
+          "named": true
+        },
+        {
+          "type": "await",
           "named": true
         },
         {
@@ -5207,6 +5486,10 @@
         },
         {
           "type": "array_type",
+          "named": true
+        },
+        {
+          "type": "await",
           "named": true
         },
         {
@@ -5694,6 +5977,10 @@
             "named": true
           },
           {
+            "type": "await",
+            "named": true
+          },
+          {
             "type": "binary_expression",
             "named": true
           },
@@ -5891,6 +6178,10 @@
         },
         {
           "type": "array_slice",
+          "named": true
+        },
+        {
+          "type": "await",
           "named": true
         },
         {
@@ -6180,6 +6471,10 @@
           "named": true
         },
         {
+          "type": "await",
+          "named": true
+        },
+        {
           "type": "binary_expression",
           "named": true
         },
@@ -6398,6 +6693,10 @@
             "named": true
           },
           {
+            "type": "await",
+            "named": true
+          },
+          {
             "type": "binary_expression",
             "named": true
           },
@@ -6593,6 +6892,10 @@
           },
           {
             "type": "array_slice",
+            "named": true
+          },
+          {
+            "type": "await",
             "named": true
           },
           {
@@ -6793,6 +7096,10 @@
         },
         {
           "type": "array_slice",
+          "named": true
+        },
+        {
+          "type": "await",
           "named": true
         },
         {
@@ -7078,6 +7385,10 @@
             "named": true
           },
           {
+            "type": "await",
+            "named": true
+          },
+          {
             "type": "binary_expression",
             "named": true
           },
@@ -7312,6 +7623,10 @@
             "named": true
           },
           {
+            "type": "await",
+            "named": true
+          },
+          {
             "type": "binary_expression",
             "named": true
           },
@@ -7540,6 +7855,10 @@
         },
         {
           "type": "array_type",
+          "named": true
+        },
+        {
+          "type": "await",
           "named": true
         },
         {
@@ -7808,6 +8127,10 @@
           },
           {
             "type": "array_slice",
+            "named": true
+          },
+          {
+            "type": "await",
             "named": true
           },
           {
@@ -8090,6 +8413,10 @@
           "named": true
         },
         {
+          "type": "await",
+          "named": true
+        },
+        {
           "type": "binary_expression",
           "named": true
         },
@@ -8293,6 +8620,10 @@
           "named": true
         },
         {
+          "type": "await",
+          "named": true
+        },
+        {
           "type": "binary_expression",
           "named": true
         },
@@ -8460,6 +8791,10 @@
         },
         {
           "type": "array_slice",
+          "named": true
+        },
+        {
+          "type": "await",
           "named": true
         },
         {
@@ -8746,6 +9081,10 @@
         },
         {
           "type": "array_type",
+          "named": true
+        },
+        {
+          "type": "await",
           "named": true
         },
         {
@@ -9047,6 +9386,10 @@
           "named": true
         },
         {
+          "type": "await",
+          "named": true
+        },
+        {
           "type": "binary_expression",
           "named": true
         },
@@ -9242,6 +9585,10 @@
           },
           {
             "type": "array_slice",
+            "named": true
+          },
+          {
+            "type": "await",
             "named": true
           },
           {
@@ -9469,6 +9816,10 @@
             "named": true
           },
           {
+            "type": "await",
+            "named": true
+          },
+          {
             "type": "binary_expression",
             "named": true
           },
@@ -9664,6 +10015,10 @@
           },
           {
             "type": "array_slice",
+            "named": true
+          },
+          {
+            "type": "await",
             "named": true
           },
           {
@@ -9872,6 +10227,10 @@
           },
           {
             "type": "array_slice",
+            "named": true
+          },
+          {
+            "type": "await",
             "named": true
           },
           {
@@ -10141,6 +10500,10 @@
         },
         {
           "type": "array_slice",
+          "named": true
+        },
+        {
+          "type": "await",
           "named": true
         },
         {
@@ -10872,6 +11235,10 @@
           "named": true
         },
         {
+          "type": "await",
+          "named": true
+        },
+        {
           "type": "binary_expression",
           "named": true
         },
@@ -11131,6 +11498,10 @@
             "named": true
           },
           {
+            "type": "await",
+            "named": true
+          },
+          {
             "type": "binary_expression",
             "named": true
           },
@@ -11387,6 +11758,10 @@
           "named": true
         },
         {
+          "type": "await",
+          "named": true
+        },
+        {
           "type": "block",
           "named": true
         },
@@ -11640,6 +12015,10 @@
         },
         {
           "type": "array_slice",
+          "named": true
+        },
+        {
+          "type": "await",
           "named": true
         },
         {
@@ -11914,6 +12293,10 @@
         },
         {
           "type": "array_slice",
+          "named": true
+        },
+        {
+          "type": "await",
           "named": true
         },
         {
@@ -12308,6 +12691,10 @@
             "named": true
           },
           {
+            "type": "await",
+            "named": true
+          },
+          {
             "type": "binary_expression",
             "named": true
           },
@@ -12648,6 +13035,10 @@
           "named": true
         },
         {
+          "type": "await",
+          "named": true
+        },
+        {
           "type": "binary_expression",
           "named": true
         },
@@ -12911,6 +13302,10 @@
           "named": true
         },
         {
+          "type": "await",
+          "named": true
+        },
+        {
           "type": "binary_expression",
           "named": true
         },
@@ -13137,6 +13532,10 @@
         },
         {
           "type": "array_slice",
+          "named": true
+        },
+        {
+          "type": "await",
           "named": true
         },
         {
@@ -13728,6 +14127,10 @@
           "named": true
         },
         {
+          "type": "await",
+          "named": true
+        },
+        {
           "type": "binary_expression",
           "named": true
         },
@@ -14003,6 +14406,10 @@
         },
         {
           "type": "array_slice",
+          "named": true
+        },
+        {
+          "type": "await",
           "named": true
         },
         {
@@ -14398,6 +14805,10 @@
         },
         {
           "type": "array_slice",
+          "named": true
+        },
+        {
+          "type": "await",
           "named": true
         },
         {
@@ -14918,6 +15329,10 @@
   },
   {
     "type": "as",
+    "named": false
+  },
+  {
+    "type": "await",
     "named": false
   },
   {

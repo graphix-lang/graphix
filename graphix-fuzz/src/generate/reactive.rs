@@ -88,9 +88,12 @@ pub enum StepKind {
     /// `let v = seq { let q = e; acc <- q; q + e }`: a triggerless machine
     /// as a step, run at the step's entry and waited for.
     Nested,
+    /// `let w = await(ev)`: a wait for the next event of an injected
+    /// input or of the burst counter, no earlier step of the run read.
+    Await,
 }
 
-pub const STEP_KINDS: [StepKind; 11] = [
+pub const STEP_KINDS: [StepKind; 12] = [
     StepKind::Let,
     StepKind::Call,
     StepKind::Connect,
@@ -102,6 +105,7 @@ pub const STEP_KINDS: [StepKind; 11] = [
     StepKind::Write,
     StepKind::Deref,
     StepKind::Nested,
+    StepKind::Await,
 ];
 
 /// Generate one reactive wrapper (schedule header + body) with the
@@ -657,8 +661,11 @@ fn fresh_block(
     let (input, _) = &inputs[rng.below(inputs.len())];
     let (other, _) = &inputs[rng.below(inputs.len())];
     st.freshes += 1;
+    // a catch is legal in a fresh block and refused in an on block
     let catches = std::mem::replace(&mut ctx.no_catch, false);
     let val = exprs::gen_typed(ctx, rng, &I64, 2);
+    ctx.no_catch = true;
+    let clocked = exprs::gen_typed(ctx, rng, &I64, 2);
     ctx.no_catch = catches;
     let i64s = ctx.vars_of(&I64);
     let level = match i64s.is_empty() {
@@ -674,7 +681,8 @@ fn fresh_block(
             format!("let {n} = i64:0; {n} <- {other} ~ {n} + i64:1; {n} + count({input})")
         }
         4 => format!(
-            "let {n} = i64:0; on {other} {{ {n} <- {n} + ({val}) }}; {n} + count({input})"
+            "let {n} = i64:0; on {other} {{ {n} <- {n} + ({clocked}) }}; {n} + \
+             count({input})"
         ),
         5 => format!(
             "select count({other}) % i64:2 {{ i64:0 => count({other}), _ => i64:-1 }} + \
@@ -1266,6 +1274,22 @@ fn ceremony(
                 let e = exprs::gen_typed(ctx, rng, &I64, 1);
                 body.push(format!("let {d} = *{ar} + {e}"));
                 ctx.push(d, I64);
+            }
+            StepKind::Await => {
+                let w = ctx.fresh();
+                match &burst_counter {
+                    Some(b) if chance(rng, 0.5) => {
+                        body.push(format!("let {w} = await({b})"));
+                        ctx.push(w, I64);
+                    }
+                    _ => {
+                        // the next injection of the input: a later epoch's
+                        reliable = false;
+                        let (input, ty) = &inputs[rng.below(inputs.len())];
+                        body.push(format!("let {w} = await({input})"));
+                        ctx.push(w, ty.clone());
+                    }
+                }
             }
             StepKind::Nested => {
                 let v = ctx.fresh();

@@ -3,7 +3,7 @@ use super::{
     TypeCast,
     array::{Array, ArrayRef, ArraySlice, ListLit},
     bind::{Bind, ByRef, Deref, Ref},
-    callsite::CallSite,
+    callsite::{CallSite, SiteKind},
     data::{Construct, Struct, StructRef, StructWith, Tuple, TupleRef, Variant},
     error::{Qop, SeqAbort, SeqGuard},
     fork_control::{ForkControl, ForkKind},
@@ -520,7 +520,12 @@ fn compile_kind<R: Rt>(
         ExprKind::SeqAbort(e) => {
             SeqAbort::compile(ctx, flags, spec.clone(), scope, top_id, e)
         }
-        ExprKind::Fresh(call) => CallSite::compile_fresh(ctx, flags, scope, top_id, call),
+        ExprKind::Fresh(call) => {
+            CallSite::compile_marked(ctx, flags, scope, top_id, call, SiteKind::Fresh)
+        }
+        ExprKind::SeqAwait(call) => {
+            CallSite::compile_marked(ctx, flags, scope, top_id, call, SiteKind::Await)
+        }
         ExprKind::SeqMachine(m) => {
             SeqMachine::compile(ctx, flags, spec.clone(), scope, top_id, m)
         }
@@ -566,6 +571,18 @@ fn compile_kind<R: Rt>(
                          for in live(..)",
                     )?;
                 }
+                for l in crate::expr::seq::idle_lives(spec) {
+                    ctx.env.warn(
+                        flags,
+                        &l,
+                        l.pos,
+                        l.end.0,
+                        "this step is a `live` read of a variable, which waits for \
+                         nothing: it completes at once on the value the variable holds, \
+                         as a plain read does. To wait for the variable's next event, \
+                         write await(..)",
+                    )?;
+                }
                 let lowered = crate::expr::seq::desugar(spec, &ctx.env, &scope.lexical)?;
                 if flags.contains(CFlag::ExpandSeq) {
                     let text = format_with_flags(
@@ -591,6 +608,14 @@ fn compile_kind<R: Rt>(
                 spec,
                 "`live` reads a variable live inside a seq step; it means nothing outside \
                  a seq block"
+            )
+        }
+        ExprKind::Await(_) => {
+            bailat!(
+                spec,
+                "`await(e)` waits for the next event of `e` as a step of a seq block: \
+                 write it as a statement of the seq, `let r = await(e)`, and use `r` \
+                 after"
             )
         }
         ExprKind::TryWith(_) => {

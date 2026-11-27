@@ -429,6 +429,11 @@ trace	select-strict-rule-aug2026/01_starved_fold_arm.gx
 trace	select-strict-rule-aug2026/02_live_fold_two_cycle.gx
 trace	select-strict-rule-aug2026/03_filter_select_qop.gx
 trace	select-wake-rematch-sep2026/00_arm_local_counter.gx
+trace	seq-await-nov2026/01_two_awaits_take_two_events.gx
+trace	seq-await-nov2026/02_an_event_during_an_earlier_step_is_taken.gx
+trace	seq-await-nov2026/03_an_event_before_the_run_is_waited_past.gx
+trace	seq-await-nov2026/04_between_runs_and_queued_runs.gx
+trace	seq-await-nov2026/05_a_statement_and_a_step_of_a_try.gx
 reject	N: missing match cases: nothing matches Array<iN> (N:N)	seq-refusal-names-oct2026/00_refusal_in_a_seq_step.gx
 reject	N: type mismatch Number does not contain fn(?#dest: [Log, `Stderr, `Stdout], v: 'a: unbound) -> 'a: unbound	set-eq-drops-cell-link-aug2026/00_list_fold_map_fn.gx
 trace	settle-order-jul2026/01_firstclass_hof_occurs_flap.gx

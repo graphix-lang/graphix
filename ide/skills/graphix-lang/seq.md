@@ -104,6 +104,27 @@ select arm is owed nothing). Otherwise it waits for the trigger's next
 fire, in every run: one triggered on a level that stands (`seq let c =
 cfg { .. }`) runs in the first run and stalls every later one. Read a
 level as a step, `let c = cfg`.
+**Waiting for the next event of a stream is `await(e)`**, a step of its
+own: `let r = await(lines);` (or a bare `await(e);`). A step that reads
+a variable completes at once on the value it holds, which for a stream
+is the event before: after a request is written, `let r = lines`,
+`live(lines)` and `once(live(lines))` all read the last reply. `await`
+completes on the first fire of `e` since the run started that no earlier
+step of the run read: one that arrived while an earlier step worked is
+taken at once, one from before the run or between runs is waited past,
+and two awaits in a row take two events. It holds one event: where every
+event matters, make the stream a `seqq`'s trigger. Nested in a larger
+expression it is refused; a step that is a bare `live(v)` is warned of,
+since it waits for nothing.
+
+```graphix,cases
+ok let t = 1; let ev = 1; seq t { let r = await(ev); r }
+ok let t = 1; let ev = 1; seq t { await(ev); let r = try { let a = await(ev); a } with(e) { 0 }; r }
+no "write it as a statement of the seq" let t = 1; let ev = 1; seq t { let n = await(ev) + 1; n }
+no "as a step of a seq block" let ev = 1; await(ev)
+no "keyword" let await = 1; await
+```
+
 A builtin under `live` is owed missed fires too: `until live(ready);
 live(count(ev))` counts an `ev` that fired while the `until` waited.
 A fire the step awake at the time read, by name or in a function it

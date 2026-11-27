@@ -5746,6 +5746,27 @@
         }
       ]
     },
+    "await": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "STRING",
+          "value": "await"
+        },
+        {
+          "type": "STRING",
+          "value": "("
+        },
+        {
+          "type": "SYMBOL",
+          "name": "_expression"
+        },
+        {
+          "type": "STRING",
+          "value": ")"
+        }
+      ]
+    },
     "never": {
       "type": "SEQ",
       "members": [
@@ -6071,6 +6092,10 @@
         {
           "type": "SYMBOL",
           "name": "live"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "await"
         },
         {
           "type": "SYMBOL",
@@ -7427,7 +7452,15 @@
               },
               {
                 "type": "STRING",
+                "value": "fresh"
+              },
+              {
+                "type": "STRING",
                 "value": "until"
+              },
+              {
+                "type": "STRING",
+                "value": "await"
               },
               {
                 "type": "STRING",

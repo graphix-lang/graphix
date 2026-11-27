@@ -2794,6 +2794,37 @@ and queued requests overwrite one another. Read through the reference
 too: <code>*r &lt;- *r + 1</code> reads the target live and accumulates.</p>
 <p>Keep persistent effects such as subscriptions and <code>tui::suspend</code> outside
 the block; steps can update their inputs and wait for their responses.</p>
+<h2 id="waiting-for-the-next-event"><a class="header" href="#waiting-for-the-next-event">Waiting for the next event</a></h2>
+<p>A step that reads a variable finishes at once with the value it holds.
+For state that is what you want. For a stream of events, such as the
+lines arriving on a socket, the value it holds is the last event, so
+reading it after sending a request gives the reply to the request
+before. <code>await(e)</code> is the step that waits for the next one:</p>
+<pre><code class="language-graphix fragment">let result = seq c {
+    Write::write_exact(c, buffer::from_string("ADD 1 2\n"))$;
+    let r1 = await(answers);
+    Write::write_exact(c, buffer::from_string("ADD 10 20\n"))$;
+    let r2 = await(answers);
+    [r1, r2]
+}
+</code></pre>
+<p><code>await(e)</code> finishes on the first event of <code>e</code> since this run started
+that no earlier step of the run has read:</p>
+<ul>
+<li>an event that arrived while an earlier step was still working is taken
+as soon as the <code>await</code> is reached, so a reply that comes back quickly
+is not lost;</li>
+<li>an event from before the run started, such as a greeting line, or from
+between two runs, is not this run's, and the <code>await</code> waits past it;</li>
+<li>each event finishes one <code>await</code>, so two in a row read two events.</li>
+</ul>
+<p><code>e</code> holds one event at a time. If two arrive before the seq reads, the
+first is gone; where every event matters, make the stream the trigger of
+a <code>seqq</code>, which queues them.</p>
+<p><code>await</code> is a step of its own: write <code>let r = await(e);</code> and use <code>r</code>
+after, or a bare <code>await(e);</code> to wait and discard. A step written
+<code>let r = live(e)</code> does not wait, it reads what <code>e</code> holds, and the check
+warns of it.</p>
 <h2 id="errors"><a class="header" href="#errors">Errors</a></h2>
 <p>A thrown error aborts the current request, resets the sequence, and
 rethrows to the enclosing handler. It is not a successful block output.

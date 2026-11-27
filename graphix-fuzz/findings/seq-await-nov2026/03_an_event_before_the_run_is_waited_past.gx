@@ -1,0 +1,4 @@
+// An event from before the run was started is not the run's: `await` waits for the
+// next, where `live(once(ev))` takes the one that stands unread. The cycle the
+// trigger fires in counts as the run. Expected: [[80, 9], [10, 6]].
+{ let step = 0; step <- select step { n if n < 12 => n + 1, _ => never() }; let ev = never<i64>(); ev <- select step { 1 => 10, 8 => 80, _ => never() }; let t = select step { 5 => null, _ => never() }; let a = seq t { let got = await(ev); (got, live(step)) }; let b = seq t { let got = live(once(ev)); (got, live(step)) }; (a, a ~ b) }

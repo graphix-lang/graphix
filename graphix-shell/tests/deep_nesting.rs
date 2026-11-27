@@ -237,6 +237,11 @@ fn program(shape: &str, d: usize) -> String {
             "live(".repeat(d),
             ")".repeat(d)
         ),
+        "await" => format!(
+            "let x = seq {{ let r = {}1{}; r }}",
+            "await(".repeat(d),
+            ")".repeat(d)
+        ),
         "never" => format!("let x: i64 = {}1{}", "never<i64>(".repeat(d), ")".repeat(d)),
         "any" => format!("let x = {}1{}", "any(".repeat(d), ")".repeat(d)),
         "abstract" => format!(
@@ -619,6 +624,7 @@ const SHAPES: &[&str] = &[
     "trywith",
     "structwith",
     "live",
+    "await",
     "never",
     "any",
     "abstract",

@@ -1,0 +1,5 @@
+// `await(e)` is the seq step that waits for the next event of a stream
+// (design/seq_blocks.md). One event completes one await: three in a row take three
+// events, the second in the cycle right after the first.
+// Expected (both engines): [40, 50, 90, 10].
+{ let step = 0; step <- select step { n if n < 12 => n + 1, _ => never() }; let ev = never<i64>(); ev <- select step { 4 => 40, 5 => 50, 9 => 90, _ => never() }; let t = select step { 2 => null, _ => never() }; seq t { let a = await(ev); let b = await(ev); let c = await(ev); (a, b, c, live(step)) } }

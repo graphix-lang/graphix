@@ -184,6 +184,7 @@ fn trigger_parens(t: &Expr, bound: bool) -> TriggerParens<'_> {
             | Never { .. }
             | Any { .. }
             | Live(_)
+            | Await(_)
             | StringInterpolate { .. } => true,
             Deref(e) | Not { expr: e } | Neg(e) | ByRef(_, e) => reads_bare(e),
             // a lambda last operand's body is a whole expression
@@ -326,6 +327,7 @@ fn opens_with_bracket(e: &ExprKind) -> bool {
         | Apply(_)
         | Any { .. }
         | Live(_)
+        | Await(_)
         | Never { .. }
         | Construct { .. }
         | TypeCast { .. }
@@ -448,6 +450,7 @@ fn head_min(e: &ExprKind) -> usize {
         StructWith(_) => "{ _ with".len(),
         Any { .. } => "any(".len(),
         Live(_) => "live(".len(),
+        Await(_) => "await(".len(),
         Never { typ: None, .. } => "never(".len(),
         Never { typ: Some(t), .. } => "never<>(".len() + flat_width(t),
         TypeCast { typ, .. } => "cast<>(".len() + flat_width(typ),
@@ -1617,6 +1620,7 @@ pub(super) fn prints_as_bare_postfix(e: &Expr) -> bool {
                     | Any { .. }
                     | Never { .. }
                     | Live(_)
+                    | Await(_)
             ),
         }
 }
@@ -2251,6 +2255,10 @@ impl PrettyDisplay for ExprKind {
                 write!(buf, "live")?;
                 pretty_print_exprs(buf, std::slice::from_ref(&**e), "(", ")", ",", true)
             }
+            Await(e) => {
+                write!(buf, "await")?;
+                pretty_print_exprs(buf, std::slice::from_ref(&**e), "(", ")", ",", true)
+            }
             Never { typ, args } => {
                 write!(buf, "never")?;
                 if let Some(t) = typ {
@@ -2277,7 +2285,7 @@ impl PrettyDisplay for ExprKind {
                 buf.kill_newline();
                 writeln!(buf, ")")
             }
-            SeqGuard(e) | SeqAbort(e) | Fresh(e) => e.fmt_pretty(buf),
+            SeqGuard(e) | SeqAbort(e) | Fresh(e) | SeqAwait(e) => e.fmt_pretty(buf),
             SeqCapture(c) => {
                 write!(buf, "capture(")?;
                 c.snapshot.fmt_pretty(buf)?;
@@ -2906,6 +2914,7 @@ impl ExprKind {
                 print_exprs(f, args, "(", ")", ", ")
             }
             ExprKind::Live(e) => write!(f, "live({e})"),
+            ExprKind::Await(e) => write!(f, "await({e})"),
             ExprKind::Never { typ, args } => {
                 match typ {
                     Some(t) => write!(f, "never<{t}>")?,
@@ -2925,7 +2934,10 @@ impl ExprKind {
             ExprKind::Struct(st) => write!(f, "{st}"),
             ExprKind::Qop { arg: e, .. } => write!(f, "{}?", Operand(e, suffixed(e))),
             ExprKind::Rethrow(e) => write!(f, "rethrow({e})"),
-            ExprKind::SeqGuard(e) | ExprKind::SeqAbort(e) | ExprKind::Fresh(e) => {
+            ExprKind::SeqGuard(e)
+            | ExprKind::SeqAbort(e)
+            | ExprKind::Fresh(e)
+            | ExprKind::SeqAwait(e) => {
                 write!(f, "{e}")
             }
             ExprKind::SeqCapture(c) => {

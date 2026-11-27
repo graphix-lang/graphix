@@ -113,4 +113,9 @@ pub const SEEDS: &[&str] = &[
     "// schedule-v1: cap=64 events=512; in0=i64:2 in1=i64:10; in1=i64:20; in0=i64:3; in1=i64:30\n{ let v = fresh in0 { let n = i64:0; on in1 { n <- n + i64:1 }; n }; v }",
     "// schedule-v1: cap=64 events=512; in0=i64:1; in0=i64:2; in0=i64:4; in0=i64:3; in0=i64:6\n{ let data = i64:0; data <- in0 * i64:10; select uniq(in0 % i64:2) { t if t == i64:0 => fresh t { (uniq(data), count(in0)) }, _ => never() } }",
     "// schedule-v1: cap=64 events=512; in0=i64:2 in1=i64:10; in1=i64:20; in0=i64:3\n{ let out = i64:0; let v = fresh let p = in0 { out <- p; let r = fresh in1 { count(in1) + p }; r }; (out, v) }",
+    // await: the next event of a stream in a seq, two in a row, one from
+    // before the run, a queued run's own
+    "// schedule-v1: cap=64 events=512; in0=i64:1; in1=i64:10; in1=i64:20; in0=i64:2; in1=i64:30\n{ let v = seq in0 { let a = await(in1); let b = await(in1); (in0, a, b) }; v }",
+    "// schedule-v1: cap=64 events=512; in1=i64:5; in0=i64:1; in1=i64:10; in0=i64:2; in1=i64:20\n{ let a = seq in0 { let r = await(in1); (in0, r) }; let b = seq in0 { let r = live(once(in1)); (in0, r) }; (a, b) }",
+    "// schedule-v1: cap=64 events=512; in0=i64:1; in0=i64:2; in1=i64:10; in1=i64:20; in1=i64:30\n{ let n = i64:0; let v = seqq in0 { n <- n + i64:1; let r = await(in1); (in0, r) }; (v, n) }",
 ];

@@ -52,19 +52,6 @@ fn at(clock: &str, v: Expr) -> Expr {
     .to_expr(pos)
 }
 
-/// `e` as `kind`, a new expression where `e` stood.
-fn renewed(e: &Expr, kind: ExprKind) -> Expr {
-    Expr {
-        id: ExprId::new(),
-        ori: e.ori.clone(),
-        pos: e.pos,
-        kind,
-        dec: e.dec.clone(),
-        str_form: e.str_form,
-        end: e.end,
-    }
-}
-
 /// Whether anything in `e` fires by itself: a read of a variable, live or
 /// not, a nested seq or on block. A call's function is where the call
 /// resolves it, and a lambda literal is a value.

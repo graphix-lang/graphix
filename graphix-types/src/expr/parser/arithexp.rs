@@ -1,7 +1,7 @@
 use super::{
     ONE_TUPLE, any, arrayexp,
     arrayexp::Index,
-    brace, cast, choice, comma_items, expr, fldname,
+    await_expr, brace, cast, choice, comma_items, expr, fldname,
     input::{Input, R},
     interpolateexp::interpolated,
     lambdaexp::{any_lambda, apply_args, lambda_ahead},
@@ -154,6 +154,7 @@ fn primary(i: &mut Input, key: bool) -> R<(Expr, Option<Parenthesized>)> {
         |i| cast(i).map(bare),
         |i| never_expr(i).map(bare),
         |i| live_expr(i).map(bare),
+        |i| await_expr(i).map(bare),
         |i| any(i).map(bare),
         |i| interpolated(i).map(bare),
         |i| brace(i).map(bare),

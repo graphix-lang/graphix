@@ -352,6 +352,43 @@ too: `*r <- *r + 1` reads the target live and accumulates.
 Keep persistent effects such as subscriptions and `tui::suspend` outside
 the block; steps can update their inputs and wait for their responses.
 
+## Waiting for the next event
+
+A step that reads a variable finishes at once with the value it holds.
+For state that is what you want. For a stream of events, such as the
+lines arriving on a socket, the value it holds is the last event, so
+reading it after sending a request gives the reply to the request
+before. `await(e)` is the step that waits for the next one:
+
+```graphix,fragment
+let result = seq c {
+    Write::write_exact(c, buffer::from_string("ADD 1 2\n"))$;
+    let r1 = await(answers);
+    Write::write_exact(c, buffer::from_string("ADD 10 20\n"))$;
+    let r2 = await(answers);
+    [r1, r2]
+}
+```
+
+`await(e)` finishes on the first event of `e` since this run started
+that no earlier step of the run has read:
+
+- an event that arrived while an earlier step was still working is taken
+  as soon as the `await` is reached, so a reply that comes back quickly
+  is not lost;
+- an event from before the run started, such as a greeting line, or from
+  between two runs, is not this run's, and the `await` waits past it;
+- each event finishes one `await`, so two in a row read two events.
+
+`e` holds one event at a time. If two arrive before the seq reads, the
+first is gone; where every event matters, make the stream the trigger of
+a `seqq`, which queues them.
+
+`await` is a step of its own: write `let r = await(e);` and use `r`
+after, or a bare `await(e);` to wait and discard. A step written
+`let r = live(e)` does not wait, it reads what `e` holds, and the check
+warns of it.
+
 ## Errors
 
 A thrown error aborts the current request, resets the sequence, and

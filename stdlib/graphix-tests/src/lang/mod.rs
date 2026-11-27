@@ -37,6 +37,7 @@ mod select;
 mod select_undecided;
 mod seq;
 mod seq_abort;
+mod seq_await;
 mod seq_calls;
 mod seq_errors;
 mod seq_let;

@@ -399,7 +399,8 @@ are in the docs named here.
   reset in place.
 - **`seq` / `seqq`** (`design/seq_blocks.md`): a machine node
   (`node/seq_machine.rs`), every statement a step; a step sees the world as
-  it stood at its entry (`seqq`: at enqueue); `live(e)` reads live. Every
+  it stood at its entry (`seqq`: at enqueue); `live(e)` reads live, and
+  `await(e)` is the step that waits for the next event of `e`. Every
   name a lowering binds starts with `#` (`is_lowered`).
 - **References** (`design/place_references.md`): `&e` is read-only and
   covariant, `&mut e` writable and invariant; references de-fuse.

@@ -1546,10 +1546,7 @@ pub struct CallSite<R: Rt> {
     /// A seq step issued this call while its function was bottom and
     /// unbound: its bind, when the function returns, is the step's birth.
     step_due: bool,
-    /// A `fresh` block's call (`design/fresh_blocks.md`): it holds no
-    /// instance until its argument first fires, and builds a new one,
-    /// born, at each fire.
-    fresh: bool,
+    kind: SiteKind,
     /// The imaged instance decoded at this update's dispatch: the sites
     /// its first update leaves imaged are held after it.
     decoded: bool,
@@ -1571,6 +1568,39 @@ pub struct CallSite<R: Rt> {
     /// The arena of the run-time bind that built `callee`'s instance:
     /// last, so the instance goes before its cells do.
     bound_arena: Option<crate::typ::tvar::ArenaRef>,
+}
+
+/// What a call site is beside a call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum SiteKind {
+    #[default]
+    Call,
+    /// A `fresh` block's call (`design/fresh_blocks.md`): it holds no
+    /// instance until its argument first fires, and builds a new one,
+    /// born, at each fire.
+    Fresh,
+    /// The `core::once(e)` a seq's `await(e)` is (`design/seq_blocks.md`):
+    /// its machine owes it no fire of `e` from before the run it is in.
+    Await,
+}
+
+impl SiteKind {
+    fn image(self) -> u8 {
+        match self {
+            SiteKind::Call => 0,
+            SiteKind::Fresh => 1,
+            SiteKind::Await => 2,
+        }
+    }
+
+    fn of_image(tag: u8) -> Result<Self, PackError> {
+        match tag {
+            0 => Ok(SiteKind::Call),
+            1 => Ok(SiteKind::Fresh),
+            2 => Ok(SiteKind::Await),
+            _ => Err(PackError::UnknownTag),
+        }
+    }
 }
 
 /// The registered builtin a site calls by name: its function is a
@@ -1625,7 +1655,7 @@ impl<R: Rt> CallSite<R> {
             share: None,
             absent: None,
             step_due: false,
-            fresh: false,
+            kind: SiteKind::Call,
             impl_reads: None,
             kept: None,
             copies: None,
@@ -1638,7 +1668,12 @@ impl<R: Rt> CallSite<R> {
 
     /// Whether this is a `fresh` block's call.
     pub(crate) fn is_fresh(&self) -> bool {
-        self.fresh
+        self.kind == SiteKind::Fresh
+    }
+
+    /// Whether this is a seq's `await`.
+    pub(crate) fn is_await(&self) -> bool {
+        self.kind == SiteKind::Await
     }
 
     fn note_kept_view(&mut self, ctx: &CompileCtx<R>) {
@@ -1830,22 +1865,24 @@ impl<R: Rt> CallSite<R> {
         Ok(Node::new(CallNode::Call(site)))
     }
 
-    /// The call a `fresh` block lowers to, `(|event| body)(event)`.
-    pub(crate) fn compile_fresh(
+    /// The call a lowering marks: a `fresh` block's `(|event| body)(event)`,
+    /// an `await`'s `core::once(e)`.
+    pub(crate) fn compile_marked(
         ctx: &mut CompileCtx<R>,
         flags: BitFlags<CFlag>,
         scope: &Scope,
         top_id: ExprId,
         call: &TArc<Expr>,
+        kind: SiteKind,
     ) -> Result<Node<R>> {
         let ExprKind::Apply(ApplyExpr { args, function }) = &call.kind else {
-            bail!("BUG: a fresh block lowers to a call")
+            bail!("BUG: a marked call is no call")
         };
         let mut node =
             Self::compile(ctx, flags, call.clone(), scope, top_id, args, function)?;
         match node.downcast_mut::<CallNode<R>>().and_then(CallNode::call_mut) {
-            Some(site) => site.fresh = true,
-            None => bail!("BUG: a fresh block's call is no call site"),
+            Some(site) => site.kind = kind,
+            None => bail!("BUG: a marked call is no call site"),
         }
         Ok(node)
     }
@@ -2204,7 +2241,7 @@ impl<R: Rt> CallSite<R> {
     /// constant of, in the compile task `ctx`, ahead of its first
     /// dispatch. A no-op for any other site.
     pub(crate) fn prebind(&mut self, ctx: &mut CompileCtx<R>) {
-        if self.fresh || !matches!(self.callee, Callee::DynamicUnbound) {
+        if self.is_fresh() || !matches!(self.callee, Callee::DynamicUnbound) {
             return;
         }
         let NodeView::Constant(c) = self.fnode.view() else { return };
@@ -2647,7 +2684,7 @@ impl<R: Rt> CallSite<R> {
     /// lambda literal), or dispatch a trait method by its self type.
     /// No-op for dynamic call sites.
     fn try_static_resolve(&mut self, ctx: &mut CompileCtx<R>) -> Result<Option<Node<R>>> {
-        if self.fresh || matches!(self.callee, Callee::Static { .. }) {
+        if self.is_fresh() || matches!(self.callee, Callee::Static { .. }) {
             return Ok(None);
         }
         let target: Option<Value> = match self.fnode.view() {
@@ -2950,12 +2987,13 @@ impl<R: Rt> CallSite<R> {
             return self.resident.set_bottom(fnode_tag.triggers() || arg_fired);
         }
         // the event with a value: one that goes bottom starts nothing over
-        let renew = self.fresh
+        let fresh = self.is_fresh();
+        let renew = fresh
             && self
                 .args
                 .values()
                 .any(|a| ctx.event.variables.get(&a.id).is_some_and(|tv| tv.is_fired()));
-        if self.fresh && !renew && matches!(self.callee, Callee::DynamicUnbound) {
+        if fresh && !renew && matches!(self.callee, Callee::DynamicUnbound) {
             for id in set.drain(..) {
                 ctx.event.variables.remove(&id);
             }
@@ -3388,7 +3426,7 @@ impl<R: Rt> CallSite<R> {
         };
         let static_target = Option::<StaticCallTarget>::decode(buf)?;
         let recursive_edge = bool::decode(buf)?;
-        let fresh = bool::decode(buf)?;
+        let kind = SiteKind::of_image(u8::decode(buf)?)?;
         let flags = image::flags_decode(buf)?;
         let scope = image::scope_decode(buf)?;
         let top_id = ExprId::decode(buf)?;
@@ -3400,7 +3438,7 @@ impl<R: Rt> CallSite<R> {
         let mut site =
             Self::unbound(spec, ftype, rtype, fnode, args, scope, flags, top_id);
         site.fork = fork;
-        site.fresh = fresh;
+        site.kind = kind;
         held.into_iter().for_each(|id| site.hold_static(ctx, id));
         site.arg_refs = arg_refs;
         site.callee = match imaged {
@@ -3634,7 +3672,7 @@ impl<R: Rt> CallSite<R> {
         }
         self.static_target.encode(buf)?;
         self.recursive_edge.load(Relaxed).encode(buf)?;
-        self.fresh.encode(buf)?;
+        buf.put_u8(self.kind.image());
         image::flags_encode(self.flags, buf)?;
         image::scope_encode(&self.scope, buf)?;
         self.top_id.encode(buf)?;

@@ -1,0 +1,3 @@
+// A bare `await(e);` waits and discards, and an await is a step in a try body.
+// Expected: [61, 8].
+{ let step = 0; step <- select step { n if n < 12 => n + 1, _ => never() }; let ev = never<i64>(); ev <- select step { 3 => 30, 6 => 60, _ => never() }; let t = select step { 1 => null, _ => never() }; seq t { await(ev); let r = try { let got = await(ev); got + 1 } with(e) { -1 }; (r, live(step)) } }

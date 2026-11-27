@@ -2471,6 +2471,25 @@ fn fresh_parses() {
 }
 
 #[test]
+fn await_parses() {
+    for s in [
+        "seq t { let r = await(ev); r }",
+        "seq t { await(ev); 1 }",
+        "seq t { let r = await(f(x) ~ y); r }",
+        "seq t { let r = try { let a = await(ev); a } with(e) { 0 }; r }",
+    ] {
+        let e = parse_one(s).unwrap();
+        assert_eq!(parse_one(&e.to_string()).unwrap(), e, "{s}");
+        assert_eq!(parse_one(&e.to_string_pretty(0)).unwrap(), e, "{s}");
+    }
+    assert!(matches!(parse_one("await(x)").unwrap().kind, ExprKind::Await(_)));
+    // it takes one expression, and `await` is no name
+    assert!(parse_one("await()").is_err());
+    assert!(parse_one("await(a, b)").is_err());
+    assert!(parse_one("let await = 1").is_err());
+}
+
+#[test]
 fn seq_parses() {
     for s in [
         "seq { 1 }",
@@ -3430,7 +3449,7 @@ fn source_error_does_not_expect_printed_data() {
         message,
         r####"at line: 1, column: 9 in module /test: Parse error at line: 1, column: 9
 Unexpected `;`
-Expected #[, mod, pub, use, catch, try, until, type, trait, impl, let, `&`, `|`, `'`, `*`, package, self, super, `!`, `r`, [<, `[`, select, seqq, seq, on, fresh, ```, cast, never, live, any, """, `"`, `{`, `(`, `-`, a value or duration:
+Expected #[, mod, pub, use, catch, try, until, type, trait, impl, let, `&`, `|`, `'`, `*`, package, self, super, `!`, `r`, [<, `[`, select, seqq, seq, on, fresh, ```, cast, never, live, await, any, """, `"`, `{`, `(`, `-`, a value or duration:
 
     let x = ;
             ^"####

@@ -664,6 +664,14 @@ fn live_expr(i: &mut Input) -> R<Expr> {
     Ok(ExprKind::Live(Arc::new(e)).to_expr(pos))
 }
 
+/// `await(e)`: a seq step that waits for the next event of `e`.
+fn await_expr(i: &mut Input) -> R<Expr> {
+    let pos = i.pos();
+    keyword(i, "await")?;
+    let e = parens(i, expr)?;
+    Ok(ExprKind::Await(Arc::new(e)).to_expr(pos))
+}
+
 fn any(i: &mut Input) -> R<Expr> {
     let pos = i.pos();
     keyword(i, "any")?;
@@ -1678,7 +1686,7 @@ static KEYWORDS: LazyLock<AHashMap<&str, Keyword>> = LazyLock::new(|| {
     let construct = [
         "mod", "let", "select", "type", "fn", "cast", "never", "if", "use", "rec",
         "catch", "try", "pub", "trait", "impl", "seq", "seqq", "until", "live", "mut",
-        "on", "fresh",
+        "on", "fresh", "await",
     ];
     // the compiler-known type and bound names among them: a user type of
     // one of those names would be unnameable, or silently the builtin
