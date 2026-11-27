@@ -102,6 +102,16 @@ value at the event the action does not happen, it is not paid later (`~!`); (4) 
 event's value can be bound, as `seq let` does. He asked to see real code before the
 details are fixed: the lowering, the admin port's handlers rewritten and what they
 showed are D58 in ~/ptmp/cr-discuss.md. -->
+<!-- 2026-11-27 claude: Eric ruled (2026-11-27, D58): each outer binding the block reads
+is sampled alone on the event (`k ~! v`, one sample a binding), since one snapshot of
+every read with no waiting cancels the whole block while any one read has no value; and
+a connect's right side, a call or the block's result that reads no variable is sampled
+on the event too, so a constant acts once an event. What the block makes itself (a
+`let`, a pattern bind, an async result) is left alone. My picks, not ruled on: a lambda
+written inside the block reads live, `live(e)` reads live, `on` is a keyword. One
+consequence to document: a stateful call in the block sees only the values at the events
+(`on k { count(x) }` counts the events, where `k ~ count(x)` counts every `x`). Real
+code and the runs: D58 in ~/ptmp/cr-discuss.md, ~/ptmp/on-block. -->
 ## 3. Not the sync subset
 
 An earlier design (`sync { let mut ..; for v in a { .. } }`, removed
