@@ -112,7 +112,7 @@ netidx = { workspace = true }
 netidx-core = { workspace = true }
 parking_lot = { workspace = true }
 poolshark = { workspace = true }
-reedline = { workspace = true }
+reedline = { workspace = true, features = ["external_printer"] }
 tokio = { workspace = true }
 triomphe = { workspace = true }
 

@@ -40,6 +40,7 @@
   - [Interface Files](./modules/interfaces.md)
   - [Dynamic Modules](./modules/dynamic.md)
 - [The Graphix Shell](./shell.md)
+- [Debugging a Running Program](./debugger.md)
 - [The Standard Library](./stdlib/overview.md)
   - [core](./stdlib/core.md)
   - [array](./stdlib/array.md)

@@ -56,6 +56,7 @@ use tokio::{
     task::{self, JoinHandle},
 };
 
+pub mod debug;
 mod gx;
 mod reconcile;
 mod rt;
@@ -440,6 +441,7 @@ enum ToGX<X: GXExt> {
     GetEnv {
         res: oneshot::Sender<Env>,
     },
+    Debug(gx::debug::Op<X>),
     /// Run a closure with the runtime's ExecState; the bridge for
     /// handle-side consumers that need `ctx.libstate`.
     WithCtx {

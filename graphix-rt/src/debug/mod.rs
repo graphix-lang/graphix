@@ -1,0 +1,677 @@
+//! The debugger's service (`design/debugger.md`): a REPL attached to the
+//! running program plus debugger commands, over any byte stream. Nothing
+//! listens unless an embedder calls [`Debugger::serve`] or one of the
+//! listeners, and the embedder makes the socket or the pipe, so who may
+//! connect is its own business: a session reads every value, runs any
+//! Graphix in the program and injects events.
+
+mod client;
+pub mod proto;
+
+pub use client::Client;
+
+use crate::{
+    CompExp, CompRes, GXExt, GXHandle, ToGX,
+    gx::debug::{Counts, Fired, Fused, Held, Op, Why, authored, held},
+};
+use anyhow::{Context, Result, anyhow, bail};
+use arcstr::ArcStr;
+use compact_str::{CompactString, format_compact};
+use graphix_compiler::{
+    BindId, MINT_BASE, PrintFlag, SourcePosition,
+    env::{Bind, Env},
+    expr::{Expr, ExprId, ModPath, Origin, Source},
+    format_with_flags,
+    seek::BindSource,
+    typ::{TVal, Type},
+};
+use log::warn;
+use netidx_core::atomic_id;
+use netidx_value::Value;
+use poolshark::local::LPooled;
+use proto::{Command, Outcome, Reply, Request, Response};
+use serde::{Deserialize, Serialize};
+use std::{
+    cmp::Ordering,
+    fmt::Write,
+    path::{Path, PathBuf},
+};
+use tokio::{
+    io::{
+        AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader,
+        Lines,
+    },
+    select,
+    sync::mpsc::{self, UnboundedReceiver},
+};
+use triomphe::Arc;
+
+atomic_id!(SessionId);
+
+/// The most bindings one answer lists.
+const LISTED: usize = 512;
+/// The most bindings one watch covers.
+const WATCHED: usize = 64;
+
+/// How a session shows a type.
+pub type ShowType = fn(&Type) -> CompactString;
+
+fn show_type(typ: &Type) -> CompactString {
+    format_with_flags(PrintFlag::DerefTVars, || format_compact!("{typ}"))
+}
+
+/// The debugger of one runtime. Cloning it is cheap; each connection it
+/// serves is a session of its own.
+pub struct Debugger<X: GXExt> {
+    gx: GXHandle<X>,
+    show: ShowType,
+}
+
+impl<X: GXExt> Clone for Debugger<X> {
+    fn clone(&self) -> Self {
+        Self { gx: self.gx.clone(), show: self.show }
+    }
+}
+
+impl<X: GXExt> Debugger<X> {
+    pub fn new(gx: GXHandle<X>) -> Self {
+        Self { gx, show: show_type }
+    }
+
+    /// Show types as `show` prints them.
+    pub fn with_types(self, show: ShowType) -> Self {
+        Self { show, ..self }
+    }
+
+    /// Serve one session over `stream` until the client closes it or the
+    /// runtime ends. What the session compiled is deleted with it.
+    pub async fn serve<S>(&self, stream: S) -> Result<()>
+    where
+        S: AsyncRead + AsyncWrite + Unpin,
+    {
+        let (rd, out) = tokio::io::split(stream);
+        let mut lines = BufReader::new(rd).lines();
+        let (tx, events) = mpsc::unbounded_channel();
+        let attached = Attached { gx: self.gx.clone(), id: SessionId::new() };
+        attached.op(Op::Attach { session: attached.id, events: tx })?;
+        let env = self.gx.get_env().await?;
+        let mut session = Session {
+            attached,
+            show: self.show,
+            out,
+            events,
+            shown: None,
+            kept: Vec::new(),
+            made: 0,
+            env,
+        };
+        session.run(&mut lines).await
+    }
+
+    /// Serve every connection `listener` accepts, each a session, until
+    /// the runtime ends.
+    #[cfg(unix)]
+    pub async fn listen_unix(&self, listener: tokio::net::UnixListener) -> Result<()> {
+        loop {
+            select! {
+                _ = self.gx.0.tx.closed() => break Ok(()),
+                conn = listener.accept() => {
+                    let (stream, _) = conn.context("accepting a debugger")?;
+                    self.spawn(stream)
+                }
+            }
+        }
+    }
+
+    /// Serve every client that connects to the pipe, each a session,
+    /// until the runtime ends: `first` is the pipe's first instance and
+    /// `next` makes each one after it.
+    #[cfg(windows)]
+    pub async fn listen_pipe(
+        &self,
+        first: tokio::net::windows::named_pipe::NamedPipeServer,
+        mut next: impl FnMut() -> std::io::Result<
+            tokio::net::windows::named_pipe::NamedPipeServer,
+        >,
+    ) -> Result<()> {
+        let mut server = first;
+        loop {
+            select! {
+                _ = self.gx.0.tx.closed() => break Ok(()),
+                conn = server.connect() => {
+                    conn.context("accepting a debugger")?;
+                    let waiting = next().context("making the pipe's next instance")?;
+                    self.spawn(std::mem::replace(&mut server, waiting))
+                }
+            }
+        }
+    }
+
+    fn spawn<S>(&self, stream: S)
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
+        let this = self.clone();
+        tokio::spawn(async move {
+            if let Err(e) = this.serve(stream).await {
+                warn!("a debugger session ended: {e:#}")
+            }
+        });
+    }
+}
+
+/// A session the runtime knows of, detached when dropped.
+struct Attached<X: GXExt> {
+    gx: GXHandle<X>,
+    id: SessionId,
+}
+
+impl<X: GXExt> Attached<X> {
+    fn op(&self, op: Op<X>) -> Result<()> {
+        let sent = self.gx.0.tx.send(ToGX::Debug(op));
+        sent.map_err(|_| self.gx.stopped("runtime is dead"))
+    }
+}
+
+impl<X: GXExt> Drop for Attached<X> {
+    fn drop(&mut self) {
+        let _ = self.op(Op::Detach { session: self.id });
+    }
+}
+
+/// The value an `eval` shows: its last expression, where that has one,
+/// and what its values print under. The next `eval` deletes it.
+struct Shown<X: GXExt> {
+    eval: u64,
+    env: Env,
+    expr: CompExp<X>,
+}
+
+struct Session<X: GXExt, W> {
+    attached: Attached<X>,
+    show: ShowType,
+    out: W,
+    events: UnboundedReceiver<Fired>,
+    shown: Option<Shown<X>>,
+    /// What the evals bound and declared, held so it lives as long as
+    /// the session.
+    kept: Vec<CompExp<X>>,
+    /// The evals and watches numbered so far.
+    made: u64,
+    /// The environment values print under: the last one a command read.
+    env: Env,
+}
+
+/// A binding's id as a target writes it after `#`: a minted id by its
+/// offset, one an image reserved by `r` and its number.
+fn handle(id: BindId) -> CompactString {
+    match id.inner().checked_sub(MINT_BASE) {
+        Some(n) => format_compact!("{n}"),
+        None => format_compact!("r{}", id.inner()),
+    }
+}
+
+fn of_handle(h: &str) -> Option<u64> {
+    match h.strip_prefix('r') {
+        Some(n) => n.parse::<u64>().ok().filter(|n| *n < MINT_BASE),
+        None => h.parse::<u64>().ok()?.checked_add(MINT_BASE),
+    }
+}
+
+fn printed(env: &Env, typ: &Type, v: &Value) -> ArcStr {
+    let mut s: LPooled<String> = LPooled::take();
+    let _ = write!(s, "{}", TVal { env, typ, v });
+    ArcStr::from(s.as_str())
+}
+
+fn file_of(ori: &Origin) -> Option<ArcStr> {
+    match &ori.source {
+        Source::File(p) => Some(format_compact!("{}", p.display()).as_str().into()),
+        Source::Netidx(p) => Some(ArcStr::from(&**p)),
+        Source::Vfs(m) => Some(m.clone()),
+        Source::Program | Source::Unspecified => None,
+    }
+}
+
+fn in_file(ori: &Origin, file: &str) -> bool {
+    match &ori.source {
+        Source::File(p) => p.ends_with(Path::new(file)),
+        Source::Vfs(m) => m.as_str() == file,
+        Source::Netidx(_) | Source::Program | Source::Unspecified => false,
+    }
+}
+
+fn by_place(a: &Arc<Bind>, b: &Arc<Bind>) -> Ordering {
+    let key = |b: &Arc<Bind>| (file_of(&b.ori), b.ori.load, b.pos, b.name.clone(), b.id);
+    key(a).cmp(&key(b))
+}
+
+/// Whether two bindings are instances of one written binding.
+fn same_place(a: &Arc<Bind>, b: &Arc<Bind>) -> bool {
+    a.pos == b.pos
+        && a.name == b.name
+        && (Arc::ptr_eq(&a.ori, &b.ori) || *a.ori == *b.ori)
+}
+
+/// `file:line` or `file:line:column`, as a target writes a place.
+fn place(target: &str) -> Option<(&str, i32, Option<i32>)> {
+    let (head, last) = target.rsplit_once(':')?;
+    let last = last.parse::<i32>().ok()?;
+    let lined =
+        head.rsplit_once(':').and_then(|(f, l)| Some((f, l.parse::<i32>().ok()?)));
+    match lined {
+        Some((file, line)) if !file.is_empty() => Some((file, line, Some(last))),
+        _ if !head.is_empty() && !head.ends_with(':') => Some((head, last, None)),
+        _ => None,
+    }
+}
+
+/// The bindings `target` names (`proto::Command`), in place order.
+fn resolve(env: &Env, target: &str) -> Result<LPooled<Vec<Arc<Bind>>>> {
+    let target = target.trim();
+    let mut found: LPooled<Vec<Arc<Bind>>> = LPooled::take();
+    if let Some(n) = target.strip_prefix('#') {
+        let id = of_handle(n).ok_or_else(|| anyhow!("#{n} is no binding's id"))?;
+        let ided = env.by_id.iter().filter(|(b, _)| b.inner() == id);
+        found.extend(ided.map(|(_, b)| b.clone()));
+        if found.is_empty() {
+            bail!("no binding has the id #{n}")
+        }
+    } else if let Some((file, line, column)) = place(target) {
+        let at = |b: &Bind| {
+            authored(env, b)
+                && b.pos.line == line
+                && column.is_none_or(|c| b.pos.column == c)
+                && in_file(&b.ori, file)
+        };
+        found.extend(env.by_id.iter().map(|(_, b)| b).filter(|b| at(b)).cloned());
+        if found.is_empty() {
+            bail!(
+                "no binding is introduced at {target} (inside fused code none is kept: \
+                 `print` the place for the block's inputs and output)"
+            )
+        }
+    } else {
+        let name = ModPath::from_iter(target.split("::"));
+        match env.lookup_bind(&ModPath::root(), &name) {
+            Ok(Some((_, b))) => found.extend(env.by_id.get(&b.id).cloned()),
+            Ok(None) | Err(_) => {
+                let named = env.by_id.iter().map(|(_, b)| b).filter(|b| b.name == target);
+                found.extend(named.cloned())
+            }
+        }
+        if found.is_empty() {
+            bail!("no binding is named {target}")
+        }
+    }
+    found.sort_by(by_place);
+    Ok(found)
+}
+
+/// Whether `list` shows `b`: one the program's author wrote, in `scope`
+/// (a module path or a file) where one is given.
+fn listed(env: &Env, b: &Bind, scope: Option<&str>) -> bool {
+    authored(env, b)
+        && match scope {
+            None => !matches!(b.ori.source, Source::Vfs(_)),
+            Some(s) if s.contains(['.', '/', '\\']) => in_file(&b.ori, s),
+            Some(s) => {
+                let module = ModPath::from_iter(s.split("::"));
+                b.scope == module
+                    || b.scope.starts_with(&*format_compact!("{}/", &**module))
+            }
+        }
+}
+
+/// The text of `spec` as its source wrote it, else as it prints.
+fn written(spec: &Expr) -> ArcStr {
+    let offset = |text: &str, at: SourcePosition| -> Option<usize> {
+        let mut lines = text.split_inclusive('\n');
+        let before: usize =
+            lines.by_ref().take((at.line - 1).max(0) as usize).map(str::len).sum();
+        let line = lines.next().unwrap_or("");
+        let column = (at.column - 1).max(0) as usize;
+        let within = line.char_indices().nth(column).map(|(i, _)| i);
+        Some(before + within.or((column == line.chars().count()).then_some(line.len()))?)
+    };
+    let text = &spec.ori.text;
+    let span = spec.end.get().and_then(|end| {
+        let (from, to) = (offset(text, spec.pos)?, offset(text, end)?);
+        text.get(from..to).filter(|s| !s.trim().is_empty())
+    });
+    match span {
+        Some(s) => ArcStr::from(s.trim_end()),
+        None => format_compact!("{spec}").as_str().into(),
+    }
+}
+
+fn source(s: &BindSource) -> proto::Source {
+    proto::Source {
+        text: written(&s.spec),
+        line: s.spec.pos.line,
+        column: s.spec.pos.column,
+    }
+}
+
+impl<X: GXExt, W: AsyncWrite + Unpin> Session<X, W> {
+    async fn send<T: Serialize>(&mut self, msg: &T) -> Result<()> {
+        let mut line = serde_json::to_vec(msg)?;
+        line.push(b'\n');
+        self.out.write_all(&line).await?;
+        Ok(self.out.flush().await?)
+    }
+
+    async fn run<R: AsyncBufRead + Unpin>(&mut self, lines: &mut Lines<R>) -> Result<()> {
+        self.send(&proto::Hello { graphix_debug: proto::VERSION }).await?;
+        let Some(hello) = lines.next_line().await? else { return Ok(()) };
+        match serde_json::from_str::<proto::Hello>(&hello) {
+            Ok(h) if h.graphix_debug == proto::VERSION => (),
+            Ok(h) => bail!("the client speaks version {}", h.graphix_debug),
+            Err(e) => bail!("the client's first line is no hello: {e}"),
+        }
+        loop {
+            select! {
+                line = lines.next_line() => match line? {
+                    None => break Ok(()),
+                    Some(line) if line.trim().is_empty() => (),
+                    Some(line) => {
+                        let response = match serde_json::from_str::<Request>(&line) {
+                            Ok(req) => Response {
+                                id: req.id,
+                                result: match self.command(req.cmd).await {
+                                    Ok(reply) => Outcome::Ok(reply),
+                                    Err(e) => {
+                                        Outcome::Err(format_compact!("{e:#}").as_str().into())
+                                    }
+                                },
+                            },
+                            Err(e) => Response {
+                                id: 0,
+                                result: Outcome::Err(
+                                    format_compact!("not a request: {e}").as_str().into(),
+                                ),
+                            },
+                        };
+                        self.send(&response).await?
+                    }
+                },
+                fired = self.events.recv() => match fired {
+                    // the runtime ended
+                    None => break Ok(()),
+                    Some(fired) => self.fired(fired).await?,
+                },
+            }
+        }
+    }
+
+    async fn fired(&mut self, fired: Fired) -> Result<()> {
+        let event = match fired {
+            Fired::Value { expr, value } => match &self.shown {
+                Some(s) if s.expr.id == expr => proto::Event::Value {
+                    eval: s.eval,
+                    value: printed(&s.env, &s.expr.typ, &value),
+                },
+                Some(_) | None => return Ok(()),
+            },
+            Fired::Cycled { .. } => return Ok(()),
+            Fired::Watch { watch, bind, cycle, value } => proto::Event::Fired {
+                watch,
+                binding: handle(bind.id),
+                name: bind.name.clone(),
+                cycle,
+                value: value.map(|v| printed(&self.env, &bind.typ, &v)),
+            },
+        };
+        self.send(&event).await
+    }
+
+    fn binding(&self, h: &Held) -> proto::Binding {
+        let b = &h.bind;
+        proto::Binding {
+            id: handle(b.id),
+            name: b.name.clone(),
+            scope: format_compact!("{}", b.scope).as_str().into(),
+            file: file_of(&b.ori),
+            line: b.pos.line,
+            column: b.pos.column,
+            typ: (self.show)(&b.typ).as_str().into(),
+            value: h.value.as_ref().map(|v| printed(&self.env, &b.typ, v)),
+            written: h.written,
+            instances: 1,
+        }
+    }
+
+    fn why(&self, w: &Why) -> proto::Why {
+        proto::Why {
+            binding: self.binding(&w.held),
+            source: w.source.as_ref().map(source),
+            reads: w.reads.iter().map(|r| self.why(r)).collect(),
+            again: w.again,
+        }
+    }
+
+    fn fused(&self, f: &Fused) -> Option<proto::Fused> {
+        let (typ, value) = f.source.fused.as_ref()?;
+        Some(proto::Fused {
+            source: source(&f.source),
+            typ: (self.show)(typ).as_str().into(),
+            value: value.as_ref().map(|v| printed(&self.env, typ, v)),
+            inputs: f.inputs.iter().map(|h| self.binding(h)).collect(),
+        })
+    }
+
+    /// The bindings `target` names as they stand, and the environment
+    /// they are printed under.
+    async fn held(&mut self, target: &str) -> Result<LPooled<Vec<Held>>> {
+        let target = CompactString::from(target);
+        let read = self.attached.gx.with_ctx(move |ctx| -> Result<_> {
+            let binds = resolve(&ctx.env, &target)?;
+            let held = binds.iter().map(|b| held(ctx, b)).collect::<LPooled<Vec<_>>>();
+            Ok((ctx.env.clone(), held))
+        });
+        let (env, held) = read.await??;
+        self.env = env;
+        Ok(held)
+    }
+
+    /// The one binding `target` names; where it names several, an error
+    /// that lists them by id.
+    async fn one(&mut self, target: &str) -> Result<Held> {
+        let mut held = self.held(target).await?;
+        if held.len() == 1 {
+            return Ok(held.pop().unwrap());
+        }
+        let mut msg: LPooled<String> = LPooled::take();
+        let _ =
+            write!(msg, "{target} names {} bindings; name one by its id:", held.len());
+        for h in held.iter().take(LISTED) {
+            let b = self.binding(h);
+            let file = b.file.as_deref().unwrap_or("");
+            let _ =
+                write!(msg, "\n  #{} {} at {file}:{}:{}", b.id, b.name, b.line, b.column);
+            if let Some(v) = &b.value {
+                let _ = write!(msg, " = {v}");
+            }
+        }
+        bail!("{}", msg.as_str())
+    }
+
+    async fn compile(&mut self, text: ArcStr) -> Result<CompRes<X>> {
+        let gx = self.attached.gx.clone();
+        let session = self.attached.id;
+        gx.exec(|res| ToGX::Debug(Op::Eval { session, text, rt: gx.clone(), res }))
+            .await?
+    }
+
+    /// Wait until a cycle has run after every write and compile this
+    /// session has asked for, passing on what happens meanwhile, and
+    /// return what `capture` last produced before it ended.
+    async fn cycled(&mut self, capture: Option<ExprId>) -> Result<Option<Value>> {
+        self.made += 1;
+        let token = self.made;
+        self.attached.op(Op::Cycle { session: self.attached.id, token })?;
+        let mut captured = None;
+        loop {
+            match self.events.recv().await {
+                None => bail!("the runtime ended"),
+                Some(Fired::Cycled { token: t }) if t == token => break Ok(captured),
+                Some(Fired::Value { expr, value }) if Some(expr) == capture => {
+                    captured = Some(value)
+                }
+                Some(fired) => self.fired(fired).await?,
+            }
+        }
+    }
+
+    async fn command(&mut self, cmd: Command) -> Result<Reply> {
+        let gx = self.attached.gx.clone();
+        let session = self.attached.id;
+        match cmd {
+            Command::Eval { text } => {
+                let mut res = self.compile(text).await?;
+                self.made += 1;
+                let eval = self.made;
+                self.env = res.env.clone();
+                let Some(last) = res.exprs.pop() else {
+                    self.shown = None;
+                    return Ok(Reply::Evaled { eval, typ: None });
+                };
+                self.kept.extend(res.exprs.drain(..));
+                let typ = last.output.then(|| (self.show)(&last.typ).as_str().into());
+                match last.output {
+                    true => self.shown = Some(Shown { eval, env: res.env, expr: last }),
+                    false => {
+                        self.shown = None;
+                        self.kept.push(last)
+                    }
+                }
+                self.cycled(None).await?;
+                Ok(Reply::Evaled { eval, typ })
+            }
+            Command::Print { target } => {
+                let held = match (self.held(&target).await, place(target.trim())) {
+                    (Ok(held), _) => held,
+                    (Err(e), None) => return Err(e),
+                    (Err(e), Some((file, line, column))) => {
+                        let file = PathBuf::from(file);
+                        let ask =
+                            |res| ToGX::Debug(Op::FusedAt { file, line, column, res });
+                        let found = gx.exec(ask).await?;
+                        let blocks: Vec<_> = found
+                            .iter()
+                            .take(LISTED)
+                            .filter_map(|f| self.fused(f))
+                            .collect();
+                        return match blocks.is_empty() {
+                            true => Err(e),
+                            false => Ok(Reply::Fused { blocks }),
+                        };
+                    }
+                };
+                let more = held.len().saturating_sub(LISTED);
+                let bindings =
+                    held.iter().take(LISTED).map(|h| self.binding(h)).collect();
+                Ok(Reply::Bindings { bindings, more })
+            }
+            Command::List { scope } => {
+                let read = gx.with_ctx(move |ctx| {
+                    let binds = ctx.env.by_id.iter().map(|(_, b)| b);
+                    let mut binds = binds
+                        .filter(|b| listed(&ctx.env, b, scope.as_deref()))
+                        .cloned()
+                        .collect::<LPooled<Vec<_>>>();
+                    binds.sort_by(by_place);
+                    let mut rows: LPooled<Vec<(Held, usize)>> = LPooled::take();
+                    let mut last: Option<&Arc<Bind>> = None;
+                    for b in binds.iter() {
+                        match (last, rows.last_mut()) {
+                            (Some(l), Some((_, n))) if same_place(l, b) => *n += 1,
+                            _ => rows.push((held(ctx, b), 1)),
+                        }
+                        last = Some(b)
+                    }
+                    (ctx.env.clone(), rows)
+                });
+                let (env, rows) = read.await?;
+                self.env = env;
+                let more = rows.len().saturating_sub(LISTED);
+                let row = |(h, n): &(Held, usize)| proto::Binding {
+                    instances: *n,
+                    ..self.binding(h)
+                };
+                let bindings = rows.iter().take(LISTED).map(row).collect();
+                Ok(Reply::Bindings { bindings, more })
+            }
+            Command::Set { target, value } => {
+                let h = self.one(&target).await?;
+                let res = self.compile(value).await?;
+                let Some(out) = res.exprs.last().filter(|e| e.output) else {
+                    bail!("the value to set is an expression")
+                };
+                let Some(v) = self.cycled(Some(out.id)).await? else {
+                    bail!("the expression has no value")
+                };
+                let shown = printed(&res.env, &out.typ, &v);
+                drop(res);
+                let (typ, tested) = (h.bind.typ.clone(), v.clone());
+                if !gx.with_ctx(move |ctx| typ.is_a(&ctx.env, &tested)).await? {
+                    let typ = (self.show)(&h.bind.typ);
+                    bail!("{shown} is not a {typ}: {} is not set", h.bind.name)
+                }
+                gx.set(h.bind.id, v)?;
+                self.cycled(None).await?;
+                Ok(Reply::Set { binding: self.binding(&h), value: shown })
+            }
+            Command::Watch { target } => {
+                let held = self.held(&target).await?;
+                if held.len() > WATCHED {
+                    bail!(
+                        "{target} names {} bindings, and a watch covers {WATCHED}",
+                        held.len()
+                    )
+                }
+                self.made += 1;
+                let ids = held.iter().map(|h| h.bind.id).collect();
+                self.attached.op(Op::Watch { session, watch: self.made, ids })?;
+                let bindings = held.iter().map(|h| self.binding(h)).collect();
+                Ok(Reply::Watching { watch: self.made, bindings })
+            }
+            Command::Unwatch { watch } => {
+                match gx
+                    .exec(|res| ToGX::Debug(Op::Unwatch { session, watch, res }))
+                    .await?
+                {
+                    true => Ok(Reply::Unwatched),
+                    false => bail!("this session has no watch {watch}"),
+                }
+            }
+            Command::Why { target } => {
+                let id = self.one(&target).await?.bind.id;
+                let why = gx.exec(|res| ToGX::Debug(Op::Why { id, res })).await?;
+                let why = why.ok_or_else(|| anyhow!("{target} is gone"))?;
+                Ok(Reply::Why { why: self.why(&why) })
+            }
+            Command::Info => {
+                let read = gx.with_ctx(|ctx| {
+                    let rt = &ctx.rt;
+                    let (cycle, timers, tasks) =
+                        (rt.cycle, rt.timers.len(), rt.tasks.len());
+                    (cycle, ctx.env.by_id.len(), ctx.fusion.fused(), timers, tasks)
+                });
+                let (cycle, bindings, fused, timers, tasks) = read.await?;
+                let Counts { sessions, watches } =
+                    gx.exec(|res| ToGX::Debug(Op::Counts { res })).await?;
+                let info = proto::Info {
+                    cycle,
+                    bindings,
+                    fused,
+                    timers,
+                    tasks,
+                    sessions,
+                    watches,
+                };
+                Ok(Reply::Info { info })
+            }
+        }
+    }
+}

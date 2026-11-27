@@ -94,6 +94,6 @@ hold it) and, where it absorbed an older document, `Supersedes:`.
 | `language_server.md` | roots, lazy checks, the last successful check, queries by target |
 | `testing.md` | how `run!` fixtures run; what a landing owes |
 | `debugging.md` | what a running program reports and where; scoped tracing and every debug environment variable |
-| `debugger.md` | DESIGNED, NOT BUILT: a REPL attached to the running program over a socket, with debugger commands (`why`, watch, pause, inject) |
+| `debugger.md` | a REPL attached to the running program over a socket, with debugger commands; phase 1 built (`print`, `list`, `watch`, `set`, `why`, the fused box), pause and node-level reasons designed |
 | `stdlib_notes.md` | notes on single packages |
 

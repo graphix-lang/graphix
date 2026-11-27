@@ -1,0 +1,146 @@
+# Debugging a Running Program
+
+When a Graphix program goes wrong it usually does nothing at all: a value
+never arrives, so everything that reads it waits. The debugger lets you
+ask a running program what it holds and why, from a second terminal,
+without stopping it.
+
+Start the program with `--debug`:
+
+```bash
+graphix --debug ./myprogram.gx
+```
+
+It prints where its debugger listens (`debugger: graphix debug ...`) and
+runs as usual. In another terminal, attach:
+
+```bash
+graphix debug
+```
+
+With one program offering a debugger that is all it takes. With several,
+name the one you mean by its process id or the socket's path.
+
+## Asking
+
+`print` shows a binding's type, its value, and the cycle that last wrote
+it. `list` shows every binding your program introduces.
+
+```text
+debug> print price
+price: i64 = 10    #4251 myprogram.gx:3:5, written in cycle 0
+debug> print total
+total: i64 has no value    #4253 myprogram.gx:5:5, none since cycle 0
+```
+
+`why` is the question to ask of a binding with no value. It shows the
+`let` that binds it and what that reads, and follows each read that has no
+value back to where the nothing starts:
+
+```text
+debug> why total
+total: i64 has no value    #4253 myprogram.gx:5:5, none since cycle 0
+  let total = price * qty
+  it reads:
+    price: i64 = 10    #4251 myprogram.gx:3:5, written in cycle 0
+    qty: i64 has no value    #4252 myprogram.gx:4:5, none since cycle 0
+      let qty = a[7]$
+      it reads:
+        a: Array<i64> = [1, 2, 3]    #4250 myprogram.gx:2:5, written in cycle 0
+      everything it reads has a value: the nothing starts in this expression
+```
+
+Here `total` waits on `qty`, and `qty` is `a[7]$` over a three-element
+array: the index fails and the `$` drops the error, which the program
+also reported on its stderr.
+
+`watch` reports each time a binding is written, until you `unwatch` it:
+
+```text
+debug> watch tick
+watch 1: tick: i64 = 41    #4249 myprogram.gx:1:5, written in cycle 96
+tick = 42    watch 1, cycle 98
+tick = 43    watch 1, cycle 100
+debug> unwatch 1
+```
+
+## Naming a binding
+
+A command's target is one of
+
+- a name, as the top of your program sees it: `price`, `net::retries`;
+- a place: `myprogram.gx:12`, or `myprogram.gx:12:5` for a line and column;
+- an id, as an answer shows it: `#4251`.
+
+A binding inside a function exists once for every call of the function,
+so a name or a place can stand for several. `print` shows them all; `why`
+and `set` take one, and list the ids to choose from when you name several.
+
+## Evaluating and injecting
+
+A line that is not a command is Graphix, evaluated in the running program
+exactly as a REPL input is. It can read anything, bind new names, and
+write:
+
+```text
+debug> price * 3
+-: i64
+30
+debug> let fee = price / 10
+debug> price <- 12
+```
+
+The value of the last expression you evaluate is shown again each time it
+changes, until you evaluate something else. What you bind lasts until you
+detach. Start a line with `eval` when its first word is also a command's
+name.
+
+`set` delivers a value to any binding, as if the program had written it:
+
+```text
+debug> set price = 100
+price <- 100
+```
+
+A binding computed from others keeps the value you set until one of them
+fires again.
+
+## Native code
+
+Code that compiled to native code keeps no bindings, so there are none to
+print inside it. Ask about a place there and the debugger shows the fused
+block that computes it instead: its text, what it last produced, and the
+bindings it reads, which you can `set`.
+
+```text
+debug> print myprogram.gx:7
+fused code keeps no binding here; it is inside:
+a fused block at line 10, column 14: i64 = 21
+  scale(price)
+  it reads:
+    price: i64 = 10    #4251 myprogram.gx:3:5, written in cycle 0
+```
+
+Run the program with `--no-fusion` to see inside.
+
+## Scripts and other programs
+
+`-c` runs one command and exits, and may be given several times; lines
+piped to `graphix debug` are run the same way. The exit status is 1 if a
+command was refused.
+
+```bash
+graphix debug -c 'why total' -c 'print price'
+```
+
+`--debug=PATH` chooses the socket. By default it is in your runtime
+directory (`$XDG_RUNTIME_DIR/graphix/`), named for the process, and only
+you can open it. Anyone who can open it can read every value in the
+program and run code in it, so treat the socket as you would the
+program's own memory.
+
+The debugger speaks lines of JSON over the socket, so another program can
+drive it. An application that embeds Graphix offers it over any byte
+stream with `graphix_rt::debug::Debugger`.
+
+`help` lists the commands.

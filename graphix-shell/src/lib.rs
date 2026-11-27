@@ -42,6 +42,7 @@ use tokio::{
 mod cache;
 use cache::Entry;
 mod completion;
+pub mod debug;
 pub mod fmt;
 mod input;
 pub mod lsp_backend;
@@ -413,6 +414,7 @@ struct Session<X: GXExt> {
     /// the runtime stopped.
     exit: Option<oneshot::Receiver<i32>>,
     keys: tokio::task::JoinHandle<()>,
+    _debug: Option<debug::Offered>,
 }
 
 impl<X: GXExt> Session<X> {
@@ -578,6 +580,11 @@ pub struct Shell<X: GXExt> {
     /// program arguments to pass to the graphix script
     #[builder(default)]
     program_args: Vec<ArcStr>,
+    /// Offer the program's debugger on this socket (a named pipe on
+    /// Windows), which `graphix debug` attaches to
+    /// ([`debug::socket_of`] is where it looks for a process).
+    #[builder(setter(strip_option), default)]
+    debug: Option<std::path::PathBuf>,
     /// The packages registered into the shell, in registration order. Each
     /// package is asked, at init, to register its builtins/modules, to supply a
     /// `main_program`, and (per displayed value) whether it has a custom
@@ -1146,6 +1153,10 @@ impl<X: GXExt> Shell<X> {
         let mut signals = KeySignals::new()?;
         let (tx, from_gx) = mpsc::channel(100);
         let gx = self.init(tx).await?;
+        let _debug = match &self.debug {
+            Some(path) => Some(debug::offer(&gx, path)?),
+            None => None,
+        };
         let exit = self.exit.take().expect("init installs the exit request");
         let script = self.mode.file_mode();
         // Armed before the first cycle: a program may wedge inside
@@ -1163,7 +1174,7 @@ impl<X: GXExt> Shell<X> {
                 }
             })
         };
-        Ok(Session { gx, from_gx, exit: Some(exit), keys })
+        Ok(Session { gx, from_gx, exit: Some(exit), keys, _debug })
     }
 }
 

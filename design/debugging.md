@@ -10,6 +10,17 @@ a seq its current step. Found by reading; not run. (a-language-08) -->
 debugger, a REPL attached to the running program over a unix socket with debugger
 commands (why, watch, pause and step, inject), not a --trace flag. Its design is
 design/debugger.md, written before it is built. -->
+<!-- 2026-11-27 claude: Eric ruled on the design's open questions (2026-11-27, D64): the
+service lives in graphix-rt, no new crate; eval may do anything; set reaches any
+binding; the flag and socket names stand as design/debugger.md writes them. Phase 1 is
+being built. -->
+<!-- 2026-11-27 claude: Phase 1 of the debugger is built (design/debugger.md): graphix
+--debug offers a socket, graphix debug attaches, and a session has eval, print, list,
+set, watch and why at the binding level, with a place inside fused code answered by the
+block's inputs and output. Pins: stdlib/graphix-tests/tests/shared/debugger.rs and
+graphix-shell/tests/shell/debugger.rs. What remains of this CR is phases 2 and 3 there:
+pause, step and break; reasons inside a select, a seq, a call and a sample; an
+instance's call path; completion in the client; live values in the editor. -->
 # Debugging
 
 Status: current principle.

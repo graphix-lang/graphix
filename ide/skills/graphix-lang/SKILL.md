@@ -39,9 +39,19 @@ can trust as written. A claim about what the check does goes in one.
 graphix --check prog.gx     # parse + typecheck only
 graphix prog.gx             # run
 graphix --expand prog.gx    # check, and print every seq's lowered machine
-graphix --no-fusion prog.gx # node-walk only (unchecked-arithmetic diagnostics live here)
+graphix --no-fusion prog.gx # node-walk only
 graphix fmt prog.gx         # format in place (--check, --stdout)
+graphix --debug prog.gx     # run, offering a debugger; then, from another shell:
+graphix debug -c 'why x'    # why x has no value; also print, list, watch, set, any Graphix
 ```
+
+**When a program does nothing**, read its stderr first (a failed operator
+and an error a `$` dropped are named there), then ask it: run it with
+`--debug` and `graphix debug -c 'why NAME'` walks from a binding with no
+value back to the expression where the nothing starts. A target is a name,
+a place (`prog.gx:12`) or an id an answer showed (`#88`); `-c` may be
+repeated, and any line that is not a command is evaluated as Graphix in
+the running program (`-c 'x + 1'`, `-c 'set x = 5'`).
 
 `#[native]` on an expression asserts it fuses whole into native code: a
 build refuses it where anything stays in the node-walk. Inside a function

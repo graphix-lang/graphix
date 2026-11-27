@@ -296,6 +296,16 @@ impl<R: Rt> Update<R> for FusedKernel<R> {
     }
 
     fn refs(&self, refs: &mut Refs) {
+        if refs.seeks_inside(&self.spec)
+            || self.static_holds.iter().any(|h| refs.seeks_callee(h.id))
+        {
+            let valued = !self.resident.tag().is_bottom() && !self.resident.is_sentinel();
+            let produced = valued.then(|| self.resident.value_cloned());
+            let fused = Some((self.typ().clone(), produced));
+            refs.sought(Arc::new(self.spec.clone()), fused, |r| {
+                self.feeders.iter().for_each(|n| n.refs(r))
+            })
+        }
         refs.static_holds(&self.static_holds);
         self.feeders.iter().for_each(|n| n.refs(refs))
     }

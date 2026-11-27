@@ -360,6 +360,8 @@ impl<N> Roots<N> {
     }
 }
 
+pub(crate) mod debug;
+
 pub(super) struct GX<X: GXExt> {
     ctx: ExecState<GXRt<X>>,
     nodes: Roots<Node<GXRt<X>>>,
@@ -399,6 +401,8 @@ pub(super) struct GX<X: GXExt> {
     /// `catch(e) expr` advances it so later inputs compile under its
     /// coverage. File loads do not touch it.
     scope: Scope,
+    /// The debugger sessions attached.
+    debug: debug::Sessions,
 }
 
 impl<X: GXExt> GX<X> {
@@ -452,6 +456,7 @@ impl<X: GXExt> GX<X> {
             settle_waiters: Vec::new(),
             trace: None,
             scope: Scope::root(),
+            debug: debug::Sessions::default(),
             program: None,
             program_fused: 0,
             restored: false,
@@ -748,6 +753,9 @@ impl<X: GXExt> GX<X> {
                 }
             }
         });
+        if !self.debug.is_empty() {
+            self.debug_cycle(&mut batch)
+        }
         // before the send loop, which may compile roots for the next cycle
         self.ctx.event.clear();
         self.ctx.rt.updated.clear();
@@ -1010,10 +1018,12 @@ impl<X: GXExt> GX<X> {
                     self.record_compiled(&r);
                     let _ = res.send(r);
                 }
+                ToGX::Debug(op) => self.debug_op(op).await,
                 ToGX::Delete { id } => {
                     if let Some(mut n) = self.nodes.remove(&id) {
                         n.delete(&mut self.ctx.view());
                     }
+                    self.debug.forget(&id);
                     debug!("delete {id:?}");
                     batch.push(GXEvent::Env(self.ctx.env.clone()));
                 }

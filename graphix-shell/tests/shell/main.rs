@@ -16,6 +16,7 @@ mod check_numeric_singleton;
 mod check_whole_script;
 mod checked_float_inline;
 mod constructor_image;
+mod debugger;
 mod default_check_cost;
 mod effect_order;
 mod elab_audit;

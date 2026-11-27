@@ -8,11 +8,11 @@
 #[cfg(target_endian = "big")]
 compile_error!("graphix supports little-endian targets only");
 pub use graphix_types::{
-    AbstractTypeRegistry, BindId, CFlag, LambdaId, LambdaInstanceId, LibState, PrintFlag,
-    SourcePosition, abstract_value, block_component, dbg_flag, defetyp, env, err, errf,
-    expr, format_with_flags, ide, is_block_component, is_do_block, is_fn_block,
-    is_lowered, is_method_block, list, mod_root, place_component, reference, rep,
-    shared_map, tracked, typ, valarray_of,
+    AbstractTypeRegistry, BindId, CFlag, LambdaId, LambdaInstanceId, LibState, MINT_BASE,
+    PrintFlag, SourcePosition, abstract_value, block_component, dbg_flag, defetyp, env,
+    err, errf, expr, format_with_flags, ide, is_block_component, is_do_block,
+    is_fn_block, is_lowered, is_method_block, list, mod_root, place_component, reference,
+    rep, shared_map, tracked, typ, valarray_of,
 };
 pub(crate) use graphix_types::{
     AddrMap, AddrSet, CAST_ERR, CAST_ERR_TAG, Restore, profile, stack,
@@ -30,6 +30,7 @@ pub mod node;
 pub mod node_shape;
 pub(crate) mod perfdbg;
 pub mod prune;
+pub mod seek;
 
 pub use node::{WriteTarget, error::diagnostic_site, module::check_script_sig};
 pub use stack::{
@@ -320,6 +321,8 @@ pub struct Refs {
     /// Collect each static hold of the nodes walked once, by its address
     /// ([`Refs::holders`]).
     holders: Option<AHashMap<usize, (BindId, ExprId)>>,
+    /// What a debugger's walk looks for (`seek.rs`).
+    seek: Option<Box<seek::Seek>>,
 }
 
 impl Refs {

@@ -131,6 +131,13 @@ fn finish(dir: &Path, child: Child) -> Ran {
     }
 }
 
+/// The output of `cmd`, run to its end with its stdin closed, under the
+/// deadline [`graphix`] runs under.
+pub fn output(mut cmd: Command) -> std::process::Output {
+    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    within_deadline(cmd.spawn().expect("run graphix"))
+}
+
 /// The child's output once it exits. One still running after [`HANG`] is
 /// sent SIGABRT, so systemd-coredump keeps its threads' stacks, and the
 /// test fails naming the pid to read them by.

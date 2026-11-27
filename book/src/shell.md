@@ -608,7 +608,8 @@ arith error in file ./myprogram.gx at line: 10, column: 32 "attempt to divide by
 ```
 
 When a program does nothing, look here first: a value that never
-arrives is very often an error a `$` dropped.
+arrives is very often an error a `$` dropped. Where nothing failed, ask
+the running program: see [Debugging a Running Program](./debugger.md).
 
 ### Logging
 

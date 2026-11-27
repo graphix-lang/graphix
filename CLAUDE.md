@@ -37,7 +37,8 @@ Rust workspace:
   fusion/JIT; re-exports graphix-types' modules (`graphix_compiler::
   {expr, typ, env}`). Entry point `compile()` in `lib.rs`.
 - **graphix-rt**: the runtime that executes node graphs on a thread of
-  its own, driven through `GXHandle`; embedder extensions via `GXExt`.
+  its own, driven through `GXHandle`; embedder extensions via `GXExt`;
+  the debugger's service (`debug`).
 - **graphix-package**: package manager (loading, vendoring, standalone
   builds). **graphix-derive**: proc macros (`defpackage!`).
 - **graphix-shell**: REPL and CLI; the binary is `graphix`.
@@ -87,6 +88,8 @@ cargo run --bin graphix -- file.gx       # run
 cargo run --bin graphix -- --check file.gx     # compile + typecheck only
 cargo run --bin graphix -- --expand file.gx    # check + print each seq's lowered machine
 cargo run --bin graphix -- fmt file.gx         # format in place (--check, --stdout; stdin when no file)
+cargo run --bin graphix -- --debug file.gx     # run, offering the debugger on a socket
+cargo run --bin graphix -- debug -c 'why x'    # ask the running program (print, list, watch, set, eval)
 ```
 
 Tests run in parallel by design (the compiler supports many instances
@@ -427,6 +430,15 @@ are in the docs named here.
   body's view reads its own first.
 
 ## Debugging
+
+**The debugger** (`design/debugger.md`): `graphix --debug prog.gx` offers
+a running program's debugger and `graphix debug` attaches: a REPL in the
+program plus `print`, `list`, `watch`, `set` and `why`, which walks from a
+binding with no value to where the nothing starts. The service is
+`graphix_rt::debug` (an embedder hands it a stream or a listener), its
+hooks `graphix-rt/src/gx/debug.rs`, and what it asks of the node graph
+rides `Update::refs` (`graphix-compiler/src/seek.rs`). A debugger that
+changes what a program computes is a bug.
 
 `TRACE` (`set_trace`, `with_trace(enable, spec, f)`, `tdbg!`) scopes
 compiler tracing to one expression — the stdlib typechecks on every

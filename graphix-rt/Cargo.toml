@@ -39,6 +39,7 @@ rand = { workspace = true }
 regex = { workspace = true }
 serde = { workspace = true }
 serde_derive = { workspace = true }
+serde_json = { workspace = true }
 smallvec = { workspace = true }
 tokio = { workspace = true }
 triomphe = { workspace = true }

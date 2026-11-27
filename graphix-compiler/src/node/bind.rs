@@ -1240,9 +1240,17 @@ impl<R: Rt> Update<R> for Bind<R> {
     }
 
     fn refs(&self, refs: &mut Refs) {
+        let mut sought = false;
         self.pattern.ids(&mut |id| {
             refs.bound.insert(id);
+            sought |= refs.seeks(id);
         });
+        if sought {
+            refs.sought(self.spec.clone(), None, |r| self.node.refs(r))
+        }
+        if refs.seeks_inside(&self.spec) {
+            self.pattern.ids(&mut |id| refs.defines(id))
+        }
         refs.static_holds(&self.static_hold);
         self.node.refs(refs);
     }

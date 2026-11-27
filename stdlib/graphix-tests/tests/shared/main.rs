@@ -6,6 +6,7 @@
 const TEST_REGISTER: &[&dyn graphix_package::Package<graphix_rt::NoExt>] =
     graphix_package::package_refs!();
 
+mod debugger;
 mod embedding;
 mod hook_loan;
 mod queue_credits;

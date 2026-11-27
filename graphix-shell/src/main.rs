@@ -132,6 +132,18 @@ enum Command {
     /// Run the Language Server Protocol server (communicates over stdio).
     /// Editors typically launch this automatically; you don't usually run it directly.
     Lsp,
+    /// Attach to a running program that offers its debugger (graphix
+    /// --debug FILE): ask what a binding holds and why, watch it, set
+    /// it, and evaluate Graphix in the program. `help` lists the commands
+    Debug {
+        /// the socket's path or the program's process id; with neither,
+        /// the one program that offers a debugger
+        target: Option<String>,
+        /// run this command and exit instead of reading commands; may
+        /// be given more than once
+        #[arg(short = 'c', long = "command")]
+        commands: Vec<String>,
+    },
     /// Format graphix source: each named file in place, or stdin to
     /// stdout when no file is named. Width and indent come from the
     /// nearest graphixfmt.json at or above the file, else the one in the
@@ -191,6 +203,11 @@ struct Params {
     /// neither read nor write the image cache
     #[arg(long = "no-cache")]
     no_cache: bool,
+    /// offer the program's debugger on a socket only this user can open
+    /// (`graphix debug` attaches to it): --debug=PATH, or by default one
+    /// under the user's runtime directory, named for the process
+    #[arg(long, value_name = "PATH", num_args = 0..=1, require_equals = true)]
+    debug: Option<Option<PathBuf>>,
     /// write the image cache and exit
     #[arg(long, conflicts_with_all = ["no_cache", "check", "expand"])]
     warm: bool,
@@ -422,6 +439,10 @@ fn tokio_main(
             (false, false) => CacheMode::On,
         });
         shell = shell.fusion_stats(p.fusion_stats);
+        if let Some(path) = p.debug {
+            let ours = || graphix_shell::debug::socket_of(std::process::id());
+            shell = shell.debug(path.unwrap_or_else(ours));
+        }
         {
             let net_config = net_config.clone();
             let publish = p.publish_timeout.map(Duration::from_secs);
@@ -590,6 +611,12 @@ fn main() -> Result<()> {
         Some(Command::Lsp) => {
             let _logger = start_logger(p.log_dir.as_deref(), "warn")?;
             return graphix_shell::lsp_backend::run();
+        }
+        Some(Command::Debug { target, commands }) => {
+            return graphix_shell::debug::run(graphix_shell::debug::Args {
+                target,
+                commands,
+            });
         }
         Some(Command::Fmt { files, check, stdout, interface, width, indent }) => {
             return graphix_shell::fmt::run(graphix_shell::fmt::Args {
