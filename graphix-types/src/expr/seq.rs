@@ -2214,6 +2214,13 @@ fn shadow_step(e: &Expr, map: &mut Names) {
                 // a glob `use` in a seq body. probe:
                 // design/review-2026-11-16/repro/t-seq-glob-use-drops-redirects.gx
                 // (t-seq-03)
+                // 2026-11-27 claude: An on block shares this rewrite (expr::seq::on),
+                // so it has the same hole: `on k { let m = { use str::*; step }; out <-
+                // m }` reads `step` live and writes at every step, where the same block
+                // with no glob `use` writes at each `k` ([-1, 0, 1, 2, ..] against [-1,
+                // 2, 5, 7] over an eight-step clock with `k` at 2, 5 and 7). In an on
+                // block a read left live can feed a write of its own target. The fix
+                // proposed here covers both.
                 if u.is_glob() {
                     return map.clear();
                 }
