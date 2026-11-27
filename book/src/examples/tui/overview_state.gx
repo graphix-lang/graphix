@@ -3,12 +3,14 @@ use tui::{line, input_handler::{Event, input_handler, on_press}, list::list};
 let selected_item = 0;
 let items = [line("Item 1"), line("Item 2"), line("Item 3")];
 
-let handle = |e: Event| on_press(e, |k| select k.code {
-    d@ `Down => {
-        selected_item <- d ~ (selected_item + 1) % array::len(items);
-        `Stop
-    },
-    _ => `Continue
+let handle = |e: Event| on_press(e, |k| on k {
+    select k.code {
+        `Down => {
+            selected_item <- (selected_item + 1) % array::len(items);
+            `Stop
+        },
+        _ => `Continue
+    }
 });
 
 // UI automatically reflects the change

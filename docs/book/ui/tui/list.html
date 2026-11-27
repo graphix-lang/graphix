@@ -222,18 +222,20 @@ let items = [
 let last = array::len(items) - 1;
 let selected = 0;
 
-let handle_event = |e: Event| on_press(e, |k| select k.code {
-    k@`Up if selected &gt; 0 =&gt; {
-        selected &lt;- (k ~ selected) - 1;
-        `Stop
-    },
-    k@`Down if selected &lt; last =&gt; {
-        selected &lt;- (k ~ selected) + 1;
-        `Stop
-    },
-    k@`Home =&gt; { selected &lt;- k ~ 0; `Stop },
-    k@`End =&gt; { selected &lt;- k ~ last; `Stop },
-    _ =&gt; `Continue
+let handle_event = |e: Event| on_press(e, |k| on k {
+    select k.code {
+        `Up if selected &gt; 0 =&gt; {
+            selected &lt;- selected - 1;
+            `Stop
+        },
+        `Down if selected &lt; last =&gt; {
+            selected &lt;- selected + 1;
+            `Stop
+        },
+        `Home =&gt; { selected &lt;- 0; `Stop },
+        `End =&gt; { selected &lt;- last; `Stop },
+        _ =&gt; `Continue
+    }
 });
 
 input_handler(

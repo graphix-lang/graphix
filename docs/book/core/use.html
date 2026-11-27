@@ -262,16 +262,13 @@ module: <code>use self::sub::x</code> may stand above <code>mod sub;</code>. Mod
 names are visible whatever their order; a value is not, because a
 module's body runs where its <code>mod</code> statement stands, so a sub-module
 that imports a parent's value must be declared below that value.</p>
-<p>A type name an import brings means that import throughout its statement
-list, above the <code>use</code> as well: <code>type Op = {mode: Mode}</code> written above
-<code>use sys::fs::Mode</code> names the imported <code>Mode</code>, never an outer type of
-that name. A statement above the <code>use</code> that needs the type while it
-compiles (a cast, a type test, a <code>let</code> that takes the type apart, an
-abstract constructor, a trait written as a parameter's type) is refused,
-and the error names the <code>use</code> to move up. The same holds for a name
-imported from a module declared further down, and, above a glob, for
-every type name the scope neither declares nor imports itself. Writing
-<code>use</code> first, then <code>mod</code>, avoids all of it.</p>
+<p>An import is in force throughout its statement list, above the <code>use</code>
+as well as below it, as in Rust: <code>type Op = {mode: Mode}</code>, an annotation
+or a cast written above <code>use sys::fs::Mode</code> names the imported <code>Mode</code>,
+never an outer type of that name. A module is the exception: a name
+imported from a module declared further down is not read by a cast, a
+type test or a destructuring <code>let</code> until the <code>mod</code>, so put <code>mod</code>
+statements at the top.</p>
 <h2 id="shadowing-and-collisions"><a class="header" href="#shadowing-and-collisions">Shadowing and collisions</a></h2>
 <p>Within one scope, names resolve in precedence order: an explicit
 declaration beats an import, an import beats a glob, a glob beats the
@@ -291,11 +288,13 @@ let list = {
 </code></pre>
 <p>The error cases:</p>
 <ul>
-<li>a declaration and an import of the same name in the same scope:
-error at the <code>use</code> if the declaration comes first; if the
-declaration comes after, it shadows the import (rebinding a name
-with <code>let</code> is idiomatic Graphix and imports are no different)</li>
-<li>two explicit imports of the same name: error — rename one</li>
+<li>a type and an import of the same name in the same scope: error,
+whichever is written first. A <code>let</code> is different: it rebinds from
+where it stands, an imported name as any other</li>
+<li>two explicit imports of the same name: error. Rename one, or, where
+both import the same item, remove the second. A module's
+implementation reads what its interface imports, and may not import it
+again</li>
 <li>two globs that both provide a name: allowed at import, error at the
 first <em>use</em> of the ambiguous name, naming both sources, unless both
 reach the same item</li>

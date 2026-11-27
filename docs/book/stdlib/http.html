@@ -248,6 +248,15 @@ val get_bin: fn(client: Client, url: string) -&gt; Result&lt;BinResponse, `HTTPE
 /// Return the bound address of a running server.
 val server_addr: fn(server: Server) -&gt; string;
 
+// CR claude for claude: [doc-drift/medium] The doc above says a request is 'answered by
+// that instance's first value', but the instance answers with the first value its reply
+// fires. A reply that does not derive from the request never fires: `#handler: |req|
+// {body: "hi", headers: [], status: u16:200}` holds every request until the client
+// gives up, with no error or log, while `|req| req ~ {..}` answers. sys::net::rpc's doc
+// for #f uses the same wording and has the same trap. In both, say that the reply must
+// derive from the request (read a field, select on it, or `req ~ reply`) and that a
+// constant error is raised as `error(req ~ `Bad)?`, as stdlib.md already says. probe:
+// design/review-2026-11-16/repro/gx-stdlib-http-constant-reply.sh (gx-stdlib-03)
 /// Start an HTTP server. Each request runs an instance of `#handler` of
 /// its own, concurrently with the others, and is answered by that
 /// instance's first value; one that raises, or that the server drops (it

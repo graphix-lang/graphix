@@ -39,18 +39,20 @@ let form = |
   };
   let handle = |e: input_handler::Event| select e {
     `Paste(_) => edit(e),
-    _ => input_handler::on_press(e, |k| select k.code {
-      `Tab | `Down if n > 0 => { focus <- k ~ (focus + 1) % n; `Stop },
-      `BackTab | `Up if n > 0 => { focus <- k ~ (focus + n - 1) % n; `Stop },
-      kk@ `Enter => {
-        on_submit(kk ~ array::map(vals, |v: line_edit::State| v.value));
-        `Stop
-      },
-      kk@ `Esc => select kk ~ on_cancel {
-        null as _ => `Continue,
-        f => { f(kk); `Stop }
-      },
-      _ => edit(e)
+    _ => input_handler::on_press(e, |k| on k {
+      select k.code {
+        `Tab | `Down if n > 0 => { focus <- (focus + 1) % n; `Stop },
+        `BackTab | `Up if n > 0 => { focus <- (focus + n - 1) % n; `Stop },
+        `Enter => {
+          on_submit(array::map(vals, |v: line_edit::State| v.value));
+          `Stop
+        },
+        kk@ `Esc => select on_cancel {
+          null as _ => `Continue,
+          f => { f(kk); `Stop }
+        },
+        _ => edit(e)
+      }
     })
   };
   let width = array::fold(fields, 0, |w: i64, f: Field| max(w, str::char_len(f.label))) + 2;

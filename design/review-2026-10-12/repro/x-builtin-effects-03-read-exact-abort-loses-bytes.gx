@@ -9,7 +9,7 @@ let out = child.stdout$;
 let clk = sys::time::timer(duration:100.ms, true);
 let n = 0;
 n <- clk ~ n + 1;
-let on = n < 2 || n > 6;
-let got = select on { true => Read::read_exact(out, u64:6), false => never() };
+let is_on = n < 2 || n > 6;
+let got = select is_on { true => Read::read_exact(out, u64:6), false => never() };
 sys::exit(sys::time::after_idle(duration:1500.ms, n) ~ 0);
 println("read_exact: [got]")

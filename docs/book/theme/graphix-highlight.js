@@ -12,7 +12,7 @@
     // ones of module, seq, trait and signature syntax.
     const KEYWORDS =
       "mod let select type fn cast never if use rec catch try pub trait impl " +
-      "seq seqq until live mut val sig with as throws for dynamic source abort " +
+      "seq seqq on until live mut val sig with as throws for dynamic source abort " +
       "flush any self super package";
 
     // Compiler-known type names, the primitives, core's aliases and the

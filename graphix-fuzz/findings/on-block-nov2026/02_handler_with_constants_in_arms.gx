@@ -1,0 +1,5 @@
+// A handler clocked by its event: a constant in an arm acts once an event,
+// and the answer is given in the event's cycle.
+// Expected trace (both engines): the answers `Stop, `Stop, `Continue with
+// the writes of the arm each event selects.
+{ let step = 0; step <- select step { n if n < 8 => n + 1, _ => never() }; let k = select step { 2 => null, 5 => null, 7 => null, _ => never() }; let m = 0; let s = 0; let h = |c| on c { select c { 2 => { m <- m + 1; `Stop }, 5 => { s <- 9; m <- 0; `Stop }, _ => `Continue } }; let ans = h(k ~ step); (k ~ ans, m, s) }

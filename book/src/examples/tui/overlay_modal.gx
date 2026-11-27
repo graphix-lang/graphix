@@ -8,20 +8,24 @@ use tui::{
 
 let open = false;
 
-let handle_base = |e: Event| on_press(e, |k| select k.code {
-  c@ `Char("o") => {
-    open <- c ~ true;
-    `Stop
-  },
-  _ => `Continue
+let handle_base = |e: Event| on_press(e, |k| on k {
+  select k.code {
+    `Char("o") => {
+      open <- true;
+      `Stop
+    },
+    _ => `Continue
+  }
 });
 
-let handle_modal = |e: Event| on_press(e, |k| select k.code {
-  c@ `Esc => {
-    open <- c ~ false;
-    `Stop
-  },
-  _ => `Continue
+let handle_modal = |e: Event| on_press(e, |k| on k {
+  select k.code {
+    `Esc => {
+      open <- false;
+      `Stop
+    },
+    _ => `Continue
+  }
 });
 
 let base = input_handler(

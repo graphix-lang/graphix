@@ -1065,12 +1065,12 @@ run_with_tempdir!(
         let db = db::open("{0}/db")$;
         let t: db::Tree<string, i64> = db::tree(db, "a")?;
         let sub = db::subscription::new(t);
-        let on = true;
-        on <- sys::time::timer(duration:200.ms, false) ~ false;
-        on <- sys::time::timer(duration:400.ms, false) ~ true;
+        let is_on = true;
+        is_on <- sys::time::timer(duration:200.ms, false) ~ false;
+        is_on <- sys::time::timer(duration:400.ms, false) ~ true;
         let i1 = db::insert(t, sys::time::timer(duration:100.ms, false) ~ "a", 1)$;
         let i2 = db::insert(t, sys::time::timer(duration:600.ms, false) ~ "b", 2)$;
-        let hits = select on {{ true => db::subscription::on_insert(sub)?, false => [] }};
+        let hits = select is_on {{ true => db::subscription::on_insert(sub)?, false => [] }};
         let b = array::filter(hits, |e| e.key == "b");
         select array::len(b) {{ 0 => never(), _ => b[0]$.value }}
     }}"#,
@@ -1087,12 +1087,12 @@ run_with_tempdir!(
         let db = db::open("{0}/db")$;
         let t: db::Tree<string, i64> = db::tree(db, "a")?;
         let pre: [string, null] = null;
-        let on = true;
-        on <- sys::time::timer(duration:200.ms, false) ~ false;
-        on <- sys::time::timer(duration:400.ms, false) ~ true;
+        let is_on = true;
+        is_on <- sys::time::timer(duration:200.ms, false) ~ false;
+        is_on <- sys::time::timer(duration:400.ms, false) ~ true;
         let i1 = db::insert(t, sys::time::timer(duration:100.ms, false) ~ "a", 1)$;
         let i2 = db::insert(t, sys::time::timer(duration:600.ms, false) ~ "b", 2)$;
-        let hits = select on {{
+        let hits = select is_on {{
             true => db::subscription::on_insert(db::subscription::new(#prefix: pre, t))?,
             false => []
         }};
@@ -1282,10 +1282,10 @@ run_with_tempdir!(
         let d = db::open("{}")?;
         let t: db::Tree<i64, i64> = db::tree(d, null)?;
         let b = db::batch(t, [`Insert(1, 1), `Insert(2, 2), `Insert(3, 3)])?;
-        let on = true;
-        on <- sys::time::after_idle(duration:100.ms, b) ~ false;
-        on <- sys::time::after_idle(duration:200.ms, b) ~ true;
-        let popped = select on {{ true => db::pop_min(b ~ t)?, false => never() }};
+        let is_on = true;
+        is_on <- sys::time::after_idle(duration:100.ms, b) ~ false;
+        is_on <- sys::time::after_idle(duration:200.ms, b) ~ true;
+        let popped = select is_on {{ true => db::pop_min(b ~ t)?, false => never() }};
         db::len(sys::time::after_idle(duration:400.ms, popped) ~ t)?
     }}"#,
     setup: |td| { td.path().join("pop_wake.db") },
@@ -1301,23 +1301,23 @@ run_with_tempdir!(
         let d = db::open("{}")?;
         let t: db::Tree<string, i64> = db::tree(d, null)?;
         let sub = db::subscription::new(t);
-        let on = true;
+        let is_on = true;
         let inserts = 0;
-        inserts <- count(select on {{ true => db::subscription::on_insert(sub)?, false => never() }});
+        inserts <- count(select is_on {{ true => db::subscription::on_insert(sub)?, false => never() }});
         let removes = 0;
-        removes <- count(select on {{ true => db::subscription::on_remove(sub)?, false => never() }});
+        removes <- count(select is_on {{ true => db::subscription::on_remove(sub)?, false => never() }});
         let changes = 0;
-        changes <- count(select on {{ true => db::subscription::on_change(sub)?, false => never() }});
+        changes <- count(select is_on {{ true => db::subscription::on_change(sub)?, false => never() }});
         seq {{
             sub;
             db::insert(t, "k", 1)?;
             until live(inserts == 1);
             db::remove(t, "k")?;
             until live(removes == 1 && changes == 2);
-            on <- false;
+            is_on <- false;
             sys::time::timer(duration:20.ms, false);
-            on <- true;
-            sys::time::after_idle(duration:50.ms, on);
+            is_on <- true;
+            sys::time::after_idle(duration:50.ms, is_on);
             (inserts, removes, changes)
         }}
     }}"#,
@@ -1491,13 +1491,13 @@ run_with_tempdir!(
         let d = db::open("{}")?;
         let t: db::Tree<string, V> = db::tree(d, null)?;
         let v = V(1);
-        let on = true;
-        let r = select on {{ true => db::insert(t, "k", v), false => never() }};
+        let is_on = true;
+        let r = select is_on {{ true => db::insert(t, "k", v), false => never() }};
         let off = t ~ false;
-        on <- off;
+        is_on <- off;
         let landed = db::get(t, sys::time::timer(duration: 10.ms, true) ~ "k")?;
-        on <- once(select landed {{ null as _ => never(), _ => true }});
-        v <- skip(#n: 2, on) ~ V(0);
+        is_on <- once(select landed {{ null as _ => never(), _ => true }});
+        v <- skip(#n: 2, is_on) ~ V(0);
         let log: Array<string> = [];
         log <- r ~ array::push(log, "[r]");
         select r {{ error as e => e ~ log, _ => never() }}
@@ -1518,10 +1518,10 @@ run_with_tempdir!(
         let d = db::open("{}")?;
         let t: db::Tree<i64, string> = db::tree(d, null)?;
         let ins = db::insert(t, 1, "one")$;
-        let on = true;
-        let popped = select on {{ true => db::pop_min(ins ~ t)?, false => never() }};
-        on <- ins ~ false;
-        on <- on ~ select on {{ false => true, true => never() }};
+        let is_on = true;
+        let popped = select is_on {{ true => db::pop_min(ins ~ t)?, false => never() }};
+        is_on <- ins ~ false;
+        is_on <- is_on ~ select is_on {{ false => true, true => never() }};
         let answered = false;
         answered <- popped ~ true;
         let n = db::len(sys::time::timer(duration: 10.ms, true) ~ t)?;
@@ -1543,10 +1543,10 @@ run_with_tempdir!(
         let txn = db::txn::begin(t ~ d)?;
         let tt = db::txn::tree(txn, txn ~ "txn")?;
         let ins = db::txn::insert(tt, "k1", 42)?;
-        let on = true;
-        let committed = select on {{ true => db::txn::commit(ins ~ txn), false => never() }};
-        on <- ins ~ false;
-        on <- on ~ select on {{ false => true, true => never() }};
+        let is_on = true;
+        let committed = select is_on {{ true => db::txn::commit(ins ~ txn), false => never() }};
+        is_on <- ins ~ false;
+        is_on <- is_on ~ select is_on {{ false => true, true => never() }};
         let answered = false;
         answered <- committed ~ true;
         let v = db::get(t, sys::time::timer(duration: 10.ms, true) ~ "k1")?;

@@ -12,8 +12,8 @@
 let d = db::open("p7.db")$;
 let t: db::Tree<i64, i64> = db::tree(d, null)$;
 let x: [i64, null] = 1;
-let on = true;
-let sub = select on { true => db::subscription::new(#prefix: x$, t), false => never() };
+let is_on = true;
+let sub = select is_on { true => db::subscription::new(#prefix: x$, t), false => never() };
 let ch = db::subscription::on_change(sub);
 let log: Array<string> = [];
 log <- sub ~ array::push(log, "sub [sub]");
@@ -22,11 +22,11 @@ let r = seq {
   sys::time::timer(duration:50.ms, false);
   x <- null;
   sys::time::timer(duration:50.ms, false);
-  on <- false;
+  is_on <- false;
   sys::time::timer(duration:50.ms, false);
   x <- 2;
   sys::time::timer(duration:50.ms, false);
-  on <- true;
+  is_on <- true;
   sys::time::timer(duration:50.ms, false);
   x <- 2;
   sys::time::timer(duration:50.ms, false);

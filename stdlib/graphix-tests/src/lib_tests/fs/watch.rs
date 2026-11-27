@@ -717,14 +717,14 @@ async fn watch_hears_after_a_wake() -> Result<()> {
             use sys::fs::watch::{{self, *}};
             let w = create(null)?;
             let wd = watch(#interest: [`Create], w, "{d}")?;
-            let on = true;
-            on <- sys::time::timer(duration:300.ms, false) ~ false;
-            on <- sys::time::timer(duration:600.ms, false) ~ true;
+            let is_on = true;
+            is_on <- sys::time::timer(duration:300.ms, false) ~ false;
+            is_on <- sys::time::timer(duration:600.ms, false) ~ true;
             let wrote = sys::fs::write_all(
                 #path: sys::time::timer(duration:1000.ms, false) ~ "{d}/b",
                 "x"
             )$;
-            select on {{ true => path(wd)?, false => "off" }}
+            select is_on {{ true => path(wd)?, false => "off" }}
         }}"#
     );
     let (ctx, mut rx) = fixture_runtime(
@@ -759,10 +759,10 @@ run!(watch_rebuilds_after_wake, r#"{
     let path = sys::fs::tempdir::path(dir);
     let watcher = watch::create(null)?;
     let interest = [`Established];
-    let on = true;
-    on <- sys::time::after_idle(duration:100.ms, false);
-    on <- sys::time::after_idle(duration:200.ms, true);
-    let event = select on {
+    let is_on = true;
+    is_on <- sys::time::after_idle(duration:100.ms, false);
+    is_on <- sys::time::after_idle(duration:200.ms, true);
+    let event = select is_on {
         true => watch::events(watch::watch(#interest:interest, watcher, path)?)?,
         false => never()
     };

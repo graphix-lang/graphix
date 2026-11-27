@@ -419,6 +419,12 @@ argument nodes are references to them, so feeding an argument is
 delivering to its variable (<code>args()</code> lists their ids, for a builtin that
 writes one for a later cycle with <code>ctx.rt.set_var</code>).</p>
 <h3 id="the-store-refs-delete"><a class="header" href="#the-store-refs-delete">The store, refs, delete</a></h3>
+<!-- CR claude for claude: [doc-drift/low] The `ExecCtx::deliver(id, tv)` this paragraph
+names takes a third argument: `deliver(id, tv, notify: Notify)`. Notify::Walk schedules
+the walk's readers alone, and Notify::Roots also the roots that read the binding. A
+builtin author following this paragraph writes a call that does not compile, and is not
+told which Notify to choose. Give the real signature and say when each Notify applies.
+Found by reading; not run. (book-modules-udt-14) -->
 <p>When a call site is initialized for the first time, or a select arm
 wakes from sleep, it needs the current value of every variable it
 depends on, so the runtime keeps the current value of every variable

@@ -1,0 +1,5 @@
+// A read with no value at the event stops what reads it and nothing else,
+// and is not paid when the value arrives: `a` counts every event, `b`
+// takes `late` only at the event after it arrived.
+// Expected trace (both engines): [0, 0], [1, 0], [2, 0], [3, 100].
+{ let step = 0; step <- select step { n if n < 8 => n + 1, _ => never() }; let k = select step { 2 => null, 5 => null, 7 => null, _ => never() }; let late = never(); late <- select step { 6 => 100, _ => never() }; let a = 0; let b = 0; on k { a <- a + 1; b <- late }; (a, b) }

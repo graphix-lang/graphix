@@ -5,18 +5,18 @@ let status = "Right-click anywhere";
 
 let items = [
     menu::action(
-        #on_click: |v| status <- v ~ "Copied!",
+        #on_click: |v| on v { status <- "Copied!" },
         #shortcut: &menu::shortcut(#ctrl: true, "C")$,
         &"Copy"
     ),
     menu::action(
-        #on_click: |v| status <- v ~ "Pasted!",
+        #on_click: |v| on v { status <- "Pasted!" },
         #shortcut: &menu::shortcut(#ctrl: true, "V")$,
         &"Paste"
     ),
     menu::divider(),
     menu::action(
-        #on_click: |v| status <- v ~ "Deleted!",
+        #on_click: |v| on v { status <- "Deleted!" },
         &"Delete"
     )
 ];

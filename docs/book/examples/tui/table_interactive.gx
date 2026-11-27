@@ -26,16 +26,18 @@ let rows = array::map(users, |u| &row([
 
 let selected = 0;
 
-let handle_event = |e: Event| on_press(e, |k| select k.code {
-    k@`Up if selected > 0 => {
-        selected <- (k ~ selected) - 1;
-        `Stop
-    },
-    k@`Down if selected < array::len(users) - 1 => {
-        selected <- (k ~ selected) + 1;
-        `Stop
-    },
-    _ => `Continue
+let handle_event = |e: Event| on_press(e, |k| on k {
+    select k.code {
+        `Up if selected > 0 => {
+            selected <- selected - 1;
+            `Stop
+        },
+        `Down if selected < array::len(users) - 1 => {
+            selected <- selected + 1;
+            `Stop
+        },
+        _ => `Continue
+    }
 });
 
 input_handler(

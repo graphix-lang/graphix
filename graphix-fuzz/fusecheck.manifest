@@ -308,6 +308,13 @@
 1	omitted-default-union-nov2026/00_default_over_a_union_of_equal_cells.gx
 1	omitted-default-union-nov2026/01_default_over_a_union_through_a_wrapper.gx
 1	omitted-default-union-nov2026/02_default_over_a_union_of_distinct_cells.gx
+5	on-block-nov2026/01_connect_sampled_on_the_event.gx
+4	on-block-nov2026/02_handler_with_constants_in_arms.gx
+4	on-block-nov2026/03_read_with_no_value.gx
+3	on-block-nov2026/04_reference_read_at_the_event.gx
+5	on-block-nov2026/05_lambda_and_stateful_call.gx
+6	on-block-nov2026/06_event_named_and_call_over_constants.gx
+0	on-block-nov2026/07_catch_in_an_on_block.gx
 1	operand-bound-member-oct2026/00_extracted_callback.gx
 1	organic-firing-aug2026/00_const_terminal.gx
 1	organic-firing-aug2026/01_multilevel_face.gx

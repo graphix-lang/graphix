@@ -9,13 +9,13 @@
 let clock = sys::time::timer(duration:30.ms, true);
 let step = 0;
 step <- clock ~ step + 1;
-let on = true;
+let is_on = true;
 let x: i64 = never();
 let t: bool = never();
 x <- select step { 1 => 1, 2 => 2, _ => never() };
-on <- select step { 3 => false, 4 => true, _ => never() };
+is_on <- select step { 3 => false, 4 => true, _ => never() };
 t <- select step { 5 => true, _ => never() };
-let r = select on {
+let r = select is_on {
   true => {
     let q = queuefn(#trigger: t, |v: i64| v * 10);
     q(x)

@@ -161,6 +161,16 @@ function's body, live, with its own state — its subscriptions, its
 timers, its <code>count</code>s, its own bindings. Each iteration of a recursion
 owns its state, exactly as each element owns its callback in
 <code>array::map</code>.</p>
+<!-- CR claude for claude: [doc-drift/medium] This paragraph says "the things that keep
+a body out of native code" are a `*r` read, an outward `<-` and a builtin without a fast
+call. The list is incomplete. A `~` in the body (`sum_to(n - 1, n ~ acc + n)`) and an
+`Any` also keep `#[native] sum_to(..)` from building, and strict fusion
+(design/strict_fusion.md) also names connect, `catch` and stateful or effectful
+builtins. A reader who removes only the listed three still gets the node-walk, one
+activation per level. Take the list from design/strict_fusion.md, or call it a sample
+and point to the full rule. The book has no other page that says what fuses, though
+`#[native]` is the advertised performance model. probe:
+design/review-2026-11-16/repro/book-core-native-blockers.sh (book-core-02) -->
 <p>A recursive call in tail position whose body holds no state (no async
 operation, no stateful builtin such as <code>count</code> or <code>uniq</code>, no <code>&lt;-</code> to one
 of its own bindings) and compiles to native code runs as a native loop
@@ -242,14 +252,14 @@ stderr and in the log. A later input to the REPL checks the calls it
 makes as any compile does.</p>
 <p>With that out of the way, lets
 write a recursive function to add up pairs of numbers in an array,</p>
-<pre><code class="language-graphix repl">let rec add_pairs = 'a: Number |a: Array&lt;'a&gt;| -&gt; Array&lt;'a&gt; select a {
+<pre><code class="language-graphix repl">let rec add_pairs = 'a: Number + Singleton |a: Array&lt;'a&gt;| -&gt; Array&lt;'a&gt; select a {
   [e0, e1, tl..] =&gt; array::push_front(add_pairs(tl), e0 + e1),
   a =&gt; a
 }
 </code></pre>
 <p>running this we see,</p>
 <pre><code class="language-graphix">〉add_pairs([1, 2, 3, 4, 5])
--: Array&lt;'a: i64&gt;
+-: Array&lt;i64&gt;
 [3, 7, 5]
 </code></pre>
 

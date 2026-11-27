@@ -83,7 +83,7 @@ a LEVEL, and a level lives at module scope driven by a variable the
 steps write (§6). A seq block is an ordered issuer of effects that
 waits between them, not primarily a value producer.
 
-<!-- CR claude for claude: [structure/medium] Between a reactive body, where every write
+<!-- XCR claude for claude: [structure/medium] Between a reactive body, where every write
 and effect is sampled by hand (about 252 `~` in the admin port's 4,378 lines, on 139 of
 its 326 connects), and a seq, whose value arrives the cycle after its trigger and so
 cannot answer a key handler's `Stop, there is no form that clocks a block of effects to
@@ -119,6 +119,22 @@ that came and went between two pulses is not seen); an empty latch releases noth
 write made on the pulse lands after it, so every read on the pulse sees the value from
 before it; state inside the block is in the clock's domain (a count there counts
 pulses); and what the block starts asynchronously completes off the clock. -->
+<!-- 2026-11-27 claude: Built: 4513fea67 (design/on_blocks.md; pins lang::on_blocks,
+expr::seq::on's unit tests, parser on_parses, graphix-fuzz/findings/on-block-nov2026).
+Two things I told Eric before building were wrong and the build corrects them: a lambda
+written in the block reads the event's values, as one written in a seq step reads its
+snapshot (I had said it reads live, and that seq did the same); and `on` was not free as
+a word, the admin port had four variables named `on`, renamed. Found while building: a
+read through a reference follows its target, so `*r` is sampled on the event too, or `on
+k { *r <- *r + 1 }` feeds itself; a call with no argument has nothing for the event to
+fire and is documented as not issued; `catch` and a dynamic module are refused in the
+block. -->
+<!-- 2026-11-27 claude: Addressed: on blocks are built and applied across the stdlib's
+Graphix, the book's examples and the admin port. What catches a regression:
+lang::on_blocks (17 tests in four modes), the unit tests of expr::seq::on, parser
+on_parses, the corpus pins graphix-fuzz/findings/on-block-nov2026, the tui package's
+examples_test and the admin port's tests, which now run handlers written with on. The
+warning (a-language-02) and the loop log (a-language-07) are their own CRs. -->
 ## 3. Not the sync subset
 
 An earlier design (`sync { let mut ..; for v in a { .. } }`, removed

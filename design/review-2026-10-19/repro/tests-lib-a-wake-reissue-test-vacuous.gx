@@ -7,16 +7,16 @@
 // arm's standing value when its scrutinee `on` delivers; replacing the arm body by
 // `path` alone also gives n = 0, 1, 2
 let path = "/etc/passwd";
-let on = true;
-let r = select on { true => count(sys::fs::is_file(path)$), false => never() };
+let is_on = true;
+let r = select is_on { true => count(sys::fs::is_file(path)$), false => never() };
 let n = 0;
 n <- r ~ n + 1;
 let t = 0;
-t <- select on {
+t <- select is_on {
     false => select t { x if x < 3 => x + 1, _ => never() },
     true => never()
 };
-on <- select n { 1 => false, _ => never() };
-on <- select t { 3 => true, _ => never() };
+is_on <- select n { 1 => false, _ => never() };
+is_on <- select t { 3 => true, _ => never() };
 sys::exit(sys::time::after_idle(duration:300.ms, 0));
 (n, r)

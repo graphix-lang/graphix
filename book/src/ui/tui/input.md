@@ -51,13 +51,18 @@ press and continues on everything else. It returns what a handler
 returns, so it is usually the handler's whole body:
 
 ```graphix,fragment
-let handle = |e: Event| on_press(e, |k| select k.code {
-  `Up => { sel <- k ~ max(0, sel - 1); `Stop },
-  `Down => { sel <- k ~ sel + 1; `Stop },
-  _ => `Continue
+let handle = |e: Event| on_press(e, |k| on k {
+  select k.code {
+    `Up => { sel <- max(0, sel - 1); `Stop },
+    `Down => { sel <- sel + 1; `Stop },
+    _ => `Continue
+  }
 });
 input_handler(#handle: &handle, &view)
 ```
+
+The [`on k` block](../../core/on.md) clocks the handler to the key: each
+arm reads `sel` as it is at the key and writes once.
 
 A handler that wants mouse, paste, resize or a release selects on the
 `Event` itself. A modal one that lets nothing through wraps the call
@@ -84,11 +89,13 @@ calls `tui::exit`, which ends it the same way: the terminal is restored
 and the runtime stops. Neither key reaches the program. Shown in the
 REPL, Ctrl-C leaves the display with the session kept, and `Ctrl-\` also
 replaces the runtime with a fresh one.
-Fire it from the key that quits, sampled with the event:
+Fire it from the key that quits. In a handler clocked by `on k`:
 
 ```graphix,ignore
-`Char("q") => { tui::exit(k ~ null); `Stop }
+`Char("q") => { tui::exit(null); `Stop }
 ```
+
+By hand it is sampled with the event, `tui::exit(k ~ null)`.
 
 ## Handing the Terminal to a Program
 
@@ -150,14 +157,16 @@ callback throws.
 {{#include ../../examples/tui/input_basic.gx}}
 ```
 
-The `Up` and `Down` arms sample the key (`u ~ count + 1`). A write
+The handler is an `on k` block, so its arms write `count <- count + 1`
+as it reads: every read is the value at the key, and a constant such as
+`` mode <- `Insert `` acts once a key. Outside such a block a write
 inside a select arm fires when its right-hand side fires, and entering
-an arm is not an event. So `count <- count + 1` writes nothing at the
-key press, and once `count` changes while its arm is still selected it
-fires again on its own update and loops; a constant such as
-`` mode <- `Insert `` never fires (the check warns of it). Sample the event
-that selects the arm instead, `` k@ `Char("i") => mode <- k ~ `Insert ``;
-the select chapter's "Writing From an Arm" spells out why.
+an arm is not an event. So `count <- count + 1` would write nothing at
+the key press, and once `count` changed while its arm was still selected
+it would fire again on its own update and loop; a constant would never
+fire (the check warns of it). By hand, each arm samples the event that
+selects it, `` k@ `Char("i") => mode <- k ~ `Insert ``; the select
+chapter's "Writing From an Arm" spells out why.
 
 ### Conditional Handling
 

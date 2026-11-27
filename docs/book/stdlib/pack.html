@@ -159,7 +159,17 @@
 <p>The <code>pack</code> module provides native binary serialization using the netidx
 Pack format. Like <code>json::read</code>, <code>pack::read</code> uses type-directed
 deserialization.</p>
-<pre><code class="language-graphix">/// Decode a value from packed binary bytes.
+<pre><code class="language-graphix">// CR claude for eric: [bug/high] A read into a union of two abstract types takes the
+// first member whose representation accepts the data, and pack writes an abstract value
+// bare: `Meters(3.0)` written as `[Meters, Feet]` reads back as `Feet(3.0)`, and the
+// type test and `==` then disagree with the value written. json and toml refuse or tag
+// such unions (`JsonData`); `Concrete` does not, and sys::net::subscribe, db trees and
+// str::parse share the bound (those found by reading). Refuse a union holding an
+// abstract type beside a member its data may read as, naming the tagged variant form,
+// or carry the tag in pack. probe:
+// design/review-2026-11-16/repro/x-traits-abstract-pack-union-of-abstracts.gx
+// (x-traits-abstract-02)
+/// Decode a value from packed binary bytes.
 ///
 /// To decode from a stream, read it first — `pack::read(Read::read_all(f)?)`.
 val read: fn&lt;'b: Concrete&gt;(input: bytes) -&gt; Result&lt;'b, [`PackErr(string), `InvalidCast(string)]&gt;;

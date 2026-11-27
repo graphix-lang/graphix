@@ -1,0 +1,5 @@
+// `on x { y <- z }` is `y <- x ~! z` (design/on_blocks.md): the write
+// takes `z` as it stands at each fire of `k`, and a binding the block
+// reads and writes counts the events.
+// Expected trace (both engines): [-1, 0], [20, 1], [50, 2], [70, 3].
+{ let step = 0; step <- select step { n if n < 8 => n + 1, _ => never() }; let k = select step { 2 => null, 5 => null, 7 => null, _ => never() }; let z = step * 10; let y = -1; let n = 0; on k { y <- z; n <- n + 1 }; (y, n) }

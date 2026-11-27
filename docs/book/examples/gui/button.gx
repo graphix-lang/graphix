@@ -2,13 +2,13 @@ use gui::{window, button::button, column::column, text::text};
 mod icon;
 
 let b0 = button(
-    #on_press: |c| println(c ~ "normal button clicked"),
+    #on_press: |c| on c { println("normal button clicked") },
     #padding: &`All(10.0),
     &text(&"Click me!")
 );
 
 let b1 = button(
-    #on_press: |c| println(c ~ "wide button clicked"),
+    #on_press: |c| on c { println("wide button clicked") },
     #padding: &`All(8.0),
     #width: &`Fixed(200.0),
     &text(#halign:&`Center, &"Wide button")

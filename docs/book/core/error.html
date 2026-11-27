@@ -159,7 +159,7 @@
 <p>Errors in Graphix are represented by the <code>Error&lt;'a&gt;</code> type. A new instance of
 which can be created with the <code>error</code> function. e.g.</p>
 <pre><code class="language-graphix">〉error(`Foo)
--: Error&lt;'a: `Foo&gt;
+-: Error&lt;`Foo&gt;
 error:`Foo
 </code></pre>
 <h2 id="catch-and-"><a class="header" href="#catch-and-">Catch and ?</a></h2>
@@ -283,9 +283,8 @@ Suppose we remove the pattern for ArrayIndexError, we would get,</p>
 <pre><code>Error: in file test.gx
 
 Caused by:
-    0: at: line: 2, column: 1 in file test.gx, in: catch(e) select e.0.error { `ArithErro..
-    1: at: line: 2, column: 10 in file test.gx, in: select e.0.error { `ArithError(s) =&gt; p..
-    2: missing match cases: no arm covers `ArrayIndexError(string)
+    0: at line: 2, column: 10 in file test.gx
+    1: missing match cases: nothing matches `ArrayIndexError(string) (2:17)
 </code></pre>
 <p>You'll recognize that this is just the normal select exhaustiveness checking at
 work. Since errors are just normal types, the important point is the compiler
@@ -307,6 +306,12 @@ as described below. This is a concise way of writing,</p>
 <p>can instead be written as,</p>
 <pre><code class="language-graphix fragment">might_fail(1, 2, 3)$
 </code></pre>
+<!-- CR claude for claude: [doc-drift/low] This paragraph says what a `$` warning names
+but not where it goes. A dropped error is logged at warn on the default log target, so a
+script prints nothing on stderr for it in either engine, `--no-fusion` included. The
+reader sees it only with `RUST_LOG=warn` and `--log-dir`, unlike a division by zero,
+which the node-walk prints. Say so here, as the graphix-lang skill does. probe:
+design/review-2026-11-16/repro/book-core-dollar-log.sh (book-core-07) -->
 <p>A warning from <code>$</code> names the site and the error. <code>$</code> and a <code>?</code> without a
 covering catch report when their error operand fires. A guard runs
 wherever its arm's pattern matches the value, so it reports even when an
@@ -348,7 +353,7 @@ should hear something more specific than <code>NullError</code>.</p>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="../core/seq.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="../core/on.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
@@ -362,7 +367,7 @@ should hear something more specific than <code>NullError</code>.</p>
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="../core/seq.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="../core/on.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <i class="fa fa-angle-left"></i>
                     </a>
 

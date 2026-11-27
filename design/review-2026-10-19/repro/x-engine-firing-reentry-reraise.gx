@@ -10,8 +10,8 @@
 // trace cap: each re-entry re-delivers 11.
 // The CLI form (literal [10, 11, 12, 13] for the in0 array) spins: 489827 lines in 3 s.
 {
-let on = true;
-let out = select on { true => array::iter([in0, in0 + 1, in0 + 2, in0 + 3]), false => -1 };
-on <- select out { 11 => false, -1 => true, _ => never() };
+let is_on = true;
+let out = select is_on { true => array::iter([in0, in0 + 1, in0 + 2, in0 + 3]), false => -1 };
+is_on <- select out { 11 => false, -1 => true, _ => never() };
 out
 }

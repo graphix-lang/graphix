@@ -1,0 +1,5 @@
+// expect: reject
+// A catch's handler runs when an error is raised, not at the event: it is
+// refused in an on block and written around it. "catch is not allowed
+// inside an on block".
+{ let k = 1; let x = 0; on k { catch(e) x <- 0; x <- 1 } }

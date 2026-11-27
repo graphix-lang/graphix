@@ -11,24 +11,35 @@ let greeting = "press f to fill in the form";
 
 let name_form = form(
   #title: "Your name",
-  #on_submit: |v| {
+  #on_submit: |v| on v {
     greeting <- "hello [v[0]$] [v[1]$]";
-    filling <- v ~ false;
+    filling <- false;
     null
   },
-  #on_cancel: |e| {
-    filling <- e ~ false;
+  #on_cancel: |e| on e {
+    filling <- false;
     null
   },
+  // CR claude for claude: [bug/low] The form is built once over constant fields, so its
+  // re-seed ("A new `fields` delivery re-seeds the editors", form.gxi) never runs. A
+  // second `f` opens the form still holding the last submission (Ada / Lovelace) with
+  // the focus on "last", and typing X then Enter greets "hello Ada LovelaceX". Esc
+  // keeps a half-typed entry the same way. Pass the fields sampled on the open,
+  // `filling ~ [..]`, as this argument: the reopened form is then empty with the focus
+  // on the first field, and the page's only form example shows the re-seed. probe:
+  // design/review-2026-11-16/repro/examples-tui-form-keeps-last-entry.sh
+  // (examples-tui-04)
   [{ label: "first", value: "" }, { label: "last", value: "" }]
 );
 
-let handle_base = |e: Event| on_press(e, |k| select k.code {
-  f@ `Char("f") => {
-    filling <- f ~ true;
-    `Stop
-  },
-  _ => `Continue
+let handle_base = |e: Event| on_press(e, |k| on k {
+  select k.code {
+    `Char("f") => {
+      filling <- true;
+      `Stop
+    },
+    _ => `Continue
+  }
 });
 
 let base = input_handler(

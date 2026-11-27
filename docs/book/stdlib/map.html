@@ -156,7 +156,17 @@
                 <div id="content" class="content">
                     <main>
                         <h1 id="map"><a class="header" href="#map">Map</a></h1>
-<pre><code class="language-graphix">/// return a new map where each element is the output of f applied to
+<pre><code class="language-graphix">// CR claude for eric: [structure/medium] A collection callback's state belongs to its
+// slot's position, in a Map as in an Array: when key "a" leaves `{a, b, c}`, b's
+// callback takes over a's count and c's takes b's. A set of live things (connections,
+// rows that each hold an editor or a subscription) therefore cannot drop a member
+// without handing every later member another's state, and the tcp server I wrote can
+// only grow its connection array. Key a Map's slots by key and give the Array and List
+// HOFs a `#key` function, or say in each HOF's doc that state is per position and a
+// removal reassigns it. It needs a ruling: it changes which callback instance survives
+// a removal. probe: design/review-2026-11-16/repro/a-stdlib-slot-identity-positional.gx
+// (a-stdlib-03)
+/// return a new map where each element is the output of f applied to
 /// the corresponding key value pair in the current map; when f maps two pairs
 /// to one key, the later pair's value wins
 val map: fn&lt;'k2: Ordered&gt;(m: Map&lt;'k, 'v&gt;, f: fn(kv: ('k, 'v)) -&gt; ('k2, 'v2) throws 'e) -&gt; Map&lt;'k2, 'v2&gt; throws 'e;

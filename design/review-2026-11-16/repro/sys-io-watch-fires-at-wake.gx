@@ -11,10 +11,10 @@
 use sys::fs::watch;
 let w = watch::create(null)$;
 let p = "/tmp/sys-io-wdir";
-let on = true;
-on <- sys::time::timer(duration:300.ms, false) ~ false;
-on <- sys::time::timer(duration:600.ms, false) ~ true;
-let n = select on {
+let is_on = true;
+is_on <- sys::time::timer(duration:300.ms, false) ~ false;
+is_on <- sys::time::timer(duration:600.ms, false) ~ true;
+let n = select is_on {
     true => count(watch::watch(#interest: [`Established], w, p)$),
     false => never()
 };

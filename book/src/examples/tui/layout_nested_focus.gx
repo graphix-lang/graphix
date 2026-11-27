@@ -40,16 +40,18 @@ let block2rem = block(
   #title: &line("Content!"),
   &{
      let position = 0;
-     let handle_event = |e: Event| on_press(e, |k| select k.code {
-         k@`Up if position > 0 => {
-             position <- (k ~ position) - 1;
-             `Stop
-         },
-         k@`Down if position < max_position => {
-             position <- (k ~ position) + 1;
-             `Stop
-         },
-         _ => `Continue
+     let handle_event = |e: Event| on_press(e, |k| on k {
+         select k.code {
+             `Up if position > 0 => {
+                 position <- position - 1;
+                 `Stop
+             },
+             `Down if position < max_position => {
+                 position <- position + 1;
+                 `Stop
+             },
+             _ => `Continue
+         }
      });
      input_handler(
        #handle: &handle_event,
@@ -78,12 +80,14 @@ let block2 = block(
   &block2_layout
 );
 
-let handle_event = |e: Event| on_press(e, |k| select k.code {
-    k@`Tab => {
-        focused <- ((k ~ focused) + 1) % 2;
-        `Stop
-    },
-    _ => `Continue
+let handle_event = |e: Event| on_press(e, |k| on k {
+    select k.code {
+        `Tab => {
+            focused <- (focused + 1) % 2;
+            `Stop
+        },
+        _ => `Continue
+    }
 });
 
 input_handler(

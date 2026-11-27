@@ -297,16 +297,18 @@ let rows = array::map(users, |u| &amp;row([
 
 let selected = 0;
 
-let handle_event = |e: Event| on_press(e, |k| select k.code {
-    k@`Up if selected &gt; 0 =&gt; {
-        selected &lt;- (k ~ selected) - 1;
-        `Stop
-    },
-    k@`Down if selected &lt; array::len(users) - 1 =&gt; {
-        selected &lt;- (k ~ selected) + 1;
-        `Stop
-    },
-    _ =&gt; `Continue
+let handle_event = |e: Event| on_press(e, |k| on k {
+    select k.code {
+        `Up if selected &gt; 0 =&gt; {
+            selected &lt;- selected - 1;
+            `Stop
+        },
+        `Down if selected &lt; array::len(users) - 1 =&gt; {
+            selected &lt;- selected + 1;
+            `Stop
+        },
+        _ =&gt; `Continue
+    }
 });
 
 input_handler(

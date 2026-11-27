@@ -49,19 +49,16 @@ trait Read {
         select chunk {
             error as _ => filter_err(chunk),
             // done is decided when a chunk arrives, never when got moves
-            bytes as b => select b ~ (buffer::len(b) == u64:0
-                || got + buffer::len(b) >= n) {
-                true => b ~ buffer::concat(chunks, b),
-                false => {
-                    // `b ~` is load-bearing: a connect fires when its
-                    // RHS fires, and an ungated `got <- f(got, b)`
-                    // would re-fire on its own write — the documented
-                    // counter idiom, an accumulator by accident.
-                    *slot <- b ~ b;
-                    count <- b ~ count + u64:1;
-                    got <- b ~ got + buffer::len(b);
-                    want <- b ~ want - buffer::len(b);
-                    never()
+            bytes as b => on b {
+                select buffer::len(b) == u64:0 || got + buffer::len(b) >= n {
+                    true => buffer::concat(chunks, b),
+                    false => {
+                        *slot <- b;
+                        count <- count + u64:1;
+                        got <- got + buffer::len(b);
+                        want <- want - buffer::len(b);
+                        never()
+                    }
                 }
             }
         }
@@ -80,14 +77,15 @@ trait Read {
         let chunk = read(s, want);
         select chunk {
             error as _ => filter_err(chunk),
-            bytes as b => select b ~ (buffer::len(b) == u64:0) {
-                true => b ~ buffer::concat(chunks),
-                false => {
-                    // gated on the chunk: see `read_exact`
-                    *slot <- b ~ b;
-                    count <- b ~ count + u64:1;
-                    want <- b ~ u64:65536;
-                    never()
+            bytes as b => on b {
+                select buffer::len(b) == u64:0 {
+                    true => buffer::concat(chunks),
+                    false => {
+                        *slot <- b;
+                        count <- count + u64:1;
+                        want <- u64:65536;
+                        never()
+                    }
                 }
             }
         }
@@ -152,11 +150,13 @@ trait Write {
         let written = write(s, rest);
         select written {
             error as _ => filter_err(written),
-            u64 as n => select n ~ (n >= buffer::len(rest)) {
-                true => null,
-                false => select n {
-                    u64:0 => error(`IOError("write returned 0 bytes")),
-                    _ => { rest <- n ~ rest[n..]$; never() }
+            u64 as n => on n {
+                select n >= buffer::len(rest) {
+                    true => null,
+                    false => select n {
+                        u64:0 => error(`IOError("write returned 0 bytes")),
+                        _ => { rest <- rest[n..]$; never() }
+                    }
                 }
             }
         }

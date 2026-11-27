@@ -7,25 +7,29 @@ let editing = false;
 let typed = "";
 
 // always enabled: 'e' starts editing
-let start = |e: Event| on_press(e, |k| select k.code {
-  i@ `Char("e") if editing == false => {
-    editing <- i ~ true;
-    `Stop
-  },
-  _ => `Continue
+let start = |e: Event| on_press(e, |k| on k {
+  select k.code {
+    `Char("e") if editing == false => {
+      editing <- true;
+      `Stop
+    },
+    _ => `Continue
+  }
 });
 
 // enabled only while editing: Esc stops, characters are typed
-let edit = |e: Event| on_press(e, |k| select k.code {
-  x@ `Esc => {
-    editing <- x ~ false;
-    `Stop
-  },
-  c@ `Char(s) => {
-    typed <- c ~ "[typed][s]";
-    `Stop
-  },
-  _ => `Continue
+let edit = |e: Event| on_press(e, |k| on k {
+  select k.code {
+    `Esc => {
+      editing <- false;
+      `Stop
+    },
+    `Char(s) => {
+      typed <- "[typed][s]";
+      `Stop
+    },
+    _ => `Continue
+  }
 });
 
 let status = select editing {

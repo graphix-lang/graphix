@@ -960,8 +960,8 @@ run!(throttle_sleep_keeps_the_window, r#"{
     let c = 0;
     c <- select c { n if n < 6 => n + 1, _ => never() };
     let log: Array<i64> = [];
-    let on = select c { 2 => false, 3 => false, _ => true };
-    select uniq(on) {
+    let is_on = select c { 2 => false, 3 => false, _ => true };
+    select uniq(is_on) {
         true => {
             let t = throttle(#rate: duration:10.s, c);
             log <- t ~ array::push(log, t);

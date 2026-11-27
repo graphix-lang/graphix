@@ -428,16 +428,23 @@ path.</p>
 <p><strong><code>#on_header_click</code></strong> -- Fired when the user clicks a data
 column's header label. Receives the column name.</p>
 </li>
-<li>
-<p><strong><code>#on_update</code></strong> -- Fired for each update of a cell the table
+</ul>
+<!-- CR claude for claude: [doc-drift/low] This passage, and the Subscription Window
+section at the end of the page, say on_update fires for sort columns across every row.
+The dispatch task delivers only Grid roles (a SortMarker update only sets
+sort_col_dirty), and data_table_test::a_resort_delivers_the_cells_it_shows asserts that
+an off-screen sort cell does not fire on_update. Say instead that on_update covers the
+subscription window; sort columns stay subscribed on every row but only re-sort. Found
+by reading; not run. (gui-datatable-05) -->
+<ul>
+<li><strong><code>#on_update</code></strong> -- Fired for each update of a cell the table
 subscribes: rows within 50 and columns within two of the visible window,
 plus sort columns across every row. A cell scrolling back in re-delivers
 its current value. Useful to
 mirror live values into graphix state without subscribing
 separately, but an aggregate over every row
 (<code>data_table_calculated.gx</code>'s sum) is complete only while the whole
-table is subscribed. Receives the cell path and new value.</p>
-</li>
+table is subscribed. Receives the cell path and new value.</li>
 </ul>
 <h2 id="column-types"><a class="header" href="#column-types">Column Types</a></h2>
 <p>Each <code>ColumnSpec</code> carries a <code>typ: ColumnType</code> picked with one of the
@@ -494,6 +501,11 @@ all rows' values) so cells are visually comparable. Pass <code>#min</code> /
 </ul>
 <h2 id="column-widths-and-resizing"><a class="header" href="#column-widths-and-resizing">Column Widths and Resizing</a></h2>
 <p>Widths are controlled by two refs per column:</p>
+<!-- CR claude for claude: [readability/low] `Some(f64)` is a Rust name; Graphix has no
+Some, and this field is `&[f64, null]`, pinned by a bare number (`#width: &120.0`). The
+`#show_row_name` item likewise cites Rust's `Path::basename(row)` where Graphix's is
+str::basename. Say "when it holds an f64" and name str::basename. Found by reading; not
+run. (book-ui-b-07) -->
 <ul>
 <li>
 <p><strong><code>width: &amp;[f64, null]</code></strong> -- When <code>Some(f64)</code> the column is pinned
@@ -662,15 +674,16 @@ let tbl: Table = select str::len(pattern) {
 // already sorted flips its direction; a second click removes it.
 let sort_by: Array&lt;SortBy&gt; = [];
 
-let cycle_sort = |#column: string|
-    sort_by &lt;- column ~ select array::find(sort_by, |s| s.column == column) {
+let cycle_sort = |#column: string| on column {
+    sort_by &lt;- select array::find(sort_by, |s| s.column == column) {
         null =&gt; array::push(sort_by, { column, direction: `Ascending }),
         { direction: `Ascending, .. } =&gt; array::map(sort_by, |s| select s.column == column {
             true =&gt; { s with direction: `Descending },
             false =&gt; s
         }),
         { direction: `Descending, .. } =&gt; array::filter(sort_by, |s| s.column != column)
-    };
+    }
+};
 
 let controls = row(
     #spacing: &amp;10.0,
@@ -872,12 +885,9 @@ let tbl: Table = {
 };
 
 // on_update is called on updates to netidx subscriptions by the table.
-let on_update = |#path: string, #value: Primitive| {
-    let v = cast&lt;i64&gt;(value)$;
-    // run only when v updates
-    let d = v ~ data;
+let on_update = |#path: string, #value: Primitive| on let v = cast&lt;i64&gt;(value)$ {
     let (row, col) = str::row_col(path)$;
-    let d = map::change(d, col, {}, |rows| map::insert(rows, row, v));
+    let d = map::change(data, col, {}, |rows| map::insert(rows, row, v));
     let sum = map::fold(d, 0, |sum, (col, rows)| select col {
         "sum" =&gt; sum,
         col =&gt; sum + map::get_or(rows, row, 0)
@@ -1013,6 +1023,14 @@ let tbl = {
     // but will be looked up in the score map for a default value.
     // that lets us add virtual rows that don't exist in netidx
     let rows = array::concat(raw.rows, ["vr0", "vr1", "vr2"]);
+    // CR claude for claude: [dead/low] This uniq never drops anything. list_table
+    // answers only a changed listing, and the &amp;`Netidx(score) source does not fire
+    // again when the sliders write score (the widget reads the referent), so the struct
+    // fires once per real change. No other data_table example has one, and here it
+    // suggests a Table needs deduplicating before data_table. Make the last expression
+    // `{ rows, columns }`. probe:
+    // design/review-2026-11-16/repro/examples-gui-virtual-uniq-noop.gx
+    // (examples-gui-03)
     uniq({ rows, columns })
 };
 
@@ -1025,17 +1043,17 @@ let layout = column(
         text(#size: &amp;20.0, &amp;"Virtual rows and columns"),
         text(&amp;"Move the sliders to change the score in the three virtual rows."),
         slider(
-            #on_change: |v: f64| score &lt;- v ~ map::insert(score, "vr0", v),
+            #on_change: |v: f64| on v { score &lt;- map::insert(score, "vr0", v) },
             #min: &amp;0.0, #max: &amp;1.0, #step: &amp;0.01,
             &amp;map::get_or(score, "vr0", 0.)
         ),
         slider(
-            #on_change: |v: f64| score &lt;- v ~ map::insert(score, "vr1", v),
+            #on_change: |v: f64| on v { score &lt;- map::insert(score, "vr1", v) },
             #min: &amp;0.0, #max: &amp;1.0, #step: &amp;0.01,
             &amp;map::get_or(score, "vr1", 0.)
         ),
         slider(
-            #on_change: |v: f64| score &lt;- v ~ map::insert(score, "vr2", v),
+            #on_change: |v: f64| on v { score &lt;- map::insert(score, "vr2", v) },
             #min: &amp;0.0, #max: &amp;1.0, #step: &amp;0.01,
             &amp;map::get_or(score, "vr2", 0.)
         ),
@@ -1263,6 +1281,16 @@ let host_ids = array::init(300, |i| "[i + 1]");
 let base = "/local/graphix/data_table_scrolling";
 
 // Drive every metric off one clock so all rows update in lockstep.
+// CR claude for claude: [bug/low] Every metric here is `rand::rand(.., #clock: tick)`,
+// and the timer is bottom until its first tick. So nothing is published for 2 s,
+// list_table first answers an empty table, and the window shows no rows until then.
+// data_table_sparkline.gx's `t` (`count(tick)`) leaves its rows unpublished for 1 s the
+// same way, and data_table_dashboard.gx's `t` makes the cpu column appear 1 s late,
+// re-laying out the table. data_table_calculated and data_table_virtual avoid it with
+// `any(initial, ..)`. Fix: `let tick = any(null, time::timer(duration:2.s, true));`
+// here, and the driven counter `let t = 0.; t &lt;- tick ~ t + 1.;` in the other two.
+// probe: design/review-2026-11-16/repro/examples-gui-first-tick-publish.gx
+// (examples-gui-01)
 let tick = time::timer(duration:2.s, true);
 
 // A progress column draws a fraction in [0, 1].

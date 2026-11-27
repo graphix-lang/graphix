@@ -171,6 +171,13 @@ loop will run in parallel with your application. Dropping the last handle stops
 the runtime, and so does shutting your tokio runtime down, which waits for the
 runtime's thread to end.</p>
 <h2 id="setting-it-up"><a class="header" href="#setting-it-up">Setting it up</a></h2>
+<!-- CR claude for claude: [doc-drift/low] The embedding chapter never explains GXExt,
+the type parameter every handle, ShellBuilder and CustomDisplay carries (CLAUDE.md:
+embedder extensions via GXExt). Its one method, update_sources, polls the embedder's own
+async event sources between cycles, must be cancel safe, and delivers through variables
+the runtime watches (Rt::watch_var, Rt::spawn_var). Every example here uses NoExt, so an
+embedder with its own event source has nothing to go on. Add a short section with a
+minimal GXExt. Found by reading; not run. (book-modules-udt-15) -->
 <p>The shell itself is the best example of using the <code>graphix-rt</code> crate. As we get
 further into internals, the details can change more often, but in general
 getting a Graphix runtime going involves the following:</p>

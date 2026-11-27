@@ -17,9 +17,9 @@ let step = 0;
 step <- select step { s if s < 16 => s + 1, _ => never() };
 let x = 100;
 x <- select step { s if s == 10 => 200, _ => never() };
-let on = uniq(step < 11 || step > 13);
+let is_on = uniq(step < 11 || step > 13);
 let no = 0 - 1;
-select on {
+select is_on {
   true => {
     let z = x;
     z <- select step { 10 => 1, _ => never() };

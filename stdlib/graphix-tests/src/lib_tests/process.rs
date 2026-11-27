@@ -346,10 +346,10 @@ run!(io_lines_batched_keeps_lines_across_a_sleep, r#"
     "/bin/sh"
   ))?;
   let out = opt::ok_or(child.stdout, `Null("stdout"))?;
-  let on = true;
-  on <- sys::time::timer(duration:150.ms, false) ~ false;
-  on <- sys::time::timer(duration:550.ms, false) ~ true;
-  let batch = select on { true => Lines::lines_batched(out)?, false => never() };
+  let is_on = true;
+  is_on <- sys::time::timer(duration:150.ms, false) ~ false;
+  is_on <- sys::time::timer(duration:550.ms, false) ~ true;
+  let batch = select is_on { true => Lines::lines_batched(out)?, false => never() };
   let seen = [];
   seen <- array::concat(batch ~ seen, batch);
   select array::len(seen) {
@@ -427,10 +427,10 @@ run!(
     r#"{
   let temp = sys::fs::tempdir::create(null)?;
   let path = sys::join_path(sys::fs::tempdir::path(temp), "ran");
-  let on = true;
-  on <- path ~ false;
-  on <- on ~ select on { false => true, true => never() };
-  let c = select on {
+  let is_on = true;
+  is_on <- path ~ false;
+  is_on <- is_on ~ select is_on { false => true, true => never() };
+  let c = select is_on {
     true => sys::process::spawn(sys::process::options(#args: ["-c", "touch '[path]'"], "/bin/sh"))$,
     false => never()
   };

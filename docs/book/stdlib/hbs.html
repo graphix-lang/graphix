@@ -165,7 +165,7 @@ rendering.</p>
 /// data alone and a map whose keys are scalars that print apart is an
 /// object keyed by their text (`{{m.[1]}}` over `{1 =&gt; "one"}` is "one");
 /// any other map is an array of `[key, value]` pairs.
-val render: fn&lt;'a: Data, 'b: Data&gt;(?#strict: bool, ?#partials: 'a, template: string, data: 'b) -&gt; Result&lt;string, `HbsErr(string)&gt;;
+val render: fn&lt;'a: Data, 'b: Data&gt;(?#strict: bool, ?#partials: 'a = null, template: string, data: 'b) -&gt; Result&lt;string, `HbsErr(string)&gt;;
 </code></pre>
 <h2 id="example"><a class="header" href="#example">Example</a></h2>
 <pre><code class="language-graphix">

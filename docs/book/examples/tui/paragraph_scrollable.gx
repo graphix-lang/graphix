@@ -8,16 +8,18 @@ use tui::{
 let lines = array::init(60, |i| line("[i + 1]: I have got a lovely bunch of coconuts"));
 let scroll_y = 0;
 
-let handle_event = |e: Event| on_press(e, |k| select k.code {
-    k@`Up if scroll_y > 0 => {
-        scroll_y <- (k ~ scroll_y) - 1;
-        `Stop
-    },
-    k@`Down if scroll_y < array::len(lines) - 1 => {
-        scroll_y <- (k ~ scroll_y) + 1;
-        `Stop
-    },
-    _ => `Continue
+let handle_event = |e: Event| on_press(e, |k| on k {
+    select k.code {
+        `Up if scroll_y > 0 => {
+            scroll_y <- scroll_y - 1;
+            `Stop
+        },
+        `Down if scroll_y < array::len(lines) - 1 => {
+            scroll_y <- scroll_y + 1;
+            `Stop
+        },
+        _ => `Continue
+    }
 });
 
 input_handler(

@@ -229,6 +229,14 @@ scrollbar(
     &amp;content
 )
 </code></pre>
+<!-- CR claude for claude: [doc-drift/low] Six TUI screenshots show programs their
+examples no longer are. scroll_basic.png shows one wrapped sentence for 50 'Line N'
+rows; scroll_paragraph.gif shows 'Very long text content...' for 100 lines;
+scroll_list.png shows 5 items for 30. paragraph_scrollable.gif (paragraph.md) shows a
+wrapped sentence for 60 numbered lines; paragraph_log_viewer.gif shows a syslog line for
+the simulated entries; block_focus.png (block.md) shows one block where the example
+draws two panes that Tab moves between. Re-capture them from the current examples. Found
+by reading; not run. (book-ui-a-02) -->
 <p><img src="./media/scroll_basic.png" alt="Basic Scrollbar" /></p>
 <h3 id="scrollable-paragraph"><a class="header" href="#scrollable-paragraph">Scrollable Paragraph</a></h3>
 <pre><code class="language-graphix">use tui::{
@@ -243,26 +251,28 @@ let lines = array::init(100, |i| line("Line [i + 1]"));
 let position = 0;
 let max_position = array::len(lines) - 1;
 
-let handle_event = |e: Event| on_press(e, |k| select k.code {
-    k@`Up if position &gt; 0 =&gt; {
-        position &lt;- (k ~ position) - 1;
-        `Stop
-    },
-    k@`Down if position &lt; max_position =&gt; {
-        position &lt;- (k ~ position) + 1;
-        `Stop
-    },
-    k@`PageUp if position &gt; 0 =&gt; {
-        position &lt;- max(0, (k ~ position) - 10);
-        `Stop
-    },
-    k@`PageDown if position &lt; max_position =&gt; {
-        position &lt;- min(max_position, (k ~ position) + 10);
-        `Stop
-    },
-    k@`Home =&gt; { position &lt;- k ~ 0; `Stop },
-    k@`End =&gt; { position &lt;- k ~ max_position; `Stop },
-    _ =&gt; `Continue
+let handle_event = |e: Event| on_press(e, |k| on k {
+    select k.code {
+        `Up if position &gt; 0 =&gt; {
+            position &lt;- position - 1;
+            `Stop
+        },
+        `Down if position &lt; max_position =&gt; {
+            position &lt;- position + 1;
+            `Stop
+        },
+        `PageUp if position &gt; 0 =&gt; {
+            position &lt;- max(0, position - 10);
+            `Stop
+        },
+        `PageDown if position &lt; max_position =&gt; {
+            position &lt;- min(max_position, position + 10);
+            `Stop
+        },
+        `Home =&gt; { position &lt;- 0; `Stop },
+        `End =&gt; { position &lt;- max_position; `Stop },
+        _ =&gt; `Continue
+    }
 });
 
 input_handler(
@@ -301,16 +311,18 @@ scroll_pos &lt;- select selected {
     _ =&gt; never()
 };
 
-let handle_event = |e: Event| on_press(e, |k| select k.code {
-    k@`Up if selected &gt; 0 =&gt; {
-        selected &lt;- (k ~ selected) - 1;
-        `Stop
-    },
-    k@`Down if selected &lt; last =&gt; {
-        selected &lt;- (k ~ selected) + 1;
-        `Stop
-    },
-    _ =&gt; `Continue
+let handle_event = |e: Event| on_press(e, |k| on k {
+    select k.code {
+        `Up if selected &gt; 0 =&gt; {
+            selected &lt;- selected - 1;
+            `Stop
+        },
+        `Down if selected &lt; last =&gt; {
+            selected &lt;- selected + 1;
+            `Stop
+        },
+        _ =&gt; `Continue
+    }
 });
 
 input_handler(

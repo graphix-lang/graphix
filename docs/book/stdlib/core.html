@@ -243,6 +243,17 @@ trait Cast {
 type Transparent&lt;'a&gt; = Abstract&lt;'a&gt;;
 impl&lt;'a&gt; Cast for Transparent&lt;'a&gt;;
 
+// CR claude for eric: [structure/low] A traversal has three spellings (`array::map(a,
+// f)`, `Collection::map(a, f)`, and bare `map(a, f)` after `use Collection::*`), and
+// they do not agree. Over a Map the trait's callback sees a value where `map::map`,
+// `filter` and `fold` see a `(key, value)` pair, and the trait gives a Map `find`,
+// `find_map` and `flat_map` that the `map` package lacks. The glob the book teaches
+// also takes core's `filter(v, pred)` away: after it, `filter(5, |v| v &gt; 3)` is refused
+// as not a Collection. Make the package functions the trait's impls (one meaning per
+// name, pairs through a `map::entries`), and rename core's stream gate or the trait
+// method so the glob shadows nothing. probe:
+// design/review-2026-11-16/repro/a-stdlib-collection-glob-shadows-filter.gx
+// (a-stdlib-13)
 /// A collection: a type constructor whose values can be traversed and
 /// rebuilt — `Array`, `List`, `Map` (over its values), and any type a
 /// program implements it for. `self&lt;'a&gt;` is the constructor applied to
@@ -289,7 +300,7 @@ trait Collection {
 };
 
 impl Collection for Array&lt;'_&gt;;
-impl&lt;'k&gt; Collection for Map&lt;'k, '_&gt;;
+impl&lt;'k: Ordered&gt; Collection for Map&lt;'k, '_&gt;;
 impl Collection for List&lt;'_&gt;;
 
 type Pos = {
@@ -331,10 +342,27 @@ val count: fn(x: Any) -&gt; i64;
 /// failed division (by zero, an overflow) is logged and returns nothing
 val divide: fn(@args: [Number, Array&lt;[Number, Array&lt;Number&gt;]&gt;]) -&gt; Number;
 
+// CR claude for eric: [readability/low] filter_err 'gives nothing' for a success by
+// going bottom (a select with a `never()` arm), while filter, which the skill pairs
+// with it as a gate, keeps its last pass standing. So `count(filter_err(r))`, and any
+// tuple, struct or string built from it, blanks whenever r is a success, where
+// `count(filter(..))` keeps its count. Sampling on it is unaffected. Decide which a
+// rejected value leaves. If bottom is intended, say so here ('bottom while e is a
+// success: a value built from it blanks; sample on it'); if not, make filter_err a Sync
+// gate that rides, as filter does. probe:
+// design/review-2026-11-16/repro/gx-stdlib-filter-err-blanks.gx (gx-stdlib-06)
 /// return e only if e is an error: a success value gives nothing, as an
 /// arm of `select e { error as e =&gt; e, _ =&gt; never() }` does
 val filter_err: fn(e: Result&lt;'a, 'b&gt;) -&gt; Error&lt;'b&gt;;
 
+// CR claude for claude: [doc-drift/medium] 'return v if f(v) is true' does not hold for
+// a predicate whose answer does not read v. `filter(x, |v| en)` with en true passes
+// nothing, then one value when en is written, then nothing again: the predicate's
+// activation fires only when what it reads fires (the `|v| k` rule). A gate on a flag
+// is the natural use of filter, and it silently drops every element. Document it here:
+// f's answer must derive from v (`|v| v ~ en`, `|v| en &amp;&amp; v &gt; 0`). Say the same on
+// array::group's f, where `|n, v| true` never closes a group. probe:
+// design/review-2026-11-16/repro/gx-stdlib-filter-capture-pred.gx (gx-stdlib-04)
 /// return v if f(v) is true, otherwise return nothing
 val filter: fn(v: 'a, f: fn(v: 'a) -&gt; bool throws 'e) -&gt; 'a throws 'e;
 
@@ -397,6 +425,17 @@ val shr: fn&lt;'a: Int + Singleton&gt;(a: 'a, b: 'a) -&gt; 'a;
 /// return the product of all arguments
 val product: fn(@args: [Number, Array&lt;[Number, Array&lt;Number&gt;]&gt;]) -&gt; Number;
 
+// CR claude for eric: [structure/medium] sum, product and divide return `Number`, a
+// union of every numeric type, which arithmetic and a typed let refuse: `sum(1, 2) + 1`
+// is 'cannot compute [Int, Real] + i64', and `let x: i64 = sum(1, 2)` is refused, so
+// the result is usable only through `cast`. They also accept mixed numeric arguments
+// (`sum(1, 2.0)` is 3.0), so the result type is chosen at run time. A generic
+// signature, `'a: Number + Singleton` over `@args: ['a, Array&lt;['a, Array&lt;'a&gt;]&gt;]`
+// returning `'a`, checks: a non-variadic stand-in types `s(1, [2]) + 1` and refuses
+// `s(1, 2.0)`. No .gx in the book, the stdlib or netidx calls them; only tests and
+// reading_types.md (which teaches this signature) do. Retype all three, or delete them
+// with the planned Iterator trait. probe:
+// design/review-2026-11-16/repro/gx-stdlib-sum-returns-number.sh (gx-stdlib-05)
 /// return the sum of all arguments
 val sum: fn(@args: [Number, Array&lt;[Number, Array&lt;Number&gt;]&gt;]) -&gt; Number;
 
@@ -797,6 +836,15 @@ val flat_map: fn(v: ['a, null], f: fn(x: 'a) -&gt; ['b, null] throws 'e) -&gt; [
 /// strict input-bool pairing.
 val filter: fn(v: ['a, null], f: fn(x: 'a) -&gt; bool throws 'e) -&gt; ['a, null] throws 'e;
 
+// CR claude for claude: [doc-drift/medium] This doc says f 'starts at v's first null',
+// but or_else calls f with no argument from a `null as _ =&gt; f()` arm. Under bind-driven
+// bodies, an effect or event source in f (a file read, a timer, an rpc) therefore acts
+// only where v is null in the program's first cycle. When v becomes null later, the
+// fallback never runs and the result is bottom, silently. A pure f is fine.
+// ok_or_else's doc ('as for or_else') has the same shape. State the rule in both docs
+// and show the effectful form, `select v { null as n =&gt; load(n ~ path), x =&gt; x }`
+// (checked: it performs at a later null), or give f the null as a parameter. probe:
+// design/review-2026-11-16/repro/gx-stdlib-opt-or-else-effect.gx (gx-stdlib-02)
 /// or_else(v, f): return v if non-null, otherwise return whatever f()
 /// produces. f runs only while v is null, as an arm of
 /// `select v { null as _ =&gt; f(), x =&gt; x }` does: it starts at v's first

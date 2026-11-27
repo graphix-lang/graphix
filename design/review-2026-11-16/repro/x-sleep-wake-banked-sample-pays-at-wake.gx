@@ -17,9 +17,9 @@
   let clk = array::iter([0, 1, 2, 3, 4, 5, 6, 7]);
   let late = never<i64>();
   late <- select clk { 3 => 42, _ => never() };
-  let on = true;
-  on <- select clk { 1 => false, 5 => true, _ => never() };
+  let is_on = true;
+  is_on <- select clk { 1 => false, 5 => true, _ => never() };
   let w = 0;
-  let a = select on { true => { w <- once(clk) ~ late; 0 }, false => 1 };
-  clk ~ (clk, on, w, count(w))
+  let a = select is_on { true => { w <- once(clk) ~ late; 0 }, false => 1 };
+  clk ~ (clk, is_on, w, count(w))
 }

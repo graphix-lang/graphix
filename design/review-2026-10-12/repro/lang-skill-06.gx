@@ -3,9 +3,9 @@
 // SKILL.md says only that unselected arms are "paused".
 sys::exit(sys::time::after_idle(duration:400.ms, 0));
 let t = sys::time::timer(duration:20.ms, true);
-let on = true;
-on <- sys::time::timer(duration:70.ms, false) ~ false;
-on <- sys::time::timer(duration:150.ms, false) ~ true;
-let c = select on { true => count(t), false => -1 };
+let is_on = true;
+is_on <- sys::time::timer(duration:70.ms, false) ~ false;
+is_on <- sys::time::timer(duration:150.ms, false) ~ true;
+let c = select is_on { true => count(t), false => -1 };
 println("c [c]");
 null

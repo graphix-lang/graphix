@@ -29,13 +29,13 @@ let cli: args::ParseResult = select args::parse(
     // (examples-rest-03)
     args::ParseResult as r => r,
     Error<'e> as e => select e.0 {
-        `ArgHelp(text) => {
+        `ArgHelp(text) => on text {
             println(text);
-            sys::exit(text ~ 0)
+            sys::exit(0)
         },
-        `ArgError(text) => {
+        `ArgError(text) => on text {
             println(text);
-            sys::exit(text ~ 2)
+            sys::exit(2)
         }
     }
 };

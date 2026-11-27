@@ -15,7 +15,7 @@ let clicks = 0;
       text(#size: &24.0, &"Hello, Graphix GUI!"),
       text(&"A simple window with text and a button"),
       button(
-        #on_press: |c| clicks <- c ~ clicks + 1,
+        #on_press: |c| on c { clicks <- clicks + 1 },
         #padding: &`All(10.0),
         &text(&"Click me!")
       ),

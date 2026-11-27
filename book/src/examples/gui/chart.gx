@@ -8,7 +8,7 @@ let x = cast<f64>(count(clock))$;
 let series = |start, end| {
     let d = [];
     let y = rand::rand(#start, #end, #clock);
-    d <- array::window(#n:20, clock ~ d, (x, y));
+    on clock { d <- array::window(#n:20, d, (x, y)) };
     d
 };
 

@@ -14,7 +14,7 @@ b <- select n { 2 => 2, _ => never() };
 let trig = select n { 4 => n, 5 => n, _ => never() };
 let log: Array<(i64, i64, i64)> = [];
 let q = queuefn(#trigger: trig, |x: i64, y: i64| -> i64 { log <- (x, y) ~ array::push(log, (x, y, n)); x + y });
-let on = n < 3 || n >= 6;
-let r = select on { true => q(a, b), false => never() };
+let is_on = n < 3 || n >= 6;
+let r = select is_on { true => q(a, b), false => never() };
 sys::exit(sys::time::after_idle(duration:300.ms, 0));
 select n { k if k >= 8 => log, _ => never() }

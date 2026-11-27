@@ -8,10 +8,10 @@
 // "sleep 0.05" (the call answers before the sleep) prints `true` first: the control.
 let child = sys::process::spawn(sys::process::options(#args: ["-c", "sleep 0.25"], "/bin/sh"))$;
 let tick = count(sys::time::timer(child ~ duration:100.ms, 4)?);
-let on = true;
-on <- select tick { 2 => false, 4 => true, _ => never() };
+let is_on = true;
+is_on <- select tick { 2 => false, 4 => true, _ => never() };
 let issued = never<bool>();
-select on {
+select is_on {
   true => select sys::process::wait(child.proc) { error as _ => never(), st => issued <- st.success },
   false => never()
 };

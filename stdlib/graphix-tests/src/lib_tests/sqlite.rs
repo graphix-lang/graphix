@@ -131,10 +131,10 @@ run!(sqlite_duplicate_columns_refused, r#"{
 run!(sqlite_exec_is_not_answered_after_a_sleep, r#"{
     let db = sqlite::open(":memory:")$;
     let made = sqlite::exec_batch(db, "CREATE TABLE t(x INTEGER)")$;
-    let on = true;
-    let n = select on { true => sqlite::exec(db, made ~ "INSERT INTO t VALUES (?)", [1])$, false => never() };
-    on <- made ~ false;
-    on <- on ~ select on { false => true, true => never() };
+    let is_on = true;
+    let n = select is_on { true => sqlite::exec(db, made ~ "INSERT INTO t VALUES (?)", [1])$, false => never() };
+    is_on <- made ~ false;
+    is_on <- is_on ~ select is_on { false => true, true => never() };
     let answered = false;
     answered <- n ~ true;
     let rows: Array<{c: i64}> =

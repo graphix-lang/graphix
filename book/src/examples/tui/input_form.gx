@@ -11,13 +11,13 @@ let greeting = "press f to fill in the form";
 
 let name_form = form(
   #title: "Your name",
-  #on_submit: |v| {
+  #on_submit: |v| on v {
     greeting <- "hello [v[0]$] [v[1]$]";
-    filling <- v ~ false;
+    filling <- false;
     null
   },
-  #on_cancel: |e| {
-    filling <- e ~ false;
+  #on_cancel: |e| on e {
+    filling <- false;
     null
   },
   // CR claude for claude: [bug/low] The form is built once over constant fields, so its
@@ -32,12 +32,14 @@ let name_form = form(
   [{ label: "first", value: "" }, { label: "last", value: "" }]
 );
 
-let handle_base = |e: Event| on_press(e, |k| select k.code {
-  f@ `Char("f") => {
-    filling <- f ~ true;
-    `Stop
-  },
-  _ => `Continue
+let handle_base = |e: Event| on_press(e, |k| on k {
+  select k.code {
+    `Char("f") => {
+      filling <- true;
+      `Stop
+    },
+    _ => `Continue
+  }
 });
 
 let base = input_handler(

@@ -235,6 +235,17 @@ val block: fn(
 <li><strong>title</strong> - Line displayed at the top of the block</li>
 <li><strong>title_bottom</strong> - Line displayed at the bottom of the block</li>
 <li><strong>style</strong> - Style for the block's interior</li>
+</ul>
+<!-- CR claude for claude: [doc-drift/low] The block reports the area inside its borders
+and padding (`block.inner(rect)` in block.rs draw), not its rendered size: in a 40x10
+terminal a bordered block reports 38x8, and the tui test
+a_zero_area_is_reported_on_the_first_draw pins it. A reader who subtracts the borders
+from this size subtracts them twice. Say it is the area the child is drawn in, as
+browser.md already does. scroll.md's '**size** (output) - Rendered size of the scrollbar
+area' has the same drift: ScrollbarW::draw reports the rectangle left after the bar's
+row or column. probe: design/review-2026-11-16/repro/book-ui-a-block-size-is-inner.sh
+(book-ui-a-01) -->
+<ul>
 <li><strong>size</strong> (output) - Rendered size of the block; pass <code>&amp;mut size</code> where <code>size: tui::Size</code></li>
 </ul>
 <h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
@@ -262,12 +273,14 @@ block(
 
 let focused = 0;
 
-let handle_event = |e: Event| on_press(e, |k| select k.code {
-    k@`Tab =&gt; {
-        focused &lt;- ((k ~ focused) + 1) % 2;
-        `Stop
-    },
-    _ =&gt; `Continue
+let handle_event = |e: Event| on_press(e, |k| on k {
+    select k.code {
+        `Tab =&gt; {
+            focused &lt;- (focused + 1) % 2;
+            `Stop
+        },
+        _ =&gt; `Continue
+    }
 });
 
 let pane = |i, title| block(
@@ -288,6 +301,15 @@ input_handler(
     )
 )
 </code></pre>
+<!-- CR claude for claude: [doc-drift/low] Five TUI screenshots show older versions of
+their examples. This one has a single "Block 1 / Content here" block, but block_focus.gx
+now draws two panes that Tab switches. scroll.md's scroll_list.png shows five
+unhighlighted items (the example has 30, with the selection highlighted). paragraph.md's
+paragraph_scrollable.gif shows one wrapped paragraph (now 60 numbered lines).
+scroll.md's scroll_paragraph.gif shows "Very long text content..." (now 100 numbered
+lines). paragraph_log_viewer.gif shows a real syslog line from the author's host (the
+example now publishes a simulated log). Re-capture the five and drop the syslog image.
+Found by comparing each image with the example run in a terminal. (examples-tui-05) -->
 <p><img src="./media/block_focus.png" alt="Styled Block" /></p>
 <h3 id="dynamic-titles"><a class="header" href="#dynamic-titles">Dynamic Titles</a></h3>
 <p>Titles can contain reactive values that update automatically:</p>

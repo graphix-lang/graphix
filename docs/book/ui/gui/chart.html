@@ -556,6 +556,15 @@ chart::chart(#title: &amp;"Summary", #style: &amp;headline, &amp;[...])
 <li><strong>margin</strong> — Margin in pixels around the plot area. Defaults to 10.</li>
 <li><strong>title_size</strong> — Font size for the chart title. Defaults to 16. Must be finite, positive and at most 4096 pixels.</li>
 <li><strong>title_color</strong> — Color of the chart title text. Defaults to black when null.</li>
+</ul>
+<!-- CR claude for claude: [doc-drift/low] A series takes the palette color at its own
+index in the datasets array: series_color is called with the dataset's index (draw_xy,
+draw_bar_chart via bar_series, draw_3d_chart), so a series with #color still uses up its
+slot. With palette [a, b] and datasets [line(#color: red), line(), line()], the second
+line is b and the third a, not a then b as this sentence suggests. An empty palette
+array also counts as null (palette_color filters it out). Say both. Found by reading;
+not run. (book-ui-a-04) -->
+<ul>
 <li><strong>palette</strong> — Colors assigned, in order, to series that set no <code>#color</code> of their own, and to pie slices without <code>#colors</code>. Cycles when there are more series than colors. When null, a built-in eight-color palette is used.</li>
 <li><strong>legend_position</strong> — Position of the series legend. Defaults to <code>`UpperLeft</code> when null.</li>
 <li><strong>legend</strong> — Legend appearance via a <code>LegendStyle</code> struct. When null, defaults to white background with black border.</li>
@@ -611,7 +620,7 @@ let x = cast&lt;f64&gt;(count(clock))$;
 let series = |start, end| {
     let d = [];
     let y = rand::rand(#start, #end, #clock);
-    d &lt;- array::window(#n:20, clock ~ d, (x, y));
+    on clock { d &lt;- array::window(#n:20, d, (x, y)) };
     d
 };
 
@@ -778,10 +787,12 @@ let err_data = [];
 let avg = rand::rand(#start: 20., #end: 80., #clock);
 let noise = rand::rand(#start: 3., #end: 15., #clock);
 
-avg_data &lt;- array::window(#n: 25, clock ~ avg_data, (x, avg));
-err_data &lt;- array::window(#n: 25, clock ~ err_data, {
-    x, min: avg - noise, avg, max: avg + noise
-});
+on clock {
+    avg_data &lt;- array::window(#n: 25, avg_data, (x, avg));
+    err_data &lt;- array::window(#n: 25, err_data, {
+        x, min: avg - noise, avg, max: avg + noise
+    })
+};
 
 let col = column(
     #spacing: &amp;15.0,
@@ -898,7 +909,7 @@ let x = cast&lt;f64&gt;(count(clock))$;
 let series = |offset, scale| {
     let d = [];
     let y = rand::rand(#start: 0., #end: scale, #clock) + offset;
-    d &lt;- array::window(#n: 30, clock ~ d, (x, y));
+    on clock { d &lt;- array::window(#n: 30, d, (x, y)) };
     d
 };
 

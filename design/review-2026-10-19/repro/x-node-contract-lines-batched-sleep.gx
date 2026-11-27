@@ -17,13 +17,13 @@ let mk = |n: i64| {
   ))$;
   child.stdout$
 };
-let on = true;
-on <- sys::time::timer(duration:120.ms, false) ~ false;
-on <- sys::time::timer(duration:350.ms, false) ~ true;
+let is_on = true;
+is_on <- sys::time::timer(duration:120.ms, false) ~ false;
+is_on <- sys::time::timer(duration:350.ms, false) ~ true;
 let p1 = mk(1);
 let p2 = mk(2);
-let u = select on { true => Lines::lines(p1)$, false => never() };
-let b = select on { true => Lines::lines_batched(p2)$, false => never() };
+let u = select is_on { true => Lines::lines(p1)$, false => never() };
+let b = select is_on { true => Lines::lines_batched(p2)$, false => never() };
 let su = [];
 su <- array::push(u ~ su, u);
 let sb = [];

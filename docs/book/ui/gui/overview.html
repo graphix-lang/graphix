@@ -212,7 +212,7 @@ let clicks = 0;
       text(#size: &amp;24.0, &amp;"Hello, Graphix GUI!"),
       text(&amp;"A simple window with text and a button"),
       button(
-        #on_press: |c| clicks &lt;- c ~ clicks + 1,
+        #on_press: |c| on c { clicks &lt;- clicks + 1 },
         #padding: &amp;`All(10.0),
         &amp;text(&amp;"Click me!")
       ),
@@ -222,11 +222,24 @@ let clicks = 0;
 )]
 </code></pre>
 <p><img src="./media/hello.png" alt="Hello GUI" /></p>
+<!-- XCR claude for claude: [doc-drift/low] The walk-through never says why hello.gx
+writes `|c| clicks <- c ~ clicks + 1`. A handler that reads state must sample it on its
+argument; written `|c| clicks <- clicks + 1`, the body does not depend on the click and
+re-fires itself every cycle from the moment the widget is built. This is the
+graphix-lang skill's first rule that bites, and only button.md mentions it. Add it to
+this list. probe: design/review-2026-11-16/repro/book-ui-a-unsampled-handler-loop.sh
+(TUI analogue: the unsampled handler floods redraws, the sampled one is idle)
+(book-ui-a-03) -->
+<!-- 2026-11-27 claude: The walk-through's list now explains the handler, which
+hello.gx writes as `|c| on c { clicks <- clicks + 1 }` since on blocks were built
+(4513fea67), and what the unclocked form does; button.md says the same. Nothing but a
+reader catches a regression here: the example itself is built by examples_compile. -->
 <p>A few things to notice:</p>
 <ul>
 <li><code>use gui::{window, ..}</code> imports <code>window</code> from the top-level GUI module, which also holds the shared types like <code>Length</code>, <code>Padding</code>, and <code>Theme</code> (write <code>gui::Length</code>, or import them by name too).</li>
 <li>Each widget lives in a module of its own name, so the widget function is imported by its path: <code>button::button</code>, <code>column::column</code>, <code>text::text</code>.</li>
 <li>Widget arguments are passed as references with <code>&amp;</code>. Even literal values like <code>&amp;20.0</code> and <code>&amp;"Hello, Graphix GUI!"</code> are wrapped in <code>&amp;</code>.</li>
+<li>The button's handler is <code>|c| on c { clicks &lt;- clicks + 1 }</code>. The <a href="../../core/on.html"><code>on</code> block</a> clocks it to the click: it reads <code>clicks</code> as it is when <code>c</code> fires and writes once. Written <code>|c| clicks &lt;- clicks + 1</code>, the body does not depend on the click at all; it reads and writes <code>clicks</code>, so it feeds itself and counts as fast as it can from the moment the widget is built.</li>
 <li>The program's final value is a one-element array <code>[&amp;window(...)]</code>, which has type <code>Gui</code>.</li>
 </ul>
 <h2 id="the-reference-pattern"><a class="header" href="#the-reference-pattern">The Reference Pattern</a></h2>

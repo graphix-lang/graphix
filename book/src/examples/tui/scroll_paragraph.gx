@@ -10,26 +10,28 @@ let lines = array::init(100, |i| line("Line [i + 1]"));
 let position = 0;
 let max_position = array::len(lines) - 1;
 
-let handle_event = |e: Event| on_press(e, |k| select k.code {
-    k@`Up if position > 0 => {
-        position <- (k ~ position) - 1;
-        `Stop
-    },
-    k@`Down if position < max_position => {
-        position <- (k ~ position) + 1;
-        `Stop
-    },
-    k@`PageUp if position > 0 => {
-        position <- max(0, (k ~ position) - 10);
-        `Stop
-    },
-    k@`PageDown if position < max_position => {
-        position <- min(max_position, (k ~ position) + 10);
-        `Stop
-    },
-    k@`Home => { position <- k ~ 0; `Stop },
-    k@`End => { position <- k ~ max_position; `Stop },
-    _ => `Continue
+let handle_event = |e: Event| on_press(e, |k| on k {
+    select k.code {
+        `Up if position > 0 => {
+            position <- position - 1;
+            `Stop
+        },
+        `Down if position < max_position => {
+            position <- position + 1;
+            `Stop
+        },
+        `PageUp if position > 0 => {
+            position <- max(0, position - 10);
+            `Stop
+        },
+        `PageDown if position < max_position => {
+            position <- min(max_position, position + 10);
+            `Stop
+        },
+        `Home => { position <- 0; `Stop },
+        `End => { position <- max_position; `Stop },
+        _ => `Continue
+    }
 });
 
 input_handler(

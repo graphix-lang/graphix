@@ -2671,9 +2671,9 @@ run!(banked_sample_payment_asleep_is_owed_nothing, r#"{
   let t = once(k);
   let p = t ~ v;
   let w = 0;
-  let on = true;
-  on <- select k { 2 => false, 4 => true, _ => never() };
-  let r = select on {
+  let is_on = true;
+  is_on <- select k { 2 => false, 4 => true, _ => never() };
+  let r = select is_on {
     true => { let q = any(p, w); q <- select k { 1 => 7, _ => never() }; q },
     false => -1
   };
@@ -4592,9 +4592,9 @@ const WAKE_KEEPS_QUEUED_WRITES_THAT_LANDED_ASLEEP: &str = r#"
   step <- select step { s if s < 16 => s + 1, _ => never() };
   let x = 100;
   x <- select step { s if s == 10 => 200, _ => never() };
-  let on = uniq(step < 11 || step > 13);
+  let is_on = uniq(step < 11 || step > 13);
   let no = 0 - 1;
-  let out = select on {
+  let out = select is_on {
     true => {
       let z = x;
       z <- select step { 10 => 1, _ => never() };

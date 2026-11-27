@@ -340,12 +340,12 @@ run!(net_rpc_sleep_abandons_silently, r#"{
     #f: |a: null| { asleep_seen <- a; let v = release ~ 1; replied <- v; v });
   sys::net::rpc(#path: "/local/ids/awake", #doc: "awake", #spec: null, #f: |a: null| a ~ 2);
   let path = "/local/ids/asleep";
-  let on = true;
-  on <- asleep_seen ~ false;
-  release <- select on { false => on ~ null, true => never() };
-  on <- replied ~ true;
+  let is_on = true;
+  is_on <- asleep_seen ~ false;
+  release <- select is_on { false => is_on ~ null, true => never() };
+  is_on <- replied ~ true;
   path <- replied ~ "/local/ids/awake";
-  let out = select on { true => sys::net::call(path, null), false => never() };
+  let out = select is_on { true => sys::net::call(path, null), false => never() };
   let (_, r) = out;
   let v: Result<i64, [`RpcError(string), `InvalidCast(string), `Aborted]> = r;
   once("[v]")
@@ -417,12 +417,12 @@ run!(net_callq_sleep_drops_its_calls, r#"{
     });
   let args = {n: 1};
   args <- once(args) ~ {n: 2};
-  let on = true;
-  on <- sys::time::after_idle(duration:100.ms, second_seen) ~ false;
-  release <- select on { false => on ~ null, true => never() };
-  on <- replied ~ true;
+  let is_on = true;
+  is_on <- sys::time::after_idle(duration:100.ms, second_seen) ~ false;
+  release <- select is_on { false => is_on ~ null, true => never() };
+  is_on <- replied ~ true;
   args <- replied ~ {n: 3};
-  let r = select on { true => sys::net::callq("/local/q/asleep", args), false => never() };
+  let r = select is_on { true => sys::net::callq("/local/q/asleep", args), false => never() };
   let v: Result<i64, [`RpcError(string), `InvalidCast(string)]> = r;
   once("[v]")
 }"#, prints(r#""3""#); FuseExpect::Jit);
@@ -672,14 +672,14 @@ run!(net_rewoken_reader_of_a_held_path, r#"
 {
   sys::net::rpc(#path: "/local/pin/held", #doc: "d", #spec: {x: {default: 0, doc: "x"}}, #f: |a: {x: i64}| a.x)$;
   let c: i64 = sys::net::call("/local/pin/held", {x: 5}).1$;
-  let on = true;
-  let b = select on {
+  let is_on = true;
+  let b = select is_on {
     true => { let x: Array<string> = sys::net::subscribe(c ~ "/local/pin/held")$; x },
     false => ["off"]
   };
   let seen = count(select b { [s] if s == "off" => never(), x => x });
-  on <- select seen { 1 => seen ~ false, _ => never() };
-  on <- select on { false => on ~ true, true => never() };
+  is_on <- select seen { 1 => seen ~ false, _ => never() };
+  is_on <- select is_on { false => is_on ~ true, true => never() };
   select seen { 2 => (c, seen), _ => never() }
 }
 "#, |v: Result<&Value>| {
@@ -980,12 +980,12 @@ async fn request_after_wake(call: &str, issues: i64) -> Result<()> {
         let path = "/local/restart";
         let args = null;
         let trigger = null;
-        let on = true;
-        on <- sys::time::after_idle(duration:100.ms, false);
-        on <- sys::time::after_idle(duration:200.ms, true);
+        let is_on = true;
+        is_on <- sys::time::after_idle(duration:100.ms, false);
+        is_on <- sys::time::after_idle(duration:200.ms, true);
         let errors = 0;
         catch(e) errors <- e ~ errors + 1;
-        let response: Any = select on {{
+        let response: Any = select is_on {{
             true => {call},
             false => never()
         }};
@@ -1033,11 +1033,11 @@ run!(net_write_not_repeated_after_wake, r#"{
     let writes = 0;
     sys::net::publish(#on_write: |v: i64| writes <- v ~ writes + 1, path, 0);
     let ready: i64 = once(sys::net::subscribe(path)?);
-    let on = ready ~ true;
-    on <- sys::time::after_idle(duration:100.ms, ready) ~ false;
-    on <- sys::time::after_idle(duration:200.ms, ready) ~ true;
-    select on {
-        true => sys::net::write(path, once(on) ~ value),
+    let is_on = ready ~ true;
+    is_on <- sys::time::after_idle(duration:100.ms, ready) ~ false;
+    is_on <- sys::time::after_idle(duration:200.ms, ready) ~ true;
+    select is_on {
+        true => sys::net::write(path, once(is_on) ~ value),
         false => never()
     };
     sys::time::after_idle(duration:400.ms, ready) ~ writes

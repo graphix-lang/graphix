@@ -6,11 +6,11 @@ let addr = sys::tcp::listener_addr(l)$;
 let client = sys::tcp::connect(addr)$;
 let server = sys::tcp::accept(l, client)$;
 let w1 = Write::write_exact(server, buffer::from_string("hello"))$;
-let on = true;
-on <- sys::time::timer(duration:300.ms, false) ~ false;
-on <- sys::time::timer(duration:600.ms, false) ~ true;
+let is_on = true;
+is_on <- sys::time::timer(duration:300.ms, false) ~ false;
+is_on <- sys::time::timer(duration:600.ms, false) ~ true;
 let w2 = Write::write_exact(sys::time::timer(duration:900.ms, false) ~ server, buffer::from_string("0123456789"))$;
-let got = select on {
+let got = select is_on {
   true => buffer::to_string(Read::read_exact(client, u64:10)$)$,
   false => never()
 };

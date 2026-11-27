@@ -11,13 +11,15 @@ let selected_row: [string, null] = never();
 let cursor: MoveCursor = never();
 let size: Size = never();
 
-let handle_event = |e: Event| on_press(e, |k| select k.code {
-    e@ `Up => { cursor <- e ~ `Up(1); `Stop },
-    e@ `Down => { cursor <- e ~ `Down(1); `Stop },
-    e@ `Left => { cursor <- e ~ `Left(1); `Stop },
-    e@ `Right => { cursor <- e ~ `Right(1); `Stop },
-    e@ `Enter => { path <- (e ~ selected_row)$; `Stop },
-    _ => `Continue
+let handle_event = |e: Event| on_press(e, |k| on k {
+    select k.code {
+        `Up => { cursor <- `Up(1); `Stop },
+        `Down => { cursor <- `Down(1); `Stop },
+        `Left => { cursor <- `Left(1); `Stop },
+        `Right => { cursor <- `Right(1); `Stop },
+        `Enter => { path <- selected_row$; `Stop },
+        _ => `Continue
+    }
 });
 
 input_handler(

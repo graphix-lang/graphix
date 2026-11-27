@@ -7,7 +7,7 @@ let x = cast<f64>(count(clock))$;
 let series = |offset, scale| {
     let d = [];
     let y = rand::rand(#start: 0., #end: scale, #clock) + offset;
-    d <- array::window(#n: 30, clock ~ d, (x, y));
+    on clock { d <- array::window(#n: 30, d, (x, y)) };
     d
 };
 

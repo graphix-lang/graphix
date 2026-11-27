@@ -218,6 +218,15 @@ impl Seek for File;
 mod watch;
 mod tempdir;
 
+// CR claude for eric: [structure/medium] Every stdlib error is a tag over one string:
+// 37 tags, six spelled `Err` (`DbErr`, `JsonErr`, ..) and the rest `Error`, seven of
+// them in `str`. A program can catch an `IOError` and cannot tell a missing file from a
+// denied one except by matching the operating system's text, so "create the file if it
+// is not there" needs an `is_file` call first. What a bad argument gets is not
+// predictable inside one module either: `sys::time::timer` answers a `TimerError`,
+// `after_idle` logs and answers nothing, `sub_dur` saturates. Give the io errors a kind
+// a select can test, settle one suffix, and make `after_idle` answer as `timer` does.
+// probe: design/review-2026-11-16/repro/a-stdlib-error-conventions.gx (a-stdlib-08)
 /// Read the specified file into memory as a utf8 string and return it, or an
 /// error if,
 /// - path is not a file

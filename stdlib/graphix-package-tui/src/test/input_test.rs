@@ -93,19 +93,19 @@ async fn a_disabled_handler_steps_aside() -> Result<()> {
         r#"
 use tui::input_handler::{self, *};
 use tui::text::text;
-let on = true;
+let is_on = true;
 let outer_hits = 0;
 let inner_hits = 0;
 let outer = |e: Event| -> [`Stop, `Continue] on_press(e, |k| select k.code {
-  kk@ `Char("d") => { on <- kk ~ false; `Stop },
+  kk@ `Char("d") => { is_on <- kk ~ false; `Stop },
   kk => { outer_hits <- (kk ~ outer_hits) + 1; `Stop }
 });
 let inner = |e: Event| -> [`Stop, `Continue] on_press(e, |k| select k.code {
-  kk@ `Char("e") => { on <- kk ~ true; `Stop },
+  kk@ `Char("e") => { is_on <- kk ~ true; `Stop },
   kk => { inner_hits <- (kk ~ inner_hits) + 1; `Stop }
 });
 let result = input_handler(
-  #enabled: &on,
+  #enabled: &is_on,
   #handle: &outer,
   &input_handler(#handle: &inner, &text(&"x"))
 )
@@ -114,16 +114,16 @@ let result = input_handler(
     .await?;
     h.watch("test::outer_hits").await?;
     h.watch("test::inner_hits").await?;
-    h.watch("test::on").await?;
+    h.watch("test::is_on").await?;
     h.dispatch_event(ch('a')).await?;
     assert_eq!(h.get_watched("test::outer_hits"), Some(&Value::I64(1)));
     h.dispatch_event(ch('d')).await?;
-    assert_eq!(h.get_watched("test::on"), Some(&Value::Bool(false)));
+    assert_eq!(h.get_watched("test::is_on"), Some(&Value::Bool(false)));
     h.dispatch_event(ch('b')).await?;
     assert_eq!(h.get_watched("test::inner_hits"), Some(&Value::I64(1)));
     assert_eq!(h.get_watched("test::outer_hits"), Some(&Value::I64(1)));
     h.dispatch_event(ch('e')).await?;
-    assert_eq!(h.get_watched("test::on"), Some(&Value::Bool(true)));
+    assert_eq!(h.get_watched("test::is_on"), Some(&Value::Bool(true)));
     h.dispatch_event(ch('z')).await?;
     assert_eq!(h.get_watched("test::outer_hits"), Some(&Value::I64(2)));
     assert_eq!(h.get_watched("test::inner_hits"), Some(&Value::I64(1)));

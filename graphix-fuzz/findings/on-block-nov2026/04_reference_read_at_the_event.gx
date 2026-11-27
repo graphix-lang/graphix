@@ -1,0 +1,4 @@
+// A read through a reference follows its target, so an on block takes it
+// at the event as it takes a variable: the write does not feed itself.
+// Expected trace (both engines): 1, 11, 21, 31.
+{ let step = 0; step <- select step { n if n < 8 => n + 1, _ => never() }; let k = select step { 2 => null, 5 => null, 7 => null, _ => never() }; let v = 1; let r = &mut v; on k { *r <- *r + 10 }; v }

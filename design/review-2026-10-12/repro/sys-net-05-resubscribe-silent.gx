@@ -11,9 +11,9 @@ let p = "/test/r";
 let c: i64 = sys::net::call(p, sys::time::timer(duration:100.ms, false) ~ {x: 5})$;
 println("call [c]");
 let t = sys::time::timer(duration:300.ms, true);
-let on = true;
-on <- t ~ !on;
-let b = select on { true => { let x: Array<string> = sys::net::subscribe(p)$; x }, false => ["off"] };
+let is_on = true;
+is_on <- t ~ !is_on;
+let b = select is_on { true => { let x: Array<string> = sys::net::subscribe(p)$; x }, false => ["off"] };
 println("b [b]");
 sys::exit(sys::time::timer(duration:1600.ms, false) ~ 0);
 b

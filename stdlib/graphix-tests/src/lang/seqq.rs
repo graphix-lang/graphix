@@ -336,10 +336,10 @@ async fn banked_requests_survive_a_sleep(mode: Mode) -> Result<()> {
         let request = select step { 1 | 2 | 3 | 4 => step, _ => never() };
         let late: i64 = never();
         late <- select step { 6 => 100, _ => never() };
-        let on = true;
-        on <- late ~ false;
-        on <- select step { 10 => true, _ => never() };
-        select on { true => seqq request { late }, false => never() }
+        let is_on = true;
+        is_on <- late ~ false;
+        is_on <- select step { 10 => true, _ => never() };
+        select is_on { true => seqq request { late }, false => never() }
     }"#;
     let (values, _) = run_delta(code, mode).await?;
     assert_eq!(as_i64s(&values), [100, 100, 100, 100]);

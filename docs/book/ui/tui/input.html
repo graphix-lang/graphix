@@ -275,13 +275,17 @@ events per keystroke, and a handler that matches <code>`Key(k)</code> alone
 runs twice. <code>on_press(e, f)</code> calls <code>f</code> with the <code>KeyEvent</code> when <code>e</code> is a
 press and continues on everything else. It returns what a handler
 returns, so it is usually the handler's whole body:</p>
-<pre><code class="language-graphix fragment">let handle = |e: Event| on_press(e, |k| select k.code {
-  `Up =&gt; { sel &lt;- k ~ max(0, sel - 1); `Stop },
-  `Down =&gt; { sel &lt;- k ~ sel + 1; `Stop },
-  _ =&gt; `Continue
+<pre><code class="language-graphix fragment">let handle = |e: Event| on_press(e, |k| on k {
+  select k.code {
+    `Up =&gt; { sel &lt;- max(0, sel - 1); `Stop },
+    `Down =&gt; { sel &lt;- sel + 1; `Stop },
+    _ =&gt; `Continue
+  }
 });
 input_handler(#handle: &amp;handle, &amp;view)
 </code></pre>
+<p>The <a href="../../core/on.html"><code>on k</code> block</a> clocks the handler to the key: each
+arm reads <code>sel</code> as it is at the key and writes once.</p>
 <p>A handler that wants mouse, paste, resize or a release selects on the
 <code>Event</code> itself. A modal one that lets nothing through wraps the call
 and answers every event, which means sampling the answer on the event
@@ -307,9 +311,10 @@ calls <code>tui::exit</code>, which ends it the same way: the terminal is restor
 and the runtime stops. Neither key reaches the program. Shown in the
 REPL, Ctrl-C leaves the display with the session kept, and <code>Ctrl-\</code> also
 replaces the runtime with a fresh one.
-Fire it from the key that quits, sampled with the event:</p>
-<pre><code class="language-graphix ignore">`Char("q") =&gt; { tui::exit(k ~ null); `Stop }
+Fire it from the key that quits. In a handler clocked by <code>on k</code>:</p>
+<pre><code class="language-graphix ignore">`Char("q") =&gt; { tui::exit(null); `Stop }
 </code></pre>
+<p>By hand it is sampled with the event, <code>tui::exit(k ~ null)</code>.</p>
 <h2 id="handing-the-terminal-to-a-program"><a class="header" href="#handing-the-terminal-to-a-program">Handing the Terminal to a Program</a></h2>
 <p>Some steps belong on the plain terminal — a <code>sudo</code> password prompt, an
 editor. <code>tui::suspend</code> takes a level: while its input is true the
@@ -399,32 +404,36 @@ callback throws.</p>
 
 let count = 0;
 
-let handle = |e: Event| on_press(e, |k| select k.code {
-  q@ `Char("q") =&gt; {
-    tui::exit(q ~ null);
-    `Stop
-  },
-  u@ `Up =&gt; {
-    count &lt;- u ~ count + 1;
-    `Stop
-  },
-  d@ `Down =&gt; {
-    count &lt;- d ~ count - 1;
-    `Stop
-  },
-  _ =&gt; `Continue
+let handle = |e: Event| on_press(e, |k| on k {
+  select k.code {
+    `Char("q") =&gt; {
+      tui::exit(null);
+      `Stop
+    },
+    `Up =&gt; {
+      count &lt;- count + 1;
+      `Stop
+    },
+    `Down =&gt; {
+      count &lt;- count - 1;
+      `Stop
+    },
+    _ =&gt; `Continue
+  }
 });
 
 input_handler(#handle: &amp;handle, &amp;paragraph(&amp;"[count]"))
 </code></pre>
-<p>The <code>Up</code> and <code>Down</code> arms sample the key (<code>u ~ count + 1</code>). A write
+<p>The handler is an <code>on k</code> block, so its arms write <code>count &lt;- count + 1</code>
+as it reads: every read is the value at the key, and a constant such as
+<code>mode &lt;- `Insert</code> acts once a key. Outside such a block a write
 inside a select arm fires when its right-hand side fires, and entering
-an arm is not an event. So <code>count &lt;- count + 1</code> writes nothing at the
-key press, and once <code>count</code> changes while its arm is still selected it
-fires again on its own update and loops; a constant such as
-<code>mode &lt;- `Insert</code> never fires (the check warns of it). Sample the event
-that selects the arm instead, <code>k@ `Char("i") =&gt; mode &lt;- k ~ `Insert</code>;
-the select chapter's "Writing From an Arm" spells out why.</p>
+an arm is not an event. So <code>count &lt;- count + 1</code> would write nothing at
+the key press, and once <code>count</code> changed while its arm was still selected
+it would fire again on its own update and loop; a constant would never
+fire (the check warns of it). By hand, each arm samples the event that
+selects it, <code>k@ `Char("i") =&gt; mode &lt;- k ~ `Insert</code>; the select
+chapter's "Writing From an Arm" spells out why.</p>
 <h3 id="conditional-handling"><a class="header" href="#conditional-handling">Conditional Handling</a></h3>
 <p>The <code>#enabled</code> parameter turns a handler on and off. A disabled handler
 steps aside: what it wraps, nested handlers included, gets every event
@@ -439,25 +448,29 @@ let editing = false;
 let typed = "";
 
 // always enabled: 'e' starts editing
-let start = |e: Event| on_press(e, |k| select k.code {
-  i@ `Char("e") if editing == false =&gt; {
-    editing &lt;- i ~ true;
-    `Stop
-  },
-  _ =&gt; `Continue
+let start = |e: Event| on_press(e, |k| on k {
+  select k.code {
+    `Char("e") if editing == false =&gt; {
+      editing &lt;- true;
+      `Stop
+    },
+    _ =&gt; `Continue
+  }
 });
 
 // enabled only while editing: Esc stops, characters are typed
-let edit = |e: Event| on_press(e, |k| select k.code {
-  x@ `Esc =&gt; {
-    editing &lt;- x ~ false;
-    `Stop
-  },
-  c@ `Char(s) =&gt; {
-    typed &lt;- c ~ "[typed][s]";
-    `Stop
-  },
-  _ =&gt; `Continue
+let edit = |e: Event| on_press(e, |k| on k {
+  select k.code {
+    `Esc =&gt; {
+      editing &lt;- false;
+      `Stop
+    },
+    `Char(s) =&gt; {
+      typed &lt;- "[typed][s]";
+      `Stop
+    },
+    _ =&gt; `Continue
+  }
 });
 
 let status = select editing {
@@ -480,21 +493,25 @@ input_handler(
 let last = "nothing yet";
 
 // the outer handler sees each event first and takes only 'a'
-let outer = |e: Event| on_press(e, |k| select k.code {
-  a@ `Char("a") =&gt; {
-    last &lt;- a ~ "outer took a";
-    `Stop
-  },
-  _ =&gt; `Continue
+let outer = |e: Event| on_press(e, |k| on k {
+  select k.code {
+    `Char("a") =&gt; {
+      last &lt;- "outer took a";
+      `Stop
+    },
+    _ =&gt; `Continue
+  }
 });
 
 // the inner handler sees what the outer one passed on
-let inner = |e: Event| on_press(e, |k| select k.code {
-  c@ `Char(s) =&gt; {
-    last &lt;- c ~ "inner took [s]";
-    `Stop
-  },
-  _ =&gt; `Continue
+let inner = |e: Event| on_press(e, |k| on k {
+  select k.code {
+    `Char(s) =&gt; {
+      last &lt;- "inner took [s]";
+      `Stop
+    },
+    _ =&gt; `Continue
+  }
 });
 
 input_handler(
@@ -547,13 +564,15 @@ let saved = "";
 // key edit it
 let handle = |e: Event| select e {
   `Paste(_) =&gt; line_edit::handle(&amp;mut ed, e),
-  _ =&gt; on_press(e, |k| select k.code {
-    kk@ `Enter =&gt; {
-      saved &lt;- kk ~ ed.value;
-      ed &lt;- kk ~ line_edit::state("");
-      `Stop
-    },
-    _ =&gt; line_edit::handle(&amp;mut ed, e)
+  _ =&gt; on_press(e, |k| on k {
+    select k.code {
+      `Enter =&gt; {
+        saved &lt;- ed.value;
+        ed &lt;- line_edit::state("");
+        `Stop
+      },
+      _ =&gt; line_edit::handle(&amp;mut ed, e)
+    }
   })
 };
 
@@ -591,24 +610,35 @@ let greeting = "press f to fill in the form";
 
 let name_form = form(
   #title: "Your name",
-  #on_submit: |v| {
+  #on_submit: |v| on v {
     greeting &lt;- "hello [v[0]$] [v[1]$]";
-    filling &lt;- v ~ false;
+    filling &lt;- false;
     null
   },
-  #on_cancel: |e| {
-    filling &lt;- e ~ false;
+  #on_cancel: |e| on e {
+    filling &lt;- false;
     null
   },
+  // CR claude for claude: [bug/low] The form is built once over constant fields, so its
+  // re-seed ("A new `fields` delivery re-seeds the editors", form.gxi) never runs. A
+  // second `f` opens the form still holding the last submission (Ada / Lovelace) with
+  // the focus on "last", and typing X then Enter greets "hello Ada LovelaceX". Esc
+  // keeps a half-typed entry the same way. Pass the fields sampled on the open,
+  // `filling ~ [..]`, as this argument: the reopened form is then empty with the focus
+  // on the first field, and the page's only form example shows the re-seed. probe:
+  // design/review-2026-11-16/repro/examples-tui-form-keeps-last-entry.sh
+  // (examples-tui-04)
   [{ label: "first", value: "" }, { label: "last", value: "" }]
 );
 
-let handle_base = |e: Event| on_press(e, |k| select k.code {
-  f@ `Char("f") =&gt; {
-    filling &lt;- f ~ true;
-    `Stop
-  },
-  _ =&gt; `Continue
+let handle_base = |e: Event| on_press(e, |k| on k {
+  select k.code {
+    `Char("f") =&gt; {
+      filling &lt;- true;
+      `Stop
+    },
+    _ =&gt; `Continue
+  }
 });
 
 let base = input_handler(
@@ -640,20 +670,22 @@ type Mode = [`Normal, `Insert];
 let mode: Mode = `Normal;
 let text = "";
 
-let handle = |e: Event| on_press(e, |k| select (k ~ mode, k.code) {
-  (`Normal, `Char("i")) =&gt; {
-    mode &lt;- k ~ `Insert;
-    `Stop
-  },
-  (`Insert, `Esc) =&gt; {
-    mode &lt;- k ~ `Normal;
-    `Stop
-  },
-  (`Insert, `Char(c)) =&gt; {
-    text &lt;- k ~ "[text][c]";
-    `Stop
-  },
-  _ =&gt; `Continue
+let handle = |e: Event| on_press(e, |k| on k {
+  select (mode, k.code) {
+    (`Normal, `Char("i")) =&gt; {
+      mode &lt;- `Insert;
+      `Stop
+    },
+    (`Insert, `Esc) =&gt; {
+      mode &lt;- `Normal;
+      `Stop
+    },
+    (`Insert, `Char(c)) =&gt; {
+      text &lt;- "[text][c]";
+      `Stop
+    },
+    _ =&gt; `Continue
+  }
 });
 
 input_handler(#handle: &amp;handle, &amp;paragraph(&amp;"[mode]: [text]"))
@@ -669,16 +701,18 @@ input_handler(#handle: &amp;handle, &amp;paragraph(&amp;"[mode]: [text]"))
 let focused = 0;
 let num_widgets = 3;
 
-let handle = |e: Event| on_press(e, |k| select k.code {
-  t@ `Tab =&gt; {
-    focused &lt;- ((t ~ focused) + 1) % num_widgets;
-    `Stop
-  },
-  t@ `BackTab =&gt; {
-    focused &lt;- ((t ~ focused) - 1 + num_widgets) % num_widgets;
-    `Stop
-  },
-  _ =&gt; `Continue
+let handle = |e: Event| on_press(e, |k| on k {
+  select k.code {
+    `Tab =&gt; {
+      focused &lt;- (focused + 1) % num_widgets;
+      `Stop
+    },
+    `BackTab =&gt; {
+      focused &lt;- (focused - 1 + num_widgets) % num_widgets;
+      `Stop
+    },
+    _ =&gt; `Continue
+  }
 });
 
 let pane = |i| block(

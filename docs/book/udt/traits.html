@@ -168,6 +168,16 @@ Graphix's traits are Rust's, spelled in Graphix.</p>
     val twice: fn(self) -&gt; string = |s| "[show(s)] [show(s)]"
 };
 </code></pre>
+<!-- CR claude for claude: [doc-drift/low] This paragraph says a method naming `self`
+only in its result is accepted and only a call to it is refused ("called without its
+self argument"). The check refuses the trait declaration itself, with or without a call:
+traits::method_decl bails "trait method mk takes no `self` argument, so no call can
+dispatch it". Cast::from_value, the core example, is refused at the call by another rule
+("Cast::from_value is called by casts and writers, never by a program"). Rewrite: every
+method of a program's trait takes `self`, and only a core trait's runtime method may
+name it only in its result. Pin it with a ```graphix,cases fence. probe:
+design/review-2026-11-16/repro/book-modules-udt-self-only-in-result.sh
+(book-modules-udt-04) -->
 <p>Each item is a <code>val</code> with a function type. The type <code>self</code> is the
 receiver — the type implementing the trait — and a method takes it as
 a positional <code>self</code> parameter, written bare: <code>fn(self, n: u64) -&gt; bytes</code>
@@ -355,6 +365,14 @@ let make = |x| Counter(x)
 compiles against the interface and calls <code>m::Show::show(m::make(9))</code>.
 A trait declared only in the <code>.gx</code> file is private to that module.</p>
 <h2 id="the-core-traits-eq-ord-and-display"><a class="header" href="#the-core-traits-eq-ord-and-display">The Core Traits: Eq, Ord and Display</a></h2>
+<!-- CR claude for claude: [doc-drift/low] The core trait declarations below leave out
+Eq's second method, `hash`. Core's mod.gxi declares `#[pure] val hash: fn(self) -> Any`,
+which the text further down introduces as something an implementation "can add". The
+Current limits bullet "`Hash` is not a trait: map keys hash structurally" is wrong on
+both counts. A Map is an ordered chunkmap keyed by Ord, as this page says above, never
+hashed, and a user type is hashed through Eq::hash (array::dedup). Show `hash` in the Eq
+declaration, and replace the bullet with "hashing is Eq::hash, not a trait of its own".
+Found by reading; not run. (book-modules-udt-08) -->
 <p>Three traits are built into core and consulted by the language
 itself:</p>
 <pre><code class="language-graphix">trait Eq { #[pure] val eq: fn(self, other: self) -&gt; bool };
@@ -410,6 +428,16 @@ println([red, red]);
 // {fg: #25500, n: 3}
 println({fg: red, n: 3})
 </code></pre>
+<!-- CR claude for claude: [doc-drift/low] The last sentence of this paragraph, "A
+method that produces no value makes the comparison produce none", contradicts
+design/traits.md and the code. Under THE BOTTOM-KEY RULE, `a == b` on a hooked type
+whose impl bottoms answers by the bottom-key rule instead of bottoming the operator.
+With an Ord impl that bottoms on K(0), `K(0) < K(2)` answers true. The paragraph further
+down ("If an implementation produces no value for some pair...") states the right rule,
+but reads as if it covers only maps and sorts. Delete the sentence and say the
+bottom-key rule holds for the operators too. probe:
+design/review-2026-11-16/repro/book-modules-udt-bottoming-ord-answers.gx
+(book-modules-udt-05) -->
 <p>Outside core only an abstract type may implement a core trait (the
 rule of the previous section). A core trait's method runs inside the
 comparison or the print, as many times as the comparison needs, a sort
@@ -549,7 +577,7 @@ total([1, 2]) + total(list::from_array([3, 4]))
 result is not the same shape (<code>total</code> returns a scalar). To <em>preserve</em>
 the container — return the same kind of collection with a new element
 — name the constructor and apply it:</p>
-<pre><code class="language-graphix fragment">let sqr = 'c: Collection, 'a: Number |c: 'c&lt;'a&gt;| -&gt; 'c&lt;'a&gt; map(c, |n| n * n);
+<pre><code class="language-graphix fragment">let sqr = 'c: Collection, 'a: Number + Singleton |c: 'c&lt;'a&gt;| -&gt; 'c&lt;'a&gt; map(c, |n| n * n);
 // Array&lt;i64&gt; [1, 4, 9]
 sqr([1, 2, 3]);
 // Map&lt;string, i64&gt;
@@ -559,7 +587,8 @@ sqr({"a" =&gt; 2, "b" =&gt; 3})
 element, so <code>-&gt; 'c&lt;'a&gt;</code> returns the <em>same</em> container: an <code>Array</code> in
 yields an <code>Array</code> out, a <code>Map</code> a <code>Map</code> — checked, not widened to "some
 collection." The bound stays on <code>'c</code>, the constructor; the <code>&lt;'a&gt;</code> only
-marks where it is applied. <code>'a: Number</code> constrains the element. (There
+marks where it is applied. <code>'a: Number + Singleton</code> constrains the element
+to one numeric type, which <code>n * n</code> needs. (There
 is no <code>'c&lt;'a&gt;: Collection</code> quantifier form: the bound belongs on the
 constructor <code>'c</code>, not on the application.)</p>
 <p>The receiver must have a last type parameter: a union of collections,

@@ -204,6 +204,7 @@ or not anything in the arm fired. So <code>screen &lt;- select key { `Esc =&gt; 
 writes at every Esc, while <code>`Esc =&gt; screen &lt;- `Menu</code> inside the arm
 never writes. The ways to act when an arm is entered:</p>
 <div class="table-wrapper"><table><thead><tr><th>To get</th><th>Write</th></tr></thead><tbody>
+<tr><td>Everything an arm does, at every entry</td><td>clock it with an <a href="./on.html"><code>on</code> block</a>: <code>k@ `Esc =&gt; on k { screen &lt;- `Menu; sel &lt;- 0 }</code>, or the whole select: <code>on key { select key { .. } }</code></td></tr>
 <tr><td>A write or an effect at every entry</td><td>sample the bind: <code>k@ `Esc =&gt; screen &lt;- k ~ `Menu</code></td></tr>
 <tr><td>A constant written when an arm is taken</td><td>connect outside: <code>screen &lt;- select key { `Esc =&gt; `Menu, _ =&gt; never() }</code></td></tr>
 <tr><td>A write or an effect once per arm</td><td><code>once(k) ~ v</code></td></tr>
@@ -282,10 +283,11 @@ Error: in file test.gx
 
 Caused by:
     0: at: line: 4, column: 1 in file test.gx, in: select x { Array&lt;i64&gt; as a =&gt; array::f..
-    1: missing match cases: no arm covers null
+    1: missing match cases: nothing matches null (4:8)
 </code></pre>
 <p>The compiler subtracts what each arm matches from the argument's type, and
-names what is left when the arms run out: here <code>null</code>, which no arm covers.
+names what is left when the arms run out: here <code>null</code>, which no arm matches
+(<code>4:8</code> is where the select's argument is, line and column).
 This goes both ways, a match case that could never match is also an error.</p>
 <pre><code class="language-graphix refused">let x: [Array&lt;i64&gt;, i64, null] = null;
 x &lt;- sys::time::timer(duration:1.s, false) ~ [1, 2, 3, 4, 5];
@@ -303,15 +305,13 @@ select x {
 Error: in file test.gx
 
 Caused by:
-    0: at: line: 4, column: 1 in file test.gx, in: select x { Array&lt;i64&gt; as a =&gt; array::f..
-    1: at: line: 7, column: 3 in file test.gx
-    2: pattern f64 will never match null, unused match cases
+    0: at: line: 7, column: 3 in file test.gx
+    1: pattern f64 will never match: nothing reaches it (4:8; the value is [i64, null, Array&lt;i64&gt;])
 </code></pre>
-<p>The diagnostic message gives you an insight into the compiler's thinking. What
-it is saying is that, by the time it's gotten to looking at the <code>f64</code> pattern,
-the only type left in the argument that hasn't already been matched is <code>null</code>,
-and since <code>f64</code> doesn't unify with <code>null</code> it is sure this pattern can never
-match.</p>
+<p>The message names the arm, at line 7, and what the select's argument can
+be: an <code>i64</code>, a <code>null</code> or an <code>Array&lt;i64&gt;</code>. The arms above the <code>f64</code> one take
+the arrays and the <code>i64</code>s, the <code>null</code> that is left is no <code>f64</code>, so nothing
+reaches the arm and it can never match.</p>
 <p>Guarded patterns can always not match because of the guard, so they do not
 subtract from the argument type set. You are required to match without a guard
 at some point. No analysis is done to determine if your guard covers the entire
@@ -332,7 +332,7 @@ Error: in file test.gx
 
 Caused by:
     0: at: line: 4, column: 1 in file test.gx, in: select x { Array&lt;i64&gt; as a =&gt; array::f..
-    1: missing match cases: no arm covers i64
+    1: missing match cases: nothing matches i64 (4:8)
 </code></pre>
 <p>This is the same error you would get if you omitted the <code>i64</code> match case
 entirely.</p>
@@ -532,22 +532,22 @@ select a {
 </code></pre>
 <p>This works at any nesting depth — a partial pattern inside a variant
 payload (<code>`Event({id, ..})</code>) completes against that payload's type.
-The one case that still needs help is when SEVERAL struct members
-that reach the arm carry all the named fields (a member an earlier arm
-already matched does not count): the pattern is ambiguous, and the
-compiler asks you to annotate the member you mean:</p>
+Where several struct members that reach the arm carry all the named
+fields, the pattern takes each of them, and a name is the type of its
+field in every one: over <code>[{x: i64, y: i64}, {x: string, z: i64}]</code>,
+<code>{x, ..}</code> binds <code>x</code> as <code>[i64, string]</code>. To take one member alone, test
+for it first:</p>
 <pre><code class="language-graphix ignore">S as {x, ..} if (x &lt; 10) || (x &gt; 50) =&gt; `VWall
 </code></pre>
 <p>Any type in scope (or an inline structural type,
-<code>{x: i64, y: i64} as {x, ..}</code>) works as the annotation.</p>
-<p>A type the program has not decided yet where a select is checked, such
-as a <code>never()</code> binding written after it or a function's unannotated
-parameter, is one unknown type there, equal only to itself, whatever
-the program decides later. An arm that tests a value of such a type is
-refused, since a later decision could make the test match what the
-arms assumed it would not, and the refusal names the binding to
-annotate:</p>
-<pre><code class="language-graphix refused">let b = true;
+<code>{x: i64, y: i64} as {x, ..}</code>) works as the test.</p>
+<p>A type the program has not decided yet where a select stands, such as a
+<code>never()</code> binding written after it or a function's unannotated
+parameter, is decided by what flows into it, wherever in the program
+that is. The select waits for it, and its arms are judged against what
+the value turns out to be. Here <code>v</code> is one of two structs, the second
+written after the select, and the partial pattern takes <code>a</code> from each:</p>
+<pre><code class="language-graphix">let b = true;
 let z = never();
 let v = select b { true =&gt; {a: [1], c: 1}, false =&gt; z };
 let r = select v { {a, ..} =&gt; "[a]" };
@@ -555,90 +555,41 @@ let r = select v { {a, ..} =&gt; "[a]" };
 z &lt;- {a: ["s"], c: "w"};
 r
 </code></pre>
-<pre><code>$ graphix test.gx
-Error: in file test.gx
-
-Caused by:
-    0: at: line: 4, column: 1 in file test.gx, in: let r = select v { { a, .. } =&gt; "[a]" ..
-    1: at: line: 4, column: 9 in file test.gx, in: select v { { a, .. } =&gt; "[a]" }
-    2: at: line: 4, column: 20 in file test.gx
-    3: { a, .. } tests a value of 'z, a type not decided at this select, which a later use could decide apart from what the arms test: annotate it, writing for 'z the type of `z` (line 2, column 5)
-</code></pre>
-<p>An arm whose pattern would decide such a type itself is refused the
-same way. Here the first arm would make <code>x</code> a <code>`J</code> alone, and the
-second arm could then never match:</p>
-<pre><code class="language-graphix refused">let f = |x| select (x, 0) { (`J, _) =&gt; 1, (`M, _) =&gt; 2 };
+<p>A name an arm binds is the type of every part that reaches it, so <code>a</code>
+is an <code>[Array&lt;i64&gt;, Array&lt;string&gt;]</code> here, and the arm's body must take
+both.</p>
+<p>A function's unannotated parameter is decided by its calls, and a select
+over it says what a call may pass. With no arm that takes everything,
+the parameter is what the arms take between them:</p>
+<pre><code class="language-graphix">let f = |x| select (x, 0) { (`J, _) =&gt; 1, (`M, _) =&gt; 2 };
 f(`M)
 </code></pre>
-<pre><code>$ graphix test.gx
-Error: in file test.gx
-
-Caused by:
-    0: at: line: 1, column: 1 in file test.gx, in: let f = |x| select (x, 0) { (`J, _) =&gt;..
-    1: at: line: 1, column: 9 in file test.gx, in: |x| select (x, 0) { (`J, _) =&gt; 1, (`M,..
-    2: at: line: 1, column: 13 in file test.gx, in: select (x, 0) { (`J, _) =&gt; 1, (`M, _) ..
-    3: at: line: 1, column: 29 in file test.gx
-    4: (`J, _) tests a value of 'x, a type not decided at this select, which a later use could decide apart from what the arms test: annotate it, writing for 'x the type of `x` (line 1, column 10)
-</code></pre>
-<p>Annotated, <code>|x: [</code>J, <code>M]|</code>, both arms check. A pattern that only takes
-such a part apart decides its shape, as an annotation would: <code>|x| select (x, 0) { ((a, b), _) =&gt; a + b }</code> makes <code>x</code> a pair. That is a tuple, a
-struct naming every field, a slice or list with a rest (<code>[a, ..]</code>,
-<code>[&lt;h, t..&gt;]</code>) or an abstract payload, holding only names, <code>_</code> and such
-patterns. A literal, a tag, <code>null</code>, <code>[]</code>, a slice of a fixed length, an
-or-pattern or a written test chooses among the part's values, and is
-refused as above; so is a literal beside a member that holds its type,
-<code>(null, _)</code> over a <code>y</code> that is <code>x</code> or <code>null</code>, and a destructure beside a
-member of its shape, <code>((a, b), _)</code> over a <code>y</code> that is <code>x</code> or a pair,
-which chooses between them. A rest
-leaves the lengths it does not take to a later name or <code>_</code>: after <code>([a, ..], _)</code>, a <code>([], _)</code> arm chooses a length and is refused. A scrutinee that is wholly
-such a type is the arms' to decide together: <code>|x| select x { </code>J =&gt; 1, <code>M =&gt; 2 }</code> makes <code>x</code> a <code>[`J, `M]</code>. A partial struct pattern decides
-nothing there, since it names only some of the fields: <code>|x| select x { {a, ..} =&gt; a }</code> is refused until <code>x</code> is annotated.</p>
-<p>A part that only a name or <code>_</code> meets passes, and a name there holds that
-type beside the other members' parts: over <code>[(`A, z), (`B, "s")]</code>,
-<code>(_, x) =&gt; str::len(x)</code> makes <code>z</code> a string, so a later <code>z &lt;- 5</code> is
-refused where it is written. A type test tests what it reads as a
-pattern does: <code>(`J, [i64, string]) as (`J, s)</code> over <code>(`J, z)</code> is
-refused until <code>z</code> is annotated, since <code>z</code> might become neither.</p>
-<p>A type test over a scrutinee that is one of two such types is refused
-too. With <code>u</code> an <code>x</code> or a <code>y</code>, both written later, <code>select u { i64 as n =&gt; n, _ =&gt; 0 }</code> could make either one an <code>i64</code>, and the check does not
-pick one by the order they stand in: annotate <code>x</code> or <code>y</code>. The other is
-then the test's to decide, or stays open where the annotation holds the
-test. Tests that cover the scrutinee between them, <code>i64 as n =&gt; .., string as s =&gt; ..</code>, decide both: each is an <code>[i64, string]</code>.</p>
-<p>Arms that bind the same part of such a scrutinee bind one type there.
-No literal or guard beside a bind narrows it, so in <code>|s| select s { `A(1, a) =&gt; a + 1, `A(2, a) =&gt; str::len(a), _ =&gt; 0 }</code> both <code>a</code> are the
-payload's one type, and the select is refused for using it as an <code>i64</code>
-and as a <code>string</code>. Annotate <code>s</code> with the union the payload may be, and
-test the bind inside the arm.</p>
-<p>A slice with a rest over a binding the arms decide leaves the type of
-the other elements to later writes, and at run time it takes a value of
-whatever they bring, at every position. After <code>let v = never(); let z = select v { [</code>J(n), ..] =&gt; n + 1, _ =&gt; 3 }<code>, </code>n<code>is an</code>i64<code>, and ``v &lt;- [</code>J(1), <code>K]`` checks. ``v &lt;- [</code>J("s"), <code>K]`` brings a member the pattern takes that </code>n<code>was not typed over, so the pattern is refused ("takes a value of ``</code>J(string) <code>too") until `v` is annotated:</code>let v: Array&lt;[<code>J(i64), </code>J(string), <code>K]&gt; = never()`` makes </code>n<code>an</code>[i64, string]`.</p>
-<p>For the same reason, two members whose left-out fields differ only in
-types not decided yet are two members, and a partial pattern over both
-is refused:</p>
-<pre><code class="language-graphix refused">let b = true;
-let x = never();
-let y = never();
-let v = select b { true =&gt; {a: [1], c: x}, false =&gt; {a: ["s"], c: y} };
-let r = select v { {a, ..} =&gt; "[a]" };
-// x and y are decided here, after the select
-x &lt;- 1;
-y &lt;- 2;
-r
+<p>Here <code>x</code> is a <code>[`J, `M]</code>, and a call that passes anything else is
+refused:</p>
+<pre><code class="language-graphix refused">let f = |x| select (x, 0) { (`J, _) =&gt; 1, (`M, _) =&gt; 2 };
+f(`K)
 </code></pre>
 <pre><code>$ graphix test.gx
 Error: in file test.gx
 
 Caused by:
-    0: at: line: 5, column: 1 in file test.gx, in: let r = select v { { a, .. } =&gt; "[a]" ..
-    1: at: line: 5, column: 9 in file test.gx, in: select v { { a, .. } =&gt; "[a]" }
-    2: at: line: 5, column: 20 in file test.gx
-    3: the pattern { a, .. } matches two members, { a: Array&lt;i64&gt;, c: 'x } and { a: Array&lt;string&gt;, c: 'y }, told apart by types not decided at this select; annotate those types, or the member you mean, e.g. `T as { a, .. }`, or name every field, writing for 'x the type of `x` (line 2, column 5) and for 'y the type of `y` (line 3, column 5)
+    0: at line: 2, column: 1 in file test.gx
+    1: missing match cases: nothing matches (`K, i64) (1:20)
 </code></pre>
-<p>Annotating <code>x</code> and <code>y</code> (<code>let x: i64 = never()</code>) decides them, and naming
-every field, <code>{a, c: _}</code>, matches both members as they are. An undecided
-type no binding names (the element of a <code>[]</code> written in the struct) is
-shown as <code>'_1</code>, <code>'_2</code>: annotate the binding the struct is built into, or
-bind the value and annotate that.</p>
+<p>The refusal stands at the call, and <code>1:20</code> is the select's argument, line
+and column. With a last arm that
+takes everything, <code>_ =&gt; 3</code>, the parameter takes any value. A pattern
+that takes a value apart asks that shape of it: <code>|x| select (x, 0) { ((a, b), _) =&gt; a + b }</code> makes <code>x</code> a pair of numbers, and <code>|x| select x { {a, ..} =&gt; a }</code> takes any struct with a field <code>a</code>.</p>
+<p>Arms that bind the same part of a value bind one type there. No literal
+or guard beside a bind narrows it, so in `` |s| select s { `A(1, a) =&gt; a</p>
+<ul>
+<li>1, <code>A(2, a) =&gt; str::len(a), _ =&gt; 0 } `` both </code>a<code>are the payload's one type, and a call is refused for passing an</code>i64<code>where the second arm uses a</code>string<code>. Annotate </code>s` with the union the payload may be, and
+test the bind inside the arm.</li>
+</ul>
+<p>A write made after the select is held to how the arms use what they
+bind. After <code>let v = never(); let z = select v { [</code>J(n), ..] =&gt; n + 1, _
+=&gt; 3 }<code>, ``v &lt;- [</code>J(1), <code>K]`` checks, and ``v &lt;- [</code>J("s"), <code>K]`` is refused, since </code>n + 1<code> takes no string. The same holds through a tuple or a struct: over `` [(</code>A, z), (<code>B, "s")] ``, </code>(_, x) =&gt;
+str::len(x)<code>reads</code>z<code>as a string, so a later</code>z &lt;- 5` is refused.</p>
 <h3 id="variant-patterns"><a class="header" href="#variant-patterns">Variant Patterns</a></h3>
 <p>Variant patterns match variants. Consider,</p>
 <pre><code class="language-graphix">let v: [`Bare, `Arg(i64), `MoreArg(string, i64)] = `Bare;
@@ -672,9 +623,8 @@ select v {
 Error: in file test.gx
 
 Caused by:
-    0: at: line: 4, column: 1 in file test.gx, in: select v { `Bare =&gt; "it's bare, no arg..
-    1: at: line: 8, column: 3 in file test.gx
-    2: unreachable arm: the earlier arms already cover the whole scrutinee, unused match cases
+    0: at: line: 8, column: 3 in file test.gx
+    1: pattern `Wrong will never match: nothing reaches it (4:8; the value is [`Arg(i64), `Bare, `MoreArg(string, i64)])
 </code></pre>
 <h3 id="literals-ignore"><a class="header" href="#literals-ignore">Literals, Ignore</a></h3>
 <p>You can match literals as well as bind variables, as you may have noticed, and
@@ -774,6 +724,17 @@ arguments are all constants, and a <code>seq</code> with no trigger.</p>
   kk@ `Down =&gt; sel &lt;- kk ~ (sel + 1),
   kk@ `Enter =&gt; screen &lt;- kk ~ `Pick,
   _ =&gt; never()
+}
+</code></pre>
+<p>An <a href="./on.html"><code>on</code> block</a> around the select says it once for every arm:
+each read is the value at the event, and a constant acts once an event.</p>
+<pre><code class="language-graphix fragment">on k {
+  select k.code {
+    `Up =&gt; sel &lt;- sel - 1,
+    `Down =&gt; sel &lt;- sel + 1,
+    `Enter =&gt; screen &lt;- `Pick,
+    _ =&gt; never()
+  }
 }
 </code></pre>
 <p><code>e ~! v</code> is the strict sample: <code>v</code> at each fire of <code>e</code>, and bottom

@@ -717,6 +717,14 @@ on let (x, y) = click { cursor <- (x, y) }
 - A `catch` goes around the block (a `?` inside raises to it); `until`
   and `try .. with` are a seq's. A call with no argument is not issued
   by the event: give it the event. `on` is a reserved word.
+- Converting a handler by hand, two things change meaning silently. A
+  sample left inside the block no longer banks (`b <- k ~ late` reads
+  `late` at the event; write `k ~ live(late)` to bank). And a constant is
+  fired by the event, not by a value the block computes: `on k { let r =
+  sel$; open <- true }` opens at every key, selected row or not; gate it
+  (`open <- r ~ true`) or write it in an arm of a select over `sel`.
+- An on block may hold one statement (`on c { n <- n + 1 }`), where a
+  plain block needs two.
 
 ```graphix,cases
 ok let n = 0; let h = |c| on c { n <- n + 1; null }; h(1)

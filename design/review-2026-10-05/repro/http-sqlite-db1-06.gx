@@ -23,17 +23,17 @@ let addr = "127.0.0.1:48746";
 let cert: [bytes, null] = null;
 let key: [bytes, null] = null;
 let maxc = 768;
-let on = true;
-on <- sys::time::timer(duration:300.ms, false) ~ false;
-on <- sys::time::timer(duration:600.ms, false) ~ true;
+let is_on = true;
+is_on <- sys::time::timer(duration:300.ms, false) ~ false;
+is_on <- sys::time::timer(duration:600.ms, false) ~ true;
 let handler = |req: http::Request| -> http::Response { body: "ok [req.path]", headers: [], status: u16:200, url: "" };
-let srv = select on {
+let srv = select is_on {
   true => http::serve(#addr: addr, #cert: cert, #key: key, #max_connections: maxc, #handler: handler),
   false => never()
 };
 let show = |r: Result<http::Response, `HTTPError(string)>| select r { error as e => "ERR [e]", v => "[v.status] [v.body]" };
 let showsrv = |s: Result<http::Server, `HTTPError(string)>| select s { error as e => "SERVE ERR [e]", v => "serving [http::server_addr(v)]" };
-println("on = [on]");
+println("on = [is_on]");
 println("srv = [showsrv(srv)]");
 let c0 = http::client(#timeout: duration:1.s, null)$;
 println("r0 = [show(http::get(c0, "http://[addr]/before"))]");

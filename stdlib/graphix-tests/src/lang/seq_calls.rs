@@ -475,17 +475,17 @@ async fn a_callee_bottom_at_the_issue_is_born_when_it_returns(mode: Mode) -> Res
             let next = never<i64>();
             let runs = 0;
             let t = select (any(0, next) ~ runs) { k if k < 3 => k, _ => never() };
-            let on = true;
-            on <- select on { false => true, true => never() };
-            let g = select on { true => |u: i64| u ~ count(u), false => never() };
+            let is_on = true;
+            is_on <- select is_on { false => true, true => never() };
+            let g = select is_on { true => |u: i64| u ~ count(u), false => never() };
             let h = |u: i64| g(u);
-            let load = select on { true => || sys::fs::read_all(path), false => never() };
+            let load = select is_on { true => || sys::fs::read_all(path), false => never() };
             let r = seq t {
                 let n = runs + 1;
                 runs <- n;
                 sys::fs::write_all(#path: path, "[n]")$;
-                on <- false;
-                until live(!on);
+                is_on <- false;
+                until live(!is_on);
                 let c = CALL;
                 n * 10 + c
             };

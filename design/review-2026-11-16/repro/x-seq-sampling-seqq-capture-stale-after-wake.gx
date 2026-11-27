@@ -20,13 +20,13 @@
 // while `seq go { [go, plain] }` reads the present one.
 let step = 0;
 step <- select step { n if n < 14 => n + 1, _ => never() };
-let on = select step { 4 | 5 | 6 => false, _ => true };
+let is_on = select step { 4 | 5 | 6 => false, _ => true };
 let go = select step { 2 | 9 => step, _ => never() };
 let x = 0;
 x <- select step { 1 => 10, 5 => 50, _ => never() };
 let qv: Array<i64> = [];
 let pv: Array<i64> = [];
-select on {
+select is_on {
   true => {
     let q = seqq go { [go, x] };
     let p = seq go { [go, x] };

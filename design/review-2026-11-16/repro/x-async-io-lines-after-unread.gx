@@ -20,10 +20,10 @@ let opts = sys::process::options(
   #args: ["-c", "sleep 0.4; printf 'l1\\nl2\\n'; sleep 0.6; printf 'l3\\n'; sleep 0.3"],
   "sh");
 let out = sys::process::spawn(opts)$.stdout$;
-let on = true;
-on <- sys::time::after_idle(duration:150.ms, out ~ false);
+let is_on = true;
+is_on <- sys::time::after_idle(duration:150.ms, out ~ false);
 // the read is in flight when its arm sleeps; its bytes go back to the stream
-let got = select on { true => Read::read(out, u64:100)$, false => never() };
+let got = select is_on { true => Read::read(out, u64:100)$, false => never() };
 println("read answered: [buffer::to_string_lossy(got)]");
 let later = sys::time::after_idle(duration:700.ms, out);
 let l = Lines::lines(later)$;

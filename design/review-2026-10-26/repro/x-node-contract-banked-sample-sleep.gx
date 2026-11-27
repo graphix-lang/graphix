@@ -13,10 +13,10 @@ n <- clk ~ n + 1;
 let payload: i64 = never();
 payload <- select n { 6 => 100, _ => never() };
 let trig = select n { 1 => n, 2 => n, 3 => n, 4 => n, _ => never() };
-let on = true;
-on <- payload ~ false;
-on <- select n { 10 => true, _ => never() };
-let r = select on {
+let is_on = true;
+is_on <- payload ~ false;
+is_on <- select n { 10 => true, _ => never() };
+let r = select is_on {
   true => seqq trig { println("run [trig] [payload] n=[live(n)]"); trig },
   false => never()
 };

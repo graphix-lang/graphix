@@ -241,6 +241,13 @@ with an <code>@args</code> parameter is refused.</p>
 <p>An ampersand <code>&amp;</code> before a type means "reference to" rather than the value itself:</p>
 <pre><code class="language-graphix sig">val text: fn(content: &amp;string) -&gt; Widget
 </code></pre>
+<!-- CR claude for claude: [readability/low] The "Efficiency - avoid copying large data
+structures" bullet below misleads. Values are immutable and shared, so passing a large
+struct or array copies nothing, and in fused code a reference costs speed because
+references de-fuse. What a reference buys is the second bullet: a consumer reads a
+changing value without being rebuilt (udt/references.md "But Why"). Drop the efficiency
+bullet or restate it as "not rebuilt when the value changes". Found by reading; not run.
+(book-core-11) -->
 <p>This takes a <em>reference</em> to a string, not the string value directly. References are important for:</p>
 <ol>
 <li><strong>Efficiency</strong> - avoid copying large data structures</li>
@@ -331,7 +338,7 @@ itself during the type inference process.</p>
 <pre><code class="language-graphix repl">let f = |x, y| x + y
 </code></pre>
 <p>Its type will be something like:</p>
-<pre><code class="language-graphix ignore">val f: fn&lt;'_2067: Number + Singleton&gt;(x: '_2067, y: '_2067) -&gt; '_2067
+<pre><code class="language-graphix ignore">val f: fn&lt;'a: Number + Singleton&gt;(x: 'a, y: 'a) -&gt; 'a
 </code></pre>
 <p>The compiler has inferred two properties here,</p>
 <ul>
@@ -347,36 +354,29 @@ over a type holding two numeric types, <code>[i64, f64]</code> or <code>Number</
 <code>x * x</code>: its values would promote at runtime, so the result's type
 would not say what it is. A call of <code>f</code> with two <code>[i64, f64]</code> values is
 refused the same way, where it is called.</p>
-<p>Comparison is <code>fn('a, 'a) -&gt; bool</code> over exactly one type: <code>|x, y| x &lt; y</code>
-takes two arguments of one type, and neither operand's type may merely
-contain the other's. <code>x == 3</code> over <code>x: [i64, null]</code> and <code>v == `Red</code>
-over <code>v: [`Green, `Red]</code> are refused; select on the value instead
-(<code>select v { `Red =&gt; true, _ =&gt; false }</code>, <code>opt::is_some</code>). Any one
-type compares, unions included: two <code>[</code>Green, <code>Red]</code> values, two
-<code>[string, i64]</code> values, and two <code>[i64, f64]</code> values, of which values of
-different types are never equal (<code>i64:3 == f64:3.0</code> is false). The
-orderings (<code>&lt;</code>, <code>&lt;=</code>, <code>&gt;</code>, <code>&gt;=</code>) refuse a type holding two numeric
-types, as arithmetic does: an <code>i64</code> and an <code>f64</code> have no order between
-them, so cast them to one.</p>
+<p>A comparison takes two operands where one's type holds the other's.
+<code>x == 3</code> over <code>x: [i64, null]</code> and <code>v == `Red</code> over <code>v: [`Green, `Red]</code> check, and so do two values of one union type, of which values
+of different types are never equal (over two <code>[i64, f64]</code> values,
+<code>i64:3 == f64:3.0</code> is false). An equality between two types that hold
+neither, <code>1 == "b"</code> or an <code>i64</code> against an <code>f64</code>, is refused: the two
+could never be equal. The orderings (<code>&lt;</code>, <code>&lt;=</code>, <code>&gt;</code>, <code>&gt;=</code>) take the same
+operands, and any two numbers besides (<code>1 &lt; 2.5</code>): every two values have
+an order, numbers by their value whatever their types. A function with a
+comparison in its body is judged at each call, so <code>|x, y| x == y</code> called
+with an <code>i64</code> and a <code>string</code> is refused where it is called.</p>
 <p>Because unchecked arithmetic operators like <code>+</code> wrap on overflow, and
 <code>/</code> and <code>%</code> return bottom on a zero divisor, rather than throwing, there
 is no <code>throws</code> clause in the type signature. (A bottomed division is
 logged by the interpreter; JIT compiled code, the default, returns
 bottom without logging. Run with <code>--no-fusion</code> to see the diagnostics
 when debugging.)</p>
-<p>In the shell this type signature is made a bit more complex by the
-shell also telling you what type variables are currently bound to, or
-<code>unbound</code> if they aren't bound, and the bounds each must stay within.
-The <code>fn&lt;&gt;</code> header lists only the variables a definition declares, so
-an inferred variable's bounds show where it occurs. In the shell this
-pops out as,</p>
+<p>The shell prints the same signature, naming the inferred variable:</p>
 <pre><code class="language-graphix">〉f
--: fn(x: '_2067: unbound within Number &amp; Singleton, y: '_2067: unbound within Number &amp; Singleton) -&gt; '_2067: unbound within Number &amp; Singleton
+-: fn&lt;'a: Number + Singleton&gt;(x: 'a, y: 'a) -&gt; 'a
 </code></pre>
-<p><code>'_2067: unbound within Number &amp; Singleton</code> is read as: <code>'_2067</code> is
-not currently bound to a type, and it must be one type of <code>Number</code>.
-This is all useful information, even though it's intimidating at first it's
-worth putting in the work to learn to decipher it.</p>
+<p>The <code>fn&lt;&gt;</code> header says what <code>'a</code> may be, one type of <code>Number</code>, and the
+variable stands by its name wherever it occurs: both arguments and the
+result are that one type.</p>
 <h2 id="putting-it-all-together"><a class="header" href="#putting-it-all-together">Putting It All Together</a></h2>
 <p>Let's decode some complex real-world signatures:</p>
 <h3 id="example-1-tui-table-widget"><a class="header" href="#example-1-tui-table-widget">Example 1: TUI Table Widget</a></h3>

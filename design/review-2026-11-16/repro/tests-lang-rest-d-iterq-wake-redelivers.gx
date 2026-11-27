@@ -10,13 +10,13 @@
 // With `on <- select out { 11 => false, -1 => true, _ => never() }` (the
 // shape of iter_reentry_emits_no_old_element) the duplicate re-sleeps the
 // arm every other cycle and the program never settles.
-let on = true;
+let is_on = true;
 let clk = 0;
-let out = select on { true => array::iterq(#clock: clk, [10, 11, 12, 13]), false => -1 };
+let out = select is_on { true => array::iterq(#clock: clk, [10, 11, 12, 13]), false => -1 };
 clk <- out ~ clk + 1;
 let seen = 0;
 seen <- out ~ seen + 1;
-on <- select seen { 2 => false, 3 => true, _ => never() };
+is_on <- select seen { 2 => false, 3 => true, _ => never() };
 let log = [];
 log <- out ~ array::push(log, out);
 let tm = sys::time::after_idle(duration:300.ms, log);

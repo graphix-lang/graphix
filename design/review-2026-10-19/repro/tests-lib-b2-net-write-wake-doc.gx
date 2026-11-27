@@ -11,10 +11,10 @@ let result = {
     let writes = 0;
     sys::net::publish(#on_write: |v: i64| writes <- v ~ writes + 1, path, 0);
     let ready: i64 = once(sys::net::subscribe(path)?);
-    let on = ready ~ true;
-    on <- sys::time::after_idle(duration:100.ms, ready) ~ false;
-    on <- sys::time::after_idle(duration:200.ms, ready) ~ true;
-    select on {
+    let is_on = ready ~ true;
+    is_on <- sys::time::after_idle(duration:100.ms, ready) ~ false;
+    is_on <- sys::time::after_idle(duration:200.ms, ready) ~ true;
+    select is_on {
         true => sys::net::write(path, value),
         false => never()
     };

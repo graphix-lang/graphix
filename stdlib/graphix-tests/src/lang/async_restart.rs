@@ -167,10 +167,10 @@ async fn wake_resumes_an_idle_wait(mode: Mode) -> Result<()> {
     let code = r#"{
         let tick = count(sys::time::timer(duration:100.ms, 4)?);
         let v = 7;
-        let on = select tick { 1 | 4 => true, _ => false };
+        let is_on = select tick { 1 | 4 => true, _ => false };
         let issued = never<i64>();
-        select on {
-            true => select sys::time::after_idle(duration:250.ms, once(on) ~ v) {
+        select is_on {
+            true => select sys::time::after_idle(duration:250.ms, once(is_on) ~ v) {
                 reply => issued <- reply
             },
             false => never()
@@ -198,18 +198,18 @@ async fn sleep_aborts_a_call_in_flight(mode: Mode) -> Result<()> {
                     #kill_on_drop: true,
                     "/bin/sh"
                 ))$;
-                let on = true;
+                let is_on = true;
                 let issued = never<bool>();
-                select on {{
+                select is_on {{
                     true => select sys::process::wait(child.proc) {{
                         error as _ => never(),
                         st => issued <- st.success
                     }},
                     false => never()
                 }};
-                on <- {sleep_on} ~ false;
-                let off = select on {{ false => child.proc, true => never() }};
-                on <- sys::process::kill(off) ~ true;
+                is_on <- {sleep_on} ~ false;
+                let off = select is_on {{ false => child.proc, true => never() }};
+                is_on <- sys::process::kill(off) ~ true;
                 issued
             }}"#
         );
@@ -318,17 +318,17 @@ async fn wake_keeps_a_calls_result(mode: Mode) -> Result<()> {
     let code = format!(
         r#"{{
             let path = "{path}";
-            let on = true;
-            let r = select on {{ true => count(sys::fs::is_file(path)$), false => never() }};
+            let is_on = true;
+            let r = select is_on {{ true => count(sys::fs::is_file(path)$), false => never() }};
             let n = 0;
             n <- r ~ n + 1;
             let t = 0;
-            t <- select on {{
+            t <- select is_on {{
                 false => select t {{ x if x < 3 => x + 1, _ => never() }},
                 true => never()
             }};
-            on <- select n {{ 1 => false, _ => never() }};
-            on <- select t {{ 3 => true, _ => never() }};
+            is_on <- select n {{ 1 => false, _ => never() }};
+            is_on <- select t {{ 3 => true, _ => never() }};
             (n, r)
         }}"#
     );
@@ -384,15 +384,15 @@ async fn wake_resumes_a_count(mode: Mode) -> Result<()> {
 async fn woken_event_state_blanks_until_the_next_event(mode: Mode) -> Result<()> {
     let code = r#"{
         let interval = duration:10.ms;
-        let on = true;
-        let c = select on { true => count(sys::time::timer(interval, 4)?), false => never() };
-        on <- select c { 2 => false, _ => never() };
+        let is_on = true;
+        let c = select is_on { true => count(sys::time::timer(interval, 4)?), false => never() };
+        is_on <- select c { 2 => false, _ => never() };
         let t = 0;
-        t <- select on {
+        t <- select is_on {
             false => select t { x if x < 3 => x + 1, _ => never() },
             true => never()
         };
-        on <- select t { 3 => true, _ => never() };
+        is_on <- select t { 3 => true, _ => never() };
         c
     }"#;
     let (values, _) = run_delta(code, mode).await?;
@@ -411,17 +411,17 @@ async fn wake_resumes_standing_timers(mode: Mode) -> Result<()> {
                 let interval = duration:10.ms;
                 let once = false;
                 let seven = 7;
-                let on = true;
-                let r = select on {{ true => {expr}, false => never() }};
+                let is_on = true;
+                let r = select is_on {{ true => {expr}, false => never() }};
                 let n = 0;
                 n <- r ~ n + 1;
                 let t = 0;
-                t <- select on {{
+                t <- select is_on {{
                     false => select t {{ x if x < 3 => x + 1, _ => never() }},
                     true => never()
                 }};
-                on <- select n {{ 1 => false, _ => never() }};
-                on <- select t {{ 3 => true, _ => never() }};
+                is_on <- select n {{ 1 => false, _ => never() }};
+                is_on <- select t {{ 3 => true, _ => never() }};
                 n
             }}"#
         );
@@ -517,9 +517,9 @@ async fn range_over_a_late_bound(mode: Mode) -> Result<()> {
 // sleep: the re-entry emits nothing it delivered before.
 async fn iter_reentry_emits_no_old_element(mode: Mode) -> Result<()> {
     let code = r#"{
-        let on = true;
-        let out = select on { true => array::iter([10, 11, 12, 13]), false => -1 };
-        on <- select out { 11 => false, -1 => true, _ => never() };
+        let is_on = true;
+        let out = select is_on { true => array::iter([10, 11, 12, 13]), false => -1 };
+        is_on <- select out { 11 => false, -1 => true, _ => never() };
         out
     }"#;
     let (values, _) = run_delta(code, mode).await?;
@@ -535,10 +535,10 @@ async fn throttle_holds_across_a_sleep(mode: Mode) -> Result<()> {
         let n = 0;
         n <- select n { k if k < 3 => k + 1, _ => never() };
         let off = select n { 3 => true, _ => never() };
-        let on = true;
-        on <- off ~ false;
-        on <- sys::time::after_idle(duration:4.s, off) ~ true;
-        select on { true => throttle(#rate: duration:3.s, n), false => never() }
+        let is_on = true;
+        is_on <- off ~ false;
+        is_on <- sys::time::after_idle(duration:4.s, off) ~ true;
+        select is_on { true => throttle(#rate: duration:3.s, n), false => never() }
     }"#;
     let (values, _) = run_delta(code, mode).await?;
     assert_eq!(as_i64s(&values), [0, 3]);

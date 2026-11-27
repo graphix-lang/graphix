@@ -23,9 +23,9 @@
     n <- select n { k if k < 6 => k + 1, _ => never() };
     let d = 10 / (n % 3);
     let f = |x: i64| x + 1;
-    let on = once(d);
+    let is_on = once(d);
     let p_tup = (-1, 0); p_tup <- (n, once(d));
-    let p_let = (-1, 0); p_let <- (n, on);
+    let p_let = (-1, 0); p_let <- (n, is_on);
     let p_sel = (-1, 0); p_sel <- (n, select once(d) { x => x + 2 });
     let p_call = (-1, 0); p_call <- (n, f(once(d)));
     let p_map = (-1, [0]); p_map <- (n, array::map([once(d)], |x: i64| x + 3));

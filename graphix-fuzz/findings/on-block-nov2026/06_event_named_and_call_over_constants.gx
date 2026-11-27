@@ -1,0 +1,5 @@
+// `on let` names the event's value, and a call none of whose arguments
+// fires is issued by the event.
+// Expected trace (both engines): n grows by 10 at each event, got takes
+// each event's pair.
+{ let step = 0; step <- select step { n if n < 8 => n + 1, _ => never() }; let k = select step { 2 => null, 5 => null, 7 => null, _ => never() }; let ev = select step { 3 => (1, "a"), 6 => (2, "b"), _ => never() }; let got = (0, ""); on let (i, s) = ev { got <- (i * 10, s) }; let n = 0; let bump = |x| n <- x ~ n + x; on k { bump(10) }; (got, n) }

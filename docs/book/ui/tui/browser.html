@@ -236,13 +236,15 @@ let selected_row: [string, null] = never();
 let cursor: MoveCursor = never();
 let size: Size = never();
 
-let handle_event = |e: Event| on_press(e, |k| select k.code {
-    e@ `Up =&gt; { cursor &lt;- e ~ `Up(1); `Stop },
-    e@ `Down =&gt; { cursor &lt;- e ~ `Down(1); `Stop },
-    e@ `Left =&gt; { cursor &lt;- e ~ `Left(1); `Stop },
-    e@ `Right =&gt; { cursor &lt;- e ~ `Right(1); `Stop },
-    e@ `Enter =&gt; { path &lt;- (e ~ selected_row)$; `Stop },
-    _ =&gt; `Continue
+let handle_event = |e: Event| on_press(e, |k| on k {
+    select k.code {
+        `Up =&gt; { cursor &lt;- `Up(1); `Stop },
+        `Down =&gt; { cursor &lt;- `Down(1); `Stop },
+        `Left =&gt; { cursor &lt;- `Left(1); `Stop },
+        `Right =&gt; { cursor &lt;- `Right(1); `Stop },
+        `Enter =&gt; { path &lt;- selected_row$; `Stop },
+        _ =&gt; `Continue
+    }
 });
 
 input_handler(
@@ -304,53 +306,70 @@ let title_bottom = select command_mode {
     }
 };
 
-let handle_normal_mode_key = |e: KeyCode| -&gt; [`Stop, `Continue] select e {
-    e@ `Left =&gt; { cursor &lt;- e ~ `Left(1); `Stop },
-    e@ `Right =&gt; { cursor &lt;- e ~ `Right(1); `Stop },
-    e@ `Down =&gt; { cursor &lt;- e ~ `Down(1); `Stop },
-    e@ `Up =&gt; { cursor &lt;- e ~ `Up(1); `Stop },
-    e@ `Enter =&gt; { path &lt;- (e ~ selected_row)$; `Stop },
-    e@ `Backspace =&gt; select e ~ str::dirname(path) {
-        null as _ =&gt; `Stop,
-        s =&gt; {
-            path &lt;- s;
+let handle_normal_mode_key = |e: KeyCode| -&gt; [`Stop, `Continue] on e {
+    select e {
+        `Left =&gt; { cursor &lt;- `Left(1); `Stop },
+        `Right =&gt; { cursor &lt;- `Right(1); `Stop },
+        `Down =&gt; { cursor &lt;- `Down(1); `Stop },
+        `Up =&gt; { cursor &lt;- `Up(1); `Stop },
+        `Enter =&gt; { path &lt;- selected_row$; `Stop },
+        // CR claude for claude: [readability/low] This arm is a hand-written null ladder.
+        // Both arms answer `Stop and the second only writes its bind, so it is `{ path &lt;-
+        // (e ~ str::dirname(path))$; `Stop }`, the shape the Enter arm above already uses,
+        // and the skill names this ladder as one never to write. The `-&gt; [`Stop,
+        // `Continue]` on handle_normal_mode_key and handle_command_mode_key is not asked
+        // for by the check either (only `|e: KeyCode|` is). The shorter arm, without those
+        // annotations, checks under -W error and behaves the same when driven in a terminal
+        // (Backspace goes up a level and does nothing at the root). (examples-tui-06)
+        // 2026-11-27 claude: Both handlers are `on e` blocks now, so nothing in them is
+        // sampled by hand. The arm is still the ladder; the short form reads `{ path &lt;-
+        // str::dirname(path)$; `Stop }`.
+        `Backspace =&gt; select str::dirname(path) {
+            null as _ =&gt; `Stop,
+            s =&gt; {
+                path &lt;- s;
+                `Stop
+            }
+        },
+        `Char(":") =&gt; {
+            command &lt;- "";
+            command_error &lt;- "";
+            command_mode &lt;- true;
             `Stop
-        }
-    },
-    k@ `Char(":") =&gt; {
-        command &lt;- k ~ "";
-        command_error &lt;- k ~ "";
-        command_mode &lt;- k ~ true;
-        `Stop
-    },
-    _ =&gt; `Continue
+        },
+        _ =&gt; `Continue
+    }
 };
 
-let handle_command_mode_key = |e: KeyCode| -&gt; [`Stop, `Continue] select e {
-    `Char(c) =&gt; {
-        command &lt;- c ~ "[command][c]";
-        `Stop
-    },
-    x@ `Enter =&gt; {
-        command_mode &lt;- x ~ false;
-        run_command(x ~! command, (x ~! selected_path)$);
-        `Stop
-    },
-    e@ `Backspace if command != "" =&gt; {
-        let len = str::char_len(command) - 1;
-        command &lt;- e ~ str::sub(#start:0, #len, command)$;
-        `Stop
-    },
-    k@ `Esc =&gt; {
-        command_mode &lt;- k ~ false;
-        `Stop
-    },
-    _ =&gt; `Continue
+let handle_command_mode_key = |e: KeyCode| -&gt; [`Stop, `Continue] on e {
+    select e {
+        `Char(c) =&gt; {
+            command &lt;- "[command][c]";
+            `Stop
+        },
+        `Enter =&gt; {
+            command_mode &lt;- false;
+            run_command(command, selected_path$);
+            `Stop
+        },
+        `Backspace if command != "" =&gt; {
+            let len = str::char_len(command) - 1;
+            command &lt;- str::sub(#start:0, #len, command)$;
+            `Stop
+        },
+        `Esc =&gt; {
+            command_mode &lt;- false;
+            `Stop
+        },
+        _ =&gt; `Continue
+    }
 };
 
-let handle_event = |e: Event| on_press(e, |k| select k ~ command_mode {
-    true =&gt; handle_command_mode_key(k.code),
-    false =&gt; handle_normal_mode_key(k.code)
+let handle_event = |e: Event| on_press(e, |k| on k {
+    select command_mode {
+        true =&gt; handle_command_mode_key(k.code),
+        false =&gt; handle_normal_mode_key(k.code)
+    }
 });
 
 let size: Size = never();

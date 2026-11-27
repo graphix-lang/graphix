@@ -11,10 +11,10 @@
 let d = db::open("/home/eric/tmp/review-2026-10-26/review/work/x-builtin-effects/dbpop")$;
 let t: db::Tree<i64, string> = db::tree(d, "x")$;
 let ins = db::insert(t, 1, "one")$;
-let on = true;
-let popped = select on { true => dbg(db::pop_min(ins ~ t)), false => never() };
-on <- ins ~ false;
-on <- sys::time::timer(duration:300.ms, false) ~ true;
+let is_on = true;
+let popped = select is_on { true => dbg(db::pop_min(ins ~ t)), false => never() };
+is_on <- ins ~ false;
+is_on <- sys::time::timer(duration:300.ms, false) ~ true;
 let n = db::len(sys::time::timer(duration:600.ms, false) ~ t)$;
 sys::exit(sys::time::after_idle(duration:1.s, n ~ 0));
-(on, n)
+(is_on, n)

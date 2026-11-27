@@ -236,6 +236,14 @@ paragraph(
 </ul>
 <pre><code class="language-graphix">use tui::{layout::{child, layout}, text::text};
 
+// CR claude for claude: [readability/low] `selected_pane` is never written and nothing
+// here handles a key, so `#focused: &amp;selected_pane` does nothing visible, yet
+// overview.md shows this example under its "Focus Management" bullet.
+// overview_styling.gx has the same shape: `is_selected = true` makes its "conditional"
+// select a constant. Either drop `#focused` and `selected_pane` here (layout_focus on
+// the layout page shows focus moving), or give it the Tab handler block_focus uses. Do
+// the same for overview_styling's `is_selected`. Found by reading; not run.
+// (examples-tui-07)
 let selected_pane = 0;
 let sidebar = text(&amp;"Sidebar");
 let main_content = text(&amp;"Main");
@@ -263,12 +271,14 @@ layout(
 let selected_item = 0;
 let items = [line("Item 1"), line("Item 2"), line("Item 3")];
 
-let handle = |e: Event| on_press(e, |k| select k.code {
-    d@ `Down =&gt; {
-        selected_item &lt;- d ~ (selected_item + 1) % array::len(items);
-        `Stop
-    },
-    _ =&gt; `Continue
+let handle = |e: Event| on_press(e, |k| on k {
+    select k.code {
+        `Down =&gt; {
+            selected_item &lt;- (selected_item + 1) % array::len(items);
+            `Stop
+        },
+        _ =&gt; `Continue
+    }
 });
 
 // UI automatically reflects the change
@@ -281,6 +291,13 @@ input_handler(
 <p>Graphix TUIs excel at displaying real-time data. Connect to data sources via netidx and the UI updates automatically:</p>
 <pre><code class="language-graphix">use tui::{span, style, gauge::gauge};
 use core::math;
+// CR claude for claude: [style/low] This file imports `sys::time` for its one timer and
+// spells `sys::net::` in full at both of its uses. sparkline_rolling.gx and
+// paragraph_log_viewer.gx do the same. That goes against the skill's "one use per root,
+// nested, and name what you use", which the earlier imports sweep applied to the rest
+// of this directory. Write `use sys::{net, time};` with `net::publish` /
+// `net::subscribe` in all three (it checks under -W error). Found by reading.
+// (examples-tui-08)
 use sys::time;
 
 // Self-contained: publish a simulated temperature reading once a
@@ -306,6 +323,15 @@ gauge(
 )
 </code></pre>
 <h2 id="printing-while-a-tui-runs"><a class="header" href="#printing-while-a-tui-runs">Printing While a TUI Runs</a></h2>
+<!-- CR claude for claude: [doc-drift/medium] This section says to redirect stderr and
+write to it, but it does not say which functions write to stderr. println, print and log
+default to `Stdout`, which is where the display draws, so `graphix app.gx 2>debug.log`
+with a println still draws its text over the display; only dbg (or `println(#dest:
+`Stderr, ..)`) reaches debug.log. Widget warnings (line_gauge's ratio clamp, calendar
+date coercion, data_table's ignored columns) reach neither place: the shell's default
+logger is "off, graphix::failure=error", so they appear only with RUST_LOG=warn and
+--log-dir. Name dbg / `#dest: `Stderr` here and say where widget warnings go. probe:
+design/review-2026-11-16/repro/book-ui-b-println-over-display.sh (book-ui-b-01) -->
 <p>The display holds neither stdout nor stderr: whatever a program, a
 library or a child process writes to either while the display runs goes
 straight to where it points. On the terminal it lands over the display

@@ -14,7 +14,7 @@ let messages = [
     "config reloaded",
 ];
 let log_source: string = never();
-log_source <- tick ~ "[n] [rand::pick(tick ~ messages)]";
+on tick { log_source <- "[n] [rand::pick(messages)]" };
 sys::net::publish("/local/graphix/paragraph_log_viewer/log", log_source);
 
 let log_entries = [];

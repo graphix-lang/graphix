@@ -54,12 +54,12 @@ const TCP_READ_ACROSS_SLEEP: &str = r#"
   let client = sys::tcp::connect(listener ~ addr)?;
   let server = sys::tcp::accept(listener, client)?;
   let w1 = Write::write_exact(server, buffer::from_string("hello"))?;
-  let on = true;
-  on <- w1 ~ false;
-  let later = select on { false => on ~ server, true => never() };
+  let is_on = true;
+  is_on <- w1 ~ false;
+  let later = select is_on { false => is_on ~ server, true => never() };
   let w2 = Write::write_exact(later, buffer::from_string("0123456789"))?;
-  on <- w2 ~ true;
-  let got = select on { true => Read::read_exact(on ~ client, u64:10)?, false => never() };
+  is_on <- w2 ~ true;
+  let got = select is_on { true => Read::read_exact(is_on ~ client, u64:10)?, false => never() };
   buffer::to_string(got)?
 }
 "#;
@@ -296,10 +296,10 @@ const TCP_CONNECT_IS_NOT_ANSWERED_AFTER_A_SLEEP: &str = r#"
 {
   let listener = sys::tcp::listen("127.0.0.1:0")?;
   let addr = sys::tcp::listener_addr(listener)?;
-  let on = true;
-  on <- addr ~ false;
-  on <- on ~ select on { false => true, true => never() };
-  let client = select on { true => sys::tcp::connect(addr)?, false => never() };
+  let is_on = true;
+  is_on <- addr ~ false;
+  is_on <- is_on ~ select is_on { false => true, true => never() };
+  let client = select is_on { true => sys::tcp::connect(addr)?, false => never() };
   let answered = false;
   answered <- client ~ true;
   let server = sys::tcp::accept(listener, addr)?;

@@ -389,6 +389,12 @@ awk '{ print "field:", $1 }'
 <p>Raw strings do not strip any newlines: the content is exactly what is
 between the delimiters.</p>
 <h2 id="any"><a class="header" href="#any">Any</a></h2>
+<!-- CR claude for claude: [readability/low] "Unifies with any other type" reads as
+two-way, and it is one-way. `Any` holds a value of every type, but no concrete type
+holds an `Any`: `let y: i64 = x` with `x: Any` is refused, "i64 does not contain Any",
+which is why the next sentences cast. Say "every value is an Any; to use an Any as a
+particular type, cast it or select on its type". probe:
+design/review-2026-11-16/repro/book-core-any-one-way.sh (book-core-12) -->
 <p>The <code>Any</code> type is a type that unifies with any other type, it corresponds to the
 underlying variant type that represents all values in Graphix (and netidx). It
 is not used very often, as it provides very few guarantees, however it has it's
@@ -524,6 +530,15 @@ cells are pooled like arrays, so building a list does not usually
 allocate. Indexed access (<code>list::nth</code>) walks the spine and is O(n);
 if you need random access, convert to an array.</p>
 <h3 id="lists-as-data"><a class="header" href="#lists-as-data">Lists as Data</a></h3>
+<!-- CR claude for claude: [doc-drift/medium] This paragraph says pack writes a list as
+a flat array, so `pack::write_bytes([<1, 2, 3>])` is the same bytes as
+`pack::write_bytes([1, 2, 3])`. That is false: pack keeps the list's marked cells.
+Pack's `fc_write_bytes` goes through `to_marked_data`, pack.gxi says it preserves list
+kinds, and design/list_native.md and stdlib/pack.md agree, so the comparison is false.
+Only json, toml and netidx strip a list to a flat array. Say that, and give
+`json::write_str([<1, 2, 3>])` ("[1,2,3]") as the example. A pack read into `List<i64>`
+or `Array<i64>` accepts either form. probe:
+design/review-2026-11-16/repro/book-core-pack-list-cells.sh (book-core-01) -->
 <p>Data carries no list cells: every writer (<code>json</code>, <code>toml</code>, <code>pack</code>, netidx)
 writes a list as a flat array, so <code>pack::write_bytes([&lt;1, 2, 3&gt;])</code> is the
 same bytes as <code>pack::write_bytes([1, 2, 3])</code>. A typed read or a cast to a
@@ -555,9 +570,8 @@ module</p>
 {"a" =&gt; 1, "b" =&gt; 2, "c" =&gt; 3}
 </code></pre>
 <p>Values can be any Graphix type. Keys are kept in order, so a key type must be
-<code>Ordered</code> (see <a href="../functions/polymorphism.html">Polymorphism</a>): no reference, no
-function and no type holding two numeric types, so <code>{&amp;x =&gt; 1}</code>, and <code>{k =&gt; "a"}</code>
-with <code>k: [i64, f64]</code>, are refused. Any other type will do, for example here is
+<code>Ordered</code> (see <a href="../functions/polymorphism.html">Polymorphism</a>): no reference and
+no function, so <code>{&amp;x =&gt; 1}</code> is refused. Any other type will do, for example here is
 a map where the key is a <code>Map&lt;string, i64&gt;</code>.</p>
 <pre><code class="language-graphix ignore">{{"foo" =&gt; 42} =&gt; "foo", {"bar" =&gt; 42} =&gt; "bar"}
 -: Map&lt;Map&lt;string, i64&gt;, string&gt;

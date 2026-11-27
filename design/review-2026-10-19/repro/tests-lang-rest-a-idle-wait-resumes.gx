@@ -10,9 +10,9 @@
 // wait is aborted or resumed; this program is the pin it lacks.
 let tick = count(sys::time::timer(duration:100.ms, 4)?);
 let v = 7;
-let on = select tick { 1 | 4 => true, _ => false };
+let is_on = select tick { 1 | 4 => true, _ => false };
 let issued = never<i64>();
-select on {
+select is_on {
   true => select sys::time::after_idle(duration:250.ms, v) { reply => issued <- reply },
   false => never()
 };

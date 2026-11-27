@@ -15,13 +15,13 @@ let clock = sys::time::timer(duration:20.ms, true);
 let n = count(clock);
 let base = str::join(#sep: "", array::init(100000, |i| "xxxxxxxxxx"));
 let big = str::concat(base, "[n]");
-let on = false;
-on <- clock ~ true;
-let out = select on {
+let is_on = false;
+is_on <- clock ~ true;
+let out = select is_on {
   true => array::iter([big, big, big]),
   false => never()
 };
-on <- out ~ false;
+is_on <- out ~ false;
 let probe = sys::time::timer(duration:1.s, true);
 let st = sys::fs::read_all(probe ~ "/proc/self/status")$;
 let rss = array::filter(str::split(#pat: "\n", st), |l| str::starts_with(#pfx: "VmRSS", l));

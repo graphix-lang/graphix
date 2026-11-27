@@ -248,6 +248,14 @@ binding. The new binding can have a different type.</p>
 <p><strong><code>x &lt;- e;</code></strong> connects, as it does anywhere. The destination is the
 original variable outside the block, and the step completes when <code>e</code>
 produces. A later statement that reads <code>x</code> sees the write.</p>
+<!-- CR claude for claude: [doc-drift/low] "It cannot be the last statement of a body
+whose value is used" understates the rule. A seq body may never end in `until`, whether
+or not the seq's value is used (`seq go { let a = 1; until live(ready) }; 2` is refused:
+"until has no value"), because `Machine::lower_stmt` always gives the seq body's last
+statement the seq's sink. Only a `try` or `with` body whose value is unused may end in
+one. Use the error's own wording: "the last statement of a seq, or of a try or with body
+whose value is used". probe: design/review-2026-11-16/repro/book-core-until-last.sh
+(book-core-09) -->
 <p><strong><code>until cond;</code></strong> waits until the boolean <code>cond</code> is true. A step sees
 the world as it stood when it started (see <a href="#what-a-step-sees">What a step
 sees</a>), so the variable it waits on is written
@@ -572,7 +580,7 @@ the run the sleep aborted is returned then.</p>
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
-                            <a rel="next prefetch" href="../core/error.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="../core/on.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <i class="fa fa-angle-right"></i>
                             </a>
 
@@ -586,7 +594,7 @@ the run the sleep aborted is returned then.</p>
                         <i class="fa fa-angle-left"></i>
                     </a>
 
-                    <a rel="next prefetch" href="../core/error.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="../core/on.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <i class="fa fa-angle-right"></i>
                     </a>
             </nav>

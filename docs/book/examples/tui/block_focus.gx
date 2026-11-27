@@ -8,12 +8,14 @@ use tui::{
 
 let focused = 0;
 
-let handle_event = |e: Event| on_press(e, |k| select k.code {
-    k@`Tab => {
-        focused <- ((k ~ focused) + 1) % 2;
-        `Stop
-    },
-    _ => `Continue
+let handle_event = |e: Event| on_press(e, |k| on k {
+    select k.code {
+        `Tab => {
+            focused <- (focused + 1) % 2;
+            `Stop
+        },
+        _ => `Continue
+    }
 });
 
 let pane = |i, title| block(

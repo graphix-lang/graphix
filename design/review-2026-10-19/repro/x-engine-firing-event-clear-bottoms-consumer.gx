@@ -12,7 +12,7 @@
 let clk = sys::time::timer(duration:40.ms, true);
 let n = 0;
 n <- clk ~ n + 1;
-let on = uniq(select n { k if (k >= 8) && (k < 10) => false, _ => true });
-let t = select on { true => count(sys::time::timer(duration:150.ms, true)), false => -1 };
+let is_on = uniq(select n { k if (k >= 8) && (k < 10) => false, _ => true });
+let t = select is_on { true => count(sys::time::timer(duration:150.ms, true)), false => -1 };
 sys::exit(select n { 16 => 0, _ => never() });
 (n, t)

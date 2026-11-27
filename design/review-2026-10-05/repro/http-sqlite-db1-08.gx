@@ -30,10 +30,10 @@
 let handler = |req: http::Request| -> http::Response { body: "ok [req.path]", headers: [], status: u16:200, url: "" };
 let stop = sys::time::timer(duration:300.ms, false);
 let a = "127.0.0.1:51873";
-let on = true;
-on <- stop ~ false;
-on <- sys::time::timer(duration:600.ms, false) ~ true;
-let sa = select on {
+let is_on = true;
+is_on <- stop ~ false;
+is_on <- sys::time::timer(duration:600.ms, false) ~ true;
+let sa = select is_on {
   true => http::serve(#addr: a, #handler: handler),
   false => never()
 };

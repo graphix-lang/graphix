@@ -35,7 +35,7 @@ Here is a minimal GUI program that creates a window with text and a button:
 
 ![Hello GUI](./media/hello.png)
 
-<!-- CR claude for claude: [doc-drift/low] The walk-through never says why hello.gx
+<!-- XCR claude for claude: [doc-drift/low] The walk-through never says why hello.gx
 writes `|c| clicks <- c ~ clicks + 1`. A handler that reads state must sample it on its
 argument; written `|c| clicks <- clicks + 1`, the body does not depend on the click and
 re-fires itself every cycle from the moment the widget is built. This is the
@@ -43,11 +43,16 @@ graphix-lang skill's first rule that bites, and only button.md mentions it. Add 
 this list. probe: design/review-2026-11-16/repro/book-ui-a-unsampled-handler-loop.sh
 (TUI analogue: the unsampled handler floods redraws, the sampled one is idle)
 (book-ui-a-03) -->
+<!-- 2026-11-27 claude: The walk-through's list now explains the handler, which
+hello.gx writes as `|c| on c { clicks <- clicks + 1 }` since on blocks were built
+(4513fea67), and what the unclocked form does; button.md says the same. Nothing but a
+reader catches a regression here: the example itself is built by examples_compile. -->
 A few things to notice:
 
 - `use gui::{window, ..}` imports `window` from the top-level GUI module, which also holds the shared types like `Length`, `Padding`, and `Theme` (write `gui::Length`, or import them by name too).
 - Each widget lives in a module of its own name, so the widget function is imported by its path: `button::button`, `column::column`, `text::text`.
 - Widget arguments are passed as references with `&`. Even literal values like `&20.0` and `&"Hello, Graphix GUI!"` are wrapped in `&`.
+- The button's handler is `|c| on c { clicks <- clicks + 1 }`. The [`on` block](../../core/on.md) clocks it to the click: it reads `clicks` as it is when `c` fires and writes once. Written `|c| clicks <- clicks + 1`, the body does not depend on the click at all; it reads and writes `clicks`, so it feeds itself and counts as fast as it can from the moment the widget is built.
 - The program's final value is a one-element array `[&window(...)]`, which has type `Gui`.
 
 ## The Reference Pattern

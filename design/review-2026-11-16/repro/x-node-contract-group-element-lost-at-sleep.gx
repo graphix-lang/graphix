@@ -16,7 +16,7 @@ let ev = array::iter([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
 let g = never();
 g <- select ev { 4 => true, _ => never() };
 let x = select ev { 1 => 1, 2 => 2, 3 => 3, _ => never() };
-let on = true;
-on <- select ev { 5 => false, 7 => true, _ => never() };
-let r = select on { true => array::group(x, |n, v| v ~ g), false => never() };
+let is_on = true;
+is_on <- select ev { 5 => false, 7 => true, _ => never() };
+let r = select is_on { true => array::group(x, |n, v| v ~ g), false => never() };
 dbg(r)

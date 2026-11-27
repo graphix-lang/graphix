@@ -12,8 +12,8 @@
 let ev = array::iter([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
 let t = select ev { 4 => true, _ => never() };
 let x = select ev { 1 => 1, 2 => 2, _ => never() };
-let on = true;
-on <- select ev { 4 => false, 6 => true, _ => never() };
+let is_on = true;
+is_on <- select ev { 4 => false, 6 => true, _ => never() };
 let q = queuefn(#trigger: t, |v: i64| v * 10);
-let r = select on { true => q(x), false => never() };
+let r = select is_on { true => q(x), false => never() };
 dbg(r)

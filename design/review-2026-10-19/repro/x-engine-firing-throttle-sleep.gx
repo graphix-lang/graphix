@@ -14,7 +14,7 @@ let clk = sys::time::timer(duration:30.ms, true);
 let n = 0;
 n <- clk ~ n + 1;
 let x = uniq(min(n, 2));
-let on = uniq(select n { k if (k >= 4) && (k < 6) => false, _ => true });
-let out = select on { true => throttle(#rate: duration:1.s, x), false => -1 };
+let is_on = uniq(select n { k if (k >= 4) && (k < 6) => false, _ => true });
+let out = select is_on { true => throttle(#rate: duration:1.s, x), false => -1 };
 sys::exit(select n { 70 => 0, _ => never() });
 (n, x, out)

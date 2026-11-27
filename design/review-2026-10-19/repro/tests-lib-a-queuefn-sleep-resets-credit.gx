@@ -5,10 +5,10 @@
 // control: with the queuefn bound outside the arm (call site inside) the same run prints [(0, 0), (4, 0)]
 let c = 0;
 c <- select c { n if n < 8 => n + 1, _ => never() };
-let on = uniq(select c { 2 | 3 => false, _ => true });
+let is_on = uniq(select c { 2 | 3 => false, _ => true });
 let x = 0;
 x <- select c { 0 => 1, 3 => 3, _ => never() };
-let r = select on {
+let r = select is_on {
     true => {
         let q = queuefn(#trigger: never(), |v: i64| -> i64 v * 10);
         q(x)

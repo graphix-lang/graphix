@@ -6,21 +6,25 @@ use tui::{
 let last = "nothing yet";
 
 // the outer handler sees each event first and takes only 'a'
-let outer = |e: Event| on_press(e, |k| select k.code {
-  a@ `Char("a") => {
-    last <- a ~ "outer took a";
-    `Stop
-  },
-  _ => `Continue
+let outer = |e: Event| on_press(e, |k| on k {
+  select k.code {
+    `Char("a") => {
+      last <- "outer took a";
+      `Stop
+    },
+    _ => `Continue
+  }
 });
 
 // the inner handler sees what the outer one passed on
-let inner = |e: Event| on_press(e, |k| select k.code {
-  c@ `Char(s) => {
-    last <- c ~ "inner took [s]";
-    `Stop
-  },
-  _ => `Continue
+let inner = |e: Event| on_press(e, |k| on k {
+  select k.code {
+    `Char(s) => {
+      last <- "inner took [s]";
+      `Stop
+    },
+    _ => `Continue
+  }
 });
 
 input_handler(

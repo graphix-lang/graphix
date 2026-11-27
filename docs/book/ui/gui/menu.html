@@ -255,18 +255,18 @@ let file_menu = menu::menu(
     &amp;"File",
     &amp;[
         menu::action(
-            #on_click: |v| println(v ~ "New file"),
+            #on_click: |v| on v { println("New file") },
             #shortcut: &amp;menu::shortcut(#ctrl: true, "N")$,
             &amp;"New"
         ),
         menu::action(
-            #on_click: |v| println(v ~ "Open file"),
+            #on_click: |v| on v { println("Open file") },
             #shortcut: &amp;menu::shortcut(#ctrl: true, "O")$,
             &amp;"Open"
         ),
         menu::divider(),
         menu::action(
-            #on_click: |v| println(v ~ "Quit"),
+            #on_click: |v| on v { println("Quit") },
             #shortcut: &amp;menu::shortcut(#ctrl: true, "Q")$,
             &amp;"Quit"
         )
@@ -277,23 +277,23 @@ let edit_menu = menu::menu(
     &amp;"Edit",
     &amp;[
         menu::action(
-            #on_click: |v| println(v ~ "Undo"),
+            #on_click: |v| on v { println("Undo") },
             #shortcut: &amp;menu::shortcut(#ctrl: true, "Z")$,
             &amp;"Undo"
         ),
         menu::action(
-            #on_click: |v| println(v ~ "Redo"),
+            #on_click: |v| on v { println("Redo") },
             #shortcut: &amp;menu::shortcut(#ctrl: true, #shift: true, "Z")$,
             &amp;"Redo"
         ),
         menu::divider(),
         menu::action(
-            #on_click: |v| println(v ~ "Copy"),
+            #on_click: |v| on v { println("Copy") },
             #shortcut: &amp;menu::shortcut(#ctrl: true, "C")$,
             &amp;"Copy"
         ),
         menu::action(
-            #on_click: |v| println(v ~ "Paste"),
+            #on_click: |v| on v { println("Paste") },
             #shortcut: &amp;menu::shortcut(#ctrl: true, "V")$,
             &amp;"Paste"
         )
@@ -319,18 +319,18 @@ let status = "Right-click anywhere";
 
 let items = [
     menu::action(
-        #on_click: |v| status &lt;- v ~ "Copied!",
+        #on_click: |v| on v { status &lt;- "Copied!" },
         #shortcut: &amp;menu::shortcut(#ctrl: true, "C")$,
         &amp;"Copy"
     ),
     menu::action(
-        #on_click: |v| status &lt;- v ~ "Pasted!",
+        #on_click: |v| on v { status &lt;- "Pasted!" },
         #shortcut: &amp;menu::shortcut(#ctrl: true, "V")$,
         &amp;"Paste"
     ),
     menu::divider(),
     menu::action(
-        #on_click: |v| status &lt;- v ~ "Deleted!",
+        #on_click: |v| on v { status &lt;- "Deleted!" },
         &amp;"Delete"
     )
 ];

@@ -176,6 +176,11 @@ val space: fn(
 <li><strong>width</strong> — horizontal size of the space</li>
 <li><strong>height</strong> — vertical size of the space</li>
 </ul>
+<!-- CR claude for claude: [readability/low] The backtick before Fill closes this
+single-backtick code span, so the rendered page shows `space(#width: &` as code followed
+by "Fill)" and a stray backtick (see docs/book/ui/gui/space.html). Wrap it in double
+backticks, `` space(#width: &`Fill) ``, as the other pages do for variants. Found by
+reading the rendered page. (book-ui-b-06) -->
 <p>A common pattern is <code>space(#width: &amp;</code>Fill)` to push items to opposite ends of a row.</p>
 <h3 id="example"><a class="header" href="#example">Example</a></h3>
 <pre><code class="language-graphix">use gui::{window, column::column, row::row, space::space, text::text};

@@ -15,8 +15,8 @@
   let x = 0;
   let r: &mut i64 = never();
   r <- select clk { 3 => &mut x, _ => never() };
-  let on = true;
-  on <- select clk { 1 => false, 5 => true, _ => never() };
-  let a = select on { true => { *r <- once(clk) ~ 77; 0 }, false => 1 };
-  clk ~ (clk, on, x, count(x))
+  let is_on = true;
+  is_on <- select clk { 1 => false, 5 => true, _ => never() };
+  let a = select is_on { true => { *r <- once(clk) ~ 77; 0 }, false => 1 };
+  clk ~ (clk, is_on, x, count(x))
 }

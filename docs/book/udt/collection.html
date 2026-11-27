@@ -242,6 +242,17 @@ defaults:</p>
 // filter, find, len, ...) comes for free. The tail-recursive fold
 // runs as a native loop; the value-building recursions are an
 // activation per element.
+// CR claude for claude: [doc-drift/low] The header above says the value-building
+// recursions are an activation per element, and book/src/udt/collection.md's paragraph
+// under this example says the same of `filter_map_l` and `append_l`. Under the JIT they
+// compile: `#[native] map(l, ..)` and `#[native] len(filter(l, ..))` over this `L`
+// build, and map plus fold over 5000 conses takes 3 ms fused against 1.7 s node-walked.
+// They recurse natively (a frame per element) where `fold_l` loops; only the node-walk
+// keeps an activation per element, for `fold_l` too. Say that here and in
+// collection.md, and drop the clause in design/tail_calls_are_calls.md's survey that
+// says `filter_map_l` does not fuse. probe:
+// design/review-2026-11-16/repro/examples-rest-cons-list-recursions-fuse.sh
+// (examples-rest-02)
 type L&lt;'a&gt; = [`C('a, L&lt;'a&gt;), `N];
 
 let rec fold_l = |l: L&lt;'a&gt;, acc: 'b, f: fn(acc: 'b, x: 'a) -&gt; 'b throws 'e|

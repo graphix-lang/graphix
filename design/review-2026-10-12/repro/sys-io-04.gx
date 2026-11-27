@@ -7,10 +7,10 @@ use sys::fs::watch;
 let dir = sys::fs::tempdir::create(null)$;
 let p = sys::fs::tempdir::path(dir);
 let w = watch::create(null)$;
-let on = true;
-on <- sys::time::timer(duration:300.ms, false) ~ false;
-on <- sys::time::timer(duration:600.ms, false) ~ true;
-let ev = select on {
+let is_on = true;
+is_on <- sys::time::timer(duration:300.ms, false) ~ false;
+is_on <- sys::time::timer(duration:600.ms, false) ~ true;
+let ev = select is_on {
   true => watch::events(watch::watch(w, p)$),
   false => never()
 };

@@ -18,7 +18,7 @@ let col = column(
         text(#size: &24.0, &"Clipboard Demo"),
         text_input(#placeholder: &"Text to copy...", #on_input: |v| content <- v, &content),
         button(
-            #on_press: |c| clipboard::write_text(c ~ content)$,
+            #on_press: |c| on c { clipboard::write_text(content)$ },
             #padding: &`All(10.0),
             &text(&"Copy to clipboard")
         ),

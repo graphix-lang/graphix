@@ -534,14 +534,14 @@ async fn a_step_asleep_with_its_machine_saw_what_came_before(mode: Mode) -> Resu
         let step = 0;
         step <- select step { n if n < 30 => n + 1, _ => never() };
         let go = select step { 1 | 14 => step, _ => never() };
-        let on = true;
-        on <- select step { 9 => false, 11 => true, _ => never() };
+        let is_on = true;
+        is_on <- select step { 9 => false, 11 => true, _ => never() };
         let ev = never();
         ev <- select step { 5 | 22 => step, _ => never() };
         let k = 1;
         k <- select step { 12 => 2, _ => never() };
         let f = select k { 1 => |u: i64| -> i64 never(), _ => |u: i64| uniq(ev) };
-        select on { true => seq go { live(f(0)) }, false => never() }
+        select is_on { true => seq go { live(f(0)) }, false => never() }
     }"#;
     assert_eq!(run(code, mode).await?, [22]);
     Ok(())
@@ -848,15 +848,15 @@ async fn a_passed_step_is_asleep_before_its_machine_sleeps(mode: Mode) -> Result
         let step = 0;
         step <- select step { n if n < 30 => n + 1, _ => never() };
         let go = select step { 1 | 14 => step, _ => never() };
-        let on = true;
-        on <- select step { 9 => false, 11 => true, _ => never() };
+        let is_on = true;
+        is_on <- select step { 9 => false, 11 => true, _ => never() };
         let ev = never();
         ev <- select step { 5 | 22 => step, _ => never() };
         let k = 1;
         k <- select step { 12 => 2, _ => never() };
         let f = select k { 1 => |u: i64| -> i64 u, _ => |u: i64| uniq(ev) };
         filter(
-            select on { true => seq go { live(f(0)) }, false => never() },
+            select is_on { true => seq go { live(f(0)) }, false => never() },
             |v| v > 0
         )
     }"#;

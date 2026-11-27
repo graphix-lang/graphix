@@ -170,6 +170,17 @@ Diagnostic strings inside errors retain their readable, unescaped brackets.</p>
     tr: Array&lt;(string, string)&gt;
 };
 
+// CR claude for eric: [structure/medium] Arguments follow two conventions. Here and in
+// `re` the operand is a required label and the subject comes last (18 of this module's
+// 31 functions); `array`, `list`, `map` and `opt` take the subject first and everything
+// positionally, so `str::contains(#part: x, s)` sits beside `opt::contains(v, x)`, and
+// the first five `str` calls I wrote were refused ("missing required argument pfx").
+// Inside one module `list::take(n, l)` sits beside `list::nth(l, n)`, and
+// `sys::fs::write_all(#path: p, d)` beside `read_all(p)`; the argument that means "do
+// it again" is `trigger`, `#clock`, `#trigger` or `#update`. Pick one rule (subject
+// first, a label only for an option with a default, one name for the trigger) and apply
+// it in one pass: `str` and `re` have about 60 call sites in the two repos. probe:
+// design/review-2026-11-16/repro/a-stdlib-name-census.sh (a-stdlib-07)
 /// return true if s starts with #pfx, otherwise return false
 val starts_with: fn(#pfx: string, s: string) -&gt; bool;
 
@@ -276,6 +287,15 @@ val char_len: fn(s: string) -&gt; i64;
 /// will return "💖💖"
 val sub: fn(#start:i64, #len:i64, s: string) -&gt; Result&lt;string, `SubError(string)&gt;;
 
+// CR claude for eric: [structure/low] A value has two text forms and each reader takes
+// one. Interpolation, `println` and `sprintf("%s")` write a datetime as `2020-01-01
+// 00:00:00 UTC` and a duration as `90.s`; `cast&lt;string&gt;` writes
+// `2020-01-01T00:00:00+00:00` and `90.0`. `parse` reads both, `cast&lt;datetime&gt;` and
+// `cast&lt;duration&gt;` refuse the printed form, and `cast&lt;string&gt;` refuses bytes,
+// composites and null, which interpolation prints. Make `cast&lt;string&gt;` of a scalar the
+// text interpolation writes and have `cast` from a string read what `parse` reads, so
+// there is one text form and not two. probe:
+// design/review-2026-11-16/repro/a-stdlib-text-forms.gx (a-stdlib-12)
 /// parse `s` as a value of the annotated type, reading what Graphix
 /// prints for one. A string is the text itself. Any other type reads the
 /// text as a literal (a number, string, bool, null, datetime, duration or

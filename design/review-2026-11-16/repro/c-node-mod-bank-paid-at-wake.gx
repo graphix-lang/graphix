@@ -28,12 +28,12 @@
   let trig = select c { 1 => null, _ => never() };
   let v = never<i64>();
   v <- select c { 3 => 42, _ => never() };
-  let on = true;
-  on <- select c { 1 => false, 5 => true, _ => never() };
+  let is_on = true;
+  is_on <- select c { 1 => false, 5 => true, _ => never() };
   let hits = 0;
-  select on {
+  select is_on {
     true => hits <- (trig ~ v) ~ hits + 1,
     false => never()
   };
-  (on, hits)
+  (is_on, hits)
 }

@@ -6,7 +6,7 @@
 let clock = sys::time::timer(duration:20.ms, 12);
 let n = 0;
 n <- clock ~ n + 1;
-let on = uniq(select n { 3 => false, 4 => false, 7 => false, 8 => false, _ => true });
-let th = select on { true => throttle(#rate: duration:10.s, n), false => -1 };
+let is_on = uniq(select n { 3 => false, 4 => false, 7 => false, 8 => false, _ => true });
+let th = select is_on { true => throttle(#rate: duration:10.s, n), false => -1 };
 println(th ~ "th=[th] n=[n]");
 sys::exit(filter(n, |x| x >= 12))

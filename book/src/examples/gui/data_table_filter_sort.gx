@@ -60,15 +60,16 @@ let tbl: Table = select str::len(pattern) {
 // already sorted flips its direction; a second click removes it.
 let sort_by: Array<SortBy> = [];
 
-let cycle_sort = |#column: string|
-    sort_by <- column ~ select array::find(sort_by, |s| s.column == column) {
+let cycle_sort = |#column: string| on column {
+    sort_by <- select array::find(sort_by, |s| s.column == column) {
         null => array::push(sort_by, { column, direction: `Ascending }),
         { direction: `Ascending, .. } => array::map(sort_by, |s| select s.column == column {
             true => { s with direction: `Descending },
             false => s
         }),
         { direction: `Descending, .. } => array::filter(sort_by, |s| s.column != column)
-    };
+    }
+};
 
 let controls = row(
     #spacing: &10.0,

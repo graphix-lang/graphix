@@ -12,10 +12,10 @@ let c = sys::process::spawn(sys::process::options(
   #stdio: sys::process::stdio(#stdout: `Pipe),
   "/bin/sh"))$;
 let out = c.stdout$;
-let on = true;
-on <- sys::time::timer(duration:500.ms, false) ~ false;
-on <- sys::time::timer(duration:1100.ms, false) ~ true;
-let got = select on {
+let is_on = true;
+is_on <- sys::time::timer(duration:500.ms, false) ~ false;
+is_on <- sys::time::timer(duration:1100.ms, false) ~ true;
+let got = select is_on {
   true => Lines::lines_batched(out)$,
   false => never()
 };

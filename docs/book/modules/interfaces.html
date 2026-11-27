@@ -363,6 +363,16 @@ mod utils;
 mod parser;
 </code></pre>
 <h2 id="sub-module-visibility"><a class="header" href="#sub-module-visibility">Sub-module Visibility</a></h2>
+<!-- CR claude for claude: [doc-drift/low] "Module and type names are visible whatever
+their order, but values are not" is only half true. It holds for a type the parent
+declares: a child reads a `type T` declared below its `mod child;`. It fails for a
+module: a sibling declared below `mod child;` can be imported (`use super::other;`
+checks), but nothing in it can be named, its types included ("undefined type other::Q in
+p::child", "other::w not defined"). Say that a child sees its parent's types whatever
+their order, and a sibling module's contents only when that sibling's `mod` stands above
+the child's. probe:
+design/review-2026-11-16/repro/book-modules-udt-later-module-invisible.sh
+(book-modules-udt-06) -->
 <p>A sub-module sees nothing of its parent implicitly — it imports what it
 needs with <code>use super::...</code>. Module and type names are visible whatever
 their order, but values are not: a module's body runs where its <code>mod</code>
@@ -396,6 +406,17 @@ mod child;
 use super::{private_setup, public_helper};
 </code></pre>
 <h3 id="impls-between-siblings"><a class="header" href="#impls-between-siblings">Impls Between Siblings</a></h3>
+<!-- CR claude for claude: [doc-drift/medium] The rules in this section and the next
+hold only for a module that has its own .gxi, which is a unit of the check
+(design/parallel_compile.md, Module checks). The two rules are: an undeclared impl is
+hidden from siblings, and a module may not decide a type the code around it left open. A
+sibling without an interface sees the hidden impl, so b's `Show::show(1)` is accepted
+unless b has a b.gxi. The p.gx / p/c.gx example below shows no p/c.gxi, so as written
+the check accepts it, contrary to "The check refuses it". Say that both rules are about
+modules with interfaces, add `p/c.gxi` to the example, and drop the `use super::Show;`
+that a.gx repeats, which "Use Statements" above says not to repeat. probe:
+design/review-2026-11-16/repro/book-modules-udt-interface-rules-need-gxi.sh
+(book-modules-udt-03) -->
 <p>Siblings reach each other only through their interfaces, trait
 implementations included. An <code>impl</code> that a module with an interface
 adds in its body without declaring it in its <code>.gxi</code> is hidden while
@@ -569,7 +590,7 @@ val double: fn&lt;'a: Number + Singleton&gt;(w: NumericWrapper&lt;'a&gt;) -&gt; 
 <pre><code class="language-graphix">// implementation - same constraint required
 type NumericWrapper&lt;'a: Number&gt; = Abstract&lt;'a&gt;;
 let wrap = |x: 'a| -&gt; NumericWrapper&lt;'a&gt; NumericWrapper(x);
-let double = |w: NumericWrapper&lt;'a&gt;| -&gt; 'a w.0 + w.0
+let double = 'a: Number + Singleton |w: NumericWrapper&lt;'a&gt;| -&gt; 'a w.0 + w.0
 </code></pre>
 <h3 id="abstract-types-in-compound-types"><a class="header" href="#abstract-types-in-compound-types">Abstract Types in Compound Types</a></h3>
 <p>Abstract types can be used within other type definitions in the interface:</p>

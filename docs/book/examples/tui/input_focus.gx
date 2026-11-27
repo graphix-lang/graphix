@@ -8,16 +8,18 @@ use tui::{
 let focused = 0;
 let num_widgets = 3;
 
-let handle = |e: Event| on_press(e, |k| select k.code {
-  t@ `Tab => {
-    focused <- ((t ~ focused) + 1) % num_widgets;
-    `Stop
-  },
-  t@ `BackTab => {
-    focused <- ((t ~ focused) - 1 + num_widgets) % num_widgets;
-    `Stop
-  },
-  _ => `Continue
+let handle = |e: Event| on_press(e, |k| on k {
+  select k.code {
+    `Tab => {
+      focused <- (focused + 1) % num_widgets;
+      `Stop
+    },
+    `BackTab => {
+      focused <- (focused - 1 + num_widgets) % num_widgets;
+      `Stop
+    },
+    _ => `Continue
+  }
 });
 
 let pane = |i| block(

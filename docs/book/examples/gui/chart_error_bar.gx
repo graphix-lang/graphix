@@ -10,10 +10,12 @@ let err_data = [];
 let avg = rand::rand(#start: 20., #end: 80., #clock);
 let noise = rand::rand(#start: 3., #end: 15., #clock);
 
-avg_data <- array::window(#n: 25, clock ~ avg_data, (x, avg));
-err_data <- array::window(#n: 25, clock ~ err_data, {
-    x, min: avg - noise, avg, max: avg + noise
-});
+on clock {
+    avg_data <- array::window(#n: 25, avg_data, (x, avg));
+    err_data <- array::window(#n: 25, err_data, {
+        x, min: avg - noise, avg, max: avg + noise
+    })
+};
 
 let col = column(
     #spacing: &15.0,

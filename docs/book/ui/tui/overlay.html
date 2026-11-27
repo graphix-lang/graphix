@@ -226,20 +226,24 @@ input handler sees every key; the base handler sees none.</p>
 
 let open = false;
 
-let handle_base = |e: Event| on_press(e, |k| select k.code {
-  c@ `Char("o") =&gt; {
-    open &lt;- c ~ true;
-    `Stop
-  },
-  _ =&gt; `Continue
+let handle_base = |e: Event| on_press(e, |k| on k {
+  select k.code {
+    `Char("o") =&gt; {
+      open &lt;- true;
+      `Stop
+    },
+    _ =&gt; `Continue
+  }
 });
 
-let handle_modal = |e: Event| on_press(e, |k| select k.code {
-  c@ `Esc =&gt; {
-    open &lt;- c ~ false;
-    `Stop
-  },
-  _ =&gt; `Continue
+let handle_modal = |e: Event| on_press(e, |k| on k {
+  select k.code {
+    `Esc =&gt; {
+      open &lt;- false;
+      `Stop
+    },
+    _ =&gt; `Continue
+  }
 });
 
 let base = input_handler(

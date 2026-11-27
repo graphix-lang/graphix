@@ -223,22 +223,33 @@ trait Read {
         let got: u64 = (s, n) ~ u64:0;
         let slot = &amp;mut chunks{count};
         let chunk = read(s, want);
+        // CR claude for claude: [bug/medium] The default read_exact's result is bottom
+        // while it waits for a later chunk: the `false` arm ends in `never()`, so
+        // between a request's first chunk and its last, every value built from the
+        // result blanks. The system streams' override (sys_io_read_exact) keeps the
+        // last answer standing until the next one arrives. read_all's and write_exact's
+        // defaults have the same `never()` arm, so a stream written in Graphix (the
+        // decoder, framer or test mock this trait's doc invites) behaves differently
+        // from a File or a TcpStream. Bind each default's select and return
+        // `hold(#clock: r, r)`, which keeps the last answer through the wait and passes
+        // each new one at once (checked in a local override). Pin the standing value
+        // beside lang::traits::graphix_defined_read_exact. `error as e =&gt; e` can
+        // replace `error as _ =&gt; filter_err(chunk)`. probe:
+        // design/review-2026-11-16/repro/gx-stdlib-read-exact-default-blanks.gx
+        // (gx-stdlib-01)
         select chunk {
             error as _ =&gt; filter_err(chunk),
             // done is decided when a chunk arrives, never when got moves
-            bytes as b =&gt; select b ~ (buffer::len(b) == u64:0
-                || got + buffer::len(b) &gt;= n) {
-                true =&gt; b ~ buffer::concat(chunks, b),
-                false =&gt; {
-                    // `b ~` is load-bearing: a connect fires when its
-                    // RHS fires, and an ungated `got &lt;- f(got, b)`
-                    // would re-fire on its own write — the documented
-                    // counter idiom, an accumulator by accident.
-                    *slot &lt;- b ~ b;
-                    count &lt;- b ~ count + u64:1;
-                    got &lt;- b ~ got + buffer::len(b);
-                    want &lt;- b ~ want - buffer::len(b);
-                    never()
+            bytes as b =&gt; on b {
+                select buffer::len(b) == u64:0 || got + buffer::len(b) &gt;= n {
+                    true =&gt; buffer::concat(chunks, b),
+                    false =&gt; {
+                        *slot &lt;- b;
+                        count &lt;- count + u64:1;
+                        got &lt;- got + buffer::len(b);
+                        want &lt;- want - buffer::len(b);
+                        never()
+                    }
                 }
             }
         }
@@ -257,20 +268,29 @@ trait Read {
         let chunk = read(s, want);
         select chunk {
             error as _ =&gt; filter_err(chunk),
-            bytes as b =&gt; select b ~ (buffer::len(b) == u64:0) {
-                true =&gt; b ~ buffer::concat(chunks),
-                false =&gt; {
-                    // gated on the chunk: see `read_exact`
-                    *slot &lt;- b ~ b;
-                    count &lt;- b ~ count + u64:1;
-                    want &lt;- b ~ u64:65536;
-                    never()
+            bytes as b =&gt; on b {
+                select buffer::len(b) == u64:0 {
+                    true =&gt; buffer::concat(chunks),
+                    false =&gt; {
+                        *slot &lt;- b;
+                        count &lt;- count + u64:1;
+                        want &lt;- u64:65536;
+                        never()
+                    }
                 }
             }
         }
     }
 };
 
+// CR claude for eric: [structure/medium] `lines` and `lines_batched` give no event at
+// the end of the stream, so a consumer cannot tell a finished file or a closed socket
+// from a quiet one: "sum the lines, then write the report" and "drop the connection the
+// peer closed" have nothing to wait for but an idle timer. `Read::read` says it with
+// empty bytes and `db::cursor::read` with null. Give the line readers the same:
+// `Result&lt;[string, null], ..&gt;` with one null at the end, or an `ended(self)` method
+// that fires once there. probe: design/review-2026-11-16/repro/a-stdlib-lines-no-eof.gx
+// (a-stdlib-04)
 /// A source of bytes that frames itself into lines.
 ///
 /// Framing is at the BYTE level, which is why this is a capability of
@@ -321,11 +341,13 @@ trait Write {
         let written = write(s, rest);
         select written {
             error as _ =&gt; filter_err(written),
-            u64 as n =&gt; select n ~ (n &gt;= buffer::len(rest)) {
-                true =&gt; null,
-                false =&gt; select n {
-                    u64:0 =&gt; error(`IOError("write returned 0 bytes")),
-                    _ =&gt; { rest &lt;- n ~ rest[n..]$; never() }
+            u64 as n =&gt; on n {
+                select n &gt;= buffer::len(rest) {
+                    true =&gt; null,
+                    false =&gt; select n {
+                        u64:0 =&gt; error(`IOError("write returned 0 bytes")),
+                        _ =&gt; { rest &lt;- rest[n..]$; never() }
+                    }
                 }
             }
         }

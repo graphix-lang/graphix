@@ -44,6 +44,39 @@ It follows that:
   accumulation that should run between events is written outside the
   block and read in it.
 
+## What converting real code showed
+
+The admin port, the stdlib's Graphix and the book's examples were
+rewritten with `on` when it was built (540 hand-written samples, about
+170 left). What bit, each a consequence of the rule:
+
+- **A hand sample inside the block does not bank.** `on k { b <- k ~
+  late }` lowers to `b <- k ~ (k ~! late)`: the read is the event's
+  value like any other, so a value absent at the event is not paid when
+  it arrives. `live(late)` keeps the hand sample's meaning. Wrapping a
+  handler that leaves one `k ~ v` in place changes that sample silently.
+- **A constant is fired by the event, not by a value the block
+  computes.** `{ let r = (k ~ sel)$; open <- r ~ true }` opens only when
+  a row is selected; `on k { let r = sel$; open <- true }` opens at every
+  key. Gate the constant on the value (`open <- r ~ true`), or put it in
+  an arm of a select over it, which a bottom scrutinee never takes.
+- **A handler with a guard answers once an event.** A guard written by
+  hand reads live state, so the handler answered again when its own
+  write landed; in the block the guard reads the event's value. The
+  states are the same and the answers are fewer (one example went from
+  135 answers to 70 for 70 keys).
+- **Where the old code banked without meaning to**, a key that arrives
+  before the sampled value has ever existed is dropped, where it was
+  paid when the value arrived (the browser's cursor before its first
+  listing).
+- **A call through a field is no call by name.** `pan.handle(e)` reads
+  `pan`, so the struct is sampled and the call is made once an event,
+  where the hand-written dispatcher was re-issued when the struct fired.
+- **A bare constant arm is not fired by the event** and needs nothing: a
+  select fires with its scrutinee and gives the arm's standing value.
+- **`on` as a word** was a variable in four places in the port and about
+  150 lines of test fixtures (a flag that is on or off), all renamed.
+
 ## What is and is not the block's text
 
 The seq rule (`design/seq_blocks.md` §5) decides it, and the lowering

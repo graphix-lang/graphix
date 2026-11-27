@@ -59,6 +59,7 @@ never writes. The ways to act when an arm is entered:
 
 | To get | Write |
 |---|---|
+| Everything an arm does, at every entry | clock it with an [`on` block](./on.md): ``k@ `Esc => on k { screen <- `Menu; sel <- 0 }``, or the whole select: `on key { select key { .. } }` |
 | A write or an effect at every entry | sample the bind: ``k@ `Esc => screen <- k ~ `Menu`` |
 | A constant written when an arm is taken | connect outside: ``screen <- select key { `Esc => `Menu, _ => never() }`` |
 | A write or an effect once per arm | `once(k) ~ v` |
@@ -716,6 +717,20 @@ select k.code {
   kk@ `Down => sel <- kk ~ (sel + 1),
   kk@ `Enter => screen <- kk ~ `Pick,
   _ => never()
+}
+```
+
+An [`on` block](./on.md) around the select says it once for every arm:
+each read is the value at the event, and a constant acts once an event.
+
+```graphix,fragment
+on k {
+  select k.code {
+    `Up => sel <- sel - 1,
+    `Down => sel <- sel + 1,
+    `Enter => screen <- `Pick,
+    _ => never()
+  }
 }
 ```
 

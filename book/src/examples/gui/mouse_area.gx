@@ -32,9 +32,9 @@ let position = "---";
                     `Right => "Right released",
                     `Middle => "Middle released"
                 },
-                #on_enter: |e| status <- e ~ "Mouse entered",
-                #on_exit: |e| status <- e ~ "Mouse exited",
-                #on_move: |pos| position <- pos ~ "[pos.x], [pos.y]",
+                #on_enter: |e| on e { status <- "Mouse entered" },
+                #on_exit: |e| on e { status <- "Mouse exited" },
+                #on_move: |pos| on pos { position <- "[pos.x], [pos.y]" },
                 &container(
                     #width: &`Fixed(300.0),
                     #height: &`Fixed(200.0),

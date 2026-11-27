@@ -22,8 +22,10 @@ let browser = |
         true => listing,
         false => never()
     };
-    selected <- restart ~ { x: 1, y: 0 };
-    viewport <- restart ~ { x: 0, y: 0 };
+    on restart {
+        selected <- { x: 1, y: 0 };
+        viewport <- { x: 0, y: 0 }
+    };
     let (mode, structure) = select listing {
         { columns, rows: listed } => {
             let mode = uniq(select columns {
@@ -234,30 +236,32 @@ let browser = |
             0 => cell(#style:header_style, line(s)),
             _ => cell(line(s))
         })));
-    select cursor {
-        `Left(n) => select n ~ sel.x {
-            e if e <= 1 => viewport <- e ~ { x: max(0, first_col - n), y: first_row },
-            e => selected <- e ~ { sel with x: max(1, sel.x - n) }
-        },
-        `Right(n) => {
-            let clim = array::len(structure.columns) - array::len(visible_columns);
-            select n ~ (sel.x, array::len(visible_columns)) {
-                (x, limit) if x >= limit =>
-                    viewport <- x ~ { x: min(clim, first_col + n), y: first_row },
-                (x, limit) => selected <- x ~ { sel with x: min(limit, sel.x + n) }
+    on cursor {
+        select cursor {
+            `Left(n) => select sel.x {
+                x if x <= 1 => viewport <- { x: max(0, first_col - n), y: first_row },
+                _ => selected <- { sel with x: max(1, sel.x - n) }
+            },
+            `Right(n) => {
+                let clim = array::len(structure.columns) - array::len(visible_columns);
+                select (sel.x, array::len(visible_columns)) {
+                    (x, limit) if x >= limit =>
+                        viewport <- { x: min(clim, first_col + n), y: first_row },
+                    (_, limit) => selected <- { sel with x: min(limit, sel.x + n) }
+                }
+            },
+            `Down(n) => {
+                let rlim = array::len(structure.rows) - array::len(visible_rows);
+                select (sel.y, array::len(visible_rows) - 1) {
+                    (y, limit) if y >= limit =>
+                        viewport <- { x: first_col, y: min(rlim, first_row + n) },
+                    (_, limit) => selected <- { sel with y: min(limit, sel.y + n) }
+                }
+            },
+            `Up(n) => select sel.y {
+                y if y <= 0 => viewport <- { x: first_col, y: max(0, first_row - n) },
+                _ => selected <- { sel with y: max(0, sel.y - n) }
             }
-        },
-        `Down(n) => {
-            let rlim = array::len(structure.rows) - array::len(visible_rows);
-            select n ~ (sel.y, array::len(visible_rows) - 1) {
-                (y, limit) if y >= limit =>
-                    viewport <- y ~ { x: first_col, y: min(rlim, first_row + n) },
-                (y, limit) => selected <- y ~ { sel with y: min(limit, sel.y + n) }
-            }
-        },
-        `Up(n) => select n ~ sel.y {
-            y if y <= 0 => viewport <- y ~ { x: first_col, y: max(0, first_row - n) },
-            y => selected <- y ~ { sel with y: max(0, sel.y - n) }
         }
     };
     table(

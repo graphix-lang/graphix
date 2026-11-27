@@ -13,9 +13,9 @@
 let clk = sys::time::timer(duration:100.ms, 7);
 let n = 0;
 n <- clk ~ n + 1;
-let on = (n / 2) % 2 == 0;
+let is_on = (n / 2) % 2 == 0;
 let wakes = 0;
-let r = select on {
+let r = select is_on {
   true => {
     let srv = http::serve(#addr: "127.0.0.1:0",
       #handler: |req: http::Request| req ~ {body: "ok", headers: [], status: u16:200})$;

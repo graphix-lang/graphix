@@ -223,9 +223,9 @@ let position = "---";
                     `Right =&gt; "Right released",
                     `Middle =&gt; "Middle released"
                 },
-                #on_enter: |e| status &lt;- e ~ "Mouse entered",
-                #on_exit: |e| status &lt;- e ~ "Mouse exited",
-                #on_move: |pos| position &lt;- pos ~ "[pos.x], [pos.y]",
+                #on_enter: |e| on e { status &lt;- "Mouse entered" },
+                #on_exit: |e| on e { status &lt;- "Mouse exited" },
+                #on_move: |pos| on pos { position &lt;- "[pos.x], [pos.y]" },
                 &amp;container(
                     #width: &amp;`Fixed(300.0),
                     #height: &amp;`Fixed(200.0),

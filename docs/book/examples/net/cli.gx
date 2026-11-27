@@ -17,15 +17,25 @@ let cli: args::ParseResult = select args::parse(
         ]
     )
 ) {
+    // CR claude for claude: [readability/low] The book's way to split a Result is
+    // `error as e => .., v => v`. This example, the only one on the args page, tests
+    // both sides by written type instead, and writes the error side as `Error<'e>`, a
+    // fresh variable in a pattern; select.md uses that form only to test inside a
+    // declared type variable. `error as e => select e.0 { .. }, r => r`, under the same
+    // `let cli: args::ParseResult` annotation, checks and behaves the same for help,
+    // version, a usage error and a subcommand. Also drop the blank first line, which
+    // opens the book's code block empty. probe:
+    // design/review-2026-11-16/repro/examples-rest-cli-error-idiom.gx
+    // (examples-rest-03)
     args::ParseResult as r => r,
     Error<'e> as e => select e.0 {
-        `ArgHelp(text) => {
+        `ArgHelp(text) => on text {
             println(text);
-            sys::exit(text ~ 0)
+            sys::exit(0)
         },
-        `ArgError(text) => {
+        `ArgError(text) => on text {
             println(text);
-            sys::exit(text ~ 2)
+            sys::exit(2)
         }
     }
 };

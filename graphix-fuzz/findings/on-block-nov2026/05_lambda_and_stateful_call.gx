@@ -1,0 +1,5 @@
+// The seq rule: a lambda written in the block reads the event's values,
+// and state in the block is in the clock's domain (the count counts the
+// events, where `k ~ count(step)` counts every step).
+// Expected trace (both engines): ([2, 4], 1, 3), ([5, 10], 2, 6), ([7, 14], 3, 8).
+{ let step = 0; step <- select step { n if n < 8 => n + 1, _ => never() }; let k = select step { 2 => null, 5 => null, 7 => null, _ => never() }; let scale = step; let r = on k { (array::map([1, 2], |x| x * scale), count(step)) }; let d = k ~ count(step); (r.0, r.1, d) }

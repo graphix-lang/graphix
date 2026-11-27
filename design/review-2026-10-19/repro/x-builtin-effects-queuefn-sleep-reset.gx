@@ -10,10 +10,10 @@ let n = 0;
 let clk = sys::time::timer(duration:20.ms, 12);
 n <- clk ~ n + 1;
 let trig = never();
-let on = true;
-on <- sys::time::timer(duration:50.ms, false) ~ false;
-on <- sys::time::timer(duration:150.ms, false) ~ true;
-let r = select on {
+let is_on = true;
+is_on <- sys::time::timer(duration:50.ms, false) ~ false;
+is_on <- sys::time::timer(duration:150.ms, false) ~ true;
+let r = select is_on {
     true => { let q = queuefn(#trigger: trig, |x: i64| x * 10); q(n) },
     false => never()
 };

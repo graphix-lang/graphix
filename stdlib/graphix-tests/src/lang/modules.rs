@@ -2081,8 +2081,8 @@ pub(crate) const A_WRITE_IN_A_SLEEPING_ARM: WithInterface = WithInterface {
     root: r#"
         let ep = 0;
         ep <- select ep { n if n < 8 => n + 1, _ => never() };
-        let on = select ep { 3 => false, 4 => false, _ => true };
-        let r = select on {
+        let is_on = select ep { 3 => false, 4 => false, _ => true };
+        let r = select is_on {
             true => {
                 mod a;
                 a::f <- once(ep) ~ |x: i64| -> i64 x + 100;
@@ -2112,13 +2112,13 @@ run!(
     "/test.gx" => r#"
         let ep = 0;
         ep <- select ep { n if n < 8 => n + 1, _ => never() };
-        let on = select ep { 3 => false, 4 => false, _ => true };
+        let is_on = select ep { 3 => false, 4 => false, _ => true };
         let mk = |t: i64| -> (i64, i64) {
             mod a;
             a::f <- once(t) ~ |x: i64| -> i64 x + 100;
             (a::f(t ~ 1), a::g(t ~ 1))
         };
-        let r = select on { true => mk(ep), false => never() };
+        let r = select is_on { true => mk(ep), false => never() };
         let result = select ep { 8 => "[r.0] [r.1]", _ => never() }
     "#,
     "/test/a.gxi" => F_AND_G.0,
@@ -2270,9 +2270,9 @@ run!(
     "/test.gx" => r#"
         let ep = 0;
         ep <- select ep { n if n < 12 => n + 1, _ => never() };
-        let on = select ep { k if k > 5 && k < 9 => false, _ => true };
+        let is_on = select ep { k if k > 5 && k < 9 => false, _ => true };
         let rv: [&mut i64, null] = null;
-        let r = select on {
+        let r = select is_on {
             true => { mod a; rv <- once(ep) ~ &mut a::v; a::g(ep ~ 1) },
             false => never()
         };
@@ -4641,9 +4641,9 @@ run!(glob_in_forked_slots, GLOB_IN_FORKED_SLOTS, |v: Result<&Value>| matches!(
 const ARM_WAKE: &str = "{
   let ep = 0;
   ep <- select ep { n if n < 12 => n + 1, _ => never() };
-  let on = select ep { n if n > 4 && n < 9 => false, _ => true };
+  let is_on = select ep { n if n > 4 && n < 9 => false, _ => true };
   let rv: [&mut i64, null] = null;
-  let r = select on {
+  let r = select is_on {
     true => { mod a; rv <- once(ep) ~ REF; ARM },
     false => never()
   };

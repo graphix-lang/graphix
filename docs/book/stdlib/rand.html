@@ -161,7 +161,7 @@
 /// default to 0.0 and 1.0, so an integer range gives both. An empty
 /// range, or one with an infinite or NaN bound, produces nothing and
 /// logs the refused range.
-val rand: fn&lt;'a: [Int, Float] + Singleton&gt;(?#start:'a, ?#end:'a, #clock:Any) -&gt; 'a;
+val rand: fn&lt;'a: [Int, Float] + Singleton&gt;(?#start: 'a = f64, ?#end: 'a = f64, #clock: Any) -&gt; 'a;
 
 /// pick a random element from the array and return it. Update
 /// each time the array updates. If the array is empty return

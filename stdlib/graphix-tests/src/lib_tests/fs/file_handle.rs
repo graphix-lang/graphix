@@ -129,10 +129,10 @@ const OPEN_IS_NOT_ANSWERED_AFTER_A_SLEEP: &str = r#"{
   use sys::fs::open;
   let temp = sys::fs::tempdir::create(null)?;
   let path = sys::join_path(sys::fs::tempdir::path(temp), "new.txt");
-  let on = true;
-  let f = select on { true => open(`CreateNew, path)?, false => never() };
-  on <- path ~ false;
-  on <- on ~ select on { false => true, true => never() };
+  let is_on = true;
+  let f = select is_on { true => open(`CreateNew, path)?, false => never() };
+  is_on <- path ~ false;
+  is_on <- is_on ~ select is_on { false => true, true => never() };
   let answered = false;
   answered <- f ~ true;
   let made = sys::fs::is_file(sys::time::timer(duration: 10.ms, true) ~ path);
