@@ -276,6 +276,11 @@ where
 /// The most input messages the runtime takes at once.
 const INPUT_BATCH: usize = 100_000;
 
+/// How many cycles in a row started by writes alone are a report
+/// ([`GX::spinning`]): past any loop a test or a bench runs on purpose,
+/// and about a second of a program that spins.
+const SPIN_CYCLES: u32 = 1 << 20;
+
 /// A finished task's reply, or nothing when the task was cancelled or
 /// died; a death is logged, its reply never comes.
 fn joined<T>(r: result::Result<(BindId, T), JoinError>) -> Option<(BindId, T)> {
@@ -366,6 +371,9 @@ pub(super) struct GX<X: GXExt> {
     /// Answers whose call's cycle queued writes: they go out at the end of
     /// the next cycle, once those writes have landed.
     held_answers: Vec<(ExprId, Value)>,
+    /// Cycles in a row that only queued variable writes started
+    /// ([`Self::spinning`]).
+    spin: u32,
     sub: tmpsc::Sender<GPooled<Vec<GXEvent>>>,
     resolvers: Resolvers,
     batch_pool: Pool<Vec<GXEvent>>,
@@ -434,6 +442,7 @@ impl<X: GXExt> GX<X> {
             callables: IntMap::default(),
             calls: VecDeque::new(),
             held_answers: Vec::new(),
+            spin: 0,
             sub: cfg.sub,
             resolvers: std::sync::Arc::from(cfg.resolvers),
             batch_pool: Pool::new(10, 1000000),
@@ -666,6 +675,13 @@ impl<X: GXExt> GX<X> {
         // behind anything its variable has waiting or was given.
         let mut due: LPooled<Vec<(BindId, VarUpdate, Via)>> = LPooled::take();
         self.ctx.rt.var_updates.take(&mut due);
+        let by_writes = tasks.is_empty()
+            && sets.is_empty()
+            && custom_tasks.is_empty()
+            && self.ctx.rt.custom_updates.is_empty()
+            && !due.is_empty()
+            && due.iter().all(|(_, _, via)| !matches!(via, Via::Reply));
+        self.spinning(by_writes, &due);
         for (id, u, via) in due.drain(..) {
             self.deliver(id, u, via);
         }
@@ -841,6 +857,39 @@ impl<X: GXExt> GX<X> {
                 r.mark(cycle);
             }
         }
+    }
+
+    /// A cycle that nothing but queued variable writes started, or one that
+    /// something else did. [`SPIN_CYCLES`] of the first kind in a row are
+    /// reported once, with the variables that cycle's writes land in:
+    /// a `<-` that feeds itself runs a cycle a write for as long as it
+    /// fires, and says nothing. No intent is judged: a loop that long may
+    /// be meant.
+    fn spinning(&mut self, by_writes: bool, due: &[(BindId, VarUpdate, Via)]) {
+        if !by_writes {
+            self.spin = 0;
+            return;
+        }
+        self.spin = self.spin.saturating_add(1);
+        if self.spin != SPIN_CYCLES {
+            return;
+        }
+        use std::fmt::Write;
+        let mut written: LPooled<String> = LPooled::take();
+        for (id, _, _) in due.iter().take(4) {
+            let sep = if written.is_empty() { "" } else { ", " };
+            let _ = match self.ctx.env.by_id.get(id) {
+                Some(b) => write!(written, "{sep}`{}` (at {})", b.name, b.pos),
+                None => write!(written, "{sep}a binding with no name"),
+            };
+        }
+        error!(
+            target: FAILURE_TARGET,
+            "{SPIN_CYCLES} cycles in a row were started by writes alone, with no event \
+             between them; this one writes {written}. A `<-` whose right side reads its \
+             own target runs a cycle a write: clock it to an event (`on e {{ .. }}`, or \
+             `x <- e ~ ..`)"
+        )
     }
 
     /// Deliver `u` to `id` this cycle: into the store, which advances here
@@ -1655,7 +1704,7 @@ impl<X: GXExt> GX<X> {
         }
     }
 
-    // CR claude for claude: [risk/medium] A `<-` whose right side reads its own target
+    // XCR claude for claude: [risk/medium] A `<-` whose right side reads its own target
     // unsampled runs a cycle per write forever; the check accepts it by ruling (the
     // same shape is a legitimate loop) and this loop says nothing. In the probe `rows
     // <- array::map(rows, ..)` without its `edit ~` passes the check and prints 8,800
@@ -1670,6 +1719,12 @@ impl<X: GXExt> GX<X> {
     // variable writes made ready and, past a threshold, logs once under FAILURE_TARGET
     // the variable that keeps the loop going. The threshold is mine to pick and
     // measure.
+    // 2026-11-27 claude: Addressed: GX::spinning counts cycles that only queued
+    // variable writes started and logs once, at SPIN_CYCLES (2^20) in a row, the
+    // variables that cycle's writes land in. What catches a regression: graphix-shell
+    // tests/shell/swallowed_error_logs.rs a_connect_that_feeds_itself_is_reported_once
+    // (a self-feeding connect is reported once and names `n`; a 300,000-step loop that
+    // ends is not).
     pub(super) async fn run(
         mut self,
         to_rt: &mut tmpsc::UnboundedReceiver<ToGX<X>>,

@@ -169,6 +169,9 @@ for itself:</p>
 <p>Leave one <code>k ~</code> out and that write no longer waits for the key: <code>sel &lt;- sel + 1</code> reads and writes <code>sel</code>, so it feeds itself and counts as fast
 as it can, and <code>menu_sel &lt;- 0</code> is a constant, which acts once and never
 again.</p>
+<p>The check warns of a function that writes and reads none of its
+parameters, and a program that spins this way logs it once, but neither
+catches a single missing sample among several.</p>
 <p>An <code>on</code> block states the clock once for everything in it:</p>
 <pre><code class="language-graphix fragment">let keys = |k| on k {
     select k.code {

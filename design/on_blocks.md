@@ -106,6 +106,24 @@ shares the seq's rewrite:
 A call with no argument has nothing for the event to fire, so it is not
 issued by it: it runs once, as anywhere. Give it the event.
 
+## The two reports built with it
+
+Item 2 of the review asked for two cheap reports beside the block, and
+both judge no intent:
+
+- **A function that writes and reads none of its parameters is warned
+  of** (`node::select::warn_undriven_writes`, CR `a-language-02`): the
+  call drives nothing in it, so the write follows its own right side.
+  `|_|` says the call is not what it acts on. It reads the function's
+  own text, so a handler that only calls an effect is not caught. Pin:
+  `lang::select::undriven_write_warning`.
+- **A program that spins is reported once** (`GX::spinning`, CR
+  `a-language-07`): the runtime counts cycles that nothing but queued
+  variable writes started, and at 2^20 in a row logs under
+  `FAILURE_TARGET` the variables that cycle's writes land in. A loop
+  that ends sooner says nothing. Pin: `swallowed_error_logs.rs`,
+  `a_connect_that_feeds_itself_is_reported_once`.
+
 ## Lowering
 
 `on` is a kind of the seq syntax node (`SeqKind::On`), so every walk of

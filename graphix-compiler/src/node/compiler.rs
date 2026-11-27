@@ -498,6 +498,7 @@ fn compile_kind<R: Rt>(
             Connect::compile(ctx, flags, spec.clone(), scope, top_id, name, value)
         }
         ExprKind::Lambda(l) => {
+            super::select::warn_undriven_writes(ctx, flags, spec, l)?;
             Lambda::compile(ctx, flags, spec.clone(), scope, l, top_id)
         }
         ExprKind::Any { args } => {

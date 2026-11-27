@@ -159,3 +159,27 @@ sys::exit(sys::time::after_idle(duration:200.ms, 0))
         assert!(log.contains(&format!("rand: no value in {range}")), "{range}: {log}");
     }
 }
+
+/// A `<-` that feeds itself runs a cycle a write and nothing else starts
+/// one: past the runtime's count of such cycles in a row it is reported
+/// once, with the variable written. A loop that ends short of the count
+/// is not.
+#[test]
+fn a_connect_that_feeds_itself_is_reported_once() {
+    const SPINS: &str = r#"
+let n = 0;
+n <- n + 1;
+sys::exit(select n { 2500000 => 0, _ => never() })
+"#;
+    const ENDS: &str = r#"
+let n = 0;
+n <- select n { k if k < 300000 => k + 1, _ => never() };
+sys::exit(select n { 300000 => 0, _ => never() })
+"#;
+    let said = "cycles in a row were started by writes alone";
+    let (_, log) = run(SPINS, false, "spins");
+    assert_eq!(log.matches(said).count(), 1, "{log}");
+    assert!(log.contains("this one writes `n` (at line: 2, column: 5)"), "{log}");
+    let (_, log) = run(ENDS, false, "ends");
+    assert!(!log.contains(said), "{log}");
+}

@@ -380,6 +380,17 @@ impl<R: Rt> Select<R> {
 // review): build the warning. A lambda that writes or performs and reads none of its
 // named parameters is warned of, `|_|` silences it, and both repos are censused for
 // false positives first.
+// 2026-11-27 claude: Built for writes: a function whose own text writes a binding and
+// names none of its parameters is warned of at the lambda's compile
+// (warn_undriven_writes; `|_|` silences it; pin lang::select::undriven_write_warning).
+// The probe's `save` handler is caught, since it writes `status`. Census, run with the
+// warning made an error: nothing in the stdlib, the book's examples and fences, the
+// skill or the admin port triggers it; two test fixtures that ignore a parameter on
+// purpose do (lang::errors::a_catch_asleep_with_raises_in_flight_lets_its_step_pass,
+// graphix-fuzz tests::queue_twins_hold_and_settle). Not built, so this stays a CR: the
+// 'performs Io' half, a handler that only calls an effect and ignores its parameter
+// (`|c| println("x")`), which needs the definition's facts and cannot be read off its
+// text.
 fn warn_constant_action<R: Rt>(
     ctx: &CompileCtx<R>,
     flags: BitFlags<CFlag>,
@@ -449,6 +460,66 @@ fn warn_constant_action<R: Rt>(
             r
         }
     })
+}
+
+/// A function written to act when it is called has to read what the call
+/// gives it: a write in its body follows its own right side, so one that
+/// reads no parameter fires with no call at all (a handler that feeds
+/// itself, or acts as soon as its inputs allow). Warned of where the
+/// function's own text writes a binding and names none of its
+/// parameters; `|_|` says the call is not what it acts on.
+pub(super) fn warn_undriven_writes<R: Rt>(
+    ctx: &CompileCtx<R>,
+    flags: BitFlags<CFlag>,
+    spec: &Expr,
+    l: &crate::expr::LambdaExpr,
+) -> Result<()> {
+    let crate::expr::LambdaBody::Expr(body) = &l.body else { return Ok(()) };
+    let mut params: SmallVec<[ArcStr; 4]> = SmallVec::new();
+    for a in l.args.iter() {
+        a.pattern.with_names(&mut |n| params.push(n.clone()))
+    }
+    if params.is_empty() {
+        return Ok(());
+    }
+    // a write in the function's own text, not in a function it holds
+    fn writes(e: &Expr) -> bool {
+        crate::stack::ensure_sufficient(|| match &e.kind {
+            ExprKind::Connect { .. } => true,
+            ExprKind::Lambda(_) => false,
+            _ => {
+                let mut found = false;
+                e.for_each_child(&mut |c| found = found || writes(c));
+                found
+            }
+        })
+    }
+    let named = |name: &crate::expr::ModPath| {
+        netidx_core::path::Path::parts(&name.0)
+            .next()
+            .is_some_and(|first| params.iter().any(|p| p.as_str() == first))
+    };
+    let reads = body.fold(false, &mut |found, e| {
+        found
+            || match &e.kind {
+                ExprKind::Ref { name } => named(name),
+                ExprKind::Connect { name, .. } => named(name),
+                _ => false,
+            }
+    });
+    if reads || !writes(body) {
+        return Ok(());
+    }
+    ctx.env.warn(
+        flags,
+        spec,
+        spec.pos,
+        spec.end.0,
+        "this function writes a binding and reads none of its parameters, so the call \
+         drives nothing in it: the write follows its own right side, and acts with no \
+         call at all. Clock it to a parameter (`|c| on c { .. }`), or name the \
+         parameter `_` if the call is not what it acts on",
+    )
 }
 
 /// Whether the call acts: an async or Io builtin given an argument (one

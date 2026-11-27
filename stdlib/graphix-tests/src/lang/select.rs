@@ -10838,6 +10838,52 @@ async fn constant_arm_action_warnings(mode: Mode) -> Result<()> {
 
 modes!(constant_arm_action_warnings);
 
+// A function that writes a binding and reads none of its parameters is
+// warned of: the call drives nothing in it. One clocked to its parameter,
+// one that samples it, one that names it `_` and one that writes nothing
+// are not.
+async fn undriven_write_warning(mode: Mode) -> Result<()> {
+    let (tx, _rx) = tokio::sync::mpsc::channel(100);
+    let flags = mode.flags() | CFlag::WarningsAreErrors;
+    let ctx = TestCtx::start(
+        config(tx, &crate::TEST_REGISTER, vec![], |ctx| {
+            ctx.control.set_par_mode(mode.par())
+        })?
+        .flags(flags),
+    )
+    .await?;
+    for src in [
+        literal!("{ let n = 0; let h = |c| on c { n <- n + 1 }; h(1) }"),
+        literal!("{ let n = 0; let h = |c| n <- c ~ n + 1; h(1) }"),
+        literal!("{ let n = 0; let h = |_| n <- n ~ 1; h(1) }"),
+        literal!("{ let n = 0; let h = |c| n + 1; h(1) }"),
+        literal!("{ let n = 0; let h = |r: &mut i64| *r <- n ~ 2; h(&mut n) }"),
+    ] {
+        ctx.rt.compile(src).await?;
+    }
+    for src in [
+        literal!("{ let n = 0; let h = |c| n <- n ~ 1; h(1) }"),
+        literal!(
+            "{ let n = 0; let ok = true; \
+               let h = |c| select ok { true => n <- ok ~ 1, false => never() }; h(1) }"
+        ),
+        literal!(
+            "{ let n = 0; let h = |#a: i64, b: i64| { n <- n ~ 1; 0 }; h(#a: 1, 2) }"
+        ),
+    ] {
+        let error = ctx.rt.compile(src).await.unwrap_err();
+        let error = format!("{error:#}");
+        assert!(
+            error.contains("writes a binding and reads none of its parameters"),
+            "{error}"
+        );
+    }
+    ctx.shutdown().await;
+    Ok(())
+}
+
+modes!(undriven_write_warning);
+
 run!(select_discriminants_follow_instantiation, r#"{
     let f = |x| select x { v => v };
     (f((1, 2)), f([3, 4, 5]))
