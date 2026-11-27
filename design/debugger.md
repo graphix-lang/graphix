@@ -86,7 +86,7 @@ second encoding to keep in step with the language.
 
 DAP is not the native protocol. It is built around threads, stack frames
 and stepping by line, which fit a dataflow program badly. An adapter can
-translate later (§8).
+translate later (§5, phase 3).
 
 ## 4. Naming what you ask about
 
