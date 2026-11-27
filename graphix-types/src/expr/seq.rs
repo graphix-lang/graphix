@@ -320,9 +320,25 @@ fn lower(spec: &Expr, env: &Env, scope: &ModPath) -> Result<Expr> {
     let _ori = OriginScope::enter(spec.ori.clone());
     let ExprKind::Seq(s) = &spec.kind else { bail!("BUG: seq lowering of a non-seq") };
     let SeqExpr { kind, trigger, abort, body } = &**s;
+    // only a body that awaits is written again
+    fn awaits(stmts: &[Expr]) -> bool {
+        stmts.iter().any(|s| {
+            let step = match &s.kind {
+                ExprKind::Bind(b) => &b.value,
+                _ => s,
+            };
+            match &step.kind {
+                ExprKind::Await(_) => true,
+                ExprKind::TryWith(t) => awaits(&t.body) || awaits(&t.handler),
+                _ => false,
+            }
+        })
+    }
     let awaits = match kind {
-        SeqKind::Plain | SeqKind::Queued { .. } => Some(lower_awaits(body)),
-        SeqKind::On | SeqKind::Fresh => None,
+        SeqKind::Plain | SeqKind::Queued { .. } if awaits(body) => {
+            Some(lower_awaits(body))
+        }
+        _ => None,
     };
     let body = awaits.as_ref().unwrap_or(body);
     let seq = Parts {
