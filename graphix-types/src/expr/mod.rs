@@ -634,6 +634,9 @@ pub enum SeqKind {
     Queued {
         flush: Option<Arc<Expr>>,
     },
+    /// `on e { .. }`: a block clocked to its trigger's fires, with no
+    /// machine (`expr/on.rs`, `design/on_blocks.md`)
+    On,
 }
 
 impl SeqKind {
@@ -643,8 +646,17 @@ impl SeqKind {
 
     pub fn flush(&self) -> Option<&Arc<Expr>> {
         match self {
-            SeqKind::Plain => None,
+            SeqKind::Plain | SeqKind::On => None,
             SeqKind::Queued { flush } => flush.as_ref(),
+        }
+    }
+
+    /// The word that begins the block.
+    pub fn keyword(&self) -> &'static str {
+        match self {
+            SeqKind::Plain => "seq",
+            SeqKind::Queued { .. } => "seqq",
+            SeqKind::On => "on",
         }
     }
 }
@@ -2027,6 +2039,7 @@ impl Expr {
                 abort: s.abort.as_ref().map(|e| a(f, e)),
                 kind: match &s.kind {
                     SeqKind::Plain => SeqKind::Plain,
+                    SeqKind::On => SeqKind::On,
                     SeqKind::Queued { flush } => {
                         SeqKind::Queued { flush: flush.as_ref().map(|e| a(f, e)) }
                     }

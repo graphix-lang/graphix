@@ -2398,6 +2398,43 @@ fn never_parses() {
 }
 
 #[test]
+fn on_parses() {
+    for s in [
+        "on k { 1 }",
+        "on k{1}",
+        "on (k) { x <- 1 }",
+        "on f(t) { x <- 1; y <- 2 }",
+        "on click ~ state { n <- n + 1 }",
+        "on t.x { 1 }",
+        "on t[0]? { 1 }",
+        "on let c = f(t) { c }",
+        "on let {a, b} = t { x <- a }",
+        "on let c: i64 = t ~ x { c }",
+        "on let (a, b) = pair() { a + b }",
+        "on k { on j { 1 } }",
+        "on k { select k { 1 => x <- 0, _ => never() }; `Stop }",
+    ] {
+        let e = parse_one(s).unwrap();
+        let again = parse_one(&e.to_string()).unwrap();
+        assert_eq!(again, e, "{s}");
+        assert_eq!(parse_one(&e.to_string_pretty(0)).unwrap(), e, "{s}");
+        match &e.kind {
+            ExprKind::Seq(a) => {
+                assert!(matches!(a.kind, SeqKind::On), "{s}");
+                assert!(a.trigger.is_some() && a.abort.is_none(), "{s}")
+            }
+            k => panic!("{s} -> {k:?}"),
+        }
+    }
+    // the event is required, a block has no clauses and `on` is no name
+    assert!(parse_one("on { 1 }").is_err());
+    assert!(parse_one("on k { }").is_err());
+    assert!(parse_one("on k; abort(c) { 1 }").is_err());
+    assert!(parse_one("let on = 1").is_err());
+    assert!(parse_one("|on| on").is_err());
+}
+
+#[test]
 fn seq_parses() {
     for s in [
         "seq { 1 }",
@@ -3357,7 +3394,7 @@ fn source_error_does_not_expect_printed_data() {
         message,
         r####"at line: 1, column: 9 in module /test: Parse error at line: 1, column: 9
 Unexpected `;`
-Expected #[, mod, pub, use, catch, try, until, type, trait, impl, let, `&`, `|`, `'`, `*`, package, self, super, `!`, `r`, [<, `[`, select, seqq, seq, ```, cast, never, live, any, """, `"`, `{`, `(`, `-`, a value or duration:
+Expected #[, mod, pub, use, catch, try, until, type, trait, impl, let, `&`, `|`, `'`, `*`, package, self, super, `!`, `r`, [<, `[`, select, seqq, seq, on, ```, cast, never, live, any, """, `"`, `{`, `(`, `-`, a value or duration:
 
     let x = ;
             ^"####

@@ -290,6 +290,16 @@ fn program(shape: &str, d: usize) -> String {
             }
             format!("let x = {s}")
         }
+        "onblock" => {
+            format!("let k = 1;\non k {{ {}1{} }}", "{ 1; ".repeat(d), " }".repeat(d))
+        }
+        "onnest" => {
+            let mut s = String::from("1");
+            for _ in 0..d {
+                s = format!("on k {{ {s} }}");
+            }
+            format!("let k = 1;\nlet x = {s}")
+        }
         // Flat programs whose types are as deep as the program is long.
         "flattype" => {
             let mut s = String::from("let x0 = 1;\n");
@@ -585,6 +595,8 @@ const SHAPES: &[&str] = &[
     "seqarm",
     "seqblock",
     "seqabort",
+    "onblock",
+    "onnest",
     "list",
     "listpat",
     "variantpat",

@@ -34,6 +34,8 @@ use smallvec::SmallVec;
 use std::cell::RefCell;
 use triomphe::Arc;
 
+mod on;
+
 /// The label of a machine with no run in progress.
 pub const IDLE: i64 = -1;
 
@@ -117,8 +119,8 @@ const CAUGHT: &str = "#seqe";
 
 /// The cells named for what the program wrote, and how many numbers
 /// precede the written name in each.
-const WRITTEN_CELLS: [(&str, usize); 4] =
-    [(TRIGGER, 1), (ENTRY_SNAPSHOT, 3), (CAPTURE, 2), (CAUGHT, 1)];
+const WRITTEN_CELLS: [(&str, usize); 5] =
+    [(TRIGGER, 1), (ENTRY_SNAPSHOT, 3), (CAPTURE, 2), (CAUGHT, 1), (on::SAMPLE, 2)];
 
 /// The cell `<numbered>_<written>`, which [`written_name`] reads back.
 fn written_cell(numbered: &str, written: &str) -> ArcStr {
@@ -270,6 +272,7 @@ fn lower(spec: &Expr, env: &Env, scope: &ModPath) -> Result<Expr> {
         body,
     };
     match (kind, seq.trigger) {
+        (SeqKind::On, _) => on::desugar(&seq, env, scope),
         (SeqKind::Queued { .. }, Some(SeqTrigger::Bind(b))) => desugar_let(&seq, b),
         (SeqKind::Queued { .. }, _) => desugar_queued(&seq, env, scope),
         (SeqKind::Plain, _) => {
@@ -2314,6 +2317,7 @@ fn rewrite_with_inner(e: &Expr, map: &Names, mode: Rewrite<'_>) -> Expr {
             let abort = abort.as_ref().map(clause);
             let kind = match kind {
                 SeqKind::Plain => SeqKind::Plain,
+                SeqKind::On => SeqKind::On,
                 SeqKind::Queued { flush } => {
                     SeqKind::Queued { flush: flush.as_ref().map(clause) }
                 }

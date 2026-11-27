@@ -23,6 +23,7 @@ mod interfaces;
 mod lists;
 mod maps;
 mod modules;
+mod on_blocks;
 mod organic_deltas;
 mod orphans;
 mod par_attrs;

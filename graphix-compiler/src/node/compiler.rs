@@ -570,7 +570,11 @@ fn compile_kind<R: Rt>(
                         PrintFlag::ReplacePrims | PrintFlag::Lowered,
                         || lowered.to_string_pretty(80),
                     );
-                    println!("// seq at {}\n{}\n", spec.pos, text);
+                    let word = match &spec.kind {
+                        ExprKind::Seq(s) => s.kind.keyword(),
+                        _ => "seq",
+                    };
+                    println!("// {word} at {}\n{}\n", spec.pos, text);
                 }
                 Ok(lowered)
             };

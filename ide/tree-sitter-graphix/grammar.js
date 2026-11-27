@@ -856,6 +856,26 @@ module.exports = grammar({
       '}',
     ),
 
+    // `on e { stmts }` or `on let pat = e { stmts }`: a block clocked to
+    // one event (design/on_blocks.md). The event is required, and there
+    // are no clauses.
+    on_block: $ => seq(
+      'on',
+      choice(
+        seq(
+          'let',
+          field('pattern', $.structure_pattern),
+          optional(seq(':', field('type', $._type))),
+          '=',
+          field('event', $._expression),
+        ),
+        field('event', $._expression),
+      ),
+      bodyOpen(),
+      $._seq_items,
+      '}',
+    ),
+
     _seq_items: $ => seq(
       repeat(seq($._seq_item, ';')),
       $._seq_item,
@@ -969,6 +989,7 @@ module.exports = grammar({
       $.apply,
       $.select,
       $.seq_block,
+      $.on_block,
       $.try_with,
       $.any,
       $.cast,
@@ -1274,7 +1295,7 @@ module.exports = grammar({
     _field_name: $ => choice(
       $.identifier,
       alias(choice(
-        'true', 'false', 'null', 'mod', 'let', 'select', 'seq', 'seqq', 'until',
+        'true', 'false', 'null', 'mod', 'let', 'select', 'seq', 'seqq', 'on', 'until',
         'trait', 'impl', 'pub', 'self', 'super', 'package',
         'type',
         'fn', 'cast', 'never', 'live', 'if', 'use', 'rec', 'catch', 'try', 'any',

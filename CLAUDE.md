@@ -386,6 +386,11 @@ are in the docs named here.
   `e ~! v` is strict. A connect writes when its RHS fires; a constant RHS in
   an arm never fires unless the arm is taken in the program's first cycle:
   sample the bind (`k ~ v`). `never<T>()` is syntax: typed bottom.
+- **`on e { .. }`** (`design/on_blocks.md`): a block clocked to one
+  event, a kind of the seq syntax node lowered with no machine: each
+  outer binding its text reads is `e ~! v`, and what reads no variable is
+  fired by the event. Values latch as they arrive and are released on the
+  pulse; state inside the block counts events.
 - **`seq` / `seqq`** (`design/seq_blocks.md`): a machine node
   (`node/seq_machine.rs`), every statement a step; a step sees the world as
   it stood at its entry (`seqq`: at enqueue); `live(e)` reads live. Every

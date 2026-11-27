@@ -37,7 +37,7 @@ fn write_seq_head<W: Write>(
     trigger: impl FnOnce(&mut W, &Expr, bool) -> fmt::Result,
     mut clause: impl FnMut(&mut W, &Expr) -> fmt::Result,
 ) -> fmt::Result {
-    write!(w, "{} ", if s.kind.queued() { "seqq" } else { "seq" })?;
+    write!(w, "{} ", s.kind.keyword())?;
     if let Some(t) = &s.trigger {
         let bound = matches!(t, SeqTrigger::Bind(_));
         if let SeqTrigger::Bind(b) = t {
@@ -421,14 +421,14 @@ fn head_fits(col: usize, limit: usize, e: &ExprKind) -> bool {
                 || match &s.trigger {
                     None => true,
                     Some(t) => {
-                        let kw = if s.kind.queued() { "seqq " } else { "seq " };
+                        let kw = s.kind.keyword().len() + " ".len();
                         let bind = match t {
                             SeqTrigger::Bind(b) => {
                                 flat_width(&writes(|f| write_seq_let(f, b)))
                             }
                             SeqTrigger::Expr(_) => 0,
                         };
-                        sub(col + kw.len() + bind, t.expr(), 0)
+                        sub(col + kw + bind, t.expr(), 0)
                     }
                 }
         }
@@ -443,8 +443,7 @@ fn head_min(e: &ExprKind) -> usize {
     match e {
         List { .. } => 2,
         TryWith(_) => "try {".len(),
-        Seq(s) if s.kind.queued() => "seqq {".len(),
-        Seq(_) => "seq {".len(),
+        Seq(s) => s.kind.keyword().len() + " {".len(),
         Select(_) => "select _ {".len(),
         StructWith(_) => "{ _ with".len(),
         Any { .. } => "any(".len(),

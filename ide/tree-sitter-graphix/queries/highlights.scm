@@ -17,6 +17,7 @@
   "try"
   "with"
   "seqq"
+  "on"
   "until"
   "abort"
   "flush("

@@ -66,15 +66,18 @@ event that says the work is done (`sys::exit(written ~ 0)`).
 
 ## The rules that bite (read these first)
 
-- **Sample state you read in a handler**: `#on_press: |c| n <- c ~ n + 1`.
-  Without `~` the body does not depend on the call: `|c| n <- n + 1`
-  reads and writes `n`, so it is the self-loop below, counting at 100%
-  CPU from the moment the widget is built, with no click at all.
+- **Clock a handler with `on`**: `#on_press: |c| on c { n <- n + 1 }`.
+  Every read in the block is its value when `c` fires, and a constant in
+  it acts once an event (see "A block on one clock" below). By hand it is
+  one sample a statement, `n <- c ~ n + 1`. With neither, the body does
+  not depend on the call: `|c| n <- n + 1` reads and writes `n`, so it
+  is the self-loop below, counting at 100% CPU from the moment the widget
+  is built, with no click at all.
 - **An arm that connects to a binding it also reads unsampled is a
   self-loop**: `` `Enter => known <- upsert(known, x) `` re-fires itself
   every cycle (the accidental counter, 100% CPU). Write
-  `known <- ev ~ upsert(known, x)`. The legitimate counter is
-  `x <- clock ~ x + 1`.
+  `known <- ev ~ upsert(known, x)`, or clock the work: `on ev { known <-
+  upsert(known, x) }`. The legitimate counter is `x <- clock ~ x + 1`.
 <!-- CR claude for claude: [doc-drift/medium] This rule says what fires inside an arm
 but not what the select itself yields. The select's result fires at every fire of its
 scrutinee (and of a consulted guard), carrying the taken arm's current value. That
@@ -111,6 +114,8 @@ design/review-2026-11-16/repro/lang-skill-select-result-fires.gx (lang-skill-02)
   trigger**: `spawn(go ~ options(#args: a, prog))`, never
   `spawn(options(#args: a, go ~ prog))` — a call fires when ANY argument
   fires, so the second re-issues the spawn when `a` moves on its own.
+  `on go { spawn(options(#args: a, prog)) }` samples the whole input by
+  construction.
 - **`<-` lands next cycle.** You do not see the new value this cycle.
 - **A value made later in the cycle reaches an earlier reader next
   cycle.** A cycle runs statements in text order and REPL inputs in input
@@ -673,6 +678,55 @@ no "will never match" |x: [(i64, i64), (f64, string), null]| select x { [(i64, i
 It is an expression form, not an operator: `x <- clock ~ x + 1` needs no
 parens. A `<-` writes when its right side fires. A pure arm has nothing
 to pause; an arm with a `<-` sleeps when unselected.
+
+## A block on one clock: `on`
+
+`on e { .. }` clocks a block to the event `e`. Everything outside latches
+as it arrives; the block releases the values when `e` fires and runs once
+on them. `on x { y <- z }` is `y <- x ~! z`.
+
+```graphix,fragment
+let keys = |k| on k {
+    select k.code {
+        `Left => { sel <- max(0, sel - 1); menu_sel <- 0; `Stop },
+        `Enter => { chosen <- item$.act; `Stop },
+        _ => `Continue
+    }
+};
+on let (x, y) = click { cursor <- (x, y) }
+```
+
+- Every binding outside the block that its text reads is its value at
+  the event, each alone: one with no value yet stops only what reads it,
+  and is never paid later (use `~` by hand where a late payment is
+  wanted). `*r` is read at the event too.
+- A constant acts once an event: `menu_sel <- 0`, the answer `` `Stop ``,
+  a call whose arguments are all constants.
+- A write lands next cycle, so a binding the block reads and writes is
+  read as it stood before the event: `on k { n <- n + 1 }` counts.
+- It answers in the event's cycle and never waits or orders its
+  statements. Steps one after another are a `seq`; an async call started
+  in the block answers later, off the clock.
+- State in the block advances once an event: `on k { count(x) }` counts
+  the events, `k ~ count(x)` counts every `x`. Accumulate outside the
+  block and read the result inside.
+- The body is the block's own text, as in a seq: a function called by
+  name reads its own captures live, a lambda written in the block reads
+  the event's values, `live(e)` reads live, a nested `on` or `seq` has
+  its own clock.
+- A `catch` goes around the block (a `?` inside raises to it); `until`
+  and `try .. with` are a seq's. A call with no argument is not issued
+  by the event: give it the event. `on` is a reserved word.
+
+```graphix,cases
+ok let n = 0; let h = |c| on c { n <- n + 1; null }; h(1)
+ok let n = 0; let ev = (1, 2); on let (a, b) = ev { n <- a + b }
+ok let v = 1; let r = &mut v; let k = 1; on k { *r <- *r + 1 }
+no "catch is not allowed inside an on block" let k = 1; let x = 0; on k { catch(e) x <- 0; x <- 1 }
+no "only legal in a seq block" let k = 1; let x = 0; on k { until x > 0; x <- 1 }
+no "an on block names the event" let x = 0; on { x <- 1 }
+no "keyword" let on = 1; on
+```
 
 ## Sequencing: `seq` and `seqq`
 

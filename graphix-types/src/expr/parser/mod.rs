@@ -1105,15 +1105,46 @@ fn seq_head(
     }
 }
 
+/// The head of an on block: the event that clocks it, with no clauses.
+fn on_head(i: &mut Input) -> R<(SeqKind, Option<SeqTrigger>, Option<Arc<Expr>>)> {
+    let at = i.pos();
+    match i.optional(seq_trigger)? {
+        Some(clock) => Ok((SeqKind::On, Some(clock), None)),
+        None => Err(i.refuse(
+            at,
+            "an on block names the event that clocks it: `on e { .. }`, or `on let k = \
+             e { .. }` to name its value",
+        )),
+    }
+}
+
 fn seq(i: &mut Input) -> R<Expr> {
     let pos = i.pos();
-    let queued = choice!(i, |i| keyword(i, "seqq").map(|_| true), |i| keyword(i, "seq")
-        .map(|_| false))?;
-    let (kind, trigger, abort) = seq_head(i, queued)?;
+    let (kind, trigger, abort) = choice!(
+        i,
+        |i| {
+            keyword(i, "seqq")?;
+            seq_head(i, true)
+        },
+        |i| {
+            keyword(i, "seq")?;
+            seq_head(i, false)
+        },
+        |i| {
+            keyword(i, "on")?;
+            on_head(i)
+        }
+    )?;
     let mut body = seq_stmts(i)?;
     let end = i.pos();
     if body.iter().all(|e| matches!(e.kind, ExprKind::NoOp)) {
-        return Err(i.refuse(end, "a seq block must contain at least one step"));
+        let what = match kind {
+            SeqKind::On => "an on block must contain at least one statement",
+            SeqKind::Plain | SeqKind::Queued { .. } => {
+                "a seq block must contain at least one step"
+            }
+        };
+        return Err(i.refuse(end, what));
     }
     let body = Arc::from_iter(body.drain(..));
     let seq = SeqExpr { kind, trigger, abort, body };
@@ -1628,6 +1659,7 @@ static KEYWORDS: LazyLock<AHashMap<&str, Keyword>> = LazyLock::new(|| {
     let construct = [
         "mod", "let", "select", "type", "fn", "cast", "never", "if", "use", "rec",
         "catch", "try", "pub", "trait", "impl", "seq", "seqq", "until", "live", "mut",
+        "on",
     ];
     // the compiler-known type and bound names among them: a user type of
     // one of those names would be unnameable, or silently the builtin

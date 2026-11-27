@@ -2001,6 +2001,32 @@ fn undecorated_expr() -> impl Strategy<Value = Expr> {
             do_block!(inner.clone()),
             interpolation(inner.clone()),
             (
+                prop_oneof![
+                    bare_trigger().prop_map(|e| SeqTrigger::Expr(Arc::new(e))),
+                    (bound_trigger(), structure_pattern_no_or(), option::of(typexp()))
+                        .prop_map(|(value, pattern, typ)| {
+                            SeqTrigger::Bind(Arc::new(BindExpr {
+                                rec: false,
+                                pattern,
+                                typ,
+                                value,
+                            }))
+                        }),
+                ],
+                collection::vec(decorated(seq_item!(inner.clone())), 1..5),
+                trailers(),
+            )
+                .prop_map(|(clock, mut body, trailers)| {
+                    trailers.on(body.iter_mut());
+                    ExprKind::Seq(Arc::new(SeqExpr {
+                        kind: SeqKind::On,
+                        trigger: Some(clock),
+                        abort: None,
+                        body: Arc::from(body),
+                    }))
+                    .to_expr_nopos()
+                }),
+            (
                 any::<bool>(),
                 option::of(prop_oneof![
                     bare_trigger().prop_map(|e| SeqTrigger::Expr(Arc::new(e))),
@@ -2585,7 +2611,7 @@ fn check(s0: &Expr, s1: &Expr) -> bool {
                 }
                 _ => false,
             };
-            k0.queued() == k1.queued()
+            k0.keyword() == k1.keyword()
                 && trig
                 && clause(a0.as_ref(), a1.as_ref())
                 && clause(k0.flush(), k1.flush())
