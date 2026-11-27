@@ -525,6 +525,9 @@ fn warn_stale_consumer<R: Rt>(
         let consumes = super::callsite::static_builtin(ctx, cs).is_some_and(|b| {
             matches!(ctx.builtin_effect(b), crate::Effect::Sync | crate::Effect::Async)
         });
+        if !consumes {
+            return walk(n);
+        }
         let (mut reads, mut fired) = (false, false);
         for a in cs.arg_nodes() {
             let mut refs = Refs::default();
@@ -536,7 +539,7 @@ fn warn_stale_consumer<R: Rt>(
                 }
             })
         }
-        if !consumes || !reads || fired {
+        if !reads || fired {
             return walk(n);
         }
         let spec = n.spec();

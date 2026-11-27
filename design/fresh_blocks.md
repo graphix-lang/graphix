@@ -143,7 +143,9 @@ instance: about 0.15 ms for a three-line body on an optimized build
 (`~/ptmp/arm-restart/c1.gx`), more for more code, and memory does not
 grow over 100,000 starts. It is meant for a dialog, a tab, a record: an
 event a person causes. A body that must start over many times a second
-should be small.
+should be small. The check takes the body as a function's, which cost
+about 3 M instructions for `tui::form`'s ninety lines (0.5% of the
+stdlib's check).
 
 ## The warning beside it
 
