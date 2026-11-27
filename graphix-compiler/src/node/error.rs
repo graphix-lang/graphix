@@ -907,10 +907,15 @@ pub(crate) fn report_coverage_hole(what: &dyn fmt::Display) {
 }
 
 /// A `$` at `site` dropping the error payload `e`, logged from the
-/// calling module.
+/// calling module under [`crate::DROPPED_TARGET`].
 macro_rules! report_ignored {
     ($site:expr, $e:expr) => {
-        log::warn!("ignored error {} {}", $site, $crate::typ::Naked($e))
+        log::warn!(
+            target: $crate::DROPPED_TARGET,
+            "ignored error {} {}",
+            $site,
+            $crate::typ::Naked($e)
+        )
     };
 }
 pub(crate) use report_ignored;

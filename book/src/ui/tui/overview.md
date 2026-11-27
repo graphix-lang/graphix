@@ -109,6 +109,9 @@ date coercion, data_table's ignored columns) reach neither place: the shell's de
 logger is "off, graphix::failure=error", so they appear only with RUST_LOG=warn and
 --log-dir. Name dbg / `#dest: `Stderr` here and say where widget warnings go. probe:
 design/review-2026-11-16/repro/book-ui-b-println-over-display.sh (book-ui-b-01) -->
+<!-- 2026-11-27 claude: RUST_LOG alone reaches stderr now (no --log-dir needed), so a
+widget's warning shows under RUST_LOG=warn; the section still has to name dbg and
+`#dest: `Stderr`. -->
 The display holds neither stdout nor stderr: whatever a program, a
 library or a child process writes to either while the display runs goes
 straight to where it points. On the terminal it lands over the display

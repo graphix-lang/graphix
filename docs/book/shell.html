@@ -609,14 +609,28 @@ graphix --no-fusion ./myprogram.gx
 # the rest were not) to stderr after compiling
 graphix --fusion-stats ./myprogram.gx
 </code></pre>
-<p><code>--no-fusion</code> is also how to see the interpreter's diagnostics for
-unchecked arithmetic (a division by zero), which native code does not
-log.</p>
+<h3 id="what-a-program-reports"><a class="header" href="#what-a-program-reports">What a program reports</a></h3>
+<p>A running program says on stderr when one of its operators fails (a
+division by zero) and when a <code>$</code> drops an error, naming the place and
+the failure. Both engines report the same thing. A report that recurs is
+printed once.</p>
+<pre><code class="language-text">ignored error in file ./myprogram.gx at line: 14, column: 20 `ArrayIndexError("array index out of bounds")
+arith error in file ./myprogram.gx at line: 10, column: 32 "attempt to divide by zero"
+</code></pre>
+<p>When a program does nothing, look here first: a value that never
+arrives is very often an error a <code>$</code> dropped.</p>
 <h3 id="logging"><a class="header" href="#logging">Logging</a></h3>
-<p>Enable debug logging for troubleshooting:</p>
+<p>The <code>RUST_LOG</code> environment variable says what else to log, and it goes
+to stderr:</p>
+<pre><code class="language-bash">RUST_LOG=info graphix ./myprogram
+</code></pre>
+<p>A program that draws on the terminal should send its log to a file
+instead, with <code>--log-dir</code>. Its failures still reach stderr; the dropped
+errors are in the file:</p>
 <pre><code class="language-bash">RUST_LOG=debug graphix --log-dir /tmp/graphix-logs ./myprogram
 </code></pre>
-<p>Logs will be written to files in the specified directory.</p>
+<p>To silence the dropped errors, name their target:
+<code>RUST_LOG=off,graphix::dropped=off</code>.</p>
 <h2 id="summary"><a class="header" href="#summary">Summary</a></h2>
 <p>The Graphix shell is designed around the reactive nature of Graphix programs:</p>
 <ul>

@@ -306,14 +306,10 @@ as described below. This is a concise way of writing,</p>
 <p>can instead be written as,</p>
 <pre><code class="language-graphix fragment">might_fail(1, 2, 3)$
 </code></pre>
-<!-- CR claude for claude: [doc-drift/low] This paragraph says what a `$` warning names
-but not where it goes. A dropped error is logged at warn on the default log target, so a
-script prints nothing on stderr for it in either engine, `--no-fusion` included. The
-reader sees it only with `RUST_LOG=warn` and `--log-dir`, unlike a division by zero,
-which the node-walk prints. Say so here, as the graphix-lang skill does. probe:
-design/review-2026-11-16/repro/book-core-dollar-log.sh (book-core-07) -->
-<p>A warning from <code>$</code> names the site and the error. <code>$</code> and a <code>?</code> without a
-covering catch report when their error operand fires. A guard runs
+<p>A warning from <code>$</code> names the site and the error, and the shell prints it
+on stderr, once for each (see <a href="../shell.html#what-a-program-reports">What a program reports</a>).
+<code>$</code> and a <code>?</code> without a covering catch report when their error operand
+fires. A guard runs
 wherever its arm's pattern matches the value, so it reports even when an
 earlier arm is selected, and a constant error in an arm entered after
 the program's first cycle never fires, so it is never reported. In fused

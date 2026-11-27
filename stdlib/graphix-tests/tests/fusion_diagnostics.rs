@@ -1,6 +1,6 @@
 use anyhow::Result;
 use arcstr::literal;
-use graphix_compiler::FAILURE_TARGET;
+use graphix_compiler::{DROPPED_TARGET, FAILURE_TARGET};
 use graphix_package_core::testing::{
     Collect, Mode, PackageRef, compile_result, fixture_runtime, next_update,
     result_source, updates_until,
@@ -17,12 +17,7 @@ struct Failures;
 impl Log for Failures {
     fn enabled(&self, meta: &Metadata<'_>) -> bool {
         meta.target() == FAILURE_TARGET
-            || (meta.level() == Level::Warn
-                && matches!(
-                    meta.target(),
-                    "graphix_compiler::node::error"
-                        | "graphix_compiler::fusion::emit_helpers"
-                ))
+            || (meta.level() == Level::Warn && meta.target() == DROPPED_TARGET)
     }
 
     fn log(&self, record: &Record<'_>) {

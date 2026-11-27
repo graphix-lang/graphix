@@ -555,7 +555,7 @@ fn emit_qop_error_disposal(
             cx.call_helper("graphix_qop_raise_null", &[site])?;
         }
         QopSink::UnhandledNull(msg) => {
-            cx.call_helper("graphix_unhandled_null", &[msg])?;
+            cx.call_helper("graphix_report_failure", &[msg])?;
         }
         QopSink::DropNull => {}
     }

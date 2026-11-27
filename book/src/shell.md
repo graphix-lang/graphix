@@ -595,19 +595,40 @@ graphix --no-fusion ./myprogram.gx
 graphix --fusion-stats ./myprogram.gx
 ```
 
-`--no-fusion` is also how to see the interpreter's diagnostics for
-unchecked arithmetic (a division by zero), which native code does not
-log.
+### What a program reports
+
+A running program says on stderr when one of its operators fails (a
+division by zero) and when a `$` drops an error, naming the place and
+the failure. Both engines report the same thing. A report that recurs is
+printed once.
+
+```text
+ignored error in file ./myprogram.gx at line: 14, column: 20 `ArrayIndexError("array index out of bounds")
+arith error in file ./myprogram.gx at line: 10, column: 32 "attempt to divide by zero"
+```
+
+When a program does nothing, look here first: a value that never
+arrives is very often an error a `$` dropped.
 
 ### Logging
 
-Enable debug logging for troubleshooting:
+The `RUST_LOG` environment variable says what else to log, and it goes
+to stderr:
+
+```bash
+RUST_LOG=info graphix ./myprogram
+```
+
+A program that draws on the terminal should send its log to a file
+instead, with `--log-dir`. Its failures still reach stderr; the dropped
+errors are in the file:
 
 ```bash
 RUST_LOG=debug graphix --log-dir /tmp/graphix-logs ./myprogram
 ```
 
-Logs will be written to files in the specified directory.
+To silence the dropped errors, name their target:
+`RUST_LOG=off,graphix::dropped=off`.
 
 ## Summary
 

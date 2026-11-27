@@ -406,7 +406,9 @@ none runs twice in a cycle (`design/dense_delivery.md`). Every write marks
 its readers' boundaries (`design/walk_pruning.md`): publish through
 `ExecCtx::publish`/`try_publish`, never `event.variables.insert` from a
 node. A running program's failures are logged under
-`graphix_compiler::FAILURE_TARGET`, never printed.
+`graphix_compiler::FAILURE_TARGET` and the errors a `$` drops under
+`DROPPED_TARGET`, never printed; the shell shows both on stderr, each
+once (`design/debugging.md`).
 
 **Session images** (`design/program_image.md`): the shell caches the state
 before any cycle under `$XDG_CACHE_HOME/graphix/registration/<build-id>/`;

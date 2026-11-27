@@ -1236,7 +1236,7 @@ fn native_residue<'a, 'n, R: Rt>(
 /// The log target of a running program's failures: an error nothing
 /// handles, a hot operator's failure, a definition assertion a run-time
 /// bind breaks. An embedder shows or routes them through its logger.
-// CR claude for eric: [structure/medium] Which failures an author hears of depends on
+// XCR claude for eric: [structure/medium] Which failures an author hears of depends on
 // the engine and on two flags. In a default run of the probe a division by zero inside
 // a function, a `$` that drops an index error and a seq stalled on that `$` print
 // nothing; `--no-fusion` reports the division alone, and the dropped errors reach only
@@ -1245,7 +1245,21 @@ fn native_residue<'a, 'n, R: Rt>(
 // `report_failure!` does, and the shell can honour RUST_LOG on stderr when no --log-dir
 // is given. probe: design/review-2026-11-16/repro/a-language-silent-failures.gx
 // (a-language-06)
+// 2026-11-27 claude: Built (Eric 2026-11-27: "clearly we should fix all the items in
+// category 1"): a kernel reports a failed integer division from the cold path of its
+// guard, in the node-walk's words (fusion::emit::nodes::report_int_div); the shell
+// honours RUST_LOG with no --log-dir, on stderr; an error a `$` drops has its own
+// target (DROPPED_TARGET) that the shell shows by default, each report once. The probe
+// now prints its two dropped index errors and its division by zero in a default run of
+// either engine. A regression fails graphix-shell/tests/shell/swallowed_error_logs.rs
+// (a_failed_division_is_reported_by_both_engines,
+// reports_reach_stderr_without_a_log_directory).
 pub const FAILURE_TARGET: &str = "graphix::failure";
+
+/// The log target of an error a `$` dropped: a warning that names the
+/// site and the error. The author asked for the drop, and it is still
+/// the cause when nothing happens, so the shell shows it by default.
+pub const DROPPED_TARGET: &str = "graphix::dropped";
 
 // CR claude for eric: [structure/medium] `Rt` has one implementation (`GXRt<X>`), and
 // its parameter `GXExt` has one in production (`NoExt`, whose only method never

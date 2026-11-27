@@ -183,3 +183,80 @@ sys::exit(select n { 300000 => 0, _ => never() })
     let (_, log) = run(ENDS, false, "ends");
     assert!(!log.contains(said), "{log}");
 }
+
+/// An integer division that bottoms says so in both engines, in the same
+/// words: a zero divisor, `MIN / -1` and a zero remainder divisor. `rand`
+/// keeps the operands from folding.
+#[test]
+fn a_failed_division_is_reported_by_both_engines() {
+    const PROGRAM: &str = r#"
+let z = rand::rand(#start: 0, #end: 1, #clock: 0);
+let min: i64 = -9223372036854775807 - 1;
+let a = 7 / z;
+let b = 7 % z;
+let c = min / (z - 1);
+let d = u32:7 / cast<u32>(z)$;
+sys::exit(sys::time::after_idle(duration:200.ms, 0))
+"#;
+    let said = [
+        "line: 4, column: 9 \"attempt to divide by zero\"",
+        "line: 5, column: 9 \"attempt to calculate the remainder with a divisor of zero\"",
+        "line: 6, column: 9 \"attempt to divide with overflow\"",
+        "line: 7, column: 9 \"attempt to divide by zero\"",
+    ];
+    for (label, no_fusion) in [("jit", false), ("interp", true)] {
+        let (stderr, _) = run(PROGRAM, no_fusion, label);
+        for want in said {
+            assert!(
+                stderr.contains("arith error in")
+                    && stderr
+                        .lines()
+                        .any(|l| l.contains("arith error") && l.ends_with(want)),
+                "{label}: no report ending {want}:\n{stderr}"
+            );
+        }
+    }
+}
+
+/// With no log directory a program's reports go to stderr: a dropped
+/// error by default, each report once however often it recurs, and
+/// whatever else `RUST_LOG` asks for. `RUST_LOG` can turn the drops off.
+#[test]
+fn reports_reach_stderr_without_a_log_directory() {
+    const PROGRAM: &str = r#"
+let tick = count(sys::time::timer(duration:20.ms, 4)$);
+let a = [1, 2, 3];
+let x = a[tick + 5]$;
+let q = 10 / (tick - tick);
+sys::exit(sys::time::after_idle(duration:200.ms, tick ~ 0))
+"#;
+    let dropped = "ignored error in";
+    let failed = "\"attempt to divide by zero\"";
+    for (label, args) in
+        [("jit", &["--no-cache"][..]), ("interp", &["--no-cache", "--no-fusion"][..])]
+    {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ran = common::graphix_no_log_dir(dir.path(), PROGRAM, args, &[]);
+        assert!(ran.status.success(), "{label}: {}", ran.stderr);
+        assert_eq!(ran.stderr.matches(dropped).count(), 1, "{label}: {}", ran.stderr);
+        assert_eq!(ran.stderr.matches(failed).count(), 1, "{label}: {}", ran.stderr);
+        assert!(!ran.stderr.contains("WARN ["), "{label}: {}", ran.stderr);
+    }
+    let dir = tempfile::tempdir().expect("tempdir");
+    let quiet = [("RUST_LOG", "off, graphix::dropped=off")];
+    let ran = common::graphix_no_log_dir(dir.path(), PROGRAM, &["--no-cache"], &quiet);
+    assert!(
+        !ran.stderr.contains(dropped) && ran.stderr.contains(failed),
+        "{}",
+        ran.stderr
+    );
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ran = common::graphix_no_log_dir(
+        dir.path(),
+        PROGRAM,
+        &["--no-cache"],
+        &[("RUST_LOG", "info")],
+    );
+    assert!(ran.stderr.contains("INFO [graphix"), "{}", ran.stderr);
+    assert!(ran.stderr.contains(dropped), "{}", ran.stderr);
+}

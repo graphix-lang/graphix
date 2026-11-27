@@ -1,9 +1,14 @@
+use ahash::{AHashSet, AHasher};
 use anyhow::{Context, Result, bail};
 use arcstr::ArcStr;
 use clap::{Args, Parser, Subcommand};
+use compact_str::format_compact;
 use enumflags2::BitFlags;
-use flexi_logger::{Duplicate, FileSpec, Logger};
-use graphix_compiler::{CFlag, FAILURE_TARGET, expr::Load};
+use flexi_logger::{
+    DeferredNow, Duplicate, FileSpec, Logger, LoggerHandle, Record,
+    filter::{LogLineFilter, LogLineWriter},
+};
+use graphix_compiler::{CFlag, DROPPED_TARGET, FAILURE_TARGET, expr::Load};
 use graphix_package::{GraphixPM, MainThreadHandle, PackageId};
 use graphix_package_core::{NetConfig, NetTimeouts};
 use graphix_rt::NoExt;
@@ -15,7 +20,15 @@ use netidx::{
     publisher::{BindCfg, DesiredAuth, Publisher, PublisherBuilder},
     subscriber::{Subscriber, SubscriberBuilder},
 };
-use std::{mem, path::PathBuf, str::FromStr, time::Duration};
+use parking_lot::Mutex;
+use std::{
+    fmt,
+    hash::{Hash, Hasher},
+    mem,
+    path::PathBuf,
+    str::FromStr,
+    time::Duration,
+};
 
 #[derive(Debug, Clone, Copy)]
 enum RawFlag {
@@ -149,8 +162,10 @@ enum Command {
 struct Params {
     #[command(subcommand)]
     command: Option<Command>,
-    /// enable logging and put the log in the specified directory. You
-    /// should also set the RUST_LOG enviornment variable. e.g. RUST_LOG=debug
+    /// put the log in a file in this directory. What is logged is what
+    /// the RUST_LOG environment variable asks for (e.g. RUST_LOG=info);
+    /// with no directory it goes to stderr. A program's failures and the
+    /// errors a `$` dropped are reported whatever RUST_LOG's level
     #[arg(long)]
     log_dir: Option<PathBuf>,
     #[command(flatten)]
@@ -385,30 +400,7 @@ fn tokio_main(
         .build()
         .context("building tokio runtime")?;
     let res = rt.block_on(async move {
-        // a program's failures reach stderr with or without a log
-        let _logger = match &p.log_dir {
-            // RUST_LOG's spec, with the failure target always on
-            Some(dir) => Logger::try_with_str(format!(
-                "{}, {FAILURE_TARGET}=error",
-                std::env::var("RUST_LOG").unwrap_or_else(|_| "off".into())
-            ))
-            .context("initializing log")?
-                .log_to_file(
-                    FileSpec::default()
-                        .directory(dir)
-                        .basename("graphix")
-                        .use_timestamp(false),
-                )
-                .duplicate_to_stderr(Duplicate::Error)
-                .start()
-                .context("starting log")?,
-            None => Logger::try_with_str(format!("off, {FAILURE_TARGET}=error"))
-                .context("initializing log")?
-                .log_to_stderr()
-                .format(|w, _, record| write!(w, "{}", record.args()))
-                .start()
-                .context("starting log")?,
-        };
+        let _logger = start_logger(p.log_dir.as_deref(), "off")?;
         info!("graphix shell starting");
         // a netidx: script needs its subscriber to load; anything else
         // loads netidx when the program first touches it
@@ -507,6 +499,77 @@ fn tokio_main(
     res
 }
 
+/// A program's report printed once on stderr however often it recurs: a
+/// failing operator in a loop says so once.
+#[derive(Default)]
+struct Once(Mutex<AHashSet<u64>>);
+
+impl Once {
+    /// More distinct reports than this are printed as they come.
+    const KEPT: usize = 4096;
+}
+
+impl LogLineFilter for Once {
+    fn write(
+        &self,
+        now: &mut DeferredNow,
+        record: &Record,
+        to: &dyn LogLineWriter,
+    ) -> std::io::Result<()> {
+        if matches!(record.target(), FAILURE_TARGET | DROPPED_TARGET) {
+            let mut hasher = AHasher::default();
+            record.target().hash(&mut hasher);
+            fmt::write(&mut HashWrite(&mut hasher), *record.args()).ok();
+            let mut seen = self.0.lock();
+            if seen.len() < Self::KEPT && !seen.insert(hasher.finish()) {
+                return Ok(());
+            }
+        }
+        to.write(now, record)
+    }
+}
+
+struct HashWrite<'a>(&'a mut AHasher);
+
+impl fmt::Write for HashWrite<'_> {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        self.0.write(s.as_bytes());
+        Ok(())
+    }
+}
+
+/// Start the log: what `RUST_LOG` asks for (`default` where it is unset),
+/// and the program's own reports unless `RUST_LOG` speaks of them: its
+/// failures, and the errors a `$` dropped. It goes to a file in `dir`,
+/// with the errors on stderr too, or to stderr where no directory is
+/// given. On stderr a program's report is its message alone, once.
+fn start_logger(dir: Option<&std::path::Path>, default: &str) -> Result<LoggerHandle> {
+    let mut spec = std::env::var("RUST_LOG").unwrap_or_else(|_| default.into());
+    for (target, level) in [(FAILURE_TARGET, "error"), (DROPPED_TARGET, "warn")] {
+        if !spec.contains(target) {
+            spec.push_str(&format_compact!(", {target}={level}"))
+        }
+    }
+    let logger = Logger::try_with_str(spec).context("initializing log")?;
+    let logger = match dir {
+        Some(dir) => logger
+            .log_to_file(
+                FileSpec::default()
+                    .directory(dir)
+                    .basename("graphix")
+                    .use_timestamp(false),
+            )
+            .duplicate_to_stderr(Duplicate::Error),
+        None => logger.log_to_stderr().filter(Box::new(Once::default())).format(
+            |w, _, record| match record.target() {
+                FAILURE_TARGET | DROPPED_TARGET => write!(w, "{}", record.args()),
+                target => write!(w, "{} [{target}] {}", record.level(), record.args()),
+            },
+        ),
+    };
+    logger.start().context("starting log")
+}
+
 fn main() -> Result<()> {
     Config::maybe_run_machine_local_resolver()?;
     let standalone = graphix_shell::stdlib_packages::<NoExt>()
@@ -524,7 +587,10 @@ fn main() -> Result<()> {
     };
     match p.command {
         Some(Command::Package { action }) => return handle_package(action),
-        Some(Command::Lsp) => return graphix_shell::lsp_backend::run(),
+        Some(Command::Lsp) => {
+            let _logger = start_logger(p.log_dir.as_deref(), "warn")?;
+            return graphix_shell::lsp_backend::run();
+        }
         Some(Command::Fmt { files, check, stdout, interface, width, indent }) => {
             return graphix_shell::fmt::run(graphix_shell::fmt::Args {
                 files,

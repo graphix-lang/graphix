@@ -280,6 +280,7 @@ fn widen_to_declared_repr(
 pub(crate) fn emit_arith_node<R: Rt>(
     cx: &mut BodyCx,
     op: ArithOp,
+    spec: &Expr,
     out_typ: &Type,
     lhs: &Node<R>,
     rhs: &Node<R>,
@@ -302,7 +303,8 @@ pub(crate) fn emit_arith_node<R: Rt>(
     let disc = propagate_flags(cx.b, base, &[lcv.disc, rcv.disc]);
     let int_div = matches!(op, ArithOp::Div | ArithOp::Mod) && prim.is_integer();
     let (value, disc) = if int_div && node_int_div_may_bottom(lhs, rhs) {
-        let (value, bad) = emit_int_div(cx, op, prim, l, r)?;
+        let (value, bad, zero) = emit_int_div(cx, op, prim, l, r)?;
+        report_int_div(cx, op, spec, disc, bad, zero)?;
         (value, taint_if(cx.b, disc, bad))
     } else {
         (emit_scalar_bin(cx, op, prim, l, r)?, disc)
@@ -331,16 +333,16 @@ fn emit_scalar_bin(
 }
 
 /// An integer `/` or `%` over `prim` with its divisor made safe: the
-/// value, and whether the operation fails (a zero divisor, a signed
-/// `MIN / -1`). `x % -1` is `x % 1`, 0, without the `MIN % -1` the
-/// hardware traps on.
+/// value, whether the operation fails (a zero divisor, a signed `MIN /
+/// -1`) and whether its divisor is zero. `x % -1` is `x % 1`, 0, without
+/// the `MIN % -1` the hardware traps on.
 fn emit_int_div(
     cx: &mut BodyCx,
     op: ArithOp,
     prim: PrimType,
     l: ClifValue,
     r: ClifValue,
-) -> Result<(ClifValue, ClifValue)> {
+) -> Result<(ClifValue, ClifValue, ClifValue)> {
     let is_zero = cx.b.ins().icmp_imm_s(IntCC::Equal, r, 0);
     let (bad, divisor_one) = match (prim.signed_int_min(), op) {
         (None, _) => (is_zero, is_zero),
@@ -358,7 +360,46 @@ fn emit_int_div(
     };
     let one = cx.b.ins().iconst(prim_to_clif(prim), 1);
     let safe_r = cx.b.ins().select(divisor_one, one, r);
-    Ok((compile_bin(cx.b, op, prim, l, safe_r)?, bad))
+    Ok((compile_bin(cx.b, op, prim, l, safe_r)?, bad, is_zero))
+}
+
+/// Report an integer division that bottoms as the node-walk does: its
+/// site and the failure, once a fire of an operand. `disc` is the
+/// operands' tags: a bottom operand fails nothing, and operands that
+/// stand were reported when they fired.
+fn report_int_div(
+    cx: &mut BodyCx,
+    op: ArithOp,
+    spec: &Expr,
+    disc: ClifValue,
+    bad: ClifValue,
+    zero: ClifValue,
+) -> Result<()> {
+    let site = crate::node::error::diagnostic_site(spec);
+    let mut msg = |what: &str| {
+        let m = compact_str::format_compact!("arith error {site} \"{what}\"");
+        cx.interned_str(&ArcStr::from(m.as_str()))
+    };
+    let by_zero = msg(match op {
+        ArithOp::Mod => "attempt to calculate the remainder with a divisor of zero",
+        _ => "attempt to divide by zero",
+    })?;
+    let overflow = msg("attempt to divide with overflow")?;
+    let msg = cx.b.ins().select(zero, by_zero, overflow);
+    let quiet = cx.b.ins().band_imm_u(disc, TAINT | STALE);
+    let fired = cx.b.ins().icmp_imm_s(IntCC::Equal, quiet, 0);
+    let report = cx.b.ins().band(bad, fired);
+    let report_bl = cx.b.create_block();
+    let cont_bl = cx.b.create_block();
+    cx.b.set_cold_block(report_bl);
+    cx.b.ins().brif(report, report_bl, &[], cont_bl, &[]);
+    cx.b.switch_to_block(report_bl);
+    cx.b.seal_block(report_bl);
+    cx.call_helper("graphix_report_failure", &[msg])?;
+    cx.b.ins().jump(cont_bl, &[]);
+    cx.b.switch_to_block(cont_bl);
+    cx.b.seal_block(cont_bl);
+    Ok(())
 }
 
 /// An operand as a Value pair for a borrowing helper, uncloned; `owned`
@@ -485,7 +526,10 @@ fn emit_checked_int_arith<R: Rt>(
     let signed = prim.is_signed();
     let ty = prim_to_clif(prim);
     let (value, bad) = match op {
-        ArithOp::Div | ArithOp::Mod => emit_int_div(cx, op, prim, l, r)?,
+        ArithOp::Div | ArithOp::Mod => {
+            let (value, bad, _) = emit_int_div(cx, op, prim, l, r)?;
+            (value, bad)
+        }
         // narrower than 64 bits: the exact result in 64, then whether it
         // fits back
         _ if ty != types::I64 => {

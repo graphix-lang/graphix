@@ -616,9 +616,10 @@ fn graphix_qop_raise_null(site: u64) {
     DEFERRED.with(|q| q.borrow_mut().raise((site, e)));
 }
 
-/// A handler-less `?` site meeting a fresh null: the same diagnostic
-/// the node-walk emits, interned whole as `msg`.
-fn graphix_unhandled_null(msg: *const arcstr::ArcStr) {
+/// A failure a site reports as the node-walk does (a handler-less `?`
+/// meeting a fresh null, an integer division that bottoms): its
+/// diagnostic, interned whole as `msg`.
+fn graphix_report_failure(msg: *const arcstr::ArcStr) {
     // SAFETY: the kernel's interned string outlives this invocation.
     report_failure!(unsafe { &*msg });
 }

@@ -721,7 +721,14 @@ pub(crate) fn arith(op: ArithOp, checked: bool, l: Value, r: Value) -> Value {
 macro_rules! arith_emit_clif {
     (false, $base:ident) => {
         fn emit_clif(&self, cx: &mut BodyCx) -> Result<CompiledExpr> {
-            emit_arith_node(cx, ArithOp::$base, &self.typ, &self.lhs, &self.rhs)
+            emit_arith_node(
+                cx,
+                ArithOp::$base,
+                &self.spec,
+                &self.typ,
+                &self.lhs,
+                &self.rhs,
+            )
         }
     };
     (true, $base:ident) => {

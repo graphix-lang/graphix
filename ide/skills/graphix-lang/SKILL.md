@@ -334,7 +334,7 @@ d)? > 0` does not report at x = 2, d = 0, exactly as the node-walk does not. Dro
 clause, and keep the native-tail-depth one only if it still holds. probe:
 design/review-2026-11-16/repro/f-select-fused-guard-report-doc.gx (f-select-07) -->
 Unchecked `+ - *` wrap; integer `/` by zero and `MIN / -1` bottom, and
-`x % -1` is 0 (only the node-walk logs those diagnostics); checked
+`x % -1` is 0 (both engines report the failure on stderr, once); checked
 (`+?` …) returns `[T, Error<`ArithError(string)>]`. `$` and a
 handler-less `?` report fired error operands. A guard reports wherever its
 arm's pattern admits the value, whichever arm takes it; a constant error in
@@ -867,8 +867,10 @@ arm hears every one.
 `x$` is "or never": the success value, or bottom on an error. It is the
 one-token spelling of `select x { error as _ => never(), v => v }` and
 of `{ catch(e) never(); x? }` — never write either of those. A dropped
-error can be logged at warn with its site (`RUST_LOG=warn` and
-`--log-dir` in the shell); the fusion limits in Operators above apply. Use `$` when the failure is an expected
+error is reported on stderr with its site, once (`ignored error in ..`;
+in the log file under `--log-dir`; `RUST_LOG=off,graphix::dropped=off`
+silences it); the fusion limits in Operators above apply. When a program
+does nothing, read those lines first. Use `$` when the failure is an expected
 non-event (a missing optional file); use `catch` when something must
 be told.
 

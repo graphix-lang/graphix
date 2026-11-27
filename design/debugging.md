@@ -1,4 +1,4 @@
-<!-- CR claude for eric: [structure/medium] Every knob in this file serves the
+<!-- CR claude for claude: [structure/medium] Every knob in this file serves the
 compiler's developers. An author whose program does nothing (a bottom, a sleeping arm, a
 constant that stands, a stalled seq step) has only `dbg`, which prints when a value
 fires and so is silent in exactly those cases; the per-cycle trace behind
@@ -6,10 +6,43 @@ fires and so is silent in exactly those cases; the per-cycle trace behind
 Add one author tool: `graphix --trace name[,name]` printing, each cycle a named binding
 is updated, its tag (fired, stale, fresh bottom, stale bottom, moved) and value, and for
 a seq its current step. Found by reading; not run. (a-language-08) -->
+<!-- 2026-11-27 claude: Eric ruled (2026-11-27, D63): the author's tool is a proper
+debugger, a REPL attached to the running program over a unix socket with debugger
+commands (why, watch, pause and step, inject), not a --trace flag. Its design is
+design/debugger.md, written before it is built. -->
 # Debugging
 
 Status: current principle.
 Pins: none: these are tools.
+
+## What a running program reports
+
+Two log targets are the program's own, and the shell shows both whatever
+`RUST_LOG`'s level (`graphix-shell/src/main.rs::start_logger`):
+
+- `FAILURE_TARGET` (`graphix::failure`, error): an operator that failed
+  and bottomed (a division by zero, `MIN / -1`), an error nothing
+  handles, a write that was dropped, a program that spins. Both engines
+  report an integer division's failure in the same words: the node-walk
+  from `node/op.rs`, a kernel from the cold path of its guard
+  (`fusion::emit::nodes::report_int_div`), once a fire of an operand.
+- `DROPPED_TARGET` (`graphix::dropped`, warn): an error a `$` dropped.
+  The author asked for the drop, and it is still the usual cause when a
+  program does nothing: over the admin port's whole test suite no `$`
+  drops an error, and of the 14 dropped across the tui package's tests,
+  4 are one known bug in the stdlib's browser.
+
+With no `--log-dir` the log is stderr: `RUST_LOG` alone is enough, a
+program's report prints as its message with no level or module, and each
+distinct report prints once however often it recurs. With `--log-dir`
+everything goes to the file, every occurrence, and errors to stderr too.
+`RUST_LOG=off,graphix::dropped=off` silences the drops. `graphix lsp`
+logs to stderr at warn by default. Pins:
+`graphix-shell/tests/shell/swallowed_error_logs.rs`.
+
+What no log can say is why nothing happened where nothing failed: an arm
+asleep, a constant that stands, a seq waiting on a step, an input that
+never arrived. That is the debugger's (`design/debugger.md`).
 
 Scoped tracing and every debug environment variable.
 

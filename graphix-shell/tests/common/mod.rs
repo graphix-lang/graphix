@@ -29,9 +29,31 @@ pub struct Ran {
 /// `dir` is the caller's, typically a `tempfile::TempDir`, so a failed
 /// test leaves nothing behind.
 pub fn graphix(dir: &Path, program: &str, args: &[&str], env: &[(&str, &str)]) -> Ran {
+    run_script(command(dir), dir, program, args, env)
+}
+
+/// [`graphix`] with no log directory: what is logged goes to stderr.
+#[allow(dead_code)]
+pub fn graphix_no_log_dir(
+    dir: &Path,
+    program: &str,
+    args: &[&str],
+    env: &[(&str, &str)],
+) -> Ran {
+    fs::create_dir_all(dir.join("log")).expect("create the log dir");
+    run_script(bare_command(dir), dir, program, args, env)
+}
+
+fn run_script(
+    mut cmd: Command,
+    dir: &Path,
+    program: &str,
+    args: &[&str],
+    env: &[(&str, &str)],
+) -> Ran {
     let path = dir.join("main.gx");
     fs::write(&path, program).expect("write the program");
-    let child = command(dir)
+    let child = cmd
         .args(args)
         .arg(&path)
         .envs(env.iter().copied())
@@ -67,10 +89,16 @@ fn command(dir: &Path) -> Command {
     let logs = dir.join("log");
     let _ = fs::remove_dir_all(&logs);
     fs::create_dir_all(&logs).expect("create the log dir");
+    let mut cmd = bare_command(dir);
+    cmd.arg("--log-dir").arg(&logs);
+    cmd
+}
+
+/// `graphix` with no netidx and its image cache in `dir/cache`, its
+/// output piped.
+fn bare_command(dir: &Path) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_graphix"));
     cmd.arg("--no-netidx")
-        .arg("--log-dir")
-        .arg(&logs)
         // CR claude for claude: [risk/low] The cache is the test's own, but the module
         // search path is the developer's: `XDG_DATA_HOME` and `GRAPHIX_MODPATH` pass
         // through. A script therefore resolves modules from ~/.local/share/graphix.
