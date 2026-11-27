@@ -1655,7 +1655,7 @@ impl<X: GXExt> GX<X> {
         }
     }
 
-    // CR claude for eric: [risk/medium] A `<-` whose right side reads its own target
+    // CR claude for claude: [risk/medium] A `<-` whose right side reads its own target
     // unsampled runs a cycle per write forever; the check accepts it by ruling (the
     // same shape is a legitimate loop) and this loop says nothing. In the probe `rows
     // <- array::map(rows, ..)` without its `edit ~` passes the check and prints 8,800
@@ -1665,6 +1665,11 @@ impl<X: GXExt> GX<X> {
     // FAILURE_TARGET the variable that keeps the loop going. probe:
     // design/review-2026-11-16/repro/a-language-table-sort.gx (remove `edit ~` from the
     // `rows <-` line) (a-language-07)
+    // 2026-11-27 claude: Eric ruled (2026-11-27, going through the language design
+    // review): build it. The runtime counts consecutive cycles that only queued
+    // variable writes made ready and, past a threshold, logs once under FAILURE_TARGET
+    // the variable that keeps the loop going. The threshold is mine to pick and
+    // measure.
     pub(super) async fn run(
         mut self,
         to_rt: &mut tmpsc::UnboundedReceiver<ToGX<X>>,

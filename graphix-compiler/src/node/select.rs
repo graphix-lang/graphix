@@ -368,7 +368,7 @@ impl<R: Rt> Select<R> {
 // after the first cycle? A constant source has every slot born then, so warning there
 // would be noise. probe:
 // design/review-2026-11-16/repro/x-rerun-4-slot-constant-no-warning.gx (x-rerun-4-04)
-// CR claude for eric: [structure/high] The check warns of a constant action in an arm
+// CR claude for claude: [structure/high] The check warns of a constant action in an arm
 // but not of the commonest handler mistake: a lambda that writes or performs Io and
 // never reads a named parameter, so nothing in it is driven by the call. In the probe
 // `let save = |c| select valid { .. }` shows its error text in the first cycle and
@@ -376,6 +376,10 @@ impl<R: Rt> Select<R> {
 // lambda whose `LambdaDef` facts say it writes or performs reads none of its named
 // parameters, and let `|_|` silence it; census both repos first. probe:
 // design/review-2026-11-16/repro/a-language-handler-ignores-event.gx (a-language-02)
+// 2026-11-27 claude: Eric ruled (2026-11-27, going through the language design
+// review): build the warning. A lambda that writes or performs and reads none of its
+// named parameters is warned of, `|_|` silences it, and both repos are censused for
+// false positives first.
 fn warn_constant_action<R: Rt>(
     ctx: &CompileCtx<R>,
     flags: BitFlags<CFlag>,

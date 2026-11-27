@@ -83,7 +83,7 @@ a LEVEL, and a level lives at module scope driven by a variable the
 steps write (§6). A seq block is an ordered issuer of effects that
 waits between them, not primarily a value producer.
 
-<!-- CR claude for eric: [structure/medium] Between a reactive body, where every write
+<!-- CR claude for claude: [structure/medium] Between a reactive body, where every write
 and effect is sampled by hand (about 252 `~` in the admin port's 4,378 lines, on 139 of
 its 326 connects), and a seq, whose value arrives the cycle after its trigger and so
 cannot answer a key handler's `Stop, there is no form that clocks a block of effects to
@@ -94,6 +94,14 @@ inside the cycle. It would replace the first, second and fifth bite rules of the
 with one construct. Short of that, teach `|c| seq c { .. }` as the handler form where no
 answer is needed: no TUI or GUI example uses seq. probe:
 design/review-2026-11-16/repro/a-language-seq-cycle-late.gx (a-language-04) -->
+<!-- 2026-11-27 claude: Eric ruled (2026-11-27, going through the language design
+review): build `on`. His read: `on x { y <- z }` lowers to `y <- x ~ z`. His answers:
+(1) what is sampled follows the seq rule, every outer read in the block's text; (2) a
+read of a binding the block also writes sees the old value; (3) where a read has no
+value at the event the action does not happen, it is not paid later (`~!`); (4) the
+event's value can be bound, as `seq let` does. He asked to see real code before the
+details are fixed: the lowering, the admin port's handlers rewritten and what they
+showed are D58 in ~/ptmp/cr-discuss.md. -->
 ## 3. Not the sync subset
 
 An earlier design (`sync { let mut ..; for v in a { .. } }`, removed
