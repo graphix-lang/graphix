@@ -467,9 +467,9 @@ lowered where it stands.
   let idle = select pc { -1 => true, _ => false };
   let r = never();                          // the block's value
   let t_c = never();                        // the trigger snapshot, each try's `e` and join cell
-  catch(e) { pc <- -1; e? };             // the machine's handler + abort action
+  catch(#seqcatch) { pc <- -1; #seqcatch? }; // the machine's handler + abort action
   <abort event>;                            // §9, when the seq has one
-  let go = filter(<trigger>, |x| x ~ idle); // busy-drop
+  let go = filter(<trigger>, |#seqarg| #seqarg ~ idle); // busy-drop
   pc <- go ~ 0;
   machine pc {
     `S0 => { let v0 = <value>; <writes> } -> `S1,

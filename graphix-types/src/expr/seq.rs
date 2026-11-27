@@ -217,6 +217,12 @@ const STATEMENT_VALUE: &str = "#seqb";
 /// #seqsin<id>_<n> = (pc, ..)`.
 const ENTRY_INPUT: &str = "#seqsin";
 
+/// The binder of the machine's own handler.
+const HANDLED: &str = "#seqcatch";
+
+/// The parameter of the function a busy-drop filter samples by.
+const SAMPLED: &str = "#seqarg";
+
 /// The prefix of a machine's program counter.
 const PC: &str = "#seqpc";
 
@@ -555,7 +561,7 @@ fn desugar_plain(
     for n in fn_names(body, env, scope_path).drain() {
         visible.entry(n.clone()).or_insert(Redirect::Function(n));
     }
-    let err_bind = literal!("e");
+    let err_bind = literal!(HANDLED);
     let catch_node = {
         let mut abort_body: SmallVec<[Expr; 2]> = SmallVec::new();
         abort_body.push(connect(pos, &pc, integer(pos, IDLE)));
@@ -1922,7 +1928,7 @@ fn idle_of(pos: SourcePosition, pc: &str) -> Expr {
 }
 
 fn lambda_sampling(pos: SourcePosition, level: &str) -> Expr {
-    let x = literal!("x");
+    let x = literal!(SAMPLED);
     ExprKind::Lambda(Arc::new(LambdaExpr {
         vargs_comments: Default::default(),
         below: Default::default(),
