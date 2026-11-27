@@ -93,6 +93,7 @@ hold it) and, where it absorbed an older document, `Supersedes:`.
 | `formatter.md` | `graphix fmt`, canonical printing, comments, layout |
 | `language_server.md` | roots, lazy checks, the last successful check, queries by target |
 | `testing.md` | how `run!` fixtures run; what a landing owes |
-| `debugging.md` | scoped tracing and every debug environment variable |
+| `debugging.md` | what a running program reports and where; scoped tracing and every debug environment variable |
+| `debugger.md` | DESIGNED, NOT BUILT: a REPL attached to the running program over a socket, with debugger commands (`why`, watch, pause, inject) |
 | `stdlib_notes.md` | notes on single packages |
 
