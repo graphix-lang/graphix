@@ -1,0 +1,30 @@
+// A read through a reference in a select arm of an on block was sampled inside the arm,
+// so an arm that slept through an event and woke between two (its scrutinee is read
+// live) gave the value of the last event it was awake for. A variable read in the same
+// place gives the last event's. Both engines agree on it: only the program's own check
+// sees it (an on twin, generate/on_twin.rs). `vb` is the form the rule gives.
+// schedule-v1: cap=88 events=4096
+{
+  let c = 0;
+  c <- select c < 24 { true => c + 1, false => never() };
+  let k = select c % 4 { 1 => c, _ => never() };
+  let x = c * 3 - 1;
+  let r = &x;
+  let a0 = 0;
+  let b0 = 0;
+  let va = on k { a0 <- select (live(c) % 2) { 0 => *r, _ => 5 }; a0 };
+  let vb = { let ev1 = k; let r_at1 = ev1 ~! r; let rd_at1 = ev1 ~! *r_at1; let b0_at1 = ev1 ~! b0; b0 <- select (c % 2) { 0 => rd_at1, _ => 5 }; b0_at1 };
+  let ta0 = 0;
+  ta0 <- a0 ~ (ta0 * 31 + c * 7 + a0);
+  let tb0 = 0;
+  tb0 <- b0 ~ (tb0 * 31 + c * 7 + b0);
+  let tav = 0;
+  tav <- va ~ (tav * 31 + c * 7 + va);
+  let tbv = 0;
+  tbv <- vb ~ (tbv * 31 + c * 7 + vb);
+  let held = ta0 == tb0 && tav == tbv;
+  select c {
+    24 => select held { true => `Held, false => `TwinDiverged },
+    _ => never()
+  }
+}

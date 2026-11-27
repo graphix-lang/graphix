@@ -140,6 +140,30 @@ run!(
     )
 );
 
+// A read through a reference is its target's value at the event wherever
+// it stands, as a variable's is: in a lambda the block writes, which a
+// later fire of the target does not call again.
+run!(
+    a_reference_read_in_a_lambda_is_taken_at_the_event,
+    clocked!(
+        "let r = &step; let out = -1; on k { let g = |q: i64| q + *r; out <- g(0) }; \
+         array::group(out, |i, _| i == 4)"
+    ),
+    prints("[i64:-1, i64:2, i64:5, i64:7]")
+);
+
+// And in an arm that wakes between two events: the arm slept through the
+// events at 5 and 7, and reads the value they took.
+run!(
+    a_reference_read_in_an_arm_that_wakes_late_is_the_last_events,
+    clocked!(
+        "let r = &step; let out = -1; \
+         on k { out <- select live(step) % 2 { 0 => *r, _ => -5 } }; \
+         array::group(out, |i, _| i == 9)"
+    ),
+    prints("[i64:-1, i64:-5, i64:2, i64:-5, i64:2, i64:-5, i64:5, i64:-5, i64:7]")
+);
+
 // An on block nested in another is clocked by its own event alone.
 run!(
     a_nested_block_takes_its_own_clock,

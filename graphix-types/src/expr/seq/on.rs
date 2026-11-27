@@ -14,6 +14,10 @@ const CLOCK: &str = "#onk";
 /// #ons<id>_<n>_<v> = #onk<id> ~! v`.
 pub(super) const SAMPLE: &str = "#ons";
 
+/// The prefix of a block's read through a reference it samples, `let
+/// #ond<id>_<n>_<r> = #onk<id> ~! *#ons<id>_<n>_<r>`.
+pub(super) const TARGET: &str = "#ond";
+
 fn refuse(e: &Expr) -> Result<()> {
     let dynamic = |x: &Expr| {
         matches!(&x.kind, ExprKind::Module { value, .. }
@@ -92,11 +96,28 @@ fn root(e: Expr, clock: &str) -> Expr {
     }
 }
 
+/// `e` with each read through a reference the block samples as that
+/// read's own cell: the target's value at the event wherever the read
+/// stands, in an arm that wakes between two events and in a lambda the
+/// block writes, as a variable's is.
+fn through(e: &Expr, targets: &AHashMap<ArcStr, ArcStr>) -> Expr {
+    ensure_sufficient(|| {
+        let target = match &e.kind {
+            ExprKind::Deref(r) => simple_ref_name(r).and_then(|r| targets.get(&r)),
+            _ => None,
+        };
+        match target {
+            Some(cell) => renewed(e, ExprKind::Ref { name: ModPath::from([&**cell]) }),
+            None => e.map_children(&mut |c| through(c, targets)),
+        }
+    })
+}
+
 /// `e` with what reads no variable fired by `clock`: the arguments of a
 /// call none of which fires, so the call is issued at the event, and the
 /// value of a connect, a `let`, a select's scrutinee and a block that
-/// nothing fires. A read through a reference follows its target, so it is
-/// taken at the event as a variable is. A lambda literal's body, a nested
+/// nothing fires. A read through a reference the block made follows its
+/// target, so it is taken at the event. A lambda literal's body, a nested
 /// seq and what a `live` reads are their own.
 fn clocked(e: &Expr, clock: &str) -> Expr {
     ensure_sufficient(|| match &e.kind {
@@ -237,12 +258,16 @@ pub(super) fn desugar(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
     }
     let mut map: LPooled<Names> = LPooled::take();
     let mut samples: LPooled<Vec<(ArcStr, Expr)>> = LPooled::take();
+    let mut targets: LPooled<AHashMap<ArcStr, ArcStr>> = LPooled::take();
     for (i, (key, read)) in vars.drain(..).enumerate() {
         let cell = written_cell(&format_compact!("{SAMPLE}{id}_{i}"), &key);
+        let target = written_cell(&format_compact!("{TARGET}{id}_{i}"), &key);
+        targets.insert(cell.clone(), target);
         map.insert(key, Redirect::Entry(cell.clone()));
         samples.push((cell, read))
     }
     let body = rewrite_stmts(seq.body, &map, Rewrite::Bindings);
+    let body: LPooled<Vec<Expr>> = body.iter().map(|x| through(x, &targets)).collect();
     let body = clocked_stmts(&body, &clock);
     let body: LPooled<Vec<Expr>> = body.iter().map(strip_live).collect();
     // a name every read of which the block shadows takes no sample
@@ -254,9 +279,15 @@ pub(super) fn desugar(seq: &Parts, env: &Env, scope: &ModPath) -> Result<Expr> {
         out.push(let_pat(pos, b.pattern.clone(), b.typ.clone(), r#ref(pos, &clock)))
     }
     for (cell, read) in samples.drain(..) {
-        if used.contains(&cell) {
+        let target = &targets[&cell];
+        let through = used.contains(target);
+        if used.contains(&cell) || through {
             let pos = read.pos;
-            out.push(let_bind(pos, &cell, None, at(&clock, read)))
+            out.push(let_bind(pos, &cell, None, at(&clock, read)));
+            if through {
+                let read = ExprKind::Deref(Arc::new(r#ref(pos, &cell))).to_expr(pos);
+                out.push(let_bind(pos, target, None, at(&clock, read)))
+            }
         }
     }
     out.extend(body.iter().cloned());

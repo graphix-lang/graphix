@@ -12,6 +12,7 @@
 mod exprs;
 mod funcs;
 mod modules;
+pub mod on_twin;
 mod patterns;
 pub mod reactive;
 pub mod twin;

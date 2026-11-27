@@ -20,7 +20,9 @@ the clock's pulse. `on x { y <- z }` is `y <- x ~! z`.
    fires, each alone. A read with no value yet stops what reads it and
    nothing else, and is never paid later (`~!`, not `~`). A read through
    a reference (`*r`) follows its target, so it is taken at the event
-   too.
+   too, as one sample of the block like a variable's: an arm that wakes
+   between two events and a lambda the block writes read the value the
+   last event took.
 2. **A constant acts once an event.** A connect's right side, a `let`'s
    value, a select's scrutinee and a block's value that read no variable
    are fired by the event, and a call none of whose arguments fires is
@@ -124,6 +126,22 @@ both judge no intent:
   that ends sooner says nothing. Pin: `swallowed_error_logs.rs`,
   `a_connect_that_feeds_itself_is_reported_once`.
 
+## How the fuzzer reaches it
+
+The lowering rewrites the syntax tree before either engine sees it, so
+both engines run the same lowered program and no comparison of them sees
+a bug in the rewrite. The **on twin** (`graphix-fuzz/src/generate/
+on_twin.rs`, a slice of the reactive lane) states the rule a second time:
+it draws a block over a small tree of its own that says which reads are
+the block's and which are taken at the event, prints it as an `on` block
+over one copy of the state and as the hand-written `~!` form over
+another, and the program settles on `` `TwinDiverged `` where the two
+differ in what they write, what they answer or when. Its first run found
+that a read through a reference was sampled where it stood, so an arm
+that woke between two events and a lambda read it late or live. The
+reactive generator also draws `on` blocks clocked to an injected input
+(`reactive::on_block`), and the mutator has `on` seeds.
+
 ## Lowering
 
 `on` is a kind of the seq syntax node (`SeqKind::On`), so every walk of
@@ -144,8 +162,11 @@ on k { sel <- max(0, sel - 1); menu_sel <- 0; `Stop }
 ```
 
 One sample is made for each outer binding the block reads, shared by its
-reads; a name every read of which the block shadows takes none. `graphix
---expand` prints the lowered block.
+reads; a name every read of which the block shadows takes none. A read
+through a sampled reference is a second sample, `let #ond_r = #onk ~!
+*#ons_r`, shared the same way; a read through a reference the block
+makes is sampled where it stands. `graphix --expand` prints the lowered
+block.
 
 ## Why each read alone
 

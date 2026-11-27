@@ -315,6 +315,8 @@ trace	on-block-nov2026/04_reference_read_at_the_event.gx
 trace	on-block-nov2026/05_lambda_and_stateful_call.gx
 trace	on-block-nov2026/06_event_named_and_call_over_constants.gx
 reject	N: catch is not allowed inside an on block: its handler runs when an error is raised, not at the event. Write it around the block, where a `?` in the block raises to it	on-block-nov2026/07_catch_in_an_on_block.gx
+trace	on-block-nov2026/08_reference_read_in_a_lambda.gx
+trace	on-block-nov2026/09_reference_read_in_an_arm_that_wakes_late.gx
 trace	operand-bound-member-oct2026/00_extracted_callback.gx
 trace	organic-firing-aug2026/00_const_terminal.gx
 trace	organic-firing-aug2026/01_multilevel_face.gx

@@ -98,4 +98,12 @@ pub const SEEDS: &[&str] = &[
     "// schedule-v1: cap=64 events=512; in0=i64:1\n{ let c = i64:0; select c { n if n < i64:5 => c <- (n ~ c) + i64:1, _ => never() }; c + (in0 * i64:0) }",
     // runaway cut by a small cycle budget
     "// schedule-v1: cap=16 events=128; in0=i64:1\n{ let x = i64:0; x <- x + i64:1; x + (in0 * i64:0) }",
+    // on blocks: a counter, a handler with constants in its arms, a read
+    // with no value yet, a reference, a lambda and a nested block
+    "// schedule-v1: cap=64 events=512; in0=i64:1; in0=i64:2; in0=i64:3\n{ let n = i64:0; on in0 { n <- n + in0 }; n }",
+    "// schedule-v1: cap=64 events=512; in0=i64:1; in0=i64:2; in0=i64:4; in0=i64:3\n{ let sel = i64:0; let menu = i64:9; let keys = |k: i64| on k { select k % i64:2 { i64:0 => { sel <- sel + i64:1; menu <- i64:0; `Stop }, _ => `Continue } }; let ans = keys(in0); (in0 ~ ans, sel, menu) }",
+    "// schedule-v1: cap=64 events=512; in0=i64:1; in0=i64:2; in0=i64:3\n{ let late = select count(in0) >= i64:2 { true => in0, false => never() }; let a = i64:0; let b = i64:0; on in0 { a <- a + late; b <- b + i64:1 }; (a, b) }",
+    "// schedule-v1: cap=64 events=512; in0=i64:5; in0=i64:6; in0=i64:7\n{ let v = i64:0; let r = &mut v; let seen = i64:0; on in0 { *r <- *r + in0; seen <- *r }; (v, seen) }",
+    "// schedule-v1: cap=64 events=512; in0=i64:2 in1=i64:10; in1=i64:20; in0=i64:3\n{ let out = i64:0; let n = i64:0; on in0 { let g = |q: i64| q + in1; out <- g(out); on in1 { n <- n + in0 } }; (out, n) }",
+    "// schedule-v1: cap=64 events=512; in0=i64:1; in0=i64:2; in0=i64:3\n{ let acc = i64:0; let v = on let p = in0 * i64:2 { acc <- acc + p; live(acc) + p }; (acc, v) }",
 ];

@@ -6578,6 +6578,32 @@ mod tests {
         }
     }
 
+    /// An on twin holds, and settles on the tag where the hand-written
+    /// form is made wrong the way a bug in the lowering would make the
+    /// block wrong: a read left live, a constant the event does not fire.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn on_twins_hold_and_settle() {
+        use generate::on_twin::{Fault, gen_on_twin, gen_on_twin_faulty};
+        const N: usize = 24;
+        let t = Duration::from_secs(120);
+        let mut rng = mutate::Rng::new(47);
+        for _ in 0..N {
+            let prog = gen_on_twin(&mut rng);
+            let d = check(&prog, t).await;
+            assert!(d.is_none(), "{prog}: {d:?}");
+        }
+        for (fault, least) in [(Fault::LiveOuter, 16), (Fault::NoRoot, 12)] {
+            let mut rng = mutate::Rng::new(47);
+            let mut seen = 0;
+            for _ in 0..N {
+                let prog = gen_on_twin_faulty(&mut rng, fault);
+                let d = check(&prog, t).await;
+                seen += matches!(&d, Some(d) if d.pair == Pair::Twin) as usize;
+            }
+            assert!(seen >= least, "{fault:?} seen in only {seen} of {N} twins");
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn must_reject_families_are_refused_where_their_rules_say() {
         let per = Duration::from_secs(60);

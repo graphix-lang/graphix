@@ -525,6 +525,35 @@ several requests, since a re-entry sees a request only if the trigger fired whil
 it slept. `abort`, `flush` and a sleep mid-run lose requests by design and are not
 drawn. Pin: `findings/nested-seqq-credit-nov2026/`.
 
+An **on twin** (`on_twin::gen_on_twin`, a slice of the same lane) holds
+the lowering of `on` to account (`design/on_blocks.md`). The lowering is
+a rewrite of the syntax tree both engines share, so they run the same
+lowered program and agree on a bug in it. The generator draws a block
+over a small tree of its own, which says of every read whether it is the
+block's own (a `let`, a binder, a parameter, the event's name) or a
+binding made outside it, and prints the tree twice: as an `on` block
+over one copy of the state, and as the form the rule gives over another
+(a clock, one strict sample of each outer binding and of each read
+through a reference, and what reads no variable fired by the clock).
+Each state variable's writes and each block's value fold into a checksum
+with the cycle they land in, and the program settles on the tag where
+the two sides' checksums differ. The tree draws shadowing lets and
+binders, lambdas and writers made in the block, calls by name, selects
+whose scrutinee moves between events, `live`, reads through a reference,
+nested blocks and every head form. Not drawn: a glob `use` (CR
+`t-seq-03` stands), a nested `seq`, and what the block refuses.
+`on_twin::Fault` makes the hand side wrong the way a lowering bug would
+make the block wrong (a read left live, constants the event does not
+fire), and `on_twins_hold_and_settle` asserts the twin sees each in at
+least two thirds and half of its programs. Pins:
+`findings/on-block-nov2026/08` and `09`.
+
+The reactive generator draws `on` blocks too (`reactive::on_block`, in
+a fifth of its programs): clocked to an injected input, as a statement,
+a handler called with the input, a bound value, an `on let`, or in an
+arm that sleeps, over the enriched vocabulary. The mutator's hand seeds
+hold six `on` programs (`corpus::SEEDS`).
+
 ## 7. Triage, dedup, and the findings corpus
 
 Dedup before minimizing (a fuzzer rediscovers a bug thousands of times

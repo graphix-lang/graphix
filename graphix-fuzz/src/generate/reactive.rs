@@ -49,6 +49,8 @@ pub struct ReactiveStats {
     pub live_reads: usize,
     /// Sample chains written with the strict `~!`.
     pub strict_samples: usize,
+    /// `on` blocks clocked to an injected input.
+    pub ons: usize,
     /// Ceremonies whose run counter fires on every injection.
     pub reliable_ceremonies: usize,
     /// Ceremony steps by kind, in [`STEP_KINDS`] order.
@@ -107,6 +109,7 @@ pub fn gen_reactive_program(rng: &mut Rng) -> String {
         0..15 => super::twin::gen_twin_program(rng),
         15..25 => gen_callable_ceremony(rng),
         25..32 => super::twin::gen_queue_twin(rng),
+        32..40 => super::on_twin::gen_on_twin(rng),
         _ => gen_reactive_stats(&GenCfg::default(), rng).0,
     }
 }
@@ -268,6 +271,9 @@ pub fn gen_reactive_stats(cfg: &GenCfg, rng: &mut Rng) -> (String, ReactiveStats
                 &mut fires_per_injection,
             ),
         }
+    }
+    if chance(rng, 0.2) {
+        on_block(&mut ctx, rng, &inputs, &mut stmts, &mut stats, &mut fires_per_injection)
     }
     // if nothing input-driven landed, add one scalar accumulator
     if fires_per_injection.is_empty() {
@@ -537,6 +543,90 @@ fn sample_chain(
         fires_per_injection.push(t.clone());
     }
     ctx.push(t, I64);
+}
+
+/// An `on` block clocked to an injected input, over the enriched
+/// vocabulary: what its body reads is taken at the injection and its
+/// constants act once an injection. Its run counter reads nothing but
+/// itself, so it fires on every injection wherever the block is not in an
+/// arm that sleeps.
+fn on_block(
+    ctx: &mut GenCtx,
+    rng: &mut Rng,
+    inputs: &[(String, GenType)],
+    stmts: &mut Vec<String>,
+    st: &mut ReactiveStats,
+    fires_per_injection: &mut Vec<String>,
+) {
+    let (input, ity) = &inputs[rng.below(inputs.len())];
+    st.ons += 1;
+    let (n, acc) = (ctx.fresh(), ctx.fresh());
+    stmts.push(format!("let {n} = i64:0"));
+    stmts.push(format!("let {acc} = i64:0"));
+    let catches = std::mem::replace(&mut ctx.no_catch, true);
+    let val = exprs::gen_typed(ctx, rng, &I64, 2);
+    let tail = exprs::gen_typed(ctx, rng, &I64, 2);
+    ctx.no_catch = catches;
+    let i64s = ctx.vars_of(&I64);
+    let level = match i64s.is_empty() {
+        true => n.clone(),
+        false => i64s[rng.below(i64s.len())].to_string(),
+    };
+    let count = format!("{n} <- {n} + i64:1");
+    let body = match rng.below(8) {
+        0 => format!("{count}; {acc} <- {acc} + ({val})"),
+        1 => format!("{count}; {acc} <- i64:{}", rng.below(9)),
+        2 => format!(
+            "{count}; select ({val}) % i64:2 {{ i64:0 => {acc} <- {acc} + i64:1, \
+             _ => {acc} <- {acc} - i64:1 }}"
+        ),
+        3 => {
+            let (g, q) = (ctx.fresh(), ctx.fresh());
+            format!("{count}; let {g} = |{q}: i64| {q} + ({val}); {acc} <- {g}({acc})")
+        }
+        4 => format!("{count}; {acc} <- live({level}) + ({val})"),
+        5 => format!("{count}; {acc} <- {input} ~ ({val})"),
+        6 => {
+            let m = ctx.fresh();
+            format!("{count}; let {m} = ({val}); on {m} {{ {acc} <- {acc} + {m} }}")
+        }
+        _ => format!("{count}; {acc} <- {acc} + {level} * i64:2"),
+    };
+    let reliable = match rng.below(10) {
+        0..=3 => {
+            stmts.push(format!("on {input} {{ {body} }}"));
+            true
+        }
+        4 | 5 => {
+            let (h, c) = (ctx.fresh(), ctx.fresh());
+            stmts.push(format!("let {h} = |{c}: {}| on {c} {{ {body} }}", ity.render()));
+            stmts.push(format!("{h}({input})"));
+            true
+        }
+        6 | 7 => {
+            let v = ctx.fresh();
+            stmts.push(format!("let {v} = on {input} {{ {body}; ({tail}) }}"));
+            ctx.push(v, I64);
+            true
+        }
+        8 => {
+            let p = ctx.fresh();
+            stmts.push(format!("on let {p} = {input} {{ {body} }}"));
+            true
+        }
+        _ => {
+            stmts.push(format!(
+                "select count({input}) % i64:2 {{ i64:0 => on {input} {{ {body} }}, \
+                 _ => never() }}"
+            ));
+            false
+        }
+    };
+    if reliable {
+        fires_per_injection.push(n.clone())
+    }
+    ctx.push(n, I64);
+    ctx.push(acc, I64);
 }
 
 /// A toggling node-walked select: the scrutinee is an injected input's
@@ -1343,6 +1433,7 @@ mod test {
             sum.tuple_triggers += st.tuple_triggers;
             sum.labeled_calls += st.labeled_calls;
             sum.live_reads += st.live_reads;
+            sum.ons += st.ons;
             for (a, b) in sum.steps.iter_mut().zip(st.steps) {
                 *a += b;
             }
@@ -1359,6 +1450,7 @@ mod test {
         assert!(sum.tuple_triggers * 100 / N >= 2, "tuples: {}/{N}", sum.tuple_triggers);
         assert!(sum.labeled_calls * 100 / N >= 5, "labeled: {}/{N}", sum.labeled_calls);
         assert!(sum.live_reads * 100 / N >= 5, "live reads: {}/{N}", sum.live_reads);
+        assert!(sum.ons * 100 / N >= 8, "on blocks: {}/{N}", sum.ons);
         for (kind, n) in STEP_KINDS.iter().zip(sum.steps) {
             assert!(n * 100 / N >= 3, "{kind:?} steps: only {n} over {N} programs");
         }

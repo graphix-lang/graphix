@@ -315,6 +315,8 @@
 5	on-block-nov2026/05_lambda_and_stateful_call.gx
 6	on-block-nov2026/06_event_named_and_call_over_constants.gx
 0	on-block-nov2026/07_catch_in_an_on_block.gx
+8	on-block-nov2026/08_reference_read_in_a_lambda.gx
+8	on-block-nov2026/09_reference_read_in_an_arm_that_wakes_late.gx
 1	operand-bound-member-oct2026/00_extracted_callback.gx
 1	organic-firing-aug2026/00_const_terminal.gx
 1	organic-firing-aug2026/01_multilevel_face.gx

@@ -1,0 +1,31 @@
+// A read through a reference in a lambda written in an on block followed its target
+// between events: the lowering sampled `*r` where it stood, and a lambda's body is its
+// own, so `a0` was written at every cycle. A variable read in the same place is the
+// event's value. Both engines run the same lowered block and agree on it: only the
+// program's own check sees it (an on twin, generate/on_twin.rs, whose first run found
+// it). `vb` is the form the rule gives.
+// schedule-v1: cap=88 events=4096
+{
+  let c = 0;
+  c <- select c < 24 { true => c + 1, false => never() };
+  let k = select c % 4 { 2 => c, _ => never() };
+  let x = c * 3 - 1;
+  let r = &x;
+  let a0 = 0;
+  let b0 = 0;
+  let va = on k { let g = |q: i64| (q + *r); a0 <- g(1); a0 };
+  let vb = { let ev1 = k; let r_at1 = ev1 ~! r; let rd_at1 = ev1 ~! *r_at1; let b0_at1 = ev1 ~! b0; let g = |q: i64| (q + rd_at1); b0 <- g((ev1 ~! 1)); b0_at1 };
+  let ta0 = 0;
+  ta0 <- a0 ~ (ta0 * 31 + c * 7 + a0);
+  let tb0 = 0;
+  tb0 <- b0 ~ (tb0 * 31 + c * 7 + b0);
+  let tav = 0;
+  tav <- va ~ (tav * 31 + c * 7 + va);
+  let tbv = 0;
+  tbv <- vb ~ (tbv * 31 + c * 7 + vb);
+  let held = ta0 == tb0 && tav == tbv;
+  select c {
+    24 => select held { true => `Held, false => `TwinDiverged },
+    _ => never()
+  }
+}

@@ -119,8 +119,14 @@ const CAUGHT: &str = "#seqe";
 
 /// The cells named for what the program wrote, and how many numbers
 /// precede the written name in each.
-const WRITTEN_CELLS: [(&str, usize); 5] =
-    [(TRIGGER, 1), (ENTRY_SNAPSHOT, 3), (CAPTURE, 2), (CAUGHT, 1), (on::SAMPLE, 2)];
+const WRITTEN_CELLS: [(&str, usize); 6] = [
+    (TRIGGER, 1),
+    (ENTRY_SNAPSHOT, 3),
+    (CAPTURE, 2),
+    (CAUGHT, 1),
+    (on::SAMPLE, 2),
+    (on::TARGET, 2),
+];
 
 /// The cell `<numbered>_<written>`, which [`written_name`] reads back.
 fn written_cell(numbered: &str, written: &str) -> ArcStr {
