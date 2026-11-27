@@ -185,7 +185,9 @@ until it is selected (and if it has netidx subscriptions or published values
 they will be unsubscribed and unpublished until it is selected again).
 Sleep is a pause: when the arm is selected again it resumes where it
 stood. Its counters, <code>once</code>s and queues keep their state, and a call it
-made is not made again.</p>
+made is not made again. An arm that should begin again at each visit,
+with new state and the world as it now stands, is written as a
+<a href="./fresh.html"><code>fresh</code> block</a>.</p>
 <p>Entering an arm is not an event, and neither is waking one. Two things
 fire in an arm: its pattern binds, when the argument fires, and the
 variables it reads from outside, when they fire while the arm is
@@ -205,6 +207,7 @@ writes at every Esc, while <code>`Esc =&gt; screen &lt;- `Menu</code> inside the
 never writes. The ways to act when an arm is entered:</p>
 <div class="table-wrapper"><table><thead><tr><th>To get</th><th>Write</th></tr></thead><tbody>
 <tr><td>Everything an arm does, at every entry</td><td>clock it with an <a href="./on.html"><code>on</code> block</a>: <code>k@ `Esc =&gt; on k { screen &lt;- `Menu; sel &lt;- 0 }</code>, or the whole select: <code>on key { select key { .. } }</code></td></tr>
+<tr><td>An arm that begins again at every entry and does not resume</td><td>start it over with a <a href="./fresh.html"><code>fresh</code> block</a>: <code>t@ `Edit =&gt; fresh t { editor(record) }</code></td></tr>
 <tr><td>A write or an effect at every entry</td><td>sample the bind: <code>k@ `Esc =&gt; screen &lt;- k ~ `Menu</code></td></tr>
 <tr><td>A constant written when an arm is taken</td><td>connect outside: <code>screen &lt;- select key { `Esc =&gt; `Menu, _ =&gt; never() }</code></td></tr>
 <tr><td>A write or an effect once per arm</td><td><code>once(k) ~ v</code></td></tr>

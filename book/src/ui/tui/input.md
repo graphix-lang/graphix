@@ -225,7 +225,10 @@ move to the next field, BackTab and Up to the previous, Enter calls
 `#on_submit` with every field's text, Esc calls `#on_cancel`. Render its
 `view` in an `input_handler` running its `handle`, on an overlay layer.
 `#style` fills its box, and `#title_style`, `#hint_style` (help, labels,
-legend) and `#field_style` (each field's row) style the rest:
+legend) and `#field_style` (each field's row) style the rest. The form is
+a [fresh block](../../core/fresh.md) over its fields, so it starts over
+each time they are delivered: pass them sampled on the event that opens
+the form, as here, and it opens blank with the first field focused:
 
 ```graphix
 {{#include ../../examples/tui/input_form.gx}}

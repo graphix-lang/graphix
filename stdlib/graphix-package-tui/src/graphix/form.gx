@@ -17,11 +17,10 @@ let form = |
   #field_style: Style = style(),
   #style: Style = style(),
   fields: Array<Field>
-| -> Form {
+| -> Form fresh fields {
   let n = array::len(fields);
   let vals: Array<line_edit::State> = array::map(fields, |f: Field| line_edit::state(f.value));
   let focus = 0;
-  focus <- fields ~ 0;
   let edit = |e: input_handler::Event| {
     let i = e ~ focus;
     // CR claude for claude: [bug/low] vals is in this select's scrutinee. The write

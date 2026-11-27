@@ -1,0 +1,60 @@
+use tui::{
+  line,
+  block::block,
+  input_handler::{Event, input_handler, on_press},
+  overlay::{Layer, layer, overlay},
+  paragraph::paragraph
+};
+
+let open = false;
+
+let handle_base = |e: Event| on_press(e, |k| on k {
+  select k.code {
+    `Char("o") => {
+      open <- true;
+      `Stop
+    },
+    _ => `Continue
+  }
+});
+
+let handle_modal = |e: Event| on_press(e, |k| on k {
+  select k.code {
+    `Esc => {
+      open <- false;
+      `Stop
+    },
+    _ => `Continue
+  }
+});
+
+let base = input_handler(
+  #handle: &handle_base,
+  &block(
+    #border: &`All,
+    #title: &line("press o to open the modal"),
+    &paragraph(&"base content")
+  )
+);
+
+// the modal starts over each time it opens: its timer and its count are new
+let layers: Array<Layer> = select uniq(open) {
+  o if o => fresh o {
+    let secs = any(0, count(sys::time::timer(duration:1.s, true)));
+    [layer(
+      #width: &`Percentage(50),
+      #height: &`Percentage(30),
+      input_handler(
+        #handle: &handle_modal,
+        &block(
+          #border: &`All,
+          #title: &line("open for [secs] s, Esc closes"),
+          &paragraph(&"this modal starts over each time it opens")
+        )
+      )
+    )]
+  },
+  _ => []
+};
+
+overlay(#layers: &layers, base)

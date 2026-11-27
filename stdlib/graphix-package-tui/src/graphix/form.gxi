@@ -21,7 +21,9 @@ type Form = {
 /// (defaults to the key legend). `#style` fills the form's box,
 /// `#title_style` styles its title, `#hint_style` the help, the labels
 /// and the legend (dark gray by default), and `#field_style` fills
-/// each field's row. A new `fields` delivery re-seeds the editors.
+/// each field's row. The form starts over at each delivery of `fields`:
+/// deliver them when the form opens (`opened ~ [..]`) and it opens with
+/// its first field focused and nothing typed.
 /// The focused editor is edited through a place reference,
 /// `line_edit::handle(&mut vals[i], e)`. Render `view` inside an
 /// `input_handler(#handle: &form.handle, …)` on an overlay layer.

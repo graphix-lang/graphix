@@ -275,6 +275,70 @@ let layers: Array&lt;Layer&gt; = select open {
 
 overlay(#layers: &amp;layers, base)
 </code></pre>
+<p>A modal that starts over each time it opens is a
+<a href="../../core/fresh.html">fresh block</a> in the arm that shows it. This one
+counts the seconds it has been open, from zero at every opening:</p>
+<pre><code class="language-graphix">use tui::{
+  line,
+  block::block,
+  input_handler::{Event, input_handler, on_press},
+  overlay::{Layer, layer, overlay},
+  paragraph::paragraph
+};
+
+let open = false;
+
+let handle_base = |e: Event| on_press(e, |k| on k {
+  select k.code {
+    `Char("o") =&gt; {
+      open &lt;- true;
+      `Stop
+    },
+    _ =&gt; `Continue
+  }
+});
+
+let handle_modal = |e: Event| on_press(e, |k| on k {
+  select k.code {
+    `Esc =&gt; {
+      open &lt;- false;
+      `Stop
+    },
+    _ =&gt; `Continue
+  }
+});
+
+let base = input_handler(
+  #handle: &amp;handle_base,
+  &amp;block(
+    #border: &amp;`All,
+    #title: &amp;line("press o to open the modal"),
+    &amp;paragraph(&amp;"base content")
+  )
+);
+
+// the modal starts over each time it opens: its timer and its count are new
+let layers: Array&lt;Layer&gt; = select uniq(open) {
+  o if o =&gt; fresh o {
+    let secs = any(0, count(sys::time::timer(duration:1.s, true)));
+    [layer(
+      #width: &amp;`Percentage(50),
+      #height: &amp;`Percentage(30),
+      input_handler(
+        #handle: &amp;handle_modal,
+        &amp;block(
+          #border: &amp;`All,
+          #title: &amp;line("open for [secs] s, Esc closes"),
+          &amp;paragraph(&amp;"this modal starts over each time it opens")
+        )
+      )
+    )]
+  },
+  _ =&gt; []
+};
+
+overlay(#layers: &amp;layers, base)
+</code></pre>
 
                     </main>
 

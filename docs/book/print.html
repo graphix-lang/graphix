@@ -1941,7 +1941,9 @@ until it is selected (and if it has netidx subscriptions or published values
 they will be unsubscribed and unpublished until it is selected again).
 Sleep is a pause: when the arm is selected again it resumes where it
 stood. Its counters, <code>once</code>s and queues keep their state, and a call it
-made is not made again.</p>
+made is not made again. An arm that should begin again at each visit,
+with new state and the world as it now stands, is written as a
+<a href="core/./fresh.html"><code>fresh</code> block</a>.</p>
 <p>Entering an arm is not an event, and neither is waking one. Two things
 fire in an arm: its pattern binds, when the argument fires, and the
 variables it reads from outside, when they fire while the arm is
@@ -1961,6 +1963,7 @@ writes at every Esc, while <code>`Esc =&gt; screen &lt;- `Menu</code> inside the
 never writes. The ways to act when an arm is entered:</p>
 <div class="table-wrapper"><table><thead><tr><th>To get</th><th>Write</th></tr></thead><tbody>
 <tr><td>Everything an arm does, at every entry</td><td>clock it with an <a href="core/./on.html"><code>on</code> block</a>: <code>k@ `Esc =&gt; on k { screen &lt;- `Menu; sel &lt;- 0 }</code>, or the whole select: <code>on key { select key { .. } }</code></td></tr>
+<tr><td>An arm that begins again at every entry and does not resume</td><td>start it over with a <a href="core/./fresh.html"><code>fresh</code> block</a>: <code>t@ `Edit =&gt; fresh t { editor(record) }</code></td></tr>
 <tr><td>A write or an effect at every entry</td><td>sample the bind: <code>k@ `Esc =&gt; screen &lt;- k ~ `Menu</code></td></tr>
 <tr><td>A constant written when an arm is taken</td><td>connect outside: <code>screen &lt;- select key { `Esc =&gt; `Menu, _ =&gt; never() }</code></td></tr>
 <tr><td>A write or an effect once per arm</td><td><code>once(k) ~ v</code></td></tr>
@@ -3000,6 +3003,88 @@ released values. <code>live(e)</code> reads <code>e</code> where it stands. A ne
 error is raised, not at the event, and a <code>?</code> inside the block raises to
 it. A call that takes no argument has nothing for the event to fire;
 give it the event.</p>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="fresh-blocks"><a class="header" href="#fresh-blocks">Fresh Blocks</a></h1>
+<h2 id="why-start-over"><a class="header" href="#why-start-over">Why start over</a></h2>
+<p>A select arm that is not selected sleeps, and when it is selected again it
+resumes: whatever state it held is still there, and nothing fired while
+it slept is delivered to it. That is right for a cursor or a scroll
+position. It is wrong for a dialog that should open blank, a timer that
+should start when a screen opens, or a view that shows data through
+something that remembers:</p>
+<pre><code class="language-graphix fragment">let view = select tab {
+    `A =&gt; "A shows [uniq(data)]",
+    `B =&gt; "B"
+}
+</code></pre>
+<p>Leave tab A, let <code>data</code> change, come back: A still shows the old value,
+because <code>uniq</code> gives nothing until <code>data</code> fires again. The check warns
+of this.</p>
+<p>A <code>fresh</code> block starts over each time an event fires:</p>
+<pre><code class="language-graphix fragment">let view = select uniq(tab) {
+    t@ `A =&gt; fresh t { "A shows [uniq(data)]" },
+    `B =&gt; "B"
+}
+</code></pre>
+<h2 id="what-it-means-1"><a class="header" href="#what-it-means-1">What it means</a></h2>
+<p><code>fresh e { .. }</code> is nothing until <code>e</code> first fires. At each fire of <code>e</code> the
+block starts over, the way a program starts:</p>
+<p><strong>Its state is new.</strong> Every stateful thing in it holds nothing, every
+<code>let</code> takes its initializer, and a call still waiting for an answer is
+dropped.</p>
+<p><strong>Its constants fire.</strong> A write of a constant, a timer over constants
+and a call over constants all act at each start.</p>
+<p><strong>What it reads fires with the value it has now.</strong> The block starts from
+the world as it stands, so <code>uniq(data)</code> gives the current <code>data</code> at once.</p>
+<p><strong>Between two fires it is ordinary live code.</strong> It follows what it reads
+as any expression does.</p>
+<pre><code class="language-graphix">let n = 0;
+n &lt;- select n { i if i &lt; 5 =&gt; i + 1, _ =&gt; never() };
+let k = select n { 2 =&gt; null, 4 =&gt; null, _ =&gt; never() };
+let ticks = fresh k { count(n) };
+ticks
+</code></pre>
+<p><code>ticks</code> counts 1, 2 from the fire at 2, then 1, 2 again from the fire at
+4.</p>
+<p><code>fresh let</code> names the event's value:</p>
+<pre><code class="language-graphix fragment">fresh let record = selected { editor(record) }
+</code></pre>
+<p>In a select arm the event is the arm's bind, as in the example above.
+Put <code>uniq</code> on the scrutinee when selecting the same arm again should not
+start it over.</p>
+<h2 id="events-come-in-as-parameters"><a class="header" href="#events-come-in-as-parameters">Events come in as parameters</a></h2>
+<p>Because a start fires everything the block reads, the block treats what
+it reads from outside as a level: a value that is right to start from.
+An event that is held as a value, such as the last key pressed, would be
+delivered again at every start. Let an event reach the block as the
+parameter of a function the block makes, which is how widgets deliver
+them:</p>
+<pre><code class="language-graphix fragment">fresh opened {
+    let text = "";
+    let keys = |k| on k { text &lt;- "[text][k]" };
+    input(#on_key: keys, text)
+}
+</code></pre>
+<h2 id="on-and-fresh"><a class="header" href="#on-and-fresh"><code>on</code> and <code>fresh</code></a></h2>
+<p>The two answer different questions. <code>on</code> says when a block reads the
+world: at the event, and not between. <code>fresh</code> says whether the block
+remembers anything from before the event.</p>
+<div class="table-wrapper"><table><thead><tr><th></th><th>Remembers</th><th>Starts over at the event</th></tr></thead><tbody>
+<tr><td>Reads live</td><td>plain code</td><td><code>fresh t { .. }</code></td></tr>
+<tr><td>Reads at the event</td><td><code>on t { .. }</code></td><td><code>fresh t { on t { .. } }</code></td></tr>
+</tbody></table>
+</div>
+<p><code>on t { count(t) }</code> counts the events. <code>fresh t { count(t) }</code> is always</p>
+<ol>
+<li>The useful nesting is two different events: <code>fresh opened { on key { .. } }</code> keeps its state for one opening.</li>
+</ol>
+<h2 id="what-it-costs"><a class="header" href="#what-it-costs">What it costs</a></h2>
+<p>Starting over builds the block again, which costs about what the first
+call of a function costs: a fraction of a millisecond for a few lines,
+more for more code. It is meant for things a person causes, such as
+opening a dialog, switching a tab or picking a record. Keep a block that
+starts over many times a second small.</p>
+<p>Reads in the block are live, so a write that reads its own target
+feeds itself, here as anywhere. Clock it: <code>fresh k { on k { n &lt;- n + 1 } }</code>.</p>
 <div style="break-before: page; page-break-before: always;"></div><h1 id="error-handling"><a class="header" href="#error-handling">Error Handling</a></h1>
 <p>Errors in Graphix are represented by the <code>Error&lt;'a&gt;</code> type. A new instance of
 which can be created with the <code>error</code> function. e.g.</p>
@@ -11993,7 +12078,10 @@ move to the next field, BackTab and Up to the previous, Enter calls
 <code>#on_submit</code> with every field's text, Esc calls <code>#on_cancel</code>. Render its
 <code>view</code> in an <code>input_handler</code> running its <code>handle</code>, on an overlay layer.
 <code>#style</code> fills its box, and <code>#title_style</code>, <code>#hint_style</code> (help, labels,
-legend) and <code>#field_style</code> (each field's row) style the rest:</p>
+legend) and <code>#field_style</code> (each field's row) style the rest. The form is
+a <a href="ui/tui/../../core/fresh.html">fresh block</a> over its fields, so it starts over
+each time they are delivered: pass them sampled on the event that opens
+the form, as here, and it opens blank with the first field focused:</p>
 <pre><code class="language-graphix">use tui::{
   block::block,
   form::form,
@@ -12016,16 +12104,7 @@ let name_form = form(
     filling &lt;- false;
     null
   },
-  // CR claude for claude: [bug/low] The form is built once over constant fields, so its
-  // re-seed ("A new `fields` delivery re-seeds the editors", form.gxi) never runs. A
-  // second `f` opens the form still holding the last submission (Ada / Lovelace) with
-  // the focus on "last", and typing X then Enter greets "hello Ada LovelaceX". Esc
-  // keeps a half-typed entry the same way. Pass the fields sampled on the open,
-  // `filling ~ [..]`, as this argument: the reopened form is then empty with the focus
-  // on the first field, and the page's only form example shows the re-seed. probe:
-  // design/review-2026-11-16/repro/examples-tui-form-keeps-last-entry.sh
-  // (examples-tui-04)
-  [{ label: "first", value: "" }, { label: "last", value: "" }]
+  filling ~ [{ label: "first", value: "" }, { label: "last", value: "" }]
 );
 
 let handle_base = |e: Event| on_press(e, |k| on k {
@@ -12641,6 +12720,70 @@ let modal = layer(
 let layers: Array&lt;Layer&gt; = select open {
   true =&gt; [modal],
   false =&gt; []
+};
+
+overlay(#layers: &amp;layers, base)
+</code></pre>
+<p>A modal that starts over each time it opens is a
+<a href="ui/tui/../../core/fresh.html">fresh block</a> in the arm that shows it. This one
+counts the seconds it has been open, from zero at every opening:</p>
+<pre><code class="language-graphix">use tui::{
+  line,
+  block::block,
+  input_handler::{Event, input_handler, on_press},
+  overlay::{Layer, layer, overlay},
+  paragraph::paragraph
+};
+
+let open = false;
+
+let handle_base = |e: Event| on_press(e, |k| on k {
+  select k.code {
+    `Char("o") =&gt; {
+      open &lt;- true;
+      `Stop
+    },
+    _ =&gt; `Continue
+  }
+});
+
+let handle_modal = |e: Event| on_press(e, |k| on k {
+  select k.code {
+    `Esc =&gt; {
+      open &lt;- false;
+      `Stop
+    },
+    _ =&gt; `Continue
+  }
+});
+
+let base = input_handler(
+  #handle: &amp;handle_base,
+  &amp;block(
+    #border: &amp;`All,
+    #title: &amp;line("press o to open the modal"),
+    &amp;paragraph(&amp;"base content")
+  )
+);
+
+// the modal starts over each time it opens: its timer and its count are new
+let layers: Array&lt;Layer&gt; = select uniq(open) {
+  o if o =&gt; fresh o {
+    let secs = any(0, count(sys::time::timer(duration:1.s, true)));
+    [layer(
+      #width: &amp;`Percentage(50),
+      #height: &amp;`Percentage(30),
+      input_handler(
+        #handle: &amp;handle_modal,
+        &amp;block(
+          #border: &amp;`All,
+          #title: &amp;line("open for [secs] s, Esc closes"),
+          &amp;paragraph(&amp;"this modal starts over each time it opens")
+        )
+      )
+    )]
+  },
+  _ =&gt; []
 };
 
 overlay(#layers: &amp;layers, base)

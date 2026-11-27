@@ -39,3 +39,11 @@ input handler sees every key; the base handler sees none.
 ```graphix
 {{#include ../../examples/tui/overlay_modal.gx}}
 ```
+
+A modal that starts over each time it opens is a
+[fresh block](../../core/fresh.md) in the arm that shows it. This one
+counts the seconds it has been open, from zero at every opening:
+
+```graphix
+{{#include ../../examples/tui/overlay_fresh.gx}}
+```
