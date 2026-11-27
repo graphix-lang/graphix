@@ -2435,6 +2435,42 @@ fn on_parses() {
 }
 
 #[test]
+fn fresh_parses() {
+    for s in [
+        "fresh k { 1 }",
+        "fresh k{1}",
+        "fresh (k) { x <- 1 }",
+        "fresh f(t) { x <- 1; y <- 2 }",
+        "fresh uniq(tab) { count(k) }",
+        "fresh let c = f(t) { c }",
+        "fresh let {a, b} = t { x <- a }",
+        "fresh let c: i64 = t ~ x { c }",
+        "fresh k { on j { 1 } }",
+        "on k { fresh j { 1 } }",
+        "fresh k { fresh j { 1 } }",
+        "select t { a@ `A => fresh a { 1 }, _ => never() }",
+    ] {
+        let e = parse_one(s).unwrap();
+        let again = parse_one(&e.to_string()).unwrap();
+        assert_eq!(again, e, "{s}");
+        assert_eq!(parse_one(&e.to_string_pretty(0)).unwrap(), e, "{s}");
+    }
+    match &parse_one("fresh let c = t { c }").unwrap().kind {
+        ExprKind::Seq(a) => {
+            assert!(matches!(a.kind, SeqKind::Fresh));
+            assert!(a.trigger.is_some() && a.abort.is_none())
+        }
+        k => panic!("{k:?}"),
+    }
+    // the event is required, a block has no clauses and `fresh` is no name
+    assert!(parse_one("fresh { 1 }").is_err());
+    assert!(parse_one("fresh k { }").is_err());
+    assert!(parse_one("fresh k; abort(c) { 1 }").is_err());
+    assert!(parse_one("let fresh = 1").is_err());
+    assert!(parse_one("|fresh| fresh").is_err());
+}
+
+#[test]
 fn seq_parses() {
     for s in [
         "seq { 1 }",
@@ -3394,7 +3430,7 @@ fn source_error_does_not_expect_printed_data() {
         message,
         r####"at line: 1, column: 9 in module /test: Parse error at line: 1, column: 9
 Unexpected `;`
-Expected #[, mod, pub, use, catch, try, until, type, trait, impl, let, `&`, `|`, `'`, `*`, package, self, super, `!`, `r`, [<, `[`, select, seqq, seq, on, ```, cast, never, live, any, """, `"`, `{`, `(`, `-`, a value or duration:
+Expected #[, mod, pub, use, catch, try, until, type, trait, impl, let, `&`, `|`, `'`, `*`, package, self, super, `!`, `r`, [<, `[`, select, seqq, seq, on, fresh, ```, cast, never, live, any, """, `"`, `{`, `(`, `-`, a value or duration:
 
     let x = ;
             ^"####

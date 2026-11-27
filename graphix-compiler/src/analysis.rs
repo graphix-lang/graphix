@@ -1208,6 +1208,7 @@ fn writes_nothing(e: &Expr) -> bool {
             | TryWith(_)
             | SeqGuard(_)
             | SeqAbort(_)
+            | Fresh(_)
             | SeqMachine(_)
             | SeqCapture(_) => false,
             NoOp

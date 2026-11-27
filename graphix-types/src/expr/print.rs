@@ -2277,7 +2277,7 @@ impl PrettyDisplay for ExprKind {
                 buf.kill_newline();
                 writeln!(buf, ")")
             }
-            SeqGuard(e) | SeqAbort(e) => e.fmt_pretty(buf),
+            SeqGuard(e) | SeqAbort(e) | Fresh(e) => e.fmt_pretty(buf),
             SeqCapture(c) => {
                 write!(buf, "capture(")?;
                 c.snapshot.fmt_pretty(buf)?;
@@ -2925,7 +2925,9 @@ impl ExprKind {
             ExprKind::Struct(st) => write!(f, "{st}"),
             ExprKind::Qop { arg: e, .. } => write!(f, "{}?", Operand(e, suffixed(e))),
             ExprKind::Rethrow(e) => write!(f, "rethrow({e})"),
-            ExprKind::SeqGuard(e) | ExprKind::SeqAbort(e) => write!(f, "{e}"),
+            ExprKind::SeqGuard(e) | ExprKind::SeqAbort(e) | ExprKind::Fresh(e) => {
+                write!(f, "{e}")
+            }
             ExprKind::SeqCapture(c) => {
                 write!(f, "capture({} or live {})", c.snapshot, c.live)
             }

@@ -46,6 +46,10 @@ It follows that:
   accumulation that should run between events is written outside the
   block and read in it.
 
+`on` decides when reads are taken; whether state survives the event is
+`fresh`'s (`fresh_blocks.md`), and the two nest: `fresh opened { on key
+{ .. } }` keeps its state for one opening.
+
 ## What converting real code showed
 
 The admin port, the stdlib's Graphix and the book's examples were

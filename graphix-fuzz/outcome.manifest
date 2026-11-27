@@ -188,6 +188,12 @@ trace	frame-taint-exit-jul2026/02_original.gx
 trace	framed-arg-stale-formal-aug2026/00_fold_go_retrigger.gx
 trace	framed-formal-seed-aug2026/01_fold_in_rec_arm_one_step.gx
 trace	framed-formal-seed-aug2026/02_found_form_min_element.gx
+trace	fresh-block-nov2026/01_state_starts_over_and_runs_live.gx
+trace	fresh-block-nov2026/02_a_start_is_a_birth.gx
+trace	fresh-block-nov2026/03_a_sleeping_arm_starts_over_too.gx
+trace	fresh-block-nov2026/04_an_arm_starts_over_at_each_visit.gx
+trace	fresh-block-nov2026/05_on_inside_and_a_capture_that_stands.gx
+trace	fresh-block-nov2026/06_nested_in_on_and_in_fresh.gx
 reject	N: iN must be Function here: it is no function	function-bound-oct2026/00_queuefn_non_function.gx
 reject	N: fn(?#d: iN, x: iN) -> iN must be Function here: it has a defaulted label, and a function passed here is called with every argument and no other; wrap it in a lambda that calls it	function-bound-oct2026/01_queuefn_defaulted_label.gx
 trace	function-scheme-arg-oct2026/00_seq_trigger_builtin.gx

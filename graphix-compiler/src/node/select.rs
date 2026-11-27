@@ -341,7 +341,7 @@ impl<R: Rt> Select<R> {
             pat.structure_predicate
                 .ids(&mut |id| ctx.env.mark_pattern_bind(id, inputs.clone()));
             let n = super::prune::Prune::compile(ctx, |ctx| {
-                compile(ctx, flags, body.clone(), &scope, top_id)
+                compile(ctx, flags | CFlag::InArm, body.clone(), &scope, top_id)
             })
             .at(&spec)?;
             built.push((pat, n));
@@ -462,6 +462,99 @@ fn warn_constant_action<R: Rt>(
     })
 }
 
+/// Warn where an arm of `sel` calls a builtin that consumes events over
+/// values no entry of the arm fires: the call holds what it last gave
+/// through a sleep, and in an arm first entered later it gives nothing,
+/// until one of them fires. What an entry fires is the scrutinee's reads
+/// and whatever the arm binds, a `let` in it included, for the arm and
+/// every arm `outer` around it.
+fn warn_stale_consumers<R: Rt>(
+    ctx: &CompileCtx<R>,
+    sel: &Select<R>,
+    outer: &IntSet<BindId>,
+) -> Result<()> {
+    let mut scrutinee = Refs::default();
+    sel.arg.node.refs(&mut scrutinee);
+    for arm in &sel.arms {
+        let mut entry: LPooled<IntSet<BindId>> = LPooled::take();
+        entry.extend(outer.iter().copied());
+        scrutinee.with_refs(|id| {
+            entry.insert(id);
+        });
+        let mut own = Refs::default();
+        arm_refs(arm, &mut own);
+        own.with_bound(|id| {
+            entry.insert(id);
+        });
+        warn_stale_consumer(ctx, sel.flags, &arm.1, &entry)?
+    }
+    Ok(())
+}
+
+fn warn_stale_consumer<R: Rt>(
+    ctx: &CompileCtx<R>,
+    flags: BitFlags<CFlag>,
+    n: &Node<R>,
+    entry: &IntSet<BindId>,
+) -> Result<()> {
+    crate::stack::ensure_sufficient(|| {
+        let walk = |n: &Node<R>| {
+            let mut r = Ok(());
+            n.for_each_child(&mut |c| {
+                if r.is_ok() {
+                    r = warn_stale_consumer(ctx, flags, c, entry)
+                }
+            });
+            r
+        };
+        let cs = match n.view() {
+            NodeView::Lambda(_) | NodeView::SeqMachine(_) => return Ok(()),
+            NodeView::Select(s)
+                if s.flags.intersects(CFlag::SeqStep | CFlag::RunEvent) =>
+            {
+                return Ok(());
+            }
+            NodeView::Select(s) => {
+                warn_stale_consumer(ctx, flags, &s.arg.node, entry)?;
+                return warn_stale_consumers(ctx, s, entry);
+            }
+            NodeView::CallSite(cs) if cs.is_fresh() => return Ok(()),
+            NodeView::CallSite(cs) => cs,
+            _ => return walk(n),
+        };
+        let consumes = super::callsite::static_builtin(ctx, cs).is_some_and(|b| {
+            matches!(ctx.builtin_effect(b), crate::Effect::Sync | crate::Effect::Async)
+        });
+        let (mut reads, mut fired) = (false, false);
+        for a in cs.arg_nodes() {
+            let mut refs = Refs::default();
+            a.refs(&mut refs);
+            refs.with_refs(|id| {
+                if !ctx.bind_to_lambda.contains_key(&id) {
+                    reads = true;
+                    fired |= entry.contains(&id)
+                }
+            })
+        }
+        if !consumes || !reads || fired {
+            return walk(n);
+        }
+        let spec = n.spec();
+        ctx.env.warn(
+            flags,
+            spec,
+            spec.pos,
+            spec.end.0,
+            "this call consumes events, and entering its arm fires nothing it reads: it \
+             gives what it gave before the arm slept, or nothing in an arm first entered \
+             later, until one of them fires. Feed it the arm's bind (`any(v, k ~ v)`), \
+             move it out of the arm, or start the arm's body over at each entry (`k@ .. \
+             => fresh k { .. }`)",
+        )?;
+        walk(n)
+    })
+}
+
 /// A function written to act when it is called has to read what the call
 /// gives it: a write in its body follows its own right side, so one that
 /// reads no parameter fires with no call at all (a handler that feeds
@@ -479,7 +572,8 @@ pub(super) fn warn_undriven_writes<R: Rt>(
     for a in l.args.iter() {
         a.pattern.with_names(&mut |n| params.push(n.clone()))
     }
-    if params.is_empty() {
+    // a lowering's function is no handler its author wrote
+    if params.is_empty() || params.iter().all(|p| crate::is_lowered(p)) {
         return Ok(());
     }
     // a write in the function's own text, not in a function it holds
@@ -1071,6 +1165,9 @@ impl<R: Rt> Update<R> for Select<R> {
         }
         for (_, n) in &self.arms {
             warn_constant_action(ctx, self.flags, n)?;
+        }
+        if !self.flags.contains(CFlag::InArm) {
+            warn_stale_consumers(ctx, self, &IntSet::default())?;
         }
         if let ExprKind::Select(se) = &self.spec.kind {
             for (_, body) in se.arms.iter() {

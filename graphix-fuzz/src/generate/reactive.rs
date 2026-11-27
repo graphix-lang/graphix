@@ -51,6 +51,8 @@ pub struct ReactiveStats {
     pub strict_samples: usize,
     /// `on` blocks clocked to an injected input.
     pub ons: usize,
+    /// `fresh` blocks started over by an injected input.
+    pub freshes: usize,
     /// Ceremonies whose run counter fires on every injection.
     pub reliable_ceremonies: usize,
     /// Ceremony steps by kind, in [`STEP_KINDS`] order.
@@ -274,6 +276,16 @@ pub fn gen_reactive_stats(cfg: &GenCfg, rng: &mut Rng) -> (String, ReactiveStats
     }
     if chance(rng, 0.2) {
         on_block(&mut ctx, rng, &inputs, &mut stmts, &mut stats, &mut fires_per_injection)
+    }
+    if chance(rng, 0.2) {
+        fresh_block(
+            &mut ctx,
+            rng,
+            &inputs,
+            &mut stmts,
+            &mut stats,
+            &mut fires_per_injection,
+        )
     }
     // if nothing input-driven landed, add one scalar accumulator
     if fires_per_injection.is_empty() {
@@ -627,6 +639,77 @@ fn on_block(
     }
     ctx.push(n, I64);
     ctx.push(acc, I64);
+}
+
+/// A `fresh` block started over by an injected input, over the enriched
+/// vocabulary: its state is new at each injection, its constants fire and
+/// what it reads fires with the value that stands, and it runs live
+/// between. Its count of its own event is 1 at every injection wherever
+/// the block is not in an arm that sleeps.
+fn fresh_block(
+    ctx: &mut GenCtx,
+    rng: &mut Rng,
+    inputs: &[(String, GenType)],
+    stmts: &mut Vec<String>,
+    st: &mut ReactiveStats,
+    fires_per_injection: &mut Vec<String>,
+) {
+    let (input, _) = &inputs[rng.below(inputs.len())];
+    let (other, _) = &inputs[rng.below(inputs.len())];
+    st.freshes += 1;
+    let catches = std::mem::replace(&mut ctx.no_catch, false);
+    let val = exprs::gen_typed(ctx, rng, &I64, 2);
+    ctx.no_catch = catches;
+    let i64s = ctx.vars_of(&I64);
+    let level = match i64s.is_empty() {
+        true => "i64:3".to_string(),
+        false => i64s[rng.below(i64s.len())].to_string(),
+    };
+    let (n, m) = (ctx.fresh(), ctx.fresh());
+    let body = match rng.below(8) {
+        0 => format!("count({input}) + ({val})"),
+        1 => format!("count({other}) * i64:10 + count({input})"),
+        2 => format!("uniq({level}) + count({input})"),
+        3 => {
+            format!("let {n} = i64:0; {n} <- {other} ~ {n} + i64:1; {n} + count({input})")
+        }
+        4 => format!(
+            "let {n} = i64:0; on {other} {{ {n} <- {n} + ({val}) }}; {n} + count({input})"
+        ),
+        5 => format!(
+            "select count({other}) % i64:2 {{ i64:0 => count({other}), _ => i64:-1 }} + \
+             count({input})"
+        ),
+        6 => format!(
+            "let {n} = fresh {other} {{ count({other}) + ({val}) }}; \
+             count({input}) + i64:0 * {n}"
+        ),
+        _ => format!("let {m} = once({level}); {m} + count({input})"),
+    };
+    let v = ctx.fresh();
+    let reliable = match rng.below(10) {
+        0..=5 => {
+            stmts.push(format!("let {v} = fresh {input} {{ {body} }}"));
+            !matches!(body.as_str(), b if b.starts_with("uniq") || b.starts_with("let"))
+        }
+        6 | 7 => {
+            let p = ctx.fresh();
+            stmts.push(format!("let {v} = fresh let {p} = {input} {{ {body} }}"));
+            false
+        }
+        _ => {
+            let t = ctx.fresh();
+            stmts.push(format!(
+                "let {v} = select uniq(count({input}) % i64:2) {{ {t} if {t} == i64:0 => \
+                 fresh {t} {{ {body} }}, _ => never() }}"
+            ));
+            false
+        }
+    };
+    if reliable {
+        fires_per_injection.push(v.clone())
+    }
+    ctx.push(v, I64);
 }
 
 /// A toggling node-walked select: the scrutinee is an injected input's
@@ -1434,6 +1517,7 @@ mod test {
             sum.labeled_calls += st.labeled_calls;
             sum.live_reads += st.live_reads;
             sum.ons += st.ons;
+            sum.freshes += st.freshes;
             for (a, b) in sum.steps.iter_mut().zip(st.steps) {
                 *a += b;
             }
@@ -1451,6 +1535,7 @@ mod test {
         assert!(sum.labeled_calls * 100 / N >= 5, "labeled: {}/{N}", sum.labeled_calls);
         assert!(sum.live_reads * 100 / N >= 5, "live reads: {}/{N}", sum.live_reads);
         assert!(sum.ons * 100 / N >= 8, "on blocks: {}/{N}", sum.ons);
+        assert!(sum.freshes * 100 / N >= 8, "fresh blocks: {}/{N}", sum.freshes);
         for (kind, n) in STEP_KINDS.iter().zip(sum.steps) {
             assert!(n * 100 / N >= 3, "{kind:?} steps: only {n} over {N} programs");
         }

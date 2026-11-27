@@ -520,6 +520,7 @@ fn compile_kind<R: Rt>(
         ExprKind::SeqAbort(e) => {
             SeqAbort::compile(ctx, flags, spec.clone(), scope, top_id, e)
         }
+        ExprKind::Fresh(call) => CallSite::compile_fresh(ctx, flags, scope, top_id, call),
         ExprKind::SeqMachine(m) => {
             SeqMachine::compile(ctx, flags, spec.clone(), scope, top_id, m)
         }

@@ -72,6 +72,7 @@ hold it) and, where it absorbed an older document, `Supersedes:`.
 | `place_references.md` | `&a[i]`, `&s.f`, `&t.0`, `&m{k}` as root + path |
 | `seq_blocks.md` | `seq`/`seqq`: the pc machine, `until`, `try … with`, the completion rule, the error guards |
 | `on_blocks.md` | `on e { .. }`: a block clocked to one event, lowered to strict samples with no machine |
+| `fresh_blocks.md` | `fresh e { .. }`: a block that starts over at each fire of an event and runs live between, a call whose instance is built again and born; the warning for an event consumer an arm's entry does not fire |
 | `dependency_summaries.md` | per-node read/write summaries after resolution; the seq machine node: every statement a step, a passed step asleep, boundaries per instance; `seqq` captures from summaries |
 | `select_coverage.md` | what reaches each arm, exhaustiveness, undecided types at a select, patterns inside a declared variable, `name@` captures |
 

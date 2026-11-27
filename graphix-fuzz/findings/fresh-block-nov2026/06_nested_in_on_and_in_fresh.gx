@@ -1,0 +1,4 @@
+// A fresh block in an on block is its own (nothing in it is sampled, its body runs
+// live), and one in a fresh block starts over with it.
+// Expected: [[0, 2, 3, 4, 5, 6, 7, 8], [101, 101, 102, 101, 101, 101, 102]].
+{ let step = 0; step <- select step { n if n < 8 => n + 1, _ => never() }; let k = select step { 2 => null, 5 => null, 7 => null, _ => never() }; let j = select step { 3 => null, 6 => null, _ => never() }; let n = 0; on j { fresh k { n <- step } }; let v = fresh k { let r = fresh any(k, j) { count(step) }; r + 100 }; (array::group(n, |i, _| i == 8), array::group(v, |i, _| i == 7)) }

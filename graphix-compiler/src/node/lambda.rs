@@ -2521,7 +2521,7 @@ impl Lambda {
         _top_id: ExprId,
     ) -> Result<Node<R>> {
         let mut flags = flags;
-        flags.remove(CFlag::SeqStep);
+        flags.remove(CFlag::SeqStep | CFlag::InArm);
         let mut s: LPooled<Vec<&ArcStr>> = LPooled::take();
         for a in l.args.iter() {
             a.pattern.with_names(&mut |n| s.push(n));

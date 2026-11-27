@@ -94,6 +94,10 @@ pub enum CFlag {
     /// arm is the arm's birth, as each run's entry of a step is. Its arms
     /// compile without it.
     RunEvent,
+    /// Compiling a select arm's body: the outermost select's check walks
+    /// the arms nested in it, knowing what each entry fires. A lambda's
+    /// body compiles without it.
+    InArm,
 }
 
 /// Sets a thread-local `Cell` for a scope and puts the previous value

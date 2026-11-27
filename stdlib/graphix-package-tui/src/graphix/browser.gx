@@ -15,10 +15,10 @@ let browser = |
     let listing = net::list_table(path)$;
     // until a path's first listing arrives the old one stands, and the
     // selection names none of its rows
-    let fresh = true;
-    fresh <- uniq(path) ~ true;
-    fresh <- listing ~ false;
-    let restart = select listing ~ fresh {
+    let unlisted = true;
+    unlisted <- uniq(path) ~ true;
+    unlisted <- listing ~ false;
+    let restart = select listing ~ unlisted {
         true => listing,
         false => never()
     };
@@ -156,11 +156,11 @@ let browser = |
             `Table => "[r]/[visible_columns[sel.x - 1]$]"
         }
     };
-    *selected_row <- select fresh {
+    *selected_row <- select unlisted {
         false => row_path,
         true => never()
     };
-    *selected_path <- select fresh {
+    *selected_path <- select unlisted {
         false => cell_path,
         true => never()
     };

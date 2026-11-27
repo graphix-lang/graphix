@@ -2090,6 +2090,9 @@ pub(crate) fn effect_blocker<R: Rt>(node: &Node<R>) -> Option<&'static str> {
     match node.view() {
         NodeView::Connect(_) | NodeView::ConnectDeref(_) => Some("connect is an effect"),
         NodeView::Catch(_) => Some("catch installs an error handler"),
+        NodeView::CallSite(c) if c.is_fresh() => {
+            Some("a fresh block builds its instance again at run time")
+        }
         NodeView::SeqGuard(_) => Some("sequence guard keeps cross-cycle state"),
         NodeView::SeqAbort(_) => Some("sequence abort fails a run"),
         NodeView::SeqMachine(_) => Some("a seq machine sequences across cycles"),

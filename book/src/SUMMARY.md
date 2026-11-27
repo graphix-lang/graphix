@@ -14,6 +14,7 @@
   - [Select](./core/select.md)
   - [Seq and Seqq](./core/seq.md)
   - [On Blocks](./core/on.md)
+  - [Fresh Blocks](./core/fresh.md)
   - [Error Handling](./core/error.md)
 - [Functions](./functions/overview.md)
   - [Labeled and Optional Arguments](./functions/labeled.md)

@@ -2015,11 +2015,12 @@ fn undecorated_expr() -> impl Strategy<Value = Expr> {
                 ],
                 collection::vec(decorated(seq_item!(inner.clone())), 1..5),
                 trailers(),
+                any::<bool>(),
             )
-                .prop_map(|(clock, mut body, trailers)| {
+                .prop_map(|(clock, mut body, trailers, fresh)| {
                     trailers.on(body.iter_mut());
                     ExprKind::Seq(Arc::new(SeqExpr {
-                        kind: SeqKind::On,
+                        kind: if fresh { SeqKind::Fresh } else { SeqKind::On },
                         trigger: Some(clock),
                         abort: None,
                         body: Arc::from(body),
@@ -3358,6 +3359,7 @@ fn compiler_kinds_children_agree() {
         (Rethrow(arc("a")), 1),
         (SeqGuard(arc("a")), 1),
         (SeqAbort(arc("a")), 1),
+        (Fresh(arc("a")), 1),
         (
             SeqMachine(Arc::new(SeqMachineExpr {
                 id: ExprId::new(),

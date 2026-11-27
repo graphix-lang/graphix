@@ -106,4 +106,11 @@ pub const SEEDS: &[&str] = &[
     "// schedule-v1: cap=64 events=512; in0=i64:5; in0=i64:6; in0=i64:7\n{ let v = i64:0; let r = &mut v; let seen = i64:0; on in0 { *r <- *r + in0; seen <- *r }; (v, seen) }",
     "// schedule-v1: cap=64 events=512; in0=i64:2 in1=i64:10; in1=i64:20; in0=i64:3\n{ let out = i64:0; let n = i64:0; on in0 { let g = |q: i64| q + in1; out <- g(out); on in1 { n <- n + in0 } }; (out, n) }",
     "// schedule-v1: cap=64 events=512; in0=i64:1; in0=i64:2; in0=i64:3\n{ let acc = i64:0; let v = on let p = in0 * i64:2 { acc <- acc + p; live(acc) + p }; (acc, v) }",
+    // fresh blocks: state that starts over, a level read at the start, an
+    // on block inside, an arm that starts over at each visit, a nested one
+    "// schedule-v1: cap=64 events=512; in0=i64:1; in0=i64:2; in0=i64:3\n{ let a = fresh in0 { count(in0) }; let b = on in0 { count(in0) }; (a, b) }",
+    "// schedule-v1: cap=64 events=512; in0=i64:2 in1=i64:10; in1=i64:20; in0=i64:3; in1=i64:30\n{ let v = fresh in0 { (uniq(in1), count(in1)) }; v }",
+    "// schedule-v1: cap=64 events=512; in0=i64:2 in1=i64:10; in1=i64:20; in0=i64:3; in1=i64:30\n{ let v = fresh in0 { let n = i64:0; on in1 { n <- n + i64:1 }; n }; v }",
+    "// schedule-v1: cap=64 events=512; in0=i64:1; in0=i64:2; in0=i64:4; in0=i64:3; in0=i64:6\n{ let data = i64:0; data <- in0 * i64:10; select uniq(in0 % i64:2) { t if t == i64:0 => fresh t { (uniq(data), count(in0)) }, _ => never() } }",
+    "// schedule-v1: cap=64 events=512; in0=i64:2 in1=i64:10; in1=i64:20; in0=i64:3\n{ let out = i64:0; let v = fresh let p = in0 { out <- p; let r = fresh in1 { count(in1) + p }; r }; (out, v) }",
 ];

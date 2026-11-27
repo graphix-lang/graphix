@@ -1,0 +1,4 @@
+// A fresh block starts over at each fire of its event and runs live between
+// (design/fresh_blocks.md): `count(step)` counts from one after each fire of `k`.
+// Expected (both engines): [1, 2, 3, 1, 2, 1, 2].
+{ let step = 0; step <- select step { n if n < 8 => n + 1, _ => never() }; let k = select step { 2 => null, 5 => null, 7 => null, _ => never() }; let v = fresh k { count(step) }; array::group(v, |i, _| i == 7) }

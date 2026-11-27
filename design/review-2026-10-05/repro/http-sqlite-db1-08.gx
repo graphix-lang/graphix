@@ -53,7 +53,7 @@ let c = http::client(#timeout: duration:1.s, null)$;
 let before = (show(http::get(c, "http://[a]/a")), show(http::get(c, "http://[b]/b")), show(http::get(c, "http://[d]/d")));
 let t = sys::time::timer(duration:900.ms, false);
 let kept = (show(http::get(t ~ c, "http://[a]/a")), show(http::get(t ~ c, "http://[b]/b")), show(http::get(t ~ c, "http://[d]/d")));
-let fresh = http::client(#timeout: duration:1.s, t)$;
-let new = (show(http::get(fresh, "http://[a]/a")), show(http::get(fresh, "http://[b]/b")), show(http::get(fresh, "http://[d]/d")));
+let second = http::client(#timeout: duration:1.s, t)$;
+let new = (show(http::get(second, "http://[a]/a")), show(http::get(second, "http://[b]/b")), show(http::get(second, "http://[d]/d")));
 sys::exit(sys::time::after_idle(duration:2.s, 0));
 (before, kept, new)

@@ -104,6 +104,9 @@ design/review-2026-11-16/repro/lang-skill-select-result-fires.gx (lang-skill-02)
   is entered: what it captured reads stale. Sample on the bind:
   `` k@ `Esc => screen <- k ~ `Menu ``, `k ~ target` for a capture's value
   at entry, `any(target, k ~ target)` for entry and every live change.
+  Or start the arm's body over at each entry, `` k@ `Edit => fresh k { ..
+  } ``, where it should begin again and not resume (see "A block that
+  starts over" below).
   The same holds for a collection callback's slot (its bind is the
   element) and for a function called there (its binds are its arguments).
 - **A component or an event source built in an arm takes the event that
@@ -737,6 +740,60 @@ no "catch is not allowed inside an on block" let k = 1; let x = 0; on k { catch(
 no "only legal in a seq block" let k = 1; let x = 0; on k { until x > 0; x <- 1 }
 no "an on block names the event" let x = 0; on { x <- 1 }
 no "keyword" let on = 1; on
+```
+
+## A block that starts over: `fresh`
+
+`fresh e { .. }` is nothing until `e` first fires, starts over at each
+fire, and runs live between. Use it where an arm, a dialog or a component
+should begin again and not resume.
+
+```graphix,fragment
+let view = select uniq(tab) {
+    t@ `Edit => fresh t { editor(record) },
+    `List => list_view
+};
+fresh let rec_ = selected { form(rec_) }
+```
+
+- A start is a birth, as the program's first cycle is: the block's state
+  is new (a stateful builtin holds nothing, a `let` takes its
+  initializer, a call in flight is dropped), its constants fire, and what
+  it reads fires with the value that stands. `fresh k { count(k) }` is
+  always 1; `on k { count(k) }` counts.
+- Between fires it is ordinary live code. Nothing is sampled, so a write
+  that reads its own target is a self-loop: `fresh k { on k { n <- n + 1
+  } }`, not `fresh k { n <- n + 1 }`.
+- **In a fresh block a capture is a level.** A start fires every value
+  the block reads, so an event held as a value (the last key) is
+  delivered again at each start, to an `on` block clocked by it too. An
+  event comes in as the parameter of a function the block makes and
+  something outside calls (`let keys = |e| on e { .. }`), or as a value
+  that is bottom between its fires.
+- In an arm the event is the arm's bind. An arm entered with no event
+  (an outer arm waking) starts nothing over. `uniq` on the scrutinee
+  keeps a re-selection of the same arm from starting it over.
+- `on` and `fresh` are independent: `on` is when reads are taken,
+  `fresh` is whether state survives the event. The useful nesting is two
+  events, `fresh opened { on key { .. } }`. A fresh block inside an `on`
+  block or a seq step is its own: nothing in it is sampled.
+- A start builds the block again: about the cost of a function's first
+  call. Fine for what a person causes; keep one that starts many times a
+  second small.
+- `until`, `try .. with` and `live` are a seq's; `fresh` is a reserved
+  word.
+- The check warns of an event-consuming builtin in an arm that entering
+  the arm does not fire (`uniq(data)` in a tab's arm): feed it the bind
+  (`any(data, k ~ data)`), move it out of the arm, or start the arm over.
+
+```graphix,cases
+ok let k = 1; let n = 0; fresh k { on k { n <- n + 1 } }
+ok let k = 1; let v = fresh let x = k { x + 1 }; v
+ok let tab: [`A, `B] = `A; let d = 1; select uniq(tab) { t@ `A => fresh t { uniq(d) }, `B => 0 }
+no "it means nothing outside a seq block" let k = 1; let x = 0; fresh k { live(x) }
+no "only legal in a seq block" let k = 1; let x = 0; fresh k { until x > 0; x }
+no "a fresh block names the event" let x = 0; fresh { x }
+no "keyword" let fresh = 1; fresh
 ```
 
 ## Sequencing: `seq` and `seqq`

@@ -19,6 +19,7 @@ mod fusion_review;
 mod image;
 mod inference;
 
+mod fresh_blocks;
 mod interfaces;
 mod lists;
 mod maps;

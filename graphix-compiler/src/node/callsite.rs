@@ -1546,6 +1546,10 @@ pub struct CallSite<R: Rt> {
     /// A seq step issued this call while its function was bottom and
     /// unbound: its bind, when the function returns, is the step's birth.
     step_due: bool,
+    /// A `fresh` block's call (`design/fresh_blocks.md`): it holds no
+    /// instance until its argument first fires, and builds a new one,
+    /// born, at each fire.
+    fresh: bool,
     /// The imaged instance decoded at this update's dispatch: the sites
     /// its first update leaves imaged are held after it.
     decoded: bool,
@@ -1621,6 +1625,7 @@ impl<R: Rt> CallSite<R> {
             share: None,
             absent: None,
             step_due: false,
+            fresh: false,
             impl_reads: None,
             kept: None,
             copies: None,
@@ -1629,6 +1634,11 @@ impl<R: Rt> CallSite<R> {
             static_holds: SmallVec::new(),
             bound_arena: None,
         }
+    }
+
+    /// Whether this is a `fresh` block's call.
+    pub(crate) fn is_fresh(&self) -> bool {
+        self.fresh
     }
 
     fn note_kept_view(&mut self, ctx: &CompileCtx<R>) {
@@ -1818,6 +1828,26 @@ impl<R: Rt> CallSite<R> {
         let site =
             Self::unbound(spec, None, rtype, fnode, args, scope.clone(), flags, top_id);
         Ok(Node::new(CallNode::Call(site)))
+    }
+
+    /// The call a `fresh` block lowers to, `(|event| body)(event)`.
+    pub(crate) fn compile_fresh(
+        ctx: &mut CompileCtx<R>,
+        flags: BitFlags<CFlag>,
+        scope: &Scope,
+        top_id: ExprId,
+        call: &TArc<Expr>,
+    ) -> Result<Node<R>> {
+        let ExprKind::Apply(ApplyExpr { args, function }) = &call.kind else {
+            bail!("BUG: a fresh block lowers to a call")
+        };
+        let mut node =
+            Self::compile(ctx, flags, call.clone(), scope, top_id, args, function)?;
+        match node.downcast_mut::<CallNode<R>>().and_then(CallNode::call_mut) {
+            Some(site) => site.fresh = true,
+            None => bail!("BUG: a fresh block's call is no call site"),
+        }
+        Ok(node)
     }
 
     fn clear_prepared_bind(&mut self, ctx: &mut CompileCtx<R>) {
@@ -2174,7 +2204,7 @@ impl<R: Rt> CallSite<R> {
     /// constant of, in the compile task `ctx`, ahead of its first
     /// dispatch. A no-op for any other site.
     pub(crate) fn prebind(&mut self, ctx: &mut CompileCtx<R>) {
-        if !matches!(self.callee, Callee::DynamicUnbound) {
+        if self.fresh || !matches!(self.callee, Callee::DynamicUnbound) {
             return;
         }
         let NodeView::Constant(c) = self.fnode.view() else { return };
@@ -2617,7 +2647,7 @@ impl<R: Rt> CallSite<R> {
     /// lambda literal), or dispatch a trait method by its self type.
     /// No-op for dynamic call sites.
     fn try_static_resolve(&mut self, ctx: &mut CompileCtx<R>) -> Result<Option<Node<R>>> {
-        if matches!(self.callee, Callee::Static { .. }) {
+        if self.fresh || matches!(self.callee, Callee::Static { .. }) {
             return Ok(None);
         }
         let target: Option<Value> = match self.fnode.view() {
@@ -2919,10 +2949,22 @@ impl<R: Rt> CallSite<R> {
             }
             return self.resident.set_bottom(fnode_tag.triggers() || arg_fired);
         }
+        // the event with a value: one that goes bottom starts nothing over
+        let renew = self.fresh
+            && self
+                .args
+                .values()
+                .any(|a| ctx.event.variables.get(&a.id).is_some_and(|tv| tv.is_fired()));
+        if self.fresh && !renew && matches!(self.callee, Callee::DynamicUnbound) {
+            for id in set.drain(..) {
+                ctx.event.variables.remove(&id);
+            }
+            return self.resident.set_bottom(false);
+        }
         let bound = if let Callee::Static { first_update, .. } = &mut self.callee {
             mem::replace(first_update, false)
         } else {
-            fnode_value.is_some_and(|v| self.rebind(ctx, v, &mut set))
+            fnode_value.is_some_and(|v| self.rebind(ctx, v, &mut set, renew))
         };
         ctx.event.learned |= bound;
         // a fresh bind's quiet arguments stand: a formal fires when its
@@ -2996,9 +3038,14 @@ impl<R: Rt> CallSite<R> {
                 // must be left to answer: which of the two is the ruling asked. probe:
                 // design/review-2026-11-16/repro/x-dyn-modules-seq-wedge-on-reload.gx
                 // and x-dyn-modules-seq-wedge-fn-write.gx (x-dyn-modules-02)
-                let tv = match mem::take(&mut self.step_due) {
-                    true => ctx.under(View::Birth, |ctx| f.update(ctx, arg_refs).clone()),
-                    false => ctx.enter_body(|ctx| f.update(ctx, arg_refs).clone()),
+                let tv = match (renew, mem::take(&mut self.step_due)) {
+                    (true, _) => ctx.born(|ctx| f.update(ctx, arg_refs).clone()),
+                    (false, true) => {
+                        ctx.under(View::Birth, |ctx| f.update(ctx, arg_refs).clone())
+                    }
+                    (false, false) => {
+                        ctx.enter_body(|ctx| f.update(ctx, arg_refs).clone())
+                    }
                 };
                 TrackedFires::restore(ctx.event, owed);
                 Some(tv)
@@ -3044,12 +3091,15 @@ impl<R: Rt> CallSite<R> {
     }
 
     /// Bind the definition `v` unless it is the one bound, or the one
-    /// whose bind failed; true when a fresh callee was bound.
+    /// whose bind failed; true when a fresh callee was bound. Under
+    /// `renew` the one bound is bound again: its instance goes and a new
+    /// one is built.
     fn rebind(
         &mut self,
         ctx: &mut ExecCtx<'_, R>,
         v: Value,
         set: &mut Published,
+        renew: bool,
     ) -> bool {
         let same = match &self.callee {
             Callee::DynamicBound { def, .. } => {
@@ -3070,7 +3120,7 @@ impl<R: Rt> CallSite<R> {
             }
             _ => false,
         };
-        if same {
+        if same && !renew {
             return false;
         }
         let Some(lb) = v.downcast_ref::<LambdaDef<R>>() else {
@@ -3338,6 +3388,7 @@ impl<R: Rt> CallSite<R> {
         };
         let static_target = Option::<StaticCallTarget>::decode(buf)?;
         let recursive_edge = bool::decode(buf)?;
+        let fresh = bool::decode(buf)?;
         let flags = image::flags_decode(buf)?;
         let scope = image::scope_decode(buf)?;
         let top_id = ExprId::decode(buf)?;
@@ -3349,6 +3400,7 @@ impl<R: Rt> CallSite<R> {
         let mut site =
             Self::unbound(spec, ftype, rtype, fnode, args, scope, flags, top_id);
         site.fork = fork;
+        site.fresh = fresh;
         held.into_iter().for_each(|id| site.hold_static(ctx, id));
         site.arg_refs = arg_refs;
         site.callee = match imaged {
@@ -3582,6 +3634,7 @@ impl<R: Rt> CallSite<R> {
         }
         self.static_target.encode(buf)?;
         self.recursive_edge.load(Relaxed).encode(buf)?;
+        self.fresh.encode(buf)?;
         image::flags_encode(self.flags, buf)?;
         image::scope_encode(&self.scope, buf)?;
         self.top_id.encode(buf)?;

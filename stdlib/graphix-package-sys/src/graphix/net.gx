@@ -18,7 +18,7 @@ let list_at = |update: Any, path: string|
 let list_table_at = |update: Any, path: string|
     -> Result<Table, `ListError(string)> 'sys_net_list_table;
 let every_second = |update: Any, path: string| -> Any select update {
-    null as _ => sys::time::timer(once(path) ~ 1, true),
+    null as _ => sys::time::timer(once(update ~ path) ~ 1, true),
     u => u
 };
 let list = |#update: Any = null, path: string| -> Result<Array<string>, `ListError(string)>

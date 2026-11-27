@@ -36,7 +36,9 @@ until it is selected (and if it has netidx subscriptions or published values
 they will be unsubscribed and unpublished until it is selected again).
 Sleep is a pause: when the arm is selected again it resumes where it
 stood. Its counters, `once`s and queues keep their state, and a call it
-made is not made again.
+made is not made again. An arm that should begin again at each visit,
+with new state and the world as it now stands, is written as a
+[`fresh` block](./fresh.md).
 
 Entering an arm is not an event, and neither is waking one. Two things
 fire in an arm: its pattern binds, when the argument fires, and the
@@ -60,6 +62,7 @@ never writes. The ways to act when an arm is entered:
 | To get | Write |
 |---|---|
 | Everything an arm does, at every entry | clock it with an [`on` block](./on.md): ``k@ `Esc => on k { screen <- `Menu; sel <- 0 }``, or the whole select: `on key { select key { .. } }` |
+| An arm that begins again at every entry and does not resume | start it over with a [`fresh` block](./fresh.md): ``t@ `Edit => fresh t { editor(record) }`` |
 | A write or an effect at every entry | sample the bind: ``k@ `Esc => screen <- k ~ `Menu`` |
 | A constant written when an arm is taken | connect outside: ``screen <- select key { `Esc => `Menu, _ => never() }`` |
 | A write or an effect once per arm | `once(k) ~ v` |

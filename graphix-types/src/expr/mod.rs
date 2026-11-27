@@ -637,6 +637,10 @@ pub enum SeqKind {
     /// `on e { .. }`: a block clocked to its trigger's fires, with no
     /// machine (`expr/on.rs`, `design/on_blocks.md`)
     On,
+    /// `fresh e { .. }`: a block that starts over at each fire of its
+    /// trigger and runs live between (`expr/seq/fresh.rs`,
+    /// `design/fresh_blocks.md`)
+    Fresh,
 }
 
 impl SeqKind {
@@ -646,7 +650,7 @@ impl SeqKind {
 
     pub fn flush(&self) -> Option<&Arc<Expr>> {
         match self {
-            SeqKind::Plain | SeqKind::On => None,
+            SeqKind::Plain | SeqKind::On | SeqKind::Fresh => None,
             SeqKind::Queued { flush } => flush.as_ref(),
         }
     }
@@ -657,6 +661,7 @@ impl SeqKind {
             SeqKind::Plain => "seq",
             SeqKind::Queued { .. } => "seqq",
             SeqKind::On => "on",
+            SeqKind::Fresh => "fresh",
         }
     }
 }
@@ -933,6 +938,9 @@ pub enum ExprKind {
     /// Compiler-generated: a fired production fails the enclosing seq
     /// machine's run.
     SeqAbort(Arc<Expr>),
+    /// Compiler-generated: a call whose instance is built again, and
+    /// born, at each fire of its argument (a `fresh` block).
+    Fresh(Arc<Expr>),
     SeqMachine(Arc<SeqMachineExpr>),
     SeqCapture(Arc<SeqCaptureExpr>),
     OrNever(Arc<Expr>),
@@ -976,6 +984,7 @@ impl ExprKind {
             | Rethrow(x)
             | SeqGuard(x)
             | SeqAbort(x)
+            | Fresh(x)
             | OrNever(x)
             | ByRef(_, x)
             | Deref(x)
@@ -1633,6 +1642,7 @@ impl Expr {
             ExprKind::SeqMachine(_)
             | ExprKind::SeqGuard(_)
             | ExprKind::SeqAbort(_)
+            | ExprKind::Fresh(_)
             | ExprKind::SeqCapture(_)
             | ExprKind::Rethrow(_) => true,
             ExprKind::Block { exprs } => exprs.first().is_some_and(Expr::is_lowered),
@@ -1901,6 +1911,7 @@ impl Expr {
             Rethrow(x) => Rethrow(a(f, x)),
             SeqGuard(x) => SeqGuard(a(f, x)),
             SeqAbort(x) => SeqAbort(a(f, x)),
+            Fresh(x) => Fresh(a(f, x)),
             OrNever(x) => OrNever(a(f, x)),
             ByRef(m, x) => ByRef(*m, a(f, x)),
             Deref(x) => Deref(a(f, x)),
@@ -2040,6 +2051,7 @@ impl Expr {
                 kind: match &s.kind {
                     SeqKind::Plain => SeqKind::Plain,
                     SeqKind::On => SeqKind::On,
+                    SeqKind::Fresh => SeqKind::Fresh,
                     SeqKind::Queued { flush } => {
                         SeqKind::Queued { flush: flush.as_ref().map(|e| a(f, e)) }
                     }
@@ -2126,6 +2138,7 @@ impl Expr {
             | Rethrow(_)
             | SeqGuard(_)
             | SeqAbort(_)
+            | Fresh(_)
             | SeqMachine(_)
             | SeqCapture(_)
             | OrNever(_)

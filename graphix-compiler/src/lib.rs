@@ -2346,6 +2346,15 @@ impl<'a, R: Rt> ExecCtx<'a, R> {
         r
     }
 
+    /// Run `f` as a birth whatever view it is run from: a `fresh` block
+    /// starting over reads what stands as delivered, in a waking arm too.
+    pub fn born<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
+        let prev = mem::replace(&mut self.event.view, View::Birth);
+        let r = f(self);
+        self.event.view = prev;
+        r
+    }
+
     /// Run `f`, the entry of a body (a select arm, a collection slot, a
     /// callee): nothing in it is born. It reads what stands stale and its
     /// constants stand; only its binds and the captures delivered this

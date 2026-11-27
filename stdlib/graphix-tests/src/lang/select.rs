@@ -1,7 +1,7 @@
 // Tests for select/match expressions
 
 use anyhow::Result;
-use arcstr::literal;
+use arcstr::{ArcStr, literal};
 use graphix_compiler::CFlag;
 use graphix_package_core::{
     run,
@@ -10883,6 +10883,54 @@ async fn undriven_write_warning(mode: Mode) -> Result<()> {
 }
 
 modes!(undriven_write_warning);
+
+// A builtin that consumes events in an arm, reading only what no entry of
+// the arm fires, is warned of: it shows what it showed before the arm
+// slept. One fed the arm's bind, the scrutinee or a bind of an arm around
+// it, one moved out of the arm, one in an on block or a fresh block, and
+// a stateless builtin are not.
+async fn stale_consumer_warning(mode: Mode) -> Result<()> {
+    let (tx, _rx) = tokio::sync::mpsc::channel(100);
+    let flags = mode.flags() | CFlag::WarningsAreErrors;
+    let ctx = TestCtx::start(
+        config(tx, &crate::TEST_REGISTER, vec![], |ctx| {
+            ctx.control.set_par_mode(mode.par())
+        })?
+        .flags(flags),
+    )
+    .await?;
+    const HEAD: &str = "let tab: [`A, `B] = `A; let other = 1; let data = 1; data <- 2;";
+    for body in [
+        "select tab { t@ `A => uniq(any(data, t ~ data)), `B => 0 }",
+        "select uniq(tab) { t@ `A => fresh t { uniq(data) }, `B => 0 }",
+        "select tab { t@ `A => on t { uniq(data) }, `B => 0 }",
+        "{ let u = uniq(data); select tab { `A => u, `B => 0 } }",
+        "select tab { `A => select data { d => uniq(d) }, `B => 0 }",
+        "select other { o => select tab { `A => count(o), `B => 0 } }",
+        "select tab { `A => count(tab), `B => 0 }",
+        "select tab { `A => data + 1, `B => 0 }",
+    ] {
+        let src = ArcStr::from(format!("{{ {HEAD} {body} }}"));
+        ctx.rt.compile(src.clone()).await.map_err(|e| anyhow::anyhow!("{src}: {e:#}"))?;
+    }
+    for body in [
+        "select tab { `A => uniq(data), `B => 0 }",
+        "select tab { `A => { let x = 1; count(data) + x }, `B => 0 }",
+        "select tab { `A => select other { 1 => uniq(data), _ => 0 }, `B => 0 }",
+    ] {
+        let src = ArcStr::from(format!("{{ {HEAD} {body} }}"));
+        let error = ctx.rt.compile(src.clone()).await.expect_err(&src);
+        let error = format!("{error:#}");
+        assert!(
+            error.contains("entering its arm fires nothing it reads"),
+            "{src}: {error}"
+        );
+    }
+    ctx.shutdown().await;
+    Ok(())
+}
+
+modes!(stale_consumer_warning);
 
 run!(select_discriminants_follow_instantiation, r#"{
     let f = |x| select x { v => v };

@@ -90,7 +90,7 @@
   (let ((keywords '("let" "rec" "mod" "use" "type" "fn" "select" "if" "try"
                      "catch" "cast" "never" "any" "with" "throws" "as"
                      "pub" "trait" "impl" "mut" "val" "for"
-                     "seq" "seqq" "on" "until" "live" "abort" "flush"
+                     "seq" "seqq" "on" "fresh" "until" "live" "abort" "flush"
                      "dynamic" "sig" "source"
                      "self" "super" "package"))
         (builtins '("true" "false" "null"))
@@ -200,7 +200,7 @@ Falls back to this mode when tree-sitter is not available.
      ;; graphix-ts-mode while Helix, Zed and Neovim color them. Fix: add the four words
      ;; here and the path-root rules from highlights.scm. probe:
      ;; design/review-2026-11-16/repro/ide-tooling-emacs-ts-keywords.el (ide-tooling-05)
-     '(["mod" "use" "let" "rec" "type" "fn" "select" "seq" "seqq" "on" "until" "abort" "flush(" "if" "catch"
+     '(["mod" "use" "let" "rec" "type" "fn" "select" "seq" "seqq" "on" "fresh" "until" "abort" "flush(" "if" "catch"
         "cast" "any" "with" "throws" "as" "trait" "impl" "for" "pub" "try" "never" "live" "val"]
        @font-lock-keyword-face)
 

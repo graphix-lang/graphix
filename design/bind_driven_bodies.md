@@ -81,7 +81,7 @@ row. "Inside" is what fires in the body, "site" is the site's own result.
 | Callee, the function changes or returns from bottom | nothing | fires, with what the stale formals compute |
 | A depth regrown at an outer wake, its argument stands | nothing | quiet |
 
-<!-- CR claude for eric: [structure/medium] A select arm can only resume, so every
+<!-- XCR claude for claude: [structure/medium] A select arm can only resume, so every
 event-consuming node in a re-entered arm shows what it held when the arm slept: in the
 probe tab A shows `uniq(data)` as 1 after `data` became 2, until `data` fires again, and
 the check says nothing. The sixteen rows of this table are the cost, and the advice that
@@ -91,6 +91,20 @@ arm is born at its first selection in each run. Offer it to authors as an explic
 restart arm or select, entered as a birth with fresh state, and extend
 `warn_constant_action` to a stateful builtin whose inputs are captures alone. probe:
 design/review-2026-11-16/repro/a-language-arm-resume-stale.gx (a-language-03) -->
+<!-- 2026-11-27 claude: Eric ruled (2026-11-27, going through the language design
+review; D60 in the discussion file): entering a body stays no event; build a block that
+starts over at each fire of an event and runs live between (`fresh t { .. }`), where
+starting over is a birth as a seq run is; add the warning for an event-consuming builtin
+in an arm whose inputs are all captures; then apply the block across the existing
+Graphix code. Probes: ~/ptmp/arm-restart/. -->
+<!-- 2026-11-27 claude: Built (design/fresh_blocks.md): `fresh e { .. }` starts a block
+over at each fire of an event and runs live between, a call whose instance is built
+again and born (CallSite::fresh); the check warns of an event-consuming builtin in an
+arm that entering the arm does not fire (select.rs::warn_stale_consumers). The probe's
+tab is `t@ `A => fresh t { .. }` and shows the new value at the entry. A regression
+fails stdlib/graphix-tests/src/lang/fresh_blocks.rs (an_arm_starts_over_at_each_visit,
+a_sleeping_arm_in_the_block_starts_over_too) or
+lang::select::stale_consumer_warning. -->
 ## 3. What the author writes
 
 | To get | Write |
@@ -112,10 +126,18 @@ design/review-2026-11-16/repro/a-language-arm-resume-stale.gx (a-language-03) --
 | An event source over constants in a body entered later | start it on the bind: `timer(once(k) ~ duration:100.ms, true)` |
 | An arm inside another arm, entered by the outer arm's wake | the inner scrutinee samples the outer event: `select any(inner, outer ~ inner) { .. }` |
 
+Two blocks state several of these rows once for a whole body. `on k { .. }` clocks it to the bind
+(`on_blocks.md`): every read is its value at `k` and every constant acts at `k`, which is the rows for
+a write, an effect, a capture's value and a stateful builtin at entry. `fresh k { .. }` starts it over
+at `k` (`fresh_blocks.md`): new state, born, then live, which is the rows for a callee, an event source
+or a component that must begin again when the arm is entered.
+
 The check warns where an arm acts on constants alone: a `<-`, a raise to a handler or an effectful call
 that reads no variable (`select.rs::warn_constant_action`), and a `seq` with no trigger or one whose
 trigger names no variable (`warn_triggerless_seq`). Such an arm acts only where it is taken in its
-root's first cycle. A select of the seq machine's world is not warned (§4).
+root's first cycle. It also warns where an arm calls a builtin that consumes events and entering the
+arm fires nothing the call reads (`warn_stale_consumers`, `fresh_blocks.md`). A select of the seq
+machine's world is not warned (§4).
 
 ## 4. Seq
 

@@ -1,0 +1,4 @@
+// A start is a birth: a constant in the block acts at each start and not before,
+// and what the block reads fires with the value that stands (`lvl`, last written at
+// step 1). Expected: [[5, 1], [5, 2], [5, 3]].
+{ let step = 0; step <- select step { n if n < 8 => n + 1, _ => never() }; let k = select step { 2 => null, 5 => null, 7 => null, _ => never() }; let lvl = 0; lvl <- select step { 1 => 5, _ => never() }; let out = 0; let v = fresh k { out <- 7; uniq(lvl) }; array::group((v, k ~ count(out)), |i, _| i == 3) }

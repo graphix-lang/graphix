@@ -599,6 +599,12 @@ are in the docs named here.
   outer binding its text reads is `e ~! v`, and what reads no variable is
   fired by the event. Values latch as they arrive and are released on the
   pulse; state inside the block counts events.
+- **`fresh e { .. }`** (`design/fresh_blocks.md`): a block that starts
+  over at each fire of one event and runs live between. A start is a
+  birth: new state, constants fire, and what it reads fires with the
+  value that stands, so a capture in it is a level. It lowers to a call
+  whose instance is built again at each fire (`CallSite::fresh`), never
+  reset in place.
 - **`seq` / `seqq`** (`design/seq_blocks.md`): a machine node
   (`node/seq_machine.rs`), every statement a step; a step sees the world as
   it stood at its entry (`seqq`: at enqueue); `live(e)` reads live. Every

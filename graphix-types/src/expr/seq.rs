@@ -34,6 +34,7 @@ use smallvec::SmallVec;
 use std::cell::RefCell;
 use triomphe::Arc;
 
+mod fresh;
 mod on;
 
 /// The label of a machine with no run in progress.
@@ -279,6 +280,7 @@ fn lower(spec: &Expr, env: &Env, scope: &ModPath) -> Result<Expr> {
     };
     match (kind, seq.trigger) {
         (SeqKind::On, _) => on::desugar(&seq, env, scope),
+        (SeqKind::Fresh, _) => fresh::desugar(&seq),
         (SeqKind::Queued { .. }, Some(SeqTrigger::Bind(b))) => desugar_let(&seq, b),
         (SeqKind::Queued { .. }, _) => desugar_queued(&seq, env, scope),
         (SeqKind::Plain, _) => {
@@ -2331,6 +2333,7 @@ fn rewrite_with_inner(e: &Expr, map: &Names, mode: Rewrite<'_>) -> Expr {
             let kind = match kind {
                 SeqKind::Plain => SeqKind::Plain,
                 SeqKind::On => SeqKind::On,
+                SeqKind::Fresh => SeqKind::Fresh,
                 SeqKind::Queued { flush } => {
                     SeqKind::Queued { flush: flush.as_ref().map(clause) }
                 }

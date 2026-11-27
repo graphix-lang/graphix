@@ -876,6 +876,26 @@ module.exports = grammar({
       '}',
     ),
 
+    // `fresh e { stmts }` or `fresh let pat = e { stmts }`: a block that
+    // starts over at each fire of one event (design/fresh_blocks.md). The
+    // event is required, and there are no clauses.
+    fresh_block: $ => seq(
+      'fresh',
+      choice(
+        seq(
+          'let',
+          field('pattern', $.structure_pattern),
+          optional(seq(':', field('type', $._type))),
+          '=',
+          field('event', $._expression),
+        ),
+        field('event', $._expression),
+      ),
+      bodyOpen(),
+      $._seq_items,
+      '}',
+    ),
+
     _seq_items: $ => seq(
       repeat(seq($._seq_item, ';')),
       $._seq_item,
@@ -990,6 +1010,7 @@ module.exports = grammar({
       $.select,
       $.seq_block,
       $.on_block,
+      $.fresh_block,
       $.try_with,
       $.any,
       $.cast,

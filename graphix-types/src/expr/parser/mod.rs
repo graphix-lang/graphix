@@ -1118,6 +1118,20 @@ fn on_head(i: &mut Input) -> R<(SeqKind, Option<SeqTrigger>, Option<Arc<Expr>>)>
     }
 }
 
+/// The head of a fresh block: the event it starts over at, with no
+/// clauses.
+fn fresh_head(i: &mut Input) -> R<(SeqKind, Option<SeqTrigger>, Option<Arc<Expr>>)> {
+    let at = i.pos();
+    match i.optional(seq_trigger)? {
+        Some(event) => Ok((SeqKind::Fresh, Some(event), None)),
+        None => Err(i.refuse(
+            at,
+            "a fresh block names the event it starts over at: `fresh e { .. }`, or \
+             `fresh let k = e { .. }` to name its value",
+        )),
+    }
+}
+
 fn seq(i: &mut Input) -> R<Expr> {
     let pos = i.pos();
     let (kind, trigger, abort) = choice!(
@@ -1133,6 +1147,10 @@ fn seq(i: &mut Input) -> R<Expr> {
         |i| {
             keyword(i, "on")?;
             on_head(i)
+        },
+        |i| {
+            keyword(i, "fresh")?;
+            fresh_head(i)
         }
     )?;
     let mut body = seq_stmts(i)?;
@@ -1140,6 +1158,7 @@ fn seq(i: &mut Input) -> R<Expr> {
     if body.iter().all(|e| matches!(e.kind, ExprKind::NoOp)) {
         let what = match kind {
             SeqKind::On => "an on block must contain at least one statement",
+            SeqKind::Fresh => "a fresh block must contain at least one statement",
             SeqKind::Plain | SeqKind::Queued { .. } => {
                 "a seq block must contain at least one step"
             }
@@ -1659,7 +1678,7 @@ static KEYWORDS: LazyLock<AHashMap<&str, Keyword>> = LazyLock::new(|| {
     let construct = [
         "mod", "let", "select", "type", "fn", "cast", "never", "if", "use", "rec",
         "catch", "try", "pub", "trait", "impl", "seq", "seqq", "until", "live", "mut",
-        "on",
+        "on", "fresh",
     ];
     // the compiler-known type and bound names among them: a user type of
     // one of those names would be unnameable, or silently the builtin
