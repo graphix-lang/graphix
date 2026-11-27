@@ -17,17 +17,20 @@ use graphix_rt::{
 use netidx_value::Value;
 use tokio::{io::DuplexStream, task::JoinHandle};
 
-/// A runtime running a program, and the events its embedder is sent.
+/// A runtime running a program, the events its embedder is sent, and
+/// its debugger.
 struct Running {
     ctx: TestCtx,
     events: Events,
     program: CompRes<NoExt>,
+    debugger: Debugger<NoExt>,
 }
 
 async fn run(program: &'static str, mode: Mode) -> Result<Running> {
     let (ctx, events) = fixture_runtime([], crate::TEST_REGISTER, mode, |_| {}).await?;
     let program = ctx.rt.compile(ArcStr::from(program)).await?;
-    Ok(Running { ctx, events, program })
+    let debugger = Debugger::new(ctx.rt.clone());
+    Ok(Running { ctx, events, program, debugger })
 }
 
 /// A session attached to a runtime.
@@ -39,15 +42,15 @@ struct Session {
 impl Running {
     async fn attach(&self) -> Result<Session> {
         let (ours, theirs) = tokio::io::duplex(1 << 16);
-        let debugger = Debugger::new(self.ctx.rt.clone());
+        let debugger = self.debugger.clone();
         let served = tokio::spawn(async move { debugger.serve(theirs).await });
         Ok(Session { client: Client::connect(ours).await?, served })
     }
 
     /// End the runtime and wait until it has: its last batch is taken.
     async fn shutdown(self) {
-        let Running { ctx, mut events, program } = self;
-        drop(program);
+        let Running { ctx, mut events, program, debugger } = self;
+        drop((program, debugger));
         ctx.shutdown().await;
         while events.recv().await.is_some() {}
     }
@@ -228,7 +231,7 @@ async fn a_session_asks_and_injects() -> Result<()> {
 
         match s.client.request(Command::Info).await? {
             Reply::Info { info } => assert!(
-                info.cycle > 0 && info.sessions == 1 && info.watches == 0,
+                info.cycle > 0 && info.sessions == 1 && info.watching.is_empty(),
                 "{mode:?}: {info:?}"
             ),
             other => bail!("expected info: {other:?}"),
@@ -271,10 +274,11 @@ let b = f(2)
     Ok(())
 }
 
-/// What a session evaluates is its own: the embedder is sent none of its
-/// values, and what it bound is deleted when it closes.
+/// What a session evaluates is the debugger's: the embedder is sent
+/// none of its values, the value it shows ends with it, and what it
+/// bound the next session reads.
 #[tokio::test(flavor = "multi_thread")]
-async fn what_a_session_made_ends_with_it() -> Result<()> {
+async fn what_a_session_binds_the_next_reads() -> Result<()> {
     const SECRET: &str = "only the session sees this";
     let mut rt = run(PROGRAM, Mode::Interp).await?;
     let mut s = rt.attach().await?;
@@ -290,9 +294,13 @@ async fn what_a_session_made_ends_with_it() -> Result<()> {
     assert!(!sent.contains(&Value::I64(47)), "{sent:?}");
     s.close().await?;
     let mut again = rt.attach().await?;
-    let gone = again.refused(Command::Print { target: "z".into() }).await?;
-    assert!(gone.contains("no binding is named z"), "{gone}");
-    assert_eq!(again.print("y").await?.value.as_deref(), Some("42"));
+    assert_eq!(again.print("z").await?.value.as_deref(), Some("5"));
+    assert_eq!(again.eval("z * 2").await?.1.as_deref(), Some("10"));
+    let sent = rt.sent().await?;
+    assert!(
+        !sent.contains(&Value::I64(5)) && !sent.contains(&Value::I64(10)),
+        "{sent:?}"
+    );
     again.close().await?;
     rt.shutdown().await;
     Ok(())
@@ -350,7 +358,8 @@ acc * 2
 /// A held program runs no cycle of its own: what its embedder writes
 /// waits, a session still asks and evaluates, a step runs one cycle of
 /// work and says what it delivered, and a break holds the program at the
-/// cycle its condition is met. The last session to leave lets it run.
+/// cycle its condition is met. The hold, the break and the log are the
+/// program's: the next session finds them as the last left them.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_held_program_waits_and_steps() -> Result<()> {
     const PROGRAM: &str = r#"
@@ -442,6 +451,31 @@ acc * 2
         assert_eq!(logged, [vec!["input"], vec!["acc"]], "{mode:?}: {cycles:?}");
 
         s.close().await?;
+        let mut next = rt.attach().await?;
+        assert_eq!(next.print("acc").await?.value.as_deref(), Some("10"), "{mode:?}");
+        let Reply::Info { info } = next.client.request(Command::Info).await? else {
+            bail!("expected info")
+        };
+        let equals = proto::When::Equals { value: "10".into() };
+        let breaks = info.watching.iter().map(|w| (w.watch, w.name.as_str(), &w.breaks));
+        assert_eq!(
+            breaks.collect::<Vec<_>>(),
+            [(watch, "acc", &Some(equals))],
+            "{mode:?}"
+        );
+        assert!(info.held, "{mode:?}: {info:?}");
+        let Reply::Cycles { cycles } =
+            next.client.request(Command::Cycles { last: Some(1) }).await?
+        else {
+            bail!("expected the cycles")
+        };
+        assert_eq!(cycles[0].delivered[0].name, "acc", "{mode:?}: {cycles:?}");
+        assert!(matches!(
+            next.client.request(Command::Unwatch { watch }).await?,
+            Reply::Unwatched
+        ));
+        assert!(matches!(next.client.request(Command::Continue).await?, Reply::Running));
+        next.close().await?;
         assert_eq!(next_update(&rt.ctx.rt, &mut rt.events, out).await?, Value::I64(30));
         rt.shutdown().await
     }
@@ -592,6 +626,7 @@ acc * 2
     );
     assert!(paused(s.client.ask(Command::Wait).await?));
 
+    assert!(matches!(s.client.request(Command::Continue).await?, Reply::Running));
     s.close().await?;
     assert_eq!(next_update(&rt.ctx.rt, &mut rt.events, out).await?, Value::I64(2));
     rt.shutdown().await;

@@ -27,7 +27,7 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    io::{AsyncBufReadExt, AsyncRead, BufReader},
+    io::{AsyncBufReadExt, AsyncRead, BufReader, Lines},
     select,
     sync::mpsc,
 };
@@ -64,6 +64,10 @@ const BRIEF: usize = 72;
 /// How long a `step` or a `wait` may take where commands are given or
 /// piped in and nobody is there to end it.
 const SCRIPT_LIMIT: Duration = Duration::from_secs(30);
+/// How long a script waits for a program to offer its debugger (or its
+/// limit, where that is shorter), and how often it looks.
+const ATTACH_WAIT: Duration = Duration::from_secs(5);
+const ATTACH_EVERY: Duration = Duration::from_millis(50);
 /// The most lines of a source a why shows.
 const SOURCE_LINES: usize = 4;
 
@@ -479,12 +483,27 @@ fn show_why(out: &mut String, w: &Why, depth: usize) {
 }
 
 fn show_info(out: &mut String, i: &Info) {
+    let state = match (i.held, i.stepping) {
+        (true, _) => CompactString::const_new("held"),
+        (false, 0) => CompactString::const_new("running"),
+        (false, n) => format_compact!("stepping, {n} cycles of work to go"),
+    };
     let _ = writeln!(
         out,
-        "cycle {}; {} bindings; {} fused blocks; {} timers and {} tasks pending; {} \
-         sessions, {} watches",
-        i.cycle, i.bindings, i.fused, i.timers, i.tasks, i.sessions, i.watches
+        "cycle {}, {state}; {} bindings; {} fused blocks; {} timers and {} tasks pending; \
+         {} sessions",
+        i.cycle, i.bindings, i.fused, i.timers, i.tasks, i.sessions
     );
+    for w in &i.watching {
+        let _ = match &w.breaks {
+            None => writeln!(out, "watch {}: {}", w.watch, w.name),
+            Some(When::Value) => writeln!(out, "break {}: {}", w.watch, w.name),
+            Some(When::NoValue) => writeln!(out, "break {}: {} none", w.watch, w.name),
+            Some(When::Equals { value }) => {
+                writeln!(out, "break {}: {} == {value}", w.watch, w.name)
+            }
+        };
+    }
 }
 
 fn show_reply(out: &mut String, reply: &Reply) {
@@ -778,10 +797,56 @@ async fn at_terminal(
     };
     // the editor's thread may hold the terminal raw inside a read
     let _ = crossterm::terminal::disable_raw_mode();
-    if ended {
-        println!("\nthe program ended");
+    match ended {
+        true => println!("\nthe program ended"),
+        // what a session leaves is the program's: say so where it is held
+        false => {
+            if let Ok(Outcome::Ok(Reply::Info { info })) = client.ask(Command::Info).await
+                && info.held
+            {
+                println!("the program is held: `graphix debug -c continue` lets it run")
+            }
+        }
     }
     Ok(())
+}
+
+/// Print each event as it comes, until the program ends or `limit`.
+async fn follow(client: &mut Client<Stream>, how: How) -> Result<()> {
+    let events = async {
+        while let Some(e) = client.event().await? {
+            let mut out: LPooled<String> = LPooled::take();
+            match how.json {
+                true => out.push_str(&serde_json::to_string(&e)?),
+                false => show_event(&mut out, &e),
+            }
+            out.push('\n');
+            let mut stdout = io::stdout().lock();
+            stdout.write_all(out.as_bytes())?;
+            stdout.flush()?
+        }
+        anyhow::Ok(())
+    };
+    within(how.limit, events).await.map(|_| ())
+}
+
+/// The socket of `target` and a connection to it. Where `wait`, a
+/// program that does not answer yet is waited for that long: it may have
+/// just been started.
+async fn attach(target: Option<&str>, wait: Option<Duration>) -> Result<Stream> {
+    let connect = || async {
+        let path = socket(target).await?;
+        let stream = open(&path).await;
+        stream.with_context(|| format!("connecting to {}", path.display()))
+    };
+    let started = tokio::time::Instant::now();
+    loop {
+        match connect().await {
+            Ok(stream) => break Ok(stream),
+            Err(e) if wait.is_none_or(|w| started.elapsed() >= w) => break Err(e),
+            Err(_) => tokio::time::sleep(ATTACH_EVERY).await,
+        }
+    }
 }
 
 /// A program for the client to run itself.
@@ -803,8 +868,12 @@ pub struct Args {
     /// Run this program, attach to it, and stop it when done.
     pub run: Option<Run>,
     pub json: bool,
-    /// The seconds a `step` or a `wait` may take; 0 for no limit. Where
-    /// absent: 30 for commands given or piped in, none at a terminal.
+    /// After the commands, print each event (a watch's, a shown value's)
+    /// as it comes, until the program ends or the limit.
+    pub follow: bool,
+    /// The seconds a `step`, a `wait` or a `follow` may take; 0 for no
+    /// limit. Where absent: 30 for commands given or piped in, none at a
+    /// terminal.
     pub timeout: Option<f64>,
 }
 
@@ -839,21 +908,24 @@ impl Started {
     }
 }
 
-/// Pass on each line `from` yields: a program's output, marked as its
-/// own.
-fn pass_on(
-    from: impl AsyncRead + Unpin + Send + 'static,
+/// A line of a program's output, marked as its own.
+fn marked(mark: &str, line: &str, how: How) -> String {
+    match how.json {
+        true => format!("{}", serde_json::json!({"program": mark, "line": line})),
+        false => format!("[{mark}] {line}"),
+    }
+}
+
+/// Pass on each line left in `lines`: a program's output.
+fn pass_on<R: AsyncRead + Unpin + Send + 'static>(
+    mut lines: Lines<BufReader<R>>,
     mark: &'static str,
     how: How,
     say: Arc<dyn Fn(String) + Send + Sync>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut lines = BufReader::new(from).lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            say(match how.json {
-                true => format!("{}", serde_json::json!({"program": mark, "line": line})),
-                false => format!("[{mark}] {line}"),
-            })
+            say(marked(mark, &line, how))
         }
     })
 }
@@ -879,24 +951,20 @@ async fn start(
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.kill_on_drop(true).spawn().context("running the program")?;
     let (stdout, stderr) = (child.stdout.take(), child.stderr.take());
-    let out = pass_on(stdout.context("the program's stdout")?, "out", how, say.clone());
+    let stdout = BufReader::new(stdout.context("the program's stdout")?).lines();
+    let out = pass_on(stdout, "out", how, say.clone());
     let mut said = BufReader::new(stderr.context("the program's stderr")?).lines();
     loop {
         match said.next_line().await? {
             Some(line) if line.starts_with("debugger: graphix debug ") => break,
-            Some(line) => say(match how.json {
-                true => {
-                    format!("{}", serde_json::json!({"program": "err", "line": line}))
-                }
-                false => format!("[err] {line}"),
-            }),
+            Some(line) => say(marked("err", &line, how)),
             None => {
                 let status = child.wait().await?;
                 bail!("the program ended before it offered a debugger ({status})")
             }
         }
     }
-    let err = pass_on(said.into_inner().into_inner(), "err", how, say);
+    let err = pass_on(said, "err", how, say);
     Ok((Started { child, passing: vec![out, err], _dir: dir }, socket))
 }
 
@@ -910,7 +978,8 @@ pub fn run(args: Args) -> Result<()> {
         .enable_all()
         .build()
         .context("building tokio runtime")?;
-    let script = !args.commands.is_empty() || !io::stdin().is_terminal();
+    // with nothing to run, a follow only listens: it reads no commands
+    let script = !args.commands.is_empty() || args.follow || !io::stdin().is_terminal();
     let limit = match (args.timeout, script) {
         (Some(secs), _) if secs > 0. && secs.is_finite() => {
             Some(Duration::from_secs_f64(secs))
@@ -919,27 +988,31 @@ pub fn run(args: Args) -> Result<()> {
         (None, true) => Some(SCRIPT_LIMIT),
     };
     let how = How { json: args.json, limit, script };
-    let all_answered = rt.block_on(async move {
+    let asked = rt.block_on(async move {
         let printer = ExternalPrinter::default();
         let say: Arc<dyn Fn(String) + Send + Sync> = match script {
-            true => Arc::new(|line| println!("{line}")),
+            true => Arc::new(|line| drop(writeln!(io::stdout(), "{line}"))),
             false => {
                 let printer = printer.clone();
                 Arc::new(move |line| drop(printer.print(line)))
             }
         };
         let (started, path) = match &args.run {
-            None => (None, socket(args.target.as_deref()).await?),
+            None => (None, None),
             Some(run) => {
                 let (started, path) = start(run, how, say).await?;
-                (Some(started), path)
+                (Some(started), Some(path))
             }
         };
         let mut alive = false;
         let asked = async {
-            let stream = open(&path).await;
-            let stream =
-                stream.with_context(|| format!("connecting to {}", path.display()))?;
+            let stream = match &path {
+                Some(path) => attach(path.to_str(), None).await?,
+                None => {
+                    let wait = how.limit.map_or(ATTACH_WAIT, |l| l.min(ATTACH_WAIT));
+                    attach(args.target.as_deref(), script.then_some(wait)).await?
+                }
+            };
             let mut client = Client::connect(stream).await?;
             let mut ok = true;
             if !args.commands.is_empty() {
@@ -951,13 +1024,16 @@ pub fn run(args: Args) -> Result<()> {
                 }
             } else if !script {
                 at_terminal(&mut client, how, printer).await?
-            } else {
+            } else if !args.follow {
                 for line in io::stdin().lock().lines() {
                     match run_line(&mut client, &line?, how).await? {
                         None => break,
                         Some(answered) => ok &= answered,
                     }
                 }
+            }
+            if args.follow {
+                follow(&mut client, how).await?
             }
             // a program whose runtime still answers is stopped at once
             alive = started.is_some()
@@ -976,11 +1052,18 @@ pub fn run(args: Args) -> Result<()> {
                 Ok(asked.unwrap_or(false))
             }
         }
-    })?;
+    });
     // the editor's thread may still be inside a read
     rt.shutdown_background();
-    if !all_answered {
-        std::process::exit(1)
+    let closed = |e: &anyhow::Error| {
+        let io = e.chain().find_map(|c| c.downcast_ref::<io::Error>());
+        io.is_some_and(|e| e.kind() == io::ErrorKind::BrokenPipe)
+    };
+    match asked {
+        // whoever read the output has what it wanted (`| head`)
+        Err(e) if closed(&e) => Ok(()),
+        Err(e) => Err(e),
+        Ok(true) => Ok(()),
+        Ok(false) => std::process::exit(1),
     }
-    Ok(())
 }

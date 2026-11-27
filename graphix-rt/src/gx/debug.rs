@@ -76,13 +76,13 @@ pub(crate) enum Op<X: GXExt> {
         session: SessionId,
         token: u64,
     },
-    /// Tell the session each delivery to `ids`; with `stop`, hold the
+    /// Tell every session each delivery to `ids`, from now until an
+    /// [`Op::Unwatch`] of the number this answers; with `stop`, hold the
     /// program after the cycle of one that meets it.
     Watch {
-        session: SessionId,
-        watch: u64,
         ids: SmallVec<[BindId; 1]>,
         stop: Option<Stop>,
+        res: oneshot::Sender<u64>,
     },
     /// Hold the program: no cycle of its own starts until a session
     /// continues or steps it. Answers the cycle the next one would be.
@@ -106,7 +106,6 @@ pub(crate) enum Op<X: GXExt> {
         res: oneshot::Sender<Vec<Logged>>,
     },
     Unwatch {
-        session: SessionId,
         watch: u64,
         res: oneshot::Sender<bool>,
     },
@@ -122,8 +121,8 @@ pub(crate) enum Op<X: GXExt> {
         column: Option<i32>,
         res: oneshot::Sender<Vec<Fused>>,
     },
-    Counts {
-        res: oneshot::Sender<Counts>,
+    State {
+        res: oneshot::Sender<State>,
     },
 }
 
@@ -170,6 +169,7 @@ pub(crate) enum Paused {
 }
 
 /// When a watch holds the program.
+#[derive(Clone)]
 pub(crate) enum Stop {
     Fires,
     NoValue,
@@ -177,14 +177,6 @@ pub(crate) enum Stop {
 }
 
 impl Stop {
-    fn again(&self) -> Self {
-        match self {
-            Stop::Fires => Stop::Fires,
-            Stop::NoValue => Stop::NoValue,
-            Stop::Equals(v) => Stop::Equals(v.clone()),
-        }
-    }
-
     fn met(&self, delivered: Option<&Value>) -> bool {
         match (self, delivered) {
             (Stop::Fires, Some(_)) | (Stop::NoValue, None) => true,
@@ -229,9 +221,21 @@ pub(crate) struct Fused {
     pub(crate) inputs: Vec<Held>,
 }
 
-pub(crate) struct Counts {
+/// How the debugger stands.
+pub(crate) struct State {
     pub(crate) sessions: usize,
-    pub(crate) watches: usize,
+    pub(crate) held: bool,
+    /// The cycles of work a step still owes.
+    pub(crate) stepping: u64,
+    pub(crate) watches: Vec<Watching>,
+}
+
+/// One binding a watch covers: the watch's number, and what holds the
+/// program where it is a break.
+pub(crate) struct Watching {
+    pub(crate) n: u64,
+    pub(crate) bind: Arc<Bind>,
+    pub(crate) stop: Option<Stop>,
 }
 
 pub(crate) fn held<X: GXExt>(ctx: &ExecState<GXRt<X>>, bind: &Arc<Bind>) -> Held {
@@ -250,29 +254,39 @@ struct Watch {
     stop: Option<Stop>,
 }
 
+/// One connection: where it is told things, and what it waits on.
 struct Session {
     events: UnboundedSender<Fired>,
-    exprs: IntSet<ExprId>,
     /// The tokens of the [`Op::Cycle`]s the next cycle answers.
     awaited: SmallVec<[u64; 2]>,
     /// The tokens of the [`Op::WhenHeld`]s the next hold answers.
     waiting: SmallVec<[u64; 1]>,
-    watches: SmallVec<[Watch; 4]>,
 }
 
-/// The sessions attached, and whether they hold the program. With none
-/// a cycle pays one branch for them.
+/// The debugger's state. It is the program's, not a session's: a hold, a
+/// watch, a break and the cycle log outlive the session that made them,
+/// so asking one thing at a time, each from a session of its own, builds
+/// on what was asked before. Until a session first attaches a cycle pays
+/// one branch for all of it.
 #[derive(Default)]
 pub(super) struct Sessions {
     by_id: IntMap<SessionId, Session>,
+    /// A session has attached: from then on the log is kept and the
+    /// watches looked at.
+    used: bool,
     /// No cycle of the program's starts, unless `steps` are owed.
     held: bool,
     /// The cycles that do the program's work still to run before it is
     /// held again.
     steps: u64,
-    /// The last cycles that delivered something, while a session is
-    /// attached.
+    /// The last cycles that delivered something.
     log: VecDeque<Logged>,
+    watches: Vec<Watch>,
+    /// The watches numbered so far.
+    watched: u64,
+    /// What sessions compiled, each by the session shown its values: none
+    /// of it is the embedder's to see, that session gone or not.
+    exprs: IntMap<ExprId, SessionId>,
 }
 
 impl Sessions {
@@ -281,8 +295,9 @@ impl Sessions {
         Self { held, ..Self::default() }
     }
 
-    pub(super) fn is_empty(&self) -> bool {
-        self.by_id.is_empty()
+    /// Whether a session has ever attached.
+    pub(super) fn used(&self) -> bool {
+        self.used
     }
 
     /// Whether the program is held now.
@@ -296,18 +311,16 @@ impl Sessions {
     }
 
     pub(super) fn owns(&self, id: &ExprId) -> bool {
-        self.by_id.values().any(|s| s.exprs.contains(id))
+        self.exprs.contains_key(id)
     }
 
     /// `id` was deleted: no session's any more.
     pub(super) fn forget(&mut self, id: &ExprId) {
-        for s in self.by_id.values_mut() {
-            s.exprs.remove(id);
-        }
+        self.exprs.remove(id);
     }
 
-    /// Take out of `updated` the roots no session owns: a held cycle
-    /// runs none of the program's.
+    /// Take out of `updated` the roots no session compiled: a held
+    /// cycle runs none of the program's.
     pub(super) fn park(
         &self,
         updated: &mut IntMap<ExprId, bool>,
@@ -348,17 +361,6 @@ impl Sessions {
             }
         }
     }
-
-    /// A session ended. The last one's leaves the program running: held
-    /// with nobody to continue it, it would never run again.
-    fn detach(&mut self, session: SessionId) {
-        self.by_id.remove(&session);
-        if self.by_id.is_empty() {
-            self.held = false;
-            self.steps = 0;
-            self.log.clear()
-        }
-    }
 }
 
 /// The bindings a source reads that bear on its value: those its nodes'
@@ -393,14 +395,15 @@ impl<X: GXExt> GX<X> {
             Op::Attach { session, events } => {
                 let s = Session {
                     events,
-                    exprs: IntSet::default(),
                     awaited: SmallVec::new(),
                     waiting: SmallVec::new(),
-                    watches: SmallVec::new(),
                 };
                 self.debug.by_id.insert(session, s);
+                self.debug.used = true
             }
-            Op::Detach { session } => self.debug.detach(session),
+            Op::Detach { session } => {
+                self.debug.by_id.remove(&session);
+            }
             Op::Pause { session, res } => {
                 let cycle = self.ctx.rt.cycle;
                 if !self.debug.held() {
@@ -448,8 +451,8 @@ impl<X: GXExt> GX<X> {
             Op::Eval { session, text, rt, res } => {
                 let r = self.compile(rt, text).await;
                 self.record_compiled(&r);
-                if let (Ok(r), Some(s)) = (&r, self.debug.by_id.get_mut(&session)) {
-                    s.exprs.extend(r.exprs.iter().map(|e| e.id))
+                if let Ok(r) = &r {
+                    self.debug.exprs.extend(r.exprs.iter().map(|e| (e.id, session)))
                 }
                 let _ = res.send(r);
             }
@@ -458,26 +461,18 @@ impl<X: GXExt> GX<X> {
                     s.awaited.push(token)
                 }
             }
-            Op::Watch { session, watch, ids, stop } => {
-                if let Some(s) = self.debug.by_id.get_mut(&session) {
-                    let mut stop = stop;
-                    let last = ids.len().saturating_sub(1);
-                    for (i, id) in ids.into_iter().enumerate() {
-                        let stop = match i == last {
-                            true => stop.take(),
-                            false => stop.as_ref().map(Stop::again),
-                        };
-                        s.watches.push(Watch { n: watch, id, stop })
-                    }
-                }
+            Op::Watch { ids, stop, res } => {
+                self.debug.watched += 1;
+                let n = self.debug.watched;
+                let watches =
+                    ids.into_iter().map(|id| Watch { n, id, stop: stop.clone() });
+                self.debug.watches.extend(watches);
+                let _ = res.send(n);
             }
-            Op::Unwatch { session, watch, res } => {
-                let had = self.debug.by_id.get_mut(&session).is_some_and(|s| {
-                    let n = s.watches.len();
-                    s.watches.retain(|w| w.n != watch);
-                    s.watches.len() != n
-                });
-                let _ = res.send(had);
+            Op::Unwatch { watch, res } => {
+                let n = self.debug.watches.len();
+                self.debug.watches.retain(|w| w.n != watch);
+                let _ = res.send(self.debug.watches.len() != n);
             }
             Op::Why { id, res } => {
                 let mut above: LPooled<IntSet<BindId>> = LPooled::take();
@@ -486,9 +481,17 @@ impl<X: GXExt> GX<X> {
             Op::FusedAt { file, line, column, res } => {
                 let _ = res.send(self.fused_at(&file, line, column));
             }
-            Op::Counts { res } => {
-                let watches = self.debug.by_id.values().map(|s| s.watches.len()).sum();
-                let _ = res.send(Counts { sessions: self.debug.by_id.len(), watches });
+            Op::State { res } => {
+                let watching = |w: &Watch| {
+                    let bind = self.ctx.env.by_id.get(&w.id)?.clone();
+                    Some(Watching { n: w.n, bind, stop: w.stop.clone() })
+                };
+                let _ = res.send(State {
+                    sessions: self.debug.by_id.len(),
+                    held: self.debug.held(),
+                    stepping: self.debug.steps,
+                    watches: self.debug.watches.iter().filter_map(watching).collect(),
+                });
             }
         }
     }
@@ -513,44 +516,35 @@ impl<X: GXExt> GX<X> {
     ) {
         let cycle = self.ctx.rt.cycle;
         let logged = (!quiet).then(|| self.delivered(cycle)).flatten();
-        let mut stop = None;
-        let mut gone: SmallVec<[SessionId; 1]> = SmallVec::new();
-        for (sid, s) in self.debug.by_id.iter_mut() {
-            let mut alive = !s.events.is_closed();
-            for e in batch.iter() {
-                if let GXEvent::Updated(id, v) = e
-                    && s.exprs.contains(id)
-                {
-                    let fired = Fired::Value { expr: *id, value: v.clone() };
-                    alive &= s.events.send(fired).is_ok()
-                }
-            }
-            for w in s.watches.iter() {
-                let var = self.ctx.rt.var_of(w.id);
-                let Some((tv, at)) = self.ctx.rt.store.get(&var.id()) else { continue };
-                let Some(bind) = self.ctx.env.by_id.get(&w.id) else { continue };
-                if *at == cycle {
-                    let value = (!tv.is_bottom()).then(|| tv.value_cloned());
-                    if w.stop.as_ref().is_some_and(|s| s.met(value.as_ref())) {
-                        stop = stop.or(Some(Paused::Break { watch: w.n }))
-                    }
-                    let fired =
-                        Fired::Watch { watch: w.n, bind: bind.clone(), cycle, value };
-                    alive &= s.events.send(fired).is_ok()
-                }
-            }
-            for token in s.awaited.drain(..) {
-                alive &= s.events.send(Fired::Cycled { token, held: quiet }).is_ok()
-            }
-            if !alive {
-                gone.push(*sid)
+        for e in batch.iter() {
+            let GXEvent::Updated(id, v) = e else { continue };
+            let shown = self.debug.exprs.get(id).and_then(|s| self.debug.by_id.get(s));
+            if let Some(s) = shown {
+                let _ = s.events.send(Fired::Value { expr: *id, value: v.clone() });
             }
         }
         batch.retain(|e| !matches!(e, GXEvent::Updated(id, _) if self.debug.owns(id)));
-        for sid in gone {
-            self.debug.detach(sid)
+        let mut stop = None;
+        for w in self.debug.watches.iter() {
+            let var = self.ctx.rt.var_of(w.id);
+            let Some((tv, at)) = self.ctx.rt.store.get(&var.id()) else { continue };
+            let Some(bind) = self.ctx.env.by_id.get(&w.id) else { continue };
+            if *at == cycle {
+                let value = (!tv.is_bottom()).then(|| tv.value_cloned());
+                if !quiet && w.stop.as_ref().is_some_and(|s| s.met(value.as_ref())) {
+                    stop = stop.or(Some(Paused::Break { watch: w.n }))
+                }
+                let fired = Fired::Watch { watch: w.n, bind: bind.clone(), cycle, value };
+                self.debug.tell(None, fired)
+            }
         }
-        if quiet || self.debug.is_empty() {
+        for s in self.debug.by_id.values_mut() {
+            for token in s.awaited.drain(..) {
+                let _ = s.events.send(Fired::Cycled { token, held: quiet });
+            }
+        }
+        self.debug.by_id.retain(|_, s| !s.events.is_closed());
+        if quiet {
             return;
         }
         if let Some(l) = &logged {
@@ -574,9 +568,6 @@ impl<X: GXExt> GX<X> {
     /// wrote, functions aside, in the order they were introduced; `None`
     /// where nothing.
     fn delivered(&self, cycle: u64) -> Option<Logged> {
-        if self.debug.is_empty() {
-            return None;
-        }
         let mut delivered = Vec::new();
         let mut more = 0;
         for (id, tv) in self.ctx.event.variables.own() {

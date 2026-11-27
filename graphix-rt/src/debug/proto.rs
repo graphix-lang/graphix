@@ -30,8 +30,9 @@ pub struct Request {
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum Command {
     /// Compile `text` against the running program as a REPL input and run
-    /// it: any Graphix. What it binds lives until the session ends; the
-    /// value it shows, until the session's next `eval`.
+    /// it: any Graphix. What it binds lives as long as the debugger, so a
+    /// later session reads it; the value it shows, until the session's
+    /// next `eval` or its end.
     Eval {
         text: ArcStr,
     },
@@ -51,7 +52,8 @@ pub enum Command {
         target: CompactString,
         value: ArcStr,
     },
-    /// Send a [`Event::Fired`] at each fire of the target's bindings.
+    /// Send every session a [`Event::Fired`] at each fire of the target's
+    /// bindings, until an `unwatch`: this session, and those after it.
     Watch {
         target: CompactString,
     },
@@ -64,8 +66,9 @@ pub enum Command {
     },
     Info,
     /// Hold the program: it runs no cycle of its own until a `continue`
-    /// or a `step`. What arrives for it meanwhile waits. A held program
-    /// still answers, and an `eval` still runs, against what stands.
+    /// or a `step`, from this session or a later one. What arrives for
+    /// it meanwhile waits. A held program still answers, and an `eval`
+    /// still runs, against what stands.
     Pause,
     Continue,
     /// Let the program run until `cycles` more of its cycles (one where
@@ -311,6 +314,8 @@ pub struct Why {
     pub again: bool,
 }
 
+/// How the program and its debugger stand. What `held`, `stepping` and
+/// `watching` say is the program's: it outlives the session that set it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Info {
     pub cycle: u64,
@@ -319,5 +324,18 @@ pub struct Info {
     pub timers: usize,
     pub tasks: usize,
     pub sessions: usize,
-    pub watches: usize,
+    /// No cycle of the program's runs until a `continue` or a `step`.
+    pub held: bool,
+    /// The cycles of work a step still owes before the program is held.
+    pub stepping: u64,
+    pub watching: Vec<Watching>,
+}
+
+/// One binding a watch covers, and for a break what holds the program.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Watching {
+    pub watch: u64,
+    pub binding: CompactString,
+    pub name: CompactString,
+    pub breaks: Option<When>,
 }

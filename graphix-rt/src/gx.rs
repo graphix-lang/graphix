@@ -787,7 +787,7 @@ impl<X: GXExt> GX<X> {
                 }
             }
         });
-        if !self.debug.is_empty() {
+        if self.debug.used() {
             self.debug_cycle(&mut batch, quiet, stepped)
         }
         // before the send loop, which may compile roots for the next cycle

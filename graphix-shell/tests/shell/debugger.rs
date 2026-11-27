@@ -214,8 +214,13 @@ fn the_default_socket_is_the_owners_and_found() {
         assert!(answered, "{target:?}: {out}");
         has(&out, &["price: i64 = 10"]);
     }
-    let (answered, out) = run.debug(Some("1"), &["info"]);
-    assert!(!answered && out.contains("connecting to"), "{out}");
+    // a script waits for a program that may have just been started, at
+    // most its limit
+    let mut nobody = graphix(dir.path());
+    nobody.args(["debug", "1", "--timeout", "0.2", "-c", "info"]);
+    let out = common::output(nobody);
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success() && said.contains("connecting to"), "{said}");
 }
 
 /// `--debug-wait` holds a program before its first cycle. A session
@@ -280,8 +285,8 @@ sys::exit(select go { true => go ~ 0, false => never() })
             ["input = 6, doubled = 12", "input = 7, doubled = 14"],
             "{label}:\n{out}"
         );
-        // the session's end lets the held program run; this one ends it
-        let _ = run.debug(None, &["set go = true"]);
+        // the break still holds it: let it run, and end it
+        let _ = run.debug(None, &["continue", "set go = true"]);
         let status = run.ended();
         assert!(status.success(), "{label}: {status:?}");
     }
@@ -329,7 +334,10 @@ fn one_command_runs_a_program_and_asks() {
         (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     assert_eq!(out.status.code(), Some(1), "{stdout}{stderr}");
     assert!(stdout.contains("[err] Error: parsing"), "{stdout}{stderr}");
-    assert!(stderr.contains("the program ended by itself"), "{stdout}{stderr}");
+    assert!(
+        stderr.contains("the program ended before it offered a debugger"),
+        "{stdout}{stderr}"
+    );
 }
 
 /// Where nobody is there to end it, a wait gives up at its limit and a
@@ -367,4 +375,63 @@ sys::exit(select go { true => go ~ 0, false => never() })
         ],
     );
     drop(run);
+}
+
+/// One command at a time, each its own `graphix debug`, builds on the
+/// last: a hold, a break, a binding and the cycle log are the program's,
+/// and a follow in one process hears what another does.
+#[test]
+fn one_command_at_a_time_builds_on_the_last() {
+    const PROGRAM: &str = r#"let input = 0;
+let doubled = input * 2;
+let go = false;
+sys::exit(select go { true => go ~ 0, false => never() })
+"#;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let socket = socket_in(dir.path());
+    let offer = format!("--debug={}", socket.display());
+    let run = Running::start(dir.path(), PROGRAM, &["--no-cache", offer.as_str()]);
+    has(&run.ask(&["pause"]), &["held before cycle"]);
+    assert!(run.ask(&["info"]).contains(", held;"));
+    has(&run.ask(&["set input = 5"]), &["input <- 5    the program is held"]);
+    let stepped = run.ask(&["step"]);
+    assert!(stepped.trim_end().ends_with(": input = 5, doubled = 10"), "{stepped}");
+    has(&run.ask(&["break doubled == 14"]), &["watch 1: doubled: i64 = 10"]);
+    assert_eq!(run.ask(&["let extra = doubled + 1"]), "");
+    has(&run.ask(&["extra"]), &["-: i64", "11"]);
+    has(&run.ask(&["continue"]), &["running"]);
+    has(&run.ask(&["set input = 7"]), &["input <- 7", "doubled = 14    watch 1"]);
+    has(&run.ask(&["wait"]), &["held before cycle"]);
+    has(&run.ask(&["info"]), &["break 1: doubled == 14"]);
+    let logged = run.ask(&["cycles 1"]);
+    assert!(
+        logged.trim_end().ends_with(": input = 7, doubled = 14, extra = 15"),
+        "{logged}"
+    );
+    has(
+        &run.ask(&["unwatch 1", "continue", "watch input"]),
+        &["running", "watch 2: input"],
+    );
+
+    let mut follower = graphix(dir.path());
+    follower.arg("debug").arg(&socket).args(["-c", "info", "--follow", "--timeout", "0"]);
+    follower.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    let mut follower = follower.spawn().expect("run graphix debug");
+    let mut heard = BufReader::new(follower.stdout.take().expect("its stdout")).lines();
+    let mut next = || heard.next().expect("the follower's output").expect("a line");
+    // its commands are done once it has said the state: it listens now
+    while !next().starts_with("watch 2: input") {}
+    has(&run.ask(&["set input = 9"]), &["input <- 9"]);
+    assert_eq!(next(), "input = 9    watch 2, cycle ".to_string() + &last_cycle(&run));
+    let _ = follower.kill();
+    let _ = follower.wait();
+    let _ = run.debug(None, &["set go = true"]);
+    assert!(run.ended().success());
+}
+
+/// The cycle that last delivered something, as `cycles 1` shows it.
+fn last_cycle(run: &Running) -> String {
+    let logged = run.ask(&["cycles 1"]);
+    let number = logged.strip_prefix("cycle ").and_then(|l| l.split(':').next());
+    number.unwrap_or_else(|| panic!("no cycle in {logged}")).to_string()
 }

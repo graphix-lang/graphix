@@ -156,9 +156,14 @@ enum Command {
         /// print each answer and event as a line of JSON
         #[arg(long)]
         json: bool,
-        /// the seconds a step or a wait may take before it is given up
-        /// (0: no limit). Without it: 30 where commands are given by -c
-        /// or piped in, no limit at a terminal
+        /// after the commands, go on printing each event (a watch's, a
+        /// shown value's) as it comes, until the program ends, the
+        /// output is closed or the timeout
+        #[arg(long)]
+        follow: bool,
+        /// the seconds a step, a wait or a follow may take before it is
+        /// given up (0: no limit). Without it: 30 where commands are
+        /// given by -c or piped in, no limit at a terminal
         #[arg(long, value_name = "SECONDS")]
         timeout: Option<f64>,
         /// with --run: the program's arguments, after `--`
@@ -639,7 +644,16 @@ fn main() -> Result<()> {
             let _logger = start_logger(p.log_dir.as_deref(), "warn")?;
             return graphix_shell::lsp_backend::run();
         }
-        Some(Command::Debug { target, commands, run, held, json, timeout, args }) => {
+        Some(Command::Debug {
+            target,
+            commands,
+            run,
+            held,
+            json,
+            follow,
+            timeout,
+            args,
+        }) => {
             let given = [
                 (p.no_fusion, "--no-fusion"),
                 (p.no_cache, "--no-cache"),
@@ -655,6 +669,7 @@ fn main() -> Result<()> {
                 commands,
                 run,
                 json,
+                follow,
                 timeout,
             });
         }

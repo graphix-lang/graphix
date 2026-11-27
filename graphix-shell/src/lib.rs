@@ -414,7 +414,10 @@ struct Session<X: GXExt> {
     /// the runtime stopped.
     exit: Option<oneshot::Receiver<i32>>,
     keys: tokio::task::JoinHandle<()>,
-    _debug: Option<debug::Offered>,
+    /// The debugger's socket, offered once the program has loaded: a
+    /// session that attached before would ask a program that is not
+    /// there yet.
+    debug: Option<debug::Offered>,
 }
 
 impl<X: GXExt> Session<X> {
@@ -984,6 +987,12 @@ impl<X: GXExt> Shell<X> {
                 }
                 Err(code) => break Ok(code),
             };
+            if let (Some(path), None) = (&self.debug, &session.debug) {
+                match debug::offer(&session.gx, path) {
+                    Ok(offered) => session.debug = Some(offered),
+                    Err(e) => break Err(e),
+                }
+            }
             if !std::mem::replace(&mut greeted, true) {
                 println!("Welcome to the graphix shell");
                 println!(
@@ -1157,10 +1166,6 @@ impl<X: GXExt> Shell<X> {
         let mut signals = KeySignals::new()?;
         let (tx, from_gx) = mpsc::channel(100);
         let gx = self.init(tx).await?;
-        let _debug = match &self.debug {
-            Some(path) => Some(debug::offer(&gx, path)?),
-            None => None,
-        };
         let exit = self.exit.take().expect("init installs the exit request");
         let script = self.mode.file_mode();
         // Armed before the first cycle: a program may wedge inside
@@ -1178,7 +1183,7 @@ impl<X: GXExt> Shell<X> {
                 }
             })
         };
-        Ok(Session { gx, from_gx, exit: Some(exit), keys, _debug })
+        Ok(Session { gx, from_gx, exit: Some(exit), keys, debug: None })
     }
 }
 

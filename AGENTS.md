@@ -296,9 +296,9 @@ cargo run --bin graphix -- file.gx       # run
 cargo run --bin graphix -- --check file.gx     # compile + typecheck only
 cargo run --bin graphix -- --expand file.gx    # check + print each seq's lowered machine
 cargo run --bin graphix -- fmt file.gx         # format in place (--check, --stdout; stdin when no file)
-cargo run --bin graphix -- debug --run file.gx -c 'why x'   # run it, ask, stop it (--json, --held)
 cargo run --bin graphix -- --debug file.gx     # run, offering the debugger on a socket
-cargo run --bin graphix -- debug -c 'why x'    # ask a program already running
+cargo run --bin graphix -- debug -c 'why x'    # ask it: one command a run, each building on the last
+cargo run --bin graphix -- debug --run file.gx -c 'why x'   # shorthand: run it, ask, stop it
 ```
 
 Tests run in parallel by design (the compiler supports many instances
@@ -645,7 +645,9 @@ a running program's debugger and `graphix debug` attaches: a REPL in the
 program plus `print`, `list`, `watch`, `set`, `why` (which walks from a
 binding with no value to where the nothing starts), and `pause`, `step`,
 `break` and `cycles`; a held runtime runs no cycle of the program's
-(`GX::run`), only quiet ones for what a session evaluates. The service is
+(`GX::run`), only quiet ones for what a session evaluates. Its state (a
+hold, a break, a watch, the log, what an eval bound) is the program's and
+outlives the session that set it. The service is
 `graphix_rt::debug` (an embedder hands it a stream or a listener), its
 hooks `graphix-rt/src/gx/debug.rs`, and what it asks of the node graph
 rides `Update::refs` (`graphix-compiler/src/seek.rs`). A debugger that

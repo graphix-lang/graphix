@@ -125,9 +125,9 @@ debug> price <- 12
 ```
 
 The value of the last expression you evaluate is shown again each time it
-changes, until you evaluate something else. What you bind lasts until you
-detach. Start a line with `eval` when its first word is also a command's
-name.
+changes, until you evaluate something else or detach. What you bind
+stays, for you and for whoever attaches next. Start a line with `eval`
+when its first word is also a command's name.
 
 `set` delivers a value to any binding, as if the program had written it:
 
@@ -179,7 +179,10 @@ To debug a program's very start, run it with `--debug-wait`: it offers
 its debugger and waits, held, before its first cycle, until you `step` or
 `continue`.
 
-When you detach, a held program runs again.
+What you set stays with the program, not with your session: a held
+program stays held when you detach, a break stays set, and the next
+`graphix debug` finds them (`info` shows them). `continue` lets a held
+program run.
 
 ## Native code
 
@@ -201,21 +204,33 @@ Run the program with `--no-fusion` to see inside.
 
 ## Scripts and agents
 
-`graphix debug --run` does the whole thing in one command: it runs the
-program with its debugger on, asks, and stops it. What the program
-prints is passed on, marked `[out]` or `[err]`.
+Run the program as usual with `--debug`, and ask it one thing at a time.
+Each `graphix debug -c` connects, runs its command and exits, and each
+builds on the last, because a pause, a break, a watch and what you bound
+stay with the program:
 
 ```bash
-graphix debug --run ./myprogram.gx -c 'why total'
-graphix --no-fusion debug --run ./myprogram.gx -c 'why total'
-graphix debug --run ./myprogram.gx --held -c 'break total none' -c continue -c wait -c 'why total'
+graphix --debug ./myprogram.gx &
+
+graphix debug -c 'why total'
+graphix debug -c 'print qty'
+graphix debug -c 'break total none'
+graphix debug -c wait            # until the break holds the program
+graphix debug -c 'why total'
+graphix debug -c continue
 ```
 
-`-c` runs one command and may be given several times; lines piped to
-`graphix debug` are run the same way. The exit status is 1 if a command
-was refused. `--held` starts the program held, as `--debug-wait` does,
-and `--` passes the program its own arguments. `--json` prints each
-answer as a line of JSON.
+`-c` may be given several times, and lines piped to `graphix debug` are
+run the same way. The exit status is 1 if a command was refused. `--json`
+prints each answer as a line of JSON. A program that was only just
+started is waited for, a few seconds.
+
+`--follow` keeps listening after the commands and prints each event as
+it comes, until the program ends, its output is closed, or the timeout:
+
+```bash
+graphix debug -c 'watch tick' --follow | head -5
+```
 
 A script never waits for ever. A `step` is waited out before the next
 command, and `wait` waits until a break holds the program, but each
@@ -226,11 +241,17 @@ do is ended, and leaves the program held.
 At a terminal nothing times out: press the interrupt key to abandon a
 command that is waiting, and `pause` to end a step.
 
-To attach to a program that is already running, leave out `--run`:
+For a single question there is a shorthand that runs the program, asks,
+and stops it, passing on what the program prints marked `[out]` or
+`[err]`:
 
 ```bash
-graphix debug -c 'why total' -c 'print price'
+graphix debug --run ./myprogram.gx -c 'why total'
+graphix --no-fusion debug --run ./myprogram.gx -c 'why total'
 ```
+
+`--held` starts that program held, as `--debug-wait` does, and `--`
+passes it its own arguments.
 
 `--debug=PATH` chooses the socket. By default it is in your runtime
 directory (`$XDG_RUNTIME_DIR/graphix/`), named for the process, and only

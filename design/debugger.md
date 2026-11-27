@@ -50,9 +50,19 @@ debugger.listen_pipe(first_instance, make_next).await?; // cfg(windows)
 The embedder creates the socket or the pipe, so its path, its
 permissions and who may connect are its own business. `serve` over a
 plain stream covers the rest: TCP under TLS, stdio, an in-memory pair in
-a test. Nothing listens unless the embedder calls one of these, and with
-no session attached a cycle pays one branch. `with_types` sets how a
-session prints a type (the shell passes the REPL's printer).
+a test. Nothing listens unless the embedder calls one of these, and
+until a session first attaches a cycle pays one branch. `with_types`
+sets how a session prints a type (the shell passes the REPL's printer).
+
+**The debugger's state is the program's, not a session's.** A session
+is a connection. A hold, a watch, a break, the cycle log and what an
+`eval` bound all outlive the session that made them (the first four are
+the runtime's, `gx::debug::Sessions`; the bindings are the `Debugger`'s),
+so asking one thing at a time, each from a short session of its own,
+builds on what was asked before. Only the value an `eval` shows, and
+the answers a session waits for, end with the session. Nothing is
+released when a session leaves: a held program stays held until some
+session says `continue`.
 
 `graphix_rt::debug::Client` speaks the protocol from the other end.
 
@@ -62,25 +72,35 @@ session prints a type (the shell passes the REPL's printer).
   `debugger: graphix debug PATH` on stderr. With no path it is
   `$XDG_RUNTIME_DIR/graphix/debug-<pid>.sock`: the directory is made mode
   0700 and the socket 0600. The socket is removed when the program ends.
-  A path that is a live socket, or no socket, is refused.
+  A path that is a live socket, or no socket, is refused. It is offered
+  once the program has loaded: a session that attached before would ask
+  a program that is not there yet, and one that fails to compile never
+  offers it.
 - `graphix --debug-wait prog.gx` offers the socket and holds the program
   before its first cycle: it starts when a session says `continue` or
   `step`.
-- `graphix debug [PATH | PID] [-c CMD]..` attaches. With no target it
+- `graphix debug [PATH | PID] [-c CMD]..` attaches, runs its commands
+  and exits: the harness for a script or an agent, run once for each
+  thing asked, against a program run as usual. With no target it
   attaches to the one program that offers a debugger and lists them when
-  there are several. `-c` runs a command and exits (several may be
-  given), as lines piped to stdin do; the exit status is 1 if any was
-  refused, and a `step` is waited out before the next command. At a
-  terminal it reads lines with a line editor, and what a watch or a
-  shown value reports prints above the prompt.
-- `graphix debug --run FILE [-c CMD].. [-- ARGS]` is one command for an
-  agent or a script: it runs the program with its debugger offered on a
+  there are several. `-c` runs a command (several may be given), as
+  lines piped to stdin do; the exit status is 1 if any was refused. A
+  program that does not answer yet is waited for, up to five seconds: it
+  may have just been started. With no commands at a terminal it reads
+  lines with a line editor, and what a watch or a shown value reports
+  prints above the prompt.
+- `--follow` goes on after the commands, printing each event (a watch's,
+  a shown value's) as it comes, until the program ends, the output is
+  closed (`| head`) or the timeout. With no commands it only listens, so
+  one process follows what the others do.
+- `graphix debug --run FILE [-c CMD].. [-- ARGS]` is the same with the
+  program run by the client: it starts it with its debugger offered on a
   socket of its own (`--held`: before its first cycle), attaches, runs
-  the commands, and stops the program. What the program prints is passed
-  on, each line marked `[out]` or `[err]`. `--no-fusion`, `--no-cache`,
+  the commands, and stops it. What the program prints is passed on, each
+  line marked `[out]` or `[err]`. `--no-fusion`, `--no-cache`,
   `--no-netidx` and `--no-init` given before `debug` are the program's.
-  A program that ends by itself is given the time a shell takes to end,
-  so its error is heard, and how it ended is said.
+  It suits one question; several, one at a time, want a program that
+  stays up.
 - `--json` prints each answer as a line of JSON, `{"cmd": .., "ok": ..}`
   or `{"cmd": .., "err": ..}`, with the events before it as the protocol
   writes them and the program's lines as `{"program": "out", "line": ..}`.
@@ -174,13 +194,13 @@ expressions that cover the place.
 
 | Command | What it does |
 |---|---|
-| `eval EXPR` | compile against the live program as a REPL input and run it: any Graphix, a read, a `<-`, a `let`. What it binds lives until the session ends. Its value, where its last expression has one, is shown as it changes until the session's next `eval`, as the REPL replaces what it shows |
+| `eval EXPR` | compile against the live program as a REPL input and run it: any Graphix, a read, a `<-`, a `let`. What it binds lives as long as the debugger, so a later session reads it. Its value, where its last expression has one, is shown as it changes until the session's next `eval` or its end, as the REPL replaces what it shows |
 | `print TARGET` | each binding's type, value and the cycle of its last delivery; for a place inside fused code, the block |
 | `list [MODULE \| FILE]` | the program's bindings in file order |
 | `set TARGET = EXPR` | evaluate `EXPR` once and deliver its value to one binding as an embedder's write does. Any binding may be set; a `let x = a + b` that is set holds the value until `a` or `b` fires again. A value that is not of the binding's type is refused |
-| `watch TARGET` / `unwatch N` | an event at each delivery to the bindings: the cycle and the value, or that it went to none |
+| `watch TARGET` / `unwatch N` | an event to every session at each delivery to the bindings: the cycle and the value, or that it went to none. The watch is the program's and numbered by it: it reports to later sessions too, until an `unwatch` from any of them |
 | `why TARGET` | §6 |
-| `info` | the cycle, the counts of bindings and fused blocks, the timers and tasks pending, the sessions and watches |
+| `info` | the cycle, whether the program runs, is held or steps, the counts of bindings and fused blocks, the timers and tasks pending, and each watch and break: what a session needs to know of what the ones before it left |
 
 `eval` may do anything in the program (Eric: allow it all). It compiles
 as a REPL input does, so the rules for a top-level input hold.
@@ -192,12 +212,13 @@ as a REPL input does, so the rules for a top-level input hold.
 | `pause` / `continue` | hold the program, let it run. A held program runs no cycle of its own: what timers, tasks and its embedder send waits. It still answers, and an `eval` still runs, against what stands; a `set` waits with the rest, and its answer says so |
 | `step [N]` | let it run until `N` (1) more cycles have done its work, then hold it, saying what the last one delivered. A step with nothing to do waits until something arrives |
 | `break TARGET [== EXPR \| none]` | a watch that also holds the program after the cycle in which the binding is written, is written a value equal to `EXPR`'s (evaluated once), or goes to no value. `unwatch N` removes it |
-| `cycles [N]` | what each of the last `N` (10) cycles delivered to the bindings the author wrote, functions aside. The last 256 cycles that delivered something are kept while a session is attached |
+| `cycles [N]` | what each of the last `N` (10) cycles delivered to the bindings the author wrote, functions aside. The last 256 cycles that delivered something are kept, from the first session's attach on |
 | `wait` | answer once the program is held: for a script after `continue` to a break. Requests after it are served while it is pending, and a `pause` ends it |
 
-`graphix --debug-wait` and `GXConfig::paused` start a program held. The
-last session to leave lets a held program run: held with nobody to
-continue it, it would never run again.
+`graphix --debug-wait` and `GXConfig::paused` start a program held. A
+hold is the program's: it stays held when the session that held it
+leaves, as a break stays set, and the terminal client says so when it
+quits a held program.
 
 **Phase 2, built: reasons inside a node** (§6).
 
@@ -295,8 +316,10 @@ text.
 - **A session's expressions** are roots like a REPL input's. Their values
   are taken out of the embedder's batch and sent to the session, so a
   display never sees them.
-- **A session that ends** detaches (`Attached`'s drop), and the handles
-  of what it compiled are dropped with it, which deletes them.
+- **A session that ends** detaches (`Attached`'s drop) and takes with it
+  only the value it showed and the answers it waited for. What its evals
+  bound is held by the `Debugger`, and their roots stay out of the
+  embedder's batch, shown to nobody.
 - **The hold** is one test in `GX::run`: a held runtime treats nothing
   the program has pending as ready, stops polling the embedder's
   sources, and answers no idle waiter. It still serves every request.
@@ -309,8 +332,8 @@ text.
   delivered something or ran a root no session owns. The cycles that
   queries start count for nothing.
 - **The cycle log** is read off the cycle's event after its nodes ran
-  (`Layered::own`), so it costs a pass over that cycle's deliveries, and
-  only while a session is attached.
+  (`Layered::own`), so it costs a pass over that cycle's deliveries, from
+  the first session's attach on.
 - **Session images, fusion, parallel evaluation and walk pruning** are
   untouched. A debugger that changes what a program computes is a bug.
 
@@ -327,14 +350,16 @@ the transport's.
 - The service over an in-memory stream, in every mode
   (`stdlib/graphix-tests/tests/shared/debugger.rs`): each command;
   instances told apart; a session's values kept from the embedder and its
-  bindings deleted when it closes; a watched program computing what it
-  computes alone; a held program waiting, stepped, and held at a break.
+  bindings read by the next; a watched program computing what it
+  computes alone; a held program waiting, stepped, and held at a break,
+  with the hold, the break and the log found by the next session.
 - The shell (`graphix-shell/tests/shell/debugger.rs`): a second process
   asking a running program, cold and from the image, in both engines; the
   fused box; the default socket's place and permissions; a program
   started held, stepped and run to a break; `--run` with `--json`, and a
   program that fails to compile; a wait and a step that give up at their
-  limit.
+  limit; one command at a time, each its own process, building on the
+  last, with a follower in another process.
 - `why_says_what_the_nodes_know` there pins each kind of note.
 - Not built: a fuzzer lane holding a watched program's trace to the
   unwatched one's.

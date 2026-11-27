@@ -13,7 +13,8 @@ pub use client::Client;
 use crate::{
     CompExp, CompRes, GXExt, GXHandle, ToGX,
     gx::debug::{
-        Counts, Fired, Fused, Held, Logged, Op, Paused, Stop, Why, authored, held,
+        Fired, Fused, Held, Logged, Op, Paused, State, Stop, Watching, Why, authored,
+        held,
     },
 };
 use anyhow::{Context, Result, anyhow, bail};
@@ -31,6 +32,7 @@ use graphix_compiler::{
 use log::warn;
 use netidx_core::atomic_id;
 use netidx_value::Value;
+use parking_lot::Mutex;
 use poolshark::local::LPooled;
 use proto::{Command, Outcome, Reply, Request, Response, When};
 use serde::{Deserialize, Serialize};
@@ -69,17 +71,21 @@ fn show_type(typ: &Type) -> CompactString {
 pub struct Debugger<X: GXExt> {
     gx: GXHandle<X>,
     show: ShowType,
+    /// What its sessions' evals bound and declared, held so it lives as
+    /// long as the debugger: a later session reads what an earlier one
+    /// bound.
+    kept: Arc<Mutex<Vec<CompExp<X>>>>,
 }
 
 impl<X: GXExt> Clone for Debugger<X> {
     fn clone(&self) -> Self {
-        Self { gx: self.gx.clone(), show: self.show }
+        Self { gx: self.gx.clone(), show: self.show, kept: self.kept.clone() }
     }
 }
 
 impl<X: GXExt> Debugger<X> {
     pub fn new(gx: GXHandle<X>) -> Self {
-        Self { gx, show: show_type }
+        Self { gx, show: show_type, kept: Arc::new(Mutex::new(Vec::new())) }
     }
 
     /// Show types as `show` prints them.
@@ -88,7 +94,9 @@ impl<X: GXExt> Debugger<X> {
     }
 
     /// Serve one session over `stream` until the client closes it or the
-    /// runtime ends. What the session compiled is deleted with it.
+    /// runtime ends. What it did outlives it: a hold, a watch, a break
+    /// and what its evals bound are the program's, and the next session
+    /// finds them. The value an eval shows ends with its session.
     pub async fn serve<S>(&self, stream: S) -> Result<()>
     where
         S: AsyncRead + AsyncWrite + Unpin,
@@ -105,7 +113,7 @@ impl<X: GXExt> Debugger<X> {
             out,
             events,
             shown: None,
-            kept: Vec::new(),
+            kept: self.kept.clone(),
             made: 0,
             tokens: 0,
             waits: SmallVec::new(),
@@ -199,9 +207,8 @@ struct Session<X: GXExt, W> {
     out: W,
     events: UnboundedReceiver<Fired>,
     shown: Option<Shown<X>>,
-    /// What the evals bound and declared, held so it lives as long as
-    /// the session.
-    kept: Vec<CompExp<X>>,
+    /// What evals bound and declared ([`Debugger`]'s).
+    kept: Arc<Mutex<Vec<CompExp<X>>>>,
     /// The evals and watches numbered so far.
     made: u64,
     /// The cycles and holds waited for so far.
@@ -759,10 +766,9 @@ impl<X: GXExt, W: AsyncWrite + Unpin> Session<X, W> {
         if held.len() > WATCHED {
             bail!("{target} names {} bindings, and a watch covers {WATCHED}", held.len())
         }
-        self.made += 1;
-        let (session, watch) = (self.attached.id, self.made);
         let ids = held.iter().map(|h| h.bind.id).collect();
-        self.attached.op(Op::Watch { session, watch, ids, stop })?;
+        let gx = self.attached.gx.clone();
+        let watch = gx.exec(|res| ToGX::Debug(Op::Watch { ids, stop, res })).await?;
         let bindings = held.iter().map(|h| self.binding(h)).collect();
         Ok(Reply::Watching { watch, bindings })
     }
@@ -782,13 +788,13 @@ impl<X: GXExt, W: AsyncWrite + Unpin> Session<X, W> {
                     self.shown = None;
                     return Ok(Some(Reply::Evaled { eval, typ: None }));
                 };
-                self.kept.extend(res.exprs.drain(..));
+                self.kept.lock().extend(res.exprs.drain(..));
                 let typ = last.output.then(|| (self.show)(&last.typ).as_str().into());
                 match last.output {
                     true => self.shown = Some(Shown { eval, env: res.env, expr: last }),
                     false => {
                         self.shown = None;
-                        self.kept.push(last)
+                        self.kept.lock().push(last)
                     }
                 }
                 self.cycled(None).await?;
@@ -896,12 +902,9 @@ impl<X: GXExt, W: AsyncWrite + Unpin> Session<X, W> {
                 Ok(Reply::Cycles { cycles: log.iter().map(|l| self.cycle(l)).collect() })
             }
             Command::Unwatch { watch } => {
-                match gx
-                    .exec(|res| ToGX::Debug(Op::Unwatch { session, watch, res }))
-                    .await?
-                {
+                match gx.exec(|res| ToGX::Debug(Op::Unwatch { watch, res })).await? {
                     true => Ok(Reply::Unwatched),
-                    false => bail!("this session has no watch {watch}"),
+                    false => bail!("there is no watch {watch}"),
                 }
             }
             Command::Why { target } => {
@@ -918,8 +921,21 @@ impl<X: GXExt, W: AsyncWrite + Unpin> Session<X, W> {
                     (cycle, ctx.env.by_id.len(), ctx.fusion.fused(), timers, tasks)
                 });
                 let (cycle, bindings, fused, timers, tasks) = read.await?;
-                let Counts { sessions, watches } =
-                    gx.exec(|res| ToGX::Debug(Op::Counts { res })).await?;
+                let State { sessions, held, stepping, watches } =
+                    gx.exec(|res| ToGX::Debug(Op::State { res })).await?;
+                self.env = gx.get_env().await?;
+                let watching = |w: &Watching| proto::Watching {
+                    watch: w.n,
+                    binding: handle(w.bind.id),
+                    name: w.bind.name.clone(),
+                    breaks: w.stop.as_ref().map(|s| match s {
+                        Stop::Fires => When::Value,
+                        Stop::NoValue => When::NoValue,
+                        Stop::Equals(v) => {
+                            When::Equals { value: printed(&self.env, &w.bind.typ, v) }
+                        }
+                    }),
+                };
                 let info = proto::Info {
                     cycle,
                     bindings,
@@ -927,7 +943,9 @@ impl<X: GXExt, W: AsyncWrite + Unpin> Session<X, W> {
                     timers,
                     tasks,
                     sessions,
-                    watches,
+                    held,
+                    stepping,
+                    watching: watches.iter().map(watching).collect(),
                 };
                 Ok(Reply::Info { info })
             }
