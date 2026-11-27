@@ -433,8 +433,10 @@ are in the docs named here.
 
 **The debugger** (`design/debugger.md`): `graphix --debug prog.gx` offers
 a running program's debugger and `graphix debug` attaches: a REPL in the
-program plus `print`, `list`, `watch`, `set` and `why`, which walks from a
-binding with no value to where the nothing starts. The service is
+program plus `print`, `list`, `watch`, `set`, `why` (which walks from a
+binding with no value to where the nothing starts), and `pause`, `step`,
+`break` and `cycles`; a held runtime runs no cycle of the program's
+(`GX::run`), only quiet ones for what a session evaluates. The service is
 `graphix_rt::debug` (an embedder hands it a stream or a listener), its
 hooks `graphix-rt/src/gx/debug.rs`, and what it asks of the node graph
 rides `Update::refs` (`graphix-compiler/src/seek.rs`). A debugger that

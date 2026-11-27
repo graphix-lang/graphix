@@ -6602,6 +6602,37 @@ price &lt;- 100
 </code></pre>
 <p>A binding computed from others keeps the value you set until one of them
 fires again.</p>
+<h2 id="pausing-and-stepping"><a class="header" href="#pausing-and-stepping">Pausing and stepping</a></h2>
+<p><code>pause</code> holds the program: it runs nothing more until you say so. What
+arrives for it meanwhile (a timer, a key, a network reply) waits. You can
+still ask anything, and evaluate against what stands.</p>
+<p><code>step</code> lets it run just until the next cycle that does something, then
+holds it again and shows what that cycle wrote. <code>continue</code> lets it run.</p>
+<pre><code class="language-text">debug&gt; pause
+held before cycle 5
+debug&gt; step
+held after cycle 6: tick = 1
+debug&gt; set price = 5
+price &lt;- 5    the program is held: it lands when it runs
+debug&gt; step
+held after cycle 12: price = 5, total has no value, scaled = 11
+debug&gt; continue
+running
+</code></pre>
+<p><code>break</code> holds the program by itself, at the cycle a binding is written:</p>
+<pre><code class="language-text">debug&gt; break tick == 12
+watch 2: tick: i64 = 4    #4249 myprogram.gx:1:5, written in cycle 13
+tick = 5    watch 2, cycle 15
+...
+break 2: held after cycle 29: tick = 12
+</code></pre>
+<p><code>break NAME</code> holds at any write, <code>break NAME == EXPR</code> at that value, and
+<code>break NAME none</code> when it loses its value. <code>unwatch</code> removes one.
+<code>cycles</code> shows what each of the last few cycles wrote.</p>
+<p>To debug a program's very start, run it with <code>--debug-wait</code>: it offers
+its debugger and waits, held, before its first cycle, until you <code>step</code> or
+<code>continue</code>.</p>
+<p>When you detach, a held program runs again.</p>
 <h2 id="native-code"><a class="header" href="#native-code">Native code</a></h2>
 <p>Code that compiled to native code keeps no bindings, so there are none to
 print inside it. Ask about a place there and the debugger shows the fused
@@ -6618,8 +6649,10 @@ a fused block at line 10, column 14: i64 = 21
 <h2 id="scripts-and-other-programs"><a class="header" href="#scripts-and-other-programs">Scripts and other programs</a></h2>
 <p><code>-c</code> runs one command and exits, and may be given several times; lines
 piped to <code>graphix debug</code> are run the same way. The exit status is 1 if a
-command was refused.</p>
+command was refused. A <code>step</code> is waited out before the next command, and
+<code>wait</code> waits until a break holds the program:</p>
 <pre><code class="language-bash">graphix debug -c 'why total' -c 'print price'
+graphix debug -c 'break total none' -c 'wait' -c 'why total'
 </code></pre>
 <p><code>--debug=PATH</code> chooses the socket. By default it is in your runtime
 directory (<code>$XDG_RUNTIME_DIR/graphix/</code>), named for the process, and only

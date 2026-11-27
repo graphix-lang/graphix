@@ -212,3 +212,72 @@ fn the_default_socket_is_the_owners_and_found() {
     let (answered, out) = run.debug(Some("1"), &["info"]);
     assert!(!answered && out.contains("connecting to"), "{out}");
 }
+
+/// `--debug-wait` holds a program before its first cycle. A session
+/// steps it, sees what each step delivered, writes while it is held, and
+/// lets it run to a break; `wait` waits for the break to hold it.
+#[test]
+fn a_program_started_held_is_stepped() {
+    const PROGRAM: &str = r#"let input = 0;
+let doubled = input * 2;
+let go = false;
+sys::exit(select go { true => go ~ 0, false => never() })
+"#;
+    for (label, args) in [("jit", &[][..]), ("interp", &["--no-fusion"][..])] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let run =
+            Running::start(dir.path(), PROGRAM, &[&["--debug-wait"], args].concat());
+        let out = run.ask(&[
+            "print input",
+            "step",
+            "print doubled",
+            "set input = 5",
+            "print doubled",
+            "step",
+            "print doubled",
+            "break doubled == 14",
+            "continue",
+            "set input = 6",
+            "set input = 7",
+            "wait",
+            "set input = 8",
+            "print doubled",
+            "cycles 2",
+        ]);
+        let lines = out.lines().map(str::trim).collect::<Vec<_>>();
+        let cycles = |from: &str| -> Vec<String> {
+            let said = lines.iter().filter(|l| l.starts_with(from));
+            said.map(|l| l.rsplit_once(": ").map_or("", |(_, d)| d).to_string()).collect()
+        };
+        assert!(lines[0].starts_with("input: i64 has no value"), "{label}:\n{out}");
+        assert_eq!(
+            cycles("held after cycle"),
+            ["input = 0, doubled = 0, go = false", "input = 5, doubled = 10"],
+            "{label}:\n{out}"
+        );
+        assert_eq!(cycles("break "), ["input = 7, doubled = 14"], "{label}:\n{out}");
+        let held = lines.iter().filter(|l| l.contains("the program is held")).count();
+        assert_eq!(held, 2, "{label}:\n{out}");
+        let doubled = lines.iter().filter(|l| l.starts_with("doubled: i64 = "));
+        let doubled = doubled.map(|l| &l[..l.find("    ").unwrap_or(l.len())]);
+        assert_eq!(
+            doubled.collect::<Vec<_>>(),
+            [
+                "doubled: i64 = 0",
+                "doubled: i64 = 0",
+                "doubled: i64 = 10",
+                "doubled: i64 = 14"
+            ],
+            "{label}:\n{out}"
+        );
+        assert_eq!(
+            cycles("cycle "),
+            ["input = 6, doubled = 12", "input = 7, doubled = 14"],
+            "{label}:\n{out}"
+        );
+        // the session's end lets the held program run; this one ends it
+        let _ = run.debug(None, &["set go = true"]);
+        let status = run.ended();
+        assert!(status.success(), "{label}: {status:?}");
+    }
+}

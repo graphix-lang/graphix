@@ -12,7 +12,9 @@ pub use client::Client;
 
 use crate::{
     CompExp, CompRes, GXExt, GXHandle, ToGX,
-    gx::debug::{Counts, Fired, Fused, Held, Op, Why, authored, held},
+    gx::debug::{
+        Counts, Fired, Fused, Held, Logged, Op, Paused, Stop, Why, authored, held,
+    },
 };
 use anyhow::{Context, Result, anyhow, bail};
 use arcstr::ArcStr;
@@ -29,7 +31,7 @@ use log::warn;
 use netidx_core::atomic_id;
 use netidx_value::Value;
 use poolshark::local::LPooled;
-use proto::{Command, Outcome, Reply, Request, Response};
+use proto::{Command, Outcome, Reply, Request, Response, When};
 use serde::{Deserialize, Serialize};
 use std::{
     cmp::Ordering,
@@ -103,6 +105,7 @@ impl<X: GXExt> Debugger<X> {
             shown: None,
             kept: Vec::new(),
             made: 0,
+            tokens: 0,
             env,
         };
         session.run(&mut lines).await
@@ -198,6 +201,8 @@ struct Session<X: GXExt, W> {
     kept: Vec<CompExp<X>>,
     /// The evals and watches numbered so far.
     made: u64,
+    /// The cycles and holds waited for so far.
+    tokens: u64,
     /// The environment values print under: the last one a command read.
     env: Env,
 }
@@ -413,7 +418,7 @@ impl<X: GXExt, W: AsyncWrite + Unpin> Session<X, W> {
                 },
                 Some(_) | None => return Ok(()),
             },
-            Fired::Cycled { .. } => return Ok(()),
+            Fired::Cycled { .. } | Fired::Held { .. } => return Ok(()),
             Fired::Watch { watch, bind, cycle, value } => proto::Event::Fired {
                 watch,
                 binding: handle(bind.id),
@@ -421,8 +426,31 @@ impl<X: GXExt, W: AsyncWrite + Unpin> Session<X, W> {
                 cycle,
                 value: value.map(|v| printed(&self.env, &bind.typ, &v)),
             },
+            Fired::Paused { cycle, by, delivered } => proto::Event::Paused {
+                cycle,
+                by: match by {
+                    Paused::Asked => proto::Paused::Asked,
+                    Paused::Stepped => proto::Paused::Stepped,
+                    Paused::Break { watch } => proto::Paused::Break { watch },
+                },
+                delivered: delivered.as_ref().map(|l| self.cycle(l)),
+            },
+            Fired::Running => proto::Event::Running,
         };
         self.send(&event).await
+    }
+
+    fn cycle(&self, l: &Logged) -> proto::Cycle {
+        let delivered = |(b, v): &(Arc<Bind>, Option<Value>)| proto::Delivered {
+            binding: handle(b.id),
+            name: b.name.clone(),
+            value: v.as_ref().map(|v| printed(&self.env, &b.typ, v)),
+        };
+        proto::Cycle {
+            cycle: l.cycle,
+            delivered: l.delivered.iter().map(delivered).collect(),
+            more: l.more,
+        }
     }
 
     fn binding(&self, h: &Held) -> proto::Binding {
@@ -503,24 +531,70 @@ impl<X: GXExt, W: AsyncWrite + Unpin> Session<X, W> {
             .await?
     }
 
+    /// A token no cycle or hold this session waited for has had.
+    fn token(&mut self) -> u64 {
+        self.tokens += 1;
+        self.tokens
+    }
+
     /// Wait until a cycle has run after every write and compile this
-    /// session has asked for, passing on what happens meanwhile, and
-    /// return what `capture` last produced before it ended.
-    async fn cycled(&mut self, capture: Option<ExprId>) -> Result<Option<Value>> {
-        self.made += 1;
-        let token = self.made;
+    /// session has asked for ([`Self::until_cycled`]).
+    async fn cycled(&mut self, capture: Option<ExprId>) -> Result<(Option<Value>, bool)> {
+        let token = self.token();
         self.attached.op(Op::Cycle { session: self.attached.id, token })?;
+        self.until_cycled(token, capture).await
+    }
+
+    /// Wait for the cycle that answers `token`, passing on what happens
+    /// meanwhile. Returns what `capture` last produced before it ended,
+    /// and whether the program was held, so the cycle delivered nothing
+    /// of its own.
+    async fn until_cycled(
+        &mut self,
+        token: u64,
+        capture: Option<ExprId>,
+    ) -> Result<(Option<Value>, bool)> {
         let mut captured = None;
         loop {
             match self.events.recv().await {
                 None => bail!("the runtime ended"),
-                Some(Fired::Cycled { token: t }) if t == token => break Ok(captured),
+                Some(Fired::Cycled { token: t, held }) if t == token => {
+                    break Ok((captured, held));
+                }
                 Some(Fired::Value { expr, value }) if Some(expr) == capture => {
                     captured = Some(value)
                 }
                 Some(fired) => self.fired(fired).await?,
             }
         }
+    }
+
+    /// The value of the expression `text`, evaluated once against the
+    /// program as it stands, and how it prints.
+    async fn value_of(&mut self, text: ArcStr) -> Result<(Value, ArcStr)> {
+        let res = self.compile(text).await?;
+        let Some(out) = res.exprs.last().filter(|e| e.output) else {
+            bail!("a value is an expression")
+        };
+        let (Some(v), _) = self.cycled(Some(out.id)).await? else {
+            bail!("the expression has no value")
+        };
+        let shown = printed(&res.env, &out.typ, &v);
+        Ok((v, shown))
+    }
+
+    /// Watch the bindings `target` names; with `stop`, a break.
+    async fn watch(&mut self, target: &str, stop: Option<Stop>) -> Result<Reply> {
+        let held = self.held(target).await?;
+        if held.len() > WATCHED {
+            bail!("{target} names {} bindings, and a watch covers {WATCHED}", held.len())
+        }
+        self.made += 1;
+        let (session, watch) = (self.attached.id, self.made);
+        let ids = held.iter().map(|h| h.bind.id).collect();
+        self.attached.op(Op::Watch { session, watch, ids, stop })?;
+        let bindings = held.iter().map(|h| self.binding(h)).collect();
+        Ok(Reply::Watching { watch, bindings })
     }
 
     async fn command(&mut self, cmd: Command) -> Result<Reply> {
@@ -604,37 +678,57 @@ impl<X: GXExt, W: AsyncWrite + Unpin> Session<X, W> {
             }
             Command::Set { target, value } => {
                 let h = self.one(&target).await?;
-                let res = self.compile(value).await?;
-                let Some(out) = res.exprs.last().filter(|e| e.output) else {
-                    bail!("the value to set is an expression")
-                };
-                let Some(v) = self.cycled(Some(out.id)).await? else {
-                    bail!("the expression has no value")
-                };
-                let shown = printed(&res.env, &out.typ, &v);
-                drop(res);
+                let (v, shown) = self.value_of(value).await?;
                 let (typ, tested) = (h.bind.typ.clone(), v.clone());
                 if !gx.with_ctx(move |ctx| typ.is_a(&ctx.env, &tested)).await? {
                     let typ = (self.show)(&h.bind.typ);
                     bail!("{shown} is not a {typ}: {} is not set", h.bind.name)
                 }
-                gx.set(h.bind.id, v)?;
-                self.cycled(None).await?;
-                Ok(Reply::Set { binding: self.binding(&h), value: shown })
+                let token = self.token();
+                self.attached.op(Op::Write { session, id: h.bind.id, v, token })?;
+                let (_, held) = self.until_cycled(token, None).await?;
+                Ok(Reply::Set { binding: self.binding(&h), value: shown, held })
             }
-            Command::Watch { target } => {
-                let held = self.held(&target).await?;
-                if held.len() > WATCHED {
-                    bail!(
-                        "{target} names {} bindings, and a watch covers {WATCHED}",
-                        held.len()
-                    )
+            Command::Watch { target } => self.watch(&target, None).await,
+            Command::Break { target, when } => {
+                let stop = match when {
+                    When::Value => Stop::Fires,
+                    When::NoValue => Stop::NoValue,
+                    When::Equals { value } => Stop::Equals(self.value_of(value).await?.0),
+                };
+                self.watch(&target, Some(stop)).await
+            }
+            Command::Pause => {
+                let cycle =
+                    gx.exec(|res| ToGX::Debug(Op::Pause { session, res })).await?;
+                Ok(Reply::Paused { cycle })
+            }
+            Command::Wait => {
+                let token = self.token();
+                self.attached.op(Op::WhenHeld { session, token })?;
+                loop {
+                    match self.events.recv().await {
+                        None => bail!("the runtime ended"),
+                        Some(Fired::Held { token: t, cycle }) if t == token => {
+                            break Ok(Reply::Paused { cycle });
+                        }
+                        Some(fired) => self.fired(fired).await?,
+                    }
                 }
-                self.made += 1;
-                let ids = held.iter().map(|h| h.bind.id).collect();
-                self.attached.op(Op::Watch { session, watch: self.made, ids })?;
-                let bindings = held.iter().map(|h| self.binding(h)).collect();
-                Ok(Reply::Watching { watch: self.made, bindings })
+            }
+            Command::Continue => {
+                self.attached.op(Op::Continue { session })?;
+                Ok(Reply::Running)
+            }
+            Command::Step { cycles } => {
+                self.attached.op(Op::Step { session, cycles: cycles.unwrap_or(1) })?;
+                Ok(Reply::Stepping)
+            }
+            Command::Cycles { last } => {
+                let last = last.unwrap_or(10);
+                let log = gx.exec(|res| ToGX::Debug(Op::Cycles { last, res })).await?;
+                self.env = gx.get_env().await?;
+                Ok(Reply::Cycles { cycles: log.iter().map(|l| self.cycle(l)).collect() })
             }
             Command::Unwatch { watch } => {
                 match gx

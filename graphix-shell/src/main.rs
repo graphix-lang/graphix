@@ -208,6 +208,11 @@ struct Params {
     /// under the user's runtime directory, named for the process
     #[arg(long, value_name = "PATH", num_args = 0..=1, require_equals = true)]
     debug: Option<Option<PathBuf>>,
+    /// offer the debugger as --debug does and hold the program before
+    /// its first cycle: it starts when a debugger says `continue` or
+    /// `step`
+    #[arg(long = "debug-wait")]
+    debug_wait: bool,
     /// write the image cache and exit
     #[arg(long, conflicts_with_all = ["no_cache", "check", "expand"])]
     warm: bool,
@@ -439,9 +444,10 @@ fn tokio_main(
             (false, false) => CacheMode::On,
         });
         shell = shell.fusion_stats(p.fusion_stats);
-        if let Some(path) = p.debug {
+        if p.debug.is_some() || p.debug_wait {
             let ours = || graphix_shell::debug::socket_of(std::process::id());
-            shell = shell.debug(path.unwrap_or_else(ours));
+            shell = shell.debug(p.debug.flatten().unwrap_or_else(ours));
+            shell = shell.debug_wait(p.debug_wait);
         }
         {
             let net_config = net_config.clone();

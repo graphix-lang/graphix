@@ -51,7 +51,10 @@ and an error a `$` dropped are named there), then ask it: run it with
 value back to the expression where the nothing starts. A target is a name,
 a place (`prog.gx:12`) or an id an answer showed (`#88`); `-c` may be
 repeated, and any line that is not a command is evaluated as Graphix in
-the running program (`-c 'x + 1'`, `-c 'set x = 5'`).
+the running program (`-c 'x + 1'`, `-c 'set x = 5'`). To catch a moment:
+`-c 'break x == 3' -c wait -c 'why y'` holds the program at the cycle `x`
+becomes 3; `pause`, `step` and `cycles` walk it a cycle at a time, and
+`graphix --debug-wait prog.gx` holds it before its first cycle.
 
 `#[native]` on an expression asserts it fuses whole into native code: a
 build refuses it where anything stays in the node-walk. Inside a function

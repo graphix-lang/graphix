@@ -11,7 +11,7 @@ use graphix_rt::{
     CompRes, GXEvent, NoExt,
     debug::{
         Client, Debugger,
-        proto::{Binding, Command, Event, Reply, Why},
+        proto::{self, Binding, Command, Event, Reply, Why},
     },
 };
 use netidx_value::Value;
@@ -103,7 +103,7 @@ impl Session {
                 Some(Event::Fired { watch, name, value, .. }) => {
                     break Ok((watch, name.to_string(), value.map(|v| v.to_string())));
                 }
-                Some(Event::Value { .. }) => (),
+                Some(Event::Value { .. } | Event::Paused { .. } | Event::Running) => (),
                 None => bail!("the session ended"),
             }
         }
@@ -189,7 +189,7 @@ async fn a_session_asks_and_injects() -> Result<()> {
         assert_eq!(watched.len(), 1);
         let set = Command::Set { target: "quiet".into(), value: "x - 33".into() };
         match s.client.request(set).await? {
-            Reply::Set { binding, value } => {
+            Reply::Set { binding, value, held: false } => {
                 assert_eq!((binding.name.as_str(), value.as_str()), ("quiet", "8"))
             }
             other => bail!("expected a set: {other:?}"),
@@ -343,6 +343,107 @@ acc * 2
         assert_eq!(driven(&mut watched, Some(&mut s)).await?, expected, "{mode:?}");
         s.close().await?;
         watched.shutdown().await
+    }
+    Ok(())
+}
+
+/// A held program runs no cycle of its own: what its embedder writes
+/// waits, a session still asks and evaluates, a step runs one cycle of
+/// work and says what it delivered, and a break holds the program at the
+/// cycle its condition is met. The last session to leave lets it run.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_held_program_waits_and_steps() -> Result<()> {
+    const PROGRAM: &str = r#"
+let input: i64 = never();
+let acc = 0;
+acc <- input ~ acc + input;
+acc * 2
+"#;
+    async fn held(
+        s: &mut Session,
+    ) -> Result<(proto::Paused, Vec<(String, Option<String>)>)> {
+        loop {
+            match s.client.event().await? {
+                Some(Event::Paused { by, delivered, .. }) => {
+                    let delivered = delivered.map(|c| c.delivered).unwrap_or_default();
+                    let named = |d: proto::Delivered| {
+                        (d.name.to_string(), d.value.map(|v| v.to_string()))
+                    };
+                    break Ok((by, delivered.into_iter().map(named).collect()));
+                }
+                Some(_) => (),
+                None => bail!("the session ended"),
+            }
+        }
+    }
+    let fired = |name: &str, v: i64| (name.to_string(), Some(v.to_string()));
+    for mode in Mode::ALL {
+        let mut rt = run(PROGRAM, mode).await?;
+        let out = rt.program.exprs.last().map(|e| e.id).expect("the program's value");
+        let named = ModPath::from_iter(["input"]);
+        let input = rt.program.env.lookup_bind(&ModPath::root(), &named)?;
+        let input = input.ok_or_else(|| anyhow!("the program binds input"))?.1.id;
+        assert_eq!(next_update(&rt.ctx.rt, &mut rt.events, out).await?, Value::I64(0));
+        let mut s = rt.attach().await?;
+        assert!(matches!(s.client.request(Command::Pause).await?, Reply::Paused { .. }));
+        rt.ctx.rt.set(input, 1i64)?;
+        assert_eq!(s.print("acc").await?.value.as_deref(), Some("0"), "{mode:?}");
+        assert_eq!(s.print("input").await?.value, None, "{mode:?}");
+        assert_eq!(s.eval("acc + 100").await?.1.as_deref(), Some("100"), "{mode:?}");
+        assert!(matches!(
+            s.client.request(Command::Step { cycles: None }).await?,
+            Reply::Stepping
+        ));
+        let (by, delivered) = held(&mut s).await?;
+        assert_eq!((by, delivered), (proto::Paused::Stepped, vec![fired("input", 1)]));
+        assert_eq!(s.print("acc").await?.value.as_deref(), Some("0"), "{mode:?}");
+        s.client.request(Command::Step { cycles: None }).await?;
+        assert_eq!(held(&mut s).await?.1, [fired("acc", 1)], "{mode:?}");
+        assert_eq!(next_update(&rt.ctx.rt, &mut rt.events, out).await?, Value::I64(2));
+
+        let set = Command::Set { target: "input".into(), value: "2".into() };
+        match s.client.request(set).await? {
+            Reply::Set { held: true, .. } => (),
+            other => bail!("expected a held set: {other:?}"),
+        }
+        assert_eq!(s.print("acc").await?.value.as_deref(), Some("1"), "{mode:?}");
+        s.client.request(Command::Step { cycles: Some(2) }).await?;
+        assert_eq!(held(&mut s).await?.1, [fired("acc", 3)], "{mode:?}");
+        assert_eq!(next_update(&rt.ctx.rt, &mut rt.events, out).await?, Value::I64(6));
+
+        let at = proto::When::Equals { value: "acc + 7".into() };
+        let Reply::Watching { watch, .. } =
+            s.client.request(Command::Break { target: "acc".into(), when: at }).await?
+        else {
+            bail!("expected a break")
+        };
+        assert!(matches!(s.client.request(Command::Continue).await?, Reply::Running));
+        rt.ctx.rt.set(input, 3i64)?;
+        assert_eq!(next_update(&rt.ctx.rt, &mut rt.events, out).await?, Value::I64(12));
+        rt.ctx.rt.set(input, 4i64)?;
+        let (by, delivered) = held(&mut s).await?;
+        assert_eq!(
+            (by, delivered),
+            (proto::Paused::Break { watch }, vec![fired("acc", 10)])
+        );
+        assert_eq!(next_update(&rt.ctx.rt, &mut rt.events, out).await?, Value::I64(20));
+        rt.ctx.rt.set(input, 5i64)?;
+        assert_eq!(s.print("acc").await?.value.as_deref(), Some("10"), "{mode:?}");
+
+        let Reply::Cycles { cycles } =
+            s.client.request(Command::Cycles { last: Some(2) }).await?
+        else {
+            bail!("expected the cycles")
+        };
+        let logged = cycles
+            .iter()
+            .map(|c| c.delivered.iter().map(|d| d.name.as_str()).collect::<Vec<_>>())
+            .collect::<Vec<_>>();
+        assert_eq!(logged, [vec!["input"], vec!["acc"]], "{mode:?}: {cycles:?}");
+
+        s.close().await?;
+        assert_eq!(next_update(&rt.ctx.rt, &mut rt.events, out).await?, Value::I64(30));
+        rt.shutdown().await
     }
     Ok(())
 }

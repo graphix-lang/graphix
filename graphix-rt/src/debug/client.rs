@@ -84,6 +84,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Client<S> {
         self.events.pop_front()
     }
 
+    /// Whether an event that arrived before the last answer is left.
+    pub fn has_queued(&self) -> bool {
+        !self.events.is_empty()
+    }
+
     /// The next event; `None` once the debugger has closed the session.
     /// Cancel safe.
     pub async fn event(&mut self) -> Result<Option<Event>> {

@@ -63,6 +63,48 @@ pub enum Command {
         target: CompactString,
     },
     Info,
+    /// Hold the program: it runs no cycle of its own until a `continue`
+    /// or a `step`. What arrives for it meanwhile waits. A held program
+    /// still answers, and an `eval` still runs, against what stands.
+    Pause,
+    Continue,
+    /// Let the program run until `cycles` more of its cycles (one where
+    /// absent) have done work, then hold it again: an [`Event::Paused`]
+    /// says when, with what the last of them delivered.
+    Step {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cycles: Option<u64>,
+    },
+    /// A watch that also holds the program after the cycle of a delivery
+    /// `when` describes.
+    Break {
+        target: CompactString,
+        #[serde(default)]
+        when: When,
+    },
+    /// Answer once the program is held, at once if it is: a step done, a
+    /// break met, a `pause`. The [`Event::Paused`] of the hold it waited
+    /// for comes before the answer.
+    Wait,
+    /// What each of the last cycles delivered (ten where `last` is
+    /// absent), oldest first. Kept while a session is attached.
+    Cycles {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last: Option<usize>,
+    },
+}
+
+/// The delivery a break holds the program at.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum When {
+    /// Any value.
+    #[default]
+    Value,
+    /// The binding going to no value.
+    NoValue,
+    /// A value equal to that of the expression `value`, evaluated once.
+    Equals { value: ArcStr },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -100,9 +142,11 @@ pub enum Reply {
         blocks: Vec<Fused>,
     },
     /// `value` is delivered to `binding`, shown as it stood before.
+    /// `held` where the program is held: the write lands when it runs.
     Set {
         binding: Binding,
         value: ArcStr,
+        held: bool,
     },
     Watching {
         watch: u64,
@@ -114,6 +158,16 @@ pub enum Reply {
     },
     Info {
         info: Info,
+    },
+    /// The program is held; `cycle` is the next it would run.
+    Paused {
+        cycle: u64,
+    },
+    Running,
+    /// The program runs until its steps are done.
+    Stepping,
+    Cycles {
+        cycles: Vec<Cycle>,
     },
 }
 
@@ -133,6 +187,45 @@ pub enum Event {
         cycle: u64,
         value: Option<ArcStr>,
     },
+    /// The program is held as of `cycle`; where a step or a break held
+    /// it, `delivered` is what its last cycle delivered.
+    Paused {
+        cycle: u64,
+        by: Paused,
+        delivered: Option<Cycle>,
+    },
+    /// Another session let the program run.
+    Running,
+}
+
+/// Why the program is held.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Paused {
+    /// A session asked.
+    Asked,
+    Stepped,
+    Break {
+        watch: u64,
+    },
+}
+
+/// What one cycle delivered to the bindings the program's author wrote,
+/// in the order they were introduced; `more` counts those left out.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Cycle {
+    pub cycle: u64,
+    pub delivered: Vec<Delivered>,
+    pub more: usize,
+}
+
+/// One delivery: the binding's id and name, and its value or `None`
+/// where it went to no value.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Delivered {
+    pub binding: CompactString,
+    pub name: CompactString,
+    pub value: Option<ArcStr>,
 }
 
 /// One binding as the runtime holds it. `id` names it in a target

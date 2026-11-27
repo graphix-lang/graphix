@@ -227,6 +227,14 @@ async fn idle_grace(armed: bool) {
     }
 }
 
+/// The embedder's sources, which a held runtime does not poll.
+async fn sources_unless<X: GXExt>(ext: &mut X, held: bool) -> Result<()> {
+    match held {
+        true => future::pending().await,
+        false => ext.update_sources().await,
+    }
+}
+
 /// Room in the subscriber's channel, when `armed`.
 async fn reserve_or_never<T>(
     sub: &tmpsc::Sender<T>,
@@ -456,7 +464,7 @@ impl<X: GXExt> GX<X> {
             settle_waiters: Vec::new(),
             trace: None,
             scope: Scope::root(),
-            debug: debug::Sessions::default(),
+            debug: debug::Sessions::starting(cfg.paused),
             program: None,
             program_fused: 0,
             restored: false,
@@ -656,25 +664,16 @@ impl<X: GXExt> GX<X> {
         }
     }
 
-    async fn do_cycle(
+    /// Deliver what waits for this cycle: the writes queued for it, what
+    /// tasks and the embedder sent, the calls made, and last cycle's late
+    /// fires. `answering` takes each call made that is owed an answer.
+    fn deliver_pending(
         &mut self,
         tasks: &mut Vec<(BindId, Value)>,
         sets: &mut Vec<EmbedderWrite>,
         custom_tasks: &mut Vec<(BindId, Box<dyn CustomBuiltinType>)>,
-        to_rt: &mut UnboundedReceiver<ToGX<X>>,
-        input: &mut Vec<ToGX<X>>,
-        aborted: &Notify,
-        mut batch: GPooled<Vec<GXEvent>>,
+        answering: &mut LPooled<Vec<(ExprId, ExprId)>>,
     ) {
-        debug_assert!(
-            !self.ctx.view().deferred_pending(),
-            "compiled references left unreplayed"
-        );
-        self.ctx.control.cycle_started();
-        // no kernel runs between cycles
-        self.ctx.fusion.relocate_kernels();
-        self.ctx.view().apply_deferred();
-        self.ctx.view().release_references();
         // A variable takes one delivery a cycle: what waited lands first,
         // each variable's oldest write, then this cycle's input, which waits
         // behind anything its variable has waiting or was given.
@@ -702,8 +701,7 @@ impl<X: GXExt> GX<X> {
                 }
             }
         }
-        let mut answering: LPooled<Vec<(ExprId, ExprId)>> = LPooled::take();
-        self.calls_made(&mut answering);
+        self.calls_made(answering);
         let mut due: LPooled<Vec<(BindId, Box<dyn CustomBuiltinType>, Via)>> =
             LPooled::take();
         self.ctx.rt.custom_updates.take(&mut due);
@@ -720,14 +718,50 @@ impl<X: GXExt> GX<X> {
             }
         }
         self.deliver_late();
+    }
+
+    async fn do_cycle(
+        &mut self,
+        quiet: bool,
+        tasks: &mut Vec<(BindId, Value)>,
+        sets: &mut Vec<EmbedderWrite>,
+        custom_tasks: &mut Vec<(BindId, Box<dyn CustomBuiltinType>)>,
+        to_rt: &mut UnboundedReceiver<ToGX<X>>,
+        input: &mut Vec<ToGX<X>>,
+        aborted: &Notify,
+        mut batch: GPooled<Vec<GXEvent>>,
+    ) {
+        debug_assert!(
+            !self.ctx.view().deferred_pending(),
+            "compiled references left unreplayed"
+        );
+        self.ctx.control.cycle_started();
+        // no kernel runs between cycles
+        self.ctx.fusion.relocate_kernels();
+        self.ctx.view().apply_deferred();
+        self.ctx.view().release_references();
+        let mut answering: LPooled<Vec<(ExprId, ExprId)>> = LPooled::take();
+        let parked = match quiet {
+            false => {
+                self.deliver_pending(tasks, sets, custom_tasks, &mut answering);
+                None
+            }
+            true => Some(self.debug.park(&mut self.ctx.rt.updated)),
+        };
+        let stepped = !quiet
+            && (!self.ctx.event.variables.is_empty()
+                || !self.ctx.event.custom.lock().is_empty()
+                || self.ctx.rt.updated.keys().any(|id| !self.debug.owns(id)));
         let worked = !self.ctx.rt.updated.is_empty()
             || !self.ctx.event.variables.is_empty()
             || !self.ctx.event.custom.lock().is_empty();
         let control = self.ctx.control.clone();
         graphix_compiler::with_control(&control, || {
             self.update_nodes(&mut batch);
-            for (answer, v) in self.held_answers.drain(..) {
-                batch.push(GXEvent::Updated(answer, v))
+            if !quiet {
+                for (answer, v) in self.held_answers.drain(..) {
+                    batch.push(GXEvent::Updated(answer, v))
+                }
             }
             // CR claude for claude: [bug/medium] The answer is held for exactly one
             // cycle. A variable takes one delivery per cycle, so a handler write queued
@@ -754,11 +788,14 @@ impl<X: GXExt> GX<X> {
             }
         });
         if !self.debug.is_empty() {
-            self.debug_cycle(&mut batch)
+            self.debug_cycle(&mut batch, quiet, stepped)
         }
         // before the send loop, which may compile roots for the next cycle
         self.ctx.event.clear();
         self.ctx.rt.updated.clear();
+        if let Some(mut parked) = parked {
+            self.ctx.rt.updated.extend(parked.drain(..))
+        }
         if let Some(tr) = self.trace.as_mut() {
             tr.cycle_end(self.ctx.rt.cycle, worked);
         }
@@ -1018,7 +1055,7 @@ impl<X: GXExt> GX<X> {
                     self.record_compiled(&r);
                     let _ = res.send(r);
                 }
-                ToGX::Debug(op) => self.debug_op(op).await,
+                ToGX::Debug(op) => self.debug_op(op, sets).await,
                 ToGX::Delete { id } => {
                     if let Some(mut n) = self.nodes.remove(&id) {
                         n.delete(&mut self.ctx.view());
@@ -1783,17 +1820,26 @@ impl<X: GXExt> GX<X> {
             // undelivered update in a watch channel is pending work that
             // `cycle_ready` cannot see until it is drained.
             peek!(watches, tasks, var_watches, custom_tasks, input);
+            // A held runtime starts no cycle of the program's: what waits
+            // for one keeps waiting, and only what a debugger asks wakes it.
+            let held = self.debug.held();
             // the send loop parks the input it serves in `sets`
-            let ready = self.cycle_ready()
-                || !tasks.is_empty()
-                || !custom_tasks.is_empty()
-                || !input.is_empty()
-                || !sets.is_empty();
+            let ready = match held {
+                true => !input.is_empty() || self.debug.awaited(),
+                false => {
+                    self.cycle_ready()
+                        || !tasks.is_empty()
+                        || !custom_tasks.is_empty()
+                        || !input.is_empty()
+                        || !sets.is_empty()
+                        || self.debug.awaited()
+                }
+            };
             // An idle waiter resolves once the runtime is idle, confirmed on
             // a second consecutive pass: the first may race an in-flight
             // spawned task.
             let mut idle_owed = false;
-            if !ready {
+            if !ready && !held {
                 // a settle waiter waits out what is outstanding without
                 // the grace loop: a finished task or a fire wakes it
                 let replies = self.ctx.rt.replies_pending();
@@ -1865,7 +1911,7 @@ impl<X: GXExt> GX<X> {
                     }
                     peek!(watches, tasks, var_watches, custom_tasks);
                 },
-                r = self.ctx.rt.ext.update_sources() => {
+                r = sources_unless(&mut self.ctx.rt.ext, held) => {
                     if let Err(e) = r {
                         error!("failed to update custom event sources {e:?}")
                     }
@@ -1883,6 +1929,14 @@ impl<X: GXExt> GX<X> {
             }
             let mut batch = self.batch_pool.take();
             self.process_input_batch(&mut sets, &mut input, &mut batch).await;
+            // a held runtime runs a cycle only for what a session waits on
+            let quiet = self.debug.held();
+            if quiet && !self.debug.awaited() {
+                if !batch.is_empty() {
+                    self.send_batch(batch, &mut sets, to_rt, &mut input, aborted).await
+                }
+                continue 'main;
+            }
             let st = Instant::now();
             // CR claude for claude: [perf/low] This runs after every wake, whether or
             // not anything is ready. Each query that asks nothing of the program
@@ -1894,6 +1948,7 @@ impl<X: GXExt> GX<X> {
             // (review_a_query_runs_a_cycle: 10 get_env -> 12 cycles, 12 empty batches)
             // Also reported as (x-concurrency-03). (rt-04)
             self.do_cycle(
+                quiet,
                 &mut tasks,
                 &mut sets,
                 &mut custom_tasks,

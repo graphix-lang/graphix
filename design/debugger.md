@@ -1,7 +1,8 @@
 # The debugger
 
-Status: **phase 1 is built** (ask and inject); phases 2 and 3 are designed
-here and not built. Eric's rulings of 2026-11-27 decided the shape (D63
+Status: **phase 1 and the control half of phase 2 are built** (ask and
+inject; hold, step and break). The reasons inside a node (§6) and phase
+3, the editor, are designed here and not built. Eric's rulings of 2026-11-27 decided the shape (D63
 and D64 in the CR discussion file). CR `a-language-08` tracks what is left.
 
 ## 1. Why
@@ -62,11 +63,14 @@ session prints a type (the shell passes the REPL's printer).
   `$XDG_RUNTIME_DIR/graphix/debug-<pid>.sock`: the directory is made mode
   0700 and the socket 0600. The socket is removed when the program ends.
   A path that is a live socket, or no socket, is refused.
+- `graphix --debug-wait prog.gx` offers the socket and holds the program
+  before its first cycle: it starts when a session says `continue` or
+  `step`.
 - `graphix debug [PATH | PID] [-c CMD]..` attaches. With no target it
   attaches to the one program that offers a debugger and lists them when
   there are several. `-c` runs a command and exits (several may be
   given), as lines piped to stdin do; the exit status is 1 if any was
-  refused. At a terminal it reads lines with a line editor, and what a
+  refused, and a `step` is waited out before the next command. At a terminal it reads lines with a line editor, and what a
   watch or a shown value reports prints above the prompt.
 - A line that starts with a command's name is that command. Any other
   line is Graphix and is evaluated; `eval` says so explicitly.
@@ -94,7 +98,15 @@ An answer to `eval` or `set` is sent only after the cycle it caused has
 run (`Op::Cycle` and `Fired::Cycled` in the hooks), and what that cycle
 produced for the session is sent before it. So a `print` after a `set`
 sees the write, and an `eval`'s first value arrives before its answer: no
-client waits on a timer.
+client waits on a timer. A write and the marker of its cycle are one
+message to the runtime (`Op::Write`): sent as two, a break could hold the
+program between them, and the answer would say the write was held when it
+had landed.
+
+`wait` is answered by the runtime once the program is held, at once if it
+is, and the `Paused` event of the hold it waited for is sent before the
+answer. A client that watched events for the pause instead would miss one
+that came before it started to watch.
 
 DAP is not the native protocol: it is built around threads, stack frames
 and stepping by line, which fit a dataflow program badly. An adapter can
@@ -151,14 +163,23 @@ expressions that cover the place.
 `eval` may do anything in the program (Eric: allow it all). It compiles
 as a REPL input does, so the rules for a top-level input hold.
 
-**Phase 2, not built: control, and reasons inside a node.**
+**Phase 2, built: control.**
 
 | Command | What it does |
 |---|---|
-| `pause` / `continue` / `step [n]` | stop between cycles, run one or `n`; `graphix --debug-wait` and `GXConfig::paused` start a program paused |
-| `break TARGET [fires \| is bottom \| == v]` | pause at the end of the cycle in which it happens |
-| `cycles [n]` | what the last `n` cycles delivered and what fired (a ring kept while a session is attached) |
-| `why`, deeper | which arm a select holds and why the others sleep, the step a seq is at and what it waits for, a call with no answer yet, a connect or a sample that has never fired, a fresh block not yet born; the binder of a parameter or a pattern's name; an instance's call path |
+| `pause` / `continue` | hold the program, let it run. A held program runs no cycle of its own: what timers, tasks and its embedder send waits. It still answers, and an `eval` still runs, against what stands; a `set` waits with the rest, and its answer says so |
+| `step [N]` | let it run until `N` (1) more cycles have done its work, then hold it, saying what the last one delivered. A step with nothing to do waits until something arrives |
+| `break TARGET [== EXPR \| none]` | a watch that also holds the program after the cycle in which the binding is written, is written a value equal to `EXPR`'s (evaluated once), or goes to no value. `unwatch N` removes it |
+| `cycles [N]` | what each of the last `N` (10) cycles delivered to the bindings the author wrote, functions aside. The last 256 cycles that delivered something are kept while a session is attached |
+| `wait` | answer once the program is held: for a script after `continue` to a break |
+
+`graphix --debug-wait` and `GXConfig::paused` start a program held. The
+last session to leave lets a held program run: held with nobody to
+continue it, it would never run again.
+
+**Phase 2, not built: reasons inside a node** (§6): which arm a select
+holds, the step a seq is at, a call with no answer, a sample that never
+fired, the binder of a parameter, an instance's call path.
 
 **Phase 3, not built: editors.** The language server already resolves the
 cursor to a binding. With a session attached, hover shows the live value
@@ -211,6 +232,20 @@ pattern's name) is reported as such.
   display never sees them.
 - **A session that ends** detaches (`Attached`'s drop), and the handles
   of what it compiled are dropped with it, which deletes them.
+- **The hold** is one test in `GX::run`: a held runtime treats nothing
+  the program has pending as ready, stops polling the embedder's
+  sources, and answers no idle waiter. It still serves every request.
+  Where a session waits on a cycle (an `eval`'s first value, a `set`'s
+  marker) it runs a quiet one (`do_cycle(quiet)`): no delivery is made,
+  and the roots no session owns are parked and put back, so the program
+  runs nothing while the session's own expressions are born against the
+  store as it stands.
+- **A step** counts cycles that did the program's work: one that
+  delivered something or ran a root no session owns. The cycles that
+  queries start count for nothing.
+- **The cycle log** is read off the cycle's event after its nodes ran
+  (`Layered::own`), so it costs a pass over that cycle's deliveries, and
+  only while a session is attached.
 - **Session images, fusion, parallel evaluation and walk pruning** are
   untouched. A debugger that changes what a program computes is a bug.
 
@@ -228,14 +263,17 @@ the transport's.
   (`stdlib/graphix-tests/tests/shared/debugger.rs`): each command;
   instances told apart; a session's values kept from the embedder and its
   bindings deleted when it closes; a watched program computing what it
-  computes alone.
+  computes alone; a held program waiting, stepped, and held at a break.
 - The shell (`graphix-shell/tests/shell/debugger.rs`): a second process
   asking a running program, cold and from the image, in both engines; the
-  fused box; the default socket's place and permissions.
+  fused box; the default socket's place and permissions; a program
+  started held, stepped and run to a break.
 - Not built: a fuzzer lane holding a watched program's trace to the
   unwatched one's.
 
 ## 10. What it does not do
 
 No stepping inside a cycle. No view inside a fused block. No time
-travel: the cycle log (phase 2) says what fired, and cannot be replayed.
+travel: the cycle log says what fired, and cannot be replayed. A held
+program's timers keep running, so what it sees when it continues is what
+piled up, not what it would have seen.

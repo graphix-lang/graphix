@@ -585,6 +585,10 @@ pub struct Shell<X: GXExt> {
     /// ([`debug::socket_of`] is where it looks for a process).
     #[builder(setter(strip_option), default)]
     debug: Option<std::path::PathBuf>,
+    /// Start the program held, to run when a debugger session continues
+    /// or steps it. Set `debug` with it.
+    #[builder(default = "false")]
+    debug_wait: bool,
     /// The packages registered into the shell, in registration order. Each
     /// package is asked, at init, to register its builtins/modules, to supply a
     /// `main_program`, and (per displayed value) whether it has a custom
@@ -794,7 +798,7 @@ impl<X: GXExt> Shell<X> {
         if !self.resolver_factories.is_empty() {
             gx = gx.resolver_factories(self.resolver_factories.clone());
         }
-        gx = gx.flags(flags);
+        gx = gx.flags(flags).paused(self.debug_wait);
         let config =
             gx.root(root).resolvers(mods).build().context("building rt config")?;
         let pending = cache.map(|cache| PendingImages {

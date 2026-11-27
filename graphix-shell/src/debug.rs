@@ -7,7 +7,10 @@ use graphix_rt::{
     GXExt, GXHandle,
     debug::{
         Client, Debugger,
-        proto::{Binding, Command, Event, Fused, Info, Outcome, Reply, Source, Why},
+        proto::{
+            Binding, Command, Cycle, Event, Fused, Info, Outcome, Paused, Reply, Source,
+            When, Why,
+        },
     },
 };
 use log::warn;
@@ -33,6 +36,14 @@ program as the REPL would: `x + 1`, `let y = x * 2`, `x <- 0`.
   unwatch N           stop watch N
   why TARGET          why a binding has no value, or what it waits on
   info                the cycle, and what is pending
+  pause               hold the program: it runs no cycle until continue or step
+  continue            let it run
+  step [N]            run until N more cycles (1) have done work, then hold it
+  break TARGET        hold it when the binding is written;
+                      `break T == EXPR` at that value, `break T none` when it
+                      goes to no value. unwatch N removes it
+  cycles [N]          what each of the last N cycles (10) delivered
+  wait                wait until the program is held (by a break or a step)
   help, quit
 
 A TARGET is a name (x, m::x), a place (file.gx:12 or file.gx:12:5), or a
@@ -247,6 +258,29 @@ fn parse(line: &str) -> Result<Line> {
         "list" => Line::Ask(Command::List {
             scope: (!rest.is_empty()).then(|| CompactString::from(rest)),
         }),
+        "wait" if rest.is_empty() => Line::Ask(Command::Wait),
+        "pause" if rest.is_empty() => Line::Ask(Command::Pause),
+        "continue" if rest.is_empty() => Line::Ask(Command::Continue),
+        "step" | "cycles" if !rest.is_empty() && rest.parse::<u64>().is_err() => {
+            bail!("usage: {word} [N]")
+        }
+        "step" => Line::Ask(Command::Step { cycles: rest.parse().ok() }),
+        "cycles" => Line::Ask(Command::Cycles { last: rest.parse().ok() }),
+        "break" => {
+            let (target, when) = match (rest.split_once("=="), rest.strip_suffix(" none"))
+            {
+                (Some((t, v)), _) if !v.trim().is_empty() => {
+                    (t.trim(), When::Equals { value: v.trim().into() })
+                }
+                (Some(_), _) => bail!("usage: break TARGET == EXPR"),
+                (None, Some(t)) => (t.trim(), When::NoValue),
+                (None, None) => (rest, When::Value),
+            };
+            match target.is_empty() {
+                true => bail!("usage: break TARGET [== EXPR | none]"),
+                false => Line::Ask(Command::Break { target: target.into(), when }),
+            }
+        }
         "unwatch" => match rest.parse::<u64>() {
             Ok(watch) => Line::Ask(Command::Unwatch { watch }),
             Err(_) => bail!("usage: unwatch N"),
@@ -411,8 +445,26 @@ fn show_reply(out: &mut String, reply: &Reply) {
                 show_fused(out, f)
             }
         }
-        Reply::Set { binding, value } => {
+        Reply::Set { binding, value, held: false } => {
             let _ = writeln!(out, "{} <- {value}", binding.name);
+        }
+        Reply::Set { binding, value, held: true } => {
+            let _ = writeln!(
+                out,
+                "{} <- {value}    the program is held: it lands when it runs",
+                binding.name
+            );
+        }
+        Reply::Paused { cycle } => {
+            let _ = writeln!(out, "held before cycle {cycle}");
+        }
+        Reply::Running => out.push_str("running\n"),
+        Reply::Stepping => (),
+        Reply::Cycles { cycles } => {
+            for c in cycles {
+                show_cycle(out, c);
+                out.push('\n')
+            }
         }
         Reply::Watching { watch, bindings } => {
             for b in bindings {
@@ -425,8 +477,45 @@ fn show_reply(out: &mut String, reply: &Reply) {
     }
 }
 
+/// `cycle N: a = 1, b has no value`.
+fn show_cycle(out: &mut String, c: &Cycle) {
+    let _ = write!(out, "cycle {}:", c.cycle);
+    for (i, d) in c.delivered.iter().enumerate() {
+        out.push_str(if i == 0 { " " } else { ", " });
+        match &d.value {
+            Some(v) => {
+                let _ = write!(out, "{} = {}", d.name, brief(v, Some(BRIEF)));
+            }
+            None => {
+                let _ = write!(out, "{} has no value", d.name);
+            }
+        }
+    }
+    if c.more > 0 {
+        let _ = write!(out, ", and {} more", c.more);
+    }
+}
+
 fn show_event(out: &mut String, event: &Event) {
     match event {
+        Event::Running => out.push_str("running: another session continued the program"),
+        Event::Paused { cycle, by: Paused::Asked, .. } => {
+            let _ = write!(out, "held before cycle {cycle} by another session");
+        }
+        Event::Paused { cycle, by, delivered } => {
+            if let Paused::Break { watch } = by {
+                let _ = write!(out, "break {watch}: ");
+            }
+            match delivered {
+                Some(c) => {
+                    out.push_str("held after ");
+                    show_cycle(out, c)
+                }
+                None => {
+                    let _ = write!(out, "held after cycle {cycle}");
+                }
+            }
+        }
         Event::Value { value, .. } => out.push_str(value),
         Event::Fired { watch, name, cycle, value: Some(v), .. } => {
             let _ = write!(out, "{name} = {v}    watch {watch}, cycle {cycle}");
@@ -438,10 +527,16 @@ fn show_event(out: &mut String, event: &Event) {
 }
 
 /// Run one line a person typed and print what it answers, then the
-/// events that came before the answer. `Ok(None)` at `quit`; else
-/// whether the line was answered and not refused.
-async fn run_line(client: &mut Client<Stream>, line: &str) -> Result<Option<bool>> {
+/// events that came before the answer; with `wait`, a `step` is waited
+/// out too. `Ok(None)` at `quit`; else whether the line was answered and
+/// not refused.
+async fn run_line(
+    client: &mut Client<Stream>,
+    line: &str,
+    wait: bool,
+) -> Result<Option<bool>> {
     let mut out: LPooled<String> = LPooled::take();
+    let mut stepping = false;
     let ok = match parse(line) {
         Err(e) => {
             let _ = writeln!(out, "error: {e:#}");
@@ -453,17 +548,28 @@ async fn run_line(client: &mut Client<Stream>, line: &str) -> Result<Option<bool
             out.push_str(HELP);
             true
         }
-        Ok(Line::Ask(cmd)) => match client.ask(cmd).await? {
-            Outcome::Ok(reply) => {
-                show_reply(&mut out, &reply);
-                true
+        Ok(Line::Ask(cmd)) => {
+            let waited = matches!(cmd, Command::Wait);
+            match client.ask(cmd).await? {
+                // the hold a wait waited for was told before its answer
+                Outcome::Ok(Reply::Paused { .. }) if waited && client.has_queued() => {
+                    true
+                }
+                Outcome::Ok(reply) => {
+                    stepping = wait && matches!(reply, Reply::Stepping);
+                    show_reply(&mut out, &reply);
+                    true
+                }
+                Outcome::Err(e) => {
+                    let _ = writeln!(out, "error: {e}");
+                    false
+                }
             }
-            Outcome::Err(e) => {
-                let _ = writeln!(out, "error: {e}");
-                false
-            }
-        },
+        }
     };
+    if stepping && let Outcome::Err(e) = client.ask(Command::Wait).await? {
+        let _ = writeln!(out, "error: {e}");
+    }
     while let Some(e) = client.queued() {
         show_event(&mut out, &e);
         out.push('\n')
@@ -509,7 +615,7 @@ async fn at_terminal(client: &mut Client<Stream>) -> Result<()> {
         select! {
             line = lines.recv() => match line {
                 None => break false,
-                Some((line, done)) => match run_line(client, &line).await? {
+                Some((line, done)) => match run_line(client, &line, false).await? {
                     None => break false,
                     Some(_) => {
                         let _ = done.send(());
@@ -559,7 +665,7 @@ pub fn run(args: Args) -> Result<()> {
         let mut ok = true;
         if !args.commands.is_empty() {
             for line in &args.commands {
-                match run_line(&mut client, line).await? {
+                match run_line(&mut client, line, true).await? {
                     None => break,
                     Some(answered) => ok &= answered,
                 }
@@ -568,7 +674,7 @@ pub fn run(args: Args) -> Result<()> {
             at_terminal(&mut client).await?
         } else {
             for line in io::stdin().lock().lines() {
-                match run_line(&mut client, &line?).await? {
+                match run_line(&mut client, &line?, true).await? {
                     None => break,
                     Some(answered) => ok &= answered,
                 }

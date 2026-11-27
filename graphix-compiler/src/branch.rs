@@ -1177,6 +1177,12 @@ impl<V: Clone> Layered<V> {
         own.or(from_parent)
     }
 
+    /// What this map itself holds: for a cycle's root event, every
+    /// delivery the cycle made.
+    pub fn own(&self) -> impl Iterator<Item = (BindId, &V)> + '_ {
+        self.map.iter().map(|(id, v)| (*id, v))
+    }
+
     /// The ids this layer delivered itself.
     pub(crate) fn own_ids(&self) -> impl Iterator<Item = BindId> + '_ {
         self.map.keys().copied()

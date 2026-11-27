@@ -1277,6 +1277,10 @@ pub struct GXConfig<X: GXExt> {
     /// per-compile cost; only the LSP backend should set it.
     #[builder(default)]
     lsp_mode: bool,
+    /// Start held: the program is compiled and runs no cycle until a
+    /// debugger session continues or steps it ([`debug::Debugger`]).
+    #[builder(default)]
+    paused: bool,
 }
 
 impl<X: GXExt> GXConfig<X> {

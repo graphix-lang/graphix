@@ -105,6 +105,48 @@ price <- 100
 A binding computed from others keeps the value you set until one of them
 fires again.
 
+## Pausing and stepping
+
+`pause` holds the program: it runs nothing more until you say so. What
+arrives for it meanwhile (a timer, a key, a network reply) waits. You can
+still ask anything, and evaluate against what stands.
+
+`step` lets it run just until the next cycle that does something, then
+holds it again and shows what that cycle wrote. `continue` lets it run.
+
+```text
+debug> pause
+held before cycle 5
+debug> step
+held after cycle 6: tick = 1
+debug> set price = 5
+price <- 5    the program is held: it lands when it runs
+debug> step
+held after cycle 12: price = 5, total has no value, scaled = 11
+debug> continue
+running
+```
+
+`break` holds the program by itself, at the cycle a binding is written:
+
+```text
+debug> break tick == 12
+watch 2: tick: i64 = 4    #4249 myprogram.gx:1:5, written in cycle 13
+tick = 5    watch 2, cycle 15
+...
+break 2: held after cycle 29: tick = 12
+```
+
+`break NAME` holds at any write, `break NAME == EXPR` at that value, and
+`break NAME none` when it loses its value. `unwatch` removes one.
+`cycles` shows what each of the last few cycles wrote.
+
+To debug a program's very start, run it with `--debug-wait`: it offers
+its debugger and waits, held, before its first cycle, until you `step` or
+`continue`.
+
+When you detach, a held program runs again.
+
 ## Native code
 
 Code that compiled to native code keeps no bindings, so there are none to
@@ -127,10 +169,12 @@ Run the program with `--no-fusion` to see inside.
 
 `-c` runs one command and exits, and may be given several times; lines
 piped to `graphix debug` are run the same way. The exit status is 1 if a
-command was refused.
+command was refused. A `step` is waited out before the next command, and
+`wait` waits until a break holds the program:
 
 ```bash
 graphix debug -c 'why total' -c 'print price'
+graphix debug -c 'break total none' -c 'wait' -c 'why total'
 ```
 
 `--debug=PATH` chooses the socket. By default it is in your runtime
