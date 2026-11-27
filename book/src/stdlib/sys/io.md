@@ -39,6 +39,12 @@ it can also read bytes appended after EOF or retry after an error.
 A handle delivered while its reader is still active leaves that reader
 running.
 
+The lines are a stream: the variable holds the last line read. To send a
+request and read its reply in a [`seq`](../../core/seq.md), read the
+reply with `await(lines)`, which waits for the next line
+([Waiting for the next event](../../core/seq.md#waiting-for-the-next-event)).
+A plain read of `lines` there gives the line before.
+
 ```graphix
 {{#include ../../../../stdlib/graphix-package-sys/src/graphix/io.gxi}}
 ```

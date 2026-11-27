@@ -189,6 +189,11 @@ handle when the seek answers. Re-delivery never rewinds automatically;
 it can also read bytes appended after EOF or retry after an error.
 A handle delivered while its reader is still active leaves that reader
 running.</p>
+<p>The lines are a stream: the variable holds the last line read. To send a
+request and read its reply in a <a href="../../core/seq.html"><code>seq</code></a>, read the
+reply with <code>await(lines)</code>, which waits for the next line
+(<a href="../../core/seq.html#waiting-for-the-next-event">Waiting for the next event</a>).
+A plain read of <code>lines</code> there gives the line before.</p>
 <pre><code class="language-graphix">/// The process's standard input, from [stdin]: it reads.
 type Stdin;
 
