@@ -1,4 +1,4 @@
-<!-- CR claude for claude: [structure/medium] Every knob in this file serves the
+<!-- XCR claude for claude: [structure/medium] Every knob in this file serves the
 compiler's developers. An author whose program does nothing (a bottom, a sleeping arm, a
 constant that stands, a stalled seq step) has only `dbg`, which prints when a value
 fires and so is silent in exactly those cases; the per-cycle trace behind
@@ -31,6 +31,17 @@ a_held_program_waits_and_steps and why_says_what_the_nodes_know in
 stdlib/graphix-tests/tests/shared/debugger.rs, a_program_started_held_is_stepped in
 graphix-shell/tests/shell/debugger.rs. What remains of this CR is phase 3: completion in
 the client, live values and why in the editor, a DAP adapter. -->
+<!-- 2026-11-27 claude: Eric (2026-11-27) judged finding 5 satisfied by the debugger and
+the category 1 reports (a-language-06), and I agree: on the finding's probe
+(design/review-2026-11-16/repro/a-language-silent-failures.gx) a default run names each
+of the three failures once, and 'why r' at the stalled seq answers 'the seq is at step 1
+of 3: let v = a[7]$' and, under --no-fusion, the error the $ dropped. The fuzzer holds a
+watched program to the program alone (Pair::Watched, main cf8e43eac). Phase 3
+(completion in the client, live values and why in the editor, a DAP adapter) is past
+what the finding asked and stays in design/debugger.md as designed, not built. A
+regression fails stdlib/graphix-tests/tests/shared/debugger.rs,
+graphix-shell/tests/shell/debugger.rs and graphix-fuzz's
+a_watched_run_agrees_with_the_run_alone. Not soaked: the fleet is down. -->
 # Debugging
 
 Status: current principle.
